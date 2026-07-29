@@ -1,0 +1,815 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_rulers.zia
+// Purpose: Focused rulers behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_canvas_camera.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_rulers;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_canvas_camera" as PreviousLayer;
+
+/// @brief Rulers implementation layer.
+class SceneEditor2DRulersLayer extends PreviousLayer.SceneEditor2DCanvasCameraLayer {
+
+    /// @brief Reflect the grid-overlay toggle on its toolbar button.
+    hide override func RefreshGridButton() {
+        if gridButton == null { return; }
+        if showGrid and gameViewActive == false {
+            gridButton.SetText("Grid: on");
+        } else {
+            gridButton.SetText("Grid");
+        }
+        UpdateCommandMenuButtons();
+    }
+
+    /// @brief Return one guide's index or -1 when it is absent.
+    hide override func CanvasGuideIndex(guides: List[Integer],
+                               coordinate: Integer) -> Integer {
+        var index = 0;
+        while index < guides.count() {
+            if guides.get(index) == coordinate { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Retain unique in-range guide coordinates under the axis cap.
+    hide override func BoundedCanvasGuides(values: List[Integer],
+                                  maximum: Integer) -> List[Integer] {
+        var bounded: List[Integer] = [];
+        var index = 0;
+        while index < values.count()
+              and bounded.count() < SceneEditor2DModel.MAX_CANVAS_GUIDES_PER_AXIS {
+            var coordinate = values.get(index);
+            if coordinate >= 0 and coordinate <= maximum
+               and CanvasGuideIndex(bounded, coordinate) < 0 {
+                bounded.add(coordinate);
+            }
+            index = index + 1;
+        }
+        return bounded;
+    }
+
+    /// @brief Drop stale or hostile guide state without touching scene bytes.
+    hide override func NormalizeCanvasGuides() {
+        var maximumX = SceneEditor2DModel.MAX_SELECTED_CELL;
+        var maximumY = SceneEditor2DModel.MAX_SELECTED_CELL;
+        if scene != null {
+            maximumX = scene.Width;
+            maximumY = scene.Height;
+        }
+        verticalGuides =
+            BoundedCanvasGuides(verticalGuides, maximumX);
+        horizontalGuides =
+            BoundedCanvasGuides(horizontalGuides, maximumY);
+    }
+
+    /// @brief Report whether one axis-aligned canvas guide exists.
+    expose override func HasCanvasGuide(axis: Integer,
+                               coordinate: Integer) -> Boolean {
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+            return CanvasGuideIndex(verticalGuides, coordinate) >= 0;
+        }
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+            return CanvasGuideIndex(horizontalGuides, coordinate) >= 0;
+        }
+        return false;
+    }
+
+    /// @brief Add or remove one bounded per-document guide.
+    /// @return True when the guide collection changed.
+    expose override func ToggleCanvasGuide(axis: Integer,
+                                  coordinate: Integer) -> Boolean {
+        if scene == null { return false; }
+        var maximum = scene.Width;
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+            maximum = scene.Height;
+        } else if axis != SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+            return false;
+        }
+        if coordinate < 0 or coordinate > maximum { return false; }
+        var existing = -1;
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+            existing = CanvasGuideIndex(verticalGuides, coordinate);
+            if existing >= 0 {
+                verticalGuides.removeAt(existing);
+            } else {
+                if verticalGuides.count()
+                   >= SceneEditor2DModel.MAX_CANVAS_GUIDES_PER_AXIS {
+                    return false;
+                }
+                verticalGuides.add(coordinate);
+            }
+        } else {
+            existing = CanvasGuideIndex(horizontalGuides, coordinate);
+            if existing >= 0 {
+                horizontalGuides.removeAt(existing);
+            } else {
+                if horizontalGuides.count()
+                   >= SceneEditor2DModel.MAX_CANVAS_GUIDES_PER_AXIS {
+                    return false;
+                }
+                horizontalGuides.add(coordinate);
+            }
+        }
+        renderDirty = true;
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Move one existing guide without creating duplicates.
+    /// @return True only when a valid guide changed coordinates.
+    expose override func MoveCanvasGuide(axis: Integer,
+                                source: Integer,
+                                target: Integer) -> Boolean {
+        if scene == null or source == target { return false; }
+        var guides = verticalGuides;
+        var maximum = scene.Width;
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+            guides = horizontalGuides;
+            maximum = scene.Height;
+        } else if axis != SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+            return false;
+        }
+        if target < 0 or target > maximum { return false; }
+        var sourceIndex = CanvasGuideIndex(guides, source);
+        if sourceIndex < 0 or CanvasGuideIndex(guides, target) >= 0 {
+            return false;
+        }
+        guides.set(sourceIndex, target);
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+            verticalGuides = guides;
+        } else {
+            horizontalGuides = guides;
+        }
+        renderDirty = true;
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Return one guide's coordinate in its ruler image.
+    /// @details Vertical guides map to the horizontal ruler; horizontal guides
+    ///          map to the vertical ruler.
+    expose override func CanvasRulerTickPosition(axis: Integer,
+                                        coordinate: Integer) -> Integer {
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+            return coordinate * displayCellSize
+                - viewOriginX + centerPadX;
+        }
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+            return coordinate * displayCellSize
+                - viewOriginY + centerPadY;
+        }
+        return -1;
+    }
+
+    /// @brief Return the closest guide marker within the ruler hit radius.
+    hide override func CanvasGuideHitIndex(axis: Integer,
+                                  localPosition: Integer) -> Integer {
+        var guides = verticalGuides;
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+            guides = horizontalGuides;
+        } else if axis != SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+            return -1;
+        }
+        var closestIndex = -1;
+        var closestDistance = SceneEditor2DModel.CANVAS_GUIDE_HIT_RADIUS + 1;
+        var index = 0;
+        while index < guides.count() {
+            var position =
+                CanvasRulerTickPosition(axis, guides.get(index));
+            var distance = SceneEditor2DModel.AbsInt2D(position - localPosition);
+            if distance <= SceneEditor2DModel.CANVAS_GUIDE_HIT_RADIUS
+               and distance < closestDistance {
+                closestIndex = index;
+                closestDistance = distance;
+            }
+            index = index + 1;
+        }
+        return closestIndex;
+    }
+
+    /// @brief Pointer coordinate along one captured guide's ruler axis.
+    hide override func CanvasGuidePointerLocalPosition(axis: Integer) -> Integer {
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+            return Convert.NumToInt(
+                PhysicalPointerToUi(Input.Mouse.X())
+                - horizontalRulerImage.GetScreenX());
+        }
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+            return Convert.NumToInt(
+                PhysicalPointerToUi(Input.Mouse.Y())
+                - verticalRulerImage.GetScreenY());
+        }
+        return -1;
+    }
+
+    /// @brief Convert the captured pointer to one bounded guide coordinate.
+    hide override func CanvasGuidePointerCoordinate(axis: Integer) -> Integer {
+        if scene == null { return -1; }
+        var origin = viewOriginX;
+        var pad = centerPadX;
+        var maximum = scene.Width;
+        var extent = Convert.NumToInt(
+            horizontalRulerImage.GetScreenWidth());
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+            origin = viewOriginY;
+            pad = centerPadY;
+            maximum = scene.Height;
+            extent = Convert.NumToInt(
+                verticalRulerImage.GetScreenHeight());
+        } else if axis != SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+            return -1;
+        }
+        var localPosition =
+            CanvasGuidePointerLocalPosition(axis);
+        // Captured motion may leave the widget. Treat leaving the visible
+        // ruler lane as an explicit removal preview rather than teleporting
+        // a guide to a valid but currently off-screen scene coordinate.
+        if localPosition < 0 - SceneEditor2DModel.CANVAS_GUIDE_HIT_RADIUS
+           or localPosition > extent + SceneEditor2DModel.CANVAS_GUIDE_HIT_RADIUS {
+            return -1;
+        }
+        return SceneEditor2DModel.CanvasRulerGuideCoordinate(
+            localPosition,
+            origin, pad, displayCellSize, maximum);
+    }
+
+    /// @brief Arm one click-or-drag ruler gesture with pointer capture.
+    hide override func BeginCanvasGuideDrag(axis: Integer,
+                                   guideIndex: Integer,
+                                   coordinate: Integer) {
+        if Input.Mouse.IsCaptured() { return; }
+        canvasGuideDragActive = true;
+        canvasGuideDragAxis = axis;
+        canvasGuideDragIndex = guideIndex;
+        canvasGuideDragOrigin = -1;
+        if guideIndex >= 0 {
+            if axis == SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+                canvasGuideDragOrigin = verticalGuides.get(guideIndex);
+            } else {
+                canvasGuideDragOrigin = horizontalGuides.get(guideIndex);
+            }
+        }
+        canvasGuideDragCurrent = coordinate;
+        if canvasGuideDragOrigin >= 0 {
+            canvasGuideDragCurrent = canvasGuideDragOrigin;
+        }
+        canvasGuideDragMoved = false;
+        canvasGuideDragStartX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.X()));
+        canvasGuideDragStartY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.Y()));
+        Input.Mouse.Capture();
+        renderDirty = true;
+        toolbarStatus.SetText("Drag guide; Escape cancels");
+    }
+
+    /// @brief Clear transient ruler manipulation and optionally release capture.
+    hide override func ResetCanvasGuideDrag(releaseCapture: Boolean) {
+        var wasActive = canvasGuideDragActive;
+        canvasGuideDragActive = false;
+        canvasGuideDragAxis = -1;
+        canvasGuideDragIndex = -1;
+        canvasGuideDragOrigin = -1;
+        canvasGuideDragCurrent = -1;
+        canvasGuideDragMoved = false;
+        canvasGuideDragStartX = 0;
+        canvasGuideDragStartY = 0;
+        if releaseCapture and wasActive and Input.Mouse.IsCaptured() {
+            Input.Mouse.Release();
+        }
+        if wasActive { renderDirty = true; }
+    }
+
+    /// @brief Cancel one live ruler gesture without changing workspace guides.
+    hide override func CancelCanvasGuideDrag() {
+        if canvasGuideDragActive == false { return; }
+        ResetCanvasGuideDrag(true);
+        gestureEscapeConsumed = true;
+        toolbarStatus.SetText("Guide move canceled");
+    }
+
+    /// @brief Update the live guide preview from the captured pointer.
+    hide override func UpdateCanvasGuideDrag() {
+        if canvasGuideDragActive == false { return; }
+        var pointerX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.X()));
+        var pointerY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.Y()));
+        if SceneEditor2DModel.AbsInt2D(pointerX - canvasGuideDragStartX)
+              >= SceneEditor2DModel.CANVAS_GUIDE_DRAG_THRESHOLD
+           or SceneEditor2DModel.AbsInt2D(pointerY - canvasGuideDragStartY)
+              >= SceneEditor2DModel.CANVAS_GUIDE_DRAG_THRESHOLD {
+            canvasGuideDragMoved = true;
+        }
+        if canvasGuideDragMoved {
+            var nextCoordinate =
+                CanvasGuidePointerCoordinate(canvasGuideDragAxis);
+            if nextCoordinate != canvasGuideDragCurrent {
+                canvasGuideDragCurrent = nextCoordinate;
+                renderDirty = true;
+            }
+            if nextCoordinate < 0 {
+                toolbarStatus.SetText("Release to remove guide");
+            } else {
+                toolbarStatus.SetText(
+                    "Move guide to " + nextCoordinate
+                    + "; Escape cancels");
+            }
+        }
+    }
+
+    /// @brief Complete one ruler click, create-drag, move, or drag-out removal.
+    hide override func FinishCanvasGuideDrag() {
+        if canvasGuideDragActive == false { return; }
+        var axis = canvasGuideDragAxis;
+        var origin = canvasGuideDragOrigin;
+        var target = canvasGuideDragCurrent;
+        var moved = canvasGuideDragMoved;
+        ResetCanvasGuideDrag(true);
+
+        var orientation = "vertical";
+        if axis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+            orientation = "horizontal";
+        }
+        if moved == false {
+            var removing = origin >= 0;
+            var coordinate = target;
+            if removing { coordinate = origin; }
+            if ToggleCanvasGuide(axis, coordinate) {
+                var action = "Added";
+                if removing { action = "Removed"; }
+                toolbarStatus.SetText(
+                    action + " " + orientation + " guide "
+                    + coordinate);
+            }
+            return;
+        }
+        if target < 0 {
+            if origin >= 0 and ToggleCanvasGuide(axis, origin) {
+                toolbarStatus.SetText(
+                    "Removed " + orientation + " guide " + origin);
+            } else {
+                toolbarStatus.SetText("Guide drag canceled");
+            }
+            return;
+        }
+        if origin < 0 {
+            if HasCanvasGuide(axis, target) {
+                toolbarStatus.SetText(
+                    "A guide already exists at " + target);
+            } else if ToggleCanvasGuide(axis, target) {
+                toolbarStatus.SetText(
+                    "Added " + orientation + " guide " + target);
+            }
+            return;
+        }
+        if origin == target {
+            toolbarStatus.SetText(
+                "Kept " + orientation + " guide " + origin);
+        } else if MoveCanvasGuide(axis, origin, target) {
+            toolbarStatus.SetText(
+                "Moved " + orientation + " guide "
+                + origin + " to " + target);
+        } else {
+            toolbarStatus.SetText(
+                "A guide already exists at " + target);
+        }
+    }
+
+    /// @brief Reflect visibility in both the toolbar and retained layout.
+    hide override func RefreshRulerPresentation() {
+        var rulersVisible = showRulers and gameViewActive == false;
+        if rulersButton != null {
+            if showRulers {
+                rulersButton.SetText("Rulers: on");
+                rulersButton.SetStyle(1);
+            } else {
+                rulersButton.SetText("Rulers");
+                rulersButton.SetStyle(0);
+            }
+        }
+        if rulerTopRow != null { rulerTopRow.SetVisible(rulersVisible); }
+        if verticalRulerImage != null {
+            verticalRulerImage.SetVisible(rulersVisible);
+        }
+        UpdateCommandMenuButtons();
+    }
+
+    /// @brief Pump click, create-drag, move, cancel, and removal gestures.
+    hide override func PumpCanvasRulers() {
+        if gameViewActive { return; }
+        if canvasGuideDragActive {
+            if showRulers == false or scene == null
+               or horizontalRulerImage == null
+               or verticalRulerImage == null
+               or displayCellSize < 1 {
+                ResetCanvasGuideDrag(true);
+                return;
+            }
+            if Input.Keyboard.WasPressed(Input.Key.Escape) {
+                CancelCanvasGuideDrag();
+                return;
+            }
+            UpdateCanvasGuideDrag();
+            if Input.Mouse.IsDown(Input.Mouse.ButtonLeft) == false {
+                FinishCanvasGuideDrag();
+            }
+            return;
+        }
+        if showRulers == false or scene == null
+           or horizontalRulerImage == null
+           or verticalRulerImage == null
+           or displayCellSize < 1
+           or Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) == false
+           or Input.Mouse.IsCaptured() {
+            return;
+        }
+        var axis = -1;
+        var localPosition = -1;
+        var origin = 0;
+        var pad = 0;
+        var maximum = 0;
+        if horizontalRulerImage.IsHovered() {
+            axis = SceneEditor2DModel.CANVAS_GUIDE_VERTICAL;
+            localPosition = Convert.NumToInt(
+                PhysicalPointerToUi(Input.Mouse.X())
+                - horizontalRulerImage.GetScreenX());
+            origin = viewOriginX;
+            pad = centerPadX;
+            maximum = scene.Width;
+        } else if verticalRulerImage.IsHovered() {
+            axis = SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL;
+            localPosition = Convert.NumToInt(
+                PhysicalPointerToUi(Input.Mouse.Y())
+                - verticalRulerImage.GetScreenY());
+            origin = viewOriginY;
+            pad = centerPadY;
+            maximum = scene.Height;
+        }
+        if axis < 0 { return; }
+        var coordinate = SceneEditor2DModel.CanvasRulerGuideCoordinate(
+            localPosition, origin, pad, displayCellSize, maximum);
+        if coordinate < 0 { return; }
+        var guideIndex =
+            CanvasGuideHitIndex(axis, localPosition);
+        if guideIndex < 0 {
+            var guideCount = verticalGuides.count();
+            if axis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+                guideCount = horizontalGuides.count();
+            }
+            if guideCount >= SceneEditor2DModel.MAX_CANVAS_GUIDES_PER_AXIS {
+                toolbarStatus.SetText("Guide limit reached");
+                return;
+            }
+        }
+        BeginCanvasGuideDrag(axis, guideIndex, coordinate);
+    }
+
+    /// @brief Draw scroll/zoom-aware cell rulers into their retained images.
+    hide override func RenderCanvasRulers() {
+        if gameViewActive or showRulers == false
+           or rulerCornerImage == null
+           or horizontalRulerImage == null
+           or verticalRulerImage == null {
+            return;
+        }
+        var width = lastCanvasViewportWidth;
+        var height = lastCanvasViewportHeight;
+        if width < 1 { width = 1; }
+        if height < 1 { height = 1; }
+        var background = Color.RGB(31, 37, 47);
+        var border = Color.RGB(75, 87, 104);
+        var minor = Color.RGB(91, 104, 123);
+        var major = Color.RGB(181, 192, 208);
+
+        rulerCornerPixels = Pixels.New(
+            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH, SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT);
+        rulerCornerPixels.FillColor(background);
+        rulerCornerPixels.DrawLine(
+            0, SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 1,
+            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 1,
+            SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 1, border);
+        rulerCornerPixels.DrawLine(
+            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 1, 0,
+            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 1,
+            SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 1, border);
+        rulerCornerPixels.DrawText(
+            5, 8, "CELL", Color.RGB(143, 158, 178));
+        rulerCornerImage.SetPixels(
+            rulerCornerPixels,
+            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH,
+            SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT);
+        rulerCornerImage.SetSize(
+            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH,
+            SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT);
+
+        horizontalRulerPixels =
+            Pixels.New(width, SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT);
+        horizontalRulerPixels.FillColor(background);
+        horizontalRulerPixels.DrawLine(
+            0, SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 1,
+            width - 1, SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 1, border);
+        verticalRulerPixels =
+            Pixels.New(SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH, height);
+        verticalRulerPixels.FillColor(background);
+        verticalRulerPixels.DrawLine(
+            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 1, 0,
+            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 1, height - 1, border);
+
+        DrawCanvasRulerContents(width, height, minor, major);
+        horizontalRulerImage.SetPixels(
+            horizontalRulerPixels, width, SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT);
+        horizontalRulerImage.SetSize(
+            width, SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT);
+        verticalRulerImage.SetPixels(
+            verticalRulerPixels, SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH, height);
+        verticalRulerImage.SetSize(
+            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH, height);
+        horizontalRulerImage.SetAccessibleDescription(
+            verticalGuides.count()
+            + " vertical guides; click a boundary to toggle, "
+            + "or drag a guide to move it.");
+        verticalRulerImage.SetAccessibleDescription(
+            horizontalGuides.count()
+            + " horizontal guides; click a boundary to toggle, "
+            + "or drag a guide to move it.");
+        }
+
+    /// @brief Draw visible ruler ticks, guides, and the active-cell cursor.
+    hide func DrawCanvasRulerContents(width: Integer,
+                                      height: Integer,
+                                      minor: Integer,
+                                      major: Integer) {
+        if scene != null and displayCellSize > 0 {
+            NormalizeCanvasGuides();
+            var stride = SceneEditor2DModel.CanvasRulerMajorStride(displayCellSize);
+            var firstColumn = viewOriginX / displayCellSize - 1;
+            if firstColumn < 0 { firstColumn = 0; }
+            var lastColumn =
+                (viewOriginX + width) / displayCellSize + 1;
+            if lastColumn > scene.Width { lastColumn = scene.Width; }
+            var column = firstColumn;
+            while column <= lastColumn {
+                var x = CanvasRulerTickPosition(
+                    SceneEditor2DModel.CANVAS_GUIDE_VERTICAL, column);
+                if x >= 0 and x < width {
+                    var tickTop = SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 5;
+                    var tickColor = minor;
+                    if column % stride == 0 {
+                        tickTop = SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 10;
+                        tickColor = major;
+                        var label = "" + column;
+                        var labelWidth = Str.get_Length(label) * 8;
+                        if x + 2 + labelWidth < width {
+                            horizontalRulerPixels.DrawText(
+                                x + 2, 3, label, major);
+                        }
+                    }
+                    horizontalRulerPixels.DrawLine(
+                        x, tickTop, x,
+                        SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 1, tickColor);
+                }
+                column = column + 1;
+            }
+
+            var firstRow = viewOriginY / displayCellSize - 1;
+            if firstRow < 0 { firstRow = 0; }
+            var lastRow =
+                (viewOriginY + height) / displayCellSize + 1;
+            if lastRow > scene.Height { lastRow = scene.Height; }
+            var row = firstRow;
+            while row <= lastRow {
+                var y = CanvasRulerTickPosition(
+                    SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL, row);
+                if y >= 0 and y < height {
+                    var tickLeft = SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 5;
+                    var tickColorY = minor;
+                    if row % stride == 0 {
+                        tickLeft = SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 10;
+                        tickColorY = major;
+                        var rowLabel = "" + row;
+                        if y + 10 < height {
+                            verticalRulerPixels.DrawText(
+                                3, y + 2, rowLabel, major);
+                        }
+                    }
+                    verticalRulerPixels.DrawLine(
+                        tickLeft, y,
+                        SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 1, y, tickColorY);
+                }
+                row = row + 1;
+            }
+
+            var guideIndex = 0;
+            while guideIndex < verticalGuides.count() {
+                var guideCoordinate =
+                    verticalGuides.get(guideIndex);
+                if canvasGuideDragActive
+                   and canvasGuideDragAxis == SceneEditor2DModel.CANVAS_GUIDE_VERTICAL
+                   and canvasGuideDragIndex == guideIndex {
+                    guideCoordinate = canvasGuideDragCurrent;
+                }
+                var guideX = -1;
+                if guideCoordinate >= 0 {
+                    guideX = CanvasRulerTickPosition(
+                        SceneEditor2DModel.CANVAS_GUIDE_VERTICAL,
+                        guideCoordinate);
+                }
+                if guideX >= 0 and guideX < width {
+                    horizontalRulerPixels.DrawLine(
+                        guideX, SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 12,
+                        guideX, SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 1,
+                        SceneEditor2DModel.CANVAS_GUIDE_COLOR);
+                }
+                guideIndex = guideIndex + 1;
+            }
+            guideIndex = 0;
+            while guideIndex < horizontalGuides.count() {
+                var guideCoordinateY =
+                    horizontalGuides.get(guideIndex);
+                if canvasGuideDragActive
+                   and canvasGuideDragAxis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL
+                   and canvasGuideDragIndex == guideIndex {
+                    guideCoordinateY = canvasGuideDragCurrent;
+                }
+                var guideY = -1;
+                if guideCoordinateY >= 0 {
+                    guideY = CanvasRulerTickPosition(
+                        SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL,
+                        guideCoordinateY);
+                }
+                if guideY >= 0 and guideY < height {
+                    verticalRulerPixels.DrawLine(
+                        SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 12, guideY,
+                        SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 1, guideY,
+                        SceneEditor2DModel.CANVAS_GUIDE_COLOR);
+                }
+                guideIndex = guideIndex + 1;
+            }
+            if canvasGuideDragActive
+               and canvasGuideDragIndex < 0
+               and canvasGuideDragCurrent >= 0 {
+                if canvasGuideDragAxis == SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+                    var pendingGuideX = CanvasRulerTickPosition(
+                        SceneEditor2DModel.CANVAS_GUIDE_VERTICAL,
+                        canvasGuideDragCurrent);
+                    if pendingGuideX >= 0 and pendingGuideX < width {
+                        horizontalRulerPixels.DrawLine(
+                            pendingGuideX,
+                            SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 12,
+                            pendingGuideX,
+                            SceneEditor2DModel.CANVAS_RULER_TOP_HEIGHT - 1,
+                            SceneEditor2DModel.CANVAS_GUIDE_COLOR);
+                    }
+                } else if canvasGuideDragAxis
+                              == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+                    var pendingGuideY = CanvasRulerTickPosition(
+                        SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL,
+                        canvasGuideDragCurrent);
+                    if pendingGuideY >= 0 and pendingGuideY < height {
+                        verticalRulerPixels.DrawLine(
+                            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 12,
+                            pendingGuideY,
+                            SceneEditor2DModel.CANVAS_RULER_LEFT_WIDTH - 1,
+                            pendingGuideY,
+                            SceneEditor2DModel.CANVAS_GUIDE_COLOR);
+                    }
+                }
+            }
+
+            if selectedCellX >= 0 {
+                var cursorX = CanvasRulerTickPosition(
+                    SceneEditor2DModel.CANVAS_GUIDE_VERTICAL, selectedCellX)
+                    + displayCellSize / 2;
+                if cursorX >= 0 and cursorX < width {
+                    horizontalRulerPixels.DrawLine(
+                        cursorX, 0, cursorX, 5,
+                        Color.RGB(255, 195, 78));
+                }
+            }
+            if selectedCellY >= 0 {
+                var cursorY = CanvasRulerTickPosition(
+                    SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL, selectedCellY)
+                    + displayCellSize / 2;
+                if cursorY >= 0 and cursorY < height {
+                    verticalRulerPixels.DrawLine(
+                        0, cursorY, 5, cursorY,
+                        Color.RGB(255, 195, 78));
+                }
+            }
+        }
+
+    }
+
+    /// @brief Draw workspace-only guide lines over the visible scene window.
+    hide override func DrawCanvasGuides() {
+        if framePixels == null or scene == null { return; }
+        var index = 0;
+        while index < verticalGuides.count() {
+            var guideCoordinate = verticalGuides.get(index);
+            if canvasGuideDragActive
+               and canvasGuideDragAxis == SceneEditor2DModel.CANVAS_GUIDE_VERTICAL
+               and canvasGuideDragIndex == index {
+                guideCoordinate = canvasGuideDragCurrent;
+            }
+            var x = guideCoordinate * displayCellSize
+                - viewOriginX;
+            if x >= 0 and x < framePixels.Width {
+                framePixels.DrawLine(
+                    x, 0, x, framePixels.Height - 1,
+                    SceneEditor2DModel.CANVAS_GUIDE_COLOR);
+            }
+            index = index + 1;
+        }
+        index = 0;
+        while index < horizontalGuides.count() {
+            var guideCoordinateY = horizontalGuides.get(index);
+            if canvasGuideDragActive
+               and canvasGuideDragAxis == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL
+               and canvasGuideDragIndex == index {
+                guideCoordinateY = canvasGuideDragCurrent;
+            }
+            var y = guideCoordinateY * displayCellSize
+                - viewOriginY;
+            if y >= 0 and y < framePixels.Height {
+                framePixels.DrawLine(
+                    0, y, framePixels.Width - 1, y,
+                    SceneEditor2DModel.CANVAS_GUIDE_COLOR);
+            }
+            index = index + 1;
+        }
+        if canvasGuideDragActive
+           and canvasGuideDragIndex < 0
+           and canvasGuideDragCurrent >= 0 {
+            if canvasGuideDragAxis == SceneEditor2DModel.CANVAS_GUIDE_VERTICAL {
+                var pendingX = canvasGuideDragCurrent
+                    * displayCellSize - viewOriginX;
+                if pendingX >= 0 and pendingX < framePixels.Width {
+                    framePixels.DrawLine(
+                        pendingX, 0,
+                        pendingX, framePixels.Height - 1,
+                        SceneEditor2DModel.CANVAS_GUIDE_COLOR);
+                }
+            } else if canvasGuideDragAxis
+                          == SceneEditor2DModel.CANVAS_GUIDE_HORIZONTAL {
+                var pendingY = canvasGuideDragCurrent
+                    * displayCellSize - viewOriginY;
+                if pendingY >= 0 and pendingY < framePixels.Height {
+                    framePixels.DrawLine(
+                        0, pendingY,
+                        framePixels.Width - 1, pendingY,
+                        SceneEditor2DModel.CANVAS_GUIDE_COLOR);
+                }
+            }
+        }
+    }
+}

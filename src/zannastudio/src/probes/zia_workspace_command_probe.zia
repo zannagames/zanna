@@ -86,7 +86,26 @@ func drainController(
     return controller.IsBusy() == false;
 }
 
-func main() {
+/// @brief Typed state shared by serial Zia workspace-command scenarios.
+class ZiaWorkspaceCommandProbeContext {
+    expose String root;
+    expose String mainPath;
+    expose app_shell.AppShell shell;
+    expose editor_engine.EditorEngine engine;
+    expose editor_tabs.EditorTabs tabs;
+    expose document_manager.DocumentManager docMgr;
+    expose project_manager.ProjectManager projMgr;
+    expose locations.LocationStore locStore;
+    expose project_index.ProjectIndexer indexer;
+    expose zia_workspace_commands.ZiaWorkspaceCommandController controller;
+    expose workspace_edit_preview.WorkspaceEditPreview renamePreview;
+    expose String uiSource;
+    expose Integer tick;
+}
+
+/// @brief Verify asynchronous worker queries, bounds, and cancellation.
+func VerifyWorkspaceQueryWorker(
+    ctx: ZiaWorkspaceCommandProbeContext) -> Boolean {
     var root = TempFile.CreateDirWithPrefix("zannastudio_zia_workspace_");
     var mainPath = Path.Join(root, "main.zia");
     var targetPath = Path.Join(root, "target.zia");
@@ -105,7 +124,7 @@ func main() {
        or ProjectIndex.UpdateFile(handle, mainPath, directSource) == false
        or ProjectIndex.UpdateFile(handle, targetPath, targetSource) == false {
         Terminal.Say("RESULT: fail direct index setup");
-        return;
+        return false;
     }
 
     var definitionJob = new zia_workspace_query_job.ZiaWorkspaceQueryJob();
@@ -117,7 +136,7 @@ func main() {
        or definitionJob.TakeCompleted() != null {
         ProjectIndex.Destroy(handle);
         Terminal.Say("RESULT: fail definition did not start asynchronously");
-        return;
+        return false;
     }
     var definition = waitForJob(definitionJob);
     if definition == null or definition!.succeeded == false
@@ -125,7 +144,7 @@ func main() {
        or Map.GetStr(definition!.result, "file") != targetPath {
         ProjectIndex.Destroy(handle);
         Terminal.Say("RESULT: fail asynchronous definition result");
-        return;
+        return false;
     }
 
     // A 2,001-item raw result gives the controller an exact truncation signal.
@@ -159,7 +178,7 @@ func main() {
           != zia_workspace_query_job.ZIA_MAX_NAVIGATION_RESULTS + 1 {
         ProjectIndex.Destroy(handle);
         Terminal.Say("RESULT: fail bounded reference result");
-        return;
+        return false;
     }
 
     var renameJob = new zia_workspace_query_job.ZiaWorkspaceQueryJob();
@@ -188,7 +207,7 @@ func main() {
         }
         ProjectIndex.Destroy(handle);
         Terminal.Say("RESULT: fail stale-safe rename edits");
-        return;
+        return false;
     }
 
     // Replacing a live request is latest-wins. The canceled generation may run
@@ -208,7 +227,7 @@ func main() {
        or latest!.kind != zia_workspace_query_job.ZIA_QUERY_DEFINITION {
         ProjectIndex.Destroy(handle);
         Terminal.Say("RESULT: fail latest-wins query");
-        return;
+        return false;
     }
 
     var shutdownJob = new zia_workspace_query_job.ZiaWorkspaceQueryJob();
@@ -219,9 +238,20 @@ func main() {
        or shutdownJob.TakeCompleted() != null {
         ProjectIndex.Destroy(handle);
         Terminal.Say("RESULT: fail worker shutdown drain");
-        return;
+        return false;
     }
     ProjectIndex.Destroy(handle);
+
+    ctx.root = root;
+    ctx.mainPath = mainPath;
+    return true;
+}
+
+/// @brief Verify cooperative indexing and bounded References publication.
+func VerifyWorkspaceReferenceCommand(
+    ctx: ZiaWorkspaceCommandProbeContext) -> Boolean {
+    var root = ctx.root;
+    var mainPath = ctx.mainPath;
 
     // Exercise Studio's real controller, including cooperative initial indexing
     // and bounded publication into the References panel.
@@ -262,7 +292,7 @@ func main() {
        or file_commands.OpenFileAtPath(shell, docMgr, engine, tabs,
                                        mainPath) == false {
         fail(shell, controller, indexer, "controller fixture setup");
-        return;
+        return false;
     }
     engine.SetText(uiSource);
     engine.editor.SetCursor(2, 8);
@@ -277,7 +307,7 @@ func main() {
        or shell.toolPanels.referencesListBox.Count != 0 {
         fail(shell, controller, indexer,
              "command blocked instead of waiting for index");
-        return;
+        return false;
     }
     shell.toolPanels.ShowTerminalPanel();
 
@@ -298,7 +328,7 @@ func main() {
           > zia_workspace_commands.RESULT_ITEMS_PER_FRAME + 1 {
         fail(shell, controller, indexer,
              "reference publication was not frame-bounded");
-        return;
+        return false;
     }
     if drainController(controller, shell, docMgr, projMgr, engine, tabs,
                        indexer, locStore) == false
@@ -309,8 +339,39 @@ func main() {
                       "Found 221 references") == 0 {
         fail(shell, controller, indexer,
              "incremental reference publication");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    ctx.tabs = tabs;
+    ctx.docMgr = docMgr;
+    ctx.projMgr = projMgr;
+    ctx.locStore = locStore;
+    ctx.indexer = indexer;
+    ctx.controller = controller;
+    ctx.renamePreview = renamePreview;
+    ctx.uiSource = uiSource;
+    ctx.tick = tick;
+    return true;
+}
+
+/// @brief Verify rename review and stale caret/index cancellation.
+func VerifyWorkspaceRenameAndCancellation(
+    ctx: ZiaWorkspaceCommandProbeContext) -> Boolean {
+    var root = ctx.root;
+    var mainPath = ctx.mainPath;
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var tabs = ctx.tabs;
+    var docMgr = ctx.docMgr;
+    var projMgr = ctx.projMgr;
+    var locStore = ctx.locStore;
+    var indexer = ctx.indexer;
+    var controller = ctx.controller;
+    var renamePreview = ctx.renamePreview;
+    var uiSource = ctx.uiSource;
+    var tick = ctx.tick;
 
     // A completed rename query must hand its immutable edit set to the shared
     // review surface and leave both the live buffer and disk untouched.
@@ -318,7 +379,7 @@ func main() {
     if controller.StartRename("renamedTarget", shell, docMgr, projMgr,
                               engine, indexer) == false {
         fail(shell, controller, indexer, "rename preview did not start");
-        return;
+        return false;
     }
     while renamePreview.HasPendingRename() == false
           and tick < ZIA_WORKSPACE_PROBE_WAIT_TICKS {
@@ -333,7 +394,7 @@ func main() {
        or File.ReadAllText(mainPath) != uiSource {
         fail(shell, controller, indexer,
              "rename result bypassed non-modal review");
-        return;
+        return false;
     }
     renamePreview.Cancel();
     renamePreview.Finish();
@@ -345,7 +406,7 @@ func main() {
                         "Go to definition", shell, docMgr, projMgr, engine,
                         indexer) == false {
         fail(shell, controller, indexer, "caret cancellation setup");
-        return;
+        return false;
     }
     engine.editor.SetCursor(0, 0);
     controller.Pump(shell, docMgr, projMgr, engine, tabs, indexer, locStore);
@@ -353,12 +414,12 @@ func main() {
        or controller.job.latestRequest != null
        or Str.IndexOf(shell.statusShell.lastLeftStatus, "canceled") == 0 {
         fail(shell, controller, indexer, "changed caret accepted stale query");
-        return;
+        return false;
     }
     if drainController(controller, shell, docMgr, projMgr, engine, tabs,
                        indexer, locStore) == false {
         fail(shell, controller, indexer, "caret cancellation drain");
-        return;
+        return false;
     }
 
     engine.editor.SetCursor(3, 15);
@@ -366,7 +427,7 @@ func main() {
                         "Go to definition", shell, docMgr, projMgr, engine,
                         indexer) == false {
         fail(shell, controller, indexer, "index cancellation setup");
-        return;
+        return false;
     }
     indexer.contentGeneration = indexer.contentGeneration + 1;
     controller.Pump(shell, docMgr, projMgr, engine, tabs, indexer, locStore);
@@ -375,12 +436,12 @@ func main() {
        or Str.IndexOf(shell.statusShell.lastLeftStatus, "canceled") == 0 {
         fail(shell, controller, indexer,
              "changed index accepted stale query");
-        return;
+        return false;
     }
     if drainController(controller, shell, docMgr, projMgr, engine, tabs,
                        indexer, locStore) == false {
         fail(shell, controller, indexer, "index cancellation drain");
-        return;
+        return false;
     }
 
     // Oversized files make the workspace index explicitly incomplete. The
@@ -398,14 +459,22 @@ func main() {
                            indexer) {
         fail(shell, controller, indexer,
              "incomplete workspace index served a query");
-        return;
+        return false;
     }
 
     if controller.Shutdown() == false {
         fail(shell, controller, indexer, "controller shutdown drain");
-        return;
+        return false;
     }
     indexer.Destroy();
     shell.Destroy();
     Terminal.Say("RESULT: ok");
+    return true;
+}
+
+func main() {
+    var ctx = new ZiaWorkspaceCommandProbeContext();
+    if VerifyWorkspaceQueryWorker(ctx) == false { return; }
+    if VerifyWorkspaceReferenceCommand(ctx) == false { return; }
+    if VerifyWorkspaceRenameAndCancellation(ctx) == false { return; }
 }

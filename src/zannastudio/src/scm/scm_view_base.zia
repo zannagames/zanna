@@ -1,0 +1,262 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/scm/scm_view_base.zia
+// Purpose: Coordinate asynchronous Git operations and Source Control UI state.
+// Key invariants:
+//   - Mutating Git jobs are serialized through a bounded visible queue.
+//   - Worktree diff reads are bounded and non-trapping.
+//   - Missing workspaces and non-repositories expose truthful disabled actions.
+//   - Sidebar controls wrap, remain keyboard reachable, and reflect live context.
+// Ownership/Lifetime: Owns queued jobs/widgets and borrows the diff overlay.
+// Links: zannastudio/src/scm/scm_git.zia,
+//        zannastudio/src/ui/diff_view.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scm_view_base;
+
+bind "scm_git";
+bind "../ui/diff_view";
+bind "../services/safe_io";
+
+bind Zanna.GUI as GUI;
+bind Str = Zanna.String;
+bind IO = Zanna.IO;
+bind Path = Zanna.IO.Path;
+bind Input = Zanna.Input;
+
+// ============================================================================
+// MODULE: scm_view
+// PURPOSE: Source Control panel controller for async Git operations.
+//
+// WHERE-THIS-FITS: Built into AppShell's `scmViewHost`. main.zia calls Setup()
+//          once, SetRepo(rootPath) for the active project, and HandleEvents() each
+//          frame. This module owns widget polling and the active GitJob lifecycle.
+//
+// KEY-DESIGN-CHOICES:
+//   * SERIALIZED JOBS WITH A VISIBLE QUEUE. Git operations mutate shared
+//     repository state; one runs at a time and later requests wait in a small
+//     bounded queue (plan 11) instead of being rejected.
+//   * STATUS REFRESH AFTER WRITES. Stage/unstage/commit/push/pull run in the
+//     background, then enqueue a fresh status snapshot when they complete.
+//   * STRUCTURED ROW DATA. The selected row stores the repo-relative path (or
+//     sha, in history mode), so commands never parse display labels.
+//   * NETWORK OPS RUN ON A PTY. Push/pull go through GitPtyJob so credential
+//     prompts stream into the panel and are answered with an in-app (masked)
+//     input — no external askpass helper (plan 11).
+// ============================================================================
+
+final HISTORY_PAGE_SIZE = 50;
+final MAX_PENDING_JOBS = 8;
+final MAX_SCM_DIFF_BYTES = 8000000;
+final SCM_CONTROLS_COMPACT_MAX_WIDTH = 360.0;
+
+/// @brief Return whether Source Control should use narrow action bases.
+func ScmUsesCompactControls(width: Number) -> Boolean {
+    return width > 0.0 and width <= SCM_CONTROLS_COMPACT_MAX_WIDTH;
+}
+
+/// @brief One queued SCM request waiting for the active job to finish.
+class PendingAction {
+    expose String kind;
+    expose String path;
+    expose String message;
+
+    expose func init() {
+        kind = "";
+        path = "";
+        message = "";
+    }
+}
+
+/// @brief Source Control panel controller.
+class ScmViewBase {
+    expose scm_git.Git git;
+    expose scm_git.GitJob activeJob;
+    expose scm_git.GitPtyJob activePtyJob;
+    expose GUI.VBox host;
+    expose GUI.Label branchLabel;
+    expose GUI.Label statusLabel;
+    expose GUI.Flex topRow;
+    expose GUI.ListBox statusList;
+    expose GUI.TextInput commitInput;
+    expose GUI.Button refreshBtn;
+    expose GUI.Button cancelBtn;
+    expose GUI.Button pushBtn;
+    expose GUI.Button pullBtn;
+    expose GUI.Button historyBtn;
+    expose GUI.Button loadMoreBtn;
+    expose GUI.Button stageBtn;
+    expose GUI.Button unstageBtn;
+    expose GUI.Button stageAllBtn;
+    expose GUI.Flex stageRow;
+    expose GUI.Flex commitRow;
+    expose GUI.Button commitBtn;
+    expose GUI.OutputPane diffPane;
+    expose GUI.Button sideBySideButton;
+    expose GUI.VBox credRow;
+    expose GUI.Flex credActionRow;
+    expose GUI.Label credLabel;
+    expose GUI.TextInput credInput;
+    expose GUI.Button credSendBtn;
+    expose GUI.Button credCancelBtn;
+    expose diff_view.DiffView diffOverlay;
+    expose Boolean ready;
+    expose Boolean repoReady;
+    expose Boolean repoContextInitialized;
+    expose String repoPath;
+    expose String queuedDiffPath;
+    expose List[PendingAction] pendingJobs;
+    expose String viewMode;      // "status" | "history" | "commitfiles"
+    expose Integer historyLoaded; // commits loaded so far (paging offset)
+    expose String historySha;     // commit backing commitfiles mode
+    expose String pendingOldText; // stash between showold and shownew jobs
+    expose String pendingDiffFile;
+    expose scm_git.GitStatus lastStatus;
+    expose Boolean compactControls;
+
+    expose func init() {
+        InitializeState();
+    }
+
+    /// @brief Initialize Source Control state for the public job controller.
+    expose func InitializeState() {
+        git = new scm_git.Git();
+        activeJob = null;
+        activePtyJob = null;
+        host = null;
+        ready = false;
+        repoReady = false;
+        repoContextInitialized = false;
+        repoPath = "";
+        queuedDiffPath = "";
+        pendingJobs = [];
+        viewMode = "status";
+        historyLoaded = 0;
+        historySha = "";
+        pendingOldText = "";
+        pendingDiffFile = "";
+        lastStatus = new scm_git.GitStatus();
+        compactControls = false;
+    }
+
+    /// @brief Build the Source Control widgets into @p host.
+    expose func Setup(hostArg: GUI.VBox) {
+        if hostArg == null { return; }
+        host = hostArg;
+
+        branchLabel = GUI.Label.New(host, "Source Control");
+        statusLabel = GUI.Label.New(host, "Idle");
+
+        topRow = GUI.Flex.New();
+        topRow.SetDirection(GUI.FlexDirection.Row);
+        topRow.SetWrap(GUI.FlexWrap.Wrap);
+        topRow.SetAlign(GUI.Align.Center);
+        topRow.SetGap(4.0);
+        host.AddChild(topRow);
+        refreshBtn = GUI.Button.New(topRow, "Refresh");
+        refreshBtn.SetAccessibleName("Refresh source control");
+        refreshBtn.SetTooltip("Refresh repository status");
+        cancelBtn = GUI.Button.New(topRow, "Cancel");
+        cancelBtn.SetAccessibleName("Cancel source control jobs");
+        cancelBtn.SetTooltip("Cancel the active Git job and queued operations");
+        pushBtn = GUI.Button.New(topRow, "Push");
+        pushBtn.SetAccessibleName("Push repository");
+        pushBtn.SetTooltip("Push the current branch");
+        pullBtn = GUI.Button.New(topRow, "Pull");
+        pullBtn.SetAccessibleName("Pull repository");
+        pullBtn.SetTooltip("Pull the current branch");
+        historyBtn = GUI.Button.New(topRow, "History");
+        historyBtn.SetAccessibleName("Toggle repository history");
+        historyBtn.SetTooltip("Switch between changes and commit history");
+        loadMoreBtn = GUI.Button.New(topRow, "More");
+        loadMoreBtn.SetAccessibleName("Load more repository history");
+        loadMoreBtn.SetTooltip("Load the next page of commits");
+        loadMoreBtn.SetVisible(false);
+
+        statusList = GUI.ListBox.New(host);
+        statusList.SetFlex(1.0);
+        statusList.SetAccessibleName("Source control changes and history");
+
+        stageRow = GUI.Flex.New();
+        stageRow.SetDirection(GUI.FlexDirection.Row);
+        stageRow.SetWrap(GUI.FlexWrap.Wrap);
+        stageRow.SetAlign(GUI.Align.Center);
+        stageRow.SetGap(4.0);
+        host.AddChild(stageRow);
+        stageBtn = GUI.Button.New(stageRow, "Stage");
+        stageBtn.SetAccessibleName("Stage selected change");
+        stageBtn.SetTooltip(
+            "Stage the selected file; after resolving a conflict this marks it resolved");
+        unstageBtn = GUI.Button.New(stageRow, "Unstage");
+        unstageBtn.SetAccessibleName("Unstage selected change");
+        unstageBtn.SetTooltip("Remove the selected file from the Git index");
+        stageAllBtn = GUI.Button.New(stageRow, "Stage All");
+        stageAllBtn.SetAccessibleName("Stage all changes");
+        stageAllBtn.SetTooltip("Stage every current worktree change");
+
+        commitRow = GUI.Flex.New();
+        commitRow.SetDirection(GUI.FlexDirection.Row);
+        commitRow.SetWrap(GUI.FlexWrap.Wrap);
+        commitRow.SetAlign(GUI.Align.Center);
+        commitRow.SetGap(4.0);
+        host.AddChild(commitRow);
+        commitInput = GUI.TextInput.New(commitRow);
+        commitInput.SetFlex(1.0);
+        commitInput.SetPreferredSize(140.0, 0.0);
+        commitInput.SetPlaceholder("Commit message");
+        commitInput.SetAccessibleName("Commit message");
+        commitInput.SetTooltip("Commit staged changes (Enter)");
+        commitBtn = GUI.Button.New(commitRow, "Commit");
+        commitBtn.SetStyle(1);
+        commitBtn.SetAccessibleName("Commit staged changes");
+        commitBtn.SetTooltip("Commit staged changes with this message (Enter)");
+
+        // Credential prompt row: hidden until an interactive push/pull asks a
+        // question; the input masks itself for password/passphrase prompts.
+        credRow = GUI.VBox.New();
+        credRow.SetSpacing(4.0);
+        host.AddChild(credRow);
+        credLabel = GUI.Label.New(credRow, "");
+        credActionRow = GUI.Flex.New();
+        credActionRow.SetDirection(GUI.FlexDirection.Row);
+        credActionRow.SetWrap(GUI.FlexWrap.Wrap);
+        credActionRow.SetAlign(GUI.Align.Center);
+        credActionRow.SetGap(4.0);
+        credRow.AddChild(credActionRow);
+        credInput = GUI.TextInput.New(credActionRow);
+        credInput.SetFlex(1.0);
+        credInput.SetPreferredSize(120.0, 0.0);
+        credInput.SetAccessibleName("Git credential response");
+        credInput.SetTooltip("Response to the active Git prompt (Enter)");
+        credSendBtn = GUI.Button.New(credActionRow, "Send");
+        credSendBtn.SetStyle(1);
+        credSendBtn.SetAccessibleName("Send Git credential response");
+        credSendBtn.SetTooltip("Send this response to Git (Enter)");
+        credCancelBtn = GUI.Button.New(credActionRow, "Abort");
+        credCancelBtn.SetAccessibleName("Abort interactive Git operation");
+        credCancelBtn.SetTooltip("Abort the active push or pull");
+        credRow.SetVisible(false);
+
+        sideBySideButton = GUI.Button.New(host, "Side-by-Side Diff");
+        sideBySideButton.SetIconName("split");
+        sideBySideButton.SetAccessibleName("Open side-by-side source control diff");
+        sideBySideButton.SetTooltip(
+            "Compare the selected worktree file with HEAD");
+        diffPane = GUI.OutputPane.New(host);
+        diffPane.SetFlex(1.0);
+        diffPane.SetAccessibleName("Source control diff and operation output");
+
+        ready = true;
+        SetRepo("");
+    }
+
+
+    /// @brief Point the concrete controller at a repository root.
+    expose func SetRepo(_path: String) {}
+}

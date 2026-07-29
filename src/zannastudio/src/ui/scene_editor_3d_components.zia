@@ -1,0 +1,809 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_components.zia
+// Purpose: Focused components behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_node_transform.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_components;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_world_transform" as PreviousLayer;
+
+/// @brief Components implementation layer.
+class SceneEditor3DComponentsLayer extends PreviousLayer.SceneEditor3DWorldTransformLayer {
+
+    /// @brief Replace one node light with an independent all-field value.
+    /// @details No live light mutates before staging completes. Imported or
+    ///          shared component aliases therefore cannot observe this edit.
+    expose override func ApplyNodeLight(
+        nodeIndex: Integer,
+        state: scene_light_3d.LightState3D) -> Boolean {
+        if scene == null or state == null
+           or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        var next = scene_light_3d.BuildLight(state);
+        if next == null {
+            toolbarStatus.SetText("Light edit failed");
+            detailLabel.SetText(
+                "Studio could not construct an independent light value.");
+            GUI.Toast.Error("3D light edit failed");
+            return false;
+        }
+        if scene_light_3d.Equivalent(node.Light, next) {
+            detailLabel.SetText("The node light is already up to date.");
+            return false;
+        }
+        node.Light = next;
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        var typeName = scene_light_3d.TypeName(next.Type);
+        if CommitScene(
+               "Updated " + typeName + " light on "
+               + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            typeName
+            + " light updated as one independent, undoable component.");
+        return true;
+    }
+
+    /// @brief Apply the light inspector to the selection (ADR 0186).
+    /// @details Zero light-bearing nodes: create from the full draft on
+    ///          every selected node. Otherwise: patch determined fields on
+    ///          light-bearing nodes only. One transaction either way.
+    expose override func ApplySelectedLightFromControls() -> Boolean {
+        if lightInspector == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var lightCount = 0;
+        var index = 0;
+        while index < selectedIndices.count() {
+            if flatNodes.get(
+                   selectedIndices.get(index)).Light != null {
+                lightCount = lightCount + 1;
+            }
+            index = index + 1;
+        }
+        if lightCount == 0 {
+            return CreateLightsOnSelection(lightInspector.BuildState());
+        }
+        return ApplySelectedLightPatch(lightInspector.BuildPatch());
+    }
+
+    /// @brief Create one light per selected lightless node, one transaction.
+    expose override func CreateLightsOnSelection(
+        state: scene_light_3d.LightState3D) -> Boolean {
+        if scene == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var staged: List[Light3D] = [];
+        var createdCount = 0;
+        var index = 0;
+        while index < selectedIndices.count() {
+            var node = flatNodes.get(selectedIndices.get(index));
+            if node.Light != null {
+                staged.add(null);
+            } else {
+                var light = scene_light_3d.BuildLight(state);
+                if light == null {
+                    toolbarStatus.SetText("Light batch failed");
+                    detailLabel.SetText(
+                        "Studio could not allocate every light. "
+                        + "No selected nodes were changed.");
+                    GUI.Toast.Error("3D light batch failed");
+                    return false;
+                }
+                staged.add(light);
+                createdCount = createdCount + 1;
+            }
+            index = index + 1;
+        }
+        if createdCount == 0 { return false; }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        index = 0;
+        while index < selectedIndices.count() {
+            var stagedLight = staged.get(index);
+            if stagedLight != null {
+                flatNodes.get(
+                    selectedIndices.get(index)).Light = stagedLight;
+            }
+            index = index + 1;
+        }
+        if CommitScene(
+               "Added " + scene_light_3d.TypeName(state.kind)
+               + " lights to " + createdCount
+               + " selected node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The light additions could not be committed.");
+            return false;
+        }
+        RefreshHierarchy(null);
+        detailLabel.SetText(
+            "Created " + createdCount
+            + " independent light component(s) in one undoable edit.");
+        return true;
+    }
+
+    /// @brief Patch determined fields onto every selected light, staged
+    ///        clone-safe with the material sharing-group rule (ADR 0186).
+    expose override func ApplySelectedLightPatch(
+        patch: scene_light_3d.LightPatch3D) -> Boolean {
+        if scene == null or patch == null or patch.HasFields() == false {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+
+        var currentLights: List[Light3D] = [];
+        var nextLights: List[Light3D] = [];
+        var changedCount = 0;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            var node =
+                flatNodes.get(selectedIndices.get(selectionIndex));
+            var current = node.Light;
+            currentLights.add(current);
+            if current == null
+               or scene_light_3d.MatchesPatch(current, patch) {
+                nextLights.add(current);
+            } else {
+                var next: Light3D = null;
+                var prior = 0;
+                while prior < currentLights.count() - 1
+                      and next == null {
+                    if currentLights.get(prior) == current
+                       and nextLights.get(prior) != current {
+                        next = nextLights.get(prior);
+                    }
+                    prior = prior + 1;
+                }
+                if next == null {
+                    next = scene_light_3d.ApplyPatchUnique(
+                        current, patch);
+                }
+                if next == null {
+                    toolbarStatus.SetText("Light batch failed");
+                    detailLabel.SetText(
+                        "Studio could not construct every replacement "
+                        + "light. No selected nodes were changed.");
+                    GUI.Toast.Error("3D light batch failed");
+                    return false;
+                }
+                nextLights.add(next);
+                changedCount = changedCount + 1;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if changedCount == 0 {
+            detailLabel.SetText(
+                "Every selected light already matches the determined "
+                + "fields.");
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            flatNodes.get(
+                selectedIndices.get(selectionIndex)).Light =
+                nextLights.get(selectionIndex);
+            selectionIndex = selectionIndex + 1;
+        }
+        if CommitScene(
+               "Updated light fields on " + changedCount
+               + " selected node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The light batch could not be committed.");
+            return false;
+        }
+        RefreshLightFields(SelectedNode());
+        UpdateLightControls(true);
+        detailLabel.SetText(
+            "Light fields updated on " + changedCount
+            + " selected node(s); unresolved mixed fields were preserved.");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Remove lights from every selected node in one transaction.
+    expose override func RemoveSelectedLights() -> Boolean {
+        if scene == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var lightCount = 0;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            if flatNodes.get(
+                   selectedIndices.get(selectionIndex)).Light != null {
+                lightCount = lightCount + 1;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if lightCount == 0 {
+            detailLabel.SetText(
+                "No selected node has a light component.");
+            return false;
+        }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            flatNodes.get(
+                selectedIndices.get(selectionIndex)).Light = null;
+            selectionIndex = selectionIndex + 1;
+        }
+        if CommitScene(
+               "Removed lights from " + lightCount
+               + " selected node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The light removal could not be committed.");
+            return false;
+        }
+        RefreshHierarchy(null);
+        detailLabel.SetText(
+            "Removed " + lightCount
+            + " light component(s); the scene nodes were preserved.");
+        return true;
+    }
+
+    /// @brief Remove one node light as a canonical history transaction.
+    expose override func RemoveNodeLight(nodeIndex: Integer) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if node.Light == null {
+            detailLabel.SetText("The selected node has no light component.");
+            return false;
+        }
+        node.Light = null;
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        if CommitScene(
+               "Removed light from " + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Removed the light component; the scene node was preserved.");
+        return true;
+    }
+
+    /// @brief Create one named top-level camera node transactionally.
+    expose override func AddCameraNode(name: String,
+                              parentIndex: Integer) -> Integer {
+        if scene == null { return -1; }
+        if parentIndex >= 0 and parentIndex < flatNodes.count()
+           and ParentAcceptsAuthoredChildren(
+                   flatNodes.get(parentIndex)) == false {
+            return -1;
+        }
+        var state = new scene_camera_3d.CameraState3D();
+        var camera = scene_camera_3d.BuildCamera(state);
+        if camera == null {
+            toolbarStatus.SetText("Camera creation failed");
+            detailLabel.SetText(
+                "Studio could not allocate the camera component.");
+            GUI.Toast.Error("3D camera creation failed");
+            return -1;
+        }
+        var parent: SceneNode = null;
+        if parentIndex >= 0 and parentIndex < flatNodes.count() {
+            parent = flatNodes.get(parentIndex);
+        }
+        var node = SceneNode.New();
+        if node == null {
+            toolbarStatus.SetText("Camera creation failed");
+            detailLabel.SetText("Studio could not allocate a scene node.");
+            GUI.Toast.Error("3D camera creation failed");
+            return -1;
+        }
+        var nodeName = Str.Trim(name);
+        if nodeName == "" { nodeName = "Camera " + scene.NodeCount; }
+        node.Name = nodeName;
+        node.Camera = camera;
+        if parent != null {
+            parent.AddChild(node);
+        } else {
+            scene.Add(node);
+        }
+        if CommitScene("Added " + nodeName) == false { return -1; }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Created a perspective camera. Use the Camera component "
+            + "inspector to change projection and clip planes.");
+        return selectedIndex;
+    }
+
+    /// @brief Apply one independent camera component transaction.
+    /// @details A replacement camera is constructed before assignment, so a
+    ///          shared imported camera instance is never mutated in place.
+    expose override func ApplyNodeCamera(
+        nodeIndex: Integer,
+        state: scene_camera_3d.CameraState3D) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if node.Camera != null
+           and scene_camera_3d.Matches(node.Camera, state) {
+            detailLabel.SetText("The node camera is already up to date.");
+            return false;
+        }
+        var next = scene_camera_3d.BuildCamera(state);
+        if next == null {
+            toolbarStatus.SetText("Camera edit failed");
+            detailLabel.SetText(
+                "Studio could not construct an independent camera value.");
+            GUI.Toast.Error("3D camera edit failed");
+            return false;
+        }
+        node.Camera = next;
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        var projectionName =
+            scene_camera_3d.ProjectionName(next.IsOrtho);
+        if CommitScene(
+               "Updated " + projectionName + " camera on "
+               + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            projectionName
+            + " camera updated as one independent, undoable component.");
+        return true;
+    }
+
+    /// @brief Apply the camera inspector draft to its one selected node.
+    expose override func ApplySelectedCameraFromControls() -> Boolean {
+        if cameraInspector == null or selectedIndices.count() != 1 {
+            return false;
+        }
+        return ApplyNodeCamera(
+            selectedIndex, cameraInspector.BuildState());
+    }
+
+    /// @brief Remove one node camera as a canonical history transaction.
+    expose override func RemoveNodeCamera(nodeIndex: Integer) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if node.Camera == null {
+            detailLabel.SetText("The selected node has no camera component.");
+            return false;
+        }
+        if lookThroughNode == node { lookThroughNode = null; }
+        node.Camera = null;
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        if CommitScene(
+               "Removed camera from " + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Removed the camera component; the scene node was preserved.");
+        return true;
+    }
+
+    /// @brief Toggle authored-camera look-through; workspace-only.
+    expose override func ToggleLookThrough() -> Boolean {
+        ReleaseGameplayViewAnchor();
+        if lookThroughNode != null {
+            lookThroughNode = null;
+            renderDirty = true;
+            RefreshCameraFields(SelectedNode());
+            return true;
+        }
+        var node = SelectedNode();
+        if node == null or node.Camera == null { return false; }
+        flyActive = false;
+        lookThroughNode = node;
+        renderDirty = true;
+        RefreshCameraFields(node);
+        return true;
+    }
+
+    /// @brief Report whether an authored camera drives the viewport.
+    expose override func IsLookingThroughCamera() -> Boolean {
+        return ActiveLookThroughNode() != null;
+    }
+
+    /// @brief Apply the collider inspector draft as one VSCN transaction.
+    expose override func ApplySelectedColliderFromControls() -> Boolean {
+        if colliderInspector == null or selectedIndices.count() != 1 {
+            return false;
+        }
+        return ApplyNodeCollider(
+            selectedIndex, colliderInspector.BuildState());
+    }
+
+    /// @brief Write one collider convention as one canonical transaction.
+    /// @details Writes kind-applicable keys, removes stale dimension keys,
+    ///          refuses exact no-ops, and reloads the canonical document on
+    ///          any partial write failure so nodes never keep half an edit.
+    expose override func ApplyNodeCollider(
+        nodeIndex: Integer,
+        state: scene_collider_3d.ColliderState3D) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        var next = scene_collider_3d.Normalize(state);
+        if next.kind == scene_collider_3d.COLLIDER_NONE {
+            return RemoveNodeColliderConvention(nodeIndex);
+        }
+        if scene_collider_3d.Matches(node, next) {
+            detailLabel.SetText(
+                "The node collider convention is already up to date.");
+            return false;
+        }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        if scene_collider_3d.WriteToNode(node, next) == false {
+            RestoreNodeComponentEdit(
+                previousSelection,
+                previousPrimary,
+                "The collider edit was rejected. No nodes were changed.");
+            return false;
+        }
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        var kindName = scene_collider_3d.KindName(next.kind);
+        if CommitScene(
+               "Updated " + kindName + " collider on "
+               + NodeDisplayName(node)) == false {
+            RestoreNodeComponentEdit(
+                previousSelection,
+                previousPrimary,
+                "The collider edit could not be committed.");
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            kindName + " collider convention written as one undoable "
+            + "typed-metadata edit.");
+        return true;
+    }
+
+    /// @brief Remove the complete collider convention transactionally.
+    expose override func RemoveNodeColliderConvention(
+        nodeIndex: Integer) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if scene_collider_3d.RemoveFromNode(node) == false {
+            detailLabel.SetText(
+                "The selected node has no collider convention.");
+            return false;
+        }
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        if CommitScene(
+               "Removed collider from " + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Removed every collider key; the scene node was preserved.");
+        return true;
+    }
+
+    /// @brief Return the selected asset-kind schema field, or null.
+    hide override func SelectedAssetComponentField()
+        -> scene_component_schema.SceneComponentField {
+        if componentPalette == null { return null; }
+        var field = componentPalette.SelectedField();
+        if field == null or field.kind != "asset" { return null; }
+        return field;
+    }
+
+    /// @brief Stage one browsed asset path into the metadata draft.
+    /// @details Fixes the ADR 0178 deferral: asset-kind schema fields browse
+    ///          the bounded workspace index (filtered by the field's asset
+    ///          kinds) and stage a portable reference; the canonical write
+    ///          still flows through the normal metadata transaction.
+    hide override func ApplyComponentAssetPath(assetPath: String) {
+        var field = SelectedAssetComponentField();
+        var node = SelectedNode();
+        if field == null or node == null { return; }
+        var documentPath = "";
+        if currentDoc != null { documentPath = currentDoc.filePath; }
+        var portable = scene_asset_browser.PortableReferencePath(
+            assetPath, documentPath);
+        if portable == "" { return; }
+        if metadataInspector.SetDraft(
+               node, field.key, "string", portable) == false {
+            return;
+        }
+        selectedNodeMetadata = metadataInspector.selectedProperty;
+        detailLabel.SetText(
+            "Staged " + portable + " into " + field.label
+            + ". Save the metadata draft to commit one undoable edit.");
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Place one scene by reference as a VSCN v7 prefab instance.
+    /// @details The referencing document must be saved so the reference can
+    ///          stay portable; grafting happens through the canonical loader
+    ///          on the post-commit reload (one implementation everywhere).
+    expose override func ImportInstancePath(path: String) -> Boolean {
+        importBrowserInstanceMode = false;
+        if path == "" or currentDoc == null or scene == null {
+            return false;
+        }
+        if currentDoc.filePath == "" {
+            detailLabel.SetText(
+                "Save this scene before placing instances so the "
+                + "reference can stay relative and portable.");
+            toolbarStatus.SetText("Instance import needs a saved scene");
+            return false;
+        }
+        var lowered = Str.ToLower(path);
+        if Str.EndsWith(lowered, ".scene3d") == false
+           and Str.EndsWith(lowered, ".vscn") == false {
+            detailLabel.SetText(
+                "Instances reference .scene3d/.vscn scenes; other formats "
+                + "import as copies.");
+            return false;
+        }
+        var portable = scene_asset_browser.PortableReferencePath(
+            path, currentDoc.filePath);
+        if portable == "" { return false; }
+        var relinkTarget = SelectedNode();
+        if relinkTarget != null and relinkTarget.PrefabPath != "" {
+            if relinkTarget.PrefabPath == portable {
+                detailLabel.SetText(
+                    "The instance already references " + portable + ".");
+                return false;
+            }
+            if relinkTarget.SetPrefabReference(portable) == false {
+                detailLabel.SetText(
+                    "The reference must be relative; move the referenced "
+                    + "scene inside the workspace.");
+                return false;
+            }
+            if CommitScene(
+                   "Re-linked instance to " + portable) == false {
+                return false;
+            }
+            LoadDocumentModel(currentDoc, true);
+            detailLabel.SetText(
+                "Re-linked the instance to " + portable + ".");
+            return true;
+        }
+        var node = SceneNode.New();
+        if node == null { return false; }
+        var stem = Path.Name(path);
+        node.Name = stem + " Instance";
+        if node.SetPrefabReference(portable) == false {
+            detailLabel.SetText(
+                "The reference must be relative; move the referenced "
+                + "scene inside the workspace.");
+            return false;
+        }
+        scene.Add(node);
+        if CommitScene("Instanced " + portable) == false {
+            return false;
+        }
+        LoadDocumentModel(currentDoc, true);
+        detailLabel.SetText(
+            "Placed " + portable + " by reference. The file stores only "
+            + "the reference plus this node's overrides.");
+        return true;
+    }
+
+    /// @brief Queue the referenced scene for the shell's open command.
+    hide override func RequestOpenPrefabSource() {
+        var node = SelectedNode();
+        if node == null or node.PrefabPath == ""
+           or currentDoc == null or currentDoc.filePath == "" {
+            detailLabel.SetText(
+                "Select a prefab instance in a saved scene to open its "
+                + "source.");
+            return;
+        }
+        pendingOpenPrefabPath = Path.Normalize(Path.Join(
+            Path.Directory(currentDoc.filePath), node.PrefabPath));
+        detailLabel.SetText(
+            "Opening " + node.PrefabPath + " as its own document.");
+    }
+
+    /// @brief Consume the queued prefab-source path for the command layer.
+    expose override func TakeOpenPrefabSourcePath() -> String {
+        var path = pendingOpenPrefabPath;
+        pendingOpenPrefabPath = "";
+        return path;
+    }
+
+    /// @brief Re-graft every instance from its referenced files.
+    expose override func ReloadPrefabInstances() {
+        if currentDoc == null { return; }
+        LoadDocumentModel(currentDoc, true);
+        toolbarStatus.SetText("Instances reloaded");
+        detailLabel.SetText(
+            "Re-grafted every prefab instance from its referenced file; "
+            + "overrides were preserved.");
+    }
+
+    /// @brief Convert the selected instance into a plain editable copy.
+    expose override func UnpackSelectedInstance() -> Boolean {
+        var node = SelectedNode();
+        if node == null or node.PrefabPath == "" {
+            detailLabel.SetText(
+                "Select a prefab instance node to unpack.");
+            return false;
+        }
+        if node.ClearPrefabReference() == false { return false; }
+        if CommitScene(
+               "Unpacked instance " + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Unpacked the instance into plain editable nodes; the "
+            + "reference was removed.");
+        return true;
+    }
+
+    /// @brief Resolve instance content to its owning prefab node.
+    /// @details Instance content is locked (ADR 0187): selection always
+    ///          lands on the owning instance so every edit path sees the
+    ///          override surface, never grafted internals.
+    hide override func ResolveInstanceOwnerIndex(nodeIndex: Integer) -> Integer {
+        if nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return nodeIndex;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if node == null or node.IsInstanceContent == false {
+            return nodeIndex;
+        }
+        var owner = node.Parent;
+        var ancestorSteps = 0;
+        while owner != null and ancestorSteps < 128 {
+            if owner.PrefabPath != "" {
+                var ownerIndex = FindFlatIndex(owner);
+                if ownerIndex >= 0 { return ownerIndex; }
+                return nodeIndex;
+            }
+            owner = owner.Parent;
+            ancestorSteps = ancestorSteps + 1;
+        }
+        return nodeIndex;
+    }
+
+    /// @brief Remap one selection so it never contains instance content.
+    hide override func ResolveInstanceOwnerSelection(
+        indices: List[Integer]) -> List[Integer] {
+        var resolved: List[Integer] = [];
+        var remapped = false;
+        var index = 0;
+        while index < indices.count() {
+            var ownerIndex =
+                ResolveInstanceOwnerIndex(indices.get(index));
+            if ownerIndex != indices.get(index) { remapped = true; }
+            if scene_selection.Contains(resolved, ownerIndex) == false {
+                resolved.add(ownerIndex);
+            }
+            index = index + 1;
+        }
+        if remapped {
+            detailLabel.SetText(
+                "Instance content is locked; selected the owning "
+                + "prefab instance instead.");
+        }
+        return resolved;
+    }
+
+    /// @brief Return whether a parent target may receive new children.
+    /// @details Children of prefab nodes never serialize, and grafted
+    ///          content is locked, so both reject with a truthful message.
+    hide override func ParentAcceptsAuthoredChildren(parent: SceneNode) -> Boolean {
+        if parent == null { return true; }
+        if parent.PrefabPath != "" {
+            detailLabel.SetText(
+                "Prefab instances own their grafted content; new children "
+                + "would not serialize. Unpack the instance first.");
+            return false;
+        }
+        if parent.IsInstanceContent {
+            detailLabel.SetText(
+                "Instance content is locked. Unpack the owning instance "
+                + "to edit its nodes.");
+            return false;
+        }
+        return true;
+    }
+}

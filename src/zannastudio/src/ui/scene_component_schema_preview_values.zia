@@ -1,0 +1,267 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_preview_values.zia
+// Purpose: Shared bounded scalar and game-output preview parsing.
+// Key invariants:
+//   - Malformed or out-of-bounds input rejects the complete staged schema.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_preview_values;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind "scene_component_schema_model" as SceneComponentModel;
+bind "scene_component_schema_environment_3d" as PreviousLayer;
+
+class SceneComponentSchemaPreviewValuesLayer extends PreviousLayer.SceneComponentSchemaEnvironment3DLayer {
+
+    /// @brief Parse one optional portable metadata key from a 3D preview profile.
+    hide override func ParsePreview3DProperty(raw: Any,
+                                name: String,
+                                schema: SceneComponentModel.SceneComponentSchema) -> String {
+        if Map.Has(raw, name) == false { return ""; }
+        if Json.TypeOf(Map.Get(raw, name)) != "string" {
+            Reject(
+                schema,
+                "scenePreview3D " + name + " must be a string.");
+            return "";
+        }
+        var value = Str.Trim(Map.GetStr(raw, name));
+        if PortableIdentifier(value, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "scenePreview3D " + name
+                    + " must be a portable key of at most 128 characters.");
+            return "";
+        }
+        return value;
+    }
+
+    /// @brief Parse one bounded schema-v7 preview scalar into its typed slot.
+    hide override func ParsePreview3DNumber(
+        raw: Any,
+        name: String,
+        minimum: Number,
+        maximum: Number,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, name) == false { return true; }
+        if Json.TypeOf(Map.Get(raw, name)) != "number" {
+            Reject(
+                schema,
+                "scenePreview3D " + name + " must be a number.");
+            return false;
+        }
+        var parsed = Parse.TryDouble(Json.Format(Map.Get(raw, name)));
+        if parsed.IsNone
+           or parsed.UnwrapF64() < minimum
+           or parsed.UnwrapF64() > maximum {
+            Reject(
+                schema,
+                "scenePreview3D " + name + " is outside its supported range.");
+            return false;
+        }
+        var value = parsed.UnwrapF64();
+        if name == "cameraFov" {
+            profile.hasCameraFov = true;
+            profile.cameraFov = value;
+        } else if name == "iblIntensity" {
+            profile.hasIblIntensity = true;
+            profile.iblIntensity = value;
+        } else if name == "heightFogBase" {
+            profile.hasHeightFogBase = true;
+            profile.heightFogBase = value;
+        } else if name == "heightFogFalloff" {
+            profile.hasHeightFogFalloff = true;
+            profile.heightFogFalloff = value;
+        } else if name == "heightFogDensity" {
+            profile.hasHeightFogDensity = true;
+            profile.heightFogDensity = value;
+        } else if name == "heightFogOpacity" {
+            profile.hasHeightFogOpacity = true;
+            profile.heightFogOpacity = value;
+        } else if name == "tonemapExposure" {
+            profile.tonemapExposure = value;
+        } else if name == "bloomThreshold" {
+            profile.bloomThreshold = value;
+        } else if name == "bloomIntensity" {
+            profile.bloomIntensity = value;
+        } else if name == "colorGradeBrightness" {
+            profile.colorGradeBrightness = value;
+        } else if name == "colorGradeContrast" {
+            profile.colorGradeContrast = value;
+        } else if name == "colorGradeSaturation" {
+            profile.colorGradeSaturation = value;
+        } else if name == "vignetteRadius" {
+            profile.vignetteRadius = value;
+        } else if name == "vignetteSoftness" {
+            profile.vignetteSoftness = value;
+        } else {
+            Reject(schema, "Unsupported numeric 3D preview member.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse one exact bounded schema-v10 post-processing integer.
+    hide override func ParsePreview3DInteger(
+        raw: Any,
+        name: String,
+        minimum: Integer,
+        maximum: Integer,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, name) == false { return true; }
+        if Json.TypeOf(Map.Get(raw, name)) != "number" {
+            Reject(
+                schema,
+                "scenePreview3D " + name + " must be an integer.");
+            return false;
+        }
+        var parsed = Parse.TryInt(Json.Format(Map.Get(raw, name)));
+        if parsed.IsNone
+           or parsed.UnwrapI64() < minimum
+           or parsed.UnwrapI64() > maximum {
+            Reject(
+                schema,
+                "scenePreview3D " + name
+                    + " is outside its supported integer range.");
+            return false;
+        }
+        if name == "tonemapMode" {
+            profile.tonemapMode = parsed.UnwrapI64();
+        } else if name == "bloomPasses" {
+            profile.bloomPasses = parsed.UnwrapI64();
+        } else {
+            Reject(schema, "Unsupported integer 3D preview member.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Count non-empty members in one three-key property group.
+    hide override func PresentCount3(a: String,
+                       b: String,
+                       c: String) -> Integer {
+        var count = 0;
+        if a != "" { count = count + 1; }
+        if b != "" { count = count + 1; }
+        if c != "" { count = count + 1; }
+        return count;
+    }
+
+    /// @brief Parse one optional 3D preview visibility default.
+    hide override func ParsePreview3DBoolean(
+        raw: Any,
+        name: String,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, name) == false { return true; }
+        if Json.TypeOf(Map.Get(raw, name)) != "boolean" {
+            Reject(
+                schema,
+                "scenePreview3D " + name + " must be a boolean.");
+            return false;
+        }
+        var value = Map.GetBool(raw, name);
+        if name == "showGrid" {
+            profile.hasShowGrid = true;
+            profile.showGrid = value;
+        } else if name == "showMarkers" {
+            profile.hasShowMarkers = true;
+            profile.showMarkers = value;
+        } else if name == "showLights" {
+            profile.hasShowLights = true;
+            profile.showLights = value;
+        } else if name == "showCameras" {
+            profile.hasShowCameras = true;
+            profile.showCameras = value;
+        } else if name == "showColliders" {
+            profile.hasShowColliders = true;
+            profile.showColliders = value;
+        } else {
+            profile.hasShowRoutes = true;
+            profile.showRoutes = value;
+        }
+        return true;
+    }
+
+    /// @brief Parse one paired schema-v12 project game-output size.
+    /// @details Dimensions are deliberately bounded so malformed project metadata
+    ///          cannot request an unbounded editor render target.
+    hide override func ParseGameViewOutputSize(
+        raw: Any,
+        profileName: String,
+        schema: SceneComponentModel.SceneComponentSchema) -> List[Integer] {
+        var output: List[Integer] = [];
+        var hasWidth = Map.Has(raw, "outputWidth");
+        var hasHeight = Map.Has(raw, "outputHeight");
+        if hasWidth == false and hasHeight == false { return output; }
+        if schema.version < SceneComponentModel.GAME_VIEW_OUTPUT_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Project game-output frames require schema version 12.");
+            return output;
+        }
+        if hasWidth != hasHeight {
+            Reject(
+                schema,
+                profileName
+                    + " outputWidth and outputHeight must be supplied together.");
+            return output;
+        }
+        if Json.TypeOf(Map.Get(raw, "outputWidth")) != "number"
+           or Json.TypeOf(Map.Get(raw, "outputHeight")) != "number" {
+            Reject(
+                schema,
+                profileName
+                    + " outputWidth and outputHeight must be integers.");
+            return output;
+        }
+        var parsedWidth =
+            Parse.TryInt(Json.Format(Map.Get(raw, "outputWidth")));
+        var parsedHeight =
+            Parse.TryInt(Json.Format(Map.Get(raw, "outputHeight")));
+        if parsedWidth.IsNone or parsedHeight.IsNone {
+            Reject(
+                schema,
+                profileName
+                    + " outputWidth and outputHeight must be integers.");
+            return output;
+        }
+        var width = parsedWidth.UnwrapI64();
+        var height = parsedHeight.UnwrapI64();
+        if width < SceneComponentModel.MIN_GAME_VIEW_OUTPUT_DIMENSION
+           or width > SceneComponentModel.MAX_GAME_VIEW_OUTPUT_DIMENSION
+           or height < SceneComponentModel.MIN_GAME_VIEW_OUTPUT_DIMENSION
+           or height > SceneComponentModel.MAX_GAME_VIEW_OUTPUT_DIMENSION {
+            Reject(
+                schema,
+                profileName
+                    + " output dimensions must be between 64 and 8,192.");
+            return output;
+        }
+        output.add(width);
+        output.add(height);
+        return output;
+    }
+
+}

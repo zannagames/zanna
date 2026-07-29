@@ -1,0 +1,491 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_problems.zia
+// Purpose: Focused problems behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_output_references.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_problems;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_output_references" as PreviousLayer;
+
+class ToolPanelProblemsLayer extends PreviousLayer.ToolPanelOutputReferencesLayer {
+
+    /// @brief Copy the selected row from the active tool panel.
+    /// @return True when a non-empty selection was copied.
+    expose override func CopySelectedToolRow() -> Boolean {
+        var selectedText = outputListBox.GetSelectedText();
+        if activeToolPanelKind == tool_panel_model.PANEL_OUTPUT and outputPaneMode {
+            selectedText = outputPane.GetSelection();
+        }
+        if activeToolPanelKind == tool_panel_model.PANEL_PROBLEMS { selectedText = diagListBox.GetSelectedText(); }
+        if activeToolPanelKind == tool_panel_model.PANEL_SEARCH { selectedText = searchListBox.GetSelectedText(); }
+        if activeToolPanelKind == tool_panel_model.PANEL_REFERENCES { selectedText = referencesListBox.GetSelectedText(); }
+        if activeToolPanelKind == tool_panel_model.PANEL_CALL_STACK { selectedText = callStackListBox.GetSelectedText(); }
+        if activeToolPanelKind == tool_panel_model.PANEL_DEBUG { selectedText = debugListBox.GetSelectedText(); }
+        if selectedText == "" { return false; }
+        GUI.ClipboardText.SetText(selectedText);
+        return true;
+    }
+
+    /// @brief Add a line to the row-mode output display.
+    /// @param line Raw output line.
+    /// @return First created ListBox item, or null when filtered out.
+    expose override func AddOutputDisplayLine(line: String) -> Any {
+        if outputFilterText != "" and Str.IndexOf(Str.ToLower(line), outputFilterText) == 0 {
+            return null;
+        }
+        EnsureOutputRowCapacity();
+        var layoutWidth = 0;
+        if outputListBox != null {
+            layoutWidth = Convert.NumToInt(outputListBox.GetLogicalWidth());
+        }
+        if layoutWidth <= 0 and app != null {
+            var scale = app.GetEffectiveScale();
+            if scale <= 0.0 { scale = 1.0; }
+            layoutWidth = Convert.NumToInt(app.GetWidth() / scale);
+        }
+        var wrapColumn = output_cache.WrapColumn(layoutWidth);
+        if outputWrapLines == false or Str.get_Length(line) <= wrapColumn {
+            var item = outputListBox.AddItem(line);
+            RegisterOutputRow(item, line);
+            ApplyOutputLineColor(item, line);
+            if outputAutoScroll {
+                outputListBox.ScrollToBottom();
+            }
+            return item;
+        }
+
+        var first: Any = null;
+        var start = 1;
+        while start <= Str.get_Length(line) {
+            var chunk = Str.MidLen(line, start, wrapColumn);
+            var item = outputListBox.AddItem(chunk);
+            RegisterOutputRow(item, chunk);
+            ApplyOutputLineColor(item, line);
+            if first == null { first = item; }
+            if outputAutoScroll {
+                outputListBox.ScrollToBottom();
+            }
+            start = start + wrapColumn;
+        }
+        return first;
+    }
+
+    /// @brief Keep row-mode output bounded by evicting old realized rows.
+    hide override func EnsureOutputRowCapacity() {
+        var removeCount = tool_panel_model.DEFAULT_TRIM_BATCH_ROWS;
+        if removeCount < 1 { removeCount = 1; }
+        while outputRenderedItems.count() >= ToolPanelModel.MAX_OUTPUT_ROW_COUNT
+              and removeCount > 0 {
+            var oldest = outputRenderedItems.get(0);
+            outputRenderedItems.removeAt(0);
+            if oldest != null {
+                outputListBox.RemoveItem(oldest);
+            }
+            removeCount = removeCount - 1;
+        }
+        if outputVirtualList != null {
+            outputVirtualList.SetCount(outputRenderedRowCount);
+        }
+    }
+
+    /// @brief Reset row-mode output bookkeeping after a full repaint.
+    hide override func ResetOutputRows() {
+        outputRenderedItems = new List();
+        outputRenderedRowCount = 0;
+        if outputVirtualList != null {
+            outputVirtualList.SetCount(0);
+        }
+    }
+
+    /// @brief Record one newly-created output row in the virtual row model.
+    /// @param item Concrete ListBox item handle.
+    /// @param text Rendered row text used to derive a stable row id.
+    hide override func RegisterOutputRow(item: Any,
+                                text: String) {
+        if item == null { return; }
+        outputRenderedRowCount = outputRenderedRowCount + 1;
+        outputRenderedItems.add(item);
+        if outputVirtualList != null {
+            outputVirtualList.SetCount(outputRenderedRowCount);
+            outputVirtualList.SetRowId(outputRenderedRowCount - 1,
+                                       "out:" + outputRenderedRowCount + ":" + Str.get_Length(text));
+        }
+    }
+
+    /// @brief Clear the Problems panel and hide it from fallback selection.
+    expose override func ClearProblemsPanel() {
+        problemRecords.clear();
+        visibleProblemRecords.clear();
+        ClearToolRows(diagListBox);
+        problemsHaveDiagnostics = false;
+        problemsErrorCount = 0;
+        problemsWarningCount = 0;
+        problemsInfoCount = 0;
+        visibleProblemCount = 0;
+        UpdateProblemsToolbarState();
+        HideProblemsPanel();
+    }
+
+    /// @brief Begin a fresh Problems panel render with a table header.
+    expose override func BeginProblems() {
+        problemRecords.clear();
+        visibleProblemRecords.clear();
+        problemsHaveDiagnostics = false;
+        problemsErrorCount = 0;
+        problemsWarningCount = 0;
+        problemsInfoCount = 0;
+        visibleProblemCount = 0;
+        RefreshProblemRows();
+    }
+
+    /// @brief Rebuild concrete Problems rows from durable filtered records.
+    hide override func RefreshProblemRows() {
+        ClearToolRows(diagListBox);
+        visibleProblemRecords.clear();
+        var header = AddToolPlainRow(diagListBox,
+                                     PadToolColumn("TYPE", ToolPanelModel.TOOL_KIND_COL)
+                                     + "  " + PadToolColumn("SOURCE", ToolPanelModel.TOOL_SOURCE_COL)
+                                     + "  " + PadToolColumn("LOCATION", ToolPanelModel.TOOL_LOCATION_COL)
+                                     + "  " + PadToolColumn("CODE", ToolPanelModel.TOOL_CODE_COL)
+                                     + "  MESSAGE"
+                                     + "  " + PadToolColumn("ACTION", ToolPanelModel.TOOL_ACTION_COL),
+                                     ToolPanelModel.ToolColorMuted());
+        if header != null {
+            GUI.ListBox.ItemSetTextColor(header, ToolPanelModel.ToolColorMuted());
+        }
+
+        var i = 0;
+        while i < problemRecords.count() {
+            var record = problemRecords.get(i);
+            if ProblemMatchesFilters(record) {
+                visibleProblemRecords.add(record);
+                RenderProblemRecord(record);
+            }
+            i = i + 1;
+        }
+        visibleProblemCount = visibleProblemRecords.count();
+        if problemRecords.count() > 0 and visibleProblemCount == 0 {
+            AddToolInfoRow(diagListBox, "filter",
+                           "No problems match the current filters");
+        }
+        UpdateProblemsToolbarState();
+    }
+
+    /// @brief Add one diagnostics row to Problems.
+    /// @return Concrete ListBox item handle, or null when filtered out.
+    expose override func AddProblem(severity: String,
+                           source: String,
+                           filePath: String,
+                           line: Integer,
+                           column: Integer,
+                           code: String,
+                           message: String,
+                           action: String) -> Any {
+        if problemRecords.count() >= tool_panel_model.DEFAULT_MAX_ROWS {
+            var oldest = problemRecords.get(0);
+            DecrementProblemSeverityCount(oldest);
+            problemRecords.removeAt(0);
+            RefreshProblemRows();
+        }
+
+        var record = new tool_panel_model.ProblemRecord();
+        record.severity = severity;
+        record.source = source;
+        record.filePath = filePath;
+        record.line = line;
+        record.column = column;
+        record.code = code;
+        record.message = message;
+        record.action = action;
+        problemRecords.add(record);
+        IncrementProblemSeverityCount(record);
+        problemsHaveDiagnostics = true;
+
+        var item: Any = null;
+        if ProblemMatchesFilters(record) {
+            visibleProblemRecords.add(record);
+            item = RenderProblemRecord(record);
+        }
+        visibleProblemCount = visibleProblemRecords.count();
+        UpdateProblemsToolbarState();
+        return item;
+    }
+
+    /// @brief Attach navigation metadata to the most recently added diagnostic.
+    /// @details Callers invoke this immediately after AddProblem. The durable
+    ///          record retains the location even when filtering retires its
+    ///          concrete ListBox item.
+    expose override func SetAddedProblemLocationData(item: Any,
+                                            locationData: String) {
+        if problemRecords.count() > 0 {
+            var record = problemRecords.get(problemRecords.count() - 1);
+            record.locationData = locationData;
+        }
+        if item != null {
+            GUI.ListBox.ItemSetData(item, locationData);
+        }
+    }
+
+    /// @brief Render one durable diagnostic into the current ListBox.
+    /// @return Newly-created concrete item.
+    hide override func RenderProblemRecord(
+        record: tool_panel_model.ProblemRecord) -> Any {
+        if record == null { return null; }
+        var displayCode = record.code;
+        if displayCode == "" { displayCode = "-"; }
+        var displayAction = record.action;
+        if displayAction == "" or displayAction == "No quick fix" { displayAction = "-"; }
+        var displaySource = record.source;
+        if displaySource == "" { displaySource = "-"; }
+        var location = record.filePath + ":" + record.line + ":" + record.column;
+        var item = AddToolLocationRow(diagListBox,
+                                      ProblemSeverityLabel(record.severity),
+                                      displaySource, location, displayCode,
+                                      record.message, displayAction);
+        ApplyProblemSeverityColor(item, record.severity);
+        if item != null and record.locationData != "" {
+            GUI.ListBox.ItemSetData(item, record.locationData);
+        }
+        return item;
+    }
+
+    /// @brief Return whether one diagnostic passes severity and text filters.
+    hide override func ProblemMatchesFilters(
+        record: tool_panel_model.ProblemRecord) -> Boolean {
+        if record == null { return false; }
+        var severity = Str.ToLower(record.severity);
+        if severity == "error" and problemsShowErrors == false {
+            return false;
+        }
+        if (severity == "warning" or severity == "warn")
+           and problemsShowWarnings == false {
+            return false;
+        }
+        if severity != "error" and severity != "warning" and severity != "warn"
+           and problemsShowInfo == false {
+            return false;
+        }
+        if problemsFilterText == "" { return true; }
+        var searchable = Str.ToLower(
+            record.source + " " + record.filePath + " " + record.code + " "
+            + record.message + " " + record.action);
+        return Str.Contains(searchable, problemsFilterText);
+    }
+
+    /// @brief Increment one normalized severity counter.
+    hide override func IncrementProblemSeverityCount(
+        record: tool_panel_model.ProblemRecord) {
+        if record == null { return; }
+        var severity = Str.ToLower(record.severity);
+        if severity == "error" {
+            problemsErrorCount = problemsErrorCount + 1;
+        } else if severity == "warning" or severity == "warn" {
+            problemsWarningCount = problemsWarningCount + 1;
+        } else {
+            problemsInfoCount = problemsInfoCount + 1;
+        }
+    }
+
+    /// @brief Decrement one normalized severity counter during bounded eviction.
+    hide override func DecrementProblemSeverityCount(
+        record: tool_panel_model.ProblemRecord) {
+        if record == null { return; }
+        var severity = Str.ToLower(record.severity);
+        if severity == "error" and problemsErrorCount > 0 {
+            problemsErrorCount = problemsErrorCount - 1;
+        } else if (severity == "warning" or severity == "warn")
+                  and problemsWarningCount > 0 {
+            problemsWarningCount = problemsWarningCount - 1;
+        } else if severity != "error" and severity != "warning"
+                  and severity != "warn" and problemsInfoCount > 0 {
+            problemsInfoCount = problemsInfoCount - 1;
+        }
+    }
+
+    /// @brief Set the case-insensitive Problems query and repaint immediately.
+    expose override func SetProblemsFilter(filter: String) {
+        if problemsFilterInput != null
+           and problemsFilterInput.get_Text() != filter {
+            problemsFilterInput.SetText(filter);
+            problemsFilterInput.WasChanged();
+        }
+        problemsFilterText = Str.ToLower(Str.Trim(filter));
+        RefreshProblemRows();
+    }
+
+    /// @brief Set all severity filters atomically.
+    expose override func SetProblemSeverityFilters(showErrors: Boolean,
+                                          showWarnings: Boolean,
+                                          showInfo: Boolean) {
+        problemsShowErrors = showErrors;
+        problemsShowWarnings = showWarnings;
+        problemsShowInfo = showInfo;
+        if problemsErrorCheck != null
+           and problemsErrorCheck.IsChecked() != showErrors {
+            problemsErrorCheck.SetChecked(showErrors);
+            problemsErrorCheck.WasChanged();
+        }
+        if problemsWarningCheck != null
+           and problemsWarningCheck.IsChecked() != showWarnings {
+            problemsWarningCheck.SetChecked(showWarnings);
+            problemsWarningCheck.WasChanged();
+        }
+        if problemsInfoCheck != null
+           and problemsInfoCheck.IsChecked() != showInfo {
+            problemsInfoCheck.SetChecked(showInfo);
+            problemsInfoCheck.WasChanged();
+        }
+        RefreshProblemRows();
+    }
+
+    /// @brief Restore the unfiltered Problems view without moving keyboard focus.
+    expose override func ResetProblemFilters() {
+        SetProblemsFilter("");
+        SetProblemSeverityFilters(true, true, true);
+    }
+
+    /// @brief Return the selected durable record, excluding headers/state rows.
+    expose override func GetSelectedProblemRecord()
+        -> tool_panel_model.ProblemRecord {
+        if diagListBox == null { return null; }
+        var index = diagListBox.SelectedIndex - 1;
+        if index < 0 or index >= visibleProblemRecords.count() {
+            return null;
+        }
+        return visibleProblemRecords.get(index);
+    }
+
+    /// @brief Return the selected quick-fix label.
+    expose override func GetSelectedProblemAction() -> String {
+        var record = GetSelectedProblemRecord();
+        if record == null { return ""; }
+        return record.action;
+    }
+
+    /// @brief Return the selected diagnostic's durable location identifier.
+    expose override func GetSelectedProblemLocationData() -> String {
+        var record = GetSelectedProblemRecord();
+        if record == null { return ""; }
+        return record.locationData;
+    }
+
+    /// @brief Set whether an asynchronous diagnostic action owns the toolbar.
+    expose override func SetProblemsActionBusy(busy: Boolean) {
+        problemsActionBusy = busy;
+        UpdateProblemsToolbarState();
+    }
+
+    /// @brief Consume a pointer or keyboard activation of the Quick Fix button.
+    expose override func ProblemsQuickFixWasRequested() -> Boolean {
+        if problemsQuickFixButton == null
+           or problemsQuickFixButton.WasClicked() == false {
+            return false;
+        }
+        var action = GetSelectedProblemAction();
+        return problemsActionBusy == false
+            and action != "" and action != "No quick fix" and action != "-";
+    }
+
+    /// @brief Poll live Problems filters and keep contextual actions synchronized.
+    hide override func PumpProblemsToolbar() {
+        if problemsFilterInput == null { return; }
+        var changed = false;
+        if problemsFilterInput.WasChanged() {
+            problemsFilterText =
+                Str.ToLower(Str.Trim(problemsFilterInput.get_Text()));
+            changed = true;
+        }
+        if problemsErrorCheck != null and problemsErrorCheck.WasChanged() {
+            problemsShowErrors = problemsErrorCheck.IsChecked();
+            changed = true;
+        }
+        if problemsWarningCheck != null
+           and problemsWarningCheck.WasChanged() {
+            problemsShowWarnings = problemsWarningCheck.IsChecked();
+            changed = true;
+        }
+        if problemsInfoCheck != null and problemsInfoCheck.WasChanged() {
+            problemsShowInfo = problemsInfoCheck.IsChecked();
+            changed = true;
+        }
+        if problemsResetButton != null and problemsResetButton.WasClicked() {
+            problemsFilterInput.SetText("");
+            problemsFilterInput.WasChanged();
+            problemsErrorCheck.SetChecked(true);
+            problemsErrorCheck.WasChanged();
+            problemsWarningCheck.SetChecked(true);
+            problemsWarningCheck.WasChanged();
+            problemsInfoCheck.SetChecked(true);
+            problemsInfoCheck.WasChanged();
+            problemsFilterText = "";
+            problemsShowErrors = true;
+            problemsShowWarnings = true;
+            problemsShowInfo = true;
+            changed = true;
+        }
+        if changed { RefreshProblemRows(); }
+        UpdateProblemsToolbarState();
+    }
+
+    /// @brief Update counts, reset availability, and selected-action truth.
+    hide override func UpdateProblemsToolbarState() {
+        var total = problemRecords.count();
+        visibleProblemCount = visibleProblemRecords.count();
+        if problemsCountLabel != null {
+            var countText = "" + visibleProblemCount + " of " + total
+                + "  ·  " + problemsErrorCount + " error";
+            if problemsErrorCount != 1 { countText = countText + "s"; }
+            countText = countText + "  ·  " + problemsWarningCount + " warning";
+            if problemsWarningCount != 1 { countText = countText + "s"; }
+            countText = countText + "  ·  " + problemsInfoCount + " info";
+            problemsCountLabel.SetText(countText);
+        }
+        if problemsResetButton != null {
+            problemsResetButton.SetEnabled(
+                problemsFilterText != ""
+                or problemsShowErrors == false
+                or problemsShowWarnings == false
+                or problemsShowInfo == false);
+        }
+        if problemsQuickFixButton != null {
+            var action = GetSelectedProblemAction();
+            var enabled = problemsActionBusy == false
+                and action != "" and action != "No quick fix" and action != "-";
+            problemsQuickFixButton.SetEnabled(enabled);
+            if problemsActionBusy {
+                problemsQuickFixButton.SetTooltip(
+                    "A diagnostic action is already running");
+            } else if enabled {
+                problemsQuickFixButton.SetTooltip(action);
+            } else {
+                problemsQuickFixButton.SetTooltip(
+                    "Select a diagnostic with an available quick fix");
+            }
+        }
+    }
+}

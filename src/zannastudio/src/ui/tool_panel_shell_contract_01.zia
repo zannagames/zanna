@@ -1,0 +1,223 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_contract_01.zia
+// Purpose: Virtual tool-panel method contract segment 1.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_contract_01;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+
+class ToolPanelShellContract01 {
+    expose func Build(_panelHost: GUI.VBox,
+                      _appArg: GUI.App,
+                      _splitArg: GUI.SplitPane) {}
+
+    expose func ConfigureDocking(_dropTarget: GUI.Widget,
+                                 _leftHost: GUI.VBox,
+                                 _rightHost: GUI.VBox,
+                                 _leftSplit: GUI.SplitPane,
+                                 _rightSplit: GUI.SplitPane) {}
+
+    hide func BuildIndependentToolGroups() {}
+
+    hide func BuildFloatingToolGroup() {}
+
+    hide func BuildDockTargets() {}
+
+    hide func ConfigureDockTarget(_target: GUI.Button,
+                                  _location: Integer,
+                                  _tooltip: String,
+                                  _icon: String,
+                                  _iconPosition: Integer) {}
+
+    expose func SetDockDragTargetsVisible(_visible: Boolean) {}
+
+    expose func AreDockDragTargetsVisible() -> Boolean { return false; }
+
+    hide func LayoutDockTargets() {}
+
+    hide func DockTargetHoverLocation() -> Integer { return 0; }
+
+    hide func ApplyDockTargetFeedback(_hoverLocation: Integer,
+                                      _currentLocation: Integer) {}
+
+    hide func DockTargetStyle(_location: Integer,
+                              _hoverLocation: Integer,
+                              _currentLocation: Integer) -> Integer { return 0; }
+
+    hide func DockTargetWasDropped(_target: GUI.Button) -> Boolean { return false; }
+
+    hide func TakeDockTargetDrop() -> Integer { return 0; }
+
+    expose func SetDockLocationName(_name: String) {}
+
+    expose func ResetWorkspaceLayout() {}
+
+    expose func MovePanelTo(_location: Integer) {}
+
+    expose func GetDockLocationName() -> String { return ""; }
+
+    expose func TakeChangedDockLocation() -> String { return ""; }
+
+    expose func SetSidePanelWidthPct(_pct: Integer) {}
+
+    expose func TakeChangedSidePanelWidthPercent() -> Integer { return 0; }
+
+    expose func SetFloatingToolPanelBounds(_x: Integer,
+                                           _y: Integer,
+                                           _width: Integer,
+                                           _height: Integer) {}
+
+    expose func TakeFloatingToolPanelGeometryChanged() -> Boolean { return false; }
+
+    expose func GetFloatingToolPanelX() -> Integer { return 0; }
+
+    expose func GetFloatingToolPanelY() -> Integer { return 0; }
+
+    expose func GetFloatingToolPanelWidth() -> Integer { return 0; }
+
+    expose func GetFloatingToolPanelHeight() -> Integer { return 0; }
+
+    hide func ApplyFloatingPanelBounds(_x: Integer,
+                                       _y: Integer,
+                                       _width: Integer,
+                                       _height: Integer,
+                                       _userAuthored: Boolean) {}
+
+    hide func FloatingViewportWidth() -> Integer { return 0; }
+
+    hide func FloatingViewportHeight() -> Integer { return 0; }
+
+    hide func PointerToFloatingUnits(_value: Number) -> Number { return 0.0; }
+
+    hide func FloatingPointerInside(_widget: GUI.Widget,
+                                    _pointerX: Number,
+                                    _pointerY: Number) -> Boolean { return false; }
+
+    hide func FloatingDockLocationForPointer(_pointerX: Number,
+                                             _pointerY: Number) -> Integer { return 0; }
+
+    hide func KeepFloatingPanelInViewport() {}
+
+    expose func FloatPrimaryToolPanelGroup() -> Boolean { return false; }
+
+    hide func MergeToolGroupLocation(_source: Integer,
+                                     _destination: Integer,
+                                     _userAuthored: Boolean) -> Boolean { return false; }
+
+    hide func ApplyDockLocation(_location: Integer, _userAuthored: Boolean) {}
+
+    hide func UpdateDockButtons() {}
+
+    hide func CollapseAllDockSplits() {}
+
+    hide func PumpDockControls() {}
+
+    hide func PumpFloatingToolGroupControls() {}
+
+    hide func DefaultFloatingToolHeaderText() -> String { return ""; }
+
+    hide func DefaultDockHeaderText() -> String { return ""; }
+
+    expose func IsDockHeaderCompact() -> Boolean { return false; }
+
+    hide func ApplyResponsiveDockHeader() {}
+
+    expose func IsProblemsToolbarCompact() -> Boolean { return false; }
+
+    hide func ApplyResponsiveProblemsToolbar() {}
+
+    expose func IsOutputToolbarCompact() -> Boolean { return false; }
+
+    hide func ApplyResponsiveOutputToolbar() {}
+
+    expose func IsReferencesToolbarCompact() -> Boolean { return false; }
+
+    hide func ApplyResponsiveReferencesToolbar() {}
+
+    expose func IsDebugConsoleToolbarCompact() -> Boolean { return false; }
+
+    hide func ApplyResponsiveDebugToolbar() {}
+
+    expose func IsCallStackToolbarCompact() -> Boolean { return false; }
+
+    hide func ApplyResponsiveCallStackToolbar() {}
+
+    expose func IsSearchControlsCompact() -> Boolean { return false; }
+
+    hide func ApplyResponsiveSearchControls() {}
+
+    expose func IsTerminalActionsCompact() -> Boolean { return false; }
+
+    hide func ApplyResponsiveTerminalActions() {}
+
+    expose func IsWatchToolbarCompact() -> Boolean { return false; }
+
+    hide func ApplyResponsiveWatchToolbar() {}
+
+    expose func Setup(_appArg: GUI.App,
+                      _tabsArg: GUI.TabBar,
+                      _problemsTab: GUI.Tab,
+                      _outputTab: GUI.Tab,
+                      _searchTab: GUI.Tab,
+                      _referencesTab: GUI.Tab,
+                      _variablesTab: GUI.Tab,
+                      _callStackTab: GUI.Tab,
+                      _debugTab: GUI.Tab,
+                      _terminalTab: GUI.Tab,
+                      _diagList: GUI.ListBox,
+                      _outPane: GUI.OutputPane,
+                      _outList: GUI.ListBox,
+                      _outVirtual: GUI.VirtualList,
+                      _searchBoxPanel: GUI.VBox,
+                      _searchList: GUI.ListBox,
+                      _refsList: GUI.ListBox,
+                      _dbgList: GUI.ListBox,
+                      _varsList: GUI.ListBox,
+                      _stackList: GUI.ListBox,
+                      _termPanel: GUI.VBox,
+                      _termPane: GUI.OutputPane) {}
+
+    hide func AssignToolTabIds() {}
+
+    expose func MoveToolPanelTo(_kind: Integer, _location: Integer) {}
+
+    expose func MoveActiveToolPanelTo(_location: Integer) -> Boolean { return false; }
+
+    expose func GetToolPanelLocationName(_kind: Integer) -> String { return ""; }
+
+    expose func GetToolPanelGroupLayout() -> String { return ""; }
+
+    expose func TakeChangedToolPanelGroupLayout() -> String { return ""; }
+
+    expose func SetToolPanelGroupLayout(_encoded: String,
+                                        _legacyDockName: String,
+                                        _legacyOrder: String) {}
+
+    hide func RebuildAllToolTabs() {}
+
+}

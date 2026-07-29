@@ -1,0 +1,843 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/intellisense_probe_part_1.zia
+// Purpose: Serial IntelliSense probe scenarios, part 1 of 2.
+// Key invariants:
+//   - Scenarios preserve the original execution order and async ownership.
+//   - Failure paths retain their original RESULT diagnostics.
+// Ownership/Lifetime: Borrows one IntellisenseProbeContext from the entry probe.
+// Links: zannastudio/src/probes/intellisense_probe.zia,
+//        zannastudio/src/probes/intellisense_probe_support.zia
+//
+//===----------------------------------------------------------------------===//
+
+module intellisense_probe_part_1;
+
+bind "../ui/app_shell";
+bind "../editor/editor_engine";
+bind "../editor/completion";
+bind "../editor/signature";
+bind "../editor/hover";
+bind "../editor/symbols";
+bind "../editor/diagnostics";
+bind "../editor/inlay_hints";
+bind "../editor/project_index";
+bind "../commands/edit_commands";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../services/locations";
+bind "../services/workspace_edits";
+
+bind Zanna.GUI;
+bind ZiaCompletion = Zanna.Zia.Completion;
+bind ZiaToolchain = Zanna.Zia.Toolchain;
+bind BasicCompletion = Zanna.Basic.LanguageService;
+bind BasicToolchain = Zanna.Basic.LanguageService;
+bind SemanticJob = Zanna.Zia.SemanticJob;
+bind Clock = Zanna.Time.Clock;
+bind TempFile = Zanna.IO.TempFile;
+bind File = Zanna.IO.File;
+bind Dir = Zanna.IO.Dir;
+bind Path = Zanna.IO.Path;
+bind Terminal = Zanna.Terminal;
+bind Str = Zanna.String;
+bind Obj = Zanna.Core.Object;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+
+bind "intellisense_probe_support" as Probe;
+bind "intellisense_probe_part_1_symbols" as SymbolScenarios;
+
+/// @brief Run the VerifyInitialControllersAndCompletionLayout scenario against the shared fixture.
+expose func VerifyInitialControllersAndCompletionLayout(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = new app_shell.AppShell();
+    var engine = new editor_engine.EditorEngine();
+    var completer = new completion.CompletionController();
+    var sigCtrl = new signature.SignatureController();
+    var inlayCtrl = new inlay_hints.InlayHintController();
+    var docMgr = new document_manager.DocumentManager();
+    var projMgr = new project_manager.ProjectManager();
+
+    shell.Build("Zanna Studio IntelliSense Probe", 820, 520);
+    engine.Setup(shell.workbench.editorRow);
+    projMgr.Setup(shell.workbench.sidebarTree);
+    completer.Setup(engine.editor, shell.app);
+    completer.SetEngine(engine);
+    completer.SetWorkspaceContext(projMgr, docMgr);
+    completer.SetSourcePath("intellisense_probe.zia");
+    sigCtrl.setup(shell.app);
+    sigCtrl.setSourcePath("intellisense_probe.zia");
+
+    var hintSource = "module HintProbe;\n"
+        + "func add(value: Integer, amount: Integer) -> Integer { return value + amount; }\n"
+        + "func main() {\n"
+        + "    var total = add(1, 2);\n"
+        + "}\n";
+    engine.SetText(hintSource);
+    inlayCtrl.Refresh(engine);
+    if inlayCtrl.lastHintCount < 2 or engine.editor.GetInlayHintCount() < 2 {
+        Probe.fail(shell, "inlay hint controller");
+        return false;
+    }
+    inlayCtrl.SetEnabled(false);
+    inlayCtrl.Refresh(engine);
+    if engine.editor.GetInlayHintCount() != 0 {
+        Probe.fail(shell, "inlay hint clear");
+        return false;
+    }
+    inlayCtrl.SetEnabled(true);
+
+    engine.SetText(
+        "module IntelliProbe;\n"
+        + "func greet(value: Integer) -> Integer { return value; }\n"
+        + "func main() {\n"
+        + "    gr\n"
+        + "}\n");
+    engine.editor.SetCursor(3, 6);
+    engine.editor.Focus();
+    completer.TriggerCompletion();
+    Probe.pumpCompletion(completer, 200);
+
+    if completer.isVisible == false or completer.itemCount <= 0 {
+        Probe.fail(shell, "completion did not open");
+        return false;
+    }
+    shell.app.SetWindowSize(400, 360);
+    shell.Poll();
+    completer.Update("");
+    shell.Render();
+    if Probe.panelFitsUiViewport(shell.app, completer.popup) == false {
+        Probe.fail(shell, "completion popup escaped a compact viewport");
+        return false;
+    }
+
+    // UI zoom participates in widget geometry. The popup must use the
+    // effective viewport rather than the backing-scale-only App logical size.
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    ctx.completer = completer;
+    ctx.sigCtrl = sigCtrl;
+    ctx.docMgr = docMgr;
+    ctx.projMgr = projMgr;
+    return true;
+}
+
+/// @brief Run the VerifyCompletionStructureAndSuppression scenario against the shared fixture.
+expose func VerifyCompletionStructureAndSuppression(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var completer = ctx.completer;
+    var docMgr = ctx.docMgr;
+    var projMgr = ctx.projMgr;
+
+    shell.app.SetUiScale(2.0);
+    shell.app.SetWindowSize(720, 520);
+    shell.Poll();
+    completer.Update("");
+    shell.Render();
+    if Probe.panelFitsUiViewport(shell.app, completer.popup) == false {
+        Probe.fail(shell, "completion popup escaped the zoomed viewport");
+        return false;
+    }
+    shell.app.SetUiScale(1.0);
+    shell.app.SetWindowSize(820, 520);
+    shell.Poll();
+    completer.Update("");
+    shell.Render();
+    if !engine.editor.IsFocused() {
+        Probe.fail(shell, "completion stole editor focus");
+        return false;
+    }
+    if Probe.listContains(completer.allLabels, "greet") == false {
+        Probe.fail(shell, "completion missing project function");
+        return false;
+    }
+
+    var structured = ZiaCompletion.ItemsForFile(engine.GetTextSnapshot(),
+                                                "intellisense_probe.zia", 4, 6);
+    var foundStructured = false;
+    var s = 0;
+    while s < Seq.get_Count(structured) {
+        var item = Seq.Get(structured, s);
+        if Map.GetStr(item, "label") == "greet" {
+            foundStructured = true;
+            if Map.GetStr(item, "insertText") != "greet"
+               or Map.GetInt(item, "replacementStartColumn") != 4
+               or Map.GetInt(item, "replacementEndColumn") != 6 {
+                Probe.fail(shell, "structured completion replacement range");
+                return false;
+            }
+        }
+        s = s + 1;
+    }
+    if foundStructured == false {
+        Probe.fail(shell, "structured completion missing project function");
+        return false;
+    }
+    var completionDisplay = completion.FormatCompletionDisplay("greet", 6,
+                                                               "Integer",
+                                                               "Greets a value\nfor display",
+                                                               "scope");
+    if Str.IndexOf(completionDisplay, "[fn] greet") == 0
+       or Str.IndexOf(completionDisplay, "Integer") == 0
+       or Str.IndexOf(completionDisplay, "Greets a value for display") == 0
+       or Str.IndexOf(completionDisplay, "[scope]") == 0 {
+        Probe.fail(shell, "completion metadata display");
+        return false;
+    }
+    if completion.ShouldSuppressAutoCompletionLine("    // gr", 9) == false {
+        Probe.fail(shell, "completion auto trigger not suppressed in line comment");
+        return false;
+    }
+    if completion.ShouldSuppressAutoCompletionLine("    var text = \"gr", 18) == false {
+        Probe.fail(shell, "completion auto trigger not suppressed in string");
+        return false;
+    }
+    if completion.ShouldSuppressAutoCompletionLine("    var text = \"gr\".", 20) {
+        Probe.fail(shell, "completion auto trigger suppressed after closed string");
+        return false;
+    }
+    engine.SetText("module IntelliProbe;\nfunc main() {\n    // gr\n}\n");
+    engine.editor.SetCursor(2, 9);
+    if completer.ShouldSuppressAutoTrigger() == false {
+        Probe.fail(shell, "completion controller auto trigger context");
+        return false;
+    }
+    engine.SetText(
+        "module IntelliProbe;\n"
+        + "func greet(value: Integer) -> Integer { return value; }\n"
+        + "func main() {\n"
+        + "    gr\n"
+        + "}\n");
+    engine.editor.SetCursor(3, 6);
+    var typeItems = ZiaCompletion.ItemsForFile(
+        "module IntelliProbe;\nfunc main() {\n    var typed: I = 0;\n}\n",
+        "intellisense_probe.zia",
+        3,
+        16);
+    if Probe.completionItemsContain(typeItems, "Integer") == false {
+        Probe.fail(shell, "type annotation completion after spaced colon");
+        return false;
+    }
+    var newItems = ZiaCompletion.ItemsForFile(
+        "module IntelliProbe;\nclass LocalThing {\n}\nfunc main() {\n    var make = new Lo();\n}\n",
+        "intellisense_probe.zia",
+        5,
+        21);
+    if Probe.completionItemsContain(newItems, "LocalThing") == false {
+        Probe.fail(shell, "new expression type completion");
+        return false;
+    }
+
+    var asyncJob = ZiaCompletion.BeginItemsForFile(engine.GetTextSnapshot(),
+                                                   "intellisense_probe.zia", 4, 6);
+    if Probe.waitSemanticJob(asyncJob, SEMANTIC_JOB_WAIT_MS) == false {
+        Probe.fail(shell, "async completion job did not finish");
+        return false;
+    }
+    if SemanticJob.IsError(asyncJob) {
+        Probe.fail(shell, "async completion error: " + SemanticJob.Error(asyncJob).UnwrapOrStr(""));
+        return false;
+    }
+    if Probe.completionItemsContain(SemanticJob.CompletionItems(asyncJob), "greet") == false {
+        Probe.fail(shell, "async completion missing project function");
+        return false;
+    }
+
+    var symbolsJob = ZiaCompletion.BeginSymbolsForFile(engine.GetTextSnapshot(),
+                                                       "intellisense_probe.zia");
+    if Probe.waitSemanticJob(symbolsJob, SEMANTIC_JOB_WAIT_MS) == false {
+        Probe.fail(shell, "async symbols job did not finish");
+        return false;
+    }
+    if Str.IndexOf(SemanticJob.Symbols(symbolsJob), "greet") == 0 {
+        Probe.fail(shell, "async symbols missing project function");
+        return false;
+    }
+    completer.Hide();
+
+    var workspaceRoot = TempFile.CreateDirWithPrefix("zannastudio_completion_workspace_");
+    var workspaceMain = Path.Join(workspaceRoot, "main.zia");
+    var workspaceHelper = Path.Join(workspaceRoot, "helper.zia");
+    File.WriteAllText(workspaceMain,
+        "module WorkspaceMain;\nfunc main() {\n    work\n}\n");
+    File.WriteAllText(workspaceHelper,
+        "module WorkspaceHelper;\nfunc workspaceHelper(value: Integer) -> Integer { return value; }\n");
+    projMgr.OpenFolder(workspaceRoot);
+    docMgr.OpenFile(workspaceMain);
+    engine.SetText("module WorkspaceMain;\nfunc main() {\n    work\n}\n");
+    engine.editor.SetCursor(2, 8);
+    completer.SetSourcePath(workspaceMain);
+    var workspacePumpTicks = 0;
+    while Probe.listContains(completer.workspaceLabels, "workspaceHelper") == false
+          and workspacePumpTicks < 400 {
+        completer.PumpWorkspaceSymbolCache(20);
+        Clock.Sleep(1);
+        workspacePumpTicks = workspacePumpTicks + 1;
+    }
+    if Probe.listContains(completer.workspaceLabels, "workspaceHelper") == false {
+        Probe.fail(shell, "workspace symbol cache missing project function count=" + completer.workspaceLabels.count());
+        return false;
+    }
+    completer.TriggerCompletion();
+    Probe.pumpCompletion(completer, 600);
+    if Probe.listContains(completer.allLabels, "workspaceHelper") == false {
+        Probe.fail(shell, "workspace symbol completion missing project function");
+        return false;
+    }
+    completer.Hide();
+
+    // A same-root refresh can produce the same file count while replacing
+    // every cached path. Completion must use cache identity, not count alone,
+    // or deleted symbols remain offered indefinitely.
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    ctx.completer = completer;
+    ctx.docMgr = docMgr;
+    ctx.projMgr = projMgr;
+    ctx.s = s;
+    return true;
+}
+
+/// @brief Run the VerifyWorkspaceCompletionAndDiagnostics scenario against the shared fixture.
+expose func VerifyWorkspaceCompletionAndDiagnostics(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var completer = ctx.completer;
+    var docMgr = ctx.docMgr;
+    var projMgr = ctx.projMgr;
+
+    completer.workspaceLabels.Push("staleWorkspaceCompletion");
+    var symbolCacheGeneration = projMgr.FileCacheGeneration();
+    projMgr.RefreshTree();
+    completer.PumpWorkspaceSymbolCache(1);
+    if projMgr.FileCacheGeneration() == symbolCacheGeneration
+       or completer.workspaceCacheGeneration != projMgr.FileCacheGeneration()
+       or Probe.listContains(completer.workspaceLabels, "staleWorkspaceCompletion") {
+        Probe.fail(shell, "workspace completion retained refreshed cache results");
+        return false;
+    }
+    projMgr.CloseProject();
+    completer.PumpWorkspaceSymbolCache(1);
+
+    var idleWorkspaceRoot = TempFile.CreateDirWithPrefix("zannastudio_completion_idle_workspace_");
+    File.WriteAllText(Path.Join(idleWorkspaceRoot, "idle.zia"),
+        "module IdleWorkspace;\nfunc idleWorkspaceSymbol() -> Integer { return 1; }\n");
+    projMgr.OpenFolder(idleWorkspaceRoot);
+    completer.Update("");
+    if completer.workspaceRoot == idleWorkspaceRoot or completer.workspacePendingJob != null {
+        Probe.fail(shell, "workspace symbol cache pumped while completion idle");
+        return false;
+    }
+    projMgr.CloseProject();
+    Dir.RemoveAll(idleWorkspaceRoot);
+
+    var activeWorkspaceRoot = TempFile.CreateDirWithPrefix("zannastudio_completion_active_workspace_");
+    File.WriteAllText(Path.Join(activeWorkspaceRoot, "active.zia"),
+        "module ActiveWorkspace;\nfunc activeWorkspaceSymbol() -> Integer { return 1; }\n");
+    projMgr.OpenFolder(activeWorkspaceRoot);
+    engine.SetText("module ActiveMain;\nfunc main() {\n    ac\n}\n");
+    engine.editor.SetCursor(2, 6);
+    completer.SetSourcePath(Path.Join(activeWorkspaceRoot, "main.zia"));
+    completer.TriggerCompletion();
+    Probe.pumpCompletion(completer, 200);
+    completer.Update("x");
+    if completer.workspaceRoot == activeWorkspaceRoot or completer.workspacePendingJob != null {
+        Probe.fail(shell, "workspace symbol cache pumped while completion active");
+        return false;
+    }
+    completer.Hide();
+    projMgr.CloseProject();
+    Dir.RemoveAll(activeWorkspaceRoot);
+    completer.SetSourcePath("intellisense_probe.zia");
+
+    var badSrc = "module IntelliProbe;\nfunc f() -> Integer { return ; }\n";
+    var diagJob = ZiaToolchain.BeginCheckForFile(badSrc, "intellisense_probe.zia");
+    if Probe.waitSemanticJob(diagJob, SEMANTIC_JOB_WAIT_MS) == false {
+        Probe.fail(shell, "async diagnostics job did not finish");
+        return false;
+    }
+    if Seq.get_Count(SemanticJob.Diagnostics(diagJob)) == 0 {
+        Probe.fail(shell, "async diagnostics missing parser error");
+        return false;
+    }
+    var suppressSource = "module SuppressProbe;\n"
+        + "func main() {\n"
+        + "    var unusedValue = 1;\n"
+        + "}\n";
+    var suppressRecords = ZiaToolchain.CheckForFile(suppressSource, "intellisense_probe.zia");
+    var suppressCode = edit_commands.SuppressibleDiagnosticCodeAt(suppressRecords, 3);
+    if suppressCode == "" {
+        Probe.fail(shell, "suppress warning diagnostic code");
+        return false;
+    }
+    engine.SetText(suppressSource);
+    if docMgr.GetActive() != null {
+        docMgr.GetActive()!.language = "zia";
+    }
+    engine.editor.SetCursor(2, 8);
+    edit_commands.handleSuppressDiagnostic(shell, docMgr, engine);
+    if Str.IndexOf(engine.GetTextSnapshot(), "// @suppress(" + suppressCode + ")") == 0 {
+        Probe.fail(shell, "suppress warning command");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != suppressSource {
+        Probe.fail(shell, "suppress warning undo");
+        return false;
+    }
+    var fixSource = "module FixProbe;\n"
+        + "func greet() -> Integer { return 1; }\n"
+        + "func main() {\n"
+        + "    grete();\n"
+        + "}\n";
+    var fixRecords = ZiaToolchain.CheckForFile(fixSource, "intellisense_probe.zia");
+    var fixRecord = edit_commands.DiagnosticFixItAt(fixRecords, 4);
+    if fixRecord == null or Map.GetBool(fixRecord, "hasFixit") == false
+       or Map.GetStr(fixRecord, "fixitReplacement") != "greet" {
+        Probe.fail(shell, "diagnostic fixit record");
+        return false;
+    }
+    if diagnostics.ProblemActionForDiagnosticRecord(fixRecord) == "No quick fix" {
+        Probe.fail(shell, "diagnostic fixit problem action");
+        return false;
+    }
+    engine.SetText(fixSource);
+    if docMgr.GetActive() != null {
+        docMgr.GetActive()!.language = "zia";
+    }
+    engine.editor.SetCursor(3, 6);
+    edit_commands.handleApplyDiagnosticFix(shell, docMgr, engine);
+    if Str.IndexOf(engine.GetTextSnapshot(), "greet();") == 0 {
+        Probe.fail(shell, "apply diagnostic fixit command");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != fixSource {
+        Probe.fail(shell, "apply diagnostic fixit undo");
+        return false;
+    }
+    var missingBindSource = "module MissingBindProbe;\n"
+        + "func main() {\n"
+        + "    Terminal.Say(\"hi\");\n"
+        + "}\n";
+    var missingBindRecords = ZiaToolchain.CheckForFile(missingBindSource,
+                                                       "intellisense_probe.zia");
+    var missingBindName = edit_commands.MissingRuntimeBindIdentifierAt(missingBindRecords, 3);
+    if missingBindName != "Terminal" {
+        Probe.fail(shell, "missing runtime bind diagnostic");
+        return false;
+    }
+    var missingBindRecord: Any = null;
+    var mb = 0;
+    while mb < Seq.get_Count(missingBindRecords) {
+        var candidateMissingBind = Seq.Get(missingBindRecords, mb);
+        if Map.GetInt(candidateMissingBind, "line") == 3 {
+            missingBindRecord = candidateMissingBind;
+        }
+        mb = mb + 1;
+    }
+    if diagnostics.ProblemActionForDiagnosticRecord(missingBindRecord) != "Create Missing Bind" {
+        Probe.fail(shell, "missing runtime bind problem action");
+        return false;
+    }
+    var expectedMissingBind = "module MissingBindProbe;\n"
+        + "bind Terminal = Zanna.Terminal;\n"
+        + "func main() {\n"
+        + "    Terminal.Say(\"hi\");\n"
+        + "}\n";
+    if edit_commands.CreateMissingRuntimeBindText(missingBindSource, "Terminal")
+       != expectedMissingBind {
+        Probe.fail(shell, "missing runtime bind helper");
+        return false;
+    }
+    engine.SetText(missingBindSource);
+    if docMgr.GetActive() != null {
+        docMgr.GetActive()!.language = "zia";
+    }
+    engine.editor.SetCursor(2, 8);
+    edit_commands.handleCreateMissingBind(shell, docMgr, engine, projMgr);
+    if engine.GetTextSnapshot() != expectedMissingBind {
+        Probe.fail(shell, "create missing bind command");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != missingBindSource {
+        Probe.fail(shell, "create missing bind undo");
+        return false;
+    }
+
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    ctx.completer = completer;
+    ctx.docMgr = docMgr;
+    ctx.projMgr = projMgr;
+    return true;
+}
+
+/// @brief Run the VerifyFixItsAndSnippetCompletion scenario against the shared fixture.
+expose func VerifyFixItsAndSnippetCompletion(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var completer = ctx.completer;
+    var docMgr = ctx.docMgr;
+    var projMgr = ctx.projMgr;
+    var s = ctx.s;
+
+    if edit_commands.ProjectFileDefinesIdentifier(
+        "module HelperModule;\nexpose func helperValue() -> Integer { return 1; }\n",
+        "helperValue") == false {
+        Probe.fail(shell, "project bind symbol detector");
+        return false;
+    }
+
+    var projectBindRoot = TempFile.CreateDirWithPrefix("zannastudio_missing_project_bind_");
+    var projectBindMain = Path.Join(projectBindRoot, "main.zia");
+    var projectBindHelper = Path.Join(projectBindRoot, "helper.zia");
+    var projectBindSource = "module ProjectBindMain;\n"
+        + "func main() -> Integer {\n"
+        + "    return helperValue();\n"
+        + "}\n";
+    var projectBindExpected = "module ProjectBindMain;\n"
+        + "bind \"./helper\";\n"
+        + "func main() -> Integer {\n"
+        + "    return helperValue();\n"
+        + "}\n";
+    File.WriteAllText(projectBindMain, projectBindSource);
+    File.WriteAllText(projectBindHelper,
+        "module HelperModule;\nexpose func helperValue() -> Integer { return 1; }\n");
+    projMgr.OpenFolder(projectBindRoot);
+    docMgr.OpenFile(projectBindMain);
+    if docMgr.GetActive() != null {
+        docMgr.GetActive()!.language = "zia";
+    }
+    engine.SetText(projectBindSource);
+    engine.editor.SetCursor(2, 12);
+    if edit_commands.CreateMissingProjectBindText(projectBindSource, "./helper")
+       != projectBindExpected {
+        Probe.fail(shell, "missing project bind helper");
+        return false;
+    }
+    edit_commands.handleCreateMissingBind(shell, docMgr, engine, projMgr);
+    if engine.GetTextSnapshot() != projectBindExpected {
+        Probe.fail(shell, "create missing project bind command");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != projectBindSource {
+        Probe.fail(shell, "create missing project bind undo");
+        return false;
+    }
+
+    File.WriteAllText(Path.Join(projectBindRoot, "other.zia"),
+        "module OtherHelper;\nexpose func sharedThing() -> Integer { return 2; }\n");
+    File.WriteAllText(projectBindHelper,
+        "module HelperModule;\nexpose func sharedThing() -> Integer { return 1; }\n");
+    projMgr.OpenFolder(projectBindRoot);
+    var ambiguousSource = "module ProjectBindMain;\n"
+        + "func main() -> Integer {\n"
+        + "    return sharedThing();\n"
+        + "}\n";
+    engine.SetText(ambiguousSource);
+    engine.editor.SetCursor(2, 12);
+    edit_commands.handleCreateMissingBind(shell, docMgr, engine, projMgr);
+    if engine.GetTextSnapshot() != ambiguousSource {
+        Probe.fail(shell, "ambiguous project bind should not edit");
+        return false;
+    }
+    projMgr.CloseProject();
+    Dir.RemoveAll(projectBindRoot);
+
+    var snippetItems = ZiaCompletion.ItemsForFile(
+        "module IntelliProbe;\nfunc main() {\n    wh\n}\n",
+        "intellisense_probe.zia", 3, 6);
+    var foundSnippetCursor = false;
+    s = 0;
+    while s < Seq.get_Count(snippetItems) {
+        var snippet = Seq.Get(snippetItems, s);
+        if Map.GetStr(snippet, "label") == "while" and Map.GetBool(snippet, "isSnippet") {
+            foundSnippetCursor = Map.GetInt(snippet, "cursorOffset") > 0;
+        }
+        s = s + 1;
+    }
+    if foundSnippetCursor == false {
+        Probe.fail(shell, "snippet completion cursor offset");
+        return false;
+    }
+
+    engine.SetText(
+        "module IntelliProbe;\n"
+        + "func greet(value: Integer) -> Integer { return value; }\n"
+        + "func main() {\n"
+        + "    gr\n"
+        + "}\n");
+    engine.editor.SetCursor(3, 6);
+    completer.TriggerCompletion();
+    Probe.pumpCompletion(completer, 200);
+    if completer.AcceptTabKey() == false {
+        Probe.fail(shell, "completion tab key accept not consumed");
+        return false;
+    }
+    var line = engine.editor.GetLine(3);
+    if line != "    greet" {
+        Probe.fail(shell, "completion tab key accept did not replace prefix cleanly: " + line);
+        return false;
+    }
+
+    engine.SetText(
+        "module IntelliProbe;\n"
+        + "func greet(value: Integer) -> Integer { return value; }\n"
+        + "func main() {\n"
+        + "    gr\n"
+        + "}\n");
+    engine.editor.SetCursor(3, 6);
+    completer.TriggerCompletion();
+    Probe.pumpCompletion(completer, 200);
+    engine.editor.InsertAtCursor("    ");
+    if completer.AcceptTypedTab("\t") == false {
+        Probe.fail(shell, "completion tab accept not consumed");
+        return false;
+    }
+    line = engine.editor.GetLine(3);
+    if line != "    greet" {
+        Probe.fail(shell, "completion tab accept did not replace prefix cleanly: " + line);
+        return false;
+    }
+
+    engine.SetText(
+        "module IntelliProbe;\n"
+        + "func greet(value: Integer) -> Integer { return value; }\n"
+        + "func main() {\n"
+        + "    gr\n"
+        + "}\n");
+    engine.editor.SetCursor(3, 6);
+    completer.TriggerCompletion();
+    Probe.pumpCompletion(completer, 200);
+    engine.editor.InsertAtCursor("    ");
+    if completer.AcceptIfEditorInsertedTab() == false {
+        Probe.fail(shell, "completion native tab fallback not consumed");
+        return false;
+    }
+    line = engine.editor.GetLine(3);
+    if line != "    greet" {
+        Probe.fail(shell, "completion native tab fallback did not replace prefix cleanly: " + line);
+        return false;
+    }
+
+    engine.SetText(
+        "module IntelliProbe;\n"
+        + "func greet(value: Integer) -> Integer { return value; }\n"
+        + "func main() {\n"
+        + "    gr\n"
+        + "}\n");
+    engine.editor.SetCursor(3, 6);
+    completer.TriggerCompletion();
+    Probe.pumpCompletion(completer, 200);
+    engine.editor.InsertAtCursor("    ");
+    if completer.AcceptHeldTabKey(true) == false {
+        Probe.fail(shell, "completion held tab fallback not consumed");
+        return false;
+    }
+    line = engine.editor.GetLine(3);
+    if line != "    greet" {
+        Probe.fail(shell, "completion held tab fallback did not replace prefix cleanly: " + line);
+        return false;
+    }
+
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    ctx.completer = completer;
+    ctx.docMgr = docMgr;
+    ctx.line = line;
+    return true;
+}
+
+/// @brief Run the VerifyCompletionAcceptanceAndSignatures scenario against the shared fixture.
+expose func VerifyCompletionAcceptanceAndSignatures(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var completer = ctx.completer;
+    var sigCtrl = ctx.sigCtrl;
+    var line = ctx.line;
+
+    engine.SetText(
+        "module IntelliProbe;\n"
+        + "func greet(value: Integer) -> Integer { return value; }\n"
+        + "func main() {\n"
+        + "    gr\n"
+        + "}\n");
+    engine.editor.SetCursor(3, 6);
+    completer.TriggerCompletion();
+    Probe.pumpCompletion(completer, 200);
+    completer.MarkTabKeyHandled();
+    if completer.AcceptHeldTabKey(true) {
+        Probe.fail(shell, "completion held tab fallback repeated while key held");
+        return false;
+    }
+    completer.AcceptHeldTabKey(false);
+    if completer.AcceptHeldTabKey(true) == false {
+        Probe.fail(shell, "completion held tab fallback did not rearm after release");
+        return false;
+    }
+    line = engine.editor.GetLine(3);
+    if line != "    greet" {
+        Probe.fail(shell, "completion held tab fallback rearm did not accept");
+        return false;
+    }
+
+    engine.SetText(
+        "module IntelliProbe;\n"
+        + "func greet(value: Integer) -> Integer { return value; }\n"
+        + "func main() {\n"
+        + "    gr\n"
+        + "}\n");
+    engine.editor.SetCursor(3, 6);
+    completer.TriggerCompletion();
+    Probe.pumpCompletion(completer, 200);
+    if Str.IndexOf(completer.SelectedCommitCharacters(), "(") == 0 {
+        Probe.fail(shell, "completion missing callable commit character");
+        return false;
+    }
+    engine.editor.InsertAtCursor("(");
+    if completer.AcceptIfCommitCharacter("(") == false {
+        Probe.fail(shell, "completion commit character not accepted");
+        return false;
+    }
+    if Str.IndexOf(engine.editor.GetLine(3), "greet(") == 0 {
+        Probe.fail(shell, "completion commit character did not keep typed char");
+        return false;
+    }
+
+    if signature.ActiveParameter("func main() {\n    greet(one, two(", 2, 19) != 0 {
+        Probe.fail(shell, "nested active parameter");
+        return false;
+    }
+    if signature.ActiveParameter("func main() {\n    greet(one, ", 2, 15) != 1 {
+        Probe.fail(shell, "comma active parameter");
+        return false;
+    }
+
+    var sigSource = "module IntelliProbe;\n"
+        + "func greet(value: Integer, label: String) -> Integer { return value; }\n"
+        + "func main() {\n"
+        + "    greet(\n"
+        + "}\n";
+    var sigText = ZiaCompletion.SignatureHelpForFile(sigSource, "intellisense_probe.zia", 4, 10);
+    if Str.IndexOf(sigText, "value: Integer") == 0 or Str.IndexOf(sigText, "label: String") == 0 {
+        Probe.fail(shell, "signature fallback missing parameter names: " + sigText);
+        return false;
+    }
+    var sigInfo = ZiaCompletion.SignatureInfoForFile(sigSource, "intellisense_probe.zia", 4, 10);
+    if Map.GetBool(sigInfo, "available") == false
+       or Map.GetInt(sigInfo, "activeParameter") != 0
+       or Seq.get_Count(Map.Get(sigInfo, "parameters")) != 2 {
+        Probe.fail(shell, "structured signature info");
+        return false;
+    }
+    var sigJob = ZiaCompletion.BeginSignatureInfoForFile(sigSource, "intellisense_probe.zia", 4, 10);
+    if Probe.waitSemanticJob(sigJob, SEMANTIC_JOB_WAIT_MS) == false {
+        Probe.fail(shell, "async signature job did not finish");
+        return false;
+    }
+    var asyncSigInfo = SemanticJob.SignatureInfo(sigJob);
+    if Map.GetBool(asyncSigInfo, "available") == false
+       or Seq.get_Count(Map.Get(asyncSigInfo, "parameters")) != 2 {
+        Probe.fail(shell, "async structured signature info");
+        return false;
+    }
+    if Str.IndexOf(signature.FormatSignatureDisplay(sigInfo), "[value: Integer]") == 0 {
+        Probe.fail(shell, "active signature parameter display");
+        return false;
+    }
+    var overloadSource = "module OverloadProbe;\n"
+        + "func mix(value: Integer) -> Integer { return value; }\n"
+        + "func mix(text: String) -> String { return text; }\n"
+        + "func main() {\n"
+        + "    mix(1);\n"
+        + "}\n";
+    var overloadSig = ZiaCompletion.SignatureInfoForFile(overloadSource,
+                                                         "intellisense_probe.zia",
+                                                         5,
+                                                         8);
+    if Map.GetInt(overloadSig, "overloadCount") != 2 {
+        Probe.fail(shell, "signature overload count");
+        return false;
+    }
+    var overloads = Map.Get(overloadSig, "overloads");
+    if overloads == null or Seq.get_Count(overloads) != 2 {
+        Probe.fail(shell, "signature overload records");
+        return false;
+    }
+    if Str.IndexOf(signature.FormatSignatureDisplay(overloadSig), "1/2") == 0 {
+        Probe.fail(shell, "signature overload display");
+        return false;
+    }
+    var secondOverloadDisplay = signature.FormatSignatureDisplayAt(overloadSig, 1);
+    if Str.IndexOf(secondOverloadDisplay, "2/2") == 0
+       or Str.IndexOf(secondOverloadDisplay, "text: String") == 0 {
+        Probe.fail(shell, "signature overload display at index");
+        return false;
+    }
+    engine.SetText(overloadSource);
+    engine.editor.SetCursor(4, 8);
+    sigCtrl.trigger(engine);
+    Probe.pumpSignature(sigCtrl, engine, 200);
+    if sigCtrl.visible == false
+       or Map.GetInt(sigCtrl.currentSignatureInfo, "overloadCount") != 2 {
+        Probe.fail(shell, "signature controller overload metadata");
+        return false;
+    }
+    shell.app.SetWindowSize(720, 520);
+    shell.Poll();
+    sigCtrl.update(engine);
+    shell.Render();
+    if Probe.panelFitsUiViewport(shell.app, sigCtrl.panel) == false {
+        Probe.fail(shell, "signature help escaped the compact viewport");
+        return false;
+    }
+
+    shell.app.SetUiScale(2.0);
+    shell.app.SetWindowSize(720, 520);
+    shell.Poll();
+    sigCtrl.update(engine);
+    shell.Render();
+    if Probe.panelFitsUiViewport(shell.app, sigCtrl.panel) == false {
+        Probe.fail(shell, "signature help escaped the zoomed viewport");
+        return false;
+    }
+    shell.app.SetUiScale(1.0);
+    shell.app.SetWindowSize(820, 520);
+    shell.Poll();
+    sigCtrl.update(engine);
+    shell.Render();
+    if sigCtrl.NextOverload() == false or sigCtrl.activeOverloadIndex != 1 {
+        Probe.fail(shell, "signature controller next overload");
+        return false;
+    }
+    if sigCtrl.PreviousOverload() == false or sigCtrl.activeOverloadIndex != 0 {
+        Probe.fail(shell, "signature controller previous overload");
+        return false;
+    }
+    sigCtrl.Hide();
+    engine.SetText(sigSource);
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    ctx.sigCtrl = sigCtrl;
+    return true;
+}
+
+/// @brief Verify signature, hover, and symbol surfaces.
+expose func VerifySignatureHoverAndSymbols(
+    ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    return SymbolScenarios.VerifySignatureHoverAndSymbols(ctx);
+}

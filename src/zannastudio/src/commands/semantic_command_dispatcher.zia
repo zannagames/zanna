@@ -1,0 +1,264 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/semantic_command_dispatcher.zia
+// Purpose: Queue and execute language-aware semantic navigation commands.
+// Key invariants:
+//   - Deferred Zia commands retain their originating document/cursor anchor.
+//   - BASIC and Zia requests continue through their owned async controllers.
+// Ownership/Lifetime: Module state owns at most one pending semantic command.
+// Links: zannastudio/src/commands/main_command_dispatcher.zia,
+//        zannastudio/src/commands/edit_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module semantic_command_dispatcher;
+
+bind "../commands/command_context";
+bind "../commands/edit_commands";
+bind "../commands/file_commands";
+bind "../editor/basic_workspace_query_job";
+bind "../editor/zia_workspace_query_job";
+bind Zanna.GUI;
+
+final PENDING_SEMANTIC_PUMP_FILES = 32;
+
+var pendingSemanticCommand = "";
+var pendingSemanticLabel = "";
+var pendingSemanticPath = "";
+var pendingSemanticLine = -1;
+var pendingSemanticCol = -1;
+var pendingSemanticRevision = -1;
+var currentDiagnosticIndex = -1;
+
+/// @brief Navigate to the next or previous diagnostic row.
+/// @details Problems row zero is a header, so navigation wraps between row 1
+///          and the final row. The LocationStore owns the target data.
+/// @param ctx Named dependency bundle assembled by main.zia.
+/// @param direction 1 for next, -1 for previous.
+expose func NavigateDiagnostic(ctx: command_context.CommandContext,
+                               direction: Integer) {
+    var count = ctx.shell.toolPanels.diagListBox.Count;
+    if count <= 1 {
+        ctx.shell.SetStatusLeft("No diagnostics");
+        return;
+    }
+
+    currentDiagnosticIndex = currentDiagnosticIndex + direction;
+    if currentDiagnosticIndex >= count { currentDiagnosticIndex = 1; }
+    if currentDiagnosticIndex < 1 { currentDiagnosticIndex = count - 1; }
+
+    ctx.shell.toolPanels.diagListBox.SelectIndex(currentDiagnosticIndex);
+    var selected = ctx.shell.toolPanels.diagListBox.Selected;
+    if selected != null {
+        ctx.locStore.OpenLocation(
+            ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs,
+            GUI.ListBox.ItemGetData(selected));
+    }
+}
+
+/// @brief Run a semantic navigation/refactor command, or defer it until indexing is ready.
+/// @details Zia project-wide commands need a complete workspace index for
+///          trustworthy results. Instead of showing a "retry later" toast, this
+///          helper records the command and cursor anchor, advances the index
+///          cooperatively, and lets PumpPendingSemanticCommand execute the same
+///          command automatically once the index reports ready. BASIC commands
+///          use their owned background workspace controller; other languages run
+///          immediately to preserve their unavailable-state feedback.
+/// @param ctx Named dependency bundle assembled by main.zia.
+/// @param commandId Semantic command id handled by ExecuteSemanticCommand.
+/// @param label User-facing command label for status text.
+expose func RunOrQueueSemanticCommand(ctx: command_context.CommandContext,
+                                    commandId: String,
+                                    label: String) {
+    if ctx == null or ctx.engine == null or ctx.engine.editor == null {
+        return;
+    }
+    var doc = ctx.docMgr.GetActive();
+    if doc != null and doc!.language == "basic" {
+        StartBasicSemanticCommand(ctx, commandId, label);
+        return;
+    }
+    if doc != null and doc!.language == "zia"
+       and ctx.ziaWorkspaceCommands != null {
+        if commandId == "rename" {
+            ctx.shell.SetStatusLeft("Rename input is unavailable");
+            return;
+        }
+        var kind = 0;
+        if commandId == "gotodef" {
+            kind = zia_workspace_query_job.ZIA_QUERY_DEFINITION;
+        } else if commandId == "findrefs" {
+            kind = zia_workspace_query_job.ZIA_QUERY_REFERENCES;
+        } else if commandId == "incomingcalls" {
+            kind = zia_workspace_query_job.ZIA_QUERY_INCOMING_CALLS;
+        } else if commandId == "outgoingcalls" {
+            kind = zia_workspace_query_job.ZIA_QUERY_OUTGOING_CALLS;
+        }
+        if kind > 0 {
+            ctx.ziaWorkspaceCommands.Start(
+                kind, label, ctx.shell, ctx.docMgr, ctx.projMgr, ctx.engine,
+                ctx.indexer);
+        }
+        return;
+    }
+    if doc == null or doc!.language != "zia" or ctx.indexer == null {
+        ExecuteSemanticCommand(ctx, commandId);
+        return;
+    }
+
+    file_commands.SaveEditorState(ctx.docMgr, ctx.engine);
+    ctx.indexer.SyncActiveNow(ctx.docMgr, ctx.engine);
+    ctx.indexer.SyncOpenDocuments(ctx.docMgr);
+    if ctx.indexer.PrepareWorkspaceQuery(PENDING_SEMANTIC_PUMP_FILES) {
+        ClearPendingSemanticCommand();
+        ExecuteSemanticCommand(ctx, commandId);
+        return;
+    }
+
+    QueuePendingSemanticCommand(ctx, commandId, label);
+}
+
+/// @brief Translate a semantic command id into an asynchronous BASIC query.
+hide func StartBasicSemanticCommand(ctx: command_context.CommandContext,
+                                    commandId: String,
+                                    label: String) {
+    if ctx.basicWorkspaceCommands == null {
+        ctx.shell.SetStatusLeft(label + " is unavailable");
+        return;
+    }
+    if commandId == "rename" {
+        ctx.shell.SetStatusLeft("Rename input is unavailable");
+        return;
+    }
+    var kind = 0;
+    if commandId == "gotodef" {
+        kind = basic_workspace_query_job.QUERY_DEFINITION;
+    } else if commandId == "findrefs" {
+        kind = basic_workspace_query_job.QUERY_REFERENCES;
+    } else if commandId == "incomingcalls" {
+        kind = basic_workspace_query_job.QUERY_INCOMING_CALLS;
+    } else if commandId == "outgoingcalls" {
+        kind = basic_workspace_query_job.QUERY_OUTGOING_CALLS;
+    }
+    if kind <= 0 { return; }
+    ctx.basicWorkspaceCommands.Start(kind, label, ctx.shell, ctx.docMgr,
+                                     ctx.projMgr, ctx.engine);
+}
+
+/// @brief Store a pending semantic command at the active document/cursor anchor.
+/// @details The anchor prevents a delayed command from firing against a different
+///          symbol after the user changes files or moves the caret while indexing
+///          continues. Re-triggering a semantic command replaces any older pending
+///          command so the most recent user intent wins.
+/// @param ctx Named dependency bundle assembled by main.zia.
+/// @param commandId Command id to execute when indexing completes.
+/// @param label User-facing label used in status and toast text.
+hide func QueuePendingSemanticCommand(ctx: command_context.CommandContext,
+                                      commandId: String,
+                                      label: String) {
+    var doc = ctx.docMgr.GetActive();
+    if doc == null { return; }
+    pendingSemanticCommand = commandId;
+    pendingSemanticLabel = label;
+    pendingSemanticPath = doc!.filePath;
+    pendingSemanticLine = ctx.engine.editor.CursorLine;
+    pendingSemanticCol = ctx.engine.editor.CursorCol;
+    pendingSemanticRevision = ctx.engine.GetRevision();
+    var msg = label + " queued while indexing ("
+              + ctx.indexer.WorkspaceIndexProgressText() + ")";
+    ctx.shell.SetStatusLeft(msg);
+}
+
+/// @brief Advance a queued semantic command and execute it when the index is ready.
+/// @details Called once per frame by DispatchCommandContext. It pumps the same
+///          bounded amount of index work as an explicit semantic command, cancels
+///          if the active document/cursor no longer matches the stored anchor, and
+///          then dispatches through the normal command handler so behavior remains
+///          centralized in edit_commands.
+/// @param ctx Named dependency bundle assembled by main.zia.
+expose func PumpPendingSemanticCommand(ctx: command_context.CommandContext) {
+    if pendingSemanticCommand == "" { return; }
+    if ctx == null or ctx.engine == null or ctx.engine.editor == null or ctx.indexer == null {
+        ClearPendingSemanticCommand();
+        return;
+    }
+    if PendingSemanticAnchorMatches(ctx) == false {
+        ctx.shell.SetStatusLeft(pendingSemanticLabel + " canceled because the cursor changed");
+        ClearPendingSemanticCommand();
+        return;
+    }
+
+    file_commands.SaveEditorState(ctx.docMgr, ctx.engine);
+    ctx.indexer.SyncActiveNow(ctx.docMgr, ctx.engine);
+    ctx.indexer.SyncOpenDocuments(ctx.docMgr);
+    if ctx.indexer.PrepareWorkspaceQuery(PENDING_SEMANTIC_PUMP_FILES) == false {
+        ctx.shell.SetStatusLeft(pendingSemanticLabel + " pending ("
+                                + ctx.indexer.WorkspaceIndexProgressText() + ")");
+        return;
+    }
+
+    var commandId = pendingSemanticCommand;
+    var label = pendingSemanticLabel;
+    ClearPendingSemanticCommand();
+    ctx.shell.SetStatusLeft(label + " ready");
+    ExecuteSemanticCommand(ctx, commandId);
+}
+
+/// @brief Return true when the active document and cursor still match the pending command.
+/// @param ctx Named dependency bundle assembled by main.zia.
+/// @return True when it is still safe to execute the queued semantic command.
+hide func PendingSemanticAnchorMatches(ctx: command_context.CommandContext) -> Boolean {
+    var doc = ctx.docMgr.GetActive();
+    if doc == null { return false; }
+    if doc!.language != "zia" { return false; }
+    if doc!.filePath != pendingSemanticPath { return false; }
+    if ctx.engine.editor.CursorLine != pendingSemanticLine { return false; }
+    if ctx.engine.editor.CursorCol != pendingSemanticCol { return false; }
+    if ctx.engine.GetRevision() != pendingSemanticRevision { return false; }
+    return true;
+}
+
+/// @brief Clear all pending semantic command state.
+hide func ClearPendingSemanticCommand() {
+    pendingSemanticCommand = "";
+    pendingSemanticLabel = "";
+    pendingSemanticPath = "";
+    pendingSemanticLine = -1;
+    pendingSemanticCol = -1;
+    pendingSemanticRevision = -1;
+}
+
+/// @brief Execute one semantic command through its existing command handler.
+/// @details This keeps queued and immediately-run commands behaviorally identical:
+///          all result rendering, prompts, workspace edits, and toasts still live in
+///          edit_commands. Unknown command ids are ignored defensively.
+/// @param ctx Named dependency bundle assembled by main.zia.
+/// @param commandId Semantic command id to run.
+hide func ExecuteSemanticCommand(ctx: command_context.CommandContext,
+                                 commandId: String) {
+    if commandId == "gotodef" {
+        edit_commands.handleGoToDefinition(ctx.shell, ctx.docMgr, ctx.engine,
+                                           ctx.tabs, ctx.indexer, ctx.locStore);
+    } else if commandId == "findrefs" {
+        edit_commands.handleFindReferences(ctx.shell, ctx.docMgr, ctx.engine,
+                                           ctx.indexer, ctx.locStore);
+    } else if commandId == "incomingcalls" {
+        edit_commands.handleIncomingCalls(ctx.shell, ctx.docMgr, ctx.engine,
+                                          ctx.indexer, ctx.locStore);
+    } else if commandId == "outgoingcalls" {
+        edit_commands.handleOutgoingCalls(ctx.shell, ctx.docMgr, ctx.engine,
+                                          ctx.indexer, ctx.locStore);
+    } else if commandId == "rename" {
+        if ctx.commandInputOverlay != null {
+            ctx.commandInputOverlay.OpenRenameSymbol(
+                ctx.shell, edit_commands.IdentifierAtCursor(ctx.engine));
+        } else {
+            ctx.shell.SetStatusLeft("Rename input is unavailable");
+        }
+    }
+}

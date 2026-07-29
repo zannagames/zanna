@@ -1,0 +1,352 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_layout.zia
+// Purpose: Viewport-mode and gizmo presentation for the 3D scene editor.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_workspace.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_layout;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_responsive_layout" as PreviousLayer;
+
+/// @brief Layout implementation layer.
+class SceneEditor3DLayoutLayer extends PreviousLayer.SceneEditor3DResponsiveLayoutLayer {
+    /// @brief Select truthful shaded meshes or authored mesh wireframes.
+    /// @details This is per-document presentation state. It never mutates the
+    ///          live SceneGraph, canonical VSCN bytes, or edit history.
+    expose override func SetViewportMode(nextMode: Integer) {
+        if (nextMode != SceneEditor3DModel.VIEWPORT_MODE_SHADED
+            and nextMode != SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME
+            and nextMode != SceneEditor3DModel.VIEWPORT_MODE_SHADED_WIRE)
+           or nextMode == viewportMode {
+            return;
+        }
+        viewportMode = nextMode;
+        UpdateViewportModeControls();
+        toolbarStatus.SetText(
+            ViewportModeLabel(viewportMode) + " viewport selected");
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief One render pass's CPU milliseconds at tenth precision.
+    hide override func PassMsTenths(pass: Integer) -> String {
+        var tenths = Convert.NumToInt(
+            viewportRenderCanvas.PassCpuMs(pass) * 10.0);
+        if tenths < 0 { tenths = 0; }
+        return (tenths / 10) + "." + (tenths % 10);
+    }
+
+    hide override func ViewportModeLabel(mode: Integer) -> String {
+        if mode == SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME { return "Wireframe"; }
+        if mode == SceneEditor3DModel.VIEWPORT_MODE_SHADED_WIRE { return "Shaded+Wire"; }
+        return "Shaded";
+    }
+
+    /// @brief Game View always uses the gameplay-like shaded material pass.
+    hide override func EffectiveViewportMode() -> Integer {
+        if gameViewActive { return SceneEditor3DModel.VIEWPORT_MODE_SHADED; }
+        return viewportMode;
+    }
+
+    /// @brief Keep the mode button, tooltip, and accessibility state truthful.
+    expose override func UpdateViewportModeControls() {
+        if viewportModeButton == null { return; }
+        var effectiveMode = EffectiveViewportMode();
+        var label = ViewportModeLabel(effectiveMode);
+        viewportModeButton.SetText(label);
+        viewportModeButton.SetStyle(
+            effectiveMode == SceneEditor3DModel.VIEWPORT_MODE_SHADED ? 1 : 0);
+        viewportModeButton.SetAccessibleName(
+            "3D viewport mode: " + label);
+        if gameViewActive {
+            viewportModeButton.SetTooltip(
+                "Game View temporarily uses shaded gameplay materials");
+            viewportModeButton.SetAccessibleDescription(
+                "Game View masks the prior viewport mode until exit.");
+        } else if viewportMode == SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME {
+            viewportModeButton.SetTooltip(
+                "Show authored triangle edges; click for shaded PBR materials");
+            viewportModeButton.SetAccessibleDescription(
+                "Authored meshes render as triangle wireframes. "
+                + "Activate for shaded PBR materials.");
+        } else {
+            viewportModeButton.SetTooltip(
+                "Show authored PBR materials; click for triangle wireframes");
+            viewportModeButton.SetAccessibleDescription(
+                "Authored meshes render with their PBR materials. "
+                + "Activate for triangle wireframes.");
+        }
+    }
+
+    /// @brief Select one viewport transform tool without mutating scene data.
+    expose override func SetGizmoMode(nextMode: Integer) {
+        if scene_transform_3d.IsValidMode(nextMode) == false { return; }
+        if terrainSculptEnabled { SetTerrainSculptEnabled(false); }
+        if nextMode == gizmoMode { return; }
+        if vertexSnapDragActive { CancelVertexSnapDrag(); }
+        if gizmoDragAxis != SceneEditor3DModel.GIZMO_AXIS_NONE { CancelGizmoDrag(); }
+        gizmoMode = nextMode;
+        gizmoHoverAxis = SceneEditor3DModel.GIZMO_AXIS_NONE;
+        UpdateGizmoModeControls();
+        toolbarStatus.SetText(
+            scene_transform_3d.ModeLabel(gizmoMode) + " tool selected");
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Select parent-relative local axes or absolute world axes.
+    expose override func SetGizmoTransformSpace(nextSpace: Integer) {
+        if scene_transform_3d.IsValidSpace(nextSpace) == false { return; }
+        if terrainSculptEnabled { SetTerrainSculptEnabled(false); }
+        if nextSpace == gizmoTransformSpace { return; }
+        if vertexSnapDragActive { CancelVertexSnapDrag(); }
+        if gizmoDragAxis != SceneEditor3DModel.GIZMO_AXIS_NONE { CancelGizmoDrag(); }
+        gizmoTransformSpace = nextSpace;
+        gizmoHoverAxis = SceneEditor3DModel.GIZMO_AXIS_NONE;
+        UpdateGizmoModeControls();
+        toolbarStatus.SetText(
+            scene_transform_3d.SpaceLabel(gizmoTransformSpace)
+            + " transform axes selected");
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Toggle mode-aware snapping and keep the native checkbox in sync.
+    expose override func SetGizmoSnapEnabled(enabled: Boolean) {
+        if enabled == gizmoSnapEnabled
+           and snapTransformCheck != null
+           and snapTransformCheck.IsChecked() == enabled {
+            return;
+        }
+        gizmoSnapEnabled = enabled;
+        SyncGizmoModeControls();
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Toggle live surface conformance for horizontal Move drags.
+    expose override func SetSurfaceSnapEnabled(enabled: Boolean) {
+        if enabled == surfaceSnapEnabled
+           and surfaceSnapCheck != null
+           and surfaceSnapCheck.IsChecked() == enabled {
+            return;
+        }
+        surfaceSnapEnabled = enabled;
+        SyncGizmoModeControls();
+        toolbarStatus.SetText(
+            enabled
+            ? "Surface Move enabled for X, Z, and XZ drags"
+            : "Surface Move disabled");
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Toggle surface-normal orientation for Drop and Surface Move.
+    expose override func SetSurfaceAlignEnabled(enabled: Boolean) {
+        if enabled == surfaceAlignEnabled
+           and surfaceAlignCheck != null
+           and surfaceAlignCheck.IsChecked() == enabled {
+            return;
+        }
+        surfaceAlignEnabled = enabled;
+        SyncGizmoModeControls();
+        toolbarStatus.SetText(
+            enabled
+            ? "Surface normal alignment enabled"
+            : "Surface normal alignment disabled");
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Toggle persistent vertex snapping; holding V remains transient.
+    expose override func SetVertexSnapEnabled(enabled: Boolean) {
+        if enabled == vertexSnapEnabled
+           and vertexSnapCheck != null
+           and vertexSnapCheck.IsChecked() == enabled {
+            return;
+        }
+        if enabled and terrainSculptEnabled {
+            SetTerrainSculptEnabled(false);
+        }
+        if vertexSnapDragActive { CancelVertexSnapDrag(); }
+        vertexSnapEnabled = enabled;
+        vertexSnapSourceCacheValid = false;
+        vertexSnapSource = new SceneEditor3DModel.VertexSnapPoint3D();
+        vertexSnapTarget = new SceneEditor3DModel.VertexSnapPoint3D();
+        SyncGizmoModeControls();
+        toolbarStatus.SetText(
+            enabled
+            ? "Vertex Move enabled; drag a selected vertex or pivot"
+            : "Vertex Move disabled; hold V for a transient gesture");
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Reconcile persisted gizmo fields with their native widgets.
+    hide override func SyncGizmoModeControls() {
+        if snapTransformCheck == null
+           or surfaceSnapCheck == null
+           or surfaceAlignCheck == null
+           or vertexSnapCheck == null {
+            return;
+        }
+        snapTransformCheck.SetChecked(gizmoSnapEnabled);
+        snapTransformRevision = snapTransformCheck.GetRevision();
+        surfaceSnapCheck.SetChecked(surfaceSnapEnabled);
+        surfaceSnapRevision = surfaceSnapCheck.GetRevision();
+        surfaceAlignCheck.SetChecked(surfaceAlignEnabled);
+        surfaceAlignRevision = surfaceAlignCheck.GetRevision();
+        vertexSnapCheck.SetChecked(vertexSnapEnabled);
+        vertexSnapRevision = vertexSnapCheck.GetRevision();
+        UpdateGizmoModeControls();
+    }
+
+    /// @brief Present an unambiguous active transform mode and snap precision.
+    expose override func UpdateGizmoModeControls() {
+        if moveToolButton == null { return; }
+        moveToolButton.SetStyle(0);
+        rotateToolButton.SetStyle(0);
+        scaleToolButton.SetStyle(0);
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            rotateToolButton.SetStyle(1);
+        } else if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            scaleToolButton.SetStyle(1);
+        } else {
+            moveToolButton.SetStyle(1);
+        }
+        if transformSpaceButton != null {
+            var spaceLabel =
+                scene_transform_3d.SpaceLabel(gizmoTransformSpace);
+            transformSpaceButton.SetText(spaceLabel);
+            transformSpaceButton.SetStyle(
+                gizmoTransformSpace
+                    == scene_transform_3d.TRANSFORM_SPACE_WORLD
+                ? 1 : 0);
+            transformSpaceButton.SetTooltip(
+                spaceLabel
+                + " axes. Click to switch coordinate space. "
+                + "Impossible parent-relative TRS conversions are rejected.");
+        }
+        var snapState = "off";
+        if gizmoSnapEnabled {
+            snapState = scene_transform_3d.SnapDescription(gizmoMode);
+        }
+        snapTransformCheck.SetTooltip(
+            scene_transform_3d.ModeLabel(gizmoMode)
+            + " snap: " + snapState);
+        if surfaceSnapCheck != null {
+            surfaceSnapCheck.SetTooltip(
+                "Surface Move: "
+                + (surfaceSnapEnabled ? "on" : "off")
+                + ". X, Z, and XZ Move drags keep every selected hierarchy "
+                + "root on the nearest visible authored or project surface.");
+        }
+        if surfaceAlignCheck != null {
+            surfaceAlignCheck.SetTooltip(
+                "Surface normal alignment: "
+                + (surfaceAlignEnabled ? "on" : "off")
+                + ". Drop and Surface Move preserve each hierarchy root's "
+                + "twist while rotating its up axis to the precise hit normal.");
+        }
+        if vertexSnapCheck != null {
+            vertexSnapCheck.SetTooltip(
+                "Vertex Move: "
+                + (vertexSnapEnabled ? "on" : "off")
+                + ". Hold V for transient use or press Shift+V to toggle. "
+                + "Drag a selected mesh vertex or pivot onto another vertex "
+                + "or visible surface; Escape restores the whole selection.");
+        }
+        if viewportImage != null {
+            var handleHint = "colored axes";
+            if gizmoMode == SceneEditor3DModel.GIZMO_MODE_MOVE {
+                handleHint = "colored axes or XY/XZ/YZ plane squares";
+            } else if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+                handleHint = "X/Y/Z rotation rings";
+            } else if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+                handleHint = "boxed axes or XY/XZ/YZ crossed scale squares";
+            }
+            viewportImage.SetTooltip(
+                "Drag " + handleHint + " to "
+                + Str.ToLower(scene_transform_3d.ModeLabel(gizmoMode))
+                + " in "
+                + Str.ToLower(
+                    scene_transform_3d.SpaceLabel(gizmoTransformSpace))
+                + " space. Click meshes to select; Shift adds and Ctrl/Cmd "
+                + "toggles. Middle/right-drag to orbit, or add Shift to pan. "
+                + "Use the wheel to zoom. The top-right View navigator snaps "
+                + "six directions and toggles perspective/orthographic.");
+        }
+        UpdateCommandMenuButtons();
+    }
+}

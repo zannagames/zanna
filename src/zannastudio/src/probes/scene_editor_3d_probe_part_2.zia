@@ -1,0 +1,618 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_editor_3d_probe_part_2.zia
+// Purpose: Serial 3D editor probe scenarios, part 2 of 4.
+// Key invariants:
+//   - Scenarios preserve the original execution order and shared fixture.
+//   - Failure paths retain their original cleanup and RESULT diagnostics.
+// Ownership/Lifetime: Borrows one SceneEditor3DProbeContext from the entry probe.
+// Links: zannastudio/src/probes/scene_editor_3d_probe.zia,
+//        zannastudio/src/probes/scene_editor_3d_probe_context.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_probe_part_2;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../commands/command_context";
+bind "../commands/file_commands";
+bind "../editor/editor_engine";
+bind "../services/file_utils";
+bind "../services/safe_io";
+bind "../ui/app_shell";
+bind "../ui/scene_clipboard";
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+bind "../ui/scene_material_3d";
+bind "../ui/scene_transform_3d";
+
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Quat = Zanna.Math.Quat;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Terminal = Zanna.Terminal;
+bind Seq = Zanna.Collections.Seq;
+bind "scene_editor_3d_probe_context" as Probe;
+bind "scene_editor_3d_probe_part_2_previews" as PreviewScenarios;
+
+/// @brief Run the VerifyNodeRoundTripAndMetadata scenario against the shared fixture.
+expose func VerifyNodeRoundTripAndMetadata(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var otherSceneDoc = ctx.otherSceneDoc;
+    var childIndex = ctx.childIndex;
+
+    var retainedSelectionData = editor.hierarchyTree.GetSelectedData();
+    if Seq.get_Count(retainedSelectionData) != 2
+       or Seq.GetStr(retainedSelectionData, 0) != "0"
+       or Seq.GetStr(retainedSelectionData, 1) != "1" {
+        Probe.fail(shell, tempPath,
+             "retained hierarchy multi-selection lost structural row data");
+        return false;
+    }
+    var childOnlySelection: List[Integer] = [];
+    childOnlySelection.add(1);
+    editor.SelectSceneNodes(childOnlySelection, 1);
+
+    tempPath = TempFile.PathWithExt("zannastudio_scene3d_probe_", ".vscn");
+    if tempPath == ""
+       or safe_io.WriteAllText(tempPath, sceneDoc.content) == false {
+        Probe.fail(shell, tempPath, "could not stage edited VSCN");
+        return false;
+    }
+    var roundTrip = SceneGraph.Load(tempPath);
+    if roundTrip == null or roundTrip.NodeCount != 3 {
+        Probe.fail(shell, tempPath, "edited VSCN did not reload");
+        return false;
+    }
+    var found = roundTrip.Find("Child Node");
+    if found.IsNone {
+        Probe.fail(shell, tempPath, "child node was absent after VSCN round trip");
+        return false;
+    }
+    var child = found.Unwrap() as SceneNode;
+    var expectedRotation = Quat.FromEuler(
+        10.0 * 0.017453292519943295,
+        20.0 * 0.017453292519943295,
+        30.0 * 0.017453292519943295);
+    if Probe.near(child.Position.X, 3.5) == false {
+        Probe.fail(shell, tempPath, "node local X changed during round trip");
+        return false;
+    }
+    if Probe.near(child.Position.Y, 2.0) == false
+       or Probe.near(child.Position.Z, -3.25) == false {
+        Probe.fail(shell, tempPath, "world-axis move changed an unrelated position");
+        return false;
+    }
+    if Probe.near(child.Scale.X, 2.0) == false
+       or Probe.near(child.Scale.Y, 1.0) == false
+       or Probe.near(child.Scale.Z, 0.5) == false {
+        Probe.fail(shell, tempPath, "node scale changed during VSCN round trip");
+        return false;
+    }
+    if Probe.near(child.Rotation.X, expectedRotation.X) == false
+       or Probe.near(child.Rotation.Y, expectedRotation.Y) == false
+       or Probe.near(child.Rotation.Z, expectedRotation.Z) == false
+       or Probe.near(child.Rotation.W, expectedRotation.W) == false {
+        Probe.fail(shell, tempPath, "node rotation changed during VSCN round trip");
+        return false;
+    }
+
+    var editedContent = sceneDoc.content;
+    if editor.CanUndo() == false or editor.Undo() == false
+       or editor.scene.Find("Child Node").IsNone
+       or Probe.near((editor.scene.Find("Child Node").Unwrap() as SceneNode).Position.X,
+               3.5) == false
+       or Probe.near((editor.scene.Find("Child Node").Unwrap() as SceneNode).Rotation.W,
+               1.0) == false
+       or editor.CanRedo() == false or editor.Redo() == false
+       or sceneDoc.content != editedContent {
+        Probe.fail(shell, tempPath,
+             "3D scene undo/redo did not restore canonical snapshots");
+        return false;
+    }
+    if editor.flatNodes.count() <= childIndex
+       or editor.flatNodes.get(childIndex).Name != "Child Node" {
+        Probe.fail(shell, tempPath, "redo lost Child Node identity before gizmo edits");
+        return false;
+    }
+
+    var metadataRevision = editor.GetRevision();
+    if editor.SetNodeMetadata(
+           childIndex, "", "role", "string", "enemy") == false
+       or editor.SetNodeMetadata(
+              childIndex, "", "health", "int", "125") == false
+       or editor.SetNodeMetadata(
+              childIndex, "", "radius", "float", "4.0") == false
+       or editor.SetNodeMetadata(
+              childIndex, "", "active", "bool", "yes") == false
+       or editor.SetNodeMetadata(
+              childIndex, "", "target", "null", "") == false
+       or editor.SetNodeMetadata(
+              childIndex, "role", "game.role", "string", "enemy") == false
+       or editor.SetNodeMetadata(
+              childIndex, "health", "active", "int", "2")
+       or editor.SetNodeMetadata(
+              childIndex, "health", "health", "int", "not-a-number")
+       or editor.SetNodeMetadata(
+              childIndex, "radius", "radius", "float", "4.0")
+       or editor.GetRevision() != metadataRevision + 6
+       or editor.flatNodes.get(childIndex).MetadataHas("role")
+       or editor.flatNodes.get(childIndex).MetadataGetString(
+              "game.role", "") != "enemy"
+       or editor.flatNodes.get(childIndex).MetadataGetInt(
+              "health", -1) != 125
+       or Probe.near(editor.flatNodes.get(childIndex).MetadataGetFloat(
+                   "radius", 0.0), 4.0) == false
+       or editor.flatNodes.get(childIndex).MetadataKind("radius") != "float"
+       or editor.flatNodes.get(childIndex).MetadataGetBool(
+              "active", false) == false
+       or editor.flatNodes.get(childIndex).MetadataKind("target") != "null"
+       or editor.metadataInspector.rows.RowCount() != 5
+       or editor.metadataInspector.keys.count() != 5
+       or editor.metadataInspector.rows.addButton.IsEnabled() == false {
+        Probe.fail(shell, tempPath,
+             "typed node-metadata inspector did not commit exact gameplay data");
+        return false;
+    }
+
+    if safe_io.WriteAllText(tempPath, sceneDoc.content) == false {
+        Probe.fail(shell, tempPath, "could not stage metadata-bearing VSCN");
+        return false;
+    }
+    var metadataRoundTrip = SceneGraph.Load(tempPath);
+    if metadataRoundTrip == null
+       or metadataRoundTrip.Find("Child Node").IsNone {
+        Probe.fail(shell, tempPath, "metadata-bearing VSCN did not reload");
+        return false;
+    }
+    var metadataChild =
+        metadataRoundTrip.Find("Child Node").Unwrap() as SceneNode;
+    if metadataChild.MetadataGetString("game.role", "") != "enemy"
+       or metadataChild.MetadataGetInt("health", -1) != 125
+       or metadataChild.MetadataKind("radius") != "float"
+       or Probe.near(metadataChild.MetadataGetFloat("radius", 0.0), 4.0) == false
+       or metadataChild.MetadataGetBool("active", false) == false
+       or metadataChild.MetadataKind("target") != "null" {
+        Probe.fail(shell, tempPath,
+             "typed node metadata changed kind or value across VSCN");
+        return false;
+    }
+
+    // Drain programmatic hierarchy-selection events from the preceding direct
+    // edit calls, then focus one row by key: presentation-only, so content,
+    // history, and revision stay untouched across a tab round trip.
+    editor.Pump(sceneDoc);
+    var tabMetadataContent = sceneDoc.content;
+    var tabMetadataRevision = editor.GetRevision();
+    editor.metadataInspector.SelectByKey("health");
+    editor.Pump(sceneDoc);
+    if sceneDoc.content != tabMetadataContent
+       or editor.GetRevision() != tabMetadataRevision {
+        Probe.fail(shell, tempPath,
+             "focusing a metadata row changed content or history");
+        return false;
+    }
+    editor.Pump(otherSceneDoc);
+    if sceneDoc.content != tabMetadataContent {
+        Probe.fail(shell, tempPath,
+             "switching away rewrote 3D metadata content");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    if editor.metadataInspector.keys.count() != 5
+       or editor.metadataInspector.rows.RowCount() != 5
+       or sceneDoc.content != tabMetadataContent {
+        Probe.fail(shell, tempPath,
+             "metadata rows were not rebuilt with their scene tab "
+             + "(rows=" + editor.metadataInspector.rows.RowCount()
+             + ", keys=" + editor.metadataInspector.keys.count()
+             + ", sameContent="
+             + (sceneDoc.content == tabMetadataContent) + ")");
+        return false;
+    }
+
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.otherSceneDoc = otherSceneDoc;
+    ctx.childIndex = childIndex;
+    ctx.child = child;
+    return true;
+}
+
+/// @brief Run the StageComponentSchemas scenario against the shared fixture.
+expose func StageComponentSchemas(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var childIndex = ctx.childIndex;
+
+    var metadataContent = sceneDoc.content;
+    if editor.RemoveNodeMetadata(childIndex, "target") == false
+       or editor.flatNodes.get(childIndex).MetadataHas("target")
+       or editor.Undo() == false
+       or sceneDoc.content != metadataContent
+       or editor.flatNodes.get(childIndex).MetadataKind("target") != "null"
+       or editor.Redo() == false
+       or editor.flatNodes.get(childIndex).MetadataHas("target")
+       or editor.Undo() == false
+       or sceneDoc.content != metadataContent {
+        Probe.fail(shell, tempPath,
+             "node-metadata removal was not one exact history action");
+        return false;
+    }
+
+    // Project-root component schemas make recurring gameplay metadata one
+    // typed, multi-node action while leaving the raw inspector available.
+    var componentDir =
+        TempFile.CreateDirWithPrefix("zannastudio_scene3d_components_");
+    var componentPath = Path.Join(componentDir, "scene-components.json");
+    var componentScenePath = Path.Join(componentDir, "level.vscn");
+    var componentSchemaText =
+        "{"
+        + "\"version\":18,"
+        + "\"components\":["
+        + "{"
+        + "\"name\":\"enemy-spawn\","
+        + "\"label\":\"Enemy Spawn\","
+        + "\"target\":\"both\","
+        + "\"description\":\"Reusable enemy placement data.\","
+        + "\"fields\":["
+        + "{\"key\":\"health\",\"type\":\"int\",\"default\":100},"
+        + "{\"key\":\"enemy.archetype\",\"type\":\"string\","
+        + "\"default\":\"grunt\"},"
+        + "{\"key\":\"enemy.level\",\"type\":\"int\",\"default\":3},"
+        + "{\"key\":\"radius\",\"type\":\"float\",\"default\":4.5},"
+        + "{\"key\":\"active\",\"type\":\"bool\",\"default\":true},"
+        + "{\"key\":\"target\",\"type\":\"null\"}"
+        + "]"
+        + "},"
+        + "{"
+        + "\"name\":\"conflicting-spawn\","
+        + "\"target\":\"3d-node\","
+        + "\"fields\":["
+        + "{\"key\":\"would.add\",\"type\":\"string\",\"default\":\"no\"},"
+        + "{\"key\":\"health\",\"type\":\"string\",\"default\":\"wrong\"}"
+        + "]"
+        + "},"
+        + "{"
+        + "\"name\":\"two-d-only\","
+        + "\"target\":\"2d-object\","
+        + "\"fields\":["
+        + "{\"key\":\"two.d.value\",\"type\":\"string\",\"default\":\"kept\"}"
+        + "]"
+        + "}"
+        + "],"
+        + "\"scenePreview3D\":{"
+        + "\"startXProperty\":\"world.startX\","
+        + "\"startYProperty\":\"world.startY\","
+        + "\"startZProperty\":\"world.startZ\","
+        + "\"startYawProperty\":\"world.startYaw\","
+        + "\"startEyeHeight\":1.5,"
+        + "\"cameraFov\":90,"
+        + "\"ambientRProperty\":\"world.ambientR\","
+        + "\"ambientGProperty\":\"world.ambientG\","
+        + "\"ambientBProperty\":\"world.ambientB\","
+        + "\"clearRProperty\":\"world.clearR\","
+        + "\"clearGProperty\":\"world.clearG\","
+        + "\"clearBProperty\":\"world.clearB\","
+        + "\"fogRProperty\":\"world.fogR\","
+        + "\"fogGProperty\":\"world.fogG\","
+        + "\"fogBProperty\":\"world.fogB\","
+        + "\"fogNearProperty\":\"world.fogNear\","
+        + "\"fogFarProperty\":\"world.fogFar\","
+        + "\"zenithRProperty\":\"world.zenithR\","
+        + "\"zenithGProperty\":\"world.zenithG\","
+        + "\"zenithBProperty\":\"world.zenithB\","
+        + "\"groundRProperty\":\"world.groundR\","
+        + "\"groundGProperty\":\"world.groundG\","
+        + "\"groundBProperty\":\"world.groundB\","
+        + "\"cloudProperty\":\"world.cloud\","
+        + "\"starsProperty\":\"world.stars\","
+        + "\"sunXProperty\":\"world.sunX\","
+        + "\"sunYProperty\":\"world.sunY\","
+        + "\"sunZProperty\":\"world.sunZ\","
+        + "\"sunRProperty\":\"world.sunR\","
+        + "\"sunGProperty\":\"world.sunG\","
+        + "\"sunBProperty\":\"world.sunB\","
+        + "\"sunIntensityProperty\":\"world.sunIntensity\","
+        + "\"fillXProperty\":\"world.fillX\","
+        + "\"fillYProperty\":\"world.fillY\","
+        + "\"fillZProperty\":\"world.fillZ\","
+        + "\"fillRProperty\":\"world.fillR\","
+        + "\"fillGProperty\":\"world.fillG\","
+        + "\"fillBProperty\":\"world.fillB\","
+        + "\"fillIntensityProperty\":\"world.fillIntensity\","
+        + "\"iblIntensity\":0.28,"
+        + "\"heightFogProperty\":\"world.heightFog\","
+        + "\"heightFogBase\":1.6,"
+        + "\"heightFogFalloff\":0.35,"
+        + "\"heightFogDensity\":0.06,"
+        + "\"heightFogOpacity\":0.65,"
+        + "\"showGrid\":false,"
+        + "\"showMarkers\":false,"
+        + "\"showLights\":false,"
+        + "\"showCameras\":false,"
+        + "\"showColliders\":false,"
+        + "\"showRoutes\":true"
+        + "},"
+        + "\"nodePreviews3D\":["
+        + "{"
+        + "\"matchProperty\":\"preview.variant\","
+        + "\"matchValue\":1,"
+        + "\"prefab\":\"missing-preferred.glb\","
+        + "\"scale\":9.0,"
+        + "\"yawDegrees\":45.0,"
+        + "\"offsetY\":20.0"
+        + "},"
+        + "{"
+        + "\"matchProperty\":\"preview.kind\","
+        + "\"matchValue\":\"prop\","
+        + "\"prefab\":\"preview-red.scene3d\","
+        + "\"variantProperty\":\"preview.variant\","
+        + "\"variantPrefabs\":["
+        + "\"preview-red.scene3d\",\"preview-blue.scene3d\"],"
+        + "\"yawProperty\":\"preview.yaw\","
+        + "\"yawUnit\":\"radians\","
+        + "\"scaleProperty\":\"preview.scale\""
+        + "}],"
+        + "\"nodePreviewFilter3D\":{"
+        + "\"label\":\"Variant\",\"allLabel\":\"All variants\","
+        + "\"matchProperty\":\"preview.variant\",\"defaultIndex\":2,"
+        + "\"states\":["
+        + "{\"label\":\"Variant 0\",\"matchValue\":0},"
+        + "{\"label\":\"Variant 1\",\"matchValue\":1}]}"
+        + "}";
+    var componentProject = new project_manager.ProjectManager();
+    componentProject.Setup(null);
+    var redPrefab = SceneGraph.New();
+    var redPrefabNode = SceneNode.New();
+    redPrefabNode.Name = "Red preview";
+    redPrefabNode.Mesh = Mesh3D.Box(2.0, 2.0, 2.0);
+    redPrefabNode.Material = Material3D.PBR(0.8, 0.1, 0.1);
+    redPrefab.Add(redPrefabNode);
+    var bluePrefab = SceneGraph.New();
+    var bluePrefabNode = SceneNode.New();
+    bluePrefabNode.Name = "Blue preview";
+    bluePrefabNode.Mesh = Mesh3D.Box(2.0, 2.0, 2.0);
+    bluePrefabNode.Material = Material3D.PBR(0.1, 0.2, 0.9);
+    bluePrefab.Add(bluePrefabNode);
+    File.WriteAllText(componentPath, componentSchemaText);
+    File.WriteAllText(
+        Path.Join(componentDir, "preview-red.scene3d"),
+        redPrefab.SaveToText());
+    File.WriteAllText(
+        Path.Join(componentDir, "preview-blue.scene3d"),
+        bluePrefab.SaveToText());
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.childIndex = childIndex;
+    ctx.metadataContent = metadataContent;
+    ctx.componentDir = componentDir;
+    ctx.componentPath = componentPath;
+    ctx.componentScenePath = componentScenePath;
+    ctx.componentProject = componentProject;
+    return true;
+}
+
+/// @brief Run the ApplyProjectPreviewProfile scenario against the shared fixture.
+expose func ApplyProjectPreviewProfile(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var componentDir = ctx.componentDir;
+    var componentPath = ctx.componentPath;
+    var componentScenePath = ctx.componentScenePath;
+    var componentProject = ctx.componentProject;
+
+    var previousComponentScenePath = sceneDoc.filePath;
+    sceneDoc.filePath = componentScenePath;
+    if componentDir == "" or File.Exists(componentPath) == false
+       or componentProject.OpenFolder(componentDir) == false {
+        sceneDoc.filePath = previousComponentScenePath;
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath, "could not create the 3D component fixture");
+        return false;
+    }
+    editor.SetWorkspaceContext(componentProject);
+
+    // ADR 0198: a fresh project scene opens at the gameplay anchor and uses
+    // complete typed atmosphere groups. Direct workspace defaults never edit
+    // or dirty the canonical scene.
+    var previewGraph = SceneGraph.New();
+    previewGraph.Root.MetadataSetFloat("world.startX", 12.5);
+    previewGraph.Root.MetadataSetFloat("world.startY", 1.25);
+    previewGraph.Root.MetadataSetFloat("world.startZ", -7.75);
+    previewGraph.Root.MetadataSetFloat("world.startYaw", 360.0);
+    previewGraph.Root.MetadataSetFloat("world.ambientR", -0.25);
+    previewGraph.Root.MetadataSetFloat("world.ambientG", 0.4);
+    previewGraph.Root.MetadataSetFloat("world.ambientB", 1.4);
+    previewGraph.Root.MetadataSetFloat("world.clearR", 0.1);
+    previewGraph.Root.MetadataSetFloat("world.clearG", 0.2);
+    previewGraph.Root.MetadataSetFloat("world.clearB", 0.3);
+    previewGraph.Root.MetadataSetFloat("world.fogR", 0.4);
+    previewGraph.Root.MetadataSetFloat("world.fogG", 0.5);
+    previewGraph.Root.MetadataSetFloat("world.fogB", 0.6);
+    previewGraph.Root.MetadataSetFloat("world.fogNear", -4.0);
+    previewGraph.Root.MetadataSetFloat("world.fogFar", -2.0);
+    previewGraph.Root.MetadataSetFloat("world.zenithR", -0.2);
+    previewGraph.Root.MetadataSetFloat("world.zenithG", 0.1);
+    previewGraph.Root.MetadataSetFloat("world.zenithB", 1.2);
+    previewGraph.Root.MetadataSetFloat("world.groundR", 0.04);
+    previewGraph.Root.MetadataSetFloat("world.groundG", 0.05);
+    previewGraph.Root.MetadataSetFloat("world.groundB", 0.06);
+    previewGraph.Root.MetadataSetFloat("world.cloud", 1.4);
+    previewGraph.Root.MetadataSetBool("world.stars", true);
+    previewGraph.Root.MetadataSetFloat("world.sunX", 0.0);
+    previewGraph.Root.MetadataSetFloat("world.sunY", -1.0);
+    previewGraph.Root.MetadataSetFloat("world.sunZ", 0.0);
+    previewGraph.Root.MetadataSetFloat("world.sunR", 1.4);
+    previewGraph.Root.MetadataSetFloat("world.sunG", -0.2);
+    previewGraph.Root.MetadataSetFloat("world.sunB", 0.5);
+    previewGraph.Root.MetadataSetFloat("world.sunIntensity", 140.0);
+    previewGraph.Root.MetadataSetFloat("world.fillX", 1.0);
+    previewGraph.Root.MetadataSetFloat("world.fillY", -1.0);
+    previewGraph.Root.MetadataSetFloat("world.fillZ", 0.0);
+    previewGraph.Root.MetadataSetFloat("world.fillR", 0.2);
+    previewGraph.Root.MetadataSetFloat("world.fillG", 0.3);
+    previewGraph.Root.MetadataSetFloat("world.fillB", 0.4);
+    previewGraph.Root.MetadataSetFloat("world.fillIntensity", 0.5);
+    previewGraph.Root.MetadataSetBool("world.heightFog", true);
+    var previewMarker = SceneNode.New();
+    previewMarker.Name = "Transient preview marker";
+    previewMarker.SetPosition(12.5, 2.75, -15.0);
+    previewMarker.MetadataSetString("preview.kind", "prop");
+    previewMarker.MetadataSetInt("preview.variant", 1);
+    previewMarker.MetadataSetFloat("preview.yaw", 0.5);
+    previewMarker.MetadataSetFloat("preview.scale", 2.0);
+    previewGraph.Add(previewMarker);
+    var previewDoc = new document.Document();
+    previewDoc.fileName = "preview.vscn";
+    previewDoc.filePath = Path.Join(componentDir, "preview.vscn");
+    previewDoc.language = "scene3d";
+    previewDoc.kind = file_utils.DOC_KIND_SCENE_3D;
+    previewDoc.content = previewGraph.SaveToText();
+    var previewBaseline = previewDoc.content;
+    var previewRevision = editor.GetRevision();
+    editor.Activate(previewDoc);
+    editor.Pump(previewDoc);
+    shell.Render();
+    var previewState = editor.ProjectPreviewRenderState();
+    if Probe.near(editor.viewTargetX, 12.5) == false
+       or Probe.near(editor.viewTargetY, 2.75) == false
+       or editor.viewTargetZ >= -7.75
+       or editor.viewTargetZ < -100.0
+       or editor.viewYawDegrees != 0
+       or editor.viewPitchDegrees != 0
+       or editor.showGrid
+       or editor.showMarkers
+       or editor.showLightOverlays
+       or editor.showCameraOverlays
+       or editor.showColliderOverlays
+       or editor.showRouteOverlays == false
+       or editor.gridCheck.IsChecked()
+       or editor.markersCheck.IsChecked()
+       or editor.lightsCheck.IsChecked()
+       or editor.camerasCheck.IsChecked()
+       or editor.collidersCheck.IsChecked()
+       or editor.routesCheck.IsChecked() == false
+       or previewState.hasCameraFov == false
+       or Probe.near(previewState.cameraFov, 90.0) == false
+       or previewState.hasIblIntensity == false
+       or Probe.near(previewState.iblIntensity, 0.28) == false
+       or previewState.hasAmbient == false
+       or Probe.near(previewState.ambientR, 0.0) == false
+       or Probe.near(previewState.ambientG, 0.4) == false
+       or Probe.near(previewState.ambientB, 1.0) == false
+       or previewState.hasClear == false
+       or Probe.near(previewState.clearR, 0.1) == false
+       or Probe.near(previewState.clearG, 0.2) == false
+       or Probe.near(previewState.clearB, 0.3) == false
+       or previewState.hasFog == false
+       or Probe.near(previewState.fogR, 0.4) == false
+       or Probe.near(previewState.fogG, 0.5) == false
+       or Probe.near(previewState.fogB, 0.6) == false
+       or Probe.near(previewState.fogNear, 0.0) == false
+       or Probe.near(previewState.fogFar, 1.0) == false
+       or previewState.hasSky == false
+       or Probe.near(previewState.zenithR, 0.0) == false
+       or Probe.near(previewState.zenithG, 0.1) == false
+       or Probe.near(previewState.zenithB, 1.0) == false
+       or Probe.near(previewState.groundR, 0.04) == false
+       or Probe.near(previewState.groundG, 0.05) == false
+       or Probe.near(previewState.groundB, 0.06) == false
+       or Probe.near(previewState.cloudDensity, 1.0) == false
+       or previewState.stars == false
+       or previewState.hasSun == false
+       or Probe.near(previewState.sunX, 0.0) == false
+       or Probe.near(previewState.sunY, -1.0) == false
+       or Probe.near(previewState.sunZ, 0.0) == false
+       or Probe.near(previewState.sunR, 1.0) == false
+       or Probe.near(previewState.sunG, 0.0) == false
+       or Probe.near(previewState.sunB, 0.5) == false
+       or Probe.near(previewState.sunIntensity, 100.0) == false
+       or previewState.hasFill == false
+       or Probe.near(previewState.fillX, 1.0) == false
+       or Probe.near(previewState.fillY, -1.0) == false
+       or Probe.near(previewState.fillZ, 0.0) == false
+       or Probe.near(previewState.fillR, 0.2) == false
+       or Probe.near(previewState.fillG, 0.3) == false
+       or Probe.near(previewState.fillB, 0.4) == false
+       or Probe.near(previewState.fillIntensity, 0.5) == false
+       or previewState.hasHeightFog == false
+       or previewState.heightFogEnabled == false
+       or Probe.near(previewState.heightFogBase, 1.6) == false
+       or Probe.near(previewState.heightFogFalloff, 0.35) == false
+       or Probe.near(previewState.heightFogDensity, 0.06) == false
+       or Probe.near(previewState.heightFogOpacity, 0.65) == false
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified
+       or editor.GetRevision() != previewRevision {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "3D profile did not apply a bounded read-only first view");
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.componentDir = componentDir;
+    ctx.componentPath = componentPath;
+    ctx.componentProject = componentProject;
+    ctx.previousComponentScenePath = previousComponentScenePath;
+    ctx.previewGraph = previewGraph;
+    ctx.previewDoc = previewDoc;
+    ctx.previewBaseline = previewBaseline;
+    ctx.previewRevision = previewRevision;
+    return true;
+}
+
+/// @brief Verify project preview rendering and filters.
+expose func VerifyPreviewRenderingAndFilters(
+    ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    return PreviewScenarios.VerifyPreviewRenderingAndFilters(ctx);
+}
+
+/// @brief Verify preview fallback and schema isolation.
+expose func VerifyPreviewFallbackAndSchemaIsolation(
+    ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    return PreviewScenarios.VerifyPreviewFallbackAndSchemaIsolation(ctx);
+}
+
+/// @brief Verify project component application.
+expose func VerifyComponentApplication(
+    ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    return PreviewScenarios.VerifyComponentApplication(ctx);
+}

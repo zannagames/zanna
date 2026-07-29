@@ -1,0 +1,320 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_model.zia
+// Purpose: Shared constants, pure geometry helpers, and compact value objects for the 2D scene editor.
+// Key invariants:
+//   - This module contains no persistent SceneEditor2D controller state.
+// Ownership/Lifetime:
+//   - Callers own returned value objects; constants and pure helpers retain no resources.
+// Links: zannastudio/src/ui/scene_editor_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_model;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+
+// ============================================================================
+// MODULE: scene_editor_2d_model
+// PURPOSE: Coordinate the document-backed 2D scene surface, gestures, asset
+//          intent, and one-step canonical history transactions.
+//
+// WHERE-THIS-FITS: SceneDocument owns serialized scene truth; tileset leaf
+//          modules own bounded image decoding and palette presentation.
+//
+// TEACHING-NOTE: Preview pixels are disposable external state. Only an accepted
+//          authored path or scene edit may change Document.content.
+// ============================================================================
+
+final MODE_SELECT: Integer = 0;
+final MODE_LINE: Integer = 7;
+final MODE_ELLIPSE: Integer = 8;
+final RECT_ROTATE_HANDLE_OFFSET: Number = 18.0;
+final RECT_HANDLE_RADIUS_SQUARED: Number = 36.0;
+final ROTATION_ZERO_EPSILON_DEGREES: Number = 0.000001;
+final MODE_PAINT: Integer = 1;
+final MODE_ERASE: Integer = 2;
+final MODE_OBJECT: Integer = 3;
+final MODE_RECTANGLE: Integer = 4;
+final MODE_FILL: Integer = 5;
+final MODE_PICKER: Integer = 6;
+
+final DEFAULT_SCENE_WIDTH: Integer = 32;
+final DEFAULT_SCENE_HEIGHT: Integer = 18;
+final DEFAULT_TILE_SIZE: Integer = 32;
+final MIN_ZOOM_PERCENT: Integer = 10;
+final MAX_ZOOM_PERCENT: Integer = 1600;
+// A whole-world fit below this scale stops communicating authored artwork.
+// First-open framing keeps native pixels and moves to the gameplay start.
+final INITIAL_GAMEPLAY_MIN_FIT_PERCENT: Integer = 50;
+final INITIAL_COMPACT_SCENE_MAX_CELLS: Integer = 64;
+final MAX_FRAME_SELECTION_ZOOM_PERCENT: Integer = 200;
+// Guard for one rendered window, not a scene-reachability cap: the canvas
+// rasterizes only the visible viewport window, so every cell of every scene
+// stays reachable at every zoom (window size is bounded by the display).
+final MAX_RENDER_DIMENSION: Integer = 8192;
+final MAX_SELECTED_CELL: Integer = 1000000;
+final MAX_NEW_SCENE_CELLS: Integer = 256;
+final MAX_2D_SCENE_HISTORY: Integer = 100;
+final MAX_2D_HISTORY_BYTES: Integer = 64000000;
+final MAX_INSPECTOR_PROPERTIES: Integer = 512;
+final MAX_OBJECT_TREE_ROWS: Integer = 4096;
+final MAX_OBJECT_HIERARCHY_DEPTH: Integer = 256;
+final OBJECT_PARENT_TARGET_MIXED: Integer = -2;
+// Master/detail starts before the canvas is reduced to a thumbnail. Chrome
+// condenses later, so an ordinary dock-heavy window keeps one-row tools while
+// still giving the canvas the full editor lane.
+final COMPACT_SCENE_2D_WIDTH: Number = 920.0;
+final COMPACT_SCENE_2D_CHROME_WIDTH: Number = 640.0;
+final CONCISE_SCENE_2D_CHROME_WIDTH: Number = 1180.0;
+final COMPACT_SCENE_2D_PALETTE_HEIGHT: Number = 520.0;
+// Three persistent columns need enough room for readable object names, a
+// useful canvas, and an inspector that does not collapse every field. Below
+// this width the hierarchy remains one click away as a full-width master.
+final HIERARCHY_PANE_MIN_WIDTH_2D: Number = 1200.0;
+final CANVAS_MARQUEE_COLOR: Integer = 0x70BEFF;
+final TILE_RECTANGLE_COLOR: Integer = 0xFFC86B;
+final TILE_GHOST_OPACITY: Number = 0.58;
+final AUTOTILE_NEIGHBOR_GHOST_OPACITY: Number = 0.82;
+final CANVAS_GUIDE_COLOR: Integer = 0x66D9EF;
+final CANVAS_GUIDE_VERTICAL: Integer = 0;
+final CANVAS_GUIDE_HORIZONTAL: Integer = 1;
+final CANVAS_RULER_TOP_HEIGHT: Integer = 24;
+final CANVAS_RULER_LEFT_WIDTH: Integer = 42;
+final CANVAS_RULER_MIN_LABEL_SPACING: Integer = 56;
+final MAX_CANVAS_GUIDES_PER_AXIS: Integer = 64;
+final CANVAS_GUIDE_HIT_RADIUS: Integer = 6;
+final CANVAS_GUIDE_DRAG_THRESHOLD: Integer = 3;
+final MAX_AUTOTILE_PREVIEW_RULES: Integer = 64;
+final AUTOTILE_LOOKUP_MAX_TILE: Integer = 4095;
+final GAME_VIEW_MATTE_COLOR: Integer = 0x080A0E;
+
+final PROPERTY_TYPE_STRING: Integer = 0;
+final PROPERTY_TYPE_INT: Integer = 1;
+final PROPERTY_TYPE_FLOAT: Integer = 2;
+final PROPERTY_TYPE_BOOL: Integer = 3;
+final PROPERTY_TYPE_NULL: Integer = 4;
+
+final SCENE_INSPECTOR_SETUP: Integer = 0;
+final SCENE_INSPECTOR_PROPERTIES: Integer = 1;
+final SCENE_INSPECTOR_CAMERA_LIGHTING: Integer = 2;
+final SCENE_INSPECTOR_LAYERS: Integer = 3;
+final SCENE_INSPECTOR_TILE_BEHAVIOR: Integer = 4;
+final SCENE_INSPECTOR_HISTORY: Integer = 5;
+
+final ARRANGE_ALIGN_X: Integer = scene_layout_2d.LAYOUT_ALIGN_X;
+final ARRANGE_ALIGN_Y: Integer = scene_layout_2d.LAYOUT_ALIGN_Y;
+final ARRANGE_DISTRIBUTE_X: Integer =
+    scene_layout_2d.LAYOUT_DISTRIBUTE_X;
+final ARRANGE_DISTRIBUTE_Y: Integer =
+    scene_layout_2d.LAYOUT_DISTRIBUTE_Y;
+
+/// @brief Whether a degree rotation is visually indistinguishable from zero.
+func RotationIsEffectivelyZero(rotation: Number) -> Boolean {
+    return rotation > 0.0 - ROTATION_ZERO_EPSILON_DEGREES
+        and rotation < ROTATION_ZERO_EPSILON_DEGREES;
+}
+
+/// @brief Deterministic preview color for a nonzero tile id.
+func TilePreviewColor(tile: Integer, layer: Integer) -> Integer {
+    var r = 56 + (tile * 53 + layer * 19) % 168;
+    var g = 56 + (tile * 97 + layer * 31) % 168;
+    var b = 56 + (tile * 151 + layer * 47) % 168;
+    return Color.RGB(r, g, b);
+}
+
+/// @brief Clamp one integer without depending on platform math adapters.
+func ClampInt(value: Integer, minimum: Integer, maximum: Integer) -> Integer {
+    if value < minimum { return minimum; }
+    if value > maximum { return maximum; }
+    return value;
+}
+
+/// @brief Clamp one Number used by persisted workspace geometry.
+func ClampNumber2D(value: Number, minimum: Number, maximum: Number) -> Number {
+    if value < minimum { return minimum; }
+    if value > maximum { return maximum; }
+    return value;
+}
+
+func AbsInt2D(value: Integer) -> Integer {
+    if value < 0 { return 0 - value; }
+    return value;
+}
+
+/// @brief Compute a bounded whole-percent zoom that fits a tile scene.
+/// @details Kept pure so compact-window and tiny-scene behavior can be probed
+///          without constructing a native GUI.
+expose func FitZoomPercent(sceneWidth: Integer,
+                           sceneHeight: Integer,
+                           tileSize: Integer,
+                           viewportWidth: Integer,
+                           viewportHeight: Integer) -> Integer {
+    if sceneWidth <= 0 or sceneHeight <= 0 or tileSize <= 0
+       or viewportWidth <= 0 or viewportHeight <= 0 {
+        return 100;
+    }
+    var cellX = viewportWidth / sceneWidth;
+    var cellY = viewportHeight / sceneHeight;
+    var cell = cellX;
+    if cellY < cell { cell = cellY; }
+    if cell < 1 { cell = 1; }
+    return ClampInt(cell * 100 / tileSize,
+                    MIN_ZOOM_PERCENT,
+                    MAX_ZOOM_PERCENT);
+}
+
+/// @brief Choose first-open scale without turning a world into a thumbnail.
+/// @details Compact scenes retain the convenient whole-scene fit. Worlds whose
+///          fit would hide authored art open at native scale and are centered
+///          by the controller around their player start.
+expose func InitialSceneZoomPercent(sceneWidth: Integer,
+                                    sceneHeight: Integer,
+                                    tileSize: Integer,
+                                    viewportWidth: Integer,
+                                    viewportHeight: Integer) -> Integer {
+    var fit = FitZoomPercent(
+        sceneWidth, sceneHeight, tileSize, viewportWidth, viewportHeight);
+    if sceneWidth <= INITIAL_COMPACT_SCENE_MAX_CELLS
+       and sceneHeight <= INITIAL_COMPACT_SCENE_MAX_CELLS {
+        return fit;
+    }
+    if fit < INITIAL_GAMEPLAY_MIN_FIT_PERCENT { return 100; }
+    return fit;
+}
+
+/// @brief Return whether a 2D scene width needs master/detail presentation.
+expose func UsesCompactLayout(width: Number) -> Boolean {
+    return width > 0.0 and width <= COMPACT_SCENE_2D_WIDTH;
+}
+
+/// @brief Return whether 2D toolbar labels need their narrowest presentation.
+expose func UsesCompactChrome(width: Number) -> Boolean {
+    return width > 0.0 and width <= COMPACT_SCENE_2D_CHROME_WIDTH;
+}
+
+/// @brief Return whether complete secondary 2D commands belong in menus.
+/// @details Progressive disclosure is width-independent: growing a scene lane
+///          gives the authored canvas more room instead of exposing every
+///          secondary action at once. Zero denotes an unmeasured host.
+expose func UsesSceneCommandMenus(width: Number) -> Boolean {
+    return width > 0.0;
+}
+
+/// @brief Return whether canvas and palette need vertical master/detail.
+expose func UsesCompactPaletteLayout(height: Number) -> Boolean {
+    return height > 0.0 and height <= COMPACT_SCENE_2D_PALETTE_HEIGHT;
+}
+
+/// @brief Return whether the object hierarchy may remain docked beside detail.
+/// @details Ordinary laptop-width scene lanes prioritize a readable canvas and
+///          inspector; the hierarchy stays available through the Objects
+///          master action until all three columns have useful width.
+expose func UsesDockedHierarchy(width: Number) -> Boolean {
+    return width >= HIERARCHY_PANE_MIN_WIDTH_2D;
+}
+
+/// @brief Choose a readable power-of-two cell interval for ruler labels.
+/// @details Minor ticks may remain denser; labels never target less than the
+///          fixed minimum spacing at the current canvas zoom.
+expose func CanvasRulerMajorStride(cellSize: Integer) -> Integer {
+    if cellSize < 1 { return 1; }
+    var stride = 1;
+    while stride * cellSize < CANVAS_RULER_MIN_LABEL_SPACING
+          and stride < 1048576 {
+        stride = stride * 2;
+    }
+    return stride;
+}
+
+/// @brief Map one ruler-local pointer coordinate to its nearest cell boundary.
+/// @return A bounded guide coordinate, or -1 outside the scene extent.
+expose func CanvasRulerGuideCoordinate(localPosition: Integer,
+                                       viewOrigin: Integer,
+                                       centerPad: Integer,
+                                       cellSize: Integer,
+                                       maximum: Integer) -> Integer {
+    if cellSize < 1 or maximum < 0 { return -1; }
+    var contentPosition = localPosition + viewOrigin - centerPad;
+    if contentPosition < 0 - cellSize / 2
+       or contentPosition > maximum * cellSize + cellSize / 2 {
+        return -1;
+    }
+    return ClampInt(
+        (contentPosition + cellSize / 2) / cellSize, 0, maximum);
+}
+
+/// @brief One object's transformed canvas footprint (ADR 0192).
+/// @details Axis-aligned bounds of the rotated sprite rectangle in canvas
+///          pixels, plus the pivot point the transform turns about.
+class ObjectFootprint2D {
+    expose Boolean valid;
+    expose Number minX;
+    expose Number minY;
+    expose Number maxX;
+    expose Number maxY;
+    expose Number pivotCanvasX;
+    expose Number pivotCanvasY;
+
+    expose func init() {
+        valid = false;
+        minX = 0.0;
+        minY = 0.0;
+        maxX = 0.0;
+        maxY = 0.0;
+        pivotCanvasX = 0.0;
+        pivotCanvasY = 0.0;
+    }
+}
+
+/// @brief One canvas-space point produced by rect-handle math.
+class CanvasPoint2D {
+    expose Number x;
+    expose Number y;
+
+    expose func init() {
+        x = 0.0;
+        y = 0.0;
+    }
+}
+

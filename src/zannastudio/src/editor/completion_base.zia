@@ -1,0 +1,462 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/editor/completion_base.zia
+// Purpose: Own completion controller state, setup, and query launch.
+// Key invariants:
+//   - Requests retain their source path, revision, cursor, and language owner.
+// Ownership/Lifetime:
+//   - CompletionController owns the inherited popup and worker state.
+// Links: zannastudio/src/editor/completion.zia
+//
+//===----------------------------------------------------------------------===//
+
+module completion_base;
+
+bind Zanna.GUI as GUI;
+bind Zanna.Input as Input;
+bind Zanna.String as Str;
+bind Zanna.Collections.Seq as Seq;
+bind Zanna.Core.Object as Obj;
+bind Zanna.Collections.Map as Map;
+bind Zanna.Zia.Completion as ZiaCompletion;
+bind Zanna.Zia.SemanticJob as SemanticJob;
+bind "../editor/basic_query_job";
+bind "../editor/zia_query";
+bind "../editor/completion_filter";
+bind "../editor/completion_items";
+bind "../editor/completion_workspace_source";
+bind "../editor/workspace_completion_index";
+bind "../editor/editor_engine";
+bind "../editor/scheduler";
+bind "../core/project_manager";
+bind "../core/document_manager";
+bind "../ui/app_shell";
+bind Path = Zanna.IO.Path;
+
+final COMPLETION_DEBOUNCE_MS = 180;
+final WORKSPACE_SYMBOL_FILES_PER_FRAME = 1;
+final MAX_WORKSPACE_COMPLETION_ITEMS = 80;
+final MAX_VISIBLE_COMPLETION_ITEMS = 80;
+final MAX_WORKSPACE_SYMBOL_CACHE_ITEMS = 300;
+final MAX_WORKSPACE_SYMBOL_SOURCE_BYTES = 200000;
+final WORKSPACE_SYMBOL_PUMP_INTERVAL_MS = 500;
+final FILTER_PREFIX_UNSET = "<unset>";
+final COMPLETION_POPUP_WIDTH = 480.0;
+final COMPLETION_POPUP_HEIGHT = 280.0;
+final COMPLETION_POPUP_MARGIN = 12.0;
+
+/// @brief Completion state, setup, and asynchronous query-launch base.
+class CompletionControllerBase {
+    expose GUI.CodeEditor editor;
+    expose editor_engine.EditorEngine engine;
+    expose GUI.FloatingPanel popup;
+    expose GUI.ListBox listbox;
+    expose GUI.App appRoot;
+
+    expose Boolean isVisible;
+    expose Integer selectedIndex;
+    expose Integer itemCount;
+    expose String sourcePath;
+    expose Boolean enabled;
+    hide Boolean isBasic;     // changed only through SetBasicMode
+
+    // Track cursor position to detect line changes (auto-dismiss)
+    expose Integer lastLine;
+    expose Integer lastCol;
+    expose Integer pendingSinceMs;
+    expose Boolean pendingQuery;
+    expose scheduler.EditorScheduler workScheduler;
+    expose Any pendingJob;
+    expose basic_query_job.BasicQueryJob basicJob;
+    expose Integer pendingBasicGeneration;
+    expose Integer pendingJobRevision;
+    expose String pendingJobPath;
+    expose Integer pendingJobLineOffset;
+    expose Integer pendingJobQueryLine;
+    expose Integer pendingJobQueryCol;
+    expose Integer pendingJobCursorLine;
+    expose Integer pendingJobCursorCol;
+    expose Integer visibleRevision;
+
+    // Cached semantic results plus derived compatibility lists.
+    expose List allLabels;
+    expose List allDisplays;
+    expose List allInsertTexts;
+    expose List allReplaceStartLines;
+    expose List allReplaceStartCols;
+    expose List allReplaceEndLines;
+    expose List allReplaceEndCols;
+    expose List allCursorOffsets;
+    expose List allCommitCharacters;
+    expose List[completion_items.CompletionCandidate] allCandidates;
+    expose List insertTexts;       // Derived from visibleCandidates for older probes.
+    expose List replaceStartLines; // Derived from visibleCandidates for older probes.
+    expose List replaceStartCols;  // Derived from visibleCandidates for older probes.
+    expose List replaceEndLines;   // Derived from visibleCandidates for older probes.
+    expose List replaceEndCols;    // Derived from visibleCandidates for older probes.
+    expose List cursorOffsets;     // Derived from visibleCandidates for older probes.
+    expose List commitCharacters;  // Derived from visibleCandidates for older probes.
+    expose List[completion_items.CompletionCandidate] visibleCandidates;
+    expose project_manager.ProjectManager workspaceProject;
+    expose document_manager.DocumentManager workspaceDocs;
+    expose String workspaceRoot;
+    expose Integer workspaceFileCount;
+    expose Integer workspaceCacheGeneration;
+    expose Integer workspaceFileIndex;
+    expose Boolean workspaceCacheReady;
+    expose List workspaceLabels;
+    expose List workspaceKinds;
+    expose List workspaceTypes;
+    expose List workspacePaths;
+    expose List workspaceLines;
+    expose workspace_completion_index.WorkspaceCompletionIndex workspaceIndex;
+    expose Any workspacePendingJob;
+    expose String workspacePendingPath;
+    expose Integer workspacePendingLineOffset;
+    expose String visiblePrefix;
+    expose Integer workspaceLastPumpMs;
+    expose Boolean tabAcceptKeyDown;
+
+    /// @brief Initialize an empty/hidden controller.
+    expose func init() {
+        InitializeState();
+    }
+
+    /// @brief Initialize completion state for the public derived controller.
+    expose func InitializeState() {
+        isVisible      = false;
+        selectedIndex  = 0;
+        itemCount      = 0;
+        sourcePath     = "";
+        enabled        = true;
+        isBasic        = false;
+        lastLine       = -1;
+        lastCol        = -1;
+        pendingSinceMs = 0;
+        pendingQuery   = false;
+        workScheduler  = null;
+        pendingJob     = null;
+        basicJob = new basic_query_job.BasicQueryJob();
+        pendingBasicGeneration = 0;
+        pendingJobRevision = -1;
+        pendingJobPath = "";
+        pendingJobLineOffset = 0;
+        pendingJobQueryLine = 1;
+        pendingJobQueryCol = 0;
+        pendingJobCursorLine = -1;
+        pendingJobCursorCol = -1;
+        visibleRevision = -1;
+        allLabels      = new List();
+        allDisplays    = new List();
+        allInsertTexts = new List();
+        allReplaceStartLines = new List();
+        allReplaceStartCols = new List();
+        allReplaceEndLines = new List();
+        allReplaceEndCols = new List();
+        allCursorOffsets = new List();
+        allCommitCharacters = new List();
+        allCandidates = [];
+        insertTexts    = new List();
+        replaceStartLines = new List();
+        replaceStartCols = new List();
+        replaceEndLines = new List();
+        replaceEndCols = new List();
+        cursorOffsets = new List();
+        commitCharacters = new List();
+        visibleCandidates = [];
+        engine          = null;
+        workspaceProject = null;
+        workspaceDocs = null;
+        workspaceRoot = "";
+        workspaceFileCount = -1;
+        workspaceCacheGeneration = -1;
+        workspaceFileIndex = 0;
+        workspaceCacheReady = false;
+        workspaceLabels = new List();
+        workspaceKinds = new List();
+        workspaceTypes = new List();
+        workspacePaths = new List();
+        workspaceLines = new List();
+        workspaceIndex = new workspace_completion_index.WorkspaceCompletionIndex();
+        workspacePendingJob = null;
+        workspacePendingPath = "";
+        workspacePendingLineOffset = 0;
+        visiblePrefix = FILTER_PREFIX_UNSET;
+        workspaceLastPumpMs = 0;
+        tabAcceptKeyDown = false;
+    }
+
+    /// @brief Construct the popup panel and embed a ListBox.
+    /// @param ed Editor whose cursor we'll trigger / position against.
+    /// @param appRoot Top-level App widget — FloatingPanels must attach
+    ///                to the app root (not the editor) so they can render
+    ///                above other widgets.
+    /// @note ListBox is constructed unattached then reparented via
+    ///       AddChild so it lives inside the FloatingPanel.
+    expose func Setup(ed: GUI.CodeEditor, rootApp: GUI.App) {
+        editor = ed;
+        appRoot = rootApp;
+
+        // Create floating overlay panel (initially hidden).
+        popup = GUI.FloatingPanel.New(rootApp);
+        popup.SetSize(COMPLETION_POPUP_WIDTH, COMPLETION_POPUP_HEIGHT);
+
+        // Embed a ListBox inside the panel for the item list.
+        // Create unattached, then reparent it into the FloatingPanel via AddChild.
+        listbox = GUI.ListBox.New(null);
+        popup.AddChild(listbox);
+
+        popup.SetVisible(false);
+        Input.Keyboard.EnableTextInput();
+    }
+
+    expose func SetEngine(value: editor_engine.EditorEngine) {
+        engine = value;
+        if value != null {
+            editor = value.editor;
+        }
+    }
+
+    expose func SetScheduler(value: scheduler.EditorScheduler) {
+        workScheduler = value;
+    }
+
+    /// @brief Switch completion backends without allowing the previous
+    ///        language's request or popup contents to survive the transition.
+    expose func SetBasicMode(value: Boolean) {
+        if isBasic == value { return; }
+        CancelPendingJob();
+        isBasic = value;
+        pendingQuery = false;
+        isVisible = false;
+        visibleRevision = -1;
+        if popup != null { popup.SetVisible(false); }
+    }
+
+    expose func SetWorkspaceContext(project: project_manager.ProjectManager,
+                                    docs: document_manager.DocumentManager) {
+        workspaceProject = project;
+        workspaceDocs = docs;
+    }
+
+    /// @brief Set the active file's path so CompleteForFile can resolve
+    ///        relative `bind` paths correctly.
+    expose func SetSourcePath(path: String) {
+        if path == sourcePath { return; }
+        CancelPendingJob();
+        pendingQuery = false;
+        isVisible = false;
+        if popup != null { popup.SetVisible(false); }
+        sourcePath = path;
+    }
+
+    expose func SetEnabled(value: Boolean) {
+        if enabled == value {
+            return;
+        }
+        enabled = value;
+        if enabled == false {
+            Hide();
+        }
+    }
+
+    expose func ShouldSuppressAutoTrigger() -> Boolean {
+        if editor == null {
+            return false;
+        }
+        return completion_filter.ShouldSuppressAutoCompletionLine(editor.GetLine(editor.CursorLine),
+                                                editor.CursorCol);
+    }
+
+    /// @brief Schedule a semantic completion query after the typing debounce.
+    expose func ScheduleCompletion() {
+        if enabled == false or editor == null {
+            return;
+        }
+        if workScheduler != null and engine != null {
+            workScheduler.Queue(scheduler.JOB_COMPLETION, sourcePath, engine.GetRevision(), -1);
+            return;
+        }
+        if pendingQuery == false {
+            pendingSinceMs = Zanna.Time.Clock.NowMs();
+        }
+        pendingQuery = true;
+    }
+
+    /// @brief Start a completion query and show the popup when its result lands.
+    /// @note Reads cursor coords from `editor`, sends them through
+    ///       `CompleteForFile` (path-aware), converts structured completion rows
+    ///       into typed candidates, populates the listbox from those candidates,
+    ///       positions the popup under the caret, and keeps focus on the editor for
+    ///       arrow / Enter navigation. Hides immediately if the engine returns empty.
+    expose func TriggerCompletion() {
+        if enabled == false or editor == null {
+            return;
+        }
+        pendingQuery = false;
+        StartCompletionJob();
+    }
+
+    hide func StartCompletionJob() {
+        if enabled == false or editor == null {
+            return;
+        }
+        if pendingJob != null {
+            pendingSinceMs = Zanna.Time.Clock.NowMs();
+            pendingQuery = true;
+            if workScheduler != null and engine != null {
+                workScheduler.Queue(scheduler.JOB_COMPLETION,
+                                    sourcePath,
+                                    engine.GetRevision(),
+                                    COMPLETION_DEBOUNCE_MS);
+            }
+            return;
+        }
+
+        // Get current source and cursor position
+        var text = editor.Text;
+        if engine != null {
+            text = engine.GetTextSnapshot();
+        }
+        // BASIC uses raw source and no Zia line offset. Queueing is latest-wins:
+        // rapid edits never create more than one active worker plus one replacement.
+        if isBasic {
+            var bLine = editor.CursorLine + 1; // 1-based
+            var bCol = editor.CursorCol;       // 0-based
+            if pendingJob != null {
+                SemanticJob.Cancel(pendingJob);
+                pendingJob = null;
+            }
+            pendingBasicGeneration = basicJob.Queue(
+                basic_query_job.QUERY_COMPLETION, text, sourcePath, bLine, bCol);
+            if engine != null {
+                pendingJobRevision = engine.GetRevision();
+            } else {
+                pendingJobRevision = editor.Revision;
+            }
+            pendingJobPath = sourcePath;
+            pendingJobLineOffset = 0;
+            pendingJobQueryLine = bLine;
+            pendingJobQueryCol = bCol;
+            pendingJobCursorLine = editor.CursorLine;
+            pendingJobCursorCol = editor.CursorCol;
+            return;
+        }
+        // A buffer with no `module` line yields null Sema; query a synthetic-
+        // module-prefixed copy and shift the cursor line by the same amount.
+        var qtext   = zia_query.WrapForQuery(text);
+        var off     = zia_query.LineOffset(text);
+        var curLine = editor.CursorLine + 1 + off;  // 1-based + prefix shift
+        var curCol  = editor.CursorCol;             // 0-based column
+
+        var job = ZiaCompletion.BeginItemsForFile(qtext, sourcePath, curLine, curCol);
+        if job != null {
+            pendingJob = job;
+            if engine != null {
+                pendingJobRevision = engine.GetRevision();
+            } else {
+                pendingJobRevision = editor.Revision;
+            }
+            pendingJobPath = sourcePath;
+            pendingJobLineOffset = off;
+            pendingJobQueryLine = curLine;
+            pendingJobQueryCol = curCol;
+            pendingJobCursorLine = editor.CursorLine;
+            pendingJobCursorCol = editor.CursorCol;
+            return;
+        }
+
+        // Stub runtimes may omit semantic jobs. Do not turn that into a
+        // foreground compile; completion simply remains hidden.
+        Hide();
+    }
+
+    hide func ApplyCompletionItems(items: Any,
+                                   off: Integer,
+                                   curLine: Integer,
+                                   curCol: Integer) {
+        // Clear previous state
+        allLabels = new List();
+        allDisplays = new List();
+        allInsertTexts = new List();
+        allReplaceStartLines = new List();
+        allReplaceStartCols = new List();
+        allReplaceEndLines = new List();
+        allReplaceEndCols = new List();
+        allCursorOffsets = new List();
+        allCommitCharacters = new List();
+        allCandidates = [];
+        insertTexts = new List();
+        replaceStartLines = new List();
+        replaceStartCols = new List();
+        replaceEndLines = new List();
+        replaceEndCols = new List();
+        cursorOffsets = new List();
+        commitCharacters = new List();
+        visibleCandidates = [];
+        itemCount = 0;
+        visiblePrefix = FILTER_PREFIX_UNSET;
+
+        if items != null {
+            var itemIdx = 0;
+            while itemIdx < Seq.get_Count(items) {
+                var item = Seq.Get(items, itemIdx);
+                itemIdx = itemIdx + 1;
+
+                var candidate = completion_items.FromEngineItem(item, off, curLine, curCol);
+                if candidate != null {
+                    AddCandidate(candidate);
+                }
+            }
+        }
+        AddWorkspaceSymbolCompletions(off, curLine, curCol);
+
+        if allCandidates.count() == 0 {
+            Hide();
+            return;
+        }
+
+        RebuildVisibleItems(CurrentPrefix());
+        if itemCount == 0 {
+            Hide();
+            return;
+        }
+
+        PositionPopupNearCursor();
+
+        // Select first item and show
+        selectedIndex = 0;
+        listbox.SelectIndex(0);
+        lastLine  = editor.CursorLine;
+        lastCol   = editor.CursorCol;
+        if engine != null {
+            visibleRevision = engine.GetRevision();
+        } else {
+            visibleRevision = editor.Revision;
+        }
+        isVisible = true;
+        popup.SetVisible(true);
+    }
+    // Virtual hooks supplied by the focused interaction/cache layer.
+    hide func CancelPendingJob() {}
+    expose func Hide() {}
+    expose func RebuildVisibleItems(prefix: String) {
+        if prefix == "" { return; }
+    }
+    expose func CurrentPrefix() -> String { return ""; }
+    hide func AddWorkspaceSymbolCompletions(off: Integer,
+                                            curLine: Integer,
+                                            curCol: Integer) {
+        if off == curLine and curLine == curCol { return; }
+    }
+    hide func AddCandidate(
+        candidate: completion_items.CompletionCandidate) {
+        if candidate == null { return; }
+    }
+    hide func PositionPopupNearCursor() {}
+}

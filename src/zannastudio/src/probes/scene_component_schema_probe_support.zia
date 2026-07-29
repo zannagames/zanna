@@ -1,0 +1,40 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_component_schema_probe_support.zia
+// Purpose: Shared assertions and cleanup for schema-version scenarios.
+// Key invariants:
+//   - Numeric comparisons retain the original exact tolerance.
+//   - Project-locator fixtures are removed on every reported failure.
+// Ownership/Lifetime: Owns no durable state.
+// Links: zannastudio/src/probes/scene_component_schema_probe.zia,
+//        zannastudio/src/ui/scene_component_schema.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_probe_support;
+
+bind "../ui/scene_component_schema";
+bind "../services/project_locator";
+
+bind Terminal = Zanna.Terminal;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+
+expose final LOCATOR_FIXTURE: String = "__scene_project_locator_probe";
+
+expose func near(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.000001;
+}
+
+expose func fail(reason: String) {
+    try { Dir.RemoveAll(LOCATOR_FIXTURE); } catch {}
+    Terminal.Say("RESULT: fail " + reason);
+}

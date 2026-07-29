@@ -1,0 +1,608 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_editor_2d_probe_part_1_editing.zia
+// Purpose: Focused 2D document and object-editing probe scenarios.
+// Key invariants:
+//   - Scenarios preserve the original execution order and shared fixture.
+//   - Failure paths retain their original cleanup and RESULT diagnostics.
+// Ownership/Lifetime: Borrows one SceneEditor2DProbeContext from the entry probe.
+// Links: zannastudio/src/probes/scene_editor_2d_probe.zia,
+//        zannastudio/src/probes/scene_editor_2d_probe_context.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_probe_part_1_editing;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../core/recovery_store";
+bind "../commands/command_context";
+bind "../commands/file_commands";
+bind "../commands/main_command_dispatcher";
+bind "../editor/editor_engine";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_asset_browser";
+bind "../ui/scene_clipboard";
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+bind "../ui/scene_tileset_2d";
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Terminal = Zanna.Terminal;
+
+// ============================================================================
+// MODULE: scene_editor_2d_probe
+// PURPOSE: Pin the 2D visual surface's document, gesture, tileset, and history
+//          contracts through the same public controller used by Studio.
+//
+// WHERE-THIS-FITS: This display probe complements SceneDocument runtime tests
+//          by exercising real widgets, Pixels assets, and document ownership.
+//
+// TEACHING-NOTE: Reloading external pixels is intentionally tested separately
+//          from assigning their path because only assignment is scene data.
+// ============================================================================
+
+bind "scene_editor_2d_probe_context" as Probe;
+
+/// @brief Run the VerifyDocumentTabContinuity scenario against the shared fixture.
+expose func VerifyDocumentTabContinuity(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    shell.app.SetWindowSize(1500, 900);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+
+    var originalContent = sceneDoc.content;
+    editor.mode = scene_editor_2d.MODE_PAINT;
+    editor.zoomPercent = 400;
+    editor.selectedCellX = 6;
+    editor.selectedCellY = 4;
+    editor.tileSpinner.SetValue(17.0);
+    editor.bodySplit.SetPosition(0.58);
+    // Re-activate once before creating history so direct probe state follows
+    // the same validated restore/render path used by a real tab switch.
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.SetSceneInspectorSection(
+        scene_editor_2d.SCENE_INSPECTOR_TILE_BEHAVIOR, false);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.canvasScroll.SetScroll(120.0, 80.0);
+    editor.inspectorScroll.SetScroll(0.0, 90.0);
+    editor.Pump(sceneDoc);
+    var expectedCanvasScrollX = editor.canvasScroll.GetScrollX();
+    var expectedCanvasScrollY = editor.canvasScroll.GetScrollY();
+    var expectedInspectorScrollY = editor.inspectorScroll.GetScrollY();
+    var expectedSplitPosition = editor.bodySplit.GetPosition();
+    var continuityTileChanged = editor.SetSceneTile(0, 0, 0, 3);
+    if expectedCanvasScrollX < 1.0 or expectedCanvasScrollY < 1.0
+       or editor.sceneInspectorSection
+          != scene_editor_2d.SCENE_INSPECTOR_TILE_BEHAVIOR
+       or continuityTileChanged == false {
+        Probe.fail(shell, "2D workspace continuity setup did not create "
+             + "scroll/topic/history state: canvas="
+             + expectedCanvasScrollX + ","
+             + expectedCanvasScrollY + " inspector=" + expectedInspectorScrollY
+             + " topic=" + editor.sceneInspectorSection
+             + " tile=" + continuityTileChanged
+             + " zoom=" + editor.zoomPercent
+             + " stage=" + editor.canvasStage.GetLogicalWidth() + "x"
+             + editor.canvasStage.GetLogicalHeight()
+             + " viewport=" + editor.canvasScroll.GetLogicalWidth() + "x"
+             + editor.canvasScroll.GetLogicalHeight());
+        return false;
+    }
+    editor.selectedCellX = 6;
+    editor.selectedCellY = 4;
+    editor.Pump(sceneDoc);
+
+    var otherSceneDoc = new document.Document();
+    otherSceneDoc.fileName = "Other.scene";
+    otherSceneDoc.language = "scene";
+    otherSceneDoc.kind = file_utils.DOC_KIND_SCENE_2D;
+    otherSceneDoc.content = editor.DefaultSceneJson();
+    editor.Pump(otherSceneDoc);
+    shell.Render();
+    if editor.mode != scene_editor_2d.MODE_SELECT
+       or Convert.NumToInt(editor.tileSpinner.Value) != 1
+       or editor.sceneInspectorSection
+          != scene_editor_2d.SCENE_INSPECTOR_SETUP
+       or editor.CanUndo()
+       or editor.compactInspectorShown
+       or Probe.near(editor.bodySplit.GetPosition(), 0.72) == false {
+        Probe.fail(shell, "new 2D tab inherited another scene's workspace or history");
+        return false;
+    }
+    editor.mode = scene_editor_2d.MODE_OBJECT;
+    editor.zoomPercent = 225;
+    editor.bodySplit.SetPosition(0.72);
+    editor.Pump(otherSceneDoc);
+
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var workspaceRestored =
+        editor.mode == scene_editor_2d.MODE_PAINT
+        and editor.zoomPercent == 400
+        and Convert.NumToInt(editor.tileSpinner.Value) == 17
+        and editor.selectedCellX == 6 and editor.selectedCellY == 4
+        and editor.sceneInspectorSection
+            == scene_editor_2d.SCENE_INSPECTOR_TILE_BEHAVIOR
+        and editor.compactInspectorShown
+        and Probe.near(editor.bodySplit.GetPosition(), expectedSplitPosition)
+        and Probe.near(editor.canvasScroll.GetScrollX(), expectedCanvasScrollX)
+        and Probe.near(editor.canvasScroll.GetScrollY(), expectedCanvasScrollY)
+        and Probe.near(editor.inspectorScroll.GetScrollY(),
+                 expectedInspectorScrollY);
+    if workspaceRestored == false {
+        Probe.fail(shell, "2D tab workspace restore mismatch: mode="
+             + editor.mode + " zoom=" + editor.zoomPercent
+             + " tile=" + Convert.NumToInt(editor.tileSpinner.Value)
+             + " cell=" + editor.selectedCellX + "," + editor.selectedCellY
+             + " topic=" + editor.sceneInspectorSection
+             + " split=" + editor.bodySplit.GetPosition()
+             + "/" + expectedSplitPosition
+             + " canvas=" + editor.canvasScroll.GetScrollX()
+             + "," + editor.canvasScroll.GetScrollY()
+             + "/" + expectedCanvasScrollX + "," + expectedCanvasScrollY
+             + " inspector=" + editor.inspectorScroll.GetScrollY()
+             + "/" + expectedInspectorScrollY);
+        return false;
+    }
+    if editor.CanUndo() == false or editor.Undo() == false
+       or sceneDoc.content != originalContent or sceneDoc.isModified {
+        Probe.fail(shell, "2D tab switch did not restore the clean undo baseline");
+        return false;
+    }
+    if editor.ReplaceScene(20, 12, 24) == false
+       or editor.scene.Width != 20 or editor.scene.Height != 12
+       or editor.scene.TileWidth != 24
+       or editor.RenameSceneLayer(0, "Gameplay") == false
+       or editor.scene.LayerName(0) != "Gameplay"
+       or editor.Undo() == false or editor.scene.LayerName(0) == "Gameplay"
+       or editor.Undo() == false or sceneDoc.content != originalContent
+       or sceneDoc.isModified {
+        Probe.fail(shell, "custom scene setup or layer rename was not undoable");
+        return false;
+    }
+    var originalRevision = editor.GetRevision();
+    if editor.PaintTileLine(0, 2, 3, 8, 3, 7) == false
+       or editor.AddSceneObject("enemy", "slime-1", 64, 96) < 0 {
+        Probe.fail(shell, "transactional stroke or object edit was rejected");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if sceneDoc.content == originalContent
+       or sceneDoc.isModified == false
+       or editor.GetRevision() != originalRevision + 2 {
+        Probe.fail(shell, "accepted edits did not update dirty document state");
+        return false;
+    }
+
+    var reparsed = SceneDocument.LoadJsonResult(sceneDoc.content);
+    if reparsed.IsOk == false {
+        Probe.fail(shell, "edited scene JSON did not parse");
+        return false;
+    }
+    var roundTrip = reparsed.Unwrap() as SceneDocument;
+    if roundTrip.GetTile(0, 2, 3) != 7
+       or roundTrip.GetTile(0, 5, 3) != 7
+       or roundTrip.GetTile(0, 8, 3) != 7
+       or roundTrip.ObjectCount() != 1
+       or roundTrip.ObjectType(0) != "enemy"
+       or roundTrip.ObjectId(0) != "slime-1"
+       or roundTrip.ObjectX(0) != 64 or roundTrip.ObjectY(0) != 96 {
+        Probe.fail(shell, "tile/object edits did not survive canonical round trip");
+        return false;
+    }
+
+    var editedContent = sceneDoc.content;
+    if editor.CanUndo() == false or editor.Undo() == false
+       or editor.scene.ObjectCount() != 0
+       or editor.scene.GetTile(0, 2, 3) != 7
+       or editor.CanRedo() == false or editor.Redo() == false
+       or sceneDoc.content != editedContent
+       or editor.scene.ObjectCount() != 1 {
+        Probe.fail(shell, "2D scene undo/redo did not restore canonical snapshots");
+        return false;
+    }
+
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.originalContent = originalContent;
+    ctx.otherSceneDoc = otherSceneDoc;
+    return true;
+}
+
+/// @brief Run the VerifyScenePropertiesAndObjectEditing scenario against the shared fixture.
+expose func VerifyScenePropertiesAndObjectEditing(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var otherSceneDoc = ctx.otherSceneDoc;
+
+    var scenePropertyRevision = editor.GetRevision();
+    if editor.SetSceneProperty("", "theme", "string", "descent") == false
+       or editor.SetSceneProperty("", "worldSeed", "int", "42") == false
+       or editor.SetSceneProperty("", "gravityScale", "float", "0.75") == false
+       or editor.SetSceneProperty("", "dark", "bool", "yes") == false
+       or editor.SetSceneProperty("", "nextObjective", "null", "") == false
+       or editor.SetSceneProperty(
+              "theme", "biome", "string", "descent") == false
+       or editor.SetSceneProperty(
+              "biome", "worldSeed", "string", "collision")
+       or editor.SetSceneProperty(
+              "worldSeed", "worldSeed", "int", "not-a-number")
+       or editor.SetSceneProperty(
+              "worldSeed", "worldSeed", "int", "42")
+       or editor.scene.Has("theme")
+       or editor.scene.GetStr("biome", "") != "descent"
+       or editor.scene.GetInt("worldSeed", -1) != 42
+       or Probe.near(editor.scene.GetFloat("gravityScale", 0.0), 0.75) == false
+       or editor.scene.GetBool("dark", false) == false
+       or editor.scene.PropertyKind("nextObjective") != "null"
+       or editor.GetRevision() != scenePropertyRevision + 6
+       or editor.sceneProperties.rows.RowCount() != 5
+       or editor.sceneProperties.keys.count() != 5
+       or editor.sceneProperties.rows.addButton.IsEnabled() == false {
+        Probe.fail(shell, "typed scene-property inspector did not commit exact metadata");
+        return false;
+    }
+    shell.Poll();
+    shell.Render();
+    var firstScenePropertyRow =
+        editor.sceneProperties.rows.rows.get(0);
+    var propertyRowDelta =
+        firstScenePropertyRow.removeButton.GetScreenY()
+        - firstScenePropertyRow.valueInput.GetScreenY();
+    if propertyRowDelta < -1.0 or propertyRowDelta > 1.0
+       or firstScenePropertyRow.removeButton.GetScreenX()
+            + firstScenePropertyRow.removeButton.GetScreenWidth()
+          > firstScenePropertyRow.valueBox.GetScreenX()
+            + firstScenePropertyRow.valueBox.GetScreenWidth() + 1.0 {
+        Probe.fail(shell,
+             "typed scene-property remove action split from its value: "
+             + firstScenePropertyRow.valueInput.GetScreenY() + "/"
+             + firstScenePropertyRow.removeButton.GetScreenY()
+             + " rowWidth=" + firstScenePropertyRow.box.GetScreenWidth()
+             + " controls="
+             + firstScenePropertyRow.keyInput.GetScreenWidth() + "+"
+             + firstScenePropertyRow.kindDropdown.GetScreenWidth() + "+"
+             + firstScenePropertyRow.valueInput.GetScreenWidth() + "+"
+             + firstScenePropertyRow.removeButton.GetScreenWidth());
+        return false;
+    }
+    var scenePropertyContent = sceneDoc.content;
+    if editor.RemoveSceneProperty("nextObjective") == false
+       or editor.scene.Has("nextObjective")
+       or editor.GetRevision() != scenePropertyRevision + 7
+       or editor.Undo() == false
+       or sceneDoc.content != scenePropertyContent
+       or editor.scene.PropertyKind("nextObjective") != "null"
+       or editor.Redo() == false
+       or editor.scene.Has("nextObjective")
+       or editor.Undo() == false
+       or sceneDoc.content != scenePropertyContent {
+        Probe.fail(shell, "scene-property removal was not one exact history action");
+        return false;
+    }
+    var scenePropertyResult = SceneDocument.LoadJsonResult(sceneDoc.content);
+    if scenePropertyResult.IsOk == false {
+        Probe.fail(shell, "authored scene-property JSON did not parse");
+        return false;
+    }
+    var propertyScene = scenePropertyResult.Unwrap() as SceneDocument;
+    if propertyScene.GetStr("biome", "") != "descent"
+       or propertyScene.GetInt("worldSeed", -1) != 42
+       or propertyScene.PropertyKind("nextObjective") != "null" {
+        Probe.fail(shell, "typed scene properties did not survive canonical round trip");
+        return false;
+    }
+    // Focusing a row is presentation-only and rows rebuild per tab.
+    var scenePropertyFocusContent = sceneDoc.content;
+    editor.sceneProperties.SelectByKey("worldSeed");
+    editor.Pump(sceneDoc);
+    if sceneDoc.content != scenePropertyFocusContent {
+        Probe.fail(shell, "focusing a scene-property row changed content");
+        return false;
+    }
+    editor.Pump(otherSceneDoc);
+    editor.Pump(sceneDoc);
+    if editor.sceneProperties.rows.RowCount() != 5
+       or sceneDoc.content != scenePropertyFocusContent {
+        Probe.fail(shell, "scene-property rows were not rebuilt with their tab");
+        return false;
+    }
+
+    var authoringRevision = editor.GetRevision();
+    if editor.SetSceneObjectProperty(0, "", "hp", "int", "25") == false
+       or editor.SetSceneObjectProperty(0, "", "label", "string",
+                                        "Slime King") == false
+       or editor.SetSceneObjectProperty(0, "", "elite", "bool", "yes") == false
+       or editor.SetSceneObjectProperty(0, "", "speed", "float", "3.5") == false
+       or editor.SetSceneObjectProperty(0, "", "target", "null", "") == false
+       or editor.SetSceneObjectProperty(0, "label", "displayName", "string",
+                                        "Slime King") == false
+       or editor.SetSceneObjectProperty(0, "hp", "hp", "int", "invalid")
+       or editor.scene.ObjectGetInt(0, "hp", -1) != 25
+       or editor.scene.ObjectPropertyKind(0, "target") != "null"
+       or editor.scene.ObjectHas(0, "label")
+       or editor.scene.ObjectGetStr(0, "displayName", "") != "Slime King"
+       or editor.UpdateSceneObject(0, "boss", "slime-king", 80, 112) == false
+       or editor.scene.ObjectType(0) != "boss"
+       or editor.scene.ObjectId(0) != "slime-king"
+       or editor.scene.ObjectGetInt(0, "hp", -1) != 25 {
+        Probe.fail(shell, "typed property or metadata inspector did not commit scene data");
+        return false;
+    }
+    if editor.AddSceneObject("boss", "slime-king", 0, 0) >= 0
+       or editor.scene.ObjectCount() != 1 {
+        Probe.fail(shell, "object inspector accepted a duplicate ID");
+        return false;
+    }
+    var duplicate = editor.DuplicateSceneObject(0);
+    var duplicateSpeed = editor.scene.ObjectGetFloat(duplicate, "speed", -1.0);
+    if duplicate != 1
+       or editor.scene.ObjectId(duplicate) != "slime-king-copy"
+       or editor.scene.ObjectType(duplicate) != "boss"
+       or editor.scene.ObjectX(duplicate) != 112
+       or editor.scene.ObjectY(duplicate) != 144
+       or editor.scene.ObjectGetInt(duplicate, "hp", -1) != 25
+       or editor.scene.ObjectGetBool(duplicate, "elite", false) == false
+       or duplicateSpeed < 3.499999 or duplicateSpeed > 3.500001
+       or editor.scene.ObjectGetStr(duplicate, "displayName", "") != "Slime King"
+       or editor.scene.ObjectPropertyKind(duplicate, "target") != "null"
+       or editor.MoveSceneObject(duplicate, 0) == false
+       or editor.scene.ObjectId(0) != "slime-king-copy"
+       or editor.scene.ObjectId(1) != "slime-king"
+       or editor.RemoveSceneObjectProperty(0, "target") == false
+       or editor.scene.ObjectHas(0, "target")
+       or editor.scene.ObjectPropertyKind(1, "target") != "null"
+       or editor.GetRevision() != authoringRevision + 10 {
+        Probe.fail(shell, "lossless object duplication or draw ordering failed");
+        return false;
+    }
+    var authoredResult = SceneDocument.LoadJsonResult(sceneDoc.content);
+    if authoredResult.IsOk == false {
+        Probe.fail(shell, "authored object JSON did not parse");
+        return false;
+    }
+    var authoredScene = authoredResult.Unwrap() as SceneDocument;
+    if authoredScene.ObjectCount() != 2
+       or authoredScene.ObjectId(0) != "slime-king-copy"
+       or authoredScene.ObjectGetInt(0, "hp", -1) != 25
+       or authoredScene.ObjectHas(0, "target")
+       or authoredScene.ObjectPropertyKind(1, "target") != "null" {
+        Probe.fail(shell, "authored object metadata did not survive canonical round trip");
+        return false;
+    }
+
+    var authoredContent = sceneDoc.content;
+    var groupSelection: List[Integer] = [];
+    groupSelection.add(0);
+    groupSelection.add(1);
+
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.otherSceneDoc = otherSceneDoc;
+    ctx.duplicate = duplicate;
+    ctx.authoredContent = authoredContent;
+    ctx.groupSelection = groupSelection;
+    return true;
+}
+
+/// @brief Run the StageComponentSchemas scenario against the shared fixture.
+expose func StageComponentSchemas(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var authoredContent = ctx.authoredContent;
+    var groupSelection = ctx.groupSelection;
+
+    // A project-root schema turns recurring gameplay metadata into a bounded,
+    // typed component action while retaining the raw property editor.
+    var componentDir =
+        TempFile.CreateDirWithPrefix("zannastudio_scene2d_components_");
+    var componentPath = Path.Join(componentDir, "scene-components.json");
+    var componentScenePath = Path.Join(componentDir, "level.scene");
+    var componentSchemaText =
+        "{"
+        + "\"version\":1,"
+        + "\"components\":["
+        + "{"
+        + "\"name\":\"enemy-spawn\","
+        + "\"label\":\"Enemy Spawn\","
+        + "\"target\":\"both\","
+        + "\"description\":\"Reusable enemy placement data.\","
+        + "\"fields\":["
+        + "{\"key\":\"hp\",\"type\":\"int\",\"default\":100},"
+        + "{\"key\":\"enemy.archetype\",\"type\":\"string\","
+        + "\"default\":\"grunt\"},"
+        + "{\"key\":\"enemy.level\",\"type\":\"int\",\"default\":3},"
+        + "{\"key\":\"enemy.radius\",\"type\":\"float\",\"default\":4.5},"
+        + "{\"key\":\"enemy.active\",\"type\":\"bool\",\"default\":true},"
+        + "{\"key\":\"enemy.target\",\"type\":\"null\"}"
+        + "]"
+        + "},"
+        + "{"
+        + "\"name\":\"conflicting-spawn\","
+        + "\"target\":\"2d-object\","
+        + "\"fields\":["
+        + "{\"key\":\"would.add\",\"type\":\"string\",\"default\":\"no\"},"
+        + "{\"key\":\"hp\",\"type\":\"string\",\"default\":\"wrong\"}"
+        + "]"
+        + "}"
+        + "]"
+        + "}";
+    var componentProject = new project_manager.ProjectManager();
+    componentProject.Setup(null);
+    File.WriteAllText(componentPath, componentSchemaText);
+    var previousComponentScenePath = sceneDoc.filePath;
+    sceneDoc.filePath = componentScenePath;
+    if componentDir == "" or File.Exists(componentPath) == false
+       or componentProject.OpenFolder(componentDir) == false {
+        sceneDoc.filePath = previousComponentScenePath;
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, "could not create the 2D project component fixture");
+        return false;
+    }
+    editor.SetWorkspaceContext(componentProject);
+    editor.componentPalette.SetSchemaEditorVisible(true);
+    editor.componentPalette.SelectAuthoredComponent("enemy-spawn");
+    var schemaSceneBaseline = sceneDoc.content;
+    var schemaSceneRevision = editor.GetRevision();
+    var schemaFileBaseline = File.ReadAllText(componentPath);
+    if editor.componentPalette.schemaToggleButton.IsEnabled() == false
+       or editor.componentPalette.schemaEditorGroup.IsVisible() == false
+       or editor.componentPalette.SelectedAuthoredComponent() == null
+       or editor.componentPalette.componentNameInput.Text != "enemy-spawn"
+       or editor.componentPalette.componentTargetDropdown.IsEnabled() == false
+       or editor.componentPalette.newComponentButton.IsEnabled() == false
+       or editor.componentPalette.schemaUndoButton.IsEnabled() {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, "2D structured component-schema controls were not usable");
+        return false;
+    }
+    var authoredFieldEdit = scene_component_authoring.AddStarterField(
+        editor.componentAuthoring.session.currentText, "enemy-spawn");
+    if editor.componentAuthoring.ApplyStructuredEdit(
+           authoredFieldEdit,
+           editor.componentPalette,
+           "Added probe component field.") == false
+       or File.ReadAllText(componentPath) == schemaFileBaseline
+       or editor.componentAuthoring.schema.Find(
+              "enemy-spawn",
+              scene_component_schema.TARGET_2D_OBJECT).fields.count() != 7
+       or editor.componentPalette.SelectedAuthoredField() == null
+       or editor.componentPalette.SelectedAuthoredField().key
+          != authoredFieldEdit.fieldKey
+       or editor.componentPalette.schemaUndoButton.IsEnabled() == false
+       or sceneDoc.content != schemaSceneBaseline
+       or editor.GetRevision() != schemaSceneRevision
+       or editor.componentAuthoring.Undo(
+              editor.componentPalette) == false
+       or File.ReadAllText(componentPath) != schemaFileBaseline
+       or editor.componentAuthoring.Redo(
+              editor.componentPalette) == false
+       or editor.componentAuthoring.schema.Find(
+              "enemy-spawn",
+              scene_component_schema.TARGET_2D_OBJECT).fields.count() != 7
+       or editor.componentAuthoring.Undo(
+              editor.componentPalette) == false
+       or File.ReadAllText(componentPath) != schemaFileBaseline
+       or sceneDoc.content != schemaSceneBaseline
+       or editor.GetRevision() != schemaSceneRevision {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, "2D structured schema edit/history dirtied the scene or drifted");
+        return false;
+    }
+    editor.componentPalette.SelectComponent("enemy-spawn");
+    editor.SelectSceneObjects(groupSelection, 1);
+    var enemyComponent = editor.componentPalette.SelectedComponent();
+    var componentRevision = editor.GetRevision();
+    if editor.componentSchema.found == false
+       or editor.componentSchema.valid == false
+       or editor.componentPalette.components.count() != 2
+       or enemyComponent == null
+       or editor.componentPalette.applyButton.IsEnabled() == false
+       or editor.ApplySelectedComponent(enemyComponent) == false
+       or editor.GetRevision() != componentRevision + 1
+       or editor.scene.ObjectGetInt(0, "hp", -1) != 25
+       or editor.scene.ObjectGetInt(1, "hp", -1) != 25
+       or editor.scene.ObjectGetStr(0, "enemy.archetype", "") != "grunt"
+       or editor.scene.ObjectGetStr(1, "enemy.archetype", "") != "grunt"
+       or editor.scene.ObjectGetInt(0, "enemy.level", -1) != 3
+       or Probe.near(editor.scene.ObjectGetFloat(
+                 1, "enemy.radius", 0.0), 4.5) == false
+       or editor.scene.ObjectGetBool(0, "enemy.active", false) == false
+       or editor.scene.ObjectPropertyKind(1, "enemy.target") != "null" {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, "2D project component did not add exact missing defaults");
+        return false;
+    }
+    var componentContent = sceneDoc.content;
+    var componentResult = SceneDocument.LoadJsonResult(componentContent);
+    if componentResult.IsOk == false
+       or (componentResult.Unwrap() as SceneDocument)
+              .ObjectPropertyKind(0, "enemy.target") != "null"
+       or editor.ApplySelectedComponent(enemyComponent)
+       or editor.GetRevision() != componentRevision + 1
+       or editor.Undo() == false
+       or sceneDoc.content != authoredContent
+       or editor.Redo() == false
+       or sceneDoc.content != componentContent
+       or editor.Undo() == false
+       or sceneDoc.content != authoredContent {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, "2D component round trip, no-op, or history was not exact");
+        return false;
+    }
+
+    editor.SelectSceneObjects(groupSelection, 1);
+    editor.componentPalette.SelectComponent("conflicting-spawn");
+    editor.SelectSceneObjects(groupSelection, 1);
+    var conflictRevision = editor.GetRevision();
+    if editor.ApplySelectedComponent(
+           editor.componentPalette.SelectedComponent())
+       or editor.GetRevision() != conflictRevision
+       or sceneDoc.content != authoredContent
+       or editor.scene.ObjectHas(0, "would.add")
+       or editor.scene.ObjectHas(1, "would.add") {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, "2D component type conflict was not fail-closed");
+        return false;
+    }
+
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.authoredContent = authoredContent;
+    ctx.groupSelection = groupSelection;
+    ctx.componentDir = componentDir;
+    ctx.componentProject = componentProject;
+    ctx.previousComponentScenePath = previousComponentScenePath;
+    return true;
+}
+

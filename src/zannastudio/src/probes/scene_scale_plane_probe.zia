@@ -60,7 +60,16 @@ func fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief State shared by pointer and group scale-plane scenarios.
+class ScalePlaneProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document.Document sceneDoc;
+    expose GUI.TestHarness harness;
+}
+
+/// @brief Verify plane math and one transactional XY pointer gesture.
+func VerifyPointerScalePlane(ctx: ScalePlaneProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scale Plane Probe", 1180, 780);
 
@@ -100,12 +109,12 @@ func main() {
        or near(moveDrag.amountB, 1.0) == false
        or edgeOnDrag.valid {
         fail(shell, "mode-aware scale-plane drag math was unstable");
-        return;
+        return false;
     }
 
     if editor.AddEmptyNode("Scale Plane", -1) != 0 {
         fail(shell, "could not create the scale-plane fixture");
-        return;
+        return false;
     }
     editor.SetGizmoMode(scene_editor_3d.GIZMO_MODE_SCALE);
     editor.SetGizmoSnapEnabled(true);
@@ -117,7 +126,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         fail(shell, "scale-plane input harness did not bind");
-        return;
+        return false;
     }
     var baseline = sceneDoc.content;
     var revision = editor.GetRevision();
@@ -156,7 +165,7 @@ func main() {
           != scene_editor_3d.GIZMO_PLANE_XY {
         harness.UnbindApp();
         fail(shell, "rounded XY scale-plane geometry was not self-consistent");
-        return;
+        return false;
     }
 
     harness.SendMouse("move", startX, startY, 0);
@@ -169,7 +178,7 @@ func main() {
        or near(editor.viewportImage.GetScreenY(), viewportY) == false {
         harness.UnbindApp();
         fail(shell, "XY scale-plane hover changed picking or viewport layout");
-        return;
+        return false;
     }
     harness.SendMouse("down", startX, startY, 0);
     harness.DispatchPending();
@@ -179,7 +188,7 @@ func main() {
        or near(editor.viewportImage.GetScreenY(), viewportY) == false {
         harness.UnbindApp();
         fail(shell, "XY scale-plane drag start shifted the viewport layout");
-        return;
+        return false;
     }
     harness.SendMouse("move", targetX, targetY, 0);
     harness.DispatchPending();
@@ -207,8 +216,22 @@ func main() {
              + " scale=" + pointerScale.X + ","
              + pointerScale.Y + "," + pointerScale.Z
              + " undo=" + undoAccepted + "/" + undoRestored);
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify Local and exact-or-reject World group scaling.
+func VerifyGroupScalePlanes(ctx: ScalePlaneProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
 
     var childIndex = editor.AddEmptyNode("Scale Child", 0);
     if childIndex != 1
@@ -216,7 +239,7 @@ func main() {
               childIndex, 1.0, 0.0, 0.0, 2.0, 0.0, 4.0) == false {
         harness.UnbindApp();
         fail(shell, "could not configure the planar-scale group fixture");
-        return;
+        return false;
     }
     var groupSelection: List[Integer] = [];
     groupSelection.add(0);
@@ -244,14 +267,14 @@ func main() {
        or sceneDoc.content != localBaseline {
         harness.UnbindApp();
         fail(shell, "Local XZ group scaling lost delta, history, or exact undo");
-        return;
+        return false;
     }
 
     if editor.SetNodeTransform(
            childIndex, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0) == false {
         harness.UnbindApp();
         fail(shell, "could not normalize the exact World scale fixture");
-        return;
+        return false;
     }
     editor.SelectSceneNodes(groupSelection, 0);
     editor.SetGizmoTransformSpace(
@@ -287,13 +310,13 @@ func main() {
         harness.UnbindApp();
         fail(shell,
              "World XY group scaling double-applied hierarchy or lost undo");
-        return;
+        return false;
     }
 
     if editor.SetNodeEulerRotation(0, 0.0, 0.0, 45.0) == false {
         harness.UnbindApp();
         fail(shell, "could not configure World scale shear rejection");
-        return;
+        return false;
     }
     var rootOnly: List[Integer] = [];
     rootOnly.add(0);
@@ -307,9 +330,17 @@ func main() {
        or editor.GetRevision() != rejectRevision
        or sceneDoc.content != rejectBaseline {
         fail(shell, "shear-producing World scale plane was not atomic");
-        return;
+        return false;
     }
 
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new ScalePlaneProbeContext();
+    if VerifyPointerScalePlane(ctx) == false { return; }
+    if VerifyGroupScalePlanes(ctx) == false { return; }
+
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

@@ -557,6 +557,10 @@ Align, and Vertex state, and **View** for camera navigation, framing,
 projection, options, Focus, and Scene Layout. Checked menu items mirror active
 tool and workspace state. Wider lanes grow the authored surface instead of
 restoring secondary controls; shortcuts and transactions do not change.
+When a schema-v18 project exposes preview states, the 3D row adds only its
+contextual selector (the redundant label hides at narrower widths). The
+permanent viewport status stays short; hover it for wrapped camera, render,
+material, fallback, and missing-resource diagnostics.
 
 The 2D command set switches among Select, Paint, Erase, Rectangle, Line,
 Ellipse, Fill, Pick, and Object modes. Paint, Fill, and the shape tools composite the
@@ -864,6 +868,18 @@ owns the live transform, while direct-model, fallback, and missing counts keep
 viewport status honest. The loaded graph remains transient and preserves scene
 bytes, dirty state, revision, selection identity, and history. See
 [scene-components.md](scene-components.md#version-17-direct-model-node-previews).
+
+Schema version 18 can add one project-owned preview-state selector over an
+exact Boolean, integer, or string node property. Index zero is always the
+explicit All option; configured states can supply a project default. Selecting
+a state suppresses only transient node-preview wrappers whose canonical owner
+has a different exact value. Nodes without the property, canonical meshes,
+environment layers, water, and material overlays remain visible. The option
+follows its document and session; switching it never changes hierarchy,
+metadata, visibility, selection, VSCN bytes, dirty state, revision, or history.
+Ashfall uses this contract for Wave 1 through Wave 4 and defaults to the
+opening wave. See
+[scene-components.md](scene-components.md#version-18-project-owned-3d-node-preview-states).
 
 Schema version 10 can add a portable post-processing recipe to that same
 profile. Complete tonemap, bloom, color-grade, and vignette groups plus optional

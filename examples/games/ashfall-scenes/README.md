@@ -73,6 +73,12 @@ the viewport target with `af.kind` and every typed runtime default already
 present. The project prefab preview appears in the same single undoable edit.
 Box Collider intentionally remains an Add Missing-only component because it
 augments existing geometry instead of creating an empty node.
+Schema v18 exposes Wave 1 through Wave 4 as session-only node-preview states
+over the exact integer `spawn.wave` metadata. Studio defaults each mission to
+Wave 1, matching the opening encounter instead of drawing all four enemy waves
+at once; **All waves** remains available for encounter-wide layout work.
+Props, pickups, terrain, canonical nodes, metadata, visibility, selection, and
+history are unaffected.
 `materials.scene3d` seeds the project material library with the campaign's
 surface-class palette. The generic contracts are documented by
 [ADR 0198](../../../docs/adr/0198-project-owned-3d-scene-preview-profiles.md),
@@ -86,7 +92,8 @@ surface-class palette. The generic contracts are documented by
 [ADR 0212](../../../docs/adr/0212-additive-3d-environment-preview-layers.md),
 [ADR 0213](../../../docs/adr/0213-runtime-backed-water-preview-layers.md),
 [ADR 0214](../../../docs/adr/0214-project-owned-3d-material-previews.md),
-and [ADR 0215](../../../docs/adr/0215-project-owned-direct-model-previews.md).
+[ADR 0215](../../../docs/adr/0215-project-owned-direct-model-previews.md),
+and [ADR 0216](../../../docs/adr/0216-project-owned-3d-node-preview-states.md).
 
 Regenerate the procedural fallback prefabs, water images, and surface maps
 deterministically after changing production prop, enemy, pickup, terrain,

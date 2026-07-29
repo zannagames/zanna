@@ -1,0 +1,215 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_contract_03.zia
+// Purpose: Virtual tool-panel method contract segment 3.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_contract_03;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_contract_02" as PreviousContract;
+
+class ToolPanelShellContract03 extends PreviousContract.ToolPanelShellContract02 {
+    hide func RenderCallStackRow(
+        _row: tool_panel_model.ToolPanelRow) -> Any { return null; }
+
+    hide func CallStackRowMatches(
+        _row: tool_panel_model.ToolPanelRow) -> Boolean { return false; }
+
+    hide func RefreshCallStackRows() {}
+
+    expose func SetCallStackFilter(_filter: String) {}
+
+    expose func GetSelectedCallStackFrameIndex() -> Integer { return 0; }
+
+    expose func CopyCallStackText() -> Boolean { return false; }
+
+    expose func HasCallStackFrames() -> Boolean { return false; }
+
+    hide func PumpCallStackToolbar() {}
+
+    hide func UpdateCallStackToolbarState() {}
+
+    hide func ApplyCallStackSurfaceVisibility() {}
+
+    hide func AddBuildOutputLines(_output: String) {}
+
+    expose func SetOutputFilter(_filter: String) {}
+
+    expose func SetOutputWrap(_enabled: Boolean) {}
+
+    expose func ToggleOutputWrap() -> Boolean { return false; }
+
+    expose func SetOutputAutoScroll(_enabled: Boolean) {}
+
+    expose func ToggleOutputAutoScroll() -> Boolean { return false; }
+
+    expose func ClearOutputContent() {}
+
+    expose func ClearOutputPanel() {}
+
+    expose func CopyOutputText() -> Boolean { return false; }
+
+    hide func PumpOutputToolbar() {}
+
+    hide func UpdateOutputToolbarState() {}
+
+    expose func SetReferencesFilter(_filter: String) {}
+
+    expose func ResetReferencesFilter() {}
+
+    expose func CopyReferenceResults() -> Boolean { return false; }
+
+    expose func ClearReferenceResults() {}
+
+    expose func HasReferenceResults() -> Boolean { return false; }
+
+    hide func PumpReferencesToolbar() {}
+
+    hide func UpdateReferencesToolbarState() {}
+
+    hide func ApplyReferenceSurfaceVisibility() {}
+
+    expose func CopySelectedToolRow() -> Boolean { return false; }
+
+    expose func AddOutputDisplayLine(_line: String) -> Any { return null; }
+
+    hide func EnsureOutputRowCapacity() {}
+
+    hide func ResetOutputRows() {}
+
+    hide func RegisterOutputRow(_item: Any,
+                                _text: String) {}
+
+    expose func ClearProblemsPanel() {}
+
+    expose func BeginProblems() {}
+
+    hide func RefreshProblemRows() {}
+
+    expose func AddProblem(_severity: String,
+                           _source: String,
+                           _filePath: String,
+                           _line: Integer,
+                           _column: Integer,
+                           _code: String,
+                           _message: String,
+                           _action: String) -> Any { return null; }
+
+    expose func SetAddedProblemLocationData(_item: Any,
+                                            _locationData: String) {}
+
+    hide func RenderProblemRecord(
+        _record: tool_panel_model.ProblemRecord) -> Any { return null; }
+
+    hide func ProblemMatchesFilters(
+        _record: tool_panel_model.ProblemRecord) -> Boolean { return false; }
+
+    hide func IncrementProblemSeverityCount(
+        _record: tool_panel_model.ProblemRecord) {}
+
+    hide func DecrementProblemSeverityCount(
+        _record: tool_panel_model.ProblemRecord) {}
+
+    expose func SetProblemsFilter(_filter: String) {}
+
+    expose func SetProblemSeverityFilters(_showErrors: Boolean,
+                                          _showWarnings: Boolean,
+                                          _showInfo: Boolean) {}
+
+    expose func ResetProblemFilters() {}
+
+    expose func GetSelectedProblemRecord()
+        -> tool_panel_model.ProblemRecord { return null; }
+
+    expose func GetSelectedProblemAction() -> String { return ""; }
+
+    expose func GetSelectedProblemLocationData() -> String { return ""; }
+
+    expose func SetProblemsActionBusy(_busy: Boolean) {}
+
+    expose func ProblemsQuickFixWasRequested() -> Boolean { return false; }
+
+    hide func PumpProblemsToolbar() {}
+
+    hide func UpdateProblemsToolbarState() {}
+
+    expose func AddToolGroupHeader(_listBox: GUI.ListBox,
+                                   _title: String,
+                                   _detail: String) -> Any { return null; }
+
+    expose func AddToolLocationRow(_listBox: GUI.ListBox,
+                                   _kind: String,
+                                   _source: String,
+                                   _location: String,
+                                   _code: String,
+                                   _preview: String,
+                                   _action: String) -> Any { return null; }
+
+    expose func AddToolStateRow(_listBox: GUI.ListBox,
+                                _kind: String,
+                                _source: String,
+                                _message: String,
+                                _color: Integer) -> Any { return null; }
+
+    expose func AddToolInfoRow(_listBox: GUI.ListBox,
+                               _source: String,
+                               _message: String) -> Any { return null; }
+
+    expose func AddToolSuccessRow(_listBox: GUI.ListBox,
+                                  _source: String,
+                                  _message: String) -> Any { return null; }
+
+    expose func ProblemSeverityLabel(_severity: String) -> String { return ""; }
+
+    expose func PadToolColumn(_text: String, _width: Integer) -> String { return ""; }
+
+    expose func TrimToolText(_text: String, _width: Integer) -> String { return ""; }
+
+    expose func ApplyProblemSeverityColor(_item: Any, _severity: String) {}
+
+    expose func ApplyOutputLineColor(_item: Any, _line: String) {}
+
+    expose func FormatDiagnosticsSummary(_errors: Integer,
+                                         _warnings: Integer,
+                                         _notes: Integer) -> String { return ""; }
+
+    expose func DiagnosticsSummaryColor(_errors: Integer,
+                                        _warnings: Integer,
+                                        _notes: Integer) -> Integer { return 0; }
+
+    expose func FormatLanguageName(_languageName: String) -> String { return ""; }
+
+    expose func FinishProblems(_problemCount: Integer) {}
+
+    expose func UpdateProblems(_problemCount: Integer) {}
+
+    hide func AddCleanProblemsRow() {}
+
+    hide func ExpandToolDockAt(_location: Integer,
+                               _minimumBottomHeight: Number) {}
+
+}

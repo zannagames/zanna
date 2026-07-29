@@ -1,0 +1,352 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/studio_application_surface_frame.zia
+// Purpose: Pump visual surfaces and language tooling for one Studio frame.
+// Key invariants:
+//   - Capability policy is refreshed before state-changing command dispatch.
+//   - Construction, frame processing, persistence, and cleanup retain their order.
+// Ownership/Lifetime:
+//   - One StudioApplication instance owns inherited state for the process lifetime.
+// Links: zannastudio/src/app/studio_application_base.zia, zannastudio/src/app/language_tool_frame.zia
+//
+//===----------------------------------------------------------------------===//
+
+module studio_application_surface_frame;
+
+bind "ui/ide_overlays";
+bind "ui/command_input";
+bind "app/context_menu_dispatcher";
+bind "app/lifecycle_controller";
+bind "app/settings_applier";
+bind "core/project";
+bind "editor/symbols";
+bind "services/locations";
+bind "services/safe_io";
+bind "commands/workspace_edit_preview_commands";
+bind "commands/build_commands";
+bind "commands/edit_commands";
+bind "app/dispatch_helpers";
+bind "commands/debug_commands";
+bind "commands/quick_open_commands";
+bind "services/project_templates";
+
+bind Zanna.GUI;
+bind IO = Zanna.IO;
+bind Machine = Zanna.System.Machine;
+bind Str = Zanna.String;
+bind "app/studio_application_base" as StudioBase;
+
+class StudioApplicationSurfaceFrame extends StudioBase.StudioApplicationBase {
+
+    hide func PumpSurfaceFrame() -> Boolean {
+        perfMon.BeginFrame();
+        shell.PollWait(StudioBase.computePollWaitMs(shell, focusThrottle, buildSys,
+                                         dbgSession, terminalCtrl, editorScheduler,
+                                         indexer, projMgr, overlays));
+
+        // Ration background work (indexing, budgeted tools, workspace watching)
+        // when the window is unfocused. Input, rendering, process streams
+        // (build/debug/terminal), and auto-save are never gated.
+        focusThrottle.Update(shell.app);
+        allowBackground = focusThrottle.AllowBackgroundWork();
+
+        // Activity bar — switch the persistent left workbench view.
+        if shell.workbench.abExplorer.WasClicked() {
+            activityBarCtrl.ShowView(activity_bar.VIEW_EXPLORER);
+            shell.SetSidebarVisible(true);
+        }
+        if shell.workbench.abSourceControl.WasClicked() {
+            activityBarCtrl.ShowView(activity_bar.VIEW_SCM);
+            shell.SetSidebarVisible(true);
+            if projMgr.IsOpen() { scmView.SetRepo(projMgr.RootPath()); }
+            else { scmView.SetRepo(""); }
+        }
+        if shell.workbench.abRunDebug.WasClicked() {
+            activityBarCtrl.ShowView(activity_bar.VIEW_RUN_DEBUG);
+            shell.SetSidebarVisible(true);
+        }
+        scmView.HandleEvents();
+        diffOverlay.Pump();
+        terminalCtrl.Pump();
+
+        // Welcome / start surface: shown only when no documents are open.
+        curDocCount = docMgr.GetCount();
+        var activeBeforeSplitRepair = docMgr.GetActive();
+        if engine.ReconcileSplitEligibility(activeBeforeSplitRepair) {
+            StudioBase.SyncFocusedPaneSelection(shell, docMgr, engine, tabs);
+            engine.ConsumePaneFocusChanged();
+            StudioBase.RebindFocusedPane(shell, engine, completer);
+        }
+        textEditorContextAvailable = StudioBase.ActiveUsesTextEditor(docMgr);
+        hasBuildTarget = build_commands.HasExecutionTarget(docMgr, projMgr);
+        hasDebugTarget = debug_commands.HasDebugTarget(docMgr);
+        shell.SetCommandContextAvailable(curDocCount > 0,
+                                         projMgr.IsOpen(),
+                                         hasBuildTarget,
+                                         hasDebugTarget);
+        if curDocCount == 0 {
+            if prevDocCount != 0 {
+                welcomeView.Refresh(sessionMgr);
+                shell.SetStatusCenter("");
+                shell.SetStatusRight("");
+            }
+            shell.SetWelcomeStatusMode(true);
+            welcomeView.SetShown(true);
+            if welcomeView.newFileButton.WasClicked() {
+                file_commands.handleNew(shell, docMgr, engine, tabs);
+            }
+            if welcomeView.newScene2DButton.WasClicked() {
+                file_commands.handleNewScene2D(shell, docMgr, engine, tabs);
+            }
+            if welcomeView.newScene3DButton.WasClicked() {
+                file_commands.handleNewScene3D(shell, docMgr, engine, tabs);
+            }
+            if welcomeView.openFileButton.WasClicked()
+               and file_commands.handleOpen(shell, docMgr, engine, tabs) {
+                explorer_action_runner.RecordActiveFile(sessionMgr, docMgr);
+                fileWatchCtrl.ResetPendingReload();
+            }
+            if welcomeView.openFolderButton.WasClicked() {
+                if file_commands.handleOpenFolder(shell, projMgr) {
+                    main_command_dispatcher.ActivateOpenWorkspace(commandContext, true);
+                    sessionMgr.RecordRecentProject(projMgr.RootPath());
+                    welcomeView.Refresh(sessionMgr);
+                }
+            }
+            var recentSel = welcomeView.TakeRecentSelection();
+            if Str.StartsWith(recentSel, "folder:") {
+                var recentFolder = Str.Mid(recentSel, 8);
+                if projMgr.OpenFolder(recentFolder) {
+                    main_command_dispatcher.ActivateOpenWorkspace(commandContext, true);
+                    sessionMgr.RecordRecentProject(recentFolder);
+                } else {
+                    sessionMgr.PruneRecentProjects();
+                }
+                welcomeView.Refresh(sessionMgr);
+            } else if Str.StartsWith(recentSel, "file:") {
+                var recentPath = Str.Mid(recentSel, 6);
+                if explorer_action_runner.OpenFileAndRecord(
+                       shell, docMgr, engine, tabs, sessionMgr, recentPath) {
+                    fileWatchCtrl.ResetPendingReload();
+                } else {
+                    welcomeView.Refresh(sessionMgr);
+                }
+            }
+        } else {
+            shell.SetWelcomeStatusMode(false);
+            welcomeView.SetShown(false);
+        }
+        prevDocCount = curDocCount;
+
+        activeVisualDoc = docMgr.GetActive();
+        if activeVisualDoc != null {
+            if scene2DEditor.Pump(activeVisualDoc!) {
+                tabs.SetModified(docMgr.activeIndex,
+                                 activeVisualDoc!.isModified);
+                shell.SetStatusRight(file_commands.DocStatusLabel(activeVisualDoc!));
+            }
+            if scene2DContextMenus.Pump(scene2DEditor) {
+                tabs.SetModified(docMgr.activeIndex,
+                                 activeVisualDoc!.isModified);
+                shell.SetStatusRight(file_commands.DocStatusLabel(activeVisualDoc!));
+            }
+            if scene3DEditor.Pump(activeVisualDoc!) {
+                tabs.SetModified(docMgr.activeIndex,
+                                 activeVisualDoc!.isModified);
+                shell.SetStatusRight(file_commands.DocStatusLabel(activeVisualDoc!));
+            }
+            if scene3DContextMenus.Pump(scene3DEditor) {
+                tabs.SetModified(docMgr.activeIndex,
+                                 activeVisualDoc!.isModified);
+                shell.SetStatusRight(file_commands.DocStatusLabel(activeVisualDoc!));
+            }
+        }
+        var sceneFocusToggle2D =
+            scene2DEditor.TakeFocusModeToggleRequested();
+        var sceneFocusToggle3D =
+            scene3DEditor.TakeFocusModeToggleRequested();
+        var sceneWorkspaceToggle2D =
+            scene2DEditor.TakeWorkspaceModeToggleRequested();
+        var sceneWorkspaceToggle3D =
+            scene3DEditor.TakeWorkspaceModeToggleRequested();
+        if sceneWorkspaceToggle2D or sceneWorkspaceToggle3D {
+            shell.ToggleSceneWorkspaceMode();
+        }
+        if sceneFocusToggle2D or sceneFocusToggle3D {
+            shell.ToggleSceneFocusMode();
+        }
+        var activeSceneSurface =
+            activeVisualDoc != null
+            and (activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_2D
+                 or activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_3D);
+        if activeSceneSurface and previousSceneSurfaceActive == false
+           and shell.IsSceneWorkspaceModeActive() == false
+           and shell.IsSceneFocusModeActive() == false {
+            // Scene documents already provide their own hierarchy, inspector,
+            // palette, and viewport. Reclaim the duplicate outer IDE docks on
+            // entry so even compact windows start with a useful authoring area.
+            shell.SetSceneWorkspaceMode(true);
+        }
+        if activeSceneSurface == false
+           and shell.IsSceneFocusModeActive() {
+            // The scene-local Exit Focus control is no longer reachable once
+            // a text/welcome surface takes over, so restore the workbench.
+            shell.SetSceneFocusMode(false);
+        }
+        if activeSceneSurface == false
+           and shell.IsSceneWorkspaceModeActive() {
+            // Scene Layout is also ephemeral; a text/welcome surface restores
+            // the exact IDE docks that the scene presentation captured.
+            shell.SetSceneWorkspaceMode(false);
+        }
+        previousSceneSurfaceActive = activeSceneSurface;
+        var sceneWorkspaceActive =
+            shell.IsSceneWorkspaceModeActive();
+        scene2DEditor.SetWorkspaceModeActive(sceneWorkspaceActive);
+        scene3DEditor.SetWorkspaceModeActive(sceneWorkspaceActive);
+        var sceneFocusActive = shell.IsSceneFocusModeActive();
+        scene2DEditor.SetFocusModeActive(sceneFocusActive);
+        scene3DEditor.SetFocusModeActive(sceneFocusActive);
+        if shell.WasCloseRequested() {
+            if file_commands.handleExit(shell, docMgr, engine) {
+                StudioBase.FlushWorkspaceLayout(
+                    shell, engine, projMgr, activityBarCtrl, appSettings,
+                    panelSplitSavePending);
+                diffOverlay.Shutdown();
+                basicWorkspaceCommands.Shutdown();
+                diagnosticActions.Shutdown();
+                ziaWorkspaceCommands.Shutdown();
+                lifecycle_controller.CleanupIde(shell, docMgr, projMgr, engine, buildSys, dbgSession,
+                                                terminalCtrl, fileWatchCtrl, workspaceWatcherState,
+                                                indexer, breakpointStore, sessionMgr, recoveryStore);
+                return true;
+            }
+        }
+        return false;
+    }
+
+    hide func PumpLanguageFrame() {
+        // ====================================================================
+        // Code Completion + IDE Intelligence
+        // ====================================================================
+        languageFrame.BeginFrame(shell, docMgr, projMgr, languageServices,
+                                 activeWorkbench, paletteCtrl, commandRegistry,
+                                 appSettings, engine);
+        activeService = languageFrame.activeService;
+        shell.SetTextEditorContextAvailable(textEditorContextAvailable);
+        commandRegistry.SetTextEditorAvailable(textEditorContextAvailable);
+        var visualSceneEditorAvailable = false;
+        var canCutSurface = textEditorContextAvailable;
+        var canCopySurface = textEditorContextAvailable;
+        var canPasteSurface = textEditorContextAvailable;
+        var canSelectAllSurface = textEditorContextAvailable;
+        var canDuplicateSurface = textEditorContextAvailable;
+        var canDeleteSceneSurface = false;
+        var canFindSurface = textEditorContextAvailable;
+        if textEditorContextAvailable == false and activeVisualDoc != null
+           and activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_2D {
+            visualSceneEditorAvailable = true;
+            canFindSurface = true;
+            canCutSurface = scene2DEditor.HasSceneObjectSelection();
+            canCopySurface = canCutSurface;
+            canPasteSurface = scene2DEditor.CanPasteSceneObjects();
+            canSelectAllSurface =
+                scene2DEditor.CanSelectAllSceneObjects();
+            canDuplicateSurface = canCutSurface;
+            canDeleteSceneSurface = canCutSurface;
+        } else if textEditorContextAvailable == false
+                  and activeVisualDoc != null
+                  and activeVisualDoc!.kind
+                      == file_utils.DOC_KIND_SCENE_3D {
+            visualSceneEditorAvailable = true;
+            canFindSurface = true;
+            canCutSurface = scene3DEditor.HasSceneNodeSelection();
+            canCopySurface = canCutSurface;
+            canPasteSurface = scene3DEditor.CanPasteSceneNodes();
+            canSelectAllSurface =
+                scene3DEditor.CanSelectAllSceneNodes();
+            canDuplicateSurface = canCutSurface;
+            canDeleteSceneSurface = canCutSurface;
+        }
+        shell.SetSurfaceEditActionsAvailable(
+            canCutSurface, canCopySurface,
+            canPasteSurface, canSelectAllSurface,
+            canDuplicateSurface, canDeleteSceneSurface,
+            canFindSurface);
+        commandRegistry.SetVisualSceneEditorAvailable(
+            visualSceneEditorAvailable);
+        commandRegistry.SetSplitEditorContext(
+            textEditorContextAvailable
+                and engine.PaneCount() < 2
+                and StudioBase.SplitCompanionDocument(docMgr, engine.currentDoc) != null,
+            engine.PaneCount() == 2);
+        var canUndoSurface = false;
+        var canRedoSurface = false;
+        if textEditorContextAvailable and engine != null and engine.editor != null {
+            canUndoSurface = engine.editor.CanUndo();
+            canRedoSurface = engine.editor.CanRedo();
+        } else if activeVisualDoc != null
+                  and activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_2D {
+            canUndoSurface = scene2DEditor.CanUndo();
+            canRedoSurface = scene2DEditor.CanRedo();
+        } else if activeVisualDoc != null
+                  and activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_3D {
+            canUndoSurface = scene3DEditor.CanUndo();
+            canRedoSurface = scene3DEditor.CanRedo();
+        }
+        shell.SetEditHistoryAvailable(canUndoSurface, canRedoSurface);
+        if textEditorContextAvailable == false and activeVisualDoc != null {
+            var visualService = "2D Scene";
+            if activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_3D {
+                visualService = "3D Scene";
+            }
+            shell.SetWorkspaceStatus(activeWorkbench.activeProjectName, visualService);
+        }
+        if allowBackground {
+            languageFrame.PumpWorkspace(shell, projMgr, docMgr, engine);
+        }
+        languageFrame.SyncBreakpoints(engine, breakpointStore);
+        if textEditorContextAvailable {
+            debug_commands.PumpGutter(shell, docMgr, engine, breakpointStore);
+        }
+
+        languageFrame.RouteCompletionKeys();
+        languageFrame.PumpForegroundTools(shell, docMgr, engine, tabs, locStore,
+                                          buildSys, dbgSession, breakpointStore);
+        debug_commands.PumpRunDebugView(
+            shell, runDebugView, docMgr, engine, tabs, buildSys,
+            breakpointStore, dbgSession, debugOverlay,
+            appSettings.saveAllBeforeBuild);
+        diagnosticActions.Pump(shell, docMgr, engine, projMgr);
+        shell.toolPanels.SetProblemsActionBusy(diagnosticActions.IsBusy());
+        ziaWorkspaceCommands.Pump(shell, docMgr, projMgr, engine, tabs,
+                                  indexer, locStore);
+        // Keep keyboard shortcuts and command-palette selections under the
+        // same target/job/debug policy as the visible menu and toolbar.
+        commandRegistry.ApplyCommandContext(curDocCount > 0,
+                                            projMgr.IsOpen(),
+                                            hasBuildTarget,
+                                            hasDebugTarget,
+                                            buildSys.IsActive(),
+                                            dbgSession.IsActive(),
+                                            dbgSession.stopped,
+                                            activeService);
+        if allowBackground {
+            languageFrame.PumpBudgetedTools(shell, docMgr, engine, locStore,
+                                            searcher, projMgr);
+        }
+        languageFrame.HandleManualIntelligenceTriggers(engine);
+        languageFrame.HandleTypedLanguageTriggers(engine);
+        curCursorLine = languageFrame.curCursorLine;
+        curCursorCol = languageFrame.curCursorCol;
+
+    }
+
+
+
+}

@@ -1,0 +1,191 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_viewport_picking_routing_probe.zia
+// Purpose: Verify 3D history, command-menu, and dock pointer routing.
+// Key invariants:
+//   - History jumps retain exact scene bytes and redo state.
+//   - Run Scene is a one-shot request with no canonical mutation.
+//   - Floating and docking panes preserve live selection behavior.
+// Ownership/Lifetime: Borrows and closes the entry probe's GUI fixture.
+// Links: zannastudio/src/probes/scene_viewport_picking_probe.zia,
+//        zannastudio/src/ui/scene_editor_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_viewport_picking_routing_probe;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Terminal = Zanna.Terminal;
+
+func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale);
+}
+
+func ClickWidget(shell: app_shell.AppShell,
+                 harness: GUI.TestHarness,
+                 widget: GUI.Widget) {
+    var x = HarnessCoordinate(
+        shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func ClickCommandMenuOffset(shell: app_shell.AppShell,
+                            harness: GUI.TestHarness,
+                            button: GUI.Button,
+                            offsetY: Number) {
+    var x = HarnessCoordinate(shell, button.GetScreenX())
+        + Convert.NumToInt(20.0);
+    var y = HarnessCoordinate(
+        shell, button.GetScreenY() + button.GetScreenHeight())
+        + Convert.NumToInt(offsetY);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+func Fail(shell: app_shell.AppShell,
+          harness: GUI.TestHarness,
+          reason: String) {
+    if harness != null { harness.UnbindApp(); }
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+/// @brief Run the VerifyFinalPointerRouting viewport-picking scenario.
+expose func Verify(
+    shell: app_shell.AppShell,
+    editor: scene_editor_3d.SceneEditor3D,
+    documents: document_manager.DocumentManager,
+    sceneDoc: document.Document,
+    harness: GUI.TestHarness) -> Boolean {
+
+    editor.showStats = false;
+    editor.SetViewportMode(scene_editor_3d.VIEWPORT_MODE_SHADED);
+    editor.Pump(sceneDoc);
+    shell.Render();
+
+    // Undo history panel (3.3): rows mirror commits oldest-first plus a
+    // Current row; a jump runs the equivalent undo chain and leaves redo.
+    var stateBefore = sceneDoc.content;
+    if editor.AddEmptyNode("History A", -1) < 0
+       or editor.AddEmptyNode("History B", -1) < 0 {
+        Fail(shell, harness, "history fixture commits failed");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    editor.RefreshHistoryPanel();
+    if editor.historyList.Count != editor.undoStack.count() + 1 {
+        Fail(shell, harness,
+             "history rows did not mirror the undo stack: rows="
+             + editor.historyList.Count
+             + " undo=" + editor.undoStack.count());
+        return false;
+    }
+    var redoBefore = editor.redoStack.count();
+    if editor.JumpToHistoryRow(editor.undoStack.count() - 2) == false
+       or sceneDoc.content != stateBefore
+       or editor.redoStack.count() != redoBefore + 2 {
+        Fail(shell, harness,
+             "history jump did not restore the pre-fixture bytes: redo="
+             + editor.redoStack.count());
+        return false;
+    }
+    if editor.Redo() == false or editor.Redo() == false {
+        Fail(shell, harness, "redo after a history jump failed");
+        return false;
+    }
+    if editor.Undo() == false or editor.Undo() == false
+       or sceneDoc.content != stateBefore {
+        Fail(shell, harness, "unwinding the history fixture failed");
+        return false;
+    }
+
+    // Run Scene affordance (4.1): the Scene-menu command raises a one-shot
+    // request the app dispatcher consumes; nothing here touches content.
+    var runBaseline = sceneDoc.content;
+    ClickWidget(shell, harness, editor.sceneMenuButton);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    // New, Import Asset, Import Instance, separator, then Run.
+    ClickCommandMenuOffset(
+        shell, harness, editor.sceneMenuButton, 111.0);
+    editor.Pump(sceneDoc);
+    if editor.TakeRunSceneRequested() == false
+       or editor.TakeRunSceneRequested()
+       or sceneDoc.content != runBaseline {
+        Fail(shell, harness,
+             "Run Scene menu command did not raise a one-shot request");
+        return false;
+    }
+
+    // Pane float/dock (Phase 5): floating reparents the hierarchy pane
+    // into the dock substrate's floating panel with the split collapsed;
+    // the pane stays fully live; docking restores the fixed layout. All
+    // of it is workspace-only.
+    var dockBaseline = sceneDoc.content;
+    if editor.hierarchyDock.Float() == false
+       or editor.hierarchyDock.floating == false
+       or editor.hierarchySplit.GetCollapsedSide() != 1 {
+        Fail(shell, harness,
+             "floating the hierarchy pane did not detach and collapse");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    editor.SelectSceneNodes([0], 0);
+    editor.Pump(sceneDoc);
+    if editor.selectedIndex != 0 {
+        Fail(shell, harness,
+             "the floated hierarchy pane lost selection behavior");
+        return false;
+    }
+    if editor.hierarchyDock.Dock() == false
+       or editor.hierarchyDock.floating
+       or editor.hierarchySplit.GetCollapsedSide() == 1
+       or sceneDoc.content != dockBaseline {
+        Fail(shell, harness,
+             "docking the hierarchy pane did not restore the layout");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.inspectorDock.Float() == false
+       or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.inspectorDock.Dock() == false
+       or editor.bodySplit.GetCollapsedSide() == 2
+       or sceneDoc.content != dockBaseline {
+        Fail(shell, harness, "3D inspector pane float/dock cycle failed");
+        return false;
+    }
+
+    harness.UnbindApp();
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+
+    if documents == null { return false; }
+    return true;
+}
+

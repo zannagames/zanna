@@ -85,7 +85,23 @@ func pump(editor: scene_editor_3d.SceneEditor3D,
     shell.Render();
 }
 
-func main() {
+/// @brief Typed state shared by serial perspective-viewport scenarios.
+class PerspectiveViewportProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose editor_engine.EditorEngine hiddenEngine;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose Integer width;
+    expose Integer height;
+    expose Number eyeDistance;
+    expose String baseline;
+    expose Integer revision;
+}
+
+/// @brief Verify projection invariants and perspective parallax.
+func VerifyViewportProjection(
+    ctx: PerspectiveViewportProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Perspective Viewport Probe", 1180, 780);
     shell.SetSceneWorkspaceMode(true);
@@ -115,14 +131,14 @@ func main() {
        or near(editor.snapRotateIncrement, 15.0) == false
        or near(editor.snapScaleIncrement, 0.1) == false {
         fail(shell, "fresh 3D document chrome defaults were not truthful");
-        return;
+        return false;
     }
 
     // One authored node keeps the camera-range analysis non-degenerate;
     // every projection expectation below uses raw world coordinates.
     if editor.AddEmptyNode("Depth Anchor", -1) < 0 {
         fail(shell, "could not author probe node");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
 
@@ -146,7 +162,7 @@ func main() {
     var centerX = width / 2;
     if editor.viewPerspective {
         fail(shell, "projection toggle to orthographic did not latch");
-        return;
+        return false;
     }
     var orthoNear = editor.ProjectWorldPoint(1.0, 0.0, 0.0);
     var orthoFar = editor.ProjectWorldPoint(1.0, 0.0, -6.0);
@@ -156,7 +172,7 @@ func main() {
         fail(shell, "orthographic projection lost depth invariance: near="
              + orthoNear.x + " far=" + orthoFar.x
              + " expected=" + (centerX + 28));
-        return;
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -166,7 +182,7 @@ func main() {
     pump(editor, sceneDoc, shell);
     if editor.viewPerspective == false {
         fail(shell, "projection toggle to perspective did not latch");
-        return;
+        return false;
     }
     var perspectivePlane = editor.ProjectWorldPoint(1.0, 0.0, 0.0);
     var perspectiveFar = editor.ProjectWorldPoint(1.0, 0.0, -6.0);
@@ -174,13 +190,13 @@ func main() {
        or withinPixels(perspectivePlane.x, centerX + 28, 1) == false {
         fail(shell, "perspective eye distance broke target-plane scale: x="
              + perspectivePlane.x + " expected=" + (centerX + 28));
-        return;
+        return false;
     }
     if perspectiveFar.visible == false
        or perspectiveFar.x >= perspectivePlane.x {
         fail(shell, "perspective projection produced no parallax: far="
              + perspectiveFar.x + " plane=" + perspectivePlane.x);
-        return;
+        return false;
     }
     var eyeDistance = (height / 1.0)
         / (2.0 * 28.0 * scene_editor_3d.VIEWPORT_FOV_HALF_TAN);
@@ -188,8 +204,31 @@ func main() {
         0.0, 0.0, eyeDistance + 5.0);
     if behindEye.visible {
         fail(shell, "behind-eye point still claimed projection visibility");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.hiddenEngine = hiddenEngine;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.width = width;
+    ctx.height = height;
+    ctx.eyeDistance = eyeDistance;
+    ctx.baseline = sceneDoc.content;
+    ctx.revision = editor.GetRevision();
+    return true;
+}
+
+/// @brief Verify eye-fixed fly navigation and workspace isolation.
+func VerifyFlyNavigation(
+    ctx: PerspectiveViewportProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var width = ctx.width;
+    var height = ctx.height;
+    var eyeDistance = ctx.eyeDistance;
 
     // ------------------------------------------------------------------
     // Right-mouse fly-look: eye-fixed rotation, workspace-only.
@@ -197,12 +236,12 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         fail(shell, "fly harness did not bind");
-        return;
+        return false;
     }
     var uiScale = shell.app.GetEffectiveScale();
     if uiScale <= 0.0 { uiScale = 1.0; }
-    var flyBaseline = sceneDoc.content;
-    var flyRevision = editor.GetRevision();
+    var flyBaseline = ctx.baseline;
+    var flyRevision = ctx.revision;
     var viewCenterX = Convert.NumToInt(
         (editor.viewportImage.GetScreenX() + width / 2.0) * uiScale);
     var viewCenterY = Convert.NumToInt(
@@ -216,7 +255,7 @@ func main() {
     if editor.IsFlyNavigationActive() == false {
         harness.UnbindApp();
         fail(shell, "right-mouse press did not begin fly navigation");
-        return;
+        return false;
     }
     var yawBefore = editor.viewYawDegrees;
     var pitchBefore = editor.viewPitchDegrees;
@@ -237,7 +276,7 @@ func main() {
         fail(shell, "fly-look did not turn 10 degrees right: yaw="
              + yawAfter + " expected=" + (yawBefore - 10)
              + " pitch=" + editor.viewPitchDegrees);
-        return;
+        return false;
     }
     // Eye-fixed contract: the target re-anchors so the eye stays put.
     // yaw -10, pitch 0: eye unit = (sin(-10deg), 0, cos(-10deg)).
@@ -252,12 +291,12 @@ func main() {
         fail(shell, "fly-look did not rotate about the fixed eye: target="
              + editor.viewTargetX + "," + editor.viewTargetZ
              + " expected=" + expectedTargetX + "," + expectedTargetZ);
-        return;
+        return false;
     }
     if near(targetXBefore, editor.viewTargetX) {
         harness.UnbindApp();
         fail(shell, "fly-look left the view target fixed like an orbit");
-        return;
+        return false;
     }
     harness.SendMouse(
         "up", viewCenterX + lookPixels, viewCenterY, 1);
@@ -266,7 +305,7 @@ func main() {
     if editor.IsFlyNavigationActive() {
         harness.UnbindApp();
         fail(shell, "releasing the right button did not end fly navigation");
-        return;
+        return false;
     }
     // Escape also ends a fresh fly capture.
     harness.SendMouse("down", viewCenterX, viewCenterY, 1);
@@ -283,13 +322,26 @@ func main() {
     harness.UnbindApp();
     if escapeArmed == false or escapeEnded == false {
         fail(shell, "Escape did not cancel fly navigation");
-        return;
+        return false;
     }
     if sceneDoc.content != flyBaseline
        or editor.GetRevision() != flyRevision {
         fail(shell, "fly navigation leaked into document content");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify overlay/snap chrome and per-document persistence.
+func VerifyViewportChromePersistence(
+    ctx: PerspectiveViewportProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var flyBaseline = ctx.baseline;
+    var flyRevision = ctx.revision;
 
     // ------------------------------------------------------------------
     // Overlay toggles and snap spinners: applied, shared, and undo-free.
@@ -298,7 +350,7 @@ func main() {
     pump(editor, sceneDoc, shell);
     if editor.viewOptionsRow.IsVisible() == false {
         fail(shell, "view options row did not open");
-        return;
+        return false;
     }
     editor.gridCheck.SetChecked(false);
     editor.statsCheck.SetChecked(true);
@@ -311,7 +363,7 @@ func main() {
         fail(shell, "overlay/snap chrome edits did not apply: grid="
              + editor.showGrid + " stats=" + editor.showStats
              + " snap=" + editor.snapMoveIncrement);
-        return;
+        return false;
     }
     var boundedLow = scene_transform_3d.BoundSnapIncrement(0.0, 1000.0);
     var boundedHigh = scene_transform_3d.BoundSnapIncrement(9999.0, 1000.0);
@@ -319,7 +371,7 @@ func main() {
        or near(boundedHigh, 1000.0) == false {
         fail(shell, "snap increment bounds drifted: low=" + boundedLow
              + " high=" + boundedHigh);
-        return;
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -337,7 +389,7 @@ func main() {
        or near(scene_transform_3d.SnapIncrement(
                    scene_transform_3d.TRANSFORM_MOVE), 0.5) == false {
         fail(shell, "fresh document inherited another document's chrome");
-        return;
+        return false;
     }
     editor.Activate(sceneDoc);
     pump(editor, sceneDoc, shell);
@@ -353,14 +405,22 @@ func main() {
              + editor.viewPerspective + " grid=" + editor.showGrid
              + " stats=" + editor.showStats
              + " snap=" + editor.snapMoveIncrement);
-        return;
+        return false;
     }
     if sceneDoc.content != flyBaseline
        or editor.GetRevision() != flyRevision {
         fail(shell, "workspace chrome dirtied the document");
-        return;
+        return false;
     }
 
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new PerspectiveViewportProbeContext();
+    if VerifyViewportProjection(ctx) == false { return; }
+    if VerifyFlyNavigation(ctx) == false { return; }
+    if VerifyViewportChromePersistence(ctx) == false { return; }
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

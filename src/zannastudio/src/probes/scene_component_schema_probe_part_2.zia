@@ -1,0 +1,744 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_component_schema_probe_part_2.zia
+// Purpose: Serial schema-version scenarios, part 2 of 2.
+// Key invariants:
+//   - Each scenario owns a complete versioned fixture with no cross-state.
+//   - Failure paths retain their original RESULT diagnostics.
+// Ownership/Lifetime: Owns only in-memory schema fixtures.
+// Links: zannastudio/src/probes/scene_component_schema_probe.zia,
+//        zannastudio/src/probes/scene_component_schema_probe_support.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_probe_part_2;
+
+bind "../ui/scene_component_schema";
+bind "../services/project_locator";
+
+bind Terminal = Zanna.Terminal;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+
+bind "scene_component_schema_probe_support" as Probe;
+
+/// @brief Run the VerifyPostFXAndGameOutput schema scenario.
+expose func VerifyPostFXAndGameOutput() -> Boolean {
+    // ADR 0208: Game View owns a bounded project output frame in either scene
+    // profile, while ordinary editor view state remains outside the schema.
+    var v12 = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":[],"
+        + "\"scenePreview2D\":{"
+        + "\"outputWidth\":1280,\"outputHeight\":720},"
+        + "\"scenePreview3D\":{"
+        + "\"outputWidth\":1600,\"outputHeight\":900}}",
+        "v12-game-output");
+    if v12.valid == false or v12.version != 12
+       or v12.scenePreview2D == null
+       or v12.scenePreview2D.present == false
+       or v12.scenePreview2D.HasOutputSize() == false
+       or v12.scenePreview2D.outputWidth != 1280
+       or v12.scenePreview2D.outputHeight != 720
+       or v12.scenePreview3D == null
+       or v12.scenePreview3D.present == false
+       or v12.scenePreview3D.HasOutputSize() == false
+       or v12.scenePreview3D.outputWidth != 1600
+       or v12.scenePreview3D.outputHeight != 900 {
+        Probe.fail("valid version-12 game-output frames did not round trip");
+        return false;
+    }
+    var v11Output = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"scenePreview2D\":{"
+        + "\"outputWidth\":1280,\"outputHeight\":720}}",
+        "v11-game-output");
+    var incompleteOutput = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":[],\"scenePreview3D\":{"
+        + "\"outputWidth\":1600}}",
+        "incomplete-game-output");
+    var fractionalOutput = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":[],\"scenePreview2D\":{"
+        + "\"outputWidth\":1280.5,\"outputHeight\":720}}",
+        "fractional-game-output");
+    var smallOutput = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":[],\"scenePreview3D\":{"
+        + "\"outputWidth\":63,\"outputHeight\":64}}",
+        "small-game-output");
+    var largeOutput = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":[],\"scenePreview2D\":{"
+        + "\"outputWidth\":8192,\"outputHeight\":8193}}",
+        "large-game-output");
+    if v11Output.valid or incompleteOutput.valid
+       or fractionalOutput.valid or smallOutput.valid or largeOutput.valid
+       or incompleteOutput.scenePreview3D.present
+       or fractionalOutput.scenePreview2D.present {
+        Probe.fail("invalid version-12 game-output frames were not fail-closed");
+        return false;
+    }
+
+    // ADR 0209: project components may opt into direct creation without
+    // conflating stable schema identity with runtime object type/node name.
+    var v13 = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":["
+        + "{\"name\":\"enemy-spawn\",\"target\":\"both\","
+        + "\"createObjectType\":\"enemy\","
+        + "\"createNodeName\":\"Enemy Spawn\","
+        + "\"fields\":[{\"key\":\"spawn.kind\",\"type\":\"string\","
+        + "\"default\":\"grunt\"}]}]}",
+        "v13-component-creation");
+    var creation = v13.Find(
+        "enemy-spawn", scene_component_schema.TARGET_2D_OBJECT);
+    if v13.valid == false or v13.version != 13
+       or creation == null
+       or creation.createObjectType != "enemy"
+       or creation.createNodeName != "Enemy Spawn"
+       or creation.CanCreateFor(
+              scene_component_schema.TARGET_2D_OBJECT) == false
+       or creation.CanCreateFor(
+              scene_component_schema.TARGET_3D_NODE) == false {
+        Probe.fail("valid version-13 component creation recipe did not round trip");
+        return false;
+    }
+    var v12Creation = scene_component_schema.ParseText(
+        "{\"version\":12,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"2d-object\","
+        + "\"createObjectType\":\"enemy\",\"fields\":["
+        + "{\"key\":\"enemy.type\",\"type\":\"int\"}]}]}",
+        "v12-component-creation");
+    var wrongCreateType = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"2d-object\","
+        + "\"createObjectType\":42,\"fields\":["
+        + "{\"key\":\"enemy.type\",\"type\":\"int\"}]}]}",
+        "wrong-component-create-type");
+    var crossTargetObject = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"3d-node\","
+        + "\"createObjectType\":\"enemy\",\"fields\":["
+        + "{\"key\":\"enemy.type\",\"type\":\"int\"}]}]}",
+        "cross-target-object-creation");
+    var crossTargetNode = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"2d-object\","
+        + "\"createNodeName\":\"Enemy\",\"fields\":["
+        + "{\"key\":\"enemy.type\",\"type\":\"int\"}]}]}",
+        "cross-target-node-creation");
+    var emptyNodeName = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"3d-node\","
+        + "\"createNodeName\":\"  \",\"fields\":["
+        + "{\"key\":\"enemy.type\",\"type\":\"int\"}]}]}",
+        "empty-node-creation");
+    if v12Creation.valid or wrongCreateType.valid
+       or crossTargetObject.valid or crossTargetNode.valid
+       or emptyNodeName.valid
+       or v12Creation.components.count() != 0 {
+        Probe.fail("invalid version-13 component creation recipe was not fail-closed");
+        return false;
+    }
+
+    // ADR 0212: independent runtime-built context can layer beside the base
+    // environment from exact typed root metadata and bounded TRS mappings.
+    var v14Text =
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":["
+        + "{\"matchProperty\":\"af.wantWater\",\"matchValue\":true,"
+        + "\"prefab\":\"assets/water.scene3d\","
+        + "\"positionXProperty\":\"af.watX\","
+        + "\"positionYProperty\":\"af.watY\","
+        + "\"positionZProperty\":\"af.watZ\","
+        + "\"scaleXProperty\":\"af.watW\","
+        + "\"scaleZProperty\":\"af.watD\"},"
+        + "{\"matchProperty\":\"weather.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/storm.vscn\","
+        + "\"yawProperty\":\"weather.yaw\",\"yawUnit\":\"degrees\"},"
+        + "{\"matchProperty\":\"world.phase\",\"matchValue\":\"night\","
+        + "\"prefab\":\"assets/night.scene3d\"}]}}";
+    var v14 = scene_component_schema.ParseText(
+        v14Text, "v14-environment-layers");
+    var layers = v14.scenePreview3D.environmentLayers;
+    if v14.valid == false or v14.version != 14
+       or layers.count() != 3
+       or layers.get(0).matchKind != "bool"
+       or layers.get(0).matchBoolean == false
+       or layers.get(0).prefab != "assets/water.scene3d"
+       or layers.get(0).positionXProperty != "af.watX"
+       or layers.get(0).positionYProperty != "af.watY"
+       or layers.get(0).positionZProperty != "af.watZ"
+       or layers.get(0).scaleXProperty != "af.watW"
+       or layers.get(0).scaleYProperty != ""
+       or layers.get(0).scaleZProperty != "af.watD"
+       or layers.get(1).matchKind != "int"
+       or layers.get(1).matchInteger != 3
+       or layers.get(1).yawProperty != "weather.yaw"
+       or layers.get(1).yawUnit != "degrees"
+       or layers.get(2).matchKind != "string"
+       or layers.get(2).matchString != "night" {
+        Probe.fail("valid version-14 environment layers did not round trip");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Run the VerifyCreationRecipesAndEnvironmentLayers schema scenario.
+expose func VerifyCreationRecipesAndEnvironmentLayers() -> Boolean {
+    var v13Layers = scene_component_schema.ParseText(
+        "{\"version\":13,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"prefab\":\"assets/water.scene3d\"}]}}",
+        "v13-environment-layers");
+    var fractionalLayerMatch = scene_component_schema.ParseText(
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":[{\"matchProperty\":\"weather\","
+        + "\"matchValue\":1.5,\"prefab\":\"assets/weather.scene3d\"}]}}",
+        "fractional-environment-layer-match");
+    var unsafeLayer = scene_component_schema.ParseText(
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"prefab\":\"../water.scene3d\"}]}}",
+        "unsafe-environment-layer");
+    var orphanLayerYaw = scene_component_schema.ParseText(
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"prefab\":\"assets/water.scene3d\","
+        + "\"yawProperty\":\"water.yaw\"}]}}",
+        "orphan-environment-layer-yaw");
+    var invalidLayerProperty = scene_component_schema.ParseText(
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"prefab\":\"assets/water.scene3d\","
+        + "\"positionXProperty\":\"../water.x\"}]}}",
+        "invalid-environment-layer-property");
+    if v13Layers.valid or fractionalLayerMatch.valid
+       or unsafeLayer.valid or orphanLayerYaw.valid
+       or invalidLayerProperty.valid
+       or unsafeLayer.scenePreview3D.environmentLayers.count() != 0 {
+        Probe.fail("invalid version-14 environment layers were not fail-closed");
+        return false;
+    }
+
+    // ADR 0213: procedural water uses the public runtime path while every
+    // construction input stays bounded, declarative, and project-relative.
+    var v15Text =
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":["
+        + "{\"matchProperty\":\"af.wantWater\",\"matchValue\":true,"
+        + "\"positionXProperty\":\"af.watX\","
+        + "\"positionYProperty\":\"af.watY\","
+        + "\"positionZProperty\":\"af.watZ\","
+        + "\"widthProperty\":\"af.watW\","
+        + "\"depthProperty\":\"af.watD\","
+        + "\"widthMultiplier\":2.0,\"depthMultiplier\":2.0,"
+        + "\"colorR\":0.1,\"colorG\":0.3,"
+        + "\"colorB\":0.6,\"colorA\":0.5,"
+        + "\"texture\":\"assets/water.png\","
+        + "\"normalMap\":\"assets/water-normal.png\","
+        + "\"resolution\":48,\"animate\":true,"
+        + "\"waves\":["
+        + "{\"dirX\":1.0,\"dirZ\":0.3,\"speed\":0.05,"
+        + "\"amplitude\":0.4,\"wavelength\":1.2},"
+        + "{\"dirX\":-0.4,\"dirZ\":0.8,\"speed\":0.035,"
+        + "\"amplitude\":0.7,\"wavelength\":0.8}]},"
+        + "{\"matchProperty\":\"weather.kind\",\"matchValue\":3,"
+        + "\"positionX\":4.0,\"positionY\":0.25,\"positionZ\":-2.0,"
+        + "\"width\":8.0,\"depth\":12.0},"
+        + "{\"matchProperty\":\"world.phase\",\"matchValue\":\"night\"}"
+        + "]}}";
+    var v15 = scene_component_schema.ParseText(
+        v15Text, "v15-water-layers");
+    var waterLayers = v15.scenePreview3D.waterLayers;
+    if v15.valid == false or v15.version != 15
+       or waterLayers.count() != 3
+       or waterLayers.get(0).matchKind != "bool"
+       or waterLayers.get(0).matchBoolean == false
+       or waterLayers.get(0).positionXProperty != "af.watX"
+       or waterLayers.get(0).widthProperty != "af.watW"
+       or waterLayers.get(0).depthProperty != "af.watD"
+       or Probe.near(waterLayers.get(0).widthMultiplier, 2.0) == false
+       or Probe.near(waterLayers.get(0).depthMultiplier, 2.0) == false
+       or waterLayers.get(0).hasColor == false
+       or Probe.near(waterLayers.get(0).colorA, 0.5) == false
+       or waterLayers.get(0).texture != "assets/water.png"
+       or waterLayers.get(0).normalMap != "assets/water-normal.png"
+       or waterLayers.get(0).resolution != 48
+       or waterLayers.get(0).animate == false
+       or waterLayers.get(0).waves.count() != 2
+       or Probe.near(waterLayers.get(0).waves.get(0).amplitude, 0.4)
+          == false
+       or Probe.near(waterLayers.get(0).waves.get(1).wavelength, 0.8)
+          == false
+       or waterLayers.get(1).matchKind != "int"
+       or waterLayers.get(1).matchInteger != 3
+       or Probe.near(waterLayers.get(1).positionX, 4.0) == false
+       or Probe.near(waterLayers.get(1).width, 8.0) == false
+       or Probe.near(waterLayers.get(1).depth, 12.0) == false
+       or waterLayers.get(2).matchKind != "string"
+       or waterLayers.get(2).matchString != "night"
+       or waterLayers.get(2).resolution != 64
+       or waterLayers.get(2).waves.count() != 0 {
+        Probe.fail("valid version-15 water layers did not round trip");
+        return false;
+    }
+    var v14Water = scene_component_schema.ParseText(
+        "{\"version\":14,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true}]}}",
+        "v14-water-layers");
+    var unsafeWaterImage = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"texture\":\"../water.png\"}]}}",
+        "unsafe-water-image");
+    var orphanWaterMultiplier = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"widthMultiplier\":2.0}]}}",
+        "orphan-water-multiplier");
+    var incompleteWaterColor = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"colorR\":0.1,\"colorG\":0.2}]}}",
+        "incomplete-water-color");
+    var zeroWaterWave = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"waves\":[{\"dirX\":0.0,"
+        + "\"dirZ\":0.0,\"speed\":1.0,\"amplitude\":0.1,"
+        + "\"wavelength\":2.0}]}]}}",
+        "zero-water-wave");
+    var incompleteWaterWave = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"waves\":[{\"dirX\":1.0,"
+        + "\"dirZ\":0.0,\"speed\":1.0,\"amplitude\":0.1}]}]}}",
+        "incomplete-water-wave");
+    var oversizedWaterGrid = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"resolution\":65}]}}",
+        "oversized-water-grid");
+    var undersizedWaterGrid = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"resolution\":7}]}}",
+        "undersized-water-grid");
+    var invalidWaterProperty = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"scenePreview3D\":{"
+        + "\"waterLayers\":[{\"matchProperty\":\"water\","
+        + "\"matchValue\":true,\"widthProperty\":\"../water.w\"}]}}",
+        "invalid-water-property");
+    if v14Water.valid or unsafeWaterImage.valid
+       or orphanWaterMultiplier.valid or incompleteWaterColor.valid
+       or zeroWaterWave.valid or incompleteWaterWave.valid
+       or oversizedWaterGrid.valid or undersizedWaterGrid.valid
+       or invalidWaterProperty.valid
+       or unsafeWaterImage.scenePreview3D.waterLayers.count() != 0 {
+        Probe.fail("invalid version-15 water layers were not fail-closed");
+        return false;
+    }
+
+    return true;
+}
+
+/// @brief Run the VerifyWaterLayers schema scenario.
+expose func VerifyWaterLayers() -> Boolean {
+    // ADR 0214: runtime-selected PBR presentation can be represented without
+    // replacing canonical node materials or executing project code.
+    var v16Text =
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"albedoMap\":\"assets/rock-albedo.png\","
+        + "\"normalMap\":\"assets/rock-normal.ktx2\","
+        + "\"metallicRoughnessMap\":\"assets/rock-mr.png\","
+        + "\"ambientOcclusionMap\":\"assets/rock-ao.png\","
+        + "\"emissiveMap\":\"assets/rock-emissive.png\","
+        + "\"metallic\":0.0,\"roughness\":0.95,"
+        + "\"ambientOcclusion\":0.8,\"normalScale\":1.25,"
+        + "\"emissiveR\":0.02,\"emissiveG\":0.024,"
+        + "\"emissiveB\":0.026,\"emissiveIntensity\":1.0,"
+        + "\"useProjectEnvironment\":true,\"ssrEnabled\":false},"
+        + "{\"matchProperty\":\"isAccent\",\"matchValue\":true,"
+        + "\"emissiveRProperty\":\"env.accentR\","
+        + "\"emissiveGProperty\":\"env.accentG\","
+        + "\"emissiveBProperty\":\"env.accentB\","
+        + "\"emissiveMultiplier\":0.5,"
+        + "\"emissiveIntensity\":2.2},"
+        + "{\"matchProperty\":\"surface.kind\",\"matchValue\":\"screen\","
+        + "\"emissiveMap\":\"assets/screen.gif\"}"
+        + "]}";
+    var v16 = scene_component_schema.ParseText(
+        v16Text, "v16-material-previews");
+    var materialPreviews = v16.materialPreviews3D;
+    if v16.valid == false or v16.version != 16
+       or materialPreviews.count() != 3
+       or materialPreviews.get(0).matchKind != "int"
+       or materialPreviews.get(0).matchInteger != 3
+       or materialPreviews.get(0).albedoMap
+          != "assets/rock-albedo.png"
+       or materialPreviews.get(0).normalMap
+          != "assets/rock-normal.ktx2"
+       or materialPreviews.get(0).metallicRoughnessMap
+          != "assets/rock-mr.png"
+       or materialPreviews.get(0).ambientOcclusionMap
+          != "assets/rock-ao.png"
+       or materialPreviews.get(0).emissiveMap
+          != "assets/rock-emissive.png"
+       or materialPreviews.get(0).hasMetallic == false
+       or Probe.near(materialPreviews.get(0).metallic, 0.0) == false
+       or materialPreviews.get(0).hasRoughness == false
+       or Probe.near(materialPreviews.get(0).roughness, 0.95) == false
+       or materialPreviews.get(0).hasAmbientOcclusion == false
+       or Probe.near(materialPreviews.get(0).ambientOcclusion, 0.8) == false
+       or materialPreviews.get(0).hasNormalScale == false
+       or Probe.near(materialPreviews.get(0).normalScale, 1.25) == false
+       or materialPreviews.get(0).hasEmissiveColor == false
+       or Probe.near(materialPreviews.get(0).emissiveB, 0.026) == false
+       or materialPreviews.get(0).hasEmissiveIntensity == false
+       or materialPreviews.get(0).useProjectEnvironment == false
+       or materialPreviews.get(0).hasSsrEnabled == false
+       or materialPreviews.get(0).ssrEnabled
+       or materialPreviews.get(1).matchKind != "bool"
+       or materialPreviews.get(1).matchBoolean == false
+       or materialPreviews.get(1).HasRootEmissive() == false
+       or materialPreviews.get(1).emissiveGProperty
+          != "env.accentG"
+       or Probe.near(materialPreviews.get(1).emissiveMultiplier, 0.5)
+          == false
+       or materialPreviews.get(2).matchKind != "string"
+       or materialPreviews.get(2).matchString != "screen"
+       or materialPreviews.get(2).HasOverrides() == false {
+        Probe.fail("valid version-16 material previews did not round trip");
+        return false;
+    }
+    var v15Materials = scene_component_schema.ParseText(
+        "{\"version\":15,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"roughness\":0.9}]}",
+        "v15-material-previews");
+    var fractionalMaterialMatch = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":1.5,"
+        + "\"roughness\":0.9}]}",
+        "fractional-material-match");
+    var unsafeMaterialMap = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"albedoMap\":\"../rock.png\"}]}",
+        "unsafe-material-map");
+    var incompleteMaterialEmissive = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"emissiveR\":0.1,\"emissiveG\":0.2}]}",
+        "incomplete-material-emissive");
+    var incompleteMaterialProperties = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"emissiveRProperty\":\"env.r\","
+        + "\"emissiveGProperty\":\"env.g\"}]}",
+        "incomplete-material-properties");
+    var mixedMaterialEmissive = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"emissiveR\":0.1,\"emissiveG\":0.2,\"emissiveB\":0.3,"
+        + "\"emissiveRProperty\":\"env.r\","
+        + "\"emissiveGProperty\":\"env.g\","
+        + "\"emissiveBProperty\":\"env.b\"}]}",
+        "mixed-material-emissive");
+    var orphanMaterialMultiplier = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"emissiveMultiplier\":2.0}]}",
+        "orphan-material-multiplier");
+    var outOfRangeMaterial = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"roughness\":1.1}]}",
+        "out-of-range-material");
+    var emptyMaterial = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3}]}",
+        "empty-material-preview");
+    var duplicateMaterial = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"materialPreviews3D\":["
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"roughness\":0.9},"
+        + "{\"matchProperty\":\"surf\",\"matchValue\":3,"
+        + "\"metallic\":0.1}]}",
+        "duplicate-material-preview");
+    if v15Materials.valid or fractionalMaterialMatch.valid
+       or unsafeMaterialMap.valid or incompleteMaterialEmissive.valid
+       or incompleteMaterialProperties.valid
+       or mixedMaterialEmissive.valid or orphanMaterialMultiplier.valid
+       or outOfRangeMaterial.valid or emptyMaterial.valid
+       or duplicateMaterial.valid
+       or unsafeMaterialMap.materialPreviews3D.count() != 0 {
+        Probe.fail("invalid version-16 material previews were not fail-closed");
+        return false;
+    }
+
+    return true;
+}
+
+/// @brief Run the VerifyMaterialAndDirectNodePreviews schema scenario.
+expose func VerifyMaterialAndDirectNodePreviews() -> Boolean {
+    // ADR 0215: typed metadata can select imported project models directly,
+    // with bounded fixed transforms composed over optional metadata mappings.
+    var v17NodeText =
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/enemy.glb\",\"scale\":0.85,"
+        + "\"yawDegrees\":180,\"offsetX\":1.0,\"offsetY\":4.2,"
+        + "\"offsetZ\":-2.0},"
+        + "{\"matchProperty\":\"enabled\",\"matchValue\":true,"
+        + "\"prefab\":\"assets/tree.fbx\"},"
+        + "{\"matchProperty\":\"role\",\"matchValue\":\"boss unit\","
+        + "\"prefab\":\"assets/boss.obj\"}]}";
+    var v17Node = scene_component_schema.ParseText(
+        v17NodeText, "v17-direct-model-node-previews");
+    var directNodePreviews = v17Node.nodePreviews3D;
+    if v17Node.valid == false or v17Node.version != 17
+       or directNodePreviews.count() != 3
+       or directNodePreviews.get(0).matchKind != "int"
+       or directNodePreviews.get(0).matchInteger != 3
+       or directNodePreviews.get(0).prefab != "assets/enemy.glb"
+       or Probe.near(directNodePreviews.get(0).scale, 0.85) == false
+       or Probe.near(directNodePreviews.get(0).yawDegrees, 180.0) == false
+       or Probe.near(directNodePreviews.get(0).offsetX, 1.0) == false
+       or Probe.near(directNodePreviews.get(0).offsetY, 4.2) == false
+       or Probe.near(directNodePreviews.get(0).offsetZ, -2.0) == false
+       or directNodePreviews.get(1).matchKind != "bool"
+       or directNodePreviews.get(1).matchBoolean == false
+       or directNodePreviews.get(1).prefab != "assets/tree.fbx"
+       or directNodePreviews.get(2).matchKind != "string"
+       or directNodePreviews.get(2).matchString != "boss unit"
+       or directNodePreviews.get(2).prefab != "assets/boss.obj" {
+        Probe.fail("valid version-17 direct-model node previews did not round trip");
+        return false;
+    }
+    var v16TypedNode = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/enemy.scene3d\"}]}",
+        "v16-typed-node-preview");
+    var fractionalNodeMatch = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":1.5,"
+        + "\"prefab\":\"assets/enemy.glb\"}]}",
+        "fractional-node-match");
+    var v16FixedNode = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.scene3d\",\"scale\":0.85}]}",
+        "v16-fixed-node-preview");
+    var v16DirectNode = scene_component_schema.ParseText(
+        "{\"version\":16,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.gltf\"}]}",
+        "v16-direct-model-node-preview");
+    var zeroNodeScale = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.glb\",\"scale\":0.0}]}",
+        "zero-node-scale");
+    var excessiveNodeYaw = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.obj\",\"yawDegrees\":36001}]}",
+        "excessive-node-yaw");
+    var excessiveNodeOffset = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.stl\",\"offsetY\":1000001}]}",
+        "excessive-node-offset");
+    var unsafeDirectNode = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"../enemy.gltf\"}]}",
+        "unsafe-direct-node-preview");
+    var unsupportedDirectNode = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.dae\"}]}",
+        "unsupported-direct-node-preview");
+    var duplicateTypedNode = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/enemy.glb\"},"
+        + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":3,"
+        + "\"prefab\":\"assets/enemy.obj\"}]}",
+        "duplicate-typed-node-preview");
+    if v16TypedNode.valid or fractionalNodeMatch.valid
+       or v16FixedNode.valid or v16DirectNode.valid
+       or zeroNodeScale.valid or excessiveNodeYaw.valid
+       or excessiveNodeOffset.valid or unsafeDirectNode.valid
+       or unsupportedDirectNode.valid or duplicateTypedNode.valid
+       or duplicateTypedNode.nodePreviews3D.count() != 0 {
+        Probe.fail("invalid version-17 direct-model node previews were not closed");
+        return false;
+    }
+
+    return true;
+}
+
+/// @brief Run the VerifyNodeFiltersAndProjectLocator schema scenario.
+expose func VerifyNodeFiltersAndProjectLocator() -> Boolean {
+    // ADR 0216: a project can expose one bounded, session-only selector that
+    // filters transient node art by an exact typed canonical metadata value.
+    var v18FilterText =
+        "{\"version\":18,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.scene3d\"}],"
+        + "\"nodePreviewFilter3D\":{"
+        + "\"label\":\"Encounter\",\"allLabel\":\"All encounters\","
+        + "\"matchProperty\":\"spawn.phase\",\"defaultIndex\":2,"
+        + "\"states\":["
+        + "{\"label\":\"Enabled\",\"matchValue\":true},"
+        + "{\"label\":\"Wave 2\",\"matchValue\":2},"
+        + "{\"label\":\"Boss\",\"matchValue\":\"boss\"}]}}";
+    var v18Filter = scene_component_schema.ParseText(
+        v18FilterText, "v18-node-preview-filter");
+    var previewFilter = v18Filter.nodePreviewFilter3D;
+    if v18Filter.valid == false or v18Filter.version != 18
+       or previewFilter == null or previewFilter.present == false
+       or previewFilter.label != "Encounter"
+       or previewFilter.allLabel != "All encounters"
+       or previewFilter.matchProperty != "spawn.phase"
+       or previewFilter.defaultIndex != 2
+       or previewFilter.OptionCount() != 4
+       or previewFilter.LabelAt(0) != "All encounters"
+       or previewFilter.LabelAt(2) != "Wave 2"
+       or previewFilter.LabelAt(4) != "All encounters"
+       or previewFilter.StateAt(0) != null
+       or previewFilter.StateAt(1).matchKind != "bool"
+       or previewFilter.StateAt(1).matchBoolean == false
+       or previewFilter.StateAt(2).matchKind != "int"
+       or previewFilter.StateAt(2).matchInteger != 2
+       or previewFilter.StateAt(3).matchKind != "string"
+       or previewFilter.StateAt(3).matchString != "boss" {
+        Probe.fail("valid version-18 node-preview filter did not round trip");
+        return false;
+    }
+    var v17Filter = scene_component_schema.ParseText(
+        "{\"version\":17,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.scene3d\"}],"
+        + "\"nodePreviewFilter3D\":{\"label\":\"Wave\","
+        + "\"matchProperty\":\"spawn.wave\",\"states\":["
+        + "{\"label\":\"Wave 1\",\"matchValue\":0}]}}",
+        "v17-node-preview-filter");
+    var orphanFilter = scene_component_schema.ParseText(
+        "{\"version\":18,\"components\":[],"
+        + "\"nodePreviewFilter3D\":{\"label\":\"Wave\","
+        + "\"matchProperty\":\"spawn.wave\",\"states\":["
+        + "{\"label\":\"Wave 1\",\"matchValue\":0}]}}",
+        "orphan-node-preview-filter");
+    var duplicateFilterLabel = scene_component_schema.ParseText(
+        "{\"version\":18,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.scene3d\"}],"
+        + "\"nodePreviewFilter3D\":{\"label\":\"Wave\","
+        + "\"allLabel\":\"All waves\",\"matchProperty\":\"spawn.wave\","
+        + "\"states\":[{\"label\":\"Wave 1\",\"matchValue\":0},"
+        + "{\"label\":\"wave 1\",\"matchValue\":1}]}}",
+        "duplicate-node-preview-filter-label");
+    var duplicateFilterValue = scene_component_schema.ParseText(
+        "{\"version\":18,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.scene3d\"}],"
+        + "\"nodePreviewFilter3D\":{\"label\":\"Wave\","
+        + "\"matchProperty\":\"spawn.wave\",\"states\":["
+        + "{\"label\":\"First\",\"matchValue\":0},"
+        + "{\"label\":\"Second\",\"matchValue\":0}]}}",
+        "duplicate-node-preview-filter-value");
+    var fractionalFilterValue = scene_component_schema.ParseText(
+        "{\"version\":18,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.scene3d\"}],"
+        + "\"nodePreviewFilter3D\":{\"label\":\"Wave\","
+        + "\"matchProperty\":\"spawn.wave\",\"states\":["
+        + "{\"label\":\"Wave 1\",\"matchValue\":0.5}]}}",
+        "fractional-node-preview-filter-value");
+    var unsafeFilterProperty = scene_component_schema.ParseText(
+        "{\"version\":18,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.scene3d\"}],"
+        + "\"nodePreviewFilter3D\":{\"label\":\"Wave\","
+        + "\"matchProperty\":\"spawn/wave\",\"states\":["
+        + "{\"label\":\"Wave 1\",\"matchValue\":0}]}}",
+        "unsafe-node-preview-filter-property");
+    var invalidFilterDefault = scene_component_schema.ParseText(
+        "{\"version\":18,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"kind\",\"matchValue\":\"enemy\","
+        + "\"prefab\":\"assets/enemy.scene3d\"}],"
+        + "\"nodePreviewFilter3D\":{\"label\":\"Wave\","
+        + "\"matchProperty\":\"spawn.wave\",\"defaultIndex\":2,"
+        + "\"states\":[{\"label\":\"Wave 1\",\"matchValue\":0}]}}",
+        "invalid-node-preview-filter-default");
+    if v17Filter.valid or orphanFilter.valid
+       or duplicateFilterLabel.valid or duplicateFilterValue.valid
+       or fractionalFilterValue.valid or unsafeFilterProperty.valid
+       or invalidFilterDefault.valid
+       or duplicateFilterValue.nodePreviewFilter3D.present {
+        Probe.fail("invalid version-18 node-preview filters were not fail-closed");
+        return false;
+    }
+
+    var v4NodePreview = scene_component_schema.ParseText(
+        "{\"version\":4,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"af.kind\",\"matchValue\":\"prop\","
+        + "\"prefab\":\"assets/prop.scene3d\"}]}",
+        "v4-node-preview");
+    var duplicateNodePreview = scene_component_schema.ParseText(
+        "{\"version\":5,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"af.kind\",\"matchValue\":\"prop\","
+        + "\"prefab\":\"assets/a.scene3d\"},"
+        + "{\"matchProperty\":\"af.kind\",\"matchValue\":\"prop\","
+        + "\"prefab\":\"assets/b.scene3d\"}]}",
+        "duplicate-node-preview");
+    var orphanVariants = scene_component_schema.ParseText(
+        "{\"version\":5,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"af.kind\",\"matchValue\":\"prop\","
+        + "\"variantPrefabs\":[\"assets/a.scene3d\"]}]}",
+        "orphan-variants");
+    var unsafePreviewPath = scene_component_schema.ParseText(
+        "{\"version\":5,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"af.kind\",\"matchValue\":\"prop\","
+        + "\"prefab\":\"../outside.scene3d\"}]}",
+        "unsafe-preview-path");
+    if v4NodePreview.valid or duplicateNodePreview.valid
+       or orphanVariants.valid or unsafePreviewPath.valid
+       or duplicateNodePreview.nodePreviews3D.count() != 0 {
+        Probe.fail("invalid version-5 node previews were not rejected fail-closed");
+        return false;
+    }
+
+    try { Dir.RemoveAll(Probe.LOCATOR_FIXTURE); } catch {}
+    var nested = Path.Join(Probe.LOCATOR_FIXTURE, "assets/scenes");
+    Dir.MakeAll(nested);
+    File.WriteAllText(
+        Path.Join(Probe.LOCATOR_FIXTURE, "zanna.project"),
+        "project PreviewProbe\n");
+    var nestedScene = Path.Join(nested, "region.scene2d");
+    File.WriteAllText(nestedScene, "{}");
+    var discovered =
+        project_locator.NearestManifestRoot(nestedScene);
+    var expectedRoot =
+        Path.Normalize(Path.Absolute(Probe.LOCATOR_FIXTURE));
+    if discovered != expectedRoot
+       or project_locator.NearestManifestRoot(
+              Path.Join(Probe.LOCATOR_FIXTURE, "missing.scene2d")) != expectedRoot
+       or project_locator.NearestManifestRoot("") != "" {
+        Probe.fail("nested explicit scene did not discover its nearest manifest");
+        return false;
+    }
+    Dir.RemoveAll(Probe.LOCATOR_FIXTURE);
+
+    Terminal.Say("RESULT: ok");
+    return true;
+}
+

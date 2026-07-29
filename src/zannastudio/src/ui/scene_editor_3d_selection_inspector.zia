@@ -1,0 +1,834 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_selection_inspector.zia
+// Purpose: Inspector, material, and component controls for selected 3D scene nodes.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_hierarchy_surface.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_selection_inspector;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_hierarchy_reordering" as PreviousLayer;
+
+/// @brief Selection Controls implementation layer.
+class SceneEditor3DSelectionInspectorLayer extends PreviousLayer.SceneEditor3DHierarchyReorderingLayer {
+
+    hide override func ApplySelectedNode() -> Boolean {
+        var node = SelectedNode();
+        if node == null { return false; }
+        var nextName = Str.Trim(nameInput.Text);
+        if nextName == "" { nextName = "Node"; }
+        node.Name = nextName;
+        node.Visible = visibleCheck.IsChecked();
+        node.SetPosition(positionX.Value, positionY.Value, positionZ.Value);
+        node.Rotation = Quat.FromEuler(rotationX.Value * SceneEditor3DModel.DEG_TO_RAD,
+                                       rotationY.Value * SceneEditor3DModel.DEG_TO_RAD,
+                                       rotationZ.Value * SceneEditor3DModel.DEG_TO_RAD).Normalize();
+        node.SetScale(scaleX.Value, scaleY.Value, scaleZ.Value);
+        if CommitScene("Updated " + nextName) == false { return false; }
+        RefreshHierarchy(node);
+        return true;
+    }
+
+    /// @brief Set visibility across the complete normalized node selection.
+    /// @details Mixed state is presentation-only. A determined checkbox value
+    ///          changes every selected node, verifies the live graph, and
+    ///          creates one canonical VSCN history entry. No-op and failed
+    ///          commits retain content, selection, and history.
+    /// @brief Set the bake-participation flag across the selection.
+    expose override func ApplySelectedStatic(nextStatic: Boolean) -> Boolean {
+        if scene == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var needsChange = false;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            if flatNodes.get(
+                   selectedIndices.get(selectionIndex)).GetStatic()
+               != nextStatic {
+                needsChange = true;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if needsChange == false {
+            detailLabel.SetText(
+                "Every selected node already has that static state.");
+            return false;
+        }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            flatNodes.get(
+                selectedIndices.get(selectionIndex))
+                .SetStatic(nextStatic);
+            selectionIndex = selectionIndex + 1;
+        }
+        var stateName = "static";
+        if nextStatic == false { stateName = "dynamic"; }
+        if CommitScene(
+               "Marked " + selectedIndices.count() + " node(s) "
+               + stateName) == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The selected nodes' static flag could not be committed.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Resolve the complete selection to one canonical visibility.
+    /// @details This is shared by the inspector, hierarchy action strip, and
+    ///          context menu; one group operation creates one history entry.
+    expose override func ApplySelectedVisibility(nextVisible: Boolean) -> Boolean {
+        if scene == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+
+        var needsChange = false;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            if flatNodes.get(
+                   selectedIndices.get(selectionIndex)).Visible
+               != nextVisible {
+                needsChange = true;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if needsChange == false {
+            detailLabel.SetText(
+                "Every selected node already has that visibility.");
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            var node =
+                flatNodes.get(selectedIndices.get(selectionIndex));
+            node.Visible = nextVisible;
+            if node.Visible != nextVisible {
+                RollBackGroupEdit(
+                    previousSelection, previousPrimary,
+                    "Studio could not update every selected node's visibility.");
+                return false;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+
+        var stateName = "visible";
+        if nextVisible == false { stateName = "hidden"; }
+        if CommitScene(
+               "Set " + selectedIndices.count() + " node(s) "
+               + stateName) == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The selected nodes' visibility could not be committed.");
+            return false;
+        }
+        RefreshHierarchy(null);
+        SelectSceneNodes(previousSelection, previousPrimary);
+        detailLabel.SetText(
+            "Visibility updated for the complete selection.");
+        return true;
+    }
+
+    /// @brief Commit every determined material control for the selection.
+    expose override func ApplySelectedMaterialFromControls() -> Boolean {
+        if materialInspector == null or materialInspector.colorPicker == null {
+            return false;
+        }
+        materialInspector.PumpDraftIntent();
+        return ApplySelectedMaterialPatch(
+            materialInspector.BuildPatch());
+    }
+
+    /// @brief Open the native picker for the currently selected texture slot.
+    hide override func ChooseMaterialMap() -> Boolean {
+        var node = SelectedNode();
+        if node == null { return false; }
+        var baseDir = "";
+        if currentDoc != null and currentDoc.filePath != "" {
+            baseDir = Path.Directory(currentDoc.filePath);
+        }
+        var slot = materialInspector.mapSlot.Selected;
+        var path = GUI.FileDialog.Open(
+            "Choose " + scene_material_3d.MapSlotName(slot) + " Map",
+            baseDir,
+            "*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.ktx2");
+        if path == "" { return false; }
+        return ApplySelectedMaterialMapPath(slot, path);
+    }
+
+    /// @brief Assign or clear one map across the complete node selection.
+    /// @details All required material clones are staged before nodes mutate.
+    ///          Equal source-material identities reuse one staged clone, so a
+    ///          selected sharing group remains shared without affecting any
+    ///          unselected node that owns the original material.
+    expose override func AssignSelectedMaterialMap(slot: Integer,
+                                          texture: Any) -> Boolean {
+        if scene == null
+           or scene_material_3d.IsMapSlot(slot) == false {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+
+        var currentMaterials: List[Material3D] = [];
+        var nextMaterials: List[Material3D] = [];
+        var changedCount = 0;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            var current = flatNodes.get(
+                selectedIndices.get(selectionIndex)).Material;
+            currentMaterials.add(current);
+            var shouldChange = texture != null
+                or scene_material_3d.HasMap(current, slot);
+            if shouldChange == false {
+                nextMaterials.add(current);
+            } else {
+                var next: Material3D = null;
+                var prior = 0;
+                while prior < currentMaterials.count() - 1
+                      and next == null {
+                    if currentMaterials.get(prior) == current
+                       and nextMaterials.get(prior) != current {
+                        next = nextMaterials.get(prior);
+                    }
+                    prior = prior + 1;
+                }
+                if next == null {
+                    next = scene_material_3d.WithMap(
+                        current, slot, texture);
+                }
+                if next == null {
+                    toolbarStatus.SetText("Texture map batch failed");
+                    detailLabel.SetText(
+                        "Studio could not allocate every material map copy. "
+                        + "No selected nodes were changed.");
+                    GUI.Toast.Error("3D texture map batch failed");
+                    return false;
+                }
+                nextMaterials.add(next);
+                changedCount = changedCount + 1;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if changedCount == 0 { return false; }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            flatNodes.get(
+                selectedIndices.get(selectionIndex)).Material =
+                nextMaterials.get(selectionIndex);
+            selectionIndex = selectionIndex + 1;
+        }
+        var action = "Embedded ";
+        if texture == null { action = "Cleared "; }
+        if CommitScene(
+               action + scene_material_3d.MapSlotName(slot)
+               + " map on " + changedCount + " selected node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The texture map batch could not be committed.");
+            return false;
+        }
+        RefreshMaterialFields(SelectedNode());
+        UpdateMaterialControls(true);
+        detailLabel.SetText(
+            action + scene_material_3d.MapSlotName(slot)
+            + " map on " + changedCount + " selected node(s).");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Assign a loaded object to one cloned material map slot.
+    hide override func AssignMaterialMap(nodeIndex: Integer,
+                                slot: Integer,
+                                texture: Any) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count()
+           or scene_material_3d.IsMapSlot(slot) == false {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        var next = scene_material_3d.WithMap(node.Material, slot, texture);
+        if next == null {
+            toolbarStatus.SetText("Texture map edit failed");
+            detailLabel.SetText(
+                "Studio could not create a node-local material copy.");
+            GUI.Toast.Error("3D texture map edit failed");
+            return false;
+        }
+        node.Material = next;
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        var action = "Embedded ";
+        if texture == null { action = "Cleared "; }
+        if CommitScene(
+               action + scene_material_3d.MapSlotName(slot)
+               + " map on " + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshMaterialFields(node);
+        return true;
+    }
+
+    expose override func SetEditorControlsEnabled(enabled: Boolean) {
+        if addEmptyButton == null { return; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var hasSelection = enabled and selectedIndex >= 0
+            and selectedIndex < flatNodes.count()
+            and selectedIndices.count() > 0;
+        var hasSingle = hasSelection and selectedIndices.count() == 1;
+        var viewportEditingEnabled =
+            hasSelection and gameViewActive == false;
+        var viewportNavigationEnabled =
+            enabled and gameViewOutputFramed == false;
+        createMenuButton.SetEnabled(enabled);
+        addEmptyButton.SetEnabled(enabled);
+        addChildButton.SetEnabled(hasSingle);
+        addBoxButton.SetEnabled(enabled);
+        addSphereButton.SetEnabled(enabled);
+        addPlaneButton.SetEnabled(enabled);
+        addCylinderButton.SetEnabled(enabled);
+        addTerrainButton.SetEnabled(enabled);
+        addLightButton.SetEnabled(enabled);
+        addCameraButton.SetEnabled(enabled);
+        duplicateNodeButton.SetEnabled(hasSelection);
+        moveToolButton.SetEnabled(viewportEditingEnabled);
+        rotateToolButton.SetEnabled(viewportEditingEnabled);
+        scaleToolButton.SetEnabled(viewportEditingEnabled);
+        dropToSurfaceButton.SetEnabled(viewportEditingEnabled);
+        placementMenuButton.SetEnabled(viewportEditingEnabled);
+        snapTransformCheck.SetEnabled(viewportEditingEnabled);
+        surfaceSnapCheck.SetEnabled(viewportEditingEnabled);
+        surfaceAlignCheck.SetEnabled(viewportEditingEnabled);
+        vertexSnapCheck.SetEnabled(viewportEditingEnabled);
+        deleteNodeButton.SetEnabled(hasSelection);
+        frameSelectedButton.SetEnabled(
+            hasSelection and gameViewOutputFramed == false);
+        gameViewButton.SetEnabled(enabled);
+        topViewButton.SetEnabled(viewportNavigationEnabled);
+        frontViewButton.SetEnabled(viewportNavigationEnabled);
+        rightViewButton.SetEnabled(viewportNavigationEnabled);
+        projectViewButton.SetEnabled(
+            viewportNavigationEnabled and CanApplyProjectPreviewView());
+        orbitLeftButton.SetEnabled(viewportNavigationEnabled);
+        orbitRightButton.SetEnabled(viewportNavigationEnabled);
+        orbitUpButton.SetEnabled(viewportNavigationEnabled);
+        orbitDownButton.SetEnabled(viewportNavigationEnabled);
+        zoomOutButton.SetEnabled(viewportNavigationEnabled);
+        zoomInButton.SetEnabled(viewportNavigationEnabled);
+        frameButton.SetEnabled(viewportNavigationEnabled);
+        projectionButton.SetEnabled(viewportNavigationEnabled);
+        viewportModeButton.SetEnabled(
+            enabled and gameViewActive == false);
+        viewOptionsButton.SetEnabled(
+            enabled and gameViewActive == false);
+        if projectPreviewFilterDropdown != null {
+            projectPreviewFilterDropdown.SetEnabled(
+                enabled and HasProjectPreviewFilter());
+        }
+        viewMenuButton.SetEnabled(true);
+        hierarchySearchInput.SetEnabled(enabled);
+        hierarchyTree.SetEnabled(enabled);
+        parentDropdown.SetEnabled(hasSelection);
+        reparentButton.SetEnabled(hasSelection);
+        preserveWorldReparentCheck.SetEnabled(hasSelection);
+        moveSiblingEarlierButton.SetEnabled(false);
+        moveSiblingLaterButton.SetEnabled(false);
+        nameInput.SetEnabled(hasSingle);
+        visibleCheck.SetEnabled(hasSelection);
+        positionX.SetEnabled(hasSelection);
+        positionY.SetEnabled(hasSelection);
+        positionZ.SetEnabled(hasSelection);
+        rotationX.SetEnabled(hasSelection);
+        rotationY.SetEnabled(hasSelection);
+        rotationZ.SetEnabled(hasSelection);
+        scaleX.SetEnabled(hasSelection);
+        scaleY.SetEnabled(hasSelection);
+        scaleZ.SetEnabled(hasSelection);
+        applyTransformButton.SetEnabled(hasSelection);
+        duplicateNodeButton.SetText("Duplicate");
+        deleteNodeButton.SetText("Delete");
+        applyTransformButton.SetText("Apply node properties");
+        applyTransformButton.SetTooltip(
+            "Set the selected node's name, visibility, and local transform");
+        UpdateHierarchySearchControls();
+        RefreshHierarchyActionControls();
+        if selectedIndices.count() > 1 {
+            duplicateNodeButton.SetText(
+                "Duplicate (" + selectedIndices.count() + ")");
+            deleteNodeButton.SetText(
+                "Delete (" + selectedIndices.count() + ")");
+            applyTransformButton.SetText(
+                "Apply deltas to " + selectedIndices.count());
+            applyTransformButton.SetTooltip(
+                "Add position/rotation and multiply scale for every "
+                + "selected node as one undoable edit");
+        }
+        UpdateParentControlAvailability();
+        UpdateSiblingControlAvailability();
+        metadataInspector.SetEnabled(hasSingle);
+        UpdateLightControls(enabled);
+        UpdateCameraControls(enabled);
+        UpdateColliderControls(enabled);
+        UpdateTerrainControls(enabled);
+        UpdateMaterialControls(enabled);
+        UpdateInspectorScope();
+        UpdateCommandMenuButtons();
+    }
+
+    /// @brief Whether at least one selected node can be made visible.
+    expose override func CanShowSelectedNodes() -> Boolean {
+        var selection = 0;
+        while selection < selectedIndices.count() {
+            var index = selectedIndices.get(selection);
+            if index >= 0 and index < flatNodes.count()
+               and flatNodes.get(index).Visible == false {
+                return true;
+            }
+            selection = selection + 1;
+        }
+        return false;
+    }
+
+    /// @brief Whether at least one selected node can be hidden.
+    expose override func CanHideSelectedNodes() -> Boolean {
+        var selection = 0;
+        while selection < selectedIndices.count() {
+            var index = selectedIndices.get(selection);
+            if index >= 0 and index < flatNodes.count()
+               and flatNodes.get(index).Visible {
+                return true;
+            }
+            selection = selection + 1;
+        }
+        return false;
+    }
+
+    /// @brief Whether every selected node ignores viewport picking.
+    expose override func SelectedAllPickLocked() -> Boolean {
+        var valid = 0;
+        var selection = 0;
+        while selection < selectedIndices.count() {
+            var index = selectedIndices.get(selection);
+            if index >= 0 and index < flatNodes.count() {
+                valid = valid + 1;
+                if NodePickLocked(index) == false { return false; }
+            }
+            selection = selection + 1;
+        }
+        return valid > 0;
+    }
+
+    /// @brief Keep hierarchy actions enabled, labeled, and mixed-state truthful.
+    hide override func RefreshHierarchyActionControls() {
+        if hierarchyShowButton == null
+           or hierarchyHideButton == null
+           or hierarchyPickLockButton == null {
+            return;
+        }
+        var hasSelection = scene != null
+            and selectedIndices.count() > 0;
+        hierarchyShowButton.SetEnabled(
+            hasSelection and CanShowSelectedNodes());
+        hierarchyHideButton.SetEnabled(
+            hasSelection and CanHideSelectedNodes());
+        hierarchyPickLockButton.SetEnabled(hasSelection);
+        if hasSelection and SelectedAllPickLocked() {
+            hierarchyPickLockButton.SetText("Unlock Pick");
+            hierarchyPickLockButton.SetAccessibleName(
+                "Unlock viewport picking for selected 3D scene nodes");
+            hierarchyPickLockButton.SetTooltip(
+                "Return every selected node to viewport click and marquee "
+                + "selection; this does not edit the scene");
+        } else {
+            var label = "⊘ Lock Pick";
+            if hasSelection and selectedIndices.count() > 1 {
+                label = "⊘ Lock All";
+            }
+            hierarchyPickLockButton.SetText(label);
+            hierarchyPickLockButton.SetAccessibleName(
+                "Lock viewport picking for selected 3D scene nodes");
+            hierarchyPickLockButton.SetTooltip(
+                "Keep the selected nodes visible but ignore them during "
+                + "viewport click and marquee selection; this follows the "
+                + "scene tab");
+        }
+    }
+
+    /// @brief Refresh typed metadata without rebuilding hierarchy identity.
+    hide override func RefreshMetadataFields(node: SceneNode) {
+        if metadataInspector == null { return; }
+        if selectedIndex != metadataOwnerIndex {
+            selectedNodeMetadata = -1;
+            metadataOwnerIndex = selectedIndex;
+        }
+        var enabled = scene != null and node != null
+            and selectedIndices.count() == 1;
+        metadataInspector.Refresh(node, enabled);
+        selectedNodeMetadata = metadataInspector.selectedProperty;
+    }
+
+    /// @brief Refresh complete node-light controls without changing history.
+    hide override func RefreshLightFields(node: SceneNode) {
+        if lightInspector == null { return; }
+        var primary = SelectedNode();
+        if primary == null and node != null { primary = node; }
+        lightInspector.RefreshSelection(
+            SelectedMaterialNodes(), primary, scene != null);
+    }
+
+    /// @brief Keep light actions truthful for the selection (ADR 0186).
+    hide override func UpdateLightControls(editorEnabled: Boolean) {
+        if lightInspector == null { return; }
+        var nodes = SelectedMaterialNodes();
+        var lightCount = 0;
+        var index = 0;
+        while index < nodes.count() {
+            if nodes.get(index).Light != null {
+                lightCount = lightCount + 1;
+            }
+            index = index + 1;
+        }
+        lightInspector.UpdateSelectionControls(
+            editorEnabled, nodes, lightCount);
+    }
+
+    /// @brief Refresh complete node-camera controls without changing history.
+    hide override func RefreshCameraFields(node: SceneNode) {
+        if cameraInspector == null { return; }
+        cameraInspector.Refresh(
+            node,
+            selectedIndices.count(),
+            scene != null,
+            lookThroughNode != null);
+    }
+
+    /// @brief Keep camera actions truthful for single-node authoring.
+    hide override func UpdateCameraControls(editorEnabled: Boolean) {
+        if cameraInspector == null { return; }
+        var node = SelectedNode();
+        var hasCamera = node != null and node.Camera != null;
+        cameraInspector.UpdateControls(
+            editorEnabled, hasCamera, selectedIndices.count(),
+            lookThroughNode != null);
+    }
+
+    /// @brief Refresh collider convention controls without changing history.
+    hide override func RefreshColliderFields(node: SceneNode) {
+        if colliderInspector == null { return; }
+        colliderInspector.Refresh(
+            node,
+            selectedIndices.count(),
+            scene != null);
+    }
+
+    /// @brief Refresh canonical terrain controls without changing history.
+    hide override func RefreshTerrainFields(node: SceneNode) {
+        if terrainInspector == null { return; }
+        var validSelection =
+            selectedIndices.count() == 1
+            and scene_terrain_3d.IsTerrainNode(node);
+        if validSelection == false and terrainSculptEnabled {
+            if terrainStrokeActive { CancelTerrainStroke(); }
+            terrainSculptEnabled = false;
+            terrainBrushHoverValid = false;
+        }
+        terrainInspector.Refresh(
+            node,
+            selectedIndices.count(),
+            scene != null and gameViewActive == false,
+            terrainSculptEnabled);
+    }
+
+    /// @brief Keep the prefab-instance group truthful for the selection.
+    hide override func RefreshInstanceControls(node: SceneNode) {
+        if instanceGroup == null { return; }
+        var single = selectedIndices.count() == 1 and node != null;
+        var isInstance = single and node.PrefabPath != "";
+        instanceGroup.SetEnabled(scene != null);
+        openPrefabSourceButton.SetEnabled(isInstance);
+        unpackInstanceButton.SetEnabled(isInstance);
+        relinkInstanceButton.SetEnabled(isInstance);
+        reloadInstancesButton.SetEnabled(scene != null);
+        if isInstance {
+            var content = "empty placeholder — the referenced scene "
+                + "did not resolve";
+            if node.ChildCount > 0 {
+                content = node.ChildCount + " grafted root node(s)";
+            }
+            instanceSummary.SetText(
+                "References " + node.PrefabPath + " • " + content
+                + " • overrides: transform, name, visibility, metadata.");
+        } else if single and node.IsInstanceContent {
+            instanceSummary.SetText(
+                "Instance content is locked; selection resolves to the "
+                + "owning prefab instance.");
+        } else {
+            instanceSummary.SetText(
+                "Select a prefab instance node to manage its reference.");
+        }
+    }
+
+    /// @brief Keep collider actions truthful for single-node authoring.
+    hide override func UpdateColliderControls(editorEnabled: Boolean) {
+        if colliderInspector == null { return; }
+        var node = SelectedNode();
+        var state = scene_collider_3d.FromNode(node);
+        colliderInspector.UpdateControls(
+            editorEnabled,
+            state.kind != scene_collider_3d.COLLIDER_NONE,
+            selectedIndices.count());
+    }
+
+    /// @brief Keep terrain actions truthful for one canonical selected grid.
+    hide override func UpdateTerrainControls(editorEnabled: Boolean) {
+        if terrainInspector == null { return; }
+        var hasTerrain =
+            selectedIndices.count() == 1
+            and scene_terrain_3d.IsTerrainNode(SelectedNode());
+        terrainInspector.UpdateControls(
+            editorEnabled and gameViewActive == false,
+            hasTerrain,
+            terrainSculptEnabled);
+    }
+
+    /// @brief Summarize selected-node coverage for the active component.
+    hide override func RefreshComponentPalette() {
+        if componentPalette == null or componentPalette.group == null {
+            return;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var component = componentPalette.SelectedComponent();
+        var enabled = scene != null and selectedIndices.count() > 0
+            and component != null;
+        var present = 0;
+        var missing = 0;
+        var conflicts = 0;
+        if enabled {
+            var selectionIndex = 0;
+            while selectionIndex < selectedIndices.count() {
+                var node =
+                    flatNodes.get(selectedIndices.get(selectionIndex));
+                var fieldIndex = 0;
+                while fieldIndex < component.fields.count() {
+                    var field = component.fields.get(fieldIndex);
+                    if node.MetadataHas(field.key) == false {
+                        missing = missing + 1;
+                    } else if node.MetadataKind(field.key)
+                               == scene_component_schema.ValueKind(
+                                      field.kind) {
+                        present = present + 1;
+                    } else {
+                        conflicts = conflicts + 1;
+                    }
+                    fieldIndex = fieldIndex + 1;
+                }
+                selectionIndex = selectionIndex + 1;
+            }
+        }
+        componentPalette.SetCreationContext(
+            scene != null and bakeActive == false, "Create Node");
+        componentPalette.SetContext(enabled, present, missing, conflicts);
+        componentPalette.SetEditEnabled(
+            enabled and selectedIndices.count() == 1);
+    }
+
+    /// @brief Route project component-picker intent into editor transactions.
+    hide override func PumpComponentControls() -> Boolean {
+        if componentPalette == null or componentPalette.group == null {
+            return false;
+        }
+        var hadPreviewFilter = HasProjectPreviewFilter();
+        if componentPalette.Pump() { RefreshComponentPalette(); }
+        var schemaChanged = componentAuthoring.PollExternalChanges(
+            1000, componentPalette);
+        var schemaAuthored =
+            componentAuthoring.Pump(componentPalette);
+        if schemaChanged or schemaAuthored
+           or componentAuthoring.handled {
+            componentSchema = componentAuthoring.schema;
+            if HasProjectPreviewFilter() {
+                if hadPreviewFilter == false {
+                    projectPreviewFilterIndex =
+                        componentSchema.nodePreviewFilter3D.defaultIndex;
+                } else {
+                    projectPreviewFilterIndex =
+                        BoundProjectPreviewFilterIndex(
+                            projectPreviewFilterIndex);
+                }
+            } else {
+                projectPreviewFilterIndex = 0;
+            }
+            SyncProjectPreviewFilterControls();
+            viewportPostFXDirty = true;
+            RefreshComponentPalette();
+            RebuildProjectNodePreviews();
+            if componentAuthoring.message != "" {
+                detailLabel.SetText(componentAuthoring.message);
+            }
+        }
+        if componentPalette.TakeEditFieldRequested() {
+            EditSelectedComponentField();
+        }
+        if componentPalette.TakeCreateRequested() {
+            return CreateNodeFromComponent(
+                       componentPalette.SelectedComponent()) >= 0;
+        }
+        if componentPalette.TakeApplyRequested() {
+            return ApplySelectedComponent(
+                componentPalette.SelectedComponent());
+        }
+        return false;
+    }
+
+    /// @brief Update material fields without rebuilding hierarchy/node identity.
+    hide override func RefreshMaterialFields(node: SceneNode) {
+        if materialInspector == null { return; }
+        var primary = SelectedNode();
+        if primary == null and node != null { primary = node; }
+        var material: Material3D = null;
+        if primary != null { material = primary.Material; }
+        materialInspector.RefreshSelection(
+            SelectedMaterialNodes(),
+            primary,
+            MaterialUsageCount(material),
+            scene != null);
+    }
+
+    /// @brief Keep material actions truthful for selection and sharing state.
+    hide override func UpdateMaterialControls(editorEnabled: Boolean) {
+        if materialInspector == null { return; }
+        var node = SelectedNode();
+        var material: Material3D = null;
+        if node != null { material = node.Material; }
+        materialInspector.UpdateSelectionControls(
+            editorEnabled,
+            SelectedMaterialNodes(),
+            MaterialUsageCount(material));
+    }
+
+    /// @brief Return normalized live material owners for current selection.
+    hide override func SelectedMaterialNodes() -> List[SceneNode] {
+        var nodes: List[SceneNode] = [];
+        var normalized = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var index = 0;
+        while index < normalized.count() {
+            nodes.add(flatNodes.get(normalized.get(index)));
+            index = index + 1;
+        }
+        return nodes;
+    }
+
+    /// @brief Count selected-scene nodes sharing one material identity.
+    hide override func MaterialUsageCount(material: Material3D) -> Integer {
+        if material == null { return 0; }
+        var count = 0;
+        var index = 0;
+        while index < flatNodes.count() {
+            if flatNodes.get(index).Material == material { count = count + 1; }
+            index = index + 1;
+        }
+        return count;
+    }
+
+    /// @brief Count node-attached lights represented by the bounded editor tree.
+    hide override func AuthoredLightCount() -> Integer {
+        var count = 0;
+        var index = 0;
+        while index < flatNodes.count() {
+            if flatNodes.get(index).Light != null { count = count + 1; }
+            index = index + 1;
+        }
+        return count;
+    }
+
+    /// @brief Return a non-empty node name for status messages.
+    hide override func NodeDisplayName(node: SceneNode) -> String {
+        if node == null { return "node"; }
+        var name = Str.Trim(node.Name);
+        if name == "" { return "unnamed node"; }
+        return name;
+    }
+}

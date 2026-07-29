@@ -1,0 +1,860 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_viewport_selection.zia
+// Purpose: Focused viewport selection behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_camera_navigation.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_viewport_selection;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_camera_navigation" as PreviousLayer;
+
+/// @brief Viewport Selection implementation layer.
+class SceneEditor3DViewportSelectionLayer extends PreviousLayer.SceneEditor3DCameraNavigationLayer {
+
+    /// @brief Push this document's bounded snap increments into the gizmos.
+    /// @details The transform module holds one live set of increments, so the
+    ///          active document reasserts its own on restore and edit.
+    hide override func ApplySnapIncrements() {
+        snapMoveIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapMoveIncrement,
+            scene_transform_3d.MAX_MOVE_SNAP_INCREMENT);
+        snapRotateIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapRotateIncrement,
+            scene_transform_3d.MAX_ROTATE_SNAP_INCREMENT);
+        snapScaleIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapScaleIncrement,
+            scene_transform_3d.MAX_SCALE_SNAP_INCREMENT);
+        scene_transform_3d.SetSnapIncrements(
+            snapMoveIncrement, snapRotateIncrement, snapScaleIncrement);
+    }
+
+    /// @brief Reflect restored workspace chrome into the retained controls.
+    hide override func SyncViewOptionControls() {
+        UpdateProjectionControls();
+        if gridCheck == null { return; }
+        gridCheck.SetChecked(showGrid);
+        markersCheck.SetChecked(showMarkers);
+        lightsCheck.SetChecked(showLightOverlays);
+        camerasCheck.SetChecked(showCameraOverlays);
+        collidersCheck.SetChecked(showColliderOverlays);
+        routesCheck.SetChecked(showRouteOverlays);
+        statsCheck.SetChecked(showStats);
+        snapMoveSpinner.SetValue(snapMoveIncrement);
+        snapRotateSpinner.SetValue(snapRotateIncrement);
+        snapScaleSpinner.SetValue(snapScaleIncrement);
+        ApplySnapIncrements();
+    }
+
+    /// @brief Find the nearest bounded origin marker at one viewport point.
+    hide override func ViewportMarkerAt(mouseX: Integer,
+                               mouseY: Integer) -> Integer {
+        var best = -1;
+        var bestDistance = 196;
+        var index = 0;
+        while index < projectedX.count()
+              and index < projectedY.count()
+              and index < flatNodes.count() {
+            var dx = projectedX.get(index) - mouseX;
+            var dy = projectedY.get(index) - mouseY;
+            var distance = dx * dx + dy * dy;
+            if distance < bestDistance {
+                bestDistance = distance;
+                best = index;
+            }
+            index = index + 1;
+        }
+        return best;
+    }
+
+    /// @brief Resolve one viewport point through visible mesh bounds then markers.
+    /// @return Flattened node index, or -1 for empty viewport space.
+    expose override func ViewportNodeAt(mouseX: Integer,
+                               mouseY: Integer) -> Integer {
+        if scene == null
+           or mouseX < 0 or mouseX >= renderedViewportWidth
+           or mouseY < 0 or mouseY >= renderedViewportHeight {
+            return -1;
+        }
+        if ConfigureViewportCamera() {
+            var castOrigin = viewportRenderCamera.ScreenToRayOrigin(
+                mouseX, mouseY,
+                renderedViewportWidth, renderedViewportHeight) as Vec3;
+            var direction = viewportRenderCamera.ScreenToRay(
+                mouseX, mouseY,
+                renderedViewportWidth, renderedViewportHeight) as Vec3;
+            var previewCandidate = -1;
+            var previewDistance = 1000000000.0;
+            if projectPreviewScene != null {
+                var previewNode =
+                    projectPreviewScene.RaycastNodesPrecise(
+                        castOrigin,
+                        direction,
+                        viewportRenderCamera.FarPlane) as SceneNode;
+                var previewHit =
+                    projectPreviewScene.RaycastPreciseHit(
+                        castOrigin,
+                        direction,
+                        viewportRenderCamera.FarPlane) as RayHit3D;
+                previewCandidate =
+                    ProjectPreviewOwner(previewNode);
+                if previewHit != null {
+                    previewDistance = previewHit.Distance;
+                }
+                if previewCandidate >= 0
+                   and NodePickLocked(previewCandidate) == false {
+                    var sceneHit = scene.RaycastPreciseHit(
+                        castOrigin,
+                        direction,
+                        viewportRenderCamera.FarPlane) as RayHit3D;
+                    if sceneHit == null
+                       or previewDistance <= sceneHit.Distance {
+                        return previewCandidate;
+                    }
+                }
+            }
+            // Walk hits front to back so pick-locked nodes yield to the
+            // geometry behind them instead of blocking the click.
+            var remaining = viewportRenderCamera.FarPlane;
+            var attempts = 0;
+            while attempts < 32 and remaining > 0.0 {
+                var node = scene.RaycastNodesPrecise(
+                    castOrigin, direction, remaining) as SceneNode;
+                if node == null { break; }
+                var hitIndex = FindFlatIndex(node);
+                if hitIndex >= 0
+                   and NodePickLocked(hitIndex) == false {
+                    return hitIndex;
+                }
+                var hit = scene.RaycastPreciseHit(
+                    castOrigin, direction, remaining) as RayHit3D;
+                if hit == null { break; }
+                var step = hit.Distance + 0.001;
+                if step <= 0.0 { break; }
+                castOrigin = Vec3.New(
+                    castOrigin.X + direction.X * step,
+                    castOrigin.Y + direction.Y * step,
+                    castOrigin.Z + direction.Z * step);
+                remaining = remaining - step;
+                attempts = attempts + 1;
+            }
+            if previewCandidate >= 0
+               and NodePickLocked(previewCandidate) == false {
+                return previewCandidate;
+            }
+        }
+        var marker = ViewportMarkerAt(mouseX, mouseY);
+        if marker >= 0 and NodePickLocked(marker) { return -1; }
+        return marker;
+    }
+
+    /// @brief Consume the one-shot Run Scene request from this editor.
+    expose override func TakeRunSceneRequested() -> Boolean {
+        if runSceneRequested == false { return false; }
+        runSceneRequested = false;
+        return true;
+    }
+
+    /// @brief Whether one flattened node is workspace pick-locked.
+    /// @details The active path set follows its document. RefreshHierarchy
+    ///          remaps live structural changes by node identity, preventing a
+    ///          reordered or deleted path from locking a different node.
+    expose override func NodePickLocked(index: Integer) -> Boolean {
+        if index < 0 or index >= flatPaths.count() { return false; }
+        return PickLockedPath(flatPaths.get(index));
+    }
+
+    /// @brief Set pick-lock for the complete selection without editing VSCN.
+    /// @return True only when workspace lock state changed.
+    expose override func SetSelectedPickLocked(nextLocked: Boolean) -> Boolean {
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+
+        var changed = false;
+        if nextLocked {
+            var selection = 0;
+            while selection < selectedIndices.count()
+                  and pickLockedPaths.count() < SceneEditor3DModel.MAX_EDITOR_NODES {
+                var index = selectedIndices.get(selection);
+                if index >= 0 and index < flatPaths.count() {
+                    var path = flatPaths.get(index);
+                    if PickLockedPath(path) == false {
+                        pickLockedPaths.add(path);
+                        changed = true;
+                    }
+                }
+                selection = selection + 1;
+            }
+        } else {
+            var kept: List[String] = [];
+            var lockIndex = 0;
+            while lockIndex < pickLockedPaths.count() {
+                var path = pickLockedPaths.get(lockIndex);
+                var selectedPath = false;
+                var selection = 0;
+                while selection < selectedIndices.count() {
+                    var index = selectedIndices.get(selection);
+                    if index >= 0 and index < flatPaths.count()
+                       and flatPaths.get(index) == path {
+                        selectedPath = true;
+                    }
+                    selection = selection + 1;
+                }
+                if selectedPath {
+                    changed = true;
+                } else if StringListContains(kept, path) == false {
+                    kept.add(path);
+                }
+                lockIndex = lockIndex + 1;
+            }
+            pickLockedPaths = kept;
+        }
+        if changed == false { return false; }
+
+        RefreshHierarchyRowLabels();
+        RefreshHierarchyActionControls();
+        CaptureWorkspaceState();
+        if nextLocked {
+            toolbarStatus.SetText(
+                "Viewport picking locked for "
+                + selectedIndices.count() + " node(s)");
+        } else {
+            toolbarStatus.SetText(
+                "Viewport picking unlocked for "
+                + selectedIndices.count() + " node(s)");
+        }
+        return true;
+    }
+
+    /// @brief Resolve a mixed selection to locked, or unlock an all-locked one.
+    /// @return True when every selected node is locked after the toggle.
+    expose override func ToggleSelectedPickLocks() -> Boolean {
+        if selectedIndices.count() == 0 { return false; }
+        var nextLocked = SelectedAllPickLocked() == false;
+        SetSelectedPickLocked(nextLocked);
+        return nextLocked;
+    }
+
+    /// @brief Toggle pick-lock on the single selected node (workspace-only).
+    /// @return True when the node is locked after the toggle.
+    expose override func ToggleSelectedPickLock() -> Boolean {
+        if selectedIndices.count() != 1 { return false; }
+        return ToggleSelectedPickLocks();
+    }
+
+    /// @brief Snap the camera to one of six axis-aligned views.
+    /// @param kind Top/Front/Right/Bottom/Back/Left orientation face.
+    expose override func SetQuickView(kind: Integer) {
+        if gameViewOutputFramed { return; }
+        if kind < SceneEditor3DModel.ORIENTATION_FACE_TOP
+           or kind > SceneEditor3DModel.ORIENTATION_FACE_LEFT {
+            return;
+        }
+        ReleaseGameplayViewAnchor();
+        if kind == SceneEditor3DModel.ORIENTATION_FACE_TOP {
+            viewYawDegrees = 0;
+            viewPitchDegrees = 80;
+        } else if kind == SceneEditor3DModel.ORIENTATION_FACE_FRONT {
+            viewYawDegrees = 0;
+            viewPitchDegrees = 0;
+        } else if kind == SceneEditor3DModel.ORIENTATION_FACE_RIGHT {
+            viewYawDegrees = 90;
+            viewPitchDegrees = 0;
+        } else if kind == SceneEditor3DModel.ORIENTATION_FACE_BOTTOM {
+            viewYawDegrees = 0;
+            viewPitchDegrees = -80;
+        } else if kind == SceneEditor3DModel.ORIENTATION_FACE_BACK {
+            viewYawDegrees = 180;
+            viewPitchDegrees = 0;
+        } else {
+            viewYawDegrees = -90;
+            viewPitchDegrees = 0;
+        }
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Return whether the complete navigator fits the viewport.
+    expose override func OrientationNavigatorVisible() -> Boolean {
+        return gameViewActive == false
+            and renderedViewportWidth
+                   >= SceneEditor3DModel.ORIENTATION_PANEL_WIDTH
+                      + SceneEditor3DModel.ORIENTATION_PANEL_MARGIN * 2
+            and renderedViewportHeight
+                   >= SceneEditor3DModel.ORIENTATION_PANEL_HEIGHT
+                      + SceneEditor3DModel.ORIENTATION_PANEL_MARGIN * 2;
+    }
+
+    /// @brief Return the navigator face under one viewport-local point.
+    /// @return Six direction faces, projection toggle, or NONE.
+    expose override func OrientationFaceAt(mouseX: Integer,
+                                  mouseY: Integer) -> Integer {
+        if OrientationNavigatorVisible() == false {
+            return SceneEditor3DModel.ORIENTATION_FACE_NONE;
+        }
+        var panelLeft = renderedViewportWidth
+            - SceneEditor3DModel.ORIENTATION_PANEL_MARGIN - SceneEditor3DModel.ORIENTATION_PANEL_WIDTH;
+        var face = SceneEditor3DModel.ORIENTATION_FACE_TOP;
+        while face <= SceneEditor3DModel.ORIENTATION_FACE_LEFT {
+            var column = face % 3;
+            var row = face / 3;
+            var left = panelLeft + SceneEditor3DModel.ORIENTATION_FACE_LEFT_PAD
+                + column
+                    * (SceneEditor3DModel.ORIENTATION_FACE_WIDTH + SceneEditor3DModel.ORIENTATION_FACE_GAP);
+            var top = SceneEditor3DModel.ORIENTATION_PANEL_MARGIN
+                + SceneEditor3DModel.ORIENTATION_FACE_TOP_PAD
+                + row
+                    * (SceneEditor3DModel.ORIENTATION_FACE_HEIGHT + SceneEditor3DModel.ORIENTATION_FACE_GAP);
+            if mouseX >= left
+               and mouseX < left + SceneEditor3DModel.ORIENTATION_FACE_WIDTH
+               and mouseY >= top
+               and mouseY < top + SceneEditor3DModel.ORIENTATION_FACE_HEIGHT {
+                return face;
+            }
+            face = face + 1;
+        }
+        var projectionLeft = panelLeft + 91;
+        var projectionTop = SceneEditor3DModel.ORIENTATION_PANEL_MARGIN + 5;
+        if mouseX >= projectionLeft and mouseX < projectionLeft + 50
+           and mouseY >= projectionTop and mouseY < projectionTop + 17 {
+            return SceneEditor3DModel.ORIENTATION_PROJECTION_TOGGLE;
+        }
+        if mouseX >= panelLeft
+           and mouseX < panelLeft + SceneEditor3DModel.ORIENTATION_PANEL_WIDTH
+           and mouseY >= SceneEditor3DModel.ORIENTATION_PANEL_MARGIN
+           and mouseY
+              < SceneEditor3DModel.ORIENTATION_PANEL_MARGIN + SceneEditor3DModel.ORIENTATION_PANEL_HEIGHT {
+            return SceneEditor3DModel.ORIENTATION_PANEL_BACKGROUND;
+        }
+        return SceneEditor3DModel.ORIENTATION_FACE_NONE;
+    }
+
+    /// @brief Return the center of one live navigator hit target.
+    /// @details Display probes use production geometry instead of duplicating
+    ///          top-right placement math.
+    expose override func OrientationFaceCenter(face: Integer) -> SceneEditor3DModel.ProjectedPoint {
+        var point = new SceneEditor3DModel.ProjectedPoint();
+        point.visible = false;
+        if OrientationNavigatorVisible() == false { return point; }
+        var panelLeft = renderedViewportWidth
+            - SceneEditor3DModel.ORIENTATION_PANEL_MARGIN - SceneEditor3DModel.ORIENTATION_PANEL_WIDTH;
+        if face >= SceneEditor3DModel.ORIENTATION_FACE_TOP
+           and face <= SceneEditor3DModel.ORIENTATION_FACE_LEFT {
+            var column = face % 3;
+            var row = face / 3;
+            point.x = panelLeft + SceneEditor3DModel.ORIENTATION_FACE_LEFT_PAD
+                + column
+                    * (SceneEditor3DModel.ORIENTATION_FACE_WIDTH + SceneEditor3DModel.ORIENTATION_FACE_GAP)
+                + SceneEditor3DModel.ORIENTATION_FACE_WIDTH / 2;
+            point.y = SceneEditor3DModel.ORIENTATION_PANEL_MARGIN
+                + SceneEditor3DModel.ORIENTATION_FACE_TOP_PAD
+                + row
+                    * (SceneEditor3DModel.ORIENTATION_FACE_HEIGHT + SceneEditor3DModel.ORIENTATION_FACE_GAP)
+                + SceneEditor3DModel.ORIENTATION_FACE_HEIGHT / 2;
+            point.visible = true;
+        } else if face == SceneEditor3DModel.ORIENTATION_PROJECTION_TOGGLE {
+            point.x = panelLeft + 116;
+            point.y = SceneEditor3DModel.ORIENTATION_PANEL_MARGIN + 13;
+            point.visible = true;
+        }
+        return point;
+    }
+
+    /// @brief Name one navigator target for status/accessibility text.
+    expose override func OrientationFaceLabel(face: Integer) -> String {
+        if face == SceneEditor3DModel.ORIENTATION_FACE_TOP { return "Top"; }
+        if face == SceneEditor3DModel.ORIENTATION_FACE_FRONT { return "Front"; }
+        if face == SceneEditor3DModel.ORIENTATION_FACE_RIGHT { return "Right"; }
+        if face == SceneEditor3DModel.ORIENTATION_FACE_BOTTOM { return "Bottom"; }
+        if face == SceneEditor3DModel.ORIENTATION_FACE_BACK { return "Back"; }
+        if face == SceneEditor3DModel.ORIENTATION_FACE_LEFT { return "Left"; }
+        if face == SceneEditor3DModel.ORIENTATION_PROJECTION_TOGGLE {
+            if viewPerspective { return "Orthographic"; }
+            return "Perspective";
+        }
+        if face == SceneEditor3DModel.ORIENTATION_PANEL_BACKGROUND { return "Navigator"; }
+        return "";
+    }
+
+    /// @brief Activate one navigator target without touching VSCN content.
+    /// @return True only for one recognized direction/projection target.
+    expose override func ActivateOrientationFace(face: Integer) -> Boolean {
+        if face >= SceneEditor3DModel.ORIENTATION_FACE_TOP
+           and face <= SceneEditor3DModel.ORIENTATION_FACE_LEFT {
+            SetQuickView(face);
+            toolbarStatus.SetText(
+                OrientationFaceLabel(face) + " view");
+            return true;
+        }
+        if face == SceneEditor3DModel.ORIENTATION_PROJECTION_TOGGLE {
+            SetViewProjection(!viewPerspective);
+            var projection = "Orthographic";
+            if viewPerspective { projection = "Perspective"; }
+            toolbarStatus.SetText(projection + " projection");
+            return true;
+        }
+        return false;
+    }
+
+    /// @brief Return the navigator face nearest the current camera heading.
+    hide override func ActiveOrientationFace() -> Integer {
+        if viewPitchDegrees >= 45 { return SceneEditor3DModel.ORIENTATION_FACE_TOP; }
+        if viewPitchDegrees <= -45 { return SceneEditor3DModel.ORIENTATION_FACE_BOTTOM; }
+        var yaw = SceneEditor3DModel.NormalizeYawDegrees(viewYawDegrees);
+        if yaw < 0 { yaw = yaw + 360; }
+        if yaw < 45 or yaw >= 315 { return SceneEditor3DModel.ORIENTATION_FACE_FRONT; }
+        if yaw < 135 { return SceneEditor3DModel.ORIENTATION_FACE_RIGHT; }
+        if yaw < 225 { return SceneEditor3DModel.ORIENTATION_FACE_BACK; }
+        return SceneEditor3DModel.ORIENTATION_FACE_LEFT;
+    }
+
+    /// @brief Encode the live camera pose as one bookmark string.
+    hide override func EncodeCameraBookmark() -> String {
+        var projection = 0;
+        if viewPerspective { projection = 1; }
+        return viewYawDegrees + "," + viewPitchDegrees + ","
+            + viewScale + "," + viewTargetX + "," + viewTargetY + ","
+            + viewTargetZ + "," + projection;
+    }
+
+    /// @brief Store or recall camera bookmarks from the digit row.
+    /// @details With the viewport surface focused, Shift+1..9 stores the
+    ///          live pose into that slot and a bare digit recalls it;
+    ///          bookmarks persist in the per-document workspace state and
+    ///          never touch canonical VSCN bytes.
+    hide override func PumpCameraBookmarks() {
+        if gameViewOutputFramed { return; }
+        if viewportImage == null or viewportImage.IsFocused() == false {
+            return;
+        }
+        var digit = 0;
+        if Input.Keyboard.WasPressed(Input.Key.Digit1) { digit = 1; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit2) { digit = 2; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit3) { digit = 3; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit4) { digit = 4; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit5) { digit = 5; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit6) { digit = 6; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit7) { digit = 7; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit8) { digit = 8; }
+        if Input.Keyboard.WasPressed(Input.Key.Digit9) { digit = 9; }
+        if digit == 0 { return; }
+        if ViewportShiftDown() {
+            StoreCameraBookmark(digit);
+        } else {
+            RecallCameraBookmark(digit);
+        }
+    }
+
+    /// @brief Store the live camera pose into one 1-based bookmark slot.
+    expose override func StoreCameraBookmark(slot: Integer) -> Boolean {
+        if gameViewOutputFramed { return false; }
+        if slot < 1 or slot > 9 { return false; }
+        while cameraBookmarks.count() < 9 { cameraBookmarks.add(""); }
+        cameraBookmarks.set(slot - 1, EncodeCameraBookmark());
+        toolbarStatus.SetText("Stored camera bookmark " + slot);
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Recall one 1-based camera bookmark slot when it exists.
+    expose override func RecallCameraBookmark(slot: Integer) -> Boolean {
+        if gameViewOutputFramed { return false; }
+        if slot < 1 or slot > cameraBookmarks.count() { return false; }
+        var encoded = cameraBookmarks.get(slot - 1);
+        if encoded == "" { return false; }
+        var parts = Str.Split(encoded, ",");
+        if Seq.get_Count(parts) != 7 { return false; }
+        ReleaseGameplayViewAnchor();
+        viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(
+            Parse.IntOr(Seq.GetStr(parts, 0), viewYawDegrees));
+        viewPitchDegrees = SceneEditor3DModel.ClampInt3D(
+            Parse.IntOr(Seq.GetStr(parts, 1), viewPitchDegrees), -80, 80);
+        viewScale = SceneEditor3DModel.ClampInt3D(
+            Parse.IntOr(Seq.GetStr(parts, 2), viewScale), 4, 120);
+        viewTargetX = Parse.DoubleOr(Seq.GetStr(parts, 3), viewTargetX);
+        viewTargetY = Parse.DoubleOr(Seq.GetStr(parts, 4), viewTargetY);
+        viewTargetZ = Parse.DoubleOr(Seq.GetStr(parts, 5), viewTargetZ);
+        SetViewProjection(
+            Parse.IntOr(Seq.GetStr(parts, 6), 1) != 0);
+        toolbarStatus.SetText("Recalled camera bookmark " + slot);
+        renderDirty = true;
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief The snap state one gizmo step should use right now.
+    /// @details Holding Ctrl temporarily inverts the checkbox: snapping
+    ///          drags snap-free and free drags snap, matching Unity's
+    ///          hold-to-invert convention. Workspace state is untouched.
+    expose override func EffectiveSnapEnabled() -> Boolean {
+        var inverted = Input.Keyboard.IsDown(Input.Key.LeftControl)
+            or Input.Keyboard.IsDown(Input.Key.RightControl);
+        if inverted { return gizmoSnapEnabled == false; }
+        return gizmoSnapEnabled;
+    }
+
+    /// @brief Return whether either Alt key is held (overlap cycling).
+    hide override func ViewportAltDown() -> Boolean {
+        return Input.Keyboard.IsDown(Input.Key.LeftAlt)
+            or Input.Keyboard.IsDown(Input.Key.RightAlt);
+    }
+
+    /// @brief Alt-click: cycle through every triangle hit under the pointer.
+    /// @details Walks the ray front to back by re-casting just past each
+    ///          triangle hit (Zia cannot type Seq elements, so the sorted
+    ///          RaycastNodesPreciseAll list stays a runtime-level surface);
+    ///          the pick after the current primary wins, wrapping, so
+    ///          repeated Alt-clicks walk through stacked geometry.
+    /// @return The flattened node index to select, or @p fallback.
+    expose override func CycleViewportNodeAt(mouseX: Integer,
+                                  mouseY: Integer,
+                                  fallback: Integer) -> Integer {
+        if scene == null or ConfigureViewportCamera() == false {
+            return fallback;
+        }
+        var castOrigin = viewportRenderCamera.ScreenToRayOrigin(
+            mouseX, mouseY,
+            renderedViewportWidth, renderedViewportHeight) as Vec3;
+        var direction = viewportRenderCamera.ScreenToRay(
+            mouseX, mouseY,
+            renderedViewportWidth, renderedViewportHeight) as Vec3;
+        var remaining = viewportRenderCamera.FarPlane;
+        var indices: List[Integer] = [];
+        var attempts = 0;
+        while attempts < 32 and remaining > 0.0 {
+            var node = scene.RaycastNodesPrecise(
+                castOrigin, direction, remaining) as SceneNode;
+            if node == null { break; }
+            var flat = ResolveInstanceOwnerIndex(FindFlatIndex(node));
+            if flat >= 0
+               and scene_selection.Contains(indices, flat) == false {
+                indices.add(flat);
+            }
+            var hit = scene.RaycastPreciseHit(
+                castOrigin, direction, remaining) as RayHit3D;
+            if hit == null { break; }
+            var step = hit.Distance + 0.001;
+            if step <= 0.0 { break; }
+            castOrigin = Vec3.New(
+                castOrigin.X + direction.X * step,
+                castOrigin.Y + direction.Y * step,
+                castOrigin.Z + direction.Z * step);
+            remaining = remaining - step;
+            attempts = attempts + 1;
+        }
+        if indices.count() == 0 { return fallback; }
+        var currentAt = -1;
+        var primary = ResolveInstanceOwnerIndex(selectedIndex);
+        var i = 0;
+        while i < indices.count() {
+            if indices.get(i) == primary { currentAt = i; }
+            i = i + 1;
+        }
+        var next = currentAt + 1;
+        if next >= indices.count() { next = 0; }
+        return indices.get(next);
+    }
+
+    /// @brief Project one node subtree's world bounds to a screen rectangle.
+    /// @details Transforms the eight subtree-local AABB corners through the
+    ///          node's world matrix and projects each through the shared
+    ///          viewport camera. Any behind-eye corner marks the bounds
+    ///          invisible because mirrored projections would inflate rects.
+    hide override func NodeScreenBounds(node: SceneNode) -> SceneEditor3DModel.ScreenBounds3D {
+        var bounds = new SceneEditor3DModel.ScreenBounds3D();
+        if node == null { return bounds; }
+        var localMin = node.BoundsMin as Vec3;
+        var localMax = node.BoundsMax as Vec3;
+        var world = node.WorldMatrix;
+        var corner = 0;
+        while corner < 8 {
+            var x = localMin.X;
+            if corner / 4 == 1 { x = localMax.X; }
+            var y = localMin.Y;
+            if (corner / 2) - (corner / 4) * 2 == 1 { y = localMax.Y; }
+            var z = localMin.Z;
+            if corner - (corner / 2) * 2 == 1 { z = localMax.Z; }
+            var worldCorner = world.TransformPoint(Vec3.New(x, y, z)) as Vec3;
+            var point = Project(worldCorner.X, worldCorner.Y, worldCorner.Z);
+            if point.visible == false { return new SceneEditor3DModel.ScreenBounds3D(); }
+            if corner == 0 {
+                bounds.minX = point.x;
+                bounds.maxX = point.x;
+                bounds.minY = point.y;
+                bounds.maxY = point.y;
+            } else {
+                if point.x < bounds.minX { bounds.minX = point.x; }
+                if point.x > bounds.maxX { bounds.maxX = point.x; }
+                if point.y < bounds.minY { bounds.minY = point.y; }
+                if point.y > bounds.maxY { bounds.maxY = point.y; }
+            }
+            corner = corner + 1;
+        }
+        bounds.visible = true;
+        return bounds;
+    }
+
+    /// @brief Apply the completed marquee rectangle to the selection.
+    /// @details Nodes whose projected world bounds intersect the rectangle
+    ///          are selected with the 2D marquee vocabulary: replace by
+    ///          default, Shift adds, Ctrl/Cmd toggles. Workspace-only.
+    hide override func ApplyMarqueeSelection() {
+        var rectMinX = marqueeStartX;
+        var rectMaxX = marqueeEndX;
+        if rectMaxX < rectMinX {
+            rectMinX = marqueeEndX;
+            rectMaxX = marqueeStartX;
+        }
+        var rectMinY = marqueeStartY;
+        var rectMaxY = marqueeEndY;
+        if rectMaxY < rectMinY {
+            rectMinY = marqueeEndY;
+            rectMaxY = marqueeStartY;
+        }
+        var hits: List[Integer] = [];
+        var i = 0;
+        while i < flatNodes.count() {
+            var bounds = NodeScreenBounds(flatNodes.get(i));
+            if bounds.visible
+               and NodePickLocked(i) == false
+               and bounds.minX <= rectMaxX and bounds.maxX >= rectMinX
+               and bounds.minY <= rectMaxY and bounds.maxY >= rectMinY {
+                var resolved = ResolveInstanceOwnerIndex(i);
+                if resolved >= 0
+                   and scene_selection.Contains(hits, resolved) == false {
+                    hits.add(resolved);
+                }
+            }
+            i = i + 1;
+        }
+        var current = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var next: List[Integer] = [];
+        var nextPrimary = -1;
+        if marqueeToggle {
+            i = 0;
+            while i < current.count() {
+                if scene_selection.Contains(hits, current.get(i)) == false {
+                    next.add(current.get(i));
+                }
+                i = i + 1;
+            }
+            i = 0;
+            while i < hits.count() {
+                if scene_selection.Contains(current, hits.get(i)) == false {
+                    next.add(hits.get(i));
+                }
+                i = i + 1;
+            }
+        } else if marqueeAdditive {
+            next = current;
+            i = 0;
+            while i < hits.count() {
+                if scene_selection.Contains(next, hits.get(i)) == false {
+                    next.add(hits.get(i));
+                }
+                i = i + 1;
+            }
+        } else {
+            next = hits;
+        }
+        if next.count() > 0 {
+            nextPrimary = next.get(next.count() - 1);
+            if scene_selection.Contains(next, selectedIndex) {
+                nextPrimary = selectedIndex;
+            }
+        }
+        SelectSceneNodes(next, nextPrimary);
+    }
+
+    /// @brief Track an armed or active marquee drag; true consumes the frame.
+    /// @details Runs before shortcut pumps so a marquee Escape cancels the
+    ///          gesture without also clearing the selection, and before the
+    ///          hover early-out so drags that leave the widget stay live.
+    hide override func PumpMarquee() -> Boolean {
+        if marqueeCandidate == false or viewportImage == null {
+            return false;
+        }
+        if Input.Keyboard.WasPressed(Input.Key.Escape)
+           and marqueeCancelled == false {
+            if marqueeActive {
+                marqueeActive = false;
+                renderDirty = true;
+            }
+            // Keep swallowing input until the button releases so the
+            // cancelled gesture's release never becomes a blank click.
+            marqueeCancelled = true;
+            return true;
+        }
+        var mouseX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.X())
+            - viewportImage.GetScreenX());
+        var mouseY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.Y())
+            - viewportImage.GetScreenY());
+        if Input.Mouse.IsDown(Input.Mouse.ButtonLeft) {
+            if marqueeCancelled { return true; }
+            if mouseX != marqueeEndX or mouseY != marqueeEndY {
+                marqueeEndX = mouseX;
+                marqueeEndY = mouseY;
+                if marqueeActive { renderDirty = true; }
+            }
+            if marqueeActive == false {
+                var dx = marqueeEndX - marqueeStartX;
+                var dy = marqueeEndY - marqueeStartY;
+                if dx * dx + dy * dy
+                   > SceneEditor3DModel.MARQUEE_THRESHOLD_SQUARED_3D {
+                    marqueeActive = true;
+                    renderDirty = true;
+                }
+            }
+            return marqueeActive;
+        }
+        marqueeCandidate = false;
+        if marqueeCancelled {
+            marqueeCancelled = false;
+            return true;
+        }
+        if marqueeActive == false { return false; }
+        marqueeActive = false;
+        ApplyMarqueeSelection();
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Apply replace, additive, toggle, or blank viewport selection.
+    /// @return True only when presentation selection state changed.
+    expose override func ApplyViewportSelection(nodeIndex: Integer,
+                                       additive: Boolean,
+                                       toggle: Boolean) -> Boolean {
+        var resolvedIndex = ResolveInstanceOwnerIndex(nodeIndex);
+        var current = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if resolvedIndex < 0 or resolvedIndex >= flatNodes.count() {
+            if additive or toggle or current.count() == 0 {
+                return false;
+            }
+            SelectSceneNodes([], -1);
+            return true;
+        }
+
+        var next: List[Integer] = [];
+        var nextPrimary = resolvedIndex;
+        if toggle {
+            var removing = scene_selection.Contains(current, resolvedIndex);
+            var index = 0;
+            while index < current.count() {
+                var candidate = current.get(index);
+                if removing == false or candidate != resolvedIndex {
+                    next.add(candidate);
+                }
+                index = index + 1;
+            }
+            if removing == false { next.add(resolvedIndex); }
+            if removing {
+                if next.count() == 0 {
+                    nextPrimary = -1;
+                } else if selectedIndex != resolvedIndex
+                          and scene_selection.Contains(
+                              next, selectedIndex) {
+                    nextPrimary = selectedIndex;
+                } else {
+                    nextPrimary = next.get(next.count() - 1);
+                }
+            }
+        } else if additive {
+            next = current;
+            if scene_selection.Contains(next, resolvedIndex) == false {
+                next.add(resolvedIndex);
+            }
+        } else {
+            next.add(resolvedIndex);
+        }
+
+        var changed = nextPrimary != selectedIndex
+            or next.count() != current.count();
+        if changed == false {
+            var compareIndex = 0;
+            while compareIndex < next.count() and changed == false {
+                if next.get(compareIndex) != current.get(compareIndex) {
+                    changed = true;
+                }
+                compareIndex = compareIndex + 1;
+            }
+        }
+        if changed == false { return false; }
+        SelectSceneNodes(next, nextPrimary);
+        return true;
+    }
+}

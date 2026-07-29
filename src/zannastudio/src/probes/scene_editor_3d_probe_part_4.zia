@@ -1,0 +1,952 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_editor_3d_probe_part_4.zia
+// Purpose: Serial 3D editor probe scenarios, part 4 of 4.
+// Key invariants:
+//   - Scenarios preserve the original execution order and shared fixture.
+//   - Failure paths retain their original cleanup and RESULT diagnostics.
+// Ownership/Lifetime: Borrows one SceneEditor3DProbeContext from the entry probe.
+// Links: zannastudio/src/probes/scene_editor_3d_probe.zia,
+//        zannastudio/src/probes/scene_editor_3d_probe_context.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_probe_part_4;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../commands/command_context";
+bind "../commands/file_commands";
+bind "../editor/editor_engine";
+bind "../services/file_utils";
+bind "../services/safe_io";
+bind "../ui/app_shell";
+bind "../ui/scene_clipboard";
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+bind "../ui/scene_material_3d";
+bind "../ui/scene_transform_3d";
+
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Quat = Zanna.Math.Quat;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Terminal = Zanna.Terminal;
+bind Seq = Zanna.Collections.Seq;
+bind "scene_editor_3d_probe_context" as Probe;
+
+/// @brief Run the VerifyGroupTransformsAndClipboard scenario against the shared fixture.
+expose func VerifyGroupTransformsAndClipboard(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var otherSceneDoc = ctx.otherSceneDoc;
+    var child = ctx.child;
+    var transformedEuler = ctx.transformedEuler;
+    var transformedContent = ctx.transformedContent;
+    var groupSelection = ctx.groupSelection;
+
+    editor.SelectSceneNodes(groupSelection, 1);
+    var groupRevision = editor.GetRevision();
+    if editor.TransformSelectedAlongGizmoAxis(
+           scene_editor_3d.GIZMO_MODE_MOVE,
+           scene_editor_3d.GIZMO_AXIS_Y,
+           1.0,
+           false) == false
+       or editor.GetRevision() != groupRevision + 1
+       or Probe.near(editor.flatNodes.get(0).Position.Y, 1.0) == false
+       or Probe.near(editor.flatNodes.get(1).Position.Y, 3.0) == false
+       or editor.Undo() == false
+       or sceneDoc.content != transformedContent {
+        Probe.fail(shell, tempPath,
+             "3D group transform was not one exact history transaction");
+        return false;
+    }
+
+    editor.SelectSceneNodes(groupSelection, 1);
+    var planeRootStart = editor.flatNodes.get(0).Position;
+    var planeChildStart = editor.flatNodes.get(1).Position;
+    groupRevision = editor.GetRevision();
+    if editor.TranslateSelectedInGizmoPlane(
+           scene_editor_3d.GIZMO_PLANE_XY,
+           1.0,
+           -0.5,
+           false) == false
+       or editor.GetRevision() != groupRevision + 1
+       or Probe.near(
+              editor.flatNodes.get(0).Position.X,
+              planeRootStart.X + 1.0) == false
+       or Probe.near(
+              editor.flatNodes.get(0).Position.Y,
+              planeRootStart.Y - 0.5) == false
+       or Probe.near(
+              editor.flatNodes.get(1).Position.X,
+              planeChildStart.X + 1.0) == false
+       or Probe.near(
+              editor.flatNodes.get(1).Position.Y,
+              planeChildStart.Y - 0.5) == false
+       or Probe.near(
+              editor.flatNodes.get(1).Position.Z,
+              planeChildStart.Z) == false
+       or editor.Undo() == false
+       or sceneDoc.content != transformedContent {
+        Probe.fail(shell, tempPath,
+             "local plane Move was not one exact group history transaction");
+        return false;
+    }
+
+    editor.SelectSceneNodes(groupSelection, 1);
+    groupRevision = editor.GetRevision();
+    if editor.DuplicateSelectedNodes() != 2
+       or editor.GetRevision() != groupRevision + 1
+       or editor.scene.NodeCount != 5
+       or editor.selectedIndices.count() != 2
+       or editor.scene.Find("Root Node Copy").IsNone
+       or (editor.scene.Find("Root Node Copy").Unwrap()
+           as SceneNode).ChildCount != 1
+       or editor.Undo() == false
+       or sceneDoc.content != transformedContent
+       or editor.scene.NodeCount != 3 {
+        Probe.fail(shell, tempPath,
+             "3D subtree duplication lost hierarchy or exact undo");
+        return false;
+    }
+
+    editor.SelectSceneNodes(groupSelection, 1);
+    groupRevision = editor.GetRevision();
+    if editor.DeleteSelectedNodes() == false
+       or editor.GetRevision() != groupRevision + 1
+       or editor.scene.NodeCount != 1
+       or editor.Undo() == false
+       or sceneDoc.content != transformedContent
+       or editor.scene.NodeCount != 3 {
+        Probe.fail(shell, tempPath,
+             "3D parent/child group deletion double-removed or lost undo");
+        return false;
+    }
+
+    // Standard Edit commands carry one canonical VSCN plus stable flattened
+    // identities. A selected child under a selected parent must travel once as
+    // part of that subtree, retain its transform, and remain selected.
+    editor.SelectSceneNodes(groupSelection, 1);
+    if editor.SelectAllSceneNodes() == false
+       or editor.selectedIndices.count() != 2
+       or editor.CopySelectedNodes() == false {
+        Probe.fail(shell, tempPath,
+             "3D Select All or Copy did not use the hierarchy selection");
+        return false;
+    }
+    var copied3D = scene_clipboard.Decode(GUI.ClipboardText.GetText());
+    if copied3D.valid == false or copied3D.kind != "3d"
+       or copied3D.primary != 1 or copied3D.indices.count() != 2
+       or copied3D.content != transformedContent
+       or scene_clipboard.HasKind(
+              GUI.ClipboardText.GetText(), "3d") == false {
+        Probe.fail(shell, tempPath,
+             "3D clipboard envelope lost kind, primary, or canonical VSCN");
+        return false;
+    }
+
+    var otherBaseline = otherSceneDoc.content;
+    editor.Pump(otherSceneDoc);
+    var crossPasteRevision = editor.GetRevision();
+    if editor.PasteSceneNodesFromClipboard() == false
+       or editor.GetRevision() != crossPasteRevision + 1
+       or editor.scene.NodeCount != 3
+       or editor.flatNodes.count() != 2
+       or editor.selectedIndices.count() != 2
+       or editor.selectedIndex != 1
+       or editor.scene.Find("Root Node Copy").IsNone
+       or (editor.scene.Find("Root Node Copy").Unwrap()
+           as SceneNode).ChildCount != 1
+       or editor.scene.Find("Child Node").IsNone {
+        Probe.fail(shell, tempPath,
+             "cross-scene 3D paste lost the selected subtree");
+        return false;
+    }
+    var pastedChild =
+        editor.scene.Find("Child Node").Unwrap() as SceneNode;
+    if Probe.near(pastedChild.Position.X, 3.5) == false
+       or Probe.near(pastedChild.Position.Y, 2.0) == false
+       or Probe.near(pastedChild.Position.Z, -3.0) == false
+       or Probe.near(pastedChild.Scale.Z, 0.8) == false
+       or Probe.near(pastedChild.Rotation.W, transformedEuler.W) == false
+       or editor.Undo() == false
+       or otherSceneDoc.content != otherBaseline
+       or editor.scene.NodeCount != 1 {
+        Probe.fail(shell, tempPath,
+             "cross-scene 3D paste lost transforms or exact undo");
+        return false;
+    }
+
+    editor.Pump(sceneDoc);
+    editor.SelectSceneNodes(groupSelection, 1);
+    var cutRevision = editor.GetRevision();
+    var cutAccepted = editor.CutSelectedNodes();
+    var cutNodeCount = editor.scene.NodeCount;
+    var cutAcceptedRevision = editor.GetRevision();
+    var cutUndone = editor.Undo();
+    if cutAccepted == false
+       or cutAcceptedRevision != cutRevision + 1
+       or cutNodeCount != 1
+       or cutUndone == false
+       or sceneDoc.content != transformedContent
+       or editor.scene.NodeCount != 3 {
+        Probe.fail(shell, tempPath,
+             "3D Cut double-removed a subtree or lost exact undo");
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.child = child;
+    return true;
+}
+
+/// @brief Run the VerifyClipboardRejectionsAndMaterialImport scenario against the shared fixture.
+expose func VerifyClipboardRejectionsAndMaterialImport(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    var wrongKindSelection: List[Integer] = [];
+    wrongKindSelection.add(0);
+    GUI.ClipboardText.SetText(scene_clipboard.Encode(
+        "2d", wrongKindSelection, 0, "{}"));
+    var rejectedPasteContent = sceneDoc.content;
+    var rejectedPasteRevision = editor.GetRevision();
+    if editor.PasteSceneNodesFromClipboard()
+       or sceneDoc.content != rejectedPasteContent
+       or editor.GetRevision() != rejectedPasteRevision {
+        Probe.fail(shell, tempPath,
+             "3D paste accepted a 2D clipboard or changed history");
+        return false;
+    }
+    GUI.ClipboardText.Clear();
+
+    if scene_editor_3d.ClosestGizmoAxis(
+           0.0, 0.0, 0.0, 0.0,
+           40.0, 0.0, 0.0, -40.0, -30.0, 25.0, 7.0)
+           != scene_editor_3d.GIZMO_AXIS_NONE
+       or scene_editor_3d.ClosestGizmoAxis(
+           25.0, 2.0, 0.0, 0.0,
+           40.0, 0.0, 0.0, -40.0, -30.0, 25.0, 7.0)
+           != scene_editor_3d.GIZMO_AXIS_X
+       or scene_editor_3d.DistanceSquaredToSegment(
+           20.0, 4.0, 0.0, 0.0, 40.0, 0.0) > 16.000001 {
+        Probe.fail(shell, tempPath, "transform gizmo hit testing was unstable");
+        return false;
+    }
+    var planeDrag = scene_transform_3d.PlaneDragAmounts(
+        10.0, -5.0,
+        40.0, 0.0,
+        0.0, -40.0,
+        2.0, 4.0);
+    var edgeOnDrag = scene_transform_3d.PlaneDragAmounts(
+        10.0, 0.0,
+        40.0, 0.0,
+        20.0, 0.0,
+        2.0, 4.0);
+    if scene_editor_3d.ClosestGizmoPlane(
+           16.0, -16.0, 0.0, 0.0,
+           40.0, 0.0, 0.0, -40.0, -30.0, 25.0)
+           != scene_editor_3d.GIZMO_PLANE_XY
+       or scene_editor_3d.ClosestGizmoPlane(
+              4.0, 10.0, 0.0, 0.0,
+              40.0, 0.0, 0.0, -40.0, -30.0, 25.0)
+           != scene_editor_3d.GIZMO_PLANE_XZ
+       or scene_editor_3d.ClosestGizmoPlane(
+              -12.0, -6.0, 0.0, 0.0,
+              40.0, 0.0, 0.0, -40.0, -30.0, 25.0)
+           != scene_editor_3d.GIZMO_PLANE_YZ
+       or scene_editor_3d.ClosestGizmoPlane(
+              15.0, 0.0, 0.0, 0.0,
+              40.0, 0.0, 30.0, 0.0, -40.0, 0.0)
+           != scene_editor_3d.GIZMO_AXIS_NONE
+       or planeDrag.valid == false
+       or Probe.near(planeDrag.amountA, 0.5) == false
+       or Probe.near(planeDrag.amountB, 0.5) == false
+       or edgeOnDrag.valid {
+        Probe.fail(shell, tempPath,
+             "translation-plane picking or projected drag solve was unstable");
+        return false;
+    }
+
+    // A normal runtime scene asset exercises Studio's importer and embedded
+    // mesh/material serialization, not only empty hierarchy JSON.
+    var importGraph = SceneGraph.New();
+    var sharedMaterial = Material3D.PBR(0.2, 0.5, 0.9);
+    sharedMaterial.Alpha = 0.9;
+    sharedMaterial.Metallic = 0.1;
+    sharedMaterial.Roughness = 0.7;
+    sharedMaterial.AmbientOcclusion = 0.8;
+    var meshNode = SceneNode.New();
+    meshNode.Name = "Imported Box";
+    meshNode.Mesh = Mesh3D.Box(1.0, 2.0, 3.0);
+    meshNode.Material = sharedMaterial;
+    importGraph.Add(meshNode);
+    var meshSibling = SceneNode.New();
+    meshSibling.Name = "Imported Box Sibling";
+    meshSibling.Mesh = meshNode.Mesh;
+    meshSibling.Material = sharedMaterial;
+    importGraph.Add(meshSibling);
+    if importGraph.Save(tempPath) == 0
+       or editor.ImportAssetPath(tempPath) == false
+       or editor.scene == null or editor.scene.NodeCount != 5
+       or editor.flatNodes.count() != 4
+       or editor.scene.Find("Root Node").IsNone
+       or editor.scene.Find("Imported Box").IsNone
+       or editor.scene.Find("Imported Box Sibling").IsNone
+       or (editor.scene.Find("Imported Box").Unwrap() as SceneNode).Mesh == null {
+        Probe.fail(shell, tempPath,
+             "mesh asset import did not merge into the editable VSCN");
+        return false;
+    }
+
+    var importedNode =
+        editor.scene.Find("Imported Box").Unwrap() as SceneNode;
+    var importedSibling =
+        editor.scene.Find("Imported Box Sibling").Unwrap() as SceneNode;
+    var importedIndex = editor.selectedIndex;
+    var materialRevision = editor.GetRevision();
+    if importedNode.Material == null
+       or importedNode.Material != importedSibling.Material
+       or editor.ApplyNodeMaterial(
+            importedIndex,
+            0.8, 0.25, 0.1, 0.55,
+            0.75, 0.2, 0.9,
+            scene_material_3d.ALPHA_BLEND, true, true) == false {
+        Probe.fail(shell, tempPath,
+             "shared imported material did not enter copy-on-edit flow");
+        return false;
+    }
+    importedNode = editor.scene.Find("Imported Box").Unwrap() as SceneNode;
+    importedSibling =
+        editor.scene.Find("Imported Box Sibling").Unwrap() as SceneNode;
+    var editedColor = importedNode.Material.Color;
+    var siblingColor = importedSibling.Material.Color;
+    if editor.GetRevision() != materialRevision + 1
+       or importedNode.Material == importedSibling.Material
+       or Probe.near(editedColor.X, 0.8) == false
+       or Probe.near(editedColor.Y, 0.25) == false
+       or Probe.near(editedColor.Z, 0.1) == false
+       or Probe.near(importedNode.Material.Alpha, 0.55) == false
+       or Probe.near(importedNode.Material.Metallic, 0.75) == false
+       or Probe.near(importedNode.Material.Roughness, 0.2) == false
+       or Probe.near(importedNode.Material.AmbientOcclusion, 0.9) == false
+       or importedNode.Material.AlphaMode
+            != scene_material_3d.ALPHA_BLEND
+       or importedNode.Material.DoubleSided == false
+       or importedNode.Material.Unlit == false
+       or Probe.near(siblingColor.X, 0.2) == false
+       or Probe.near(siblingColor.Y, 0.5) == false
+       or Probe.near(siblingColor.Z, 0.9) == false
+       or Probe.near(importedSibling.Material.Roughness, 0.7) == false
+       or editor.materialInspector.colorPicker.GetRed() != 204
+       or editor.materialInspector.alphaMode.Selected
+            != scene_material_3d.ALPHA_BLEND {
+        Probe.fail(shell, tempPath,
+             "material edit changed a sibling or left the inspector stale");
+        return false;
+    }
+    var materialContent = sceneDoc.content;
+    if editor.ApplyNodeMaterial(
+           importedIndex,
+           0.8, 0.25, 0.1, 0.55,
+           0.75, 0.2, 0.9,
+           scene_material_3d.ALPHA_BLEND, true, true)
+       or editor.GetRevision() != materialRevision + 1 {
+        Probe.fail(shell, tempPath, "identical material draft created a history entry");
+        return false;
+    }
+    if editor.Undo() == false {
+        Probe.fail(shell, tempPath, "material edit was not undoable");
+        return false;
+    }
+    importedNode = editor.scene.Find("Imported Box").Unwrap() as SceneNode;
+    importedSibling =
+        editor.scene.Find("Imported Box Sibling").Unwrap() as SceneNode;
+    if importedNode.Material == null
+       or importedNode.Material != importedSibling.Material
+       or Probe.near(importedNode.Material.Roughness, 0.7) == false
+       or editor.Redo() == false
+       or sceneDoc.content != materialContent {
+        Probe.fail(shell, tempPath,
+             "material undo/redo did not restore canonical sharing");
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.importedNode = importedNode;
+    ctx.importedSibling = importedSibling;
+    ctx.importedIndex = importedIndex;
+    ctx.materialContent = materialContent;
+    return true;
+}
+
+/// @brief Run the VerifyMaterialMapsAndRoundTrip scenario against the shared fixture.
+expose func VerifyMaterialMapsAndRoundTrip(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var importedNode = ctx.importedNode;
+    var importedSibling = ctx.importedSibling;
+    var importedIndex = ctx.importedIndex;
+    var materialContent = ctx.materialContent;
+
+    importedNode = editor.scene.Find("Imported Box").Unwrap() as SceneNode;
+    importedIndex = editor.selectedIndex;
+    if editor.RemoveNodeMaterial(importedIndex) == false
+       or (editor.scene.Find("Imported Box").Unwrap() as SceneNode).Material
+            != null
+       or editor.Undo() == false
+       or sceneDoc.content != materialContent {
+        Probe.fail(shell, tempPath,
+             "material removal was not one reversible scene transaction");
+        return false;
+    }
+
+    var texturePath =
+        TempFile.PathWithExt("zannastudio_scene3d_map_", ".png");
+    var texturePixels = Pixels.New(2, 2);
+    if texturePixels != null {
+        texturePixels.FillRgba(0x3366CCFF);
+    }
+    if texturePath == "" or texturePixels == null
+       or Pixels.SavePng(texturePixels, texturePath) != 1 {
+        if texturePath != "" { safe_io.DeleteFile(texturePath); }
+        Probe.fail(shell, tempPath, "could not create material-map fixture");
+        return false;
+    }
+    importedNode = editor.scene.Find("Imported Box").Unwrap() as SceneNode;
+    importedSibling =
+        editor.scene.Find("Imported Box Sibling").Unwrap() as SceneNode;
+    importedIndex = editor.selectedIndex;
+    var materialBeforeMap = importedNode.Material;
+    var mapRevision = editor.GetRevision();
+    if editor.ApplyMaterialMapPath(
+           importedIndex, scene_material_3d.MAP_ALBEDO, texturePath) == false {
+        safe_io.DeleteFile(texturePath);
+        Probe.fail(shell, tempPath, "albedo map was not accepted");
+        return false;
+    }
+    importedNode = editor.scene.Find("Imported Box").Unwrap() as SceneNode;
+    importedSibling =
+        editor.scene.Find("Imported Box Sibling").Unwrap() as SceneNode;
+    editor.materialInspector.mapSlot.SetSelected(
+        scene_material_3d.MAP_ALBEDO);
+    editor.materialInspector.RefreshMapSummary(importedNode);
+    var albedoMapPixels = scene_material_3d.MapPixels(
+        importedNode.Material, scene_material_3d.MAP_ALBEDO);
+    if editor.GetRevision() != mapRevision + 1
+       or importedNode.Material == materialBeforeMap
+       or importedNode.Material.HasTexture == false
+       or importedSibling.Material.HasTexture
+       or albedoMapPixels == null
+       or albedoMapPixels.Width != 2
+       or albedoMapPixels.Height != 2
+       or editor.materialInspector.mapPreviewPixels == null
+       or editor.materialInspector.mapPreviewPixels.Width
+            != scene_material_3d.MATERIAL_MAP_PREVIEW_EDGE
+       or editor.materialInspector.mapPreviewPixels.Height
+            != scene_material_3d.MATERIAL_MAP_PREVIEW_EDGE
+       or editor.materialInspector.mapPreviewImage.IsVisible() == false
+       or editor.materialInspector.mapPreviewStage.IsVisible() == false {
+        safe_io.DeleteFile(texturePath);
+        Probe.fail(shell, tempPath,
+             "albedo map lost isolation, history, or its canonical thumbnail");
+        return false;
+    }
+    if editor.ApplyMaterialMapPath(
+           importedIndex, scene_material_3d.MAP_NORMAL, texturePath) == false {
+        safe_io.DeleteFile(texturePath);
+        Probe.fail(shell, tempPath, "normal map was not accepted");
+        return false;
+    }
+    importedNode = editor.scene.Find("Imported Box").Unwrap() as SceneNode;
+    editor.materialInspector.mapSlot.SetSelected(
+        scene_material_3d.MAP_NORMAL);
+    editor.materialInspector.RefreshMapSummary(importedNode);
+    if editor.GetRevision() != mapRevision + 2
+       or importedNode.Material.HasTexture == false
+       or importedNode.Material.HasNormalMap == false
+       or importedSibling.Material.HasNormalMap
+       or editor.materialInspector.mapPreviewPixels == null
+       or editor.materialInspector.mapPreviewImage.IsVisible() == false {
+        safe_io.DeleteFile(texturePath);
+        Probe.fail(shell, tempPath,
+             "normal map did not preserve albedo, isolation, or its thumbnail");
+        return false;
+    }
+    if editor.materialInspector.clearMapButton.IsEnabled() == false
+       or editor.ClearMaterialMap(
+              importedIndex, scene_material_3d.MAP_EMISSIVE)
+       or editor.GetRevision() != mapRevision + 2 {
+        safe_io.DeleteFile(texturePath);
+        Probe.fail(shell, tempPath,
+             "map controls or absent-slot history state were not truthful");
+        return false;
+    }
+    materialContent = sceneDoc.content;
+    var clearMapRevision = editor.GetRevision();
+    if editor.ClearMaterialMap(
+           importedIndex, scene_material_3d.MAP_NORMAL) == false
+       or editor.GetRevision() != clearMapRevision + 1
+       or (editor.scene.Find("Imported Box").Unwrap()
+           as SceneNode).Material.HasNormalMap
+       or editor.materialInspector.mapPreviewPixels != null
+       or editor.materialInspector.mapPreviewImage.IsVisible()
+       or editor.Undo() == false
+       or sceneDoc.content != materialContent {
+        safe_io.DeleteFile(texturePath);
+        Probe.fail(shell, tempPath,
+             "map clearing was not one reversible material transaction");
+        return false;
+    }
+    importedNode = editor.scene.Find("Imported Box").Unwrap() as SceneNode;
+    editor.materialInspector.RefreshMapSummary(importedNode);
+    if editor.materialInspector.mapPreviewPixels == null
+       or editor.materialInspector.mapPreviewImage.IsVisible() == false {
+        safe_io.DeleteFile(texturePath);
+        Probe.fail(shell, tempPath,
+             "undo restored the normal map without restoring its thumbnail");
+        return false;
+    }
+    safe_io.DeleteFile(texturePath);
+
+    if safe_io.WriteAllText(tempPath, sceneDoc.content) == false {
+        Probe.fail(shell, tempPath, "could not stage material-authored VSCN");
+        return false;
+    }
+    var materialRoundTrip = SceneGraph.Load(tempPath);
+    if materialRoundTrip == null
+       or materialRoundTrip.Find("Imported Box").IsNone {
+        Probe.fail(shell, tempPath, "material-authored VSCN did not reload");
+        return false;
+    }
+    var reloadedMaterialNode =
+        materialRoundTrip.Find("Imported Box").Unwrap() as SceneNode;
+    var reloadedAlbedoPixels = scene_material_3d.MapPixels(
+        reloadedMaterialNode.Material, scene_material_3d.MAP_ALBEDO);
+    var reloadedNormalPixels = scene_material_3d.MapPixels(
+        reloadedMaterialNode.Material, scene_material_3d.MAP_NORMAL);
+    var reloadedPreview = scene_material_3d.MapPreviewPixels(
+        reloadedMaterialNode.Material, scene_material_3d.MAP_ALBEDO);
+    if reloadedMaterialNode.Material == null
+       or Probe.near(reloadedMaterialNode.Material.Color.X, 0.8) == false
+       or Probe.near(reloadedMaterialNode.Material.Alpha, 0.55) == false
+       or Probe.near(reloadedMaterialNode.Material.Metallic, 0.75) == false
+       or Probe.near(reloadedMaterialNode.Material.Roughness, 0.2) == false
+       or reloadedMaterialNode.Material.AlphaMode
+            != scene_material_3d.ALPHA_BLEND
+       or reloadedMaterialNode.Material.DoubleSided == false
+       or reloadedMaterialNode.Material.Unlit == false
+       or reloadedMaterialNode.Material.HasTexture == false
+       or reloadedMaterialNode.Material.HasNormalMap == false
+       or reloadedAlbedoPixels == null
+       or reloadedAlbedoPixels.Width != 2
+       or reloadedAlbedoPixels.Height != 2
+       or reloadedNormalPixels == null
+       or reloadedPreview == null
+       or reloadedPreview.Width
+            != scene_material_3d.MATERIAL_MAP_PREVIEW_EDGE
+       or reloadedPreview.Height
+            != scene_material_3d.MATERIAL_MAP_PREVIEW_EDGE {
+        Probe.fail(shell, tempPath,
+             "material properties/maps/thumbnails did not survive VSCN round trip");
+        return false;
+    }
+
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Run the VerifyWorldSpaceTransforms scenario against the shared fixture.
+expose func VerifyWorldSpaceTransforms(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    var worldParentIndex = editor.AddEmptyNode("World Space Parent", -1);
+    var worldChildIndex =
+        editor.AddEmptyNode("World Space Child", worldParentIndex);
+    if worldParentIndex < 0 or worldChildIndex < 0
+       or editor.SetNodeTransform(
+              worldParentIndex, 2.0, 0.0, 0.0, 1.0, 1.0, 1.0) == false
+       or editor.SetNodeEulerRotation(
+              worldParentIndex, 0.0, 0.0, 90.0) == false
+       or editor.SetNodeTransform(
+              worldChildIndex, 1.0, 0.0, 0.0, 1.0, 1.0, 1.0) == false {
+        Probe.fail(shell, tempPath, "could not create world-transform fixture");
+        return false;
+    }
+    var worldSelection: List[Integer] = [];
+    worldSelection.add(worldChildIndex);
+    if editor.SelectSceneNodes(worldSelection, worldChildIndex) == false {
+        Probe.fail(shell, tempPath, "could not select world-transform child");
+        return false;
+    }
+    var worldChild = editor.flatNodes.get(worldChildIndex);
+    var initialWorld = worldChild.WorldPosition;
+    if Probe.near(initialWorld.X, 2.0) == false
+       or Probe.near(initialWorld.Y, 1.0) == false {
+        Probe.fail(shell, tempPath, "world-transform fixture has the wrong parent pose");
+        return false;
+    }
+
+    editor.SetGizmoTransformSpace(
+        scene_transform_3d.TRANSFORM_SPACE_WORLD);
+    if editor.gizmoTransformSpace
+          != scene_transform_3d.TRANSFORM_SPACE_WORLD
+       or editor.transformSpaceButton == null {
+        Probe.fail(shell, tempPath, "world transform space was not presented truthfully");
+        return false;
+    }
+    var worldMoveRevision = editor.GetRevision();
+    if editor.TransformSelectedAlongGizmoAxis(
+           scene_editor_3d.GIZMO_MODE_MOVE,
+           scene_editor_3d.GIZMO_AXIS_X,
+           2.0,
+           false) == false {
+        Probe.fail(shell, tempPath, "world-aligned Move was not committed");
+        return false;
+    }
+    worldChild = editor.scene.Find("World Space Child").Unwrap() as SceneNode;
+    var movedWorld = worldChild.WorldPosition;
+    if editor.GetRevision() != worldMoveRevision + 1
+       or Probe.near(movedWorld.X, 4.0) == false
+       or Probe.near(movedWorld.Y, 1.0) == false
+       or Probe.near(worldChild.Position.X, 1.0) == false
+       or Probe.near(worldChild.Position.Y, -2.0) == false {
+        Probe.fail(shell, tempPath,
+             "world Move did not convert through the rotated parent exactly");
+        return false;
+    }
+    var worldMoveContent = sceneDoc.content;
+    if editor.Undo() == false
+       or Probe.near((editor.scene.Find("World Space Child").Unwrap()
+                as SceneNode).WorldPosition.X, 2.0) == false
+       or editor.Redo() == false
+       or sceneDoc.content != worldMoveContent {
+        Probe.fail(shell, tempPath, "world Move was not one canonical history entry");
+        return false;
+    }
+
+    // A retained TreeView reports preorder, but controller callers and restored
+    // process state may not. Selected ancestors must always be transformed
+    // before descendants so a world delta is applied exactly once.
+    worldParentIndex = Probe.findNodeIndex(editor, "World Space Parent");
+    worldChildIndex = Probe.findNodeIndex(editor, "World Space Child");
+    var reversedWorldGroup: List[Integer] = [];
+    reversedWorldGroup.add(worldChildIndex);
+    reversedWorldGroup.add(worldParentIndex);
+    editor.SelectSceneNodes(reversedWorldGroup, worldChildIndex);
+    var reversedWorldRevision = editor.GetRevision();
+    if editor.TransformSelectedAlongGizmoAxis(
+           scene_editor_3d.GIZMO_MODE_MOVE,
+           scene_editor_3d.GIZMO_AXIS_X,
+           1.0,
+           false) == false
+       or editor.GetRevision() != reversedWorldRevision + 1
+       or Probe.near((editor.scene.Find("World Space Parent").Unwrap()
+                as SceneNode).WorldPosition.X, 3.0) == false
+       or Probe.near((editor.scene.Find("World Space Child").Unwrap()
+                as SceneNode).WorldPosition.X, 5.0) == false {
+        Probe.fail(shell, tempPath,
+             "world group transform depended on ancestor selection order");
+        return false;
+    }
+    if editor.Undo() == false
+       or Probe.near((editor.scene.Find("World Space Parent").Unwrap()
+                as SceneNode).WorldPosition.X, 2.0) == false
+       or Probe.near((editor.scene.Find("World Space Child").Unwrap()
+                as SceneNode).WorldPosition.X, 4.0) == false {
+        Probe.fail(shell, tempPath,
+             "ancestor-aware world group undo did not restore the baseline");
+        return false;
+    }
+
+    worldParentIndex = Probe.findNodeIndex(editor, "World Space Parent");
+    worldChildIndex = Probe.findNodeIndex(editor, "World Space Child");
+    reversedWorldGroup = [];
+    reversedWorldGroup.add(worldChildIndex);
+    reversedWorldGroup.add(worldParentIndex);
+    editor.SelectSceneNodes(reversedWorldGroup, worldChildIndex);
+    var worldPlaneRevision = editor.GetRevision();
+    if editor.TranslateSelectedInGizmoPlane(
+           scene_editor_3d.GIZMO_PLANE_XZ,
+           1.0,
+           2.0,
+           false) == false
+       or editor.GetRevision() != worldPlaneRevision + 1
+       or Probe.near((editor.scene.Find("World Space Parent").Unwrap()
+                as SceneNode).WorldPosition.X, 3.0) == false
+       or Probe.near((editor.scene.Find("World Space Parent").Unwrap()
+                as SceneNode).WorldPosition.Z, 2.0) == false
+       or Probe.near((editor.scene.Find("World Space Child").Unwrap()
+                as SceneNode).WorldPosition.X, 5.0) == false
+       or Probe.near((editor.scene.Find("World Space Child").Unwrap()
+                as SceneNode).WorldPosition.Z, 2.0) == false
+       or editor.Undo() == false {
+        Probe.fail(shell, tempPath,
+             "world plane Move double-applied an ancestor delta or lost undo");
+        return false;
+    }
+    worldParentIndex = Probe.findNodeIndex(editor, "World Space Parent");
+    worldChildIndex = Probe.findNodeIndex(editor, "World Space Child");
+    worldSelection = [];
+    worldSelection.add(worldChildIndex);
+    editor.SelectSceneNodes(worldSelection, worldChildIndex);
+
+    editor.SetGizmoTransformSpace(
+        scene_transform_3d.TRANSFORM_SPACE_LOCAL);
+    var localPlaneRevision = editor.GetRevision();
+    if editor.TranslateSelectedInGizmoPlane(
+           scene_editor_3d.GIZMO_PLANE_XY,
+           1.0,
+           2.0,
+           false) == false {
+        Probe.fail(shell, tempPath, "local plane Move was not committed");
+        return false;
+    }
+    worldChild = editor.scene.Find("World Space Child").Unwrap() as SceneNode;
+    var localPlaneWorld = worldChild.WorldPosition;
+    if editor.GetRevision() != localPlaneRevision + 1
+       or Probe.near(localPlaneWorld.X, 2.0) == false
+       or Probe.near(localPlaneWorld.Y, 2.0) == false
+       or editor.Undo() == false {
+        Probe.fail(shell, tempPath,
+             "local plane Move did not follow both parent-relative axes");
+        return false;
+    }
+    var localMoveRevision = editor.GetRevision();
+    if editor.TransformSelectedAlongGizmoAxis(
+           scene_editor_3d.GIZMO_MODE_MOVE,
+           scene_editor_3d.GIZMO_AXIS_X,
+           1.0,
+           false) == false {
+        Probe.fail(shell, tempPath, "local Move after world Move was not committed");
+        return false;
+    }
+    worldChild = editor.scene.Find("World Space Child").Unwrap() as SceneNode;
+    var localMovedWorld = worldChild.WorldPosition;
+    if editor.GetRevision() != localMoveRevision + 1
+       or Probe.near(localMovedWorld.X, 4.0) == false
+       or Probe.near(localMovedWorld.Y, 2.0) == false {
+        Probe.fail(shell, tempPath,
+             "local/world Move spaces did not produce distinct parent-aware axes");
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.worldParentIndex = worldParentIndex;
+    ctx.worldChildIndex = worldChildIndex;
+    ctx.worldSelection = worldSelection;
+    ctx.worldChild = worldChild;
+    return true;
+}
+
+/// @brief Run the VerifyTransformFailuresAndSaveSafety scenario against the shared fixture.
+expose func VerifyTransformFailuresAndSaveSafety(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var hiddenEngine = ctx.hiddenEngine;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var worldParentIndex = ctx.worldParentIndex;
+    var worldChildIndex = ctx.worldChildIndex;
+    var worldSelection = ctx.worldSelection;
+    var worldChild = ctx.worldChild;
+
+    if editor.Undo() == false {
+        Probe.fail(shell, tempPath, "local Move could not restore the world Move baseline");
+        return false;
+    }
+    editor.SetGizmoTransformSpace(
+        scene_transform_3d.TRANSFORM_SPACE_WORLD);
+
+    var beforeSingularPlaneContent = sceneDoc.content;
+    worldParentIndex = Probe.findNodeIndex(editor, "World Space Parent");
+    if editor.SetNodeTransform(
+           worldParentIndex, 2.0, 0.0, 0.0, 0.0, 1.0, 1.0) == false {
+        Probe.fail(shell, tempPath,
+             "could not create singular world-plane rejection fixture");
+        return false;
+    }
+    worldChildIndex = Probe.findNodeIndex(editor, "World Space Child");
+    worldSelection = [];
+    worldSelection.add(worldChildIndex);
+    editor.SelectSceneNodes(worldSelection, worldChildIndex);
+    worldChild = editor.flatNodes.get(worldChildIndex);
+    var singularPlaneLocal = worldChild.Position;
+    var singularPlaneContent = sceneDoc.content;
+    var singularPlaneRevision = editor.GetRevision();
+    if editor.TranslateSelectedInGizmoPlane(
+           scene_editor_3d.GIZMO_PLANE_XY,
+           1.0,
+           1.0,
+           false)
+       or editor.GetRevision() != singularPlaneRevision
+       or sceneDoc.content != singularPlaneContent
+       or Probe.near(worldChild.Position.X, singularPlaneLocal.X) == false
+       or Probe.near(worldChild.Position.Y, singularPlaneLocal.Y) == false
+       or Probe.near(worldChild.Position.Z, singularPlaneLocal.Z) == false
+       or editor.Undo() == false
+       or sceneDoc.content != beforeSingularPlaneContent {
+        Probe.fail(shell, tempPath,
+             "singular world plane Move did not reject atomically");
+        return false;
+    }
+    worldChildIndex = Probe.findNodeIndex(editor, "World Space Child");
+    worldSelection = [];
+    worldSelection.add(worldChildIndex);
+    editor.SelectSceneNodes(worldSelection, worldChildIndex);
+
+    if editor.TransformSelectedAlongGizmoAxis(
+           scene_editor_3d.GIZMO_MODE_ROTATE,
+           scene_editor_3d.GIZMO_AXIS_Z,
+           90.0,
+           false) == false {
+        Probe.fail(shell, tempPath, "world-aligned Rotate was not committed");
+        return false;
+    }
+    worldChild = editor.scene.Find("World Space Child").Unwrap() as SceneNode;
+    var worldRotation = worldChild.WorldRotation;
+    if Probe.near(worldChild.WorldPosition.X, 4.0) == false
+       or Probe.near(worldChild.WorldPosition.Y, 1.0) == false
+       or Probe.near(worldRotation.W, 0.0) == false
+       or Probe.near(worldRotation.Z, 1.0) == false {
+        Probe.fail(shell, tempPath,
+             "world Rotate changed the pivot or produced the wrong orientation");
+        return false;
+    }
+    if editor.TransformSelectedAlongGizmoAxis(
+           scene_editor_3d.GIZMO_MODE_SCALE,
+           scene_editor_3d.GIZMO_AXIS_X,
+           1.0,
+           false) == false {
+        Probe.fail(shell, tempPath, "world-aligned Scale was not committed");
+        return false;
+    }
+    worldChild = editor.scene.Find("World Space Child").Unwrap() as SceneNode;
+    if Probe.near(worldChild.WorldPosition.X, 4.0) == false
+       or Probe.near(worldChild.WorldPosition.Y, 1.0) == false
+       or Probe.near(worldChild.WorldScale.X, 2.0) == false
+       or Probe.near(worldChild.WorldScale.Y, 1.0) == false {
+        Probe.fail(shell, tempPath,
+             "world Scale changed the pivot or wrong world basis");
+        return false;
+    }
+
+    worldParentIndex = Probe.findNodeIndex(editor, "World Space Parent");
+    worldChildIndex = Probe.findNodeIndex(editor, "World Space Child");
+    if worldParentIndex < 0 or worldChildIndex < 0
+       or editor.SetNodeTransform(
+              worldParentIndex, 2.0, 0.0, 0.0, 2.0, 1.0, 1.0) == false {
+        Probe.fail(shell, tempPath,
+             "could not prepare the lossy world-transform fixture");
+        return false;
+    }
+    worldSelection = [];
+    worldSelection.add(worldChildIndex);
+    editor.SelectSceneNodes(worldSelection, worldChildIndex);
+    worldChild = editor.flatNodes.get(worldChildIndex);
+    var rejectedLocalPosition = worldChild.Position;
+    var rejectedLocalRotation = worldChild.Rotation;
+    var rejectedLocalScale = worldChild.Scale;
+    var rejectedWorldContent = sceneDoc.content;
+    var rejectedWorldRevision = editor.GetRevision();
+    if editor.TransformSelectedAlongGizmoAxis(
+           scene_editor_3d.GIZMO_MODE_ROTATE,
+           scene_editor_3d.GIZMO_AXIS_X,
+           37.0,
+           false)
+       or editor.GetRevision() != rejectedWorldRevision
+       or sceneDoc.content != rejectedWorldContent
+       or Probe.near(worldChild.Position.X, rejectedLocalPosition.X) == false
+       or Probe.near(worldChild.Position.Y, rejectedLocalPosition.Y) == false
+       or Probe.near(worldChild.Position.Z, rejectedLocalPosition.Z) == false
+       or Probe.near(worldChild.Rotation.X, rejectedLocalRotation.X) == false
+       or Probe.near(worldChild.Rotation.Y, rejectedLocalRotation.Y) == false
+       or Probe.near(worldChild.Rotation.Z, rejectedLocalRotation.Z) == false
+       or Probe.near(worldChild.Rotation.W, rejectedLocalRotation.W) == false
+       or Probe.near(worldChild.Scale.X, rejectedLocalScale.X) == false
+       or Probe.near(worldChild.Scale.Y, rejectedLocalScale.Y) == false
+       or Probe.near(worldChild.Scale.Z, rejectedLocalScale.Z) == false {
+        Probe.fail(shell, tempPath,
+             "lossy world Rotate did not reject the complete edit atomically");
+        return false;
+    }
+
+    var saveDir = TempFile.CreateDirWithPrefix("zannastudio_scene3d_save_");
+    var saveStem = Path.Join(saveDir, "world");
+    var wrongPath = Path.Join(saveDir, "world.scene");
+    var canonicalBeforeSave = sceneDoc.content;
+    file_commands.SetSaveFormatOptions(true, true);
+    file_commands.NormalizeDocumentForSave(
+        documents, hiddenEngine, documents.activeIndex);
+    if sceneDoc.content != canonicalBeforeSave
+       or documents.SaveAsBlockReason(documents.activeIndex, wrongPath) == ""
+       or documents.SaveAs(saveStem) == false
+       or sceneDoc.filePath != saveStem + ".scene3d"
+       or sceneDoc.kind != file_utils.DOC_KIND_SCENE_3D
+       or File.Exists(sceneDoc.filePath) == false {
+        Dir.RemoveAll(saveDir);
+        Probe.fail(shell, tempPath,
+             "3D save normalization or extension safety failed");
+        return false;
+    }
+    Dir.RemoveAll(saveDir);
+
+    var invalidDoc = new document.Document();
+    invalidDoc.fileName = "broken.vscn";
+    invalidDoc.language = "scene3d";
+    invalidDoc.kind = file_utils.DOC_KIND_SCENE_3D;
+    invalidDoc.content = "{\"format\":\"vscn\",\"version\":2,";
+    var invalidOriginal = invalidDoc.content;
+    editor.Activate(invalidDoc);
+    editor.Pump(invalidDoc);
+    if editor.scene != null or editor.loadError == ""
+       or invalidDoc.content != invalidOriginal or invalidDoc.isModified {
+        Probe.fail(shell, tempPath, "invalid VSCN was not preserved transactionally");
+        return false;
+    }
+
+    safe_io.DeleteFile(tempPath);
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+    return true;
+}

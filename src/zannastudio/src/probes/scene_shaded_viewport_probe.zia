@@ -33,6 +33,7 @@ module scene_shaded_viewport_probe;
 //          The probe also compares bounded pixels from the two production modes.
 // ============================================================================
 
+bind "../core/document";
 bind "../core/document_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
@@ -76,10 +77,11 @@ func ClickCommandMenuOffset(shell: app_shell.AppShell,
                             harness: GUI.TestHarness,
                             button: GUI.Button,
                             offsetY: Number) {
-    var x = HarnessCoordinate(shell, button.GetScreenX() + 20.0);
+    var x = HarnessCoordinate(shell, button.GetScreenX())
+        + Convert.NumToInt(20.0);
     var y = HarnessCoordinate(
-        shell,
-        button.GetScreenY() + button.GetScreenHeight() + offsetY);
+        shell, button.GetScreenY() + button.GetScreenHeight())
+        + Convert.NumToInt(offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -122,7 +124,20 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Typed state shared by serial shaded-viewport scenarios.
+class ShadedViewportProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose GUI.TestHarness harness;
+    expose String canonical;
+    expose Integer revision;
+}
+
+/// @brief Verify retained renderer objects and camera/overlay projection.
+func VerifyShadedRenderer(
+    ctx: ShadedViewportProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Shaded Viewport Probe", 1120, 760);
 
@@ -141,13 +156,13 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
     if editor.viewportMode != scene_editor_3d.VIEWPORT_MODE_SHADED
        or editor.viewportModeButton.GetAccessibleName()
             != "3D viewport mode: Shaded" {
         Fail(shell, harness, "shaded mode was not the accessible default");
-        return;
+        return false;
     }
 
     if editor.addBoxButton.IsVisible() {
@@ -158,7 +173,7 @@ func main() {
         shell.Render();
         if editor.createMenu.IsVisible() == false {
             Fail(shell, harness, "compact Create menu did not open");
-            return;
+            return false;
         }
         // Two 28px rows, one 9px separator, then the Box row.
         ClickCommandMenuOffset(
@@ -166,7 +181,7 @@ func main() {
     }
     if editor.Pump(sceneDoc) == false {
         Fail(shell, harness, "the production Add Box action was not accepted");
-        return;
+        return false;
     }
     shell.Render();
     shell.Poll();
@@ -174,7 +189,7 @@ func main() {
            0, 1.25, 0.75, -2.0, 1.0, 1.0, 1.0) == false {
         Fail(shell, harness,
              "the off-center camera-alignment fixture was not accepted");
-        return;
+        return false;
     }
     editor.Pump(sceneDoc);
     shell.Render();
@@ -191,7 +206,7 @@ func main() {
              + " targetNull=" + (editor.viewportRenderTarget == null)
              + " cameraNull=" + (editor.viewportRenderCamera == null)
              + " pixelsNull=" + (editor.viewportPixels == null));
-        return;
+        return false;
     }
     if editor.viewportRenderCanvas.IsOffscreen == false
        or editor.viewportRenderCanvas.Backend != "software"
@@ -205,7 +220,7 @@ func main() {
              + "x" + editor.viewportRenderCanvas.Height
              + " expected=" + editor.renderedViewportWidth
              + "x" + editor.renderedViewportHeight);
-        return;
+        return false;
     }
     if editor.viewportRenderTarget.Width != editor.renderedViewportWidth
        or editor.viewportRenderTarget.Height != editor.renderedViewportHeight
@@ -213,7 +228,7 @@ func main() {
        or editor.viewportPixels.Height != editor.renderedViewportHeight {
         Fail(shell, harness,
              "render target/readback dimensions diverged from the viewport");
-        return;
+        return false;
     }
     // Perspective is the session default (ADR 0183); the exact
     // OrthoSize-to-viewScale identity is an orthographic contract, so pin
@@ -221,7 +236,7 @@ func main() {
     if editor.viewportRenderCamera.IsOrtho {
         Fail(shell, harness,
              "the retained camera did not default to perspective");
-        return;
+        return false;
     }
     editor.SetViewProjection(false);
     editor.Pump(sceneDoc);
@@ -233,7 +248,7 @@ func main() {
               0.000001) == false {
         Fail(shell, harness,
              "orthographic camera scale did not match editor projection");
-        return;
+        return false;
     }
     editor.SetViewProjection(true);
     editor.Pump(sceneDoc);
@@ -241,7 +256,7 @@ func main() {
     if editor.viewportRenderCanvas.DrawCount < 1 {
         Fail(shell, harness,
              "scene graph submitted no mesh draws to the embedded canvas");
-        return;
+        return false;
     }
 
     var world = editor.flatNodes.get(0).WorldPosition;
@@ -259,8 +274,24 @@ func main() {
              + runtimePoint.X + "," + runtimePoint.Y
              + " editor=" + editor.projectedX.get(0)
              + "," + editor.projectedY.get(0));
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify viewport modes and acceleration remain workspace-only.
+func VerifyViewportModesAndAcceleration(
+    ctx: ShadedViewportProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
 
     var shadedPixels = editor.viewportPixels.Clone();
     var canonical = sceneDoc.content;
@@ -276,7 +307,7 @@ func main() {
             != scene_editor_3d.VIEWPORT_MODE_WIREFRAME {
         Fail(shell, harness,
              "wireframe selection changed content or lost workspace state");
-        return;
+        return false;
     }
     shell.Render();
     if editor.viewportRenderCanvas.DrawCount < 1
@@ -287,7 +318,7 @@ func main() {
               editor.projectedY.get(0)) < 24 {
         Fail(shell, harness,
              "shaded and wireframe modes did not produce distinct mesh pixels");
-        return;
+        return false;
     }
 
     // The cycle now passes through the combined Shaded+Wire mode (3.2)
@@ -303,7 +334,7 @@ func main() {
         Fail(shell, harness,
              "the combined Shaded+Wire step was not workspace-only: mode="
              + editor.viewportMode);
-        return;
+        return false;
     }
     Click(shell, harness, editor.viewportModeButton);
     if editor.Pump(sceneDoc)
@@ -316,7 +347,7 @@ func main() {
             != scene_editor_3d.VIEWPORT_MODE_SHADED {
         Fail(shell, harness,
              "returning to shaded mode was not a workspace-only action");
-        return;
+        return false;
     }
 
     // ADR 0191: idle frames render the target at the full logical viewport,
@@ -332,7 +363,7 @@ func main() {
              + editor.ViewportTargetHeight() + " vs "
              + editor.renderedViewportWidth + "x"
              + editor.renderedViewportHeight);
-        return;
+        return false;
     }
     editor.SetViewportAcceleration(true);
     if editor.Pump(sceneDoc)
@@ -343,7 +374,7 @@ func main() {
        or editor.GetRevision() != revision {
         Fail(shell, harness,
              "acceleration request did not rebuild a working renderer");
-        return;
+        return false;
     }
     editor.SetViewportAcceleration(false);
     if editor.Pump(sceneDoc)
@@ -352,8 +383,23 @@ func main() {
        or editor.GetRevision() != revision {
         Fail(shell, harness,
              "returning to the software viewport lost the renderer");
-        return;
+        return false;
     }
+
+    ctx.canonical = canonical;
+    ctx.revision = revision;
+    return true;
+}
+
+/// @brief Verify focused viewport shortcuts and Escape selection clearing.
+func VerifyViewportFocusShortcuts(
+    ctx: ShadedViewportProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
+    var canonical = ctx.canonical;
+    var revision = ctx.revision;
 
     // The viewport is a real focusable surface: a click grants it keyboard
     // focus, W/E/R route without any toolbar-button proxy, and Escape clears
@@ -371,7 +417,7 @@ func main() {
     shell.Render();
     if editor.viewportImage.IsFocused() == false {
         Fail(shell, harness, "viewport click did not grant surface focus");
-        return;
+        return false;
     }
     harness.SendKey("e", 0);
     harness.DispatchPending();
@@ -380,7 +426,7 @@ func main() {
         Fail(shell, harness,
              "focused viewport did not own the E tool shortcut: mode="
              + editor.gizmoMode);
-        return;
+        return false;
     }
     editor.SelectSceneNodes([0], 0);
     harness.SendKey("escape", 0);
@@ -392,10 +438,18 @@ func main() {
         Fail(shell, harness,
              "focused-viewport Escape did not clear selection workspace-only: "
              + "selected=" + editor.selectedIndices.count());
-        return;
+        return false;
     }
 
-    harness.UnbindApp();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new ShadedViewportProbeContext();
+    if VerifyShadedRenderer(ctx) == false { return; }
+    if VerifyViewportModesAndAcceleration(ctx) == false { return; }
+    if VerifyViewportFocusShortcuts(ctx) == false { return; }
+    ctx.harness.UnbindApp();
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

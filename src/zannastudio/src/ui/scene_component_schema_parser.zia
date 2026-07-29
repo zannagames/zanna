@@ -1,0 +1,23 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_parser.zia
+// Purpose: Concrete stateless parser assembled from focused schema layers.
+// Key invariants:
+//   - The concrete type adds no state and preserves the layered parser contract.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_parser;
+
+bind "scene_component_schema_components" as ParserImplementation;
+
+class SceneComponentSchemaParser extends ParserImplementation.SceneComponentSchemaComponentsLayer {}

@@ -128,26 +128,43 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief State shared by simple and multi-cell brush preview scenarios.
+class BrushPreviewProbeContext {
+    expose String tempDir;
+    expose app_shell.AppShell shell;
+    expose scene_editor_2d.SceneEditor2D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose GUI.TestHarness harness;
+    expose String baseline;
+    expose Integer baselineRevision;
+    expose Integer baselineUndo;
+    expose Boolean baselineDirty;
+    expose Integer paintPixel;
+}
+
+/// @brief Verify per-tab tools and atlas-true paint/fill hover.
+func VerifySimpleBrushPreviews(
+    ctx: BrushPreviewProbeContext) -> Boolean {
     var tempDir =
         TempFile.CreateDirWithPrefix("zannastudio_brush_preview_");
     var atlasPath = Path.Join(tempDir, "brush-atlas.png");
     var atlas = Pixels.New(32, 16);
     if tempDir == "" or atlas == null {
         Fail(null, null, tempDir, "temporary atlas allocation");
-        return;
+        return false;
     }
     atlas.DrawBox(0, 0, 16, 16, Color.RGB(240, 36, 28));
     atlas.DrawBox(16, 0, 16, 16, Color.RGB(28, 224, 58));
     if Pixels.SavePng(atlas, atlasPath) != 1 {
         Fail(null, null, tempDir, "temporary atlas write");
-        return;
+        return false;
     }
 
     var fixture = SceneDocument.New(8, 6, 16, 16);
     if fixture == null {
         Fail(null, null, tempDir, "scene fixture");
-        return;
+        return false;
     }
     fixture.SetLayerAsset(0, "brush-atlas.png");
     fixture.SetTile(0, 0, 0, 1);
@@ -174,7 +191,7 @@ func main() {
     PumpTwice(shell, editor, sceneDoc);
     if editor.tilesets.TileCount(0) != 2 {
         Fail(shell, null, tempDir, "atlas did not load");
-        return;
+        return false;
     }
 
     var baseline = sceneDoc.content;
@@ -192,19 +209,19 @@ func main() {
     PumpTwice(shell, editor, sceneDoc);
     if editor.mode != scene_editor_2d.MODE_ELLIPSE {
         Fail(shell, null, tempDir, "ellipse tool did not follow its scene tab");
-        return;
+        return false;
     }
     PumpTwice(shell, editor, otherDoc);
     if editor.mode != scene_editor_2d.MODE_LINE {
         Fail(shell, null, tempDir, "line tool did not follow its scene tab");
-        return;
+        return false;
     }
     PumpTwice(shell, editor, sceneDoc);
 
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, tempDir, "automation app binding");
-        return;
+        return false;
     }
 
     // Paint hover uses the selected atlas frame, not an outline-only box.
@@ -218,7 +235,7 @@ func main() {
              + Color.GetRed(paintPixel) + ","
              + Color.GetGreen(paintPixel) + ","
              + Color.GetBlue(paintPixel));
-        return;
+        return false;
     }
 
     // Tool changes repaint immediately, even while the pointer stays still.
@@ -228,7 +245,7 @@ func main() {
     if Color.GetRed(erasedGhostPixel) > 70
        or Color.GetGreen(erasedGhostPixel) > 70 {
         Fail(shell, harness, tempDir, "stale paint ghost survived tool switch");
-        return;
+        return false;
     }
 
     // Fill hover shares the same atlas-true preview path.
@@ -238,8 +255,37 @@ func main() {
     var fillPixel = SampleCell(editor, 3, 2);
     if LooksGreen(fillPixel) == false {
         Fail(shell, harness, tempDir, "fill hover was not atlas-true");
-        return;
+        return false;
     }
+
+    ctx.tempDir = tempDir;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    ctx.baseline = baseline;
+    ctx.baselineRevision = baselineRevision;
+    ctx.baselineUndo = baselineUndo;
+    ctx.baselineDirty = baselineDirty;
+    ctx.paintPixel = paintPixel;
+    return true;
+}
+
+/// @brief Verify stamp, rectangle, cancellation, and invalid-scene previews.
+func VerifyMultiCellBrushPreviews(
+    ctx: BrushPreviewProbeContext) -> Boolean {
+    var tempDir = ctx.tempDir;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
+    var baseline = ctx.baseline;
+    var baselineRevision = ctx.baselineRevision;
+    var baselineUndo = ctx.baselineUndo;
+    var baselineDirty = ctx.baselineDirty;
+    var paintPixel = ctx.paintPixel;
 
     // A canvas-sourced stamp previews every non-empty source frame.
     editor.tileRegionMinX = 0;
@@ -248,7 +294,7 @@ func main() {
     editor.tileRegionMaxY = 0;
     if editor.UseTileRegionAsStamp() == false {
         Fail(shell, harness, tempDir, "stamp fixture");
-        return;
+        return false;
     }
     MoveToCell(shell, harness, editor, sceneDoc, 4, 3);
     var stampRed = SampleCell(editor, 4, 3);
@@ -256,13 +302,13 @@ func main() {
     if LooksRed(stampRed) == false or LooksGreen(stampGreen) == false {
         Fail(shell, harness, tempDir,
              "stamp ghost did not preserve source frames");
-        return;
+        return false;
     }
     editor.SetToolMode(scene_editor_2d.MODE_LINE);
     PumpTwice(shell, editor, sceneDoc);
     if editor.stampActive {
         Fail(shell, harness, tempDir, "tool switch did not clear stamp");
-        return;
+        return false;
     }
 
     // Captured rectangles preview every would-be committed tile, then Escape
@@ -288,7 +334,7 @@ func main() {
        or editor.scene.GetTile(0, 3, 3) != 0 {
         Fail(shell, harness, tempDir,
              "captured rectangle was not an atlas-true preview");
-        return;
+        return false;
     }
     harness.SendKey("escape", 0);
     harness.DispatchPending();
@@ -305,7 +351,7 @@ func main() {
        or sceneDoc.isModified != baselineDirty {
         Fail(shell, harness, tempDir,
              "preview changed canonical state or leaked capture");
-        return;
+        return false;
     }
 
     // Every newly-added tool follows the same invalid-scene enablement gate.
@@ -316,14 +362,14 @@ func main() {
        or editor.ellipseButton.IsEnabled() {
         Fail(shell, harness, tempDir,
              "shape tools stayed enabled for an invalid scene");
-        return;
+        return false;
     }
     PumpTwice(shell, editor, sceneDoc);
     if editor.lineButton.IsEnabled() == false
        or editor.ellipseButton.IsEnabled() == false {
         Fail(shell, harness, tempDir,
              "shape tools did not re-enable with the valid scene");
-        return;
+        return false;
     }
 
     var metric = "paint="
@@ -335,5 +381,13 @@ func main() {
         + " rectangle=" + Color.GetRed(rectanglePixel);
     Cleanup(shell, harness, tempDir);
     Terminal.Say("METRIC: " + metric);
+    return true;
+}
+
+func main() {
+    var ctx = new BrushPreviewProbeContext();
+    if VerifySimpleBrushPreviews(ctx) == false { return; }
+    if VerifyMultiCellBrushPreviews(ctx) == false { return; }
+
     Terminal.Say("RESULT: ok");
 }

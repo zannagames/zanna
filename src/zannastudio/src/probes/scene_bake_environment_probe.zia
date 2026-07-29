@@ -78,14 +78,24 @@ func pump(editor: scene_editor_3d.SceneEditor3D,
     shell.Render();
 }
 
-func main() {
+/// @brief State shared by bake and environment-authoring scenarios.
+class BakeEnvironmentProbeContext {
+    expose app_shell.AppShell shell;
+    expose String workDir;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+}
+
+/// @brief Verify bake preflight, cancellation, and bounded completion.
+func VerifyLightmapBake(ctx: BakeEnvironmentProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Bake Environment Probe", 1180, 780);
 
     var workDir = TempFile.CreateDirWithPrefix("zannastudio_bake_probe_");
     if workDir == "" {
         fail(shell, "", "could not create the bake workspace");
-        return;
+        return false;
     }
     var scenePath = Path.Join(workDir, "bake.scene3d");
 
@@ -103,7 +113,7 @@ func main() {
        or editor.AddEmptyNode("Block", -1) < 0
        or editor.AddLightNode("Key Light", -1) < 0 {
         fail(shell, workDir, "could not author the bake fixture");
-        return;
+        return false;
     }
     var sharedMesh = Mesh3D.Box(1.0, 0.2, 1.0);
     editor.flatNodes.get(0).Mesh = sharedMesh;
@@ -125,7 +135,7 @@ func main() {
        or editor.flatNodes.get(1).GetStatic() == false {
         fail(shell, workDir,
              "batch static marking was not one exact transaction");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
 
@@ -137,15 +147,15 @@ func main() {
     if sharedNames.count() != 2 {
         fail(shell, workDir,
              "shared-mesh scan drifted: " + sharedNames.count());
-        return;
+        return false;
     }
     if editor.StartBake() {
         fail(shell, workDir, "bake accepted shared meshes");
-        return;
+        return false;
     }
     if editor.IsBakeActive() {
         fail(shell, workDir, "refused bake still became active");
-        return;
+        return false;
     }
     var uniqueRevision = editor.GetRevision();
     if editor.MakeMeshesUniqueForBaking() == false
@@ -154,12 +164,29 @@ func main() {
           == editor.flatNodes.get(1).Mesh {
         fail(shell, workDir,
              "make-unique was not one exact mesh-copy transaction");
-        return;
+        return false;
     }
     if editor.MakeMeshesUniqueForBaking() {
         fail(shell, workDir, "make-unique no-op still claimed changes");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.workDir = workDir;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Verify bake execution, probe sidecars, and environment conventions.
+func VerifyBakeExecutionAndEnvironment(
+    ctx: BakeEnvironmentProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var workDir = ctx.workDir;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
 
     // ------------------------------------------------------------------
     // Cancel: an active bake restores the exact prior document.
@@ -181,20 +208,20 @@ func main() {
              + debugStatics
              + " nodes=" + editor.flatNodes.count()
              + " active=" + editor.IsBakeActive());
-        return;
+        return false;
     }
     var cancelEditRevision = editor.GetRevision();
     if editor.AddEmptyNode("Illegal Mid-Bake", -1) >= 0
        or editor.GetRevision() != cancelEditRevision {
         editor.CancelBake();
         fail(shell, workDir, "edits were accepted during an active bake");
-        return;
+        return false;
     }
     editor.CancelBake();
     if editor.IsBakeActive()
        or sceneDoc.content != cancelBaseline {
         fail(shell, workDir, "cancel did not restore the exact document");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
 
@@ -205,7 +232,7 @@ func main() {
     var bakeRevision = editor.GetRevision();
     if editor.StartBake() == false {
         fail(shell, workDir, "second bake did not start");
-        return;
+        return false;
     }
     var pumps = 0;
     while editor.IsBakeActive() and pumps < 4000 {
@@ -215,7 +242,7 @@ func main() {
     if editor.IsBakeActive() {
         editor.CancelBake();
         fail(shell, workDir, "bake did not complete within the pump budget");
-        return;
+        return false;
     }
     if editor.GetRevision() != bakeRevision + 1
        or Str.Contains(sceneDoc.content, "\"lightMap\": 0") == false {
@@ -223,7 +250,7 @@ func main() {
              "completed bake was not one committed transaction with a "
              + "persisted lightmap: revision=" + editor.GetRevision()
              + "/" + (bakeRevision + 1));
-        return;
+        return false;
     }
     var reloaded = documents.NewScene3DDocument();
     reloaded.content = sceneDoc.content;
@@ -232,7 +259,7 @@ func main() {
     pump(editor, reloaded, shell);
     if editor.loadError != "" or editor.flatNodes.count() != 3 {
         fail(shell, workDir, "baked scene did not reload cleanly");
-        return;
+        return false;
     }
     editor.Activate(sceneDoc);
     pump(editor, sceneDoc, shell);
@@ -243,7 +270,7 @@ func main() {
        or persisted.samples != 1
        or persisted.bounces != 0 {
         fail(shell, workDir, "bake settings did not persist on the root");
-        return;
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -259,26 +286,26 @@ func main() {
        or editor.GetRevision() != probeRevision + 1
        or editor.flatNodes.get(0).MetadataHas("probes.spacing") == false {
         fail(shell, workDir, "probe grid apply was not one transaction");
-        return;
+        return false;
     }
     var sidecarBaseline = sceneDoc.content;
     if editor.BakeSelectedProbeGrid() == false {
         fail(shell, workDir, "probe bake failed after a lightmap bake");
-        return;
+        return false;
     }
     var sidecarPath = Path.Join(workDir, "bake.vlpg");
     if File.Exists(sidecarPath) == false {
         fail(shell, workDir, "the .vlpg sidecar was not written");
-        return;
+        return false;
     }
     if sceneDoc.content != sidecarBaseline {
         fail(shell, workDir, "the probe sidecar dirtied the scene");
-        return;
+        return false;
     }
     if editor.RemoveSelectedProbeGrid() == false
        or editor.flatNodes.get(0).MetadataHas("probes.spacing") {
         fail(shell, workDir, "probe grid removal drifted");
-        return;
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -292,24 +319,32 @@ func main() {
     if editor.ApplyEnvironmentFromControls() == false
        or editor.GetRevision() != envRevision + 1 {
         fail(shell, workDir, "environment apply was not one transaction");
-        return;
+        return false;
     }
     var envState = scene_bake_3d.EnvironmentFromRoot(editor.scene.Root);
     if envState.skyboxPath != "sky/panorama.hdr"
        or envState.iblEnabled == false
        or near(envState.iblIntensity, 1.5) == false {
         fail(shell, workDir, "environment convention did not round-trip");
-        return;
+        return false;
     }
     var envBaseline = sceneDoc.content;
     pump(editor, sceneDoc, shell);
     pump(editor, sceneDoc, shell);
     if sceneDoc.content != envBaseline {
         fail(shell, workDir, "live environment rendering dirtied content");
-        return;
+        return false;
     }
 
-    Dir.RemoveAll(workDir);
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new BakeEnvironmentProbeContext();
+    if VerifyLightmapBake(ctx) == false { return; }
+    if VerifyBakeExecutionAndEnvironment(ctx) == false { return; }
+
+    Dir.RemoveAll(ctx.workDir);
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

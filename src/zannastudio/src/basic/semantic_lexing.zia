@@ -1,0 +1,390 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/basic/semantic_lexing.zia
+// Purpose: Scan BASIC tokens, comments, delimiters, and declaration text.
+// Key invariants:
+//   - All positions retain the semantic scanner's one-based convention.
+// Ownership/Lifetime:
+//   - Helpers borrow immutable source strings and retain no state.
+// Links: zannastudio/src/basic/semantic_scan.zia
+//
+//===----------------------------------------------------------------------===//
+
+module semantic_lexing;
+
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Obj = Zanna.Core.Object;
+bind Str = Zanna.String;
+
+func ProcedureKeywordOnLine(line: String) -> String {
+    var code = StripLineComment(line);
+    if KeywordColumn(code, "FUNCTION") > 0 { return "FUNCTION"; }
+    if KeywordColumn(code, "SUB") > 0 { return "SUB"; }
+    if KeywordColumn(code, "PROPERTY") > 0 { return "PROPERTY"; }
+    if KeywordColumn(code, "DESTRUCTOR") > 0 { return "DESTRUCTOR"; }
+    return "";
+}
+
+func BasicBlockEndLine(source: String,
+                       startLine: Integer,
+                       keyword: String) -> Integer {
+    var lines = Str.Split(source, "\n");
+    var i = startLine + 1;
+    while i <= Seq.get_Count(lines) {
+        var code = Str.Trim(StripLineComment(Obj.ToString(Seq.Get(lines, i - 1))));
+        if IsEndKeywordLine(code, keyword) {
+            return i;
+        }
+        i = i + 1;
+    }
+    return Seq.get_Count(lines);
+}
+
+func IsEndKeywordLine(code: String,
+                      keyword: String) -> Boolean {
+    var upper = Str.ToUpper(Str.Trim(code));
+    if Str.StartsWith(upper, "END " + keyword) { return true; }
+    if keyword == "FUNCTION" and Str.StartsWith(upper, "ENDFUNCTION") { return true; }
+    if keyword == "SUB" and Str.StartsWith(upper, "ENDSUB") { return true; }
+    return false;
+}
+
+func IsBlockKeyword(keyword: String) -> Boolean {
+    if keyword == "FUNCTION" or keyword == "SUB" or keyword == "PROPERTY"
+       or keyword == "DESTRUCTOR" or keyword == "CLASS"
+       or keyword == "INTERFACE" or keyword == "TYPE"
+       or keyword == "ENUM" or keyword == "NAMESPACE" {
+        return true;
+    }
+    return false;
+}
+
+func KeywordColumn(line: String,
+                   keyword: String) -> Integer {
+    return KeywordColumnFrom(line, keyword, 1);
+}
+
+func KeywordColumnFrom(line: String,
+                       keyword: String,
+                       startPos: Integer) -> Integer {
+    var pos = startPos;
+    while pos <= Str.get_Length(line) {
+        var ch = Str.MidLen(line, pos, 1);
+        if ch == "\"" {
+            pos = SkipString(line, pos);
+            continue;
+        }
+        if ch == "'" { return 0; }
+        if IsRemCommentAt(line, pos) { return 0; }
+        if IsBasicIdentifierStart(ch) {
+            var token = ReadBasicIdentifierAt(line, pos);
+            if Str.ToUpper(StripTypeSuffix(token)) == keyword {
+                return pos;
+            }
+            pos = pos + Str.get_Length(token);
+            continue;
+        }
+        pos = pos + 1;
+    }
+    return 0;
+}
+
+func StripLineComment(line: String) -> String {
+    var pos = 1;
+    var inString = false;
+    while pos <= Str.get_Length(line) {
+        var ch = Str.MidLen(line, pos, 1);
+        if inString {
+            if ch == "\"" {
+                if pos < Str.get_Length(line) and Str.MidLen(line, pos + 1, 1) == "\"" {
+                    pos = pos + 2;
+                    continue;
+                }
+                inString = false;
+            }
+            pos = pos + 1;
+            continue;
+        }
+        if ch == "\"" {
+            inString = true;
+            pos = pos + 1;
+            continue;
+        }
+        if ch == "'" or IsRemCommentAt(line, pos) {
+            if pos <= 1 { return ""; }
+            return Str.Left(line, pos - 1);
+        }
+        pos = pos + 1;
+    }
+    return line;
+}
+
+func IsRemCommentAt(line: String,
+                    pos: Integer) -> Boolean {
+    if pos < 1 or pos + 2 > Str.get_Length(line) { return false; }
+    if Str.ToUpper(Str.MidLen(line, pos, 3)) != "REM" { return false; }
+    var beforeOk = pos == 1 or IsBasicIdentifierChar(Str.MidLen(line, pos - 1, 1)) == false;
+    var afterPos = pos + 3;
+    var afterOk = afterPos > Str.get_Length(line)
+                  or IsBasicIdentifierChar(Str.MidLen(line, afterPos, 1)) == false;
+    return beforeOk and afterOk;
+}
+
+func ReadBasicIdentifierAt(line: String,
+                           startPos: Integer) -> String {
+    if startPos < 1 or startPos > Str.get_Length(line) { return ""; }
+    if IsBasicIdentifierStart(Str.MidLen(line, startPos, 1)) == false { return ""; }
+    var pos = startPos;
+    var name = "";
+    while pos <= Str.get_Length(line) {
+        var ch = Str.MidLen(line, pos, 1);
+        if name == "" {
+            if IsBasicIdentifierStart(ch) == false { return ""; }
+        } else if IsBasicIdentifierPart(ch) == false {
+            break;
+        }
+        name = name + ch;
+        pos = pos + 1;
+    }
+    if pos <= Str.get_Length(line) and IsTypeSuffix(Str.MidLen(line, pos, 1)) {
+        name = name + Str.MidLen(line, pos, 1);
+    }
+    return name;
+}
+
+func IsDeclarationNameAt(line: String,
+                         nameCol: Integer) -> Boolean {
+    var before = Str.ToUpper(Str.Trim(Str.Left(line, nameCol - 1)));
+    return EndsWithToken(before, "FUNCTION")
+           or EndsWithToken(before, "SUB")
+           or EndsWithToken(before, "PROPERTY")
+           or EndsWithToken(before, "CLASS")
+           or EndsWithToken(before, "TYPE")
+           or EndsWithToken(before, "ENUM")
+           or EndsWithToken(before, "INTERFACE")
+           or EndsWithToken(before, "NAMESPACE")
+           or EndsWithToken(before, "DIM")
+           or EndsWithToken(before, "CONST");
+}
+
+func EndsWithToken(text: String,
+                   token: String) -> Boolean {
+    var trimmed = Str.ToUpper(Str.Trim(text));
+    if trimmed == token { return true; }
+    return Str.EndsWith(trimmed, " " + token);
+}
+
+func MatchingParenOnLine(line: String,
+                         openCol: Integer) -> Integer {
+    var depth = 0;
+    var pos = openCol;
+    while pos <= Str.get_Length(line) {
+        var ch = Str.MidLen(line, pos, 1);
+        if ch == "(" {
+            depth = depth + 1;
+        } else if ch == ")" {
+            depth = depth - 1;
+            if depth == 0 { return pos; }
+        } else if ch == "\"" {
+            pos = SkipString(line, pos);
+            continue;
+        }
+        pos = pos + 1;
+    }
+    return 0;
+}
+
+func NextCommaOutsideParens(line: String,
+                            startPos: Integer) -> Integer {
+    var depth = 0;
+    var pos = startPos;
+    while pos <= Str.get_Length(line) {
+        var ch = Str.MidLen(line, pos, 1);
+        if ch == "\"" {
+            pos = SkipString(line, pos);
+            continue;
+        }
+        if ch == "(" {
+            depth = depth + 1;
+        } else if ch == ")" {
+            if depth > 0 { depth = depth - 1; }
+        } else if ch == "," and depth == 0 {
+            return pos;
+        } else if ch == "'" {
+            return 0;
+        }
+        pos = pos + 1;
+    }
+    return 0;
+}
+
+func ReturnTypeFromDeclarationLine(line: String,
+                                   closeParen: Integer) -> String {
+    var start = closeParen;
+    if start <= 0 { start = 1; }
+    var asCol = KeywordColumnFrom(line, "AS", start);
+    if asCol <= 0 { return ""; }
+    return TypeTextAfterAs(line, asCol);
+}
+
+func TypeTextAfterAs(line: String,
+                     asCol: Integer) -> String {
+    var pos = SkipWhitespace(line, asCol + Str.get_Length("AS"));
+    var endPos = pos;
+    while endPos <= Str.get_Length(line) {
+        var ch = Str.MidLen(line, endPos, 1);
+        if ch == "," or ch == ")" or ch == ":" or ch == "=" { break; }
+        endPos = endPos + 1;
+    }
+    if endPos <= pos { return ""; }
+    return CleanInline(Str.MidLen(line, pos, endPos - pos));
+}
+
+func SkipString(line: String,
+                quoteCol: Integer) -> Integer {
+    var pos = quoteCol + 1;
+    while pos <= Str.get_Length(line) {
+        if Str.MidLen(line, pos, 1) == "\"" {
+            if pos < Str.get_Length(line) and Str.MidLen(line, pos + 1, 1) == "\"" {
+                pos = pos + 2;
+                continue;
+            }
+            return pos + 1;
+        }
+        pos = pos + 1;
+    }
+    return Str.get_Length(line) + 1;
+}
+
+func SkipWhitespace(line: String,
+                    pos: Integer) -> Integer {
+    var i = pos;
+    while i <= Str.get_Length(line) and IsSpace(Str.MidLen(line, i, 1)) {
+        i = i + 1;
+    }
+    return i;
+}
+
+func SkipWhitespaceAndCommas(line: String,
+                             pos: Integer) -> Integer {
+    var i = pos;
+    while i <= Str.get_Length(line) {
+        var ch = Str.MidLen(line, i, 1);
+        if IsSpace(ch) or ch == "," {
+            i = i + 1;
+        } else {
+            break;
+        }
+    }
+    return i;
+}
+
+func SkipParameterModifier(line: String,
+                           pos: Integer) -> Integer {
+    var i = SkipWhitespace(line, pos);
+    var token = ReadBasicIdentifierAt(line, i);
+    var upper = Str.ToUpper(StripTypeSuffix(token));
+    if upper == "BYVAL" or upper == "BYREF" or upper == "OPTIONAL" or upper == "PARAMARRAY" {
+        return SkipWhitespace(line, i + Str.get_Length(token));
+    }
+    return i;
+}
+
+func LeadingWhitespaceLength(line: String) -> Integer {
+    var i = 1;
+    while i <= Str.get_Length(line) and IsSpace(Str.MidLen(line, i, 1)) {
+        i = i + 1;
+    }
+    return i - 1;
+}
+
+func SourceLine(source: String,
+                lineNumber: Integer) -> String {
+    if source == "" { return ""; }
+    var lines = Str.Split(source, "\n");
+    if lineNumber < 1 or lineNumber > Seq.get_Count(lines) { return ""; }
+    return Obj.ToString(Seq.Get(lines, lineNumber - 1));
+}
+
+func LineCount(source: String) -> Integer {
+    if source == "" { return 0; }
+    return Seq.get_Count(Str.Split(source, "\n"));
+}
+
+func CleanInline(text: String) -> String {
+    return Str.Trim(Str.Replace(Str.Replace(text, "\n", " "), "\t", " "));
+}
+
+func StripTypeSuffix(name: String) -> String {
+    if HasTypeSuffix(name) {
+        return Str.Left(name, Str.get_Length(name) - 1);
+    }
+    return name;
+}
+
+func TypeSuffix(name: String) -> String {
+    if name == "" { return ""; }
+    var last = Str.Right(name, 1);
+    if IsTypeSuffix(last) { return last; }
+    return "";
+}
+
+func HasTypeSuffix(name: String) -> Boolean {
+    return TypeSuffix(name) != "";
+}
+
+func IsTypeSuffix(ch: String) -> Boolean {
+    return ch == "$" or ch == "%" or ch == "&" or ch == "!" or ch == "#";
+}
+
+func IsBasicIdentifierStart(ch: String) -> Boolean {
+    if ch >= "a" and ch <= "z" { return true; }
+    if ch >= "A" and ch <= "Z" { return true; }
+    if ch == "_" { return true; }
+    return false;
+}
+
+func IsBasicIdentifierPart(ch: String) -> Boolean {
+    if IsBasicIdentifierStart(ch) { return true; }
+    if ch >= "0" and ch <= "9" { return true; }
+    return false;
+}
+
+func IsBasicIdentifierChar(ch: String) -> Boolean {
+    return IsBasicIdentifierPart(ch) or IsTypeSuffix(ch);
+}
+
+func IsSpace(ch: String) -> Boolean {
+    return ch == " " or ch == "\t";
+}
+
+func IsKeyword(name: String) -> Boolean {
+    var upper = Str.ToUpper(StripTypeSuffix(name));
+    if upper == "AND" or upper == "ANDALSO" or upper == "AS" { return true; }
+    if upper == "BASE" or upper == "BOOLEAN" or upper == "BYREF" or upper == "BYVAL" { return true; }
+    if upper == "CALL" or upper == "CASE" or upper == "CATCH" or upper == "CLASS" or upper == "CONST" { return true; }
+    if upper == "DELETE" or upper == "DIM" or upper == "DO" or upper == "DOUBLE" { return true; }
+    if upper == "ELSE" or upper == "ELSEIF" or upper == "END" or upper == "ENUM" or upper == "EXIT" { return true; }
+    if upper == "FALSE" or upper == "FINAL" or upper == "FOR" or upper == "FUNCTION" { return true; }
+    if upper == "GOSUB" or upper == "GOTO" { return true; }
+    if upper == "IF" or upper == "IMPLEMENTS" or upper == "INHERITS" or upper == "INTEGER" or upper == "INTERFACE" or upper == "IS" { return true; }
+    if upper == "LET" or upper == "LOOP" { return true; }
+    if upper == "ME" or upper == "MOD" { return true; }
+    if upper == "NAMESPACE" or upper == "NEW" or upper == "NEXT" or upper == "NOT" or upper == "NULL" { return true; }
+    if upper == "OR" or upper == "ORELSE" or upper == "OVERRIDE" { return true; }
+    if upper == "PRIVATE" or upper == "PROPERTY" or upper == "PUBLIC" { return true; }
+    if upper == "REM" or upper == "RETURN" { return true; }
+    if upper == "SELECT" or upper == "STATIC" or upper == "STEP" or upper == "STRING" or upper == "SUB" { return true; }
+    if upper == "THEN" or upper == "TO" or upper == "TRUE" or upper == "TRY" or upper == "TYPE" { return true; }
+    if upper == "UNTIL" or upper == "USING" { return true; }
+    if upper == "VIRTUAL" { return true; }
+    if upper == "WEND" or upper == "WHILE" { return true; }
+    return false;
+}
+

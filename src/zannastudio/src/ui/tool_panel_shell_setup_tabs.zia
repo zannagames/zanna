@@ -1,0 +1,719 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_setup_tabs.zia
+// Purpose: Focused setup tabs behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_dock_pump.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_setup_tabs;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_dock_pump" as PreviousLayer;
+
+class ToolPanelSetupTabsLayer extends PreviousLayer.ToolPanelDockPumpLayer {
+
+    /// @brief Inject the concrete widgets that make up the bottom tool area.
+    /// @param appArg Owning application, used for output wrap width.
+    /// @param tabsArg Bottom tool tab bar.
+    /// @param problemsTab Problems tab handle.
+    /// @param outputTab Output tab handle.
+    /// @param searchTab Search tab handle.
+    /// @param referencesTab References tab handle.
+    /// @param variablesTab Variables tab handle.
+    /// @param callStackTab Call Stack tab handle.
+    /// @param debugTab Debug Console tab handle.
+    /// @param terminalTab Terminal tab handle.
+    /// @param diagList Problems ListBox.
+    /// @param outPane Raw output pane.
+    /// @param outList Row-mode output ListBox.
+    /// @param outVirtual Virtual output row helper.
+    /// @param searchBoxPanel Search panel container.
+    /// @param searchList Search result ListBox.
+    /// @param refsList References ListBox.
+    /// @param dbgList Debug Console ListBox.
+    /// @param varsList Variables ListBox.
+    /// @param stackList Call Stack ListBox.
+    /// @param termPanel Terminal panel container.
+    /// @param termPane Terminal output pane.
+    expose override func Setup(appArg: GUI.App,
+                      tabsArg: GUI.TabBar,
+                      problemsTab: GUI.Tab,
+                      outputTab: GUI.Tab,
+                      searchTab: GUI.Tab,
+                      referencesTab: GUI.Tab,
+                      variablesTab: GUI.Tab,
+                      callStackTab: GUI.Tab,
+                      debugTab: GUI.Tab,
+                      terminalTab: GUI.Tab,
+                      diagList: GUI.ListBox,
+                      outPane: GUI.OutputPane,
+                      outList: GUI.ListBox,
+                      outVirtual: GUI.VirtualList,
+                      searchBoxPanel: GUI.VBox,
+                      searchList: GUI.ListBox,
+                      refsList: GUI.ListBox,
+                      dbgList: GUI.ListBox,
+                      varsList: GUI.ListBox,
+                      stackList: GUI.ListBox,
+                      termPanel: GUI.VBox,
+                      termPane: GUI.OutputPane) {
+        app = appArg;
+        toolTabBar = tabsArg;
+        toolProblemsTab = problemsTab;
+        toolOutputTab = outputTab;
+        toolSearchTab = searchTab;
+        toolReferencesTab = referencesTab;
+        toolVariablesTab = variablesTab;
+        toolCallStackTab = callStackTab;
+        toolDebugTab = debugTab;
+        toolTerminalTab = terminalTab;
+        diagListBox = diagList;
+        outputPane = outPane;
+        outputListBox = outList;
+        outputVirtualList = outVirtual;
+        searchPanel = searchBoxPanel;
+        searchListBox = searchList;
+        referencesListBox = refsList;
+        debugListBox = dbgList;
+        variablesListBox = varsList;
+        callStackListBox = stackList;
+        terminalPanel = termPanel;
+        terminalPane = termPane;
+        AssignToolTabIds();
+    }
+
+    /// @brief Assign application-stable identities to every movable tool tab.
+    /// @details Visual indices are mutable after drag-reorder, so routing and
+    ///          persistence use these copied IDs instead.
+    hide override func AssignToolTabIds() {
+        if toolProblemsTab != null {
+            toolProblemsTab.SetStableId(tool_panel_model.TAB_ID_PROBLEMS);
+        }
+        if toolOutputTab != null {
+            toolOutputTab.SetStableId(tool_panel_model.TAB_ID_OUTPUT);
+        }
+        if toolSearchTab != null {
+            toolSearchTab.SetStableId(tool_panel_model.TAB_ID_SEARCH);
+        }
+        if toolReferencesTab != null {
+            toolReferencesTab.SetStableId(tool_panel_model.TAB_ID_REFERENCES);
+        }
+        if toolVariablesTab != null {
+            toolVariablesTab.SetStableId(tool_panel_model.TAB_ID_VARIABLES);
+        }
+        if toolCallStackTab != null {
+            toolCallStackTab.SetStableId(tool_panel_model.TAB_ID_CALL_STACK);
+        }
+        if toolDebugTab != null {
+            toolDebugTab.SetStableId(tool_panel_model.TAB_ID_DEBUG);
+        }
+        if toolTerminalTab != null {
+            toolTerminalTab.SetStableId(tool_panel_model.TAB_ID_TERMINAL);
+        }
+    }
+
+    /// @brief Move one live tool surface into a different independent group.
+    /// @details The content widget is reparented and its Tab presentation is
+    ///          recreated because GUI.Tab values are owned by exactly one bar.
+    ///          Controller/model state and focused text controls remain intact.
+    expose override func MoveToolPanelTo(kind: Integer, location: Integer) {
+        TransferToolPanel(kind, location, true);
+    }
+
+    /// @brief Move the most recently selected tool to another dock group.
+    /// @return True when a visible built-in tool changed groups.
+    expose override func MoveActiveToolPanelTo(location: Integer) -> Boolean {
+        var id =
+            tool_panel_model.TabIdForPanelKind(activeToolPanelKind);
+        if id == tool_panel_model.TAB_ID_NONE
+           or !workspace_dock.IsToolLocation(location)
+           or toolPanelGroups.LocationForId(id) == location {
+            return false;
+        }
+        TransferToolPanel(activeToolPanelKind, location, true);
+        return toolPanelGroups.LocationForId(id) == location;
+    }
+
+    /// @brief Return the current group location for one panel kind.
+    expose override func GetToolPanelLocationName(kind: Integer) -> String {
+        var id = tool_panel_model.TabIdForPanelKind(kind);
+        return workspace_dock.ToolLocationName(
+            toolPanelGroups.LocationForId(id));
+    }
+
+    /// @brief Return the complete canonical attached-plus-floating layout.
+    expose override func GetToolPanelGroupLayout() -> String {
+        return toolPanelGroups.Encode();
+    }
+
+    /// @brief Consume one or more individual moves as one durable layout edge.
+    expose override func TakeChangedToolPanelGroupLayout() -> String {
+        if !toolPanelGroupLayoutDirty { return ""; }
+        toolPanelGroupLayoutDirty = false;
+        return GetToolPanelGroupLayout();
+    }
+
+    /// @brief Apply grouped persistence, falling back atomically to legacy state.
+    /// @param encoded Canonical attached/floating membership, or empty to migrate.
+    /// @param legacyDockName Legacy location for the primary tool group.
+    /// @param legacyOrder Legacy complete stable-ID order.
+    expose override func SetToolPanelGroupLayout(encoded: String,
+                                        legacyDockName: String,
+                                        legacyOrder: String) {
+        if toolTabBar == null or leftToolTabBar == null { return; }
+        var candidate = new tool_panel_groups.ToolPanelGroups();
+        candidate.Apply(encoded, legacyDockName, legacyOrder);
+
+        var restorePanelId = GetActiveToolPanelId();
+        var restoreFocusId = FocusedToolControlId();
+        HideAllToolPanels();
+        RetireAllToolTabs();
+
+        CollapseAllDockSplits();
+        dockLocation = workspace_dock.DockLocationFromName(legacyDockName);
+        var primaryHost = bottomDockHost;
+        if dockLocation == workspace_dock.DOCK_LEFT {
+            primaryHost = leftDockHost;
+        } else if dockLocation == workspace_dock.DOCK_RIGHT {
+            primaryHost = rightDockHost;
+        }
+        primaryHost.AddChild(panelRoot);
+
+        toolPanelGroups = candidate;
+        RebuildAllToolTabs();
+        toolTabBar.SetVisible(false);
+        leftToolTabBar.SetVisible(false);
+        bottomToolTabBar.SetVisible(false);
+        rightToolTabBar.SetVisible(false);
+        floatingToolTabBar.SetVisible(false);
+        panelRoot.SetVisible(false);
+        leftToolGroupRoot.SetVisible(false);
+        bottomToolGroupRoot.SetVisible(false);
+        rightToolGroupRoot.SetVisible(false);
+        floatingToolGroupRoot.SetVisible(false);
+        floatingToolPanel.SetVisible(false);
+        activeLeftToolPanelKind = tool_panel_model.PANEL_NONE;
+        activeBottomToolPanelKind = tool_panel_model.PANEL_NONE;
+        activeRightToolPanelKind = tool_panel_model.PANEL_NONE;
+        activeFloatingToolPanelKind = tool_panel_model.PANEL_NONE;
+        SetActiveToolPanelKind(tool_panel_model.PANEL_NONE);
+
+        RestoreIndependentGroup(workspace_dock.DOCK_LEFT);
+        RestoreIndependentGroup(workspace_dock.DOCK_BOTTOM);
+        RestoreIndependentGroup(workspace_dock.DOCK_RIGHT);
+        RestoreIndependentGroup(workspace_dock.DOCK_FLOATING);
+        if restorePanelId != tool_panel_model.TAB_ID_NONE {
+            ShowToolPanelKind(
+                tool_panel_model.PanelKindForTabId(restorePanelId));
+        }
+        RestoreToolControlFocus(restoreFocusId);
+        UpdateDockButtons();
+        toolTabOrderDirty = false;
+        dockLocationDirty = false;
+        toolPanelGroupLayoutDirty = false;
+    }
+
+    /// @brief Recreate every tab in canonical order around unchanged panels.
+    hide override func RebuildAllToolTabs() {
+        var parts = Str.Split(toolPanelGroups.order, ",");
+        var i = 0;
+        while i < Seq.get_Count(parts) {
+            var id = Str.Trim(Obj.ToString(Seq.Get(parts, i)));
+            var kind = tool_panel_model.PanelKindForTabId(id);
+            var location = toolPanelGroups.LocationForId(id);
+            var root = ToolGroupRootAt(location);
+            var bar = ToolTabBarAt(location);
+            var panel = ToolPanelWidget(kind);
+            if root != null and bar != null and panel != null {
+                root.AddChild(panel);
+                panel.SetVisible(false);
+                SetToolTabForKind(kind, CreateToolTab(bar, kind));
+            }
+            i = i + 1;
+        }
+        KeepFloatingResizeRowLast();
+    }
+
+    /// @brief Retire every current presentation from its owning TabBar.
+    hide override func RetireAllToolTabs() {
+        RetireToolTab(toolProblemsTab, tool_panel_model.PANEL_PROBLEMS);
+        RetireToolTab(toolOutputTab, tool_panel_model.PANEL_OUTPUT);
+        RetireToolTab(toolSearchTab, tool_panel_model.PANEL_SEARCH);
+        RetireToolTab(toolReferencesTab, tool_panel_model.PANEL_REFERENCES);
+        RetireToolTab(toolVariablesTab, tool_panel_model.PANEL_VARIABLES);
+        RetireToolTab(toolCallStackTab, tool_panel_model.PANEL_CALL_STACK);
+        RetireToolTab(toolDebugTab, tool_panel_model.PANEL_DEBUG);
+        RetireToolTab(toolTerminalTab, tool_panel_model.PANEL_TERMINAL);
+        toolTabBar.PruneRetiredTabs();
+        leftToolTabBar.PruneRetiredTabs();
+        bottomToolTabBar.PruneRetiredTabs();
+        rightToolTabBar.PruneRetiredTabs();
+        floatingToolTabBar.PruneRetiredTabs();
+    }
+
+    hide override func RetireToolTab(tab: GUI.Tab, kind: Integer) {
+        if tab == null { return; }
+        var id = tool_panel_model.TabIdForPanelKind(kind);
+        var bar = ToolTabBarAt(toolPanelGroups.LocationForId(id));
+        if bar != null { bar.RemoveTab(tab); }
+    }
+
+    /// @brief Transfer one presentation/content pair and optionally publish it.
+    hide override func TransferToolPanel(kind: Integer,
+                                location: Integer,
+                                userAuthored: Boolean) {
+        var id = tool_panel_model.TabIdForPanelKind(kind);
+        if id == tool_panel_model.TAB_ID_NONE
+           or !workspace_dock.IsToolLocation(location) {
+            return;
+        }
+        var source = toolPanelGroups.LocationForId(id);
+        if source == location { return; }
+
+        var sourceBar = ToolTabBarAt(source);
+        var destinationBar = ToolTabBarAt(location);
+        var destinationRoot = ToolGroupRootAt(location);
+        var panel = ToolPanelWidget(kind);
+        var oldTab = ToolTabForKind(kind);
+        if sourceBar == null or destinationBar == null
+           or destinationRoot == null or panel == null or oldTab == null {
+            return;
+        }
+
+        var wasVisible = panel.IsVisible();
+        var wasSourceActive = ActiveToolPanelKindAt(source) == kind;
+        var restoreFocusId = FocusedToolControlId();
+        sourceBar.RemoveTab(oldTab);
+        sourceBar.PruneRetiredTabs();
+        destinationRoot.AddChild(panel);
+        KeepFloatingResizeRowLast();
+        toolPanelGroups.MoveId(id, location);
+        SetToolTabForKind(kind, CreateToolTab(destinationBar, kind));
+
+        if wasSourceActive {
+            if toolPanelGroups.HasIdsAt(source) {
+                var fallbackId = toolPanelGroups.FirstIdAt(source);
+                ShowToolPanelKind(
+                    tool_panel_model.PanelKindForTabId(fallbackId));
+            } else {
+                CollapseEmptyIndependentGroup(source);
+            }
+        } else {
+            CollapseEmptyIndependentGroup(source);
+        }
+
+        if wasVisible or userAuthored {
+            ShowToolPanelKind(kind);
+        } else {
+            panel.SetVisible(false);
+        }
+        RestoreToolControlFocus(restoreFocusId);
+        if userAuthored {
+            toolPanelGroupLayoutDirty = true;
+            toolTabOrderDirty = true;
+        }
+    }
+
+    /// @brief Restore the first tab of one non-empty persisted group.
+    hide override func RestoreIndependentGroup(location: Integer) {
+        if !toolPanelGroups.HasIdsAt(location) {
+            return;
+        }
+        var id = toolPanelGroups.FirstIdAt(location);
+        ShowToolPanelKind(tool_panel_model.PanelKindForTabId(id));
+    }
+
+    /// @brief Collapse a now-empty auxiliary group without touching other docks.
+    hide override func CollapseEmptyIndependentGroup(location: Integer) {
+        var bar = ToolTabBarAt(location);
+        var root = ToolGroupRootAt(location);
+        if bar == null or root == null or bar.TabCount > 0 { return; }
+        HideToolGroupAt(location);
+    }
+
+    /// @brief Return the selected panel for one physical dock.
+    hide override func ActiveToolPanelKindAt(location: Integer) -> Integer {
+        if location == workspace_dock.DOCK_LEFT {
+            return activeLeftToolPanelKind;
+        }
+        if location == workspace_dock.DOCK_RIGHT {
+            return activeRightToolPanelKind;
+        }
+        if location == workspace_dock.DOCK_BOTTOM {
+            return activeBottomToolPanelKind;
+        }
+        if location == workspace_dock.DOCK_FLOATING {
+            return activeFloatingToolPanelKind;
+        }
+        return tool_panel_model.PANEL_NONE;
+    }
+
+    /// @brief Update one dock's selection without disturbing sibling groups.
+    hide override func SetActiveToolPanelKindAt(location: Integer, kind: Integer) {
+        if location == workspace_dock.DOCK_LEFT {
+            activeLeftToolPanelKind = kind;
+        } else if location == workspace_dock.DOCK_RIGHT {
+            activeRightToolPanelKind = kind;
+        } else if location == workspace_dock.DOCK_BOTTOM {
+            activeBottomToolPanelKind = kind;
+        } else if location == workspace_dock.DOCK_FLOATING {
+            activeFloatingToolPanelKind = kind;
+        }
+    }
+
+    /// @brief Return a remaining visible selection after one group closes.
+    hide override func AnyActiveToolPanelKind() -> Integer {
+        if activeBottomToolPanelKind != tool_panel_model.PANEL_NONE {
+            return activeBottomToolPanelKind;
+        }
+        if activeLeftToolPanelKind != tool_panel_model.PANEL_NONE {
+            return activeLeftToolPanelKind;
+        }
+        if activeRightToolPanelKind != tool_panel_model.PANEL_NONE {
+            return activeRightToolPanelKind;
+        }
+        return activeFloatingToolPanelKind;
+    }
+
+    /// @brief Return whether one panel is selected in its own physical group.
+    hide override func IsToolPanelSelected(kind: Integer) -> Boolean {
+        var id = tool_panel_model.TabIdForPanelKind(kind);
+        var location = toolPanelGroups.LocationForId(id);
+        return ActiveToolPanelKindAt(location) == kind;
+    }
+
+    hide override func ToolTabBarAt(location: Integer) -> GUI.TabBar {
+        if location == dockLocation { return toolTabBar; }
+        if location == workspace_dock.DOCK_FLOATING {
+            return floatingToolTabBar;
+        }
+        if location == workspace_dock.DOCK_LEFT { return leftToolTabBar; }
+        if location == workspace_dock.DOCK_RIGHT { return rightToolTabBar; }
+        return bottomToolTabBar;
+    }
+
+    hide override func ToolGroupRootAt(location: Integer) -> GUI.VBox {
+        if location == dockLocation { return panelRoot; }
+        if location == workspace_dock.DOCK_FLOATING {
+            return floatingToolGroupRoot;
+        }
+        if location == workspace_dock.DOCK_LEFT { return leftToolGroupRoot; }
+        if location == workspace_dock.DOCK_RIGHT { return rightToolGroupRoot; }
+        return bottomToolGroupRoot;
+    }
+
+    /// @brief Keep the resize affordance after any reparented tool surfaces.
+    hide override func KeepFloatingResizeRowLast() {
+        if floatingToolGroupRoot != null and floatingToolResizeRow != null {
+            floatingToolGroupRoot.AddChild(floatingToolResizeRow);
+        }
+    }
+
+    hide override func ToolPanelWidget(kind: Integer) -> GUI.VBox {
+        if kind == tool_panel_model.PANEL_PROBLEMS { return problemsPanel; }
+        if kind == tool_panel_model.PANEL_OUTPUT { return outputPanel; }
+        if kind == tool_panel_model.PANEL_SEARCH { return searchPanel; }
+        if kind == tool_panel_model.PANEL_REFERENCES { return referencesPanel; }
+        if kind == tool_panel_model.PANEL_VARIABLES { return variablesPanel; }
+        if kind == tool_panel_model.PANEL_CALL_STACK { return callStackPanel; }
+        if kind == tool_panel_model.PANEL_DEBUG { return debugPanel; }
+        if kind == tool_panel_model.PANEL_TERMINAL { return terminalPanel; }
+        return null;
+    }
+
+    hide override func ToolTabForKind(kind: Integer) -> GUI.Tab {
+        if kind == tool_panel_model.PANEL_PROBLEMS { return toolProblemsTab; }
+        if kind == tool_panel_model.PANEL_OUTPUT { return toolOutputTab; }
+        if kind == tool_panel_model.PANEL_SEARCH { return toolSearchTab; }
+        if kind == tool_panel_model.PANEL_REFERENCES {
+            return toolReferencesTab;
+        }
+        if kind == tool_panel_model.PANEL_VARIABLES {
+            return toolVariablesTab;
+        }
+        if kind == tool_panel_model.PANEL_CALL_STACK {
+            return toolCallStackTab;
+        }
+        if kind == tool_panel_model.PANEL_DEBUG { return toolDebugTab; }
+        if kind == tool_panel_model.PANEL_TERMINAL { return toolTerminalTab; }
+        return null;
+    }
+
+    hide override func SetToolTabForKind(kind: Integer, tab: GUI.Tab) {
+        if kind == tool_panel_model.PANEL_PROBLEMS {
+            toolProblemsTab = tab;
+        } else if kind == tool_panel_model.PANEL_OUTPUT {
+            toolOutputTab = tab;
+        } else if kind == tool_panel_model.PANEL_SEARCH {
+            toolSearchTab = tab;
+        } else if kind == tool_panel_model.PANEL_REFERENCES {
+            toolReferencesTab = tab;
+        } else if kind == tool_panel_model.PANEL_VARIABLES {
+            toolVariablesTab = tab;
+        } else if kind == tool_panel_model.PANEL_CALL_STACK {
+            toolCallStackTab = tab;
+        } else if kind == tool_panel_model.PANEL_DEBUG {
+            toolDebugTab = tab;
+        } else if kind == tool_panel_model.PANEL_TERMINAL {
+            toolTerminalTab = tab;
+        }
+    }
+
+    hide override func CreateToolTab(bar: GUI.TabBar, kind: Integer) -> GUI.Tab {
+        var tab: GUI.Tab =
+            bar.AddTab(tool_panel_model.PanelName(kind), 0);
+        var id = tool_panel_model.TabIdForPanelKind(kind);
+        tab.SetStableId(id);
+        tab.SetTooltip(tool_panel_model.PanelName(kind));
+        return tab;
+    }
+
+    hide override func ShowToolPanelKind(kind: Integer) {
+        if kind == tool_panel_model.PANEL_PROBLEMS { ShowProblemsPanel(); }
+        else if kind == tool_panel_model.PANEL_OUTPUT { ShowOutputPanel(); }
+        else if kind == tool_panel_model.PANEL_SEARCH { ShowSearchPanel(); }
+        else if kind == tool_panel_model.PANEL_REFERENCES {
+            ShowReferencesPanel();
+        } else if kind == tool_panel_model.PANEL_VARIABLES {
+            ShowVariablesPanel();
+        } else if kind == tool_panel_model.PANEL_CALL_STACK {
+            ShowCallStackPanel();
+        } else if kind == tool_panel_model.PANEL_DEBUG { ShowDebugPanel(); }
+        else if kind == tool_panel_model.PANEL_TERMINAL {
+            ShowTerminalPanel();
+        }
+    }
+
+    /// @brief Record the exact focused control across a panel reparent.
+    hide override func FocusedToolControlId() -> String {
+        if terminalPane != null and terminalPane.IsFocused() {
+            return "terminal";
+        }
+        if searchQueryInput != null and searchQueryInput.IsFocused() {
+            return "search-query";
+        }
+        if searchReplaceInput != null and searchReplaceInput.IsFocused() {
+            return "search-replace";
+        }
+        if searchKindsInput != null and searchKindsInput.IsFocused() {
+            return "search-kinds";
+        }
+        if searchIncludeInput != null and searchIncludeInput.IsFocused() {
+            return "search-include";
+        }
+        if searchExcludeInput != null and searchExcludeInput.IsFocused() {
+            return "search-exclude";
+        }
+        if problemsFilterInput != null and problemsFilterInput.IsFocused() {
+            return "problems-filter";
+        }
+        if outputFilterInput != null and outputFilterInput.IsFocused() {
+            return "output-filter";
+        }
+        if referencesFilterInput != null
+           and referencesFilterInput.IsFocused() {
+            return "references-filter";
+        }
+        if debugFilterInput != null and debugFilterInput.IsFocused() {
+            return "debug-filter";
+        }
+        if callStackFilterInput != null and callStackFilterInput.IsFocused() {
+            return "stack-filter";
+        }
+        if watchExpressionInput != null and watchExpressionInput.IsFocused() {
+            return "watch";
+        }
+        return "";
+    }
+
+    hide override func RestoreToolControlFocus(id: String) {
+        if id == "terminal" { terminalPane.Focus(); }
+        else if id == "search-query" { searchQueryInput.Focus(); }
+        else if id == "search-replace" { searchReplaceInput.Focus(); }
+        else if id == "search-kinds" { searchKindsInput.Focus(); }
+        else if id == "search-include" { searchIncludeInput.Focus(); }
+        else if id == "search-exclude" { searchExcludeInput.Focus(); }
+        else if id == "problems-filter" { problemsFilterInput.Focus(); }
+        else if id == "output-filter" { outputFilterInput.Focus(); }
+        else if id == "references-filter" {
+            referencesFilterInput.Focus();
+        } else if id == "debug-filter" { debugFilterInput.Focus(); }
+        else if id == "stack-filter" { callStackFilterInput.Focus(); }
+        else if id == "watch" { watchExpressionInput.Focus(); }
+    }
+
+    /// @brief Apply a complete persisted tool-tab order.
+    /// @details Malformed, duplicate, or future-only orders fall back atomically
+    ///          to the built-in order. Programmatic moves consume their reorder
+    ///          edge so they never look like fresh user input.
+    expose override func SetToolTabOrder(encoded: String) {
+        if toolTabBar == null { return; }
+        var order = encoded;
+        if IsValidToolTabOrder(order) == false {
+            order = tool_panel_model.DEFAULT_TAB_ORDER;
+        }
+        toolPanelGroups.SetCompleteOrder(order);
+        ApplyToolTabOrderAt(workspace_dock.DOCK_LEFT);
+        ApplyToolTabOrderAt(workspace_dock.DOCK_BOTTOM);
+        ApplyToolTabOrderAt(workspace_dock.DOCK_RIGHT);
+        ApplyToolTabOrderAt(workspace_dock.DOCK_FLOATING);
+        toolTabBar.WasReordered();
+        if leftToolTabBar != null { leftToolTabBar.WasReordered(); }
+        if bottomToolTabBar != null { bottomToolTabBar.WasReordered(); }
+        if rightToolTabBar != null { rightToolTabBar.WasReordered(); }
+        if floatingToolTabBar != null { floatingToolTabBar.WasReordered(); }
+        toolTabOrderDirty = false;
+    }
+
+    /// @brief Restore the built-in tool-tab order without publishing a drag.
+    expose override func ResetToolTabOrder() {
+        SetToolTabOrder(tool_panel_model.DEFAULT_TAB_ORDER);
+    }
+
+    /// @brief Return the current order as comma-separated stable tab IDs.
+    expose override func GetToolTabOrder() -> String {
+        if toolTabBar == null { return ""; }
+        return toolPanelGroups.order;
+    }
+
+    /// @brief Consume one user-authored tool-tab reorder.
+    /// @return Current serialized order, or empty when unchanged.
+    expose override func TakeChangedToolTabOrder() -> String {
+        if toolTabOrderDirty == false { return ""; }
+        toolTabOrderDirty = false;
+        return GetToolTabOrder();
+    }
+
+    /// @brief Validate that an encoded order names every known tab exactly once.
+    hide override func IsValidToolTabOrder(encoded: String) -> Boolean {
+        var parts = Str.Split(encoded, ",");
+        if Seq.get_Count(parts) != 8 { return false; }
+        var i = 0;
+        while i < Seq.get_Count(parts) {
+            var id = Str.Trim(Obj.ToString(Seq.Get(parts, i)));
+            if IsKnownToolTabId(id) == false { return false; }
+            var j = 0;
+            while j < i {
+                if Str.Trim(Obj.ToString(Seq.Get(parts, j))) == id {
+                    return false;
+                }
+                j = j + 1;
+            }
+            i = i + 1;
+        }
+        return true;
+    }
+
+    /// @brief Return whether an ID belongs to one built-in tool panel.
+    hide override func IsKnownToolTabId(id: String) -> Boolean {
+        return id == tool_panel_model.TAB_ID_PROBLEMS
+            or id == tool_panel_model.TAB_ID_OUTPUT
+            or id == tool_panel_model.TAB_ID_SEARCH
+            or id == tool_panel_model.TAB_ID_REFERENCES
+            or id == tool_panel_model.TAB_ID_VARIABLES
+            or id == tool_panel_model.TAB_ID_CALL_STACK
+            or id == tool_panel_model.TAB_ID_DEBUG
+            or id == tool_panel_model.TAB_ID_TERMINAL;
+    }
+
+    /// @brief Find a tab by stable ID in the mutable visual order.
+    hide override func FindToolTabIndex(id: String) -> Integer {
+        return FindToolTabIndexInBar(toolTabBar, id);
+    }
+
+    /// @brief Find one stable ID inside a particular dock group's tab bar.
+    hide override func FindToolTabIndexInBar(bar: GUI.TabBar,
+                                    id: String) -> Integer {
+        if bar == null { return -1; }
+        var i = 0;
+        while i < bar.TabCount {
+            var tab: GUI.Tab = bar.GetTabAt(i);
+            if tab != null and tab.GetStableId() == id { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Apply durable ordering to the subset assigned to one group.
+    hide override func ApplyToolTabOrderAt(location: Integer) {
+        var bar = ToolTabBarAt(location);
+        if bar == null { return; }
+        var parts = Str.Split(toolPanelGroups.IdsAt(location), ",");
+        var target = 0;
+        var i = 0;
+        while i < Seq.get_Count(parts) {
+            var wanted = Str.Trim(Obj.ToString(Seq.Get(parts, i)));
+            if wanted != "" {
+                var from = FindToolTabIndexInBar(bar, wanted);
+                if from >= 0 and from != target {
+                    bar.MoveTab(from, target);
+                }
+                target = target + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    /// @brief Serialize one group's current visual order.
+    hide override func ToolTabOrderAt(location: Integer) -> String {
+        var bar = ToolTabBarAt(location);
+        if bar == null { return ""; }
+        var result = "";
+        var i = 0;
+        while i < bar.TabCount {
+            var tab: GUI.Tab = bar.GetTabAt(i);
+            if tab != null {
+                if result != "" { result = result + ","; }
+                result = result + tab.GetStableId();
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    /// @brief Synchronize the durable order after a drag in any group.
+    hide override func CaptureToolTabOrder() {
+        var result = ToolTabOrderAt(workspace_dock.DOCK_LEFT);
+        var bottom = ToolTabOrderAt(workspace_dock.DOCK_BOTTOM);
+        var right = ToolTabOrderAt(workspace_dock.DOCK_RIGHT);
+        var floating = ToolTabOrderAt(workspace_dock.DOCK_FLOATING);
+        if bottom != "" {
+            if result != "" { result = result + ","; }
+            result = result + bottom;
+        }
+        if right != "" {
+            if result != "" { result = result + ","; }
+            result = result + right;
+        }
+        if floating != "" {
+            if result != "" { result = result + ","; }
+            result = result + floating;
+        }
+        if toolPanelGroups.SetCompleteOrder(result) {
+            toolTabOrderDirty = true;
+            toolPanelGroupLayoutDirty = true;
+        }
+    }
+}

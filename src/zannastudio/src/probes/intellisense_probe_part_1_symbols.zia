@@ -1,0 +1,223 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/intellisense_probe_part_1_symbols.zia
+// Purpose: Focused signature, hover, and symbol IntelliSense scenarios.
+// Key invariants:
+//   - Scenarios preserve the original execution order and async ownership.
+//   - Failure paths retain their original RESULT diagnostics.
+// Ownership/Lifetime: Borrows one IntellisenseProbeContext from the entry probe.
+// Links: zannastudio/src/probes/intellisense_probe.zia,
+//        zannastudio/src/probes/intellisense_probe_support.zia
+//
+//===----------------------------------------------------------------------===//
+
+module intellisense_probe_part_1_symbols;
+
+bind "../ui/app_shell";
+bind "../editor/editor_engine";
+bind "../editor/completion";
+bind "../editor/signature";
+bind "../editor/hover";
+bind "../editor/symbols";
+bind "../editor/diagnostics";
+bind "../editor/inlay_hints";
+bind "../editor/project_index";
+bind "../commands/edit_commands";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../services/locations";
+bind "../services/workspace_edits";
+
+bind Zanna.GUI;
+bind ZiaCompletion = Zanna.Zia.Completion;
+bind ZiaToolchain = Zanna.Zia.Toolchain;
+bind BasicCompletion = Zanna.Basic.LanguageService;
+bind BasicToolchain = Zanna.Basic.LanguageService;
+bind SemanticJob = Zanna.Zia.SemanticJob;
+bind Clock = Zanna.Time.Clock;
+bind TempFile = Zanna.IO.TempFile;
+bind File = Zanna.IO.File;
+bind Dir = Zanna.IO.Dir;
+bind Path = Zanna.IO.Path;
+bind Terminal = Zanna.Terminal;
+bind Str = Zanna.String;
+bind Obj = Zanna.Core.Object;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+
+bind "intellisense_probe_support" as Probe;
+
+/// @brief Run the VerifySignatureHoverAndSymbols scenario against the shared fixture.
+expose func VerifySignatureHoverAndSymbols(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var sigCtrl = ctx.sigCtrl;
+
+    engine.editor.SetCursor(3, 10);
+    sigCtrl.trigger(engine);
+    Probe.pumpSignature(sigCtrl, engine, 200);
+    if sigCtrl.visible == false {
+        Probe.fail(shell, "signature controller did not show after open paren");
+        return false;
+    }
+    sigCtrl.Hide();
+    var commaSigSource = "module IntelliProbe;\n"
+        + "func greet(value: Integer, label: String) -> Integer { return value; }\n"
+        + "func main() {\n"
+        + "    greet(1, \n"
+        + "}\n";
+    engine.SetText(commaSigSource);
+    engine.editor.SetCursor(3, 13);
+    sigCtrl.trigger(engine);
+    Probe.pumpSignature(sigCtrl, engine, 200);
+    if sigCtrl.visible == false {
+        Probe.fail(shell, "signature controller did not show after comma");
+        return false;
+    }
+    var commaSigInfo = ZiaCompletion.SignatureInfoForFile(commaSigSource,
+                                                          "intellisense_probe.zia",
+                                                          4,
+                                                          13);
+    if Map.GetInt(commaSigInfo, "activeParameter") != 1 {
+        Probe.fail(shell, "signature comma active parameter");
+        return false;
+    }
+    sigCtrl.Hide();
+    var displaySig = Map.New();
+    Map.SetStr(displaySig, "display", "greet(value: Integer) -> Integer");
+    Map.SetStr(displaySig, "documentation", "Returns the original value.");
+    Map.SetStr(displaySig, "source", "scope");
+    var sigDisplay = signature.FormatSignatureDisplay(displaySig);
+    if Str.IndexOf(sigDisplay, "Returns the original value.") == 0
+       or Str.IndexOf(sigDisplay, "[scope]") == 0 {
+        Probe.fail(shell, "signature metadata display");
+        return false;
+    }
+    var displayHover = Map.New();
+    Map.SetStr(displayHover, "display", "function greet: Function(Integer)->Integer");
+    Map.SetStr(displayHover, "documentation", "Hover docs\nfrom metadata.");
+    Map.SetStr(displayHover, "source", "scope");
+    var hoverDisplay = hover.FormatHoverDisplay(displayHover);
+    if Str.IndexOf(hoverDisplay, "Hover docs from metadata.") == 0
+       or Str.IndexOf(hoverDisplay, "[scope]") == 0 {
+        Probe.fail(shell, "hover metadata display");
+        return false;
+    }
+    var docSource = "module IntelliProbe;\n"
+        + "/// Adds one to the value.\n"
+        + "func docAdd(value: Integer) -> Integer { return value + 1; }\n"
+        + "func main() {\n"
+        + "    docAdd(1);\n"
+        + "}\n";
+    var docSig = ZiaCompletion.SignatureInfoForFile(docSource, "intellisense_probe.zia", 5, 11);
+    if Str.IndexOf(Map.GetStr(docSig, "documentation"), "Adds one to the value.") == 0 {
+        Probe.fail(shell, "signature declaration documentation");
+        return false;
+    }
+    var docHover = ZiaCompletion.HoverInfoForFile(docSource, "intellisense_probe.zia", 5, 6);
+    if Str.IndexOf(Map.GetStr(docHover, "documentation"), "Adds one to the value.") == 0 {
+        Probe.fail(shell, "hover declaration documentation");
+        return false;
+    }
+    var runtimeDocSource = "module RuntimeDocProbe;\n"
+        + "bind Zanna.Terminal as Terminal;\n"
+        + "func main() {\n"
+        + "    Terminal.Say(\"hi\");\n"
+        + "}\n";
+    var runtimeItems = ZiaCompletion.ItemsForFile(runtimeDocSource,
+                                                  "intellisense_probe.zia",
+                                                  4,
+                                                  15);
+    if Probe.completionItemDocumentationContains(runtimeItems,
+                                           "Say",
+                                           "Runtime method Zanna.Terminal.Say.") == false {
+        Probe.fail(shell, "runtime completion documentation");
+        return false;
+    }
+    var runtimeClassDocSource = "module RuntimeClassDocProbe;\n"
+        + "bind Zanna.GUI as GUI;\n"
+        + "func main() {\n"
+        + "    GUI.Ap\n"
+        + "}\n";
+    var runtimeClassItems = ZiaCompletion.ItemsForFile(runtimeClassDocSource,
+                                                       "intellisense_probe.zia",
+                                                       4,
+                                                       10);
+    if Probe.completionItemDocumentationContains(runtimeClassItems,
+                                           "App",
+                                           "Owns a GUI application window") == false {
+        Probe.fail(shell, "runtime class completion documentation");
+        return false;
+    }
+    var runtimeClassHoverSource = "module RuntimeClassHoverProbe;\n"
+        + "func use(app: Zanna.GUI.App) {}\n";
+    var runtimeClassHover = ZiaCompletion.HoverInfoForFile(runtimeClassHoverSource,
+                                                           "intellisense_probe.zia",
+                                                           2,
+                                                           25);
+    if Str.IndexOf(Map.GetStr(runtimeClassHover, "documentation"),
+                   "Owns a GUI application window") == 0 {
+        Probe.fail(shell, "runtime class hover documentation");
+        return false;
+    }
+    var runtimeSig = ZiaCompletion.SignatureInfoForFile(runtimeDocSource,
+                                                        "intellisense_probe.zia",
+                                                        4,
+                                                        17);
+    if Str.IndexOf(Map.GetStr(runtimeSig, "display"), "Say(s: String) -> Void") == 0 {
+        Probe.fail(shell, "runtime signature display");
+        return false;
+    }
+    if Str.IndexOf(Map.GetStr(runtimeSig, "documentation"),
+                   "Runtime method Zanna.Terminal.Say.") == 0 {
+        Probe.fail(shell, "runtime signature documentation");
+        return false;
+    }
+    var runtimeSigJob = ZiaCompletion.BeginSignatureInfoForFile(runtimeDocSource,
+                                                                "intellisense_probe.zia",
+                                                                4,
+                                                                17);
+    if Probe.waitSemanticJob(runtimeSigJob, SEMANTIC_JOB_WAIT_MS) == false {
+        Probe.fail(shell, "async runtime signature job did not finish");
+        return false;
+    }
+    var runtimeAsyncSig = SemanticJob.SignatureInfo(runtimeSigJob);
+    if Str.IndexOf(Map.GetStr(runtimeAsyncSig, "documentation"),
+                   "Runtime method Zanna.Terminal.Say.") == 0 {
+        Probe.fail(shell, "async runtime signature documentation");
+        return false;
+    }
+    var runtimeHover = ZiaCompletion.HoverInfoForFile(runtimeDocSource,
+                                                      "intellisense_probe.zia",
+                                                      4,
+                                                      14);
+    if Str.IndexOf(Map.GetStr(runtimeHover, "documentation"),
+                   "Runtime method Zanna.Terminal.Say.") == 0 {
+        Probe.fail(shell, "runtime hover documentation");
+        return false;
+    }
+    var runtimeHoverJob = ZiaCompletion.BeginHoverInfoForFile(runtimeDocSource,
+                                                              "intellisense_probe.zia",
+                                                              4,
+                                                              14);
+    if Probe.waitSemanticJob(runtimeHoverJob, SEMANTIC_JOB_WAIT_MS) == false {
+        Probe.fail(shell, "async runtime hover job did not finish");
+        return false;
+    }
+    var runtimeAsyncHover = SemanticJob.HoverInfo(runtimeHoverJob);
+    if Str.IndexOf(Map.GetStr(runtimeAsyncHover, "documentation"),
+                   "Runtime method Zanna.Terminal.Say.") == 0 {
+        Probe.fail(shell, "async runtime hover documentation");
+        return false;
+    }
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    return true;
+}
+

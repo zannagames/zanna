@@ -1,0 +1,630 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_drops_gizmo_input.zia
+// Purpose: Focused drops gizmo input behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_terrain_navigation.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_drops_gizmo_input;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_terrain_navigation" as PreviousLayer;
+
+/// @brief Drops Gizmo Input implementation layer.
+class SceneEditor3DDropsGizmoInputLayer extends PreviousLayer.SceneEditor3DTerrainNavigationLayer {
+
+    /// @brief Consume viewport drops: import 3D assets, apply materials.
+    hide override func PumpViewportDrops() -> Boolean {
+        if viewportImage == null or scene == null { return false; }
+        if viewportImage.WasDropped() == false { return false; }
+        if gameViewActive {
+            toolbarStatus.SetText(
+                "Exit Game View before dropping assets or materials");
+            return false;
+        }
+        var dropType = viewportImage.GetDropType();
+        var dropData = viewportImage.GetDropData();
+        if dropType == "zanna/material" {
+            return ApplyMaterialDropAt(
+                viewportImage.GetDropX(), viewportImage.GetDropY());
+        }
+        return ImportAssetDrop(dropData);
+    }
+
+    /// @brief Import one dropped 3D asset through the standard import path.
+    /// @details Shared by the viewport drop pump and the DnD probe: the
+    ///          extension gate refuses non-3D assets before any import work.
+    expose override func ImportAssetDrop(assetPath: String) -> Boolean {
+        if assetPath == "" { return false; }
+        if scene_asset_browser.AssetExtensionAllowed(
+               assetPath,
+               scene_asset_browser.NormalizeAssetExtensions(
+                   ".scene3d,.vscn,.gltf,.glb,.fbx,.obj,.stl")) == false {
+            toolbarStatus.SetText(
+                "Only 3D assets can drop into the viewport.");
+            return false;
+        }
+        return ImportAssetPath(assetPath);
+    }
+
+    /// @brief Apply the selected library material to the node under the drop.
+    hide override func ApplyMaterialDropAt(dropX: Number, dropY: Number) -> Boolean {
+        var mouseX = Convert.NumToInt(
+            PhysicalPointerToUi(dropX)
+            - viewportImage.GetScreenX());
+        var mouseY = Convert.NumToInt(
+            PhysicalPointerToUi(dropY)
+            - viewportImage.GetScreenY());
+        var node = ViewportNodeAt(mouseX, mouseY);
+        if node < 0 {
+            toolbarStatus.SetText(
+                "Drop the material onto a visible mesh.");
+            return false;
+        }
+        SelectSceneNodes([node], node);
+        return ApplyLibraryMaterialToSelection();
+    }
+
+    /// @brief F2 begins an inline hierarchy rename of the single selection.
+    /// @details The row editor pre-fills the raw node name (rows decorate the
+    ///          label with kind badges). Enter or focus loss commits through
+    ///          ApplyHierarchyRename as one undoable edit; Escape cancels.
+    hide override func PumpHierarchyRename() {
+        if Input.Keyboard.WasPressed(Input.Key.F2) == false { return; }
+        if SceneSelectionCommandsOwnFocus() == false { return; }
+        BeginRenameSelected();
+    }
+
+    /// @brief Begin a visible inline rename of the selected node's row.
+    /// @details Shared by F2, context menus, and create-and-rename flows.
+    ///          Viewport-priority layouts reveal the full-width hierarchy
+    ///          master before opening the row editor. Focus mode refuses the
+    ///          edit unless the hierarchy already owns a floating pane.
+    /// @return True when the row editor opened.
+    expose override func BeginRenameSelected() -> Boolean {
+        if hierarchyTree == null or scene == null { return false; }
+        if hierarchyTree.IsEditing() { return false; }
+        if selectedIndices.count() != 1 { return false; }
+        if selectedIndex < 0
+           or selectedIndex >= hierarchyTreeNodes.count()
+           or hierarchyTreeNodes.get(selectedIndex) == null {
+            return false;
+        }
+        var node = SelectedNode();
+        if node == null { return false; }
+        if focusModeActive and hierarchyDock.floating == false {
+            return false;
+        }
+        if hierarchyDock.floating == false
+           and SceneEditor3DModel.UsesDockedHierarchy(lastHostWidth) == false {
+            compactHierarchyShown = true;
+            compactInspectorShown = false;
+            ApplyInspectorLayout();
+            CaptureWorkspaceState();
+        }
+        return hierarchyTree.BeginEditNode(
+            hierarchyTreeNodes.get(selectedIndex), node.Name);
+    }
+
+    /// @brief Apply a committed inline hierarchy rename as one undoable edit.
+    /// @details The edited row's data carries its flat index, so a selection
+    ///          change between commit and consumption cannot retarget the
+    ///          rename. Empty and unchanged names are no-ops.
+    hide override func ApplyHierarchyRename() -> Boolean {
+        var edited = hierarchyTree.GetEditedNodeOption();
+        if edited.IsSome == false { return false; }
+        var index = Parse.IntOr(
+            GUI.TreeView.Node.GetData(edited.Unwrap()), -1);
+        if index < 0 or index >= flatNodes.count() { return false; }
+        var node = flatNodes.get(index);
+        if node == null { return false; }
+        var nextName = Str.Trim(hierarchyTree.GetEditText());
+        if nextName == "" or nextName == node.Name { return false; }
+        node.Name = nextName;
+        if CommitScene("Renamed node to " + nextName) == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        return true;
+    }
+
+    /// @brief Apply conventional transform shortcuts only while viewport owns focus.
+    hide override func PumpGizmoShortcuts() {
+        if GizmoControlsOwnFocus() == false {
+            return;
+        }
+        if Input.Keyboard.WasPressed(Input.Key.V)
+           and ViewportShiftDown() {
+            SetVertexSnapEnabled(vertexSnapEnabled == false);
+        }
+        if Input.Keyboard.WasPressed(Input.Key.F) {
+            if selectedIndices.count() > 0 { FrameSelected(); }
+            else { FrameAll(); }
+            renderDirty = true;
+        }
+        if Input.Keyboard.WasPressed(Input.Key.End) {
+            DropSelectedToSurface();
+        } else if Input.Keyboard.WasPressed(Input.Key.W) {
+            SetGizmoMode(SceneEditor3DModel.GIZMO_MODE_MOVE);
+        } else if Input.Keyboard.WasPressed(Input.Key.E) {
+            SetGizmoMode(SceneEditor3DModel.GIZMO_MODE_ROTATE);
+        } else if Input.Keyboard.WasPressed(Input.Key.R) {
+            SetGizmoMode(SceneEditor3DModel.GIZMO_MODE_SCALE);
+        }
+        if Input.Keyboard.WasPressed(Input.Key.Escape)
+           and selectedIndices.count() > 0 {
+            // Workspace-only: clearing selection never touches VSCN bytes,
+            // history, or dirty state. Drag and fly Escapes are consumed
+            // before this pump runs.
+            SelectSceneNodes([], -1);
+            renderDirty = true;
+        }
+    }
+
+    /// @brief Give the viewport surface keyboard focus for its shortcuts.
+    /// @details The viewport Image is a real focusable widget; clicking it
+    ///          already focuses it through the GUI's click-to-focus path, and
+    ///          navigation gestures route here so shortcut ownership follows
+    ///          the surface rather than a toolbar-button proxy.
+    hide override func FocusActiveGizmoButton() {
+        if viewportImage != null { viewportImage.Focus(); }
+    }
+
+    /// @brief Return whether W/E/R belong to this scene viewport this frame.
+    /// @details The focused viewport surface is the primary owner; the
+    ///          transform tool buttons remain accepted so keyboard-driven
+    ///          toolbar workflows keep their shortcuts.
+    hide override func GizmoControlsOwnFocus() -> Boolean {
+        return (viewportImage != null and viewportImage.IsFocused())
+            or (moveToolButton != null and moveToolButton.IsFocused())
+            or (rotateToolButton != null and rotateToolButton.IsFocused())
+            or (scaleToolButton != null and scaleToolButton.IsFocused())
+            or (dropToSurfaceButton != null
+                and dropToSurfaceButton.IsFocused())
+            or (snapTransformCheck != null
+                and snapTransformCheck.IsFocused())
+            or (surfaceSnapCheck != null
+                and surfaceSnapCheck.IsFocused())
+            or (surfaceAlignCheck != null
+                and surfaceAlignCheck.IsFocused())
+            or (vertexSnapCheck != null
+                and vertexSnapCheck.IsFocused())
+            or (transformSpaceButton != null
+                and transformSpaceButton.IsFocused());
+    }
+
+    /// @brief Return whether duplicate/delete keys belong to the scene surface.
+    /// @details Text, numeric, color, and material inputs remain outside this
+    ///          focus set even while their node stays selected.
+    expose override func SceneSelectionCommandsOwnFocus() -> Boolean {
+        // GizmoControlsOwnFocus covers the focused viewport surface.
+        return (hierarchyTree != null and hierarchyTree.IsFocused())
+            or GizmoControlsOwnFocus()
+            or (duplicateNodeButton != null
+                and duplicateNodeButton.IsFocused())
+            or (deleteNodeButton != null and deleteNodeButton.IsFocused())
+            or (frameSelectedButton != null
+                and frameSelectedButton.IsFocused());
+    }
+
+    /// @brief Return the transform handle at one viewport-local coordinate.
+    /// @details Exposed so display probes use the exact rounded geometry that
+    ///          production input and rendering share.
+    expose override func GizmoHandleAtViewportPoint(mouseX: Integer,
+                                           mouseY: Integer) -> Integer {
+        if gameViewActive { return SceneEditor3DModel.GIZMO_AXIS_NONE; }
+        var node = SelectedNode();
+        if node == null { return SceneEditor3DModel.GIZMO_AXIS_NONE; }
+        var world = node.WorldPosition;
+        var origin = Project(world.X, world.Y, world.Z);
+        if origin.visible == false { return SceneEditor3DModel.GIZMO_AXIS_NONE; }
+        var xEnd = GizmoAxisEndpoint(node, SceneEditor3DModel.GIZMO_AXIS_X);
+        var yEnd = GizmoAxisEndpoint(node, SceneEditor3DModel.GIZMO_AXIS_Y);
+        var zEnd = GizmoAxisEndpoint(node, SceneEditor3DModel.GIZMO_AXIS_Z);
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            return SceneEditor3DModel.ClosestGizmoRotationRing(
+                mouseX, mouseY, origin.x, origin.y,
+                xEnd.x, xEnd.y, yEnd.x, yEnd.y, zEnd.x, zEnd.y,
+                SceneEditor3DModel.GIZMO_RING_PICK_RADIUS);
+        }
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_MOVE
+           or gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            var plane = SceneEditor3DModel.ClosestGizmoPlane(
+                mouseX, mouseY, origin.x, origin.y,
+                xEnd.x, xEnd.y, yEnd.x, yEnd.y, zEnd.x, zEnd.y);
+            if plane != SceneEditor3DModel.GIZMO_AXIS_NONE { return plane; }
+        }
+        return SceneEditor3DModel.ClosestGizmoAxis(
+            mouseX, mouseY, origin.x, origin.y,
+            xEnd.x, xEnd.y, yEnd.x, yEnd.y, zEnd.x, zEnd.y,
+            SceneEditor3DModel.GIZMO_PICK_RADIUS);
+    }
+
+    /// @brief Return the currently hovered axis or plane handle.
+    expose override func HoveredGizmoHandle() -> Integer {
+        return gizmoHoverAxis;
+    }
+
+    /// @brief Return the active gesture amount for deterministic input probes.
+    expose override func GizmoDragAccumulatedAmount() -> Number {
+        return gizmoDragAccumulated;
+    }
+
+    /// @brief Return the selected node's rounded projected axis endpoint.
+    /// @details Display probes use this instead of duplicating camera math.
+    expose override func SelectedGizmoAxisEndpoint(
+        axis: Integer) -> SceneEditor3DModel.ProjectedPoint {
+        if SceneEditor3DModel.IsGizmoAxis(axis) == false {
+            return new SceneEditor3DModel.ProjectedPoint();
+        }
+        return GizmoAxisEndpoint(SelectedNode(), axis);
+    }
+
+    /// @brief Return one rounded point on the selected projected rotation ring.
+    /// @details Probes and production drawing share this exact right-handed
+    ///          ellipse parameterization instead of duplicating camera math.
+    expose override func SelectedGizmoRotationRingPoint(
+        axis: Integer,
+        degrees: Number) -> SceneEditor3DModel.ProjectedPoint {
+        return GizmoRotationRingPoint(
+            SelectedNode(), axis, degrees);
+    }
+
+    /// @brief Project one angular coordinate on a node's rotation ellipse.
+    hide override func GizmoRotationRingPoint(node: SceneNode,
+                                     axis: Integer,
+                                     degrees: Number) -> SceneEditor3DModel.ProjectedPoint {
+        var point = new SceneEditor3DModel.ProjectedPoint();
+        if node == null or SceneEditor3DModel.IsGizmoAxis(axis) == false { return point; }
+        var world = node.WorldPosition;
+        var origin = Project(world.X, world.Y, world.Z);
+        var axisA = GizmoAxisEndpoint(node, SceneEditor3DModel.GizmoRingAxisA(axis));
+        var axisB = GizmoAxisEndpoint(node, SceneEditor3DModel.GizmoRingAxisB(axis));
+        var radians = degrees * SceneEditor3DModel.DEG_TO_RAD;
+        point.x = origin.x + Convert.NumToInt(
+            (axisA.x - origin.x) * Math.Cos(radians)
+            + (axisB.x - origin.x) * Math.Sin(radians));
+        point.y = origin.y + Convert.NumToInt(
+            (axisA.y - origin.y) * Math.Cos(radians)
+            + (axisB.y - origin.y) * Math.Sin(radians));
+        return point;
+    }
+
+    /// @brief Decode one viewport point against a node's projected ring basis.
+    hide override func GizmoRotationRingAngle(
+        node: SceneNode,
+        axis: Integer,
+        pointerX: Number,
+        pointerY: Number) -> scene_transform_3d.RingAngleResult {
+        if node == null or SceneEditor3DModel.IsGizmoAxis(axis) == false {
+            return new scene_transform_3d.RingAngleResult();
+        }
+        var world = node.WorldPosition;
+        var origin = Project(world.X, world.Y, world.Z);
+        var axisA = GizmoAxisEndpoint(node, SceneEditor3DModel.GizmoRingAxisA(axis));
+        var axisB = GizmoAxisEndpoint(node, SceneEditor3DModel.GizmoRingAxisB(axis));
+        return scene_transform_3d.RotationRingAngle(
+            pointerX, pointerY, origin.x, origin.y,
+            axisA.x, axisA.y, axisB.x, axisB.y);
+    }
+
+    /// @brief Project one parent-aware local transform handle.
+    hide override func GizmoAxisEndpoint(node: SceneNode,
+                                axis: Integer) -> SceneEditor3DModel.ProjectedPoint {
+        if node == null { return new SceneEditor3DModel.ProjectedPoint(); }
+        var world = node.WorldPosition;
+        if gizmoTransformSpace
+           == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+            var worldLength = GizmoWorldLength();
+            var worldX = world.X;
+            var worldY = world.Y;
+            var worldZ = world.Z;
+            if axis == SceneEditor3DModel.GIZMO_AXIS_X { worldX = worldX + worldLength; }
+            else if axis == SceneEditor3DModel.GIZMO_AXIS_Y {
+                worldY = worldY + worldLength;
+            } else {
+                worldZ = worldZ + worldLength;
+            }
+            return Project(worldX, worldY, worldZ);
+        }
+        var localLength = GizmoLocalLength(node, axis);
+        var deltaX = 0.0;
+        var deltaY = 0.0;
+        var deltaZ = 0.0;
+        if axis == SceneEditor3DModel.GIZMO_AXIS_X { deltaX = localLength; }
+        else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { deltaY = localLength; }
+        else { deltaZ = localLength; }
+
+        var parent = node.Parent;
+        if parent != null {
+            var parentScale = parent.WorldScale;
+            deltaX = deltaX * parentScale.X;
+            deltaY = deltaY * parentScale.Y;
+            deltaZ = deltaZ * parentScale.Z;
+            var rotation = parent.WorldRotation;
+            var crossX = 2.0
+                * (rotation.Y * deltaZ - rotation.Z * deltaY);
+            var crossY = 2.0
+                * (rotation.Z * deltaX - rotation.X * deltaZ);
+            var crossZ = 2.0
+                * (rotation.X * deltaY - rotation.Y * deltaX);
+            var rotatedX = deltaX + rotation.W * crossX
+                + rotation.Y * crossZ - rotation.Z * crossY;
+            var rotatedY = deltaY + rotation.W * crossY
+                + rotation.Z * crossX - rotation.X * crossZ;
+            var rotatedZ = deltaZ + rotation.W * crossZ
+                + rotation.X * crossY - rotation.Y * crossX;
+            deltaX = rotatedX;
+            deltaY = rotatedY;
+            deltaZ = rotatedZ;
+        }
+        return Project(
+            world.X + deltaX, world.Y + deltaY, world.Z + deltaZ);
+    }
+
+    /// @brief Local distance that produces a stable world-space handle length.
+    hide override func GizmoLocalLength(node: SceneNode,
+                               axis: Integer) -> Number {
+        var worldLength = GizmoWorldLength();
+        if node == null or node.Parent == null { return worldLength; }
+        var scale = node.Parent.WorldScale;
+        var axisScale = scale.Z;
+        if axis == SceneEditor3DModel.GIZMO_AXIS_X { axisScale = scale.X; }
+        else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { axisScale = scale.Y; }
+        if axisScale < 0.0 { axisScale = 0.0 - axisScale; }
+        if axisScale < 0.0001 { axisScale = 0.0001; }
+        return worldLength / axisScale;
+    }
+
+    /// @brief World distance that keeps every absolute-axis handle pixel-stable.
+    hide override func GizmoWorldLength() -> Number {
+        if viewScale > 0 { return SceneEditor3DModel.GIZMO_PIXEL_LENGTH / viewScale; }
+        return 1.0;
+    }
+
+    /// @brief Scene-unit amount represented by the currently displayed handle.
+    hide override func GizmoDragLength(node: SceneNode,
+                              axis: Integer) -> Number {
+        if gizmoTransformSpace
+           == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+            return GizmoWorldLength();
+        }
+        return GizmoLocalLength(node, axis);
+    }
+
+    /// @brief Return whether this handle participates in live grounding.
+    hide override func SurfaceSnapActiveForHandle(handle: Integer) -> Boolean {
+        return surfaceSnapEnabled
+            and gizmoMode == SceneEditor3DModel.GIZMO_MODE_MOVE
+            and (handle == SceneEditor3DModel.GIZMO_AXIS_X
+                 or handle == SceneEditor3DModel.GIZMO_AXIS_Z
+                 or handle == SceneEditor3DModel.GIZMO_PLANE_XZ);
+    }
+
+    /// @brief Start one captured transactional transform gesture.
+    hide override func BeginGizmoDrag(axis: Integer) {
+        if bakeActive {
+            detailLabel.SetText(
+                "A lightmap bake is running; cancel it before "
+                + "transforming nodes.");
+            return;
+        }
+        var node = SelectedNode();
+        if node == null
+           or (SceneEditor3DModel.IsGizmoAxis(axis) == false
+               and ((gizmoMode != SceneEditor3DModel.GIZMO_MODE_MOVE
+                     and gizmoMode != SceneEditor3DModel.GIZMO_MODE_SCALE)
+                    or SceneEditor3DModel.IsGizmoPlane(axis) == false)) {
+            return;
+        }
+        if SurfaceSnapActiveForHandle(axis) {
+            var surfaceRoots = TopLevelSelectedIndices();
+            if surfaceRoots.count() > SceneEditor3DModel.MAX_LIVE_SURFACE_SNAP_ROOTS {
+                toolbarStatus.SetText("Surface Move selection is too large");
+                detailLabel.SetText(
+                    "Surface Move accepts at most "
+                    + SceneEditor3DModel.MAX_LIVE_SURFACE_SNAP_ROOTS
+                    + " selected hierarchy roots per live gesture. "
+                    + "Reduce the selection or turn Surface off.");
+                return;
+            }
+        }
+        var sourceX = 0.0;
+        var sourceY = 0.0;
+        var sourceZ = 0.0;
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            var rotation = node.Rotation;
+            var euler = QuaternionToEulerDegrees(rotation);
+            sourceX = euler.X;
+            sourceY = euler.Y;
+            sourceZ = euler.Z;
+        } else if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            var scale = node.Scale;
+            sourceX = scale.X;
+            sourceY = scale.Y;
+            sourceZ = scale.Z;
+        } else {
+            var position = node.Position;
+            sourceX = position.X;
+            sourceY = position.Y;
+            sourceZ = position.Z;
+        }
+        if gizmoTransformSpace
+           == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+            if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+                sourceX = 0.0;
+                sourceY = 0.0;
+                sourceZ = 0.0;
+            } else if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+                var worldScale = node.WorldScale;
+                sourceX = worldScale.X;
+                sourceY = worldScale.Y;
+                sourceZ = worldScale.Z;
+            } else {
+                var worldPosition = node.WorldPosition;
+                sourceX = worldPosition.X;
+                sourceY = worldPosition.Y;
+                sourceZ = worldPosition.Z;
+            }
+        }
+        var initialRingAngle = 0.0;
+        var initialRingValid = false;
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            var pointerX =
+                PhysicalPointerToUi(Input.Mouse.X())
+                - viewportImage.GetScreenX();
+            var pointerY =
+                PhysicalPointerToUi(Input.Mouse.Y())
+                - viewportImage.GetScreenY();
+            var decodedRing = GizmoRotationRingAngle(
+                node, axis, pointerX, pointerY);
+            if decodedRing.valid == false { return; }
+            initialRingAngle = decodedRing.degrees;
+            initialRingValid = true;
+        }
+        gizmoDragAxis = axis;
+        gizmoDragChanged = false;
+        gizmoDragAccumulated = 0.0;
+        gizmoDragAccumulatedB = 0.0;
+        gizmoDragPreviousRingAngle = initialRingAngle;
+        gizmoDragRingAngleValid = initialRingValid;
+        gizmoDragStartX = sourceX;
+        gizmoDragStartY = sourceY;
+        gizmoDragStartZ = sourceZ;
+        gizmoDragIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if gizmoTransformSpace
+           == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+            gizmoDragIndices =
+                HierarchyOrderedSelection(gizmoDragIndices);
+        }
+        gizmoDragStartXs = [];
+        gizmoDragStartYs = [];
+        gizmoDragStartZs = [];
+        gizmoDragStartPositions = [];
+        gizmoDragStartRotations = [];
+        gizmoDragStartScales = [];
+        gizmoDragStartWorldMatrices = [];
+        gizmoDragStartWorldPositions = [];
+        gizmoDragStartWorldScales = [];
+        var selectionIndex = 0;
+        while selectionIndex < gizmoDragIndices.count() {
+            var selectedNode = flatNodes.get(
+                gizmoDragIndices.get(selectionIndex));
+            gizmoDragStartPositions.add(selectedNode.Position);
+            gizmoDragStartRotations.add(selectedNode.Rotation);
+            gizmoDragStartScales.add(selectedNode.Scale);
+            if gizmoTransformSpace
+               == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+                gizmoDragStartWorldMatrices.add(
+                    selectedNode.WorldMatrix);
+                gizmoDragStartWorldPositions.add(
+                    selectedNode.WorldPosition);
+                gizmoDragStartWorldScales.add(
+                    selectedNode.WorldScale);
+            }
+            var startX = 0.0;
+            var startY = 0.0;
+            var startZ = 0.0;
+            if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+                var selectedEuler =
+                    QuaternionToEulerDegrees(selectedNode.Rotation);
+                startX = selectedEuler.X;
+                startY = selectedEuler.Y;
+                startZ = selectedEuler.Z;
+            } else if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+                var selectedScale = selectedNode.Scale;
+                startX = selectedScale.X;
+                startY = selectedScale.Y;
+                startZ = selectedScale.Z;
+            } else {
+                var selectedPosition = selectedNode.Position;
+                startX = selectedPosition.X;
+                startY = selectedPosition.Y;
+                startZ = selectedPosition.Z;
+            }
+            gizmoDragStartXs.add(startX);
+            gizmoDragStartYs.add(startY);
+            gizmoDragStartZs.add(startZ);
+            selectionIndex = selectionIndex + 1;
+        }
+        Input.Mouse.Capture();
+        toolbarStatus.SetText(
+            scene_transform_3d.ModeAction(gizmoMode)
+            + " " + gizmoDragIndices.count()
+            + " selected node(s) on "
+            + scene_transform_3d.SpaceLabel(gizmoTransformSpace)
+            + " " + GizmoHandleLabel(axis)
+            + GizmoSnapStatus());
+        renderDirty = true;
+    }
+}

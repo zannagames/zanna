@@ -1,0 +1,468 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_dock_state.zia
+// Purpose: Focused dock state behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_build_layout.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_dock_state;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_build_layout" as PreviousLayer;
+
+class ToolPanelDockStateLayer extends PreviousLayer.ToolPanelBuildLayoutLayer {
+
+    /// @brief Return primary/secondary/default styling for one dock card.
+    hide override func DockTargetStyle(location: Integer,
+                              hoverLocation: Integer,
+                              currentLocation: Integer) -> Integer {
+        if location == hoverLocation { return 1; }
+        if location == currentLocation { return 0; }
+        return 2;
+    }
+
+    /// @brief Consume a valid typed drop from one explicit target.
+    hide override func DockTargetWasDropped(target: GUI.Button) -> Boolean {
+        if target == null or !target.WasDropped() { return false; }
+        return target.GetDropType() == workspace_dock.TOOL_PANEL_DRAG_TYPE
+            and target.GetDropData() == workspace_dock.TOOL_PANEL_DRAG_DATA;
+    }
+
+    /// @brief Consume any explicit target drop and return its location.
+    hide override func TakeDockTargetDrop() -> Integer {
+        if DockTargetWasDropped(dockBottomTarget) {
+            return workspace_dock.DOCK_BOTTOM;
+        }
+        if DockTargetWasDropped(dockLeftTarget) {
+            return workspace_dock.DOCK_LEFT;
+        }
+        if DockTargetWasDropped(dockRightTarget) {
+            return workspace_dock.DOCK_RIGHT;
+        }
+        if DockTargetWasDropped(dockFloatTarget) {
+            return workspace_dock.DOCK_FLOATING;
+        }
+        return workspace_dock.DOCK_NONE;
+    }
+
+    /// @brief Apply a persisted dock name without publishing a user change.
+    expose override func SetDockLocationName(name: String) {
+        ApplyDockLocation(workspace_dock.DockLocationFromName(name), false);
+    }
+
+    /// @brief Restore the durable tool-dock geometry and tab order defaults.
+    /// @details This is an explicit recovery action, so stale drag edges are
+    ///          cleared after the controller-authored reset.
+    expose override func ResetWorkspaceLayout() {
+        SetToolPanelGroupLayout(
+            "", "bottom", tool_panel_model.DEFAULT_TAB_ORDER);
+        SetBottomSplitPct(70);
+        SetSidePanelWidthPct(30);
+        SetFloatingToolPanelBounds(
+            ToolPanelModel.FLOATING_PANEL_DEFAULT_X,
+            ToolPanelModel.FLOATING_PANEL_DEFAULT_Y,
+            ToolPanelModel.FLOATING_PANEL_DEFAULT_WIDTH,
+            ToolPanelModel.FLOATING_PANEL_DEFAULT_HEIGHT);
+        HidePanelArea();
+        splitFractionDirty = false;
+        sideFractionDirty = false;
+        dockLocationDirty = false;
+        toolTabOrderDirty = false;
+        toolPanelGroupLayoutDirty = false;
+        floatingPanelGeometryDirty = false;
+    }
+
+    /// @brief Move the primary attached group to an edge or floating window.
+    /// @param location One supported workspace_dock tool location.
+    expose override func MovePanelTo(location: Integer) {
+        if location == workspace_dock.DOCK_FLOATING {
+            MergeToolGroupLocation(
+                dockLocation, workspace_dock.DOCK_FLOATING, true);
+            return;
+        }
+        ApplyDockLocation(location, true);
+    }
+
+    /// @brief Return the current durable dock name.
+    expose override func GetDockLocationName() -> String {
+        return workspace_dock.DockLocationName(dockLocation);
+    }
+
+    /// @brief Consume one user-authored dock-location change.
+    /// @return "left", "bottom", "right", or empty when unchanged.
+    expose override func TakeChangedDockLocation() -> String {
+        if dockLocationDirty == false { return ""; }
+        dockLocationDirty = false;
+        return GetDockLocationName();
+    }
+
+    /// @brief Apply a persisted side-panel width percentage.
+    /// @param pct Panel share of the side splitter, clamped to [20, 55].
+    expose override func SetSidePanelWidthPct(pct: Integer) {
+        var clamped = pct;
+        if clamped < 20 { clamped = 20; }
+        if clamped > 55 { clamped = 55; }
+        sidePanelFraction = clamped / 100.0;
+        if activeLeftToolPanelKind != tool_panel_model.PANEL_NONE {
+            ApplySidePanelSplitAt(workspace_dock.DOCK_LEFT);
+        }
+        if activeRightToolPanelKind != tool_panel_model.PANEL_NONE {
+            ApplySidePanelSplitAt(workspace_dock.DOCK_RIGHT);
+        }
+    }
+
+    /// @brief Consume one user-authored side-panel width change.
+    /// @return Rounded panel width percentage, or -1 when unchanged.
+    expose override func TakeChangedSidePanelWidthPercent() -> Integer {
+        if sideFractionDirty == false { return -1; }
+        sideFractionDirty = false;
+        var scaled = sidePanelFraction * 100.0;
+        var pct = 20;
+        while pct < 55 and scaled >= pct + 0.5 {
+            pct = pct + 1;
+        }
+        return pct;
+    }
+
+    /// @brief Apply persisted floating-window geometry without publishing input.
+    expose override func SetFloatingToolPanelBounds(x: Integer,
+                                           y: Integer,
+                                           width: Integer,
+                                           height: Integer) {
+        ApplyFloatingPanelBounds(x, y, width, height, false);
+        floatingPanelGeometryDirty = false;
+    }
+
+    /// @brief Consume one user-authored floating move or resize edge.
+    expose override func TakeFloatingToolPanelGeometryChanged() -> Boolean {
+        if !floatingPanelGeometryDirty { return false; }
+        floatingPanelGeometryDirty = false;
+        return true;
+    }
+
+    /// @brief Return the durable floating-window X coordinate.
+    expose override func GetFloatingToolPanelX() -> Integer { return floatingPanelX; }
+
+    /// @brief Return the durable floating-window Y coordinate.
+    expose override func GetFloatingToolPanelY() -> Integer { return floatingPanelY; }
+
+    /// @brief Return the durable floating-window width.
+    expose override func GetFloatingToolPanelWidth() -> Integer {
+        return floatingPanelWidth;
+    }
+
+    /// @brief Return the durable floating-window height.
+    expose override func GetFloatingToolPanelHeight() -> Integer {
+        return floatingPanelHeight;
+    }
+
+    /// @brief Clamp, apply, and optionally publish floating-window geometry.
+    hide override func ApplyFloatingPanelBounds(x: Integer,
+                                       y: Integer,
+                                       width: Integer,
+                                       height: Integer,
+                                       userAuthored: Boolean) {
+        var viewportWidth = FloatingViewportWidth();
+        var viewportHeight = FloatingViewportHeight();
+        var margin = ToolPanelModel.FLOATING_PANEL_VIEWPORT_MARGIN;
+
+        var maxWidth = viewportWidth - margin * 2;
+        var maxHeight = viewportHeight - margin * 2;
+        if maxWidth < 1 { maxWidth = viewportWidth; }
+        if maxHeight < 1 { maxHeight = viewportHeight; }
+        if maxWidth < 1 { maxWidth = 1; }
+        if maxHeight < 1 { maxHeight = 1; }
+
+        var minWidth = ToolPanelModel.FLOATING_PANEL_MIN_WIDTH;
+        var minHeight = ToolPanelModel.FLOATING_PANEL_MIN_HEIGHT;
+        if minWidth > maxWidth { minWidth = maxWidth; }
+        if minHeight > maxHeight { minHeight = maxHeight; }
+
+        var clampedWidth = width;
+        var clampedHeight = height;
+        if clampedWidth < minWidth { clampedWidth = minWidth; }
+        if clampedWidth > maxWidth { clampedWidth = maxWidth; }
+        if clampedHeight < minHeight { clampedHeight = minHeight; }
+        if clampedHeight > maxHeight { clampedHeight = maxHeight; }
+
+        var minX = margin;
+        var minY = margin;
+        var maxX = viewportWidth - margin - clampedWidth;
+        var maxY = viewportHeight - margin - clampedHeight;
+        if maxX < minX {
+            minX = 0;
+            maxX = viewportWidth - clampedWidth;
+            if maxX < 0 { maxX = 0; }
+        }
+        if maxY < minY {
+            minY = 0;
+            maxY = viewportHeight - clampedHeight;
+            if maxY < 0 { maxY = 0; }
+        }
+
+        var clampedX = x;
+        var clampedY = y;
+        if clampedX < minX { clampedX = minX; }
+        if clampedX > maxX { clampedX = maxX; }
+        if clampedY < minY { clampedY = minY; }
+        if clampedY > maxY { clampedY = maxY; }
+
+        var changed = clampedX != floatingPanelX
+            or clampedY != floatingPanelY
+            or clampedWidth != floatingPanelWidth
+            or clampedHeight != floatingPanelHeight;
+        floatingPanelX = clampedX;
+        floatingPanelY = clampedY;
+        floatingPanelWidth = clampedWidth;
+        floatingPanelHeight = clampedHeight;
+        if floatingToolPanel != null {
+            floatingToolPanel.SetPosition(floatingPanelX, floatingPanelY);
+            floatingToolPanel.SetSize(
+                floatingPanelWidth, floatingPanelHeight);
+        }
+        if floatingToolGroupRoot != null {
+            floatingToolGroupRoot.SetPreferredSize(
+                floatingPanelWidth, floatingPanelHeight);
+        }
+        if userAuthored and changed {
+            floatingPanelGeometryDirty = true;
+        }
+    }
+
+    /// @brief Return the app width in effective UI-layout units.
+    hide override func FloatingViewportWidth() -> Integer {
+        if app == null { return 1280; }
+        var scale = app.GetEffectiveScale();
+        if scale <= 0.0 { scale = 1.0; }
+        var width = Convert.NumToInt(app.GetWidth() / scale);
+        if width < 1 { return 1280; }
+        return width;
+    }
+
+    /// @brief Return the app height in effective UI-layout units.
+    hide override func FloatingViewportHeight() -> Integer {
+        if app == null { return 720; }
+        var scale = app.GetEffectiveScale();
+        if scale <= 0.0 { scale = 1.0; }
+        var height = Convert.NumToInt(app.GetHeight() / scale);
+        if height < 1 { return 720; }
+        return height;
+    }
+
+    /// @brief Convert one framebuffer pointer coordinate into UI-layout units.
+    hide override func PointerToFloatingUnits(value: Number) -> Number {
+        if app == null { return value; }
+        var scale = app.GetEffectiveScale();
+        if scale <= 0.0 { scale = 1.0; }
+        return value / scale;
+    }
+
+    /// @brief Return whether one logical pointer is inside a visible widget.
+    hide override func FloatingPointerInside(widget: GUI.Widget,
+                                    pointerX: Number,
+                                    pointerY: Number) -> Boolean {
+        if widget == null or !widget.IsVisible() { return false; }
+        return pointerX >= widget.GetScreenX()
+            and pointerY >= widget.GetScreenY()
+            and pointerX
+                <= widget.GetScreenX() + widget.GetScreenWidth()
+            and pointerY
+                <= widget.GetScreenY() + widget.GetScreenHeight();
+    }
+
+    /// @brief Resolve an intentional floating-group dock target.
+    /// @details Visible target cards win, followed by a narrow workbench-edge
+    ///          strip. This keeps small window moves from becoming surprise
+    ///          full-group dock operations.
+    hide override func FloatingDockLocationForPointer(pointerX: Number,
+                                             pointerY: Number) -> Integer {
+        if FloatingPointerInside(dockBottomTarget, pointerX, pointerY) {
+            return workspace_dock.DOCK_BOTTOM;
+        }
+        if FloatingPointerInside(dockFloatTarget, pointerX, pointerY) {
+            return workspace_dock.DOCK_FLOATING;
+        }
+        if FloatingPointerInside(dockLeftTarget, pointerX, pointerY) {
+            return workspace_dock.DOCK_LEFT;
+        }
+        if FloatingPointerInside(dockRightTarget, pointerX, pointerY) {
+            return workspace_dock.DOCK_RIGHT;
+        }
+        if workspaceDropTarget == null { return workspace_dock.DOCK_NONE; }
+        return workspace_dock.FloatingSnapEdgeForPointer(
+            pointerX,
+            pointerY,
+            workspaceDropTarget.GetScreenX(),
+            workspaceDropTarget.GetScreenY(),
+            workspaceDropTarget.GetScreenWidth(),
+            workspaceDropTarget.GetScreenHeight());
+    }
+
+    /// @brief Recover floating geometry after a resize or UI-scale change.
+    hide override func KeepFloatingPanelInViewport() {
+        var width = FloatingViewportWidth();
+        var height = FloatingViewportHeight();
+        var scale = 1.0;
+        if app != null {
+            scale = app.GetEffectiveScale();
+            if scale <= 0.0 { scale = 1.0; }
+        }
+        var scaleDelta = scale - floatingViewportScale;
+        if scaleDelta < 0.0 { scaleDelta = 0.0 - scaleDelta; }
+        if width == floatingViewportWidth
+           and height == floatingViewportHeight
+           and scaleDelta <= 0.0001 {
+            return;
+        }
+        floatingViewportWidth = width;
+        floatingViewportHeight = height;
+        floatingViewportScale = scale;
+        ApplyFloatingPanelBounds(
+            floatingPanelX, floatingPanelY,
+            floatingPanelWidth, floatingPanelHeight, false);
+    }
+
+    /// @brief Float the complete primary attached group without losing order.
+    /// @return True when at least one panel changed location.
+    expose override func FloatPrimaryToolPanelGroup() -> Boolean {
+        return MergeToolGroupLocation(
+            dockLocation, workspace_dock.DOCK_FLOATING, true);
+    }
+
+    /// @brief Merge one complete group into another while preserving live state.
+    hide override func MergeToolGroupLocation(source: Integer,
+                                     destination: Integer,
+                                     userAuthored: Boolean) -> Boolean {
+        if !workspace_dock.IsToolLocation(source)
+           or !workspace_dock.IsToolLocation(destination)
+           or source == destination
+           or !toolPanelGroups.HasIdsAt(source) {
+            return false;
+        }
+
+        var sourceActive = ActiveToolPanelKindAt(source);
+        var restoreFocusId = FocusedToolControlId();
+        var stableOrder = toolPanelGroups.order;
+        var ids = Str.Split(toolPanelGroups.IdsAt(source), ",");
+        var i = 0;
+        while i < Seq.get_Count(ids) {
+            var id = Str.Trim(Obj.ToString(Seq.Get(ids, i)));
+            var kind = tool_panel_model.PanelKindForTabId(id);
+            if kind != tool_panel_model.PANEL_NONE {
+                TransferToolPanel(kind, destination, false);
+            }
+            i = i + 1;
+        }
+        toolPanelGroups.SetCompleteOrder(stableOrder);
+        ApplyToolTabOrderAt(workspace_dock.DOCK_LEFT);
+        ApplyToolTabOrderAt(workspace_dock.DOCK_BOTTOM);
+        ApplyToolTabOrderAt(workspace_dock.DOCK_RIGHT);
+        ApplyToolTabOrderAt(workspace_dock.DOCK_FLOATING);
+        KeepFloatingResizeRowLast();
+
+        if sourceActive != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(sourceActive);
+        }
+        RestoreToolControlFocus(restoreFocusId);
+        if userAuthored {
+            toolPanelGroupLayoutDirty = true;
+        }
+        return true;
+    }
+
+    /// @brief Move the primary group, merging an occupied destination group.
+    hide override func ApplyDockLocation(location: Integer, userAuthored: Boolean) {
+        if workspace_dock.IsDockLocation(location) == false { return; }
+        if location == dockLocation {
+            UpdateDockButtons();
+            return;
+        }
+
+        var source = dockLocation;
+        var restorePanelId = GetActiveToolPanelId();
+        var restoreFocusId = FocusedToolControlId();
+        var restoreLeft = activeLeftToolPanelKind;
+        var restoreBottom = activeBottomToolPanelKind;
+        var restoreRight = activeRightToolPanelKind;
+        var restoreFloating = activeFloatingToolPanelKind;
+        HideAllToolPanels();
+        RetireAllToolTabs();
+        CollapseAllDockSplits();
+
+        toolPanelGroups.MergeLocation(source, location);
+        if panelRoot != null {
+            if location == workspace_dock.DOCK_LEFT and leftDockHost != null {
+                leftDockHost.AddChild(panelRoot);
+            } else if location == workspace_dock.DOCK_RIGHT
+                      and rightDockHost != null {
+                rightDockHost.AddChild(panelRoot);
+            } else if bottomDockHost != null {
+                bottomDockHost.AddChild(panelRoot);
+            }
+        }
+        dockLocation = location;
+        ApplyResponsiveDockHeader();
+        RebuildAllToolTabs();
+        toolTabBar.SetVisible(false);
+        leftToolTabBar.SetVisible(false);
+        bottomToolTabBar.SetVisible(false);
+        rightToolTabBar.SetVisible(false);
+        floatingToolTabBar.SetVisible(false);
+        panelRoot.SetVisible(false);
+        leftToolGroupRoot.SetVisible(false);
+        bottomToolGroupRoot.SetVisible(false);
+        rightToolGroupRoot.SetVisible(false);
+        floatingToolGroupRoot.SetVisible(false);
+        floatingToolPanel.SetVisible(false);
+        activeLeftToolPanelKind = tool_panel_model.PANEL_NONE;
+        activeBottomToolPanelKind = tool_panel_model.PANEL_NONE;
+        activeRightToolPanelKind = tool_panel_model.PANEL_NONE;
+        activeFloatingToolPanelKind = tool_panel_model.PANEL_NONE;
+        SetActiveToolPanelKind(tool_panel_model.PANEL_NONE);
+
+        if restoreLeft != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(restoreLeft);
+        }
+        if restoreBottom != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(restoreBottom);
+        }
+        if restoreRight != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(restoreRight);
+        }
+        if restoreFloating != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(restoreFloating);
+        }
+        if restorePanelId != tool_panel_model.TAB_ID_NONE {
+            ShowToolPanelKind(
+                tool_panel_model.PanelKindForTabId(restorePanelId));
+        }
+        RestoreToolControlFocus(restoreFocusId);
+        UpdateDockButtons();
+        if userAuthored {
+            dockLocationDirty = true;
+            toolPanelGroupLayoutDirty = true;
+        }
+    }
+}

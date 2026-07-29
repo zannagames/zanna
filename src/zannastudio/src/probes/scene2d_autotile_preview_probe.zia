@@ -152,14 +152,32 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief State shared by autotile parity and preview scenarios.
+class AutotilePreviewProbeContext {
+    expose String tempDir;
+    expose app_shell.AppShell shell;
+    expose scene_editor_2d.SceneEditor2D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose String baseline;
+    expose Integer baselineRevision;
+    expose Integer baselineUndo;
+    expose Boolean baselineDirty;
+    expose Integer centerPixel;
+    expose Integer upPixel;
+    expose Integer rightPixel;
+}
+
+/// @brief Build the fixture and verify editor/runtime autotile parity.
+func VerifyAutotileParity(
+    ctx: AutotilePreviewProbeContext) -> Boolean {
     var tempDir =
         TempFile.CreateDirWithPrefix("zannastudio_autotile_preview_");
     var atlasPath = Path.Join(tempDir, "autotile-atlas.png");
     var atlas = Pixels.New(256, 16);
     if tempDir == "" or atlas == null {
         Fail(null, null, tempDir, "temporary atlas allocation");
-        return;
+        return false;
     }
     atlas.FillColor(Color.RGB(92, 72, 122));
     // Tile ids are one-based; each frame begins at (tile - 1) * 16.
@@ -172,13 +190,13 @@ func main() {
     atlas.DrawBox(128, 0, 16, 16, Color.RGB(232, 210, 26));   // 9
     if Pixels.SavePng(atlas, atlasPath) != 1 {
         Fail(null, null, tempDir, "temporary atlas write");
-        return;
+        return false;
     }
 
     var fixture = SceneDocument.New(6, 5, 16, 16);
     if fixture == null {
         Fail(null, null, tempDir, "scene fixture");
-        return;
+        return false;
     }
     fixture.SetLayerAsset(0, "autotile-atlas.png");
     // Center sees up + right: mask 1 + 2 = 3 => tile 4.
@@ -188,7 +206,7 @@ func main() {
     var overlay = fixture.AddLayer("overlay");
     if overlay != 1 {
         Fail(null, null, tempDir, "overlay fixture");
-        return;
+        return false;
     }
     fixture.SetTile(overlay, 2, 2, 1);
     fixture.SetLayerVisible(overlay, false);
@@ -214,7 +232,7 @@ func main() {
            1, "1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16")
            == false {
         Fail(shell, null, tempDir, "autotile rule fixture");
-        return;
+        return false;
     }
     PumpTwice(shell, editor, sceneDoc);
 
@@ -227,7 +245,7 @@ func main() {
     var runtimeMap = editor.scene.BuildTilemap();
     if runtimeMap == null {
         Fail(shell, null, tempDir, "runtime tilemap fixture");
-        return;
+        return false;
     }
     runtimeMap.ApplyAutoTile();
     if editor.autotilePreviewEnabled == false
@@ -243,7 +261,7 @@ func main() {
        or editor.scene.GetTile(0, 2, 1) != 1
        or editor.scene.GetTile(0, 3, 2) != 1 {
         Fail(shell, null, tempDir, "runtime/editor autotile parity");
-        return;
+        return false;
     }
 
     var centerPixel = SampleCell(editor, 2, 2);
@@ -254,8 +272,39 @@ func main() {
        or LooksYellow(rightPixel) == false {
         Fail(shell, null, tempDir,
              "resolved atlas frames were not rendered");
-        return;
+        return false;
     }
+
+    ctx.tempDir = tempDir;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.baseline = baseline;
+    ctx.baselineRevision = baselineRevision;
+    ctx.baselineUndo = baselineUndo;
+    ctx.baselineDirty = baselineDirty;
+    ctx.centerPixel = centerPixel;
+    ctx.upPixel = upPixel;
+    ctx.rightPixel = rightPixel;
+    return true;
+}
+
+/// @brief Verify per-tab, hover, live-paint, and animation presentation.
+func VerifyAutotilePresentation(
+    ctx: AutotilePreviewProbeContext) -> Boolean {
+    var tempDir = ctx.tempDir;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var baseline = ctx.baseline;
+    var baselineRevision = ctx.baselineRevision;
+    var baselineUndo = ctx.baselineUndo;
+    var baselineDirty = ctx.baselineDirty;
+    var centerPixel = ctx.centerPixel;
+    var upPixel = ctx.upPixel;
+    var rightPixel = ctx.rightPixel;
 
     // Preview is per-tab presentation. Turning it off reveals raw base frames
     // without changing canonical bytes, history, revision, or dirty state.
@@ -269,7 +318,7 @@ func main() {
        or editor.undoStack.count() != baselineUndo
        or sceneDoc.isModified != baselineDirty {
         Fail(shell, null, tempDir, "preview-off canonical isolation");
-        return;
+        return false;
     }
 
     var otherDoc = documents.NewScene2DDocument();
@@ -280,13 +329,13 @@ func main() {
     if editor.autotilePreviewEnabled == false
        or editor.AutotileResolvedSceneTile(0, 2, 2) != 4 {
         Fail(shell, null, tempDir, "new tab did not default preview on");
-        return;
+        return false;
     }
     PumpTwice(shell, editor, sceneDoc);
     if editor.autotilePreviewEnabled
        or editor.AutotileResolvedSceneTile(0, 2, 2) != 1 {
         Fail(shell, null, tempDir, "preview choice did not follow its tab");
-        return;
+        return false;
     }
     editor.SetAutotilePreviewEnabled(true);
     PumpTwice(shell, editor, sceneDoc);
@@ -296,7 +345,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, tempDir, "automation app binding");
-        return;
+        return false;
     }
     editor.SetToolMode(scene_editor_2d.MODE_PAINT);
     editor.tileSpinner.SetValue(1);
@@ -311,20 +360,20 @@ func main() {
        or editor.undoStack.count() != baselineUndo
        or sceneDoc.isModified != baselineDirty {
         Fail(shell, harness, tempDir, "prospective autotile hover");
-        return;
+        return false;
     }
 
     // A real tile transaction retains base ids but immediately updates every
     // affected resolved neighbor; the runtime copy reaches the same result.
     if editor.PaintTileLine(0, 2, 3, 2, 3, 1) == false {
         Fail(shell, harness, tempDir, "live autotile paint");
-        return;
+        return false;
     }
     PumpTwice(shell, editor, sceneDoc);
     var paintedRuntime = editor.scene.BuildTilemap();
     if paintedRuntime == null {
         Fail(shell, harness, tempDir, "painted runtime tilemap");
-        return;
+        return false;
     }
     paintedRuntime.ApplyAutoTile();
     var paintedCenterPixel = SampleCell(editor, 2, 2);
@@ -338,19 +387,19 @@ func main() {
        or editor.GetRevision() != baselineRevision + 1
        or editor.undoStack.count() != baselineUndo + 1 {
         Fail(shell, harness, tempDir, "live paint did not update parity");
-        return;
+        return false;
     }
 
     // Animation preview consumes the resolved variant, not the canonical base.
     if editor.Undo() == false
        or editor.SetTileBehaviorAnim(4, "4, 6", "100, 100") == false {
         Fail(shell, harness, tempDir, "animation composition fixture");
-        return;
+        return false;
     }
     editor.SetPreviewActive(true);
     if editor.ResolvedSceneTileForPreview(0, 2, 2) != 4 {
         Fail(shell, harness, tempDir, "autotile animation initial frame");
-        return;
+        return false;
     }
     editor.AdvancePreviewClock(150);
     if editor.ResolvedSceneTileForPreview(0, 2, 2) != 6 {
@@ -364,7 +413,7 @@ func main() {
              + Seq.get_Count(editor.scene.TileAnimFrames(4))
              + " durations="
              + Seq.get_Count(editor.scene.TileAnimDurations(4)));
-        return;
+        return false;
     }
 
     var metric = "resolved="
@@ -376,5 +425,13 @@ func main() {
         + "/" + Color.GetRed(hoverNeighborPixel);
     Cleanup(shell, harness, tempDir);
     Terminal.Say("METRIC: " + metric);
+    return true;
+}
+
+func main() {
+    var ctx = new AutotilePreviewProbeContext();
+    if VerifyAutotileParity(ctx) == false { return; }
+    if VerifyAutotilePresentation(ctx) == false { return; }
+
     Terminal.Say("RESULT: ok");
 }

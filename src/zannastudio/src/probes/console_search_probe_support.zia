@@ -1,0 +1,153 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/console_search_probe_support.zia
+// Purpose: Shared fixture and assertions for console/search probe scenarios.
+// Key invariants:
+//   - Clipboard retries and viewport bounds retain their original limits.
+//   - Scenario state remains serial across panels, overlays, and search jobs.
+// Ownership/Lifetime: The entry probe owns one context for its complete run.
+// Links: zannastudio/src/probes/console_search_probe.zia,
+//        zannastudio/src/commands/search_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module console_search_probe_support;
+
+bind "../ui/app_shell";
+bind "../ui/command_input";
+bind "../ui/debug_breakpoint_overlay";
+bind "../ui/diff_view";
+bind "../ui/explorer_actions";
+bind "../ui/ide_overlays";
+bind "../ui/output_cache";
+bind "../ui/notification_policy";
+bind "../app/command_palette_controller";
+bind "../commands/command_registry";
+bind "../commands/build_commands";
+bind "../commands/quick_open_commands";
+bind "../commands/search_commands";
+bind "../build/build_system";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../core/settings";
+bind "../editor/diagnostics";
+bind "../services/locations";
+
+bind GUI = Zanna.GUI;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Terminal = Zanna.Terminal;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind TempFile = Zanna.IO.TempFile;
+bind Str = Zanna.String;
+bind Clock = Zanna.Time.Clock;
+bind Env = Zanna.System.Environment;
+bind Machine = Zanna.System.Machine;
+
+final CLIPBOARD_RETRY_ATTEMPTS = 50;
+
+/// @brief Typed state passed between serial console/search scenarios.
+class ConsoleSearchProbeContext {
+    expose app_shell.AppShell shell;
+    expose command_registry.CommandRegistry chromeRegistry;
+    expose ide_overlays.IdeOverlays overlays;
+    expose settings.SettingsManager prefs;
+    expose debug_breakpoint_overlay.DebugBreakpointOverlay breakpointOverlay;
+    expose String root;
+    expose Integer i;
+    expose String symbolPath;
+    expose document_manager.DocumentManager docMgr;
+    expose locations.LocationStore locStore;
+    expose search_commands.SearchController searcher;
+    expose project_manager.ProjectManager projMgr;
+    expose diff_view.DiffView asyncDiff;
+}
+
+expose func UiViewportWidth(app: GUI.App) -> Number {
+    return app_shell.UiViewportWidth(app);
+}
+
+expose func UiViewportHeight(app: GUI.App) -> Number {
+    return app_shell.UiViewportHeight(app);
+}
+
+expose func fail(shell: app_shell.AppShell, reason: String) {
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+expose func OverlayContainsAction(app: GUI.App,
+                           panel: GUI.FloatingPanel,
+                           action: GUI.Button) -> Boolean {
+    if app == null or panel == null or action == null { return false; }
+    var panelRight = panel.GetScreenX() + panel.GetScreenWidth();
+    var panelBottom = panel.GetScreenY() + panel.GetScreenHeight();
+    return panel.GetScreenX() >= 0.0 and panel.GetScreenY() >= 0.0
+        and panelRight <= UiViewportWidth(app) + 1.0
+        and panelBottom <= UiViewportHeight(app) + 1.0
+        and action.GetScreenX() + action.GetScreenWidth() <= panelRight
+        and action.GetScreenY() + action.GetScreenHeight() <= panelBottom;
+}
+
+expose func copySelectedClipboardContains(shell: app_shell.AppShell, needle: String) -> Boolean {
+    var attempt = 0;
+    while attempt < CLIPBOARD_RETRY_ATTEMPTS {
+        if shell.toolPanels.CopySelectedToolRow() {
+            if Str.IndexOf(GUI.ClipboardText.GetText(), needle) != 0 {
+                return true;
+            }
+        }
+        Clock.Sleep(2);
+        attempt = attempt + 1;
+    }
+    return false;
+}
+
+expose func copySelectedClipboardEquals(shell: app_shell.AppShell, expected: String) -> Boolean {
+    var attempt = 0;
+    while attempt < CLIPBOARD_RETRY_ATTEMPTS {
+        if shell.toolPanels.CopySelectedToolRow() {
+            if GUI.ClipboardText.GetText() == expected {
+                return true;
+            }
+        }
+        Clock.Sleep(2);
+        attempt = attempt + 1;
+    }
+    return false;
+}
+
+expose func copySelectedClipboardNonEmpty(shell: app_shell.AppShell) -> Boolean {
+    var attempt = 0;
+    while attempt < CLIPBOARD_RETRY_ATTEMPTS {
+        if shell.toolPanels.CopySelectedToolRow() {
+            if GUI.ClipboardText.GetText() != "" {
+                return true;
+            }
+        }
+        Clock.Sleep(2);
+        attempt = attempt + 1;
+    }
+    return false;
+}
+
+expose func copyOutputClipboardContains(shell: app_shell.AppShell, needle: String) -> Boolean {
+    var attempt = 0;
+    while attempt < CLIPBOARD_RETRY_ATTEMPTS {
+        if shell.toolPanels.CopyOutputText() {
+            if Str.IndexOf(GUI.ClipboardText.GetText(), needle) != 0 {
+                return true;
+            }
+        }
+        Clock.Sleep(2);
+        attempt = attempt + 1;
+    }
+    return false;
+}
+

@@ -16,7 +16,8 @@
 # Ownership/Lifetime: Build/test-time source audit with no runtime state.
 # Links: src/zannastudio/src/ui/command_input.zia,
 #        src/zannastudio/src/commands/search_commands.zia,
-#        src/zannastudio/src/commands/file_commands.zia
+#        src/zannastudio/src/commands/file_commands.zia,
+#        src/zannastudio/src/commands/file_save_support.zia
 #
 #===----------------------------------------------------------------------===#
 
@@ -54,7 +55,8 @@ foreach(ZANNA_STUDIO_SOURCE IN LISTS ZANNA_STUDIO_INPUT_SOURCES)
                    "${ZANNA_STUDIO_INPUT_LINE}"
                    ZANNA_STUDIO_INPUT_LINE)
             set(ZANNA_STUDIO_INPUT_ALLOWED false)
-            if(ZANNA_STUDIO_SOURCE_RELATIVE STREQUAL "commands/file_commands.zia"
+            if(ZANNA_STUDIO_SOURCE_RELATIVE STREQUAL
+                   "commands/file_save_support.zia"
                AND ZANNA_STUDIO_INPUT_LINE MATCHES "MessageBox\\.Confirm")
                 set(ZANNA_STUDIO_INPUT_ALLOWED true)
             endif()

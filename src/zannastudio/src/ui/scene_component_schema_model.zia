@@ -1,0 +1,981 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_model.zia
+// Purpose: Value records and bounds for project-defined scene-component schemas.
+// Key invariants:
+//   - Bounds and default records remain the single source of truth for every parser layer.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_model;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+
+final SCHEMA_FILE_NAME: String = "scene-components.json";
+final SCHEMA_VERSION: Integer = 1;
+final SCHEMA_VERSION_MAX: Integer = 18;
+final OBJECT_PREVIEW_SCHEMA_VERSION: Integer = 3;
+final SCENE_PREVIEW_3D_SCHEMA_VERSION: Integer = 4;
+final NODE_PREVIEW_3D_SCHEMA_VERSION: Integer = 5;
+final SKY_LIGHT_PREVIEW_3D_SCHEMA_VERSION: Integer = 6;
+final LENS_ATMOSPHERE_PREVIEW_3D_SCHEMA_VERSION: Integer = 7;
+final SCENE_PREVIEW_2D_SCHEMA_VERSION: Integer = 8;
+final SCENE_ENVIRONMENT_PREVIEW_3D_SCHEMA_VERSION: Integer = 9;
+final SCENE_POSTFX_PREVIEW_3D_SCHEMA_VERSION: Integer = 10;
+final OBJECT_PREVIEW_DRAW_STACK_SCHEMA_VERSION: Integer = 11;
+final GAME_VIEW_OUTPUT_SCHEMA_VERSION: Integer = 12;
+final COMPONENT_CREATION_SCHEMA_VERSION: Integer = 13;
+final ADDITIVE_ENVIRONMENT_LAYERS_SCHEMA_VERSION: Integer = 14;
+final RUNTIME_WATER_PREVIEW_3D_SCHEMA_VERSION: Integer = 15;
+final MATERIAL_PREVIEW_3D_SCHEMA_VERSION: Integer = 16;
+final DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION: Integer = 17;
+final NODE_PREVIEW_FILTER_3D_SCHEMA_VERSION: Integer = 18;
+final MAX_ENUM_CHOICES: Integer = 64;
+final MAX_ENUM_CHOICE_CHARS: Integer = 64;
+final MAX_ASSET_KINDS: Integer = 4;
+final TARGET_2D_OBJECT: String = "2d-object";
+final TARGET_3D_NODE: String = "3d-node";
+final TARGET_BOTH: String = "both";
+final MAX_SCHEMA_BYTES: Integer = 1000000;
+final MAX_COMPONENTS: Integer = 128;
+final MAX_FIELDS_PER_COMPONENT: Integer = 64;
+final MAX_TOTAL_FIELDS: Integer = 2048;
+final MAX_COMPONENT_NAME_CHARS: Integer = 64;
+final MAX_LABEL_CHARS: Integer = 128;
+final MAX_CREATE_OBJECT_TYPE_CHARS: Integer = 128;
+final MAX_CREATE_NODE_NAME_CHARS: Integer = 128;
+final MAX_DESCRIPTION_CHARS: Integer = 1024;
+final MAX_FIELD_KEY_CHARS: Integer = 128;
+final MAX_DEFAULT_STRING_CHARS: Integer = 16384;
+final MAX_OBJECT_PREVIEWS: Integer = 128;
+final MAX_PREVIEW_SPRITE_CHARS: Integer = 1024;
+final MAX_PREVIEW_FRAME_MAP: Integer = 256;
+final MAX_PREVIEW_FRAME: Integer = 1000000;
+final MIN_PREVIEW_FRAME_OFFSET: Integer = -1000000;
+final MAX_PREVIEW_FRAME_OFFSET: Integer = 1000000;
+final MIN_PREVIEW_DRAW_ORDER: Integer = -128;
+final MAX_PREVIEW_DRAW_ORDER: Integer = 127;
+final MIN_PREVIEW_AFTER_LAYER: Integer = -1;
+final MAX_PREVIEW_AFTER_LAYER: Integer = 15;
+final MAX_NODE_PREVIEWS_3D: Integer = 128;
+final MAX_NODE_PREVIEW_VARIANTS: Integer = 256;
+final MAX_NODE_PREVIEW_PREFAB_CHARS: Integer = 1024;
+final MIN_NODE_PREVIEW_SCALE: Number = 0.001;
+final MAX_NODE_PREVIEW_SCALE: Number = 1000.0;
+final MAX_NODE_PREVIEW_YAW_DEGREES: Number = 36000.0;
+final MAX_NODE_PREVIEW_OFFSET: Number = 1000000.0;
+final MAX_NODE_PREVIEW_FILTER_STATES: Integer = 32;
+final MAX_NODE_PREVIEW_FILTER_LABEL_CHARS: Integer = 64;
+final MAX_MATERIAL_PREVIEWS_3D: Integer = 128;
+final MAX_MATERIAL_PREVIEW_TEXTURE_CHARS: Integer = 1024;
+final MAX_MATERIAL_PREVIEW_NORMAL_SCALE: Number = 8.0;
+final MAX_MATERIAL_PREVIEW_EMISSIVE_INTENSITY: Number = 64.0;
+final MAX_MATERIAL_PREVIEW_EMISSIVE_MULTIPLIER: Number = 64.0;
+final MAX_SCENE_PREVIEW_2D_VARIANTS: Integer = 64;
+final MAX_SCENE_PREVIEW_2D_IMAGE_CHARS: Integer = 1024;
+final MIN_SCENE_PREVIEW_2D_OFFSET: Integer = -1000000;
+final MAX_SCENE_PREVIEW_2D_OFFSET: Integer = 1000000;
+final MAX_SCENE_ENVIRONMENT_PREVIEW_VARIANTS: Integer = 64;
+final MAX_SCENE_ENVIRONMENT_PREVIEW_LAYERS: Integer = 32;
+final MAX_SCENE_WATER_PREVIEW_LAYERS: Integer = 8;
+final MAX_SCENE_WATER_PREVIEW_WAVES: Integer = 8;
+final MIN_SCENE_WATER_PREVIEW_RESOLUTION: Integer = 8;
+final MAX_SCENE_WATER_PREVIEW_RESOLUTION: Integer = 64;
+final MIN_SCENE_WATER_PREVIEW_SIZE: Number = 0.01;
+final MAX_SCENE_WATER_PREVIEW_SIZE: Number = 100000.0;
+final MAX_SCENE_WATER_PREVIEW_POSITION: Number = 1000000.0;
+final MAX_SCENE_WATER_PREVIEW_DIRECTION: Number = 1000.0;
+final MAX_SCENE_WATER_PREVIEW_SPEED: Number = 1000.0;
+final MAX_SCENE_WATER_PREVIEW_AMPLITUDE: Number = 1000.0;
+final MAX_SCENE_WATER_PREVIEW_WAVELENGTH: Number = 100000.0;
+final MIN_GAME_VIEW_OUTPUT_DIMENSION: Integer = 64;
+final MAX_GAME_VIEW_OUTPUT_DIMENSION: Integer = 8192;
+final MIN_SCENE_ENVIRONMENT_PREVIEW_OFFSET: Integer = -1000000;
+final MAX_SCENE_ENVIRONMENT_PREVIEW_OFFSET: Integer = 1000000;
+final BACKGROUND_FIT_COVER: String = "cover";
+final BACKGROUND_FIT_CONTAIN: String = "contain";
+final BACKGROUND_FIT_STRETCH: String = "stretch";
+
+/// @brief One validated typed field in a project scene-component template.
+class SceneComponentField {
+    expose String key;
+    expose String label;
+    expose String kind;
+    expose String defaultText;
+    expose String description;
+    expose List[String] choices;
+    expose List[String] assetKinds;
+
+    expose func init() {
+        key = "";
+        label = "";
+        kind = "";
+        defaultText = "";
+        description = "";
+        choices = [];
+        assetKinds = [];
+    }
+
+    /// @brief Return whether one exact value is a declared enum choice.
+    expose func HasChoice(value: String) -> Boolean {
+        var index = 0;
+        while index < choices.count() {
+            if choices.get(index) == value { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+}
+
+/// @brief One named project template applicable to 2D objects, 3D nodes, or both.
+class SceneComponentDefinition {
+    expose String name;
+    expose String label;
+    expose String target;
+    expose String description;
+    expose String createObjectType;
+    expose String createNodeName;
+    expose List[SceneComponentField] fields;
+
+    expose func init() {
+        name = "";
+        label = "";
+        target = "";
+        description = "";
+        createObjectType = "";
+        createNodeName = "";
+        fields = [];
+    }
+
+    /// @brief Return whether this definition may be applied to one editor target.
+    expose func SupportsTarget(requested: String) -> Boolean {
+        return target == TARGET_BOTH or target == requested;
+    }
+
+    /// @brief Return whether this template can create content in one editor.
+    expose func CanCreateFor(requested: String) -> Boolean {
+        if SupportsTarget(requested) == false { return false; }
+        if requested == TARGET_2D_OBJECT {
+            return createObjectType != "";
+        }
+        if requested == TARGET_3D_NODE {
+            return createNodeName != "";
+        }
+        return false;
+    }
+
+    /// @brief Find one exact field key, or null when absent.
+    expose func FieldNamed(key: String) -> SceneComponentField {
+        var index = 0;
+        while index < fields.count() {
+            var field = fields.get(index);
+            if field != null and field.key == key { return field; }
+            index = index + 1;
+        }
+        return null;
+    }
+}
+
+/// @brief One deterministic project-owned 2D object visualization rule.
+class SceneObjectPreviewDefinition {
+    expose String objectType;
+    expose String sprite;
+    expose Integer frame;
+    expose String frameProperty;
+    expose Integer frameOffset;
+    expose List[Integer] frameMap;
+    expose Integer drawOrder;
+    expose Integer afterLayer;
+
+    expose func init() {
+        objectType = "";
+        sprite = "";
+        frame = 0;
+        frameProperty = "";
+        frameOffset = 0;
+        frameMap = [];
+        drawOrder = 0;
+        // SceneDocument supports at most sixteen layers. Fifteen therefore
+        // means "after the final layer" for every smaller scene as well.
+        afterLayer = MAX_PREVIEW_AFTER_LAYER;
+    }
+
+    /// @brief Resolve one property value to a bounded atlas frame.
+    /// @details Negative, unmapped, or overflowing values use the authored
+    ///          fallback frame instead of producing an invalid image lookup.
+    expose func FrameForValue(value: Integer) -> Integer {
+        if value < 0 { return frame; }
+        if frameMap.count() > 0 {
+            if value >= frameMap.count() { return frame; }
+            return frameMap.get(value);
+        }
+        var resolved = value + frameOffset;
+        if resolved < 0 or resolved > MAX_PREVIEW_FRAME {
+            return frame;
+        }
+        return resolved;
+    }
+}
+
+/// @brief One bounded project-owned gameplay-like 2D scene backdrop profile.
+/// @details Images resolve beside the project schema, not beside scene files.
+///          Integer variants are read-only editor presentation conventions.
+class ScenePreview2DDefinition {
+    expose Boolean present;
+    expose Boolean hasOutputSize;
+    expose Integer outputWidth;
+    expose Integer outputHeight;
+    expose String background;
+    expose String variantProperty;
+    expose Integer variantOffset;
+    expose List[String] variantImages;
+    expose String fit;
+    expose Boolean hasShowGrid;
+    expose Boolean showGrid;
+
+    expose func init() {
+        present = false;
+        hasOutputSize = false;
+        outputWidth = 0;
+        outputHeight = 0;
+        background = "";
+        variantProperty = "";
+        variantOffset = 0;
+        variantImages = [];
+        fit = BACKGROUND_FIT_COVER;
+        hasShowGrid = false;
+        showGrid = false;
+    }
+
+    /// @brief Return whether Game View owns an exact project output frame.
+    expose func HasOutputSize() -> Boolean {
+        return hasOutputSize and outputWidth > 0 and outputHeight > 0;
+    }
+
+    /// @brief Resolve one integer variant or the optional fallback image.
+    expose func BackgroundForVariant(value: Integer) -> String {
+        var index = value + variantOffset;
+        if index >= 0 and index < variantImages.count() {
+            return variantImages.get(index);
+        }
+        return background;
+    }
+}
+
+/// @brief One independently matched, metadata-transformed 3D environment layer.
+/// @details The record is project-owned preview data only. Studio resolves the
+///          match and optional float transform properties against the canonical
+///          scene root without executing project code or mutating the scene.
+class SceneEnvironmentLayer3DDefinition {
+    expose String matchProperty;
+    expose String matchKind;
+    expose Boolean matchBoolean;
+    expose Integer matchInteger;
+    expose String matchString;
+    expose String prefab;
+    expose String positionXProperty;
+    expose String positionYProperty;
+    expose String positionZProperty;
+    expose String scaleXProperty;
+    expose String scaleYProperty;
+    expose String scaleZProperty;
+    expose String yawProperty;
+    expose String yawUnit;
+
+    expose func init() {
+        matchProperty = "";
+        matchKind = "";
+        matchBoolean = false;
+        matchInteger = 0;
+        matchString = "";
+        prefab = "";
+        positionXProperty = "";
+        positionYProperty = "";
+        positionZProperty = "";
+        scaleXProperty = "";
+        scaleYProperty = "";
+        scaleZProperty = "";
+        yawProperty = "";
+        yawUnit = "";
+    }
+}
+
+/// @brief One bounded Gerstner wave for a runtime-backed water preview.
+class SceneWaterWave3DDefinition {
+    expose Number dirX;
+    expose Number dirZ;
+    expose Number speed;
+    expose Number amplitude;
+    expose Number wavelength;
+
+    expose func init() {
+        dirX = 1.0;
+        dirZ = 0.0;
+        speed = 0.0;
+        amplitude = 0.0;
+        wavelength = 1.0;
+    }
+}
+
+/// @brief One conditionally present runtime Water3D preview surface.
+/// @details Static values remain useful for ordinary project scenery; optional
+///          float metadata mappings replace them from the canonical scene root.
+class SceneWaterLayer3DDefinition {
+    expose String matchProperty;
+    expose String matchKind;
+    expose Boolean matchBoolean;
+    expose Integer matchInteger;
+    expose String matchString;
+    expose Number positionX;
+    expose Number positionY;
+    expose Number positionZ;
+    expose String positionXProperty;
+    expose String positionYProperty;
+    expose String positionZProperty;
+    expose Number width;
+    expose Number depth;
+    expose String widthProperty;
+    expose String depthProperty;
+    expose Number widthMultiplier;
+    expose Number depthMultiplier;
+    expose Boolean hasColor;
+    expose Number colorR;
+    expose Number colorG;
+    expose Number colorB;
+    expose Number colorA;
+    expose String texture;
+    expose String normalMap;
+    expose Integer resolution;
+    expose Boolean animate;
+    expose List[SceneWaterWave3DDefinition] waves;
+
+    expose func init() {
+        matchProperty = "";
+        matchKind = "";
+        matchBoolean = false;
+        matchInteger = 0;
+        matchString = "";
+        positionX = 0.0;
+        positionY = 0.0;
+        positionZ = 0.0;
+        positionXProperty = "";
+        positionYProperty = "";
+        positionZProperty = "";
+        width = 1.0;
+        depth = 1.0;
+        widthProperty = "";
+        depthProperty = "";
+        widthMultiplier = 1.0;
+        depthMultiplier = 1.0;
+        hasColor = false;
+        colorR = 0.1;
+        colorG = 0.3;
+        colorB = 0.6;
+        colorA = 0.5;
+        texture = "";
+        normalMap = "";
+        resolution = 64;
+        animate = false;
+        waves = [];
+    }
+}
+
+/// @brief Project root-metadata mappings for a gameplay-like 3D preview.
+/// @details Property groups are either complete or absent. The editor reads
+///          only typed scalar metadata and never executes project code.
+class ScenePreview3DDefinition {
+    expose Boolean present;
+    expose Boolean hasOutputSize;
+    expose Integer outputWidth;
+    expose Integer outputHeight;
+    expose String startXProperty;
+    expose String startYProperty;
+    expose String startZProperty;
+    expose String startYawProperty;
+    expose Boolean hasStartEyeHeight;
+    expose Number startEyeHeight;
+    expose String ambientRProperty;
+    expose String ambientGProperty;
+    expose String ambientBProperty;
+    expose String clearRProperty;
+    expose String clearGProperty;
+    expose String clearBProperty;
+    expose String fogRProperty;
+    expose String fogGProperty;
+    expose String fogBProperty;
+    expose String fogNearProperty;
+    expose String fogFarProperty;
+    expose String zenithRProperty;
+    expose String zenithGProperty;
+    expose String zenithBProperty;
+    expose String groundRProperty;
+    expose String groundGProperty;
+    expose String groundBProperty;
+    expose String cloudProperty;
+    expose String starsProperty;
+    expose String sunXProperty;
+    expose String sunYProperty;
+    expose String sunZProperty;
+    expose String sunRProperty;
+    expose String sunGProperty;
+    expose String sunBProperty;
+    expose String sunIntensityProperty;
+    expose String fillXProperty;
+    expose String fillYProperty;
+    expose String fillZProperty;
+    expose String fillRProperty;
+    expose String fillGProperty;
+    expose String fillBProperty;
+    expose String fillIntensityProperty;
+    expose Boolean hasCameraFov;
+    expose Number cameraFov;
+    expose Boolean hasIblIntensity;
+    expose Number iblIntensity;
+    expose String heightFogProperty;
+    expose Boolean hasHeightFogBase;
+    expose Number heightFogBase;
+    expose Boolean hasHeightFogFalloff;
+    expose Number heightFogFalloff;
+    expose Boolean hasHeightFogDensity;
+    expose Number heightFogDensity;
+    expose Boolean hasHeightFogOpacity;
+    expose Number heightFogOpacity;
+    expose Boolean hasShowGrid;
+    expose Boolean showGrid;
+    expose Boolean hasShowMarkers;
+    expose Boolean showMarkers;
+    expose Boolean hasShowLights;
+    expose Boolean showLights;
+    expose Boolean hasShowCameras;
+    expose Boolean showCameras;
+    expose Boolean hasShowColliders;
+    expose Boolean showColliders;
+    expose Boolean hasShowRoutes;
+    expose Boolean showRoutes;
+    expose String environmentPrefab;
+    expose String environmentVariantProperty;
+    expose List[String] environmentVariantPrefabs;
+    expose Integer environmentVariantOffset;
+    expose List[SceneEnvironmentLayer3DDefinition] environmentLayers;
+    expose List[SceneWaterLayer3DDefinition] waterLayers;
+    expose Boolean hasTonemap;
+    expose Integer tonemapMode;
+    expose Number tonemapExposure;
+    expose Boolean hasBloom;
+    expose Number bloomThreshold;
+    expose Number bloomIntensity;
+    expose Integer bloomPasses;
+    expose Boolean hasColorGrade;
+    expose Number colorGradeBrightness;
+    expose Number colorGradeContrast;
+    expose Number colorGradeSaturation;
+    expose Boolean hasVignette;
+    expose Number vignetteRadius;
+    expose Number vignetteSoftness;
+    expose Boolean hasFxaa;
+    expose Boolean fxaa;
+
+    expose func init() {
+        present = false;
+        hasOutputSize = false;
+        outputWidth = 0;
+        outputHeight = 0;
+        startXProperty = "";
+        startYProperty = "";
+        startZProperty = "";
+        startYawProperty = "";
+        hasStartEyeHeight = false;
+        startEyeHeight = 0.0;
+        ambientRProperty = "";
+        ambientGProperty = "";
+        ambientBProperty = "";
+        clearRProperty = "";
+        clearGProperty = "";
+        clearBProperty = "";
+        fogRProperty = "";
+        fogGProperty = "";
+        fogBProperty = "";
+        fogNearProperty = "";
+        fogFarProperty = "";
+        zenithRProperty = "";
+        zenithGProperty = "";
+        zenithBProperty = "";
+        groundRProperty = "";
+        groundGProperty = "";
+        groundBProperty = "";
+        cloudProperty = "";
+        starsProperty = "";
+        sunXProperty = "";
+        sunYProperty = "";
+        sunZProperty = "";
+        sunRProperty = "";
+        sunGProperty = "";
+        sunBProperty = "";
+        sunIntensityProperty = "";
+        fillXProperty = "";
+        fillYProperty = "";
+        fillZProperty = "";
+        fillRProperty = "";
+        fillGProperty = "";
+        fillBProperty = "";
+        fillIntensityProperty = "";
+        hasCameraFov = false;
+        cameraFov = 60.0;
+        hasIblIntensity = false;
+        iblIntensity = 0.0;
+        heightFogProperty = "";
+        hasHeightFogBase = false;
+        heightFogBase = 0.0;
+        hasHeightFogFalloff = false;
+        heightFogFalloff = 0.0;
+        hasHeightFogDensity = false;
+        heightFogDensity = 0.0;
+        hasHeightFogOpacity = false;
+        heightFogOpacity = 0.0;
+        hasShowGrid = false;
+        showGrid = false;
+        hasShowMarkers = false;
+        showMarkers = false;
+        hasShowLights = false;
+        showLights = false;
+        hasShowCameras = false;
+        showCameras = false;
+        hasShowColliders = false;
+        showColliders = false;
+        hasShowRoutes = false;
+        showRoutes = false;
+        environmentPrefab = "";
+        environmentVariantProperty = "";
+        environmentVariantPrefabs = [];
+        environmentVariantOffset = 0;
+        environmentLayers = [];
+        waterLayers = [];
+        hasTonemap = false;
+        tonemapMode = 0;
+        tonemapExposure = 1.0;
+        hasBloom = false;
+        bloomThreshold = 0.8;
+        bloomIntensity = 1.0;
+        bloomPasses = 3;
+        hasColorGrade = false;
+        colorGradeBrightness = 0.0;
+        colorGradeContrast = 1.0;
+        colorGradeSaturation = 1.0;
+        hasVignette = false;
+        vignetteRadius = 0.7;
+        vignetteSoftness = 0.3;
+        hasFxaa = false;
+        fxaa = false;
+    }
+
+    /// @brief Return whether Game View owns an exact project output frame.
+    expose func HasOutputSize() -> Boolean {
+        return hasOutputSize and outputWidth > 0 and outputHeight > 0;
+    }
+
+    expose func HasStart() -> Boolean {
+        return startXProperty != "" and startYProperty != ""
+            and startZProperty != "";
+    }
+
+    expose func HasAmbient() -> Boolean {
+        return ambientRProperty != "" and ambientGProperty != ""
+            and ambientBProperty != "";
+    }
+
+    expose func HasClear() -> Boolean {
+        return clearRProperty != "" and clearGProperty != ""
+            and clearBProperty != "";
+    }
+
+    expose func HasFog() -> Boolean {
+        return fogRProperty != "" and fogGProperty != ""
+            and fogBProperty != "" and fogNearProperty != ""
+            and fogFarProperty != "";
+    }
+
+    expose func HasSkyPalette() -> Boolean {
+        return HasClear()
+            and zenithRProperty != "" and zenithGProperty != ""
+            and zenithBProperty != ""
+            and groundRProperty != "" and groundGProperty != ""
+            and groundBProperty != "";
+    }
+
+    expose func HasSun() -> Boolean {
+        return sunXProperty != "" and sunYProperty != ""
+            and sunZProperty != ""
+            and sunRProperty != "" and sunGProperty != ""
+            and sunBProperty != "" and sunIntensityProperty != "";
+    }
+
+    expose func HasFill() -> Boolean {
+        return fillXProperty != "" and fillYProperty != ""
+            and fillZProperty != ""
+            and fillRProperty != "" and fillGProperty != ""
+            and fillBProperty != "" and fillIntensityProperty != "";
+    }
+
+    expose func HasHeightFog() -> Boolean {
+        return heightFogProperty != ""
+            and hasHeightFogBase
+            and hasHeightFogFalloff
+            and hasHeightFogDensity
+            and hasHeightFogOpacity;
+    }
+
+    /// @brief Number of enabled deterministic post-processing passes.
+    expose func PostFXEffectCount() -> Integer {
+        var count = 0;
+        if hasTonemap { count = count + 1; }
+        if hasBloom { count = count + 1; }
+        if hasColorGrade { count = count + 1; }
+        if hasVignette { count = count + 1; }
+        if hasFxaa and fxaa { count = count + 1; }
+        return count;
+    }
+
+    /// @brief Return whether this profile owns any active post-processing.
+    expose func HasPostFX() -> Boolean {
+        return PostFXEffectCount() > 0;
+    }
+
+    /// @brief Resolve one root-metadata environment variant or its fallback.
+    expose func EnvironmentPrefabForVariant(value: Integer) -> String {
+        var index = value + environmentVariantOffset;
+        if index >= 0 and index < environmentVariantPrefabs.count() {
+            return environmentVariantPrefabs.get(index);
+        }
+        return environmentPrefab;
+    }
+}
+
+/// @brief One metadata-matched transient 3D prefab visualization rule.
+class SceneNodePreview3DDefinition {
+    expose String matchProperty;
+    expose String matchValue;
+    expose String matchKind;
+    expose Boolean matchBoolean;
+    expose Integer matchInteger;
+    expose String matchString;
+    expose String prefab;
+    expose String variantProperty;
+    expose List[String] variantPrefabs;
+    expose String yawProperty;
+    expose String yawUnit;
+    expose String scaleProperty;
+    expose Number scale;
+    expose Number yawDegrees;
+    expose Number offsetX;
+    expose Number offsetY;
+    expose Number offsetZ;
+
+    expose func init() {
+        matchProperty = "";
+        matchValue = "";
+        matchKind = "";
+        matchBoolean = false;
+        matchInteger = 0;
+        matchString = "";
+        prefab = "";
+        variantProperty = "";
+        variantPrefabs = [];
+        yawProperty = "";
+        yawUnit = "";
+        scaleProperty = "";
+        scale = 1.0;
+        yawDegrees = 0.0;
+        offsetX = 0.0;
+        offsetY = 0.0;
+        offsetZ = 0.0;
+    }
+
+    /// @brief Resolve a bounded integer variant or the authored fallback.
+    expose func PrefabForVariant(value: Integer) -> String {
+        if value >= 0 and value < variantPrefabs.count() {
+            return variantPrefabs.get(value);
+        }
+        return prefab;
+    }
+}
+
+/// @brief One exact typed value exposed by a project node-preview filter.
+class SceneNodePreviewFilterState3DDefinition {
+    expose String label;
+    expose String matchKind;
+    expose Boolean matchBoolean;
+    expose Integer matchInteger;
+    expose String matchString;
+
+    expose func init() {
+        label = "";
+        matchKind = "";
+        matchBoolean = false;
+        matchInteger = 0;
+        matchString = "";
+    }
+}
+
+/// @brief One project-owned session-only selector for transient node previews.
+/// @details Index zero always means the explicit All option. Configured states
+///          occupy indices one through N and compare exact metadata kinds.
+class SceneNodePreviewFilter3DDefinition {
+    expose Boolean present;
+    expose String label;
+    expose String allLabel;
+    expose String matchProperty;
+    expose Integer defaultIndex;
+    expose List[SceneNodePreviewFilterState3DDefinition] states;
+
+    expose func init() {
+        present = false;
+        label = "Preview";
+        allLabel = "All";
+        matchProperty = "";
+        defaultIndex = 0;
+        states = [];
+    }
+
+    expose func OptionCount() -> Integer {
+        return states.count() + 1;
+    }
+
+    expose func LabelAt(index: Integer) -> String {
+        if index <= 0 or index > states.count() { return allLabel; }
+        return states.get(index - 1).label;
+    }
+
+    expose func StateAt(
+        index: Integer) -> SceneNodePreviewFilterState3DDefinition {
+        if index <= 0 or index > states.count() { return null; }
+        return states.get(index - 1);
+    }
+}
+
+/// @brief One typed metadata-matched, render-only PBR material overlay.
+/// @details Source albedo tint and every unspecified material field survive.
+///          Texture paths resolve beside the project schema, while optional
+///          emissive properties resolve only against typed scene-root floats.
+class SceneMaterialPreview3DDefinition {
+    expose String matchProperty;
+    expose String matchKind;
+    expose Boolean matchBoolean;
+    expose Integer matchInteger;
+    expose String matchString;
+    expose String albedoMap;
+    expose String normalMap;
+    expose String metallicRoughnessMap;
+    expose String ambientOcclusionMap;
+    expose String emissiveMap;
+    expose Boolean hasMetallic;
+    expose Number metallic;
+    expose Boolean hasRoughness;
+    expose Number roughness;
+    expose Boolean hasAmbientOcclusion;
+    expose Number ambientOcclusion;
+    expose Boolean hasNormalScale;
+    expose Number normalScale;
+    expose Boolean hasEmissiveColor;
+    expose Number emissiveR;
+    expose Number emissiveG;
+    expose Number emissiveB;
+    expose String emissiveRProperty;
+    expose String emissiveGProperty;
+    expose String emissiveBProperty;
+    expose Number emissiveMultiplier;
+    expose Boolean hasEmissiveIntensity;
+    expose Number emissiveIntensity;
+    expose Boolean useProjectEnvironment;
+    expose Boolean hasSsrEnabled;
+    expose Boolean ssrEnabled;
+
+    expose func init() {
+        matchProperty = "";
+        matchKind = "";
+        matchBoolean = false;
+        matchInteger = 0;
+        matchString = "";
+        albedoMap = "";
+        normalMap = "";
+        metallicRoughnessMap = "";
+        ambientOcclusionMap = "";
+        emissiveMap = "";
+        hasMetallic = false;
+        metallic = 0.0;
+        hasRoughness = false;
+        roughness = 0.5;
+        hasAmbientOcclusion = false;
+        ambientOcclusion = 1.0;
+        hasNormalScale = false;
+        normalScale = 1.0;
+        hasEmissiveColor = false;
+        emissiveR = 0.0;
+        emissiveG = 0.0;
+        emissiveB = 0.0;
+        emissiveRProperty = "";
+        emissiveGProperty = "";
+        emissiveBProperty = "";
+        emissiveMultiplier = 1.0;
+        hasEmissiveIntensity = false;
+        emissiveIntensity = 1.0;
+        useProjectEnvironment = false;
+        hasSsrEnabled = false;
+        ssrEnabled = false;
+    }
+
+    expose func HasRootEmissive() -> Boolean {
+        return emissiveRProperty != ""
+            and emissiveGProperty != ""
+            and emissiveBProperty != "";
+    }
+
+    expose func HasOverrides() -> Boolean {
+        return albedoMap != ""
+            or normalMap != ""
+            or metallicRoughnessMap != ""
+            or ambientOcclusionMap != ""
+            or emissiveMap != ""
+            or hasMetallic
+            or hasRoughness
+            or hasAmbientOcclusion
+            or hasNormalScale
+            or hasEmissiveColor
+            or HasRootEmissive()
+            or hasEmissiveIntensity
+            or useProjectEnvironment
+            or hasSsrEnabled;
+    }
+}
+
+/// @brief Complete fail-closed result of loading one project schema.
+class SceneComponentSchema {
+    expose Boolean found;
+    expose Boolean valid;
+    expose String sourcePath;
+    expose String error;
+    expose Integer version;
+    expose List[SceneComponentDefinition] components;
+    expose List[SceneObjectPreviewDefinition] objectPreviews;
+    expose ScenePreview2DDefinition scenePreview2D;
+    expose ScenePreview3DDefinition scenePreview3D;
+    expose List[SceneNodePreview3DDefinition] nodePreviews3D;
+    expose SceneNodePreviewFilter3DDefinition nodePreviewFilter3D;
+    expose List[SceneMaterialPreview3DDefinition] materialPreviews3D;
+
+    expose func init() {
+        found = false;
+        valid = true;
+        sourcePath = "";
+        error = "";
+        version = SCHEMA_VERSION;
+        components = [];
+        objectPreviews = [];
+        scenePreview2D = new ScenePreview2DDefinition();
+        scenePreview3D = new ScenePreview3DDefinition();
+        nodePreviews3D = [];
+        nodePreviewFilter3D =
+            new SceneNodePreviewFilter3DDefinition();
+        materialPreviews3D = [];
+    }
+
+    /// @brief Count definitions compatible with one editor target.
+    expose func CountForTarget(target: String) -> Integer {
+        var count = 0;
+        var index = 0;
+        while index < components.count() {
+            var component = components.get(index);
+            if component != null and component.SupportsTarget(target) {
+                count = count + 1;
+            }
+            index = index + 1;
+        }
+        return count;
+    }
+
+    /// @brief Return one compatible component by filtered index.
+    expose func AtForTarget(
+        target: String,
+        filteredIndex: Integer) -> SceneComponentDefinition {
+        if filteredIndex < 0 { return null; }
+        var seen = 0;
+        var index = 0;
+        while index < components.count() {
+            var component = components.get(index);
+            if component != null and component.SupportsTarget(target) {
+                if seen == filteredIndex { return component; }
+                seen = seen + 1;
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+
+    /// @brief Find a compatible component by case-insensitive stable name.
+    expose func Find(name: String,
+                     target: String) -> SceneComponentDefinition {
+        var folded = Str.ToLower(Str.Trim(name));
+        var index = 0;
+        while index < components.count() {
+            var component = components.get(index);
+            if component != null and component.SupportsTarget(target)
+               and Str.ToLower(component.name) == folded {
+                return component;
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+
+    /// @brief Find one project preview rule by case-insensitive object type.
+    expose func PreviewForObjectType(
+        objectType: String) -> SceneObjectPreviewDefinition {
+        var folded = Str.ToLower(Str.Trim(objectType));
+        var index = 0;
+        while index < objectPreviews.count() {
+            var preview = objectPreviews.get(index);
+            if preview != null
+               and Str.ToLower(preview.objectType) == folded {
+                return preview;
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+
+    /// @brief Find one exact string-metadata 3D node preview rule.
+    expose func NodePreview3DForMatch(
+        metadataKey: String,
+        metadataValue: String) -> SceneNodePreview3DDefinition {
+        var index = 0;
+        while index < nodePreviews3D.count() {
+            var preview = nodePreviews3D.get(index);
+            if preview != null
+               and preview.matchProperty == metadataKey
+               and preview.matchValue == metadataValue {
+                return preview;
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+}
+
+/// @brief Return the fixed schema path beneath a workspace root.

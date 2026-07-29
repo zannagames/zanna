@@ -1,0 +1,597 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_state_initialization.zia
+// Purpose: Deterministically initialize the retained 3D editor state.
+// Key invariants:
+//   - Every inherited controller field is assigned before focused layers run.
+// Ownership/Lifetime:
+//   - The final SceneEditor3D facade owns all initialized retained state.
+// Links: zannastudio/src/ui/scene_editor_3d_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_state_initialization;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_contract_06" as SceneEditor3DContract;
+bind "scene_editor_3d_state" as PreviousLayer;
+
+/// @brief Deterministic initialization layer for retained 3D editor state.
+class SceneEditor3DStateInitialization extends PreviousLayer.SceneEditor3DState {
+    hide func InitializeState() {
+        InitializePrimaryControlState();
+        InitializeBakeAndToolbarState();
+        InitializeInspectorControlState();
+        InitializeProjectPreviewState();
+        InitializeSceneViewportState();
+        InitializeViewOptionState();
+        InitializeHistoryAndGizmoState();
+        InitializeSnapAndHierarchyState();
+    }
+
+    /// @brief Initialize one cohesive segment of retained 3D editor state.
+    hide func InitializePrimaryControlState() {
+        guiApp = null;
+        root = null;
+        toolbar = null;
+        viewToolbar = null;
+        viewSectionLabel = null;
+        transformSectionLabel = null;
+        zoomSectionLabel = null;
+        sceneMenuButton = null;
+        sceneMenu = null;
+        sceneNewItem = null;
+        sceneImportAssetItem = null;
+        sceneImportInstanceItem = null;
+        sceneRunItem = null;
+        newSceneButton = null;
+        importAssetButton = null;
+        createMenuButton = null;
+        createMenu = null;
+        createEmptyItem = null;
+        createChildItem = null;
+        createBoxItem = null;
+        createSphereItem = null;
+        createPlaneItem = null;
+        createCylinderItem = null;
+        createTerrainItem = null;
+        createLightItem = null;
+        createCameraItem = null;
+        createDuplicateItem = null;
+        createDeleteItem = null;
+        addEmptyButton = null;
+        addChildButton = null;
+        addBoxButton = null;
+        addSphereButton = null;
+        addPlaneButton = null;
+        addCylinderButton = null;
+        addTerrainButton = null;
+        runSceneButton = null;
+        runSceneRequested = false;
+        workspaceModeActive = false;
+        workspaceModeToggleRequested = false;
+        focusModeActive = false;
+        focusModeToggleRequested = false;
+        topViewButton = null;
+        frontViewButton = null;
+        rightViewButton = null;
+        projectViewButton = null;
+        addLightButton = null;
+        addCameraButton = null;
+        importInstanceButton = null;
+        instanceGroup = null;
+        instanceSummary = null;
+        openPrefabSourceButton = null;
+        reloadInstancesButton = null;
+        unpackInstanceButton = null;
+        relinkInstanceButton = null;
+        importBrowserInstanceMode = false;
+        pendingOpenPrefabPath = "";
+        materialLibraryGroup = null;
+        materialLibraryStatus = null;
+        materialLibraryList = null;
+        materialSwatchImage = null;
+        materialSwatchName = "";
+        historyGroup = null;
+        historyList = null;
+        undoLabels = [];
+        redoLabels = [];
+        historyListRefreshing = false;
+        materialLibraryNameInput = null;
+        materialLibrarySaveButton = null;
+        materialLibraryApplyButton = null;
+        materialLibraryReloadButton = null;
+        materialLibrary = null;
+        materialLibraryRoot = "";
+        materialLibraryOverwriteArmed = false;
+        materialLibraryPollMs = 0;
+    }
+
+    /// @brief Initialize one cohesive segment of retained 3D editor state.
+    hide func InitializeBakeAndToolbarState() {        staticCheck = null;
+        staticRevision = 0;
+        bakeGroup = null;
+        bakeStatus = null;
+        bakeTexelsSpinner = null;
+        bakeSamplesSpinner = null;
+        bakeBouncesSpinner = null;
+        bakeSkyPicker = null;
+        bakeButton = null;
+        makeUniqueButton = null;
+        bakeProbesButton = null;
+        probeGroup = null;
+        probeStatus = null;
+        probeMinXSpinner = null;
+        probeMinYSpinner = null;
+        probeMinZSpinner = null;
+        probeMaxXSpinner = null;
+        probeMaxYSpinner = null;
+        probeMaxZSpinner = null;
+        probeSpacingSpinner = null;
+        probeApplyButton = null;
+        probeRemoveButton = null;
+        envGroup = null;
+        envSkyboxInput = null;
+        envBrowseButton = null;
+        envIblCheck = null;
+        envIblIntensitySpinner = null;
+        envApplyButton = null;
+        activeBaker = null;
+        lastCompletedBaker = null;
+        bakeActive = false;
+        envBrowseMode = false;
+        envSkyboxCubemapPath = "";
+        envSkyboxCubemap = null;
+        projectEnvironmentSignature = "";
+        projectSkyCubemap = null;
+        projectSunLight = null;
+        projectFillLight = null;
+        duplicateNodeButton = null;
+        deleteNodeButton = null;
+        orbitLeftButton = null;
+        orbitRightButton = null;
+        orbitUpButton = null;
+        orbitDownButton = null;
+        moveToolButton = null;
+        rotateToolButton = null;
+        scaleToolButton = null;
+        dropToSurfaceButton = null;
+        placementMenuButton = null;
+        placementMenu = null;
+        placementDropItem = null;
+        placementSurfaceItem = null;
+        placementAlignItem = null;
+        placementVertexItem = null;
+        transformSpaceButton = null;
+        snapTransformCheck = null;
+        surfaceSnapCheck = null;
+        surfaceAlignCheck = null;
+        vertexSnapCheck = null;
+        zoomOutButton = null;
+        zoomInButton = null;
+        frameButton = null;
+        frameSelectedButton = null;
+        viewportModeButton = null;
+        hierarchyButton = null;
+        inspectorButton = null;
+        workspaceButton = null;
+        focusButton = null;
+        toolbarStatus = null;
+    }
+
+    /// @brief Initialize one cohesive segment of retained 3D editor state.
+    hide func InitializeInspectorControlState() {        viewStatusLabel = null;
+        projectPreviewFilterLabel = null;
+        projectPreviewFilterDropdown = null;
+        hierarchySplit = null;
+        hierarchyPaneBox = null;
+        hierarchyDock = new scene_pane_docking.PaneDock();
+        inspectorDock = new scene_pane_docking.PaneDock();
+        bodySplit = null;
+        importGroup = null;
+        nameLabel = null;
+        positionLabel = null;
+        positionRow = null;
+        rotationLabel = null;
+        rotationRow = null;
+        scaleLabel = null;
+        scaleRow = null;
+        componentAssetHost = null;
+        objectTabButton = null;
+        sceneTabButton = null;
+        sceneSectionRow = null;
+        sceneSectionDropdown = null;
+        sceneInspectorSection = SceneEditor3DModel.SCENE_INSPECTOR_WORLD;
+        inspectorSceneTab = true;
+        inspectorAutoFollowHadSelection = false;
+        addComponentRow = null;
+        addComponentDropdown = null;
+        addComponentButton = null;
+        addComponentKinds = [];
+        transformDraftActive = false;
+        draftOriginPX = 0.0;
+        draftOriginPY = 0.0;
+        draftOriginPZ = 0.0;
+        draftOriginRX = 0.0;
+        draftOriginRY = 0.0;
+        draftOriginRZ = 0.0;
+        draftOriginSX = 1.0;
+        draftOriginSY = 1.0;
+        draftOriginSZ = 1.0;
+        lastHostWidth = 0.0;
+        viewportScroll = null;
+        viewportImage = null;
+        inspectorScroll = null;
+        hierarchySearchInput = null;
+        hierarchySearchPreviousButton = null;
+        hierarchySearchNextButton = null;
+        hierarchySearchStatus = null;
+        hierarchyShowButton = null;
+        hierarchyHideButton = null;
+        hierarchyPickLockButton = null;
+        hierarchyTree = null;
+        parentDropdown = null;
+        reparentButton = null;
+        preserveWorldReparentCheck = null;
+        moveSiblingEarlierButton = null;
+        moveSiblingLaterButton = null;
+        nameInput = null;
+        visibleCheck = null;
+        positionX = null;
+        positionY = null;
+        positionZ = null;
+        rotationX = null;
+        rotationY = null;
+        rotationZ = null;
+        scaleX = null;
+        scaleY = null;
+        scaleZ = null;
+        applyTransformButton = null;
+        importAssetBrowser = new scene_asset_browser.SceneAssetBrowser();
+        lightInspector =
+            new scene_light_inspector_3d.SceneLightInspector3D();
+        cameraInspector =
+            new scene_camera_inspector_3d.SceneCameraInspector3D();
+        colliderInspector =
+            new scene_collider_inspector_3d.SceneColliderInspector3D();
+        terrainInspector =
+            new scene_terrain_inspector_3d.SceneTerrainInspector3D();
+        componentAssetBrowser =
+            new scene_asset_browser.SceneAssetBrowser();
+        materialInspector = new
+            scene_material_inspector_3d.SceneMaterialInspector3D();
+        metadataInspector = new
+            scene_metadata_inspector_3d.SceneMetadataInspector3D();
+        componentPalette =
+            new scene_component_palette.SceneComponentPalette();
+        componentAuthoring =
+            new scene_component_authoring_controller.SceneComponentAuthoringController();
+    }
+
+    /// @brief Initialize one cohesive segment of retained 3D editor state.
+    hide func InitializeProjectPreviewState() {        selectionInfo = null;
+        detailLabel = null;
+        projectManager = null;
+        componentSchema =
+            new scene_component_schema.SceneComponentSchema();
+        projectPreviewScene = null;
+        projectPreviewInstanceCount = 0;
+        projectPreviewMissingCount = 0;
+        projectPreviewFallbackCount = 0;
+        projectPreviewDirectModelCount = 0;
+        projectPreviewFilteredCount = 0;
+        projectPreviewFilterIndex = 0;
+        projectPreviewClipped = false;
+        projectPreviewAssetPaths = [];
+        projectPreviewAssets = [];
+        projectPreviewNodes = [];
+        projectPreviewOwners = [];
+        projectPreviewWrappers = [];
+        projectPreviewWrapperOwners = [];
+        projectPreviewWrapperRules = [];
+        projectWaterPreviews = [];
+        projectWaterWidths = [];
+        projectWaterDepths = [];
+        projectWaterXs = [];
+        projectWaterYs = [];
+        projectWaterZs = [];
+        projectWaterAnimated = [];
+        projectWaterImagePaths = [];
+        projectWaterImages = [];
+        projectWaterLastAnimationMs = 0;
+        projectMaterialPreviewCount = 0;
+        projectMaterialPreviewMissingCount = 0;
+        projectMaterialPreviewNodes = [];
+        projectMaterialPreviewRules = [];
+        projectMaterialPreviewMaterials = [];
+        projectMaterialPreviewFrameNodes = [];
+        projectMaterialPreviewFrameMaterials = [];
+        projectMaterialPreviewTexturePaths = [];
+        projectMaterialPreviewTextures = [];
+    }
+
+    /// @brief Initialize one cohesive segment of retained 3D editor state.
+    hide func InitializeSceneViewportState() {        currentDoc = null;
+        scene = null;
+        viewportPixels = null;
+        viewportRenderCanvas = null;
+        viewportRenderTarget = null;
+        viewportRenderCamera = null;
+        viewportRenderPostFX = null;
+        viewportPostFXDirty = true;
+        viewportAccelerationRequested = false;
+        viewportTargetWidth = 0;
+        viewportTargetHeight = 0;
+        flatNodes = [];
+        flatDepths = [];
+        flatPaths = [];
+        hierarchyTreeNodes = [];
+        hierarchySearchMatches = [];
+        hierarchySearchCursor = -1;
+        parentTargetIndices = [];
+        projectedX = [];
+        projectedY = [];
+        currentSerialized = "";
+        loadError = "";
+        selectedIndex = -1;
+        selectedIndices = [];
+        selectedNodeMetadata = -1;
+        revision = 0;
+        viewYawDegrees = 35;
+        viewPitchDegrees = 25;
+        viewScale = 28;
+        viewportMode = SceneEditor3DModel.VIEWPORT_MODE_SHADED;
+        renderedViewportWidth = SceneEditor3DModel.DEFAULT_VIEWPORT_WIDTH;
+        renderedViewportHeight = SceneEditor3DModel.DEFAULT_VIEWPORT_HEIGHT;
+        gizmoMode = SceneEditor3DModel.GIZMO_MODE_MOVE;
+        gizmoTransformSpace =
+            scene_transform_3d.TRANSFORM_SPACE_LOCAL;
+        gizmoSnapEnabled = false;
+        surfaceSnapEnabled = false;
+        surfaceAlignEnabled = false;
+        vertexSnapEnabled = false;
+        viewPerspective = true;
+        showGrid = true;
+        showMarkers = true;
+        showLightOverlays = true;
+        showCameraOverlays = true;
+        showColliderOverlays = true;
+        showRouteOverlays = true;
+        showStats = false;
+        snapMoveIncrement = 0.5;
+        snapRotateIncrement = 15.0;
+        snapScaleIncrement = 0.1;
+    }
+
+    /// @brief Initialize one cohesive segment of retained 3D editor state.
+    hide func InitializeViewOptionState() {        projectionButton = null;
+        gameViewButton = null;
+        viewOptionsButton = null;
+        viewMenuButton = null;
+        viewMenu = null;
+        viewCameraMenu = null;
+        viewTopItem = null;
+        viewFrontItem = null;
+        viewRightItem = null;
+        viewGameplayItem = null;
+        viewOrbitLeftItem = null;
+        viewOrbitRightItem = null;
+        viewOrbitUpItem = null;
+        viewOrbitDownItem = null;
+        viewZoomOutItem = null;
+        viewZoomInItem = null;
+        viewFrameSelectedItem = null;
+        viewFrameAllItem = null;
+        viewProjectionItem = null;
+        viewOptionsItem = null;
+        viewHierarchyItem = null;
+        viewInspectorItem = null;
+        viewFocusItem = null;
+        viewWorkspaceItem = null;
+        viewOptionsRow = null;
+        gridCheck = null;
+        markersCheck = null;
+        lightsCheck = null;
+        camerasCheck = null;
+        collidersCheck = null;
+        routesCheck = null;
+        statsCheck = null;
+        editorLightCheck = null;
+        editorLightAssist = true;
+        gameViewActive = false;
+        gameViewOutputFramed = false;
+        gameOutputFramePending = false;
+        snapMoveSpinner = null;
+        snapRotateSpinner = null;
+        snapScaleSpinner = null;
+        viewOptionsVisible = false;
+        flyActive = false;
+        flyLastMs = -1;
+        flySpeedMultiplier = 1.0;
+        flyYawRemainder = 0.0;
+        flyPitchRemainder = 0.0;
+        lookThroughNode = null;
+        insetEnabled = true;
+        insetRenderTarget = null;
+        insetRenderCanvas = null;
+        insetRenderCamera = null;
+        insetPixels = null;
+        insetFrameCounter = 0;
+        insetLastRenderFrame = -1000;
+        insetSourceRevision = -1;
+        insetSourceNode = null;
+        projectionCameraReady = false;
+        viewTargetX = 0.0;
+        viewTargetY = 0.0;
+        viewTargetZ = 0.0;
+        gameplayViewAnchored = false;
+        gameplayEyeX = 0.0;
+        gameplayEyeY = 0.0;
+        gameplayEyeZ = 0.0;
+        hierarchyClipped = false;
+        compactLayout = false;
+        compactChrome = false;
+        inspectorRequestedVisible = true;
+        compactHierarchyShown = false;
+        compactInspectorShown = false;
+    }
+
+    /// @brief Initialize one cohesive segment of retained 3D editor state.
+    hide func InitializeHistoryAndGizmoState() {        undoStack = [];
+        redoStack = [];
+        cleanSerialized = "";
+        componentSchemaPath = "";
+        renderDirty = true;
+        viewportRenderFallback = false;
+        visibleRevision = 0;
+        gizmoHoverAxis = SceneEditor3DModel.GIZMO_AXIS_NONE;
+        gizmoDragAxis = SceneEditor3DModel.GIZMO_AXIS_NONE;
+        gizmoDragChanged = false;
+        gizmoDragAccumulated = 0.0;
+        gizmoDragAccumulatedB = 0.0;
+        gizmoDragPreviousRingAngle = 0.0;
+        gizmoDragRingAngleValid = false;
+        gizmoDragStartX = 0.0;
+        gizmoDragStartY = 0.0;
+        gizmoDragStartZ = 0.0;
+        gizmoDragIndices = [];
+        gizmoDragStartXs = [];
+        gizmoDragStartYs = [];
+        gizmoDragStartZs = [];
+        gizmoDragStartPositions = [];
+        gizmoDragStartRotations = [];
+        gizmoDragStartScales = [];
+        gizmoDragStartWorldMatrices = [];
+        gizmoDragStartWorldPositions = [];
+        gizmoDragStartWorldScales = [];
+    }
+
+    /// @brief Initialize one cohesive segment of retained 3D editor state.
+    hide func InitializeSnapAndHierarchyState() {        vertexSnapDragActive = false;
+        vertexSnapDragChanged = false;
+        vertexSnapSource = new SceneEditor3DModel.VertexSnapPoint3D();
+        vertexSnapTarget = new SceneEditor3DModel.VertexSnapPoint3D();
+        vertexSnapSourceCacheValid = false;
+        vertexSnapLastSourceX = -1000000;
+        vertexSnapLastSourceY = -1000000;
+        vertexSnapLastTargetX = -1000000;
+        vertexSnapLastTargetY = -1000000;
+        vertexSnapDragIndices = [];
+        vertexSnapStartPositions = [];
+        vertexSnapStartRotations = [];
+        vertexSnapStartScales = [];
+        vertexSnapStartWorldMatrices = [];
+        terrainSculptEnabled = false;
+        terrainStrokeActive = false;
+        terrainStrokeChanged = false;
+        terrainBrushHoverValid = false;
+        terrainBrushHoverX = 0.0;
+        terrainBrushHoverY = 0.0;
+        terrainBrushHoverZ = 0.0;
+        terrainStrokeHasLastPoint = false;
+        terrainStrokeLastX = 0.0;
+        terrainStrokeLastZ = 0.0;
+        terrainStrokeNode = null;
+        terrainStrokeStartMesh = null;
+        terrainStrokeHeights = [];
+        snapTransformRevision = 0;
+        surfaceSnapRevision = 0;
+        surfaceAlignRevision = 0;
+        vertexSnapRevision = 0;
+        metadataOwnerIndex = -1;
+        restoreInspectorScrollPending = false;
+        pendingInspectorScrollY = 0.0;
+        initialProjectPreviewPending = false;
+        hierarchyDocument = null;
+        hierarchySceneRoot = null;
+        hierarchyPreferredNode = null;
+        hierarchyExpandedNodes = [];
+        hierarchyExpandedPaths = [];
+        hierarchyPickLockedNodes = [];
+        hierarchyPreserveExpansionByIdentity = false;
+        hierarchyExpandByDefault = true;
+        hierarchySearchQuery = "";
+        lastViewportClickNode = -1;
+        lastViewportClickX = 0;
+        lastViewportClickY = 0;
+        lastViewportClickMs = 0;
+        hoveredViewportNode = -1;
+        orientationHoverFace = SceneEditor3DModel.ORIENTATION_FACE_NONE;
+        cameraBookmarks = [];
+        pickLockedPaths = [];
+        marqueeCandidate = false;
+        marqueeActive = false;
+        marqueeCancelled = false;
+        marqueeAdditive = false;
+        marqueeToggle = false;
+        marqueeStartX = 0;
+        marqueeStartY = 0;
+        marqueeEndX = 0;
+        marqueeEndY = 0;
+    }
+}
+

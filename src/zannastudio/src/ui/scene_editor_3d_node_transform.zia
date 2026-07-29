@@ -1,0 +1,960 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_node_transform.zia
+// Purpose: Focused node transform behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_layout.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_node_transform;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_layout" as PreviousLayer;
+
+/// @brief Node Transform implementation layer.
+class SceneEditor3DNodeTransformLayer extends PreviousLayer.SceneEditor3DLayoutLayer {
+
+    /// @brief Return the monotonic accepted-edit revision.
+    expose override func GetRevision() -> Integer {
+        return revision;
+    }
+
+    /// @brief Add a named empty node through the normal committed edit path.
+    /// @return New flattened node index, or -1 on failure.
+    expose override func AddEmptyNode(name: String,
+                             parentIndex: Integer) -> Integer {
+        if scene == null { return -1; }
+        if parentIndex >= 0 and parentIndex < flatNodes.count()
+           and ParentAcceptsAuthoredChildren(
+                   flatNodes.get(parentIndex)) == false {
+            return -1;
+        }
+        var parent: SceneNode = null;
+        if parentIndex >= 0 and parentIndex < flatNodes.count() {
+            parent = flatNodes.get(parentIndex);
+        }
+        var node = SceneNode.New();
+        var nodeName = Str.Trim(name);
+        if nodeName == "" { nodeName = "Node " + scene.NodeCount; }
+        node.Name = nodeName;
+        if parent != null {
+            parent.AddChild(node);
+        } else {
+            scene.Add(node);
+        }
+        if CommitScene("Added " + nodeName) == false { return -1; }
+        RefreshHierarchy(node);
+        return selectedIndex;
+    }
+
+    /// @brief Create one named point-light node through canonical VSCN history.
+    /// @details The light is staged before hierarchy mutation. A valid parent
+    ///          index creates a light child; -1 creates a top-level node.
+    expose override func AddLightNode(name: String,
+                             parentIndex: Integer) -> Integer {
+        if scene == null { return -1; }
+        if parentIndex >= 0 and parentIndex < flatNodes.count()
+           and ParentAcceptsAuthoredChildren(
+                   flatNodes.get(parentIndex)) == false {
+            return -1;
+        }
+        var state = new scene_light_3d.LightState3D();
+        var light = scene_light_3d.BuildLight(state);
+        if light == null {
+            toolbarStatus.SetText("Light creation failed");
+            detailLabel.SetText(
+                "Studio could not allocate the Point light component.");
+            GUI.Toast.Error("3D light creation failed");
+            return -1;
+        }
+        var parent: SceneNode = null;
+        if parentIndex >= 0 and parentIndex < flatNodes.count() {
+            parent = flatNodes.get(parentIndex);
+        }
+        var node = SceneNode.New();
+        if node == null {
+            toolbarStatus.SetText("Light creation failed");
+            detailLabel.SetText("Studio could not allocate a scene node.");
+            GUI.Toast.Error("3D light creation failed");
+            return -1;
+        }
+        var nodeName = Str.Trim(name);
+        if nodeName == "" { nodeName = "Point Light " + scene.NodeCount; }
+        node.Name = nodeName;
+        node.Light = light;
+        if parent != null {
+            parent.AddChild(node);
+        } else {
+            scene.Add(node);
+        }
+        if CommitScene("Added " + nodeName) == false { return -1; }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Created a Point light. Use the Light component inspector "
+            + "to change its type and local emission fields.");
+        return selectedIndex;
+    }
+
+    /// @brief Create, rename, or update one typed node metadata value.
+    expose override func SetNodeMetadata(nodeIndex: Integer,
+                                previousKey: String,
+                                key: String,
+                                kind: String,
+                                value: String) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        var nextKey = Str.Trim(key);
+        if nextKey == "" {
+            detailLabel.SetText("Node metadata key cannot be empty.");
+            return false;
+        }
+        if previousKey != "" and node.MetadataHas(previousKey) == false {
+            detailLabel.SetText(
+                "The selected node metadata value no longer exists.");
+            return false;
+        }
+        if previousKey != nextKey and node.MetadataHas(nextKey) {
+            detailLabel.SetText(
+                "Node metadata \"" + nextKey + "\" already exists.");
+            return false;
+        }
+
+        var intValue = 0;
+        var floatValue = 0.0;
+        var boolValue = false;
+        if kind == "int" {
+            var parsedInt = Parse.TryInt(Str.Trim(value));
+            if parsedInt.IsNone {
+                detailLabel.SetText("Enter a valid whole number.");
+                return false;
+            }
+            intValue = parsedInt.UnwrapI64();
+        } else if kind == "float" {
+            var parsedFloat = Parse.TryDouble(Str.Trim(value));
+            if parsedFloat.IsNone {
+                detailLabel.SetText("Enter a valid finite number.");
+                return false;
+            }
+            floatValue = parsedFloat.UnwrapF64();
+        } else if kind == "bool" {
+            var parsedBool = Parse.TryBool(Str.Trim(value));
+            if parsedBool.IsNone {
+                detailLabel.SetText(
+                    "Enter true/false, yes/no, on/off, or 1/0.");
+                return false;
+            }
+            boolValue = parsedBool.UnwrapI1();
+        } else if kind != "string" and kind != "null" {
+            detailLabel.SetText("Choose a supported node metadata type.");
+            return false;
+        }
+
+        if previousKey == nextKey
+           and NodeMetadataMatches(
+               node, nextKey, kind, value,
+               intValue, floatValue, boolValue) {
+            detailLabel.SetText("Node metadata is already up to date.");
+            return false;
+        }
+
+        var applied = false;
+        if kind == "string" {
+            applied = node.MetadataSetString(nextKey, value);
+        } else if kind == "int" {
+            applied = node.MetadataSetInt(nextKey, intValue);
+        } else if kind == "float" {
+            applied = node.MetadataSetFloat(nextKey, floatValue);
+        } else if kind == "bool" {
+            applied = node.MetadataSetBool(nextKey, boolValue);
+        } else {
+            applied = node.MetadataSetNull(nextKey);
+        }
+        if applied == false
+           or NodeMetadataMatches(
+               node, nextKey, kind, value,
+               intValue, floatValue, boolValue) == false {
+            RestoreNodeMetadataEdit(
+                nodeIndex,
+                "The metadata value was rejected. Keys are limited to "
+                + "128 bytes, nodes to 256 values, and strings to 64 KiB.");
+            return false;
+        }
+        if previousKey != "" and previousKey != nextKey
+           and node.MetadataRemove(previousKey) == false {
+            RestoreNodeMetadataEdit(
+                nodeIndex,
+                "Studio could not complete the metadata rename.");
+            return false;
+        }
+        if CommitScene("Updated node metadata " + nextKey) == false {
+            RestoreNodeMetadataEdit(
+                nodeIndex,
+                "The node metadata update could not be committed.");
+            return false;
+        }
+
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        metadataOwnerIndex = nodeIndex;
+        detailLabel.SetText("");
+        // Metadata keys feed component badges; rebuild rows in place.
+        RefreshHierarchy(node);
+        RefreshMetadataFields(node);
+        metadataInspector.SelectByKey(nextKey);
+        selectedNodeMetadata = metadataInspector.selectedProperty;
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Remove one typed node metadata value through canonical history.
+    expose override func RemoveNodeMetadata(nodeIndex: Integer,
+                                   key: String) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        var nextKey = Str.Trim(key);
+        if nextKey == "" or node.MetadataHas(nextKey) == false {
+            return false;
+        }
+        if node.MetadataRemove(nextKey) == false {
+            detailLabel.SetText("The node rejected the metadata removal.");
+            return false;
+        }
+        if CommitScene("Removed node metadata " + nextKey) == false {
+            RestoreNodeMetadataEdit(
+                nodeIndex,
+                "The node metadata removal could not be committed.");
+            return false;
+        }
+        selectedNodeMetadata = -1;
+        metadataOwnerIndex = nodeIndex;
+        detailLabel.SetText("");
+        RefreshHierarchy(node);
+        RefreshMetadataFields(node);
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Add every missing field from one project component transactionally.
+    /// @details Existing same-kind values are preserved. Any type conflict,
+    ///          rejected runtime write, or failed VSCN commit restores the
+    ///          complete canonical document.
+    expose override func ApplySelectedComponent(
+        component: scene_component_schema.SceneComponentDefinition)
+        -> Boolean {
+        if scene == null or component == null
+           or component.SupportsTarget(
+               scene_component_schema.TARGET_3D_NODE) == false {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 {
+            detailLabel.SetText(
+                "Select one or more nodes before adding a component.");
+            return false;
+        }
+
+        var missing = 0;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            var node = flatNodes.get(selectedIndices.get(selectionIndex));
+            var fieldIndex = 0;
+            while fieldIndex < component.fields.count() {
+                var field = component.fields.get(fieldIndex);
+                if node.MetadataHas(field.key) {
+                    if node.MetadataKind(field.key)
+                       != scene_component_schema.ValueKind(field.kind) {
+                        detailLabel.SetText(
+                            "Component \"" + component.label
+                            + "\" conflicts with metadata \"" + field.key
+                            + "\". No nodes were changed.");
+                        RefreshComponentPalette();
+                        return false;
+                    }
+                } else {
+                    missing = missing + 1;
+                }
+                fieldIndex = fieldIndex + 1;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if missing == 0 {
+            detailLabel.SetText(
+                "Component \"" + component.label
+                + "\" is already complete on the selection.");
+            RefreshComponentPalette();
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            var node = flatNodes.get(selectedIndices.get(selectionIndex));
+            var fieldIndex = 0;
+            while fieldIndex < component.fields.count() {
+                var field = component.fields.get(fieldIndex);
+                if node.MetadataHas(field.key) == false
+                   and WriteNodeComponentField(node, field) == false {
+                    RestoreNodeComponentEdit(
+                        previousSelection,
+                        previousPrimary,
+                        "Component \"" + component.label
+                        + "\" was rejected. No nodes were changed.");
+                    return false;
+                }
+                fieldIndex = fieldIndex + 1;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+
+        if CommitScene(
+               "Added " + component.label + " to "
+               + selectedIndices.count() + " node(s)") == false {
+            RestoreNodeComponentEdit(
+                previousSelection,
+                previousPrimary,
+                "The component could not be committed. No nodes were changed.");
+            return false;
+        }
+        selectedNodeMetadata = -1;
+        metadataOwnerIndex = selectedIndex;
+        // Component membership feeds hierarchy badges and viewport tints;
+        // rebuild rows while preserving the batch selection.
+        RefreshHierarchy(null);
+        SetEditorControlsEnabled(true);
+        detailLabel.SetText(
+            "Added " + missing + " missing field(s) from "
+            + component.label + ".");
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Return a stable scene-unique name for a component recipe.
+    hide override func UniqueComponentNodeName(base: String) -> String {
+        var stem = Str.Trim(base);
+        if stem == "" { stem = "Gameplay Node"; }
+        if scene.Find(stem).IsNone { return stem; }
+        var suffix = 2;
+        while suffix <= flatNodes.count() + 2 {
+            var candidate = stem + " " + suffix;
+            if scene.Find(candidate).IsNone { return candidate; }
+            suffix = suffix + 1;
+        }
+        return stem + " " + (flatNodes.count() + 3);
+    }
+
+    /// @brief Create one project-defined gameplay node in one transaction.
+    /// @details The node is placed at the current viewport target and receives
+    ///          every typed recipe default before entering the live graph, so
+    ///          Undo never exposes an empty intermediate node.
+    expose override func CreateNodeFromComponent(
+        component: scene_component_schema.SceneComponentDefinition)
+        -> Integer {
+        if scene == null or component == null
+           or component.CanCreateFor(
+               scene_component_schema.TARGET_3D_NODE) == false {
+            detailLabel.SetText(
+                "This project component has no 3D creation recipe.");
+            return -1;
+        }
+        if bakeActive {
+            detailLabel.SetText(
+                "Cancel the lightmap bake before creating scene nodes.");
+            return -1;
+        }
+        if flatNodes.count() >= SceneEditor3DModel.MAX_EDITOR_NODES {
+            detailLabel.SetText(
+                "The scene has reached Studio's editable node limit.");
+            return -1;
+        }
+
+        var node = SceneNode.New();
+        if node == null {
+            detailLabel.SetText(
+                "Studio could not allocate the project scene node.");
+            return -1;
+        }
+        node.Name = UniqueComponentNodeName(component.createNodeName);
+        node.SetPosition(viewTargetX, viewTargetY, viewTargetZ);
+        var fieldIndex = 0;
+        while fieldIndex < component.fields.count() {
+            if WriteNodeComponentField(
+                   node, component.fields.get(fieldIndex)) == false {
+                detailLabel.SetText(
+                    "Project node creation was rejected before the scene "
+                    + "was changed.");
+                return -1;
+            }
+            fieldIndex = fieldIndex + 1;
+        }
+
+        scene.Add(node);
+        if CommitScene("Created " + component.label) == false {
+            // Serialization failures reload the canonical document inside
+            // CommitScene. The guarded bake path above is the only ordinary
+            // pre-serialization refusal.
+            return -1;
+        }
+        RefreshHierarchy(node);
+        detailLabel.SetText(
+            "Created " + component.label + " \"" + node.Name
+            + "\" at the viewport target.");
+        CaptureWorkspaceState();
+        return selectedIndex;
+    }
+
+    /// @brief Copy one schema field into the single-node raw metadata editor.
+    expose override func EditSelectedComponentField() -> Boolean {
+        if scene == null or componentPalette == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var field = componentPalette.SelectedField();
+        if field == null or selectedIndices.count() != 1 {
+            return false;
+        }
+        var node = SelectedNode();
+        if node == null
+           or metadataInspector.SetDraft(
+               node,
+               field.key,
+               scene_component_schema.ValueKind(field.kind),
+               field.defaultText) == false {
+            return false;
+        }
+        selectedNodeMetadata = metadataInspector.selectedProperty;
+        if field.kind == "asset" {
+            componentAssetBrowser.SetExtensions(
+                file_utils.AssetKindListExtensions(field.assetKinds));
+            componentAssetBrowser.Open();
+            detailLabel.SetText(
+                "Editing " + field.label
+                + ". Browse the filtered project assets or type a "
+                + "reference in the raw typed-metadata controls.");
+        } else {
+            detailLabel.SetText(
+                "Editing " + field.label
+                + " in the raw typed-metadata controls.");
+        }
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Write and verify one already-validated schema default.
+    hide override func WriteNodeComponentField(
+        node: SceneNode,
+        field: scene_component_schema.SceneComponentField) -> Boolean {
+        var intValue = 0;
+        var floatValue = 0.0;
+        var boolValue = false;
+        var applied = false;
+        var kind = scene_component_schema.ValueKind(field.kind);
+        if kind == "string" {
+            applied =
+                node.MetadataSetString(field.key, field.defaultText);
+        } else if kind == "int" {
+            var parsedInt = Parse.TryInt(field.defaultText);
+            if parsedInt.IsNone { return false; }
+            intValue = parsedInt.UnwrapI64();
+            applied = node.MetadataSetInt(field.key, intValue);
+        } else if kind == "float" {
+            var parsedFloat = Parse.TryDouble(field.defaultText);
+            if parsedFloat.IsNone { return false; }
+            floatValue = parsedFloat.UnwrapF64();
+            applied = node.MetadataSetFloat(field.key, floatValue);
+        } else if kind == "bool" {
+            var parsedBool = Parse.TryBool(field.defaultText);
+            if parsedBool.IsNone { return false; }
+            boolValue = parsedBool.UnwrapI1();
+            applied = node.MetadataSetBool(field.key, boolValue);
+        } else if kind == "null" {
+            applied = node.MetadataSetNull(field.key);
+        } else {
+            return false;
+        }
+        return applied and NodeMetadataMatches(
+            node,
+            field.key,
+            kind,
+            field.defaultText,
+            intValue,
+            floatValue,
+            boolValue);
+    }
+
+    /// @brief Reload the canonical document after a partial component write.
+    hide override func RestoreNodeComponentEdit(
+        previousSelection: List[Integer],
+        previousPrimary: Integer,
+        message: String) {
+        var doc = currentDoc;
+        if doc != null { LoadDocumentModel(doc, true); }
+        SelectSceneNodes(previousSelection, previousPrimary);
+        detailLabel.SetText(message + " The document was restored.");
+        toolbarStatus.SetText("Component edit rolled back");
+        RefreshComponentPalette();
+    }
+
+    /// @brief Verify one just-written value without scalar string coercion.
+    hide override func NodeMetadataMatches(node: SceneNode,
+                                  key: String,
+                                  kind: String,
+                                  stringValue: String,
+                                  intValue: Integer,
+                                  floatValue: Number,
+                                  boolValue: Boolean) -> Boolean {
+        if node == null or node.MetadataHas(key) == false
+           or node.MetadataKind(key) != kind {
+            return false;
+        }
+        if kind == "string" {
+            return node.MetadataGetString(key, "") == stringValue;
+        }
+        if kind == "int" {
+            return node.MetadataGetInt(key, 0) == intValue;
+        }
+        if kind == "float" {
+            var delta = node.MetadataGetFloat(key, 0.0) - floatValue;
+            if delta < 0.0 { delta = 0.0 - delta; }
+            return delta < 0.000000000001;
+        }
+        if kind == "bool" {
+            return node.MetadataGetBool(key, false) == boolValue;
+        }
+        return kind == "null";
+    }
+
+    /// @brief Reload canonical VSCN after any partial metadata transaction.
+    hide override func RestoreNodeMetadataEdit(nodeIndex: Integer,
+                                      message: String) {
+        var doc = currentDoc;
+        if doc != null { LoadDocumentModel(doc, true); }
+        if nodeIndex >= 0 and nodeIndex < flatNodes.count() {
+            SelectIndex(nodeIndex);
+        }
+        detailLabel.SetText(message + " The document was restored.");
+        toolbarStatus.SetText("Metadata edit rolled back");
+    }
+
+    /// @brief Update one node's local transform and commit it.
+    expose override func SetNodeTransform(nodeIndex: Integer,
+                                 px: Number,
+                                 py: Number,
+                                 pz: Number,
+                                 sx: Number,
+                                 sy: Number,
+                                 sz: Number) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        node.SetPosition(px, py, pz);
+        node.SetScale(sx, sy, sz);
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        if CommitScene("Updated node transform") == false { return false; }
+        positionX.SetValue(px);
+        positionY.SetValue(py);
+        positionZ.SetValue(pz);
+        scaleX.SetValue(sx);
+        scaleY.SetValue(sy);
+        scaleZ.SetValue(sz);
+        return true;
+    }
+
+    /// @brief Update one node's local Euler rotation in editor-friendly degrees.
+    expose override func SetNodeEulerRotation(nodeIndex: Integer,
+                                     xDegrees: Number,
+                                     yDegrees: Number,
+                                     zDegrees: Number) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        node.Rotation = Quat.FromEuler(xDegrees * SceneEditor3DModel.DEG_TO_RAD,
+                                       yDegrees * SceneEditor3DModel.DEG_TO_RAD,
+                                       zDegrees * SceneEditor3DModel.DEG_TO_RAD).Normalize();
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        if CommitScene("Updated node rotation") == false { return false; }
+        rotationX.SetValue(xDegrees);
+        rotationY.SetValue(yDegrees);
+        rotationZ.SetValue(zDegrees);
+        return true;
+    }
+
+    /// @brief Translate one node along a displayed local gizmo axis and commit.
+    /// @details This is the deterministic command path behind direct viewport
+    ///          manipulation. The projected handle reflects parent rotation and
+    ///          scale while the edit remains an inspector-compatible local value.
+    expose override func TranslateNodeAlongGizmoAxis(nodeIndex: Integer,
+                                            axis: Integer,
+                                            amount: Number) -> Boolean {
+        return TransformNodeAlongGizmoAxis(
+            nodeIndex, SceneEditor3DModel.GIZMO_MODE_MOVE, axis, amount, false);
+    }
+
+    /// @brief Apply one deterministic Move, Rotate, or Scale axis edit.
+    /// @details This is the probeable command boundary behind live gizmo drags.
+    ///          The amount is expressed in units, degrees, or scale depending
+    ///          on mode; optional snapping quantizes the resulting value.
+    expose override func TransformNodeAlongGizmoAxis(nodeIndex: Integer,
+                                            transformMode: Integer,
+                                            axis: Integer,
+                                            amount: Number,
+                                            snapEnabled: Boolean) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count()
+           or scene_transform_3d.IsValidMode(transformMode) == false
+           or (axis != SceneEditor3DModel.GIZMO_AXIS_X and axis != SceneEditor3DModel.GIZMO_AXIS_Y
+               and axis != SceneEditor3DModel.GIZMO_AXIS_Z)
+           or (amount > -0.0000001 and amount < 0.0000001) {
+            return false;
+        }
+        if gizmoTransformSpace
+           == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+            selectedIndex = nodeIndex;
+            selectedIndices = scene_selection.Single(
+                nodeIndex, flatNodes.count());
+            return TransformSelectedAlongWorldGizmoAxis(
+                transformMode, axis, amount, snapEnabled);
+        }
+        var node = flatNodes.get(nodeIndex);
+        var sourceX = 0.0;
+        var sourceY = 0.0;
+        var sourceZ = 0.0;
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            var rotation = node.Rotation;
+            var euler = QuaternionToEulerDegrees(rotation);
+            sourceX = euler.X;
+            sourceY = euler.Y;
+            sourceZ = euler.Z;
+        } else if transformMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            var scale = node.Scale;
+            sourceX = scale.X;
+            sourceY = scale.Y;
+            sourceZ = scale.Z;
+        } else {
+            var position = node.Position;
+            sourceX = position.X;
+            sourceY = position.Y;
+            sourceZ = position.Z;
+        }
+        var sourceValue = sourceZ;
+        if axis == SceneEditor3DModel.GIZMO_AXIS_X { sourceValue = sourceX; }
+        else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { sourceValue = sourceY; }
+        var targetValue = scene_transform_3d.AxisTarget(
+            transformMode, sourceValue, amount, snapEnabled);
+        if scene_transform_3d.NearlyEqual(sourceValue, targetValue) {
+            return false;
+        }
+        var targetX = sourceX;
+        var targetY = sourceY;
+        var targetZ = sourceZ;
+        if axis == SceneEditor3DModel.GIZMO_AXIS_X { targetX = targetValue; }
+        else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { targetY = targetValue; }
+        else { targetZ = targetValue; }
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            return SetNodeEulerRotation(
+                nodeIndex, targetX, targetY, targetZ);
+        }
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            var localPosition = node.Position;
+            return SetNodeTransform(
+                nodeIndex,
+                localPosition.X, localPosition.Y, localPosition.Z,
+                targetX, targetY, targetZ);
+        }
+        var localScale = node.Scale;
+        return SetNodeTransform(
+            nodeIndex, targetX, targetY, targetZ,
+            localScale.X, localScale.Y, localScale.Z);
+    }
+
+    /// @brief Apply one axis amount to every selected local transform.
+    /// @details The complete group is serialized once so undo restores every
+    ///          member together. Rotate and scale use each node's local origin.
+    expose override func TransformSelectedAlongGizmoAxis(
+        transformMode: Integer,
+        axis: Integer,
+        amount: Number,
+        snapEnabled: Boolean) -> Boolean {
+        if gizmoTransformSpace
+           == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+            return TransformSelectedAlongWorldGizmoAxis(
+                transformMode, axis, amount, snapEnabled);
+        }
+        if scene == null
+           or scene_transform_3d.IsValidMode(transformMode) == false
+           or (axis != SceneEditor3DModel.GIZMO_AXIS_X and axis != SceneEditor3DModel.GIZMO_AXIS_Y
+               and axis != SceneEditor3DModel.GIZMO_AXIS_Z)
+           or (amount > -0.0000001 and amount < 0.0000001) {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var changed = false;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            var nodeIndex = selectedIndices.get(selectionIndex);
+            var node = flatNodes.get(nodeIndex);
+            var sourceX = 0.0;
+            var sourceY = 0.0;
+            var sourceZ = 0.0;
+            if transformMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+                var euler = QuaternionToEulerDegrees(node.Rotation);
+                sourceX = euler.X;
+                sourceY = euler.Y;
+                sourceZ = euler.Z;
+            } else if transformMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+                var scale = node.Scale;
+                sourceX = scale.X;
+                sourceY = scale.Y;
+                sourceZ = scale.Z;
+            } else {
+                var position = node.Position;
+                sourceX = position.X;
+                sourceY = position.Y;
+                sourceZ = position.Z;
+            }
+            var sourceValue = sourceZ;
+            if axis == SceneEditor3DModel.GIZMO_AXIS_X { sourceValue = sourceX; }
+            else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { sourceValue = sourceY; }
+            var targetValue = scene_transform_3d.AxisTarget(
+                transformMode, sourceValue, amount, snapEnabled);
+            if scene_transform_3d.NearlyEqual(
+                   sourceValue, targetValue) == false {
+                if axis == SceneEditor3DModel.GIZMO_AXIS_X { sourceX = targetValue; }
+                else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { sourceY = targetValue; }
+                else { sourceZ = targetValue; }
+                ApplyNodeTransformValues(
+                    node, transformMode, sourceX, sourceY, sourceZ);
+                changed = true;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if changed == false { return false; }
+        if CommitScene(
+               scene_transform_3d.ModeHistoryVerb(transformMode)
+               + " " + selectedIndices.count() + " selected node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The selected transforms could not be committed.");
+            return false;
+        }
+        RefreshSelectedFields();
+        SetEditorControlsEnabled(true);
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Translate every selected node along two axes of one gizmo plane.
+    /// @details Compatibility wrapper for deterministic Move-plane probes.
+    expose override func TranslateSelectedInGizmoPlane(
+        plane: Integer,
+        amountA: Number,
+        amountB: Number,
+        snapEnabled: Boolean) -> Boolean {
+        return TransformSelectedInGizmoPlane(
+            SceneEditor3DModel.GIZMO_MODE_MOVE, plane, amountA, amountB, snapEnabled);
+    }
+
+    /// @brief Scale every selected node along two axes of one gizmo plane.
+    /// @details The primary selection defines snapping and therefore the shared
+    ///          additive group delta. World edits use exact matrix assignment
+    ///          in hierarchy order and reject the complete group on shear.
+    expose override func ScaleSelectedInGizmoPlane(
+        plane: Integer,
+        amountA: Number,
+        amountB: Number,
+        snapEnabled: Boolean) -> Boolean {
+        return TransformSelectedInGizmoPlane(
+            SceneEditor3DModel.GIZMO_MODE_SCALE, plane, amountA, amountB, snapEnabled);
+    }
+
+    /// @brief Apply one two-axis Move or Scale command to the selected group.
+    /// @details Local edits use parent-relative fields. World edits use exact
+    ///          runtime matrix assignment in hierarchy order. Either path
+    ///          commits one canonical history snapshot or restores every node.
+    hide override func TransformSelectedInGizmoPlane(
+        transformMode: Integer,
+        plane: Integer,
+        amountA: Number,
+        amountB: Number,
+        snapEnabled: Boolean) -> Boolean {
+        if scene == null
+           or (transformMode != SceneEditor3DModel.GIZMO_MODE_MOVE
+               and transformMode != SceneEditor3DModel.GIZMO_MODE_SCALE)
+           or SceneEditor3DModel.IsGizmoPlane(plane) == false
+           or (scene_transform_3d.NearlyEqual(amountA, 0.0)
+               and scene_transform_3d.NearlyEqual(amountB, 0.0)) {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        if gizmoTransformSpace
+           == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+            return TransformSelectedInWorldGizmoPlane(
+                transformMode, plane, amountA, amountB, snapEnabled);
+        }
+
+        var primary = SelectedNode();
+        if primary == null { return false; }
+        var axisA = SceneEditor3DModel.GizmoPlaneAxisA(plane);
+        var axisB = SceneEditor3DModel.GizmoPlaneAxisB(plane);
+        var primaryValues = primary.Position;
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            primaryValues = primary.Scale;
+        }
+        var sourceA = SceneEditor3DModel.GizmoAxisValue(primaryValues, axisA);
+        var sourceB = SceneEditor3DModel.GizmoAxisValue(primaryValues, axisB);
+        var targetA = scene_transform_3d.AxisTarget(
+            transformMode, sourceA, amountA, snapEnabled);
+        var targetB = scene_transform_3d.AxisTarget(
+            transformMode, sourceB, amountB, snapEnabled);
+        var deltaA = targetA - sourceA;
+        var deltaB = targetB - sourceB;
+        if scene_transform_3d.NearlyEqual(deltaA, 0.0)
+           and scene_transform_3d.NearlyEqual(deltaB, 0.0) {
+            return false;
+        }
+
+        var deltaX = 0.0;
+        var deltaY = 0.0;
+        var deltaZ = 0.0;
+        if axisA == SceneEditor3DModel.GIZMO_AXIS_X { deltaX = deltaA; }
+        else if axisA == SceneEditor3DModel.GIZMO_AXIS_Y { deltaY = deltaA; }
+        else { deltaZ = deltaA; }
+        if axisB == SceneEditor3DModel.GIZMO_AXIS_X { deltaX = deltaB; }
+        else if axisB == SceneEditor3DModel.GIZMO_AXIS_Y { deltaY = deltaB; }
+        else { deltaZ = deltaB; }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            var node = flatNodes.get(
+                selectedIndices.get(selectionIndex));
+            var values = node.Position;
+            if transformMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+                values = node.Scale;
+            }
+            var valueX = values.X + deltaX;
+            var valueY = values.Y + deltaY;
+            var valueZ = values.Z + deltaZ;
+            if transformMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+                if axisA == SceneEditor3DModel.GIZMO_AXIS_X
+                   or axisB == SceneEditor3DModel.GIZMO_AXIS_X {
+                    valueX = scene_transform_3d.UsableScale(
+                        valueX, values.X);
+                }
+                if axisA == SceneEditor3DModel.GIZMO_AXIS_Y
+                   or axisB == SceneEditor3DModel.GIZMO_AXIS_Y {
+                    valueY = scene_transform_3d.UsableScale(
+                        valueY, values.Y);
+                }
+                if axisA == SceneEditor3DModel.GIZMO_AXIS_Z
+                   or axisB == SceneEditor3DModel.GIZMO_AXIS_Z {
+                    valueZ = scene_transform_3d.UsableScale(
+                        valueZ, values.Z);
+                }
+            }
+            ApplyNodeTransformValues(
+                node, transformMode, valueX, valueY, valueZ);
+            selectionIndex = selectionIndex + 1;
+        }
+        if CommitScene(
+               scene_transform_3d.ModeHistoryVerb(transformMode)
+               + " " + selectedIndices.count()
+               + " selected node(s) in "
+               + GizmoAxisLabel(plane) + " plane") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The selected plane transform could not be committed.");
+            return false;
+        }
+        RefreshSelectedFields();
+        SetEditorControlsEnabled(true);
+        renderDirty = true;
+        return true;
+    }
+
+}

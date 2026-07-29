@@ -1,0 +1,107 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_model.zia
+// Purpose: Shared constants and responsive helpers for tool panels.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_model;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+
+/// @brief Semantic tool-panel row colors from the live theme palette.
+func ToolColorError() -> Integer { return theme_colors.Rgb("accentDanger"); }
+func ToolColorWarning() -> Integer { return theme_colors.Rgb("accentWarning"); }
+func ToolColorInfo() -> Integer { return theme_colors.Rgb("accentInfo"); }
+func ToolColorSuccess() -> Integer { return theme_colors.Rgb("accentSuccess"); }
+func ToolColorMuted() -> Integer { return theme_colors.Rgb("fgTertiary"); }
+final TOOL_KIND_COL = 10;
+final TOOL_SOURCE_COL = 10;
+final TOOL_LOCATION_COL = 24;
+final TOOL_CODE_COL = 10;
+final TOOL_ACTION_COL = 18;
+final MAX_OUTPUT_ROW_COUNT = 5000;
+// Includes the dock header, tab strip, Search controls, and a useful result
+// viewport at the native minimum window size. Compact wrapping can add rows.
+final SEARCH_PANEL_MIN_LOGICAL_HEIGHT = 260.0;
+final SEARCH_PANEL_COMPACT_MIN_LOGICAL_HEIGHT = 320.0;
+final SEARCH_CONTROLS_COMPACT_MAX_WIDTH = 520.0;
+final PROBLEMS_CONTROLS_COMPACT_MAX_WIDTH = 560.0;
+final OUTPUT_CONTROLS_COMPACT_MAX_WIDTH = 520.0;
+final REFERENCES_CONTROLS_COMPACT_MAX_WIDTH = 480.0;
+final DEBUG_CONSOLE_CONTROLS_COMPACT_MAX_WIDTH = 520.0;
+final CALL_STACK_CONTROLS_COMPACT_MAX_WIDTH = 440.0;
+final TERMINAL_ACTIONS_COMPACT_MAX_WIDTH = 360.0;
+final WATCH_TOOLBAR_COMPACT_MAX_WIDTH = 420.0;
+final TOOL_TABS_COMPACT_MAX_WIDTH = 720.0;
+final FLOATING_PANEL_DEFAULT_X = 96;
+final FLOATING_PANEL_DEFAULT_Y = 88;
+final FLOATING_PANEL_DEFAULT_WIDTH = 680;
+final FLOATING_PANEL_DEFAULT_HEIGHT = 420;
+final FLOATING_PANEL_MIN_WIDTH = 360;
+final FLOATING_PANEL_MIN_HEIGHT = 240;
+final FLOATING_PANEL_VIEWPORT_MARGIN = 12;
+
+/// @brief Return whether Search should use narrow action copy and flex bases.
+/// @details Logical width already excludes backing scale and whole-UI zoom.
+func SearchUsesCompactControls(width: Number) -> Boolean {
+    return width > 0.0 and width <= SEARCH_CONTROLS_COMPACT_MAX_WIDTH;
+}
+
+/// @brief Return whether Problems should shorten its wrapped toolbar labels.
+func ProblemsUseCompactControls(width: Number) -> Boolean {
+    return width > 0.0 and width <= PROBLEMS_CONTROLS_COMPACT_MAX_WIDTH;
+}
+
+/// @brief Return whether Output should use compact wrapped toolbar controls.
+func OutputUsesCompactControls(width: Number) -> Boolean {
+    return width > 0.0 and width <= OUTPUT_CONTROLS_COMPACT_MAX_WIDTH;
+}
+
+/// @brief Return whether References should hide its verbose count treatment.
+func ReferencesUseCompactControls(width: Number) -> Boolean {
+    return width > 0.0 and width <= REFERENCES_CONTROLS_COMPACT_MAX_WIDTH;
+}
+
+/// @brief Return whether Debug Console should compact its wrapped toolbar.
+func DebugConsoleUsesCompactControls(width: Number) -> Boolean {
+    return width > 0.0 and width <= DEBUG_CONSOLE_CONTROLS_COMPACT_MAX_WIDTH;
+}
+
+/// @brief Return whether Call Stack should compact its wrapped toolbar.
+func CallStackUsesCompactControls(width: Number) -> Boolean {
+    return width > 0.0 and width <= CALL_STACK_CONTROLS_COMPACT_MAX_WIDTH;
+}
+
+/// @brief Return whether Terminal actions should wrap from compact flex bases.
+func TerminalUsesCompactActions(width: Number) -> Boolean {
+    return width > 0.0 and width <= TERMINAL_ACTIONS_COMPACT_MAX_WIDTH;
+}
+
+/// @brief Return whether Variables should compact its watch-management row.
+func WatchToolbarUsesCompactActions(width: Number) -> Boolean {
+    return width > 0.0 and width <= WATCH_TOOLBAR_COMPACT_MAX_WIDTH;
+}
+

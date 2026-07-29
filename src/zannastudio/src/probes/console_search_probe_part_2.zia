@@ -1,0 +1,751 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/console_search_probe_part_2.zia
+// Purpose: Serial console/search probe scenarios, part 2 of 2.
+// Key invariants:
+//   - Scenarios preserve the original execution order and shared controllers.
+//   - Failure paths retain their original RESULT diagnostics.
+// Ownership/Lifetime: Borrows one ConsoleSearchProbeContext from the entry probe.
+// Links: zannastudio/src/probes/console_search_probe.zia,
+//        zannastudio/src/probes/console_search_probe_support.zia
+//
+//===----------------------------------------------------------------------===//
+
+module console_search_probe_part_2;
+
+bind "../ui/app_shell";
+bind "../ui/command_input";
+bind "../ui/debug_breakpoint_overlay";
+bind "../ui/diff_view";
+bind "../ui/explorer_actions";
+bind "../ui/ide_overlays";
+bind "../ui/output_cache";
+bind "../ui/notification_policy";
+bind "../app/command_palette_controller";
+bind "../commands/command_registry";
+bind "../commands/build_commands";
+bind "../commands/quick_open_commands";
+bind "../commands/search_commands";
+bind "../build/build_system";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../core/settings";
+bind "../editor/diagnostics";
+bind "../services/locations";
+
+bind GUI = Zanna.GUI;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Terminal = Zanna.Terminal;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind TempFile = Zanna.IO.TempFile;
+bind Str = Zanna.String;
+bind Clock = Zanna.Time.Clock;
+bind Env = Zanna.System.Environment;
+bind Machine = Zanna.System.Machine;
+
+bind "console_search_probe_support" as Probe;
+
+/// @brief Run the VerifyOverlayResetAndSearchHelpers scenario against the shared fixture.
+expose func VerifyOverlayResetAndSearchHelpers(ctx: Probe.ConsoleSearchProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var breakpointOverlay = ctx.breakpointOverlay;
+
+    breakpointOverlay.OpenCondition(
+        shell, "/workspace/example/main.zia", 42, "index > 3");
+    breakpointOverlay.detailLabel.SetText("Condition validation is deferred.");
+    shell.Render();
+    if Probe.OverlayContainsAction(shell.app, breakpointOverlay.panel,
+                             breakpointOverlay.applyButton) == false {
+        Probe.fail(shell, "breakpoint overlay escaped the zoomed viewport");
+        return false;
+    }
+    breakpointOverlay.Cancel();
+    shell.app.SetUiScale(1.0);
+    shell.app.SetWindowSize(1280, 720);
+    shell.Poll();
+
+    if search_commands.LineMatches("Alpha beta", "alpha", false, false) == false {
+        Probe.fail(shell, "case-insensitive search");
+        return false;
+    }
+    if search_commands.LineMatches("alphabet", "alpha", false, true) {
+        Probe.fail(shell, "whole-word search");
+        return false;
+    }
+    if search_commands.LineMatchesWithMode("var needle = 42;", "needle = [0-9]+", false, false, true) == false {
+        Probe.fail(shell, "regex search match");
+        return false;
+    }
+    if search_commands.LineMatchesWithMode("var needle = x;", "needle = [0-9]+", false, false, true) {
+        Probe.fail(shell, "regex search reject");
+        return false;
+    }
+    if search_commands.MatchColumnWithMode("abc needle42", "needle[0-9]+", false, true) != 5
+       or search_commands.MatchLengthWithMode("abc needle42", "needle[0-9]+", false, true) != 8 {
+        Probe.fail(shell, "regex search range");
+        return false;
+    }
+    if search_commands.LineMatchesWithMode("func main()", "^func [a-z]+\\(\\)$", false, false, true) == false {
+        Probe.fail(shell, "regex anchors and escapes");
+        return false;
+    }
+    if search_commands.QuickOpenScore("src/main.zia", "main.zia") != 1 {
+        Probe.fail(shell, "quick open exact file");
+        return false;
+    }
+
+    ctx.shell = shell;
+    return true;
+}
+
+/// @brief Run the VerifyQuickOpenAndWorkspaceSymbols scenario against the shared fixture.
+expose func VerifyQuickOpenAndWorkspaceSymbols(ctx: Probe.ConsoleSearchProbeContext) -> Boolean {
+    var shell = ctx.shell;
+
+    if search_commands.QuickOpenScore("src/main.zia", "mai") != 2 {
+        Probe.fail(shell, "quick open file prefix");
+        return false;
+    }
+    if search_commands.QuickOpenScore("src/main.zia", "src/") != 3 {
+        Probe.fail(shell, "quick open path prefix");
+        return false;
+    }
+    var quickOpenPath = "/tmp/project/src/main.zia";
+    var quickOpenId = search_commands.QuickOpenCommandId(quickOpenPath);
+    if search_commands.QuickOpenPathFromCommandId(quickOpenId) != quickOpenPath
+       or search_commands.QuickOpenPathFromCommandId("build") != "" {
+        Probe.fail(shell, "quick open palette command id");
+        return false;
+    }
+    if search_commands.SearchGlobMatches("src/main.zia", "src/*.zia") == false
+       or search_commands.SearchGlobMatches("src/main.zia", "main.*") == false
+       or search_commands.SearchGlobMatches("src/main.zia", "test*.zia") {
+        Probe.fail(shell, "search glob matching");
+        return false;
+    }
+
+    var root = TempFile.CreateDirWithPrefix("zannastudio_search_probe_");
+    var i = 0;
+    while i < 40 {
+        File.WriteAllText(Path.Join(root, "file" + i + ".zia"),
+                          "module File" + i + ";\nfunc main() {\n    var needle = " + i + ";\n}\n");
+        i = i + 1;
+    }
+    var symbolPath = Path.Join(root, "symbols.zia");
+    File.WriteAllText(symbolPath,
+                      "module Symbols;\nfunc alphaSymbol() -> Integer { return 1; }\n");
+
+    var docMgr = new document_manager.DocumentManager();
+    var locStore = new locations.LocationStore();
+
+    // An unsaved open buffer is not exempt from the same size ceiling used
+    // for disk sources. Otherwise one generated paste can monopolize search.
+    var oversizedOpenPath = Path.Join(root, "oversized-open.txt");
+    File.WriteAllText(oversizedOpenPath, "small on disk\n");
+    var oversizedOpenDoc = docMgr.OpenFile(oversizedOpenPath);
+    oversizedOpenDoc.content = Str.Repeat("x", 2000001);
+    if search_commands.SearchDiskFileTooLarge(docMgr, oversizedOpenPath) == false {
+        Probe.fail(shell, "oversized open search buffer was not bounded");
+        return false;
+    }
+    oversizedOpenDoc.content = "small on disk\n";
+
+    // File-count slicing is insufficient when each candidate is large. The
+    // aggregate source budget must yield before scanning all three in one pump.
+    var byteBudgetRoot = TempFile.CreateDirWithPrefix("zannastudio_search_bytes_");
+    var budgetSource = "needle\n" + Str.Repeat("x", 700000);
+    i = 0;
+    while i < 3 {
+        File.WriteAllText(Path.Join(byteBudgetRoot, "budget" + i + ".txt"),
+                          budgetSource);
+        i = i + 1;
+    }
+    var byteBudgetSearch = new search_commands.SearchController();
+    var byteBudgetLocs = new locations.LocationStore();
+    if byteBudgetSearch.StartDirect(shell, byteBudgetRoot, "needle", ".txt",
+                                    false, false) == false {
+        Probe.fail(shell, "byte-budget search did not start");
+        return false;
+    }
+    byteBudgetSearch.Pump(shell, docMgr, byteBudgetLocs);
+    if byteBudgetSearch.active == false
+       or byteBudgetSearch.lastPumpFileCount <= 0
+       or byteBudgetSearch.lastPumpFileCount >= 3
+       or byteBudgetSearch.lastPumpByteCount > 2000000 {
+        Probe.fail(shell, "search exceeded one-frame aggregate byte budget");
+        return false;
+    }
+    while byteBudgetSearch.active {
+        byteBudgetSearch.Pump(shell, docMgr, byteBudgetLocs);
+        if byteBudgetSearch.lastPumpByteCount > 2000000 {
+            Probe.fail(shell, "search exceeded later aggregate byte budget");
+            return false;
+        }
+    }
+    if byteBudgetSearch.resultCount != 3 {
+        Probe.fail(shell, "byte-budget search lost results");
+        return false;
+    }
+
+    var searcher = new search_commands.SearchController();
+    if searcher.StartDirect(shell, root, "needle", ".zia", false, false) == false {
+        Probe.fail(shell, "start direct search");
+        return false;
+    }
+    searcher.Pump(shell, docMgr, locStore);
+    if searcher.active == false {
+        Probe.fail(shell, "search completed in one pump");
+        return false;
+    }
+    if searcher.resultCount <= 0 or searcher.resultCount >= 40 {
+        Probe.fail(shell, "search slice result count");
+        return false;
+    }
+    shell.toolPanels.ShowTerminalPanel();
+    while searcher.active {
+        searcher.Pump(shell, docMgr, locStore);
+    }
+    if searcher.resultCount != 40 {
+        Probe.fail(shell, "cooperative search final count");
+        return false;
+    }
+    if shell.toolPanels.IsTerminalPanelVisible() == false
+       or shell.toolPanels.IsSearchPanelActive() {
+        Probe.fail(shell, "background search completion stole the Terminal panel");
+        return false;
+    }
+    shell.toolPanels.ShowSearchPanel();
+    if shell.toolPanels.searchListBox.Count != 80
+       or !shell.toolPanels.searchListBox.IsVisible() {
+        Probe.fail(shell, "search panel rows");
+        return false;
+    }
+    shell.toolPanels.searchListBox.SelectIndex(1);
+    var searchRowText = GUI.ListBox.ItemGetText(shell.toolPanels.searchListBox.Selected);
+    if Str.IndexOf(searchRowText, "match") == 0
+       or Str.IndexOf(searchRowText, "text") == 0
+       or Str.IndexOf(searchRowText, "needle") == 0 {
+        Probe.fail(shell, "search structured row");
+        return false;
+    }
+    if search_commands.SearchPathAllowed(root, Path.Join(root, "file11.zia"), "file1*.zia", "file10.zia") == false
+       or search_commands.SearchPathAllowed(root, Path.Join(root, "file10.zia"), "file1*.zia", "file10.zia") {
+        Probe.fail(shell, "search include exclude path filters");
+        return false;
+    }
+    var filteredSearcher = new search_commands.SearchController();
+    if filteredSearcher.StartDirectWithOptions(shell, root, "needle", ".zia", false, false,
+                                               "file1*.zia", "file10.zia") == false {
+        Probe.fail(shell, "start filtered direct search");
+        return false;
+    }
+    while filteredSearcher.active {
+        filteredSearcher.Pump(shell, docMgr, locStore);
+    }
+    if filteredSearcher.resultCount != 10 {
+        Probe.fail(shell, "filtered direct search count");
+        return false;
+    }
+    var regexSearcher = new search_commands.SearchController();
+    if regexSearcher.StartDirectWithSearchMode(shell, root, "needle = [1-3][0-9]", ".zia",
+                                               false, false, true, "", "") == false {
+        Probe.fail(shell, "start regex direct search");
+        return false;
+    }
+    while regexSearcher.active {
+        regexSearcher.Pump(shell, docMgr, locStore);
+    }
+    if regexSearcher.resultCount != 30 {
+        Probe.fail(shell, "regex direct search count");
+        return false;
+    }
+
+
+    ctx.shell = shell;
+    ctx.root = root;
+    ctx.i = i;
+    ctx.symbolPath = symbolPath;
+    ctx.docMgr = docMgr;
+    ctx.locStore = locStore;
+    ctx.searcher = searcher;
+    return true;
+}
+
+/// @brief Run the VerifySearchModesAndWorkspaceIndex scenario against the shared fixture.
+expose func VerifySearchModesAndWorkspaceIndex(ctx: Probe.ConsoleSearchProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var chromeRegistry = ctx.chromeRegistry;
+    var root = ctx.root;
+    var i = ctx.i;
+    var symbolPath = ctx.symbolPath;
+    var docMgr = ctx.docMgr;
+    var locStore = ctx.locStore;
+
+    var projMgr = new project_manager.ProjectManager();
+    projMgr.Setup(shell.workbench.sidebarTree);
+    projMgr.OpenFolder(root);
+
+    // Quick Open must rank a warmed large cache over multiple frames instead
+    // of allocating one command row per project file on the invoking frame.
+    var quickProjMgr = new project_manager.ProjectManager();
+    quickProjMgr.Setup(null);
+    quickProjMgr.OpenFolder(root);
+    quickProjMgr.fileCache = new List();
+    quickProjMgr.fileCacheComplete = true;
+    quickProjMgr.fileCacheRefreshing = false;
+    i = 0;
+    while i < 2048 {
+        var quickName = "boring_entry_" + i + ".zia";
+        if i == 2047 { quickName = "needle_target.zia"; }
+        quickProjMgr.fileCache.Push(Path.Join(root, quickName));
+        i = i + 1;
+    }
+    var quickPalette = new command_palette_controller.CommandPaletteController();
+    if search_commands.ShowQuickOpenPalette(shell, quickProjMgr) == false {
+        Probe.fail(shell, "large-cache quick open did not show");
+        return false;
+    }
+    quickPalette.BeginQuickOpen();
+    shell.commandPalette.SetQuery("needle");
+    quick_open_commands.PumpQuickOpenPalette(shell, quickProjMgr, quickPalette);
+    if quickPalette.quickOpenLastPumpScanCount <= 0
+       or quickPalette.quickOpenLastPumpScanCount > 512
+       or quickPalette.quickOpenScanIndex > 512
+       or quickPalette.quickOpenScanComplete
+       or quickPalette.quickOpenPublishedCount > 100 {
+        Probe.fail(shell, "quick open exceeded one-frame cache budget");
+        return false;
+    }
+    var quickPumps = 1;
+    while quickPalette.quickOpenScanComplete == false and quickPumps < 10 {
+        quick_open_commands.PumpQuickOpenPalette(shell, quickProjMgr, quickPalette);
+        if quickPalette.quickOpenLastPumpScanCount > 512 {
+            Probe.fail(shell, "quick open exceeded later cache budget");
+            return false;
+        }
+        quickPumps = quickPumps + 1;
+    }
+    if quickPalette.quickOpenScanComplete == false
+       or quickPalette.quickOpenResultPaths.count() != 1
+       or Obj.ToString(quickPalette.quickOpenResultPaths.get(0))
+          != Path.Join(root, "needle_target.zia") {
+        Probe.fail(shell, "quick open incremental ranking missed late cache result");
+        return false;
+    }
+
+    // A workspace refresh can replace the cache with the same number of files.
+    // Query generation and count are therefore insufficient identities: the
+    // old result must disappear and scanning must restart at entry zero.
+    var quickCacheGeneration = quickProjMgr.FileCacheGeneration();
+    quickProjMgr.RefreshTree();
+    if quickProjMgr.FileCacheGeneration() == quickCacheGeneration {
+        Probe.fail(shell, "headless project refresh retained file-cache identity");
+        return false;
+    }
+    quickProjMgr.fileCache = new List();
+    quickProjMgr.fileCacheComplete = true;
+    quickProjMgr.fileCacheRefreshing = false;
+    i = 0;
+    while i < 2048 {
+        var refreshedName = "refreshed_entry_" + i + ".zia";
+        if i == 0 { refreshedName = "refreshed_needle_target.zia"; }
+        quickProjMgr.fileCache.Push(Path.Join(root, refreshedName));
+        i = i + 1;
+    }
+    quick_open_commands.PumpQuickOpenPalette(shell, quickProjMgr, quickPalette);
+    if quickPalette.quickOpenCacheGeneration != quickProjMgr.FileCacheGeneration()
+       or quickPalette.quickOpenScanIndex <= 0
+       or quickPalette.quickOpenScanIndex > 512
+       or quickPalette.quickOpenResultPaths.count() != 1
+       or Obj.ToString(quickPalette.quickOpenResultPaths.get(0))
+          != Path.Join(root, "refreshed_needle_target.zia") {
+        Probe.fail(shell, "quick open retained same-size stale cache results");
+        return false;
+    }
+    shell.commandPalette.Hide();
+    quickPalette.ResetToCommands(shell, chromeRegistry, null);
+
+    var panelSearcher = new search_commands.SearchController();
+    shell.toolPanels.ShowTerminalPanel();
+    panelSearcher.OpenPanel(shell, root, "");
+    if shell.toolPanels.searchQueryInput.IsFocused() == false
+       or shell.toolPanels.terminalPane.IsFocused()
+       or shell.toolPanels.IsSearchRunInputFocused() == false {
+        Probe.fail(shell, "explicit project search did not take query focus");
+        return false;
+    }
+    shell.toolPanels.searchReplaceInput.Focus();
+    if shell.toolPanels.IsSearchInputFocused() == false
+       or shell.toolPanels.IsSearchRunInputFocused() {
+        Probe.fail(shell, "replacement input was routed through Enter-to-search");
+        return false;
+    }
+    shell.toolPanels.searchQueryInput.Focus();
+    shell.toolPanels.searchQueryInput.SetText("needle");
+    shell.toolPanels.searchKindsInput.SetText(".zia");
+    shell.toolPanels.searchIncludeInput.SetText("file1*.zia");
+    shell.toolPanels.searchExcludeInput.SetText("file10.zia");
+    if !shell.toolPanels.searchPanel.IsVisible() or !shell.toolPanels.searchListBox.IsVisible() {
+        Probe.fail(shell, "search panel opens docked controls");
+        return false;
+    }
+    if panelSearcher.RunPanel(shell, null, docMgr, null) == false {
+        Probe.fail(shell, "search panel starts direct search");
+        return false;
+    }
+    var activeSearchRoot = panelSearcher.root;
+    var activePanelRoot = panelSearcher.panelRoot;
+    shell.toolPanels.ShowTerminalPanel();
+    if panelSearcher.StartProject(shell, projMgr, "Search in Project",
+                                  docMgr, null)
+       or panelSearcher.active == false
+       or panelSearcher.root != activeSearchRoot
+       or panelSearcher.panelRoot != activePanelRoot
+       or panelSearcher.panelUseWorkspace
+       or shell.toolPanels.IsSearchPanelActive() == false
+       or shell.toolPanels.searchQueryInput.IsFocused() == false
+       or Str.IndexOf(shell.statusShell.lastLeftStatus,
+                      "Search is already running") == 0 {
+        Probe.fail(shell, "repeated project search interrupted active work");
+        return false;
+    }
+    while panelSearcher.active {
+        panelSearcher.Pump(shell, docMgr, locStore);
+    }
+    if panelSearcher.resultCount != 10 {
+        Probe.fail(shell, "search panel input filters");
+        return false;
+    }
+    if panelSearcher.resultLocationFirstId <= 1
+       or panelSearcher.resultLocationLastId
+          - panelSearcher.resultLocationFirstId + 1 != 10 {
+        Probe.fail(shell, "search result generation range");
+        return false;
+    }
+    if panelSearcher.replacer.StartFromResults(
+           locStore, panelSearcher.resultLocationFirstId,
+           panelSearcher.resultLocationLastId, "needle",
+           "needle", false, false, false) == false {
+        Probe.fail(shell, "cooperative replace did not start");
+        return false;
+    }
+    shell.toolPanels.ShowTerminalPanel();
+    var replacePanelRevision =
+        shell.toolPanels.GetPanelSelectionRevision();
+    while panelSearcher.replacer.IsBusy() {
+        panelSearcher.HandlePanel(shell, null, docMgr, null, locStore);
+    }
+    if shell.toolPanels.IsTerminalPanelVisible() == false
+       or shell.toolPanels.IsSearchPanelActive()
+       or shell.toolPanels.GetPanelSelectionRevision()
+          != replacePanelRevision {
+        Probe.fail(shell, "background replace completion stole the Terminal panel");
+        return false;
+    }
+    shell.toolPanels.ShowSearchPanel();
+    if shell.toolPanels.searchListBox.Count <= 0 {
+        Probe.fail(shell, "passive replace completion did not publish a summary");
+        return false;
+    }
+    docMgr.OpenFile(symbolPath);
+
+    ctx.shell = shell;
+    ctx.root = root;
+    ctx.i = i;
+    ctx.docMgr = docMgr;
+    ctx.locStore = locStore;
+    ctx.projMgr = projMgr;
+    return true;
+}
+
+/// @brief Run the VerifySearchNavigationAndAsyncResults scenario against the shared fixture.
+expose func VerifySearchNavigationAndAsyncResults(ctx: Probe.ConsoleSearchProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var overlays = ctx.overlays;
+    var root = ctx.root;
+    var i = ctx.i;
+    var docMgr = ctx.docMgr;
+    var locStore = ctx.locStore;
+    var projMgr = ctx.projMgr;
+
+    docMgr.GetActive()!.content = "module Symbols;\nfunc betaSymbol() -> Integer { return 2; }\n";
+    var symbolCount = search_commands.CollectWorkspaceSymbols(shell, projMgr, docMgr, locStore, "beta");
+    if symbolCount != 1 or shell.toolPanels.searchListBox.Count != 2 {
+        Probe.fail(shell, "workspace symbols use dirty open content");
+        return false;
+    }
+    shell.toolPanels.searchListBox.SelectIndex(1);
+    if GUI.ListBox.ItemGetData(shell.toolPanels.searchListBox.Selected) == "" {
+        Probe.fail(shell, "workspace symbols location data");
+        return false;
+    }
+    var symbolRowText = GUI.ListBox.ItemGetText(shell.toolPanels.searchListBox.Selected);
+    if Str.IndexOf(symbolRowText, "symbol") == 0
+       or Str.IndexOf(symbolRowText, "betaSymbol") == 0 {
+        Probe.fail(shell, "workspace symbols structured row");
+        return false;
+    }
+    var uncachedSymbolPath = Path.Join(root, "uncached_symbol.zia");
+    File.WriteAllText(uncachedSymbolPath,
+                      "module UncachedSymbol;\nfunc uncachedSymbolProbe() -> Integer { return 3; }\n");
+    var uncachedCount = search_commands.CollectWorkspaceSymbols(shell, projMgr,
+                                                               docMgr, locStore,
+                                                               "uncachedSymbolProbe");
+    if uncachedCount != 1 {
+        Probe.fail(shell, "workspace symbols enumerate uncached files");
+        return false;
+    }
+
+    // The user-facing workspace-symbol route must not enumerate and parse the
+    // whole project in one UI frame. It shares FileIndex discovery with text
+    // search, processes at most four source files per pump, and still prefers
+    // the dirty open buffer when that file's turn arrives.
+    var asyncSymbolLocs = new locations.LocationStore();
+    var asyncSymbols = new search_commands.SearchController();
+    if asyncSymbols.StartWorkspaceSymbols(shell, projMgr, docMgr, null, "beta") == false {
+        Probe.fail(shell, "start cooperative workspace symbols");
+        return false;
+    }
+    asyncSymbols.Pump(shell, docMgr, asyncSymbolLocs);
+    if asyncSymbols.active == false
+       or asyncSymbols.lastPumpFileCount <= 0
+       or asyncSymbols.lastPumpFileCount > 4
+       or asyncSymbols.fileIndex > 4 {
+        Probe.fail(shell, "workspace symbols exceeded one-frame file budget");
+        return false;
+    }
+    var symbolPumps = 1;
+    while asyncSymbols.active and symbolPumps < 1000 {
+        asyncSymbols.Pump(shell, docMgr, asyncSymbolLocs);
+        if asyncSymbols.lastPumpFileCount > 4 {
+            Probe.fail(shell, "workspace symbols exceeded later frame budget");
+            return false;
+        }
+        symbolPumps = symbolPumps + 1;
+    }
+    if asyncSymbols.active or asyncSymbols.resultCount != 1
+       or asyncSymbolLocs.items.count() != 1 {
+        Probe.fail(shell, "cooperative workspace symbols lost dirty-buffer result");
+        return false;
+    }
+    var cachedSearcher = new search_commands.SearchController();
+    if cachedSearcher.StartCachedDirect(shell, projMgr, root, "needle", ".zia", false, false) == false {
+        Probe.fail(shell, "start cached search");
+        return false;
+    }
+    while cachedSearcher.active {
+        cachedSearcher.Pump(shell, docMgr, locStore);
+    }
+    if cachedSearcher.resultCount != 40 {
+        Probe.fail(shell, "cached search final count");
+        return false;
+    }
+    var filteredCachedSearcher = new search_commands.SearchController();
+    if filteredCachedSearcher.StartCachedDirectWithOptions(shell, projMgr, root, "needle", ".zia", false, false,
+                                                           "file1*.zia", "file10.zia") == false {
+        Probe.fail(shell, "start filtered cached search");
+        return false;
+    }
+    while filteredCachedSearcher.active {
+        filteredCachedSearcher.Pump(shell, docMgr, locStore);
+    }
+    if filteredCachedSearcher.resultCount != 10 {
+        Probe.fail(shell, "filtered cached search count");
+        return false;
+    }
+    var regexCachedSearcher = new search_commands.SearchController();
+    if regexCachedSearcher.StartCachedDirectWithSearchMode(shell, projMgr, root, "needle = [12][0-9]", ".zia",
+                                                           false, false, true, "", "") == false {
+        Probe.fail(shell, "start regex cached search");
+        return false;
+    }
+    while regexCachedSearcher.active {
+        regexCachedSearcher.Pump(shell, docMgr, locStore);
+    }
+    if regexCachedSearcher.resultCount != 20 {
+        Probe.fail(shell, "regex cached search count");
+        return false;
+    }
+    shell.toolPanels.SetDebugOutput("debug one\ndebug two\n");
+    if shell.toolPanels.debugListBox.Count != 2 or !shell.toolPanels.debugListBox.IsVisible() {
+        Probe.fail(shell, "debug console rows");
+        return false;
+    }
+    shell.toolPanels.ShowTerminalPanel();
+    var panelRevisionBeforeDebugOutput =
+        shell.toolPanels.GetPanelSelectionRevision();
+    shell.toolPanels.UpdateDebugOutput("debug three\n");
+    if shell.toolPanels.IsTerminalPanelVisible() == false
+       or shell.toolPanels.GetPanelSelectionRevision()
+          != panelRevisionBeforeDebugOutput {
+        Probe.fail(shell, "background debug output stole the Terminal panel");
+        return false;
+    }
+    shell.toolPanels.ShowDebugPanel();
+    if shell.toolPanels.debugListBox.Count != 1 {
+        Probe.fail(shell, "passive debug output did not refresh rows");
+        return false;
+    }
+    shell.toolPanels.AddToolPlainRow(shell.toolPanels.referencesListBox, "main.zia", 0);
+    shell.toolPanels.ShowReferencesPanel();
+    if !shell.toolPanels.referencesListBox.IsVisible() or shell.toolPanels.toolTabBar.GetActiveIndex() != 3 {
+        Probe.fail(shell, "references panel rows");
+        return false;
+    }
+
+    // Opening a diff shows a loading row immediately; worker completion and
+    // widget creation are both pumped later in batches of at most 100 rows.
+    var asyncDiff = new diff_view.DiffView();
+    asyncDiff.Setup(shell);
+    var diffLeft = new Zanna.Text.StringBuilder();
+    var diffRight = new Zanna.Text.StringBuilder();
+    i = 0;
+    while i < 250 {
+        if i > 0 {
+            diffLeft.Append("\n");
+            diffRight.Append("\n");
+        }
+        diffLeft.Append("before-" + i);
+        diffRight.Append("after-" + i);
+        i = i + 1;
+    }
+    shell.app.SetWindowSize(620, 460);
+    shell.Poll();
+    overlays.OpenAbout(shell);
+    asyncDiff.Open(
+        "/a/long/workspace/path/whose/title/must/not/collide/with/the/close/action/sample.zia",
+        diffLeft.ToString(),
+        diffRight.ToString());
+    overlays.Pump(shell);
+    if overlays.aboutVisible or overlays.aboutPanel.IsVisible()
+       or asyncDiff.visible == false or asyncDiff.panel.IsVisible() == false {
+        asyncDiff.Shutdown();
+        Probe.fail(shell, "diff did not replace About");
+        return false;
+    }
+
+    ctx.shell = shell;
+    ctx.root = root;
+    ctx.asyncDiff = asyncDiff;
+    return true;
+}
+
+/// @brief Run the VerifyAsyncDiffAndCleanup scenario against the shared fixture.
+expose func VerifyAsyncDiffAndCleanup(ctx: Probe.ConsoleSearchProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var root = ctx.root;
+    var searcher = ctx.searcher;
+    var asyncDiff = ctx.asyncDiff;
+
+    shell.Render();
+    var diffPanelRight = asyncDiff.panel.GetScreenX()
+        + asyncDiff.panel.GetScreenWidth();
+    var diffPanelBottom = asyncDiff.panel.GetScreenY()
+        + asyncDiff.panel.GetScreenHeight();
+    if asyncDiff.panel.GetScreenX() < 0.0
+       or asyncDiff.panel.GetScreenY() < 0.0
+       or diffPanelRight > Probe.UiViewportWidth(shell.app) + 1.0
+       or diffPanelBottom > Probe.UiViewportHeight(shell.app) + 1.0
+       or asyncDiff.closeButton.GetScreenX()
+              + asyncDiff.closeButton.GetScreenWidth() > diffPanelRight
+       or asyncDiff.closeButton.GetScreenY()
+              + asyncDiff.closeButton.GetScreenHeight() > diffPanelBottom {
+        asyncDiff.Shutdown();
+        Probe.fail(shell, "diff overlay escaped the compact viewport"
+             + ": panel=" + asyncDiff.panel.GetScreenX() + ","
+             + asyncDiff.panel.GetScreenY() + " "
+             + asyncDiff.panel.GetScreenWidth() + "x"
+             + asyncDiff.panel.GetScreenHeight()
+             + " close=" + asyncDiff.closeButton.GetScreenX() + ","
+             + asyncDiff.closeButton.GetScreenY() + " "
+             + asyncDiff.closeButton.GetScreenWidth() + "x"
+             + asyncDiff.closeButton.GetScreenHeight()
+             + " viewport=" + Probe.UiViewportWidth(shell.app) + "x"
+             + Probe.UiViewportHeight(shell.app)
+             + " app=" + shell.app.GetWidth() + "x"
+             + shell.app.GetHeight());
+        return false;
+    }
+    if asyncDiff.rowsList.Count != 1 or asyncDiff.IsBusy() == false {
+        asyncDiff.Shutdown();
+        Probe.fail(shell, "diff open blocked instead of showing pending state");
+        return false;
+    }
+
+    shell.app.SetUiScale(2.0);
+    shell.app.SetWindowSize(720, 520);
+    shell.Poll();
+    asyncDiff.Pump();
+    shell.Render();
+    if Probe.OverlayContainsAction(shell.app, asyncDiff.panel,
+                             asyncDiff.closeButton) == false {
+        asyncDiff.Shutdown();
+        Probe.fail(shell, "diff overlay escaped the zoomed viewport");
+        return false;
+    }
+    shell.app.SetUiScale(1.0);
+    shell.app.SetWindowSize(620, 460);
+    shell.Poll();
+    asyncDiff.Pump();
+    shell.Render();
+    var diffPumps = 0;
+    while asyncDiff.IsBusy() and diffPumps < 5000 {
+        asyncDiff.Pump();
+        if asyncDiff.lastPumpRenderCount > 100 {
+            asyncDiff.Shutdown();
+            Probe.fail(shell, "diff renderer exceeded one-frame row budget");
+            return false;
+        }
+        Clock.Sleep(1);
+        diffPumps = diffPumps + 1;
+    }
+    if asyncDiff.IsBusy() or asyncDiff.rowsList.Count != 250 {
+        var diffFailureState =
+            "pumps=" + diffPumps
+            + " rows=" + asyncDiff.rowsList.Count
+            + " pendingGeneration=" + asyncDiff.pendingGeneration
+            + " renderIndex=" + asyncDiff.renderIndex
+            + " renderResult=" + (asyncDiff.renderResult != null)
+            + " jobBusy=" + asyncDiff.job.IsBusy()
+            + " activeFuture=" + (asyncDiff.job.activeFuture != null)
+            + " pendingRequest=" + (asyncDiff.job.pendingRequest != null)
+            + " completedRequest=" + (asyncDiff.job.completedRequest != null)
+            + " queued=" + asyncDiff.job.queuedCount
+            + " started=" + asyncDiff.job.startedCount
+            + " completed=" + asyncDiff.job.completedCount
+            + " cancelled=" + asyncDiff.job.cancelledCount
+            + " jobError=" + asyncDiff.job.lastError
+            + " viewError=" + asyncDiff.lastError;
+        asyncDiff.Shutdown();
+        Probe.fail(shell, "async diff did not finish bounded rendering: "
+             + diffFailureState);
+        return false;
+    }
+    asyncDiff.Close();
+    if asyncDiff.Shutdown() == false {
+        Probe.fail(shell, "diff worker did not drain at shutdown");
+        return false;
+    }
+
+    if searcher.StartDirect(shell, root, "needle", ".zia", false, false) == false {
+        Probe.fail(shell, "restart direct search");
+        return false;
+    }
+    searcher.Cancel(shell);
+    if searcher.active {
+        Probe.fail(shell, "cancel search");
+        return false;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+    Env.Exit(0);
+    return true;
+}

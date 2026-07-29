@@ -55,7 +55,14 @@ func listContains(items: List, label: String) -> Boolean {
     return false;
 }
 
-func main() {
+/// @brief State shared by asynchronous BASIC controller scenarios.
+class BasicAsyncProbeContext {
+    expose app_shell.AppShell shell;
+    expose editor_engine.EditorEngine engine;
+}
+
+/// @brief Verify completion ownership, coalescing, and language cancellation.
+func VerifyAsyncCompletion(ctx: BasicAsyncProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     var engine = new editor_engine.EditorEngine();
     shell.Build("Zanna Studio BASIC Async Controller Probe", 840, 560);
@@ -85,7 +92,7 @@ func main() {
     var oldCompletionGeneration = completer.pendingBasicGeneration;
     if oldCompletionGeneration <= 0 or completer.basicJob.startedCount != 1 {
         fail(shell, "completion ran synchronously");
-        return;
+        return false;
     }
 
     var newCompletion = "DIM newOnly AS INTEGER\nnewOnly = 1\nPRINT ne";
@@ -96,7 +103,7 @@ func main() {
     if completer.pendingBasicGeneration <= oldCompletionGeneration
        or completer.basicJob.startedCount != 1 {
         fail(shell, "completion tab switch was not coalesced");
-        return;
+        return false;
     }
 
     var completionTicks = 0;
@@ -109,7 +116,7 @@ func main() {
        or listContains(completer.allLabels, "NEWONLY") == false
        or listContains(completer.allLabels, "OLDONLY") {
         fail(shell, "completion published a stale tab result");
-        return;
+        return false;
     }
     completer.Hide();
 
@@ -120,12 +127,12 @@ func main() {
     completer.TriggerCompletion();
     if completer.pendingBasicGeneration <= 0 {
         fail(shell, "same-path completion mode switch had no pending work");
-        return;
+        return false;
     }
     completer.SetBasicMode(false);
     if completer.pendingBasicGeneration != 0 or completer.isVisible {
         fail(shell, "completion mode switch retained stale state");
-        return;
+        return false;
     }
     var modeDrainTicks = 0;
     while completer.basicJob.IsBusy() and modeDrainTicks < CONTROLLER_WAIT_TICKS {
@@ -135,9 +142,19 @@ func main() {
     }
     if completer.basicJob.IsBusy() or completer.isVisible {
         fail(shell, "cancelled completion mode did not drain invisibly");
-        return;
+        return false;
     }
     completer.SetBasicMode(true);
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    return true;
+}
+
+/// @brief Verify diagnostics, folding, and signature publication ownership.
+func VerifyAsyncAnalysis(ctx: BasicAsyncProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
 
     // Diagnostics: an invalid old tab is replaced by a clean new tab before
     // publication. The clean result must own the rendered counts and cache.
@@ -153,7 +170,7 @@ func main() {
        or liveDiag.manualCheckPending == false
        or shell.statusShell.lastLeftStatus != "Diagnostics running..." {
         fail(shell, "manual diagnostics did not queue honestly with auto-check disabled");
-        return;
+        return false;
     }
 
     liveDiag.setSourcePath("new_diagnostics.bas");
@@ -161,7 +178,7 @@ func main() {
     liveDiag.runNow(engine, shell);
     if liveDiag.pendingBasicGeneration <= oldDiagnosticGeneration {
         fail(shell, "diagnostic tab switch did not queue a newer generation");
-        return;
+        return false;
     }
     var diagnosticTicks = 0;
     while liveDiag.lastCheckedPath != "new_diagnostics.bas"
@@ -176,7 +193,7 @@ func main() {
        or liveDiag.manualCheckPending
        or shell.statusShell.lastLeftStatus != "Diagnostics complete" {
         fail(shell, "diagnostics published a stale tab result");
-        return;
+        return false;
     }
 
     // Cancelling an explicit check through a same-path language transition
@@ -185,7 +202,7 @@ func main() {
     liveDiag.runNow(engine, shell);
     if liveDiag.pendingBasicGeneration <= 0 or liveDiag.manualCheckPending == false {
         fail(shell, "manual cancellation setup did not start");
-        return;
+        return false;
     }
     liveDiag.SetBasicMode(false);
     liveDiag.update(engine, shell, locStore);
@@ -193,7 +210,7 @@ func main() {
        or liveDiag.manualCheckPending
        or shell.statusShell.lastLeftStatus != "Diagnostics cancelled" {
         fail(shell, "diagnostic mode switch did not publish cancellation");
-        return;
+        return false;
     }
     liveDiag.SetBasicMode(true);
 
@@ -213,7 +230,7 @@ func main() {
                                             liveDiag.lastWarningCount,
                                             liveDiag.lastNoteCount) {
         fail(shell, "manual diagnostic error status was inaccurate");
-        return;
+        return false;
     }
 
     // Hidden BASIC semantic folding must also use a worker; it is enabled on
@@ -226,7 +243,7 @@ func main() {
     outline.update(engine);
     if outline.pendingBasicGeneration <= 0 or outline.foldedPath != "" {
         fail(shell, "hidden BASIC folding ran synchronously");
-        return;
+        return false;
     }
     var symbolTicks = 0;
     while outline.foldedPath == "" and symbolTicks < CONTROLLER_WAIT_TICKS {
@@ -237,7 +254,7 @@ func main() {
     if outline.foldedPath != "folding.bas"
        or outline.foldedRevision != engine.GetRevision() {
         fail(shell, "hidden BASIC folding did not publish");
-        return;
+        return false;
     }
 
     // Signature help uses the same stale-safe path/caret contract.
@@ -252,7 +269,7 @@ func main() {
     var oldSignatureGeneration = sigCtrl.pendingBasicGeneration;
     if oldSignatureGeneration <= 0 {
         fail(shell, "signature help ran synchronously");
-        return;
+        return false;
     }
 
     var newSignature = "SUB NewCall(name$)\n  PRINT name$\nEND SUB\nNewCall(\"Ada\")\n";
@@ -262,7 +279,7 @@ func main() {
     sigCtrl.trigger(engine);
     if sigCtrl.pendingBasicGeneration <= oldSignatureGeneration {
         fail(shell, "signature tab switch did not queue a newer generation");
-        return;
+        return false;
     }
     var signatureTicks = 0;
     while sigCtrl.visible == false and signatureTicks < CONTROLLER_WAIT_TICKS {
@@ -273,10 +290,18 @@ func main() {
     if sigCtrl.visible == false
        or Map.GetStr(sigCtrl.currentSignatureInfo, "name") != "NewCall" {
         fail(shell, "signature help published a stale tab result");
-        return;
+        return false;
     }
     sigCtrl.Hide();
 
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new BasicAsyncProbeContext();
+    if VerifyAsyncCompletion(ctx) == false { return; }
+    if VerifyAsyncAnalysis(ctx) == false { return; }
+
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

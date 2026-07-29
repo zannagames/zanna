@@ -1,0 +1,562 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/ide_overlays_base.zia
+// Purpose: Build and coordinate Studio Settings and About overlays.
+// Key invariants:
+//   - Settings controls remain scrollable and bounded at supported window sizes.
+//   - Compact Preferences uses the full workbench lane instead of leaving an
+//     unusable editor sliver beside fixed-width controls.
+//   - About content scrolls independently while its title and Close action stay
+//     inside the floating panel at every supported window size.
+//   - Preferences search matches setting names and live commands, and always
+//     presents either matching cards or an explicit empty state.
+//   - The preferences body reserves its vertical scrollbar gutter and never
+//     exposes accidental horizontal scrolling.
+//   - Keybinding guidance reflects the current desktop platform.
+//   - Settings and About participate in the shell's exclusive focus surface.
+// Ownership/Lifetime: AppShell owns widgets; one IdeOverlays controls their state.
+// Links: zannastudio/src/ui/app_shell.zia,
+//        zannastudio/src/commands/command_registry.zia
+//
+//===----------------------------------------------------------------------===//
+
+module ide_overlays_base;
+
+bind "../ui/app_shell";
+bind "../core/settings";
+bind "../app/build_info";
+bind "../services/theme_colors";
+bind "../commands/command_registry";
+bind "../commands/command_catalog";
+
+bind Zanna.GUI as GUI;
+bind Str = Zanna.String;
+bind Convert = Zanna.Core.Convert;
+bind Seq = Zanna.Collections.Seq;
+bind Obj = Zanna.Core.Object;
+
+final ACTION_NONE = 0;
+final ACTION_APPLY_SETTINGS = 1;
+final ACTION_BROWSE_FONT = 2;
+final ACTION_USE_SYSTEM_FONT = 3;
+final ACTION_RESET_FONT_SIZE = 4;
+final ACTION_CLOSE_SETTINGS = 5;
+final ACTION_CLOSE_ABOUT = 6;
+final ACTION_RESET_APPEARANCE = 7;
+final ACTION_RESET_EDITING = 8;
+final ACTION_RESET_INTELLISENSE = 9;
+final ACTION_RESET_STARTUP = 10;
+
+final SETTINGS_DOCK_WIDTH = 560;
+final SETTINGS_DOCK_MAX_WIDTH = 720;
+final SETTINGS_DOCK_MIN_WIDTH = 420;
+final SETTINGS_DOCK_SCREEN_PERCENT = 85;
+final SETTINGS_DEDICATED_SURFACE_MAX_WIDTH = 1100;
+final ABOUT_PANEL_WIDTH = 520;
+final ABOUT_PANEL_HEIGHT = 420;
+final PANEL_SCREEN_MARGIN = 28;
+
+final APPEARANCE_SETTINGS_TERMS =
+    "appearance editor font size interface ui zoom color theme dark light "
+    + "minimap status bar fullscreen";
+final EDITING_SETTINGS_TERMS =
+    "editing tab size indentation spaces diagnostics typing code folding wrap "
+    + "long lines line numbers trailing whitespace save final newline auto save "
+    + "build debug modified files";
+final INTELLISENSE_SETTINGS_TERMS =
+    "intellisense diagnostics delay live checks completion autocomplete "
+    + "debounce suggestions";
+final STARTUP_SETTINGS_TERMS =
+    "startup safety restore open files launch last project session confirm "
+    + "closing close unsaved files";
+final KEYBINDING_SETTINGS_TERMS =
+    "keybindings keyboard shortcut shortcuts hotkeys commands chords bindings "
+    + "bind unbind reset";
+
+// ============================================================================
+// MODULE: ide_overlays
+// PURPOSE: Docked Settings surface and floating About panel for Zanna Studio.
+//
+// WHERE-THIS-FITS: main.zia opens and pumps these overlays, settings_applier
+//          commits edited values, and AppShell provides the dock/floating panel
+//          hosts. This module owns controls, layout, reset buttons, and action
+//          ids returned to the frame loop.
+//
+// TEACHING-NOTE: Overlay modules should return small action ids instead of
+//          directly changing unrelated subsystems. The frame loop can then apply
+//          settings, browse files, or close panels in the right order.
+// ============================================================================
+
+/// @brief Return whether every filter token occurs in a settings haystack.
+/// @details Token matching lets natural queries such as "font editor" or
+///          "auto save" work without depending on label word order.
+expose func SettingsTermsMatch(terms: String, filter: String) -> Boolean {
+    var needle = Str.ToLower(Str.Trim(filter));
+    needle = Str.Replace(needle, "-", " ");
+    needle = Str.Replace(needle, "_", " ");
+    if needle == "" { return true; }
+    var haystack = Str.ToLower(terms);
+    var tokens = Str.Split(needle, " ");
+    var i = 0;
+    while i < Seq.get_Count(tokens) {
+        var token = Str.Trim(Obj.ToString(Seq.Get(tokens, i)));
+        if token != "" and Str.Contains(haystack, token) == false {
+            return false;
+        }
+        i = i + 1;
+    }
+    return true;
+}
+
+/// @brief Docked Preferences surface plus the floating About panel.
+/// @details Preferences lives beside the editor when there is useful room for
+///          both, and takes the right workbench lane at compact widths.
+class IdeOverlaysBase {
+    expose GUI.VBox settingsPanel;
+    expose GUI.ScrollView settingsBodyScroll;
+    expose GUI.FloatingPanel aboutPanel;
+    expose GUI.ScrollView aboutBodyScroll;
+    expose GUI.Label aboutBuildInfo;
+
+    expose GUI.TextInput fontPathInput;
+    expose GUI.Spinner fontSizeSpinner;
+    expose GUI.Spinner tabWidthSpinner;
+    expose GUI.Spinner diagnosticsDelaySpinner;
+    expose GUI.Spinner completionDelaySpinner;
+    expose GUI.Spinner uiZoomSpinner;
+    expose GUI.Dropdown themeDropdown;
+    expose GUI.Checkbox minimapCheck;
+    expose GUI.Checkbox statusBarCheck;
+    expose GUI.Checkbox fullscreenCheck;
+    expose GUI.Checkbox autoCheckCheck;
+    expose GUI.Checkbox codeFoldingCheck;
+    expose GUI.Checkbox wordWrapCheck;
+    expose GUI.Checkbox lineNumbersCheck;
+    expose GUI.Checkbox insertSpacesCheck;
+    expose GUI.Checkbox trimWhitespaceCheck;
+    expose GUI.Checkbox finalNewlineCheck;
+    expose GUI.Checkbox autoSaveCheck;
+    expose GUI.Checkbox saveAllBeforeBuildCheck;
+    expose GUI.Checkbox restoreSessionCheck;
+    expose GUI.Checkbox restoreLastProjectCheck;
+    expose GUI.Checkbox confirmCloseCheck;
+    expose GUI.Button browseFontButton;
+    expose GUI.Button useSystemFontButton;
+    expose GUI.Button resetFontSizeButton;
+    expose GUI.Button resetAppearanceButton;
+    expose GUI.Button resetEditingButton;
+    expose GUI.Button resetIntelliSenseButton;
+    expose GUI.Button resetStartupButton;
+    expose GUI.Button applySettingsButton;
+    expose GUI.TextInput settingsFilterInput;
+    expose GUI.Button settingsFilterClearButton;
+    expose GUI.Label settingsNoMatchesLabel;
+    expose GUI.ListBox keybindingList;
+    expose GUI.TextInput keybindingShortcutInput;
+    expose GUI.Button keybindingSetButton;
+    expose GUI.Button keybindingClearButton;
+    expose GUI.Label keybindingStatusLabel;
+    expose String keybindingOverridesDraft;
+    hide GUI.GroupBox appCardRef;
+    hide GUI.GroupBox editCardRef;
+    hide GUI.GroupBox intelliCardRef;
+    hide GUI.GroupBox startupCardRef;
+    hide GUI.GroupBox keybindingCardRef;
+    expose GUI.Button closeSettingsButton;
+    expose GUI.Button aboutCloseButton;
+
+    expose Boolean settingsVisible;
+    expose Boolean aboutVisible;
+    expose Boolean settingsUsesDedicatedSurface;
+    expose Boolean keybindingListInitialized;
+    expose Integer settingsDockWidth;
+    hide GUI.VBox settingsEditorArea;
+    hide GUI.VBox settingsContent;
+    hide app_shell.AppShell ownerShell;
+
+    expose func init() {
+        InitializeState();
+    }
+
+    /// @brief Initialize overlay state for the public controller.
+    expose func InitializeState() {
+        settingsVisible = false;
+        aboutVisible = false;
+        settingsUsesDedicatedSurface = false;
+        keybindingListInitialized = false;
+        settingsDockWidth = 0;
+        settingsEditorArea = null;
+        settingsContent = null;
+        ownerShell = null;
+    }
+
+    hide func setupSettingsPanel(shell: app_shell.AppShell) {
+        settingsPanel = shell.workbench.preferencesPanel;
+        settingsEditorArea = shell.workbench.editorArea;
+        settingsPanel.SetSize(SETTINGS_DOCK_WIDTH, 0);
+        settingsPanel.SetVisible(false);
+
+        var root = GUI.VBox.New();
+        root.SetPadding(18.0);
+        root.SetSpacing(14.0);
+        root.SetFlex(1.0);
+        settingsPanel.AddChild(root);
+
+        var title = GUI.Label.New(root, "Preferences");
+        title.SetMargin(1);
+
+        var intro = GUI.Label.New(
+            root,
+            "Search and configure appearance, editing, language tools, startup, "
+            + "and keyboard shortcuts.");
+        intro.SetMargin(1);
+        intro.SetWordWrap(true);
+
+        settingsBodyScroll = GUI.ScrollView.New(root);
+        settingsBodyScroll.SetFlex(1.0);
+
+        var body = GUI.VBox.New();
+        body.SetPadding(4.0);
+        body.SetSpacing(20.0);
+        settingsBodyScroll.AddChild(body);
+        settingsContent = body;
+
+        var filterRow = GUI.HBox.New();
+        filterRow.SetSpacing(6.0);
+        body.AddChild(filterRow);
+        settingsFilterInput = GUI.TextInput.New(filterRow);
+        settingsFilterInput.SetFlex(1.0);
+        settingsFilterInput.SetPlaceholder("Search settings...");
+        settingsFilterClearButton = GUI.Button.New(filterRow, "×");
+        settingsFilterClearButton.SetStyle(2);
+        settingsFilterClearButton.SetPreferredSize(34.0, 0.0);
+        settingsFilterClearButton.SetTooltip("Clear preferences search");
+        settingsFilterClearButton.SetAccessibleName("Clear preferences search");
+        settingsFilterClearButton.SetEnabled(false);
+        settingsNoMatchesLabel = GUI.Label.New(body, "");
+        settingsNoMatchesLabel.SetWordWrap(true);
+        settingsNoMatchesLabel.SetVisible(false);
+
+        var appCard = GUI.GroupBox.New(body, "Appearance");
+        appCardRef = appCard;
+
+        var fontPathControls =
+            AddPreferenceRow(appCard, "Editor font", "Optional .ttf or .ttc file.");
+        fontPathInput = GUI.TextInput.New(fontPathControls);
+        fontPathInput.SetPlaceholder("Built-in editor font");
+        var fontPathButtons = GUI.HBox.New();
+        fontPathButtons.SetSpacing(10.0);
+        fontPathControls.AddChild(fontPathButtons);
+        browseFontButton = GUI.Button.New(fontPathButtons, "Choose Font...");
+        browseFontButton.SetStyle(2);
+        useSystemFontButton = GUI.Button.New(fontPathButtons, "Use Default");
+        useSystemFontButton.SetStyle(2);
+
+        var fontSizeBox =
+            AddPreferenceRow(appCard, "Font size", "Point size used by the code editor.");
+        var fontSizeControls = GUI.HBox.New();
+        fontSizeControls.SetSpacing(10.0);
+        fontSizeBox.AddChild(fontSizeControls);
+        fontSizeSpinner = GUI.Spinner.New(fontSizeControls);
+        fontSizeSpinner.SetRange(12.0, 36.0);
+        fontSizeSpinner.SetStep(1.0);
+        fontSizeSpinner.SetDecimals(0);
+        fontSizeSpinner.SetSize(110, 0);
+        resetFontSizeButton = GUI.Button.New(fontSizeControls, "Restore Default");
+        resetFontSizeButton.SetStyle(2);
+
+        var uiZoomBox =
+            AddPreferenceRow(appCard, "Interface zoom", "Scales menus, panels, and editor.");
+        var uiZoomControls = GUI.HBox.New();
+        uiZoomControls.SetSpacing(10.0);
+        uiZoomBox.AddChild(uiZoomControls);
+        uiZoomSpinner = GUI.Spinner.New(uiZoomControls);
+        uiZoomSpinner.SetRange(50.0, 300.0);
+        uiZoomSpinner.SetStep(10.0);
+        uiZoomSpinner.SetDecimals(0);
+        uiZoomSpinner.SetSize(110, 0);
+        GUI.Label.New(uiZoomControls, "percent");
+
+        var themeControls =
+            AddPreferenceRow(appCard, "Color theme", "Switch between dark and light surfaces.");
+        themeDropdown = GUI.Dropdown.New(themeControls);
+        themeDropdown.AddItem("Dark");
+        themeDropdown.AddItem("Light");
+        minimapCheck = GUI.Checkbox.New(appCard, "Show the minimap");
+        statusBarCheck = GUI.Checkbox.New(appCard, "Show the status bar");
+        fullscreenCheck = GUI.Checkbox.New(appCard, "Start in fullscreen");
+        resetAppearanceButton = GUI.Button.New(appCard, "Restore Appearance Defaults");
+        resetAppearanceButton.SetStyle(2);
+
+        var editCard = GUI.GroupBox.New(body, "Editing");
+        editCardRef = editCard;
+
+        var tabWidthBox =
+            AddPreferenceRow(editCard, "Tab size", "Columns used for indentation.");
+        var tabWidthControls = GUI.HBox.New();
+        tabWidthControls.SetSpacing(10.0);
+        tabWidthBox.AddChild(tabWidthControls);
+        tabWidthSpinner = GUI.Spinner.New(tabWidthControls);
+        tabWidthSpinner.SetRange(2.0, 8.0);
+        tabWidthSpinner.SetStep(1.0);
+        tabWidthSpinner.SetDecimals(0);
+        tabWidthSpinner.SetSize(110, 0);
+
+        autoCheckCheck = GUI.Checkbox.New(editCard, "Run diagnostics while typing");
+        codeFoldingCheck = GUI.Checkbox.New(editCard, "Enable code folding");
+        wordWrapCheck = GUI.Checkbox.New(editCard, "Wrap long lines");
+        lineNumbersCheck = GUI.Checkbox.New(editCard, "Show line numbers");
+        insertSpacesCheck = GUI.Checkbox.New(editCard, "Insert spaces for Tab");
+        trimWhitespaceCheck = GUI.Checkbox.New(editCard, "Trim trailing whitespace on save");
+        finalNewlineCheck = GUI.Checkbox.New(editCard, "Ensure final newline on save");
+        autoSaveCheck = GUI.Checkbox.New(editCard, "Auto-save named files after idle");
+        saveAllBeforeBuildCheck = GUI.Checkbox.New(editCard, "Save all modified files before build/debug");
+        resetEditingButton = GUI.Button.New(editCard, "Restore Editing Defaults");
+        resetEditingButton.SetStyle(2);
+
+        var intelliCard = GUI.GroupBox.New(body, "IntelliSense");
+        intelliCardRef = intelliCard;
+
+        var diagnosticsDelayBox =
+            AddPreferenceRow(intelliCard, "Diagnostics delay", "Idle time before live checks.");
+        var diagnosticsDelayControls = GUI.HBox.New();
+        diagnosticsDelayControls.SetSpacing(10.0);
+        diagnosticsDelayBox.AddChild(diagnosticsDelayControls);
+        diagnosticsDelaySpinner = GUI.Spinner.New(diagnosticsDelayControls);
+        diagnosticsDelaySpinner.SetRange(100.0, 5000.0);
+        diagnosticsDelaySpinner.SetStep(50.0);
+        diagnosticsDelaySpinner.SetDecimals(0);
+        diagnosticsDelaySpinner.SetSize(130, 0);
+
+        var completionDelayBox =
+            AddPreferenceRow(intelliCard, "Completion delay", "Debounce time for completions.");
+        var completionDelayControls = GUI.HBox.New();
+        completionDelayControls.SetSpacing(10.0);
+        completionDelayBox.AddChild(completionDelayControls);
+        completionDelaySpinner = GUI.Spinner.New(completionDelayControls);
+        completionDelaySpinner.SetRange(0.0, 2000.0);
+        completionDelaySpinner.SetStep(25.0);
+        completionDelaySpinner.SetDecimals(0);
+        completionDelaySpinner.SetSize(130, 0);
+        resetIntelliSenseButton = GUI.Button.New(intelliCard, "Restore IntelliSense Defaults");
+        resetIntelliSenseButton.SetStyle(2);
+
+        var startupCard = GUI.GroupBox.New(body, "Startup and safety");
+        startupCardRef = startupCard;
+
+        restoreSessionCheck = GUI.Checkbox.New(startupCard, "Restore open files on launch");
+        restoreLastProjectCheck =
+            GUI.Checkbox.New(startupCard, "Restore the last project on launch");
+        confirmCloseCheck = GUI.Checkbox.New(startupCard, "Confirm before closing unsaved files");
+        resetStartupButton = GUI.Button.New(startupCard, "Restore Startup Defaults");
+        resetStartupButton.SetStyle(2);
+
+        var footer = GUI.HBox.New();
+        footer.SetSpacing(10.0);
+        root.AddChild(footer);
+        var footerSpacer = GUI.Label.New(footer, "");
+        footerSpacer.SetFlex(1.0);
+        closeSettingsButton = GUI.Button.New(footer, "Cancel");
+        closeSettingsButton.SetStyle(2);
+        var keyCard = GUI.GroupBox.New(body, "Keybindings");
+        keybindingCardRef = keyCard;
+        var keyHint = GUI.Label.New(
+            keyCard,
+            "Select a command, type a shortcut (for example "
+            + command_catalog.PlatformShortcut("Ctrl+Shift+K") + " or "
+            + command_catalog.PlatformShortcut("Ctrl+K Ctrl+S")
+            + "), then choose Set. Leave it empty and choose Set to unbind.");
+        keyHint.SetWordWrap(true);
+        keybindingList = GUI.ListBox.New(keyCard);
+        keybindingList.SetSize(0, 180);
+        var keyEditRow = GUI.VBox.New();
+        keyEditRow.SetSpacing(6.0);
+        keyCard.AddChild(keyEditRow);
+        keybindingShortcutInput = GUI.TextInput.New(keyEditRow);
+        keybindingShortcutInput.SetPlaceholder("Shortcut");
+        var keyEditButtons = GUI.HBox.New();
+        keyEditButtons.SetSpacing(6.0);
+        keyEditRow.AddChild(keyEditButtons);
+        keybindingSetButton = GUI.Button.New(keyEditButtons, "Set");
+        keybindingClearButton = GUI.Button.New(keyEditButtons, "Reset");
+        keybindingStatusLabel = GUI.Label.New(keyCard, "");
+        keybindingStatusLabel.SetWordWrap(true);
+
+        applySettingsButton = GUI.Button.New(footer, "Save Changes");
+        applySettingsButton.SetStyle(1);
+    }
+
+    /// @brief Add a preference row with a descriptive header and full-width controls.
+    /// @details The settings dock uses this helper for every label/control pair so
+    ///          long descriptions and controls stack instead of colliding in a
+    ///          narrow dock. The returned VBox is the control lane; callers attach
+    ///          the actual input widgets to it.
+    hide func AddPreferenceRow(card: GUI.GroupBox,
+                               titleText: String,
+                               descriptionText: String) -> GUI.VBox {
+        var row = GUI.VBox.New();
+        row.SetSpacing(8.0);
+        row.SetPadding(0.0);
+        card.AddChild(row);
+
+        var textCol = GUI.VBox.New();
+        textCol.SetSpacing(3.0);
+        textCol.SetPadding(0.0);
+        textCol.SetFlex(1.0);
+        row.AddChild(textCol);
+
+        var title = GUI.Label.New(textCol, titleText);
+        title.SetMargin(0);
+        if descriptionText != "" {
+            var description = GUI.Label.New(textCol, descriptionText);
+            description.SetWordWrap(true);
+            description.SetMargin(0);
+        }
+
+        var controls = GUI.VBox.New();
+        controls.SetSpacing(8.0);
+        controls.SetPadding(0.0);
+        row.AddChild(controls);
+        return controls;
+    }
+
+    hide func setupAboutPanel(shell: app_shell.AppShell) {
+        aboutPanel = GUI.FloatingPanel.New(shell.app);
+        aboutPanel.SetSize(ABOUT_PANEL_WIDTH, ABOUT_PANEL_HEIGHT);
+        aboutPanel.SetVisible(false);
+
+        var root = GUI.VBox.New();
+        root.SetPadding(18.0);
+        root.SetSpacing(12.0);
+        aboutPanel.AddChild(root);
+
+        var title = GUI.Label.New(root, "About Zanna Studio");
+        title.SetMargin(1);
+        title.SetIconName("zanna-mark");
+
+        // Build metadata may contain several long source/output/compiler paths.
+        // Keep that variable-height material in a clipped, wheel-scrollable body
+        // so it can never push the footer outside the fixed panel surface.
+        aboutBodyScroll = GUI.ScrollView.New(root);
+        aboutBodyScroll.SetFlex(1.0);
+        var body = GUI.VBox.New();
+        body.SetPadding(4.0);
+        body.SetSpacing(12.0);
+        aboutBodyScroll.AddChild(body);
+
+        var aboutTagline = GUI.Label.New(body, "Code. Create. Compile. Conquer.");
+        aboutTagline.SetColor(theme_colors.Rgb("accentPrimary"));
+
+        var aboutLine1 = GUI.Label.New(
+            body,
+            "A native IDE for Zia and Zanna BASIC with live diagnostics, hover info, semantic navigation, project search, and an integrated editor.");
+        aboutLine1.SetWordWrap(true);
+        var aboutLine2 = GUI.Label.New(
+            body,
+            "Both languages support build, run, debug, completion, references, rename, workspace symbols, and signature help.");
+        aboutLine2.SetWordWrap(true);
+        var aboutLine3 = GUI.Label.New(
+            body,
+            "Shortcuts: " + command_catalog.PlatformShortcut("Ctrl+B")
+            + " sidebar, " + command_catalog.PlatformShortcut("Ctrl+Shift+P")
+            + " palette, " + command_catalog.PlatformShortcut("Ctrl+,")
+            + " settings, F5 build and run.");
+        aboutLine3.SetWordWrap(true);
+        aboutBuildInfo = GUI.Label.New(body, build_info.BuildSummary());
+        aboutBuildInfo.SetWordWrap(true);
+        aboutBuildInfo.SetColor(theme_colors.Rgb("fgTertiary"));
+
+        var footer = GUI.HBox.New();
+        footer.SetSpacing(10.0);
+        root.AddChild(footer);
+        var footerSpacer = GUI.Label.New(footer, "");
+        footerSpacer.SetFlex(1.0);
+        aboutCloseButton = GUI.Button.New(footer, "Close");
+        aboutCloseButton.SetStyle(1);
+    }
+
+    hide func layoutSettingsPanel(shell: app_shell.AppShell) {
+        if settingsPanel == null { return; }
+        var rootW = logicalAppWidth(shell);
+        if rootW <= 0 { rootW = 1280; }
+        var dedicated = rootW <= SETTINGS_DEDICATED_SURFACE_MAX_WIDTH;
+        var panelW = SETTINGS_DOCK_WIDTH;
+        if rootW < 760 { panelW = SETTINGS_DOCK_MIN_WIDTH; }
+        if rootW > 1320 { panelW = SETTINGS_DOCK_MAX_WIDTH; }
+        var maxW = (rootW * SETTINGS_DOCK_SCREEN_PERCENT) / 100;
+        if panelW > maxW { panelW = maxW; }
+        if maxW >= SETTINGS_DOCK_MIN_WIDTH and panelW < SETTINGS_DOCK_MIN_WIDTH {
+            panelW = SETTINGS_DOCK_MIN_WIDTH;
+        }
+        if panelW < 240 { panelW = 240; }
+        if settingsContent != null {
+            // Root padding consumes 36 px and a tall preferences page reserves
+            // the 12 px vertical scrollbar gutter. Bound the child to the
+            // remaining viewport so its own padding cannot summon a horizontal
+            // scrollbar at compact widths.
+            var contentW = panelW - 48;
+            if contentW < 180 { contentW = 180; }
+            settingsContent.SetPreferredSize(contentW, 0.0);
+            settingsContent.SetMaxSize(contentW, 0.0);
+        }
+        // List rows include command labels plus shortcuts. Bound their intrinsic
+        // content width to the live dock so one long command cannot make every
+        // preference control overflow the vertical ScrollView horizontally.
+        if keybindingList != null {
+            var contentMaxW = panelW - 72;
+            if contentMaxW < 160 { contentMaxW = 160; }
+            keybindingList.SetPreferredSize(contentMaxW, 180.0);
+        }
+        if settingsFilterInput != null {
+            var filterInputW = panelW - 120;
+            if filterInputW < 120 { filterInputW = 120; }
+            settingsFilterInput.SetPreferredSize(filterInputW, 0.0);
+        }
+        if settingsDockWidth == panelW
+           and settingsUsesDedicatedSurface == dedicated { return; }
+        settingsDockWidth = panelW;
+        settingsUsesDedicatedSurface = dedicated;
+        if settingsUsesDedicatedSurface {
+            // At compact widths, a fixed dock plus the editor produces two
+            // unusable slivers. Give Preferences the entire right workbench
+            // lane; closing or widening restores the editor in place.
+            settingsEditorArea.SetVisible(false);
+            settingsPanel.SetFlex(1.0);
+        } else {
+            settingsEditorArea.SetVisible(true);
+            settingsPanel.SetFlex(0.0);
+        }
+        settingsPanel.SetSize(panelW, 0);
+    }
+
+    hide func layoutAboutPanel(shell: app_shell.AppShell) {
+        if aboutPanel == null { return; }
+        var rootW = logicalAppWidth(shell);
+        var rootH = logicalAppHeight(shell);
+        if rootW <= 0 { rootW = 1280; }
+        if rootH <= 0 { rootH = 800; }
+        var panelW = ABOUT_PANEL_WIDTH;
+        var panelH = ABOUT_PANEL_HEIGHT;
+        if panelW > rootW - (PANEL_SCREEN_MARGIN * 2) {
+            panelW = rootW - (PANEL_SCREEN_MARGIN * 2);
+        }
+        if panelH > rootH - (PANEL_SCREEN_MARGIN * 2) {
+            panelH = rootH - (PANEL_SCREEN_MARGIN * 2);
+        }
+        aboutPanel.SetSize(panelW, panelH);
+        aboutPanel.CenterInParent();
+    }
+
+    hide func logicalAppWidth(shell: app_shell.AppShell) -> Integer {
+        return app_shell.UiViewportWidth(shell.app);
+    }
+
+    hide func logicalAppHeight(shell: app_shell.AppShell) -> Integer {
+        return app_shell.UiViewportHeight(shell.app);
+    }
+}

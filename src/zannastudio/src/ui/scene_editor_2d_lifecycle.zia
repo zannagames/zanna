@@ -1,0 +1,734 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_lifecycle.zia
+// Purpose: Focused lifecycle behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_lifecycle;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_state" as PreviousLayer;
+
+/// @brief Lifecycle implementation layer.
+class SceneEditor2DLifecycleLayer extends PreviousLayer.SceneEditor2DState {
+
+    /// @brief Build the visual editor into WorkbenchShell.scene2DHost.
+
+    /// @brief Borrow Studio's multi-root project index for non-modal assets.
+    expose override func SetWorkspaceContext(
+        nextProjectManager: project_manager.ProjectManager) {
+        projectManager = nextProjectManager;
+        ReloadComponentSchema();
+    }
+
+    /// @brief Reload project component templates for the active document root.
+    expose override func ReloadComponentSchema() {
+        var rootPath = ComponentSchemaRoot();
+        componentSchemaPath =
+            scene_component_schema.PathForRoot(rootPath);
+        if componentPalette != null and componentPalette.group != null
+           and componentAuthoring != null {
+            componentAuthoring.Load(
+                componentSchemaPath,
+                scene_component_schema.TARGET_2D_OBJECT,
+                componentPalette);
+            componentSchema = componentAuthoring.schema;
+            RefreshComponentPalette();
+        } else {
+            componentSchema =
+                scene_component_schema.LoadPath(componentSchemaPath);
+        }
+        if tilesets != null { tilesets.ClearSceneBackground(); }
+        renderDirty = true;
+    }
+
+    /// @brief Keep multi-root schema ownership aligned with document ownership.
+    hide override func EnsureComponentSchema(force: Boolean) {
+        var nextPath = scene_component_schema.PathForRoot(
+            ComponentSchemaRoot());
+        if force or nextPath != componentSchemaPath {
+            ReloadComponentSchema();
+        }
+    }
+
+    /// @brief Resolve the unambiguous workspace root for the current scene.
+    hide override func ComponentSchemaRoot() -> String {
+        if projectManager == null { return ""; }
+        if currentDoc != null and currentDoc.filePath != "" {
+            var owner =
+                projectManager.WorkspaceRootPathForPath(currentDoc.filePath);
+            if owner != "" { return owner; }
+            // An explicitly opened external scene keeps its own project
+            // authoring conventions; never borrow an unrelated sole workspace.
+            return project_locator.NearestManifestRoot(
+                currentDoc.filePath);
+        }
+        if projectManager.RootCount() == 1 {
+            return projectManager.RootPathAt(0);
+        }
+        return "";
+    }
+
+    /// @brief Pump one active document and return true when scene JSON changed.
+    expose override func Pump(activeDoc: document.Document) -> Boolean {
+        if activeDoc == null or activeDoc.kind != file_utils.DOC_KIND_SCENE_2D {
+            return false;
+        }
+        if activeDoc != currentDoc or activeDoc.content != currentSerialized {
+            Activate(activeDoc);
+        }
+        EnsureComponentSchema(false);
+        if activeDoc == currentDoc and activeDoc.isModified == false
+           and activeDoc.content == currentSerialized {
+            cleanSerialized = currentSerialized;
+        }
+
+        RefreshResponsiveLayout();
+        PumpCommandMenuButtons();
+        if hierarchyButton.WasClicked()
+           or viewHierarchyItem.WasClicked() {
+            ToggleHierarchyPane();
+        }
+        if inspectorButton.WasClicked()
+           or viewInspectorItem.WasClicked() {
+            ToggleInspectorPane();
+        }
+        if paletteButton.WasClicked()
+           or viewPaletteItem.WasClicked() {
+            TogglePalettePane();
+        }
+        if workspaceButton.WasClicked()
+           or viewWorkspaceItem.WasClicked() {
+            RequestWorkspaceModeToggle();
+        }
+        if focusButton.WasClicked()
+           or viewFocusItem.WasClicked() {
+            RequestFocusModeToggle();
+        }
+        if objectTabButton.WasClicked() { SetInspectorSceneTab(false); }
+        if sceneTabButton.WasClicked() { SetInspectorSceneTab(true); }
+        if sceneSectionDropdown.WasChanged() {
+            SetSceneInspectorSection(
+                sceneSectionDropdown.Selected, true);
+        }
+
+        var changed = PumpDocumentAndAssetControls();
+        if scene == null {
+            if renderDirty { RenderScene(); }
+            ApplyPendingWorkspaceScroll();
+            CaptureWorkspaceState();
+            return changed;
+        }
+        PumpCanvasToolbarControls();
+        changed = PumpSceneAuthoringControls() or changed;
+        return CompletePumpFrame(changed);
+    }
+
+    /// @brief Pump draft commits, pane docks, imports, and asset selections.
+    hide func PumpDocumentAndAssetControls() -> Boolean {
+        var changed = false;
+        gestureEscapeConsumed = false;
+        // Commit or cancel a pending live position edit before selection and
+        // document handlers can observe uncommitted document state.
+        changed = PumpObjectTransformDraft() or changed;
+        changed = PumpObjectFlipControls() or changed;
+        changed = PumpObjectTintInput() or changed;
+        if hierarchyDock.Pump() {
+            ApplyInspectorLayout();
+            renderDirty = true;
+        }
+        if inspectorDock.Pump() {
+            ApplyInspectorLayout();
+            renderDirty = true;
+        }
+        if paletteDock.Pump() {
+            ApplyPaletteLayout();
+            renderDirty = true;
+        }
+        if newSceneButton.WasClicked()
+           or sceneNewItem.WasClicked() {
+            changed = ReplaceScene(
+                Convert.NumToInt(sceneWidthSpinner.Value),
+                Convert.NumToInt(sceneHeightSpinner.Value),
+                Convert.NumToInt(sceneTileSizeSpinner.Value));
+        }
+        if importButton.WasClicked()
+           or sceneImportItem.WasClicked() {
+            changed = ImportTiled() or changed;
+        }
+        tiledAssetBrowser.SetLibraryRoot(ComponentSchemaRoot());
+        tilesetInspector.assetBrowser.SetLibraryRoot(ComponentSchemaRoot());
+        componentAssetBrowser.SetLibraryRoot(ComponentSchemaRoot());
+        var componentAssetPath = componentAssetBrowser.Pump(
+            projectManager,
+            scene != null and SelectedAssetComponentField() != null);
+        if componentAssetPath != "" {
+            ApplyComponentAssetPath(componentAssetPath);
+        }
+        var projectImportPath = tiledAssetBrowser.Pump(
+            projectManager, currentDoc != null);
+        if projectImportPath != "" {
+            changed = ImportTiledPath(projectImportPath) or changed;
+        }
+        var canChooseLayerAsset = scene != null
+            and activeLayer >= 0 and activeLayer < scene.LayerCount();
+        var projectLayerAssetPath = tilesetInspector.assetBrowser.Pump(
+            projectManager, canChooseLayerAsset);
+        if projectLayerAssetPath != "" {
+            var libraryEntry = tilesetInspector.assetBrowser
+                .LibraryEntryForAbsolutePath(projectLayerAssetPath);
+            if libraryEntry != null and scene != null
+               and libraryEntry.tileWidth > 0
+               and (libraryEntry.tileWidth != scene.TileWidth
+                    or libraryEntry.tileHeight != scene.TileHeight) {
+                detailLabel.SetText(
+                    "Library grid for this asset is "
+                    + libraryEntry.tileWidth + "x" + libraryEntry.tileHeight
+                    + "; the scene uses " + scene.TileWidth + "x"
+                    + scene.TileHeight + ". The scene was not resized.");
+            }
+            changed = ApplyLayerAssetPath(
+                activeLayer,
+                PortableLayerAssetPath(projectLayerAssetPath)) or changed;
+        }
+        return changed;
+    }
+
+    /// @brief Pump mode, preview, zoom, overlay, and framing controls.
+    hide func PumpCanvasToolbarControls() {
+        if currentDoc != null
+           and currentDoc.filePath != tilesetDocumentPath {
+            ReloadTilesets();
+            RefreshTilesetPalette();
+        }
+        PollTilesetExternalChanges(250);
+
+        UpdateCanvasViewportSize();
+        if selectButton.WasClicked()
+           or toolSelectItem.WasClicked() {
+            SetMode(SceneEditor2DModel.MODE_SELECT);
+        }
+        if paintButton.WasClicked()
+           or toolPaintItem.WasClicked() {
+            SetMode(SceneEditor2DModel.MODE_PAINT);
+        }
+        if eraseButton.WasClicked()
+           or toolEraseItem.WasClicked() {
+            SetMode(SceneEditor2DModel.MODE_ERASE);
+        }
+        if rectangleButton.WasClicked()
+           or toolRectangleItem.WasClicked() {
+            SetMode(SceneEditor2DModel.MODE_RECTANGLE);
+        }
+        if lineButton.WasClicked()
+           or toolLineItem.WasClicked() {
+            SetMode(SceneEditor2DModel.MODE_LINE);
+        }
+        if ellipseButton.WasClicked()
+           or toolEllipseItem.WasClicked() {
+            SetMode(SceneEditor2DModel.MODE_ELLIPSE);
+        }
+        if fillButton.WasClicked()
+           or toolFillItem.WasClicked() {
+            SetMode(SceneEditor2DModel.MODE_FILL);
+        }
+        if pickerButton.WasClicked()
+           or toolPickerItem.WasClicked() {
+            SetMode(SceneEditor2DModel.MODE_PICKER);
+        }
+        if previewButton.WasClicked()
+           or scenePreviewItem.WasClicked() {
+            SetPreviewActive(previewActive == false);
+        }
+        if gameViewButton.WasClicked()
+           or viewGameItem.WasClicked() {
+            SetGameViewActive(gameViewActive == false);
+        }
+        if gameOutputFramePending and ApplyGameOutputFrame() {
+            gameOutputFramePending = false;
+        }
+        if runSceneButton.WasClicked()
+           or sceneRunItem.WasClicked() {
+            runSceneRequested = true;
+        }
+        PumpPreviewClock();
+        if objectButton.WasClicked()
+           or toolObjectItem.WasClicked() {
+            SetMode(SceneEditor2DModel.MODE_OBJECT);
+        }
+        if zoomOutButton.WasClicked() { ZoomAtWindowCenter(-1); }
+        if zoomInButton.WasClicked() { ZoomAtWindowCenter(1); }
+        if actualSizeButton.WasClicked()
+           or viewActualSizeItem.WasClicked() {
+            ZoomToPercentAtWindowCenter(100);
+        }
+        if gridButton.WasClicked()
+           or viewGridItem.WasClicked() {
+            showGrid = showGrid == false;
+            RefreshGridButton();
+            renderDirty = true;
+        }
+        if rulersButton.WasClicked()
+           or viewRulersItem.WasClicked() {
+            showRulers = showRulers == false;
+            RefreshRulerPresentation();
+            renderDirty = true;
+        }
+        if fitButton.WasClicked()
+           or viewFitItem.WasClicked() {
+            initialFramePending = false;
+            fitPending = false;
+            if FitScene() { renderDirty = true; }
+        }
+        if initialFramePending and FrameInitialScene() {
+            initialFramePending = false;
+            restoreScrollPending = false;
+            renderDirty = true;
+        }
+        if fitPending and FitScene() {
+            fitPending = false;
+            renderDirty = true;
+        }
+        if tileSpinner.WasChanged() {
+            RefreshTilesetPalette();
+            renderDirty = true;
+        }
+
+    }
+
+    /// @brief Pump history, inspectors, rulers, canvas, and keyboard authoring.
+    hide func PumpSceneAuthoringControls() -> Boolean {
+        var changed = false;
+        changed = PumpHistoryPanel() or changed;
+        changed = PumpScenePropertyControls() or changed;
+        changed = PumpLayerControls() or changed;
+        changed = PumpObjectControls() or changed;
+        changed = PumpComponentControls() or changed;
+        changed = PumpTileBehaviorControls() or changed;
+        changed = PumpCameraLightingControls() or changed;
+        PumpTilesetPalette();
+        PumpCanvasRulers();
+        changed = PumpCanvas() or changed;
+        changed = PumpCanvasKeyboard() or changed;
+
+        return changed;
+    }
+
+    /// @brief Render and persist workspace state after one authoring frame.
+    hide func CompletePumpFrame(changedBeforeCompletion: Boolean) -> Boolean {
+        var changed = changedBeforeCompletion;
+        if changed { RefreshHistoryPanel(); }
+        if renderDirty { RenderScene(); }
+        ApplyPendingWorkspaceScroll();
+        // User input only arrives between frames, so any object-spinner
+        // change edges still set here came from this pump's programmatic
+        // refreshes; drain them so the live-edit path never mistakes them
+        // for user edits.
+        DrainObjectSpinnerEdges();
+        CaptureWorkspaceState();
+        return changed;
+    }
+
+    /// @brief Parse and display one document without mutating invalid input.
+    expose override func Activate(doc: document.Document) {
+        LoadDocumentModel(doc, false);
+    }
+
+    /// @brief Return whether a visual scene edit can be undone.
+    expose override func CanUndo() -> Boolean {
+        return undoStack.count() > 0;
+    }
+
+    /// @brief Return whether an undone visual scene edit can be redone.
+    expose override func CanRedo() -> Boolean {
+        return redoStack.count() > 0;
+    }
+
+    /// @brief Restore the preceding canonical scene snapshot.
+    expose override func Undo() -> Boolean {
+        if currentDoc == null or undoStack.count() == 0 { return false; }
+        SyncHistoryLabels();
+        var index = undoStack.count() - 1;
+        var target = undoStack.get(index);
+        undoStack.removeAt(index);
+        var label = "Edit";
+        if undoLabels.count() > 0 {
+            label = undoLabels.get(undoLabels.count() - 1);
+            undoLabels.removeAt(undoLabels.count() - 1);
+        }
+        PushHistory(redoStack, currentSerialized);
+        redoLabels.add(label);
+        SyncHistoryLabels();
+        currentDoc.content = target;
+        currentDoc.isModified = target != cleanSerialized;
+        revision = revision + 1;
+        LoadDocumentModel(currentDoc, true);
+        toolbarStatus.SetText("Undid 2D scene edit");
+        return true;
+    }
+
+    /// @brief Reapply the next canonical scene snapshot.
+    expose override func Redo() -> Boolean {
+        if currentDoc == null or redoStack.count() == 0 { return false; }
+        SyncHistoryLabels();
+        var index = redoStack.count() - 1;
+        var target = redoStack.get(index);
+        redoStack.removeAt(index);
+        var label = "Edit";
+        if redoLabels.count() > 0 {
+            label = redoLabels.get(redoLabels.count() - 1);
+            redoLabels.removeAt(redoLabels.count() - 1);
+        }
+        PushHistory(undoStack, currentSerialized);
+        undoLabels.add(label);
+        SyncHistoryLabels();
+        currentDoc.content = target;
+        currentDoc.isModified = target != cleanSerialized;
+        revision = revision + 1;
+        LoadDocumentModel(currentDoc, true);
+        toolbarStatus.SetText("Redid 2D scene edit");
+        return true;
+    }
+
+    /// @brief Parse and display one document with optional history retention.
+    hide override func LoadDocumentModel(doc: document.Document,
+                                preserveHistory: Boolean) {
+        if paintStrokeActive { CancelPaintStroke(); }
+        if tileRectangleActive { CancelTileRectangle(); }
+        if canvasMarqueeActive { CancelCanvasMarquee(); }
+        if canvasGuideDragActive { ResetCanvasGuideDrag(true); }
+        var switchingDocument = currentDoc != doc;
+        var reloadingDocument = currentDoc == doc;
+        if currentDoc != null { CaptureWorkspaceState(); }
+        if preserveHistory == false {
+            var savedState = doc.scene2DWorkspace;
+            var canRestoreHistory = switchingDocument
+                and savedState != null
+                and savedState.historyContent == doc.content;
+            if canRestoreHistory {
+                undoStack = savedState.undoStack;
+                redoStack = savedState.redoStack;
+                undoLabels = savedState.undoLabels;
+                redoLabels = savedState.redoLabels;
+                cleanSerialized = savedState.cleanSerialized;
+            } else {
+                undoStack = [];
+                redoStack = [];
+                undoLabels = [];
+                redoLabels = [];
+                if doc.isModified == false { cleanSerialized = doc.content; }
+                else { cleanSerialized = ""; }
+            }
+        }
+        currentDoc = doc;
+        currentSerialized = doc.content;
+        EnsureComponentSchema(false);
+        loadError = "";
+        RestoreWorkspaceState(doc);
+        if reloadingDocument {
+            // A canonical reload creates new layer identities. Clearing is
+            // safer than applying an old numeric index to a different layer;
+            // ordinary live add/remove/reorder operations remap exactly.
+            lockedLayers = [];
+            soloLayer = -1;
+            if doc.scene2DWorkspace != null {
+                doc.scene2DWorkspace.lockedLayers = [];
+                doc.scene2DWorkspace.soloLayer = -1;
+            }
+        }
+        // Restoring divider positions intentionally clears SplitPane collapse
+        // state. Reconcile the current responsive presentation once here:
+        // the host dimensions may be unchanged, so the idle resize cache will
+        // correctly have no reason to reapply it on the next Pump.
+        ApplyInspectorLayout();
+        ApplyPaletteLayout();
+        ResetCanvasMarquee(true);
+        ResetTileRectangle(true);
+        lastPaintX = -1;
+        lastPaintY = -1;
+        paintStrokeActive = false;
+        paintStrokeChanged = false;
+        paintStrokeSnapshot = "";
+        objectDragActive = false;
+        objectDragChanged = false;
+        objectDragSnapshot = "";
+        objectDragIndex = -1;
+
+        var parsed = SceneDocument.LoadJsonResult(doc.content);
+        if parsed.IsOk {
+            scene = parsed.Unwrap() as SceneDocument;
+            SetEditorControlsEnabled(true);
+            detailLabel.SetText("");
+            toolbarStatus.SetText("2D scene ready");
+        } else {
+            scene = null;
+            loadError = parsed.UnwrapErrStr();
+            SetEditorControlsEnabled(false);
+            toolbarStatus.SetText("Scene needs repair");
+            detailLabel.SetText("Scene could not be parsed. The original JSON "
+                                + "is preserved.\n\n" + loadError);
+        }
+        RefreshAutotilePreviewRules();
+        ReloadTilesets();
+        RefreshInspector();
+        RefreshSceneSetupFields();
+        RefreshTilesetPalette();
+        RefreshHistoryPanel();
+        renderDirty = true;
+    }
+
+    /// @brief Snapshot live canvas, inspector, and process-local history state.
+    hide override func CaptureWorkspaceState() {
+        if currentDoc == null or currentDoc.scene2DWorkspace == null { return; }
+        var state = currentDoc.scene2DWorkspace;
+        state.initialized = true;
+        state.mode = SceneEditor2DModel.ClampInt(mode, SceneEditor2DModel.MODE_SELECT, SceneEditor2DModel.MODE_ELLIPSE);
+        if gameViewOutputFramed == false {
+            state.zoomPercent = SceneEditor2DModel.ClampInt(
+                zoomPercent, SceneEditor2DModel.MIN_ZOOM_PERCENT, SceneEditor2DModel.MAX_ZOOM_PERCENT);
+        }
+        state.activeLayer = activeLayer;
+        state.selectedObject = selectedObject;
+        state.selectedObjects = selectedObjects;
+        state.selectedObjectProperty = selectedObjectProperty;
+        state.selectedSceneProperty = selectedSceneProperty;
+        state.selectedCellX = selectedCellX;
+        state.selectedCellY = selectedCellY;
+        var tileId = 1;
+        if tileSpinner != null {
+            tileId = SceneEditor2DModel.ClampInt(
+                Convert.NumToInt(tileSpinner.Value), 0, 1000000);
+        }
+        state.tileId = tileId;
+        if bodySplit != null {
+            state.splitPosition = SceneEditor2DModel.ClampNumber2D(
+                bodySplit.GetPosition(), 0.20, 0.85);
+        }
+        if hierarchySplit != null {
+            state.hierarchySplitPosition = SceneEditor2DModel.ClampNumber2D(
+                hierarchySplit.GetPosition(), 0.10, 0.45);
+        }
+        if canvasSplit != null {
+            state.canvasSplitPosition = SceneEditor2DModel.ClampNumber2D(
+                canvasSplit.GetPosition(), 0.40, 0.92);
+        }
+        if canvasScroll != null and gameViewOutputFramed == false {
+            state.canvasScrollX = SceneEditor2DModel.ClampNumber2D(
+                LogicalScrollX(canvasScroll), 0.0, 1000000.0);
+            state.canvasScrollY = SceneEditor2DModel.ClampNumber2D(
+                LogicalScrollY(canvasScroll), 0.0, 1000000.0);
+        }
+        if inspectorScroll != null {
+            state.inspectorScrollY = SceneEditor2DModel.ClampNumber2D(
+                LogicalScrollY(inspectorScroll), 0.0, 1000000.0);
+        }
+        state.inspectorSceneSection = SceneEditor2DModel.ClampInt(
+            sceneInspectorSection,
+            SceneEditor2DModel.SCENE_INSPECTOR_SETUP,
+            SceneEditor2DModel.SCENE_INSPECTOR_HISTORY);
+        state.inspectorRequestedVisible = inspectorRequestedVisible;
+        state.compactInspectorShown = compactInspectorShown;
+        state.paletteRequestedVisible = paletteRequestedVisible;
+        state.compactPaletteShown = compactPaletteShown;
+        state.previewActive = previewActive;
+        state.gameViewActive = gameViewActive;
+        state.gameViewOutputFramed = gameViewOutputFramed;
+        state.autotilePreviewEnabled = autotilePreviewEnabled;
+        state.showGrid = showGrid;
+        state.showRulers = showRulers;
+        state.verticalGuides = verticalGuides;
+        state.horizontalGuides = horizontalGuides;
+        state.lockedLayers = lockedLayers;
+        state.soloLayer = soloLayer;
+        state.undoStack = undoStack;
+        state.redoStack = redoStack;
+        state.undoLabels = undoLabels;
+        state.redoLabels = redoLabels;
+        state.cleanSerialized = cleanSerialized;
+        state.historyContent = currentSerialized;
+    }
+
+    /// @brief Restore a document's validated canvas and inspector workspace.
+    hide override func RestoreWorkspaceState(doc: document.Document) {
+        var state = doc.scene2DWorkspace;
+        if state == null or state.initialized == false {
+            mode = SceneEditor2DModel.MODE_SELECT;
+            zoomPercent = 100;
+            activeLayer = 0;
+            selectedObject = -1;
+            selectedObjects = [];
+            selectedObjectProperty = -1;
+            selectedSceneProperty = -1;
+            selectedCellX = -1;
+            selectedCellY = -1;
+            if tileSpinner != null { tileSpinner.SetValue(1.0); }
+            if bodySplit != null { bodySplit.SetPosition(0.72); }
+            if hierarchySplit != null { hierarchySplit.SetPosition(0.18); }
+            if canvasSplit != null { canvasSplit.SetPosition(0.72); }
+            pendingCanvasScrollX = 0.0;
+            pendingCanvasScrollY = 0.0;
+            pendingInspectorScrollY = 0.0;
+            sceneInspectorSection = SceneEditor2DModel.SCENE_INSPECTOR_SETUP;
+            if sceneSectionDropdown != null {
+                sceneSectionDropdown.SetSelected(sceneInspectorSection);
+                sceneSectionDropdown.WasChanged();
+            }
+            inspectorRequestedVisible = true;
+            compactHierarchyShown = false;
+            compactInspectorShown = false;
+            paletteRequestedVisible = true;
+            compactPaletteShown = false;
+            previewActive = false;
+            gameViewActive = false;
+            gameViewOutputFramed = false;
+            gameOutputFramePending = false;
+            autotilePreviewEnabled = true;
+            showGrid = true;
+            showRulers = true;
+            verticalGuides = [];
+            horizontalGuides = [];
+            lockedLayers = [];
+            soloLayer = -1;
+            if componentSchema != null and componentSchema.valid
+               and componentSchema.scenePreview2D != null
+               and componentSchema.scenePreview2D.present
+               and componentSchema.scenePreview2D.hasShowGrid {
+                showGrid = componentSchema.scenePreview2D.showGrid;
+            }
+            RefreshPreviewButton();
+            UpdateGameViewButton();
+            RefreshGridButton();
+            RefreshRulerPresentation();
+            if tileBehavior != null
+               and tileBehavior.autotilePreviewCheck != null {
+                tileBehavior.SetAutotilePreviewEnabled(
+                    autotilePreviewEnabled);
+            }
+            restoreScrollPending = true;
+            fitPending = false;
+            initialFramePending = true;
+            UpdateModeButtons();
+            return;
+        }
+
+        mode = SceneEditor2DModel.ClampInt(state.mode, SceneEditor2DModel.MODE_SELECT, SceneEditor2DModel.MODE_ELLIPSE);
+        zoomPercent = SceneEditor2DModel.ClampInt(
+            state.zoomPercent, SceneEditor2DModel.MIN_ZOOM_PERCENT, SceneEditor2DModel.MAX_ZOOM_PERCENT);
+        activeLayer = SceneEditor2DModel.ClampInt(state.activeLayer, 0, 1023);
+        selectedObject = SceneEditor2DModel.ClampInt(state.selectedObject, -1, 1000000);
+        selectedObjects = state.selectedObjects;
+        selectedObjectProperty = SceneEditor2DModel.ClampInt(
+            state.selectedObjectProperty, -1, SceneEditor2DModel.MAX_INSPECTOR_PROPERTIES - 1);
+        selectedSceneProperty = SceneEditor2DModel.ClampInt(
+            state.selectedSceneProperty, -1, SceneEditor2DModel.MAX_INSPECTOR_PROPERTIES - 1);
+        selectedCellX = SceneEditor2DModel.ClampInt(
+            state.selectedCellX, -1, SceneEditor2DModel.MAX_SELECTED_CELL);
+        selectedCellY = SceneEditor2DModel.ClampInt(
+            state.selectedCellY, -1, SceneEditor2DModel.MAX_SELECTED_CELL);
+        if tileSpinner != null {
+            tileSpinner.SetValue(SceneEditor2DModel.ClampInt(state.tileId, 0, 1000000));
+        }
+        if bodySplit != null {
+            bodySplit.SetPosition(SceneEditor2DModel.ClampNumber2D(
+                state.splitPosition, 0.20, 0.85));
+        }
+        if hierarchySplit != null {
+            hierarchySplit.SetPosition(SceneEditor2DModel.ClampNumber2D(
+                state.hierarchySplitPosition, 0.10, 0.45));
+        }
+        if canvasSplit != null {
+            canvasSplit.SetPosition(SceneEditor2DModel.ClampNumber2D(
+                state.canvasSplitPosition, 0.40, 0.92));
+        }
+        pendingCanvasScrollX = SceneEditor2DModel.ClampNumber2D(
+            state.canvasScrollX, 0.0, 1000000.0);
+        pendingCanvasScrollY = SceneEditor2DModel.ClampNumber2D(
+            state.canvasScrollY, 0.0, 1000000.0);
+        pendingInspectorScrollY = SceneEditor2DModel.ClampNumber2D(
+            state.inspectorScrollY, 0.0, 1000000.0);
+        sceneInspectorSection = SceneEditor2DModel.ClampInt(
+            state.inspectorSceneSection,
+            SceneEditor2DModel.SCENE_INSPECTOR_SETUP,
+            SceneEditor2DModel.SCENE_INSPECTOR_HISTORY);
+        if sceneSectionDropdown != null {
+            sceneSectionDropdown.SetSelected(sceneInspectorSection);
+            sceneSectionDropdown.WasChanged();
+        }
+        inspectorRequestedVisible = state.inspectorRequestedVisible;
+        compactHierarchyShown = false;
+        compactInspectorShown = state.compactInspectorShown;
+        paletteRequestedVisible = state.paletteRequestedVisible;
+        compactPaletteShown = state.compactPaletteShown;
+        previewActive = state.previewActive;
+        gameViewActive = state.gameViewActive;
+        gameViewOutputFramed =
+            state.gameViewActive and state.gameViewOutputFramed;
+        gameOutputFramePending = gameViewOutputFramed;
+        autotilePreviewEnabled = state.autotilePreviewEnabled;
+        showGrid = state.showGrid;
+        showRulers = state.showRulers;
+        verticalGuides = state.verticalGuides;
+        horizontalGuides = state.horizontalGuides;
+        lockedLayers = state.lockedLayers;
+        soloLayer = SceneEditor2DModel.ClampInt(state.soloLayer, -1, 1023);
+        RefreshPreviewButton();
+        UpdateGameViewButton();
+        RefreshGridButton();
+        RefreshRulerPresentation();
+        if tileBehavior != null
+           and tileBehavior.autotilePreviewCheck != null {
+            tileBehavior.SetAutotilePreviewEnabled(
+                autotilePreviewEnabled);
+        }
+        restoreScrollPending = gameViewOutputFramed == false;
+        fitPending = false;
+        initialFramePending = false;
+        UpdateModeButtons();
+    }
+}

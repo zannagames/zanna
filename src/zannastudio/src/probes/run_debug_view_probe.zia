@@ -100,11 +100,20 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Typed state shared by serial Run and Debug view scenarios.
+class RunDebugViewProbeContext {
+    expose app_shell.AppShell shell;
+    expose run_debug_view.RunDebugView view;
+    expose GUI.TestHarness harness;
+}
+
+/// @brief Verify activity routing and state-aware session actions.
+func VerifyRunDebugSessionActions(
+    ctx: RunDebugViewProbeContext) -> Boolean {
     if run_debug_support.RunDebugUsesCompactControls(360.0) == false
        or run_debug_support.RunDebugUsesCompactControls(360.01) {
         Terminal.Say("RESULT: fail Run and Debug compact-layout policy");
-        return;
+        return false;
     }
 
     var shell = new app_shell.AppShell();
@@ -126,7 +135,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
 
     if activity.activeView != activity_bar.VIEW_RUN_DEBUG
@@ -135,7 +144,7 @@ func main() {
        or shell.workbench.scmViewHost.IsVisible()
        or shell.workbench.abRunDebug.IsToggled() == false {
         Fail(shell, harness, "Run and Debug activity view routing");
-        return;
+        return false;
     }
 
     // Idle state tells the truth about whether a saved debug target exists.
@@ -148,7 +157,7 @@ func main() {
        or view.stopButton.IsEnabled()
        or view.stepOverButton.IsEnabled() {
         Fail(shell, harness, "targetless idle action state");
-        return;
+        return false;
     }
     view.UpdateSession(true, false, "Idle", "Ready to debug main.zia",
                        false, false, false);
@@ -156,7 +165,7 @@ func main() {
     Click(shell, harness, view.primaryButton);
     if view.Pump() != run_debug_support.RUN_DEBUG_ACTION_START {
         Fail(shell, harness, "real pointer Start action");
-        return;
+        return false;
     }
     shell.Poll();
 
@@ -170,12 +179,12 @@ func main() {
        or view.stopButton.IsEnabled() == false
        or view.stepOverButton.IsEnabled() {
         Fail(shell, harness, "running action state");
-        return;
+        return false;
     }
     Click(shell, harness, view.primaryButton);
     if view.Pump() != run_debug_support.RUN_DEBUG_ACTION_PAUSE {
         Fail(shell, harness, "real pointer Pause action");
-        return;
+        return false;
     }
     shell.Poll();
 
@@ -189,14 +198,27 @@ func main() {
        or view.stepInButton.IsEnabled() == false
        or view.stepOutButton.IsEnabled() == false {
         Fail(shell, harness, "paused action state");
-        return;
+        return false;
     }
     Click(shell, harness, view.stepOverButton);
     if view.Pump() != run_debug_support.RUN_DEBUG_ACTION_STEP_OVER {
         Fail(shell, harness, "real pointer Step Over action");
-        return;
+        return false;
     }
     shell.Poll();
+
+    ctx.shell = shell;
+    ctx.view = view;
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify breakpoint filtering and selection identity.
+func VerifyBreakpointView(
+    ctx: RunDebugViewProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var view = ctx.view;
+    var harness = ctx.harness;
 
     // Breakpoint filtering keeps durable path/line identity and complete counts.
     view.BeginBreakpoints(7);
@@ -208,7 +230,7 @@ func main() {
        or view.visibleBreakpointCount != 3
        or view.breakpointList.Count != 3 {
         Fail(shell, harness, "breakpoint source publication");
-        return;
+        return false;
     }
 
     view.breakpointFilterInput.Focus();
@@ -238,7 +260,7 @@ func main() {
              + " path=" + view.SelectedBreakpointPath()
              + " line=" + view.SelectedBreakpointLine()
              + " action=" + selectionAction);
-        return;
+        return false;
     }
 
     shell.Render();
@@ -259,7 +281,7 @@ func main() {
              + " remove=" + WidgetBounds(view.removeBreakpointButton)
              + " path=" + view.SelectedBreakpointPath()
              + " line=" + view.SelectedBreakpointLine());
-        return;
+        return false;
     }
     shell.Poll();
     view.scrollView.SetScroll(0.0, 0.0);
@@ -271,49 +293,59 @@ func main() {
        or view.breakpointList.Count != 3
        or view.breakpointFilterInput.IsFocused() == false {
         Fail(shell, harness, "pointer breakpoint filter reset");
-        return;
+        return false;
     }
     shell.Poll();
+
+    return true;
+}
+
+/// @brief Verify state labels and durable command-owned breakpoint updates.
+func VerifyRunDebugCommandBoundary(
+    ctx: RunDebugViewProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var view = ctx.view;
+    var harness = ctx.harness;
 
     // Command-owned state labels cover every stable/transitional session state.
     var stateSession = new debug_session.DebugSession();
     if debug_commands.DebugPanelStateLabel(stateSession) != "Idle" {
         Fail(shell, harness, "idle command state");
-        return;
+        return false;
     }
     stateSession.hasSession = true;
     if debug_commands.DebugPanelStateLabel(stateSession) != "Running" {
         Fail(shell, harness, "running command state");
-        return;
+        return false;
     }
     stateSession.stopped = true;
     if debug_commands.DebugPanelStateLabel(stateSession) != "Paused" {
         Fail(shell, harness, "paused command state");
-        return;
+        return false;
     }
     stateSession.stopped = false;
     stateSession.lastType = "pausing";
     if debug_commands.DebugPanelStateLabel(stateSession) != "Pausing" {
         Fail(shell, harness, "pausing command state");
-        return;
+        return false;
     }
     stateSession.restartPending = true;
     stateSession.terminateRequested = true;
     stateSession.lastType = "terminating";
     if debug_commands.DebugPanelStateLabel(stateSession) != "Restarting" {
         Fail(shell, harness, "restarting command state");
-        return;
+        return false;
     }
     stateSession.restartPending = false;
     if debug_commands.DebugPanelStateLabel(stateSession) != "Stopping" {
         Fail(shell, harness, "stopping command state");
-        return;
+        return false;
     }
     stateSession.terminateRequested = false;
     stateSession.terminated = true;
     if debug_commands.DebugPanelStateLabel(stateSession) != "Terminated" {
         Fail(shell, harness, "terminated command state");
-        return;
+        return false;
     }
 
     // The command boundary publishes the real store version and removes the
@@ -349,7 +381,7 @@ func main() {
        or view.primaryActionLabel != "Start"
        or view.primaryButton.IsEnabled() == false {
         Fail(shell, harness, "command snapshot publication");
-        return;
+        return false;
     }
 
     view.breakpointFilterInput.SetText("jobs");
@@ -375,10 +407,20 @@ func main() {
        or reloadedStore.Has(removePath, removeLine)
        or reloadedStore.Count() != 2 {
         Fail(shell, harness, "durable filtered breakpoint removal");
-        return;
+        return false;
     }
     view.breakpointFilterInput.SetText("");
     view.Pump();
+
+    return true;
+}
+
+/// @brief Verify transitional actions and high-zoom compact reachability.
+func VerifyRunDebugResponsiveLayout(
+    ctx: RunDebugViewProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var view = ctx.view;
+    var harness = ctx.harness;
 
     // Transitional states never advertise commands that the adapter rejects.
     view.UpdateSession(true, false, "Stopping", "Stopping debugger...",
@@ -388,7 +430,7 @@ func main() {
        or view.stopButton.IsEnabled()
        or view.stepOverButton.IsEnabled() {
         Fail(shell, harness, "stopping state advertised actions");
-        return;
+        return false;
     }
 
     // The sidebar uses wrapped controls and lets users reach both ends of a
@@ -412,7 +454,7 @@ func main() {
              + " stop=" + WidgetBounds(view.stopButton)
              + " step-out=" + WidgetBounds(view.stepOutButton)
              + " console=" + WidgetBounds(view.consoleButton));
-        return;
+        return false;
     }
     view.scrollView.SetScroll(0.0, 10000.0);
     shell.Render();
@@ -423,10 +465,19 @@ func main() {
              + " host=" + WidgetBounds(view.host)
              + " scroll-y=" + view.scrollView.GetScrollY()
              + " logpoint=" + WidgetBounds(view.logpointButton));
-        return;
+        return false;
     }
 
-    harness.UnbindApp();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new RunDebugViewProbeContext();
+    if VerifyRunDebugSessionActions(ctx) == false { return; }
+    if VerifyBreakpointView(ctx) == false { return; }
+    if VerifyRunDebugCommandBoundary(ctx) == false { return; }
+    if VerifyRunDebugResponsiveLayout(ctx) == false { return; }
+    ctx.harness.UnbindApp();
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

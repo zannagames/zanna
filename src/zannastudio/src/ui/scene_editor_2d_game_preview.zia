@@ -1,0 +1,940 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_game_preview.zia
+// Purpose: Focused game preview behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_tile_previews.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_game_preview;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_tile_previews" as PreviousLayer;
+
+/// @brief Game Preview implementation layer.
+class SceneEditor2DGamePreviewLayer extends PreviousLayer.SceneEditor2DTilePreviewsLayer {
+
+    /// @brief Report and reject behavior edits outside Tilemap's tile range.
+    hide override func TileBehaviorTileValid(tile: Integer) -> Boolean {
+        if tile >= 1 and tile <= 4095 { return true; }
+        detailLabel.SetText("Behavior applies to tile ids 1 through 4095.");
+        return false;
+    }
+
+    /// @brief Route camera/lighting form intents into canonical history.
+    hide override func PumpCameraLightingControls() -> Boolean {
+        if scene == null or cameraLighting == null { return false; }
+        var changed = false;
+        if cameraLighting.TakeCameraApplyRequested() {
+            changed = ApplyCameraSection(
+                cameraLighting.DraftCameraMode(),
+                cameraLighting.cameraMinXInput.Text,
+                cameraLighting.cameraMinYInput.Text,
+                cameraLighting.cameraMaxXInput.Text,
+                cameraLighting.cameraMaxYInput.Text,
+                cameraLighting.cameraDeadzoneWidthInput.Text,
+                cameraLighting.cameraDeadzoneHeightInput.Text,
+                cameraLighting.cameraLerpInput.Text,
+                cameraLighting.cameraZoomInput.Text) or changed;
+        }
+        if cameraLighting.TakeCameraClearRequested() {
+            changed = ClearCameraSection() or changed;
+        }
+        if cameraLighting.TakeLightingApplyRequested() {
+            changed = ApplyLightingSection(
+                cameraLighting.lightingDarknessInput.Text,
+                cameraLighting.lightingTintInput.Text,
+                cameraLighting.lightingPlayerRadiusInput.Text,
+                cameraLighting.lightingPlayerColorInput.Text) or changed;
+        }
+        if cameraLighting.TakeLightingClearRequested() {
+            changed = ClearLightingSection() or changed;
+        }
+        return changed;
+    }
+
+    /// @brief Author the complete camera section as one history transaction.
+    /// @details Blank drafts remove their field; bounds must be authored as a
+    ///          complete group of four or left completely blank (ADR 0177).
+    expose override func ApplyCameraSection(mode: String,
+                                   minX: String,
+                                   minY: String,
+                                   maxX: String,
+                                   maxY: String,
+                                   deadzoneWidth: String,
+                                   deadzoneHeight: String,
+                                   lerpPct: String,
+                                   zoomPct: String) -> Boolean {
+        if scene == null { return false; }
+        var boundsFilled = 0;
+        if Str.Trim(minX) != "" { boundsFilled = boundsFilled + 1; }
+        if Str.Trim(minY) != "" { boundsFilled = boundsFilled + 1; }
+        if Str.Trim(maxX) != "" { boundsFilled = boundsFilled + 1; }
+        if Str.Trim(maxY) != "" { boundsFilled = boundsFilled + 1; }
+        if boundsFilled != 0 and boundsFilled != 4 {
+            detailLabel.SetText(
+                "Camera bounds need all four values, or none.");
+            return false;
+        }
+        var snapshot = scene.ToJson();
+        if mode == "" {
+            scene.CameraRemove("mode");
+        } else {
+            scene.CameraSetStr("mode", mode);
+        }
+        var applied = mode == "" or scene.CameraGetStr("mode", "") == mode;
+        applied = applied and ApplyCameraIntField("minX", minX);
+        applied = applied and ApplyCameraIntField("minY", minY);
+        applied = applied and ApplyCameraIntField("maxX", maxX);
+        applied = applied and ApplyCameraIntField("maxY", maxY);
+        applied = applied
+            and ApplyCameraIntField("deadzoneWidth", deadzoneWidth);
+        applied = applied
+            and ApplyCameraIntField("deadzoneHeight", deadzoneHeight);
+        applied = applied and ApplyCameraIntField("followLerpPct", lerpPct);
+        applied = applied and ApplyCameraIntField("zoomPct", zoomPct);
+        if applied == false {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The camera settings were rejected. Check the documented "
+                + "field ranges.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Camera settings are already up to date.");
+            return false;
+        }
+        if CommitScene("Updated camera settings") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Author the complete lighting section as one history transaction.
+    expose override func ApplyLightingSection(darkness: String,
+                                     tint: String,
+                                     playerLightRadius: String,
+                                     playerLightColor: String) -> Boolean {
+        if scene == null { return false; }
+        var snapshot = scene.ToJson();
+        var applied = ApplyLightingIntField("darkness", darkness);
+        applied = applied and ApplyLightingIntField("tint", tint);
+        applied = applied
+            and ApplyLightingIntField("playerLightRadius", playerLightRadius);
+        applied = applied
+            and ApplyLightingIntField("playerLightColor", playerLightColor);
+        if applied == false {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The lighting settings were rejected. Check the documented "
+                + "field ranges.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Lighting settings are already up to date.");
+            return false;
+        }
+        if CommitScene("Updated lighting settings") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Remove every authored camera field as one history transaction.
+    expose override func ClearCameraSection() -> Boolean {
+        if scene == null { return false; }
+        var keys = scene.CameraKeys();
+        if Seq.get_Count(keys) == 0 { return false; }
+        var snapshot = scene.ToJson();
+        var index = 0;
+        while index < Seq.get_Count(keys) {
+            scene.CameraRemove(Seq.GetStr(keys, index));
+            index = index + 1;
+        }
+        if CommitScene("Cleared camera settings") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Remove every authored lighting field as one history transaction.
+    expose override func ClearLightingSection() -> Boolean {
+        if scene == null { return false; }
+        var keys = scene.LightingKeys();
+        if Seq.get_Count(keys) == 0 { return false; }
+        var snapshot = scene.ToJson();
+        var index = 0;
+        while index < Seq.get_Count(keys) {
+            scene.LightingRemove(Seq.GetStr(keys, index));
+            index = index + 1;
+        }
+        if CommitScene("Cleared lighting settings") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Apply one camera integer draft; blank removes the field.
+    hide override func ApplyCameraIntField(key: String, draft: String) -> Boolean {
+        var text = Str.Trim(draft);
+        if text == "" {
+            scene.CameraRemove(key);
+            return scene.CameraFieldKind(key) == "";
+        }
+        var parsed = Parse.TryInt(text);
+        if parsed.IsNone { return false; }
+        var value = parsed.UnwrapI64();
+        scene.CameraSetInt(key, value);
+        return scene.CameraGetInt(key, value + 1) == value;
+    }
+
+    /// @brief Apply one lighting integer draft; blank removes the field.
+    hide override func ApplyLightingIntField(key: String, draft: String) -> Boolean {
+        var text = Str.Trim(draft);
+        if text == "" {
+            scene.LightingRemove(key);
+            return scene.LightingFieldKind(key) == "";
+        }
+        var parsed = Parse.TryInt(text);
+        if parsed.IsNone { return false; }
+        var value = parsed.UnwrapI64();
+        scene.LightingSetInt(key, value);
+        return scene.LightingGetInt(key, value + 1) == value;
+    }
+
+    /// @brief Consume the toolbar Run Scene intent for the command layer.
+    expose override func TakeRunSceneRequested() -> Boolean {
+        var requested = runSceneRequested;
+        runSceneRequested = false;
+        return requested;
+    }
+
+    /// @brief Return whether animated preview mode is active for this tab.
+    expose override func PreviewActive() -> Boolean {
+        return previewActive;
+    }
+
+    /// @brief Return whether this document is presenting clean gameplay pixels.
+    expose override func GameViewActive() -> Boolean {
+        return gameViewActive;
+    }
+
+    /// @brief Enter or leave the non-destructive clean gameplay presentation.
+    /// @details Active mutation gestures must finish or cancel first. The mode
+    ///          preserves selection, tools, overlays, preview preference,
+    ///          canonical bytes, revision, dirty state, and history.
+    expose override func SetGameViewActive(active: Boolean) {
+        if active == gameViewActive {
+            UpdateGameViewButton();
+            return;
+        }
+        if active
+           and (paintStrokeActive or tileRectangleActive
+                or canvasMarqueeActive or canvasGuideDragActive
+                or objectDragActive or rectGestureMode != 0) {
+            toolbarStatus.SetText(
+                "Finish or cancel the active canvas gesture before Game View");
+            return;
+        }
+        if active { CaptureWorkspaceState(); }
+        var restoreFramedView = gameViewOutputFramed;
+        gameViewActive = active;
+        if active {
+            gameViewOutputFramed = ProjectGameOutputAvailable();
+            gameOutputFramePending = gameViewOutputFramed;
+        } else {
+            gameViewOutputFramed = false;
+            gameOutputFramePending = false;
+            if restoreFramedView and currentDoc != null
+               and currentDoc.scene2DWorkspace != null {
+                var state = currentDoc.scene2DWorkspace;
+                zoomPercent = SceneEditor2DModel.ClampInt(
+                    state.zoomPercent,
+                    SceneEditor2DModel.MIN_ZOOM_PERCENT, SceneEditor2DModel.MAX_ZOOM_PERCENT);
+                pendingCanvasScrollX = SceneEditor2DModel.ClampNumber2D(
+                    state.canvasScrollX, 0.0, 1000000.0);
+                pendingCanvasScrollY = SceneEditor2DModel.ClampNumber2D(
+                    state.canvasScrollY, 0.0, 1000000.0);
+                restoreScrollPending = true;
+                PublishCanvasExtentForZoom();
+                SetLogicalScroll(
+                    canvasScroll,
+                    pendingCanvasScrollX,
+                    pendingCanvasScrollY);
+                restoreScrollPending = false;
+            }
+        }
+        previewLastTickMs = -1;
+        previewElapsedMs = 0;
+        previewFrameStamp = "";
+        hoverCellX = -1;
+        hoverCellY = -1;
+        UpdateGameViewButton();
+        RefreshRulerPresentation();
+        SetEditorControlsEnabled(editorControlsEnabled);
+        renderDirty = true;
+        if active or restoreFramedView == false {
+            CaptureWorkspaceState();
+        }
+        if active {
+            if gameViewOutputFramed {
+                toolbarStatus.SetText(
+                    "Game View: project " + GameOutputSizeLabel()
+                    + " output; exit to navigate");
+            } else {
+                toolbarStatus.SetText(
+                    "Game View: authored pixels with pan and zoom");
+            }
+        } else {
+            toolbarStatus.SetText("Editor overlays and canvas tools restored");
+        }
+    }
+
+    /// @brief Keep the clean-view action and accessibility text truthful.
+    hide override func UpdateGameViewButton() {
+        if gameViewButton == null { return; }
+        if canvasImage != null {
+            canvasImage.SetDropTarget(gameViewActive == false);
+            if gameViewActive {
+                if gameViewOutputFramed {
+                    canvasImage.SetTooltip(
+                        "Clean " + GameOutputSizeLabel()
+                        + " project output. The gameplay frame and camera "
+                        + "are locked; exit Game View to navigate or edit.");
+                } else {
+                    canvasImage.SetTooltip(
+                        "Clean Game View: middle-drag pans, the wheel zooms, "
+                        + "and F fits the scene. Exit Game View to edit.");
+                }
+            } else {
+                canvasImage.SetTooltip(
+                    "Paint or erase freehand, drag Rectangle, click Fill or "
+                    + "Pick; Escape cancels captured tile gestures. In Select "
+                    + "mode click or drag a box, Shift adds, Control/Command "
+                    + "toggles, and object drags move the selection. The wheel "
+                    + "zooms around the pointer and middle-drag pans.");
+            }
+        }
+        var concise = compactChrome
+            or lastHostWidth < SceneEditor2DModel.CONCISE_SCENE_2D_CHROME_WIDTH;
+        if gameViewActive {
+            if concise { gameViewButton.SetText("Exit Game"); }
+            else { gameViewButton.SetText("Exit Game View"); }
+            gameViewButton.SetStyle(1);
+            gameViewButton.SetTooltip(
+                "Restore canvas tools, selection, grid, rulers, guides, "
+                + "routes, handles, and other editor overlays");
+            gameViewButton.SetAccessibleName("Exit 2D Game View");
+            UpdateCommandMenuButtons();
+            return;
+        }
+        if concise { gameViewButton.SetText("Game"); }
+        else { gameViewButton.SetText("Game View"); }
+        gameViewButton.SetStyle(2);
+        gameViewButton.SetTooltip(
+            "Show only authored gameplay pixels; keep pan and zoom, and "
+            + "restore every editor overlay and tool on exit");
+        gameViewButton.SetAccessibleName("Enter 2D Game View");
+        UpdateCommandMenuButtons();
+    }
+
+    /// @brief Return whether the active project declares an exact 2D output.
+    hide override func ProjectGameOutputAvailable() -> Boolean {
+        return componentSchema != null and componentSchema.valid
+            and componentSchema.scenePreview2D != null
+            and componentSchema.scenePreview2D.present
+            and componentSchema.scenePreview2D.HasOutputSize();
+    }
+
+    /// @brief Project-authored output width, or zero when no frame is declared.
+    expose override func GameOutputWidth() -> Integer {
+        if ProjectGameOutputAvailable() == false { return 0; }
+        return componentSchema.scenePreview2D.outputWidth;
+    }
+
+    /// @brief Project-authored output height, or zero when absent.
+    expose override func GameOutputHeight() -> Integer {
+        if ProjectGameOutputAvailable() == false { return 0; }
+        return componentSchema.scenePreview2D.outputHeight;
+    }
+
+    /// @brief Human-readable exact project output dimensions.
+    hide override func GameOutputSizeLabel() -> String {
+        var width = GameOutputWidth();
+        var height = GameOutputHeight();
+        if width <= 0 or height <= 0 { return "authored"; }
+        return width + "x" + height;
+    }
+
+    /// @brief Largest centered project-aspect width inside one viewport.
+    expose override func GameOutputFrameWidthFor(
+        viewportWidth: Integer,
+        viewportHeight: Integer) -> Integer {
+        var outputWidth = GameOutputWidth();
+        var outputHeight = GameOutputHeight();
+        if viewportWidth <= 0 or viewportHeight <= 0
+           or outputWidth <= 0 or outputHeight <= 0 {
+            return viewportWidth;
+        }
+        if viewportWidth * outputHeight
+           <= viewportHeight * outputWidth {
+            return viewportWidth;
+        }
+        var width = viewportHeight * outputWidth / outputHeight;
+        if width < 1 { width = 1; }
+        return width;
+    }
+
+    /// @brief Largest centered project-aspect height inside one viewport.
+    expose override func GameOutputFrameHeightFor(
+        viewportWidth: Integer,
+        viewportHeight: Integer) -> Integer {
+        var outputWidth = GameOutputWidth();
+        var outputHeight = GameOutputHeight();
+        if viewportWidth <= 0 or viewportHeight <= 0
+           or outputWidth <= 0 or outputHeight <= 0 {
+            return viewportHeight;
+        }
+        if viewportWidth * outputHeight
+           <= viewportHeight * outputWidth {
+            var height = viewportWidth * outputHeight / outputWidth;
+            if height < 1 { height = 1; }
+            return height;
+        }
+        return viewportHeight;
+    }
+
+    /// @brief Centered horizontal origin of the project output frame.
+    expose override func GameOutputFrameXFor(
+        viewportWidth: Integer,
+        viewportHeight: Integer) -> Integer {
+        return (viewportWidth
+            - GameOutputFrameWidthFor(viewportWidth, viewportHeight)) / 2;
+    }
+
+    /// @brief Centered vertical origin of the project output frame.
+    expose override func GameOutputFrameYFor(
+        viewportWidth: Integer,
+        viewportHeight: Integer) -> Integer {
+        return (viewportHeight
+            - GameOutputFrameHeightFor(viewportWidth, viewportHeight)) / 2;
+    }
+
+    /// @brief Fit authored output pixels and center the gameplay start.
+    hide override func ApplyGameOutputFrame() -> Boolean {
+        if gameViewActive == false or gameViewOutputFramed == false
+           or scene == null or canvasScroll == null {
+            return false;
+        }
+        var viewportWidth = lastCanvasViewportWidth;
+        var viewportHeight = lastCanvasViewportHeight;
+        if viewportWidth <= 0 {
+            viewportWidth =
+                Convert.NumToInt(canvasScroll.GetLogicalWidth());
+        }
+        if viewportHeight <= 0 {
+            viewportHeight =
+                Convert.NumToInt(canvasScroll.GetLogicalHeight());
+        }
+        if viewportWidth <= 0 or viewportHeight <= 0 { return false; }
+        var frameWidth =
+            GameOutputFrameWidthFor(viewportWidth, viewportHeight);
+        var frameHeight =
+            GameOutputFrameHeightFor(viewportWidth, viewportHeight);
+        var outputWidth = GameOutputWidth();
+        var outputHeight = GameOutputHeight();
+        if frameWidth <= 0 or frameHeight <= 0
+           or outputWidth <= 0 or outputHeight <= 0 {
+            return false;
+        }
+        var widthZoom = frameWidth * 100 / outputWidth;
+        var heightZoom = frameHeight * 100 / outputHeight;
+        var nextZoom = widthZoom;
+        if heightZoom < nextZoom { nextZoom = heightZoom; }
+        zoomPercent = SceneEditor2DModel.ClampInt(
+            nextZoom, SceneEditor2DModel.MIN_ZOOM_PERCENT, SceneEditor2DModel.MAX_ZOOM_PERCENT);
+        initialFramePending = false;
+        fitPending = false;
+        restoreScrollPending = false;
+        var centered = CenterCanvasAtWorldPoint(
+            InitialSceneFocusWorldX(), InitialSceneFocusWorldY());
+        if centered {
+            renderDirty = true;
+            SetEditorControlsEnabled(editorControlsEnabled);
+        }
+        return centered;
+    }
+
+    /// @brief Return effective animation playback without rewriting its toggle.
+    hide override func PreviewPlaybackActive() -> Boolean {
+        return previewActive or gameViewActive;
+    }
+
+    /// @brief Toggle workspace-only preview playback for the active tab.
+    expose override func SetPreviewActive(active: Boolean) {
+        previewActive = active;
+        previewLastTickMs = -1;
+        previewElapsedMs = 0;
+        previewFrameStamp = "";
+        RefreshPreviewButton();
+        renderDirty = true;
+    }
+
+    /// @brief Set one document's non-destructive runtime-autotile preview.
+    expose override func SetAutotilePreviewEnabled(enabled: Boolean) {
+        autotilePreviewEnabled = enabled;
+        if tileBehavior != null
+           and tileBehavior.autotilePreviewCheck != null {
+            tileBehavior.SetAutotilePreviewEnabled(enabled);
+        }
+        renderDirty = true;
+        CaptureWorkspaceState();
+        if toolbarStatus != null {
+            if enabled {
+                toolbarStatus.SetText("Live autotile preview on");
+            } else {
+                toolbarStatus.SetText("Live autotile preview off");
+            }
+        }
+    }
+
+    /// @brief Deterministically advance the preview clock (probes and tests).
+    expose override func AdvancePreviewClock(deltaMs: Integer) {
+        if PreviewPlaybackActive() == false or deltaMs <= 0 { return; }
+        previewElapsedMs = previewElapsedMs + deltaMs;
+        previewLastTickMs = Clock.NowMs();
+        previewFrameStamp = "";
+        renderDirty = true;
+    }
+
+    /// @brief Keep the Preview toggle's label truthful.
+    hide override func RefreshPreviewButton() {
+        if previewButton == null { return; }
+        if previewActive {
+            previewButton.SetText("Preview: on");
+        } else {
+            previewButton.SetText("Preview");
+        }
+    }
+
+    /// @brief Advance the bounded preview clock and repaint on frame changes.
+    /// @details Workspace-only: canonical bytes, history, revision, and dirty
+    ///          state never change, and edits behave identically while active.
+    hide override func PumpPreviewClock() {
+        if PreviewPlaybackActive() == false or scene == null { return; }
+        var now = Clock.NowMs();
+        if previewLastTickMs >= 0 {
+            var delta = now - previewLastTickMs;
+            if delta > 0 and delta < 10000 {
+                previewElapsedMs = previewElapsedMs + delta;
+            }
+        }
+        previewLastTickMs = now;
+        var stamp = "";
+        var bases = scene.TileAnimBases();
+        var index = 0;
+        while index < Seq.get_Count(bases) {
+            var base = Box.ToI64(Seq.Get(bases, index));
+            stamp = stamp + base + ":"
+                + PreviewFrameForBase(base) + ";";
+            index = index + 1;
+        }
+        if stamp != previewFrameStamp {
+            previewFrameStamp = stamp;
+            renderDirty = true;
+        }
+    }
+
+    /// @brief Cache the runtime-visible prefix of canonical autotile rules.
+    /// @details Tilemap owns 64 rule slots and SceneDocument enumerates bases
+    ///          in ascending order, so retaining the first 64 exactly matches
+    ///          BuildTilemap registration precedence. A bounded direct lookup
+    ///          keeps the windowed renderer independent of rule count.
+    hide override func RefreshAutotilePreviewRules() {
+        autotilePreviewRuleCount = 0;
+        autotilePreviewBases = [];
+        autotilePreviewVariants = [];
+        autotilePreviewLookup = [];
+        if scene == null { return; }
+
+        var runtimeBases = scene.AutotileBases();
+        var baseIndex = 0;
+        while baseIndex < Seq.get_Count(runtimeBases)
+              and autotilePreviewRuleCount
+                  < SceneEditor2DModel.MAX_AUTOTILE_PREVIEW_RULES {
+            var base = Box.ToI64(Seq.Get(runtimeBases, baseIndex));
+            var variants = scene.AutotileVariants(base);
+            if Seq.get_Count(variants) == 16 {
+                autotilePreviewBases.add(base);
+                var variant = 0;
+                while variant < 16 {
+                    autotilePreviewVariants.add(
+                        Box.ToI64(Seq.Get(variants, variant)));
+                    variant = variant + 1;
+                }
+                autotilePreviewRuleCount =
+                    autotilePreviewRuleCount + 1;
+            }
+            baseIndex = baseIndex + 1;
+        }
+        if autotilePreviewRuleCount == 0 { return; }
+
+        var tile = 0;
+        while tile <= SceneEditor2DModel.AUTOTILE_LOOKUP_MAX_TILE {
+            autotilePreviewLookup.add(-1);
+            tile = tile + 1;
+        }
+        // Runtime variant classification keeps the first registered rule.
+        var rule = 0;
+        while rule < autotilePreviewRuleCount {
+            var variant = 0;
+            while variant < 16 {
+                tile = autotilePreviewVariants.get(rule * 16 + variant);
+                if tile >= 0 and tile <= SceneEditor2DModel.AUTOTILE_LOOKUP_MAX_TILE
+                   and autotilePreviewLookup.get(tile) < 0 {
+                    autotilePreviewLookup.set(tile, rule);
+                }
+                variant = variant + 1;
+            }
+            rule = rule + 1;
+        }
+        // An exact base match wins before runtime scans every variant table.
+        rule = 0;
+        while rule < autotilePreviewRuleCount {
+            tile = autotilePreviewBases.get(rule);
+            if tile >= 0 and tile <= SceneEditor2DModel.AUTOTILE_LOOKUP_MAX_TILE {
+                autotilePreviewLookup.set(tile, rule);
+            }
+            rule = rule + 1;
+        }
+    }
+
+    /// @brief Classify one tile with Tilemap's exact base-before-variant rule.
+    hide override func AutotilePreviewRuleForTile(tile: Integer) -> Integer {
+        if autotilePreviewRuleCount <= 0 { return -1; }
+        if tile >= 0 and tile < autotilePreviewLookup.count() {
+            return autotilePreviewLookup.get(tile);
+        }
+        var rule = 0;
+        while rule < autotilePreviewRuleCount {
+            if autotilePreviewBases.get(rule) == tile { return rule; }
+            rule = rule + 1;
+        }
+        rule = 0;
+        while rule < autotilePreviewRuleCount {
+            var variant = 0;
+            while variant < 16 {
+                if autotilePreviewVariants.get(rule * 16 + variant)
+                   == tile {
+                    return rule;
+                }
+                variant = variant + 1;
+            }
+            rule = rule + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Whether one tile connects to a specific cached autotile rule.
+    hide override func AutotilePreviewRuleContains(rule: Integer,
+                                          tile: Integer) -> Boolean {
+        if rule < 0 or rule >= autotilePreviewRuleCount {
+            return false;
+        }
+        if autotilePreviewBases.get(rule) == tile { return true; }
+        var variant = 0;
+        while variant < 16 {
+            if autotilePreviewVariants.get(rule * 16 + variant)
+               == tile {
+                return true;
+            }
+            variant = variant + 1;
+        }
+        return false;
+    }
+
+    /// @brief Compute Tilemap's up/right/down/left neighbor mask.
+    hide override func AutotilePreviewMask(layer: Integer,
+                                  x: Integer,
+                                  y: Integer,
+                                  rule: Integer) -> Integer {
+        var mask = 0;
+        if y > 0
+           and AutotilePreviewRuleContains(
+               rule, scene.GetTile(layer, x, y - 1)) {
+            mask = mask + 1;
+        }
+        if x < scene.Width - 1
+           and AutotilePreviewRuleContains(
+               rule, scene.GetTile(layer, x + 1, y)) {
+            mask = mask + 2;
+        }
+        if y < scene.Height - 1
+           and AutotilePreviewRuleContains(
+               rule, scene.GetTile(layer, x, y + 1)) {
+            mask = mask + 4;
+        }
+        if x > 0
+           and AutotilePreviewRuleContains(
+               rule, scene.GetTile(layer, x - 1, y)) {
+            mask = mask + 8;
+        }
+        return mask;
+    }
+
+    /// @brief Resolve one canonical cell exactly as Tilemap.ApplyAutoTile.
+    /// @details Runtime autotile application is base-layer-only. Studio keeps
+    ///          that same boundary and never writes the resolved variant back.
+    expose override func AutotileResolvedSceneTile(layer: Integer,
+                                          x: Integer,
+                                          y: Integer) -> Integer {
+        if scene == null or layer < 0 or layer >= scene.LayerCount()
+           or x < 0 or y < 0 or x >= scene.Width or y >= scene.Height {
+            return 0;
+        }
+        var tile = scene.GetTile(layer, x, y);
+        if autotilePreviewEnabled == false or layer != 0
+           or autotilePreviewRuleCount <= 0 {
+            return tile;
+        }
+        var rule = AutotilePreviewRuleForTile(tile);
+        if rule < 0 { return tile; }
+        var mask = AutotilePreviewMask(layer, x, y, rule);
+        return autotilePreviewVariants.get(rule * 16 + mask);
+    }
+
+    /// @brief Read one prospective single-cell paint without mutating scene.
+    hide override func AutotilePreviewTileWithOverride(layer: Integer,
+                                              x: Integer,
+                                              y: Integer,
+                                              overrideX: Integer,
+                                              overrideY: Integer,
+                                              overrideTile: Integer)
+                                              -> Integer {
+        if x == overrideX and y == overrideY { return overrideTile; }
+        return scene.GetTile(layer, x, y);
+    }
+
+    /// @brief Resolve one prospective brush cell through the runtime mask.
+    hide override func AutotileResolvedTileWithOverride(layer: Integer,
+                                               x: Integer,
+                                               y: Integer,
+                                               tile: Integer,
+                                               overrideX: Integer,
+                                               overrideY: Integer,
+                                               overrideTile: Integer)
+                                               -> Integer {
+        if autotilePreviewEnabled == false or layer != 0
+           or autotilePreviewRuleCount <= 0 {
+            return tile;
+        }
+        var rule = AutotilePreviewRuleForTile(tile);
+        if rule < 0 { return tile; }
+        var mask = 0;
+        if y > 0
+           and AutotilePreviewRuleContains(
+               rule,
+               AutotilePreviewTileWithOverride(
+                   layer, x, y - 1,
+                   overrideX, overrideY, overrideTile)) {
+            mask = mask + 1;
+        }
+        if x < scene.Width - 1
+           and AutotilePreviewRuleContains(
+               rule,
+               AutotilePreviewTileWithOverride(
+                   layer, x + 1, y,
+                   overrideX, overrideY, overrideTile)) {
+            mask = mask + 2;
+        }
+        if y < scene.Height - 1
+           and AutotilePreviewRuleContains(
+               rule,
+               AutotilePreviewTileWithOverride(
+                   layer, x, y + 1,
+                   overrideX, overrideY, overrideTile)) {
+            mask = mask + 4;
+        }
+        if x > 0
+           and AutotilePreviewRuleContains(
+               rule,
+               AutotilePreviewTileWithOverride(
+                   layer, x - 1, y,
+                   overrideX, overrideY, overrideTile)) {
+            mask = mask + 8;
+        }
+        return autotilePreviewVariants.get(rule * 16 + mask);
+    }
+
+    /// @brief Resolve one tile through preview animation state when active.
+    hide override func PreviewResolvedTile(tile: Integer) -> Integer {
+        if PreviewPlaybackActive() == false or scene == null or tile <= 0 {
+            return tile;
+        }
+        var frames = scene.TileAnimFrames(tile);
+        if Seq.get_Count(frames) == 0 { return tile; }
+        var frame = PreviewFrameForBase(tile);
+        if frame < 0 or frame >= Seq.get_Count(frames) { return tile; }
+        return Box.ToI64(Seq.Get(frames, frame));
+    }
+
+    /// @brief Resolve authored autotile and optional animation preview layers.
+    expose override func ResolvedSceneTileForPreview(layer: Integer,
+                                            x: Integer,
+                                            y: Integer) -> Integer {
+        return PreviewResolvedTile(
+            AutotileResolvedSceneTile(layer, x, y));
+    }
+
+    /// @brief Return one base tile's current frame index from durations.
+    /// @details Matches Tilemap playback: elapsed time cycles through the
+    ///          authored per-frame durations in order.
+    hide override func PreviewFrameForBase(base: Integer) -> Integer {
+        var durations = scene.TileAnimDurations(base);
+        var count = Seq.get_Count(durations);
+        if count <= 0 { return -1; }
+        var total = 0;
+        var index = 0;
+        while index < count {
+            total = total + Box.ToI64(Seq.Get(durations, index));
+            index = index + 1;
+        }
+        if total <= 0 { return 0; }
+        var cycle = previewElapsedMs % total;
+        index = 0;
+        while index < count {
+            cycle = cycle - Box.ToI64(Seq.Get(durations, index));
+            if cycle < 0 { return index; }
+            index = index + 1;
+        }
+        return 0;
+    }
+
+    /// @brief Draw the follow-mode deadzone at the player start while previewing.
+    hide override func DrawPreviewDeadzoneOverlay() {
+        if previewActive == false
+           or scene.CameraGetStr("mode", "") != "follow"
+           or scene.CameraFieldKind("deadzoneWidth") != "int"
+           or scene.CameraFieldKind("deadzoneHeight") != "int"
+           or scene.PropertyKind("playerStartX") != "int"
+           or scene.PropertyKind("playerStartY") != "int" {
+            return;
+        }
+        var centerX = scene.GetInt("playerStartX", 0) * displayCellSize
+            / scene.TileWidth - viewOriginX;
+        var centerY = scene.GetInt("playerStartY", 0) * displayCellSize
+            / scene.TileHeight - viewOriginY;
+        var halfWidth = scene.CameraGetInt("deadzoneWidth", 0)
+            * displayCellSize / scene.TileWidth / 2;
+        var halfHeight = scene.CameraGetInt("deadzoneHeight", 0)
+            * displayCellSize / scene.TileHeight / 2;
+        if halfWidth <= 0 or halfHeight <= 0 { return; }
+        framePixels.DrawFrame(
+            centerX - halfWidth,
+            centerY - halfHeight,
+            halfWidth * 2,
+            halfHeight * 2,
+            Color.RGB(150, 220, 170));
+    }
+
+    /// @brief Draw the authored camera bounds rectangle (workspace-only).
+    hide override func DrawCameraBoundsOverlay() {
+        if scene.CameraFieldKind("minX") != "int"
+           or scene.CameraFieldKind("minY") != "int"
+           or scene.CameraFieldKind("maxX") != "int"
+           or scene.CameraFieldKind("maxY") != "int" {
+            return;
+        }
+        var contentWidth = scene.Width * displayCellSize;
+        var contentHeight = scene.Height * displayCellSize;
+        var x0 = SceneEditor2DModel.ClampInt(
+            scene.CameraGetInt("minX", 0) * displayCellSize / scene.TileWidth,
+            0, contentWidth) - viewOriginX;
+        var y0 = SceneEditor2DModel.ClampInt(
+            scene.CameraGetInt("minY", 0) * displayCellSize / scene.TileHeight,
+            0, contentHeight) - viewOriginY;
+        var x1 = SceneEditor2DModel.ClampInt(
+            scene.CameraGetInt("maxX", 0) * displayCellSize / scene.TileWidth,
+            0, contentWidth) - viewOriginX;
+        var y1 = SceneEditor2DModel.ClampInt(
+            scene.CameraGetInt("maxY", 0) * displayCellSize / scene.TileHeight,
+            0, contentHeight) - viewOriginY;
+        if x1 <= x0 or y1 <= y0 { return; }
+        framePixels.DrawFrame(
+            x0, y0, x1 - x0 + 1, y1 - y0 + 1, Color.RGB(233, 140, 220));
+    }
+
+    /// @brief Parse comma-separated integers, or null for malformed drafts.
+    hide override func ParseCsvIntegers(text: String) -> Any {
+        var out = Seq.New();
+        var trimmed = Str.Trim(text);
+        if trimmed == "" { return out; }
+        var parts = Str.Split(trimmed, ",");
+        var count = Seq.get_Count(parts);
+        var index = 0;
+        while index < count {
+            var part = Str.Trim(Seq.GetStr(parts, index));
+            var parsed = Parse.TryInt(part);
+            if parsed.IsNone { return null; }
+            Seq.Push(out, Box.I64(parsed.UnwrapI64()));
+            index = index + 1;
+        }
+        return out;
+    }
+}

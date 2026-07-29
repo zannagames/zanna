@@ -60,7 +60,18 @@ func fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Typed state shared by serial light-authoring scenarios.
+class LightAuthoringProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document_manager.DocumentManager documents;
+    expose Integer lightIndex;
+    expose String spotContent;
+}
+
+/// @brief Verify public construction and reconstruction for every light kind.
+func VerifyLightConstruction(
+    ctx: LightAuthoringProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Light Authoring Probe", 1120, 760);
 
@@ -96,22 +107,31 @@ func main() {
            or built.Type != kind
            or scene_light_3d.Equivalent(built, rebuilt) == false {
             fail(shell, "all-type light reconstruction failed at " + kind);
-            return;
+            return false;
         }
         if kind == scene_light_3d.LIGHT_SPOT
            and (near(built.InnerConeDegrees, 18.0) == false
                 or near(built.OuterConeDegrees, 36.0) == false) {
             fail(shell, "spot cone degrees were not publicly inspectable");
-            return;
+            return false;
         }
         if (kind == scene_light_3d.LIGHT_AMBIENT
             or kind == scene_light_3d.LIGHT_VOLUME)
            and built.CastsShadows {
             fail(shell, "unsupported light kind retained shadow eligibility");
-            return;
+            return false;
         }
         kind = kind + 1;
     }
+
+    ctx.shell = shell;
+    return true;
+}
+
+/// @brief Verify one-node light edits, inspector state, and exact history.
+func VerifySingleLightTransactions(
+    ctx: LightAuthoringProbeContext) -> Boolean {
+    var shell = ctx.shell;
 
     var editor = new scene_editor_3d.SceneEditor3D();
     scene_panels_3d.Build(editor,shell.workbench.scene3DHost, shell.app);
@@ -134,7 +154,7 @@ func main() {
        or sceneDoc.content == addBaseline
        or Str.Contains(sceneDoc.content, "\"light\"") == false {
         fail(shell, "Point light node was not one canonical VSCN edit");
-        return;
+        return false;
     }
     var rowText = GUI.TreeView.Node.GetText(
         editor.hierarchyTreeNodes.get(lightIndex));
@@ -142,7 +162,7 @@ func main() {
        or GUI.TreeView.Node.GetIcon(
               editor.hierarchyTreeNodes.get(lightIndex)) != "✦" {
         fail(shell, "hierarchy did not identify the meshless light node");
-        return;
+        return false;
     }
 
     var original = editor.flatNodes.get(lightIndex).Light;
@@ -169,7 +189,7 @@ func main() {
        or original.Type != scene_light_3d.LIGHT_POINT
        or near(original.Intensity, 1.0) == false {
         fail(shell, "light edit mutated an alias or missed one transaction");
-        return;
+        return false;
     }
     var spot = editor.flatNodes.get(lightIndex).Light;
     if spot.Type != scene_light_3d.LIGHT_SPOT
@@ -178,7 +198,7 @@ func main() {
        or near(spot.OuterConeDegrees, 41.0) == false
        or spot.CastsShadows == false {
         fail(shell, "Spot light fields did not reach the live node");
-        return;
+        return false;
     }
     var spotContent = sceneDoc.content;
     if editor.ApplyNodeLight(
@@ -186,7 +206,7 @@ func main() {
        or editor.GetRevision() != applyRevision + 1
        or sceneDoc.content != spotContent {
         fail(shell, "equivalent light replacement created history");
-        return;
+        return false;
     }
 
     editor.lightInspector.typeDropdown.SetSelected(
@@ -198,7 +218,7 @@ func main() {
        or editor.lightInspector.shapeGroup.IsVisible()
        or editor.lightInspector.castsShadowsCheck.IsEnabled() {
         fail(shell, "Ambient inspector exposed inapplicable spatial fields");
-        return;
+        return false;
     }
     editor.lightInspector.typeDropdown.SetSelected(
         scene_light_3d.LIGHT_SPOT);
@@ -210,7 +230,7 @@ func main() {
        or editor.lightInspector.innerCone.IsEnabled() == false
        or editor.lightInspector.outerCone.IsEnabled() == false {
         fail(shell, "Spot inspector omitted applicable authoring fields");
-        return;
+        return false;
     }
 
     var removeRevision = editor.GetRevision();
@@ -229,8 +249,24 @@ func main() {
        or editor.Undo() == false
        or sceneDoc.content != spotContent {
         fail(shell, "light removal lost no-op, exact undo, or redo behavior");
-        return;
+        return false;
     }
+
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.lightIndex = lightIndex;
+    ctx.spotContent = spotContent;
+    return true;
+}
+
+/// @brief Verify batch light patches, sharing, removal, and reopen.
+func VerifyBatchLightTransactions(
+    ctx: LightAuthoringProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var lightIndex = ctx.lightIndex;
+    var spotContent = ctx.spotContent;
 
     // ------------------------------------------------------------------
     // ADR 0186: batch light editing with truthful mixed-value fields.
@@ -243,7 +279,7 @@ func main() {
     if editor.lightInspector.applyButton.IsEnabled() == false
        or editor.lightInspector.removeButton.IsEnabled() == false {
         fail(shell, "partial light coverage disabled batch actions");
-        return;
+        return false;
     }
 
     // Create lights across an all-lightless selection in one transaction.
@@ -263,11 +299,11 @@ func main() {
        or near(editor.flatNodes.get(emptyIndex).Light.Intensity,
                2.0) == false {
         fail(shell, "batch light creation was not one exact transaction");
-        return;
+        return false;
     }
     if editor.CreateLightsOnSelection(createDraft) {
         fail(shell, "covered selection still claimed light creation");
-        return;
+        return false;
     }
 
     // Distinct intensities survive a concrete color-only patch.
@@ -276,7 +312,7 @@ func main() {
     varyDraft.intensity = 3.0;
     if editor.ApplyNodeLight(thirdIndex, varyDraft) == false {
         fail(shell, "could not stage differing batch intensities");
-        return;
+        return false;
     }
     editor.SelectSceneNodes(lightless, emptyIndex);
     var colorPatch = new scene_light_3d.LightPatch3D();
@@ -297,7 +333,7 @@ func main() {
                0.25) == false {
         fail(shell,
              "concrete color patch did not preserve mixed intensities");
-        return;
+        return false;
     }
 
     // Mixed presentation: differing intensities read as indeterminate.
@@ -306,7 +342,7 @@ func main() {
        or editor.lightInspector.typeDropdown.Selected
           != scene_light_3d.LIGHT_POINT {
         fail(shell, "mixed intensity was not presented indeterminate");
-        return;
+        return false;
     }
 
     // Mixed-kind concrete rebuild: both lights become directional.
@@ -314,12 +350,12 @@ func main() {
     mixedKindDraft.kind = scene_light_3d.LIGHT_SPOT;
     if editor.ApplyNodeLight(thirdIndex, mixedKindDraft) == false {
         fail(shell, "could not stage the mixed-kind selection");
-        return;
+        return false;
     }
     editor.SelectSceneNodes(lightless, emptyIndex);
     if editor.lightInspector.typeDropdown.Selected >= 0 {
         fail(shell, "mixed kinds did not present a mixed dropdown");
-        return;
+        return false;
     }
     var kindPatch = new scene_light_3d.LightPatch3D();
     kindPatch.applyKind = true;
@@ -333,7 +369,7 @@ func main() {
                2.0) == false {
         fail(shell,
              "concrete kind rebuild lost compatible fields");
-        return;
+        return false;
     }
 
     // Shared-light staging: the selected group reuses one clone, the
@@ -361,7 +397,7 @@ func main() {
        or near(editor.flatNodes.get(shareA).Light.Intensity,
                9.0) == false {
         fail(shell, "shared-light staging broke the clone rules");
-        return;
+        return false;
     }
 
     // Batch removal: one transaction, unselected sharer preserved.
@@ -374,7 +410,7 @@ func main() {
        or editor.Undo() == false
        or editor.flatNodes.get(shareA).Light == null {
         fail(shell, "batch light removal was not one exact transaction");
-        return;
+        return false;
     }
 
     var reopened = documents.NewScene3DDocument();
@@ -393,9 +429,17 @@ func main() {
        or editor.projectedX.count() != 1
        or editor.projectedY.count() != 1 {
         fail(shell, "reopened VSCN lost light state or viewport marker");
-        return;
+        return false;
     }
 
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new LightAuthoringProbeContext();
+    if VerifyLightConstruction(ctx) == false { return; }
+    if VerifySingleLightTransactions(ctx) == false { return; }
+    if VerifyBatchLightTransactions(ctx) == false { return; }
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

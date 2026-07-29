@@ -1,0 +1,874 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/session_manager.zia
+// Purpose: Session save, recent-history commands, and bounded restore orchestration.
+// Key invariants:
+//   - Writes and restore pumps preserve active-document priority and all configured limits.
+// Ownership/Lifetime:
+//   - The inherited state owns only durable path and split-document references.
+// Links: zannastudio/src/core/session.zia, zannastudio/src/core/session_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module session_manager;
+
+bind "document_manager";
+bind "project_manager";
+bind "document";
+bind "../editor/editor_tabs";
+bind "../services/file_utils";
+bind "../services/safe_io";
+
+bind Ini = Zanna.Data.Ini;
+bind Codec = Zanna.Text.Codec;
+bind IO = Zanna.IO;
+bind Dir = Zanna.IO.Dir;
+bind Path = Zanna.IO.Path;
+bind Parse = Zanna.Core.Parse;
+bind Convert = Zanna.Core.Convert;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+bind Obj = Zanna.Core.Object;
+bind Str = Zanna.String;
+bind "session_state" as State;
+
+final MAX_RECENT_PROJECTS = State.MAX_RECENT_PROJECTS;
+final MAX_RECENT_FILES = State.MAX_RECENT_FILES;
+final MAX_SESSION_WORKSPACE_ROOTS = State.MAX_SESSION_WORKSPACE_ROOTS;
+final MAX_SESSION_FILES = State.MAX_SESSION_FILES;
+final MAX_SESSION_RECOVERY_CHARS = State.MAX_SESSION_RECOVERY_CHARS;
+final MAX_SESSION_RECOVERY_ENCODED_CHARS = State.MAX_SESSION_RECOVERY_ENCODED_CHARS;
+final MAX_SESSION_RECOVERY_TOTAL_CHARS = State.MAX_SESSION_RECOVERY_TOTAL_CHARS;
+final MAX_SESSION_STALE_SECTIONS = State.MAX_SESSION_STALE_SECTIONS;
+final SCENE_WORKSPACE_STATE_VERSION = State.SCENE_WORKSPACE_STATE_VERSION;
+final MAX_SCENE_WORKSPACE_SCROLL = State.MAX_SCENE_WORKSPACE_SCROLL;
+final MAX_SCENE_WORKSPACE_TARGET_MILLIS = State.MAX_SCENE_WORKSPACE_TARGET_MILLIS;
+
+type SessionRestoreJob = State.SessionRestoreJob;
+type SessionSaveState = State.SessionSaveState;
+
+class SessionManagerImplementation extends State.SessionManagerState {
+expose func Setup(path: String) {
+        settingsPath = path;
+        PruneRecentProjectHistory();
+        PruneRecentFileHistory();
+    }
+
+    /// @brief Capture the physical editor-pane owners immediately before Save.
+    /// @details SessionManager borrows the two Documents only until the next
+    ///          Save call. The writer translates object identity to bounded
+    ///          durable session slots, so filtered tabs cannot shift the mapping.
+    expose func CaptureSplitState(first: document.Document,
+                                  second: document.Document,
+                                  secondFocused: Boolean) {
+        capturedSplitFirstDocument = first;
+        capturedSplitSecondDocument = second;
+        splitActive = State.IsSplitDocumentEligible(first)
+            and State.IsSplitDocumentEligible(second) and first != second;
+        if splitActive == false {
+            capturedSplitFirstDocument = null;
+            capturedSplitSecondDocument = null;
+        }
+        splitSecondFocused = splitActive and secondFocused;
+    }
+
+    /// @brief Clear any borrowed pane owners for a single-pane shutdown.
+    expose func ClearSplitState() {
+        capturedSplitFirstDocument = null;
+        capturedSplitSecondDocument = null;
+        splitActive = false;
+        splitSecondFocused = false;
+    }
+
+    /// @brief Restored owner of the physical primary (left) pane, if durable.
+    expose func RestoredSplitFirstDocument() -> document.Document? {
+        return restoredSplitFirstDocument;
+    }
+
+    /// @brief Restored owner of the physical secondary (right) pane, if durable.
+    expose func RestoredSplitSecondDocument() -> document.Document? {
+        return restoredSplitSecondDocument;
+    }
+
+    /// @brief Persist live session state, including bounded dirty-buffer recovery.
+    /// @details This form is safe while the application is running or after an
+    ///          unclean termination snapshot. Clean shutdown must use
+    ///          `SaveCleanExit` so an explicit Discard decision cannot reappear
+    ///          as recovered text on the next launch.
+    expose func Save(docMgr: document_manager.DocumentManager,
+                     projMgr: project_manager.ProjectManager) -> Boolean {
+        return SaveInternal(docMgr, projMgr, true);
+    }
+
+    /// @brief Persist tabs and workspace state without unsaved buffer payloads.
+    /// @details A confirmed clean exit has already resolved dirty documents via
+    ///          Save or Discard. Named tabs remain restorable from disk, while
+    ///          dirty untitled drafts and stale recovery fields are removed.
+    expose func SaveCleanExit(docMgr: document_manager.DocumentManager,
+                              projMgr: project_manager.ProjectManager) -> Boolean {
+        return SaveInternal(docMgr, projMgr, false);
+    }
+
+    /// @brief Shared bounded session writer.
+    /// @param persistRecovery True for crash-tolerant snapshots; false for a
+    ///        confirmed clean exit whose discarded buffers must stay discarded.
+    hide func SaveInternal(docMgr: document_manager.DocumentManager,
+                           projMgr: project_manager.ProjectManager,
+                           persistRecovery: Boolean) -> Boolean {
+        if settingsPath == "" or docMgr == null { return false; }
+        if safe_io.MakeAll(Path.Directory(settingsPath)) == false { return false; }
+
+        var state = CreateSessionSaveState(
+            docMgr, projMgr, persistRecovery);
+        if state == null { return false; }
+        WriteSessionDocuments(state, docMgr, persistRecovery);
+        FinalizeSessionDocuments(state);
+        ClearStaleSessionFiles(state);
+        SaveRecentProjects(state.ini, projMgr);
+        SaveRecentFiles(state.ini, docMgr);
+        return safe_io.WriteStudioState(
+            settingsPath, Ini.Format(state.ini));
+    }
+
+    /// @brief Read shared state and prepare workspace/document priorities.
+    hide func CreateSessionSaveState(
+        docMgr: document_manager.DocumentManager,
+        projMgr: project_manager.ProjectManager,
+        persistRecovery: Boolean) -> SessionSaveState {
+        var content = "";
+        if IO.File.Exists(settingsPath) {
+            var readResult = safe_io.ReadStudioState(settingsPath);
+            if readResult.ok == false { return null; }
+            content = readResult.text;
+        }
+        var state = new SessionSaveState();
+        state.ini = Ini.Parse(content);
+        state.previousCount =
+            Parse.IntOr(Ini.Get(state.ini, "session", "count"), 0);
+        if state.previousCount < 0 { state.previousCount = 0; }
+        if state.previousCount > MAX_SESSION_STALE_SECTIONS {
+            state.previousCount = MAX_SESSION_STALE_SECTIONS;
+        }
+        WriteSessionWorkspaceRoots(state, projMgr);
+        if state.workspaceRootCount > 0 {
+            state.projectRoot =
+                Ini.Get(state.ini, "session", "workspaceRoot.0");
+        }
+        PrepareSessionPriorityState(state, docMgr, persistRecovery);
+        Ini.Set(state.ini, "session", "projectRoot", state.projectRoot);
+        return state;
+    }
+
+    /// @brief Replace the bounded indexed workspace-root collection.
+    hide func WriteSessionWorkspaceRoots(
+        state: SessionSaveState,
+        projMgr: project_manager.ProjectManager) {
+        var previousCount = Parse.IntOr(
+            Ini.Get(state.ini, "session", "workspaceRootCount"), 0);
+        if previousCount < 0 { previousCount = 0; }
+        if previousCount > MAX_SESSION_WORKSPACE_ROOTS {
+            previousCount = MAX_SESSION_WORKSPACE_ROOTS;
+        }
+        if projMgr != null {
+            var rootIndex = 0;
+            while rootIndex < projMgr.RootCount()
+                  and state.workspaceRootCount < MAX_SESSION_WORKSPACE_ROOTS {
+                var workspaceRoot = projMgr.RootPathAt(rootIndex);
+                if workspaceRoot != "" {
+                    Ini.Set(
+                        state.ini, "session",
+                        "workspaceRoot." + state.workspaceRootCount,
+                        workspaceRoot);
+                    state.workspaceRootCount = state.workspaceRootCount + 1;
+                }
+                rootIndex = rootIndex + 1;
+            }
+        }
+        var staleRootIndex = state.workspaceRootCount;
+        while staleRootIndex < previousCount {
+            Ini.Remove(
+                state.ini, "session", "workspaceRoot." + staleRootIndex);
+            staleRootIndex = staleRootIndex + 1;
+        }
+        Ini.Set(
+            state.ini, "session", "workspaceRootCount",
+            "" + state.workspaceRootCount);
+    }
+
+    /// @brief Capture active-tab and structured-split reservation state.
+    hide func PrepareSessionPriorityState(
+        state: SessionSaveState,
+        docMgr: document_manager.DocumentManager,
+        persistRecovery: Boolean) {
+        state.activeDocument = docMgr.GetActive();
+        if state.activeDocument != null {
+            state.activeEligible = ShouldPersistDocument(
+                state.activeDocument, persistRecovery);
+            if persistRecovery
+               and ShouldPersistRecovery(state.activeDocument) {
+                state.activeRecoveryReserve =
+                    Str.get_Length(state.activeDocument.content);
+            }
+        }
+        state.structuredSplitRequested = splitActive
+            and capturedSplitFirstDocument != null
+            and capturedSplitSecondDocument != null
+            and capturedSplitFirstDocument != capturedSplitSecondDocument
+            and docMgr.IndexOfDocument(capturedSplitFirstDocument) >= 0
+            and docMgr.IndexOfDocument(capturedSplitSecondDocument) >= 0;
+        state.splitFirstEligible = state.structuredSplitRequested
+            and ShouldPersistDocument(
+                capturedSplitFirstDocument, persistRecovery);
+        state.splitSecondEligible = state.structuredSplitRequested
+            and ShouldPersistDocument(
+                capturedSplitSecondDocument, persistRecovery);
+    }
+
+    /// @brief Write bounded documents while reserving visible pane owners.
+    hide func WriteSessionDocuments(
+        state: SessionSaveState,
+        docMgr: document_manager.DocumentManager,
+        persistRecovery: Boolean) {
+        var index = 0;
+        while index < docMgr.GetCount()
+              and state.written < MAX_SESSION_FILES {
+            var doc = docMgr.documents.get(index);
+            if PrepareSessionDocument(
+                   state, doc, persistRecovery) {
+                WriteSessionDocument(state, doc);
+            }
+            index = index + 1;
+        }
+        if state.persistedActiveIndex < 0 and state.written > 0 {
+            state.persistedActiveIndex = 0;
+        }
+    }
+
+    /// @brief Apply slot and aggregate-recovery budgets to one document.
+    hide func PrepareSessionDocument(
+        state: SessionSaveState,
+        doc: document.Document,
+        persistRecovery: Boolean) -> Boolean {
+        var shouldWrite = ShouldPersistDocument(doc, persistRecovery);
+        var reservedPrioritySlots = 0;
+        if state.activeEligible and state.activeWritten == false
+           and doc != state.activeDocument {
+            reservedPrioritySlots = reservedPrioritySlots + 1;
+        }
+        if state.splitFirstEligible and state.splitFirstWritten == false
+           and doc != capturedSplitFirstDocument
+           and capturedSplitFirstDocument != state.activeDocument {
+            reservedPrioritySlots = reservedPrioritySlots + 1;
+        }
+        if state.splitSecondEligible and state.splitSecondWritten == false
+           and doc != capturedSplitSecondDocument
+           and capturedSplitSecondDocument != state.activeDocument {
+            reservedPrioritySlots = reservedPrioritySlots + 1;
+        }
+        if shouldWrite
+           and state.written >= MAX_SESSION_FILES - reservedPrioritySlots {
+            shouldWrite = false;
+        }
+
+        state.currentWriteRecovery = false;
+        state.currentRecoveryChars = 0;
+        if shouldWrite and persistRecovery and ShouldPersistRecovery(doc) {
+            state.currentRecoveryChars = Str.get_Length(doc.content);
+            var remainingRecovery = MAX_SESSION_RECOVERY_TOTAL_CHARS
+                - state.recoveryCharsWritten;
+            if state.activeEligible and state.activeWritten == false
+               and doc != state.activeDocument {
+                remainingRecovery =
+                    remainingRecovery - state.activeRecoveryReserve;
+            }
+            state.currentWriteRecovery =
+                state.currentRecoveryChars <= remainingRecovery;
+            if state.currentWriteRecovery == false and doc.filePath == "" {
+                shouldWrite = false;
+            }
+        }
+        return shouldWrite;
+    }
+
+    /// @brief Serialize one accepted document and update pane identities.
+    hide func WriteSessionDocument(
+        state: SessionSaveState,
+        doc: document.Document) {
+        var section = "session.file." + state.written;
+        Ini.Set(state.ini, section, "path", doc.filePath);
+        Ini.Set(state.ini, section, "name", doc.fileName);
+        Ini.Set(state.ini, section, "kind", file_utils.KindName(doc.kind));
+        Ini.Set(state.ini, section, "cursorLine", "" + doc.cursorLine);
+        Ini.Set(state.ini, section, "cursorCol", "" + doc.cursorCol);
+        Ini.Set(state.ini, section, "scrollLine", "" + doc.scrollLine);
+        WriteSceneWorkspaceState(state.ini, section, doc);
+        if state.currentWriteRecovery {
+            Ini.Set(
+                state.ini, section, "recovery",
+                EncodeRecoveryText(doc.content));
+            Ini.Set(state.ini, section, "recoveryEncoding", "base64");
+            Ini.Set(state.ini, section, "recoveryModified", "1");
+            state.recoveryCharsWritten = state.recoveryCharsWritten
+                + state.currentRecoveryChars;
+        } else {
+            Ini.Set(state.ini, section, "recovery", "");
+            Ini.Set(state.ini, section, "recoveryEncoding", "");
+            Ini.Set(state.ini, section, "recoveryModified", "0");
+        }
+        if state.activeDocument != null and doc == state.activeDocument {
+            state.persistedActiveIndex = state.written;
+            state.activePath = doc.filePath;
+            state.activeWritten = true;
+        }
+        if state.structuredSplitRequested
+           and doc == capturedSplitFirstDocument {
+            state.splitFirstWritten = true;
+            state.splitFirstWrittenIndex = state.written;
+        }
+        if state.structuredSplitRequested
+           and doc == capturedSplitSecondDocument {
+            state.splitSecondWritten = true;
+            state.splitSecondWrittenIndex = state.written;
+        }
+        state.written = state.written + 1;
+    }
+
+    /// @brief Publish structured or legacy split state and active-tab identity.
+    hide func FinalizeSessionDocuments(state: SessionSaveState) {
+        var structuredSplitPersisted = state.structuredSplitRequested
+            and state.splitFirstWritten and state.splitSecondWritten
+            and state.splitFirstWrittenIndex != state.splitSecondWrittenIndex;
+        var legacySplitPersisted = splitActive
+            and capturedSplitFirstDocument == null
+            and capturedSplitSecondDocument == null;
+        var splitPersisted =
+            structuredSplitPersisted or legacySplitPersisted;
+        var splitFlag = "0";
+        if splitPersisted { splitFlag = "1"; }
+        Ini.Set(state.ini, "session", "splitActive", splitFlag);
+        if structuredSplitPersisted {
+            Ini.Set(
+                state.ini, "session", "splitFirstIndex",
+                "" + state.splitFirstWrittenIndex);
+            Ini.Set(
+                state.ini, "session", "splitSecondIndex",
+                "" + state.splitSecondWrittenIndex);
+            var splitFocus = "0";
+            if splitSecondFocused { splitFocus = "1"; }
+            Ini.Set(
+                state.ini, "session", "splitSecondFocused", splitFocus);
+        } else {
+            Ini.Remove(state.ini, "session", "splitFirstIndex");
+            Ini.Remove(state.ini, "session", "splitSecondIndex");
+            Ini.Remove(state.ini, "session", "splitSecondFocused");
+        }
+        splitActive = splitPersisted;
+        if splitActive == false { splitSecondFocused = false; }
+        Ini.Set(state.ini, "session", "count", "" + state.written);
+        Ini.Set(state.ini, "session", "activePath", state.activePath);
+        Ini.Set(
+            state.ini, "session", "activeIndex",
+            "" + state.persistedActiveIndex);
+    }
+
+    /// @brief Remove unused old document sections after a shorter save.
+    hide func ClearStaleSessionFiles(state: SessionSaveState) {
+        var staleIndex = state.written;
+        while staleIndex < state.previousCount {
+            Map.Remove(state.ini, "session.file." + staleIndex);
+            staleIndex = staleIndex + 1;
+        }
+    }
+
+    expose func RecordRecentFile(path: String) -> Boolean {
+        if settingsPath == "" or !document_manager.IsEditableTextFile(path) { return false; }
+        if safe_io.MakeAll(Path.Directory(settingsPath)) == false { return false; }
+
+        var content = "";
+        if IO.File.Exists(settingsPath) {
+            var readResult = safe_io.ReadStudioState(settingsPath);
+            if readResult.ok == false { return false; }
+            content = readResult.text;
+        }
+        var ini = Ini.Parse(content);
+        PrependRecentFile(ini, path);
+        return safe_io.WriteStudioState(settingsPath, Ini.Format(ini));
+    }
+
+    /// @brief Put one valid workspace folder at the front of recent history.
+    /// @param path Existing directory opened as a workspace root.
+    /// @return True when the updated settings were persisted.
+    expose func RecordRecentProject(path: String) -> Boolean {
+        var canonicalPath = CanonicalRecentPath(path);
+        if settingsPath == "" or canonicalPath == ""
+           or Dir.Exists(canonicalPath) == false {
+            return false;
+        }
+        if safe_io.MakeAll(Path.Directory(settingsPath)) == false { return false; }
+
+        var content = "";
+        if IO.File.Exists(settingsPath) {
+            var readResult = safe_io.ReadStudioState(settingsPath);
+            if readResult.ok == false { return false; }
+            content = readResult.text;
+        }
+        var ini = Ini.Parse(content);
+        PrependRecentProject(ini, canonicalPath);
+        return safe_io.WriteStudioState(settingsPath, Ini.Format(ini));
+    }
+
+    /// @brief Remove missing and duplicate workspace folders from recent history.
+    expose func PruneRecentProjects() {
+        PruneRecentProjectHistory();
+    }
+
+    /// @brief Return the number of valid recent workspace folders.
+    expose func RecentProjectCount() -> Integer {
+        if settingsPath == "" or IO.File.Exists(settingsPath) == false { return 0; }
+        var readResult = safe_io.ReadStudioState(settingsPath);
+        if readResult.ok == false { return 0; }
+        var ini = Ini.Parse(readResult.text);
+        var count = Parse.IntOr(Ini.Get(ini, "recent", "count"), 0);
+        if count < 0 { return 0; }
+        if count > MAX_RECENT_PROJECTS { return MAX_RECENT_PROJECTS; }
+        return count;
+    }
+
+    /// @brief Return one valid recent workspace folder by index.
+    expose func RecentProjectAt(index: Integer) -> String {
+        if index < 0 { return ""; }
+        if settingsPath == "" or IO.File.Exists(settingsPath) == false { return ""; }
+        if index >= RecentProjectCount() { return ""; }
+        var readResult = safe_io.ReadStudioState(settingsPath);
+        if readResult.ok == false { return ""; }
+        var ini = Ini.Parse(readResult.text);
+        var path = CanonicalRecentPath(Ini.Get(ini, "recent", "path." + index));
+        if path == "" or Dir.Exists(path) == false { return ""; }
+        return path;
+    }
+
+    /// @brief Remove missing, duplicate, and unsupported paths from recent files.
+    /// @details Open commands call this after a cached path fails validation so
+    ///          the same dead entry does not keep appearing for the rest of the
+    ///          session. Setup also performs this repair on application launch.
+    expose func PruneRecentFiles() {
+        PruneRecentFileHistory();
+    }
+
+    expose func RecentFileCount() -> Integer {
+        if settingsPath == "" or IO.File.Exists(settingsPath) == false { return 0; }
+        var readResult = safe_io.ReadStudioState(settingsPath);
+        if readResult.ok == false { return 0; }
+        var ini = Ini.Parse(readResult.text);
+        var count = Parse.IntOr(Ini.Get(ini, "recentFiles", "count"), 0);
+        if count < 0 { return 0; }
+        if count > MAX_RECENT_FILES { return MAX_RECENT_FILES; }
+        return count;
+    }
+
+    expose func RecentFileAt(index: Integer) -> String {
+        if index < 0 { return ""; }
+        if settingsPath == "" or IO.File.Exists(settingsPath) == false { return ""; }
+        if index >= RecentFileCount() { return ""; }
+        var readResult = safe_io.ReadStudioState(settingsPath);
+        if readResult.ok == false { return ""; }
+        var ini = Ini.Parse(readResult.text);
+        var path = Ini.Get(ini, "recentFiles", "path." + index);
+        if !document_manager.IsEditableTextFile(path) { return ""; }
+        return path;
+    }
+
+    /// @brief Restore a complete session through the compatibility blocking API.
+    /// @details Main uses BeginRestore/PumpRestore so the native window can poll
+    ///          and repaint between batches. Tests and non-UI callers retain the
+    ///          original all-at-once result through this wrapper.
+    expose func Restore(docMgr: document_manager.DocumentManager,
+                        projMgr: project_manager.ProjectManager,
+                        tabs: editor_tabs.EditorTabs) -> Integer {
+        var job = BeginRestore(docMgr, projMgr, tabs);
+        while job.active {
+            PumpRestore(job, 64);
+        }
+        return job.restoredCount;
+    }
+
+    /// @brief Parse durable session state without opening roots or documents yet.
+    /// @param docMgr Destination document model.
+    /// @param projMgr Destination workspace model, or null to skip workspace roots.
+    /// @param tabs Optional visual tab controller.
+    /// @return A resumable job; inactive means there was nothing safe to restore.
+    expose func BeginRestore(docMgr: document_manager.DocumentManager,
+                             projMgr: project_manager.ProjectManager,
+                             tabs: editor_tabs.EditorTabs) -> SessionRestoreJob {
+        return BeginRestoreInternal(docMgr, projMgr, tabs, false);
+    }
+
+    /// @brief Parse only dirty-buffer recovery for an explicit-file launch.
+    /// @details A command-line/Open With target owns the new workspace. Clean
+    ///          tabs, split ownership, and prior workspace roots are skipped,
+    ///          while bounded unsaved buffers remain protected from data loss.
+    /// @param docMgr Destination document model.
+    /// @param tabs Optional visual tab controller.
+    /// @return Resumable recovery scan with the same caller-budgeted contract.
+    expose func BeginRecoveryRestore(
+        docMgr: document_manager.DocumentManager,
+        tabs: editor_tabs.EditorTabs) -> SessionRestoreJob {
+        return BeginRestoreInternal(docMgr, null, tabs, true);
+    }
+
+    /// @brief Shared parser for complete and dirty-buffer-only restore passes.
+    hide func BeginRestoreInternal(
+        docMgr: document_manager.DocumentManager,
+        projMgr: project_manager.ProjectManager,
+        tabs: editor_tabs.EditorTabs,
+        recoveryOnly: Boolean) -> SessionRestoreJob {
+        var job = new SessionRestoreJob();
+        restoredSplitFirstDocument = null;
+        restoredSplitSecondDocument = null;
+        splitSecondFocused = false;
+        if settingsPath == "" or docMgr == null { return job; }
+        if IO.File.Exists(settingsPath) == false { return job; }
+
+        var readResult = safe_io.ReadStudioState(settingsPath);
+        if readResult.ok == false { return job; }
+        var ini = Ini.Parse(readResult.text);
+        splitActive = Ini.Get(ini, "session", "splitActive") == "1";
+        if Ini.Get(ini, "settings", "restoreSession") == "0" { return job; }
+
+        job.ini = ini;
+        job.docMgr = docMgr;
+        job.projMgr = projMgr;
+        job.tabs = tabs;
+        job.recoveryOnly = recoveryOnly;
+        job.activePath = Ini.Get(ini, "session", "activePath");
+
+        var restoreProject = Ini.Get(ini, "settings", "restoreLastProject") != "0";
+        var workspaceRootCountText = Ini.Get(ini, "session", "workspaceRootCount");
+        if recoveryOnly == false
+           and restoreProject and projMgr != null and workspaceRootCountText != "" {
+            job.indexedWorkspaceRoots = true;
+            job.workspaceRootCount = Parse.IntOr(workspaceRootCountText, 0);
+            if job.workspaceRootCount < 0 { job.workspaceRootCount = 0; }
+            if job.workspaceRootCount > MAX_SESSION_WORKSPACE_ROOTS {
+                job.workspaceRootCount = MAX_SESSION_WORKSPACE_ROOTS;
+            }
+        } else if recoveryOnly == false and restoreProject and projMgr != null {
+            job.legacyProjectRoot = Ini.Get(ini, "session", "projectRoot");
+            job.legacyRootProcessed = job.legacyProjectRoot == "";
+        }
+
+        job.fileCount = Parse.IntOr(Ini.Get(ini, "session", "count"), 0);
+        if job.fileCount < 0 { job.fileCount = 0; }
+        if job.fileCount > MAX_SESSION_FILES { job.fileCount = MAX_SESSION_FILES; }
+
+        var splitFirstIndexText = Ini.Get(ini, "session", "splitFirstIndex");
+        var splitSecondIndexText = Ini.Get(ini, "session", "splitSecondIndex");
+        job.structuredSplitRequested = recoveryOnly == false and splitActive
+            and (splitFirstIndexText != "" or splitSecondIndexText != "");
+        if job.structuredSplitRequested {
+            job.splitFirstIndex = Parse.IntOr(splitFirstIndexText, -1);
+            job.splitSecondIndex = Parse.IntOr(splitSecondIndexText, -1);
+            job.splitSecondFocused =
+                Ini.Get(ini, "session", "splitSecondFocused") == "1";
+        }
+
+        var rootWork = job.workspaceRootCount;
+        if job.indexedWorkspaceRoots == false and job.legacyRootProcessed == false {
+            rootWork = 1;
+        }
+        job.totalWork = rootWork + job.fileCount;
+        job.active = job.totalWork > 0;
+        if job.active == false {
+            FinalizeRestore(job);
+        }
+        if recoveryOnly {
+            splitActive = false;
+            splitSecondFocused = false;
+        }
+        return job;
+    }
+
+    /// @brief Advance one restore job by no more than @p maxEntries roots/files.
+    /// @return Number of durable entries examined during this call.
+    expose func PumpRestore(job: SessionRestoreJob,
+                            maxEntries: Integer) -> Integer {
+        if job == null or job.active == false { return 0; }
+        var limit = maxEntries;
+        if limit <= 0 { limit = 1; }
+        var processed = 0;
+
+        while processed < limit
+              and job.workspaceRootIndex < job.workspaceRootCount {
+            var workspaceRoot = Ini.Get(job.ini, "session",
+                                        "workspaceRoot." + job.workspaceRootIndex);
+            job.workspaceRootIndex = job.workspaceRootIndex + 1;
+            processed = processed + 1;
+            job.completedWork = job.completedWork + 1;
+            if workspaceRoot == "" or Dir.Exists(workspaceRoot) == false
+               or job.projMgr == null {
+                continue;
+            }
+            if job.restoredWorkspaceRoot == false {
+                job.restoredWorkspaceRoot = job.projMgr.OpenFolder(workspaceRoot);
+            } else {
+                job.projMgr.AddFolderToWorkspace(workspaceRoot);
+            }
+        }
+
+        if processed < limit and job.workspaceRootIndex >= job.workspaceRootCount
+           and job.legacyRootProcessed == false {
+            job.legacyRootProcessed = true;
+            processed = processed + 1;
+            job.completedWork = job.completedWork + 1;
+            if job.projMgr != null and job.legacyProjectRoot != ""
+               and Dir.Exists(job.legacyProjectRoot) {
+                job.restoredWorkspaceRoot = job.projMgr.OpenFolder(job.legacyProjectRoot);
+            }
+        }
+
+        while processed < limit and job.workspaceRootIndex >= job.workspaceRootCount
+              and job.legacyRootProcessed and job.fileIndex < job.fileCount {
+            RestoreOneSessionFile(job, job.fileIndex);
+            job.fileIndex = job.fileIndex + 1;
+            processed = processed + 1;
+            job.completedWork = job.completedWork + 1;
+        }
+        job.lastPumpCount = processed;
+
+        if job.workspaceRootIndex >= job.workspaceRootCount
+           and job.legacyRootProcessed and job.fileIndex >= job.fileCount {
+            FinalizeRestore(job);
+        }
+        return processed;
+    }
+
+    /// @brief Stop a partial restore without mutating any remaining entries.
+    expose func CancelRestore(job: SessionRestoreJob) {
+        if job == null { return; }
+        job.active = false;
+        job.lastPumpCount = 0;
+        job.ini = null;
+        job.docMgr = null;
+        job.projMgr = null;
+        job.tabs = null;
+    }
+
+    /// @brief Compact progress text for the painted startup surface.
+    expose func RestoreProgressText(job: SessionRestoreJob) -> String {
+        if job == null or job.totalWork <= 0 { return "Restoring your workspace..."; }
+        if job.recoveryOnly {
+            return "Recovering unsaved tabs: "
+                + job.completedWork + "/" + job.totalWork;
+        }
+        return "Restoring your workspace: " + job.completedWork + "/" + job.totalWork;
+    }
+
+    /// @brief Restore one indexed document/recovery slot into live models.
+    hide func RestoreOneSessionFile(job: SessionRestoreJob,
+                                    index: Integer) {
+        var section = "session.file." + index;
+        var path = Ini.Get(job.ini, section, "path");
+        var recoveryModified = Ini.Get(job.ini, section, "recoveryModified") == "1";
+        if job.recoveryOnly and recoveryModified == false { return; }
+        var recovery = DecodeRecoveryText(Ini.Get(job.ini, section, "recovery"),
+                                          Ini.Get(job.ini, section, "recoveryEncoding"));
+        if path != "" and document_manager.IsEditableTextFile(path) {
+            var documentCountBefore = job.docMgr.GetCount();
+            var doc = job.docMgr.OpenFile(path);
+            if job.docMgr.GetCount() == documentCountBefore {
+                // Legacy settings may spell one file as both relative and
+                // absolute. Keep only one canonical path owner.
+                if recoveryModified
+                   and RestoreRecoveryDraft(job.docMgr, job.tabs, job.ini,
+                                            section, path, recovery) {
+                    Ini.Set(job.ini, section, "path", "");
+                    var duplicateDraft = job.docMgr.GetActive();
+                    if duplicateDraft != null {
+                        RecordRestoredSplitDocument(job, index, duplicateDraft!);
+                    }
+                    job.restoredCount = job.restoredCount + 1;
+                } else {
+                    ClearSessionFile(job.ini, section);
+                }
+                job.prunedSession = true;
+            } else {
+                doc.kind = file_utils.DetectKind(doc.filePath);
+                if recoveryModified and recovery != "" {
+                    doc.content = recovery;
+                    doc.isModified = true;
+                }
+                doc.cursorLine = Parse.IntOr(Ini.Get(job.ini, section, "cursorLine"), 1);
+                doc.cursorCol = Parse.IntOr(Ini.Get(job.ini, section, "cursorCol"), 1);
+                doc.scrollLine = Parse.IntOr(Ini.Get(job.ini, section, "scrollLine"), 1);
+                if doc.cursorLine <= 0 { doc.cursorLine = 1; }
+                if doc.cursorCol <= 0 { doc.cursorCol = 1; }
+                if doc.scrollLine <= 0 { doc.scrollLine = 1; }
+                RestoreSceneWorkspaceState(job.ini, section, doc);
+                if job.tabs != null {
+                    job.tabs.AddTab(doc.fileName, 1);
+                    job.tabs.SetTooltip(job.docMgr.activeIndex, doc.filePath);
+                    if doc.isModified {
+                        job.tabs.SetModified(job.docMgr.activeIndex, true);
+                    }
+                }
+                RecordRestoredSplitDocument(job, index, doc);
+                job.restoredCount = job.restoredCount + 1;
+            }
+        } else if path != "" {
+            if recoveryModified
+               and RestoreRecoveryDraft(job.docMgr, job.tabs, job.ini,
+                                        section, path, recovery) {
+                // Preserve recovery text but detach it from the unsafe origin.
+                Ini.Set(job.ini, section, "path", "");
+                var missingDraft = job.docMgr.GetActive();
+                if missingDraft != null {
+                    RecordRestoredSplitDocument(job, index, missingDraft!);
+                }
+                job.restoredCount = job.restoredCount + 1;
+            } else {
+                ClearSessionFile(job.ini, section);
+            }
+            if job.activePath == path {
+                job.activePath = "";
+                Ini.Set(job.ini, "session", "activePath", "");
+            }
+            job.prunedSession = true;
+        } else if RestoreRecoveryDraft(job.docMgr, job.tabs, job.ini,
+                                       section, path, recovery) {
+            var untitledDraft = job.docMgr.GetActive();
+            if untitledDraft != null {
+                RecordRestoredSplitDocument(job, index, untitledDraft!);
+            }
+            job.restoredCount = job.restoredCount + 1;
+        }
+    }
+
+    /// @brief Map one durable session slot to the actual Document it restored.
+    /// @details Missing or rejected earlier slots cannot shift this association;
+    ///          the saved slot number is matched before DocumentManager indices
+    ///          are compacted by validation.
+    hide func RecordRestoredSplitDocument(job: SessionRestoreJob,
+                                          index: Integer,
+                                          doc: document.Document) {
+        if job == null or doc == null or job.structuredSplitRequested == false {
+            return;
+        }
+        if index == job.splitFirstIndex {
+            job.splitFirstDocument = doc;
+        }
+        if index == job.splitSecondIndex {
+            job.splitSecondDocument = doc;
+        }
+    }
+
+    /// @brief Apply active-tab selection and persist any rejected-slot cleanup.
+    hide func FinalizeRestore(job: SessionRestoreJob) {
+        if job == null { return; }
+        if job.structuredSplitRequested {
+            if job.splitFirstDocument != null
+               and job.splitSecondDocument != null
+               and job.splitFirstDocument != job.splitSecondDocument
+               and State.IsSplitDocumentEligible(job.splitFirstDocument)
+               and State.IsSplitDocumentEligible(job.splitSecondDocument) {
+                restoredSplitFirstDocument = job.splitFirstDocument;
+                restoredSplitSecondDocument = job.splitSecondDocument;
+                splitSecondFocused = job.splitSecondFocused;
+            } else {
+                // A structured session is authoritative. If either pane owner
+                // disappeared or was rejected, remain single-pane instead of
+                // guessing an unrelated companion document.
+                restoredSplitFirstDocument = null;
+                restoredSplitSecondDocument = null;
+                splitActive = false;
+                splitSecondFocused = false;
+            }
+        }
+        if job.restoredCount > 0 and job.docMgr != null {
+            var activeIdx = -1;
+            if job.activePath != "" {
+                activeIdx = job.docMgr.FindByPath(job.activePath);
+            }
+            if activeIdx < 0 and job.ini != null {
+                activeIdx = Parse.IntOr(Ini.Get(job.ini, "session", "activeIndex"), 0);
+            }
+            if activeIdx < 0 or activeIdx >= job.docMgr.GetCount() {
+                activeIdx = 0;
+            }
+            job.docMgr.SetActive(activeIdx);
+            if job.tabs != null { job.tabs.SetActive(activeIdx); }
+        }
+        if job.prunedSession and job.ini != null {
+            safe_io.WriteStudioState(settingsPath, Ini.Format(job.ini));
+        }
+        job.active = false;
+        job.lastPumpCount = 0;
+        job.ini = null;
+        job.docMgr = null;
+        job.projMgr = null;
+        job.tabs = null;
+    }
+
+    /// @brief Restore bounded recovery text as an unsaved draft document.
+    /// @details Used for ordinary untitled recovery and as the data-preserving
+    ///          fallback when a named file disappeared or became unsupported.
+    /// @return True when a draft was added.
+    hide func RestoreRecoveryDraft(docMgr: document_manager.DocumentManager,
+                                   tabs: editor_tabs.EditorTabs,
+                                   ini: Any,
+                                   section: String,
+                                   originalPath: String,
+                                   recovery: String) -> Boolean {
+        if recovery == "" { return false; }
+        var draft = docMgr.NewDocument();
+        var savedName = Ini.Get(ini, section, "name");
+        if savedName == "" and originalPath != "" {
+            savedName = Path.Name(originalPath) + " (Recovered)";
+            Ini.Set(ini, section, "name", savedName);
+        }
+        if savedName != "" { draft.fileName = savedName; }
+        draft.content = recovery;
+        var savedKindName = Ini.Get(ini, section, "kind");
+        if savedKindName == "" {
+            draft.kind = file_utils.DOC_KIND_CODE;
+        } else {
+            draft.kind = file_utils.KindFromName(savedKindName);
+            if draft.kind == file_utils.DOC_KIND_BINARY_UNSUPPORTED {
+                draft.kind = file_utils.DOC_KIND_CODE;
+            }
+        }
+        var languagePath = originalPath;
+        if languagePath == "" { languagePath = savedName; }
+        draft.language = file_utils.DetectLanguage(languagePath);
+        if draft.kind == file_utils.DOC_KIND_SCENE_2D {
+            draft.language = "scene";
+        } else if draft.kind == file_utils.DOC_KIND_SCENE_3D {
+            draft.language = "scene3d";
+        } else if draft.kind == file_utils.DOC_KIND_CODE
+                  and draft.language != "basic" {
+            draft.language = "zia";
+        }
+        draft.isNew = true;
+        draft.isModified = true;
+        draft.cursorLine = Parse.IntOr(Ini.Get(ini, section, "cursorLine"), 1);
+        draft.cursorCol = Parse.IntOr(Ini.Get(ini, section, "cursorCol"), 1);
+        draft.scrollLine = Parse.IntOr(Ini.Get(ini, section, "scrollLine"), 1);
+        if draft.cursorLine <= 0 { draft.cursorLine = 1; }
+        if draft.cursorCol <= 0 { draft.cursorCol = 1; }
+        if draft.scrollLine <= 0 { draft.scrollLine = 1; }
+        RestoreSceneWorkspaceState(ini, section, draft);
+        if tabs != null {
+            tabs.AddTab(draft.fileName, 1);
+            tabs.SetModified(docMgr.activeIndex, true);
+        }
+        return true;
+    }
+
+    /// @brief Persist bounded, versioned workspace state for a visual document.
+    /// @details Removing both version markers makes stale fields inert when a
+    ///          durable slot changes kind or a future controller declines state.
+}

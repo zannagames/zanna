@@ -1,0 +1,195 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_contract_02.zia
+// Purpose: Virtual tool-panel method contract segment 2.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_contract_02;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_contract_01" as PreviousContract;
+
+class ToolPanelShellContract02 extends PreviousContract.ToolPanelShellContract01 {
+    hide func RetireAllToolTabs() {}
+
+    hide func RetireToolTab(_tab: GUI.Tab, _kind: Integer) {}
+
+    hide func TransferToolPanel(_kind: Integer,
+                                _location: Integer,
+                                _userAuthored: Boolean) {}
+
+    hide func RestoreIndependentGroup(_location: Integer) {}
+
+    hide func CollapseEmptyIndependentGroup(_location: Integer) {}
+
+    hide func ActiveToolPanelKindAt(_location: Integer) -> Integer { return 0; }
+
+    hide func SetActiveToolPanelKindAt(_location: Integer, _kind: Integer) {}
+
+    hide func AnyActiveToolPanelKind() -> Integer { return 0; }
+
+    hide func IsToolPanelSelected(_kind: Integer) -> Boolean { return false; }
+
+    hide func ToolTabBarAt(_location: Integer) -> GUI.TabBar { return null; }
+
+    hide func ToolGroupRootAt(_location: Integer) -> GUI.VBox { return null; }
+
+    hide func KeepFloatingResizeRowLast() {}
+
+    hide func ToolPanelWidget(_kind: Integer) -> GUI.VBox { return null; }
+
+    hide func ToolTabForKind(_kind: Integer) -> GUI.Tab { return null; }
+
+    hide func SetToolTabForKind(_kind: Integer, _tab: GUI.Tab) {}
+
+    hide func CreateToolTab(_bar: GUI.TabBar, _kind: Integer) -> GUI.Tab { return null; }
+
+    hide func ShowToolPanelKind(_kind: Integer) {}
+
+    hide func FocusedToolControlId() -> String { return ""; }
+
+    hide func RestoreToolControlFocus(_id: String) {}
+
+    expose func SetToolTabOrder(_encoded: String) {}
+
+    expose func ResetToolTabOrder() {}
+
+    expose func GetToolTabOrder() -> String { return ""; }
+
+    expose func TakeChangedToolTabOrder() -> String { return ""; }
+
+    hide func IsValidToolTabOrder(_encoded: String) -> Boolean { return false; }
+
+    hide func IsKnownToolTabId(_id: String) -> Boolean { return false; }
+
+    hide func FindToolTabIndex(_id: String) -> Integer { return 0; }
+
+    hide func FindToolTabIndexInBar(_bar: GUI.TabBar,
+                                    _id: String) -> Integer { return 0; }
+
+    hide func ApplyToolTabOrderAt(_location: Integer) {}
+
+    hide func ToolTabOrderAt(_location: Integer) -> String { return ""; }
+
+    hide func CaptureToolTabOrder() {}
+
+    expose func SetBuildOutput(_output: String) {}
+
+    expose func AppendBuildOutput(_output: String) {}
+
+    expose func UpdateBuildOutput(_output: String) {}
+
+    hide func RenderOutputPane(_output: String) {}
+
+    hide func RenderOutputRows(_output: String) {}
+
+    hide func UseOutputPane() {}
+
+    expose func UseOutputRows() {}
+
+    expose func BeginOutputRows() {}
+
+    expose func BeginGeneratedOutputRows() {}
+
+    expose func SetOutputRowSource(_output: String) {}
+
+    expose func HasOutputContent() -> Boolean { return false; }
+
+    expose func ClearToolRows(_listBox: GUI.ListBox) {}
+
+    expose func AddToolPlainRow(_listBox: GUI.ListBox,
+                                _text: String,
+                                _color: Integer) -> Any { return null; }
+
+    expose func AddToolSectionRow(_listBox: GUI.ListBox,
+                                  _text: String) -> Any { return null; }
+
+    hide func AddReferenceModelRow(_text: String,
+                                   _searchText: String,
+                                   _color: Integer,
+                                   _isGroupHeader: Boolean) -> Any { return null; }
+
+    hide func RenderReferenceModelRow(
+        _row: tool_panel_model.ToolPanelRow) -> Any { return null; }
+
+    hide func FindReferenceRow(_id: String)
+        -> tool_panel_model.ToolPanelRow { return null; }
+
+    hide func ReferenceRowMatches(
+        _row: tool_panel_model.ToolPanelRow) -> Boolean { return false; }
+
+    hide func RecountReferenceResults() {}
+
+    hide func RefreshReferenceRows() {}
+
+    expose func SetAddedToolRowLocationData(_listBox: GUI.ListBox,
+                                            _item: Any,
+                                            _locationData: String) {}
+
+    hide func ToolRowsForListBox(_listBox: GUI.ListBox) -> tool_panel_model.ToolPanelRows { return null; }
+
+    hide func EnsureToolRowsCapacity(_listBox: GUI.ListBox,
+                                     _model: tool_panel_model.ToolPanelRows) {}
+
+    expose func SetDebugOutput(_output: String) {}
+
+    expose func UpdateDebugOutput(_output: String) {}
+
+    expose func UpdateDebugOutputParts(_programOutput: String,
+                                       _statusText: String) {}
+
+    hide func SetDebugConsoleSource(_output: String,
+                                    _canClear: Boolean) {}
+
+    hide func RefreshDebugConsoleRows() {}
+
+    hide func DebugConsoleLineMatches(_line: String) -> Boolean { return false; }
+
+    hide func RenderDebugConsoleLine(_line: String) {}
+
+    expose func SetDebugConsoleFilter(_filter: String) {}
+
+    expose func SetDebugConsoleWrap(_enabled: Boolean) {}
+
+    expose func CopyDebugConsoleText() -> Boolean { return false; }
+
+    expose func TakeDebugConsoleClearRequest() -> Boolean { return false; }
+
+    hide func PumpDebugConsoleToolbar() {}
+
+    hide func UpdateDebugToolbarState() {}
+
+    hide func ApplyDebugConsoleSurfaceVisibility() {}
+
+    hide func ApplyDebugLineColor(_item: Any,
+                                  _line: String) {}
+
+    expose func BeginCallStack(_state: String) {}
+
+    expose func AddCallStackFrame(_frameIndex: Integer,
+                                  _label: String) -> Any { return null; }
+
+}

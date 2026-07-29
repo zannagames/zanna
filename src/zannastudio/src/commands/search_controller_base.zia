@@ -1,0 +1,607 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/search_controller_base.zia
+// Purpose: Own search state, request setup, and Search panel submission.
+// Key invariants:
+//   - Every pump remains file-, byte-, result-, and discovery-budget bounded.
+// Ownership/Lifetime:
+//   - Main owns one SearchController while methods borrow shell and document services.
+// Links: zannastudio/src/commands/search_commands.zia, zannastudio/src/commands/replace_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module search_controller_base;
+
+bind "../ui/app_shell";
+bind "../ui/notification_policy";
+bind "../core/project_manager";
+bind "../editor/editor_engine";
+bind "../editor/editor_tabs";
+bind "../commands/file_commands";
+bind "replace_commands";
+bind "../commands/quick_open_commands";
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../services/locations";
+bind "../services/search_matcher";
+bind "../services/search_paths";
+bind "../services/search_request";
+bind "../services/safe_io";
+bind "../services/workspace_file_index";
+bind "../editor/zia_query";
+bind "../basic/semantic_scan";
+
+bind Zanna.GUI;
+bind ZiaCompletion = Zanna.Zia.Completion;
+bind IO = Zanna.IO;
+bind Dir = Zanna.IO.Dir;
+bind Path = Zanna.IO.Path;
+bind FileIndex = Zanna.Workspace.FileIndex;
+bind Str = Zanna.String;
+bind Seq = Zanna.Collections.Seq;
+bind Obj = Zanna.Core.Object;
+bind Map = Zanna.Collections.Map;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind "search_commands_support" as SearchSupport;
+
+final SEARCH_FILES_PER_FRAME = SearchSupport.SEARCH_FILES_PER_FRAME;
+final SEARCH_BYTES_PER_FRAME = SearchSupport.SEARCH_BYTES_PER_FRAME;
+final SEARCH_DISCOVERY_PAGE_SIZE = SearchSupport.SEARCH_DISCOVERY_PAGE_SIZE;
+final MAX_SEARCH_FILE_BYTES = SearchSupport.MAX_SEARCH_FILE_BYTES;
+final MAX_SEARCH_RESULTS = SearchSupport.MAX_SEARCH_RESULTS;
+final SEARCH_MODE_TEXT: Integer = SearchSupport.SEARCH_MODE_TEXT;
+final SEARCH_MODE_WORKSPACE_SYMBOLS: Integer = SearchSupport.SEARCH_MODE_WORKSPACE_SYMBOLS;
+
+class SearchControllerBase {
+    expose Boolean active;
+    expose Boolean canceled;
+    expose replace_commands.ProjectReplaceController replacer;
+    expose Integer mode;
+    expose String root;
+    expose String query;
+    expose String fileKinds;
+    expose String ignorePatterns;
+    expose String includeGlobs;
+    expose String excludeGlobs;
+    expose Boolean caseSensitive;
+    expose Boolean wholeWord;
+    expose Boolean regexMode;
+    expose Integer fileIndex;
+    expose Integer resultCount;
+    expose Integer totalFiles;
+    expose List files;
+    expose Any filesSeen;
+    expose Boolean discovering;
+    expose List pendingDirs;
+    expose Integer directoriesScanned;
+    expose Integer discoveryOffset;
+    expose Boolean discoveryTruncated;
+    expose String discoveryError;
+    expose Integer skippedLargeFiles;
+    expose Boolean resultLimitReached;
+    expose String panelRoot;
+    expose String panelIgnorePatterns;
+    expose Boolean panelUseWorkspace;
+    expose List rootPaths;
+    expose List rootIgnorePatterns;
+    expose Integer rootSearchIndex;
+    expose Integer lastPumpFileCount;
+    expose Integer lastPumpByteCount;
+    expose Integer resultLocationFirstId;
+    expose Integer resultLocationLastId;
+    expose Boolean resultLocationRangePending;
+
+    expose func init() {
+        InitializeState();
+    }
+
+    /// @brief Initialize search state for the public execution controller.
+    expose func InitializeState() {
+        active = false;
+        canceled = false;
+        replacer = new replace_commands.ProjectReplaceController();
+        mode = SEARCH_MODE_TEXT;
+        root = "";
+        query = "";
+        fileKinds = "";
+        ignorePatterns = "";
+        includeGlobs = "";
+        excludeGlobs = "";
+        caseSensitive = false;
+        wholeWord = false;
+        regexMode = false;
+        fileIndex = 0;
+        resultCount = 0;
+        totalFiles = 0;
+        files = new List();
+        filesSeen = Map.New();
+        discovering = false;
+        pendingDirs = new List();
+        directoriesScanned = 0;
+        discoveryOffset = 0;
+        discoveryTruncated = false;
+        discoveryError = "";
+        skippedLargeFiles = 0;
+        resultLimitReached = false;
+        panelRoot = "";
+        panelIgnorePatterns = "";
+        panelUseWorkspace = false;
+        rootPaths = new List();
+        rootIgnorePatterns = new List();
+        rootSearchIndex = 0;
+        lastPumpFileCount = 0;
+        lastPumpByteCount = 0;
+        resultLocationFirstId = 0;
+        resultLocationLastId = 0;
+        resultLocationRangePending = false;
+    }
+
+    /// @brief Reveal live search/replace work instead of interrupting it.
+    /// @param shell Workbench shell that owns the shared Search panel.
+    /// @return True when an active operation was revealed.
+    /// @details Search-in-project/folder commands can race the frame that
+    ///          disables their shortcut or menu item. Preserve that operation,
+    ///          show its progress and Stop control, and keep the query field
+    ///          keyboard-ready. An explicit Search button/Enter submission
+    ///          remains the intentional way to replace a running search.
+    hide func RevealActiveWork(shell: app_shell.AppShell) -> Boolean {
+        if HasActiveWork() == false { return false; }
+        if shell == null { return true; }
+        shell.toolPanels.ShowSearchPanel();
+        shell.toolPanels.FocusSearchQuery();
+        if replacer.IsBusy() {
+            shell.SetStatusLeft(
+                "Replace All is running; use Stop before starting another search");
+        } else {
+            shell.SetStatusLeft(
+                "Search is already running; use Stop or submit a new search");
+        }
+        return true;
+    }
+
+    expose func Start(shell: app_shell.AppShell,
+                      rootPath: String,
+                      searchTitle: String,
+                      docMgr: document_manager.DocumentManager,
+                      engine: editor_engine.EditorEngine) -> Boolean {
+        if RevealActiveWork(shell) { return false; }
+
+        file_commands.SaveEditorState(docMgr, engine);
+        OpenPanel(shell, rootPath, "");
+        if searchTitle != "" {
+            shell.SetStatusLeft(searchTitle + ": " + rootPath);
+        }
+        return true;
+    }
+
+    expose func StartProject(shell: app_shell.AppShell,
+                             projMgr: project_manager.ProjectManager,
+                             searchTitle: String,
+                             docMgr: document_manager.DocumentManager,
+                             engine: editor_engine.EditorEngine) -> Boolean {
+        if RevealActiveWork(shell) { return false; }
+        if projMgr == null or projMgr.IsOpen() == false {
+            return false;
+        }
+        file_commands.SaveEditorState(docMgr, engine);
+        OpenWorkspacePanel(shell, projMgr);
+        if searchTitle != "" {
+            shell.SetStatusLeft(searchTitle + ": " + SearchSupport.WorkspaceScopeLabel(projMgr));
+        }
+        return true;
+    }
+
+    /// @brief Start a cooperative workspace-symbol search.
+    /// @details File discovery uses the same paged FileIndex cursor as project
+    ///          text search, while symbol extraction is limited to a small
+    ///          number of source files per frame. Starting a symbol search
+    ///          replaces any older root-scoped search using the shared Search
+    ///          panel and cancel action.
+    /// @param shell App shell that owns result rows and status feedback.
+    /// @param projMgr Project manager providing every workspace root.
+    /// @param docMgr Open documents whose unsaved text takes precedence.
+    /// @param engine Active editor whose current buffer must be saved first.
+    /// @param queryText User-entered symbol filter.
+    /// @return True when bounded discovery was initialized.
+    expose func StartWorkspaceSymbols(shell: app_shell.AppShell,
+                                      projMgr: project_manager.ProjectManager,
+                                      docMgr: document_manager.DocumentManager,
+                                      engine: editor_engine.EditorEngine,
+                                      queryText: String) -> Boolean {
+        if replacer.IsBusy() { return false; }
+        if shell == null or projMgr == null or projMgr.IsOpen() == false {
+            return false;
+        }
+        var symbolQuery = Str.Trim(queryText);
+        if symbolQuery == "" { return false; }
+        if active { Cancel(shell); }
+
+        file_commands.SaveEditorState(docMgr, engine);
+        var request = search_request.Create(projMgr.RootPath(), symbolQuery,
+                                            ".zia,.bas,.vb", false, false,
+                                            false, "", "",
+                                            projMgr.IgnorePatterns());
+        if StartWorkspaceRequest(shell, projMgr, request) == false {
+            return false;
+        }
+        mode = SEARCH_MODE_WORKSPACE_SYMBOLS;
+        // Seed live named buffers before disk discovery. This preserves
+        // unsaved/ignored-file visibility and makes the active edit available
+        // without waiting for its FileIndex page; later discovery de-duplicates
+        // the same canonical path through filesSeen.
+        if docMgr != null {
+            var i = 0;
+            while i < docMgr.GetCount() {
+                var doc = docMgr.documents.get(i);
+                if (doc.language == "zia" or doc.language == "basic")
+                   and doc.filePath != "" {
+                    workspace_file_index.AddUniquePath(files, filesSeen, doc.filePath);
+                }
+                i = i + 1;
+            }
+            totalFiles = files.count();
+        }
+        if projMgr.RootCount() > 1 {
+            shell.SetStatusLeft("Discovering workspace symbols across "
+                                + projMgr.RootCount() + " roots...");
+        } else {
+            shell.SetStatusLeft("Discovering workspace symbols...");
+        }
+        return true;
+    }
+
+    expose func StartFolder(shell: app_shell.AppShell,
+                            projMgr: project_manager.ProjectManager,
+                            folderPath: String,
+                            searchTitle: String,
+                            docMgr: document_manager.DocumentManager,
+                            engine: editor_engine.EditorEngine) -> Boolean {
+        if RevealActiveWork(shell) { return false; }
+        if folderPath == "" or Dir.Exists(folderPath) == false {
+            return false;
+        }
+        var ignores = "";
+        if projMgr != null and projMgr.IsOpen() and SearchSupport.IsWithinRoot(folderPath, projMgr.RootPath()) {
+            ignores = projMgr.IgnorePatterns();
+        }
+        file_commands.SaveEditorState(docMgr, engine);
+        OpenPanel(shell, folderPath, ignores);
+        if searchTitle != "" {
+            shell.SetStatusLeft(searchTitle + ": " + folderPath);
+        }
+        return true;
+    }
+
+    expose func OpenPanel(shell: app_shell.AppShell,
+                          rootPath: String,
+                          ignorePatternsText: String) {
+        if shell == null or rootPath == "" or replacer.IsBusy() { return; }
+        panelRoot = rootPath;
+        panelIgnorePatterns = ignorePatternsText;
+        panelUseWorkspace = false;
+        shell.toolPanels.ShowSearchPanel();
+        shell.toolPanels.FocusSearchQuery();
+        shell.SetStatusLeft("Search scope: " + rootPath);
+    }
+
+    /// @brief Open the Search panel scoped to every workspace root.
+    /// @param shell Workbench shell that owns the Search controls.
+    /// @param projMgr Project manager providing root paths and ignore patterns.
+    /// @details The panel still stores the primary root for compatibility with
+    ///          existing controls, but `panelUseWorkspace` tells RunPanel to
+    ///          rebuild a multi-root request from ProjectManager instead of
+    ///          searching only panelRoot.
+    expose func OpenWorkspacePanel(shell: app_shell.AppShell,
+                                   projMgr: project_manager.ProjectManager) {
+        if shell == null or projMgr == null or projMgr.IsOpen() == false
+           or replacer.IsBusy() { return; }
+        panelRoot = projMgr.RootPath();
+        panelIgnorePatterns = projMgr.IgnorePatterns();
+        panelUseWorkspace = true;
+        shell.toolPanels.ShowSearchPanel();
+        shell.toolPanels.FocusSearchQuery();
+        shell.SetStatusLeft("Search scope: " + SearchSupport.WorkspaceScopeLabel(projMgr));
+    }
+
+    expose func HandlePanel(shell: app_shell.AppShell,
+                            projMgr: project_manager.ProjectManager,
+                            docMgr: document_manager.DocumentManager,
+                            engine: editor_engine.EditorEngine,
+                            locStore: locations.LocationStore) {
+        if shell == null { return; }
+        if replacer.IsBusy() {
+            if shell.toolPanels.searchCancelButton != null
+               and shell.toolPanels.searchCancelButton.WasClicked() {
+                Cancel(shell);
+                UpdatePanelCommandState(shell);
+                return;
+            }
+            if replacer.Pump(docMgr, engine) {
+                var summary = replacer.TakeSummary();
+                resultCount = 0;
+                canceled = true;
+                resultLocationFirstId = 0;
+                resultLocationLastId = 0;
+                shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
+                shell.toolPanels.AddToolInfoRow(
+                    shell.toolPanels.searchListBox, "replace",
+                    summary + ". Run Search to refresh results.");
+                shell.SetStatusLeft(summary);
+                UpdatePanelCommandState(shell);
+                return;
+            }
+            shell.SetStatusLeft("Replacing files: " + replacer.fileIndex + "/"
+                                + replacer.plans.count() + "...");
+            UpdatePanelCommandState(shell);
+            return;
+        }
+        if shell.toolPanels.searchCancelButton != null and shell.toolPanels.searchCancelButton.WasClicked() {
+            Cancel(shell);
+        }
+        if shell.toolPanels.searchReplaceButton != null
+           and shell.toolPanels.searchReplaceButton.WasClicked()
+           and active == false and mode == SEARCH_MODE_TEXT {
+            if SearchResultsAreReplaceable() == false {
+                var unavailable = "Run a complete text search before replacing";
+                if resultLimitReached or discoveryTruncated {
+                    unavailable = "Replace All is unavailable because search results are incomplete";
+                }
+                shell.SetStatusLeft(unavailable);
+                notification_policy.ActionWarning(unavailable);
+            } else if PanelMatchesCurrentSearch(shell) == false {
+                var changed = "Search text or options changed; run Search before replacing";
+                shell.SetStatusLeft(changed);
+            } else if replacer.StartFromResults(
+                          locStore, resultLocationFirstId,
+                          resultLocationLastId, query,
+                          shell.toolPanels.searchReplaceInput.get_Text(),
+                          caseSensitive, wholeWord, regexMode) {
+                shell.SetStatusLeft("Preparing replacement across "
+                                    + replacer.plans.count() + " file(s)...");
+            } else {
+                var startError = replacer.lastSummary;
+                if startError == "" { startError = "Replace could not start"; }
+                shell.SetStatusLeft(startError);
+                notification_policy.ActionWarning(startError);
+            }
+            UpdatePanelCommandState(shell);
+            return;
+        }
+        var runRequested = false;
+        if shell.toolPanels.searchRunButton != null and shell.toolPanels.searchRunButton.WasClicked() {
+            runRequested = true;
+        }
+        if shell.toolPanels.searchPanel != null and shell.toolPanels.searchPanel.IsVisible()
+           and shell.toolPanels.IsSearchRunInputFocused()
+           and Input.Keyboard.WasPressed(Zanna.Input.Key.Enter)
+           and Str.Trim(shell.toolPanels.searchQueryInput.get_Text()) != "" {
+            runRequested = true;
+        }
+        if runRequested == false {
+            UpdatePanelCommandState(shell);
+            return;
+        }
+        RunPanel(shell, projMgr, docMgr, engine);
+        UpdatePanelCommandState(shell);
+    }
+
+    expose func RunPanel(shell: app_shell.AppShell,
+                         projMgr: project_manager.ProjectManager,
+                         docMgr: document_manager.DocumentManager,
+                         engine: editor_engine.EditorEngine) -> Boolean {
+        if shell == null { return false; }
+        if replacer.IsBusy() {
+            shell.SetStatusLeft("Wait for Replace All to finish or stop it first");
+            return false;
+        }
+        var rootPath = panelRoot;
+        if rootPath == "" and projMgr != null and projMgr.IsOpen() {
+            rootPath = projMgr.RootPath();
+            panelIgnorePatterns = projMgr.IgnorePatterns();
+            panelUseWorkspace = true;
+        }
+        if rootPath == "" or Dir.Exists(rootPath) == false {
+            notification_policy.ActionWarning("Open a project folder first");
+            return false;
+        }
+        var queryText = Str.Trim(shell.toolPanels.searchQueryInput.get_Text());
+        if queryText == "" {
+            shell.SetStatusLeft("Enter search text");
+            return false;
+        }
+        if active {
+            Cancel(shell);
+        }
+        file_commands.SaveEditorState(docMgr, engine);
+        if panelUseWorkspace and projMgr != null and projMgr.IsOpen() {
+            var workspaceRequest = search_request.Create(rootPath,
+                                                         queryText,
+                                                         shell.toolPanels.searchKindsInput.get_Text(),
+                                                         shell.toolPanels.searchCaseCheck.IsChecked(),
+                                                         shell.toolPanels.searchWholeWordCheck.IsChecked(),
+                                                         shell.toolPanels.searchRegexCheck.IsChecked(),
+                                                         shell.toolPanels.searchIncludeInput.get_Text(),
+                                                         shell.toolPanels.searchExcludeInput.get_Text(),
+                                                         panelIgnorePatterns);
+            return StartWorkspaceRequest(shell, projMgr, workspaceRequest);
+        }
+        var request = search_request.Create(rootPath,
+                                            queryText,
+                                            shell.toolPanels.searchKindsInput.get_Text(),
+                                            shell.toolPanels.searchCaseCheck.IsChecked(),
+                                            shell.toolPanels.searchWholeWordCheck.IsChecked(),
+                                            shell.toolPanels.searchRegexCheck.IsChecked(),
+                                            shell.toolPanels.searchIncludeInput.get_Text(),
+                                            shell.toolPanels.searchExcludeInput.get_Text(),
+                                            panelIgnorePatterns);
+        return StartDirectRequest(shell, request);
+    }
+
+    expose func StartDirect(shell: app_shell.AppShell,
+                            rootPath: String,
+                            requestedQuery: String,
+                            requestedKinds: String,
+                            requestedCase: Boolean,
+                            requestedWholeWord: Boolean) -> Boolean {
+        return StartDirectWithOptions(shell, rootPath, requestedQuery,
+                                      requestedKinds, requestedCase, requestedWholeWord,
+                                      "", "");
+    }
+
+    expose func StartDirectWithOptions(shell: app_shell.AppShell,
+                                       rootPath: String,
+                                       requestedQuery: String,
+                                       requestedKinds: String,
+                                       requestedCase: Boolean,
+                                       requestedWholeWord: Boolean,
+                                       requestedIncludeGlobs: String,
+                                       requestedExcludeGlobs: String) -> Boolean {
+        if rootPath == "" or requestedQuery == "" { return false; }
+        return StartDirectWithSearchMode(shell, rootPath, requestedQuery,
+                                         requestedKinds, requestedCase, requestedWholeWord,
+                                         false, requestedIncludeGlobs, requestedExcludeGlobs);
+    }
+
+    expose func StartDirectWithSearchMode(shell: app_shell.AppShell,
+                                          rootPath: String,
+                                          requestedQuery: String,
+                                          requestedKinds: String,
+                                          requestedCase: Boolean,
+                                          requestedWholeWord: Boolean,
+                                          requestedRegexMode: Boolean,
+                                          requestedIncludeGlobs: String,
+                                          requestedExcludeGlobs: String) -> Boolean {
+        if rootPath == "" or requestedQuery == "" { return false; }
+        if Dir.Exists(rootPath) == false { return false; }
+
+        var request = search_request.Create(rootPath, requestedQuery, requestedKinds,
+                                            requestedCase, requestedWholeWord,
+                                            requestedRegexMode,
+                                            requestedIncludeGlobs, requestedExcludeGlobs, "");
+        return StartDirectRequest(shell, request);
+    }
+
+    /// @brief Start an uncached search using an already-normalized request.
+    /// @param shell App shell that owns the search result panel and status bar.
+    /// @param request Search request produced by prompt UI, probes, or tests.
+    /// @return True when the controller accepted the request and queued work.
+    /// @details Searches discover files cooperatively through FileIndex.Page.
+    ///          This is authoritative for project searches: the run is complete
+    ///          only after file-index discovery reports `done`, so users never
+    ///          receive a silently partial result from a warming project cache.
+    hide func StartDirectRequest(shell: app_shell.AppShell,
+                                 request: search_request.SearchRequest) -> Boolean {
+        var paths = new List();
+        var ignores = new List();
+        paths.Push(request.rootPath);
+        ignores.Push(request.ignorePatterns);
+        return StartRequestWithRoots(shell, request, paths, ignores);
+    }
+
+    /// @brief Start a workspace search spanning all ProjectManager roots.
+    /// @param shell App shell that owns the search result panel and status bar.
+    /// @param projMgr Project manager providing root paths and ignore patterns.
+    /// @param request Search options from the panel or prompt.
+    /// @return True when the controller accepted the multi-root request.
+    /// @details The request's rootPath remains the primary root for display and
+    ///          compatibility, while rootPaths/rootIgnorePatterns hold the full
+    ///          root queue consumed by PumpDiscovery.
+    hide func StartWorkspaceRequest(shell: app_shell.AppShell,
+                                    projMgr: project_manager.ProjectManager,
+                                    request: search_request.SearchRequest) -> Boolean {
+        if projMgr == null or projMgr.IsOpen() == false { return false; }
+        var paths = new List();
+        var ignores = new List();
+        var i = 0;
+        while i < projMgr.RootCount() {
+            var rootPath = projMgr.RootPathAt(i);
+            if rootPath != "" and Dir.Exists(rootPath) {
+                paths.Push(rootPath);
+                ignores.Push(projMgr.RootIgnorePatternsAt(i));
+            }
+            i = i + 1;
+        }
+        return StartRequestWithRoots(shell, request, paths, ignores);
+    }
+
+    /// @brief Start a search over an explicit ordered list of roots.
+    /// @param shell App shell that owns the search result panel and status bar.
+    /// @param request Normalized search request for query/options.
+    /// @param paths Absolute root paths to search in order.
+    /// @param ignores Per-root ignore pattern strings aligned with @p paths.
+    /// @return True when root discovery was initialized.
+    /// @details This is the common initializer for single-root, folder, and
+    ///          multi-root project searches. The search still discovers files
+    ///          cooperatively through FileIndex.Page and never snapshots a whole
+    ///          workspace synchronously.
+    hide func StartRequestWithRoots(shell: app_shell.AppShell,
+                                    request: search_request.SearchRequest,
+                                    paths: List,
+                                    ignores: List) -> Boolean {
+        if replacer.IsBusy() { return false; }
+        if search_request.IsRunnable(request) == false { return false; }
+        if paths.count() == 0 { return false; }
+
+        ApplyRequest(request);
+        rootPaths = paths;
+        rootIgnorePatterns = ignores;
+        rootSearchIndex = 0;
+        files = new List();
+        filesSeen = Map.New();
+        pendingDirs = new List();
+        discovering = true;
+        directoriesScanned = 0;
+        discoveryOffset = 0;
+        discoveryTruncated = false;
+        discoveryError = "";
+        totalFiles = 0;
+        fileIndex = 0;
+        resultCount = 0;
+        skippedLargeFiles = 0;
+        resultLimitReached = false;
+        canceled = false;
+        mode = SEARCH_MODE_TEXT;
+        active = true;
+        resultLocationFirstId = 0;
+        resultLocationLastId = 0;
+        resultLocationRangePending = true;
+
+        shell.toolPanels.ClearToolRows(shell.toolPanels.searchListBox);
+        shell.toolPanels.ShowSearchPanel();
+        if rootPaths.count() > 1 {
+            shell.SetStatusLeft("Discovering files across " + rootPaths.count()
+                                + " roots for '" + query + "'...");
+        } else {
+            shell.SetStatusLeft("Discovering files for '" + query + "'...");
+        }
+        return true;
+    }
+
+
+    /// @brief Cancel concrete search work.
+    expose func Cancel(_shell: app_shell.AppShell) {}
+
+    /// @brief Return whether concrete search or replacement work is active.
+    expose func HasActiveWork() -> Boolean { return false; }
+
+    /// @brief Apply one normalized request in the concrete execution layer.
+    hide func ApplyRequest(_request: search_request.SearchRequest) {}
+
+    /// @brief Synchronize concrete Search panel command availability.
+    hide func UpdatePanelCommandState(_shell: app_shell.AppShell) {}
+
+    /// @brief Return whether the concrete result set supports replacement.
+    hide func SearchResultsAreReplaceable() -> Boolean { return false; }
+
+    /// @brief Return whether the panel still describes the concrete search.
+    hide func PanelMatchesCurrentSearch(
+        _shell: app_shell.AppShell) -> Boolean {
+        return false;
+    }
+}

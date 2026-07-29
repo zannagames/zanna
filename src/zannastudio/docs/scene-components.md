@@ -135,7 +135,7 @@ type or node discriminator from the component label.
 
 | Member | Required | Contract |
 | --- | --- | --- |
-| Root `version` | Yes | Numeric integer `1` through `15`; use the lowest version required by the optional members below. |
+| Root `version` | Yes | Numeric integer `1` through `18`; use the lowest version required by the optional members below. |
 | Root `components` | Yes | Array with at most 128 entries. |
 | Component `name` | Yes | Stable portable identifier, at most 64 characters; unique without regard to case. |
 | Component `target` | Yes | `2d-object`, `3d-node`, or `both`. |
@@ -178,7 +178,7 @@ always writes the lowest version its content requires, so a file that stops
 using version-2 kinds returns to `"version": 1`. A version-2 file presented to
 an older Studio is rejected wholesale, exactly like any unknown version.
 
-## Versions 3–17: Preview And Creation Extensions
+## Versions 3–18: Preview And Creation Extensions
 
 Later versions add declarative, editor-only visualization conventions while
 keeping component fields and canonical scene formats unchanged:
@@ -200,6 +200,7 @@ keeping component fields and canonical scene formats unchanged:
 | 15 | extended `scenePreview3D` | Construct bounded runtime `Water3D` preview layers from typed root metadata. |
 | 16 | `materialPreviews3D` | Apply typed, render-only project material overlays during shaded drawing. |
 | 17 | extended `nodePreviews3D` | Match typed node metadata and instantiate direct project models with bounded fixed transforms and ordered fallback. |
+| 18 | `nodePreviewFilter3D` | Expose bounded, per-document preview states that filter only transient 3D node art. |
 
 Studio never executes project code to apply these profiles, and preview
 resolution never writes scene bytes, dirty state, revision, or history. The
@@ -695,9 +696,59 @@ graph. It can render, contribute visual bounds, participate in surface
 placement, and remap picking to its canonical marker, but it never enters the
 hierarchy, selection identity, VSCN bytes, dirty state, revision, or history.
 
+### Version 18 Project-Owned 3D Node Preview States
+
+Version 18 can make a stateful scene resemble one real gameplay state instead
+of drawing every transient actor at once:
+
+```json
+{
+  "version": 18,
+  "components": [],
+  "nodePreviews3D": [
+    {
+      "matchProperty": "spawn.archetype",
+      "matchValue": 0,
+      "prefab": "assets/enemies/grunt.glb"
+    }
+  ],
+  "nodePreviewFilter3D": {
+    "label": "Wave",
+    "allLabel": "All waves",
+    "matchProperty": "spawn.wave",
+    "defaultIndex": 1,
+    "states": [
+      {"label": "Wave 1", "matchValue": 0},
+      {"label": "Wave 2", "matchValue": 1}
+    ]
+  }
+}
+```
+
+`label`, `matchProperty`, and a `states` array of 1–32 entries are required.
+`allLabel` defaults to `All`. Labels contain 1–64 characters and are unique
+without regard to case. Each state has an exact Boolean, integer, or string
+`matchValue`; fractional numbers and duplicate kind/value identities are
+invalid. `defaultIndex` is zero for All or one through the state count and
+defaults to zero.
+
+When a state is active, a node carrying `matchProperty` contributes transient
+node-preview art only if its metadata kind and value match. Nodes without that
+property stay visible, so a Wave selector can suppress inactive enemies without
+hiding props or pickups. All shows every matching node preview. Environment
+prefabs, water, canonical meshes, and render-only material overlays are not
+filtered.
+
+The contextual dropdown belongs to the scene document and survives tab/session
+restore. It rebuilds only disposable preview art; hierarchy, metadata,
+visibility, selection, VSCN bytes, dirty state, revision, and history remain
+unchanged. A compact viewport status reports the active state, active preview
+count, direct-model count, and filtered count. Its wrapped tooltip retains the
+full camera, render, material, fallback, and resource diagnostics.
+
 See [ADR 0197](../../../docs/adr/0197-project-owned-2d-object-preview-profiles.md)
 through
-[ADR 0215](../../../docs/adr/0215-project-owned-direct-model-previews.md)
+[ADR 0216](../../../docs/adr/0216-project-owned-3d-node-preview-states.md)
 for the complete bounds, precedence, and 3D profile contracts.
 
 ## Migration Assistant

@@ -69,7 +69,15 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief State shared by direct tile operations and pointer gestures.
+class TileToolsProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_2d.SceneEditor2D editor;
+    expose document.Document sceneDoc;
+}
+
+/// @brief Verify rectangle, fill, picker, and exact history operations.
+func VerifyTileOperations(ctx: TileToolsProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Tile Tools Probe", 1120, 760);
 
@@ -87,7 +95,7 @@ func main() {
 
     if editor.ReplaceScene(8, 6, 16) == false {
         Fail(shell, null, "scene fixture");
-        return;
+        return false;
     }
 
     var rectangleRevision = editor.GetRevision();
@@ -96,7 +104,7 @@ func main() {
        or editor.GetRevision() != rectangleRevision + 1
        or editor.undoStack.count() != rectangleUndo + 1 {
         Fail(shell, null, "reverse inclusive rectangle transaction");
-        return;
+        return false;
     }
     var y = 0;
     while y < editor.scene.Height {
@@ -108,7 +116,7 @@ func main() {
             }
             if editor.scene.GetTile(0, x, y) != expected {
                 Fail(shell, null, "rectangle membership");
-                return;
+                return false;
             }
             x = x + 1;
         }
@@ -123,13 +131,13 @@ func main() {
        or editor.Redo() == false
        or sceneDoc.content != rectangleContent {
         Fail(shell, null, "rectangle no-op or exact undo/redo");
-        return;
+        return false;
     }
 
     if editor.ApplyTileRectangle(0, 0, 0, 7, 5, 1) == false
        or editor.ApplyTileRectangle(0, 3, 0, 3, 5, 2) == false {
         Fail(shell, null, "flood fixture");
-        return;
+        return false;
     }
     var fillBaseline = sceneDoc.content;
     var fillRevision = editor.GetRevision();
@@ -146,12 +154,12 @@ func main() {
        or editor.Undo() == false
        or sceneDoc.content != fillBaseline {
         Fail(shell, null, "four-connected fill count, no-op, or undo");
-        return;
+        return false;
     }
 
     if editor.ApplyTileRectangle(0, 2, 2, 2, 2, 11) == false {
         Fail(shell, null, "picker fixture");
-        return;
+        return false;
     }
     var pickContent = sceneDoc.content;
     var pickRevision = editor.GetRevision();
@@ -166,15 +174,27 @@ func main() {
        or editor.undoStack.count() != pickUndo
        or sceneDoc.isModified != pickDirty {
         Fail(shell, null, "picker workspace isolation");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Verify captured rectangle and freehand pointer transactions.
+func VerifyTilePointerGestures(ctx: TileToolsProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
 
     editor.Pump(sceneDoc);
     shell.Render();
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
 
     editor.mode = scene_editor_2d.MODE_RECTANGLE;
@@ -208,7 +228,7 @@ func main() {
        or overlay % 16777216
           != scene_editor_2d.TILE_RECTANGLE_COLOR {
         Fail(shell, harness, "captured non-destructive rectangle preview");
-        return;
+        return false;
     }
 
     harness.SendMouse("up", endX, endY, 0);
@@ -220,15 +240,15 @@ func main() {
        or editor.GetRevision() != gestureRevision + 1
        or editor.undoStack.count() != gestureUndo + 1 {
         Fail(shell, harness, "rectangle release transaction");
-        return;
+        return false;
     }
-    y = 1;
+    var y = 1;
     while y <= 2 {
         var x = 1;
         while x <= 3 {
             if editor.scene.GetTile(0, x, y) != 13 {
                 Fail(shell, harness, "rectangle release membership");
-                return;
+                return false;
             }
             x = x + 1;
         }
@@ -237,7 +257,7 @@ func main() {
     editor.Pump(sceneDoc);
     if editor.GetRevision() != gestureRevision + 1 {
         Fail(shell, harness, "rectangle release applied more than once");
-        return;
+        return false;
     }
 
     var cancelContent = sceneDoc.content;
@@ -259,7 +279,7 @@ func main() {
        or editor.GetRevision() != cancelRevision
        or editor.undoStack.count() != cancelUndo {
         Fail(shell, harness, "rectangle Escape cancellation");
-        return;
+        return false;
     }
     harness.SendMouse("up", endX, endY, 0);
     harness.DispatchPending();
@@ -285,7 +305,7 @@ func main() {
        or editor.scene.GetTile(0, 5, 1) != 17
        or editor.scene.GetTile(0, 6, 1) != 17 {
         Fail(shell, harness, "freehand capture fixture");
-        return;
+        return false;
     }
     harness.SendKey("escape", 0);
     harness.DispatchPending();
@@ -297,13 +317,21 @@ func main() {
        or editor.scene.GetTile(0, 5, 1) == 17
        or editor.scene.GetTile(0, 6, 1) == 17 {
         Fail(shell, harness, "freehand Escape rollback");
-        return;
+        return false;
     }
     harness.SendMouse("up", paintEndX, paintEndY, 0);
     harness.DispatchPending();
     editor.Pump(sceneDoc);
 
     harness.UnbindApp();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new TileToolsProbeContext();
+    if VerifyTileOperations(ctx) == false { return; }
+    if VerifyTilePointerGestures(ctx) == false { return; }
+
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

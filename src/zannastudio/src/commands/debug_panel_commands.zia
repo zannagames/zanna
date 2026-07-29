@@ -1,0 +1,462 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/debug_panel_commands.zia
+// Purpose: Present debugger state in panels and source-location decorations.
+// Key invariants:
+//   - Panel snapshots are derived from DebugSession without blocking the UI.
+//   - Variable expansion renders cached children or an explicit loading row.
+//   - Stop navigation never decorates an unrelated or unavailable source file.
+//   - Breakpoint and session snapshots update only when their model changes.
+// Ownership/Lifetime:
+//   - DebugSession owns data; AppShell and EditorEngine own presentation state.
+// Links: zannastudio/src/commands/debug_commands.zia,
+//        zannastudio/src/build/debug_session.zia
+//
+//===----------------------------------------------------------------------===//
+
+module debug_panel_commands;
+
+bind "../ui/app_shell";
+bind "../core/document_manager";
+bind "../editor/editor_engine";
+bind "../editor/editor_tabs";
+bind "../build/breakpoints";
+bind "../build/debug_session";
+bind "../build/var_model";
+bind "../build/build_system";
+bind "../commands/file_commands";
+bind "../ui/run_debug_view";
+bind "../services/file_utils";
+bind "../services/theme_colors";
+
+bind Zanna.GUI;
+bind IO = Zanna.IO;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+bind Convert = Zanna.Core.Convert;
+bind Pixels = Zanna.Graphics.Pixels;
+
+final DEBUG_STOP_SLOT = 1;
+
+/// @brief Return whether the active document can be launched by the debugger.
+/// @details The debug adapter launches a concrete source path, so an untitled
+///          buffer or read-only preview is not yet a valid target.
+/// @param docMgr Current document manager, if available.
+/// @return True only for a saved editable active document.
+expose func HasDebugTarget(docMgr: document_manager.DocumentManager) -> Boolean {
+    if docMgr == null { return false; }
+    var doc = docMgr.GetActive();
+    return doc != null and doc!.isNew == false and doc!.filePath != ""
+           and doc!.isReadOnlyPreview == false
+           and file_utils.IsVisualKind(doc!.kind) == false;
+}
+
+/// @brief Return a concise state label for debugger-owned panel chrome.
+func DebugPanelStateLabel(session: debug_session.DebugSession) -> String {
+    if session == null { return "Idle"; }
+    if session.restartPending { return "Restarting"; }
+    if session.terminated { return "Terminated"; }
+    if session.terminateRequested or session.lastType == "terminating" {
+        return "Stopping";
+    }
+    if session.lastType == "pausing" { return "Pausing"; }
+    if session.stopped { return "Paused"; }
+    if session.IsActive() { return "Running"; }
+    return "Idle";
+}
+
+/// @brief Build one concise, truthful Run/Debug sidebar state description.
+hide func RunDebugStateDetail(
+    state: String,
+    session: debug_session.DebugSession,
+    docMgr: document_manager.DocumentManager,
+    hasTarget: Boolean,
+    buildBusy: Boolean) -> String {
+    var targetName = "";
+    if docMgr != null {
+        var activeDoc = docMgr.GetActive();
+        if activeDoc != null {
+            targetName = activeDoc!.fileName;
+            if targetName == "" {
+                targetName = Path.Name(activeDoc!.filePath);
+            }
+        }
+    }
+    var sessionName = targetName;
+    if session != null and session.activePath != "" {
+        sessionName = Path.Name(session.activePath);
+    }
+    if state == "Paused" {
+        var detail = "Paused";
+        if sessionName != "" {
+            detail = detail + " at " + sessionName;
+            if session != null and session.lastLine > 0 {
+                detail = detail + ":" + session.lastLine;
+            }
+        }
+        if session != null and session.lastReason != "" {
+            detail = detail + " · " + session.lastReason;
+        }
+        return detail;
+    }
+    if state == "Running" {
+        if sessionName != "" { return "Running " + sessionName; }
+        return "Debugger is running";
+    }
+    if state == "Pausing" {
+        if sessionName != "" { return "Pausing " + sessionName + "..."; }
+        return "Waiting for the debugger to pause...";
+    }
+    if state == "Restarting" {
+        if sessionName != "" { return "Restarting " + sessionName + "..."; }
+        return "Restarting debugger...";
+    }
+    if state == "Stopping" { return "Stopping debugger..."; }
+    if state == "Terminated" {
+        var terminated = "Debug session ended";
+        if session != null and session.exitCode >= 0 {
+            terminated = terminated + " with code " + session.exitCode;
+        }
+        if session != null and session.lastReason != ""
+           and session.lastReason != "exit" {
+            terminated = terminated + " · " + session.lastReason;
+        }
+        return terminated;
+    }
+    if buildBusy {
+        return "Wait for the active build or run job to finish";
+    }
+    if hasTarget == false {
+        return "Open or save a source file to start debugging";
+    }
+    if targetName != "" { return "Ready to debug " + targetName; }
+    return "Ready to debug the active source file";
+}
+
+/// @brief Publish debugger and breakpoint snapshots to the Run/Debug view.
+func SyncRunDebugView(
+    view: run_debug_view.RunDebugView,
+    docMgr: document_manager.DocumentManager,
+    buildSys: build_system.BuildSystem,
+    store: breakpoints.BreakpointStore,
+    session: debug_session.DebugSession) {
+    if view == null { return; }
+    var hasTarget = HasDebugTarget(docMgr);
+    var buildBusy = buildSys != null and buildSys.IsActive();
+    var state = DebugPanelStateLabel(session);
+    var active = session != null and session.IsActive();
+    var stopped = session != null and session.stopped;
+    var stopping = session != null
+        and (session.terminateRequested or session.restartPending);
+    view.UpdateSession(
+        hasTarget, buildBusy, state,
+        RunDebugStateDetail(
+            state, session, docMgr, hasTarget, buildBusy),
+        active, stopped, stopping);
+
+    if store == null {
+        if view.breakpointModelVersion != -2 {
+            view.BeginBreakpoints(-2);
+            view.EndBreakpoints();
+        }
+        return;
+    }
+    if view.breakpointModelVersion == store.version { return; }
+    view.BeginBreakpoints(store.version);
+    var i = 0;
+    while i < store.Count() {
+        view.AddBreakpoint(
+            i, store.GetPath(i), store.GetLine(i),
+            store.GetCondition(i), store.GetLogMessage(i));
+        i = i + 1;
+    }
+    view.EndBreakpoints();
+}
+
+/// @brief Fill the Variables and Call Stack panels from the session's structured
+///        stop snapshot. Cleared when not stopped. Does not change the active tab,
+///        so the user's panel choice (Debug Console etc.) is preserved; the rows
+///        are ready the moment they click Variables or Call Stack.
+func PopulateDebugPanels(shell: app_shell.AppShell,
+                         session: debug_session.DebugSession) {
+    shell.toolPanels.ClearToolRows(shell.toolPanels.variablesListBox);
+    shell.toolPanels.BeginCallStack(DebugPanelStateLabel(session));
+    if session == null { return; }
+
+    var variableTree = GUI.VirtualTree.New();
+    var wc = session.WatchCount();
+    if session.stopped == false and wc == 0 { return; }
+    if wc > 0 {
+        variableTree.AddNode("", "watches", "Watches");
+        var wi = 0;
+        while wi < wc {
+            variableTree.AddNode("watches", "watch:" + wi, session.WatchLabel(wi));
+            wi = wi + 1;
+        }
+        variableTree.Expand("watches");
+    }
+
+    var lc = 0;
+    if session.stopped {
+        lc = session.LocalCount();
+    }
+    if lc == 0 {
+        if session.stopped == false {
+            variableTree.AddNode("", "locals", "Locals: pause debugger to inspect");
+        } else if wc == 0 {
+            variableTree.AddNode("", "locals-empty", "(no locals in scope)");
+        } else {
+            variableTree.AddNode("", "locals", "Locals: (none)");
+        }
+    } else {
+        variableTree.AddNode("", "locals", "Locals");
+        var i = 0;
+        while i < lc {
+            AddVarNode(session, variableTree, "locals", session.LocalName(i),
+                       session.LocalName(i), session.LocalValue(i),
+                       session.LocalType(i), session.LocalVarRef(i),
+                       session.LocalChildCount(i));
+            i = i + 1;
+        }
+        variableTree.Expand("locals");
+    }
+    RenderVariableTree(shell, variableTree);
+
+    if session.stopped == false { return; }
+    var fc = session.FrameCount();
+    var j = 0;
+    while j < fc {
+        shell.toolPanels.AddCallStackFrame(j, session.FrameLabel(j));
+        j = j + 1;
+    }
+}
+
+/// @brief Clear only debugger-owned program output and retain session status.
+func handleClearDebugConsole(shell: app_shell.AppShell,
+                             session: debug_session.DebugSession) {
+    if session == null {
+        shell.toolPanels.UpdateDebugOutput("");
+        shell.SetStatusLeft("Cleared debug output");
+        return;
+    }
+    session.ClearProgramOutput();
+    shell.toolPanels.UpdateDebugOutputParts("", session.FormatConsole());
+    shell.SetStatusLeft("Cleared debug program output");
+}
+
+/// @brief Render the structured Variables tree into the existing tool ListBox.
+hide func RenderVariableTree(shell: app_shell.AppShell,
+                             tree: GUI.VirtualTree) {
+    if shell == null or tree == null { return; }
+    var rows = tree.VisibleRows();
+    if rows == null { return; }
+    var i = 0;
+    while i < Seq.get_Count(rows) {
+        var row = Seq.Get(rows, i);
+        var depth = Map.GetInt(row, "depth");
+        var text = Map.GetStr(row, "text");
+        var id = Map.GetStr(row, "id");
+        var item: Any = null;
+        if depth <= 0 {
+            item = shell.toolPanels.AddToolSectionRow(shell.toolPanels.variablesListBox, text);
+        } else {
+            item = shell.toolPanels.AddToolPlainRow(shell.toolPanels.variablesListBox, IndentForDepth(depth) + text, 0);
+        }
+        if item != null and id != "" {
+            GUI.ListBox.ItemSetData(item, id);
+        }
+        i = i + 1;
+    }
+}
+
+/// @brief Return the selected watch index from the Variables panel, or -1.
+/// @details Only node IDs with the `watch:` prefix are accepted; section rows
+///          and locals intentionally cannot be removed by watch commands.
+/// @param shell Workbench shell containing the Variables list box.
+/// @return Zero-based watch index, or -1 when no watch row is selected.
+func SelectedWatchIndex(shell: app_shell.AppShell) -> Integer {
+    if shell == null or shell.toolPanels.variablesListBox == null { return -1; }
+    var item = shell.toolPanels.variablesListBox.Selected;
+    if item == null { return -1; }
+    var id = GUI.ListBox.ItemGetData(item);
+    if Str.StartsWith(id, "watch:") == false { return -1; }
+    return Convert.ToInt64(Str.Mid(id, 7));
+}
+
+/// @brief Add a variable row to @p tree and, when it is an expanded composite,
+///        recurse into its (lazily fetched, cached) children.
+/// @details Node ids are stable name-paths ("nums", "nums/[0]") so expansion
+///          state survives steps. A leaf that somehow carries an expanded flag
+///          (e.g. it was a composite before a step turned it scalar) is pruned so
+///          the flag set stays clean.
+hide func AddVarNode(session: debug_session.DebugSession, tree: GUI.VirtualTree,
+                     parentId: String, path: String, name: String, value: String,
+                     typeName: String, varRef: Integer, childCount: Integer) {
+    var expandable = varRef > 0 and childCount > 0;
+    var expanded = expandable and session.varTree.IsExpanded(path);
+    if expandable == false and session.varTree.IsExpanded(path) {
+        session.varTree.SetExpanded(path, false); // prune a now-scalar node
+    }
+    var twisty = "   ";
+    if expandable {
+        if expanded { twisty = " ▾ "; } else { twisty = " ▸ "; }
+    }
+    var label = twisty + name + " = " + value + " : " + typeName;
+    tree.AddNode(parentId, path, label);
+    if expanded == false { return; }
+
+    if session.varTree.HasCache(path) == false {
+        var statusLabel = "   Loading children...";
+        if session.VariableChildrenRequestFailed(path) {
+            statusLabel = "   Children unavailable — collapse and expand to retry";
+        } else if session.VariableChildrenRequestPending(path) {
+            statusLabel = "   Loading children...";
+        } else if session.VariableChildrenRequestActive() {
+            statusLabel = "   Waiting to load children...";
+        } else if session.RequestVariableChildren(path, varRef) == false {
+            statusLabel = "   Children unavailable";
+        }
+        tree.AddNode(path, "variable-status:" + path, statusLabel);
+        tree.Expand(path);
+        return;
+    }
+    var kids = session.varTree.GetCache(path);
+    if kids == null { return; }
+    tree.Expand(path);
+    var k = 0;
+    while k < kids.items.count() {
+        var c = kids.items.get(k) as var_model.VarChildRec;
+        AddVarNode(session, tree, path, path + "/" + c.name, c.name, c.value,
+                   c.typeName, c.varRef, c.childCount);
+        k = k + 1;
+    }
+}
+
+/// @brief Toggle expand/collapse of the selected Variables row. Returns true when
+///        a variable row was activated (so the caller re-renders).
+/// @details Bound to the Variables list selection change. Expanding an unloaded
+///          composite queues an adapter request and immediately renders a
+///          loading row; a later DebugUpdate publishes the cached children.
+func HandleVariableActivate(shell: app_shell.AppShell,
+                            session: debug_session.DebugSession) -> Boolean {
+    if shell == null or session == null or session.stopped == false { return false; }
+    if shell.toolPanels.variablesListBox == null { return false; }
+    var item = shell.toolPanels.variablesListBox.Selected;
+    if item == null { return false; }
+    var id = GUI.ListBox.ItemGetData(item);
+    // Local variable rows use their name-path as the id; watch/section rows use
+    // their own prefixes and are handled elsewhere.
+    if id == "" or Str.StartsWith(id, "watch:")
+        or Str.StartsWith(id, "variable-status:") or id == "locals"
+        or id == "watches" or id == "locals-empty" { return false; }
+    var expanded = session.varTree.Toggle(id);
+    if expanded { session.ClearVariableChildrenFailure(id); }
+    PopulateDebugPanels(shell, session);
+    return true;
+}
+
+hide func IndentForDepth(depth: Integer) -> String {
+    var text = "";
+    var i = 0;
+    while i < depth {
+        text = text + "  ";
+        i = i + 1;
+    }
+    return text;
+}
+
+/// @brief True if two paths denote the same source file after absolute
+///        lexical normalization.
+/// @details Debugger stop paths can differ from editor paths by relative
+///          spelling or `.`/`..` segments. Normalized absolute equality covers
+///          those cases without the false positives caused by suffix matching
+///          similarly named files in different directories.
+func SamePath(a: String, b: String) -> Boolean {
+    if a == b { return true; }
+    if a == "" or b == "" { return false; }
+    var na = Path.Normalize(Path.Absolute(a));
+    var nb = Path.Normalize(Path.Absolute(b));
+    return na == nb;
+}
+
+func OpenStopLocation(shell: app_shell.AppShell,
+                      docMgr: document_manager.DocumentManager,
+                      engine: editor_engine.EditorEngine,
+                      tabs: editor_tabs.EditorTabs,
+                      session: debug_session.DebugSession) {
+    if session.activePath == "" or session.lastLine <= 0 { return; }
+    var maybeActive = docMgr.GetActive();
+    var needsOpen = false;
+    if maybeActive == null {
+        needsOpen = true;
+    } else {
+        var active = maybeActive!;
+        if SamePath(active.filePath, session.activePath) == false {
+            needsOpen = true;
+        }
+    }
+    if needsOpen {
+        if IO.File.Exists(session.activePath) == false
+           or file_commands.OpenFileAtPath(shell, docMgr, engine, tabs,
+                                           session.activePath) == false {
+            ClearDebugStopMarker(engine);
+            shell.SetStatusLeft("Stopped source unavailable: " + session.activePath);
+            return;
+        }
+    }
+    engine.GoToLine(session.lastLine);
+    MarkDebugStopLine(engine, session.lastLine);
+}
+
+/// @brief Draw the current debug stop line in the secondary gutter slot.
+/// @details Breakpoints use slot 0, so this marker can be cleared/repainted
+///          independently as the VM stops on different lines.
+/// @param engine Editor containing the stopped source file.
+/// @param line One-based source line reported by the debug adapter.
+func MarkDebugStopLine(engine: editor_engine.EditorEngine,
+                       line: Integer) {
+    if engine == null or engine.editor == null or line <= 0 { return; }
+    engine.editor.ClearGutterIcons(DEBUG_STOP_SLOT);
+    engine.editor.SetGutterIcon(line - 1, DebugStopIcon(), DEBUG_STOP_SLOT);
+}
+
+/// @brief Clear the current debug stop marker from the editor gutter.
+/// @param engine Editor whose secondary gutter slot should be cleared.
+func ClearDebugStopMarker(engine: editor_engine.EditorEngine) {
+    if engine == null or engine.editor == null { return; }
+    engine.editor.ClearGutterIcons(DEBUG_STOP_SLOT);
+}
+
+/// @brief Build a compact arrow marker for the current debug execution line.
+/// @details The icon is generated at runtime to keep Zanna Studio dependency-free
+///          and avoid adding platform-specific image assets.
+/// @return Pixels object suitable for CodeEditor.SetGutterIcon.
+func DebugStopIcon() -> Any {
+    var px = Pixels.New(8, 8);
+    px.Clear();
+    var stopColor = theme_colors.Rgba("accentInfo");
+    px.SetRgba(2, 1, stopColor);
+    px.SetRgba(2, 2, stopColor);
+    px.SetRgba(3, 2, stopColor);
+    px.SetRgba(2, 3, stopColor);
+    px.SetRgba(3, 3, stopColor);
+    px.SetRgba(4, 3, stopColor);
+    px.SetRgba(2, 4, stopColor);
+    px.SetRgba(3, 4, stopColor);
+    px.SetRgba(4, 4, stopColor);
+    px.SetRgba(5, 4, stopColor);
+    px.SetRgba(2, 5, stopColor);
+    px.SetRgba(3, 5, stopColor);
+    px.SetRgba(4, 5, stopColor);
+    px.SetRgba(2, 6, stopColor);
+    px.SetRgba(3, 6, stopColor);
+    px.SetRgba(2, 7, stopColor);
+    return px;
+}

@@ -81,7 +81,15 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Typed state shared by the serial tool-panel scenarios.
+class ToolPanelToolbarProbeContext {
+    expose app_shell.AppShell shell;
+    expose GUI.TestHarness harness;
+}
+
+/// @brief Verify Output filtering, actions, and content preservation.
+func VerifyOutputToolbar(
+    ctx: ToolPanelToolbarProbeContext) -> Boolean {
     if tool_panel_shell.ProblemsUseCompactControls(560.0) == false
        or tool_panel_shell.ProblemsUseCompactControls(560.01)
        or tool_panel_shell.OutputUsesCompactControls(520.0) == false
@@ -100,7 +108,7 @@ func main() {
        or diagnostic_edit_commands.ActionKindForProblemLabel(
               "No quick fix") != 0 {
         Terminal.Say("RESULT: fail toolbar policy helpers");
-        return;
+        return false;
     }
 
     var shell = new app_shell.AppShell();
@@ -111,7 +119,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
 
     // Output exposes its previously hidden capabilities in the live panel.
@@ -127,7 +135,7 @@ func main() {
        or shell.toolPanels.outputClearButton.IsEnabled() == false
        or shell.toolPanels.outputFilterClearButton.IsEnabled() {
         Fail(shell, harness, "initial Output toolbar state");
-        return;
+        return false;
     }
 
     // A live authored filter switches to structured rows without losing focus.
@@ -140,7 +148,7 @@ func main() {
        or shell.toolPanels.outputFilterInput.IsFocused() == false
        or shell.toolPanels.outputFilterClearButton.IsEnabled() == false {
         Fail(shell, harness, "live Output filter");
-        return;
+        return false;
     }
 
     // Checkbox and button behavior travels through real hit testing.
@@ -149,14 +157,14 @@ func main() {
     if shell.toolPanels.outputWrapLines == false
        or shell.toolPanels.outputWrapCheck.IsChecked() == false {
         Fail(shell, harness, "pointer Output wrap");
-        return;
+        return false;
     }
     Click(shell, harness, shell.toolPanels.outputFollowCheck);
     Pump(shell);
     if shell.toolPanels.outputAutoScroll
        or shell.toolPanels.outputFollowCheck.IsChecked() {
         Fail(shell, harness, "pointer Output follow");
-        return;
+        return false;
     }
 
     GUI.ClipboardText.Clear();
@@ -164,7 +172,7 @@ func main() {
     Pump(shell);
     if GUI.ClipboardText.GetText() != completeOutput {
         Fail(shell, harness, "Output Copy did not use complete unfiltered text");
-        return;
+        return false;
     }
 
     Click(shell, harness, shell.toolPanels.outputFilterClearButton);
@@ -174,7 +182,7 @@ func main() {
        or shell.toolPanels.outputListBox.Count != 3
        or shell.toolPanels.outputFilterInput.IsFocused() == false {
         Fail(shell, harness, "pointer Output filter reset");
-        return;
+        return false;
     }
 
     Click(shell, harness, shell.toolPanels.outputClearButton);
@@ -186,8 +194,19 @@ func main() {
        or shell.toolPanels.outputCopyButton.IsEnabled()
        or shell.toolPanels.outputClearButton.IsEnabled() {
         Fail(shell, harness, "in-panel Output Clear collapsed the surface");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify Problems records, filters, and quick-fix state.
+func VerifyProblemsToolbar(
+    ctx: ToolPanelToolbarProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var harness = ctx.harness;
 
     // Problems retains durable records while its concrete rows are rebuilt.
     shell.toolPanels.BeginProblems();
@@ -213,7 +232,7 @@ func main() {
        or shell.toolPanels.problemsWarningCount != 1
        or shell.toolPanels.problemsInfoCount != 1 {
         Fail(shell, harness, "structured Problems counts");
-        return;
+        return false;
     }
 
     shell.toolPanels.diagListBox.SelectIndex(1);
@@ -222,7 +241,7 @@ func main() {
        or shell.toolPanels.GetSelectedProblemAction() != "Apply Fix-It"
        or shell.toolPanels.GetSelectedProblemLocationData() != "101" {
         Fail(shell, harness, "selected Problems action state");
-        return;
+        return false;
     }
     Click(shell, harness, shell.toolPanels.problemsQuickFixButton);
     shell.toolPanels.PumpToolTabs();
@@ -232,7 +251,7 @@ func main() {
     shell.Poll();
     if firstQuickFixEdge == false {
         Fail(shell, harness, "Problems Quick Fix activation edge");
-        return;
+        return false;
     }
 
     // Text filtering retires and recreates rows without losing their metadata.
@@ -243,7 +262,7 @@ func main() {
        or shell.toolPanels.diagListBox.Count != 2
        or shell.toolPanels.problemsFilterInput.IsFocused() == false {
         Fail(shell, harness, "live Problems text filter");
-        return;
+        return false;
     }
     shell.toolPanels.diagListBox.SelectIndex(1);
     Pump(shell);
@@ -251,7 +270,7 @@ func main() {
        or shell.toolPanels.GetSelectedProblemLocationData() != "102"
        or shell.toolPanels.problemsQuickFixButton.IsEnabled() == false {
         Fail(shell, harness, "filtered Problems metadata");
-        return;
+        return false;
     }
 
     Click(shell, harness, shell.toolPanels.problemsResetButton);
@@ -262,7 +281,7 @@ func main() {
        or shell.toolPanels.visibleProblemCount != 2
        or shell.toolPanels.diagListBox.Count != 3 {
         Fail(shell, harness, "pointer Problems severity filter");
-        return;
+        return false;
     }
     Click(shell, harness, shell.toolPanels.problemsResetButton);
     Pump(shell);
@@ -272,7 +291,7 @@ func main() {
        or shell.toolPanels.problemsShowInfo == false
        or shell.toolPanels.visibleProblemCount != 3 {
         Fail(shell, harness, "pointer Problems reset");
-        return;
+        return false;
     }
 
     shell.toolPanels.SetProblemsFilter("does-not-exist");
@@ -291,7 +310,7 @@ func main() {
             + shell.toolPanels.problemsQuickFixButton.IsEnabled()
             + " filter=" + shell.toolPanels.problemsFilterText);
         Fail(shell, harness, "Problems empty filtered state");
-        return;
+        return false;
     }
     shell.toolPanels.ResetProblemFilters();
     shell.toolPanels.diagListBox.SelectIndex(1);
@@ -299,9 +318,18 @@ func main() {
     Pump(shell);
     if shell.toolPanels.problemsQuickFixButton.IsEnabled() {
         Fail(shell, harness, "busy Problems action remained enabled");
-        return;
+        return false;
     }
     shell.toolPanels.SetProblemsActionBusy(false);
+
+    return true;
+}
+
+/// @brief Verify grouped References filtering, copying, and clearing.
+func VerifyReferencesToolbar(
+    ctx: ToolPanelToolbarProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var harness = ctx.harness;
 
     // References owns a durable grouped model, so live filtering can rebuild
     // concrete rows without losing source-location IDs.
@@ -338,7 +366,7 @@ func main() {
        or shell.toolPanels.referencesClearButton.IsEnabled() == false
        or shell.toolPanels.referencesEmptyLabel.IsVisible() {
         Fail(shell, harness, "structured References initial state");
-        return;
+        return false;
     }
 
     // Matching a heading keeps all children; matching a child keeps only that
@@ -351,13 +379,13 @@ func main() {
        or shell.toolPanels.referencesListBox.Count != 3
        or shell.toolPanels.referencesFilterInput.IsFocused() == false {
         Fail(shell, harness, "References group filter");
-        return;
+        return false;
     }
     shell.toolPanels.referencesListBox.SelectIndex(1);
     if GUI.ListBox.ItemGetData(
            shell.toolPanels.referencesListBox.Selected) != "ref-alpha-one" {
         Fail(shell, harness, "References group-filter location metadata");
-        return;
+        return false;
     }
 
     shell.toolPanels.referencesFilterInput.SetText("spawn enemy");
@@ -368,7 +396,7 @@ func main() {
        or GUI.ListBox.ItemGetData(
               shell.toolPanels.referencesListBox.Selected) != "ref-beta-one" {
         Fail(shell, harness, "References child filter metadata");
-        return;
+        return false;
     }
 
     // Incremental publication under an active filter realizes a matching group
@@ -379,7 +407,7 @@ func main() {
        or shell.toolPanels.referencesListBox.IsVisible()
        or shell.toolPanels.referencesEmptyLabel.IsVisible() == false {
         Fail(shell, harness, "References filtered empty state");
-        return;
+        return false;
     }
     shell.toolPanels.AddToolGroupHeader(
         shell.toolPanels.referencesListBox, "late.zia", "src/late.zia");
@@ -398,7 +426,7 @@ func main() {
        or GUI.ListBox.ItemGetData(
               shell.toolPanels.referencesListBox.Selected) != "ref-late-one" {
         Fail(shell, harness, "incremental filtered References publication");
-        return;
+        return false;
     }
 
     GUI.ClipboardText.Clear();
@@ -409,7 +437,7 @@ func main() {
        or Str.Contains(copiedReferences, "spawn enemy") == false
        or Str.Contains(copiedReferences, "late match result") == false {
         Fail(shell, harness, "References Copy omitted unfiltered results");
-        return;
+        return false;
     }
 
     Click(shell, harness, shell.toolPanels.referencesFilterClearButton);
@@ -420,7 +448,7 @@ func main() {
        or shell.toolPanels.referencesListBox.Count != 7
        or shell.toolPanels.referencesFilterInput.IsFocused() == false {
         Fail(shell, harness, "pointer References filter reset");
-        return;
+        return false;
     }
 
     Click(shell, harness, shell.toolPanels.referencesClearButton);
@@ -435,7 +463,7 @@ func main() {
        or shell.toolPanels.referencesCopyButton.IsEnabled()
        or shell.toolPanels.referencesClearButton.IsEnabled() {
         Fail(shell, harness, "in-panel References Clear collapsed the surface");
-        return;
+        return false;
     }
 
     shell.toolPanels.AddToolGroupHeader(
@@ -445,6 +473,15 @@ func main() {
         "", "side dock result", "");
     shell.toolPanels.SetAddedToolRowLocationData(
         shell.toolPanels.referencesListBox, sideOne, "ref-side-one");
+
+    return true;
+}
+
+/// @brief Verify compact toolbar reachability in zoomed side docks.
+func VerifyResponsiveSideDocks(
+    ctx: ToolPanelToolbarProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var harness = ctx.harness;
 
     // Zoomed side docks compact and wrap the same live controls; typed focus and
     // records survive reparenting.
@@ -474,7 +511,7 @@ func main() {
               + shell.toolPanels.problemsToolbar.GetScreenHeight()
           > shell.toolPanels.diagListBox.GetScreenY() + 1.0 {
         Fail(shell, harness, "Problems controls overflowed zoomed side dock");
-        return;
+        return false;
     }
 
     shell.toolPanels.ShowOutputPanel();
@@ -497,7 +534,7 @@ func main() {
               + shell.toolPanels.outputToolbar.GetScreenHeight()
           > shell.toolPanels.outputPane.GetScreenY() + 1.0 {
         Fail(shell, harness, "Output controls overflowed zoomed side dock");
-        return;
+        return false;
     }
 
     shell.toolPanels.ShowReferencesPanel();
@@ -519,10 +556,19 @@ func main() {
               + shell.toolPanels.referencesToolbar.GetScreenHeight()
           > shell.toolPanels.referencesListBox.GetScreenY() + 1.0 {
         Fail(shell, harness, "References controls overflowed zoomed side dock");
-        return;
+        return false;
     }
 
-    harness.UnbindApp();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new ToolPanelToolbarProbeContext();
+    if VerifyOutputToolbar(ctx) == false { return; }
+    if VerifyProblemsToolbar(ctx) == false { return; }
+    if VerifyReferencesToolbar(ctx) == false { return; }
+    if VerifyResponsiveSideDocks(ctx) == false { return; }
+    ctx.harness.UnbindApp();
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

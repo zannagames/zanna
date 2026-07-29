@@ -1,0 +1,844 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_environment_3d.zia
+// Purpose: Additive environment, water, and post-processing preview parsing.
+// Key invariants:
+//   - Malformed or out-of-bounds input rejects the complete staged schema.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_environment_3d;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind "scene_component_schema_model" as SceneComponentModel;
+bind "scene_component_schema_scene_preview_3d" as PreviousLayer;
+
+class SceneComponentSchemaEnvironment3DLayer extends PreviousLayer.SceneComponentSchemaScenePreview3DLayer {
+
+    /// @brief Parse bounded schema-v14 additive 3D environment layers.
+    /// @details Each layer has one exact typed root-metadata condition, one safe
+    ///          prefab, and optional float metadata mappings for individual TRS
+    ///          axes. Missing mappings use identity values; configured mappings
+    ///          fail closed at render time when the scene metadata is absent or
+    ///          wrong-typed.
+    hide override func ParseSceneEnvironmentLayers3D(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "environmentLayers") == false { return true; }
+        var rawLayers = Map.Get(raw, "environmentLayers");
+        if rawLayers == null or Json.TypeOf(rawLayers) != "array" {
+            Reject(schema, "scenePreview3D environmentLayers must be an array.");
+            return false;
+        }
+        var count = Seq.get_Count(rawLayers);
+        if count <= 0 or count > SceneComponentModel.MAX_SCENE_ENVIRONMENT_PREVIEW_LAYERS {
+            Reject(
+                schema,
+                "scenePreview3D requires between 1 and 32 environment layers.");
+            return false;
+        }
+        var index = 0;
+        while index < count {
+            var rawLayer = Seq.Get(rawLayers, index);
+            var layer = ParseSceneEnvironmentLayer3D(
+                rawLayer, index, schema);
+            if layer == null { return false; }
+            profile.environmentLayers.add(layer);
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse one typed additive environment layer.
+    hide func ParseSceneEnvironmentLayer3D(
+        rawLayer: Any,
+        index: Integer,
+        schema: SceneComponentModel.SceneComponentSchema)
+        -> SceneComponentModel.SceneEnvironmentLayer3DDefinition {
+        if rawLayer == null or Json.TypeOf(rawLayer) != "object" {
+            Reject(
+                schema,
+                "3D environment layer " + index + " must be an object.");
+            return null;
+        }
+        var layer = new SceneComponentModel.SceneEnvironmentLayer3DDefinition();
+        if ParseEnvironmentLayerMatch(rawLayer, index, layer, schema) == false
+           or ParseEnvironmentLayerProperties(
+               rawLayer, index, layer, schema) == false
+           or ParseEnvironmentLayerYaw(rawLayer, index, layer, schema) == false {
+            return null;
+        }
+        return layer;
+    }
+
+    /// @brief Parse one exact typed match and portable prefab.
+    hide func ParseEnvironmentLayerMatch(
+        rawLayer: Any,
+        index: Integer,
+        layer: SceneComponentModel.SceneEnvironmentLayer3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(rawLayer, "matchProperty") == false
+           or Json.TypeOf(
+               Map.Get(rawLayer, "matchProperty")) != "string" {
+            Reject(
+                schema,
+                "3D environment layer " + index
+                    + " requires a matchProperty string.");
+            return false;
+        }
+        layer.matchProperty =
+            Str.Trim(Map.GetStr(rawLayer, "matchProperty"));
+        if PortableIdentifier(
+               layer.matchProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "3D environment layer " + index
+                    + " matchProperty must be a portable key.");
+            return false;
+        }
+        if Map.Has(rawLayer, "matchValue") == false {
+            Reject(
+                schema,
+                "3D environment layer " + index
+                    + " requires a Boolean, integer, or string matchValue.");
+            return false;
+        }
+        var rawMatch = Map.Get(rawLayer, "matchValue");
+        var matchType = Json.TypeOf(rawMatch);
+        if matchType == "boolean" {
+            layer.matchKind = "bool";
+            layer.matchBoolean = Map.GetBool(rawLayer, "matchValue");
+        } else if matchType == "number" {
+            var parsedMatch = Parse.TryInt(Json.Format(rawMatch));
+            if parsedMatch.IsNone {
+                Reject(
+                    schema,
+                    "3D environment layer " + index
+                        + " numeric matchValue must be an integer.");
+                return false;
+            }
+            layer.matchKind = "int";
+            layer.matchInteger = parsedMatch.UnwrapI64();
+        } else if matchType == "string" {
+            layer.matchKind = "string";
+            layer.matchString = Map.GetStr(rawLayer, "matchValue");
+            if Str.get_Length(layer.matchString) > SceneComponentModel.MAX_FIELD_KEY_CHARS {
+                Reject(
+                    schema,
+                    "3D environment layer " + index
+                        + " string matchValue exceeds 128 characters.");
+                return false;
+            }
+        } else {
+            Reject(
+                schema,
+                "3D environment layer " + index
+                    + " matchValue must be Boolean, integer, or string.");
+            return false;
+        }
+        if Map.Has(rawLayer, "prefab") == false
+           or Json.TypeOf(Map.Get(rawLayer, "prefab")) != "string" {
+            Reject(
+                schema,
+                "3D environment layer " + index
+                    + " requires a prefab string.");
+            return false;
+        }
+        layer.prefab = Str.Trim(Map.GetStr(rawLayer, "prefab"));
+        if PortablePreviewPrefab(layer.prefab) == false {
+            Reject(
+                schema,
+                "3D environment layer " + index
+                    + " prefab must be a safe project-relative "
+                    + ".scene3d or .vscn path.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse optional position and scale metadata mappings.
+    hide func ParseEnvironmentLayerProperties(
+        rawLayer: Any,
+        index: Integer,
+        layer: SceneComponentModel.SceneEnvironmentLayer3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var propertyNames: List[String] = [
+            "positionXProperty", "positionYProperty", "positionZProperty",
+            "scaleXProperty", "scaleYProperty", "scaleZProperty"
+        ];
+        var propertyIndex = 0;
+        while propertyIndex < propertyNames.count() {
+            var name = propertyNames.get(propertyIndex);
+            var value = "";
+            if Map.Has(rawLayer, name) {
+                if Json.TypeOf(Map.Get(rawLayer, name)) != "string" {
+                    Reject(
+                        schema,
+                        "3D environment layer " + index + " " + name
+                            + " must be a string.");
+                    return false;
+                }
+                value = Str.Trim(Map.GetStr(rawLayer, name));
+                if PortableIdentifier(
+                       value, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+                    Reject(
+                        schema,
+                        "3D environment layer " + index + " " + name
+                            + " must be a portable key.");
+                    return false;
+                }
+            }
+            if name == "positionXProperty" {
+                layer.positionXProperty = value;
+            } else if name == "positionYProperty" {
+                layer.positionYProperty = value;
+            } else if name == "positionZProperty" {
+                layer.positionZProperty = value;
+            } else if name == "scaleXProperty" {
+                layer.scaleXProperty = value;
+            } else if name == "scaleYProperty" {
+                layer.scaleYProperty = value;
+            } else {
+                layer.scaleZProperty = value;
+            }
+            propertyIndex = propertyIndex + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse the optional paired yaw property and unit.
+    hide func ParseEnvironmentLayerYaw(
+        rawLayer: Any,
+        index: Integer,
+        layer: SceneComponentModel.SceneEnvironmentLayer3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasYawProperty = Map.Has(rawLayer, "yawProperty");
+        var hasYawUnit = Map.Has(rawLayer, "yawUnit");
+        if hasYawProperty != hasYawUnit {
+            Reject(
+                schema,
+                "3D environment layer " + index
+                    + " yawProperty and yawUnit must be supplied together.");
+            return false;
+        }
+        if hasYawProperty {
+            if Json.TypeOf(Map.Get(rawLayer, "yawProperty")) != "string"
+               or Json.TypeOf(Map.Get(rawLayer, "yawUnit")) != "string" {
+                Reject(
+                    schema,
+                    "3D environment layer " + index
+                        + " yawProperty/yawUnit must be strings.");
+                return false;
+            }
+            layer.yawProperty =
+                Str.Trim(Map.GetStr(rawLayer, "yawProperty"));
+            layer.yawUnit =
+                Str.ToLower(Str.Trim(Map.GetStr(rawLayer, "yawUnit")));
+            if PortableIdentifier(
+                   layer.yawProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false
+               or (layer.yawUnit != "degrees"
+                   and layer.yawUnit != "radians") {
+                Reject(
+                    schema,
+                    "3D environment layer " + index
+                        + " yaw requires a portable property and "
+                        + "degrees or radians unit.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse one optional bounded number from a water-layer object.
+    hide override func ParseWaterLayerNumber(
+        rawLayer: Any,
+        name: String,
+        minimum: Number,
+        maximum: Number,
+        fallback: Number,
+        layerIndex: Integer,
+        schema: SceneComponentModel.SceneComponentSchema) -> Number {
+        if Map.Has(rawLayer, name) == false { return fallback; }
+        if Json.TypeOf(Map.Get(rawLayer, name)) != "number" {
+            Reject(
+                schema,
+                "3D water layer " + layerIndex + " " + name
+                    + " must be a number.");
+            return fallback;
+        }
+        var parsed =
+            Parse.TryDouble(Json.Format(Map.Get(rawLayer, name)));
+        if parsed.IsNone
+           or parsed.UnwrapF64() < minimum
+           or parsed.UnwrapF64() > maximum {
+            Reject(
+                schema,
+                "3D water layer " + layerIndex + " " + name
+                    + " is outside its supported range.");
+            return fallback;
+        }
+        return parsed.UnwrapF64();
+    }
+
+    /// @brief Parse one optional portable float-metadata mapping for water.
+    hide override func ParseWaterLayerProperty(
+        rawLayer: Any,
+        name: String,
+        layerIndex: Integer,
+        schema: SceneComponentModel.SceneComponentSchema) -> String {
+        if Map.Has(rawLayer, name) == false { return ""; }
+        if Json.TypeOf(Map.Get(rawLayer, name)) != "string" {
+            Reject(
+                schema,
+                "3D water layer " + layerIndex + " " + name
+                    + " must be a string.");
+            return "";
+        }
+        var value = Str.Trim(Map.GetStr(rawLayer, name));
+        if PortableIdentifier(value, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "3D water layer " + layerIndex + " " + name
+                    + " must be a portable key.");
+            return "";
+        }
+        return value;
+    }
+
+    /// @brief Parse schema-v15 runtime-backed 3D water layers.
+    /// @details The schema supplies only bounded declarative construction data.
+    ///          Canonical root metadata is resolved later by the active editor.
+    hide override func ParseSceneWaterLayers3D(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "waterLayers") == false { return true; }
+        var rawLayers = Map.Get(raw, "waterLayers");
+        if rawLayers == null or Json.TypeOf(rawLayers) != "array" {
+            Reject(schema, "scenePreview3D waterLayers must be an array.");
+            return false;
+        }
+        var count = Seq.get_Count(rawLayers);
+        if count <= 0 or count > SceneComponentModel.MAX_SCENE_WATER_PREVIEW_LAYERS {
+            Reject(
+                schema,
+                "scenePreview3D requires between 1 and 8 water layers.");
+            return false;
+        }
+        var index = 0;
+        while index < count {
+            var rawLayer = Seq.Get(rawLayers, index);
+            var layer = ParseSceneWaterLayer3D(rawLayer, index, schema);
+            if layer == null { return false; }
+            profile.waterLayers.add(layer);
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse one complete runtime-backed water layer.
+    hide func ParseSceneWaterLayer3D(
+        rawLayer: Any,
+        index: Integer,
+        schema: SceneComponentModel.SceneComponentSchema)
+        -> SceneComponentModel.SceneWaterLayer3DDefinition {
+        if rawLayer == null or Json.TypeOf(rawLayer) != "object" {
+            Reject(schema, "3D water layer " + index + " must be an object.");
+            return null;
+        }
+        var layer = new SceneComponentModel.SceneWaterLayer3DDefinition();
+        if ParseWaterLayerMatch(rawLayer, index, layer, schema) == false
+           or ParseWaterLayerGeometry(rawLayer, index, layer, schema) == false
+           or ParseWaterLayerColor(rawLayer, index, layer, schema) == false
+           or ParseWaterLayerImages(rawLayer, index, layer, schema) == false
+           or ParseWaterLayerSettings(rawLayer, index, layer, schema) == false
+           or ParseWaterLayerWaves(rawLayer, index, layer, schema) == false {
+            return null;
+        }
+        return layer;
+    }
+
+    /// @brief Parse one exact typed water-presence selector.
+    hide func ParseWaterLayerMatch(
+        rawLayer: Any,
+        index: Integer,
+        layer: SceneComponentModel.SceneWaterLayer3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(rawLayer, "matchProperty") == false
+           or Json.TypeOf(
+               Map.Get(rawLayer, "matchProperty")) != "string" {
+            Reject(
+                schema,
+                "3D water layer " + index
+                    + " requires a matchProperty string.");
+            return false;
+        }
+        layer.matchProperty =
+            Str.Trim(Map.GetStr(rawLayer, "matchProperty"));
+        if PortableIdentifier(
+               layer.matchProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "3D water layer " + index
+                    + " matchProperty must be a portable key.");
+            return false;
+        }
+        if Map.Has(rawLayer, "matchValue") == false {
+            Reject(
+                schema,
+                "3D water layer " + index
+                    + " requires a Boolean, integer, or string matchValue.");
+            return false;
+        }
+        var rawMatch = Map.Get(rawLayer, "matchValue");
+        var matchType = Json.TypeOf(rawMatch);
+        if matchType == "boolean" {
+            layer.matchKind = "bool";
+            layer.matchBoolean = Map.GetBool(rawLayer, "matchValue");
+        } else if matchType == "number" {
+            var parsedMatch = Parse.TryInt(Json.Format(rawMatch));
+            if parsedMatch.IsNone {
+                Reject(
+                    schema,
+                    "3D water layer " + index
+                        + " numeric matchValue must be an integer.");
+                return false;
+            }
+            layer.matchKind = "int";
+            layer.matchInteger = parsedMatch.UnwrapI64();
+        } else if matchType == "string" {
+            layer.matchKind = "string";
+            layer.matchString = Map.GetStr(rawLayer, "matchValue");
+            if Str.get_Length(layer.matchString) > SceneComponentModel.MAX_FIELD_KEY_CHARS {
+                Reject(
+                    schema,
+                    "3D water layer " + index
+                        + " string matchValue exceeds 128 characters.");
+                return false;
+            }
+        } else {
+            Reject(
+                schema,
+                "3D water layer " + index
+                    + " matchValue must be Boolean, integer, or string.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse fixed geometry and optional root-metadata mappings.
+    hide func ParseWaterLayerGeometry(
+        rawLayer: Any,
+        index: Integer,
+        layer: SceneComponentModel.SceneWaterLayer3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        layer.positionX = ParseWaterLayerNumber(
+            rawLayer, "positionX",
+            0.0 - SceneComponentModel.MAX_SCENE_WATER_PREVIEW_POSITION,
+            SceneComponentModel.MAX_SCENE_WATER_PREVIEW_POSITION,
+            0.0, index, schema);
+        layer.positionY = ParseWaterLayerNumber(
+            rawLayer, "positionY",
+            0.0 - SceneComponentModel.MAX_SCENE_WATER_PREVIEW_POSITION,
+            SceneComponentModel.MAX_SCENE_WATER_PREVIEW_POSITION,
+            0.0, index, schema);
+        layer.positionZ = ParseWaterLayerNumber(
+            rawLayer, "positionZ",
+            0.0 - SceneComponentModel.MAX_SCENE_WATER_PREVIEW_POSITION,
+            SceneComponentModel.MAX_SCENE_WATER_PREVIEW_POSITION,
+            0.0, index, schema);
+        layer.width = ParseWaterLayerNumber(
+            rawLayer, "width",
+            SceneComponentModel.MIN_SCENE_WATER_PREVIEW_SIZE,
+            SceneComponentModel.MAX_SCENE_WATER_PREVIEW_SIZE,
+            1.0, index, schema);
+        layer.depth = ParseWaterLayerNumber(
+            rawLayer, "depth",
+            SceneComponentModel.MIN_SCENE_WATER_PREVIEW_SIZE,
+            SceneComponentModel.MAX_SCENE_WATER_PREVIEW_SIZE,
+            1.0, index, schema);
+        layer.positionXProperty = ParseWaterLayerProperty(
+            rawLayer, "positionXProperty", index, schema);
+        layer.positionYProperty = ParseWaterLayerProperty(
+            rawLayer, "positionYProperty", index, schema);
+        layer.positionZProperty = ParseWaterLayerProperty(
+            rawLayer, "positionZProperty", index, schema);
+        layer.widthProperty = ParseWaterLayerProperty(
+            rawLayer, "widthProperty", index, schema);
+        layer.depthProperty = ParseWaterLayerProperty(
+            rawLayer, "depthProperty", index, schema);
+        layer.widthMultiplier = ParseWaterLayerNumber(
+            rawLayer, "widthMultiplier",
+            SceneComponentModel.MIN_SCENE_WATER_PREVIEW_SIZE,
+            SceneComponentModel.MAX_SCENE_WATER_PREVIEW_SIZE,
+            1.0, index, schema);
+        layer.depthMultiplier = ParseWaterLayerNumber(
+            rawLayer, "depthMultiplier",
+            SceneComponentModel.MIN_SCENE_WATER_PREVIEW_SIZE,
+            SceneComponentModel.MAX_SCENE_WATER_PREVIEW_SIZE,
+            1.0, index, schema);
+        if schema.valid == false { return false; }
+        if Map.Has(rawLayer, "widthMultiplier")
+           and layer.widthProperty == "" {
+            Reject(
+                schema,
+                "3D water layer " + index
+                    + " widthMultiplier requires widthProperty.");
+            return false;
+        }
+        if Map.Has(rawLayer, "depthMultiplier")
+           and layer.depthProperty == "" {
+            Reject(
+                schema,
+                "3D water layer " + index
+                    + " depthMultiplier requires depthProperty.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse the optional complete fixed RGBA group.
+    hide func ParseWaterLayerColor(
+        rawLayer: Any,
+        index: Integer,
+        layer: SceneComponentModel.SceneWaterLayer3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var colorCount = 0;
+        var colorNames: List[String] = [
+            "colorR", "colorG", "colorB", "colorA"
+        ];
+        var colorIndex = 0;
+        while colorIndex < colorNames.count() {
+            if Map.Has(rawLayer, colorNames.get(colorIndex)) {
+                colorCount = colorCount + 1;
+            }
+            colorIndex = colorIndex + 1;
+        }
+        if colorCount != 0 and colorCount != 4 {
+            Reject(
+                schema,
+                "3D water layer " + index
+                    + " colorR/G/B/A members must be complete.");
+            return false;
+        }
+        if colorCount == 4 {
+            layer.colorR = ParseWaterLayerNumber(
+                rawLayer, "colorR", 0.0, 1.0, 0.1, index, schema);
+            layer.colorG = ParseWaterLayerNumber(
+                rawLayer, "colorG", 0.0, 1.0, 0.3, index, schema);
+            layer.colorB = ParseWaterLayerNumber(
+                rawLayer, "colorB", 0.0, 1.0, 0.6, index, schema);
+            layer.colorA = ParseWaterLayerNumber(
+                rawLayer, "colorA", 0.0, 1.0, 0.5, index, schema);
+            if schema.valid == false { return false; }
+            layer.hasColor = true;
+        }
+        return true;
+    }
+
+    /// @brief Parse optional portable surface and normal images.
+    hide func ParseWaterLayerImages(
+        rawLayer: Any,
+        index: Integer,
+        layer: SceneComponentModel.SceneWaterLayer3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var imageNames: List[String] = ["texture", "normalMap"];
+        var imageIndex = 0;
+        while imageIndex < imageNames.count() {
+            var imageName = imageNames.get(imageIndex);
+            var imagePath = "";
+            if Map.Has(rawLayer, imageName) {
+                if Json.TypeOf(Map.Get(rawLayer, imageName)) != "string" {
+                    Reject(
+                        schema,
+                        "3D water layer " + index + " " + imageName
+                            + " must be a string.");
+                    return false;
+                }
+                imagePath = Str.Trim(Map.GetStr(rawLayer, imageName));
+                if PortablePreviewImage(imagePath) == false {
+                    Reject(
+                        schema,
+                        "3D water layer " + index + " " + imageName
+                            + " must be a safe project-relative image path.");
+                    return false;
+                }
+            }
+            if imageName == "texture" {
+                layer.texture = imagePath;
+            } else {
+                layer.normalMap = imagePath;
+            }
+            imageIndex = imageIndex + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse bounded mesh resolution and animation state.
+    hide func ParseWaterLayerSettings(
+        rawLayer: Any,
+        index: Integer,
+        layer: SceneComponentModel.SceneWaterLayer3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(rawLayer, "resolution") {
+            if Json.TypeOf(Map.Get(rawLayer, "resolution")) != "number" {
+                Reject(
+                    schema,
+                    "3D water layer " + index
+                        + " resolution must be an integer.");
+                return false;
+            }
+            var parsedResolution = Parse.TryInt(
+                Json.Format(Map.Get(rawLayer, "resolution")));
+            if parsedResolution.IsNone
+               or parsedResolution.UnwrapI64()
+                  < SceneComponentModel.MIN_SCENE_WATER_PREVIEW_RESOLUTION
+               or parsedResolution.UnwrapI64()
+                  > SceneComponentModel.MAX_SCENE_WATER_PREVIEW_RESOLUTION {
+                Reject(
+                    schema,
+                    "3D water layer " + index
+                        + " resolution must be between 8 and 64.");
+                return false;
+            }
+            layer.resolution = parsedResolution.UnwrapI64();
+        }
+        if Map.Has(rawLayer, "animate") {
+            if Json.TypeOf(Map.Get(rawLayer, "animate")) != "boolean" {
+                Reject(
+                    schema,
+                    "3D water layer " + index
+                        + " animate must be a boolean.");
+                return false;
+            }
+            layer.animate = Map.GetBool(rawLayer, "animate");
+        }
+        return true;
+    }
+
+    /// @brief Parse all bounded non-zero Gerstner wave records.
+    hide func ParseWaterLayerWaves(
+        rawLayer: Any,
+        index: Integer,
+        layer: SceneComponentModel.SceneWaterLayer3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(rawLayer, "waves") {
+            var rawWaves = Map.Get(rawLayer, "waves");
+            if rawWaves == null or Json.TypeOf(rawWaves) != "array"
+               or Seq.get_Count(rawWaves)
+                  > SceneComponentModel.MAX_SCENE_WATER_PREVIEW_WAVES {
+                Reject(
+                    schema,
+                    "3D water layer " + index
+                        + " waves must contain at most 8 records.");
+                return false;
+            }
+            var waveIndex = 0;
+            while waveIndex < Seq.get_Count(rawWaves) {
+                var rawWave = Seq.Get(rawWaves, waveIndex);
+                if rawWave == null or Json.TypeOf(rawWave) != "object" {
+                    Reject(
+                        schema,
+                        "3D water layer " + index + " wave "
+                            + waveIndex + " must be an object.");
+                    return false;
+                }
+                var waveNames: List[String] = [
+                    "dirX", "dirZ", "speed", "amplitude", "wavelength"
+                ];
+                var waveMember = 0;
+                while waveMember < waveNames.count() {
+                    var waveName = waveNames.get(waveMember);
+                    if Map.Has(rawWave, waveName) == false {
+                        Reject(
+                            schema,
+                            "3D water layer " + index + " wave "
+                                + waveIndex + " requires " + waveName + ".");
+                        return false;
+                    }
+                    waveMember = waveMember + 1;
+                }
+                var wave = new SceneComponentModel.SceneWaterWave3DDefinition();
+                wave.dirX = ParseWaterLayerNumber(
+                    rawWave, "dirX",
+                    0.0 - SceneComponentModel.MAX_SCENE_WATER_PREVIEW_DIRECTION,
+                    SceneComponentModel.MAX_SCENE_WATER_PREVIEW_DIRECTION,
+                    1.0, index, schema);
+                wave.dirZ = ParseWaterLayerNumber(
+                    rawWave, "dirZ",
+                    0.0 - SceneComponentModel.MAX_SCENE_WATER_PREVIEW_DIRECTION,
+                    SceneComponentModel.MAX_SCENE_WATER_PREVIEW_DIRECTION,
+                    0.0, index, schema);
+                wave.speed = ParseWaterLayerNumber(
+                    rawWave, "speed",
+                    0.0 - SceneComponentModel.MAX_SCENE_WATER_PREVIEW_SPEED,
+                    SceneComponentModel.MAX_SCENE_WATER_PREVIEW_SPEED,
+                    0.0, index, schema);
+                wave.amplitude = ParseWaterLayerNumber(
+                    rawWave, "amplitude",
+                    0.0,
+                    SceneComponentModel.MAX_SCENE_WATER_PREVIEW_AMPLITUDE,
+                    0.0, index, schema);
+                wave.wavelength = ParseWaterLayerNumber(
+                    rawWave, "wavelength",
+                    SceneComponentModel.MIN_SCENE_WATER_PREVIEW_SIZE,
+                    SceneComponentModel.MAX_SCENE_WATER_PREVIEW_WAVELENGTH,
+                    1.0, index, schema);
+                if schema.valid == false { return false; }
+                if wave.dirX > -0.000001 and wave.dirX < 0.000001
+                   and wave.dirZ > -0.000001
+                   and wave.dirZ < 0.000001 {
+                    Reject(
+                        schema,
+                        "3D water layer " + index + " wave "
+                            + waveIndex + " direction cannot be zero.");
+                    return false;
+                }
+                layer.waves.add(wave);
+                waveIndex = waveIndex + 1;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse deterministic schema-v10 viewport post-processing passes.
+    /// @details Each parameter group is complete or absent. The fixed chain order
+    ///          matches the portable runtime path and excludes depth-dependent
+    ///          effects whose availability differs by backend.
+    hide override func ParseScenePostFXPreview3D(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasTonemapMode = Map.Has(raw, "tonemapMode");
+        var hasTonemapExposure = Map.Has(raw, "tonemapExposure");
+        if hasTonemapMode != hasTonemapExposure {
+            Reject(
+                schema,
+                "scenePreview3D tonemapMode and tonemapExposure "
+                    + "must be supplied together.");
+            return false;
+        }
+        if hasTonemapMode {
+            if ParsePreview3DInteger(
+                   raw, "tonemapMode", 0, 2, profile, schema) == false
+               or ParsePreview3DNumber(
+                   raw, "tonemapExposure", 0.0, 16.0,
+                   profile, schema) == false {
+                return false;
+            }
+            profile.hasTonemap = true;
+        }
+
+        var hasBloomThreshold = Map.Has(raw, "bloomThreshold");
+        var hasBloomIntensity = Map.Has(raw, "bloomIntensity");
+        var hasBloomPasses = Map.Has(raw, "bloomPasses");
+        var bloomCount = 0;
+        if hasBloomThreshold { bloomCount = bloomCount + 1; }
+        if hasBloomIntensity { bloomCount = bloomCount + 1; }
+        if hasBloomPasses { bloomCount = bloomCount + 1; }
+        if bloomCount != 0 and bloomCount != 3 {
+            Reject(
+                schema,
+                "scenePreview3D bloom threshold/intensity/passes "
+                    + "must be complete.");
+            return false;
+        }
+        if bloomCount == 3 {
+            if ParsePreview3DNumber(
+                   raw, "bloomThreshold", 0.0, 16.0,
+                   profile, schema) == false
+               or ParsePreview3DNumber(
+                   raw, "bloomIntensity", 0.0, 16.0,
+                   profile, schema) == false
+               or ParsePreview3DInteger(
+                   raw, "bloomPasses", 0, 32,
+                   profile, schema) == false {
+                return false;
+            }
+            profile.hasBloom = true;
+        }
+
+        var hasGradeBrightness =
+            Map.Has(raw, "colorGradeBrightness");
+        var hasGradeContrast =
+            Map.Has(raw, "colorGradeContrast");
+        var hasGradeSaturation =
+            Map.Has(raw, "colorGradeSaturation");
+        var gradeCount = 0;
+        if hasGradeBrightness { gradeCount = gradeCount + 1; }
+        if hasGradeContrast { gradeCount = gradeCount + 1; }
+        if hasGradeSaturation { gradeCount = gradeCount + 1; }
+        if gradeCount != 0 and gradeCount != 3 {
+            Reject(
+                schema,
+                "scenePreview3D color-grade brightness/contrast/saturation "
+                    + "must be complete.");
+            return false;
+        }
+        if gradeCount == 3 {
+            if ParsePreview3DNumber(
+                   raw, "colorGradeBrightness", -1.0, 1.0,
+                   profile, schema) == false
+               or ParsePreview3DNumber(
+                   raw, "colorGradeContrast", 0.0, 4.0,
+                   profile, schema) == false
+               or ParsePreview3DNumber(
+                   raw, "colorGradeSaturation", 0.0, 4.0,
+                   profile, schema) == false {
+                return false;
+            }
+            profile.hasColorGrade = true;
+        }
+
+        var hasVignetteRadius = Map.Has(raw, "vignetteRadius");
+        var hasVignetteSoftness = Map.Has(raw, "vignetteSoftness");
+        if hasVignetteRadius != hasVignetteSoftness {
+            Reject(
+                schema,
+                "scenePreview3D vignetteRadius and vignetteSoftness "
+                    + "must be supplied together.");
+            return false;
+        }
+        if hasVignetteRadius {
+            if ParsePreview3DNumber(
+                   raw, "vignetteRadius", 0.0, 1.0,
+                   profile, schema) == false
+               or ParsePreview3DNumber(
+                   raw, "vignetteSoftness", 0.001, 1.0,
+                   profile, schema) == false {
+                return false;
+            }
+            profile.hasVignette = true;
+        }
+
+        if Map.Has(raw, "fxaa") {
+            if Json.TypeOf(Map.Get(raw, "fxaa")) != "boolean" {
+                Reject(schema, "scenePreview3D fxaa must be a boolean.");
+                return false;
+            }
+            profile.hasFxaa = true;
+            profile.fxaa = Map.GetBool(raw, "fxaa");
+        }
+        return true;
+    }
+
+}

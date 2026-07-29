@@ -1,0 +1,960 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_build_layout.zia
+// Purpose: Focused build layout behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_build_layout;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_state" as PreviousLayer;
+
+class ToolPanelBuildLayoutLayer extends PreviousLayer.ToolPanelShellState {
+
+    /// @brief Build the complete bottom tool-panel surface under the editor.
+    /// @param panelHost Bottom split host that receives all tool panels; they fill
+    ///        it via flex and the splitter owns the height.
+    /// @param appArg Owning application, used for output wrap width.
+    /// @param splitArg Vertical splitter shared with the editor, driven by the
+    ///        panel show/hide paths to collapse/restore the bottom area.
+    expose override func Build(panelHost: GUI.VBox,
+                      appArg: GUI.App,
+                      splitArg: GUI.SplitPane) {
+        BuildToolPanelFrame(panelHost, splitArg);
+        BuildProblemsAndOutputPanels();
+        BuildSearchAndReferencesPanels();
+        BuildDebugAndVariablesPanels();
+        BuildCallStackAndTerminalPanels();
+        Setup(appArg, toolTabBar, toolProblemsTab, toolOutputTab, toolSearchTab,
+              toolReferencesTab, toolVariablesTab, toolCallStackTab,
+              toolDebugTab, toolTerminalTab, diagListBox, outputPane,
+              outputListBox, outputVirtualList, searchPanel, searchListBox,
+              referencesListBox, debugListBox, variablesListBox,
+              callStackListBox, terminalPanel, terminalPane);
+        UpdateProblemsToolbarState();
+        UpdateOutputToolbarState();
+        UpdateReferencesToolbarState();
+        UpdateDebugToolbarState();
+        UpdateCallStackToolbarState();
+        }
+
+    /// @brief Build the shared root, dock header, and stable tab identities.
+    hide func BuildToolPanelFrame(panelHost: GUI.VBox, splitArg: GUI.SplitPane) {
+        editorSplit = splitArg;
+        bottomDockHost = panelHost;
+
+        panelRoot = GUI.VBox.New();
+        panelRoot.SetSpacing(0.0);
+        panelRoot.SetPadding(0.0);
+        panelRoot.SetFlex(1.0);
+        panelHost.AddChild(panelRoot);
+
+        dockHeader = GUI.HBox.New();
+        dockHeader.SetSpacing(4.0);
+        dockHeader.SetPadding(4.0);
+        panelRoot.AddChild(dockHeader);
+
+        dockDragHandle = GUI.Label.New(dockHeader, "Panels  -  drag to dock");
+        dockDragHandle.SetFlex(1.0);
+        dockDragHandle.SetTooltip(
+            "Drag to a workbench edge or the center Float target");
+        dockDragHandle.SetDraggable(true);
+        dockDragHandle.SetDragData(workspace_dock.TOOL_PANEL_DRAG_TYPE,
+                                   workspace_dock.TOOL_PANEL_DRAG_DATA);
+
+        dockLeftButton = GUI.Button.New(dockHeader, "Left");
+        dockLeftButton.SetPreferredSize(48.0, 24.0);
+        dockLeftButton.SetTooltip("Move the selected tool to the left group");
+        dockBottomButton = GUI.Button.New(dockHeader, "Bottom");
+        dockBottomButton.SetPreferredSize(58.0, 24.0);
+        dockBottomButton.SetTooltip(
+            "Move the selected tool below the editor");
+        dockRightButton = GUI.Button.New(dockHeader, "Right");
+        dockRightButton.SetPreferredSize(52.0, 24.0);
+        dockRightButton.SetTooltip(
+            "Move the selected tool to the right group");
+        dockFloatButton = GUI.Button.New(dockHeader, "Float");
+        dockFloatButton.SetPreferredSize(48.0, 24.0);
+        dockFloatButton.SetTooltip(
+            "Move the selected tool into a movable floating window");
+        dockHideButton = GUI.Button.New(dockHeader, "Hide");
+        dockHideButton.SetPreferredSize(46.0, 24.0);
+        dockHideButton.SetTooltip("Hide the panel area");
+
+        toolTabBar = GUI.TabBar.New(panelRoot);
+        toolTabBar.SetAutoClose(false);
+        toolProblemsTab = toolTabBar.AddTab("Problems", 0);
+        toolOutputTab = toolTabBar.AddTab("Output", 0);
+        toolSearchTab = toolTabBar.AddTab("Search", 0);
+        toolReferencesTab = toolTabBar.AddTab("References", 0);
+        toolVariablesTab = toolTabBar.AddTab("Variables", 0);
+        toolCallStackTab = toolTabBar.AddTab("Call Stack", 0);
+        toolDebugTab = toolTabBar.AddTab("Debug Console", 0);
+        toolTerminalTab = toolTabBar.AddTab("Terminal", 0);
+        toolTabBar.SetVisible(false);
+    }
+
+    /// @brief Build Problems and Output surfaces.
+    hide func BuildProblemsAndOutputPanels() {        problemsPanel = GUI.VBox.New();
+        problemsPanel.SetSpacing(4.0);
+        problemsPanel.SetPadding(4.0);
+        problemsPanel.SetVisible(false);
+        problemsPanel.SetFlex(1.0);
+        panelRoot.AddChild(problemsPanel);
+        problemsToolbar = GUI.Flex.New();
+        problemsToolbar.SetDirection(GUI.FlexDirection.Row);
+        problemsToolbar.SetWrap(GUI.FlexWrap.Wrap);
+        problemsToolbar.SetAlign(GUI.Align.Center);
+        problemsToolbar.SetGap(4.0);
+        problemsPanel.AddChild(problemsToolbar);
+        problemsFilterInput = GUI.TextInput.New(problemsToolbar);
+        problemsFilterInput.SetFlex(1.0);
+        problemsFilterInput.SetPreferredSize(220.0, 0.0);
+        problemsFilterInput.SetMinSize(100.0, 0.0);
+        problemsFilterInput.SetPlaceholder("Filter problems");
+        problemsFilterInput.SetAccessibleName("Filter problems");
+        problemsFilterInput.SetTooltip(
+            "Filter by message, file, source, or diagnostic code");
+        problemsErrorCheck = GUI.Checkbox.New(problemsToolbar, "Errors");
+        problemsErrorCheck.SetChecked(true);
+        problemsErrorCheck.SetTooltip("Show error diagnostics");
+        problemsWarningCheck = GUI.Checkbox.New(problemsToolbar, "Warnings");
+        problemsWarningCheck.SetChecked(true);
+        problemsWarningCheck.SetTooltip("Show warning diagnostics");
+        problemsInfoCheck = GUI.Checkbox.New(problemsToolbar, "Info");
+        problemsInfoCheck.SetChecked(true);
+        problemsInfoCheck.SetTooltip("Show informational diagnostics");
+        problemsResetButton = GUI.Button.New(problemsToolbar, "All");
+        problemsResetButton.SetAccessibleName("Reset problem filters");
+        problemsResetButton.SetTooltip("Show every diagnostic");
+        problemsQuickFixButton = GUI.Button.New(problemsToolbar, "Quick Fix");
+        problemsQuickFixButton.SetStyle(1);
+        problemsQuickFixButton.SetAccessibleName(
+            "Apply selected problem quick fix");
+        problemsQuickFixButton.SetTooltip(
+            "Select a diagnostic with an available quick fix");
+        problemsQuickFixButton.SetEnabled(false);
+        problemsCountLabel = GUI.Label.New(problemsToolbar, "0 problems");
+        problemsCountLabel.SetTooltip("Visible and total diagnostic counts");
+
+        diagListBox = GUI.ListBox.New(problemsPanel);
+        diagListBox.SetMultiSelect(true);
+        diagListBox.SetVisible(true);
+        diagListBox.SetFlex(1.0);
+        diagListBox.SetAccessibleName("Problems");
+
+        outputPanel = GUI.VBox.New();
+        outputPanel.SetSpacing(4.0);
+        outputPanel.SetPadding(4.0);
+        outputPanel.SetVisible(false);
+        outputPanel.SetFlex(1.0);
+        panelRoot.AddChild(outputPanel);
+        outputToolbar = GUI.Flex.New();
+        outputToolbar.SetDirection(GUI.FlexDirection.Row);
+        outputToolbar.SetWrap(GUI.FlexWrap.Wrap);
+        outputToolbar.SetAlign(GUI.Align.Center);
+        outputToolbar.SetGap(4.0);
+        outputPanel.AddChild(outputToolbar);
+        outputFilterInput = GUI.TextInput.New(outputToolbar);
+        outputFilterInput.SetFlex(1.0);
+        outputFilterInput.SetPreferredSize(220.0, 0.0);
+        outputFilterInput.SetMinSize(100.0, 0.0);
+        outputFilterInput.SetPlaceholder("Filter output");
+        outputFilterInput.SetAccessibleName("Filter build output");
+        outputFilterInput.SetTooltip("Show output lines containing this text");
+        outputFilterClearButton = GUI.Button.New(outputToolbar, "×");
+        outputFilterClearButton.SetPreferredSize(34.0, 0.0);
+        outputFilterClearButton.SetAccessibleName("Clear output filter");
+        outputFilterClearButton.SetTooltip("Clear the output text filter");
+        outputWrapCheck = GUI.Checkbox.New(outputToolbar, "Wrap");
+        outputWrapCheck.SetChecked(false);
+        outputWrapCheck.SetTooltip("Wrap long output lines");
+        outputFollowCheck = GUI.Checkbox.New(outputToolbar, "Follow");
+        outputFollowCheck.SetChecked(true);
+        outputFollowCheck.SetTooltip("Follow new output at the bottom");
+        outputCopyButton = GUI.Button.New(outputToolbar, "Copy");
+        outputCopyButton.SetAccessibleName("Copy Output panel text");
+        outputCopyButton.SetTooltip(
+            "Copy complete captured output or the current generated rows");
+        outputClearButton = GUI.Button.New(outputToolbar, "Clear");
+        outputClearButton.SetAccessibleName("Clear build output");
+        outputClearButton.SetTooltip("Clear all build output");
+
+        outputPane = GUI.OutputPane.New(outputPanel);
+        outputPane.SetMaxLines(10000);
+        outputPane.SetAutoScroll(true);
+        outputPane.SetVisible(true);
+        outputPane.SetFlex(1.0);
+        outputPane.SetAccessibleName("Build output");
+
+        outputListBox = GUI.ListBox.New(outputPanel);
+        outputListBox.SetMultiSelect(true);
+        outputListBox.SetVisible(false);
+        outputListBox.SetFlex(1.0);
+        outputListBox.SetAccessibleName("Filtered build output");
+        outputVirtualList = GUI.VirtualList.New(0, 18, 100);
+    }
+
+    /// @brief Build Search and References surfaces.
+    hide func BuildSearchAndReferencesPanels() {        searchPanel = GUI.VBox.New();
+        searchPanel.SetVisible(false);
+        searchPanel.SetFlex(1.0);
+        searchPanel.SetSpacing(4.0);
+        searchPanel.SetPadding(4.0);
+        panelRoot.AddChild(searchPanel);
+        var searchQueryRow = GUI.Flex.New();
+        searchQueryRow.SetDirection(GUI.FlexDirection.Row);
+        searchQueryRow.SetWrap(GUI.FlexWrap.Wrap);
+        searchQueryRow.SetAlign(GUI.Align.Center);
+        searchQueryRow.SetGap(4.0);
+        searchPanel.AddChild(searchQueryRow);
+        searchQueryInput = GUI.TextInput.New(searchQueryRow);
+        searchQueryInput.SetFlex(1.0);
+        searchQueryInput.SetPreferredSize(240.0, 0.0);
+        searchQueryInput.SetPlaceholder("Search");
+        searchQueryInput.SetAccessibleName("Project search query");
+        searchQueryInput.SetTooltip("Text or regular expression to find");
+        searchRunButton = GUI.Button.New(searchQueryRow, "Search");
+        searchRunButton.SetStyle(1);
+        searchRunButton.SetAccessibleName("Search project");
+        searchRunButton.SetTooltip("Search in the project (Enter)");
+        searchCancelButton = GUI.Button.New(searchQueryRow, "Stop");
+        searchCancelButton.SetAccessibleName("Stop project search");
+        searchCancelButton.SetTooltip("Stop the active search or replacement");
+
+        var searchReplaceRow = GUI.Flex.New();
+        searchReplaceRow.SetDirection(GUI.FlexDirection.Row);
+        searchReplaceRow.SetWrap(GUI.FlexWrap.Wrap);
+        searchReplaceRow.SetAlign(GUI.Align.Center);
+        searchReplaceRow.SetGap(4.0);
+        searchPanel.AddChild(searchReplaceRow);
+        searchReplaceInput = GUI.TextInput.New(searchReplaceRow);
+        searchReplaceInput.SetFlex(1.0);
+        searchReplaceInput.SetPreferredSize(240.0, 0.0);
+        searchReplaceInput.SetPlaceholder("Replace");
+        searchReplaceInput.SetAccessibleName("Replacement text");
+        searchReplaceInput.SetTooltip("Replacement text; Enter does not replace");
+        searchReplaceButton = GUI.Button.New(searchReplaceRow, "Replace All");
+        searchReplaceButton.SetIconName("replace");
+        searchReplaceButton.SetStyle(2);
+        searchReplaceButton.SetAccessibleName("Replace all search results");
+        searchReplaceButton.SetTooltip("Replace every current search result");
+
+        var searchOptionsRow = GUI.Flex.New();
+        searchOptionsRow.SetDirection(GUI.FlexDirection.Row);
+        searchOptionsRow.SetWrap(GUI.FlexWrap.Wrap);
+        searchOptionsRow.SetAlign(GUI.Align.Center);
+        searchOptionsRow.SetGap(4.0);
+        searchPanel.AddChild(searchOptionsRow);
+        searchCaseCheck = GUI.Checkbox.New(searchOptionsRow, "Case");
+        searchCaseCheck.SetTooltip("Match letter case");
+        searchWholeWordCheck = GUI.Checkbox.New(searchOptionsRow, "Word");
+        searchWholeWordCheck.SetTooltip("Match complete words only");
+        searchRegexCheck = GUI.Checkbox.New(searchOptionsRow, "Regex");
+        searchRegexCheck.SetTooltip("Interpret the query as a regular expression");
+        searchKindsInput = GUI.TextInput.New(searchOptionsRow);
+        searchKindsInput.SetPlaceholder(".zia,.bas,.txt");
+        searchKindsInput.SetFlex(1.0);
+        searchKindsInput.SetPreferredSize(180.0, 0.0);
+        searchKindsInput.SetAccessibleName("File types");
+        searchKindsInput.SetTooltip(
+            "Comma-separated file extensions; leave empty for project defaults");
+
+        var searchPathRow = GUI.Flex.New();
+        searchPathRow.SetDirection(GUI.FlexDirection.Row);
+        searchPathRow.SetWrap(GUI.FlexWrap.Wrap);
+        searchPathRow.SetAlign(GUI.Align.Center);
+        searchPathRow.SetGap(4.0);
+        searchPanel.AddChild(searchPathRow);
+        searchIncludeInput = GUI.TextInput.New(searchPathRow);
+        searchIncludeInput.SetPlaceholder("Include globs");
+        searchIncludeInput.SetFlex(1.0);
+        searchIncludeInput.SetPreferredSize(240.0, 0.0);
+        searchIncludeInput.SetAccessibleName("Files to include");
+        searchIncludeInput.SetTooltip("Optional comma-separated include globs");
+        searchExcludeInput = GUI.TextInput.New(searchPathRow);
+        searchExcludeInput.SetPlaceholder("Exclude globs");
+        searchExcludeInput.SetFlex(1.0);
+        searchExcludeInput.SetPreferredSize(240.0, 0.0);
+        searchExcludeInput.SetAccessibleName("Files to exclude");
+        searchExcludeInput.SetTooltip("Optional comma-separated exclude globs");
+
+        searchListBox = GUI.ListBox.New(searchPanel);
+        searchListBox.SetMultiSelect(true);
+        searchListBox.SetVisible(true);
+        searchListBox.SetFlex(1.0);
+        searchListBox.SetAccessibleName("Project search results");
+
+        referencesPanel = GUI.VBox.New();
+        referencesPanel.SetSpacing(4.0);
+        referencesPanel.SetPadding(4.0);
+        referencesPanel.SetVisible(false);
+        referencesPanel.SetFlex(1.0);
+        panelRoot.AddChild(referencesPanel);
+        referencesToolbar = GUI.Flex.New();
+        referencesToolbar.SetDirection(GUI.FlexDirection.Row);
+        referencesToolbar.SetWrap(GUI.FlexWrap.Wrap);
+        referencesToolbar.SetAlign(GUI.Align.Center);
+        referencesToolbar.SetGap(4.0);
+        referencesPanel.AddChild(referencesToolbar);
+        referencesFilterInput = GUI.TextInput.New(referencesToolbar);
+        referencesFilterInput.SetFlex(1.0);
+        referencesFilterInput.SetPreferredSize(240.0, 0.0);
+        referencesFilterInput.SetMinSize(100.0, 0.0);
+        referencesFilterInput.SetPlaceholder("Filter references");
+        referencesFilterInput.SetAccessibleName("Filter reference results");
+        referencesFilterInput.SetTooltip(
+            "Filter by file, symbol, source, location, or preview text");
+        referencesFilterClearButton =
+            GUI.Button.New(referencesToolbar, "×");
+        referencesFilterClearButton.SetPreferredSize(34.0, 0.0);
+        referencesFilterClearButton.SetAccessibleName(
+            "Clear reference filter");
+        referencesFilterClearButton.SetTooltip(
+            "Clear the reference-result filter");
+        referencesCountLabel =
+            GUI.Label.New(referencesToolbar, "0 references");
+        referencesCountLabel.SetTooltip(
+            "Visible and total reference-result counts");
+        referencesCopyButton = GUI.Button.New(referencesToolbar, "Copy All");
+        referencesCopyButton.SetAccessibleName(
+            "Copy all reference results");
+        referencesCopyButton.SetTooltip(
+            "Copy the complete unfiltered grouped result set");
+        referencesClearButton = GUI.Button.New(referencesToolbar, "Clear");
+        referencesClearButton.SetAccessibleName("Clear reference results");
+        referencesClearButton.SetTooltip(
+            "Clear these results while keeping References open");
+        referencesEmptyLabel =
+            GUI.Label.New(referencesPanel, "No reference results");
+        referencesEmptyLabel.SetColor(ToolPanelModel.ToolColorMuted());
+        referencesEmptyLabel.SetAccessibleName("No reference results");
+        referencesEmptyLabel.SetVisible(true);
+
+        referencesListBox = GUI.ListBox.New(referencesPanel);
+        referencesListBox.SetMultiSelect(true);
+        referencesListBox.SetVisible(false);
+        referencesListBox.SetFlex(1.0);
+        referencesListBox.SetAccessibleName("Reference results");
+    }
+
+    /// @brief Build Debug Console and Variables surfaces.
+    hide func BuildDebugAndVariablesPanels() {        debugPanel = GUI.VBox.New();
+        debugPanel.SetSpacing(4.0);
+        debugPanel.SetPadding(4.0);
+        debugPanel.SetVisible(false);
+        debugPanel.SetFlex(1.0);
+        panelRoot.AddChild(debugPanel);
+        debugToolbar = GUI.Flex.New();
+        debugToolbar.SetDirection(GUI.FlexDirection.Row);
+        debugToolbar.SetWrap(GUI.FlexWrap.Wrap);
+        debugToolbar.SetAlign(GUI.Align.Center);
+        debugToolbar.SetGap(4.0);
+        debugPanel.AddChild(debugToolbar);
+        debugFilterInput = GUI.TextInput.New(debugToolbar);
+        debugFilterInput.SetFlex(1.0);
+        debugFilterInput.SetPreferredSize(220.0, 0.0);
+        debugFilterInput.SetMinSize(100.0, 0.0);
+        debugFilterInput.SetPlaceholder("Filter debug output");
+        debugFilterInput.SetAccessibleName("Filter debug console");
+        debugFilterInput.SetTooltip(
+            "Show debug-console lines containing this text");
+        debugFilterClearButton = GUI.Button.New(debugToolbar, "×");
+        debugFilterClearButton.SetPreferredSize(34.0, 0.0);
+        debugFilterClearButton.SetAccessibleName("Clear debug-console filter");
+        debugFilterClearButton.SetTooltip("Clear the debug-console filter");
+        debugCountLabel = GUI.Label.New(debugToolbar, "0 lines");
+        debugCountLabel.SetTooltip("Visible and total debug-console line counts");
+        debugWrapCheck = GUI.Checkbox.New(debugToolbar, "Wrap");
+        debugWrapCheck.SetChecked(false);
+        debugWrapCheck.SetTooltip("Wrap long debug-console lines");
+        debugCopyButton = GUI.Button.New(debugToolbar, "Copy All");
+        debugCopyButton.SetAccessibleName("Copy all debug-console output");
+        debugCopyButton.SetTooltip(
+            "Copy the complete unfiltered debug-console text");
+        debugClearButton = GUI.Button.New(debugToolbar, "Clear");
+        debugClearButton.SetAccessibleName("Clear debug program output");
+        debugClearButton.SetTooltip(
+            "Clear program output without changing debugger state");
+        debugEmptyLabel =
+            GUI.Label.New(debugPanel, "Debug console is idle");
+        debugEmptyLabel.SetColor(ToolPanelModel.ToolColorMuted());
+        debugEmptyLabel.SetAccessibleName("Debug console is idle");
+        debugEmptyLabel.SetVisible(true);
+
+        debugListBox = GUI.ListBox.New(debugPanel);
+        debugListBox.SetMultiSelect(true);
+        debugListBox.SetVisible(false);
+        debugListBox.SetFlex(1.0);
+        debugListBox.SetAccessibleName("Debug console output");
+
+        variablesPanel = GUI.VBox.New();
+        variablesPanel.SetSpacing(4.0);
+        variablesPanel.SetPadding(4.0);
+        variablesPanel.SetFlex(1.0);
+        variablesPanel.SetVisible(false);
+        panelRoot.AddChild(variablesPanel);
+
+        watchToolbar = GUI.Flex.New();
+        watchToolbar.SetDirection(GUI.FlexDirection.Row);
+        watchToolbar.SetWrap(GUI.FlexWrap.Wrap);
+        watchToolbar.SetAlign(GUI.Align.Center);
+        watchToolbar.SetGap(4.0);
+        variablesPanel.AddChild(watchToolbar);
+        watchExpressionInput = GUI.TextInput.New(watchToolbar);
+        // Keep the authored basis stable so action buttons are not pushed onto
+        // an unmeasured overflow row. The wrapping toolbar itself handles
+        // genuinely narrow docks.
+        watchExpressionInput.SetFlex(0.0);
+        watchExpressionInput.SetPreferredSize(180.0, 0.0);
+        watchExpressionInput.SetPlaceholder("Watch expression");
+        watchExpressionInput.SetAccessibleName("Debugger watch expression");
+        watchExpressionInput.SetTooltip(
+            "Expression to evaluate whenever the debugger pauses (Enter)");
+        watchAddButton = GUI.Button.New(watchToolbar, "Add");
+        watchAddButton.SetStyle(1);
+        watchAddButton.SetAccessibleName("Add debugger watch");
+        watchAddButton.SetTooltip("Add this watch expression (Enter)");
+        watchRemoveButton = GUI.Button.New(watchToolbar, "Remove");
+        watchRemoveButton.SetAccessibleName("Remove selected debugger watch");
+        watchRemoveButton.SetTooltip("Remove the selected watch row");
+        watchRefreshButton = GUI.Button.New(watchToolbar, "Refresh");
+        watchRefreshButton.SetAccessibleName("Refresh debugger watches");
+        watchRefreshButton.SetTooltip(
+            "Re-evaluate every watch at the current debug stop");
+        watchClearButton = GUI.Button.New(watchToolbar, "Clear");
+        watchClearButton.SetAccessibleName("Clear debugger watches");
+        watchClearButton.SetTooltip("Remove every watch expression");
+        watchAddButton.SetEnabled(false);
+        watchRemoveButton.SetEnabled(false);
+        watchRefreshButton.SetEnabled(false);
+        watchClearButton.SetEnabled(false);
+
+        variablesListBox = GUI.ListBox.New(variablesPanel);
+        variablesListBox.SetMultiSelect(true);
+        variablesListBox.SetVisible(true);
+        variablesListBox.SetFlex(1.0);
+    }
+
+    /// @brief Build Call Stack and Terminal surfaces.
+    hide func BuildCallStackAndTerminalPanels() {        callStackPanel = GUI.VBox.New();
+        callStackPanel.SetSpacing(4.0);
+        callStackPanel.SetPadding(4.0);
+        callStackPanel.SetVisible(false);
+        callStackPanel.SetFlex(1.0);
+        panelRoot.AddChild(callStackPanel);
+        callStackToolbar = GUI.Flex.New();
+        callStackToolbar.SetDirection(GUI.FlexDirection.Row);
+        callStackToolbar.SetWrap(GUI.FlexWrap.Wrap);
+        callStackToolbar.SetAlign(GUI.Align.Center);
+        callStackToolbar.SetGap(4.0);
+        callStackPanel.AddChild(callStackToolbar);
+        callStackFilterInput = GUI.TextInput.New(callStackToolbar);
+        callStackFilterInput.SetFlex(1.0);
+        callStackFilterInput.SetPreferredSize(220.0, 0.0);
+        callStackFilterInput.SetMinSize(100.0, 0.0);
+        callStackFilterInput.SetPlaceholder("Filter frames");
+        callStackFilterInput.SetAccessibleName("Filter call stack frames");
+        callStackFilterInput.SetTooltip(
+            "Filter by function, source file, or line");
+        callStackFilterClearButton =
+            GUI.Button.New(callStackToolbar, "×");
+        callStackFilterClearButton.SetPreferredSize(34.0, 0.0);
+        callStackFilterClearButton.SetAccessibleName(
+            "Clear call-stack filter");
+        callStackFilterClearButton.SetTooltip("Clear the call-stack filter");
+        callStackCountLabel =
+            GUI.Label.New(callStackToolbar, "0 frames · Idle");
+        callStackCountLabel.SetTooltip(
+            "Visible frame count and debugger state");
+        callStackCopyButton = GUI.Button.New(callStackToolbar, "Copy Stack");
+        callStackCopyButton.SetAccessibleName("Copy complete call stack");
+        callStackCopyButton.SetTooltip(
+            "Copy every frame in the current paused stack");
+        callStackEmptyLabel = GUI.Label.New(
+            callStackPanel, "Start debugging to inspect the call stack");
+        callStackEmptyLabel.SetColor(ToolPanelModel.ToolColorMuted());
+        callStackEmptyLabel.SetAccessibleName(
+            "Start debugging to inspect the call stack");
+        callStackEmptyLabel.SetVisible(true);
+
+        callStackListBox = GUI.ListBox.New(callStackPanel);
+        callStackListBox.SetMultiSelect(false);
+        callStackListBox.SetVisible(false);
+        callStackListBox.SetFlex(1.0);
+        callStackListBox.SetAccessibleName("Call stack frames");
+
+        terminalPanel = GUI.VBox.New();
+        terminalPanel.SetSpacing(0.0);
+        terminalPanel.SetPadding(0.0);
+        terminalPanel.SetFlex(1.0);
+        terminalPanel.SetVisible(false);
+        panelRoot.AddChild(terminalPanel);
+        terminalPane = GUI.OutputPane.New(terminalPanel);
+        terminalPane.SetMaxLines(10000);
+        terminalPane.SetAutoScroll(true);
+        terminalPane.SetFlex(1.0);
+        terminalActionRow = GUI.Flex.New();
+        terminalActionRow.SetDirection(GUI.FlexDirection.Row);
+        terminalActionRow.SetWrap(GUI.FlexWrap.Wrap);
+        terminalActionRow.SetAlign(GUI.Align.Center);
+        terminalActionRow.SetGap(4.0);
+        terminalActionRow.SetPadding(4.0);
+        terminalPanel.AddChild(terminalActionRow);
+        terminalKill = GUI.Button.New(terminalActionRow, "Stop");
+        terminalKill.SetAccessibleName("Stop active terminal");
+        terminalKill.SetTooltip("Stop the active terminal process");
+        terminalRestart = GUI.Button.New(terminalActionRow, "Restart");
+        terminalRestart.SetAccessibleName("Restart active terminal");
+        terminalRestart.SetTooltip(
+            "Restart the active terminal in the current workspace");
+        terminalRestart.SetStyle(2);
+        terminalNew = GUI.Button.New(terminalActionRow, "New");
+        terminalNew.SetAccessibleName("New terminal");
+        terminalNew.SetTooltip("Create and switch to a new terminal session");
+        terminalNew.SetStyle(1);
+        terminalNext = GUI.Button.New(terminalActionRow, "Next");
+        terminalNext.SetAccessibleName("Next terminal");
+        terminalNext.SetTooltip("Switch to the next terminal session");
+        terminalNext.SetStyle(2);
+    }
+
+    /// @brief Attach stable side-dock hosts after WorkbenchShell builds them.
+    /// @param dropTarget Whole workbench surface accepting panel-header drops.
+    /// @param leftHost First pane of the left docking splitter.
+    /// @param rightHost Second pane of the right docking splitter.
+    /// @param leftSplit Splitter that reveals/collapses the left dock.
+    /// @param rightSplit Splitter that reveals/collapses the right dock.
+    expose override func ConfigureDocking(dropTarget: GUI.Widget,
+                                 leftHost: GUI.VBox,
+                                 rightHost: GUI.VBox,
+                                 leftSplit: GUI.SplitPane,
+                                 rightSplit: GUI.SplitPane) {
+        workspaceDropTarget = dropTarget;
+        leftDockHost = leftHost;
+        rightDockHost = rightHost;
+        leftDockSplit = leftSplit;
+        rightDockSplit = rightSplit;
+        BuildIndependentToolGroups();
+        if workspaceDropTarget != null {
+            workspaceDropTarget.SetDropTarget(true);
+            workspaceDropTarget.SetAcceptedDropTypes(
+                workspace_dock.TOOL_PANEL_DRAG_TYPE);
+            BuildDockTargets();
+        }
+        UpdateDockButtons();
+    }
+
+    /// @brief Build one stationary auxiliary group in every possible dock.
+    /// @details The legacy panelRoot remains the primary group and can still
+    ///          migrate as a unit. These roots stay mounted in their hosts so
+    ///          individual live panels can move without rebuilding controllers.
+    hide override func BuildIndependentToolGroups() {
+        if leftToolGroupRoot != null { return; }
+
+        leftToolGroupRoot = GUI.VBox.New();
+        leftToolGroupRoot.SetName("tool-group-left");
+        leftToolGroupRoot.SetSpacing(0.0);
+        leftToolGroupRoot.SetPadding(0.0);
+        leftToolGroupRoot.SetFlex(1.0);
+        leftToolGroupRoot.SetVisible(false);
+        leftDockHost.AddChild(leftToolGroupRoot);
+        var leftHeader = GUI.HBox.New();
+        leftHeader.SetSpacing(4.0);
+        leftHeader.SetPadding(4.0);
+        leftToolGroupRoot.AddChild(leftHeader);
+        leftToolGroupLabel = GUI.Label.New(leftHeader, "Left tools");
+        leftToolGroupLabel.SetFlex(1.0);
+        leftToolGroupLabel.SetTooltip(
+            "Independent tools docked on the left");
+        leftToolMoveBottomButton = GUI.Button.New(leftHeader, "↓");
+        leftToolMoveBottomButton.SetPreferredSize(24.0, 24.0);
+        leftToolMoveBottomButton.SetAccessibleName(
+            "Move active left tool to bottom");
+        leftToolMoveBottomButton.SetTooltip(
+            "Move the selected left tool below the editor");
+        leftToolMoveRightButton = GUI.Button.New(leftHeader, "→");
+        leftToolMoveRightButton.SetPreferredSize(24.0, 24.0);
+        leftToolMoveRightButton.SetAccessibleName(
+            "Move active left tool to right");
+        leftToolMoveRightButton.SetTooltip(
+            "Move the selected left tool to the right group");
+        leftToolMoveFloatingButton = GUI.Button.New(leftHeader, "◇");
+        leftToolMoveFloatingButton.SetPreferredSize(24.0, 24.0);
+        leftToolMoveFloatingButton.SetAccessibleName(
+            "Float active left tool");
+        leftToolMoveFloatingButton.SetTooltip(
+            "Move the selected left tool into the floating window");
+        leftToolGroupHideButton = GUI.Button.New(leftHeader, "");
+        leftToolGroupHideButton.SetIconName("close");
+        leftToolGroupHideButton.SetPreferredSize(24.0, 24.0);
+        leftToolGroupHideButton.SetAccessibleName("Hide left tool group");
+        leftToolTabBar = GUI.TabBar.New(leftToolGroupRoot);
+        leftToolTabBar.SetAutoClose(false);
+
+        bottomToolGroupRoot = GUI.VBox.New();
+        bottomToolGroupRoot.SetName("tool-group-bottom");
+        bottomToolGroupRoot.SetSpacing(0.0);
+        bottomToolGroupRoot.SetPadding(0.0);
+        bottomToolGroupRoot.SetFlex(1.0);
+        bottomToolGroupRoot.SetVisible(false);
+        bottomDockHost.AddChild(bottomToolGroupRoot);
+        var bottomHeader = GUI.HBox.New();
+        bottomHeader.SetSpacing(4.0);
+        bottomHeader.SetPadding(4.0);
+        bottomToolGroupRoot.AddChild(bottomHeader);
+        bottomToolGroupLabel = GUI.Label.New(bottomHeader, "Bottom tools");
+        bottomToolGroupLabel.SetFlex(1.0);
+        bottomToolGroupLabel.SetTooltip(
+            "Independent tools docked below the editor");
+        bottomToolMoveLeftButton = GUI.Button.New(bottomHeader, "←");
+        bottomToolMoveLeftButton.SetPreferredSize(24.0, 24.0);
+        bottomToolMoveLeftButton.SetAccessibleName(
+            "Move active bottom tool to left");
+        bottomToolMoveLeftButton.SetTooltip(
+            "Move the selected bottom tool to the left group");
+        bottomToolMoveRightButton = GUI.Button.New(bottomHeader, "→");
+        bottomToolMoveRightButton.SetPreferredSize(24.0, 24.0);
+        bottomToolMoveRightButton.SetAccessibleName(
+            "Move active bottom tool to right");
+        bottomToolMoveRightButton.SetTooltip(
+            "Move the selected bottom tool to the right group");
+        bottomToolMoveFloatingButton = GUI.Button.New(bottomHeader, "◇");
+        bottomToolMoveFloatingButton.SetPreferredSize(24.0, 24.0);
+        bottomToolMoveFloatingButton.SetAccessibleName(
+            "Float active bottom tool");
+        bottomToolMoveFloatingButton.SetTooltip(
+            "Move the selected bottom tool into the floating window");
+        bottomToolGroupHideButton = GUI.Button.New(bottomHeader, "");
+        bottomToolGroupHideButton.SetIconName("close");
+        bottomToolGroupHideButton.SetPreferredSize(24.0, 24.0);
+        bottomToolGroupHideButton.SetAccessibleName("Hide bottom tool group");
+        bottomToolTabBar = GUI.TabBar.New(bottomToolGroupRoot);
+        bottomToolTabBar.SetAutoClose(false);
+
+        rightToolGroupRoot = GUI.VBox.New();
+        rightToolGroupRoot.SetName("tool-group-right");
+        rightToolGroupRoot.SetSpacing(0.0);
+        rightToolGroupRoot.SetPadding(0.0);
+        rightToolGroupRoot.SetFlex(1.0);
+        rightToolGroupRoot.SetVisible(false);
+        rightDockHost.AddChild(rightToolGroupRoot);
+        var rightHeader = GUI.HBox.New();
+        rightHeader.SetSpacing(4.0);
+        rightHeader.SetPadding(4.0);
+        rightToolGroupRoot.AddChild(rightHeader);
+        rightToolGroupLabel = GUI.Label.New(rightHeader, "Right tools");
+        rightToolGroupLabel.SetFlex(1.0);
+        rightToolGroupLabel.SetTooltip(
+            "Independent tools docked on the right");
+        rightToolMoveLeftButton = GUI.Button.New(rightHeader, "←");
+        rightToolMoveLeftButton.SetPreferredSize(24.0, 24.0);
+        rightToolMoveLeftButton.SetAccessibleName(
+            "Move active right tool to left");
+        rightToolMoveLeftButton.SetTooltip(
+            "Move the selected right tool to the left group");
+        rightToolMoveBottomButton = GUI.Button.New(rightHeader, "↓");
+        rightToolMoveBottomButton.SetPreferredSize(24.0, 24.0);
+        rightToolMoveBottomButton.SetAccessibleName(
+            "Move active right tool to bottom");
+        rightToolMoveBottomButton.SetTooltip(
+            "Move the selected right tool below the editor");
+        rightToolMoveFloatingButton = GUI.Button.New(rightHeader, "◇");
+        rightToolMoveFloatingButton.SetPreferredSize(24.0, 24.0);
+        rightToolMoveFloatingButton.SetAccessibleName(
+            "Float active right tool");
+        rightToolMoveFloatingButton.SetTooltip(
+            "Move the selected right tool into the floating window");
+        rightToolGroupHideButton = GUI.Button.New(rightHeader, "");
+        rightToolGroupHideButton.SetIconName("close");
+        rightToolGroupHideButton.SetPreferredSize(24.0, 24.0);
+        rightToolGroupHideButton.SetAccessibleName("Hide right tool group");
+        rightToolTabBar = GUI.TabBar.New(rightToolGroupRoot);
+        rightToolTabBar.SetAutoClose(false);
+
+        BuildFloatingToolGroup();
+    }
+
+    /// @brief Build the movable, resizable in-window tool-group overlay.
+    /// @details The overlay owns only presentation widgets. Tool surfaces are
+    ///          reparented into its VBox exactly like an attached dock, keeping
+    ///          terminal/editor focus and controller state alive.
+    hide override func BuildFloatingToolGroup() {
+        if app == null or floatingToolPanel != null { return; }
+
+        floatingToolPanel = GUI.FloatingPanel.New(app);
+        floatingToolPanel.SetVisible(false);
+
+        floatingToolGroupRoot = GUI.VBox.New();
+        floatingToolGroupRoot.SetSpacing(0.0);
+        floatingToolGroupRoot.SetPadding(0.0);
+        floatingToolGroupRoot.SetFlex(1.0);
+        floatingToolGroupRoot.SetVisible(false);
+        floatingToolPanel.AddChild(floatingToolGroupRoot);
+
+        var floatingHeader = GUI.HBox.New();
+        floatingHeader.SetSpacing(4.0);
+        floatingHeader.SetPadding(4.0);
+        floatingToolGroupRoot.AddChild(floatingHeader);
+        floatingToolMoveHandle =
+            GUI.Label.New(floatingHeader, "Floating tools · drag");
+        floatingToolMoveHandle.SetFlex(1.0);
+        floatingToolMoveHandle.SetAccessibleName(
+            "Move floating tool window");
+        floatingToolMoveHandle.SetTooltip(
+            "Drag the window; release at an edge to dock the whole group");
+
+        floatingToolMoveLeftButton = GUI.Button.New(floatingHeader, "←");
+        floatingToolMoveLeftButton.SetPreferredSize(24.0, 24.0);
+        floatingToolMoveLeftButton.SetAccessibleName(
+            "Move active floating tool left");
+        floatingToolMoveLeftButton.SetTooltip(
+            "Move the selected floating tool to the left group");
+        floatingToolMoveBottomButton = GUI.Button.New(floatingHeader, "↓");
+        floatingToolMoveBottomButton.SetPreferredSize(24.0, 24.0);
+        floatingToolMoveBottomButton.SetAccessibleName(
+            "Move active floating tool to bottom");
+        floatingToolMoveBottomButton.SetTooltip(
+            "Move the selected floating tool below the editor");
+        floatingToolMoveRightButton = GUI.Button.New(floatingHeader, "→");
+        floatingToolMoveRightButton.SetPreferredSize(24.0, 24.0);
+        floatingToolMoveRightButton.SetAccessibleName(
+            "Move active floating tool right");
+        floatingToolMoveRightButton.SetTooltip(
+            "Move the selected floating tool to the right group");
+        floatingToolGroupHideButton = GUI.Button.New(floatingHeader, "");
+        floatingToolGroupHideButton.SetIconName("close");
+        floatingToolGroupHideButton.SetPreferredSize(24.0, 24.0);
+        floatingToolGroupHideButton.SetAccessibleName(
+            "Hide floating tool group");
+        floatingToolGroupHideButton.SetTooltip(
+            "Hide the floating tools without closing their state");
+
+        floatingToolTabBar = GUI.TabBar.New(floatingToolGroupRoot);
+        floatingToolTabBar.SetAutoClose(false);
+
+        floatingToolResizeRow = GUI.HBox.New();
+        floatingToolResizeRow.SetSpacing(4.0);
+        floatingToolResizeRow.SetPadding(3.0);
+        floatingToolGroupRoot.AddChild(floatingToolResizeRow);
+        var resizeHint =
+            GUI.Label.New(floatingToolResizeRow, "Floating tool window");
+        resizeHint.SetFlex(1.0);
+        resizeHint.SetColor(ToolPanelModel.ToolColorMuted());
+        floatingToolResizeHandle =
+            GUI.Label.New(floatingToolResizeRow, "↘");
+        floatingToolResizeHandle.SetPreferredSize(28.0, 22.0);
+        floatingToolResizeHandle.SetAccessibleName(
+            "Resize floating tool window");
+        floatingToolResizeHandle.SetTooltip(
+            "Drag to resize the floating tool window");
+
+        ApplyFloatingPanelBounds(
+            floatingPanelX, floatingPanelY,
+            floatingPanelWidth, floatingPanelHeight, false);
+    }
+
+    /// @brief Build four stationary workbench targets for panel-header drags.
+    /// @details Manual positioning keeps these late children above the normal
+    ///          HBox layout without allowing them to consume editor space.
+    hide override func BuildDockTargets() {
+        if workspaceDropTarget == null or dockLeftTarget != null { return; }
+
+        dockLeftTarget = GUI.Button.New(workspaceDropTarget, "Dock Left");
+        ConfigureDockTarget(dockLeftTarget,
+                            workspace_dock.DOCK_LEFT,
+                            "Move the panel area to the left side",
+                            "←",
+                            0);
+        dockRightTarget = GUI.Button.New(workspaceDropTarget, "Dock Right");
+        ConfigureDockTarget(dockRightTarget,
+                            workspace_dock.DOCK_RIGHT,
+                            "Move the panel area to the right side",
+                            "→",
+                            1);
+        dockFloatTarget = GUI.Button.New(workspaceDropTarget, "Float");
+        ConfigureDockTarget(dockFloatTarget,
+                            workspace_dock.DOCK_FLOATING,
+                            "Move the panel group into a floating window",
+                            "◇",
+                            0);
+        // Build Bottom last so it wins hit testing if an unusually compact
+        // workbench ever makes the manual target cards overlap.
+        dockBottomTarget = GUI.Button.New(workspaceDropTarget, "Dock Bottom");
+        ConfigureDockTarget(dockBottomTarget,
+                            workspace_dock.DOCK_BOTTOM,
+                            "Move the panel area below the editor",
+                            "↓",
+                            1);
+    }
+
+    /// @brief Configure one visible target as a real typed drop receiver.
+    hide override func ConfigureDockTarget(target: GUI.Button,
+                                  location: Integer,
+                                  tooltip: String,
+                                  icon: String,
+                                  iconPosition: Integer) {
+        if target == null { return; }
+        target.SetName("dock-target-" + workspace_dock.DockLocationName(location));
+        target.SetStyle(2);
+        target.SetIcon(icon);
+        target.SetIconPosition(iconPosition);
+        target.SetTooltipRich("Dock panels", tooltip);
+        target.SetPosition(0, 0);
+        target.SetSize(1, 1);
+        target.SetDropTarget(true);
+        target.SetAcceptedDropTypes(workspace_dock.TOOL_PANEL_DRAG_TYPE);
+        target.SetVisible(false);
+    }
+
+    /// @brief Show or hide direct-manipulation targets for an active drag.
+    /// @details Exposed so deterministic GUI automation can verify the same
+    ///          production surface; callers cannot author a dock change here.
+    expose override func SetDockDragTargetsVisible(visible: Boolean) {
+        if dockLeftTarget == null
+           or dockBottomTarget == null
+           or dockRightTarget == null
+           or dockFloatTarget == null {
+            dockTargetsVisible = false;
+            return;
+        }
+
+        if visible {
+            LayoutDockTargets();
+            if !dockTargetsVisible {
+                dockLeftTarget.SetVisible(true);
+                dockBottomTarget.SetVisible(true);
+                dockRightTarget.SetVisible(true);
+                dockFloatTarget.SetVisible(true);
+                ApplyDockTargetFeedback(
+                    workspace_dock.DOCK_NONE, dockLocation);
+            }
+        } else if dockTargetsVisible {
+            dockLeftTarget.SetVisible(false);
+            dockBottomTarget.SetVisible(false);
+            dockRightTarget.SetVisible(false);
+            dockFloatTarget.SetVisible(false);
+            dockTargetHoverLocation = workspace_dock.DOCK_NONE;
+        }
+        dockTargetsVisible = visible;
+    }
+
+    /// @brief Return whether the stationary target cards are currently shown.
+    expose override func AreDockDragTargetsVisible() -> Boolean {
+        return dockTargetsVisible;
+    }
+
+    /// @brief Keep the four target cards inside the current workbench bounds.
+    hide override func LayoutDockTargets() {
+        if workspaceDropTarget == null { return; }
+        var width = workspaceDropTarget.GetLogicalWidth();
+        var height = workspaceDropTarget.GetLogicalHeight();
+        var targetWidth =
+            Convert.NumToInt(workspace_dock.DockTargetWidth(width));
+        var targetHeight =
+            Convert.NumToInt(workspace_dock.DockTargetHeight(height));
+        if targetWidth < 1 or targetHeight < 1 { return; }
+
+        dockLeftTarget.SetPosition(
+            Convert.NumToInt(workspace_dock.DockTargetX(
+                workspace_dock.DOCK_LEFT, width)),
+            Convert.NumToInt(workspace_dock.DockTargetY(
+                workspace_dock.DOCK_LEFT, height)));
+        dockLeftTarget.SetSize(targetWidth, targetHeight);
+        dockRightTarget.SetPosition(
+            Convert.NumToInt(workspace_dock.DockTargetX(
+                workspace_dock.DOCK_RIGHT, width)),
+            Convert.NumToInt(workspace_dock.DockTargetY(
+                workspace_dock.DOCK_RIGHT, height)));
+        dockRightTarget.SetSize(targetWidth, targetHeight);
+        dockBottomTarget.SetPosition(
+            Convert.NumToInt(workspace_dock.DockTargetX(
+                workspace_dock.DOCK_BOTTOM, width)),
+            Convert.NumToInt(workspace_dock.DockTargetY(
+                workspace_dock.DOCK_BOTTOM, height)));
+        dockBottomTarget.SetSize(targetWidth, targetHeight);
+        dockFloatTarget.SetPosition(
+            Convert.NumToInt(workspace_dock.DockTargetX(
+                workspace_dock.DOCK_FLOATING, width)),
+            Convert.NumToInt(workspace_dock.DockTargetY(
+                workspace_dock.DOCK_FLOATING, height)));
+        dockFloatTarget.SetSize(targetWidth, targetHeight);
+    }
+
+    /// @brief Return the explicit target currently under the drag pointer.
+    hide override func DockTargetHoverLocation() -> Integer {
+        if dockBottomTarget != null and dockBottomTarget.IsDragOver() {
+            return workspace_dock.DOCK_BOTTOM;
+        }
+        if dockFloatTarget != null and dockFloatTarget.IsDragOver() {
+            return workspace_dock.DOCK_FLOATING;
+        }
+        if dockLeftTarget != null and dockLeftTarget.IsDragOver() {
+            return workspace_dock.DOCK_LEFT;
+        }
+        if dockRightTarget != null and dockRightTarget.IsDragOver() {
+            return workspace_dock.DOCK_RIGHT;
+        }
+        return workspace_dock.DOCK_NONE;
+    }
+
+    /// @brief Apply concise copy and a primary hover treatment to target cards.
+    hide override func ApplyDockTargetFeedback(hoverLocation: Integer,
+                                      currentLocation: Integer) {
+        dockTargetHoverLocation = hoverLocation;
+        dockLeftTarget.SetText(workspace_dock.DockTargetText(
+            workspace_dock.DOCK_LEFT,
+            currentLocation,
+            hoverLocation == workspace_dock.DOCK_LEFT));
+        dockBottomTarget.SetText(workspace_dock.DockTargetText(
+            workspace_dock.DOCK_BOTTOM,
+            currentLocation,
+            hoverLocation == workspace_dock.DOCK_BOTTOM));
+        dockRightTarget.SetText(workspace_dock.DockTargetText(
+            workspace_dock.DOCK_RIGHT,
+            currentLocation,
+            hoverLocation == workspace_dock.DOCK_RIGHT));
+        dockFloatTarget.SetText(workspace_dock.DockTargetText(
+            workspace_dock.DOCK_FLOATING,
+            currentLocation,
+            hoverLocation == workspace_dock.DOCK_FLOATING));
+
+        dockLeftTarget.SetStyle(
+            DockTargetStyle(
+                workspace_dock.DOCK_LEFT, hoverLocation, currentLocation));
+        dockBottomTarget.SetStyle(
+            DockTargetStyle(
+                workspace_dock.DOCK_BOTTOM, hoverLocation, currentLocation));
+        dockRightTarget.SetStyle(
+            DockTargetStyle(
+                workspace_dock.DOCK_RIGHT, hoverLocation, currentLocation));
+        dockFloatTarget.SetStyle(
+            DockTargetStyle(
+                workspace_dock.DOCK_FLOATING,
+                hoverLocation,
+                currentLocation));
+    }
+}

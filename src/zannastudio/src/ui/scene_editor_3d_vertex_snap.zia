@@ -1,0 +1,758 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_vertex_snap.zia
+// Purpose: Focused vertex snap behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_viewport_selection.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_vertex_snap;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_viewport_selection" as PreviousLayer;
+
+/// @brief Vertex Snap implementation layer.
+class SceneEditor3DVertexSnapLayer extends PreviousLayer.SceneEditor3DViewportSelectionLayer {
+
+    /// @brief Recognize only two nearby clicks on the same viewport node.
+    /// @details The global mouse double-click flag has no widget or position
+    ///          identity, so it cannot safely distinguish toolbar clicks.
+    hide override func RegisterViewportClick(resolvedIndex: Integer,
+                                    mouseX: Integer,
+                                    mouseY: Integer) -> Boolean {
+        var now = Zanna.Time.Clock.NowMs();
+        var elapsed = now - lastViewportClickMs;
+        var dx = mouseX - lastViewportClickX;
+        var dy = mouseY - lastViewportClickY;
+        var isDouble = resolvedIndex >= 0
+            and resolvedIndex == lastViewportClickNode
+            and elapsed >= 0
+            and elapsed <= SceneEditor3DModel.VIEWPORT_DOUBLE_CLICK_MS
+            and dx * dx + dy * dy
+                <= SceneEditor3DModel.VIEWPORT_DOUBLE_CLICK_RADIUS_SQUARED;
+        lastViewportClickNode = resolvedIndex;
+        lastViewportClickX = mouseX;
+        lastViewportClickY = mouseY;
+        lastViewportClickMs = now;
+        return isDouble;
+    }
+
+    /// @brief Return whether persistent or held-V vertex snapping owns input.
+    hide override func EffectiveVertexSnapEnabled() -> Boolean {
+        if vertexSnapEnabled { return true; }
+        return GizmoControlsOwnFocus()
+            and Input.Keyboard.IsDown(Input.Key.V);
+    }
+
+    /// @brief Return whether one mesh node is visible and drawable in its tree.
+    hide override func VertexSnapNodeVisible(node: SceneNode) -> Boolean {
+        if node == null or node.Mesh == null
+           or node.Mesh.Resident == false {
+            return false;
+        }
+        var current = node;
+        var depth = 0;
+        while current != null and depth <= SceneEditor3DModel.MAX_HIERARCHY_DEPTH {
+            if current.Visible == false { return false; }
+            current = current.Parent;
+            depth = depth + 1;
+        }
+        return current == null;
+    }
+
+    /// @brief Cheap screen-bounds prefilter before reading individual vertices.
+    hide override func VertexSnapPointerNearNode(node: SceneNode,
+                                        mouseX: Integer,
+                                        mouseY: Integer) -> Boolean {
+        var bounds = NodeScreenBounds(node);
+        if bounds.visible == false { return false; }
+        return mouseX >= bounds.minX - SceneEditor3DModel.VERTEX_SNAP_PICK_RADIUS
+            and mouseX <= bounds.maxX + SceneEditor3DModel.VERTEX_SNAP_PICK_RADIUS
+            and mouseY >= bounds.minY - SceneEditor3DModel.VERTEX_SNAP_PICK_RADIUS
+            and mouseY <= bounds.maxY + SceneEditor3DModel.VERTEX_SNAP_PICK_RADIUS;
+    }
+
+    /// @brief Name one canonical or transient mesh in snap feedback.
+    hide override func VertexSnapNodeLabel(node: SceneNode,
+                                  ownerIndex: Integer) -> String {
+        if ownerIndex >= 0 and ownerIndex < flatNodes.count() {
+            return NodeDisplayName(flatNodes.get(ownerIndex));
+        }
+        if node != null and Str.Trim(node.Name) != "" {
+            return node.Name;
+        }
+        return "project surface";
+    }
+
+    /// @brief Admit one projected point when it is the closest stable candidate.
+    hide override func ConsiderVertexSnapPoint(candidate: SceneEditor3DModel.VertexSnapPoint3D,
+                                      world: Vec3,
+                                      mouseX: Integer,
+                                      mouseY: Integer,
+                                      kind: Integer,
+                                      ownerIndex: Integer,
+                                      vertexIndex: Integer,
+                                      label: String) {
+        if candidate == null or world == null { return; }
+        var projected = Project(world.X, world.Y, world.Z);
+        if projected.visible == false { return; }
+        var dx = projected.x - mouseX;
+        var dy = projected.y - mouseY;
+        var distance = dx * dx + dy * dy;
+        if distance > SceneEditor3DModel.VERTEX_SNAP_PICK_RADIUS_SQUARED
+           or distance >= candidate.distanceSquared {
+            return;
+        }
+        candidate.valid = true;
+        candidate.kind = kind;
+        candidate.world =
+            Vec3.New(world.X, world.Y, world.Z);
+        candidate.screenX = projected.x;
+        candidate.screenY = projected.y;
+        candidate.distanceSquared = distance;
+        candidate.ownerIndex = ownerIndex;
+        candidate.vertexIndex = vertexIndex;
+        candidate.label = label;
+    }
+
+    /// @brief Scan one pointer-near mesh without exceeding the caller budget.
+    /// @return Vertices examined, zero for an ineligible mesh, or -1 on cap.
+    hide override func ScanVertexSnapMesh(candidate: SceneEditor3DModel.VertexSnapPoint3D,
+                                 node: SceneNode,
+                                 ownerIndex: Integer,
+                                 mouseX: Integer,
+                                 mouseY: Integer,
+                                 remaining: Integer) -> Integer {
+        if VertexSnapNodeVisible(node) == false
+           or VertexSnapPointerNearNode(node, mouseX, mouseY) == false {
+            return 0;
+        }
+        var mesh = node.Mesh;
+        var count = mesh.VertexCount;
+        if count <= 0 { return 0; }
+        if remaining <= 0 or count > remaining {
+            candidate.clipped = true;
+            return -1;
+        }
+        var worldMatrix = node.WorldMatrix;
+        if worldMatrix == null { return 0; }
+        var vertex = 0;
+        while vertex < count {
+            var local =
+                mesh.VertexPosition(vertex) as Vec3;
+            if local != null {
+                var world =
+                    worldMatrix.TransformPoint(local) as Vec3;
+                ConsiderVertexSnapPoint(
+                    candidate,
+                    world,
+                    mouseX,
+                    mouseY,
+                    SceneEditor3DModel.VERTEX_SNAP_KIND_VERTEX,
+                    ownerIndex,
+                    vertex,
+                    VertexSnapNodeLabel(node, ownerIndex));
+            }
+            vertex = vertex + 1;
+        }
+        return count;
+    }
+
+    /// @brief Remove an untrustworthy vertex winner after a capped scan.
+    hide override func DiscardClippedVertexCandidate(
+        candidate: SceneEditor3DModel.VertexSnapPoint3D) {
+        if candidate == null
+           or candidate.clipped == false
+           or candidate.kind != SceneEditor3DModel.VERTEX_SNAP_KIND_VERTEX {
+            return;
+        }
+        candidate.valid = false;
+        candidate.kind = SceneEditor3DModel.VERTEX_SNAP_KIND_NONE;
+        candidate.world = Vec3.New(0.0, 0.0, 0.0);
+        candidate.distanceSquared = 1000000000;
+        candidate.ownerIndex = -1;
+        candidate.vertexIndex = -1;
+        candidate.label = "";
+    }
+
+    /// @brief Find the selected pivot or exact selected mesh vertex under V.
+    hide override func FindVertexSnapSource(mouseX: Integer,
+                                   mouseY: Integer) -> SceneEditor3DModel.VertexSnapPoint3D {
+        var candidate = new SceneEditor3DModel.VertexSnapPoint3D();
+        var roots = TopLevelSelectedNodes();
+        if roots.count() == 0 { return candidate; }
+        var primary = SelectedNode();
+        if primary != null {
+            ConsiderVertexSnapPoint(
+                candidate,
+                primary.WorldPosition,
+                mouseX,
+                mouseY,
+                SceneEditor3DModel.VERTEX_SNAP_KIND_PIVOT,
+                selectedIndex,
+                -1,
+                NodeDisplayName(primary) + " pivot");
+        }
+
+        var remaining = SceneEditor3DModel.MAX_VERTEX_SNAP_VERTICES;
+        var complete = true;
+        var index = 0;
+        while index < flatNodes.count() and complete {
+            var node = flatNodes.get(index);
+            if node.Mesh != null and NodeWithinRoots(node, roots) {
+                var scanned = ScanVertexSnapMesh(
+                    candidate, node, index, mouseX, mouseY, remaining);
+                if scanned < 0 {
+                    complete = false;
+                } else {
+                    remaining = remaining - scanned;
+                }
+            }
+            index = index + 1;
+        }
+        index = 0;
+        while index < projectPreviewNodes.count()
+              and index < projectPreviewOwners.count()
+              and complete {
+            var preview = projectPreviewNodes.get(index);
+            var owner = projectPreviewOwners.get(index);
+            if preview.Mesh != null
+               and owner >= 0 and owner < flatNodes.count()
+               and NodeWithinRoots(flatNodes.get(owner), roots) {
+                var scanned = ScanVertexSnapMesh(
+                    candidate,
+                    preview,
+                    owner,
+                    mouseX,
+                    mouseY,
+                    remaining);
+                if scanned < 0 {
+                    complete = false;
+                } else {
+                    remaining = remaining - scanned;
+                }
+            }
+            index = index + 1;
+        }
+        DiscardClippedVertexCandidate(candidate);
+        return candidate;
+    }
+
+    /// @brief Find an exact unselected canonical/project vertex under pointer.
+    hide override func FindVertexSnapTargetVertex(
+        mouseX: Integer,
+        mouseY: Integer,
+        roots: List[SceneNode]) -> SceneEditor3DModel.VertexSnapPoint3D {
+        var candidate = new SceneEditor3DModel.VertexSnapPoint3D();
+        var remaining = SceneEditor3DModel.MAX_VERTEX_SNAP_VERTICES;
+        var complete = true;
+        var index = 0;
+        while index < flatNodes.count() and complete {
+            var node = flatNodes.get(index);
+            if node.Mesh != null
+               and NodeWithinRoots(node, roots) == false {
+                var scanned = ScanVertexSnapMesh(
+                    candidate, node, index, mouseX, mouseY, remaining);
+                if scanned < 0 {
+                    complete = false;
+                } else {
+                    remaining = remaining - scanned;
+                }
+            }
+            index = index + 1;
+        }
+        index = 0;
+        while index < projectPreviewNodes.count()
+              and index < projectPreviewOwners.count()
+              and complete {
+            var preview = projectPreviewNodes.get(index);
+            var owner = projectPreviewOwners.get(index);
+            var selectedOwner = owner >= 0 and owner < flatNodes.count()
+                and NodeWithinRoots(flatNodes.get(owner), roots);
+            if preview.Mesh != null and selectedOwner == false {
+                var scanned = ScanVertexSnapMesh(
+                    candidate,
+                    preview,
+                    owner,
+                    mouseX,
+                    mouseY,
+                    remaining);
+                if scanned < 0 {
+                    complete = false;
+                } else {
+                    remaining = remaining - scanned;
+                }
+            }
+            index = index + 1;
+        }
+        DiscardClippedVertexCandidate(candidate);
+        return candidate;
+    }
+
+    /// @brief Raycast the visible authored/project surface with selection absent.
+    hide override func FindVertexSnapSurfaceTarget(
+        mouseX: Integer,
+        mouseY: Integer,
+        roots: List[SceneNode],
+        clipped: Boolean) -> SceneEditor3DModel.VertexSnapPoint3D {
+        var candidate = new SceneEditor3DModel.VertexSnapPoint3D();
+        candidate.clipped = clipped;
+        if scene == null or ConfigureViewportCamera() == false {
+            return candidate;
+        }
+        var origin = viewportRenderCamera.ScreenToRayOrigin(
+            mouseX, mouseY,
+            renderedViewportWidth, renderedViewportHeight) as Vec3;
+        var direction = viewportRenderCamera.ScreenToRay(
+            mouseX, mouseY,
+            renderedViewportWidth, renderedViewportHeight) as Vec3;
+        if origin == null or direction == null { return candidate; }
+
+        var suppressedNodes: List[SceneNode] = [];
+        var suppressedMeshes: List[Mesh3D] = [];
+        SuppressSelectedDropMeshes(
+            roots, suppressedNodes, suppressedMeshes);
+        var nearest = scene.RaycastPreciseHit(
+            origin,
+            direction,
+            viewportRenderCamera.FarPlane) as RayHit3D;
+        if projectPreviewScene != null {
+            var preview = projectPreviewScene.RaycastPreciseHit(
+                origin,
+                direction,
+                viewportRenderCamera.FarPlane) as RayHit3D;
+            if preview != null
+               and (nearest == null
+                    or preview.Distance < nearest.Distance) {
+                nearest = preview;
+            }
+        }
+        RestoreSuppressedDropMeshes(
+            suppressedNodes, suppressedMeshes);
+        if nearest == null { return candidate; }
+        var point = nearest.Point as Vec3;
+        if point == null { return candidate; }
+        var projected = Project(point.X, point.Y, point.Z);
+        candidate.valid = projected.visible;
+        candidate.kind = SceneEditor3DModel.VERTEX_SNAP_KIND_SURFACE;
+        candidate.world = Vec3.New(point.X, point.Y, point.Z);
+        candidate.screenX = projected.x;
+        candidate.screenY = projected.y;
+        candidate.distanceSquared = 0;
+        candidate.label = "visible surface";
+        return candidate;
+    }
+
+    /// @brief Prefer a nearby exact vertex, then the precise surface under it.
+    hide override func FindVertexSnapTarget(
+        mouseX: Integer,
+        mouseY: Integer,
+        roots: List[SceneNode]) -> SceneEditor3DModel.VertexSnapPoint3D {
+        var vertex =
+            FindVertexSnapTargetVertex(mouseX, mouseY, roots);
+        if vertex.valid { return vertex; }
+        return FindVertexSnapSurfaceTarget(
+            mouseX, mouseY, roots, vertex.clipped);
+    }
+
+    /// @brief Return current selected roots from immutable drag indices.
+    hide override func VertexSnapDragRoots() -> List[SceneNode] {
+        var roots: List[SceneNode] = [];
+        var index = 0;
+        while index < vertexSnapDragIndices.count() {
+            var nodeIndex = vertexSnapDragIndices.get(index);
+            if nodeIndex >= 0 and nodeIndex < flatNodes.count() {
+                roots.add(flatNodes.get(nodeIndex));
+            }
+            index = index + 1;
+        }
+        return roots;
+    }
+
+    /// @brief Cache hover source until pointer or rendered view changes.
+    hide override func UpdateVertexSnapSourceHover(mouseX: Integer,
+                                          mouseY: Integer) {
+        if vertexSnapSourceCacheValid
+           and mouseX == vertexSnapLastSourceX
+           and mouseY == vertexSnapLastSourceY
+           and renderDirty == false {
+            return;
+        }
+        var previousValid = vertexSnapSource.valid;
+        var previousClipped = vertexSnapSource.clipped;
+        var previousKind = vertexSnapSource.kind;
+        var previousX = vertexSnapSource.screenX;
+        var previousY = vertexSnapSource.screenY;
+        vertexSnapSource = FindVertexSnapSource(mouseX, mouseY);
+        vertexSnapLastSourceX = mouseX;
+        vertexSnapLastSourceY = mouseY;
+        vertexSnapSourceCacheValid = true;
+        if previousValid != vertexSnapSource.valid
+           or previousClipped != vertexSnapSource.clipped
+           or previousKind != vertexSnapSource.kind
+           or previousX != vertexSnapSource.screenX
+           or previousY != vertexSnapSource.screenY {
+            renderDirty = true;
+        }
+        if vertexSnapSource.valid {
+            toolbarStatus.SetText(
+                "Vertex Move source: " + vertexSnapSource.label);
+        } else if vertexSnapSource.clipped {
+            toolbarStatus.SetText(
+                "Vertex source exceeds the interactive scan cap");
+        } else {
+            toolbarStatus.SetText(
+                "Vertex Move: point at a selected vertex or pivot");
+        }
+    }
+
+    /// @brief Start one exact selected-root translation from a chosen point.
+    hide override func BeginVertexSnapDrag(source: SceneEditor3DModel.VertexSnapPoint3D) {
+        if source == null or source.valid == false or bakeActive {
+            if bakeActive {
+                detailLabel.SetText(
+                    "A lightmap bake is running; cancel it before "
+                    + "vertex-snapping nodes.");
+            }
+            return;
+        }
+        var roots = TopLevelSelectedIndices();
+        if roots.count() == 0 { return; }
+        if roots.count() > SceneEditor3DModel.MAX_VERTEX_SNAP_ROOTS {
+            toolbarStatus.SetText("Vertex Move selection is too large");
+            detailLabel.SetText(
+                "Vertex Move accepts at most " + SceneEditor3DModel.MAX_VERTEX_SNAP_ROOTS
+                + " selected hierarchy roots per gesture.");
+            return;
+        }
+        if gizmoMode != SceneEditor3DModel.GIZMO_MODE_MOVE {
+            SetGizmoMode(SceneEditor3DModel.GIZMO_MODE_MOVE);
+        }
+        vertexSnapDragIndices = HierarchyOrderedSelection(roots);
+        vertexSnapStartPositions = [];
+        vertexSnapStartRotations = [];
+        vertexSnapStartScales = [];
+        vertexSnapStartWorldMatrices = [];
+        var index = 0;
+        while index < vertexSnapDragIndices.count() {
+            var nodeIndex = vertexSnapDragIndices.get(index);
+            if nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+                vertexSnapDragIndices = [];
+                return;
+            }
+            var node = flatNodes.get(nodeIndex);
+            vertexSnapStartPositions.add(node.Position);
+            vertexSnapStartRotations.add(node.Rotation);
+            vertexSnapStartScales.add(node.Scale);
+            vertexSnapStartWorldMatrices.add(node.WorldMatrix);
+            index = index + 1;
+        }
+        if vertexSnapStartWorldMatrices.count()
+           != vertexSnapDragIndices.count() {
+            vertexSnapDragIndices = [];
+            return;
+        }
+        vertexSnapSource = source;
+        vertexSnapTarget = new SceneEditor3DModel.VertexSnapPoint3D();
+        vertexSnapDragActive = true;
+        vertexSnapDragChanged = false;
+        vertexSnapLastTargetX = -1000000;
+        vertexSnapLastTargetY = -1000000;
+        gizmoHoverAxis = SceneEditor3DModel.GIZMO_AXIS_NONE;
+        hoveredViewportNode = -1;
+        marqueeCandidate = false;
+        marqueeActive = false;
+        marqueeCancelled = false;
+        Input.Mouse.Capture();
+        toolbarStatus.SetText(
+            "Vertex Move " + vertexSnapDragIndices.count()
+            + " root(s): " + source.label);
+        detailLabel.SetText(
+            "Drag onto another vertex or visible surface; Escape restores "
+            + "the complete selection.");
+        renderDirty = true;
+    }
+
+    /// @brief Restore every vertex-snap root to its immutable local TRS.
+    hide override func RestoreVertexSnapOrigins() {
+        RestoreLocalTransforms(
+            vertexSnapDragIndices,
+            vertexSnapStartPositions,
+            vertexSnapStartRotations,
+            vertexSnapStartScales);
+    }
+
+    /// @brief Apply the current target as an exact world translation.
+    hide override func ApplyVertexSnapTarget(mouseX: Integer,
+                                    mouseY: Integer) {
+        if vertexSnapDragActive == false { return; }
+        if mouseX == vertexSnapLastTargetX
+           and mouseY == vertexSnapLastTargetY {
+            return;
+        }
+        vertexSnapLastTargetX = mouseX;
+        vertexSnapLastTargetY = mouseY;
+        var roots = VertexSnapDragRoots();
+        vertexSnapTarget =
+            FindVertexSnapTarget(mouseX, mouseY, roots);
+        RestoreVertexSnapOrigins();
+        vertexSnapDragChanged = false;
+        if vertexSnapTarget.valid == false {
+            SyncProjectNodePreviewTransforms();
+            RefreshSelectedFields();
+            toolbarStatus.SetText(
+                vertexSnapTarget.clipped
+                ? "Vertex target capped; point at a visible surface"
+                : "Vertex Move: no target under pointer");
+            renderDirty = true;
+            return;
+        }
+
+        var dx = vertexSnapTarget.world.X - vertexSnapSource.world.X;
+        var dy = vertexSnapTarget.world.Y - vertexSnapSource.world.Y;
+        var dz = vertexSnapTarget.world.Z - vertexSnapSource.world.Z;
+        var changed =
+            scene_transform_3d.NearlyEqual(dx, 0.0) == false
+            or scene_transform_3d.NearlyEqual(dy, 0.0) == false
+            or scene_transform_3d.NearlyEqual(dz, 0.0) == false;
+        var accepted = true;
+        var index = 0;
+        while index < vertexSnapDragIndices.count() and accepted
+              and index < vertexSnapStartWorldMatrices.count() {
+            var nodeIndex = vertexSnapDragIndices.get(index);
+            var desired = Mat4.Mul(
+                Mat4.Translate(dx, dy, dz),
+                vertexSnapStartWorldMatrices.get(index));
+            if nodeIndex < 0 or nodeIndex >= flatNodes.count()
+               or desired == null
+               or flatNodes.get(nodeIndex)
+                      .TrySetWorldMatrix(desired) == false {
+                accepted = false;
+            }
+            index = index + 1;
+        }
+        if accepted == false
+           or index != vertexSnapDragIndices.count() {
+            RestoreVertexSnapOrigins();
+            vertexSnapTarget.valid = false;
+            detailLabel.SetText(
+                "The target would require a singular or sheared "
+                + "parent-relative transform. The gesture remains uncommitted.");
+            toolbarStatus.SetText("Vertex Move rejected");
+        } else {
+            vertexSnapDragChanged = changed;
+            var sourceKind = "Vertex";
+            if vertexSnapSource.kind == SceneEditor3DModel.VERTEX_SNAP_KIND_PIVOT {
+                sourceKind = "Pivot";
+            }
+            var targetKind = "Surface";
+            if vertexSnapTarget.kind == SceneEditor3DModel.VERTEX_SNAP_KIND_VERTEX {
+                targetKind = "Vertex";
+            }
+            toolbarStatus.SetText(
+                sourceKind + " to " + targetKind + ": "
+                + vertexSnapTarget.label);
+            detailLabel.SetText(
+                "Release for one undoable selected-root translation; "
+                + "Escape restores the origin.");
+        }
+        SyncProjectNodePreviewTransforms();
+        RefreshSelectedFields();
+        renderDirty = true;
+    }
+
+    /// @brief Clear transient vertex-snap state and optionally release capture.
+    hide override func ResetVertexSnapDrag(releaseCapture: Boolean) {
+        var wasActive = vertexSnapDragActive;
+        vertexSnapDragActive = false;
+        vertexSnapDragChanged = false;
+        vertexSnapSource = new SceneEditor3DModel.VertexSnapPoint3D();
+        vertexSnapTarget = new SceneEditor3DModel.VertexSnapPoint3D();
+        vertexSnapSourceCacheValid = false;
+        vertexSnapLastSourceX = -1000000;
+        vertexSnapLastSourceY = -1000000;
+        vertexSnapLastTargetX = -1000000;
+        vertexSnapLastTargetY = -1000000;
+        vertexSnapDragIndices = [];
+        vertexSnapStartPositions = [];
+        vertexSnapStartRotations = [];
+        vertexSnapStartScales = [];
+        vertexSnapStartWorldMatrices = [];
+        if releaseCapture and wasActive and Input.Mouse.IsCaptured() {
+            Input.Mouse.Release();
+        }
+    }
+
+    /// @brief Commit one complete vertex gesture as a single history entry.
+    hide override func FinishVertexSnapDrag() -> Boolean {
+        var changed = vertexSnapDragChanged;
+        var count = vertexSnapDragIndices.count();
+        if changed == false {
+            RestoreVertexSnapOrigins();
+        }
+        ResetVertexSnapDrag(true);
+        SyncProjectNodePreviewTransforms();
+        RefreshSelectedFields();
+        renderDirty = true;
+        if changed == false { return false; }
+        if CommitScene(
+               "Vertex-snapped " + count
+               + " selected hierarchy root(s)") {
+            RebuildProjectNodePreviews();
+            return true;
+        }
+        return false;
+    }
+
+    /// @brief Roll back one active vertex gesture without history.
+    hide override func CancelVertexSnapDrag() {
+        if vertexSnapDragActive {
+            RestoreVertexSnapOrigins();
+        }
+        ResetVertexSnapDrag(true);
+        SyncProjectNodePreviewTransforms();
+        RefreshSelectedFields();
+        toolbarStatus.SetText("Vertex Move canceled");
+        detailLabel.SetText("");
+        renderDirty = true;
+    }
+
+    /// @brief Probe the exact production source resolver at one screen point.
+    expose override func VertexSnapSourceAtViewportPoint(
+        mouseX: Integer,
+        mouseY: Integer) -> SceneEditor3DModel.VertexSnapPoint3D {
+        ConfigureViewportCamera();
+        return FindVertexSnapSource(mouseX, mouseY);
+    }
+
+    /// @brief Probe the exact production target resolver for current selection.
+    expose override func VertexSnapTargetAtViewportPoint(
+        mouseX: Integer,
+        mouseY: Integer) -> SceneEditor3DModel.VertexSnapPoint3D {
+        ConfigureViewportCamera();
+        return FindVertexSnapTarget(
+            mouseX, mouseY, TopLevelSelectedNodes());
+    }
+
+    /// @brief Return whether a vertex gesture currently owns pointer capture.
+    expose override func IsVertexSnapDragging() -> Boolean {
+        return vertexSnapDragActive;
+    }
+
+    /// @brief Enter or leave the selected terrain's viewport sculpt tool.
+    expose override func SetTerrainSculptEnabled(active: Boolean) {
+        if active {
+            if scene == null or gameViewActive or bakeActive
+               or selectedIndices.count() != 1
+               or scene_terrain_3d.IsTerrainNode(
+                   SelectedNode()) == false {
+                terrainSculptEnabled = false;
+                terrainBrushHoverValid = false;
+                if terrainInspector != null {
+                    terrainInspector.SetSculptActive(false);
+                    UpdateTerrainControls(scene != null);
+                }
+                return;
+            }
+            if vertexSnapDragActive { CancelVertexSnapDrag(); }
+            if gizmoDragAxis != SceneEditor3DModel.GIZMO_AXIS_NONE { CancelGizmoDrag(); }
+            vertexSnapSource = new SceneEditor3DModel.VertexSnapPoint3D();
+            vertexSnapSourceCacheValid = false;
+            gizmoHoverAxis = SceneEditor3DModel.GIZMO_AXIS_NONE;
+            hoveredViewportNode = -1;
+            marqueeCandidate = false;
+            marqueeActive = false;
+            marqueeCancelled = false;
+            terrainSculptEnabled = true;
+            terrainBrushHoverValid = false;
+            terrainInspector.SetSculptActive(true);
+            UpdateTerrainControls(true);
+            toolbarStatus.SetText(
+                scene_terrain_3d.BrushModeName(
+                    terrainInspector.BrushMode())
+                + " terrain brush active");
+            detailLabel.SetText(
+                "Drag over the selected terrain. Shift temporarily inverts "
+                + "Raise/Lower; release commits once; Escape cancels.");
+        } else {
+            if terrainStrokeActive { CancelTerrainStroke(); }
+            terrainSculptEnabled = false;
+            terrainBrushHoverValid = false;
+            if terrainInspector != null {
+                terrainInspector.SetSculptActive(false);
+                UpdateTerrainControls(scene != null);
+            }
+            toolbarStatus.SetText("Terrain sculpt tool stopped");
+            detailLabel.SetText("");
+        }
+        renderDirty = true;
+    }
+}

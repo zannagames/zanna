@@ -1,0 +1,636 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/build/debug_session_base.zia
+// Purpose: Own debug-adapter process state, requests, watches, and restart intent.
+// Key invariants:
+//   - Adapter I/O and variable expansion never block the Studio frame loop.
+//   - Variable references and child caches are invalidated whenever execution resumes.
+// Ownership/Lifetime:
+//   - DebugSession owns the child process handle and all parsed adapter snapshots.
+//   - VarTreeState owns copied child records; adapter event maps remain transient.
+// Links: zannastudio/src/commands/debug_commands.zia,
+//        zannastudio/src/build/var_model.zia
+//
+//===----------------------------------------------------------------------===//
+
+module debug_session_base;
+
+bind "bounded_output";
+bind "breakpoints";
+bind "var_model";
+
+bind Process = Zanna.System.Process;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Obj = Zanna.Core.Object;
+bind Path = Zanna.IO.Path;
+bind Time = Zanna.Time;
+
+// ============================================================================
+// MODULE: debug_session
+// PURPOSE: Drive the out-of-process VM debug adapter.
+//
+// WHERE-THIS-FITS: debug_commands starts and controls the session. main.zia pumps
+//          DebugUpdate every frame. AppShell renders call stack, variables, debug
+//          console output, and toolbar enablement from this state.
+//
+// TEACHING-NOTE: Debugging is asynchronous. Commands are written to the adapter
+//          stdin as newline JSON, then matching events arrive later on stderr
+//          with the "@@VDBG@@ " sentinel. Polling keeps this explicit and avoids
+//          callback state hidden outside the frame loop.
+// ============================================================================
+
+final SENTINEL = "@@VDBG@@ ";
+final MAX_DEBUG_OUTPUT_CHARS = 250000;
+final TERMINATE_GRACE_MS = 750;
+final VARIABLE_REQUEST_TIMEOUT_MS = 2000;
+
+class DebugSessionBase {
+    expose Process.ProcessHandle processHandle;
+    expose Boolean hasSession;
+    expose Boolean stopped;
+    expose Boolean terminated;
+    expose String activePath;
+    expose Integer lastLine;
+    expose String lastType;
+    expose String lastReason;
+    expose String consoleText;
+    expose String programOutput;
+    expose Integer exitCode;
+
+    // Structured snapshot of the most recent stop, for the Variables and Call
+    // Stack panels. Null when not stopped. Each is a parsed JSON array: frames of
+    // {function,path,line}; locals of {name,value,type,varRef,childCount}.
+    expose Any stopFrames;
+    expose Any stopLocals;
+
+    // Children of the most recently expanded composite variable (a parsed JSON
+    // array of {name,value,type,varRef,childCount}), and the varRef they belong
+    // to. Populated by a `variables` event in response to RequestVariables. These
+    // are scoped to the current stop; the adapter's refs die on resume.
+    expose Any lastVarChildren;
+    expose Integer lastVarRef;
+    expose String pendingVarPath;
+    expose Integer pendingVarRef;
+    expose String failedVarPath;
+    expose Time.Countdown variableRequestCountdown;
+
+    // Persistent expand/collapse state + per-stop child cache for the Variables
+    // panel tree (plan 13). Keyed by stable name-paths so expansion survives steps.
+    expose var_model.VarTreeState varTree;
+
+    // Most recent watch/evaluate result (from an `evaluated` event).
+    expose String lastEvalExpr;
+    expose String lastEvalValue;
+    expose String lastEvalType;
+    expose Boolean lastEvalOk;
+    expose Boolean evalJustArrived; // set when a fresh result lands; IDE clears it.
+    expose String pendingManualEvalExpr;
+
+    // Persistent watch expressions for the current debug session. Values refresh
+    // asynchronously whenever execution stops.
+    expose List watchExprs;
+    expose List watchValues;
+    expose List watchTypes;
+    expose List watchOk;
+    expose Integer watchRefreshIndex;
+    expose Boolean watchRequestActive;
+    expose String watchRequestExpr;
+
+    // Accumulator for partial control-channel lines.
+    hide String ctrlBuf;
+    // True when Poll observed a state change worth refreshing the UI for.
+    expose Boolean dirty;
+    expose Boolean terminateRequested;
+    expose Time.Countdown terminateCountdown;
+    expose Boolean restartPending;
+    expose String restartZannaBin;
+    expose String restartPath;
+
+    expose func init() {
+        InitializeState();
+    }
+
+    /// @brief Initialize adapter state for the public polling controller.
+    expose func InitializeState() {
+        processHandle = null;
+        hasSession = false;
+        stopped = false;
+        terminated = false;
+        activePath = "";
+        lastLine = 0;
+        lastType = "";
+        lastReason = "";
+        consoleText = "";
+        programOutput = "";
+        exitCode = -1;
+        stopFrames = null;
+        stopLocals = null;
+        lastVarChildren = null;
+        lastVarRef = 0;
+        pendingVarPath = "";
+        pendingVarRef = 0;
+        failedVarPath = "";
+        variableRequestCountdown = Time.Countdown.New(VARIABLE_REQUEST_TIMEOUT_MS);
+        lastEvalExpr = "";
+        lastEvalValue = "";
+        lastEvalType = "";
+        lastEvalOk = false;
+        evalJustArrived = false;
+        pendingManualEvalExpr = "";
+        watchExprs = new List();
+        watchValues = new List();
+        watchTypes = new List();
+        watchOk = new List();
+        watchRefreshIndex = -1;
+        watchRequestActive = false;
+        watchRequestExpr = "";
+        varTree = new var_model.VarTreeState();
+        ctrlBuf = "";
+        dirty = false;
+        terminateRequested = false;
+        terminateCountdown = Time.Countdown.New(TERMINATE_GRACE_MS);
+        restartPending = false;
+        restartZannaBin = "";
+        restartPath = "";
+    }
+
+    /// @brief Launch the adapter for @p path and install its breakpoints.
+    expose func Launch(zannaBin: String,
+                       path: String,
+                       store: breakpoints.BreakpointStore) -> Boolean {
+        if zannaBin == "" or path == "" { return false; }
+        ReleaseProcessHandle();
+
+        var args = Seq.New();
+        Seq.Push(args, "run");
+        Seq.Push(args, "--debug-adapter");
+        Seq.Push(args, path);
+        processHandle = Process.StartWithEnv(zannaBin, args, Path.Directory(path), null);
+        if processHandle == null or processHandle.IsValid() == false {
+            processHandle = null;
+            return false;
+        }
+
+        hasSession = true;
+        stopped = false;
+        terminated = false;
+        activePath = path;
+        lastLine = 0;
+        lastType = "";
+        lastReason = "";
+        consoleText = "";
+        programOutput = "";
+        exitCode = -1;
+        if varTree != null { varTree.ClearAll(); } // fresh session starts collapsed
+        ClearStopSnapshot();
+        ClearEvaluationSnapshot();
+        ClearWatchValues();
+        ctrlBuf = "";
+        dirty = true;
+        terminateRequested = false;
+        terminateCountdown.Reset();
+        restartPending = false;
+        restartZannaBin = "";
+        restartPath = "";
+
+        processHandle.WriteStdin(buildSetBreakpoints(path, store) + "\n");
+        processHandle.WriteStdin("{\"type\":\"launch\"}\n");
+        return true;
+    }
+
+    /// @brief Ask the debug adapter to terminate without blocking the UI frame.
+    /// @details The request is written to stdin and Poll() completes the shutdown
+    ///          asynchronously. If the child keeps running beyond
+    ///          TERMINATE_GRACE_MS, Poll() kills it on a later frame.
+    /// @return True when a terminate request was sent or was already pending.
+    expose func RequestTerminate() -> Boolean {
+        if processHandle == null { return false; }
+        if terminated { return false; }
+        if terminateRequested {
+            return true;
+        }
+        processHandle.WriteStdin("{\"type\":\"terminate\"}\n");
+        terminateRequested = true;
+        terminateCountdown.Start();
+        ClearStopSnapshot();
+        ClearEvaluationSnapshot();
+        ClearWatchValues();
+        stopped = false;
+        lastType = "terminating";
+        dirty = true;
+        return true;
+    }
+
+    hide func buildSetBreakpoints(path: String,
+                                  store: breakpoints.BreakpointStore) -> String {
+        var lines = "";
+        var lineCount = 0;
+        var meta = "";
+        var metaCount = 0;
+        if store != null {
+            var i = 0;
+            while i < store.Count() {
+                if store.GetPath(i) == path {
+                    var ln = store.GetLine(i);
+                    if lineCount > 0 { lines = lines + ","; }
+                    lines = lines + ln;
+                    lineCount = lineCount + 1;
+                    var cond = store.GetCondition(i);
+                    var log = store.GetLogMessage(i);
+                    if cond != "" or log != "" {
+                        if metaCount > 0 { meta = meta + ","; }
+                        meta = meta + "{\"line\":" + ln;
+                        if cond != "" { meta = meta + ",\"condition\":\"" + jsonEscape(cond) + "\""; }
+                        if log != "" { meta = meta + ",\"logMessage\":\"" + jsonEscape(log) + "\""; }
+                        meta = meta + "}";
+                        metaCount = metaCount + 1;
+                    }
+                }
+                i = i + 1;
+            }
+        }
+        var out = "{\"type\":\"setBreakpoints\",\"path\":\"" + jsonEscape(path)
+            + "\",\"lines\":[" + lines + "]";
+        if metaCount > 0 {
+            out = out + ",\"meta\":[" + meta + "]";
+        }
+        return out + "}";
+    }
+
+    /// @brief Re-send the breakpoint set (with conditions/logpoints) for @p path so
+    ///        mid-session edits take effect. The adapter applies condition/logpoint
+    ///        changes while stopped; adding/removing lines needs a relaunch.
+    expose func SyncBreakpoints(path: String,
+                                store: breakpoints.BreakpointStore) -> Boolean {
+        if hasSession == false or terminated or processHandle == null { return false; }
+        processHandle.WriteStdin(buildSetBreakpoints(path, store) + "\n");
+        return true;
+    }
+
+    /// @brief Run to a specific line: continue execution until it reaches @p line
+    ///        in @p path. The adapter implements this by stepping over until the
+    ///        line is hit (or an existing breakpoint intervenes). Only valid while
+    ///        stopped. Cursor must be in the current function for a step to reach it.
+    expose func RunToLine(path: String, line: Integer) -> Boolean {
+        if hasSession == false or terminated or processHandle == null { return false; }
+        if stopped == false or path == "" or line <= 0 { return false; }
+        EnterRunningState("running");
+        processHandle.WriteStdin("{\"type\":\"runToLine\",\"path\":\"" + jsonEscape(path)
+            + "\",\"line\":" + line + "}\n");
+        return true;
+    }
+
+    hide func jsonEscape(s: String) -> String {
+        var out = Str.Replace(s, "\\", "\\\\");
+        out = Str.Replace(out, "\"", "\\\"");
+        out = Str.Replace(out, "\n", "\\n");
+        out = Str.Replace(out, "\r", "\\r");
+        out = Str.Replace(out, "\t", "\\t");
+        return out;
+    }
+
+    expose func Continue() -> Boolean { return sendStep("continue"); }
+    expose func StepOver() -> Boolean { return sendStep("stepOver"); }
+    expose func StepIn() -> Boolean { return sendStep("stepIn"); }
+    expose func StepOut() -> Boolean { return sendStep("stepOut"); }
+
+    hide func sendStep(kind: String) -> Boolean {
+        if hasSession == false or terminated or processHandle == null { return false; }
+        if stopped == false { return false; }
+        EnterRunningState("running");
+        processHandle.WriteStdin("{\"type\":\"" + kind + "\"}\n");
+        return true;
+    }
+
+    /// @brief Pause a freely-running program at the next instruction.
+    expose func Pause() -> Boolean {
+        if hasSession == false or terminated or processHandle == null { return false; }
+        if stopped { return false; }
+        lastType = "pausing";
+        dirty = true;
+        processHandle.WriteStdin("{\"type\":\"pause\"}\n");
+        return true;
+    }
+
+    /// @brief Request the value of a watch/hover expression at the current stop.
+    ///        The result arrives asynchronously as an `evaluated` event and lands
+    ///        in lastEval* on a later Poll(). Only valid while stopped.
+    expose func Evaluate(expr: String) -> Boolean {
+        if hasSession == false or terminated or processHandle == null { return false; }
+        if stopped == false or expr == "" { return false; }
+        pendingManualEvalExpr = expr;
+        processHandle.WriteStdin("{\"type\":\"evaluate\",\"expr\":\"" + jsonEscape(expr) + "\"}\n");
+        return true;
+    }
+
+    /// @brief Request one level of children of a composite variable (a local whose
+    ///        LocalVarRef is > 0, or a nested child's varRef). The children arrive
+    ///        asynchronously as a `variables` event and land in lastVarChildren on
+    ///        a later Poll(). Only valid while stopped; refs die on resume.
+    /// @param varRef Reference id advertised by a local/child at the current stop.
+    /// @param start First child index to fetch (0-based).
+    /// @param count Maximum number of children to fetch (adapter pages at <=100).
+    /// @return True when the request was sent.
+    expose func RequestVariables(varRef: Integer, start: Integer, count: Integer) -> Boolean {
+        if hasSession == false or terminated or processHandle == null { return false; }
+        if stopped == false or varRef <= 0 { return false; }
+        processHandle.WriteStdin("{\"type\":\"variables\",\"varRef\":" + varRef
+            + ",\"start\":" + start + ",\"count\":" + count + "}\n");
+        return true;
+    }
+
+    /// @brief Start one non-blocking Variables-panel child request.
+    /// @details Requests are serialized because adapter replies identify only a
+    ///          varRef, while the UI cache is keyed by a stable name path. A
+    ///          later Poll copies the matching reply into VarTreeState.
+    /// @param path Stable Variables-panel name path for the composite row.
+    /// @param varRef Adapter reference valid at the current stop.
+    /// @return True when sent or already pending for the same row.
+    expose func RequestVariableChildren(path: String,
+                                        varRef: Integer) -> Boolean {
+        if path == "" or varRef <= 0 { return false; }
+        if pendingVarPath != "" {
+            return pendingVarPath == path and pendingVarRef == varRef;
+        }
+        lastVarChildren = null;
+        lastVarRef = 0;
+        if RequestVariables(varRef, 0, 100) == false { return false; }
+        pendingVarPath = path;
+        pendingVarRef = varRef;
+        if failedVarPath == path { failedVarPath = ""; }
+        variableRequestCountdown.Start();
+        dirty = true;
+        return true;
+    }
+
+    /// @brief True while any Variables-panel child request awaits a reply.
+    expose func VariableChildrenRequestActive() -> Boolean {
+        return pendingVarPath != "";
+    }
+
+    /// @brief True when @p path owns the active child request.
+    expose func VariableChildrenRequestPending(path: String) -> Boolean {
+        return path != "" and pendingVarPath == path;
+    }
+
+    /// @brief True when the latest request for @p path timed out.
+    expose func VariableChildrenRequestFailed(path: String) -> Boolean {
+        return path != "" and failedVarPath == path;
+    }
+
+    /// @brief Allow a collapsed/expanded failed row to retry once.
+    expose func ClearVariableChildrenFailure(path: String) {
+        if path != "" and failedVarPath == path { failedVarPath = ""; }
+    }
+
+    /// @brief Add a persistent watch expression for this debug session.
+    /// @details Duplicate and blank expressions are ignored. When execution is
+    ///          currently stopped, adding the watch immediately starts a refresh
+    ///          so the Variables panel can show a value without waiting for the
+    ///          next breakpoint.
+    /// @param expr Expression text to evaluate in the current frame.
+    /// @return True when the watch was added; false for blank or duplicate text.
+    expose func AddWatch(expr: String) -> Boolean {
+        var clean = Str.Trim(expr);
+        if clean == "" { return false; }
+        if FindWatch(clean) >= 0 { return false; }
+        watchExprs.add(clean);
+        watchValues.add("(pending)");
+        watchTypes.add("");
+        watchOk.add(false);
+        if stopped {
+            RefreshWatches();
+        }
+        return true;
+    }
+
+    /// @brief Remove the watch expression at @p index.
+    /// @details Refresh bookkeeping is adjusted so an in-flight watch refresh
+    ///          does not continue to target a removed row. The session is marked
+    ///          dirty so the UI refreshes even when no adapter event arrives.
+    /// @param index Zero-based watch row index.
+    /// @return True when a watch was removed.
+    expose func RemoveWatch(index: Integer) -> Boolean {
+        if index < 0 or index >= watchExprs.count() { return false; }
+        var removedExpr = Obj.ToString(watchExprs.get(index));
+        watchExprs.removeAt(index);
+        watchValues.removeAt(index);
+        watchTypes.removeAt(index);
+        watchOk.removeAt(index);
+        if watchRefreshIndex >= index { watchRefreshIndex = watchRefreshIndex - 1; }
+        if watchRequestExpr == removedExpr {
+            watchRequestActive = false;
+            watchRequestExpr = "";
+        }
+        dirty = true;
+        if stopped and watchRefreshIndex >= 0 {
+            PumpWatchRequest();
+        }
+        return true;
+    }
+
+    /// @brief Remove all watch expressions and pending watch refresh state.
+    /// @details Manual evaluate results are left intact; only the persistent
+    ///          watch list backing the Variables panel is cleared.
+    /// @return Nothing.
+    expose func ClearWatches() {
+        watchExprs.clear();
+        watchValues.clear();
+        watchTypes.clear();
+        watchOk.clear();
+        watchRefreshIndex = -1;
+        watchRequestActive = false;
+        watchRequestExpr = "";
+        dirty = true;
+    }
+
+    /// @brief Return the number of persistent watch expressions.
+    /// @return Number of watch expressions currently stored on the session.
+    expose func WatchCount() -> Integer {
+        return watchExprs.count();
+    }
+
+    /// @brief Return the raw watch expression at @p i, or "" when out of range.
+    /// @param i Zero-based watch index.
+    /// @return Expression text, or empty string when @p i is invalid.
+    expose func WatchExpression(i: Integer) -> String {
+        if i < 0 or i >= watchExprs.count() { return ""; }
+        return Obj.ToString(watchExprs.get(i));
+    }
+
+    /// @brief Return a display label for watch @p i with its last known value.
+    /// @details Successful watch results include a type suffix when available.
+    ///          Failed or pending values remain visible so the user can tell the
+    ///          expression is being tracked.
+    expose func WatchLabel(i: Integer) -> String {
+        if i < 0 or i >= watchExprs.count() { return ""; }
+        var expr = Obj.ToString(watchExprs.get(i));
+        var value = Obj.ToString(watchValues.get(i));
+        var typeName = Obj.ToString(watchTypes.get(i));
+        var okText = Str.ToLower(Obj.ToString(watchOk.get(i)));
+        var ok = okText == "true" or okText == "1";
+        if ok == false and value == "" { value = "(unavailable)"; }
+        if ok and typeName != "" {
+            return expr + " = " + value + " : " + typeName;
+        }
+        return expr + " = " + value;
+    }
+
+    /// @brief Re-evaluate every watch expression at the current stop.
+    /// @details The debug adapter processes one evaluation request at a time, so
+    ///          this method seeds a small state machine that advances from later
+    ///          `evaluated` events in Poll().
+    /// @return Nothing.
+    expose func RefreshWatches() {
+        ClearWatchValues();
+        if watchExprs.count() == 0 or stopped == false {
+            watchRefreshIndex = -1;
+            return;
+        }
+        watchRefreshIndex = 0;
+        watchRequestActive = false;
+        PumpWatchRequest();
+    }
+
+    hide func ClearWatchValues() {
+        var i = 0;
+        while i < watchValues.count() {
+            watchValues.removeAt(i);
+            watchValues.insert(i, "(pending)");
+            watchTypes.removeAt(i);
+            watchTypes.insert(i, "");
+            watchOk.removeAt(i);
+            watchOk.insert(i, false);
+            i = i + 1;
+        }
+        watchRefreshIndex = -1;
+        watchRequestActive = false;
+        watchRequestExpr = "";
+    }
+
+    /// @brief Clear data that is valid only while execution is paused.
+    /// @details Call-stack rows, local variables, and the formatted stop
+    ///          console block all describe one specific suspended frame. They
+    ///          must be removed as soon as the adapter resumes or terminates so
+    ///          the IDE never shows stale variables from an older breakpoint.
+    /// @return Nothing.
+    hide func ClearStopSnapshot() {
+        stopFrames = null;
+        stopLocals = null;
+        lastVarChildren = null;
+        lastVarRef = 0;
+        pendingVarPath = "";
+        pendingVarRef = 0;
+        failedVarPath = "";
+        variableRequestCountdown.Reset();
+        // Child data is bound to the (now dead) stop's varRefs; drop it but keep
+        // the expanded set so the same nodes re-open at the next stop.
+        if varTree != null { varTree.InvalidateRefs(); }
+        consoleText = "";
+    }
+
+    /// @brief Clear pending and completed manual evaluation state.
+    /// @details Evaluation replies arrive asynchronously. When execution resumes
+    ///          or a session is relaunched, any outstanding reply belongs to the
+    ///          old stop context and should not be surfaced as a fresh status
+    ///          toast in the IDE.
+    /// @return Nothing.
+    hide func ClearEvaluationSnapshot() {
+        lastEvalExpr = "";
+        lastEvalValue = "";
+        lastEvalType = "";
+        lastEvalOk = false;
+        evalJustArrived = false;
+        pendingManualEvalExpr = "";
+    }
+
+    /// @brief Transition the session from a paused stop back to running state.
+    /// @details Stepping, continue, and run-to-line all invalidate stop locals,
+    ///          call-stack frames, pending evaluates, and watch values. Keeping
+    ///          the transition in one helper prevents individual commands from
+    ///          leaving stale debugger panel rows behind.
+    /// @param runningType Status token stored in lastType while the adapter runs.
+    /// @return Nothing.
+    hide func EnterRunningState(runningType: String) {
+        stopped = false;
+        lastType = runningType;
+        lastReason = "";
+        ClearStopSnapshot();
+        ClearEvaluationSnapshot();
+        ClearWatchValues();
+        dirty = true;
+    }
+
+    /// @brief Destroy and clear the current adapter process handle, if present.
+    /// @details The runtime process handle owns OS resources. Debug sessions can
+    ///          terminate via an adapter event, process exit, explicit stop, or
+    ///          restart; centralizing cleanup avoids handle leaks and prevents a
+    ///          dead process from blocking a subsequent launch.
+    /// @return Nothing.
+    hide func ReleaseProcessHandle() {
+        if processHandle == null { return; }
+        processHandle.Destroy();
+        processHandle = null;
+    }
+
+    hide func PumpWatchRequest() {
+        if stopped == false or processHandle == null { return; }
+        if watchRequestActive { return; }
+        if watchRefreshIndex < 0 or watchRefreshIndex >= watchExprs.count() { return; }
+        var expr = Obj.ToString(watchExprs.get(watchRefreshIndex));
+        watchRequestExpr = expr;
+        watchRequestActive = true;
+        processHandle.WriteStdin("{\"type\":\"evaluate\",\"expr\":\"" + jsonEscape(expr) + "\"}\n");
+    }
+
+    hide func FindWatch(expr: String) -> Integer {
+        var i = 0;
+        while i < watchExprs.count() {
+            if Obj.ToString(watchExprs.get(i)) == expr { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+
+    expose func Terminate() -> Boolean {
+        if processHandle == null { return false; }
+        return RequestTerminate();
+    }
+
+    /// @brief Queue a restart and begin asynchronous termination of this adapter.
+    /// @details Launching happens from debug_commands.DebugUpdate after Poll()
+    ///          observes the old process has stopped, so two adapters never race
+    ///          for the same debug UI state.
+    expose func RequestRestart(zannaBin: String,
+                               path: String) -> Boolean {
+        if zannaBin == "" or path == "" { return false; }
+        if IsActive() == false {
+            return false;
+        }
+        restartPending = true;
+        restartZannaBin = zannaBin;
+        restartPath = path;
+        return RequestTerminate();
+    }
+
+    /// @brief Clear any queued restart after it launches or is canceled.
+    expose func ClearRestartRequest() {
+        restartPending = false;
+        restartZannaBin = "";
+        restartPath = "";
+    }
+
+    expose func IsActive() -> Boolean {
+        return hasSession and terminated == false;
+    }
+
+
+}

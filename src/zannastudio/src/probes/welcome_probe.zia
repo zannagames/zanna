@@ -79,7 +79,16 @@ func panelFitsUiViewport(app: GUI.App, panel: GUI.FloatingPanel) -> Boolean {
             <= app_shell.UiViewportHeight(app) + 1.0;
 }
 
-func main() {
+/// @brief Typed state shared by the serial welcome-surface scenarios.
+class WelcomeProbeContext {
+    expose app_shell.AppShell shell;
+    expose welcome_view.WelcomeView wv;
+    expose ide_overlays.IdeOverlays overlays;
+    expose command_input.CommandInputOverlay commandOverlay;
+}
+
+/// @brief Build the shell and verify no-document command policy.
+func VerifyWelcomeCommandPolicy(ctx: WelcomeProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Welcome Probe", 900, 640);
     // Match the production startup path so native HiDPI sizing and centering
@@ -102,7 +111,7 @@ func main() {
        or shell.menuChrome.tbNew.IsEnabled() == false
        or shell.menuChrome.tbOpen.IsEnabled() == false {
         fail(shell, "empty welcome command chrome");
-        return;
+        return false;
     }
 
     // Periodic idle state refreshes must not override the empty-context gate.
@@ -114,7 +123,7 @@ func main() {
        or shell.menuChrome.tbDebug.IsEnabled()
        or shell.menuChrome.executionStateApplyCount != idleExecutionApplyCount {
         fail(shell, "idle refresh re-enabled empty welcome commands");
-        return;
+        return false;
     }
 
     // A project can build from its manifest without an editor tab, but the
@@ -128,7 +137,7 @@ func main() {
        or shell.menuChrome.miQuickOpen.IsEnabled() == false
        or shell.menuChrome.miSearchProject.IsEnabled() == false {
         fail(shell, "project-only welcome command chrome");
-        return;
+        return false;
     }
     shell.SetCommandContextAvailable(false, false, false, false);
 
@@ -141,21 +150,35 @@ func main() {
     overlays.Setup(shell);
     var commandOverlay = new command_input.CommandInputOverlay();
     commandOverlay.Setup(shell);
+
+    ctx.shell = shell;
+    ctx.wv = wv;
+    ctx.overlays = overlays;
+    ctx.commandOverlay = commandOverlay;
+    return true;
+}
+
+/// @brief Verify welcome content, startup state, and desktop layout.
+func VerifyWelcomeContentAndLayout(
+    ctx: WelcomeProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var wv = ctx.wv;
+
     var tabs = new editor_tabs.EditorTabs();
     tabs.Setup(shell.workbench.tabBar);
     if shell.workbench.tabBar.IsVisible() {
         fail(shell, "empty tab strip visible on welcome screen");
-        return;
+        return false;
     }
     tabs.AddTab("first.zia", 1);
     if shell.workbench.tabBar.IsVisible() == false {
         fail(shell, "first document did not restore tab strip");
-        return;
+        return false;
     }
     tabs.RemoveTab(0);
     if shell.workbench.tabBar.IsVisible() {
         fail(shell, "last tab close left empty strip visible");
-        return;
+        return false;
     }
     // Match main's no-project startup chrome: the activity bar remains usable,
     // while the otherwise empty Explorer pane must not offset the welcome card.
@@ -166,14 +189,14 @@ func main() {
     shell.Render();
     if shell.statusShell.welcomeMode == false {
         fail(shell, "welcome status policy did not activate");
-        return;
+        return false;
     }
     shell.SetWelcomeStatusMode(false);
     shell.Poll();
     shell.Render();
     if shell.statusShell.welcomeMode {
         fail(shell, "document status policy did not restore");
-        return;
+        return false;
     }
     shell.SetWelcomeStatusMode(true);
 
@@ -182,12 +205,12 @@ func main() {
         or wv.openFolderButton == null or wv.recentList == null
         or wv.emptyRecentLabel == null or wv.hintLabel == null {
         fail(shell, "welcome widgets not built");
-        return;
+        return false;
     }
     if wv.commandPaletteShortcut
        != command_catalog.PlatformShortcut("Ctrl+Shift+P") {
         fail(shell, "welcome command hint is not platform-native");
-        return;
+        return false;
     }
 
     // Cooperative restore must show an intentional progress card between
@@ -205,7 +228,7 @@ func main() {
         or shell.workbench.welcomeHost.IsVisible() == false
         or shell.workbench.editorRow.IsVisible() {
         fail(shell, "startup restore surface exposes empty editor or live content");
-        return;
+        return false;
     }
     wv.SetStartupMode(false);
     if wv.startupMode or wv.actionRow.IsVisible() == false
@@ -214,33 +237,33 @@ func main() {
         or wv.emptyRecentLabel.IsVisible() == false
         or wv.hintLabel.IsVisible() == false {
         fail(shell, "welcome content did not restore after startup");
-        return;
+        return false;
     }
 
     var compact = build_info.CompactSummary(
         "Build: probe\nSource: /private/source\nOutput: /private/output\nZanna: /private/zanna");
     if compact != "Build: probe" {
         fail(shell, "welcome build summary should be one line");
-        return;
+        return false;
     }
     var versionedCompact = build_info.CompactSummary(
         "Zanna Studio 9.8.7-test\nBuild: probe\nSource: private");
     if versionedCompact != "Zanna Studio 9.8.7-test" {
         fail(shell, "welcome should prefer stamped product identity");
-        return;
+        return false;
     }
     if welcome_view.ContentWidthForHost(1200.0) < 719.5
         or welcome_view.ContentWidthForHost(600.0) < 527.5
         or welcome_view.ContentWidthForHost(600.0) > 528.5
         or welcome_view.ContentWidthForHost(300.0) < 317.5 {
         fail(shell, "welcome content width should clamp to its host");
-        return;
+        return false;
     }
     if welcome_view.UsesCompactLayout(455.0) == false
         or welcome_view.CanShowCompactRecents(455.0) == false
         or welcome_view.CanShowCompactRecents(300.0) {
         fail(shell, "welcome compact-height policy hides usable recent work");
-        return;
+        return false;
     }
 
     // Shown: welcome host visible, editor row hidden.
@@ -252,38 +275,38 @@ func main() {
        or shell.workbench.splitPane.GetCollapsedSide() != 1
        or shell.workbench.rightSidebarSplit.GetCollapsedSide() != 2 {
         fail(shell, "empty startup sidebar still consumes width");
-        return;
+        return false;
     }
     if shell.workbench.welcomeHost.IsVisible() == false {
         fail(shell, "welcome host not visible when shown");
-        return;
+        return false;
     }
     if shell.workbench.editorRow.IsVisible() {
         fail(shell, "editor row should be hidden when welcome shown");
-        return;
+        return false;
     }
 
     var buildBottom = wv.buildLabel.GetLogicalY() + wv.buildLabel.GetLogicalHeight();
     if buildBottom > wv.actionRow.GetLogicalY() {
         fail(shell, "build metadata overlaps welcome actions");
-        return;
+        return false;
     }
     var actionBottom = wv.actionRow.GetLogicalY() + wv.actionRow.GetLogicalHeight();
     if actionBottom > wv.recentHeader.GetLogicalY() {
         fail(shell, "welcome actions overlap recent header");
-        return;
+        return false;
     }
     var headerBottom = wv.recentHeader.GetLogicalY() + wv.recentHeader.GetLogicalHeight();
     if headerBottom > wv.emptyRecentLabel.GetLogicalY() {
         fail(shell, "recent header overlaps empty state");
-        return;
+        return false;
     }
     var recentBottom = wv.emptyRecentLabel.GetLogicalY()
         + wv.emptyRecentLabel.GetLogicalHeight();
     if wv.hintLabel.IsVisible()
        and recentBottom > wv.hintLabel.GetLogicalY() {
         fail(shell, "recent empty state overlaps command hint");
-        return;
+        return false;
     }
 
     // Optional manual visual-QA mode. Hold the already-rendered desktop-sized
@@ -303,6 +326,17 @@ func main() {
             shell.Render();
         }
     }
+
+    return true;
+}
+
+/// @brief Verify native sizing, UI zoom, and mutually exclusive overlays.
+func VerifyWindowConstraintsAndOverlays(
+    ctx: WelcomeProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var wv = ctx.wv;
+    var overlays = ctx.overlays;
+    var commandOverlay = ctx.commandOverlay;
 
     // The production shell publishes a native minimum instead of allowing the
     // workbench to collapse to a sliver. Explicit resize requests share the
@@ -327,7 +361,7 @@ func main() {
     if shell.app.GetLogicalWidth() < expectedMinW
        or shell.app.GetLogicalHeight() < expectedMinH {
         fail(shell, "native workbench minimum size was not enforced");
-        return;
+        return false;
     }
     var constrainedHostHeight =
         shell.workbench.welcomeHost.GetLogicalHeight();
@@ -335,12 +369,12 @@ func main() {
        and (wv.recentHeader.IsVisible() == false
             or wv.emptyRecentLabel.IsVisible() == false) {
         fail(shell, "workbench minimum hid reachable recent work");
-        return;
+        return false;
     }
     if welcome_view.UsesCompactLayout(constrainedHostHeight)
        and wv.hintLabel.IsVisible() {
         fail(shell, "compact welcome retained the low-priority command hint");
-        return;
+        return false;
     }
 
     // Whole-UI zoom grows control metrics, padding, and typography. Keeping the
@@ -353,7 +387,7 @@ func main() {
     var zoomedLogicalChromeSize = shell.app.GetLogicalFontSize();
     if zoomedLogicalChromeSize < 14.9 or zoomedLogicalChromeSize > 15.1 {
         fail(shell, "UI zoom was applied twice to the chrome font");
-        return;
+        return false;
     }
     var expectedZoomMinW = 1440;
     var expectedZoomMinH = 1040;
@@ -370,7 +404,7 @@ func main() {
     if shell.app.GetLogicalWidth() < expectedZoomMinW
        or shell.app.GetLogicalHeight() < expectedZoomMinH {
         fail(shell, "UI zoom did not expand the undersized workbench");
-        return;
+        return false;
     }
     if Machine.Os == "macos" {
         if shell.app.GetX() < 0
@@ -380,7 +414,7 @@ func main() {
            or shell.app.GetY() + shell.app.GetLogicalHeight()
                > shell.app.GetMonitorHeight() - 16 {
             fail(shell, "zoom expansion left the workbench outside the desktop");
-            return;
+            return false;
         }
     }
     shell.app.SetWindowSize(64, 64);
@@ -389,7 +423,7 @@ func main() {
     if shell.app.GetLogicalWidth() < expectedZoomMinW
        or shell.app.GetLogicalHeight() < expectedZoomMinH {
         fail(shell, "UI zoom did not raise the native workbench minimum");
-        return;
+        return false;
     }
 
     overlays.OpenAbout(shell);
@@ -397,7 +431,7 @@ func main() {
     shell.Render();
     if panelFitsUiViewport(shell.app, overlays.aboutPanel) == false {
         fail(shell, "About overlay escaped the zoomed workbench");
-        return;
+        return false;
     }
     if HasArg("--visual-zoom-hold") {
         Terminal.Say("VISUAL: zoomed window=" + shell.app.GetLogicalWidth() + "x"
@@ -436,7 +470,7 @@ func main() {
     if panelFitsUiViewport(shell.app, overlays.aboutPanel) == false
        or closeBottom > panelBottom {
         fail(shell, "About overlay escaped the supported workbench bounds");
-        return;
+        return false;
     }
     var footerTop = overlays.aboutCloseButton.GetScreenY();
     overlays.aboutBuildInfo.SetText(
@@ -460,7 +494,7 @@ func main() {
        or overlays.aboutCloseButton.GetScreenY()
               + overlays.aboutCloseButton.GetScreenHeight() > panelBottom {
         fail(shell, "About metadata is not independently scrollable");
-        return;
+        return false;
     }
     overlays.CloseAbout();
     shell.Render();
@@ -474,9 +508,18 @@ func main() {
     if overlays.aboutVisible or overlays.aboutPanel.IsVisible()
        or commandOverlay.IsVisible() == false {
         fail(shell, "command input stacked over About");
-        return;
+        return false;
     }
     commandOverlay.Cancel();
+
+    return true;
+}
+
+/// @brief Verify defensive compact layout and typed recent-work rows.
+func VerifyCompactLayoutAndRecents(
+    ctx: WelcomeProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var wv = ctx.wv;
 
     // Restore the unconstrained runtime default so this component probe can
     // still exercise defensive compact layout below Studio's production floor.
@@ -497,7 +540,7 @@ func main() {
              + " list=" + wv.recentList.IsVisible()
              + " empty=" + wv.emptyRecentLabel.IsVisible()
              + " hint=" + wv.hintLabel.IsVisible());
-        return;
+        return false;
     }
 
     shell.app.SetWindowSize(900, 640);
@@ -509,7 +552,7 @@ func main() {
     if welcome_view.UsesCompactLayout(shell.workbench.welcomeHost.GetLogicalHeight())
         or wv.recentHeader.IsVisible() == false or wv.hintLabel.IsVisible() == false {
         fail(shell, "welcome secondary content did not restore after resize");
-        return;
+        return false;
     }
 
     // Hidden: inverse.
@@ -518,11 +561,11 @@ func main() {
     shell.Render();
     if shell.workbench.welcomeHost.IsVisible() {
         fail(shell, "welcome host should hide when not shown");
-        return;
+        return false;
     }
     if shell.workbench.editorRow.IsVisible() == false {
         fail(shell, "editor row should be visible when welcome hidden");
-        return;
+        return false;
     }
 
     // Workspace folders are first-class recent rows. They lead recent files,
@@ -537,7 +580,7 @@ func main() {
     if populatedSession.RecordRecentFile(recentFile) == false
        or populatedSession.RecordRecentProject(recentProject) == false {
         fail(shell, "recent welcome fixtures were not persisted");
-        return;
+        return false;
     }
     wv.Refresh(populatedSession);
     if wv.recentList.Count != 2 or wv.recentList.IsVisible() == false
@@ -545,17 +588,17 @@ func main() {
        or welcome_view.GUIRecentProjectDisplayText(recentProject)
           != "sample workspace/    " + recentDir {
         fail(shell, "recent workspace and file rows were not composed");
-        return;
+        return false;
     }
     wv.recentList.SelectIndex(0);
     if wv.TakeRecentSelection() != "folder:" + recentProject {
         fail(shell, "recent workspace selection lost its action type");
-        return;
+        return false;
     }
     wv.recentList.SelectIndex(1);
     if wv.TakeRecentSelection() != "file:" + recentFile {
         fail(shell, "recent file selection lost its action type");
-        return;
+        return false;
     }
 
     // Refresh against an empty session must not trap.
@@ -564,9 +607,18 @@ func main() {
     shell.Render();
     if wv.recentList.IsVisible() or wv.emptyRecentLabel.IsVisible() == false {
         fail(shell, "empty recent-file state not shown");
-        return;
+        return false;
     }
 
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new WelcomeProbeContext();
+    if VerifyWelcomeCommandPolicy(ctx) == false { return; }
+    if VerifyWelcomeContentAndLayout(ctx) == false { return; }
+    if VerifyWindowConstraintsAndOverlays(ctx) == false { return; }
+    if VerifyCompactLayoutAndRecents(ctx) == false { return; }
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

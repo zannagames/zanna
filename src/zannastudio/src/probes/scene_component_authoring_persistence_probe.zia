@@ -1,0 +1,159 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_component_authoring_persistence_probe.zia
+// Purpose: Verify optional-field preservation and schema-file persistence.
+// Key invariants:
+//   - Unchanged optional members remain omitted after structured edits.
+//   - Atomic schema creation is exactly undoable and conflict-aware.
+// Ownership/Lifetime: Owns and removes one temporary schema directory.
+// Links: zannastudio/src/probes/scene_component_authoring_probe.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_authoring_persistence_probe;
+
+bind "../services/safe_io";
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_component_schema";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind TempFile = Zanna.IO.TempFile;
+bind Str = Zanna.String;
+bind Terminal = Zanna.Terminal;
+
+func fail(tempDir: String, reason: String) {
+    safe_io.DeleteDirectoryTree(tempDir);
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+/// @brief Run the VerifyDirectModelsAndPersistence authoring scenario.
+expose func Verify(
+    empty: String,
+    unknownEdit: scene_component_authoring.SceneComponentEditResult)
+    -> Boolean {
+
+    var omittedDefaultText =
+        "{\"version\":1,\"components\":["
+        + "{\"name\":\"counter\",\"target\":\"both\",\"fields\":["
+        + "{\"key\":\"counter.value\",\"type\":\"int\"}]}]}";
+    var labelOnlyEdit = scene_component_authoring.UpdateField(
+        omittedDefaultText,
+        "counter",
+        "counter.value",
+        "counter.value",
+        "Counter value",
+        "int",
+        "0",
+        "",
+        "");
+    if labelOnlyEdit.ok == false or labelOnlyEdit.changed == false
+       or Str.Contains(labelOnlyEdit.content, "\"label\"") == false
+       or Str.Contains(labelOnlyEdit.content, "\"default\"") {
+        fail("", "label-only edit materialized an omitted field default");
+        return false;
+    }
+    var fieldDescriptionOnly = scene_component_authoring.UpdateField(
+        omittedDefaultText,
+        "counter",
+        "counter.value",
+        "counter.value",
+        "counter.value",
+        "int",
+        "0",
+        "Counts accepted events.",
+        "");
+    if fieldDescriptionOnly.ok == false
+       or Str.Contains(fieldDescriptionOnly.content, "\"description\"")
+          == false
+       or Str.Contains(fieldDescriptionOnly.content, "\"label\"")
+       or Str.Contains(fieldDescriptionOnly.content, "\"default\"") {
+        fail("", "field edit materialized unchanged optional members");
+        return false;
+    }
+    var componentDescriptionOnly =
+        scene_component_authoring.UpdateComponent(
+            omittedDefaultText,
+            "counter",
+            "counter",
+            "counter",
+            scene_component_schema.TARGET_BOTH,
+            "Shared counter data.",
+            "",
+            "");
+    if componentDescriptionOnly.ok == false
+       or Str.Contains(componentDescriptionOnly.content, "\"description\"")
+          == false
+       or Str.Contains(componentDescriptionOnly.content, "\"label\"") {
+        fail("", "component edit materialized an unchanged optional label");
+        return false;
+    }
+
+    var tempDir =
+        TempFile.CreateDirWithPrefix("zannastudio_component_authoring_");
+    var schemaPath = Path.Join(
+        tempDir, scene_component_schema.SCHEMA_FILE_NAME);
+    if tempDir == "" {
+        fail(tempDir, "could not create schema authoring fixture");
+        return false;
+    }
+    var session =
+        new scene_component_authoring.SceneComponentAuthoringSession();
+    if session.Load(schemaPath) == false or session.found
+       or session.currentText != empty
+       or session.CanUndo() or session.CanRedo()
+       or session.Apply(unknownEdit.content) == false
+       or session.found == false
+       or File.Exists(schemaPath) == false
+       or File.ReadAllText(schemaPath) != unknownEdit.content
+       or session.CanUndo() == false
+       or session.CanRedo() {
+        fail(tempDir, "schema session did not atomically create its file");
+        return false;
+    }
+    if session.Undo() == false or File.Exists(schemaPath)
+       or session.found or session.currentText != empty
+       or session.CanRedo() == false
+       or session.Redo() == false
+       or File.ReadAllText(schemaPath) != unknownEdit.content
+       or session.found == false {
+        fail(tempDir, "schema file creation was not exactly undoable");
+        return false;
+    }
+
+    var external = unknownEdit.content + "\n";
+    if safe_io.WriteAllTextAtomic(schemaPath, external) == false
+       or session.HasExternalChange() == false {
+        fail(tempDir, "schema session did not notice an external edit");
+        return false;
+    }
+    var localEdit = scene_component_authoring.UpdateComponent(
+        session.currentText,
+        "enemy",
+        "enemy",
+        "Enemy changed locally",
+        scene_component_schema.TARGET_BOTH,
+        "",
+        "enemy",
+        "Enemy");
+    if localEdit.ok == false or session.Apply(localEdit.content)
+       or File.ReadAllText(schemaPath) != external
+       or session.error == ""
+       or session.Reload() == false
+       or session.currentText != external
+       or session.CanUndo() or session.CanRedo() {
+        fail(tempDir, "external conflict was overwritten or retained stale history");
+        return false;
+    }
+
+    safe_io.DeleteDirectoryTree(tempDir);
+    Terminal.Say("RESULT: ok");
+    return true;
+}
+

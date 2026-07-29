@@ -1,0 +1,806 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_renderer.zia
+// Purpose: Focused renderer behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_rulers.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_renderer;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_rulers" as PreviousLayer;
+
+/// @brief Renderer implementation layer.
+class SceneEditor2DRendererLayer extends PreviousLayer.SceneEditor2DRulersLayer {
+
+    /// @brief Composite one already-resolved active-layer brush ghost.
+    /// @return True when a real atlas frame was composited.
+    hide override func DrawResolvedTileGhostCell(tile: Integer,
+                                        cellX: Integer,
+                                        cellY: Integer,
+                                        opacity: Number) -> Boolean {
+        if framePixels == null or scene == null or tilesets == null
+           or activeLayer < 0 or activeLayer >= scene.LayerCount()
+           or displayCellSize <= 0 or tile <= 0
+           or cellX < 0 or cellY < 0
+           or cellX >= scene.Width or cellY >= scene.Height {
+            return false;
+        }
+        var x = cellX * displayCellSize - viewOriginX;
+        var y = cellY * displayCellSize - viewOriginY;
+        if x + displayCellSize <= 0 or y + displayCellSize <= 0
+           or x >= framePixels.Width or y >= framePixels.Height {
+            return false;
+        }
+        if tilesets.DrawTileWithOpacity(
+               framePixels, activeLayer, tile, x, y,
+               displayCellSize, opacity) {
+            return true;
+        }
+        framePixels.DrawFrame(
+            x + 1, y + 1,
+            displayCellSize - 1, displayCellSize - 1,
+            SceneEditor2DModel.TilePreviewColor(tile, activeLayer));
+        return false;
+    }
+
+    /// @brief Composite one image-true prospective brush cell.
+    /// @details Autotile substitution runs before optional animation, matching
+    ///          the canonical canvas renderer. Missing atlas frames retain a
+    ///          bounded outline fallback instead of hiding the tool position.
+    hide override func DrawTileGhostCell(tile: Integer,
+                                cellX: Integer,
+                                cellY: Integer) -> Boolean {
+        if scene == null or activeLayer < 0
+           or activeLayer >= scene.LayerCount()
+           or tile <= 0 or cellX < 0 or cellY < 0
+           or cellX >= scene.Width or cellY >= scene.Height {
+            return false;
+        }
+        var resolved = PreviewResolvedTile(
+            AutotileResolvedTileWithOverride(
+                activeLayer, cellX, cellY, tile,
+                cellX, cellY, tile));
+        return DrawResolvedTileGhostCell(
+            resolved, cellX, cellY, SceneEditor2DModel.TILE_GHOST_OPACITY);
+    }
+
+    /// @brief Preview one neighbor changed by a prospective paint cell.
+    hide override func DrawAutotileNeighborGhost(pendingTile: Integer,
+                                        pendingX: Integer,
+                                        pendingY: Integer,
+                                        neighborX: Integer,
+                                        neighborY: Integer) {
+        if neighborX < 0 or neighborY < 0
+           or neighborX >= scene.Width or neighborY >= scene.Height {
+            return;
+        }
+        var raw = scene.GetTile(activeLayer, neighborX, neighborY);
+        var current = AutotileResolvedSceneTile(
+            activeLayer, neighborX, neighborY);
+        var prospective = AutotileResolvedTileWithOverride(
+            activeLayer, neighborX, neighborY, raw,
+            pendingX, pendingY, pendingTile);
+        if prospective == current { return; }
+        DrawResolvedTileGhostCell(
+            PreviewResolvedTile(prospective),
+            neighborX, neighborY,
+            SceneEditor2DModel.AUTOTILE_NEIGHBOR_GHOST_OPACITY);
+    }
+
+    /// @brief Preview every adjacent variant the next paint click would change.
+    hide override func DrawAutotileNeighborGhosts(tile: Integer,
+                                         cellX: Integer,
+                                         cellY: Integer) {
+        if scene == null or activeLayer != 0
+           or autotilePreviewEnabled == false
+           or autotilePreviewRuleCount <= 0 {
+            return;
+        }
+        DrawAutotileNeighborGhost(tile, cellX, cellY, cellX, cellY - 1);
+        DrawAutotileNeighborGhost(tile, cellX, cellY, cellX + 1, cellY);
+        DrawAutotileNeighborGhost(tile, cellX, cellY, cellX, cellY + 1);
+        DrawAutotileNeighborGhost(tile, cellX, cellY, cellX - 1, cellY);
+    }
+
+    /// @brief Paint non-destructive atlas-true previews for tile tools.
+    /// @details A hover previews one tile for Paint, Fill, Rectangle, Line, and
+    ///          Ellipse. Active stamps preview every non-empty source cell, and
+    ///          captured shapes preview exactly the cells their commit path
+    ///          will write. Rectangle iteration is clipped to the visible
+    ///          raster window so huge scenes cannot turn a hover into
+    ///          unbounded work.
+    hide override func DrawTileBrushGhosts() {
+        if framePixels == null or scene == null
+           or selectedCellX < 0 or selectedCellY < 0
+           or LayerLocked(activeLayer) {
+            return;
+        }
+        var selectedTile = SceneEditor2DModel.ClampInt(
+            Convert.NumToInt(tileSpinner.Value), 0, 1000000);
+        if mode == SceneEditor2DModel.MODE_PAINT {
+            if stampActive and stampWidth > 0 and stampHeight > 0 {
+                var anchorX =
+                    selectedCellX / stampWidth * stampWidth;
+                var anchorY =
+                    selectedCellY / stampHeight * stampHeight;
+                var row = 0;
+                while row < stampHeight {
+                    var column = 0;
+                    while column < stampWidth {
+                        DrawTileGhostCell(
+                            stampTiles.get(row * stampWidth + column),
+                            anchorX + column, anchorY + row);
+                        column = column + 1;
+                    }
+                    row = row + 1;
+                }
+            } else {
+                DrawAutotileNeighborGhosts(
+                    selectedTile, selectedCellX, selectedCellY);
+                DrawTileGhostCell(
+                    selectedTile, selectedCellX, selectedCellY);
+            }
+            return;
+        }
+        if mode == SceneEditor2DModel.MODE_ERASE {
+            DrawAutotileNeighborGhosts(
+                0, selectedCellX, selectedCellY);
+            return;
+        }
+        if mode == SceneEditor2DModel.MODE_FILL {
+            DrawTileGhostCell(
+                selectedTile, selectedCellX, selectedCellY);
+            return;
+        }
+        if mode != SceneEditor2DModel.MODE_RECTANGLE and mode != SceneEditor2DModel.MODE_LINE
+           and mode != SceneEditor2DModel.MODE_ELLIPSE {
+            return;
+        }
+        if tileRectangleActive == false {
+            DrawTileGhostCell(
+                selectedTile, selectedCellX, selectedCellY);
+            return;
+        }
+        if tileRectangleShape != 0 {
+            var cells = ShapeCells(
+                tileRectangleShape,
+                tileRectangleStartX, tileRectangleStartY,
+                tileRectangleCurrentX, tileRectangleCurrentY);
+            var index = 0;
+            while index + 1 < cells.count() {
+                DrawTileGhostCell(
+                    tileRectangleTile,
+                    cells.get(index), cells.get(index + 1));
+                index = index + 2;
+            }
+            return;
+        }
+
+        var minimumX = tileRectangleStartX;
+        var maximumX = tileRectangleCurrentX;
+        if maximumX < minimumX {
+            minimumX = tileRectangleCurrentX;
+            maximumX = tileRectangleStartX;
+        }
+        var minimumY = tileRectangleStartY;
+        var maximumY = tileRectangleCurrentY;
+        if maximumY < minimumY {
+            minimumY = tileRectangleCurrentY;
+            maximumY = tileRectangleStartY;
+        }
+        var firstVisibleX = viewOriginX / displayCellSize;
+        var firstVisibleY = viewOriginY / displayCellSize;
+        var lastVisibleX =
+            (viewOriginX + framePixels.Width - 1) / displayCellSize;
+        var lastVisibleY =
+            (viewOriginY + framePixels.Height - 1) / displayCellSize;
+        if maximumX < firstVisibleX or minimumX > lastVisibleX
+           or maximumY < firstVisibleY or minimumY > lastVisibleY {
+            return;
+        }
+        minimumX = SceneEditor2DModel.ClampInt(minimumX, firstVisibleX, lastVisibleX);
+        maximumX = SceneEditor2DModel.ClampInt(maximumX, firstVisibleX, lastVisibleX);
+        minimumY = SceneEditor2DModel.ClampInt(minimumY, firstVisibleY, lastVisibleY);
+        maximumY = SceneEditor2DModel.ClampInt(maximumY, firstVisibleY, lastVisibleY);
+        if minimumX > maximumX or minimumY > maximumY { return; }
+        var y = minimumY;
+        while y <= maximumY {
+            var x = minimumX;
+            while x <= maximumX {
+                DrawTileGhostCell(tileRectangleTile, x, y);
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+    }
+
+    /// @brief Re-render when the viewport or scroll offset changes.
+    /// @details The image holds only the visible window, so unlike the old
+    ///          full-scene buffer, every scroll movement (scrollbar, wheel
+    ///          pan, restored session offset) must re-rasterize the window.
+    hide override func UpdateCanvasViewportSize() {
+        if canvasScroll == null { return; }
+        var width = Convert.NumToInt(canvasScroll.GetLogicalWidth());
+        var height = Convert.NumToInt(canvasScroll.GetLogicalHeight());
+        if width != lastCanvasViewportWidth
+           or height != lastCanvasViewportHeight {
+            lastCanvasViewportWidth = width;
+            lastCanvasViewportHeight = height;
+            if gameViewOutputFramed {
+                gameOutputFramePending = true;
+            }
+            renderDirty = true;
+        }
+        if scene != null {
+            var scrollX = Convert.NumToInt(LogicalScrollX(canvasScroll));
+            var scrollY = Convert.NumToInt(LogicalScrollY(canvasScroll));
+            if scrollX != viewOriginX or scrollY != viewOriginY {
+                renderDirty = true;
+            }
+        }
+    }
+
+    /// @brief Return the app's logical-to-framebuffer scale for legacy pixel APIs.
+    hide override func EffectiveUiScale() -> Number {
+        if guiApp == null { return 1.0; }
+        var scale = guiApp.GetEffectiveScale();
+        if scale <= 0.0 { return 1.0; }
+        return scale;
+    }
+
+    /// @brief Convert a GUI-app pointer coordinate into effective UI units.
+    /// @details GUI widget screen bounds are logical while Zanna.Input.Mouse
+    ///          receives framebuffer coordinates from GUI application polling.
+    hide override func PhysicalPointerToUi(value: Number) -> Number {
+        return value / EffectiveUiScale();
+    }
+
+    /// @brief Read a legacy framebuffer scroll offset as logical UI units.
+    hide override func LogicalScrollX(scroll: GUI.ScrollView) -> Number {
+        if scroll == null { return 0.0; }
+        return scroll.GetScrollX() / EffectiveUiScale();
+    }
+
+    /// @brief Read a legacy framebuffer scroll offset as logical UI units.
+    hide override func LogicalScrollY(scroll: GUI.ScrollView) -> Number {
+        if scroll == null { return 0.0; }
+        return scroll.GetScrollY() / EffectiveUiScale();
+    }
+
+    /// @brief Apply logical offsets through ScrollView's framebuffer-pixel API.
+    hide override func SetLogicalScroll(scroll: GUI.ScrollView,
+                               x: Number,
+                               y: Number) {
+        if scroll == null { return; }
+        var scale = EffectiveUiScale();
+        scroll.SetScroll(x * scale, y * scale);
+    }
+
+    /// @brief Apply logical content dimensions through the legacy pixel API.
+    hide override func SetLogicalContentSize(scroll: GUI.ScrollView,
+                                    width: Number,
+                                    height: Number) {
+        if scroll == null { return; }
+        var scale = EffectiveUiScale();
+        scroll.SetContentSize(width * scale, height * scale);
+    }
+
+    /// @brief Render a bounded, dependency-free scene preview into GUI.Image.
+    hide override func RenderScene() {
+        renderDirty = false;
+        if canvasImage == null { return; }
+        if scene == null {
+            framePixels = Pixels.New(640, 360);
+            framePixels.FillColor(Color.RGB(24, 28, 36));
+            framePixels.DrawTextCentered(
+                150, "Unable to display this 2D scene", Color.RGB(230, 115, 115));
+            framePixels.DrawTextCentered(
+                172, "Use New 32x18 or repair the JSON as text",
+                Color.RGB(180, 188, 202));
+            canvasImage.SetPixels(framePixels, 640, 360);
+            canvasImage.SetSize(640, 360);
+            var emptyStageWidth = 640;
+            var emptyStageHeight = 360;
+            if lastCanvasViewportWidth > emptyStageWidth {
+                emptyStageWidth = lastCanvasViewportWidth;
+            }
+            if lastCanvasViewportHeight > emptyStageHeight {
+                emptyStageHeight = lastCanvasViewportHeight;
+            }
+            centerPadX = (emptyStageWidth - 640) / 2;
+            centerPadY = (emptyStageHeight - 360) / 2;
+            if centerPadX < 0 { centerPadX = 0; }
+            if centerPadY < 0 { centerPadY = 0; }
+            canvasImage.SetMarginEdges(centerPadX, centerPadY, 0.0, 0.0);
+            canvasStage.SetSize(emptyStageWidth, emptyStageHeight);
+            SetLogicalContentSize(
+                canvasScroll, emptyStageWidth, emptyStageHeight);
+            renderedColumns = 0;
+            renderedRows = 0;
+            viewOriginX = 0;
+            viewOriginY = 0;
+            viewStatusLabel.SetText("");
+            RenderCanvasRulers();
+            return;
+        }
+
+        // Windowed rendering: the stage advertises the complete scene extent
+        // to the scrollbars while only the visible window rasterizes, so every
+        // cell of every scene stays reachable at every zoom.
+        displayCellSize = DisplayCellForZoom();
+        var sceneColumns = scene.Width;
+        var sceneRows = scene.Height;
+        if sceneColumns < 1 { sceneColumns = 1; }
+        if sceneRows < 1 { sceneRows = 1; }
+        var contentWidth = sceneColumns * displayCellSize + 1;
+        var contentHeight = sceneRows * displayCellSize + 1;
+
+        var viewportWidth = lastCanvasViewportWidth;
+        var viewportHeight = lastCanvasViewportHeight;
+        if viewportWidth <= 0 { viewportWidth = 640; }
+        if viewportHeight <= 0 { viewportHeight = 360; }
+
+        var stageWidth = contentWidth;
+        var stageHeight = contentHeight;
+        if viewportWidth > stageWidth { stageWidth = viewportWidth; }
+        if viewportHeight > stageHeight { stageHeight = viewportHeight; }
+        canvasStage.SetSize(stageWidth, stageHeight);
+        SetLogicalContentSize(canvasScroll, stageWidth, stageHeight);
+
+        var windowWidth = contentWidth;
+        if windowWidth > viewportWidth { windowWidth = viewportWidth; }
+        if windowWidth > SceneEditor2DModel.MAX_RENDER_DIMENSION {
+            windowWidth = SceneEditor2DModel.MAX_RENDER_DIMENSION;
+        }
+        var windowHeight = contentHeight;
+        if windowHeight > viewportHeight { windowHeight = viewportHeight; }
+        if windowHeight > SceneEditor2DModel.MAX_RENDER_DIMENSION {
+            windowHeight = SceneEditor2DModel.MAX_RENDER_DIMENSION;
+        }
+        if windowWidth < 1 { windowWidth = 1; }
+        if windowHeight < 1 { windowHeight = 1; }
+
+        centerPadX = (viewportWidth - contentWidth) / 2;
+        centerPadY = (viewportHeight - contentHeight) / 2;
+        if centerPadX < 0 { centerPadX = 0; }
+        if centerPadY < 0 { centerPadY = 0; }
+
+        viewOriginX = Convert.NumToInt(LogicalScrollX(canvasScroll));
+        viewOriginY = Convert.NumToInt(LogicalScrollY(canvasScroll));
+        var maxOriginX = contentWidth - windowWidth;
+        var maxOriginY = contentHeight - windowHeight;
+        if maxOriginX < 0 { maxOriginX = 0; }
+        if maxOriginY < 0 { maxOriginY = 0; }
+        viewOriginX = SceneEditor2DModel.ClampInt(viewOriginX, 0, maxOriginX);
+        viewOriginY = SceneEditor2DModel.ClampInt(viewOriginY, 0, maxOriginY);
+
+        var firstColumn = viewOriginX / displayCellSize;
+        var firstRow = viewOriginY / displayCellSize;
+        var lastColumn = (viewOriginX + windowWidth - 1) / displayCellSize;
+        var lastRow = (viewOriginY + windowHeight - 1) / displayCellSize;
+        if lastColumn > sceneColumns - 1 { lastColumn = sceneColumns - 1; }
+        if lastRow > sceneRows - 1 { lastRow = sceneRows - 1; }
+        renderedColumns = lastColumn - firstColumn + 1;
+        renderedRows = lastRow - firstRow + 1;
+
+        framePixels = Pixels.New(windowWidth, windowHeight);
+        framePixels.FillColor(Color.RGB(24, 28, 36));
+        DrawProjectSceneBackground();
+
+        DrawAuthoredSceneWindow(
+            firstColumn, firstRow, lastColumn, lastRow,
+            windowWidth, windowHeight);
+        DrawTransientCanvasOverlays(sceneColumns, sceneRows);
+        PublishRenderedScene(windowWidth, windowHeight);
+    }
+
+    /// @brief Draw authored layers, the grid, sprites, and object overlays.
+    hide func DrawAuthoredSceneWindow(
+        firstColumn: Integer,
+        firstRow: Integer,
+        lastColumn: Integer,
+        lastRow: Integer,
+        windowWidth: Integer,
+        windowHeight: Integer) {
+        var objectStack = ObjectPreviewStack();
+        var objectSpriteDrawn: List[Integer] = [];
+        var objectFlagIndex = 0;
+        while objectFlagIndex < scene.ObjectCount() {
+            objectSpriteDrawn.add(0);
+            objectFlagIndex = objectFlagIndex + 1;
+        }
+        var objectVisualCursor = DrawObjectSpritesAtBoundary(
+            objectStack, objectSpriteDrawn, 0, 0,
+            windowWidth, windowHeight);
+
+        var layer = 0;
+        while layer < scene.LayerCount() {
+            var layerShown = scene.LayerVisible(layer)
+                and (gameViewActive
+                     or soloLayer < 0 or soloLayer == layer);
+            var layerOpacity = scene.LayerOpacity(layer);
+            if layerShown and layerOpacity > 0.001 {
+                var y = firstRow;
+                while y <= lastRow {
+                    var x = firstColumn;
+                    while x <= lastColumn {
+                        var tile =
+                            ResolvedSceneTileForPreview(layer, x, y);
+                        if tile > 0 {
+                            var drawX = x * displayCellSize - viewOriginX;
+                            var drawY = y * displayCellSize - viewOriginY;
+                            var drewAsset = tilesets.DrawTileWithOpacity(
+                                framePixels,
+                                layer,
+                                tile,
+                                drawX,
+                                drawY,
+                                displayCellSize,
+                                layerOpacity);
+                            if drewAsset == false {
+                                framePixels.DrawBox(
+                                    drawX + 1,
+                                    drawY + 1,
+                                    displayCellSize - 1,
+                                    displayCellSize - 1,
+                                    SceneEditor2DModel.TilePreviewColor(tile, layer));
+                            }
+                        }
+                        x = x + 1;
+                    }
+                    y = y + 1;
+                }
+            }
+            objectVisualCursor = DrawObjectSpritesAtBoundary(
+                objectStack, objectSpriteDrawn,
+                objectVisualCursor, layer + 1,
+                windowWidth, windowHeight);
+            layer = layer + 1;
+        }
+
+        if showGrid {
+            var gridColor = Color.RGB(54, 61, 73);
+            var x = firstColumn;
+            while x <= lastColumn + 1 {
+                var lineX = x * displayCellSize - viewOriginX;
+                framePixels.DrawLine(lineX, 0,
+                                     lineX, windowHeight - 1,
+                                     gridColor);
+                x = x + 1;
+            }
+            var y = firstRow;
+            while y <= lastRow + 1 {
+                var lineY = y * displayCellSize - viewOriginY;
+                framePixels.DrawLine(0, lineY,
+                                     windowWidth - 1, lineY,
+                                     gridColor);
+                y = y + 1;
+            }
+        }
+
+        if gameViewActive == false {
+            DrawCameraBoundsOverlay();
+            DrawPreviewDeadzoneOverlay();
+            DrawRoutePolylines();
+        }
+        var overlayMargin = displayCellSize * 2 + 32;
+        var objectStackIndex = 0;
+        if gameViewActive { objectStackIndex = objectStack.count(); }
+        while objectStackIndex < objectStack.count() {
+            var objectIndex = objectStack.get(objectStackIndex);
+            var objectX = scene.ObjectX(objectIndex) * displayCellSize
+                / scene.TileWidth - viewOriginX;
+            var objectY = scene.ObjectY(objectIndex) * displayCellSize
+                / scene.TileHeight - viewOriginY;
+            if objectX < 0 - overlayMargin
+               or objectY < 0 - overlayMargin
+               or objectX > windowWidth + overlayMargin
+               or objectY > windowHeight + overlayMargin {
+                objectStackIndex = objectStackIndex + 1;
+                continue;
+            }
+            var objectColor = Color.RGB(255, 190, 72);
+            if scene_selection.Contains(selectedObjects, objectIndex) {
+                objectColor = Color.RGB(104, 220, 255);
+            }
+            if objectIndex == selectedObject {
+                objectColor = Color.RGB(170, 242, 255);
+            }
+            var drewSprite = objectSpriteDrawn.get(objectIndex) != 0;
+            if drewSprite == false {
+                framePixels.DrawDisc(objectX + displayCellSize / 2,
+                                     objectY + displayCellSize / 2,
+                                     SceneEditor2DModel.ClampInt(displayCellSize / 4, 2, 10),
+                                     objectColor);
+            }
+            if scene.ObjectPropertyKind(objectIndex, "light.radius")
+               == "int" {
+                framePixels.DrawRing(
+                    objectX + displayCellSize / 2,
+                    objectY + displayCellSize / 2,
+                    SceneEditor2DModel.ClampInt(displayCellSize / 2 + 3, 5, 24),
+                    Color.RGB(255, 236, 150));
+            }
+            // The outline follows the transformed sprite footprint
+            // (ADR 0192); markers keep their legacy one-cell frame.
+            if objectIndex == selectedObject and RectToolEligible() {
+                var handle = 0;
+                while handle <= 4 {
+                    var handlePoint =
+                        RectHandlePoint(objectIndex, handle);
+                    if handle == 4 {
+                        framePixels.DrawDisc(
+                            Convert.NumToInt(handlePoint.x),
+                            Convert.NumToInt(handlePoint.y),
+                            4, Color.RGB(170, 242, 255));
+                    } else {
+                        framePixels.DrawBox(
+                            Convert.NumToInt(handlePoint.x) - 3,
+                            Convert.NumToInt(handlePoint.y) - 3,
+                            7, 7, Color.RGB(255, 255, 255));
+                    }
+                    handle = handle + 1;
+                }
+            }
+            var outline = ObjectCanvasFootprint(objectIndex);
+            if outline.valid {
+                framePixels.DrawFrame(
+                    Convert.NumToInt(outline.minX),
+                    Convert.NumToInt(outline.minY),
+                    Convert.NumToInt(outline.maxX - outline.minX),
+                    Convert.NumToInt(outline.maxY - outline.minY),
+                    objectColor);
+            } else {
+                framePixels.DrawFrame(objectX, objectY,
+                                      displayCellSize, displayCellSize,
+                                      objectColor);
+            }
+            objectStackIndex = objectStackIndex + 1;
+        }
+
+    }
+
+    /// @brief Draw editor-only tile, shape, stamp, and marquee previews.
+    hide func DrawTransientCanvasOverlays(sceneColumns: Integer,
+                                          sceneRows: Integer) {
+        if gameViewActive == false { DrawTileBrushGhosts(); }
+
+        if gameViewActive == false
+           and selectedCellX >= 0 and selectedCellY >= 0
+           and selectedCellX < sceneColumns
+           and selectedCellY < sceneRows {
+            framePixels.DrawFrame(
+                selectedCellX * displayCellSize - viewOriginX,
+                selectedCellY * displayCellSize - viewOriginY,
+                displayCellSize + 1,
+                displayCellSize + 1,
+                Color.RGB(255, 255, 255));
+        }
+        if gameViewActive == false and tileRegionMinX >= 0 {
+            framePixels.DrawFrame(
+                tileRegionMinX * displayCellSize - viewOriginX,
+                tileRegionMinY * displayCellSize - viewOriginY,
+                (tileRegionMaxX - tileRegionMinX + 1) * displayCellSize + 1,
+                (tileRegionMaxY - tileRegionMinY + 1) * displayCellSize + 1,
+                Color.RGB(255, 220, 120));
+        }
+        // Stamp ghost: the grid-anchored footprint the next click writes.
+        if gameViewActive == false
+           and stampActive and mode == SceneEditor2DModel.MODE_PAINT
+           and stampWidth > 0 and stampHeight > 0
+           and selectedCellX >= 0 and selectedCellY >= 0 {
+            var ghostCellX = selectedCellX / stampWidth * stampWidth;
+            var ghostCellY = selectedCellY / stampHeight * stampHeight;
+            framePixels.DrawFrame(
+                ghostCellX * displayCellSize - viewOriginX,
+                ghostCellY * displayCellSize - viewOriginY,
+                stampWidth * displayCellSize + 1,
+                stampHeight * displayCellSize + 1,
+                Color.RGB(140, 235, 170));
+        }
+
+        if gameViewActive == false
+           and tileRectangleActive
+           and tileRectangleStartX >= 0
+           and tileRectangleStartY >= 0
+           and tileRectangleCurrentX >= 0
+           and tileRectangleCurrentY >= 0 {
+            if tileRectangleShape != 0 {
+                // Line/ellipse previews frame the exact commit cells.
+                var previewCells = ShapeCells(
+                    tileRectangleShape,
+                    tileRectangleStartX, tileRectangleStartY,
+                    tileRectangleCurrentX, tileRectangleCurrentY);
+                var previewIndex = 0;
+                while previewIndex < previewCells.count() {
+                    framePixels.DrawFrame(
+                        previewCells.get(previewIndex)
+                            * displayCellSize - viewOriginX,
+                        previewCells.get(previewIndex + 1)
+                            * displayCellSize - viewOriginY,
+                        displayCellSize + 1,
+                        displayCellSize + 1,
+                        SceneEditor2DModel.TILE_RECTANGLE_COLOR);
+                    previewIndex = previewIndex + 2;
+                }
+            } else {
+                var minimumTileX = tileRectangleStartX;
+                var maximumTileX = tileRectangleCurrentX;
+                if maximumTileX < minimumTileX {
+                    minimumTileX = tileRectangleCurrentX;
+                    maximumTileX = tileRectangleStartX;
+                }
+                var minimumTileY = tileRectangleStartY;
+                var maximumTileY = tileRectangleCurrentY;
+                if maximumTileY < minimumTileY {
+                    minimumTileY = tileRectangleCurrentY;
+                    maximumTileY = tileRectangleStartY;
+                }
+                framePixels.DrawFrame(
+                    minimumTileX * displayCellSize - viewOriginX,
+                    minimumTileY * displayCellSize - viewOriginY,
+                    (maximumTileX - minimumTileX + 1)
+                        * displayCellSize + 1,
+                    (maximumTileY - minimumTileY + 1)
+                        * displayCellSize + 1,
+                    SceneEditor2DModel.TILE_RECTANGLE_COLOR);
+            }
+        }
+
+        if gameViewActive == false
+           and canvasMarqueeActive
+           and canvasMarqueeStartX >= 0
+           and canvasMarqueeStartY >= 0
+           and canvasMarqueeCurrentX >= 0
+           and canvasMarqueeCurrentY >= 0 {
+            var minimumX = canvasMarqueeStartX;
+            var maximumX = canvasMarqueeCurrentX;
+            if maximumX < minimumX {
+                minimumX = canvasMarqueeCurrentX;
+                maximumX = canvasMarqueeStartX;
+            }
+            var minimumY = canvasMarqueeStartY;
+            var maximumY = canvasMarqueeCurrentY;
+            if maximumY < minimumY {
+                minimumY = canvasMarqueeCurrentY;
+                maximumY = canvasMarqueeStartY;
+            }
+            framePixels.DrawFrame(
+                minimumX * displayCellSize - viewOriginX,
+                minimumY * displayCellSize - viewOriginY,
+                (maximumX - minimumX + 1) * displayCellSize + 1,
+                (maximumY - minimumY + 1) * displayCellSize + 1,
+                SceneEditor2DModel.CANVAS_MARQUEE_COLOR);
+        }
+
+    }
+
+    /// @brief Publish pixels, rulers, status text, and accessibility state.
+    hide func PublishRenderedScene(windowWidth: Integer,
+                                   windowHeight: Integer) {
+        // Guides are editor chrome: keep them legible above authored pixels
+        // and transient tool previews without changing either source.
+        if gameViewActive == false { DrawCanvasGuides(); }
+        DrawGameOutputMatte(windowWidth, windowHeight);
+        RenderCanvasRulers();
+        canvasImage.SetPixels(framePixels, windowWidth, windowHeight);
+        canvasImage.SetSize(windowWidth, windowHeight);
+        // Pin the rendered window under the viewport: the ScrollView places
+        // the image at (margin - scroll), so a margin equal to the clamped
+        // scroll origin keeps window pixels exactly aligned with content
+        // coordinates; the pad centers small scenes.
+        canvasImage.SetMarginEdges(
+            viewOriginX + centerPadX, viewOriginY + centerPadY, 0.0, 0.0);
+        var suffix = "";
+        if tilesets.cacheSaturated {
+            suffix = suffix + "  |  tileset preview cache capped";
+        }
+        var cellStatus = "";
+        if selectedCellX >= 0 and selectedCellY >= 0 {
+            cellStatus = "  |  cell "
+                + selectedCellX + ", " + selectedCellY;
+        }
+        var marqueeStatus = "";
+        if canvasMarqueeActive {
+            marqueeStatus = "  |  box "
+                + (SceneEditor2DModel.AbsInt2D(
+                    canvasMarqueeCurrentX - canvasMarqueeStartX) + 1)
+                + "x"
+                + (SceneEditor2DModel.AbsInt2D(
+                    canvasMarqueeCurrentY - canvasMarqueeStartY) + 1);
+        }
+        var rectangleStatus = "";
+        if tileRectangleActive {
+            var shapeName = "rectangle";
+            if tileRectangleShape == 1 { shapeName = "line"; }
+            if tileRectangleShape == 2 { shapeName = "ellipse"; }
+            rectangleStatus = "  |  " + shapeName + " "
+                + (SceneEditor2DModel.AbsInt2D(
+                    tileRectangleCurrentX - tileRectangleStartX) + 1)
+                + "x"
+                + (SceneEditor2DModel.AbsInt2D(
+                    tileRectangleCurrentY - tileRectangleStartY) + 1);
+        }
+        if gameViewActive {
+            if gameViewOutputFramed {
+                viewStatusLabel.SetText(
+                    "Game View  |  " + GameOutputSizeLabel()
+                    + " project output" + suffix);
+                canvasImage.SetAccessibleDescription(
+                    scene.ObjectCount() + " authored objects in the locked "
+                    + GameOutputSizeLabel()
+                    + " project gameplay frame. Exit Game View to navigate "
+                    + "or edit.");
+            } else {
+                viewStatusLabel.SetText(
+                    "Game View  |  zoom " + zoomPercent + "%" + suffix);
+                canvasImage.SetAccessibleDescription(
+                    scene.ObjectCount() + " authored objects on a "
+                    + renderedColumns + " by " + renderedRows
+                    + " cell clean gameplay preview. Pan with the middle "
+                    + "mouse button, zoom with the wheel, or exit Game View "
+                    + "to edit.");
+            }
+        } else {
+            viewStatusLabel.SetText(
+                "Layer " + (activeLayer + 1) + "/" + scene.LayerCount()
+                + "  |  zoom " + zoomPercent + "%"
+                + cellStatus + marqueeStatus + rectangleStatus + suffix);
+            canvasImage.SetAccessibleDescription(
+                scene.ObjectCount() + " authored objects on a "
+                + renderedColumns + " by " + renderedRows
+                + " cell preview. Tile tools preview real atlas frames and "
+                + "support freehand Paint and Erase, captured Rectangle, Line, "
+                + "and Ellipse, connected Fill, and active-layer Pick. "
+                + "Cell rulers can toggle workspace-only alignment guides. "
+                + "In Select mode, click objects or drag blank space to "
+                + "box-select; Shift adds and Control or Command toggles.");
+        }
+        }
+}

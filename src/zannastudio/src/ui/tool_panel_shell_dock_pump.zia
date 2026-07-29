@@ -1,0 +1,779 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_dock_pump.zia
+// Purpose: Focused dock pump behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_dock_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_dock_pump;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_dock_state" as PreviousLayer;
+
+class ToolPanelDockPumpLayer extends PreviousLayer.ToolPanelDockStateLayer {
+
+    /// @brief Disable the button representing the current dock.
+    hide override func UpdateDockButtons() {
+        if dockLeftButton != null {
+            dockLeftButton.SetEnabled(dockLocation != workspace_dock.DOCK_LEFT);
+        }
+        if dockBottomButton != null {
+            dockBottomButton.SetEnabled(dockLocation != workspace_dock.DOCK_BOTTOM);
+        }
+        if dockRightButton != null {
+            dockRightButton.SetEnabled(dockLocation != workspace_dock.DOCK_RIGHT);
+        }
+    }
+
+    /// @brief Collapse every possible tool dock before a move or full hide.
+    hide override func CollapseAllDockSplits() {
+        if editorSplit != null { editorSplit.CollapseSecond(); }
+        if leftDockSplit != null { leftDockSplit.CollapseFirst(); }
+        if rightDockSplit != null { rightDockSplit.CollapseSecond(); }
+    }
+
+    /// @brief Poll explicit controls and edge-drop docking.
+    hide override func PumpDockControls() {
+        var primaryKind = ActiveToolPanelKindAt(dockLocation);
+        if dockLeftButton != null and dockLeftButton.WasClicked() {
+            TransferToolPanel(
+                primaryKind, workspace_dock.DOCK_LEFT, true);
+        } else if dockBottomButton != null and dockBottomButton.WasClicked() {
+            TransferToolPanel(
+                primaryKind, workspace_dock.DOCK_BOTTOM, true);
+        } else if dockRightButton != null and dockRightButton.WasClicked() {
+            TransferToolPanel(
+                primaryKind, workspace_dock.DOCK_RIGHT, true);
+        } else if dockFloatButton != null and dockFloatButton.WasClicked() {
+            TransferToolPanel(
+                primaryKind, workspace_dock.DOCK_FLOATING, true);
+        }
+
+        var explicitDropLocation = TakeDockTargetDrop();
+        var dragging = dockDragHandle != null
+            and dockDragHandle.IsBeingDragged();
+        if dragging and workspaceDropTarget != null {
+            SetDockDragTargetsVisible(true);
+            var hoverLocation = DockTargetHoverLocation();
+            if hoverLocation == workspace_dock.DOCK_NONE {
+                hoverLocation = workspace_dock.DockEdgeForPointer(
+                    PointerToFloatingUnits(Input.Mouse.X()),
+                    PointerToFloatingUnits(Input.Mouse.Y()),
+                    workspaceDropTarget.GetScreenX(),
+                    workspaceDropTarget.GetScreenY(),
+                    workspaceDropTarget.GetScreenWidth(),
+                    workspaceDropTarget.GetScreenHeight());
+            }
+            if hoverLocation != dockTargetHoverLocation {
+                ApplyDockTargetFeedback(hoverLocation, dockLocation);
+            }
+            dockDragHandle.SetText(
+                workspace_dock.DockDragHint(hoverLocation));
+        } else if !dragging and dockDragWasActive {
+            dockDragHandle.SetText(DefaultDockHeaderText());
+        }
+        if !dragging { SetDockDragTargetsVisible(false); }
+        dockDragWasActive = dragging;
+
+        if explicitDropLocation != workspace_dock.DOCK_NONE {
+            MovePanelTo(explicitDropLocation);
+        } else if workspaceDropTarget != null and workspaceDropTarget.WasDropped()
+           and workspaceDropTarget.GetDropType()
+               == workspace_dock.TOOL_PANEL_DRAG_TYPE
+           and workspaceDropTarget.GetDropData()
+               == workspace_dock.TOOL_PANEL_DRAG_DATA {
+            var location = workspace_dock.DockLocationForPointer(
+                PointerToFloatingUnits(Input.Mouse.X()),
+                PointerToFloatingUnits(Input.Mouse.Y()),
+                workspaceDropTarget.GetScreenX(),
+                workspaceDropTarget.GetScreenY(),
+                workspaceDropTarget.GetScreenWidth(),
+                workspaceDropTarget.GetScreenHeight(),
+                dockLocation);
+            MovePanelTo(location);
+        }
+
+        if dockHideButton != null and dockHideButton.WasClicked() {
+            HidePanelArea();
+        }
+        if leftToolMoveBottomButton != null
+           and leftToolMoveBottomButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_LEFT),
+                workspace_dock.DOCK_BOTTOM, true);
+        }
+        if leftToolMoveRightButton != null
+           and leftToolMoveRightButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_LEFT),
+                workspace_dock.DOCK_RIGHT, true);
+        }
+        if leftToolMoveFloatingButton != null
+           and leftToolMoveFloatingButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_LEFT),
+                workspace_dock.DOCK_FLOATING, true);
+        }
+        if bottomToolMoveLeftButton != null
+           and bottomToolMoveLeftButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_BOTTOM),
+                workspace_dock.DOCK_LEFT, true);
+        }
+        if bottomToolMoveRightButton != null
+           and bottomToolMoveRightButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_BOTTOM),
+                workspace_dock.DOCK_RIGHT, true);
+        }
+        if bottomToolMoveFloatingButton != null
+           and bottomToolMoveFloatingButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_BOTTOM),
+                workspace_dock.DOCK_FLOATING, true);
+        }
+        if rightToolMoveLeftButton != null
+           and rightToolMoveLeftButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_RIGHT),
+                workspace_dock.DOCK_LEFT, true);
+        }
+        if rightToolMoveBottomButton != null
+           and rightToolMoveBottomButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_RIGHT),
+                workspace_dock.DOCK_BOTTOM, true);
+        }
+        if rightToolMoveFloatingButton != null
+           and rightToolMoveFloatingButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_RIGHT),
+                workspace_dock.DOCK_FLOATING, true);
+        }
+        if leftToolGroupHideButton != null
+           and leftToolGroupHideButton.WasClicked() {
+            HideToolGroupAt(workspace_dock.DOCK_LEFT);
+        }
+        if bottomToolGroupHideButton != null
+           and bottomToolGroupHideButton.WasClicked() {
+            HideToolGroupAt(workspace_dock.DOCK_BOTTOM);
+        }
+        if rightToolGroupHideButton != null
+           and rightToolGroupHideButton.WasClicked() {
+            HideToolGroupAt(workspace_dock.DOCK_RIGHT);
+        }
+        PumpFloatingToolGroupControls();
+    }
+
+    /// @brief Poll floating-window move, resize, dock, and per-tool controls.
+    hide override func PumpFloatingToolGroupControls() {
+        KeepFloatingPanelInViewport();
+        if floatingToolPanel == null or floatingToolMoveHandle == null {
+            return;
+        }
+
+        if floatingToolMoveLeftButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_FLOATING),
+                workspace_dock.DOCK_LEFT, true);
+        } else if floatingToolMoveBottomButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_FLOATING),
+                workspace_dock.DOCK_BOTTOM, true);
+        } else if floatingToolMoveRightButton.WasClicked() {
+            TransferToolPanel(
+                ActiveToolPanelKindAt(workspace_dock.DOCK_FLOATING),
+                workspace_dock.DOCK_RIGHT, true);
+        }
+        if floatingToolGroupHideButton.WasClicked() {
+            HideToolGroupAt(workspace_dock.DOCK_FLOATING);
+        }
+
+        if !floatingToolPanel.IsVisible() {
+            var wasManipulating =
+                floatingPanelMoving or floatingPanelResizing;
+            floatingPanelMoving = false;
+            floatingPanelResizing = false;
+            if wasManipulating {
+                SetDockDragTargetsVisible(false);
+            }
+            return;
+        }
+
+        var pointerX = PointerToFloatingUnits(Input.Mouse.X());
+        var pointerY = PointerToFloatingUnits(Input.Mouse.Y());
+        var leftDown = Input.Mouse.IsDown(Input.Mouse.ButtonLeft);
+
+        if !floatingPanelMoving and !floatingPanelResizing
+           and leftDown and floatingToolMoveHandle.IsPressed() {
+            floatingPanelMoving = true;
+            floatingPanelManipulationChanged = false;
+            floatingPointerOffsetX = pointerX - floatingPanelX;
+            floatingPointerOffsetY = pointerY - floatingPanelY;
+            floatingMoveStartX = floatingPanelX;
+            floatingMoveStartY = floatingPanelY;
+        }
+        if !floatingPanelMoving and !floatingPanelResizing
+           and leftDown and floatingToolResizeHandle.IsPressed() {
+            floatingPanelResizing = true;
+            floatingPanelManipulationChanged = false;
+            floatingResizeStartPointerX = pointerX;
+            floatingResizeStartPointerY = pointerY;
+            floatingResizeStartWidth = floatingPanelWidth;
+            floatingResizeStartHeight = floatingPanelHeight;
+        }
+
+        if floatingPanelMoving {
+            if leftDown {
+                var oldX = floatingPanelX;
+                var oldY = floatingPanelY;
+                ApplyFloatingPanelBounds(
+                    Convert.NumToInt(pointerX - floatingPointerOffsetX),
+                    Convert.NumToInt(pointerY - floatingPointerOffsetY),
+                    floatingPanelWidth,
+                    floatingPanelHeight,
+                    false);
+                if oldX != floatingPanelX or oldY != floatingPanelY {
+                    floatingPanelManipulationChanged = true;
+                }
+
+                SetDockDragTargetsVisible(true);
+                var hoverLocation =
+                    FloatingDockLocationForPointer(pointerX, pointerY);
+                ApplyDockTargetFeedback(
+                    hoverLocation, workspace_dock.DOCK_FLOATING);
+                if hoverLocation == workspace_dock.DOCK_NONE {
+                    floatingToolMoveHandle.SetText(
+                        "Moving floating tools · release to place");
+                } else {
+                    floatingToolMoveHandle.SetText(
+                        workspace_dock.DockDragHint(hoverLocation));
+                }
+            } else {
+                floatingPanelMoving = false;
+                var dropLocation =
+                    FloatingDockLocationForPointer(pointerX, pointerY);
+                SetDockDragTargetsVisible(false);
+                if workspace_dock.IsDockLocation(dropLocation) {
+                    ApplyFloatingPanelBounds(
+                        floatingMoveStartX,
+                        floatingMoveStartY,
+                        floatingPanelWidth,
+                        floatingPanelHeight,
+                        false);
+                    MergeToolGroupLocation(
+                        workspace_dock.DOCK_FLOATING,
+                        dropLocation,
+                        true);
+                } else if floatingPanelManipulationChanged {
+                    floatingPanelGeometryDirty = true;
+                }
+                floatingPanelManipulationChanged = false;
+                floatingToolMoveHandle.SetText(
+                    DefaultFloatingToolHeaderText());
+            }
+        } else if floatingPanelResizing {
+            if leftDown {
+                var oldWidth = floatingPanelWidth;
+                var oldHeight = floatingPanelHeight;
+                ApplyFloatingPanelBounds(
+                    floatingPanelX,
+                    floatingPanelY,
+                    floatingResizeStartWidth
+                        + Convert.NumToInt(
+                            pointerX - floatingResizeStartPointerX),
+                    floatingResizeStartHeight
+                        + Convert.NumToInt(
+                            pointerY - floatingResizeStartPointerY),
+                    false);
+                if oldWidth != floatingPanelWidth
+                   or oldHeight != floatingPanelHeight {
+                    floatingPanelManipulationChanged = true;
+                }
+            } else {
+                floatingPanelResizing = false;
+                if floatingPanelManipulationChanged {
+                    floatingPanelGeometryDirty = true;
+                }
+                floatingPanelManipulationChanged = false;
+            }
+        }
+    }
+
+    /// @brief Return useful resting copy for the floating move handle.
+    hide override func DefaultFloatingToolHeaderText() -> String {
+        var kind = ActiveToolPanelKindAt(workspace_dock.DOCK_FLOATING);
+        if kind == tool_panel_model.PANEL_NONE {
+            return "Floating tools · drag";
+        }
+        return "Floating · " + tool_panel_model.PanelName(kind) + " · drag";
+    }
+
+    /// @brief Return the resting drag-handle label for the current header mode.
+    hide override func DefaultDockHeaderText() -> String {
+        if compactDockHeader { return "Panels"; }
+        return "Panels  -  drag to dock or float";
+    }
+
+    /// @brief Return whether the dock header is using its narrow control set.
+    expose override func IsDockHeaderCompact() -> Boolean {
+        return compactDockHeader;
+    }
+
+    /// @brief Keep all docking controls visible in narrow and side-dock headers.
+    /// @details Full labels remain in a roomy bottom dock. Side docks use compact
+    ///          directional glyphs plus unchanged descriptive tooltips, leaving
+    ///          enough drag-handle surface for direct movement.
+    hide override func ApplyResponsiveDockHeader() {
+        if panelRoot == null or dockDragHandle == null { return; }
+        var width = panelRoot.GetLogicalWidth();
+        if width <= 0.0 { return; }
+        var compact = dockLocation != workspace_dock.DOCK_BOTTOM
+            or width <= 480.0;
+        if compact == compactDockHeader
+           and dockHeaderLocation == dockLocation {
+            return;
+        }
+        compactDockHeader = compact;
+        dockHeaderLocation = dockLocation;
+        dockDragHandle.SetText(DefaultDockHeaderText());
+        if compactDockHeader {
+            dockHeader.SetSpacing(0.0);
+            dockHeader.SetPadding(2.0);
+            dockLeftButton.SetText("←");
+            dockBottomButton.SetText("↓");
+            dockRightButton.SetText("→");
+            dockFloatButton.SetText("◇");
+            dockHideButton.SetText("");
+            dockHideButton.SetIconName("close");
+            dockLeftButton.SetPreferredSize(16.0, 24.0);
+            dockLeftButton.SetMinSize(16.0, 24.0);
+            dockBottomButton.SetPreferredSize(16.0, 24.0);
+            dockBottomButton.SetMinSize(16.0, 24.0);
+            dockRightButton.SetPreferredSize(16.0, 24.0);
+            dockRightButton.SetMinSize(16.0, 24.0);
+            dockFloatButton.SetPreferredSize(16.0, 24.0);
+            dockFloatButton.SetMinSize(16.0, 24.0);
+            dockHideButton.SetPreferredSize(16.0, 24.0);
+            dockHideButton.SetMinSize(16.0, 24.0);
+            if dockLocation == workspace_dock.DOCK_LEFT {
+                dockLeftButton.SetPreferredSize(0.0, 24.0);
+                dockLeftButton.SetMinSize(0.0, 24.0);
+            } else if dockLocation == workspace_dock.DOCK_BOTTOM {
+                dockBottomButton.SetPreferredSize(0.0, 24.0);
+                dockBottomButton.SetMinSize(0.0, 24.0);
+            } else if dockLocation == workspace_dock.DOCK_RIGHT {
+                dockRightButton.SetPreferredSize(0.0, 24.0);
+                dockRightButton.SetMinSize(0.0, 24.0);
+            }
+            dockLeftButton.SetVisible(
+                dockLocation != workspace_dock.DOCK_LEFT);
+            dockBottomButton.SetVisible(
+                dockLocation != workspace_dock.DOCK_BOTTOM);
+            dockRightButton.SetVisible(
+                dockLocation != workspace_dock.DOCK_RIGHT);
+            dockFloatButton.SetVisible(true);
+        } else {
+            dockHeader.SetSpacing(4.0);
+            dockHeader.SetPadding(4.0);
+            dockLeftButton.SetText("Left");
+            dockBottomButton.SetText("Bottom");
+            dockRightButton.SetText("Right");
+            dockFloatButton.SetText("Float");
+            dockHideButton.SetText("Hide");
+            dockHideButton.SetIconName("");
+            dockLeftButton.SetVisible(true);
+            dockBottomButton.SetVisible(true);
+            dockRightButton.SetVisible(true);
+            dockFloatButton.SetVisible(true);
+            dockLeftButton.SetPreferredSize(48.0, 24.0);
+            dockLeftButton.SetMinSize(0.0, 24.0);
+            dockBottomButton.SetPreferredSize(58.0, 24.0);
+            dockBottomButton.SetMinSize(0.0, 24.0);
+            dockRightButton.SetPreferredSize(52.0, 24.0);
+            dockRightButton.SetMinSize(0.0, 24.0);
+            dockFloatButton.SetPreferredSize(48.0, 24.0);
+            dockFloatButton.SetMinSize(0.0, 24.0);
+            dockHideButton.SetPreferredSize(46.0, 24.0);
+            dockHideButton.SetMinSize(0.0, 24.0);
+        }
+    }
+
+    /// @brief Return whether Problems currently uses compact toolbar labels.
+    expose override func IsProblemsToolbarCompact() -> Boolean {
+        return compactProblemsToolbar;
+    }
+
+    /// @brief Keep filtering and quick-fix controls reachable in side docks.
+    hide override func ApplyResponsiveProblemsToolbar() {
+        if problemsPanel == null or problemsFilterInput == null { return; }
+        var width = problemsPanel.GetLogicalWidth();
+        if width <= 0.0 and panelRoot != null {
+            width = panelRoot.GetLogicalWidth();
+        }
+        if width <= 0.0 { return; }
+
+        var compact = ToolPanelModel.ProblemsUseCompactControls(width);
+        if compact == compactProblemsToolbar { return; }
+        compactProblemsToolbar = compact;
+        if compactProblemsToolbar {
+            problemsFilterInput.SetMinSize(64.0, 0.0);
+            problemsFilterInput.SetPreferredSize(96.0, 0.0);
+            problemsErrorCheck.SetText("E");
+            problemsWarningCheck.SetText("W");
+            problemsInfoCheck.SetText("I");
+            problemsQuickFixButton.SetText("Fix");
+            problemsQuickFixButton.SetPreferredSize(44.0, 0.0);
+            problemsCountLabel.SetVisible(false);
+        } else {
+            problemsFilterInput.SetMinSize(120.0, 0.0);
+            problemsFilterInput.SetPreferredSize(220.0, 0.0);
+            problemsErrorCheck.SetText("Errors");
+            problemsWarningCheck.SetText("Warnings");
+            problemsInfoCheck.SetText("Info");
+            problemsQuickFixButton.SetText("Quick Fix");
+            problemsQuickFixButton.SetPreferredSize(76.0, 0.0);
+            problemsCountLabel.SetVisible(true);
+        }
+        problemsResetButton.SetMinSize(40.0, 0.0);
+        problemsQuickFixButton.SetMinSize(44.0, 0.0);
+    }
+
+    /// @brief Return whether Output currently uses compact toolbar controls.
+    expose override func IsOutputToolbarCompact() -> Boolean {
+        return compactOutputToolbar;
+    }
+
+    /// @brief Keep Output filtering and stream controls inside narrow docks.
+    hide override func ApplyResponsiveOutputToolbar() {
+        if outputPanel == null or outputFilterInput == null { return; }
+        var width = outputPanel.GetLogicalWidth();
+        if width <= 0.0 and panelRoot != null {
+            width = panelRoot.GetLogicalWidth();
+        }
+        if width <= 0.0 { return; }
+
+        var compact = ToolPanelModel.OutputUsesCompactControls(width);
+        if compact == compactOutputToolbar { return; }
+        compactOutputToolbar = compact;
+        if compactOutputToolbar {
+            outputFilterInput.SetMinSize(64.0, 0.0);
+            outputFilterInput.SetPreferredSize(92.0, 0.0);
+            outputWrapCheck.SetText("Wrap");
+            outputFollowCheck.SetText("Follow");
+            outputCopyButton.SetPreferredSize(48.0, 0.0);
+            outputClearButton.SetPreferredSize(52.0, 0.0);
+        } else {
+            outputFilterInput.SetMinSize(120.0, 0.0);
+            outputFilterInput.SetPreferredSize(220.0, 0.0);
+            outputWrapCheck.SetText("Wrap");
+            outputFollowCheck.SetText("Follow");
+            outputCopyButton.SetPreferredSize(0.0, 0.0);
+            outputClearButton.SetPreferredSize(0.0, 0.0);
+        }
+        outputFilterClearButton.SetMinSize(34.0, 0.0);
+        outputCopyButton.SetMinSize(48.0, 0.0);
+        outputClearButton.SetMinSize(52.0, 0.0);
+    }
+
+    /// @brief Return whether References currently uses compact controls.
+    expose override func IsReferencesToolbarCompact() -> Boolean {
+        return compactReferencesToolbar;
+    }
+
+    /// @brief Keep References filtering and result actions inside narrow docks.
+    hide override func ApplyResponsiveReferencesToolbar() {
+        if referencesPanel == null or referencesFilterInput == null { return; }
+        var width = referencesPanel.GetLogicalWidth();
+        if width <= 0.0 and panelRoot != null {
+            width = panelRoot.GetLogicalWidth();
+        }
+        if width <= 0.0 { return; }
+
+        var compact = ToolPanelModel.ReferencesUseCompactControls(width);
+        if compact == compactReferencesToolbar { return; }
+        compactReferencesToolbar = compact;
+        if compactReferencesToolbar {
+            referencesFilterInput.SetMinSize(64.0, 0.0);
+            referencesFilterInput.SetPreferredSize(92.0, 0.0);
+            referencesCountLabel.SetVisible(false);
+            referencesCopyButton.SetText("Copy");
+            referencesCopyButton.SetPreferredSize(48.0, 0.0);
+            referencesClearButton.SetPreferredSize(52.0, 0.0);
+        } else {
+            referencesFilterInput.SetMinSize(120.0, 0.0);
+            referencesFilterInput.SetPreferredSize(240.0, 0.0);
+            referencesCountLabel.SetVisible(true);
+            referencesCopyButton.SetText("Copy All");
+            referencesCopyButton.SetPreferredSize(0.0, 0.0);
+            referencesClearButton.SetPreferredSize(0.0, 0.0);
+        }
+        referencesFilterClearButton.SetMinSize(34.0, 0.0);
+        referencesCopyButton.SetMinSize(48.0, 0.0);
+        referencesClearButton.SetMinSize(52.0, 0.0);
+    }
+
+    /// @brief Return whether Debug Console currently uses compact controls.
+    expose override func IsDebugConsoleToolbarCompact() -> Boolean {
+        return compactDebugToolbar;
+    }
+
+    /// @brief Keep Debug Console controls reachable in narrow side docks.
+    hide override func ApplyResponsiveDebugToolbar() {
+        if debugPanel == null or debugFilterInput == null { return; }
+        var width = debugPanel.GetLogicalWidth();
+        if width <= 0.0 and panelRoot != null {
+            width = panelRoot.GetLogicalWidth();
+        }
+        if width <= 0.0 { return; }
+
+        var compact = ToolPanelModel.DebugConsoleUsesCompactControls(width);
+        if compact == compactDebugToolbar { return; }
+        compactDebugToolbar = compact;
+        if compactDebugToolbar {
+            debugFilterInput.SetMinSize(64.0, 0.0);
+            debugFilterInput.SetPreferredSize(92.0, 0.0);
+            debugCountLabel.SetVisible(false);
+            debugCopyButton.SetText("Copy");
+            debugCopyButton.SetPreferredSize(48.0, 0.0);
+            debugClearButton.SetPreferredSize(52.0, 0.0);
+        } else {
+            debugFilterInput.SetMinSize(120.0, 0.0);
+            debugFilterInput.SetPreferredSize(220.0, 0.0);
+            debugCountLabel.SetVisible(true);
+            debugCopyButton.SetText("Copy All");
+            debugCopyButton.SetPreferredSize(0.0, 0.0);
+            debugClearButton.SetPreferredSize(0.0, 0.0);
+        }
+        debugFilterClearButton.SetMinSize(34.0, 0.0);
+        debugCopyButton.SetMinSize(48.0, 0.0);
+        debugClearButton.SetMinSize(52.0, 0.0);
+    }
+
+    /// @brief Return whether Call Stack currently uses compact controls.
+    expose override func IsCallStackToolbarCompact() -> Boolean {
+        return compactCallStackToolbar;
+    }
+
+    /// @brief Keep Call Stack filtering and copy actions inside side docks.
+    hide override func ApplyResponsiveCallStackToolbar() {
+        if callStackPanel == null or callStackFilterInput == null { return; }
+        var width = callStackPanel.GetLogicalWidth();
+        if width <= 0.0 and panelRoot != null {
+            width = panelRoot.GetLogicalWidth();
+        }
+        if width <= 0.0 { return; }
+
+        var compact = ToolPanelModel.CallStackUsesCompactControls(width);
+        if compact == compactCallStackToolbar { return; }
+        compactCallStackToolbar = compact;
+        if compactCallStackToolbar {
+            callStackFilterInput.SetMinSize(64.0, 0.0);
+            callStackFilterInput.SetPreferredSize(92.0, 0.0);
+            callStackCountLabel.SetVisible(false);
+            callStackCopyButton.SetText("Copy");
+            callStackCopyButton.SetPreferredSize(48.0, 0.0);
+        } else {
+            callStackFilterInput.SetMinSize(120.0, 0.0);
+            callStackFilterInput.SetPreferredSize(220.0, 0.0);
+            callStackCountLabel.SetVisible(true);
+            callStackCopyButton.SetText("Copy Stack");
+            callStackCopyButton.SetPreferredSize(0.0, 0.0);
+        }
+        callStackFilterClearButton.SetMinSize(34.0, 0.0);
+        callStackCopyButton.SetMinSize(48.0, 0.0);
+    }
+
+    /// @brief Return whether Search currently uses its narrow control treatment.
+    expose override func IsSearchControlsCompact() -> Boolean {
+        return compactSearchControls;
+    }
+
+    /// @brief Reflow Search controls without replacing their live widget state.
+    /// @details Flex rows wrap from the preferred bases below. Compact copy and
+    ///          smaller action widths keep query/replace actions on one line at
+    ///          normal side-dock widths, while filters wrap into full-width rows
+    ///          instead of overflowing at the minimum supported window size.
+    hide override func ApplyResponsiveSearchControls() {
+        if searchPanel == null or searchQueryInput == null { return; }
+        var width = searchPanel.GetLogicalWidth();
+        if width <= 0.0 and panelRoot != null {
+            width = panelRoot.GetLogicalWidth();
+        }
+        if width <= 0.0 { return; }
+
+        var compact = ToolPanelModel.SearchUsesCompactControls(width);
+        if compact == compactSearchControls { return; }
+        compactSearchControls = compact;
+        if compactSearchControls {
+            searchQueryInput.SetPreferredSize(104.0, 0.0);
+            searchReplaceInput.SetPreferredSize(112.0, 0.0);
+            searchKindsInput.SetPreferredSize(112.0, 0.0);
+            searchIncludeInput.SetPreferredSize(112.0, 0.0);
+            searchExcludeInput.SetPreferredSize(112.0, 0.0);
+
+            searchRunButton.SetText("Go");
+            searchRunButton.SetMinSize(44.0, 0.0);
+            searchRunButton.SetPreferredSize(44.0, 0.0);
+            searchCancelButton.SetText("Stop");
+            searchCancelButton.SetMinSize(52.0, 0.0);
+            searchCancelButton.SetPreferredSize(52.0, 0.0);
+            searchReplaceButton.SetText("All");
+            searchReplaceButton.SetMinSize(64.0, 0.0);
+            searchReplaceButton.SetPreferredSize(64.0, 0.0);
+        } else {
+            searchQueryInput.SetPreferredSize(240.0, 0.0);
+            searchReplaceInput.SetPreferredSize(240.0, 0.0);
+            searchKindsInput.SetPreferredSize(180.0, 0.0);
+            searchIncludeInput.SetPreferredSize(240.0, 0.0);
+            searchExcludeInput.SetPreferredSize(240.0, 0.0);
+
+            searchRunButton.SetText("Search");
+            searchRunButton.SetPreferredSize(0.0, 0.0);
+            searchRunButton.SetMinSize(60.0, 0.0);
+            searchCancelButton.SetText("Stop");
+            searchCancelButton.SetPreferredSize(0.0, 0.0);
+            searchCancelButton.SetMinSize(60.0, 0.0);
+            searchReplaceButton.SetText("Replace All");
+            searchReplaceButton.SetPreferredSize(0.0, 0.0);
+            searchReplaceButton.SetMinSize(60.0, 0.0);
+        }
+    }
+
+    /// @brief Return whether Terminal currently uses wrapping equal-width actions.
+    expose override func IsTerminalActionsCompact() -> Boolean {
+        return compactTerminalActions;
+    }
+
+    /// @brief Keep every Terminal session action inside narrow side docks.
+    /// @details Compact actions retain descriptive text and tooltips. Flex growth
+    ///          produces two balanced rows at the minimum dock width, while a
+    ///          roomy dock restores natural button widths on a single row.
+    hide override func ApplyResponsiveTerminalActions() {
+        if terminalPanel == null or terminalActionRow == null
+           or terminalKill == null {
+            return;
+        }
+        var width = terminalPanel.GetLogicalWidth();
+        if width <= 0.0 and panelRoot != null {
+            width = panelRoot.GetLogicalWidth();
+        }
+        if width <= 0.0 { return; }
+
+        var compact = ToolPanelModel.TerminalUsesCompactActions(width);
+        if compact == compactTerminalActions { return; }
+        compactTerminalActions = compact;
+        if compactTerminalActions {
+            terminalKill.SetFlex(1.0);
+            terminalRestart.SetFlex(1.0);
+            terminalNew.SetFlex(1.0);
+            terminalNext.SetFlex(1.0);
+            terminalKill.SetMinSize(60.0, 0.0);
+            terminalRestart.SetMinSize(76.0, 0.0);
+            terminalNew.SetMinSize(60.0, 0.0);
+            terminalNext.SetMinSize(60.0, 0.0);
+            terminalKill.SetPreferredSize(60.0, 0.0);
+            terminalRestart.SetPreferredSize(76.0, 0.0);
+            terminalNew.SetPreferredSize(60.0, 0.0);
+            terminalNext.SetPreferredSize(60.0, 0.0);
+        } else {
+            terminalKill.SetFlex(0.0);
+            terminalRestart.SetFlex(0.0);
+            terminalNew.SetFlex(0.0);
+            terminalNext.SetFlex(0.0);
+            terminalKill.SetPreferredSize(0.0, 0.0);
+            terminalRestart.SetPreferredSize(0.0, 0.0);
+            terminalNew.SetPreferredSize(0.0, 0.0);
+            terminalNext.SetPreferredSize(0.0, 0.0);
+            terminalKill.SetMinSize(60.0, 0.0);
+            terminalRestart.SetMinSize(60.0, 0.0);
+            terminalNew.SetMinSize(60.0, 0.0);
+            terminalNext.SetMinSize(60.0, 0.0);
+        }
+    }
+
+    /// @brief Return whether Variables uses compact watch controls.
+    expose override func IsWatchToolbarCompact() -> Boolean {
+        return compactWatchToolbar;
+    }
+
+    /// @brief Keep watch entry and actions within narrow side docks.
+    /// @details The Flex row wraps as one stable widget tree. Compact bases
+    ///          preserve a useful Variables list below the controls without
+    ///          replacing the user's in-progress expression or keyboard focus.
+    hide override func ApplyResponsiveWatchToolbar() {
+        if variablesPanel == null or watchToolbar == null
+           or watchExpressionInput == null {
+            return;
+        }
+        var width = variablesPanel.GetLogicalWidth();
+        if width <= 0.0 and panelRoot != null {
+            width = panelRoot.GetLogicalWidth();
+        }
+        if app != null {
+            var uiScale = app.GetUiScale();
+            if uiScale > 0.0 { width = width / uiScale; }
+        }
+        if width <= 0.0 { return; }
+
+        var compact = ToolPanelModel.WatchToolbarUsesCompactActions(width);
+        if compact == compactWatchToolbar { return; }
+        compactWatchToolbar = compact;
+        if compactWatchToolbar {
+            watchToolbar.SetPreferredSize(0.0, 60.0);
+            watchExpressionInput.SetMinSize(60.0, 0.0);
+            watchExpressionInput.SetPreferredSize(72.0, 0.0);
+            watchAddButton.SetText("+");
+            watchRemoveButton.SetText("−");
+            watchRefreshButton.SetText("↻");
+            watchClearButton.SetText("×");
+            watchAddButton.SetPreferredSize(36.0, 0.0);
+            watchRemoveButton.SetPreferredSize(36.0, 0.0);
+            watchRefreshButton.SetPreferredSize(36.0, 0.0);
+            watchClearButton.SetPreferredSize(36.0, 0.0);
+        } else {
+            // Flex wrap resolves its cross-axis extent before the parent width
+            // is final. Reserve a second row so late fractional layout cannot
+            // place the final action over the Variables list.
+            watchToolbar.SetPreferredSize(0.0, 60.0);
+            watchExpressionInput.SetMinSize(120.0, 0.0);
+            watchExpressionInput.SetPreferredSize(160.0, 0.0);
+            watchAddButton.SetText("Add");
+            watchRemoveButton.SetText("Remove");
+            watchRefreshButton.SetText("Refresh");
+            watchClearButton.SetText("Clear");
+            watchAddButton.SetPreferredSize(48.0, 0.0);
+            watchRemoveButton.SetPreferredSize(64.0, 0.0);
+            watchRefreshButton.SetPreferredSize(64.0, 0.0);
+            watchClearButton.SetPreferredSize(52.0, 0.0);
+        }
+        var actionMin = 36.0;
+        if compactWatchToolbar == false { actionMin = 48.0; }
+        watchAddButton.SetMinSize(actionMin, 0.0);
+        watchRemoveButton.SetMinSize(actionMin, 0.0);
+        watchRefreshButton.SetMinSize(actionMin, 0.0);
+        watchClearButton.SetMinSize(actionMin, 0.0);
+    }
+}

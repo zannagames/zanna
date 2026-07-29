@@ -147,6 +147,30 @@ TEST(ZiaBinds, StrictResolverReturnsFalseForMissingImport) {
     EXPECT_GT(diag.errorCount(), 0u);
 }
 
+TEST(ZiaBinds, SupportsModularGraphsBeyondPrevious256FileLimit) {
+    const fs::path tempRoot = fs::temp_directory_path() / "zia_bind_tests" /
+                              std::to_string(static_cast<unsigned long long>(::getpid()));
+    const fs::path dir = tempRoot / "wide_import_graph";
+
+    std::string mainSource = "module Main;\n";
+    for (int i = 0; i < 300; ++i) {
+        const std::string moduleName = "WideImport" + std::to_string(i);
+        const std::string fileName = "wide_import_" + std::to_string(i) + ".zia";
+        writeFile(dir, fileName, "module " + moduleName + ";\n");
+        mainSource += "bind \"" + fileName + "\";\n";
+    }
+    mainSource += "func start() {}\n";
+
+    const fs::path mainPath = writeFile(dir, "main.zia", mainSource);
+    const std::string mainPathStr = mainPath.string();
+    SourceManager sm;
+    CompilerInput input{.source = mainSource, .path = mainPathStr};
+    CompilerOptions opts{};
+
+    auto result = compile(input, opts, sm);
+    EXPECT_TRUE(result.succeeded());
+}
+
 TEST(ZiaBinds, LegacyAliasFirstNamespaceBindWorks) {
     const std::string source = R"(
 module Main;
@@ -815,13 +839,13 @@ func start() {    Zanna.Terminal.SayInt(cfg.WIDTH);
     if (v1000 != 0 || cfgUnresolved || errorCount > 2) {
         std::cerr << "Diagnostics for MalformedBindDoesNotCascade (errors=" << errorCount << "):\n";
         for (const auto &d : result.diagnostics.diagnostics()) {
-            std::cerr << "  [" << (d.severity == Severity::Error ? "ERROR" : "WARN") << "] " << d.code
-                      << " " << d.message << "\n";
+            std::cerr << "  [" << (d.severity == Severity::Error ? "ERROR" : "WARN") << "] "
+                      << d.code << " " << d.message << "\n";
         }
     }
-    EXPECT_EQ(v1000, 0);        // no fabricated "<dir>/.zia" import
+    EXPECT_EQ(v1000, 0);         // no fabricated "<dir>/.zia" import
     EXPECT_FALSE(cfgUnresolved); // the valid relative bind still resolved
-    EXPECT_LE(errorCount, 2);   // only the local incomplete-bind error, not a cascade
+    EXPECT_LE(errorCount, 2);    // only the local incomplete-bind error, not a cascade
 }
 
 } // namespace

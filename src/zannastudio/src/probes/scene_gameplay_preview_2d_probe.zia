@@ -93,7 +93,19 @@ func pump(editor: scene_editor_2d.SceneEditor2D,
     return changed;
 }
 
-func main() {
+/// @brief Typed state shared by serial Xenoscape preview scenarios.
+class GameplayPreview2DProbeContext {
+    expose app_shell.AppShell shell;
+    expose project_manager.ProjectManager project;
+    expose scene_editor_2d.SceneEditor2D editor;
+    expose document.Document sceneDoc;
+    expose String baseline;
+    expose scene_component_schema.SceneComponentDefinition enemyRecipe;
+}
+
+/// @brief Load the project and verify its preview schema and canonical scene.
+func VerifyProjectPreviewSetup(
+    ctx: GameplayPreview2DProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Xenoscape Preview Probe", 1180, 780);
     shell.SetSceneWorkspaceMode(true);
@@ -107,7 +119,7 @@ func main() {
        or project.OpenFolder(root) == false {
         fail(shell, project,
              "could not open the Xenoscape project fixture at " + root);
-        return;
+        return false;
     }
 
     var editor = new scene_editor_2d.SceneEditor2D();
@@ -134,7 +146,7 @@ func main() {
              + " content=" + (sceneDoc.content != baseline)
              + " modified=" + sceneDoc.isModified
              + " snapshot=" + (editor.currentSerialized != baseline));
-        return;
+        return false;
     }
     var secondChanged = pump(editor, sceneDoc, shell);
     if sceneDoc.content != baseline
@@ -146,7 +158,7 @@ func main() {
              + " content=" + (sceneDoc.content != baseline)
              + " modified=" + sceneDoc.isModified
              + " snapshot=" + (editor.currentSerialized != baseline));
-        return;
+        return false;
     }
     var thirdChanged = pump(editor, sceneDoc, shell);
     if sceneDoc.content != baseline
@@ -158,7 +170,7 @@ func main() {
              + " content=" + (sceneDoc.content != baseline)
              + " modified=" + sceneDoc.isModified
              + " snapshot=" + (editor.currentSerialized != baseline));
-        return;
+        return false;
     }
 
     if editor.loadError != ""
@@ -173,7 +185,7 @@ func main() {
         fail(shell, project,
              "the Xenoscape region did not become its canonical "
              + "rendered Studio scene");
-        return;
+        return false;
     }
 
     var enemyRecipe:
@@ -204,8 +216,27 @@ func main() {
         fail(shell, project,
              "the project-owned biome, tile, or grid profile "
              + "did not reach the production canvas");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.project = project;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.baseline = baseline;
+    ctx.enemyRecipe = enemyRecipe;
+    return true;
+}
+
+/// @brief Verify component recipes, draw order, and first-open framing.
+func VerifyGameplayRecipeAndPresentation(
+    ctx: GameplayPreview2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var project = ctx.project;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var baseline = ctx.baseline;
+    var enemyRecipe = ctx.enemyRecipe;
 
     // The project palette must create a runtime-valid Xenoscape record
     // directly, without first inserting a generic object or making the user
@@ -224,7 +255,7 @@ func main() {
        or editor.componentPalette.applyButton.IsEnabled() {
         fail(shell, project,
              "the selection-free Xenoscape creation action was not truthful");
-        return;
+        return false;
     }
     var createdEnemy = editor.CreateObjectFromComponent(enemyRecipe);
     var createdContent = sceneDoc.content;
@@ -249,7 +280,7 @@ func main() {
         fail(shell, project,
              "direct Xenoscape object creation was not one exact "
              + "gameplay-ready transaction");
-        return;
+        return false;
     }
     if editor.Undo() == false
        or sceneDoc.content != baseline
@@ -272,13 +303,13 @@ func main() {
        or sceneDoc.isModified {
         fail(shell, project,
              "Xenoscape recipe undo/redo did not restore exact scene bytes");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
     if editor.ObjectPreviewStack().count() != recipeBaselinePreviewCount {
         fail(shell, project,
              "undoing the Xenoscape recipe left transient preview content");
-        return;
+        return false;
     }
 
     // Xenoscape paints pickups, the player, enemies/bosses, interactions, then
@@ -304,7 +335,7 @@ func main() {
        or editor.ObjectPreviewDrawOrder(75) != 50 {
         fail(shell, project,
              "project preview stack diverged from gameplay paint order");
-        return;
+        return false;
     }
 
     // Large gameplay worlds must remain legible instead of opening as a
@@ -323,7 +354,7 @@ func main() {
              + " origin=" + editor.viewOriginX + ","
              + editor.viewOriginY + " rendered="
              + editor.renderedColumns + "x" + editor.renderedRows);
-        return;
+        return false;
     }
 
     // Loading, background compositing, and sprite resolution are presentation
@@ -336,8 +367,20 @@ func main() {
              + " content=" + (sceneDoc.content != baseline)
              + " modified=" + sceneDoc.isModified
              + " snapshot=" + (editor.currentSerialized != baseline));
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify clean output-framed Game View and camera restoration.
+func VerifyGameplayGameView(
+    ctx: GameplayPreview2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var project = ctx.project;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var baseline = ctx.baseline;
 
     // The comparison artifact must contain gameplay pixels, not the object
     // rectangles that make the ordinary authoring canvas actionable.
@@ -407,7 +450,7 @@ func main() {
              + "/" + baselineRevision
              + " history=" + editor.undoStack.count()
              + "/" + baselineUndo);
-        return;
+        return false;
     }
     var gameZoom = editor.zoomPercent;
     var gameOriginX = editor.viewOriginX;
@@ -419,7 +462,7 @@ func main() {
     if Pixels.SavePng(editor.framePixels, screenshotPath) != 1 {
         fail(shell, project,
              "could not capture the actual Studio 2D viewport");
-        return;
+        return false;
     }
 
     Terminal.Say(
@@ -466,11 +509,19 @@ func main() {
                  + " scroll=" + editor.canvasScroll.GetScrollX()
                  + "," + editor.canvasScroll.GetScrollY()
                  + "/" + baselineScrollX + "," + baselineScrollY);
-            return;
+            return false;
         }
     }
 
     project.CloseProject();
     shell.Destroy();
     Terminal.Say("RESULT: ok");
+    return true;
+}
+
+func main() {
+    var ctx = new GameplayPreview2DProbeContext();
+    if VerifyProjectPreviewSetup(ctx) == false { return; }
+    if VerifyGameplayRecipeAndPresentation(ctx) == false { return; }
+    if VerifyGameplayGameView(ctx) == false { return; }
 }

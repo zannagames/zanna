@@ -1,0 +1,317 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_authoring_versioning.zia
+// Purpose: Select the minimum schema version required by authored features.
+// Key invariants:
+//   - Version selection inspects the complete draft before serialization.
+// Ownership/Lifetime:
+//   - All helpers borrow parsed JSON values and retain no state.
+// Links: zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_authoring_versioning;
+
+bind "../services/safe_io";
+bind "scene_component_schema";
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Obj = Zanna.Core.Object;
+bind WorkspaceEdit = Zanna.Workspace.Edit;
+
+/// @brief Write the lowest schema version the authored content requires.
+func SyncSchemaVersion(root: Any) {
+    var required = scene_component_schema.SCHEMA_VERSION;
+    if Map.Has(root, "scenePreview2D") {
+        required =
+            scene_component_schema.SCENE_PREVIEW_2D_SCHEMA_VERSION;
+        var scenePreview2D = Map.Get(root, "scenePreview2D");
+        if scenePreview2D != null
+           and Json.TypeOf(scenePreview2D) == "object"
+           and ScenePreviewHasOutputMembers(scenePreview2D) {
+            required =
+                scene_component_schema.GAME_VIEW_OUTPUT_SCHEMA_VERSION;
+        }
+    }
+    if Map.Has(root, "nodePreviews3D") {
+        var nodeVersion =
+            scene_component_schema.NODE_PREVIEW_3D_SCHEMA_VERSION;
+        if NodePreviewsRequireDirectModels(
+               Map.Get(root, "nodePreviews3D")) {
+            nodeVersion =
+                scene_component_schema
+                    .DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION;
+        }
+        if nodeVersion > required { required = nodeVersion; }
+    }
+    if Map.Has(root, "nodePreviewFilter3D") {
+        var filterVersion =
+            scene_component_schema
+                .NODE_PREVIEW_FILTER_3D_SCHEMA_VERSION;
+        if filterVersion > required { required = filterVersion; }
+    }
+    if Map.Has(root, "materialPreviews3D") {
+        var materialPreviewVersion =
+            scene_component_schema.MATERIAL_PREVIEW_3D_SCHEMA_VERSION;
+        if materialPreviewVersion > required {
+            required = materialPreviewVersion;
+        }
+    }
+    if Map.Has(root, "scenePreview3D") {
+        var scenePreviewVersion =
+            scene_component_schema.SCENE_PREVIEW_3D_SCHEMA_VERSION;
+        var scenePreview = Map.Get(root, "scenePreview3D");
+        if scenePreview != null
+           and Json.TypeOf(scenePreview) == "object" {
+            if ScenePreviewHasWaterLayers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .RUNTIME_WATER_PREVIEW_3D_SCHEMA_VERSION;
+            } else if ScenePreviewHasEnvironmentLayers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .ADDITIVE_ENVIRONMENT_LAYERS_SCHEMA_VERSION;
+            } else if ScenePreviewHasOutputMembers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .GAME_VIEW_OUTPUT_SCHEMA_VERSION;
+            } else if ScenePreviewHasPostFXMembers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .SCENE_POSTFX_PREVIEW_3D_SCHEMA_VERSION;
+            } else if ScenePreviewHasEnvironmentMembers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .SCENE_ENVIRONMENT_PREVIEW_3D_SCHEMA_VERSION;
+            } else if ScenePreviewHasLensAtmosphereMembers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .LENS_ATMOSPHERE_PREVIEW_3D_SCHEMA_VERSION;
+            } else if ScenePreviewHasSkyLightMembers(scenePreview) {
+                scenePreviewVersion =
+                    scene_component_schema
+                        .SKY_LIGHT_PREVIEW_3D_SCHEMA_VERSION;
+            }
+        }
+        if scenePreviewVersion > required {
+            required = scenePreviewVersion;
+        }
+    }
+    if Map.Has(root, "objectPreviews") {
+        var previewVersion =
+            scene_component_schema.OBJECT_PREVIEW_SCHEMA_VERSION;
+        if ObjectPreviewsHaveDrawStackMembers(
+               Map.Get(root, "objectPreviews")) {
+            previewVersion =
+                scene_component_schema
+                    .OBJECT_PREVIEW_DRAW_STACK_SCHEMA_VERSION;
+        }
+        if previewVersion > required { required = previewVersion; }
+    }
+    var components = Map.Get(root, "components");
+    if components == null or Json.TypeOf(components) != "array" {
+        Map.SetInt(root, "version", required);
+        return;
+    }
+    var componentIndex = 0;
+    while componentIndex < Seq.get_Count(components) {
+        var component = Seq.Get(components, componentIndex);
+        componentIndex = componentIndex + 1;
+        if component == null or Json.TypeOf(component) != "object" {
+            continue;
+        }
+        if Map.Has(component, "createObjectType")
+           or Map.Has(component, "createNodeName") {
+            var creationVersion =
+                scene_component_schema.COMPONENT_CREATION_SCHEMA_VERSION;
+            if creationVersion > required {
+                required = creationVersion;
+            }
+        }
+        var fields = Map.Get(component, "fields");
+        if fields == null or Json.TypeOf(fields) != "array" { continue; }
+        var fieldIndex = 0;
+        while fieldIndex < Seq.get_Count(fields) {
+            var field = Seq.Get(fields, fieldIndex);
+            fieldIndex = fieldIndex + 1;
+            if field == null or Json.TypeOf(field) != "object" { continue; }
+            var kind = Str.ToLower(Str.Trim(Map.GetStr(field, "type")));
+            var kindVersion = scene_component_schema.KindVersion(kind);
+            if kindVersion > required { required = kindVersion; }
+        }
+    }
+    Map.SetInt(root, "version", required);
+}
+
+/// @brief Return whether node-preview content requires schema version 17.
+func NodePreviewsRequireDirectModels(raw: Any) -> Boolean {
+    if raw == null or Json.TypeOf(raw) != "array" { return false; }
+    var index = 0;
+    while index < Seq.get_Count(raw) {
+        var preview = Seq.Get(raw, index);
+        index = index + 1;
+        if preview == null or Json.TypeOf(preview) != "object" {
+            continue;
+        }
+        if Map.Has(preview, "matchValue")
+           and Json.TypeOf(Map.Get(preview, "matchValue")) != "string" {
+            return true;
+        }
+        if Map.Has(preview, "scale")
+           or Map.Has(preview, "yawDegrees")
+           or Map.Has(preview, "offsetX")
+           or Map.Has(preview, "offsetY")
+           or Map.Has(preview, "offsetZ") {
+            return true;
+        }
+        if Map.Has(preview, "prefab") {
+            var prefab = Map.Get(preview, "prefab");
+            if prefab != null and Json.TypeOf(prefab) == "string"
+               and DirectModelPreviewPath(
+                   Map.GetStr(preview, "prefab")) {
+                return true;
+            }
+        }
+        if Map.Has(preview, "variantPrefabs") {
+            var variants = Map.Get(preview, "variantPrefabs");
+            if variants != null and Json.TypeOf(variants) == "array" {
+                var variantIndex = 0;
+                while variantIndex < Seq.get_Count(variants) {
+                    var variant = Seq.Get(variants, variantIndex);
+                    if variant != null
+                       and Json.TypeOf(variant) == "string"
+                       and DirectModelPreviewPath(
+                           Seq.GetStr(variants, variantIndex)) {
+                        return true;
+                    }
+                    variantIndex = variantIndex + 1;
+                }
+            }
+        }
+    }
+    return false;
+}
+
+/// @brief Identify a public SceneAsset model extension, excluding VSCN scenes.
+func DirectModelPreviewPath(path: String) -> Boolean {
+    var folded = Str.ToLower(Str.Trim(path));
+    return Str.EndsWith(folded, ".gltf")
+        or Str.EndsWith(folded, ".glb")
+        or Str.EndsWith(folded, ".fbx")
+        or Str.EndsWith(folded, ".obj")
+        or Str.EndsWith(folded, ".stl");
+}
+
+/// @brief Return whether one raw scene profile requires schema version 15.
+func ScenePreviewHasWaterLayers(raw: Any) -> Boolean {
+    return Map.Has(raw, "waterLayers");
+}
+
+/// @brief Return whether one raw scene profile requires schema version 14.
+func ScenePreviewHasEnvironmentLayers(raw: Any) -> Boolean {
+    return Map.Has(raw, "environmentLayers");
+}
+
+/// @brief Return whether one raw scene profile requires schema version 12.
+func ScenePreviewHasOutputMembers(raw: Any) -> Boolean {
+    return Map.Has(raw, "outputWidth") or Map.Has(raw, "outputHeight");
+}
+
+/// @brief Return whether object-preview content requires schema version 11.
+func ObjectPreviewsHaveDrawStackMembers(raw: Any) -> Boolean {
+    if raw == null or Json.TypeOf(raw) != "array" { return false; }
+    var index = 0;
+    while index < Seq.get_Count(raw) {
+        var preview = Seq.Get(raw, index);
+        if preview != null and Json.TypeOf(preview) == "object"
+           and (Map.Has(preview, "drawOrder")
+                or Map.Has(preview, "afterLayer")) {
+            return true;
+        }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// @brief Return whether one raw scene profile requires schema version 10.
+func ScenePreviewHasPostFXMembers(raw: Any) -> Boolean {
+    var names: List[String] = [
+        "tonemapMode", "tonemapExposure",
+        "bloomThreshold", "bloomIntensity", "bloomPasses",
+        "colorGradeBrightness", "colorGradeContrast",
+        "colorGradeSaturation",
+        "vignetteRadius", "vignetteSoftness",
+        "fxaa"
+    ];
+    var index = 0;
+    while index < names.count() {
+        if Map.Has(raw, names.get(index)) { return true; }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// @brief Return whether one raw scene profile requires schema version 9.
+func ScenePreviewHasEnvironmentMembers(raw: Any) -> Boolean {
+    var names: List[String] = [
+        "environmentPrefab",
+        "environmentVariantProperty",
+        "environmentVariantPrefabs",
+        "environmentVariantOffset"
+    ];
+    var index = 0;
+    while index < names.count() {
+        if Map.Has(raw, names.get(index)) { return true; }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// @brief Return whether one raw scene profile requires schema version 6.
+func ScenePreviewHasSkyLightMembers(raw: Any) -> Boolean {
+    var names: List[String] = [
+        "zenithRProperty", "zenithGProperty", "zenithBProperty",
+        "groundRProperty", "groundGProperty", "groundBProperty",
+        "cloudProperty", "starsProperty",
+        "sunXProperty", "sunYProperty", "sunZProperty",
+        "sunRProperty", "sunGProperty", "sunBProperty",
+        "sunIntensityProperty",
+        "fillXProperty", "fillYProperty", "fillZProperty",
+        "fillRProperty", "fillGProperty", "fillBProperty",
+        "fillIntensityProperty"
+    ];
+    var index = 0;
+    while index < names.count() {
+        if Map.Has(raw, names.get(index)) { return true; }
+        index = index + 1;
+    }
+    return false;
+}
+
+/// @brief Return whether one raw scene profile requires schema version 7.
+func ScenePreviewHasLensAtmosphereMembers(raw: Any) -> Boolean {
+    var names: List[String] = [
+        "cameraFov", "iblIntensity", "heightFogProperty",
+        "heightFogBase", "heightFogFalloff",
+        "heightFogDensity", "heightFogOpacity"
+    ];
+    var index = 0;
+    while index < names.count() {
+        if Map.Has(raw, names.get(index)) { return true; }
+        index = index + 1;
+    }
+    return false;
+}
+
+

@@ -1,0 +1,787 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_model.zia
+// Purpose: Shared constants, pure geometry helpers, and compact value objects for the 3D scene editor.
+// Key invariants:
+//   - This module contains no persistent SceneEditor3D controller state.
+// Ownership/Lifetime:
+//   - Callers own all returned value objects; constants and pure helpers retain no resources.
+// Links: zannastudio/src/ui/scene_editor_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_model;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+
+final DEFAULT_VIEWPORT_WIDTH: Integer = 800;
+final DEFAULT_VIEWPORT_HEIGHT: Integer = 520;
+final PROJECT_SKY_FACE_SIZE: Integer = 32;
+final MIN_VIEWPORT_WIDTH: Integer = 320;
+final MIN_VIEWPORT_HEIGHT: Integer = 240;
+final MAX_VIEWPORT_WIDTH: Integer = 3840;
+final MAX_VIEWPORT_HEIGHT: Integer = 2160;
+// Interactive drags render at reduced resolution and re-render full on
+// release (ADR 0191 interim); the divisor keeps the upscale integral.
+final INTERACTIVE_RESOLUTION_DIVISOR: Integer = 2;
+final GAME_VIEW_MATTE_COLOR: Integer = 0x080A0E;
+final MAX_SCENE_BYTES: Integer = 64000000;
+final MAX_3D_HISTORY_BYTES: Integer = 256000000;
+final MAX_TEXTURE_SOURCE_BYTES: Integer = 16000000;
+final MAX_EDITOR_NODES: Integer = 4096;
+final MAX_PROJECT_PREVIEW_NODES: Integer = 4096;
+final MAX_PROJECT_PREVIEW_ASSETS: Integer = 256;
+final MAX_PROJECT_MATERIAL_PREVIEW_TEXTURES: Integer = 640;
+final PROJECT_WATER_ANIMATION_FRAME_MS: Integer = 33;
+final PROJECT_WATER_MAX_STEP_MS: Integer = 100;
+final MAX_HIERARCHY_DEPTH: Integer = 256;
+final MAX_3D_SCENE_HISTORY: Integer = 100;
+final DEG_TO_RAD: Number = 0.017453292519943295;
+final RAD_TO_DEG: Number = 57.29577951308232;
+final GIZMO_PIXEL_LENGTH: Number = 36.0;
+final GIZMO_PICK_RADIUS: Number = 7.0;
+final GIZMO_RING_PICK_RADIUS: Number = 6.0;
+final GIZMO_RING_SEGMENTS: Integer = 32;
+final GIZMO_RING_STEP_RADIANS: Number = 0.19634954084936207;
+final GIZMO_RING_INVALID_DISTANCE: Number = 1000000000.0;
+final GIZMO_PLANE_INNER_FRACTION: Number = 0.25;
+final GIZMO_PLANE_OUTER_FRACTION: Number = 0.55;
+// The viewport enters master/detail before three fixed panes reduce it to a
+// thumbnail. Toolbar chrome reaches its narrowest tier only on truly compact
+// hosts, keeping dock-heavy desktop windows concise without oversized rows.
+final COMPACT_SCENE_3D_WIDTH: Number = 980.0;
+final COMPACT_SCENE_3D_CHROME_WIDTH: Number = 700.0;
+final SCENE_INSPECTOR_WORLD: Integer = 0;
+final SCENE_INSPECTOR_LIGHTING: Integer = 1;
+final SCENE_INSPECTOR_ASSETS: Integer = 2;
+final SCENE_INSPECTOR_HISTORY: Integer = 3;
+// Three persistent columns need enough room for readable node paths, a useful
+// viewport, and an inspector that does not collapse every field. Below this
+// width the hierarchy remains one click away as a full-width master.
+final HIERARCHY_PANE_MIN_WIDTH: Number = 1200.0;
+final RESPONSIVE_WIDTH_EPSILON: Number = 0.01;
+final VIEWPORT_CLEAR_RED: Number = 0.08627450980392157;
+final VIEWPORT_CLEAR_GREEN: Number = 0.10196078431372549;
+final VIEWPORT_CLEAR_BLUE: Number = 0.13333333333333333;
+final VIEWPORT_CAMERA_NEAR: Number = 0.1;
+final VIEWPORT_CAMERA_MIN_DISTANCE: Number = 100.0;
+final VIEWPORT_FOV_DEGREES: Number = 60.0;
+// Stable default-lens contract for projection probes; project preview
+// profiles may override the active editor lens at runtime.
+final VIEWPORT_FOV_HALF_TAN: Number = 0.5773502691896257;
+final FLY_LOOK_DEGREES_PER_PIXEL: Number = 0.25;
+final FLY_BASE_SPEED_PER_SECOND: Number = 0.6;
+final FLY_FAST_MULTIPLIER: Number = 4.0;
+final FLY_MIN_SPEED_MULTIPLIER: Number = 0.1;
+final FLY_MAX_SPEED_MULTIPLIER: Number = 10.0;
+final VIEWPORT_DOUBLE_CLICK_MS: Integer = 400;
+final MARQUEE_THRESHOLD_SQUARED_3D: Integer = 16;
+final VIEWPORT_DOUBLE_CLICK_RADIUS_SQUARED: Integer = 64;
+final DROP_SURFACE_START_CLEARANCE: Number = 0.25;
+final LIVE_SURFACE_SNAP_START_CLEARANCE: Number = 4.0;
+final DROP_SURFACE_MAX_DISTANCE: Number = 1000000.0;
+final MAX_LIVE_SURFACE_SNAP_ROOTS: Integer = 256;
+final VERTEX_SNAP_PICK_RADIUS: Integer = 11;
+final VERTEX_SNAP_PICK_RADIUS_SQUARED: Integer = 121;
+final MAX_VERTEX_SNAP_VERTICES: Integer = 32768;
+final MAX_VERTEX_SNAP_ROOTS: Integer = 256;
+final VERTEX_SNAP_KIND_NONE: Integer = 0;
+final VERTEX_SNAP_KIND_VERTEX: Integer = 1;
+final VERTEX_SNAP_KIND_PIVOT: Integer = 2;
+final VERTEX_SNAP_KIND_SURFACE: Integer = 3;
+final MAX_TERRAIN_DABS_PER_FRAME: Integer = 32;
+final TERRAIN_BRUSH_RING_SEGMENTS: Integer = 40;
+final TERRAIN_BRUSH_RING_STEP_RADIANS: Number = 0.15707963267948966;
+
+// Top-right in-viewport navigator. Its fixed pixel geometry remains stable
+// across UI scale because viewport pixels and pointer conversion share the
+// same logical coordinate space.
+final ORIENTATION_FACE_NONE: Integer = -1;
+final ORIENTATION_FACE_TOP: Integer = 0;
+final ORIENTATION_FACE_FRONT: Integer = 1;
+final ORIENTATION_FACE_RIGHT: Integer = 2;
+final ORIENTATION_FACE_BOTTOM: Integer = 3;
+final ORIENTATION_FACE_BACK: Integer = 4;
+final ORIENTATION_FACE_LEFT: Integer = 5;
+final ORIENTATION_PROJECTION_TOGGLE: Integer = 6;
+final ORIENTATION_PANEL_BACKGROUND: Integer = 7;
+final ORIENTATION_PANEL_WIDTH: Integer = 148;
+final ORIENTATION_PANEL_HEIGHT: Integer = 80;
+final ORIENTATION_PANEL_MARGIN: Integer = 10;
+final ORIENTATION_FACE_WIDTH: Integer = 42;
+final ORIENTATION_FACE_HEIGHT: Integer = 22;
+final ORIENTATION_FACE_GAP: Integer = 4;
+final ORIENTATION_FACE_LEFT_PAD: Integer = 7;
+final ORIENTATION_FACE_TOP_PAD: Integer = 27;
+
+final VIEWPORT_MODE_SHADED: Integer = 0;
+final VIEWPORT_MODE_WIREFRAME: Integer = 1;
+final VIEWPORT_MODE_SHADED_WIRE: Integer = 2;
+
+final INSET_WIDTH: Integer = 256;
+final INSET_HEIGHT: Integer = 144;
+final INSET_REFRESH_FRAMES: Integer = 8;
+
+final GIZMO_AXIS_NONE: Integer = -1;
+final GIZMO_AXIS_X: Integer = 0;
+final GIZMO_AXIS_Y: Integer = 1;
+final GIZMO_AXIS_Z: Integer = 2;
+final GIZMO_PLANE_XY: Integer = 3;
+final GIZMO_PLANE_XZ: Integer = 4;
+final GIZMO_PLANE_YZ: Integer = 5;
+
+final GIZMO_MODE_MOVE: Integer = scene_transform_3d.TRANSFORM_MOVE;
+final GIZMO_MODE_ROTATE: Integer = scene_transform_3d.TRANSFORM_ROTATE;
+final GIZMO_MODE_SCALE: Integer = scene_transform_3d.TRANSFORM_SCALE;
+
+final PRIMITIVE_EMPTY: Integer = 0;
+final PRIMITIVE_BOX: Integer = 1;
+final PRIMITIVE_SPHERE: Integer = 2;
+final PRIMITIVE_PLANE: Integer = 3;
+final PRIMITIVE_CYLINDER: Integer = 4;
+
+final ADD_COMPONENT_LIGHT: Integer = 0;
+final ADD_COMPONENT_MATERIAL: Integer = 1;
+final ADD_COMPONENT_CAMERA: Integer = 2;
+final ADD_COMPONENT_COLLIDER: Integer = 3;
+final PARENT_TARGET_MIXED: Integer = -2;
+
+/// @brief Return whether a handle names one single-axis transform.
+func IsGizmoAxis(handle: Integer) -> Boolean {
+    return handle == GIZMO_AXIS_X
+        or handle == GIZMO_AXIS_Y
+        or handle == GIZMO_AXIS_Z;
+}
+
+/// @brief Return whether a handle names one two-axis transform plane.
+func IsGizmoPlane(handle: Integer) -> Boolean {
+    return handle == GIZMO_PLANE_XY
+        or handle == GIZMO_PLANE_XZ
+        or handle == GIZMO_PLANE_YZ;
+}
+
+/// @brief Return the first conventional axis in one plane handle.
+func GizmoPlaneAxisA(plane: Integer) -> Integer {
+    if plane == GIZMO_PLANE_YZ { return GIZMO_AXIS_Y; }
+    return GIZMO_AXIS_X;
+}
+
+/// @brief Return the second conventional axis in one plane handle.
+func GizmoPlaneAxisB(plane: Integer) -> Integer {
+    if plane == GIZMO_PLANE_XY { return GIZMO_AXIS_Y; }
+    return GIZMO_AXIS_Z;
+}
+
+/// @brief Return the first oriented basis axis for one rotation ring.
+/// @details The ordered pairs follow positive right-handed rotation:
+///          X rotates Y toward Z, Y rotates Z toward X, Z rotates X toward Y.
+func GizmoRingAxisA(axis: Integer) -> Integer {
+    if axis == GIZMO_AXIS_X { return GIZMO_AXIS_Y; }
+    if axis == GIZMO_AXIS_Y { return GIZMO_AXIS_Z; }
+    return GIZMO_AXIS_X;
+}
+
+/// @brief Return the second oriented basis axis for one rotation ring.
+func GizmoRingAxisB(axis: Integer) -> Integer {
+    if axis == GIZMO_AXIS_X { return GIZMO_AXIS_Z; }
+    if axis == GIZMO_AXIS_Y { return GIZMO_AXIS_X; }
+    return GIZMO_AXIS_Y;
+}
+
+/// @brief Read one Cartesian component from a runtime vector.
+func GizmoAxisValue(value: Vec3,
+                    axis: Integer) -> Number {
+    if value == null { return 0.0; }
+    if axis == GIZMO_AXIS_X { return value.X; }
+    if axis == GIZMO_AXIS_Y { return value.Y; }
+    return value.Z;
+}
+
+/// @brief Clamp one Number used by persisted scene workspace geometry.
+func ClampNumber3D(value: Number, minimum: Number, maximum: Number) -> Number {
+    if value < minimum { return minimum; }
+    if value > maximum { return maximum; }
+    return value;
+}
+
+/// @brief Keep long orbit sessions numerically stable and easy to persist.
+func NormalizeYawDegrees(value: Integer) -> Integer {
+    var normalized = value;
+    while normalized > 180 { normalized = normalized - 360; }
+    while normalized < -180 { normalized = normalized + 360; }
+    return normalized;
+}
+
+/// @brief Squared pointer distance to a finite projected line segment.
+/// @details Pure geometry keeps gizmo hit testing deterministic and probeable.
+expose func DistanceSquaredToSegment(pointerX: Number,
+                                     pointerY: Number,
+                                     startX: Number,
+                                     startY: Number,
+                                     endX: Number,
+                                     endY: Number) -> Number {
+    var segmentX = endX - startX;
+    var segmentY = endY - startY;
+    var lengthSquared = segmentX * segmentX + segmentY * segmentY;
+    if lengthSquared <= 0.000001 {
+        var pointX = pointerX - startX;
+        var pointY = pointerY - startY;
+        return pointX * pointX + pointY * pointY;
+    }
+    var projection = ((pointerX - startX) * segmentX
+                      + (pointerY - startY) * segmentY)
+        / lengthSquared;
+    if projection < 0.0 { projection = 0.0; }
+    if projection > 1.0 { projection = 1.0; }
+    var nearestX = startX + projection * segmentX;
+    var nearestY = startY + projection * segmentY;
+    var deltaX = pointerX - nearestX;
+    var deltaY = pointerY - nearestY;
+    return deltaX * deltaX + deltaY * deltaY;
+}
+
+/// @brief Pick the nearest projected translation axis within a pixel radius.
+expose func ClosestGizmoAxis(pointerX: Number,
+                             pointerY: Number,
+                             originX: Number,
+                             originY: Number,
+                             axisXX: Number,
+                             axisXY: Number,
+                             axisYX: Number,
+                             axisYY: Number,
+                             axisZX: Number,
+                             axisZY: Number,
+                             radius: Number) -> Integer {
+    var threshold = radius * radius;
+    var centerX = pointerX - originX;
+    var centerY = pointerY - originY;
+    if centerX * centerX + centerY * centerY <= threshold {
+        return GIZMO_AXIS_NONE;
+    }
+    var bestDistance = threshold;
+    var best = GIZMO_AXIS_NONE;
+    var distance = DistanceSquaredToSegment(
+        pointerX, pointerY, originX, originY, axisXX, axisXY);
+    if distance <= bestDistance {
+        bestDistance = distance;
+        best = GIZMO_AXIS_X;
+    }
+    distance = DistanceSquaredToSegment(
+        pointerX, pointerY, originX, originY, axisYX, axisYY);
+    if distance < bestDistance {
+        bestDistance = distance;
+        best = GIZMO_AXIS_Y;
+    }
+    distance = DistanceSquaredToSegment(
+        pointerX, pointerY, originX, originY, axisZX, axisZY);
+    if distance < bestDistance {
+        best = GIZMO_AXIS_Z;
+    }
+    return best;
+}
+
+/// @brief Return whether a pointer lies inside one projected plane handle.
+func GizmoPlaneContains(pointerX: Number,
+                        pointerY: Number,
+                        originX: Number,
+                        originY: Number,
+                        axisAX: Number,
+                        axisAY: Number,
+                        axisBX: Number,
+                        axisBY: Number) -> Boolean {
+    var vectorAX = axisAX - originX;
+    var vectorAY = axisAY - originY;
+    var vectorBX = axisBX - originX;
+    var vectorBY = axisBY - originY;
+    if scene_transform_3d.PlaneProjectionIsUsable(
+           vectorAX, vectorAY, vectorBX, vectorBY) == false {
+        return false;
+    }
+    var relativeX = pointerX - originX;
+    var relativeY = pointerY - originY;
+    var determinant =
+        vectorAX * vectorBY - vectorAY * vectorBX;
+    var fractionA =
+        (relativeX * vectorBY - relativeY * vectorBX) / determinant;
+    var fractionB =
+        (vectorAX * relativeY - vectorAY * relativeX) / determinant;
+    return fractionA >= GIZMO_PLANE_INNER_FRACTION
+        and fractionA <= GIZMO_PLANE_OUTER_FRACTION
+        and fractionB >= GIZMO_PLANE_INNER_FRACTION
+        and fractionB <= GIZMO_PLANE_OUTER_FRACTION;
+}
+
+/// @brief Squared projected area used to prefer the most face-on overlap.
+func GizmoPlaneAreaSquared(originX: Number,
+                           originY: Number,
+                           axisAX: Number,
+                           axisAY: Number,
+                           axisBX: Number,
+                           axisBY: Number) -> Number {
+    var vectorAX = axisAX - originX;
+    var vectorAY = axisAY - originY;
+    var vectorBX = axisBX - originX;
+    var vectorBY = axisBY - originY;
+    var determinant =
+        vectorAX * vectorBY - vectorAY * vectorBX;
+    return determinant * determinant;
+}
+
+/// @brief Pick the most face-on projected XY, XZ, or YZ transform plane.
+/// @details Axis-line picking runs only after this function so an intentional
+///          click inside a visible plane cannot be stolen by its border axes.
+expose func ClosestGizmoPlane(pointerX: Number,
+                              pointerY: Number,
+                              originX: Number,
+                              originY: Number,
+                              axisXX: Number,
+                              axisXY: Number,
+                              axisYX: Number,
+                              axisYY: Number,
+                              axisZX: Number,
+                              axisZY: Number) -> Integer {
+    var best = GIZMO_AXIS_NONE;
+    var bestArea = 0.0;
+    if GizmoPlaneContains(
+           pointerX, pointerY, originX, originY,
+           axisXX, axisXY, axisYX, axisYY) {
+        best = GIZMO_PLANE_XY;
+        bestArea = GizmoPlaneAreaSquared(
+            originX, originY, axisXX, axisXY, axisYX, axisYY);
+    }
+    if GizmoPlaneContains(
+           pointerX, pointerY, originX, originY,
+           axisXX, axisXY, axisZX, axisZY) {
+        var area = GizmoPlaneAreaSquared(
+            originX, originY, axisXX, axisXY, axisZX, axisZY);
+        if area > bestArea {
+            best = GIZMO_PLANE_XZ;
+            bestArea = area;
+        }
+    }
+    if GizmoPlaneContains(
+           pointerX, pointerY, originX, originY,
+           axisYX, axisYY, axisZX, axisZY) {
+        var area = GizmoPlaneAreaSquared(
+            originX, originY, axisYX, axisYY, axisZX, axisZY);
+        if area > bestArea {
+            best = GIZMO_PLANE_YZ;
+        }
+    }
+    return best;
+}
+
+/// @brief Squared pointer distance to a sampled projected rotation ellipse.
+/// @details Sampling the same 32-segment ellipse used for drawing keeps hit
+///          testing stable without assuming that the projection is circular.
+func DistanceSquaredToGizmoRotationRing(
+    pointerX: Number,
+    pointerY: Number,
+    originX: Number,
+    originY: Number,
+    axisAX: Number,
+    axisAY: Number,
+    axisBX: Number,
+    axisBY: Number) -> Number {
+    var vectorAX = axisAX - originX;
+    var vectorAY = axisAY - originY;
+    var vectorBX = axisBX - originX;
+    var vectorBY = axisBY - originY;
+    if scene_transform_3d.PlaneProjectionIsUsable(
+           vectorAX, vectorAY, vectorBX, vectorBY) == false {
+        return GIZMO_RING_INVALID_DISTANCE;
+    }
+    var previousX = originX + vectorAX;
+    var previousY = originY + vectorAY;
+    var best = GIZMO_RING_INVALID_DISTANCE;
+    var segment = 1;
+    while segment <= GIZMO_RING_SEGMENTS {
+        var angle = segment * GIZMO_RING_STEP_RADIANS;
+        var cosine = Math.Cos(angle);
+        var sine = Math.Sin(angle);
+        var currentX =
+            originX + vectorAX * cosine + vectorBX * sine;
+        var currentY =
+            originY + vectorAY * cosine + vectorBY * sine;
+        var distance = DistanceSquaredToSegment(
+            pointerX, pointerY,
+            previousX, previousY, currentX, currentY);
+        if distance < best { best = distance; }
+        previousX = currentX;
+        previousY = currentY;
+        segment = segment + 1;
+    }
+    return best;
+}
+
+/// @brief Pick the nearest stable projected X, Y, or Z rotation ring.
+/// @details Ring planes use the right-handed basis order shared by angular
+///          decoding. Exact ties remain deterministic in X/Y/Z order.
+expose func ClosestGizmoRotationRing(
+    pointerX: Number,
+    pointerY: Number,
+    originX: Number,
+    originY: Number,
+    axisXX: Number,
+    axisXY: Number,
+    axisYX: Number,
+    axisYY: Number,
+    axisZX: Number,
+    axisZY: Number,
+    radius: Number) -> Integer {
+    var threshold = radius * radius;
+    var bestDistance = threshold;
+    var best = GIZMO_AXIS_NONE;
+    var distance = DistanceSquaredToGizmoRotationRing(
+        pointerX, pointerY, originX, originY,
+        axisYX, axisYY, axisZX, axisZY);
+    if distance <= bestDistance {
+        bestDistance = distance;
+        best = GIZMO_AXIS_X;
+    }
+    distance = DistanceSquaredToGizmoRotationRing(
+        pointerX, pointerY, originX, originY,
+        axisZX, axisZY, axisXX, axisXY);
+    if distance < bestDistance {
+        bestDistance = distance;
+        best = GIZMO_AXIS_Y;
+    }
+    distance = DistanceSquaredToGizmoRotationRing(
+        pointerX, pointerY, originX, originY,
+        axisXX, axisXY, axisYX, axisYY);
+    if distance < bestDistance {
+        best = GIZMO_AXIS_Z;
+    }
+    return best;
+}
+
+/// @brief Return whether a 3D scene width needs master/detail presentation.
+expose func UsesCompactLayout(width: Number) -> Boolean {
+    return width > 0.0 and width <= COMPACT_SCENE_3D_WIDTH;
+}
+
+/// @brief Return whether 3D toolbar labels need their narrowest presentation.
+expose func UsesCompactChrome(width: Number) -> Boolean {
+    return width > 0.0 and width <= COMPACT_SCENE_3D_CHROME_WIDTH;
+}
+
+/// @brief Return whether complete secondary command sets belong in menus.
+/// @details Progressive disclosure is width-independent: growing a scene lane
+///          gives the authored viewport more room instead of exposing every
+///          secondary action at once. Zero denotes an unmeasured host.
+expose func UsesSceneCommandMenus(width: Number) -> Boolean {
+    return width > 0.0;
+}
+
+/// @brief Return whether the hierarchy may remain docked beside viewport detail.
+/// @details Ordinary laptop-width scene lanes prioritize a readable viewport
+///          and inspector; the hierarchy stays available through the
+///          Hierarchy master action until all three columns have useful width.
+expose func UsesDockedHierarchy(width: Number) -> Boolean {
+    return width >= HIERARCHY_PANE_MIN_WIDTH;
+}
+
+/// @brief One projected viewport coordinate.
+class ProjectedPoint {
+    expose Integer x;
+    expose Integer y;
+    expose Boolean visible;
+
+    expose func init() {
+        x = 0;
+        y = 0;
+        visible = true;
+    }
+}
+
+/// @brief One node subtree's screen-projected world-bounds rectangle.
+class ScreenBounds3D {
+    expose Integer minX;
+    expose Integer minY;
+    expose Integer maxX;
+    expose Integer maxY;
+    expose Boolean visible;
+
+    expose func init() {
+        minX = 0;
+        minY = 0;
+        maxX = 0;
+        maxY = 0;
+        visible = false;
+    }
+}
+
+/// @brief One node subtree's axis-aligned bounds in world space.
+class WorldBounds3D {
+    expose Number minX;
+    expose Number minY;
+    expose Number minZ;
+    expose Number maxX;
+    expose Number maxY;
+    expose Number maxZ;
+    expose Boolean valid;
+
+    expose func init() {
+        minX = 0.0;
+        minY = 0.0;
+        minZ = 0.0;
+        maxX = 0.0;
+        maxY = 0.0;
+        maxZ = 0.0;
+        valid = false;
+    }
+}
+
+/// @brief One selected root's vertical placement result.
+class SurfacePlacement3D {
+    expose Boolean hit;
+    expose Number surfaceY;
+    expose Vec3 normal;
+
+    expose func init() {
+        hit = false;
+        surfaceY = 0.0;
+        normal = Vec3.New(0.0, 1.0, 0.0);
+    }
+}
+
+/// @brief One bounded source or target point for a vertex-snap gesture.
+class VertexSnapPoint3D {
+    expose Boolean valid;
+    expose Boolean clipped;
+    expose Integer kind;
+    expose Vec3 world;
+    expose Integer screenX;
+    expose Integer screenY;
+    expose Integer distanceSquared;
+    expose Integer ownerIndex;
+    expose Integer vertexIndex;
+    expose String label;
+
+    expose func init() {
+        valid = false;
+        clipped = false;
+        kind = VERTEX_SNAP_KIND_NONE;
+        world = Vec3.New(0.0, 0.0, 0.0);
+        screenX = 0;
+        screenY = 0;
+        distanceSquared = 1000000000;
+        ownerIndex = -1;
+        vertexIndex = -1;
+        label = "";
+    }
+}
+
+/// @brief One precise hit on the currently selected canonical terrain.
+class TerrainPointerHit3D {
+    expose Boolean valid;
+    expose Number localX;
+    expose Number localY;
+    expose Number localZ;
+
+    expose func init() {
+        valid = false;
+        localX = 0.0;
+        localY = 0.0;
+        localZ = 0.0;
+    }
+}
+
+/// @brief Resolved, validated runtime-water geometry for one scene root.
+class ProjectWaterPreviewState {
+    expose Boolean valid;
+    expose Number width;
+    expose Number depth;
+    expose Number x;
+    expose Number y;
+    expose Number z;
+
+    expose func init() {
+        valid = false;
+        width = 1.0;
+        depth = 1.0;
+        x = 0.0;
+        y = 0.0;
+        z = 0.0;
+    }
+}
+
+/// @brief Fully validated viewport atmosphere resolved from scene metadata.
+class ScenePreview3DRenderState {
+    expose Boolean hasCameraFov;
+    expose Number cameraFov;
+    expose Boolean hasIblIntensity;
+    expose Number iblIntensity;
+    expose Boolean hasAmbient;
+    expose Number ambientR;
+    expose Number ambientG;
+    expose Number ambientB;
+    expose Boolean hasClear;
+    expose Number clearR;
+    expose Number clearG;
+    expose Number clearB;
+    expose Boolean hasFog;
+    expose Number fogR;
+    expose Number fogG;
+    expose Number fogB;
+    expose Number fogNear;
+    expose Number fogFar;
+    expose Boolean hasSky;
+    expose Number zenithR;
+    expose Number zenithG;
+    expose Number zenithB;
+    expose Number groundR;
+    expose Number groundG;
+    expose Number groundB;
+    expose Number cloudDensity;
+    expose Boolean stars;
+    expose Boolean hasSun;
+    expose Number sunX;
+    expose Number sunY;
+    expose Number sunZ;
+    expose Number sunR;
+    expose Number sunG;
+    expose Number sunB;
+    expose Number sunIntensity;
+    expose Boolean hasFill;
+    expose Number fillX;
+    expose Number fillY;
+    expose Number fillZ;
+    expose Number fillR;
+    expose Number fillG;
+    expose Number fillB;
+    expose Number fillIntensity;
+    expose Boolean hasHeightFog;
+    expose Boolean heightFogEnabled;
+    expose Number heightFogBase;
+    expose Number heightFogFalloff;
+    expose Number heightFogDensity;
+    expose Number heightFogOpacity;
+
+    expose func init() {
+        hasCameraFov = false;
+        cameraFov = VIEWPORT_FOV_DEGREES;
+        hasIblIntensity = false;
+        iblIntensity = 0.0;
+        hasAmbient = false;
+        ambientR = 0.0;
+        ambientG = 0.0;
+        ambientB = 0.0;
+        hasClear = false;
+        clearR = 0.0;
+        clearG = 0.0;
+        clearB = 0.0;
+        hasFog = false;
+        fogR = 0.0;
+        fogG = 0.0;
+        fogB = 0.0;
+        fogNear = 0.0;
+        fogFar = 1.0;
+        hasSky = false;
+        zenithR = 0.0;
+        zenithG = 0.0;
+        zenithB = 0.0;
+        groundR = 0.0;
+        groundG = 0.0;
+        groundB = 0.0;
+        cloudDensity = 0.0;
+        stars = false;
+        hasSun = false;
+        sunX = 0.0;
+        sunY = -1.0;
+        sunZ = 0.0;
+        sunR = 1.0;
+        sunG = 1.0;
+        sunB = 1.0;
+        sunIntensity = 0.0;
+        hasFill = false;
+        fillX = 0.0;
+        fillY = -1.0;
+        fillZ = 0.0;
+        fillR = 1.0;
+        fillG = 1.0;
+        fillB = 1.0;
+        fillIntensity = 0.0;
+        hasHeightFog = false;
+        heightFogEnabled = false;
+        heightFogBase = 0.0;
+        heightFogFalloff = 0.0;
+        heightFogDensity = 0.0;
+        heightFogOpacity = 0.0;
+    }
+}
+
+
+
+/// @brief Clamp one integer without platform-specific math helpers.
+func ClampInt3D(value: Integer,
+                minimum: Integer,
+                maximum: Integer) -> Integer {
+    if value < minimum { return minimum; }
+    if value > maximum { return maximum; }
+    return value;
+}

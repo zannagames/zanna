@@ -1,0 +1,424 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_terrain_authoring.zia
+// Purpose: Author canonical terrain and primitive placement in 3D scenes.
+// Key invariants:
+//   - Terrain and primitive creation use one canonical history transaction.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited state; this layer owns none.
+// Links: zannastudio/src/ui/scene_editor_3d_materials_terrain.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_terrain_authoring;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_materials_terrain" as PreviousLayer;
+
+/// @brief Terrain sculpting and primitive-placement implementation layer.
+class SceneEditor3DTerrainAuthoringLayer extends PreviousLayer.SceneEditor3DMaterialsTerrainLayer {
+    /// @brief Create canonical terrain at the current view target.
+    expose override func AddTerrainFromMenu() -> Boolean {
+        return AddTerrainAt(
+            viewTargetX, viewTargetY, viewTargetZ, false);
+    }
+
+    /// @brief Create canonical terrain on the surface beneath a pointer.
+    expose override func AddTerrainAtPointer(physicalX: Number,
+                                    physicalY: Number) -> Boolean {
+        if viewportImage == null { return AddTerrainFromMenu(); }
+        var viewportX = Convert.NumToInt(
+            PhysicalPointerToUi(physicalX)
+            - viewportImage.GetScreenX());
+        var viewportY = Convert.NumToInt(
+            PhysicalPointerToUi(physicalY)
+            - viewportImage.GetScreenY());
+        var spawn = ViewportSpawnPoint(viewportX, viewportY);
+        return AddTerrainAt(spawn.X, spawn.Y, spawn.Z, false);
+    }
+
+    /// @brief Create one centered, gameplay-canonical terrain mesh.
+    /// @details The new node owns a complete ordinary VSCN mesh and material;
+    ///          typed terrain metadata only makes that exact mesh safely
+    ///          re-editable. Creation is one transaction and opens sculpting.
+    hide override func AddTerrainAt(spawnX: Number,
+                           spawnY: Number,
+                           spawnZ: Number,
+                           armRename: Boolean) -> Boolean {
+        if scene == null { return false; }
+        var columns = scene_terrain_3d.DEFAULT_COLUMNS;
+        var rows = scene_terrain_3d.DEFAULT_ROWS;
+        var spacing = scene_terrain_3d.DEFAULT_SPACING;
+        var heights =
+            scene_terrain_3d.FlatHeights(columns, rows, 0.0);
+        var mesh =
+            scene_terrain_3d.BuildMesh(
+                heights, columns, rows, spacing);
+        if mesh == null {
+            detailLabel.SetText(
+                "Studio could not allocate the bounded terrain mesh.");
+            GUI.Toast.Error("3D terrain creation failed");
+            return false;
+        }
+        var node = SceneNode.New();
+        if node == null {
+            detailLabel.SetText(
+                "Studio could not allocate a terrain scene node.");
+            GUI.Toast.Error("3D terrain creation failed");
+            return false;
+        }
+        node.Name = "Terrain " + scene.NodeCount;
+        node.Mesh = mesh;
+        var material = Material3D.FromColor(0.31, 0.46, 0.24);
+        if material != null {
+            material.Metallic = 0.0;
+            material.Roughness = 0.92;
+            node.Material = material;
+        }
+        if scene_terrain_3d.WriteConvention(
+               node, columns, rows, spacing) == false {
+            detailLabel.SetText(
+                "Studio could not write the canonical terrain convention.");
+            GUI.Toast.Error("3D terrain creation failed");
+            return false;
+        }
+        node.SetPosition(spawnX, spawnY, spawnZ);
+        scene.Add(node);
+        if CommitScene("Added " + node.Name) == false { return false; }
+        RefreshHierarchy(node);
+        SetTerrainSculptEnabled(true);
+        if armRename { BeginRenameSelected(); }
+        detailLabel.SetText(
+            "Terrain is the exact game mesh. Drag over it to sculpt; "
+            + "release commits one history entry and Escape cancels.");
+        return true;
+    }
+
+    /// @brief Compare height lists using the editor mutation epsilon.
+    hide override func TerrainHeightsDiffer(left: List[Number],
+                                   right: List[Number]) -> Boolean {
+        if left.count() != right.count() { return true; }
+        var index = 0;
+        while index < left.count() {
+            if scene_transform_3d.NearlyEqual(
+                   left.get(index), right.get(index)) == false {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    /// @brief Replace one terrain's mesh/convention through one transaction.
+    hide override func CommitTerrainMesh(node: SceneNode,
+                                heights: List[Number],
+                                columns: Integer,
+                                rows: Integer,
+                                spacing: Number,
+                                message: String) -> Boolean {
+        if node == null or scene_terrain_3d.IsTerrainNode(node) == false {
+            return false;
+        }
+        var mesh = scene_terrain_3d.BuildMesh(
+            heights, columns, rows, spacing);
+        if mesh == null {
+            detailLabel.SetText(
+                "The terrain draft did not form a valid bounded grid.");
+            return false;
+        }
+        node.Mesh = mesh;
+        if scene_terrain_3d.WriteConvention(
+               node, columns, rows, spacing) == false {
+            RollBackFailedCommit(
+                "The terrain convention could not be updated.");
+            return false;
+        }
+        if CommitScene(message) == false { return false; }
+        RefreshHierarchy(node);
+        return true;
+    }
+
+    /// @brief Regenerate selected terrain from the inspector grid draft.
+    expose override func RegenerateSelectedTerrain() -> Boolean {
+        if terrainStrokeActive or selectedIndices.count() != 1 {
+            return false;
+        }
+        var node = SelectedNode();
+        var current = scene_terrain_3d.FromNode(node);
+        if current.present == false { return false; }
+        var draft = terrainInspector.BuildGridState();
+        var level = scene_terrain_3d.BoundHeight(
+            terrainInspector.flattenHeightSpinner.Value);
+        var source = scene_terrain_3d.HeightsFromNode(node);
+        var target = scene_terrain_3d.FlatHeights(
+            draft.columns, draft.rows, level);
+        var geometryChanged =
+            current.columns != draft.columns
+            or current.rows != draft.rows
+            or scene_transform_3d.NearlyEqual(
+                current.spacing, draft.spacing) == false
+            or TerrainHeightsDiffer(source, target);
+        if geometryChanged == false {
+            detailLabel.SetText(
+                "The terrain already matches the flat grid draft.");
+            return false;
+        }
+        return CommitTerrainMesh(
+            node,
+            target,
+            draft.columns,
+            draft.rows,
+            draft.spacing,
+            "Regenerated " + NodeDisplayName(node) + " terrain");
+    }
+
+    /// @brief Flatten every sample of selected terrain to the inspector level.
+    expose override func FlattenSelectedTerrain() -> Boolean {
+        if terrainStrokeActive or selectedIndices.count() != 1 {
+            return false;
+        }
+        var node = SelectedNode();
+        var state = scene_terrain_3d.FromNode(node);
+        if state.present == false { return false; }
+        var source = scene_terrain_3d.HeightsFromNode(node);
+        var target = scene_terrain_3d.FlatHeights(
+            state.columns,
+            state.rows,
+            terrainInspector.flattenHeightSpinner.Value);
+        if TerrainHeightsDiffer(source, target) == false {
+            detailLabel.SetText(
+                "Every terrain sample already has the requested level.");
+            return false;
+        }
+        return CommitTerrainMesh(
+            node,
+            target,
+            state.columns,
+            state.rows,
+            state.spacing,
+            "Flattened " + NodeDisplayName(node) + " terrain");
+    }
+
+    /// @brief Apply one programmatic terrain dab as one history transaction.
+    /// @details Probe and automation surface; viewport strokes call the same
+    ///          pure brush math repeatedly but commit only on pointer release.
+    expose override func SculptSelectedTerrainAt(
+        localX: Number,
+        localZ: Number,
+        radius: Number,
+        strength: Number,
+        mode: Integer,
+        flattenHeight: Number) -> Boolean {
+        if terrainStrokeActive or selectedIndices.count() != 1 {
+            return false;
+        }
+        var node = SelectedNode();
+        var state = scene_terrain_3d.FromNode(node);
+        if state.present == false { return false; }
+        var source = scene_terrain_3d.HeightsFromNode(node);
+        var target = scene_terrain_3d.ApplyBrush(
+            source,
+            state.columns,
+            state.rows,
+            state.spacing,
+            localX,
+            localZ,
+            radius,
+            strength,
+            mode,
+            flattenHeight);
+        if TerrainHeightsDiffer(source, target) == false { return false; }
+        return CommitTerrainMesh(
+            node,
+            target,
+            state.columns,
+            state.rows,
+            state.spacing,
+            scene_terrain_3d.BrushModeName(mode)
+            + "-sculpted " + NodeDisplayName(node) + " terrain");
+    }
+
+    expose override func AddPrimitive(kind: Integer, asChild: Boolean) -> Boolean {
+        return AddPrimitiveAt(
+            kind, asChild,
+            viewTargetX, viewTargetY, viewTargetZ, false);
+    }
+
+    /// @brief Create one primitive from a context menu with rename armed.
+    /// @details Menu creates spawn at the camera's view target and open the
+    ///          inline hierarchy rename so the name is typed immediately;
+    ///          toolbar buttons keep plain creation.
+    expose override func AddPrimitiveFromMenu(kind: Integer,
+                                     asChild: Boolean) -> Boolean {
+        return AddPrimitiveAt(
+            kind, asChild,
+            viewTargetX, viewTargetY, viewTargetZ, true);
+    }
+
+    /// @brief Create one primitive at the surface under a viewport pointer.
+    /// @details The spawn point is the precise triangle hit under the
+    ///          pointer, the ground-plane intersection when the ray misses
+    ///          geometry, or the view target when it misses both. Shared by
+    ///          the viewport context menu's create items.
+    /// @param physicalX Physical pointer x recorded when the menu opened.
+    /// @param physicalY Physical pointer y recorded when the menu opened.
+    expose override func AddPrimitiveAtPointer(kind: Integer,
+                                      physicalX: Number,
+                                      physicalY: Number) -> Boolean {
+        if viewportImage == null {
+            return AddPrimitiveFromMenu(kind, false);
+        }
+        var viewportX = Convert.NumToInt(
+            PhysicalPointerToUi(physicalX)
+            - viewportImage.GetScreenX());
+        var viewportY = Convert.NumToInt(
+            PhysicalPointerToUi(physicalY)
+            - viewportImage.GetScreenY());
+        var spawn = ViewportSpawnPoint(viewportX, viewportY);
+        return AddPrimitiveAt(
+            kind, false, spawn.X, spawn.Y, spawn.Z, true);
+    }
+
+    /// @brief Resolve a viewport point to a world spawn position.
+    /// @details Precise surface hit first, ground plane (y = 0) second,
+    ///          view target last — creation always lands somewhere visible.
+    expose override func ViewportSpawnPoint(viewportX: Integer,
+                                   viewportY: Integer) -> Vec3 {
+        if scene != null and ConfigureViewportCamera() {
+            var origin = viewportRenderCamera.ScreenToRayOrigin(
+                viewportX, viewportY,
+                renderedViewportWidth, renderedViewportHeight) as Vec3;
+            var direction = viewportRenderCamera.ScreenToRay(
+                viewportX, viewportY,
+                renderedViewportWidth, renderedViewportHeight) as Vec3;
+            var hit = scene.RaycastPreciseHit(
+                origin, direction, viewportRenderCamera.FarPlane)
+                as RayHit3D;
+            if hit != null { return hit.Point as Vec3; }
+            if direction.Y < -0.000001 or direction.Y > 0.000001 {
+                var t = (0.0 - origin.Y) / direction.Y;
+                if t > 0.0 and t < viewportRenderCamera.FarPlane {
+                    return Vec3.New(
+                        origin.X + direction.X * t,
+                        0.0,
+                        origin.Z + direction.Z * t);
+                }
+            }
+        }
+        return Vec3.New(viewTargetX, viewTargetY, viewTargetZ);
+    }
+
+    /// @brief Shared primitive creation at one world position.
+    /// @details Root creates spawn at the given world point; child creates
+    ///          keep the parent-local origin so they land on their parent.
+    ///          One undoable transaction; the new node becomes the
+    ///          selection, optionally with inline rename armed.
+    hide override func AddPrimitiveAt(kind: Integer,
+                             asChild: Boolean,
+                             spawnX: Number,
+                             spawnY: Number,
+                             spawnZ: Number,
+                             armRename: Boolean) -> Boolean {
+        if scene == null { return false; }
+        if asChild
+           and ParentAcceptsAuthoredChildren(SelectedNode()) == false {
+            return false;
+        }
+        var node = SceneNode.New();
+        var name = "Empty " + scene.NodeCount;
+        if kind == SceneEditor3DModel.PRIMITIVE_BOX {
+            name = "Box " + scene.NodeCount;
+            node.Mesh = Mesh3D.Box(1.0, 1.0, 1.0);
+            node.Material = Material3D.FromColor(0.30, 0.62, 0.92);
+        } else if kind == SceneEditor3DModel.PRIMITIVE_SPHERE {
+            name = "Sphere " + scene.NodeCount;
+            node.Mesh = Mesh3D.Sphere(0.5, 16);
+            node.Material = Material3D.FromColor(0.92, 0.52, 0.26);
+        } else if kind == SceneEditor3DModel.PRIMITIVE_PLANE {
+            name = "Plane " + scene.NodeCount;
+            node.Mesh = Mesh3D.Plane(4.0, 4.0);
+            node.Material = Material3D.FromColor(0.42, 0.70, 0.42);
+        } else if kind == SceneEditor3DModel.PRIMITIVE_CYLINDER {
+            name = "Cylinder " + scene.NodeCount;
+            node.Mesh = Mesh3D.Cylinder(0.5, 1.0, 24);
+            node.Material = Material3D.FromColor(0.72, 0.46, 0.82);
+        }
+        node.Name = name;
+        var parent = SelectedNode();
+        if asChild and parent != null {
+            parent.AddChild(node);
+        } else {
+            node.SetPosition(spawnX, spawnY, spawnZ);
+            scene.Add(node);
+        }
+        if CommitScene("Added " + name) == false { return false; }
+        RefreshHierarchy(node);
+        if armRename { BeginRenameSelected(); }
+        return true;
+    }
+}
+

@@ -1,3 +1,22 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/editor_hot_path_probe.zia
+// Purpose: Guard large editor-buffer cursor, snapshot, index, and folding paths.
+// Key invariants:
+//   - Cursor movement never changes revisions or copies full clean buffers.
+//   - Project-index synchronization runs only for changed or idle content.
+//   - Large-buffer inlay and semantic-fold work remains bounded.
+// Ownership/Lifetime: The probe owns and destroys one hidden AppShell.
+// Links: zannastudio/src/editor/editor_engine.zia,
+//        zannastudio/src/editor/project_index.zia
+//
+//===----------------------------------------------------------------------===//
+
 module editor_hot_path_probe;
 
 // ============================================================================
@@ -32,7 +51,15 @@ func fail(shell: app_shell.AppShell, reason: String) {
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Typed state shared by serial editor hot-path scenarios.
+class EditorHotPathProbeContext {
+    expose app_shell.AppShell shell;
+    expose editor_engine.EditorEngine engine;
+}
+
+/// @brief Verify revision, cursor, and cached-snapshot invariants.
+func VerifyEditorRevisionAndSnapshots(
+    ctx: EditorHotPathProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     var engine = new editor_engine.EditorEngine();
 
@@ -42,32 +69,32 @@ func main() {
     var initialRevision = engine.GetRevision();
     if initialRevision <= 0 {
         fail(shell, "initial revision");
-        return;
+        return false;
     }
 
     engine.editor.SetCursor(0, 0);
     if engine.GetRevision() != initialRevision {
         fail(shell, "cursor changed revision");
-        return;
+        return false;
     }
 
     engine.SetText("module Probe;\nfunc main() {\n}\n");
     var loadedRevision = engine.GetRevision();
     if loadedRevision <= initialRevision {
         fail(shell, "set text did not bump revision");
-        return;
+        return false;
     }
 
     engine.ClearModified();
     if engine.GetRevision() != loadedRevision {
         fail(shell, "clear modified changed revision");
-        return;
+        return false;
     }
 
     engine.editor.SetCursor(1, 0);
     if engine.GetRevision() != loadedRevision {
         fail(shell, "second cursor change changed revision");
-        return;
+        return false;
     }
 
     var large = "module Large;\nfunc main() {\n";
@@ -87,23 +114,23 @@ func main() {
     }
     if engine.GetRevision() != largeRevision {
         fail(shell, "large-file cursor movement changed revision");
-        return;
+        return false;
     }
     if engine.editor.GetLayoutLinearScanCount() != 0 {
         fail(shell, "large-file no-wrap cursor movement scanned layout");
-        return;
+        return false;
     }
     if engine.editor.GetFullTextCopyCount() != 0 {
         fail(shell, "large-file cursor movement copied full text");
-        return;
+        return false;
     }
     if engine.editor.GetSyntaxHighlightCallCount() != 0 {
         fail(shell, "large-file cursor movement highlighted text");
-        return;
+        return false;
     }
     if engine.editor.GetHighlightSpanCheckCount() != 0 {
         fail(shell, "large-file cursor movement scanned highlight spans");
-        return;
+        return false;
     }
 
     engine.editor.ResetPerfStats();
@@ -111,38 +138,38 @@ func main() {
     var snapshot2 = engine.GetTextSnapshot();
     if snapshot1 != snapshot2 {
         fail(shell, "text snapshot mismatch");
-        return;
+        return false;
     }
     if engine.editor.GetFullTextCopyCount() != 0 {
         fail(shell, "cached snapshot copied clean revision");
-        return;
+        return false;
     }
 
     var beforeSnapshotEditRevision = engine.GetRevision();
     engine.editor.InsertAtCursor("    var cachedSnapshotProbe = 1;\n");
     if engine.GetRevision() <= beforeSnapshotEditRevision {
         fail(shell, "snapshot probe insert did not bump revision");
-        return;
+        return false;
     }
     engine.editor.ResetPerfStats();
     snapshot1 = engine.GetTextSnapshot();
     snapshot2 = engine.GetTextSnapshot();
     if snapshot1 != snapshot2 {
         fail(shell, "edited text snapshot mismatch");
-        return;
+        return false;
     }
     if Str.IndexOf(snapshot1, "cachedSnapshotProbe") == 0 {
         fail(shell, "edited text snapshot stale");
-        return;
+        return false;
     }
     var snapshotCopies = engine.editor.GetFullTextCopyCount();
     if snapshotCopies != 1 {
         fail(shell, "edited revision not snapshotted exactly once: " + snapshotCopies);
-        return;
+        return false;
     }
     if engine.editor.GetFullTextCopyByteCount() <= 0 {
         fail(shell, "edited revision snapshot byte counter did not update");
-        return;
+        return false;
     }
 
     engine.SetText("module Probe;\nfunc main() {\n}\n");
@@ -153,22 +180,33 @@ func main() {
     var editRevision = engine.GetRevision();
     if editRevision <= loadedRevision {
         fail(shell, "insert did not bump revision");
-        return;
+        return false;
     }
 
     engine.editor.Undo();
     var undoRevision = engine.GetRevision();
     if undoRevision <= editRevision {
         fail(shell, "undo did not bump revision");
-        return;
+        return false;
     }
 
     engine.editor.Redo();
     var redoRevision = engine.GetRevision();
     if redoRevision <= undoRevision {
         fail(shell, "redo did not bump revision");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    return true;
+}
+
+/// @brief Verify changed-only and idle project-index synchronization.
+func VerifyProjectIndexHotPath(
+    ctx: EditorHotPathProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
 
     var root = TempFile.CreateDirWithPrefix("zannastudio_editor_hot_path_");
     var filePath = Path.Join(root, "main.zia");
@@ -188,31 +226,31 @@ func main() {
     indexer.SyncOpenDocuments(docMgr);
     if indexer.syncCount != baseSyncs {
         fail(shell, "open document sync repeated unchanged content");
-        return;
+        return false;
     }
     if indexer.updateCount != 0 or indexer.updateBytes != 0 {
         fail(shell, "unchanged open document updated project index counters");
-        return;
+        return false;
     }
     doc.content = doc.content + "// dirty tab\n";
     indexer.SyncOpenDocuments(docMgr);
     if indexer.syncCount != baseSyncs + 1 {
         fail(shell, "open document sync missed changed content");
-        return;
+        return false;
     }
     if indexer.updateCount != 1 or indexer.updateBytes < Str.get_Length(doc.content) {
         fail(shell, "open document project index counters");
-        return;
+        return false;
     }
     indexer.ResetPerfStats();
     indexer.SyncOpenDocuments(docMgr);
     if indexer.syncCount != baseSyncs + 1 {
         fail(shell, "open document sync repeated changed content");
-        return;
+        return false;
     }
     if indexer.updateCount != 0 or indexer.updateBytes != 0 {
         fail(shell, "project index counters reset or unchanged sync");
-        return;
+        return false;
     }
     baseSyncs = indexer.syncCount;
 
@@ -223,7 +261,7 @@ func main() {
     }
     if indexer.syncCount != baseSyncs {
         fail(shell, "idle index sync repeated without revision change");
-        return;
+        return false;
     }
 
     engine.editor.SetCursor(1, 0);
@@ -232,18 +270,27 @@ func main() {
     indexer.SyncActiveWhenIdle(docMgr, engine);
     if indexer.syncCount != editedSyncs {
         fail(shell, "index sync ran before idle");
-        return;
+        return false;
     }
     Clock.Sleep(420);
     indexer.SyncActiveWhenIdle(docMgr, engine);
     if indexer.syncCount != editedSyncs + 1 {
         fail(shell, "index sync did not run after idle");
-        return;
+        return false;
     }
     if indexer.updateCount != 1 or indexer.updateBytes <= 0 {
         fail(shell, "active idle sync project index counters");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify large-buffer cursor, inlay, and folding budgets.
+func VerifyLargeBufferAndFoldingBudgets(
+    ctx: EditorHotPathProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
 
     var idleLarge = "";
     var idleLargeLine = "let value = 42;\n";
@@ -264,11 +311,11 @@ func main() {
     var moveElapsed = Zanna.Time.Clock.NowMs() - moveStart;
     if moveElapsed > 250 {
         fail(shell, "large-buffer cursor movement exceeded budget: " + moveElapsed + "ms");
-        return;
+        return false;
     }
     if engine.editor.GetFullTextCopyCount() != 0 {
         fail(shell, "large-buffer cursor movement copied full text");
-        return;
+        return false;
     }
 
     var inlayCtrl = new inlay_hints.InlayHintController();
@@ -276,11 +323,11 @@ func main() {
     inlayCtrl.Refresh(engine);
     if inlayCtrl.lastHintCount != 0 or engine.editor.GetInlayHintCount() != 0 {
         fail(shell, "large-buffer inlay hints were not capped");
-        return;
+        return false;
     }
     if engine.editor.GetFullTextCopyCount() != 0 {
         fail(shell, "large-buffer inlay scan copied full text");
-        return;
+        return false;
     }
 
     var foldStressSource = "module FoldPerf;\n";
@@ -303,11 +350,11 @@ func main() {
     var foldElapsedMs = Zanna.Time.Clock.NowMs() - foldStartMs;
     if foldCount != 200 {
         fail(shell, "semantic fold perf count: " + foldCount);
-        return;
+        return false;
     }
     if foldElapsedMs > 250 {
         fail(shell, "semantic fold generation exceeded budget: " + foldElapsedMs + "ms");
-        return;
+        return false;
     }
 
     var hiddenOutline = new symbols.SymbolOutline();
@@ -321,7 +368,7 @@ func main() {
     }
     if hiddenOutline.foldedPath != "fold_perf.zia" {
         fail(shell, "hidden semantic folding skipped while outline hidden");
-        return;
+        return false;
     }
 
     var visibleOutline = new symbols.SymbolOutline();
@@ -337,9 +384,17 @@ func main() {
     }
     if visibleOutline.foldedPath != "fold_perf.zia" {
         fail(shell, "visible semantic folding initial refresh");
-        return;
+        return false;
     }
 
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new EditorHotPathProbeContext();
+    if VerifyEditorRevisionAndSnapshots(ctx) == false { return; }
+    if VerifyProjectIndexHotPath(ctx) == false { return; }
+    if VerifyLargeBufferAndFoldingBudgets(ctx) == false { return; }
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

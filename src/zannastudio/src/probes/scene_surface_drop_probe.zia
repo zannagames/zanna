@@ -97,12 +97,26 @@ func pump(editor: scene_editor_3d.SceneEditor3D,
     shell.Render();
 }
 
-func main() {
+/// @brief Typed state shared by the serial surface-placement scenarios.
+class SurfaceDropProbeContext {
+    expose String workDir;
+    expose project_manager.ProjectManager project;
+    expose app_shell.AppShell shell;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document.Document sceneDoc;
+    expose GUI.TestHarness harness;
+    expose Number uiScale;
+    expose Number worldHandleLength;
+}
+
+/// @brief Create the project-owned environment and prefab preview fixtures.
+func PrepareProjectPreviews(ctx: SurfaceDropProbeContext) -> Boolean {
     var workDir =
         TempFile.CreateDirWithPrefix("zannastudio_surface_drop_");
+    ctx.workDir = workDir;
     if workDir == "" {
         finish(null, null, null, "", "temporary project allocation");
-        return;
+        return false;
     }
 
     // A project-owned environment floor covers x=[-12,12] at world y=0.
@@ -138,8 +152,15 @@ func main() {
         finish(
             null, null, null, workDir,
             "project preview fixture write");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Activate the scene and verify transactional multi-root dropping.
+func VerifyInitialSurfaceDrop(ctx: SurfaceDropProbeContext) -> Boolean {
+    var workDir = ctx.workDir;
 
     // A raised canonical platform under the left cube wins over the lower
     // environment floor; the right cube can land only on preview geometry.
@@ -190,7 +211,7 @@ func main() {
         finish(
             null, project, null, workDir,
             "temporary project open");
-        return;
+        return false;
     }
 
     var shell = new app_shell.AppShell();
@@ -221,7 +242,7 @@ func main() {
         finish(
             shell, project, null, workDir,
             "canonical or preview scene activation");
-        return;
+        return false;
     }
 
     editor.SelectSceneNodes([1, 2], 2);
@@ -234,7 +255,7 @@ func main() {
         finish(
             shell, project, null, workDir,
             "Drop toolbar action availability");
-        return;
+        return false;
     }
 
     // Exercise the production End shortcut and its viewport-focus boundary.
@@ -243,7 +264,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "keyboard harness bind");
-        return;
+        return false;
     }
     editor.viewportImage.Focus();
     harness.SendKey("end", 0);
@@ -263,7 +284,7 @@ func main() {
             shell, project, harness, workDir,
             "multi-root End placement was not one canonical/preview "
             + "surface transaction");
-        return;
+        return false;
     }
 
     // A second drop is a byte/history no-op because both bottoms already
@@ -277,7 +298,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "already-grounded placement created history");
-        return;
+        return false;
     }
 
     if editor.Undo() == false
@@ -291,8 +312,25 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "surface placement undo/redo was not exact");
-        return;
+        return false;
     }
+
+    ctx.project = project;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify live surface movement and its single release transaction.
+func VerifyLiveSurfaceMove(ctx: SurfaceDropProbeContext) -> Boolean {
+    var workDir = ctx.workDir;
+    var project = ctx.project;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
 
     // Surface Move stays live during the pointer gesture: canonical bytes and
     // history wait for release, while both the authored cube and its project
@@ -311,7 +349,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "Surface Move control or document workspace state");
-        return;
+        return false;
     }
 
     var moveBaseline = sceneDoc.content;
@@ -345,7 +383,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "Surface Move X handle geometry");
-        return;
+        return false;
     }
 
     harness.SendMouse("move", startX, startY, 0);
@@ -377,7 +415,7 @@ func main() {
             shell, project, harness, workDir,
             "live Surface Move did not ground canonical/prefab geometry "
             + "without early history");
-        return;
+        return false;
     }
 
     harness.SendMouse("up", targetX, targetY, 0);
@@ -394,7 +432,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "Surface Move release was not one canonical transaction");
-        return;
+        return false;
     }
     if editor.Undo() == false
        or sceneDoc.content != moveBaseline
@@ -408,8 +446,24 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "Surface Move undo/redo was not exact");
-        return;
+        return false;
     }
+
+    ctx.uiScale = uiScale;
+    ctx.worldHandleLength = worldHandleLength;
+    return true;
+}
+
+/// @brief Verify rising-terrain alignment and exact drop history.
+func VerifySurfaceAlignment(ctx: SurfaceDropProbeContext) -> Boolean {
+    var workDir = ctx.workDir;
+    var project = ctx.project;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
+    var uiScale = ctx.uiScale;
+    var worldHandleLength = ctx.worldHandleLength;
 
     // Align adds exact terrain-normal orientation without an early commit.
     // The live query begins high enough to climb from the floor onto this
@@ -421,21 +475,21 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "could not reselect the aligned Surface Move fixture");
-        return;
+        return false;
     }
     editor.SetSurfaceAlignEnabled(true);
     if editor.selectedIndex != 1 {
         finish(
             shell, project, harness, workDir,
             "Align toggle unexpectedly cleared the selection");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
     if editor.selectedIndex != 1 {
         finish(
             shell, project, harness, workDir,
             "Align pump unexpectedly cleared the selection");
-        return;
+        return false;
     }
     if editor.surfaceAlignCheck == null
        or editor.surfaceAlignCheck.IsChecked() == false
@@ -446,7 +500,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "surface-normal Align control or document workspace state");
-        return;
+        return false;
     }
     var alignBaseline = sceneDoc.content;
     var alignRevision = editor.GetRevision();
@@ -488,7 +542,7 @@ func main() {
             + editor.selectedIndices.count()
             + " mode=" + editor.gizmoMode
             + " visible=" + alignXEnd.visible);
-        return;
+        return false;
     }
 
     harness.SendMouse("move", alignStartX, alignStartY, 0);
@@ -531,7 +585,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "live rising-terrain Align lost normal, prefab, or history");
-        return;
+        return false;
     }
 
     harness.SendMouse("up", alignTargetX, alignTargetY, 0);
@@ -545,7 +599,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "normal-aligned release was not one transaction");
-        return;
+        return false;
     }
     if editor.Undo() == false
        or sceneDoc.content != alignBaseline
@@ -559,7 +613,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "normal-aligned Surface Move undo/redo was not exact");
-        return;
+        return false;
     }
     var redoneUp = Quat.RotateVec3(
         editor.flatNodes.get(1).WorldRotation,
@@ -568,8 +622,24 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "normal alignment did not survive redo");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify the explicit normal-aligned Drop transaction and history.
+func VerifyExplicitAlignedDrop(
+    ctx: SurfaceDropProbeContext) -> Boolean {
+    var workDir = ctx.workDir;
+    var project = ctx.project;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
+    var rampUp = Quat.RotateVec3(
+        editor.flatNodes.get(4).WorldRotation,
+        Vec3.New(0.0, 1.0, 0.0)) as Vec3;
 
     // The explicit Drop action shares the same normal-aware exact transaction.
     if editor.Undo() == false
@@ -578,7 +648,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "could not configure normal-aligned Drop");
-        return;
+        return false;
     }
     var alignDropBaseline = sceneDoc.content;
     var alignDropRevision = editor.GetRevision();
@@ -587,7 +657,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "normal-aligned Drop was rejected");
-        return;
+        return false;
     }
     var dropAlignedUp = Quat.RotateVec3(
         editor.flatNodes.get(1).WorldRotation,
@@ -608,8 +678,21 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "normal-aligned Drop history or prefab result was not exact");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify missing surfaces and responsive placement controls.
+func VerifyMissingSurfaceAndLayout(
+    ctx: SurfaceDropProbeContext) -> Boolean {
+    var workDir = ctx.workDir;
+    var project = ctx.project;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
 
     // The isolated cube has neither canonical nor preview geometry below it.
     editor.SelectSceneNodes([3], 3);
@@ -624,7 +707,7 @@ func main() {
         finish(
             shell, project, harness, workDir,
             "missing-surface placement was not a no-op");
-        return;
+        return false;
     }
 
     // Precise placement and layout commands share bounded overflow surfaces
@@ -673,7 +756,7 @@ func main() {
             + editor.viewToolbar.GetScreenWidth() + "x"
             + editor.viewToolbar.GetScreenHeight()
             + " root=" + editor.root.GetLogicalWidth());
-        return;
+        return false;
     }
 
     editor.SetWorkspaceModeActive(false);
@@ -721,7 +804,7 @@ func main() {
             + " toolbar=" + laptopToolbarRight + ","
             + laptopToolbarBottom
             + " root=" + editor.root.GetLogicalWidth());
-        return;
+        return false;
     }
 
     shell.SetSceneWorkspaceMode(false);
@@ -768,8 +851,19 @@ func main() {
             + " toolbar=" + compactToolbarRight + ","
             + compactToolbarBottom
             + " root=" + editor.root.GetLogicalWidth());
-        return;
+        return false;
     }
 
-    finish(shell, project, harness, workDir, "");
+    return true;
+}
+
+func main() {
+    var ctx = new SurfaceDropProbeContext();
+    if PrepareProjectPreviews(ctx) == false { return; }
+    if VerifyInitialSurfaceDrop(ctx) == false { return; }
+    if VerifyLiveSurfaceMove(ctx) == false { return; }
+    if VerifySurfaceAlignment(ctx) == false { return; }
+    if VerifyExplicitAlignedDrop(ctx) == false { return; }
+    if VerifyMissingSurfaceAndLayout(ctx) == false { return; }
+    finish(ctx.shell, ctx.project, ctx.harness, ctx.workDir, "");
 }

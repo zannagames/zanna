@@ -1,0 +1,226 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/bottom_panel_probe_support.zia
+// Purpose: Shared fixture and pointer helpers for bottom-panel scenarios.
+// Key invariants:
+//   - Pointer coordinates continue through the production event route.
+//   - Scenarios share the same dock tree and live widget identities.
+// Ownership/Lifetime: The entry probe owns one context for its complete run.
+// Links: zannastudio/src/probes/bottom_panel_probe.zia,
+//        zannastudio/src/ui/tool_panel_shell.zia
+//
+//===----------------------------------------------------------------------===//
+
+module bottom_panel_probe_support;
+
+bind "../ui/app_shell";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_shell";
+bind "../ui/workspace_dock";
+
+bind Zanna.GUI as GUI;
+bind Terminal = Zanna.Terminal;
+bind Env = Zanna.System.Environment;
+bind Convert = Zanna.Core.Convert;
+
+/// @brief Typed state passed between serial bottom-panel scenarios.
+class BottomPanelProbeContext {
+    expose app_shell.AppShell shell;
+    expose GUI.SplitPane split;
+    expose GUI.TestHarness groupHarness;
+    expose GUI.TestHarness dockHarness;
+}
+
+expose func HasArg(name: String) -> Boolean {
+    var i = 0;
+    while i < Env.GetArgumentCount() {
+        if Env.GetArgument(i) == name { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+expose func fail(shell: app_shell.AppShell, reason: String) {
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+/// @brief Return whether one live widget remains inside a parent screen rect.
+expose func ContainsWidget(parent: GUI.Widget, child: GUI.Widget) -> Boolean {
+    if parent == null or child == null { return false; }
+    return child.GetScreenX() >= parent.GetScreenX() - 1.0
+        and child.GetScreenY() >= parent.GetScreenY() - 1.0
+        and child.GetScreenX() + child.GetScreenWidth()
+            <= parent.GetScreenX() + parent.GetScreenWidth() + 1.0
+        and child.GetScreenY() + child.GetScreenHeight()
+            <= parent.GetScreenY() + parent.GetScreenHeight() + 1.0;
+}
+
+/// @brief Dispatch authored pointer input through the normal app event path.
+expose func DispatchDockFrame(shell: app_shell.AppShell,
+                       harness: GUI.TestHarness) -> Boolean {
+    var accepted = harness.DispatchPending();
+    shell.workbench.PumpSidebarDocking();
+    shell.toolPanels.PumpToolTabs();
+    shell.Render();
+    return accepted >= 0;
+}
+
+/// @brief Convert public logical widget geometry to harness framebuffer pixels.
+expose func HarnessCoordinate(shell: app_shell.AppShell,
+                       logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale);
+}
+
+/// @brief Click one rendered dock control through the production event route.
+expose func ClickDockControl(shell: app_shell.AppShell,
+                      harness: GUI.TestHarness,
+                      widget: GUI.Widget) -> Boolean {
+    var x = HarnessCoordinate(shell,
+        widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(shell,
+        widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    return DispatchDockFrame(shell, harness);
+}
+
+/// @brief Press and move the real panel header beyond the drag dead zone.
+expose func BeginDockDrag(shell: app_shell.AppShell,
+                   harness: GUI.TestHarness) -> Boolean {
+    var dragX = HarnessCoordinate(shell,
+        shell.toolPanels.dockDragHandle.GetScreenX()
+        + shell.toolPanels.dockDragHandle.GetScreenWidth() / 2.0);
+    var dragY = HarnessCoordinate(shell,
+        shell.toolPanels.dockDragHandle.GetScreenY()
+        + shell.toolPanels.dockDragHandle.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", dragX, dragY, 0);
+    harness.SendMouse("down", dragX, dragY, 0);
+    if !DispatchDockFrame(shell, harness) { return false; }
+    harness.SendMouse(
+        "move", dragX + HarnessCoordinate(shell, 8.0), dragY, 0);
+    if !DispatchDockFrame(shell, harness) { return false; }
+    return shell.toolPanels.dockDragHandle.IsBeingDragged()
+        and shell.toolPanels.AreDockDragTargetsVisible();
+}
+
+/// @brief Press and move the real primary-sidebar header beyond the dead zone.
+expose func BeginSidebarDrag(shell: app_shell.AppShell,
+                      harness: GUI.TestHarness) -> Boolean {
+    var dragX = HarnessCoordinate(shell,
+        shell.workbench.primarySidebar.dragHandle.GetScreenX()
+        + shell.workbench.primarySidebar.dragHandle.GetScreenWidth() / 2.0);
+    var dragY = HarnessCoordinate(shell,
+        shell.workbench.primarySidebar.dragHandle.GetScreenY()
+        + shell.workbench.primarySidebar.dragHandle.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", dragX, dragY, 0);
+    harness.SendMouse("down", dragX, dragY, 0);
+    if !DispatchDockFrame(shell, harness) { return false; }
+    harness.SendMouse(
+        "move", dragX + HarnessCoordinate(shell, 8.0), dragY, 0);
+    if !DispatchDockFrame(shell, harness) { return false; }
+    return shell.workbench.primarySidebar.dragHandle.IsBeingDragged()
+        and shell.workbench.AreSidebarDockTargetsVisible();
+}
+
+/// @brief Move an active real pointer drag to one physical coordinate.
+expose func MoveDockDrag(shell: app_shell.AppShell,
+                  harness: GUI.TestHarness,
+                  x: Integer,
+                  y: Integer) -> Boolean {
+    harness.SendMouse(
+        "move", HarnessCoordinate(shell, x), HarnessCoordinate(shell, y), 0);
+    return DispatchDockFrame(shell, harness);
+}
+
+/// @brief Release an active real pointer drag at one physical coordinate.
+expose func ReleaseDockDrag(shell: app_shell.AppShell,
+                     harness: GUI.TestHarness,
+                     x: Integer,
+                     y: Integer) -> Boolean {
+    harness.SendMouse(
+        "up", HarnessCoordinate(shell, x), HarnessCoordinate(shell, y), 0);
+    return DispatchDockFrame(shell, harness);
+}
+
+/// @brief Drag a pressed floating-window handle by one logical delta.
+expose func DragFloatingControl(shell: app_shell.AppShell,
+                         harness: GUI.TestHarness,
+                         widget: GUI.Widget,
+                         deltaX: Integer,
+                         deltaY: Integer) -> Boolean {
+    var x = widget.GetScreenX() + widget.GetScreenWidth() / 2.0;
+    var y = widget.GetScreenY() + widget.GetScreenHeight() / 2.0;
+    harness.SendMouse(
+        "move", HarnessCoordinate(shell, x), HarnessCoordinate(shell, y), 0);
+    harness.SendMouse(
+        "down", HarnessCoordinate(shell, x), HarnessCoordinate(shell, y), 0);
+    if !DispatchDockFrame(shell, harness) { return false; }
+    harness.SendMouse(
+        "move",
+        HarnessCoordinate(shell, x + deltaX),
+        HarnessCoordinate(shell, y + deltaY),
+        0);
+    if !DispatchDockFrame(shell, harness) { return false; }
+    harness.SendMouse(
+        "up",
+        HarnessCoordinate(shell, x + deltaX),
+        HarnessCoordinate(shell, y + deltaY),
+        0);
+    return DispatchDockFrame(shell, harness);
+}
+
+/// @brief Drag the floating group to one attached workbench edge.
+expose func DockFloatingGroupAt(shell: app_shell.AppShell,
+                         harness: GUI.TestHarness,
+                         location: Integer) -> Boolean {
+    var handle = shell.toolPanels.floatingToolMoveHandle;
+    var x = handle.GetScreenX() + handle.GetScreenWidth() / 2.0;
+    var y = handle.GetScreenY() + handle.GetScreenHeight() / 2.0;
+    var targetX = Convert.NumToInt(
+        shell.toolPanels.workspaceDropTarget.GetScreenX()
+        + shell.toolPanels.workspaceDropTarget.GetScreenWidth() / 2.0);
+    var targetY = Convert.NumToInt(
+        shell.toolPanels.workspaceDropTarget.GetScreenY()
+        + shell.toolPanels.workspaceDropTarget.GetScreenHeight() * 0.42);
+    if location == workspace_dock.DOCK_LEFT {
+        targetX = Convert.NumToInt(
+            shell.toolPanels.workspaceDropTarget.GetScreenX() + 4.0);
+    } else if location == workspace_dock.DOCK_RIGHT {
+        targetX = Convert.NumToInt(
+            shell.toolPanels.workspaceDropTarget.GetScreenX()
+            + shell.toolPanels.workspaceDropTarget.GetScreenWidth() - 4.0);
+    } else if location == workspace_dock.DOCK_BOTTOM {
+        targetY = Convert.NumToInt(
+            shell.toolPanels.workspaceDropTarget.GetScreenY()
+            + shell.toolPanels.workspaceDropTarget.GetScreenHeight() - 4.0);
+    } else {
+        return false;
+    }
+    harness.SendMouse(
+        "move", HarnessCoordinate(shell, x), HarnessCoordinate(shell, y), 0);
+    harness.SendMouse(
+        "down", HarnessCoordinate(shell, x), HarnessCoordinate(shell, y), 0);
+    if !DispatchDockFrame(shell, harness) { return false; }
+    harness.SendMouse(
+        "move",
+        HarnessCoordinate(shell, targetX),
+        HarnessCoordinate(shell, targetY),
+        0);
+    if !DispatchDockFrame(shell, harness) { return false; }
+    harness.SendMouse(
+        "up",
+        HarnessCoordinate(shell, targetX),
+        HarnessCoordinate(shell, targetY),
+        0);
+    return DispatchDockFrame(shell, harness);
+}
+

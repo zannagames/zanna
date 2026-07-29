@@ -210,13 +210,14 @@ authored same-kind values. Their shared structured schema form maintains every
 cross-target definition with validated atomic writes, unknown-member
 preservation, external-conflict detection, and independent 20-step file
 undo/redo without dirtying a scene. Project component schemas accept versions
-1 through 15. Validated enum-choice and asset-reference fields are authored as
+1 through 18. Validated enum-choice and asset-reference fields are authored as
 ordinary string values; later versions add asset libraries, object/node
 previews, 3D gameplay-view profiles, project-owned 2D backgrounds, 3D scene
 environments, portable post-processing previews, 2D object draw stacks, exact
 Game View output frames, direct component creation recipes, independently
 matched metadata-transformed 3D environment layers, and bounded runtime-backed
-water layers. On the
+water layers, render-only project materials, direct imported-model previews,
+and per-document node-preview states. On the
 selection-free Object tab, a compatible schema-v13 recipe creates a correctly
 typed 2D object at the selected/visible cell or a uniquely named 3D node at the
 viewport target, applies all typed defaults before one canonical commit,
@@ -879,6 +880,14 @@ the failed rule's transform. Ashfall uses its runtime enemy glTF paths and
 presentation scales directly, retains generated scene prefabs for missing art
 and procedural-only archetypes, and keeps all preview instances outside
 canonical VSCN state (ADR 0215).
+Schema-v18 projects can expose one bounded preview-state selector over exact
+Boolean, integer, or string node metadata. All remains explicit, and nodes
+without the discriminant stay visible; only the disposable node-preview graph
+is filtered. The chosen option follows its document and session without
+changing hierarchy, metadata, visibility, selection, VSCN bytes, dirty state,
+revision, or history. Ashfall defaults its Wave selector to Wave 1, so a
+mission opens with the active five-enemy encounter rather than all four waves,
+while All waves remains available for layout work (ADR 0216).
 Schema-v10 profiles can also declare the portable tonemap, bloom, color-grade,
 vignette, and FXAA recipe used by the game. Studio retains one runtime
 `PostFX3D` chain, finalizes the shaded offscreen frame before readback, and

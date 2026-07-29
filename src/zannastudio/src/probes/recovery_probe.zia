@@ -70,17 +70,24 @@ func hasRecoveryTempFiles(path: String) -> Boolean {
     return false;
 }
 
-func main() {
+/// @brief Typed state shared by serial recovery scenarios.
+class RecoveryProbeContext {
+    expose String settingsDir;
+}
+
+/// @brief Verify synchronous swaps, crash discovery, and paged scanning.
+func VerifySynchronousRecovery(
+    ctx: RecoveryProbeContext) -> Boolean {
     var settingsDir = TempFile.CreateDirWithPrefix("zannastudio_recovery_");
 
     var store = new recovery_store.RecoveryStore();
     if store.Setup(settingsDir) == false {
         fail("first recovery setup failed");
-        return;
+        return false;
     }
     if store.uncleanExit {
         fail("first setup should be clean");
-        return;
+        return false;
     }
 
     // A modified untitled document.
@@ -90,28 +97,28 @@ func main() {
     doc.isModified = true;
     if store.WriteSwaps(docMgr, null) == false {
         fail("modified swap write failed");
-        return;
+        return false;
     }
 
     // Simulate a crash: a fresh store over the same dir sees the leftover lock.
     var store2 = new recovery_store.RecoveryStore();
     if store2.Setup(settingsDir) == false {
         fail("second recovery setup failed");
-        return;
+        return false;
     }
     if store2.uncleanExit == false {
         fail("unclean exit not detected");
-        return;
+        return false;
     }
     var recovered = store2.CollectRecovered();
     if recovered.count() != 1 {
         fail("expected 1 recovered doc, got " + recovered.count());
-        return;
+        return false;
     }
     var rec = recovered.get(0) as recovery_store.RecoveryRecord;
     if rec.content != "recovered text\nsecond line" {
         fail("recovered content mismatch");
-        return;
+        return false;
     }
 
     // Startup discovery must page a cluttered recovery directory and retire
@@ -120,7 +127,7 @@ func main() {
     var pagedStore = new recovery_store.RecoveryStore();
     if pagedStore.Setup(pagedDir) == false {
         fail("paged recovery setup failed");
-        return;
+        return false;
     }
     File.WriteAllText(Path.Join(pagedStore.recoveryDir, "swap-page.path"), "");
     File.WriteAllText(Path.Join(pagedStore.recoveryDir, "swap-page.swp"),
@@ -149,11 +156,11 @@ func main() {
           != "paged recovered text"
        or hasRecoveryTempFiles(pagedStore.recoveryDir) {
         fail("recovery discovery did not remain paged and cleanup-safe");
-        return;
+        return false;
     }
     if pagedStore.MarkCleanExit() == false {
         fail("paged recovery clean exit failed");
-        return;
+        return false;
     }
 
     // A successful save/reload transition clears isModified. Its older swap
@@ -161,11 +168,11 @@ func main() {
     doc.isModified = false;
     if store2.PruneStaleSwaps(docMgr) == false {
         fail("stale swap pruning failed");
-        return;
+        return false;
     }
     if store2.CollectRecovered().count() != 0 {
         fail("stale swap survived saved document pruning");
-        return;
+        return false;
     }
 
     // A clean lifecycle exit clears the lock/swaps and persists only the
@@ -173,9 +180,15 @@ func main() {
     // survive in either an active or stale INI slot.
     if store2.MarkCleanExit() == false {
         fail("initial clean marker removal failed");
-        return;
+        return false;
     }
 
+    ctx.settingsDir = settingsDir;
+    return true;
+}
+
+/// @brief Verify coalesced asynchronous swaps and cancellation-safe pruning.
+func VerifyAsynchronousRecovery() -> Boolean {
     // Interactive recovery uses owned background callbacks. A second request
     // coalesces behind the active worker and must eventually replace the older
     // snapshot without sharing editor/document objects across threads.
@@ -183,7 +196,7 @@ func main() {
     var asyncStore = new recovery_store.RecoveryStore();
     if asyncStore.Setup(asyncDir) == false {
         fail("async recovery setup failed");
-        return;
+        return false;
     }
     var asyncDocs = new document_manager.DocumentManager();
     var asyncDoc = asyncDocs.NewDocument();
@@ -191,27 +204,27 @@ func main() {
     asyncDoc.isModified = true;
     if asyncStore.QueueSwaps(asyncDocs, null) == false {
         fail("first async recovery request did not start");
-        return;
+        return false;
     }
     asyncDoc.content = "newest coalesced snapshot";
     if asyncStore.QueueSwaps(asyncDocs, null) == false
        or asyncStore.asyncQueuedRequests != 2 {
         fail("newest async recovery request did not coalesce");
-        return;
+        return false;
     }
     if drainAsync(asyncStore, 12000) == false
        or asyncStore.asyncCompletedRequests != 2
        or asyncStore.asyncCommittedDocuments != 2
        or asyncStore.lastAsyncError != "" {
         fail("async recovery requests did not complete cleanly");
-        return;
+        return false;
     }
     var asyncRecovered = asyncStore.CollectRecovered();
     if asyncRecovered.count() != 1
        or (asyncRecovered.get(0) as recovery_store.RecoveryRecord).content
           != "newest coalesced snapshot" {
         fail("coalesced recovery did not retain the newest content");
-        return;
+        return false;
     }
 
     // Save/close command reconciliation must queue remaining dirty content
@@ -221,14 +234,14 @@ func main() {
        or asyncStore.IsAsyncBusy() == false
        or drainAsync(asyncStore, 12000) == false {
         fail("command reconciliation did not queue recovery work");
-        return;
+        return false;
     }
     asyncRecovered = asyncStore.CollectRecovered();
     if asyncRecovered.count() != 1
        or (asyncRecovered.get(0) as recovery_store.RecoveryRecord).content
           != "dirty content queued by reconciliation" {
         fail("command reconciliation persisted the wrong content");
-        return;
+        return false;
     }
 
     // A save/close transition may race a large staged write. Authoritative
@@ -238,24 +251,32 @@ func main() {
     asyncDoc.isModified = true;
     if asyncStore.QueueSwaps(asyncDocs, null) == false {
         fail("cancellation recovery request did not start");
-        return;
+        return false;
     }
     asyncDoc.isModified = false;
     if asyncStore.WriteSwaps(asyncDocs, null) == false {
         fail("authoritative recovery reconciliation failed");
-        return;
+        return false;
     }
     if drainAsync(asyncStore, 12000) == false
        or asyncStore.asyncCancelledRequests < 1
        or asyncStore.CollectRecovered().count() != 0
        or hasRecoveryTempFiles(asyncStore.recoveryDir) {
         fail("cancelled worker recreated stale recovery data");
-        return;
+        return false;
     }
     if asyncStore.MarkCleanExit() == false {
         fail("async recovery clean exit failed");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify clean lifecycle persistence and discarded-buffer restore.
+func VerifyCleanLifecycleRecovery(
+    ctx: RecoveryProbeContext) -> Boolean {
+    var settingsDir = ctx.settingsDir;
 
     var sessionPath = Path.Join(settingsDir, "settings.ini");
     File.WriteAllText(sessionPath, "[settings]\nrestoreSession=1\n");
@@ -278,7 +299,7 @@ func main() {
        or Ini.Get(crashIni, "session.file.0", "recoveryModified") != "1"
        or Ini.Get(crashIni, "session.file.1", "recoveryModified") != "1" {
         fail("live session snapshot did not retain dirty recovery");
-        return;
+        return false;
     }
 
     var store3 = new recovery_store.RecoveryStore();
@@ -297,18 +318,18 @@ func main() {
        or Ini.Get(cleanIni, "session.file.1", "name") != ""
        or Ini.Get(cleanIni, "session.file.1", "recovery") != "" {
         fail("clean exit retained discarded session content");
-        return;
+        return false;
     }
 
     var store4 = new recovery_store.RecoveryStore();
     store4.Setup(settingsDir);
     if store4.uncleanExit {
         fail("central clean exit left the recovery lock");
-        return;
+        return false;
     }
     if store4.CollectRecovered().count() != 0 {
         fail("swaps not cleared after clean exit");
-        return;
+        return false;
     }
 
     var restoredDocs = new document_manager.DocumentManager();
@@ -320,12 +341,20 @@ func main() {
        or restoredDocs.GetActive()!.content != "module DiskVersion;\n"
        or restoredDocs.GetActive()!.isModified {
         fail("discarded buffer returned after clean session restore");
-        return;
+        return false;
     }
     if store4.MarkCleanExit() == false {
         fail("final clean marker removal failed");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify failed setup and session persistence retain crash state.
+func VerifyRecoveryFailureRetention(
+    ctx: RecoveryProbeContext) -> Boolean {
+    var settingsDir = ctx.settingsDir;
 
     // Recovery setup and shutdown are filesystem boundaries too. An invalid
     // settings directory must fail without a runtime trap, and a failed session
@@ -336,14 +365,14 @@ func main() {
     var invalidStore = new recovery_store.RecoveryStore();
     if invalidStore.Setup(invalidSettingsDir) {
         fail("recovery setup accepted a regular file as its settings directory");
-        return;
+        return false;
     }
 
     var retainedDir = TempFile.CreateDirWithPrefix("zannastudio_recovery_retained_");
     var retainedStore = new recovery_store.RecoveryStore();
     if retainedStore.Setup(retainedDir) == false {
         fail("retained recovery setup failed");
-        return;
+        return false;
     }
     var retainedDocs = new document_manager.DocumentManager();
     var retainedDoc = retainedDocs.NewDocument();
@@ -351,7 +380,7 @@ func main() {
     retainedDoc.isModified = true;
     if retainedStore.WriteSwaps(retainedDocs, null) == false {
         fail("retained swap write failed");
-        return;
+        return false;
     }
     var failingSession = new session.SessionManager();
     failingSession.Setup(retainedDir);
@@ -364,12 +393,21 @@ func main() {
        or retainedCheck.uncleanExit == false
        or retainedCheck.CollectRecovered().count() != 1 {
         fail("failed session persistence cleared recoverable crash state");
-        return;
+        return false;
     }
     if retainedCheck.MarkCleanExit() == false {
         fail("retained recovery cleanup failed");
-        return;
+        return false;
     }
 
     Terminal.Say("RESULT: ok");
+    return true;
+}
+
+func main() {
+    var ctx = new RecoveryProbeContext();
+    if VerifySynchronousRecovery(ctx) == false { return; }
+    if VerifyAsynchronousRecovery() == false { return; }
+    if VerifyCleanLifecycleRecovery(ctx) == false { return; }
+    if VerifyRecoveryFailureRetention(ctx) == false { return; }
 }

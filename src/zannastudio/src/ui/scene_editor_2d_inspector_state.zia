@@ -1,0 +1,840 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_inspector_state.zia
+// Purpose: Focused inspector state behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_layers_history.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_inspector_state;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_layers_history" as PreviousLayer;
+
+/// @brief Inspector State implementation layer.
+class SceneEditor2DInspectorStateLayer extends PreviousLayer.SceneEditor2DLayersHistoryLayer {
+
+    expose override func SetEditorControlsEnabled(enabled: Boolean) {
+        if selectButton == null { return; }
+        editorControlsEnabled = enabled;
+        UpdateModeButtons();
+        tileSpinner.SetEnabled(enabled and gameViewActive == false);
+        previewButton.SetEnabled(enabled and gameViewActive == false);
+        gameViewButton.SetEnabled(enabled);
+        zoomOutButton.SetEnabled(enabled and gameViewOutputFramed == false);
+        zoomInButton.SetEnabled(enabled and gameViewOutputFramed == false);
+        fitButton.SetEnabled(enabled and gameViewOutputFramed == false);
+        actualSizeButton.SetEnabled(
+            enabled and gameViewOutputFramed == false);
+        gridButton.SetEnabled(enabled and gameViewActive == false);
+        rulersButton.SetEnabled(enabled and gameViewActive == false);
+        viewMenuButton.SetEnabled(true);
+        layerList.SetEnabled(enabled);
+        UpdateLayerActionControls();
+        sceneProperties.SetEnabled(enabled);
+        tilesetInspector.SetEnabled(enabled);
+        hierarchySearchInput.SetEnabled(enabled);
+        objectTree.SetEnabled(enabled);
+        addObjectButton.SetEnabled(enabled);
+        addChildObjectButton.SetEnabled(enabled);
+        applyObjectButton.SetEnabled(enabled);
+        removeObjectButton.SetEnabled(enabled);
+        objectParentDropdown.SetEnabled(enabled);
+        reparentObjectButton.SetEnabled(enabled);
+        duplicateObjectButton.SetEnabled(enabled);
+        objectUpButton.SetEnabled(enabled);
+        objectDownButton.SetEnabled(enabled);
+        objectArrangeDropdown.SetEnabled(enabled);
+        arrangeObjectButton.SetEnabled(enabled);
+        objectProperties.SetEnabled(enabled);
+        removeObjectPropertyButton.SetEnabled(enabled);
+        objectTypeInput.SetEnabled(enabled);
+        objectIdInput.SetEnabled(enabled);
+        objectXSpinner.SetEnabled(enabled);
+        objectYSpinner.SetEnabled(enabled);
+        objectAfterLayerDropdown.SetEnabled(enabled);
+        objectDrawOrderSpinner.SetEnabled(enabled);
+        objectDrawStackApplyButton.SetEnabled(enabled);
+        objectDrawStackResetButton.SetEnabled(enabled);
+        UpdateHierarchySearchControls();
+        UpdateInspectorScope();
+        UpdateCommandMenuButtons();
+    }
+
+    /// @brief Keep layer controls truthful at empty and draw-order boundaries.
+    hide override func UpdateLayerActionControls() {
+        if addLayerButton == null { return; }
+        var valid = editorControlsEnabled and scene != null
+            and activeLayer >= 0 and activeLayer < scene.LayerCount();
+        addLayerButton.SetEnabled(editorControlsEnabled and scene != null);
+        removeLayerButton.SetEnabled(
+            valid and scene.LayerCount() > 1);
+        layerUpButton.SetEnabled(valid and activeLayer > 0);
+        layerDownButton.SetEnabled(
+            valid and activeLayer + 1 < scene.LayerCount());
+        layerVisibleCheck.SetEnabled(valid);
+        layerOpacitySpinner.SetEnabled(valid);
+        layerLockCheck.SetEnabled(valid);
+        layerSoloCheck.SetEnabled(valid);
+        layerNameInput.SetEnabled(valid);
+        layerAssetInput.SetEnabled(valid);
+        chooseLayerAssetButton.SetEnabled(valid);
+    }
+
+    /// @brief Rebuild bounded inspector rows from the active model.
+    /// @brief Live single-object X/Y editing with one commit per gesture.
+    /// @details Spinner changes move the object in the document immediately
+    ///          (matching the canvas-drag preview model); the edit serializes
+    ///          exactly once when both spinners are unfocused, and Escape
+    ///          while editing restores the captured position without
+    ///          creating history. Canvas gestures own their own drafts.
+    /// @return True when one canonical transaction committed this frame.
+    hide override func PumpObjectTransformDraft() -> Boolean {
+        if objectDragActive or paintStrokeActive or canvasMarqueeActive
+           or rectGestureMode != 0 {
+            return false;
+        }
+        if scene == null or selectedObjects.count() != 1
+           or selectedObject < 0
+           or selectedObject >= scene.ObjectCount() {
+            objectTransformDraftActive = false;
+            return false;
+        }
+        var edited = objectXSpinner.WasChanged()
+            or objectYSpinner.WasChanged();
+        if edited {
+            var nextX = Convert.NumToInt(objectXSpinner.Value);
+            var nextY = Convert.NumToInt(objectYSpinner.Value);
+            var currentX = scene.ObjectX(selectedObject);
+            var currentY = scene.ObjectY(selectedObject);
+            // Echo values equal to the object are refresh noise, not edits.
+            if nextX != currentX or nextY != currentY {
+                if objectTransformDraftActive == false {
+                    objectTransformDraftActive = true;
+                    CaptureObjectDraftOrigins();
+                }
+                scene.SetObjectPosition(selectedObject, nextX, nextY);
+                renderDirty = true;
+            }
+        }
+        // Rotation/scale rows share the same one-gesture draft (ADR 0192);
+        // the epsilon guard keeps refresh echoes from opening a draft.
+        var transformEdited = objectRotationSpinner.WasChanged()
+            or objectScaleXSpinner.WasChanged()
+            or objectScaleYSpinner.WasChanged()
+            or objectPivotXSpinner.WasChanged()
+            or objectPivotYSpinner.WasChanged();
+        if transformEdited {
+            var nextRotation = objectRotationSpinner.Value;
+            var nextScaleX = objectScaleXSpinner.Value;
+            var nextScaleY = objectScaleYSpinner.Value;
+            var nextPivotX = objectPivotXSpinner.Value;
+            var nextPivotY = objectPivotYSpinner.Value;
+            if NumberDiffers(
+                   nextRotation, scene.ObjectRotation(selectedObject))
+               or NumberDiffers(
+                   nextScaleX, scene.ObjectScaleX(selectedObject))
+               or NumberDiffers(
+                   nextScaleY, scene.ObjectScaleY(selectedObject))
+               or NumberDiffers(
+                   nextPivotX, scene.ObjectPivotX(selectedObject))
+               or NumberDiffers(
+                   nextPivotY, scene.ObjectPivotY(selectedObject)) {
+                if objectTransformDraftActive == false {
+                    objectTransformDraftActive = true;
+                    CaptureObjectDraftOrigins();
+                }
+                scene.SetObjectRotation(selectedObject, nextRotation);
+                scene.SetObjectScale(
+                    selectedObject, nextScaleX, nextScaleY);
+                scene.SetObjectPivot(
+                    selectedObject, nextPivotX, nextPivotY);
+                renderDirty = true;
+            }
+        }
+        if objectTransformDraftActive == false { return false; }
+        var editingFocused = objectXSpinner.IsFocused()
+            or objectYSpinner.IsFocused()
+            or objectRotationSpinner.IsFocused()
+            or objectScaleXSpinner.IsFocused()
+            or objectScaleYSpinner.IsFocused()
+            or objectPivotXSpinner.IsFocused()
+            or objectPivotYSpinner.IsFocused();
+        if editingFocused
+           and Input.Keyboard.WasPressed(Input.Key.Escape) {
+            scene.SetObjectPosition(
+                selectedObject, objectDraftOriginX, objectDraftOriginY);
+            scene.SetObjectRotation(
+                selectedObject, objectDraftOriginRotation);
+            scene.SetObjectScale(
+                selectedObject,
+                objectDraftOriginScaleX, objectDraftOriginScaleY);
+            scene.SetObjectPivot(
+                selectedObject,
+                objectDraftOriginPivotX, objectDraftOriginPivotY);
+            objectTransformDraftActive = false;
+            gestureEscapeConsumed = true;
+            RefreshObjectFields();
+            renderDirty = true;
+            toolbarStatus.SetText("Transform edit canceled");
+            return false;
+        }
+        // A completed value scrub commits its gesture immediately, mirroring
+        // canvas-drag release; typed edits still commit when focus leaves.
+        var scrubFinished = objectXSpinner.WasScrubFinished()
+            or objectYSpinner.WasScrubFinished()
+            or objectRotationSpinner.WasScrubFinished()
+            or objectScaleXSpinner.WasScrubFinished()
+            or objectScaleYSpinner.WasScrubFinished()
+            or objectPivotXSpinner.WasScrubFinished()
+            or objectPivotYSpinner.WasScrubFinished();
+        if editingFocused and scrubFinished == false { return false; }
+        objectTransformDraftActive = false;
+        return CommitScene("Transformed object");
+    }
+
+    /// @brief Capture every draft origin when a transform gesture opens.
+    hide override func CaptureObjectDraftOrigins() {
+        objectDraftOriginX = scene.ObjectX(selectedObject);
+        objectDraftOriginY = scene.ObjectY(selectedObject);
+        objectDraftOriginRotation = scene.ObjectRotation(selectedObject);
+        objectDraftOriginScaleX = scene.ObjectScaleX(selectedObject);
+        objectDraftOriginScaleY = scene.ObjectScaleY(selectedObject);
+        objectDraftOriginPivotX = scene.ObjectPivotX(selectedObject);
+        objectDraftOriginPivotY = scene.ObjectPivotY(selectedObject);
+    }
+
+    /// @brief Format one raw RGBA tint as eight uppercase hex digits.
+    hide override func TintHexText(rgba: Integer) -> String {
+        var digits = "0123456789ABCDEF";
+        var text = "";
+        var shift = 28;
+        while shift >= 0 {
+            var nibble = rgba / PowerOfTwo(shift) % 16;
+            text = text + Str.MidLen(digits, nibble, 1);
+            shift = shift - 4;
+        }
+        return text;
+    }
+
+    /// @brief Return 2^exponent for the nibble extraction above.
+    hide override func PowerOfTwo(exponent: Integer) -> Integer {
+        var value = 1;
+        var step = 0;
+        while step < exponent {
+            value = value * 2;
+            step = step + 1;
+        }
+        return value;
+    }
+
+    /// @brief Parse tint text as RRGGBBAA (or RRGGBB = opaque); -1 invalid.
+    hide override func TintFromHexText(text: String) -> Integer {
+        var clean = Str.Trim(text);
+        if Str.StartsWith(clean, "#") { clean = Str.Mid(clean, 1); }
+        if Str.get_Length(clean) == 6 { clean = clean + "FF"; }
+        if Str.get_Length(clean) != 8 { return -1; }
+        var parsed = Parse.IntRadix(clean, 16, -1);
+        if parsed < 0 { return -1; }
+        return parsed;
+    }
+
+    /// @brief Commit a submitted tint as one undoable transaction.
+    hide override func PumpObjectTintInput() -> Boolean {
+        if scene == null or selectedObjects.count() != 1
+           or selectedObject < 0
+           or selectedObject >= scene.ObjectCount() {
+            return false;
+        }
+        if objectTintInput.WasSubmitted() == false { return false; }
+        var nextTint = TintFromHexText(objectTintInput.Text);
+        if nextTint < 0 {
+            detailLabel.SetText(
+                "Tint must be RRGGBBAA hex (FFFFFFFF clears it).");
+            RefreshObjectFields();
+            return false;
+        }
+        if nextTint == scene.ObjectTint(selectedObject) { return false; }
+        var previousTint = scene.ObjectTint(selectedObject);
+        scene.SetObjectTint(selectedObject, nextTint);
+        if CommitScene("Tinted object") == false {
+            scene.SetObjectTint(selectedObject, previousTint);
+            RefreshObjectFields();
+            return false;
+        }
+        detailLabel.SetText("");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Whether two authored numbers differ beyond echo noise.
+    hide override func NumberDiffers(next: Number, current: Number) -> Boolean {
+        var delta = next - current;
+        if delta < 0.0 { delta = 0.0 - delta; }
+        return delta > 0.0005;
+    }
+
+    /// @brief Commit flip toggles as immediate one-transaction edits.
+    hide override func PumpObjectFlipControls() -> Boolean {
+        if scene == null or selectedObjects.count() != 1
+           or selectedObject < 0
+           or selectedObject >= scene.ObjectCount() {
+            return false;
+        }
+        var toggledX = objectFlipXCheck.WasChanged();
+        var toggledY = objectFlipYCheck.WasChanged();
+        if toggledX == false and toggledY == false { return false; }
+        var nextFlipX = objectFlipXCheck.IsChecked();
+        var nextFlipY = objectFlipYCheck.IsChecked();
+        if nextFlipX == scene.ObjectFlipX(selectedObject)
+           and nextFlipY == scene.ObjectFlipY(selectedObject) {
+            return false;
+        }
+        var previousFlipX = scene.ObjectFlipX(selectedObject);
+        var previousFlipY = scene.ObjectFlipY(selectedObject);
+        scene.SetObjectFlip(selectedObject, nextFlipX, nextFlipY);
+        if CommitScene("Flipped object") == false {
+            scene.SetObjectFlip(
+                selectedObject, previousFlipX, previousFlipY);
+            RefreshObjectFields();
+            return false;
+        }
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Consume stale object-spinner change edges after programmatic
+    ///        SetValue refreshes so they cannot masquerade as user edits.
+    hide override func DrainObjectSpinnerEdges() {
+        if objectXSpinner == null { return; }
+        objectXSpinner.WasChanged();
+        objectYSpinner.WasChanged();
+        objectRotationSpinner.WasChanged();
+        objectScaleXSpinner.WasChanged();
+        objectScaleYSpinner.WasChanged();
+        objectPivotXSpinner.WasChanged();
+        objectPivotYSpinner.WasChanged();
+        objectFlipXCheck.WasChanged();
+        objectFlipYCheck.WasChanged();
+    }
+
+    /// @brief Show only inspector groups relevant to the current selection.
+    /// @details Object-scoped fields and groups appear with selected objects;
+    ///          scene-scoped groups (setup, imports, scene properties,
+    ///          camera/lighting, layers, tile behavior, and the palette
+    ///          strip) stay with the loaded scene. Pure presentation: no
+    ///          canonical bytes, history, or selection state changes here.
+    hide override func UpdateInspectorScope() {
+        if objectFieldsLabel == null { return; }
+        var hasScene = scene != null;
+        var hasSelection = hasScene and selectedObjects.count() > 0;
+        var objectTab = hasScene and inspectorSceneTab == false;
+        var sceneTab = hasScene and inspectorSceneTab;
+        var objectScope = objectTab and hasSelection;
+        objectTabButton.SetVisible(hasScene);
+        sceneTabButton.SetVisible(hasScene);
+        objectTabButton.SetStyle(0);
+        sceneTabButton.SetStyle(0);
+        if sceneTab { sceneTabButton.SetStyle(1); }
+        if objectTab { objectTabButton.SetStyle(1); }
+        objectTabHost.SetVisible(objectTab);
+        sceneTabHost.SetVisible(sceneTab);
+        sceneSectionRow.SetVisible(sceneTab);
+        sceneSetupGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor2DModel.SCENE_INSPECTOR_SETUP);
+        sceneImportGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor2DModel.SCENE_INSPECTOR_SETUP);
+        sceneInfoLabel.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor2DModel.SCENE_INSPECTOR_SETUP);
+        sceneProperties.group.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor2DModel.SCENE_INSPECTOR_PROPERTIES);
+        cameraLighting.cameraGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection
+                == SceneEditor2DModel.SCENE_INSPECTOR_CAMERA_LIGHTING);
+        cameraLighting.lightingGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection
+                == SceneEditor2DModel.SCENE_INSPECTOR_CAMERA_LIGHTING);
+        layersGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor2DModel.SCENE_INSPECTOR_LAYERS);
+        tileBehavior.group.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor2DModel.SCENE_INSPECTOR_TILE_BEHAVIOR);
+        historyGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor2DModel.SCENE_INSPECTOR_HISTORY);
+        objectFieldsLabel.SetVisible(objectScope);
+        objectTypeInput.SetVisible(objectScope);
+        objectIdInput.SetVisible(objectScope);
+        objectPositionRow.SetVisible(objectScope);
+        objectTransformRow.SetVisible(
+            objectScope and selectedObjects.count() == 1);
+        objectDrawStackGroup.SetVisible(
+            objectScope and selectedObjects.count() == 1);
+        objectArrangeRow.SetVisible(objectScope);
+        objectPropertyLabel.SetVisible(objectScope);
+        objectProperties.host.SetVisible(objectScope);
+        objectProperties.addButton.SetVisible(objectScope);
+        removeObjectPropertyButton.SetVisible(
+            objectScope and selectedObjects.count() > 1);
+        // X/Y edits commit live and the id/type fields commit on Enter, so
+        // the explicit Apply is retired from the visible surface.
+        applyObjectButton.SetVisible(false);
+        // Keep project recipes available on the Object tab without a
+        // selection so gameplay-ready objects need no generic placeholder.
+        componentPalette.group.SetVisible(objectTab);
+        componentAssetHost.SetVisible(objectScope);
+        tilesetInspector.group.SetVisible(hasScene);
+        // Scope storms reflow the whole inspector column; force a complete
+        // re-measure/arrange/repaint so no child keeps partial-pass geometry.
+        if inspectorScroll != null {
+            inspectorScroll.InvalidateLayout();
+            inspectorScroll.InvalidatePaint();
+        }
+    }
+
+    /// @brief Choose the Object or Scene inspector tab (workspace-only).
+    /// @details Selection changes auto-follow: selecting objects returns to
+    ///          Object, clearing the selection returns to Scene.
+    expose override func SetInspectorSceneTab(sceneTab: Boolean) {
+        if inspectorSceneTab == sceneTab { return; }
+        inspectorSceneTab = sceneTab;
+        UpdateInspectorScope();
+    }
+
+    /// @brief Select one progressive-disclosure topic on the Scene inspector.
+    /// @param section Bounded scene topic index.
+    /// @param resetScroll Whether a direct user change returns to the topic top.
+    expose override func SetSceneInspectorSection(section: Integer,
+                                         resetScroll: Boolean) {
+        var bounded = SceneEditor2DModel.ClampInt(
+            section,
+            SceneEditor2DModel.SCENE_INSPECTOR_SETUP,
+            SceneEditor2DModel.SCENE_INSPECTOR_HISTORY);
+        sceneInspectorSection = bounded;
+        if sceneSectionDropdown != null
+           and sceneSectionDropdown.Selected != bounded {
+            sceneSectionDropdown.SetSelected(bounded);
+            sceneSectionDropdown.WasChanged();
+        }
+        if resetScroll and inspectorScroll != null {
+            inspectorScroll.SetScroll(0.0, 0.0);
+            pendingInspectorScrollY = 0.0;
+        }
+        UpdateInspectorScope();
+    }
+
+    /// @brief Remove hostile, duplicate, or stale layer workspace indices.
+    hide override func NormalizeLayerWorkspaceState() {
+        if scene == null {
+            lockedLayers = [];
+            soloLayer = -1;
+            return;
+        }
+        var normalized: List[Integer] = [];
+        var index = 0;
+        while index < lockedLayers.count() {
+            var layer = lockedLayers.get(index);
+            var duplicate = false;
+            var prior = 0;
+            while prior < normalized.count() {
+                if normalized.get(prior) == layer { duplicate = true; }
+                prior = prior + 1;
+            }
+            if layer >= 0 and layer < scene.LayerCount()
+               and duplicate == false {
+                normalized.add(layer);
+            }
+            index = index + 1;
+        }
+        lockedLayers = normalized;
+        if soloLayer < 0 or soloLayer >= scene.LayerCount() {
+            soloLayer = -1;
+        }
+        if currentDoc != null and currentDoc.scene2DWorkspace != null {
+            currentDoc.scene2DWorkspace.lockedLayers = lockedLayers;
+            currentDoc.scene2DWorkspace.soloLayer = soloLayer;
+        }
+    }
+
+    /// @brief Compose one scannable layer navigator row.
+    hide override func LayerNavigatorLabel(layer: Integer) -> String {
+        if scene == null or layer < 0 or layer >= scene.LayerCount() {
+            return "○ (missing layer)";
+        }
+        var label = "○ ";
+        if scene.LayerVisible(layer) { label = "● "; }
+        if LayerLocked(layer) { label = label + "⊘ "; }
+        if soloLayer == layer { label = label + "SOLO "; }
+        label = label + scene.LayerName(layer);
+        var opacityPercent = Convert.NumToInt(
+            scene.LayerOpacity(layer) * 100.0 + 0.5);
+        if opacityPercent < 100 {
+            label = label + "  " + opacityPercent + "%";
+        }
+        return label;
+    }
+
+    /// @brief Tint exceptional layer states without obscuring row text.
+    hide override func LayerNavigatorColor(layer: Integer) -> Integer {
+        if soloLayer == layer { return Color.RGB(102, 220, 190); }
+        if LayerLocked(layer) { return Color.RGB(239, 190, 86); }
+        if scene != null and layer >= 0 and layer < scene.LayerCount()
+           and scene.LayerVisible(layer) == false {
+            return Color.RGB(142, 151, 164);
+        }
+        return Color.RGB(225, 231, 238);
+    }
+
+    /// @brief Refresh only fixed-height layer rows and their active selection.
+    hide override func RefreshLayerNavigator() {
+        if layerList == null { return; }
+        layerList.Clear();
+        layerListItems = [];
+        if scene == null { return; }
+        var layerCount = scene.LayerCount();
+        if activeLayer < 0 or activeLayer >= layerCount { activeLayer = 0; }
+        NormalizeLayerWorkspaceState();
+        var layer = 0;
+        while layer < layerCount {
+            var item = layerList.AddItem(LayerNavigatorLabel(layer));
+            layerListItems.add(item);
+            if item != null {
+                GUI.ListBox.ItemSetData(item, "" + layer);
+                GUI.ListBox.ItemSetTextColor(
+                    item, LayerNavigatorColor(layer));
+            }
+            layer = layer + 1;
+        }
+        if layerCount > 0 { layerList.SelectIndex(activeLayer); }
+        UpdateLayerActionControls();
+    }
+
+    /// @brief Update live row cues without rebuilding or scrolling the list.
+    hide override func RefreshLayerNavigatorRows() {
+        if scene == null { return; }
+        var layer = 0;
+        while layer < layerListItems.count()
+              and layer < scene.LayerCount() {
+            var item = layerListItems.get(layer);
+            if item != null {
+                GUI.ListBox.ItemSetText(
+                    item, LayerNavigatorLabel(layer));
+                GUI.ListBox.ItemSetTextColor(
+                    item, LayerNavigatorColor(layer));
+            }
+            layer = layer + 1;
+        }
+        UpdateLayerActionControls();
+    }
+
+    hide override func RefreshInspector() {
+        UpdateInspectorScope();
+        layerList.Clear();
+        layerListItems = [];
+        sceneProperties.Refresh(scene, editorControlsEnabled);
+        selectedSceneProperty = sceneProperties.selectedProperty;
+        cameraLighting.Refresh(scene, editorControlsEnabled);
+        if scene == null {
+            selectedObject = -1;
+            selectedObjects = [];
+            selectedObjectProperty = -1;
+            selectedSceneProperty = -1;
+            RefreshObjectTree();
+            RefreshObjectFields();
+            sceneInfoLabel.SetText("Invalid 2D scene");
+            toolbarStatus.SetText("Scene JSON needs attention");
+            return;
+        }
+
+        sceneInfoLabel.SetText(
+            scene.Width + " x " + scene.Height + " tiles\n"
+            + scene.TileWidth + " x " + scene.TileHeight + " px tiles"
+            + "  |  " + scene.LayerCount() + " layer(s)"
+            + "  |  " + scene.ObjectCount() + " object(s)");
+
+        RefreshLayerNavigator();
+        RefreshLayerFields();
+
+        RefreshObjectTree();
+        RefreshObjectFields();
+    }
+
+    hide override func StringListContains(values: List[String],
+                                 value: String) -> Boolean {
+        var index = 0;
+        while index < values.count() {
+            if values.get(index) == value { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    /// @brief Snapshot expansion before replacing retained object rows.
+    hide override func CaptureObjectTreeExpansion() {
+        objectExpandedIds = [];
+        objectExpandedPaths = [];
+        var sameDocument =
+            currentDoc != null and objectTreeDocument == currentDoc;
+        objectTreeExpandByDefault =
+            objectTreeNodes.count() == 0 or sameDocument == false;
+        if sameDocument == false { return; }
+        var index = 0;
+        while index < objectTreeNodes.count()
+              and index < objectTreeIds.count()
+              and index < objectTreePaths.count() {
+            var treeNode = objectTreeNodes.get(index);
+            if treeNode != null
+               and GUI.TreeView.Node.IsExpanded(treeNode) {
+                var objectId = objectTreeIds.get(index);
+                if objectId != "" { objectExpandedIds.add(objectId); }
+                objectExpandedPaths.add(objectTreePaths.get(index));
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Return a bounded structural depth, with roots at depth zero.
+    hide override func ObjectHierarchyDepth(index: Integer) -> Integer {
+        if scene == null or index < 0 or index >= scene.ObjectCount() {
+            return SceneEditor2DModel.MAX_OBJECT_HIERARCHY_DEPTH + 1;
+        }
+        var depth = 0;
+        var current = index;
+        var steps = 0;
+        while current >= 0 and steps <= SceneEditor2DModel.MAX_OBJECT_HIERARCHY_DEPTH {
+            var parent = scene.ObjectParent(current);
+            if parent < 0 { return depth; }
+            depth = depth + 1;
+            steps = steps + 1;
+            current = parent;
+        }
+        return SceneEditor2DModel.MAX_OBJECT_HIERARCHY_DEPTH + 1;
+    }
+
+    /// @brief Return whether ancestor contains candidate in the live hierarchy.
+    hide override func ObjectHierarchyContains(ancestor: Integer,
+                                      candidate: Integer) -> Boolean {
+        if scene == null or ancestor < 0 or candidate < 0
+           or ancestor >= scene.ObjectCount()
+           or candidate >= scene.ObjectCount() {
+            return false;
+        }
+        var current = candidate;
+        var steps = 0;
+        while current >= 0 and steps <= scene.ObjectCount() {
+            if current == ancestor { return true; }
+            current = scene.ObjectParent(current);
+            steps = steps + 1;
+        }
+        return false;
+    }
+
+    hide override func ShouldExpandObjectNode(index: Integer,
+                                     objectId: String,
+                                     path: String) -> Boolean {
+        var selectionIndex = 0;
+        while selectionIndex < selectedObjects.count() {
+            if ObjectHierarchyContains(
+                   index, selectedObjects.get(selectionIndex)) {
+                return true;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if objectTreeExpandByDefault { return true; }
+        if objectId != ""
+           and StringListContains(objectExpandedIds, objectId) {
+            return true;
+        }
+        return StringListContains(objectExpandedPaths, path);
+    }
+
+    /// @brief Rebuild a bounded retained parent/child presentation.
+    /// @details Depth and row limits protect the UI while preserving every
+    ///          object in canonical scene data.
+    hide override func RefreshObjectTree() {
+        if objectTree == null { return; }
+        CaptureObjectTreeExpansion();
+        objectTreeNodes = [];
+        objectTreeIds = [];
+        objectTreePaths = [];
+        objectHierarchyClipped = false;
+        objectTree.Clear();
+        objectTree.PruneRetiredNodes();
+
+        if scene == null {
+            objectHierarchyStatus.SetText("");
+            objectTreeDocument = currentDoc;
+            RefreshHierarchySearch(false);
+            return;
+        }
+
+        var objectCount = scene.ObjectCount();
+        if selectedObject >= objectCount { selectedObject = -1; }
+        selectedObjects = scene_selection.Normalize(
+            selectedObjects, objectCount, selectedObject);
+        if selectedObject < 0 and selectedObjects.count() > 0 {
+            selectedObject = selectedObjects.get(0);
+        }
+
+        var visibleCount = objectCount;
+        if visibleCount > SceneEditor2DModel.MAX_OBJECT_TREE_ROWS {
+            visibleCount = SceneEditor2DModel.MAX_OBJECT_TREE_ROWS;
+            objectHierarchyClipped = true;
+        }
+        var depths: List[Integer] = [];
+        var hasChildren: List[Boolean] = [];
+        var index = 0;
+        while index < visibleCount {
+            objectTreeNodes.add(null);
+            objectTreeIds.add(scene.ObjectId(index));
+            objectTreePaths.add("");
+            depths.add(ObjectHierarchyDepth(index));
+            hasChildren.add(false);
+            index = index + 1;
+        }
+        index = 0;
+        while index < objectCount {
+            var parent = scene.ObjectParent(index);
+            if parent >= 0 and parent < visibleCount {
+                hasChildren.set(parent, true);
+            }
+            index = index + 1;
+        }
+
+        var rowCount = 0;
+        var depth = 0;
+        while depth <= SceneEditor2DModel.MAX_OBJECT_HIERARCHY_DEPTH
+              and rowCount < SceneEditor2DModel.MAX_OBJECT_TREE_ROWS {
+            index = 0;
+            while index < visibleCount
+                  and rowCount < SceneEditor2DModel.MAX_OBJECT_TREE_ROWS {
+                if depths.get(index) == depth {
+                    var parentIndex = scene.ObjectParent(index);
+                    var parentTreeNode: Any = null;
+                    var path = Fmt.Int(index);
+                    var canAppend = parentIndex < 0;
+                    if parentIndex >= 0 and parentIndex < visibleCount
+                       and objectTreeNodes.get(parentIndex) != null {
+                        parentTreeNode = objectTreeNodes.get(parentIndex);
+                        path = objectTreePaths.get(parentIndex)
+                            + "/" + Fmt.Int(index);
+                        canAppend = true;
+                    }
+                    if canAppend {
+                        var objectId = scene.ObjectId(index);
+                        var displayId = objectId;
+                        if displayId == "" { displayId = "(unnamed)"; }
+                        var treeNode = objectTree.AddNode(
+                            parentTreeNode,
+                            displayId + "  :  " + scene.ObjectType(index)
+                            + "  @ " + scene.ObjectX(index)
+                            + ", " + scene.ObjectY(index));
+                        if treeNode == null {
+                            objectHierarchyClipped = true;
+                        } else {
+                            GUI.TreeView.Node.SetData(
+                                treeNode, Fmt.Int(index));
+                            GUI.TreeView.Node.SetStableId(
+                                treeNode, objectId + "|" + path);
+                            objectTreeNodes.set(index, treeNode);
+                            objectTreePaths.set(index, path);
+                            rowCount = rowCount + 1;
+                        }
+                    } else {
+                        objectHierarchyClipped = true;
+                    }
+                } else if depths.get(index)
+                          > SceneEditor2DModel.MAX_OBJECT_HIERARCHY_DEPTH {
+                    objectHierarchyClipped = true;
+                }
+                index = index + 1;
+            }
+            depth = depth + 1;
+        }
+
+        index = 0;
+        while index < visibleCount {
+            var node = objectTreeNodes.get(index);
+            if node != null {
+                var icon = "◇";
+                if hasChildren.get(index) { icon = "◆"; }
+                GUI.TreeView.Node.SetIcon(node, icon);
+                if hasChildren.get(index)
+                   and ShouldExpandObjectNode(
+                       index,
+                       objectTreeIds.get(index),
+                       objectTreePaths.get(index)) {
+                    objectTree.Expand(node);
+                }
+            }
+            index = index + 1;
+        }
+
+        if rowCount < objectCount { objectHierarchyClipped = true; }
+        if objectHierarchyClipped {
+            objectHierarchyStatus.SetText(
+                "Hierarchy view is bounded to "
+                + SceneEditor2DModel.MAX_OBJECT_TREE_ROWS + " rows and depth "
+                + SceneEditor2DModel.MAX_OBJECT_HIERARCHY_DEPTH
+                + "; hidden objects remain preserved in the scene.");
+        } else {
+            objectHierarchyStatus.SetText("");
+        }
+        objectTreeDocument = currentDoc;
+        RestoreObjectTreeSelection();
+        RefreshHierarchySearch(false);
+        objectExpandedIds = [];
+        objectExpandedPaths = [];
+    }
+}

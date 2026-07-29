@@ -1,0 +1,835 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_bake_environment.zia
+// Purpose: Focused bake environment behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_components.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_bake_environment;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_components" as PreviousLayer;
+
+/// @brief Bake Environment implementation layer.
+class SceneEditor3DBakeEnvironmentLayer extends PreviousLayer.SceneEditor3DComponentsLayer {
+
+    /// @brief Small bounded probe-bounds spinner builder.
+    expose override func AddProbeSpinner(parent: GUI.Flex,
+                              label: String,
+                              value: Number) -> GUI.Spinner {
+        var spinner = GUI.Spinner.New(parent);
+        spinner.SetRange(-1000000.0, 1000000.0);
+        spinner.SetStep(0.5);
+        spinner.SetDecimals(2);
+        spinner.SetValue(value);
+        spinner.SetPreferredSize(72.0, 0.0);
+        spinner.SetAccessibleName(label + " probe value");
+        return spinner;
+    }
+
+    /// @brief Pump every bake, probe, and environment intent (ADR 0188).
+    hide override func PumpBakeControls() {
+        if bakeButton == null { return; }
+        if bakeButton.WasClicked() {
+            if bakeActive { CancelBake(); }
+            else { StartBake(); }
+        }
+        if makeUniqueButton.WasClicked() {
+            MakeMeshesUniqueForBaking();
+        }
+        if probeApplyButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            ApplySelectedProbeGrid();
+        }
+        if probeRemoveButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            RemoveSelectedProbeGrid();
+        }
+        if bakeProbesButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            BakeSelectedProbeGrid();
+        }
+        if envBrowseButton.WasClicked() {
+            envBrowseMode = true;
+            importBrowserInstanceMode = false;
+            importAssetBrowser.SetExtensions(".hdr,.png,.jpg,.jpeg");
+            importAssetBrowser.Open();
+        }
+        if envApplyButton.WasClicked() {
+            ApplyEnvironmentFromControls();
+        }
+    }
+
+    /// @brief Read the bake settings draft from the retained controls.
+    hide override func BakeSettingsFromControls() -> scene_bake_3d.BakeSettings3D {
+        var state = new scene_bake_3d.BakeSettings3D();
+        state.texelsPerUnit = bakeTexelsSpinner.Value;
+        state.samples = Convert.NumToInt(bakeSamplesSpinner.Value);
+        state.bounces = Convert.NumToInt(bakeBouncesSpinner.Value);
+        state.skyR =
+            scene_light_3d.UnitFromByte(bakeSkyPicker.GetRed());
+        state.skyG =
+            scene_light_3d.UnitFromByte(bakeSkyPicker.GetGreen());
+        state.skyB =
+            scene_light_3d.UnitFromByte(bakeSkyPicker.GetBlue());
+        return scene_bake_3d.NormalizeSettings(state);
+    }
+
+    /// @brief Begin one chunked lightmap bake over the live scene.
+    /// @details The shared-mesh preflight refuses first: the baker writes
+    ///          chart UVs into mesh vertices, so shared meshes would
+    ///          clobber each other (ADR 0188).
+    expose override func StartBake() -> Boolean {
+        if scene == null or bakeActive { return false; }
+        var staticMeshCount = 0;
+        var staticScan = 0;
+        while staticScan < flatNodes.count() {
+            var staticNode = flatNodes.get(staticScan);
+            if staticNode.GetStatic() and staticNode.Mesh != null {
+                staticMeshCount = staticMeshCount + 1;
+            }
+            staticScan = staticScan + 1;
+        }
+        if staticMeshCount == 0 {
+            bakeStatus.SetText(
+                "Bake refused: no static mesh nodes. Mark bake "
+                + "participants with the Static checkbox first.");
+            return false;
+        }
+        var sharedNames =
+            scene_bake_3d.SharedMeshNodeNames(AllLiveNodes());
+        if sharedNames.count() > 0 {
+            var listing = "";
+            var index = 0;
+            while index < sharedNames.count() and index < 8 {
+                if listing != "" { listing = listing + ", "; }
+                listing = listing + sharedNames.get(index);
+                index = index + 1;
+            }
+            if sharedNames.count() > 8 {
+                listing = listing + ", …";
+            }
+            bakeStatus.SetText(
+                "Bake refused: " + sharedNames.count()
+                + " node(s) share meshes (" + listing
+                + "). Run Make Meshes Unique first.");
+            detailLabel.SetText(
+                "Baking writes chart UVs into mesh vertices, so shared "
+                + "meshes would overwrite each other's charts.");
+            return false;
+        }
+        var settings = BakeSettingsFromControls();
+        var baker = LightBaker3D.New(scene);
+        if baker == null {
+            bakeStatus.SetText("The light baker could not be created.");
+            return false;
+        }
+        baker.TexelsPerUnit = settings.texelsPerUnit;
+        baker.Samples = settings.samples;
+        baker.Bounces = settings.bounces;
+        baker.SetSkyColor(settings.skyR, settings.skyG, settings.skyB);
+        var lightCount = 0;
+        var index = 0;
+        while index < flatNodes.count() {
+            var node = flatNodes.get(index);
+            if node.Light != null {
+                var worldLight = scene_bake_3d.WorldSpaceLight(
+                    node, node.Light);
+                if worldLight != null {
+                    baker.AddLight(worldLight);
+                    lightCount = lightCount + 1;
+                }
+            }
+            index = index + 1;
+        }
+        activeBaker = baker;
+        bakeActive = true;
+        bakeButton.SetText("Cancel Bake");
+        bakeStatus.SetText(
+            "Baking with " + lightCount + " authored light(s)…");
+        return true;
+    }
+
+    /// @brief Run bounded bake chunks inside the editor pump.
+    /// @return True when a completed bake committed document content.
+    hide override func PumpBakeSteps() -> Boolean {
+        if bakeActive == false or activeBaker == null { return false; }
+        var startMs = Zanna.Time.Clock.NowMs();
+        var complete = false;
+        while complete == false
+              and Zanna.Time.Clock.NowMs() - startMs < 8 {
+            complete = activeBaker.BakeStep();
+        }
+        if complete { return FinishBake(); }
+        var percent = Convert.NumToInt(activeBaker.Progress * 100.0);
+        bakeStatus.SetText("Baking… " + percent + "%");
+        return false;
+    }
+
+    /// @brief Apply and commit one completed bake as one transaction.
+    hide override func FinishBake() -> Boolean {
+        var baker = activeBaker;
+        bakeActive = false;
+        activeBaker = null;
+        bakeButton.SetText("Bake");
+        if baker == null or scene == null { return false; }
+        baker.Apply();
+        if scene_bake_3d.WriteSettingsToRoot(
+               scene.Root, BakeSettingsFromControls()) == false {
+            RollBackFailedCommit(
+                "The bake settings could not be persisted.");
+            return false;
+        }
+        if CommitScene("Baked lightmaps") == false {
+            RollBackFailedCommit(
+                "The completed bake could not be committed.");
+            return false;
+        }
+        lastCompletedBaker = baker;
+        bakeStatus.SetText(
+            "Bake applied: charts, atlas materials, and settings "
+            + "committed as one undoable edit.");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Cancel an active bake and restore the exact prior document.
+    expose override func CancelBake() {
+        if bakeActive == false { return; }
+        bakeActive = false;
+        activeBaker = null;
+        bakeButton.SetText("Bake");
+        if currentDoc != null { LoadDocumentModel(currentDoc, true); }
+        bakeStatus.SetText(
+            "Bake canceled; the document was restored exactly.");
+    }
+
+    /// @brief Report whether a chunked bake currently owns the scene.
+    expose override func IsBakeActive() -> Boolean {
+        return bakeActive;
+    }
+
+    /// @brief Return every represented live node for preflight scans.
+    hide override func AllLiveNodes() -> List[SceneNode] {
+        var nodes: List[SceneNode] = [];
+        var index = 0;
+        while index < flatNodes.count() {
+            nodes.add(flatNodes.get(index));
+            index = index + 1;
+        }
+        return nodes;
+    }
+
+    /// @brief Deep-copy shared meshes per node in one undoable edit.
+    expose override func MakeMeshesUniqueForBaking() -> Boolean {
+        if scene == null or bakeActive { return false; }
+        var seen: List[Mesh3D2] = [];
+        var copies = 0;
+        var index = 0;
+        while index < flatNodes.count() {
+            var node = flatNodes.get(index);
+            var mesh = node.Mesh;
+            if mesh != null {
+                var priorUse = false;
+                var scan = 0;
+                while scan < seen.count() and priorUse == false {
+                    if seen.get(scan) == mesh { priorUse = true; }
+                    scan = scan + 1;
+                }
+                if priorUse {
+                    var copy = mesh.Clone() as Mesh3D2;
+                    if copy == null {
+                        RestoreNodeComponentEdit(
+                            selectedIndices, selectedIndex,
+                            "A mesh copy failed. No nodes were changed.");
+                        return false;
+                    }
+                    node.Mesh = copy;
+                    copies = copies + 1;
+                } else {
+                    seen.add(mesh);
+                }
+            }
+            index = index + 1;
+        }
+        if copies == 0 {
+            bakeStatus.SetText(
+                "Every baked node already owns a unique mesh.");
+            return false;
+        }
+        if CommitScene(
+               "Made " + copies + " shared mesh(es) unique for baking")
+           == false {
+            return false;
+        }
+        bakeStatus.SetText(
+            copies + " shared mesh(es) deep-copied; baking can proceed.");
+        return true;
+    }
+
+    /// @brief Write the probes.* convention onto the selected node.
+    expose override func ApplySelectedProbeGrid() -> Boolean {
+        var node = SelectedNode();
+        if node == null or scene == null { return false; }
+        var state = new scene_bake_3d.ProbeGridState3D();
+        state.minX = probeMinXSpinner.Value;
+        state.minY = probeMinYSpinner.Value;
+        state.minZ = probeMinZSpinner.Value;
+        state.maxX = probeMaxXSpinner.Value;
+        state.maxY = probeMaxYSpinner.Value;
+        state.maxZ = probeMaxZSpinner.Value;
+        state.spacing = probeSpacingSpinner.Value;
+        if scene_bake_3d.WriteProbeGridToNode(node, state) == false {
+            return false;
+        }
+        if CommitScene(
+               "Authored probe grid on " + NodeDisplayName(node))
+           == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        probeStatus.SetText(
+            "Probe grid written as one undoable typed-metadata edit.");
+        return true;
+    }
+
+    /// @brief Remove the probes.* convention from the selected node.
+    expose override func RemoveSelectedProbeGrid() -> Boolean {
+        var node = SelectedNode();
+        if node == null or scene == null { return false; }
+        if scene_bake_3d.RemoveProbeGridFromNode(node) == false {
+            probeStatus.SetText(
+                "The selected node has no probe grid.");
+            return false;
+        }
+        if CommitScene(
+               "Removed probe grid from " + NodeDisplayName(node))
+           == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        probeStatus.SetText("Probe grid removed.");
+        return true;
+    }
+
+    /// @brief Bake the selected probe grid and save its .vlpg sidecar.
+    /// @details The sidecar never dirties the scene document (ADR 0188).
+    expose override func BakeSelectedProbeGrid() -> Boolean {
+        var node = SelectedNode();
+        var state = scene_bake_3d.ProbeGridFromNode(node);
+        if state.present == false {
+            probeStatus.SetText(
+                "Apply a probe grid to the selected node first.");
+            return false;
+        }
+        if lastCompletedBaker == null {
+            probeStatus.SetText(
+                "Run a lightmap bake first; probes sample its result.");
+            return false;
+        }
+        if currentDoc == null or currentDoc.filePath == "" {
+            probeStatus.SetText(
+                "Save the scene first so the .vlpg sidecar has a home.");
+            return false;
+        }
+        var grid = LightProbeGrid3D.New(
+            Vec3.New(state.minX, state.minY, state.minZ),
+            Vec3.New(state.maxX, state.maxY, state.maxZ),
+            state.spacing);
+        if grid == null { return false; }
+        grid.Bake(lastCompletedBaker);
+        var sidecarPath = SceneSidecarPath(".vlpg");
+        if grid.Save(sidecarPath) == false {
+            probeStatus.SetText(
+                "The probe sidecar could not be written: " + sidecarPath);
+            return false;
+        }
+        probeStatus.SetText(
+            "Baked " + grid.ProbeCount + " probes to "
+            + Path.Name(sidecarPath)
+            + "; the scene document is untouched.");
+        return true;
+    }
+
+    /// @brief Sibling sidecar path derived from the document path.
+    hide override func SceneSidecarPath(extension: String) -> String {
+        var base = currentDoc.filePath;
+        var dot = Str.LastIndexOf(base, ".");
+        if dot > 0 { base = Str.MidLen(base, 1, dot - 1); }
+        return base + extension;
+    }
+
+    /// @brief Write the env.* convention to the root as one transaction.
+    expose override func ApplyEnvironmentFromControls() -> Boolean {
+        if scene == null { return false; }
+        var state = new scene_bake_3d.EnvironmentState3D();
+        state.skyboxPath = Str.Trim(envSkyboxInput.get_Text());
+        state.iblEnabled = envIblCheck.IsChecked();
+        state.iblIntensity = envIblIntensitySpinner.Value;
+        if scene_bake_3d.WriteEnvironmentToRoot(
+               scene.Root, state) == false {
+            return false;
+        }
+        if CommitScene("Updated scene environment") == false {
+            return false;
+        }
+        renderDirty = true;
+        detailLabel.SetText(
+            "Environment written to the scene root; games consume it "
+            + "through Canvas3D.SetSkybox/IblEnabled/IblIntensity.");
+        return true;
+    }
+
+    /// @brief Apply the authored environment to one render canvas.
+    /// @details Workspace-only presentation: the cubemap cache keys on the
+    ///          resolved path and never touches canonical content.
+    hide override func ApplyEnvironmentToCanvas(canvas: Canvas3D) -> Boolean {
+        if canvas == null or scene == null { return false; }
+        var state = scene_bake_3d.EnvironmentFromRoot(scene.Root);
+        canvas.IblEnabled = state.iblEnabled;
+        canvas.IblIntensity = state.iblIntensity;
+        if state.skyboxPath == "" {
+            canvas.ClearSkybox();
+            return false;
+        }
+        var resolved = state.skyboxPath;
+        if currentDoc != null and currentDoc.filePath != ""
+           and Path.IsAbsolute(resolved) == false {
+            resolved = Path.Join(
+                Path.Directory(currentDoc.filePath), resolved);
+        }
+        if resolved != envSkyboxCubemapPath {
+            envSkyboxCubemapPath = resolved;
+            envSkyboxCubemap = null;
+            // A missing panorama is presentation-only: the reference stays
+            // authored and the viewport simply skips the skybox.
+            if File.Exists(resolved) {
+                envSkyboxCubemap =
+                    CubeMap3D.LoadHdrPanorama(resolved, 128.0)
+                    as CubeMap3D;
+            }
+        }
+        if envSkyboxCubemap != null {
+            canvas.SetSkybox(envSkyboxCubemap);
+            return true;
+        } else {
+            canvas.ClearSkybox();
+        }
+        return false;
+    }
+
+    /// @brief Return one stable cache key for the resolved project environment.
+    hide override func ProjectEnvironmentSignature(
+        state: SceneEditor3DModel.ScenePreview3DRenderState) -> String {
+        if state == null { return "none"; }
+        var flags = "";
+        if state.hasSky { flags = flags + "S"; }
+        if state.stars { flags = flags + "*"; }
+        if state.hasSun { flags = flags + "K"; }
+        if state.hasFill { flags = flags + "F"; }
+        return flags
+            + "|" + state.clearR + "|" + state.clearG + "|" + state.clearB
+            + "|" + state.zenithR + "|" + state.zenithG
+            + "|" + state.zenithB
+            + "|" + state.groundR + "|" + state.groundG
+            + "|" + state.groundB + "|" + state.cloudDensity
+            + "|" + state.sunX + "|" + state.sunY + "|" + state.sunZ
+            + "|" + state.sunR + "|" + state.sunG + "|" + state.sunB
+            + "|" + state.sunIntensity
+            + "|" + state.fillX + "|" + state.fillY + "|" + state.fillZ
+            + "|" + state.fillR + "|" + state.fillG + "|" + state.fillB
+            + "|" + state.fillIntensity;
+    }
+
+    /// @brief Cache bounded project sky/light resources until metadata changes.
+    hide override func EnsureProjectPreviewEnvironment(
+        state: SceneEditor3DModel.ScenePreview3DRenderState) {
+        var signature = ProjectEnvironmentSignature(state);
+        if signature == projectEnvironmentSignature { return; }
+        projectEnvironmentSignature = signature;
+        projectSkyCubemap = null;
+        projectSunLight = null;
+        projectFillLight = null;
+        if state == null { return; }
+        if state.hasSky {
+            projectSkyCubemap = BuildProjectSkybox(state);
+        }
+        if state.hasSun and state.sunIntensity > 0.0
+           and DirectionUsable(state.sunX, state.sunY, state.sunZ) {
+            projectSunLight = Light3D.Directional(
+                Vec3.New(state.sunX, state.sunY, state.sunZ),
+                state.sunR * state.sunIntensity,
+                state.sunG * state.sunIntensity,
+                state.sunB * state.sunIntensity);
+        }
+        if state.hasFill and state.fillIntensity > 0.0
+           and DirectionUsable(state.fillX, state.fillY, state.fillZ) {
+            projectFillLight = Light3D.Directional(
+                Vec3.New(state.fillX, state.fillY, state.fillZ),
+                state.fillR * state.fillIntensity,
+                state.fillG * state.fillIntensity,
+                state.fillB * state.fillIntensity);
+        }
+    }
+
+    /// @brief Return whether a directional-light vector is nondegenerate.
+    hide override func DirectionUsable(x: Number,
+                              y: Number,
+                              z: Number) -> Boolean {
+        return x * x + y * y + z * z > 0.000001;
+    }
+
+    /// @brief Build one fixed-budget project sky from the resolved palette.
+    hide override func BuildProjectSkybox(
+        state: SceneEditor3DModel.ScenePreview3DRenderState) -> CubeMap3D {
+        var positiveX = BuildProjectSkyFace(state, 0);
+        var negativeX = BuildProjectSkyFace(state, 1);
+        var positiveY = BuildProjectSkyFace(state, 2);
+        var negativeY = BuildProjectSkyFace(state, 3);
+        var positiveZ = BuildProjectSkyFace(state, 4);
+        var negativeZ = BuildProjectSkyFace(state, 5);
+        if positiveX == null or negativeX == null
+           or positiveY == null or negativeY == null
+           or positiveZ == null or negativeZ == null {
+            return null;
+        }
+        return CubeMap3D.New(
+            positiveX, negativeX, positiveY,
+            negativeY, positiveZ, negativeZ);
+    }
+
+    /// @brief Rasterize one 32x32 cubemap face from direction-space colors.
+    hide override func BuildProjectSkyFace(
+        state: SceneEditor3DModel.ScenePreview3DRenderState,
+        face: Integer) -> Pixels {
+        var pixels =
+            Pixels.New(SceneEditor3DModel.PROJECT_SKY_FACE_SIZE, SceneEditor3DModel.PROJECT_SKY_FACE_SIZE);
+        if pixels == null { return null; }
+        var y = 0;
+        while y < SceneEditor3DModel.PROJECT_SKY_FACE_SIZE {
+            var x = 0;
+            while x < SceneEditor3DModel.PROJECT_SKY_FACE_SIZE {
+                var u = ((x + 0.5)
+                    / (SceneEditor3DModel.PROJECT_SKY_FACE_SIZE / 1.0)) * 2.0 - 1.0;
+                var v = ((y + 0.5)
+                    / (SceneEditor3DModel.PROJECT_SKY_FACE_SIZE / 1.0)) * 2.0 - 1.0;
+                var directionX = 0.0;
+                var directionY = 0.0;
+                var directionZ = 0.0;
+                if face == 0 {
+                    directionX = 1.0;
+                    directionY = 0.0 - v;
+                    directionZ = 0.0 - u;
+                } else if face == 1 {
+                    directionX = -1.0;
+                    directionY = 0.0 - v;
+                    directionZ = u;
+                } else if face == 2 {
+                    directionX = u;
+                    directionY = 1.0;
+                    directionZ = v;
+                } else if face == 3 {
+                    directionX = u;
+                    directionY = -1.0;
+                    directionZ = 0.0 - v;
+                } else if face == 4 {
+                    directionX = u;
+                    directionY = 0.0 - v;
+                    directionZ = 1.0;
+                } else {
+                    directionX = 0.0 - u;
+                    directionY = 0.0 - v;
+                    directionZ = -1.0;
+                }
+                var length = Math.Sqrt(
+                    directionX * directionX
+                    + directionY * directionY
+                    + directionZ * directionZ);
+                if length < 0.000001 { length = 1.0; }
+                Pixels.Set(
+                    pixels,
+                    x,
+                    y,
+                    ProjectSkyColor(
+                        state,
+                        directionX / length,
+                        directionY / length,
+                        directionZ / length));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        return pixels;
+    }
+
+    /// @brief Sample bounded analytic sky color for one world direction.
+    hide override func ProjectSkyColor(
+        state: SceneEditor3DModel.ScenePreview3DRenderState,
+        directionX: Number,
+        directionY: Number,
+        directionZ: Number) -> Integer {
+        var red = state.clearR;
+        var green = state.clearG;
+        var blue = state.clearB;
+        if directionY < -0.02 {
+            var down = SceneEditor3DModel.ClampNumber3D(
+                (0.0 - directionY) * 2.2, 0.0, 1.0);
+            red = Lerp3D(state.clearR, state.groundR, down);
+            green = Lerp3D(state.clearG, state.groundG, down);
+            blue = Lerp3D(state.clearB, state.groundB, down);
+            return PackPreviewColor(red, green, blue);
+        }
+        var up = Smoothstep3D(0.0, 0.55, directionY);
+        red = Lerp3D(state.clearR, state.zenithR, up);
+        green = Lerp3D(state.clearG, state.zenithG, up);
+        blue = Lerp3D(state.clearB, state.zenithB, up);
+        var haze = SceneEditor3DModel.ClampNumber3D(
+            1.0 - AbsNumber3D(directionY) * 2.4, 0.0, 1.0);
+        haze = haze * haze * 0.22;
+        red = red + haze * state.clearR;
+        green = green + haze * state.clearG;
+        blue = blue + haze * state.clearB;
+
+        if state.hasSun and state.sunIntensity > 0.0
+           and DirectionUsable(state.sunX, state.sunY, state.sunZ) {
+            var sunLength = Math.Sqrt(
+                state.sunX * state.sunX
+                + state.sunY * state.sunY
+                + state.sunZ * state.sunZ);
+            var sunDot =
+                (directionX * (0.0 - state.sunX)
+                 + directionY * (0.0 - state.sunY)
+                 + directionZ * (0.0 - state.sunZ))
+                / sunLength;
+            if sunDot > 0.0 {
+                var glow = sunDot * sunDot;
+                glow = glow * glow * glow;
+                red = red + glow * 0.9 * state.sunR;
+                green = green + glow * 0.9 * state.sunG;
+                blue = blue + glow * 0.9 * state.sunB;
+            }
+        }
+        if state.cloudDensity > 0.0 {
+            var band = SceneEditor3DModel.ClampNumber3D(
+                1.0 - AbsNumber3D(directionY) * 1.4, 0.0, 1.0);
+            var noise =
+                Math.Sin(directionX * 7.0 + directionZ * 5.0) * 0.5
+                + Math.Sin(
+                    directionX * 13.0 - directionZ * 11.0
+                    + directionY * 6.0) * 0.3
+                + Math.Cos(
+                    directionZ * 17.0 + directionX * 3.0) * 0.2;
+            var cloud = Smoothstep3D(
+                0.55 - state.cloudDensity * 0.35,
+                0.9,
+                (noise + 1.0) * 0.5)
+                * band * state.cloudDensity;
+            red = Lerp3D(red, red * 0.4 + 0.55, cloud);
+            green = Lerp3D(green, green * 0.4 + 0.55, cloud);
+            blue = Lerp3D(blue, blue * 0.4 + 0.58, cloud);
+        }
+        if state.stars and directionY > 0.05 {
+            var hashX = Convert.NumToInt(
+                Math.Round((directionX + 1.0) * 271.0));
+            var hashY = Convert.NumToInt(
+                Math.Round((directionY + 1.0) * 197.0));
+            var hashZ = Convert.NumToInt(
+                Math.Round((directionZ + 1.0) * 353.0));
+            var hash =
+                (hashX * 73856093
+                 + hashZ * 19349663
+                 + hashY * 83492791) % 100000;
+            if hash < 0 { hash = 0 - hash; }
+            if hash > 99720 {
+                var magnitude = (hash - 99720) / 280.0;
+                red = red + 0.55 * magnitude;
+                green = green + 0.60 * magnitude;
+                blue = blue + 0.70 * magnitude;
+            }
+        }
+        return PackPreviewColor(red, green, blue);
+    }
+
+    /// @brief Linear interpolation without introducing a math dependency.
+    hide override func Lerp3D(a: Number,
+                     b: Number,
+                     amount: Number) -> Number {
+        return a + (b - a) * amount;
+    }
+
+    /// @brief Bounded cubic easing for palette and cloud transitions.
+    hide override func Smoothstep3D(minimum: Number,
+                           maximum: Number,
+                           value: Number) -> Number {
+        if maximum <= minimum {
+            if value < minimum { return 0.0; }
+            return 1.0;
+        }
+        var t = SceneEditor3DModel.ClampNumber3D(
+            (value - minimum) / (maximum - minimum), 0.0, 1.0);
+        return t * t * (3.0 - 2.0 * t);
+    }
+
+    /// @brief Return one scalar's magnitude.
+    hide override func AbsNumber3D(value: Number) -> Number {
+        if value < 0.0 { return 0.0 - value; }
+        return value;
+    }
+
+    /// @brief Pack normalized preview color into RGBA8 for CubeMap3D.
+    hide override func PackPreviewColor(red: Number,
+                               green: Number,
+                               blue: Number) -> Integer {
+        var r = Convert.NumToInt(Math.Round(
+            SceneEditor3DModel.ClampNumber3D(red, 0.0, 1.0) * 255.0));
+        var g = Convert.NumToInt(Math.Round(
+            SceneEditor3DModel.ClampNumber3D(green, 0.0, 1.0) * 255.0));
+        var b = Convert.NumToInt(Math.Round(
+            SceneEditor3DModel.ClampNumber3D(blue, 0.0, 1.0) * 255.0));
+        return (((r * 256) + g) * 256 + b) * 256 + 255;
+    }
+
+    /// @brief Apply resolved profile atmosphere without canonical mutation.
+    hide override func ApplyProjectPreviewEnvironment(
+        canvas: Canvas3D,
+        state: SceneEditor3DModel.ScenePreview3DRenderState,
+        authoredSkyPresent: Boolean,
+        assist: Boolean) {
+        if canvas == null or state == null { return; }
+        EnsureProjectPreviewEnvironment(state);
+        if authoredSkyPresent == false {
+            if projectSkyCubemap != null {
+                canvas.SetSkybox(projectSkyCubemap);
+            } else {
+                canvas.ClearSkybox();
+            }
+        }
+        if state.hasIblIntensity
+           and (authoredSkyPresent or projectSkyCubemap != null) {
+            canvas.IblEnabled = state.iblIntensity > 0.0;
+            canvas.IblIntensity = state.iblIntensity;
+        }
+        if projectSunLight != null or projectFillLight != null {
+            canvas.ClearLights();
+            var slot = 0;
+            if projectSunLight != null {
+                canvas.SetLight(slot, projectSunLight);
+                slot = slot + 1;
+            }
+            if projectFillLight != null {
+                canvas.SetLight(slot, projectFillLight);
+            }
+        } else {
+            canvas.SetDefaultLighting();
+        }
+        if state.hasAmbient {
+            canvas.SetAmbient(
+                state.ambientR,
+                state.ambientG,
+                state.ambientB);
+        } else if assist {
+            canvas.SetAmbient(0.55, 0.55, 0.58);
+        } else {
+            canvas.SetAmbient(0.05, 0.05, 0.06);
+        }
+        if state.hasFog {
+            canvas.SetFog(
+                state.fogNear,
+                state.fogFar,
+                state.fogR,
+                state.fogG,
+                state.fogB);
+        } else {
+            canvas.ClearFog();
+        }
+        if state.hasHeightFog and state.heightFogEnabled {
+            canvas.SetHeightFog(
+                state.heightFogBase,
+                state.heightFogFalloff,
+                state.heightFogDensity,
+                state.heightFogOpacity);
+        } else {
+            canvas.ClearHeightFog();
+        }
+        if state.hasClear {
+            canvas.Clear(
+                state.clearR,
+                state.clearG,
+                state.clearB);
+        } else {
+            canvas.Clear(
+                SceneEditor3DModel.VIEWPORT_CLEAR_RED,
+                SceneEditor3DModel.VIEWPORT_CLEAR_GREEN,
+                SceneEditor3DModel.VIEWPORT_CLEAR_BLUE);
+        }
+    }
+}

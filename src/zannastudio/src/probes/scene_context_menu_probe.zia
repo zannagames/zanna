@@ -86,7 +86,20 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Typed state shared by the serial context-menu scenarios.
+class SceneContextMenuProbeContext {
+    expose document_manager.DocumentManager documents;
+    expose app_shell.AppShell shell;
+    expose scene_editor_2d.SceneEditor2D editor2d;
+    expose document.Document doc2d;
+    expose GUI.TestHarness harness;
+    expose String block;
+    expose String regionBaseline;
+}
+
+/// @brief Verify 3D hierarchy and viewport context-menu routing.
+func VerifyContextMenus3D(
+    ctx: SceneContextMenuProbeContext) -> Boolean {
     // ------------------------------------------------------------------ 3D
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene Context Menu Probe", 1240, 800);
@@ -108,7 +121,7 @@ func main() {
     var nodeIndex = editor3d.AddEmptyNode("Marker", -1);
     if nodeIndex < 0 {
         Fail(shell, null, "3D node fixture");
-        return;
+        return false;
     }
     editor3d.SelectSceneNodes([nodeIndex], nodeIndex);
     editor3d.Pump(doc3d);
@@ -118,7 +131,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, null, "3D bind");
-        return;
+        return false;
     }
     var canonical = doc3d.content;
     var revision = editor3d.GetRevision();
@@ -145,7 +158,7 @@ func main() {
     menus3d.Pump(editor3d);
     if menus3d.hierarchyMenu.IsVisible() == false {
         Fail(shell, harness, "3D hierarchy right-click did not open its menu");
-        return;
+        return false;
     }
     if menus3d.hierarchyRename.IsEnabled() == false
        or menus3d.hierarchyCreateChild.IsEnabled() == false
@@ -157,7 +170,7 @@ func main() {
        or menus3d.hierarchyDuplicate.IsEnabled() == false
        or menus3d.hierarchyDelete.IsEnabled() == false {
         Fail(shell, harness, "3D single-selection enablement was wrong");
-        return;
+        return false;
     }
     menus3d.hierarchyMenu.Hide();
     shell.Poll();
@@ -182,7 +195,7 @@ func main() {
     menus3d.Pump(editor3d);
     if menus3d.viewportMenu.IsVisible() == false {
         Fail(shell, harness, "3D viewport right-click did not open its menu");
-        return;
+        return false;
     }
     menus3d.viewportMenu.Hide();
     shell.Poll();
@@ -204,14 +217,14 @@ func main() {
     menus3d.Pump(editor3d);
     if menus3d.viewportMenu.IsVisible() {
         Fail(shell, harness, "3D fly drag opened the viewport menu");
-        return;
+        return false;
     }
 
     // Routing and enablement never touch canonical state.
     if doc3d.content != canonical
        or editor3d.GetRevision() != revision {
         Fail(shell, harness, "3D menu routing changed content or history");
-        return;
+        return false;
     }
 
     // Menu-created primitives spawn at the view target with the inline
@@ -222,7 +235,7 @@ func main() {
            scene_editor_3d.PRIMITIVE_CYLINDER, false) == false
        or editor3d.flatNodes.count() != beforeNodes + 1 {
         Fail(shell, harness, "menu cylinder create did not add one node");
-        return;
+        return false;
     }
     var createdNode = editor3d.flatNodes.get(beforeNodes);
     var spawnDeltaX = createdNode.WorldPosition.X - 2.5;
@@ -236,20 +249,27 @@ func main() {
              "menu create did not spawn a mesh at the view target with "
              + "a visible rename armed: x="
              + createdNode.WorldPosition.X);
-        return;
+        return false;
     }
     editor3d.hierarchyTree.CancelEdit();
     editor3d.viewTargetX = 0.0;
     if editor3d.Undo() == false or doc3d.content != canonical {
         Fail(shell, harness,
              "undoing the menu-created cylinder did not restore bytes");
-        return;
+        return false;
     }
+    ctx.documents = documents;
     harness.UnbindApp();
     shell.Destroy();
+    return true;
+}
 
+/// @brief Verify 2D menu routing and object creation at the click cell.
+func VerifyContextMenusAndPlacement2D(
+    ctx: SceneContextMenuProbeContext) -> Boolean {
     // ------------------------------------------------------------------ 2D
-    shell = new app_shell.AppShell();
+    var documents = ctx.documents;
+    var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene Context Menu Probe 2D", 1240, 800);
     shell.SetSceneWorkspaceMode(true);
     var editor2d = new scene_editor_2d.SceneEditor2D();
@@ -267,17 +287,17 @@ func main() {
 
     if editor2d.AddSceneObject("enemy", "left", 0, 0) != 0 {
         Fail(shell, null, "2D object fixture");
-        return;
+        return false;
     }
     editor2d.SelectSceneObjects([0], 0);
     editor2d.Pump(doc2d);
     shell.Poll();
     shell.Render();
 
-    harness = GUI.TestHarness.New();
+    var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, null, "2D bind");
-        return;
+        return false;
     }
     var canonical2d = doc2d.content;
 
@@ -301,12 +321,12 @@ func main() {
     menus2d.Pump(editor2d);
     if menus2d.hierarchyMenu.IsVisible() == false {
         Fail(shell, harness, "2D hierarchy right-click did not open its menu");
-        return;
+        return false;
     }
     if menus2d.hierarchyRename.IsEnabled() == false
        or menus2d.hierarchyAddChild.IsEnabled() == false {
         Fail(shell, harness, "2D single-selection enablement was wrong");
-        return;
+        return false;
     }
     menus2d.hierarchyMenu.Hide();
     shell.Poll();
@@ -330,13 +350,13 @@ func main() {
     menus2d.Pump(editor2d);
     if menus2d.canvasMenu.IsVisible() == false {
         Fail(shell, harness, "2D canvas right-click did not open the tool menu");
-        return;
+        return false;
     }
     menus2d.canvasMenu.Hide();
 
     if doc2d.content != canonical2d {
         Fail(shell, harness, "2D menu routing changed content");
-        return;
+        return false;
     }
 
     // "Add Object Here" enables over scene cells and creates one selected,
@@ -348,7 +368,7 @@ func main() {
         Fail(shell, harness,
              "Add Object Here was not enabled over a scene cell: cell="
              + addCellX + "," + addCellY);
-        return;
+        return false;
     }
     var beforeObjects = editor2d.scene.ObjectCount();
     var created = editor2d.CreateObjectAtCanvasPoint(canvasX, canvasY);
@@ -364,14 +384,29 @@ func main() {
         Fail(shell, harness,
              "Add Object Here did not create a selected, visibly renamed "
              + "entity at the click cell: index=" + created);
-        return;
+        return false;
     }
     editor2d.objectTree.CancelEdit();
     if editor2d.Undo() == false or doc2d.content != canonical2d {
         Fail(shell, harness,
              "undoing Add Object Here did not restore canonical bytes");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.editor2d = editor2d;
+    ctx.doc2d = doc2d;
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify tile-region clipboard and reusable stamp transactions.
+func VerifyTileRegionsAndStamp(
+    ctx: SceneContextMenuProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor2d = ctx.editor2d;
+    var doc2d = ctx.doc2d;
+    var harness = ctx.harness;
 
     // Free placement math scales content pixels to scene pixels exactly:
     // whole display cells map to whole tiles, and a half cell to a half
@@ -388,14 +423,14 @@ func main() {
              + " tile=" + editor2d.scene.TileWidth
              + " x1=" + editor2d.CanvasFreePixelX(
                    editor2d.displayCellSize));
-        return;
+        return false;
     }
     // Tile region operations (2.1): paste records the region, copy encodes
     // the exact block, delete clears as one transaction, undo restores.
     var block = scene_clipboard.EncodeTileBlock(2, 1, [7, 8]);
     if block == "" or scene_clipboard.HasTileBlock(block) == false {
         Fail(shell, harness, "tile block encode failed");
-        return;
+        return false;
     }
     GUI.ClipboardText.SetText(block);
     var regionBaseline = doc2d.content;
@@ -412,25 +447,25 @@ func main() {
              + editor2d.scene.GetTile(0, 2, 1)
              + " region=" + editor2d.tileRegionMinX + ".."
              + editor2d.tileRegionMaxX);
-        return;
+        return false;
     }
     GUI.ClipboardText.SetText("");
     if editor2d.CopyTileRegion() == false {
         Fail(shell, harness, "tile region copy failed");
-        return;
+        return false;
     }
     var copied = scene_clipboard.DecodeTileBlock(
         GUI.ClipboardText.GetText());
     if copied.valid == false or copied.width != 2 or copied.height != 1
        or copied.tiles.get(0) != 7 or copied.tiles.get(1) != 8 {
         Fail(shell, harness, "copied tile block did not round-trip");
-        return;
+        return false;
     }
     if editor2d.DeleteTileRegion() == false
        or editor2d.scene.GetTile(0, 1, 1) != 0
        or editor2d.undoStack.count() != regionUndo + 2 {
         Fail(shell, harness, "tile region delete was not one transaction");
-        return;
+        return false;
     }
     if editor2d.Undo() == false
        or editor2d.scene.GetTile(0, 1, 1) != 7
@@ -438,7 +473,7 @@ func main() {
        or doc2d.content != regionBaseline {
         Fail(shell, harness,
              "undoing tile region edits did not restore exact bytes");
-        return;
+        return false;
     }
 
     // Region stamp (2.1b): adopt the region as a stamp, then one real
@@ -449,7 +484,7 @@ func main() {
        or editor2d.stampActive == false
        or editor2d.stampWidth != 2 or editor2d.stampHeight != 1 {
         Fail(shell, harness, "region stamp capture failed");
-        return;
+        return false;
     }
     editor2d.Pump(doc2d);
     shell.Poll();
@@ -484,19 +519,34 @@ func main() {
              + editor2d.scene.GetTile(0, 5, 3)
              + " undo=" + editor2d.undoStack.count()
              + "/" + (stampUndo + 1));
-        return;
+        return false;
     }
     editor2d.ClearTileStamp();
     if editor2d.stampActive {
         Fail(shell, harness, "stamp did not clear");
-        return;
+        return false;
     }
     if editor2d.Undo() == false or editor2d.Undo() == false
        or doc2d.content != regionBaseline {
         Fail(shell, harness,
              "undoing stamp edits did not restore exact bytes");
-        return;
+        return false;
     }
+
+    ctx.block = block;
+    ctx.regionBaseline = regionBaseline;
+    return true;
+}
+
+/// @brief Verify raster shape gestures and layers-panel state.
+func VerifyShapeAndLayerTools(
+    ctx: SceneContextMenuProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor2d = ctx.editor2d;
+    var doc2d = ctx.doc2d;
+    var harness = ctx.harness;
+    var block = ctx.block;
+    var regionBaseline = ctx.regionBaseline;
 
     // Line and ellipse tools (2.1c): a real drag writes the rasterized
     // shape as one transaction; undo restores exact bytes.
@@ -541,7 +591,7 @@ func main() {
              + editor2d.scene.GetTile(0, 3, 1)
              + editor2d.scene.GetTile(0, 4, 1)
              + " undo=" + editor2d.undoStack.count());
-        return;
+        return false;
     }
     editor2d.SetToolMode(scene_editor_2d.MODE_ELLIPSE);
     var ellipseStartX = HarnessCoordinate(
@@ -580,13 +630,13 @@ func main() {
              + editor2d.scene.GetTile(0, 3, 5)
              + " center=" + editor2d.scene.GetTile(0, 3, 3)
              + " undo=" + editor2d.undoStack.count());
-        return;
+        return false;
     }
     if editor2d.Undo() == false or editor2d.Undo() == false
        or doc2d.content != regionBaseline {
         Fail(shell, harness,
              "undoing shape edits did not restore exact bytes");
-        return;
+        return false;
     }
 
     // Layers panel (2.2): opacity commits one first-class edit; lock is
@@ -608,11 +658,11 @@ func main() {
              "layer opacity did not commit one first-class edit: o="
              + editor2d.scene.LayerOpacity(0)
              + " undo=" + editor2d.undoStack.count());
-        return;
+        return false;
     }
     if editor2d.Undo() == false or doc2d.content != layerBaseline {
         Fail(shell, harness, "undoing layer opacity did not restore bytes");
-        return;
+        return false;
     }
     editor2d.inspectorScroll.ScrollTo(editor2d.layerLockCheck);
     editor2d.Pump(doc2d);
@@ -622,7 +672,7 @@ func main() {
     editor2d.Pump(doc2d);
     if editor2d.LayerLocked(0) == false {
         Fail(shell, harness, "lock click did not lock the active layer");
-        return;
+        return false;
     }
     shell.Poll();
     shell.Render();
@@ -630,7 +680,7 @@ func main() {
     if editor2d.PasteTileBlockAt(1, 1)
        or doc2d.content != layerBaseline {
         Fail(shell, harness, "a locked layer accepted a tile paste");
-        return;
+        return false;
     }
     ClickWidget2D(shell, harness, editor2d.layerLockCheck);
     editor2d.Pump(doc2d);
@@ -640,7 +690,7 @@ func main() {
              + editor2d.layerLockCheck.IsChecked()
              + " enabled=" + editor2d.layerLockCheck.IsEnabled()
              + " visible=" + editor2d.layerLockCheck.IsVisible());
-        return;
+        return false;
     }
     shell.Poll();
     shell.Render();
@@ -650,16 +700,25 @@ func main() {
         Fail(shell, harness,
              "solo did not set preview state or touched content: solo="
              + editor2d.soloLayer);
-        return;
+        return false;
     }
     ClickWidget2D(shell, harness, editor2d.layerSoloCheck);
     editor2d.Pump(doc2d);
     if editor2d.soloLayer != -1 {
         Fail(shell, harness, "unsolo did not clear preview state");
-        return;
+        return false;
     }
 
-    harness.UnbindApp();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new SceneContextMenuProbeContext();
+    if VerifyContextMenus3D(ctx) == false { return; }
+    if VerifyContextMenusAndPlacement2D(ctx) == false { return; }
+    if VerifyTileRegionsAndStamp(ctx) == false { return; }
+    if VerifyShapeAndLayerTools(ctx) == false { return; }
+    ctx.harness.UnbindApp();
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

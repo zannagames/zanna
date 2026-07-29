@@ -79,7 +79,19 @@ func ArgValue(name: String) -> String {
     return "";
 }
 
-func main() {
+/// @brief Typed state shared by serial phase-2/phase-3 scenarios.
+class Phase23ProbeContext {
+    expose String root;
+    expose String spacedDir;
+    expose String sourcePath;
+    expose String ziaBin;
+    expose String zannaBin;
+    expose build_system.BuildSystem buildSys;
+}
+
+/// @brief Verify run configuration, compiler resolution, and process output.
+func VerifyRunConfigurationAndProcess(
+    ctx: Phase23ProbeContext) -> Boolean {
     var root = TempFile.CreateDirWithPrefix("zannastudio_phase23_probe_");
     var spacedDir = Path.Join(root, "dir with spaces");
     Dir.MakeAll(spacedDir);
@@ -100,19 +112,19 @@ func main() {
     if assertTrue(cfg.program == "zanna"
                   and Seq.get_Count(cfg.args) == 3
                   and Obj.ToString(Seq.Get(cfg.args, 1)) == "--diagnostic-format=json",
-                  "default run config uses argument vector") == false { return; }
+                  "default run config uses argument vector") == false { return false; }
     if assertTrue(Obj.ToString(Seq.Get(cfg.args, 2)) == sourcePath,
-                  "run config preserves path with spaces as one arg") == false { return; }
+                  "run config preserves path with spaces as one arg") == false { return false; }
 
     var split = run_config.SplitArgs("run \"path with spaces\" {target}");
     if assertTrue(Seq.get_Count(split) == 3
                   and Obj.ToString(Seq.Get(split, 1)) == "path with spaces",
-                  "split args preserves quoted token") == false { return; }
+                  "split args preserves quoted token") == false { return false; }
     var splitEscaped = run_config.SplitArgs("run 'single quoted' escaped\\ token");
     if assertTrue(Seq.get_Count(splitEscaped) == 3
                   and Obj.ToString(Seq.Get(splitEscaped, 1)) == "single quoted"
                   and Obj.ToString(Seq.Get(splitEscaped, 2)) == "escaped token",
-                  "split args preserves single quotes and escapes") == false { return; }
+                  "split args preserves single quotes and escapes") == false { return false; }
 
     var projMgr = new project_manager.ProjectManager();
     projMgr.project = new project.Project();
@@ -123,7 +135,7 @@ func main() {
     if assertTrue(custom.program == "custom-runner"
                   and custom.kind == run_config.KIND_CUSTOM
                   and Obj.ToString(Seq.Get(custom.args, 1)) == root,
-                  "project run config override") == false { return; }
+                  "project run config override") == false { return false; }
 
     var buildSys = new build_system.BuildSystem();
     var diag = buildSys.ParseDiagnosticLine("C:\\tmp\\a file.zia:12:3: warning[W123]: careful");
@@ -133,19 +145,19 @@ func main() {
                   and diag!.column == 3
                   and diag!.severity == 1
                   and diag!.code == "W123",
-                  "problem matcher preserves colon and space path") == false { return; }
+                  "problem matcher preserves colon and space path") == false { return false; }
 
     if assertTrue(buildSys.FormatDuration(850) == "850ms"
                   and buildSys.FormatDuration(0) == "0ms"
                   and buildSys.FormatDuration(1000) == "1.0s"
                   and buildSys.FormatDuration(1234) == "1.2s"
                   and buildSys.FormatDuration(12340) == "12.3s",
-                  "build duration formats sub-second as ms and longer as seconds") == false { return; }
+                  "build duration formats sub-second as ms and longer as seconds") == false { return false; }
 
     var ziaBin = ArgValue("--zia-bin");
-    if assertTrue(ziaBin != "", "zia binary argument provided") == false { return; }
+    if assertTrue(ziaBin != "", "zia binary argument provided") == false { return false; }
     var zannaBin = ArgValue("--zanna-bin");
-    if assertTrue(zannaBin != "", "zanna binary argument provided") == false { return; }
+    if assertTrue(zannaBin != "", "zanna binary argument provided") == false { return false; }
 
     // Compiler resolution: the IDE spawns through Process/execve(), which neither
     // searches PATH nor resolves a bare name, so a bare "zanna" never starts a
@@ -157,9 +169,9 @@ func main() {
     if assertTrue(resolvedZanna == expectedZanna
                   and Path.IsAbsolute(resolvedZanna)
                   and File.Exists(resolvedZanna),
-                  "default zanna resolves to an existing absolute path") == false { return; }
+                  "default zanna resolves to an existing absolute path") == false { return false; }
     if assertTrue(buildSys.ResolveCompiler("zanna_missing_binary_zzz_404") == "",
-                  "an unfindable program resolves to empty") == false { return; }
+                  "an unfindable program resolves to empty") == false { return false; }
 
     var procCfg = new run_config.RunConfig();
     procCfg.name = "Probe Run";
@@ -167,7 +179,7 @@ func main() {
     procCfg.program = ziaBin;
     procCfg.workingDirectory = spacedDir;
     Seq.Push(procCfg.args, sourcePath);
-    if assertTrue(buildSys.StartConfig(procCfg), "process job starts") == false { return; }
+    if assertTrue(buildSys.StartConfig(procCfg), "process job starts") == false { return false; }
     // Use elapsed time rather than poll counts: Sleep(1) is allowed to wake
     // later than requested on Windows, and cold process startup can include
     // executable scanning.  A poll-count deadline therefore varied with host
@@ -180,10 +192,28 @@ func main() {
     if buildSys.IsActive() {
         buildSys.Stop();
         fail("process job timed out: " + buildSys.GetOutput());
-        return;
+        return false;
     }
     if assertTrue(buildSys.lastBuildSuccess and Str.IndexOf(buildSys.GetOutput(), "PHASE2-RUN") != 0,
-                  "process job streams child output") == false { return; }
+                  "process job streams child output") == false { return false; }
+
+    ctx.root = root;
+    ctx.spacedDir = spacedDir;
+    ctx.sourcePath = sourcePath;
+    ctx.ziaBin = ziaBin;
+    ctx.zannaBin = zannaBin;
+    ctx.buildSys = buildSys;
+    return true;
+}
+
+/// @brief Verify project-entry execution and process termination.
+func VerifyProjectExecutionAndStop(
+    ctx: Phase23ProbeContext) -> Boolean {
+    var root = ctx.root;
+    var spacedDir = ctx.spacedDir;
+    var ziaBin = ctx.ziaBin;
+    var zannaBin = ctx.zannaBin;
+    var buildSys = ctx.buildSys;
 
     var projectRoot = Path.Join(root, "project with spaces");
     var projectSrc = Path.Join(projectRoot, "src");
@@ -210,28 +240,28 @@ func main() {
     if assertTrue(build_commands.HasExecutionTarget(emptyProjectDocs, entryProj)
                   and build_commands.HasExecutionTarget(emptyProjectDocs, null) == false
                   and debug_commands.HasDebugTarget(emptyProjectDocs) == false,
-                  "open projects are executable without an editor document") == false { return; }
+                  "open projects are executable without an editor document") == false { return false; }
     var untitledDocs = new document_manager.DocumentManager();
     untitledDocs.NewDocument();
     if assertTrue(build_commands.HasExecutionTarget(untitledDocs, null) == false
                   and debug_commands.HasDebugTarget(untitledDocs) == false,
-                  "untitled buffers are not advertised as execution targets") == false { return; }
+                  "untitled buffers are not advertised as execution targets") == false { return false; }
     emptyProjectDocs.OpenFile(entryPath);
     if assertTrue(build_commands.HasExecutionTarget(emptyProjectDocs, null)
                   and debug_commands.HasDebugTarget(emptyProjectDocs),
-                  "saved source files are build and debug targets") == false { return; }
+                  "saved source files are build and debug targets") == false { return false; }
     var projectOnlyCfg = run_config.ForDocument(run_config.ACTION_BUILD, null, entryProj);
     if assertTrue(projectOnlyCfg.kind == run_config.KIND_PROJECT_ENTRY
                   and projectOnlyCfg.targetPath == projectRoot,
-                  "project-only build config targets the workspace root") == false { return; }
+                  "project-only build config targets the workspace root") == false { return false; }
     var entryCfg = run_config.ForDocument(run_config.ACTION_RUN, entryDoc, entryProj);
     entryCfg.program = zannaBin;
     if assertTrue(entryCfg.kind == run_config.KIND_PROJECT_ENTRY
                   and entryCfg.targetPath == projectRoot
                   and entryProj.project.entryFile == "src/main.zia",
-                  "project entry run config targets manifest root") == false { return; }
-    if assertTrue(buildSys.StartConfig(entryCfg), "project entry process starts") == false { return; }
-    processDeadlineMs = Clock.NowMs() + 15000;
+                  "project entry run config targets manifest root") == false { return false; }
+    if assertTrue(buildSys.StartConfig(entryCfg), "project entry process starts") == false { return false; }
+    var processDeadlineMs = Clock.NowMs() + 15000;
     while buildSys.IsActive() and Clock.NowMs() < processDeadlineMs {
         buildSys.Update();
         Clock.Sleep(1);
@@ -239,10 +269,10 @@ func main() {
     if buildSys.IsActive() {
         buildSys.Stop();
         fail("project entry run timed out: " + buildSys.GetOutput());
-        return;
+        return false;
     }
     if assertTrue(buildSys.lastBuildSuccess and Str.IndexOf(buildSys.GetOutput(), "DIR-RUN-OK") != 0,
-                  "project entry run executes manifest entry") == false { return; }
+                  "project entry run executes manifest entry") == false { return false; }
 
     var longPath = Path.Join(spacedDir, "long_running.zia");
     File.WriteAllText(longPath,
@@ -258,44 +288,53 @@ func main() {
     stopCfg.program = ziaBin;
     stopCfg.workingDirectory = spacedDir;
     Seq.Push(stopCfg.args, longPath);
-    if assertTrue(buildSys.StartConfig(stopCfg), "long-running process starts") == false { return; }
+    if assertTrue(buildSys.StartConfig(stopCfg), "long-running process starts") == false { return false; }
     Clock.Sleep(50);
     buildSys.Update();
     if buildSys.IsActive() == false {
         fail("long-running process exited early: " + buildSys.GetOutput());
-        return;
+        return false;
     }
     var killed = buildSys.Stop();
     if assertTrue(killed
                   and buildSys.IsActive() == false
                   and buildSys.exitCode == -1
                   and Str.IndexOf(buildSys.GetOutput(), "[stopped]") != 0,
-                  "stop kills long-running process") == false { return; }
+                  "stop kills long-running process") == false { return false; }
+
+    return true;
+}
+
+/// @brief Verify bounded and failure-safe breakpoint persistence.
+func VerifyBreakpointPersistence(
+    ctx: Phase23ProbeContext) -> Boolean {
+    var root = ctx.root;
+    var sourcePath = ctx.sourcePath;
 
     var bpPath = Path.Join(root, "settings.ini");
     var bpStore = new breakpoints.BreakpointStore();
     bpStore.Setup(bpPath);
     bpStore.Toggle(sourcePath, 2);
     bpStore.Toggle(sourcePath, 3);
-    if assertTrue(bpStore.Save(), "breakpoint store saves ordinary state") == false { return; }
+    if assertTrue(bpStore.Save(), "breakpoint store saves ordinary state") == false { return false; }
     bpStore.Toggle(sourcePath, 3);
-    if assertTrue(bpStore.Save(), "breakpoint store saves compacted state") == false { return; }
+    if assertTrue(bpStore.Save(), "breakpoint store saves compacted state") == false { return false; }
     var bpText = File.ReadAllText(bpPath);
     if assertTrue(Str.IndexOf(bpText, "[breakpoint.1]") == 0,
-                  "breakpoint save removes stale higher-numbered sections") == false { return; }
+                  "breakpoint save removes stale higher-numbered sections") == false { return false; }
     var loadedBps = new breakpoints.BreakpointStore();
     loadedBps.Setup(bpPath);
-    if assertTrue(loadedBps.Load(), "breakpoint store reload succeeds") == false { return; }
+    if assertTrue(loadedBps.Load(), "breakpoint store reload succeeds") == false { return false; }
     if assertTrue(loadedBps.Count() == 1
                   and loadedBps.GetPath(0) == sourcePath
                   and loadedBps.GetLine(0) == 2,
-                  "breakpoints persist by structured path and line") == false { return; }
+                  "breakpoints persist by structured path and line") == false { return false; }
     if assertTrue(loadedBps.RemoveAtLocation(sourcePath, 999) == false
                   and loadedBps.Count() == 1,
-                  "removing a stale breakpoint never toggles it on") == false { return; }
+                  "removing a stale breakpoint never toggles it on") == false { return false; }
     if assertTrue(loadedBps.RemoveAtLocation(sourcePath, 2)
                   and loadedBps.Count() == 0,
-                  "exact breakpoint removal updates the durable store") == false { return; }
+                  "exact breakpoint removal updates the durable store") == false { return false; }
 
     var settingsOnlyPath = Path.Join(root, "settings-only.ini");
     File.WriteAllText(settingsOnlyPath, "[settings]\ntheme=dark\nfontSize=15\n");
@@ -303,7 +342,7 @@ func main() {
     emptyBps.Setup(settingsOnlyPath);
     emptyBps.Load();
     if assertTrue(emptyBps.Count() == 0,
-                  "breakpoint load tolerates settings file without breakpoint section") == false { return; }
+                  "breakpoint load tolerates settings file without breakpoint section") == false { return false; }
 
     // The writer must obey the same count cap as the loader. Otherwise a
     // generated/debug-heavy session can create a settings file that startup
@@ -319,18 +358,28 @@ func main() {
         cappedBps.items.add(cappedBp);
         cappedBpIndex = cappedBpIndex + 1;
     }
-    if assertTrue(cappedBps.Save(), "bounded breakpoint store saves") == false { return; }
+    if assertTrue(cappedBps.Save(), "bounded breakpoint store saves") == false { return false; }
     var cappedBpIni = Ini.Parse(File.ReadAllText(cappedBpPath));
     if assertTrue(Ini.Get(cappedBpIni, "breakpoints", "count") == "4096"
                   and Ini.Get(cappedBpIni, "breakpoint.4095", "line") == "4096"
                   and Ini.Get(cappedBpIni, "breakpoint.4096", "line") == "",
-                  "breakpoint writer caps records at the restore limit") == false { return; }
+                  "breakpoint writer caps records at the restore limit") == false { return false; }
 
     var invalidBps = new breakpoints.BreakpointStore();
     invalidBps.Setup(root);
     invalidBps.Toggle(sourcePath, 9);
     if assertTrue(invalidBps.Save() == false,
-                  "breakpoint persistence failure returns without trapping") == false { return; }
+                  "breakpoint persistence failure returns without trapping") == false { return false; }
+
+    return true;
+}
+
+/// @brief Verify the VM debug adapter and owned scene persistence.
+func VerifyDebugAdapterAndScene(
+    ctx: Phase23ProbeContext) -> Boolean {
+    var root = ctx.root;
+    var spacedDir = ctx.spacedDir;
+    var zannaBin = ctx.zannaBin;
 
     // Real VM debug adapter: launch a program, stop at a breakpoint with a call
     // stack and locals, then continue to exit. Drives the same DebugSession the IDE
@@ -350,7 +399,7 @@ func main() {
 
     var dbg = new debug_session.DebugSession();
     if assertTrue(dbg.Launch(zannaBin, dbgFile, dbgStore),
-                  "debug adapter launches") == false { return; }
+                  "debug adapter launches") == false { return false; }
     var debugDeadlineMs = Clock.NowMs() + 20000;
     while dbg.IsActive() and dbg.stopped == false and Clock.NowMs() < debugDeadlineMs {
         dbg.Poll();
@@ -359,13 +408,13 @@ func main() {
     if dbg.IsActive() and dbg.stopped == false {
         dbg.Terminate();
         fail("debug adapter breakpoint wait timed out");
-        return;
+        return false;
     }
     if assertTrue(dbg.stopped and dbg.lastLine == 5 and dbg.lastReason == "breakpoint",
-                  "debug adapter stops at the breakpoint line") == false { return; }
+                  "debug adapter stops at the breakpoint line") == false { return false; }
     if assertTrue(Str.IndexOf(dbg.FormatConsole(), "Call stack") != 0
                   and Str.IndexOf(dbg.FormatConsole(), "total = 7") != 0,
-                  "debug stop reports a call stack and locals") == false { return; }
+                  "debug stop reports a call stack and locals") == false { return false; }
 
     dbg.Continue();
     debugDeadlineMs = Clock.NowMs() + 20000;
@@ -376,12 +425,12 @@ func main() {
     if dbg.IsActive() {
         dbg.Terminate();
         fail("debug adapter termination wait timed out");
-        return;
+        return false;
     }
     if assertTrue(dbg.terminated
                   and Str.IndexOf(dbg.programOutput, "before-bp") != 0
                   and Str.IndexOf(dbg.programOutput, "after-bp") != 0,
-                  "debug adapter runs the program and terminates after continue") == false { return; }
+                  "debug adapter runs the program and terminates after continue") == false { return false; }
 
     var scene = SceneDocument.New(3, 2, 16, 16);
     scene.SetStr("theme", "cavern");
@@ -393,20 +442,29 @@ func main() {
     scene.ObjectSetInt(obj, "hp", 3);
     scene.ObjectSetBool(obj, "awake", true);
     var scenePath = Path.Join(root, "level.scene");
-    if assertTrue(scene.Save(scenePath), "scene save file") == false { return; }
+    if assertTrue(scene.Save(scenePath), "scene save file") == false { return false; }
     var loaded = SceneDocument.Load(scenePath);
     if assertTrue(loaded.HasErrors() == false
                   and loaded.GetTile(1, 1, 1) == 7
                   and loaded.ObjectGetInt(0, "hp", -1) == 3
                   and loaded.ObjectGetBool(0, "awake", false),
-                  "scene load/save preserves owned edits") == false { return; }
+                  "scene load/save preserves owned edits") == false { return false; }
     if assertTrue(loaded.BuildTilemap() != null,
-                  "scene builds render tilemap copy") == false { return; }
+                  "scene builds render tilemap copy") == false { return false; }
     var bad = SceneDocument.LoadJson("{\"version\":1,");
     if assertTrue(bad.HasErrors()
                   and Seq.get_Count(bad.DiagnosticRecords()) > 0,
-                  "scene malformed json reports diagnostics") == false { return; }
+                  "scene malformed json reports diagnostics") == false { return false; }
 
     Dir.RemoveAll(root);
     Terminal.Say("RESULT: ok");
+    return true;
+}
+
+func main() {
+    var ctx = new Phase23ProbeContext();
+    if VerifyRunConfigurationAndProcess(ctx) == false { return; }
+    if VerifyProjectExecutionAndStop(ctx) == false { return; }
+    if VerifyBreakpointPersistence(ctx) == false { return; }
+    if VerifyDebugAdapterAndScene(ctx) == false { return; }
 }

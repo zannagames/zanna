@@ -1,0 +1,795 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_layout.zia
+// Purpose: Focused layout behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_lifecycle.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_layout;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_lifecycle" as PreviousLayer;
+
+/// @brief Layout implementation layer.
+class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer {
+
+    /// @brief Toggle the inspector without making either compact pane unusable.
+    expose override func ToggleInspectorPane() {
+        if focusModeActive and inspectorDock.floating == false { return; }
+        if compactHierarchyShown {
+            compactHierarchyShown = false;
+            if compactLayout {
+                compactInspectorShown = true;
+            } else {
+                inspectorRequestedVisible = true;
+            }
+            ApplyInspectorLayout();
+            ApplyPaletteLayout();
+            CaptureWorkspaceState();
+            return;
+        }
+        if compactLayout {
+            compactInspectorShown = !compactInspectorShown;
+        } else {
+            inspectorRequestedVisible = !inspectorRequestedVisible;
+        }
+        ApplyInspectorLayout();
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Toggle a full-width object hierarchy on viewport-priority hosts.
+    expose override func ToggleHierarchyPane() {
+        if focusModeActive or hierarchyDock.floating
+           or SceneEditor2DModel.UsesDockedHierarchy(lastHostWidth) {
+            return;
+        }
+        compactHierarchyShown = compactHierarchyShown == false;
+        if compactHierarchyShown {
+            compactInspectorShown = false;
+            compactPaletteShown = false;
+        }
+        ApplyInspectorLayout();
+        ApplyPaletteLayout();
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Toggle the palette without sacrificing canvas usability.
+    expose override func TogglePalettePane() {
+        if paletteDock.floating
+           or (focusModeActive and paletteDock.floating == false) {
+            return;
+        }
+        if compactHierarchyShown {
+            compactHierarchyShown = false;
+            if compactPaletteLayout {
+                compactPaletteShown = true;
+            } else {
+                paletteRequestedVisible = true;
+            }
+            ApplyInspectorLayout();
+            ApplyPaletteLayout();
+            CaptureWorkspaceState();
+            return;
+        }
+        if compactPaletteLayout {
+            compactPaletteShown = !compactPaletteShown;
+        } else {
+            paletteRequestedVisible = !paletteRequestedVisible;
+        }
+        ApplyPaletteLayout();
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Publish a one-shot request for outer-only scene layout.
+    expose override func RequestWorkspaceModeToggle() {
+        workspaceModeToggleRequested = true;
+    }
+
+    /// @brief Consume one outer-only scene-layout toggle request.
+    expose override func TakeWorkspaceModeToggleRequested() -> Boolean {
+        var requested = workspaceModeToggleRequested;
+        workspaceModeToggleRequested = false;
+        return requested;
+    }
+
+    /// @brief Synchronize the shell's outer-only scene layout state.
+    expose override func SetWorkspaceModeActive(active: Boolean) {
+        if workspaceModeActive == active { return; }
+        workspaceModeActive = active;
+        UpdateWorkspaceButton();
+    }
+
+    /// @brief Return whether outer-only Scene Layout is active.
+    expose override func IsWorkspaceModeActive() -> Boolean {
+        return workspaceModeActive;
+    }
+
+    /// @brief Publish a one-shot request for the outer shell focus presentation.
+    expose override func RequestFocusModeToggle() {
+        focusModeToggleRequested = true;
+    }
+
+    /// @brief Consume one focus-mode toggle request.
+    expose override func TakeFocusModeToggleRequested() -> Boolean {
+        var requested = focusModeToggleRequested;
+        focusModeToggleRequested = false;
+        return requested;
+    }
+
+    /// @brief Synchronize the outer shell's focus-presentation state.
+    expose override func SetFocusModeActive(active: Boolean) {
+        if focusModeActive == active { return; }
+        focusModeActive = active;
+        ApplyInspectorLayout();
+        ApplyPaletteLayout();
+        UpdateFocusButton();
+    }
+
+    /// @brief Return whether the outer shell is presenting this scene in focus.
+    expose override func IsFocusModeActive() -> Boolean {
+        return focusModeActive;
+    }
+
+    /// @brief Open one persistent command menu beneath its owning button.
+    hide override func ShowCommandMenu(button: GUI.Button,
+                              menu: GUI.ContextMenu) {
+        if button == null or menu == null { return; }
+        var scale = 1.0;
+        if guiApp != null {
+            scale = guiApp.GetEffectiveScale();
+            if scale <= 0.0 { scale = 1.0; }
+        }
+        menu.Show(
+            Convert.NumToInt(button.GetScreenX() * scale),
+            Convert.NumToInt(
+                (button.GetScreenY() + button.GetScreenHeight()) * scale));
+    }
+
+    /// @brief Mirror document-level availability into the Scene menu.
+    hide override func ConfigureSceneMenu() {
+        var hasDocument = currentDoc != null;
+        var hasScene = scene != null;
+        sceneNewItem.SetEnabled(hasDocument);
+        sceneImportItem.SetEnabled(hasDocument);
+        scenePreviewItem.SetEnabled(
+            hasScene and gameViewActive == false);
+        scenePreviewItem.SetChecked(previewActive);
+        scenePreviewItem.SetText(
+            previewActive
+            ? "Stop Animation Preview"
+            : "Preview Animations");
+        sceneRunItem.SetEnabled(hasScene);
+    }
+
+    /// @brief Return the full user-facing name of one canvas tool.
+    hide override func ToolModeLabel(value: Integer) -> String {
+        if value == SceneEditor2DModel.MODE_PAINT { return "Paint"; }
+        if value == SceneEditor2DModel.MODE_ERASE { return "Erase"; }
+        if value == SceneEditor2DModel.MODE_RECTANGLE { return "Rectangle"; }
+        if value == SceneEditor2DModel.MODE_LINE { return "Line"; }
+        if value == SceneEditor2DModel.MODE_ELLIPSE { return "Ellipse"; }
+        if value == SceneEditor2DModel.MODE_FILL { return "Flood Fill"; }
+        if value == SceneEditor2DModel.MODE_PICKER { return "Pick Tile"; }
+        if value == SceneEditor2DModel.MODE_OBJECT { return "Object"; }
+        return "Select";
+    }
+
+    /// @brief Mirror active-mode and edit availability into the Tools menu.
+    hide override func ConfigureToolMenu() {
+        var enabled =
+            editorControlsEnabled and gameViewActive == false;
+        toolSelectItem.SetEnabled(enabled);
+        toolPaintItem.SetEnabled(enabled);
+        toolEraseItem.SetEnabled(enabled);
+        toolRectangleItem.SetEnabled(enabled);
+        toolLineItem.SetEnabled(enabled);
+        toolEllipseItem.SetEnabled(enabled);
+        toolFillItem.SetEnabled(enabled);
+        toolPickerItem.SetEnabled(enabled);
+        toolObjectItem.SetEnabled(enabled);
+        toolSelectItem.SetChecked(mode == SceneEditor2DModel.MODE_SELECT);
+        toolPaintItem.SetChecked(mode == SceneEditor2DModel.MODE_PAINT);
+        toolEraseItem.SetChecked(mode == SceneEditor2DModel.MODE_ERASE);
+        toolRectangleItem.SetChecked(mode == SceneEditor2DModel.MODE_RECTANGLE);
+        toolLineItem.SetChecked(mode == SceneEditor2DModel.MODE_LINE);
+        toolEllipseItem.SetChecked(mode == SceneEditor2DModel.MODE_ELLIPSE);
+        toolFillItem.SetChecked(mode == SceneEditor2DModel.MODE_FILL);
+        toolPickerItem.SetChecked(mode == SceneEditor2DModel.MODE_PICKER);
+        toolObjectItem.SetChecked(mode == SceneEditor2DModel.MODE_OBJECT);
+    }
+
+    /// @brief Mirror navigation, overlays, and pane state into the View menu.
+    hide override func ConfigureViewMenu() {
+        var enabled = scene != null;
+        var navigationEnabled =
+            enabled and gameViewOutputFramed == false;
+        viewFitItem.SetEnabled(navigationEnabled);
+        viewActualSizeItem.SetEnabled(navigationEnabled);
+        viewGridItem.SetEnabled(
+            enabled and gameViewActive == false);
+        viewGridItem.SetChecked(showGrid);
+        viewRulersItem.SetEnabled(
+            enabled and gameViewActive == false);
+        viewRulersItem.SetChecked(showRulers);
+        viewGameItem.SetEnabled(enabled);
+        viewGameItem.SetChecked(gameViewActive);
+        viewGameItem.SetText(
+            gameViewActive ? "Exit Game View" : "Game View");
+
+        var canToggleHierarchy =
+            SceneEditor2DModel.UsesDockedHierarchy(lastHostWidth) == false
+            and focusModeActive == false
+            and hierarchyDock.floating == false;
+        viewHierarchyItem.SetEnabled(canToggleHierarchy);
+        viewHierarchyItem.SetText(
+            compactHierarchyShown
+            ? "Return to Canvas"
+            : "Open Objects");
+        viewInspectorItem.SetEnabled(
+            focusModeActive == false or inspectorDock.floating);
+        viewInspectorItem.SetText(
+            compactInspectorShown
+            ? "Return to Canvas"
+            : "Toggle Inspector");
+        viewPaletteItem.SetEnabled(
+            focusModeActive == false or paletteDock.floating);
+        viewPaletteItem.SetText(
+            compactPaletteShown
+            ? "Return to Canvas"
+            : "Toggle Palette");
+        viewFocusItem.SetEnabled(
+            focusButton != null and focusButton.IsEnabled());
+        viewFocusItem.SetChecked(focusModeActive);
+        viewFocusItem.SetText(
+            focusModeActive ? "Exit Focus" : "Focus Canvas");
+        viewWorkspaceItem.SetEnabled(true);
+        viewWorkspaceItem.SetChecked(workspaceModeActive);
+        viewWorkspaceItem.SetText(
+            workspaceModeActive ? "Exit Scene Layout" : "Scene Layout");
+    }
+
+    /// @brief Open requested overflow menus after responsive visibility settles.
+    hide override func PumpCommandMenuButtons() {
+        if sceneMenuButton.WasClicked() {
+            ConfigureSceneMenu();
+            ShowCommandMenu(sceneMenuButton, sceneMenu);
+        }
+        if toolMenuButton.WasClicked() {
+            ConfigureToolMenu();
+            ShowCommandMenu(toolMenuButton, toolMenu);
+        }
+        if viewMenuButton.WasClicked() {
+            ConfigureViewMenu();
+            ShowCommandMenu(viewMenuButton, viewMenu);
+        }
+    }
+
+    /// @brief Keep compact menu affordances visibly and accessibly truthful.
+    hide override func UpdateCommandMenuButtons() {
+        if sceneMenuButton != null {
+            sceneMenuButton.SetStyle(previewActive ? 1 : 0);
+            sceneMenuButton.SetAccessibleDescription(
+                previewActive
+                ? "Animation preview is playing."
+                : "Animation preview is stopped.");
+        }
+        if toolMenuButton != null {
+            var hiddenMode =
+                mode != SceneEditor2DModel.MODE_SELECT
+                and mode != SceneEditor2DModel.MODE_PAINT
+                and mode != SceneEditor2DModel.MODE_ERASE;
+            var label = "Tools...";
+            if compactChrome { label = "Tools"; }
+            if hiddenMode {
+                label = ToolModeLabel(mode);
+                if compactChrome and mode == SceneEditor2DModel.MODE_RECTANGLE {
+                    label = "Rect";
+                } else if compactChrome and mode == SceneEditor2DModel.MODE_ELLIPSE {
+                    label = "Oval";
+                } else if compactChrome and mode == SceneEditor2DModel.MODE_FILL {
+                    label = "Fill";
+                } else if compactChrome and mode == SceneEditor2DModel.MODE_PICKER {
+                    label = "Pick";
+                }
+            }
+            toolMenuButton.SetText(label);
+            toolMenuButton.SetStyle(hiddenMode ? 1 : 0);
+            toolMenuButton.SetAccessibleDescription(
+                "Current 2D scene tool: " + ToolModeLabel(mode) + ".");
+        }
+        if viewMenuButton != null {
+            var presentationActive =
+                focusModeActive or workspaceModeActive;
+            viewMenuButton.SetStyle(presentationActive ? 1 : 2);
+            viewMenuButton.SetAccessibleDescription(
+                "Grid " + (showGrid ? "on" : "off")
+                + ", rulers " + (showRulers ? "on" : "off")
+                + ", Focus " + (focusModeActive ? "on" : "off")
+                + ", Scene Layout "
+                + (workspaceModeActive ? "on" : "off") + ".");
+        }
+    }
+
+    /// @brief Swap dense secondary tools and view actions for complete menus.
+    hide override func ApplyCommandMenuVisibility(useMenus: Boolean) {
+        sceneMenuButton.SetVisible(useMenus);
+        newSceneButton.SetVisible(!useMenus);
+        importButton.SetVisible(!useMenus);
+        previewButton.SetVisible(!useMenus);
+        runSceneButton.SetVisible(!useMenus);
+
+        toolMenuButton.SetVisible(useMenus);
+        rectangleButton.SetVisible(!useMenus);
+        lineButton.SetVisible(!useMenus);
+        ellipseButton.SetVisible(!useMenus);
+        fillButton.SetVisible(!useMenus);
+        pickerButton.SetVisible(!useMenus);
+        objectButton.SetVisible(!useMenus);
+
+        viewMenuButton.SetVisible(useMenus);
+        fitButton.SetVisible(!useMenus);
+        actualSizeButton.SetVisible(!useMenus);
+        gridButton.SetVisible(!useMenus);
+        rulersButton.SetVisible(!useMenus);
+        focusButton.SetVisible(!useMenus);
+        workspaceButton.SetVisible(!useMenus);
+    }
+
+    /// @brief Reconcile wrapping chrome and master/detail layout after resize.
+    expose override func RefreshResponsiveLayout() {
+        if root == null or bodySplit == null { return; }
+        var width = root.GetLogicalWidth();
+        var height = root.GetLogicalHeight();
+        if width <= 0.0 or height <= 0.0 { return; }
+        var widthDelta = width - lastHostWidth;
+        if widthDelta < 0.0 { widthDelta = 0.0 - widthDelta; }
+        var widthChanged = widthDelta > 0.01;
+        lastHostWidth = width;
+        lastHostHeight = height;
+        var nextCompact = SceneEditor2DModel.UsesCompactLayout(width);
+        var nextCompactChrome = SceneEditor2DModel.UsesCompactChrome(width);
+        var layoutChanged = nextCompact != compactLayout;
+        var chromeChanged = nextCompactChrome != compactChrome;
+        if layoutChanged {
+            compactLayout = nextCompact;
+            renderDirty = true;
+        }
+        compactChrome = nextCompactChrome;
+        if layoutChanged or chromeChanged or widthChanged {
+            ApplyResponsiveChrome();
+        }
+        var nextCompactPalette = SceneEditor2DModel.UsesCompactPaletteLayout(height);
+        var paletteChanged =
+            nextCompactPalette != compactPaletteLayout;
+        if paletteChanged {
+            compactPaletteLayout = nextCompactPalette;
+            renderDirty = true;
+        }
+        if layoutChanged or widthChanged {
+            ApplyInspectorLayout();
+        }
+        if layoutChanged or widthChanged or paletteChanged {
+            ApplyPaletteLayout();
+        }
+    }
+
+    /// @brief Keep essential scene actions reachable when toolbar rows wrap.
+    hide override func ApplyResponsiveChrome() {
+        var useCommandMenus = SceneEditor2DModel.UsesSceneCommandMenus(lastHostWidth);
+        ApplyCommandMenuVisibility(useCommandMenus);
+        if compactChrome {
+            // The progressive compact set needs one command row and at most
+            // two context rows, leaving most small-window height to the canvas.
+            toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 40.0);
+            viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 76.0);
+            sceneMenuButton.SetText("Scene");
+            newSceneButton.SetText("New");
+            importButton.SetText("Import...");
+            runSceneButton.SetText("Run");
+            rectangleButton.SetText("Rect");
+            ellipseButton.SetText("Oval");
+            previewButton.SetText("Play");
+            toolbar.SetGap(2.0);
+            toolbar.SetPadding(2.0);
+            viewToolbar.SetGap(2.0);
+            viewToolbar.SetPadding(2.0);
+            toolbarStatus.SetVisible(false);
+            viewStatusLabel.SetVisible(false);
+        } else if lastHostWidth < SceneEditor2DModel.CONCISE_SCENE_2D_CHROME_WIDTH {
+            toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 40.0);
+            viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 40.0);
+            sceneMenuButton.SetText("Scene");
+            newSceneButton.SetText("New");
+            importButton.SetText("Import");
+            rectangleButton.SetText("Rect");
+            ellipseButton.SetText("Oval");
+            previewButton.SetText("Play");
+            runSceneButton.SetText("Run");
+            toolbar.SetGap(2.0);
+            toolbar.SetPadding(2.0);
+            viewToolbar.SetGap(2.0);
+            viewToolbar.SetPadding(2.0);
+            toolbarStatus.SetVisible(false);
+            viewStatusLabel.SetVisible(false);
+        } else if SceneEditor2DModel.UsesDockedHierarchy(lastHostWidth) == false {
+            // Laptop-width scene-layout mode fits the concise actions in one
+            // row. Do not keep the narrower tier's defensive two-row floor:
+            // that would consume canvas height as an empty band.
+            toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 0.0);
+            viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 0.0);
+            sceneMenuButton.SetText("Scene");
+            newSceneButton.SetText("New");
+            importButton.SetText("Import");
+            rectangleButton.SetText("Rect");
+            ellipseButton.SetText("Oval");
+            previewButton.SetText("Play");
+            runSceneButton.SetText("Run");
+            toolbar.SetGap(4.0);
+            toolbar.SetPadding(4.0);
+            viewToolbar.SetGap(4.0);
+            viewToolbar.SetPadding(4.0);
+            toolbarStatus.SetVisible(false);
+            viewStatusLabel.SetVisible(false);
+        } else {
+            toolbar.SetPreferredSize(0.0, 0.0);
+            toolbar.SetMinSize(0.0, 0.0);
+            viewToolbar.SetPreferredSize(0.0, 0.0);
+            viewToolbar.SetMinSize(0.0, 0.0);
+            sceneMenuButton.SetText("Scene...");
+            newSceneButton.SetText("New Scene");
+            importButton.SetText("Import Tiled...");
+            rectangleButton.SetText("Rectangle");
+            ellipseButton.SetText("Ellipse");
+            previewButton.SetText("Preview");
+            runSceneButton.SetText("Run Scene");
+            toolbar.SetGap(4.0);
+            toolbar.SetPadding(4.0);
+            viewToolbar.SetGap(4.0);
+            viewToolbar.SetPadding(4.0);
+            toolbarStatus.SetVisible(true);
+            viewStatusLabel.SetVisible(true);
+        }
+        UpdateInspectorButton();
+        UpdatePaletteButton();
+        UpdateHierarchyButton();
+        UpdateWorkspaceButton();
+        UpdateFocusButton();
+        UpdateGameViewButton();
+        UpdateModeButtons();
+        UpdateCommandMenuButtons();
+    }
+
+    /// @brief Apply wide split or compact one-pane-at-a-time presentation.
+    hide override func ApplyInspectorLayout() {
+        if bodySplit == null { return; }
+        var wantHierarchyPane = false;
+        var showHierarchyMaster = false;
+        if hierarchySplit != null {
+            wantHierarchyPane =
+                compactLayout == false
+                and focusModeActive == false
+                and hierarchyDock.floating == false
+                and SceneEditor2DModel.UsesDockedHierarchy(lastHostWidth);
+            showHierarchyMaster =
+                compactHierarchyShown
+                and focusModeActive == false
+                and hierarchyDock.floating == false
+                and SceneEditor2DModel.UsesDockedHierarchy(lastHostWidth) == false;
+            var desiredHierarchySide = 1;
+            if wantHierarchyPane { desiredHierarchySide = 0; }
+            else if showHierarchyMaster { desiredHierarchySide = 2; }
+            var currentHierarchySide =
+                hierarchySplit.GetCollapsedSide();
+            if desiredHierarchySide == 0 {
+                hierarchySplit.Restore();
+            } else if desiredHierarchySide == 2 {
+                hierarchySplit.CollapseSecond();
+            } else {
+                hierarchySplit.CollapseFirst();
+            }
+            if currentHierarchySide != desiredHierarchySide {
+                renderDirty = true;
+            }
+        }
+        if objectPaneBox != null {
+            objectPaneBox.SetVisible(
+                wantHierarchyPane or showHierarchyMaster
+                    or hierarchyDock.floating);
+        }
+        var desiredSide = 0;
+        if focusModeActive and inspectorDock.floating == false {
+            desiredSide = 2;
+        } else if compactLayout {
+            desiredSide = 2;
+            if compactInspectorShown { desiredSide = 1; }
+        } else if !inspectorRequestedVisible or inspectorDock.floating {
+            desiredSide = 2;
+        }
+
+        if bodySplit.GetCollapsedSide() != desiredSide {
+            if desiredSide == 1 { bodySplit.CollapseFirst(); }
+            else if desiredSide == 2 { bodySplit.CollapseSecond(); }
+            else { bodySplit.Restore(); }
+            renderDirty = true;
+        }
+        if canvasSplit != null {
+            canvasSplit.SetVisible(desiredSide != 1);
+        }
+        if inspectorScroll != null {
+            inspectorScroll.SetVisible(
+                desiredSide != 2 or inspectorDock.floating);
+        }
+        UpdateHierarchyButton();
+        UpdateInspectorButton();
+    }
+
+    /// @brief Apply wide canvas/palette split or short-height master/detail.
+    hide override func ApplyPaletteLayout() {
+        if canvasSplit == null { return; }
+        if paletteDock.floating {
+            if canvasScroll != null { canvasScroll.SetVisible(true); }
+            if paletteStripBox != null { paletteStripBox.SetVisible(true); }
+            UpdatePaletteButton();
+            return;
+        }
+        var desiredSide = 0;
+        if focusModeActive {
+            desiredSide = 2;
+        } else if compactPaletteLayout {
+            desiredSide = 2;
+            if compactPaletteShown { desiredSide = 1; }
+        } else if paletteRequestedVisible == false {
+            desiredSide = 2;
+        }
+        if canvasSplit.GetCollapsedSide() != desiredSide {
+            if desiredSide == 1 { canvasSplit.CollapseFirst(); }
+            else if desiredSide == 2 { canvasSplit.CollapseSecond(); }
+            else { canvasSplit.Restore(); }
+            renderDirty = true;
+        }
+        if canvasScroll != null {
+            canvasScroll.SetVisible(desiredSide != 1);
+        }
+        if paletteStripBox != null {
+            paletteStripBox.SetVisible(desiredSide != 2);
+        }
+        UpdatePaletteButton();
+    }
+
+    /// @brief Keep the narrow hierarchy master action truthful.
+    hide override func UpdateHierarchyButton() {
+        if hierarchyButton == null { return; }
+        var needsMaster =
+            lastHostWidth > 0.0
+            and SceneEditor2DModel.UsesDockedHierarchy(lastHostWidth) == false;
+        hierarchyButton.SetVisible(needsMaster);
+        if needsMaster == false { return; }
+        if focusModeActive {
+            hierarchyButton.SetEnabled(false);
+            hierarchyButton.SetText("Objects hidden");
+            hierarchyButton.SetTooltip(
+                "Exit Focus to open the object hierarchy");
+            hierarchyButton.SetStyle(0);
+        } else if hierarchyDock.floating {
+            hierarchyButton.SetEnabled(false);
+            hierarchyButton.SetText("Objects floating");
+            hierarchyButton.SetTooltip(
+                "The object hierarchy is already available in its floating pane");
+            hierarchyButton.SetStyle(2);
+        } else if compactHierarchyShown {
+            hierarchyButton.SetEnabled(true);
+            hierarchyButton.SetText("Canvas");
+            hierarchyButton.SetTooltip(
+                "Return to the scene canvas");
+            hierarchyButton.SetStyle(1);
+        } else {
+            hierarchyButton.SetEnabled(true);
+            hierarchyButton.SetText("Objects");
+            hierarchyButton.SetTooltip(
+                "Open the object hierarchy at the full editor width");
+            hierarchyButton.SetStyle(2);
+        }
+    }
+
+    /// @brief Describe the destination of the inspector toggle.
+    hide override func UpdateInspectorButton() {
+        if inspectorButton == null { return; }
+        inspectorButton.SetVisible(
+            compactLayout or inspectorRequestedVisible == false);
+        if focusModeActive and inspectorDock.floating == false {
+            inspectorButton.SetEnabled(false);
+            inspectorButton.SetText("Inspector hidden");
+            inspectorButton.SetTooltip(
+                "Exit Focus to restore the scene inspector");
+            inspectorButton.SetStyle(0);
+            return;
+        }
+        inspectorButton.SetEnabled(true);
+        if compactHierarchyShown {
+            inspectorButton.SetText("Inspector");
+            inspectorButton.SetTooltip(
+                "Switch from objects to the scene inspector");
+            inspectorButton.SetStyle(2);
+            return;
+        }
+        if compactLayout {
+            if compactInspectorShown {
+                inspectorButton.SetText("Canvas");
+                inspectorButton.SetTooltip("Return to the full-width scene canvas");
+                inspectorButton.SetStyle(1);
+            } else {
+                inspectorButton.SetText("Inspector");
+                inspectorButton.SetTooltip("Show the scene inspector at full width");
+                inspectorButton.SetStyle(2);
+            }
+        } else if inspectorRequestedVisible {
+            inspectorButton.SetText("Hide Inspector");
+            inspectorButton.SetTooltip(
+                "Hide the scene inspector and give the canvas the full width");
+            inspectorButton.SetStyle(2);
+        } else {
+            inspectorButton.SetText("Show Inspector");
+            inspectorButton.SetTooltip("Restore the scene inspector");
+            inspectorButton.SetStyle(1);
+        }
+    }
+
+    /// @brief Describe the destination of the palette toggle.
+    hide override func UpdatePaletteButton() {
+        if paletteButton == null { return; }
+        paletteButton.SetVisible(
+            compactPaletteLayout or paletteRequestedVisible == false);
+        if focusModeActive and paletteDock.floating == false {
+            paletteButton.SetEnabled(false);
+            paletteButton.SetText("Palette hidden");
+            paletteButton.SetTooltip(
+                "Exit Focus to restore the tile palette");
+            paletteButton.SetStyle(0);
+            return;
+        }
+        if paletteDock.floating {
+            paletteButton.SetText("Palette floating");
+            paletteButton.SetEnabled(false);
+            paletteButton.SetStyle(2);
+            return;
+        }
+        paletteButton.SetEnabled(true);
+        if compactHierarchyShown {
+            paletteButton.SetText("Palette");
+            paletteButton.SetTooltip(
+                "Switch from objects to the tile palette");
+            paletteButton.SetStyle(2);
+            return;
+        }
+        if compactPaletteLayout {
+            if compactPaletteShown {
+                paletteButton.SetText("Canvas");
+                paletteButton.SetTooltip(
+                    "Return to the full-height scene canvas");
+                paletteButton.SetStyle(1);
+            } else {
+                paletteButton.SetText("Palette");
+                paletteButton.SetTooltip(
+                    "Show the tile palette at full height");
+                paletteButton.SetStyle(2);
+            }
+        } else if paletteRequestedVisible {
+            paletteButton.SetText("Hide Palette");
+            paletteButton.SetTooltip(
+                "Hide the tile palette and give the canvas the full height");
+            paletteButton.SetStyle(2);
+        } else {
+            paletteButton.SetText("Show Palette");
+            paletteButton.SetTooltip("Restore the tile palette");
+            paletteButton.SetStyle(1);
+        }
+    }
+
+    /// @brief Keep the reversible outer-only scene-layout action truthful.
+    hide override func UpdateWorkspaceButton() {
+        if workspaceButton == null { return; }
+        if workspaceModeActive {
+            workspaceButton.SetText("Exit Layout");
+            workspaceButton.SetTooltip(
+                "Restore the Studio sidebar and tool docks while keeping "
+                    + "this scene's internal pane layout");
+            workspaceButton.SetStyle(1);
+        } else {
+            if compactChrome
+               or SceneEditor2DModel.UsesDockedHierarchy(lastHostWidth) == false {
+                workspaceButton.SetText("Layout");
+            } else {
+                workspaceButton.SetText("Scene Layout");
+            }
+            workspaceButton.SetTooltip(
+                "Hide outer Studio docks but keep objects, canvas, palette, "
+                    + "and inspector available");
+            workspaceButton.SetStyle(2);
+        }
+        UpdateCommandMenuButtons();
+    }
+
+    /// @brief Keep the reversible outer-workbench action truthful.
+    hide override func UpdateFocusButton() {
+        if focusButton == null { return; }
+        if focusModeActive {
+            focusButton.SetText("Exit Focus");
+            focusButton.SetTooltip(
+                "Restore scene panes, sidebar, and tool panels (Shift+Space)");
+            focusButton.SetStyle(1);
+        } else {
+            focusButton.SetText("Focus");
+            focusButton.SetTooltip(
+                "Hide scene panes and outer Studio docks to maximize the canvas "
+                + "(Shift+Space)");
+            focusButton.SetStyle(2);
+        }
+        UpdateCommandMenuButtons();
+    }
+
+    /// @brief Apply deferred scroll state after the canvas content size is known.
+    hide override func ApplyPendingWorkspaceScroll() {
+        if restoreScrollPending == false { return; }
+        if canvasScroll != null {
+            SetLogicalScroll(
+                canvasScroll,
+                pendingCanvasScrollX, pendingCanvasScrollY);
+        }
+        if inspectorScroll != null {
+            SetLogicalScroll(
+                inspectorScroll, 0.0, pendingInspectorScrollY);
+        }
+        restoreScrollPending = false;
+    }
+}

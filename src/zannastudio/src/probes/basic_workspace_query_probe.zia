@@ -90,7 +90,21 @@ func editForFile(edits: Any,
     return null;
 }
 
-func main() {
+/// @brief Snapshot state shared by workspace-query validation scenarios.
+class BasicWorkspaceQueryProbeContext {
+    expose String activePath;
+    expose String activeSource;
+    expose String libraryPath;
+    expose List roots;
+    expose List ignores;
+    expose List openPaths;
+    expose List openSources;
+    expose Any edits;
+}
+
+/// @brief Verify asynchronous multi-root navigation and rename snapshots.
+func VerifyWorkspaceQueries(
+    ctx: BasicWorkspaceQueryProbeContext) -> Boolean {
     var rootA = TempFile.CreateDirWithPrefix("zannastudio_basic_ws_a_");
     var rootB = TempFile.CreateDirWithPrefix("zannastudio_basic_ws_b_");
     var activePath = Path.Join(rootA, "main.bas");
@@ -124,7 +138,7 @@ func main() {
     if definitionGeneration <= 0 or definitionJob.startedCount != 1
        or definitionJob.HasCompleted() {
         fail("definition did not start asynchronously");
-        return;
+        return false;
     }
     var definition = waitForCompletion(definitionJob);
     if definition == null or definition!.succeeded == false
@@ -133,7 +147,7 @@ func main() {
           != overridePath
        or Map.GetInt(definition!.result, "fileCount") != 3 {
         fail("unsaved multi-root definition result");
-        return;
+        return false;
     }
 
     // References cross from the active snapshot into the second root and carry
@@ -147,7 +161,7 @@ func main() {
        or Map.GetBool(references!.result, "success") == false
        or Map.GetInt(references!.result, "resultCount") != 2 {
         fail("cross-root references result");
-        return;
+        return false;
     }
     var referenceItems = Map.Get(references!.result, "items");
     var activeRef = refForFile(referenceItems, activePath);
@@ -168,7 +182,7 @@ func main() {
         }
         fail("reference preview or snapshot metadata preview=" + activePreview
             + " activeMtime=" + activeMtime + " libraryMtime=" + libraryMtime);
-        return;
+        return false;
     }
 
     var incomingJob = new basic_workspace_query_job.BasicWorkspaceQueryJob();
@@ -183,7 +197,7 @@ func main() {
        or Seq.get_Count(incomingItems) != 1
        or Map.GetStr(Seq.Get(incomingItems, 0), "caller") != "Caller" {
         fail("incoming caller metadata");
-        return;
+        return false;
     }
 
     var outgoingJob = new basic_workspace_query_job.BasicWorkspaceQueryJob();
@@ -195,7 +209,7 @@ func main() {
        or Map.GetBool(outgoing!.result, "success") == false
        or Map.GetInt(outgoing!.result, "resultCount") != 2 {
         fail("outgoing call result");
-        return;
+        return false;
     }
 
     var renameJob = new basic_workspace_query_job.BasicWorkspaceQueryJob();
@@ -210,8 +224,31 @@ func main() {
        or Seq.get_Count(edits) != 2
        or Map.GetStr(Seq.Get(edits, 0), "expectedText") == "" {
         fail("rename edit snapshot contract");
-        return;
+        return false;
     }
+
+    ctx.activePath = activePath;
+    ctx.activeSource = activeSource;
+    ctx.libraryPath = libraryPath;
+    ctx.roots = roots;
+    ctx.ignores = ignores;
+    ctx.openPaths = openPaths;
+    ctx.openSources = openSources;
+    ctx.edits = edits;
+    return true;
+}
+
+/// @brief Verify stale-snapshot rejection, coalescing, caps, and shutdown.
+func VerifyWorkspaceQueryBoundaries(
+    ctx: BasicWorkspaceQueryProbeContext) -> Boolean {
+    var activePath = ctx.activePath;
+    var activeSource = ctx.activeSource;
+    var libraryPath = ctx.libraryPath;
+    var roots = ctx.roots;
+    var ignores = ctx.ignores;
+    var openPaths = ctx.openPaths;
+    var openSources = ctx.openSources;
+    var edits = ctx.edits;
 
     // Delayed rename edits must validate both open-buffer text and the closed
     // file mtime captured by the worker before changing anything.
@@ -228,7 +265,7 @@ func main() {
        or Str.IndexOf(changedOpenResult.message, "source changed") == 0
        or changedOpen.content != "SUB Caller()\n  LiveName()\n  OtherX()\nEND SUB\n" {
         fail("open rename snapshot changed under worker");
-        return;
+        return false;
     }
 
     var libraryEdit = editForFile(edits, libraryPath);
@@ -241,7 +278,7 @@ func main() {
        or Str.IndexOf(changedDiskResult.message, "changed during") == 0
        or File.ReadAllText(libraryPath) != "SUB ChangedAfterScan()\nEND SUB\n" {
         fail("closed rename snapshot changed under worker");
-        return;
+        return false;
     }
 
     // Latest-wins coalescing: only the replacement request may publish.
@@ -256,14 +293,14 @@ func main() {
         openSources);
     if secondGeneration <= firstGeneration or coalesced.cancelledCount != 1 {
         fail("workspace request did not coalesce");
-        return;
+        return false;
     }
     var latest = waitForCompletion(coalesced);
     if latest == null or latest!.generation != secondGeneration
        or latest!.succeeded == false
        or Map.GetBool(latest!.result, "success") == false {
         fail("stale workspace request published");
-        return;
+        return false;
     }
 
     // A pathological single line cannot allocate more than the public result
@@ -295,7 +332,7 @@ func main() {
                          + " reason=" + Map.GetStr(cappedRefs!.result, "reason"));
         }
         fail("reference cap contract");
-        return;
+        return false;
     }
 
     var cappedRenameJob = new basic_workspace_query_job.BasicWorkspaceQueryJob();
@@ -307,7 +344,7 @@ func main() {
        or Map.GetStr(cappedRename!.result, "reason") != "workspace_limit"
        or Map.Get(cappedRename!.result, "edits") != null {
         fail("partial rename was not rejected");
-        return;
+        return false;
     }
 
     var shutdownJob = new basic_workspace_query_job.BasicWorkspaceQueryJob();
@@ -316,8 +353,16 @@ func main() {
     if shutdownJob.CancelAndWait() == false or shutdownJob.IsBusy()
        or shutdownJob.HasCompleted() {
         fail("cancelled worker did not drain before shutdown");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+func main() {
+    var ctx = new BasicWorkspaceQueryProbeContext();
+    if VerifyWorkspaceQueries(ctx) == false { return; }
+    if VerifyWorkspaceQueryBoundaries(ctx) == false { return; }
 
     Terminal.Say("RESULT: ok");
 }

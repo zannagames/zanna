@@ -87,7 +87,16 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Fixture state shared by the 2D and 3D drop scenarios.
+class SceneDndProbeContext {
+    expose String tempDir;
+    expose String notesPath;
+    expose project_manager.ProjectManager project;
+    expose document_manager.DocumentManager documents;
+}
+
+/// @brief Verify asset-card dropping and rectangular rotation in 2D.
+func VerifyScene2DDrops(ctx: SceneDndProbeContext) -> Boolean {
     // Temp project with one tiny image asset and one saved 3D scene asset.
     var tempDir = TempFile.CreateDirWithPrefix("zannastudio_dnd_");
     var spritePath = Path.Join(tempDir, "hero.png");
@@ -96,11 +105,10 @@ func main() {
     if Pixels.SavePng(sprite, spritePath) != 1 {
         removeTempDir(tempDir);
         Terminal.Say("RESULT: fail sprite fixture");
-        return;
+        return false;
     }
     var notesPath = Path.Join(tempDir, "notes.txt");
     File.WriteAllText(notesPath, "not an image\n");
-
     // ------------------------------------------------------------------ 2D
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene DnD Probe", 1240, 800);
@@ -110,7 +118,7 @@ func main() {
     var project = new project_manager.ProjectManager();
     if project.OpenFolder(tempDir) == false {
         Fail(shell, null, tempDir, "temp project open");
-        return;
+        return false;
     }
     editor2d.SetWorkspaceContext(project);
     var documents = new document_manager.DocumentManager();
@@ -125,7 +133,7 @@ func main() {
     // a selection, so create and select one object before opening it.
     if editor2d.AddSceneObject("anchor", "anchor", 0, 0) != 0 {
         Fail(shell, null, tempDir, "2D anchor fixture");
-        return;
+        return false;
     }
     editor2d.SelectSceneObjects([0], 0);
     editor2d.Pump(doc2d);
@@ -144,7 +152,7 @@ func main() {
     if editor2d.componentAssetBrowser.assetList.Count == 0
        or editor2d.componentAssetBrowser.thumbnailCards.count() == 0 {
         Fail(shell, null, tempDir, "asset cache did not surface hero.png");
-        return;
+        return false;
     }
     editor2d.componentAssetBrowser.assetList.SelectIndex(0);
     editor2d.Pump(doc2d);
@@ -154,7 +162,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, null, tempDir, "2D bind");
-        return;
+        return false;
     }
     // The asset browser sits low in the inspector column: reveal it first,
     // exactly as a user would scroll to it before dragging.
@@ -205,19 +213,19 @@ func main() {
         Fail(shell, harness, tempDir,
              "asset drop did not create one object (count="
              + editor2d.scene.ObjectCount() + ")");
-        return;
+        return false;
     }
     var dropped = editor2d.scene.ObjectCount() - 1;
     if editor2d.scene.ObjectType(dropped) != "sprite"
        or editor2d.scene.ObjectGetStr(dropped, "editor.sprite", "") == "" {
         Fail(shell, harness, tempDir,
              "dropped sprite lost its type or editor.sprite reference");
-        return;
+        return false;
     }
     if editor2d.undoStack.count() != undoBefore + 1 {
         Fail(shell, harness, tempDir,
              "sprite drop was not exactly one undoable transaction");
-        return;
+        return false;
     }
 
     // A non-image drop is refused without touching history.
@@ -226,7 +234,7 @@ func main() {
        or doc2d.content != refusedContent
        or editor2d.undoStack.count() != undoBefore + 1 {
         Fail(shell, harness, tempDir, "non-image drop was not refused");
-        return;
+        return false;
     }
     // Rect-tool rotate: drag the rotation handle a quarter turn around the
     // dropped sprite's pivot and commit exactly one undoable transaction.
@@ -269,20 +277,33 @@ func main() {
              + editor2d.scene.ObjectRotation(dropped)
              + " undo=" + editor2d.undoStack.count()
              + "/" + (undoBeforeRotate + 1));
-        return;
+        return false;
     }
     if editor2d.Undo() == false
        or NumbersNear(editor2d.scene.ObjectRotation(dropped), 0.0) == false {
         Fail(shell, harness, tempDir,
              "undoing the rotation did not restore the default");
-        return;
+        return false;
     }
 
+    ctx.tempDir = tempDir;
+    ctx.notesPath = notesPath;
+    ctx.project = project;
+    ctx.documents = documents;
     harness.UnbindApp();
     shell.Destroy();
+    return true;
+}
+
+/// @brief Verify typed scene-asset import and refusal in 3D.
+func VerifyScene3DDrops(ctx: SceneDndProbeContext) -> Boolean {
+    var tempDir = ctx.tempDir;
+    var notesPath = ctx.notesPath;
+    var project = ctx.project;
+    var documents = ctx.documents;
 
     // ------------------------------------------------------------------ 3D
-    shell = new app_shell.AppShell();
+    var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene DnD Probe 3D", 1240, 800);
     shell.SetSceneWorkspaceMode(true);
     var editor3d = new scene_editor_3d.SceneEditor3D();
@@ -300,13 +321,13 @@ func main() {
     // effect: node count grows by the asset's nodes in one transaction).
     if editor3d.AddEmptyNode("Anchor", -1) < 0 {
         Fail(shell, null, tempDir, "3D fixture node");
-        return;
+        return false;
     }
     var assetScenePath = Path.Join(tempDir, "prop.scene3d");
     File.WriteAllText(assetScenePath, editor3d.scene.SaveToText());
     if File.Exists(assetScenePath) == false {
         Fail(shell, null, tempDir, "3D asset fixture write");
-        return;
+        return false;
     }
     editor3d.Pump(doc3d);
     shell.Poll();
@@ -315,23 +336,32 @@ func main() {
     var undo3dBefore = editor3d.undoStack.count();
     if editor3d.ImportAssetDrop(assetScenePath) == false {
         Fail(shell, null, tempDir, "3D dropped-asset import failed");
-        return;
+        return false;
     }
     editor3d.Pump(doc3d);
     if editor3d.flatNodes.count() <= nodesBefore
        or editor3d.undoStack.count() != undo3dBefore + 1 {
         Fail(shell, null, tempDir,
              "3D asset import was not one growing transaction");
-        return;
+        return false;
     }
 
     // A non-3D asset drop is refused by the extension gate without history.
     if editor3d.ImportAssetDrop(notesPath) != false
        or editor3d.undoStack.count() != undo3dBefore + 1 {
         Fail(shell, null, tempDir, "3D non-asset drop was not refused");
-        return;
+        return false;
     }
     shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new SceneDndProbeContext();
+    if VerifyScene2DDrops(ctx) == false { return; }
+    if VerifyScene3DDrops(ctx) == false { return; }
+
+    var tempDir = ctx.tempDir;
     removeTempDir(tempDir);
     Terminal.Say("RESULT: ok");
 }

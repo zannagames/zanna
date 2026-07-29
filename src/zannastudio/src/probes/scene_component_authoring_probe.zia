@@ -17,7 +17,7 @@
 //     version-13 component creation recipes, version-14 additive 3D
 //     environment layers, version-15 runtime-backed water layers, and
 //     version-16 typed 3D material previews, plus version-17 typed direct
-//     model node previews and their fixed transforms.
+//     model node previews and version-18 node-preview filter states.
 //   - File writes are atomic, conflict-aware, and exactly undoable/redoable.
 // Ownership/Lifetime: The probe owns only temporary schema files and records.
 // Links: zannastudio/src/ui/scene_component_authoring.zia,
@@ -37,7 +37,8 @@
 //        docs/adr/0212-additive-3d-environment-preview-layers.md,
 //        docs/adr/0213-runtime-backed-water-preview-layers.md,
 //        docs/adr/0214-project-owned-3d-material-previews.md,
-//        docs/adr/0215-project-owned-direct-model-previews.md
+//        docs/adr/0215-project-owned-direct-model-previews.md,
+//        docs/adr/0216-project-owned-3d-node-preview-states.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,6 +47,7 @@ module scene_component_authoring_probe;
 bind "../services/safe_io";
 bind "../ui/scene_component_authoring";
 bind "../ui/scene_component_schema";
+bind "scene_component_authoring_persistence_probe";
 
 bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
@@ -64,14 +66,21 @@ func fail(tempDir: String, reason: String) {
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Typed state shared by serial component-authoring scenarios.
+class ComponentAuthoringProbeContext {
+    expose String empty;
+    expose scene_component_authoring.SceneComponentEditResult unknownEdit;
+}
+
+/// @brief Run the VerifyStarterAndFieldEdits authoring scenario.
+func VerifyStarterAndFieldEdits(ctx: ComponentAuthoringProbeContext) -> Boolean {
     var empty = scene_component_authoring.EmptySchemaText();
     var emptySchema =
         scene_component_schema.ParseText(empty, "memory");
     if emptySchema.valid == false
        or emptySchema.components.count() != 0 {
         fail("", "empty authoring schema was not valid");
-        return;
+        return false;
     }
 
     var added = scene_component_authoring.AddStarterComponent(
@@ -94,7 +103,7 @@ func main() {
        or addedSchema.components.get(0).createObjectType != "component"
        or addedSchema.components.get(0).createNodeName != "" {
         fail("", "starter component was not complete and deterministic");
-        return;
+        return false;
     }
 
     var renamed = scene_component_authoring.UpdateComponent(
@@ -119,14 +128,14 @@ func main() {
        or enemy.createNodeName != "Enemy"
        or enemy.fields.get(0).key != "component.enabled" {
         fail("", "component update changed unrelated stable field keys");
-        return;
+        return false;
     }
 
     var fieldAdded = scene_component_authoring.AddStarterField(
         renamed.content, "enemy");
     if fieldAdded.ok == false or fieldAdded.fieldKey != "enemy.value" {
         fail("", "starter field did not receive a unique portable key");
-        return;
+        return false;
     }
     var fieldUpdated = scene_component_authoring.UpdateField(
         fieldAdded.content,
@@ -154,7 +163,7 @@ func main() {
        or fieldSchema.version
           != scene_component_schema.COMPONENT_CREATION_SCHEMA_VERSION {
         fail("", "typed field update did not round-trip exactly");
-        return;
+        return false;
     }
 
     var moved = scene_component_authoring.MoveField(
@@ -166,7 +175,7 @@ func main() {
     if moved.ok == false or moved.changed == false
        or enemy.fields.get(0).key != "enemy.hp" {
         fail("", "field ordering was not a stable structured edit");
-        return;
+        return false;
     }
 
     var duplicate = scene_component_authoring.UpdateField(
@@ -182,7 +191,7 @@ func main() {
     if duplicate.ok or duplicate.changed
        or duplicate.content != moved.content {
         fail("", "duplicate field edit did not fail closed");
-        return;
+        return false;
     }
 
     var removed = scene_component_authoring.RemoveField(
@@ -193,7 +202,7 @@ func main() {
        or rejectedLast.ok or rejectedLast.changed
        or rejectedLast.content != removed.content {
         fail("", "field removal violated the non-empty component contract");
-        return;
+        return false;
     }
 
     var second = scene_component_authoring.AddStarterComponent(
@@ -207,9 +216,16 @@ func main() {
        or secondSchema.components.get(0).name != "component"
        or secondSchema.components.get(1).name != "enemy" {
         fail("", "component insertion or ordering was not deterministic");
-        return;
+        return false;
     }
 
+
+    ctx.empty = empty;
+    return true;
+}
+
+/// @brief Run the VerifyUnknownFieldsAndDrawStacks authoring scenario.
+func VerifyUnknownFieldsAndDrawStacks(ctx: ComponentAuthoringProbeContext) -> Boolean {
     var unknownText =
         "{\"version\":1,\"vendor\":{\"keep\":true},\"components\":["
         + "{\"name\":\"enemy\",\"target\":\"both\",\"custom\":\"keep\","
@@ -230,7 +246,7 @@ func main() {
        or Str.Contains(unknownEdit.content, "\"custom\"") == false
        or Str.Contains(unknownEdit.content, "\"editorHint\"") == false {
         fail("", "structured edit discarded unknown version-1 members");
-        return;
+        return false;
     }
 
     var previewText =
@@ -268,7 +284,7 @@ func main() {
        or previewRule.frameMap.get(1) != 9
        or Str.Contains(previewEdit.content, "\"vendor\"") == false {
         fail("", "component edit discarded a version-3 preview profile");
-        return;
+        return false;
     }
 
     var drawStackPreviewText =
@@ -305,7 +321,7 @@ func main() {
         fail(
             "",
             "component edit discarded a version-11 draw-stack profile");
-        return;
+        return false;
     }
 
     var preview3DText =
@@ -344,9 +360,16 @@ func main() {
        or preview3DSchema.scenePreview3D.hasShowMarkers == false
        or preview3DSchema.scenePreview3D.showMarkers {
         fail("", "component edit discarded a version-4 3D preview profile");
-        return;
+        return false;
     }
 
+
+    ctx.unknownEdit = unknownEdit;
+    return true;
+}
+
+/// @brief Run the VerifyNodeAndSkyPreviews authoring scenario.
+func VerifyNodeAndSkyPreviews() -> Boolean {
     var nodePreviewText =
         "{\"version\":5,\"components\":["
         + "{\"name\":\"prop\",\"target\":\"3d-node\",\"fields\":["
@@ -381,7 +404,7 @@ func main() {
        or nodePreviewRule.PrefabForVariant(4)
           != "assets/editor/default.scene3d" {
         fail("", "component edit discarded a version-5 node preview profile");
-        return;
+        return false;
     }
 
     var skyPreviewText =
@@ -425,7 +448,7 @@ func main() {
        or skyPreviewSchema.scenePreview3D.HasSun() == false
        or skyPreviewSchema.scenePreview3D.sunIntensityProperty != "sun.i" {
         fail("", "component edit discarded a version-6 sky/light profile");
-        return;
+        return false;
     }
 
     var atmosphericPreviewText =
@@ -477,9 +500,14 @@ func main() {
         fail(
             "",
             "component edit discarded a version-7 atmosphere profile");
-        return;
+        return false;
     }
 
+    return true;
+}
+
+/// @brief Run the VerifyBackdropAndEnvironmentPreviews authoring scenario.
+func VerifyBackdropAndEnvironmentPreviews() -> Boolean {
     var backgroundPreviewText =
         "{\"version\":8,\"components\":["
         + "{\"name\":\"environment\",\"target\":\"2d-object\","
@@ -516,7 +544,7 @@ func main() {
         fail(
             "",
             "component edit discarded a version-8 2D scene profile");
-        return;
+        return false;
     }
 
     var environmentPreviewText =
@@ -565,7 +593,7 @@ func main() {
         fail(
             "",
             "component edit discarded a version-9 environment profile");
-        return;
+        return false;
     }
 
     var postFXPreviewText =
@@ -616,9 +644,14 @@ func main() {
         fail(
             "",
             "component edit discarded a version-10 post-FX profile");
-        return;
+        return false;
     }
 
+    return true;
+}
+
+/// @brief Run the VerifyOutputAndEnvironmentLayers authoring scenario.
+func VerifyOutputAndEnvironmentLayers() -> Boolean {
     var outputFrameText =
         "{\"version\":12,\"components\":["
         + "{\"name\":\"camera\",\"target\":\"both\",\"fields\":["
@@ -655,7 +688,7 @@ func main() {
         fail(
             "",
             "component edit discarded a version-12 game-output frame");
-        return;
+        return false;
     }
 
     var environmentLayerText =
@@ -706,7 +739,7 @@ func main() {
         fail(
             "",
             "component edit discarded a version-14 environment layer");
-        return;
+        return false;
     }
 
     var waterLayerText =
@@ -768,9 +801,14 @@ func main() {
         fail(
             "",
             "component edit discarded a version-15 runtime water layer");
-        return;
+        return false;
     }
 
+    return true;
+}
+
+/// @brief Run the VerifyWaterAndMaterialPreviews authoring scenario.
+func VerifyWaterAndMaterialPreviews() -> Boolean {
     var materialPreviewText =
         "{\"version\":16,\"components\":["
         + "{\"name\":\"surface\",\"target\":\"3d-node\",\"fields\":["
@@ -822,11 +860,11 @@ func main() {
         fail(
             "",
             "component edit discarded a version-16 material preview");
-        return;
+        return false;
     }
 
     var directModelPreviewText =
-        "{\"version\":17,\"components\":["
+        "{\"version\":18,\"components\":["
         + "{\"name\":\"spawn\",\"target\":\"3d-node\",\"fields\":["
         + "{\"key\":\"spawn.kind\",\"type\":\"int\","
         + "\"default\":3}]}],"
@@ -834,7 +872,12 @@ func main() {
         + "{\"matchProperty\":\"spawn.kind\",\"matchValue\":3,"
         + "\"prefab\":\"assets/enemy.glb\",\"scale\":0.85,"
         + "\"yawDegrees\":180.0,\"offsetX\":1.0,"
-        + "\"offsetY\":4.2,\"offsetZ\":-2.0}]}";
+        + "\"offsetY\":4.2,\"offsetZ\":-2.0}],"
+        + "\"nodePreviewFilter3D\":{\"label\":\"Wave\","
+        + "\"allLabel\":\"All waves\",\"matchProperty\":\"spawn.wave\","
+        + "\"defaultIndex\":1,\"states\":["
+        + "{\"label\":\"Wave 1\",\"matchValue\":0},"
+        + "{\"label\":\"Wave 2\",\"matchValue\":1}]}}";
     var directModelPreviewEdit =
         scene_component_authoring.UpdateField(
             directModelPreviewText,
@@ -851,12 +894,14 @@ func main() {
             directModelPreviewEdit.content, "memory");
     var retainedDirectModels =
         directModelPreviewSchema.nodePreviews3D;
+    var retainedPreviewFilter =
+        directModelPreviewSchema.nodePreviewFilter3D;
     if directModelPreviewEdit.ok == false
        or directModelPreviewEdit.changed == false
        or directModelPreviewSchema.valid == false
        or directModelPreviewSchema.version
           != scene_component_schema
-              .DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION
+              .NODE_PREVIEW_FILTER_3D_SCHEMA_VERSION
        or retainedDirectModels.count() != 1
        or retainedDirectModels.get(0).matchKind != "int"
        or retainedDirectModels.get(0).matchInteger != 3
@@ -865,126 +910,39 @@ func main() {
        or near(retainedDirectModels.get(0).yawDegrees, 180.0) == false
        or near(retainedDirectModels.get(0).offsetX, 1.0) == false
        or near(retainedDirectModels.get(0).offsetY, 4.2) == false
-       or near(retainedDirectModels.get(0).offsetZ, -2.0) == false {
+       or near(retainedDirectModels.get(0).offsetZ, -2.0) == false
+       or retainedPreviewFilter == null
+       or retainedPreviewFilter.present == false
+       or retainedPreviewFilter.label != "Wave"
+       or retainedPreviewFilter.allLabel != "All waves"
+       or retainedPreviewFilter.matchProperty != "spawn.wave"
+       or retainedPreviewFilter.defaultIndex != 1
+       or retainedPreviewFilter.states.count() != 2
+       or retainedPreviewFilter.StateAt(1).matchInteger != 0
+       or retainedPreviewFilter.StateAt(2).matchInteger != 1 {
         fail(
             "",
-            "component edit discarded a version-17 direct model preview");
-        return;
+            "component edit discarded version-18 preview state metadata");
+        return false;
     }
 
-    var omittedDefaultText =
-        "{\"version\":1,\"components\":["
-        + "{\"name\":\"counter\",\"target\":\"both\",\"fields\":["
-        + "{\"key\":\"counter.value\",\"type\":\"int\"}]}]}";
-    var labelOnlyEdit = scene_component_authoring.UpdateField(
-        omittedDefaultText,
-        "counter",
-        "counter.value",
-        "counter.value",
-        "Counter value",
-        "int",
-        "0",
-        "",
-        "");
-    if labelOnlyEdit.ok == false or labelOnlyEdit.changed == false
-       or Str.Contains(labelOnlyEdit.content, "\"label\"") == false
-       or Str.Contains(labelOnlyEdit.content, "\"default\"") {
-        fail("", "label-only edit materialized an omitted field default");
-        return;
-    }
-    var fieldDescriptionOnly = scene_component_authoring.UpdateField(
-        omittedDefaultText,
-        "counter",
-        "counter.value",
-        "counter.value",
-        "counter.value",
-        "int",
-        "0",
-        "Counts accepted events.",
-        "");
-    if fieldDescriptionOnly.ok == false
-       or Str.Contains(fieldDescriptionOnly.content, "\"description\"")
-          == false
-       or Str.Contains(fieldDescriptionOnly.content, "\"label\"")
-       or Str.Contains(fieldDescriptionOnly.content, "\"default\"") {
-        fail("", "field edit materialized unchanged optional members");
-        return;
-    }
-    var componentDescriptionOnly =
-        scene_component_authoring.UpdateComponent(
-            omittedDefaultText,
-            "counter",
-            "counter",
-            "counter",
-            scene_component_schema.TARGET_BOTH,
-            "Shared counter data.",
-            "",
-            "");
-    if componentDescriptionOnly.ok == false
-       or Str.Contains(componentDescriptionOnly.content, "\"description\"")
-          == false
-       or Str.Contains(componentDescriptionOnly.content, "\"label\"") {
-        fail("", "component edit materialized an unchanged optional label");
-        return;
-    }
+    return true;
+}
 
-    var tempDir =
-        TempFile.CreateDirWithPrefix("zannastudio_component_authoring_");
-    var schemaPath = Path.Join(
-        tempDir, scene_component_schema.SCHEMA_FILE_NAME);
-    if tempDir == "" {
-        fail(tempDir, "could not create schema authoring fixture");
-        return;
-    }
-    var session =
-        new scene_component_authoring.SceneComponentAuthoringSession();
-    if session.Load(schemaPath) == false or session.found
-       or session.currentText != empty
-       or session.CanUndo() or session.CanRedo()
-       or session.Apply(unknownEdit.content) == false
-       or session.found == false
-       or File.Exists(schemaPath) == false
-       or File.ReadAllText(schemaPath) != unknownEdit.content
-       or session.CanUndo() == false
-       or session.CanRedo() {
-        fail(tempDir, "schema session did not atomically create its file");
-        return;
-    }
-    if session.Undo() == false or File.Exists(schemaPath)
-       or session.found or session.currentText != empty
-       or session.CanRedo() == false
-       or session.Redo() == false
-       or File.ReadAllText(schemaPath) != unknownEdit.content
-       or session.found == false {
-        fail(tempDir, "schema file creation was not exactly undoable");
-        return;
-    }
+/// @brief Run direct-model metadata and persistence scenarios.
+func VerifyDirectModelsAndPersistence(
+    ctx: ComponentAuthoringProbeContext) -> Boolean {
+    return scene_component_authoring_persistence_probe.Verify(
+        ctx.empty, ctx.unknownEdit);
+}
 
-    var external = unknownEdit.content + "\n";
-    if safe_io.WriteAllTextAtomic(schemaPath, external) == false
-       or session.HasExternalChange() == false {
-        fail(tempDir, "schema session did not notice an external edit");
-        return;
-    }
-    var localEdit = scene_component_authoring.UpdateComponent(
-        session.currentText,
-        "enemy",
-        "enemy",
-        "Enemy changed locally",
-        scene_component_schema.TARGET_BOTH,
-        "",
-        "enemy",
-        "Enemy");
-    if localEdit.ok == false or session.Apply(localEdit.content)
-       or File.ReadAllText(schemaPath) != external
-       or session.error == ""
-       or session.Reload() == false
-       or session.currentText != external
-       or session.CanUndo() or session.CanRedo() {
-        fail(tempDir, "external conflict was overwritten or retained stale history");
-        return;
-    }
-
-    safe_io.DeleteDirectoryTree(tempDir);
-    Terminal.Say("RESULT: ok");
+func main() {
+    var ctx = new ComponentAuthoringProbeContext();
+    if VerifyStarterAndFieldEdits(ctx) == false { return; }
+    if VerifyUnknownFieldsAndDrawStacks(ctx) == false { return; }
+    if VerifyNodeAndSkyPreviews() == false { return; }
+    if VerifyBackdropAndEnvironmentPreviews() == false { return; }
+    if VerifyOutputAndEnvironmentLayers() == false { return; }
+    if VerifyWaterAndMaterialPreviews() == false { return; }
+    if VerifyDirectModelsAndPersistence(ctx) == false { return; }
 }

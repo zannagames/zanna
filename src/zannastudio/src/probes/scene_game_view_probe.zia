@@ -128,7 +128,30 @@ func Finish3D(shell: app_shell.AppShell,
     return reason;
 }
 
-func Test2DGameView() -> String {
+/// @brief State shared by 2D Game View setup and interaction verification.
+class GameView2DProbeContext {
+    expose String tempDir;
+    expose app_shell.AppShell shell;
+    expose scene_editor_2d.SceneEditor2D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose Integer marker;
+    expose Integer sampleX;
+    expose Integer sampleY;
+    expose Integer upperSampleX;
+    expose Integer upperSampleY;
+    expose Integer normalPixel;
+    expose Integer normalUpperPixel;
+    expose String baseline;
+    expose String baselineSerialized;
+    expose Integer baselineRevision;
+    expose Integer baselineUndo;
+    expose Integer baselineRedo;
+    expose Boolean baselineDirty;
+}
+
+/// @brief Build the 2D fixture and verify clean Game View presentation.
+func Prepare2DGameView(ctx: GameView2DProbeContext) -> String {
     var tempDir =
         TempFile.CreateDirWithPrefix("zannastudio_game_view_2d_");
     var tilePath = Path.Join(tempDir, "tile.png");
@@ -275,6 +298,49 @@ func Test2DGameView() -> String {
             + " dirty=" + sceneDoc.isModified + "/" + baselineDirty);
     }
 
+    ctx.tempDir = tempDir;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.marker = marker;
+    ctx.sampleX = sampleX;
+    ctx.sampleY = sampleY;
+    ctx.upperSampleX = upperSampleX;
+    ctx.upperSampleY = upperSampleY;
+    ctx.normalPixel = normalPixel;
+    ctx.normalUpperPixel = normalUpperPixel;
+    ctx.baseline = baseline;
+    ctx.baselineSerialized = baselineSerialized;
+    ctx.baselineRevision = baselineRevision;
+    ctx.baselineUndo = baselineUndo;
+    ctx.baselineRedo = baselineRedo;
+    ctx.baselineDirty = baselineDirty;
+    return "";
+}
+
+/// @brief Verify 2D Game View input isolation and per-document restoration.
+func Verify2DGameViewInteraction(
+    ctx: GameView2DProbeContext) -> String {
+    var tempDir = ctx.tempDir;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var marker = ctx.marker;
+    var sampleX = ctx.sampleX;
+    var sampleY = ctx.sampleY;
+    var upperSampleX = ctx.upperSampleX;
+    var upperSampleY = ctx.upperSampleY;
+    var normalPixel = ctx.normalPixel;
+    var normalUpperPixel = ctx.normalUpperPixel;
+    var baseline = ctx.baseline;
+    var baselineSerialized = ctx.baselineSerialized;
+    var baselineRevision = ctx.baselineRevision;
+    var baselineUndo = ctx.baselineUndo;
+    var baselineRedo = ctx.baselineRedo;
+    var baselineDirty = ctx.baselineDirty;
+
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         return Finish2D(
@@ -336,6 +402,13 @@ func Test2DGameView() -> String {
             "2D editor presentation did not restore exactly");
     }
     return Finish2D(shell, harness, tempDir, "");
+}
+
+func Test2DGameView() -> String {
+    var ctx = new GameView2DProbeContext();
+    var reason = Prepare2DGameView(ctx);
+    if reason != "" { return reason; }
+    return Verify2DGameViewInteraction(ctx);
 }
 
 func Test3DGameView() -> String {

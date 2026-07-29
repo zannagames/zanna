@@ -52,7 +52,15 @@ func watcherEvent(path: String,
     return event;
 }
 
-func main() {
+/// @brief State shared by active-file and workspace watcher scenarios.
+class WorkspaceWatcherProbeContext {
+    expose String root;
+    expose project_manager.ProjectManager projMgr;
+}
+
+/// @brief Verify active and inactive document watcher lifecycle and budgets.
+func VerifyDocumentWatchers(
+    ctx: WorkspaceWatcherProbeContext) -> Boolean {
     var root = TempFile.CreateDirWithPrefix("zannastudio_workspace_watcher_");
     var i = 0;
     while i < 100 {
@@ -69,13 +77,13 @@ func main() {
     if projMgr.OpenFolder(root) == false {
         safe_io.DeleteDirectoryTree(root);
         Terminal.Say("RESULT: fail - temporary workspace did not open");
-        return;
+        return false;
     }
     var fileWatch = new file_watch_controller.FileWatchController();
     if fileWatch.hasWatcher or fileWatch.fileWatcher != null {
         safe_io.DeleteDirectoryTree(root);
         Terminal.Say("RESULT: fail - active-file watcher created a CWD placeholder");
-        return;
+        return false;
     }
     var fileDocs = new document_manager.DocumentManager();
     var watchedFilePath = Path.Join(root, "file_0.zia");
@@ -85,13 +93,13 @@ func main() {
         fileWatch.Destroy();
         safe_io.DeleteDirectoryTree(root);
         Terminal.Say("RESULT: fail - active-file watcher did not remember its path");
-        return;
+        return false;
     }
     fileWatch.Destroy();
     if fileWatch.hasWatcher or fileWatch.fileWatcher != null or fileWatch.watchedPath != "" {
         safe_io.DeleteDirectoryTree(root);
         Terminal.Say("RESULT: fail - active-file watcher cleanup retained state");
-        return;
+        return false;
     }
 
     // Inactive-tab metadata checks are a resumable pass, not an O(open tabs)
@@ -113,7 +121,7 @@ func main() {
         manyFileWatch.Destroy();
         safe_io.DeleteDirectoryTree(root);
         Terminal.Say("RESULT: fail - open-document metadata poll was not frame-bounded");
-        return;
+        return false;
     }
     var metadataFrames = 1;
     while manyFileWatch.openDocPollActive and metadataFrames < 20 {
@@ -122,7 +130,7 @@ func main() {
             manyFileWatch.Destroy();
             safe_io.DeleteDirectoryTree(root);
             Terminal.Say("RESULT: fail - open-document metadata budget was exceeded");
-            return;
+            return false;
         }
         metadataFrames = metadataFrames + 1;
     }
@@ -134,7 +142,7 @@ func main() {
         manyFileWatch.Destroy();
         safe_io.DeleteDirectoryTree(root);
         Terminal.Say("RESULT: fail - resumable metadata poll missed a late changed tab");
-        return;
+        return false;
     }
     manyFileWatch.Destroy();
 
@@ -154,16 +162,27 @@ func main() {
         missingWatch.Destroy();
         safe_io.DeleteDirectoryTree(root);
         Terminal.Say("RESULT: fail - missing active file retried its watcher every frame");
-        return;
+        return false;
     }
     missingWatch.Destroy();
+
+    ctx.root = root;
+    ctx.projMgr = projMgr;
+    return true;
+}
+
+/// @brief Verify cooperative discovery, topology events, and fallback scans.
+func VerifyWorkspaceWatchers(
+    ctx: WorkspaceWatcherProbeContext) -> Boolean {
+    var root = ctx.root;
+    var projMgr = ctx.projMgr;
 
     var state = new workspace_watcher.WorkspaceWatcherState();
     workspace_watcher.PumpWorkspaceWatcher(null, projMgr, null, null, null, null, state);
     if state.watchers.count() <= 0 or state.watchers.count() > 65
        or state.discoveryActive == false {
         fail(state, root, "watcher startup was not frame-bounded");
-        return;
+        return false;
     }
 
     var rounds = 0;
@@ -182,12 +201,12 @@ func main() {
              + " root=" + state.discoveryRootIndex
              + " offset=" + state.discoveryPageOffset
              + " rounds=" + rounds);
-        return;
+        return false;
     }
     workspace_watcher.PumpWorkspaceWatcher(null, projMgr, null, null, null, null, state);
     if state.lastWatcherPollCount <= 0 or state.lastWatcherPollCount > 32 {
         fail(state, root, "quiet watcher rotation exceeded its frame budget");
-        return;
+        return false;
     }
 
     var modificationEvents = Seq.New();
@@ -196,7 +215,7 @@ func main() {
     if workspace_watcher.ObserveWorkspaceTopologyEvents(state, modificationEvents)
        or state.watchers.count() != watcherCount or state.discoveryActive == false {
         fail(state, root, "ordinary directory modification rebuilt live watchers");
-        return;
+        return false;
     }
     rounds = 0;
     while state.discoveryActive and rounds < 16 {
@@ -205,13 +224,13 @@ func main() {
     }
     if state.discoveryActive or state.watchers.count() != watcherCount {
         fail(state, root, "additive topology discovery did not preserve watchers");
-        return;
+        return false;
     }
     var overflowEvents = Seq.New();
     Seq.Push(overflowEvents, watcherEvent(root, "overflow", true));
     if workspace_watcher.ObserveWorkspaceTopologyEvents(state, overflowEvents) == false {
         fail(state, root, "overflow did not request cooperative rediscovery");
-        return;
+        return false;
     }
 
     state.degraded = true;
@@ -220,7 +239,7 @@ func main() {
     if state.fallbackScanActive == false or state.fallbackPageOffset <= 0
        or state.fallbackPageOffset > 256 {
         fail(state, root, "fallback scan was not page-bounded");
-        return;
+        return false;
     }
     rounds = 0;
     while state.fallbackScanActive and rounds < 16 {
@@ -230,7 +249,7 @@ func main() {
     if state.fallbackScanActive or state.fallbackBaselineReady == false
        or state.lastEntryCount != 400 {
         fail(state, root, "fallback baseline did not complete");
-        return;
+        return false;
     }
 
     var firstFingerprint = state.lastFingerprint;
@@ -253,10 +272,18 @@ func main() {
     }
     if state.fallbackScanActive or state.lastFingerprint == firstFingerprint {
         fail(state, root, "fallback fingerprint missed a file modification");
-        return;
+        return false;
     }
 
     workspace_watcher.StopWorkspaceWatcher(state);
     safe_io.DeleteDirectoryTree(root);
+    return true;
+}
+
+func main() {
+    var ctx = new WorkspaceWatcherProbeContext();
+    if VerifyDocumentWatchers(ctx) == false { return; }
+    if VerifyWorkspaceWatchers(ctx) == false { return; }
+
     Terminal.Say("RESULT: ok");
 }

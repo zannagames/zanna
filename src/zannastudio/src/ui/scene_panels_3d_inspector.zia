@@ -1,0 +1,528 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_panels_3d_inspector.zia
+// Purpose: Construct the 3D hierarchy and inspector authoring surfaces.
+// Key invariants:
+//   - Widget handles are assigned directly to their owning SceneEditor3D.
+//   - Inspector groups retain their historical construction order and defaults.
+//   - This stateless builder is called exactly once for each editor instance.
+// Ownership/Lifetime:
+//   - SceneEditor3D owns every constructed widget; this module owns nothing.
+// Links: zannastudio/src/ui/scene_panels_3d.zia,
+//        zannastudio/src/ui/scene_editor_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_panels_3d_inspector;
+
+bind "../services/file_utils";
+bind "scene_bake_3d";
+bind "scene_editor_3d";
+bind "scene_pane_docking";
+
+bind GUI = Zanna.GUI;
+
+/// @brief Construct inspector tabs and the scene-topic selector.
+func BuildInspectorHeader(editor: scene_editor_3d.SceneEditor3D,
+                          inspector: GUI.VBox,
+                          app: GUI.App) {
+        // Object | Scene inspector tabs: node groups live on the Object tab
+        // and editor.scene-wide groups (imports, bake, environment, material
+        // library) on the Scene tab. Selection changes auto-follow, and a
+        // manual choice holds until the next selection change.
+        var inspectorTabRow = GUI.HBox.New();
+        inspectorTabRow.SetSpacing(4.0);
+        inspector.AddChild(inspectorTabRow);
+        editor.inspectorDock.Setup(
+            app,
+            editor.bodySplit.Second,
+            editor.inspectorScroll,
+            editor.bodySplit,
+            2,
+            0.70,
+            "Inspector",
+            inspectorTabRow);
+        editor.objectTabButton = GUI.Button.New(inspectorTabRow, "Object");
+        editor.objectTabButton.SetTooltip(
+            "Inspect the selected nodes' components");
+        editor.sceneTabButton = GUI.Button.New(inspectorTabRow, "Scene");
+        editor.sceneTabButton.SetTooltip(
+            "Author scene-wide imports, bake, environment, and the "
+            + "material library");
+        editor.sceneSectionRow = GUI.HBox.New();
+        editor.sceneSectionRow.SetSpacing(4.0);
+        inspector.AddChild(editor.sceneSectionRow);
+        GUI.Label.New(editor.sceneSectionRow, "Topic");
+        editor.sceneSectionDropdown =
+            GUI.Dropdown.New(editor.sceneSectionRow);
+        editor.sceneSectionDropdown.SetFlex(1.0);
+        editor.sceneSectionDropdown.SetAccessibleName(
+            "3D Scene inspector topic");
+        editor.sceneSectionDropdown.SetTooltip(
+            "Show one scene-wide authoring topic at a time");
+        editor.sceneSectionDropdown.AddItem("World");
+        editor.sceneSectionDropdown.AddItem("Lighting & Bake");
+        editor.sceneSectionDropdown.AddItem("Assets & Materials");
+        editor.sceneSectionDropdown.AddItem("History");
+        editor.sceneSectionDropdown.SetSelected(
+            scene_editor_3d.SCENE_INSPECTOR_WORLD);
+        editor.sceneSectionDropdown.WasChanged();
+}
+
+/// @brief Construct hierarchy search, actions, tree, and reparent controls.
+func BuildHierarchy(editor: scene_editor_3d.SceneEditor3D,
+                    app: GUI.App) {
+        var hierarchyPane = editor.hierarchyPaneBox;
+        GUI.Label.New(hierarchyPane, "Scene hierarchy");
+        var hierarchySearchRow = GUI.HBox.New();
+        hierarchySearchRow.SetSpacing(4.0);
+        hierarchyPane.AddChild(hierarchySearchRow);
+        editor.hierarchyDock.Setup(
+            app,
+            editor.hierarchySplit.First,
+            editor.hierarchyPaneBox,
+            editor.hierarchySplit,
+            1,
+            0.18,
+            "Hierarchy",
+            hierarchySearchRow);
+        editor.hierarchySearchInput = GUI.TextInput.New(hierarchySearchRow);
+        editor.hierarchySearchInput.SetFlex(1.0);
+        editor.hierarchySearchInput.SetPlaceholder("Find node name");
+        editor.hierarchySearchInput.SetAccessibleName(
+            "Find 3D scene node by name");
+        editor.hierarchySearchInput.SetTooltip(
+            "Keep the hierarchy intact and jump between matching visible rows");
+        editor.hierarchySearchPreviousButton =
+            GUI.Button.New(hierarchySearchRow, "Prev");
+        editor.hierarchySearchPreviousButton.SetAccessibleName(
+            "Previous matching 3D scene node");
+        editor.hierarchySearchPreviousButton.SetTooltip(
+            "Select and reveal the previous matching node");
+        editor.hierarchySearchNextButton =
+            GUI.Button.New(hierarchySearchRow, "Next");
+        editor.hierarchySearchNextButton.SetAccessibleName(
+            "Next matching 3D scene node");
+        editor.hierarchySearchNextButton.SetTooltip(
+            "Select and reveal the next matching node");
+        editor.hierarchySearchStatus = GUI.Label.New(
+            hierarchyPane, "Find by node name");
+        editor.hierarchySearchStatus.SetWordWrap(true);
+        var hierarchyActionRow = GUI.Flex.New();
+        hierarchyActionRow.SetDirection(GUI.FlexDirection.Row);
+        hierarchyActionRow.SetWrap(GUI.FlexWrap.Wrap);
+        hierarchyActionRow.SetAlign(GUI.Align.Center);
+        hierarchyActionRow.SetGap(4.0);
+        hierarchyPane.AddChild(hierarchyActionRow);
+        editor.hierarchyShowButton =
+            GUI.Button.New(hierarchyActionRow, "● Show");
+        editor.hierarchyShowButton.SetAccessibleName(
+            "Show selected 3D scene nodes");
+        editor.hierarchyShowButton.SetTooltip(
+            "Make every selected hierarchy node visible as one undoable edit");
+        editor.hierarchyHideButton =
+            GUI.Button.New(hierarchyActionRow, "○ Hide");
+        editor.hierarchyHideButton.SetAccessibleName(
+            "Hide selected 3D scene nodes");
+        editor.hierarchyHideButton.SetTooltip(
+            "Hide every selected hierarchy node as one undoable edit");
+        editor.hierarchyPickLockButton =
+            GUI.Button.New(hierarchyActionRow, "⊘ Lock Pick");
+        editor.hierarchyPickLockButton.SetAccessibleName(
+            "Lock viewport picking for selected 3D scene nodes");
+        editor.hierarchyPickLockButton.SetTooltip(
+            "Keep the selected nodes visible but ignore them during viewport "
+            + "click and marquee selection; this follows the scene tab");
+        editor.hierarchyTree = GUI.TreeView.New(hierarchyPane);
+        editor.hierarchyTree.SetAccessibleName("3D scene hierarchy");
+        // The dedicated pane gives the tree the full remaining height
+        // instead of a fixed inspector slot.
+        editor.hierarchyTree.SetFlex(1.0);
+        editor.hierarchyTree.SetMultiSelect(true);
+        editor.hierarchyTree.SetDragDropMode(2);
+        editor.hierarchyTree.SetTooltip(
+            "●/○ shows visibility and ⊘ marks viewport pick locks. Expand "
+            + "real parent/child rows. Ctrl/Command-click toggles, "
+            + "Shift-click selects a range, and drag above/onto/below a row "
+            + "to reorder or reparent one undoable selection.");
+        var parentRow = GUI.HBox.New();
+        parentRow.SetSpacing(4.0);
+        hierarchyPane.AddChild(parentRow);
+        GUI.Label.New(parentRow, "Parent");
+        editor.parentDropdown = GUI.Dropdown.New(parentRow);
+        editor.parentDropdown.SetFlex(1.0);
+        editor.parentDropdown.SetAccessibleName("Selected node parent target");
+        editor.parentDropdown.SetTooltip(
+            "Choose a hierarchy parent and whether to preserve the world transform");
+        editor.reparentButton = GUI.Button.New(parentRow, "Reparent");
+        editor.reparentButton.SetTooltip(
+            "Move selected hierarchy roots beneath this parent as one undoable edit");
+        editor.preserveWorldReparentCheck =
+            GUI.Checkbox.New(hierarchyPane, "Keep world transform");
+        editor.preserveWorldReparentCheck.SetAccessibleName(
+            "Preserve world transform while reparenting");
+        editor.preserveWorldReparentCheck.SetTooltip(
+            "Derive new local transforms so nodes and descendants stay in place; "
+            + "reject conversions that would require shear");
+        editor.preserveWorldReparentCheck.SetChecked(true);
+        var siblingOrderRow = GUI.HBox.New();
+        siblingOrderRow.SetSpacing(4.0);
+        hierarchyPane.AddChild(siblingOrderRow);
+        GUI.Label.New(siblingOrderRow, "Sibling order");
+        editor.moveSiblingEarlierButton =
+            GUI.Button.New(siblingOrderRow, "Earlier");
+        editor.moveSiblingEarlierButton.SetAccessibleName(
+            "Move selected 3D scene nodes earlier");
+        editor.moveSiblingEarlierButton.SetTooltip(
+            "Move one contiguous sibling selection one position earlier");
+        editor.moveSiblingLaterButton =
+            GUI.Button.New(siblingOrderRow, "Later");
+        editor.moveSiblingLaterButton.SetAccessibleName(
+            "Move selected 3D scene nodes later");
+        editor.moveSiblingLaterButton.SetTooltip(
+            "Move one contiguous sibling selection one position later");
+}
+
+/// @brief Construct selected-node transform and component inspectors.
+func BuildNodeInspector(editor: scene_editor_3d.SceneEditor3D,
+                        inspector: GUI.VBox) {
+        editor.importGroup = GUI.GroupBox.New(inspector, "Project 3D imports");
+        editor.importAssetBrowser.Setup(
+            editor.importGroup,
+            "Import Project 3D Asset...",
+            ".scene3d,.vscn,.gltf,.glb,.fbx,.obj,.stl",
+            "Import Asset");
+        editor.nameLabel = GUI.Label.New(inspector, "Name");
+        editor.nameInput = GUI.TextInput.New(inspector);
+        editor.nameInput.SetPlaceholder("Node name");
+        editor.visibleCheck = GUI.Checkbox.New(inspector, "Visible");
+        editor.staticCheck = GUI.Checkbox.New(inspector, "Static (baked)");
+        editor.staticCheck.SetTooltip(
+            "Static nodes participate in lightmap and probe bakes");
+        editor.staticCheck.SetChecked(false);
+
+        editor.positionLabel = GUI.Label.New(inspector, "Position");
+        editor.positionRow = GUI.HBox.New();
+        editor.positionRow.SetSpacing(4.0);
+        inspector.AddChild(editor.positionRow);
+        editor.positionX = editor.AddTransformSpinner(editor.positionRow, "X", 0.0);
+        editor.positionY = editor.AddTransformSpinner(editor.positionRow, "Y", 0.0);
+        editor.positionZ = editor.AddTransformSpinner(editor.positionRow, "Z", 0.0);
+
+        editor.rotationLabel = GUI.Label.New(inspector, "Rotation (degrees)");
+        editor.rotationRow = GUI.HBox.New();
+        editor.rotationRow.SetSpacing(4.0);
+        inspector.AddChild(editor.rotationRow);
+        editor.rotationX = editor.AddRotationSpinner(editor.rotationRow, "X");
+        editor.rotationY = editor.AddRotationSpinner(editor.rotationRow, "Y");
+        editor.rotationZ = editor.AddRotationSpinner(editor.rotationRow, "Z");
+
+        editor.scaleLabel = GUI.Label.New(inspector, "Scale");
+        editor.scaleRow = GUI.HBox.New();
+        editor.scaleRow.SetSpacing(4.0);
+        inspector.AddChild(editor.scaleRow);
+        editor.scaleX = editor.AddTransformSpinner(editor.scaleRow, "X", 1.0);
+        editor.scaleY = editor.AddTransformSpinner(editor.scaleRow, "Y", 1.0);
+        editor.scaleZ = editor.AddTransformSpinner(editor.scaleRow, "Z", 1.0);
+        editor.applyTransformButton = GUI.Button.New(inspector, "Apply node properties");
+        editor.applyTransformButton.SetTooltip(
+            "Apply the visible local transform fields to the current selection");
+
+        editor.addComponentRow = GUI.HBox.New();
+        editor.addComponentRow.SetSpacing(4.0);
+        inspector.AddChild(editor.addComponentRow);
+        GUI.Label.New(editor.addComponentRow, "Add component");
+        editor.addComponentDropdown = GUI.Dropdown.New(editor.addComponentRow);
+        editor.addComponentDropdown.SetFlex(1.0);
+        editor.addComponentDropdown.SetAccessibleName(
+            "Component to add to the selection");
+        editor.addComponentButton = GUI.Button.New(editor.addComponentRow, "Add");
+        editor.addComponentButton.SetTooltip(
+            "Create the chosen component with defaults on the selection as "
+            + "one undoable edit");
+
+        // Terrain is a primary world-authoring surface, so it stays directly
+        // below transforms/components instead of hiding beneath generic
+        // metadata and secondary component inspectors.
+        editor.terrainInspector.Setup(inspector);
+        editor.metadataInspector.Setup(inspector);
+        editor.componentPalette.Setup(
+            inspector,
+            "Project components",
+            "3D node component template");
+        editor.componentAssetHost =
+            GUI.GroupBox.New(inspector, "Component asset field");
+        editor.componentAssetBrowser.Setup(
+            editor.componentAssetHost,
+            "Browse Asset Field...",
+            file_utils.AssetKindExtensions("any"),
+            "Use In Field Draft");
+        editor.lightInspector.Setup(inspector);
+        editor.cameraInspector.Setup(inspector);
+        editor.colliderInspector.Setup(inspector);
+        editor.instanceGroup = GUI.GroupBox.New(inspector, "Prefab instance");
+        editor.instanceSummary = GUI.Label.New(
+            editor.instanceGroup,
+            "Select a prefab instance node to manage its reference.");
+        editor.instanceSummary.SetWordWrap(true);
+        // Wrapping row: four buttons exceed a narrow inspector pane's width.
+        var instanceRow = GUI.Flex.New();
+        instanceRow.SetDirection(GUI.FlexDirection.Row);
+        instanceRow.SetWrap(GUI.FlexWrap.Wrap);
+        instanceRow.SetAlign(GUI.Align.Center);
+        instanceRow.SetGap(4.0);
+        editor.instanceGroup.AddChild(instanceRow);
+        editor.openPrefabSourceButton =
+            GUI.Button.New(instanceRow, "Open Source");
+        editor.openPrefabSourceButton.SetTooltip(
+            "Open the referenced scene as its own document");
+        editor.reloadInstancesButton = GUI.Button.New(instanceRow, "Reload");
+        editor.reloadInstancesButton.SetTooltip(
+            "Re-graft every instance from its referenced file; "
+            + "overrides are preserved");
+        editor.unpackInstanceButton = GUI.Button.New(instanceRow, "Unpack");
+        editor.unpackInstanceButton.SetTooltip(
+            "Convert this instance into a plain editable copy in one "
+            + "undoable edit, removing the reference");
+        editor.relinkInstanceButton = GUI.Button.New(instanceRow, "Re-link...");
+        editor.relinkInstanceButton.SetTooltip(
+            "Choose a different referenced scene for this instance");
+}
+
+/// @brief Construct lightmap and probe-grid baking controls.
+func BuildBakeInspector(editor: scene_editor_3d.SceneEditor3D,
+                        inspector: GUI.VBox) {
+        editor.bakeGroup = GUI.GroupBox.New(inspector, "Lightmap bake");
+        editor.bakeStatus = GUI.Label.New(
+            editor.bakeGroup,
+            "Deterministic CPU bake over the live scene (ADR 0188).");
+        editor.bakeStatus.SetWordWrap(true);
+        // Wrapping row: three labeled spinners exceed narrow inspector panes.
+        var bakeSettingsRow = GUI.Flex.New();
+        bakeSettingsRow.SetDirection(GUI.FlexDirection.Row);
+        bakeSettingsRow.SetWrap(GUI.FlexWrap.Wrap);
+        bakeSettingsRow.SetAlign(GUI.Align.Center);
+        bakeSettingsRow.SetGap(4.0);
+        editor.bakeGroup.AddChild(bakeSettingsRow);
+        // Each labeled spinner lives in its own pair box so wrapping keeps
+        // the label beside its control instead of splitting them across lines.
+        var texelsPair = GUI.HBox.New();
+        texelsPair.SetSpacing(4.0);
+        bakeSettingsRow.AddChild(texelsPair);
+        GUI.Label.New(texelsPair, "Texels/u");
+        editor.bakeTexelsSpinner = GUI.Spinner.New(texelsPair);
+        editor.bakeTexelsSpinner.SetRange(
+            scene_bake_3d.MIN_TEXELS, scene_bake_3d.MAX_TEXELS);
+        editor.bakeTexelsSpinner.SetStep(0.5);
+        editor.bakeTexelsSpinner.SetDecimals(2);
+        editor.bakeTexelsSpinner.SetValue(scene_bake_3d.DEFAULT_TEXELS);
+        editor.bakeTexelsSpinner.SetPreferredSize(72.0, 0.0);
+        editor.bakeTexelsSpinner.SetAccessibleName("Bake texels per unit");
+        var samplesPair = GUI.HBox.New();
+        samplesPair.SetSpacing(4.0);
+        bakeSettingsRow.AddChild(samplesPair);
+        GUI.Label.New(samplesPair, "Samples");
+        editor.bakeSamplesSpinner = GUI.Spinner.New(samplesPair);
+        editor.bakeSamplesSpinner.SetRange(1.0, 1024.0);
+        editor.bakeSamplesSpinner.SetStep(16.0);
+        editor.bakeSamplesSpinner.SetDecimals(0);
+        editor.bakeSamplesSpinner.SetValue(64.0);
+        editor.bakeSamplesSpinner.SetPreferredSize(72.0, 0.0);
+        editor.bakeSamplesSpinner.SetAccessibleName("Bake samples per texel");
+        var bouncesPair = GUI.HBox.New();
+        bouncesPair.SetSpacing(4.0);
+        bakeSettingsRow.AddChild(bouncesPair);
+        GUI.Label.New(bouncesPair, "Bounces");
+        editor.bakeBouncesSpinner = GUI.Spinner.New(bouncesPair);
+        editor.bakeBouncesSpinner.SetRange(0.0, 8.0);
+        editor.bakeBouncesSpinner.SetStep(1.0);
+        editor.bakeBouncesSpinner.SetDecimals(0);
+        editor.bakeBouncesSpinner.SetValue(2.0);
+        editor.bakeBouncesSpinner.SetPreferredSize(60.0, 0.0);
+        editor.bakeBouncesSpinner.SetAccessibleName("Bake light bounces");
+        var bakeSkyRow = GUI.HBox.New();
+        bakeSkyRow.SetSpacing(4.0);
+        editor.bakeGroup.AddChild(bakeSkyRow);
+        GUI.Label.New(bakeSkyRow, "Sky");
+        editor.bakeSkyPicker = GUI.ColorPicker.New(bakeSkyRow);
+        editor.bakeSkyPicker.SetFlex(1.0);
+        editor.bakeSkyPicker.SetAlphaEnabled(false);
+        editor.bakeSkyPicker.SetAccessibleName("Bake sky color");
+        var bakeActionRow = GUI.Flex.New();
+        bakeActionRow.SetDirection(GUI.FlexDirection.Row);
+        bakeActionRow.SetWrap(GUI.FlexWrap.Wrap);
+        bakeActionRow.SetAlign(GUI.Align.Center);
+        bakeActionRow.SetGap(4.0);
+        editor.bakeGroup.AddChild(bakeActionRow);
+        editor.bakeButton = GUI.Button.New(bakeActionRow, "Bake");
+        editor.bakeButton.SetTooltip(
+            "Run the chunked CPU bake and commit charts, atlas "
+            + "materials, and settings as one undoable edit");
+        editor.makeUniqueButton =
+            GUI.Button.New(bakeActionRow, "Make Meshes Unique");
+        editor.makeUniqueButton.SetTooltip(
+            "Deep-copy meshes shared by multiple nodes so charts "
+            + "cannot clobber each other; one undoable edit");
+        editor.bakeProbesButton = GUI.Button.New(bakeActionRow, "Bake Probes");
+        editor.bakeProbesButton.SetTooltip(
+            "Bake the selected probe grid against the last lightmap "
+            + "bake and save the .vlpg sidecar beside the scene");
+
+        editor.probeGroup = GUI.GroupBox.New(inspector, "Light probe grid");
+        editor.probeStatus = GUI.Label.New(
+            editor.probeGroup,
+            "Author probes.* bounds on the selected node; games load "
+            + "the .vlpg sidecar.");
+        editor.probeStatus.SetWordWrap(true);
+        // Wrapping rows: labeled spinner triplets and the action trio exceed
+        // narrow inspector panes.
+        var probeMinRow = GUI.Flex.New();
+        probeMinRow.SetDirection(GUI.FlexDirection.Row);
+        probeMinRow.SetWrap(GUI.FlexWrap.Wrap);
+        probeMinRow.SetAlign(GUI.Align.Center);
+        probeMinRow.SetGap(4.0);
+        editor.probeGroup.AddChild(probeMinRow);
+        GUI.Label.New(probeMinRow, "Min");
+        editor.probeMinXSpinner = editor.AddProbeSpinner(probeMinRow, "min X", -8.0);
+        editor.probeMinYSpinner = editor.AddProbeSpinner(probeMinRow, "min Y", 0.0);
+        editor.probeMinZSpinner = editor.AddProbeSpinner(probeMinRow, "min Z", -8.0);
+        var probeMaxRow = GUI.Flex.New();
+        probeMaxRow.SetDirection(GUI.FlexDirection.Row);
+        probeMaxRow.SetWrap(GUI.FlexWrap.Wrap);
+        probeMaxRow.SetAlign(GUI.Align.Center);
+        probeMaxRow.SetGap(4.0);
+        editor.probeGroup.AddChild(probeMaxRow);
+        GUI.Label.New(probeMaxRow, "Max");
+        editor.probeMaxXSpinner = editor.AddProbeSpinner(probeMaxRow, "max X", 8.0);
+        editor.probeMaxYSpinner = editor.AddProbeSpinner(probeMaxRow, "max Y", 4.0);
+        editor.probeMaxZSpinner = editor.AddProbeSpinner(probeMaxRow, "max Z", 8.0);
+        var probeActionRow = GUI.Flex.New();
+        probeActionRow.SetDirection(GUI.FlexDirection.Row);
+        probeActionRow.SetWrap(GUI.FlexWrap.Wrap);
+        probeActionRow.SetAlign(GUI.Align.Center);
+        probeActionRow.SetGap(4.0);
+        editor.probeGroup.AddChild(probeActionRow);
+        GUI.Label.New(probeActionRow, "Spacing");
+        editor.probeSpacingSpinner =
+            editor.AddProbeSpinner(probeActionRow, "spacing", 2.0);
+        editor.probeApplyButton = GUI.Button.New(probeActionRow, "Apply Grid");
+        editor.probeApplyButton.SetTooltip(
+            "Write the probes.* convention in one undoable edit");
+        editor.probeRemoveButton = GUI.Button.New(probeActionRow, "Remove");
+        editor.probeRemoveButton.SetTooltip(
+            "Remove every probes.* key while keeping the node");
+}
+
+/// @brief Construct history, environment, and material-library controls.
+func BuildEnvironmentInspector(editor: scene_editor_3d.SceneEditor3D,
+                               inspector: GUI.VBox) {
+        editor.historyGroup = GUI.GroupBox.New(inspector, "History");
+        editor.historyList = GUI.ListBox.New(editor.historyGroup);
+        editor.historyList.SetPreferredSize(0.0, 110.0);
+        editor.historyList.SetAccessibleName(
+            "Undoable edits oldest first; click a row to jump");
+        editor.envGroup = GUI.GroupBox.New(inspector, "Environment");
+        // Wrapping row: the Browse button drops below the input on narrow
+        // panes instead of pushing the row past the inspector width.
+        var envSkyRow = GUI.Flex.New();
+        envSkyRow.SetDirection(GUI.FlexDirection.Row);
+        envSkyRow.SetWrap(GUI.FlexWrap.Wrap);
+        envSkyRow.SetAlign(GUI.Align.Center);
+        envSkyRow.SetGap(4.0);
+        editor.envGroup.AddChild(envSkyRow);
+        GUI.Label.New(envSkyRow, "Skybox");
+        editor.envSkyboxInput = GUI.TextInput.New(envSkyRow);
+        editor.envSkyboxInput.SetFlex(1.0);
+        editor.envSkyboxInput.SetPreferredSize(120.0, 0.0);
+        editor.envSkyboxInput.SetPlaceholder("panorama asset (relative)");
+        editor.envSkyboxInput.SetAccessibleName("Environment skybox asset");
+        editor.envBrowseButton = GUI.Button.New(envSkyRow, "Browse...");
+        editor.envBrowseButton.SetTooltip(
+            "Choose a skybox panorama from the workspace index");
+        // Wrapping row: checkbox plus labeled spinner exceeds narrow panes.
+        var envIblRow = GUI.Flex.New();
+        envIblRow.SetDirection(GUI.FlexDirection.Row);
+        envIblRow.SetWrap(GUI.FlexWrap.Wrap);
+        envIblRow.SetAlign(GUI.Align.Center);
+        envIblRow.SetGap(4.0);
+        editor.envGroup.AddChild(envIblRow);
+        editor.envIblCheck = GUI.Checkbox.New(envIblRow, "Image-based lighting");
+        editor.envIblCheck.SetChecked(false);
+        GUI.Label.New(envIblRow, "Intensity");
+        editor.envIblIntensitySpinner = GUI.Spinner.New(envIblRow);
+        editor.envIblIntensitySpinner.SetRange(
+            0.0, scene_bake_3d.MAX_IBL_INTENSITY);
+        editor.envIblIntensitySpinner.SetStep(0.1);
+        editor.envIblIntensitySpinner.SetDecimals(2);
+        editor.envIblIntensitySpinner.SetValue(1.0);
+        editor.envIblIntensitySpinner.SetPreferredSize(72.0, 0.0);
+        editor.envIblIntensitySpinner.SetAccessibleName(
+            "Image-based lighting intensity");
+        editor.envApplyButton = GUI.Button.New(editor.envGroup, "Apply Environment");
+        editor.envApplyButton.SetTooltip(
+            "Write the env.* convention to the scene root in one "
+            + "undoable edit; the viewport applies it live");
+
+        editor.materialInspector.Setup(inspector);
+
+        editor.materialLibraryGroup =
+            GUI.GroupBox.New(inspector, "Material library");
+        editor.materialLibraryStatus = GUI.Label.New(
+            editor.materialLibraryGroup,
+            "Open a workspace folder to use materials.scene3d.");
+        editor.materialLibraryStatus.SetWordWrap(true);
+        editor.materialLibraryList = GUI.ListBox.New(editor.materialLibraryGroup);
+        editor.materialLibraryList.SetPreferredSize(0.0, 110.0);
+        editor.materialSwatchImage = GUI.Image.New(editor.materialLibraryGroup);
+        editor.materialSwatchImage.SetSize(48, 48);
+        editor.materialSwatchImage.SetVisible(false);
+        editor.materialSwatchImage.SetAccessibleName(
+            "Rendered preview of the selected library material");
+        editor.materialLibraryList.SetAccessibleName("Project library materials");
+        // The selected library material drags onto viewport meshes.
+        editor.materialLibraryList.SetDraggable(true);
+        editor.materialLibraryList.SetDragData("zanna/material", "");
+        var materialLibraryNameRow = GUI.HBox.New();
+        materialLibraryNameRow.SetSpacing(4.0);
+        editor.materialLibraryGroup.AddChild(materialLibraryNameRow);
+        editor.materialLibraryNameInput =
+            GUI.TextInput.New(materialLibraryNameRow);
+        editor.materialLibraryNameInput.SetFlex(1.0);
+        editor.materialLibraryNameInput.SetPlaceholder("Library material name");
+        editor.materialLibraryNameInput.SetAccessibleName(
+            "Library material name");
+        var materialLibraryActions = GUI.Flex.New();
+        materialLibraryActions.SetDirection(GUI.FlexDirection.Row);
+        materialLibraryActions.SetWrap(GUI.FlexWrap.Wrap);
+        materialLibraryActions.SetGap(4.0);
+        editor.materialLibraryGroup.AddChild(materialLibraryActions);
+        editor.materialLibrarySaveButton =
+            GUI.Button.New(materialLibraryActions, "Save to Library");
+        editor.materialLibrarySaveButton.SetTooltip(
+            "Store an independent copy of the selected node's material "
+            + "under this name; atomic, conflict-guarded write");
+        editor.materialLibraryApplyButton =
+            GUI.Button.New(materialLibraryActions, "Apply from Library");
+        editor.materialLibraryApplyButton.SetTooltip(
+            "Clone the chosen library material onto every selected "
+            + "node as one undoable edit; scenes stay self-contained");
+        editor.materialLibraryReloadButton =
+            GUI.Button.New(materialLibraryActions, "Reload");
+        editor.materialLibraryReloadButton.SetTooltip(
+            "Re-read materials.scene3d from disk");
+}
+
+/// @brief Add trailing status rows and publish the initial disabled state.
+func FinishInspector(editor: scene_editor_3d.SceneEditor3D,
+                     inspector: GUI.VBox) {
+        editor.selectionInfo = GUI.Label.New(inspector, "No node selected");
+        editor.selectionInfo.SetWordWrap(true);
+        editor.detailLabel = GUI.Label.New(inspector, "");
+        editor.detailLabel.SetWordWrap(true);
+        editor.SetEditorControlsEnabled(false);
+    }

@@ -1,0 +1,743 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_overlays.zia
+// Purpose: Focused overlays behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_renderer.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_overlays;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_renderer" as PreviousLayer;
+
+/// @brief Overlays implementation layer.
+class SceneEditor3DOverlaysLayer extends PreviousLayer.SceneEditor3DRendererLayer {
+
+    /// @brief Draw the responsive six-face camera navigator.
+    /// @details The navigator is a pure viewport overlay. Stable geometry is
+    ///          shared with OrientationFaceAt, active heading is amber, hover
+    ///          is cyan, and axis-family tint keeps directions scannable.
+    hide override func DrawOrientationNavigator() {
+        if viewportPixels == null
+           or OrientationNavigatorVisible() == false {
+            return;
+        }
+        var panelLeft = renderedViewportWidth
+            - SceneEditor3DModel.ORIENTATION_PANEL_MARGIN - SceneEditor3DModel.ORIENTATION_PANEL_WIDTH;
+        var panelTop = SceneEditor3DModel.ORIENTATION_PANEL_MARGIN;
+        viewportPixels.DrawBox(
+            panelLeft, panelTop,
+            SceneEditor3DModel.ORIENTATION_PANEL_WIDTH, SceneEditor3DModel.ORIENTATION_PANEL_HEIGHT,
+            Color.RGB(25, 30, 39));
+        viewportPixels.DrawFrame(
+            panelLeft, panelTop,
+            SceneEditor3DModel.ORIENTATION_PANEL_WIDTH, SceneEditor3DModel.ORIENTATION_PANEL_HEIGHT,
+            Color.RGB(84, 95, 112));
+        viewportPixels.DrawText(
+            panelLeft + 7, panelTop + 8,
+            "VIEW", Color.RGB(188, 198, 214));
+
+        // Tiny XYZ triad gives the compact face grid an immediate spatial cue.
+        var triadX = panelLeft + 57;
+        var triadY = panelTop + 14;
+        viewportPixels.DrawDisc(
+            triadX, triadY, 2, Color.RGB(215, 220, 228));
+        viewportPixels.DrawLine(
+            triadX, triadY, triadX + 15, triadY,
+            Color.RGB(218, 88, 88));
+        viewportPixels.DrawLine(
+            triadX, triadY, triadX, triadY - 9,
+            Color.RGB(88, 205, 112));
+        viewportPixels.DrawLine(
+            triadX, triadY, triadX + 9, triadY + 7,
+            Color.RGB(86, 138, 226));
+
+        var projectionLeft = panelLeft + 91;
+        var projectionTop = panelTop + 5;
+        var projectionFill = Color.RGB(48, 57, 70);
+        var projectionOutline = Color.RGB(104, 117, 136);
+        if orientationHoverFace == SceneEditor3DModel.ORIENTATION_PROJECTION_TOGGLE {
+            projectionFill = Color.RGB(43, 94, 110);
+            projectionOutline = Color.RGB(104, 220, 255);
+        }
+        viewportPixels.DrawBox(
+            projectionLeft, projectionTop, 50, 17, projectionFill);
+        viewportPixels.DrawFrame(
+            projectionLeft, projectionTop, 50, 17, projectionOutline);
+        var projectionText = "PERSP";
+        if viewPerspective == false { projectionText = "ORTHO"; }
+        viewportPixels.DrawText(
+            projectionLeft + 5, projectionTop + 5,
+            projectionText, Color.RGB(224, 229, 236));
+
+        var active = ActiveOrientationFace();
+        var face = SceneEditor3DModel.ORIENTATION_FACE_TOP;
+        while face <= SceneEditor3DModel.ORIENTATION_FACE_LEFT {
+            var column = face % 3;
+            var row = face / 3;
+            var left = panelLeft + SceneEditor3DModel.ORIENTATION_FACE_LEFT_PAD
+                + column
+                    * (SceneEditor3DModel.ORIENTATION_FACE_WIDTH + SceneEditor3DModel.ORIENTATION_FACE_GAP);
+            var top = panelTop + SceneEditor3DModel.ORIENTATION_FACE_TOP_PAD
+                + row
+                    * (SceneEditor3DModel.ORIENTATION_FACE_HEIGHT + SceneEditor3DModel.ORIENTATION_FACE_GAP);
+            var fill = Color.RGB(52, 61, 74);
+            if face == SceneEditor3DModel.ORIENTATION_FACE_TOP
+               or face == SceneEditor3DModel.ORIENTATION_FACE_BOTTOM {
+                fill = Color.RGB(38, 82, 51);
+            } else if face == SceneEditor3DModel.ORIENTATION_FACE_FRONT
+                      or face == SceneEditor3DModel.ORIENTATION_FACE_BACK {
+                fill = Color.RGB(37, 65, 104);
+            } else {
+                fill = Color.RGB(96, 48, 51);
+            }
+            var outline = Color.RGB(91, 104, 123);
+            if face == active {
+                fill = Color.RGB(124, 91, 35);
+                outline = Color.RGB(255, 195, 78);
+            }
+            if face == orientationHoverFace {
+                fill = Color.RGB(39, 105, 122);
+                outline = Color.RGB(104, 220, 255);
+            }
+            viewportPixels.DrawBox(
+                left, top,
+                SceneEditor3DModel.ORIENTATION_FACE_WIDTH, SceneEditor3DModel.ORIENTATION_FACE_HEIGHT,
+                fill);
+            viewportPixels.DrawFrame(
+                left, top,
+                SceneEditor3DModel.ORIENTATION_FACE_WIDTH, SceneEditor3DModel.ORIENTATION_FACE_HEIGHT,
+                outline);
+            var label = "TOP";
+            if face == SceneEditor3DModel.ORIENTATION_FACE_FRONT { label = "FRONT"; }
+            else if face == SceneEditor3DModel.ORIENTATION_FACE_RIGHT { label = "RIGHT"; }
+            else if face == SceneEditor3DModel.ORIENTATION_FACE_BOTTOM { label = "BOT"; }
+            else if face == SceneEditor3DModel.ORIENTATION_FACE_BACK { label = "BACK"; }
+            else if face == SceneEditor3DModel.ORIENTATION_FACE_LEFT { label = "LEFT"; }
+            var labelWidth = Str.get_Length(label) * 8;
+            viewportPixels.DrawText(
+                left + (SceneEditor3DModel.ORIENTATION_FACE_WIDTH - labelWidth) / 2,
+                top + 7,
+                label,
+                Color.RGB(235, 239, 244));
+            face = face + 1;
+        }
+    }
+
+    /// @brief Draw a mode-specific endpoint so tools are distinguishable.
+    /// @brief Draw four short corner brackets around one screen rectangle.
+    /// @details The cheap screen-space stand-in for a mesh silhouette until
+    ///          the GPU outline pass lands (deferral recorded in status).
+    hide override func DrawCornerBrackets(bounds: SceneEditor3DModel.ScreenBounds3D, color: Integer) {
+        if viewportPixels == null { return; }
+        var width = bounds.maxX - bounds.minX;
+        var height = bounds.maxY - bounds.minY;
+        var arm = 10;
+        if width / 3 < arm { arm = width / 3; }
+        if height / 3 < arm { arm = height / 3; }
+        if arm < 3 { arm = 3; }
+        viewportPixels.DrawLine(
+            bounds.minX, bounds.minY, bounds.minX + arm, bounds.minY, color);
+        viewportPixels.DrawLine(
+            bounds.minX, bounds.minY, bounds.minX, bounds.minY + arm, color);
+        viewportPixels.DrawLine(
+            bounds.maxX, bounds.minY, bounds.maxX - arm, bounds.minY, color);
+        viewportPixels.DrawLine(
+            bounds.maxX, bounds.minY, bounds.maxX, bounds.minY + arm, color);
+        viewportPixels.DrawLine(
+            bounds.minX, bounds.maxY, bounds.minX + arm, bounds.maxY, color);
+        viewportPixels.DrawLine(
+            bounds.minX, bounds.maxY, bounds.minX, bounds.maxY - arm, color);
+        viewportPixels.DrawLine(
+            bounds.maxX, bounds.maxY, bounds.maxX - arm, bounds.maxY, color);
+        viewportPixels.DrawLine(
+            bounds.maxX, bounds.maxY, bounds.maxX, bounds.maxY - arm, color);
+    }
+
+    /// @brief Draw hover/selection bounds brackets and the marquee band.
+    /// @details Selected mesh nodes get bracket outlines (primary amber,
+    ///          others cyan); the hovered unselected mesh gets a subtle
+    ///          bracket; an active marquee draws its live rectangle.
+    hide override func DrawSelectionFeedback() {
+        if viewportPixels == null { return; }
+        var i = 0;
+        while i < flatNodes.count() {
+            var isSelected =
+                scene_selection.Contains(selectedIndices, i);
+            var isHovered = i == hoveredViewportNode;
+            if (isSelected or isHovered)
+               and flatNodes.get(i).Mesh != null {
+                var bounds = NodeScreenBounds(flatNodes.get(i));
+                if bounds.visible {
+                    var color = Color.RGB(96, 110, 126);
+                    if isSelected { color = Color.RGB(104, 220, 255); }
+                    if i == selectedIndex {
+                        color = Color.RGB(255, 195, 78);
+                    }
+                    DrawCornerBrackets(bounds, color);
+                }
+            }
+            i = i + 1;
+        }
+        if marqueeActive {
+            var x = marqueeStartX;
+            var y = marqueeStartY;
+            var width = marqueeEndX - marqueeStartX;
+            var height = marqueeEndY - marqueeStartY;
+            if width < 0 {
+                x = marqueeEndX;
+                width = 0 - width;
+            }
+            if height < 0 {
+                y = marqueeEndY;
+                height = 0 - height;
+            }
+            viewportPixels.DrawFrame(
+                x, y, width + 1, height + 1, Color.RGB(120, 190, 255));
+        }
+    }
+
+    /// @brief Return the concise point-kind label used by snap feedback.
+    hide override func VertexSnapKindLabel(kind: Integer) -> String {
+        if kind == SceneEditor3DModel.VERTEX_SNAP_KIND_VERTEX { return "Vertex"; }
+        if kind == SceneEditor3DModel.VERTEX_SNAP_KIND_PIVOT { return "Pivot"; }
+        if kind == SceneEditor3DModel.VERTEX_SNAP_KIND_SURFACE { return "Surface"; }
+        return "Point";
+    }
+
+    /// @brief Draw one high-contrast screen-space snap reticle.
+    hide override func DrawVertexSnapReticle(x: Integer,
+                                    y: Integer,
+                                    color: Integer,
+                                    filled: Boolean) {
+        if viewportPixels == null { return; }
+        viewportPixels.DrawFrame(x - 6, y - 6, 13, 13, color);
+        viewportPixels.DrawLine(x - 10, y, x - 4, y, color);
+        viewportPixels.DrawLine(x + 4, y, x + 10, y, color);
+        viewportPixels.DrawLine(x, y - 10, x, y - 4, color);
+        viewportPixels.DrawLine(x, y + 4, x, y + 10, color);
+        if filled {
+            viewportPixels.DrawDisc(x, y, 2, color);
+        }
+    }
+
+    /// @brief Draw hover source and active source-to-target snap feedback.
+    hide override func DrawVertexSnapFeedback() {
+        if viewportPixels == null or gameViewActive { return; }
+        if vertexSnapDragActive {
+            var sourceColor = Color.RGB(255, 195, 78);
+            DrawVertexSnapReticle(
+                vertexSnapSource.screenX,
+                vertexSnapSource.screenY,
+                sourceColor,
+                true);
+            if vertexSnapTarget.valid {
+                var targetColor = Color.RGB(100, 226, 255);
+                if vertexSnapTarget.kind == SceneEditor3DModel.VERTEX_SNAP_KIND_SURFACE {
+                    targetColor = Color.RGB(112, 226, 142);
+                }
+                viewportPixels.DrawLine(
+                    vertexSnapSource.screenX,
+                    vertexSnapSource.screenY,
+                    vertexSnapTarget.screenX,
+                    vertexSnapTarget.screenY,
+                    Color.RGB(218, 224, 234));
+                DrawVertexSnapReticle(
+                    vertexSnapTarget.screenX,
+                    vertexSnapTarget.screenY,
+                    targetColor,
+                    true);
+            }
+            return;
+        }
+        if vertexSnapSource.valid {
+            DrawVertexSnapReticle(
+                vertexSnapSource.screenX,
+                vertexSnapSource.screenY,
+                Color.RGB(255, 205, 92),
+                false);
+        }
+    }
+
+    /// @brief Draw a terrain-conforming local-space brush ring.
+    /// @details Each segment samples the exact live height list before node
+    ///          world transformation, so scaled/rotated terrain previews the
+    ///          same footprint the brush edits.
+    hide override func DrawTerrainBrushFeedback() {
+        if viewportPixels == null or gameViewActive
+           or terrainSculptEnabled == false
+           or terrainBrushHoverValid == false {
+            return;
+        }
+        var node = SelectedNode();
+        var state = scene_terrain_3d.FromNode(node);
+        if state.present == false { return; }
+        var heights = scene_terrain_3d.HeightsFromNode(node);
+        if heights.count() != state.columns * state.rows { return; }
+        var radius = SceneEditor3DModel.ClampNumber3D(
+            terrainInspector.radiusSpinner.Value,
+            scene_terrain_3d.MIN_BRUSH_RADIUS,
+            scene_terrain_3d.MAX_BRUSH_RADIUS);
+        var color = Color.RGB(102, 224, 255);
+        if terrainStrokeActive {
+            color = Color.RGB(255, 195, 78);
+        }
+        var previous: SceneEditor3DModel.ProjectedPoint = null;
+        var segment = 0;
+        while segment <= SceneEditor3DModel.TERRAIN_BRUSH_RING_SEGMENTS {
+            var angle =
+                segment * SceneEditor3DModel.TERRAIN_BRUSH_RING_STEP_RADIANS;
+            var localX =
+                terrainBrushHoverX + Math.Cos(angle) * radius;
+            var localZ =
+                terrainBrushHoverZ + Math.Sin(angle) * radius;
+            var localY = scene_terrain_3d.SampleHeight(
+                heights,
+                state.columns,
+                state.rows,
+                state.spacing,
+                localX,
+                localZ) + 0.025;
+            var world = Mat4.TransformPoint(
+                node.WorldMatrix,
+                Vec3.New(localX, localY, localZ)) as Vec3;
+            if world != null {
+                var point = Project(world.X, world.Y, world.Z);
+                if previous != null
+                   and previous.visible and point.visible {
+                    viewportPixels.DrawLine(
+                        previous.x, previous.y,
+                        point.x, point.y,
+                        color);
+                }
+                previous = point;
+            }
+            segment = segment + 1;
+        }
+        var centerY = scene_terrain_3d.SampleHeight(
+            heights,
+            state.columns,
+            state.rows,
+            state.spacing,
+            terrainBrushHoverX,
+            terrainBrushHoverZ) + 0.03;
+        var centerWorld = Mat4.TransformPoint(
+            node.WorldMatrix,
+            Vec3.New(
+                terrainBrushHoverX,
+                centerY,
+                terrainBrushHoverZ)) as Vec3;
+        if centerWorld == null { return; }
+        var center =
+            Project(centerWorld.X, centerWorld.Y, centerWorld.Z);
+        if center.visible {
+            viewportPixels.DrawDisc(center.x, center.y, 3, color);
+            viewportPixels.DrawLine(
+                center.x - 7, center.y,
+                center.x - 3, center.y, color);
+            viewportPixels.DrawLine(
+                center.x + 3, center.y,
+                center.x + 7, center.y, color);
+            viewportPixels.DrawLine(
+                center.x, center.y - 7,
+                center.x, center.y - 3, color);
+            viewportPixels.DrawLine(
+                center.x, center.y + 3,
+                center.x, center.y + 7, color);
+        }
+    }
+
+    hide override func DrawGizmoHandle(point: SceneEditor3DModel.ProjectedPoint,
+                              color: Integer) {
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            viewportPixels.DrawFrame(
+                point.x - 4, point.y - 4, 9, 9, color);
+            return;
+        }
+        viewportPixels.DrawDisc(point.x, point.y, 3, color);
+    }
+
+    /// @brief Resolve the authored light-local offset through node world space.
+    hide override func LightWorldPosition(node: SceneNode,
+                                 light: Light3D) -> Vec3 {
+        if node == null { return Vec3.New(0.0, 0.0, 0.0); }
+        if light == null
+           or scene_light_3d.HasPosition(light.Type) == false {
+            return node.WorldPosition;
+        }
+        return Mat4.TransformPoint(node.WorldMatrix, light.Position) as Vec3;
+    }
+
+    /// @brief Resolve and normalize one light-local direction in world space.
+    hide override func LightWorldDirection(node: SceneNode,
+                                  light: Light3D) -> Vec3 {
+        if node == null or light == null {
+            return Vec3.New(0.0, -1.0, 0.0);
+        }
+        var transformed = Mat4.TransformVector(
+            node.WorldMatrix, light.Direction) as Vec3;
+        if transformed == null {
+            return Vec3.New(0.0, -1.0, 0.0);
+        }
+        var length = Math.Sqrt(
+            transformed.X * transformed.X
+            + transformed.Y * transformed.Y
+            + transformed.Z * transformed.Z);
+        if length <= 0.000001 {
+            return Vec3.New(0.0, -1.0, 0.0);
+        }
+        return Vec3.New(
+            transformed.X / length,
+            transformed.Y / length,
+            transformed.Z / length);
+    }
+
+    /// @brief Draw a pickable light glyph plus applicable direction and range.
+    /// @details The retained overlay makes meshless lighting nodes visible
+    ///          without replacing the live SceneGraph shading underneath it.
+    hide override func DrawLightOverlay(node: SceneNode,
+                               light: Light3D,
+                               selected: Boolean) {
+        if node == null or light == null or viewportPixels == null { return; }
+        var world = LightWorldPosition(node, light);
+        var center = Project(world.X, world.Y, world.Z);
+        if center.visible == false { return; }
+        var nodeWorld = node.WorldPosition;
+        var nodePoint = Project(
+            nodeWorld.X, nodeWorld.Y, nodeWorld.Z);
+        var color = scene_light_3d.PackedRgb(light);
+        if color == 0 { color = Color.RGB(118, 100, 54); }
+        if light.IsEnabled == false {
+            color = Color.RGB(106, 108, 114);
+        }
+        if nodePoint.visible
+           and (center.x != nodePoint.x or center.y != nodePoint.y) {
+            viewportPixels.DrawLine(
+                nodePoint.x, nodePoint.y,
+                center.x, center.y,
+                Color.RGB(132, 112, 66));
+        }
+        viewportPixels.DrawLine(
+            center.x - 7, center.y,
+            center.x + 7, center.y, color);
+        viewportPixels.DrawLine(
+            center.x, center.y - 7,
+            center.x, center.y + 7, color);
+        viewportPixels.DrawDisc(center.x, center.y, 4, color);
+        var outline = Color.RGB(255, 220, 136);
+        if selected { outline = Color.RGB(255, 195, 78); }
+        viewportPixels.DrawFrame(
+            center.x - 6, center.y - 6, 13, 13, outline);
+
+        if scene_light_3d.HasDirection(light.Type) {
+            var direction = LightWorldDirection(node, light);
+            var endpoint = Project(
+                world.X + direction.X * 1.5,
+                world.Y + direction.Y * 1.5,
+                world.Z + direction.Z * 1.5);
+            if endpoint.visible {
+                viewportPixels.DrawLine(
+                    center.x, center.y,
+                    endpoint.x, endpoint.y, color);
+                viewportPixels.DrawDisc(
+                    endpoint.x, endpoint.y, 2, color);
+            }
+        }
+        if selected and scene_light_3d.HasRange(light.Type) {
+            var rangePixels = Convert.NumToInt(light.Range * viewScale);
+            if rangePixels < 8 { rangePixels = 8; }
+            if rangePixels > 90 { rangePixels = 90; }
+            viewportPixels.DrawFrame(
+                center.x - rangePixels,
+                center.y - rangePixels,
+                rangePixels * 2 + 1,
+                rangePixels * 2 + 1,
+                Color.RGB(156, 128, 62));
+        }
+    }
+
+    /// @brief Draw a camera glyph plus its authored frustum wireframe.
+    /// @details Pose comes from the node world transform and projection from
+    ///          the authored fields, both projected through the shared
+    ///          viewport camera (ADR 0184). Behind-eye segments are skipped.
+    hide override func DrawCameraOverlay(node: SceneNode,
+                                selected: Boolean) {
+        var camera = node.Camera;
+        if camera == null or viewportPixels == null { return; }
+        var center = Project(
+            node.WorldPosition.X,
+            node.WorldPosition.Y,
+            node.WorldPosition.Z);
+        var color = Color.RGB(126, 214, 204);
+        if selected { color = Color.RGB(168, 255, 240); }
+        if center.visible {
+            viewportPixels.DrawFrame(
+                center.x - 5, center.y - 4, 11, 9, color);
+            viewportPixels.DrawDisc(center.x + 7, center.y, 2, color);
+        }
+
+        var state = scene_camera_3d.FromCamera(camera);
+        var world = node.WorldMatrix;
+        var eye = node.WorldPosition;
+        var forward = NormalizedVectorOr(
+            Mat4.TransformVector(
+                world, Vec3.New(0.0, 0.0, -1.0)) as Vec3,
+            0.0, 0.0, -1.0);
+        var up = NormalizedVectorOr(
+            Mat4.TransformVector(
+                world, Vec3.New(0.0, 1.0, 0.0)) as Vec3,
+            0.0, 1.0, 0.0);
+        var right = NormalizedVectorOr(
+            Vec3.Cross(forward, up) as Vec3, 1.0, 0.0, 0.0);
+        up = NormalizedVectorOr(
+            Vec3.Cross(right, forward) as Vec3, 0.0, 1.0, 0.0);
+
+        var nearHalfHeight = state.orthoSize;
+        var farHalfHeight = state.orthoSize;
+        if state.isOrtho == false {
+            var halfTangent = Math.Tan(
+                state.fovDegrees * 0.5 * SceneEditor3DModel.DEG_TO_RAD);
+            nearHalfHeight = halfTangent * state.nearPlane;
+            farHalfHeight = halfTangent * state.farPlane;
+        }
+        var nearHalfWidth =
+            nearHalfHeight * scene_camera_3d.DEFAULT_ASPECT;
+        var farHalfWidth =
+            farHalfHeight * scene_camera_3d.DEFAULT_ASPECT;
+        DrawFrustumRect(
+            eye, forward, right, up,
+            state.nearPlane, nearHalfWidth, nearHalfHeight, color);
+        DrawFrustumRect(
+            eye, forward, right, up,
+            state.farPlane, farHalfWidth, farHalfHeight, color);
+        var corner = 0;
+        while corner < 4 {
+            var signRight = 1.0;
+            if corner == 1 or corner == 2 { signRight = -1.0; }
+            var signUp = 1.0;
+            if corner >= 2 { signUp = -1.0; }
+            var nearPoint = FrustumCorner(
+                eye, forward, right, up,
+                state.nearPlane,
+                nearHalfWidth * signRight,
+                nearHalfHeight * signUp);
+            var farPoint = FrustumCorner(
+                eye, forward, right, up,
+                state.farPlane,
+                farHalfWidth * signRight,
+                farHalfHeight * signUp);
+            if nearPoint.visible and farPoint.visible {
+                viewportPixels.DrawLine(
+                    nearPoint.x, nearPoint.y,
+                    farPoint.x, farPoint.y, color);
+            }
+            corner = corner + 1;
+        }
+    }
+
+    /// @brief Project one frustum-plane corner through the shared camera.
+    hide override func FrustumCorner(eye: Vec3,
+                            forward: Vec3,
+                            right: Vec3,
+                            up: Vec3,
+                            distance: Number,
+                            offsetRight: Number,
+                            offsetUp: Number) -> SceneEditor3DModel.ProjectedPoint {
+        return Project(
+            eye.X + forward.X * distance
+                + right.X * offsetRight + up.X * offsetUp,
+            eye.Y + forward.Y * distance
+                + right.Y * offsetRight + up.Y * offsetUp,
+            eye.Z + forward.Z * distance
+                + right.Z * offsetRight + up.Z * offsetUp);
+    }
+
+    /// @brief Draw one projected frustum rectangle with visibility guards.
+    hide override func DrawFrustumRect(eye: Vec3,
+                              forward: Vec3,
+                              right: Vec3,
+                              up: Vec3,
+                              distance: Number,
+                              halfWidth: Number,
+                              halfHeight: Number,
+                              color: Integer) {
+        var topRight = FrustumCorner(
+            eye, forward, right, up, distance, halfWidth, halfHeight);
+        var topLeft = FrustumCorner(
+            eye, forward, right, up, distance,
+            0.0 - halfWidth, halfHeight);
+        var bottomLeft = FrustumCorner(
+            eye, forward, right, up, distance,
+            0.0 - halfWidth, 0.0 - halfHeight);
+        var bottomRight = FrustumCorner(
+            eye, forward, right, up, distance,
+            halfWidth, 0.0 - halfHeight);
+        if topRight.visible and topLeft.visible {
+            viewportPixels.DrawLine(
+                topRight.x, topRight.y, topLeft.x, topLeft.y, color);
+        }
+        if topLeft.visible and bottomLeft.visible {
+            viewportPixels.DrawLine(
+                topLeft.x, topLeft.y, bottomLeft.x, bottomLeft.y, color);
+        }
+        if bottomLeft.visible and bottomRight.visible {
+            viewportPixels.DrawLine(
+                bottomLeft.x, bottomLeft.y,
+                bottomRight.x, bottomRight.y, color);
+        }
+        if bottomRight.visible and topRight.visible {
+            viewportPixels.DrawLine(
+                bottomRight.x, bottomRight.y,
+                topRight.x, topRight.y, color);
+        }
+    }
+
+    /// @brief Retain the bounded picture-in-picture renderer lazily.
+    hide override func EnsureInsetRenderer() -> Boolean {
+        if insetRenderTarget != null
+           and insetRenderCanvas != null
+           and insetRenderCamera != null {
+            return true;
+        }
+        var target = RenderTarget3D.New(SceneEditor3DModel.INSET_WIDTH, SceneEditor3DModel.INSET_HEIGHT);
+        if target == null { return false; }
+        var canvas = Canvas3D.NewOffscreen(target);
+        if canvas == null { return false; }
+        canvas.SetDefaultLighting();
+        var camera = Camera3D.New(
+            scene_camera_3d.DEFAULT_FOV_DEGREES,
+            SceneEditor3DModel.INSET_WIDTH / (SceneEditor3DModel.INSET_HEIGHT / 1.0),
+            scene_camera_3d.DEFAULT_NEAR_PLANE,
+            scene_camera_3d.DEFAULT_FAR_PLANE);
+        if camera == null { return false; }
+        insetRenderTarget = target;
+        insetRenderCanvas = canvas;
+        insetRenderCamera = camera;
+        return true;
+    }
+
+    /// @brief Render and composite the selected camera's bounded preview.
+    /// @details Presentation only (ADR 0184): the inset re-renders during
+    ///          damaged frames when its source changed or the bounded frame
+    ///          spacing elapsed, and never touches canonical content.
+    hide override func DrawCameraPreviewInset() {
+        if insetEnabled == false or showCameraOverlays == false {
+            return;
+        }
+        if scene == null or viewportRenderFallback { return; }
+        var node = SelectedNode();
+        if node == null or node.Camera == null { return; }
+        var sourceChanged = insetSourceRevision != revision
+            or insetSourceNode != node;
+        var spacingElapsed = insetFrameCounter - insetLastRenderFrame
+            >= SceneEditor3DModel.INSET_REFRESH_FRAMES;
+        if (sourceChanged or spacingElapsed or insetPixels == null)
+           and EnsureInsetRenderer() {
+            ApplyAuthoredCameraPose(insetRenderCamera, node);
+            insetRenderCanvas.Wireframe = false;
+            var insetAuthoredSky =
+                ApplyEnvironmentToCanvas(insetRenderCanvas);
+            ApplyProjectPreviewEnvironment(
+                insetRenderCanvas,
+                ProjectPreviewRenderState(),
+                insetAuthoredSky,
+                false);
+            Canvas3D.Begin(insetRenderCanvas, insetRenderCamera);
+            scene.Draw(insetRenderCanvas, insetRenderCamera);
+            if projectPreviewScene != null {
+                projectPreviewScene.Draw(
+                    insetRenderCanvas, insetRenderCamera);
+            }
+            DrawProjectWaterPreviews(
+                insetRenderCanvas, insetRenderCamera);
+            Canvas3D.End(insetRenderCanvas);
+            var rendered = insetRenderTarget.AsPixels();
+            if rendered != null {
+                insetPixels = rendered;
+                insetLastRenderFrame = insetFrameCounter;
+                insetSourceRevision = revision;
+                insetSourceNode = node;
+            }
+        }
+        if insetPixels == null { return; }
+        var margin = 8;
+        var x = renderedViewportWidth - SceneEditor3DModel.INSET_WIDTH - margin;
+        var y = renderedViewportHeight - SceneEditor3DModel.INSET_HEIGHT - margin;
+        if x < 8 or y < 8 { return; }
+        viewportPixels.Copy(
+            x, y, insetPixels, 0, 0, SceneEditor3DModel.INSET_WIDTH, SceneEditor3DModel.INSET_HEIGHT);
+        viewportPixels.DrawFrame(
+            x - 1, y - 1, SceneEditor3DModel.INSET_WIDTH + 2, SceneEditor3DModel.INSET_HEIGHT + 2,
+            Color.RGB(126, 214, 204));
+    }
+
+}

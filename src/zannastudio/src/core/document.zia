@@ -16,6 +16,8 @@
 //     output frame is active without entering canonical document content.
 //   - Scene-inspector topic selection follows its document like camera, split,
 //     scroll, and tool state; it never enters scene content.
+//   - Project node-preview state selection is tab-local presentation and never
+//     changes canonical scene metadata, visibility, or history.
 //   - New scene tabs start with compact supporting panes and a dominant
 //     canvas/viewport; restored tabs retain their own divider choices.
 // Ownership/Lifetime:
@@ -24,7 +26,8 @@
 //        docs/adr/0166-exact-scenenode-world-matrix-assignment.md,
 //        docs/adr/0168-windowless-canvas3d-rendering.md,
 //        docs/adr/0207-non-destructive-scene-game-view.md,
-//        docs/adr/0208-project-authored-game-output-frames.md
+//        docs/adr/0208-project-authored-game-output-frames.md,
+//        docs/adr/0216-project-owned-3d-node-preview-states.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -188,6 +191,7 @@ class Scene3DWorkspaceState {
     expose Boolean previewActive;
     expose Boolean gameViewActive;
     expose Boolean gameViewOutputFramed;
+    expose Integer projectPreviewFilterIndex;
     expose List[String] cameraBookmarks;
     expose List[String] pickLockedPaths;
     expose List[String] undoStack;
@@ -237,6 +241,7 @@ class Scene3DWorkspaceState {
         previewActive = false;
         gameViewActive = false;
         gameViewOutputFramed = false;
+        projectPreviewFilterIndex = -1;
         cameraBookmarks = [];
         pickLockedPaths = [];
         undoStack = [];

@@ -82,7 +82,17 @@ func pump(editor: scene_editor_3d.SceneEditor3D,
     shell.Render();
 }
 
-func main() {
+/// @brief Typed state shared by serial collider-authoring scenarios.
+class ColliderAuthoringProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+}
+
+/// @brief Verify collider vocabulary, transactions, removal, and exact undo.
+func VerifyColliderTransactions(
+    ctx: ColliderAuthoringProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Collider Authoring Probe", 1180, 780);
 
@@ -98,7 +108,7 @@ func main() {
        or scene_collider_3d.KindToken(
               scene_collider_3d.COLLIDER_CAPSULE) != "capsule" {
         fail(shell, "", "collider kind vocabulary drifted");
-        return;
+        return false;
     }
     var draft = new scene_collider_3d.ColliderState3D();
     draft.kind = scene_collider_3d.COLLIDER_BOX;
@@ -108,7 +118,7 @@ func main() {
     if near(normalized.halfX, scene_collider_3d.MIN_DIMENSION) == false
        or near(normalized.halfY, scene_collider_3d.MIN_DIMENSION) == false {
         fail(shell, "", "collider dimension bounds drifted");
-        return;
+        return false;
     }
     if file_utils.AssetKindExtensions("image")
           != ".png,.jpg,.jpeg,.bmp,.gif"
@@ -118,7 +128,7 @@ func main() {
        or Str.Contains(
               file_utils.AssetKindExtensions("unknown"), ".gltf") == false {
         fail(shell, "", "asset kind extension map drifted");
-        return;
+        return false;
     }
 
     var editor = new scene_editor_3d.SceneEditor3D();
@@ -131,7 +141,7 @@ func main() {
 
     if editor.AddEmptyNode("Blocker", -1) < 0 {
         fail(shell, "", "could not author the collider probe node");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
     var node = editor.flatNodes.get(0);
@@ -159,12 +169,12 @@ func main() {
        or node.MetadataHas("collider.radius")
        or Str.Contains(sceneDoc.content, "collider.kind") == false {
         fail(shell, "", "box collider apply was not one exact transaction");
-        return;
+        return false;
     }
     if editor.ApplyNodeCollider(0, boxDraft)
        or editor.GetRevision() != applyRevision + 1 {
         fail(shell, "", "exact no-op collider apply still created history");
-        return;
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -184,7 +194,7 @@ func main() {
        or node.MetadataHas("collider.height") {
         fail(shell, "",
              "kind switch did not rewrite the exact key set");
-        return;
+        return false;
     }
     if editor.Undo() == false
        or editor.flatNodes.get(0).MetadataGetString(
@@ -193,14 +203,28 @@ func main() {
        or sceneDoc.content != applyBaseline
        or editor.flatNodes.get(0).MetadataHas("collider.kind") {
         fail(shell, "", "collider applies did not undo exactly");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Verify route recognition, overlays, and asset-field browsing.
+func VerifyRouteAndAssetFieldAuthoring(
+    ctx: ColliderAuthoringProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
 
     // ------------------------------------------------------------------
     // Remove: complete key set deleted, node preserved.
     // ------------------------------------------------------------------
-    node = editor.flatNodes.get(0);
+    var node = editor.flatNodes.get(0);
     var capsuleDraft = new scene_collider_3d.ColliderState3D();
     capsuleDraft.kind = scene_collider_3d.COLLIDER_CAPSULE;
     capsuleDraft.radius = 0.5;
@@ -214,11 +238,11 @@ func main() {
        or node.MetadataHas("collider.trigger")
        or editor.flatNodes.count() != 1 {
         fail(shell, "", "collider removal left stale keys or lost the node");
-        return;
+        return false;
     }
     if editor.RemoveNodeColliderConvention(0) {
         fail(shell, "", "removing an absent collider still claimed success");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
 
@@ -264,7 +288,7 @@ func main() {
        or componentProject.OpenFolder(componentDir) == false {
         sceneDoc.filePath = previousScenePath;
         fail(shell, componentDir, "could not create the route fixture");
-        return;
+        return false;
     }
     editor.SetWorkspaceContext(componentProject);
     pump(editor, sceneDoc, shell);
@@ -275,7 +299,7 @@ func main() {
        or editor.AddEmptyNode("WP 2", routeIndex) < 0 {
         sceneDoc.filePath = previousScenePath;
         fail(shell, componentDir, "could not author the route nodes");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
     routeIndex = -1;
@@ -295,7 +319,7 @@ func main() {
        or editor.ApplySelectedComponent(routeComponent) == false {
         sceneDoc.filePath = previousScenePath;
         fail(shell, componentDir, "could not apply the route component");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
     var routeRow = GUI.TreeView.Node.GetText(
@@ -304,7 +328,7 @@ func main() {
         sceneDoc.filePath = previousScenePath;
         fail(shell, componentDir,
              "route badge missing from hierarchy row: " + routeRow);
-        return;
+        return false;
     }
 
     // Overlay toggles must redraw without touching canonical bytes.
@@ -321,7 +345,7 @@ func main() {
         sceneDoc.filePath = previousScenePath;
         fail(shell, componentDir,
              "overlay toggles dirtied content or did not latch");
-        return;
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -335,7 +359,7 @@ func main() {
         sceneDoc.filePath = previousScenePath;
         fail(shell, componentDir,
              "asset field edit did not open the bounded browser");
-        return;
+        return false;
     }
     editor.componentAssetBrowser.Close();
     editor.componentPalette.SelectField("brief.text");
@@ -344,13 +368,20 @@ func main() {
         sceneDoc.filePath = previousScenePath;
         fail(shell, componentDir,
              "scalar field edit opened the asset browser");
-        return;
+        return false;
     }
 
     sceneDoc.filePath = previousScenePath;
     componentProject.CloseProject();
     editor.SetWorkspaceContext(null);
     Dir.RemoveAll(componentDir);
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new ColliderAuthoringProbeContext();
+    if VerifyColliderTransactions(ctx) == false { return; }
+    if VerifyRouteAndAssetFieldAuthoring(ctx) == false { return; }
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

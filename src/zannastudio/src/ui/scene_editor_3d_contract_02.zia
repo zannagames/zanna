@@ -1,0 +1,470 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_contract_02.zia
+// Purpose: Virtual method contract segment 2 for composable 3D scene-editor implementation layers.
+// Key invariants:
+//   - Signatures mirror the public/private controller surface and provide neutral dispatch fallbacks.
+// Ownership/Lifetime:
+//   - Contract instances are implementation scaffolding and own no external resources.
+// Links: zannastudio/src/ui/scene_editor_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_contract_02;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_contract_01" as PreviousContract;
+
+/// @brief Dispatch declarations used by focused SceneEditor3D layers.
+class SceneEditor3DContract02 extends PreviousContract.SceneEditor3DContract01 {
+    /// @brief Neutral dispatch slot for EffectiveViewportMode.
+    hide func EffectiveViewportMode() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for UpdateViewportModeControls.
+    expose func UpdateViewportModeControls() {}
+
+    /// @brief Neutral dispatch slot for SetGizmoMode.
+    expose func SetGizmoMode(_nextMode: Integer) {}
+
+    /// @brief Neutral dispatch slot for SetGizmoTransformSpace.
+    expose func SetGizmoTransformSpace(_nextSpace: Integer) {}
+
+    /// @brief Neutral dispatch slot for SetGizmoSnapEnabled.
+    expose func SetGizmoSnapEnabled(_enabled: Boolean) {}
+
+    /// @brief Neutral dispatch slot for SetSurfaceSnapEnabled.
+    expose func SetSurfaceSnapEnabled(_enabled: Boolean) {}
+
+    /// @brief Neutral dispatch slot for SetSurfaceAlignEnabled.
+    expose func SetSurfaceAlignEnabled(_enabled: Boolean) {}
+
+    /// @brief Neutral dispatch slot for SetVertexSnapEnabled.
+    expose func SetVertexSnapEnabled(_enabled: Boolean) {}
+
+    /// @brief Neutral dispatch slot for SyncGizmoModeControls.
+    hide func SyncGizmoModeControls() {}
+
+    /// @brief Neutral dispatch slot for UpdateGizmoModeControls.
+    expose func UpdateGizmoModeControls() {}
+
+    /// @brief Neutral dispatch slot for GetRevision.
+    expose func GetRevision() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for AddEmptyNode.
+    expose func AddEmptyNode(_name: String,
+                             _parentIndex: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for AddLightNode.
+    expose func AddLightNode(_name: String,
+                             _parentIndex: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for SetNodeMetadata.
+    expose func SetNodeMetadata(_nodeIndex: Integer,
+                                _previousKey: String,
+                                _key: String,
+                                _kind: String,
+                                _value: String) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RemoveNodeMetadata.
+    expose func RemoveNodeMetadata(_nodeIndex: Integer,
+                                   _key: String) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplySelectedComponent.
+    expose func ApplySelectedComponent(
+        _component: scene_component_schema.SceneComponentDefinition)
+        -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for UniqueComponentNodeName.
+    hide func UniqueComponentNodeName(_base: String) -> String { return ""; }
+
+    /// @brief Neutral dispatch slot for CreateNodeFromComponent.
+    expose func CreateNodeFromComponent(
+        _component: scene_component_schema.SceneComponentDefinition)
+        -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for EditSelectedComponentField.
+    expose func EditSelectedComponentField() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for WriteNodeComponentField.
+    hide func WriteNodeComponentField(
+        _node: SceneNode,
+        _field: scene_component_schema.SceneComponentField) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RestoreNodeComponentEdit.
+    hide func RestoreNodeComponentEdit(
+        _previousSelection: List[Integer],
+        _previousPrimary: Integer,
+        _message: String) {}
+
+    /// @brief Neutral dispatch slot for NodeMetadataMatches.
+    hide func NodeMetadataMatches(_node: SceneNode,
+                                  _key: String,
+                                  _kind: String,
+                                  _stringValue: String,
+                                  _intValue: Integer,
+                                  _floatValue: Number,
+                                  _boolValue: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RestoreNodeMetadataEdit.
+    hide func RestoreNodeMetadataEdit(_nodeIndex: Integer,
+                                      _message: String) {}
+
+    /// @brief Neutral dispatch slot for SetNodeTransform.
+    expose func SetNodeTransform(_nodeIndex: Integer,
+                                 _px: Number,
+                                 _py: Number,
+                                 _pz: Number,
+                                 _sx: Number,
+                                 _sy: Number,
+                                 _sz: Number) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SetNodeEulerRotation.
+    expose func SetNodeEulerRotation(_nodeIndex: Integer,
+                                     _xDegrees: Number,
+                                     _yDegrees: Number,
+                                     _zDegrees: Number) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for TranslateNodeAlongGizmoAxis.
+    expose func TranslateNodeAlongGizmoAxis(_nodeIndex: Integer,
+                                            _axis: Integer,
+                                            _amount: Number) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for TransformNodeAlongGizmoAxis.
+    expose func TransformNodeAlongGizmoAxis(_nodeIndex: Integer,
+                                            _transformMode: Integer,
+                                            _axis: Integer,
+                                            _amount: Number,
+                                            _snapEnabled: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for TransformSelectedAlongGizmoAxis.
+    expose func TransformSelectedAlongGizmoAxis(
+        _transformMode: Integer,
+        _axis: Integer,
+        _amount: Number,
+        _snapEnabled: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for TranslateSelectedInGizmoPlane.
+    expose func TranslateSelectedInGizmoPlane(
+        _plane: Integer,
+        _amountA: Number,
+        _amountB: Number,
+        _snapEnabled: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ScaleSelectedInGizmoPlane.
+    expose func ScaleSelectedInGizmoPlane(
+        _plane: Integer,
+        _amountA: Number,
+        _amountB: Number,
+        _snapEnabled: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for TransformSelectedInGizmoPlane.
+    hide func TransformSelectedInGizmoPlane(
+        _transformMode: Integer,
+        _plane: Integer,
+        _amountA: Number,
+        _amountB: Number,
+        _snapEnabled: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for TransformSelectedInWorldGizmoPlane.
+    hide func TransformSelectedInWorldGizmoPlane(
+        _transformMode: Integer,
+        _plane: Integer,
+        _amountA: Number,
+        _amountB: Number,
+        _snapEnabled: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for TransformSelectedAlongWorldGizmoAxis.
+    hide func TransformSelectedAlongWorldGizmoAxis(
+        _transformMode: Integer,
+        _axis: Integer,
+        _amount: Number,
+        _snapEnabled: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for HierarchyOrderedSelection.
+    hide func HierarchyOrderedSelection(
+        _indices: List[Integer]) -> List[Integer] { return []; }
+
+    /// @brief Neutral dispatch slot for WorldAxisSourceValue.
+    hide func WorldAxisSourceValue(_transformMode: Integer,
+                                   _axis: Integer,
+                                   _worldPosition: Vec3,
+                                   _worldScale: Vec3) -> Number { return 0.0; }
+
+    /// @brief Neutral dispatch slot for WorldAxisTargetMatrix.
+    hide func WorldAxisTargetMatrix(_startWorld: Mat4,
+                                    _pivot: Vec3,
+                                    _worldScale: Vec3,
+                                    _transformMode: Integer,
+                                    _axis: Integer,
+                                    _delta: Number) -> Mat4 { return null; }
+
+    /// @brief Neutral dispatch slot for WorldPlaneTargetMatrix.
+    hide func WorldPlaneTargetMatrix(
+        _startWorld: Mat4,
+        _pivot: Vec3,
+        _worldScale: Vec3,
+        _transformMode: Integer,
+        _axisA: Integer,
+        _axisB: Integer,
+        _deltaA: Number,
+        _deltaB: Number) -> Mat4 { return null; }
+
+    /// @brief Neutral dispatch slot for RestoreLocalTransforms.
+    hide func RestoreLocalTransforms(_indices: List[Integer],
+                                     _positions: List[Vec3],
+                                     _rotations: List[Quat],
+                                     _scales: List[Vec3]) {}
+
+    /// @brief Neutral dispatch slot for ApplySelectedTransformDeltas.
+    expose func ApplySelectedTransformDeltas(
+        _positionDeltaX: Number,
+        _positionDeltaY: Number,
+        _positionDeltaZ: Number,
+        _rotationDeltaX: Number,
+        _rotationDeltaY: Number,
+        _rotationDeltaZ: Number,
+        _scaleFactorX: Number,
+        _scaleFactorY: Number,
+        _scaleFactorZ: Number) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplyNodeLight.
+    expose func ApplyNodeLight(
+        _nodeIndex: Integer,
+        _state: scene_light_3d.LightState3D) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplySelectedLightFromControls.
+    expose func ApplySelectedLightFromControls() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CreateLightsOnSelection.
+    expose func CreateLightsOnSelection(
+        _state: scene_light_3d.LightState3D) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplySelectedLightPatch.
+    expose func ApplySelectedLightPatch(
+        _patch: scene_light_3d.LightPatch3D) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RemoveSelectedLights.
+    expose func RemoveSelectedLights() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RemoveNodeLight.
+    expose func RemoveNodeLight(_nodeIndex: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for AddCameraNode.
+    expose func AddCameraNode(_name: String,
+                              _parentIndex: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ApplyNodeCamera.
+    expose func ApplyNodeCamera(
+        _nodeIndex: Integer,
+        _state: scene_camera_3d.CameraState3D) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplySelectedCameraFromControls.
+    expose func ApplySelectedCameraFromControls() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RemoveNodeCamera.
+    expose func RemoveNodeCamera(_nodeIndex: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ToggleLookThrough.
+    expose func ToggleLookThrough() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for IsLookingThroughCamera.
+    expose func IsLookingThroughCamera() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplySelectedColliderFromControls.
+    expose func ApplySelectedColliderFromControls() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplyNodeCollider.
+    expose func ApplyNodeCollider(
+        _nodeIndex: Integer,
+        _state: scene_collider_3d.ColliderState3D) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RemoveNodeColliderConvention.
+    expose func RemoveNodeColliderConvention(
+        _nodeIndex: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SelectedAssetComponentField.
+    hide func SelectedAssetComponentField()
+        -> scene_component_schema.SceneComponentField { return null; }
+
+    /// @brief Neutral dispatch slot for ApplyComponentAssetPath.
+    hide func ApplyComponentAssetPath(_assetPath: String) {}
+
+    /// @brief Neutral dispatch slot for ImportInstancePath.
+    expose func ImportInstancePath(_path: String) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RequestOpenPrefabSource.
+    hide func RequestOpenPrefabSource() {}
+
+    /// @brief Neutral dispatch slot for TakeOpenPrefabSourcePath.
+    expose func TakeOpenPrefabSourcePath() -> String { return ""; }
+
+    /// @brief Neutral dispatch slot for ReloadPrefabInstances.
+    expose func ReloadPrefabInstances() {}
+
+    /// @brief Neutral dispatch slot for UnpackSelectedInstance.
+    expose func UnpackSelectedInstance() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ResolveInstanceOwnerIndex.
+    hide func ResolveInstanceOwnerIndex(_nodeIndex: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ResolveInstanceOwnerSelection.
+    hide func ResolveInstanceOwnerSelection(
+        _indices: List[Integer]) -> List[Integer] { return []; }
+
+    /// @brief Neutral dispatch slot for ParentAcceptsAuthoredChildren.
+    hide func ParentAcceptsAuthoredChildren(_parent: SceneNode) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for AddProbeSpinner.
+    expose func AddProbeSpinner(_parent: GUI.Flex,
+                              _label: String,
+                              _value: Number) -> GUI.Spinner { return null; }
+
+    /// @brief Neutral dispatch slot for PumpBakeControls.
+    hide func PumpBakeControls() {}
+
+    /// @brief Neutral dispatch slot for BakeSettingsFromControls.
+    hide func BakeSettingsFromControls() -> scene_bake_3d.BakeSettings3D { return null; }
+
+    /// @brief Neutral dispatch slot for StartBake.
+    expose func StartBake() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for PumpBakeSteps.
+    hide func PumpBakeSteps() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for FinishBake.
+    hide func FinishBake() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CancelBake.
+    expose func CancelBake() {}
+
+    /// @brief Neutral dispatch slot for IsBakeActive.
+    expose func IsBakeActive() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for AllLiveNodes.
+    hide func AllLiveNodes() -> List[SceneNode] { return []; }
+
+    /// @brief Neutral dispatch slot for MakeMeshesUniqueForBaking.
+    expose func MakeMeshesUniqueForBaking() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplySelectedProbeGrid.
+    expose func ApplySelectedProbeGrid() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RemoveSelectedProbeGrid.
+    expose func RemoveSelectedProbeGrid() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for BakeSelectedProbeGrid.
+    expose func BakeSelectedProbeGrid() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SceneSidecarPath.
+    hide func SceneSidecarPath(_extension: String) -> String { return ""; }
+
+    /// @brief Neutral dispatch slot for ApplyEnvironmentFromControls.
+    expose func ApplyEnvironmentFromControls() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplyEnvironmentToCanvas.
+    hide func ApplyEnvironmentToCanvas(_canvas: Canvas3D) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ProjectEnvironmentSignature.
+    hide func ProjectEnvironmentSignature(
+        _state: SceneEditor3DModel.ScenePreview3DRenderState) -> String { return ""; }
+
+    /// @brief Neutral dispatch slot for EnsureProjectPreviewEnvironment.
+    hide func EnsureProjectPreviewEnvironment(
+        _state: SceneEditor3DModel.ScenePreview3DRenderState) {}
+
+    /// @brief Neutral dispatch slot for DirectionUsable.
+    hide func DirectionUsable(_x: Number,
+                              _y: Number,
+                              _z: Number) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for BuildProjectSkybox.
+    hide func BuildProjectSkybox(
+        _state: SceneEditor3DModel.ScenePreview3DRenderState) -> CubeMap3D { return null; }
+
+    /// @brief Neutral dispatch slot for BuildProjectSkyFace.
+    hide func BuildProjectSkyFace(
+        _state: SceneEditor3DModel.ScenePreview3DRenderState,
+        _face: Integer) -> Pixels { return null; }
+
+    /// @brief Neutral dispatch slot for ProjectSkyColor.
+    hide func ProjectSkyColor(
+        _state: SceneEditor3DModel.ScenePreview3DRenderState,
+        _directionX: Number,
+        _directionY: Number,
+        _directionZ: Number) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for Lerp3D.
+    hide func Lerp3D(_a: Number,
+                     _b: Number,
+                     _amount: Number) -> Number { return 0.0; }
+
+    /// @brief Neutral dispatch slot for Smoothstep3D.
+    hide func Smoothstep3D(_minimum: Number,
+                           _maximum: Number,
+                           _value: Number) -> Number { return 0.0; }
+
+}

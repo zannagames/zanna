@@ -1,0 +1,926 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_editor_3d_probe_part_3.zia
+// Purpose: Serial 3D editor probe scenarios, part 3 of 4.
+// Key invariants:
+//   - Scenarios preserve the original execution order and shared fixture.
+//   - Failure paths retain their original cleanup and RESULT diagnostics.
+// Ownership/Lifetime: Borrows one SceneEditor3DProbeContext from the entry probe.
+// Links: zannastudio/src/probes/scene_editor_3d_probe.zia,
+//        zannastudio/src/probes/scene_editor_3d_probe_context.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_probe_part_3;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../commands/command_context";
+bind "../commands/file_commands";
+bind "../commands/main_command_dispatcher";
+bind "../editor/editor_engine";
+bind "../services/file_utils";
+bind "../services/safe_io";
+bind "../ui/app_shell";
+bind "../ui/scene_clipboard";
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+bind "../ui/scene_material_3d";
+bind "../ui/scene_transform_3d";
+
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Quat = Zanna.Math.Quat;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Terminal = Zanna.Terminal;
+bind Seq = Zanna.Collections.Seq;
+bind "scene_editor_3d_probe_context" as Probe;
+
+/// @brief Run the VerifyTransformsAndHierarchySearch scenario against the shared fixture.
+expose func VerifyTransformsAndHierarchySearch(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var child = ctx.child;
+
+    var transformedFound = editor.scene.Find("Child Node");
+    if transformedFound.IsNone {
+        var names = "";
+        var nameIndex = 0;
+        while nameIndex < editor.flatNodes.count() {
+            names = names + "[" + nameIndex + "]"
+                + editor.flatNodes.get(nameIndex).Name + " ";
+            nameIndex = nameIndex + 1;
+        }
+        Probe.fail(shell, tempPath,
+             "transform commands lost Child Node identity: " + names);
+        return false;
+    }
+    var transformedNode = transformedFound.Unwrap() as SceneNode;
+    var transformedEuler = Quat.FromEuler(
+        10.0 * 0.017453292519943295,
+        30.0 * 0.017453292519943295,
+        30.0 * 0.017453292519943295);
+    if Probe.near(transformedNode.Position.Z, -3.0) == false
+       or Probe.near(transformedNode.Scale.Z, 0.8) == false
+       or Probe.near(transformedNode.Rotation.X, transformedEuler.X) == false
+       or Probe.near(transformedNode.Rotation.Y, transformedEuler.Y) == false
+       or Probe.near(transformedNode.Rotation.Z, transformedEuler.Z) == false
+       or Probe.near(transformedNode.Rotation.W, transformedEuler.W) == false {
+        Probe.fail(shell, tempPath,
+             "snapped transform values did not reach the live scene graph");
+        return false;
+    }
+    var transformedContent = sceneDoc.content;
+    if editor.Undo() == false
+       or Probe.near((editor.scene.Find("Child Node").Unwrap()
+                as SceneNode).Position.Z, -3.25) == false
+       or editor.Redo() == false
+       or sceneDoc.content != transformedContent
+       or safe_io.WriteAllText(tempPath, transformedContent) == false {
+        Probe.fail(shell, tempPath,
+             "one transform action did not produce one undoable snapshot");
+        return false;
+    }
+    var transformedRoundTrip = SceneGraph.Load(tempPath);
+    if transformedRoundTrip == null
+       or transformedRoundTrip.Find("Child Node").IsNone {
+        Probe.fail(shell, tempPath, "transformed VSCN did not reload");
+        return false;
+    }
+    var transformedReloaded =
+        transformedRoundTrip.Find("Child Node").Unwrap() as SceneNode;
+    if Probe.near(transformedReloaded.Position.Z, -3.0) == false
+       or Probe.near(transformedReloaded.Scale.Z, 0.8) == false
+       or Probe.near(transformedReloaded.Rotation.W, transformedEuler.W) == false {
+        Probe.fail(shell, tempPath,
+             "Move/Rotate/Scale transforms did not survive VSCN round trip");
+        return false;
+    }
+
+    // Find operates on the retained bounded hierarchy, not a destructive
+    // filter. A jump selects and reveals the exact row while canonical VSCN,
+    // history, and the viewport camera stay byte/value exact.
+    editor.hierarchyTree.Collapse(editor.hierarchyTreeNodes.get(0));
+    var hierarchySearchContent = sceneDoc.content;
+    var hierarchySearchRevision = editor.GetRevision();
+    var hierarchySearchUndoCount = editor.undoStack.count();
+    var hierarchySearchRedoCount = editor.redoStack.count();
+    var hierarchySearchYaw = editor.viewYawDegrees;
+    var hierarchySearchPitch = editor.viewPitchDegrees;
+    var hierarchySearchScale = editor.viewScale;
+    var hierarchySearchTargetX = editor.viewTargetX;
+    var hierarchySearchTargetY = editor.viewTargetY;
+    var hierarchySearchTargetZ = editor.viewTargetZ;
+    if editor.FindHierarchy("NODE", 1) == false
+       or editor.hierarchySearchMatches.count() != 2
+       or editor.hierarchySearchCursor != 0
+       or editor.selectedIndex != 0
+       or editor.FindHierarchy("NODE", 1) == false
+       or editor.hierarchySearchCursor != 1
+       or editor.selectedIndex != 1
+       or GUI.TreeView.Node.IsExpanded(
+              editor.hierarchyTreeNodes.get(0)) == false
+       or editor.FindHierarchy("NODE", 1) == false
+       or editor.hierarchySearchCursor != 0
+       or editor.selectedIndex != 0
+       or editor.FindHierarchy("NODE", -1) == false
+       or editor.hierarchySearchCursor != 1
+       or editor.selectedIndex != 1
+       or editor.FindHierarchy("child", 1) == false
+       or editor.hierarchySearchMatches.count() != 1
+       or editor.selectedIndex != 1
+       or sceneDoc.content != hierarchySearchContent
+       or editor.GetRevision() != hierarchySearchRevision
+       or editor.undoStack.count() != hierarchySearchUndoCount
+       or editor.redoStack.count() != hierarchySearchRedoCount
+       or editor.viewYawDegrees != hierarchySearchYaw
+       or editor.viewPitchDegrees != hierarchySearchPitch
+       or editor.viewScale != hierarchySearchScale
+       or Probe.near(editor.viewTargetX, hierarchySearchTargetX) == false
+       or Probe.near(editor.viewTargetY, hierarchySearchTargetY) == false
+       or Probe.near(editor.viewTargetZ, hierarchySearchTargetZ) == false {
+        Probe.fail(shell, tempPath,
+             "3D hierarchy find did not wrap, reveal, or stay read-only");
+        return false;
+    }
+    var findContext3D = new command_context.CommandContext();
+    findContext3D.shell = shell;
+    findContext3D.docMgr = documents;
+    findContext3D.scene3DEditor = editor;
+    var findInspectorTemporarilyHidden = false;
+    if editor.compactLayout == false
+       and editor.inspectorRequestedVisible {
+        editor.ToggleInspectorPane();
+        shell.Render();
+        findInspectorTemporarilyHidden = true;
+    }
+    var findHierarchyWasHidden =
+        editor.hierarchyPaneBox.IsVisible() == false;
+    var findInspectorRequested = editor.inspectorRequestedVisible;
+    if main_command_dispatcher.HandleSurfaceFind(findContext3D) == false
+       or editor.hierarchySearchInput.IsFocused() == false
+       or editor.SceneSelectionCommandsOwnFocus()
+       or editor.hierarchyPaneBox.IsVisible() == false
+       or editor.inspectorRequestedVisible != findInspectorRequested
+       or sceneDoc.content != hierarchySearchContent
+       or editor.GetRevision() != hierarchySearchRevision {
+        Probe.fail(shell, tempPath,
+             "standard Find did not focus the 3D hierarchy safely");
+        return false;
+    }
+    shell.Render();
+    var hierarchySearchTop =
+        editor.hierarchySearchInput.GetScreenY();
+    var hierarchySearchBottom = hierarchySearchTop
+        + editor.hierarchySearchInput.GetScreenHeight();
+    var expectedFindHierarchySide = 0;
+    if findHierarchyWasHidden { expectedFindHierarchySide = 2; }
+    if editor.hierarchySplit.GetCollapsedSide()
+          != expectedFindHierarchySide
+       or hierarchySearchTop < editor.hierarchyPaneBox.GetScreenY() - 1.0
+       or hierarchySearchBottom
+          > editor.hierarchyPaneBox.GetScreenY()
+            + editor.hierarchyPaneBox.GetScreenHeight() + 1.0 {
+        Probe.fail(shell, tempPath,
+             "3D Find did not reveal its hierarchy query");
+        return false;
+    }
+    if editor.FindHierarchy("", 1)
+       or editor.hierarchySearchMatches.count() != 0 {
+        Probe.fail(shell, tempPath, "empty 3D hierarchy search produced a match");
+        return false;
+    }
+    if findHierarchyWasHidden {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
+    if findInspectorTemporarilyHidden {
+        editor.ToggleInspectorPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
+
+    // Existing nodes need the same hierarchy-authoring path as newly-created
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.child = child;
+    ctx.transformedEuler = transformedEuler;
+    ctx.transformedContent = transformedContent;
+    return true;
+}
+
+/// @brief Run the VerifyExactReparenting scenario against the shared fixture.
+expose func VerifyExactReparenting(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var child = ctx.child;
+
+    // children. Reparent one child beneath a transformed root, prove the
+    // complete world pose and VSCN round trip stay fixed, preserve selected
+    // identity after preorder changes, and undo to byte-exact snapshots.
+    var collapsedContent = sceneDoc.content;
+    var collapsedRevision = editor.GetRevision();
+    editor.hierarchyTree.Collapse(editor.hierarchyTreeNodes.get(0));
+    if GUI.TreeView.Node.IsExpanded(editor.hierarchyTreeNodes.get(0))
+       or sceneDoc.content != collapsedContent
+       or editor.GetRevision() != collapsedRevision {
+        Probe.fail(shell, tempPath,
+             "collapsing a hierarchy row changed canonical scene history");
+        return false;
+    }
+    var parentTargetIndex = editor.AddEmptyNode("Parent Target", -1);
+    if parentTargetIndex != 2
+       or editor.hierarchyTreeNodes.count() != 3
+       or GUI.TreeView.Node.IsExpanded(
+              editor.hierarchyTreeNodes.get(0)) {
+        Probe.fail(shell, tempPath,
+             "3D hierarchy refresh lost collapse state or root-level target");
+        return false;
+    }
+    editor.hierarchyTree.Expand(editor.hierarchyTreeNodes.get(0));
+    var targetCreatedContent = sceneDoc.content;
+    if editor.preserveWorldReparentCheck.IsChecked() == false
+       or editor.SetNodeTransform(
+              parentTargetIndex, 10.0, -4.0, 2.0, 2.0, 2.0, 2.0) == false {
+        Probe.fail(shell, tempPath,
+             "3D preserve-world reparent mode or transformed target setup failed");
+        return false;
+    }
+    var targetBaseline = sceneDoc.content;
+    var childSelection: List[Integer] = [];
+    childSelection.add(1);
+    var childWorldPositionBefore = editor.flatNodes.get(1).WorldPosition;
+    var childWorldRotationBefore = editor.flatNodes.get(1).WorldRotation;
+    var childWorldScaleBefore = editor.flatNodes.get(1).WorldScale;
+    if editor.SelectSceneNodes(childSelection, 1) == false
+       or editor.parentDropdown.IsEnabled() == false
+       or editor.preserveWorldReparentCheck.IsEnabled() == false
+       or editor.reparentButton.IsEnabled() {
+        Probe.fail(shell, tempPath,
+             "3D parent controls did not show the unchanged current parent");
+        return false;
+    }
+    var parentTargetOption = -1;
+    var parentOptionIndex = 0;
+    while parentOptionIndex < editor.parentTargetIndices.count() {
+        if editor.parentTargetIndices.get(parentOptionIndex)
+           == parentTargetIndex {
+            parentTargetOption = parentOptionIndex;
+            break;
+        }
+        parentOptionIndex = parentOptionIndex + 1;
+    }
+    if parentTargetOption < 0 {
+        Probe.fail(shell, tempPath,
+             "3D parent chooser omitted a valid root-level target");
+        return false;
+    }
+    if editor.SelectParentTarget(parentTargetIndex) == false
+       or editor.parentDropdown.Selected != parentTargetOption
+       or editor.reparentButton.IsEnabled() == false {
+        Probe.fail(shell, tempPath,
+             "3D parent chooser did not enable a changed valid target");
+        return false;
+    }
+    var reparentRevision = editor.GetRevision();
+    if editor.ReparentSelectedNodes(parentTargetIndex) == false
+       or editor.GetRevision() != reparentRevision + 1
+       or editor.selectedIndices.count() != 1
+       or editor.selectedIndex != 2
+       or editor.flatNodes.get(2).Name != "Child Node"
+       or editor.flatNodes.get(2).Parent == null
+       or editor.flatNodes.get(2).Parent.Name != "Parent Target"
+       or Probe.near(editor.flatNodes.get(2).Position.X, -3.25) == false
+       or Probe.near(editor.flatNodes.get(2).Position.Y, 3.0) == false
+       or Probe.near(editor.flatNodes.get(2).Position.Z, -2.5) == false
+       or Probe.near(editor.flatNodes.get(2).Scale.X, 1.0) == false
+       or Probe.near(editor.flatNodes.get(2).Scale.Y, 0.5) == false
+       or Probe.near(editor.flatNodes.get(2).Scale.Z, 0.4) == false
+       or Probe.near(editor.flatNodes.get(2).WorldPosition.X,
+               childWorldPositionBefore.X) == false
+       or Probe.near(editor.flatNodes.get(2).WorldPosition.Y,
+               childWorldPositionBefore.Y) == false
+       or Probe.near(editor.flatNodes.get(2).WorldPosition.Z,
+               childWorldPositionBefore.Z) == false
+       or Probe.near(editor.flatNodes.get(2).WorldRotation.X,
+               childWorldRotationBefore.X) == false
+       or Probe.near(editor.flatNodes.get(2).WorldRotation.Y,
+               childWorldRotationBefore.Y) == false
+       or Probe.near(editor.flatNodes.get(2).WorldRotation.Z,
+               childWorldRotationBefore.Z) == false
+       or Probe.near(editor.flatNodes.get(2).WorldRotation.W,
+               childWorldRotationBefore.W) == false
+       or Probe.near(editor.flatNodes.get(2).WorldScale.X,
+               childWorldScaleBefore.X) == false
+       or Probe.near(editor.flatNodes.get(2).WorldScale.Y,
+               childWorldScaleBefore.Y) == false
+       or Probe.near(editor.flatNodes.get(2).WorldScale.Z,
+               childWorldScaleBefore.Z) == false
+       or safe_io.WriteAllText(tempPath, sceneDoc.content) == false {
+        Probe.fail(shell, tempPath,
+             "3D hierarchy reparent lost world transform or stable selection");
+        return false;
+    }
+    var reparentedRoundTrip = SceneGraph.Load(tempPath);
+    if reparentedRoundTrip == null
+       or reparentedRoundTrip.Find("Parent Target").IsNone
+       or (reparentedRoundTrip.Find("Parent Target").Unwrap()
+           as SceneNode).ChildCount != 1
+       or reparentedRoundTrip.Find("Child Node").IsNone
+       or (reparentedRoundTrip.Find("Child Node").Unwrap()
+           as SceneNode).Parent.Name != "Parent Target"
+       or Probe.near((reparentedRoundTrip.Find("Child Node").Unwrap()
+                as SceneNode).WorldPosition.X,
+               childWorldPositionBefore.X) == false
+       or editor.Undo() == false
+       or sceneDoc.content != targetBaseline {
+        Probe.fail(shell, tempPath,
+             "3D reparent did not round trip or undo to exact snapshots");
+        return false;
+    }
+
+    // A non-uniform destination combined with this rotated child requires
+    // shear. Exact preserve-world mode must reject it without changing bytes,
+    // history, selection, or the original hierarchy.
+    if editor.SetNodeTransform(
+           parentTargetIndex, 10.0, -4.0, 2.0, 2.0, 1.0, 1.0) == false {
+        Probe.fail(shell, tempPath,
+             "3D lossy preserve-world rejection fixture was not created");
+        return false;
+    }
+    var lossyBaseline = sceneDoc.content;
+    editor.SelectSceneNodes(childSelection, 1);
+    var lossyRevision = editor.GetRevision();
+    if editor.ReparentSelectedNodes(parentTargetIndex)
+       or editor.GetRevision() != lossyRevision
+       or sceneDoc.content != lossyBaseline
+       or editor.selectedIndices.count() != 1
+       or editor.selectedIndex != 1
+       or editor.flatNodes.get(1).Parent == null
+       or editor.flatNodes.get(1).Parent.Name != "Root Node"
+       or editor.Undo() == false
+       or sceneDoc.content != targetBaseline {
+        Probe.fail(shell, tempPath,
+             "3D lossy preserve-world reparent was not an exact rollback");
+        return false;
+    }
+
+    // Intentional hierarchy-local authoring remains available as an explicit
+    // opt-out. It keeps local TRS and therefore changes world placement.
+    editor.preserveWorldReparentCheck.SetChecked(false);
+    editor.SelectSceneNodes(childSelection, 1);
+    reparentRevision = editor.GetRevision();
+    if editor.ReparentSelectedNodes(parentTargetIndex) == false
+       or editor.GetRevision() != reparentRevision + 1
+       or editor.flatNodes.get(2).Parent == null
+       or editor.flatNodes.get(2).Parent.Name != "Parent Target"
+       or Probe.near(editor.flatNodes.get(2).Position.X, 3.5) == false
+       or Probe.near(editor.flatNodes.get(2).Position.Y, 2.0) == false
+       or Probe.near(editor.flatNodes.get(2).Position.Z, -3.0) == false
+       or Probe.near(editor.flatNodes.get(2).WorldPosition.X,
+               childWorldPositionBefore.X)
+       or editor.Undo() == false
+       or sceneDoc.content != targetBaseline {
+        Probe.fail(shell, tempPath,
+             "3D local-transform reparent opt-out was not explicit and undoable");
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.child = child;
+    ctx.parentTargetIndex = parentTargetIndex;
+    ctx.targetCreatedContent = targetCreatedContent;
+    ctx.targetBaseline = targetBaseline;
+    ctx.childSelection = childSelection;
+    ctx.reparentRevision = reparentRevision;
+    return true;
+}
+
+/// @brief Run the VerifyLocalReparentAndOrderingSetup scenario against the shared fixture.
+expose func VerifyLocalReparentAndOrderingSetup(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var child = ctx.child;
+    var transformedContent = ctx.transformedContent;
+    var parentTargetIndex = ctx.parentTargetIndex;
+    var targetCreatedContent = ctx.targetCreatedContent;
+    var targetBaseline = ctx.targetBaseline;
+    var childSelection = ctx.childSelection;
+    var reparentRevision = ctx.reparentRevision;
+
+    editor.preserveWorldReparentCheck.SetChecked(true);
+
+    // Moving several independent roots must remain one transaction while a
+    // selected descendant travels only through its selected ancestor and the
+    // complete world placement stays fixed.
+    var siblingRootIndex = editor.AddEmptyNode("Sibling Root", -1);
+    var siblingBaseline = sceneDoc.content;
+    var multiRootSelection: List[Integer] = [];
+    multiRootSelection.add(0);
+    multiRootSelection.add(siblingRootIndex);
+    editor.SelectSceneNodes(multiRootSelection, siblingRootIndex);
+    reparentRevision = editor.GetRevision();
+    if siblingRootIndex != 3
+       or editor.ReparentSelectedNodes(parentTargetIndex) == false
+       or editor.GetRevision() != reparentRevision + 1
+       or editor.selectedIndices.count() != 2
+       or editor.selectedIndex != 3
+       or editor.scene.Find("Parent Target").IsNone
+       or (editor.scene.Find("Parent Target").Unwrap()
+           as SceneNode).ChildCount != 2
+       or editor.scene.Find("Root Node").IsNone
+       or (editor.scene.Find("Root Node").Unwrap()
+           as SceneNode).Parent.Name != "Parent Target"
+       or editor.scene.Find("Sibling Root").IsNone
+       or (editor.scene.Find("Sibling Root").Unwrap()
+           as SceneNode).Parent.Name != "Parent Target"
+       or editor.Undo() == false
+       or sceneDoc.content != siblingBaseline
+       or editor.Undo() == false
+       or sceneDoc.content != targetBaseline
+       or editor.Undo() == false
+       or sceneDoc.content != targetCreatedContent
+       or editor.Undo() == false
+       or sceneDoc.content != transformedContent {
+        Probe.fail(shell, tempPath,
+             "3D multi-root reparent lost selection or exact history");
+        return false;
+    }
+
+    // A target inside the moved subtree is a cycle, and an existing parent is
+    // a no-op. Neither may modify canonical bytes or history.
+    var rootOnly: List[Integer] = [];
+    rootOnly.add(0);
+    editor.SelectSceneNodes(rootOnly, 0);
+    reparentRevision = editor.GetRevision();
+    if editor.ReparentSelectedNodes(1)
+       or editor.GetRevision() != reparentRevision
+       or sceneDoc.content != transformedContent {
+        Probe.fail(shell, tempPath,
+             "3D hierarchy accepted a descendant reparent cycle");
+        return false;
+    }
+    editor.SelectSceneNodes(childSelection, 1);
+    if editor.ReparentSelectedNodes(0)
+       or editor.GetRevision() != reparentRevision
+       or sceneDoc.content != transformedContent {
+        Probe.fail(shell, tempPath,
+             "3D hierarchy created history for an unchanged parent");
+        return false;
+    }
+
+    // Sibling order is canonical scene data. Move a contiguous root-level
+    // selection as one stable block in both directions, retain selection by
+    // node identity, and prove VSCN/history preserve the exact child order.
+    var orderA = editor.AddEmptyNode("Order A", -1);
+    var orderB = editor.AddEmptyNode("Order B", -1);
+    var orderC = editor.AddEmptyNode("Order C", -1);
+    if orderA != 2 or orderB != 3 or orderC != 4 {
+        Probe.fail(shell, tempPath,
+             "3D sibling-order setup did not append deterministic roots");
+        return false;
+    }
+    var orderingBaseline = sceneDoc.content;
+    var orderingRevision = editor.GetRevision();
+    editor.SelectSceneNodes(rootOnly, 0);
+    if editor.moveSiblingEarlierButton.IsEnabled()
+       or editor.MoveSelectedSiblings(-1)
+       or editor.GetRevision() != orderingRevision
+       or sceneDoc.content != orderingBaseline {
+        Probe.fail(shell, tempPath,
+             "3D sibling ordering accepted an earlier boundary no-op");
+        return false;
+    }
+
+    var gappedSiblings: List[Integer] = [];
+    gappedSiblings.add(orderA);
+    gappedSiblings.add(orderC);
+    editor.SelectSceneNodes(gappedSiblings, orderC);
+    if editor.moveSiblingEarlierButton.IsEnabled()
+       or editor.moveSiblingLaterButton.IsEnabled()
+       or editor.MoveSelectedSiblings(-1)
+       or editor.GetRevision() != orderingRevision
+       or sceneDoc.content != orderingBaseline {
+        Probe.fail(shell, tempPath,
+             "3D sibling ordering accepted a non-contiguous selection");
+        return false;
+    }
+
+    var siblingBlock: List[Integer] = [];
+    siblingBlock.add(orderB);
+    siblingBlock.add(orderC);
+    editor.SelectSceneNodes(siblingBlock, orderC);
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.child = child;
+    ctx.transformedContent = transformedContent;
+    ctx.childSelection = childSelection;
+    ctx.rootOnly = rootOnly;
+    ctx.orderingBaseline = orderingBaseline;
+    ctx.orderingRevision = orderingRevision;
+    return true;
+}
+
+/// @brief Run the VerifySiblingOrderingAndTreeDrops scenario against the shared fixture.
+expose func VerifySiblingOrderingAndTreeDrops(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var transformedContent = ctx.transformedContent;
+    var childSelection = ctx.childSelection;
+    var rootOnly = ctx.rootOnly;
+    var orderingBaseline = ctx.orderingBaseline;
+    var orderingRevision = ctx.orderingRevision;
+
+    if editor.moveSiblingEarlierButton.IsEnabled() == false
+       or editor.moveSiblingLaterButton.IsEnabled() {
+        Probe.fail(shell, tempPath,
+             "3D sibling ordering exposed incorrect block boundaries");
+        return false;
+    }
+    orderingRevision = editor.GetRevision();
+    if editor.MoveSelectedSiblings(-1) == false
+       or editor.GetRevision() != orderingRevision + 1
+       or editor.scene.Root.GetChild(0).Name != "Root Node"
+       or editor.scene.Root.GetChild(1).Name != "Order B"
+       or editor.scene.Root.GetChild(2).Name != "Order C"
+       or editor.scene.Root.GetChild(3).Name != "Order A"
+       or editor.selectedIndices.count() != 2
+       or editor.selectedIndices.get(0) != 2
+       or editor.selectedIndices.get(1) != 3
+       or editor.selectedIndex != 3
+       or safe_io.WriteAllText(tempPath, sceneDoc.content) == false {
+        Probe.fail(shell, tempPath,
+             "3D sibling block did not move earlier as one stable edit");
+        return false;
+    }
+    var earlierOrdering = sceneDoc.content;
+    var orderingRoundTrip = SceneGraph.Load(tempPath);
+    if orderingRoundTrip == null
+       or orderingRoundTrip.Root.GetChild(0).Name != "Root Node"
+       or orderingRoundTrip.Root.GetChild(1).Name != "Order B"
+       or orderingRoundTrip.Root.GetChild(2).Name != "Order C"
+       or orderingRoundTrip.Root.GetChild(3).Name != "Order A"
+       or editor.Undo() == false
+       or sceneDoc.content != orderingBaseline
+       or editor.Redo() == false
+       or sceneDoc.content != earlierOrdering {
+        Probe.fail(shell, tempPath,
+             "3D sibling order did not survive VSCN or exact undo/redo");
+        return false;
+    }
+
+    var movedBlock: List[Integer] = [];
+    movedBlock.add(2);
+    movedBlock.add(3);
+    editor.SelectSceneNodes(movedBlock, 3);
+    orderingRevision = editor.GetRevision();
+    if editor.moveSiblingLaterButton.IsEnabled() == false
+       or editor.MoveSelectedSiblings(1) == false
+       or editor.GetRevision() != orderingRevision + 1
+       or sceneDoc.content != orderingBaseline
+       or editor.scene.Root.GetChild(0).Name != "Root Node"
+       or editor.scene.Root.GetChild(1).Name != "Order A"
+       or editor.scene.Root.GetChild(2).Name != "Order B"
+       or editor.scene.Root.GetChild(3).Name != "Order C"
+       or editor.selectedIndices.get(0) != 3
+       or editor.selectedIndices.get(1) != 4
+       or editor.selectedIndex != 4 {
+        Probe.fail(shell, tempPath,
+             "3D sibling block did not move later as one stable edit");
+        return false;
+    }
+
+    // TreeView row drops are application-directed but canonical. BEFORE can
+    // combine cross-parent exact reparenting with sibling placement, AFTER
+    // retains a multi-root block, and INTO reuses the same transactional path.
+    var rowDropBaseline = sceneDoc.content;
+    editor.SelectSceneNodes(childSelection, 1);
+    var rowDropWorld = editor.flatNodes.get(1).WorldPosition;
+    editor.hierarchyTree.Collapse(editor.hierarchyTreeNodes.get(0));
+    var rowDropRevision = editor.GetRevision();
+    if editor.ApplyHierarchyDrop(
+           1, 3, 0) == false
+       or editor.GetRevision() != rowDropRevision + 1
+       or editor.scene.Root.GetChild(0).Name != "Root Node"
+       or editor.scene.Root.GetChild(1).Name != "Order A"
+       or editor.scene.Root.GetChild(2).Name != "Child Node"
+       or editor.scene.Root.GetChild(3).Name != "Order B"
+       or editor.scene.Root.GetChild(4).Name != "Order C"
+       or editor.scene.Find("Child Node").IsNone
+       or (editor.scene.Find("Child Node").Unwrap()
+           as SceneNode).Parent != editor.scene.Root
+       or Probe.near((editor.scene.Find("Child Node").Unwrap()
+                as SceneNode).WorldPosition.X,
+               rowDropWorld.X) == false
+       or Probe.near((editor.scene.Find("Child Node").Unwrap()
+                as SceneNode).WorldPosition.Y,
+               rowDropWorld.Y) == false
+       or Probe.near((editor.scene.Find("Child Node").Unwrap()
+                as SceneNode).WorldPosition.Z,
+               rowDropWorld.Z) == false
+       or editor.selectedIndex != 2
+       or editor.selectedIndices.count() != 1
+       or GUI.TreeView.Node.IsExpanded(
+              editor.hierarchyTreeNodes.get(0))
+       or safe_io.WriteAllText(tempPath, sceneDoc.content) == false {
+        Probe.fail(shell, tempPath,
+             "3D BEFORE row drop was not one preserve-world hierarchy edit");
+        return false;
+    }
+    var rowDropRoundTrip = SceneGraph.Load(tempPath);
+    if rowDropRoundTrip == null
+       or rowDropRoundTrip.Root.GetChild(1).Name != "Order A"
+       or rowDropRoundTrip.Root.GetChild(2).Name != "Child Node"
+       or editor.Undo() == false
+       or sceneDoc.content != rowDropBaseline {
+        Probe.fail(shell, tempPath,
+             "3D BEFORE row drop did not round trip or undo exactly");
+        return false;
+    }
+    editor.hierarchyTree.Expand(editor.hierarchyTreeNodes.get(0));
+
+    var afterSelection: List[Integer] = [];
+    afterSelection.add(2);
+    afterSelection.add(3);
+    editor.SelectSceneNodes(afterSelection, 3);
+    rowDropRevision = editor.GetRevision();
+    if editor.ApplyHierarchyDrop(3, 4, 2) == false
+       or editor.GetRevision() != rowDropRevision + 1
+       or editor.scene.Root.GetChild(0).Name != "Root Node"
+       or editor.scene.Root.GetChild(1).Name != "Order C"
+       or editor.scene.Root.GetChild(2).Name != "Order A"
+       or editor.scene.Root.GetChild(3).Name != "Order B"
+       or editor.selectedIndices.count() != 2
+       or editor.selectedIndex != 4
+       or editor.Undo() == false
+       or sceneDoc.content != rowDropBaseline {
+        Probe.fail(shell, tempPath,
+             "3D AFTER row drop lost multi-root order, selection, or undo");
+        return false;
+    }
+
+    var intoSelection: List[Integer] = [];
+    intoSelection.add(2);
+    editor.SelectSceneNodes(intoSelection, 2);
+    rowDropRevision = editor.GetRevision();
+    if editor.ApplyHierarchyDrop(2, 0, 1) == false
+       or editor.GetRevision() != rowDropRevision + 1
+       or editor.scene.Find("Order A").IsNone
+       or (editor.scene.Find("Order A").Unwrap()
+           as SceneNode).Parent.Name != "Root Node"
+       or editor.selectedIndex != 2
+       or editor.Undo() == false
+       or sceneDoc.content != rowDropBaseline {
+        Probe.fail(shell, tempPath,
+             "3D INTO row drop did not reuse transactional reparenting");
+        return false;
+    }
+
+    editor.SelectSceneNodes(rootOnly, 0);
+    rowDropRevision = editor.GetRevision();
+    if editor.ApplyHierarchyDrop(0, 1, 0)
+       or editor.GetRevision() != rowDropRevision
+       or sceneDoc.content != rowDropBaseline {
+        Probe.fail(shell, tempPath,
+             "3D row drop accepted a target inside its moved subtree");
+        return false;
+    }
+
+    if editor.Undo() == false
+       or sceneDoc.content != earlierOrdering
+       or editor.Undo() == false
+       or sceneDoc.content != orderingBaseline
+       or editor.Undo() == false
+       or editor.Undo() == false
+       or editor.Undo() == false
+       or sceneDoc.content != transformedContent {
+        Probe.fail(shell, tempPath,
+             "3D sibling-order history did not restore its exact baseline");
+        return false;
+    }
+
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.transformedContent = transformedContent;
+    ctx.childSelection = childSelection;
+    return true;
+}
+
+/// @brief Run the VerifyVisibilityAndInspectorGroups scenario against the shared fixture.
+expose func VerifyVisibilityAndInspectorGroups(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var transformedContent = ctx.transformedContent;
+    var childSelection = ctx.childSelection;
+
+    var groupSelection: List[Integer] = [];
+    groupSelection.add(0);
+    groupSelection.add(1);
+    if editor.SelectSceneNodes(groupSelection, 1) == false
+       or editor.selectedIndices.count() != 2
+       or editor.moveSiblingEarlierButton.IsEnabled()
+       or editor.moveSiblingLaterButton.IsEnabled()
+       or editor.MoveSelectedSiblings(1)
+       or editor.nameInput.IsEnabled()
+       or editor.visibleCheck.IsEnabled() == false
+       or editor.visibleCheck.IsIndeterminate()
+       or editor.visibleCheck.IsChecked() == false
+       or editor.applyTransformButton.IsEnabled() == false
+       or editor.positionX.IsEnabled() == false
+       or editor.rotationY.IsEnabled() == false
+       or editor.scaleZ.IsEnabled() == false
+       or editor.duplicateNodeButton.IsEnabled() == false
+       or editor.deleteNodeButton.IsEnabled() == false {
+        Probe.fail(shell, tempPath,
+             "3D group selection left single-node actions ambiguous");
+        return false;
+    }
+
+    editor.Pump(sceneDoc);
+    var visibilityRevision = editor.GetRevision();
+    editor.visibleCheck.SetChecked(false);
+    if editor.Pump(sceneDoc) == false
+       or editor.GetRevision() != visibilityRevision + 1
+       or editor.flatNodes.get(0).Visible
+       or editor.flatNodes.get(1).Visible
+       or editor.selectedIndices.count() != 2
+       or editor.visibleCheck.IsChecked()
+       or editor.visibleCheck.IsIndeterminate() {
+        Probe.fail(shell, tempPath,
+             "3D group visibility did not commit one determined batch");
+        return false;
+    }
+    if editor.Undo() == false
+       or sceneDoc.content != transformedContent {
+        Probe.fail(shell, tempPath,
+             "3D group visibility did not undo to the exact snapshot");
+        return false;
+    }
+
+    editor.SelectSceneNodes(childSelection, 1);
+    editor.Pump(sceneDoc);
+    visibilityRevision = editor.GetRevision();
+    editor.visibleCheck.SetChecked(false);
+    if editor.Pump(sceneDoc) == false
+       or editor.GetRevision() != visibilityRevision + 1
+       or editor.flatNodes.get(0).Visible == false
+       or editor.flatNodes.get(1).Visible {
+        Probe.fail(shell, tempPath,
+             "3D visibility mixed-state setup failed");
+        return false;
+    }
+    editor.SelectSceneNodes(groupSelection, 1);
+    if editor.visibleCheck.IsEnabled() == false
+       or editor.visibleCheck.IsIndeterminate() == false
+       or editor.visibleCheck.IsChecked() {
+        Probe.fail(shell, tempPath,
+             "3D group visibility did not present a mixed checkbox");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    visibilityRevision = editor.GetRevision();
+    editor.visibleCheck.SetChecked(true);
+    var visPumpChanged = editor.Pump(sceneDoc);
+    if visPumpChanged == false
+       or editor.GetRevision() != visibilityRevision + 1
+       or editor.flatNodes.get(0).Visible == false
+       or editor.flatNodes.get(1).Visible == false
+       or sceneDoc.content != transformedContent
+       or editor.Undo() == false
+       or editor.Undo() == false
+       or sceneDoc.content != transformedContent {
+        Probe.fail(shell, tempPath,
+             "3D mixed visibility did not resolve or undo atomically: "
+             + "pump=" + visPumpChanged
+             + " revision=" + editor.GetRevision() + "/"
+             + (visibilityRevision + 1)
+             + " v0=" + editor.flatNodes.get(0).Visible
+             + " v1=" + editor.flatNodes.get(1).Visible);
+        return false;
+    }
+    editor.SelectSceneNodes(groupSelection, 1);
+
+    editor.positionX.Focus();
+    if editor.positionX.IsFocused() == false
+       or editor.SceneSelectionCommandsOwnFocus() {
+        Probe.fail(shell, tempPath,
+             "3D scene selection shortcuts escaped a transform input");
+        return false;
+    }
+    var hierarchyWasMaster = editor.hierarchyPaneBox.IsVisible() == false;
+    if hierarchyWasMaster {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
+    editor.hierarchyTree.Focus();
+    if editor.hierarchyTree.IsFocused() == false
+       or editor.SceneSelectionCommandsOwnFocus() == false {
+        Probe.fail(shell, tempPath,
+             "3D hierarchy focus did not own scene selection shortcuts");
+        return false;
+    }
+    if hierarchyWasMaster {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
+
+    var rootPosition = editor.flatNodes.get(0).Position;
+    var childPosition = editor.flatNodes.get(1).Position;
+    var rootScale = editor.flatNodes.get(0).Scale;
+    var childScale = editor.flatNodes.get(1).Scale;
+    var batchRevision = editor.GetRevision();
+    if editor.ApplySelectedTransformDeltas(
+           1.0, -2.0, 0.5,
+           0.0, 15.0, 0.0,
+           2.0, 0.5, 1.25) == false
+       or editor.GetRevision() != batchRevision + 1
+       or editor.selectedIndices.count() != 2
+       or Probe.near(
+              editor.flatNodes.get(0).Position.X,
+              rootPosition.X + 1.0) == false
+       or Probe.near(
+              editor.flatNodes.get(0).Position.Y,
+              rootPosition.Y - 2.0) == false
+       or Probe.near(
+              editor.flatNodes.get(1).Position.Z,
+              childPosition.Z + 0.5) == false
+       or Probe.near(
+              editor.flatNodes.get(0).Scale.X,
+              rootScale.X * 2.0) == false
+       or Probe.near(
+              editor.flatNodes.get(1).Scale.Y,
+              childScale.Y * 0.5) == false
+       or Probe.near(
+              editor.flatNodes.get(1).Scale.Z,
+              childScale.Z * 1.25) == false
+       or Probe.near(editor.positionX.Value, 0.0) == false
+       or Probe.near(editor.rotationY.Value, 0.0) == false
+       or Probe.near(editor.scaleZ.Value, 1.0) == false
+       or editor.ApplySelectedTransformDeltas(
+              0.0, 0.0, 0.0,
+              0.0, 0.0, 0.0,
+              1.0, 1.0, 1.0)
+       or editor.GetRevision() != batchRevision + 1
+       or editor.Undo() == false
+       or sceneDoc.content != transformedContent {
+        Probe.fail(shell, tempPath,
+             "3D batch transform was not one exact relative history action");
+        return false;
+    }
+
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.transformedContent = transformedContent;
+    ctx.groupSelection = groupSelection;
+    return true;
+}

@@ -1,0 +1,544 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_material_previews.zia
+// Purpose: Typed material-preview and portable asset parsing.
+// Key invariants:
+//   - Malformed or out-of-bounds input rejects the complete staged schema.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_material_previews;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind "scene_component_schema_model" as SceneComponentModel;
+bind "scene_component_schema_node_previews" as PreviousLayer;
+
+class SceneComponentSchemaMaterialPreviewsLayer extends PreviousLayer.SceneComponentSchemaNodePreviewsLayer {
+
+    /// @brief Parse one optional bounded material-preview scalar.
+    hide override func ParseMaterialPreviewNumber(
+        raw: Any,
+        name: String,
+        minimum: Number,
+        maximum: Number,
+        fallback: Number,
+        previewIndex: Integer,
+        schema: SceneComponentModel.SceneComponentSchema) -> Number {
+        if Map.Has(raw, name) == false { return fallback; }
+        if Json.TypeOf(Map.Get(raw, name)) != "number" {
+            Reject(
+                schema,
+                "3D material preview " + previewIndex + " " + name
+                    + " must be a number.");
+            return fallback;
+        }
+        var parsed = Parse.TryDouble(Json.Format(Map.Get(raw, name)));
+        if parsed.IsNone
+           or parsed.UnwrapF64() < minimum
+           or parsed.UnwrapF64() > maximum {
+            Reject(
+                schema,
+                "3D material preview " + previewIndex + " " + name
+                    + " is outside its supported range.");
+            return fallback;
+        }
+        return parsed.UnwrapF64();
+    }
+
+    /// @brief Parse optional schema-v16 metadata-driven material overlays.
+    /// @details Rules preserve unspecified canonical material state. Exact typed
+    ///          match identities are unique, and every external texture remains a
+    ///          safe project-relative reference.
+    hide override func ParseMaterialPreviews3D(
+        root: Any,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(root, "materialPreviews3D") == false { return true; }
+        if schema.version < SceneComponentModel.MATERIAL_PREVIEW_3D_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Project 3D material previews require schema version 16.");
+            return false;
+        }
+        var rawPreviews = Map.Get(root, "materialPreviews3D");
+        if rawPreviews == null or Json.TypeOf(rawPreviews) != "array" {
+            Reject(schema, "materialPreviews3D must be an array.");
+            return false;
+        }
+        var count = Seq.get_Count(rawPreviews);
+        if count > SceneComponentModel.MAX_MATERIAL_PREVIEWS_3D {
+            Reject(schema, "Component schema exceeds 128 3D material previews.");
+            return false;
+        }
+
+        var staged: List[SceneComponentModel.SceneMaterialPreview3DDefinition] = [];
+        var seenMatches = Map.New();
+        var index = 0;
+        while index < count {
+            var raw = Seq.Get(rawPreviews, index);
+            var preview = ParseMaterialPreview3D(
+                raw, index, seenMatches, schema);
+            if preview == null { return false; }
+            staged.add(preview);
+            index = index + 1;
+        }
+        schema.materialPreviews3D = staged;
+        return true;
+    }
+
+    /// @brief Parse one complete material-preview rule.
+    hide func ParseMaterialPreview3D(
+        raw: Any,
+        index: Integer,
+        seenMatches: Any,
+        schema: SceneComponentModel.SceneComponentSchema)
+        -> SceneComponentModel.SceneMaterialPreview3DDefinition {
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(
+                schema,
+                "3D material preview " + index + " must be an object.");
+            return null;
+        }
+        var preview = new SceneComponentModel.SceneMaterialPreview3DDefinition();
+        if ParseMaterialPreviewMatch(
+               raw, index, seenMatches, preview, schema) == false
+           or ParseMaterialPreviewTextures(
+               raw, index, preview, schema) == false
+           or ParseMaterialPreviewScalars(
+               raw, index, preview, schema) == false
+           or ParseMaterialPreviewEmissive(
+               raw, index, preview, schema) == false
+           or ParseMaterialPreviewFlags(
+               raw, index, preview, schema) == false {
+            return null;
+        }
+        return preview;
+    }
+
+    /// @brief Parse and deduplicate one exact typed material selector.
+    hide func ParseMaterialPreviewMatch(
+        raw: Any,
+        index: Integer,
+        seenMatches: Any,
+        preview: SceneComponentModel.SceneMaterialPreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "matchProperty") == false
+           or Json.TypeOf(Map.Get(raw, "matchProperty")) != "string" {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " requires a matchProperty string.");
+            return false;
+        }
+        preview.matchProperty =
+            Str.Trim(Map.GetStr(raw, "matchProperty"));
+        if PortableIdentifier(
+               preview.matchProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " matchProperty must be a portable key.");
+            return false;
+        }
+        if Map.Has(raw, "matchValue") == false {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " requires a Boolean, integer, or string matchValue.");
+            return false;
+        }
+        var rawMatch = Map.Get(raw, "matchValue");
+        var matchType = Json.TypeOf(rawMatch);
+        var matchIdentity = "";
+        if matchType == "boolean" {
+            preview.matchKind = "bool";
+            preview.matchBoolean = Map.GetBool(raw, "matchValue");
+            matchIdentity = "" + preview.matchBoolean;
+        } else if matchType == "number" {
+            var parsedMatch = Parse.TryInt(Json.Format(rawMatch));
+            if parsedMatch.IsNone {
+                Reject(
+                    schema,
+                    "3D material preview " + index
+                        + " numeric matchValue must be an integer.");
+                return false;
+            }
+            preview.matchKind = "int";
+            preview.matchInteger = parsedMatch.UnwrapI64();
+            matchIdentity = "" + preview.matchInteger;
+        } else if matchType == "string" {
+            preview.matchKind = "string";
+            preview.matchString = Map.GetStr(raw, "matchValue");
+            if Str.get_Length(preview.matchString) > SceneComponentModel.MAX_FIELD_KEY_CHARS {
+                Reject(
+                    schema,
+                    "3D material preview " + index
+                        + " string matchValue exceeds 128 characters.");
+                return false;
+            }
+            matchIdentity = preview.matchString;
+        } else {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " matchValue must be Boolean, integer, or string.");
+            return false;
+        }
+        var matchKey = preview.matchProperty + "\n"
+            + preview.matchKind + "\n" + matchIdentity;
+        if Map.Has(seenMatches, matchKey) {
+            Reject(
+                schema,
+                "Duplicate 3D material preview match for \""
+                    + preview.matchProperty + "\".");
+            return false;
+        }
+        Map.SetBool(seenMatches, matchKey, true);
+        return true;
+    }
+
+    /// @brief Parse all optional portable texture overrides.
+    hide func ParseMaterialPreviewTextures(
+        raw: Any,
+        index: Integer,
+        preview: SceneComponentModel.SceneMaterialPreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var textureNames: List[String] = [
+            "albedoMap",
+            "normalMap",
+            "metallicRoughnessMap",
+            "ambientOcclusionMap",
+            "emissiveMap"
+        ];
+        var textureIndex = 0;
+        while textureIndex < textureNames.count() {
+            var textureName = textureNames.get(textureIndex);
+            var texturePath = "";
+            if Map.Has(raw, textureName) {
+                if Json.TypeOf(Map.Get(raw, textureName)) != "string" {
+                    Reject(
+                        schema,
+                        "3D material preview " + index + " "
+                            + textureName + " must be a string.");
+                    return false;
+                }
+                texturePath = Str.Trim(Map.GetStr(raw, textureName));
+                if PortablePreviewTexture(texturePath) == false {
+                    Reject(
+                        schema,
+                        "3D material preview " + index + " "
+                            + textureName + " must be a safe "
+                            + "project-relative texture path.");
+                    return false;
+                }
+            }
+            if textureName == "albedoMap" {
+                preview.albedoMap = texturePath;
+            } else if textureName == "normalMap" {
+                preview.normalMap = texturePath;
+            } else if textureName == "metallicRoughnessMap" {
+                preview.metallicRoughnessMap = texturePath;
+            } else if textureName == "ambientOcclusionMap" {
+                preview.ambientOcclusionMap = texturePath;
+            } else {
+                preview.emissiveMap = texturePath;
+            }
+            textureIndex = textureIndex + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse optional bounded scalar material overrides.
+    hide func ParseMaterialPreviewScalars(
+        raw: Any,
+        index: Integer,
+        preview: SceneComponentModel.SceneMaterialPreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "metallic") {
+            preview.hasMetallic = true;
+            preview.metallic = ParseMaterialPreviewNumber(
+                raw, "metallic", 0.0, 1.0, 0.0, index, schema);
+        }
+        if Map.Has(raw, "roughness") {
+            preview.hasRoughness = true;
+            preview.roughness = ParseMaterialPreviewNumber(
+                raw, "roughness", 0.0, 1.0, 0.5, index, schema);
+        }
+        if Map.Has(raw, "ambientOcclusion") {
+            preview.hasAmbientOcclusion = true;
+            preview.ambientOcclusion = ParseMaterialPreviewNumber(
+                raw, "ambientOcclusion", 0.0, 1.0, 1.0, index, schema);
+        }
+        if Map.Has(raw, "normalScale") {
+            preview.hasNormalScale = true;
+            preview.normalScale = ParseMaterialPreviewNumber(
+                raw, "normalScale", 0.0,
+                SceneComponentModel.MAX_MATERIAL_PREVIEW_NORMAL_SCALE,
+                1.0, index, schema);
+        }
+        if Map.Has(raw, "emissiveIntensity") {
+            preview.hasEmissiveIntensity = true;
+            preview.emissiveIntensity = ParseMaterialPreviewNumber(
+                raw, "emissiveIntensity", 0.0,
+                SceneComponentModel.MAX_MATERIAL_PREVIEW_EMISSIVE_INTENSITY,
+                1.0, index, schema);
+        }
+        if schema.valid == false { return false; }
+        return true;
+    }
+
+    /// @brief Parse fixed or metadata-mapped emissive overrides.
+    hide func ParseMaterialPreviewEmissive(
+        raw: Any,
+        index: Integer,
+        preview: SceneComponentModel.SceneMaterialPreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var emissiveColorNames: List[String] = [
+            "emissiveR", "emissiveG", "emissiveB"
+        ];
+        var emissiveColorCount = 0;
+        var emissiveIndex = 0;
+        while emissiveIndex < emissiveColorNames.count() {
+            if Map.Has(raw, emissiveColorNames.get(emissiveIndex)) {
+                emissiveColorCount = emissiveColorCount + 1;
+            }
+            emissiveIndex = emissiveIndex + 1;
+        }
+        if emissiveColorCount != 0 and emissiveColorCount != 3 {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " emissiveR/G/B members must be complete.");
+            return false;
+        }
+        if emissiveColorCount == 3 {
+            preview.emissiveR = ParseMaterialPreviewNumber(
+                raw, "emissiveR", 0.0, 1.0, 0.0, index, schema);
+            preview.emissiveG = ParseMaterialPreviewNumber(
+                raw, "emissiveG", 0.0, 1.0, 0.0, index, schema);
+            preview.emissiveB = ParseMaterialPreviewNumber(
+                raw, "emissiveB", 0.0, 1.0, 0.0, index, schema);
+            if schema.valid == false { return false; }
+            preview.hasEmissiveColor = true;
+        }
+
+        var emissivePropertyNames: List[String] = [
+            "emissiveRProperty",
+            "emissiveGProperty",
+            "emissiveBProperty"
+        ];
+        var emissivePropertyCount = 0;
+        emissiveIndex = 0;
+        while emissiveIndex < emissivePropertyNames.count() {
+            if Map.Has(raw, emissivePropertyNames.get(emissiveIndex)) {
+                emissivePropertyCount = emissivePropertyCount + 1;
+            }
+            emissiveIndex = emissiveIndex + 1;
+        }
+        if emissivePropertyCount != 0 and emissivePropertyCount != 3 {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " emissive property mappings must be complete.");
+            return false;
+        }
+        if emissivePropertyCount == 3 {
+            emissiveIndex = 0;
+            while emissiveIndex < emissivePropertyNames.count() {
+                var propertyName =
+                    emissivePropertyNames.get(emissiveIndex);
+                if Json.TypeOf(Map.Get(raw, propertyName)) != "string" {
+                    Reject(
+                        schema,
+                        "3D material preview " + index + " "
+                            + propertyName + " must be a string.");
+                    return false;
+                }
+                var propertyValue =
+                    Str.Trim(Map.GetStr(raw, propertyName));
+                if PortableIdentifier(
+                       propertyValue, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+                    Reject(
+                        schema,
+                        "3D material preview " + index + " "
+                            + propertyName + " must be a portable key.");
+                    return false;
+                }
+                if propertyName == "emissiveRProperty" {
+                    preview.emissiveRProperty = propertyValue;
+                } else if propertyName == "emissiveGProperty" {
+                    preview.emissiveGProperty = propertyValue;
+                } else {
+                    preview.emissiveBProperty = propertyValue;
+                }
+                emissiveIndex = emissiveIndex + 1;
+            }
+        }
+        if preview.hasEmissiveColor and preview.HasRootEmissive() {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " cannot combine fixed and mapped emissive colors.");
+            return false;
+        }
+        if Map.Has(raw, "emissiveMultiplier") {
+            if preview.HasRootEmissive() == false {
+                Reject(
+                    schema,
+                    "3D material preview " + index
+                        + " emissiveMultiplier requires mapped "
+                        + "emissive properties.");
+                return false;
+            }
+            preview.emissiveMultiplier = ParseMaterialPreviewNumber(
+                raw, "emissiveMultiplier", 0.0,
+                SceneComponentModel.MAX_MATERIAL_PREVIEW_EMISSIVE_MULTIPLIER,
+                1.0, index, schema);
+            if schema.valid == false { return false; }
+        }
+        return true;
+    }
+
+    /// @brief Parse preview environment flags and require a real override.
+    hide func ParseMaterialPreviewFlags(
+        raw: Any,
+        index: Integer,
+        preview: SceneComponentModel.SceneMaterialPreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "useProjectEnvironment") {
+            if Json.TypeOf(
+                   Map.Get(raw, "useProjectEnvironment")) != "boolean" {
+                Reject(
+                    schema,
+                    "3D material preview " + index
+                        + " useProjectEnvironment must be Boolean.");
+                return false;
+            }
+            preview.useProjectEnvironment =
+                Map.GetBool(raw, "useProjectEnvironment");
+        }
+        if Map.Has(raw, "ssrEnabled") {
+            if Json.TypeOf(Map.Get(raw, "ssrEnabled")) != "boolean" {
+                Reject(
+                    schema,
+                    "3D material preview " + index
+                        + " ssrEnabled must be Boolean.");
+                return false;
+            }
+            preview.hasSsrEnabled = true;
+            preview.ssrEnabled = Map.GetBool(raw, "ssrEnabled");
+        }
+        if preview.HasOverrides() == false {
+            Reject(
+                schema,
+                "3D material preview " + index
+                    + " requires at least one material override.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Validate one project-relative scene or imported-model preview.
+    /// @details The runtime's public SceneAsset loader owns extension-specific
+    ///          validation and dependency traversal. This gate only admits its
+    ///          portable 3D formats and rejects paths that can escape the project.
+    hide override func PortablePreviewPrefab(value: String) -> Boolean {
+        var length = Str.get_Length(value);
+        if length <= 0 or length > SceneComponentModel.MAX_NODE_PREVIEW_PREFAB_CHARS {
+            return false;
+        }
+        if Path.IsAbsolute(value)
+           or Str.Contains(value, "\\")
+           or Str.Contains(value, ":")
+           or value == ".."
+           or Str.StartsWith(value, "../")
+           or Str.Contains(value, "/../")
+           or Str.EndsWith(value, "/..") {
+            return false;
+        }
+        var folded = Str.ToLower(value);
+        return Str.EndsWith(folded, ".scene3d")
+            or Str.EndsWith(folded, ".vscn")
+            or Str.EndsWith(folded, ".gltf")
+            or Str.EndsWith(folded, ".glb")
+            or Str.EndsWith(folded, ".fbx")
+            or Str.EndsWith(folded, ".obj")
+            or Str.EndsWith(folded, ".stl");
+    }
+
+    /// @brief Return whether a portable 3D preview is an imported model asset.
+    hide override func DirectModelPreviewPrefab(value: String) -> Boolean {
+        var folded = Str.ToLower(value);
+        return Str.EndsWith(folded, ".gltf")
+            or Str.EndsWith(folded, ".glb")
+            or Str.EndsWith(folded, ".fbx")
+            or Str.EndsWith(folded, ".obj")
+            or Str.EndsWith(folded, ".stl");
+    }
+
+    /// @brief Validate one project-root-relative 2D preview image reference.
+    hide override func PortablePreviewImage(value: String) -> Boolean {
+        var length = Str.get_Length(value);
+        if length <= 0 or length > SceneComponentModel.MAX_SCENE_PREVIEW_2D_IMAGE_CHARS {
+            return false;
+        }
+        if Path.IsAbsolute(value)
+           or Str.Contains(value, "\\")
+           or Str.Contains(value, ":")
+           or value == ".."
+           or Str.StartsWith(value, "../")
+           or Str.Contains(value, "/../")
+           or Str.EndsWith(value, "/..") {
+            return false;
+        }
+        var folded = Str.ToLower(value);
+        return Str.EndsWith(folded, ".png")
+            or Str.EndsWith(folded, ".jpg")
+            or Str.EndsWith(folded, ".jpeg")
+            or Str.EndsWith(folded, ".bmp")
+            or Str.EndsWith(folded, ".gif");
+    }
+
+    /// @brief Validate one project-root-relative PBR texture reference.
+    /// @details Material previews additionally accept strict runtime KTX2 assets.
+    hide override func PortablePreviewTexture(value: String) -> Boolean {
+        var length = Str.get_Length(value);
+        if length <= 0 or length > SceneComponentModel.MAX_MATERIAL_PREVIEW_TEXTURE_CHARS {
+            return false;
+        }
+        if Path.IsAbsolute(value)
+           or Str.Contains(value, "\\")
+           or Str.Contains(value, ":")
+           or value == ".."
+           or Str.StartsWith(value, "../")
+           or Str.Contains(value, "/../")
+           or Str.EndsWith(value, "/..") {
+            return false;
+        }
+        var folded = Str.ToLower(value);
+        return Str.EndsWith(folded, ".png")
+            or Str.EndsWith(folded, ".jpg")
+            or Str.EndsWith(folded, ".jpeg")
+            or Str.EndsWith(folded, ".bmp")
+            or Str.EndsWith(folded, ".gif")
+            or Str.EndsWith(folded, ".ktx2");
+    }
+
+}

@@ -1,0 +1,565 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_tile_previews.zia
+// Purpose: Focused tile previews behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_hierarchy_reparent.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_tile_previews;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_hierarchy_reparent" as PreviousLayer;
+
+/// @brief Tile Previews implementation layer.
+class SceneEditor2DTilePreviewsLayer extends PreviousLayer.SceneEditor2DHierarchyReparentLayer {
+
+    /// @brief Route tile-behavior inspector intents into canonical history.
+    hide override func PumpTileBehaviorControls() -> Boolean {
+        if scene == null or tileBehavior == null { return false; }
+        tileBehavior.Pump(scene);
+        var tile = Convert.NumToInt(tileSpinner.Value);
+        var changed = false;
+        if tileBehavior.TakeAutotilePreviewChanged() {
+            SetAutotilePreviewEnabled(
+                tileBehavior.AutotilePreviewEnabled());
+        }
+        var collisionKind = tileBehavior.TakeCollisionKind();
+        if collisionKind >= 0 {
+            changed = SetTileBehaviorCollision(tile, collisionKind) or changed;
+        }
+        if tileBehavior.TakePropertySetRequested() {
+            changed = SetTileBehaviorProperty(
+                tile,
+                tileBehavior.propertyKeyInput.Text,
+                tileBehavior.SelectedPropertyKind(),
+                tileBehavior.propertyValueInput.Text) or changed;
+        }
+        if tileBehavior.TakePropertyRemoveRequested() {
+            changed = RemoveTileBehaviorProperty(
+                tile, tileBehavior.SelectedPropertyKey()) or changed;
+        }
+        if tileBehavior.TakeAnimSetRequested() {
+            changed = SetTileBehaviorAnim(
+                tile,
+                tileBehavior.animFramesInput.Text,
+                tileBehavior.animDurationsInput.Text) or changed;
+        }
+        if tileBehavior.TakeAnimClearRequested() {
+            changed = ClearTileBehaviorAnim(tile) or changed;
+        }
+        if tileBehavior.TakeAutotileSetRequested() {
+            changed = SetTileBehaviorAutotile(
+                tile, tileBehavior.autotileInput.Text) or changed;
+        }
+        if tileBehavior.TakeAutotileClearRequested() {
+            changed = ClearTileBehaviorAutotile(tile) or changed;
+        }
+        return changed;
+    }
+
+    /// @brief Author one tile's collision kind through canonical history.
+    expose override func SetTileBehaviorCollision(tile: Integer,
+                                         kind: Integer) -> Boolean {
+        if scene == null { return false; }
+        if TileBehaviorTileValid(tile) == false { return false; }
+        if kind < 0 or kind > 2 {
+            detailLabel.SetText("Collision kind must be 0, 1, or 2.");
+            return false;
+        }
+        var snapshot = scene.ToJson();
+        scene.SetTileCollision(tile, kind);
+        if scene.TileCollision(tile) != kind {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText("The scene model rejected the collision edit.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Tile collision is already up to date.");
+            return false;
+        }
+        if CommitScene("Updated collision for tile " + tile) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Author one typed tile property through canonical history.
+    expose override func SetTileBehaviorProperty(tile: Integer,
+                                        key: String,
+                                        kind: String,
+                                        value: String) -> Boolean {
+        if scene == null { return false; }
+        if TileBehaviorTileValid(tile) == false { return false; }
+        var nextKey = Str.Trim(key);
+        if nextKey == "" {
+            detailLabel.SetText("Enter a tile property key.");
+            return false;
+        }
+        var snapshot = scene.ToJson();
+        if kind == "bool" {
+            var parsedBool = Parse.TryBool(Str.Trim(value));
+            if parsedBool.IsNone {
+                detailLabel.SetText(
+                    "Enter true/false, yes/no, on/off, or 1/0.");
+                return false;
+            }
+            scene.SetTilePropertyBool(tile, nextKey, parsedBool.UnwrapI1());
+        } else {
+            var parsedInt = Parse.TryInt(Str.Trim(value));
+            if parsedInt.IsNone {
+                detailLabel.SetText("Enter a valid whole number.");
+                return false;
+            }
+            scene.SetTilePropertyInt(tile, nextKey, parsedInt.UnwrapI64());
+        }
+        if scene.TilePropertyKind(tile, nextKey) != kind {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The tile property was rejected. Keys are limited to 128 "
+                + "bytes, 64 properties per tile, and 4,096 per scene.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Tile property is already up to date.");
+            return false;
+        }
+        if CommitScene("Updated tile " + tile + " property " + nextKey)
+           == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Remove one typed tile property through canonical history.
+    expose override func RemoveTileBehaviorProperty(tile: Integer,
+                                           key: String) -> Boolean {
+        if scene == null or key == "" { return false; }
+        if scene.TilePropertyKind(tile, key) == "" { return false; }
+        var snapshot = scene.ToJson();
+        scene.RemoveTileProperty(tile, key);
+        if scene.TilePropertyKind(tile, key) != "" {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene model rejected the tile property removal.");
+            return false;
+        }
+        if CommitScene("Removed tile " + tile + " property " + key) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Author one per-frame tile animation through canonical history.
+    expose override func SetTileBehaviorAnim(tile: Integer,
+                                    framesCsv: String,
+                                    durationsCsv: String) -> Boolean {
+        if scene == null { return false; }
+        if TileBehaviorTileValid(tile) == false { return false; }
+        var frames = ParseCsvIntegers(framesCsv);
+        var durations = ParseCsvIntegers(durationsCsv);
+        if frames == null or durations == null
+           or Seq.get_Count(frames) == 0
+           or Seq.get_Count(frames) != Seq.get_Count(durations) {
+            detailLabel.SetText(
+                "Enter matching comma-separated frame ids and positive "
+                + "durations.");
+            return false;
+        }
+        var snapshot = scene.ToJson();
+        scene.SetTileAnim(tile, frames, durations);
+        if Seq.get_Count(scene.TileAnimFrames(tile))
+           != Seq.get_Count(frames) {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene model rejected the animation. Use 1 to 4,096 "
+                + "frames with positive millisecond durations.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Tile animation is already up to date.");
+            return false;
+        }
+        if CommitScene("Updated animation for tile " + tile) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Remove one tile animation through canonical history.
+    expose override func ClearTileBehaviorAnim(tile: Integer) -> Boolean {
+        if scene == null { return false; }
+        if Seq.get_Count(scene.TileAnimFrames(tile)) == 0 { return false; }
+        var snapshot = scene.ToJson();
+        scene.RemoveTileAnim(tile);
+        if CommitScene("Removed animation for tile " + tile) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Author one 16-variant autotile rule through canonical history.
+    expose override func SetTileBehaviorAutotile(tile: Integer,
+                                        variantsCsv: String) -> Boolean {
+        if scene == null { return false; }
+        if TileBehaviorTileValid(tile) == false { return false; }
+        var variants = ParseCsvIntegers(variantsCsv);
+        if variants == null or Seq.get_Count(variants) != 16 {
+            detailLabel.SetText(
+                "Enter exactly 16 comma-separated variant tile ids.");
+            return false;
+        }
+        var snapshot = scene.ToJson();
+        scene.SetAutotileRule(tile, variants);
+        if Seq.get_Count(scene.AutotileVariants(tile)) != 16 {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText("The scene model rejected the autotile rule.");
+            return false;
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Autotile rule is already up to date.");
+            return false;
+        }
+        if CommitScene("Updated autotile rule for tile " + tile) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        RefreshAutotilePreviewRules();
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Remove one autotile rule through canonical history.
+    expose override func ClearTileBehaviorAutotile(tile: Integer) -> Boolean {
+        if scene == null { return false; }
+        if Seq.get_Count(scene.AutotileVariants(tile)) == 0 { return false; }
+        var snapshot = scene.ToJson();
+        scene.RemoveAutotileRule(tile);
+        if CommitScene("Removed autotile rule for tile " + tile) == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        RefreshAutotilePreviewRules();
+        detailLabel.SetText("");
+        RefreshTilesetPalette();
+        return true;
+    }
+
+    /// @brief Draw one object's authored sprite frame, or return false.
+    /// @details `editor.sprite` wins, then a loadable `sprite` property, per
+    ///          ADR 0179. Resolution shares the layer-image budgets and never
+    ///          mutates scene content, history, revision, or dirty state.
+    hide override func DrawObjectSpritePreview(objectIndex: Integer,
+                                      x: Integer,
+                                      y: Integer) -> Boolean {
+        var path = ObjectSpritePath(objectIndex);
+        if path == "" { return false; }
+        var frame = ObjectSpriteFrame(objectIndex);
+        // Sprite-true rendering (ADR 0192): native frame size at the
+        // current zoom with the object's full transform; the legacy
+        // one-cell draw remains the bounded fallback.
+        if tilesets.DrawSpriteFrameTransformed(
+               framePixels, path, frame, x, y,
+               displayCellSize, scene.TileWidth, scene.TileHeight,
+               scene.ObjectScaleX(objectIndex),
+               scene.ObjectScaleY(objectIndex),
+               scene.ObjectRotation(objectIndex),
+               scene.ObjectFlipX(objectIndex),
+               scene.ObjectFlipY(objectIndex),
+               scene.ObjectTint(objectIndex),
+               scene.ObjectPivotX(objectIndex),
+               scene.ObjectPivotY(objectIndex)) {
+            return true;
+        }
+        return tilesets.DrawSpriteFrame(
+            framePixels, path, frame, x, y, displayCellSize);
+    }
+
+    /// @brief Paint one effective draw-stack boundary's object sprite pixels.
+    /// @details Stack order is boundary/priority/document order. This pass
+    ///          records successful image draws so the later editor-overlay
+    ///          pass can add markers only for objects without renderable art.
+    /// @return The first stack cursor belonging to a later boundary.
+    hide override func DrawObjectSpritesAtBoundary(
+        stack: List[Integer],
+        spriteDrawn: List[Integer],
+        startCursor: Integer,
+        boundary: Integer,
+        windowWidth: Integer,
+        windowHeight: Integer) -> Integer {
+        var cursor = startCursor;
+        while cursor < stack.count() {
+            var objectIndex = stack.get(cursor);
+            var objectBoundary =
+                scene_object_draw_stack_2d.LayerBoundary(
+                    scene, componentSchema, objectIndex);
+            if objectBoundary > boundary { return cursor; }
+            if objectBoundary == boundary {
+                var objectX =
+                    scene.ObjectX(objectIndex) * displayCellSize
+                    / scene.TileWidth - viewOriginX;
+                var objectY =
+                    scene.ObjectY(objectIndex) * displayCellSize
+                    / scene.TileHeight - viewOriginY;
+                var footprint = ObjectCanvasFootprint(objectIndex);
+                var visible = true;
+                if footprint.valid {
+                    visible = footprint.maxX >= 0.0
+                        and footprint.maxY >= 0.0
+                        and footprint.minX < windowWidth
+                        and footprint.minY < windowHeight;
+                }
+                if visible and DrawObjectSpritePreview(
+                       objectIndex, objectX, objectY) {
+                    spriteDrawn.set(objectIndex, 1);
+                }
+            }
+            cursor = cursor + 1;
+        }
+        return cursor;
+    }
+
+    /// @brief Resolve one object's sprite reference (`editor.sprite` wins).
+    hide override func ObjectSpritePath(objectIndex: Integer) -> String {
+        var path = Str.Trim(
+            scene.ObjectGetStr(objectIndex, "editor.sprite", ""));
+        if path != "" { return path; }
+        path = Str.Trim(scene.ObjectGetStr(objectIndex, "sprite", ""));
+        if path != "" { return path; }
+        var preview = ProjectObjectPreview(objectIndex);
+        if preview == null { return ""; }
+        return preview.sprite;
+    }
+
+    /// @brief Resolve authored per-object frame before project profile fallback.
+    hide override func ObjectSpriteFrame(objectIndex: Integer) -> Integer {
+        var explicitPath = Str.Trim(
+            scene.ObjectGetStr(objectIndex, "editor.sprite", ""));
+        if explicitPath == "" {
+            explicitPath = Str.Trim(
+                scene.ObjectGetStr(objectIndex, "sprite", ""));
+        }
+        if explicitPath != "" {
+            return scene.ObjectGetInt(objectIndex, "editor.frame", 0);
+        }
+        var preview = ProjectObjectPreview(objectIndex);
+        if preview == null or preview.frameProperty == "" {
+            if preview != null { return preview.frame; }
+            return 0;
+        }
+        if scene.ObjectPropertyKind(
+               objectIndex, preview.frameProperty) != "int" {
+            return preview.frame;
+        }
+        return preview.FrameForValue(
+            scene.ObjectGetInt(
+                objectIndex, preview.frameProperty, -1));
+    }
+
+    /// @brief Return the deterministic project rule for one object type.
+    hide override func ProjectObjectPreview(
+        objectIndex: Integer)
+        -> scene_component_schema.SceneObjectPreviewDefinition {
+        if componentSchema == null or componentSchema.valid == false
+           or scene == null or objectIndex < 0
+           or objectIndex >= scene.ObjectCount() {
+            return null;
+        }
+        return componentSchema.PreviewForObjectType(
+            scene.ObjectType(objectIndex));
+    }
+
+    /// @brief Effective bounded object-preview priority (smaller paints first).
+    expose override func ObjectPreviewDrawOrder(objectIndex: Integer) -> Integer {
+        return scene_object_draw_stack_2d.EffectiveDrawOrder(
+            scene, componentSchema, objectIndex);
+    }
+
+    /// @brief Effective tile layer after which one object preview paints.
+    expose override func ObjectPreviewAfterLayer(objectIndex: Integer) -> Integer {
+        return scene_object_draw_stack_2d.EffectiveAfterLayer(
+            scene, componentSchema, objectIndex);
+    }
+
+    /// @brief Bottom-to-top visual object identities for rendering and picking.
+    expose override func ObjectPreviewStack() -> List[Integer] {
+        return scene_object_draw_stack_2d.Build(
+            scene, componentSchema);
+    }
+
+    /// @brief Resolve the active project-owned screen-space scene backdrop.
+    /// @details A missing/wrong-typed variant key uses the declared fallback.
+    hide override func ProjectSceneBackground() -> String {
+        if componentSchema == null or componentSchema.valid == false
+           or scene == null or componentSchema.scenePreview2D == null
+           or componentSchema.scenePreview2D.present == false {
+            return "";
+        }
+        var profile = componentSchema.scenePreview2D;
+        if profile.variantProperty == ""
+           or scene.PropertyKind(profile.variantProperty) != "int" {
+            return profile.background;
+        }
+        return profile.BackgroundForVariant(
+            scene.GetInt(profile.variantProperty, 0));
+    }
+
+    /// @brief Composite the current project backdrop behind scene content.
+    hide override func DrawProjectSceneBackground() -> Boolean {
+        var path = ProjectSceneBackground();
+        if path == "" or componentSchema == null { return false; }
+        if gameViewOutputFramed and framePixels != null {
+            var width = GameOutputFrameWidthFor(
+                framePixels.Width, framePixels.Height);
+            var height = GameOutputFrameHeightFor(
+                framePixels.Width, framePixels.Height);
+            return tilesets.DrawSceneBackgroundRegion(
+                framePixels,
+                path,
+                componentSchema.sourcePath,
+                componentSchema.scenePreview2D.fit,
+                GameOutputFrameXFor(
+                    framePixels.Width, framePixels.Height),
+                GameOutputFrameYFor(
+                    framePixels.Width, framePixels.Height),
+                width,
+                height);
+        }
+        return tilesets.DrawSceneBackground(
+            framePixels,
+            path,
+            componentSchema.sourcePath,
+            componentSchema.scenePreview2D.fit);
+    }
+
+    /// @brief Cover pixels outside the exact project output with neutral matte.
+    hide override func DrawGameOutputMatte(width: Integer, height: Integer) {
+        if gameViewOutputFramed == false or framePixels == null
+           or width <= 0 or height <= 0 {
+            return;
+        }
+        var frameX = GameOutputFrameXFor(width, height);
+        var frameY = GameOutputFrameYFor(width, height);
+        var frameWidth = GameOutputFrameWidthFor(width, height);
+        var frameHeight = GameOutputFrameHeightFor(width, height);
+        if frameY > 0 {
+            framePixels.DrawBox(
+                0, 0, width, frameY, SceneEditor2DModel.GAME_VIEW_MATTE_COLOR);
+        }
+        var bottomY = frameY + frameHeight;
+        if bottomY < height {
+            framePixels.DrawBox(
+                0, bottomY, width, height - bottomY,
+                SceneEditor2DModel.GAME_VIEW_MATTE_COLOR);
+        }
+        if frameX > 0 {
+            framePixels.DrawBox(
+                0, frameY, frameX, frameHeight,
+                SceneEditor2DModel.GAME_VIEW_MATTE_COLOR);
+        }
+        var rightX = frameX + frameWidth;
+        if rightX < width {
+            framePixels.DrawBox(
+                rightX, frameY, width - rightX, frameHeight,
+                SceneEditor2DModel.GAME_VIEW_MATTE_COLOR);
+        }
+    }
+
+    /// @brief Draw workspace-only polylines for route objects (ADR 0179).
+    /// @details A route is an object of type `route`; its waypoints are its
+    ///          direct children in sibling order. At most 256 waypoints per
+    ///          route are drawn; the full list stays editable in the tree.
+    hide override func DrawRoutePolylines() {
+        var routeIndex = 0;
+        while routeIndex < scene.ObjectCount() {
+            if scene.ObjectType(routeIndex) != "route" {
+                routeIndex = routeIndex + 1;
+                continue;
+            }
+            var lineColor = Color.RGB(120, 132, 150);
+            if scene_selection.Contains(selectedObjects, routeIndex) {
+                lineColor = Color.RGB(104, 220, 255);
+            }
+            var fromX = scene.ObjectX(routeIndex) * displayCellSize
+                / scene.TileWidth + displayCellSize / 2 - viewOriginX;
+            var fromY = scene.ObjectY(routeIndex) * displayCellSize
+                / scene.TileHeight + displayCellSize / 2 - viewOriginY;
+            var drawn = 0;
+            var childIndex = 0;
+            while childIndex < scene.ObjectCount() and drawn < 256 {
+                if scene.ObjectParent(childIndex) == routeIndex {
+                    var toX = scene.ObjectX(childIndex) * displayCellSize
+                        / scene.TileWidth + displayCellSize / 2 - viewOriginX;
+                    var toY = scene.ObjectY(childIndex) * displayCellSize
+                        / scene.TileHeight + displayCellSize / 2 - viewOriginY;
+                    framePixels.DrawLine(fromX, fromY, toX, toY, lineColor);
+                    fromX = toX;
+                    fromY = toY;
+                    drawn = drawn + 1;
+                }
+                childIndex = childIndex + 1;
+            }
+            routeIndex = routeIndex + 1;
+        }
+    }
+}

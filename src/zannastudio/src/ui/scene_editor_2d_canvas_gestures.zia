@@ -1,0 +1,798 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_canvas_gestures.zia
+// Purpose: Focused canvas gestures behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_layer_controls.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_canvas_gestures;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_layer_controls" as PreviousLayer;
+
+/// @brief Canvas Gestures implementation layer.
+class SceneEditor2DCanvasGesturesLayer extends PreviousLayer.SceneEditor2DLayerControlsLayer {
+
+    hide override func ObjectIdExists(objectId: String, exceptIndex: Integer) -> Boolean {
+        if scene == null { return false; }
+        var index = 0;
+        while index < scene.ObjectCount() {
+            if index != exceptIndex and scene.ObjectId(index) == objectId {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    hide override func ObjectIndexWithId(objectId: String) -> Integer {
+        if scene == null or objectId == "" { return -1; }
+        var index = 0;
+        while index < scene.ObjectCount() {
+            if scene.ObjectId(index) == objectId { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    hide override func UniqueObjectId(base: String) -> String {
+        var stem = Str.Trim(base);
+        if stem == "" { stem = "object"; }
+        if ObjectIdExists(stem, -1) == false { return stem; }
+        var suffix = 2;
+        while suffix <= scene.ObjectCount() + 2 {
+            var candidate = stem + "-" + suffix;
+            if ObjectIdExists(candidate, -1) == false { return candidate; }
+            suffix = suffix + 1;
+        }
+        return stem + "-" + (scene.ObjectCount() + 3);
+    }
+
+    /// @brief Return whether either side-specific Shift key is held.
+    hide override func CanvasShiftDown() -> Boolean {
+        return Input.Keyboard.IsDown(Input.Key.LeftShift)
+            or Input.Keyboard.IsDown(Input.Key.RightShift);
+    }
+
+    /// @brief Return whether conventional Control/Command selection is held.
+    /// @brief Return whether either Alt key is held (transient picker).
+    hide override func CanvasAltDown() -> Boolean {
+        return Input.Keyboard.IsDown(Input.Key.LeftAlt)
+            or Input.Keyboard.IsDown(Input.Key.RightAlt);
+    }
+
+    hide override func CanvasPrimaryModifierDown() -> Boolean {
+        return Input.Keyboard.IsDown(Input.Key.LeftControl)
+            or Input.Keyboard.IsDown(Input.Key.RightControl)
+            or Input.Keyboard.IsDown(Input.Key.LeftSuper)
+            or Input.Keyboard.IsDown(Input.Key.RightSuper);
+    }
+
+    /// @brief Begin one blank-space marquee without changing selection yet.
+    hide override func BeginCanvasMarquee(cellX: Integer,
+                                 cellY: Integer,
+                                 additive: Boolean,
+                                 toggle: Boolean) {
+        canvasMarqueeActive = true;
+        canvasMarqueeStartX = cellX;
+        canvasMarqueeStartY = cellY;
+        canvasMarqueeCurrentX = cellX;
+        canvasMarqueeCurrentY = cellY;
+        canvasMarqueeAdditive = additive;
+        canvasMarqueeToggle = toggle;
+        if Input.Mouse.IsCaptured() == false {
+            Input.Mouse.Capture();
+        }
+        renderDirty = true;
+        // Keep this transient status short enough to remain on one toolbar
+        // line. Reflowing the retained layout after pointer capture moves the
+        // canvas underneath the physical pointer and corrupts the drag cell.
+        toolbarStatus.SetText("Box select; Escape cancels");
+    }
+
+    /// @brief Clear transient marquee state and optionally release its capture.
+    hide override func ResetCanvasMarquee(releaseCapture: Boolean) {
+        var wasActive = canvasMarqueeActive;
+        canvasMarqueeActive = false;
+        canvasMarqueeStartX = -1;
+        canvasMarqueeStartY = -1;
+        canvasMarqueeCurrentX = -1;
+        canvasMarqueeCurrentY = -1;
+        tileRegionMinX = -1;
+        tileRegionMinY = -1;
+        tileRegionMaxX = -1;
+        tileRegionMaxY = -1;
+        stampActive = false;
+        stampWidth = 0;
+        stampHeight = 0;
+        stampTiles = [];
+        hoverCellX = -1;
+        hoverCellY = -1;
+        canvasMarqueeAdditive = false;
+        canvasMarqueeToggle = false;
+        if releaseCapture and wasActive and Input.Mouse.IsCaptured() {
+            Input.Mouse.Release();
+        }
+        if wasActive { renderDirty = true; }
+    }
+
+    /// @brief Cancel one active marquee and preserve its prior selection.
+    hide override func CancelCanvasMarquee() {
+        if canvasMarqueeActive == false { return; }
+        ResetCanvasMarquee(true);
+        gestureEscapeConsumed = true;
+        toolbarStatus.SetText("Box selection canceled");
+    }
+
+    /// @brief Apply one marquee exactly once when the left button is released.
+    hide override func FinishCanvasMarquee() {
+        if canvasMarqueeActive == false { return; }
+        var startX = canvasMarqueeStartX;
+        var startY = canvasMarqueeStartY;
+        var endX = canvasMarqueeCurrentX;
+        var endY = canvasMarqueeCurrentY;
+        var additive = canvasMarqueeAdditive;
+        var toggle = canvasMarqueeToggle;
+        ResetCanvasMarquee(true);
+        SetTileRegion(startX, startY, endX, endY);
+        var changed = ApplyCanvasMarqueeSelection(
+            startX, startY, endX, endY, additive, toggle);
+        if selectedObjects.count() == 0 {
+            toolbarStatus.SetText("No canvas objects selected");
+        } else if changed {
+            toolbarStatus.SetText(
+                "Selected " + selectedObjects.count()
+                + " canvas object(s)");
+        } else {
+            toolbarStatus.SetText(
+                "Canvas selection unchanged ("
+                + selectedObjects.count() + " object(s))");
+        }
+    }
+
+    /// @brief Begin a non-destructive inclusive tile-shape preview.
+    hide override func BeginTileRectangle(cellX: Integer,
+                                 cellY: Integer) {
+        tileRectangleShape = 0;
+        if mode == SceneEditor2DModel.MODE_LINE { tileRectangleShape = 1; }
+        if mode == SceneEditor2DModel.MODE_ELLIPSE { tileRectangleShape = 2; }
+        tileRectangleActive = true;
+        tileRectangleStartX = cellX;
+        tileRectangleStartY = cellY;
+        tileRectangleCurrentX = cellX;
+        tileRectangleCurrentY = cellY;
+        tileRectangleTile =
+            SceneEditor2DModel.ClampInt(Convert.NumToInt(tileSpinner.Value), 0, 1000000);
+        if Input.Mouse.IsCaptured() == false {
+            Input.Mouse.Capture();
+        }
+        renderDirty = true;
+        var shapeName = "rectangle";
+        if tileRectangleShape == 1 { shapeName = "line"; }
+        if tileRectangleShape == 2 { shapeName = "ellipse"; }
+        toolbarStatus.SetText(
+            "Drag a tile " + shapeName
+            + "; release applies and Escape cancels");
+    }
+
+    /// @brief Clear transient rectangle state and optionally release capture.
+    hide override func ResetTileRectangle(releaseCapture: Boolean) {
+        var wasActive = tileRectangleActive;
+        tileRectangleActive = false;
+        tileRectangleStartX = -1;
+        tileRectangleStartY = -1;
+        tileRectangleCurrentX = -1;
+        tileRectangleCurrentY = -1;
+        tileRectangleTile = 0;
+        if releaseCapture and wasActive and Input.Mouse.IsCaptured() {
+            Input.Mouse.Release();
+        }
+        if wasActive { renderDirty = true; }
+    }
+
+    /// @brief Clamp a captured rectangle pointer to the rendered scene edge.
+    hide override func UpdateTileRectanglePointer() {
+        if tileRectangleActive == false or canvasImage == null
+           or displayCellSize <= 0
+           or renderedColumns <= 0 or renderedRows <= 0 {
+            return;
+        }
+        var relativeX = PhysicalPointerToUi(Input.Mouse.X())
+            - canvasImage.GetScreenX();
+        var relativeY = PhysicalPointerToUi(Input.Mouse.Y())
+            - canvasImage.GetScreenY();
+        var cellX = 0;
+        var cellY = 0;
+        if relativeX > 0.0 {
+            cellX = Convert.NumToInt(relativeX) / displayCellSize;
+        }
+        if relativeY > 0.0 {
+            cellY = Convert.NumToInt(relativeY) / displayCellSize;
+        }
+        cellX = SceneEditor2DModel.ClampInt(cellX, 0, renderedColumns - 1);
+        cellY = SceneEditor2DModel.ClampInt(cellY, 0, renderedRows - 1);
+        if tileRectangleCurrentX != cellX
+           or tileRectangleCurrentY != cellY {
+            tileRectangleCurrentX = cellX;
+            tileRectangleCurrentY = cellY;
+            selectedCellX = cellX;
+            selectedCellY = cellY;
+            renderDirty = true;
+        }
+    }
+
+    /// @brief Cancel an active tile rectangle without canonical mutation.
+    hide override func CancelTileRectangle() {
+        if tileRectangleActive == false { return; }
+        ResetTileRectangle(true);
+        gestureEscapeConsumed = true;
+        toolbarStatus.SetText("Tile rectangle canceled");
+    }
+
+    /// @brief Apply one captured tile rectangle exactly once on release.
+    hide override func FinishTileRectangle() -> Boolean {
+        if tileRectangleActive == false { return false; }
+        var startX = tileRectangleStartX;
+        var startY = tileRectangleStartY;
+        var endX = tileRectangleCurrentX;
+        var endY = tileRectangleCurrentY;
+        var tile = tileRectangleTile;
+        var shape = tileRectangleShape;
+        ResetTileRectangle(true);
+        if shape != 0 {
+            return ApplyTileShape(
+                shape, startX, startY, endX, endY, tile);
+        }
+        return ApplyTileRectangle(
+            activeLayer, startX, startY, endX, endY, tile);
+    }
+
+    /// @brief Cells covered by one line or ellipse gesture (x,y pairs).
+    /// @details The single source for previews and commits so the ghost
+    ///          always matches the written cells. Lines rasterize with the
+    ///          classic integer error walk; ellipses sample the boundary
+    ///          per column and per row of the inclusive drag rectangle.
+    hide override func ShapeCells(shape: Integer,
+                         startX: Integer,
+                         startY: Integer,
+                         endX: Integer,
+                         endY: Integer) -> List[Integer] {
+        var cells: List[Integer] = [];
+        if shape == 1 {
+            var deltaX = endX - startX;
+            if deltaX < 0 { deltaX = 0 - deltaX; }
+            var deltaY = endY - startY;
+            if deltaY < 0 { deltaY = 0 - deltaY; }
+            var stepX = -1;
+            if endX > startX { stepX = 1; }
+            var stepY = -1;
+            if endY > startY { stepY = 1; }
+            var walkError = deltaX - deltaY;
+            var x = startX;
+            var y = startY;
+            var guardSteps = deltaX + deltaY + 1;
+            while guardSteps >= 0 {
+                cells.add(x);
+                cells.add(y);
+                if x == endX and y == endY { return cells; }
+                var doubled = walkError * 2;
+                if doubled > 0 - deltaY {
+                    walkError = walkError - deltaY;
+                    x = x + stepX;
+                }
+                if doubled < deltaX {
+                    walkError = walkError + deltaX;
+                    y = y + stepY;
+                }
+                guardSteps = guardSteps - 1;
+            }
+            return cells;
+        }
+        var minX = startX;
+        var maxX = endX;
+        if maxX < minX {
+            minX = endX;
+            maxX = startX;
+        }
+        var minY = startY;
+        var maxY = endY;
+        if maxY < minY {
+            minY = endY;
+            maxY = startY;
+        }
+        var centerX = (minX + maxX) * 0.5;
+        var centerY = (minY + maxY) * 0.5;
+        var radiusX = (maxX - minX) * 0.5;
+        var radiusY = (maxY - minY) * 0.5;
+        if radiusX < 0.5 or radiusY < 0.5 {
+            // Degenerate ellipses collapse to their bounding rectangle
+            // outline, which for a 1-cell-thick drag is the drag itself.
+            var x = minX;
+            while x <= maxX {
+                var y = minY;
+                while y <= maxY {
+                    cells.add(x);
+                    cells.add(y);
+                    y = y + 1;
+                }
+                x = x + 1;
+            }
+            return cells;
+        }
+        var column = minX;
+        while column <= maxX {
+            var normalized = (column - centerX) / radiusX;
+            var squared = 1.0 - normalized * normalized;
+            if squared < 0.0 { squared = 0.0; }
+            var offset = radiusY * Math.Sqrt(squared);
+            cells.add(column);
+            cells.add(Convert.NumToInt(centerY - offset + 0.5));
+            cells.add(column);
+            cells.add(Convert.NumToInt(centerY + offset + 0.5));
+            column = column + 1;
+        }
+        var row = minY;
+        while row <= maxY {
+            var normalized = (row - centerY) / radiusY;
+            var squared = 1.0 - normalized * normalized;
+            if squared < 0.0 { squared = 0.0; }
+            var offset = radiusX * Math.Sqrt(squared);
+            cells.add(Convert.NumToInt(centerX - offset + 0.5));
+            cells.add(row);
+            cells.add(Convert.NumToInt(centerX + offset + 0.5));
+            cells.add(row);
+            row = row + 1;
+        }
+        return cells;
+    }
+
+    /// @brief Write one line or ellipse of tiles as a single transaction.
+    hide override func ApplyTileShape(shape: Integer,
+                             startX: Integer,
+                             startY: Integer,
+                             endX: Integer,
+                             endY: Integer,
+                             tile: Integer) -> Boolean {
+        if scene == null or activeLayer < 0
+           or activeLayer >= scene.LayerCount() {
+            return false;
+        }
+        if RefuseLockedLayer(activeLayer) { return false; }
+        var nextTile = tile;
+        if nextTile < 0 { nextTile = 0; }
+        var cells = ShapeCells(shape, startX, startY, endX, endY);
+        var changedCells = 0;
+        var index = 0;
+        while index < cells.count() {
+            var x = cells.get(index);
+            var y = cells.get(index + 1);
+            if x >= 0 and x < scene.Width
+               and y >= 0 and y < scene.Height
+               and scene.GetTile(activeLayer, x, y) != nextTile {
+                scene.SetTile(activeLayer, x, y, nextTile);
+                changedCells = changedCells + 1;
+            }
+            index = index + 2;
+        }
+        renderDirty = true;
+        if changedCells == 0 {
+            toolbarStatus.SetText(
+                "Shape already matches the selected tile");
+            return false;
+        }
+        var label = "Painted tile line";
+        if shape == 2 { label = "Painted tile ellipse"; }
+        if CommitScene(label) == false {
+            RestoreSceneSnapshot(currentSerialized);
+            return false;
+        }
+        toolbarStatus.SetText(
+            "Painted " + changedCells + " tile(s)");
+        return true;
+    }
+
+    /// @brief Reset one freehand stroke and optionally release its capture.
+    hide override func ResetPaintStroke(releaseCapture: Boolean) {
+        var wasActive = paintStrokeActive;
+        paintStrokeActive = false;
+        paintStrokeChanged = false;
+        paintStrokeSnapshot = "";
+        lastPaintX = -1;
+        lastPaintY = -1;
+        if releaseCapture and wasActive and Input.Mouse.IsCaptured() {
+            Input.Mouse.Release();
+        }
+    }
+
+    /// @brief Restore the pre-stroke snapshot and create no history.
+    hide override func CancelPaintStroke() {
+        if paintStrokeActive == false { return; }
+        var snapshot = paintStrokeSnapshot;
+        var changed = paintStrokeChanged;
+        ResetPaintStroke(true);
+        gestureEscapeConsumed = true;
+        if changed and snapshot != "" {
+            RestoreSceneSnapshot(snapshot);
+        }
+        toolbarStatus.SetText("Tile stroke canceled");
+    }
+
+    /// @brief Keep clean-view pan/zoom live while consuming every edit gesture.
+    hide override func PumpGameViewCanvasNavigation() -> Boolean {
+        if canvasImage != null and canvasImage.WasDropped() {
+            toolbarStatus.SetText(
+                "Exit Game View before dropping assets onto the canvas");
+            return false;
+        }
+        if scene == null or canvasImage == null
+           or canvasImage.IsHovered() == false {
+            return false;
+        }
+        var leftPressed =
+            Input.Mouse.WasPressed(Input.Mouse.ButtonLeft);
+        var leftClicked =
+            Input.Mouse.WasClicked(Input.Mouse.ButtonLeft);
+        if leftPressed or leftClicked
+           or Input.Mouse.WasPressed(Input.Mouse.ButtonMiddle) {
+            canvasImage.Focus();
+        }
+        if gameViewOutputFramed { return false; }
+        if Input.Mouse.IsDown(Input.Mouse.ButtonMiddle) {
+            var panX = PhysicalPointerToUi(Input.Mouse.DeltaX());
+            var panY = PhysicalPointerToUi(Input.Mouse.DeltaY());
+            if panX != 0 or panY != 0 {
+                SetLogicalScroll(
+                    canvasScroll,
+                    LogicalScrollX(canvasScroll) - panX,
+                    LogicalScrollY(canvasScroll) - panY);
+            }
+            return false;
+        }
+        var relativeX = PhysicalPointerToUi(Input.Mouse.X())
+            - canvasImage.GetScreenX();
+        var relativeY = PhysicalPointerToUi(Input.Mouse.Y())
+            - canvasImage.GetScreenY();
+        var wheel = Input.Mouse.WheelYFloat();
+        if wheel > 0.0 or wheel < 0.0 {
+            var direction = 1;
+            if wheel < 0.0 { direction = -1; }
+            ZoomStepAnchored(
+                direction,
+                relativeX + viewOriginX,
+                relativeY + viewOriginY,
+                relativeX + centerPadX,
+                relativeY + centerPadY);
+        }
+        return false;
+    }
+
+    /// @brief Apply the current mouse tool to one bounded scene cell.
+    hide override func PumpCanvas() -> Boolean {
+        if gameViewActive {
+            return PumpGameViewCanvasNavigation();
+        }
+        if canvasImage != null and canvasImage.WasDropped() {
+            return CreateSpriteObjectFromDrop(
+                canvasImage.GetDropData(),
+                canvasImage.GetDropX(),
+                canvasImage.GetDropY()) >= 0;
+        }
+        if canvasMarqueeActive {
+            if Input.Keyboard.WasPressed(Input.Key.Escape) {
+                CancelCanvasMarquee();
+                return false;
+            }
+            if !Input.Mouse.IsDown(Input.Mouse.ButtonLeft) {
+                FinishCanvasMarquee();
+                return false;
+            }
+        }
+        if tileRectangleActive {
+            if Input.Keyboard.WasPressed(Input.Key.Escape) {
+                CancelTileRectangle();
+                return false;
+            }
+            UpdateTileRectanglePointer();
+            if !Input.Mouse.IsDown(Input.Mouse.ButtonLeft) {
+                return FinishTileRectangle();
+            }
+            return false;
+        }
+        if paintStrokeActive {
+            if Input.Keyboard.WasPressed(Input.Key.Escape) {
+                CancelPaintStroke();
+                return false;
+            }
+            if !Input.Mouse.IsDown(Input.Mouse.ButtonLeft) {
+                return FinishPaintStroke();
+            }
+        }
+        if objectDragActive
+           and !Input.Mouse.IsDown(Input.Mouse.ButtonLeft) {
+            return FinishObjectDrag();
+        }
+        if scene == null or canvasImage == null {
+            return false;
+        }
+        if canvasImage.IsHovered() == false { return false; }
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft)
+           or Input.Mouse.WasPressed(Input.Mouse.ButtonMiddle) {
+            FocusActiveModeButton();
+        }
+
+        if Input.Mouse.IsDown(Input.Mouse.ButtonMiddle) {
+            var panX = PhysicalPointerToUi(Input.Mouse.DeltaX());
+            var panY = PhysicalPointerToUi(Input.Mouse.DeltaY());
+            if panX != 0 or panY != 0 {
+                SetLogicalScroll(
+                    canvasScroll,
+                    LogicalScrollX(canvasScroll) - panX,
+                    LogicalScrollY(canvasScroll) - panY);
+            }
+            return false;
+        }
+
+        var relativeX = PhysicalPointerToUi(Input.Mouse.X())
+            - canvasImage.GetScreenX();
+        var relativeY = PhysicalPointerToUi(Input.Mouse.Y())
+            - canvasImage.GetScreenY();
+        if displayCellSize <= 0 { return false; }
+        if rectGestureMode != 0 {
+            return PumpRectGesture(relativeX, relativeY);
+        }
+
+        var wheel = Input.Mouse.WheelYFloat();
+        if wheel > 0.0 or wheel < 0.0 {
+            // The image's left/top edge sits exactly at content pixel
+            // (viewOriginX, viewOriginY), and at (centerPadX, centerPadY)
+            // inside the viewport, so both anchor forms derive directly.
+            var direction = 1;
+            if wheel < 0.0 { direction = -1; }
+            ZoomStepAnchored(
+                direction,
+                relativeX + viewOriginX,
+                relativeY + viewOriginY,
+                relativeX + centerPadX,
+                relativeY + centerPadY);
+            return false;
+        }
+
+        if rectGestureMode != 0 {
+            return PumpRectGesture(relativeX, relativeY);
+        }
+        if stampActive and Input.Keyboard.WasPressed(Input.Key.Escape) {
+            ClearTileStamp();
+            gestureEscapeConsumed = true;
+            toolbarStatus.SetText("Stamp cleared");
+        }
+        var contentX = Convert.NumToInt(relativeX) + viewOriginX;
+        var contentY = Convert.NumToInt(relativeY) + viewOriginY;
+        if contentX < 0 or contentY < 0 { return false; }
+        var cellX = contentX / displayCellSize;
+        var cellY = contentY / displayCellSize;
+        if cellX < 0 or cellY < 0
+           or cellX >= scene.Width or cellY >= scene.Height {
+            return false;
+        }
+
+        return PumpCanvasToolAtCell(
+            relativeX, relativeY, contentX, contentY, cellX, cellY);
+    }
+
+    /// @brief Apply the active editing tool to one validated canvas cell.
+    hide func PumpCanvasToolAtCell(
+        relativeX: Number,
+        relativeY: Number,
+        contentX: Integer,
+        contentY: Integer,
+        cellX: Integer,
+        cellY: Integer) -> Boolean {
+        if selectedCellX != cellX or selectedCellY != cellY {
+            renderDirty = true;
+        }
+        selectedCellX = cellX;
+        selectedCellY = cellY;
+        if canvasMarqueeActive {
+            if canvasMarqueeCurrentX != cellX
+               or canvasMarqueeCurrentY != cellY {
+                canvasMarqueeCurrentX = cellX;
+                canvasMarqueeCurrentY = cellY;
+                renderDirty = true;
+            }
+            return false;
+        }
+        // Alt-hold is a transient eyedropper in every paint-family tool.
+        if (mode == SceneEditor2DModel.MODE_PAINT or mode == SceneEditor2DModel.MODE_ERASE
+            or mode == SceneEditor2DModel.MODE_RECTANGLE or mode == SceneEditor2DModel.MODE_FILL)
+           and CanvasAltDown()
+           and Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+            PickSceneTile(activeLayer, cellX, cellY);
+            return false;
+        }
+        if mode == SceneEditor2DModel.MODE_PAINT or mode == SceneEditor2DModel.MODE_ERASE {
+            if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+                paintStrokeActive = true;
+                paintStrokeChanged = false;
+                paintStrokeSnapshot = currentSerialized;
+                lastPaintX = cellX;
+                lastPaintY = cellY;
+                if Input.Mouse.IsCaptured() == false {
+                    Input.Mouse.Capture();
+                }
+                paintStrokeChanged =
+                    ApplyStrokeCell(cellX, cellY) or paintStrokeChanged;
+            }
+            if paintStrokeActive
+               and Input.Mouse.IsDown(Input.Mouse.ButtonLeft)
+               and (cellX != lastPaintX or cellY != lastPaintY) {
+                paintStrokeChanged =
+                    ApplyStrokeLine(cellX, cellY) or paintStrokeChanged;
+            }
+            return false;
+        }
+
+        if mode == SceneEditor2DModel.MODE_RECTANGLE or mode == SceneEditor2DModel.MODE_LINE
+           or mode == SceneEditor2DModel.MODE_ELLIPSE {
+            if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+                BeginTileRectangle(cellX, cellY);
+            }
+            return false;
+        }
+
+        if mode == SceneEditor2DModel.MODE_FILL {
+            if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+                var fillTile = SceneEditor2DModel.ClampInt(
+                    Convert.NumToInt(tileSpinner.Value), 0, 1000000);
+                return FloodFillSceneTile(
+                    activeLayer, cellX, cellY, fillTile) > 0;
+            }
+            return false;
+        }
+
+        if mode == SceneEditor2DModel.MODE_PICKER {
+            if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+                PickSceneTile(activeLayer, cellX, cellY);
+            }
+            return false;
+        }
+
+        if mode == SceneEditor2DModel.MODE_OBJECT {
+            if !Input.Mouse.WasClicked(Input.Mouse.ButtonLeft) { return false; }
+            var objectIndex = AddSceneObject(
+                "entity",
+                UniqueObjectId("object-" + (scene.ObjectCount() + 1)),
+                cellX * scene.TileWidth,
+                cellY * scene.TileHeight);
+            if objectIndex >= 0 {
+                toolbarStatus.SetText("Placed object");
+                return true;
+            }
+            return false;
+        }
+
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+            if RectToolEligible() {
+                var handleHit = RectHandleAtPoint(
+                    selectedObject, relativeX, relativeY);
+                if handleHit >= 0 {
+                    BeginRectGesture(handleHit, relativeX, relativeY);
+                    return false;
+                }
+            }
+            var hitObject = FindObjectAtCanvasPoint(relativeX, relativeY);
+            var additive = CanvasShiftDown();
+            var toggle = CanvasPrimaryModifierDown();
+            if hitObject >= 0 {
+                ApplyCanvasPointSelection(
+                    hitObject, additive, toggle);
+            } else {
+                objectDragActive = false;
+                objectDragChanged = false;
+                objectDragSnapshot = "";
+                objectDragIndex = -1;
+                BeginCanvasMarquee(
+                    cellX, cellY, additive, toggle);
+                RefreshInspector();
+                return false;
+            }
+            objectDragActive = additive == false
+                and toggle == false
+                and scene_selection.Contains(
+                    selectedObjects, hitObject);
+            objectDragChanged = false;
+            objectDragSnapshot = currentSerialized;
+            objectDragIndex = hitObject;
+            if objectDragActive {
+                objectDragLastX = scene.ObjectX(objectDragIndex);
+                objectDragLastY = scene.ObjectY(objectDragIndex);
+            } else {
+                objectDragSnapshot = "";
+                objectDragIndex = -1;
+            }
+            RefreshInspector();
+            renderDirty = true;
+            if objectDragActive {
+                toolbarStatus.SetText(
+                    "Drag " + selectedObjects.count()
+                    + " selected object(s) together");
+            } else if selectedObjects.count() > 0 {
+                toolbarStatus.SetText(
+                    "Selected " + selectedObjects.count()
+                    + " canvas object(s)");
+            } else {
+                toolbarStatus.SetText("No canvas objects selected");
+            }
+        }
+        if objectDragActive
+           and Input.Mouse.IsDown(Input.Mouse.ButtonLeft)
+           and objectDragIndex >= 0
+           and objectDragIndex < scene.ObjectCount() {
+            var objectX = cellX * scene.TileWidth;
+            var objectY = cellY * scene.TileHeight;
+            if CanvasPrimaryModifierDown() {
+                // Ctrl/Cmd-hold drops the tile grid: the drag follows the
+                // pointer at exact scene-pixel precision (positions are
+                // already pixel integers in the model).
+                objectX = CanvasFreePixelX(contentX);
+                objectY = CanvasFreePixelY(contentY);
+            }
+            var deltaX = objectX - objectDragLastX;
+            var deltaY = objectY - objectDragLastY;
+            if deltaX != 0 or deltaY != 0 {
+                objectDragChanged = TranslateSelectedObjectsUncommitted(
+                    deltaX, deltaY) or objectDragChanged;
+                objectDragLastX = objectX;
+                objectDragLastY = objectY;
+                objectXSpinner.SetValue(objectX);
+                objectYSpinner.SetValue(objectY);
+                renderDirty = true;
+            }
+        }
+        return false;
+    }
+}

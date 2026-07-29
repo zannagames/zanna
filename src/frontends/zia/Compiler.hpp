@@ -64,7 +64,7 @@
 /// - Simple file binds: `bind "foo";` (looks in the same directory)
 /// - Circular imports are allowed (skipped without error)
 /// - Maximum import depth of 50 levels
-/// - Maximum of 256 imported files
+/// - Maximum of 512 imported files
 ///
 /// ## Error Handling
 ///

@@ -1,0 +1,77 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_editor_2d_probe_context.zia
+// Purpose: Own shared fixture state and assertions for the 2D editor probe.
+// Key invariants:
+//   - Scenario modules share one editor, shell, and serial document history.
+//   - Failure and temporary-directory cleanup remain centralized.
+// Ownership/Lifetime: The entry probe owns one context for its complete run.
+// Links: zannastudio/src/probes/scene_editor_2d_probe.zia,
+//        zannastudio/src/ui/scene_editor_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_probe_context;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../editor/editor_engine";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_2d";
+
+bind Pixels = Zanna.Graphics.Pixels;
+bind Dir = Zanna.IO.Dir;
+bind Terminal = Zanna.Terminal;
+
+/// @brief Typed state passed between serial 2D editor probe scenarios.
+class SceneEditor2DProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_2d.SceneEditor2D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose editor_engine.EditorEngine hiddenEngine;
+
+    expose String originalContent;
+    expose document.Document otherSceneDoc;
+    expose Integer duplicate;
+    expose String authoredContent;
+    expose List[Integer] groupSelection;
+
+    expose String componentDir;
+    expose project_manager.ProjectManager componentProject;
+    expose String previousComponentScenePath;
+
+    expose String otherBaseline;
+    expose document.Document hierarchyDoc;
+    expose List[Integer] oneObject;
+    expose document.Document hierarchyAuthoringDoc;
+
+    expose String tilesetDir;
+    expose String tilesetPath;
+    expose String invalidTilesetPath;
+    expose Pixels atlas;
+    expose String previousScenePath;
+    expose String relativeTilesetPath;
+    expose project_manager.ProjectManager assetProject;
+}
+
+expose func fail(shell: app_shell.AppShell, reason: String) {
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+expose func removeTempDir(path: String) {
+    if path != "" { Dir.RemoveAll(path); }
+}
+
+expose func near(actual: Number, expected: Number) -> Boolean {
+    var difference = actual - expected;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference < 0.01;
+}

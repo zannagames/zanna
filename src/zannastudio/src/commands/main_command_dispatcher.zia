@@ -42,6 +42,8 @@ bind "../commands/diagnostic_edit_commands";
 bind "../commands/edit_commands";
 bind "../commands/file_commands";
 bind "../commands/search_commands";
+bind "../commands/semantic_command_dispatcher";
+bind "../commands/surface_command_dispatcher" as SurfaceCommands;
 bind "../commands/zia_workspace_commands";
 bind "../commands/view_commands";
 bind "../core/document_manager";
@@ -51,9 +53,7 @@ bind "../core/settings";
 bind "../editor/diagnostics";
 bind "../editor/editor_engine";
 bind "../editor/editor_tabs";
-bind "../editor/basic_workspace_query_job";
 bind "../editor/project_index";
-bind "../editor/zia_workspace_query_job";
 bind "../editor/signature";
 bind "../editor/symbols";
 bind "../services/file_utils";
@@ -68,7 +68,6 @@ bind "../ui/workspace_dock";
 
 bind Zanna.GUI;
 bind IO = Zanna.IO;
-bind Dir = Zanna.IO.Dir;
 bind Path = Zanna.IO.Path;
 
 // ============================================================================
@@ -84,16 +83,6 @@ bind Path = Zanna.IO.Path;
 //          router separate makes it obvious where a command is registered,
 //          where it runs, and how UI events reach it.
 // ============================================================================
-
-var currentDiagIdx = -1;
-final PENDING_SEMANTIC_PUMP_FILES = 32;
-
-var pendingSemanticCommand = "";
-var pendingSemanticLabel = "";
-var pendingSemanticPath = "";
-var pendingSemanticLine = -1;
-var pendingSemanticCol = -1;
-var pendingSemanticRevision = -1;
 
 /// @brief Dispatch all command triggers for one frame using legacy parameters.
 /// @details This wrapper preserves existing probe and caller code while the
@@ -197,7 +186,7 @@ expose func DispatchCommandContext(ctx: command_context.CommandContext,
     }
 
     PumpFileTreeOpen(ctx, suppressTreeOpen);
-    PumpPendingSemanticCommand(ctx);
+    semantic_command_dispatcher.PumpPendingSemanticCommand(ctx);
     if ctx.basicWorkspaceCommands != null {
         ctx.basicWorkspaceCommands.Pump(ctx.shell, ctx.docMgr, ctx.projMgr,
                                         ctx.engine, ctx.tabs, ctx.locStore);
@@ -519,25 +508,25 @@ hide func PumpFileTreeOpen(ctx: command_context.CommandContext,
 hide func DispatchEditCommands(ctx: command_context.CommandContext,
                                cpSelected: String) {
     if dispatch_helpers.Triggered("undo", ctx.shell.menuChrome.miUndo, null, cpSelected) {
-        HandleSurfaceHistory(ctx, false);
+        SurfaceCommands.HandleSurfaceHistory(ctx, false);
     }
     if dispatch_helpers.Triggered("redo", ctx.shell.menuChrome.miRedo, null, cpSelected) {
-        HandleSurfaceHistory(ctx, true);
+        SurfaceCommands.HandleSurfaceHistory(ctx, true);
     }
     if dispatch_helpers.Triggered("cut", ctx.shell.menuChrome.miCut, null, cpSelected) {
-        HandleSurfaceCut(ctx);
+        SurfaceCommands.HandleSurfaceCut(ctx);
     }
     if dispatch_helpers.Triggered("copy", ctx.shell.menuChrome.miCopy, null, cpSelected) {
-        HandleSurfaceCopy(ctx);
+        SurfaceCommands.HandleSurfaceCopy(ctx);
     }
     if dispatch_helpers.Triggered("paste", ctx.shell.menuChrome.miPaste, null, cpSelected) {
-        HandleSurfacePaste(ctx);
+        SurfaceCommands.HandleSurfacePaste(ctx);
     }
     if dispatch_helpers.Triggered("selectall", ctx.shell.menuChrome.miSelectAll, null, cpSelected) {
-        HandleSurfaceSelectAll(ctx);
+        SurfaceCommands.HandleSurfaceSelectAll(ctx);
     }
     if dispatch_helpers.Triggered("find", ctx.shell.menuChrome.miFind, ctx.shell.menuChrome.tbFind, cpSelected) {
-        HandleSurfaceFind(ctx);
+        SurfaceCommands.HandleSurfaceFind(ctx);
     }
     if dispatch_helpers.TriggeredMenu("goto", ctx.shell.menuChrome.miGoToLine, cpSelected) {
         if ctx.commandInputOverlay != null and ctx.engine != null and ctx.engine.editor != null {
@@ -546,10 +535,10 @@ hide func DispatchEditCommands(ctx: command_context.CommandContext,
             ctx.shell.SetStatusLeft("Go To Line input is unavailable");
         }
     }
-    if dispatch_helpers.TriggeredMenu("gotodef", ctx.shell.menuChrome.miGoToDefinition, cpSelected)  { RunOrQueueSemanticCommand(ctx, "gotodef", "Go to definition"); }
-    if dispatch_helpers.TriggeredMenu("findrefs", ctx.shell.menuChrome.miFindReferences, cpSelected) { RunOrQueueSemanticCommand(ctx, "findrefs", "Find references"); }
-    if dispatch_helpers.TriggeredMenu("incomingcalls", ctx.shell.menuChrome.miIncomingCalls, cpSelected) { RunOrQueueSemanticCommand(ctx, "incomingcalls", "Incoming calls"); }
-    if dispatch_helpers.TriggeredMenu("outgoingcalls", ctx.shell.menuChrome.miOutgoingCalls, cpSelected) { RunOrQueueSemanticCommand(ctx, "outgoingcalls", "Outgoing calls"); }
+    if dispatch_helpers.TriggeredMenu("gotodef", ctx.shell.menuChrome.miGoToDefinition, cpSelected)  { semantic_command_dispatcher.RunOrQueueSemanticCommand(ctx, "gotodef", "Go to definition"); }
+    if dispatch_helpers.TriggeredMenu("findrefs", ctx.shell.menuChrome.miFindReferences, cpSelected) { semantic_command_dispatcher.RunOrQueueSemanticCommand(ctx, "findrefs", "Find references"); }
+    if dispatch_helpers.TriggeredMenu("incomingcalls", ctx.shell.menuChrome.miIncomingCalls, cpSelected) { semantic_command_dispatcher.RunOrQueueSemanticCommand(ctx, "incomingcalls", "Incoming calls"); }
+    if dispatch_helpers.TriggeredMenu("outgoingcalls", ctx.shell.menuChrome.miOutgoingCalls, cpSelected) { semantic_command_dispatcher.RunOrQueueSemanticCommand(ctx, "outgoingcalls", "Outgoing calls"); }
     if dispatch_helpers.TriggeredMenu("rename", ctx.shell.menuChrome.miRenameSymbol, cpSelected) {
         if ctx.commandInputOverlay != null {
             ctx.commandInputOverlay.OpenRenameSymbol(ctx.shell, edit_commands.IdentifierAtCursor(ctx.engine));
@@ -569,7 +558,7 @@ hide func DispatchEditCommands(ctx: command_context.CommandContext,
         ctx.shell.menuChrome.miDuplicateSelection.WasClicked();
     if duplicateMenuClicked or Shortcuts.WasTriggered("duplicateline")
        or cpSelected == "duplicateline" {
-        HandleSurfaceDuplicate(
+        SurfaceCommands.HandleSurfaceDuplicate(
             ctx, duplicateMenuClicked or cpSelected == "duplicateline");
     }
     var deleteSceneMenuClicked =
@@ -577,7 +566,7 @@ hide func DispatchEditCommands(ctx: command_context.CommandContext,
     if deleteSceneMenuClicked
        or Shortcuts.WasTriggered("deletesceneselection")
        or cpSelected == "deletesceneselection" {
-        HandleSceneSelectionDelete(
+        SurfaceCommands.HandleSceneSelectionDelete(
             ctx, deleteSceneMenuClicked
                  or cpSelected == "deletesceneselection");
     }
@@ -637,10 +626,10 @@ hide func DispatchEditCommands(ctx: command_context.CommandContext,
     if dispatch_helpers.TriggeredNoMenu("formatselection", cpSelected)                { edit_commands.handleFormatSelection(ctx.shell, ctx.docMgr, ctx.engine); }
 
     if dispatch_helpers.TriggeredMenu("nexterror", ctx.shell.menuChrome.miNextError, cpSelected) {
-        NavigateDiagnostic(ctx, 1);
+        semantic_command_dispatcher.NavigateDiagnostic(ctx, 1);
     }
     if dispatch_helpers.TriggeredMenu("preverror", ctx.shell.menuChrome.miPreviousError, cpSelected) {
-        NavigateDiagnostic(ctx, -1);
+        semantic_command_dispatcher.NavigateDiagnostic(ctx, -1);
     }
     if dispatch_helpers.TriggeredNoMenu("checknow", cpSelected) {
         file_commands.SaveEditorState(ctx.docMgr, ctx.engine);
@@ -658,291 +647,12 @@ hide func DispatchEditCommands(ctx: command_context.CommandContext,
     }
 }
 
-/// @brief Route standard undo/redo to the visible editor surface.
-hide func HandleSurfaceHistory(ctx: command_context.CommandContext,
-                               redo: Boolean) {
-    var doc = ctx.docMgr.GetActive();
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
-       and ctx.scene2DEditor != null {
-        var changed = false;
-        if redo { changed = ctx.scene2DEditor.Redo(); }
-        else { changed = ctx.scene2DEditor.Undo(); }
-        if changed {
-            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
-            var action = "undone";
-            if redo { action = "redone"; }
-            ctx.shell.SetStatusLeft("2D scene " + action);
-        }
-        return;
-    }
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
-       and ctx.scene3DEditor != null {
-        var changed3D = false;
-        if redo { changed3D = ctx.scene3DEditor.Redo(); }
-        else { changed3D = ctx.scene3DEditor.Undo(); }
-        if changed3D {
-            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
-            var action3D = "undone";
-            if redo { action3D = "redone"; }
-            ctx.shell.SetStatusLeft("3D scene " + action3D);
-        }
-        return;
-    }
-    if redo {
-        edit_commands.handleRedo(ctx.engine);
-    } else {
-        edit_commands.handleUndo(ctx.engine, ctx.docMgr);
-    }
-}
-
-/// @brief Route standard Cut to the active editable surface.
-hide func HandleSurfaceCut(ctx: command_context.CommandContext) {
-    var doc = ctx.docMgr.GetActive();
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
-       and ctx.scene2DEditor != null {
-        if ctx.scene2DEditor.CutSelectedSceneObjects() {
-            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
-            ctx.shell.SetStatusLeft("Cut 2D scene selection");
-        } else {
-            ctx.shell.SetStatusLeft(
-                "Select one or more 2D scene objects to cut");
-        }
-        return;
-    }
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
-       and ctx.scene3DEditor != null {
-        if ctx.scene3DEditor.CutSelectedNodes() {
-            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
-            ctx.shell.SetStatusLeft("Cut 3D scene selection");
-        } else {
-            ctx.shell.SetStatusLeft(
-                "Select one or more 3D scene nodes to cut");
-        }
-        return;
-    }
-    if doc != null and doc!.isReadOnlyPreview {
-        ctx.shell.SetStatusLeft("Cut is unavailable in read-only previews");
-        return;
-    }
-    edit_commands.handleCut(ctx.engine);
-}
-
-/// @brief Route standard Copy to the active editable surface.
-hide func HandleSurfaceCopy(ctx: command_context.CommandContext) {
-    var doc = ctx.docMgr.GetActive();
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
-       and ctx.scene2DEditor != null {
-        if ctx.scene2DEditor.CopySelectedSceneObjects() {
-            ctx.shell.SetStatusLeft("Copied 2D scene selection");
-        } else {
-            ctx.shell.SetStatusLeft(
-                "Select one or more 2D scene objects to copy");
-        }
-        return;
-    }
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
-       and ctx.scene3DEditor != null {
-        if ctx.scene3DEditor.CopySelectedNodes() {
-            ctx.shell.SetStatusLeft("Copied 3D scene selection");
-        } else {
-            ctx.shell.SetStatusLeft(
-                "Select one or more 3D scene nodes to copy");
-        }
-        return;
-    }
-    if doc != null and doc!.isReadOnlyPreview {
-        ctx.shell.SetStatusLeft("Copy is unavailable in read-only previews");
-        return;
-    }
-    edit_commands.handleCopy(ctx.engine);
-}
-
-/// @brief Route standard Paste to the active editable surface.
-hide func HandleSurfacePaste(ctx: command_context.CommandContext) {
-    var doc = ctx.docMgr.GetActive();
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
-       and ctx.scene2DEditor != null {
-        if ctx.scene2DEditor.PasteSceneObjectsFromClipboard() {
-            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
-            ctx.shell.SetStatusLeft("Pasted into 2D scene");
-        } else {
-            ctx.shell.SetStatusLeft(
-                "Clipboard has no compatible 2D scene objects");
-        }
-        return;
-    }
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
-       and ctx.scene3DEditor != null {
-        if ctx.scene3DEditor.PasteSceneNodesFromClipboard() {
-            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
-            ctx.shell.SetStatusLeft("Pasted into 3D scene");
-        } else {
-            ctx.shell.SetStatusLeft(
-                "Clipboard has no compatible 3D scene nodes");
-        }
-        return;
-    }
-    if doc != null and doc!.isReadOnlyPreview {
-        ctx.shell.SetStatusLeft("Paste is unavailable in read-only previews");
-        return;
-    }
-    edit_commands.handlePaste(ctx.engine);
-}
-
-/// @brief Route standard Select All to the active editable surface.
-hide func HandleSurfaceSelectAll(ctx: command_context.CommandContext) {
-    var doc = ctx.docMgr.GetActive();
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
-       and ctx.scene2DEditor != null {
-        if ctx.scene2DEditor.SelectAllSceneObjects() {
-            ctx.shell.SetStatusLeft("Selected all 2D scene objects");
-        } else {
-            ctx.shell.SetStatusLeft("This 2D scene has no objects to select");
-        }
-        return;
-    }
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
-       and ctx.scene3DEditor != null {
-        if ctx.scene3DEditor.SelectAllSceneNodes() {
-            ctx.shell.SetStatusLeft("Selected all 3D scene nodes");
-        } else {
-            ctx.shell.SetStatusLeft("This 3D scene has no nodes to select");
-        }
-        return;
-    }
-    if doc != null and doc!.isReadOnlyPreview {
-        ctx.shell.SetStatusLeft(
-            "Select All is unavailable in read-only previews");
-        return;
-    }
-    edit_commands.handleSelectAll(ctx.engine);
-}
-
-/// @brief Route standard Find to the visible source or scene hierarchy.
-/// @details Scene Find reveals its docked hierarchy or full-width hierarchy
-///          master and focuses a non-destructive retained-hierarchy query. A
-///          damaged visual scene never falls through to the hidden CodeEditor
-///          FindBar.
-/// @param ctx Active command dependencies and visible document.
-/// @return True when a source or scene surface consumed the command.
+/// @brief Route Find to the visible source or scene hierarchy.
 expose func HandleSurfaceFind(
     ctx: command_context.CommandContext) -> Boolean {
-    if ctx == null or ctx.docMgr == null { return false; }
-    var doc = ctx.docMgr.GetActive();
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D {
-        var focused2D = ctx.scene2DEditor != null
-            and ctx.scene2DEditor.FocusHierarchySearch();
-        if ctx.shell != null {
-            if focused2D {
-                ctx.shell.SetStatusLeft("Find 2D scene object");
-            } else {
-                ctx.shell.SetStatusLeft(
-                    "2D hierarchy Find is unavailable while the scene needs repair");
-            }
-        }
-        return true;
-    }
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D {
-        var focused3D = ctx.scene3DEditor != null
-            and ctx.scene3DEditor.FocusHierarchySearch();
-        if ctx.shell != null {
-            if focused3D {
-                ctx.shell.SetStatusLeft("Find 3D scene node");
-            } else {
-                ctx.shell.SetStatusLeft(
-                    "3D hierarchy Find is unavailable while the scene needs repair");
-            }
-        }
-        return true;
-    }
-    if ctx.shell == null { return false; }
-    edit_commands.handleFind(ctx.shell);
-    return true;
+    return SurfaceCommands.HandleSurfaceFind(ctx);
 }
 
-/// @brief Route Duplicate Selection without escaping scene-owned focus.
-/// @param ctx Active command dependencies and visible document.
-/// @param explicitInvocation True for command-palette invocation.
-/// @details Palette selection is deliberate even though opening the palette
-///          moves focus. Keyboard dispatch requires hierarchy or viewport
-///          focus so an inspector input can never duplicate scene content.
-hide func HandleSurfaceDuplicate(ctx: command_context.CommandContext,
-                                 explicitInvocation: Boolean) {
-    var doc = ctx.docMgr.GetActive();
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
-       and ctx.scene2DEditor != null {
-        if explicitInvocation == false
-           and ctx.scene2DEditor.SceneSelectionCommandsOwnFocus() == false {
-            return;
-        }
-        var duplicated = ctx.scene2DEditor.DuplicateSelectedSceneObjects();
-        if duplicated > 0 {
-            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
-            ctx.shell.SetStatusLeft(
-                "Duplicated " + duplicated + " 2D scene object(s)");
-        } else if explicitInvocation {
-            ctx.shell.SetStatusLeft(
-                "Select one or more 2D scene objects to duplicate");
-        }
-        return;
-    }
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
-       and ctx.scene3DEditor != null {
-        if explicitInvocation == false
-           and ctx.scene3DEditor.SceneSelectionCommandsOwnFocus() == false {
-            return;
-        }
-        var duplicated3D = ctx.scene3DEditor.DuplicateSelectedNodes();
-        if duplicated3D > 0 {
-            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
-            ctx.shell.SetStatusLeft(
-                "Duplicated " + duplicated3D + " 3D scene node(s)");
-        } else if explicitInvocation {
-            ctx.shell.SetStatusLeft(
-                "Select one or more 3D scene nodes to duplicate");
-        }
-        return;
-    }
-    edit_commands.handleDuplicateLine(ctx.shell, ctx.engine);
-}
-
-/// @brief Delete a visual-scene selection without hijacking text input Delete.
-/// @param ctx Active command dependencies and visible document.
-/// @param explicitInvocation True for command-palette invocation.
-hide func HandleSceneSelectionDelete(
-    ctx: command_context.CommandContext,
-    explicitInvocation: Boolean) {
-    var doc = ctx.docMgr.GetActive();
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
-       and ctx.scene2DEditor != null {
-        if explicitInvocation == false
-           and ctx.scene2DEditor.SceneSelectionCommandsOwnFocus() == false {
-            return;
-        }
-        if ctx.scene2DEditor.RemoveSelectedSceneObjects() {
-            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
-            ctx.shell.SetStatusLeft("Deleted 2D scene selection");
-        } else if explicitInvocation {
-            ctx.shell.SetStatusLeft(
-                "Select one or more 2D scene objects to delete");
-        }
-        return;
-    }
-    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
-       and ctx.scene3DEditor != null {
-        if explicitInvocation == false
-           and ctx.scene3DEditor.SceneSelectionCommandsOwnFocus() == false {
-            return;
-        }
-        if ctx.scene3DEditor.DeleteSelectedNodes() {
-            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
-            ctx.shell.SetStatusLeft("Deleted 3D scene selection");
-        } else if explicitInvocation {
-            ctx.shell.SetStatusLeft(
-                "Select one or more 3D scene nodes to delete");
-        }
-    }
-}
 
 /// @brief Dispatch workbench, output, explorer-palette, quick-open, and search commands.
 /// @param ctx Named dependency bundle assembled by main.zia.
@@ -1094,11 +804,13 @@ hide func DispatchViewSearchCommands(ctx: command_context.CommandContext,
     if dispatch_helpers.TriggeredNoMenu("toggleoutputautoscroll", cpSelected)                   { view_commands.handleToggleOutputAutoScroll(ctx.shell); }
     if dispatch_helpers.TriggeredNoMenu("togglerenderwhitespace", cpSelected)                   { view_commands.handleToggleRenderWhitespace(ctx.shell, ctx.engine, ctx.appSettings); }
     if dispatch_helpers.TriggeredNoMenu("treenewfile", cpSelected) {
-        var overlayNewFileDir = contextDirForSelectedProjectPath(ctx.projMgr);
+        var overlayNewFileDir =
+            explorer_action_runner.ContextDirectoryForSelectedPath(ctx.projMgr);
         if overlayNewFileDir != "" { ctx.explorerOverlay.OpenNewFile(ctx.shell, overlayNewFileDir); }
     }
     if dispatch_helpers.TriggeredNoMenu("treenewfolder", cpSelected) {
-        var overlayNewFolderDir = contextDirForSelectedProjectPath(ctx.projMgr);
+        var overlayNewFolderDir =
+            explorer_action_runner.ContextDirectoryForSelectedPath(ctx.projMgr);
         if overlayNewFolderDir != "" { ctx.explorerOverlay.OpenNewFolder(ctx.shell, overlayNewFolderDir); }
     }
     if dispatch_helpers.TriggeredNoMenu("treerename", cpSelected) {
@@ -1260,242 +972,4 @@ hide func DispatchBuildDebugCommands(ctx: command_context.CommandContext,
                                                          ctx.dbgSession,
                                                          completedDebugOverlayAction);
     }
-}
-
-/// @brief Run a semantic navigation/refactor command, or defer it until indexing is ready.
-/// @details Zia project-wide commands need a complete workspace index for
-///          trustworthy results. Instead of showing a "retry later" toast, this
-///          helper records the command and cursor anchor, advances the index
-///          cooperatively, and lets PumpPendingSemanticCommand execute the same
-///          command automatically once the index reports ready. BASIC commands
-///          use their owned background workspace controller; other languages run
-///          immediately to preserve their unavailable-state feedback.
-/// @param ctx Named dependency bundle assembled by main.zia.
-/// @param commandId Semantic command id handled by ExecuteSemanticCommand.
-/// @param label User-facing command label for status text.
-hide func RunOrQueueSemanticCommand(ctx: command_context.CommandContext,
-                                    commandId: String,
-                                    label: String) {
-    if ctx == null or ctx.engine == null or ctx.engine.editor == null {
-        return;
-    }
-    var doc = ctx.docMgr.GetActive();
-    if doc != null and doc!.language == "basic" {
-        StartBasicSemanticCommand(ctx, commandId, label);
-        return;
-    }
-    if doc != null and doc!.language == "zia"
-       and ctx.ziaWorkspaceCommands != null {
-        if commandId == "rename" {
-            ctx.shell.SetStatusLeft("Rename input is unavailable");
-            return;
-        }
-        var kind = 0;
-        if commandId == "gotodef" {
-            kind = zia_workspace_query_job.ZIA_QUERY_DEFINITION;
-        } else if commandId == "findrefs" {
-            kind = zia_workspace_query_job.ZIA_QUERY_REFERENCES;
-        } else if commandId == "incomingcalls" {
-            kind = zia_workspace_query_job.ZIA_QUERY_INCOMING_CALLS;
-        } else if commandId == "outgoingcalls" {
-            kind = zia_workspace_query_job.ZIA_QUERY_OUTGOING_CALLS;
-        }
-        if kind > 0 {
-            ctx.ziaWorkspaceCommands.Start(
-                kind, label, ctx.shell, ctx.docMgr, ctx.projMgr, ctx.engine,
-                ctx.indexer);
-        }
-        return;
-    }
-    if doc == null or doc!.language != "zia" or ctx.indexer == null {
-        ExecuteSemanticCommand(ctx, commandId);
-        return;
-    }
-
-    file_commands.SaveEditorState(ctx.docMgr, ctx.engine);
-    ctx.indexer.SyncActiveNow(ctx.docMgr, ctx.engine);
-    ctx.indexer.SyncOpenDocuments(ctx.docMgr);
-    if ctx.indexer.PrepareWorkspaceQuery(PENDING_SEMANTIC_PUMP_FILES) {
-        ClearPendingSemanticCommand();
-        ExecuteSemanticCommand(ctx, commandId);
-        return;
-    }
-
-    QueuePendingSemanticCommand(ctx, commandId, label);
-}
-
-/// @brief Translate a semantic command id into an asynchronous BASIC query.
-hide func StartBasicSemanticCommand(ctx: command_context.CommandContext,
-                                    commandId: String,
-                                    label: String) {
-    if ctx.basicWorkspaceCommands == null {
-        ctx.shell.SetStatusLeft(label + " is unavailable");
-        return;
-    }
-    if commandId == "rename" {
-        ctx.shell.SetStatusLeft("Rename input is unavailable");
-        return;
-    }
-    var kind = 0;
-    if commandId == "gotodef" {
-        kind = basic_workspace_query_job.QUERY_DEFINITION;
-    } else if commandId == "findrefs" {
-        kind = basic_workspace_query_job.QUERY_REFERENCES;
-    } else if commandId == "incomingcalls" {
-        kind = basic_workspace_query_job.QUERY_INCOMING_CALLS;
-    } else if commandId == "outgoingcalls" {
-        kind = basic_workspace_query_job.QUERY_OUTGOING_CALLS;
-    }
-    if kind <= 0 { return; }
-    ctx.basicWorkspaceCommands.Start(kind, label, ctx.shell, ctx.docMgr,
-                                     ctx.projMgr, ctx.engine);
-}
-
-/// @brief Store a pending semantic command at the active document/cursor anchor.
-/// @details The anchor prevents a delayed command from firing against a different
-///          symbol after the user changes files or moves the caret while indexing
-///          continues. Re-triggering a semantic command replaces any older pending
-///          command so the most recent user intent wins.
-/// @param ctx Named dependency bundle assembled by main.zia.
-/// @param commandId Command id to execute when indexing completes.
-/// @param label User-facing label used in status and toast text.
-hide func QueuePendingSemanticCommand(ctx: command_context.CommandContext,
-                                      commandId: String,
-                                      label: String) {
-    var doc = ctx.docMgr.GetActive();
-    if doc == null { return; }
-    pendingSemanticCommand = commandId;
-    pendingSemanticLabel = label;
-    pendingSemanticPath = doc!.filePath;
-    pendingSemanticLine = ctx.engine.editor.CursorLine;
-    pendingSemanticCol = ctx.engine.editor.CursorCol;
-    pendingSemanticRevision = ctx.engine.GetRevision();
-    var msg = label + " queued while indexing ("
-              + ctx.indexer.WorkspaceIndexProgressText() + ")";
-    ctx.shell.SetStatusLeft(msg);
-}
-
-/// @brief Advance a queued semantic command and execute it when the index is ready.
-/// @details Called once per frame by DispatchCommandContext. It pumps the same
-///          bounded amount of index work as an explicit semantic command, cancels
-///          if the active document/cursor no longer matches the stored anchor, and
-///          then dispatches through the normal command handler so behavior remains
-///          centralized in edit_commands.
-/// @param ctx Named dependency bundle assembled by main.zia.
-hide func PumpPendingSemanticCommand(ctx: command_context.CommandContext) {
-    if pendingSemanticCommand == "" { return; }
-    if ctx == null or ctx.engine == null or ctx.engine.editor == null or ctx.indexer == null {
-        ClearPendingSemanticCommand();
-        return;
-    }
-    if PendingSemanticAnchorMatches(ctx) == false {
-        ctx.shell.SetStatusLeft(pendingSemanticLabel + " canceled because the cursor changed");
-        ClearPendingSemanticCommand();
-        return;
-    }
-
-    file_commands.SaveEditorState(ctx.docMgr, ctx.engine);
-    ctx.indexer.SyncActiveNow(ctx.docMgr, ctx.engine);
-    ctx.indexer.SyncOpenDocuments(ctx.docMgr);
-    if ctx.indexer.PrepareWorkspaceQuery(PENDING_SEMANTIC_PUMP_FILES) == false {
-        ctx.shell.SetStatusLeft(pendingSemanticLabel + " pending ("
-                                + ctx.indexer.WorkspaceIndexProgressText() + ")");
-        return;
-    }
-
-    var commandId = pendingSemanticCommand;
-    var label = pendingSemanticLabel;
-    ClearPendingSemanticCommand();
-    ctx.shell.SetStatusLeft(label + " ready");
-    ExecuteSemanticCommand(ctx, commandId);
-}
-
-/// @brief Return true when the active document and cursor still match the pending command.
-/// @param ctx Named dependency bundle assembled by main.zia.
-/// @return True when it is still safe to execute the queued semantic command.
-hide func PendingSemanticAnchorMatches(ctx: command_context.CommandContext) -> Boolean {
-    var doc = ctx.docMgr.GetActive();
-    if doc == null { return false; }
-    if doc!.language != "zia" { return false; }
-    if doc!.filePath != pendingSemanticPath { return false; }
-    if ctx.engine.editor.CursorLine != pendingSemanticLine { return false; }
-    if ctx.engine.editor.CursorCol != pendingSemanticCol { return false; }
-    if ctx.engine.GetRevision() != pendingSemanticRevision { return false; }
-    return true;
-}
-
-/// @brief Clear all pending semantic command state.
-hide func ClearPendingSemanticCommand() {
-    pendingSemanticCommand = "";
-    pendingSemanticLabel = "";
-    pendingSemanticPath = "";
-    pendingSemanticLine = -1;
-    pendingSemanticCol = -1;
-    pendingSemanticRevision = -1;
-}
-
-/// @brief Execute one semantic command through its existing command handler.
-/// @details This keeps queued and immediately-run commands behaviorally identical:
-///          all result rendering, prompts, workspace edits, and toasts still live in
-///          edit_commands. Unknown command ids are ignored defensively.
-/// @param ctx Named dependency bundle assembled by main.zia.
-/// @param commandId Semantic command id to run.
-hide func ExecuteSemanticCommand(ctx: command_context.CommandContext,
-                                 commandId: String) {
-    if commandId == "gotodef" {
-        edit_commands.handleGoToDefinition(ctx.shell, ctx.docMgr, ctx.engine,
-                                           ctx.tabs, ctx.indexer, ctx.locStore);
-    } else if commandId == "findrefs" {
-        edit_commands.handleFindReferences(ctx.shell, ctx.docMgr, ctx.engine,
-                                           ctx.indexer, ctx.locStore);
-    } else if commandId == "incomingcalls" {
-        edit_commands.handleIncomingCalls(ctx.shell, ctx.docMgr, ctx.engine,
-                                          ctx.indexer, ctx.locStore);
-    } else if commandId == "outgoingcalls" {
-        edit_commands.handleOutgoingCalls(ctx.shell, ctx.docMgr, ctx.engine,
-                                          ctx.indexer, ctx.locStore);
-    } else if commandId == "rename" {
-        if ctx.commandInputOverlay != null {
-            ctx.commandInputOverlay.OpenRenameSymbol(
-                ctx.shell, edit_commands.IdentifierAtCursor(ctx.engine));
-        } else {
-            ctx.shell.SetStatusLeft("Rename input is unavailable");
-        }
-    }
-}
-
-/// @brief Navigate to the next or previous diagnostic row.
-/// @details Problems row zero is a header, so navigation wraps between row 1 and
-///          the final row. The LocationStore owns the actual target data.
-/// @param ctx Named dependency bundle assembled by main.zia.
-/// @param direction 1 for next, -1 for previous.
-hide func NavigateDiagnostic(ctx: command_context.CommandContext,
-                             direction: Integer) {
-    var count = ctx.shell.toolPanels.diagListBox.Count;
-    if count <= 1 {
-        ctx.shell.SetStatusLeft("No diagnostics");
-        return;
-    }
-
-    currentDiagIdx = currentDiagIdx + direction;
-    if currentDiagIdx >= count { currentDiagIdx = 1; }
-    if currentDiagIdx < 1 { currentDiagIdx = count - 1; }
-
-    ctx.shell.toolPanels.diagListBox.SelectIndex(currentDiagIdx);
-    var selItem = ctx.shell.toolPanels.diagListBox.Selected;
-    if selItem != null {
-        ctx.locStore.OpenLocation(ctx.shell, ctx.docMgr, ctx.engine,
-                                  ctx.tabs, GUI.ListBox.ItemGetData(selItem));
-    }
-}
-
-/// @brief Return a directory suitable for selected explorer create commands.
-/// @param projMgr Project manager containing the current explorer selection.
-/// @return Selected directory, selected file parent, or empty when unavailable.
-hide func contextDirForSelectedProjectPath(projMgr: project_manager.ProjectManager) -> String {
-    var selected = projMgr.SelectedPath();
-    if selected == "" { return ""; }
-    if Dir.Exists(selected) { return selected; }
-    if IO.File.Exists(selected) { return Path.Directory(selected); }
-    return "";
 }

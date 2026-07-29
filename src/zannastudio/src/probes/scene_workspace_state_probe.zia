@@ -13,6 +13,8 @@
 //   - Hostile scalar fields clamp before a scene controller can consume them.
 //   - Local/world 3D transform space follows named and recovery scene tabs.
 //   - Shaded/wireframe viewport preference follows the same bounded ownership.
+//   - Project-owned 3D preview selection follows its document and clamps before
+//     a schema can resolve the session-owned option.
 //   - Typed property selections restore only within their owning scene tab.
 //   - Wide inspector preference and compact master/detail pane restore exactly.
 //   - Dirty untitled scenes recover as visual tabs, never as source documents.
@@ -22,7 +24,8 @@
 //        zannastudio/src/core/document.zia,
 //        docs/adr/0166-exact-scenenode-world-matrix-assignment.md,
 //        docs/adr/0168-windowless-canvas3d-rendering.md,
-//        docs/adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md
+//        docs/adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md,
+//        docs/adr/0216-project-owned-3d-node-preview-states.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -64,12 +67,22 @@ func near(actual: Number, expected: Number) -> Boolean {
     return difference < 0.001;
 }
 
-func main() {
+/// @brief Typed state shared by serial scene-workspace persistence scenarios.
+class SceneWorkspaceStateProbeContext {
+    expose String root;
+    expose String settingsPath;
+    expose String scene2DPath;
+    expose String scene3DPath;
+}
+
+/// @brief Verify named 2D/3D workspace state round-trips exactly.
+func VerifyNamedSceneWorkspaceState(
+    ctx: SceneWorkspaceStateProbeContext) -> Boolean {
     var root = TempFile.CreateDirWithPrefix(
         "zannastudio_scene_workspace_state_");
     if root == "" {
         fail(root, "could not create isolated state directory");
-        return;
+        return false;
     }
 
     var settingsPath = Path.Join(root, "named-scenes.ini");
@@ -115,6 +128,7 @@ func main() {
     source3D.scene3DWorkspace.viewPitchDegrees = 35;
     source3D.scene3DWorkspace.viewScale = 52;
     source3D.scene3DWorkspace.viewportMode = 1;
+    source3D.scene3DWorkspace.projectPreviewFilterIndex = 3;
     source3D.scene3DWorkspace.viewTargetX = 1.25;
     source3D.scene3DWorkspace.viewTargetY = -2.5;
     source3D.scene3DWorkspace.viewTargetZ = 3.75;
@@ -129,7 +143,7 @@ func main() {
     if writer.SaveCleanExit(
            sourceDocs, new project_manager.ProjectManager()) == false {
         fail(root, "named scene workspace save failed");
-        return;
+        return false;
     }
     var savedIni = Ini.Parse(File.ReadAllText(settingsPath));
     if Ini.Get(savedIni, "session.file.0", "scene2dVersion") != "1"
@@ -151,13 +165,15 @@ func main() {
        or Ini.Get(savedIni, "session.file.1", "scene3dSurfaceAlign") != "1"
        or Ini.Get(savedIni, "session.file.1", "scene3dVertexSnap") != "1"
        or Ini.Get(savedIni, "session.file.1", "scene3dViewportMode") != "1"
+       or Ini.Get(
+              savedIni, "session.file.1", "scene3dPreviewFilter") != "3"
        or Ini.Get(savedIni, "session.file.1", "scene3dTargetY") != "-2500"
        or Ini.Get(
               savedIni, "session.file.1", "scene3dInspectorSection") != "2"
        or Ini.Get(savedIni, "session.file.1", "scene3dInspectorVisible") != "1"
        or Ini.Get(savedIni, "session.file.1", "scene3dCompactInspector") != "0" {
         fail(root, "scene state was not written as versioned fixed-point fields");
-        return;
+        return false;
     }
 
     var reader = new session.SessionManager();
@@ -166,13 +182,13 @@ func main() {
     if reader.Restore(
            restoredDocs, new project_manager.ProjectManager(), null) != 2 {
         fail(root, "named scene session did not restore both tabs");
-        return;
+        return false;
     }
     var restored2DIndex = restoredDocs.FindByPath(scene2DPath);
     var restored3DIndex = restoredDocs.FindByPath(scene3DPath);
     if restored2DIndex < 0 or restored3DIndex < 0 {
         fail(root, "named scenes lost their canonical path owners");
-        return;
+        return false;
     }
     var restored2D = restoredDocs.documents.get(restored2DIndex);
     var restored3D = restoredDocs.documents.get(restored3DIndex);
@@ -200,6 +216,7 @@ func main() {
        or restored3D.scene3DWorkspace.viewPitchDegrees != 35
        or restored3D.scene3DWorkspace.viewScale != 52
        or restored3D.scene3DWorkspace.viewportMode != 1
+       or restored3D.scene3DWorkspace.projectPreviewFilterIndex != 3
        or near(restored3D.scene3DWorkspace.viewTargetX, 1.25) == false
        or near(restored3D.scene3DWorkspace.viewTargetY, -2.5) == false
        or near(restored3D.scene3DWorkspace.viewTargetZ, 3.75) == false
@@ -208,8 +225,24 @@ func main() {
        or restored3D.scene3DWorkspace.inspectorRequestedVisible == false
        or restored3D.scene3DWorkspace.compactInspectorShown {
         fail(root, "named scene workspace values did not round trip");
-        return;
+        return false;
     }
+
+    ctx.root = root;
+    ctx.settingsPath = settingsPath;
+    ctx.scene2DPath = scene2DPath;
+    ctx.scene3DPath = scene3DPath;
+    return true;
+}
+
+/// @brief Verify hostile session scalar fields clamp before activation.
+func VerifyBoundedSceneWorkspaceState(
+    ctx: SceneWorkspaceStateProbeContext) -> Boolean {
+    var root = ctx.root;
+    var settingsPath = ctx.settingsPath;
+    var scene2DPath = ctx.scene2DPath;
+    var scene3DPath = ctx.scene3DPath;
+    var savedIni = Ini.Parse(File.ReadAllText(settingsPath));
 
     Ini.Set(savedIni, "session.file.0", "scene2dMode", "-30");
     Ini.Set(savedIni, "session.file.0", "scene2dZoom", "999999");
@@ -234,6 +267,7 @@ func main() {
     Ini.Set(savedIni, "session.file.1", "scene3dPitch", "999");
     Ini.Set(savedIni, "session.file.1", "scene3dScale", "0");
     Ini.Set(savedIni, "session.file.1", "scene3dViewportMode", "999");
+    Ini.Set(savedIni, "session.file.1", "scene3dPreviewFilter", "999");
     Ini.Set(savedIni, "session.file.1", "scene3dTargetX", "2000000000");
     Ini.Set(
         savedIni, "session.file.1", "scene3dInspectorSection", "-999");
@@ -246,7 +280,7 @@ func main() {
     if hostileReader.Restore(
            boundedDocs, new project_manager.ProjectManager(), null) != 2 {
         fail(root, "repairable hostile scene state rejected the session");
-        return;
+        return false;
     }
     var bounded2D = boundedDocs.documents.get(
         boundedDocs.FindByPath(scene2DPath));
@@ -272,13 +306,22 @@ func main() {
        or bounded3D.scene3DWorkspace.viewPitchDegrees != 80
        or bounded3D.scene3DWorkspace.viewScale != 4
        or bounded3D.scene3DWorkspace.viewportMode != 1
+       or bounded3D.scene3DWorkspace.projectPreviewFilterIndex != 32
        or near(bounded3D.scene3DWorkspace.viewTargetX, 1000000.0) == false
        or bounded3D.scene3DWorkspace.inspectorSceneSection != 0
        or bounded3D.scene3DWorkspace.inspectorRequestedVisible
        or bounded3D.scene3DWorkspace.compactInspectorShown == false {
         fail(root, "hostile scene workspace fields were not bounded");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify dirty untitled scenes recover as visual tabs.
+func VerifyUntitledSceneRecovery(
+    ctx: SceneWorkspaceStateProbeContext) -> Boolean {
+    var root = ctx.root;
 
     var recoveryPath = Path.Join(root, "untitled-scenes.ini");
     File.WriteAllText(
@@ -299,12 +342,13 @@ func main() {
     recovery3D.scene3DWorkspace.transformVertexSnapEnabled = true;
     recovery3D.scene3DWorkspace.viewScale = 64;
     recovery3D.scene3DWorkspace.viewportMode = 1;
+    recovery3D.scene3DWorkspace.projectPreviewFilterIndex = 4;
     var recoveryWriter = new session.SessionManager();
     recoveryWriter.Setup(recoveryPath);
     if recoveryWriter.Save(
            recoveryDocs, new project_manager.ProjectManager()) == false {
         fail(root, "dirty untitled scene recovery save failed");
-        return;
+        return false;
     }
     var recoveryReader = new session.SessionManager();
     recoveryReader.Setup(recoveryPath);
@@ -330,11 +374,21 @@ func main() {
        or recoveredDocs.documents.get(1).scene3DWorkspace
               .transformVertexSnapEnabled == false
        or recoveredDocs.documents.get(1).scene3DWorkspace.viewScale != 64
-       or recoveredDocs.documents.get(1).scene3DWorkspace.viewportMode != 1 {
+       or recoveredDocs.documents.get(1).scene3DWorkspace.viewportMode != 1
+       or recoveredDocs.documents.get(1).scene3DWorkspace
+              .projectPreviewFilterIndex != 4 {
         fail(root, "dirty untitled scenes did not recover as visual tabs");
-        return;
+        return false;
     }
 
     Dir.RemoveAll(root);
     Terminal.Say("RESULT: ok");
+    return true;
+}
+
+func main() {
+    var ctx = new SceneWorkspaceStateProbeContext();
+    if VerifyNamedSceneWorkspaceState(ctx) == false { return; }
+    if VerifyBoundedSceneWorkspaceState(ctx) == false { return; }
+    if VerifyUntitledSceneRecovery(ctx) == false { return; }
 }

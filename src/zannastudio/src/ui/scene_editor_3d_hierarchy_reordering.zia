@@ -1,0 +1,643 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_hierarchy_reordering.zia
+// Purpose: Reorder, delete, and duplicate 3D hierarchy selections.
+// Key invariants:
+//   - Structural group edits preserve order and commit or roll back atomically.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited state; this layer owns none.
+// Links: zannastudio/src/ui/scene_editor_3d_hierarchy_surface.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_hierarchy_reordering;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_hierarchy_surface" as PreviousLayer;
+
+/// @brief Structural hierarchy editing implementation layer.
+class SceneEditor3DHierarchyReorderingLayer extends PreviousLayer.SceneEditor3DHierarchySurfaceLayer {
+    /// @brief Apply one latched TreeView row drop through canonical history.
+    /// @details Dragging an unselected source first makes it the sole
+    ///          selection. INTO uses the established transactional reparent
+    ///          path; BEFORE/AFTER also establish exact sibling order.
+    expose override func ApplyHierarchyDrop(sourceIndex: Integer,
+                                   targetIndex: Integer,
+                                   position: Integer) -> Boolean {
+        if scene == null
+           or sourceIndex < 0 or sourceIndex >= flatNodes.count()
+           or targetIndex < 0 or targetIndex >= flatNodes.count()
+           or position < 0 or position > 2 {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if scene_selection.Contains(selectedIndices, sourceIndex) == false {
+            SelectIndex(sourceIndex);
+        }
+        if position == 1 {
+            if ParentAcceptsAuthoredChildren(
+                   flatNodes.get(targetIndex)) == false {
+                return false;
+            }
+            return ReparentSelectedNodes(targetIndex);
+        }
+        return MoveSelectedBeside(
+            targetIndex, position == 2);
+    }
+
+    /// @brief Return whether one direct-child sequence is already exact.
+    hide override func ChildOrderMatches(parent: SceneNode,
+                                desired: List[SceneNode]) -> Boolean {
+        if parent == null or parent.ChildCount != desired.count() {
+            return false;
+        }
+        var index = 0;
+        while index < desired.count() {
+            if parent.GetChild(index) != desired.get(index) {
+                return false;
+            }
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Reparent selected roots beside a target and establish row order.
+    /// @details Attachment, exact preserve-world conversion, stable ordering,
+    ///          serialization, selection remapping, and rollback form one edit.
+    hide override func MoveSelectedBeside(targetIndex: Integer,
+                                 after: Boolean) -> Boolean {
+        if scene == null
+           or targetIndex < 0 or targetIndex >= flatNodes.count() {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var roots = TopLevelSelectedNodes();
+        if roots.count() == 0 { return false; }
+
+        var target = flatNodes.get(targetIndex);
+        if scene_hierarchy_3d.TargetAllowed(target, roots) == false {
+            detailLabel.SetText(
+                "Drop beside a node outside the selected subtrees.");
+            return false;
+        }
+        var destinationParent = target.Parent;
+        if destinationParent == null {
+            detailLabel.SetText("The drop target has no editable parent.");
+            return false;
+        }
+        var destinationParentIndex =
+            FindNodeIndex(flatNodes, destinationParent);
+        if ParentTargetFits(destinationParentIndex, roots) == false {
+            detailLabel.SetText(
+                "That row drop would exceed Studio's hierarchy depth limit.");
+            return false;
+        }
+
+        // Normalize moved roots to the scene's current structural preorder,
+        // independent of the order in which callers supplied selected indices.
+        var orderedRoots: List[SceneNode] = [];
+        var flatIndex = 0;
+        while flatIndex < flatNodes.count() {
+            var candidate = flatNodes.get(flatIndex);
+            if FindNodeIndex(roots, candidate) >= 0 {
+                orderedRoots.add(candidate);
+            }
+            flatIndex = flatIndex + 1;
+        }
+        if orderedRoots.count() != roots.count() { return false; }
+
+        // Compute the complete destination order before changing hierarchy.
+        // Selected roots already under the destination are removed first, then
+        // the whole ordered block is inserted around the target.
+        var desired: List[SceneNode] = [];
+        var inserted = false;
+        var childIndex = 0;
+        while childIndex < destinationParent.ChildCount {
+            var child = destinationParent.GetChild(childIndex);
+            if FindNodeIndex(orderedRoots, child) < 0 {
+                if child == target and after == false {
+                    var rootIndex = 0;
+                    while rootIndex < orderedRoots.count() {
+                        desired.add(orderedRoots.get(rootIndex));
+                        rootIndex = rootIndex + 1;
+                    }
+                }
+                desired.add(child);
+                if child == target and after {
+                    var rootIndex = 0;
+                    while rootIndex < orderedRoots.count() {
+                        desired.add(orderedRoots.get(rootIndex));
+                        rootIndex = rootIndex + 1;
+                    }
+                }
+                if child == target { inserted = true; }
+            }
+            childIndex = childIndex + 1;
+        }
+        if inserted == false {
+            detailLabel.SetText("The row drop target is no longer attached.");
+            return false;
+        }
+
+        var allAlreadyDirect = true;
+        var rootIndex = 0;
+        while rootIndex < orderedRoots.count() {
+            if orderedRoots.get(rootIndex).Parent != destinationParent {
+                allAlreadyDirect = false;
+            }
+            rootIndex = rootIndex + 1;
+        }
+        if allAlreadyDirect and ChildOrderMatches(destinationParent, desired) {
+            detailLabel.SetText(
+                "The selected hierarchy roots already use that row position.");
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var selectedNodes: List[SceneNode] = [];
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            selectedNodes.add(
+                flatNodes.get(selectedIndices.get(selectionIndex)));
+            selectionIndex = selectionIndex + 1;
+        }
+        var primaryNode = SelectedNode();
+        var preserveWorld = preserveWorldReparentCheck != null
+            and preserveWorldReparentCheck.IsChecked();
+
+        rootIndex = 0;
+        while rootIndex < orderedRoots.count() {
+            var node = orderedRoots.get(rootIndex);
+            if node.Parent != destinationParent {
+                var attached = false;
+                if preserveWorld {
+                    attached =
+                        destinationParent.TryAddChildPreserveWorld(node);
+                } else {
+                    attached = destinationParent.TryAddChild(node);
+                }
+                if attached == false {
+                    RollBackGroupEdit(
+                        previousSelection, previousPrimary,
+                        "Studio could not attach every dragged hierarchy "
+                        + "root without a lossy transform.");
+                    return false;
+                }
+            }
+            rootIndex = rootIndex + 1;
+        }
+
+        if destinationParent.ChildCount != desired.count() {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The destination hierarchy changed during the row drop.");
+            return false;
+        }
+        childIndex = 0;
+        while childIndex < desired.count() {
+            var desiredChild = desired.get(childIndex);
+            if destinationParent.GetChild(childIndex) != desiredChild
+               and destinationParent.TryMoveChild(
+                       desiredChild, childIndex) == false {
+                RollBackGroupEdit(
+                    previousSelection, previousPrimary,
+                    "Studio could not establish the complete dropped row order.");
+                return false;
+            }
+            childIndex = childIndex + 1;
+        }
+        if ChildOrderMatches(destinationParent, desired) == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "Studio could not verify the complete dropped row order.");
+            return false;
+        }
+
+        var destinationNodes = FlattenGraph(scene);
+        var nextSelection: List[Integer] = [];
+        selectionIndex = 0;
+        while selectionIndex < selectedNodes.count() {
+            var mapped = FindNodeIndex(
+                destinationNodes, selectedNodes.get(selectionIndex));
+            if mapped >= 0 { nextSelection.add(mapped); }
+            selectionIndex = selectionIndex + 1;
+        }
+        var nextPrimary = FindNodeIndex(destinationNodes, primaryNode);
+        if nextSelection.count() != selectedNodes.count()
+           or nextPrimary < 0 {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "Studio could not retain the dropped hierarchy selection.");
+            return false;
+        }
+
+        var placement = "before";
+        if after { placement = "after"; }
+        if CommitScene(
+               "Moved " + orderedRoots.count() + " hierarchy root(s) "
+               + placement + " " + NodeDisplayName(target)) == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The dropped hierarchy could not be committed.");
+            return false;
+        }
+        RefreshHierarchy(null);
+        SelectSceneNodes(nextSelection, nextPrimary);
+        detailLabel.SetText(
+            "Hierarchy row order changed as one undoable edit.");
+        return true;
+    }
+
+    /// @brief Return a selected contiguous block of children in sibling order.
+    /// @details Empty means the selection is empty, mixed-parent, contains
+    ///          ancestor/descendant rows, or has an unselected sibling gap.
+    hide override func SelectedSiblingBlock() -> List[SceneNode] {
+        var block: List[SceneNode] = [];
+        if scene == null { return block; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return block; }
+
+        var selectedNodes: List[SceneNode] = [];
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            selectedNodes.add(
+                flatNodes.get(selectedIndices.get(selectionIndex)));
+            selectionIndex = selectionIndex + 1;
+        }
+        var parent = selectedNodes.get(0).Parent;
+        if parent == null { return block; }
+        selectionIndex = 1;
+        while selectionIndex < selectedNodes.count() {
+            if selectedNodes.get(selectionIndex).Parent != parent {
+                return [];
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+
+        var started = false;
+        var ended = false;
+        var childIndex = 0;
+        while childIndex < parent.ChildCount {
+            var child = parent.GetChild(childIndex);
+            var selected = FindNodeIndex(selectedNodes, child) >= 0;
+            if selected {
+                if ended { return []; }
+                block.add(child);
+                started = true;
+            } else if started {
+                ended = true;
+            }
+            childIndex = childIndex + 1;
+        }
+        if block.count() != selectedNodes.count() { return []; }
+        return block;
+    }
+
+    /// @brief Find one direct child index without exposing native child storage.
+    hide override func DirectChildIndex(parent: SceneNode,
+                               child: SceneNode) -> Integer {
+        if parent == null or child == null { return -1; }
+        var index = 0;
+        while index < parent.ChildCount {
+            if parent.GetChild(index) == child { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Move one contiguous selected sibling block by one position.
+    /// @param direction -1 for earlier or 1 for later.
+    /// @details The runtime operation is allocation-free, but Studio still
+    ///          treats the complete block as one canonical history transaction
+    ///          and reloads the old document after any rejected partial move.
+    expose override func MoveSelectedSiblings(direction: Integer) -> Boolean {
+        if direction != -1 and direction != 1 { return false; }
+        var block = SelectedSiblingBlock();
+        if block.count() == 0 {
+            detailLabel.SetText(
+                "Select one contiguous group of nodes with the same parent.");
+            return false;
+        }
+        var parent = block.get(0).Parent;
+        var first = DirectChildIndex(parent, block.get(0));
+        if first < 0 { return false; }
+        var last = first + block.count() - 1;
+        if (direction < 0 and first == 0)
+           or (direction > 0 and last + 1 >= parent.ChildCount) {
+            detailLabel.SetText(
+                "The selected sibling block is already at that boundary.");
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var selectedNodes: List[SceneNode] = [];
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            selectedNodes.add(
+                flatNodes.get(selectedIndices.get(selectionIndex)));
+            selectionIndex = selectionIndex + 1;
+        }
+        var primaryNode = SelectedNode();
+
+        if direction < 0 {
+            var blockIndex = 0;
+            while blockIndex < block.count() {
+                if parent.TryMoveChild(
+                       block.get(blockIndex),
+                       first - 1 + blockIndex) == false {
+                    RollBackGroupEdit(
+                        previousSelection, previousPrimary,
+                        "Studio could not move the complete sibling block.");
+                    return false;
+                }
+                blockIndex = blockIndex + 1;
+            }
+        } else {
+            var blockIndex = block.count() - 1;
+            while blockIndex >= 0 {
+                if parent.TryMoveChild(
+                       block.get(blockIndex),
+                       first + blockIndex + 1) == false {
+                    RollBackGroupEdit(
+                        previousSelection, previousPrimary,
+                        "Studio could not move the complete sibling block.");
+                    return false;
+                }
+                blockIndex = blockIndex - 1;
+            }
+        }
+
+        var destinationNodes = FlattenGraph(scene);
+        var nextSelection: List[Integer] = [];
+        selectionIndex = 0;
+        while selectionIndex < selectedNodes.count() {
+            var mapped = FindNodeIndex(
+                destinationNodes, selectedNodes.get(selectionIndex));
+            if mapped >= 0 { nextSelection.add(mapped); }
+            selectionIndex = selectionIndex + 1;
+        }
+        var nextPrimary = FindNodeIndex(destinationNodes, primaryNode);
+        if nextSelection.count() != selectedNodes.count()
+           or nextPrimary < 0 {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "Studio could not retain the reordered selection.");
+            return false;
+        }
+
+        var directionName = "earlier";
+        if direction > 0 { directionName = "later"; }
+        if CommitScene(
+               "Moved " + block.count() + " sibling node(s) "
+               + directionName) == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The selected sibling block could not be reordered.");
+            return false;
+        }
+        RefreshHierarchy(null);
+        SelectSceneNodes(nextSelection, nextPrimary);
+        detailLabel.SetText(
+            "Sibling order changed without changing parent or local transforms.");
+        return true;
+    }
+
+    /// @brief Remove selected hierarchy roots as one safe history transaction.
+    expose override func DeleteSelectedNodes() -> Boolean {
+        if scene == null { return false; }
+        var roots = TopLevelSelectedIndices();
+        if roots.count() == 0 { return false; }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var firstRemoved = flatNodes.count();
+        var index = roots.count() - 1;
+        while index >= 0 {
+            var nodeIndex = roots.get(index);
+            if nodeIndex < firstRemoved { firstRemoved = nodeIndex; }
+            scene.Remove(flatNodes.get(nodeIndex));
+            index = index - 1;
+        }
+        selectedIndex = firstRemoved;
+        selectedIndices = scene_selection.Single(
+            selectedIndex, scene.NodeCount - 1);
+        var message = "Deleted " + previousSelection.count()
+            + " selected node(s)";
+        if CommitScene(message) == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The selected nodes could not be deleted.");
+            return false;
+        }
+        RefreshHierarchy(null);
+        return true;
+    }
+
+    /// @brief Flatten one cloned graph in the same pre-order as the inspector.
+    hide override func FlattenGraph(graph: SceneGraph) -> List[SceneNode] {
+        var nodes: List[SceneNode] = [];
+        if graph == null { return nodes; }
+        var root = graph.Root;
+        var child = 0;
+        while child < root.ChildCount and nodes.count() < SceneEditor3DModel.MAX_EDITOR_NODES {
+            AppendFlattenedClone(root.GetChild(child), nodes);
+            child = child + 1;
+        }
+        return nodes;
+    }
+
+    hide override func AppendFlattenedClone(node: SceneNode,
+                                   nodes: List[SceneNode]) {
+        if node == null or nodes.count() >= SceneEditor3DModel.MAX_EDITOR_NODES { return; }
+        nodes.add(node);
+        var child = 0;
+        while child < node.ChildCount and nodes.count() < SceneEditor3DModel.MAX_EDITOR_NODES {
+            AppendFlattenedClone(node.GetChild(child), nodes);
+            child = child + 1;
+        }
+    }
+
+    /// @brief Return a useful scene-unique name for one duplicated root.
+    hide override func UniqueDuplicateNodeName(source: SceneNode) -> String {
+        var stem = NodeDisplayName(source) + " Copy";
+        if scene.Find(stem).IsNone { return stem; }
+        var suffix = 2;
+        while suffix <= flatNodes.count() + 2 {
+            var candidate = stem + " " + suffix;
+            if scene.Find(candidate).IsNone { return candidate; }
+            suffix = suffix + 1;
+        }
+        return stem + " " + (flatNodes.count() + 3);
+    }
+
+    /// @brief Reload canonical content after a partially applied group action.
+    hide override func RollBackGroupEdit(previousSelection: List[Integer],
+                                previousPrimary: Integer,
+                                message: String) {
+        var doc = currentDoc;
+        if doc != null { LoadDocumentModel(doc, true); }
+        SelectSceneNodes(previousSelection, previousPrimary);
+        toolbarStatus.SetText("Group edit rolled back");
+        detailLabel.SetText(message);
+    }
+
+    /// @brief Duplicate selected hierarchy roots from a canonical full clone.
+    /// @return Number of selected nodes represented in the duplicate selection.
+    expose override func DuplicateSelectedNodes() -> Integer {
+        if scene == null or currentSerialized == "" { return 0; }
+        var roots = TopLevelSelectedIndices();
+        if roots.count() == 0 { return 0; }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var cloneGraph = LoadGraphFromContent(currentSerialized);
+        var cloneNodes = FlattenGraph(cloneGraph);
+        if cloneGraph == null or cloneNodes.count() != flatNodes.count() {
+            detailLabel.SetText(
+                "Studio could not build a complete hierarchy clone. "
+                + "No nodes were changed.");
+            return 0;
+        }
+
+        var duplicateSelectionNodes: List[SceneNode] = [];
+        var selectionIndex = 0;
+        while selectionIndex < previousSelection.count() {
+            duplicateSelectionNodes.add(
+                cloneNodes.get(previousSelection.get(selectionIndex)));
+            selectionIndex = selectionIndex + 1;
+        }
+        var primaryClone: SceneNode = null;
+        if previousPrimary >= 0 and previousPrimary < cloneNodes.count() {
+            primaryClone = cloneNodes.get(previousPrimary);
+        }
+
+        var rootIndex = 0;
+        while rootIndex < roots.count() {
+            var sourceIndex = roots.get(rootIndex);
+            var source = flatNodes.get(sourceIndex);
+            var clone = cloneNodes.get(sourceIndex);
+            var cloneParent = clone.Parent;
+            var destinationParent = source.Parent;
+            if cloneParent == null or destinationParent == null {
+                RollBackGroupEdit(
+                    previousSelection, previousPrimary,
+                    "The duplicate hierarchy had no valid parent.");
+                return 0;
+            }
+            cloneParent.RemoveChild(clone);
+            clone.Name = UniqueDuplicateNodeName(source);
+            var position = clone.Position;
+            clone.SetPosition(position.X + 1.0, position.Y, position.Z);
+            if destinationParent.TryAddChild(clone) == false {
+                RollBackGroupEdit(
+                    previousSelection, previousPrimary,
+                    "Studio could not attach every duplicated subtree. "
+                    + "The document was restored.");
+                return 0;
+            }
+            rootIndex = rootIndex + 1;
+        }
+        if scene.NodeCount - 1 > SceneEditor3DModel.MAX_EDITOR_NODES {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "Duplicating this selection would exceed Studio's "
+                + SceneEditor3DModel.MAX_EDITOR_NODES + "-node editing limit.");
+            return 0;
+        }
+
+        var message = "Duplicated " + roots.count()
+            + " selected hierarchy root(s)";
+        if CommitScene(message) == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The selected hierarchy could not be duplicated.");
+            return 0;
+        }
+        RefreshHierarchy(null);
+        var duplicateIndices: List[Integer] = [];
+        var duplicatePrimary = -1;
+        selectionIndex = 0;
+        while selectionIndex < duplicateSelectionNodes.count() {
+            var duplicateIndex =
+                FindFlatIndex(duplicateSelectionNodes.get(selectionIndex));
+            if duplicateIndex >= 0 { duplicateIndices.add(duplicateIndex); }
+            selectionIndex = selectionIndex + 1;
+        }
+        if primaryClone != null {
+            duplicatePrimary = FindFlatIndex(primaryClone);
+        }
+        if duplicatePrimary < 0 and duplicateIndices.count() > 0 {
+            duplicatePrimary = duplicateIndices.get(0);
+        }
+        SelectSceneNodes(duplicateIndices, duplicatePrimary);
+        return duplicateIndices.count();
+    }
+}
+

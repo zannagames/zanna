@@ -1,0 +1,425 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_output_rows.zia
+// Purpose: Focused output rows behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_setup_tabs.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_output_rows;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_setup_tabs" as PreviousLayer;
+
+class ToolPanelOutputRowsLayer extends PreviousLayer.ToolPanelSetupTabsLayer {
+
+    /// @brief Populate the build-output panel with complete stdout/stderr text.
+    /// @param output Complete captured output, or empty to clear the panel.
+    expose override func SetBuildOutput(output: String) {
+        if output == lastBuildOutput {
+            return;
+        }
+        if output == "" {
+            ClearOutputPanel();
+            return;
+        }
+
+        if lastBuildOutput != "" and Str.EndsWith(lastBuildOutput, "\n")
+           and Str.StartsWith(output, lastBuildOutput) {
+            var delta = Str.Mid(output, Str.get_Length(lastBuildOutput) + 1);
+            if output_cache.ShouldUseRawPane(outputFilterText, outputWrapLines) {
+                AppendBuildOutput(delta);
+            } else {
+                lastBuildOutput = output_cache.Bound("", output);
+                RenderOutputRows(lastBuildOutput);
+                ShowOutputPanel();
+            }
+            return;
+        }
+
+        lastBuildOutput = output_cache.Bound("", output);
+        if output_cache.ShouldUseRawPane(outputFilterText, outputWrapLines) {
+            RenderOutputPane(lastBuildOutput);
+        } else {
+            RenderOutputRows(lastBuildOutput);
+        }
+        ShowOutputPanel();
+    }
+
+    /// @brief Append incremental process output to the active output surface.
+    /// @param output Newly captured stdout/stderr text.
+    expose override func AppendBuildOutput(output: String) {
+        UpdateBuildOutput(output);
+        if output != "" { ShowOutputPanel(); }
+    }
+
+    /// @brief Append process output without changing the selected tool panel.
+    /// @details Build jobs stream through this path after their initial reveal,
+    ///          allowing the user to move to Terminal or another tool mid-job.
+    expose override func UpdateBuildOutput(output: String) {
+        if output == "" { return; }
+        var previousLen = Str.get_Length(lastBuildOutput);
+        lastBuildOutput = output_cache.Bound(lastBuildOutput, output);
+        var trimmed = output_cache.AppendWouldTrim(previousLen, output);
+        if output_cache.ShouldUseRawPane(outputFilterText, outputWrapLines) {
+            UseOutputPane();
+            if trimmed {
+                RenderOutputPane(lastBuildOutput);
+            } else {
+                outputPane.Append(output);
+            }
+            return;
+        }
+
+        if outputPartialItem != null {
+            outputListBox.RemoveItem(outputPartialItem);
+            outputPartialItem = null;
+        }
+
+        var combined = outputPartialLine + output;
+        outputPartialLine = "";
+
+        var lines = Str.Split(combined, "\n");
+        var n = Seq.get_Count(lines);
+        var endsWithNewline = Str.EndsWith(combined, "\n");
+        var i = 0;
+        while i < n {
+            var line = Obj.ToString(Seq.Get(lines, i));
+            var isLast = i == n - 1;
+            if isLast and endsWithNewline == false {
+                outputPartialLine = line;
+                if line != "" {
+                    outputPartialItem = AddOutputDisplayLine(line);
+                }
+            } else if line != "" {
+                AddOutputDisplayLine(line);
+            }
+            i = i + 1;
+        }
+
+        if trimmed {
+            RenderOutputRows(lastBuildOutput);
+        }
+    }
+
+    /// @brief Switch output rendering to the raw output pane and repaint it.
+    /// @param output Complete output text to display.
+    hide override func RenderOutputPane(output: String) {
+        UseOutputPane();
+        outputPane.Clear();
+        outputListBox.Clear();
+        ResetOutputRows();
+        outputPartialLine = "";
+        outputPartialItem = null;
+        outputPane.Append(output);
+    }
+
+    /// @brief Switch output rendering to ListBox rows and repaint all rows.
+    /// @param output Complete output text to split into display rows.
+    hide override func RenderOutputRows(output: String) {
+        UseOutputRows();
+        outputListBox.Clear();
+        ResetOutputRows();
+        outputPartialLine = "";
+        outputPartialItem = null;
+        AddBuildOutputLines(output);
+    }
+
+    /// @brief Use the raw append-only output pane for the Output tab.
+    hide override func UseOutputPane() {
+        outputPaneMode = true;
+        outputListBox.SetVisible(false);
+        if IsToolPanelSelected(tool_panel_model.PANEL_OUTPUT) {
+            outputPane.SetVisible(true);
+        }
+    }
+
+    /// @brief Use the row-mode output ListBox for the Output tab.
+    expose override func UseOutputRows() {
+        outputPaneMode = false;
+        outputPane.SetVisible(false);
+        if IsToolPanelSelected(tool_panel_model.PANEL_OUTPUT) {
+            outputListBox.SetVisible(true);
+        }
+    }
+
+    /// @brief Clear output rows and prepare for row-by-row population.
+    expose override func BeginOutputRows() {
+        UseOutputRows();
+        outputListBox.Clear();
+        ResetOutputRows();
+        outputPartialLine = "";
+        outputPartialItem = null;
+        UpdateOutputToolbarState();
+    }
+
+    /// @brief Begin a generated report that replaces the captured-output cache.
+    /// @details Views such as Keyboard Shortcuts and Recent Files are complete
+    ///          Output-panel documents of their own. Their Copy action must not
+    ///          silently return an older build log.
+    expose override func BeginGeneratedOutputRows() {
+        BeginOutputRows();
+        lastBuildOutput = "";
+        UpdateOutputToolbarState();
+    }
+
+    /// @brief Retain the complete source behind a caller-rendered row snapshot.
+    /// @details Build diagnostics render structured rows so they can carry
+    ///          navigation metadata, while Copy and later filtering still need
+    ///          the original unfiltered text.
+    expose override func SetOutputRowSource(output: String) {
+        lastBuildOutput = output_cache.Bound("", output);
+        UpdateOutputToolbarState();
+    }
+
+    /// @brief Return whether Output has visible or cached content.
+    /// @return True when raw text, row output, or cached output exists.
+    expose override func HasOutputContent() -> Boolean {
+        if lastBuildOutput != "" { return true; }
+        if outputPaneMode and outputPane.LineCount > 0 { return true; }
+        if outputListBox.Count > 0 { return true; }
+        return false;
+    }
+
+    /// @brief Clear a ListBox-backed tool panel and its row model.
+    /// @param listBox Tool-panel ListBox to clear.
+    expose override func ClearToolRows(listBox: GUI.ListBox) {
+        if listBox == null { return; }
+        if listBox == referencesListBox {
+            referencesListBox.Clear();
+            referencesRows.Clear();
+            referencesResultCount = 0;
+            visibleReferenceCount = 0;
+            currentReferenceGroupId = "";
+            UpdateReferencesToolbarState();
+            ApplyReferenceSurfaceVisibility();
+            return;
+        }
+        listBox.Clear();
+        var model = ToolRowsForListBox(listBox);
+        if model != null {
+            model.Clear();
+        }
+    }
+
+    /// @brief Add a plain row through the bounded row model.
+    /// @param listBox Destination ListBox.
+    /// @param text Row text.
+    /// @param color Optional text color, or zero for default.
+    /// @return Concrete ListBox item handle, or null.
+    expose override func AddToolPlainRow(listBox: GUI.ListBox,
+                                text: String,
+                                color: Integer) -> Any {
+        if listBox == null { return null; }
+        if listBox == referencesListBox {
+            return AddReferenceModelRow(text, text, color, false);
+        }
+        var model = ToolRowsForListBox(listBox);
+        if model != null {
+            EnsureToolRowsCapacity(listBox, model);
+            var row = model.Add(text, color);
+            var item = listBox.AddItem(text);
+            row.item = item;
+            if color != 0 {
+                GUI.ListBox.ItemSetTextColor(item, color);
+            }
+            return item;
+        }
+        var fallback = listBox.AddItem(text);
+        if color != 0 {
+            GUI.ListBox.ItemSetTextColor(fallback, color);
+        }
+        return fallback;
+    }
+
+    /// @brief Add a muted section/header row to a tool panel.
+    /// @param listBox Destination ListBox.
+    /// @param text Header text.
+    /// @return Concrete ListBox item handle, or null.
+    expose override func AddToolSectionRow(listBox: GUI.ListBox,
+                                  text: String) -> Any {
+        return AddToolPlainRow(listBox, text, ToolPanelModel.ToolColorMuted());
+    }
+
+    /// @brief Add one durable References row and realize it when it is visible.
+    /// @details Group headers are deferred while filtering until a matching
+    ///          child arrives. This prevents empty headings during incremental
+    ///          workspace-result publication without forcing an O(n²) repaint.
+    hide override func AddReferenceModelRow(text: String,
+                                   searchText: String,
+                                   color: Integer,
+                                   isGroupHeader: Boolean) -> Any {
+        if referencesListBox == null or referencesRows == null { return null; }
+        var wasAtCapacity = referencesRows.maxRows > 0
+            and referencesRows.Count() >= referencesRows.maxRows;
+        EnsureToolRowsCapacity(referencesListBox, referencesRows);
+        if wasAtCapacity {
+            RecountReferenceResults();
+        }
+
+        var row = referencesRows.Add(text, color);
+        row.searchText = searchText;
+        row.isGroupHeader = isGroupHeader;
+        if isGroupHeader {
+            row.groupId = row.id;
+            currentReferenceGroupId = row.id;
+        } else {
+            row.groupId = currentReferenceGroupId;
+            referencesResultCount = referencesResultCount + 1;
+        }
+
+        var item: Any = null;
+        if isGroupHeader {
+            if referencesFilterText == "" {
+                item = RenderReferenceModelRow(row);
+            }
+        } else {
+            var group = FindReferenceRow(row.groupId);
+            var visible = ReferenceRowMatches(row);
+            if group != null and ReferenceRowMatches(group) {
+                visible = true;
+            }
+            if visible {
+                if group != null and group.item == null {
+                    RenderReferenceModelRow(group);
+                }
+                item = RenderReferenceModelRow(row);
+                visibleReferenceCount = visibleReferenceCount + 1;
+            }
+        }
+        UpdateReferencesToolbarState();
+        ApplyReferenceSurfaceVisibility();
+        return item;
+    }
+
+    /// @brief Realize one durable References row with its navigation metadata.
+    hide override func RenderReferenceModelRow(
+        row: tool_panel_model.ToolPanelRow) -> Any {
+        if row == null or referencesListBox == null { return null; }
+        var item = referencesListBox.AddItem(row.text);
+        row.item = item;
+        if row.color != 0 {
+            GUI.ListBox.ItemSetTextColor(item, row.color);
+        }
+        if row.data != "" {
+            GUI.ListBox.ItemSetData(item, row.data);
+        }
+        return item;
+    }
+
+    /// @brief Find one References row by its stable model identity.
+    hide override func FindReferenceRow(id: String)
+        -> tool_panel_model.ToolPanelRow {
+        if id == "" or referencesRows == null { return null; }
+        var i = 0;
+        while i < referencesRows.rows.count() {
+            var row = referencesRows.rows.get(i);
+            if row != null and row.id == id { return row; }
+            i = i + 1;
+        }
+        return null;
+    }
+
+    /// @brief Return whether one durable row passes the current text filter.
+    hide override func ReferenceRowMatches(
+        row: tool_panel_model.ToolPanelRow) -> Boolean {
+        if row == null { return false; }
+        if referencesFilterText == "" { return true; }
+        return Str.Contains(Str.ToLower(row.searchText), referencesFilterText);
+    }
+
+    /// @brief Recount non-header results after bounded model eviction.
+    hide override func RecountReferenceResults() {
+        referencesResultCount = 0;
+        var i = 0;
+        while referencesRows != null and i < referencesRows.rows.count() {
+            var row = referencesRows.rows.get(i);
+            if row != null and row.isGroupHeader == false {
+                referencesResultCount = referencesResultCount + 1;
+            }
+            i = i + 1;
+        }
+    }
+
+    /// @brief Rebuild References rows without discarding durable identities.
+    /// @details A matching group heading includes all of its children. A
+    ///          matching child includes its heading, and empty groups are
+    ///          omitted. Navigation IDs are reapplied to every realized row.
+    hide override func RefreshReferenceRows() {
+        if referencesListBox == null or referencesRows == null { return; }
+        referencesListBox.Clear();
+        visibleReferenceCount = 0;
+
+        var resetIndex = 0;
+        while resetIndex < referencesRows.rows.count() {
+            var resetRow = referencesRows.rows.get(resetIndex);
+            if resetRow != null { resetRow.item = null; }
+            resetIndex = resetIndex + 1;
+        }
+
+        var i = 0;
+        while i < referencesRows.rows.count() {
+            var row = referencesRows.rows.get(i);
+            if row == null {
+                i = i + 1;
+            } else if row.isGroupHeader {
+                var groupMatches = ReferenceRowMatches(row);
+                var renderedHeader = false;
+                var j = i + 1;
+                while j < referencesRows.rows.count() {
+                    var child = referencesRows.rows.get(j);
+                    if child == null {
+                        j = j + 1;
+                    } else if child.isGroupHeader
+                              or child.groupId != row.id {
+                        break;
+                    } else {
+                        if groupMatches or ReferenceRowMatches(child) {
+                            if renderedHeader == false {
+                                RenderReferenceModelRow(row);
+                                renderedHeader = true;
+                            }
+                            RenderReferenceModelRow(child);
+                            visibleReferenceCount =
+                                visibleReferenceCount + 1;
+                        }
+                        j = j + 1;
+                    }
+                }
+                i = j;
+            } else {
+                // A bounded eviction can orphan an old child from its header.
+                // Keep that valid result independently filterable.
+                if ReferenceRowMatches(row) {
+                    RenderReferenceModelRow(row);
+                    visibleReferenceCount = visibleReferenceCount + 1;
+                }
+                i = i + 1;
+            }
+        }
+        RecountReferenceResults();
+        UpdateReferencesToolbarState();
+        ApplyReferenceSurfaceVisibility();
+    }
+}

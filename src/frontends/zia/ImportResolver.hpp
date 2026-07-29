@@ -39,7 +39,7 @@
 ///   7. Mark the file as fully processed and pop the import stack.
 ///
 /// Safety limits prevent runaway compilation: kMaxImportDepth (50) bounds
-/// recursion depth and kMaxImportedFiles (256) bounds total file count.
+/// recursion depth and kMaxImportedFiles (512) bounds total file count.
 ///
 /// @invariant processedFiles_ and inProgressFiles_ are disjoint at all times.
 /// @invariant importStack_ mirrors the current recursion path (depth == stack size).
@@ -119,9 +119,10 @@ class ImportResolver {
     /// @brief Maximum total number of imported files per compilation unit.
     /// @details Prevents runaway compilation from pathologically large import
     ///          graphs. Once this limit is reached, further imports are rejected.
-    ///          Raised to 256 to accommodate large dogfood projects such as
-    ///          Zanna Studio, which legitimately span well over 100 modules.
-    static constexpr size_t kMaxImportedFiles = 256;
+    ///          Raised to 512 so modular dogfood applications such as Zanna
+    ///          Studio can split cohesive subsystems without consolidating
+    ///          unrelated source solely to fit the previous graph ceiling.
+    static constexpr size_t kMaxImportedFiles = 512;
 
     /// @brief Convert a relative or symbolic import path to an absolute filesystem path.
     /// @details Takes the import string from the `bind` statement (e.g., "utils/math")

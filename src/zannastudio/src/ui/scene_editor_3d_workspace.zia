@@ -1,0 +1,804 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_workspace.zia
+// Purpose: Focused workspace behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_project_instances.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_workspace;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_pump_routing" as PreviousLayer;
+
+/// @brief Workspace implementation layer.
+class SceneEditor3DWorkspaceLayer extends PreviousLayer.SceneEditor3DPumpRoutingLayer {
+
+    /// @brief Load one document transactionally through the runtime VSCN loader.
+    expose override func Activate(doc: document.Document) {
+        LoadDocumentModel(doc, false);
+    }
+
+    /// @brief Return whether a committed VSCN edit can be undone.
+    expose override func CanUndo() -> Boolean {
+        return undoStack.count() > 0;
+    }
+
+    /// @brief Return whether an undone VSCN edit can be redone.
+    expose override func CanRedo() -> Boolean {
+        return redoStack.count() > 0;
+    }
+
+    /// @brief Restore the preceding canonical VSCN snapshot.
+    expose override func Undo() -> Boolean {
+        if currentDoc == null or undoStack.count() == 0 { return false; }
+        var index = undoStack.count() - 1;
+        var target = undoStack.get(index);
+        undoStack.removeAt(index);
+        PushHistory(redoStack, currentSerialized);
+        if undoLabels.count() > 0 {
+            redoLabels.add(undoLabels.get(undoLabels.count() - 1));
+            undoLabels.removeAt(undoLabels.count() - 1);
+        }
+        currentDoc.content = target;
+        currentDoc.isModified = target != cleanSerialized;
+        revision = revision + 1;
+        LoadDocumentModel(currentDoc, true);
+        toolbarStatus.SetText("Undid 3D scene edit");
+        return true;
+    }
+
+    /// @brief Reapply the next canonical VSCN snapshot.
+    expose override func Redo() -> Boolean {
+        if currentDoc == null or redoStack.count() == 0 { return false; }
+        var index = redoStack.count() - 1;
+        var target = redoStack.get(index);
+        redoStack.removeAt(index);
+        PushHistory(undoStack, currentSerialized);
+        if redoLabels.count() > 0 {
+            undoLabels.add(redoLabels.get(redoLabels.count() - 1));
+            redoLabels.removeAt(redoLabels.count() - 1);
+        }
+        currentDoc.content = target;
+        currentDoc.isModified = target != cleanSerialized;
+        revision = revision + 1;
+        LoadDocumentModel(currentDoc, true);
+        toolbarStatus.SetText("Redid 3D scene edit");
+        return true;
+    }
+
+    /// @brief Load one document model with optional undo-history retention.
+    hide override func LoadDocumentModel(doc: document.Document,
+                                preserveHistory: Boolean) {
+        if terrainStrokeActive { CancelTerrainStroke(); }
+        terrainSculptEnabled = false;
+        terrainBrushHoverValid = false;
+        if vertexSnapDragActive { CancelVertexSnapDrag(); }
+        var switchingDocument = currentDoc != doc;
+        lastViewportClickNode = -1;
+        lastViewportClickMs = 0;
+        hoveredViewportNode = -1;
+        marqueeCandidate = false;
+        marqueeActive = false;
+        marqueeCancelled = false;
+        if currentDoc != null { CaptureWorkspaceState(); }
+        if preserveHistory == false {
+            var savedState = doc.scene3DWorkspace;
+            var canRestoreHistory = switchingDocument
+                and savedState != null
+                and savedState.historyContent == doc.content;
+            if canRestoreHistory {
+                undoStack = savedState.undoStack;
+                redoStack = savedState.redoStack;
+                cleanSerialized = savedState.cleanSerialized;
+            } else {
+                undoStack = [];
+                redoStack = [];
+                if doc.isModified == false { cleanSerialized = doc.content; }
+                else { cleanSerialized = ""; }
+            }
+        }
+        currentDoc = doc;
+        currentSerialized = doc.content;
+        EnsureComponentSchema(false);
+        RestoreWorkspaceState(doc);
+        // Restoring divider positions intentionally clears SplitPane collapse
+        // state. Reconcile the current responsive presentation once here so
+        // activation, Undo, and Redo cannot reopen hidden compact panes when
+        // the host dimensions—and therefore the resize cache—did not change.
+        ApplyInspectorLayout();
+        gizmoHoverAxis = SceneEditor3DModel.GIZMO_AXIS_NONE;
+        ResetGizmoDrag(true);
+        ResetVertexSnapDrag(true);
+        lookThroughNode = null;
+        insetPixels = null;
+        insetSourceRevision = -1;
+        insetSourceNode = null;
+        loadError = "";
+        scene = LoadGraphFromContent(doc.content);
+        if scene == null {
+            SetEditorControlsEnabled(false);
+            toolbarStatus.SetText("Scene needs repair");
+            detailLabel.SetText("The VSCN asset could not be loaded. The original "
+                                + "document is preserved.\n\n" + loadError);
+        } else {
+            SetEditorControlsEnabled(true);
+            toolbarStatus.SetText("3D scene ready");
+            detailLabel.SetText("");
+        }
+        RefreshHierarchy(null);
+        renderDirty = true;
+    }
+
+    /// @brief Snapshot live hierarchy, camera, inspector, and undo state.
+    hide override func CaptureWorkspaceState() {
+        if currentDoc == null or currentDoc.scene3DWorkspace == null { return; }
+        var state = currentDoc.scene3DWorkspace;
+        state.initialized = true;
+        state.selectedIndex = selectedIndex;
+        state.selectedIndices = selectedIndices;
+        state.selectedNodeMetadata = selectedNodeMetadata;
+        state.transformMode = gizmoMode;
+        state.transformSpace = gizmoTransformSpace;
+        state.transformSnapEnabled = gizmoSnapEnabled;
+        state.transformSurfaceSnapEnabled = surfaceSnapEnabled;
+        state.transformSurfaceAlignEnabled = surfaceAlignEnabled;
+        state.transformVertexSnapEnabled = vertexSnapEnabled;
+        state.cameraBookmarks = cameraBookmarks;
+        if gameViewOutputFramed == false {
+            state.viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(viewYawDegrees);
+            state.viewPitchDegrees = SceneEditor3DModel.ClampInt3D(viewPitchDegrees, -80, 80);
+            state.viewScale = SceneEditor3DModel.ClampInt3D(viewScale, 4, 120);
+        }
+        state.viewportMode = SceneEditor3DModel.ClampInt3D(
+            viewportMode, SceneEditor3DModel.VIEWPORT_MODE_SHADED, SceneEditor3DModel.VIEWPORT_MODE_SHADED_WIRE);
+        if gameViewOutputFramed == false {
+            state.viewTargetX = SceneEditor3DModel.ClampNumber3D(
+                viewTargetX, -1000000.0, 1000000.0);
+            state.viewTargetY = SceneEditor3DModel.ClampNumber3D(
+                viewTargetY, -1000000.0, 1000000.0);
+            state.viewTargetZ = SceneEditor3DModel.ClampNumber3D(
+                viewTargetZ, -1000000.0, 1000000.0);
+            state.gameplayViewAnchored = gameplayViewAnchored;
+            state.gameplayEyeX = SceneEditor3DModel.ClampNumber3D(
+                gameplayEyeX, -1000000.0, 1000000.0);
+            state.gameplayEyeY = SceneEditor3DModel.ClampNumber3D(
+                gameplayEyeY, -1000000.0, 1000000.0);
+            state.gameplayEyeZ = SceneEditor3DModel.ClampNumber3D(
+                gameplayEyeZ, -1000000.0, 1000000.0);
+            state.viewPerspective = viewPerspective;
+            state.showGrid = showGrid;
+            state.showMarkers = showMarkers;
+            state.showLightOverlays = showLightOverlays;
+            state.showCameraOverlays = showCameraOverlays;
+            state.showColliderOverlays = showColliderOverlays;
+            state.showRouteOverlays = showRouteOverlays;
+            state.showStats = showStats;
+        }
+        state.gameViewActive = gameViewActive;
+        state.gameViewOutputFramed = gameViewOutputFramed;
+        state.projectPreviewFilterIndex = projectPreviewFilterIndex;
+        state.snapMoveIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapMoveIncrement,
+            scene_transform_3d.MAX_MOVE_SNAP_INCREMENT);
+        state.snapRotateIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapRotateIncrement,
+            scene_transform_3d.MAX_ROTATE_SNAP_INCREMENT);
+        state.snapScaleIncrement = scene_transform_3d.BoundSnapIncrement(
+            snapScaleIncrement,
+            scene_transform_3d.MAX_SCALE_SNAP_INCREMENT);
+        if bodySplit != null {
+            state.splitPosition = SceneEditor3DModel.ClampNumber3D(
+                bodySplit.GetPosition(), 0.20, 0.85);
+        }
+        if hierarchySplit != null {
+            state.hierarchySplitPosition = SceneEditor3DModel.ClampNumber3D(
+                hierarchySplit.GetPosition(), 0.10, 0.45);
+        }
+        if inspectorScroll != null {
+            state.inspectorScrollY = SceneEditor3DModel.ClampNumber3D(
+                LogicalScrollY(inspectorScroll), 0.0, 1000000.0);
+        }
+        state.inspectorSceneSection = SceneEditor3DModel.ClampInt3D(
+            sceneInspectorSection,
+            SceneEditor3DModel.SCENE_INSPECTOR_WORLD,
+            SceneEditor3DModel.SCENE_INSPECTOR_HISTORY);
+        state.inspectorRequestedVisible = inspectorRequestedVisible;
+        state.compactInspectorShown = compactInspectorShown;
+        state.pickLockedPaths = pickLockedPaths;
+        state.undoStack = undoStack;
+        state.redoStack = redoStack;
+        state.cleanSerialized = cleanSerialized;
+        state.historyContent = currentSerialized;
+    }
+
+    /// @brief Restore a document's validated hierarchy, camera, and inspector.
+    hide override func RestoreWorkspaceState(doc: document.Document) {
+        var state = doc.scene3DWorkspace;
+        if state == null or state.initialized == false {
+            initialProjectPreviewPending = true;
+            selectedIndex = -1;
+            selectedIndices = [];
+            selectedNodeMetadata = -1;
+            metadataOwnerIndex = -1;
+            gizmoMode = SceneEditor3DModel.GIZMO_MODE_MOVE;
+            gizmoTransformSpace =
+                scene_transform_3d.TRANSFORM_SPACE_LOCAL;
+            gizmoSnapEnabled = false;
+            surfaceSnapEnabled = false;
+            surfaceAlignEnabled = false;
+            vertexSnapEnabled = false;
+            viewYawDegrees = 35;
+            viewPitchDegrees = 25;
+            viewScale = 28;
+            viewportMode = SceneEditor3DModel.VIEWPORT_MODE_SHADED;
+            viewTargetX = 0.0;
+            viewTargetY = 0.0;
+            viewTargetZ = 0.0;
+            gameplayViewAnchored = false;
+            gameplayEyeX = 0.0;
+            gameplayEyeY = 0.0;
+            gameplayEyeZ = 0.0;
+            viewPerspective = true;
+            showGrid = true;
+            showMarkers = true;
+            showLightOverlays = true;
+            showCameraOverlays = true;
+            showColliderOverlays = true;
+            showRouteOverlays = true;
+            showStats = false;
+            gameViewActive = false;
+            gameViewOutputFramed = false;
+            projectPreviewFilterIndex = 0;
+            if HasProjectPreviewFilter() {
+                projectPreviewFilterIndex =
+                    componentSchema.nodePreviewFilter3D.defaultIndex;
+            }
+            gameOutputFramePending = false;
+            snapMoveIncrement =
+                scene_transform_3d.DEFAULT_MOVE_SNAP_INCREMENT;
+            snapRotateIncrement =
+                scene_transform_3d.DEFAULT_ROTATE_SNAP_INCREMENT;
+            snapScaleIncrement =
+                scene_transform_3d.DEFAULT_SCALE_SNAP_INCREMENT;
+            flyActive = false;
+            flyLastMs = -1;
+            if bodySplit != null { bodySplit.SetPosition(0.70); }
+            if hierarchySplit != null { hierarchySplit.SetPosition(0.18); }
+            pendingInspectorScrollY = 0.0;
+            sceneInspectorSection = SceneEditor3DModel.SCENE_INSPECTOR_WORLD;
+            if sceneSectionDropdown != null {
+                sceneSectionDropdown.SetSelected(sceneInspectorSection);
+                sceneSectionDropdown.WasChanged();
+            }
+            inspectorRequestedVisible = true;
+            compactHierarchyShown = false;
+            compactInspectorShown = false;
+            pickLockedPaths = [];
+            restoreInspectorScrollPending = true;
+            SyncGizmoModeControls();
+            UpdateViewportModeControls();
+            SyncViewOptionControls();
+            UpdateGameViewButton();
+            SyncProjectPreviewFilterControls();
+            return;
+        }
+
+        initialProjectPreviewPending = false;
+        selectedIndex = SceneEditor3DModel.ClampInt3D(
+            state.selectedIndex, -1, SceneEditor3DModel.MAX_EDITOR_NODES - 1);
+        selectedIndices = state.selectedIndices;
+        selectedNodeMetadata = SceneEditor3DModel.ClampInt3D(
+            state.selectedNodeMetadata, -1, 255);
+        metadataOwnerIndex = selectedIndex;
+        gizmoMode = SceneEditor3DModel.ClampInt3D(
+            state.transformMode, SceneEditor3DModel.GIZMO_MODE_MOVE, SceneEditor3DModel.GIZMO_MODE_SCALE);
+        gizmoTransformSpace = SceneEditor3DModel.ClampInt3D(
+            state.transformSpace,
+            scene_transform_3d.TRANSFORM_SPACE_LOCAL,
+            scene_transform_3d.TRANSFORM_SPACE_WORLD);
+        gizmoSnapEnabled = state.transformSnapEnabled;
+        surfaceSnapEnabled = state.transformSurfaceSnapEnabled;
+        surfaceAlignEnabled = state.transformSurfaceAlignEnabled;
+        vertexSnapEnabled = state.transformVertexSnapEnabled;
+        viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(
+            SceneEditor3DModel.ClampInt3D(state.viewYawDegrees, -36000, 36000));
+        viewPitchDegrees = SceneEditor3DModel.ClampInt3D(state.viewPitchDegrees, -80, 80);
+        viewScale = SceneEditor3DModel.ClampInt3D(state.viewScale, 4, 120);
+        viewportMode = SceneEditor3DModel.ClampInt3D(
+            state.viewportMode,
+            SceneEditor3DModel.VIEWPORT_MODE_SHADED, SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME);
+        viewTargetX = SceneEditor3DModel.ClampNumber3D(
+            state.viewTargetX, -1000000.0, 1000000.0);
+        viewTargetY = SceneEditor3DModel.ClampNumber3D(
+            state.viewTargetY, -1000000.0, 1000000.0);
+        viewTargetZ = SceneEditor3DModel.ClampNumber3D(
+            state.viewTargetZ, -1000000.0, 1000000.0);
+        gameplayViewAnchored = state.gameplayViewAnchored;
+        gameplayEyeX = SceneEditor3DModel.ClampNumber3D(
+            state.gameplayEyeX, -1000000.0, 1000000.0);
+        gameplayEyeY = SceneEditor3DModel.ClampNumber3D(
+            state.gameplayEyeY, -1000000.0, 1000000.0);
+        gameplayEyeZ = SceneEditor3DModel.ClampNumber3D(
+            state.gameplayEyeZ, -1000000.0, 1000000.0);
+        viewPerspective = state.viewPerspective;
+        showGrid = state.showGrid;
+        showMarkers = state.showMarkers;
+        showLightOverlays = state.showLightOverlays;
+        showCameraOverlays = state.showCameraOverlays;
+        showColliderOverlays = state.showColliderOverlays;
+        showRouteOverlays = state.showRouteOverlays;
+        showStats = state.showStats;
+        gameViewActive = state.gameViewActive;
+        gameViewOutputFramed =
+            state.gameViewActive and state.gameViewOutputFramed;
+        projectPreviewFilterIndex =
+            BoundProjectPreviewFilterIndex(
+                state.projectPreviewFilterIndex);
+        gameOutputFramePending = gameViewOutputFramed;
+        snapMoveIncrement = state.snapMoveIncrement;
+        snapRotateIncrement = state.snapRotateIncrement;
+        snapScaleIncrement = state.snapScaleIncrement;
+        flyActive = false;
+        flyLastMs = -1;
+        if bodySplit != null {
+            bodySplit.SetPosition(SceneEditor3DModel.ClampNumber3D(
+                state.splitPosition, 0.20, 0.85));
+        }
+        if hierarchySplit != null {
+            hierarchySplit.SetPosition(SceneEditor3DModel.ClampNumber3D(
+                state.hierarchySplitPosition, 0.10, 0.45));
+        }
+        pendingInspectorScrollY = SceneEditor3DModel.ClampNumber3D(
+            state.inspectorScrollY, 0.0, 1000000.0);
+        sceneInspectorSection = SceneEditor3DModel.ClampInt3D(
+            state.inspectorSceneSection,
+            SceneEditor3DModel.SCENE_INSPECTOR_WORLD,
+            SceneEditor3DModel.SCENE_INSPECTOR_HISTORY);
+        if sceneSectionDropdown != null {
+            sceneSectionDropdown.SetSelected(sceneInspectorSection);
+            sceneSectionDropdown.WasChanged();
+        }
+        inspectorRequestedVisible = state.inspectorRequestedVisible;
+        compactHierarchyShown = false;
+        compactInspectorShown = state.compactInspectorShown;
+        pickLockedPaths = state.pickLockedPaths;
+        restoreInspectorScrollPending = true;
+        SyncGizmoModeControls();
+        UpdateViewportModeControls();
+        SyncViewOptionControls();
+        UpdateGameViewButton();
+        SyncProjectPreviewFilterControls();
+    }
+
+    /// @brief Apply project first-open camera and overlay defaults read-only.
+    /// @details The caller invokes this only for a document without persisted
+    ///          workspace state. Missing or wrong-typed start metadata retains
+    ///          the ordinary editor view, while independent overlay defaults
+    ///          remain useful.
+    hide override func ApplyInitialProjectPreview() {
+        gameplayViewAnchored = false;
+        if scene == null or componentSchema == null
+           or componentSchema.valid == false {
+            return;
+        }
+        var profile = componentSchema.scenePreview3D;
+        if profile == null or profile.present == false { return; }
+        var rootNode = scene.Root;
+        if rootNode == null { return; }
+
+        if profile.HasStart()
+           and RootHasFloat(rootNode, profile.startXProperty)
+           and RootHasFloat(rootNode, profile.startYProperty)
+           and RootHasFloat(rootNode, profile.startZProperty) {
+            var startX = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.startXProperty, viewTargetX),
+                -1000000.0,
+                1000000.0);
+            var startY = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.startYProperty, viewTargetY),
+                -1000000.0,
+                1000000.0);
+            var startZ = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.startZProperty, viewTargetZ),
+                -1000000.0,
+                1000000.0);
+            var hasMappedYaw = profile.startYawProperty != ""
+                and RootHasFloat(rootNode, profile.startYawProperty);
+            if profile.hasStartEyeHeight and hasMappedYaw {
+                var mappedYaw = SceneEditor3DModel.ClampNumber3D(
+                    rootNode.MetadataGetFloat(
+                        profile.startYawProperty, viewYawDegrees),
+                    -36000.0,
+                    36000.0);
+                viewYawDegrees =
+                    SceneEditor3DModel.NormalizeYawDegrees(
+                        0 - Convert.NumToInt(mappedYaw));
+                viewPitchDegrees = 0;
+                gameplayEyeX = startX;
+                gameplayEyeY = startY + profile.startEyeHeight;
+                gameplayEyeZ = startZ;
+                gameplayViewAnchored = true;
+                ReanchorGameplayViewTarget();
+            } else {
+                viewTargetX = startX;
+                viewTargetY = startY;
+                viewTargetZ = startZ;
+                if hasMappedYaw {
+                    var targetYaw = SceneEditor3DModel.ClampNumber3D(
+                        rootNode.MetadataGetFloat(
+                            profile.startYawProperty, viewYawDegrees),
+                        -36000.0,
+                        36000.0);
+                    viewYawDegrees =
+                        SceneEditor3DModel.NormalizeYawDegrees(Convert.NumToInt(targetYaw));
+                }
+            }
+        }
+        if profile.hasShowGrid {
+            showGrid = profile.showGrid;
+        }
+        if profile.hasShowMarkers {
+            showMarkers = profile.showMarkers;
+        }
+        if profile.hasShowLights {
+            showLightOverlays = profile.showLights;
+        }
+        if profile.hasShowCameras {
+            showCameraOverlays = profile.showCameras;
+        }
+        if profile.hasShowColliders {
+            showColliderOverlays = profile.showColliders;
+        }
+        if profile.hasShowRoutes {
+            showRouteOverlays = profile.showRoutes;
+        }
+        SyncViewOptionControls();
+        renderDirty = true;
+    }
+
+    /// @brief Recompute the orbit target without moving the gameplay eye.
+    /// @details The editor stores orbit target + pixels-per-unit while game
+    ///          profiles store an eye pose. Responsive layout can change the
+    ///          derived orbit distance, so the target must follow that distance
+    ///          to keep the actual retained camera at the runtime spawn.
+    hide override func ReanchorGameplayViewTarget() {
+        if gameplayViewAnchored == false or viewPerspective == false {
+            return;
+        }
+        var eyeUnit = ViewportEyeUnit();
+        var eyeDistance = PerspectiveEyeDistance();
+        viewTargetX = SceneEditor3DModel.ClampNumber3D(
+            gameplayEyeX - eyeUnit.X * eyeDistance,
+            -1000000.0, 1000000.0);
+        viewTargetY = SceneEditor3DModel.ClampNumber3D(
+            gameplayEyeY - eyeUnit.Y * eyeDistance,
+            -1000000.0, 1000000.0);
+        viewTargetZ = SceneEditor3DModel.ClampNumber3D(
+            gameplayEyeZ - eyeUnit.Z * eyeDistance,
+            -1000000.0, 1000000.0);
+    }
+
+    /// @brief Leave exact runtime-eye mode once the user navigates manually.
+    hide override func ReleaseGameplayViewAnchor() {
+        gameplayViewAnchored = false;
+    }
+
+    /// @brief Return whether this scene owns a valid project preview profile.
+    expose override func CanApplyProjectPreviewView() -> Boolean {
+        return scene != null
+            and scene.Root != null
+            and componentSchema != null
+            and componentSchema.valid
+            and componentSchema.scenePreview3D != null
+            and componentSchema.scenePreview3D.present;
+    }
+
+    /// @brief Reapply project gameplay camera and overlay defaults read-only.
+    /// @details This explicit workspace action recovers from manual navigation
+    ///          and older persisted view state. It exits camera look-through,
+    ///          never serializes VSCN, and never creates an undo entry.
+    expose override func ApplyProjectPreviewView() -> Boolean {
+        if gameViewOutputFramed
+           or CanApplyProjectPreviewView() == false {
+            return false;
+        }
+        flyActive = false;
+        flyLastMs = -1;
+        if lookThroughNode != null {
+            lookThroughNode = null;
+            RefreshCameraFields(SelectedNode());
+        }
+        ApplyInitialProjectPreview();
+        toolbarStatus.SetText("Gameplay view restored");
+        return true;
+    }
+
+    /// @brief Keep the gameplay-view affordance truthful for the active root.
+    hide override func UpdateProjectViewButton() {
+        if projectViewButton != null {
+            projectViewButton.SetEnabled(
+                CanApplyProjectPreviewView()
+                and gameViewOutputFramed == false);
+        }
+    }
+
+    /// @brief Resolve project atmosphere metadata for the shaded viewport.
+    /// @details Complete groups with any wrong-typed member remain absent so
+    ///          callers can use the ordinary Studio fallback deterministically.
+    expose override func ProjectPreviewRenderState()
+        -> SceneEditor3DModel.ScenePreview3DRenderState {
+        var result = new SceneEditor3DModel.ScenePreview3DRenderState();
+        if scene == null or scene.Root == null
+           or componentSchema == null
+           or componentSchema.valid == false {
+            return result;
+        }
+        var profile = componentSchema.scenePreview3D;
+        if profile == null or profile.present == false { return result; }
+        var rootNode = scene.Root;
+
+        if profile.hasCameraFov {
+            result.hasCameraFov = true;
+            result.cameraFov = profile.cameraFov;
+        }
+        if profile.hasIblIntensity {
+            result.hasIblIntensity = true;
+            result.iblIntensity = profile.iblIntensity;
+        }
+        if profile.HasAmbient()
+           and RootHasFloat(rootNode, profile.ambientRProperty)
+           and RootHasFloat(rootNode, profile.ambientGProperty)
+           and RootHasFloat(rootNode, profile.ambientBProperty) {
+            result.hasAmbient = true;
+            result.ambientR = RootColor(
+                rootNode, profile.ambientRProperty);
+            result.ambientG = RootColor(
+                rootNode, profile.ambientGProperty);
+            result.ambientB = RootColor(
+                rootNode, profile.ambientBProperty);
+        }
+        if profile.HasClear()
+           and RootHasFloat(rootNode, profile.clearRProperty)
+           and RootHasFloat(rootNode, profile.clearGProperty)
+           and RootHasFloat(rootNode, profile.clearBProperty) {
+            result.hasClear = true;
+            result.clearR = RootColor(
+                rootNode, profile.clearRProperty);
+            result.clearG = RootColor(
+                rootNode, profile.clearGProperty);
+            result.clearB = RootColor(
+                rootNode, profile.clearBProperty);
+        }
+        if profile.HasFog()
+           and RootHasFloat(rootNode, profile.fogRProperty)
+           and RootHasFloat(rootNode, profile.fogGProperty)
+           and RootHasFloat(rootNode, profile.fogBProperty)
+           and RootHasFloat(rootNode, profile.fogNearProperty)
+           and RootHasFloat(rootNode, profile.fogFarProperty) {
+            result.hasFog = true;
+            result.fogR = RootColor(rootNode, profile.fogRProperty);
+            result.fogG = RootColor(rootNode, profile.fogGProperty);
+            result.fogB = RootColor(rootNode, profile.fogBProperty);
+            result.fogNear = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fogNearProperty, 0.0),
+                0.0,
+                999999999.0);
+            result.fogFar = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fogFarProperty, result.fogNear + 1.0),
+                0.0,
+                1000000000.0);
+            if result.fogFar <= result.fogNear {
+                result.fogFar = result.fogNear + 1.0;
+            }
+        }
+        if profile.HasSkyPalette()
+           and RootHasFloat(rootNode, profile.zenithRProperty)
+           and RootHasFloat(rootNode, profile.zenithGProperty)
+           and RootHasFloat(rootNode, profile.zenithBProperty)
+           and RootHasFloat(rootNode, profile.groundRProperty)
+           and RootHasFloat(rootNode, profile.groundGProperty)
+           and RootHasFloat(rootNode, profile.groundBProperty)
+           and result.hasClear {
+            result.hasSky = true;
+            result.zenithR =
+                RootColor(rootNode, profile.zenithRProperty);
+            result.zenithG =
+                RootColor(rootNode, profile.zenithGProperty);
+            result.zenithB =
+                RootColor(rootNode, profile.zenithBProperty);
+            result.groundR =
+                RootColor(rootNode, profile.groundRProperty);
+            result.groundG =
+                RootColor(rootNode, profile.groundGProperty);
+            result.groundB =
+                RootColor(rootNode, profile.groundBProperty);
+            if profile.cloudProperty != ""
+               and RootHasFloat(rootNode, profile.cloudProperty) {
+                result.cloudDensity = SceneEditor3DModel.ClampNumber3D(
+                    rootNode.MetadataGetFloat(
+                        profile.cloudProperty, 0.0),
+                    0.0,
+                    1.0);
+            }
+            if profile.starsProperty != ""
+               and RootHasBool(rootNode, profile.starsProperty) {
+                result.stars = rootNode.MetadataGetBool(
+                    profile.starsProperty, false);
+            }
+        }
+        if profile.HasSun()
+           and RootHasFloat(rootNode, profile.sunXProperty)
+           and RootHasFloat(rootNode, profile.sunYProperty)
+           and RootHasFloat(rootNode, profile.sunZProperty)
+           and RootHasFloat(rootNode, profile.sunRProperty)
+           and RootHasFloat(rootNode, profile.sunGProperty)
+           and RootHasFloat(rootNode, profile.sunBProperty)
+           and RootHasFloat(rootNode, profile.sunIntensityProperty) {
+            result.hasSun = true;
+            result.sunX = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.sunXProperty, 0.0),
+                -1000.0,
+                1000.0);
+            result.sunY = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.sunYProperty, -1.0),
+                -1000.0,
+                1000.0);
+            result.sunZ = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.sunZProperty, 0.0),
+                -1000.0,
+                1000.0);
+            result.sunR = RootColor(rootNode, profile.sunRProperty);
+            result.sunG = RootColor(rootNode, profile.sunGProperty);
+            result.sunB = RootColor(rootNode, profile.sunBProperty);
+            result.sunIntensity = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.sunIntensityProperty, 0.0),
+                0.0,
+                100.0);
+        }
+        if profile.HasFill()
+           and RootHasFloat(rootNode, profile.fillXProperty)
+           and RootHasFloat(rootNode, profile.fillYProperty)
+           and RootHasFloat(rootNode, profile.fillZProperty)
+           and RootHasFloat(rootNode, profile.fillRProperty)
+           and RootHasFloat(rootNode, profile.fillGProperty)
+           and RootHasFloat(rootNode, profile.fillBProperty)
+           and RootHasFloat(rootNode, profile.fillIntensityProperty) {
+            result.hasFill = true;
+            result.fillX = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fillXProperty, 0.0),
+                -1000.0,
+                1000.0);
+            result.fillY = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fillYProperty, -1.0),
+                -1000.0,
+                1000.0);
+            result.fillZ = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fillZProperty, 0.0),
+                -1000.0,
+                1000.0);
+            result.fillR = RootColor(rootNode, profile.fillRProperty);
+            result.fillG = RootColor(rootNode, profile.fillGProperty);
+            result.fillB = RootColor(rootNode, profile.fillBProperty);
+            result.fillIntensity = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    profile.fillIntensityProperty, 0.0),
+                0.0,
+                100.0);
+        }
+        if profile.HasHeightFog()
+           and RootHasBool(rootNode, profile.heightFogProperty) {
+            result.hasHeightFog = true;
+            result.heightFogEnabled = rootNode.MetadataGetBool(
+                profile.heightFogProperty, false);
+            result.heightFogBase = profile.heightFogBase;
+            result.heightFogFalloff = profile.heightFogFalloff;
+            result.heightFogDensity = profile.heightFogDensity;
+            result.heightFogOpacity = profile.heightFogOpacity;
+        }
+        return result;
+    }
+
+    /// @brief Return whether one root key is exact typed float metadata.
+    hide override func RootHasFloat(rootNode: SceneNode,
+                           key: String) -> Boolean {
+        return rootNode != null and key != ""
+            and rootNode.MetadataHas(key)
+            and rootNode.MetadataKind(key) == "float";
+    }
+
+    /// @brief Return whether one root key is exact typed boolean metadata.
+    hide override func RootHasBool(rootNode: SceneNode,
+                          key: String) -> Boolean {
+        return rootNode != null and key != ""
+            and rootNode.MetadataHas(key)
+            and rootNode.MetadataKind(key) == "bool";
+    }
+
+    /// @brief Read one normalized project color channel from root metadata.
+    hide override func RootColor(rootNode: SceneNode,
+                        key: String) -> Number {
+        return SceneEditor3DModel.ClampNumber3D(
+            rootNode.MetadataGetFloat(key, 0.0), 0.0, 1.0);
+    }
+}

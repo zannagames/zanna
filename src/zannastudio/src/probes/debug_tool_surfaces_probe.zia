@@ -105,13 +105,22 @@ func SeedPausedStack(session: debug_session.DebugSession) {
     Seq.Push(session.stopFrames, Frame("dispatch", "/workspace/lib.zia", 44));
 }
 
-func main() {
+/// @brief State shared by Call Stack and Debug Console scenarios.
+class DebugToolSurfacesProbeContext {
+    expose app_shell.AppShell shell;
+    expose debug_session.DebugSession session;
+    expose GUI.TestHarness harness;
+}
+
+/// @brief Verify Call Stack states, filtering, identity, and copying.
+func VerifyCallStackSurface(
+    ctx: DebugToolSurfacesProbeContext) -> Boolean {
     if tool_panel_shell.DebugConsoleUsesCompactControls(520.0) == false
        or tool_panel_shell.DebugConsoleUsesCompactControls(520.01)
        or tool_panel_shell.CallStackUsesCompactControls(440.0) == false
        or tool_panel_shell.CallStackUsesCompactControls(440.01) {
         Terminal.Say("RESULT: fail debugger toolbar policy helpers");
-        return;
+        return false;
     }
 
     var shell = new app_shell.AppShell();
@@ -123,7 +132,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
 
     // Idle Call Stack is a real state-aware surface, not a fake list row.
@@ -138,7 +147,7 @@ func main() {
        or shell.toolPanels.callStackStateText != "Idle"
        or shell.toolPanels.callStackCopyButton.IsEnabled() {
         Fail(shell, harness, "idle Call Stack state");
-        return;
+        return false;
     }
 
     SeedPausedStack(session);
@@ -152,7 +161,7 @@ func main() {
        or shell.toolPanels.callStackEmptyLabel.IsVisible()
        or shell.toolPanels.callStackCopyButton.IsEnabled() == false {
         Fail(shell, harness, "paused Call Stack snapshot");
-        return;
+        return false;
     }
 
     // Filtering keeps the original frame index rather than remapping row zero.
@@ -165,7 +174,7 @@ func main() {
        or shell.toolPanels.GetSelectedCallStackFrameIndex() != 1
        or shell.toolPanels.callStackFilterInput.IsFocused() == false {
         Fail(shell, harness, "filtered Call Stack frame identity");
-        return;
+        return false;
     }
 
     GUI.ClipboardText.Clear();
@@ -176,7 +185,7 @@ func main() {
        or Str.Contains(copiedStack, "#1  worker") == false
        or Str.Contains(copiedStack, "#2  dispatch") == false {
         Fail(shell, harness, "Call Stack Copy omitted filtered-out frames");
-        return;
+        return false;
     }
     Click(shell, harness, shell.toolPanels.callStackFilterClearButton);
     Pump(shell);
@@ -184,8 +193,21 @@ func main() {
        or shell.toolPanels.callStackListBox.Count != 3
        or shell.toolPanels.callStackFilterInput.IsFocused() == false {
         Fail(shell, harness, "pointer Call Stack filter reset");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.session = session;
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify Debug Console behavior and responsive debugger layouts.
+func VerifyDebugConsoleSurface(
+    ctx: DebugToolSurfacesProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var session = ctx.session;
+    var harness = ctx.harness;
 
     // Debug Console separates program output from non-clearable debugger status.
     session.programOutput =
@@ -204,7 +226,7 @@ func main() {
        or shell.toolPanels.debugCopyButton.IsEnabled() == false
        or shell.toolPanels.debugClearButton.IsEnabled() == false {
         Fail(shell, harness, "structured Debug Console state");
-        return;
+        return false;
     }
 
     shell.toolPanels.debugFilterInput.Focus();
@@ -215,7 +237,7 @@ func main() {
        or shell.toolPanels.debugListBox.Count != 1
        or shell.toolPanels.debugFilterInput.IsFocused() == false {
         Fail(shell, harness, "live Debug Console filter");
-        return;
+        return false;
     }
 
     GUI.ClipboardText.Clear();
@@ -226,7 +248,7 @@ func main() {
        or Str.Contains(copiedDebug, "error: sample trap") == false
        or Str.Contains(copiedDebug, "[debug] stopped") == false {
         Fail(shell, harness, "Debug Copy omitted unfiltered text");
-        return;
+        return false;
     }
 
     Click(shell, harness, shell.toolPanels.debugFilterClearButton);
@@ -244,7 +266,7 @@ func main() {
        or shell.toolPanels.debugListBox.Count
           <= shell.toolPanels.visibleDebugConsoleLineCount {
         Fail(shell, harness, "pointer Debug Console wrapping");
-        return;
+        return false;
     }
 
     // Clear is routed back to the session, then status remains visible.
@@ -252,7 +274,7 @@ func main() {
     shell.toolPanels.PumpToolTabs();
     if shell.toolPanels.TakeDebugConsoleClearRequest() == false {
         Fail(shell, harness, "Debug Clear request edge");
-        return;
+        return false;
     }
     debug_commands.handleClearDebugConsole(shell, session);
     Pump(shell);
@@ -264,7 +286,7 @@ func main() {
        or Str.Contains(shell.toolPanels.debugConsoleSource,
                        "[debug] stopped") == false {
         Fail(shell, harness, "Debug Clear discarded or re-created status");
-        return;
+        return false;
     }
 
     // Running and terminated snapshots replace stale frame rows immediately.
@@ -279,7 +301,7 @@ func main() {
        or shell.toolPanels.callStackListBox.IsVisible()
        or shell.toolPanels.callStackEmptyLabel.IsVisible() == false {
         Fail(shell, harness, "running Call Stack retained stale frames");
-        return;
+        return false;
     }
     session.hasSession = false;
     session.terminated = true;
@@ -290,7 +312,7 @@ func main() {
        or shell.toolPanels.callStackListBox.IsVisible()
        or shell.toolPanels.callStackEmptyLabel.IsVisible() == false {
         Fail(shell, harness, "terminated Call Stack state");
-        return;
+        return false;
     }
 
     // Both stable widget trees reflow and preserve filter focus through docks.
@@ -315,7 +337,7 @@ func main() {
               + shell.toolPanels.callStackToolbar.GetScreenHeight()
           > shell.toolPanels.callStackListBox.GetScreenY() + 1.0 {
         Fail(shell, harness, "Call Stack controls overflowed zoomed side dock");
-        return;
+        return false;
     }
 
     shell.toolPanels.ShowDebugPanel();
@@ -339,10 +361,18 @@ func main() {
               + shell.toolPanels.debugToolbar.GetScreenHeight()
           > shell.toolPanels.debugListBox.GetScreenY() + 1.0 {
         Fail(shell, harness, "Debug controls overflowed zoomed side dock");
-        return;
+        return false;
     }
 
-    harness.UnbindApp();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new DebugToolSurfacesProbeContext();
+    if VerifyCallStackSurface(ctx) == false { return; }
+    if VerifyDebugConsoleSurface(ctx) == false { return; }
+
+    ctx.harness.UnbindApp();
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

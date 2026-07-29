@@ -1,0 +1,207 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_row_helpers.zia
+// Purpose: Focused row helpers behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_problems.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_row_helpers;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_problems" as PreviousLayer;
+
+class ToolPanelRowHelpersLayer extends PreviousLayer.ToolPanelProblemsLayer {
+
+    /// @brief Add a muted group header row.
+    /// @return Concrete ListBox item handle.
+    expose override func AddToolGroupHeader(listBox: GUI.ListBox,
+                                   title: String,
+                                   detail: String) -> Any {
+        if listBox == null { return null; }
+        var text = TrimToolText(title, 36);
+        if detail != "" and detail != title {
+            text = text + "  " + TrimToolText(detail, 96);
+        }
+        if listBox == referencesListBox {
+            return AddReferenceModelRow(
+                text, title + " " + detail, ToolPanelModel.ToolColorMuted(), true);
+        }
+        return AddToolPlainRow(listBox, text, ToolPanelModel.ToolColorMuted());
+    }
+
+    /// @brief Add a fixed-column location row to a tool panel.
+    /// @return Concrete ListBox item handle.
+    expose override func AddToolLocationRow(listBox: GUI.ListBox,
+                                   kind: String,
+                                   source: String,
+                                   location: String,
+                                   code: String,
+                                   preview: String,
+                                   action: String) -> Any {
+        if listBox == null { return null; }
+        var displayKind = kind;
+        if displayKind == "" { displayKind = "-"; }
+        var displaySource = source;
+        if displaySource == "" { displaySource = "-"; }
+        var displayCode = code;
+        if displayCode == "" { displayCode = "-"; }
+        var text = PadToolColumn(displayKind, ToolPanelModel.TOOL_KIND_COL)
+                   + "  " + PadToolColumn(displaySource, ToolPanelModel.TOOL_SOURCE_COL)
+                   + "  " + PadToolColumn(location, ToolPanelModel.TOOL_LOCATION_COL)
+                   + "  " + PadToolColumn(displayCode, ToolPanelModel.TOOL_CODE_COL)
+                   + "  " + TrimToolText(preview, 96);
+        if action != "" {
+            text = text + "  " + PadToolColumn(action, ToolPanelModel.TOOL_ACTION_COL);
+        }
+        if listBox == referencesListBox {
+            return AddReferenceModelRow(
+                text,
+                kind + " " + source + " " + location + " " + code + " "
+                    + preview + " " + action,
+                0,
+                false);
+        }
+        return AddToolPlainRow(listBox, text, 0);
+    }
+
+    /// @brief Add a colorized state row to a tool panel.
+    /// @return Concrete ListBox item handle.
+    expose override func AddToolStateRow(listBox: GUI.ListBox,
+                                kind: String,
+                                source: String,
+                                message: String,
+                                color: Integer) -> Any {
+        var item = AddToolLocationRow(listBox, kind, source, "-", "-", message, "-");
+        if item != null {
+            GUI.ListBox.ItemSetTextColor(item, color);
+        }
+        if listBox == referencesListBox and referencesRows.Count() > 0 {
+            var row = referencesRows.rows.get(referencesRows.Count() - 1);
+            row.color = color;
+        }
+        return item;
+    }
+
+    /// @brief Add a muted informational state row.
+    /// @return Concrete ListBox item handle.
+    expose override func AddToolInfoRow(listBox: GUI.ListBox,
+                               source: String,
+                               message: String) -> Any {
+        return AddToolStateRow(listBox, "INFO", source, message, ToolPanelModel.ToolColorMuted());
+    }
+
+    /// @brief Add a success state row.
+    /// @return Concrete ListBox item handle.
+    expose override func AddToolSuccessRow(listBox: GUI.ListBox,
+                                  source: String,
+                                  message: String) -> Any {
+        return AddToolStateRow(listBox, "OK", source, message, ToolPanelModel.ToolColorSuccess());
+    }
+
+    /// @brief Format a diagnostics severity label.
+    /// @return Short normalized severity text.
+    expose override func ProblemSeverityLabel(severity: String) -> String {
+        return tool_panel_text.ProblemSeverityLabel(severity);
+    }
+
+    /// @brief Pad or trim a fixed-width panel column.
+    /// @return Column text with stable width.
+    expose override func PadToolColumn(text: String, width: Integer) -> String {
+        return tool_panel_text.PadToolColumn(text, width);
+    }
+
+    /// @brief Trim panel text to a bounded display width.
+    /// @return Trimmed display text.
+    expose override func TrimToolText(text: String, width: Integer) -> String {
+        return tool_panel_text.TrimToolText(text, width);
+    }
+
+    /// @brief Apply severity color to a Problems row.
+    expose override func ApplyProblemSeverityColor(item: Any, severity: String) {
+        if item == null { return; }
+        GUI.ListBox.ItemSetTextColor(item, tool_panel_text.ProblemSeverityColor(severity));
+    }
+
+    /// @brief Apply semantic color to an output row.
+    expose override func ApplyOutputLineColor(item: Any, line: String) {
+        if item == null { return; }
+        var color = tool_panel_text.OutputLineColor(line);
+        if color != 0 {
+            GUI.ListBox.ItemSetTextColor(item, color);
+        }
+    }
+
+    /// @brief Format the diagnostics status item text.
+    /// @return Short diagnostics summary.
+    expose override func FormatDiagnosticsSummary(errors: Integer,
+                                         warnings: Integer,
+                                         notes: Integer) -> String {
+        return tool_panel_text.FormatDiagnosticsSummary(errors, warnings, notes);
+    }
+
+    /// @brief Pick the diagnostics status item color.
+    /// @return RGB color integer.
+    expose override func DiagnosticsSummaryColor(errors: Integer,
+                                        warnings: Integer,
+                                        notes: Integer) -> Integer {
+        return tool_panel_text.DiagnosticsSummaryColor(errors, warnings, notes);
+    }
+
+    /// @brief Format a language display name.
+    /// @return Human-readable language name.
+    expose override func FormatLanguageName(languageName: String) -> String {
+        return tool_panel_text.FormatLanguageName(languageName);
+    }
+
+    /// @brief Finish Problems rendering and show or hide the panel.
+    /// @param problemCount Number of diagnostics rendered.
+    expose override func FinishProblems(problemCount: Integer) {
+        UpdateProblems(problemCount);
+        if problemCount > 0 { ShowProblemsPanel(); }
+    }
+
+    /// @brief Finish Problems rendering without changing the selected panel.
+    /// @details Live diagnostics and background builds can update the model
+    ///          after the user has moved to Terminal or another tool.
+    expose override func UpdateProblems(problemCount: Integer) {
+        if problemCount > 0 {
+            problemsHaveDiagnostics = true;
+            if IsToolPanelSelected(tool_panel_model.PANEL_PROBLEMS) {
+                if problemsPanel != null { problemsPanel.SetVisible(true); }
+                diagListBox.SetVisible(true);
+            }
+        } else {
+            problemsHaveDiagnostics = false;
+            AddCleanProblemsRow();
+            HideProblemsPanel();
+        }
+        UpdateProblemsToolbarState();
+    }
+
+    /// @brief Add the clean-state Problems row after a successful check.
+    hide override func AddCleanProblemsRow() {
+        AddToolSuccessRow(diagListBox, "build", "No diagnostics from the latest check");
+    }
+}

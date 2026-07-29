@@ -1,0 +1,457 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/edit_navigation_commands.zia
+// Purpose: Navigate Zia definitions, references, and call hierarchies.
+// Key invariants:
+//   - Semantic navigation uses synchronized structured workspace records.
+// Ownership/Lifetime:
+//   - Callers own editor, index, location, and document state.
+// Links: zannastudio/src/commands/edit_commands.zia
+//
+//===----------------------------------------------------------------------===//
+
+module edit_navigation_commands;
+
+bind "../ui/app_shell";
+bind "../editor/editor_engine";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../editor/editor_tabs";
+bind "../editor/project_index";
+bind "../services/locations";
+bind "../services/safe_io";
+bind "../services/text_utils";
+bind "../services/workspace_file_index";
+bind "../commands/file_commands";
+bind "../commands/comment_commands";
+bind "../commands/diagnostic_edit_commands";
+bind "../commands/editor_document_edit";
+bind "edit_basic_navigation" as BasicNavigation;
+bind "../commands/source_transform_commands";
+bind "../basic/semantic_scan";
+bind "../zia/bind_utils";
+bind "../zia/formatters";
+bind "../zia/identifier_utils";
+bind "../zia/refactors";
+bind "../zia/source_scan";
+bind Zanna.GUI;
+bind IO = Zanna.IO;
+bind Path = Zanna.IO.Path;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind Seq = Zanna.Collections.Seq;
+bind Obj = Zanna.Core.Object;
+bind Map = Zanna.Collections.Map;
+
+final SEMANTIC_QUERY_PUMP_FILES = 32;
+
+/// @brief Return the active selection or cursor word for command-input defaults.
+/// @param engine Active editor engine, or null while no editor is ready.
+/// @return Trimmed selected text when present, otherwise the editor word at the cursor.
+/// @details The returned text is a convenience prefill only; command handlers
+///          still perform language-specific identifier validation before editing.
+func IdentifierAtCursor(engine: editor_engine.EditorEngine) -> String {
+    if engine == null or engine.editor == null { return ""; }
+    if engine.editor.CursorHasSelection(0) {
+        return Str.Trim(engine.editor.GetSelectedText());
+    }
+    return Str.Trim(engine.editor.GetWordAtCursor());
+}
+
+/// @brief Jump to the definition of the symbol at the cursor.
+/// @details Uses ProjectIndexer and LocationStore so cross-file definitions
+///          navigate through the same structured path as search/diagnostics.
+func handleGoToDefinition(shell: app_shell.AppShell,
+                          docMgr: document_manager.DocumentManager,
+                          engine: editor_engine.EditorEngine,
+                          tabs: editor_tabs.EditorTabs,
+                          indexer: project_index.ProjectIndexer,
+                          locStore: locations.LocationStore) {
+    if engine == null or engine.editor == null { return; }
+    var doc = docMgr.GetActive();
+    if doc == null {
+        shell.SetStatusLeft("Go to definition is unavailable for this file");
+        return;
+    }
+    var activeDoc = doc!;
+    if activeDoc.language == "basic" {
+        shell.SetStatusLeft("BASIC go to definition is handled in the background");
+        return;
+    }
+    if activeDoc.language != "zia" {
+        shell.SetStatusLeft("Go to definition is unavailable for this file");
+        return;
+    }
+
+    file_commands.SaveEditorState(docMgr, engine);
+    indexer.SyncActiveNow(docMgr, engine);
+    indexer.SyncOpenDocuments(docMgr);
+    if PrepareSemanticQuery(shell, indexer, "Go to definition") == false { return; }
+    var curLine = engine.editor.CursorLine + 1;
+    var curCol  = engine.editor.CursorCol;
+    var def = indexer.Definition(activeDoc.filePath, activeDoc.content, curLine, curCol);
+    if def != null and Map.GetBool(def, "found") {
+        var file = Map.GetStr(def, "file");
+        var line = Map.GetInt(def, "line");
+        var col = Map.GetInt(def, "column");
+        var endLine = Map.GetIntOr(def, "endLine", line);
+        var endCol = Map.GetIntOr(def, "endColumn", col + 1);
+        var id = locStore.Add(file, line, col, endLine, endCol,
+                              locations.KIND_DEFINITION, Map.GetStr(def, "name"));
+        if locStore.OpenLocation(shell, docMgr, engine, tabs, id) {
+            shell.SetStatusLeft("Definition: " + Map.GetStr(def, "name"));
+        }
+        return;
+    }
+
+    shell.SetStatusLeft("Definition not found");
+}
+
+func handleFindReferences(shell: app_shell.AppShell,
+                          docMgr: document_manager.DocumentManager,
+                          engine: editor_engine.EditorEngine,
+                          indexer: project_index.ProjectIndexer,
+                          locStore: locations.LocationStore) {
+    if engine == null or engine.editor == null { return; }
+    var doc = docMgr.GetActive();
+    if doc == null {
+        shell.SetStatusLeft("Find references is unavailable for this file");
+        return;
+    }
+    var activeDoc = doc!;
+    if activeDoc.language == "basic" {
+        shell.SetStatusLeft("BASIC references are handled in the background");
+        return;
+    }
+    if activeDoc.language != "zia" {
+        shell.SetStatusLeft("Find references is unavailable for this file");
+        return;
+    }
+    file_commands.SaveEditorState(docMgr, engine);
+    indexer.SyncActiveNow(docMgr, engine);
+    indexer.SyncOpenDocuments(docMgr);
+    if PrepareSemanticQuery(shell, indexer, "Find references") == false { return; }
+    var refs = indexer.References(activeDoc.filePath, activeDoc.content, engine.editor.CursorLine + 1, engine.editor.CursorCol);
+    shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
+    if refs == null or Seq.get_Count(refs) == 0 {
+        shell.toolPanels.HideReferencesPanel();
+        shell.SetStatusLeft("No references found");
+        return;
+    }
+    var i = 0;
+    var lastFile = "";
+    while i < Seq.get_Count(refs) {
+        var ref = Seq.Get(refs, i);
+        var file = Map.GetStr(ref, "file");
+        var line = Map.GetInt(ref, "line");
+        var col = Map.GetInt(ref, "column");
+        var endLine = Map.GetIntOr(ref, "endLine", line);
+        var endCol = Map.GetIntOr(ref, "endColumn", col + 1);
+        var name = Map.GetStr(ref, "name");
+        var marker = "";
+        if Map.GetBool(ref, "isDefinition") {
+            marker = "definition";
+        }
+        if file != lastFile {
+            shell.toolPanels.AddToolGroupHeader(shell.toolPanels.referencesListBox, Path.Name(file), file);
+            lastFile = file;
+        }
+        var preview = ReferencePreviewLine(docMgr, file, line);
+        var id = locStore.Add(file, line, col, endLine, endCol,
+                              locations.KIND_REFERENCE, name);
+        var item = shell.toolPanels.AddToolLocationRow(shell.toolPanels.referencesListBox,
+                                            "ref", "zia",
+                                            "" + line + ":" + col,
+                                            marker, preview, "");
+        shell.toolPanels.SetAddedToolRowLocationData(
+            shell.toolPanels.referencesListBox, item, id);
+        i = i + 1;
+    }
+    shell.toolPanels.ShowReferencesPanel();
+    shell.SetStatusLeft("Found " + Seq.get_Count(refs) + " references");
+}
+
+func handleIncomingCalls(shell: app_shell.AppShell,
+                         docMgr: document_manager.DocumentManager,
+                         engine: editor_engine.EditorEngine,
+                         indexer: project_index.ProjectIndexer,
+                         locStore: locations.LocationStore) {
+    if engine == null or engine.editor == null { return; }
+    var doc = docMgr.GetActive();
+    if doc == null {
+        shell.SetStatusLeft("Incoming calls is unavailable for this file");
+        return;
+    }
+    var activeDoc = doc!;
+    if activeDoc.language == "basic" {
+        shell.SetStatusLeft("BASIC call hierarchy is handled in the background");
+        return;
+    }
+    if activeDoc.language != "zia" {
+        shell.SetStatusLeft("Incoming calls is unavailable for this file");
+        return;
+    }
+    file_commands.SaveEditorState(docMgr, engine);
+    indexer.SyncActiveNow(docMgr, engine);
+    indexer.SyncOpenDocuments(docMgr);
+    if PrepareSemanticQuery(shell, indexer, "Incoming calls") == false { return; }
+    var refs = indexer.References(activeDoc.filePath, activeDoc.content, engine.editor.CursorLine + 1, engine.editor.CursorCol);
+    shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
+    if refs == null or Seq.get_Count(refs) == 0 {
+        shell.toolPanels.HideReferencesPanel();
+        shell.SetStatusLeft("No incoming calls found");
+        return;
+    }
+
+    var i = 0;
+    var count = 0;
+    var lastGroup = "";
+    while i < Seq.get_Count(refs) {
+        var ref = Seq.Get(refs, i);
+        if Map.GetBool(ref, "isDefinition") {
+            i = i + 1;
+            continue;
+        }
+
+        var file = Map.GetStr(ref, "file");
+        var line = Map.GetInt(ref, "line");
+        var col = Map.GetInt(ref, "column");
+        var endLine = Map.GetIntOr(ref, "endLine", line);
+        var endCol = Map.GetIntOr(ref, "endColumn", col + 1);
+        var name = Map.GetStr(ref, "name");
+        var source = SourceForPath(docMgr, file);
+        var caller = EnclosingZiaFunctionName(source, line);
+        if caller == "" {
+            caller = "<top-level>";
+        }
+        var group = file + "|" + caller;
+        if group != lastGroup {
+            shell.toolPanels.AddToolGroupHeader(shell.toolPanels.referencesListBox, caller, Path.Name(file));
+            lastGroup = group;
+        }
+
+        var preview = ReferencePreviewLine(docMgr, file, line);
+        var id = locStore.Add(file, line, col, endLine, endCol,
+                              locations.KIND_REFERENCE, name);
+        var item = shell.toolPanels.AddToolLocationRow(shell.toolPanels.referencesListBox,
+                                            "call", "zia",
+                                            "" + line + ":" + col,
+                                            "", preview, "");
+        shell.toolPanels.SetAddedToolRowLocationData(
+            shell.toolPanels.referencesListBox, item, id);
+        count = count + 1;
+        i = i + 1;
+    }
+
+    if count == 0 {
+        shell.toolPanels.HideReferencesPanel();
+        shell.SetStatusLeft("No incoming calls found");
+        return;
+    }
+    shell.toolPanels.ShowReferencesPanel();
+    shell.SetStatusLeft("Found " + count + " incoming calls");
+}
+
+func handleOutgoingCalls(shell: app_shell.AppShell,
+                         docMgr: document_manager.DocumentManager,
+                         engine: editor_engine.EditorEngine,
+                         indexer: project_index.ProjectIndexer,
+                         locStore: locations.LocationStore) {
+    if engine == null or engine.editor == null { return; }
+    var doc = docMgr.GetActive();
+    if doc == null {
+        shell.SetStatusLeft("Outgoing calls is unavailable for this file");
+        return;
+    }
+    var activeDoc = doc!;
+    if activeDoc.language == "basic" {
+        shell.SetStatusLeft("BASIC call hierarchy is handled in the background");
+        return;
+    }
+    if activeDoc.language != "zia" {
+        shell.SetStatusLeft("Outgoing calls is unavailable for this file");
+        return;
+    }
+    file_commands.SaveEditorState(docMgr, engine);
+    indexer.SyncActiveNow(docMgr, engine);
+    indexer.SyncOpenDocuments(docMgr);
+    if PrepareSemanticQuery(shell, indexer, "Outgoing calls") == false { return; }
+
+    var cursorLine = engine.editor.CursorLine + 1;
+    var startLine = EnclosingZiaFunctionStartLine(activeDoc.content, cursorLine);
+    if startLine <= 0 {
+        shell.toolPanels.HideReferencesPanel();
+        shell.SetStatusLeft("No enclosing function found");
+        return;
+    }
+    var callerName = ZiaFunctionNameFromLine(SourceLine(activeDoc.content, startLine));
+    var endLine = ZiaFunctionEndLine(activeDoc.content, startLine);
+    var tokens = OutgoingZiaCallTokens(activeDoc.content, startLine, endLine);
+    shell.toolPanels.ClearToolRows(shell.toolPanels.referencesListBox);
+    if tokens == null or Seq.get_Count(tokens) == 0 {
+        shell.toolPanels.HideReferencesPanel();
+        shell.SetStatusLeft("No outgoing calls found");
+        return;
+    }
+
+    var i = 0;
+    var count = 0;
+    var lastTarget = "";
+    while i < Seq.get_Count(tokens) {
+        var token = Seq.Get(tokens, i);
+        var tokenLine = Map.GetInt(token, "line");
+        var tokenCol = Map.GetInt(token, "column");
+        var tokenName = Map.GetStr(token, "name");
+        var def = indexer.Definition(activeDoc.filePath, activeDoc.content,
+                                     tokenLine, tokenCol);
+        if def != null and Map.GetBool(def, "found") {
+            var file = Map.GetStr(def, "file");
+            var line = Map.GetInt(def, "line");
+            var col = Map.GetInt(def, "column");
+            var endDefLine = Map.GetIntOr(def, "endLine", line);
+            var endDefCol = Map.GetIntOr(def, "endColumn", col + 1);
+            var targetName = Map.GetStr(def, "name");
+            if targetName == "" {
+                targetName = tokenName;
+            }
+            var targetGroup = file + "|" + targetName + "|" + line + "|" + col;
+            if targetGroup != lastTarget {
+                shell.toolPanels.AddToolGroupHeader(shell.toolPanels.referencesListBox,
+                                         callerName + " -> " + targetName,
+                                         Path.Name(file));
+                lastTarget = targetGroup;
+            }
+            var preview = ReferencePreviewLine(docMgr, activeDoc.filePath, tokenLine);
+            var id = locStore.Add(file, line, col, endDefLine, endDefCol,
+                                  locations.KIND_DEFINITION, targetName);
+            var item = shell.toolPanels.AddToolLocationRow(shell.toolPanels.referencesListBox,
+                                                "call", "zia",
+                                                "" + tokenLine + ":" + tokenCol,
+                                                "definition", preview, "");
+            shell.toolPanels.SetAddedToolRowLocationData(
+                shell.toolPanels.referencesListBox, item, id);
+            count = count + 1;
+        }
+        i = i + 1;
+    }
+
+    if count == 0 {
+        shell.toolPanels.HideReferencesPanel();
+        shell.SetStatusLeft("No outgoing calls found");
+        return;
+    }
+    shell.toolPanels.ShowReferencesPanel();
+    shell.SetStatusLeft("Found " + count + " outgoing calls");
+}
+
+func ReferencePreviewLine(docMgr: document_manager.DocumentManager,
+                          filePath: String,
+                          lineNumber: Integer) -> String {
+    var source = SourceForPath(docMgr, filePath);
+    if source == "" { return ""; }
+    var lines = Str.Split(source, "\n");
+    if lineNumber < 1 or lineNumber > Seq.get_Count(lines) { return ""; }
+    return Str.Trim(Obj.ToString(Seq.Get(lines, lineNumber - 1)));
+}
+
+func SourceForPath(docMgr: document_manager.DocumentManager,
+                   filePath: String) -> String {
+    if docMgr != null {
+        var idx = docMgr.FindByPath(filePath);
+        if idx >= 0 {
+            return docMgr.documents.get(idx).content;
+        }
+    }
+    if IO.File.Exists(filePath) {
+        var readResult = safe_io.ReadAllText(filePath);
+        if readResult.ok { return readResult.text; }
+    }
+    return "";
+}
+
+func SourceLine(source: String,
+                lineNumber: Integer) -> String {
+    return source_scan.SourceLine(source, lineNumber);
+}
+
+expose func EnclosingZiaFunctionStartLine(source: String,
+                                          lineNumber: Integer) -> Integer {
+    return source_scan.EnclosingZiaFunctionStartLine(source, lineNumber);
+}
+
+expose func EnclosingZiaFunctionName(source: String,
+                                     lineNumber: Integer) -> String {
+    return source_scan.EnclosingZiaFunctionName(source, lineNumber);
+}
+
+expose func ZiaFunctionNameFromLine(line: String) -> String {
+    return source_scan.ZiaFunctionNameFromLine(line);
+}
+
+expose func ZiaFunctionEndLine(source: String,
+                               startLine: Integer) -> Integer {
+    return source_scan.ZiaFunctionEndLine(source, startLine);
+}
+
+expose func OutgoingZiaCallTokens(source: String,
+                                  startLine: Integer,
+                                  endLine: Integer) -> Any {
+    return source_scan.OutgoingZiaCallTokens(source, startLine, endLine);
+}
+
+/// @brief Pump a bounded amount of workspace indexing before a semantic query.
+/// @details Go-to-definition, references, call hierarchy, and rename require a
+///          complete workspace index for trustworthy results. This helper keeps
+///          those commands responsive by advancing a small batch and reporting
+///          progress when the index is still warming.
+/// @param shell Workbench shell used for contextual status feedback.
+/// @param indexer Project index owner.
+/// @param label User-facing command name for the status message.
+/// @return True when the workspace index is complete enough for the query.
+func PrepareSemanticQuery(shell: app_shell.AppShell,
+                          indexer: project_index.ProjectIndexer,
+                          label: String) -> Boolean {
+    if indexer == null { return false; }
+    if indexer.PrepareWorkspaceQuery(SEMANTIC_QUERY_PUMP_FILES) {
+        return true;
+    }
+    var msg = label + " is waiting for workspace indexing ("
+              + indexer.WorkspaceIndexProgressText() + ")";
+    if shell != null {
+        shell.SetStatusLeft(msg);
+    }
+    return false;
+}
+
+expose func ApplyActiveDocumentContentToEditor(docMgr: document_manager.DocumentManager,
+                                               engine: editor_engine.EditorEngine,
+                                               tabs: editor_tabs.EditorTabs) -> Boolean {
+    if docMgr == null or engine == null or engine.editor == null { return false; }
+    var active = docMgr.GetActive();
+    if active == null { return false; }
+    var target = active!.content;
+    if engine.GetTextSnapshot() == target {
+        if tabs != null {
+            tabs.SetModified(docMgr.activeIndex, active!.isModified);
+        }
+        return false;
+    }
+
+    var lastLine = engine.editor.LineCount - 1;
+    if lastLine < 0 { return false; }
+    var last = engine.editor.GetLine(lastLine);
+    engine.editor.SetCursorSelection(0, 0, 0, lastLine, Str.get_Length(last));
+    engine.editor.InsertAtCursor(target);
+    engine.SaveToDocument(active!);
+    active!.isModified = true;
+    if tabs != null {
+        tabs.SetModified(docMgr.activeIndex, true);
+    }
+    return true;
+}
+

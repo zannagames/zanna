@@ -1,0 +1,349 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_contract_04.zia
+// Purpose: Virtual method contract segment 4 for composable 2D scene-editor layers.
+// Key invariants:
+//   - Signatures mirror the controller surface and provide neutral dispatch fallbacks.
+// Ownership/Lifetime:
+//   - Contract instances are implementation scaffolding and own no external resources.
+// Links: zannastudio/src/ui/scene_editor_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_contract_04;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_contract_03" as PreviousContract;
+
+/// @brief Dispatch declarations used by focused SceneEditor2D layers.
+class SceneEditor2DContract04 extends PreviousContract.SceneEditor2DContract03 {
+    /// @brief Neutral dispatch slot for RemapLayerWorkspaceForMove.
+    hide func RemapLayerWorkspaceForMove(_source: Integer,
+                                         _destination: Integer) {}
+
+    /// @brief Neutral dispatch slot for RemapLayerWorkspaceForRemoval.
+    hide func RemapLayerWorkspaceForRemoval(_removed: Integer) {}
+
+    /// @brief Neutral dispatch slot for MoveSceneLayer.
+    hide func MoveSceneLayer(_source: Integer,
+                             _destination: Integer,
+                             _action: String) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SetLayerLocked.
+    expose func SetLayerLocked(_layer: Integer,
+                               _nextLocked: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SetSoloLayer.
+    expose func SetSoloLayer(_nextSolo: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SetLayerVisibility.
+    expose func SetLayerVisibility(_layer: Integer,
+                                   _nextVisible: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for PumpLayerControls.
+    hide func PumpLayerControls() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for PortableLayerAssetPath.
+    hide func PortableLayerAssetPath(_assetPath: String) -> String { return ""; }
+
+    /// @brief Neutral dispatch slot for ConfigureSceneSpinner.
+    expose func ConfigureSceneSpinner(_spinner: GUI.Spinner,
+                                    _value: Integer,
+                                    _maximum: Integer) {}
+
+    /// @brief Neutral dispatch slot for RefreshSceneSetupFields.
+    hide func RefreshSceneSetupFields() {}
+
+    /// @brief Neutral dispatch slot for PumpObjectControls.
+    hide func PumpObjectControls() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for PumpComponentControls.
+    hide func PumpComponentControls() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ObjectIdExists.
+    hide func ObjectIdExists(_objectId: String, _exceptIndex: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ObjectIndexWithId.
+    hide func ObjectIndexWithId(_objectId: String) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for UniqueObjectId.
+    hide func UniqueObjectId(_base: String) -> String { return ""; }
+
+    /// @brief Neutral dispatch slot for CanvasShiftDown.
+    hide func CanvasShiftDown() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CanvasAltDown.
+    hide func CanvasAltDown() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CanvasPrimaryModifierDown.
+    hide func CanvasPrimaryModifierDown() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for BeginCanvasMarquee.
+    hide func BeginCanvasMarquee(_cellX: Integer,
+                                 _cellY: Integer,
+                                 _additive: Boolean,
+                                 _toggle: Boolean) {}
+
+    /// @brief Neutral dispatch slot for ResetCanvasMarquee.
+    hide func ResetCanvasMarquee(_releaseCapture: Boolean) {}
+
+    /// @brief Neutral dispatch slot for CancelCanvasMarquee.
+    hide func CancelCanvasMarquee() {}
+
+    /// @brief Neutral dispatch slot for FinishCanvasMarquee.
+    hide func FinishCanvasMarquee() {}
+
+    /// @brief Neutral dispatch slot for BeginTileRectangle.
+    hide func BeginTileRectangle(_cellX: Integer,
+                                 _cellY: Integer) {}
+
+    /// @brief Neutral dispatch slot for ResetTileRectangle.
+    hide func ResetTileRectangle(_releaseCapture: Boolean) {}
+
+    /// @brief Neutral dispatch slot for UpdateTileRectanglePointer.
+    hide func UpdateTileRectanglePointer() {}
+
+    /// @brief Neutral dispatch slot for CancelTileRectangle.
+    hide func CancelTileRectangle() {}
+
+    /// @brief Neutral dispatch slot for FinishTileRectangle.
+    hide func FinishTileRectangle() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ShapeCells.
+    hide func ShapeCells(_shape: Integer,
+                         _startX: Integer,
+                         _startY: Integer,
+                         _endX: Integer,
+                         _endY: Integer) -> List[Integer] { return []; }
+
+    /// @brief Neutral dispatch slot for ApplyTileShape.
+    hide func ApplyTileShape(_shape: Integer,
+                             _startX: Integer,
+                             _startY: Integer,
+                             _endX: Integer,
+                             _endY: Integer,
+                             _tile: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ResetPaintStroke.
+    hide func ResetPaintStroke(_releaseCapture: Boolean) {}
+
+    /// @brief Neutral dispatch slot for CancelPaintStroke.
+    hide func CancelPaintStroke() {}
+
+    /// @brief Neutral dispatch slot for PumpGameViewCanvasNavigation.
+    hide func PumpGameViewCanvasNavigation() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for PumpCanvas.
+    hide func PumpCanvas() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for PumpCanvasKeyboard.
+    hide func PumpCanvasKeyboard() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for PumpObjectRename.
+    hide func PumpObjectRename() {}
+
+    /// @brief Neutral dispatch slot for BeginRenameSelectedObject.
+    expose func BeginRenameSelectedObject() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CreateRootObjectAtSelection.
+    expose func CreateRootObjectAtSelection() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for CreateChildObjectUnderSelection.
+    expose func CreateChildObjectUnderSelection() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for CreateObjectAtCanvasPoint.
+    expose func CreateObjectAtCanvasPoint(_pointX: Number,
+                                          _pointY: Number) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ObjectCanvasFootprint.
+    hide func ObjectCanvasFootprint(_objectIndex: Integer)
+        -> SceneEditor2DModel.ObjectFootprint2D { return null; }
+
+    /// @brief Neutral dispatch slot for ObjectScaledRect.
+    hide func ObjectScaledRect(_objectIndex: Integer)
+        -> SceneEditor2DModel.ObjectFootprint2D { return null; }
+
+    /// @brief Neutral dispatch slot for ObjectFootprintContains.
+    hide func ObjectFootprintContains(_objectIndex: Integer,
+                                      _canvasX: Number,
+                                      _canvasY: Number) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RectHandlePoint.
+    expose func RectHandlePoint(_objectIndex: Integer,
+                                _handle: Integer) -> SceneEditor2DModel.CanvasPoint2D { return null; }
+
+    /// @brief Neutral dispatch slot for RectHandleAtPoint.
+    hide func RectHandleAtPoint(_objectIndex: Integer,
+                                _pointX: Number,
+                                _pointY: Number) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for RectToolEligible.
+    hide func RectToolEligible() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for BeginRectGesture.
+    hide func BeginRectGesture(_handle: Integer,
+                               _pointX: Number,
+                               _pointY: Number) {}
+
+    /// @brief Neutral dispatch slot for RectGestureLocalPoint.
+    hide func RectGestureLocalPoint(_pointX: Number,
+                                    _pointY: Number) -> SceneEditor2DModel.CanvasPoint2D { return null; }
+
+    /// @brief Neutral dispatch slot for PumpRectGesture.
+    hide func PumpRectGesture(_pointX: Number, _pointY: Number) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SetTileRegion.
+    hide func SetTileRegion(_startX: Integer,
+                            _startY: Integer,
+                            _endX: Integer,
+                            _endY: Integer) {}
+
+    /// @brief Neutral dispatch slot for ClearTileRegion.
+    hide func ClearTileRegion() {}
+
+    /// @brief Neutral dispatch slot for HasTileRegion.
+    expose func HasTileRegion() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CopyTileRegion.
+    expose func CopyTileRegion() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for DeleteTileRegion.
+    expose func DeleteTileRegion() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CutTileRegion.
+    expose func CutTileRegion() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for PasteTileBlockAt.
+    expose func PasteTileBlockAt(_cellX: Integer,
+                                 _cellY: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for UseTileRegionAsStamp.
+    expose func UseTileRegionAsStamp() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ClearTileStamp.
+    expose func ClearTileStamp() {}
+
+    /// @brief Neutral dispatch slot for ApplyStampAt.
+    hide func ApplyStampAt(_cellX: Integer, _cellY: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CanvasFreePixelX.
+    expose func CanvasFreePixelX(_contentXValue: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for CanvasFreePixelY.
+    expose func CanvasFreePixelY(_contentYValue: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for CanvasCellAtPointX.
+    expose func CanvasCellAtPointX(_pointX: Number) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for CanvasCellAtPointY.
+    expose func CanvasCellAtPointY(_pointY: Number) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for CanvasCellAtPoint.
+    hide func CanvasCellAtPoint(_pointX: Number,
+                                _pointY: Number,
+                                _horizontal: Boolean) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for CreateSpriteObjectFromDrop.
+    expose func CreateSpriteObjectFromDrop(_assetPath: String,
+                                           _dropX: Number,
+                                           _dropY: Number) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for MoveSelectedObjectEarlier.
+    expose func MoveSelectedObjectEarlier() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for MoveSelectedObjectLater.
+    expose func MoveSelectedObjectLater() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SetToolMode.
+    expose func SetToolMode(_nextMode: Integer) {}
+
+    /// @brief Neutral dispatch slot for ApplyObjectRename.
+    hide func ApplyObjectRename() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SceneSelectionCommandsOwnFocus.
+    expose func SceneSelectionCommandsOwnFocus() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for FocusActiveModeButton.
+    hide func FocusActiveModeButton() {}
+
+    /// @brief Neutral dispatch slot for ApplyStrokeCell.
+    hide func ApplyStrokeCell(_cellX: Integer, _cellY: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplyStrokeLine.
+    hide func ApplyStrokeLine(_targetX: Integer,
+                              _targetY: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplyTileCell.
+    hide func ApplyTileCell(_layer: Integer,
+                            _cellX: Integer,
+                            _cellY: Integer,
+                            _tile: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplyTileLineUncommitted.
+    hide func ApplyTileLineUncommitted(_layer: Integer,
+                                       _startX: Integer,
+                                       _startY: Integer,
+                                       _targetX: Integer,
+                                       _targetY: Integer,
+                                       _tile: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for FinishPaintStroke.
+    hide func FinishPaintStroke() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for FinishObjectDrag.
+    hide func FinishObjectDrag() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for FindObjectAtCanvasPoint.
+    hide func FindObjectAtCanvasPoint(_pointX: Number,
+                                      _pointY: Number) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for FindObjectAtCell.
+    hide func FindObjectAtCell(_cellX: Integer, _cellY: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for FitScene.
+    hide func FitScene() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for FrameInitialScene.
+    hide func FrameInitialScene() -> Boolean { return false; }
+
+}

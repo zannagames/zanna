@@ -1,0 +1,460 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_layers_history.zia
+// Purpose: Focused layers history behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_component_properties.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_layers_history;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_component_properties" as PreviousLayer;
+
+/// @brief Layers History implementation layer.
+class SceneEditor2DLayersHistoryLayer extends PreviousLayer.SceneEditor2DComponentPropertiesLayer {
+
+    /// @brief Verify one just-written typed property without string coercion.
+    hide override func BatchPropertyMatches(index: Integer,
+                                   key: String,
+                                   kind: String,
+                                   stringValue: String,
+                                   intValue: Integer,
+                                   floatValue: Number,
+                                   boolValue: Boolean) -> Boolean {
+        if scene.ObjectHas(index, key) == false
+           or scene.ObjectPropertyKind(index, key) != kind {
+            return false;
+        }
+        if kind == "string" {
+            return scene.ObjectGetStr(index, key, "") == stringValue;
+        }
+        if kind == "int" {
+            return scene.ObjectGetInt(index, key, 0) == intValue;
+        }
+        if kind == "float" {
+            var delta =
+                scene.ObjectGetFloat(index, key, 0.0) - floatValue;
+            if delta < 0.0 { delta = 0.0 - delta; }
+            return delta < 0.000000000001;
+        }
+        if kind == "bool" {
+            return scene.ObjectGetBool(index, key, false) == boolValue;
+        }
+        return kind == "null";
+    }
+
+    /// @brief Replace the document with a bounded, undoable empty scene.
+    expose override func ReplaceScene(width: Integer,
+                             height: Integer,
+                             tileSize: Integer) -> Boolean {
+        var nextWidth = SceneEditor2DModel.ClampInt(width, 1, SceneEditor2DModel.MAX_NEW_SCENE_CELLS);
+        var nextHeight = SceneEditor2DModel.ClampInt(height, 1, SceneEditor2DModel.MAX_NEW_SCENE_CELLS);
+        var nextTileSize = SceneEditor2DModel.ClampInt(tileSize, 1, 512);
+        scene = SceneDocument.New(nextWidth, nextHeight,
+                                  nextTileSize, nextTileSize);
+        if scene == null { return false; }
+        RefreshAutotilePreviewRules();
+        loadError = "";
+        activeLayer = 0;
+        selectedObject = -1;
+        selectedObjects = [];
+        selectedObjectProperty = -1;
+        selectedCellX = -1;
+        selectedCellY = -1;
+        SetEditorControlsEnabled(true);
+        initialFramePending = false;
+        fitPending = true;
+        var changed = CommitScene(
+            "Created " + nextWidth + "x" + nextHeight + " scene");
+        ReloadTilesets();
+        detailLabel.SetText("");
+        RefreshInspector();
+        RefreshSceneSetupFields();
+        return changed;
+    }
+
+    /// @brief Rename one scene layer through the canonical history path.
+    expose override func RenameSceneLayer(layer: Integer,
+                                 name: String) -> Boolean {
+        if scene == null or layer < 0 or layer >= scene.LayerCount() {
+            return false;
+        }
+        var nextName = Str.Trim(name);
+        if nextName == "" or scene.LayerName(layer) == nextName {
+            return false;
+        }
+        scene.SetLayerName(layer, nextName);
+        if scene.LayerName(layer) != nextName {
+            detailLabel.SetText(
+                "Layer names must fit the scene format's 31-byte limit.");
+            return false;
+        }
+        activeLayer = layer;
+        var changed = CommitScene("Renamed layer to " + nextName);
+        detailLabel.SetText("");
+        RefreshInspector();
+        return changed;
+    }
+
+    /// @brief Validate and persist one external layer tileset reference.
+    /// @details Empty paths clear the reference. Accepted changes create one
+    ///          canonical history entry; invalid images leave JSON untouched.
+    expose override func ApplyLayerAssetPath(layer: Integer,
+                                    assetPath: String) -> Boolean {
+        if scene == null or layer < 0 or layer >= scene.LayerCount() {
+            return false;
+        }
+        var nextPath = Str.Trim(assetPath);
+        var previousPath = scene.LayerAsset(layer);
+        if nextPath == previousPath { return false; }
+
+        if nextPath != "" {
+            var docPath = "";
+            if currentDoc != null { docPath = currentDoc.filePath; }
+            var candidate = tilesets.ValidateCandidateForLayer(
+                layer, nextPath, docPath,
+                scene.TileWidth, scene.TileHeight);
+            if candidate.error != "" {
+                toolbarStatus.SetText("Layer image not loaded");
+                tilesetInspector.status.SetText(candidate.error);
+                detailLabel.SetText(
+                    "The layer image was not changed.\n\n" + candidate.error);
+                GUI.Toast.Error("2D tileset image could not be loaded");
+                return false;
+            }
+        }
+
+        scene.SetLayerAsset(layer, nextPath);
+        if scene.LayerAsset(layer) != nextPath {
+            detailLabel.SetText("The scene model rejected the layer image path.");
+            return false;
+        }
+        activeLayer = layer;
+        var action = "Updated layer image";
+        if nextPath == "" { action = "Cleared layer image"; }
+        if CommitScene(action) == false {
+            scene.SetLayerAsset(layer, previousPath);
+            detailLabel.SetText("The layer image change could not be committed.");
+            return false;
+        }
+        ReloadTilesets();
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Reload external layer pixels without changing scene history.
+    expose override func ReloadTilesetPreviews() {
+        ReloadTilesets();
+        RefreshTilesetPalette();
+        var entry = tilesets.Entry(activeLayer);
+        if entry != null and entry.error != "" {
+            toolbarStatus.SetText("Layer image reload failed");
+            detailLabel.SetText(entry.error);
+        } else {
+            toolbarStatus.SetText("Reloaded layer image previews");
+            detailLabel.SetText("");
+        }
+    }
+
+    /// @brief Quietly refresh externally changed layer images without history.
+    /// @return True when metadata changed and the bounded preview was reloaded.
+    expose override func PollTilesetExternalChanges(intervalMs: Integer) -> Boolean {
+        if scene == null or tilesets == null
+           or tilesets.PollExternalChanges(intervalMs) == false {
+            return false;
+        }
+        ReloadTilesets();
+        RefreshTilesetPalette();
+        var entry = tilesets.Entry(activeLayer);
+        if entry != null and entry.error != "" {
+            toolbarStatus.SetText("Layer image changed externally");
+            detailLabel.SetText(entry.error);
+        } else {
+            toolbarStatus.SetText(
+                "Layer image refreshed after external change");
+            detailLabel.SetText("");
+        }
+        return true;
+    }
+
+    /// @brief Select one visible palette frame and enter Paint mode.
+    expose override func SelectPaletteTile(tileId: Integer) -> Boolean {
+        if scene == null or tileId <= 0
+           or tileId > tilesets.TileCount(activeLayer) {
+            return false;
+        }
+        tileSpinner.SetValue(tileId);
+        SetMode(SceneEditor2DModel.MODE_PAINT);
+        RefreshTilesetPalette();
+        toolbarStatus.SetText("Selected tile " + tileId + " for painting");
+        return true;
+    }
+
+    /// @brief Import one Tiled path transactionally without opening a dialog.
+    /// @return True only when import and serialization both succeed.
+    expose override func ImportTiledPath(path: String) -> Boolean {
+        if path == "" { return false; }
+        var imported = SceneDocument.ImportTiledResult(path);
+        if imported.IsOk == false {
+            var message = imported.UnwrapErrStr();
+            detailLabel.SetText("Tiled import failed:\n" + message);
+            toolbarStatus.SetText("Import failed");
+            GUI.Toast.Error("Tiled import failed: " + message);
+            return false;
+        }
+        scene = imported.Unwrap() as SceneDocument;
+        RefreshAutotilePreviewRules();
+        loadError = "";
+        activeLayer = 0;
+        selectedObject = -1;
+        selectedObjects = [];
+        selectedObjectProperty = -1;
+        selectedCellX = -1;
+        selectedCellY = -1;
+        SetEditorControlsEnabled(true);
+        initialFramePending = false;
+        fitPending = true;
+        var changed = CommitScene("Imported " + Path.Name(path));
+        ReloadTilesets();
+        RefreshInspector();
+        RefreshSceneSetupFields();
+        return changed;
+    }
+
+    /// @brief Import a user-selected Tiled file transactionally.
+    hide override func ImportTiled() -> Boolean {
+        var baseDir = "";
+        if currentDoc != null and currentDoc.filePath != "" {
+            baseDir = Path.Directory(currentDoc.filePath);
+        }
+        var path = GUI.FileDialog.Open(
+            "Import Tiled Map", baseDir, "*.tmj;*.json;*.tmx");
+        if path == "" { return false; }
+        return ImportTiledPath(path);
+    }
+
+    /// @brief Serialize one accepted edit into the shared Document model.
+    hide override func CommitScene(message: String) -> Boolean {
+        if scene == null or currentDoc == null { return false; }
+        var serialized = scene.ToJson();
+        if serialized == "" {
+            detailLabel.SetText("Scene serialization failed; no document data changed.");
+            return false;
+        }
+        if serialized == currentSerialized { return false; }
+        SyncHistoryLabels();
+        PushHistory(undoStack, currentSerialized);
+        undoLabels.add(message);
+        SyncHistoryLabels();
+        redoStack = [];
+        redoLabels = [];
+        currentSerialized = serialized;
+        currentDoc.content = serialized;
+        currentDoc.isModified = serialized != cleanSerialized;
+        revision = revision + 1;
+        renderDirty = true;
+        toolbarStatus.SetText(message);
+        return true;
+    }
+
+    /// @brief Append one bounded canonical scene-JSON history snapshot.
+    /// @details Entry count and aggregate bytes are both bounded (ADR 0190):
+    ///          oldest snapshots drop first, and the newest snapshot is
+    ///          always retained so the last edit stays undoable.
+    hide override func PushHistory(stack: List[String], content: String) {
+        if content == "" { return; }
+        stack.add(content);
+        scene_history.TrimHistory(
+            stack, SceneEditor2DModel.MAX_2D_SCENE_HISTORY, SceneEditor2DModel.MAX_2D_HISTORY_BYTES);
+    }
+
+    /// @brief Reconcile best-effort labels with bounded snapshot stacks.
+    /// @details Budget trims can drop old snapshots. Front-trimming and
+    ///          padding keep labels aligned without making presentation text
+    ///          part of canonical scene history.
+    hide override func SyncHistoryLabels() {
+        while undoLabels.count() > undoStack.count() {
+            undoLabels.removeAt(0);
+        }
+        while undoLabels.count() < undoStack.count() {
+            var rebuilt: List[String] = [];
+            rebuilt.add("Edit");
+            var undoIndex = 0;
+            while undoIndex < undoLabels.count() {
+                rebuilt.add(undoLabels.get(undoIndex));
+                undoIndex = undoIndex + 1;
+            }
+            undoLabels = rebuilt;
+        }
+        while redoLabels.count() > redoStack.count() {
+            redoLabels.removeAt(0);
+        }
+        while redoLabels.count() < redoStack.count() {
+            redoLabels.add("Edit");
+        }
+    }
+
+    /// @brief Rebuild the visible 2D History timeline oldest-first.
+    expose override func RefreshHistoryPanel() {
+        if historyList == null { return; }
+        SyncHistoryLabels();
+        historyListRefreshing = true;
+        historyList.Clear();
+        var index = 0;
+        while index < undoLabels.count() {
+            historyList.AddItem(
+                (index + 1) + ". " + undoLabels.get(index));
+            index = index + 1;
+        }
+        historyList.AddItem("● Current");
+        historyList.SelectIndex(undoLabels.count());
+        // Programmatic selection raises a normal selection edge. Drain it so
+        // the next frame cannot mistake refresh for a user jump.
+        historyList.WasSelectionChanged();
+        historyListRefreshing = false;
+    }
+
+    /// @brief Jump to the snapshot immediately before one listed edit.
+    /// @details Row k is oldest-first; the Current row is intentionally a
+    ///          no-op and completed jumps retain the equivalent redo chain.
+    expose override func JumpToHistoryRow(row: Integer) -> Boolean {
+        SyncHistoryLabels();
+        if row < 0 or row >= undoStack.count() { return false; }
+        var undos = undoStack.count() - row;
+        var step = 0;
+        while step < undos {
+            if Undo() == false { return false; }
+            step = step + 1;
+        }
+        toolbarStatus.SetText("Jumped back " + undos + " edit(s)");
+        RefreshHistoryPanel();
+        return true;
+    }
+
+    /// @brief Route one History row selection into the normal undo path.
+    hide override func PumpHistoryPanel() -> Boolean {
+        if historyList == null or historyListRefreshing { return false; }
+        if historyList.WasSelectionChanged() == false { return false; }
+        var row = historyList.SelectedIndex;
+        SyncHistoryLabels();
+        if row >= 0 and row < undoStack.count() {
+            return JumpToHistoryRow(row);
+        }
+        RefreshHistoryPanel();
+        return false;
+    }
+
+    hide override func SetMode(nextMode: Integer) {
+        var normalizedMode = nextMode;
+        if nextMode < SceneEditor2DModel.MODE_SELECT or nextMode > SceneEditor2DModel.MODE_ELLIPSE {
+            normalizedMode = SceneEditor2DModel.MODE_SELECT;
+        }
+        if paintStrokeActive and normalizedMode != mode {
+            CancelPaintStroke();
+        }
+        if tileRectangleActive and normalizedMode != SceneEditor2DModel.MODE_RECTANGLE {
+            CancelTileRectangle();
+        }
+        if canvasMarqueeActive and normalizedMode != SceneEditor2DModel.MODE_SELECT {
+            CancelCanvasMarquee();
+        }
+        if normalizedMode != SceneEditor2DModel.MODE_PAINT { ClearTileStamp(); }
+        var modeChanged = mode != normalizedMode;
+        mode = normalizedMode;
+        lastPaintX = -1;
+        lastPaintY = -1;
+        UpdateModeButtons();
+        if modeChanged { renderDirty = true; }
+    }
+
+    expose override func UpdateModeButtons() {
+        if selectButton == null { return; }
+        var canvasEditingEnabled =
+            editorControlsEnabled and gameViewActive == false;
+        selectButton.SetEnabled(canvasEditingEnabled);
+        paintButton.SetEnabled(canvasEditingEnabled);
+        eraseButton.SetEnabled(canvasEditingEnabled);
+        rectangleButton.SetEnabled(canvasEditingEnabled);
+        lineButton.SetEnabled(canvasEditingEnabled);
+        ellipseButton.SetEnabled(canvasEditingEnabled);
+        fillButton.SetEnabled(canvasEditingEnabled);
+        pickerButton.SetEnabled(canvasEditingEnabled);
+        objectButton.SetEnabled(canvasEditingEnabled);
+        toolMenuButton.SetEnabled(canvasEditingEnabled);
+        selectButton.SetStyle(0);
+        paintButton.SetStyle(0);
+        eraseButton.SetStyle(0);
+        rectangleButton.SetStyle(0);
+        lineButton.SetStyle(0);
+        ellipseButton.SetStyle(0);
+        fillButton.SetStyle(0);
+        pickerButton.SetStyle(0);
+        objectButton.SetStyle(0);
+        if mode == SceneEditor2DModel.MODE_PAINT {
+            paintButton.SetStyle(1);
+        } else if mode == SceneEditor2DModel.MODE_ERASE {
+            eraseButton.SetStyle(1);
+        } else if mode == SceneEditor2DModel.MODE_RECTANGLE {
+            rectangleButton.SetStyle(1);
+        } else if mode == SceneEditor2DModel.MODE_LINE {
+            lineButton.SetStyle(1);
+        } else if mode == SceneEditor2DModel.MODE_ELLIPSE {
+            ellipseButton.SetStyle(1);
+        } else if mode == SceneEditor2DModel.MODE_FILL {
+            fillButton.SetStyle(1);
+        } else if mode == SceneEditor2DModel.MODE_PICKER {
+            pickerButton.SetStyle(1);
+        } else if mode == SceneEditor2DModel.MODE_OBJECT {
+            objectButton.SetStyle(1);
+        } else {
+            selectButton.SetStyle(1);
+        }
+        UpdateCommandMenuButtons();
+    }
+}

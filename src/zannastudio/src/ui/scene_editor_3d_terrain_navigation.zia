@@ -1,0 +1,705 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_terrain_navigation.zia
+// Purpose: Focused terrain navigation behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_vertex_snap.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_terrain_navigation;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_vertex_snap" as PreviousLayer;
+
+/// @brief Terrain Navigation implementation layer.
+class SceneEditor3DTerrainNavigationLayer extends PreviousLayer.SceneEditor3DVertexSnapLayer {
+
+    /// @brief Return whether terrain sculpting currently owns left input.
+    expose override func IsTerrainSculptEnabled() -> Boolean {
+        return terrainSculptEnabled;
+    }
+
+    /// @brief Return whether one captured terrain stroke is in progress.
+    expose override func IsTerrainSculpting() -> Boolean {
+        return terrainStrokeActive;
+    }
+
+    /// @brief Resolve a screen point only when selected terrain is foremost.
+    expose override func TerrainPointAtViewport(
+        mouseX: Integer,
+        mouseY: Integer) -> SceneEditor3DModel.TerrainPointerHit3D {
+        var result = new SceneEditor3DModel.TerrainPointerHit3D();
+        var node = SelectedNode();
+        if scene == null or selectedIndices.count() != 1
+           or scene_terrain_3d.IsTerrainNode(node) == false
+           or mouseX < 0 or mouseX >= renderedViewportWidth
+           or mouseY < 0 or mouseY >= renderedViewportHeight
+           or ConfigureViewportCamera() == false {
+            return result;
+        }
+        var origin = viewportRenderCamera.ScreenToRayOrigin(
+            mouseX, mouseY,
+            renderedViewportWidth, renderedViewportHeight) as Vec3;
+        var direction = viewportRenderCamera.ScreenToRay(
+            mouseX, mouseY,
+            renderedViewportWidth, renderedViewportHeight) as Vec3;
+        if origin == null or direction == null { return result; }
+        var hitNode = scene.RaycastNodesPrecise(
+            origin,
+            direction,
+            viewportRenderCamera.FarPlane) as SceneNode;
+        if hitNode != node { return result; }
+        var hit = scene.RaycastPreciseHit(
+            origin,
+            direction,
+            viewportRenderCamera.FarPlane) as RayHit3D;
+        if hit == null or hit.Point == null { return result; }
+        var inverse = Mat4.Inverse(node.WorldMatrix) as Mat4;
+        if inverse == null { return result; }
+        var local = Mat4.TransformPoint(
+            inverse, hit.Point) as Vec3;
+        if local == null { return result; }
+        result.valid = true;
+        result.localX = local.X;
+        result.localY = local.Y;
+        result.localZ = local.Z;
+        return result;
+    }
+
+    /// @brief Keep the projected brush ring aligned with the precise hit.
+    hide override func UpdateTerrainBrushHover(mouseX: Integer,
+                                      mouseY: Integer)
+        -> SceneEditor3DModel.TerrainPointerHit3D {
+        var hit = TerrainPointAtViewport(mouseX, mouseY);
+        var changed = hit.valid != terrainBrushHoverValid;
+        if hit.valid {
+            changed = changed
+                or scene_transform_3d.NearlyEqual(
+                    hit.localX, terrainBrushHoverX) == false
+                or scene_transform_3d.NearlyEqual(
+                    hit.localY, terrainBrushHoverY) == false
+                or scene_transform_3d.NearlyEqual(
+                    hit.localZ, terrainBrushHoverZ) == false;
+            terrainBrushHoverX = hit.localX;
+            terrainBrushHoverY = hit.localY;
+            terrainBrushHoverZ = hit.localZ;
+        }
+        terrainBrushHoverValid = hit.valid;
+        if changed { renderDirty = true; }
+        return hit;
+    }
+
+    /// @brief Shift temporarily swaps Raise and Lower without changing UI.
+    hide override func EffectiveTerrainBrushMode() -> Integer {
+        var mode = terrainInspector.BrushMode();
+        if ViewportShiftDown() {
+            if mode == scene_terrain_3d.BRUSH_RAISE {
+                return scene_terrain_3d.BRUSH_LOWER;
+            }
+            if mode == scene_terrain_3d.BRUSH_LOWER {
+                return scene_terrain_3d.BRUSH_RAISE;
+            }
+        }
+        return mode;
+    }
+
+    /// @brief Rebuild the live terrain mesh for one radial brush dab.
+    hide override func ApplyTerrainDab(localX: Number,
+                              localZ: Number) {
+        if terrainStrokeActive == false
+           or terrainStrokeNode == null {
+            return;
+        }
+        var state =
+            scene_terrain_3d.FromNode(terrainStrokeNode);
+        if state.present == false {
+            CancelTerrainStroke();
+            return;
+        }
+        var target = scene_terrain_3d.ApplyBrush(
+            terrainStrokeHeights,
+            state.columns,
+            state.rows,
+            state.spacing,
+            localX,
+            localZ,
+            terrainInspector.radiusSpinner.Value,
+            terrainInspector.strengthSpinner.Value,
+            EffectiveTerrainBrushMode(),
+            terrainInspector.flattenHeightSpinner.Value);
+        if TerrainHeightsDiffer(
+               terrainStrokeHeights, target) == false {
+            return;
+        }
+        var mesh = scene_terrain_3d.BuildMesh(
+            target,
+            state.columns,
+            state.rows,
+            state.spacing);
+        if mesh == null {
+            CancelTerrainStroke();
+            detailLabel.SetText(
+                "The live terrain mesh could not be rebuilt; "
+                + "the stroke was restored.");
+            return;
+        }
+        terrainStrokeHeights = target;
+        terrainStrokeNode.Mesh = mesh;
+        terrainStrokeChanged = true;
+        terrainBrushHoverY = scene_terrain_3d.SampleHeight(
+            terrainStrokeHeights,
+            state.columns,
+            state.rows,
+            state.spacing,
+            localX,
+            localZ);
+        renderDirty = true;
+    }
+
+    /// @brief Resample pointer motion into bounded, evenly spaced brush dabs.
+    hide override func ApplyTerrainStrokePoint(localX: Number,
+                                      localZ: Number) {
+        if terrainStrokeActive == false { return; }
+        if terrainStrokeHasLastPoint == false {
+            ApplyTerrainDab(localX, localZ);
+            terrainStrokeLastX = localX;
+            terrainStrokeLastZ = localZ;
+            terrainStrokeHasLastPoint = true;
+            return;
+        }
+        var dx = localX - terrainStrokeLastX;
+        var dz = localZ - terrainStrokeLastZ;
+        var distance = Math.Sqrt(dx * dx + dz * dz);
+        var step = terrainInspector.radiusSpinner.Value * 0.22;
+        var state =
+            scene_terrain_3d.FromNode(terrainStrokeNode);
+        if state.present and step < state.spacing * 0.25 {
+            step = state.spacing * 0.25;
+        }
+        if step < 0.025 { step = 0.025; }
+        if distance < step * 0.2 { return; }
+        var dabs = Convert.NumToInt(distance / step) + 1;
+        if dabs < 1 { dabs = 1; }
+        if dabs > SceneEditor3DModel.MAX_TERRAIN_DABS_PER_FRAME {
+            dabs = SceneEditor3DModel.MAX_TERRAIN_DABS_PER_FRAME;
+        }
+        var startX = terrainStrokeLastX;
+        var startZ = terrainStrokeLastZ;
+        var dab = 1;
+        while dab <= dabs and terrainStrokeActive {
+            var fraction = dab / (dabs / 1.0);
+            ApplyTerrainDab(
+                startX + dx * fraction,
+                startZ + dz * fraction);
+            dab = dab + 1;
+        }
+        if terrainStrokeActive {
+            terrainStrokeLastX = localX;
+            terrainStrokeLastZ = localZ;
+        }
+    }
+
+    /// @brief Begin one captured terrain gesture from a precise local hit.
+    hide override func BeginTerrainStroke(hit: SceneEditor3DModel.TerrainPointerHit3D) {
+        var node = SelectedNode();
+        if hit == null or hit.valid == false
+           or terrainSculptEnabled == false
+           or node == null or bakeActive {
+            return;
+        }
+        var state = scene_terrain_3d.FromNode(node);
+        var heights = scene_terrain_3d.HeightsFromNode(node);
+        if state.present == false
+           or heights.count() != state.columns * state.rows {
+            SetTerrainSculptEnabled(false);
+            detailLabel.SetText(
+                "The terrain mesh no longer matches its typed grid contract.");
+            return;
+        }
+        terrainStrokeActive = true;
+        terrainStrokeChanged = false;
+        terrainStrokeHasLastPoint = false;
+        terrainStrokeNode = node;
+        terrainStrokeStartMesh = node.Mesh;
+        terrainStrokeHeights = heights;
+        Input.Mouse.Capture();
+        ApplyTerrainStrokePoint(hit.localX, hit.localZ);
+        toolbarStatus.SetText(
+            scene_terrain_3d.BrushModeName(
+                EffectiveTerrainBrushMode())
+            + "-sculpting " + NodeDisplayName(node));
+        detailLabel.SetText(
+            "Release for one undoable terrain stroke; Escape restores "
+            + "the original mesh.");
+        renderDirty = true;
+    }
+
+    /// @brief Clear transient stroke values and optional pointer capture.
+    hide override func ResetTerrainStroke(releaseCapture: Boolean) {
+        var wasActive = terrainStrokeActive;
+        terrainStrokeActive = false;
+        terrainStrokeChanged = false;
+        terrainStrokeHasLastPoint = false;
+        terrainStrokeLastX = 0.0;
+        terrainStrokeLastZ = 0.0;
+        terrainStrokeNode = null;
+        terrainStrokeStartMesh = null;
+        terrainStrokeHeights = [];
+        if releaseCapture and wasActive and Input.Mouse.IsCaptured() {
+            Input.Mouse.Release();
+        }
+    }
+
+    /// @brief Commit a complete sculpt stroke as one canonical snapshot.
+    hide override func FinishTerrainStroke() -> Boolean {
+        if terrainStrokeActive == false { return false; }
+        var changed = terrainStrokeChanged;
+        var node = terrainStrokeNode;
+        var original = terrainStrokeStartMesh;
+        var mode = EffectiveTerrainBrushMode();
+        if changed == false and node != null {
+            node.Mesh = original;
+        }
+        ResetTerrainStroke(true);
+        renderDirty = true;
+        if changed == false or node == null { return false; }
+        if CommitScene(
+               scene_terrain_3d.BrushModeName(mode)
+               + "-sculpted " + NodeDisplayName(node)
+               + " terrain") == false {
+            return false;
+        }
+        RefreshHierarchy(node);
+        terrainSculptEnabled =
+            scene_terrain_3d.IsTerrainNode(SelectedNode());
+        terrainInspector.SetSculptActive(terrainSculptEnabled);
+        UpdateTerrainControls(true);
+        detailLabel.SetText(
+            "Terrain stroke committed as one exact VSCN mesh edit.");
+        return true;
+    }
+
+    /// @brief Restore the pre-stroke mesh without creating history.
+    hide override func CancelTerrainStroke() {
+        if terrainStrokeActive
+           and terrainStrokeNode != null
+           and terrainStrokeStartMesh != null {
+            terrainStrokeNode.Mesh = terrainStrokeStartMesh;
+        }
+        ResetTerrainStroke(true);
+        toolbarStatus.SetText("Terrain stroke canceled");
+        detailLabel.SetText("");
+        renderDirty = true;
+    }
+
+    /// @brief Pump viewport selection, orbit/pan, zoom, and transform gizmos.
+    /// @return True only when a complete gizmo drag committed document content.
+    hide override func PumpViewportNavigation() -> Boolean {
+        if terrainStrokeActive {
+            return PumpActiveTerrainStroke();
+        }
+        if vertexSnapDragActive {
+            return PumpActiveVertexSnapDrag();
+        }
+        if gizmoDragAxis != SceneEditor3DModel.GIZMO_AXIS_NONE {
+            return PumpActiveGizmoDrag();
+        }
+        if flyActive {
+            PumpFlyFrame();
+            return false;
+        }
+        if gameViewActive == false {
+            if EffectiveVertexSnapEnabled() {
+                marqueeCandidate = false;
+                marqueeActive = false;
+                marqueeCancelled = false;
+            }
+            if PumpMarquee() { return false; }
+            PumpGizmoShortcuts();
+            PumpHierarchyRename();
+        }
+        if viewportImage == null or viewportImage.IsHovered() == false {
+            ClearTerrainBrushHover();
+            ClearVertexSnapSourceHover();
+            ClearGizmoHover();
+            ClearViewportNodeHover();
+            ClearOrientationHover();
+            return false;
+        }
+        var mouseX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.X())
+            - viewportImage.GetScreenX());
+        var mouseY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.Y())
+            - viewportImage.GetScreenY());
+        if gameViewOutputFramed {
+            PumpLockedGameOutputPointer();
+            return false;
+        }
+        var orientationFace = OrientationFaceAt(mouseX, mouseY);
+        if orientationFace != orientationHoverFace {
+            orientationHoverFace = orientationFace;
+            renderDirty = true;
+        }
+        if orientationFace != SceneEditor3DModel.ORIENTATION_FACE_NONE {
+            PumpOrientationNavigatorPointer(orientationFace);
+            return false;
+        }
+        if PumpViewportCameraNavigation() { return false; }
+        if gameViewActive {
+            PumpGameViewPointer();
+            return false;
+        }
+        if terrainSculptEnabled {
+            PumpTerrainSculptPointer(mouseX, mouseY);
+            return false;
+        }
+        ClearTerrainBrushHover();
+        if EffectiveVertexSnapEnabled() {
+            PumpVertexSnapPointer(mouseX, mouseY);
+            return false;
+        }
+        ClearVertexSnapSourceHover();
+        PumpViewportSelectionPointer(mouseX, mouseY);
+        return false;
+    }
+
+    /// @brief Continue, commit, or cancel one captured terrain stroke.
+    hide func PumpActiveTerrainStroke() -> Boolean {
+        if Input.Keyboard.WasPressed(Input.Key.Escape) {
+            CancelTerrainStroke();
+            return false;
+        }
+        if !Input.Mouse.IsDown(Input.Mouse.ButtonLeft) {
+            return FinishTerrainStroke();
+        }
+        var terrainX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.X())
+            - viewportImage.GetScreenX());
+        var terrainY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.Y())
+            - viewportImage.GetScreenY());
+        var terrainHit = UpdateTerrainBrushHover(terrainX, terrainY);
+        if terrainHit.valid {
+            ApplyTerrainStrokePoint(terrainHit.localX, terrainHit.localZ);
+        }
+        return false;
+    }
+
+    /// @brief Continue, commit, or cancel one captured vertex-snap drag.
+    hide func PumpActiveVertexSnapDrag() -> Boolean {
+        if Input.Keyboard.WasPressed(Input.Key.Escape) {
+            CancelVertexSnapDrag();
+            return false;
+        }
+        if !Input.Mouse.IsDown(Input.Mouse.ButtonLeft) {
+            return FinishVertexSnapDrag();
+        }
+        var targetX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.X())
+            - viewportImage.GetScreenX());
+        var targetY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.Y())
+            - viewportImage.GetScreenY());
+        ApplyVertexSnapTarget(targetX, targetY);
+        return false;
+    }
+
+    /// @brief Continue, commit, or cancel one captured transform drag.
+    hide func PumpActiveGizmoDrag() -> Boolean {
+        if Input.Keyboard.WasPressed(Input.Key.Escape) {
+            CancelGizmoDrag();
+            return false;
+        }
+        if !Input.Mouse.IsDown(Input.Mouse.ButtonLeft) {
+            return FinishGizmoDrag();
+        }
+        ApplyGizmoMouseDelta();
+        return false;
+    }
+
+    /// @brief Clear a stale terrain pointer preview.
+    hide func ClearTerrainBrushHover() {
+        if terrainBrushHoverValid {
+            terrainBrushHoverValid = false;
+            renderDirty = true;
+        }
+    }
+
+    /// @brief Clear a stale vertex-snap source preview and its cache.
+    hide func ClearVertexSnapSourceHover() {
+        if vertexSnapSource.valid or vertexSnapSource.clipped {
+            vertexSnapSource = new SceneEditor3DModel.VertexSnapPoint3D();
+            vertexSnapSourceCacheValid = false;
+            renderDirty = true;
+        }
+    }
+
+    /// @brief Clear a stale transform-handle hover.
+    hide func ClearGizmoHover() {
+        if gizmoHoverAxis != SceneEditor3DModel.GIZMO_AXIS_NONE {
+            gizmoHoverAxis = SceneEditor3DModel.GIZMO_AXIS_NONE;
+            renderDirty = true;
+        }
+    }
+
+    /// @brief Clear a stale scene-node hover.
+    hide func ClearViewportNodeHover() {
+        if hoveredViewportNode != -1 {
+            hoveredViewportNode = -1;
+            renderDirty = true;
+        }
+    }
+
+    /// @brief Clear a stale orientation-navigator hover.
+    hide func ClearOrientationHover() {
+        if orientationHoverFace != SceneEditor3DModel.ORIENTATION_FACE_NONE {
+            orientationHoverFace = SceneEditor3DModel.ORIENTATION_FACE_NONE;
+            renderDirty = true;
+        }
+    }
+
+    /// @brief Consume pointer focus inside a locked gameplay output frame.
+    hide func PumpLockedGameOutputPointer() {
+        ClearTerrainBrushHover();
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft)
+           or Input.Mouse.WasPressed(Input.Mouse.ButtonMiddle)
+           or Input.Mouse.WasPressed(Input.Mouse.ButtonRight) {
+            FocusActiveGizmoButton();
+        }
+        ClearGizmoHover();
+        ClearViewportNodeHover();
+        ClearOrientationHover();
+    }
+
+    /// @brief Consume the orientation navigator's complete pointer region.
+    hide func PumpOrientationNavigatorPointer(orientationFace: Integer) {
+        ClearTerrainBrushHover();
+        ClearGizmoHover();
+        ClearViewportNodeHover();
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+            FocusActiveGizmoButton();
+        }
+        if Input.Mouse.WasClicked(Input.Mouse.ButtonLeft) {
+            ActivateOrientationFace(orientationFace);
+        }
+    }
+
+    /// @brief Pump dolly, fly, orbit, and pan; return true when input is held.
+    hide func PumpViewportCameraNavigation() -> Boolean {
+        var navigationOwned = ActiveLookThroughNode() == null;
+        var wheel = Input.Mouse.WheelYFloat();
+        if navigationOwned {
+            if wheel > 0.0 {
+                DollyViewportAtPointer(1);
+            } else if wheel < 0.0 {
+                DollyViewportAtPointer(-1);
+            }
+        }
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonMiddle)
+           or Input.Mouse.WasPressed(Input.Mouse.ButtonRight) {
+            FocusActiveGizmoButton();
+        }
+        if navigationOwned
+           and Input.Mouse.WasPressed(Input.Mouse.ButtonRight)
+           and ViewportShiftDown() == false {
+            BeginFlyNavigation();
+            return true;
+        }
+        if navigationOwned == false
+           or (Input.Mouse.IsDown(Input.Mouse.ButtonMiddle) == false
+               and Input.Mouse.IsDown(Input.Mouse.ButtonRight) == false) {
+            return false;
+        }
+        var deltaX = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.DeltaX()));
+        var deltaY = Convert.NumToInt(
+            PhysicalPointerToUi(Input.Mouse.DeltaY()));
+        if deltaX != 0 or deltaY != 0 {
+            if ViewportShiftDown() {
+                PanViewportByPixels(deltaX, deltaY);
+            } else {
+                ReleaseGameplayViewAnchor();
+                viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(
+                    viewYawDegrees + deltaX);
+                viewPitchDegrees = SceneEditor3DModel.ClampInt3D(
+                    viewPitchDegrees - deltaY, -80, 80);
+                renderDirty = true;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Clear editor-only hover state while Game View owns the pointer.
+    hide func PumpGameViewPointer() {
+        ClearTerrainBrushHover();
+        ClearVertexSnapSourceHover();
+        ClearGizmoHover();
+        ClearViewportNodeHover();
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+            FocusActiveGizmoButton();
+        }
+    }
+
+    /// @brief Pump terrain hover, escape, and stroke capture.
+    hide func PumpTerrainSculptPointer(mouseX: Integer,
+                                       mouseY: Integer) {
+        marqueeCandidate = false;
+        marqueeActive = false;
+        marqueeCancelled = false;
+        ClearGizmoHover();
+        ClearViewportNodeHover();
+        ClearVertexSnapSourceHover();
+        if Input.Keyboard.WasPressed(Input.Key.Escape) {
+            SetTerrainSculptEnabled(false);
+            return;
+        }
+        var terrainHit = UpdateTerrainBrushHover(mouseX, mouseY);
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+            FocusActiveGizmoButton();
+            if terrainHit.valid { BeginTerrainStroke(terrainHit); }
+        }
+    }
+
+    /// @brief Pump vertex-source hover and drag capture.
+    hide func PumpVertexSnapPointer(mouseX: Integer,
+                                    mouseY: Integer) {
+        marqueeCandidate = false;
+        marqueeActive = false;
+        marqueeCancelled = false;
+        ClearGizmoHover();
+        ClearViewportNodeHover();
+        UpdateVertexSnapSourceHover(mouseX, mouseY);
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+            FocusActiveGizmoButton();
+            if vertexSnapSource.valid {
+                BeginVertexSnapDrag(vertexSnapSource);
+            }
+        }
+    }
+
+    /// @brief Pump ordinary gizmo hover, marquee arming, and click selection.
+    hide func PumpViewportSelectionPointer(mouseX: Integer,
+                                           mouseY: Integer) {
+        var hoveredAxis = GizmoHandleAtViewportPoint(mouseX, mouseY);
+        if hoveredAxis != gizmoHoverAxis {
+            gizmoHoverAxis = hoveredAxis;
+            renderDirty = true;
+        }
+        var hoveredNode = -1;
+        if hoveredAxis == SceneEditor3DModel.GIZMO_AXIS_NONE {
+            hoveredNode = ViewportNodeAt(mouseX, mouseY);
+        }
+        if hoveredNode != hoveredViewportNode {
+            hoveredViewportNode = hoveredNode;
+            renderDirty = true;
+        }
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft) {
+            FocusActiveGizmoButton();
+        }
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft)
+           and hoveredAxis != SceneEditor3DModel.GIZMO_AXIS_NONE {
+            BeginGizmoDrag(hoveredAxis);
+            return;
+        }
+        if Input.Mouse.WasPressed(Input.Mouse.ButtonLeft)
+           and hoveredAxis == SceneEditor3DModel.GIZMO_AXIS_NONE {
+            // Arm a marquee candidate: it activates only past the drag
+            // threshold, so plain clicks keep flowing to the click path.
+            marqueeCandidate = true;
+            marqueeActive = false;
+            marqueeStartX = mouseX;
+            marqueeStartY = mouseY;
+            marqueeEndX = mouseX;
+            marqueeEndY = mouseY;
+            marqueeAdditive = ViewportShiftDown();
+            marqueeToggle = ViewportPrimaryModifierDown();
+        }
+        if Input.Mouse.WasClicked(Input.Mouse.ButtonLeft) == false {
+            return;
+        }
+        var best = ViewportNodeAt(mouseX, mouseY);
+        if ViewportAltDown() {
+            best = CycleViewportNodeAt(mouseX, mouseY, best);
+        }
+        var doubleClick = RegisterViewportClick(best, mouseX, mouseY);
+        ApplyViewportSelection(
+            best,
+            ViewportShiftDown(),
+            ViewportPrimaryModifierDown());
+        if best >= 0
+           and doubleClick
+           and scene_selection.Contains(selectedIndices, best) {
+            FrameSelected();
+            renderDirty = true;
+        }
+    }
+}

@@ -6,31 +6,23 @@
 //===----------------------------------------------------------------------===//
 //
 // File: zannastudio/src/ui/scene_tileset_2d.zia
-// Purpose: Bounded tileset/background loading, palette rendering, and canvas
-//          blitting for Studio's editable 2D scene surface.
+// Purpose: Render bounded 2D tilesets, sprites, and project backgrounds.
 // Key invariants:
-//   - Authored relative paths resolve beside the saved scene document.
-//   - Image source, decoded-pixel, palette, scaled-tile, and scene-background
-//     caches are bounded.
 //   - Translucent frames composite source-over; opaque frames use a fast copy.
-//   - Project backgrounds can target a bounded output region without painting
-//     across the surrounding Game View matte.
-//   - Zero-rotation sprite fast paths use an epsilon-safe degree comparison.
+//   - Project backgrounds never paint outside the requested output region.
+//   - Scaled tile, sprite, and background caches remain bounded.
 //   - Invalid or missing assets produce ordinary inline state, never traps.
-//   - Tile IDs remain SceneDocument's one-based tileset frame indexes.
-// Ownership/Lifetime: SceneEditor2D owns one library; entries own decoded
-//                     Pixels handles until the scene or layer assets change.
-// Links: zannastudio/src/ui/scene_editor_2d.zia,
-//        zannastudio/src/probes/scene_editor_2d_probe.zia,
-//        docs/adr/0202-project-owned-2d-scene-background-previews.md,
-//        docs/adr/0208-project-authored-game-output-frames.md,
-//        docs/zannalib/game/scene.md
+// Ownership/Lifetime:
+//   - SceneEditor2D owns one library and its inherited decoded pixel caches.
+// Links: zannastudio/src/ui/scene_tileset_2d_base.zia,
+//        zannastudio/src/ui/scene_editor_2d.zia
 //
 //===----------------------------------------------------------------------===//
 
 module scene_tileset_2d;
 
 bind "../services/safe_io";
+bind "scene_tileset_2d_base";
 
 bind SceneDocument = Zanna.Game2D.SceneDocument;
 bind Pixels = Zanna.Graphics.Pixels;
@@ -42,24 +34,10 @@ bind Clock = Zanna.Time.Clock;
 bind Math = Zanna.Math;
 bind Convert = Zanna.Core.Convert;
 
-// ============================================================================
-// MODULE: scene_tileset_2d
-// PURPOSE: Turn SceneDocument layer asset references into bounded visual
-//          previews without adding filesystem or cache policy to SceneEditor2D.
-//
-// WHERE-THIS-FITS: SceneDocument remains the canonical model and stores only
-//          paths/tile IDs. SceneEditor2D owns widgets, history, and selection.
-//
-// TEACHING-NOTE: A layer image is an external editor preview dependency, not
-//          embedded scene data. Loading failure must therefore leave the
-//          authored JSON untouched and render a deterministic fallback.
-// ============================================================================
-
 final MAX_TILESET_SOURCE_BYTES: Integer = 16000000;
 final MAX_TILESET_SOURCE_PIXELS: Integer = 4194304;
 final MAX_SCENE_TILESET_PIXELS: Integer = 8388608;
 final MAX_SCALED_CACHE_PIXELS: Integer = 8388608;
-final MAX_PALETTE_TILES: Integer = 512;
 final MAX_SPRITE_ENTRIES: Integer = 64;
 final MAX_TRANSFORMED_SPRITE_AXIS: Integer = 4096;
 final MAX_BACKGROUND_SCALED_AXIS: Integer = 4096;
@@ -72,376 +50,28 @@ final PALETTE_STRIDE: Integer = 30;
 
 /// @brief Whether a degree rotation is visually indistinguishable from zero.
 func RotationIsEffectivelyZero(rotation: Number) -> Boolean {
-    return rotation > 0.0 - ROTATION_ZERO_EPSILON_DEGREES
-        and rotation < ROTATION_ZERO_EPSILON_DEGREES;
-}
-
-/// @brief One decoded layer tileset plus truthful load metadata.
-class TilesetEntry2D {
-    expose String authoredPath;
-    expose String resolvedPath;
-    expose Pixels pixels;
-    expose Integer width;
-    expose Integer height;
-    expose Integer tileWidth;
-    expose Integer tileHeight;
-    expose Integer columns;
-    expose Integer rows;
-    expose Integer tileCount;
-    expose Integer sourceBytes;
-    expose Integer sourceModified;
-    expose String error;
-    expose String warning;
-
-    expose func init() {
-        authoredPath = "";
-        resolvedPath = "";
-        pixels = null;
-        width = 0;
-        height = 0;
-        tileWidth = 0;
-        tileHeight = 0;
-        columns = 0;
-        rows = 0;
-        tileCount = 0;
-        sourceBytes = -1;
-        sourceModified = -1;
-        error = "";
-        warning = "";
-    }
-}
-
-/// @brief One scaled frame plus the compositing decision cached with it.
-class ScaledTile2D {
-    expose Pixels pixels;
-    expose Boolean hasTransparency;
-
-    expose func init() {
-        pixels = null;
-        hasTransparency = false;
-    }
+    return scene_tileset_2d_base.RotationIsEffectivelyZero(rotation);
 }
 
 /// @brief Resolve one authored path without changing the persisted spelling.
 expose func ResolveAssetPath(authoredPath: String,
                              documentPath: String) -> String {
-    var clean = Str.Trim(authoredPath);
-    if clean == "" { return ""; }
-    try {
-        if Path.IsAbsolute(clean) {
-            return Path.Normalize(clean);
-        }
-        if Str.Trim(documentPath) != "" {
-            return Path.Normalize(
-                Path.Join(Path.Directory(documentPath), clean));
-        }
-        return Path.Normalize(Path.Absolute(clean));
-    } catch {
-        return "";
-    }
-    return "";
+    return scene_tileset_2d_base.ResolveAssetPath(
+        authoredPath, documentPath);
 }
 
 /// @brief Convert a palette-local point to a one-based tile ID.
-/// @return Zero when the point is outside the bounded visible palette.
 expose func PaletteTileAt(tileCount: Integer,
                           x: Integer,
                           y: Integer) -> Integer {
-    if tileCount <= 0 or x < 0 or y < 0 { return 0; }
-    var column = x / PALETTE_STRIDE;
-    var row = y / PALETTE_STRIDE;
-    if column < 0 or column >= PALETTE_COLUMNS { return 0; }
-    var tile = row * PALETTE_COLUMNS + column + 1;
-    var shown = tileCount;
-    if shown > MAX_PALETTE_TILES { shown = MAX_PALETTE_TILES; }
-    if tile < 1 or tile > shown { return 0; }
-    return tile;
+    return scene_tileset_2d_base.PaletteTileAt(tileCount, x, y);
 }
 
-/// @brief Decoded asset library and bounded scaled-tile cache for one scene.
-class SceneTilesetLibrary2D {
-    expose List[TilesetEntry2D] entries;
-    expose String documentPath;
-    expose Integer sourcePixelCount;
-    expose Integer revision;
-    expose Boolean cacheSaturated;
-    hide Map scaledTileCache;
-    hide Integer cacheCellSize;
-    hide Integer cachedPixelCount;
-    hide Integer lastExternalPollMs;
-    hide Integer externalPollLayer;
-    hide List[String] spritePaths;
-    hide List[TilesetEntry2D] spriteEntries;
-    hide Integer spriteTileWidth;
-    hide Integer spriteTileHeight;
-    hide TilesetEntry2D backgroundEntry;
-    hide String backgroundReferencePath;
-    hide Pixels scaledBackground;
-    hide String scaledBackgroundFit;
-    hide Integer scaledBackgroundViewportWidth;
-    hide Integer scaledBackgroundViewportHeight;
-    hide Integer scaledBackgroundX;
-    hide Integer scaledBackgroundY;
-    hide Boolean scaledBackgroundHasTransparency;
-
+/// @brief Rendering and scaled-cache layer for one decoded scene library.
+class SceneTilesetLibrary2D
+    extends scene_tileset_2d_base.SceneTilesetLibrary2DBase {
     expose func init() {
-        entries = [];
-        documentPath = "";
-        sourcePixelCount = 0;
-        revision = 0;
-        cacheSaturated = false;
-        scaledTileCache = Map.New();
-        cacheCellSize = 0;
-        cachedPixelCount = 0;
-        lastExternalPollMs = -1;
-        externalPollLayer = 0;
-        spritePaths = [];
-        spriteEntries = [];
-        spriteTileWidth = 0;
-        spriteTileHeight = 0;
-        backgroundEntry = null;
-        backgroundReferencePath = "";
-        scaledBackground = null;
-        scaledBackgroundFit = "";
-        scaledBackgroundViewportWidth = 0;
-        scaledBackgroundViewportHeight = 0;
-        scaledBackgroundX = 0;
-        scaledBackgroundY = 0;
-        scaledBackgroundHasTransparency = false;
-    }
-
-    /// @brief Rebuild every layer preview from the current canonical scene.
-    expose func Reload(scene: SceneDocument, nextDocumentPath: String) {
-        ClearSceneBackground();
-        entries = [];
-        documentPath = nextDocumentPath;
-        sourcePixelCount = 0;
-        revision = revision + 1;
-        ClearScaledCache();
-        lastExternalPollMs = Clock.NowMs();
-        externalPollLayer = 0;
-        spritePaths = [];
-        spriteEntries = [];
-        spriteTileWidth = 0;
-        spriteTileHeight = 0;
-        if scene == null { return; }
-        spriteTileWidth = scene.TileWidth;
-        spriteTileHeight = scene.TileHeight;
-
-        var layer = 0;
-        while layer < scene.LayerCount() {
-            var entry = DecodeEntry(
-                scene.LayerAsset(layer),
-                nextDocumentPath,
-                scene.TileWidth,
-                scene.TileHeight);
-            if entry.pixels != null {
-                var pixelCount = entry.width * entry.height;
-                if sourcePixelCount + pixelCount
-                   > MAX_SCENE_TILESET_PIXELS {
-                    entry.pixels = null;
-                    entry.columns = 0;
-                    entry.rows = 0;
-                    entry.tileCount = 0;
-                    entry.error =
-                        "Scene tileset previews exceed the 32 MB decoded limit.";
-                } else {
-                    sourcePixelCount = sourcePixelCount + pixelCount;
-                }
-            }
-            entries.add(entry);
-            layer = layer + 1;
-        }
-    }
-
-    /// @brief Check one referenced image for an external metadata change.
-    /// @details At most one filesystem entry is statted per eligible call.
-    ///          The caller owns reloading because this check never mutates the
-    ///          decoded library or authored scene state.
-    expose func PollExternalChanges(intervalMs: Integer) -> Boolean {
-        var interval = intervalMs;
-        if interval < 0 { interval = 0; }
-        var now = Clock.NowMs();
-        if lastExternalPollMs >= 0
-           and now - lastExternalPollMs < interval {
-            return false;
-        }
-        lastExternalPollMs = now;
-        var backgroundCount = 0;
-        if backgroundEntry != null
-           and backgroundEntry.authoredPath != "" {
-            backgroundCount = 1;
-        }
-        var total =
-            entries.count() + spriteEntries.count() + backgroundCount;
-        if total == 0 { return false; }
-
-        var visited = 0;
-        while visited < total {
-            if externalPollLayer >= total {
-                externalPollLayer = 0;
-            }
-            var entry: TilesetEntry2D = null;
-            if externalPollLayer < entries.count() {
-                entry = entries.get(externalPollLayer);
-            } else if externalPollLayer
-                      < entries.count() + spriteEntries.count() {
-                entry = spriteEntries.get(
-                    externalPollLayer - entries.count());
-            } else {
-                entry = backgroundEntry;
-            }
-            externalPollLayer = externalPollLayer + 1;
-            visited = visited + 1;
-            if entry != null and entry.authoredPath != "" {
-                return safe_io.SizeBytes(entry.resolvedPath)
-                           != entry.sourceBytes
-                    or safe_io.Modified(entry.resolvedPath)
-                           != entry.sourceModified;
-            }
-        }
-        return false;
-    }
-
-    /// @brief Decode a candidate without changing the loaded scene library.
-    expose func ValidateCandidate(authoredPath: String,
-                                  nextDocumentPath: String,
-                                  tileWidth: Integer,
-                                  tileHeight: Integer) -> TilesetEntry2D {
-        return DecodeEntry(
-            authoredPath, nextDocumentPath, tileWidth, tileHeight);
-    }
-
-    /// @brief Validate a replacement against the scene-wide decoded budget.
-    expose func ValidateCandidateForLayer(
-        layer: Integer,
-        authoredPath: String,
-        nextDocumentPath: String,
-        tileWidth: Integer,
-        tileHeight: Integer) -> TilesetEntry2D {
-        var candidate = ValidateCandidate(
-            authoredPath, nextDocumentPath, tileWidth, tileHeight);
-        if candidate.pixels == null { return candidate; }
-        var retainedPixels = sourcePixelCount;
-        var current = Entry(layer);
-        if current != null and current.pixels != null {
-            retainedPixels =
-                retainedPixels - current.width * current.height;
-        }
-        if retainedPixels + candidate.width * candidate.height
-           > MAX_SCENE_TILESET_PIXELS {
-            candidate.pixels = null;
-            candidate.columns = 0;
-            candidate.rows = 0;
-            candidate.tileCount = 0;
-            candidate.error =
-                "Scene tileset previews exceed the 32 MB decoded limit.";
-        }
-        return candidate;
-    }
-
-    /// @brief Return one layer entry, or null when the layer is invalid.
-    expose func Entry(layer: Integer) -> TilesetEntry2D {
-        if layer < 0 or layer >= entries.count() { return null; }
-        return entries.get(layer);
-    }
-
-    /// @brief Return the number of usable one-based frames for one layer.
-    expose func TileCount(layer: Integer) -> Integer {
-        var entry = Entry(layer);
-        if entry == null { return 0; }
-        return entry.tileCount;
-    }
-
-    /// @brief Return a compact, truthful inspector summary for one layer.
-    expose func Status(layer: Integer) -> String {
-        var entry = Entry(layer);
-        if entry == null or entry.authoredPath == "" {
-            return "No tileset image. Choose one to preview and paint visually.";
-        }
-        if entry.error != "" { return entry.error; }
-        var status = Path.Name(entry.resolvedPath)
-            + "  •  " + entry.width + "x" + entry.height
-            + "  •  " + entry.tileCount + " tiles ("
-            + entry.columns + "x" + entry.rows + ")";
-        if entry.tileCount > MAX_PALETTE_TILES {
-            status = status + "  •  showing first " + MAX_PALETTE_TILES;
-        }
-        if entry.warning != "" { status = status + "\n" + entry.warning; }
-        return status;
-    }
-
-    /// @brief Render a scrollable, bounded palette for one layer.
-    expose func RenderPalette(layer: Integer,
-                              selectedTile: Integer) -> Pixels {
-        return RenderPaletteMarked(layer, selectedTile, []);
-    }
-
-    /// @brief Render the bounded palette with behavior badges on marked tiles.
-    /// @details Marked tile ids receive a small corner badge so authored
-    ///          collision/data/animation/autotile rules are visible at a
-    ///          glance (ADR 0176). Marks never affect hit testing.
-    expose func RenderPaletteMarked(layer: Integer,
-                                    selectedTile: Integer,
-                                    marked: List[Integer]) -> Pixels {
-        var entry = Entry(layer);
-        if entry == null or entry.pixels == null or entry.tileCount <= 0 {
-            return null;
-        }
-        var shown = entry.tileCount;
-        if shown > MAX_PALETTE_TILES { shown = MAX_PALETTE_TILES; }
-        var rowCount = (shown + PALETTE_COLUMNS - 1) / PALETTE_COLUMNS;
-        var width = PALETTE_COLUMNS * PALETTE_STRIDE;
-        var height = rowCount * PALETTE_STRIDE;
-        var palette = Pixels.New(width, height);
-        if palette == null { return null; }
-        palette.FillColor(Color.RGB(29, 34, 43));
-
-        var tile = 1;
-        while tile <= shown {
-            var index = tile - 1;
-            var column = index % PALETTE_COLUMNS;
-            var row = index / PALETTE_COLUMNS;
-            var x = column * PALETTE_STRIDE;
-            var y = row * PALETTE_STRIDE;
-            palette.DrawFrame(
-                x, y, PALETTE_STRIDE, PALETTE_STRIDE,
-                Color.RGB(68, 76, 90));
-            if DrawTile(
-                   palette, layer, tile, x + 1, y + 1,
-                   PALETTE_TILE_SIZE) == false {
-                palette.DrawBox(
-                    x + 2, y + 2,
-                    PALETTE_TILE_SIZE - 2, PALETTE_TILE_SIZE - 2,
-                    Color.RGB(87, 58, 92));
-            }
-            if TileIsMarked(marked, tile) {
-                palette.DrawBox(
-                    x + PALETTE_STRIDE - 8, y + 2, 6, 6,
-                    Color.RGB(255, 190, 72));
-            }
-            if tile == selectedTile {
-                palette.DrawFrame(
-                    x, y, PALETTE_STRIDE, PALETTE_STRIDE,
-                    Color.RGB(104, 220, 255));
-                palette.DrawFrame(
-                    x + 1, y + 1,
-                    PALETTE_STRIDE - 2, PALETTE_STRIDE - 2,
-                    Color.RGB(255, 255, 255));
-            }
-            tile = tile + 1;
-        }
-        return palette;
-    }
-
-    /// @brief Return whether one tile id appears in the bounded marked list.
-    hide func TileIsMarked(marked: List[Integer], tile: Integer) -> Boolean {
-        var index = 0;
-        while index < marked.count() {
-            if marked.get(index) == tile { return true; }
-            index = index + 1;
-        }
-        return false;
+        InitializeState();
     }
 
     /// @brief Composite one project-owned screen-space scene backdrop.
@@ -542,7 +172,7 @@ class SceneTilesetLibrary2D {
     }
 
     /// @brief Drop one decoded/scaled project scene background.
-    expose func ClearSceneBackground() {
+    expose override func ClearSceneBackground() {
         if backgroundEntry != null and backgroundEntry.pixels != null {
             sourcePixelCount = sourcePixelCount
                 - backgroundEntry.width * backgroundEntry.height;
@@ -555,7 +185,7 @@ class SceneTilesetLibrary2D {
 
     /// @brief Blit one tileset frame into a square editor-preview cell.
     /// @return False for missing assets, invalid IDs, or exhausted cache budget.
-    expose func DrawTile(destination: Pixels,
+    expose override func DrawTile(destination: Pixels,
                          layer: Integer,
                          tileId: Integer,
                          x: Integer,
@@ -765,7 +395,7 @@ class SceneTilesetLibrary2D {
     /// @details Early-return style: every stage output is a fresh single
     ///          assignment, which the IL verifier requires for object
     ///          variables under exception scopes.
-    hide func ComposeSpriteStages(entry: TilesetEntry2D,
+    hide func ComposeSpriteStages(entry: scene_tileset_2d_base.TilesetEntry2D,
                                   tileId: Integer,
                                   scaledWidth: Integer,
                                   scaledHeight: Integer,
@@ -858,7 +488,7 @@ class SceneTilesetLibrary2D {
     /// @brief Decode or reuse the one active project scene backdrop.
     hide func EnsureSceneBackground(
         authoredPath: String,
-        referencePath: String) -> TilesetEntry2D {
+        referencePath: String) -> scene_tileset_2d_base.TilesetEntry2D {
         var path = Str.Trim(authoredPath);
         var reference = Str.Trim(referencePath);
         if backgroundEntry != null
@@ -887,7 +517,7 @@ class SceneTilesetLibrary2D {
     }
 
     /// @brief Scale one background according to a bounded viewport fit mode.
-    hide func ScaleSceneBackground(entry: TilesetEntry2D,
+    hide func ScaleSceneBackground(entry: scene_tileset_2d_base.TilesetEntry2D,
                                    fit: String,
                                    viewportWidth: Integer,
                                    viewportHeight: Integer) -> Boolean {
@@ -991,7 +621,7 @@ class SceneTilesetLibrary2D {
 
     /// @brief Shared bounded scale-cache blit for layer and sprite frames.
     hide func DrawEntryFrame(destination: Pixels,
-                             entry: TilesetEntry2D,
+                             entry: scene_tileset_2d_base.TilesetEntry2D,
                              keyPrefix: String,
                              tileId: Integer,
                              x: Integer,
@@ -1020,7 +650,7 @@ class SceneTilesetLibrary2D {
     }
 
     /// @brief Drop scaled previews after an asset or zoom change.
-    expose func ClearScaledCache() {
+    expose override func ClearScaledCache() {
         scaledTileCache = Map.New();
         cacheCellSize = 0;
         cachedPixelCount = 0;
@@ -1028,7 +658,7 @@ class SceneTilesetLibrary2D {
     }
 
     /// @brief Extract and nearest-scale one source frame without leaking traps.
-    hide func ScaleTile(entry: TilesetEntry2D,
+    hide func ScaleTile(entry: scene_tileset_2d_base.TilesetEntry2D,
                         tileId: Integer,
                         cellSize: Integer) -> Pixels {
         try {
@@ -1054,13 +684,13 @@ class SceneTilesetLibrary2D {
     }
 
     /// @brief Resolve one scaled frame through the bounded cache.
-    hide func ResolveScaledTile(entry: TilesetEntry2D,
+    hide func ResolveScaledTile(entry: scene_tileset_2d_base.TilesetEntry2D,
                                 keyPrefix: String,
                                 tileId: Integer,
-                                cellSize: Integer) -> ScaledTile2D {
+                                cellSize: Integer) -> scene_tileset_2d_base.ScaledTile2D {
         var key = keyPrefix + tileId;
         if Map.Has(scaledTileCache, key) {
-            return Map.Get(scaledTileCache, key) as ScaledTile2D;
+            return Map.Get(scaledTileCache, key) as scene_tileset_2d_base.ScaledTile2D;
         }
         var neededPixels = cellSize * cellSize;
         if neededPixels <= 0
@@ -1070,7 +700,7 @@ class SceneTilesetLibrary2D {
         }
         var scaled = ScaleTile(entry, tileId, cellSize);
         if scaled == null { return null; }
-        var cachedTile = new ScaledTile2D();
+        var cachedTile = new scene_tileset_2d_base.ScaledTile2D();
         cachedTile.pixels = scaled;
         cachedTile.hasTransparency = HasTransparency(scaled, cellSize);
         Map.Set(scaledTileCache, key, cachedTile);
@@ -1129,8 +759,8 @@ class SceneTilesetLibrary2D {
     /// @brief Decode one project scene backdrop independently of scene data.
     hide func DecodeSceneBackground(
         authoredPath: String,
-        referencePath: String) -> TilesetEntry2D {
-        var entry = new TilesetEntry2D();
+        referencePath: String) -> scene_tileset_2d_base.TilesetEntry2D {
+        var entry = new scene_tileset_2d_base.TilesetEntry2D();
         entry.authoredPath = Str.Trim(authoredPath);
         if entry.authoredPath == "" { return entry; }
         entry.resolvedPath = ResolveAssetPath(
@@ -1173,11 +803,11 @@ class SceneTilesetLibrary2D {
     }
 
     /// @brief Decode and validate one image independently of scene mutation.
-    hide func DecodeEntry(authoredPath: String,
+    hide override func DecodeEntry(authoredPath: String,
                           nextDocumentPath: String,
                           tileWidth: Integer,
-                          tileHeight: Integer) -> TilesetEntry2D {
-        var entry = new TilesetEntry2D();
+                          tileHeight: Integer) -> scene_tileset_2d_base.TilesetEntry2D {
+        var entry = new scene_tileset_2d_base.TilesetEntry2D();
         entry.authoredPath = Str.Trim(authoredPath);
         entry.tileWidth = tileWidth;
         entry.tileHeight = tileHeight;

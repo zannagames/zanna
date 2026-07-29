@@ -1,0 +1,784 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/session_state.zia
+// Purpose: Persist and conservatively restore Studio workspace, document,
+//          recovery, and recent-file state.
+// Key invariants:
+//   - Only editable documents and bounded dirty drafts survive a session.
+//   - Invalid persisted paths are removed before they can pollute startup UI.
+//   - Startup can restore workspace roots and tabs in caller-budgeted batches.
+//   - Explicit-file launches recover dirty buffers without reviving unrelated
+//     clean tabs, split panes, or workspace roots.
+//   - Writers retain at most the restore limits and cap aggregate embedded
+//     recovery text, prioritizing the active document when truncation is needed.
+//   - Scene view state is fixed-point, versioned, and bounded before it reaches
+//     a live canvas, hierarchy, split pane, camera, or inspector topic.
+//   - Project preview-state indices persist per scene only as bounded
+//     presentation; missing or changed schemas recover through editor defaults.
+//   - All nine 2D authoring modes, including Line and Ellipse, retain their
+//     exact bounded identity through named-scene session restoration.
+//   - Structured split panes map through validated durable slots; a rejected
+//     pane owner never falls back to an unrelated open document.
+//   - Visual surfaces and read-only previews never become split-pane owners.
+// Ownership/Lifetime:
+//   - SessionManager owns only its settings path and borrows live IDE models.
+// Links: zannastudio/src/core/document_manager.zia,
+//        zannastudio/src/core/settings.zia,
+//        docs/adr/0166-exact-scenenode-world-matrix-assignment.md,
+//        docs/adr/0168-windowless-canvas3d-rendering.md,
+//        docs/adr/0171-bounded-scene-flood-fill-and-studio-tile-tools.md,
+//        docs/adr/0216-project-owned-3d-node-preview-states.md
+//
+//===----------------------------------------------------------------------===//
+
+module session_state;
+
+bind "document_manager";
+bind "project_manager";
+bind "document";
+bind "../editor/editor_tabs";
+bind "../services/file_utils";
+bind "../services/safe_io";
+
+bind Ini = Zanna.Data.Ini;
+bind Codec = Zanna.Text.Codec;
+bind IO = Zanna.IO;
+bind Dir = Zanna.IO.Dir;
+bind Path = Zanna.IO.Path;
+bind Parse = Zanna.Core.Parse;
+bind Convert = Zanna.Core.Convert;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+bind Obj = Zanna.Core.Object;
+bind Str = Zanna.String;
+
+// ============================================================================
+// MODULE: session
+// PURPOSE: Persist and restore Zanna Studio workspace session state.
+//
+// WHERE-THIS-FITS: Settings chooses the INI path; DocumentManager, ProjectManager,
+//          and EditorTabs own live state. SessionManager translates between those
+//          models and durable `[session]`, `[recent]`, and recovery sections.
+//
+// TEACHING-NOTE: Session restore must be conservative because it runs at startup
+//          and protects user work. Keep recovery text bounded, keep unknown INI
+//          keys intact, and prefer explicit per-document fields over display text.
+// ============================================================================
+
+final MAX_RECENT_PROJECTS = 10;
+final MAX_RECENT_FILES = 20;
+final MAX_SESSION_WORKSPACE_ROOTS = 64;
+final MAX_SESSION_FILES = 256;
+final MAX_SESSION_RECOVERY_CHARS = 200000;
+final MAX_SESSION_RECOVERY_ENCODED_CHARS = 300000;
+final MAX_SESSION_RECOVERY_TOTAL_CHARS = 4000000;
+final MAX_SESSION_STALE_SECTIONS = 4096;
+final SCENE_WORKSPACE_STATE_VERSION = 1;
+final MAX_SCENE_WORKSPACE_SCROLL = 1000000;
+final MAX_SCENE_WORKSPACE_TARGET_MILLIS = 1000000000;
+
+/// @brief Return whether a durable document may own a CodeEditor split pane.
+expose func IsSplitDocumentEligible(doc: document.Document) -> Boolean {
+    return doc != null and doc.isReadOnlyPreview == false
+           and file_utils.IsVisualKind(doc.kind) == false;
+}
+
+/// @brief Resumable state for one bounded session-restore pass.
+/// @details The parsed INI and borrowed live models remain valid until the job
+///          completes or is canceled. No background thread touches GUI models;
+///          main advances the job between event polls and renders.
+class SessionRestoreJob {
+    expose Any ini;
+    expose document_manager.DocumentManager docMgr;
+    expose project_manager.ProjectManager projMgr;
+    expose editor_tabs.EditorTabs tabs;
+    expose Boolean active;
+    expose Boolean indexedWorkspaceRoots;
+    expose Boolean restoredWorkspaceRoot;
+    expose Boolean legacyRootProcessed;
+    expose Integer workspaceRootCount;
+    expose Integer workspaceRootIndex;
+    expose String legacyProjectRoot;
+    expose Integer fileCount;
+    expose Integer fileIndex;
+    expose String activePath;
+    expose Boolean structuredSplitRequested;
+    expose Integer splitFirstIndex;
+    expose Integer splitSecondIndex;
+    expose Boolean splitSecondFocused;
+    expose document.Document splitFirstDocument;
+    expose document.Document splitSecondDocument;
+    expose Integer restoredCount;
+    expose Boolean prunedSession;
+    expose Boolean recoveryOnly;
+    expose Integer totalWork;
+    expose Integer completedWork;
+    expose Integer lastPumpCount;
+
+    expose func init() {
+        ini = null;
+        docMgr = null;
+        projMgr = null;
+        tabs = null;
+        active = false;
+        indexedWorkspaceRoots = false;
+        restoredWorkspaceRoot = false;
+        legacyRootProcessed = true;
+        workspaceRootCount = 0;
+        workspaceRootIndex = 0;
+        legacyProjectRoot = "";
+        fileCount = 0;
+        fileIndex = 0;
+        activePath = "";
+        structuredSplitRequested = false;
+        splitFirstIndex = -1;
+        splitSecondIndex = -1;
+        splitSecondFocused = false;
+        splitFirstDocument = null;
+        splitSecondDocument = null;
+        restoredCount = 0;
+        prunedSession = false;
+        recoveryOnly = false;
+        totalWork = 0;
+        completedWork = 0;
+        lastPumpCount = 0;
+    }
+}
+
+/// @brief Mutable transaction state for one bounded session write.
+/// @details Helpers share this value-only record so document reservation,
+///          recovery budgets, active-tab identity, and split-pane identity
+///          remain one ordered transaction without one monolithic writer.
+class SessionSaveState {
+    expose Any ini;
+    expose Integer previousCount;
+    expose Integer workspaceRootCount;
+    expose String projectRoot;
+    expose String activePath;
+    expose document.Document? activeDocument;
+    expose Integer persistedActiveIndex;
+    expose Boolean activeEligible;
+    expose Integer activeRecoveryReserve;
+    expose Boolean activeWritten;
+    expose Integer recoveryCharsWritten;
+    expose Boolean structuredSplitRequested;
+    expose Boolean splitFirstEligible;
+    expose Boolean splitSecondEligible;
+    expose Boolean splitFirstWritten;
+    expose Boolean splitSecondWritten;
+    expose Integer splitFirstWrittenIndex;
+    expose Integer splitSecondWrittenIndex;
+    expose Integer written;
+    expose Boolean currentWriteRecovery;
+    expose Integer currentRecoveryChars;
+
+    expose func init() {
+        ini = null;
+        previousCount = 0;
+        workspaceRootCount = 0;
+        projectRoot = "";
+        activePath = "";
+        activeDocument = null;
+        persistedActiveIndex = -1;
+        activeEligible = false;
+        activeRecoveryReserve = 0;
+        activeWritten = false;
+        recoveryCharsWritten = 0;
+        structuredSplitRequested = false;
+        splitFirstEligible = false;
+        splitSecondEligible = false;
+        splitFirstWritten = false;
+        splitSecondWritten = false;
+        splitFirstWrittenIndex = -1;
+        splitSecondWrittenIndex = -1;
+        written = 0;
+        currentWriteRecovery = false;
+        currentRecoveryChars = 0;
+    }
+}
+
+/// @brief Shared state and low-level persistence policy for SessionManager.
+class SessionManagerState {
+expose String settingsPath;
+    expose Boolean splitActive;
+    expose Boolean splitSecondFocused;
+    hide document.Document capturedSplitFirstDocument;
+    hide document.Document capturedSplitSecondDocument;
+    hide document.Document restoredSplitFirstDocument;
+    hide document.Document restoredSplitSecondDocument;
+
+    hide func InitializeState() {
+        splitActive = false;
+        splitSecondFocused = false;
+        capturedSplitFirstDocument = null;
+        capturedSplitSecondDocument = null;
+        restoredSplitFirstDocument = null;
+        restoredSplitSecondDocument = null;
+        settingsPath = "";
+    }
+
+hide func WriteSceneWorkspaceState(ini: Any,
+                                       section: String,
+                                       doc: document.Document) {
+        Ini.Remove(ini, section, "scene2dVersion");
+        Ini.Remove(ini, section, "scene3dVersion");
+        if doc == null { return; }
+
+        if doc.kind == file_utils.DOC_KIND_SCENE_2D
+           and doc.scene2DWorkspace != null
+           and doc.scene2DWorkspace.initialized {
+            var state2D = doc.scene2DWorkspace;
+            Ini.Set(ini, section, "scene2dVersion",
+                    "" + SCENE_WORKSPACE_STATE_VERSION);
+            Ini.Set(ini, section, "scene2dMode",
+                    "" + ClampSessionInt(state2D.mode, 0, 8));
+            Ini.Set(ini, section, "scene2dZoom",
+                    "" + ClampSessionInt(state2D.zoomPercent, 25, 1600));
+            Ini.Set(ini, section, "scene2dLayer",
+                    "" + ClampSessionInt(state2D.activeLayer, 0, 1023));
+            Ini.Set(ini, section, "scene2dObject",
+                    "" + ClampSessionInt(
+                        state2D.selectedObject, -1, 1000000));
+            Ini.Set(ini, section, "scene2dProperty",
+                    "" + ClampSessionInt(
+                        state2D.selectedObjectProperty, -1, 511));
+            Ini.Set(ini, section, "scene2dSceneProperty",
+                    "" + ClampSessionInt(
+                        state2D.selectedSceneProperty, -1, 511));
+            Ini.Set(ini, section, "scene2dCellX",
+                    "" + ClampSessionInt(state2D.selectedCellX, -1, 255));
+            Ini.Set(ini, section, "scene2dCellY",
+                    "" + ClampSessionInt(state2D.selectedCellY, -1, 255));
+            Ini.Set(ini, section, "scene2dTile",
+                    "" + ClampSessionInt(state2D.tileId, 0, 1000000));
+            Ini.Set(ini, section, "scene2dSplit",
+                    "" + ClampSessionInt(
+                        Convert.NumToInt(state2D.splitPosition * 10000.0),
+                        2000, 8500));
+            Ini.Set(ini, section, "scene2dScrollX",
+                    "" + ClampSessionInt(
+                        Convert.NumToInt(state2D.canvasScrollX),
+                        0, MAX_SCENE_WORKSPACE_SCROLL));
+            Ini.Set(ini, section, "scene2dScrollY",
+                    "" + ClampSessionInt(
+                        Convert.NumToInt(state2D.canvasScrollY),
+                        0, MAX_SCENE_WORKSPACE_SCROLL));
+            Ini.Set(ini, section, "scene2dInspectorScrollY",
+                    "" + ClampSessionInt(
+                        Convert.NumToInt(state2D.inspectorScrollY),
+                        0, MAX_SCENE_WORKSPACE_SCROLL));
+            Ini.Set(ini, section, "scene2dInspectorSection",
+                    "" + ClampSessionInt(
+                        state2D.inspectorSceneSection, 0, 5));
+            Ini.Set(ini, section, "scene2dInspectorVisible",
+                    SessionBool(state2D.inspectorRequestedVisible));
+            Ini.Set(ini, section, "scene2dCompactInspector",
+                    SessionBool(state2D.compactInspectorShown));
+            Ini.Set(ini, section, "scene2dPaletteVisible",
+                    SessionBool(state2D.paletteRequestedVisible));
+            Ini.Set(ini, section, "scene2dCompactPalette",
+                    SessionBool(state2D.compactPaletteShown));
+            return;
+        }
+
+        if doc.kind == file_utils.DOC_KIND_SCENE_3D
+           and doc.scene3DWorkspace != null
+           and doc.scene3DWorkspace.initialized {
+            var state3D = doc.scene3DWorkspace;
+            Ini.Set(ini, section, "scene3dVersion",
+                    "" + SCENE_WORKSPACE_STATE_VERSION);
+            Ini.Set(ini, section, "scene3dSelection",
+                    "" + ClampSessionInt(state3D.selectedIndex, -1, 1023));
+            Ini.Set(ini, section, "scene3dMetadataProperty",
+                    "" + ClampSessionInt(
+                        state3D.selectedNodeMetadata, -1, 255));
+            Ini.Set(ini, section, "scene3dTransformMode",
+                    "" + ClampSessionInt(state3D.transformMode, 0, 2));
+            Ini.Set(ini, section, "scene3dTransformSpace",
+                    "" + ClampSessionInt(state3D.transformSpace, 0, 1));
+            Ini.Set(ini, section, "scene3dTransformSnap",
+                    SessionBool(state3D.transformSnapEnabled));
+            Ini.Set(ini, section, "scene3dSurfaceSnap",
+                    SessionBool(state3D.transformSurfaceSnapEnabled));
+            Ini.Set(ini, section, "scene3dSurfaceAlign",
+                    SessionBool(state3D.transformSurfaceAlignEnabled));
+            Ini.Set(ini, section, "scene3dVertexSnap",
+                    SessionBool(state3D.transformVertexSnapEnabled));
+            Ini.Set(ini, section, "scene3dYaw",
+                    "" + ClampSessionInt(
+                        state3D.viewYawDegrees, -180, 180));
+            Ini.Set(ini, section, "scene3dPitch",
+                    "" + ClampSessionInt(state3D.viewPitchDegrees, -80, 80));
+            Ini.Set(ini, section, "scene3dScale",
+                    "" + ClampSessionInt(state3D.viewScale, 4, 120));
+            Ini.Set(ini, section, "scene3dViewportMode",
+                    "" + ClampSessionInt(state3D.viewportMode, 0, 1));
+            Ini.Set(ini, section, "scene3dPreviewFilter",
+                    "" + ClampSessionInt(
+                        state3D.projectPreviewFilterIndex, -1, 32));
+            Ini.Set(ini, section, "scene3dTargetX",
+                    ScaledSceneTarget(state3D.viewTargetX));
+            Ini.Set(ini, section, "scene3dTargetY",
+                    ScaledSceneTarget(state3D.viewTargetY));
+            Ini.Set(ini, section, "scene3dTargetZ",
+                    ScaledSceneTarget(state3D.viewTargetZ));
+            Ini.Set(ini, section, "scene3dSplit",
+                    "" + ClampSessionInt(
+                        Convert.NumToInt(state3D.splitPosition * 10000.0),
+                        2000, 8500));
+            Ini.Set(ini, section, "scene3dInspectorScrollY",
+                    "" + ClampSessionInt(
+                        Convert.NumToInt(state3D.inspectorScrollY),
+                        0, MAX_SCENE_WORKSPACE_SCROLL));
+            Ini.Set(ini, section, "scene3dInspectorSection",
+                    "" + ClampSessionInt(
+                        state3D.inspectorSceneSection, 0, 3));
+            Ini.Set(ini, section, "scene3dInspectorVisible",
+                    SessionBool(state3D.inspectorRequestedVisible));
+            Ini.Set(ini, section, "scene3dCompactInspector",
+                    SessionBool(state3D.compactInspectorShown));
+        }
+    }
+
+    /// @brief Restore scene state only when its kind and schema both match.
+    hide func RestoreSceneWorkspaceState(ini: Any,
+                                         section: String,
+                                         doc: document.Document) {
+        if doc == null { return; }
+        if doc.kind == file_utils.DOC_KIND_SCENE_2D
+           and Parse.IntOr(
+               Ini.Get(ini, section, "scene2dVersion"), 0)
+               == SCENE_WORKSPACE_STATE_VERSION {
+            var state2D = doc.scene2DWorkspace;
+            state2D.initialized = true;
+            state2D.mode = ReadSessionInt(
+                ini, section, "scene2dMode", 0, 0, 8);
+            state2D.zoomPercent = ReadSessionInt(
+                ini, section, "scene2dZoom", 100, 25, 1600);
+            state2D.activeLayer = ReadSessionInt(
+                ini, section, "scene2dLayer", 0, 0, 1023);
+            state2D.selectedObject = ReadSessionInt(
+                ini, section, "scene2dObject", -1, -1, 1000000);
+            state2D.selectedObjectProperty = ReadSessionInt(
+                ini, section, "scene2dProperty", -1, -1, 511);
+            state2D.selectedSceneProperty = ReadSessionInt(
+                ini, section, "scene2dSceneProperty", -1, -1, 511);
+            state2D.selectedCellX = ReadSessionInt(
+                ini, section, "scene2dCellX", -1, -1, 255);
+            state2D.selectedCellY = ReadSessionInt(
+                ini, section, "scene2dCellY", -1, -1, 255);
+            state2D.tileId = ReadSessionInt(
+                ini, section, "scene2dTile", 1, 0, 1000000);
+            state2D.splitPosition = ReadSessionInt(
+                ini, section, "scene2dSplit", 6800, 2000, 8500)
+                / 10000.0;
+            state2D.canvasScrollX = ReadSessionInt(
+                ini, section, "scene2dScrollX", 0,
+                0, MAX_SCENE_WORKSPACE_SCROLL) / 1.0;
+            state2D.canvasScrollY = ReadSessionInt(
+                ini, section, "scene2dScrollY", 0,
+                0, MAX_SCENE_WORKSPACE_SCROLL) / 1.0;
+            state2D.inspectorScrollY = ReadSessionInt(
+                ini, section, "scene2dInspectorScrollY", 0,
+                0, MAX_SCENE_WORKSPACE_SCROLL) / 1.0;
+            state2D.inspectorSceneSection = ReadSessionInt(
+                ini, section, "scene2dInspectorSection", 0, 0, 5);
+            state2D.inspectorRequestedVisible = ReadSessionInt(
+                ini, section, "scene2dInspectorVisible", 1, 0, 1) != 0;
+            state2D.compactInspectorShown = ReadSessionInt(
+                ini, section, "scene2dCompactInspector", 0, 0, 1) != 0;
+            state2D.paletteRequestedVisible = ReadSessionInt(
+                ini, section, "scene2dPaletteVisible", 1, 0, 1) != 0;
+            state2D.compactPaletteShown = ReadSessionInt(
+                ini, section, "scene2dCompactPalette", 0, 0, 1) != 0;
+            state2D.undoStack = [];
+            state2D.redoStack = [];
+            state2D.cleanSerialized = "";
+            state2D.historyContent = "";
+            return;
+        }
+
+        if doc.kind == file_utils.DOC_KIND_SCENE_3D
+           and Parse.IntOr(
+               Ini.Get(ini, section, "scene3dVersion"), 0)
+               == SCENE_WORKSPACE_STATE_VERSION {
+            var state3D = doc.scene3DWorkspace;
+            state3D.initialized = true;
+            state3D.selectedIndex = ReadSessionInt(
+                ini, section, "scene3dSelection", -1, -1, 1023);
+            state3D.selectedNodeMetadata = ReadSessionInt(
+                ini, section, "scene3dMetadataProperty", -1, -1, 255);
+            state3D.transformMode = ReadSessionInt(
+                ini, section, "scene3dTransformMode", 0, 0, 2);
+            state3D.transformSpace = ReadSessionInt(
+                ini, section, "scene3dTransformSpace", 0, 0, 1);
+            state3D.transformSnapEnabled = ReadSessionInt(
+                ini, section, "scene3dTransformSnap", 0, 0, 1) != 0;
+            state3D.transformSurfaceSnapEnabled = ReadSessionInt(
+                ini, section, "scene3dSurfaceSnap", 0, 0, 1) != 0;
+            state3D.transformSurfaceAlignEnabled = ReadSessionInt(
+                ini, section, "scene3dSurfaceAlign", 0, 0, 1) != 0;
+            state3D.transformVertexSnapEnabled = ReadSessionInt(
+                ini, section, "scene3dVertexSnap", 0, 0, 1) != 0;
+            state3D.viewYawDegrees = ReadSessionInt(
+                ini, section, "scene3dYaw", 35, -180, 180);
+            state3D.viewPitchDegrees = ReadSessionInt(
+                ini, section, "scene3dPitch", -25, -80, 80);
+            state3D.viewScale = ReadSessionInt(
+                ini, section, "scene3dScale", 28, 4, 120);
+            state3D.viewportMode = ReadSessionInt(
+                ini, section, "scene3dViewportMode", 0, 0, 1);
+            state3D.projectPreviewFilterIndex = ReadSessionInt(
+                ini, section, "scene3dPreviewFilter", -1, -1, 32);
+            state3D.viewTargetX = ReadSceneTarget(
+                ini, section, "scene3dTargetX");
+            state3D.viewTargetY = ReadSceneTarget(
+                ini, section, "scene3dTargetY");
+            state3D.viewTargetZ = ReadSceneTarget(
+                ini, section, "scene3dTargetZ");
+            state3D.splitPosition = ReadSessionInt(
+                ini, section, "scene3dSplit", 6500, 2000, 8500)
+                / 10000.0;
+            state3D.inspectorScrollY = ReadSessionInt(
+                ini, section, "scene3dInspectorScrollY", 0,
+                0, MAX_SCENE_WORKSPACE_SCROLL) / 1.0;
+            state3D.inspectorSceneSection = ReadSessionInt(
+                ini, section, "scene3dInspectorSection", 0, 0, 3);
+            state3D.inspectorRequestedVisible = ReadSessionInt(
+                ini, section, "scene3dInspectorVisible", 1, 0, 1) != 0;
+            state3D.compactInspectorShown = ReadSessionInt(
+                ini, section, "scene3dCompactInspector", 0, 0, 1) != 0;
+            state3D.undoStack = [];
+            state3D.redoStack = [];
+            state3D.cleanSerialized = "";
+            state3D.historyContent = "";
+        }
+    }
+
+    /// @brief Encode one Boolean workspace field as a stable integer string.
+    hide func SessionBool(value: Boolean) -> String {
+        if value { return "1"; }
+        return "0";
+    }
+
+    /// @brief Parse and clamp one untrusted integer workspace field.
+    hide func ReadSessionInt(ini: Any,
+                             section: String,
+                             key: String,
+                             fallback: Integer,
+                             minimum: Integer,
+                             maximum: Integer) -> Integer {
+        return ClampSessionInt(
+            Parse.IntOr(Ini.Get(ini, section, key), fallback),
+            minimum, maximum);
+    }
+
+    /// @brief Clamp an integer without platform-specific helpers.
+    hide func ClampSessionInt(value: Integer,
+                              minimum: Integer,
+                              maximum: Integer) -> Integer {
+        if value < minimum { return minimum; }
+        if value > maximum { return maximum; }
+        return value;
+    }
+
+    /// @brief Serialize one camera target as bounded thousandths.
+    hide func ScaledSceneTarget(value: Number) -> String {
+        return "" + ClampSessionInt(
+            Convert.NumToInt(value * 1000.0),
+            0 - MAX_SCENE_WORKSPACE_TARGET_MILLIS,
+            MAX_SCENE_WORKSPACE_TARGET_MILLIS);
+    }
+
+    /// @brief Read one bounded fixed-point camera target.
+    hide func ReadSceneTarget(ini: Any,
+                              section: String,
+                              key: String) -> Number {
+        return ReadSessionInt(
+            ini, section, key, 0,
+            0 - MAX_SCENE_WORKSPACE_TARGET_MILLIS,
+            MAX_SCENE_WORKSPACE_TARGET_MILLIS) / 1000.0;
+    }
+
+    /// @brief Decide whether an open document belongs in durable tab state.
+    /// @details Read-only previews and unsupported payloads are deliberately
+    ///          ephemeral. Modified untitled drafts remain eligible through the
+    ///          bounded recovery snapshot path.
+    hide func ShouldPersistDocument(doc: document.Document,
+                                    persistRecovery: Boolean) -> Boolean {
+        if doc == null or doc.isReadOnlyPreview { return false; }
+        if doc.filePath == "" {
+            return persistRecovery and ShouldPersistRecovery(doc);
+        }
+        if doc.isNew { return false; }
+        return document_manager.IsEditableTextFile(doc.filePath);
+    }
+
+    /// @brief Decide whether a document should carry a crash-recovery snapshot.
+    /// @details Recovery is deliberately limited to modified, editable text buffers
+    ///          under a bounded size cap. Existing files are included as well as
+    ///          untitled drafts so a crash after editing a saved file restores the
+    ///          unsaved buffer instead of silently reopening the older disk version.
+    /// @param doc Open document being written into session state.
+    /// @return True when the complete buffer should be persisted in settings.
+    hide func ShouldPersistRecovery(doc: document.Document) -> Boolean {
+        if doc == null { return false; }
+        if doc.isModified == false { return false; }
+        if doc.isReadOnlyPreview { return false; }
+        return Str.get_Length(doc.content) <= MAX_SESSION_RECOVERY_CHARS;
+    }
+
+    /// @brief Encode crash-recovery text into an INI-safe scalar value.
+    /// @details The project INI helper writes values verbatim and parses one
+    ///          physical line at a time, so raw document buffers containing
+    ///          newlines cannot be stored directly. Base64 keeps the complete
+    ///          text reversible while staying within the existing runtime API.
+    /// @param text Document buffer to persist.
+    /// @return Base64-encoded representation suitable for `Ini.Set`.
+    hide func EncodeRecoveryText(text: String) -> String {
+        return Codec.Base64Encode(text);
+    }
+
+    /// @brief Decode session recovery text from current or legacy settings.
+    /// @details New entries set `recoveryEncoding=base64`. Older Zanna Studio
+    ///          sessions stored raw text under `recovery`; those values are
+    ///          returned unchanged so restore keeps backward compatibility.
+    /// @param encoded Value read from `session.file.N.recovery`.
+    /// @param encoding Encoding marker read from `session.file.N.recoveryEncoding`.
+    /// @return Decoded document buffer, or the raw value for legacy entries.
+    hide func DecodeRecoveryText(encoded: String, encoding: String) -> String {
+        if encoded == "" { return ""; }
+        if Str.get_Length(encoded) > MAX_SESSION_RECOVERY_ENCODED_CHARS { return ""; }
+        if encoding == "base64" {
+            try {
+                var decoded = Codec.Base64Decode(encoded);
+                if Str.get_Length(decoded) > MAX_SESSION_RECOVERY_CHARS { return ""; }
+                return decoded;
+            } catch {
+                return "";
+            }
+        }
+        if Str.get_Length(encoded) > MAX_SESSION_RECOVERY_CHARS { return ""; }
+        return encoded;
+    }
+
+    /// @brief Record every live workspace root with the primary root first.
+    hide func SaveRecentProjects(ini: Any,
+                                 projMgr: project_manager.ProjectManager) {
+        if projMgr == null { return; }
+        // Prepend extras in reverse, then primary, so root index 0 remains the
+        // most prominent row while every multi-root folder stays discoverable.
+        var i = projMgr.RootCount() - 1;
+        while i >= 0 {
+            PrependRecentProject(ini, projMgr.RootPathAt(i));
+            i = i - 1;
+        }
+    }
+
+    /// @brief Prepend a workspace folder while canonicalizing and de-duplicating.
+    hide func PrependRecentProject(ini: Any, path: String) {
+        var canonicalPath = CanonicalRecentPath(path);
+        if canonicalPath == "" or Dir.Exists(canonicalPath) == false { return; }
+        var oldCount = Parse.IntOr(Ini.Get(ini, "recent", "count"), 0);
+        if oldCount < 0 { oldCount = 0; }
+        if oldCount > MAX_RECENT_PROJECTS { oldCount = MAX_RECENT_PROJECTS; }
+        var oldPaths = Seq.New();
+        var i = 0;
+        while i < oldCount {
+            var oldPath = CanonicalRecentPath(Ini.Get(ini, "recent", "path." + i));
+            if oldPath != "" and oldPath != canonicalPath and Dir.Exists(oldPath)
+               and !StringSeqContains(oldPaths, oldPath) {
+                Seq.Push(oldPaths, oldPath);
+            }
+            i = i + 1;
+        }
+
+        Ini.Set(ini, "recent", "path.0", canonicalPath);
+        var written = 1;
+        i = 0;
+        while i < Seq.get_Count(oldPaths) and written < MAX_RECENT_PROJECTS {
+            Ini.Set(ini, "recent", "path." + written,
+                    Obj.ToString(Seq.Get(oldPaths, i)));
+            written = written + 1;
+            i = i + 1;
+        }
+        var persisted = written;
+        while written < MAX_RECENT_PROJECTS {
+            Ini.Set(ini, "recent", "path." + written, "");
+            written = written + 1;
+        }
+        Ini.Set(ini, "recent", "count", "" + persisted);
+    }
+
+    hide func SaveRecentFiles(ini: Any, docMgr: document_manager.DocumentManager) {
+        if docMgr == null { return; }
+        var i = docMgr.GetCount() - 1;
+        while i >= 0 {
+            var doc = docMgr.documents.get(i);
+            if doc.filePath != "" and !doc.isNew and !doc.isReadOnlyPreview
+                and document_manager.IsEditableTextFile(doc.filePath) {
+                PrependRecentFile(ini, doc.filePath);
+            }
+            i = i - 1;
+        }
+    }
+
+    hide func PrependRecentFile(ini: Any, path: String) {
+        var canonicalPath = CanonicalRecentPath(path);
+        if !document_manager.IsEditableTextFile(canonicalPath) { return; }
+        var oldCount = Parse.IntOr(Ini.Get(ini, "recentFiles", "count"), 0);
+        if oldCount < 0 { oldCount = 0; }
+        if oldCount > MAX_RECENT_FILES { oldCount = MAX_RECENT_FILES; }
+        var oldPaths = Seq.New();
+        var i = 0;
+        while i < oldCount {
+            var oldPath = CanonicalRecentPath(Ini.Get(ini, "recentFiles", "path." + i));
+            if oldPath != "" and oldPath != canonicalPath
+                and document_manager.IsEditableTextFile(oldPath)
+                and !StringSeqContains(oldPaths, oldPath) {
+                Seq.Push(oldPaths, oldPath);
+            }
+            i = i + 1;
+        }
+
+        Ini.Set(ini, "recentFiles", "path.0", canonicalPath);
+        var written = 1;
+        i = 0;
+        while i < Seq.get_Count(oldPaths) and written < MAX_RECENT_FILES {
+            Ini.Set(ini, "recentFiles", "path." + written, Obj.ToString(Seq.Get(oldPaths, i)));
+            written = written + 1;
+            i = i + 1;
+        }
+        Ini.Set(ini, "recentFiles", "count", "" + written);
+    }
+
+    /// @brief Remove invalid and duplicate workspace folders from recent history.
+    hide func PruneRecentProjectHistory() {
+        if settingsPath == "" or !IO.File.Exists(settingsPath) { return; }
+        var readResult = safe_io.ReadStudioState(settingsPath);
+        if readResult.ok == false { return; }
+        var ini = Ini.Parse(readResult.text);
+        if PruneRecentProjectsInIni(ini) {
+            safe_io.WriteStudioState(settingsPath, Ini.Format(ini));
+        }
+    }
+
+    /// @brief Compact valid recent workspace paths in-place.
+    hide func PruneRecentProjectsInIni(ini: Any) -> Boolean {
+        var oldCount = Parse.IntOr(Ini.Get(ini, "recent", "count"), 0);
+        if oldCount < 0 { oldCount = 0; }
+        var scanCount = oldCount;
+        if scanCount > MAX_RECENT_PROJECTS { scanCount = MAX_RECENT_PROJECTS; }
+        var paths = Seq.New();
+        var i = 0;
+        while i < scanCount {
+            var path = CanonicalRecentPath(Ini.Get(ini, "recent", "path." + i));
+            if path != "" and Dir.Exists(path) and !StringSeqContains(paths, path) {
+                Seq.Push(paths, path);
+            }
+            i = i + 1;
+        }
+
+        var changed = oldCount != Seq.get_Count(paths);
+        i = 0;
+        while i < Seq.get_Count(paths) {
+            var expected = Obj.ToString(Seq.Get(paths, i));
+            if Ini.Get(ini, "recent", "path." + i) != expected { changed = true; }
+            Ini.Set(ini, "recent", "path." + i, expected);
+            i = i + 1;
+        }
+        while i < MAX_RECENT_PROJECTS {
+            if Ini.Get(ini, "recent", "path." + i) != "" { changed = true; }
+            Ini.Set(ini, "recent", "path." + i, "");
+            i = i + 1;
+        }
+        Ini.Set(ini, "recent", "count", "" + Seq.get_Count(paths));
+        return changed;
+    }
+
+    /// @brief Remove invalid and duplicate files from durable recent history.
+    /// @details Setup calls this once so legacy settings are repaired before the
+    ///          welcome view asks for rows. Unknown INI sections remain intact.
+    hide func PruneRecentFileHistory() {
+        if settingsPath == "" or !IO.File.Exists(settingsPath) { return; }
+        var readResult = safe_io.ReadStudioState(settingsPath);
+        if readResult.ok == false { return; }
+        var ini = Ini.Parse(readResult.text);
+        if PruneRecentFilesInIni(ini) {
+            safe_io.WriteStudioState(settingsPath, Ini.Format(ini));
+        }
+    }
+
+    /// @brief Compact valid recent paths in-place and report whether INI changed.
+    hide func PruneRecentFilesInIni(ini: Any) -> Boolean {
+        var oldCount = Parse.IntOr(Ini.Get(ini, "recentFiles", "count"), 0);
+        if oldCount < 0 { oldCount = 0; }
+        var scanCount = oldCount;
+        if scanCount > MAX_RECENT_FILES { scanCount = MAX_RECENT_FILES; }
+        var paths = Seq.New();
+        var i = 0;
+        while i < scanCount {
+            var path = CanonicalRecentPath(Ini.Get(ini, "recentFiles", "path." + i));
+            if document_manager.IsEditableTextFile(path) and !StringSeqContains(paths, path) {
+                Seq.Push(paths, path);
+            }
+            i = i + 1;
+        }
+
+        var changed = oldCount != Seq.get_Count(paths);
+        i = 0;
+        while i < Seq.get_Count(paths) {
+            var expected = Obj.ToString(Seq.Get(paths, i));
+            if Ini.Get(ini, "recentFiles", "path." + i) != expected { changed = true; }
+            Ini.Set(ini, "recentFiles", "path." + i, expected);
+            i = i + 1;
+        }
+        while i < MAX_RECENT_FILES {
+            if Ini.Get(ini, "recentFiles", "path." + i) != "" { changed = true; }
+            Ini.Set(ini, "recentFiles", "path." + i, "");
+            i = i + 1;
+        }
+        Ini.Set(ini, "recentFiles", "count", "" + Seq.get_Count(paths));
+        return changed;
+    }
+
+    /// @brief Return whether an untyped sequence already contains a path.
+    hide func StringSeqContains(items: Any, path: String) -> Boolean {
+        var i = 0;
+        while i < Seq.get_Count(items) {
+            if Obj.ToString(Seq.Get(items, i)) == path { return true; }
+            i = i + 1;
+        }
+        return false;
+    }
+
+    /// @brief Normalize recent-file identity before persistence or comparison.
+    /// @param path Absolute or relative file path spelling.
+    /// @return Absolute normalized path, or empty for an empty input.
+    /// @details Studio can be launched from a terminal, Finder, or a file
+    ///          association. Canonical storage prevents those working-directory
+    ///          differences from creating duplicate welcome rows.
+    hide func CanonicalRecentPath(path: String) -> String {
+        if path == "" { return ""; }
+        try {
+            return Path.Normalize(Path.Absolute(path));
+        } catch {
+            return "";
+        }
+        return "";
+    }
+
+    /// @brief Clear a rejected session slot while preserving unrelated settings.
+    hide func ClearSessionFile(ini: Any, section: String) {
+        Ini.Set(ini, section, "path", "");
+        Ini.Set(ini, section, "name", "");
+        Ini.Set(ini, section, "recovery", "");
+        Ini.Set(ini, section, "recoveryEncoding", "");
+        Ini.Set(ini, section, "recoveryModified", "0");
+    }
+}

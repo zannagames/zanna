@@ -1,0 +1,645 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/project_manager_base.zia
+// Purpose: Own workspace roots, Explorer tree state, and safe file mutations.
+// Key invariants:
+//   - Tree nodes store canonical absolute paths rather than display labels.
+//   - Rename, move, and trash operations never mutate a workspace root or an
+//     out-of-workspace path.
+//   - Explorer mutations never follow a linked descendant outside a root.
+//   - Linked descendant directories remain visible but cannot be expanded.
+//   - Successful mutations retarget or clear Explorer selection and expansion.
+//   - Explorer scan, natural sort, and node publication work are frame-bounded.
+//   - Published children use deterministic, case-insensitive natural ordering.
+// Ownership/Lifetime:
+//   - ProjectManager owns workspace models, caches, and path bookkeeping.
+//   - AppShell owns the injected TreeView for the complete manager lifetime.
+// Links: zannastudio/src/core/project_file_ops.zia,
+//        zannastudio/src/core/document_manager.zia
+//
+//===----------------------------------------------------------------------===//
+
+module project_manager_base;
+
+bind "project";
+bind "project_file_ops";
+bind "project_bind_rewriter";
+bind "../services/workspace_file_index";
+bind "../services/safe_io";
+bind Zanna.GUI as GUI;
+bind Obj = Zanna.Core.Object;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+bind IO = Zanna.IO;
+bind Zanna.IO.Path as Path;
+bind Zanna.IO.Dir as Dir;
+bind Zanna.String as Str;
+bind FileIndex = Zanna.Workspace.FileIndex;
+bind Option = Zanna.Option;
+bind "../core/document_manager";
+bind "../zia/bind_utils";
+
+// Tree rows now carry real vector icons (plan 04 follow-up), so the text
+// prefixes that used to stand in for them are empty. The label helpers remain
+// the single decoration point if a future mode needs prefixes again.
+final TREE_ROOT_PREFIX = "";
+final TREE_FOLDER_PREFIX = "";
+final TREE_FILE_PREFIX = "";
+final MAX_TREE_REFRESH_EXPANDED_DIRS = 128;
+final TREE_DIRECTORY_PAGE_SIZE = 128;
+final TREE_INITIAL_WORK_BUDGET = 2048;
+final TREE_FRAME_WORK_BUDGET = 512;
+final TREE_LOAD_SCAN = 0;
+final TREE_LOAD_SORT_DIRECTORIES = 1;
+final TREE_LOAD_SORT_FILES = 2;
+final TREE_LOAD_PUBLISH_DIRECTORIES = 3;
+final TREE_LOAD_PUBLISH_FILES = 4;
+
+/// @brief Return whether a one-character string is an ASCII decimal digit.
+/// @param ch Candidate character extracted from a filename.
+/// @return True only for `0` through `9`.
+func IsNaturalSortDigit(ch: String) -> Boolean {
+    return Str.get_Length(ch) == 1 and Str.IndexOf("0123456789", ch) > 0;
+}
+
+/// @brief Compare two Explorer names using case-insensitive natural ordering.
+/// @details Consecutive digit runs compare by numeric magnitude without parsing
+///          into a bounded integer, so arbitrarily long filenames stay safe.
+///          Equal numeric values prefer fewer leading zeroes, followed by an
+///          ordinal case-sensitive tie-break for deterministic output.
+/// @param left First filename.
+/// @param right Second filename.
+/// @return Negative, zero, or positive according to natural display order.
+expose func NaturalNameCompare(left: String, right: String) -> Integer {
+    var leftKey = Str.ToLower(left);
+    var rightKey = Str.ToLower(right);
+    var leftLength = Str.get_Length(leftKey);
+    var rightLength = Str.get_Length(rightKey);
+    var leftIndex = 0;
+    var rightIndex = 0;
+
+    while leftIndex < leftLength and rightIndex < rightLength {
+        var leftChar = Str.Substring(leftKey, leftIndex, 1);
+        var rightChar = Str.Substring(rightKey, rightIndex, 1);
+        var leftDigit = IsNaturalSortDigit(leftChar);
+        var rightDigit = IsNaturalSortDigit(rightChar);
+
+        if leftDigit and rightDigit {
+            var leftEnd = leftIndex;
+            while leftEnd < leftLength
+                  and IsNaturalSortDigit(Str.Substring(leftKey, leftEnd, 1)) {
+                leftEnd = leftEnd + 1;
+            }
+            var rightEnd = rightIndex;
+            while rightEnd < rightLength
+                  and IsNaturalSortDigit(Str.Substring(rightKey, rightEnd, 1)) {
+                rightEnd = rightEnd + 1;
+            }
+
+            var leftSignificant = leftIndex;
+            while leftSignificant + 1 < leftEnd
+                  and Str.Substring(leftKey, leftSignificant, 1) == "0" {
+                leftSignificant = leftSignificant + 1;
+            }
+            var rightSignificant = rightIndex;
+            while rightSignificant + 1 < rightEnd
+                  and Str.Substring(rightKey, rightSignificant, 1) == "0" {
+                rightSignificant = rightSignificant + 1;
+            }
+
+            var leftDigits = leftEnd - leftSignificant;
+            var rightDigits = rightEnd - rightSignificant;
+            if leftDigits != rightDigits {
+                return leftDigits - rightDigits;
+            }
+
+            var numberCompare = Str.Compare(
+                Str.Substring(leftKey, leftSignificant, leftDigits),
+                Str.Substring(rightKey, rightSignificant, rightDigits));
+            if numberCompare != 0 { return numberCompare; }
+
+            var leftRunLength = leftEnd - leftIndex;
+            var rightRunLength = rightEnd - rightIndex;
+            if leftRunLength != rightRunLength {
+                return leftRunLength - rightRunLength;
+            }
+
+            leftIndex = leftEnd;
+            rightIndex = rightEnd;
+            continue;
+        }
+
+        var charCompare = Str.Compare(leftChar, rightChar);
+        if charCompare != 0 { return charCompare; }
+        leftIndex = leftIndex + 1;
+        rightIndex = rightIndex + 1;
+    }
+
+    if leftIndex < leftLength { return 1; }
+    if rightIndex < rightLength { return 0 - 1; }
+    return Str.Compare(left, right);
+}
+
+/// @brief Return a stable naturally sorted copy of an Explorer name list.
+/// @details Uses an iterative merge sort to keep large directories O(n log n)
+///          while avoiding recursion depth and leaving the runtime-owned input
+///          list untouched.
+/// @param items String-like filename entries to order.
+/// @return New list ordered with @ref NaturalNameCompare.
+expose func NaturalSortNames(items: List) -> List {
+    var state = BeginIncrementalNameSort(items);
+    while state.done == false {
+        PumpIncrementalNameSort(state, 4096);
+    }
+    return state.source;
+}
+
+/// @brief Mutable bottom-up merge-sort state for frame-budgeted Explorer work.
+/// @details One pump moves a bounded number of names. This keeps sorting a very
+///          large flat directory from becoming a second UI stall after bounded
+///          filesystem enumeration completes.
+class IncrementalNameSort {
+    expose List source;
+    expose List merged;
+    expose Integer width;
+    expose Integer start;
+    expose Integer middle;
+    expose Integer finish;
+    expose Integer left;
+    expose Integer right;
+    expose Boolean runActive;
+    expose Boolean done;
+
+    expose func init() {
+        source = new List();
+        merged = new List();
+        width = 1;
+        start = 0;
+        middle = 0;
+        finish = 0;
+        left = 0;
+        right = 0;
+        runActive = false;
+        done = true;
+    }
+}
+
+/// @brief Begin an incremental natural-name sort over a private list copy.
+func BeginIncrementalNameSort(items: List) -> IncrementalNameSort {
+    var state = new IncrementalNameSort();
+    for item in items { state.source.Push(item); }
+    state.done = state.source.count() <= 1;
+    return state;
+}
+
+/// @brief Advance a natural-name merge sort by at most @p maxMoves items.
+/// @param state Sort state returned by BeginIncrementalNameSort.
+/// @param maxMoves Maximum list elements to merge in this call.
+/// @return Number of elements moved during this call.
+func PumpIncrementalNameSort(state: IncrementalNameSort,
+                             maxMoves: Integer) -> Integer {
+    if state == null or state.done or maxMoves <= 0 { return 0; }
+    var moved = 0;
+    while state.done == false and moved < maxMoves {
+        var count = state.source.count();
+        if state.runActive == false {
+            if state.start >= count {
+                state.source = state.merged;
+                state.merged = new List();
+                state.width = state.width * 2;
+                state.start = 0;
+                count = state.source.count();
+                if state.width >= count {
+                    state.done = true;
+                    break;
+                }
+            }
+            state.middle = state.start + state.width;
+            if state.middle > count { state.middle = count; }
+            state.finish = state.middle + state.width;
+            if state.finish > count { state.finish = count; }
+            state.left = state.start;
+            state.right = state.middle;
+            state.runActive = true;
+        }
+
+        if state.left >= state.middle and state.right >= state.finish {
+            state.start = state.finish;
+            state.runActive = false;
+            continue;
+        }
+        if state.right >= state.finish
+           or (state.left < state.middle
+               and NaturalNameCompare(Obj.ToString(state.source.get(state.left)),
+                                      Obj.ToString(state.source.get(state.right))) <= 0) {
+            state.merged.Push(state.source.get(state.left));
+            state.left = state.left + 1;
+        } else {
+            state.merged.Push(state.source.get(state.right));
+            state.right = state.right + 1;
+        }
+        moved = moved + 1;
+    }
+    return moved;
+}
+
+/// @brief One queued immediate-directory scan/sort/publication job.
+class ExplorerTreeLoad {
+    expose String dirPath;
+    expose String normalizedDir;
+    expose Any parentNode;
+    expose Integer offset;
+    expose Integer stage;
+    expose Integer publishIndex;
+    expose List directories;
+    expose List files;
+    expose IncrementalNameSort directorySort;
+    expose IncrementalNameSort fileSort;
+
+    expose func init() {
+        dirPath = "";
+        normalizedDir = "";
+        parentNode = null;
+        offset = 0;
+        stage = TREE_LOAD_SCAN;
+        publishIndex = 0;
+        directories = new List();
+        files = new List();
+        directorySort = new IncrementalNameSort();
+        fileSort = new IncrementalNameSort();
+    }
+}
+
+// ============================================================================
+// MODULE: project_manager
+// PURPOSE: Owns the file-tree sidebar and the open Project. Translates
+//          GUI tree clicks into "this file path was selected" events for
+//          the main loop to consume.
+//
+// WHERE-THIS-FITS: Sits between the GUI TreeView widget (a `Zanna.GUI.TreeView`
+//          provided by app_shell) and the project model (`project.Project`).
+//          The main loop in main.zia calls `HandleTreeClicks` each frame to
+//          poll for selection changes.
+//
+// KEY-DESIGN-CHOICES:
+//   * POLLING NOT EVENTS. The TreeView exposes a "was selection changed"
+//     boolean that the IDE polls each frame. This matches the rest of
+//     the IDE's frame-driven model and avoids needing a callback
+//     dispatcher.
+//   * NODE DATA = ABSOLUTE PATH. Each tree node stores its absolute
+//     path via `TreeView.Node.SetData`. Labels may carry lightweight
+//     visual prefixes for polish; the path is the source of truth for
+//     file-vs-directory detection.
+//   * EXCLUDE PATTERNS. `ShouldExcludePath` delegates to
+//     Zanna.Workspace.FileIndex, which applies hard excludes, `.gitignore`,
+//     and optional ignore/exclude patterns from `zanna.project`.
+//   * DEMAND-LOADED TREE AND QUICK OPEN. `PopulateTree` adds only the
+//     project root's immediate children. Clicking a folder populates that
+//     folder once. Quick Open builds the full FileIndex-backed cache lazily
+//     on first use, so project open stays responsive on large workspaces.
+//
+// HOW-TO-READ: Setup (wire up the widget) -> OpenFolder (entry point) ->
+//   PopulateTree -> RequestTreeChildren/PumpTreeLoads -> HandleTreeClicks
+//   (poll for selection) -> ShouldExcludePath (filters).
+// ============================================================================
+
+/// @brief Sidebar TreeView controller plus the open Project.
+
+func RewriteZiaBindContent(content: String,
+                           importingPath: String,
+                           oldNorm: String,
+                           newNorm: String,
+                           oldWasDir: Boolean) -> project_bind_rewriter.BindRewriteResult {
+    return project_bind_rewriter.RewriteZiaBindContent(content, importingPath, oldNorm, newNorm, oldWasDir);
+}
+
+func RewriteZiaBindLine(line: String,
+                        importingPath: String,
+                        oldNorm: String,
+                        newNorm: String,
+                        oldWasDir: Boolean) -> String {
+    return project_bind_rewriter.RewriteZiaBindLine(line, importingPath, oldNorm, newNorm, oldWasDir);
+}
+
+func ResolveBindPath(importPath: String, importingPath: String) -> String {
+    return project_bind_rewriter.ResolveBindPath(importPath, importingPath);
+}
+
+func RelativeBindPath(importingDir: String,
+                      targetPath: String,
+                      oldImportPath: String,
+                      keepNoExt: Boolean) -> String {
+    return project_bind_rewriter.RelativeBindPath(importingDir, targetPath, oldImportPath, keepNoExt);
+}
+
+func NormalizeAbsPath(path: String) -> String {
+    return bind_utils.NormalizeAbsPath(path);
+}
+
+func NormalizeBindSeparators(path: String) -> String {
+    return bind_utils.NormalizeBindSeparators(path);
+}
+
+func ListContains(items: List, value: String) -> Boolean {
+    return bind_utils.ListContains(items, value);
+}
+
+/// @brief Workspace ownership and path-policy foundation for ProjectManager.
+class ProjectManagerBase {
+/// The currently open project (always non-null after Setup); the PRIMARY root.
+    expose project.Project project;
+    /// Additional workspace roots beyond the primary `project` (multi-root).
+    expose List[project.Project] extraRoots;
+    /// The TreeView widget injected at Setup time.
+    expose GUI.TreeView treeView;
+    /// Path of the most recently selected file (empty if none yet).
+    expose String selectedFilePath;
+    /// True for one frame after a file was clicked.
+    expose Boolean fileWasSelected;
+    /// Project file paths collected while building the tree, reused by Quick Open.
+    expose List fileCache;
+    /// Map-backed set mirroring `fileCache` so cache warming stays linear.
+    expose Any fileCacheSeen;
+    /// True after `fileCache` has been populated by the full workspace index.
+    expose Boolean fileCacheComplete;
+    /// Monotonic identity for a file-cache snapshot; changes whenever paths reset.
+    expose Integer fileCacheGeneration;
+    /// Directories waiting for incremental project-file cache discovery.
+    expose List pendingFileCacheDirs;
+    /// True while the full project-file cache is being discovered cooperatively.
+    expose Boolean fileCacheRefreshing;
+    /// Number of directories scanned by the current cache refresh.
+    expose Integer fileCacheDirsScanned;
+    /// Root index currently being paged by FileIndex.Page.
+    expose Integer fileCacheRootIndex;
+    /// Runtime FileIndex.Page offset within the current root.
+    expose Integer fileCachePageOffset;
+    /// True if the runtime index hit its safety cap during the last refresh.
+    expose Boolean fileCacheTruncated;
+    /// Destination path for the most recent explorer move-to-trash operation.
+    expose String lastTrashPath;
+    /// Absolute directory paths whose TreeView children have been populated.
+    expose List loadedTreeDirs;
+    /// FIFO of bounded immediate-directory Explorer jobs.
+    expose List[ExplorerTreeLoad] treeLoadJobs;
+    /// Total raw directory entries consumed by the current Explorer generation.
+    expose Integer treeEntriesScanned;
+    /// Raw directory entries consumed by the most recent tree pump.
+    expose Integer lastTreePumpEntries;
+    /// Directory paths currently known to be expanded in the Explorer.
+    expose List expandedTreeDirs;
+    /// Snapshot used only while rebuilding the tree after a refresh.
+    expose List treeRestoreExpandedDirs;
+    /// Selected path to restore after a refresh rebuild.
+    expose String treeRestoreSelectedPath;
+    /// Remaining expanded directories allowed across one cooperative refresh.
+    expose Integer treeRestoreBudget;
+    /// True after the selected node was restored during the current rebuild.
+    expose Boolean treeRestoredSelection;
+    /// Number of Zia file-bind paths rewritten by the most recent rename.
+    expose Integer lastBindRewriteCount;
+    /// User-facing reason the most recent Explorer mutation was rejected.
+    expose String lastOperationError;
+
+    /// @brief Initialize with no selection. Call `Setup` next.
+    hide func InitializeState() {
+        selectedFilePath = "";
+        extraRoots = [];
+        fileWasSelected = false;
+        fileCache = new List();
+        fileCacheSeen = Map.New();
+        fileCacheComplete = false;
+        fileCacheGeneration = 0;
+        pendingFileCacheDirs = new List();
+        fileCacheRefreshing = false;
+        fileCacheDirsScanned = 0;
+        fileCacheRootIndex = 0;
+        fileCachePageOffset = 0;
+        fileCacheTruncated = false;
+        lastTrashPath = "";
+        loadedTreeDirs = new List();
+        treeLoadJobs = [];
+        treeEntriesScanned = 0;
+        lastTreePumpEntries = 0;
+        expandedTreeDirs = new List();
+        treeRestoreExpandedDirs = new List();
+        treeRestoreSelectedPath = "";
+        treeRestoreBudget = 0;
+        treeRestoredSelection = false;
+        lastBindRewriteCount = 0;
+        lastOperationError = "";
+    }
+
+    /// @brief Inject the TreeView widget and construct the empty Project.
+    /// @param tree Sidebar TreeView from AppShell.
+    expose func Setup(tree: GUI.TreeView) {
+        treeView = tree;
+        project = new project.Project();
+        // Enable poll-model drag-and-drop so files can be moved between folders.
+        if treeView != null {
+            treeView.SetDragDropEnabled(true);
+        }
+    }
+
+/// @brief All open workspace roots: the primary project plus any extra roots.
+    func AllRoots() -> List[project.Project] {
+        var roots: List[project.Project] = [];
+        if project != null and project.isOpen { roots.Push(project); }
+        var i = 0;
+        while i < extraRoots.count() {
+            var r = extraRoots.get(i);
+            if r != null and r.isOpen { roots.Push(r); }
+            i = i + 1;
+        }
+        return roots;
+    }
+
+    /// @brief Return the number of open workspace roots.
+    /// @return Count of primary plus extra roots that are currently open.
+    /// @details Consumers such as search, file watching, and workspace symbols
+    ///          should use this accessor rather than assuming RootPath is the
+    ///          whole workspace. The primary project remains index 0.
+    expose func RootCount() -> Integer {
+        return AllRoots().count();
+    }
+
+    /// @brief Return the absolute path for a workspace root by index.
+    /// @param index Zero-based root index; index 0 is the primary project.
+    /// @return Absolute root path, or empty when the index is out of range.
+    /// @details The returned path is stable for the current frame only; callers
+    ///          that cache roots should also compare WorkspaceSignature after
+    ///          project open/close/add-folder operations.
+    expose func RootPathAt(index: Integer) -> String {
+        var roots = AllRoots();
+        if index < 0 or index >= roots.count() { return ""; }
+        var root = roots.get(index);
+        if root == null { return ""; }
+        return root.rootPath;
+    }
+
+    /// @brief Return ignore patterns for a workspace root by index.
+    /// @param index Zero-based root index; index 0 is the primary project.
+    /// @return Comma-separated ignore pattern list, or empty when unavailable.
+    /// @details Ignore patterns are root-local because each folder may have a
+    ///          different zanna.project manifest. FileIndex callers must pass
+    ///          the patterns that belong to the root they are paging.
+    expose func RootIgnorePatternsAt(index: Integer) -> String {
+        var roots = AllRoots();
+        if index < 0 or index >= roots.count() { return ""; }
+        var root = roots.get(index);
+        if root == null { return ""; }
+        return root.ignorePatterns;
+    }
+
+    /// @brief Return the display name for a workspace root by index.
+    /// @param index Zero-based root index; index 0 is the primary project.
+    /// @return Project display name, folder name, or empty when out of range.
+    expose func RootNameAt(index: Integer) -> String {
+        var roots = AllRoots();
+        if index < 0 or index >= roots.count() { return ""; }
+        var root = roots.get(index);
+        if root == null { return ""; }
+        return root.name;
+    }
+
+    /// @brief Return a compact signature for the currently open workspace roots.
+    /// @return Separator-delimited root path list.
+    /// @details File watchers compare this value each frame. Including every
+    ///          root path lets them restart when a folder is added or removed,
+    ///          not just when the primary root changes.
+    expose func WorkspaceSignature() -> String {
+        var result = "";
+        var roots = AllRoots();
+        var i = 0;
+        while i < roots.count() {
+            var root = roots.get(i);
+            if root != null {
+                if result != "" { result = result + "\n"; }
+                result = result + root.rootPath;
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    /// @brief The workspace root owning @p path (longest rootPath prefix).
+    /// @return Owning project, or null when the path is outside every root.
+    func WorkspaceProjectForPath(path: String) -> project.Project {
+        if path == "" { return null; }
+        var best: project.Project = null;
+        var bestLen = -1;
+        var all = AllRoots();
+        var i = 0;
+        while i < all.count() {
+            var r = all.get(i);
+            var rp = NormalizeAbsPath(r.rootPath);
+            if project_file_ops.IsWithinRoot(path, rp) and Str.get_Length(rp) > bestLen {
+                best = r;
+                bestLen = Str.get_Length(rp);
+            }
+            i = i + 1;
+        }
+        return best;
+    }
+
+    /// @brief The workspace root owning @p path, with primary-root fallback.
+    /// @details Presentation helpers historically accept paths outside the
+    ///          workspace. Mutation methods use WorkspaceProjectForPath instead.
+    func OwningProject(path: String) -> project.Project {
+        var owner = WorkspaceProjectForPath(path);
+        if owner != null { return owner; }
+        return project;
+    }
+
+    /// @brief Return whether a path equals or is nested below an open root.
+    expose func IsWorkspacePath(path: String) -> Boolean {
+        return WorkspaceProjectForPath(path) != null;
+    }
+
+    /// @brief Return the open workspace root that owns a path.
+    /// @details Exact root paths resolve to themselves; descendants resolve by
+    ///          longest matching root so nested multi-root folders stay
+    ///          unambiguous. This is presentation-safe and performs no mutation.
+    /// @param path Root or descendant path selected in the Explorer.
+    /// @return Owning root path, or empty when the path is outside the workspace.
+    expose func WorkspaceRootPathForPath(path: String) -> String {
+        var owner = WorkspaceProjectForPath(path);
+        if owner == null { return ""; }
+        return owner.rootPath;
+    }
+
+    /// @brief Return whether a path is one of the open workspace roots.
+    expose func IsWorkspaceRootPath(path: String) -> Boolean {
+        var owner = WorkspaceProjectForPath(path);
+        if owner == null { return false; }
+        return NormalizeAbsPath(path) == NormalizeAbsPath(owner.rootPath);
+    }
+
+    /// @brief Return whether Explorer may rename, move, or trash a path.
+    /// @details Roots and Studio's private trash are immutable through Explorer.
+    expose func CanMutatePath(path: String) -> Boolean {
+        var owner = WorkspaceProjectForPath(path);
+        if owner == null { return false; }
+        var normalized = NormalizeAbsPath(path);
+        var root = NormalizeAbsPath(owner.rootPath);
+        if normalized == root { return false; }
+        var trashRoot = NormalizeAbsPath(Path.Join(root, ".zannastudio-trash"));
+        if project_file_ops.IsWithinRoot(normalized, trashRoot) { return false; }
+        if PathHasLinkedComponent(normalized, root, false) { return false; }
+        return IO.File.Exists(path) or Dir.Exists(path);
+    }
+
+    /// @brief Return whether Explorer may create children in a directory.
+    /// @details Open roots are valid creation targets, but out-of-workspace
+    ///          directories and Studio's private trash are never writable
+    ///          through an Explorer overlay.
+    expose func CanCreateInDirectory(path: String) -> Boolean {
+        if path == "" or Dir.Exists(path) == false { return false; }
+        var owner = WorkspaceProjectForPath(path);
+        if owner == null { return false; }
+        var trashRoot = Path.Join(owner.rootPath, ".zannastudio-trash");
+        if project_file_ops.IsWithinRoot(path, trashRoot) { return false; }
+        return PathHasLinkedComponent(path, owner.rootPath, true) == false;
+    }
+
+    /// @brief Return whether Explorer may enumerate children below a directory.
+    /// @details A workspace root intentionally opened through a link remains
+    ///          traversable, but a linked descendant is an inert boundary so
+    ///          external target content cannot appear inside the project tree.
+    expose func CanTraverseTreeDirectory(path: String) -> Boolean {
+        if path == "" or Dir.Exists(path) == false { return false; }
+        var owner = WorkspaceProjectForPath(path);
+        if owner == null { return false; }
+        return PathHasLinkedComponent(path, owner.rootPath, true) == false;
+    }
+
+    /// @brief Detect a linked/reparse component below an opened workspace root.
+    /// @details The root itself is trusted because users may intentionally open
+    ///          a workspace through a symlink. Descendant links are not valid
+    ///          mutation parents: following one could create or move content
+    ///          outside the folder presented by Explorer.
+    func PathHasLinkedComponent(path: String,
+                                rootPath: String,
+                                includeLeaf: Boolean) -> Boolean {
+        var normalized = NormalizeAbsPath(path);
+        var root = NormalizeAbsPath(rootPath);
+        if project_file_ops.IsWithinRoot(normalized, root) == false { return true; }
+        var current = normalized;
+        if includeLeaf == false { current = NormalizeAbsPath(Path.Directory(current)); }
+        while current != root {
+            if Path.IsLink(current) { return true; }
+            var parent = NormalizeAbsPath(Path.Directory(current));
+            if parent == current
+               or project_file_ops.IsWithinRoot(parent, root) == false {
+                return true;
+            }
+            current = parent;
+        }
+        return false;
+    }
+}

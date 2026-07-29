@@ -1,0 +1,303 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_debug_console.zia
+// Purpose: Focused debug console behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_output_rows.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_debug_console;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_output_rows" as PreviousLayer;
+
+class ToolPanelDebugConsoleLayer extends PreviousLayer.ToolPanelOutputRowsLayer {
+
+    /// @brief Attach metadata to the most recently added structured row.
+    /// @details References callers invoke this immediately after adding a
+    ///          result. Durable data survives filtered-out and rebuilt items.
+    expose override func SetAddedToolRowLocationData(listBox: GUI.ListBox,
+                                            item: Any,
+                                            locationData: String) {
+        if listBox == referencesListBox and referencesRows.Count() > 0 {
+            var row = referencesRows.rows.get(referencesRows.Count() - 1);
+            row.data = locationData;
+            if row.item != null {
+                GUI.ListBox.ItemSetData(row.item, locationData);
+            }
+            return;
+        }
+        if item != null {
+            GUI.ListBox.ItemSetData(item, locationData);
+        }
+    }
+
+    /// @brief Return the row model associated with a concrete ListBox.
+    /// @param listBox Tool-panel ListBox.
+    /// @return Matching row model, or null for non-tool lists.
+    hide override func ToolRowsForListBox(listBox: GUI.ListBox) -> tool_panel_model.ToolPanelRows {
+        if listBox == diagListBox { return problemsRows; }
+        if listBox == searchListBox { return searchRows; }
+        if listBox == referencesListBox { return referencesRows; }
+        if listBox == debugListBox { return debugRows; }
+        if listBox == variablesListBox { return variablesRows; }
+        if listBox == callStackListBox { return callStackRows; }
+        return null;
+    }
+
+    /// @brief Trim oldest realized rows before adding another row.
+    /// @param listBox Concrete ListBox that owns visible row items.
+    /// @param model Bounded row model aligned with the ListBox.
+    hide override func EnsureToolRowsCapacity(listBox: GUI.ListBox,
+                                     model: tool_panel_model.ToolPanelRows) {
+        if listBox == null or model == null { return; }
+        var removeCount = tool_panel_model.DEFAULT_TRIM_BATCH_ROWS;
+        if removeCount < 1 { removeCount = 1; }
+        while model.maxRows > 0 and model.Count() >= model.maxRows
+              and removeCount > 0 {
+            var row = model.First();
+            if row != null and row.item != null {
+                listBox.RemoveItem(row.item);
+            }
+            model.RemoveFirst();
+            removeCount = removeCount - 1;
+        }
+    }
+
+    /// @brief Replace debug-console rows from complete debug output text.
+    /// @param output Debug output text.
+    expose override func SetDebugOutput(output: String) {
+        UpdateDebugOutput(output);
+        ShowDebugPanel();
+    }
+
+    /// @brief Refresh Debug Console contents without changing the selected tab.
+    /// @details Adapter events can arrive while the user works in Terminal,
+    ///          Variables, or another panel; background output must stay passive.
+    expose override func UpdateDebugOutput(output: String) {
+        SetDebugConsoleSource(output, output != "");
+    }
+
+    /// @brief Refresh separately owned program output and debugger status text.
+    /// @details Only program output is clearable. Stop/termination status remains
+    ///          truthful after Clear and can still be filtered or copied.
+    expose override func UpdateDebugOutputParts(programOutput: String,
+                                       statusText: String) {
+        var combined = programOutput;
+        if statusText != "" {
+            if combined != "" and Str.EndsWith(combined, "\n") == false {
+                combined = combined + "\n";
+            }
+            combined = combined + statusText;
+        }
+        SetDebugConsoleSource(combined, programOutput != "");
+    }
+
+    /// @brief Replace the complete bounded Debug Console source and repaint.
+    hide override func SetDebugConsoleSource(output: String,
+                                    canClear: Boolean) {
+        debugConsoleSource = output;
+        debugConsoleCanClear = canClear;
+        debugConsoleClearRequested = false;
+        RefreshDebugConsoleRows();
+    }
+
+    /// @brief Rebuild filtered/wrapped Debug Console rows from durable source.
+    hide override func RefreshDebugConsoleRows() {
+        ClearToolRows(debugListBox);
+        debugConsoleLineCount = 0;
+        visibleDebugConsoleLineCount = 0;
+        var lines = Str.Split(debugConsoleSource, "\n");
+        var n = Seq.get_Count(lines);
+        var i = 0;
+        while i < n {
+            var line = Obj.ToString(Seq.Get(lines, i));
+            if line != "" {
+                debugConsoleLineCount = debugConsoleLineCount + 1;
+                if DebugConsoleLineMatches(line) {
+                    visibleDebugConsoleLineCount =
+                        visibleDebugConsoleLineCount + 1;
+                    RenderDebugConsoleLine(line);
+                }
+            }
+            i = i + 1;
+        }
+        UpdateDebugToolbarState();
+        ApplyDebugConsoleSurfaceVisibility();
+    }
+
+    /// @brief Return whether one source line passes the current debug filter.
+    hide override func DebugConsoleLineMatches(line: String) -> Boolean {
+        if debugFilterText == "" { return true; }
+        return Str.Contains(Str.ToLower(line), debugFilterText);
+    }
+
+    /// @brief Render one logical debug line, optionally split into wrap chunks.
+    hide override func RenderDebugConsoleLine(line: String) {
+        var layoutWidth = 0;
+        if debugListBox != null {
+            layoutWidth = Convert.NumToInt(debugListBox.GetLogicalWidth());
+        }
+        if layoutWidth <= 0 and app != null {
+            var scale = app.GetEffectiveScale();
+            if scale <= 0.0 { scale = 1.0; }
+            layoutWidth = Convert.NumToInt(app.GetWidth() / scale);
+        }
+        var wrapColumn = output_cache.WrapColumn(layoutWidth);
+        if debugWrapLines == false or Str.get_Length(line) <= wrapColumn {
+            var item = AddToolPlainRow(debugListBox, line, 0);
+            ApplyDebugLineColor(item, line);
+            return;
+        }
+
+        var start = 1;
+        while start <= Str.get_Length(line) {
+            var chunk = Str.MidLen(line, start, wrapColumn);
+            var item = AddToolPlainRow(debugListBox, chunk, 0);
+            ApplyDebugLineColor(item, line);
+            start = start + wrapColumn;
+        }
+    }
+
+    /// @brief Set the case-insensitive Debug Console filter.
+    expose override func SetDebugConsoleFilter(filter: String) {
+        var filterHadFocus =
+            debugFilterInput != null and debugFilterInput.IsFocused();
+        if debugFilterInput != null
+           and debugFilterInput.get_Text() != filter {
+            debugFilterInput.SetText(filter);
+            debugFilterInput.WasChanged();
+        }
+        debugFilterText = Str.ToLower(Str.Trim(filter));
+        RefreshDebugConsoleRows();
+        if filterHadFocus { debugFilterInput.Focus(); }
+    }
+
+    /// @brief Enable or disable Debug Console line wrapping.
+    expose override func SetDebugConsoleWrap(enabled: Boolean) {
+        debugWrapLines = enabled;
+        if debugWrapCheck != null and debugWrapCheck.IsChecked() != enabled {
+            debugWrapCheck.SetChecked(enabled);
+            debugWrapCheck.WasChanged();
+        }
+        RefreshDebugConsoleRows();
+    }
+
+    /// @brief Copy the complete unfiltered Debug Console source.
+    expose override func CopyDebugConsoleText() -> Boolean {
+        if debugConsoleSource == "" { return false; }
+        GUI.ClipboardText.SetText(debugConsoleSource);
+        return true;
+    }
+
+    /// @brief Consume one user request to clear debugger-owned program output.
+    expose override func TakeDebugConsoleClearRequest() -> Boolean {
+        if debugConsoleClearRequested == false { return false; }
+        debugConsoleClearRequested = false;
+        return true;
+    }
+
+    /// @brief Poll live Debug Console filters and local copy/wrap actions.
+    hide override func PumpDebugConsoleToolbar() {
+        if debugFilterInput == null { return; }
+        if debugFilterInput.WasChanged() {
+            debugFilterText =
+                Str.ToLower(Str.Trim(debugFilterInput.get_Text()));
+            RefreshDebugConsoleRows();
+        }
+        if debugFilterClearButton != null
+           and debugFilterClearButton.WasClicked() {
+            debugFilterInput.SetText("");
+            debugFilterInput.WasChanged();
+            debugFilterText = "";
+            RefreshDebugConsoleRows();
+            debugFilterInput.Focus();
+        }
+        if debugWrapCheck != null and debugWrapCheck.WasChanged() {
+            debugWrapLines = debugWrapCheck.IsChecked();
+            RefreshDebugConsoleRows();
+        }
+        if debugCopyButton != null and debugCopyButton.WasClicked() {
+            CopyDebugConsoleText();
+        }
+        if debugClearButton != null and debugClearButton.WasClicked()
+           and debugConsoleCanClear {
+            debugConsoleClearRequested = true;
+        }
+        UpdateDebugToolbarState();
+    }
+
+    /// @brief Synchronize Debug Console counts and truthful action state.
+    hide override func UpdateDebugToolbarState() {
+        if debugCountLabel != null {
+            var countText = "";
+            if debugFilterText != "" {
+                countText = "" + visibleDebugConsoleLineCount + " of "
+                    + debugConsoleLineCount + " lines";
+            } else {
+                countText = "" + debugConsoleLineCount + " line";
+                if debugConsoleLineCount != 1 {
+                    countText = countText + "s";
+                }
+            }
+            debugCountLabel.SetText(countText);
+        }
+        if debugFilterClearButton != null {
+            debugFilterClearButton.SetEnabled(
+                debugFilterInput != null
+                and debugFilterInput.get_Text() != "");
+        }
+        if debugCopyButton != null {
+            debugCopyButton.SetEnabled(debugConsoleSource != "");
+        }
+        if debugClearButton != null {
+            debugClearButton.SetEnabled(
+                debugConsoleCanClear and debugConsoleClearRequested == false);
+        }
+        if debugEmptyLabel != null {
+            var emptyText = "Debug console is idle";
+            if debugConsoleLineCount > 0
+               and visibleDebugConsoleLineCount == 0 {
+                emptyText = "No debug output matches the current filter";
+            }
+            debugEmptyLabel.SetText(emptyText);
+            debugEmptyLabel.SetAccessibleName(emptyText);
+        }
+    }
+
+    /// @brief Reveal either Debug Console rows or the contextual empty state.
+    hide override func ApplyDebugConsoleSurfaceVisibility() {
+        var panelVisible =
+            IsToolPanelSelected(tool_panel_model.PANEL_DEBUG)
+            and debugPanel != null and debugPanel.IsVisible();
+        if debugListBox != null {
+            debugListBox.SetVisible(
+                panelVisible and visibleDebugConsoleLineCount > 0);
+        }
+        if debugEmptyLabel != null {
+            debugEmptyLabel.SetVisible(
+                panelVisible and visibleDebugConsoleLineCount == 0);
+        }
+    }
+}

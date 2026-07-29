@@ -1,0 +1,259 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_panel_queries.zia
+// Purpose: Focused panel queries behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_debug_panels.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_panel_queries;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_debug_panels" as PreviousLayer;
+
+class ToolPanelQueriesLayer extends PreviousLayer.ToolPanelDebugPanelsLayer {
+
+    /// @brief Return whether a text field in the Search panel owns keyboard input.
+    /// @details Global Enter/Escape state must not run or cancel a workspace
+    ///          search while the user is typing in Terminal, the editor, or an
+    ///          unrelated overlay merely because the Search panel is visible.
+    expose override func IsSearchInputFocused() -> Boolean {
+        return (searchQueryInput != null and searchQueryInput.IsFocused())
+            or (searchReplaceInput != null and searchReplaceInput.IsFocused())
+            or (searchKindsInput != null and searchKindsInput.IsFocused())
+            or (searchIncludeInput != null and searchIncludeInput.IsFocused())
+            or (searchExcludeInput != null and searchExcludeInput.IsFocused());
+    }
+
+    /// @brief Return whether Enter should run the current text-search request.
+    /// @details The replacement field deliberately does not qualify: pressing
+    ///          Enter while authoring replacement text must never rerun search
+    ///          or imply the destructive Replace All action.
+    expose override func IsSearchRunInputFocused() -> Boolean {
+        return (searchQueryInput != null and searchQueryInput.IsFocused())
+            or (searchKindsInput != null and searchKindsInput.IsFocused())
+            or (searchIncludeInput != null and searchIncludeInput.IsFocused())
+            or (searchExcludeInput != null and searchExcludeInput.IsFocused());
+    }
+
+    /// @brief Give an explicitly opened Search workflow keyboard ownership.
+    /// @details ShowSearchPanel intentionally does not focus: background search
+    ///          completion may reveal results without stealing editor/terminal
+    ///          input. Command entry points call this after revealing the panel.
+    expose override func FocusSearchQuery() {
+        if searchPanel != null and searchPanel.IsVisible()
+           and searchQueryInput != null {
+            searchQueryInput.Focus();
+        }
+    }
+
+    /// @brief Return whether Search currently owns the visible tool dock.
+    /// @details Background search completion uses this to avoid stealing the
+    ///          dock or raising routine result toasts after the user moved on.
+    expose override func IsSearchPanelActive() -> Boolean {
+        return IsToolPanelSelected(tool_panel_model.PANEL_SEARCH)
+            and searchPanel != null and searchPanel.IsVisible();
+    }
+
+    /// @brief Return whether Output currently owns the visible tool dock.
+    expose override func IsOutputPanelActive() -> Boolean {
+        return IsToolPanelSelected(tool_panel_model.PANEL_OUTPUT)
+            and ((outputPanel != null and outputPanel.IsVisible())
+                 or (outputPanel == null
+                     and ((outputPane != null and outputPane.IsVisible())
+                          or (outputListBox != null
+                              and outputListBox.IsVisible()))));
+    }
+
+    /// @brief Return whether Problems currently owns the visible tool dock.
+    expose override func IsProblemsPanelActive() -> Boolean {
+        return IsToolPanelSelected(tool_panel_model.PANEL_PROBLEMS)
+            and ((problemsPanel != null and problemsPanel.IsVisible())
+                 or (problemsPanel == null and diagListBox != null
+                     and diagListBox.IsVisible()));
+    }
+
+    /// @brief Return whether References currently owns the visible tool dock.
+    expose override func IsReferencesPanelActive() -> Boolean {
+        return IsToolPanelSelected(tool_panel_model.PANEL_REFERENCES)
+            and referencesPanel != null and referencesPanel.IsVisible();
+    }
+
+    /// @brief Return whether Debug Console currently owns the visible tool dock.
+    expose override func IsDebugPanelActive() -> Boolean {
+        return IsToolPanelSelected(tool_panel_model.PANEL_DEBUG)
+            and debugPanel != null and debugPanel.IsVisible();
+    }
+
+    /// @brief Return whether Call Stack currently owns the visible tool dock.
+    expose override func IsCallStackPanelActive() -> Boolean {
+        return IsToolPanelSelected(tool_panel_model.PANEL_CALL_STACK)
+            and callStackPanel != null and callStackPanel.IsVisible();
+    }
+
+    /// @brief Return the monotonic tool-panel selection revision.
+    expose override func GetPanelSelectionRevision() -> Integer {
+        return panelSelectionRevision;
+    }
+
+    /// @brief Publish one actual panel selection transition.
+    hide override func SetActiveToolPanelKind(kind: Integer) {
+        if activeToolPanelKind != kind {
+            activeToolPanelKind = kind;
+            panelSelectionRevision = panelSelectionRevision + 1;
+        }
+    }
+
+    /// @brief Hide Debug Console and select a fallback panel if content remains.
+    expose override func HideDebugPanel() {
+        var location = toolPanelGroups.LocationForId(
+            tool_panel_model.TAB_ID_DEBUG);
+        var wasSelected =
+            ActiveToolPanelKindAt(location)
+                == tool_panel_model.PANEL_DEBUG;
+        if debugPanel != null { debugPanel.SetVisible(false); }
+        debugListBox.SetVisible(false);
+        if debugEmptyLabel != null { debugEmptyLabel.SetVisible(false); }
+        if wasSelected { ShowFallbackToolPanelAt(location); }
+    }
+
+    /// @brief Select useful retained content without crossing dock groups.
+    hide override func ShowFallbackToolPanelAt(location: Integer) {
+        if toolPanelGroups.LocationForId(tool_panel_model.TAB_ID_OUTPUT)
+               == location
+           and HasOutputContent() {
+            ShowOutputPanel();
+        } else if toolPanelGroups.LocationForId(
+                      tool_panel_model.TAB_ID_PROBLEMS) == location
+                  and HasActiveProblemsContent() {
+            ShowProblemsPanel();
+        } else if toolPanelGroups.LocationForId(
+                      tool_panel_model.TAB_ID_SEARCH) == location
+                  and searchListBox.Count > 0 {
+            ShowSearchPanel();
+        } else if toolPanelGroups.LocationForId(
+                      tool_panel_model.TAB_ID_REFERENCES) == location
+                  and HasReferenceResults() {
+            ShowReferencesPanel();
+        } else if toolPanelGroups.LocationForId(
+                      tool_panel_model.TAB_ID_VARIABLES) == location
+                  and variablesListBox.Count > 0 {
+            ShowVariablesPanel();
+        } else if toolPanelGroups.LocationForId(
+                      tool_panel_model.TAB_ID_CALL_STACK) == location
+                  and HasCallStackFrames() {
+            ShowCallStackPanel();
+        } else if toolPanelGroups.LocationForId(
+                      tool_panel_model.TAB_ID_DEBUG) == location
+                  and debugConsoleSource != "" {
+            ShowDebugPanel();
+        } else {
+            HideToolGroupAt(location);
+        }
+    }
+
+    /// @brief Select fallback panel after hiding Terminal.
+    hide override func ShowFallbackToolPanelWithoutTerminal() {
+        var location = toolPanelGroups.LocationForId(
+            tool_panel_model.TAB_ID_TERMINAL);
+        ShowFallbackToolPanelAt(location);
+    }
+
+    /// @brief Return whether Problems should claim fallback space.
+    /// @return True when active diagnostics are present.
+    hide override func HasActiveProblemsContent() -> Boolean {
+        return problemsHaveDiagnostics and problemRecords.count() > 0;
+    }
+
+    /// @brief Poll bottom tool tabs and show the selected panel.
+    expose override func PumpToolTabs() {
+        if toolTabBar == null { return; }
+        ApplyResponsiveDockHeader();
+        PumpDockControls();
+        ApplyResponsiveProblemsToolbar();
+        ApplyResponsiveOutputToolbar();
+        ApplyResponsiveReferencesToolbar();
+        ApplyResponsiveDebugToolbar();
+        ApplyResponsiveCallStackToolbar();
+        ApplyResponsiveSearchControls();
+        ApplyResponsiveTerminalActions();
+        ApplyResponsiveWatchToolbar();
+        PumpProblemsToolbar();
+        PumpOutputToolbar();
+        PumpReferencesToolbar();
+        PumpDebugConsoleToolbar();
+        PumpCallStackToolbar();
+        CaptureSplitDrag(); // every frame: keep a live splitter drag remembered
+        ApplyResponsiveToolTabLabels();
+        var reordered = false;
+        var leftBar = ToolTabBarAt(workspace_dock.DOCK_LEFT);
+        var bottomBar = ToolTabBarAt(workspace_dock.DOCK_BOTTOM);
+        var rightBar = ToolTabBarAt(workspace_dock.DOCK_RIGHT);
+        var floatingBar = ToolTabBarAt(workspace_dock.DOCK_FLOATING);
+        if leftBar != null and leftBar.WasReordered() {
+            reordered = true;
+        }
+        if bottomBar != null and bottomBar.WasReordered() {
+            reordered = true;
+        }
+        if rightBar != null and rightBar.WasReordered() {
+            reordered = true;
+        }
+        if floatingBar != null and floatingBar.WasReordered() {
+            reordered = true;
+        }
+        if reordered { CaptureToolTabOrder(); }
+
+        var searchLocation = toolPanelGroups.LocationForId(
+            tool_panel_model.TAB_ID_SEARCH);
+        if ActiveToolPanelKindAt(searchLocation)
+               == tool_panel_model.PANEL_SEARCH {
+            // Recompute after a window resize; the configured fraction remains
+            // untouched and is restored automatically on a roomier viewport.
+            ExpandToolDockAt(searchLocation, SearchPanelMinimumHeight());
+        }
+
+        PumpToolTabSelectionAt(workspace_dock.DOCK_LEFT);
+        PumpToolTabSelectionAt(workspace_dock.DOCK_BOTTOM);
+        PumpToolTabSelectionAt(workspace_dock.DOCK_RIGHT);
+        PumpToolTabSelectionAt(workspace_dock.DOCK_FLOATING);
+    }
+
+    /// @brief Consume one group's tab selection and route by stable ID.
+    hide override func PumpToolTabSelectionAt(location: Integer) {
+        var bar = ToolTabBarAt(location);
+        if bar == null or !bar.WasChanged() { return; }
+        var idx = bar.GetActiveIndex();
+        if idx < 0 or idx >= bar.TabCount { return; }
+        var activeTab: GUI.Tab = bar.GetTabAt(idx);
+        if activeTab == null { return; }
+        var panelKind =
+            tool_panel_model.PanelKindForTabId(activeTab.GetStableId());
+        if panelKind != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(panelKind);
+            return;
+        }
+        ShowFallbackToolPanelAt(location);
+    }
+}

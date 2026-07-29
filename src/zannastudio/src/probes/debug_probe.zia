@@ -69,11 +69,21 @@ func pollUntilSettled(session: debug_session.DebugSession, budgetMs: Integer) {
     session.Poll();
 }
 
-func main() {
+/// @brief Typed state shared by serial debugger scenarios.
+class DebugProbeContext {
+    expose String zannaBin;
+    expose String dir;
+    expose String prog;
+    expose debug_session.DebugSession session;
+}
+
+/// @brief Launch Zia and verify breakpoint, locals, evaluation, and watches.
+func VerifyZiaBreakpointState(
+    ctx: DebugProbeContext) -> Boolean {
     var zannaBin = argValue("--zanna-bin");
     if zannaBin == "" {
         fail("no --zanna-bin argument");
-        return;
+        return false;
     }
 
     var dir = TempFile.CreateDirWithPrefix("zannastudio_debug_");
@@ -94,7 +104,7 @@ func main() {
     var session = new debug_session.DebugSession();
     if session.Launch(zannaBin, prog, store) == false {
         fail("DebugSession.Launch returned false");
-        return;
+        return false;
     }
 
     // 1) Run to the breakpoint on line 5; locals a/b must be populated.
@@ -102,58 +112,58 @@ func main() {
     if session.stopped == false {
         fail("did not stop at breakpoint (terminated=" + session.terminated
             + ", reason=" + session.lastReason + ")");
-        return;
+        return false;
     }
     if session.lastReason != "breakpoint" {
         fail("stop reason was '" + session.lastReason + "'");
-        return;
+        return false;
     }
     if session.lastLine != 5 {
         fail("stopped at wrong line: " + session.lastLine);
-        return;
+        return false;
     }
     // The adapter reports the canonical source path (symlinks resolved), which
     // may differ in form from `prog` — assert it identifies the same file.
     if Str.EndsWith(session.activePath, "dbg.zia") == false {
         fail("stop path is not our file: " + session.activePath);
-        return;
+        return false;
     }
     if Str.IndexOf(session.consoleText, "a = 10") == 0 {
         fail("locals missing 'a = 10' in console: " + session.consoleText);
-        return;
+        return false;
     }
     if Str.IndexOf(session.consoleText, "b = 20") == 0 {
         fail("locals missing 'b = 20'");
-        return;
+        return false;
     }
 
     // Structured accessors that back the Variables / Call Stack panels.
     if session.LocalCount() < 2 {
         fail("LocalCount was " + session.LocalCount() + " (expected >= 2)");
-        return;
+        return false;
     }
     if session.FrameCount() < 1 {
         fail("FrameCount was " + session.FrameCount() + " (expected >= 1)");
-        return;
+        return false;
     }
     if Str.IndexOf(session.FrameLabel(0), "main") == 0 {
         fail("FrameLabel(0) missing 'main': " + session.FrameLabel(0));
-        return;
+        return false;
     }
     // FramePath/FrameLine back clickable call-stack navigation.
     if session.FrameLine(0) != 5 {
         fail("FrameLine(0) was " + session.FrameLine(0) + " (expected 5)");
-        return;
+        return false;
     }
     if Str.EndsWith(session.FramePath(0), "dbg.zia") == false {
         fail("FramePath(0) not our file: " + session.FramePath(0));
-        return;
+        return false;
     }
 
     // 1b) Watch/evaluate a name at the stop (reuses the frame locals).
     if session.Evaluate("a") == false {
         fail("Evaluate rejected while stopped");
-        return;
+        return false;
     }
     var ew = 0;
     while ew < 8000 and session.lastEvalExpr != "a" {
@@ -163,11 +173,11 @@ func main() {
     }
     if session.lastEvalOk == false {
         fail("evaluate 'a' returned not-ok");
-        return;
+        return false;
     }
     if session.lastEvalValue != "10" {
         fail("evaluate 'a' value was '" + session.lastEvalValue + "' (expected 10)");
-        return;
+        return false;
     }
     session.Evaluate("a + b");
     var ewExpr = 0;
@@ -178,7 +188,7 @@ func main() {
     }
     if session.lastEvalOk == false or session.lastEvalValue != "30" {
         fail("evaluate 'a + b' returned value '" + session.lastEvalValue + "'");
-        return;
+        return false;
     }
     // An unknown name must resolve to not-ok (and not crash the session).
     session.Evaluate("not_a_real_local");
@@ -190,11 +200,11 @@ func main() {
     }
     if session.lastEvalOk {
         fail("evaluate unknown name should be not-ok");
-        return;
+        return false;
     }
     if session.AddWatch("a + b") == false or session.AddWatch("a + b") {
         fail("watch add/duplicate handling failed");
-        return;
+        return false;
     }
     var ww = 0;
     while ww < 8000 and Str.IndexOf(session.WatchLabel(0), "30") == 0 {
@@ -204,86 +214,99 @@ func main() {
     }
     if session.WatchCount() != 1 or Str.IndexOf(session.WatchLabel(0), "a + b = 30") == 0 {
         fail("watch did not evaluate expression: " + session.WatchLabel(0));
-        return;
+        return false;
     }
     if session.WatchExpression(0) != "a + b" {
         fail("WatchExpression returned '" + session.WatchExpression(0) + "'");
-        return;
+        return false;
     }
     if session.RemoveWatch(0) == false or session.WatchCount() != 0 {
         fail("RemoveWatch did not clear the watch list");
-        return;
+        return false;
     }
     if session.AddWatch("a") == false {
         fail("AddWatch rejected after RemoveWatch");
-        return;
+        return false;
     }
     session.ClearWatches();
     if session.WatchCount() != 0 {
         fail("ClearWatches left " + session.WatchCount() + " watches");
-        return;
+        return false;
     }
+
+    ctx.zannaBin = zannaBin;
+    ctx.dir = dir;
+    ctx.prog = prog;
+    ctx.session = session;
+    return true;
+}
+
+/// @brief Verify Zia stepping, run-to-cursor, and termination state.
+func VerifyZiaStepping(
+    ctx: DebugProbeContext) -> Boolean {
+    var prog = ctx.prog;
+    var session = ctx.session;
 
     // 2) Step over → advance to the next source line (6).
     if session.StepOver() == false {
         fail("StepOver rejected while stopped");
-        return;
+        return false;
     }
     if session.FrameCount() != 0 or session.LocalCount() != 0 or session.stopped {
         fail("StepOver left stale paused debugger state visible");
-        return;
+        return false;
     }
     pollUntilSettled(session, debugWaitMs());
     if session.stopped == false {
         fail("did not stop after StepOver (terminated=" + session.terminated + ")");
-        return;
+        return false;
     }
     if session.lastLine != 6 {
         fail("StepOver landed on line " + session.lastLine + " (expected 6)");
-        return;
+        return false;
     }
 
     // 2b) Run to cursor: a one-shot breakpoint at line 7 (return) is hit, then
     //     removed so the persistent set is restored for the final continue.
     if session.RunToLine(prog, 7) == false {
         fail("RunToLine rejected while stopped");
-        return;
+        return false;
     }
     if session.FrameCount() != 0 or session.LocalCount() != 0 or session.stopped {
         fail("RunToLine left stale paused debugger state visible");
-        return;
+        return false;
     }
     pollUntilSettled(session, debugWaitMs());
     if session.stopped == false {
         fail("did not stop after RunToLine (terminated=" + session.terminated + ")");
-        return;
+        return false;
     }
     if session.lastLine != 7 {
         fail("RunToLine landed on line " + session.lastLine + " (expected 7)");
-        return;
+        return false;
     }
 
     // 3) Continue → run to completion; main returns 30, program prints c=30.
     if session.Continue() == false {
         fail("Continue rejected while stopped");
-        return;
+        return false;
     }
     if session.FrameCount() != 0 or session.LocalCount() != 0 or session.stopped {
         fail("Continue left stale paused debugger state visible");
-        return;
+        return false;
     }
     pollUntilSettled(session, debugWaitMs());
     if session.terminated == false {
         fail("did not terminate after Continue");
-        return;
+        return false;
     }
     if session.exitCode != 30 {
         fail("exit code was " + session.exitCode + " (expected 30)");
-        return;
+        return false;
     }
     if Str.IndexOf(session.programOutput, "c=30") == 0 {
         fail("program output missing 'c=30': " + session.programOutput);
-        return;
+        return false;
     }
     var terminatedStatus = session.FormatConsole();
     session.ClearProgramOutput();
@@ -291,8 +314,17 @@ func main() {
        or Str.IndexOf(terminatedStatus, "terminated") == 0
        or session.FormatConsole() != terminatedStatus {
         fail("clearing program output changed debugger termination status");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify BASIC source breakpoints and local-variable reporting.
+func VerifyBasicDebugging(
+    ctx: DebugProbeContext) -> Boolean {
+    var zannaBin = ctx.zannaBin;
+    var dir = ctx.dir;
 
     // ===== BASIC: source-line breakpoints work for the second frontend =====
     var bprog = Path.Join(dir, "dbg.bas");
@@ -306,36 +338,45 @@ func main() {
     var bsession = new debug_session.DebugSession();
     if bsession.Launch(zannaBin, bprog, bstore) == false {
         fail("BASIC DebugSession.Launch returned false");
-        return;
+        return false;
     }
     pollUntilSettled(bsession, debugWaitMs());
     if bsession.stopped == false {
         fail("BASIC did not stop at breakpoint (terminated=" + bsession.terminated + ")");
-        return;
+        return false;
     }
     if bsession.lastLine != 2 {
         fail("BASIC stopped at line " + bsession.lastLine + " (expected 2)");
-        return;
+        return false;
     }
     if Str.EndsWith(bsession.activePath, "dbg.bas") == false {
         fail("BASIC stop path is not our file: " + bsession.activePath);
-        return;
+        return false;
     }
     // BASIC locals must be populated too — regression guard: the lowerer now
     // names variable slots so the debugger surfaces them (previously empty).
     if Str.IndexOf(bsession.consoleText, "x =") == 0 {
         fail("BASIC locals missing 'x' in console: " + bsession.consoleText);
-        return;
+        return false;
     }
     if bsession.Continue() == false {
         fail("BASIC Continue rejected while stopped");
-        return;
+        return false;
     }
     pollUntilSettled(bsession, debugWaitMs());
     if bsession.terminated == false {
         fail("BASIC did not terminate after Continue");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify conditional breakpoints and non-stopping logpoints.
+func VerifyConditionalBreakpointsAndLogpoints(
+    ctx: DebugProbeContext) -> Boolean {
+    var zannaBin = ctx.zannaBin;
+    var dir = ctx.dir;
 
     // ===== Conditional breakpoint: halts only when the condition holds =======
     var cprog = Path.Join(dir, "loop.zia");
@@ -354,16 +395,16 @@ func main() {
     var csession = new debug_session.DebugSession();
     if csession.Launch(zannaBin, cprog, cstore) == false {
         fail("conditional: Launch returned false");
-        return;
+        return false;
     }
     pollUntilSettled(csession, debugWaitMs());
     if csession.stopped == false {
         fail("conditional: did not stop (terminated=" + csession.terminated + ")");
-        return;
+        return false;
     }
     if csession.lastLine != 5 {
         fail("conditional: stopped at line " + csession.lastLine + " (expected 5)");
-        return;
+        return false;
     }
     // The condition must have skipped i=0,1,2 and stopped at i=3.
     csession.Evaluate("i");
@@ -375,7 +416,7 @@ func main() {
     }
     if csession.lastEvalValue != "3" {
         fail("conditional: stopped with i=" + csession.lastEvalValue + " (expected 3)");
-        return;
+        return false;
     }
     csession.Terminate();
 
@@ -385,14 +426,14 @@ func main() {
     var lsession = new debug_session.DebugSession();
     if lsession.Launch(zannaBin, cprog, lstore) == false {
         fail("logpoint: Launch returned false");
-        return;
+        return false;
     }
     var lw = 0;
     while lsession.IsActive() and lw < debugWaitMs() {
         lsession.Poll();
         if lsession.stopped {
             fail("logpoint: unexpectedly halted at line " + lsession.lastLine);
-            return;
+            return false;
         }
         Time.Clock.Sleep(5);
         lw = lw + 5;
@@ -400,8 +441,17 @@ func main() {
     lsession.Poll();
     if Str.IndexOf(lsession.programOutput, "[logpoint:5] iter i=3") == 0 {
         fail("logpoint: missing 'iter i=3' in output: " + lsession.programOutput);
-        return;
+        return false;
     }
 
     Terminal.Say("RESULT: ok");
+    return true;
+}
+
+func main() {
+    var ctx = new DebugProbeContext();
+    if VerifyZiaBreakpointState(ctx) == false { return; }
+    if VerifyZiaStepping(ctx) == false { return; }
+    if VerifyBasicDebugging(ctx) == false { return; }
+    if VerifyConditionalBreakpointsAndLogpoints(ctx) == false { return; }
 }

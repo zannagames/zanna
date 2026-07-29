@@ -1,0 +1,993 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_materials_terrain.zia
+// Purpose: Focused materials terrain behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_bake_environment.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_materials_terrain;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_bake_environment" as PreviousLayer;
+
+/// @brief Materials Terrain implementation layer.
+class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBakeEnvironmentLayer {
+
+    /// @brief Pump the material library group (ADR 0189).
+    hide override func PumpMaterialLibraryControls() {
+        if materialLibraryGroup == null { return; }
+        var rootPath = ComponentSchemaRoot();
+        if rootPath != materialLibraryRoot {
+            materialLibraryRoot = rootPath;
+            ReloadMaterialLibrary();
+        }
+        // Bounded external polling: reload when the on-disk bytes drift.
+        materialLibraryPollMs = materialLibraryPollMs + 1;
+        if materialLibrary != null and materialLibrary.found
+           and materialLibraryPollMs >= 120 {
+            materialLibraryPollMs = 0;
+            var current = safe_io.ReadAllTextBounded(
+                materialLibrary.sourcePath,
+                material_library_3d.MAX_MATERIAL_LIBRARY_BYTES);
+            if current.ok and current.text != materialLibrary.diskText {
+                ReloadMaterialLibrary();
+                materialLibraryStatus.SetText(
+                    "materials.scene3d changed on disk; the list was "
+                    + "reloaded.");
+            }
+        }
+        if materialLibraryReloadButton.WasClicked() {
+            ReloadMaterialLibrary();
+        }
+        if materialLibraryNameInput.WasChanged() {
+            materialLibraryOverwriteArmed = false;
+            UpdateMaterialLibraryControls();
+        }
+        if materialLibrarySaveButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            SaveSelectedMaterialToLibrary();
+        }
+        if materialLibraryApplyButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            ApplyLibraryMaterialToSelection();
+        }
+        if materialLibraryList.WasSelectionChanged() {
+            materialLibraryOverwriteArmed = false;
+            UpdateMaterialLibraryControls();
+            var dragName = "";
+            if materialLibrary != null and materialLibrary.valid
+               and materialLibraryList.SelectedIndex >= 0
+               and materialLibraryList.SelectedIndex
+                   < materialLibrary.entries.count() {
+                dragName = materialLibrary.entries.get(
+                    materialLibraryList.SelectedIndex).name;
+            }
+            materialLibraryList.SetDragData("zanna/material", dragName);
+            RefreshMaterialSwatch();
+        }
+    }
+
+    /// @brief Reload materials.scene3d for the owning workspace root.
+    expose override func ReloadMaterialLibrary() {
+        materialLibraryOverwriteArmed = false;
+        var libraryPath =
+            material_library_3d.PathForRoot(materialLibraryRoot);
+        if libraryPath == "" {
+            materialLibrary = null;
+            materialLibraryList.Clear();
+            materialLibraryStatus.SetText(
+                "Open a workspace folder to use materials.scene3d.");
+            UpdateMaterialLibraryControls();
+            return;
+        }
+        materialLibrary = material_library_3d.LoadPath(libraryPath);
+        materialLibraryList.Clear();
+        if materialLibrary.valid == false {
+            materialLibraryStatus.SetText(
+                "materials.scene3d is invalid: " + materialLibrary.error);
+        } else if materialLibrary.found == false {
+            materialLibraryStatus.SetText(
+                "No materials.scene3d yet; Save to Library creates it.");
+        } else {
+            var index = 0;
+            while index < materialLibrary.entries.count() {
+                var entry = materialLibrary.entries.get(index);
+                var maps = scene_material_3d.RetainedMapCount(
+                    entry.material);
+                var summary = entry.name;
+                if maps == 1 { summary = summary + "  •  1 map"; }
+                else if maps > 1 {
+                    summary = summary + "  •  " + maps + " maps";
+                }
+                materialLibraryList.AddItem(summary);
+                index = index + 1;
+            }
+            materialLibraryStatus.SetText(
+                materialLibrary.entries.count()
+                + " library material(s) in materials.scene3d.");
+        }
+        UpdateMaterialLibraryControls();
+    }
+
+    /// @brief Keep library actions truthful for selection and validity.
+    hide override func UpdateMaterialLibraryControls() {
+        if materialLibraryGroup == null { return; }
+        var usable = materialLibrary != null
+            and materialLibrary.valid;
+        var hasSingle = scene != null
+            and selectedIndices.count() == 1
+            and SelectedNode() != null
+            and SelectedNode().Material != null;
+        materialLibraryGroup.SetEnabled(scene != null);
+        materialLibrarySaveButton.SetEnabled(
+            usable and hasSingle
+            and material_library_3d.NameIsValid(
+                    materialLibraryNameInput.get_Text()));
+        materialLibraryApplyButton.SetEnabled(
+            usable and materialLibrary.found
+            and scene != null and selectedIndices.count() > 0
+            and materialLibraryList.SelectedIndex >= 0);
+        if materialLibraryOverwriteArmed {
+            materialLibrarySaveButton.SetText("Confirm Overwrite");
+        } else {
+            materialLibrarySaveButton.SetText("Save to Library");
+        }
+    }
+
+    /// @brief Stage and persist the selected node's material by name.
+    /// @details Overwriting an existing name requires a second explicit
+    ///          click; writes are atomic and conflict-guarded and never
+    ///          touch scene content or history.
+    expose override func SaveSelectedMaterialToLibrary() -> Boolean {
+        var node = SelectedNode();
+        if materialLibrary == null or materialLibrary.valid == false
+           or node == null or node.Material == null {
+            return false;
+        }
+        var name = Str.Trim(materialLibraryNameInput.get_Text());
+        if material_library_3d.NameIsValid(name) == false {
+            materialLibraryStatus.SetText(
+                "Library names need 1-64 characters.");
+            return false;
+        }
+        var existing = materialLibrary.EntryNamed(name);
+        if existing != null and materialLibraryOverwriteArmed == false {
+            materialLibraryOverwriteArmed = true;
+            UpdateMaterialLibraryControls();
+            materialLibraryStatus.SetText(
+                "\"" + name + "\" already exists. Click Confirm "
+                + "Overwrite to replace it.");
+            return false;
+        }
+        materialLibraryOverwriteArmed = false;
+        var staged =
+            Material3D.Clone(node.Material) as Material3D;
+        if staged == null {
+            materialLibraryStatus.SetText(
+                "The material could not be cloned for the library.");
+            return false;
+        }
+        var nextEntries:
+            List[material_library_3d.MaterialLibraryEntry3D] = [];
+        var index = 0;
+        while index < materialLibrary.entries.count() {
+            var entry = materialLibrary.entries.get(index);
+            if Str.ToLower(entry.name) != Str.ToLower(name) {
+                nextEntries.add(entry);
+            }
+            index = index + 1;
+        }
+        var nextEntry =
+            new material_library_3d.MaterialLibraryEntry3D();
+        nextEntry.name = name;
+        nextEntry.material = staged;
+        nextEntries.add(nextEntry);
+        if material_library_3d.SaveEntries(
+               materialLibrary, nextEntries) == false {
+            materialLibraryStatus.SetText(materialLibrary.error);
+            return false;
+        }
+        ReloadMaterialLibrary();
+        materialLibraryStatus.SetText(
+            "Saved \"" + name + "\" to materials.scene3d.");
+        return true;
+    }
+
+    /// @brief Clone the chosen library material onto the selection.
+    /// @details Per-node independent clones through one canonical history
+    ///          entry; unselected users of shared materials are untouched
+    ///          and the scene never references the library file.
+    /// @brief Reconcile best-effort labels with the snapshot stacks.
+    /// @details Trims and wholesale stack replacements (budget trims,
+    ///          workspace restores) can outpace the label lists; front-pad
+    ///          or front-drop so counts always match before presenting.
+    hide override func SyncHistoryLabels() {
+        while undoLabels.count() > undoStack.count() {
+            undoLabels.removeAt(0);
+        }
+        while undoLabels.count() < undoStack.count() {
+            undoLabels.add("Edit");
+            var last = undoLabels.count() - 1;
+            var moved = undoLabels.get(last);
+            undoLabels.removeAt(last);
+            var rebuilt: List[String] = [];
+            rebuilt.add(moved);
+            var index = 0;
+            while index < undoLabels.count() {
+                rebuilt.add(undoLabels.get(index));
+                index = index + 1;
+            }
+            undoLabels = rebuilt;
+        }
+        while redoLabels.count() > redoStack.count() {
+            redoLabels.removeAt(0);
+        }
+        while redoLabels.count() < redoStack.count() {
+            redoLabels.add("Edit");
+        }
+    }
+
+    /// @brief Rebuild the History rows: undone-past oldest first + Current.
+    expose override func RefreshHistoryPanel() {
+        if historyList == null { return; }
+        SyncHistoryLabels();
+        historyListRefreshing = true;
+        historyList.Clear();
+        var index = 0;
+        while index < undoLabels.count() {
+            historyList.AddItem((index + 1) + ". " + undoLabels.get(index));
+            index = index + 1;
+        }
+        historyList.AddItem("● Current");
+        historyList.SelectIndex(undoLabels.count());
+        // Programmatic selection raises the same edge a user click would;
+        // drain it so the next pump cannot mistake it for a jump request.
+        historyList.WasSelectionChanged();
+        historyListRefreshing = false;
+    }
+
+    /// @brief Jump to the state before one history row's edit.
+    /// @details Row k (0-based, oldest first) restores the snapshot taken
+    ///          before that edit by running the equivalent chain of Undo
+    ///          calls; the Current row is a no-op. Redo stays available.
+    expose override func JumpToHistoryRow(row: Integer) -> Boolean {
+        SyncHistoryLabels();
+        if row < 0 or row >= undoStack.count() { return false; }
+        var undos = undoStack.count() - row;
+        var step = 0;
+        while step < undos {
+            if Undo() == false { return false; }
+            step = step + 1;
+        }
+        toolbarStatus.SetText("Jumped back " + undos + " edit(s)");
+        return true;
+    }
+
+    /// @brief Route history row clicks into jumps.
+    hide override func PumpHistoryPanel() {
+        if historyList == null or historyListRefreshing { return; }
+        if historyList.WasSelectionChanged() == false { return; }
+        var row = historyList.SelectedIndex;
+        SyncHistoryLabels();
+        if row >= 0 and row < undoStack.count() {
+            JumpToHistoryRow(row);
+        }
+        RefreshHistoryPanel();
+    }
+
+    /// @brief Render the selected library material as a lit sphere swatch.
+    /// @details Deterministic software offscreen render, cached by entry
+    ///          name so reselecting the same entry re-renders nothing.
+    ///          Workspace-only presentation; never touches canonical bytes.
+    expose override func RefreshMaterialSwatch() {
+        if materialSwatchImage == null or materialLibrary == null {
+            return;
+        }
+        var selected = materialLibraryList.SelectedIndex;
+        if selected < 0 or selected >= materialLibrary.entries.count() {
+            materialSwatchImage.SetVisible(false);
+            materialSwatchName = "";
+            return;
+        }
+        var entry = materialLibrary.entries.get(selected);
+        if entry == null or entry.material == null {
+            materialSwatchImage.SetVisible(false);
+            materialSwatchName = "";
+            return;
+        }
+        if entry.name == materialSwatchName
+           and materialSwatchImage.IsVisible() {
+            return;
+        }
+        var target = RenderTarget3D.New(48, 48);
+        if target == null { return; }
+        var canvas = Canvas3D.NewOffscreen(target);
+        if canvas == null { return; }
+        canvas.SetDefaultLighting();
+        canvas.SetAmbient(0.35, 0.35, 0.38);
+        var camera = Camera3D.New(45.0, 1.0, 0.1, 10.0);
+        if camera == null { return; }
+        camera.LookAt(
+            Vec3.New(0.0, 0.0, 2.4),
+            Vec3.New(0.0, 0.0, 0.0),
+            Vec3.New(0.0, 1.0, 0.0));
+        var swatchScene = SceneGraph.New();
+        var sphere = SceneNode.New();
+        sphere.Name = "swatch";
+        sphere.Mesh = Mesh3D.Sphere(0.9, 24);
+        sphere.Material = entry.material;
+        swatchScene.Add(sphere);
+        canvas.Clear(0.14, 0.15, 0.18);
+        swatchScene.Draw(canvas, camera);
+        var rendered = target.AsPixels() as Pixels;
+        if rendered == null { return; }
+        materialSwatchImage.SetPixels(rendered, 48, 48);
+        materialSwatchImage.SetVisible(true);
+        materialSwatchName = entry.name;
+    }
+
+    expose override func ApplyLibraryMaterialToSelection() -> Boolean {
+        if materialLibrary == null or materialLibrary.valid == false
+           or scene == null {
+            return false;
+        }
+        var listIndex = materialLibraryList.SelectedIndex;
+        if listIndex < 0
+           or listIndex >= materialLibrary.entries.count() {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var source = materialLibrary.entries.get(listIndex).material;
+        var staged: List[Material3D] = [];
+        var index = 0;
+        while index < selectedIndices.count() {
+            var clone = Material3D.Clone(source) as Material3D;
+            if clone == null {
+                materialLibraryStatus.SetText(
+                    "Studio could not clone the library material. "
+                    + "No selected nodes were changed.");
+                return false;
+            }
+            staged.add(clone);
+            index = index + 1;
+        }
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        index = 0;
+        while index < selectedIndices.count() {
+            flatNodes.get(selectedIndices.get(index)).Material =
+                staged.get(index);
+            index = index + 1;
+        }
+        if CommitScene(
+               "Applied library material \""
+               + materialLibrary.entries.get(listIndex).name
+               + "\" to " + selectedIndices.count()
+               + " node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The library material could not be committed.");
+            return false;
+        }
+        RefreshMaterialFields(SelectedNode());
+        renderDirty = true;
+        materialLibraryStatus.SetText(
+            "Applied \""
+            + materialLibrary.entries.get(listIndex).name
+            + "\" as independent per-node copies.");
+        return true;
+    }
+
+    /// @brief Validate the look-through node still exists with a camera.
+    hide override func ActiveLookThroughNode() -> SceneNode {
+        if lookThroughNode == null { return null; }
+        if FindFlatIndex(lookThroughNode) < 0
+           or lookThroughNode.Camera == null {
+            lookThroughNode = null;
+            return null;
+        }
+        return lookThroughNode;
+    }
+
+    /// @brief Normalize one vector or fall back to a stable default axis.
+    hide override func NormalizedVectorOr(vector: Vec3,
+                                 fallbackX: Number,
+                                 fallbackY: Number,
+                                 fallbackZ: Number) -> Vec3 {
+        if vector == null {
+            return Vec3.New(fallbackX, fallbackY, fallbackZ);
+        }
+        var length = Math.Sqrt(
+            vector.X * vector.X
+            + vector.Y * vector.Y
+            + vector.Z * vector.Z);
+        if length <= 0.000001 {
+            return Vec3.New(fallbackX, fallbackY, fallbackZ);
+        }
+        return Vec3.New(
+            vector.X / length, vector.Y / length, vector.Z / length);
+    }
+
+    /// @brief Configure one retained camera from an authored camera node.
+    /// @details Pose derives from the node world transform (camera looks
+    ///          along its node's -Z, up +Y) and projection from the authored
+    ///          fields; the authored Camera3D object is never mutated.
+    hide override func ApplyAuthoredCameraPose(target: Camera3D,
+                                      node: SceneNode) {
+        if target == null or node == null or node.Camera == null { return; }
+        var state = scene_camera_3d.FromCamera(node.Camera);
+        target.IsOrtho = state.isOrtho;
+        if state.isOrtho {
+            target.OrthoSize = state.orthoSize;
+        } else {
+            target.Fov = state.fovDegrees;
+        }
+        target.NearPlane = state.nearPlane;
+        target.FarPlane = state.farPlane;
+        var world = node.WorldMatrix;
+        var eye = node.WorldPosition;
+        var forward = NormalizedVectorOr(
+            Mat4.TransformVector(
+                world, Vec3.New(0.0, 0.0, -1.0)) as Vec3,
+            0.0, 0.0, -1.0);
+        var up = NormalizedVectorOr(
+            Mat4.TransformVector(
+                world, Vec3.New(0.0, 1.0, 0.0)) as Vec3,
+            0.0, 1.0, 0.0);
+        var alignment = forward.X * up.X
+            + forward.Y * up.Y
+            + forward.Z * up.Z;
+        if alignment > 0.999 or alignment < -0.999 {
+            up = Vec3.New(0.0, 0.0, 1.0);
+        }
+        target.LookAt(
+            Vec3.New(eye.X, eye.Y, eye.Z),
+            Vec3.New(
+                eye.X + forward.X,
+                eye.Y + forward.Y,
+                eye.Z + forward.Z),
+            up);
+    }
+
+    /// @brief Apply one copy-on-edit PBR material component transaction.
+    /// @details Existing material state is cloned before visible fields change,
+    ///          preserving shared siblings and unexposed texture/custom slots.
+    expose override func ApplyNodeMaterial(nodeIndex: Integer,
+                                  red: Number,
+                                  green: Number,
+                                  blue: Number,
+                                  alpha: Number,
+                                  metallic: Number,
+                                  roughness: Number,
+                                  ambientOcclusion: Number,
+                                  alphaMode: Integer,
+                                  doubleSided: Boolean,
+                                  unlit: Boolean) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        var current = node.Material;
+        if scene_material_3d.Matches(
+               current, red, green, blue, alpha, metallic, roughness,
+               ambientOcclusion, alphaMode, doubleSided, unlit) {
+            return false;
+        }
+        var next = scene_material_3d.MakeUnique(
+            current, red, green, blue, alpha, metallic, roughness,
+            ambientOcclusion, alphaMode, doubleSided, unlit);
+        if next == null {
+            toolbarStatus.SetText("Material edit failed");
+            detailLabel.SetText(
+                "Studio could not allocate a node-local material copy.");
+            GUI.Toast.Error("3D material edit failed");
+            return false;
+        }
+        node.Material = next;
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        if CommitScene("Updated material on " + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshMaterialFields(node);
+        return true;
+    }
+
+    /// @brief Apply one sparse PBR patch to the complete node selection.
+    /// @details Materials are cloned before any live node changes. Selected
+    ///          nodes that share one source material reuse one patched clone,
+    ///          while unselected users retain the original. Any allocation or
+    ///          serialization failure restores canonical bytes and selection.
+    expose override func ApplySelectedMaterialPatch(
+        patch: scene_material_3d.MaterialPatch3D) -> Boolean {
+        if scene == null or patch == null or patch.HasFields() == false {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+
+        var currentMaterials: List[Material3D] = [];
+        var nextMaterials: List[Material3D] = [];
+        var changedCount = 0;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            var node =
+                flatNodes.get(selectedIndices.get(selectionIndex));
+            var current = node.Material;
+            currentMaterials.add(current);
+            if scene_material_3d.MatchesPatch(current, patch) {
+                nextMaterials.add(current);
+            } else {
+                var next: Material3D = null;
+                var prior = 0;
+                while prior < currentMaterials.count() - 1
+                      and next == null {
+                    if currentMaterials.get(prior) == current
+                       and nextMaterials.get(prior) != current {
+                        next = nextMaterials.get(prior);
+                    }
+                    prior = prior + 1;
+                }
+                if next == null {
+                    next = scene_material_3d.ApplyPatchUnique(
+                        current, patch);
+                }
+                if next == null {
+                    toolbarStatus.SetText("Material batch failed");
+                    detailLabel.SetText(
+                        "Studio could not allocate every material copy. "
+                        + "No selected nodes were changed.");
+                    GUI.Toast.Error("3D material batch failed");
+                    return false;
+                }
+                nextMaterials.add(next);
+                changedCount = changedCount + 1;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if changedCount == 0 { return false; }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            flatNodes.get(
+                selectedIndices.get(selectionIndex)).Material =
+                nextMaterials.get(selectionIndex);
+            selectionIndex = selectionIndex + 1;
+        }
+        if CommitScene(
+               "Updated material fields on " + changedCount
+               + " selected node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The material batch could not be committed.");
+            return false;
+        }
+        RefreshMaterialFields(SelectedNode());
+        UpdateMaterialControls(true);
+        detailLabel.SetText(
+            "Material fields updated on " + changedCount
+            + " selected node(s); unresolved mixed fields were preserved.");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Remove one selected material component as a history transaction.
+    expose override func RemoveNodeMaterial(nodeIndex: Integer) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if node.Material == null { return false; }
+        node.Material = null;
+        selectedIndex = nodeIndex;
+        selectedIndices = scene_selection.Single(
+            nodeIndex, flatNodes.count());
+        if CommitScene("Removed material from " + NodeDisplayName(node)) == false {
+            return false;
+        }
+        RefreshMaterialFields(node);
+        return true;
+    }
+
+    /// @brief Remove materials from every selected node in one transaction.
+    expose override func RemoveSelectedMaterials() -> Boolean {
+        if scene == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var materialCount = 0;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            if flatNodes.get(
+                   selectedIndices.get(selectionIndex)).Material != null {
+                materialCount = materialCount + 1;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if materialCount == 0 { return false; }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            flatNodes.get(
+                selectedIndices.get(selectionIndex)).Material = null;
+            selectionIndex = selectionIndex + 1;
+        }
+        if CommitScene(
+               "Removed material from " + materialCount
+               + " selected node(s)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The material removal batch could not be committed.");
+            return false;
+        }
+        RefreshMaterialFields(SelectedNode());
+        UpdateMaterialControls(true);
+        detailLabel.SetText(
+            "Removed " + materialCount
+            + " material component(s) in one scene edit.");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Load and embed one texture map as a node-local material edit.
+    expose override func ApplyMaterialMapPath(nodeIndex: Integer,
+                                     slot: Integer,
+                                     path: String) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count()
+           or scene_material_3d.IsMapSlot(slot) == false
+           or Str.Trim(path) == "" {
+            return false;
+        }
+        var texture = LoadMaterialMapPath(path);
+        if texture == null { return false; }
+        return AssignMaterialMap(nodeIndex, slot, texture);
+    }
+
+    /// @brief Load one map once and assign it across the current selection.
+    expose override func ApplySelectedMaterialMapPath(slot: Integer,
+                                             path: String) -> Boolean {
+        if scene == null
+           or scene_material_3d.IsMapSlot(slot) == false
+           or Str.Trim(path) == "" {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        var texture = LoadMaterialMapPath(path);
+        if texture == null { return false; }
+        return AssignSelectedMaterialMap(slot, texture);
+    }
+
+    /// @brief Decode one bounded material map with actionable diagnostics.
+    hide override func LoadMaterialMapPath(path: String) -> Any {
+        var sourceBytes = safe_io.SizeBytes(path);
+        if sourceBytes < 0 or sourceBytes > SceneEditor3DModel.MAX_TEXTURE_SOURCE_BYTES {
+            toolbarStatus.SetText("Texture map not loaded");
+            detailLabel.SetText(
+                "Choose a readable texture no larger than 16 MB.");
+            GUI.Toast.Error("3D texture map could not be read");
+            return null;
+        }
+        var texture = scene_material_3d.LoadTexturePath(path);
+        if texture == null {
+            toolbarStatus.SetText("Texture map not loaded");
+            detailLabel.SetText(
+                "Studio could not decode " + Path.Name(path)
+                + ". Use PNG, JPEG, BMP, GIF, or a valid KTX2 asset; "
+                + "raster maps may contain at most 16,777,216 pixels.");
+            GUI.Toast.Error("Unsupported or invalid 3D texture map");
+            return null;
+        }
+        return texture;
+    }
+
+    /// @brief Clear one editable map slot as a single history transaction.
+    expose override func ClearMaterialMap(nodeIndex: Integer,
+                                 slot: Integer) -> Boolean {
+        if scene == null or nodeIndex < 0 or nodeIndex >= flatNodes.count()
+           or scene_material_3d.IsMapSlot(slot) == false {
+            return false;
+        }
+        var node = flatNodes.get(nodeIndex);
+        if scene_material_3d.HasMap(node.Material, slot) == false {
+            return false;
+        }
+        return AssignMaterialMap(nodeIndex, slot, null);
+    }
+
+    /// @brief Clear one map slot everywhere it is present in the selection.
+    expose override func ClearSelectedMaterialMap(slot: Integer) -> Boolean {
+        if scene == null
+           or scene_material_3d.IsMapSlot(slot) == false {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var index = 0;
+        while index < selectedIndices.count() {
+            var material =
+                flatNodes.get(selectedIndices.get(index)).Material;
+            if scene_material_3d.HasMap(material, slot) {
+                return AssignSelectedMaterialMap(slot, null);
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    /// @brief Import one supported asset path into the active VSCN document.
+    expose override func ImportAssetPath(path: String) -> Boolean {
+        if path == "" or currentDoc == null { return false; }
+        var imported = SceneAsset.LoadResult(path);
+        if imported == null or imported.IsOk == false {
+            var message = "Unsupported or invalid 3D asset";
+            if imported != null { message = imported.UnwrapErrStr(); }
+            detailLabel.SetText("3D import failed:\n" + message);
+            toolbarStatus.SetText("Import failed");
+            GUI.Toast.Error("3D import failed: " + message);
+            return false;
+        }
+        var asset = imported.Unwrap() as SceneAsset;
+        var importedScene = asset.InstantiateScene() as SceneGraph;
+        if importedScene == null {
+            detailLabel.SetText("3D import failed: the asset has no scene hierarchy.");
+            toolbarStatus.SetText("Import failed");
+            GUI.Toast.Error("3D import failed: no scene hierarchy");
+            return false;
+        }
+
+        var importedCount = importedScene.NodeCount - 1;
+        var firstImported: SceneNode = null;
+        if importedCount > 0 {
+            firstImported = importedScene.Root.GetChild(0);
+        }
+        if scene == null {
+            scene = importedScene;
+        } else if importedCount > 0 {
+            var importedRoot = importedScene.Root;
+            while importedRoot.ChildCount > 0 {
+                var importedNode = importedRoot.GetChild(0);
+                importedRoot.RemoveChild(importedNode);
+                if scene.TryAdd(importedNode) == false {
+                    var failedDoc = currentDoc;
+                    if failedDoc != null { LoadDocumentModel(failedDoc, true); }
+                    detailLabel.SetText(
+                        "3D import failed while merging the asset hierarchy. "
+                        + "The document was restored.");
+                    toolbarStatus.SetText("Import rolled back");
+                    GUI.Toast.Error("3D asset merge failed");
+                    return false;
+                }
+            }
+        }
+        loadError = "";
+        selectedIndex = -1;
+        selectedIndices = [];
+        SetEditorControlsEnabled(true);
+        if importedCount == 0 and scene != importedScene {
+            detailLabel.SetText("The selected asset contains no scene nodes.");
+            toolbarStatus.SetText("Nothing to import");
+            return false;
+        }
+        RefreshHierarchy(firstImported);
+        FrameAll();
+        return CommitScene(
+            "Imported " + importedCount + " node(s) from " + Path.Name(path));
+    }
+
+    /// @brief Build one bounded snap-increment spinner in the options row.
+    expose override func AddSnapSpinner(minimum: Number,
+                             maximum: Number,
+                             step: Number,
+                             value: Number,
+                             accessibleName: String) -> GUI.Spinner {
+        var spinner = GUI.Spinner.New(viewOptionsRow);
+        spinner.SetRange(minimum, maximum);
+        spinner.SetStep(step);
+        spinner.SetDecimals(3);
+        spinner.SetValue(value);
+        spinner.SetPreferredSize(72.0, 0.0);
+        spinner.SetAccessibleName(accessibleName);
+        return spinner;
+    }
+
+    expose override func AddTransformSpinner(parent: GUI.HBox,
+                                  label: String,
+                                  value: Number) -> GUI.Spinner {
+        GUI.Label.New(parent, label);
+        var spinner = GUI.Spinner.New(parent);
+        spinner.SetRange(-1000000.0, 1000000.0);
+        spinner.SetStep(0.1);
+        spinner.SetDecimals(3);
+        spinner.SetValue(value);
+        spinner.SetPreferredSize(72.0, 0.0);
+        // Flex lets the X/Y/Z triplet share the inspector width instead of
+        // overflowing the pane when the inspector is narrow.
+        spinner.SetFlex(1.0);
+        return spinner;
+    }
+
+    expose override func AddRotationSpinner(parent: GUI.HBox,
+                                 label: String) -> GUI.Spinner {
+        GUI.Label.New(parent, label);
+        var spinner = GUI.Spinner.New(parent);
+        spinner.SetRange(-36000.0, 36000.0);
+        spinner.SetStep(1.0);
+        spinner.SetDecimals(2);
+        spinner.SetValue(0.0);
+        spinner.SetPreferredSize(76.0, 0.0);
+        spinner.SetFlex(1.0);
+        return spinner;
+    }
+
+    hide override func LoadGraphFromContent(content: String) -> SceneGraph {
+        // ADR 0190: load the canonical text directly. The document path names
+        // the base directory for relative prefab references (ADR 0187), so no
+        // staged sibling file is needed; untitled documents accept that
+        // relative references cannot resolve until their first save.
+        var virtualPath = "untitled.scene3d";
+        if currentDoc != null and currentDoc.filePath != "" {
+            virtualPath = currentDoc.filePath;
+        }
+        var loaded = SceneAsset.LoadTextResult(virtualPath, content);
+        if loaded == null or loaded.IsOk == false {
+            loadError = "Invalid or unsupported VSCN data.";
+            if loaded != null { loadError = loaded.UnwrapErrStr(); }
+            return null;
+        }
+        var asset = loaded.Unwrap() as SceneAsset;
+        var graph = asset.InstantiateScene() as SceneGraph;
+        if graph == null {
+            loadError = "The VSCN asset contains no instantiable scene.";
+        }
+        return graph;
+    }
+
+    hide override func ImportAsset() -> Boolean {
+        var baseDir = "";
+        if currentDoc != null and currentDoc.filePath != "" {
+            baseDir = Path.Directory(currentDoc.filePath);
+        }
+        var path = GUI.FileDialog.Open(
+            "Import 3D Asset", baseDir, "*.vscn;*.gltf;*.glb;*.fbx;*.obj;*.stl");
+        if path == "" { return false; }
+        return ImportAssetPath(path);
+    }
+
+    hide override func CommitScene(message: String) -> Boolean {
+        if scene == null or currentDoc == null { return false; }
+        if bakeActive {
+            detailLabel.SetText(
+                "A lightmap bake is running; cancel it before editing "
+                + "the scene.");
+            return false;
+        }
+        // ADR 0190: serialize entirely in memory — no staged temp file, no
+        // disk IO, and no sibling-directory churn per accepted edit.
+        var text = scene.SaveToText();
+        if text == "" {
+            RollBackFailedCommit("The 3D scene could not be serialized.");
+            return false;
+        }
+        if Str.get_Length(text) > SceneEditor3DModel.MAX_SCENE_BYTES {
+            RollBackFailedCommit(
+                "The serialized 3D scene exceeded Studio's 64 MB editing limit.");
+            return false;
+        }
+        if text == currentSerialized { return false; }
+        PushHistory(undoStack, currentSerialized);
+        undoLabels.add(message);
+        redoStack = [];
+        redoLabels = [];
+        currentSerialized = text;
+        currentDoc.content = text;
+        currentDoc.isModified = currentSerialized != cleanSerialized;
+        revision = revision + 1;
+        // Material overlays derive from canonical material objects and root
+        // metadata. Rebuild only their cheap clones after accepted edits;
+        // project textures remain cached and prefab assets are untouched.
+        RebuildProjectMaterialPreviews();
+        renderDirty = true;
+        toolbarStatus.SetText(message);
+        detailLabel.SetText("");
+        return true;
+    }
+
+    /// @brief Append one bounded canonical VSCN history snapshot.
+    /// @details Entry count and aggregate bytes are both bounded (ADR 0190):
+    ///          oldest snapshots drop first so a document near the 64 MB
+    ///          editing limit cannot pin gigabytes of history.
+    hide override func PushHistory(stack: List[String], content: String) {
+        if content == "" { return; }
+        stack.add(content);
+        scene_history.TrimHistory(
+            stack, SceneEditor3DModel.MAX_3D_SCENE_HISTORY, SceneEditor3DModel.MAX_3D_HISTORY_BYTES);
+    }
+
+    hide override func RollBackFailedCommit(message: String) {
+        var doc = currentDoc;
+        if doc != null { LoadDocumentModel(doc, true); }
+        detailLabel.SetText(message + " The last edit was rolled back.");
+        toolbarStatus.SetText("Edit rolled back");
+        GUI.Toast.Error("3D scene edit rolled back");
+    }
+
+}

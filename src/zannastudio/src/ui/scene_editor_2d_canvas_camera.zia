@@ -1,0 +1,756 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_canvas_camera.zia
+// Purpose: Focused canvas camera behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_object_canvas.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_canvas_camera;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_object_canvas" as PreviousLayer;
+
+/// @brief Canvas Camera implementation layer.
+class SceneEditor2DCanvasCameraLayer extends PreviousLayer.SceneEditor2DObjectCanvasLayer {
+
+    /// @brief Adopt the recorded tile region as the active paint stamp.
+    /// @details Stamps come from the canvas region rather than the palette
+    ///          because the palette's 8-column display grid does not match
+    ///          arbitrary atlas layouts; the region always captures the
+    ///          true arrangement. Switching tools or Escape clears it.
+    expose override func UseTileRegionAsStamp() -> Boolean {
+        if HasTileRegion() == false { return false; }
+        stampTiles = [];
+        var y = tileRegionMinY;
+        while y <= tileRegionMaxY {
+            var x = tileRegionMinX;
+            while x <= tileRegionMaxX {
+                stampTiles.add(scene.GetTile(activeLayer, x, y));
+                x = x + 1;
+            }
+            y = y + 1;
+        }
+        stampWidth = tileRegionMaxX - tileRegionMinX + 1;
+        stampHeight = tileRegionMaxY - tileRegionMinY + 1;
+        stampActive = true;
+        SetToolMode(SceneEditor2DModel.MODE_PAINT);
+        toolbarStatus.SetText(
+            "Stamp " + stampWidth + "x" + stampHeight
+            + "; Escape or a tool switch clears it");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Clear the active paint stamp back to single-tile painting.
+    expose override func ClearTileStamp() {
+        if stampActive == false { return; }
+        stampActive = false;
+        stampWidth = 0;
+        stampHeight = 0;
+        stampTiles = [];
+        renderDirty = true;
+    }
+
+    /// @brief Write the stamp block anchored to its tiling grid at one cell.
+    /// @details Cells align to floor(cell / stampSize) * stampSize so drag
+    ///          strokes tile the stamp seamlessly instead of smearing it.
+    hide override func ApplyStampAt(cellX: Integer, cellY: Integer) -> Boolean {
+        var anchorX = cellX / stampWidth * stampWidth;
+        var anchorY = cellY / stampHeight * stampHeight;
+        var changed = false;
+        var row = 0;
+        while row < stampHeight {
+            var column = 0;
+            while column < stampWidth {
+                var targetX = anchorX + column;
+                var targetY = anchorY + row;
+                if targetX >= 0 and targetX < scene.Width
+                   and targetY >= 0 and targetY < scene.Height {
+                    changed = ApplyTileCell(
+                        activeLayer, targetX, targetY,
+                        stampTiles.get(row * stampWidth + column))
+                        or changed;
+                }
+                column = column + 1;
+            }
+            row = row + 1;
+        }
+        return changed;
+    }
+
+    /// @brief Scene-pixel x for one canvas content x (free placement).
+    /// @details The Ctrl/Cmd-hold drag path: content pixels scale to scene
+    ///          pixels by the authored tile size over the display cell size.
+    expose override func CanvasFreePixelX(contentXValue: Integer) -> Integer {
+        if scene == null or displayCellSize <= 0 { return 0; }
+        return contentXValue * scene.TileWidth / displayCellSize;
+    }
+
+    /// @brief Scene-pixel y for one canvas content y (free placement).
+    expose override func CanvasFreePixelY(contentYValue: Integer) -> Integer {
+        if scene == null or displayCellSize <= 0 { return 0; }
+        return contentYValue * scene.TileHeight / displayCellSize;
+    }
+
+    /// @brief The scene cell at one physical point, or -1 outside the canvas.
+    expose override func CanvasCellAtPointX(pointX: Number) -> Integer {
+        return CanvasCellAtPoint(pointX, 0.0, true);
+    }
+
+    /// @brief The scene row at one physical point, or -1 outside the canvas.
+    expose override func CanvasCellAtPointY(pointY: Number) -> Integer {
+        return CanvasCellAtPoint(0.0, pointY, false);
+    }
+
+    /// @brief Shared point-to-cell math mirroring the canvas hit path.
+    /// @details Validates only the queried axis: each caller resolves one
+    ///          axis at a time, so the other point argument is a dummy.
+    hide override func CanvasCellAtPoint(pointX: Number,
+                                pointY: Number,
+                                horizontal: Boolean) -> Integer {
+        if scene == null or canvasImage == null
+           or displayCellSize <= 0 {
+            return -1;
+        }
+        if horizontal {
+            var relativeX = PhysicalPointerToUi(pointX)
+                - canvasImage.GetScreenX();
+            var contentX = Convert.NumToInt(relativeX) + viewOriginX;
+            if contentX < 0 { return -1; }
+            var cellX = contentX / displayCellSize;
+            if cellX >= scene.Width { return -1; }
+            return cellX;
+        }
+        var relativeY = PhysicalPointerToUi(pointY)
+            - canvasImage.GetScreenY();
+        var contentY = Convert.NumToInt(relativeY) + viewOriginY;
+        if contentY < 0 { return -1; }
+        var cellY = contentY / displayCellSize;
+        if cellY >= scene.Height { return -1; }
+        return cellY;
+    }
+
+    /// @brief Create one sprite object from a dropped image asset.
+    /// @details One undoable transaction: the object and its editor.sprite
+    ///          reference commit together. The drop lands at the recorded
+    ///          drop point's cell; non-image assets are refused.
+    /// @param assetPath Absolute workspace path of the dropped asset.
+    /// @param dropX Physical pointer x recorded when the drop landed.
+    /// @param dropY Physical pointer y recorded when the drop landed.
+    /// @return The new object index, or -1 when nothing was created.
+    expose override func CreateSpriteObjectFromDrop(assetPath: String,
+                                           dropX: Number,
+                                           dropY: Number) -> Integer {
+        if scene == null or assetPath == "" { return -1; }
+        if scene_asset_browser.AssetExtensionAllowed(
+               assetPath,
+               scene_asset_browser.NormalizeAssetExtensions(
+                   ".png,.jpg,.jpeg,.bmp,.gif")) == false {
+            detailLabel.SetText(
+                "Only image assets can drop onto the canvas as sprites.");
+            return -1;
+        }
+        var cellX = CanvasCellAtPointX(dropX);
+        var cellY = CanvasCellAtPointY(dropY);
+        if cellX < 0 or cellY < 0 {
+            detailLabel.SetText(
+                "Drop the asset over a scene cell to place a sprite.");
+            return -1;
+        }
+        var documentPath = "";
+        if currentDoc != null { documentPath = currentDoc.filePath; }
+        var portable = scene_asset_browser.PortableReferencePath(
+            assetPath, documentPath);
+        if portable == "" {
+            detailLabel.SetText(
+                "The dropped asset has no portable project reference.");
+            return -1;
+        }
+        var objectId = UniqueObjectId(
+            "sprite-" + (scene.ObjectCount() + 1));
+        var previousSelection = selectedObjects;
+        var previousPrimary = selectedObject;
+        var objectIndex = scene.AddObject(
+            "sprite", objectId,
+            cellX * scene.TileWidth, cellY * scene.TileHeight);
+        if objectIndex < 0 { return -1; }
+        scene.ObjectSetStr(objectIndex, "editor.sprite", portable);
+        selectedObject = objectIndex;
+        selectedObjects = scene_selection.Single(
+            objectIndex, scene.ObjectCount());
+        if CommitScene("Dropped sprite " + objectId) == false {
+            scene.RemoveObject(objectIndex);
+            selectedObject = previousPrimary;
+            selectedObjects = previousSelection;
+            detailLabel.SetText(
+                "The dropped sprite could not be committed.");
+            RefreshInspector();
+            return -1;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        renderDirty = true;
+        return objectIndex;
+    }
+
+    /// @brief Move the single selected object before its previous sibling.
+    /// @details Shared by the Up button and the hierarchy context menu.
+    expose override func MoveSelectedObjectEarlier() -> Boolean {
+        if selectedObjects.count() != 1 { return false; }
+        var previousSibling = PreviousObjectSibling(selectedObject);
+        if previousSibling < 0 { return false; }
+        return ApplyObjectHierarchyDrop(selectedObject, previousSibling, 0);
+    }
+
+    /// @brief Move the single selected object after its next sibling.
+    /// @details Shared by the Down button and the hierarchy context menu.
+    expose override func MoveSelectedObjectLater() -> Boolean {
+        if selectedObjects.count() != 1 { return false; }
+        var nextSibling = NextObjectSibling(selectedObject);
+        if nextSibling < 0 { return false; }
+        return ApplyObjectHierarchyDrop(selectedObject, nextSibling, 2);
+    }
+
+    /// @brief Switch the active canvas tool as workspace-only state.
+    /// @details Shared by the toolbar buttons and the canvas context menu.
+    expose override func SetToolMode(nextMode: Integer) {
+        SetMode(nextMode);
+    }
+
+    /// @brief Apply a committed inline object-id rename as one undoable edit.
+    /// @details The edited row's data carries the object index, so a selection
+    ///          change between commit and consumption cannot retarget the
+    ///          rename. UpdateSceneObject owns emptiness, uniqueness, model
+    ///          acceptance, rollback, and the single history entry.
+    hide override func ApplyObjectRename() -> Boolean {
+        var edited = objectTree.GetEditedNodeOption();
+        if edited.IsSome == false { return false; }
+        var index = Parse.IntOr(
+            GUI.TreeView.Node.GetData(edited.Unwrap()), -1);
+        if index < 0 or index >= scene.ObjectCount() { return false; }
+        var nextId = Str.Trim(objectTree.GetEditText());
+        if nextId == "" or nextId == scene.ObjectId(index) { return false; }
+        return UpdateSceneObject(
+            index,
+            scene.ObjectType(index),
+            nextId,
+            scene.ObjectX(index),
+            scene.ObjectY(index));
+    }
+
+    /// @brief Return whether scene selection shortcuts belong to this surface.
+    /// @details Inspector text/value controls intentionally do not qualify.
+    ///          The focused canvas surface is the primary owner; tool and
+    ///          hierarchy controls remain accepted for keyboard workflows.
+    expose override func SceneSelectionCommandsOwnFocus() -> Boolean {
+        return (canvasImage != null and canvasImage.IsFocused())
+            or (objectTree != null and objectTree.IsFocused())
+            or (selectButton != null and selectButton.IsFocused())
+            or (paintButton != null and paintButton.IsFocused())
+            or (eraseButton != null and eraseButton.IsFocused())
+            or (objectButton != null and objectButton.IsFocused())
+            or (duplicateObjectButton != null
+                and duplicateObjectButton.IsFocused())
+            or (removeObjectButton != null
+                and removeObjectButton.IsFocused())
+            or (objectUpButton != null and objectUpButton.IsFocused())
+            or (objectDownButton != null and objectDownButton.IsFocused());
+    }
+
+    /// @brief Give the canvas surface keyboard focus for its shortcuts.
+    /// @details The canvas Image is a real focusable widget; clicking it
+    ///          already focuses it through the GUI's click-to-focus path, so
+    ///          shortcut ownership follows the surface rather than a
+    ///          mode-button proxy.
+    hide override func FocusActiveModeButton() {
+        if canvasImage != null { canvasImage.Focus(); }
+    }
+
+    /// @brief Mutate one cell inside the current uncommitted paint stroke.
+    hide override func ApplyStrokeCell(cellX: Integer, cellY: Integer) -> Boolean {
+        if RefuseLockedLayer(activeLayer) { return false; }
+        if mode == SceneEditor2DModel.MODE_PAINT and stampActive
+           and stampWidth > 0 and stampHeight > 0 {
+            return ApplyStampAt(cellX, cellY);
+        }
+        var tile = 0;
+        if mode == SceneEditor2DModel.MODE_PAINT {
+            tile = Convert.NumToInt(tileSpinner.Value);
+            if tile < 0 { tile = 0; }
+        }
+        return ApplyTileCell(activeLayer, cellX, cellY, tile);
+    }
+
+    /// @brief Fill every raster cell between the last and current pointer cell.
+    hide override func ApplyStrokeLine(targetX: Integer,
+                              targetY: Integer) -> Boolean {
+        var startX = lastPaintX;
+        var startY = lastPaintY;
+        if startX < 0 or startY < 0 {
+            startX = targetX;
+            startY = targetY;
+        }
+        var tile = 0;
+        if mode == SceneEditor2DModel.MODE_PAINT {
+            tile = Convert.NumToInt(tileSpinner.Value);
+            if tile < 0 { tile = 0; }
+        }
+        var changed = ApplyTileLineUncommitted(
+            activeLayer, startX, startY, targetX, targetY, tile);
+        lastPaintX = targetX;
+        lastPaintY = targetY;
+        return changed;
+    }
+
+    hide override func ApplyTileCell(layer: Integer,
+                            cellX: Integer,
+                            cellY: Integer,
+                            tile: Integer) -> Boolean {
+        if scene == null or layer < 0 or layer >= scene.LayerCount()
+           or cellX < 0 or cellY < 0
+           or cellX >= scene.Width or cellY >= scene.Height {
+            return false;
+        }
+        if scene.GetTile(layer, cellX, cellY) == tile { return false; }
+        scene.SetTile(layer, cellX, cellY, tile);
+        renderDirty = true;
+        return true;
+    }
+
+    hide override func ApplyTileLineUncommitted(layer: Integer,
+                                       startX: Integer,
+                                       startY: Integer,
+                                       targetX: Integer,
+                                       targetY: Integer,
+                                       tile: Integer) -> Boolean {
+        var x = startX;
+        var y = startY;
+        var dx = SceneEditor2DModel.AbsInt2D(targetX - x);
+        var sx = -1;
+        if x < targetX { sx = 1; }
+        var dy = 0 - SceneEditor2DModel.AbsInt2D(targetY - y);
+        var sy = -1;
+        if y < targetY { sy = 1; }
+        var error = dx + dy;
+        var changed = false;
+        while true {
+            changed = ApplyTileCell(layer, x, y, tile) or changed;
+            if x == targetX and y == targetY { break; }
+            var doubled = error * 2;
+            if doubled >= dy {
+                error = error + dy;
+                x = x + sx;
+            }
+            if doubled <= dx {
+                error = error + dx;
+                y = y + sy;
+            }
+        }
+        return changed;
+    }
+
+    /// @brief Commit one complete paint gesture as a single history entry.
+    hide override func FinishPaintStroke() -> Boolean {
+        var changed = paintStrokeChanged;
+        var snapshot = paintStrokeSnapshot;
+        ResetPaintStroke(true);
+        if changed == false { return false; }
+
+        var message = "Painted tile stroke";
+        if mode == SceneEditor2DModel.MODE_ERASE { message = "Erased tile stroke"; }
+        if CommitScene(message) { return true; }
+        RestoreSceneSnapshot(snapshot);
+        detailLabel.SetText("The tile stroke could not be committed.");
+        return false;
+    }
+
+    /// @brief Commit one complete object drag as a single history entry.
+    hide override func FinishObjectDrag() -> Boolean {
+        var changed = objectDragChanged;
+        var snapshot = objectDragSnapshot;
+        var index = objectDragIndex;
+        objectDragActive = false;
+        objectDragChanged = false;
+        objectDragSnapshot = "";
+        objectDragIndex = -1;
+        objectDragLastX = 0;
+        objectDragLastY = 0;
+        if changed == false { return false; }
+        selectedObject = index;
+        var count = selectedObjects.count();
+        var message = "Moved " + count + " objects";
+        if count == 1 { message = "Moved scene object"; }
+        if CommitScene(message) {
+            RefreshInspector();
+            return true;
+        }
+        RestoreSceneSnapshot(snapshot);
+        detailLabel.SetText("The object move could not be committed.");
+        return false;
+    }
+
+    /// @brief Topmost object whose transformed sprite contains one point.
+    /// @details The same project/per-object stack used for painting wins.
+    ///          Sprite objects test their exact rotated footprint (ADR 0192);
+    ///          markers keep their legacy one-cell footprint.
+    /// @param pointX Canvas-relative x in display pixels.
+    /// @param pointY Canvas-relative y in display pixels.
+    hide override func FindObjectAtCanvasPoint(pointX: Number,
+                                      pointY: Number) -> Integer {
+        if scene == null { return -1; }
+        var stack = ObjectPreviewStack();
+        var stackIndex = stack.count() - 1;
+        while stackIndex >= 0 {
+            var index = stack.get(stackIndex);
+            if ObjectFootprintContains(index, pointX, pointY) {
+                return index;
+            }
+            stackIndex = stackIndex - 1;
+        }
+        return -1;
+    }
+
+    hide override func FindObjectAtCell(cellX: Integer, cellY: Integer) -> Integer {
+        if scene == null { return -1; }
+        var stack = ObjectPreviewStack();
+        var stackIndex = stack.count() - 1;
+        while stackIndex >= 0 {
+            var index = stack.get(stackIndex);
+            var objectCellX = scene.ObjectX(index) / scene.TileWidth;
+            var objectCellY = scene.ObjectY(index) / scene.TileHeight;
+            if objectCellX == cellX and objectCellY == cellY { return index; }
+            stackIndex = stackIndex - 1;
+        }
+        return -1;
+    }
+
+    hide override func FitScene() -> Boolean {
+        if scene == null or canvasScroll == null { return false; }
+        var width = Convert.NumToInt(
+            canvasScroll.GetLogicalWidth() - 24.0);
+        var height = Convert.NumToInt(
+            canvasScroll.GetLogicalHeight() - 24.0);
+        if width <= 0 or height <= 0 { return false; }
+        zoomPercent = SceneEditor2DModel.FitZoomPercent(
+            scene.Width, scene.Height, SceneTilePixelSize(),
+            width, height);
+        SetLogicalScroll(canvasScroll, 0.0, 0.0);
+        return true;
+    }
+
+    /// @brief Apply first-open framing after scene and viewport both exist.
+    /// @details A useful whole-scene view wins for compact scenes. Large
+    ///          gameplay worlds preserve native artwork and open around their
+    ///          authored player start instead of as an unreadable thumbnail.
+    hide override func FrameInitialScene() -> Boolean {
+        if scene == null or canvasScroll == null { return false; }
+        var width = Convert.NumToInt(
+            canvasScroll.GetLogicalWidth() - 24.0);
+        var height = Convert.NumToInt(
+            canvasScroll.GetLogicalHeight() - 24.0);
+        if width <= 0 or height <= 0 { return false; }
+        var fit = SceneEditor2DModel.FitZoomPercent(
+            scene.Width, scene.Height, SceneTilePixelSize(),
+            width, height);
+        zoomPercent = SceneEditor2DModel.InitialSceneZoomPercent(
+            scene.Width, scene.Height, SceneTilePixelSize(),
+            width, height);
+        fitPending = false;
+        if zoomPercent == fit {
+            return FitScene();
+        }
+        return CenterCanvasAtWorldPoint(
+            InitialSceneFocusWorldX(), InitialSceneFocusWorldY());
+    }
+
+    /// @brief Center the viewport on the selected objects at a useful scale.
+    /// @details Matches the 3D editor's F shortcut: one selection gets detail,
+    ///          while a spread-out selection is fitted as a bounded group.
+    expose override func FrameSelected() -> Boolean {
+        if gameViewOutputFramed { return false; }
+        if scene == null or canvasScroll == null { return false; }
+        selectedObjects = scene_selection.Normalize(
+            selectedObjects, scene.ObjectCount(), selectedObject);
+        if selectedObjects.count() == 0 { return false; }
+        var first = selectedObjects.get(0);
+        var minimumX = scene.ObjectX(first);
+        var minimumY = scene.ObjectY(first);
+        var maximumX = minimumX;
+        var maximumY = minimumY;
+        var index = 1;
+        while index < selectedObjects.count() {
+            var objectIndex = selectedObjects.get(index);
+            var x = scene.ObjectX(objectIndex);
+            var y = scene.ObjectY(objectIndex);
+            if x < minimumX { minimumX = x; }
+            if y < minimumY { minimumY = y; }
+            if x > maximumX { maximumX = x; }
+            if y > maximumY { maximumY = y; }
+            index = index + 1;
+        }
+
+        var width = Convert.NumToInt(
+            canvasScroll.GetLogicalWidth() - 24.0);
+        var height = Convert.NumToInt(
+            canvasScroll.GetLogicalHeight() - 24.0);
+        if width <= 0 or height <= 0 { return false; }
+        var selectionColumns =
+            (maximumX - minimumX) / scene.TileWidth + 3;
+        var selectionRows =
+            (maximumY - minimumY) / scene.TileHeight + 3;
+        zoomPercent = SceneEditor2DModel.FitZoomPercent(
+            selectionColumns, selectionRows, SceneTilePixelSize(),
+            width, height);
+        if zoomPercent > SceneEditor2DModel.MAX_FRAME_SELECTION_ZOOM_PERCENT {
+            zoomPercent = SceneEditor2DModel.MAX_FRAME_SELECTION_ZOOM_PERCENT;
+        }
+        initialFramePending = false;
+        fitPending = false;
+        restoreScrollPending = false;
+        var framed = CenterCanvasAtWorldPoint(
+            (minimumX + maximumX + scene.TileWidth) / 2,
+            (minimumY + maximumY + scene.TileHeight) / 2);
+        if framed {
+            toolbarStatus.SetText(
+                "Framed " + selectedObjects.count() + " object(s)");
+            CaptureWorkspaceState();
+        }
+        return framed;
+    }
+
+    /// @brief Return the best gameplay focus in authored scene pixels.
+    hide override func InitialSceneFocusWorldX() -> Integer {
+        if scene.PropertyKind("playerStartX") == "int"
+           and scene.PropertyKind("playerStartY") == "int" {
+            return scene.GetInt("playerStartX", 0)
+                + scene.TileWidth / 2;
+        }
+        var index = InitialPlayerStartObject();
+        if index >= 0 {
+            return scene.ObjectX(index) + scene.TileWidth / 2;
+        }
+        return scene.Width * scene.TileWidth / 2;
+    }
+
+    /// @brief Return the best gameplay focus in authored scene pixels.
+    hide override func InitialSceneFocusWorldY() -> Integer {
+        if scene.PropertyKind("playerStartX") == "int"
+           and scene.PropertyKind("playerStartY") == "int" {
+            return scene.GetInt("playerStartY", 0)
+                + scene.TileHeight / 2;
+        }
+        var index = InitialPlayerStartObject();
+        if index >= 0 {
+            return scene.ObjectY(index) + scene.TileHeight / 2;
+        }
+        return scene.Height * scene.TileHeight / 2;
+    }
+
+    /// @brief Find the conventional player-start object without editing data.
+    hide override func InitialPlayerStartObject() -> Integer {
+        var index = 0;
+        while index < scene.ObjectCount() {
+            if Str.ToLower(scene.ObjectType(index)) == "player-start"
+               or Str.ToLower(scene.ObjectId(index)) == "player-start" {
+                return index;
+            }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Publish the current zoom extent before changing scroll.
+    hide override func PublishCanvasExtentForZoom() {
+        if scene == null or canvasStage == null or canvasScroll == null {
+            return;
+        }
+        var cell = DisplayCellForZoom();
+        var stageWidth = scene.Width * cell + 1;
+        var stageHeight = scene.Height * cell + 1;
+        var viewportWidth = lastCanvasViewportWidth;
+        var viewportHeight = lastCanvasViewportHeight;
+        if viewportWidth <= 0 {
+            viewportWidth =
+                Convert.NumToInt(canvasScroll.GetLogicalWidth());
+        }
+        if viewportHeight <= 0 {
+            viewportHeight =
+                Convert.NumToInt(canvasScroll.GetLogicalHeight());
+        }
+        if viewportWidth > stageWidth { stageWidth = viewportWidth; }
+        if viewportHeight > stageHeight { stageHeight = viewportHeight; }
+        canvasStage.SetSize(stageWidth, stageHeight);
+        SetLogicalContentSize(canvasScroll, stageWidth, stageHeight);
+    }
+
+    /// @brief Center one authored scene point without changing scene content.
+    hide override func CenterCanvasAtWorldPoint(worldX: Integer,
+                                       worldY: Integer) -> Boolean {
+        if scene == null or canvasScroll == null { return false; }
+        PublishCanvasExtentForZoom();
+        var viewportWidth = canvasScroll.GetLogicalWidth();
+        var viewportHeight = canvasScroll.GetLogicalHeight();
+        if viewportWidth <= 0.0 or viewportHeight <= 0.0 {
+            return false;
+        }
+        var cell = DisplayCellForZoom();
+        var focusX = worldX * cell / scene.TileWidth;
+        var focusY = worldY * cell / scene.TileHeight;
+        var scrollX = focusX - viewportWidth * 0.5;
+        var scrollY = focusY - viewportHeight * 0.5;
+        if scrollX < 0.0 { scrollX = 0.0; }
+        if scrollY < 0.0 { scrollY = 0.0; }
+        SetLogicalScroll(canvasScroll, scrollX, scrollY);
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief The authored tile edge in pixels that 100% zoom reproduces.
+    hide override func SceneTilePixelSize() -> Integer {
+        if scene != null and scene.TileWidth > 0 { return scene.TileWidth; }
+        return SceneEditor2DModel.DEFAULT_TILE_SIZE;
+    }
+
+    /// @brief Rendered cell edge in pixels for the current zoom.
+    /// @details 100% zoom shows artwork at native tile resolution; the cell
+    ///          never collapses below one pixel.
+    hide override func DisplayCellForZoom() -> Integer {
+        var cell = SceneTilePixelSize() * zoomPercent / 100;
+        if cell < 1 { cell = 1; }
+        return cell;
+    }
+
+    /// @brief Set zoom while keeping one content point fixed in the viewport.
+    /// @details @p anchorContentX/Y are content pixels at the CURRENT zoom;
+    ///          @p anchorViewX/Y are the same point's viewport offsets. The
+    ///          scroll target keeps that world point under the same viewport
+    ///          position after the cell size changes; the ScrollView clamps.
+    hide override func ZoomToPercentAnchored(nextPercent: Integer,
+                                    anchorContentX: Number,
+                                    anchorContentY: Number,
+                                    anchorViewX: Number,
+                                    anchorViewY: Number) {
+        var clamped = SceneEditor2DModel.ClampInt(
+            nextPercent, SceneEditor2DModel.MIN_ZOOM_PERCENT, SceneEditor2DModel.MAX_ZOOM_PERCENT);
+        if clamped == zoomPercent { return; }
+        var previousCell = displayCellSize;
+        if previousCell < 1 { previousCell = 1; }
+        var anchorCellX = anchorContentX / previousCell;
+        var anchorCellY = anchorContentY / previousCell;
+        zoomPercent = clamped;
+        initialFramePending = false;
+        fitPending = false;
+        renderDirty = true;
+        var nextCell = DisplayCellForZoom();
+        if scene != null and canvasStage != null {
+            // Publish the new content extent before anchoring the scroll so
+            // the ScrollView cannot clamp against the previous zoom's bounds.
+            var contentWidth = scene.Width * nextCell + 1;
+            var contentHeight = scene.Height * nextCell + 1;
+            var stageWidth = contentWidth;
+            var stageHeight = contentHeight;
+            if lastCanvasViewportWidth > stageWidth {
+                stageWidth = lastCanvasViewportWidth;
+            }
+            if lastCanvasViewportHeight > stageHeight {
+                stageHeight = lastCanvasViewportHeight;
+            }
+            canvasStage.SetSize(stageWidth, stageHeight);
+            SetLogicalContentSize(canvasScroll, stageWidth, stageHeight);
+        }
+        SetLogicalScroll(
+            canvasScroll,
+            anchorCellX * nextCell - anchorViewX,
+            anchorCellY * nextCell - anchorViewY);
+    }
+
+    /// @brief One multiplicative zoom step (~1.25x) anchored at a point.
+    hide override func ZoomStepAnchored(direction: Integer,
+                               anchorContentX: Number,
+                               anchorContentY: Number,
+                               anchorViewX: Number,
+                               anchorViewY: Number) {
+        var next = zoomPercent * 5 / 4;
+        if direction < 0 { next = zoomPercent * 4 / 5; }
+        if next == zoomPercent { next = zoomPercent + direction; }
+        ZoomToPercentAnchored(
+            next, anchorContentX, anchorContentY, anchorViewX, anchorViewY);
+    }
+
+    /// @brief Zoom one step keeping the rendered window's center fixed.
+    hide override func ZoomAtWindowCenter(direction: Integer) {
+        var halfWidth = renderedColumns * displayCellSize / 2.0;
+        var halfHeight = renderedRows * displayCellSize / 2.0;
+        ZoomStepAnchored(
+            direction,
+            viewOriginX + halfWidth,
+            viewOriginY + halfHeight,
+            centerPadX + halfWidth,
+            centerPadY + halfHeight);
+    }
+
+    /// @brief Public zoom control anchored at the rendered window's center.
+    /// @details Wheel zoom anchors at the pointer through the same shared
+    ///          helper; this surface serves toolbar, commands, and probes.
+    expose override func SetZoomPercent(nextPercent: Integer) {
+        if gameViewOutputFramed { return; }
+        ZoomToPercentAtWindowCenter(nextPercent);
+    }
+
+    /// @brief Jump to an exact zoom keeping the window's center fixed.
+    hide override func ZoomToPercentAtWindowCenter(nextPercent: Integer) {
+        var halfWidth = renderedColumns * displayCellSize / 2.0;
+        var halfHeight = renderedRows * displayCellSize / 2.0;
+        ZoomToPercentAnchored(
+            nextPercent,
+            viewOriginX + halfWidth,
+            viewOriginY + halfHeight,
+            centerPadX + halfWidth,
+            centerPadY + halfHeight);
+    }
+}

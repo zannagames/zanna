@@ -1,0 +1,402 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_contract_05.zia
+// Purpose: Virtual method contract segment 5 for composable 3D scene-editor implementation layers.
+// Key invariants:
+//   - Signatures mirror the public/private controller surface and provide neutral dispatch fallbacks.
+// Ownership/Lifetime:
+//   - Contract instances are implementation scaffolding and own no external resources.
+// Links: zannastudio/src/ui/scene_editor_3d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_contract_05;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_contract_04" as PreviousContract;
+
+/// @brief Dispatch declarations used by focused SceneEditor3D layers.
+class SceneEditor3DContract05 extends PreviousContract.SceneEditor3DContract04 {
+    /// @brief Neutral dispatch slot for GameViewActive.
+    expose func GameViewActive() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SetGameViewActive.
+    expose func SetGameViewActive(_active: Boolean) {}
+
+    /// @brief Neutral dispatch slot for UpdateGameViewButton.
+    hide func UpdateGameViewButton() {}
+
+    /// @brief Neutral dispatch slot for ProjectGameOutputAvailable.
+    hide func ProjectGameOutputAvailable() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for GameOutputWidth.
+    expose func GameOutputWidth() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for GameOutputHeight.
+    expose func GameOutputHeight() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for GameOutputSizeLabel.
+    hide func GameOutputSizeLabel() -> String { return ""; }
+
+    /// @brief Neutral dispatch slot for GameOutputFrameWidthFor.
+    expose func GameOutputFrameWidthFor(
+        _viewportWidth: Integer,
+        _viewportHeight: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for GameOutputFrameHeightFor.
+    expose func GameOutputFrameHeightFor(
+        _viewportWidth: Integer,
+        _viewportHeight: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ViewportContentWidth.
+    expose func ViewportContentWidth() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ViewportContentHeight.
+    expose func ViewportContentHeight() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ViewportContentX.
+    expose func ViewportContentX() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ViewportContentY.
+    expose func ViewportContentY() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ApplyGameOutputFrame.
+    hide func ApplyGameOutputFrame() {}
+
+    /// @brief Neutral dispatch slot for RestoreGameOutputEditorView.
+    hide func RestoreGameOutputEditorView() {}
+
+    /// @brief Neutral dispatch slot for SetViewOptionsVisible.
+    expose func SetViewOptionsVisible(_visible: Boolean) {}
+
+    /// @brief Neutral dispatch slot for UpdateViewOptionsChrome.
+    hide func UpdateViewOptionsChrome() {}
+
+    /// @brief Neutral dispatch slot for ProjectWorldPoint.
+    expose func ProjectWorldPoint(_x: Number,
+                                  _y: Number,
+                                  _z: Number) -> SceneEditor3DModel.ProjectedPoint { return null; }
+
+    /// @brief Neutral dispatch slot for UpdateProjectionControls.
+    hide func UpdateProjectionControls() {}
+
+    /// @brief Neutral dispatch slot for PumpViewOptionControls.
+    hide func PumpViewOptionControls() {}
+
+    /// @brief Neutral dispatch slot for ApplySnapIncrements.
+    hide func ApplySnapIncrements() {}
+
+    /// @brief Neutral dispatch slot for SyncViewOptionControls.
+    hide func SyncViewOptionControls() {}
+
+    /// @brief Neutral dispatch slot for ViewportMarkerAt.
+    hide func ViewportMarkerAt(_mouseX: Integer,
+                               _mouseY: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ViewportNodeAt.
+    expose func ViewportNodeAt(_mouseX: Integer,
+                               _mouseY: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for TakeRunSceneRequested.
+    expose func TakeRunSceneRequested() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for NodePickLocked.
+    expose func NodePickLocked(_index: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SetSelectedPickLocked.
+    expose func SetSelectedPickLocked(_nextLocked: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ToggleSelectedPickLocks.
+    expose func ToggleSelectedPickLocks() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ToggleSelectedPickLock.
+    expose func ToggleSelectedPickLock() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SetQuickView.
+    expose func SetQuickView(_kind: Integer) {}
+
+    /// @brief Neutral dispatch slot for OrientationNavigatorVisible.
+    expose func OrientationNavigatorVisible() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for OrientationFaceAt.
+    expose func OrientationFaceAt(_mouseX: Integer,
+                                  _mouseY: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for OrientationFaceCenter.
+    expose func OrientationFaceCenter(_face: Integer) -> SceneEditor3DModel.ProjectedPoint { return null; }
+
+    /// @brief Neutral dispatch slot for OrientationFaceLabel.
+    expose func OrientationFaceLabel(_face: Integer) -> String { return ""; }
+
+    /// @brief Neutral dispatch slot for ActivateOrientationFace.
+    expose func ActivateOrientationFace(_face: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ActiveOrientationFace.
+    hide func ActiveOrientationFace() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for EncodeCameraBookmark.
+    hide func EncodeCameraBookmark() -> String { return ""; }
+
+    /// @brief Neutral dispatch slot for PumpCameraBookmarks.
+    hide func PumpCameraBookmarks() {}
+
+    /// @brief Neutral dispatch slot for StoreCameraBookmark.
+    expose func StoreCameraBookmark(_slot: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RecallCameraBookmark.
+    expose func RecallCameraBookmark(_slot: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for EffectiveSnapEnabled.
+    expose func EffectiveSnapEnabled() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ViewportAltDown.
+    hide func ViewportAltDown() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CycleViewportNodeAt.
+    expose func CycleViewportNodeAt(_mouseX: Integer,
+                                  _mouseY: Integer,
+                                  _fallback: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for NodeScreenBounds.
+    hide func NodeScreenBounds(_node: SceneNode) -> SceneEditor3DModel.ScreenBounds3D { return null; }
+
+    /// @brief Neutral dispatch slot for ApplyMarqueeSelection.
+    hide func ApplyMarqueeSelection() {}
+
+    /// @brief Neutral dispatch slot for PumpMarquee.
+    hide func PumpMarquee() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplyViewportSelection.
+    expose func ApplyViewportSelection(_nodeIndex: Integer,
+                                       _additive: Boolean,
+                                       _toggle: Boolean) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for RegisterViewportClick.
+    hide func RegisterViewportClick(_resolvedIndex: Integer,
+                                    _mouseX: Integer,
+                                    _mouseY: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for EffectiveVertexSnapEnabled.
+    hide func EffectiveVertexSnapEnabled() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for VertexSnapNodeVisible.
+    hide func VertexSnapNodeVisible(_node: SceneNode) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for VertexSnapPointerNearNode.
+    hide func VertexSnapPointerNearNode(_node: SceneNode,
+                                        _mouseX: Integer,
+                                        _mouseY: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for VertexSnapNodeLabel.
+    hide func VertexSnapNodeLabel(_node: SceneNode,
+                                  _ownerIndex: Integer) -> String { return ""; }
+
+    /// @brief Neutral dispatch slot for ConsiderVertexSnapPoint.
+    hide func ConsiderVertexSnapPoint(_candidate: SceneEditor3DModel.VertexSnapPoint3D,
+                                      _world: Vec3,
+                                      _mouseX: Integer,
+                                      _mouseY: Integer,
+                                      _kind: Integer,
+                                      _ownerIndex: Integer,
+                                      _vertexIndex: Integer,
+                                      _label: String) {}
+
+    /// @brief Neutral dispatch slot for ScanVertexSnapMesh.
+    hide func ScanVertexSnapMesh(_candidate: SceneEditor3DModel.VertexSnapPoint3D,
+                                 _node: SceneNode,
+                                 _ownerIndex: Integer,
+                                 _mouseX: Integer,
+                                 _mouseY: Integer,
+                                 _remaining: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for DiscardClippedVertexCandidate.
+    hide func DiscardClippedVertexCandidate(
+        _candidate: SceneEditor3DModel.VertexSnapPoint3D) {}
+
+    /// @brief Neutral dispatch slot for FindVertexSnapSource.
+    hide func FindVertexSnapSource(_mouseX: Integer,
+                                   _mouseY: Integer) -> SceneEditor3DModel.VertexSnapPoint3D { return null; }
+
+    /// @brief Neutral dispatch slot for FindVertexSnapTargetVertex.
+    hide func FindVertexSnapTargetVertex(
+        _mouseX: Integer,
+        _mouseY: Integer,
+        _roots: List[SceneNode]) -> SceneEditor3DModel.VertexSnapPoint3D { return null; }
+
+    /// @brief Neutral dispatch slot for FindVertexSnapSurfaceTarget.
+    hide func FindVertexSnapSurfaceTarget(
+        _mouseX: Integer,
+        _mouseY: Integer,
+        _roots: List[SceneNode],
+        _clipped: Boolean) -> SceneEditor3DModel.VertexSnapPoint3D { return null; }
+
+    /// @brief Neutral dispatch slot for FindVertexSnapTarget.
+    hide func FindVertexSnapTarget(
+        _mouseX: Integer,
+        _mouseY: Integer,
+        _roots: List[SceneNode]) -> SceneEditor3DModel.VertexSnapPoint3D { return null; }
+
+    /// @brief Neutral dispatch slot for VertexSnapDragRoots.
+    hide func VertexSnapDragRoots() -> List[SceneNode] { return []; }
+
+    /// @brief Neutral dispatch slot for UpdateVertexSnapSourceHover.
+    hide func UpdateVertexSnapSourceHover(_mouseX: Integer,
+                                          _mouseY: Integer) {}
+
+    /// @brief Neutral dispatch slot for BeginVertexSnapDrag.
+    hide func BeginVertexSnapDrag(_source: SceneEditor3DModel.VertexSnapPoint3D) {}
+
+    /// @brief Neutral dispatch slot for RestoreVertexSnapOrigins.
+    hide func RestoreVertexSnapOrigins() {}
+
+    /// @brief Neutral dispatch slot for ApplyVertexSnapTarget.
+    hide func ApplyVertexSnapTarget(_mouseX: Integer,
+                                    _mouseY: Integer) {}
+
+    /// @brief Neutral dispatch slot for ResetVertexSnapDrag.
+    hide func ResetVertexSnapDrag(_releaseCapture: Boolean) {}
+
+    /// @brief Neutral dispatch slot for FinishVertexSnapDrag.
+    hide func FinishVertexSnapDrag() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CancelVertexSnapDrag.
+    hide func CancelVertexSnapDrag() {}
+
+    /// @brief Neutral dispatch slot for VertexSnapSourceAtViewportPoint.
+    expose func VertexSnapSourceAtViewportPoint(
+        _mouseX: Integer,
+        _mouseY: Integer) -> SceneEditor3DModel.VertexSnapPoint3D { return null; }
+
+    /// @brief Neutral dispatch slot for VertexSnapTargetAtViewportPoint.
+    expose func VertexSnapTargetAtViewportPoint(
+        _mouseX: Integer,
+        _mouseY: Integer) -> SceneEditor3DModel.VertexSnapPoint3D { return null; }
+
+    /// @brief Neutral dispatch slot for IsVertexSnapDragging.
+    expose func IsVertexSnapDragging() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SetTerrainSculptEnabled.
+    expose func SetTerrainSculptEnabled(_active: Boolean) {}
+
+    /// @brief Neutral dispatch slot for IsTerrainSculptEnabled.
+    expose func IsTerrainSculptEnabled() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for IsTerrainSculpting.
+    expose func IsTerrainSculpting() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for TerrainPointAtViewport.
+    expose func TerrainPointAtViewport(
+        _mouseX: Integer,
+        _mouseY: Integer) -> SceneEditor3DModel.TerrainPointerHit3D { return null; }
+
+    /// @brief Neutral dispatch slot for UpdateTerrainBrushHover.
+    hide func UpdateTerrainBrushHover(_mouseX: Integer,
+                                      _mouseY: Integer)
+        -> SceneEditor3DModel.TerrainPointerHit3D { return null; }
+
+    /// @brief Neutral dispatch slot for EffectiveTerrainBrushMode.
+    hide func EffectiveTerrainBrushMode() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ApplyTerrainDab.
+    hide func ApplyTerrainDab(_localX: Number,
+                              _localZ: Number) {}
+
+    /// @brief Neutral dispatch slot for ApplyTerrainStrokePoint.
+    hide func ApplyTerrainStrokePoint(_localX: Number,
+                                      _localZ: Number) {}
+
+    /// @brief Neutral dispatch slot for BeginTerrainStroke.
+    hide func BeginTerrainStroke(_hit: SceneEditor3DModel.TerrainPointerHit3D) {}
+
+    /// @brief Neutral dispatch slot for ResetTerrainStroke.
+    hide func ResetTerrainStroke(_releaseCapture: Boolean) {}
+
+    /// @brief Neutral dispatch slot for FinishTerrainStroke.
+    hide func FinishTerrainStroke() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CancelTerrainStroke.
+    hide func CancelTerrainStroke() {}
+
+    /// @brief Neutral dispatch slot for PumpViewportNavigation.
+    hide func PumpViewportNavigation() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for PumpViewportDrops.
+    hide func PumpViewportDrops() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ImportAssetDrop.
+    expose func ImportAssetDrop(_assetPath: String) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplyMaterialDropAt.
+    hide func ApplyMaterialDropAt(_dropX: Number, _dropY: Number) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for PumpHierarchyRename.
+    hide func PumpHierarchyRename() {}
+
+    /// @brief Neutral dispatch slot for BeginRenameSelected.
+    expose func BeginRenameSelected() -> Boolean { return false; }
+
+}

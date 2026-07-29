@@ -1,0 +1,310 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_panel_layout.zia
+// Purpose: Focused panel layout behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_row_helpers.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_panel_layout;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_row_helpers" as PreviousLayer;
+
+class ToolPanelPanelLayoutLayer extends PreviousLayer.ToolPanelRowHelpersLayer {
+
+    /// @brief Restore one physical tool dock without changing sibling splits.
+    hide override func ExpandToolDockAt(location: Integer,
+                               minimumBottomHeight: Number) {
+        if location == workspace_dock.DOCK_FLOATING {
+            KeepFloatingPanelInViewport();
+            if floatingToolPanel != null {
+                floatingToolPanel.SetVisible(true);
+            }
+        } else if location == workspace_dock.DOCK_BOTTOM {
+            ApplyBottomPanelSplit(minimumBottomHeight);
+        } else {
+            ApplySidePanelSplitAt(location);
+        }
+    }
+
+    /// @brief Return Search's minimum height in physical layout units.
+    /// @details Tool-panel widgets grow with both HiDPI backing scale and user
+    ///          UI zoom, so the reserved results viewport must follow the same
+    ///          effective scale instead of remaining a fixed pixel count.
+    hide override func SearchPanelMinimumHeight() -> Number {
+        var scale = 1.0;
+        if app != null {
+            scale = app.GetScale() * app.GetUiScale();
+            if scale <= 0.0 { scale = 1.0; }
+        }
+        var logicalHeight = ToolPanelModel.SEARCH_PANEL_MIN_LOGICAL_HEIGHT;
+        if compactSearchControls {
+            logicalHeight = ToolPanelModel.SEARCH_PANEL_COMPACT_MIN_LOGICAL_HEIGHT;
+        }
+        return logicalHeight * scale;
+    }
+
+    /// @brief Apply the configured split while reserving optional panel height.
+    /// @details The splitter position is the editor's fraction. Search uses a
+    ///          temporary cap derived from the live splitter height, so compact
+    ///          windows retain result rows without overwriting the persisted
+    ///          fraction used by every other tool panel.
+    /// @param minimumPanelHeight Minimum requested height for the second pane.
+    hide override func ApplyBottomPanelSplit(minimumPanelHeight: Number) {
+        if editorSplit == null { return; }
+        if editorSplit.GetCollapsedSide() != 0 {
+            editorSplit.Restore();
+        }
+        var desired = bottomSplitFraction;
+        var splitHeight = editorSplit.GetHeight();
+        if minimumPanelHeight > 0.0 and splitHeight > 0.0 {
+            var maximumEditorFraction = 1.0 - minimumPanelHeight / splitHeight;
+            if maximumEditorFraction < 0.3 { maximumEditorFraction = 0.3; }
+            if desired > maximumEditorFraction { desired = maximumEditorFraction; }
+        }
+        var delta = editorSplit.GetPosition() - desired;
+        if delta < 0.0 { delta = 0.0 - delta; }
+        if delta > 0.001 {
+            editorSplit.SetPosition(desired);
+        }
+        appliedSplitFraction = desired;
+    }
+
+    /// @brief Apply the shared configured width to one physical side dock.
+    hide override func ApplySidePanelSplitAt(location: Integer) {
+        var split = leftDockSplit;
+        var desired = sidePanelFraction;
+        if location == workspace_dock.DOCK_RIGHT {
+            split = rightDockSplit;
+            desired = 1.0 - sidePanelFraction;
+        } else if location != workspace_dock.DOCK_LEFT {
+            return;
+        }
+        if split == null { return; }
+        if split.GetCollapsedSide() != 0 { split.Restore(); }
+        var delta = split.GetPosition() - desired;
+        if delta < 0.0 { delta = 0.0 - delta; }
+        if delta > 0.001 { split.SetPosition(desired); }
+        appliedSideSplitPosition = desired;
+    }
+
+    /// @brief Collapse one physical tool dock without disturbing the others.
+    hide override func CollapseToolDockAt(location: Integer) {
+        if location == workspace_dock.DOCK_FLOATING {
+            if floatingToolPanel != null {
+                floatingToolPanel.SetVisible(false);
+            }
+        } else if location == workspace_dock.DOCK_LEFT {
+            if leftDockSplit != null { leftDockSplit.CollapseFirst(); }
+        } else if location == workspace_dock.DOCK_RIGHT {
+            if rightDockSplit != null { rightDockSplit.CollapseSecond(); }
+        } else if location == workspace_dock.DOCK_BOTTOM
+                  and editorSplit != null {
+            editorSplit.CollapseSecond();
+        }
+    }
+
+    /// @brief Capture live splitter drags for every simultaneously open group.
+    hide override func CaptureSplitDrag() {
+        if activeBottomToolPanelKind != tool_panel_model.PANEL_NONE
+           and editorSplit != null
+           and editorSplit.GetCollapsedSide() == 0 {
+            var bottomPos = editorSplit.GetPosition();
+            if bottomPos >= 0.3 and bottomPos <= 0.985 {
+                var bottomDelta = bottomPos - appliedSplitFraction;
+                if bottomDelta < 0.0 {
+                    bottomDelta = 0.0 - bottomDelta;
+                }
+                if bottomDelta > 0.004 {
+                    bottomSplitFraction = bottomPos;
+                    appliedSplitFraction = bottomPos;
+                    splitFractionDirty = true;
+                }
+            }
+        }
+        CaptureSideSplitDragAt(workspace_dock.DOCK_LEFT);
+        CaptureSideSplitDragAt(workspace_dock.DOCK_RIGHT);
+    }
+
+    /// @brief Capture one side width as the shared durable panel fraction.
+    hide override func CaptureSideSplitDragAt(location: Integer) {
+        if ActiveToolPanelKindAt(location)
+               == tool_panel_model.PANEL_NONE {
+            return;
+        }
+        var sideSplit = leftDockSplit;
+        if location == workspace_dock.DOCK_RIGHT {
+            sideSplit = rightDockSplit;
+        }
+        if sideSplit == null or sideSplit.GetCollapsedSide() != 0 { return; }
+        var sidePosition = sideSplit.GetPosition();
+        var panelFraction = sidePosition;
+        if location == workspace_dock.DOCK_RIGHT {
+            panelFraction = 1.0 - sidePosition;
+        }
+        if panelFraction < 0.20 or panelFraction > 0.55 { return; }
+        var sideDelta = panelFraction - sidePanelFraction;
+        if sideDelta < 0.0 { sideDelta = 0.0 - sideDelta; }
+        if sideDelta > 0.004 {
+            sidePanelFraction = panelFraction;
+            appliedSideSplitPosition = sidePosition;
+            sideFractionDirty = true;
+            var sibling = workspace_dock.DOCK_RIGHT;
+            if location == workspace_dock.DOCK_RIGHT {
+                sibling = workspace_dock.DOCK_LEFT;
+            }
+            if ActiveToolPanelKindAt(sibling)
+                   != tool_panel_model.PANEL_NONE {
+                ApplySidePanelSplitAt(sibling);
+            }
+        }
+    }
+
+    /// @brief Apply a persisted editor-height percentage (settings-driven).
+    /// @param pct Editor's share of the split, clamped to [30, 95].
+    expose override func SetBottomSplitPct(pct: Integer) {
+        var clamped = pct;
+        if clamped < 30 { clamped = 30; }
+        if clamped > 95 { clamped = 95; }
+        bottomSplitFraction = clamped / 100.0; // int/float promotes to Number
+        if editorSplit != null
+           and activeBottomToolPanelKind
+               != tool_panel_model.PANEL_NONE {
+            if activeBottomToolPanelKind
+                   == tool_panel_model.PANEL_SEARCH {
+                ApplyBottomPanelSplit(SearchPanelMinimumHeight());
+            } else {
+                ExpandToolDockAt(workspace_dock.DOCK_BOTTOM, 0.0);
+            }
+        }
+    }
+
+    /// @brief Consume a user-authored split change as a persisted percentage.
+    /// @details Controller-authored Search expansion never sets the dirty bit.
+    ///          Live drag values round to the nearest percent and clamp to the
+    ///          same [30, 95] range accepted by SettingsManager.
+    /// @return Changed percentage, or -1 when there is nothing to persist.
+    expose override func TakeChangedSplitPercent() -> Integer {
+        if splitFractionDirty == false { return -1; }
+        splitFractionDirty = false;
+        var scaled = bottomSplitFraction * 100.0;
+        var pct = 30;
+        while pct < 95 and scaled >= pct + 0.5 {
+            pct = pct + 1;
+        }
+        return pct;
+    }
+
+    /// @brief Switch long tool-tab labels to discoverable compact names.
+    /// @details The tab bar remains horizontally scrollable, but at the native
+    ///          minimum the full labels hid Debug and Terminal completely. The
+    ///          compact set fits common narrow workbench widths while explicit
+    ///          tooltips retain every unabbreviated name. GetLogicalWidth has
+    ///          already removed both backing scale and user zoom.
+    hide override func ApplyResponsiveToolTabLabels() {
+        if toolTabBar == null { return; }
+        var width = toolTabBar.GetLogicalWidth();
+        if width <= 0.0 { return; }
+        var compact = width <= ToolPanelModel.TOOL_TABS_COMPACT_MAX_WIDTH;
+        if compact == compactToolTabs { return; }
+        compactToolTabs = compact;
+        if compactToolTabs {
+            toolReferencesTab.SetTitle("Refs");
+            toolVariablesTab.SetTitle("Vars");
+            toolCallStackTab.SetTitle("Stack");
+            toolDebugTab.SetTitle("Debug");
+            toolTerminalTab.SetTitle("Term");
+        } else {
+            toolReferencesTab.SetTitle("References");
+            toolVariablesTab.SetTitle("Variables");
+            toolCallStackTab.SetTitle("Call Stack");
+            toolDebugTab.SetTitle("Debug Console");
+            toolTerminalTab.SetTitle("Terminal");
+        }
+        toolReferencesTab.SetTooltip("References");
+        toolVariablesTab.SetTooltip("Variables");
+        toolCallStackTab.SetTooltip("Call Stack");
+        toolDebugTab.SetTooltip("Debug Console");
+        toolTerminalTab.SetTooltip("Terminal");
+    }
+
+    /// @brief Hide one tool surface while retaining all buffered/controller data.
+    hide override func HideToolPanelSurface(kind: Integer) {
+        if kind == tool_panel_model.PANEL_PROBLEMS {
+            if problemsPanel != null { problemsPanel.SetVisible(false); }
+            if diagListBox != null { diagListBox.SetVisible(false); }
+        } else if kind == tool_panel_model.PANEL_OUTPUT {
+            if outputPanel != null { outputPanel.SetVisible(false); }
+            if outputPane != null { outputPane.SetVisible(false); }
+            if outputListBox != null { outputListBox.SetVisible(false); }
+        } else if kind == tool_panel_model.PANEL_SEARCH {
+            if searchPanel != null { searchPanel.SetVisible(false); }
+            if searchListBox != null { searchListBox.SetVisible(false); }
+        } else if kind == tool_panel_model.PANEL_REFERENCES {
+            if referencesPanel != null { referencesPanel.SetVisible(false); }
+            if referencesListBox != null {
+                referencesListBox.SetVisible(false);
+            }
+            if referencesEmptyLabel != null {
+                referencesEmptyLabel.SetVisible(false);
+            }
+        } else if kind == tool_panel_model.PANEL_VARIABLES {
+            if variablesPanel != null { variablesPanel.SetVisible(false); }
+            if variablesListBox != null {
+                variablesListBox.SetVisible(false);
+            }
+        } else if kind == tool_panel_model.PANEL_CALL_STACK {
+            if callStackPanel != null { callStackPanel.SetVisible(false); }
+            if callStackListBox != null {
+                callStackListBox.SetVisible(false);
+            }
+            if callStackEmptyLabel != null {
+                callStackEmptyLabel.SetVisible(false);
+            }
+        } else if kind == tool_panel_model.PANEL_DEBUG {
+            if debugPanel != null { debugPanel.SetVisible(false); }
+            if debugListBox != null { debugListBox.SetVisible(false); }
+            if debugEmptyLabel != null {
+                debugEmptyLabel.SetVisible(false);
+            }
+        } else if kind == tool_panel_model.PANEL_TERMINAL {
+            if terminalPanel != null { terminalPanel.SetVisible(false); }
+        }
+    }
+
+    /// @brief Hide only the panels assigned to one dock group.
+    hide override func HideToolPanelsAt(location: Integer) {
+        var parts = Str.Split(toolPanelGroups.IdsAt(location), ",");
+        var i = 0;
+        while i < Seq.get_Count(parts) {
+            var id = Str.Trim(Obj.ToString(Seq.Get(parts, i)));
+            if id != "" {
+                HideToolPanelSurface(
+                    tool_panel_model.PanelKindForTabId(id));
+            }
+            i = i + 1;
+        }
+    }
+}

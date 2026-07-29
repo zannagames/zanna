@@ -40,6 +40,18 @@ bind IO = Zanna.IO;
 bind Path = Zanna.IO.Path;
 bind Dir = Zanna.IO.Dir;
 
+/// @brief Return a directory suitable for selected Explorer create commands.
+/// @param projMgr Project manager containing the current Explorer selection.
+/// @return Selected directory, selected file parent, or empty when unavailable.
+expose func ContextDirectoryForSelectedPath(
+    projMgr: project_manager.ProjectManager) -> String {
+    var selected = projMgr.SelectedPath();
+    if selected == "" { return ""; }
+    if Dir.Exists(selected) { return selected; }
+    if IO.File.Exists(selected) { return Path.Directory(selected); }
+    return "";
+}
+
 // ============================================================================
 // MODULE: explorer_action_runner
 // PURPOSE: Execute Explorer overlay actions and shared file-open/session helpers.

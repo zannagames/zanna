@@ -1,0 +1,838 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_inspector_hierarchy.zia
+// Purpose: Focused inspector hierarchy behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_selection_controls.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_inspector_hierarchy;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_selection_controls" as PreviousLayer;
+
+/// @brief Inspector Hierarchy implementation layer.
+class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSelectionControlsLayer {
+
+    /// @brief Choose the Object or Scene inspector tab (workspace-only).
+    /// @details Selection changes auto-follow: selecting nodes returns to
+    ///          Object, clearing the selection returns to Scene.
+    expose override func SetInspectorSceneTab(sceneTab: Boolean) {
+        if inspectorSceneTab == sceneTab { return; }
+        inspectorSceneTab = sceneTab;
+        UpdateInspectorScope();
+    }
+
+    /// @brief Select one progressive-disclosure topic on the Scene inspector.
+    /// @param section Bounded scene topic index.
+    /// @param resetScroll Whether a direct user change returns to the topic top.
+    expose override func SetSceneInspectorSection(section: Integer,
+                                         resetScroll: Boolean) {
+        var bounded = SceneEditor3DModel.ClampInt3D(
+            section,
+            SceneEditor3DModel.SCENE_INSPECTOR_WORLD,
+            SceneEditor3DModel.SCENE_INSPECTOR_HISTORY);
+        sceneInspectorSection = bounded;
+        if sceneSectionDropdown != null
+           and sceneSectionDropdown.Selected != bounded {
+            sceneSectionDropdown.SetSelected(bounded);
+            sceneSectionDropdown.WasChanged();
+        }
+        if resetScroll and inspectorScroll != null {
+            inspectorScroll.SetScroll(0.0, 0.0);
+            pendingInspectorScrollY = 0.0;
+        }
+        UpdateInspectorScope();
+    }
+
+    /// @brief Return whether any selected node carries a Light component.
+    hide override func SelectionHasLight() -> Boolean {
+        var index = 0;
+        while index < selectedIndices.count() {
+            var flat = selectedIndices.get(index);
+            if flat >= 0 and flat < flatNodes.count()
+               and flatNodes.get(flat).Light != null {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    /// @brief Return whether any selected node carries a Material component.
+    hide override func SelectionHasMaterial() -> Boolean {
+        var index = 0;
+        while index < selectedIndices.count() {
+            var flat = selectedIndices.get(index);
+            if flat >= 0 and flat < flatNodes.count()
+               and flatNodes.get(flat).Material != null {
+                return true;
+            }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    /// @brief Rebuild the addable built-in component choices for the selection.
+    /// @details Light and Material are addable when at least one selected node
+    ///          lacks them; Camera and Collider need exactly one node without
+    ///          the component. Project schema components keep their own group.
+    hide override func RefreshAddComponentChoices() {
+        if addComponentDropdown == null { return; }
+        addComponentKinds = [];
+        addComponentDropdown.Clear();
+        if scene == null or selectedIndices.count() == 0 { return; }
+        var single = selectedIndices.count() == 1;
+        var singleNode = SelectedNode();
+        var lacksLight = false;
+        var lacksMaterial = false;
+        var index = 0;
+        while index < selectedIndices.count() {
+            var flat = selectedIndices.get(index);
+            if flat >= 0 and flat < flatNodes.count() {
+                if flatNodes.get(flat).Light == null { lacksLight = true; }
+                if flatNodes.get(flat).Material == null {
+                    lacksMaterial = true;
+                }
+            }
+            index = index + 1;
+        }
+        if lacksLight {
+            addComponentDropdown.AddItem("Light");
+            addComponentKinds.add(SceneEditor3DModel.ADD_COMPONENT_LIGHT);
+        }
+        if lacksMaterial {
+            addComponentDropdown.AddItem("Material");
+            addComponentKinds.add(SceneEditor3DModel.ADD_COMPONENT_MATERIAL);
+        }
+        if single and singleNode != null and singleNode.Camera == null {
+            addComponentDropdown.AddItem("Camera");
+            addComponentKinds.add(SceneEditor3DModel.ADD_COMPONENT_CAMERA);
+        }
+        if single and singleNode != null
+           and singleNode.MetadataHas("collider.kind") == false {
+            addComponentDropdown.AddItem("Collider");
+            addComponentKinds.add(SceneEditor3DModel.ADD_COMPONENT_COLLIDER);
+        }
+        if addComponentKinds.count() > 0 {
+            addComponentDropdown.SetSelected(0);
+        }
+    }
+
+    /// @brief Return whether a spinner value differs beyond display noise.
+    hide override func TransformValueDiffers(spinnerValue: Number,
+                                    nodeValue: Number,
+                                    epsilon: Number) -> Boolean {
+        var delta = spinnerValue - nodeValue;
+        if delta < 0.0 { delta = 0.0 - delta; }
+        return delta > epsilon;
+    }
+
+    /// @brief Consume stale transform-spinner change edges after programmatic
+    ///        SetValue refreshes so they cannot masquerade as user edits.
+    hide override func DrainTransformSpinnerEdges() {
+        if positionX == null { return; }
+        positionX.WasChanged();
+        positionY.WasChanged();
+        positionZ.WasChanged();
+        rotationX.WasChanged();
+        rotationY.WasChanged();
+        rotationZ.WasChanged();
+        scaleX.WasChanged();
+        scaleY.WasChanged();
+        scaleZ.WasChanged();
+    }
+
+    /// @brief Live single-node transform editing with one commit per gesture.
+    /// @details Spinner changes mutate the live node immediately, matching
+    ///          the gizmo-drag preview model; the edit serializes exactly
+    ///          once when the transform spinners lose keyboard focus, and
+    ///          Escape while editing restores the captured values without
+    ///          creating history. Multi-selections keep the explicit
+    ///          relative Apply button, whose semantics are deliberate.
+    /// @return True when one canonical transaction committed this frame.
+    hide override func PumpTransformDraft() -> Boolean {
+        if gizmoDragAxis != SceneEditor3DModel.GIZMO_AXIS_NONE or flyActive {
+            return false;
+        }
+        if scene == null or selectedIndices.count() != 1 {
+            transformDraftActive = false;
+            return false;
+        }
+        var node = SelectedNode();
+        if node == null {
+            transformDraftActive = false;
+            return false;
+        }
+        var edited = positionX.WasChanged() or positionY.WasChanged()
+            or positionZ.WasChanged() or rotationX.WasChanged()
+            or rotationY.WasChanged() or rotationZ.WasChanged()
+            or scaleX.WasChanged() or scaleY.WasChanged()
+            or scaleZ.WasChanged();
+        if edited {
+            // Only value changes that actually differ from the live node are
+            // user edits, and only differing groups re-apply: re-applying an
+            // untouched rotation would silently perturb the quaternion
+            // through the lossy euler round trip and fold that drift into
+            // the next unrelated commit.
+            var positionNow = node.Position;
+            var eulerNow = QuaternionToEulerDegrees(node.Rotation);
+            var scaleNow = node.Scale;
+            var positionEdited =
+                TransformValueDiffers(positionX.Value, positionNow.X, 0.0005)
+                or TransformValueDiffers(
+                    positionY.Value, positionNow.Y, 0.0005)
+                or TransformValueDiffers(
+                    positionZ.Value, positionNow.Z, 0.0005);
+            var rotationEdited =
+                TransformValueDiffers(rotationX.Value, eulerNow.X, 0.01)
+                or TransformValueDiffers(rotationY.Value, eulerNow.Y, 0.01)
+                or TransformValueDiffers(rotationZ.Value, eulerNow.Z, 0.01);
+            var scaleEdited =
+                TransformValueDiffers(scaleX.Value, scaleNow.X, 0.0005)
+                or TransformValueDiffers(scaleY.Value, scaleNow.Y, 0.0005)
+                or TransformValueDiffers(scaleZ.Value, scaleNow.Z, 0.0005);
+            if positionEdited or rotationEdited or scaleEdited {
+                if transformDraftActive == false {
+                    transformDraftActive = true;
+                    draftOriginPX = positionNow.X;
+                    draftOriginPY = positionNow.Y;
+                    draftOriginPZ = positionNow.Z;
+                    draftOriginRX = eulerNow.X;
+                    draftOriginRY = eulerNow.Y;
+                    draftOriginRZ = eulerNow.Z;
+                    draftOriginSX = scaleNow.X;
+                    draftOriginSY = scaleNow.Y;
+                    draftOriginSZ = scaleNow.Z;
+                }
+                if positionEdited {
+                    ApplyNodeTransformValues(
+                        node, SceneEditor3DModel.GIZMO_MODE_MOVE,
+                        positionX.Value, positionY.Value, positionZ.Value);
+                }
+                if rotationEdited {
+                    ApplyNodeTransformValues(
+                        node, SceneEditor3DModel.GIZMO_MODE_ROTATE,
+                        rotationX.Value, rotationY.Value, rotationZ.Value);
+                }
+                if scaleEdited {
+                    ApplyNodeTransformValues(
+                        node, SceneEditor3DModel.GIZMO_MODE_SCALE,
+                        scaleX.Value, scaleY.Value, scaleZ.Value);
+                }
+                renderDirty = true;
+            }
+        }
+        if transformDraftActive == false { return false; }
+        var editingFocused = positionX.IsFocused()
+            or positionY.IsFocused() or positionZ.IsFocused()
+            or rotationX.IsFocused() or rotationY.IsFocused()
+            or rotationZ.IsFocused() or scaleX.IsFocused()
+            or scaleY.IsFocused() or scaleZ.IsFocused();
+        if editingFocused
+           and Input.Keyboard.WasPressed(Input.Key.Escape) {
+            ApplyNodeTransformValues(
+                node, SceneEditor3DModel.GIZMO_MODE_MOVE,
+                draftOriginPX, draftOriginPY, draftOriginPZ);
+            ApplyNodeTransformValues(
+                node, SceneEditor3DModel.GIZMO_MODE_ROTATE,
+                draftOriginRX, draftOriginRY, draftOriginRZ);
+            ApplyNodeTransformValues(
+                node, SceneEditor3DModel.GIZMO_MODE_SCALE,
+                draftOriginSX, draftOriginSY, draftOriginSZ);
+            transformDraftActive = false;
+            RefreshSelectedFields();
+            renderDirty = true;
+            toolbarStatus.SetText("Transform edit canceled");
+            return false;
+        }
+        // A completed value scrub commits its gesture immediately, mirroring
+        // gizmo-drag release; typed edits still commit when focus leaves.
+        var scrubFinished = positionX.WasScrubFinished()
+            or positionY.WasScrubFinished() or positionZ.WasScrubFinished()
+            or rotationX.WasScrubFinished() or rotationY.WasScrubFinished()
+            or rotationZ.WasScrubFinished() or scaleX.WasScrubFinished()
+            or scaleY.WasScrubFinished() or scaleZ.WasScrubFinished();
+        if editingFocused and scrubFinished == false { return false; }
+        transformDraftActive = false;
+        return CommitScene("Edited node transform");
+    }
+
+    /// @brief The number of addable built-in component choices (probe surface).
+    expose override func AddComponentChoiceCount() -> Integer {
+        return addComponentKinds.count();
+    }
+
+    /// @brief The ADD_COMPONENT_* kind at one dropdown row (probe surface).
+    expose override func AddComponentKindAt(index: Integer) -> Integer {
+        if index < 0 or index >= addComponentKinds.count() { return -1; }
+        return addComponentKinds.get(index);
+    }
+
+    /// @brief Create the chosen built-in component with defaults.
+    /// @return True when one canonical transaction committed.
+    expose override func AddSelectedComponentChoice() -> Boolean {
+        var choice = addComponentDropdown.Selected;
+        if choice < 0 or choice >= addComponentKinds.count() {
+            return false;
+        }
+        var kind = addComponentKinds.get(choice);
+        var changed = false;
+        if kind == SceneEditor3DModel.ADD_COMPONENT_LIGHT {
+            changed = CreateLightsOnSelection(
+                new scene_light_3d.LightState3D());
+        } else if kind == SceneEditor3DModel.ADD_COMPONENT_MATERIAL {
+            changed = ApplySelectedMaterialFromControls();
+        } else if kind == SceneEditor3DModel.ADD_COMPONENT_CAMERA {
+            changed = ApplyNodeCamera(
+                selectedIndex, new scene_camera_3d.CameraState3D());
+        } else if kind == SceneEditor3DModel.ADD_COMPONENT_COLLIDER {
+            var colliderState = new scene_collider_3d.ColliderState3D();
+            colliderState.kind = scene_collider_3d.COLLIDER_BOX;
+            changed = ApplyNodeCollider(selectedIndex, colliderState);
+        }
+        if changed { RefreshSelectedFields(); }
+        return changed;
+    }
+
+    hide override func RefreshSelectedFields() {
+        var node = SelectedNode();
+        // Auto-follow the Object/Scene tab on selection-presence changes
+        // only, so a manual tab choice survives ordinary refreshes.
+        var scopeHasSelection = selectedIndices.count() > 0;
+        if scopeHasSelection != inspectorAutoFollowHadSelection {
+            inspectorAutoFollowHadSelection = scopeHasSelection;
+            inspectorSceneTab = scopeHasSelection == false;
+        }
+        RefreshParentTargets();
+        UpdateSiblingControlAvailability();
+        RefreshComponentPalette();
+        RefreshAddComponentChoices();
+        UpdateInspectorScope();
+        if node == null {
+            nameInput.SetText("");
+            visibleCheck.SetIndeterminate(false);
+            visibleCheck.SetChecked(false);
+            visibleRevision = visibleCheck.GetRevision();
+            positionX.SetValue(0.0);
+            positionY.SetValue(0.0);
+            positionZ.SetValue(0.0);
+            rotationX.SetValue(0.0);
+            rotationY.SetValue(0.0);
+            rotationZ.SetValue(0.0);
+            scaleX.SetValue(1.0);
+            scaleY.SetValue(1.0);
+            scaleZ.SetValue(1.0);
+            selectionInfo.SetText("No node selected");
+            RefreshMetadataFields(null);
+            RefreshLightFields(null);
+            RefreshCameraFields(null);
+            RefreshColliderFields(null);
+            RefreshTerrainFields(null);
+            RefreshInstanceControls(null);
+            RefreshMaterialFields(null);
+            return;
+        }
+        if selectedIndices.count() > 1 {
+            nameInput.SetText("");
+            nameInput.SetPlaceholder(
+                selectedIndices.count() + " nodes selected");
+            var allVisible = true;
+            var allHidden = true;
+            var visibilityIndex = 0;
+            while visibilityIndex < selectedIndices.count() {
+                if flatNodes.get(
+                       selectedIndices.get(visibilityIndex)).Visible {
+                    allHidden = false;
+                } else {
+                    allVisible = false;
+                }
+                visibilityIndex = visibilityIndex + 1;
+            }
+            if allVisible {
+                visibleCheck.SetChecked(true);
+            } else if allHidden {
+                visibleCheck.SetChecked(false);
+            } else {
+                visibleCheck.SetIndeterminate(true);
+            }
+            visibleCheck.SetTooltip(
+                "Set visibility for all "
+                + selectedIndices.count() + " selected nodes");
+            visibleRevision = visibleCheck.GetRevision();
+            var allStatic = true;
+            var allDynamic = true;
+            var staticIndex = 0;
+            while staticIndex < selectedIndices.count() {
+                if flatNodes.get(
+                       selectedIndices.get(staticIndex)).GetStatic() {
+                    allDynamic = false;
+                } else {
+                    allStatic = false;
+                }
+                staticIndex = staticIndex + 1;
+            }
+            if allStatic {
+                staticCheck.SetChecked(true);
+            } else if allDynamic {
+                staticCheck.SetChecked(false);
+            } else {
+                staticCheck.SetIndeterminate(true);
+            }
+            staticCheck.SetTooltip(
+                "Mark all " + selectedIndices.count()
+                + " selected nodes as bake participants");
+            staticRevision = staticCheck.GetRevision();
+            positionX.SetValue(0.0);
+            positionY.SetValue(0.0);
+            positionZ.SetValue(0.0);
+            rotationX.SetValue(0.0);
+            rotationY.SetValue(0.0);
+            rotationZ.SetValue(0.0);
+            scaleX.SetValue(1.0);
+            scaleY.SetValue(1.0);
+            scaleZ.SetValue(1.0);
+            selectionInfo.SetText(
+                selectedIndices.count() + " nodes selected  |  primary "
+                + NodeDisplayName(node)
+                + "  |  inspector adds position/rotation and multiplies "
+                + "scale for the group");
+            RefreshMetadataFields(node);
+            RefreshLightFields(node);
+            RefreshCameraFields(node);
+            RefreshColliderFields(node);
+            RefreshTerrainFields(node);
+            RefreshInstanceControls(node);
+            RefreshMaterialFields(null);
+            return;
+        }
+        nameInput.SetPlaceholder("Node name");
+        nameInput.SetText(node.Name);
+        visibleCheck.SetChecked(node.Visible);
+        visibleCheck.SetTooltip("Set this node's visibility");
+        visibleRevision = visibleCheck.GetRevision();
+        staticCheck.SetChecked(node.GetStatic());
+        staticRevision = staticCheck.GetRevision();
+        var position = node.Position;
+        positionX.SetValue(position.X);
+        positionY.SetValue(position.Y);
+        positionZ.SetValue(position.Z);
+        var rotation = node.Rotation;
+        var euler = QuaternionToEulerDegrees(rotation);
+        rotationX.SetValue(euler.X);
+        rotationY.SetValue(euler.Y);
+        rotationZ.SetValue(euler.Z);
+        var scale = node.Scale;
+        scaleX.SetValue(scale.X);
+        scaleY.SetValue(scale.Y);
+        scaleZ.SetValue(scale.Z);
+        var kind = "empty";
+        if node.Mesh != null { kind = "mesh"; }
+        var materialState = "no material";
+        if node.Material != null { materialState = "material"; }
+        var lightState = "no light";
+        if node.Light != null {
+            lightState =
+                scene_light_3d.TypeName(node.Light.Type) + " light";
+        }
+        var cameraState = "no camera";
+        if node.Camera != null { cameraState = "camera"; }
+        selectionInfo.SetText(
+            kind + " node  |  children " + node.ChildCount
+            + "  |  " + lightState
+            + "  |  " + cameraState
+            + "  |  " + materialState + "  |  local transform");
+        RefreshMetadataFields(node);
+        RefreshLightFields(node);
+        RefreshCameraFields(node);
+        RefreshColliderFields(node);
+        RefreshTerrainFields(node);
+        RefreshInstanceControls(node);
+        RefreshMaterialFields(node);
+    }
+
+    hide override func QuaternionToEulerDegrees(rotation: Quat) -> Vec3 {
+        if rotation == null { return Vec3.New(0.0, 0.0, 0.0); }
+        var x = rotation.X;
+        var y = rotation.Y;
+        var z = rotation.Z;
+        var w = rotation.W;
+        var pitch = Math.Atan2(
+            2.0 * (w * x + y * z),
+            1.0 - 2.0 * (x * x + y * y));
+        var yaw = Math.Asin(Math.Clamp(
+            2.0 * (w * y - z * x), -1.0, 1.0));
+        var roll = Math.Atan2(
+            2.0 * (w * z + x * y),
+            1.0 - 2.0 * (y * y + z * z));
+        return Vec3.New(
+            pitch * SceneEditor3DModel.RAD_TO_DEG,
+            yaw * SceneEditor3DModel.RAD_TO_DEG,
+            roll * SceneEditor3DModel.RAD_TO_DEG);
+    }
+
+    hide override func RefreshHierarchy(preferred: SceneNode) {
+        CaptureHierarchyExpansion();
+        flatNodes = [];
+        flatDepths = [];
+        flatPaths = [];
+        hierarchyTreeNodes = [];
+        hierarchyTree.Clear();
+        hierarchyTree.PruneRetiredNodes();
+        hierarchyClipped = false;
+        hierarchyPreferredNode = preferred;
+        if scene != null {
+            var sceneRoot = scene.Root;
+            var child = 0;
+            while child < sceneRoot.ChildCount
+                  and flatNodes.count() < SceneEditor3DModel.MAX_EDITOR_NODES {
+                AppendHierarchy(
+                    sceneRoot.GetChild(child), 0, "" + child, null);
+                child = child + 1;
+            }
+            if child < sceneRoot.ChildCount { hierarchyClipped = true; }
+            hierarchySceneRoot = sceneRoot;
+        } else {
+            hierarchySceneRoot = null;
+        }
+        ReconcilePickLocksAfterHierarchyRefresh();
+        RefreshHierarchyRowLabels();
+        hierarchyDocument = currentDoc;
+
+        var i = 0;
+        var preferredIndex = -1;
+        while i < flatNodes.count() {
+            var node = flatNodes.get(i);
+            if preferred != null and node == preferred { preferredIndex = i; }
+            i = i + 1;
+        }
+        if preferredIndex >= 0 {
+            selectedIndex = preferredIndex;
+            selectedIndices = scene_selection.Single(
+                preferredIndex, flatNodes.count());
+        } else if selectedIndex >= flatNodes.count() {
+            selectedIndex = -1;
+            selectedIndices = [];
+        } else {
+            selectedIndices = scene_selection.Normalize(
+                selectedIndices, flatNodes.count(), selectedIndex);
+            if selectedIndex < 0 and selectedIndices.count() > 0 {
+                selectedIndex = selectedIndices.get(0);
+            }
+        }
+        RevealHierarchyTreeSelection();
+        RefreshHierarchySearch(false);
+        hierarchyPreferredNode = null;
+        hierarchyExpandedNodes = [];
+        hierarchyExpandedPaths = [];
+        hierarchyPickLockedNodes = [];
+        RefreshSelectedFields();
+        SetEditorControlsEnabled(scene != null);
+        RebuildProjectNodePreviews();
+        renderDirty = true;
+    }
+
+    /// @brief Snapshot expanded identities before rebuilding retained rows.
+    /// @details Live graph refreshes match node identity, while canonical
+    ///          reloads fall back to structural paths. First presentation
+    ///          expands the complete bounded hierarchy for discoverability.
+    hide override func CaptureHierarchyExpansion() {
+        hierarchyExpandedNodes = [];
+        hierarchyExpandedPaths = [];
+        hierarchyPickLockedNodes = [];
+        var sameDocument =
+            currentDoc != null and hierarchyDocument == currentDoc;
+        hierarchyPreserveExpansionByIdentity =
+            sameDocument and scene != null and hierarchySceneRoot != null
+            and hierarchySceneRoot == scene.Root;
+        hierarchyExpandByDefault =
+            hierarchyTreeNodes.count() == 0 or sameDocument == false;
+        if sameDocument == false { return; }
+        var index = 0;
+        while index < hierarchyTreeNodes.count()
+              and index < flatNodes.count()
+              and index < flatPaths.count() {
+            var treeNode = hierarchyTreeNodes.get(index);
+            if treeNode != null
+               and GUI.TreeView.Node.IsExpanded(treeNode) {
+                hierarchyExpandedNodes.add(flatNodes.get(index));
+                hierarchyExpandedPaths.add(flatPaths.get(index));
+            }
+            if hierarchyPreserveExpansionByIdentity
+               and PickLockedPath(flatPaths.get(index)) {
+                hierarchyPickLockedNodes.add(flatNodes.get(index));
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Return whether one node is the candidate or its ancestor.
+    hide override func HierarchyContains(node: SceneNode,
+                                candidate: SceneNode) -> Boolean {
+        if node == null or candidate == null { return false; }
+        var current = candidate;
+        while current != null {
+            if current == node { return true; }
+            current = current.Parent;
+        }
+        return false;
+    }
+
+    hide override func ExpandedPathContains(path: String) -> Boolean {
+        var index = 0;
+        while index < hierarchyExpandedPaths.count() {
+            if hierarchyExpandedPaths.get(index) == path { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    /// @brief Return whether an exact bounded hierarchy path is pick-locked.
+    hide override func PickLockedPath(path: String) -> Boolean {
+        var index = 0;
+        while index < pickLockedPaths.count() {
+            if pickLockedPaths.get(index) == path { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    hide override func StringListContains(values: List[String],
+                                 value: String) -> Boolean {
+        var index = 0;
+        while index < values.count() {
+            if values.get(index) == value { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    hide override func FlatPathIndex(path: String) -> Integer {
+        var index = 0;
+        while index < flatPaths.count() {
+            if flatPaths.get(index) == path { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Rebind workspace locks safely after one hierarchy rebuild.
+    /// @details Live graph edits follow SceneNode identity so reordered or
+    ///          deleted paths cannot transfer a lock to another node.
+    ///          Canonical reloads have new identities and retain only exact,
+    ///          still-existing paths from the document's workspace state.
+    hide override func ReconcilePickLocksAfterHierarchyRefresh() {
+        var reconciled: List[String] = [];
+        if hierarchyPreserveExpansionByIdentity {
+            var nodeIndex = 0;
+            while nodeIndex < hierarchyPickLockedNodes.count()
+                  and reconciled.count() < SceneEditor3DModel.MAX_EDITOR_NODES {
+                var flatIndex = FindFlatIndex(
+                    hierarchyPickLockedNodes.get(nodeIndex));
+                if flatIndex >= 0 and flatIndex < flatPaths.count() {
+                    var mappedPath = flatPaths.get(flatIndex);
+                    if StringListContains(reconciled, mappedPath) == false {
+                        reconciled.add(mappedPath);
+                    }
+                }
+                nodeIndex = nodeIndex + 1;
+            }
+        } else {
+            var lockIndex = 0;
+            while lockIndex < pickLockedPaths.count()
+                  and reconciled.count() < SceneEditor3DModel.MAX_EDITOR_NODES {
+                var path = pickLockedPaths.get(lockIndex);
+                if FlatPathIndex(path) >= 0
+                   and StringListContains(reconciled, path) == false {
+                    reconciled.add(path);
+                }
+                lockIndex = lockIndex + 1;
+            }
+        }
+        pickLockedPaths = reconciled;
+        if currentDoc != null and currentDoc.scene3DWorkspace != null {
+            currentDoc.scene3DWorkspace.pickLockedPaths =
+                pickLockedPaths;
+        }
+    }
+
+    /// @brief Decide expansion without confusing reordered live nodes by path.
+    hide override func ShouldExpandHierarchyNode(node: SceneNode,
+                                        path: String) -> Boolean {
+        if node == null or node.ChildCount == 0 { return false; }
+        if hierarchyPreferredNode != null
+           and HierarchyContains(node, hierarchyPreferredNode) {
+            return true;
+        }
+        if hierarchyExpandByDefault { return true; }
+        if hierarchyPreserveExpansionByIdentity {
+            return FindNodeIndex(hierarchyExpandedNodes, node) >= 0;
+        }
+        return ExpandedPathContains(path);
+    }
+
+    /// @brief Compose one hierarchy row's visibility, name, and component cues.
+    hide override func HierarchyRowLabel(node: SceneNode,
+                                path: String) -> String {
+        if node == null { return "○ (missing)"; }
+        var visibleMarker = "○ ";
+        if node.Visible { visibleMarker = "● "; }
+        var componentMarker = "";
+        if node.Mesh != null { componentMarker = " [mesh]"; }
+        if node.Material != null {
+            componentMarker = componentMarker + " [mat]";
+        }
+        if node.Light != null {
+            componentMarker = componentMarker + " [light]";
+        }
+        if node.Camera != null {
+            componentMarker = componentMarker + " [camera]";
+        }
+        if node.PrefabPath != "" {
+            componentMarker = componentMarker + " [prefab]";
+        } else if node.IsInstanceContent {
+            componentMarker = componentMarker + " [instance]";
+        }
+        var gameplayBadge = NodeComponentBadge(node);
+        if gameplayBadge != "" {
+            componentMarker = componentMarker
+                + " [" + gameplayBadge + "]";
+        }
+        var name = node.Name;
+        if name == "" { name = "(unnamed)"; }
+        var lockMarker = "";
+        if PickLockedPath(path) { lockMarker = "  ⊘"; }
+        return visibleMarker + name + lockMarker + componentMarker;
+    }
+
+    /// @brief Refresh retained row labels without disturbing tree identity.
+    hide override func RefreshHierarchyRowLabels() {
+        var index = 0;
+        while index < hierarchyTreeNodes.count()
+              and index < flatNodes.count()
+              and index < flatPaths.count() {
+            var treeNode = hierarchyTreeNodes.get(index);
+            if treeNode != null {
+                GUI.TreeView.Node.SetText(
+                    treeNode,
+                    HierarchyRowLabel(
+                        flatNodes.get(index), flatPaths.get(index)));
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Append one true retained parent/child row and its bounded subtree.
+    hide override func AppendHierarchy(node: SceneNode,
+                              depth: Integer,
+                              path: String,
+                              parentTreeNode: Any) {
+        if node == null { return; }
+        if flatNodes.count() >= SceneEditor3DModel.MAX_EDITOR_NODES
+           or depth > SceneEditor3DModel.MAX_HIERARCHY_DEPTH {
+            hierarchyClipped = true;
+            return;
+        }
+        var treeNode = hierarchyTree.AddNode(
+            parentTreeNode,
+            HierarchyRowLabel(node, path));
+        if treeNode == null {
+            hierarchyClipped = true;
+            return;
+        }
+        GUI.TreeView.Node.SetData(treeNode, "" + flatNodes.count());
+        GUI.TreeView.Node.SetStableId(treeNode, path);
+        var icon = "◇";
+        if node.PrefabPath != "" { icon = "⬒"; }
+        else if node.Mesh != null { icon = "◆"; }
+        else if node.Light != null { icon = "✦"; }
+        else if node.Camera != null { icon = "▣"; }
+        GUI.TreeView.Node.SetIcon(treeNode, icon);
+        flatNodes.add(node);
+        flatDepths.add(depth);
+        flatPaths.add(path);
+        hierarchyTreeNodes.add(treeNode);
+        var child = 0;
+        while child < node.ChildCount
+              and flatNodes.count() < SceneEditor3DModel.MAX_EDITOR_NODES {
+            AppendHierarchy(
+                node.GetChild(child),
+                depth + 1,
+                path + "/" + child,
+                treeNode);
+            child = child + 1;
+        }
+        if child < node.ChildCount { hierarchyClipped = true; }
+        if ShouldExpandHierarchyNode(node, path) {
+            hierarchyTree.Expand(treeNode);
+        }
+    }
+}

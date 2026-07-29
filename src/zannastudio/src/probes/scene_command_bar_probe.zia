@@ -75,10 +75,11 @@ func ClickMenuOffset(shell: app_shell.AppShell,
                      harness: GUI.TestHarness,
                      button: GUI.Button,
                      offsetY: Number) {
-    var x = HarnessCoordinate(shell, button.GetScreenX() + 20.0);
+    var x = HarnessCoordinate(shell, button.GetScreenX())
+        + Convert.NumToInt(20.0);
     var y = HarnessCoordinate(
-        shell,
-        button.GetScreenY() + button.GetScreenHeight() + offsetY);
+        shell, button.GetScreenY() + button.GetScreenHeight())
+        + Convert.NumToInt(offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -109,7 +110,8 @@ func Pump3D(shell: app_shell.AppShell,
     shell.Render();
 }
 
-func main() {
+/// @brief Verify responsive 2D command menus and progressive controls.
+func VerifyCommandBar2D() -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Scene Command Bar Probe", 1120, 720);
     var documents = new document_manager.DocumentManager();
@@ -126,7 +128,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "input harness binding");
-        return;
+        return false;
     }
 
     if scene_editor_2d.UsesSceneCommandMenus(
@@ -144,7 +146,7 @@ func main() {
        or editor2d.toolbar.GetScreenHeight() > 48.0
        or editor2d.viewToolbar.GetScreenHeight() > 84.0 {
         Fail(shell, harness, "2D medium command-bar geometry");
-        return;
+        return false;
     }
 
     ClickWidget(shell, harness, editor2d.sceneMenuButton);
@@ -157,21 +159,21 @@ func main() {
        or editor2d.scenePreviewItem.IsChecked()
        or editor2d.sceneRunItem.IsEnabled() == false {
         Fail(shell, harness, "2D Scene menu state");
-        return;
+        return false;
     }
     // New, Import, separator, then animation Preview.
     ClickMenuOffset(shell, harness, editor2d.sceneMenuButton, 83.0);
     editor2d.Pump(doc2d);
     if editor2d.PreviewActive() == false {
         Fail(shell, harness, "2D Scene Preview dispatch");
-        return;
+        return false;
     }
     ClickWidget(shell, harness, editor2d.sceneMenuButton);
     editor2d.Pump(doc2d);
     shell.Render();
     if editor2d.scenePreviewItem.IsChecked() == false {
         Fail(shell, harness, "2D Scene Preview check state");
-        return;
+        return false;
     }
     editor2d.sceneMenu.Hide();
     editor2d.SetPreviewActive(false);
@@ -184,7 +186,7 @@ func main() {
     editor2d.Pump(doc2d);
     if editor2d.TakeRunSceneRequested() == false {
         Fail(shell, harness, "2D Scene Run dispatch");
-        return;
+        return false;
     }
 
     ClickWidget(shell, harness, editor2d.toolMenuButton);
@@ -193,14 +195,14 @@ func main() {
     if editor2d.toolMenu.IsVisible() == false
        or editor2d.toolSelectItem.IsChecked() == false {
         Fail(shell, harness, "2D Tools menu state");
-        return;
+        return false;
     }
     // Select/Paint/Erase, separator, then Rectangle.
     ClickMenuOffset(shell, harness, editor2d.toolMenuButton, 111.0);
     editor2d.Pump(doc2d);
     if editor2d.mode != scene_editor_2d.MODE_RECTANGLE {
         Fail(shell, harness, "2D Rectangle menu dispatch");
-        return;
+        return false;
     }
     ClickWidget(shell, harness, editor2d.toolMenuButton);
     editor2d.Pump(doc2d);
@@ -208,7 +210,7 @@ func main() {
     if editor2d.toolRectangleItem.IsChecked() == false
        or editor2d.toolSelectItem.IsChecked() {
         Fail(shell, harness, "2D active tool check state");
-        return;
+        return false;
     }
     editor2d.toolMenu.Hide();
 
@@ -220,21 +222,21 @@ func main() {
        or editor2d.viewRulersItem.IsChecked() == false
        or editor2d.viewWorkspaceItem.IsCheckable() == false {
         Fail(shell, harness, "2D View menu state");
-        return;
+        return false;
     }
     // Fit, Actual Size, separator, then Grid.
     ClickMenuOffset(shell, harness, editor2d.viewMenuButton, 83.0);
     editor2d.Pump(doc2d);
     if editor2d.showGrid {
         Fail(shell, harness, "2D Grid menu dispatch");
-        return;
+        return false;
     }
     ClickWidget(shell, harness, editor2d.viewMenuButton);
     editor2d.Pump(doc2d);
     shell.Render();
     if editor2d.viewGridItem.IsChecked() {
         Fail(shell, harness, "2D Grid menu check did not refresh");
-        return;
+        return false;
     }
     editor2d.viewMenu.Hide();
 
@@ -256,14 +258,19 @@ func main() {
        or editor2d.eraseButton.IsVisible() == false
        or editor2d.gameViewButton.IsVisible() == false {
         Fail(shell, harness, "2D wide progressive commands expanded");
-        return;
+        return false;
     }
 
     harness.UnbindApp();
     shell.Destroy();
+    return true;
+}
 
-    shell = new app_shell.AppShell();
+/// @brief Verify responsive 3D command menus and progressive controls.
+func VerifyCommandBar3D() -> Boolean {
+    var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio 3D Command Bar Probe", 1120, 720);
+    var documents = new document_manager.DocumentManager();
     var editor3d = new scene_editor_3d.SceneEditor3D();
     scene_panels_3d.Build(
         editor3d, shell.workbench.scene3DHost, shell.app);
@@ -272,15 +279,15 @@ func main() {
     editor3d.Activate(doc3d);
     Pump3D(shell, editor3d, doc3d);
     Pump3D(shell, editor3d, doc3d);
-    harness = GUI.TestHarness.New();
+    var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "3D input harness binding");
-        return;
+        return false;
     }
     if editor3d.AddPrimitiveFromMenu(
            scene_editor_3d.PRIMITIVE_BOX, false) == false {
         Fail(shell, harness, "3D placement fixture");
-        return;
+        return false;
     }
     Pump3D(shell, editor3d, doc3d);
 
@@ -303,7 +310,7 @@ func main() {
        or editor3d.toolbar.GetScreenHeight() > 48.0
        or editor3d.viewToolbar.GetScreenHeight() > 84.0 {
         Fail(shell, harness, "3D medium command-bar geometry");
-        return;
+        return false;
     }
 
     ClickWidget(shell, harness, editor3d.sceneMenuButton);
@@ -315,14 +322,14 @@ func main() {
        or editor3d.sceneImportInstanceItem.IsEnabled() == false
        or editor3d.sceneRunItem.IsEnabled() == false {
         Fail(shell, harness, "3D Scene menu state");
-        return;
+        return false;
     }
     // New, Import Asset, Import Instance, separator, then Run.
     ClickMenuOffset(shell, harness, editor3d.sceneMenuButton, 111.0);
     editor3d.Pump(doc3d);
     if editor3d.TakeRunSceneRequested() == false {
         Fail(shell, harness, "3D Scene Run dispatch");
-        return;
+        return false;
     }
 
     ClickWidget(shell, harness, editor3d.createMenuButton);
@@ -331,7 +338,7 @@ func main() {
     if editor3d.createMenu.IsVisible() == false
        or editor3d.createTerrainItem.IsEnabled() == false {
         Fail(shell, harness, "3D Create Terrain menu state");
-        return;
+        return false;
     }
     // Empty, Child, separator, Box, Sphere, Plane, Cylinder, then Terrain.
     ClickMenuOffset(
@@ -343,7 +350,7 @@ func main() {
               editor3d.flatNodes.get(editor3d.selectedIndex)) == false
        or editor3d.IsTerrainSculptEnabled() == false {
         Fail(shell, harness, "3D Create Terrain menu dispatch");
-        return;
+        return false;
     }
 
     ClickWidget(shell, harness, editor3d.placementMenuButton);
@@ -366,7 +373,7 @@ func main() {
              + " selected=" + editor3d.selectedIndices.count()
              + " vertex=" + editor3d.vertexSnapEnabled + "/"
              + editor3d.placementVertexItem.IsChecked());
-        return;
+        return false;
     }
     // Drop, separator, Surface, Align, then Vertex.
     ClickMenuOffset(
@@ -374,14 +381,14 @@ func main() {
     editor3d.Pump(doc3d);
     if editor3d.vertexSnapEnabled == false {
         Fail(shell, harness, "3D Vertex Move menu dispatch");
-        return;
+        return false;
     }
     ClickWidget(shell, harness, editor3d.placementMenuButton);
     editor3d.Pump(doc3d);
     shell.Render();
     if editor3d.placementVertexItem.IsChecked() == false {
         Fail(shell, harness, "3D Vertex Move check did not refresh");
-        return;
+        return false;
     }
     editor3d.placementMenu.Hide();
 
@@ -393,21 +400,21 @@ func main() {
        or editor3d.viewFocusItem.IsCheckable() == false
        or editor3d.viewWorkspaceItem.IsCheckable() == false {
         Fail(shell, harness, "3D View menu state");
-        return;
+        return false;
     }
     // Camera Navigation submenu, Frame Selected, Frame All, then Projection.
     ClickMenuOffset(shell, harness, editor3d.viewMenuButton, 102.0);
     editor3d.Pump(doc3d);
     if editor3d.viewPerspective {
         Fail(shell, harness, "3D Projection menu dispatch");
-        return;
+        return false;
     }
     ClickWidget(shell, harness, editor3d.viewMenuButton);
     editor3d.Pump(doc3d);
     shell.Render();
     if editor3d.viewProjectionItem.IsChecked() {
         Fail(shell, harness, "3D Projection check did not refresh");
-        return;
+        return false;
     }
     editor3d.viewMenu.Hide();
 
@@ -418,7 +425,7 @@ func main() {
     if editor3d.viewMenuButton.IsVisible() == false
        or editor3d.viewportScroll.GetScreenHeight() < 100.0 {
         Fail(shell, harness, "3D compact View access or viewport height");
-        return;
+        return false;
     }
 
     shell.SetSceneWorkspaceMode(true);
@@ -444,10 +451,16 @@ func main() {
        or editor3d.scaleToolButton.IsVisible() == false
        or editor3d.gameViewButton.IsVisible() == false {
         Fail(shell, harness, "3D wide progressive commands expanded");
-        return;
+        return false;
     }
 
     harness.UnbindApp();
     shell.Destroy();
+    return true;
+}
+
+func main() {
+    if VerifyCommandBar2D() == false { return; }
+    if VerifyCommandBar3D() == false { return; }
     Terminal.Say("RESULT: ok");
 }

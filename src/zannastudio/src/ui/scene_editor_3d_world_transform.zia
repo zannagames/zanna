@@ -1,0 +1,544 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_world_transform.zia
+// Purpose: Apply exact world-space group transforms in the 3D scene editor.
+// Key invariants:
+//   - World transforms either commit one exact group edit or restore all roots.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited state; this layer owns none.
+// Links: zannastudio/src/ui/scene_editor_3d_node_transform.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_world_transform;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_node_transform" as PreviousLayer;
+
+/// @brief Exact world-space group-transform implementation layer.
+class SceneEditor3DWorldTransformLayer extends PreviousLayer.SceneEditor3DNodeTransformLayer {
+    /// @brief Apply one exact absolute-world plane transform to a group.
+    hide override func TransformSelectedInWorldGizmoPlane(
+        transformMode: Integer,
+        plane: Integer,
+        amountA: Number,
+        amountB: Number,
+        snapEnabled: Boolean) -> Boolean {
+        var worldIndices = HierarchyOrderedSelection(selectedIndices);
+        var primary = SelectedNode();
+        if worldIndices.count() == 0 or primary == null { return false; }
+
+        var axisA = SceneEditor3DModel.GizmoPlaneAxisA(plane);
+        var axisB = SceneEditor3DModel.GizmoPlaneAxisB(plane);
+        var primaryValues = primary.WorldPosition;
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            primaryValues = primary.WorldScale;
+        }
+        var sourceA = SceneEditor3DModel.GizmoAxisValue(primaryValues, axisA);
+        var sourceB = SceneEditor3DModel.GizmoAxisValue(primaryValues, axisB);
+        var targetA = scene_transform_3d.AxisTarget(
+            transformMode, sourceA, amountA, snapEnabled);
+        var targetB = scene_transform_3d.AxisTarget(
+            transformMode, sourceB, amountB, snapEnabled);
+        var deltaA = targetA - sourceA;
+        var deltaB = targetB - sourceB;
+        if scene_transform_3d.NearlyEqual(deltaA, 0.0)
+           and scene_transform_3d.NearlyEqual(deltaB, 0.0) {
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var startPositions: List[Vec3] = [];
+        var startRotations: List[Quat] = [];
+        var startScales: List[Vec3] = [];
+        var startWorldMatrices: List[Mat4] = [];
+        var startWorldPositions: List[Vec3] = [];
+        var startWorldScales: List[Vec3] = [];
+        var selectionIndex = 0;
+        while selectionIndex < worldIndices.count() {
+            var node = flatNodes.get(worldIndices.get(selectionIndex));
+            startPositions.add(node.Position);
+            startRotations.add(node.Rotation);
+            startScales.add(node.Scale);
+            startWorldMatrices.add(node.WorldMatrix);
+            startWorldPositions.add(node.WorldPosition);
+            startWorldScales.add(node.WorldScale);
+            selectionIndex = selectionIndex + 1;
+        }
+
+        var accepted = true;
+        selectionIndex = 0;
+        while selectionIndex < worldIndices.count() and accepted {
+            var desired = WorldPlaneTargetMatrix(
+                startWorldMatrices.get(selectionIndex),
+                startWorldPositions.get(selectionIndex),
+                startWorldScales.get(selectionIndex),
+                transformMode,
+                axisA,
+                axisB,
+                deltaA,
+                deltaB);
+            if desired == null
+               or flatNodes.get(worldIndices.get(selectionIndex))
+                      .TrySetWorldMatrix(desired) == false {
+                accepted = false;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if accepted == false {
+            RestoreLocalTransforms(
+                worldIndices,
+                startPositions,
+                startRotations,
+                startScales);
+            detailLabel.SetText(
+                "The world-space plane transform would require a singular, "
+                + "degenerate, or sheared local transform. No nodes changed.");
+            toolbarStatus.SetText("World plane transform rejected");
+            RefreshSelectedFields();
+            renderDirty = true;
+            return false;
+        }
+        if CommitScene(
+               scene_transform_3d.ModeHistoryVerb(transformMode)
+               + " " + selectedIndices.count()
+               + " selected node(s) in world "
+               + GizmoAxisLabel(plane) + " plane") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The world-space plane transform could not be committed.");
+            return false;
+        }
+        RefreshSelectedFields();
+        SetEditorControlsEnabled(true);
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Apply one absolute-world axis amount to every selected node.
+    /// @details Each member uses its own pivot and captured world matrix. The
+    ///          runtime proves the resulting parent-relative TRS exactly; one
+    ///          rejection restores every captured local transform before return.
+    hide override func TransformSelectedAlongWorldGizmoAxis(
+        transformMode: Integer,
+        axis: Integer,
+        amount: Number,
+        snapEnabled: Boolean) -> Boolean {
+        if scene == null
+           or scene_transform_3d.IsValidMode(transformMode) == false
+           or (axis != SceneEditor3DModel.GIZMO_AXIS_X and axis != SceneEditor3DModel.GIZMO_AXIS_Y
+               and axis != SceneEditor3DModel.GIZMO_AXIS_Z)
+           or (amount > -0.0000001 and amount < 0.0000001) {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var worldIndices = HierarchyOrderedSelection(selectedIndices);
+        if worldIndices.count() == 0 { return false; }
+
+        var primary = SelectedNode();
+        if primary == null { return false; }
+        var primaryPosition = primary.WorldPosition;
+        var primaryScale = primary.WorldScale;
+        var sourceValue = WorldAxisSourceValue(
+            transformMode, axis, primaryPosition, primaryScale);
+        var targetValue = scene_transform_3d.AxisTarget(
+            transformMode, sourceValue, amount, snapEnabled);
+        var delta = targetValue - sourceValue;
+        if scene_transform_3d.NearlyEqual(delta, 0.0) {
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var startPositions: List[Vec3] = [];
+        var startRotations: List[Quat] = [];
+        var startScales: List[Vec3] = [];
+        var startWorldMatrices: List[Mat4] = [];
+        var startWorldPositions: List[Vec3] = [];
+        var startWorldScales: List[Vec3] = [];
+        var selectionIndex = 0;
+        while selectionIndex < worldIndices.count() {
+            var node = flatNodes.get(
+                worldIndices.get(selectionIndex));
+            startPositions.add(node.Position);
+            startRotations.add(node.Rotation);
+            startScales.add(node.Scale);
+            startWorldMatrices.add(node.WorldMatrix);
+            startWorldPositions.add(node.WorldPosition);
+            startWorldScales.add(node.WorldScale);
+            selectionIndex = selectionIndex + 1;
+        }
+
+        var accepted = true;
+        selectionIndex = 0;
+        while selectionIndex < worldIndices.count() and accepted {
+            var desired = WorldAxisTargetMatrix(
+                startWorldMatrices.get(selectionIndex),
+                startWorldPositions.get(selectionIndex),
+                startWorldScales.get(selectionIndex),
+                transformMode,
+                axis,
+                delta);
+            if desired == null
+               or flatNodes.get(
+                      worldIndices.get(selectionIndex))
+                      .TrySetWorldMatrix(desired) == false {
+                accepted = false;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if accepted == false {
+            RestoreLocalTransforms(
+                worldIndices,
+                startPositions,
+                startRotations,
+                startScales);
+            detailLabel.SetText(
+                "The world-space transform would require a singular, "
+                + "degenerate, or sheared local transform. No nodes changed.");
+            toolbarStatus.SetText("World transform rejected");
+            RefreshSelectedFields();
+            renderDirty = true;
+            return false;
+        }
+
+        if CommitScene(
+               scene_transform_3d.ModeHistoryVerb(transformMode)
+               + " " + selectedIndices.count()
+               + " selected node(s) in world space") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The world-space transform could not be committed.");
+            return false;
+        }
+        RefreshSelectedFields();
+        SetEditorControlsEnabled(true);
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Return selected flattened indices in parent-before-child order.
+    /// @details The visible hierarchy is a bounded preorder flattening. Rebuild
+    ///          from that model order instead of trusting caller/restore order,
+    ///          so a selected ancestor's world delta cannot affect a descendant
+    ///          after the descendant has already reached its requested matrix.
+    hide override func HierarchyOrderedSelection(
+        indices: List[Integer]) -> List[Integer] {
+        var ordered: List[Integer] = [];
+        var flatIndex = 0;
+        while flatIndex < flatNodes.count() {
+            if scene_selection.Contains(indices, flatIndex) {
+                ordered.add(flatIndex);
+            }
+            flatIndex = flatIndex + 1;
+        }
+        return ordered;
+    }
+
+    /// @brief Resolve the snapped axis source used by one world-space action.
+    hide override func WorldAxisSourceValue(transformMode: Integer,
+                                   axis: Integer,
+                                   worldPosition: Vec3,
+                                   worldScale: Vec3) -> Number {
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_ROTATE { return 0.0; }
+        var source = 0.0;
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            if worldScale == null { return 1.0; }
+            source = worldScale.Z;
+            if axis == SceneEditor3DModel.GIZMO_AXIS_X { source = worldScale.X; }
+            else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { source = worldScale.Y; }
+            return source;
+        }
+        if worldPosition == null { return 0.0; }
+        source = worldPosition.Z;
+        if axis == SceneEditor3DModel.GIZMO_AXIS_X { source = worldPosition.X; }
+        else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { source = worldPosition.Y; }
+        return source;
+    }
+
+    /// @brief Build one world-axis delta around the node's captured pivot.
+    hide override func WorldAxisTargetMatrix(startWorld: Mat4,
+                                    pivot: Vec3,
+                                    worldScale: Vec3,
+                                    transformMode: Integer,
+                                    axis: Integer,
+                                    delta: Number) -> Mat4 {
+        if startWorld == null or pivot == null { return null; }
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_MOVE {
+            var dx = 0.0;
+            var dy = 0.0;
+            var dz = 0.0;
+            if axis == SceneEditor3DModel.GIZMO_AXIS_X { dx = delta; }
+            else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { dy = delta; }
+            else { dz = delta; }
+            return Mat4.Mul(Mat4.Translate(dx, dy, dz), startWorld);
+        }
+
+        var deltaTransform: Mat4 = null;
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            var radians = delta * SceneEditor3DModel.DEG_TO_RAD;
+            if axis == SceneEditor3DModel.GIZMO_AXIS_X {
+                deltaTransform = Mat4.RotateX(radians);
+            } else if axis == SceneEditor3DModel.GIZMO_AXIS_Y {
+                deltaTransform = Mat4.RotateY(radians);
+            } else {
+                deltaTransform = Mat4.RotateZ(radians);
+            }
+        } else if transformMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            if worldScale == null { return null; }
+            var sourceScale = worldScale.Z;
+            if axis == SceneEditor3DModel.GIZMO_AXIS_X { sourceScale = worldScale.X; }
+            else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { sourceScale = worldScale.Y; }
+            if sourceScale > -0.000001 and sourceScale < 0.000001 {
+                return null;
+            }
+            var targetScale = scene_transform_3d.UsableScale(
+                sourceScale + delta, sourceScale);
+            var factor = targetScale / sourceScale;
+            var factorX = 1.0;
+            var factorY = 1.0;
+            var factorZ = 1.0;
+            if axis == SceneEditor3DModel.GIZMO_AXIS_X { factorX = factor; }
+            else if axis == SceneEditor3DModel.GIZMO_AXIS_Y { factorY = factor; }
+            else { factorZ = factor; }
+            deltaTransform = Mat4.Scale(factorX, factorY, factorZ);
+        }
+        if deltaTransform == null { return null; }
+        return Mat4.Mul(
+            Mat4.Translate(pivot.X, pivot.Y, pivot.Z),
+            Mat4.Mul(
+                deltaTransform,
+                Mat4.Mul(
+                    Mat4.Translate(
+                        0.0 - pivot.X,
+                        0.0 - pivot.Y,
+                        0.0 - pivot.Z),
+                    startWorld)));
+    }
+
+    /// @brief Build one world-plane Move or Scale delta around a node pivot.
+    /// @details Two-axis scale factors are derived from the captured absolute
+    ///          scale. TrySetWorldMatrix remains the authority for whether the
+    ///          resulting parent-relative transform is an exact TRS.
+    hide override func WorldPlaneTargetMatrix(
+        startWorld: Mat4,
+        pivot: Vec3,
+        worldScale: Vec3,
+        transformMode: Integer,
+        axisA: Integer,
+        axisB: Integer,
+        deltaA: Number,
+        deltaB: Number) -> Mat4 {
+        if startWorld == null or pivot == null { return null; }
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_MOVE {
+            var dx = 0.0;
+            var dy = 0.0;
+            var dz = 0.0;
+            if axisA == SceneEditor3DModel.GIZMO_AXIS_X { dx = deltaA; }
+            else if axisA == SceneEditor3DModel.GIZMO_AXIS_Y { dy = deltaA; }
+            else { dz = deltaA; }
+            if axisB == SceneEditor3DModel.GIZMO_AXIS_X { dx = deltaB; }
+            else if axisB == SceneEditor3DModel.GIZMO_AXIS_Y { dy = deltaB; }
+            else { dz = deltaB; }
+            return Mat4.Mul(Mat4.Translate(dx, dy, dz), startWorld);
+        }
+        if transformMode != SceneEditor3DModel.GIZMO_MODE_SCALE or worldScale == null {
+            return null;
+        }
+
+        var sourceA = SceneEditor3DModel.GizmoAxisValue(worldScale, axisA);
+        var sourceB = SceneEditor3DModel.GizmoAxisValue(worldScale, axisB);
+        if (sourceA > -0.000001 and sourceA < 0.000001)
+           or (sourceB > -0.000001 and sourceB < 0.000001) {
+            return null;
+        }
+        var factorA = scene_transform_3d.UsableScale(
+            sourceA + deltaA, sourceA) / sourceA;
+        var factorB = scene_transform_3d.UsableScale(
+            sourceB + deltaB, sourceB) / sourceB;
+        var factorX = 1.0;
+        var factorY = 1.0;
+        var factorZ = 1.0;
+        if axisA == SceneEditor3DModel.GIZMO_AXIS_X { factorX = factorA; }
+        else if axisA == SceneEditor3DModel.GIZMO_AXIS_Y { factorY = factorA; }
+        else { factorZ = factorA; }
+        if axisB == SceneEditor3DModel.GIZMO_AXIS_X { factorX = factorB; }
+        else if axisB == SceneEditor3DModel.GIZMO_AXIS_Y { factorY = factorB; }
+        else { factorZ = factorB; }
+        var deltaTransform = Mat4.Scale(factorX, factorY, factorZ);
+        return Mat4.Mul(
+            Mat4.Translate(pivot.X, pivot.Y, pivot.Z),
+            Mat4.Mul(
+                deltaTransform,
+                Mat4.Mul(
+                    Mat4.Translate(
+                        0.0 - pivot.X,
+                        0.0 - pivot.Y,
+                        0.0 - pivot.Z),
+                    startWorld)));
+    }
+
+    /// @brief Restore complete local TRS snapshots after a rejected group edit.
+    hide override func RestoreLocalTransforms(indices: List[Integer],
+                                     positions: List[Vec3],
+                                     rotations: List[Quat],
+                                     scales: List[Vec3]) {
+        var index = 0;
+        while index < indices.count()
+              and index < positions.count()
+              and index < rotations.count()
+              and index < scales.count() {
+            var nodeIndex = indices.get(index);
+            if nodeIndex >= 0 and nodeIndex < flatNodes.count() {
+                var node = flatNodes.get(nodeIndex);
+                var position = positions.get(index);
+                var scale = scales.get(index);
+                node.SetPosition(position.X, position.Y, position.Z);
+                node.Rotation = rotations.get(index);
+                node.SetScale(scale.X, scale.Y, scale.Z);
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Apply explicit relative inspector values to every selected node.
+    /// @details Position and Euler values are added to each local transform;
+    ///          scale values multiply each local scale. The batch commits once
+    ///          and reloads the prior canonical graph on any commit failure.
+    expose override func ApplySelectedTransformDeltas(
+        positionDeltaX: Number,
+        positionDeltaY: Number,
+        positionDeltaZ: Number,
+        rotationDeltaX: Number,
+        rotationDeltaY: Number,
+        rotationDeltaZ: Number,
+        scaleFactorX: Number,
+        scaleFactorY: Number,
+        scaleFactorZ: Number) -> Boolean {
+        if scene == null { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() < 2 { return false; }
+        var positionChanged =
+            scene_transform_3d.NearlyEqual(positionDeltaX, 0.0) == false
+            or scene_transform_3d.NearlyEqual(positionDeltaY, 0.0) == false
+            or scene_transform_3d.NearlyEqual(positionDeltaZ, 0.0) == false;
+        var rotationChanged =
+            scene_transform_3d.NearlyEqual(rotationDeltaX, 0.0) == false
+            or scene_transform_3d.NearlyEqual(rotationDeltaY, 0.0) == false
+            or scene_transform_3d.NearlyEqual(rotationDeltaZ, 0.0) == false;
+        var scaleChanged =
+            scene_transform_3d.NearlyEqual(scaleFactorX, 1.0) == false
+            or scene_transform_3d.NearlyEqual(scaleFactorY, 1.0) == false
+            or scene_transform_3d.NearlyEqual(scaleFactorZ, 1.0) == false;
+        if positionChanged == false
+           and rotationChanged == false and scaleChanged == false {
+            detailLabel.SetText("The batch transform is already neutral.");
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            var node = flatNodes.get(selectedIndices.get(selectionIndex));
+            var position = node.Position;
+            node.SetPosition(
+                position.X + positionDeltaX,
+                position.Y + positionDeltaY,
+                position.Z + positionDeltaZ);
+            var euler = QuaternionToEulerDegrees(node.Rotation);
+            node.Rotation = Quat.FromEuler(
+                (euler.X + rotationDeltaX) * SceneEditor3DModel.DEG_TO_RAD,
+                (euler.Y + rotationDeltaY) * SceneEditor3DModel.DEG_TO_RAD,
+                (euler.Z + rotationDeltaZ) * SceneEditor3DModel.DEG_TO_RAD).Normalize();
+            var scale = node.Scale;
+            node.SetScale(
+                scale.X * scaleFactorX,
+                scale.Y * scaleFactorY,
+                scale.Z * scaleFactorZ);
+            selectionIndex = selectionIndex + 1;
+        }
+        var count = selectedIndices.count();
+        if CommitScene(
+               "Applied transform deltas to " + count + " selected nodes")
+           == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The batch transform could not be committed.");
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshSelectedFields();
+        SetEditorControlsEnabled(true);
+        renderDirty = true;
+        return true;
+    }
+}
+

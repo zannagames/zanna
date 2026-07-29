@@ -1,0 +1,352 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/commands/surface_command_dispatcher.zia
+// Purpose: Route standard edit commands to text, 2D, or 3D surfaces.
+// Key invariants:
+//   - The visible surface exclusively owns history and selection commands.
+// Ownership/Lifetime:
+//   - CommandContext retains every borrowed editor and shell dependency.
+// Links: zannastudio/src/commands/main_command_dispatcher.zia
+//
+//===----------------------------------------------------------------------===//
+
+module surface_command_dispatcher;
+
+bind "../app/command_palette_controller";
+bind "../app/context_menus";
+bind "../app/dispatch_helpers";
+bind "../app/explorer_action_runner";
+bind "../app/file_watch_controller";
+bind "../app/lifecycle_controller";
+bind "../app/workspace_watcher";
+bind "../build/breakpoints";
+bind "../build/build_system";
+bind "../build/debug_session";
+bind "../commands/build_commands";
+bind "../commands/basic_workspace_commands";
+bind "../commands/command_context";
+bind "../ui/command_input";
+bind "../commands/command_registry";
+bind "../commands/debug_commands";
+bind "../commands/diagnostic_edit_commands";
+bind "../commands/edit_commands";
+bind "../commands/file_commands";
+bind "../commands/search_commands";
+bind "../commands/semantic_command_dispatcher";
+bind "../commands/zia_workspace_commands";
+bind "../commands/view_commands";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../core/session";
+bind "../core/settings";
+bind "../editor/diagnostics";
+bind "../editor/editor_engine";
+bind "../editor/editor_tabs";
+bind "../editor/project_index";
+bind "../editor/signature";
+bind "../editor/symbols";
+bind "../services/file_utils";
+bind "../services/locations";
+bind "../services/safe_io";
+bind "../terminal/terminal_controller";
+bind "../ui/app_shell";
+bind "../ui/debug_breakpoint_overlay";
+bind "../ui/explorer_actions";
+bind "../ui/ide_overlays";
+bind "../ui/workspace_dock";
+bind Zanna.GUI;
+bind IO = Zanna.IO;
+bind Dir = Zanna.IO.Dir;
+bind Path = Zanna.IO.Path;
+
+/// @brief Route standard undo/redo to the visible editor surface.
+expose func HandleSurfaceHistory(ctx: command_context.CommandContext,
+                               redo: Boolean) {
+    var doc = ctx.docMgr.GetActive();
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
+       and ctx.scene2DEditor != null {
+        var changed = false;
+        if redo { changed = ctx.scene2DEditor.Redo(); }
+        else { changed = ctx.scene2DEditor.Undo(); }
+        if changed {
+            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
+            var action = "undone";
+            if redo { action = "redone"; }
+            ctx.shell.SetStatusLeft("2D scene " + action);
+        }
+        return;
+    }
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
+       and ctx.scene3DEditor != null {
+        var changed3D = false;
+        if redo { changed3D = ctx.scene3DEditor.Redo(); }
+        else { changed3D = ctx.scene3DEditor.Undo(); }
+        if changed3D {
+            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
+            var action3D = "undone";
+            if redo { action3D = "redone"; }
+            ctx.shell.SetStatusLeft("3D scene " + action3D);
+        }
+        return;
+    }
+    if redo {
+        edit_commands.handleRedo(ctx.engine);
+    } else {
+        edit_commands.handleUndo(ctx.engine, ctx.docMgr);
+    }
+}
+
+/// @brief Route standard Cut to the active editable surface.
+expose func HandleSurfaceCut(ctx: command_context.CommandContext) {
+    var doc = ctx.docMgr.GetActive();
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
+       and ctx.scene2DEditor != null {
+        if ctx.scene2DEditor.CutSelectedSceneObjects() {
+            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
+            ctx.shell.SetStatusLeft("Cut 2D scene selection");
+        } else {
+            ctx.shell.SetStatusLeft(
+                "Select one or more 2D scene objects to cut");
+        }
+        return;
+    }
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
+       and ctx.scene3DEditor != null {
+        if ctx.scene3DEditor.CutSelectedNodes() {
+            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
+            ctx.shell.SetStatusLeft("Cut 3D scene selection");
+        } else {
+            ctx.shell.SetStatusLeft(
+                "Select one or more 3D scene nodes to cut");
+        }
+        return;
+    }
+    if doc != null and doc!.isReadOnlyPreview {
+        ctx.shell.SetStatusLeft("Cut is unavailable in read-only previews");
+        return;
+    }
+    edit_commands.handleCut(ctx.engine);
+}
+
+/// @brief Route standard Copy to the active editable surface.
+expose func HandleSurfaceCopy(ctx: command_context.CommandContext) {
+    var doc = ctx.docMgr.GetActive();
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
+       and ctx.scene2DEditor != null {
+        if ctx.scene2DEditor.CopySelectedSceneObjects() {
+            ctx.shell.SetStatusLeft("Copied 2D scene selection");
+        } else {
+            ctx.shell.SetStatusLeft(
+                "Select one or more 2D scene objects to copy");
+        }
+        return;
+    }
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
+       and ctx.scene3DEditor != null {
+        if ctx.scene3DEditor.CopySelectedNodes() {
+            ctx.shell.SetStatusLeft("Copied 3D scene selection");
+        } else {
+            ctx.shell.SetStatusLeft(
+                "Select one or more 3D scene nodes to copy");
+        }
+        return;
+    }
+    if doc != null and doc!.isReadOnlyPreview {
+        ctx.shell.SetStatusLeft("Copy is unavailable in read-only previews");
+        return;
+    }
+    edit_commands.handleCopy(ctx.engine);
+}
+
+/// @brief Route standard Paste to the active editable surface.
+expose func HandleSurfacePaste(ctx: command_context.CommandContext) {
+    var doc = ctx.docMgr.GetActive();
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
+       and ctx.scene2DEditor != null {
+        if ctx.scene2DEditor.PasteSceneObjectsFromClipboard() {
+            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
+            ctx.shell.SetStatusLeft("Pasted into 2D scene");
+        } else {
+            ctx.shell.SetStatusLeft(
+                "Clipboard has no compatible 2D scene objects");
+        }
+        return;
+    }
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
+       and ctx.scene3DEditor != null {
+        if ctx.scene3DEditor.PasteSceneNodesFromClipboard() {
+            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
+            ctx.shell.SetStatusLeft("Pasted into 3D scene");
+        } else {
+            ctx.shell.SetStatusLeft(
+                "Clipboard has no compatible 3D scene nodes");
+        }
+        return;
+    }
+    if doc != null and doc!.isReadOnlyPreview {
+        ctx.shell.SetStatusLeft("Paste is unavailable in read-only previews");
+        return;
+    }
+    edit_commands.handlePaste(ctx.engine);
+}
+
+/// @brief Route standard Select All to the active editable surface.
+expose func HandleSurfaceSelectAll(ctx: command_context.CommandContext) {
+    var doc = ctx.docMgr.GetActive();
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
+       and ctx.scene2DEditor != null {
+        if ctx.scene2DEditor.SelectAllSceneObjects() {
+            ctx.shell.SetStatusLeft("Selected all 2D scene objects");
+        } else {
+            ctx.shell.SetStatusLeft("This 2D scene has no objects to select");
+        }
+        return;
+    }
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
+       and ctx.scene3DEditor != null {
+        if ctx.scene3DEditor.SelectAllSceneNodes() {
+            ctx.shell.SetStatusLeft("Selected all 3D scene nodes");
+        } else {
+            ctx.shell.SetStatusLeft("This 3D scene has no nodes to select");
+        }
+        return;
+    }
+    if doc != null and doc!.isReadOnlyPreview {
+        ctx.shell.SetStatusLeft(
+            "Select All is unavailable in read-only previews");
+        return;
+    }
+    edit_commands.handleSelectAll(ctx.engine);
+}
+
+/// @brief Route standard Find to the visible source or scene hierarchy.
+/// @details Scene Find reveals its docked hierarchy or full-width hierarchy
+///          master and focuses a non-destructive retained-hierarchy query. A
+///          damaged visual scene never falls through to the hidden CodeEditor
+///          FindBar.
+/// @param ctx Active command dependencies and visible document.
+/// @return True when a source or scene surface consumed the command.
+expose func HandleSurfaceFind(
+    ctx: command_context.CommandContext) -> Boolean {
+    if ctx == null or ctx.docMgr == null { return false; }
+    var doc = ctx.docMgr.GetActive();
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D {
+        var focused2D = ctx.scene2DEditor != null
+            and ctx.scene2DEditor.FocusHierarchySearch();
+        if ctx.shell != null {
+            if focused2D {
+                ctx.shell.SetStatusLeft("Find 2D scene object");
+            } else {
+                ctx.shell.SetStatusLeft(
+                    "2D hierarchy Find is unavailable while the scene needs repair");
+            }
+        }
+        return true;
+    }
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D {
+        var focused3D = ctx.scene3DEditor != null
+            and ctx.scene3DEditor.FocusHierarchySearch();
+        if ctx.shell != null {
+            if focused3D {
+                ctx.shell.SetStatusLeft("Find 3D scene node");
+            } else {
+                ctx.shell.SetStatusLeft(
+                    "3D hierarchy Find is unavailable while the scene needs repair");
+            }
+        }
+        return true;
+    }
+    if ctx.shell == null { return false; }
+    edit_commands.handleFind(ctx.shell);
+    return true;
+}
+
+/// @brief Route Duplicate Selection without escaping scene-owned focus.
+/// @param ctx Active command dependencies and visible document.
+/// @param explicitInvocation True for command-palette invocation.
+/// @details Palette selection is deliberate even though opening the palette
+///          moves focus. Keyboard dispatch requires hierarchy or viewport
+///          focus so an inspector input can never duplicate scene content.
+expose func HandleSurfaceDuplicate(ctx: command_context.CommandContext,
+                                 explicitInvocation: Boolean) {
+    var doc = ctx.docMgr.GetActive();
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
+       and ctx.scene2DEditor != null {
+        if explicitInvocation == false
+           and ctx.scene2DEditor.SceneSelectionCommandsOwnFocus() == false {
+            return;
+        }
+        var duplicated = ctx.scene2DEditor.DuplicateSelectedSceneObjects();
+        if duplicated > 0 {
+            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
+            ctx.shell.SetStatusLeft(
+                "Duplicated " + duplicated + " 2D scene object(s)");
+        } else if explicitInvocation {
+            ctx.shell.SetStatusLeft(
+                "Select one or more 2D scene objects to duplicate");
+        }
+        return;
+    }
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
+       and ctx.scene3DEditor != null {
+        if explicitInvocation == false
+           and ctx.scene3DEditor.SceneSelectionCommandsOwnFocus() == false {
+            return;
+        }
+        var duplicated3D = ctx.scene3DEditor.DuplicateSelectedNodes();
+        if duplicated3D > 0 {
+            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
+            ctx.shell.SetStatusLeft(
+                "Duplicated " + duplicated3D + " 3D scene node(s)");
+        } else if explicitInvocation {
+            ctx.shell.SetStatusLeft(
+                "Select one or more 3D scene nodes to duplicate");
+        }
+        return;
+    }
+    edit_commands.handleDuplicateLine(ctx.shell, ctx.engine);
+}
+
+/// @brief Delete a visual-scene selection without hijacking text input Delete.
+/// @param ctx Active command dependencies and visible document.
+/// @param explicitInvocation True for command-palette invocation.
+expose func HandleSceneSelectionDelete(
+    ctx: command_context.CommandContext,
+    explicitInvocation: Boolean) {
+    var doc = ctx.docMgr.GetActive();
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_2D
+       and ctx.scene2DEditor != null {
+        if explicitInvocation == false
+           and ctx.scene2DEditor.SceneSelectionCommandsOwnFocus() == false {
+            return;
+        }
+        if ctx.scene2DEditor.RemoveSelectedSceneObjects() {
+            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
+            ctx.shell.SetStatusLeft("Deleted 2D scene selection");
+        } else if explicitInvocation {
+            ctx.shell.SetStatusLeft(
+                "Select one or more 2D scene objects to delete");
+        }
+        return;
+    }
+    if doc != null and doc!.kind == file_utils.DOC_KIND_SCENE_3D
+       and ctx.scene3DEditor != null {
+        if explicitInvocation == false
+           and ctx.scene3DEditor.SceneSelectionCommandsOwnFocus() == false {
+            return;
+        }
+        if ctx.scene3DEditor.DeleteSelectedNodes() {
+            ctx.tabs.SetModified(ctx.docMgr.activeIndex, doc!.isModified);
+            ctx.shell.SetStatusLeft("Deleted 3D scene selection");
+        } else if explicitInvocation {
+            ctx.shell.SetStatusLeft(
+                "Select one or more 3D scene nodes to delete");
+        }
+    }
+}
+

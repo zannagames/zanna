@@ -1,0 +1,976 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_editor_3d_probe_part_1.zia
+// Purpose: Serial 3D editor probe scenarios, part 1 of 4.
+// Key invariants:
+//   - Scenarios preserve the original execution order and shared fixture.
+//   - Failure paths retain their original cleanup and RESULT diagnostics.
+// Ownership/Lifetime: Borrows one SceneEditor3DProbeContext from the entry probe.
+// Links: zannastudio/src/probes/scene_editor_3d_probe.zia,
+//        zannastudio/src/probes/scene_editor_3d_probe_context.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_probe_part_1;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../commands/command_context";
+bind "../commands/file_commands";
+bind "../editor/editor_engine";
+bind "../services/file_utils";
+bind "../services/safe_io";
+bind "../ui/app_shell";
+bind "../ui/scene_clipboard";
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+bind "../ui/scene_material_3d";
+bind "../ui/scene_transform_3d";
+
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Quat = Zanna.Math.Quat;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Terminal = Zanna.Terminal;
+bind Seq = Zanna.Collections.Seq;
+bind "scene_editor_3d_probe_context" as Probe;
+
+/// @brief Run the VerifyInitialSurface scenario against the shared fixture.
+expose func VerifyInitialSurface(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = "";
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 3D Scene Editor Probe", 1180, 780);
+
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(editor,shell.workbench.scene3DHost, shell.app);
+    var hiddenEngine = new editor_engine.EditorEngine();
+    hiddenEngine.Setup(shell.workbench.editorRow);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    hiddenEngine.LoadDocument(sceneDoc);
+    shell.SelectSurface(sceneDoc.kind);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+
+    if shell.workbench.scene3DHost.IsVisible() == false
+       or shell.workbench.editorRow.IsVisible()
+       or shell.workbench.scene2DHost.IsVisible() {
+        Probe.fail(shell, tempPath,
+             "3D document did not select exactly one visual surface");
+        return false;
+    }
+    if editor.scene == null or editor.scene.NodeCount != 1
+       or editor.flatNodes.count() != 0
+       or editor.viewportPixels == null {
+        Probe.fail(shell, tempPath, "empty VSCN did not build a usable viewport");
+        return false;
+    }
+
+    if scene_editor_3d.UsesCompactLayout(980.0) == false
+       or scene_editor_3d.UsesCompactLayout(980.01)
+       or scene_editor_3d.UsesCompactLayout(0.0)
+       or scene_editor_3d.UsesCompactChrome(700.0) == false
+       or scene_editor_3d.UsesCompactChrome(700.01)
+       or scene_editor_3d.UsesDockedHierarchy(1199.99)
+       or scene_editor_3d.UsesDockedHierarchy(1200.0) == false
+       or scene_editor_3d.UsesDockedHierarchy(0.0) {
+        Probe.fail(shell, tempPath,
+             "3D viewport-priority thresholds were unstable");
+        return false;
+    }
+    editor.RequestWorkspaceModeToggle();
+    if editor.TakeWorkspaceModeToggleRequested() == false
+       or editor.TakeWorkspaceModeToggleRequested() {
+        Probe.fail(shell, tempPath,
+             "3D Scene Layout request was not a one-shot edge");
+        return false;
+    }
+    var layoutHierarchySide3D =
+        editor.hierarchySplit.GetCollapsedSide();
+    var layoutBodySide3D = editor.bodySplit.GetCollapsedSide();
+    editor.SetWorkspaceModeActive(true);
+    if editor.IsWorkspaceModeActive() == false
+       or editor.hierarchySplit.GetCollapsedSide()
+          != layoutHierarchySide3D
+       or editor.bodySplit.GetCollapsedSide() != layoutBodySide3D {
+        Probe.fail(shell, tempPath,
+             "3D Scene Layout state changed internal scene panes");
+        return false;
+    }
+    editor.SetWorkspaceModeActive(false);
+    editor.RequestFocusModeToggle();
+    if editor.TakeFocusModeToggleRequested() == false
+       or editor.TakeFocusModeToggleRequested() {
+        Probe.fail(shell, tempPath,
+             "3D scene focus request was not a one-shot edge");
+        return false;
+    }
+    var focusHierarchySide3D =
+        editor.hierarchySplit.GetCollapsedSide();
+    var focusBodySide3D = editor.bodySplit.GetCollapsedSide();
+    var focusInspectorRequested3D =
+        editor.inspectorRequestedVisible;
+    editor.SetFocusModeActive(true);
+    if editor.IsFocusModeActive() == false
+       or editor.hierarchySplit.GetCollapsedSide() != 1
+       or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.inspectorRequestedVisible
+            != focusInspectorRequested3D
+       or editor.inspectorButton.IsEnabled() {
+        Probe.fail(shell, tempPath,
+             "3D scene focus did not reclaim internal viewport space safely");
+        return false;
+    }
+    editor.SetFocusModeActive(false);
+    if editor.hierarchySplit.GetCollapsedSide()
+            != focusHierarchySide3D
+       or editor.bodySplit.GetCollapsedSide() != focusBodySide3D
+       or editor.inspectorRequestedVisible
+            != focusInspectorRequested3D
+       or editor.inspectorButton.IsEnabled() == false {
+        Probe.fail(shell, tempPath,
+             "3D scene focus did not restore the exact internal layout");
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.hiddenEngine = hiddenEngine;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Run the VerifyTransformContracts scenario against the shared fixture.
+expose func VerifyTransformContracts(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    if Probe.near(scene_transform_3d.AxisDragAmount(
+                scene_transform_3d.TRANSFORM_MOVE,
+                36.0, 0.0, 36.0, 0.0, 2.0), 2.0) == false
+       or Probe.near(scene_transform_3d.AxisDragAmount(
+                   scene_transform_3d.TRANSFORM_ROTATE,
+                   36.0, 0.0, 36.0, 0.0, 2.0), 45.0) == false
+       or Probe.near(scene_transform_3d.AxisDragAmount(
+                   scene_transform_3d.TRANSFORM_SCALE,
+                   36.0, 0.0, 36.0, 0.0, 2.0), 1.0) == false
+       or Probe.near(scene_transform_3d.AxisTarget(
+                   scene_transform_3d.TRANSFORM_MOVE,
+                   1.24, 0.10, true), 1.5) == false
+       or Probe.near(scene_transform_3d.AxisTarget(
+                   scene_transform_3d.TRANSFORM_ROTATE,
+                   20.0, 8.0, true), 30.0) == false
+       or Probe.near(scene_transform_3d.AxisTarget(
+                   scene_transform_3d.TRANSFORM_SCALE,
+                   0.5, 0.26, true), 0.8) == false
+       or Probe.near(scene_transform_3d.UsableScale(0.0, -1.0), -0.001)
+           == false {
+        Probe.fail(shell, tempPath, "3D transform projection or snapping drifted");
+        return false;
+    }
+    if Probe.near(scene_material_3d.ClampUnit(-1.0), 0.0) == false
+       or Probe.near(scene_material_3d.ClampUnit(2.0), 1.0) == false
+       or Probe.near(scene_material_3d.UnitFromByte(128), 128.0 / 255.0) == false
+       or scene_material_3d.AlphaModeOrOpaque(99)
+            != scene_material_3d.ALPHA_OPAQUE
+       or scene_material_3d.PackedRgb(null)
+            != scene_material_3d.DEFAULT_COLOR
+       or scene_material_3d.IsMapSlot(
+              scene_material_3d.MAP_EMISSIVE) == false
+       or scene_material_3d.IsMapSlot(99)
+       or scene_material_3d.MapSlotName(
+              scene_material_3d.MAP_METALLIC_ROUGHNESS)
+            != "Metallic / Roughness"
+       or scene_material_3d.HasMap(
+              null, scene_material_3d.MAP_ALBEDO)
+       or scene_material_3d.EditableMapDimensionsAllowed(4096, 4096)
+             == false
+       or scene_material_3d.EditableMapDimensionsAllowed(4097, 4096)
+       or scene_material_3d.EditableMapDimensionsAllowed(0, 4096) {
+        Probe.fail(shell, tempPath, "3D material draft normalization drifted");
+        return false;
+    }
+    if editor.gizmoMode != scene_editor_3d.GIZMO_MODE_MOVE
+       or editor.gizmoSnapEnabled
+       or editor.snapTransformCheck.IsChecked() {
+        Probe.fail(shell, tempPath, "3D transform toolbar defaults were not truthful");
+        return false;
+    }
+    if editor.AddEmptyNode("Shortcut Probe", -1) != 0 {
+        Probe.fail(shell, tempPath, "could not create transform shortcut probe node");
+        return false;
+    }
+    var focusHarness = GUI.TestHarness.New();
+    if focusHarness.BindApp(shell.app) == false {
+        Probe.fail(shell, tempPath, "3D transform focus harness did not bind");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var pointerBaseline = sceneDoc.content;
+    var pointerRevision = editor.GetRevision();
+    var uiScale = shell.app.GetEffectiveScale();
+    if uiScale <= 0.0 { uiScale = 1.0; }
+    var pointerOriginX = editor.projectedX.get(0);
+    var pointerOriginY = editor.projectedY.get(0);
+    var pointerXEnd = editor.SelectedGizmoAxisEndpoint(
+        scene_editor_3d.GIZMO_AXIS_X);
+    var pointerYEnd = editor.SelectedGizmoAxisEndpoint(
+        scene_editor_3d.GIZMO_AXIS_Y);
+    var axisXX = pointerXEnd.x - pointerOriginX;
+    var axisXY = pointerXEnd.y - pointerOriginY;
+    var axisYX = pointerYEnd.x - pointerOriginX;
+    var axisYY = pointerYEnd.y - pointerOriginY;
+    var planeCenterFraction =
+        (scene_editor_3d.GIZMO_PLANE_INNER_FRACTION
+         + scene_editor_3d.GIZMO_PLANE_OUTER_FRACTION) * 0.5;
+    var planeLocalX = pointerOriginX + Convert.NumToInt(
+        planeCenterFraction * (axisXX + axisYX));
+    var planeLocalY = pointerOriginY + Convert.NumToInt(
+        planeCenterFraction * (axisXY + axisYY));
+    var planeX = Convert.NumToInt(
+        (editor.viewportImage.GetScreenX()
+         + planeLocalX) * uiScale + 0.999999);
+    var planeY = Convert.NumToInt(
+        (editor.viewportImage.GetScreenY()
+         + planeLocalY) * uiScale + 0.999999);
+    var dragFraction = 0.5 * editor.viewScale
+        / scene_editor_3d.GIZMO_PIXEL_LENGTH;
+    var planeTargetX = Convert.NumToInt(
+        planeX + dragFraction * (axisXX + axisYX) * uiScale);
+    var planeTargetY = Convert.NumToInt(
+        planeY + dragFraction * (axisXY + axisYY) * uiScale);
+    editor.SetGizmoSnapEnabled(true);
+    if editor.GizmoHandleAtViewportPoint(
+           planeLocalX, planeLocalY)
+          != scene_editor_3d.GIZMO_PLANE_XY {
+        focusHarness.UnbindApp();
+        Probe.fail(shell, tempPath,
+             "rounded XY handle geometry was not self-consistent");
+        return false;
+    }
+    focusHarness.SendMouse("move", planeX, planeY, 0);
+    focusHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.HoveredGizmoHandle()
+          != scene_editor_3d.GIZMO_PLANE_XY {
+        focusHarness.UnbindApp();
+        Probe.fail(shell, tempPath,
+             "real XY plane pointer did not pick the rendered plane: "
+             + "handle=" + editor.HoveredGizmoHandle()
+             + " pointer=" + planeX + "," + planeY
+             + " expected=" + planeLocalX + "," + planeLocalY
+             + " origin=" + pointerOriginX + "," + pointerOriginY);
+        return false;
+    }
+    focusHarness.SendMouse("down", planeX, planeY, 0);
+    focusHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    focusHarness.SendMouse("move", planeTargetX, planeTargetY, 0);
+    focusHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    focusHarness.SendMouse("up", planeTargetX, planeTargetY, 0);
+    focusHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var pointerMoved = editor.flatNodes.get(0).Position;
+    if editor.GetRevision() != pointerRevision + 1
+       or Probe.near(pointerMoved.X, 0.5) == false
+       or Probe.near(pointerMoved.Y, 0.5) == false
+       or Probe.near(pointerMoved.Z, 0.0) == false
+       or editor.Undo() == false
+       or sceneDoc.content != pointerBaseline {
+        focusHarness.UnbindApp();
+        Probe.fail(shell, tempPath,
+             "real XY plane pointer drag was not one snapped transaction: "
+             + "revision=" + editor.GetRevision() + "/"
+             + (pointerRevision + 1)
+             + " position=" + pointerMoved.X + ","
+             + pointerMoved.Y + "," + pointerMoved.Z
+             + " pointer=" + planeX + "," + planeY + "->"
+             + planeTargetX + "," + planeTargetY
+             + " origin=" + pointerOriginX + "," + pointerOriginY
+             + " projectedNow=" + editor.projectedX.get(0) + ","
+             + editor.projectedY.get(0)
+             + " axes=" + axisXX + "," + axisXY + "/"
+             + axisYX + "," + axisYY
+             + " handle=" + editor.HoveredGizmoHandle()
+             + " scale=" + uiScale
+             + " image=" + editor.viewportImage.GetScreenX() + ","
+             + editor.viewportImage.GetScreenY());
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.focusHarness = focusHarness;
+    return true;
+}
+
+/// @brief Run the VerifyPointerFocusAndShortcuts scenario against the shared fixture.
+expose func VerifyPointerFocusAndShortcuts(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var focusHarness = ctx.focusHarness;
+
+    editor.SetGizmoSnapEnabled(false);
+    // A production-width shell can intentionally be in viewport-priority
+    // master/detail. Reveal the inspector before testing native field focus.
+    if editor.compactLayout and editor.compactInspectorShown == false {
+        editor.ToggleInspectorPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
+    editor.nameInput.Focus();
+    focusHarness.SendKey("R", 0);
+    focusHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    if editor.gizmoMode != scene_editor_3d.GIZMO_MODE_MOVE
+       or editor.nameInput.IsFocused() == false {
+        focusHarness.UnbindApp();
+        Probe.fail(shell, tempPath,
+             "transform shortcut escaped the focused node-name input");
+        return false;
+    }
+    // The material group is presence-scoped, so give the node a default
+    // material through the Add-component path before focusing its picker;
+    // Undo restores the document after the focus-routing check.
+    var pickerChoice = 0;
+    var pickerChoiceFound = false;
+    while pickerChoice < editor.AddComponentChoiceCount()
+          and pickerChoiceFound == false {
+        if editor.AddComponentKindAt(pickerChoice)
+           == scene_editor_3d.ADD_COMPONENT_MATERIAL {
+            editor.addComponentDropdown.SetSelected(pickerChoice);
+            pickerChoiceFound = true;
+        } else {
+            pickerChoice = pickerChoice + 1;
+        }
+    }
+    if pickerChoiceFound == false
+       or editor.AddSelectedComponentChoice() == false
+       or editor.materialInspector.group.IsVisible() == false {
+        focusHarness.UnbindApp();
+        Probe.fail(shell, tempPath,
+             "Add component did not create a material for the picker check");
+        return false;
+    }
+    editor.materialInspector.colorPicker.Focus();
+    focusHarness.SendKey("R", 0);
+    focusHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    if editor.gizmoMode != scene_editor_3d.GIZMO_MODE_MOVE
+       or editor.materialInspector.colorPicker.IsFocused() == false {
+        focusHarness.UnbindApp();
+        Probe.fail(shell, tempPath,
+             "transform shortcut escaped the focused material color picker");
+        return false;
+    }
+    editor.materialInspector.mapSlot.Focus();
+    focusHarness.SendKey("W", 0);
+    focusHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    if editor.gizmoMode != scene_editor_3d.GIZMO_MODE_MOVE
+       or editor.materialInspector.mapSlot.IsFocused() == false {
+        focusHarness.UnbindApp();
+        Probe.fail(shell, tempPath,
+             "transform shortcut escaped the focused material map selector");
+        return false;
+    }
+    // Restore the pre-material document now that the material-hosted focus
+    // checks are complete.
+    if editor.Undo() == false {
+        focusHarness.UnbindApp();
+        Probe.fail(shell, tempPath, "undoing the picker-check material failed");
+        return false;
+    }
+    if editor.compactLayout and editor.compactInspectorShown {
+        editor.ToggleInspectorPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
+    editor.moveToolButton.Focus();
+    focusHarness.SendKey("R", 0);
+    focusHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    focusHarness.SendKey("E", 0);
+    focusHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    if editor.moveToolButton.IsFocused() == false
+       or editor.gizmoMode != scene_editor_3d.GIZMO_MODE_ROTATE {
+        focusHarness.UnbindApp();
+        Probe.fail(shell, tempPath,
+             "focused viewport did not own transform shortcuts");
+        return false;
+    }
+    focusHarness.SendKey("W", 0);
+    focusHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    focusHarness.UnbindApp();
+    if editor.gizmoMode != scene_editor_3d.GIZMO_MODE_MOVE {
+        Probe.fail(shell, tempPath, "Move viewport shortcut was not deterministic");
+        return false;
+    }
+    if editor.Undo() == false or sceneDoc.isModified {
+        Probe.fail(shell, tempPath,
+             "transform shortcut focus setup did not restore clean scene");
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Verify medium and laptop-width progressive toolbar layouts.
+hide func VerifyResponsiveWideLanes(
+    ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    // Medium lanes collapse complete secondary sets into bounded overflow
+    // surfaces instead of reserving several wrapped toolbar rows.
+    shell.app.SetMinimumSize(1, 1);
+    shell.app.SetWindowSize(1000, 700);
+    editor.SetWorkspaceModeActive(true);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var mediumViewMenuRight = editor.viewMenuButton.GetScreenX()
+        + editor.viewMenuButton.GetScreenWidth();
+    var mediumViewMenuBottom = editor.viewMenuButton.GetScreenY()
+        + editor.viewMenuButton.GetScreenHeight();
+    if editor.viewMenuButton.IsVisible() == false
+       or editor.workspaceButton.IsVisible()
+       or editor.viewWorkspaceItem.IsCheckable() == false
+       or mediumViewMenuRight
+          > editor.viewToolbar.GetScreenX()
+              + editor.viewToolbar.GetScreenWidth() + 1.0
+       or mediumViewMenuBottom
+          > editor.viewToolbar.GetScreenY()
+              + editor.viewToolbar.GetScreenHeight() + 1.0 {
+        Probe.fail(shell, tempPath,
+             "medium 3D View overflow was missing or clipped");
+        return false;
+    }
+    editor.SetWorkspaceModeActive(false);
+
+    // A laptop-width Scene Layout has one progressive document/create row.
+    // Its Flex measurement must not retain a dead band for hidden primitives.
+    shell.app.SetWindowSize(1320, 760);
+    shell.SetSceneWorkspaceMode(true);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var laptopLaneWidth = editor.root.GetScreenWidth();
+    var laptopToolbarBottom = editor.toolbar.GetScreenY()
+        + editor.toolbar.GetScreenHeight();
+    var laptopLastActionBottom = editor.createMenuButton.GetScreenY()
+        + editor.createMenuButton.GetScreenHeight();
+    if laptopLaneWidth < 1180.0 or laptopLaneWidth >= 1400.0
+       or laptopToolbarBottom - laptopLastActionBottom > 12.0 {
+        Probe.fail(shell, tempPath,
+             "laptop 3D creation toolbar retained an empty wrapped row: lane="
+             + laptopLaneWidth + " toolbarBottom=" + laptopToolbarBottom
+             + " actionBottom=" + laptopLastActionBottom);
+        return false;
+    }
+
+
+    // The real workbench's activity rail leaves an approximately 1120-pixel
+    // scene lane in a 1180-pixel laptop window. The progressive commands still
+    // fit on one row there; no invisible primitive row may be reserved.
+    shell.app.SetWindowSize(1180, 760);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var ordinaryLaneWidth = editor.root.GetScreenWidth();
+    var ordinaryToolbarBottom = editor.toolbar.GetScreenY()
+        + editor.toolbar.GetScreenHeight();
+    var ordinaryLastActionBottom = editor.createMenuButton.GetScreenY()
+        + editor.createMenuButton.GetScreenHeight();
+    if ordinaryLaneWidth >= 1180.0
+       or ordinaryToolbarBottom - ordinaryLastActionBottom > 12.0 {
+        Probe.fail(shell, tempPath,
+             "ordinary 3D creation toolbar retained an empty wrapped row: lane="
+             + ordinaryLaneWidth + " toolbarBottom="
+             + ordinaryToolbarBottom + " actionBottom="
+             + ordinaryLastActionBottom);
+        return false;
+    }
+    shell.SetSceneWorkspaceMode(false);
+
+    return true;
+}
+
+/// @brief Verify compact viewport, hierarchy, inspector, and overflow layouts.
+hide func VerifyResponsiveCompactLane(
+    ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    shell.app.SetWindowSize(560, 420);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var compactBodyWidth = editor.bodySplit.GetScreenWidth();
+    if editor.compactLayout == false
+       or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.hierarchyPaneBox.IsVisible()
+       or editor.hierarchyButton.IsVisible() == false
+       or editor.inspectorScroll.IsVisible()
+       or editor.viewportScroll.IsVisible() == false
+       or editor.toolbarStatus.IsVisible()
+       or editor.viewStatusLabel.IsVisible()
+       or editor.viewportScroll.GetScreenWidth() < compactBodyWidth - 8.0 {
+        Probe.fail(shell, tempPath,
+             "compact 3D viewport did not claim the available width: root="
+             + editor.root.GetScreenWidth() + " body=" + compactBodyWidth
+             + " viewport=" + editor.viewportScroll.GetScreenWidth()
+             + " side=" + editor.bodySplit.GetCollapsedSide()
+             + " compactInspector=" + editor.compactInspectorShown
+             + " app=" + shell.app.GetWidth()
+             + " scale=" + shell.app.GetEffectiveScale());
+        return false;
+    }
+    editor.ToggleHierarchyPane();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.hierarchySplit.GetCollapsedSide() != 2
+       or editor.compactHierarchyShown == false
+       or editor.hierarchyPaneBox.IsVisible() == false
+       or editor.hierarchyPaneBox.GetScreenWidth()
+            < editor.hierarchySplit.GetScreenWidth() - 8.0 {
+        Probe.fail(shell, tempPath,
+             "compact 3D hierarchy did not replace the detail surface");
+        return false;
+    }
+    editor.ToggleHierarchyPane();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.hierarchySplit.GetCollapsedSide() != 1
+       or editor.compactHierarchyShown
+       or editor.hierarchyPaneBox.IsVisible()
+       or editor.viewportScroll.IsVisible() == false {
+        Probe.fail(shell, tempPath,
+             "compact 3D viewport did not restore after hierarchy use");
+        return false;
+    }
+    var toolbarRight =
+        editor.toolbar.GetScreenX() + editor.toolbar.GetScreenWidth() + 1.0;
+    var toolbarBottom =
+        editor.toolbar.GetScreenY() + editor.toolbar.GetScreenHeight() + 1.0;
+    var createRight = editor.createMenuButton.GetScreenX()
+        + editor.createMenuButton.GetScreenWidth();
+    var createBottom = editor.createMenuButton.GetScreenY()
+        + editor.createMenuButton.GetScreenHeight();
+    if editor.sceneMenuButton.IsVisible() == false
+       or editor.createMenuButton.IsVisible() == false
+       or editor.newSceneButton.IsVisible()
+       or editor.addBoxButton.IsVisible()
+       or editor.deleteNodeButton.IsVisible()
+       or createRight > toolbarRight or createBottom > toolbarBottom {
+        Probe.fail(shell, tempPath, "compact 3D creation actions were clipped: action="
+             + createRight + "," + createBottom + " toolbar="
+             + toolbarRight + "," + toolbarBottom
+             + " rect=" + editor.toolbar.GetScreenX() + ","
+             + editor.toolbar.GetScreenY() + ","
+             + editor.toolbar.GetScreenWidth() + ","
+             + editor.toolbar.GetScreenHeight()
+             + " rootWidth=" + editor.root.GetScreenWidth()
+             + " rows=" + editor.sceneMenuButton.GetScreenY() + "/"
+             + editor.createMenuButton.GetScreenY());
+        return false;
+    }
+    var viewToolbarRight = editor.viewToolbar.GetScreenX()
+        + editor.viewToolbar.GetScreenWidth() + 1.0;
+    var viewToolbarBottom = editor.viewToolbar.GetScreenY()
+        + editor.viewToolbar.GetScreenHeight() + 1.0;
+    var viewMenuRight = editor.viewMenuButton.GetScreenX()
+        + editor.viewMenuButton.GetScreenWidth();
+    var viewMenuBottom = editor.viewMenuButton.GetScreenY()
+        + editor.viewMenuButton.GetScreenHeight();
+    var placementMenuRight = editor.placementMenuButton.GetScreenX()
+        + editor.placementMenuButton.GetScreenWidth();
+    var placementMenuBottom = editor.placementMenuButton.GetScreenY()
+        + editor.placementMenuButton.GetScreenHeight();
+    var hierarchyButtonRight = editor.hierarchyButton.GetScreenX()
+        + editor.hierarchyButton.GetScreenWidth();
+    var hierarchyButtonBottom = editor.hierarchyButton.GetScreenY()
+        + editor.hierarchyButton.GetScreenHeight();
+    if editor.viewMenuButton.IsVisible() == false
+       or editor.placementMenuButton.IsVisible() == false
+       or editor.frameSelectedButton.IsVisible()
+       or editor.vertexSnapCheck.IsVisible()
+       or editor.workspaceButton.IsVisible()
+       or viewMenuRight > viewToolbarRight
+       or viewMenuBottom > viewToolbarBottom
+       or placementMenuRight > viewToolbarRight
+       or placementMenuBottom > viewToolbarBottom
+       or hierarchyButtonRight > viewToolbarRight
+       or hierarchyButtonBottom > viewToolbarBottom {
+        Probe.fail(shell, tempPath,
+             "compact 3D overflow actions were clipped: view="
+             + viewMenuRight + "," + viewMenuBottom
+             + " placement=" + placementMenuRight + ","
+             + placementMenuBottom
+             + " hierarchy=" + hierarchyButtonRight + ","
+             + hierarchyButtonBottom
+             + " toolbar=" + viewToolbarRight + "," + viewToolbarBottom
+             + " root=" + editor.root.GetLogicalWidth());
+        return false;
+    }
+    if editor.viewportScroll.GetScreenHeight()
+          < editor.bodySplit.GetScreenHeight() - 8.0 {
+        Probe.fail(shell, tempPath,
+             "compact 3D chrome did not leave a useful full-height viewport");
+        return false;
+    }
+
+    editor.ToggleInspectorPane();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.bodySplit.GetCollapsedSide() != 1
+       or editor.compactInspectorShown == false
+       or editor.viewportScroll.IsVisible()
+       or editor.inspectorScroll.IsVisible() == false
+       or editor.inspectorScroll.GetScreenWidth() < compactBodyWidth - 8.0 {
+        Probe.fail(shell, tempPath,
+             "compact 3D inspector did not replace the viewport at full width"
+             + ": side=" + editor.bodySplit.GetCollapsedSide()
+             + " shown=" + editor.compactInspectorShown
+             + " inspector=" + editor.inspectorScroll.GetScreenWidth()
+             + " body=" + compactBodyWidth);
+        return false;
+    }
+
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Run the VerifyResponsiveToolbar scenario against the shared fixture.
+expose func VerifyResponsiveToolbar(
+    ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    if VerifyResponsiveWideLanes(ctx) == false { return false; }
+    return VerifyResponsiveCompactLane(ctx);
+}
+
+/// @brief Run the VerifyDesktopPaneLayout scenario against the shared fixture.
+expose func VerifyDesktopPaneLayout(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    shell.app.SetWindowSize(1600, 900);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.compactLayout
+       or editor.bodySplit.GetCollapsedSide() != 0
+       or editor.toolbarStatus.IsVisible()
+       or editor.viewStatusLabel.IsVisible()
+       or editor.viewportScroll.GetScreenWidth() < 240.0
+       or editor.inspectorScroll.GetScreenWidth() < 240.0 {
+        Probe.fail(shell, tempPath,
+             "viewport-safe 3D split did not restore after resize"
+             + ": compact=" + editor.compactLayout
+             + " side=" + editor.bodySplit.GetCollapsedSide()
+             + " root=" + editor.root.GetScreenWidth()
+             + " viewport=" + editor.viewportScroll.GetScreenWidth()
+             + " inspector=" + editor.inspectorScroll.GetScreenWidth()
+             + " app=" + shell.app.GetWidth()
+             + " scale=" + shell.app.GetEffectiveScale());
+        return false;
+    }
+
+    // A normal 1440-pixel Studio window must already be the productive
+    // three-pane workbench, with supporting panes bounded around a viewport
+    // that remains the editor's visual center.
+    shell.app.SetWindowSize(1440, 900);
+    shell.SetSceneWorkspaceMode(true);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var desktopRootWidth3D = editor.root.GetScreenWidth();
+    var desktopHierarchyWidth3D = editor.hierarchyPaneBox.GetScreenWidth();
+    var desktopViewportWidth3D = editor.viewportScroll.GetScreenWidth();
+    var desktopInspectorWidth3D = editor.inspectorScroll.GetScreenWidth();
+    if editor.hierarchySplit.GetCollapsedSide() != 0
+       or editor.hierarchyPaneBox.IsVisible() == false
+       or desktopHierarchyWidth3D < 210.0
+       or desktopHierarchyWidth3D > desktopRootWidth3D * 0.24
+       or desktopInspectorWidth3D < 300.0
+       or desktopInspectorWidth3D > desktopRootWidth3D * 0.30
+       or desktopViewportWidth3D < desktopRootWidth3D * 0.45
+       or desktopViewportWidth3D <= desktopInspectorWidth3D {
+        Probe.fail(shell, tempPath,
+             "desktop 3D workbench was not viewport-first: root="
+             + desktopRootWidth3D + " hierarchy="
+             + desktopHierarchyWidth3D + " viewport="
+             + desktopViewportWidth3D + " inspector="
+             + desktopInspectorWidth3D + " hierarchy-side="
+             + editor.hierarchySplit.GetCollapsedSide());
+        return false;
+    }
+    shell.SetSceneWorkspaceMode(false);
+    shell.Poll();
+    shell.Render();
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Run the VerifyInspectorAndTabContinuity scenario against the shared fixture.
+expose func VerifyInspectorAndTabContinuity(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    editor.Pump(sceneDoc);
+    shell.Render();
+
+    editor.ToggleInspectorPane();
+    shell.Render();
+    if editor.inspectorRequestedVisible
+       or editor.compactInspectorShown == false
+       or editor.bodySplit.GetCollapsedSide() != 2 {
+        Probe.fail(shell, tempPath,
+             "wide 3D inspector hide did not preserve compact selection");
+        return false;
+    }
+    shell.app.SetWindowSize(560, 420);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.compactLayout == false
+       or editor.bodySplit.GetCollapsedSide() != 1
+       or editor.inspectorRequestedVisible {
+        Probe.fail(shell, tempPath,
+             "compact 3D pane selection overwrote the wide preference");
+        return false;
+    }
+    shell.app.SetWindowSize(1600, 900);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.compactLayout
+       or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.inspectorRequestedVisible {
+        Probe.fail(shell, tempPath,
+             "wide 3D inspector preference was lost across compact resize");
+        return false;
+    }
+    editor.ToggleInspectorPane();
+    shell.Render();
+    if editor.bodySplit.GetCollapsedSide() != 0
+       or editor.inspectorRequestedVisible == false
+       or editor.compactInspectorShown == false {
+        Probe.fail(shell, tempPath, "wide 3D inspector did not restore independently");
+        return false;
+    }
+
+    var original = sceneDoc.content;
+    editor.viewYawDegrees = 71;
+    editor.viewPitchDegrees = -31;
+    editor.viewScale = 52;
+    editor.viewTargetX = 1.25;
+    editor.viewTargetY = -2.5;
+    editor.viewTargetZ = 3.75;
+    editor.bodySplit.SetPosition(0.57);
+    editor.SetGizmoMode(scene_editor_3d.GIZMO_MODE_ROTATE);
+    editor.SetGizmoSnapEnabled(true);
+    // Re-activate once before creating history so direct probe state follows
+    // the same validated restore/render path used by a real tab switch.
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var expectedSplitPosition = editor.bodySplit.GetPosition();
+    if editor.AddEmptyNode("Clean-state probe", -1) != 0 {
+        Probe.fail(shell, tempPath, "3D workspace continuity setup failed");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+
+    var otherSceneDoc = new document.Document();
+    otherSceneDoc.fileName = "Other.vscn";
+    otherSceneDoc.language = "scene3d";
+    otherSceneDoc.kind = file_utils.DOC_KIND_SCENE_3D;
+    otherSceneDoc.content = file_utils.DefaultScene3DContent();
+    editor.Pump(otherSceneDoc);
+    shell.Render();
+    if editor.selectedIndex != -1
+       or editor.viewYawDegrees != 35
+       or editor.viewPitchDegrees != 25
+       or editor.viewScale != 28
+       or Probe.near(editor.viewTargetX, 0.0) == false
+       or editor.gizmoMode != scene_editor_3d.GIZMO_MODE_MOVE
+       or editor.gizmoSnapEnabled
+       or editor.CanUndo()
+       or editor.compactInspectorShown
+       or Probe.near(editor.bodySplit.GetPosition(), 0.70) == false {
+        Probe.fail(shell, tempPath,
+             "new 3D tab inherited another scene's camera or history");
+        return false;
+    }
+    editor.viewYawDegrees = -112;
+    editor.viewPitchDegrees = 42;
+    editor.viewScale = 16;
+    editor.bodySplit.SetPosition(0.73);
+    editor.SetGizmoMode(scene_editor_3d.GIZMO_MODE_SCALE);
+    editor.SetGizmoSnapEnabled(true);
+    editor.Pump(otherSceneDoc);
+
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.selectedIndex != 0
+       or editor.hierarchyTree.GetSelected() == null
+       or GUI.TreeView.Node.GetData(
+              editor.hierarchyTree.GetSelected()) != "0"
+       or editor.viewYawDegrees != 71
+       or editor.viewPitchDegrees != -31
+       or editor.viewScale != 52
+       or Probe.near(editor.viewTargetX, 1.25) == false
+       or Probe.near(editor.viewTargetY, -2.5) == false
+       or Probe.near(editor.viewTargetZ, 3.75) == false
+       or editor.gizmoMode != scene_editor_3d.GIZMO_MODE_ROTATE
+       or editor.gizmoSnapEnabled == false
+       or editor.snapTransformCheck.IsChecked() == false
+       or editor.compactInspectorShown == false
+       or Probe.near(editor.bodySplit.GetPosition(), expectedSplitPosition) == false
+       or editor.CanUndo() == false
+       or editor.Undo() == false
+       or sceneDoc.content != original
+       or sceneDoc.isModified {
+        Probe.fail(shell, tempPath,
+             "3D tab switch did not restore workspace and clean undo baseline");
+        return false;
+    }
+    var originalRevision = editor.GetRevision();
+    var rootIndex = editor.AddEmptyNode("Root Node", -1);
+    var childIndex = editor.AddEmptyNode("Child Node", rootIndex);
+    if rootIndex != 0 or childIndex != 1
+       or editor.SetNodeTransform(childIndex,
+                                  1.5, 2.0, -3.25,
+                                  2.0, 1.0, 0.5) == false
+       or editor.TranslateNodeAlongGizmoAxis(
+            childIndex, scene_editor_3d.GIZMO_AXIS_X, 2.0) == false
+       or editor.SetNodeEulerRotation(
+            childIndex, 10.0, 20.0, 30.0) == false {
+        Probe.fail(shell, tempPath, "hierarchy or transform edit was rejected");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if sceneDoc.content == original or sceneDoc.isModified == false
+       or editor.GetRevision() != originalRevision + 5
+       or editor.projectedX.count() != 2
+       or editor.hierarchyTreeNodes.count() != 2
+       or editor.flatPaths.count() != 2
+       or editor.flatPaths.get(0) != "0"
+       or editor.flatPaths.get(1) != "0/0"
+       or GUI.TreeView.Node.HasChildren(
+              editor.hierarchyTreeNodes.get(0)) == false
+       or GUI.TreeView.Node.HasChildren(
+              editor.hierarchyTreeNodes.get(1))
+       or GUI.TreeView.Node.IsExpanded(
+              editor.hierarchyTreeNodes.get(0)) == false
+       or editor.renderedViewportWidth < 320
+       or editor.renderedViewportHeight < 240 {
+        Probe.fail(shell, tempPath,
+             "accepted edits did not update retained hierarchy or viewport (dirty="
+             + sceneDoc.isModified + ", revision=" + editor.GetRevision()
+             + ", projected=" + editor.projectedX.count()
+             + ", nodes=" + editor.flatNodes.count() + ")");
+        return false;
+    }
+    var retainedSelection: List[Integer] = [];
+    retainedSelection.add(0);
+    retainedSelection.add(1);
+    if editor.SelectSceneNodes(retainedSelection, 1) == false
+       or editor.hierarchyTree.GetSelected() == null
+       or GUI.TreeView.Node.GetData(
+              editor.hierarchyTree.GetSelected()) != "1" {
+        Probe.fail(shell, tempPath,
+             "retained hierarchy did not restore its primary selection");
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.original = original;
+    ctx.otherSceneDoc = otherSceneDoc;
+    ctx.rootIndex = rootIndex;
+    ctx.childIndex = childIndex;
+    return true;
+}

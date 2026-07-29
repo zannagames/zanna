@@ -20,6 +20,7 @@
 module semantic_scan;
 
 bind Map = Zanna.Collections.Map;
+bind "semantic_lexing" as SemanticLexing;
 bind Seq = Zanna.Collections.Seq;
 bind Obj = Zanna.Core.Object;
 bind Str = Zanna.String;
@@ -45,15 +46,15 @@ final BASIC_MAX_SIGNATURE_BACKTRACK_LINES = 200;
 expose func IdentifierAt(source: String,
                          lineNumber: Integer,
                          col0: Integer) -> String {
-    var line = SourceLine(source, lineNumber);
+    var line = SemanticLexing.SourceLine(source, lineNumber);
     if line == "" { return ""; }
     var at = col0 + 1;
     if at < 1 { at = 1; }
     if at > Str.get_Length(line) { at = Str.get_Length(line); }
     if at < 1 { return ""; }
 
-    if IsBasicIdentifierChar(Str.MidLen(line, at, 1)) == false {
-        if at > 1 and IsBasicIdentifierChar(Str.MidLen(line, at - 1, 1)) {
+    if SemanticLexing.IsBasicIdentifierChar(Str.MidLen(line, at, 1)) == false {
+        if at > 1 and SemanticLexing.IsBasicIdentifierChar(Str.MidLen(line, at - 1, 1)) {
             at = at - 1;
         } else {
             return "";
@@ -61,29 +62,29 @@ expose func IdentifierAt(source: String,
     }
 
     var start = at;
-    while start > 1 and IsBasicIdentifierChar(Str.MidLen(line, start - 1, 1)) {
+    while start > 1 and SemanticLexing.IsBasicIdentifierChar(Str.MidLen(line, start - 1, 1)) {
         start = start - 1;
     }
     var endPos = at;
-    while endPos < Str.get_Length(line) and IsBasicIdentifierChar(Str.MidLen(line, endPos + 1, 1)) {
+    while endPos < Str.get_Length(line) and SemanticLexing.IsBasicIdentifierChar(Str.MidLen(line, endPos + 1, 1)) {
         endPos = endPos + 1;
     }
     return Str.MidLen(line, start, endPos - start + 1);
 }
 
 expose func CanonicalName(name: String) -> String {
-    return Str.ToLower(StripTypeSuffix(name));
+    return Str.ToLower(SemanticLexing.StripTypeSuffix(name));
 }
 
 expose func IsValidBasicIdentifier(name: String) -> Boolean {
     if name == "" { return false; }
-    var base = StripTypeSuffix(name);
+    var base = SemanticLexing.StripTypeSuffix(name);
     if base == "" { return false; }
-    if IsKeyword(base) { return false; }
-    if IsBasicIdentifierStart(Str.MidLen(base, 1, 1)) == false { return false; }
+    if SemanticLexing.IsKeyword(base) { return false; }
+    if SemanticLexing.IsBasicIdentifierStart(Str.MidLen(base, 1, 1)) == false { return false; }
     var i = 2;
     while i <= Str.get_Length(base) {
-        if IsBasicIdentifierPart(Str.MidLen(base, i, 1)) == false { return false; }
+        if SemanticLexing.IsBasicIdentifierPart(Str.MidLen(base, i, 1)) == false { return false; }
         i = i + 1;
     }
     return true;
@@ -91,8 +92,8 @@ expose func IsValidBasicIdentifier(name: String) -> Boolean {
 
 expose func ReplacementForOccurrence(oldToken: String,
                                      newName: String) -> String {
-    if HasTypeSuffix(newName) { return newName; }
-    var suffix = TypeSuffix(oldToken);
+    if SemanticLexing.HasTypeSuffix(newName) { return newName; }
+    var suffix = SemanticLexing.TypeSuffix(oldToken);
     if suffix != "" { return newName + suffix; }
     return newName;
 }
@@ -132,7 +133,7 @@ expose func AddDeclarationsCapped(decls: Any,
     var i = 1;
     while i <= lineCount and HasResultCapacity(decls, maxCount) {
         var rawLine = Obj.ToString(Seq.Get(lines, i - 1));
-        var code = StripLineComment(rawLine);
+        var code = SemanticLexing.StripLineComment(rawLine);
         AddBlockDeclaration(decls, path, source, code, i, lineCount,
                             "FUNCTION", "function", maxCount);
         AddBlockDeclaration(decls, path, source, code, i, lineCount,
@@ -212,7 +213,7 @@ expose func AddReferencesForFileCapped(refs: Any,
 
     var localOnly = Map.GetBool(def, "local") or Map.GetStr(def, "kind") == "label";
     var fromLine = 1;
-    var toLine = LineCount(source);
+    var toLine = SemanticLexing.LineCount(source);
     if localOnly {
         if path != Map.GetStr(def, "file") { return true; }
         fromLine = Map.GetIntOr(def, "scopeStart", 1);
@@ -260,10 +261,10 @@ expose func EnclosingBasicProcedureStartLine(source: String,
     var i = lineNumber;
     if i > Seq.get_Count(lines) { i = Seq.get_Count(lines); }
     while i >= 1 {
-        var code = StripLineComment(Obj.ToString(Seq.Get(lines, i - 1)));
-        var kind = ProcedureKeywordOnLine(code);
+        var code = SemanticLexing.StripLineComment(Obj.ToString(Seq.Get(lines, i - 1)));
+        var kind = SemanticLexing.ProcedureKeywordOnLine(code);
         if kind != "" {
-            var endLine = BasicBlockEndLine(source, i, kind);
+            var endLine = SemanticLexing.BasicBlockEndLine(source, i, kind);
             if lineNumber <= endLine {
                 return i;
             }
@@ -278,8 +279,8 @@ expose func EnclosingBasicProcedureName(source: String,
     var start = EnclosingBasicProcedureStartLine(source, lineNumber);
     if start <= 0 { return ""; }
     var decl = ProcedureDeclarationFromLine("<editor>", source,
-                                            SourceLine(source, start), start,
-                                            LineCount(source));
+                                            SemanticLexing.SourceLine(source, start), start,
+                                            SemanticLexing.LineCount(source));
     if Map.GetBool(decl, "found") { return Map.GetStr(decl, "name"); }
     return "";
 }
@@ -287,9 +288,9 @@ expose func EnclosingBasicProcedureName(source: String,
 expose func BasicProcedureEndLine(source: String,
                                   startLine: Integer) -> Integer {
     if startLine <= 0 { return 0; }
-    var kind = ProcedureKeywordOnLine(SourceLine(source, startLine));
+    var kind = SemanticLexing.ProcedureKeywordOnLine(SemanticLexing.SourceLine(source, startLine));
     if kind == "" { return startLine; }
-    return BasicBlockEndLine(source, startLine, kind);
+    return SemanticLexing.BasicBlockEndLine(source, startLine, kind);
 }
 
 expose func OutgoingBasicCallTokens(source: String,
@@ -417,7 +418,7 @@ func ProcedureDeclarationFromLine(path: String,
                                   line: String,
                                   lineNumber: Integer,
                                   lineCount: Integer) -> Any {
-    var kind = ProcedureKeywordOnLine(line);
+    var kind = SemanticLexing.ProcedureKeywordOnLine(line);
     if kind == "" { return NewNotFound(); }
     return ProcedureOrBlockDeclaration(path, source, line, lineNumber,
                                        lineCount, kind, "function");
@@ -430,30 +431,30 @@ func ProcedureOrBlockDeclaration(path: String,
                                  lineCount: Integer,
                                  keyword: String,
                                  kind: String) -> Any {
-    var code = StripLineComment(line);
-    var keywordCol = KeywordColumn(code, keyword);
+    var code = SemanticLexing.StripLineComment(line);
+    var keywordCol = SemanticLexing.KeywordColumn(code, keyword);
     if keywordCol <= 0 { return NewNotFound(); }
-    if EndsWithToken(Str.Trim(Str.Left(code, keywordCol - 1)), "END") {
+    if SemanticLexing.EndsWithToken(Str.Trim(Str.Left(code, keywordCol - 1)), "END") {
         return NewNotFound();
     }
-    var nameStart = SkipWhitespace(code, keywordCol + Str.get_Length(keyword));
-    var name = ReadBasicIdentifierAt(code, nameStart);
+    var nameStart = SemanticLexing.SkipWhitespace(code, keywordCol + Str.get_Length(keyword));
+    var name = SemanticLexing.ReadBasicIdentifierAt(code, nameStart);
     if name == "" { return NewNotFound(); }
 
     var endLine = lineCount;
-    if IsBlockKeyword(keyword) {
-        endLine = BasicBlockEndLine(source, lineNumber, keyword);
+    if SemanticLexing.IsBlockKeyword(keyword) {
+        endLine = SemanticLexing.BasicBlockEndLine(source, lineNumber, keyword);
     }
     var openParen = Str.IndexOfFrom(code, nameStart + Str.get_Length(name), "(");
     var closeParen = 0;
     var paramsText = "";
     if openParen != 0 {
-        closeParen = MatchingParenOnLine(code, openParen);
+        closeParen = SemanticLexing.MatchingParenOnLine(code, openParen);
         if closeParen > openParen {
             paramsText = Str.MidLen(code, openParen + 1, closeParen - openParen - 1);
         }
     }
-    var returnType = ReturnTypeFromDeclarationLine(code, closeParen);
+    var returnType = SemanticLexing.ReturnTypeFromDeclarationLine(code, closeParen);
     var signature = SignatureDisplay(keyword, name, paramsText, returnType);
     var decl = NewDecl(path, name, kind, lineNumber, nameStart,
                        nameStart + Str.get_Length(name), lineNumber, endLine,
@@ -475,10 +476,10 @@ func AddDestructorDeclaration(decls: Any,
                               lineNumber: Integer,
                               maxCount: Integer) {
     if HasResultCapacity(decls, maxCount) == false { return; }
-    var keywordCol = KeywordColumn(line, "DESTRUCTOR");
+    var keywordCol = SemanticLexing.KeywordColumn(line, "DESTRUCTOR");
     if keywordCol <= 0 { return; }
-    if EndsWithToken(Str.Trim(Str.Left(line, keywordCol - 1)), "END") { return; }
-    var endLine = BasicBlockEndLine(source, lineNumber, "DESTRUCTOR");
+    if SemanticLexing.EndsWithToken(Str.Trim(Str.Left(line, keywordCol - 1)), "END") { return; }
+    var endLine = SemanticLexing.BasicBlockEndLine(source, lineNumber, "DESTRUCTOR");
     var decl = NewDecl(path, "DESTRUCTOR", "function", lineNumber, keywordCol,
                        keywordCol + Str.get_Length("DESTRUCTOR"), lineNumber,
                        endLine, false, "DESTRUCTOR", "", "");
@@ -494,9 +495,9 @@ func AddLabelDeclaration(decls: Any,
     if HasResultCapacity(decls, maxCount) == false { return; }
     var code = Str.Trim(line);
     if code == "" { return; }
-    var offset = LeadingWhitespaceLength(line) + 1;
-    var name = ReadBasicIdentifierAt(line, offset);
-    if name == "" or IsKeyword(name) { return; }
+    var offset = SemanticLexing.LeadingWhitespaceLength(line) + 1;
+    var name = SemanticLexing.ReadBasicIdentifierAt(line, offset);
+    if name == "" or SemanticLexing.IsKeyword(name) { return; }
     var after = offset + Str.get_Length(name);
     if after <= Str.get_Length(line) and Str.MidLen(line, after, 1) == ":" {
         var decl = NewDecl(path, name, "label", lineNumber, offset,
@@ -514,7 +515,7 @@ func AddDimDeclarations(decls: Any,
                         lineCount: Integer,
                         maxCount: Integer) {
     if HasResultCapacity(decls, maxCount) == false { return; }
-    var dimCol = KeywordColumn(line, "DIM");
+    var dimCol = SemanticLexing.KeywordColumn(line, "DIM");
     if dimCol <= 0 { return; }
     var scopeStart = EnclosingBasicProcedureStartLine(source, lineNumber);
     var scopeEnd = lineCount;
@@ -537,7 +538,7 @@ func AddConstDeclaration(decls: Any,
                          lineCount: Integer,
                          maxCount: Integer) {
     if HasResultCapacity(decls, maxCount) == false { return; }
-    var constCol = KeywordColumn(line, "CONST");
+    var constCol = SemanticLexing.KeywordColumn(line, "CONST");
     if constCol <= 0 { return; }
     var scopeStart = EnclosingBasicProcedureStartLine(source, lineNumber);
     var scopeEnd = lineCount;
@@ -563,15 +564,15 @@ func AddClassFieldDeclaration(decls: Any,
     if EnclosingBasicProcedureStartLine(source, lineNumber) > 0 { return; }
     var code = Str.Trim(line);
     if code == "" { return; }
-    var firstCol = LeadingWhitespaceLength(line) + 1;
-    var name = ReadBasicIdentifierAt(line, firstCol);
-    if name == "" or IsKeyword(name) { return; }
+    var firstCol = SemanticLexing.LeadingWhitespaceLength(line) + 1;
+    var name = SemanticLexing.ReadBasicIdentifierAt(line, firstCol);
+    if name == "" or SemanticLexing.IsKeyword(name) { return; }
     var afterName = firstCol + Str.get_Length(name);
-    var asCol = KeywordColumnFrom(line, "AS", afterName);
+    var asCol = SemanticLexing.KeywordColumnFrom(line, "AS", afterName);
     if asCol <= 0 { return; }
     var decl = NewDecl(path, name, "field", lineNumber, firstCol,
                        firstCol + Str.get_Length(name), 1, lineCount,
-                       false, name, "", TypeTextAfterAs(line, asCol));
+                       false, name, "", SemanticLexing.TypeTextAfterAs(line, asCol));
     Seq.Push(decls, decl);
 }
 
@@ -589,15 +590,15 @@ func AddVariableDeclarationsFromList(decls: Any,
     var actualScopeStart = scopeStart;
     if actualScopeStart <= 0 { actualScopeStart = 1; }
     while pos <= Str.get_Length(line) and HasResultCapacity(decls, maxCount) {
-        pos = SkipWhitespaceAndCommas(line, pos);
+        pos = SemanticLexing.SkipWhitespaceAndCommas(line, pos);
         if pos > Str.get_Length(line) { break; }
-        var name = ReadBasicIdentifierAt(line, pos);
+        var name = SemanticLexing.ReadBasicIdentifierAt(line, pos);
         if name == "" { break; }
         var typeText = "";
-        var asCol = KeywordColumnFrom(line, "AS", pos + Str.get_Length(name));
-        var commaCol = NextCommaOutsideParens(line, pos + Str.get_Length(name));
+        var asCol = SemanticLexing.KeywordColumnFrom(line, "AS", pos + Str.get_Length(name));
+        var commaCol = SemanticLexing.NextCommaOutsideParens(line, pos + Str.get_Length(name));
         if asCol > 0 and (commaCol == 0 or asCol < commaCol) {
-            typeText = TypeTextAfterAs(line, asCol);
+            typeText = SemanticLexing.TypeTextAfterAs(line, asCol);
         }
         var decl = NewDecl(path, name, kind, lineNumber, pos,
                            pos + Str.get_Length(name), actualScopeStart, scopeEnd,
@@ -623,15 +624,15 @@ func AddParameterDeclarations(decls: Any,
 
     var pos = openParen + 1;
     while pos <= Str.get_Length(line) and HasResultCapacity(decls, maxCount) {
-        pos = SkipWhitespaceAndCommas(line, pos);
-        pos = SkipParameterModifier(line, pos);
-        var name = ReadBasicIdentifierAt(line, pos);
+        pos = SemanticLexing.SkipWhitespaceAndCommas(line, pos);
+        pos = SemanticLexing.SkipParameterModifier(line, pos);
+        var name = SemanticLexing.ReadBasicIdentifierAt(line, pos);
         if name == "" { break; }
-        var commaCol = NextCommaOutsideParens(line, pos + Str.get_Length(name));
-        var asCol = KeywordColumnFrom(line, "AS", pos + Str.get_Length(name));
+        var commaCol = SemanticLexing.NextCommaOutsideParens(line, pos + Str.get_Length(name));
+        var asCol = SemanticLexing.KeywordColumnFrom(line, "AS", pos + Str.get_Length(name));
         var typeText = "";
         if asCol > 0 and (commaCol == 0 or asCol < commaCol) {
-            typeText = TypeTextAfterAs(line, asCol);
+            typeText = SemanticLexing.TypeTextAfterAs(line, asCol);
         }
         var decl = NewDecl(path, name, "parameter", procLine, pos,
                            pos + Str.get_Length(name), scopeStart, scopeEnd,
@@ -707,10 +708,10 @@ func AddLineReferences(refs: Any,
             continue;
         }
         if ch == "'" { break; }
-        if IsRemCommentAt(line, pos) { break; }
-        if IsBasicIdentifierStart(ch) {
+        if SemanticLexing.IsRemCommentAt(line, pos) { break; }
+        if SemanticLexing.IsBasicIdentifierStart(ch) {
             var start = pos;
-            var token = ReadBasicIdentifierAt(line, start);
+            var token = SemanticLexing.ReadBasicIdentifierAt(line, start);
             if token != "" {
                 if CanonicalName(token) == canon {
                     var ref = Map.New();
@@ -761,13 +762,13 @@ func AddOutgoingCallsFromLine(tokens: Any,
             continue;
         }
         if ch == "'" { break; }
-        if IsRemCommentAt(line, pos) { break; }
-        if IsBasicIdentifierStart(ch) {
+        if SemanticLexing.IsRemCommentAt(line, pos) { break; }
+        if SemanticLexing.IsBasicIdentifierStart(ch) {
             var start = pos;
-            var name = ReadBasicIdentifierAt(line, start);
-            var next = SkipWhitespace(line, start + Str.get_Length(name));
-            if IsKeyword(name) == false
-               and IsDeclarationNameAt(line, start) == false
+            var name = SemanticLexing.ReadBasicIdentifierAt(line, start);
+            var next = SemanticLexing.SkipWhitespace(line, start + Str.get_Length(name));
+            if SemanticLexing.IsKeyword(name) == false
+               and SemanticLexing.IsDeclarationNameAt(line, start) == false
                and next <= n
                and Str.MidLen(line, next, 1) == "(" {
                 var token = Map.New();
@@ -809,7 +810,7 @@ func ActiveCallAt(source: String,
     var activeParam = 0;
     var row = lineIdx;
     while row >= minLine {
-        var text = StripLineComment(Obj.ToString(Seq.Get(lines, row)));
+        var text = SemanticLexing.StripLineComment(Obj.ToString(Seq.Get(lines, row)));
         var pos = Str.get_Length(text);
         if row == lineIdx {
             pos = col0;
@@ -844,9 +845,9 @@ func ActiveCallAt(source: String,
 func CallNameBeforeOpenParen(line: String,
                              openCol: Integer) -> String {
     var pos = openCol - 1;
-    while pos >= 1 and IsSpace(Str.MidLen(line, pos, 1)) { pos = pos - 1; }
+    while pos >= 1 and SemanticLexing.IsSpace(Str.MidLen(line, pos, 1)) { pos = pos - 1; }
     var endPos = pos;
-    while pos >= 1 and IsBasicIdentifierChar(Str.MidLen(line, pos, 1)) {
+    while pos >= 1 and SemanticLexing.IsBasicIdentifierChar(Str.MidLen(line, pos, 1)) {
         pos = pos - 1;
     }
     if endPos < pos + 1 { return ""; }
@@ -869,15 +870,15 @@ func ParamsSeqFromText(paramsText: String) -> Any {
     var params = Seq.New();
     var pos = 1;
     while pos <= Str.get_Length(paramsText) {
-        pos = SkipWhitespaceAndCommas(paramsText, pos);
-        pos = SkipParameterModifier(paramsText, pos);
-        var name = ReadBasicIdentifierAt(paramsText, pos);
+        pos = SemanticLexing.SkipWhitespaceAndCommas(paramsText, pos);
+        pos = SemanticLexing.SkipParameterModifier(paramsText, pos);
+        var name = SemanticLexing.ReadBasicIdentifierAt(paramsText, pos);
         if name == "" { break; }
-        var commaCol = NextCommaOutsideParens(paramsText, pos + Str.get_Length(name));
-        var asCol = KeywordColumnFrom(paramsText, "AS", pos + Str.get_Length(name));
+        var commaCol = SemanticLexing.NextCommaOutsideParens(paramsText, pos + Str.get_Length(name));
+        var asCol = SemanticLexing.KeywordColumnFrom(paramsText, "AS", pos + Str.get_Length(name));
         var typeText = "";
         if asCol > 0 and (commaCol == 0 or asCol < commaCol) {
-            typeText = TypeTextAfterAs(paramsText, asCol);
+            typeText = SemanticLexing.TypeTextAfterAs(paramsText, asCol);
         }
         var param = Map.New();
         Map.SetStr(param, "name", name);
@@ -893,7 +894,7 @@ func SignatureDisplay(keyword: String,
                       name: String,
                       paramsText: String,
                       returnType: String) -> String {
-    var text = keyword + " " + name + "(" + CleanInline(paramsText) + ")";
+    var text = keyword + " " + name + "(" + SemanticLexing.CleanInline(paramsText) + ")";
     if returnType != "" {
         text = text + " AS " + returnType;
     }
@@ -902,370 +903,4 @@ func SignatureDisplay(keyword: String,
 
 func IsCallableKind(kind: String) -> Boolean {
     return kind == "function" or kind == "property";
-}
-
-func ProcedureKeywordOnLine(line: String) -> String {
-    var code = StripLineComment(line);
-    if KeywordColumn(code, "FUNCTION") > 0 { return "FUNCTION"; }
-    if KeywordColumn(code, "SUB") > 0 { return "SUB"; }
-    if KeywordColumn(code, "PROPERTY") > 0 { return "PROPERTY"; }
-    if KeywordColumn(code, "DESTRUCTOR") > 0 { return "DESTRUCTOR"; }
-    return "";
-}
-
-func BasicBlockEndLine(source: String,
-                       startLine: Integer,
-                       keyword: String) -> Integer {
-    var lines = Str.Split(source, "\n");
-    var i = startLine + 1;
-    while i <= Seq.get_Count(lines) {
-        var code = Str.Trim(StripLineComment(Obj.ToString(Seq.Get(lines, i - 1))));
-        if IsEndKeywordLine(code, keyword) {
-            return i;
-        }
-        i = i + 1;
-    }
-    return Seq.get_Count(lines);
-}
-
-func IsEndKeywordLine(code: String,
-                      keyword: String) -> Boolean {
-    var upper = Str.ToUpper(Str.Trim(code));
-    if Str.StartsWith(upper, "END " + keyword) { return true; }
-    if keyword == "FUNCTION" and Str.StartsWith(upper, "ENDFUNCTION") { return true; }
-    if keyword == "SUB" and Str.StartsWith(upper, "ENDSUB") { return true; }
-    return false;
-}
-
-func IsBlockKeyword(keyword: String) -> Boolean {
-    if keyword == "FUNCTION" or keyword == "SUB" or keyword == "PROPERTY"
-       or keyword == "DESTRUCTOR" or keyword == "CLASS"
-       or keyword == "INTERFACE" or keyword == "TYPE"
-       or keyword == "ENUM" or keyword == "NAMESPACE" {
-        return true;
-    }
-    return false;
-}
-
-func KeywordColumn(line: String,
-                   keyword: String) -> Integer {
-    return KeywordColumnFrom(line, keyword, 1);
-}
-
-func KeywordColumnFrom(line: String,
-                       keyword: String,
-                       startPos: Integer) -> Integer {
-    var pos = startPos;
-    while pos <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, pos, 1);
-        if ch == "\"" {
-            pos = SkipString(line, pos);
-            continue;
-        }
-        if ch == "'" { return 0; }
-        if IsRemCommentAt(line, pos) { return 0; }
-        if IsBasicIdentifierStart(ch) {
-            var token = ReadBasicIdentifierAt(line, pos);
-            if Str.ToUpper(StripTypeSuffix(token)) == keyword {
-                return pos;
-            }
-            pos = pos + Str.get_Length(token);
-            continue;
-        }
-        pos = pos + 1;
-    }
-    return 0;
-}
-
-func StripLineComment(line: String) -> String {
-    var pos = 1;
-    var inString = false;
-    while pos <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, pos, 1);
-        if inString {
-            if ch == "\"" {
-                if pos < Str.get_Length(line) and Str.MidLen(line, pos + 1, 1) == "\"" {
-                    pos = pos + 2;
-                    continue;
-                }
-                inString = false;
-            }
-            pos = pos + 1;
-            continue;
-        }
-        if ch == "\"" {
-            inString = true;
-            pos = pos + 1;
-            continue;
-        }
-        if ch == "'" or IsRemCommentAt(line, pos) {
-            if pos <= 1 { return ""; }
-            return Str.Left(line, pos - 1);
-        }
-        pos = pos + 1;
-    }
-    return line;
-}
-
-func IsRemCommentAt(line: String,
-                    pos: Integer) -> Boolean {
-    if pos < 1 or pos + 2 > Str.get_Length(line) { return false; }
-    if Str.ToUpper(Str.MidLen(line, pos, 3)) != "REM" { return false; }
-    var beforeOk = pos == 1 or IsBasicIdentifierChar(Str.MidLen(line, pos - 1, 1)) == false;
-    var afterPos = pos + 3;
-    var afterOk = afterPos > Str.get_Length(line)
-                  or IsBasicIdentifierChar(Str.MidLen(line, afterPos, 1)) == false;
-    return beforeOk and afterOk;
-}
-
-func ReadBasicIdentifierAt(line: String,
-                           startPos: Integer) -> String {
-    if startPos < 1 or startPos > Str.get_Length(line) { return ""; }
-    if IsBasicIdentifierStart(Str.MidLen(line, startPos, 1)) == false { return ""; }
-    var pos = startPos;
-    var name = "";
-    while pos <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, pos, 1);
-        if name == "" {
-            if IsBasicIdentifierStart(ch) == false { return ""; }
-        } else if IsBasicIdentifierPart(ch) == false {
-            break;
-        }
-        name = name + ch;
-        pos = pos + 1;
-    }
-    if pos <= Str.get_Length(line) and IsTypeSuffix(Str.MidLen(line, pos, 1)) {
-        name = name + Str.MidLen(line, pos, 1);
-    }
-    return name;
-}
-
-func IsDeclarationNameAt(line: String,
-                         nameCol: Integer) -> Boolean {
-    var before = Str.ToUpper(Str.Trim(Str.Left(line, nameCol - 1)));
-    return EndsWithToken(before, "FUNCTION")
-           or EndsWithToken(before, "SUB")
-           or EndsWithToken(before, "PROPERTY")
-           or EndsWithToken(before, "CLASS")
-           or EndsWithToken(before, "TYPE")
-           or EndsWithToken(before, "ENUM")
-           or EndsWithToken(before, "INTERFACE")
-           or EndsWithToken(before, "NAMESPACE")
-           or EndsWithToken(before, "DIM")
-           or EndsWithToken(before, "CONST");
-}
-
-func EndsWithToken(text: String,
-                   token: String) -> Boolean {
-    var trimmed = Str.ToUpper(Str.Trim(text));
-    if trimmed == token { return true; }
-    return Str.EndsWith(trimmed, " " + token);
-}
-
-func MatchingParenOnLine(line: String,
-                         openCol: Integer) -> Integer {
-    var depth = 0;
-    var pos = openCol;
-    while pos <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, pos, 1);
-        if ch == "(" {
-            depth = depth + 1;
-        } else if ch == ")" {
-            depth = depth - 1;
-            if depth == 0 { return pos; }
-        } else if ch == "\"" {
-            pos = SkipString(line, pos);
-            continue;
-        }
-        pos = pos + 1;
-    }
-    return 0;
-}
-
-func NextCommaOutsideParens(line: String,
-                            startPos: Integer) -> Integer {
-    var depth = 0;
-    var pos = startPos;
-    while pos <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, pos, 1);
-        if ch == "\"" {
-            pos = SkipString(line, pos);
-            continue;
-        }
-        if ch == "(" {
-            depth = depth + 1;
-        } else if ch == ")" {
-            if depth > 0 { depth = depth - 1; }
-        } else if ch == "," and depth == 0 {
-            return pos;
-        } else if ch == "'" {
-            return 0;
-        }
-        pos = pos + 1;
-    }
-    return 0;
-}
-
-func ReturnTypeFromDeclarationLine(line: String,
-                                   closeParen: Integer) -> String {
-    var start = closeParen;
-    if start <= 0 { start = 1; }
-    var asCol = KeywordColumnFrom(line, "AS", start);
-    if asCol <= 0 { return ""; }
-    return TypeTextAfterAs(line, asCol);
-}
-
-func TypeTextAfterAs(line: String,
-                     asCol: Integer) -> String {
-    var pos = SkipWhitespace(line, asCol + Str.get_Length("AS"));
-    var endPos = pos;
-    while endPos <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, endPos, 1);
-        if ch == "," or ch == ")" or ch == ":" or ch == "=" { break; }
-        endPos = endPos + 1;
-    }
-    if endPos <= pos { return ""; }
-    return CleanInline(Str.MidLen(line, pos, endPos - pos));
-}
-
-func SkipString(line: String,
-                quoteCol: Integer) -> Integer {
-    var pos = quoteCol + 1;
-    while pos <= Str.get_Length(line) {
-        if Str.MidLen(line, pos, 1) == "\"" {
-            if pos < Str.get_Length(line) and Str.MidLen(line, pos + 1, 1) == "\"" {
-                pos = pos + 2;
-                continue;
-            }
-            return pos + 1;
-        }
-        pos = pos + 1;
-    }
-    return Str.get_Length(line) + 1;
-}
-
-func SkipWhitespace(line: String,
-                    pos: Integer) -> Integer {
-    var i = pos;
-    while i <= Str.get_Length(line) and IsSpace(Str.MidLen(line, i, 1)) {
-        i = i + 1;
-    }
-    return i;
-}
-
-func SkipWhitespaceAndCommas(line: String,
-                             pos: Integer) -> Integer {
-    var i = pos;
-    while i <= Str.get_Length(line) {
-        var ch = Str.MidLen(line, i, 1);
-        if IsSpace(ch) or ch == "," {
-            i = i + 1;
-        } else {
-            break;
-        }
-    }
-    return i;
-}
-
-func SkipParameterModifier(line: String,
-                           pos: Integer) -> Integer {
-    var i = SkipWhitespace(line, pos);
-    var token = ReadBasicIdentifierAt(line, i);
-    var upper = Str.ToUpper(StripTypeSuffix(token));
-    if upper == "BYVAL" or upper == "BYREF" or upper == "OPTIONAL" or upper == "PARAMARRAY" {
-        return SkipWhitespace(line, i + Str.get_Length(token));
-    }
-    return i;
-}
-
-func LeadingWhitespaceLength(line: String) -> Integer {
-    var i = 1;
-    while i <= Str.get_Length(line) and IsSpace(Str.MidLen(line, i, 1)) {
-        i = i + 1;
-    }
-    return i - 1;
-}
-
-func SourceLine(source: String,
-                lineNumber: Integer) -> String {
-    if source == "" { return ""; }
-    var lines = Str.Split(source, "\n");
-    if lineNumber < 1 or lineNumber > Seq.get_Count(lines) { return ""; }
-    return Obj.ToString(Seq.Get(lines, lineNumber - 1));
-}
-
-func LineCount(source: String) -> Integer {
-    if source == "" { return 0; }
-    return Seq.get_Count(Str.Split(source, "\n"));
-}
-
-func CleanInline(text: String) -> String {
-    return Str.Trim(Str.Replace(Str.Replace(text, "\n", " "), "\t", " "));
-}
-
-func StripTypeSuffix(name: String) -> String {
-    if HasTypeSuffix(name) {
-        return Str.Left(name, Str.get_Length(name) - 1);
-    }
-    return name;
-}
-
-func TypeSuffix(name: String) -> String {
-    if name == "" { return ""; }
-    var last = Str.Right(name, 1);
-    if IsTypeSuffix(last) { return last; }
-    return "";
-}
-
-func HasTypeSuffix(name: String) -> Boolean {
-    return TypeSuffix(name) != "";
-}
-
-func IsTypeSuffix(ch: String) -> Boolean {
-    return ch == "$" or ch == "%" or ch == "&" or ch == "!" or ch == "#";
-}
-
-func IsBasicIdentifierStart(ch: String) -> Boolean {
-    if ch >= "a" and ch <= "z" { return true; }
-    if ch >= "A" and ch <= "Z" { return true; }
-    if ch == "_" { return true; }
-    return false;
-}
-
-func IsBasicIdentifierPart(ch: String) -> Boolean {
-    if IsBasicIdentifierStart(ch) { return true; }
-    if ch >= "0" and ch <= "9" { return true; }
-    return false;
-}
-
-func IsBasicIdentifierChar(ch: String) -> Boolean {
-    return IsBasicIdentifierPart(ch) or IsTypeSuffix(ch);
-}
-
-func IsSpace(ch: String) -> Boolean {
-    return ch == " " or ch == "\t";
-}
-
-func IsKeyword(name: String) -> Boolean {
-    var upper = Str.ToUpper(StripTypeSuffix(name));
-    if upper == "AND" or upper == "ANDALSO" or upper == "AS" { return true; }
-    if upper == "BASE" or upper == "BOOLEAN" or upper == "BYREF" or upper == "BYVAL" { return true; }
-    if upper == "CALL" or upper == "CASE" or upper == "CATCH" or upper == "CLASS" or upper == "CONST" { return true; }
-    if upper == "DELETE" or upper == "DIM" or upper == "DO" or upper == "DOUBLE" { return true; }
-    if upper == "ELSE" or upper == "ELSEIF" or upper == "END" or upper == "ENUM" or upper == "EXIT" { return true; }
-    if upper == "FALSE" or upper == "FINAL" or upper == "FOR" or upper == "FUNCTION" { return true; }
-    if upper == "GOSUB" or upper == "GOTO" { return true; }
-    if upper == "IF" or upper == "IMPLEMENTS" or upper == "INHERITS" or upper == "INTEGER" or upper == "INTERFACE" or upper == "IS" { return true; }
-    if upper == "LET" or upper == "LOOP" { return true; }
-    if upper == "ME" or upper == "MOD" { return true; }
-    if upper == "NAMESPACE" or upper == "NEW" or upper == "NEXT" or upper == "NOT" or upper == "NULL" { return true; }
-    if upper == "OR" or upper == "ORELSE" or upper == "OVERRIDE" { return true; }
-    if upper == "PRIVATE" or upper == "PROPERTY" or upper == "PUBLIC" { return true; }
-    if upper == "REM" or upper == "RETURN" { return true; }
-    if upper == "SELECT" or upper == "STATIC" or upper == "STEP" or upper == "STRING" or upper == "SUB" { return true; }
-    if upper == "THEN" or upper == "TO" or upper == "TRUE" or upper == "TRY" or upper == "TYPE" { return true; }
-    if upper == "UNTIL" or upper == "USING" { return true; }
-    if upper == "VIRTUAL" { return true; }
-    if upper == "WEND" or upper == "WHILE" { return true; }
-    return false;
 }

@@ -1,0 +1,826 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_hierarchy_reparent.zia
+// Purpose: Focused hierarchy reparent behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_hierarchy_clipboard.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_hierarchy_reparent;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_hierarchy_clipboard" as PreviousLayer;
+
+/// @brief Hierarchy Reparent implementation layer.
+class SceneEditor2DHierarchyReparentLayer extends PreviousLayer.SceneEditor2DHierarchyClipboardLayer {
+
+    /// @brief Move one object to an explicit draw-order index.
+    expose override func MoveSceneObject(index: Integer, target: Integer) -> Boolean {
+        if scene == null or index < 0 or target < 0
+           or index >= scene.ObjectCount() or target >= scene.ObjectCount()
+           or index == target {
+            return false;
+        }
+        scene.MoveObject(index, target);
+        selectedObject = target;
+        selectedObjects = scene_selection.Single(
+            target, scene.ObjectCount());
+        if CommitScene("Changed object draw order") == false {
+            scene.MoveObject(target, index);
+            selectedObject = index;
+            selectedObjects = scene_selection.Single(
+                index, scene.ObjectCount());
+            detailLabel.SetText("The object order change could not be committed.");
+            RefreshInspector();
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Author one object's editor-only tile-layer/priority overrides.
+    /// @details The pair commits atomically through ordinary typed properties;
+    ///          games remain free to ignore the editor namespace.
+    expose override func SetObjectPreviewStackOverride(
+        objectIndex: Integer,
+        afterLayer: Integer,
+        drawOrder: Integer) -> Boolean {
+        if scene == null or objectIndex < 0
+           or objectIndex >= scene.ObjectCount()
+           or afterLayer
+                < scene_component_schema.MIN_PREVIEW_AFTER_LAYER
+           or afterLayer
+                > scene_component_schema.MAX_PREVIEW_AFTER_LAYER
+           or drawOrder
+                < scene_component_schema.MIN_PREVIEW_DRAW_ORDER
+           or drawOrder
+                > scene_component_schema.MAX_PREVIEW_DRAW_ORDER {
+            return false;
+        }
+        var hasLayer = scene.ObjectPropertyKind(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY) != "";
+        var hasOrder = scene.ObjectPropertyKind(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY) != "";
+        var requestedBoundary = afterLayer + 1;
+        if requestedBoundary < 0 { requestedBoundary = 0; }
+        if requestedBoundary > scene.LayerCount() {
+            requestedBoundary = scene.LayerCount();
+        }
+        var currentBoundary =
+            scene_object_draw_stack_2d.LayerBoundary(
+                scene, componentSchema, objectIndex);
+        if hasLayer == false and hasOrder == false
+           and requestedBoundary == currentBoundary
+           and drawOrder == ObjectPreviewDrawOrder(objectIndex) {
+            detailLabel.SetText(
+                "The object already inherits that preview draw stack.");
+            return false;
+        }
+        if hasLayer and hasOrder
+           and scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY) == "int"
+           and scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY) == "int"
+           and scene.ObjectGetInt(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY,
+               afterLayer - 1) == afterLayer
+           and scene.ObjectGetInt(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY,
+               drawOrder - 1) == drawOrder {
+            detailLabel.SetText(
+                "The object preview draw stack is already up to date.");
+            return false;
+        }
+
+        var snapshot = scene.ToJson();
+        scene.ObjectSetInt(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY,
+            afterLayer);
+        scene.ObjectSetInt(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY,
+            drawOrder);
+        if scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY) != "int"
+           or scene.ObjectGetInt(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY,
+               afterLayer - 1) != afterLayer
+           or scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY) != "int"
+           or scene.ObjectGetInt(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY,
+               drawOrder - 1) != drawOrder {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene rejected the preview stack. Object properties "
+                + "may be at capacity.");
+            return false;
+        }
+        selectedObject = objectIndex;
+        selectedObjects = scene_selection.Single(
+            objectIndex, scene.ObjectCount());
+        if CommitScene("Updated object preview draw stack") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Remove one object's preview-stack overrides atomically.
+    expose override func ClearObjectPreviewStackOverride(
+        objectIndex: Integer) -> Boolean {
+        if scene == null or objectIndex < 0
+           or objectIndex >= scene.ObjectCount() {
+            return false;
+        }
+        var layerKind = scene.ObjectPropertyKind(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY);
+        var orderKind = scene.ObjectPropertyKind(
+            objectIndex,
+            scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY);
+        if layerKind == "" and orderKind == "" { return false; }
+        var snapshot = scene.ToJson();
+        if layerKind != "" {
+            scene.ObjectRemove(
+                objectIndex,
+                scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY);
+        }
+        if orderKind != "" {
+            scene.ObjectRemove(
+                objectIndex,
+                scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY);
+        }
+        if scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY) != ""
+           or scene.ObjectPropertyKind(
+               objectIndex,
+               scene_object_draw_stack_2d.EXPLICIT_DRAW_ORDER_KEY) != "" {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene rejected the preview-stack reset.");
+            return false;
+        }
+        selectedObject = objectIndex;
+        selectedObjects = scene_selection.Single(
+            objectIndex, scene.ObjectCount());
+        if CommitScene("Reset object preview draw stack") == false {
+            RestoreSceneSnapshot(snapshot);
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    hide override func IntegerIndexOf(values: List[Integer],
+                             value: Integer) -> Integer {
+        var index = 0;
+        while index < values.count() {
+            if values.get(index) == value { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    hide override func IntegerListsEqual(left: List[Integer],
+                                right: List[Integer]) -> Boolean {
+        if left.count() != right.count() { return false; }
+        var index = 0;
+        while index < left.count() {
+            if left.get(index) != right.get(index) { return false; }
+            index = index + 1;
+        }
+        return true;
+    }
+
+    hide override func SnapshotObjectParents() -> List[Integer] {
+        var parents: List[Integer] = [];
+        if scene == null { return parents; }
+        var index = 0;
+        while index < scene.ObjectCount() {
+            parents.add(scene.ObjectParent(index));
+            index = index + 1;
+        }
+        return parents;
+    }
+
+    /// @brief Classify every identity by the selected root that contains it.
+    /// @details Memoized parent walks keep hierarchy edits linear even near the
+    ///          SceneDocument object limit.
+    hide override func SelectedRootOwners(parents: List[Integer],
+                                 roots: List[Integer])
+        -> List[Integer] {
+        var owners: List[Integer] = [];
+        var index = 0;
+        while index < parents.count() {
+            owners.add(-2);
+            index = index + 1;
+        }
+        index = 0;
+        while index < roots.count() {
+            var rootIdentity = roots.get(index);
+            if rootIdentity >= 0 and rootIdentity < owners.count() {
+                owners.set(rootIdentity, rootIdentity);
+            }
+            index = index + 1;
+        }
+
+        var start = 0;
+        while start < parents.count() {
+            if owners.get(start) == -2 {
+                var path: List[Integer] = [];
+                var current = start;
+                var steps = 0;
+                while current >= 0 and current < parents.count()
+                      and owners.get(current) == -2
+                      and steps <= parents.count() {
+                    path.add(current);
+                    current = parents.get(current);
+                    steps = steps + 1;
+                }
+                var owner = -1;
+                if current >= 0 and current < owners.count() {
+                    owner = owners.get(current);
+                }
+                var pathIndex = path.count() - 1;
+                while pathIndex >= 0 {
+                    owners.set(path.get(pathIndex), owner);
+                    pathIndex = pathIndex - 1;
+                }
+            }
+            start = start + 1;
+        }
+        return owners;
+    }
+
+    /// @brief Compute every absolute depth with memoized parent walks.
+    hide override func IdentityDepths(parents: List[Integer]) -> List[Integer] {
+        var depths: List[Integer] = [];
+        var index = 0;
+        while index < parents.count() {
+            var depth = -1;
+            if parents.get(index) < 0 { depth = 0; }
+            depths.add(depth);
+            index = index + 1;
+        }
+        var start = 0;
+        while start < parents.count() {
+            if depths.get(start) < 0 {
+                var path: List[Integer] = [];
+                var current = start;
+                var steps = 0;
+                while current >= 0 and current < parents.count()
+                      and depths.get(current) < 0
+                      and steps <= parents.count() {
+                    path.add(current);
+                    current = parents.get(current);
+                    steps = steps + 1;
+                }
+                var depth = -1;
+                if current >= 0 and current < depths.count() {
+                    depth = depths.get(current);
+                }
+                var pathIndex = path.count() - 1;
+                while pathIndex >= 0 {
+                    depth = depth + 1;
+                    depths.set(path.get(pathIndex), depth);
+                    pathIndex = pathIndex - 1;
+                }
+            }
+            start = start + 1;
+        }
+        return depths;
+    }
+
+    /// @brief Normalize selected hierarchy roots into current draw order.
+    hide override func TopLevelSelectedObjectRoots(
+        parents: List[Integer]) -> List[Integer] {
+        var roots: List[Integer] = [];
+        var candidate = 0;
+        while candidate < parents.count() {
+            if scene_selection.Contains(selectedObjects, candidate) {
+                var nested = false;
+                var ancestor = parents.get(candidate);
+                var steps = 0;
+                while ancestor >= 0 and steps <= parents.count() {
+                    if scene_selection.Contains(
+                           selectedObjects, ancestor) {
+                        nested = true;
+                        break;
+                    }
+                    ancestor = parents.get(ancestor);
+                    steps = steps + 1;
+                }
+                if nested == false { roots.add(candidate); }
+            }
+            candidate = candidate + 1;
+        }
+        return roots;
+    }
+
+    hide override func MovingObjectIdentities(owners: List[Integer])
+        -> List[Integer] {
+        var moving: List[Integer] = [];
+        var candidate = 0;
+        while candidate < owners.count() {
+            if owners.get(candidate) >= 0 { moving.add(candidate); }
+            candidate = candidate + 1;
+        }
+        return moving;
+    }
+
+    hide override func ObjectDropFitsDepth(destinationParent: Integer,
+                                  parents: List[Integer],
+                                  owners: List[Integer]) -> Boolean {
+        var depths = IdentityDepths(parents);
+        return ObjectDropFitsKnownDepths(
+            destinationParent, depths, owners);
+    }
+
+    /// @brief Check a target using one shared depth snapshot.
+    /// @details Parent-picker refresh calls this for many candidates and must
+    ///          not repeat a complete hierarchy walk for every dropdown row.
+    hide override func ObjectDropFitsKnownDepths(
+        destinationParent: Integer,
+        depths: List[Integer],
+        owners: List[Integer]) -> Boolean {
+        var rootDepth = 0;
+        if destinationParent >= 0 {
+            rootDepth = depths.get(destinationParent) + 1;
+        }
+        var identity = 0;
+        while identity < owners.count() {
+            var owner = owners.get(identity);
+            if owner >= 0
+               and rootDepth + depths.get(identity) - depths.get(owner)
+                  > SceneEditor2DModel.MAX_OBJECT_HIERARCHY_DEPTH {
+                return false;
+            }
+            identity = identity + 1;
+        }
+        return true;
+    }
+
+    /// @brief Move selected top-level subtrees beneath one explicit parent.
+    /// @param targetParent Object index, or -1 for the scene root.
+    /// @details This is the keyboard-accessible counterpart to an INTO row
+    ///          drop. Reparenting to the scene root appends after the last
+    ///          remaining root. Absolute object coordinates are unchanged.
+    expose override func ReparentSelectedSceneObjects(
+        targetParent: Integer) -> Boolean {
+        if scene == null or targetParent < -1
+           or targetParent >= scene.ObjectCount() {
+            return false;
+        }
+        selectedObjects = scene_selection.Normalize(
+            selectedObjects, scene.ObjectCount(), selectedObject);
+        var parents = SnapshotObjectParents();
+        var roots = TopLevelSelectedObjectRoots(parents);
+        if roots.count() == 0 { return false; }
+        var owners = SelectedRootOwners(parents, roots);
+        var moving = MovingObjectIdentities(owners);
+        if targetParent >= 0
+           and scene_selection.Contains(moving, targetParent) {
+            detailLabel.SetText(
+                "An object cannot be parented to itself or one of its descendants.");
+            return false;
+        }
+        if ObjectDropFitsDepth(
+               targetParent, parents, owners) == false {
+            detailLabel.SetText(
+                "That parent would exceed Studio's hierarchy depth limit.");
+            return false;
+        }
+
+        var alreadyParented = true;
+        var rootIndex = 0;
+        while rootIndex < roots.count() {
+            if parents.get(roots.get(rootIndex)) != targetParent {
+                alreadyParented = false;
+            }
+            rootIndex = rootIndex + 1;
+        }
+        if alreadyParented {
+            detailLabel.SetText(
+                "The selected object subtrees already use that parent.");
+            return false;
+        }
+
+        var source = roots.get(0);
+        if targetParent >= 0 {
+            return ApplyObjectHierarchyDrop(source, targetParent, 1);
+        }
+
+        var lastRemainingRoot = -1;
+        var candidate = 0;
+        while candidate < parents.count() {
+            if parents.get(candidate) < 0
+               and scene_selection.Contains(moving, candidate) == false {
+                lastRemainingRoot = candidate;
+            }
+            candidate = candidate + 1;
+        }
+        if lastRemainingRoot < 0 {
+            detailLabel.SetText(
+                "Studio could not find an attached scene-root destination.");
+            return false;
+        }
+        var changed =
+            ApplyObjectHierarchyDrop(source, lastRemainingRoot, 2);
+        if changed {
+            toolbarStatus.SetText(
+                "Reparented " + roots.count()
+                + " object subtree(s) to scene root");
+        }
+        return changed;
+    }
+
+    /// @brief Apply one retained TreeView row drop as a canonical transaction.
+    /// @details Selected top-level roots carry their complete subtrees.
+    ///          BEFORE/AFTER use the target's parent; INTO appends beneath the
+    ///          target. Every identity and parent index is remapped exactly.
+    expose override func ApplyObjectHierarchyDrop(sourceIndex: Integer,
+                                         targetIndex: Integer,
+                                         position: Integer) -> Boolean {
+        if scene == null or currentDoc == null
+           or sourceIndex < 0 or sourceIndex >= scene.ObjectCount()
+           or targetIndex < 0 or targetIndex >= scene.ObjectCount()
+           or position < 0 or position > 2 {
+            return false;
+        }
+        selectedObjects = scene_selection.Normalize(
+            selectedObjects, scene.ObjectCount(), selectedObject);
+        if scene_selection.Contains(selectedObjects, sourceIndex) == false {
+            var sourceOnly = scene_selection.Single(
+                sourceIndex, scene.ObjectCount());
+            SelectSceneObjects(sourceOnly, sourceIndex);
+        }
+
+        var parents = SnapshotObjectParents();
+        var roots = TopLevelSelectedObjectRoots(parents);
+        var owners = SelectedRootOwners(parents, roots);
+        var moving = MovingObjectIdentities(owners);
+        if roots.count() == 0
+           or scene_selection.Contains(moving, targetIndex) {
+            detailLabel.SetText(
+                "Drop onto a row outside the selected object subtrees.");
+            return false;
+        }
+
+        var destinationParent = parents.get(targetIndex);
+        if position == 1 {
+            destinationParent = targetIndex;
+        }
+        if ObjectDropFitsDepth(
+               destinationParent, parents, owners) == false {
+            detailLabel.SetText(
+                "That row drop would exceed Studio's hierarchy depth limit.");
+            return false;
+        }
+
+        var remaining: List[Integer] = [];
+        var identityOrder: List[Integer] = [];
+        var identity = 0;
+        while identity < parents.count() {
+            identityOrder.add(identity);
+            if scene_selection.Contains(moving, identity) == false {
+                remaining.add(identity);
+            }
+            identity = identity + 1;
+        }
+
+        var insertion = -1;
+        if position == 0 {
+            insertion = IntegerIndexOf(remaining, targetIndex);
+        } else {
+            var targetRoots: List[Integer] = [];
+            targetRoots.add(targetIndex);
+            var targetOwners =
+                SelectedRootOwners(parents, targetRoots);
+            var remainingIndex = 0;
+            while remainingIndex < remaining.count() {
+                if targetOwners.get(
+                       remaining.get(remainingIndex)) == targetIndex {
+                    insertion = remainingIndex + 1;
+                }
+                remainingIndex = remainingIndex + 1;
+            }
+        }
+        if insertion < 0 or insertion > remaining.count() {
+            detailLabel.SetText(
+                "The hierarchy drop target is no longer attached.");
+            return false;
+        }
+
+        var desired = remaining;
+        var movingIndex = 0;
+        while movingIndex < moving.count() {
+            desired.insert(
+                insertion + movingIndex, moving.get(movingIndex));
+            movingIndex = movingIndex + 1;
+        }
+
+        var parentAlreadyExact = true;
+        var rootIndex = 0;
+        while rootIndex < roots.count() {
+            if parents.get(roots.get(rootIndex)) != destinationParent {
+                parentAlreadyExact = false;
+            }
+            rootIndex = rootIndex + 1;
+        }
+        if parentAlreadyExact
+           and IntegerListsEqual(identityOrder, desired) {
+            detailLabel.SetText(
+                "The selected object subtrees already use that row position.");
+            return false;
+        }
+
+        var snapshot = currentSerialized;
+        var previousSelection = selectedObjects;
+        var previousPrimary = selectedObject;
+        var currentOrder = identityOrder;
+        var destination = 0;
+        while destination < desired.count() {
+            var desiredIdentity = desired.get(destination);
+            var current = IntegerIndexOf(
+                currentOrder, desiredIdentity);
+            if current < 0 {
+                RestoreSceneSnapshot(snapshot);
+                selectedObjects = previousSelection;
+                selectedObject = previousPrimary;
+                RefreshInspector();
+                detailLabel.SetText(
+                    "Studio lost an object identity while reordering.");
+                return false;
+            }
+            if current != destination {
+                scene.MoveObject(current, destination);
+                currentOrder.removeAt(current);
+                currentOrder.insert(destination, desiredIdentity);
+            }
+            destination = destination + 1;
+        }
+
+        var destinationParentIndex = -1;
+        if destinationParent >= 0 {
+            destinationParentIndex =
+                IntegerIndexOf(desired, destinationParent);
+        }
+        rootIndex = 0;
+        while rootIndex < roots.count() {
+            var nextRoot = IntegerIndexOf(
+                desired, roots.get(rootIndex));
+            if nextRoot < 0
+               or scene.TrySetObjectParent(
+                      nextRoot, destinationParentIndex) == false {
+                RestoreSceneSnapshot(snapshot);
+                selectedObjects = previousSelection;
+                selectedObject = previousPrimary;
+                RefreshInspector();
+                detailLabel.SetText(
+                    "The scene model rejected the hierarchy change.");
+                return false;
+            }
+            rootIndex = rootIndex + 1;
+        }
+
+        var nextSelection: List[Integer] = [];
+        var selectionIndex = 0;
+        while selectionIndex < previousSelection.count() {
+            var mapped = IntegerIndexOf(
+                desired, previousSelection.get(selectionIndex));
+            if mapped >= 0 { nextSelection.add(mapped); }
+            selectionIndex = selectionIndex + 1;
+        }
+        var nextPrimary = IntegerIndexOf(desired, previousPrimary);
+        if nextPrimary < 0 and nextSelection.count() > 0 {
+            nextPrimary = nextSelection.get(0);
+        }
+        selectedObjects = nextSelection;
+        selectedObject = nextPrimary;
+        selectedObjectProperty = -1;
+
+        var action = "Moved " + roots.count()
+            + " object subtree(s)";
+        if position == 1 {
+            action = "Reparented " + roots.count()
+                + " object subtree(s)";
+        }
+        if CommitScene(action) == false {
+            RestoreSceneSnapshot(snapshot);
+            selectedObjects = previousSelection;
+            selectedObject = previousPrimary;
+            RefreshInspector();
+            detailLabel.SetText(
+                "The hierarchy edit could not be committed.");
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    hide override func PreviousObjectSibling(index: Integer) -> Integer {
+        if scene == null or index < 0 or index >= scene.ObjectCount() {
+            return -1;
+        }
+        var parent = scene.ObjectParent(index);
+        var sibling = -1;
+        var candidate = 0;
+        while candidate < index {
+            if scene.ObjectParent(candidate) == parent {
+                sibling = candidate;
+            }
+            candidate = candidate + 1;
+        }
+        return sibling;
+    }
+
+    hide override func NextObjectSibling(index: Integer) -> Integer {
+        if scene == null or index < 0 or index >= scene.ObjectCount() {
+            return -1;
+        }
+        var parent = scene.ObjectParent(index);
+        var candidate = index + 1;
+        while candidate < scene.ObjectCount() {
+            if scene.ObjectParent(candidate) == parent { return candidate; }
+            candidate = candidate + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Create, rename, or update one typed scene property transactionally.
+    expose override func SetSceneProperty(previousKey: String,
+                                 key: String,
+                                 kind: String,
+                                 value: String) -> Boolean {
+        if scene == null { return false; }
+        var nextKey = Str.Trim(key);
+        if nextKey == "" {
+            detailLabel.SetText("Scene property key cannot be empty.");
+            return false;
+        }
+        if previousKey != "" and scene.Has(previousKey) == false {
+            detailLabel.SetText(
+                "The selected scene property no longer exists.");
+            return false;
+        }
+        if previousKey != nextKey and scene.Has(nextKey) {
+            detailLabel.SetText(
+                "Scene property \"" + nextKey + "\" already exists.");
+            return false;
+        }
+
+        var snapshot = scene.ToJson();
+        var intValue = 0;
+        var floatValue = 0.0;
+        var boolValue = false;
+        if kind == "string" {
+            scene.SetStr(nextKey, value);
+        } else if kind == "int" {
+            var parsedInt = Parse.TryInt(Str.Trim(value));
+            if parsedInt.IsNone {
+                detailLabel.SetText("Enter a valid whole number.");
+                return false;
+            }
+            intValue = parsedInt.UnwrapI64();
+            scene.SetInt(nextKey, intValue);
+        } else if kind == "float" {
+            var parsedFloat = Parse.TryDouble(Str.Trim(value));
+            if parsedFloat.IsNone {
+                detailLabel.SetText("Enter a valid finite number.");
+                return false;
+            }
+            floatValue = parsedFloat.UnwrapF64();
+            scene.SetFloat(nextKey, floatValue);
+        } else if kind == "bool" {
+            var parsedBool = Parse.TryBool(Str.Trim(value));
+            if parsedBool.IsNone {
+                detailLabel.SetText(
+                    "Enter true/false, yes/no, on/off, or 1/0.");
+                return false;
+            }
+            boolValue = parsedBool.UnwrapI1();
+            scene.SetBool(nextKey, boolValue);
+        } else if kind == "null" {
+            scene.SetNull(nextKey);
+        } else {
+            detailLabel.SetText("Choose a supported scene property type.");
+            return false;
+        }
+
+        if ScenePropertyMatches(
+               nextKey, kind, value, intValue, floatValue, boolValue) == false {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene property was rejected. Keys are limited to "
+                + "128 bytes and string values to 64 KiB.");
+            return false;
+        }
+        if previousKey != "" and previousKey != nextKey {
+            scene.Remove(previousKey);
+        }
+        if scene.ToJson() == snapshot {
+            detailLabel.SetText("Scene property is already up to date.");
+            return false;
+        }
+        if CommitScene("Updated scene property " + nextKey) == false {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene property update could not be committed.");
+            return false;
+        }
+
+        detailLabel.SetText("");
+        RefreshInspector();
+        sceneProperties.SelectByKey(nextKey);
+        selectedSceneProperty = sceneProperties.selectedProperty;
+        return true;
+    }
+
+    /// @brief Remove one typed scene property through canonical history.
+    expose override func RemoveSceneProperty(key: String) -> Boolean {
+        if scene == null { return false; }
+        var nextKey = Str.Trim(key);
+        if nextKey == "" or scene.Has(nextKey) == false { return false; }
+        var snapshot = scene.ToJson();
+        scene.Remove(nextKey);
+        if scene.Has(nextKey) {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene model rejected the property removal.");
+            return false;
+        }
+        if CommitScene("Removed scene property " + nextKey) == false {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The scene property removal could not be committed.");
+            return false;
+        }
+        detailLabel.SetText("");
+        selectedSceneProperty = -1;
+        RefreshInspector();
+        return true;
+    }
+}

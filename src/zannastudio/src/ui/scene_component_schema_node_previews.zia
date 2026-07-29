@@ -1,0 +1,401 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_node_previews.zia
+// Purpose: Typed 3D node-preview parsing.
+// Key invariants:
+//   - Malformed or out-of-bounds input rejects the complete staged schema.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_node_previews;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind "scene_component_schema_model" as SceneComponentModel;
+bind "scene_component_schema_loading" as PreviousLayer;
+
+class SceneComponentSchemaNodePreviewsLayer extends PreviousLayer.SceneComponentSchemaLoadingLayer {
+
+    /// @brief Parse one bounded direct-model preview transform scalar.
+    hide override func ParseNodePreviewNumber(raw: Any,
+                                name: String,
+                                minimum: Number,
+                                maximum: Number,
+                                fallback: Number,
+                                previewIndex: Integer,
+                                schema: SceneComponentModel.SceneComponentSchema) -> Number {
+        if Map.Has(raw, name) == false { return fallback; }
+        if schema.version < SceneComponentModel.DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "3D node preview " + previewIndex + " " + name
+                    + " requires schema version 17.");
+            return fallback;
+        }
+        if Json.TypeOf(Map.Get(raw, name)) != "number" {
+            Reject(
+                schema,
+                "3D node preview " + previewIndex + " " + name
+                    + " must be a number.");
+            return fallback;
+        }
+        var parsed = Parse.TryDouble(Json.Format(Map.Get(raw, name)));
+        if parsed.IsNone
+           or parsed.UnwrapF64() < minimum
+           or parsed.UnwrapF64() > maximum {
+            Reject(
+                schema,
+                "3D node preview " + previewIndex + " " + name
+                    + " is outside its supported range.");
+            return fallback;
+        }
+        return parsed.UnwrapF64();
+    }
+
+    /// @brief Validate one typed metadata match and bounded asset recipe.
+    hide override func ParseNodePreview3D(
+        raw: Any,
+        index: Integer,
+        seenMatches: Any,
+        schema: SceneComponentModel.SceneComponentSchema) -> SceneComponentModel.SceneNodePreview3DDefinition {
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(schema, "3D node preview " + index + " must be an object.");
+            return null;
+        }
+        var preview = new SceneComponentModel.SceneNodePreview3DDefinition();
+        if ParseNodePreviewMatch(
+               raw, index, seenMatches, preview, schema) == false {
+            return null;
+        }
+        if ParseNodePreviewPrefab(raw, preview, schema) == false {
+            return null;
+        }
+        if ParseNodePreviewVariants(raw, preview, schema) == false {
+            return null;
+        }
+        if ParseNodePreviewTransform(
+               raw, index, preview, schema) == false {
+            return null;
+        }
+        if preview.prefab == "" and preview.variantPrefabs.count() == 0 {
+            Reject(
+                schema,
+                "3D node preview requires a prefab or variantPrefabs.");
+            return null;
+        }
+        return preview;
+    }
+
+    /// @brief Parse and deduplicate the exact typed metadata selector.
+    hide func ParseNodePreviewMatch(
+        raw: Any,
+        index: Integer,
+        seenMatches: Any,
+        preview: SceneComponentModel.SceneNodePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "matchProperty") == false
+           or Json.TypeOf(Map.Get(raw, "matchProperty")) != "string" {
+            Reject(
+                schema,
+                "3D node preview " + index
+                    + " requires a matchProperty string.");
+            return false;
+        }
+        preview.matchProperty =
+            Str.Trim(Map.GetStr(raw, "matchProperty"));
+        if PortableIdentifier(
+               preview.matchProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "3D node preview " + index
+                    + " requires a portable matchProperty.");
+            return false;
+        }
+        if Map.Has(raw, "matchValue") == false {
+            Reject(
+                schema,
+                "3D node preview " + index
+                    + " requires a Boolean, integer, or string matchValue.");
+            return false;
+        }
+        var rawMatch = Map.Get(raw, "matchValue");
+        var matchType = Json.TypeOf(rawMatch);
+        var matchIdentity = "";
+        if matchType == "boolean" {
+            if schema.version < SceneComponentModel.DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+                Reject(
+                    schema,
+                    "Typed 3D node preview matches require schema version 17.");
+                return false;
+            }
+            preview.matchKind = "bool";
+            preview.matchBoolean = Map.GetBool(raw, "matchValue");
+            matchIdentity = "" + preview.matchBoolean;
+        } else if matchType == "number" {
+            if schema.version < SceneComponentModel.DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+                Reject(
+                    schema,
+                    "Typed 3D node preview matches require schema version 17.");
+                return false;
+            }
+            var parsedMatch = Parse.TryInt(Json.Format(rawMatch));
+            if parsedMatch.IsNone {
+                Reject(
+                    schema,
+                    "3D node preview " + index
+                        + " numeric matchValue must be an integer.");
+                return false;
+            }
+            preview.matchKind = "int";
+            preview.matchInteger = parsedMatch.UnwrapI64();
+            matchIdentity = "" + preview.matchInteger;
+        } else if matchType == "string" {
+            preview.matchKind = "string";
+            preview.matchString = Map.GetStr(raw, "matchValue");
+            preview.matchValue = preview.matchString;
+            if schema.version < SceneComponentModel.DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+                if PortableIdentifier(
+                       preview.matchString, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+                    Reject(
+                        schema,
+                        "3D node preview " + index
+                            + " requires a portable matchValue.");
+                    return false;
+                }
+            } else if Str.get_Length(preview.matchString)
+                      > SceneComponentModel.MAX_FIELD_KEY_CHARS {
+                Reject(
+                    schema,
+                    "3D node preview " + index
+                        + " string matchValue exceeds 128 characters.");
+                return false;
+            }
+            matchIdentity = preview.matchString;
+        } else {
+            Reject(
+                schema,
+                "3D node preview " + index
+                    + " matchValue must be Boolean, integer, or string.");
+            return false;
+        }
+        var matchKey = preview.matchProperty + "\n"
+            + preview.matchKind + "\n" + matchIdentity;
+        if Map.Has(seenMatches, matchKey) {
+            Reject(
+                schema,
+                "Duplicate 3D node preview match for \""
+                    + preview.matchProperty + "\".");
+            return false;
+        }
+        Map.SetBool(seenMatches, matchKey, true);
+        return true;
+    }
+
+    /// @brief Parse the optional direct prefab asset.
+    hide func ParseNodePreviewPrefab(
+        raw: Any,
+        preview: SceneComponentModel.SceneNodePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "prefab") {
+            if Json.TypeOf(Map.Get(raw, "prefab")) != "string" {
+                Reject(schema, "3D node preview prefab must be a string.");
+                return false;
+            }
+            preview.prefab = Str.Trim(Map.GetStr(raw, "prefab"));
+            if PortablePreviewPrefab(preview.prefab) == false {
+                Reject(
+                    schema,
+                    "3D node preview prefab must be a safe project-relative "
+                    + "3D scene or model asset path.");
+                return false;
+            }
+            if DirectModelPreviewPrefab(preview.prefab)
+               and schema.version < SceneComponentModel.DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+                Reject(
+                    schema,
+                    "Direct-model 3D node previews require schema version 17.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse an optional metadata-indexed prefab variant table.
+    hide func ParseNodePreviewVariants(
+        raw: Any,
+        preview: SceneComponentModel.SceneNodePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasVariantProperty = Map.Has(raw, "variantProperty");
+        var hasVariantPrefabs = Map.Has(raw, "variantPrefabs");
+        if hasVariantProperty != hasVariantPrefabs {
+            Reject(
+                schema,
+                "3D node preview variantProperty and variantPrefabs "
+                    + "must be supplied together.");
+            return false;
+        }
+        if hasVariantProperty {
+            if Json.TypeOf(Map.Get(raw, "variantProperty")) != "string" {
+                Reject(
+                    schema,
+                    "3D node preview variantProperty must be a string.");
+                return false;
+            }
+            preview.variantProperty =
+                Str.Trim(Map.GetStr(raw, "variantProperty"));
+            if PortableIdentifier(
+                   preview.variantProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+                Reject(
+                    schema,
+                    "3D node preview variantProperty must be a portable key.");
+                return false;
+            }
+            var variants = Map.Get(raw, "variantPrefabs");
+            if variants == null or Json.TypeOf(variants) != "array" {
+                Reject(
+                    schema,
+                    "3D node preview variantPrefabs must be an array.");
+                return false;
+            }
+            var variantCount = Seq.get_Count(variants);
+            if variantCount <= 0
+               or variantCount > SceneComponentModel.MAX_NODE_PREVIEW_VARIANTS {
+                Reject(
+                    schema,
+                    "3D node preview requires between 1 and 256 variants.");
+                return false;
+            }
+            var variantIndex = 0;
+            while variantIndex < variantCount {
+                var rawPath = Seq.Get(variants, variantIndex);
+                if rawPath == null or Json.TypeOf(rawPath) != "string" {
+                    Reject(
+                        schema,
+                        "3D node preview variant paths must be strings.");
+                    return false;
+                }
+                var path = Str.Trim(Seq.GetStr(variants, variantIndex));
+                if PortablePreviewPrefab(path) == false {
+                    Reject(
+                        schema,
+                        "3D node preview variants must be safe "
+                        + "project-relative 3D scene or model asset paths.");
+                    return false;
+                }
+                if DirectModelPreviewPrefab(path)
+                   and schema.version
+                      < SceneComponentModel.DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION {
+                    Reject(
+                        schema,
+                        "Direct-model 3D node preview variants require "
+                            + "schema version 17.");
+                    return false;
+                }
+                preview.variantPrefabs.add(path);
+                variantIndex = variantIndex + 1;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse optional metadata-driven and fixed preview transforms.
+    hide func ParseNodePreviewTransform(
+        raw: Any,
+        index: Integer,
+        preview: SceneComponentModel.SceneNodePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasYawProperty = Map.Has(raw, "yawProperty");
+        var hasYawUnit = Map.Has(raw, "yawUnit");
+        if hasYawProperty != hasYawUnit {
+            Reject(
+                schema,
+                "3D node preview yawProperty and yawUnit "
+                    + "must be supplied together.");
+            return false;
+        }
+        if hasYawProperty {
+            if Json.TypeOf(Map.Get(raw, "yawProperty")) != "string"
+               or Json.TypeOf(Map.Get(raw, "yawUnit")) != "string" {
+                Reject(
+                    schema,
+                    "3D node preview yawProperty/yawUnit must be strings.");
+                return false;
+            }
+            preview.yawProperty =
+                Str.Trim(Map.GetStr(raw, "yawProperty"));
+            preview.yawUnit =
+                Str.ToLower(Str.Trim(Map.GetStr(raw, "yawUnit")));
+            if PortableIdentifier(
+                   preview.yawProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false
+               or (preview.yawUnit != "degrees"
+                   and preview.yawUnit != "radians") {
+                Reject(
+                    schema,
+                    "3D node preview yaw requires a portable property and "
+                    + "degrees or radians unit.");
+                return false;
+            }
+        }
+        if Map.Has(raw, "scaleProperty") {
+            if Json.TypeOf(Map.Get(raw, "scaleProperty")) != "string" {
+                Reject(
+                    schema,
+                    "3D node preview scaleProperty must be a string.");
+                return false;
+            }
+            preview.scaleProperty =
+                Str.Trim(Map.GetStr(raw, "scaleProperty"));
+            if PortableIdentifier(
+                   preview.scaleProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+                Reject(
+                    schema,
+                    "3D node preview scaleProperty must be a portable key.");
+                return false;
+            }
+        }
+        preview.scale = ParseNodePreviewNumber(
+            raw, "scale",
+            SceneComponentModel.MIN_NODE_PREVIEW_SCALE,
+            SceneComponentModel.MAX_NODE_PREVIEW_SCALE,
+            1.0, index, schema);
+        preview.yawDegrees = ParseNodePreviewNumber(
+            raw, "yawDegrees",
+            0.0 - SceneComponentModel.MAX_NODE_PREVIEW_YAW_DEGREES,
+            SceneComponentModel.MAX_NODE_PREVIEW_YAW_DEGREES,
+            0.0, index, schema);
+        preview.offsetX = ParseNodePreviewNumber(
+            raw, "offsetX",
+            0.0 - SceneComponentModel.MAX_NODE_PREVIEW_OFFSET,
+            SceneComponentModel.MAX_NODE_PREVIEW_OFFSET,
+            0.0, index, schema);
+        preview.offsetY = ParseNodePreviewNumber(
+            raw, "offsetY",
+            0.0 - SceneComponentModel.MAX_NODE_PREVIEW_OFFSET,
+            SceneComponentModel.MAX_NODE_PREVIEW_OFFSET,
+            0.0, index, schema);
+        preview.offsetZ = ParseNodePreviewNumber(
+            raw, "offsetZ",
+            0.0 - SceneComponentModel.MAX_NODE_PREVIEW_OFFSET,
+            SceneComponentModel.MAX_NODE_PREVIEW_OFFSET,
+            0.0, index, schema);
+        return schema.valid;
+    }
+
+}

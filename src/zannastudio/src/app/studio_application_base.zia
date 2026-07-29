@@ -1,0 +1,964 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/app/studio_application_base.zia
+// Purpose: Shared application state, support helpers, and bounded startup phases.
+// Key invariants:
+//   - Startup preserves phase order while all cross-phase state has one owner.
+// Ownership/Lifetime:
+//   - StudioApplicationBase owns controllers until the final application cleanup.
+// Links: zannastudio/src/main.zia, zannastudio/src/core/session.zia
+//
+//===----------------------------------------------------------------------===//
+
+module studio_application_base;
+
+bind "../ui/app_shell";
+bind "../ui/welcome_view";
+bind "../ui/ide_overlays";
+bind "../ui/explorer_actions";
+bind "../ui/debug_breakpoint_overlay";
+bind "../ui/command_input";
+bind "../ui/workspace_edit_preview";
+bind "../ui/activity_bar";
+bind "../ui/run_debug_view";
+bind "../ui/scene_context_menus_2d";
+bind "../ui/scene_context_menus_3d";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_2d";
+bind "../ui/scene_panels_3d";
+bind "build_info";
+bind "command_palette_controller";
+bind "workspace_watcher";
+bind "file_watch_controller";
+bind "focus_throttle";
+bind "explorer_action_runner";
+bind "language_tool_frame";
+bind "startup_arguments";
+bind "../scm/scm_view";
+bind "../scm/scm_gutter_controller";
+bind "../terminal/terminal_controller";
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../core/settings";
+bind "../core/session";
+bind "../core/recovery_store";
+bind "../editor/editor_engine";
+bind "../editor/editor_tabs";
+bind "../editor/breadcrumb_index";
+bind "../services/file_utils";
+bind "../services/locations";
+bind "../services/project_locator";
+bind "../build/build_system";
+bind "../build/breakpoints";
+bind "../build/debug_session";
+bind "../commands/command_registry";
+bind "../commands/command_context";
+bind "../commands/basic_workspace_commands";
+bind "../commands/diagnostic_edit_commands";
+bind "../commands/zia_workspace_commands";
+bind "../commands/main_command_dispatcher";
+bind "../commands/file_commands";
+bind "../commands/view_commands";
+bind "../commands/search_commands";
+bind "../ui/diff_view";
+
+bind Zanna.GUI;
+bind Env = Zanna.System.Environment;
+bind Terminal = Zanna.Terminal;
+bind Str = Zanna.String;
+bind Threads = Zanna.Threads;
+
+final MOUSE_BUTTON_RIGHT = 1;
+
+final WIN_WIDTH = 1280;
+final WIN_HEIGHT = 800;
+final WINDOW_SIZE_PERCENT = 72;  // % of monitor size on first launch.
+final AUTO_SAVE_IDLE_MS = 1500;
+final OPEN_DOC_EXTERNAL_POLL_MS = 1000;
+final POLL_WAIT_BACKGROUND_MS = 8;
+final POLL_WAIT_IDLE_FOCUSED_MS = 50;
+final POLL_WAIT_IDLE_UNFOCUSED_MS = 150;
+final BREADCRUMB_SCAN_LINES_PER_FRAME = 256;
+final SESSION_RESTORE_ENTRIES_PER_PAINT = 1;
+final RECOVERY_SCAN_ENTRIES_PER_PAINT = 1;
+final PANEL_SPLIT_SAVE_IDLE_MS = 600;
+
+
+/// @brief Route the selected Problems quick fix through its real source anchor.
+/// @details Filtering rebuilds ListBox rows, so the tool-panel model supplies
+///          durable action/location metadata. Opening that location first makes
+///          the existing asynchronous diagnostic controller validate and edit
+///          exactly the diagnostic the user selected.
+func HandleProblemsQuickFix(
+    shell: app_shell.AppShell,
+    docMgr: document_manager.DocumentManager,
+    engine: editor_engine.EditorEngine,
+    tabs: editor_tabs.EditorTabs,
+    projMgr: project_manager.ProjectManager,
+    locStore: locations.LocationStore,
+    controller: diagnostic_edit_commands.DiagnosticActionController) {
+    if shell == null or controller == null
+       or shell.toolPanels.ProblemsQuickFixWasRequested() == false {
+        return;
+    }
+    diagnostic_edit_commands.StartSelectedProblemAction(
+        controller, shell, docMgr, engine, tabs, projMgr, locStore);
+    shell.toolPanels.SetProblemsActionBusy(controller.IsBusy());
+}
+
+/// @brief Return whether the active document owns the visible CodeEditor.
+func ActiveUsesTextEditor(docMgr: document_manager.DocumentManager) -> Boolean {
+    if docMgr == null { return false; }
+    var doc = docMgr.GetActive();
+    return doc != null and doc!.isReadOnlyPreview == false
+           and file_utils.IsVisualKind(doc!.kind) == false;
+}
+
+/// @brief Return the active surface's cheap content revision.
+/// @details Visual editors own their canonical Document content directly, so
+///          auto-save/recovery must not watch the hidden CodeEditor revision.
+func ActiveContentRevision(docMgr: document_manager.DocumentManager,
+                           engine: editor_engine.EditorEngine,
+                           scene2D: scene_editor_2d.SceneEditor2D,
+                           scene3D: scene_editor_3d.SceneEditor3D) -> Integer {
+    if docMgr != null {
+        var doc = docMgr.GetActive();
+        if doc != null {
+            if doc!.kind == file_utils.DOC_KIND_SCENE_2D and scene2D != null {
+                return scene2D.GetRevision();
+            }
+            if doc!.kind == file_utils.DOC_KIND_SCENE_3D and scene3D != null {
+                return scene3D.GetRevision();
+            }
+        }
+    }
+    if engine == null { return 0; }
+    return engine.GetRevision();
+}
+
+/// @brief Flush unsettled dock location and splitter changes before shutdown.
+/// @details Normal frames debounce writes; shutdown consumes every remaining
+///          edge-trigger and commits it together as one settings transaction.
+func FlushWorkspaceLayout(shell: app_shell.AppShell,
+                          engine: editor_engine.EditorEngine,
+                          projMgr: project_manager.ProjectManager,
+                          activityBarCtrl: activity_bar.ActivityBar,
+                          appSettings: settings.SettingsManager,
+                          savePending: Boolean) {
+    if shell == null or appSettings == null { return; }
+    var shouldSave = savePending;
+    var changedPct = shell.toolPanels.TakeChangedSplitPercent();
+    if changedPct >= 0 {
+        appSettings.bottomPanelSplitPct = changedPct;
+        shouldSave = true;
+    }
+    var changedSidePct = shell.toolPanels.TakeChangedSidePanelWidthPercent();
+    if changedSidePct >= 0 {
+        appSettings.sidePanelWidthPct = changedSidePct;
+        shouldSave = true;
+    }
+    if shell.toolPanels.TakeFloatingToolPanelGeometryChanged() {
+        appSettings.floatingToolPanelX =
+            shell.toolPanels.GetFloatingToolPanelX();
+        appSettings.floatingToolPanelY =
+            shell.toolPanels.GetFloatingToolPanelY();
+        appSettings.floatingToolPanelWidth =
+            shell.toolPanels.GetFloatingToolPanelWidth();
+        appSettings.floatingToolPanelHeight =
+            shell.toolPanels.GetFloatingToolPanelHeight();
+        shouldSave = true;
+    }
+    var changedSidebarPct =
+        shell.workbench.TakeChangedSidebarWidthPercent();
+    if changedSidebarPct >= 0 {
+        appSettings.sidebarWidthPct = changedSidebarPct;
+        shouldSave = true;
+    }
+    var changedSidebarPosition =
+        shell.workbench.TakeChangedSidebarPosition();
+    if changedSidebarPosition != "" {
+        appSettings.primarySidebarPosition = changedSidebarPosition;
+        shouldSave = true;
+    }
+    if HasPersistentSidebarContext(projMgr, activityBarCtrl)
+       and appSettings.sidebarVisible != shell.workbench.IsSidebarVisible() {
+        appSettings.sidebarVisible = shell.workbench.IsSidebarVisible();
+        shouldSave = true;
+    }
+    if activityBarCtrl != null
+       and appSettings.activeSidebarViewId != activityBarCtrl.activeView {
+        appSettings.activeSidebarViewId = activityBarCtrl.activeView;
+        shouldSave = true;
+    }
+    if engine != null {
+        var changedEditorSplitPct =
+            engine.TakeChangedSplitPositionPercent();
+        if changedEditorSplitPct >= 0 {
+            appSettings.editorSplitPct = changedEditorSplitPct;
+            shouldSave = true;
+        }
+    }
+    var changedDock = shell.toolPanels.TakeChangedDockLocation();
+    if changedDock != "" {
+        appSettings.panelDockPosition = changedDock;
+        shouldSave = true;
+    }
+    var changedGroupLayout =
+        shell.toolPanels.TakeChangedToolPanelGroupLayout();
+    if changedGroupLayout != "" {
+        appSettings.toolPanelGroupLayout = changedGroupLayout;
+        shouldSave = true;
+    }
+    var changedTabOrder = shell.toolPanels.TakeChangedToolTabOrder();
+    if changedTabOrder != "" {
+        appSettings.toolPanelTabOrder = changedTabOrder;
+        shouldSave = true;
+    }
+    var activeToolPanelId = shell.toolPanels.GetActiveToolPanelId();
+    if appSettings.activeToolPanelId != activeToolPanelId {
+        appSettings.activeToolPanelId = activeToolPanelId;
+        shouldSave = true;
+    }
+    if shouldSave { appSettings.Save(); }
+}
+
+/// @brief Re-point the focused-pane controllers at engine.editor after a split
+///        or focus change. Minimap and find bar bind the widget directly; the
+///        completion controller re-syncs via SetEngine. Hover and signature read
+///        engine.editor fresh each frame, so they need no explicit re-bind.
+func RebindFocusedPane(shell: app_shell.AppShell,
+                       engine: editor_engine.EditorEngine,
+                       completer: completion.CompletionController) {
+    if shell == null or engine == null { return; }
+    if shell.workbench.minimap != null { shell.workbench.minimap.BindEditor(engine.editor); }
+    if shell.workbench.findBar != null { shell.workbench.findBar.BindEditor(engine.editor); }
+    if completer != null { completer.SetEngine(engine); }
+}
+
+/// @brief Select a distinct open document for a new secondary pane.
+func SplitCompanionDocument(docMgr: document_manager.DocumentManager,
+                            primary: document.Document) -> document.Document? {
+    if docMgr == null or editor_engine.IsSplitDocumentEligible(primary) == false {
+        return null;
+    }
+    var i = 0;
+    while i < docMgr.GetCount() {
+        var candidate = docMgr.GetDocument(i);
+        if candidate != null and candidate! != primary
+           and editor_engine.IsSplitDocumentEligible(candidate!) {
+            return candidate;
+        }
+        i = i + 1;
+    }
+    return null;
+}
+
+/// @brief Open a safe two-document split, optionally explaining rejection.
+func OpenSplitWithCompanion(shell: app_shell.AppShell,
+                            docMgr: document_manager.DocumentManager,
+                            engine: editor_engine.EditorEngine,
+                            notifyOnFailure: Boolean) -> Boolean {
+    var companion = SplitCompanionDocument(docMgr, engine.currentDoc);
+    if companion == null {
+        if notifyOnFailure {
+            var reason = "Open a second file before splitting the editor";
+            shell.SetStatusLeft(reason);
+        }
+        return false;
+    }
+    return engine.SplitRight(companion!);
+}
+
+/// @brief Align the global document/tab model with the physically focused pane.
+func SyncFocusedPaneSelection(shell: app_shell.AppShell,
+                              docMgr: document_manager.DocumentManager,
+                              engine: editor_engine.EditorEngine,
+                              tabs: editor_tabs.EditorTabs) -> Boolean {
+    if shell == null or docMgr == null or engine == null or tabs == null
+       or engine.currentDoc == null {
+        return false;
+    }
+    var focused = engine.currentDoc;
+    var focusedIndex = docMgr.SetActiveDocument(focused);
+    if focusedIndex < 0 { return false; }
+    tabs.SetActive(focusedIndex);
+
+    // FocusOtherPane captures the pane it leaves. Reflect that dirty state even
+    // when typing and native focus movement arrived in the same frame.
+    var i = 0;
+    while i < docMgr.GetCount() {
+        var doc = docMgr.GetDocument(i);
+        if doc != null { tabs.SetModified(i, doc!.isModified); }
+        i = i + 1;
+    }
+
+    shell.SelectSurface(focused.kind);
+    if focused.isNew { shell.SetBreadcrumbPath(""); }
+    else { shell.SetBreadcrumbPath(focused.filePath); }
+    shell.SetStatusRight(file_commands.DocStatusLabel(focused));
+    return true;
+}
+
+/// @brief Rebuild an exact durable left/right editor arrangement.
+/// @details The session maps durable file slots back to Document identities
+///          during validation. Startup therefore never substitutes a different
+///          tab when one saved pane owner is missing or rejected.
+func OpenRestoredSplit(docMgr: document_manager.DocumentManager,
+                       engine: editor_engine.EditorEngine,
+                       tabs: editor_tabs.EditorTabs,
+                       sessionMgr: session.SessionManager) -> Boolean {
+    if docMgr == null or engine == null or tabs == null or sessionMgr == null {
+        return false;
+    }
+    var first = sessionMgr.RestoredSplitFirstDocument();
+    var second = sessionMgr.RestoredSplitSecondDocument();
+    if first == null or second == null or first! == second!
+       or editor_engine.IsSplitDocumentEligible(first!) == false
+       or editor_engine.IsSplitDocumentEligible(second!) == false {
+        return false;
+    }
+    var firstIndex = docMgr.SetActiveDocument(first!);
+    if firstIndex < 0 { return false; }
+    tabs.SetActive(firstIndex);
+    engine.LoadDocument(first!);
+    if engine.SplitRight(second!) == false { return false; }
+    if sessionMgr.splitSecondFocused {
+        engine.FocusOtherPane();
+    }
+    return true;
+}
+
+/// @brief Consume and publish an engine-level pane focus transition.
+func ReconcilePaneFocus(shell: app_shell.AppShell,
+                        docMgr: document_manager.DocumentManager,
+                        engine: editor_engine.EditorEngine,
+                        tabs: editor_tabs.EditorTabs,
+                        completer: completion.CompletionController) {
+    if engine == null or engine.ConsumePaneFocusChanged() == false { return; }
+    SyncFocusedPaneSelection(shell, docMgr, engine, tabs);
+    RebindFocusedPane(shell, engine, completer);
+}
+
+func hasArg(name: String) -> Boolean {
+    var i = 0;
+    while i < Env.GetArgumentCount() {
+        if Env.GetArgument(i) == name { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+func handleCommandLine() -> Boolean {
+    if hasArg("--version") {
+        Terminal.Say(build_info.BuildSummary());
+        return true;
+    }
+    if hasArg("--help") or hasArg("-h") {
+        Terminal.Say("Usage: zannastudio [--version] [--help] [file]");
+        return true;
+    }
+    return false;
+}
+
+func envFlagEnabled(name: String) -> Boolean {
+    if Env.HasVariable(name) == false { return false; }
+    var v = Str.ToLower(Env.GetVariable(name));
+    return v == "1" or v == "true" or v == "yes" or v == "on";
+}
+
+/// @brief Compute how long the next PollWait may sleep without delaying live work.
+func computePollWaitMs(shell: app_shell.AppShell,
+                       focusThrottle: focus_throttle.FocusThrottle,
+                       buildSys: build_system.BuildSystem,
+                       dbgSession: debug_session.DebugSession,
+                       terminalCtrl: terminal_controller.TerminalController,
+                       editorScheduler: scheduler.EditorScheduler,
+                       indexer: project_index.ProjectIndexer,
+                       projMgr: project_manager.ProjectManager,
+                       overlays: ide_overlays.IdeOverlays) -> Integer {
+    if shell == null { return 0; }
+    if buildSys != null and buildSys.IsActive() { return 0; }
+    if dbgSession != null and dbgSession.IsActive() { return 0; }
+    if terminalCtrl != null and terminalCtrl.HasActiveSession() { return 0; }
+    if shell.commandPalette != null and shell.commandPalette.IsVisible() { return 0; }
+    if overlays != null and (overlays.settingsVisible or overlays.aboutVisible) { return 0; }
+
+    if editorScheduler != null and editorScheduler.QueuedCount() > 0 {
+        return POLL_WAIT_BACKGROUND_MS;
+    }
+    if indexer != null and indexer.indexing {
+        return POLL_WAIT_BACKGROUND_MS;
+    }
+    if projMgr != null and projMgr.fileCacheRefreshing {
+        return POLL_WAIT_BACKGROUND_MS;
+    }
+
+    if focusThrottle != null and focusThrottle.focused == false {
+        return POLL_WAIT_IDLE_UNFOCUSED_MS;
+    }
+    return POLL_WAIT_IDLE_FOCUSED_MS;
+}
+
+/// @brief Return whether sidebar visibility has meaningful persistent context.
+/// @details Explorer/SCM need a workspace; Run and Debug also serves standalone
+///          source files and therefore persists visibility without a project.
+func HasPersistentSidebarContext(
+    projMgr: project_manager.ProjectManager,
+    activityBarCtrl: activity_bar.ActivityBar) -> Boolean {
+    if projMgr != null and projMgr.IsOpen() { return true; }
+    return activityBarCtrl != null
+        and activityBarCtrl.activeView == activity_bar.VIEW_RUN_DEBUG;
+}
+
+class StudioApplicationBase {
+    hide app_shell.AppShell shell;
+    hide document_manager.DocumentManager docMgr;
+    hide editor_engine.EditorEngine engine;
+    hide editor_tabs.EditorTabs tabs;
+    hide project_manager.ProjectManager projMgr;
+    hide activity_bar.ActivityBar activityBarCtrl;
+    hide run_debug_view.RunDebugView runDebugView;
+    hide scm_view.ScmView scmView;
+    hide diff_view.DiffView diffOverlay;
+    hide workspace_edit_preview.WorkspaceEditPreview renamePreview;
+    hide terminal_controller.TerminalController terminalCtrl;
+    hide build_system.BuildSystem buildSys;
+    hide breakpoints.BreakpointStore breakpointStore;
+    hide debug_session.DebugSession dbgSession;
+    hide locations.LocationStore locStore;
+    hide command_registry.CommandRegistry commandRegistry;
+    hide language_service.LanguageServiceManager languageServices;
+    hide workbench_state.ActiveWorkbenchState activeWorkbench;
+    hide perf_monitor.PerfMonitor perfMon;
+    hide project_index.ProjectIndexer indexer;
+    hide scheduler.EditorScheduler editorScheduler;
+    hide search_commands.SearchController searcher;
+    hide command_palette_controller.CommandPaletteController paletteCtrl;
+    hide file_watch_controller.FileWatchController fileWatchCtrl;
+    hide focus_throttle.FocusThrottle focusThrottle;
+    hide basic_workspace_commands.BasicWorkspaceCommandController basicWorkspaceCommands;
+    hide diagnostic_edit_commands.DiagnosticActionController diagnosticActions;
+    hide zia_workspace_commands.ZiaWorkspaceCommandController ziaWorkspaceCommands;
+    hide ide_overlays.IdeOverlays overlays;
+    hide explorer_actions.ExplorerActionOverlay explorerOverlay;
+    hide debug_breakpoint_overlay.DebugBreakpointOverlay debugOverlay;
+    hide command_input.CommandInputOverlay commandInputOverlay;
+    hide welcome_view.WelcomeView welcomeView;
+    hide scene_editor_2d.SceneEditor2D scene2DEditor;
+    hide scene_context_menus_2d.SceneContextMenus2D scene2DContextMenus;
+    hide scene_editor_3d.SceneEditor3D scene3DEditor;
+    hide scene_context_menus_3d.SceneContextMenus3D scene3DContextMenus;
+    hide completion.CompletionController completer;
+    hide diagnostics.LiveDiagnostics liveDiag;
+    hide semantic_tokens.SemanticHighlighter semHighlighter;
+    hide hover.HoverController hoverCtrl;
+    hide signature.SignatureController sigCtrl;
+    hide inlay_hints.InlayHintController inlayCtrl;
+    hide symbols.SymbolOutline symbolOutline;
+    hide language_tool_frame.LanguageToolFrameController languageFrame;
+    hide settings.SettingsManager appSettings;
+    hide session.SessionManager sessionMgr;
+    hide recovery_store.RecoveryStore recoveryStore;
+    hide String startupFile;
+    hide Integer restoredCount;
+    hide Boolean restoreSplitRequested;
+    hide workspace_watcher.WorkspaceWatcherState workspaceWatcherState;
+    hide command_context.CommandContext commandContext;
+    hide Integer prevDocCount;
+    hide Boolean previousSceneSurfaceActive;
+    hide Integer prevCursorLine;
+    hide Integer prevCursorCol;
+    hide Integer prevStatusRevision;
+    hide Integer prevStatusLineCount;
+    hide Integer prevStatusCursorCount;
+    hide Boolean didPostFirstFrameActivate;
+    hide Integer startupRepaintFrames;
+    hide Integer autoSaveRevision;
+    hide Integer autoSaveActiveIndex;
+    hide Threads.Debouncer autoSaveDebounce;
+    hide Integer recoveryRevision;
+    hide Integer recoveryActiveIndex;
+    hide Threads.Debouncer recoveryDebounce;
+    hide scm_gutter_controller.ScmGutterController scmGutter;
+    hide Integer scmGutterRevision;
+    hide Threads.Debouncer scmGutterDebounce;
+    hide Integer scmGutterActiveIndex;
+    hide breadcrumb_index.IncrementalBreadcrumbIndex breadcrumbFunctions;
+    hide Threads.Debouncer panelSplitSaveDebounce;
+    hide Boolean panelSplitSavePending;
+    hide Boolean allowBackground;
+    hide Integer curDocCount;
+    hide Boolean textEditorContextAvailable;
+    hide Boolean hasBuildTarget;
+    hide Boolean hasDebugTarget;
+    hide document.Document? activeVisualDoc;
+    hide language_service.LanguageService activeService;
+    hide Integer curCursorLine;
+    hide Integer curCursorCol;
+    hide Integer currentRevisionForSave;
+
+
+    hide func InitializeComponents() {
+        // ========================================================================
+        // Initialize components
+        // ========================================================================
+        shell = new app_shell.AppShell();
+        docMgr = new document_manager.DocumentManager();
+        engine = new editor_engine.EditorEngine();
+        tabs = new editor_tabs.EditorTabs();
+        projMgr = new project_manager.ProjectManager();
+        activityBarCtrl = new activity_bar.ActivityBar();
+        runDebugView = new run_debug_view.RunDebugView();
+        scmView = new scm_view.ScmView();
+        diffOverlay = new diff_view.DiffView();
+        renamePreview =
+            new workspace_edit_preview.WorkspaceEditPreview();
+        terminalCtrl = new terminal_controller.TerminalController();
+        buildSys = new build_system.BuildSystem();
+        breakpointStore = new breakpoints.BreakpointStore();
+        dbgSession = new debug_session.DebugSession();
+        locStore = new locations.LocationStore();
+        commandRegistry = new command_registry.CommandRegistry();
+        languageServices = new language_service.LanguageServiceManager();
+        activeWorkbench = new workbench_state.ActiveWorkbenchState();
+        perfMon = new perf_monitor.PerfMonitor();
+        indexer = new project_index.ProjectIndexer();
+        editorScheduler = new scheduler.EditorScheduler();
+        searcher = new search_commands.SearchController();
+        paletteCtrl = new command_palette_controller.CommandPaletteController();
+        fileWatchCtrl = new file_watch_controller.FileWatchController();
+        focusThrottle = new focus_throttle.FocusThrottle();
+        basicWorkspaceCommands =
+            new basic_workspace_commands.BasicWorkspaceCommandController();
+        diagnosticActions =
+            new diagnostic_edit_commands.DiagnosticActionController();
+        ziaWorkspaceCommands =
+            new zia_workspace_commands.ZiaWorkspaceCommandController();
+        indexer.SetScheduler(editorScheduler);
+    }
+
+    hide func BuildShellAndOverlays() {
+        shell.Build("Zanna Studio", WIN_WIDTH, WIN_HEIGHT);
+        view_commands.applyShellFont(shell);
+        shell.ApplyWorkbenchWindowConstraints();
+        shell.CenterAndSize(WINDOW_SIZE_PERCENT);
+        shell.SetStatusLeft("Starting...");
+        shell.SetStatusCenter("");
+        shell.SetStatusRight("");
+
+        overlays = new ide_overlays.IdeOverlays();
+        overlays.Setup(shell);
+        explorerOverlay = new explorer_actions.ExplorerActionOverlay();
+        explorerOverlay.Setup(shell);
+        debugOverlay = new debug_breakpoint_overlay.DebugBreakpointOverlay();
+        debugOverlay.Setup(shell);
+        commandInputOverlay = new command_input.CommandInputOverlay();
+        commandInputOverlay.Setup(shell);
+        renamePreview.Setup(shell);
+        basicWorkspaceCommands.renamePreview = renamePreview;
+        ziaWorkspaceCommands.renamePreview = renamePreview;
+
+        welcomeView = new welcome_view.WelcomeView();
+        welcomeView.Setup(shell.workbench.welcomeHost,
+                          shell.workbench.editorRow,
+                          shell.workbench.scene2DHost,
+                          shell.workbench.scene3DHost);
+        // Paint a complete, truthful startup surface before synchronous settings,
+        // session, recovery, and project restoration can occupy the UI thread.
+        // This replaces the former blank split-pane frame that looked like a hung
+        // or mangled editor on larger workspaces.
+        shell.SetSidebarVisible(false);
+        welcomeView.SetStartupMode(true);
+        welcomeView.SetShown(true);
+        shell.SetWelcomeStatusMode(true);
+        // Let the platform deliver its initial show/resize events before the first
+        // paint. Activating the window earlier exposes a blank workbench while the
+        // startup widgets are still being constructed; rendering without this
+        // poll can also paint against the pre-show window extent on some backends.
+        shell.Activate();
+        shell.Poll();
+        shell.Render();
+
+        engine.Setup(shell.workbench.editorRow);
+        engine.editor.Focus();
+        scene2DEditor = new scene_editor_2d.SceneEditor2D();
+        scene_panels_2d.Build(scene2DEditor,shell.workbench.scene2DHost, shell.app);
+        scene2DContextMenus =
+            new scene_context_menus_2d.SceneContextMenus2D();
+        scene2DContextMenus.Setup();
+        scene2DEditor.SetWorkspaceContext(projMgr);
+        scene3DEditor = new scene_editor_3d.SceneEditor3D();
+        scene_panels_3d.Build(scene3DEditor,shell.workbench.scene3DHost, shell.app);
+        scene3DContextMenus =
+            new scene_context_menus_3d.SceneContextMenus3D();
+        scene3DContextMenus.Setup();
+        scene3DEditor.SetWorkspaceContext(projMgr);
+        // ADR 0191: the interactive viewport requests the platform GPU backend
+        // (falling back to software truthfully). Probes never enable this, so
+        // they keep byte-deterministic software rendering.
+        if envFlagEnabled("ZANNA_STUDIO_SOFTWARE_VIEWPORT") == false {
+            scene3DEditor.SetViewportAcceleration(true);
+        }
+    }
+
+    hide func BuildEditorServices() {
+        completer = new completion.CompletionController();
+        completer.Setup(engine.editor, shell.app);
+        completer.SetEngine(engine);
+        completer.SetScheduler(editorScheduler);
+        completer.SetWorkspaceContext(projMgr, docMgr);
+
+        // Real-time diagnostics (errors-as-you-type)
+        liveDiag = new diagnostics.LiveDiagnostics();
+        liveDiag.SetScheduler(editorScheduler);
+        semHighlighter = new semantic_tokens.SemanticHighlighter();
+
+        // Hover tooltips (type info on mouse dwell)
+        hoverCtrl = new hover.HoverController();
+        hoverCtrl.setup(shell.app);
+        hoverCtrl.SetScheduler(editorScheduler);
+
+        sigCtrl = new signature.SignatureController();
+        sigCtrl.setup(shell.app);
+        sigCtrl.SetScheduler(editorScheduler);
+
+        inlayCtrl = new inlay_hints.InlayHintController();
+
+        // Symbol outline panel (below diagnostics, toggled via View menu)
+        symbolOutline = new symbols.SymbolOutline();
+        symbolOutline.setup(shell.workbench.editorArea);
+        symbolOutline.SetScheduler(editorScheduler);
+
+        languageFrame = new language_tool_frame.LanguageToolFrameController();
+        languageFrame.Setup(completer, liveDiag, semHighlighter, hoverCtrl,
+                            sigCtrl, inlayCtrl, symbolOutline, indexer,
+                            editorScheduler, perfMon);
+
+        shell.workbench.minimap = GUI.Minimap.New(shell.workbench.editorRow);
+        shell.workbench.minimap.SetWidth(100);
+        shell.workbench.minimap.BindEditor(engine.editor);
+
+        tabs.Setup(shell.workbench.tabBar);
+        projMgr.Setup(shell.workbench.sidebarTree);
+        runDebugView.Setup(shell.workbench.runDebugViewHost);
+        activityBarCtrl.Setup(shell.workbench.explorerView,
+                              shell.workbench.scmViewHost,
+                              shell.workbench.runDebugViewHost,
+                              shell.workbench.abExplorer,
+                              shell.workbench.abSourceControl,
+                              shell.workbench.abRunDebug);
+        scmView.Setup(shell.workbench.scmViewHost);
+        diffOverlay.Setup(shell);
+        scmView.diffOverlay = diffOverlay;
+        terminalCtrl.Setup(shell.toolPanels.terminalPanel, shell.toolPanels.terminalPane,
+                           shell.toolPanels.terminalKill, shell.toolPanels.terminalRestart);
+        terminalCtrl.SetupButtons(shell.toolPanels.terminalNew, shell.toolPanels.terminalNext);
+
+        shell.ApplyCommandShortcuts(commandRegistry);
+        commandRegistry.InstallShortcuts();
+        paletteCtrl.ResetToCommands(shell, commandRegistry, languageServices.ziaService);
+    }
+
+    hide func LoadSettingsAndStores() {
+        // ========================================================================
+        // Load persistent settings and restore session
+        // ========================================================================
+        appSettings = new settings.SettingsManager();
+        appSettings.Load();
+        if appSettings.keybindingOverrides != "" {
+            commandRegistry.ApplyOverrides(appSettings.keybindingOverrides);
+            commandRegistry.InstallShortcuts();
+            shell.ApplyCommandShortcuts(commandRegistry);
+        }
+        breakpointStore.Setup(appSettings.settingsPath);
+        breakpointStore.Load();
+        editorScheduler.Configure(appSettings.diagnosticsDelayMs, appSettings.completionDelayMs);
+        view_commands.applyPersistentSettings(shell, engine, liveDiag, appSettings);
+        file_commands.SetConfirmDirtyClose(appSettings.confirmOnExitWithUnsavedChanges);
+        file_commands.SetSaveFormatOptions(appSettings.trimTrailingWhitespace,
+                                           appSettings.ensureFinalNewline);
+
+        sessionMgr = new session.SessionManager();
+        sessionMgr.Setup(appSettings.settingsPath);
+        recoveryStore = new recovery_store.RecoveryStore();
+        recoveryStore.Setup(appSettings.settingsDir);
+        file_commands.SetRecoveryStore(recoveryStore);
+    }
+
+    hide func RestoreSessionState() {
+        // Resolve the explicit target before ordinary session restore. It owns
+        // startup focus and project context, but dirty persisted buffers must still
+        // be recovered conservatively.
+        startupFile = startup_arguments.CommandLineFile();
+        restoredCount = 0;
+        restoreSplitRequested = false;
+        if appSettings.restoreSession {
+            // Restore one durable root/tab per painted startup frame. Individual
+            // text files are already size-bounded; this outer budget prevents a
+            // large 256-tab session from making the native window look hung while
+            // all of them are validated, read, hashed, and added to the tab bar.
+            var restoreJob: session.SessionRestoreJob = null;
+            if startupFile != "" {
+                restoreJob = sessionMgr.BeginRecoveryRestore(docMgr, tabs);
+            } else {
+                restoreJob = sessionMgr.BeginRestore(docMgr, projMgr, tabs);
+            }
+            while restoreJob.active {
+                sessionMgr.PumpRestore(restoreJob, SESSION_RESTORE_ENTRIES_PER_PAINT);
+                var restoreProgress = sessionMgr.RestoreProgressText(restoreJob);
+                welcomeView.SetStartupProgress(restoreProgress);
+                shell.SetStatusLeft(restoreProgress);
+                shell.Poll();
+                shell.Render();
+            }
+            restoredCount = restoreJob.restoredCount;
+            restoreSplitRequested = sessionMgr.splitActive;
+        }
+    }
+
+    hide func ScanRecoveryData() {
+        // Page the flat recovery directory even after a clean exit so abandoned
+        // worker staging files are retired without an unbounded Setup enumeration.
+        // On an unclean exit the same pass validates and retains bounded swap pairs.
+        var recoveryScan = recoveryStore.BeginRecoveryScan(recoveryStore.uncleanExit);
+        while recoveryScan.active {
+            recoveryStore.PumpRecoveryScan(recoveryScan, RECOVERY_SCAN_ENTRIES_PER_PAINT);
+            var recoveryScanStatus = "Cleaning recovery data: "
+                + recoveryScan.entriesScanned + " entries";
+            if recoveryStore.uncleanExit {
+                recoveryScanStatus = "Checking crash recovery: "
+                    + recoveryScan.entriesScanned + " entries";
+            }
+            welcomeView.SetStartupProgress(recoveryScanStatus);
+            shell.SetStatusLeft(recoveryScanStatus);
+            shell.Poll();
+            shell.Render();
+        }
+
+        // After an unclean exit, re-open captured documents one painted item at a
+        // time. Keep swaps durable until a later save or clean shutdown so a second
+        // immediate crash cannot lose the recovered buffer.
+        if recoveryStore.uncleanExit {
+            var recovered = recoveryScan.records;
+            var rc = recovered.count();
+            var ri = 0;
+            var recoveredOpened = 0;
+            var lastRecoveredIndex = -1;
+            while ri < rc {
+                var rec = recovered.get(ri) as recovery_store.RecoveryRecord;
+                var countBeforeRecovery = docMgr.GetCount();
+                var rdoc = docMgr.ApplyRecoveredText(rec.path, rec.content);
+                if docMgr.GetCount() > countBeforeRecovery {
+                    tabs.AddTab(rdoc.fileName, 1);
+                    tabs.SetTooltip(docMgr.activeIndex, rdoc.filePath);
+                }
+                tabs.SetModified(docMgr.activeIndex, true);
+                lastRecoveredIndex = docMgr.activeIndex;
+                recoveredOpened = recoveredOpened + 1;
+                ri = ri + 1;
+                var recoveryApplyStatus = "Recovering unsaved files: " + ri + "/" + rc;
+                welcomeView.SetStartupProgress(recoveryApplyStatus);
+                shell.SetStatusLeft(recoveryApplyStatus);
+                shell.Poll();
+                shell.Render();
+            }
+            if recoveredOpened > 0 {
+                docMgr.SetActive(lastRecoveredIndex);
+                tabs.SetActive(lastRecoveredIndex);
+                restoredCount = restoredCount + recoveredOpened;
+                // Crash-recovered work is the most urgent startup context. Keep the
+                // last recovered buffer focused instead of replacing it with an
+                // older clean-session pane arrangement.
+                restoreSplitRequested = false;
+                GUI.Toast.Info("Recovered " + recoveredOpened + " unsaved file(s) from a previous session");
+            }
+            if recoveryScan.truncated {
+                GUI.Toast.Warning("Some crash-recovery entries exceeded Studio safety limits");
+            }
+        }
+    }
+
+    hide func OpenStartupTargetAndWorkspace() {
+        // Shell/Open With launches provide one positional source path. Open it
+        // after session recovery so the explicitly requested document wins focus.
+        if startupFile != "" {
+            var startupProjectRoot =
+                project_locator.NearestManifestRoot(startupFile);
+            if startupProjectRoot != ""
+               and projMgr.OpenFolder(startupProjectRoot) {
+                sessionMgr.RecordRecentProject(startupProjectRoot);
+            }
+            if explorer_action_runner.OpenFileAndRecord(
+                   shell, docMgr, engine, tabs, sessionMgr, startupFile) {
+                restoredCount = restoredCount + 1;
+                // An explicit Open With / command-line target owns startup focus.
+                // Do not replace it with the prior session's pane arrangement.
+                restoreSplitRequested = false;
+            }
+        }
+
+        // Restore the selected workspace view only after project restoration so
+        // Source Control is already pointed at the live root before it is revealed.
+        if projMgr.IsOpen() {
+            scmView.SetRepo(projMgr.RootPath());
+        }
+        activityBarCtrl.ShowView(appSettings.activeSidebarViewId);
+
+        // A blank Explorer pane makes the no-project opening surface look broken
+        // and pushes the welcome card visibly off-center. Restore the pane only
+        // when session loading actually produced a workspace.
+        shell.SetSidebarVisible(settings.EffectiveSidebarVisibility(
+            projMgr.IsOpen(), appSettings.sidebarVisible,
+            activityBarCtrl.activeView));
+        welcomeView.SetStartupMode(false);
+    }
+
+    hide func PresentStartupState() {
+        // ========================================================================
+        // Show the welcome surface if no session was restored, otherwise load the
+        // restored active document. No fake editable "welcome document" is created.
+        // ========================================================================
+        if restoredCount == 0 {
+            welcomeView.Refresh(sessionMgr);
+            welcomeView.SetShown(true);
+            shell.SetWelcomeStatusMode(true);
+            shell.SetStatusRight("");
+        } else {
+            welcomeView.SetShown(false);
+            shell.SetWelcomeStatusMode(false);
+            var restoredDoc = docMgr.GetActive();
+            if restoredDoc != null {
+                var exactSplitAvailable = restoreSplitRequested
+                    and sessionMgr.RestoredSplitFirstDocument() != null
+                    and sessionMgr.RestoredSplitSecondDocument() != null;
+                var exactSplitOpened = false;
+                if exactSplitAvailable {
+                    exactSplitOpened = OpenRestoredSplit(
+                        docMgr, engine, tabs, sessionMgr);
+                }
+                if exactSplitOpened == false {
+                    engine.LoadDocument(restoredDoc);
+                }
+                if restoreSplitRequested and exactSplitAvailable == false {
+                    OpenSplitWithCompanion(shell, docMgr, engine, false);
+                }
+                SyncFocusedPaneSelection(shell, docMgr, engine, tabs);
+                engine.ConsumePaneFocusChanged();
+                RebindFocusedPane(shell, engine, completer);
+            }
+        }
+
+        if projMgr.IsOpen() {
+            terminalCtrl.SetCwd(projMgr.RootPath());
+        }
+        shell.toolPanels.SetActiveToolPanelId(appSettings.activeToolPanelId);
+
+        shell.SetStatusLeft("Ready");
+        if restoredCount == 0 {
+            shell.SetStatusCenter("");
+        } else {
+            shell.SetStatusCenter("Ln 1, Col 1  |  Lines: " + engine.GetLineCount());
+        }
+
+        // Present the resolved welcome/document state before the event loop's
+        // first idle wait. Without this frame, a fast restore can replace the
+        // startup card in memory but leave the native window showing only its
+        // empty shell until an unrelated event wakes the renderer.
+        shell.Render();
+    }
+
+    hide func PrepareInteractiveControllers() {
+        shell.workbench.findBar.BindEditor(engine.editor);
+
+        // File watcher state lives in FileWatchController so the frame loop only
+        // resets/bumps it when commands resolve external-change notifications.
+        workspaceWatcherState = new workspace_watcher.WorkspaceWatcherState();
+
+        // Command routing dependencies are stable after startup.
+        commandContext = new command_context.CommandContext();
+        commandContext.shell = shell;
+        commandContext.docMgr = docMgr;
+        commandContext.projMgr = projMgr;
+        commandContext.engine = engine;
+        commandContext.tabs = tabs;
+        commandContext.activityBarCtrl = activityBarCtrl;
+        commandContext.scene2DEditor = scene2DEditor;
+        commandContext.scene3DEditor = scene3DEditor;
+        commandContext.buildSys = buildSys;
+        commandContext.dbgSession = dbgSession;
+        commandContext.terminalCtrl = terminalCtrl;
+        commandContext.scmView = scmView;
+        commandContext.diffOverlay = diffOverlay;
+        commandContext.fileWatchCtrl = fileWatchCtrl;
+        commandContext.workspaceWatcherState = workspaceWatcherState;
+        commandContext.indexer = indexer;
+        commandContext.breakpointStore = breakpointStore;
+        commandContext.sessionMgr = sessionMgr;
+        commandContext.locStore = locStore;
+        commandContext.commandRegistry = commandRegistry;
+        commandContext.paletteCtrl = paletteCtrl;
+        commandContext.explorerOverlay = explorerOverlay;
+        commandContext.debugOverlay = debugOverlay;
+        commandContext.commandInputOverlay = commandInputOverlay;
+        commandContext.overlays = overlays;
+        commandContext.liveDiag = liveDiag;
+        commandContext.symbolOutline = symbolOutline;
+        commandContext.sigCtrl = sigCtrl;
+        commandContext.searcher = searcher;
+        commandContext.basicWorkspaceCommands = basicWorkspaceCommands;
+        commandContext.diagnosticActions = diagnosticActions;
+        commandContext.ziaWorkspaceCommands = ziaWorkspaceCommands;
+        commandContext.appSettings = appSettings;
+        // Session restore happens after the view controllers are constructed.
+        // Apply its workspace through the same transition used by every live
+        // folder-open route so SCM, terminal, Explorer, and indexing agree before
+        // the first interactive frame.
+        main_command_dispatcher.ActivateOpenWorkspace(commandContext, true);
+
+    }
+
+    hide func InitializeFrameState() {
+        // Welcome-surface visibility tracking (refresh recents on transition to shown).
+        prevDocCount = -1;
+        // False forces the first active scene frame through the same transition as
+        // a later text-to-scene tab switch. It is a transition latch, not a stored
+        // preference, so Exit Layout remains stable while that scene surface stays.
+        previousSceneSurfaceActive = false;
+
+        // Cursor tracking for dot-trigger and status bar caching
+        prevCursorLine = 1;
+        prevCursorCol  = 1;
+        prevStatusRevision = engine.GetRevision();
+        prevStatusLineCount = engine.GetLineCount();
+        prevStatusCursorCount = engine.editor.GetCursorCount();
+        didPostFirstFrameActivate = false;
+        // Session restore and first-frame responsive layout keep moving panes and
+        // docks after their earliest paints, and retained damage cannot see
+        // widgets that moved inside internally-painted subtrees. Litter from the
+        // startup cascade can therefore survive in dock-row gaps until an
+        // unrelated full repaint. Count a few settled frames, then erase it once.
+        startupRepaintFrames = 3;
+        autoSaveRevision = ActiveContentRevision(
+            docMgr, engine, scene2DEditor, scene3DEditor);
+        autoSaveActiveIndex = docMgr.activeIndex;
+        autoSaveDebounce = Threads.Debouncer.New(AUTO_SAVE_IDLE_MS);
+        recoveryRevision = autoSaveRevision;
+        recoveryActiveIndex = docMgr.activeIndex;
+        recoveryDebounce = Threads.Debouncer.New(2000);
+        scmGutter = new scm_gutter_controller.ScmGutterController();
+        scmGutterRevision = engine.GetRevision();
+        scmGutterDebounce = Threads.Debouncer.New(700);
+        scmGutterActiveIndex = -1;
+        breadcrumbFunctions = new breadcrumb_index.IncrementalBreadcrumbIndex();
+        panelSplitSaveDebounce = Threads.Debouncer.New(PANEL_SPLIT_SAVE_IDLE_MS);
+        panelSplitSavePending = false;
+    }
+}
+

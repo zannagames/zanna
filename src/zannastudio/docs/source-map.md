@@ -449,6 +449,9 @@ startup card between entries instead of opening an entire large session on one
 unresponsive UI frame. `Restore` remains the blocking compatibility wrapper.
 Save mirrors the restore record limits, caps aggregate embedded recovery, and
 prioritizes the active document when a large tab set must be truncated.
+Visual-scene records also retain bounded per-document canvas/camera/tool state,
+including the schema-v18 3D node-preview option; project defaults remain the
+fallback when an older session has no saved index.
 
 Recovery text is intentionally capped and base64 encoded. This module should
 remain conservative because it runs during startup/shutdown and protects user
@@ -936,15 +939,16 @@ before either controller can reconstruct selected 2D objects or 3D subtrees.
 ### `ui/scene_component_schema.zia`
 
 Document-independent, fail-closed loader for project-root
-`scene-components.json`. It validates versions 1 through 16, target,
+`scene-components.json`. It validates versions 1 through 18, target,
 identifiers, limits, scalar kinds, exact defaults, asset/object/node preview
 conventions, 3D gameplay-view profiles, scene environments and portable
 post-processing, 2D scene backgrounds, object draw-stack rules, and paired
 project output dimensions plus target-compatible component creation recipes
 and independently matched metadata-transformed 3D environment layers plus
 runtime-water construction inputs and typed metadata-selected PBR material
-overlays into value-only records. It does not own widgets, scenes, project
-state, or document mutation.
+overlays, typed direct-model node rules, and bounded exact-typed 3D
+node-preview states into value-only records. It does not own widgets, scenes,
+project state, or document mutation.
 
 ### `ui/scene_component_authoring.zia`
 
@@ -1046,6 +1050,10 @@ closest-visible-mesh bounds picking before a meshless origin-marker fallback.
 Its responsive chrome keeps active transforms and Game View direct while
 stable Scene/Create/Placement/View menus own secondary commands at every width;
 wider lanes enlarge the viewport instead of repopulating the chrome.
+When a project declares schema-v18 preview states, one contextual selector
+filters only disposable node-preview wrappers and follows the owning document;
+the compact status summarizes active/filtered art while its wrapped tooltip
+retains full camera/render/resource diagnostics.
 Its per-document Scene-inspector topic discloses exactly one complete World,
 Lighting & Bake, Assets & Materials, or History surface at a time.
 The responsive corner orientation navigator owns six axis views, projection
@@ -1103,8 +1111,9 @@ history.
 
 Constructs the complete retained 3D scene widget tree, including stable
 Scene/Create/Placement/View menu-item handles and the compact Scene-inspector
-topic selector. `SceneEditor3D` owns responsive labels, truthful check/enable
-state, topic visibility, and transactional dispatch.
+topic selector plus the contextual project preview-state dropdown.
+`SceneEditor3D` owns responsive labels, truthful check/enable state, topic
+visibility, and transactional dispatch.
 
 ### `ui/scene_metadata_inspector_3d.zia`
 
@@ -1444,6 +1453,8 @@ Important probe groups:
   gameplay eye/FOV retention across responsive dock changes, schema-v9 terrain
   composition, schema-v16 typed surface selection with exact production
   maps/PBR/emissive/environment state and canonical-material restoration,
+  schema-v18 Wave default/state/All switching with exact active/direct/filtered
+  preview counts and canonical isolation,
   schema-v17 direct enemy-rig loading with exact typed archetypes,
   project paths/transforms, and truthful direct/fallback counts,
   schema-v15 exact runtime `Water3D` dimensions, production image inputs, two

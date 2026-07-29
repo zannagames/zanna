@@ -1,0 +1,650 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_layer_controls.zia
+// Purpose: Focused layer controls behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_inspector_controls.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_layer_controls;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_inspector_controls" as PreviousLayer;
+
+/// @brief Layer Controls implementation layer.
+class SceneEditor2DLayerControlsLayer extends PreviousLayer.SceneEditor2DInspectorControlsLayer {
+
+    hide override func PropertyValueText(index: Integer,
+                                key: String,
+                                kind: String) -> String {
+        if kind == "string" { return scene.ObjectGetStr(index, key, ""); }
+        if kind == "int" {
+            return Fmt.Int(scene.ObjectGetInt(index, key, 0));
+        }
+        if kind == "float" {
+            return Fmt.Num(scene.ObjectGetFloat(index, key, 0.0));
+        }
+        if kind == "bool" {
+            return Fmt.Bool(scene.ObjectGetBool(index, key, false));
+        }
+        if kind == "null" { return ""; }
+        return "";
+    }
+
+    hide override func PropertyPreview(value: String, kind: String) -> String {
+        if kind == "null" { return "null"; }
+        var preview = Str.Replace(
+            Str.Replace(value, "\r", "\\r"), "\n", "\\n");
+        if Str.get_Length(preview) > 72 {
+            preview = Str.Left(preview, 69) + "...";
+        }
+        if kind == "string" { return "\"" + preview + "\""; }
+        return preview;
+    }
+
+    hide override func PropertyKindToken(index: Integer) -> String {
+        if index == SceneEditor2DModel.PROPERTY_TYPE_INT { return "int"; }
+        if index == SceneEditor2DModel.PROPERTY_TYPE_FLOAT { return "float"; }
+        if index == SceneEditor2DModel.PROPERTY_TYPE_BOOL { return "bool"; }
+        if index == SceneEditor2DModel.PROPERTY_TYPE_NULL { return "null"; }
+        return "string";
+    }
+
+    hide override func PropertyKindIndex(kind: String) -> Integer {
+        if kind == "int" { return SceneEditor2DModel.PROPERTY_TYPE_INT; }
+        if kind == "float" { return SceneEditor2DModel.PROPERTY_TYPE_FLOAT; }
+        if kind == "bool" { return SceneEditor2DModel.PROPERTY_TYPE_BOOL; }
+        if kind == "null" { return SceneEditor2DModel.PROPERTY_TYPE_NULL; }
+        return SceneEditor2DModel.PROPERTY_TYPE_STRING;
+    }
+
+    hide override func SelectObjectPropertyByKey(key: String) {
+        var index = 0;
+        while index < objectPropertyKeys.count() {
+            if objectPropertyKeys.get(index) == key {
+                var row = objectProperties.rows.get(index);
+                row.valueInput.Focus();
+                return;
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Prefill one existing or draft property row and focus it.
+    hide override func StageObjectPropertyDraft(key: String,
+                                       kind: String,
+                                       value: String,
+                                       focusKey: Boolean) {
+        var index = 0;
+        while index < objectPropertyKeys.count() {
+            if objectPropertyKeys.get(index) == key {
+                var row = objectProperties.rows.get(index);
+                row.kindDropdown.SetSelected(PropertyKindIndex(kind));
+                row.valueInput.SetText(value);
+                if focusKey { row.keyInput.Focus(); }
+                else { row.valueInput.Focus(); }
+                return;
+            }
+            index = index + 1;
+        }
+        objectProperties.AddDraftRow();
+        var draft = objectProperties.rows.get(
+            objectProperties.rows.count() - 1);
+        draft.keyInput.SetText(key);
+        draft.kindDropdown.SetSelected(PropertyKindIndex(kind));
+        draft.valueInput.SetText(value);
+        if focusKey { draft.keyInput.Focus(); }
+        else { draft.valueInput.Focus(); }
+    }
+
+    hide override func RestoreSceneSnapshot(snapshot: String) {
+        var restored = SceneDocument.LoadJsonResult(snapshot);
+        if restored.IsOk {
+            scene = restored.Unwrap() as SceneDocument;
+            RefreshAutotilePreviewRules();
+            renderDirty = true;
+            RefreshInspector();
+        }
+    }
+
+    /// @brief Whether one layer is workspace-locked against tile edits.
+    expose override func LayerLocked(layer: Integer) -> Boolean {
+        var index = 0;
+        while index < lockedLayers.count() {
+            if lockedLayers.get(index) == layer { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+
+    /// @brief Refuse an edit on a locked layer with a visible reason.
+    hide override func RefuseLockedLayer(layer: Integer) -> Boolean {
+        if LayerLocked(layer) == false { return false; }
+        detailLabel.SetText(
+            "Layer " + (layer + 1) + " is locked; unlock it to edit tiles.");
+        return true;
+    }
+
+    /// @brief Map one old index through a stable layer move.
+    hide override func RemapLayerIndexForMove(index: Integer,
+                                     source: Integer,
+                                     destination: Integer) -> Integer {
+        if index == source { return destination; }
+        if source < destination
+           and index > source and index <= destination {
+            return index - 1;
+        }
+        if destination < source
+           and index >= destination and index < source {
+            return index + 1;
+        }
+        return index;
+    }
+
+    /// @brief Preserve lock/solo identity across one accepted layer move.
+    hide override func RemapLayerWorkspaceForMove(source: Integer,
+                                         destination: Integer) {
+        var remapped: List[Integer] = [];
+        var index = 0;
+        while index < lockedLayers.count() {
+            remapped.add(RemapLayerIndexForMove(
+                lockedLayers.get(index), source, destination));
+            index = index + 1;
+        }
+        lockedLayers = remapped;
+        if soloLayer >= 0 {
+            soloLayer = RemapLayerIndexForMove(
+                soloLayer, source, destination);
+        }
+        NormalizeLayerWorkspaceState();
+        renderDirty = true;
+    }
+
+    /// @brief Preserve surviving layer state after one accepted removal.
+    hide override func RemapLayerWorkspaceForRemoval(removed: Integer) {
+        var remapped: List[Integer] = [];
+        var index = 0;
+        while index < lockedLayers.count() {
+            var layer = lockedLayers.get(index);
+            if layer < removed {
+                remapped.add(layer);
+            } else if layer > removed {
+                remapped.add(layer - 1);
+            }
+            index = index + 1;
+        }
+        lockedLayers = remapped;
+        if soloLayer == removed {
+            soloLayer = -1;
+        } else if soloLayer > removed {
+            soloLayer = soloLayer - 1;
+        }
+        NormalizeLayerWorkspaceState();
+        renderDirty = true;
+    }
+
+    /// @brief Move one layer through the shared canonical transaction path.
+    /// @details Direct ListBox requests, Alt+Arrow, and explicit buttons all
+    ///          preserve Lock/Solo identity and commit exactly one history.
+    hide override func MoveSceneLayer(source: Integer,
+                             destination: Integer,
+                             action: String) -> Boolean {
+        if scene == null or source < 0 or destination < 0
+           or source >= scene.LayerCount()
+           or destination >= scene.LayerCount()
+           or source == destination {
+            return false;
+        }
+        var before = scene.ToJson();
+        if before == "" { return false; }
+        scene.MoveLayer(source, destination);
+        var after = scene.ToJson();
+        if after == "" or after == before { return false; }
+        RemapLayerWorkspaceForMove(source, destination);
+        activeLayer = destination;
+        if CommitScene(action) == false {
+            scene.MoveLayer(destination, source);
+            RemapLayerWorkspaceForMove(destination, source);
+            activeLayer = source;
+            RefreshInspector();
+            return false;
+        }
+        ReloadTilesets();
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Set one layer's workspace-only tile edit lock.
+    /// @return True only when lock state changed.
+    expose override func SetLayerLocked(layer: Integer,
+                               nextLocked: Boolean) -> Boolean {
+        if scene == null or layer < 0 or layer >= scene.LayerCount()
+           or LayerLocked(layer) == nextLocked {
+            return false;
+        }
+        if nextLocked {
+            lockedLayers.add(layer);
+        } else {
+            var kept: List[Integer] = [];
+            var index = 0;
+            while index < lockedLayers.count() {
+                if lockedLayers.get(index) != layer {
+                    kept.add(lockedLayers.get(index));
+                }
+                index = index + 1;
+            }
+            lockedLayers = kept;
+        }
+        NormalizeLayerWorkspaceState();
+        RefreshLayerNavigatorRows();
+        RefreshLayerFields();
+        CaptureWorkspaceState();
+        if nextLocked {
+            toolbarStatus.SetText("Layer locked against tile edits");
+        } else {
+            toolbarStatus.SetText("Layer unlocked");
+        }
+        return true;
+    }
+
+    /// @brief Isolate one layer in the canvas, or pass -1 to clear Solo.
+    /// @return True only when workspace presentation changed.
+    expose override func SetSoloLayer(nextSolo: Integer) -> Boolean {
+        if scene == null or nextSolo < -1
+           or nextSolo >= scene.LayerCount()
+           or nextSolo == soloLayer {
+            return false;
+        }
+        soloLayer = nextSolo;
+        NormalizeLayerWorkspaceState();
+        renderDirty = true;
+        RefreshLayerNavigatorRows();
+        RefreshLayerFields();
+        CaptureWorkspaceState();
+        if soloLayer >= 0 {
+            toolbarStatus.SetText(
+                "Soloing layer " + (soloLayer + 1));
+        } else {
+            toolbarStatus.SetText("Layer Solo cleared");
+        }
+        return true;
+    }
+
+    /// @brief Set one authored layer's visibility through canonical history.
+    expose override func SetLayerVisibility(layer: Integer,
+                                   nextVisible: Boolean) -> Boolean {
+        if scene == null or layer < 0 or layer >= scene.LayerCount()
+           or scene.LayerVisible(layer) == nextVisible {
+            return false;
+        }
+        scene.SetLayerVisible(layer, nextVisible);
+        var action = "Hidden layer";
+        if nextVisible { action = "Shown layer"; }
+        if CommitScene(action) == false { return false; }
+        activeLayer = layer;
+        renderDirty = true;
+        RefreshLayerNavigatorRows();
+        RefreshLayerFields();
+        return true;
+    }
+
+    hide override func PumpLayerControls() -> Boolean {
+        if scene == null { return false; }
+        var changed = false;
+        if layerList.WasSelectionChanged() {
+            var selected = layerList.SelectedIndex;
+            if selected >= 0 and selected < scene.LayerCount() {
+                activeLayer = selected;
+                RefreshLayerFields();
+                renderDirty = true;
+            }
+        }
+        if layerList.WasActivated()
+           and activeLayer >= 0 and activeLayer < scene.LayerCount() {
+            changed = SetLayerVisibility(
+                activeLayer,
+                scene.LayerVisible(activeLayer) == false) or changed;
+        }
+        if layerList.WasReorderRequested() {
+            var source = layerList.GetReorderSourceIndex();
+            var destination = layerList.GetReorderTargetIndex();
+            changed = MoveSceneLayer(
+                source, destination, "Reordered layer") or changed;
+        }
+        if addLayerButton.WasClicked() {
+            var added = scene.AddLayer("Layer " + (scene.LayerCount() + 1));
+            if added >= 0 {
+                activeLayer = added;
+                changed = CommitScene("Added layer") or changed;
+                ReloadTilesets();
+                RefreshInspector();
+            }
+        }
+        if removeLayerButton.WasClicked() {
+            var before = scene.LayerCount();
+            scene.RemoveLayer(activeLayer);
+            if scene.LayerCount() != before {
+                var removed = activeLayer;
+                RemapLayerWorkspaceForRemoval(removed);
+                if activeLayer >= scene.LayerCount() {
+                    activeLayer = scene.LayerCount() - 1;
+                }
+                changed = CommitScene("Removed layer") or changed;
+                ReloadTilesets();
+                RefreshInspector();
+            }
+        }
+        if layerUpButton.WasClicked() and activeLayer > 0 {
+            var source = activeLayer;
+            var destination = activeLayer - 1;
+            changed = MoveSceneLayer(
+                source, destination, "Moved layer up") or changed;
+        }
+        if layerDownButton.WasClicked()
+           and activeLayer + 1 < scene.LayerCount() {
+            var source = activeLayer;
+            var destination = activeLayer + 1;
+            changed = MoveSceneLayer(
+                source, destination, "Moved layer down") or changed;
+        }
+        if layerNameInput.WasSubmitted() {
+            changed = RenameSceneLayer(
+                activeLayer, layerNameInput.Text) or changed;
+        }
+        var nextVisibleRevision = layerVisibleCheck.GetRevision();
+        if nextVisibleRevision != layerVisibleRevision {
+            layerVisibleRevision = nextVisibleRevision;
+            var nextVisible = layerVisibleCheck.IsChecked();
+            changed = SetLayerVisibility(
+                activeLayer, nextVisible) or changed;
+        }
+        var nextOpacityRevision = layerOpacitySpinner.GetRevision();
+        if nextOpacityRevision != layerOpacityRevision {
+            layerOpacityRevision = nextOpacityRevision;
+            var nextOpacity = layerOpacitySpinner.Value;
+            if NumberDiffers(
+                   nextOpacity, scene.LayerOpacity(activeLayer)) {
+                scene.SetLayerOpacity(activeLayer, nextOpacity);
+                changed = CommitScene("Updated layer opacity") or changed;
+                renderDirty = true;
+                RefreshInspector();
+            }
+        }
+        var nextLockRevision = layerLockCheck.GetRevision();
+        if nextLockRevision != layerLockRevision {
+            layerLockRevision = nextLockRevision;
+            var wantLocked = layerLockCheck.IsChecked();
+            SetLayerLocked(activeLayer, wantLocked);
+        }
+        var nextSoloRevision = layerSoloCheck.GetRevision();
+        if nextSoloRevision != layerSoloRevision {
+            layerSoloRevision = nextSoloRevision;
+            var wantSolo = layerSoloCheck.IsChecked();
+            var nextSolo = -1;
+            if wantSolo { nextSolo = activeLayer; }
+            SetSoloLayer(nextSolo);
+        }
+        if chooseLayerAssetButton.WasClicked() {
+            var baseDir = "";
+            if currentDoc != null and currentDoc.filePath != "" {
+                baseDir = Path.Directory(currentDoc.filePath);
+            }
+            var assetPath = GUI.FileDialog.Open(
+                "Choose Layer Image", baseDir, "*.png;*.jpg;*.jpeg;*.bmp;*.gif");
+            if assetPath != "" {
+                changed = ApplyLayerAssetPath(
+                    activeLayer, PortableLayerAssetPath(assetPath)) or changed;
+            }
+        }
+        if layerAssetInput.WasSubmitted() {
+            changed = ApplyLayerAssetPath(
+                activeLayer, layerAssetInput.Text) or changed;
+        }
+        if tilesetInspector.TakeReloadRequested() {
+            ReloadTilesetPreviews();
+        }
+        if tilesetInspector.TakeClearRequested() {
+            changed = ApplyLayerAssetPath(activeLayer, "") or changed;
+        }
+        return changed;
+    }
+
+    /// @brief Prefer scene-relative authored paths for saved scene documents.
+    hide override func PortableLayerAssetPath(assetPath: String) -> String {
+        var documentPath = "";
+        if currentDoc != null { documentPath = currentDoc.filePath; }
+        return scene_asset_browser.PortableReferencePath(
+            assetPath, documentPath);
+    }
+
+    /// @brief Configure one integer spinner used for new-scene dimensions.
+    expose override func ConfigureSceneSpinner(spinner: GUI.Spinner,
+                                    value: Integer,
+                                    maximum: Integer) {
+        spinner.SetRange(1.0, maximum);
+        spinner.SetStep(1.0);
+        spinner.SetDecimals(0);
+        spinner.SetValue(value);
+        spinner.SetPreferredSize(68.0, 0.0);
+    }
+
+    /// @brief Reflect the loaded scene in the new-scene setup controls.
+    hide override func RefreshSceneSetupFields() {
+        if scene == null or sceneWidthSpinner == null { return; }
+        sceneWidthSpinner.SetValue(scene.Width);
+        sceneHeightSpinner.SetValue(scene.Height);
+        sceneTileSizeSpinner.SetValue(scene.TileWidth);
+    }
+
+    hide override func PumpObjectControls() -> Boolean {
+        if scene == null { return false; }
+        PumpHierarchySearchControls();
+        var changed = false;
+        if objectTree.WasSelectionChanged() {
+            var primaryRow = objectTree.GetSelected();
+            selectedObject = -1;
+            if primaryRow != null {
+                selectedObject = Parse.IntOr(
+                    GUI.TreeView.Node.GetData(primaryRow), -1);
+            }
+            selectedObjects = scene_selection.FromData(
+                objectTree.GetSelectedData(),
+                scene.ObjectCount(),
+                selectedObject);
+            if selectedObject < 0 and selectedObjects.count() > 0 {
+                selectedObject = selectedObjects.get(0);
+            }
+            selectedObjectProperty = -1;
+            RefreshObjectFields();
+            renderDirty = true;
+        }
+        if objectTree.WasActivated()
+           and selectedObjects.count() > 0 {
+            FrameSelected();
+        }
+        if objectTree.WasDropReceived() {
+            var sourceIndex = Parse.IntOr(
+                objectTree.GetDropSourceData(), -1);
+            var targetIndex = Parse.IntOr(
+                objectTree.GetDropTargetData(), -1);
+            var dropPosition = objectTree.GetDropPosition();
+            objectTree.ClearDrop();
+            changed = ApplyObjectHierarchyDrop(
+                sourceIndex, targetIndex, dropPosition) or changed;
+        }
+        if objectTree.WasEditCommitted() {
+            changed = ApplyObjectRename() or changed;
+        }
+        PumpObjectRename();
+        if objectParentDropdown.WasChanged() {
+            UpdateObjectParentControlAvailability();
+        }
+        if reparentObjectButton.WasClicked() {
+            changed = ReparentSelectedSceneObjects(
+                SelectedObjectParentTargetIndex()) or changed;
+        }
+        if addObjectButton.WasClicked() {
+            changed = CreateRootObjectAtSelection() >= 0 or changed;
+        }
+        if addChildObjectButton.WasClicked() {
+            changed = CreateChildObjectUnderSelection() >= 0 or changed;
+        }
+        var applyRequested = applyObjectButton.WasClicked();
+        if objectTypeInput.WasSubmitted() { applyRequested = true; }
+        if objectIdInput.WasSubmitted() { applyRequested = true; }
+        if applyRequested and selectedObjects.count() == 1
+           and selectedObject >= 0
+           and selectedObject < scene.ObjectCount() {
+            changed = UpdateSceneObject(
+                selectedObject,
+                objectTypeInput.Text,
+                objectIdInput.Text,
+                Convert.NumToInt(objectXSpinner.Value),
+                Convert.NumToInt(objectYSpinner.Value)) or changed;
+        }
+        if objectDrawStackApplyButton.WasClicked()
+           and selectedObjects.count() == 1
+           and selectedObject >= 0
+           and selectedObject < scene.ObjectCount() {
+            changed = SetObjectPreviewStackOverride(
+                selectedObject,
+                objectAfterLayerDropdown.Selected - 1,
+                Convert.NumToInt(objectDrawOrderSpinner.Value)) or changed;
+        }
+        if objectDrawStackResetButton.WasClicked()
+           and selectedObjects.count() == 1
+           and selectedObject >= 0
+           and selectedObject < scene.ObjectCount() {
+            changed = ClearObjectPreviewStackOverride(
+                selectedObject) or changed;
+        }
+        if duplicateObjectButton.WasClicked() and selectedObject >= 0 {
+            if DuplicateSelectedSceneObjects() > 0 { changed = true; }
+        }
+        if objectArrangeDropdown.WasChanged() {
+            RefreshObjectArrangeControls(selectedObjects.count() > 0);
+        }
+        if arrangeObjectButton.WasClicked() {
+            changed = ArrangeSelectedSceneObjects(
+                objectArrangeDropdown.Selected) or changed;
+        }
+        if objectUpButton.WasClicked() {
+            changed = MoveSelectedObjectEarlier() or changed;
+        }
+        if objectDownButton.WasClicked() {
+            changed = MoveSelectedObjectLater() or changed;
+        }
+        if removeObjectButton.WasClicked() and selectedObject >= 0 {
+            changed = RemoveSelectedSceneObjects() or changed;
+        }
+        objectProperties.Pump();
+        var propertyCommitRow = objectProperties.TakeCommitRow();
+        if propertyCommitRow >= 0 and selectedObjects.count() > 1 {
+            changed = SetSelectedSceneObjectProperty(
+                objectProperties.KeyTextAt(propertyCommitRow),
+                PropertyKindToken(
+                    objectProperties.KindIndexAt(propertyCommitRow)),
+                objectProperties.ValueTextAt(propertyCommitRow)) or changed;
+        } else if propertyCommitRow >= 0 and selectedObjects.count() == 1
+                  and selectedObject >= 0 {
+            changed = SetSceneObjectProperty(
+                selectedObject,
+                objectProperties.CanonicalKeyAt(propertyCommitRow),
+                objectProperties.KeyTextAt(propertyCommitRow),
+                PropertyKindToken(
+                    objectProperties.KindIndexAt(propertyCommitRow)),
+                objectProperties.ValueTextAt(propertyCommitRow)) or changed;
+        }
+        var propertyRemoveRow = objectProperties.TakeRemoveRow();
+        if propertyRemoveRow >= 0 and selectedObjects.count() == 1
+           and selectedObject >= 0 {
+            changed = RemoveSceneObjectProperty(
+                selectedObject,
+                objectProperties.CanonicalKeyAt(
+                    propertyRemoveRow)) or changed;
+        }
+        if removeObjectPropertyButton.WasClicked()
+           and selectedObjects.count() > 1
+           and objectProperties.RowCount() > 0 {
+            changed = RemoveSelectedSceneObjectProperty(
+                objectProperties.KeyTextAt(0)) or changed;
+        }
+        return changed;
+    }
+
+    /// @brief Route project component-picker intent into editor transactions.
+    hide override func PumpComponentControls() -> Boolean {
+        if componentPalette == null or componentPalette.group == null {
+            return false;
+        }
+        if componentPalette.Pump() { RefreshComponentPalette(); }
+        var schemaChanged = componentAuthoring.PollExternalChanges(
+            1000, componentPalette);
+        var schemaAuthored =
+            componentAuthoring.Pump(componentPalette);
+        if schemaChanged or schemaAuthored
+           or componentAuthoring.handled {
+            componentSchema = componentAuthoring.schema;
+            RefreshComponentPalette();
+            if componentAuthoring.message != "" {
+                detailLabel.SetText(componentAuthoring.message);
+            }
+        }
+        if componentPalette.TakeEditFieldRequested() {
+            EditSelectedComponentField();
+        }
+        if componentPalette.TakeCreateRequested() {
+            return CreateObjectFromComponent(
+                       componentPalette.SelectedComponent()) >= 0;
+        }
+        if componentPalette.TakeApplyRequested() {
+            return ApplySelectedComponent(
+                componentPalette.SelectedComponent());
+        }
+        return false;
+    }
+}

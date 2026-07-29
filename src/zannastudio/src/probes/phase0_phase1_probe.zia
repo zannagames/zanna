@@ -59,6 +59,7 @@ bind "../ui/tool_panel_groups";
 bind "../ui/tool_panel_model";
 bind "../ui/workspace_dock";
 bind "../basic/semantic_scan";
+bind "phase0_phase1_models_probe";
 
 bind Terminal = Zanna.Terminal;
 bind File = Zanna.IO.File;
@@ -104,519 +105,13 @@ func AddEdit(edits: Any,
     Seq.Push(edits, edit);
 }
 
-func TestToolPanelGroups() {
-    var defaultGroups = new tool_panel_groups.ToolPanelGroups();
-    if assertTrue(
-           defaultGroups.Encode()
-               == "left=;bottom=problems,output,search,references,variables,"
-                  + "call-stack,debug-console,terminal;right=;floating="
-           and defaultGroups.LocationForId(tool_panel_model.TAB_ID_TERMINAL)
-               == workspace_dock.DOCK_BOTTOM,
-           "tool-panel groups start as one compatible bottom strip") == false {
-        return;
-    }
-    if assertTrue(
-           defaultGroups.Apply(
-               "left=problems,search;"
-               + "bottom=output,references,variables,call-stack,debug-console;"
-               + "right=terminal",
-               "bottom",
-               tool_panel_model.DEFAULT_TAB_ORDER)
-           and defaultGroups.LocationForId(
-                   tool_panel_model.TAB_ID_PROBLEMS)
-               == workspace_dock.DOCK_LEFT
-           and defaultGroups.LocationForId(
-                   tool_panel_model.TAB_ID_TERMINAL)
-               == workspace_dock.DOCK_RIGHT,
-           "tool-panel groups migrate one complete three-dock layout") == false {
-        return;
-    }
-    var mergeGroups = new tool_panel_groups.ToolPanelGroups();
-    mergeGroups.Apply(
-        "left=problems,search;"
-        + "bottom=output,references,variables,call-stack,debug-console;"
-        + "right=terminal",
-        "bottom",
-        tool_panel_model.DEFAULT_TAB_ORDER);
-    if assertTrue(
-           mergeGroups.MergeLocation(
-               workspace_dock.DOCK_LEFT, workspace_dock.DOCK_RIGHT)
-           and mergeGroups.Encode()
-               == "left=;bottom=output,references,variables,call-stack,"
-                  + "debug-console;right=problems,search,terminal;floating=",
-           "whole-group docking merges occupied destinations in stable order")
-       == false {
-        return;
-    }
-    defaultGroups.MoveId(
-        tool_panel_model.TAB_ID_TERMINAL, workspace_dock.DOCK_BOTTOM);
-    if assertTrue(
-           defaultGroups.Encode()
-               == "left=problems,search;"
-                  + "bottom=output,references,variables,call-stack,"
-                  + "debug-console,terminal;right=;floating=",
-           "moving one tool preserves every other group member") == false {
-        return;
-    }
-    if assertTrue(
-           defaultGroups.Apply(
-                   "left=terminal;bottom=terminal;right=",
-                   "right",
-                   "terminal,debug-console,call-stack,variables,references,"
-                   + "search,output,problems")
-               == false
-           and defaultGroups.Encode()
-               == "left=;bottom=;right=terminal,debug-console,call-stack,"
-                  + "variables,references,search,output,problems;floating=",
-           "malformed group layouts recover atomically through legacy state")
-       == false {
-        return;
-    }
-    var floatingGroups = new tool_panel_groups.ToolPanelGroups();
-    if assertTrue(
-           floatingGroups.Apply(
-               "left=problems;bottom=output,search,references,variables,"
-               + "call-stack,debug-console;right=;floating=terminal",
-               "bottom",
-               tool_panel_model.DEFAULT_TAB_ORDER)
-           and floatingGroups.LocationForId(
-                   tool_panel_model.TAB_ID_TERMINAL)
-               == workspace_dock.DOCK_FLOATING
-           and floatingGroups.MoveId(
-               tool_panel_model.TAB_ID_PROBLEMS,
-               workspace_dock.DOCK_FLOATING)
-           and floatingGroups.Encode()
-               == "left=;bottom=output,search,references,variables,"
-                  + "call-stack,debug-console;right=;"
-                  + "floating=terminal,problems",
-           "tool-panel groups persist a fourth movable floating location")
-       == false {
-        return;
-    }
+class DocumentsSettingsProbeContext {
+    expose String root;
 }
 
-func TestSafeIo() {
-    if assertTrue(file_utils.DetectKind("LEVEL.Scene") == file_utils.DOC_KIND_SCENE,
-                  "scene kind case-insensitive") == false { return; }
-    if assertTrue(file_utils.DetectLanguage("game.BAS") == "basic",
-                  "basic language case-insensitive") == false { return; }
-    if assertTrue(file_utils.DetectLanguage("level.scene") == "scene",
-                  "scene language routed explicitly") == false { return; }
-    var defaultProjectsBase = project_templates.DefaultProjectsBase();
-    if assertTrue(defaultProjectsBase != ""
-                  and Path.Name(defaultProjectsBase) == "ZannaProjects",
-                  "new projects use the native user home") == false { return; }
-
-    // Runtime file moves trap on ordinary user-facing failures. Studio's safe
-    // boundary must turn a destination collision into false while preserving
-    // both files, then still permit an ordinary no-overwrite move.
-    var safeIoRoot = TempFile.CreateDirWithPrefix("zannastudio_safe_io_");
-    var safeIoSource = Path.Join(safeIoRoot, "source.txt");
-    var safeIoCollision = Path.Join(safeIoRoot, "collision.txt");
-    var safeIoMoved = Path.Join(safeIoRoot, "moved.txt");
-    File.WriteAllText(safeIoSource, "source");
-    File.WriteAllText(safeIoCollision, "collision");
-    if assertTrue(safe_io.MoveFile(safeIoSource, safeIoCollision) == false
-                  and File.ReadAllText(safeIoSource) == "source"
-                  and File.ReadAllText(safeIoCollision) == "collision",
-                  "safe file move contains destination traps") == false { return; }
-    if assertTrue(safe_io.MoveFile(safeIoSource, safeIoMoved)
-                  and File.Exists(safeIoSource) == false
-                  and File.ReadAllText(safeIoMoved) == "source",
-                  "safe file move succeeds without overwrite") == false { return; }
-    var safeIoCopied = Path.Join(safeIoRoot, "copied.txt");
-    if assertTrue(safe_io.CopyFile(safeIoMoved, safeIoCollision) == false
-                  and safe_io.CopyFile(safeIoMoved, safeIoCopied)
-                  and File.ReadAllText(safeIoCopied) == "source"
-                  and File.ReadAllText(safeIoCollision) == "collision",
-                  "safe file copy succeeds without overwriting collisions") == false { return; }
-    var longStagingName = "";
-    var longNameIndex = 0;
-    while longNameIndex < 230 {
-        longStagingName = longStagingName + "n";
-        longNameIndex = longNameIndex + 1;
-    }
-    var longStagingTarget = Path.Join(safeIoRoot, longStagingName + ".txt");
-    var shortStagingPath = safe_io.SiblingTempPath(longStagingTarget, "probe");
-    if assertTrue(shortStagingPath != ""
-                  and Path.Directory(shortStagingPath) == safeIoRoot
-                  and Str.StartsWith(Path.Name(shortStagingPath),
-                                     ".zannastudio-probe-")
-                  and Str.get_Length(Path.Name(shortStagingPath)) < 96
-                  and safe_io.SiblingTempPath(longStagingTarget, "../escape") == "",
-                  "atomic staging names stay short and reject unsafe labels") == false { return; }
-    var safeCreated = Path.Join(safeIoRoot, "created.txt");
-    if assertTrue(safe_io.CreateTextFile(safeCreated, "created")
-                  and File.ReadAllText(safeCreated) == "created"
-                  and safe_io.CreateTextFile(safeCreated, "replacement") == false
-                  and File.ReadAllText(safeCreated) == "created",
-                  "atomic text creation preserves no-overwrite behavior") == false { return; }
-    var missingSafeRead = safe_io.ReadAllText(Path.Join(safeIoRoot, "missing.txt"));
-    if assertTrue(missingSafeRead.ok == false
-                  and safe_io.SizeBytes(Path.Join(safeIoRoot, "missing.txt")) == -1
-                  and safe_io.Modified(Path.Join(safeIoRoot, "missing.txt")) == -1,
-                  "safe metadata and text reads contain missing-file traps") == false { return; }
-    var missingSafeList = safe_io.ListFiles(Path.Join(safeIoRoot, "missing-dir"));
-    var missingProject = new project.Project();
-    missingProject.Open(Path.Join(safeIoRoot, "missing-dir"));
-    if assertTrue(missingSafeList.items.count() == 0 and missingProject.isOpen == false,
-                  "missing folders fail without opening or trapping") == false { return; }
-
-    var entryRoot = Path.Join(safeIoRoot, "entry-project");
-    var entrySrc = Path.Join(entryRoot, "src");
-    Dir.MakeAll(entrySrc);
-    var entryFile = Path.Join(entrySrc, "main.zia");
-    File.WriteAllText(entryFile, "module Entry;\n");
-    var entryProject = new project.Project();
-    entryProject.Open(entryRoot);
-    var detachedProjectManager = new project_manager.ProjectManager();
-    if assertTrue(detachedProjectManager.OpenFolder(entryRoot)
-                  and detachedProjectManager.IsOpen(),
-                  "folder open is safe before Explorer widget setup") == false { return; }
-    var entryManager = new project_manager.ProjectManager();
-    entryManager.project = entryProject;
-    Dir.MakeAll(Path.Join(entryRoot, "zanna.project"));
-    if assertTrue(entryManager.SetEntryFile(entryFile) == false
-                  and entryProject.entryFile == "main.zia"
-                  and entryProject.hasProjectFile == false,
-                  "failed entry persistence leaves the in-memory project unchanged") == false {
-        return;
-    }
-
-}
-
-func TestCommandsAndModels() {
-    var registry = new command_registry.CommandRegistry();
-    if assertTrue(registry.NormalizeId("sidebar") == "togglesidebar",
-                  "sidebar command normalized") == false { return; }
-    if assertTrue(registry.IsKnown("rename"), "rename command registered") == false { return; }
-    if assertTrue(registry.Find("save").category == "File"
-                  and registry.Find("saveas").category == "File"
-                  and registry.Find("openfolder").category == "File"
-                  and registry.Find("rename").category == "Refactor"
-                  and registry.Find("extractfunction").category == "Refactor"
-                  and registry.Find("searchproject").category == "Search"
-                  and registry.Find("signature_trigger").category == "Navigate"
-                  and registry.Find("signaturenextoverload").category == "Navigate"
-                  and registry.Find("movesidebarleft").category == "View"
-                  and registry.Find("movesidebarright").category == "View"
-                  and registry.Find("movetoolleft").category == "View"
-                  and registry.Find("movetoolbottom").category == "View"
-                  and registry.Find("movetoolright").category == "View"
-                  and registry.Find("movetoolfloating").category == "View"
-                  and registry.Find("floatpanelgroup").category == "View"
-                  and registry.Find("resetworkspacelayout").category == "View"
-                  and registry.Find("scenefocus").category == "View",
-                  "command palette categories assigned") == false { return; }
-    if assertTrue(registry.Find("saveas").shortcut
-                      == command_catalog.PlatformShortcut("Ctrl+Shift+S")
-                  and registry.Find("saveall").shortcut
-                      == command_catalog.PlatformShortcut("Ctrl+Alt+Shift+S")
-                  and registry.Find("openfolder").shortcut
-                      == command_catalog.PlatformShortcut("Ctrl+Alt+O")
-                  and registry.Find("scenefocus").shortcut
-                      == command_catalog.PlatformShortcut("Shift+Space"),
-                  "file command shortcuts are discoverable and conflict-free") == false { return; }
-
-    var langMgr = new language_service.LanguageServiceManager();
-    var basicDoc = new document.Document();
-    basicDoc.language = "basic";
-    var basicService = langMgr.ForDocument(basicDoc);
-    // BASIC combines the Zanna.Basic.* runtime bridge with the IDE-side BASIC
-    // scanner for navigation, references, rename, and signature help.
-    if assertTrue(basicService.canComplete and basicService.canDiagnose
-                  and basicService.canGoToDefinition
-                  and basicService.canFindReferences
-                  and basicService.canRename
-                  and basicService.canSignatureHelp,
-                  "basic language assistance enabled") == false { return; }
-    if assertTrue(status_bar_model.LanguageStatusText("basic") == "Lang: BASIC",
-                  "basic status text is first-class") == false { return; }
-    var ziaDoc = new document.Document();
-    ziaDoc.language = "zia";
-    ziaDoc.kind = file_utils.DOC_KIND_CODE;
-    var ziaService = langMgr.ForDocument(ziaDoc);
-    if assertTrue(ziaService.canRename,
-                  "zia rename capability enabled") == false { return; }
-    if assertTrue(registry.IsExecutable("rename", basicService)
-                  and registry.IsExecutable("rename", ziaService),
-                  "command registry gates language capabilities") == false { return; }
-    if assertTrue(registry.IsExecutable("signaturenextoverload", basicService)
-                  and registry.IsExecutable("signatureprevoverload", ziaService)
-                  and registry.IsExecutable("signature_trigger", ziaService),
-                  "signature overload commands gate language capabilities") == false { return; }
-    var disabledReason = registry.DisabledReason("extractlocal", basicService);
-    if assertTrue(Str.IndexOf(disabledReason, "Zia source syntax") != 0,
-                  "disabled command reason labels Zia-only transform") == false { return; }
-
-    registry.ApplyCommandContext(false, false, false, false,
-                                 false, false, false, ziaService);
-    if assertTrue(registry.IsExecutable("new", ziaService)
-                  and registry.IsExecutable("open", ziaService)
-                  and registry.IsExecutable("toggletheme", ziaService)
-                  and registry.IsExecutable("save", ziaService) == false
-                  and registry.IsExecutable("find", ziaService) == false
-                  and registry.IsExecutable("build", ziaService) == false
-                  and registry.IsExecutable("debugstart", ziaService) == false
-                  and registry.IsExecutable("quickopen", ziaService) == false
-                  and registry.IsExecutable("stopjob", ziaService) == false,
-                  "empty welcome gates shortcuts and palette commands") == false { return; }
-    if assertTrue(Str.IndexOf(registry.DisabledReason("save", ziaService),
-                              "Open a document") != 0
-                  and Str.IndexOf(registry.DisabledReason("quickopen", ziaService),
-                                  "Open a project") != 0,
-                  "context-disabled commands explain how to enable them") == false { return; }
-
-    registry.ApplyCommandContext(true, true, true, true,
-                                 false, false, false, ziaService);
-    if assertTrue(registry.IsExecutable("save", ziaService)
-                  and registry.IsExecutable("find", ziaService)
-                  and registry.IsExecutable("build", ziaService)
-                  and registry.IsExecutable("debugstart", ziaService)
-                  and registry.IsExecutable("quickopen", ziaService)
-                  and registry.IsExecutable("stopjob", ziaService) == false
-                  and registry.IsExecutable("debugcontinue", ziaService) == false,
-                  "document and project context enables target commands") == false { return; }
-
-    registry.SetTextEditorAvailable(false);
-    if assertTrue(registry.IsExecutable("save", ziaService)
-                  and registry.IsExecutable("close", ziaService)
-                  and registry.IsExecutable("find", ziaService) == false
-                  and registry.IsExecutable("cut", ziaService) == false
-                  and registry.IsExecutable("minimap", ziaService) == false
-                  and registry.IsExecutable("spliteditorright", ziaService) == false
-                  and Str.IndexOf(registry.DisabledReason("find", ziaService),
-                                 "source, text, and scene surfaces") != 0,
-                  "visual surfaces disable hidden code-editor commands") == false {
-        return;
-    }
-    registry.SetVisualSceneEditorAvailable(true);
-    if assertTrue(registry.IsExecutable("cut", ziaService)
-                  and registry.IsExecutable("copy", ziaService)
-                  and registry.IsExecutable("paste", ziaService)
-                  and registry.IsExecutable("selectall", ziaService)
-                  and registry.IsExecutable("duplicateline", ziaService)
-                  and registry.IsExecutable(
-                      "deletesceneselection", ziaService)
-                  and registry.IsExecutable("find", ziaService)
-                  and registry.IsExecutable("minimap", ziaService) == false,
-                  "visual scenes own selection edits and hierarchy Find")
-       == false {
-        return;
-    }
-    registry.SetVisualSceneEditorAvailable(false);
-    registry.SetTextEditorAvailable(true);
-    if assertTrue(
-           registry.IsExecutable("duplicateline", ziaService)
-           and registry.IsExecutable(
-               "deletesceneselection", ziaService) == false,
-           "text editors retain duplicate but not scene-only delete")
-       == false {
-        return;
-    }
-
-    registry.SetSplitEditorContext(false, false);
-    if assertTrue(registry.IsExecutable("spliteditorright", ziaService) == false
-                  and registry.IsExecutable("focusotherpane", ziaService) == false
-                  and registry.IsExecutable("closesplit", ziaService) == false
-                  and Str.IndexOf(
-                      registry.DisabledReason("spliteditorright", ziaService),
-                      "another source or text document") != 0,
-                  "single-document split commands explain missing topology") == false {
-        return;
-    }
-    registry.SetSplitEditorContext(true, false);
-    if assertTrue(registry.IsExecutable("spliteditorright", ziaService)
-                  and registry.IsExecutable("focusotherpane", ziaService) == false
-                  and registry.IsExecutable("closesplit", ziaService) == false,
-                  "eligible companion enables only split creation") == false {
-        return;
-    }
-    registry.SetSplitEditorContext(false, true);
-    if assertTrue(registry.IsExecutable("spliteditorright", ziaService) == false
-                  and registry.IsExecutable("focusotherpane", ziaService)
-                  and registry.IsExecutable("closesplit", ziaService)
-                  and Str.IndexOf(
-                      registry.DisabledReason("spliteditorright", ziaService),
-                      "Close the current editor split") == 1,
-                  "active split enables pane commands and blocks nesting") == false {
-        return;
-    }
-    registry.SetSplitEditorContext(true, false);
-
-    registry.ApplyCommandContext(true, true, true, true,
-                                 true, false, false, ziaService);
-    if assertTrue(registry.IsExecutable("build", ziaService) == false
-                  and registry.IsExecutable("debugstart", ziaService) == false
-                  and registry.IsExecutable("stopjob", ziaService),
-                  "active jobs gate competing shortcut and palette commands") == false { return; }
-
-    registry.ApplyCommandContext(true, true, true, true,
-                                 false, true, true, ziaService);
-    if assertTrue(registry.IsExecutable("build", ziaService) == false
-                  and registry.IsExecutable("debugstart", ziaService) == false
-                  and registry.IsExecutable("debugcontinue", ziaService)
-                  and registry.IsExecutable("debugstepover", ziaService)
-                  and registry.IsExecutable("debugpause", ziaService) == false
-                  and registry.IsExecutable("debugrestart", ziaService)
-                  and registry.IsExecutable("debugstop", ziaService),
-                  "paused debug sessions expose only valid controls") == false { return; }
-
-    registry.ApplyCommandContext(false, true, true, false,
-                                 false, false, false, ziaService);
-    if assertTrue(registry.IsExecutable("build", ziaService)
-                  and registry.IsExecutable("run", ziaService)
-                  and registry.IsExecutable("quickopen", ziaService)
-                  and registry.IsExecutable("debugstart", ziaService) == false,
-                  "project-only context builds without advertising file debugging") == false {
-        return;
-    }
-    var shortcutRefreshes = registry.shortcutStateRefreshCount;
-    registry.ApplyCommandContext(false, true, true, false,
-                                 false, false, false, ziaService);
-    if assertTrue(registry.shortcutStateRefreshCount == shortcutRefreshes,
-                  "stable frame context avoids redundant shortcut refresh") == false {
-        return;
-    }
-
-    var basicSource = "SUB Greet(name$)\n  PRINT name$\nEND SUB\nGreet(\"Ada\")\n";
-    var basicDecls = semantic_scan.DeclarationsForFile("probe.bas", basicSource);
-    var greetDef = semantic_scan.BestDefinition(basicDecls, "probe.bas", 4, "Greet");
-    if assertTrue(greetDef != null and Map.GetBool(greetDef, "found")
-                  and Map.GetInt(greetDef, "line") == 1,
-                  "basic scanner finds procedure definitions") == false { return; }
-    var basicRefs = Seq.New();
-    semantic_scan.AddReferencesForFile(basicRefs, "probe.bas", basicSource, greetDef);
-    if assertTrue(Seq.get_Count(basicRefs) >= 2,
-                  "basic scanner finds procedure references") == false { return; }
-    var basicRenameEdits = semantic_scan.RenameEditsFromReferences(basicRefs, "Welcome");
-    if assertTrue(Seq.get_Count(basicRenameEdits) >= 2
-                  and Map.GetStr(Seq.Get(basicRenameEdits, 0), "newText") == "Welcome",
-                  "basic scanner emits rename edits") == false { return; }
-    var basicSig = semantic_scan.SignatureInfoForFile("probe.bas", basicSource, 4, 8);
-    if assertTrue(Map.GetBool(basicSig, "available")
-                  and Map.GetStr(basicSig, "name") == "Greet",
-                  "basic scanner returns signature help") == false { return; }
-
-    var previewPath = Path.Join(TempFile.Dir(), "zannastudio_preview.png");
-    File.WriteAllText(previewPath, "not actually image data");
-    var previewDocs = new document_manager.DocumentManager();
-    var previewDoc = previewDocs.OpenFile(previewPath);
-    if assertTrue(previewDoc.isReadOnlyPreview
-                  and Str.IndexOf(previewDoc.content, "Binary preview is not available") != 0
-                  and previewDocs.SaveDocument(previewDocs.activeIndex) == false,
-                  "binary files open as read-only previews") == false { return; }
-
-    var locs = new locations.LocationStore();
-    var id = locs.Add("C:\\tmp\\a file.zia", 3, 4, 3, 8, locations.KIND_SEARCH, "hit");
-    var loc = locs.Get(id);
-    if assertTrue(loc != null and loc!.filePath == "C:\\tmp\\a file.zia",
-                  "location store preserves colon path") == false { return; }
-
-    if assertTrue(search_commands.LineMatches("foobar foo", "foo", false, true),
-                  "whole-word search finds later whole token") == false { return; }
-    if assertTrue(search_commands.LineMatches("Alpha", "alpha", false, false),
-                  "case-insensitive search") == false { return; }
-    if assertTrue(search_commands.LineMatches("Alpha", "alpha", true, false) == false,
-                  "case-sensitive search") == false { return; }
-
-    var shortcutRegistry = new command_registry.CommandRegistry();
-    if assertTrue(shortcutRegistry.ShortcutConflictCount() == 0,
-                  "default keybindings have no conflicts") == false { return; }
-    var saveShortcut = shortcutRegistry.ShortcutFor("save");
-    shortcutRegistry.Add("probe.conflict", "Probe Conflict", "Intentional conflict",
-                         saveShortcut, "", true);
-    if assertTrue(shortcutRegistry.ShortcutConflictCount() == 1
-                  and shortcutRegistry.ShortcutHasConflict(saveShortcut)
-                  and Str.IndexOf(shortcutRegistry.ShortcutConflictSummary(), "save") != 0,
-                  "keybinding conflict detection reports duplicates") == false { return; }
-
-    var workScheduler = new scheduler.EditorScheduler();
-    var firstGen = workScheduler.Queue(scheduler.JOB_DIAGNOSTICS, "a.zia", 1, 0);
-    var secondGen = workScheduler.Queue(scheduler.JOB_DIAGNOSTICS, "a.zia", 2, 0);
-    if assertTrue(workScheduler.IsCurrent(scheduler.JOB_DIAGNOSTICS, firstGen) == false
-                  and workScheduler.IsCurrent(scheduler.JOB_DIAGNOSTICS, secondGen)
-                  and workScheduler.QueuedGeneration(scheduler.JOB_DIAGNOSTICS) == secondGen,
-                  "scheduler generations reject stale jobs") == false { return; }
-    workScheduler.Cancel(scheduler.JOB_DIAGNOSTICS);
-    if assertTrue(workScheduler.IsCurrent(scheduler.JOB_DIAGNOSTICS, secondGen) == false
-                  and workScheduler.QueuedGeneration(scheduler.JOB_DIAGNOSTICS) == 0,
-                  "scheduler cancel invalidates queued generation") == false { return; }
-
-    var defaultSettings = new settings.SettingsManager();
-    if assertTrue(defaultSettings.fontSize == settings.DEFAULT_FONT_SIZE
-                  and settings.DEFAULT_FONT_SIZE == 15,
-                  "default editor font size is readable") == false { return; }
-    if assertTrue(defaultSettings.minimapVisible,
-                  "minimap defaults on: the line-summary cache renders incrementally") == false { return; }
-    if assertTrue(defaultSettings.wordWrap == false and defaultSettings.lineNumbers,
-                  "editor view settings have stable defaults") == false { return; }
-    if assertTrue(defaultSettings.insertSpaces
-                  and defaultSettings.ensureFinalNewline
-                  and defaultSettings.autoSave == false
-                  and defaultSettings.saveAllBeforeBuild
-                  and defaultSettings.trimTrailingWhitespace == false,
-                  "editor save settings have stable defaults") == false { return; }
-    if assertTrue(defaultSettings.uiZoomPercent == 100,
-                  "UI zoom defaults to 100 percent") == false { return; }
-    if assertTrue(defaultSettings.panelDockPosition == "bottom"
-                  and defaultSettings.toolPanelGroupLayout == ""
-                  and defaultSettings.sidePanelWidthPct == 30
-                  and defaultSettings.floatingToolPanelX == 96
-                  and defaultSettings.floatingToolPanelY == 88
-                  and defaultSettings.floatingToolPanelWidth == 680
-                  and defaultSettings.floatingToolPanelHeight == 420
-                  and defaultSettings.primarySidebarPosition == "left"
-                  and defaultSettings.sidebarWidthPct == 24
-                  and defaultSettings.sidebarVisible
-                  and defaultSettings.activeSidebarViewId == "explorer"
-                  and defaultSettings.editorSplitPct == 50
-                  and defaultSettings.activeToolPanelId == "none"
-                  and defaultSettings.toolPanelTabOrder
-                      == "problems,output,search,references,variables,call-stack,debug-console,terminal",
-                  "workspace docking has stable defaults") == false { return; }
-    if assertTrue(
-        settings.EffectiveSidebarVisibility(
-            false, true, "explorer") == false
-        and settings.EffectiveSidebarVisibility(
-            false, true, "run-debug")
-        and settings.EffectiveSidebarVisibility(
-            true, true, "explorer")
-        and settings.EffectiveSidebarVisibility(
-            true, false, "run-debug") == false,
-        "startup suppresses only sidebar views that need a workspace")
-       == false {
-        return;
-    }
-
-    var sigSource = "module Demo;\nfunc f() { outer(inner(a, b), c); }\n";
-    if assertTrue(signature.ActiveParameter(sigSource, 2, 27) == 1,
-                  "nested signature active parameter") == false { return; }
-
-    if assertTrue(edit_commands.IsValidIdentifier("newName_1"),
-                  "valid rename identifier") == false { return; }
-    if assertTrue(edit_commands.IsValidIdentifier("1bad") == false,
-                  "invalid rename identifier") == false { return; }
-    if assertTrue(edit_commands.IsValidIdentifier("while") == false,
-                  "keyword rename identifier rejected") == false { return; }
-
-    var closeMgr = new document_manager.DocumentManager();
-    var closeA = closeMgr.NewDocument();
-    closeA.fileName = "a.zia";
-    var closeB = closeMgr.NewDocument();
-    closeB.fileName = "b.zia";
-    var closeC = closeMgr.NewDocument();
-    closeC.fileName = "c.zia";
-    closeMgr.SetActive(2);
-    closeMgr.CloseDocument(0);
-    var stillActive = closeMgr.GetActive();
-    if assertTrue(closeMgr.activeIndex == 1 and stillActive != null and stillActive!.fileName == "c.zia",
-                  "closing tab left of active keeps same document active") == false { return; }
-
-}
-
-func TestDocumentsAndSettings() {
+func TestDocumentBehavior(ctx: DocumentsSettingsProbeContext) {
     var root = TempFile.CreateDirWithPrefix("zannastudio_phase_probe_");
+    ctx.root = root;
     var filePath = Path.Join(root, "main.zia");
     File.WriteAllText(filePath, "module Main;\nfunc start() {\n    var oldName = 1;\n    var useName = oldName;\n}\n");
     var aliasDir = Path.Join(root, "path-alias");
@@ -725,7 +220,10 @@ func TestDocumentsAndSettings() {
                   and binarySaveDoc.isNew
                   and binarySaveDoc.filePath == "",
                   "Save As rejects known binary extensions without mutating the document") == false { return; }
+}
 
+func TestSettingsBehavior(ctx: DocumentsSettingsProbeContext) {
+    var root = ctx.root;
     var tinySettingsPath = Path.Join(root, "tiny-settings.ini");
     File.WriteAllText(tinySettingsPath, "[settings]\nfontSize=8\n");
     var tinySettings = new settings.SettingsManager();
@@ -975,7 +473,16 @@ func TestSessionPersistence() {
     Dir.RemoveAll(root);
 }
 
-func TestSessionRestoreHardening() {
+class SessionRestoreProbeContext {
+    expose String root;
+    expose String filePath;
+    expose String binaryPath;
+    expose String binarySettingsPath;
+    expose session.SessionManager binarySession;
+    expose document_manager.DocumentManager sessionDocMgr;
+}
+
+func TestSessionRestoreInputHardening(ctx: SessionRestoreProbeContext) {
     var root = TempFile.CreateDirWithPrefix("zannastudio_phase_restore_");
     var filePath = Path.Join(root, "main.zia");
     File.WriteAllText(filePath,
@@ -999,6 +506,10 @@ func TestSessionRestoreHardening() {
     var sessionDocMgr = new document_manager.DocumentManager();
     sessionDocMgr.OpenFile(filePath);
     var sessionProjMgr = new project_manager.ProjectManager();
+    ctx.root = root;
+    ctx.filePath = filePath;
+    ctx.binaryPath = binaryPath;
+    ctx.sessionDocMgr = sessionDocMgr;
 
     // A hostile or corrupt shared state file is rejected from metadata alone.
     // Save paths must also decline to clobber it because preserving unknown
@@ -1055,6 +566,8 @@ func TestSessionRestoreHardening() {
         + "[recentFiles]\ncount=2\npath.0=" + binaryPath + "\npath.1=" + filePath + "\n");
     var binarySession = new session.SessionManager();
     binarySession.Setup(binarySettingsPath);
+    ctx.binarySettingsPath = binarySettingsPath;
+    ctx.binarySession = binarySession;
     var prunedHistoryIni = Ini.Parse(File.ReadAllText(binarySettingsPath));
     if assertTrue(binarySession.RecentFileCount() == 1
                   and binarySession.RecentFileAt(0) == filePath
@@ -1112,6 +625,15 @@ func TestSessionRestoreHardening() {
                   "session restore removes canonically duplicate document slots") == false {
         return;
     }
+}
+
+func TestSessionRestoreScheduling(ctx: SessionRestoreProbeContext) {
+    var root = ctx.root;
+    var filePath = ctx.filePath;
+    var binaryPath = ctx.binaryPath;
+    var binarySettingsPath = ctx.binarySettingsPath;
+    var binarySession = ctx.binarySession;
+    var sessionDocMgr = ctx.sessionDocMgr;
 
     // The startup-facing restore API must honor its caller's root/file budget;
     // otherwise a valid 256-tab session monopolizes the UI before main can
@@ -1348,17 +870,18 @@ func TestWorkspaceEdits() {
 }
 
 func main() {
-    TestToolPanelGroups();
+    if phase0_phase1_models_probe.Run() == false { return; }
+    var documentsSettingsCtx = new DocumentsSettingsProbeContext();
+    TestDocumentBehavior(documentsSettingsCtx);
     if probeFailed { return; }
-    TestSafeIo();
-    if probeFailed { return; }
-    TestCommandsAndModels();
-    if probeFailed { return; }
-    TestDocumentsAndSettings();
+    TestSettingsBehavior(documentsSettingsCtx);
     if probeFailed { return; }
     TestSessionPersistence();
     if probeFailed { return; }
-    TestSessionRestoreHardening();
+    var restoreCtx = new SessionRestoreProbeContext();
+    TestSessionRestoreInputHardening(restoreCtx);
+    if probeFailed { return; }
+    TestSessionRestoreScheduling(restoreCtx);
     if probeFailed { return; }
     TestWorkspaceEdits();
     if probeFailed { return; }

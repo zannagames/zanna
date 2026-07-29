@@ -1,0 +1,699 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/bottom_panel_probe_part_1.zia
+// Purpose: Serial bottom-panel probe scenarios, part 1 of 2.
+// Key invariants:
+//   - Scenarios preserve the original dock tree and execution order.
+//   - Failure paths retain their original RESULT diagnostics.
+// Ownership/Lifetime: Borrows one BottomPanelProbeContext from the entry probe.
+// Links: zannastudio/src/probes/bottom_panel_probe.zia,
+//        zannastudio/src/probes/bottom_panel_probe_support.zia
+//
+//===----------------------------------------------------------------------===//
+
+module bottom_panel_probe_part_1;
+
+bind "../ui/app_shell";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_shell";
+bind "../ui/workspace_dock";
+
+bind Zanna.GUI as GUI;
+bind Terminal = Zanna.Terminal;
+bind Env = Zanna.System.Environment;
+bind Convert = Zanna.Core.Convert;
+
+bind "bottom_panel_probe_support" as Probe;
+
+/// @brief Run the VerifyInitialCollapseAndSidebarGeometry scenario against the shared fixture.
+expose func VerifyInitialCollapseAndSidebarGeometry(ctx: Probe.BottomPanelProbeContext) -> Boolean {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Bottom Panel Probe", 1100, 760);
+    shell.Poll();
+    shell.Render();
+
+    if !tool_panel_shell.SearchUsesCompactControls(520.0)
+       or tool_panel_shell.SearchUsesCompactControls(520.01)
+       or tool_panel_shell.SearchUsesCompactControls(0.0)
+       or !tool_panel_shell.TerminalUsesCompactActions(360.0)
+       or tool_panel_shell.TerminalUsesCompactActions(360.01)
+       or tool_panel_shell.TerminalUsesCompactActions(0.0) {
+        Probe.fail(shell, "tool-panel responsive thresholds were unstable");
+        return false;
+    }
+
+    var split = shell.workbench.editorSplit;
+    if split == null { Probe.fail(shell, "editorSplit missing"); return false; }
+
+    // No panel yet: use the explicit collapsed-side state. Merely moving the
+    // divider to 1.0 still leaves the second child's minimum-height strip in
+    // the layout, which looks like a permanently empty bottom panel.
+    if split.GetCollapsedSide() != 2 {
+        Probe.fail(shell, "bottom has no explicit collapsed state: " + split.GetCollapsedSide());
+        return false;
+    }
+    if shell.workbench.bottomPanelHost.GetHeight() > 1 {
+        Probe.fail(shell, "hidden bottom still consumes height: "
+              + shell.workbench.bottomPanelHost.GetHeight());
+        return false;
+    }
+
+    // Sidebar collapse uses the same explicit splitter contract. The vertical
+    // activity bar sits outside this split and remains available while the
+    // explorer/source-control pane itself must shrink all the way to zero.
+    var sidebarPosition = shell.workbench.splitPane.GetPosition();
+    shell.workbench.ToggleSidebar();
+    shell.Render();
+    if shell.workbench.splitPane.GetCollapsedSide() != 1
+       or shell.workbench.leftViewStack.IsVisible() {
+        Probe.fail(shell, "hidden sidebar still consumes geometry or paints content");
+        return false;
+    }
+    shell.workbench.ToggleSidebar();
+    shell.Render();
+    var restoredSidebarPosition = shell.workbench.splitPane.GetPosition();
+    var sidebarDelta = restoredSidebarPosition - sidebarPosition;
+    if sidebarDelta < 0.0 { sidebarDelta = 0.0 - sidebarDelta; }
+    if shell.workbench.splitPane.GetCollapsedSide() != 0
+       or sidebarDelta > 0.01
+       or shell.workbench.leftViewStack.GetWidth() <= 1
+       or shell.workbench.leftViewStack.IsVisible() == false {
+        Probe.fail(shell, "sidebar restore lost its previous width");
+        return false;
+    }
+
+
+    ctx.shell = shell;
+    ctx.split = split;
+    return true;
+}
+
+/// @brief Run the VerifySidebarSizingAndDockVisibility scenario against the shared fixture.
+expose func VerifySidebarSizingAndDockVisibility(ctx: Probe.BottomPanelProbeContext) -> Boolean {
+    var shell = ctx.shell;
+
+    // Sidebar divider changes are durable workspace state. Controller-authored
+    // restores establish a new baseline and must not publish an input edge.
+    shell.workbench.splitPane.SetPosition(0.333);
+    if shell.workbench.TakeChangedSidebarWidthPercent() != 33
+       or shell.workbench.TakeChangedSidebarWidthPercent() != -1 {
+        Probe.fail(shell, "sidebar drag did not publish one rounded width");
+        return false;
+    }
+    shell.workbench.SetSidebarWidthPct(24);
+    if shell.workbench.TakeChangedSidebarWidthPercent() != -1 {
+        Probe.fail(shell, "persisted sidebar width masqueraded as a drag");
+        return false;
+    }
+    shell.workbench.SetSidebarVisible(false);
+    shell.workbench.SetSidebarWidthPct(35);
+    if shell.workbench.splitPane.GetCollapsedSide() != 1 {
+        Probe.fail(shell, "hidden persisted sidebar width reopened the pane");
+        return false;
+    }
+    shell.workbench.SetSidebarVisible(true);
+    shell.Render();
+    var restoredPersistedSidebar = shell.workbench.splitPane.GetPosition();
+    if restoredPersistedSidebar < 0.34
+       or restoredPersistedSidebar > 0.36
+       or shell.workbench.TakeChangedSidebarWidthPercent() != -1 {
+        Probe.fail(shell, "hidden sidebar width did not restore cleanly");
+        return false;
+    }
+    shell.workbench.SetSidebarWidthPct(24);
+
+    // The primary sidebar is a real movable dock rather than a fixed left
+    // column. Moving it keeps the same live view tree, focus, logical width,
+    // collapsed state, and one-shot persistence edges.
+    if shell.workbench.GetSidebarPositionName() != "left"
+       or shell.workbench.rightSidebarSplit.GetCollapsedSide() != 2 {
+        Probe.fail(shell, "primary sidebar did not start in the left dock");
+        return false;
+    }
+    shell.workbench.sidebarTree.Focus();
+    shell.workbench.MoveSidebarTo(workspace_dock.DOCK_RIGHT);
+    shell.Render();
+    if shell.workbench.GetSidebarPositionName() != "right"
+       or shell.workbench.splitPane.GetCollapsedSide() != 1
+       or shell.workbench.rightSidebarSplit.GetCollapsedSide() != 0
+       or shell.workbench.leftSidebarHost.GetChildCount() != 0
+       or shell.workbench.rightSidebarHost.GetChildCount() != 1
+       or shell.workbench.sidebarTree.IsFocused() == false
+       or shell.workbench.leftViewStack.GetScreenX()
+              <= shell.workbench.workbenchRow.GetScreenX()
+       or shell.workbench.activityBar.GetScreenX()
+              < shell.workbench.leftViewStack.GetScreenX()
+                + shell.workbench.leftViewStack.GetScreenWidth() - 1.0 {
+        Probe.fail(shell, "right sidebar move lost topology, focus, or placement");
+        return false;
+    }
+    if shell.workbench.TakeChangedSidebarPosition() != "right"
+       or shell.workbench.TakeChangedSidebarPosition() != "" {
+        Probe.fail(shell, "right sidebar move did not publish one durable edge");
+        return false;
+    }
+
+    shell.workbench.rightSidebarSplit.SetPosition(0.667);
+    if shell.workbench.TakeChangedSidebarWidthPercent() != 33
+       or shell.workbench.TakeChangedSidebarWidthPercent() != -1 {
+        Probe.fail(shell, "right sidebar divider did not publish logical width");
+        return false;
+    }
+    shell.workbench.SetSidebarWidthPct(24);
+    if shell.workbench.rightSidebarSplit.GetPosition() < 0.75
+       or shell.workbench.rightSidebarSplit.GetPosition() > 0.77
+       or shell.workbench.TakeChangedSidebarWidthPercent() != -1 {
+        Probe.fail(shell, "right sidebar persisted width replay was not mirrored");
+        return false;
+    }
+    shell.workbench.SetSidebarVisible(false);
+    shell.workbench.SetSidebarWidthPct(35);
+    if shell.workbench.rightSidebarSplit.GetCollapsedSide() != 2
+       or shell.workbench.activityBar.IsVisible() == false {
+        Probe.fail(shell, "hidden right sidebar consumed space or hid activity rail");
+        return false;
+    }
+    shell.workbench.SetSidebarVisible(true);
+    shell.Render();
+    if shell.workbench.rightSidebarSplit.GetPosition() < 0.64
+       or shell.workbench.rightSidebarSplit.GetPosition() > 0.66
+       or shell.workbench.TakeChangedSidebarWidthPercent() != -1 {
+        Probe.fail(shell, "hidden right sidebar width did not restore cleanly");
+        return false;
+    }
+
+    // Persisted/controller-authored placement never masquerades as user input.
+    shell.workbench.SetSidebarPositionName("left");
+    shell.workbench.SetSidebarWidthPct(24);
+    shell.Render();
+    if shell.workbench.GetSidebarPositionName() != "left"
+       or shell.workbench.TakeChangedSidebarPosition() != ""
+       or shell.workbench.splitPane.GetCollapsedSide() != 0
+       or shell.workbench.rightSidebarSplit.GetCollapsedSide() != 2 {
+        Probe.fail(shell, "persisted left sidebar placement leaked an input edge");
+        return false;
+    }
+
+    // Exercise the production header drag and stationary target cards. The
+    // cards are bounded inside the editor workbench and only the hovered edge
+    // accepts the typed primary-sidebar payload.
+    var sidebarHarness = GUI.TestHarness.New();
+    if !sidebarHarness.BindApp(shell.app) {
+        Probe.fail(shell, "sidebar dock automation could not bind the app");
+        return false;
+    }
+    shell.workbench.sidebarTree.Focus();
+    if !Probe.BeginSidebarDrag(shell, sidebarHarness) {
+        Probe.fail(shell, "primary sidebar header did not begin a real drag: "
+             + "dragging="
+             + shell.workbench.primarySidebar.dragHandle.IsBeingDragged()
+             + " targets="
+             + shell.workbench.AreSidebarDockTargetsVisible()
+             + " hovered="
+             + shell.workbench.primarySidebar.dragHandle.IsHovered()
+             + " pressed="
+             + shell.workbench.primarySidebar.dragHandle.IsPressed()
+             + " handle="
+             + shell.workbench.primarySidebar.dragHandle.GetScreenX()
+             + "," + shell.workbench.primarySidebar.dragHandle.GetScreenY()
+             + " size="
+             + shell.workbench.primarySidebar.dragHandle.GetScreenWidth()
+             + "x"
+             + shell.workbench.primarySidebar.dragHandle.GetScreenHeight());
+        return false;
+    }
+    if shell.workbench.primarySidebar.leftTarget.IsVisible() == false
+       or shell.workbench.primarySidebar.rightTarget.IsVisible() == false
+       or shell.workbench.primarySidebar.leftTarget.GetLogicalX() < 0.0
+       or shell.workbench.primarySidebar.rightTarget.GetLogicalX()
+              + shell.workbench.primarySidebar.rightTarget.GetLogicalWidth()
+              > shell.workbench.workbenchRow.GetLogicalWidth() + 1.0
+       or shell.workbench.primarySidebar.leftTarget.GetLogicalX()
+              >= shell.workbench.primarySidebar.rightTarget.GetLogicalX() {
+        Probe.fail(shell, "primary sidebar targets were not bounded edge cards");
+        return false;
+    }
+    var sidebarRightX = Convert.NumToInt(
+        shell.workbench.primarySidebar.rightTarget.GetScreenX()
+        + shell.workbench.primarySidebar.rightTarget.GetScreenWidth() / 2.0);
+    var sidebarRightY = Convert.NumToInt(
+        shell.workbench.primarySidebar.rightTarget.GetScreenY()
+        + shell.workbench.primarySidebar.rightTarget.GetScreenHeight() / 2.0);
+    if !Probe.MoveDockDrag(
+           shell, sidebarHarness, sidebarRightX, sidebarRightY)
+       or shell.workbench.primarySidebar.rightTarget.IsDragOver() == false
+       or shell.workbench.primarySidebar.leftTarget.IsDragOver() {
+        Probe.fail(shell, "right primary-sidebar target did not own drag hover");
+        return false;
+    }
+    if !Probe.ReleaseDockDrag(
+           shell, sidebarHarness, sidebarRightX, sidebarRightY) {
+        Probe.fail(shell, "right primary-sidebar target release was not dispatched");
+        return false;
+    }
+
+    ctx.shell = shell;
+    return true;
+}
+
+/// @brief Run the VerifyPanelTabsAndSearchLayout scenario against the shared fixture.
+expose func VerifyPanelTabsAndSearchLayout(ctx: Probe.BottomPanelProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var split = ctx.split;
+
+    shell.workbench.PumpSidebarDocking();
+    shell.Render();
+    if shell.workbench.GetSidebarPositionName() != "right"
+       or shell.workbench.AreSidebarDockTargetsVisible()
+       or shell.workbench.sidebarTree.IsFocused() == false
+       or shell.workbench.TakeChangedSidebarPosition() != "right"
+       or shell.workbench.TakeChangedSidebarPosition() != "" {
+        Probe.fail(shell, "real sidebar drop lost focus, state, or persistence edge");
+        return false;
+    }
+    shell.workbench.SetSidebarPositionName("left");
+    shell.workbench.SetSidebarWidthPct(24);
+    shell.Render();
+
+    // Showing a panel restores the split to the configured fraction (default 70%
+    // editor). Terminal needs no content to display.
+    shell.toolPanels.ShowTerminalPanel();
+    shell.Render();
+    if split.GetCollapsedSide() != 0 {
+        Probe.fail(shell, "terminal show did not restore second pane");
+        return false;
+    }
+    var p1 = split.GetPosition();
+    if p1 < 0.6 or p1 > 0.8 {
+        Probe.fail(shell, "terminal show did not restore split (~0.70): " + p1);
+        return false;
+    }
+    var editorH1 = shell.workbench.editorRow.GetHeight();
+
+    // Switching to another panel keeps the SAME split position — the editor must
+    // not jump. Variables and Terminal share one height now.
+    shell.toolPanels.ShowVariablesPanel();
+    shell.Render();
+    var p2 = split.GetPosition();
+    if p2 < 0.6 or p2 > 0.8 {
+        Probe.fail(shell, "variables show changed split unexpectedly: " + p2);
+        return false;
+    }
+    var editorH2 = shell.workbench.editorRow.GetHeight();
+    if editorH1 != editorH2 {
+        Probe.fail(shell, "editor height jumped between tabs: " + editorH1 + " vs " + editorH2);
+        return false;
+    }
+
+    // Tool tabs are genuinely movable: routing follows stable tab identity,
+    // and a successful drag publishes one serialized order for persistence.
+    if shell.toolPanels.GetToolTabOrder()
+       != tool_panel_model.DEFAULT_TAB_ORDER {
+        Probe.fail(shell, "tool tabs did not start in the stable default order");
+        return false;
+    }
+    if shell.toolPanels.toolTabBar.MoveTab(7, 0) == false {
+        Probe.fail(shell, "tool tab reorder was rejected");
+        return false;
+    }
+    shell.toolPanels.PumpToolTabs();
+    var movedOrder = shell.toolPanels.TakeChangedToolTabOrder();
+    if movedOrder
+       != "terminal,problems,output,search,references,variables,call-stack,debug-console"
+       or shell.toolPanels.TakeChangedToolTabOrder() != "" {
+        Probe.fail(shell, "tool tab reorder did not publish one durable order");
+        return false;
+    }
+    shell.toolPanels.toolTabBar.SetActive(shell.toolPanels.toolSearchTab);
+    shell.toolPanels.PumpToolTabs();
+    if shell.toolPanels.activeToolPanelKind
+       != tool_panel_model.PANEL_SEARCH
+       or shell.toolPanels.GetActiveToolPanelId() != "search" {
+        Probe.fail(shell, "reordered Search tab routed by stale visual index");
+        return false;
+    }
+    shell.toolPanels.toolTabBar.SetActive(shell.toolPanels.toolTerminalTab);
+    shell.toolPanels.PumpToolTabs();
+    if shell.toolPanels.activeToolPanelKind
+       != tool_panel_model.PANEL_TERMINAL
+       or shell.toolPanels.terminalPanel.IsVisible() == false
+       or shell.toolPanels.GetActiveToolPanelId() != "terminal" {
+        Probe.fail(shell, "reordered Terminal tab routed to the wrong panel");
+        return false;
+    }
+    shell.toolPanels.SetToolTabOrder(tool_panel_model.DEFAULT_TAB_ORDER);
+    if shell.toolPanels.GetToolTabOrder()
+           != tool_panel_model.DEFAULT_TAB_ORDER
+       or shell.toolPanels.TakeChangedToolTabOrder() != "" {
+        Probe.fail(shell, "persisted tool tab order replayed as user input");
+        return false;
+    }
+    shell.toolPanels.SetToolTabOrder("terminal,terminal");
+    if shell.toolPanels.GetToolTabOrder()
+           != tool_panel_model.DEFAULT_TAB_ORDER
+       or shell.toolPanels.TakeChangedToolTabOrder() != "" {
+        Probe.fail(shell, "malformed tool tab order did not recover atomically");
+        return false;
+    }
+    shell.toolPanels.SetActiveToolPanelId("search");
+    if shell.toolPanels.GetActiveToolPanelId() != "search"
+       or shell.toolPanels.searchPanel.IsVisible() == false {
+        Probe.fail(shell, "stable active-panel replay did not select Search");
+        return false;
+    }
+    shell.toolPanels.SetActiveToolPanelId("future-panel");
+    if shell.toolPanels.GetActiveToolPanelId() != "none"
+       or split.GetCollapsedSide() != 2 {
+        Probe.fail(shell, "unknown active-panel state did not collapse safely");
+        return false;
+    }
+
+    // Individual tools can split into independent groups while the remaining
+    // bottom strip stays live. Moving Terminal preserves its native input
+    // widget, then Problems can occupy the opposite side simultaneously.
+    var groupHarness = GUI.TestHarness.New();
+    if !groupHarness.BindApp(shell.app) {
+        Probe.fail(shell, "group dock-control automation could not bind the app");
+        return false;
+    }
+    shell.toolPanels.ShowTerminalPanel();
+    shell.Render();
+    shell.toolPanels.terminalPane.Focus();
+    if !Probe.ClickDockControl(
+           shell, groupHarness, shell.toolPanels.dockRightButton) {
+        groupHarness.UnbindApp();
+        Probe.fail(shell, "primary group control could not move Terminal right");
+        return false;
+    }
+    shell.toolPanels.ShowOutputPanel();
+    shell.toolPanels.ShowProblemsPanel();
+    shell.Render();
+    if !Probe.ClickDockControl(
+           shell, groupHarness, shell.toolPanels.dockLeftButton) {
+        groupHarness.UnbindApp();
+        Probe.fail(shell, "primary group control could not move Problems left");
+        return false;
+    }
+    shell.Render();
+    if !Probe.ClickDockControl(
+           shell, groupHarness,
+           shell.toolPanels.rightToolMoveBottomButton)
+       or shell.toolPanels.GetToolPanelLocationName(
+              tool_panel_model.PANEL_TERMINAL) != "bottom"
+       or !Probe.ClickDockControl(
+              shell, groupHarness, shell.toolPanels.dockRightButton) {
+        groupHarness.UnbindApp();
+        Probe.fail(shell, "auxiliary group controls did not round-trip Terminal");
+        return false;
+    }
+
+    ctx.shell = shell;
+    ctx.split = split;
+    ctx.groupHarness = groupHarness;
+    return true;
+}
+
+/// @brief Run the VerifyIndependentToolGroups scenario against the shared fixture.
+expose func VerifyIndependentToolGroups(ctx: Probe.BottomPanelProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var groupHarness = ctx.groupHarness;
+
+    shell.Render();
+    if shell.toolPanels.GetToolPanelLocationName(
+           tool_panel_model.PANEL_PROBLEMS) != "left"
+       or shell.toolPanels.GetToolPanelLocationName(
+              tool_panel_model.PANEL_TERMINAL) != "right"
+       or shell.toolPanels.GetToolPanelLocationName(
+              tool_panel_model.PANEL_OUTPUT) != "bottom"
+       or shell.toolPanels.leftToolTabBar.TabCount != 1
+       or shell.toolPanels.toolTabBar.TabCount != 6
+       or shell.toolPanels.rightToolTabBar.TabCount != 1
+       or !shell.toolPanels.problemsPanel.IsVisible()
+       or !shell.toolPanels.outputPanel.IsVisible()
+       or !shell.toolPanels.terminalPanel.IsVisible()
+       or shell.workbench.leftDockSplit.GetCollapsedSide() != 0
+       or shell.workbench.editorSplit.GetCollapsedSide() != 0
+       or shell.workbench.rightDockSplit.GetCollapsedSide() != 0 {
+        Probe.fail(shell, "three independent tool groups were not simultaneously live");
+        return false;
+    }
+
+    // The same live Terminal surface can become a movable overlay. Programmatic
+    // geometry replay is quiet; real handle/resize drags each publish one
+    // durable edge, and releasing the move handle at an edge docks the whole
+    // floating group without rebuilding the terminal widget or losing focus.
+    shell.toolPanels.SetFloatingToolPanelBounds(140, 108, 700, 430);
+    if shell.toolPanels.TakeFloatingToolPanelGeometryChanged() {
+        groupHarness.UnbindApp();
+        Probe.fail(shell, "persisted floating bounds masqueraded as pointer input");
+        return false;
+    }
+    var stableFloatingTerminal = shell.toolPanels.terminalPanel;
+    shell.toolPanels.terminalPane.SetTerminalMode(true);
+    shell.toolPanels.terminalPane.Focus();
+    if !Probe.ClickDockControl(
+           shell, groupHarness,
+           shell.toolPanels.rightToolMoveFloatingButton) {
+        groupHarness.UnbindApp();
+        Probe.fail(shell, "right tool could not enter the floating group");
+        return false;
+    }
+    shell.Render();
+    if shell.toolPanels.GetToolPanelLocationName(
+           tool_panel_model.PANEL_TERMINAL) != "floating"
+       or !shell.toolPanels.floatingToolPanel.IsVisible()
+       or !shell.toolPanels.floatingToolGroupRoot.IsVisible()
+       or shell.toolPanels.floatingToolTabBar.TabCount != 1
+       or shell.toolPanels.rightToolTabBar.TabCount != 0
+       or shell.toolPanels.terminalPanel != stableFloatingTerminal {
+        groupHarness.UnbindApp();
+        Probe.fail(shell, "floating transfer lost topology, state, or focus");
+        return false;
+    }
+    shell.toolPanels.terminalPane.Focus();
+    shell.Poll();
+    if !shell.toolPanels.terminalPane.IsFocused() {
+        groupHarness.UnbindApp();
+        Probe.fail(shell, "floating terminal could not retain focus before movement");
+        return false;
+    }
+
+    var floatingXBefore = shell.toolPanels.GetFloatingToolPanelX();
+    var floatingYBefore = shell.toolPanels.GetFloatingToolPanelY();
+    var floatingMoveDispatched = Probe.DragFloatingControl(
+        shell, groupHarness,
+        shell.toolPanels.floatingToolMoveHandle, 34, 26);
+    var floatingMoveChanged =
+        shell.toolPanels.TakeFloatingToolPanelGeometryChanged();
+    var floatingMoveChangedAgain =
+        shell.toolPanels.TakeFloatingToolPanelGeometryChanged();
+    if !floatingMoveDispatched
+       or shell.toolPanels.GetFloatingToolPanelX() <= floatingXBefore
+       or shell.toolPanels.GetFloatingToolPanelY() <= floatingYBefore
+       or !floatingMoveChanged
+       or floatingMoveChangedAgain
+       or !shell.toolPanels.terminalPane.IsFocused() {
+        groupHarness.UnbindApp();
+        Probe.fail(shell, "floating move did not clamp and publish one bounds edge: "
+             + "dispatched=" + floatingMoveDispatched
+             + " before=" + floatingXBefore + "," + floatingYBefore
+             + " after="
+             + shell.toolPanels.GetFloatingToolPanelX() + ","
+             + shell.toolPanels.GetFloatingToolPanelY()
+             + " changed=" + floatingMoveChanged
+             + "/" + floatingMoveChangedAgain
+             + " handle="
+             + shell.toolPanels.floatingToolMoveHandle.GetScreenX()
+             + ","
+             + shell.toolPanels.floatingToolMoveHandle.GetScreenY()
+             + " "
+             + shell.toolPanels.floatingToolMoveHandle.GetScreenWidth()
+             + "x"
+             + shell.toolPanels.floatingToolMoveHandle.GetScreenHeight()
+             + " hovered="
+             + shell.toolPanels.floatingToolMoveHandle.IsHovered()
+             + " scale=" + shell.app.GetEffectiveScale()
+             + " panel="
+             + shell.toolPanels.floatingToolPanel.GetScreenX()
+             + ","
+             + shell.toolPanels.floatingToolPanel.GetScreenY()
+             + " "
+             + shell.toolPanels.floatingToolPanel.GetScreenWidth()
+             + "x"
+             + shell.toolPanels.floatingToolPanel.GetScreenHeight()
+             + " focus="
+             + shell.toolPanels.terminalPane.IsFocused()
+             + " root="
+             + shell.toolPanels.floatingToolGroupRoot.GetScreenX()
+             + ","
+             + shell.toolPanels.floatingToolGroupRoot.GetScreenY()
+             + " "
+             + shell.toolPanels.floatingToolGroupRoot.GetScreenWidth()
+             + "x"
+             + shell.toolPanels.floatingToolGroupRoot.GetScreenHeight());
+        return false;
+    }
+    var floatingWidthBefore = shell.toolPanels.GetFloatingToolPanelWidth();
+    var floatingHeightBefore = shell.toolPanels.GetFloatingToolPanelHeight();
+    if !Probe.DragFloatingControl(
+           shell, groupHarness,
+           shell.toolPanels.floatingToolResizeHandle, 28, 24)
+       or shell.toolPanels.GetFloatingToolPanelWidth()
+              <= floatingWidthBefore
+       or shell.toolPanels.GetFloatingToolPanelHeight()
+              <= floatingHeightBefore
+       or !shell.toolPanels.TakeFloatingToolPanelGeometryChanged()
+       or shell.toolPanels.TakeFloatingToolPanelGeometryChanged()
+       or !shell.toolPanels.terminalPane.IsFocused() {
+        groupHarness.UnbindApp();
+        Probe.fail(shell, "floating resize did not publish one bounded geometry edge");
+        return false;
+    }
+    var floatingDockedRight = Probe.DockFloatingGroupAt(
+        shell, groupHarness, workspace_dock.DOCK_RIGHT);
+    if !floatingDockedRight
+       or shell.toolPanels.GetToolPanelLocationName(
+              tool_panel_model.PANEL_TERMINAL) != "right"
+       or shell.toolPanels.floatingToolPanel.IsVisible()
+       or shell.toolPanels.floatingToolTabBar.TabCount != 0
+       or shell.toolPanels.rightToolTabBar.TabCount != 1
+       or shell.toolPanels.terminalPanel != stableFloatingTerminal
+       or !shell.toolPanels.terminalPane.IsFocused() {
+        groupHarness.UnbindApp();
+        Probe.fail(shell, "floating group did not dock back intact at an edge: "
+             + "dispatched=" + floatingDockedRight
+             + " location="
+             + shell.toolPanels.GetToolPanelLocationName(
+                 tool_panel_model.PANEL_TERMINAL)
+             + " visible="
+             + shell.toolPanels.floatingToolPanel.IsVisible()
+             + " tabs="
+             + shell.toolPanels.floatingToolTabBar.TabCount + "/"
+             + shell.toolPanels.rightToolTabBar.TabCount
+             + " stable="
+             + (shell.toolPanels.terminalPanel == stableFloatingTerminal)
+             + " focus="
+             + shell.toolPanels.terminalPane.IsFocused());
+        return false;
+    }
+    groupHarness.UnbindApp();
+
+
+    ctx.shell = shell;
+    return true;
+}
+
+/// @brief Run the VerifyGroupedLayoutAndRestore scenario against the shared fixture.
+expose func VerifyGroupedLayoutAndRestore(ctx: Probe.BottomPanelProbeContext) -> Boolean {
+    var shell = ctx.shell;
+
+    var groupedLayout = shell.toolPanels.GetToolPanelGroupLayout();
+    if groupedLayout
+           != "left=problems;bottom=output,search,references,variables,"
+              + "call-stack,debug-console;right=terminal;floating="
+       or shell.toolPanels.TakeChangedToolPanelGroupLayout() != groupedLayout
+       or shell.toolPanels.TakeChangedToolPanelGroupLayout() != "" {
+        Probe.fail(shell, "individual tool movement did not publish one grouped layout");
+        return false;
+    }
+
+    // Scene focus is a reversible workspace presentation, not a destructive
+    // layout reset. Capture simultaneous groups and the primary sidebar.
+    shell.SetSidebarVisible(true);
+    shell.Render();
+    var focusActivePanelId = shell.toolPanels.GetActiveToolPanelId();
+    var focusLeftVisible = shell.toolPanels.leftToolGroupRoot.IsVisible();
+    var focusBottomVisible = shell.toolPanels.bottomToolGroupRoot.IsVisible();
+    var focusRightVisible = shell.toolPanels.rightToolGroupRoot.IsVisible();
+    shell.SetSceneFocusMode(true);
+    shell.Render();
+    if shell.IsSceneFocusModeActive() == false
+       or shell.workbench.IsSidebarVisible()
+       or shell.toolPanels.leftToolGroupRoot.IsVisible()
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible()
+       or shell.toolPanels.rightToolGroupRoot.IsVisible()
+       or shell.toolPanels.GetActiveToolPanelId() != focusActivePanelId
+       or shell.toolPanels.GetToolPanelGroupLayout() != groupedLayout {
+        Probe.fail(shell, "scene focus mode did not reclaim outer dock space safely");
+        return false;
+    }
+    shell.SetSceneFocusMode(false);
+    shell.Render();
+    if shell.IsSceneFocusModeActive()
+       or shell.workbench.IsSidebarVisible() == false
+       or shell.toolPanels.leftToolGroupRoot.IsVisible() != focusLeftVisible
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible() != focusBottomVisible
+       or shell.toolPanels.rightToolGroupRoot.IsVisible() != focusRightVisible
+       or shell.toolPanels.GetActiveToolPanelId() != focusActivePanelId
+       or shell.toolPanels.GetToolPanelGroupLayout() != groupedLayout
+       or shell.toolPanels.TakeChangedToolPanelGroupLayout() != "" {
+        Probe.fail(shell, "scene focus mode did not restore the exact dock layout");
+        return false;
+    }
+
+    // Scene Layout keeps outer docks reclaimed across a temporary full-focus
+    // round trip, then restores the same captured layout when it exits.
+    shell.SetSceneWorkspaceMode(true);
+    shell.Render();
+    if shell.IsSceneWorkspaceModeActive() == false
+       or shell.workbench.IsSidebarVisible()
+       or shell.workbench.leftViewStack.IsVisible()
+       or shell.toolPanels.leftToolGroupRoot.IsVisible()
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible()
+       or shell.toolPanels.rightToolGroupRoot.IsVisible() {
+        Probe.fail(shell, "scene layout mode did not reclaim outer IDE docks");
+        return false;
+    }
+    // Startup tab selection and background diagnostics/build output can arrive
+    // one frame after scene entry. They may update retained content but must
+    // not break the presentation invariant by reopening a physical dock.
+    shell.toolPanels.ShowOutputPanel();
+    shell.toolPanels.ShowProblemsPanel();
+    shell.toolPanels.ShowTerminalPanel();
+    shell.toolPanels.PumpToolTabs();
+    shell.Render();
+    if shell.toolPanels.leftToolGroupRoot.IsVisible()
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible()
+       or shell.toolPanels.rightToolGroupRoot.IsVisible()
+       or shell.toolPanels.GetActiveToolPanelId() != focusActivePanelId {
+        Probe.fail(shell, "scene layout was broken by a late tool-panel reveal");
+        return false;
+    }
+    shell.SetSceneFocusMode(true);
+    shell.SetSceneFocusMode(false);
+    shell.Render();
+    if shell.IsSceneWorkspaceModeActive() == false
+       or shell.IsSceneFocusModeActive()
+       or shell.workbench.IsSidebarVisible()
+       or shell.workbench.leftViewStack.IsVisible()
+       or shell.toolPanels.leftToolGroupRoot.IsVisible()
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible()
+       or shell.toolPanels.rightToolGroupRoot.IsVisible() {
+        Probe.fail(shell, "scene focus exit discarded the active scene layout");
+        return false;
+    }
+    shell.SetSceneWorkspaceMode(false);
+    shell.Render();
+    if shell.IsSceneWorkspaceModeActive()
+       or shell.workbench.IsSidebarVisible() == false
+       or shell.workbench.leftViewStack.IsVisible() == false
+       or shell.toolPanels.leftToolGroupRoot.IsVisible() != focusLeftVisible
+       or shell.toolPanels.bottomToolGroupRoot.IsVisible() != focusBottomVisible
+       or shell.toolPanels.rightToolGroupRoot.IsVisible() != focusRightVisible
+       or shell.toolPanels.GetActiveToolPanelId() != focusActivePanelId
+       or shell.toolPanels.GetToolPanelGroupLayout() != groupedLayout
+       or shell.toolPanels.TakeChangedToolPanelGroupLayout() != "" {
+        Probe.fail(shell, "scene layout mode did not restore the exact dock layout");
+        return false;
+    }
+
+
+    ctx.shell = shell;
+    return true;
+}
+

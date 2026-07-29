@@ -1,0 +1,761 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_hierarchy_surface.zia
+// Purpose: Focused hierarchy surface behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_materials_terrain.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_hierarchy_surface;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_terrain_authoring" as PreviousLayer;
+
+/// @brief Hierarchy Surface implementation layer.
+class SceneEditor3DHierarchySurfaceLayer extends PreviousLayer.SceneEditor3DTerrainAuthoringLayer {
+
+    hide override func FindNodeIndex(nodes: List[SceneNode],
+                            needle: SceneNode) -> Integer {
+        var index = 0;
+        while index < nodes.count() {
+            if nodes.get(index) == needle { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Return selected roots in an arbitrary flattened source graph.
+    hide override func TopLevelIndicesFor(nodes: List[SceneNode],
+                                 indices: List[Integer],
+                                 primary: Integer) -> List[Integer] {
+        var roots: List[Integer] = [];
+        var normalized = scene_selection.Normalize(
+            indices, nodes.count(), primary);
+        var selectionIndex = 0;
+        while selectionIndex < normalized.count() {
+            var candidate = normalized.get(selectionIndex);
+            var parent = nodes.get(candidate).Parent;
+            var hasSelectedAncestor = false;
+            while parent != null and hasSelectedAncestor == false {
+                var parentIndex = FindNodeIndex(nodes, parent);
+                if parentIndex >= 0
+                   and scene_selection.Contains(
+                       normalized, parentIndex) {
+                    hasSelectedAncestor = true;
+                }
+                parent = parent.Parent;
+            }
+            if hasSelectedAncestor == false { roots.add(candidate); }
+            selectionIndex = selectionIndex + 1;
+        }
+        return roots;
+    }
+
+    /// @brief Return selected hierarchy roots, excluding selected descendants.
+    hide override func TopLevelSelectedIndices() -> List[Integer] {
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        return TopLevelIndicesFor(
+            flatNodes, selectedIndices, selectedIndex);
+    }
+
+    /// @brief Return live handles for the top-level roots of current selection.
+    hide override func TopLevelSelectedNodes() -> List[SceneNode] {
+        var nodes: List[SceneNode] = [];
+        var indices = TopLevelSelectedIndices();
+        var index = 0;
+        while index < indices.count() {
+            nodes.add(flatNodes.get(indices.get(index)));
+            index = index + 1;
+        }
+        return nodes;
+    }
+
+    /// @brief Resolve one subtree's local mesh bounds into a world AABB.
+    /// @details BoundsMin/BoundsMax include descendant meshes. Meshless marker
+    ///          nodes naturally collapse to their world-space pivot, which is
+    ///          still a useful placement point for project preview recipes.
+    hide override func NodeWorldBounds(node: SceneNode) -> SceneEditor3DModel.WorldBounds3D {
+        var bounds = new SceneEditor3DModel.WorldBounds3D();
+        if node == null or node.WorldMatrix == null { return bounds; }
+        var localMin = node.BoundsMin as Vec3;
+        var localMax = node.BoundsMax as Vec3;
+        if localMin == null or localMax == null { return bounds; }
+        var world = node.WorldMatrix;
+        var corner = 0;
+        while corner < 8 {
+            var x = localMin.X;
+            if corner / 4 == 1 { x = localMax.X; }
+            var y = localMin.Y;
+            if (corner / 2) - (corner / 4) * 2 == 1 {
+                y = localMax.Y;
+            }
+            var z = localMin.Z;
+            if corner - (corner / 2) * 2 == 1 {
+                z = localMax.Z;
+            }
+            var point =
+                world.TransformPoint(Vec3.New(x, y, z)) as Vec3;
+            if point == null { return new SceneEditor3DModel.WorldBounds3D(); }
+            if corner == 0 {
+                bounds.minX = point.X;
+                bounds.minY = point.Y;
+                bounds.minZ = point.Z;
+                bounds.maxX = point.X;
+                bounds.maxY = point.Y;
+                bounds.maxZ = point.Z;
+            } else {
+                if point.X < bounds.minX { bounds.minX = point.X; }
+                if point.Y < bounds.minY { bounds.minY = point.Y; }
+                if point.Z < bounds.minZ { bounds.minZ = point.Z; }
+                if point.X > bounds.maxX { bounds.maxX = point.X; }
+                if point.Y > bounds.maxY { bounds.maxY = point.Y; }
+                if point.Z > bounds.maxZ { bounds.maxZ = point.Z; }
+            }
+            corner = corner + 1;
+        }
+        bounds.valid = true;
+        return bounds;
+    }
+
+    /// @brief Expand one valid world bound by another valid world bound.
+    hide override func MergeWorldBounds(target: SceneEditor3DModel.WorldBounds3D,
+                               source: SceneEditor3DModel.WorldBounds3D) {
+        if target == null or source == null or source.valid == false {
+            return;
+        }
+        if target.valid == false {
+            target.minX = source.minX;
+            target.minY = source.minY;
+            target.minZ = source.minZ;
+            target.maxX = source.maxX;
+            target.maxY = source.maxY;
+            target.maxZ = source.maxZ;
+            target.valid = true;
+            return;
+        }
+        if source.minX < target.minX { target.minX = source.minX; }
+        if source.minY < target.minY { target.minY = source.minY; }
+        if source.minZ < target.minZ { target.minZ = source.minZ; }
+        if source.maxX > target.maxX { target.maxX = source.maxX; }
+        if source.maxY > target.maxY { target.maxY = source.maxY; }
+        if source.maxZ > target.maxZ { target.maxZ = source.maxZ; }
+    }
+
+    /// @brief Return whether one node belongs to any selected root subtree.
+    hide override func NodeWithinRoots(node: SceneNode,
+                              roots: List[SceneNode]) -> Boolean {
+        var current = node;
+        var depth = 0;
+        while current != null and depth <= SceneEditor3DModel.MAX_HIERARCHY_DEPTH {
+            var rootIndex = 0;
+            while rootIndex < roots.count() {
+                if current == roots.get(rootIndex) { return true; }
+                rootIndex = rootIndex + 1;
+            }
+            current = current.Parent;
+            depth = depth + 1;
+        }
+        return false;
+    }
+
+    /// @brief Bound canonical geometry together with its visible prefab art.
+    /// @details Project preview wrappers are disposable but often carry the
+    ///          only mesh for gameplay marker nodes. Including their direct
+    ///          wrapper bounds makes the visible art, rather than an empty
+    ///          marker pivot, rest on the queried surface.
+    hide override func SurfaceRootWorldBounds(root: SceneNode) -> SceneEditor3DModel.WorldBounds3D {
+        var bounds = NodeWorldBounds(root);
+        if root == null or projectPreviewScene == null
+           or projectPreviewScene.Root == null {
+            return bounds;
+        }
+        var roots: List[SceneNode] = [];
+        roots.add(root);
+        var index = 0;
+        while index < projectPreviewNodes.count()
+              and index < projectPreviewOwners.count() {
+            var preview = projectPreviewNodes.get(index);
+            var owner = projectPreviewOwners.get(index);
+            if preview != null
+               and preview.Parent == projectPreviewScene.Root
+               and owner >= 0 and owner < flatNodes.count()
+               and NodeWithinRoots(flatNodes.get(owner), roots) {
+                MergeWorldBounds(bounds, NodeWorldBounds(preview));
+            }
+            index = index + 1;
+        }
+        return bounds;
+    }
+
+    /// @brief Temporarily remove selected geometry from placement queries.
+    /// @details Canonical nodes and project prefab descendants are restored
+    ///          before any transform or serialization. Project environment
+    ///          nodes use owner -1 and deliberately remain eligible surfaces.
+    hide override func SuppressSelectedDropMeshes(
+        roots: List[SceneNode],
+        suppressedNodes: List[SceneNode],
+        suppressedMeshes: List[Mesh3D]) {
+        var index = 0;
+        while index < flatNodes.count() {
+            var node = flatNodes.get(index);
+            if node.Mesh != null and NodeWithinRoots(node, roots) {
+                suppressedNodes.add(node);
+                suppressedMeshes.add(node.Mesh);
+                node.Mesh = null;
+            }
+            index = index + 1;
+        }
+        index = 0;
+        while index < projectPreviewNodes.count()
+              and index < projectPreviewOwners.count() {
+            var preview = projectPreviewNodes.get(index);
+            var owner = projectPreviewOwners.get(index);
+            if preview.Mesh != null
+               and owner >= 0 and owner < flatNodes.count()
+               and NodeWithinRoots(flatNodes.get(owner), roots) {
+                suppressedNodes.add(preview);
+                suppressedMeshes.add(preview.Mesh);
+                preview.Mesh = null;
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Restore every mesh hidden for one synchronous placement query.
+    hide override func RestoreSuppressedDropMeshes(
+        nodes: List[SceneNode],
+        meshes: List[Mesh3D]) {
+        var index = 0;
+        while index < nodes.count() and index < meshes.count() {
+            nodes.get(index).Mesh = meshes.get(index);
+            index = index + 1;
+        }
+    }
+
+    /// @brief Return the nearest canonical or project-preview surface hit.
+    hide override func NearestDropSurface(origin: Vec3) -> RayHit3D {
+        if origin == null or scene == null { return null; }
+        var direction = Vec3.New(0.0, -1.0, 0.0);
+        var nearest = scene.RaycastPreciseHit(
+            origin, direction, SceneEditor3DModel.DROP_SURFACE_MAX_DISTANCE) as RayHit3D;
+        if projectPreviewScene != null {
+            var preview = projectPreviewScene.RaycastPreciseHit(
+                origin, direction,
+                SceneEditor3DModel.DROP_SURFACE_MAX_DISTANCE) as RayHit3D;
+            if preview != null
+               and (nearest == null
+                    or preview.Distance < nearest.Distance) {
+                nearest = preview;
+            }
+        }
+        return nearest;
+    }
+
+    /// @brief Query independent vertical placements with selected meshes absent.
+    /// @return One result per root, or an empty list when bounds are invalid.
+    hide override func QuerySurfacePlacements(
+        roots: List[SceneNode],
+        startClearance: Number) -> List[SceneEditor3DModel.SurfacePlacement3D] {
+        var placements: List[SceneEditor3DModel.SurfacePlacement3D] = [];
+        var bounds: List[SceneEditor3DModel.WorldBounds3D] = [];
+        SyncProjectNodePreviewTransforms();
+        var clearance = SceneEditor3DModel.ClampNumber3D(
+            startClearance,
+            SceneEditor3DModel.DROP_SURFACE_START_CLEARANCE,
+            SceneEditor3DModel.LIVE_SURFACE_SNAP_START_CLEARANCE);
+        var rootIndex = 0;
+        while rootIndex < roots.count() {
+            var rootBounds =
+                SurfaceRootWorldBounds(roots.get(rootIndex));
+            if rootBounds.valid == false { return placements; }
+            bounds.add(rootBounds);
+            rootIndex = rootIndex + 1;
+        }
+
+        var suppressedNodes: List[SceneNode] = [];
+        var suppressedMeshes: List[Mesh3D] = [];
+        SuppressSelectedDropMeshes(
+            roots, suppressedNodes, suppressedMeshes);
+        rootIndex = 0;
+        while rootIndex < roots.count() {
+            var rootBounds = bounds.get(rootIndex);
+            var origin = Vec3.New(
+                (rootBounds.minX + rootBounds.maxX) * 0.5,
+                rootBounds.minY + clearance,
+                (rootBounds.minZ + rootBounds.maxZ) * 0.5);
+            var hit = NearestDropSurface(origin);
+            var placement = new SceneEditor3DModel.SurfacePlacement3D();
+            if hit != null {
+                placement.hit = true;
+                placement.surfaceY = hit.Point.Y;
+                placement.normal = hit.Normal as Vec3;
+            }
+            placements.add(placement);
+            rootIndex = rootIndex + 1;
+        }
+        RestoreSuppressedDropMeshes(
+            suppressedNodes, suppressedMeshes);
+        return placements;
+    }
+
+    /// @brief Return a stable upward-facing unit surface normal.
+    hide override func UpwardSurfaceNormal(normal: Vec3) -> Vec3 {
+        var result = NormalizedVectorOr(normal, 0.0, 1.0, 0.0);
+        if result.Y < 0.0 {
+            result = Vec3.New(
+                0.0 - result.X,
+                0.0 - result.Y,
+                0.0 - result.Z);
+        }
+        return result;
+    }
+
+    /// @brief Shortest world rotation from one root's up axis to a hit normal.
+    /// @details The delta rotates the existing world orientation, so yaw/twist
+    ///          around the root's up axis is preserved rather than reset.
+    hide override func SurfaceAlignmentDelta(
+        root: SceneNode,
+        normal: Vec3) -> Quat {
+        if root == null { return Quat.Identity(); }
+        var currentUp = NormalizedVectorOr(
+            Quat.RotateVec3(
+                root.WorldRotation,
+                Vec3.New(0.0, 1.0, 0.0)) as Vec3,
+            0.0, 1.0, 0.0);
+        var targetUp = UpwardSurfaceNormal(normal);
+        var dot = Vec3.Dot(currentUp, targetUp);
+        if dot > 1.0 { dot = 1.0; }
+        if dot < -1.0 { dot = -1.0; }
+        if dot > 0.999999 { return Quat.Identity(); }
+        if dot < -0.999999 {
+            var axis =
+                Vec3.Cross(currentUp, Vec3.New(1.0, 0.0, 0.0))
+                as Vec3;
+            var axisLengthSquared =
+                axis.X * axis.X + axis.Y * axis.Y + axis.Z * axis.Z;
+            if axisLengthSquared < 0.000001 {
+                axis =
+                    Vec3.Cross(currentUp, Vec3.New(0.0, 0.0, 1.0))
+                    as Vec3;
+            }
+            axis = NormalizedVectorOr(axis, 0.0, 0.0, 1.0);
+            return Quat.FromAxisAngle(
+                axis, 180.0 * SceneEditor3DModel.DEG_TO_RAD).Normalize();
+        }
+        var cross = Vec3.Cross(currentUp, targetUp) as Vec3;
+        return Quat.New(
+            cross.X, cross.Y, cross.Z, 1.0 + dot).Normalize();
+    }
+
+    /// @brief Rotate one captured world matrix about its root pivot.
+    hide override func SurfaceAlignedWorldMatrix(
+        root: SceneNode,
+        startWorld: Mat4,
+        normal: Vec3) -> Mat4 {
+        if root == null or startWorld == null { return null; }
+        var pivot = root.WorldPosition;
+        var delta = SurfaceAlignmentDelta(root, normal);
+        return Mat4.Mul(
+            Mat4.Translate(pivot.X, pivot.Y, pivot.Z),
+            Mat4.Mul(
+                Quat.ToMat4(delta),
+                Mat4.Mul(
+                    Mat4.Translate(
+                        0.0 - pivot.X,
+                        0.0 - pivot.Y,
+                        0.0 - pivot.Z),
+                    startWorld)));
+    }
+
+    /// @brief Apply queried surface deltas as one exact live root group.
+    /// @return Moved-root count, or -1 after exact local-transform rollback.
+    hide override func ApplyRootsToNearestSurfaces(
+        rootIndices: List[Integer],
+        roots: List[SceneNode],
+        alignNormals: Boolean,
+        startClearance: Number) -> Integer {
+        if roots.count() == 0
+           or roots.count() != rootIndices.count() {
+            return -1;
+        }
+        var placements =
+            QuerySurfacePlacements(roots, startClearance);
+        if placements.count() != roots.count() { return -1; }
+
+        var startPositions: List[Vec3] = [];
+        var startRotations: List[Quat] = [];
+        var startScales: List[Vec3] = [];
+        var startWorldMatrices: List[Mat4] = [];
+        var rootIndex = 0;
+        while rootIndex < roots.count() {
+            var root = roots.get(rootIndex);
+            startPositions.add(root.Position);
+            startRotations.add(root.Rotation);
+            startScales.add(root.Scale);
+            startWorldMatrices.add(root.WorldMatrix);
+            rootIndex = rootIndex + 1;
+        }
+
+        var moved = 0;
+        var accepted = true;
+        rootIndex = 0;
+        while rootIndex < roots.count() and accepted {
+            var placement = placements.get(rootIndex);
+            if placement.hit {
+                var root = roots.get(rootIndex);
+                var aligned = false;
+                if alignNormals {
+                    var currentUp = NormalizedVectorOr(
+                        Quat.RotateVec3(
+                            root.WorldRotation,
+                            Vec3.New(0.0, 1.0, 0.0)) as Vec3,
+                        0.0, 1.0, 0.0);
+                    var targetUp =
+                        UpwardSurfaceNormal(placement.normal);
+                    aligned = Vec3.Dot(currentUp, targetUp) < 0.999999;
+                    if aligned
+                       and root.TrySetWorldMatrix(
+                           SurfaceAlignedWorldMatrix(
+                               root,
+                               startWorldMatrices.get(rootIndex),
+                               placement.normal)) == false {
+                        accepted = false;
+                    }
+                    if accepted and aligned {
+                        SyncProjectNodePreviewTransforms();
+                    }
+                }
+                if accepted {
+                    var alignedBounds = SurfaceRootWorldBounds(root);
+                    if alignedBounds.valid == false {
+                        accepted = false;
+                    } else {
+                        var deltaY =
+                            placement.surfaceY - alignedBounds.minY;
+                        if scene_transform_3d.NearlyEqual(
+                               deltaY, 0.0) == false {
+                            var desired = Mat4.Mul(
+                                Mat4.Translate(0.0, deltaY, 0.0),
+                                root.WorldMatrix);
+                            if root.TrySetWorldMatrix(desired) == false {
+                                accepted = false;
+                            } else if aligned == false {
+                                moved = moved + 1;
+                            }
+                        }
+                        if accepted and aligned {
+                            moved = moved + 1;
+                        }
+                    }
+                }
+            }
+            rootIndex = rootIndex + 1;
+        }
+        if accepted == false {
+            RestoreLocalTransforms(
+                rootIndices,
+                startPositions,
+                startRotations,
+                startScales);
+            SyncProjectNodePreviewTransforms();
+            return -1;
+        }
+        return moved;
+    }
+
+    /// @brief Drop selected hierarchy roots onto nearest visible surfaces.
+    /// @details Each root casts independently from its world-space bottom
+    ///          center. Selected authored meshes and their project prefab
+    ///          previews cannot catch their own rays; project environment
+    ///          previews and unselected authored geometry remain eligible.
+    ///          Exact world-to-local conversion is required for every moved
+    ///          root, then the group serializes through one history entry.
+    expose override func DropSelectedToSurface() -> Boolean {
+        if scene == null or gameViewActive { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var rootIndices = TopLevelSelectedIndices();
+        var roots = TopLevelSelectedNodes();
+        if roots.count() == 0
+           or roots.count() != rootIndices.count() {
+            return false;
+        }
+        var moved =
+            ApplyRootsToNearestSurfaces(
+                rootIndices,
+                roots,
+                surfaceAlignEnabled,
+                SceneEditor3DModel.DROP_SURFACE_START_CLEARANCE);
+        if moved < 0 {
+            toolbarStatus.SetText("Drop to Surface rejected");
+            detailLabel.SetText(
+                "Studio could not resolve every selected world bound, "
+                + "or placement required a sheared or singular transform. "
+                + "No nodes changed.");
+            RefreshSelectedFields();
+            renderDirty = true;
+            return false;
+        }
+        if moved == 0 {
+            toolbarStatus.SetText("Drop to Surface made no changes");
+            detailLabel.SetText(
+                "The selection already rests on a visible surface, "
+                + "or no surface exists below it.");
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        if CommitScene(
+               "Dropped " + moved + " selected node(s) to surface")
+           == false {
+            RollBackGroupEdit(
+                previousSelection,
+                previousPrimary,
+                "The surface placement could not be committed.");
+            return false;
+        }
+        RebuildProjectNodePreviews();
+        RefreshSelectedFields();
+        SetEditorControlsEnabled(true);
+        detailLabel.SetText(
+            "Dropped " + moved + " selected hierarchy root(s) onto "
+            + "the nearest visible surface.");
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Return the maximum child-edge depth beneath one live node.
+    hide override func SubtreeRelativeDepth(node: SceneNode) -> Integer {
+        if node == null { return 0; }
+        var maximum = 0;
+        var child = 0;
+        while child < node.ChildCount {
+            var depth = 1 + SubtreeRelativeDepth(node.GetChild(child));
+            if depth > maximum { maximum = depth; }
+            if maximum >= SceneEditor3DModel.MAX_HIERARCHY_DEPTH { return maximum; }
+            child = child + 1;
+        }
+        return maximum;
+    }
+
+    /// @brief Return whether all moved subtrees remain visible within the cap.
+    hide override func ParentTargetFits(targetIndex: Integer,
+                               roots: List[SceneNode]) -> Boolean {
+        var rootDepth = 0;
+        if targetIndex >= 0 {
+            if targetIndex >= flatDepths.count() { return false; }
+            rootDepth = flatDepths.get(targetIndex) + 1;
+        }
+        var index = 0;
+        while index < roots.count() {
+            if rootDepth + SubtreeRelativeDepth(roots.get(index))
+               > SceneEditor3DModel.MAX_HIERARCHY_DEPTH {
+                return false;
+            }
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Move selected hierarchy roots beneath one existing target.
+    /// @param targetIndex Flattened target index, or -1 for the scene root.
+    /// @details World transforms are preserved by default through the runtime's
+    ///          exact TRS conversion; the inspector can explicitly preserve
+    ///          local transforms instead. Cycles, excessive depth, lossy world
+    ///          conversion, unchanged parents, and invalid targets are
+    ///          byte/history no-ops.
+    ///          The complete operation serializes once and selection is remapped
+    ///          by live node identity after preorder changes.
+    expose override func ReparentSelectedNodes(targetIndex: Integer) -> Boolean {
+        if targetIndex >= 0 and targetIndex < flatNodes.count()
+           and ParentAcceptsAuthoredChildren(
+                   flatNodes.get(targetIndex)) == false {
+            return false;
+        }
+        if scene == null or (targetIndex < -1)
+           or targetIndex >= flatNodes.count() {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var roots = TopLevelSelectedNodes();
+        if roots.count() == 0 { return false; }
+
+        var target = scene.Root;
+        if targetIndex >= 0 { target = flatNodes.get(targetIndex); }
+        if scene_hierarchy_3d.TargetAllowed(target, roots) == false {
+            detailLabel.SetText(
+                "A node cannot be reparented to itself or one of its descendants.");
+            return false;
+        }
+        if ParentTargetFits(targetIndex, roots) == false {
+            detailLabel.SetText(
+                "That parent would exceed Studio's hierarchy depth limit.");
+            return false;
+        }
+        if scene_hierarchy_3d.AllAlreadyParented(roots, target) {
+            detailLabel.SetText(
+                "The selected hierarchy roots already use that parent.");
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var selectedNodes: List[SceneNode] = [];
+        var selectionIndex = 0;
+        while selectionIndex < selectedIndices.count() {
+            selectedNodes.add(
+                flatNodes.get(selectedIndices.get(selectionIndex)));
+            selectionIndex = selectionIndex + 1;
+        }
+        var primaryNode = SelectedNode();
+        var preserveWorld = preserveWorldReparentCheck != null
+            and preserveWorldReparentCheck.IsChecked();
+
+        var rootIndex = 0;
+        while rootIndex < roots.count() {
+            var node = roots.get(rootIndex);
+            var attached = false;
+            if preserveWorld {
+                attached = target.TryAddChildPreserveWorld(node);
+            } else {
+                attached = target.TryAddChild(node);
+            }
+            if attached == false {
+                var failure =
+                    "Studio could not attach every selected hierarchy root. "
+                    + "The document was restored.";
+                if preserveWorld {
+                    failure =
+                        "Keeping the complete world transform would require "
+                        + "a singular, sheared, or otherwise lossy local "
+                        + "transform. The document was restored.";
+                }
+                RollBackGroupEdit(
+                    previousSelection, previousPrimary,
+                    failure);
+                return false;
+            }
+            rootIndex = rootIndex + 1;
+        }
+
+        // Resolve every identity before accepting serialized bytes. If the
+        // resulting preorder cannot represent the complete prior selection,
+        // currentDoc still contains the old canonical graph and rollback is
+        // exact.
+        var destinationNodes = FlattenGraph(scene);
+        var nextSelection: List[Integer] = [];
+        selectionIndex = 0;
+        while selectionIndex < selectedNodes.count() {
+            var mapped = FindNodeIndex(
+                destinationNodes, selectedNodes.get(selectionIndex));
+            if mapped >= 0 { nextSelection.add(mapped); }
+            selectionIndex = selectionIndex + 1;
+        }
+        var nextPrimary = FindNodeIndex(destinationNodes, primaryNode);
+        if nextSelection.count() != selectedNodes.count()
+           or nextPrimary < 0 {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "Studio could not retain the reparented selection.");
+            return false;
+        }
+
+        var targetName = "scene root";
+        if targetIndex >= 0 { targetName = NodeDisplayName(target); }
+        var transformMode = " while preserving local transforms";
+        if preserveWorld {
+            transformMode = " while preserving world transforms";
+        }
+        if CommitScene(
+               "Reparented " + roots.count() + " hierarchy root(s) to "
+               + targetName + transformMode) == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The selected hierarchy could not be reparented.");
+            return false;
+        }
+
+        RefreshHierarchy(null);
+        SelectSceneNodes(nextSelection, nextPrimary);
+        if preserveWorld {
+            detailLabel.SetText(
+                "World transforms were preserved while changing parent.");
+        } else {
+            detailLabel.SetText(
+                "Local transforms were preserved while changing parent.");
+        }
+        return true;
+    }
+
+}

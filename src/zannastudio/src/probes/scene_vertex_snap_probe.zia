@@ -96,7 +96,17 @@ func physicalY(editor: scene_editor_3d.SceneEditor3D,
         * scale + 0.999999);
 }
 
-func main() {
+/// @brief State shared by the serial vertex-snap pointer scenarios.
+class VertexSnapProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document.Document sceneDoc;
+    expose GUI.TestHarness harness;
+    expose Number uiScale;
+}
+
+/// @brief Build the fixture and verify exact vertex-to-vertex snapping.
+func VerifyVertexToVertex(ctx: VertexSnapProbeContext) -> Boolean {
     var authored = SceneGraph.New();
     var source = SceneNode.New();
     source.Name = "Source crate";
@@ -135,7 +145,7 @@ func main() {
     if editor.flatNodes.count() != 3
        or editor.SelectSceneNodes([0], 0) == false {
         fail(shell, null, "fixture hierarchy or source selection");
-        return;
+        return false;
     }
     editor.SetVertexSnapEnabled(true);
     pump(editor, sceneDoc, shell);
@@ -146,7 +156,7 @@ func main() {
        or editor.placementMenuButton.IsVisible() == false
        or editor.vertexSnapCheck.IsVisible() {
         fail(shell, null, "Vertex control layout or document state");
-        return;
+        return false;
     }
 
     var sourceNode = editor.flatNodes.get(0);
@@ -177,13 +187,13 @@ func main() {
             shell, null,
             "exact vertex source/target resolution kinds="
             + sourceCandidate.kind + "/" + targetCandidate.kind);
-        return;
+        return false;
     }
 
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         fail(shell, null, "input harness did not bind");
-        return;
+        return false;
     }
     var uiScale = shell.app.GetEffectiveScale();
     if uiScale <= 0.0 { uiScale = 1.0; }
@@ -208,7 +218,7 @@ func main() {
     pump(editor, sceneDoc, shell);
     if editor.IsVertexSnapDragging() == false {
         fail(shell, harness, "vertex-to-vertex drag did not begin");
-        return;
+        return false;
     }
     harness.SendMouse("move", targetX, targetY, 0);
     harness.DispatchPending();
@@ -220,7 +230,7 @@ func main() {
         fail(
             shell, harness,
             "vertex-to-vertex live move changed history or missed target");
-        return;
+        return false;
     }
     harness.SendMouse("up", targetX, targetY, 0);
     harness.DispatchPending();
@@ -230,25 +240,42 @@ func main() {
        or editor.undoStack.count() != baselineUndo + 1
        or sceneDoc.content == baseline {
         fail(shell, harness, "vertex-to-vertex release was not one edit");
-        return;
+        return false;
     }
     if editor.Undo() == false or sceneDoc.content != baseline {
         fail(shell, harness, "vertex-to-vertex undo was not exact");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    ctx.uiScale = uiScale;
+    return true;
+}
+
+/// @brief Verify pivot cancellation and precise surface fallback.
+func VerifyPivotAndSurfaceSnapping(
+    ctx: VertexSnapProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
+    var uiScale = ctx.uiScale;
 
     // The larger box keeps its pivot farther than the 11-pixel vertex radius.
     editor.SelectSceneNodes([0], 0);
     pump(editor, sceneDoc, shell);
-    sourceNode = editor.flatNodes.get(0);
-    targetNode = editor.flatNodes.get(1);
+    var sourceNode = editor.flatNodes.get(0);
+    var targetNode = editor.flatNodes.get(1);
     var pivot = sourceNode.WorldPosition;
     var pivotScreen =
         editor.ProjectWorldPoint(pivot.X, pivot.Y, pivot.Z);
-    targetLocal = targetNode.Mesh.VertexPosition(0) as Vec3;
-    targetWorld =
+    var targetLocal = targetNode.Mesh.VertexPosition(0) as Vec3;
+    var targetWorld =
         targetNode.WorldMatrix.TransformPoint(targetLocal) as Vec3;
-    targetScreen = editor.ProjectWorldPoint(
+    var targetScreen = editor.ProjectWorldPoint(
         targetWorld.X, targetWorld.Y, targetWorld.Z);
     var pivotCandidate = editor.VertexSnapSourceAtViewportPoint(
         pivotScreen.x, pivotScreen.y);
@@ -258,12 +285,12 @@ func main() {
         fail(
             shell, harness,
             "selected pivot did not resolve kind=" + pivotCandidate.kind);
-        return;
+        return false;
     }
-    sourceX = physicalX(editor, pivotScreen.x, uiScale);
-    sourceY = physicalY(editor, pivotScreen.y, uiScale);
-    targetX = physicalX(editor, targetScreen.x, uiScale);
-    targetY = physicalY(editor, targetScreen.y, uiScale);
+    var sourceX = physicalX(editor, pivotScreen.x, uiScale);
+    var sourceY = physicalY(editor, pivotScreen.y, uiScale);
+    var targetX = physicalX(editor, targetScreen.x, uiScale);
+    var targetY = physicalY(editor, targetScreen.y, uiScale);
     var cancelBaseline = sceneDoc.content;
     var cancelRevision = editor.GetRevision();
     harness.SendMouse("move", sourceX, sourceY, 0);
@@ -286,7 +313,7 @@ func main() {
        or sceneDoc.content != cancelBaseline
        or editor.GetRevision() != cancelRevision {
         fail(shell, harness, "pivot-to-vertex Escape did not restore");
-        return;
+        return false;
     }
 
     // A point well inside the large plane but away from its four corners must
@@ -294,10 +321,10 @@ func main() {
     editor.SelectSceneNodes([0], 0);
     pump(editor, sceneDoc, shell);
     sourceNode = editor.flatNodes.get(0);
-    sourceLocal = sourceNode.Mesh.VertexPosition(0) as Vec3;
-    sourceWorld =
+    var sourceLocal = sourceNode.Mesh.VertexPosition(0) as Vec3;
+    var sourceWorld =
         sourceNode.WorldMatrix.TransformPoint(sourceLocal) as Vec3;
-    sourceScreen = editor.ProjectWorldPoint(
+    var sourceScreen = editor.ProjectWorldPoint(
         sourceWorld.X, sourceWorld.Y, sourceWorld.Z);
     var surfaceScreen = editor.ProjectWorldPoint(0.0, -2.0, 6.0);
     var surfaceTarget = editor.VertexSnapTargetAtViewportPoint(
@@ -309,7 +336,7 @@ func main() {
             shell, harness,
             "interior plane target was not a precise surface kind="
             + surfaceTarget.kind);
-        return;
+        return false;
     }
     sourceX = physicalX(editor, sourceScreen.x, uiScale);
     sourceY = physicalY(editor, sourceScreen.y, uiScale);
@@ -334,7 +361,7 @@ func main() {
        or sceneDoc.content != surfaceBaseline
        or editor.GetRevision() != surfaceRevision {
         fail(shell, harness, "vertex-to-surface live target or history");
-        return;
+        return false;
     }
     harness.SendMouse("up", targetX, targetY, 0);
     harness.DispatchPending();
@@ -346,9 +373,17 @@ func main() {
        or editor.Undo() == false
        or sceneDoc.content != surfaceBaseline {
         fail(shell, null, "vertex-to-surface release or exact undo");
-        return;
+        return false;
     }
 
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new VertexSnapProbeContext();
+    if VerifyVertexToVertex(ctx) == false { return; }
+    if VerifyPivotAndSurfaceSnapping(ctx) == false { return; }
+
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

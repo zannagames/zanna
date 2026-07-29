@@ -1,0 +1,509 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_scene_preview_2d.zia
+// Purpose: Project-owned 2D scene and object-preview parsing.
+// Key invariants:
+//   - Malformed or out-of-bounds input rejects the complete staged schema.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_scene_preview_2d;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind "scene_component_schema_model" as SceneComponentModel;
+bind "scene_component_schema_preview_values" as PreviousLayer;
+
+class SceneComponentSchemaScenePreview2DLayer extends PreviousLayer.SceneComponentSchemaPreviewValuesLayer {
+
+    /// @brief Parse the optional schema-v8 project 2D scene backdrop profile.
+    hide override func ParseScenePreview2D(
+        root: Any,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(root, "scenePreview2D") == false { return true; }
+        if schema.version < SceneComponentModel.SCENE_PREVIEW_2D_SCHEMA_VERSION {
+            Reject(schema, "Project 2D scene previews require schema version 8.");
+            return false;
+        }
+        var raw = Map.Get(root, "scenePreview2D");
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(schema, "scenePreview2D must be an object.");
+            return false;
+        }
+        var profile = new SceneComponentModel.ScenePreview2DDefinition();
+        if ParseScenePreview2DOutputAndBackground(raw, profile, schema) == false
+           or ParseScenePreview2DVariants(raw, profile, schema) == false
+           or ParseScenePreview2DPresentation(raw, profile, schema) == false {
+            return false;
+        }
+        profile.present = true;
+        schema.scenePreview2D = profile;
+        return true;
+    }
+
+    /// @brief Parse optional game-output size and fixed background image.
+    hide func ParseScenePreview2DOutputAndBackground(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview2DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var outputSize =
+            ParseGameViewOutputSize(raw, "scenePreview2D", schema);
+        if schema.valid == false { return false; }
+        if outputSize.count() == 2 {
+            profile.hasOutputSize = true;
+            profile.outputWidth = outputSize.get(0);
+            profile.outputHeight = outputSize.get(1);
+        }
+        if Map.Has(raw, "background") {
+            if Json.TypeOf(Map.Get(raw, "background")) != "string" {
+                Reject(schema, "scenePreview2D background must be a string.");
+                return false;
+            }
+            profile.background = Str.Trim(Map.GetStr(raw, "background"));
+            if PortablePreviewImage(profile.background) == false {
+                Reject(
+                    schema,
+                    "scenePreview2D background must be a safe project-relative "
+                        + "image path.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse an optional metadata-indexed background image table.
+    hide func ParseScenePreview2DVariants(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview2DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasVariantProperty = Map.Has(raw, "variantProperty");
+        var hasVariantImages = Map.Has(raw, "variantImages");
+        if hasVariantProperty != hasVariantImages {
+            Reject(
+                schema,
+                "scenePreview2D variantProperty and variantImages "
+                    + "must be supplied together.");
+            return false;
+        }
+        if hasVariantProperty {
+            if Json.TypeOf(Map.Get(raw, "variantProperty")) != "string" {
+                Reject(
+                    schema,
+                    "scenePreview2D variantProperty must be a string.");
+                return false;
+            }
+            profile.variantProperty =
+                Str.Trim(Map.GetStr(raw, "variantProperty"));
+            if PortableIdentifier(
+                   profile.variantProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+                Reject(
+                    schema,
+                    "scenePreview2D variantProperty must be a portable key.");
+                return false;
+            }
+            var variants = Map.Get(raw, "variantImages");
+            if variants == null or Json.TypeOf(variants) != "array" {
+                Reject(
+                    schema,
+                    "scenePreview2D variantImages must be an array.");
+                return false;
+            }
+            var count = Seq.get_Count(variants);
+            if count <= 0 or count > SceneComponentModel.MAX_SCENE_PREVIEW_2D_VARIANTS {
+                Reject(
+                    schema,
+                    "scenePreview2D requires between 1 and 64 variant images.");
+                return false;
+            }
+            var index = 0;
+            while index < count {
+                var rawPath = Seq.Get(variants, index);
+                if rawPath == null or Json.TypeOf(rawPath) != "string" {
+                    Reject(
+                        schema,
+                        "scenePreview2D variant image paths must be strings.");
+                    return false;
+                }
+                var path = Str.Trim(Seq.GetStr(variants, index));
+                if PortablePreviewImage(path) == false {
+                    Reject(
+                        schema,
+                        "scenePreview2D variants must be safe project-relative "
+                            + "image paths.");
+                    return false;
+                }
+                profile.variantImages.add(path);
+                index = index + 1;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse variant offset, fit, grid state, and useful-content rules.
+    hide func ParseScenePreview2DPresentation(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview2DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasVariantImages = Map.Has(raw, "variantImages");
+        if Map.Has(raw, "variantOffset") {
+            if hasVariantImages == false
+               or Json.TypeOf(Map.Get(raw, "variantOffset")) != "number" {
+                Reject(
+                    schema,
+                    "scenePreview2D variantOffset requires variant images "
+                        + "and must be an integer.");
+                return false;
+            }
+            var parsed =
+                Parse.TryInt(Json.Format(Map.Get(raw, "variantOffset")));
+            if parsed.IsNone
+               or parsed.UnwrapI64() < SceneComponentModel.MIN_SCENE_PREVIEW_2D_OFFSET
+               or parsed.UnwrapI64() > SceneComponentModel.MAX_SCENE_PREVIEW_2D_OFFSET {
+                Reject(
+                    schema,
+                    "scenePreview2D variantOffset exceeds the supported range.");
+                return false;
+            }
+            profile.variantOffset = parsed.UnwrapI64();
+        }
+
+        if Map.Has(raw, "fit") {
+            if Json.TypeOf(Map.Get(raw, "fit")) != "string" {
+                Reject(schema, "scenePreview2D fit must be a string.");
+                return false;
+            }
+            profile.fit = Str.ToLower(Str.Trim(Map.GetStr(raw, "fit")));
+            if profile.fit != SceneComponentModel.BACKGROUND_FIT_COVER
+               and profile.fit != SceneComponentModel.BACKGROUND_FIT_CONTAIN
+               and profile.fit != SceneComponentModel.BACKGROUND_FIT_STRETCH {
+                Reject(
+                    schema,
+                    "scenePreview2D fit must be cover, contain, or stretch.");
+                return false;
+            }
+            if profile.background == "" and profile.variantImages.count() == 0 {
+                Reject(
+                    schema,
+                    "scenePreview2D fit requires a background image.");
+                return false;
+            }
+        }
+
+        if Map.Has(raw, "showGrid") {
+            if Json.TypeOf(Map.Get(raw, "showGrid")) != "boolean" {
+                Reject(schema, "scenePreview2D showGrid must be a boolean.");
+                return false;
+            }
+            profile.hasShowGrid = true;
+            profile.showGrid = Map.GetBool(raw, "showGrid");
+        }
+        if profile.background == "" and profile.variantImages.count() == 0
+           and profile.hasShowGrid == false
+           and profile.hasOutputSize == false {
+            Reject(
+                schema,
+                "scenePreview2D requires a background mapping, showGrid, "
+                    + "or game-output size.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse the optional schema-v3 project object-preview collection.
+    hide override func ParseObjectPreviews(root: Any,
+                             schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(root, "objectPreviews") == false { return true; }
+        if schema.version < SceneComponentModel.OBJECT_PREVIEW_SCHEMA_VERSION {
+            Reject(schema, "Project object previews require schema version 3.");
+            return false;
+        }
+        var rawPreviews = Map.Get(root, "objectPreviews");
+        if rawPreviews == null or Json.TypeOf(rawPreviews) != "array" {
+            Reject(schema, "objectPreviews must be an array.");
+            return false;
+        }
+        var count = Seq.get_Count(rawPreviews);
+        if count > SceneComponentModel.MAX_OBJECT_PREVIEWS {
+            Reject(schema, "Component schema exceeds 128 object previews.");
+            return false;
+        }
+        var staged: List[SceneComponentModel.SceneObjectPreviewDefinition] = [];
+        var seenTypes = Map.New();
+        var index = 0;
+        while index < count {
+            var preview = ParseObjectPreview(
+                Seq.Get(rawPreviews, index), index, seenTypes, schema);
+            if preview == null { return false; }
+            staged.add(preview);
+            index = index + 1;
+        }
+        schema.objectPreviews = staged;
+        return true;
+    }
+
+    /// @brief Validate one project object-preview definition atomically.
+    hide override func ParseObjectPreview(
+        raw: Any,
+        index: Integer,
+        seenTypes: Any,
+        schema: SceneComponentModel.SceneComponentSchema)
+        -> SceneComponentModel.SceneObjectPreviewDefinition {
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(schema, "Object preview " + index + " must be an object.");
+            return null;
+        }
+        var preview = new SceneComponentModel.SceneObjectPreviewDefinition();
+        if ParseObjectPreviewIdentity(
+               raw, index, seenTypes, preview, schema) == false
+           or ParseObjectPreviewSprite(raw, preview, schema) == false
+           or ParseObjectPreviewFrame(raw, preview, schema) == false
+           or ParseObjectPreviewFrameMapping(raw, preview, schema) == false
+           or ParseObjectPreviewDrawStack(raw, preview, schema) == false {
+            return null;
+        }
+        return preview;
+    }
+
+    /// @brief Parse and deduplicate the object type selector.
+    hide func ParseObjectPreviewIdentity(
+        raw: Any,
+        index: Integer,
+        seenTypes: Any,
+        preview: SceneComponentModel.SceneObjectPreviewDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        preview.objectType = Str.Trim(Map.GetStr(raw, "objectType"));
+        if PortableIdentifier(
+               preview.objectType, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "Object preview " + index
+                    + " requires a portable objectType of at most 128 characters.");
+            return false;
+        }
+        var foldedType = Str.ToLower(preview.objectType);
+        if Map.Has(seenTypes, foldedType) {
+            Reject(
+                schema,
+                "Duplicate object preview type \"" + preview.objectType + "\".");
+            return false;
+        }
+        Map.SetBool(seenTypes, foldedType, true);
+        return true;
+    }
+
+    /// @brief Parse the required bounded sprite reference.
+    hide func ParseObjectPreviewSprite(
+        raw: Any,
+        preview: SceneComponentModel.SceneObjectPreviewDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "sprite") == false
+           or Json.TypeOf(Map.Get(raw, "sprite")) != "string" {
+            Reject(
+                schema,
+                "Object preview \"" + preview.objectType
+                    + "\" requires a sprite string.");
+            return false;
+        }
+        preview.sprite = Str.Trim(Map.GetStr(raw, "sprite"));
+        if preview.sprite == ""
+           or Str.get_Length(preview.sprite) > SceneComponentModel.MAX_PREVIEW_SPRITE_CHARS {
+            Reject(
+                schema,
+                "Object preview \"" + preview.objectType
+                    + "\" sprite must contain at most 1,024 characters.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse fixed frame and optional frame metadata key.
+    hide func ParseObjectPreviewFrame(
+        raw: Any,
+        preview: SceneComponentModel.SceneObjectPreviewDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "frame") {
+            var rawFrame = Map.Get(raw, "frame");
+            if Json.TypeOf(rawFrame) != "number" {
+                Reject(schema, "Object preview frame must be an integer.");
+                return false;
+            }
+            var parsedFrame = Parse.TryInt(Json.Format(rawFrame));
+            if parsedFrame.IsNone
+               or parsedFrame.UnwrapI64() < 0
+               or parsedFrame.UnwrapI64() > SceneComponentModel.MAX_PREVIEW_FRAME {
+                Reject(
+                    schema,
+                    "Object preview frame must be between 0 and 1,000,000.");
+                return false;
+            }
+            preview.frame = parsedFrame.UnwrapI64();
+        }
+
+        if Map.Has(raw, "frameProperty") {
+            if Json.TypeOf(Map.Get(raw, "frameProperty")) != "string" {
+                Reject(schema, "Object preview frameProperty must be a string.");
+                return false;
+            }
+            preview.frameProperty =
+                Str.Trim(Map.GetStr(raw, "frameProperty"));
+            if PortableIdentifier(
+                   preview.frameProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+                Reject(
+                    schema,
+                    "Object preview frameProperty must be a portable key "
+                    + "of at most 128 characters.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse mutually exclusive frame offset and frame-map behavior.
+    hide func ParseObjectPreviewFrameMapping(
+        raw: Any,
+        preview: SceneComponentModel.SceneObjectPreviewDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasOffset = Map.Has(raw, "frameOffset");
+        var hasMap = Map.Has(raw, "frameMap");
+        if (hasOffset or hasMap) and preview.frameProperty == "" {
+            Reject(
+                schema,
+                "Object preview frameOffset/frameMap requires frameProperty.");
+            return false;
+        }
+        if hasOffset and hasMap {
+            Reject(
+                schema,
+                "Object preview frameOffset and frameMap are mutually exclusive.");
+            return false;
+        }
+        if hasOffset {
+            var rawOffset = Map.Get(raw, "frameOffset");
+            if Json.TypeOf(rawOffset) != "number" {
+                Reject(schema, "Object preview frameOffset must be an integer.");
+                return false;
+            }
+            var parsedOffset = Parse.TryInt(Json.Format(rawOffset));
+            if parsedOffset.IsNone
+               or parsedOffset.UnwrapI64() < SceneComponentModel.MIN_PREVIEW_FRAME_OFFSET
+               or parsedOffset.UnwrapI64() > SceneComponentModel.MAX_PREVIEW_FRAME_OFFSET {
+                Reject(
+                    schema,
+                    "Object preview frameOffset exceeds the supported range.");
+                return false;
+            }
+            preview.frameOffset = parsedOffset.UnwrapI64();
+        }
+        if hasMap and ParsePreviewFrameMap(raw, preview, schema) == false {
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse optional versioned draw-stack placement.
+    hide func ParseObjectPreviewDrawStack(
+        raw: Any,
+        preview: SceneComponentModel.SceneObjectPreviewDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasDrawOrder = Map.Has(raw, "drawOrder");
+        var hasAfterLayer = Map.Has(raw, "afterLayer");
+        if (hasDrawOrder or hasAfterLayer)
+           and schema.version < SceneComponentModel.OBJECT_PREVIEW_DRAW_STACK_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Object preview drawOrder/afterLayer requires schema version 11.");
+            return false;
+        }
+        if hasDrawOrder {
+            var rawDrawOrder = Map.Get(raw, "drawOrder");
+            if Json.TypeOf(rawDrawOrder) != "number" {
+                Reject(schema, "Object preview drawOrder must be an integer.");
+                return false;
+            }
+            var parsedDrawOrder = Parse.TryInt(Json.Format(rawDrawOrder));
+            if parsedDrawOrder.IsNone
+               or parsedDrawOrder.UnwrapI64() < SceneComponentModel.MIN_PREVIEW_DRAW_ORDER
+               or parsedDrawOrder.UnwrapI64() > SceneComponentModel.MAX_PREVIEW_DRAW_ORDER {
+                Reject(
+                    schema,
+                    "Object preview drawOrder must be between -128 and 127.");
+                return false;
+            }
+            preview.drawOrder = parsedDrawOrder.UnwrapI64();
+        }
+        if hasAfterLayer {
+            var rawAfterLayer = Map.Get(raw, "afterLayer");
+            if Json.TypeOf(rawAfterLayer) != "number" {
+                Reject(schema, "Object preview afterLayer must be an integer.");
+                return false;
+            }
+            var parsedAfterLayer = Parse.TryInt(Json.Format(rawAfterLayer));
+            if parsedAfterLayer.IsNone
+               or parsedAfterLayer.UnwrapI64() < SceneComponentModel.MIN_PREVIEW_AFTER_LAYER
+               or parsedAfterLayer.UnwrapI64() > SceneComponentModel.MAX_PREVIEW_AFTER_LAYER {
+                Reject(
+                    schema,
+                    "Object preview afterLayer must be between -1 and 15.");
+                return false;
+            }
+            preview.afterLayer = parsedAfterLayer.UnwrapI64();
+        }
+        return true;
+    }
+
+    /// @brief Parse one bounded non-negative atlas-frame map.
+    hide override func ParsePreviewFrameMap(raw: Any,
+                              preview: SceneComponentModel.SceneObjectPreviewDefinition,
+                              schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var rawMap = Map.Get(raw, "frameMap");
+        if rawMap == null or Json.TypeOf(rawMap) != "array" {
+            Reject(schema, "Object preview frameMap must be an array.");
+            return false;
+        }
+        var count = Seq.get_Count(rawMap);
+        if count <= 0 or count > SceneComponentModel.MAX_PREVIEW_FRAME_MAP {
+            Reject(
+                schema,
+                "Object preview frameMap requires between 1 and 256 entries.");
+            return false;
+        }
+        var index = 0;
+        while index < count {
+            var rawFrame = Seq.Get(rawMap, index);
+            if rawFrame == null or Json.TypeOf(rawFrame) != "number" {
+                Reject(schema, "Object preview frameMap entries must be integers.");
+                return false;
+            }
+            var parsed = Parse.TryInt(Json.Format(rawFrame));
+            if parsed.IsNone or parsed.UnwrapI64() < 0
+               or parsed.UnwrapI64() > SceneComponentModel.MAX_PREVIEW_FRAME {
+                Reject(
+                    schema,
+                    "Object preview frameMap entries must be between "
+                    + "0 and 1,000,000.");
+                return false;
+            }
+            preview.frameMap.add(parsed.UnwrapI64());
+            index = index + 1;
+        }
+        return true;
+    }
+
+}

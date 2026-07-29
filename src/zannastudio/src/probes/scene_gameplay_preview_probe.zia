@@ -19,6 +19,8 @@
 //     placeholders during draw while canonical materials remain untouched.
 //   - Typed spawn archetypes instantiate the same project glTF enemy rigs and
 //     fixed presentation transforms used by the game, with ordered fallback.
+//   - A project-owned Wave selector defaults to the active encounter, filters
+//     only transient enemy art, and can reveal All without changing scene data.
 //   - Applying Gameplay View is read-only and survives prior navigation.
 //   - Game View removes navigator, gizmo, selection, and editor-light chrome.
 //   - Game View renders the exact 1600x900 project output inside neutral matte.
@@ -38,7 +40,8 @@
 //        docs/adr/0212-additive-3d-environment-preview-layers.md,
 //        docs/adr/0213-runtime-backed-water-preview-layers.md,
 //        docs/adr/0214-project-owned-3d-material-previews.md,
-//        docs/adr/0215-project-owned-direct-model-previews.md
+//        docs/adr/0215-project-owned-direct-model-previews.md,
+//        docs/adr/0216-project-owned-3d-node-preview-states.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -51,6 +54,7 @@ bind "../ui/app_shell";
 bind "../ui/scene_component_schema";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
+bind "scene_gameplay_preview_water_probe";
 
 bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
@@ -175,7 +179,21 @@ func pump(editor: scene_editor_3d.SceneEditor3D,
     shell.Render();
 }
 
-func main() {
+/// @brief Typed state shared by serial gameplay-preview scenarios.
+class GameplayPreviewProbeContext {
+    expose app_shell.AppShell shell;
+    expose project_manager.ProjectManager project;
+    expose String root;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document.Document sceneDoc;
+    expose String baseline;
+    expose scene_component_schema.SceneComponentDefinition enemyRecipe;
+    expose Number meanLuma;
+    expose document.Document waterDoc;
+}
+
+/// @brief Run the VerifyProjectAndPreviewContracts gameplay-preview scenario.
+func VerifyProjectAndPreviewContracts(ctx: GameplayPreviewProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Gameplay Preview Probe", 1180, 780);
     shell.SetSceneWorkspaceMode(true);
@@ -189,7 +207,7 @@ func main() {
        or project.OpenFolder(root) == false {
         fail(shell, project,
              "could not open the Ashfall project fixture at " + root);
-        return;
+        return false;
     }
 
     var editor = new scene_editor_3d.SceneEditor3D();
@@ -216,7 +234,7 @@ func main() {
        or editor.viewportPixels == null {
         fail(shell, project,
              "the Ashfall mission did not become a rendered Studio scene");
-        return;
+        return false;
     }
 
     var hasEnvironmentPreview = false;
@@ -237,7 +255,10 @@ func main() {
         scene_component_schema.SceneComponentDefinition = null;
     var rangerPreview:
         scene_component_schema.SceneNodePreview3DDefinition = null;
+    var waveFilter:
+        scene_component_schema.SceneNodePreviewFilter3DDefinition = null;
     if editor.componentSchema != null {
+        waveFilter = editor.componentSchema.nodePreviewFilter3D;
         enemyRecipe = editor.componentSchema.Find(
             "enemy-spawn", scene_component_schema.TARGET_3D_NODE);
         var ruleIndex = 0;
@@ -256,7 +277,7 @@ func main() {
     if editor.componentSchema == null
        or editor.componentSchema.version
           != scene_component_schema
-              .DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION
+              .NODE_PREVIEW_FILTER_3D_SCHEMA_VERSION
        or enemyRecipe == null
        or enemyRecipe.createNodeName != "Enemy Spawn"
        or enemyRecipe.FieldNamed("af.kind") == null
@@ -273,6 +294,16 @@ func main() {
               .waterLayers.count() != 1
        or editor.componentSchema.nodePreviews3D.count() != 15
        or editor.componentSchema.materialPreviews3D.count() != 10
+       or waveFilter == null or waveFilter.present == false
+       or waveFilter.label != "Wave"
+       or waveFilter.allLabel != "All waves"
+       or waveFilter.matchProperty != "spawn.wave"
+       or waveFilter.defaultIndex != 1
+       or waveFilter.states.count() != 4
+       or waveFilter.StateAt(1).matchInteger != 0
+       or waveFilter.StateAt(2).matchInteger != 1
+       or waveFilter.StateAt(3).matchInteger != 2
+       or waveFilter.StateAt(4).matchInteger != 3
        or rangerPreview == null
        or rangerPreview.prefab != "assets_src/enemies/ranger.gltf"
        or near(rangerPreview.scale, 0.95) == false
@@ -285,16 +316,80 @@ func main() {
           != "assets/editor-previews/environment-terrain-01.scene3d"
        or hasEnvironmentPreview == false
        or editor.projectWaterPreviews.count() != 0
-       or editor.projectPreviewInstanceCount <= 0
-       or editor.projectPreviewDirectModelCount != 20
+       or editor.projectPreviewFilterIndex != 1
+       or editor.ProjectPreviewFilterSelectionLabel() != "Wave 1"
+       or editor.projectPreviewFilterDropdown.IsVisible() == false
+       or editor.projectPreviewFilterDropdown.Selected != 1
+       or editor.projectPreviewInstanceCount != 26
+       or editor.projectPreviewDirectModelCount != 5
+       or editor.projectPreviewFilteredCount != 15
        or editor.projectPreviewFallbackCount != 0
        or editor.projectPreviewMissingCount != 0
        or editor.projectPreviewClipped {
         fail(shell, project,
              "the runtime terrain did not become a bounded "
              + "scene environment preview");
-        return;
+        return false;
     }
+
+
+    ctx.shell = shell;
+    ctx.project = project;
+    ctx.root = root;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.baseline = baseline;
+    ctx.enemyRecipe = enemyRecipe;
+    return true;
+}
+
+/// @brief Run the VerifyWaveFilterAndRuntimeMaterials gameplay-preview scenario.
+func VerifyWaveFilterAndRuntimeMaterials(ctx: GameplayPreviewProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var project = ctx.project;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var baseline = ctx.baseline;
+
+    // Switch between encounter states and All using session-only editor state.
+    // Every selection must retain exact scene bytes, revision, and history.
+    var filterBaselineRevision = editor.GetRevision();
+    var filterBaselineUndo = editor.undoStack.count();
+    if editor.SetProjectPreviewFilterIndex(2) == false
+       or editor.projectPreviewFilterIndex != 2
+       or editor.ProjectPreviewFilterSelectionLabel() != "Wave 2"
+       or editor.projectPreviewFilterDropdown.Selected != 2
+       or editor.projectPreviewInstanceCount != 26
+       or editor.projectPreviewDirectModelCount != 5
+       or editor.projectPreviewFilteredCount != 15
+       or editor.SetProjectPreviewFilterIndex(0) == false
+       or editor.ProjectPreviewFilterSelectionLabel() != "All waves"
+       or editor.projectPreviewInstanceCount != 41
+       or editor.projectPreviewDirectModelCount != 20
+       or editor.projectPreviewFilteredCount != 0
+       or editor.SetProjectPreviewFilterIndex(1) == false
+       or editor.ProjectPreviewFilterSelectionLabel() != "Wave 1"
+       or editor.projectPreviewInstanceCount != 26
+       or editor.projectPreviewDirectModelCount != 5
+       or editor.projectPreviewFilteredCount != 15
+       or sceneDoc.content != baseline
+       or sceneDoc.isModified
+       or editor.GetRevision() != filterBaselineRevision
+       or editor.undoStack.count() != filterBaselineUndo
+       or editor.redoStack.count() != 0 {
+        fail(
+            shell,
+            project,
+            "Ashfall preview-state selection changed canonical data "
+            + "or did not isolate one encounter wave"
+            + " state=" + editor.projectPreviewFilterIndex
+            + " label=" + editor.ProjectPreviewFilterSelectionLabel()
+            + " previews=" + editor.projectPreviewInstanceCount
+            + " direct=" + editor.projectPreviewDirectModelCount
+            + " filtered=" + editor.projectPreviewFilteredCount);
+        return false;
+    }
+    pump(editor, sceneDoc, shell);
 
     // Scene VSCN stores simple tint materials while runtime code selects
     // TextureLib presentation from typed `surf` metadata. Schema-v16 closes
@@ -371,8 +466,26 @@ func main() {
             + "/64 missing="
             + editor.projectMaterialPreviewMissingCount
             + " hull/accent=" + hullIndex + "/" + accentIndex);
-        return;
+        return false;
     }
+
+
+    ctx.shell = shell;
+    ctx.project = project;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.baseline = baseline;
+    return true;
+}
+
+/// @brief Run the VerifyEnemyPreviewAndCreationRecipe gameplay-preview scenario.
+func VerifyEnemyPreviewAndCreationRecipe(ctx: GameplayPreviewProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var project = ctx.project;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var baseline = ctx.baseline;
+    var enemyRecipe = ctx.enemyRecipe;
 
     // Create one real Ashfall spawn at the viewport target. The discriminator
     // and every gameplay default must exist before the node enters canonical
@@ -388,12 +501,16 @@ func main() {
     var recipeBaselineUndo = editor.undoStack.count();
     var recipeBaselinePreviewCount =
         editor.projectPreviewInstanceCount;
+    var recipeBaselineDirectModelCount =
+        editor.projectPreviewDirectModelCount;
+    var recipeBaselineFilteredCount =
+        editor.projectPreviewFilteredCount;
     if editor.componentPalette.group.IsVisible() == false
        or editor.componentPalette.createButton.IsEnabled() == false
        or editor.componentPalette.applyButton.IsEnabled() {
         fail(shell, project,
              "the selection-free Ashfall creation action was not truthful");
-        return;
+        return false;
     }
     var createdSpawn = editor.CreateNodeFromComponent(enemyRecipe);
     var createdContent = sceneDoc.content;
@@ -444,6 +561,10 @@ func main() {
        or createdContent == baseline
        or editor.projectPreviewInstanceCount
           != recipeBaselinePreviewCount + 1
+       or editor.projectPreviewDirectModelCount
+          != recipeBaselineDirectModelCount
+       or editor.projectPreviewFilteredCount
+          != recipeBaselineFilteredCount
        or editor.projectPreviewMissingCount != 0 {
         fail(shell, project,
              "direct Ashfall node creation was not one exact "
@@ -465,14 +586,22 @@ func main() {
              + " bytesChanged=" + (createdContent != baseline)
              + " previews=" + editor.projectPreviewInstanceCount
              + "/" + (recipeBaselinePreviewCount + 1)
+             + " direct=" + editor.projectPreviewDirectModelCount
+             + "/" + recipeBaselineDirectModelCount
+             + " filtered=" + editor.projectPreviewFilteredCount
+             + "/" + recipeBaselineFilteredCount
              + " missing=" + editor.projectPreviewMissingCount);
-        return;
+        return false;
     }
     if editor.Undo() == false
        or sceneDoc.content != baseline
        or editor.flatNodes.count() != 134
        or editor.projectPreviewInstanceCount
           != recipeBaselinePreviewCount
+       or editor.projectPreviewDirectModelCount
+          != recipeBaselineDirectModelCount
+       or editor.projectPreviewFilteredCount
+          != recipeBaselineFilteredCount
        or editor.undoStack.count() != recipeBaselineUndo
        or editor.redoStack.count() != 1
        or editor.Redo() == false
@@ -482,6 +611,10 @@ func main() {
               .MetadataGetString("af.kind", "") != "spawn"
        or editor.projectPreviewInstanceCount
           != recipeBaselinePreviewCount + 1
+       or editor.projectPreviewDirectModelCount
+          != recipeBaselineDirectModelCount
+       or editor.projectPreviewFilteredCount
+          != recipeBaselineFilteredCount
        or editor.undoStack.count() != recipeBaselineUndo + 1
        or editor.redoStack.count() != 0
        or editor.Undo() == false
@@ -489,14 +622,35 @@ func main() {
        or editor.flatNodes.count() != 134
        or editor.projectPreviewInstanceCount
           != recipeBaselinePreviewCount
+       or editor.projectPreviewDirectModelCount
+          != recipeBaselineDirectModelCount
+       or editor.projectPreviewFilteredCount
+          != recipeBaselineFilteredCount
        or editor.undoStack.count() != recipeBaselineUndo
        or editor.redoStack.count() != 1
        or editor.GetRevision() != recipeBaselineRevision + 4
        or sceneDoc.isModified {
         fail(shell, project,
              "Ashfall recipe undo/redo did not restore exact scene bytes");
-        return;
+        return false;
     }
+
+
+    ctx.shell = shell;
+    ctx.project = project;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.baseline = baseline;
+    return true;
+}
+
+/// @brief Run the VerifyPostFXAndRenderedFrame gameplay-preview scenario.
+func VerifyPostFXAndRenderedFrame(ctx: GameplayPreviewProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var project = ctx.project;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var baseline = ctx.baseline;
 
     var previewProfile = editor.componentSchema.scenePreview3D;
     if previewProfile.HasPostFX() == false
@@ -512,7 +666,7 @@ func main() {
         fail(shell, project,
              "the Ashfall runtime post-FX recipe did not reach "
              + "the retained Studio viewport");
-        return;
+        return false;
     }
     var meanLuma = sceneMeanLuma(
         editor.viewportPixels,
@@ -522,7 +676,7 @@ func main() {
         fail(shell, project,
              "finalized Ashfall viewport escaped its runtime-lit visual "
              + "envelope (mean luma " + meanLuma + ")");
-        return;
+        return false;
     }
 
     var eye = editor.viewportRenderCamera.Position;
@@ -549,7 +703,7 @@ func main() {
              + projectedCenter.x + "," + projectedCenter.y
              + " expected="
              + expectedCenterX + "," + expectedCenterY);
-        return;
+        return false;
     }
 
     // A dock change replaces the retained camera at a different aspect.
@@ -563,7 +717,7 @@ func main() {
        or near(eye.Z, 34.0) == false {
         fail(shell, project,
              "responsive dock layout moved the gameplay camera");
-        return;
+        return false;
     }
 
     // Deliberately navigate away, then prove the user-facing recovery action
@@ -576,7 +730,7 @@ func main() {
     pump(editor, sceneDoc, shell);
     if editor.ApplyProjectPreviewView() == false {
         fail(shell, project, "Gameplay View action was unavailable");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
     eye = editor.viewportRenderCamera.Position;
@@ -591,8 +745,28 @@ func main() {
        or sceneDoc.isModified {
         fail(shell, project,
              "Gameplay View did not restore the read-only runtime pose");
-        return;
+        return false;
     }
+
+
+    ctx.shell = shell;
+    ctx.project = project;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.baseline = baseline;
+    ctx.meanLuma = meanLuma;
+    return true;
+}
+
+/// @brief Run the VerifyGameViewAndCameraRestore gameplay-preview scenario.
+func VerifyGameViewAndCameraRestore(ctx: GameplayPreviewProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var project = ctx.project;
+    var root = ctx.root;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var baseline = ctx.baseline;
+    var meanLuma = ctx.meanLuma;
 
     var baselineRevision = editor.GetRevision();
     var baselineUndo = editor.undoStack.count();
@@ -678,7 +852,7 @@ func main() {
              + "/" + baselineRevision
              + " history=" + editor.undoStack.count()
              + "/" + baselineUndo);
-        return;
+        return false;
     }
 
     var screenshotPath =
@@ -687,7 +861,7 @@ func main() {
     if Pixels.SavePng(editor.viewportPixels, screenshotPath) != 1 {
         fail(shell, project,
              "could not capture the actual Studio viewport");
-        return;
+        return false;
     }
 
     Terminal.Say(
@@ -698,6 +872,8 @@ func main() {
         + " frame=" + gameFrameWidth + "x" + gameFrameHeight
         + " previews=" + editor.projectPreviewInstanceCount
         + " directModels=" + editor.projectPreviewDirectModelCount
+        + " filtered=" + editor.projectPreviewFilteredCount
+        + " previewState=" + editor.ProjectPreviewFilterSelectionLabel()
         + " fallbacks=" + editor.projectPreviewFallbackCount
         + " materials=" + editor.projectMaterialPreviewCount
         + " postfx=" + editor.viewportRenderPostFX.EffectCount
@@ -732,7 +908,7 @@ func main() {
             fail(shell, project,
                  "leaving output-framed Game View did not restore "
                  + "the exact editor camera and canonical state");
-            return;
+            return false;
         }
     }
 
@@ -747,170 +923,27 @@ func main() {
     waterDoc.language = "scene3d";
     waterDoc.kind = file_utils.DOC_KIND_SCENE_3D;
     waterDoc.content = File.ReadAllText(waterScenePath);
-    var waterBaseline = waterDoc.content;
-    var waterBaselineRevision = editor.GetRevision();
-    editor.Activate(waterDoc);
-    pump(editor, waterDoc, shell);
-    pump(editor, waterDoc, shell);
-    var hasLegacyWaterProxy = false;
-    if editor.projectPreviewScene != null
-       and editor.projectPreviewScene.Root != null {
-        var waterPreviewIndex = 0;
-        while waterPreviewIndex
-              < editor.projectPreviewScene.Root.ChildCount {
-            var candidate = editor.projectPreviewScene.Root.GetChild(
-                waterPreviewIndex);
-            if candidate != null
-               and candidate.Name == "Scene environment layer 0" {
-                hasLegacyWaterProxy = true;
-            }
-            waterPreviewIndex = waterPreviewIndex + 1;
-        }
-    }
-    var waterDefinition =
-        editor.componentSchema.scenePreview3D.waterLayers.get(0);
-    var waterCenter = editor.ProjectWorldPoint(-12.0, 0.28, -14.0);
-    if editor.componentSchema.version
-          != scene_component_schema
-              .DIRECT_MODEL_PREVIEW_3D_SCHEMA_VERSION
-       or editor.componentSchema.scenePreview3D
-              .environmentLayers.count() != 0
-       or editor.componentSchema.scenePreview3D.waterLayers.count() != 1
-       or waterDefinition.matchKind != "bool"
-       or waterDefinition.matchBoolean == false
-       or waterDefinition.positionXProperty != "af.watX"
-       or waterDefinition.positionYProperty != "af.watY"
-       or waterDefinition.positionZProperty != "af.watZ"
-       or waterDefinition.widthProperty != "af.watW"
-       or waterDefinition.depthProperty != "af.watD"
-       or near(waterDefinition.widthMultiplier, 2.0) == false
-       or near(waterDefinition.depthMultiplier, 2.0) == false
-       or waterDefinition.texture
-          != "assets/editor-previews/water-albedo.png"
-       or waterDefinition.normalMap
-          != "assets/editor-previews/water-normal.png"
-       or waterDefinition.resolution != 64
-       or waterDefinition.animate == false
-       or waterDefinition.waves.count() != 2
-       or near(waterDefinition.waves.get(0).dirX, 1.0) == false
-       or near(waterDefinition.waves.get(0).dirZ, 0.3) == false
-       or near(waterDefinition.waves.get(0).speed, 0.05) == false
-       or near(waterDefinition.waves.get(0).amplitude, 0.4) == false
-       or near(waterDefinition.waves.get(0).wavelength, 1.2) == false
-       or near(waterDefinition.waves.get(1).dirX, -0.4) == false
-       or near(waterDefinition.waves.get(1).dirZ, 0.8) == false
-       or near(waterDefinition.waves.get(1).speed, 0.035) == false
-       or near(waterDefinition.waves.get(1).amplitude, 0.7) == false
-       or near(waterDefinition.waves.get(1).wavelength, 0.8) == false
-       or editor.projectWaterPreviews.count() != 1
-       or editor.projectWaterWidths.count() != 1
-       or editor.projectWaterDepths.count() != 1
-       or editor.projectWaterXs.count() != 1
-       or editor.projectWaterYs.count() != 1
-       or editor.projectWaterZs.count() != 1
-       or near(editor.projectWaterWidths.get(0), 6.4) == false
-       or near(editor.projectWaterDepths.get(0), 6.4) == false
-       or near(editor.projectWaterXs.get(0), -12.0) == false
-       or near(editor.projectWaterYs.get(0), 0.28) == false
-       or near(editor.projectWaterZs.get(0), -14.0) == false
-       or hasLegacyWaterProxy
-       or waterCenter.visible == false
-       or editor.projectPreviewMissingCount != 0
-       or editor.projectPreviewClipped
-       or editor.viewportRenderCanvas.FrameFinalized == false
-       or editor.viewportRenderCanvas.DrawCount <= 1
-       or waterDoc.content != waterBaseline
-       or waterDoc.isModified
-       or editor.GetRevision() != waterBaselineRevision
-       or editor.undoStack.count() != 0
-       or editor.redoStack.count() != 0 {
-        fail(shell, project,
-             "mission 05 water did not become one exact runtime-backed "
-             + "one-frame preview");
-        return;
-    }
-    editor.viewTargetX = -12.0;
-    editor.viewTargetY = 0.28;
-    editor.viewTargetZ = -14.0;
-    editor.viewScale = 28;
-    editor.SetViewProjection(false);
-    editor.SetQuickView(0);
-    editor.viewYawDegrees = 35;
-    editor.viewPitchDegrees = 35;
-    editor.SetViewProjection(true);
-    pump(editor, waterDoc, shell);
-    pump(editor, waterDoc, shell);
-    var waterTopCenter =
-        editor.ProjectWorldPoint(-12.0, 0.28, -14.0);
-    var waterTopCorner =
-        editor.ProjectWorldPoint(-8.8, 0.28, -10.8);
-    if waterTopCenter.visible == false
-       or waterTopCorner.visible == false {
-        fail(shell, project,
-             "mission 05 water footprint could not be framed for authoring");
-        return;
-    }
-    var waterBefore = editor.viewportPixels.Clone() as Pixels;
-    var waterStep = 0;
-    while waterStep < 10 {
-        if editor.AdvanceProjectWaterPreview(0.1) == false {
-            fail(shell, project,
-                 "mission 05 runtime water refused a bounded preview step");
-            return;
-        }
-        waterStep = waterStep + 1;
-    }
-    pump(editor, waterDoc, shell);
-    var changedWaterPixels = pixelDifferenceAround(
-        waterBefore,
-        editor.viewportPixels,
-        waterTopCenter.x,
-        waterTopCenter.y,
-        128);
-    if changedWaterPixels <= 0
-       or editor.viewportRenderCanvas.FrameFinalized == false
-       or editor.viewportRenderCanvas.DrawCount <= 1
-       or waterDoc.content != waterBaseline
-       or waterDoc.isModified
-       or editor.GetRevision() != waterBaselineRevision
-       or editor.undoStack.count() != 0
-       or editor.redoStack.count() != 0 {
-        var waterBeforePath =
-            Path.Join(TempFile.Dir(), "zannastudio_water_before.png");
-        var waterAfterPath =
-            Path.Join(TempFile.Dir(), "zannastudio_water_after.png");
-        Pixels.SavePng(waterBefore, waterBeforePath);
-        Pixels.SavePng(editor.viewportPixels, waterAfterPath);
-        fail(shell, project,
-             "runtime water animation or one-frame composition changed "
-             + "canonical state or produced no visible frame delta"
-             + " changedPixels=" + changedWaterPixels
-             + " draws=" + editor.viewportRenderCanvas.DrawCount
-             + " before=" + waterBeforePath
-             + " after=" + waterAfterPath);
-        return;
-    }
-    var waterScreenshotPath =
-        Path.Join(
-            TempFile.Dir(),
-            "zannastudio_ashfall_water_preview.png");
-    if editor.viewportPixels == null
-       or Pixels.SavePng(
-              editor.viewportPixels, waterScreenshotPath) != 1 {
-        fail(shell, project,
-             "could not capture the mission 05 water preview");
-        return;
-    }
-    Terminal.Say(
-        "METRIC: water=-12,0.28,-14 size=6.4x6.4 runtime=Water3D"
-        + " waves=2 resolution=64"
-        + " changedPixels=" + changedWaterPixels
-        + " composedDraws=" + editor.viewportRenderCanvas.DrawCount
-        + " gameplayScreen=" + waterCenter.x + "," + waterCenter.y
-        + " authoringScreen=" + waterTopCenter.x + "," + waterTopCenter.y
-        + " screenshot=" + waterScreenshotPath);
 
-    project.CloseProject();
-    shell.Destroy();
-    Terminal.Say("RESULT: ok");
+    ctx.shell = shell;
+    ctx.project = project;
+    ctx.editor = editor;
+    ctx.waterDoc = waterDoc;
+    return true;
+}
+
+/// @brief Run the runtime-water and screenshot scenario.
+func VerifyWaterPreviewAndScreenshot(
+    ctx: GameplayPreviewProbeContext) -> Boolean {
+    return scene_gameplay_preview_water_probe.Verify(
+        ctx.shell, ctx.project, ctx.editor, ctx.waterDoc);
+}
+
+func main() {
+    var ctx = new GameplayPreviewProbeContext();
+    if VerifyProjectAndPreviewContracts(ctx) == false { return; }
+    if VerifyWaveFilterAndRuntimeMaterials(ctx) == false { return; }
+    if VerifyEnemyPreviewAndCreationRecipe(ctx) == false { return; }
+    if VerifyPostFXAndRenderedFrame(ctx) == false { return; }
+    if VerifyGameViewAndCameraRestore(ctx) == false { return; }
+    if VerifyWaterPreviewAndScreenshot(ctx) == false { return; }
 }

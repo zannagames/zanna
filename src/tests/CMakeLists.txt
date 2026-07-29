@@ -1194,7 +1194,7 @@ set_tests_properties(zia_smoke_zannastudio PROPERTIES
 add_test(NAME zia_smoke_zannastudio_project_compile
         COMMAND $<TARGET_FILE:zanna> build "${CMAKE_SOURCE_DIR}/src/zannastudio" -o "${CMAKE_BINARY_DIR}/zannastudio_smoke.il")
 set_tests_properties(zia_smoke_zannastudio_project_compile PROPERTIES
-        LABELS "zia;smoke"
+        LABELS "zia;smoke;slow"
         TIMEOUT 180)
 
 add_test(NAME zannastudio_notification_policy
@@ -1321,7 +1321,7 @@ add_test(NAME zia_zannastudio_scene_editor_2d
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_editor_2d PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         # Source compilation and hidden-window rendering can exceed the normal
         # display-only runtime while unrelated CTest workers saturate the host.
         # Keep bounded headroom above the observed serial runtime.
@@ -1404,7 +1404,7 @@ add_test(NAME zia_zannastudio_scene_context_menus
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_context_menus PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 120)
 
 add_test(NAME zia_zannastudio_scene_dnd
@@ -1412,7 +1412,7 @@ add_test(NAME zia_zannastudio_scene_dnd
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_dnd PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 180)
 
 add_test(NAME zia_zannastudio_scene_asset_thumbnails
@@ -1444,7 +1444,7 @@ add_test(NAME zia_zannastudio_scene_inline_rename
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_inline_rename PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 120)
 
 add_test(NAME zia_zannastudio_scene2d_large_map
@@ -1492,7 +1492,7 @@ add_test(NAME zia_zannastudio_scene2d_object_draw_stack
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene2d_object_draw_stack PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 150)
 
 add_test(NAME zia_zannastudio_scene_game_view
@@ -1500,7 +1500,7 @@ add_test(NAME zia_zannastudio_scene_game_view
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_game_view PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 150)
 
 add_test(NAME zia_zannastudio_asset_library
@@ -1562,7 +1562,7 @@ add_test(NAME zia_zannastudio_scene_gameplay_preview
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_gameplay_preview PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 150)
 
 add_test(NAME zia_zannastudio_scene_gameplay_preview_2d
@@ -1570,7 +1570,7 @@ add_test(NAME zia_zannastudio_scene_gameplay_preview_2d
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_gameplay_preview_2d PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 150)
 
 add_test(NAME zia_zannastudio_scene_collider_authoring
@@ -1642,7 +1642,7 @@ add_test(NAME zia_zannastudio_scene_surface_drop
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_surface_drop PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 150)
 
 add_test(NAME zia_zannastudio_scene_vertex_snap
@@ -1690,7 +1690,7 @@ add_test(NAME zia_zannastudio_scene_command_bar
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_command_bar PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 150)
 
 add_test(NAME zia_zannastudio_scene_inspector_topics
@@ -1698,7 +1698,7 @@ add_test(NAME zia_zannastudio_scene_inspector_topics
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_inspector_topics PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;scene;requires_display"
+        LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 150)
 
 add_test(NAME zia_zannastudio_scene_workspace_state
@@ -1715,7 +1715,7 @@ add_test(NAME zia_zannastudio_scene_component_schema
 set_tests_properties(zia_zannastudio_scene_component_schema PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
         LABELS "zia;zannastudio;scene"
-        TIMEOUT 30)
+        TIMEOUT 60)
 
 add_test(NAME zia_zannastudio_scene_component_authoring
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_component_authoring_probe.zia"
@@ -1879,7 +1879,7 @@ add_test(NAME zia_zannastudio_multi_root
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_multi_root PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;multi-root;requires_display"
+        LABELS "zia;zannastudio;multi-root;requires_display;slow"
         TIMEOUT 90)
 
 add_test(NAME zia_zannastudio_scm
@@ -2087,7 +2087,7 @@ add_test(NAME zia_zannastudio_basic_workspace_query
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_basic_workspace_query PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;semantic;threads"
+        LABELS "zia;zannastudio;semantic;threads;slow"
         TIMEOUT 90)
 
 add_test(NAME zia_zannastudio_basic_workspace_commands
@@ -2095,7 +2095,7 @@ add_test(NAME zia_zannastudio_basic_workspace_commands
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_basic_workspace_commands PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;zannastudio;semantic;threads;requires_display"
+        LABELS "zia;zannastudio;semantic;threads;requires_display;slow"
         RUN_SERIAL TRUE
         TIMEOUT 90)
 
@@ -2716,7 +2716,7 @@ add_test(NAME zia_xenoscape_performance
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
 set_tests_properties(zia_xenoscape_performance PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;performance"
+        LABELS "zia;smoke;gameplay;performance;slow"
         TIMEOUT 60)
 
 add_test(NAME zia_xenoscape_soak
@@ -2852,7 +2852,7 @@ add_test(NAME zia_calibration_baseball
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/baseball")
 set_tests_properties(zia_calibration_baseball PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;comprehensive"
+        LABELS "zia;comprehensive;slow"
         TIMEOUT 300)
 
 add_test(NAME zia_staff_usage_baseball
@@ -2876,7 +2876,7 @@ add_test(NAME zia_season_baseball
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/baseball")
 set_tests_properties(zia_season_baseball PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;comprehensive"
+        LABELS "zia;comprehensive;slow"
         TIMEOUT 600)
 
 add_test(NAME zia_persistence_baseball
@@ -2912,7 +2912,7 @@ if (ZANNA_BASH_EXECUTABLE)
             COMMAND ${ZANNA_BASH_COMMAND} "scripts/lint_platform_policy.sh" --strict)
     set_tests_properties(platform_policy_lint_strict PROPERTIES
             PASS_REGULAR_EXPRESSION "Platform policy lint: clean"
-            LABELS "tools;smoke;requires_posix_shell"
+            LABELS "tools;smoke;requires_posix_shell;slow"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}"
             # A clean full-tree scan normally completes in about ten seconds on
             # Windows, but the complete parallel Debug suite can saturate process

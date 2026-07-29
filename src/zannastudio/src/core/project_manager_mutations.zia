@@ -1,0 +1,673 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/core/project_manager_mutations.zia
+// Purpose: Safe Explorer rename, move, trash, entry-file, and bind-rewrite operations.
+// Key invariants:
+//   - Mutations stay inside an owned workspace root and update tree state transactionally.
+// Ownership/Lifetime:
+//   - The inherited tree layer owns models while callers retain document ownership.
+// Links: zannastudio/src/core/project_file_ops.zia, zannastudio/src/core/project_bind_rewriter.zia
+//
+//===----------------------------------------------------------------------===//
+
+module project_manager_mutations;
+
+bind "project" as ProjectModel;
+bind "project_file_ops";
+bind "project_bind_rewriter";
+bind "../services/workspace_file_index";
+bind "../services/safe_io";
+bind Zanna.GUI as GUI;
+bind Obj = Zanna.Core.Object;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+bind IO = Zanna.IO;
+bind Zanna.IO.Path as Path;
+bind Zanna.IO.Dir as Dir;
+bind Zanna.String as Str;
+bind FileIndex = Zanna.Workspace.FileIndex;
+bind Option = Zanna.Option;
+bind "document_manager";
+bind "../zia/bind_utils";
+bind "project_manager_base" as Base;
+bind "project_manager_tree" as PreviousLayer;
+
+class ProjectManagerMutationLayer extends PreviousLayer.ProjectManagerTreeLayer {
+expose func RenameSelected(newName: String,
+                               docMgr: document_manager.DocumentManager) -> String {
+        var oldPath = SelectedPath();
+        return RenamePath(oldPath, newName, docMgr);
+    }
+
+    expose func RenamePath(oldPath: String,
+                           newName: String,
+                           docMgr: document_manager.DocumentManager) -> String {
+        lastBindRewriteCount = 0;
+        lastOperationError = "";
+        if oldPath == "" or newName == "" { return ""; }
+        if CanMutatePath(oldPath) == false { return ""; }
+        if IsPlainChildName(newName) == false {
+            return "";
+        }
+        var oldName = Path.Name(oldPath);
+        if oldName == newName {
+            lastOperationError = "The name is unchanged.";
+            return "";
+        }
+        var caseOnlyRename = Str.ToLower(oldName) == Str.ToLower(newName);
+        var newPath = Path.Join(Path.Directory(oldPath), newName);
+        if (IO.File.Exists(newPath) or Dir.Exists(newPath)) and caseOnlyRename == false {
+            lastOperationError = "Target already exists.";
+            return "";
+        }
+        var oldWasDir = Dir.Exists(oldPath);
+        if docMgr != null {
+            var retargetReason = docMgr.RetargetBlockReason(oldPath, newPath, oldWasDir);
+            if retargetReason != "" {
+                lastOperationError = retargetReason;
+                return "";
+            }
+        }
+        if IO.File.Exists(oldPath) {
+            if MovePathForRename(oldPath, newPath, false, caseOnlyRename) == false {
+                if lastOperationError == "" {
+                    lastOperationError = "The file could not be renamed.";
+                }
+                return "";
+            }
+            if docMgr != null {
+                docMgr.UpdatePath(oldPath, newPath);
+            }
+        } else if Dir.Exists(oldPath) {
+            if MovePathForRename(oldPath, newPath, true, caseOnlyRename) == false {
+                if lastOperationError == "" {
+                    lastOperationError = "The folder could not be renamed.";
+                }
+                return "";
+            }
+            if docMgr != null {
+                docMgr.UpdatePathPrefix(oldPath, newPath);
+            }
+        } else {
+            return "";
+        }
+        UpdateEntryAfterRename(oldPath, newPath, oldWasDir);
+        lastBindRewriteCount = RewriteProjectBindsAfterRename(oldPath, newPath, oldWasDir, docMgr);
+        RetargetTreePathState(oldPath, newPath, oldWasDir);
+        RefreshTree();
+        return newPath;
+    }
+
+    /// @brief Rename a file or directory, including case-only name changes.
+    /// @details Case-insensitive filesystems report the destination of `Foo` to
+    ///          `foo` as the source itself. Moving through a unique sibling
+    ///          makes the spelling change portable. After the first move, a
+    ///          still-existing destination proves that a distinct entry owns
+    ///          the target on a case-sensitive filesystem, so the source is
+    ///          restored without overwriting it.
+    /// @param sourcePath Existing file or directory.
+    /// @param destinationPath Requested sibling destination.
+    /// @param isDirectory True for a directory move.
+    /// @param caseOnly True when only the basename's case differs.
+    /// @return True when the final destination owns the original entry.
+    func MovePathForRename(sourcePath: String,
+                           destinationPath: String,
+                           isDirectory: Boolean,
+                           caseOnly: Boolean) -> Boolean {
+        if caseOnly == false {
+            if isDirectory {
+                return safe_io.MoveDirectory(sourcePath, destinationPath);
+            }
+            return safe_io.MoveFile(sourcePath, destinationPath);
+        }
+
+        var tempPath = CaseRenameTempPath(sourcePath);
+        if tempPath == "" {
+            lastOperationError = "A temporary rename path could not be reserved.";
+            return false;
+        }
+        var staged = false;
+        if isDirectory {
+            staged = safe_io.MoveDirectory(sourcePath, tempPath);
+        } else {
+            staged = safe_io.MoveFile(sourcePath, tempPath);
+        }
+        if staged == false { return false; }
+
+        if IO.File.Exists(destinationPath) or Dir.Exists(destinationPath) {
+            if RestoreCaseRenameTemp(tempPath, sourcePath, isDirectory) == false {
+                lastOperationError = "Target already exists; the original remains at " + tempPath;
+            } else {
+                lastOperationError = "Target already exists.";
+            }
+            return false;
+        }
+
+        var committed = false;
+        if isDirectory {
+            committed = safe_io.MoveDirectory(tempPath, destinationPath);
+        } else {
+            committed = safe_io.MoveFile(tempPath, destinationPath);
+        }
+        if committed { return true; }
+        if RestoreCaseRenameTemp(tempPath, sourcePath, isDirectory) == false {
+            lastOperationError = "Rename failed; the original remains at " + tempPath;
+        }
+        return false;
+    }
+
+    /// @brief Reserve a unique sibling name for a case-only rename transaction.
+    func CaseRenameTempPath(sourcePath: String) -> String {
+        var parent = Path.Directory(sourcePath);
+        var base = ".zannastudio-case-" + Zanna.Time.Clock.NowMs();
+        var attempt = 0;
+        while attempt < 128 {
+            var candidate = Path.Join(parent, base + "-" + attempt);
+            if IO.File.Exists(candidate) == false and Dir.Exists(candidate) == false {
+                return candidate;
+            }
+            attempt = attempt + 1;
+        }
+        return "";
+    }
+
+    /// @brief Restore a staged case-only rename after collision or commit failure.
+    func RestoreCaseRenameTemp(tempPath: String,
+                               sourcePath: String,
+                               isDirectory: Boolean) -> Boolean {
+        if isDirectory {
+            return safe_io.MoveDirectory(tempPath, sourcePath);
+        }
+        return safe_io.MoveFile(tempPath, sourcePath);
+    }
+
+    /// @brief Retarget Explorer selection and expansion paths after a move.
+    /// @details RefreshTree snapshots state from the existing widget immediately
+    ///          before rebuilding it. Updating that state first lets the new
+    ///          node regain selection and keeps renamed directory descendants
+    ///          expanded instead of attempting to restore paths that no longer
+    ///          exist.
+    func RetargetTreePathState(oldPath: String,
+                               newPath: String,
+                               oldWasDirectory: Boolean) {
+        selectedFilePath = RetargetMovedTreePath(selectedFilePath,
+                                                 oldPath,
+                                                 newPath,
+                                                 oldWasDirectory);
+        treeRestoreSelectedPath = RetargetMovedTreePath(treeRestoreSelectedPath,
+                                                        oldPath,
+                                                        newPath,
+                                                        oldWasDirectory);
+        expandedTreeDirs = RetargetMovedTreePaths(expandedTreeDirs,
+                                                  oldPath,
+                                                  newPath,
+                                                  oldWasDirectory);
+        treeRestoreExpandedDirs = RetargetMovedTreePaths(treeRestoreExpandedDirs,
+                                                         oldPath,
+                                                         newPath,
+                                                         oldWasDirectory);
+        if treeView != null {
+            var selected = treeView.GetSelected();
+            if selected != null {
+                var selectedPath = GUI.TreeView.Node.GetData(selected);
+                var updatedPath = RetargetMovedTreePath(selectedPath,
+                                                        oldPath,
+                                                        newPath,
+                                                        oldWasDirectory);
+                if updatedPath != selectedPath {
+                    GUI.TreeView.Node.SetData(selected, updatedPath);
+                }
+            }
+        }
+    }
+
+    /// @brief Retarget one exact path or descendant through a tree move.
+    func RetargetMovedTreePath(path: String,
+                               oldPath: String,
+                               newPath: String,
+                               oldWasDirectory: Boolean) -> String {
+        if path == "" { return ""; }
+        var normalized = Base.NormalizeAbsPath(path);
+        var oldNormalized = Base.NormalizeAbsPath(oldPath);
+        var newNormalized = Base.NormalizeAbsPath(newPath);
+        if normalized == oldNormalized { return newNormalized; }
+        if oldWasDirectory {
+            var prefix = oldNormalized + Path.Separator();
+            if Str.StartsWith(normalized, prefix) {
+                return Path.Join(newNormalized,
+                                 Str.Mid(normalized, Str.get_Length(prefix) + 1));
+            }
+        }
+        return path;
+    }
+
+    /// @brief Retarget every stored Explorer path without introducing duplicates.
+    func RetargetMovedTreePaths(paths: List,
+                                oldPath: String,
+                                newPath: String,
+                                oldWasDirectory: Boolean) -> List {
+        var result = new List();
+        var i = 0;
+        while i < paths.count() {
+            var updated = RetargetMovedTreePath(Obj.ToString(paths.get(i)),
+                                                oldPath,
+                                                newPath,
+                                                oldWasDirectory);
+            if updated != "" and Base.ListContains(result, updated) == false {
+                result.Push(updated);
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    /// @brief Clear Explorer state that points at a trashed path or descendant.
+    func RemoveTreePathState(path: String,
+                             includeDescendants: Boolean) {
+        if TreePathMatches(selectedFilePath, path, includeDescendants) {
+            selectedFilePath = "";
+        }
+        if TreePathMatches(treeRestoreSelectedPath, path, includeDescendants) {
+            treeRestoreSelectedPath = "";
+        }
+        expandedTreeDirs = RemoveMatchingTreePaths(expandedTreeDirs,
+                                                   path,
+                                                   includeDescendants);
+        treeRestoreExpandedDirs = RemoveMatchingTreePaths(treeRestoreExpandedDirs,
+                                                          path,
+                                                          includeDescendants);
+        if treeView != null {
+            var selected = treeView.GetSelected();
+            if selected != null
+               and TreePathMatches(GUI.TreeView.Node.GetData(selected),
+                                   path,
+                                   includeDescendants) {
+                GUI.TreeView.Node.SetData(selected, "");
+            }
+        }
+    }
+
+    /// @brief Filter removed paths out of one Explorer state list.
+    func RemoveMatchingTreePaths(paths: List,
+                                 path: String,
+                                 includeDescendants: Boolean) -> List {
+        var result = new List();
+        var i = 0;
+        while i < paths.count() {
+            var candidate = Obj.ToString(paths.get(i));
+            if TreePathMatches(candidate, path, includeDescendants) == false {
+                result.Push(candidate);
+            }
+            i = i + 1;
+        }
+        return result;
+    }
+
+    /// @brief Return whether one stored tree path is the mutation target.
+    func TreePathMatches(candidate: String,
+                         path: String,
+                         includeDescendants: Boolean) -> Boolean {
+        if candidate == "" or path == "" { return false; }
+        if Base.NormalizeAbsPath(candidate) == Base.NormalizeAbsPath(path) { return true; }
+        return includeDescendants and project_file_ops.IsWithinRoot(candidate, path);
+    }
+
+    /// @brief Move a file or folder into another directory (drag-and-drop).
+    /// @details Mirrors RenamePath but targets a different parent directory.
+    ///          Rejects moving onto the source's own parent, into the source's
+    ///          own subtree, or over an existing destination. Updates open
+    ///          documents, the project entry, and project binds.
+    /// @return New absolute path on success, or "" when rejected.
+    expose func MovePathInto(sourcePath: String,
+                             targetDir: String,
+                             docMgr: document_manager.DocumentManager) -> String {
+        lastBindRewriteCount = 0;
+        lastOperationError = "";
+        if sourcePath == "" or targetDir == "" { return ""; }
+        if CanMutatePath(sourcePath) == false { return ""; }
+        if CanCreateInDirectory(targetDir) == false { return ""; }
+        var sourceOwner = WorkspaceProjectForPath(sourcePath);
+        var targetOwner = WorkspaceProjectForPath(targetDir);
+        if sourceOwner == null or targetOwner == null
+           or Base.NormalizeAbsPath(sourceOwner.rootPath) != Base.NormalizeAbsPath(targetOwner.rootPath) {
+            return "";
+        }
+        var targetTrash = Path.Join(targetOwner.rootPath, ".zannastudio-trash");
+        if project_file_ops.IsWithinRoot(targetDir, targetTrash) { return ""; }
+        // Reject moving a folder into itself or one of its descendants.
+        if Dir.Exists(sourcePath) and project_file_ops.IsWithinRoot(targetDir, sourcePath) {
+            return "";
+        }
+        var baseName = Path.Name(sourcePath);
+        if baseName == "" { return ""; }
+        var newPath = Path.Join(targetDir, baseName);
+        if Base.NormalizeAbsPath(newPath) == Base.NormalizeAbsPath(sourcePath) {
+            return ""; // already in this folder
+        }
+        if IO.File.Exists(newPath) or Dir.Exists(newPath) {
+            lastOperationError = "A file or folder with that name already exists there.";
+            return ""; // don't overwrite
+        }
+
+        var oldWasDir = Dir.Exists(sourcePath);
+        if docMgr != null {
+            var retargetReason = docMgr.RetargetBlockReason(sourcePath, newPath, oldWasDir);
+            if retargetReason != "" {
+                lastOperationError = retargetReason;
+                return "";
+            }
+        }
+        if IO.File.Exists(sourcePath) {
+            if safe_io.MoveFile(sourcePath, newPath) == false {
+                lastOperationError = "The file could not be moved.";
+                return "";
+            }
+            if docMgr != null { docMgr.UpdatePath(sourcePath, newPath); }
+        } else if Dir.Exists(sourcePath) {
+            if safe_io.MoveDirectory(sourcePath, newPath) == false {
+                lastOperationError = "The folder could not be moved.";
+                return "";
+            }
+            if docMgr != null { docMgr.UpdatePathPrefix(sourcePath, newPath); }
+        } else {
+            return "";
+        }
+        UpdateEntryAfterRename(sourcePath, newPath, oldWasDir);
+        lastBindRewriteCount = RewriteProjectBindsAfterRename(sourcePath, newPath, oldWasDir, docMgr);
+        RetargetTreePathState(sourcePath, newPath, oldWasDir);
+        RefreshTree();
+        return newPath;
+    }
+
+    expose func PreviewBindRewriteCount(path: String,
+                                        newName: String,
+                                        docMgr: document_manager.DocumentManager) -> Integer {
+        if path == "" or newName == "" { return 0; }
+        if IsPlainChildName(newName) == false {
+            return 0;
+        }
+        var newPath = Path.Join(Path.Directory(path), newName);
+        var isDir = Dir.Exists(path);
+        return CountProjectBindsForRename(path, newPath, isDir, docMgr);
+    }
+
+    expose func DeleteSelected(docMgr: document_manager.DocumentManager) -> Boolean {
+        var path = SelectedPath();
+        return DeletePath(path, docMgr);
+    }
+
+    expose func DeletePath(path: String,
+                           docMgr: document_manager.DocumentManager) -> Boolean {
+        lastTrashPath = "";
+        lastOperationError = "";
+        if path == "" { return false; }
+        if CanMutatePath(path) == false { return false; }
+        var trashPath = TrashPathFor(path);
+        if trashPath == "" { return false; }
+        var owner = WorkspaceProjectForPath(path);
+        if owner == null { return false; }
+        var trashDir = Path.Directory(trashPath);
+        if PathHasLinkedComponent(trashDir, owner.rootPath, true) {
+            lastOperationError = "The project trash path crosses a linked folder.";
+            return false;
+        }
+        if safe_io.MakeAll(trashDir) == false {
+            lastOperationError = "The project trash folder could not be created.";
+            return false;
+        }
+        if PathHasLinkedComponent(trashDir, owner.rootPath, true) {
+            lastOperationError = "The project trash path changed to a linked folder.";
+            return false;
+        }
+        if IO.File.Exists(path) {
+            if safe_io.MoveFile(path, trashPath) == false {
+                lastOperationError = "The file could not be moved to project trash.";
+                return false;
+            }
+            CloseOpenDocumentsUnder(path, docMgr);
+        } else if Dir.Exists(path) {
+            if safe_io.MoveDirectory(path, trashPath) == false {
+                lastOperationError = "The folder could not be moved to project trash.";
+                return false;
+            }
+            CloseOpenDocumentsUnder(path, docMgr);
+        } else {
+            return false;
+        }
+        if docMgr != null {
+            docMgr.ForgetPathsUnder(path);
+        }
+        RemoveTreePathState(path, true);
+        lastTrashPath = trashPath;
+        RefreshTree();
+        return true;
+    }
+
+    /// @brief Return a collision-free project-local trash path for explorer delete.
+    /// @details Zanna Studio keeps deletes reversible by moving files and directories to
+    ///          `.zannastudio-trash` under the project root instead of unlinking them.
+    ///          The path includes the original basename and a monotonic tick suffix,
+    ///          with a small numeric retry loop for same-tick collisions.
+    /// @param sourcePath Absolute file or directory selected in the explorer.
+    /// @return Absolute destination path, or empty string if no project trash is available.
+    hide func TrashPathFor(sourcePath: String) -> String {
+        var owner = WorkspaceProjectForPath(sourcePath);
+        if owner == null or owner.rootPath == "" or sourcePath == "" { return ""; }
+        return project_file_ops.TrashPathFor(owner.rootPath, sourcePath);
+    }
+
+    expose func SetEntryFile(filePath: String) -> Boolean {
+        if filePath == "" or IO.File.Exists(filePath) == false { return false; }
+        var owner = WorkspaceProjectForPath(filePath);
+        if owner == null or owner.isOpen == false { return false; }
+
+        var rel = RelativePathIn(owner, filePath);
+        var manifestPath = Path.Join(owner.rootPath, "zanna.project");
+        var content = "";
+        var replaced = false;
+
+        if IO.File.Exists(manifestPath) {
+            var manifestRead = safe_io.ReadAllText(manifestPath);
+            if manifestRead.ok == false { return false; }
+            var lines = Str.Split(manifestRead.text, "\n");
+            var i = 0;
+            while i < Seq.get_Count(lines) {
+                var line = Obj.ToString(Seq.Get(lines, i));
+                if Str.StartsWith(Str.Trim(line), "entry ") {
+                    line = "entry " + rel;
+                    replaced = true;
+                }
+                if i > 0 { content = content + "\n"; }
+                content = content + line;
+                i = i + 1;
+            }
+        }
+
+        if content == "" {
+            content = "project " + owner.name + "\nentry " + rel + "\nlang " + owner.lang + "\n";
+        } else if replaced == false {
+            if Str.EndsWith(content, "\n") == false {
+                content = content + "\n";
+            }
+            content = content + "entry " + rel + "\n";
+        }
+
+        if safe_io.WriteAllText(manifestPath, content) == false { return false; }
+        owner.entryFile = rel;
+        owner.hasProjectFile = true;
+        return true;
+    }
+
+    func CloseOpenDocumentsUnder(path: String,
+                                 docMgr: document_manager.DocumentManager) {
+        if docMgr == null { return; }
+        var i = docMgr.GetCount() - 1;
+        while i >= 0 {
+            var doc = docMgr.documents.get(i);
+            if doc.filePath == path or Str.StartsWith(doc.filePath, path + Path.Separator()) {
+                docMgr.CloseDocument(i);
+            }
+            i = i - 1;
+        }
+    }
+
+    expose func RelativePath(fullPath: String) -> String {
+        return RelativePathIn(OwningProject(fullPath), fullPath);
+    }
+
+    /// @brief Relative path of @p fullPath within a specific workspace root.
+    func RelativePathIn(owner: ProjectModel.Project, fullPath: String) -> String {
+        if owner == null or owner.rootPath == "" { return fullPath; }
+        var root = owner.rootPath;
+        var prefix = root + Path.Separator();
+        if Str.StartsWith(fullPath, prefix) {
+            return Base.NormalizeBindSeparators(Str.Mid(fullPath, Str.get_Length(prefix) + 1));
+        }
+        return Base.NormalizeBindSeparators(fullPath);
+    }
+
+    func UpdateEntryAfterRename(oldPath: String, newPath: String, oldWasDir: Boolean) {
+        var owner = WorkspaceProjectForPath(oldPath);
+        if owner == null or owner.entryFile == "" { return; }
+        var entryAbs = Base.NormalizeAbsPath(Path.Join(owner.rootPath, owner.entryFile));
+        var oldNorm = Base.NormalizeAbsPath(oldPath);
+        var newNorm = Base.NormalizeAbsPath(newPath);
+        var replacement = "";
+        if oldWasDir {
+            var prefix = oldNorm + Path.Separator();
+            if Str.StartsWith(entryAbs, prefix) {
+                var suffix = Str.Mid(entryAbs, Str.get_Length(prefix) + 1);
+                replacement = Path.Join(newNorm, suffix);
+            }
+        } else if entryAbs == oldNorm {
+            replacement = newNorm;
+        }
+        if replacement != "" {
+            if SetEntryFile(replacement) == false {
+                AddOperationWarning("The project entry file could not be updated.");
+            }
+        }
+    }
+
+    func RewriteProjectBindsAfterRename(oldPath: String,
+                                        newPath: String,
+                                        oldWasDir: Boolean,
+                                        docMgr: document_manager.DocumentManager) -> Integer {
+        return ProcessProjectBindsForRename(oldPath, newPath, oldWasDir, docMgr, true);
+    }
+
+    func CountProjectBindsForRename(oldPath: String,
+                                    newPath: String,
+                                    oldWasDir: Boolean,
+                                    docMgr: document_manager.DocumentManager) -> Integer {
+        return ProcessProjectBindsForRename(oldPath, newPath, oldWasDir, docMgr, false);
+    }
+
+    func ProcessProjectBindsForRename(oldPath: String,
+                                      newPath: String,
+                                      oldWasDir: Boolean,
+                                      docMgr: document_manager.DocumentManager,
+                                      applyChanges: Boolean) -> Integer {
+        if self.project == null or self.project.rootPath == "" { return 0; }
+        var files = new List();
+        AddIndexedZiaFiles(files);
+        if docMgr != null {
+            var d = 0;
+            while d < docMgr.GetCount() {
+                var doc = docMgr.documents.get(d);
+                if doc.filePath != "" and IsZiaFile(doc.filePath)
+                   and workspace_file_index.ListContains(files, doc.filePath) == false {
+                    files.Push(doc.filePath);
+                }
+                d = d + 1;
+            }
+        }
+
+        var oldNorm = Base.NormalizeAbsPath(oldPath);
+        var newNorm = Base.NormalizeAbsPath(newPath);
+        var total = 0;
+        var i = 0;
+        while i < files.count() {
+            var filePath = Obj.ToString(files.get(i));
+            var docIndex = -1;
+            var content = "";
+            if docMgr != null {
+                docIndex = docMgr.FindByPath(filePath);
+            }
+            if docIndex >= 0 {
+                content = docMgr.documents.get(docIndex).content;
+            } else if IO.File.Exists(filePath) {
+                var sourceRead = safe_io.ReadAllText(filePath);
+                if sourceRead.ok { content = sourceRead.text; }
+            }
+
+            var rewrite = Base.RewriteZiaBindContent(content, filePath, oldNorm, newNorm, oldWasDir);
+            if rewrite.count > 0 {
+                if applyChanges == false {
+                    total = total + rewrite.count;
+                } else if docIndex >= 0 {
+                    var openDoc = docMgr.documents.get(docIndex);
+                    openDoc.content = rewrite.text;
+                    openDoc.isModified = true;
+                    total = total + rewrite.count;
+                } else if safe_io.WriteAllText(filePath, rewrite.text) {
+                    total = total + rewrite.count;
+                } else {
+                    AddOperationWarning("One or more Zia bind paths could not be updated.");
+                }
+            }
+            i = i + 1;
+        }
+        return total;
+    }
+
+    /// @brief Accumulate a non-fatal warning after a physical tree move succeeds.
+    func AddOperationWarning(message: String) {
+        if message == "" { return; }
+        if lastOperationError == "" {
+            lastOperationError = message;
+        } else if Str.IndexOf(lastOperationError, message) == 0 {
+            lastOperationError = lastOperationError + " " + message;
+        }
+    }
+
+    /// @brief Add project Zia files from the runtime workspace index.
+    /// @details Runtime FileIndex owns hard excludes, `.gitignore`, and project
+    ///          ignore patterns. Using it here avoids a second recursive scanner
+    ///          on the UI path and keeps rename bind rewrites aligned with Quick
+    ///          Open, project cache, and workspace indexing.
+    /// @param files Mutable List receiving absolute `.zia` file paths.
+    func AddIndexedZiaFiles(files: List) {
+        var roots = AllRoots();
+        var i = 0;
+        while i < roots.count() {
+            var root = roots.get(i);
+            if root != null and root.rootPath != "" {
+                workspace_file_index.AddEnumeratedFiles(files,
+                                                        root.rootPath,
+                                                        ".zia",
+                                                        root.ignorePatterns);
+            }
+            i = i + 1;
+        }
+    }
+
+    /// @brief Return true when a name is a safe single filesystem component.
+    /// @details Explorer rename/create actions accept a child name, never a path.
+    ///          Rejecting separators, Windows drive separators, and dot aliases
+    ///          keeps cross-platform behavior consistent before any disk move.
+    /// @param name User-provided file or folder name.
+    /// @return True when @p name can be joined under the selected parent.
+    func IsPlainChildName(name: String) -> Boolean {
+        return project_file_ops.IsPlainChildName(name);
+    }
+
+    func IsZiaFile(path: String) -> Boolean {
+        return project_file_ops.IsZiaFile(path);
+    }
+}

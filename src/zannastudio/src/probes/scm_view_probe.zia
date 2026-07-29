@@ -126,12 +126,25 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief State shared by ordinary and conflicted SCM workflows.
+class ScmViewProbeContext {
+    expose Boolean skipped = false;
+    expose String dir;
+    expose String filePath;
+    expose scm_git.Git git;
+    expose app_shell.AppShell shell;
+    expose scm_view.ScmView view;
+    expose GUI.TestHarness harness;
+}
+
+/// @brief Verify layout, selection, staging, and ordinary commit input.
+func VerifyOrdinaryScmWorkflow(ctx: ScmViewProbeContext) -> Boolean {
     var versionArgs = Seq.New();
     Seq.Push(versionArgs, "--version");
     if Exec.RunArgs("git", versionArgs) != 0 {
         Terminal.Say("RESULT: ok (git unavailable, skipped)");
-        return;
+        ctx.skipped = true;
+        return true;
     }
 
     var dir = TempFile.CreateDirWithPrefix("zannastudio_scm_view_");
@@ -141,7 +154,7 @@ func main() {
     Seq.Push(initArgs, "init");
     if Exec.RunArgs("git", initArgs) != 0 {
         Terminal.Say("RESULT: fail git init");
-        return;
+        return false;
     }
     GitConfig(dir, "user.email", "probe@example.com");
     GitConfig(dir, "user.name", "Source Control Probe");
@@ -153,7 +166,7 @@ func main() {
     File.WriteAllText(filePath, "module Game; // base\n");
     if git.StageAll() == false or git.Commit("seed") == false {
         Terminal.Say("RESULT: fail seed repository");
-        return;
+        return false;
     }
     File.WriteAllText(filePath, "module Game; // edited in Studio\n");
 
@@ -174,7 +187,7 @@ func main() {
     if PumpUntilIdle(shell, view, 10000) == false or view.repoReady == false
        or view.lastStatus.entries.count() != 1 {
         Fail(shell, null, "initial repository status");
-        return;
+        return false;
     }
 
     // No row is selected yet: only the aggregate Stage All action is honest.
@@ -184,7 +197,7 @@ func main() {
        or view.commitBtn.IsEnabled()
        or view.commitInput.IsEnabled() == false {
         Fail(shell, null, "initial selection-aware actions");
-        return;
+        return false;
     }
 
     // Exercise the minimum supported sidebar share after a completed layout.
@@ -205,7 +218,7 @@ func main() {
             + " commitRight="
             + (view.commitBtn.GetScreenX() + view.commitBtn.GetScreenWidth()));
         Fail(shell, null, "controls overflowed the narrow sidebar");
-        return;
+        return false;
     }
     shell.workbench.SetSidebarWidthPct(30);
     shell.Poll();
@@ -216,7 +229,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
 
     // Selecting a modified worktree row enables Stage and both diff surfaces,
@@ -228,7 +241,7 @@ func main() {
        or view.unstageBtn.IsEnabled()
        or view.sideBySideButton.IsEnabled() == false {
         Fail(shell, harness, "modified-row action state");
-        return;
+        return false;
     }
 
     // Stage through the real hit-test path. The refreshed staged-only snapshot
@@ -241,7 +254,7 @@ func main() {
        or view.stageAllBtn.IsEnabled()
        or view.commitBtn.IsEnabled() {
         Fail(shell, harness, "pointer Stage workflow");
-        return;
+        return false;
     }
 
     // Focused Enter submits one commit; the successful refresh clears both the
@@ -251,7 +264,7 @@ func main() {
     view.HandleEvents();
     if view.commitBtn.IsEnabled() == false {
         Fail(shell, harness, "typed staged commit was not enabled");
-        return;
+        return false;
     }
     harness.SendKey("enter", 0);
     harness.DispatchPending();
@@ -261,8 +274,26 @@ func main() {
        or view.commitInput.get_Text() != ""
        or git.Status().entries.count() != 0 {
         Fail(shell, harness, "focused Enter commit workflow");
-        return;
+        return false;
     }
+
+    ctx.dir = dir;
+    ctx.filePath = filePath;
+    ctx.git = git;
+    ctx.shell = shell;
+    ctx.view = view;
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify conflict guidance, staging, and resolution commit.
+func VerifyConflictedScmWorkflow(ctx: ScmViewProbeContext) -> Boolean {
+    var dir = ctx.dir;
+    var filePath = ctx.filePath;
+    var git = ctx.git;
+    var shell = ctx.shell;
+    var view = ctx.view;
+    var harness = ctx.harness;
 
     // Produce a real two-branch conflict outside the view, then refresh it.
     var baseBranch = git.CurrentBranch();
@@ -274,18 +305,18 @@ func main() {
     Seq.Push(branchArgs, "scm-view-conflict");
     if Exec.RunArgs("git", branchArgs) != 0 {
         Fail(shell, harness, "create conflict branch");
-        return;
+        return false;
     }
     File.WriteAllText(filePath, "module Game; // branch version\n");
     if git.StageAll() == false or git.Commit("branch version") == false
        or git.Checkout(baseBranch) == false {
         Fail(shell, harness, "seed conflict branch");
-        return;
+        return false;
     }
     File.WriteAllText(filePath, "module Game; // base version\n");
     if git.StageAll() == false or git.Commit("base version") == false {
         Fail(shell, harness, "seed conflict base");
-        return;
+        return false;
     }
     var mergeArgs = Seq.New();
     Seq.Push(mergeArgs, "-C");
@@ -294,7 +325,7 @@ func main() {
     Seq.Push(mergeArgs, "scm-view-conflict");
     if Exec.RunArgs("git", mergeArgs) == 0 {
         Fail(shell, harness, "expected merge conflict");
-        return;
+        return false;
     }
 
     view.Refresh();
@@ -316,14 +347,14 @@ func main() {
                 + " conflicted=" + view.lastStatus.entries.get(0).conflicted);
         }
         Fail(shell, harness, "conflict status");
-        return;
+        return false;
     }
     view.commitInput.SetText("resolve conflict from Studio");
     view.commitInput.Focus();
     view.HandleEvents();
     if view.commitBtn.IsEnabled() {
         Fail(shell, harness, "unresolved conflict enabled Commit");
-        return;
+        return false;
     }
 
     view.statusList.SelectIndex(0);
@@ -332,14 +363,14 @@ func main() {
        or view.stageBtn.IsEnabled() == false
        or view.sideBySideButton.IsEnabled() == false {
         Fail(shell, harness, "selected conflict actions");
-        return;
+        return false;
     }
     view.diffPane.SelectAll();
     var conflictDiff = view.diffPane.GetSelection();
     if Str.Contains(conflictDiff, "edit the conflict markers") == false
        or Str.Contains(conflictDiff, "then Stage it") == false {
         Fail(shell, harness, "conflict guidance missing from diff");
-        return;
+        return false;
     }
 
     // The authored message survives while the user edits, then staging the
@@ -354,7 +385,7 @@ func main() {
        or view.commitInput.get_Text() != "resolve conflict from Studio"
        or view.commitBtn.IsEnabled() == false {
         Fail(shell, harness, "edit-then-Stage conflict resolution");
-        return;
+        return false;
     }
     view.commitInput.Focus();
     harness.SendKey("enter", 0);
@@ -364,10 +395,19 @@ func main() {
        or view.lastStatus.entries.count() != 0
        or git.Status().entries.count() != 0 {
         Fail(shell, harness, "resolved conflict commit");
-        return;
+        return false;
     }
 
-    harness.UnbindApp();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new ScmViewProbeContext();
+    if VerifyOrdinaryScmWorkflow(ctx) == false { return; }
+    if ctx.skipped { return; }
+    if VerifyConflictedScmWorkflow(ctx) == false { return; }
+
+    ctx.harness.UnbindApp();
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

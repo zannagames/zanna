@@ -1,0 +1,363 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_output_references.zia
+// Purpose: Focused output references behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_call_stack.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_output_references;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_call_stack" as PreviousLayer;
+
+class ToolPanelOutputReferencesLayer extends PreviousLayer.ToolPanelCallStackLayer {
+
+    /// @brief Split output text into rows and append each non-empty line.
+    /// @param output Complete output text.
+    hide override func AddBuildOutputLines(output: String) {
+        var lines = Str.Split(output, "\n");
+        var n = Seq.get_Count(lines);
+        var i = 0;
+        while i < n {
+            var line = Obj.ToString(Seq.Get(lines, i));
+            if line != "" {
+                AddOutputDisplayLine(line);
+            }
+            i = i + 1;
+        }
+    }
+
+    /// @brief Set the Output panel text filter and repaint the active surface.
+    /// @param filter Case-insensitive substring filter.
+    expose override func SetOutputFilter(filter: String) {
+        var wasActive = IsOutputPanelActive();
+        var filterHadFocus =
+            outputFilterInput != null and outputFilterInput.IsFocused();
+        if outputFilterInput != null
+           and outputFilterInput.get_Text() != filter {
+            outputFilterInput.SetText(filter);
+            // This is controller synchronization, not fresh user input.
+            outputFilterInput.WasChanged();
+        }
+        outputFilterText = Str.ToLower(Str.Trim(filter));
+        if output_cache.ShouldUseRawPane(outputFilterText, outputWrapLines) {
+            RenderOutputPane(lastBuildOutput);
+            if wasActive or lastBuildOutput != "" or outputFilterText != "" {
+                ShowOutputPanel();
+            } else {
+                HideOutputPanel();
+            }
+            if filterHadFocus { outputFilterInput.Focus(); }
+            UpdateOutputToolbarState();
+            return;
+        }
+        RenderOutputRows(lastBuildOutput);
+        if wasActive or outputListBox.Count > 0 or outputFilterText != "" {
+            ShowOutputPanel();
+        } else {
+            HideOutputPanel();
+        }
+        if filterHadFocus { outputFilterInput.Focus(); }
+        UpdateOutputToolbarState();
+    }
+
+    /// @brief Set row-mode wrapping and synchronize the visible checkbox.
+    /// @param enabled True to wrap long output rows to the panel width.
+    expose override func SetOutputWrap(enabled: Boolean) {
+        var wasActive = IsOutputPanelActive();
+        var filterHadFocus =
+            outputFilterInput != null and outputFilterInput.IsFocused();
+        outputWrapLines = enabled;
+        if outputWrapCheck != null
+           and outputWrapCheck.IsChecked() != enabled {
+            outputWrapCheck.SetChecked(enabled);
+            outputWrapCheck.WasChanged();
+        }
+        if output_cache.ShouldUseRawPane(outputFilterText, outputWrapLines) {
+            RenderOutputPane(lastBuildOutput);
+        } else {
+            RenderOutputRows(lastBuildOutput);
+        }
+        if wasActive or HasOutputContent() or outputFilterText != "" {
+            ShowOutputPanel();
+        }
+        if filterHadFocus { outputFilterInput.Focus(); }
+        UpdateOutputToolbarState();
+    }
+
+    /// @brief Toggle row-mode wrapping for the Output panel.
+    /// @return New wrapping state.
+    expose override func ToggleOutputWrap() -> Boolean {
+        SetOutputWrap(outputWrapLines == false);
+        return outputWrapLines;
+    }
+
+    /// @brief Enable or disable auto-scroll for the output pane.
+    /// @param enabled True to scroll to new output as it arrives.
+    expose override func SetOutputAutoScroll(enabled: Boolean) {
+        outputAutoScroll = enabled;
+        if outputPane != null {
+            outputPane.SetAutoScroll(enabled);
+        }
+        if outputFollowCheck != null
+           and outputFollowCheck.IsChecked() != enabled {
+            outputFollowCheck.SetChecked(enabled);
+            outputFollowCheck.WasChanged();
+        }
+        UpdateOutputToolbarState();
+    }
+
+    /// @brief Toggle output auto-scroll.
+    /// @return New auto-scroll state.
+    expose override func ToggleOutputAutoScroll() -> Boolean {
+        outputAutoScroll = outputAutoScroll == false;
+        SetOutputAutoScroll(outputAutoScroll);
+        return outputAutoScroll;
+    }
+
+    /// @brief Clear output text and rows while retaining the current panel.
+    /// @details The inline Clear action must not make the surface disappear
+    ///          beneath the pointer. Command-level clearing can explicitly hide
+    ///          it through ClearOutputPanel.
+    expose override func ClearOutputContent() {
+        if outputPane != null { outputPane.Clear(); }
+        if outputListBox != null { outputListBox.Clear(); }
+        ResetOutputRows();
+        lastBuildOutput = "";
+        outputPartialLine = "";
+        outputPartialItem = null;
+        outputPaneMode = true;
+        if IsOutputPanelActive() {
+            outputPane.SetVisible(true);
+            outputListBox.SetVisible(false);
+        }
+        UpdateOutputToolbarState();
+    }
+
+    /// @brief Clear output text, rows, partial-line state, and visibility.
+    expose override func ClearOutputPanel() {
+        ClearOutputContent();
+        HideOutputPanel();
+    }
+
+    /// @brief Copy complete captured text or the current generated rows.
+    /// @return True when text was copied.
+    expose override func CopyOutputText() -> Boolean {
+        var text = lastBuildOutput;
+        if text == "" {
+            var i = 0;
+            while i < outputRenderedItems.count() {
+                var item = outputRenderedItems.get(i);
+                if item != null {
+                    if text != "" { text = text + "\n"; }
+                    text = text + GUI.ListBox.ItemGetText(item);
+                }
+                i = i + 1;
+            }
+        }
+        if text == "" { return false; }
+        GUI.ClipboardText.SetText(text);
+        return true;
+    }
+
+    /// @brief Poll live Output toolbar state and execute direct local actions.
+    /// @details These actions alter only the Output surface, so they do not need
+    ///          command-palette routing or unrelated notification popups.
+    hide override func PumpOutputToolbar() {
+        if outputFilterInput == null { return; }
+        if outputFilterInput.WasChanged() {
+            SetOutputFilter(outputFilterInput.get_Text());
+        }
+        if outputFilterClearButton != null
+           and outputFilterClearButton.WasClicked() {
+            outputFilterInput.SetText("");
+            outputFilterInput.WasChanged();
+            SetOutputFilter("");
+            outputFilterInput.Focus();
+        }
+        if outputWrapCheck != null and outputWrapCheck.WasChanged() {
+            SetOutputWrap(outputWrapCheck.IsChecked());
+        }
+        if outputFollowCheck != null and outputFollowCheck.WasChanged() {
+            SetOutputAutoScroll(outputFollowCheck.IsChecked());
+        }
+        if outputCopyButton != null and outputCopyButton.WasClicked() {
+            CopyOutputText();
+        }
+        if outputClearButton != null and outputClearButton.WasClicked() {
+            ClearOutputContent();
+        }
+        UpdateOutputToolbarState();
+    }
+
+    /// @brief Keep Output actions truthful to the current cached content.
+    hide override func UpdateOutputToolbarState() {
+        if outputFilterClearButton != null {
+            outputFilterClearButton.SetEnabled(
+                outputFilterInput != null
+                and outputFilterInput.get_Text() != "");
+        }
+        if outputCopyButton != null {
+            outputCopyButton.SetEnabled(
+                lastBuildOutput != "" or outputRenderedItems.count() > 0);
+        }
+        if outputClearButton != null {
+            outputClearButton.SetEnabled(HasOutputContent());
+        }
+    }
+
+    /// @brief Set the case-insensitive References query and repaint immediately.
+    expose override func SetReferencesFilter(filter: String) {
+        var filterHadFocus =
+            referencesFilterInput != null and referencesFilterInput.IsFocused();
+        if referencesFilterInput != null
+           and referencesFilterInput.get_Text() != filter {
+            referencesFilterInput.SetText(filter);
+            // Consume the synchronization edge; this method performs the repaint.
+            referencesFilterInput.WasChanged();
+        }
+        referencesFilterText = Str.ToLower(Str.Trim(filter));
+        RefreshReferenceRows();
+        if filterHadFocus { referencesFilterInput.Focus(); }
+    }
+
+    /// @brief Restore the unfiltered References view without closing the panel.
+    expose override func ResetReferencesFilter() {
+        SetReferencesFilter("");
+    }
+
+    /// @brief Copy the complete durable grouped References result set.
+    /// @return True when at least one actual result was copied.
+    expose override func CopyReferenceResults() -> Boolean {
+        if referencesRows == null or referencesResultCount <= 0 {
+            return false;
+        }
+        var text = "";
+        var i = 0;
+        while i < referencesRows.rows.count() {
+            var row = referencesRows.rows.get(i);
+            if row != null {
+                if text != "" { text = text + "\n"; }
+                if row.isGroupHeader {
+                    text = text + row.text;
+                } else {
+                    text = text + "  " + row.text;
+                }
+            }
+            i = i + 1;
+        }
+        if text == "" { return false; }
+        GUI.ClipboardText.SetText(text);
+        return true;
+    }
+
+    /// @brief Clear References content while retaining the active surface.
+    expose override func ClearReferenceResults() {
+        ClearToolRows(referencesListBox);
+    }
+
+    /// @brief Return whether durable References content can claim fallback space.
+    expose override func HasReferenceResults() -> Boolean {
+        return referencesResultCount > 0;
+    }
+
+    /// @brief Poll live References filtering and direct local actions.
+    hide override func PumpReferencesToolbar() {
+        if referencesFilterInput == null { return; }
+        if referencesFilterInput.WasChanged() {
+            referencesFilterText =
+                Str.ToLower(Str.Trim(referencesFilterInput.get_Text()));
+            RefreshReferenceRows();
+        }
+        if referencesFilterClearButton != null
+           and referencesFilterClearButton.WasClicked() {
+            referencesFilterInput.SetText("");
+            referencesFilterInput.WasChanged();
+            referencesFilterText = "";
+            RefreshReferenceRows();
+            referencesFilterInput.Focus();
+        }
+        if referencesCopyButton != null
+           and referencesCopyButton.WasClicked() {
+            CopyReferenceResults();
+        }
+        if referencesClearButton != null
+           and referencesClearButton.WasClicked() {
+            ClearReferenceResults();
+        }
+        UpdateReferencesToolbarState();
+    }
+
+    /// @brief Synchronize References counts, actions, and honest empty copy.
+    hide override func UpdateReferencesToolbarState() {
+        if referencesCountLabel != null {
+            var countText = "";
+            if referencesFilterText != "" {
+                countText = "" + visibleReferenceCount + " of "
+                    + referencesResultCount + " references";
+            } else {
+                countText = "" + referencesResultCount + " reference";
+                if referencesResultCount != 1 {
+                    countText = countText + "s";
+                }
+            }
+            referencesCountLabel.SetText(countText);
+        }
+        if referencesFilterClearButton != null {
+            referencesFilterClearButton.SetEnabled(
+                referencesFilterInput != null
+                and referencesFilterInput.get_Text() != "");
+        }
+        if referencesCopyButton != null {
+            referencesCopyButton.SetEnabled(referencesResultCount > 0);
+        }
+        if referencesClearButton != null {
+            referencesClearButton.SetEnabled(referencesResultCount > 0);
+        }
+        if referencesEmptyLabel != null {
+            var emptyText = "No reference results";
+            if referencesResultCount > 0 and visibleReferenceCount == 0 {
+                emptyText = "No references match the current filter";
+            }
+            referencesEmptyLabel.SetText(emptyText);
+            referencesEmptyLabel.SetAccessibleName(emptyText);
+        }
+    }
+
+    /// @brief Reveal either the References list or its contextual empty state.
+    hide override func ApplyReferenceSurfaceVisibility() {
+        var panelVisible =
+            IsToolPanelSelected(tool_panel_model.PANEL_REFERENCES)
+            and referencesPanel != null and referencesPanel.IsVisible();
+        if referencesListBox != null {
+            referencesListBox.SetVisible(
+                panelVisible and visibleReferenceCount > 0);
+        }
+        if referencesEmptyLabel != null {
+            referencesEmptyLabel.SetVisible(
+                panelVisible and visibleReferenceCount == 0);
+        }
+    }
+}

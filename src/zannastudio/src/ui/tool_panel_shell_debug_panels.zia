@@ -1,0 +1,241 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_debug_panels.zia
+// Purpose: Focused debug panels behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_panel_visibility.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_debug_panels;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_panel_visibility" as PreviousLayer;
+
+class ToolPanelDebugPanelsLayer extends PreviousLayer.ToolPanelVisibilityLayer {
+
+    /// @brief Hide Search and select a fallback panel if content remains.
+    expose override func HideSearchPanel() {
+        var location = toolPanelGroups.LocationForId(
+            tool_panel_model.TAB_ID_SEARCH);
+        var wasSelected =
+            ActiveToolPanelKindAt(location)
+                == tool_panel_model.PANEL_SEARCH;
+        searchPanel.SetVisible(false);
+        searchListBox.SetVisible(false);
+        if wasSelected { ShowFallbackToolPanelAt(location); }
+    }
+
+    /// @brief Show the References panel and select its tab.
+    expose override func ShowReferencesPanel() {
+        if focusPresentationActive { return; }
+        var filterHadFocus =
+            referencesFilterInput != null and referencesFilterInput.IsFocused();
+        ApplyResponsiveReferencesToolbar();
+        PrepareToolPanel(tool_panel_model.PANEL_REFERENCES, 0.0);
+        if referencesPanel != null { referencesPanel.SetVisible(true); }
+        ApplyReferenceSurfaceVisibility();
+        if filterHadFocus { referencesFilterInput.Focus(); }
+        UpdateReferencesToolbarState();
+    }
+
+    /// @brief Hide References and select a fallback panel if content remains.
+    expose override func HideReferencesPanel() {
+        var location = toolPanelGroups.LocationForId(
+            tool_panel_model.TAB_ID_REFERENCES);
+        var wasSelected =
+            ActiveToolPanelKindAt(location)
+                == tool_panel_model.PANEL_REFERENCES;
+        if referencesPanel != null { referencesPanel.SetVisible(false); }
+        referencesListBox.SetVisible(false);
+        if referencesEmptyLabel != null {
+            referencesEmptyLabel.SetVisible(false);
+        }
+        if wasSelected { ShowFallbackToolPanelAt(location); }
+    }
+
+    /// @brief Show the Variables panel and select its tab.
+    expose override func ShowVariablesPanel() {
+        if focusPresentationActive { return; }
+        var watchHadFocus =
+            watchExpressionInput != null and watchExpressionInput.IsFocused();
+        ApplyResponsiveWatchToolbar();
+        PrepareToolPanel(tool_panel_model.PANEL_VARIABLES, 0.0);
+        if variablesPanel != null { variablesPanel.SetVisible(true); }
+        variablesListBox.SetVisible(true);
+        if watchHadFocus { watchExpressionInput.Focus(); }
+    }
+
+    /// @brief Show the Call Stack panel and select its tab.
+    expose override func ShowCallStackPanel() {
+        if focusPresentationActive { return; }
+        var filterHadFocus =
+            callStackFilterInput != null and callStackFilterInput.IsFocused();
+        ApplyResponsiveCallStackToolbar();
+        PrepareToolPanel(tool_panel_model.PANEL_CALL_STACK, 0.0);
+        if callStackPanel != null { callStackPanel.SetVisible(true); }
+        ApplyCallStackSurfaceVisibility();
+        if filterHadFocus { callStackFilterInput.Focus(); }
+        UpdateCallStackToolbarState();
+    }
+
+    /// @brief Hide Call Stack and select a fallback panel if content remains.
+    expose override func HideCallStackPanel() {
+        var location = toolPanelGroups.LocationForId(
+            tool_panel_model.TAB_ID_CALL_STACK);
+        var wasSelected =
+            ActiveToolPanelKindAt(location)
+                == tool_panel_model.PANEL_CALL_STACK;
+        if callStackPanel != null { callStackPanel.SetVisible(false); }
+        callStackListBox.SetVisible(false);
+        if callStackEmptyLabel != null {
+            callStackEmptyLabel.SetVisible(false);
+        }
+        if wasSelected { ShowFallbackToolPanelAt(location); }
+    }
+
+    /// @brief Show the Debug Console panel and select its tab.
+    expose override func ShowDebugPanel() {
+        if focusPresentationActive { return; }
+        var filterHadFocus =
+            debugFilterInput != null and debugFilterInput.IsFocused();
+        ApplyResponsiveDebugToolbar();
+        PrepareToolPanel(tool_panel_model.PANEL_DEBUG, 0.0);
+        if debugPanel != null { debugPanel.SetVisible(true); }
+        ApplyDebugConsoleSurfaceVisibility();
+        if filterHadFocus { debugFilterInput.Focus(); }
+        UpdateDebugToolbarState();
+    }
+
+    /// @brief Show the Terminal panel and focus its pane.
+    expose override func ShowTerminalPanel() {
+        if focusPresentationActive { return; }
+        ApplyResponsiveTerminalActions();
+        PrepareToolPanel(tool_panel_model.PANEL_TERMINAL, 0.0);
+        terminalPanel.SetVisible(true);
+        if terminalPane != null { terminalPane.Focus(); }
+    }
+
+    /// @brief Hide Terminal without destroying its session.
+    expose override func HideTerminalPanel() {
+        var location = toolPanelGroups.LocationForId(
+            tool_panel_model.TAB_ID_TERMINAL);
+        var wasSelected =
+            ActiveToolPanelKindAt(location)
+                == tool_panel_model.PANEL_TERMINAL;
+        terminalPanel.SetVisible(false);
+        if wasSelected { ShowFallbackToolPanelWithoutTerminal(); }
+    }
+
+    /// @brief Toggle terminal panel visibility.
+    expose override func ToggleTerminalPanel() {
+        if terminalPanel != null and terminalPanel.IsVisible() {
+            HideTerminalPanel();
+        } else {
+            ShowTerminalPanel();
+        }
+    }
+
+    /// @brief Return true when the terminal panel is visible.
+    expose override func IsTerminalPanelVisible() -> Boolean {
+        return terminalPanel != null and terminalPanel.IsVisible();
+    }
+
+    /// @brief Read the inline debugger watch expression exactly as authored.
+    expose override func GetWatchExpressionText() -> String {
+        if watchExpressionInput == null { return ""; }
+        return watchExpressionInput.get_Text();
+    }
+
+    /// @brief Seed the inline watch field without changing panel selection.
+    expose override func SetWatchExpressionText(text: String) {
+        if watchExpressionInput != null {
+            watchExpressionInput.SetText(text);
+        }
+    }
+
+    /// @brief Clear the inline watch field after a successful add.
+    expose override func ClearWatchExpression() {
+        SetWatchExpressionText("");
+    }
+
+    /// @brief Give an explicit Add Watch command keyboard ownership.
+    expose override func FocusWatchExpression() {
+        if variablesPanel != null and variablesPanel.IsVisible()
+           and watchExpressionInput != null {
+            watchExpressionInput.Focus();
+        }
+    }
+
+    /// @brief Return whether watch text entry owns keyboard input.
+    expose override func IsWatchExpressionFocused() -> Boolean {
+        return watchExpressionInput != null
+            and watchExpressionInput.IsFocused()
+            and variablesPanel != null
+            and variablesPanel.IsVisible();
+    }
+
+    /// @brief Consume an Add click or Enter from the inline watch field.
+    expose override func WatchAddWasRequested() -> Boolean {
+        if watchAddButton != null and watchAddButton.WasClicked() {
+            return true;
+        }
+        return IsWatchExpressionFocused()
+            and Str.Trim(GetWatchExpressionText()) != ""
+            and Input.Keyboard.WasPressed(Zanna.Input.Key.Enter);
+    }
+
+    /// @brief Consume the selected-watch removal action.
+    expose override func WatchRemoveWasRequested() -> Boolean {
+        return watchRemoveButton != null and watchRemoveButton.WasClicked();
+    }
+
+    /// @brief Consume the manual watch-refresh action.
+    expose override func WatchRefreshWasRequested() -> Boolean {
+        return watchRefreshButton != null and watchRefreshButton.WasClicked();
+    }
+
+    /// @brief Consume the clear-all-watches action.
+    expose override func WatchClearWasRequested() -> Boolean {
+        return watchClearButton != null and watchClearButton.WasClicked();
+    }
+
+    /// @brief Synchronize watch action availability with live debugger state.
+    /// @param sessionAvailable True when a DebugSession owns the watch list.
+    /// @param selectedWatch True when the selected Variables row is a watch.
+    /// @param stopped True while watch expressions can be evaluated.
+    /// @param watchCount Current number of persistent watch expressions.
+    expose override func SetWatchToolbarState(sessionAvailable: Boolean,
+                                     selectedWatch: Boolean,
+                                     stopped: Boolean,
+                                     watchCount: Integer) {
+        if watchAddButton == null { return; }
+        watchAddButton.SetEnabled(
+            sessionAvailable
+            and Str.Trim(GetWatchExpressionText()) != "");
+        watchRemoveButton.SetEnabled(sessionAvailable and selectedWatch);
+        watchRefreshButton.SetEnabled(
+            sessionAvailable and stopped and watchCount > 0);
+        watchClearButton.SetEnabled(sessionAvailable and watchCount > 0);
+    }
+}

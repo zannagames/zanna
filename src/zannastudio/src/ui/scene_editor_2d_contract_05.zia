@@ -1,0 +1,232 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_contract_05.zia
+// Purpose: Virtual method contract segment 5 for composable 2D scene-editor layers.
+// Key invariants:
+//   - Signatures mirror the controller surface and provide neutral dispatch fallbacks.
+// Ownership/Lifetime:
+//   - Contract instances are implementation scaffolding and own no external resources.
+// Links: zannastudio/src/ui/scene_editor_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_contract_05;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_contract_04" as PreviousContract;
+
+/// @brief Dispatch declarations used by focused SceneEditor2D layers.
+class SceneEditor2DContract05 extends PreviousContract.SceneEditor2DContract04 {
+    /// @brief Neutral dispatch slot for FrameSelected.
+    expose func FrameSelected() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for InitialSceneFocusWorldX.
+    hide func InitialSceneFocusWorldX() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for InitialSceneFocusWorldY.
+    hide func InitialSceneFocusWorldY() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for InitialPlayerStartObject.
+    hide func InitialPlayerStartObject() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for PublishCanvasExtentForZoom.
+    hide func PublishCanvasExtentForZoom() {}
+
+    /// @brief Neutral dispatch slot for CenterCanvasAtWorldPoint.
+    hide func CenterCanvasAtWorldPoint(_worldX: Integer,
+                                       _worldY: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for SceneTilePixelSize.
+    hide func SceneTilePixelSize() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for DisplayCellForZoom.
+    hide func DisplayCellForZoom() -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for ZoomToPercentAnchored.
+    hide func ZoomToPercentAnchored(_nextPercent: Integer,
+                                    _anchorContentX: Number,
+                                    _anchorContentY: Number,
+                                    _anchorViewX: Number,
+                                    _anchorViewY: Number) {}
+
+    /// @brief Neutral dispatch slot for ZoomStepAnchored.
+    hide func ZoomStepAnchored(_direction: Integer,
+                               _anchorContentX: Number,
+                               _anchorContentY: Number,
+                               _anchorViewX: Number,
+                               _anchorViewY: Number) {}
+
+    /// @brief Neutral dispatch slot for ZoomAtWindowCenter.
+    hide func ZoomAtWindowCenter(_direction: Integer) {}
+
+    /// @brief Neutral dispatch slot for SetZoomPercent.
+    expose func SetZoomPercent(_nextPercent: Integer) {}
+
+    /// @brief Neutral dispatch slot for ZoomToPercentAtWindowCenter.
+    hide func ZoomToPercentAtWindowCenter(_nextPercent: Integer) {}
+
+    /// @brief Neutral dispatch slot for RefreshGridButton.
+    hide func RefreshGridButton() {}
+
+    /// @brief Neutral dispatch slot for CanvasGuideIndex.
+    hide func CanvasGuideIndex(_guides: List[Integer],
+                               _coordinate: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for BoundedCanvasGuides.
+    hide func BoundedCanvasGuides(_values: List[Integer],
+                                  _maximum: Integer) -> List[Integer] { return []; }
+
+    /// @brief Neutral dispatch slot for NormalizeCanvasGuides.
+    hide func NormalizeCanvasGuides() {}
+
+    /// @brief Neutral dispatch slot for HasCanvasGuide.
+    expose func HasCanvasGuide(_axis: Integer,
+                               _coordinate: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ToggleCanvasGuide.
+    expose func ToggleCanvasGuide(_axis: Integer,
+                                  _coordinate: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for MoveCanvasGuide.
+    expose func MoveCanvasGuide(_axis: Integer,
+                                _source: Integer,
+                                _target: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for CanvasRulerTickPosition.
+    expose func CanvasRulerTickPosition(_axis: Integer,
+                                        _coordinate: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for CanvasGuideHitIndex.
+    hide func CanvasGuideHitIndex(_axis: Integer,
+                                  _localPosition: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for CanvasGuidePointerLocalPosition.
+    hide func CanvasGuidePointerLocalPosition(_axis: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for CanvasGuidePointerCoordinate.
+    hide func CanvasGuidePointerCoordinate(_axis: Integer) -> Integer { return 0; }
+
+    /// @brief Neutral dispatch slot for BeginCanvasGuideDrag.
+    hide func BeginCanvasGuideDrag(_axis: Integer,
+                                   _guideIndex: Integer,
+                                   _coordinate: Integer) {}
+
+    /// @brief Neutral dispatch slot for ResetCanvasGuideDrag.
+    hide func ResetCanvasGuideDrag(_releaseCapture: Boolean) {}
+
+    /// @brief Neutral dispatch slot for CancelCanvasGuideDrag.
+    hide func CancelCanvasGuideDrag() {}
+
+    /// @brief Neutral dispatch slot for UpdateCanvasGuideDrag.
+    hide func UpdateCanvasGuideDrag() {}
+
+    /// @brief Neutral dispatch slot for FinishCanvasGuideDrag.
+    hide func FinishCanvasGuideDrag() {}
+
+    /// @brief Neutral dispatch slot for RefreshRulerPresentation.
+    hide func RefreshRulerPresentation() {}
+
+    /// @brief Neutral dispatch slot for PumpCanvasRulers.
+    hide func PumpCanvasRulers() {}
+
+    /// @brief Neutral dispatch slot for RenderCanvasRulers.
+    hide func RenderCanvasRulers() {}
+
+    /// @brief Neutral dispatch slot for DrawCanvasGuides.
+    hide func DrawCanvasGuides() {}
+
+    /// @brief Neutral dispatch slot for DrawResolvedTileGhostCell.
+    hide func DrawResolvedTileGhostCell(_tile: Integer,
+                                        _cellX: Integer,
+                                        _cellY: Integer,
+                                        _opacity: Number) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for DrawTileGhostCell.
+    hide func DrawTileGhostCell(_tile: Integer,
+                                _cellX: Integer,
+                                _cellY: Integer) -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for DrawAutotileNeighborGhost.
+    hide func DrawAutotileNeighborGhost(_pendingTile: Integer,
+                                        _pendingX: Integer,
+                                        _pendingY: Integer,
+                                        _neighborX: Integer,
+                                        _neighborY: Integer) {}
+
+    /// @brief Neutral dispatch slot for DrawAutotileNeighborGhosts.
+    hide func DrawAutotileNeighborGhosts(_tile: Integer,
+                                         _cellX: Integer,
+                                         _cellY: Integer) {}
+
+    /// @brief Neutral dispatch slot for DrawTileBrushGhosts.
+    hide func DrawTileBrushGhosts() {}
+
+    /// @brief Neutral dispatch slot for UpdateCanvasViewportSize.
+    hide func UpdateCanvasViewportSize() {}
+
+    /// @brief Neutral dispatch slot for EffectiveUiScale.
+    hide func EffectiveUiScale() -> Number { return 0.0; }
+
+    /// @brief Neutral dispatch slot for PhysicalPointerToUi.
+    hide func PhysicalPointerToUi(_value: Number) -> Number { return 0.0; }
+
+    /// @brief Neutral dispatch slot for LogicalScrollX.
+    hide func LogicalScrollX(_scroll: GUI.ScrollView) -> Number { return 0.0; }
+
+    /// @brief Neutral dispatch slot for LogicalScrollY.
+    hide func LogicalScrollY(_scroll: GUI.ScrollView) -> Number { return 0.0; }
+
+    /// @brief Neutral dispatch slot for SetLogicalScroll.
+    hide func SetLogicalScroll(_scroll: GUI.ScrollView,
+                               _x: Number,
+                               _y: Number) {}
+
+    /// @brief Neutral dispatch slot for SetLogicalContentSize.
+    hide func SetLogicalContentSize(_scroll: GUI.ScrollView,
+                                    _width: Number,
+                                    _height: Number) {}
+
+    /// @brief Neutral dispatch slot for RenderScene.
+    hide func RenderScene() {}
+
+}

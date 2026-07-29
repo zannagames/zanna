@@ -23,6 +23,7 @@ module diff_engine;
 
 bind Str = Zanna.String;
 bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
 
 final DIFF_MAX_TOTAL_LINES = 20000;
 final DIFF_MAX_EDIT_DEPTH = 512;
@@ -72,6 +73,26 @@ class DiffBuildResult {
     }
 }
 
+/// @brief Return true when the two line sequences share an exact value.
+/// @details A wholly disjoint diff has no diagonal Myers step, so detecting it
+///          up front avoids building an edit trace whose result is known to be
+///          empty. This is especially important on interpreted backends where
+///          each boxed trace-cell operation carries runtime-bridge overhead.
+func LinesShareValue(aLines: Any, bLines: Any) -> Boolean {
+    var seen = Map.New();
+    var i = 0;
+    while i < Seq.get_Count(aLines) {
+        Map.SetBool(seen, Seq.GetStr(aLines, i), true);
+        i = i + 1;
+    }
+    i = 0;
+    while i < Seq.get_Count(bLines) {
+        if Map.Has(seen, Seq.GetStr(bLines, i)) { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
 /// @brief Longest-common-subsequence length table row walker (Myers greedy).
 /// @details Returns a List of Integer pairs encoded as (aIndex * 1000000 +
 ///          bIndex) marking matched line pairs, in order. Inputs beyond the
@@ -85,6 +106,9 @@ func MatchedPairs(aLines: Any, bLines: Any) -> List {
     }
     if aCount + bCount > DIFF_MAX_TOTAL_LINES {
         return pairs; // Bounded: degrade to replace-everything.
+    }
+    if LinesShareValue(aLines, bLines) == false {
+        return pairs;
     }
 
     // Myers greedy forward search recording the middle-snake-free trace.

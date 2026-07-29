@@ -1,0 +1,682 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_scene_preview_3d.zia
+// Purpose: Core project-owned 3D scene-preview parsing.
+// Key invariants:
+//   - Malformed or out-of-bounds input rejects the complete staged schema.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_scene_preview_3d;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind "scene_component_schema_model" as SceneComponentModel;
+bind "scene_component_schema_material_previews" as PreviousLayer;
+
+class SceneComponentSchemaScenePreview3DLayer extends PreviousLayer.SceneComponentSchemaMaterialPreviewsLayer {
+
+    /// @brief Parse the optional schema-v4 project 3D preview profile.
+    hide override func ParseScenePreview3D(
+        root: Any,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(root, "scenePreview3D") == false { return true; }
+        if schema.version < SceneComponentModel.SCENE_PREVIEW_3D_SCHEMA_VERSION {
+            Reject(schema, "Project 3D previews require schema version 4.");
+            return false;
+        }
+        var raw = Map.Get(root, "scenePreview3D");
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(schema, "scenePreview3D must be an object.");
+            return false;
+        }
+        if ValidateScenePreview3DVersions(raw, schema) == false {
+            return false;
+        }
+        var profile = new SceneComponentModel.ScenePreview3DDefinition();
+        if ParseScenePreview3DProfile(raw, profile, schema) == false
+           or ParseScenePreview3DProperties(raw, profile, schema) == false
+           or ParseScenePreview3DNumbers(raw, profile, schema) == false
+           or ValidateScenePreview3DStart(raw, profile, schema) == false
+           or ValidateScenePreview3DColorAndLighting(profile, schema) == false
+           or ValidateScenePreview3DHeightFog(profile, schema) == false
+           or ParseScenePreview3DBooleans(raw, profile, schema) == false {
+            return false;
+        }
+        profile.present = true;
+        schema.scenePreview3D = profile;
+        return true;
+    }
+
+    /// @brief Reject members introduced after the schema's declared version.
+    hide func ValidateScenePreview3DVersions(
+        raw: Any,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var versionSixNames: List[String] = [
+            "zenithRProperty", "zenithGProperty", "zenithBProperty",
+            "groundRProperty", "groundGProperty", "groundBProperty",
+            "cloudProperty", "starsProperty",
+            "sunXProperty", "sunYProperty", "sunZProperty",
+            "sunRProperty", "sunGProperty", "sunBProperty",
+            "sunIntensityProperty",
+            "fillXProperty", "fillYProperty", "fillZProperty",
+            "fillRProperty", "fillGProperty", "fillBProperty",
+            "fillIntensityProperty"
+        ];
+        var versionSixIndex = 0;
+        while versionSixIndex < versionSixNames.count() {
+            if Map.Has(raw, versionSixNames.get(versionSixIndex))
+               and schema.version < SceneComponentModel.SKY_LIGHT_PREVIEW_3D_SCHEMA_VERSION {
+                Reject(
+                    schema,
+                    "Project 3D sky/light previews require schema version 6.");
+                return false;
+            }
+            versionSixIndex = versionSixIndex + 1;
+        }
+        var versionSevenNames: List[String] = [
+            "cameraFov", "iblIntensity", "heightFogProperty",
+            "heightFogBase", "heightFogFalloff",
+            "heightFogDensity", "heightFogOpacity"
+        ];
+        var versionSevenIndex = 0;
+        while versionSevenIndex < versionSevenNames.count() {
+            if Map.Has(raw, versionSevenNames.get(versionSevenIndex))
+               and schema.version
+                   < SceneComponentModel.LENS_ATMOSPHERE_PREVIEW_3D_SCHEMA_VERSION {
+                Reject(
+                    schema,
+                    "Project 3D lens/atmosphere previews require "
+                        + "schema version 7.");
+                return false;
+            }
+            versionSevenIndex = versionSevenIndex + 1;
+        }
+        var versionNineNames: List[String] = [
+            "environmentPrefab",
+            "environmentVariantProperty",
+            "environmentVariantPrefabs",
+            "environmentVariantOffset"
+        ];
+        var versionNineIndex = 0;
+        while versionNineIndex < versionNineNames.count() {
+            if Map.Has(raw, versionNineNames.get(versionNineIndex))
+               and schema.version
+                   < SceneComponentModel.SCENE_ENVIRONMENT_PREVIEW_3D_SCHEMA_VERSION {
+                Reject(
+                    schema,
+                    "Project 3D scene environment previews require "
+                        + "schema version 9.");
+                return false;
+            }
+            versionNineIndex = versionNineIndex + 1;
+        }
+        if Map.Has(raw, "environmentLayers")
+           and schema.version
+               < SceneComponentModel.ADDITIVE_ENVIRONMENT_LAYERS_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Additive 3D environment layers require schema version 14.");
+            return false;
+        }
+        if Map.Has(raw, "waterLayers")
+           and schema.version
+               < SceneComponentModel.RUNTIME_WATER_PREVIEW_3D_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Runtime-backed 3D water layers require schema version 15.");
+            return false;
+        }
+        var versionTenNames: List[String] = [
+            "tonemapMode", "tonemapExposure",
+            "bloomThreshold", "bloomIntensity", "bloomPasses",
+            "colorGradeBrightness", "colorGradeContrast",
+            "colorGradeSaturation",
+            "vignetteRadius", "vignetteSoftness",
+            "fxaa"
+        ];
+        var versionTenIndex = 0;
+        while versionTenIndex < versionTenNames.count() {
+            if Map.Has(raw, versionTenNames.get(versionTenIndex))
+               and schema.version
+                   < SceneComponentModel.SCENE_POSTFX_PREVIEW_3D_SCHEMA_VERSION {
+                Reject(
+                    schema,
+                    "Project 3D post-processing previews require "
+                        + "schema version 10.");
+                return false;
+            }
+            versionTenIndex = versionTenIndex + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse output, environment, water, and post-processing settings.
+    hide func ParseScenePreview3DProfile(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var outputSize =
+            ParseGameViewOutputSize(raw, "scenePreview3D", schema);
+        if schema.valid == false { return false; }
+        if outputSize.count() == 2 {
+            profile.hasOutputSize = true;
+            profile.outputWidth = outputSize.get(0);
+            profile.outputHeight = outputSize.get(1);
+        }
+        if ParseSceneEnvironmentPreview3D(
+               raw, profile, schema) == false {
+            return false;
+        }
+        if ParseSceneWaterLayers3D(raw, profile, schema) == false {
+            return false;
+        }
+        if ParseScenePostFXPreview3D(raw, profile, schema) == false {
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse all portable root-metadata property mappings.
+    hide func ParseScenePreview3DProperties(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        profile.startXProperty =
+            ParsePreview3DProperty(raw, "startXProperty", schema);
+        profile.startYProperty =
+            ParsePreview3DProperty(raw, "startYProperty", schema);
+        profile.startZProperty =
+            ParsePreview3DProperty(raw, "startZProperty", schema);
+        profile.startYawProperty =
+            ParsePreview3DProperty(raw, "startYawProperty", schema);
+        profile.ambientRProperty =
+            ParsePreview3DProperty(raw, "ambientRProperty", schema);
+        profile.ambientGProperty =
+            ParsePreview3DProperty(raw, "ambientGProperty", schema);
+        profile.ambientBProperty =
+            ParsePreview3DProperty(raw, "ambientBProperty", schema);
+        profile.clearRProperty =
+            ParsePreview3DProperty(raw, "clearRProperty", schema);
+        profile.clearGProperty =
+            ParsePreview3DProperty(raw, "clearGProperty", schema);
+        profile.clearBProperty =
+            ParsePreview3DProperty(raw, "clearBProperty", schema);
+        profile.fogRProperty =
+            ParsePreview3DProperty(raw, "fogRProperty", schema);
+        profile.fogGProperty =
+            ParsePreview3DProperty(raw, "fogGProperty", schema);
+        profile.fogBProperty =
+            ParsePreview3DProperty(raw, "fogBProperty", schema);
+        profile.fogNearProperty =
+            ParsePreview3DProperty(raw, "fogNearProperty", schema);
+        profile.fogFarProperty =
+            ParsePreview3DProperty(raw, "fogFarProperty", schema);
+        profile.zenithRProperty =
+            ParsePreview3DProperty(raw, "zenithRProperty", schema);
+        profile.zenithGProperty =
+            ParsePreview3DProperty(raw, "zenithGProperty", schema);
+        profile.zenithBProperty =
+            ParsePreview3DProperty(raw, "zenithBProperty", schema);
+        profile.groundRProperty =
+            ParsePreview3DProperty(raw, "groundRProperty", schema);
+        profile.groundGProperty =
+            ParsePreview3DProperty(raw, "groundGProperty", schema);
+        profile.groundBProperty =
+            ParsePreview3DProperty(raw, "groundBProperty", schema);
+        profile.cloudProperty =
+            ParsePreview3DProperty(raw, "cloudProperty", schema);
+        profile.starsProperty =
+            ParsePreview3DProperty(raw, "starsProperty", schema);
+        profile.sunXProperty =
+            ParsePreview3DProperty(raw, "sunXProperty", schema);
+        profile.sunYProperty =
+            ParsePreview3DProperty(raw, "sunYProperty", schema);
+        profile.sunZProperty =
+            ParsePreview3DProperty(raw, "sunZProperty", schema);
+        profile.sunRProperty =
+            ParsePreview3DProperty(raw, "sunRProperty", schema);
+        profile.sunGProperty =
+            ParsePreview3DProperty(raw, "sunGProperty", schema);
+        profile.sunBProperty =
+            ParsePreview3DProperty(raw, "sunBProperty", schema);
+        profile.sunIntensityProperty =
+            ParsePreview3DProperty(raw, "sunIntensityProperty", schema);
+        profile.fillXProperty =
+            ParsePreview3DProperty(raw, "fillXProperty", schema);
+        profile.fillYProperty =
+            ParsePreview3DProperty(raw, "fillYProperty", schema);
+        profile.fillZProperty =
+            ParsePreview3DProperty(raw, "fillZProperty", schema);
+        profile.fillRProperty =
+            ParsePreview3DProperty(raw, "fillRProperty", schema);
+        profile.fillGProperty =
+            ParsePreview3DProperty(raw, "fillGProperty", schema);
+        profile.fillBProperty =
+            ParsePreview3DProperty(raw, "fillBProperty", schema);
+        profile.fillIntensityProperty =
+            ParsePreview3DProperty(raw, "fillIntensityProperty", schema);
+        profile.heightFogProperty =
+            ParsePreview3DProperty(raw, "heightFogProperty", schema);
+        if schema.valid == false { return false; }
+        return true;
+    }
+
+    /// @brief Parse bounded fixed lens and height-fog values.
+    hide func ParseScenePreview3DNumbers(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if ParsePreview3DNumber(
+               raw, "cameraFov", 1.0, 179.0, profile, schema) == false
+           or ParsePreview3DNumber(
+               raw, "iblIntensity", 0.0, 8.0, profile, schema) == false
+           or ParsePreview3DNumber(
+               raw, "heightFogBase",
+               -1000000.0, 1000000.0, profile, schema) == false
+           or ParsePreview3DNumber(
+               raw, "heightFogFalloff",
+               0.0, 100.0, profile, schema) == false
+           or ParsePreview3DNumber(
+               raw, "heightFogDensity",
+               0.0, 100.0, profile, schema) == false
+           or ParsePreview3DNumber(
+               raw, "heightFogOpacity",
+               0.0, 1.0, profile, schema) == false {
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Validate the complete optional start transform and eye height.
+    hide func ValidateScenePreview3DStart(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var startCount = PresentCount3(
+            profile.startXProperty,
+            profile.startYProperty,
+            profile.startZProperty);
+        if startCount != 0 and startCount != 3 {
+            Reject(
+                schema,
+                "scenePreview3D start X/Y/Z properties must be complete.");
+            return false;
+        }
+        if profile.startYawProperty != "" and startCount != 3 {
+            Reject(
+                schema,
+                "scenePreview3D start yaw requires complete X/Y/Z properties.");
+            return false;
+        }
+        if Map.Has(raw, "startEyeHeight") {
+            var rawEyeHeight = Map.Get(raw, "startEyeHeight");
+            if Json.TypeOf(rawEyeHeight) != "number" {
+                Reject(
+                    schema,
+                    "scenePreview3D startEyeHeight must be a number.");
+                return false;
+            }
+            var parsedEyeHeight =
+                Parse.TryDouble(Json.Format(rawEyeHeight));
+            if parsedEyeHeight.IsNone
+               or parsedEyeHeight.UnwrapF64() < -1000.0
+               or parsedEyeHeight.UnwrapF64() > 1000.0 {
+                Reject(
+                    schema,
+                    "scenePreview3D startEyeHeight must be between "
+                    + "-1,000 and 1,000.");
+                return false;
+            }
+            if startCount != 3 or profile.startYawProperty == "" {
+                Reject(
+                    schema,
+                    "scenePreview3D startEyeHeight requires complete "
+                    + "start X/Y/Z/yaw properties.");
+                return false;
+            }
+            profile.hasStartEyeHeight = true;
+            profile.startEyeHeight = parsedEyeHeight.UnwrapF64();
+        }
+        return true;
+    }
+
+    /// @brief Validate complete color, sky, sun, and fill-light groups.
+    hide func ValidateScenePreview3DColorAndLighting(
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var ambientCount = PresentCount3(
+            profile.ambientRProperty,
+            profile.ambientGProperty,
+            profile.ambientBProperty);
+        if ambientCount != 0 and ambientCount != 3 {
+            Reject(
+                schema,
+                "scenePreview3D ambient RGB properties must be complete.");
+            return false;
+        }
+        var clearCount = PresentCount3(
+            profile.clearRProperty,
+            profile.clearGProperty,
+            profile.clearBProperty);
+        if clearCount != 0 and clearCount != 3 {
+            Reject(
+                schema,
+                "scenePreview3D clear RGB properties must be complete.");
+            return false;
+        }
+        var fogCount =
+            PresentCount3(
+                profile.fogRProperty,
+                profile.fogGProperty,
+                profile.fogBProperty);
+        if profile.fogNearProperty != "" { fogCount = fogCount + 1; }
+        if profile.fogFarProperty != "" { fogCount = fogCount + 1; }
+        if fogCount != 0 and fogCount != 5 {
+            Reject(
+                schema,
+                "scenePreview3D fog RGB/near/far properties must be complete.");
+            return false;
+        }
+        var skyCount =
+            PresentCount3(
+                profile.zenithRProperty,
+                profile.zenithGProperty,
+                profile.zenithBProperty)
+            + PresentCount3(
+                profile.groundRProperty,
+                profile.groundGProperty,
+                profile.groundBProperty);
+        if skyCount != 0
+           and (skyCount != 6 or clearCount != 3) {
+            Reject(
+                schema,
+                "scenePreview3D sky zenith/ground/horizon RGB properties "
+                    + "must be complete.");
+            return false;
+        }
+        if (profile.cloudProperty != ""
+            or profile.starsProperty != "")
+           and skyCount != 6 {
+            Reject(
+                schema,
+                "scenePreview3D cloud/stars properties require a complete "
+                    + "sky palette.");
+            return false;
+        }
+        var sunCount =
+            PresentCount3(
+                profile.sunXProperty,
+                profile.sunYProperty,
+                profile.sunZProperty)
+            + PresentCount3(
+                profile.sunRProperty,
+                profile.sunGProperty,
+                profile.sunBProperty);
+        if profile.sunIntensityProperty != "" {
+            sunCount = sunCount + 1;
+        }
+        if sunCount != 0 and sunCount != 7 {
+            Reject(
+                schema,
+                "scenePreview3D sun direction/RGB/intensity properties "
+                    + "must be complete.");
+            return false;
+        }
+        var fillCount =
+            PresentCount3(
+                profile.fillXProperty,
+                profile.fillYProperty,
+                profile.fillZProperty)
+            + PresentCount3(
+                profile.fillRProperty,
+                profile.fillGProperty,
+                profile.fillBProperty);
+        if profile.fillIntensityProperty != "" {
+            fillCount = fillCount + 1;
+        }
+        if fillCount != 0 and fillCount != 7 {
+            Reject(
+                schema,
+                "scenePreview3D fill direction/RGB/intensity properties "
+                    + "must be complete.");
+            return false;
+        }
+        if profile.hasIblIntensity and skyCount != 6 {
+            Reject(
+                schema,
+                "scenePreview3D iblIntensity requires a complete sky palette.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Validate the all-or-none height-fog parameter group.
+    hide func ValidateScenePreview3DHeightFog(
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var heightFogCount = 0;
+        if profile.heightFogProperty != "" {
+            heightFogCount = heightFogCount + 1;
+        }
+        if profile.hasHeightFogBase {
+            heightFogCount = heightFogCount + 1;
+        }
+        if profile.hasHeightFogFalloff {
+            heightFogCount = heightFogCount + 1;
+        }
+        if profile.hasHeightFogDensity {
+            heightFogCount = heightFogCount + 1;
+        }
+        if profile.hasHeightFogOpacity {
+            heightFogCount = heightFogCount + 1;
+        }
+        if heightFogCount != 0 and heightFogCount != 5 {
+            Reject(
+                schema,
+                "scenePreview3D height fog property/base/falloff/density/"
+                    + "opacity members must be complete.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse bounded viewport-visibility flags.
+    hide func ParseScenePreview3DBooleans(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var booleanNames: List[String] = [
+            "showGrid",
+            "showMarkers",
+            "showLights",
+            "showCameras",
+            "showColliders",
+            "showRoutes"
+        ];
+        var booleanIndex = 0;
+        while booleanIndex < booleanNames.count() {
+            if ParsePreview3DBoolean(
+                   raw,
+                   booleanNames.get(booleanIndex),
+                   profile,
+                   schema) == false {
+                return false;
+            }
+            booleanIndex = booleanIndex + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse one optional schema-v9 transient scene-environment prefab.
+    /// @details Paths remain project-relative and variants resolve only from exact
+    ///          integer root metadata; no project code executes in Studio.
+    hide override func ParseSceneEnvironmentPreview3D(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if ParseSceneEnvironmentPrefab(raw, profile, schema) == false
+           or ParseSceneEnvironmentVariants(raw, profile, schema) == false
+           or ParseSceneEnvironmentVariantOffset(raw, profile, schema) == false {
+            return false;
+        }
+        return ParseSceneEnvironmentLayers3D(raw, profile, schema);
+    }
+
+    /// @brief Parse the optional fixed portable environment prefab.
+    hide func ParseSceneEnvironmentPrefab(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "environmentPrefab") {
+            if Json.TypeOf(Map.Get(raw, "environmentPrefab")) != "string" {
+                Reject(
+                    schema,
+                    "scenePreview3D environmentPrefab must be a string.");
+                return false;
+            }
+            profile.environmentPrefab =
+                Str.Trim(Map.GetStr(raw, "environmentPrefab"));
+            if PortablePreviewPrefab(profile.environmentPrefab) == false {
+                Reject(
+                    schema,
+                    "scenePreview3D environmentPrefab must be a safe "
+                        + "project-relative scene path.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse the optional metadata-indexed environment prefab table.
+    hide func ParseSceneEnvironmentVariants(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasVariantProperty =
+            Map.Has(raw, "environmentVariantProperty");
+        var hasVariantPrefabs =
+            Map.Has(raw, "environmentVariantPrefabs");
+        if hasVariantProperty != hasVariantPrefabs {
+            Reject(
+                schema,
+                "scenePreview3D environmentVariantProperty and "
+                    + "environmentVariantPrefabs must be supplied together.");
+            return false;
+        }
+        if hasVariantProperty {
+            if Json.TypeOf(
+                   Map.Get(raw, "environmentVariantProperty")) != "string" {
+                Reject(
+                    schema,
+                    "scenePreview3D environmentVariantProperty "
+                        + "must be a string.");
+                return false;
+            }
+            profile.environmentVariantProperty =
+                Str.Trim(Map.GetStr(raw, "environmentVariantProperty"));
+            if PortableIdentifier(
+                   profile.environmentVariantProperty,
+                   SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+                Reject(
+                    schema,
+                    "scenePreview3D environmentVariantProperty "
+                        + "must be a portable key.");
+                return false;
+            }
+            var variants =
+                Map.Get(raw, "environmentVariantPrefabs");
+            if variants == null or Json.TypeOf(variants) != "array" {
+                Reject(
+                    schema,
+                    "scenePreview3D environmentVariantPrefabs "
+                        + "must be an array.");
+                return false;
+            }
+            var count = Seq.get_Count(variants);
+            if count <= 0
+               or count > SceneComponentModel.MAX_SCENE_ENVIRONMENT_PREVIEW_VARIANTS {
+                Reject(
+                    schema,
+                    "scenePreview3D requires between 1 and 64 "
+                        + "environment variants.");
+                return false;
+            }
+            var index = 0;
+            while index < count {
+                var rawPath = Seq.Get(variants, index);
+                if rawPath == null
+                   or Json.TypeOf(rawPath) != "string" {
+                    Reject(
+                        schema,
+                        "scenePreview3D environment variant paths "
+                            + "must be strings.");
+                    return false;
+                }
+                var path = Str.Trim(Seq.GetStr(variants, index));
+                if PortablePreviewPrefab(path) == false {
+                    Reject(
+                        schema,
+                        "scenePreview3D environment variants must be "
+                            + "safe project-relative scene paths.");
+                    return false;
+                }
+                profile.environmentVariantPrefabs.add(path);
+                index = index + 1;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse the optional bounded environment variant index offset.
+    hide func ParseSceneEnvironmentVariantOffset(
+        raw: Any,
+        profile: SceneComponentModel.ScenePreview3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasVariantPrefabs = Map.Has(raw, "environmentVariantPrefabs");
+        if Map.Has(raw, "environmentVariantOffset") {
+            if hasVariantPrefabs == false
+               or Json.TypeOf(
+                   Map.Get(raw, "environmentVariantOffset")) != "number" {
+                Reject(
+                    schema,
+                    "scenePreview3D environmentVariantOffset requires "
+                        + "variant prefabs and must be an integer.");
+                return false;
+            }
+            var parsed = Parse.TryInt(
+                Json.Format(Map.Get(raw, "environmentVariantOffset")));
+            if parsed.IsNone
+               or parsed.UnwrapI64()
+                  < SceneComponentModel.MIN_SCENE_ENVIRONMENT_PREVIEW_OFFSET
+               or parsed.UnwrapI64()
+                  > SceneComponentModel.MAX_SCENE_ENVIRONMENT_PREVIEW_OFFSET {
+                Reject(
+                    schema,
+                    "scenePreview3D environmentVariantOffset "
+                        + "exceeds the supported range.");
+                return false;
+            }
+            profile.environmentVariantOffset = parsed.UnwrapI64();
+        }
+        return true;
+    }
+
+}

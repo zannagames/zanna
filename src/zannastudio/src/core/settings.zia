@@ -225,7 +225,14 @@ class SettingsManager {
         var readResult = safe_io.ReadStudioState(settingsPath);
         if readResult.ok == false { return; }
         var ini = Ini.Parse(readResult.text);
+        LoadAppearanceSettings(ini);
+        LoadToolPanelSettings(ini);
+        LoadWorkbenchSettings(ini);
+        LoadEditingSettings(ini);
+    }
 
+    /// @brief Load font, theme, and editor display preferences.
+    hide func LoadAppearanceSettings(ini: Any) {
         // fontSize: migrate old tiny values to the current comfortable default.
         var sizeStr = Ini.Get(ini, "settings", "fontSize");
         if sizeStr != "" {
@@ -288,7 +295,10 @@ class SettingsManager {
             var rw = Parse.IntOr(rwStr, renderWhitespaceMode);
             if rw >= 0 and rw <= 2 { renderWhitespaceMode = rw; }
         }
+    }
 
+    /// @brief Load tool-panel docking, sizing, and floating geometry.
+    hide func LoadToolPanelSettings(ini: Any) {
         var wsStr = Ini.Get(ini, "settings", "wheelSpeed");
         if wsStr != "" {
             var ws = Parse.IntOr(wsStr, wheelSpeedPct);
@@ -356,7 +366,10 @@ class SettingsManager {
                 floatingToolPanelHeight = floatingHeight;
             }
         }
+    }
 
+    /// @brief Load sidebar, editor split, and active panel identities.
+    hide func LoadWorkbenchSettings(ini: Any) {
         var primarySidebarStr =
             Ini.Get(ini, "settings", "primarySidebarPosition");
         if primarySidebarStr == "left" or primarySidebarStr == "right" {
@@ -398,7 +411,10 @@ class SettingsManager {
         if IsValidActiveToolPanelId(activeToolPanelStr) {
             activeToolPanelId = activeToolPanelStr;
         }
+    }
 
+    /// @brief Load editing, persistence, timing, and zoom preferences.
+    hide func LoadEditingSettings(ini: Any) {
         var lnStr = Ini.Get(ini, "settings", "lineNumbers");
         if lnStr != "" {
             lineNumbers = lnStr == "1";
@@ -468,6 +484,7 @@ class SettingsManager {
             if uiZoom >= 50 and uiZoom <= 300 { uiZoomPercent = uiZoom; }
         }
     }
+
 
     /// @brief Persist settings to disk in the native configuration directory.
     /// @note Updates the settings section while preserving session and

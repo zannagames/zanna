@@ -88,7 +88,22 @@ func loadActiveSource(docMgr: document_manager.DocumentManager,
     engine.LoadDocument(doc);
 }
 
-func main() {
+/// @brief Typed state shared by serial diagnostic-action scenarios.
+class DiagnosticActionProbeContext {
+    expose String rootA;
+    expose String rootB;
+    expose String mainPath;
+    expose String openHelperPath;
+    expose app_shell.AppShell shell;
+    expose editor_engine.EditorEngine engine;
+    expose document_manager.DocumentManager docMgr;
+    expose project_manager.ProjectManager projMgr;
+    expose diagnostic_edit_commands.DiagnosticActionController controller;
+}
+
+/// @brief Verify bounded project-bind candidate discovery.
+func VerifyProjectBindQueries(
+    ctx: DiagnosticActionProbeContext) -> Boolean {
     var rootA = TempFile.CreateDirWithPrefix("zannastudio_bind_query_a_");
     var rootB = TempFile.CreateDirWithPrefix("zannastudio_bind_query_b_");
     var mainPath = Path.Join(rootA, "main.zia");
@@ -120,7 +135,7 @@ func main() {
     if project_bind_query_job.PathKey(caseUpperPath)
            == project_bind_query_job.PathKey(caseLowerPath) {
         fail(null, null, "path key folded case-sensitive names");
-        return;
+        return false;
     }
 
     var rootsA = new List();
@@ -152,7 +167,7 @@ func main() {
        or openResult!.candidateMtime != -1
        or openResult!.candidateOpenSource != liveHelperSource {
         fail(null, null, "open snapshot candidate");
-        return;
+        return false;
     }
 
     var staleDiskJob = new project_bind_query_job.ProjectBindQueryJob();
@@ -163,7 +178,7 @@ func main() {
        or staleDiskResult!.reason != "not_found"
        or staleDiskResult!.candidatePath != "" {
         fail(null, null, "open snapshot did not shadow disk");
-        return;
+        return false;
     }
 
     // A unique definition may come from any workspace root.
@@ -185,7 +200,7 @@ func main() {
         }
         fail(null, null, "multi-root unique candidate reason=" + crossReason
             + " path=" + crossPath + " mtime=" + crossMtime);
-        return;
+        return false;
     }
 
     var ambiguousJob = new project_bind_query_job.ProjectBindQueryJob();
@@ -196,7 +211,7 @@ func main() {
        or ambiguousResult!.reason != "ambiguous"
        or ambiguousResult!.candidatePath != "" {
         fail(null, null, "ambiguous candidate published");
-        return;
+        return false;
     }
 
     // On case-sensitive volumes these are two independent candidates. On
@@ -209,16 +224,16 @@ func main() {
     var caseResult = waitForBind(caseJob);
     if caseResult == null or caseResult!.succeeded == false {
         fail(null, null, "case-sensitive candidate scan failed");
-        return;
+        return false;
     }
     if File.SameFile(caseUpperPath, caseLowerPath) {
         if caseResult!.reason != "" {
             fail(null, null, "case-only alias scanned twice");
-            return;
+            return false;
         }
     } else if caseResult!.reason != "ambiguous" {
         fail(null, null, "case-sensitive candidates were merged");
-        return;
+        return false;
     }
 
     // One skipped source makes uniqueness unknowable, even when another file
@@ -236,7 +251,7 @@ func main() {
        or incompleteResult!.reason != "workspace_limit"
        or incompleteResult!.candidatePath != "" {
         fail(null, null, "incomplete uniqueness scan published");
-        return;
+        return false;
     }
 
     // Queue replacement is latest-wins even if the first worker finishes before
@@ -253,7 +268,7 @@ func main() {
        or latestResult == null or latestResult!.generation != newGeneration
        or latestResult!.candidatePath != crossHelperPath {
         fail(null, null, "latest-wins bind query");
-        return;
+        return false;
     }
 
     var shutdownJob = new project_bind_query_job.ProjectBindQueryJob();
@@ -262,8 +277,21 @@ func main() {
     if shutdownJob.CancelAndWait() == false or shutdownJob.IsBusy()
        or shutdownJob.TakeCompleted() != null {
         fail(null, null, "bind worker did not drain at shutdown");
-        return;
+        return false;
     }
+
+    ctx.rootA = rootA;
+    ctx.rootB = rootB;
+    ctx.mainPath = mainPath;
+    ctx.openHelperPath = openHelperPath;
+    return true;
+}
+
+/// @brief Verify asynchronous suppression and fix-it controller actions.
+func VerifyDiagnosticControllerEdits(
+    ctx: DiagnosticActionProbeContext) -> Boolean {
+    var rootA = ctx.rootA;
+    var mainPath = ctx.mainPath;
 
     // Exercise the actual Studio controller against a live editor. Every Start
     // call must return before semantic work can alter the buffer.
@@ -284,7 +312,7 @@ func main() {
     var locStore = new locations.LocationStore();
     if projMgr.OpenFolder(rootA) == false {
         fail(shell, null, "controller workspace open");
-        return;
+        return false;
     }
     var controller =
         new diagnostic_edit_commands.DiagnosticActionController();
@@ -314,12 +342,12 @@ func main() {
        or controller.pendingSemanticJob == null {
         fail(shell, controller,
              "Problems suppression did not open and start asynchronously");
-        return;
+        return false;
     }
     if waitForAction(controller, shell, docMgr, engine, projMgr) == false
        or Str.IndexOf(engine.GetTextSnapshot(), "// @suppress(W") == 0 {
         fail(shell, controller, "asynchronous suppression did not apply");
-        return;
+        return false;
     }
 
     var fixSource = "module FixProbe;\n"
@@ -333,12 +361,12 @@ func main() {
                         "Apply Fix-It", shell, docMgr, engine, projMgr) == false
        or engine.GetTextSnapshot() != fixSource {
         fail(shell, controller, "fix-it did not start asynchronously");
-        return;
+        return false;
     }
     if waitForAction(controller, shell, docMgr, engine, projMgr) == false
        or Str.IndexOf(engine.GetTextSnapshot(), "greet();") == 0 {
         fail(shell, controller, "asynchronous fix-it did not apply");
-        return;
+        return false;
     }
 
     // A cursor move invalidates the captured edit anchor before a result can
@@ -348,14 +376,35 @@ func main() {
     if controller.Start(diagnostic_edit_commands.ACTION_APPLY_FIX,
                         "Apply Fix-It", shell, docMgr, engine, projMgr) == false {
         fail(shell, controller, "stale-anchor setup");
-        return;
+        return false;
     }
     engine.editor.SetCursor(0, 0);
     controller.Pump(shell, docMgr, engine, projMgr);
     if controller.IsBusy() or engine.GetTextSnapshot() != fixSource {
         fail(shell, controller, "changed cursor accepted stale fix-it");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    ctx.docMgr = docMgr;
+    ctx.projMgr = projMgr;
+    ctx.controller = controller;
+    return true;
+}
+
+/// @brief Verify runtime/project binds and stale-candidate rejection.
+func VerifyDiagnosticBindActions(
+    ctx: DiagnosticActionProbeContext) -> Boolean {
+    var rootA = ctx.rootA;
+    var rootB = ctx.rootB;
+    var mainPath = ctx.mainPath;
+    var openHelperPath = ctx.openHelperPath;
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var docMgr = ctx.docMgr;
+    var projMgr = ctx.projMgr;
+    var controller = ctx.controller;
 
     var runtimeSource = "module MissingRuntimeBind;\n"
         + "func main() {\n"
@@ -375,7 +424,7 @@ func main() {
        or waitForAction(controller, shell, docMgr, engine, projMgr) == false
        or engine.GetTextSnapshot() != runtimeExpected {
         fail(shell, controller, "asynchronous runtime bind");
-        return;
+        return false;
     }
 
     var projectHelperPath = Path.Join(rootA, "project_helper.zia");
@@ -400,7 +449,7 @@ func main() {
        or waitForAction(controller, shell, docMgr, engine, projMgr) == false
        or engine.GetTextSnapshot() != projectExpected {
         fail(shell, controller, "asynchronous unique project bind");
-        return;
+        return false;
     }
 
     var ambiguousSource = "module AmbiguousProjectBind;\n"
@@ -415,7 +464,7 @@ func main() {
        or waitForAction(controller, shell, docMgr, engine, projMgr) == false
        or engine.GetTextSnapshot() != ambiguousSource {
         fail(shell, controller, "ambiguous controller bind edited source");
-        return;
+        return false;
     }
 
     // Hold a completed open-snapshot result outside the controller for one
@@ -436,7 +485,7 @@ func main() {
            diagnostic_edit_commands.ACTION_CREATE_MISSING_BIND,
            "Create Missing Bind", shell, docMgr, engine, projMgr) == false {
         fail(shell, controller, "open-candidate stale setup");
-        return;
+        return false;
     }
     var semanticTick = 0;
     while controller.pendingBindGeneration <= 0
@@ -447,7 +496,7 @@ func main() {
     }
     if controller.pendingBindGeneration <= 0 {
         fail(shell, controller, "open-candidate bind scan did not start");
-        return;
+        return false;
     }
     var bindTick = 0;
     while controller.bindJob.completedRequest == null
@@ -458,23 +507,31 @@ func main() {
     }
     if controller.bindJob.completedRequest == null {
         fail(shell, controller, "open-candidate bind scan did not finish");
-        return;
+        return false;
     }
     openCandidateDoc.content =
         "module OpenHelper;\nexpose func changedValue() -> Integer { return 5; }\n";
     controller.Pump(shell, docMgr, engine, projMgr);
     if controller.IsBusy() or engine.GetTextSnapshot() != openProjectSource {
         fail(shell, controller, "changed open candidate accepted stale bind");
-        return;
+        return false;
     }
 
     if controller.Shutdown() == false {
         fail(shell, controller, "diagnostic controller shutdown");
-        return;
+        return false;
     }
     projMgr.CloseProject();
     shell.Destroy();
     Dir.RemoveAll(rootA);
     Dir.RemoveAll(rootB);
     Terminal.Say("RESULT: ok");
+    return true;
+}
+
+func main() {
+    var ctx = new DiagnosticActionProbeContext();
+    if VerifyProjectBindQueries(ctx) == false { return; }
+    if VerifyDiagnosticControllerEdits(ctx) == false { return; }
+    if VerifyDiagnosticBindActions(ctx) == false { return; }
 }

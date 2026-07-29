@@ -1,0 +1,197 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_contract.zia
+// Purpose: Virtual contract shared by stateless scene-component parser layers.
+// Key invariants:
+//   - Every parser helper has one override slot and neutral contract stubs never publish data.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_contract;
+
+bind "scene_component_schema_model" as SceneComponentModel;
+
+class SceneComponentSchemaParserContract {
+    expose func PathForRoot(_root: String) -> String { return ""; }
+
+    expose func LoadPath(_path: String) -> SceneComponentModel.SceneComponentSchema { return null; }
+
+    expose func ParseText(_text: String,
+                          _sourcePath: String) -> SceneComponentModel.SceneComponentSchema { return null; }
+
+    hide func ParseNodePreviews3D(_root: Any,
+                             _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseNodePreviewFilter3D(
+        _root: Any,
+        _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseNodePreviewNumber(_raw: Any,
+                                _name: String,
+                                _minimum: Number,
+                                _maximum: Number,
+                                _fallback: Number,
+                                _previewIndex: Integer,
+                                _schema: SceneComponentModel.SceneComponentSchema) -> Number { return 0.0; }
+
+    hide func ParseNodePreview3D(
+        _raw: Any,
+        _index: Integer,
+        _seenMatches: Any,
+        _schema: SceneComponentModel.SceneComponentSchema) -> SceneComponentModel.SceneNodePreview3DDefinition { return null; }
+
+    hide func ParseMaterialPreviewNumber(
+        _raw: Any,
+        _name: String,
+        _minimum: Number,
+        _maximum: Number,
+        _fallback: Number,
+        _previewIndex: Integer,
+        _schema: SceneComponentModel.SceneComponentSchema) -> Number { return 0.0; }
+
+    hide func ParseMaterialPreviews3D(_root: Any,
+                                 _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func PortablePreviewPrefab(_value: String) -> Boolean { return false; }
+
+    hide func DirectModelPreviewPrefab(_value: String) -> Boolean { return false; }
+
+    hide func PortablePreviewImage(_value: String) -> Boolean { return false; }
+
+    hide func PortablePreviewTexture(_value: String) -> Boolean { return false; }
+
+    hide func ParseScenePreview3D(_root: Any,
+                             _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseSceneEnvironmentPreview3D(
+        _raw: Any,
+        _profile: SceneComponentModel.ScenePreview3DDefinition,
+        _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseSceneEnvironmentLayers3D(
+        _raw: Any,
+        _profile: SceneComponentModel.ScenePreview3DDefinition,
+        _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseWaterLayerNumber(
+        _rawLayer: Any,
+        _name: String,
+        _minimum: Number,
+        _maximum: Number,
+        _fallback: Number,
+        _layerIndex: Integer,
+        _schema: SceneComponentModel.SceneComponentSchema) -> Number { return 0.0; }
+
+    hide func ParseWaterLayerProperty(
+        _rawLayer: Any,
+        _name: String,
+        _layerIndex: Integer,
+        _schema: SceneComponentModel.SceneComponentSchema) -> String { return ""; }
+
+    hide func ParseSceneWaterLayers3D(
+        _raw: Any,
+        _profile: SceneComponentModel.ScenePreview3DDefinition,
+        _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseScenePostFXPreview3D(
+        _raw: Any,
+        _profile: SceneComponentModel.ScenePreview3DDefinition,
+        _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParsePreview3DProperty(_raw: Any,
+                                _name: String,
+                                _schema: SceneComponentModel.SceneComponentSchema) -> String { return ""; }
+
+    hide func ParsePreview3DNumber(
+        _raw: Any,
+        _name: String,
+        _minimum: Number,
+        _maximum: Number,
+        _profile: SceneComponentModel.ScenePreview3DDefinition,
+        _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParsePreview3DInteger(
+        _raw: Any,
+        _name: String,
+        _minimum: Integer,
+        _maximum: Integer,
+        _profile: SceneComponentModel.ScenePreview3DDefinition,
+        _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func PresentCount3(_a: String,
+                       _b: String,
+                       _c: String) -> Integer { return 0; }
+
+    hide func ParsePreview3DBoolean(
+        _raw: Any,
+        _name: String,
+        _profile: SceneComponentModel.ScenePreview3DDefinition,
+        _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseGameViewOutputSize(
+        _raw: Any,
+        _profileName: String,
+        _schema: SceneComponentModel.SceneComponentSchema) -> List[Integer] { return []; }
+
+    hide func ParseScenePreview2D(_root: Any,
+                             _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseObjectPreviews(_root: Any,
+                             _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseObjectPreview(_raw: Any,
+                            _index: Integer,
+                            _seenTypes: Any,
+                            _schema: SceneComponentModel.SceneComponentSchema)
+        -> SceneComponentModel.SceneObjectPreviewDefinition { return null; }
+
+    hide func ParsePreviewFrameMap(_raw: Any,
+                              _preview: SceneComponentModel.SceneObjectPreviewDefinition,
+                              _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseComponent(_raw: Any,
+                        _index: Integer,
+                        _seenNames: Any,
+                        _schema: SceneComponentModel.SceneComponentSchema)
+        -> SceneComponentModel.SceneComponentDefinition { return null; }
+
+    hide func ParseField(_raw: Any,
+                    _componentName: String,
+                    _index: Integer,
+                    _seenKeys: Any,
+                    _schema: SceneComponentModel.SceneComponentSchema) -> SceneComponentModel.SceneComponentField { return null; }
+
+    hide func ParseEnumChoices(_raw: Any,
+                          _field: SceneComponentModel.SceneComponentField,
+                          _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func ParseAssetKinds(_raw: Any,
+                         _field: SceneComponentModel.SceneComponentField,
+                         _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    hide func CanonicalizeDefault(_raw: Any,
+                             _field: SceneComponentModel.SceneComponentField,
+                             _schema: SceneComponentModel.SceneComponentSchema) -> Boolean { return false; }
+
+    expose func IsScalarKind(_kind: String) -> Boolean { return false; }
+
+    expose func ValueKind(_kind: String) -> String { return ""; }
+
+    expose func KindVersion(_kind: String) -> Integer { return 0; }
+
+    hide func PortableIdentifier(_value: String,
+                            _maximum: Integer) -> Boolean { return false; }
+
+    hide func Reject(_schema: SceneComponentModel.SceneComponentSchema,
+                _message: String) -> SceneComponentModel.SceneComponentSchema { return null; }
+
+}

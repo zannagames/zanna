@@ -1,0 +1,497 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_gameplay_overlays.zia
+// Purpose: Draw collider, route, component, and gizmo gameplay overlays.
+// Key invariants:
+//   - Overlay drawing is presentation-only and never changes canonical state.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited state; this layer owns none.
+// Links: zannastudio/src/ui/scene_editor_3d_overlays.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_gameplay_overlays;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_overlays" as PreviousLayer;
+
+/// @brief Gameplay and transform-overlay implementation layer.
+class SceneEditor3DGameplayOverlaysLayer extends PreviousLayer.SceneEditor3DOverlaysLayer {
+    /// @brief Project one node-local point through the world transform.
+    hide override func ProjectLocalPoint(world: Mat4,
+                                localX: Number,
+                                localY: Number,
+                                localZ: Number) -> SceneEditor3DModel.ProjectedPoint {
+        var transformed = Mat4.TransformPoint(
+            world, Vec3.New(localX, localY, localZ)) as Vec3;
+        if transformed == null { return new SceneEditor3DModel.ProjectedPoint(); }
+        return Project(transformed.X, transformed.Y, transformed.Z);
+    }
+
+    /// @brief Draw one overlay segment, dashed for trigger colliders.
+    /// @details Dashing interpolates the projected endpoints, drawing the
+    ///          outer 40% spans; both endpoints must be in front of the eye.
+    hide override func DrawColliderSegment(from: SceneEditor3DModel.ProjectedPoint,
+                                  to: SceneEditor3DModel.ProjectedPoint,
+                                  color: Integer,
+                                  dashed: Boolean) {
+        if from.visible == false or to.visible == false { return; }
+        if dashed == false {
+            viewportPixels.DrawLine(from.x, from.y, to.x, to.y, color);
+            return;
+        }
+        var firstX = from.x + Convert.NumToInt((to.x - from.x) * 0.4);
+        var firstY = from.y + Convert.NumToInt((to.y - from.y) * 0.4);
+        var secondX = from.x + Convert.NumToInt((to.x - from.x) * 0.6);
+        var secondY = from.y + Convert.NumToInt((to.y - from.y) * 0.6);
+        viewportPixels.DrawLine(from.x, from.y, firstX, firstY, color);
+        viewportPixels.DrawLine(secondX, secondY, to.x, to.y, color);
+    }
+
+    /// @brief Draw one transformed local-space wire box.
+    hide override func DrawColliderBox(world: Mat4,
+                              minX: Number,
+                              minY: Number,
+                              minZ: Number,
+                              maxX: Number,
+                              maxY: Number,
+                              maxZ: Number,
+                              color: Integer,
+                              dashed: Boolean) {
+        var c000 = ProjectLocalPoint(world, minX, minY, minZ);
+        var c100 = ProjectLocalPoint(world, maxX, minY, minZ);
+        var c010 = ProjectLocalPoint(world, minX, maxY, minZ);
+        var c110 = ProjectLocalPoint(world, maxX, maxY, minZ);
+        var c001 = ProjectLocalPoint(world, minX, minY, maxZ);
+        var c101 = ProjectLocalPoint(world, maxX, minY, maxZ);
+        var c011 = ProjectLocalPoint(world, minX, maxY, maxZ);
+        var c111 = ProjectLocalPoint(world, maxX, maxY, maxZ);
+        DrawColliderSegment(c000, c100, color, dashed);
+        DrawColliderSegment(c010, c110, color, dashed);
+        DrawColliderSegment(c001, c101, color, dashed);
+        DrawColliderSegment(c011, c111, color, dashed);
+        DrawColliderSegment(c000, c010, color, dashed);
+        DrawColliderSegment(c100, c110, color, dashed);
+        DrawColliderSegment(c001, c011, color, dashed);
+        DrawColliderSegment(c101, c111, color, dashed);
+        DrawColliderSegment(c000, c001, color, dashed);
+        DrawColliderSegment(c100, c101, color, dashed);
+        DrawColliderSegment(c010, c011, color, dashed);
+        DrawColliderSegment(c110, c111, color, dashed);
+    }
+
+    /// @brief Draw one transformed local-plane wire circle.
+    /// @param plane 0 = XY, 1 = XZ, 2 = YZ.
+    hide override func DrawColliderCircle(world: Mat4,
+                                 centerY: Number,
+                                 radius: Number,
+                                 plane: Integer,
+                                 color: Integer,
+                                 dashed: Boolean) {
+        var segments = 16;
+        var previous = new SceneEditor3DModel.ProjectedPoint();
+        var segment = 0;
+        while segment <= segments {
+            var angle = segment * 2.0 * 3.141592653589793 / segments;
+            var alongA = Math.Cos(angle) * radius;
+            var alongB = Math.Sin(angle) * radius;
+            var localX = alongA;
+            var localY = centerY + alongB;
+            var localZ = 0.0;
+            if plane == 1 {
+                localY = centerY;
+                localZ = alongB;
+            } else if plane == 2 {
+                localX = 0.0;
+                localY = centerY + alongA;
+                localZ = alongB;
+            }
+            var point = ProjectLocalPoint(
+                world, localX, localY, localZ);
+            if segment > 0
+               and (dashed == false or segment - (segment / 2) * 2 == 1) {
+                DrawColliderSegment(previous, point, color, false);
+            }
+            previous = point;
+            segment = segment + 1;
+        }
+    }
+
+    /// @brief Draw the authored collider convention wireframe (ADR 0185).
+    hide override func DrawColliderOverlay(node: SceneNode,
+                                  selected: Boolean) {
+        var state = scene_collider_3d.FromNode(node);
+        if state.kind == scene_collider_3d.COLLIDER_NONE { return; }
+        var world = node.WorldMatrix;
+        if world == null { return; }
+        var color = Color.RGB(140, 210, 120);
+        if selected { color = Color.RGB(190, 255, 160); }
+        var dashed = state.trigger;
+        if state.kind == scene_collider_3d.COLLIDER_BOX {
+            DrawColliderBox(
+                world,
+                0.0 - state.halfX, 0.0 - state.halfY, 0.0 - state.halfZ,
+                state.halfX, state.halfY, state.halfZ,
+                color, dashed);
+        } else if state.kind == scene_collider_3d.COLLIDER_SPHERE {
+            DrawColliderCircle(world, 0.0, state.radius, 0, color, dashed);
+            DrawColliderCircle(world, 0.0, state.radius, 1, color, dashed);
+            DrawColliderCircle(world, 0.0, state.radius, 2, color, dashed);
+        } else if state.kind == scene_collider_3d.COLLIDER_CAPSULE {
+            var halfHeight = state.height * 0.5;
+            DrawColliderCircle(
+                world, halfHeight, state.radius, 1, color, dashed);
+            DrawColliderCircle(
+                world, 0.0 - halfHeight, state.radius, 1, color, dashed);
+            DrawColliderSegment(
+                ProjectLocalPoint(
+                    world, state.radius, 0.0 - halfHeight, 0.0),
+                ProjectLocalPoint(world, state.radius, halfHeight, 0.0),
+                color, dashed);
+            DrawColliderSegment(
+                ProjectLocalPoint(
+                    world, 0.0 - state.radius, 0.0 - halfHeight, 0.0),
+                ProjectLocalPoint(
+                    world, 0.0 - state.radius, halfHeight, 0.0),
+                color, dashed);
+            DrawColliderSegment(
+                ProjectLocalPoint(
+                    world, 0.0, 0.0 - halfHeight, state.radius),
+                ProjectLocalPoint(world, 0.0, halfHeight, state.radius),
+                color, dashed);
+            DrawColliderSegment(
+                ProjectLocalPoint(
+                    world, 0.0, 0.0 - halfHeight, 0.0 - state.radius),
+                ProjectLocalPoint(
+                    world, 0.0, halfHeight, 0.0 - state.radius),
+                color, dashed);
+        } else {
+            var boundsMin = node.BoundsMin;
+            var boundsMax = node.BoundsMax;
+            if boundsMin == null or boundsMax == null { return; }
+            DrawColliderBox(
+                world,
+                boundsMin.X, boundsMin.Y, boundsMin.Z,
+                boundsMax.X, boundsMax.Y, boundsMax.Z,
+                color, dashed);
+        }
+    }
+
+    /// @brief Draw ordered route polylines through direct children.
+    /// @details A route is a node carrying the project `route` component
+    ///          (ADR 0185 lifting the 2D convention of ADR 0179). At most
+    ///          256 waypoints per route are drawn; the hierarchy stays the
+    ///          editable source of truth.
+    hide override func DrawRouteOverlays() {
+        if showRouteOverlays == false { return; }
+        var routeComponent = RouteComponentDefinition();
+        if routeComponent == null { return; }
+        var index = 0;
+        while index < flatNodes.count() {
+            var node = flatNodes.get(index);
+            if NodeCarriesComponent(node, routeComponent) {
+                var highlighted =
+                    scene_selection.Contains(selectedIndices, index);
+                var child = 0;
+                while child < node.ChildCount
+                      and highlighted == false {
+                    var childIndex =
+                        FindFlatIndex(node.GetChild(child));
+                    if childIndex >= 0
+                       and scene_selection.Contains(
+                              selectedIndices, childIndex) {
+                        highlighted = true;
+                    }
+                    child = child + 1;
+                }
+                var color = Color.RGB(196, 150, 255);
+                if highlighted { color = Color.RGB(230, 196, 255); }
+                var previousPoint = Project(
+                    node.WorldPosition.X,
+                    node.WorldPosition.Y,
+                    node.WorldPosition.Z);
+                var waypoint = 0;
+                while waypoint < node.ChildCount and waypoint < 256 {
+                    var waypointNode = node.GetChild(waypoint);
+                    if waypointNode != null {
+                        var world = waypointNode.WorldPosition;
+                        var point = Project(world.X, world.Y, world.Z);
+                        DrawColliderSegment(
+                            previousPoint, point, color, false);
+                        previousPoint = point;
+                    }
+                    waypoint = waypoint + 1;
+                }
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Return the project route component for 3D nodes, or null.
+    hide override func RouteComponentDefinition()
+        -> scene_component_schema.SceneComponentDefinition {
+        if componentSchema == null or componentSchema.valid == false {
+            return null;
+        }
+        return componentSchema.Find(
+            "route", scene_component_schema.TARGET_3D_NODE);
+    }
+
+    /// @brief Return whether one node has every field of one component.
+    hide override func NodeCarriesComponent(
+        node: SceneNode,
+        component: scene_component_schema.SceneComponentDefinition)
+        -> Boolean {
+        if node == null or component == null
+           or component.fields.count() == 0 {
+            return false;
+        }
+        var fieldIndex = 0;
+        while fieldIndex < component.fields.count() {
+            if node.MetadataHas(
+                   component.fields.get(fieldIndex).key) == false {
+                return false;
+            }
+            fieldIndex = fieldIndex + 1;
+        }
+        return true;
+    }
+
+    /// @brief Deterministic viewport tint for recognized gameplay markers.
+    /// @return Packed color, or zero when no 3D component matches.
+    hide override func NodeComponentTint(node: SceneNode) -> Integer {
+        if componentSchema == null or componentSchema.valid == false
+           or node == null {
+            return 0;
+        }
+        var seen = 0;
+        var index = 0;
+        while index < componentSchema.components.count() {
+            var component = componentSchema.components.get(index);
+            if component != null
+               and component.SupportsTarget(
+                   scene_component_schema.TARGET_3D_NODE) {
+                if NodeCarriesComponent(node, component) {
+                    return ComponentTintColor(seen);
+                }
+                seen = seen + 1;
+            }
+            index = index + 1;
+        }
+        return 0;
+    }
+
+    /// @brief First recognized gameplay component name for one node.
+    hide override func NodeComponentBadge(node: SceneNode) -> String {
+        if componentSchema == null or componentSchema.valid == false
+           or node == null {
+            return "";
+        }
+        var index = 0;
+        while index < componentSchema.components.count() {
+            var component = componentSchema.components.get(index);
+            if component != null
+               and component.SupportsTarget(
+                   scene_component_schema.TARGET_3D_NODE)
+               and NodeCarriesComponent(node, component) {
+                return component.name;
+            }
+            index = index + 1;
+        }
+        return "";
+    }
+
+    /// @brief Fixed six-color palette keyed by schema component order.
+    hide override func ComponentTintColor(position: Integer) -> Integer {
+        var slot = position - (position / 6) * 6;
+        if slot == 0 { return Color.RGB(255, 138, 128); }
+        if slot == 1 { return Color.RGB(255, 213, 128); }
+        if slot == 2 { return Color.RGB(174, 255, 128); }
+        if slot == 3 { return Color.RGB(128, 222, 255); }
+        if slot == 4 { return Color.RGB(196, 150, 255); }
+        return Color.RGB(255, 158, 222);
+    }
+
+    /// @brief Interpolate one corner of a projected plane handle.
+    hide override func GizmoPlanePoint(origin: SceneEditor3DModel.ProjectedPoint,
+                              axisA: SceneEditor3DModel.ProjectedPoint,
+                              axisB: SceneEditor3DModel.ProjectedPoint,
+                              fractionA: Number,
+                              fractionB: Number) -> SceneEditor3DModel.ProjectedPoint {
+        var point = new SceneEditor3DModel.ProjectedPoint();
+        point.x = origin.x + Convert.NumToInt(
+            (axisA.x - origin.x) * fractionA
+            + (axisB.x - origin.x) * fractionB);
+        point.y = origin.y + Convert.NumToInt(
+            (axisA.y - origin.y) * fractionA
+            + (axisB.y - origin.y) * fractionB);
+        return point;
+    }
+
+    /// @brief Draw the same conditioned 32-segment ellipse used for picking.
+    hide override func DrawGizmoRotationRing(origin: SceneEditor3DModel.ProjectedPoint,
+                                    axisA: SceneEditor3DModel.ProjectedPoint,
+                                    axisB: SceneEditor3DModel.ProjectedPoint,
+                                    color: Integer) {
+        var vectorAX = axisA.x - origin.x;
+        var vectorAY = axisA.y - origin.y;
+        var vectorBX = axisB.x - origin.x;
+        var vectorBY = axisB.y - origin.y;
+        if scene_transform_3d.PlaneProjectionIsUsable(
+               vectorAX, vectorAY, vectorBX, vectorBY) == false {
+            return;
+        }
+        var previous = GizmoPlanePoint(
+            origin, axisA, axisB, 1.0, 0.0);
+        var segment = 1;
+        while segment <= SceneEditor3DModel.GIZMO_RING_SEGMENTS {
+            var angle = segment * SceneEditor3DModel.GIZMO_RING_STEP_RADIANS;
+            var current = GizmoPlanePoint(
+                origin, axisA, axisB,
+                Math.Cos(angle), Math.Sin(angle));
+            viewportPixels.DrawLine(
+                previous.x, previous.y,
+                current.x, current.y, color);
+            previous = current;
+            segment = segment + 1;
+        }
+    }
+
+    /// @brief Draw one filled, outlined plane only when projection is stable.
+    hide override func DrawGizmoPlane(origin: SceneEditor3DModel.ProjectedPoint,
+                             axisA: SceneEditor3DModel.ProjectedPoint,
+                             axisB: SceneEditor3DModel.ProjectedPoint,
+                             fillColor: Integer,
+                             outlineColor: Integer,
+                             crossed: Boolean) {
+        var vectorAX = axisA.x - origin.x;
+        var vectorAY = axisA.y - origin.y;
+        var vectorBX = axisB.x - origin.x;
+        var vectorBY = axisB.y - origin.y;
+        if scene_transform_3d.PlaneProjectionIsUsable(
+               vectorAX, vectorAY, vectorBX, vectorBY) == false {
+            return;
+        }
+        var cornerAA = GizmoPlanePoint(
+            origin, axisA, axisB,
+            SceneEditor3DModel.GIZMO_PLANE_INNER_FRACTION,
+            SceneEditor3DModel.GIZMO_PLANE_INNER_FRACTION);
+        var cornerBA = GizmoPlanePoint(
+            origin, axisA, axisB,
+            SceneEditor3DModel.GIZMO_PLANE_OUTER_FRACTION,
+            SceneEditor3DModel.GIZMO_PLANE_INNER_FRACTION);
+        var cornerBB = GizmoPlanePoint(
+            origin, axisA, axisB,
+            SceneEditor3DModel.GIZMO_PLANE_OUTER_FRACTION,
+            SceneEditor3DModel.GIZMO_PLANE_OUTER_FRACTION);
+        var cornerAB = GizmoPlanePoint(
+            origin, axisA, axisB,
+            SceneEditor3DModel.GIZMO_PLANE_INNER_FRACTION,
+            SceneEditor3DModel.GIZMO_PLANE_OUTER_FRACTION);
+        viewportPixels.DrawTriangle(
+            cornerAA.x, cornerAA.y,
+            cornerBA.x, cornerBA.y,
+            cornerBB.x, cornerBB.y,
+            fillColor);
+        viewportPixels.DrawTriangle(
+            cornerAA.x, cornerAA.y,
+            cornerBB.x, cornerBB.y,
+            cornerAB.x, cornerAB.y,
+            fillColor);
+        viewportPixels.DrawLine(
+            cornerAA.x, cornerAA.y, cornerBA.x, cornerBA.y,
+            outlineColor);
+        viewportPixels.DrawLine(
+            cornerBA.x, cornerBA.y, cornerBB.x, cornerBB.y,
+            outlineColor);
+        viewportPixels.DrawLine(
+            cornerBB.x, cornerBB.y, cornerAB.x, cornerAB.y,
+            outlineColor);
+        viewportPixels.DrawLine(
+            cornerAB.x, cornerAB.y, cornerAA.x, cornerAA.y,
+            outlineColor);
+        if crossed {
+            viewportPixels.DrawLine(
+                cornerAA.x, cornerAA.y, cornerBB.x, cornerBB.y,
+                outlineColor);
+            viewportPixels.DrawLine(
+                cornerBA.x, cornerBA.y, cornerAB.x, cornerAB.y,
+                outlineColor);
+        }
+    }
+
+    hide override func FindFlatIndex(node: SceneNode) -> Integer {
+        if node == null { return -1; }
+        var i = 0;
+        while i < flatNodes.count() {
+            if flatNodes.get(i) == node { return i; }
+            i = i + 1;
+        }
+        return -1;
+    }
+}
+

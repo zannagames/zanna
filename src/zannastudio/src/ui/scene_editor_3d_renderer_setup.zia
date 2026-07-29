@@ -1,0 +1,457 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_renderer_setup.zia
+// Purpose: Focused renderer setup behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_gizmo_transform.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_renderer_setup;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_gizmo_transform" as PreviousLayer;
+
+/// @brief Renderer Setup implementation layer.
+class SceneEditor3DRendererSetupLayer extends PreviousLayer.SceneEditor3DGizmoTransformLayer {
+
+    /// @brief Return the app's logical-to-framebuffer scale for legacy pixel APIs.
+    hide override func EffectiveUiScale() -> Number {
+        if guiApp == null { return 1.0; }
+        var scale = guiApp.GetEffectiveScale();
+        if scale <= 0.0 { return 1.0; }
+        return scale;
+    }
+
+    /// @brief Convert a GUI-app pointer coordinate into effective UI units.
+    hide override func PhysicalPointerToUi(value: Number) -> Number {
+        return value / EffectiveUiScale();
+    }
+
+    /// @brief Read a legacy framebuffer scroll offset as logical UI units.
+    hide override func LogicalScrollY(scroll: GUI.ScrollView) -> Number {
+        if scroll == null { return 0.0; }
+        return scroll.GetScrollY() / EffectiveUiScale();
+    }
+
+    /// @brief Apply logical offsets through ScrollView's framebuffer-pixel API.
+    hide override func SetLogicalScroll(scroll: GUI.ScrollView,
+                               x: Number,
+                               y: Number) {
+        if scroll == null { return; }
+        var scale = EffectiveUiScale();
+        scroll.SetScroll(x * scale, y * scale);
+    }
+
+    /// @brief Apply logical content dimensions through the legacy pixel API.
+    hide override func SetLogicalContentSize(scroll: GUI.ScrollView,
+                                    width: Number,
+                                    height: Number) {
+        if scroll == null { return; }
+        var scale = EffectiveUiScale();
+        scroll.SetContentSize(width * scale, height * scale);
+    }
+
+    hide override func GizmoAxisLabel(axis: Integer) -> String {
+        if axis == SceneEditor3DModel.GIZMO_PLANE_XY { return "XY"; }
+        if axis == SceneEditor3DModel.GIZMO_PLANE_XZ { return "XZ"; }
+        if axis == SceneEditor3DModel.GIZMO_PLANE_YZ { return "YZ"; }
+        if axis == SceneEditor3DModel.GIZMO_AXIS_X { return "X"; }
+        if axis == SceneEditor3DModel.GIZMO_AXIS_Y { return "Y"; }
+        return "Z";
+    }
+
+    /// @brief Describe an axis or plane without relying on color alone.
+    hide override func GizmoHandleLabel(handle: Integer) -> String {
+        if SceneEditor3DModel.IsGizmoPlane(handle) {
+            if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+                return GizmoAxisLabel(handle) + " scale plane";
+            }
+            return GizmoAxisLabel(handle) + " move plane";
+        }
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            return GizmoAxisLabel(handle) + " rotation ring";
+        }
+        return GizmoAxisLabel(handle) + " axis";
+    }
+
+    hide override func GizmoSnapStatus() -> String {
+        if gizmoSnapEnabled == false { return ""; }
+        return "  |  snap "
+            + scene_transform_3d.SnapDescription(gizmoMode);
+    }
+
+    /// @brief Return camera distance, far plane, and orthographic half-height.
+    /// @details Only nodes whose projected origins are near the viewport affect
+    ///          the depth range. This keeps nearby geometry precise in large
+    ///          worlds while retaining enough margin for visible mesh extents.
+    hide override func ViewportCameraRange() -> Vec3 {
+        var halfHeight =
+            ViewportContentHeight() / (2.0 * viewScale);
+        var depthMargin = halfHeight * 2.0 + 10.0;
+        var maxTowardEye = 0.0;
+        var minTowardEye = 0.0;
+        var yaw = viewYawDegrees * SceneEditor3DModel.DEG_TO_RAD;
+        var pitch = viewPitchDegrees * SceneEditor3DModel.DEG_TO_RAD;
+        var sinYaw = Math.Sin(yaw);
+        var cosYaw = Math.Cos(yaw);
+        var sinPitch = Math.Sin(pitch);
+        var cosPitch = Math.Cos(pitch);
+        var halfWidthWorld =
+            ViewportContentWidth() / (2.0 * viewScale);
+        var i = 0;
+        while i < flatNodes.count() {
+            var world = flatNodes.get(i).WorldPosition;
+            var dx = world.X - viewTargetX;
+            var dy = world.Y - viewTargetY;
+            var dz = world.Z - viewTargetZ;
+            var rotatedX = dx * cosYaw - dz * sinYaw;
+            var rotatedZ = dx * sinYaw + dz * cosYaw;
+            var rotatedY = dy * cosPitch - rotatedZ * sinPitch;
+            // Pure rotated-space bound: a generous three-viewport margin,
+            // independent of the retained camera so the depth range can be
+            // computed before the camera is configured each frame.
+            if rotatedX >= 0.0 - halfWidthWorld * 3.0
+               and rotatedX <= halfWidthWorld * 3.0
+               and rotatedY >= 0.0 - halfHeight * 3.0
+               and rotatedY <= halfHeight * 3.0 {
+                var towardEye =
+                    rotatedZ * cosPitch + dy * sinPitch;
+                if towardEye > maxTowardEye {
+                    maxTowardEye = towardEye;
+                }
+                if towardEye < minTowardEye {
+                    minTowardEye = towardEye;
+                }
+            }
+            i = i + 1;
+        }
+        var distance = maxTowardEye + depthMargin;
+        if distance < SceneEditor3DModel.VIEWPORT_CAMERA_MIN_DISTANCE {
+            distance = SceneEditor3DModel.VIEWPORT_CAMERA_MIN_DISTANCE;
+        }
+        var farPlane = distance - minTowardEye + depthMargin;
+        if farPlane < distance + depthMargin {
+            farPlane = distance + depthMargin;
+        }
+        return Vec3.New(distance, farPlane, halfHeight);
+    }
+
+    /// @brief Retain one correctly sized windowless renderer and camera.
+    /// @brief Enable or disable the accelerated offscreen viewport (ADR 0191).
+    /// @details Probes never call this, so they keep the byte-deterministic
+    ///          software constructor. The renderer is dropped and rebuilt on
+    ///          the next damaged frame; canonical content never changes.
+    expose override func SetViewportAcceleration(enabled: Boolean) {
+        if viewportAccelerationRequested == enabled { return; }
+        viewportAccelerationRequested = enabled;
+        viewportRenderTarget = null;
+        viewportRenderCanvas = null;
+        viewportRenderCamera = null;
+        viewportRenderPostFX = null;
+        viewportPostFXDirty = true;
+        projectionCameraReady = false;
+        renderDirty = true;
+    }
+
+    /// @brief The render-target width backing the viewport (probe surface).
+    expose override func ViewportTargetWidth() -> Integer {
+        return viewportTargetWidth;
+    }
+
+    /// @brief The render-target height backing the viewport (probe surface).
+    expose override func ViewportTargetHeight() -> Integer {
+        return viewportTargetHeight;
+    }
+
+    /// @brief Whether this frame should render at reduced resolution.
+    /// @details Camera and gizmo drags re-render every frame; halving the
+    ///          shaded target during them keeps interaction fluid while the
+    ///          release path re-renders at full resolution (ADR 0191 interim).
+    hide override func InteractiveDegradeActive() -> Boolean {
+        if gameViewOutputFramed { return false; }
+        if flyActive { return true; }
+        if gizmoDragAxis != SceneEditor3DModel.GIZMO_AXIS_NONE { return true; }
+        if vertexSnapDragActive { return true; }
+        if terrainStrokeActive { return true; }
+        return viewportImage != null
+            and viewportImage.IsHovered()
+            and (Input.Mouse.IsDown(Input.Mouse.ButtonMiddle)
+                 or Input.Mouse.IsDown(Input.Mouse.ButtonRight));
+    }
+
+    hide override func EnsureViewportRenderer(targetWidth: Integer,
+                                     targetHeight: Integer) -> Boolean {
+        if targetWidth <= 0 or targetHeight <= 0 {
+            return false;
+        }
+        if viewportRenderTarget != null
+           and viewportRenderCanvas != null
+           and viewportRenderCamera != null
+           and viewportRenderTarget.Width == targetWidth
+           and viewportRenderTarget.Height == targetHeight {
+            return true;
+        }
+
+        var target = RenderTarget3D.New(targetWidth, targetHeight);
+        if target == null { return false; }
+        var canvas: Canvas3D = null;
+        if viewportAccelerationRequested {
+            canvas = Canvas3D.NewOffscreenAccelerated(target);
+        } else {
+            canvas = Canvas3D.NewOffscreen(target);
+        }
+        if canvas == null { return false; }
+        // Camera framing derives from the LOGICAL viewport so a reduced
+        // interactive target renders the identical view at lower resolution.
+        var aspect =
+            ViewportContentWidth() / (ViewportContentHeight() / 1.0);
+        var halfHeight =
+            ViewportContentHeight() / (2.0 * viewScale);
+        var camera = Camera3D.NewOrtho(
+            halfHeight, aspect,
+            SceneEditor3DModel.VIEWPORT_CAMERA_NEAR,
+            SceneEditor3DModel.VIEWPORT_CAMERA_MIN_DISTANCE * 4.0);
+        if camera == null { return false; }
+        camera.Fov = ActiveViewportFovDegrees();
+        canvas.SetDefaultLighting();
+
+        viewportRenderTarget = target;
+        viewportRenderCanvas = canvas;
+        viewportRenderCamera = camera;
+        viewportRenderPostFX = null;
+        viewportPostFXDirty = true;
+        viewportTargetWidth = targetWidth;
+        viewportTargetHeight = targetHeight;
+        // The fresh camera has never been configured for the current view
+        // state; Project must fall back to hand math until it is.
+        projectionCameraReady = false;
+        return true;
+    }
+
+    /// @brief Eye distance that keeps viewScale exact at the view target.
+    /// @details Pixels-per-unit on the target plane equals viewScale in both
+    ///          projections, so zoom, pan, and Frame Selected keep identical
+    ///          apparent-size semantics when switching modes (ADR 0183).
+    hide override func ActiveViewportFovDegrees() -> Number {
+        if componentSchema != null
+           and componentSchema.valid
+           and componentSchema.scenePreview3D != null
+           and componentSchema.scenePreview3D.present
+           and componentSchema.scenePreview3D.hasCameraFov {
+            return componentSchema.scenePreview3D.cameraFov;
+        }
+        return SceneEditor3DModel.VIEWPORT_FOV_DEGREES;
+    }
+
+    /// @brief Return the tangent of half the active bounded perspective lens.
+    hide override func ActiveViewportFovHalfTan() -> Number {
+        var tangent = Math.Tan(
+            ActiveViewportFovDegrees() * SceneEditor3DModel.DEG_TO_RAD * 0.5);
+        if tangent < 0.0001 { return 0.0001; }
+        return tangent;
+    }
+
+    hide override func PerspectiveEyeDistance() -> Number {
+        var distance = ViewportContentHeight()
+            / (2.0 * viewScale * ActiveViewportFovHalfTan());
+        if distance < 0.5 { distance = 0.5; }
+        if distance > 1000000.0 { distance = 1000000.0; }
+        return distance;
+    }
+
+    /// @brief Keep the retained camera exact for draw, overlays, and picking.
+    /// @details One mode-switchable Camera3D is the single projection source
+    ///          (ADR 0183): the shaded render, every overlay, and every pick
+    ///          ray read the same configured state in both modes.
+    hide override func ConfigureViewportCamera() -> Boolean {
+        var targetWidth = ViewportContentWidth();
+        var targetHeight = ViewportContentHeight();
+        if InteractiveDegradeActive() {
+            targetWidth = targetWidth / SceneEditor3DModel.INTERACTIVE_RESOLUTION_DIVISOR;
+            targetHeight = targetHeight / SceneEditor3DModel.INTERACTIVE_RESOLUTION_DIVISOR;
+            if targetWidth < SceneEditor3DModel.MIN_VIEWPORT_WIDTH {
+                targetWidth = SceneEditor3DModel.MIN_VIEWPORT_WIDTH;
+            }
+            if targetHeight < SceneEditor3DModel.MIN_VIEWPORT_HEIGHT {
+                targetHeight = SceneEditor3DModel.MIN_VIEWPORT_HEIGHT;
+            }
+        }
+        if scene == null
+           or EnsureViewportRenderer(targetWidth, targetHeight) == false {
+            projectionCameraReady = false;
+            return false;
+        }
+        var lookNode = ActiveLookThroughNode();
+        if lookNode != null {
+            ApplyAuthoredCameraPose(viewportRenderCamera, lookNode);
+            projectionCameraReady = true;
+            return true;
+        }
+        var cameraRange = ViewportCameraRange();
+        if viewPerspective {
+            var eyeDistance = PerspectiveEyeDistance();
+            viewportRenderCamera.IsOrtho = false;
+            viewportRenderCamera.Fov = ActiveViewportFovDegrees();
+            var nearPlane = eyeDistance / 500.0;
+            if nearPlane < SceneEditor3DModel.VIEWPORT_CAMERA_NEAR {
+                nearPlane = SceneEditor3DModel.VIEWPORT_CAMERA_NEAR;
+            }
+            viewportRenderCamera.NearPlane = nearPlane;
+            var farPlane =
+                eyeDistance + (cameraRange.Y - cameraRange.X);
+            if farPlane < eyeDistance * 2.0 {
+                farPlane = eyeDistance * 2.0;
+            }
+            viewportRenderCamera.FarPlane = farPlane;
+            viewportRenderCamera.Orbit(
+                Vec3.New(viewTargetX, viewTargetY, viewTargetZ),
+                eyeDistance,
+                viewYawDegrees,
+                viewPitchDegrees);
+        } else {
+            viewportRenderCamera.IsOrtho = true;
+            viewportRenderCamera.OrthoSize = cameraRange.Z;
+            viewportRenderCamera.NearPlane = SceneEditor3DModel.VIEWPORT_CAMERA_NEAR;
+            viewportRenderCamera.FarPlane = cameraRange.Y;
+            viewportRenderCamera.Orbit(
+                Vec3.New(viewTargetX, viewTargetY, viewTargetZ),
+                cameraRange.X,
+                viewYawDegrees,
+                viewPitchDegrees);
+        }
+        projectionCameraReady = true;
+        return true;
+    }
+
+
+    /// @brief Rebuild one retained portable project post-processing chain.
+    /// @details Static schema values are copied into runtime state only when
+    ///          the schema or render canvas changes, avoiding per-frame
+    ///          allocation while keeping project code outside Studio.
+    hide override func RebuildProjectPreviewPostFX() {
+        viewportRenderPostFX = null;
+        viewportPostFXDirty = false;
+        if componentSchema == null
+           or componentSchema.valid == false
+           or componentSchema.scenePreview3D == null {
+            return;
+        }
+        var profile = componentSchema.scenePreview3D;
+        if profile.present == false or profile.HasPostFX() == false {
+            return;
+        }
+        var chain = PostFX3D.New();
+        if chain == null { return; }
+        if profile.hasTonemap {
+            PostFX3D.AddTonemap(
+                chain, profile.tonemapMode, profile.tonemapExposure);
+        }
+        if profile.hasBloom {
+            PostFX3D.AddBloom(
+                chain,
+                profile.bloomThreshold,
+                profile.bloomIntensity,
+                profile.bloomPasses);
+        }
+        if profile.hasColorGrade {
+            PostFX3D.AddColorGrade(
+                chain,
+                profile.colorGradeBrightness,
+                profile.colorGradeContrast,
+                profile.colorGradeSaturation);
+        }
+        if profile.hasVignette {
+            PostFX3D.AddVignette(
+                chain,
+                profile.vignetteRadius,
+                profile.vignetteSoftness);
+        }
+        if profile.hasFxaa and profile.fxaa {
+            PostFX3D.AddFxaa(chain);
+        }
+        if chain.EffectCount > 0 {
+            viewportRenderPostFX = chain;
+        }
+    }
+
+    /// @brief Attach project effects only to the main shaded scene viewport.
+    hide override func ApplyProjectPreviewPostFX() {
+        if viewportRenderCanvas == null { return; }
+        if viewportPostFXDirty { RebuildProjectPreviewPostFX(); }
+        if EffectiveViewportMode() == SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME
+           or viewportRenderPostFX == null {
+            Canvas3D.SetPostFX(viewportRenderCanvas, null);
+            return;
+        }
+        Canvas3D.SetPostFX(
+            viewportRenderCanvas, viewportRenderPostFX);
+    }
+}

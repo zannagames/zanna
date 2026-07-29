@@ -1,0 +1,92 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/scm/scm_git_support.zia
+// Purpose: Detect Git prompts and classify common command failures.
+// Key invariants:
+//   - Prompt detection only considers an unterminated final output line.
+//   - Unknown failures preserve raw output without speculative guidance.
+// Ownership/Lifetime: Stateless text helpers own no process or repository state.
+// Links: zannastudio/src/scm/scm_git.zia,
+//        zannastudio/src/scm/scm_view.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scm_git_support;
+
+bind Str = Zanna.String;
+
+/// @brief Detect a credential/confirmation prompt at the tail of PTY output.
+/// @details A prompt is an unterminated final line matching the patterns git,
+///          git-credential, and ssh actually emit. Detection is heuristic and
+///          fails open: unmatched output simply streams to the panel.
+/// @param text Merged PTY output so far.
+/// @return The prompt line (trimmed) when one is pending, else empty.
+expose func DetectPrompt(text: String) -> String {
+    if text == "" { return ""; }
+    if Str.EndsWith(text, "\n") { return ""; }
+    var tail = text;
+    var nl = Str.LastIndexOf(text, "\n");
+    if nl != 0 { tail = Str.Mid(text, nl + 1); }
+    tail = Str.Trim(Str.Replace(tail, "\r", ""));
+    if tail == "" { return ""; }
+    var lower = Str.ToLower(tail);
+    if Str.IndexOf(lower, "username for") != 0 { return tail; }
+    if Str.IndexOf(lower, "password for") != 0 { return tail; }
+    if Str.IndexOf(lower, "passphrase") != 0 { return tail; }
+    if Str.EndsWith(lower, "password:") { return tail; }
+    if Str.IndexOf(lower, "are you sure you want to continue connecting") != 0 { return tail; }
+    return "";
+}
+
+/// @brief True when @p prompt asks for a secret (mask the input field).
+expose func PromptWantsMask(prompt: String) -> Boolean {
+    var lower = Str.ToLower(prompt);
+    if Str.IndexOf(lower, "password") != 0 { return true; }
+    if Str.IndexOf(lower, "passphrase") != 0 { return true; }
+    return false;
+}
+
+/// @brief Classify common Git failures into short user-actionable guidance.
+/// @details Source Control still preserves raw stdout/stderr in the output pane.
+///          This helper adds a concise first line for the cases that otherwise
+///          look like a generic non-zero exit: disabled terminal prompts, merge
+///          conflicts, non-fast-forward push rejection, missing upstream, and lock
+///          contention.
+/// @param kind Logical Git job kind such as `push`, `pull`, or `commit`.
+/// @param output Combined stdout/stderr text from the Git job.
+/// @return Human-readable recovery hint, or empty when no known pattern matches.
+expose func FailureHint(kind: String,
+                        output: String) -> String {
+    var text = Str.ToLower(output);
+    if Str.IndexOf(text, "terminal prompts disabled") != 0
+       or Str.IndexOf(text, "could not read username") != 0
+       or Str.IndexOf(text, "authentication failed") != 0
+       or Str.IndexOf(text, "gcm_interactive") != 0 {
+        return "Authentication needed. Open a terminal for this repository and run git "
+            + kind + " to complete sign-in, then refresh Source Control.";
+    }
+    if Str.IndexOf(text, "conflict") != 0
+       or Str.IndexOf(text, "merge failed") != 0
+       or Str.IndexOf(text, "fix conflicts") != 0 {
+        return "Git reported conflicts. Resolve conflicted files, stage them, then commit or continue the operation.";
+    }
+    if Str.IndexOf(text, "non-fast-forward") != 0
+       or Str.IndexOf(text, "fetch first") != 0
+       or Str.IndexOf(text, "rejected") != 0 {
+        return "Push was rejected by the remote. Pull or rebase first, then push again.";
+    }
+    if Str.IndexOf(text, "no upstream branch") != 0
+       or Str.IndexOf(text, "set-upstream") != 0 {
+        return "This branch has no upstream. Set an upstream in a terminal or push with an upstream before using the IDE button.";
+    }
+    if Str.IndexOf(text, "index.lock") != 0
+       or Str.IndexOf(text, "could not lock") != 0 {
+        return "Git could not acquire its repository lock. Finish or stop the other Git process, then retry.";
+    }
+    return "";
+}

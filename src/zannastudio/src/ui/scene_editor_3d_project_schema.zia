@@ -1,0 +1,883 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_project_schema.zia
+// Purpose: Focused project schema behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_state.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_project_schema;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_state_initialization" as PreviousLayer;
+
+/// @brief Project Schema implementation layer.
+class SceneEditor3DProjectSchemaLayer extends PreviousLayer.SceneEditor3DStateInitialization {
+
+    /// @brief Build the editor into WorkbenchShell.scene3DHost.
+
+    /// @brief Borrow Studio's multi-root project index for non-modal assets.
+    expose override func SetWorkspaceContext(
+        nextProjectManager: project_manager.ProjectManager) {
+        projectManager = nextProjectManager;
+        ReloadComponentSchema();
+        if scene != null { RebuildProjectNodePreviews(); }
+    }
+
+    /// @brief Reload project component templates for the active document root.
+    expose override func ReloadComponentSchema() {
+        var hadFilter =
+            componentSchema != null
+            and componentSchema.valid
+            and componentSchema.nodePreviewFilter3D != null
+            and componentSchema.nodePreviewFilter3D.present;
+        var rootPath = ComponentSchemaRoot();
+        componentSchemaPath =
+            scene_component_schema.PathForRoot(rootPath);
+        if componentPalette != null and componentPalette.group != null
+           and componentAuthoring != null {
+            componentAuthoring.Load(
+                componentSchemaPath,
+                scene_component_schema.TARGET_3D_NODE,
+                componentPalette);
+            componentSchema = componentAuthoring.schema;
+            RefreshComponentPalette();
+        } else {
+            componentSchema =
+                scene_component_schema.LoadPath(componentSchemaPath);
+        }
+        if HasProjectPreviewFilter() {
+            if hadFilter == false {
+                projectPreviewFilterIndex =
+                    componentSchema.nodePreviewFilter3D.defaultIndex;
+            } else {
+                projectPreviewFilterIndex =
+                    BoundProjectPreviewFilterIndex(
+                        projectPreviewFilterIndex);
+            }
+        } else {
+            projectPreviewFilterIndex = 0;
+        }
+        SyncProjectPreviewFilterControls();
+        viewportPostFXDirty = true;
+        renderDirty = true;
+    }
+
+    /// @brief Keep multi-root schema ownership aligned with document ownership.
+    hide override func EnsureComponentSchema(force: Boolean) {
+        var nextPath = scene_component_schema.PathForRoot(
+            ComponentSchemaRoot());
+        if force or nextPath != componentSchemaPath {
+            ReloadComponentSchema();
+        }
+    }
+
+    /// @brief Resolve the unambiguous workspace root for the current scene.
+    hide override func ComponentSchemaRoot() -> String {
+        if projectManager == null { return ""; }
+        if currentDoc != null and currentDoc.filePath != "" {
+            var owner =
+                projectManager.WorkspaceRootPathForPath(currentDoc.filePath);
+            if owner != "" { return owner; }
+            return project_locator.NearestManifestRoot(
+                currentDoc.filePath);
+        }
+        if projectManager.RootCount() == 1 {
+            return projectManager.RootPathAt(0);
+        }
+        return "";
+    }
+
+    /// @brief Return whether the active project exposes preview-only states.
+    expose override func HasProjectPreviewFilter() -> Boolean {
+        return componentSchema != null
+            and componentSchema.valid
+            and componentSchema.nodePreviewFilter3D != null
+            and componentSchema.nodePreviewFilter3D.present
+            and componentSchema.nodePreviewFilter3D.states.count() > 0;
+    }
+
+    /// @brief Clamp one session-owned option to the active project contract.
+    hide override func BoundProjectPreviewFilterIndex(index: Integer) -> Integer {
+        if HasProjectPreviewFilter() == false { return 0; }
+        var maximum =
+            componentSchema.nodePreviewFilter3D.states.count();
+        if index < 0 or index > maximum {
+            return componentSchema.nodePreviewFilter3D.defaultIndex;
+        }
+        return index;
+    }
+
+    /// @brief Keep the contextual selector truthful without persistent chrome.
+    hide override func SyncProjectPreviewFilterControls() {
+        if projectPreviewFilterLabel == null
+           or projectPreviewFilterDropdown == null {
+            return;
+        }
+        var available = HasProjectPreviewFilter();
+        projectPreviewFilterLabel.SetVisible(
+            available and compactChrome == false
+            and SceneEditor3DModel.UsesDockedHierarchy(lastHostWidth));
+        projectPreviewFilterDropdown.SetVisible(available);
+        projectPreviewFilterDropdown.SetEnabled(
+            available and scene != null);
+        if available == false {
+            projectPreviewFilterDropdown.Clear();
+            projectPreviewFilterIndex = 0;
+            return;
+        }
+        var filter = componentSchema.nodePreviewFilter3D;
+        projectPreviewFilterIndex =
+            BoundProjectPreviewFilterIndex(projectPreviewFilterIndex);
+        projectPreviewFilterLabel.SetText(filter.label);
+        projectPreviewFilterDropdown.Clear();
+        projectPreviewFilterDropdown.AddItem(filter.allLabel);
+        var index = 0;
+        while index < filter.states.count() {
+            projectPreviewFilterDropdown.AddItem(
+                filter.states.get(index).label);
+            index = index + 1;
+        }
+        projectPreviewFilterDropdown.SetSelected(
+            projectPreviewFilterIndex);
+        projectPreviewFilterDropdown.WasChanged();
+        var selectedLabel =
+            filter.LabelAt(projectPreviewFilterIndex);
+        var help = filter.label + ": " + selectedLabel
+            + ". This filters only transient project node previews; "
+            + "scene nodes, metadata, visibility, selection, and history "
+            + "remain unchanged.";
+        projectPreviewFilterLabel.SetTooltip(help);
+        projectPreviewFilterDropdown.SetTooltip(help);
+        projectPreviewFilterDropdown.SetAccessibleName(
+            filter.label + " project node-preview state");
+    }
+
+    /// @brief Select one All-or-project preview state without editing VSCN.
+    expose override func SetProjectPreviewFilterIndex(index: Integer) -> Boolean {
+        if HasProjectPreviewFilter() == false { return false; }
+        var bounded = BoundProjectPreviewFilterIndex(index);
+        if bounded == projectPreviewFilterIndex {
+            SyncProjectPreviewFilterControls();
+            return false;
+        }
+        projectPreviewFilterIndex = bounded;
+        SyncProjectPreviewFilterControls();
+        RebuildProjectNodePreviews();
+        CaptureWorkspaceState();
+        toolbarStatus.SetText(
+            componentSchema.nodePreviewFilter3D.label + ": "
+            + componentSchema.nodePreviewFilter3D.LabelAt(bounded));
+        return true;
+    }
+
+    /// @brief Return the user-facing active preview-state label.
+    expose override func ProjectPreviewFilterSelectionLabel() -> String {
+        if HasProjectPreviewFilter() == false { return ""; }
+        return componentSchema.nodePreviewFilter3D.LabelAt(
+            BoundProjectPreviewFilterIndex(projectPreviewFilterIndex));
+    }
+
+    /// @brief Decide whether one canonical owner contributes transient art.
+    /// @details Nodes without the discriminant remain visible so a wave filter
+    ///          does not hide props, pickups, terrain, or unrelated previews.
+    hide override func ProjectNodePreviewFilterAllows(node: SceneNode) -> Boolean {
+        if node == null or HasProjectPreviewFilter() == false
+           or projectPreviewFilterIndex <= 0 {
+            return true;
+        }
+        var filter = componentSchema.nodePreviewFilter3D;
+        if node.MetadataHas(filter.matchProperty) == false {
+            return true;
+        }
+        var state = filter.StateAt(projectPreviewFilterIndex);
+        if state == null { return true; }
+        return ProjectNodeMetadataMatches(
+            node,
+            filter.matchProperty,
+            state.matchKind,
+            state.matchBoolean,
+            state.matchInteger,
+            state.matchString);
+    }
+
+    /// @brief Match one exact typed scalar against a canonical scene node.
+    hide override func ProjectNodeMetadataMatches(
+        node: SceneNode,
+        matchProperty: String,
+        matchKind: String,
+        matchBoolean: Boolean,
+        matchInteger: Integer,
+        matchString: String) -> Boolean {
+        if node == null or matchProperty == ""
+           or node.MetadataHas(matchProperty) == false
+           or node.MetadataKind(matchProperty) != matchKind {
+            return false;
+        }
+        if matchKind == "bool" {
+            return node.MetadataGetBool(
+                matchProperty, false) == matchBoolean;
+        }
+        if matchKind == "int" {
+            return node.MetadataGetInt(
+                matchProperty, 0) == matchInteger;
+        }
+        if matchKind == "string" {
+            return node.MetadataGetString(
+                matchProperty, "") == matchString;
+        }
+        return false;
+    }
+
+    /// @brief Return whether one typed node-preview rule matches a source node.
+    hide override func ProjectNodePreviewRuleMatches(
+        node: SceneNode,
+        rule: scene_component_schema.SceneNodePreview3DDefinition)
+        -> Boolean {
+        if node == null or rule == null {
+            return false;
+        }
+        return ProjectNodeMetadataMatches(
+            node,
+            rule.matchProperty,
+            rule.matchKind,
+            rule.matchBoolean,
+            rule.matchInteger,
+            rule.matchString);
+    }
+
+    /// @brief Find the first typed material rule matching one canonical node.
+    hide override func ProjectMaterialPreviewRule(
+        node: SceneNode)
+        -> scene_component_schema.SceneMaterialPreview3DDefinition {
+        if node == null or componentSchema == null
+           or componentSchema.valid == false {
+            return null;
+        }
+        var index = 0;
+        while index < componentSchema.materialPreviews3D.count() {
+            var rule = componentSchema.materialPreviews3D.get(index);
+            if rule != null
+               and ProjectNodeMetadataMatches(
+                   node,
+                   rule.matchProperty,
+                   rule.matchKind,
+                   rule.matchBoolean,
+                   rule.matchInteger,
+                   rule.matchString) {
+                return rule;
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+
+    /// @brief Resolve one rule's integer variant with its authored fallback.
+    hide override func ProjectNodePreviewPrefab(
+        node: SceneNode,
+        rule: scene_component_schema.SceneNodePreview3DDefinition)
+        -> String {
+        if node == null or rule == null { return ""; }
+        if rule.variantProperty != ""
+           and node.MetadataHas(rule.variantProperty)
+           and node.MetadataKind(rule.variantProperty) == "int" {
+            return rule.PrefabForVariant(
+                node.MetadataGetInt(rule.variantProperty, -1));
+        }
+        return rule.prefab;
+    }
+
+    /// @brief Resolve one scene-level environment prefab from root metadata.
+    hide override func ProjectEnvironmentPreviewPrefab() -> String {
+        if scene == null or scene.Root == null
+           or componentSchema == null
+           or componentSchema.valid == false
+           or componentSchema.scenePreview3D == null {
+            return "";
+        }
+        var profile = componentSchema.scenePreview3D;
+        if profile.environmentVariantProperty != ""
+           and scene.Root.MetadataHas(
+               profile.environmentVariantProperty)
+           and scene.Root.MetadataKind(
+               profile.environmentVariantProperty) == "int" {
+            return profile.EnvironmentPrefabForVariant(
+                scene.Root.MetadataGetInt(
+                    profile.environmentVariantProperty, 0));
+        }
+        return profile.environmentPrefab;
+    }
+
+    /// @brief Match one exact typed scalar against the canonical scene root.
+    hide override func ProjectRootMetadataMatches(
+        matchProperty: String,
+        matchKind: String,
+        matchBoolean: Boolean,
+        matchInteger: Integer,
+        matchString: String) -> Boolean {
+        if scene == null or scene.Root == null
+           or matchProperty == ""
+           or scene.Root.MetadataHas(matchProperty) == false
+           or scene.Root.MetadataKind(matchProperty) != matchKind {
+            return false;
+        }
+        if matchKind == "bool" {
+            return scene.Root.MetadataGetBool(
+                matchProperty, false) == matchBoolean;
+        }
+        if matchKind == "int" {
+            return scene.Root.MetadataGetInt(
+                matchProperty, 0) == matchInteger;
+        }
+        if matchKind == "string" {
+            return scene.Root.MetadataGetString(
+                matchProperty, "") == matchString;
+        }
+        return false;
+    }
+
+    /// @brief Return whether one additive layer matches exact typed root data.
+    hide override func ProjectEnvironmentLayerMatches(
+        layer: scene_component_schema.SceneEnvironmentLayer3DDefinition)
+        -> Boolean {
+        if layer == null { return false; }
+        return ProjectRootMetadataMatches(
+            layer.matchProperty,
+            layer.matchKind,
+            layer.matchBoolean,
+            layer.matchInteger,
+            layer.matchString);
+    }
+
+    /// @brief Validate every configured additive-layer transform property.
+    /// @details A missing mapping uses identity; an explicitly mapped property
+    ///          must remain a float so malformed scene data cannot silently
+    ///          relocate a project preview.
+    hide override func ProjectEnvironmentLayerTransformUsable(
+        layer: scene_component_schema.SceneEnvironmentLayer3DDefinition)
+        -> Boolean {
+        if scene == null or scene.Root == null or layer == null {
+            return false;
+        }
+        var properties: List[String] = [
+            layer.positionXProperty,
+            layer.positionYProperty,
+            layer.positionZProperty,
+            layer.scaleXProperty,
+            layer.scaleYProperty,
+            layer.scaleZProperty,
+            layer.yawProperty
+        ];
+        var index = 0;
+        while index < properties.count() {
+            var mappedProperty = properties.get(index);
+            if mappedProperty != ""
+               and (scene.Root.MetadataHas(mappedProperty) == false
+                    or scene.Root.MetadataKind(mappedProperty) != "float") {
+                return false;
+            }
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Resolve one additive layer's bounded root-metadata transform.
+    hide override func ProjectEnvironmentLayerWorldMatrix(
+        layer: scene_component_schema.SceneEnvironmentLayer3DDefinition)
+        -> Mat4 {
+        var rootNode = scene.Root;
+        var x = 0.0;
+        var y = 0.0;
+        var z = 0.0;
+        var scaleX = 1.0;
+        var scaleY = 1.0;
+        var scaleZ = 1.0;
+        var yaw = 0.0;
+        if layer.positionXProperty != "" {
+            x = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.positionXProperty, 0.0),
+                -1000000.0, 1000000.0);
+        }
+        if layer.positionYProperty != "" {
+            y = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.positionYProperty, 0.0),
+                -1000000.0, 1000000.0);
+        }
+        if layer.positionZProperty != "" {
+            z = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.positionZProperty, 0.0),
+                -1000000.0, 1000000.0);
+        }
+        if layer.scaleXProperty != "" {
+            scaleX = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.scaleXProperty, 1.0),
+                -1000.0, 1000.0);
+        }
+        if layer.scaleYProperty != "" {
+            scaleY = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.scaleYProperty, 1.0),
+                -1000.0, 1000.0);
+        }
+        if layer.scaleZProperty != "" {
+            scaleZ = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(
+                    layer.scaleZProperty, 1.0),
+                -1000.0, 1000.0);
+        }
+        if layer.yawProperty != "" {
+            yaw = SceneEditor3DModel.ClampNumber3D(
+                rootNode.MetadataGetFloat(layer.yawProperty, 0.0),
+                -1000000.0, 1000000.0);
+            if layer.yawUnit == "degrees" {
+                yaw = yaw * SceneEditor3DModel.DEG_TO_RAD;
+            }
+        }
+        return Mat4.Mul(
+            Mat4.Translate(x, y, z),
+            Mat4.Mul(
+                Mat4.RotateY(yaw),
+                Mat4.Scale(scaleX, scaleY, scaleZ)));
+    }
+
+    /// @brief Return whether one runtime water layer is active for this scene.
+    hide override func ProjectWaterLayerMatches(
+        layer: scene_component_schema.SceneWaterLayer3DDefinition)
+        -> Boolean {
+        if layer == null { return false; }
+        return ProjectRootMetadataMatches(
+            layer.matchProperty,
+            layer.matchKind,
+            layer.matchBoolean,
+            layer.matchInteger,
+            layer.matchString);
+    }
+
+    /// @brief Resolve one runtime water layer from typed root metadata.
+    /// @details Configured mappings replace their static values and must remain
+    ///          floats. Invalid or nonpositive resolved dimensions fail closed.
+    hide override func ResolveProjectWaterLayer(
+        layer: scene_component_schema.SceneWaterLayer3DDefinition)
+        -> SceneEditor3DModel.ProjectWaterPreviewState {
+        var state = new SceneEditor3DModel.ProjectWaterPreviewState();
+        if scene == null or scene.Root == null or layer == null {
+            return state;
+        }
+        var properties: List[String] = [
+            layer.positionXProperty,
+            layer.positionYProperty,
+            layer.positionZProperty,
+            layer.widthProperty,
+            layer.depthProperty
+        ];
+        var index = 0;
+        while index < properties.count() {
+            var mappedProperty = properties.get(index);
+            if mappedProperty != ""
+               and (scene.Root.MetadataHas(mappedProperty) == false
+                    or scene.Root.MetadataKind(mappedProperty) != "float") {
+                return state;
+            }
+            index = index + 1;
+        }
+        state.x = layer.positionX;
+        state.y = layer.positionY;
+        state.z = layer.positionZ;
+        state.width = layer.width;
+        state.depth = layer.depth;
+        if layer.positionXProperty != "" {
+            state.x = scene.Root.MetadataGetFloat(
+                layer.positionXProperty, state.x);
+        }
+        if layer.positionYProperty != "" {
+            state.y = scene.Root.MetadataGetFloat(
+                layer.positionYProperty, state.y);
+        }
+        if layer.positionZProperty != "" {
+            state.z = scene.Root.MetadataGetFloat(
+                layer.positionZProperty, state.z);
+        }
+        if layer.widthProperty != "" {
+            state.width = scene.Root.MetadataGetFloat(
+                layer.widthProperty, state.width);
+        }
+        if layer.depthProperty != "" {
+            state.depth = scene.Root.MetadataGetFloat(
+                layer.depthProperty, state.depth);
+        }
+        state.width = state.width * layer.widthMultiplier;
+        state.depth = state.depth * layer.depthMultiplier;
+        if state.width
+              < scene_component_schema.MIN_SCENE_WATER_PREVIEW_SIZE
+           or state.width
+              > scene_component_schema.MAX_SCENE_WATER_PREVIEW_SIZE
+           or state.depth
+              < scene_component_schema.MIN_SCENE_WATER_PREVIEW_SIZE
+           or state.depth
+              > scene_component_schema.MAX_SCENE_WATER_PREVIEW_SIZE {
+            return state;
+        }
+        state.x = SceneEditor3DModel.ClampNumber3D(
+            state.x,
+            0.0 - scene_component_schema
+                .MAX_SCENE_WATER_PREVIEW_POSITION,
+            scene_component_schema.MAX_SCENE_WATER_PREVIEW_POSITION);
+        state.y = SceneEditor3DModel.ClampNumber3D(
+            state.y,
+            0.0 - scene_component_schema
+                .MAX_SCENE_WATER_PREVIEW_POSITION,
+            scene_component_schema.MAX_SCENE_WATER_PREVIEW_POSITION);
+        state.z = SceneEditor3DModel.ClampNumber3D(
+            state.z,
+            0.0 - scene_component_schema
+                .MAX_SCENE_WATER_PREVIEW_POSITION,
+            scene_component_schema.MAX_SCENE_WATER_PREVIEW_POSITION);
+        state.valid = true;
+        return state;
+    }
+
+    /// @brief Load and cache one bounded project-owned water image.
+    hide override func ProjectWaterImage(reference: String) -> Pixels {
+        if reference == "" { return null; }
+        var index = 0;
+        while index < projectWaterImagePaths.count() {
+            if projectWaterImagePaths.get(index) == reference {
+                return projectWaterImages.get(index);
+            }
+            index = index + 1;
+        }
+        if projectWaterImagePaths.count()
+           >= scene_component_schema.MAX_SCENE_WATER_PREVIEW_LAYERS * 2 {
+            projectPreviewClipped = true;
+            return null;
+        }
+        var root = ComponentSchemaRoot();
+        if root == "" { return null; }
+        var fullPath = Path.Join(root, reference);
+        var sourceBytes = safe_io.SizeBytes(fullPath);
+        if sourceBytes <= 0 or sourceBytes > SceneEditor3DModel.MAX_TEXTURE_SOURCE_BYTES {
+            return null;
+        }
+        var image = Pixels.Load(fullPath);
+        if image == null
+           or Pixels.get_Width(image) <= 0
+           or Pixels.get_Height(image) <= 0
+           or Pixels.get_Width(image)
+              > 16777216 / Pixels.get_Height(image) {
+            return null;
+        }
+        projectWaterImagePaths.add(reference);
+        projectWaterImages.add(image);
+        return image;
+    }
+
+    /// @brief Load and cache one bounded project material-preview texture.
+    /// @details Raster and strict KTX2 decoding share the material inspector's
+    ///          limits. Failed references are cached as null so one malformed
+    ///          rule cannot repeat filesystem or decoder work for every node.
+    hide override func ProjectMaterialPreviewTexture(reference: String) -> Any {
+        if reference == "" { return null; }
+        var index = 0;
+        while index < projectMaterialPreviewTexturePaths.count() {
+            if projectMaterialPreviewTexturePaths.get(index) == reference {
+                return projectMaterialPreviewTextures.get(index);
+            }
+            index = index + 1;
+        }
+        if projectMaterialPreviewTexturePaths.count()
+           >= SceneEditor3DModel.MAX_PROJECT_MATERIAL_PREVIEW_TEXTURES {
+            projectPreviewClipped = true;
+            return null;
+        }
+        var texture: Any = null;
+        var root = ComponentSchemaRoot();
+        if root != "" {
+            var fullPath = Path.Normalize(Path.Absolute(
+                Path.Join(root, reference)));
+            var sourceBytes = safe_io.SizeBytes(fullPath);
+            if sourceBytes > 0 and sourceBytes <= SceneEditor3DModel.MAX_TEXTURE_SOURCE_BYTES {
+                texture = scene_material_3d.LoadTexturePath(fullPath);
+            }
+        }
+        projectMaterialPreviewTexturePaths.add(reference);
+        projectMaterialPreviewTextures.add(texture);
+        return texture;
+    }
+
+    /// @brief Clone one canonical material and apply one declarative overlay.
+    /// @details Every configured texture must load before the clone publishes;
+    ///          missing or wrong-typed root emissive mappings fail the complete
+    ///          node overlay rather than showing a misleading partial result.
+    hide override func BuildProjectMaterialPreview(
+        node: SceneNode,
+        rule: scene_component_schema.SceneMaterialPreview3DDefinition)
+        -> Material3D {
+        if node == null or rule == null { return null; }
+        var albedo: Any = null;
+        var normal: Any = null;
+        var metallicRoughness: Any = null;
+        var ambientOcclusion: Any = null;
+        var emissive: Any = null;
+        if rule.albedoMap != "" {
+            albedo = ProjectMaterialPreviewTexture(rule.albedoMap);
+            if albedo == null { return null; }
+        }
+        if rule.normalMap != "" {
+            normal = ProjectMaterialPreviewTexture(rule.normalMap);
+            if normal == null { return null; }
+        }
+        if rule.metallicRoughnessMap != "" {
+            metallicRoughness =
+                ProjectMaterialPreviewTexture(
+                    rule.metallicRoughnessMap);
+            if metallicRoughness == null { return null; }
+        }
+        if rule.ambientOcclusionMap != "" {
+            ambientOcclusion =
+                ProjectMaterialPreviewTexture(
+                    rule.ambientOcclusionMap);
+            if ambientOcclusion == null { return null; }
+        }
+        if rule.emissiveMap != "" {
+            emissive = ProjectMaterialPreviewTexture(rule.emissiveMap);
+            if emissive == null { return null; }
+        }
+
+        var emissiveR = rule.emissiveR;
+        var emissiveG = rule.emissiveG;
+        var emissiveB = rule.emissiveB;
+        if rule.HasRootEmissive() {
+            if scene == null or scene.Root == null {
+                return null;
+            }
+            var properties: List[String] = [
+                rule.emissiveRProperty,
+                rule.emissiveGProperty,
+                rule.emissiveBProperty
+            ];
+            var propertyIndex = 0;
+            while propertyIndex < properties.count() {
+                var propertyKey = properties.get(propertyIndex);
+                if scene.Root.MetadataHas(propertyKey) == false
+                   or scene.Root.MetadataKind(propertyKey) != "float" {
+                    return null;
+                }
+                propertyIndex = propertyIndex + 1;
+            }
+            emissiveR = SceneEditor3DModel.ClampNumber3D(
+                scene.Root.MetadataGetFloat(
+                    rule.emissiveRProperty, 0.0)
+                    * rule.emissiveMultiplier,
+                0.0, 1.0);
+            emissiveG = SceneEditor3DModel.ClampNumber3D(
+                scene.Root.MetadataGetFloat(
+                    rule.emissiveGProperty, 0.0)
+                    * rule.emissiveMultiplier,
+                0.0, 1.0);
+            emissiveB = SceneEditor3DModel.ClampNumber3D(
+                scene.Root.MetadataGetFloat(
+                    rule.emissiveBProperty, 0.0)
+                    * rule.emissiveMultiplier,
+                0.0, 1.0);
+        }
+
+        var next: Material3D = null;
+        if node.Material != null {
+            next = Material3D.Clone(node.Material) as Material3D;
+        } else {
+            next = Material3D.PBR(1.0, 1.0, 1.0) as Material3D;
+        }
+        if next == null { return null; }
+        if albedo != null { next.SetTexture(albedo); }
+        if normal != null { next.SetNormalMap(normal); }
+        if metallicRoughness != null {
+            next.SetMetallicRoughnessMap(metallicRoughness);
+        }
+        if ambientOcclusion != null {
+            next.SetAmbientOcclusionMap(ambientOcclusion);
+        }
+        if emissive != null { next.SetEmissiveMap(emissive); }
+        if rule.hasMetallic { next.Metallic = rule.metallic; }
+        if rule.hasRoughness { next.Roughness = rule.roughness; }
+        if rule.hasAmbientOcclusion {
+            next.AmbientOcclusion = rule.ambientOcclusion;
+        }
+        if rule.hasNormalScale { next.NormalScale = rule.normalScale; }
+        if rule.hasEmissiveColor or rule.HasRootEmissive() {
+            Material3D.SetEmissiveColor(
+                next, emissiveR, emissiveG, emissiveB);
+        }
+        if rule.hasEmissiveIntensity {
+            next.EmissiveIntensity = rule.emissiveIntensity;
+        }
+        if rule.hasSsrEnabled { next.SsrEnabled = rule.ssrEnabled; }
+        return next;
+    }
+
+    /// @brief Rebuild render-only material clones without reloading textures.
+    hide override func RebuildProjectMaterialPreviews() {
+        projectMaterialPreviewCount = 0;
+        projectMaterialPreviewMissingCount = 0;
+        projectMaterialPreviewNodes = [];
+        projectMaterialPreviewRules = [];
+        projectMaterialPreviewMaterials = [];
+        projectMaterialPreviewFrameNodes = [];
+        projectMaterialPreviewFrameMaterials = [];
+        if scene == null or componentSchema == null
+           or componentSchema.valid == false
+           or componentSchema.materialPreviews3D.count() == 0 {
+            return;
+        }
+        var index = 0;
+        while index < flatNodes.count() {
+            var node = flatNodes.get(index);
+            var rule = ProjectMaterialPreviewRule(node);
+            if rule != null {
+                var material =
+                    BuildProjectMaterialPreview(node, rule);
+                if material == null {
+                    projectMaterialPreviewMissingCount =
+                        projectMaterialPreviewMissingCount + 1;
+                } else {
+                    projectMaterialPreviewNodes.add(node);
+                    projectMaterialPreviewRules.add(rule);
+                    projectMaterialPreviewMaterials.add(material);
+                    projectMaterialPreviewCount =
+                        projectMaterialPreviewCount + 1;
+                }
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Return one node's disposable material clone for focused probes.
+    expose override func ProjectMaterialPreviewForNode(
+        nodeIndex: Integer) -> Material3D {
+        if nodeIndex < 0 or nodeIndex >= flatNodes.count() {
+            return null;
+        }
+        var node = flatNodes.get(nodeIndex);
+        var index = 0;
+        while index < projectMaterialPreviewNodes.count()
+              and index < projectMaterialPreviewMaterials.count() {
+            if projectMaterialPreviewNodes.get(index) == node {
+                return projectMaterialPreviewMaterials.get(index);
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+
+    /// @brief Substitute preview clones for one synchronous shaded draw.
+    hide override func ApplyProjectMaterialPreviews() {
+        projectMaterialPreviewFrameNodes = [];
+        projectMaterialPreviewFrameMaterials = [];
+        var index = 0;
+        while index < projectMaterialPreviewNodes.count()
+              and index < projectMaterialPreviewRules.count()
+              and index < projectMaterialPreviewMaterials.count() {
+            var node = projectMaterialPreviewNodes.get(index);
+            var rule = projectMaterialPreviewRules.get(index);
+            var material = projectMaterialPreviewMaterials.get(index);
+            if node != null and material != null {
+                if rule.useProjectEnvironment
+                   and projectSkyCubemap != null {
+                    Material3D.SetEnvMap(
+                        material, projectSkyCubemap);
+                }
+                projectMaterialPreviewFrameNodes.add(node);
+                projectMaterialPreviewFrameMaterials.add(node.Material);
+                node.Material = material;
+            }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Restore every canonical material immediately after frame submit.
+    hide override func RestoreProjectMaterialPreviews() {
+        var index = 0;
+        while index < projectMaterialPreviewFrameNodes.count()
+              and index < projectMaterialPreviewFrameMaterials.count() {
+            var node = projectMaterialPreviewFrameNodes.get(index);
+            if node != null {
+                node.Material =
+                    projectMaterialPreviewFrameMaterials.get(index);
+            }
+            index = index + 1;
+        }
+        projectMaterialPreviewFrameNodes = [];
+        projectMaterialPreviewFrameMaterials = [];
+    }
+}

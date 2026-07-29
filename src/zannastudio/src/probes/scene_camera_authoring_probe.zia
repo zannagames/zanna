@@ -80,7 +80,17 @@ func pump(editor: scene_editor_3d.SceneEditor3D,
     shell.Render();
 }
 
-func main() {
+/// @brief State shared by authoring and presentation camera scenarios.
+class CameraAuthoringProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+}
+
+/// @brief Verify camera normalization, transactions, and persistence.
+func VerifyCameraAuthoring(
+    ctx: CameraAuthoringProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Camera Authoring Probe", 1180, 780);
 
@@ -97,13 +107,13 @@ func main() {
        or near(normalized.nearPlane, 0.1) == false
        or normalized.farPlane <= normalized.nearPlane {
         fail(shell, "camera draft normalization drifted");
-        return;
+        return false;
     }
     var built = scene_camera_3d.BuildCamera(normalized);
     if built == null
        or scene_camera_3d.Matches(built, normalized) == false {
         fail(shell, "camera reconstruction was not equivalent");
-        return;
+        return false;
     }
     var rebuilt = scene_camera_3d.BuildCamera(
         scene_camera_3d.FromCamera(built));
@@ -111,7 +121,7 @@ func main() {
        or scene_camera_3d.Matches(
               rebuilt, scene_camera_3d.FromCamera(built)) == false {
         fail(shell, "camera FromCamera round-trip drifted");
-        return;
+        return false;
     }
 
     var editor = new scene_editor_3d.SceneEditor3D();
@@ -121,6 +131,21 @@ func main() {
     shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
     editor.Activate(sceneDoc);
     pump(editor, sceneDoc, shell);
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Verify camera transactions and persisted reload.
+func VerifyCameraTransactions(
+    ctx: CameraAuthoringProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
 
     // ------------------------------------------------------------------
     // Add Camera: one canonical transaction, persisted VSCN camera.
@@ -134,22 +159,22 @@ func main() {
        or sceneDoc.content == addBaseline
        or Str.Contains(sceneDoc.content, "\"isOrtho\"") == false {
         fail(shell, "camera node was not one canonical VSCN edit");
-        return;
+        return false;
     }
     var rowText = GUI.TreeView.Node.GetText(
         editor.hierarchyTreeNodes.get(cameraIndex));
     if Str.Contains(rowText, "[camera]") == false {
         fail(shell, "hierarchy row lacked the camera badge: " + rowText);
-        return;
+        return false;
     }
     if editor.Undo() == false or sceneDoc.content != addBaseline {
         fail(shell, "camera creation did not undo to the exact baseline");
-        return;
+        return false;
     }
     if editor.Redo() == false
        or editor.flatNodes.get(0).Camera == null {
         fail(shell, "camera creation did not redo");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
 
@@ -170,12 +195,12 @@ func main() {
        or near(node.Camera.NearPlane, 0.25) == false
        or near(node.Camera.FarPlane, 500.0) == false {
         fail(shell, "camera apply was not one exact transaction");
-        return;
+        return false;
     }
     if editor.ApplyNodeCamera(0, edit)
        or editor.GetRevision() != applyRevision + 1 {
         fail(shell, "exact no-op camera apply still created history");
-        return;
+        return false;
     }
     var orthoEdit = new scene_camera_3d.CameraState3D();
     orthoEdit.isOrtho = true;
@@ -186,14 +211,14 @@ func main() {
        or node.Camera.IsOrtho == false
        or near(node.Camera.OrthoSize, 7.5) == false {
         fail(shell, "orthographic camera apply did not latch");
-        return;
+        return false;
     }
     if editor.Undo() == false
        or editor.flatNodes.get(0).Camera.IsOrtho
        or editor.Undo() == false
        or sceneDoc.content != applyBaseline {
         fail(shell, "camera applies did not undo exactly");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
 
@@ -202,7 +227,7 @@ func main() {
     // ------------------------------------------------------------------
     if editor.ApplyNodeCamera(0, edit) == false {
         fail(shell, "camera reload staging apply failed");
-        return;
+        return false;
     }
     var reloadDoc = documents.NewScene3DDocument();
     reloadDoc.content = sceneDoc.content;
@@ -212,16 +237,26 @@ func main() {
        or editor.flatNodes.get(0).Camera == null
        or near(editor.flatNodes.get(0).Camera.Fov, 72.5) == false {
         fail(shell, "authored camera did not survive VSCN reload");
-        return;
+        return false;
     }
     editor.Activate(sceneDoc);
     pump(editor, sceneDoc, shell);
+
+    return true;
+}
+
+/// @brief Verify look-through and preview presentation remain noncanonical.
+func VerifyCameraPresentation(
+    ctx: CameraAuthoringProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
 
     // ------------------------------------------------------------------
     // Look-through: authored pose drives the shared projection while the
     // editor pose and canonical bytes stay untouched.
     // ------------------------------------------------------------------
-    node = editor.flatNodes.get(0);
+    var node = editor.flatNodes.get(0);
     node.SetPosition(0.0, 0.0, 10.0);
     editor.ApplyViewportSelection(0, false, false);
     pump(editor, sceneDoc, shell);
@@ -234,7 +269,7 @@ func main() {
     if editor.ToggleLookThrough() == false
        or editor.IsLookingThroughCamera() == false {
         fail(shell, "look-through did not begin from a camera node");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
     // The node sits at (0,0,10) with identity rotation looking down -Z, so
@@ -248,12 +283,12 @@ func main() {
         fail(shell, "look-through did not project the authored vantage: "
              + centered.x + "," + centered.y
              + " expected " + (width / 2) + "," + (height / 2));
-        return;
+        return false;
     }
     var behind = editor.ProjectWorldPoint(0.0, 0.0, 20.0);
     if behind.visible {
         fail(shell, "look-through kept behind-camera points visible");
-        return;
+        return false;
     }
     if editor.viewYawDegrees != yawBefore
        or editor.viewPitchDegrees != pitchBefore
@@ -261,19 +296,19 @@ func main() {
        or near(editor.viewTargetX, targetXBefore) == false
        or editor.GetRevision() != lookRevision {
         fail(shell, "look-through modified the editor camera pose");
-        return;
+        return false;
     }
     if editor.ToggleLookThrough() == false
        or editor.IsLookingThroughCamera() {
         fail(shell, "exiting look-through did not restore the editor pose");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
     var restored = editor.ProjectWorldPoint(0.0, 0.0, 0.0);
     if restored.visible == false
        or withinPixels(restored.x, width / 2, 1) == false {
         fail(shell, "editor projection did not resume after look-through");
-        return;
+        return false;
     }
 
     // Removing the camera component exits an active look-through.
@@ -281,17 +316,17 @@ func main() {
        or editor.RemoveNodeCamera(0) == false
        or editor.IsLookingThroughCamera() {
         fail(shell, "removing the camera did not exit look-through");
-        return;
+        return false;
     }
     if editor.Undo() == false
        or editor.flatNodes.get(0).Camera == null {
         fail(shell, "camera removal did not undo");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
     if sceneDoc.content != lookBaseline {
         fail(shell, "look-through session leaked into canonical history");
-        return;
+        return false;
     }
 
     // ------------------------------------------------------------------
@@ -308,7 +343,7 @@ func main() {
         if border != Color.RGB(126, 214, 204) {
             fail(shell, "preview inset border was not composited: "
                  + border + " at " + (insetX - 1) + "," + (insetY - 1));
-            return;
+            return false;
         }
         editor.cameraInspector.previewCheck.SetChecked(false);
         pump(editor, sceneDoc, shell);
@@ -317,16 +352,25 @@ func main() {
             insetX - 1, insetY - 1);
         if cleared == Color.RGB(126, 214, 204) {
             fail(shell, "disabling the preview inset did not clear it");
-            return;
+            return false;
         }
         editor.cameraInspector.previewCheck.SetChecked(true);
         pump(editor, sceneDoc, shell);
     }
     if sceneDoc.content != lookBaseline {
         fail(shell, "the preview inset dirtied canonical content");
-        return;
+        return false;
     }
 
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new CameraAuthoringProbeContext();
+    if VerifyCameraAuthoring(ctx) == false { return; }
+    if VerifyCameraTransactions(ctx) == false { return; }
+    if VerifyCameraPresentation(ctx) == false { return; }
+
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

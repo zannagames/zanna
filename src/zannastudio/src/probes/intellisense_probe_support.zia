@@ -1,0 +1,152 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/intellisense_probe_support.zia
+// Purpose: Shared fixture and assertions for IntelliSense probe scenarios.
+// Key invariants:
+//   - Async polling remains bounded by the original probe limits.
+//   - Every scenario operates on the same editor and language controllers.
+// Ownership/Lifetime: The entry probe owns one context for its complete run.
+// Links: zannastudio/src/probes/intellisense_probe.zia,
+//        zannastudio/src/editor/completion.zia
+//
+//===----------------------------------------------------------------------===//
+
+module intellisense_probe_support;
+
+bind "../ui/app_shell";
+bind "../editor/editor_engine";
+bind "../editor/completion";
+bind "../editor/signature";
+bind "../editor/hover";
+bind "../editor/symbols";
+bind "../editor/diagnostics";
+bind "../editor/inlay_hints";
+bind "../editor/project_index";
+bind "../commands/edit_commands";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../services/locations";
+bind "../services/workspace_edits";
+
+bind Zanna.GUI;
+bind ZiaCompletion = Zanna.Zia.Completion;
+bind ZiaToolchain = Zanna.Zia.Toolchain;
+bind BasicCompletion = Zanna.Basic.LanguageService;
+bind BasicToolchain = Zanna.Basic.LanguageService;
+bind SemanticJob = Zanna.Zia.SemanticJob;
+bind Clock = Zanna.Time.Clock;
+bind TempFile = Zanna.IO.TempFile;
+bind File = Zanna.IO.File;
+bind Dir = Zanna.IO.Dir;
+bind Path = Zanna.IO.Path;
+bind Terminal = Zanna.Terminal;
+bind Str = Zanna.String;
+bind Obj = Zanna.Core.Object;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+
+final SEMANTIC_JOB_WAIT_MS = 4000;
+
+/// @brief Typed state passed between serial IntelliSense scenarios.
+class IntellisenseProbeContext {
+    expose app_shell.AppShell shell;
+    expose editor_engine.EditorEngine engine;
+    expose completion.CompletionController completer;
+    expose signature.SignatureController sigCtrl;
+    expose document_manager.DocumentManager docMgr;
+    expose project_manager.ProjectManager projMgr;
+    expose Integer s;
+    expose String line;
+}
+
+expose func fail(shell: app_shell.AppShell, reason: String) {
+    shell.Destroy();
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+expose func listContains(items: List, label: String) -> Boolean {
+    var i = 0;
+    while i < items.count() {
+        if Obj.ToString(items.get(i)) == label {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+expose func pumpCompletion(completer: completion.CompletionController, maxTicks: Integer) {
+    var i = 0;
+    while i < maxTicks and completer.isVisible == false {
+        completer.Update("");
+        Clock.Sleep(1);
+        i = i + 1;
+    }
+}
+
+expose func pumpSignature(sigCtrl: signature.SignatureController,
+                   engine: editor_engine.EditorEngine,
+                   maxTicks: Integer) {
+    var i = 0;
+    while i < maxTicks and sigCtrl.visible == false {
+        sigCtrl.update(engine);
+        Clock.Sleep(1);
+        i = i + 1;
+    }
+}
+
+expose func panelFitsUiViewport(app: GUI.App, panel: GUI.FloatingPanel) -> Boolean {
+    if app == null or panel == null { return false; }
+    return panel.GetScreenX() >= 0.0
+        and panel.GetScreenY() >= 0.0
+        and panel.GetScreenX() + panel.GetScreenWidth()
+            <= app_shell.UiViewportWidth(app) + 1.0
+        and panel.GetScreenY() + panel.GetScreenHeight()
+            <= app_shell.UiViewportHeight(app) + 1.0;
+}
+
+expose func waitSemanticJob(job: Any, maxTicks: Integer) -> Boolean {
+    if job == null { return false; }
+    var i = 0;
+    while i < maxTicks {
+        if SemanticJob.IsDone(job) {
+            return true;
+        }
+        Clock.Sleep(1);
+        i = i + 1;
+    }
+    return false;
+}
+
+expose func completionItemsContain(items: Any, label: String) -> Boolean {
+    if items == null { return false; }
+    var i = 0;
+    while i < Seq.get_Count(items) {
+        var item = Seq.Get(items, i);
+        if Map.GetStr(item, "label") == label {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+
+expose func completionItemDocumentationContains(items: Any, label: String, needle: String) -> Boolean {
+    if items == null { return false; }
+    var i = 0;
+    while i < Seq.get_Count(items) {
+        var item = Seq.Get(items, i);
+        if Map.GetStr(item, "label") == label
+           and Str.IndexOf(Map.GetStr(item, "documentation"), needle) > 0 {
+            return true;
+        }
+        i = i + 1;
+    }
+    return false;
+}
+

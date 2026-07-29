@@ -13,7 +13,8 @@
 #   - Background-capable Build/Search controllers cannot call Toast directly.
 #   - Warnings and errors remain available through contextual policy.
 # Ownership/Lifetime: Build/test-time source audit with no runtime state.
-# Links: src/zannastudio/src/ui/notification_policy.zia
+# Links: src/zannastudio/src/ui/notification_policy.zia,
+#        src/zannastudio/src/app/studio_application_base.zia
 #
 #===----------------------------------------------------------------------===#
 
@@ -62,12 +63,13 @@ foreach(ZANNA_STUDIO_SOURCE IN LISTS ZANNA_STUDIO_NOTIFICATION_SOURCES)
             "${ZANNA_STUDIO_NOTIFICATION_LINE}"
             "visible but macOS did not make it active"
             ZANNA_STUDIO_ACTIVATION_TOAST)
-        if(ZANNA_STUDIO_SOURCE_RELATIVE STREQUAL "main.zia")
-            if(NOT ZANNA_STUDIO_RECOVERY_TOAST EQUAL -1)
-                set(ZANNA_STUDIO_NOTIFICATION_ALLOWED true)
-            elseif(NOT ZANNA_STUDIO_ACTIVATION_TOAST EQUAL -1)
-                set(ZANNA_STUDIO_NOTIFICATION_ALLOWED true)
-            endif()
+        if(ZANNA_STUDIO_SOURCE_RELATIVE STREQUAL
+               "app/studio_application_base.zia"
+           AND NOT ZANNA_STUDIO_RECOVERY_TOAST EQUAL -1)
+            set(ZANNA_STUDIO_NOTIFICATION_ALLOWED true)
+        elseif(ZANNA_STUDIO_SOURCE_RELATIVE STREQUAL "main.zia"
+               AND NOT ZANNA_STUDIO_ACTIVATION_TOAST EQUAL -1)
+            set(ZANNA_STUDIO_NOTIFICATION_ALLOWED true)
         endif()
 
         if(NOT ZANNA_STUDIO_NOTIFICATION_ALLOWED)

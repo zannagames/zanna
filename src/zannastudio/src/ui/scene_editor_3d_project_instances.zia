@@ -1,0 +1,581 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_project_instances.zia
+// Purpose: Focused project instances behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_project_schema.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_project_instances;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_project_schema" as PreviousLayer;
+
+/// @brief Project Instances implementation layer.
+class SceneEditor3DProjectInstancesLayer extends PreviousLayer.SceneEditor3DProjectSchemaLayer {
+
+    /// @brief Construct one bounded public-runtime water surface.
+    hide override func AddProjectWaterPreview(
+        layer: scene_component_schema.SceneWaterLayer3DDefinition)
+        -> Boolean {
+        var resolved = ResolveProjectWaterLayer(layer);
+        if resolved.valid == false { return false; }
+        var texture: Pixels = null;
+        var normalMap: Pixels = null;
+        if layer.texture != "" {
+            texture = ProjectWaterImage(layer.texture);
+            if texture == null { return false; }
+        }
+        if layer.normalMap != "" {
+            normalMap = ProjectWaterImage(layer.normalMap);
+            if normalMap == null { return false; }
+        }
+        var water = Water3D.New(resolved.width, resolved.depth);
+        if water == null { return false; }
+        Water3D.SetPosition(
+            water, resolved.x, resolved.y, resolved.z);
+        Water3D.SetResolution(water, layer.resolution);
+        if layer.hasColor {
+            Water3D.SetColor(
+                water,
+                layer.colorR,
+                layer.colorG,
+                layer.colorB,
+                layer.colorA);
+        }
+        if texture != null { Water3D.SetTexture(water, texture); }
+        if normalMap != null {
+            Water3D.SetNormalMap(water, normalMap);
+        }
+        var waveIndex = 0;
+        while waveIndex < layer.waves.count() {
+            var wave = layer.waves.get(waveIndex);
+            Water3D.AddWave(
+                water,
+                wave.dirX,
+                wave.dirZ,
+                wave.speed,
+                wave.amplitude,
+                wave.wavelength);
+            waveIndex = waveIndex + 1;
+        }
+        Water3D.Update(water, 0.0);
+        projectWaterPreviews.add(water);
+        projectWaterWidths.add(resolved.width);
+        projectWaterDepths.add(resolved.depth);
+        projectWaterXs.add(resolved.x);
+        projectWaterYs.add(resolved.y);
+        projectWaterZs.add(resolved.z);
+        projectWaterAnimated.add(layer.animate);
+        projectPreviewInstanceCount =
+            projectPreviewInstanceCount + 1;
+        return true;
+    }
+
+    /// @brief Return whether one preview path is a direct imported model.
+    hide override func IsProjectDirectModelPath(path: String) -> Boolean {
+        var folded = Str.ToLower(path);
+        return Str.EndsWith(folded, ".gltf")
+            or Str.EndsWith(folded, ".glb")
+            or Str.EndsWith(folded, ".fbx")
+            or Str.EndsWith(folded, ".obj")
+            or Str.EndsWith(folded, ".stl");
+    }
+
+    /// @brief Load and cache one validated project preview asset.
+    /// @details The public result API accepts VSCN plus glTF/GLB/FBX/OBJ/STL.
+    ///          Parent bytes are checked before and after the import so a
+    ///          growing or replaced source cannot publish a partial preview.
+    hide override func ProjectNodePreviewAsset(path: String) -> SceneAsset {
+        var index = 0;
+        while index < projectPreviewAssetPaths.count() {
+            if projectPreviewAssetPaths.get(index) == path {
+                return projectPreviewAssets.get(index);
+            }
+            index = index + 1;
+        }
+        if projectPreviewAssetPaths.count()
+           >= SceneEditor3DModel.MAX_PROJECT_PREVIEW_ASSETS {
+            projectPreviewClipped = true;
+            return null;
+        }
+        var asset: SceneAsset = null;
+        var beforeSize = safe_io.SizeBytes(path);
+        if beforeSize >= 0 and beforeSize <= SceneEditor3DModel.MAX_SCENE_BYTES {
+            var loaded = SceneAsset.LoadResult(path);
+            var afterSize = safe_io.SizeBytes(path);
+            if loaded != null and loaded.IsOk {
+                if afterSize == beforeSize {
+                    asset = loaded.Unwrap() as SceneAsset;
+                }
+            }
+        }
+        projectPreviewAssetPaths.add(path);
+        projectPreviewAssets.add(asset);
+        return asset;
+    }
+
+    /// @brief Record transient subtree identities that map to one source node.
+    hide override func AppendProjectPreviewOwners(node: SceneNode,
+                                         owner: Integer) {
+        if node == null
+           or projectPreviewNodes.count() >= SceneEditor3DModel.MAX_PROJECT_PREVIEW_NODES {
+            projectPreviewClipped = true;
+            return;
+        }
+        projectPreviewNodes.add(node);
+        projectPreviewOwners.add(owner);
+        var child = 0;
+        while child < node.ChildCount
+              and projectPreviewNodes.count()
+                  < SceneEditor3DModel.MAX_PROJECT_PREVIEW_NODES {
+            AppendProjectPreviewOwners(node.GetChild(child), owner);
+            child = child + 1;
+        }
+        if child < node.ChildCount { projectPreviewClipped = true; }
+    }
+
+    /// @brief Compose bounded recipe and metadata transforms after source TRS.
+    hide override func ProjectPreviewWorldMatrix(
+        node: SceneNode,
+        rule: scene_component_schema.SceneNodePreview3DDefinition) -> Mat4 {
+        var result = node.WorldMatrix;
+        var yaw = rule.yawDegrees * SceneEditor3DModel.DEG_TO_RAD;
+        if rule.yawProperty != ""
+           and node.MetadataHas(rule.yawProperty)
+           and node.MetadataKind(rule.yawProperty) == "float" {
+            var mappedYaw =
+                node.MetadataGetFloat(rule.yawProperty, 0.0);
+            if rule.yawUnit == "degrees" {
+                mappedYaw = mappedYaw * SceneEditor3DModel.DEG_TO_RAD;
+            }
+            yaw = yaw + mappedYaw;
+        }
+        var scale = rule.scale;
+        if rule.scaleProperty != ""
+           and node.MetadataHas(rule.scaleProperty)
+           and node.MetadataKind(rule.scaleProperty) == "float" {
+            var mappedScale = SceneEditor3DModel.ClampNumber3D(
+                node.MetadataGetFloat(rule.scaleProperty, 1.0),
+                -1000.0,
+                1000.0);
+            scale = scale * mappedScale;
+        }
+        return Mat4.Mul(
+            result,
+            Mat4.Mul(
+                Mat4.Translate(
+                    rule.offsetX, rule.offsetY, rule.offsetZ),
+                Mat4.Mul(
+                    Mat4.RotateY(yaw),
+                    Mat4.ScaleUniform(scale))));
+    }
+
+    /// @brief Instantiate one base or additive scene-environment preview.
+    hide override func AddProjectEnvironmentPreview(
+        projectRoot: String,
+        reference: String,
+        label: String,
+        worldMatrix: Mat4) -> Boolean {
+        if projectPreviewScene == null or reference == "" {
+            return false;
+        }
+        var environmentPath = Path.Normalize(Path.Absolute(
+            Path.Join(projectRoot, reference)));
+        var environmentAsset =
+            ProjectNodePreviewAsset(environmentPath);
+        var environmentInstance: SceneGraph = null;
+        if environmentAsset != null {
+            environmentInstance =
+                environmentAsset.InstantiateScene() as SceneGraph;
+        }
+        if environmentInstance == null
+           or environmentInstance.Root == null
+           or environmentInstance.Root.ChildCount == 0 {
+            projectPreviewMissingCount =
+                projectPreviewMissingCount + 1;
+            return false;
+        }
+        if projectPreviewNodes.count() + environmentInstance.NodeCount
+           > SceneEditor3DModel.MAX_PROJECT_PREVIEW_NODES {
+            projectPreviewClipped = true;
+            return false;
+        }
+        var environmentWrapper = SceneNode.New();
+        environmentWrapper.Name = label;
+        var environmentRoot = environmentInstance.Root;
+        while environmentRoot.ChildCount > 0 {
+            var environmentChild =
+                environmentRoot.GetChild(0);
+            environmentRoot.RemoveChild(environmentChild);
+            environmentWrapper.AddChild(environmentChild);
+        }
+        if environmentWrapper.TrySetWorldMatrix(worldMatrix) == false {
+            projectPreviewMissingCount =
+                projectPreviewMissingCount + 1;
+            return false;
+        }
+        projectPreviewScene.Add(environmentWrapper);
+        AppendProjectPreviewOwners(environmentWrapper, -1);
+        projectPreviewInstanceCount =
+            projectPreviewInstanceCount + 1;
+        return true;
+    }
+
+    /// @brief Try one matched node-preview recipe without publishing failure.
+    /// @details Callers may continue to a later matching rule when the preferred
+    ///          project model is absent or invalid. Only a complete instantiated
+    ///          graph enters the disposable preview scene.
+    hide override func TryAddProjectNodePreview(
+        projectRoot: String,
+        source: SceneNode,
+        sourceIndex: Integer,
+        rule: scene_component_schema.SceneNodePreview3DDefinition)
+        -> Boolean {
+        var reference = ProjectNodePreviewPrefab(source, rule);
+        if reference == "" { return false; }
+        var path = Path.Normalize(Path.Absolute(
+            Path.Join(projectRoot, reference)));
+        var asset = ProjectNodePreviewAsset(path);
+        if asset == null { return false; }
+        var instance = asset.InstantiateScene() as SceneGraph;
+        if instance == null
+           or instance.Root == null
+           or instance.Root.ChildCount == 0 {
+            return false;
+        }
+        if projectPreviewNodes.count() + instance.NodeCount
+           > SceneEditor3DModel.MAX_PROJECT_PREVIEW_NODES {
+            projectPreviewClipped = true;
+            return false;
+        }
+        var wrapper = SceneNode.New();
+        wrapper.Name = "Preview " + sourceIndex;
+        var prefabRoot = instance.Root;
+        while prefabRoot.ChildCount > 0 {
+            var child = prefabRoot.GetChild(0);
+            prefabRoot.RemoveChild(child);
+            wrapper.AddChild(child);
+        }
+        if wrapper.TrySetWorldMatrix(
+               ProjectPreviewWorldMatrix(source, rule)) == false {
+            return false;
+        }
+        projectPreviewScene.Add(wrapper);
+        AppendProjectPreviewOwners(wrapper, sourceIndex);
+        projectPreviewWrappers.add(wrapper);
+        projectPreviewWrapperOwners.add(sourceIndex);
+        projectPreviewWrapperRules.add(rule);
+        projectPreviewInstanceCount =
+            projectPreviewInstanceCount + 1;
+        if IsProjectDirectModelPath(path) {
+            projectPreviewDirectModelCount =
+                projectPreviewDirectModelCount + 1;
+        }
+        return true;
+    }
+
+    /// @brief Rebuild every project preview in a disposable scene graph.
+    /// @details No transient node ever enters the canonical scene or history.
+    hide override func RebuildProjectNodePreviews() {
+        projectPreviewScene = null;
+        projectPreviewInstanceCount = 0;
+        projectPreviewMissingCount = 0;
+        projectPreviewFallbackCount = 0;
+        projectPreviewDirectModelCount = 0;
+        projectPreviewFilteredCount = 0;
+        projectPreviewClipped = false;
+        projectPreviewAssetPaths = [];
+        projectPreviewAssets = [];
+        projectPreviewNodes = [];
+        projectPreviewOwners = [];
+        projectPreviewWrappers = [];
+        projectPreviewWrapperOwners = [];
+        projectPreviewWrapperRules = [];
+        projectWaterPreviews = [];
+        projectWaterWidths = [];
+        projectWaterDepths = [];
+        projectWaterXs = [];
+        projectWaterYs = [];
+        projectWaterZs = [];
+        projectWaterAnimated = [];
+        projectWaterImagePaths = [];
+        projectWaterImages = [];
+        projectWaterLastAnimationMs = 0;
+        projectMaterialPreviewTexturePaths = [];
+        projectMaterialPreviewTextures = [];
+        var environmentReference =
+            ProjectEnvironmentPreviewPrefab();
+        var profile:
+            scene_component_schema.ScenePreview3DDefinition = null;
+        if componentSchema != null {
+            profile = componentSchema.scenePreview3D;
+        }
+        if scene == null or componentSchema == null
+           or componentSchema.valid == false {
+            RebuildProjectMaterialPreviews();
+            return;
+        }
+        RebuildProjectMaterialPreviews();
+        if componentSchema.nodePreviews3D.count() == 0
+           and environmentReference == ""
+           and (profile == null
+                or (profile.environmentLayers.count() == 0
+                    and profile.waterLayers.count() == 0)) {
+            return;
+        }
+        var projectRoot = ComponentSchemaRoot();
+        if projectRoot == "" { return; }
+        projectPreviewScene = SceneGraph.New();
+        if environmentReference != "" {
+            AddProjectEnvironmentPreview(
+                projectRoot,
+                environmentReference,
+                "Scene environment preview",
+                Mat4.Identity());
+        }
+        if profile != null {
+            var layerIndex = 0;
+            while layerIndex < profile.environmentLayers.count() {
+                var layer = profile.environmentLayers.get(layerIndex);
+                if ProjectEnvironmentLayerMatches(layer) {
+                    if ProjectEnvironmentLayerTransformUsable(layer) {
+                        AddProjectEnvironmentPreview(
+                            projectRoot,
+                            layer.prefab,
+                            "Scene environment layer " + layerIndex,
+                            ProjectEnvironmentLayerWorldMatrix(layer));
+                    } else {
+                        projectPreviewMissingCount =
+                            projectPreviewMissingCount + 1;
+                    }
+                }
+                if projectPreviewClipped { break; }
+                layerIndex = layerIndex + 1;
+            }
+            var waterIndex = 0;
+            while waterIndex < profile.waterLayers.count() {
+                var waterLayer = profile.waterLayers.get(waterIndex);
+                if ProjectWaterLayerMatches(waterLayer)
+                   and AddProjectWaterPreview(waterLayer) == false {
+                    projectPreviewMissingCount =
+                        projectPreviewMissingCount + 1;
+                }
+                waterIndex = waterIndex + 1;
+            }
+        }
+        var sourceIndex = 0;
+        while sourceIndex < flatNodes.count()
+              and projectPreviewNodes.count()
+                  < SceneEditor3DModel.MAX_PROJECT_PREVIEW_NODES {
+            var source = flatNodes.get(sourceIndex);
+            var filterAllows =
+                ProjectNodePreviewFilterAllows(source);
+            var matched = 0;
+            var added = false;
+            var ruleIndex = 0;
+            while ruleIndex < componentSchema.nodePreviews3D.count()
+                  and added == false
+                  and projectPreviewClipped == false {
+                var rule =
+                    componentSchema.nodePreviews3D.get(ruleIndex);
+                if ProjectNodePreviewRuleMatches(source, rule) {
+                    matched = matched + 1;
+                    if filterAllows {
+                        added = TryAddProjectNodePreview(
+                            projectRoot, source, sourceIndex, rule);
+                    }
+                }
+                ruleIndex = ruleIndex + 1;
+            }
+            if filterAllows == false and matched > 0 {
+                projectPreviewFilteredCount =
+                    projectPreviewFilteredCount + 1;
+            } else if added and matched > 1 {
+                projectPreviewFallbackCount =
+                    projectPreviewFallbackCount + 1;
+            } else if matched > 0 and added == false
+                      and projectPreviewClipped == false {
+                projectPreviewMissingCount =
+                    projectPreviewMissingCount + 1;
+            }
+            if projectPreviewClipped { break; }
+            sourceIndex = sourceIndex + 1;
+        }
+        if sourceIndex < flatNodes.count() {
+            projectPreviewClipped = true;
+        }
+        if projectPreviewNodes.count() == 0 {
+            projectPreviewScene = null;
+        }
+        renderDirty = true;
+    }
+
+    /// @brief Follow live source transforms without rebuilding preview assets.
+    /// @details The exact rule that successfully produced each wrapper is
+    ///          retained, so a preferred direct model that fell back to a later
+    ///          recipe never acquires the failed recipe's transform. Canonical
+    ///          bytes remain untouched during live gizmo movement.
+    hide override func SyncProjectNodePreviewTransforms() {
+        if projectPreviewScene == null
+           or projectPreviewScene.Root == null {
+            return;
+        }
+        var index = 0;
+        while index < projectPreviewWrappers.count()
+              and index < projectPreviewWrapperOwners.count()
+              and index < projectPreviewWrapperRules.count() {
+            var preview = projectPreviewWrappers.get(index);
+            var owner = projectPreviewWrapperOwners.get(index);
+            var rule = projectPreviewWrapperRules.get(index);
+            if preview != null and rule != null
+               and owner >= 0 and owner < flatNodes.count() {
+                var source = flatNodes.get(owner);
+                preview.TrySetWorldMatrix(
+                    ProjectPreviewWorldMatrix(source, rule));
+            }
+            index = index + 1;
+        }
+        renderDirty = true;
+    }
+
+    /// @brief Advance every retained runtime-water preview deterministically.
+    /// @details This probe-facing path is also useful for explicit preview
+    ///          stepping; it never changes canonical scene or history state.
+    expose override func AdvanceProjectWaterPreview(deltaSeconds: Number)
+        -> Boolean {
+        if projectWaterPreviews.count() == 0
+           or deltaSeconds <= 0.0 {
+            return false;
+        }
+        var bounded = SceneEditor3DModel.ClampNumber3D(
+            deltaSeconds,
+            0.000001,
+            SceneEditor3DModel.PROJECT_WATER_MAX_STEP_MS / 1000.0);
+        var index = 0;
+        while index < projectWaterPreviews.count() {
+            Water3D.Update(
+                projectWaterPreviews.get(index), bounded);
+            index = index + 1;
+        }
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Advance opted-in water previews on a bounded 30 Hz cadence.
+    hide override func PumpProjectWaterPreviewAnimation() {
+        if projectWaterPreviews.count() == 0 { return; }
+        var hasAnimated = false;
+        var index = 0;
+        while index < projectWaterAnimated.count() {
+            if projectWaterAnimated.get(index) { hasAnimated = true; }
+            index = index + 1;
+        }
+        if hasAnimated == false { return; }
+        var now = Zanna.Time.Clock.NowMs();
+        if projectWaterLastAnimationMs <= 0
+           or now < projectWaterLastAnimationMs {
+            projectWaterLastAnimationMs = now;
+            return;
+        }
+        var elapsed = now - projectWaterLastAnimationMs;
+        if elapsed < SceneEditor3DModel.PROJECT_WATER_ANIMATION_FRAME_MS { return; }
+        if elapsed > SceneEditor3DModel.PROJECT_WATER_MAX_STEP_MS {
+            elapsed = SceneEditor3DModel.PROJECT_WATER_MAX_STEP_MS;
+        }
+        var deltaSeconds = elapsed / 1000.0;
+        index = 0;
+        while index < projectWaterPreviews.count()
+              and index < projectWaterAnimated.count() {
+            if projectWaterAnimated.get(index) {
+                Water3D.Update(
+                    projectWaterPreviews.get(index), deltaSeconds);
+            }
+            index = index + 1;
+        }
+        projectWaterLastAnimationMs = now;
+        renderDirty = true;
+    }
+
+    /// @brief Map one transient preview hit back to its canonical marker.
+    hide override func ProjectPreviewOwner(node: SceneNode) -> Integer {
+        var index = 0;
+        while index < projectPreviewNodes.count()
+              and index < projectPreviewOwners.count() {
+            if projectPreviewNodes.get(index) == node {
+                return projectPreviewOwners.get(index);
+            }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+}

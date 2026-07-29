@@ -131,7 +131,26 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Typed state shared by serial draw-stack scenarios.
+class ObjectDrawStackProbeContext {
+    expose String tempDir;
+    expose app_shell.AppShell shell;
+    expose scene_editor_2d.SceneEditor2D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose String baseline;
+    expose Integer baselineRevision;
+    expose Integer baselineUndo;
+    expose Boolean baselineDirty;
+    expose Integer underForeground;
+    expose Integer low;
+    expose Integer high;
+    expose Integer invalidOverride;
+}
+
+/// @brief Build the project profile and verify render-stack presentation.
+func VerifyProjectDrawStack(
+    ctx: ObjectDrawStackProbeContext) -> Boolean {
     var tempDir =
         TempFile.CreateDirWithPrefix("zannastudio_object_stack_");
     var basePath = Path.Join(tempDir, "base.png");
@@ -143,7 +162,7 @@ func main() {
     if tempDir == "" or base == null or foreground == null
        or sprites == null {
         Fail(null, null, tempDir, "temporary image allocation");
-        return;
+        return false;
     }
     base.FillColor(Color.RGB(210, 42, 36));
     foreground.FillColor(Color.RGB(30, 72, 220));
@@ -154,13 +173,13 @@ func main() {
        or Pixels.SavePng(foreground, foregroundPath) != 1
        or Pixels.SavePng(sprites, spritePath) != 1 {
         Fail(null, null, tempDir, "temporary image write");
-        return;
+        return false;
     }
 
     var fixture = SceneDocument.New(6, 4, 16, 16);
     if fixture == null {
         Fail(null, null, tempDir, "scene fixture");
-        return;
+        return false;
     }
     fixture.SetLayerName(0, "Ground");
     fixture.SetLayerAsset(0, "base.png");
@@ -169,7 +188,7 @@ func main() {
     var foregroundLayer = fixture.AddLayer("Foreground");
     if foregroundLayer != 1 {
         Fail(null, null, tempDir, "foreground layer fixture");
-        return;
+        return false;
     }
     fixture.SetLayerAsset(foregroundLayer, "foreground.png");
     fixture.SetTile(foregroundLayer, 1, 1, 1);
@@ -183,7 +202,7 @@ func main() {
     if underForeground != 0 or low != 1 or high != 2
        or invalidOverride != 3 {
         Fail(null, null, tempDir, "object fixture");
-        return;
+        return false;
     }
     fixture.ObjectSetStr(
         invalidOverride, "editor.drawOrder", "not-an-integer");
@@ -207,7 +226,7 @@ func main() {
         Path.Join(tempDir, "scene-components.json"));
     if editor.componentSchema.valid == false {
         Fail(shell, null, tempDir, "project draw-stack schema");
-        return;
+        return false;
     }
 
     var documents = new document_manager.DocumentManager();
@@ -223,7 +242,7 @@ func main() {
     PumpTwice(shell, editor, sceneDoc);
     if editor.loadError != "" or editor.framePixels == null {
         Fail(shell, null, tempDir, "production canvas");
-        return;
+        return false;
     }
 
     var baseline = sceneDoc.content;
@@ -241,7 +260,7 @@ func main() {
        or editor.ObjectPreviewAfterLayer(invalidOverride) != 15
        or editor.ObjectPreviewDrawOrder(invalidOverride) != 10 {
         Fail(shell, null, tempDir, "stable project/fallback stack");
-        return;
+        return false;
     }
 
     // Green paints between Ground and Foreground and is therefore covered by
@@ -253,20 +272,52 @@ func main() {
         Fail(shell, null, tempDir,
              "layer/prioritized pixels " + coveredPixel
              + "/" + overlapPixel);
-        return;
+        return false;
     }
     if sceneDoc.content != baseline
        or editor.GetRevision() != baselineRevision
        or editor.undoStack.count() != baselineUndo
        or sceneDoc.isModified != baselineDirty {
         Fail(shell, null, tempDir, "presentation changed canonical state");
-        return;
+        return false;
     }
+
+    ctx.tempDir = tempDir;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.baseline = baseline;
+    ctx.baselineRevision = baselineRevision;
+    ctx.baselineUndo = baselineUndo;
+    ctx.baselineDirty = baselineDirty;
+    ctx.underForeground = underForeground;
+    ctx.low = low;
+    ctx.high = high;
+    ctx.invalidOverride = invalidOverride;
+    return true;
+}
+
+/// @brief Verify picking and transactional per-object stack overrides.
+func VerifyObjectDrawStackOverrides(
+    ctx: ObjectDrawStackProbeContext) -> Boolean {
+    var tempDir = ctx.tempDir;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var baseline = ctx.baseline;
+    var baselineRevision = ctx.baselineRevision;
+    var baselineUndo = ctx.baselineUndo;
+    var underForeground = ctx.underForeground;
+    var low = ctx.low;
+    var high = ctx.high;
+    var invalidOverride = ctx.invalidOverride;
+    var stack = editor.ObjectPreviewStack();
 
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, tempDir, "automation app binding");
-        return;
+        return false;
     }
     ClickCanvasCell(shell, harness, editor, 2, 1);
     PumpTwice(shell, editor, sceneDoc);
@@ -276,7 +327,7 @@ func main() {
        or Convert.NumToInt(editor.objectDrawOrderSpinner.Value) != 30 {
         Fail(shell, harness, tempDir,
              "topmost project pick or direct inspector state");
-        return;
+        return false;
     }
 
     editor.objectAfterLayerDropdown.SetSelected(0);
@@ -340,7 +391,7 @@ func main() {
              + " widgetRevision=" + applyWidgetRevision
              + "->" + applyWidgetRevisionAfter
              + " scroll=" + editor.inspectorScroll.GetScrollY());
-        return;
+        return false;
     }
 
     // Reapplying the same pair is an explicit no-op.
@@ -353,7 +404,7 @@ func main() {
        or editor.GetRevision() != baselineRevision + 1
        or editor.undoStack.count() != baselineUndo + 1 {
         Fail(shell, harness, tempDir, "duplicate Apply was not a no-op");
-        return;
+        return false;
     }
 
     // The visible yellow sprite now wins the same real canvas click.
@@ -362,7 +413,7 @@ func main() {
     if editor.selectedObject != low {
         Fail(shell, harness, tempDir,
              "picking diverged from overridden visual stack");
-        return;
+        return false;
     }
 
     editor.SelectSceneObjects([high], high);
@@ -370,7 +421,7 @@ func main() {
     shell.Render();
     if editor.objectDrawStackResetButton.IsEnabled() == false {
         Fail(shell, harness, tempDir, "Use Project action unavailable");
-        return;
+        return false;
     }
     editor.inspectorScroll.ScrollTo(editor.objectDrawStackResetButton);
     shell.Render();
@@ -393,7 +444,7 @@ func main() {
           != Color.RGB(220, 42, 196) % 16777216 {
         Fail(shell, harness, tempDir,
              "Use Project reset or exact byte restoration");
-        return;
+        return false;
     }
 
     ClickCanvasCell(shell, harness, editor, 2, 1);
@@ -401,9 +452,16 @@ func main() {
     if editor.selectedObject != high {
         Fail(shell, harness, tempDir,
              "restored project stack did not restore topmost picking");
-        return;
+        return false;
     }
 
     Cleanup(shell, harness, tempDir);
     Terminal.Say("RESULT: ok");
+    return true;
+}
+
+func main() {
+    var ctx = new ObjectDrawStackProbeContext();
+    if VerifyProjectDrawStack(ctx) == false { return; }
+    if VerifyObjectDrawStackOverrides(ctx) == false { return; }
 }

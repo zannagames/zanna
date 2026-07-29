@@ -1,7 +1,7 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-27
+last-verified: 2026-07-28
 ---
 
 # Architecture Decision Records
@@ -16,6 +16,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0006](0006-spec-currency-and-adr-triggers.md) — Spec Currency and ADR Triggers
 - [ADR 0110](0110-project-rename-viper-to-zanna.md) — Rename the Project from Viper to Zanna
 - [ADR 0118](0118-rename-zannaide-to-zanna-studio.md) — Rename ZannaIDE to Zanna Studio
+- [ADR 0217](0217-modular-zia-import-graph-capacity.md) — Raise Bounded Zia Import Graph Capacity
+- [ADR 0218](0218-zanna-studio-source-module-boundaries.md) — Bound Zanna Studio Source Modules and Functions
 
 ## IL & Optimizer
 
@@ -246,3 +248,4 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0213](0213-runtime-backed-water-preview-layers.md) — Render Runtime-Backed Water Preview Layers
 - [ADR 0214](0214-project-owned-3d-material-previews.md) — Render Project-Owned 3D Material Previews
 - [ADR 0215](0215-project-owned-direct-model-previews.md) — Render Project-Owned Direct Model Previews
+- [ADR 0216](0216-project-owned-3d-node-preview-states.md) — Add Project-Owned 3D Node Preview States

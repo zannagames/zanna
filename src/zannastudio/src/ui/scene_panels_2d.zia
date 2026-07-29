@@ -56,11 +56,26 @@ bind "scene_layout_2d";
 bind GUI = Zanna.GUI;
 
 /// @brief Build the full 2D editor widget tree onto @p editor's fields.
-/// @details Verbatim relocation of the historical Setup body; the editor
-///          records its app handle before delegating here.
+/// @details Construction is grouped by owned surface so each helper has one
+///          layout responsibility while preserving the historical widget order.
 expose func Build(editor: scene_editor_2d.SceneEditor2D,
                   host: GUI.VBox,
                   app: GUI.App) {
+    BuildCommandToolbar(editor, host, app);
+    BuildViewToolbar(editor);
+    var inspector = BuildWorkspaceScaffold(editor);
+    BuildInspectorHeader(editor, inspector, app);
+    BuildSceneInspector(editor, app);
+    BuildHierarchy(editor, app);
+    BuildObjectTransformInspector(editor);
+    BuildObjectMetadataInspector(editor);
+    FinishInspector(editor, inspector);
+}
+
+/// @brief Construct the editor root and primary scene/tool command bar.
+func BuildCommandToolbar(editor: scene_editor_2d.SceneEditor2D,
+                         host: GUI.VBox,
+                         app: GUI.App) {
         editor.guiApp = app;
         editor.root = GUI.VBox.New();
         editor.root.SetSpacing(0.0);
@@ -174,7 +189,10 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.toolbarStatus.SetEllipsis(true);
         editor.toolbarStatus.SetMaxLines(1);
         editor.toolbarStatus.SetFlex(1.0);
+}
 
+/// @brief Construct zoom, view, and responsive-layout controls.
+func BuildViewToolbar(editor: scene_editor_2d.SceneEditor2D) {
         editor.viewToolbar = GUI.Flex.New();
         editor.viewToolbar.SetDirection(GUI.FlexDirection.Row);
         editor.viewToolbar.SetWrap(GUI.FlexWrap.Wrap);
@@ -275,7 +293,12 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.viewStatusLabel.SetMaxLines(1);
         editor.viewStatusLabel.SetFlex(1.0);
         editor.UpdateModeButtons();
+}
 
+/// @brief Construct the objects, canvas/palette, and inspector frame.
+/// @return The inspector content box borrowed by the remaining builders.
+func BuildWorkspaceScaffold(editor: scene_editor_2d.SceneEditor2D)
+    -> GUI.VBox {
         // Three-pane workbench: Objects | Canvas+Palette | Inspector. The
         // outer split owns the object hierarchy pane; the inner split keeps
         // its historical name so persisted fractions and probes stay stable,
@@ -396,7 +419,14 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         inspector.SetSpacing(6.0);
         inspector.SetPadding(8.0);
         editor.inspectorScroll.AddChild(inspector);
+        return inspector;
+}
 
+/// @brief Construct inspector tabs, pane docking, and the topic selector.
+func BuildInspectorHeader(editor: scene_editor_2d.SceneEditor2D,
+                          inspector: GUI.VBox,
+                          app: GUI.App) {
+        var paletteStrip = editor.paletteStripBox;
         // Object | Scene inspector tabs: object fields and component groups
         // live on the Object tab; editor.scene-wide groups (setup, imports, editor.scene
         // properties, camera/lighting, layers, tile behavior) on the Scene
@@ -456,7 +486,12 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.sceneSectionDropdown.SetSelected(
             scene_editor_2d.SCENE_INSPECTOR_SETUP);
         editor.sceneSectionDropdown.WasChanged();
+}
 
+/// @brief Construct scene setup, history, properties, layers, and tile tools.
+func BuildSceneInspector(editor: scene_editor_2d.SceneEditor2D,
+                         app: GUI.App) {
+        var paletteStrip = editor.paletteStripBox;
         editor.sceneSetupGroup =
             GUI.GroupBox.New(editor.sceneTabHost, "Scene setup");
         var sceneSizeRow = GUI.HBox.New();
@@ -567,7 +602,12 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         // happens; per-tile behavior authoring stays on the Scene tab.
         editor.tilesetInspector.Setup(paletteStrip, app);
         editor.tileBehavior.Setup(editor.sceneTabHost);
+}
 
+/// @brief Construct object hierarchy search, reparent, and ordering controls.
+func BuildHierarchy(editor: scene_editor_2d.SceneEditor2D,
+                    app: GUI.App) {
+        var objectPane = editor.objectPaneBox;
         GUI.Label.New(objectPane, "Objects");
         var hierarchySearchRow = GUI.HBox.New();
         hierarchySearchRow.SetSpacing(4.0);
@@ -660,7 +700,11 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.objectDownButton = GUI.Button.New(objectOrderButtons, "Down");
         editor.objectDownButton.SetTooltip(
             "Move the selected object subtree after its next sibling");
+}
 
+/// @brief Construct selected-object identity and transform controls.
+func BuildObjectTransformInspector(
+    editor: scene_editor_2d.SceneEditor2D) {
         editor.objectFieldsLabel = GUI.Label.New(editor.objectTabHost, "Selected object");
         editor.objectTypeInput = GUI.TextInput.New(editor.objectTabHost);
         editor.objectTypeInput.SetPlaceholder("Object type");
@@ -727,6 +771,11 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
         editor.objectTintInput.SetTooltip(
             "RGBA multiply tint in hex; FFFFFFFF means no tint. "
             + "Enter commits one undoable edit.");
+}
+
+/// @brief Construct object preview ordering, properties, and components.
+func BuildObjectMetadataInspector(
+    editor: scene_editor_2d.SceneEditor2D) {
         editor.objectDrawStackGroup =
             GUI.GroupBox.New(editor.objectTabHost, "Preview draw stack");
         editor.objectDrawStackSummary = GUI.Label.New(
@@ -809,7 +858,11 @@ expose func Build(editor: scene_editor_2d.SceneEditor2D,
             "Browse Asset Field...",
             file_utils.AssetKindExtensions("any"),
             "Use In Field Draft");
+}
 
+/// @brief Add trailing status rows and publish the initial disabled state.
+func FinishInspector(editor: scene_editor_2d.SceneEditor2D,
+                     inspector: GUI.VBox) {
         editor.detailLabel = GUI.Label.New(inspector, "");
         editor.detailLabel.SetWordWrap(true);
         editor.SetEditorControlsEnabled(false);

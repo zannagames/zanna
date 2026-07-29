@@ -1,5 +1,5 @@
 {
-  "version": 17,
+  "version": 18,
   "components": [
     {
       "name": "enemy-spawn",
@@ -673,5 +673,29 @@
         "assets/editor-previews/pickup-04.scene3d"
       ]
     }
-  ]
+  ],
+  "nodePreviewFilter3D": {
+    "label": "Wave",
+    "allLabel": "All waves",
+    "matchProperty": "spawn.wave",
+    "defaultIndex": 1,
+    "states": [
+      {
+        "label": "Wave 1",
+        "matchValue": 0
+      },
+      {
+        "label": "Wave 2",
+        "matchValue": 1
+      },
+      {
+        "label": "Wave 3",
+        "matchValue": 2
+      },
+      {
+        "label": "Wave 4",
+        "matchValue": 3
+      }
+    ]
+  }
 }

@@ -105,10 +105,11 @@ func ClickMenuOffset(shell: app_shell.AppShell,
                      harness: GUI.TestHarness,
                      button: GUI.Button,
                      offsetY: Number) {
-    var x = HarnessCoordinate(shell, button.GetScreenX() + 20.0);
+    var x = HarnessCoordinate(shell, button.GetScreenX())
+        + Convert.NumToInt(20.0);
     var y = HarnessCoordinate(
-        shell,
-        button.GetScreenY() + button.GetScreenHeight() + offsetY);
+        shell, button.GetScreenY() + button.GetScreenHeight())
+        + Convert.NumToInt(offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -133,7 +134,31 @@ func ClickRulersControl(shell: app_shell.AppShell,
     return true;
 }
 
-func main() {
+/// @brief Typed state shared by the serial rulers-and-guides scenarios.
+class RulersGuidesProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_2d.SceneEditor2D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose SceneDocument fixture;
+    expose Integer guideColumn;
+    expose Integer guideRow;
+    expose String baseline;
+    expose Integer baselineRevision;
+    expose Integer baselineUndo;
+    expose GUI.TestHarness harness;
+    expose Integer rulerX;
+    expose Integer rulerY;
+    expose Integer movedColumn;
+    expose Integer movedRulerX;
+    expose Integer canceledColumn;
+    expose Integer canceledRulerX;
+    expose Integer movedRow;
+}
+
+/// @brief Build the fixture and verify a ruler click toggles one guide.
+func VerifyRulerSetupAndClick(
+    ctx: RulersGuidesProbeContext) -> Boolean {
     if scene_editor_2d.CanvasRulerMajorStride(32) != 2
        or scene_editor_2d.CanvasRulerMajorStride(8) != 8
        or scene_editor_2d.CanvasRulerGuideCoordinate(
@@ -143,7 +168,7 @@ func main() {
        or scene_editor_2d.CanvasRulerGuideCoordinate(
               -40, 0, 0, 32, 80) != -1 {
         Terminal.Say("RESULT: fail pure ruler geometry");
-        return;
+        return false;
     }
 
     var shell = new app_shell.AppShell();
@@ -158,7 +183,7 @@ func main() {
     var fixture = SceneDocument.New(80, 50, 32, 32);
     if fixture == null {
         Fail(shell, null, "scene fixture");
-        return;
+        return false;
     }
     fixture.SetTile(0, 0, 0, 1);
     sceneDoc.content = fixture.ToJson();
@@ -183,7 +208,7 @@ func main() {
        or editor.verticalRulerPixels.Height
           != Convert.NumToInt(editor.canvasScroll.GetLogicalHeight()) {
         Fail(shell, null, "initial ruler layout or pixels");
-        return;
+        return false;
     }
 
     editor.canvasScroll.SetScroll(320.0, 160.0);
@@ -201,7 +226,7 @@ func main() {
        or guideY < 0
        or guideY >= editor.verticalRulerPixels.Height {
         Fail(shell, null, "scrolled ruler tick placement");
-        return;
+        return false;
     }
 
     var baseline = sceneDoc.content;
@@ -210,7 +235,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
 
     // A real top-ruler click toggles the exact visible cell boundary.
@@ -270,7 +295,7 @@ func main() {
              + editor.horizontalRulerImage.GetScreenWidth() + "x"
              + editor.horizontalRulerImage.GetScreenHeight()
              + " pointer=" + rulerX + "," + rulerY);
-        return;
+        return false;
     }
 
     // Clicking the same ruler coordinate removes, rather than duplicates, it.
@@ -285,7 +310,7 @@ func main() {
            scene_editor_2d.CANVAS_GUIDE_VERTICAL,
            guideColumn) {
         Fail(shell, harness, "guide click did not toggle removal");
-        return;
+        return false;
     }
 
     if editor.ToggleCanvasGuide(
@@ -295,9 +320,39 @@ func main() {
               scene_editor_2d.CANVAS_GUIDE_HORIZONTAL,
               guideRow) == false {
         Fail(shell, harness, "direct guide fixture");
-        return;
+        return false;
     }
     PumpTwice(shell, editor, sceneDoc);
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.fixture = fixture;
+    ctx.guideColumn = guideColumn;
+    ctx.guideRow = guideRow;
+    ctx.baseline = baseline;
+    ctx.baselineRevision = baselineRevision;
+    ctx.baselineUndo = baselineUndo;
+    ctx.harness = harness;
+    ctx.rulerX = rulerX;
+    ctx.rulerY = rulerY;
+    return true;
+}
+
+/// @brief Verify captured vertical-guide moves and Escape rollback.
+func VerifyVerticalGuideDrags(
+    ctx: RulersGuidesProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var guideColumn = ctx.guideColumn;
+    var baseline = ctx.baseline;
+    var baselineRevision = ctx.baselineRevision;
+    var baselineUndo = ctx.baselineUndo;
+    var harness = ctx.harness;
+    var rulerX = ctx.rulerX;
+    var rulerY = ctx.rulerY;
 
     // A real captured top-ruler drag previews at the target while retaining
     // the workspace source, then applies exactly once on release.
@@ -334,7 +389,7 @@ func main() {
        or editor.GetRevision() != baselineRevision
        or editor.undoStack.count() != baselineUndo {
         Fail(shell, harness, "live vertical-guide drag preview");
-        return;
+        return false;
     }
     harness.SendMouse("up", movedRulerX, rulerY, 0);
     harness.DispatchPending();
@@ -348,7 +403,7 @@ func main() {
               scene_editor_2d.CANVAS_GUIDE_VERTICAL,
               movedColumn) == false {
         Fail(shell, harness, "vertical-guide release did not move once");
-        return;
+        return false;
     }
 
     // Escape restores the exact source after a live move and releases capture.
@@ -384,8 +439,29 @@ func main() {
        or editor.GetRevision() != baselineRevision
        or editor.undoStack.count() != baselineUndo {
         Fail(shell, harness, "Escape did not roll back guide drag");
-        return;
+        return false;
     }
+
+    ctx.movedColumn = movedColumn;
+    ctx.movedRulerX = movedRulerX;
+    ctx.canceledColumn = canceledColumn;
+    ctx.canceledRulerX = canceledRulerX;
+    return true;
+}
+
+/// @brief Verify horizontal moves, creation, removal, and collisions.
+func VerifyGuideCreationAndCollisions(
+    ctx: RulersGuidesProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var guideRow = ctx.guideRow;
+    var harness = ctx.harness;
+    var rulerY = ctx.rulerY;
+    var movedColumn = ctx.movedColumn;
+    var movedRulerX = ctx.movedRulerX;
+    var canceledColumn = ctx.canceledColumn;
+    var canceledRulerX = ctx.canceledRulerX;
 
     // The left ruler owns the same captured behavior for horizontal guides.
     var movedRow = guideRow + 2;
@@ -414,7 +490,7 @@ func main() {
           != scene_editor_2d.CANVAS_GUIDE_HORIZONTAL
        or editor.canvasGuideDragCurrent != movedRow {
         Fail(shell, harness, "live horizontal-guide drag preview");
-        return;
+        return false;
     }
     harness.SendMouse("up", leftRulerX, movedRulerY, 0);
     harness.DispatchPending();
@@ -426,7 +502,7 @@ func main() {
               scene_editor_2d.CANVAS_GUIDE_HORIZONTAL,
               movedRow) == false {
         Fail(shell, harness, "horizontal-guide release did not move");
-        return;
+        return false;
     }
 
     // Dragging from empty ruler space creates at the release coordinate,
@@ -460,7 +536,7 @@ func main() {
               scene_editor_2d.CANVAS_GUIDE_VERTICAL,
               createdColumn) == false {
         Fail(shell, harness, "empty-ruler drag did not create at target");
-        return;
+        return false;
     }
     var outsideRulerX = HarnessCoordinate(
         shell,
@@ -476,7 +552,7 @@ func main() {
     shell.Render();
     if editor.canvasGuideDragCurrent >= 0 {
         Fail(shell, harness, "drag-out did not preview guide removal");
-        return;
+        return false;
     }
     harness.SendMouse("up", outsideRulerX, rulerY, 0);
     harness.DispatchPending();
@@ -486,7 +562,7 @@ func main() {
            createdColumn)
        or Input.Mouse.IsCaptured() {
         Fail(shell, harness, "drag-out did not remove guide");
-        return;
+        return false;
     }
 
     // A captured destination collision never drops or duplicates either guide.
@@ -494,7 +570,7 @@ func main() {
            scene_editor_2d.CANVAS_GUIDE_VERTICAL,
            canceledColumn) == false {
         Fail(shell, harness, "guide collision fixture");
-        return;
+        return false;
     }
     harness.SendMouse("move", movedRulerX, rulerY, 0);
     harness.SendMouse("down", movedRulerX, rulerY, 0);
@@ -518,14 +594,33 @@ func main() {
               scene_editor_2d.CANVAS_GUIDE_VERTICAL,
               canceledColumn) == false {
         Fail(shell, harness, "guide collision changed workspace");
-        return;
+        return false;
     }
+
+    ctx.movedRow = movedRow;
+    return true;
+}
+
+/// @brief Verify visibility, tab ownership, capacity, and capture output.
+func VerifyGuideWorkspaceOwnership(
+    ctx: RulersGuidesProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var fixture = ctx.fixture;
+    var baseline = ctx.baseline;
+    var baselineRevision = ctx.baselineRevision;
+    var baselineUndo = ctx.baselineUndo;
+    var harness = ctx.harness;
+    var movedColumn = ctx.movedColumn;
+    var movedRow = ctx.movedRow;
 
     // Visibility is a real layout action and follows the owning tab.
     if ClickRulersControl(
            shell, harness, editor, sceneDoc) == false {
         Fail(shell, harness, "compact View menu did not open");
-        return;
+        return false;
     }
     PumpTwice(shell, editor, sceneDoc);
     if editor.showRulers
@@ -543,7 +638,7 @@ func main() {
              + " revision=" + editor.GetRevision() + "/"
              + baselineRevision + " undo="
              + editor.undoStack.count() + "/" + baselineUndo);
-        return;
+        return false;
     }
 
     var otherSceneDoc = documents.NewScene2DDocument();
@@ -553,7 +648,7 @@ func main() {
        or editor.verticalGuides.count() != 0
        or editor.horizontalGuides.count() != 0 {
         Fail(shell, harness, "new scene inherited ruler workspace");
-        return;
+        return false;
     }
     var coordinate = 0;
     while coordinate < scene_editor_2d.MAX_CANVAS_GUIDES_PER_AXIS {
@@ -561,7 +656,7 @@ func main() {
                scene_editor_2d.CANVAS_GUIDE_VERTICAL,
                coordinate) == false {
             Fail(shell, harness, "guide capacity fixture");
-            return;
+            return false;
         }
         coordinate = coordinate + 1;
     }
@@ -571,7 +666,7 @@ func main() {
               scene_editor_2d.CANVAS_GUIDE_VERTICAL,
               coordinate) {
         Fail(shell, harness, "guide capacity bound");
-        return;
+        return false;
     }
 
     PumpTwice(shell, editor, sceneDoc);
@@ -585,13 +680,13 @@ func main() {
               scene_editor_2d.CANVAS_GUIDE_HORIZONTAL,
               movedRow) == false {
         Fail(shell, harness, "ruler workspace did not follow the scene tab");
-        return;
+        return false;
     }
 
     if ClickRulersControl(
            shell, harness, editor, sceneDoc) == false {
         Fail(shell, harness, "compact View menu did not reopen");
-        return;
+        return false;
     }
     PumpTwice(shell, editor, sceneDoc);
     var rulerCapture = TempFile.Dir()
@@ -606,7 +701,7 @@ func main() {
        or editor.GetRevision() != baselineRevision
        or editor.undoStack.count() != baselineUndo {
         Fail(shell, harness, "ruler/guide capture or final isolation");
-        return;
+        return false;
     }
 
     var metric = editor.horizontalRulerPixels.Width
@@ -618,4 +713,13 @@ func main() {
         "METRIC: ruler=" + rulerCapture
         + " canvas=" + canvasCapture + " " + metric);
     Terminal.Say("RESULT: ok");
+    return true;
+}
+
+func main() {
+    var ctx = new RulersGuidesProbeContext();
+    if VerifyRulerSetupAndClick(ctx) == false { return; }
+    if VerifyVerticalGuideDrags(ctx) == false { return; }
+    if VerifyGuideCreationAndCollisions(ctx) == false { return; }
+    if VerifyGuideWorkspaceOwnership(ctx) == false { return; }
 }

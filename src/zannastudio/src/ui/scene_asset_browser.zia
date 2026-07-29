@@ -29,6 +29,7 @@ bind "../services/asset_library";
 bind "../services/safe_io";
 bind "inspector_rows";
 bind "scene_asset_thumbnails";
+bind "scene_asset_browser_support";
 
 bind GUI = Zanna.GUI;
 bind Pixels = Zanna.Graphics.Pixels;
@@ -64,216 +65,31 @@ final ASSET_CARD_WIDTH: Integer = 96;
 final ASSET_CARD_HEIGHT: Integer = 116;
 final ASSET_CARD_GAP: Integer = 6;
 
-/// @brief One bounded, clickable, draggable asset-grid card.
-class SceneAssetThumbnailCard {
-    expose GUI.VBox host;
-    expose GUI.Image image;
-    expose GUI.Button placeholder;
-    expose GUI.Button labelButton;
-    expose String path;
-    expose Integer rowIndex;
-    expose Boolean thumbnailAttempted;
-    expose Boolean thumbnailReady;
-
-    expose func init() {
-        host = null;
-        image = null;
-        placeholder = null;
-        labelButton = null;
-        path = "";
-        rowIndex = -1;
-        thumbnailAttempted = false;
-        thumbnailReady = false;
-    }
-
-    /// @brief Build a fixed-size card whose controls share one drag payload.
-    expose func Build(parent: GUI.Flex,
-                      assetPath: String,
-                      assetLabel: String,
-                      listRow: Integer) {
-        path = assetPath;
-        rowIndex = listRow;
-        host = GUI.VBox.New();
-        host.SetSpacing(3.0);
-        host.SetAlign(GUI.Align.Center);
-        host.SetPreferredSize(
-            ASSET_CARD_WIDTH + 0.0, ASSET_CARD_HEIGHT + 0.0);
-        host.SetMinSize(
-            ASSET_CARD_WIDTH + 0.0, ASSET_CARD_HEIGHT + 0.0);
-        host.SetMaxSize(
-            ASSET_CARD_WIDTH + 0.0, ASSET_CARD_HEIGHT + 0.0);
-        parent.AddChild(host);
-
-        image = GUI.Image.New(host);
-        image.SetPreferredSize(
-            ASSET_THUMBNAIL_EDGE + 0.0,
-            ASSET_THUMBNAIL_EDGE + 0.0);
-        image.SetMinSize(
-            ASSET_THUMBNAIL_EDGE + 0.0,
-            ASSET_THUMBNAIL_EDGE + 0.0);
-        image.SetMaxSize(
-            ASSET_THUMBNAIL_EDGE + 0.0,
-            ASSET_THUMBNAIL_EDGE + 0.0);
-        image.SetScaleMode(0);
-        image.SetFilter(1);
-        image.SetFocusable(true);
-        image.SetAccessibleName(
-            "Thumbnail for " + assetLabel);
-        image.SetTooltip(assetLabel);
-        image.SetDraggable(true);
-        image.SetDragData("zanna/asset", path);
-        image.SetVisible(false);
-
-        placeholder = GUI.Button.New(host, "");
-        placeholder.SetPreferredSize(
-            ASSET_THUMBNAIL_EDGE + 0.0,
-            ASSET_THUMBNAIL_EDGE + 0.0);
-        placeholder.SetMinSize(
-            ASSET_THUMBNAIL_EDGE + 0.0,
-            ASSET_THUMBNAIL_EDGE + 0.0);
-        placeholder.SetMaxSize(
-            ASSET_THUMBNAIL_EDGE + 0.0,
-            ASSET_THUMBNAIL_EDGE + 0.0);
-        placeholder.SetStyle(2);
-        if scene_asset_thumbnails.IsImageAsset(path) {
-            placeholder.SetIconName("file-image");
-        } else {
-            placeholder.SetIconName("file");
-        }
-        placeholder.SetAccessibleName(
-            "Asset preview placeholder for " + assetLabel);
-        placeholder.SetTooltip(assetLabel);
-        placeholder.SetDraggable(true);
-        placeholder.SetDragData("zanna/asset", path);
-
-        labelButton = GUI.Button.New(host, Path.Name(path));
-        labelButton.SetPreferredSize(ASSET_CARD_WIDTH + 0.0, 28.0);
-        labelButton.SetMinSize(ASSET_CARD_WIDTH + 0.0, 28.0);
-        labelButton.SetMaxSize(ASSET_CARD_WIDTH + 0.0, 28.0);
-        labelButton.SetStyle(2);
-        labelButton.SetAccessibleName("Select asset " + assetLabel);
-        labelButton.SetTooltip(assetLabel);
-        labelButton.SetDraggable(true);
-        labelButton.SetDragData("zanna/asset", path);
-    }
-
-    /// @brief Replace the placeholder with one widget-owned pixel upload.
-    expose func SetThumbnail(pixels: Pixels) {
-        if pixels == null or image == null { return; }
-        image.SetPixels(pixels, pixels.Width, pixels.Height);
-        image.SetVisible(true);
-        placeholder.SetVisible(false);
-        thumbnailReady = true;
-    }
-
-    /// @brief Drain click edges from every interactive part of the card.
-    expose func TakeClicked() -> Boolean {
-        var clickedImage = image != null and image.WasClicked();
-        var clickedPlaceholder =
-            placeholder != null and placeholder.WasClicked();
-        var clickedLabel =
-            labelButton != null and labelButton.WasClicked();
-        return clickedImage or clickedPlaceholder or clickedLabel;
-    }
-
-    /// @brief Present the hidden list's canonical selection on this card.
-    expose func SetSelected(selected: Boolean) {
-        if labelButton == null { return; }
-        if selected { labelButton.SetStyle(1); }
-        else { labelButton.SetStyle(2); }
-    }
-}
-
-/// @brief Normalize a comma/semicolon extension list for exact membership.
+/// @brief Normalize a comma or semicolon extension allow-list.
 expose func NormalizeAssetExtensions(extensions: String) -> String {
-    var value = Str.ToLower(Str.Trim(extensions));
-    value = Str.Replace(value, ";", ",");
-    value = Str.Replace(value, " ", "");
-    value = Str.Replace(value, "*", "");
-    while Str.IndexOf(value, ",,") > 0 {
-        value = Str.Replace(value, ",,", ",");
-    }
-    if value == "" { return ","; }
-    if Str.StartsWith(value, ",") == false { value = "," + value; }
-    if Str.EndsWith(value, ",") == false { value = value + ","; }
-    return value;
+    return scene_asset_browser_support.NormalizeAssetExtensions(extensions);
 }
 
 /// @brief Return whether one path belongs to an exact extension allow-list.
 expose func AssetExtensionAllowed(path: String,
                                   normalizedExtensions: String) -> Boolean {
-    var extension = Str.ToLower(Path.Extension(path));
-    if extension == "" { return false; }
-    return Str.IndexOf(
-        normalizedExtensions, "," + extension + ",") > 0;
+    return scene_asset_browser_support.AssetExtensionAllowed(
+        path, normalizedExtensions);
 }
 
-/// @brief Match a case-insensitive browser query against label and full path.
+/// @brief Match a browser query against a label and full path.
 expose func AssetMatchesFilter(label: String,
                                path: String,
                                filter: String) -> Boolean {
-    var query = Str.ToLower(Str.Trim(filter));
-    if query == "" { return true; }
-    return Str.IndexOf(Str.ToLower(label), query) > 0
-        or Str.IndexOf(Str.ToLower(path), query) > 0;
+    return scene_asset_browser_support.AssetMatchesFilter(
+        label, path, filter);
 }
 
 /// @brief Return a portable scene-relative reference when roots are compatible.
-/// @details Unsaved documents and incompatible roots retain an absolute path.
 expose func PortableReferencePath(assetPath: String,
                                   documentPath: String) -> String {
-    var cleanAsset = Str.Trim(assetPath);
-    if cleanAsset == "" { return ""; }
-    if Path.IsAbsolute(cleanAsset) == false {
-        return PortableSeparators(cleanAsset);
-    }
-
-    var target = Path.Normalize(Path.Absolute(cleanAsset));
-    if Str.Trim(documentPath) == "" {
-        return PortableSeparators(target);
-    }
-    var base = Path.Normalize(
-        Path.Absolute(Path.Directory(documentPath)));
-    var baseParts = AssetPathParts(base);
-    var targetParts = AssetPathParts(target);
-    if Seq.get_Count(baseParts) == 0
-       or Seq.get_Count(targetParts) == 0 {
-        return PortableSeparators(target);
-    }
-
-    var baseRoot = Obj.ToString(Seq.Get(baseParts, 0));
-    var targetRoot = Obj.ToString(Seq.Get(targetParts, 0));
-    var rootsMatch = baseRoot == targetRoot;
-    if rootsMatch == false
-       and Str.EndsWith(baseRoot, ":")
-       and Str.EndsWith(targetRoot, ":") {
-        rootsMatch = Str.ToLower(baseRoot) == Str.ToLower(targetRoot);
-    }
-    if rootsMatch == false { return PortableSeparators(target); }
-
-    var common = 1;
-    while common < Seq.get_Count(baseParts)
-          and common < Seq.get_Count(targetParts)
-          and Obj.ToString(Seq.Get(baseParts, common))
-              == Obj.ToString(Seq.Get(targetParts, common)) {
-        common = common + 1;
-    }
-
-    var relative = "";
-    var baseIndex = common;
-    while baseIndex < Seq.get_Count(baseParts) {
-        relative = AppendAssetPath(relative, "..");
-        baseIndex = baseIndex + 1;
-    }
-    var targetIndex = common;
-    while targetIndex < Seq.get_Count(targetParts) {
-        relative = AppendAssetPath(
-            relative,
-            Obj.ToString(Seq.Get(targetParts, targetIndex)));
-        targetIndex = targetIndex + 1;
-    }
-    if relative == "" { relative = Path.Name(target); }
-    return relative;
+    return scene_asset_browser_support.PortableReferencePath(
+        assetPath, documentPath);
 }
 
 /// @brief Presentation-only project asset chooser.
@@ -288,7 +104,7 @@ class SceneAssetBrowser {
     expose GUI.ListBox assetList;
     expose GUI.ScrollView thumbnailScroll;
     expose GUI.Flex thumbnailGrid;
-    expose List[SceneAssetThumbnailCard] thumbnailCards;
+    expose List[scene_asset_browser_support.SceneAssetThumbnailCard] thumbnailCards;
     expose Boolean gridView;
     expose Integer thumbnailAttemptedCount;
     expose Integer thumbnailReadyCount;
@@ -831,7 +647,7 @@ class SceneAssetBrowser {
                         if thumbnailCards.count()
                            < MAX_VISIBLE_ASSET_THUMBNAILS {
                             var card =
-                                new SceneAssetThumbnailCard();
+                                new scene_asset_browser_support.SceneAssetThumbnailCard();
                             card.Build(
                                 thumbnailGrid,
                                 path,
@@ -909,7 +725,7 @@ class SceneAssetBrowser {
 
     /// @brief Return whether one card intersects the live grid viewport.
     hide func ThumbnailCardVisible(
-        card: SceneAssetThumbnailCard,
+        card: scene_asset_browser_support.SceneAssetThumbnailCard,
         index: Integer) -> Boolean {
         if card == null or card.host == null { return false; }
         var viewportHeight = thumbnailScroll.GetScreenHeight();
@@ -1137,41 +953,10 @@ class SceneAssetBrowser {
 
 /// @brief Convert platform separators to portable forward slashes.
 func PortableSeparators(path: String) -> String {
-    var value = Str.Replace(path, "\\", "/");
-    var separator = Path.Separator();
-    if separator != "/" {
-        value = Str.Replace(value, separator, "/");
-    }
-    return value;
-}
-
-/// @brief Split a normalized filesystem path into meaningful components.
-func AssetPathParts(path: String) -> Any {
-    var parts = Seq.New();
-    var raw = Str.Split(PortableSeparators(path), "/");
-    var i = 0;
-    while i < Seq.get_Count(raw) {
-        var part = Obj.ToString(Seq.Get(raw, i));
-        if part != "" and part != "." {
-            Seq.Push(parts, part);
-        }
-        i = i + 1;
-    }
-    return parts;
-}
-
-/// @brief Append one portable path component.
-func AppendAssetPath(path: String, component: String) -> String {
-    if path == "" { return component; }
-    return path + "/" + component;
+    return scene_asset_browser_support.PortableSeparators(path);
 }
 
 /// @brief Decode one preview without leaking loader exceptions into UI state.
 func LoadAssetPreview(path: String) -> Pixels {
-    try {
-        return Pixels.Load(path);
-    } catch {
-        return null;
-    }
-    return null;
+    return scene_asset_browser_support.LoadAssetPreview(path);
 }

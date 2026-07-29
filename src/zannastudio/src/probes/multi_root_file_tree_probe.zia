@@ -69,7 +69,24 @@ func cacheContains(projMgr: project_manager.ProjectManager, needle: String) -> B
     return false;
 }
 
-func main() {
+/// @brief State shared by the serial multi-root workspace scenarios.
+class MultiRootProbeContext {
+    expose app_shell.AppShell shell;
+    expose String root1;
+    expose String root2;
+    expose project_manager.ProjectManager projMgr;
+    expose document_manager.DocumentManager docMgr;
+    expose project_index.ProjectIndexer indexer;
+    expose scm_view.ScmView scm;
+    expose terminal_controller.TerminalController terminalCtrl;
+    expose search_commands.SearchController searcher;
+    expose locations.LocationStore locStore;
+    expose workspace_watcher.WorkspaceWatcherState watcherState;
+    expose command_context.CommandContext commandContext;
+}
+
+/// @brief Open the first two roots and verify aggregate consumer state.
+func VerifyInitialRoots(ctx: MultiRootProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Multi-Root Probe", 960, 640);
 
@@ -98,13 +115,25 @@ func main() {
     commandContext.searcher = searcher;
     commandContext.locStore = locStore;
     commandContext.workspaceWatcherState = watcherState;
+    ctx.shell = shell;
+    ctx.root1 = root1;
+    ctx.root2 = root2;
+    ctx.projMgr = projMgr;
+    ctx.docMgr = docMgr;
+    ctx.indexer = indexer;
+    ctx.scm = scm;
+    ctx.terminalCtrl = terminalCtrl;
+    ctx.searcher = searcher;
+    ctx.locStore = locStore;
+    ctx.watcherState = watcherState;
+    ctx.commandContext = commandContext;
 
     // Single root first.
-    if projMgr.OpenFolder(root1) == false { fail(shell, "primary root open failed"); return; }
+    if projMgr.OpenFolder(root1) == false { fail(shell, "primary root open failed"); return false; }
     shell.SetSidebarVisible(false);
     if main_command_dispatcher.ActivateOpenWorkspace(commandContext, true) == false {
         fail(shell, "primary workspace consumers not activated");
-        return;
+        return false;
     }
     shell.Poll();
     shell.Render();
@@ -113,26 +142,37 @@ func main() {
        or shell.workbench.IsSidebarVisible() == false
        or shell.workbench.leftViewStack.IsVisible() == false {
         fail(shell, "primary workspace consumers diverged");
-        return;
+        return false;
     }
-    if projMgr.extraRoots.count() != 0 { fail(shell, "extraRoots not empty after OpenFolder"); return; }
-    if cacheContains(projMgr, "alpha.zia") == false { fail(shell, "alpha.zia missing from single-root cache"); return; }
-    if cacheContains(projMgr, "beta.zia") { fail(shell, "beta.zia present before AddFolder"); return; }
+    if projMgr.extraRoots.count() != 0 { fail(shell, "extraRoots not empty after OpenFolder"); return false; }
+    if cacheContains(projMgr, "alpha.zia") == false { fail(shell, "alpha.zia missing from single-root cache"); return false; }
+    if cacheContains(projMgr, "beta.zia") { fail(shell, "beta.zia present before AddFolder"); return false; }
 
     // Add a second root — both roots' files should now be cached.
     if projMgr.AddFolderToWorkspace(root2) == false {
         fail(shell, "second root add failed");
-        return;
+        return false;
     }
-    if projMgr.extraRoots.count() != 1 { fail(shell, "extraRoots count != 1 after AddFolder"); return; }
+    if projMgr.extraRoots.count() != 1 { fail(shell, "extraRoots count != 1 after AddFolder"); return false; }
     if main_command_dispatcher.ActivateOpenWorkspace(commandContext, false) == false
        or indexer.workspaceSignature != projMgr.WorkspaceSignature()
        or scm.repoPath != root1 or terminalCtrl.cwd != root1 {
         fail(shell, "multi-root workspace consumers diverged");
-        return;
+        return false;
     }
-    if cacheContains(projMgr, "alpha.zia") == false { fail(shell, "alpha.zia missing from multi-root cache"); return; }
-    if cacheContains(projMgr, "beta.zia") == false { fail(shell, "beta.zia missing from multi-root cache"); return; }
+    if cacheContains(projMgr, "alpha.zia") == false { fail(shell, "alpha.zia missing from multi-root cache"); return false; }
+    if cacheContains(projMgr, "beta.zia") == false { fail(shell, "beta.zia missing from multi-root cache"); return false; }
+
+    return true;
+}
+
+/// @brief Verify complete, shortened, and partial-root session restoration.
+func VerifySessionPersistence(ctx: MultiRootProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var root1 = ctx.root1;
+    var root2 = ctx.root2;
+    var projMgr = ctx.projMgr;
+    var docMgr = ctx.docMgr;
 
     // Session persistence must retain every root, not silently collapse the
     // workspace to its primary folder on the next launch.
@@ -144,7 +184,7 @@ func main() {
     sessionMgr.Setup(sessionPath);
     if sessionMgr.Save(docMgr, projMgr) == false {
         fail(shell, "multi-root session save failed");
-        return;
+        return false;
     }
     var savedSession = Ini.Parse(File.ReadAllText(sessionPath));
     if Ini.Get(savedSession, "session", "workspaceRootCount") != "2"
@@ -154,7 +194,7 @@ func main() {
        or Ini.Get(savedSession, "recent", "path.0") != root1
        or Ini.Get(savedSession, "recent", "path.1") != root2 {
         fail(shell, "multi-root session did not serialize every root");
-        return;
+        return false;
     }
     var restoredMgr = new project_manager.ProjectManager();
     restoredMgr.Setup(null);
@@ -164,19 +204,19 @@ func main() {
        or restoredMgr.RootPathAt(0) != root1
        or restoredMgr.RootPathAt(1) != root2 {
         fail(shell, "multi-root session restore collapsed the workspace");
-        return;
+        return false;
     }
     if restoredMgr.RemoveFolderFromWorkspace(root2) == false
        or sessionMgr.Save(restoredDocs, restoredMgr) == false {
         fail(shell, "shorter workspace session save failed");
-        return;
+        return false;
     }
     var shorterSession = Ini.Parse(File.ReadAllText(sessionPath));
     if Ini.Get(shorterSession, "session", "workspaceRootCount") != "1"
        or Ini.Get(shorterSession, "session", "workspaceRoot.0") != root1
        or Ini.Get(shorterSession, "session", "workspaceRoot.1") != "" {
         fail(shell, "shorter workspace session retained a removed root");
-        return;
+        return false;
     }
 
     // A missing saved primary must not prevent a still-valid extra root from
@@ -196,15 +236,25 @@ func main() {
        or partialMgr.RootCount() != 1
        or partialMgr.RootPath() != root2 {
         fail(shell, "surviving workspace root was not promoted during restore");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify root ownership, duplicate rejection, and metadata rewrites.
+func VerifyRootOwnership(ctx: MultiRootProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var root1 = ctx.root1;
+    var root2 = ctx.root2;
+    var projMgr = ctx.projMgr;
 
     // Adding a duplicate root is rejected honestly and does not change state.
     if projMgr.AddFolderToWorkspace(root2)
        or projMgr.extraRoots.count() != 1
        or projMgr.lastOperationError == "" {
         fail(shell, "duplicate AddFolder did not report an unchanged workspace");
-        return;
+        return false;
     }
 
     // A folder-picker race must not close the current multi-root workspace.
@@ -213,19 +263,19 @@ func main() {
        or projMgr.RootPath() != root1
        or projMgr.RootCount() != 2 {
         fail(shell, "failed replacement destroyed the current workspace");
-        return;
+        return false;
     }
 
     // OwningProject resolves a file to its own root (relative path strips that root).
     var betaAbs = Path.Join(root2, "beta.zia");
-    if projMgr.RelativePath(betaAbs) != "beta.zia" { fail(shell, "RelativePath not root-aware for second root"); return; }
+    if projMgr.RelativePath(betaAbs) != "beta.zia" { fail(shell, "RelativePath not root-aware for second root"); return false; }
 
     // Entry metadata belongs to the file's owning root. The primary project
     // must remain untouched when an extra-root file is selected as that root's
     // entry point, and a later rename must follow the same owner.
     if projMgr.SetEntryFile(betaAbs) == false {
         fail(shell, "extra-root entry file rejected");
-        return;
+        return false;
     }
     var secondRootProject = projMgr.extraRoots.get(0);
     if secondRootProject.entryFile != "beta.zia"
@@ -233,7 +283,7 @@ func main() {
        or Str.IndexOf(File.ReadAllText(Path.Join(root2, "zanna.project")),
                       "entry beta.zia") == 0 {
         fail(shell, "extra-root entry metadata used primary root");
-        return;
+        return false;
     }
     var renamedBeta = projMgr.RenamePath(betaAbs, "beta-renamed.zia", null);
     if renamedBeta != Path.Join(root2, "beta-renamed.zia")
@@ -241,8 +291,26 @@ func main() {
        or Str.IndexOf(File.ReadAllText(Path.Join(root2, "zanna.project")),
                       "entry beta-renamed.zia") == 0 {
         fail(shell, "extra-root entry metadata did not follow rename");
-        return;
+        return false;
     }
+
+    return true;
+}
+
+/// @brief Verify root removal, promotion, replacement, and final close.
+func VerifyWorkspaceTransitions(ctx: MultiRootProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var root1 = ctx.root1;
+    var root2 = ctx.root2;
+    var projMgr = ctx.projMgr;
+    var docMgr = ctx.docMgr;
+    var indexer = ctx.indexer;
+    var scm = ctx.scm;
+    var terminalCtrl = ctx.terminalCtrl;
+    var searcher = ctx.searcher;
+    var locStore = ctx.locStore;
+    var watcherState = ctx.watcherState;
+    var commandContext = ctx.commandContext;
 
     // Root removal is a full service transition, not merely a tree-row delete.
     // First remove an extra root, then re-add it and remove the primary so the
@@ -255,12 +323,12 @@ func main() {
        or Dir.Exists(root2) == false
        or cacheContains(projMgr, "beta-renamed.zia") {
         fail(shell, "extra workspace root removal left stale state");
-        return;
+        return false;
     }
     if projMgr.AddFolderToWorkspace(root2) == false
        or main_command_dispatcher.ActivateOpenWorkspace(commandContext, false) == false {
         fail(shell, "removed workspace root could not be re-added");
-        return;
+        return false;
     }
     if main_command_dispatcher.RemoveWorkspaceFolder(commandContext, root1) == false
        or projMgr.RootCount() != 1
@@ -270,7 +338,7 @@ func main() {
        or scm.repoPath != root2 or terminalCtrl.cwd != root2
        or Dir.Exists(root1) == false {
         fail(shell, "primary workspace root removal did not promote consumers");
-        return;
+        return false;
     }
 
     // Replacing an existing workspace through File/Command Palette must move
@@ -295,7 +363,7 @@ func main() {
        or watcherState.rootSignature != ""
        or watcherState.watchers.count() != 0 {
         fail(shell, "replacement workspace consumers retained stale root");
-        return;
+        return false;
     }
 
     // Closing a workspace is a first-class transition: release the index and
@@ -303,7 +371,7 @@ func main() {
     // open editor documents alone.
     if main_command_dispatcher.RemoveWorkspaceFolder(commandContext, root3) == false {
         fail(shell, "removing the final root did not close the workspace");
-        return;
+        return false;
     }
     shell.Poll();
     shell.Render();
@@ -315,23 +383,33 @@ func main() {
        or shell.workbench.splitPane.GetCollapsedSide() != 1
        or shell.workbench.rightSidebarSplit.GetCollapsedSide() != 2 {
         fail(shell, "closed workspace retained attached consumers");
-        return;
+        return false;
     }
     if Dir.Exists(root3) == false {
         fail(shell, "close workspace mutated the project directory");
-        return;
+        return false;
     }
     scm.Refresh();
     if scm.activeJob != null or scm.activePtyJob != null {
         fail(shell, "closed workspace allowed an unscoped git refresh");
-        return;
+        return false;
     }
     if main_command_dispatcher.RemoveWorkspaceFolder(commandContext, root3) {
         fail(shell, "removing a folder from a closed workspace reported success");
-        return;
+        return false;
     }
 
-    indexer.Destroy();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new MultiRootProbeContext();
+    if VerifyInitialRoots(ctx) == false { return; }
+    if VerifySessionPersistence(ctx) == false { return; }
+    if VerifyRootOwnership(ctx) == false { return; }
+    if VerifyWorkspaceTransitions(ctx) == false { return; }
+
+    ctx.indexer.Destroy();
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

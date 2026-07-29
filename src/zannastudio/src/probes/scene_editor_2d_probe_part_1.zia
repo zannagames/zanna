@@ -1,0 +1,655 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_editor_2d_probe_part_1.zia
+// Purpose: Serial 2D editor probe scenarios, part 1 of 2.
+// Key invariants:
+//   - Scenarios preserve the original execution order and shared fixture.
+//   - Failure paths retain their original cleanup and RESULT diagnostics.
+// Ownership/Lifetime: Borrows one SceneEditor2DProbeContext from the entry probe.
+// Links: zannastudio/src/probes/scene_editor_2d_probe.zia,
+//        zannastudio/src/probes/scene_editor_2d_probe_context.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_probe_part_1;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../core/recovery_store";
+bind "../commands/command_context";
+bind "../commands/file_commands";
+bind "../commands/main_command_dispatcher";
+bind "../editor/editor_engine";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_asset_browser";
+bind "../ui/scene_clipboard";
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+bind "../ui/scene_tileset_2d";
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Terminal = Zanna.Terminal;
+
+// ============================================================================
+// MODULE: scene_editor_2d_probe
+// PURPOSE: Pin the 2D visual surface's document, gesture, tileset, and history
+//          contracts through the same public controller used by Studio.
+//
+// WHERE-THIS-FITS: This display probe complements SceneDocument runtime tests
+//          by exercising real widgets, Pixels assets, and document ownership.
+//
+// TEACHING-NOTE: Reloading external pixels is intentionally tested separately
+//          from assigning their path because only assignment is scene data.
+// ============================================================================
+
+bind "scene_editor_2d_probe_context" as Probe;
+bind "scene_editor_2d_probe_part_1_editing" as EditingScenarios;
+
+/// @brief Run the VerifyInitialSurfaceAndWorldFraming scenario against the shared fixture.
+expose func VerifyInitialSurfaceAndWorldFraming(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D Scene Editor Probe", 1100, 760);
+
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(editor,shell.workbench.scene2DHost, shell.app);
+
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    var hiddenEngine = new editor_engine.EditorEngine();
+    hiddenEngine.Setup(shell.workbench.editorRow);
+    hiddenEngine.LoadDocument(sceneDoc);
+    shell.SelectSurface(sceneDoc.kind);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+
+    if shell.workbench.scene2DHost.IsVisible() == false
+       or shell.workbench.editorRow.IsVisible()
+       or shell.workbench.scene3DHost.IsVisible() {
+        Probe.fail(shell, "2D document did not select exactly one visual surface");
+        return false;
+    }
+    if editor.scene == null
+       or editor.scene.Width != 32 or editor.scene.Height != 18
+       or editor.scene.LayerCount() != 1
+       or editor.renderedColumns != 32 or editor.renderedRows != 18
+       or editor.framePixels == null
+       or scene_editor_2d.FitZoomPercent(3, 2, 16, 600, 400) < 1000
+       or editor.canvasStage.GetLogicalWidth()
+          < editor.canvasScroll.GetLogicalWidth() - 2.0
+       or editor.canvasImage.GetScreenX()
+          <= editor.canvasScroll.GetScreenX() + 2.0 {
+        Probe.fail(shell, "default scene did not build a usable bounded canvas ("
+             + editor.scene.Width + "x" + editor.scene.Height
+             + ", layers=" + editor.scene.LayerCount()
+             + ", rendered=" + editor.renderedColumns + "x" + editor.renderedRows
+             + ", pixels=" + (editor.framePixels != null) + ")");
+        return false;
+    }
+    if scene_editor_2d.InitialSceneZoomPercent(
+           150, 17, 64, 800, 500) != 100
+       or scene_editor_2d.InitialSceneZoomPercent(
+              32, 18, 32, 800, 500)
+          != scene_editor_2d.FitZoomPercent(
+                 32, 18, 32, 800, 500) {
+        Probe.fail(shell, "initial 2D framing did not distinguish gameplay scale "
+             + "from a useful whole-scene fit");
+        return false;
+    }
+
+    var largeScene = SceneDocument.New(150, 17, 64, 64);
+    largeScene.SetInt("playerStartX", 192);
+    largeScene.SetInt("playerStartY", 832);
+    largeScene.AddObject("player-start", "player-start", 192, 832);
+    largeScene.AddObject("enemy", "far-enemy", 8192, 448);
+    var largeSceneDoc = new document.Document();
+    largeSceneDoc.fileName = "Large World.scene";
+    largeSceneDoc.language = "scene";
+    largeSceneDoc.kind = file_utils.DOC_KIND_SCENE_2D;
+    largeSceneDoc.content = largeScene.ToJson();
+    editor.Pump(largeSceneDoc);
+    shell.Render();
+    editor.Pump(largeSceneDoc);
+    shell.Render();
+    editor.Pump(largeSceneDoc);
+    shell.Render();
+    var startViewX =
+        192 * editor.displayCellSize / editor.scene.TileWidth
+        - editor.viewOriginX;
+    var startViewY =
+        832 * editor.displayCellSize / editor.scene.TileHeight
+        - editor.viewOriginY;
+    if editor.zoomPercent != 100
+       or editor.viewOriginY <= 0
+       or startViewX < 0 or startViewY < 0
+       or startViewX > editor.renderedColumns * editor.displayCellSize
+       or startViewY > editor.renderedRows * editor.displayCellSize {
+        Probe.fail(shell, "large world opened as an overview instead of framing "
+             + "its authored player start: zoom=" + editor.zoomPercent
+             + " origin=" + editor.viewOriginX + "," + editor.viewOriginY
+             + " start=" + startViewX + "," + startViewY
+             + " window=" + editor.renderedColumns + "x"
+             + editor.renderedRows);
+        return false;
+    }
+    if editor.SelectSceneObjects([1], 1) == false
+       or editor.FrameSelected() == false {
+        Probe.fail(shell, "2D selection could not request canvas framing");
+        return false;
+    }
+    shell.Render();
+    editor.Pump(largeSceneDoc);
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.hiddenEngine = hiddenEngine;
+    return true;
+}
+
+/// @brief Run the VerifyCanvasFramingAndTransformContracts scenario against the shared fixture.
+expose func VerifyCanvasFramingAndTransformContracts(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    shell.Render();
+    var farEnemyViewX =
+        8192 * editor.displayCellSize / editor.scene.TileWidth
+        - editor.viewOriginX;
+    var farEnemyViewY =
+        448 * editor.displayCellSize / editor.scene.TileHeight
+        - editor.viewOriginY;
+    if editor.viewOriginX < 7000
+       or farEnemyViewX < 0 or farEnemyViewY < 0
+       or farEnemyViewX > editor.renderedColumns * editor.displayCellSize
+       or farEnemyViewY > editor.renderedRows * editor.displayCellSize {
+        Probe.fail(shell, "framing a selected object did not reveal it: origin="
+             + editor.viewOriginX + "," + editor.viewOriginY
+             + " object=" + farEnemyViewX + "," + farEnemyViewY);
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+
+    if scene_editor_2d.UsesCompactLayout(920.0) == false
+       or scene_editor_2d.UsesCompactLayout(920.01)
+       or scene_editor_2d.UsesCompactLayout(0.0)
+       or scene_editor_2d.UsesCompactChrome(640.0) == false
+       or scene_editor_2d.UsesCompactChrome(640.01)
+       or scene_editor_2d.UsesCompactPaletteLayout(520.0) == false
+       or scene_editor_2d.UsesCompactPaletteLayout(520.01)
+       or scene_editor_2d.UsesDockedHierarchy(1199.99)
+       or scene_editor_2d.UsesDockedHierarchy(1200.0) == false
+       or scene_editor_2d.UsesDockedHierarchy(0.0) {
+        Probe.fail(shell, "2D viewport-priority thresholds were unstable");
+        return false;
+    }
+    editor.RequestWorkspaceModeToggle();
+    if editor.TakeWorkspaceModeToggleRequested() == false
+       or editor.TakeWorkspaceModeToggleRequested() {
+        Probe.fail(shell, "2D Scene Layout request was not a one-shot edge");
+        return false;
+    }
+    var layoutHierarchySide2D =
+        editor.hierarchySplit.GetCollapsedSide();
+    var layoutBodySide2D = editor.bodySplit.GetCollapsedSide();
+    var layoutPaletteSide2D = editor.canvasSplit.GetCollapsedSide();
+    editor.SetWorkspaceModeActive(true);
+    if editor.IsWorkspaceModeActive() == false
+       or editor.hierarchySplit.GetCollapsedSide()
+          != layoutHierarchySide2D
+       or editor.bodySplit.GetCollapsedSide() != layoutBodySide2D
+       or editor.canvasSplit.GetCollapsedSide() != layoutPaletteSide2D {
+        Probe.fail(shell, "2D Scene Layout state changed internal scene panes");
+        return false;
+    }
+    editor.SetWorkspaceModeActive(false);
+    editor.RequestFocusModeToggle();
+    if editor.TakeFocusModeToggleRequested() == false
+       or editor.TakeFocusModeToggleRequested() {
+        Probe.fail(shell, "2D scene focus request was not a one-shot edge");
+        return false;
+    }
+    var focusHierarchySide2D =
+        editor.hierarchySplit.GetCollapsedSide();
+    var focusBodySide2D = editor.bodySplit.GetCollapsedSide();
+    var focusPaletteSide2D = editor.canvasSplit.GetCollapsedSide();
+    var focusInspectorRequested2D =
+        editor.inspectorRequestedVisible;
+    var focusPaletteRequested2D =
+        editor.paletteRequestedVisible;
+    editor.SetFocusModeActive(true);
+    if editor.IsFocusModeActive() == false
+       or editor.hierarchySplit.GetCollapsedSide() != 1
+       or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.canvasSplit.GetCollapsedSide() != 2
+       or editor.inspectorRequestedVisible
+            != focusInspectorRequested2D
+       or editor.paletteRequestedVisible
+            != focusPaletteRequested2D
+       or editor.inspectorButton.IsEnabled()
+       or editor.paletteButton.IsEnabled() {
+        Probe.fail(shell,
+             "2D scene focus did not reclaim internal canvas space safely");
+        return false;
+    }
+    editor.SetFocusModeActive(false);
+    if editor.hierarchySplit.GetCollapsedSide()
+            != focusHierarchySide2D
+       or editor.bodySplit.GetCollapsedSide() != focusBodySide2D
+       or editor.canvasSplit.GetCollapsedSide()
+            != focusPaletteSide2D
+       or editor.inspectorRequestedVisible
+            != focusInspectorRequested2D
+       or editor.paletteRequestedVisible
+            != focusPaletteRequested2D
+       or editor.inspectorButton.IsEnabled() == false
+       or editor.paletteButton.IsEnabled() == false {
+        Probe.fail(shell,
+             "2D scene focus did not restore the exact internal layout "
+             + "(hierarchy=" + editor.hierarchySplit.GetCollapsedSide()
+             + "/" + focusHierarchySide2D
+             + ", body=" + editor.bodySplit.GetCollapsedSide()
+             + "/" + focusBodySide2D
+             + ", palette=" + editor.canvasSplit.GetCollapsedSide()
+             + "/" + focusPaletteSide2D
+             + ", inspector=" + editor.inspectorRequestedVisible
+             + "/" + focusInspectorRequested2D
+             + ", palette-request=" + editor.paletteRequestedVisible
+             + "/" + focusPaletteRequested2D
+             + ", buttons=" + editor.inspectorButton.IsEnabled()
+             + "/" + editor.paletteButton.IsEnabled()
+             + ", active=" + editor.IsFocusModeActive()
+             + ", compact=" + editor.compactLayout
+             + ", root-width=" + editor.root.GetLogicalWidth()
+             + ", floating=" + editor.hierarchyDock.floating
+             + "/" + editor.inspectorDock.floating
+             + "/" + editor.paletteDock.floating + ")");
+        return false;
+    }
+
+    // A common medium lane exposes complete secondary commands through one
+    // bounded View surface instead of growing around the longest state label.
+    shell.app.SetMinimumSize(1, 1);
+    shell.app.SetWindowSize(1000, 700);
+    editor.SetWorkspaceModeActive(true);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.viewMenuButton.IsVisible() == false
+       or editor.workspaceButton.IsVisible()
+       or editor.viewWorkspaceItem.IsCheckable() == false
+       or editor.viewMenuButton.GetScreenX()
+          + editor.viewMenuButton.GetScreenWidth()
+          > editor.viewToolbar.GetScreenX()
+              + editor.viewToolbar.GetScreenWidth() + 1.0
+       or editor.viewMenuButton.GetScreenY()
+            + editor.viewMenuButton.GetScreenHeight()
+          > editor.viewToolbar.GetScreenY()
+              + editor.viewToolbar.GetScreenHeight() + 1.0 {
+        Probe.fail(shell,
+             "medium 2D View overflow was missing or clipped");
+        return false;
+    }
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Run the VerifyResponsiveLayoutSetup scenario against the shared fixture.
+expose func VerifyResponsiveLayoutSetup(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    editor.SetWorkspaceModeActive(false);
+
+    // Studio supports a 720-wide production window, which leaves a much
+    // narrower center surface after the sidebar. Go smaller here to keep the
+    // responsive contract defensive and verify every action remains reachable.
+    shell.app.SetWindowSize(560, 420);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var compactBodyWidth = editor.bodySplit.GetScreenWidth();
+    if editor.compactLayout == false
+       or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.compactPaletteLayout == false
+       or editor.canvasSplit.GetCollapsedSide() != 2
+       or editor.objectPaneBox.IsVisible()
+       or editor.hierarchyButton.IsVisible() == false
+       or editor.inspectorScroll.IsVisible()
+       or editor.paletteStripBox.IsVisible()
+       or editor.toolbarStatus.IsVisible()
+       or editor.viewStatusLabel.IsVisible()
+       or editor.canvasScroll.GetScreenWidth()
+            < compactBodyWidth
+                - scene_editor_2d.CANVAS_RULER_LEFT_WIDTH - 8.0
+       or editor.toolMenuButton.IsVisible() == false
+       or editor.objectButton.IsVisible()
+       or editor.toolMenuButton.GetScreenX()
+              + editor.toolMenuButton.GetScreenWidth()
+          > editor.toolbar.GetScreenX() + editor.toolbar.GetScreenWidth() + 1.0
+       or editor.toolMenuButton.GetScreenY()
+              + editor.toolMenuButton.GetScreenHeight()
+          > editor.toolbar.GetScreenY() + editor.toolbar.GetScreenHeight() + 1.0
+       or editor.inspectorButton.GetScreenX()
+              + editor.inspectorButton.GetScreenWidth()
+          > editor.viewToolbar.GetScreenX()
+              + editor.viewToolbar.GetScreenWidth() + 1.0
+       or editor.inspectorButton.GetScreenY()
+              + editor.inspectorButton.GetScreenHeight()
+          > editor.viewToolbar.GetScreenY()
+              + editor.viewToolbar.GetScreenHeight() + 1.0 {
+        Probe.fail(shell, "compact 2D canvas or wrapping actions were clipped: root="
+             + editor.root.GetScreenWidth() + " body=" + compactBodyWidth
+             + " canvas=" + editor.canvasScroll.GetScreenWidth()
+             + " side=" + editor.bodySplit.GetCollapsedSide()
+             + " compact=" + editor.compactLayout
+             + " status=" + editor.toolbarStatus.IsVisible()
+             + "/" + editor.viewStatusLabel.IsVisible()
+             + " tools=" + editor.toolMenuButton.GetScreenX() + ","
+             + editor.toolMenuButton.GetScreenY() + " "
+             + editor.toolMenuButton.GetScreenWidth() + "x"
+             + editor.toolMenuButton.GetScreenHeight()
+             + " toolbar=" + editor.toolbar.GetScreenX() + ","
+             + editor.toolbar.GetScreenY() + " "
+             + editor.toolbar.GetScreenWidth() + "x"
+             + editor.toolbar.GetScreenHeight()
+             + " inspector=" + editor.inspectorButton.GetScreenX() + ","
+             + editor.inspectorButton.GetScreenY() + " "
+             + editor.inspectorButton.GetScreenWidth() + "x"
+             + editor.inspectorButton.GetScreenHeight()
+             + " view=" + editor.viewToolbar.GetScreenX() + ","
+             + editor.viewToolbar.GetScreenY() + " "
+             + editor.viewToolbar.GetScreenWidth() + "x"
+             + editor.viewToolbar.GetScreenHeight());
+        return false;
+    }
+    editor.ToggleHierarchyPane();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.hierarchySplit.GetCollapsedSide() != 2
+       or editor.compactHierarchyShown == false
+       or editor.objectPaneBox.IsVisible() == false
+       or editor.objectPaneBox.GetScreenWidth()
+            < editor.hierarchySplit.GetScreenWidth() - 8.0 {
+        Probe.fail(shell,
+             "compact 2D objects did not replace the detail surface");
+        return false;
+    }
+    editor.ToggleHierarchyPane();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.hierarchySplit.GetCollapsedSide() != 1
+       or editor.compactHierarchyShown
+       or editor.objectPaneBox.IsVisible()
+       or editor.canvasScroll.IsVisible() == false {
+        Probe.fail(shell,
+             "compact 2D canvas did not restore after object hierarchy use");
+        return false;
+    }
+    if editor.paletteButton.GetScreenX()
+           + editor.paletteButton.GetScreenWidth()
+          > editor.viewToolbar.GetScreenX()
+            + editor.viewToolbar.GetScreenWidth() + 1.0
+       or editor.paletteButton.GetScreenY()
+            + editor.paletteButton.GetScreenHeight()
+          > editor.viewToolbar.GetScreenY()
+            + editor.viewToolbar.GetScreenHeight() + 1.0
+       or editor.hierarchyButton.GetScreenX()
+            + editor.hierarchyButton.GetScreenWidth()
+          > editor.viewToolbar.GetScreenX()
+            + editor.viewToolbar.GetScreenWidth() + 1.0
+       or editor.hierarchyButton.GetScreenY()
+            + editor.hierarchyButton.GetScreenHeight()
+          > editor.viewToolbar.GetScreenY()
+            + editor.viewToolbar.GetScreenHeight() + 1.0
+       or editor.viewMenuButton.IsVisible() == false
+       or editor.workspaceButton.IsVisible()
+       or editor.viewMenuButton.GetScreenX()
+            + editor.viewMenuButton.GetScreenWidth()
+          > editor.viewToolbar.GetScreenX()
+            + editor.viewToolbar.GetScreenWidth() + 1.0
+       or editor.viewMenuButton.GetScreenY()
+            + editor.viewMenuButton.GetScreenHeight()
+          > editor.viewToolbar.GetScreenY()
+            + editor.viewToolbar.GetScreenHeight() + 1.0 {
+        Probe.fail(shell,
+             "compact 2D palette, hierarchy, or View action was clipped");
+        return false;
+    }
+
+    var compactCanvasHeight = editor.canvasSplit.GetScreenHeight();
+    if editor.canvasScroll.GetScreenHeight()
+          < compactCanvasHeight
+              - scene_editor_2d.CANVAS_RULER_TOP_HEIGHT - 8.0 {
+        Probe.fail(shell, "short 2D host did not prioritize the canvas height");
+        return false;
+    }
+    editor.TogglePalettePane();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.canvasSplit.GetCollapsedSide() != 1
+       or editor.compactPaletteShown == false
+       or editor.canvasScroll.IsVisible()
+       or editor.paletteStripBox.IsVisible() == false
+       or editor.paletteStripBox.GetScreenHeight() < compactCanvasHeight - 8.0 {
+        Probe.fail(shell, "compact 2D palette did not replace the canvas");
+        return false;
+    }
+    editor.TogglePalettePane();
+    shell.Render();
+    if editor.canvasSplit.GetCollapsedSide() != 2
+       or editor.compactPaletteShown
+       or editor.canvasScroll.IsVisible() == false
+       or editor.paletteStripBox.IsVisible() {
+        Probe.fail(shell, "compact 2D canvas did not restore after palette use");
+        return false;
+    }
+
+    editor.ToggleInspectorPane();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.bodySplit.GetCollapsedSide() != 1
+       or editor.compactInspectorShown == false
+       or editor.canvasSplit.IsVisible()
+       or editor.inspectorScroll.IsVisible() == false
+       or editor.inspectorScroll.GetScreenWidth() < compactBodyWidth - 8.0 {
+        Probe.fail(shell, "compact 2D inspector did not replace the canvas at full width");
+        return false;
+    }
+
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Run the VerifyCompactAndDesktopLayout scenario against the shared fixture.
+expose func VerifyCompactAndDesktopLayout(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    shell.app.SetWindowSize(1500, 900);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.compactLayout
+       or editor.compactPaletteLayout
+       or editor.bodySplit.GetCollapsedSide() != 0
+       or editor.canvasSplit.GetCollapsedSide() != 0
+       or editor.toolbarStatus.IsVisible()
+       or editor.viewStatusLabel.IsVisible()
+       or editor.canvasScroll.GetScreenWidth() < 200.0
+       or editor.inspectorScroll.GetScreenWidth() < 200.0 {
+        Probe.fail(shell, "viewport-safe 2D split did not restore after resize");
+        return false;
+    }
+
+    // A normal 1440-pixel Studio window must already be the productive
+    // three-pane workbench. Waiting for an unusually wide monitor hides
+    // hierarchy context, while proportional side panes can quietly consume
+    // most of the canvas.
+    shell.app.SetWindowSize(1440, 900);
+    shell.SetSceneWorkspaceMode(true);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var desktopRootWidth2D = editor.root.GetScreenWidth();
+    var desktopHierarchyWidth2D = editor.objectPaneBox.GetScreenWidth();
+    var desktopCanvasWidth2D = editor.canvasScroll.GetScreenWidth();
+    var desktopInspectorWidth2D = editor.inspectorScroll.GetScreenWidth();
+    if editor.hierarchySplit.GetCollapsedSide() != 0
+       or editor.objectPaneBox.IsVisible() == false
+       or desktopHierarchyWidth2D < 210.0
+       or desktopHierarchyWidth2D > desktopRootWidth2D * 0.24
+       or desktopInspectorWidth2D < 280.0
+       or desktopInspectorWidth2D > desktopRootWidth2D * 0.30
+       or desktopCanvasWidth2D < desktopRootWidth2D * 0.45
+       or desktopCanvasWidth2D <= desktopInspectorWidth2D {
+        Probe.fail(shell, "desktop 2D workbench was not canvas-first: root="
+             + desktopRootWidth2D + " objects=" + desktopHierarchyWidth2D
+             + " canvas=" + desktopCanvasWidth2D
+             + " inspector=" + desktopInspectorWidth2D
+             + " hierarchy-side="
+             + editor.hierarchySplit.GetCollapsedSide());
+        return false;
+    }
+    shell.SetSceneWorkspaceMode(false);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.canvasSplit.SetPosition(0.61);
+    var expectedPaletteSplitPosition = editor.canvasSplit.GetPosition();
+
+    // The wide visibility preference and compact master/detail selection are
+    // intentionally independent across resize boundaries.
+    editor.ToggleInspectorPane();
+    shell.Render();
+    if editor.inspectorRequestedVisible
+       or editor.compactInspectorShown == false
+       or editor.bodySplit.GetCollapsedSide() != 2 {
+        Probe.fail(shell, "wide 2D inspector hide did not preserve compact selection");
+        return false;
+    }
+    shell.app.SetWindowSize(560, 420);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.compactLayout == false
+       or editor.bodySplit.GetCollapsedSide() != 1
+       or editor.inspectorRequestedVisible {
+        Probe.fail(shell, "compact 2D pane selection overwrote the wide preference");
+        return false;
+    }
+    shell.app.SetWindowSize(1500, 900);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    if editor.compactLayout
+       or editor.bodySplit.GetCollapsedSide() != 2
+       or editor.inspectorRequestedVisible
+       or Probe.near(editor.canvasSplit.GetPosition(),
+               expectedPaletteSplitPosition) == false {
+        Probe.fail(shell, "wide 2D inspector preference was lost across compact resize");
+        return false;
+    }
+    editor.ToggleInspectorPane();
+    shell.Render();
+    if editor.bodySplit.GetCollapsedSide() != 0
+       or editor.inspectorRequestedVisible == false
+       or editor.compactInspectorShown == false {
+        Probe.fail(shell, "wide 2D inspector did not restore independently");
+        return false;
+    }
+
+    // The production dock-heavy lane keeps its primary set on one purposeful
+    // row while complete secondary tools live in the adjacent overflow.
+    shell.app.SetWindowSize(1200, 900);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    shell.Render();
+    var toolRowDelta =
+        editor.toolMenuButton.GetScreenY()
+        - editor.sceneMenuButton.GetScreenY();
+    if editor.sceneMenuButton.IsVisible() == false
+       or editor.toolMenuButton.IsVisible() == false
+       or editor.objectButton.IsVisible()
+       or toolRowDelta < -1.0 or toolRowDelta > 1.0 {
+        Probe.fail(shell, "medium-width 2D primary tools did not remain one row: "
+             + editor.sceneMenuButton.GetScreenY() + "/"
+             + editor.toolMenuButton.GetScreenY()
+             + " root=" + editor.root.GetScreenWidth());
+        return false;
+    }
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Verify tab continuity through the focused scenario module.
+expose func VerifyDocumentTabContinuity(
+    ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    return EditingScenarios.VerifyDocumentTabContinuity(ctx);
+}
+
+/// @brief Verify scene properties and object editing.
+expose func VerifyScenePropertiesAndObjectEditing(
+    ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    return EditingScenarios.VerifyScenePropertiesAndObjectEditing(ctx);
+}
+
+/// @brief Stage project component schemas for later scenarios.
+expose func StageComponentSchemas(
+    ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    return EditingScenarios.StageComponentSchemas(ctx);
+}

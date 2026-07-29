@@ -1,0 +1,572 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_components.zia
+// Purpose: Component, field, default, and portable-identifier validation.
+// Key invariants:
+//   - Malformed or out-of-bounds input rejects the complete staged schema.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_components;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind "scene_component_schema_model" as SceneComponentModel;
+bind "scene_component_schema_scene_preview_2d" as PreviousLayer;
+
+class SceneComponentSchemaComponentsLayer extends PreviousLayer.SceneComponentSchemaScenePreview2DLayer {
+
+    /// @brief Parse and validate one component without publishing it to the schema.
+    hide override func ParseComponent(
+        raw: Any,
+        index: Integer,
+        seenNames: Any,
+        schema: SceneComponentModel.SceneComponentSchema)
+        -> SceneComponentModel.SceneComponentDefinition {
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(schema, "Component " + index + " must be an object.");
+            return null;
+        }
+        var component = new SceneComponentModel.SceneComponentDefinition();
+        if ParseComponentIdentity(
+               raw, index, seenNames, component, schema) == false
+           or ParseComponentPresentation(raw, component, schema) == false
+           or ParseComponentCreation(raw, component, schema) == false
+           or ParseComponentFields(raw, component, schema) == false {
+            return null;
+        }
+        return component;
+    }
+
+    /// @brief Parse and deduplicate one component name and target.
+    hide func ParseComponentIdentity(
+        raw: Any,
+        index: Integer,
+        seenNames: Any,
+        component: SceneComponentModel.SceneComponentDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        component.name = Str.Trim(Map.GetStr(raw, "name"));
+        if PortableIdentifier(component.name, SceneComponentModel.MAX_COMPONENT_NAME_CHARS) == false {
+            Reject(
+                schema,
+                "Component " + index
+                    + " requires a portable name of at most 64 characters.");
+            return false;
+        }
+        var foldedName = Str.ToLower(component.name);
+        if Map.Has(seenNames, foldedName) {
+            Reject(
+                schema,
+                "Duplicate component name \"" + component.name + "\".");
+            return false;
+        }
+        Map.SetBool(seenNames, foldedName, true);
+
+        component.target = Str.ToLower(Str.Trim(Map.GetStr(raw, "target")));
+        if component.target != SceneComponentModel.TARGET_2D_OBJECT
+           and component.target != SceneComponentModel.TARGET_3D_NODE
+           and component.target != SceneComponentModel.TARGET_BOTH {
+            Reject(
+                schema,
+                "Component \"" + component.name
+                    + "\" target must be 2d-object, 3d-node, or both.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse optional component label and description text.
+    hide func ParseComponentPresentation(
+        raw: Any,
+        component: SceneComponentModel.SceneComponentDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        component.label = component.name;
+        if Map.Has(raw, "label") {
+            if Json.TypeOf(Map.Get(raw, "label")) != "string" {
+                Reject(
+                    schema,
+                    "Component \"" + component.name + "\" label must be a string.");
+                return false;
+            }
+            component.label = Str.Trim(Map.GetStr(raw, "label"));
+            if component.label == ""
+               or Str.get_Length(component.label) > SceneComponentModel.MAX_LABEL_CHARS {
+                Reject(
+                    schema,
+                    "Component \"" + component.name
+                        + "\" label must contain at most 128 characters.");
+                return false;
+            }
+        }
+        if Map.Has(raw, "description") {
+            if Json.TypeOf(Map.Get(raw, "description")) != "string" {
+                Reject(
+                    schema,
+                    "Component \"" + component.name
+                        + "\" description must be a string.");
+                return false;
+            }
+            component.description = Map.GetStr(raw, "description");
+            if Str.get_Length(component.description) > SceneComponentModel.MAX_DESCRIPTION_CHARS {
+                Reject(
+                    schema,
+                    "Component \"" + component.name
+                        + "\" description exceeds 1,024 characters.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse optional versioned direct-creation recipes.
+    hide func ParseComponentCreation(
+        raw: Any,
+        component: SceneComponentModel.SceneComponentDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var hasCreateObjectType = Map.Has(raw, "createObjectType");
+        var hasCreateNodeName = Map.Has(raw, "createNodeName");
+        if hasCreateObjectType or hasCreateNodeName {
+            if schema.version < SceneComponentModel.COMPONENT_CREATION_SCHEMA_VERSION {
+                Reject(
+                    schema,
+                    "Component creation recipes require schema version 13.");
+                return false;
+            }
+        }
+        if hasCreateObjectType {
+            if Json.TypeOf(Map.Get(raw, "createObjectType")) != "string" {
+                Reject(
+                    schema,
+                    "Component \"" + component.name
+                        + "\" createObjectType must be a string.");
+                return false;
+            }
+            component.createObjectType =
+                Str.Trim(Map.GetStr(raw, "createObjectType"));
+            if component.SupportsTarget(SceneComponentModel.TARGET_2D_OBJECT) == false
+               or PortableIdentifier(
+                   component.createObjectType,
+                   SceneComponentModel.MAX_CREATE_OBJECT_TYPE_CHARS) == false {
+                Reject(
+                    schema,
+                    "Component \"" + component.name
+                        + "\" createObjectType requires a 2D-compatible "
+                        + "target and portable type of at most 128 characters.");
+                return false;
+            }
+        }
+        if hasCreateNodeName {
+            if Json.TypeOf(Map.Get(raw, "createNodeName")) != "string" {
+                Reject(
+                    schema,
+                    "Component \"" + component.name
+                        + "\" createNodeName must be a string.");
+                return false;
+            }
+            component.createNodeName =
+                Str.Trim(Map.GetStr(raw, "createNodeName"));
+            if component.SupportsTarget(SceneComponentModel.TARGET_3D_NODE) == false
+               or component.createNodeName == ""
+               or Str.get_Length(component.createNodeName)
+                  > SceneComponentModel.MAX_CREATE_NODE_NAME_CHARS {
+                Reject(
+                    schema,
+                    "Component \"" + component.name
+                        + "\" createNodeName requires a 3D-compatible "
+                        + "target and name of at most 128 characters.");
+                return false;
+            }
+        }
+        return true;
+    }
+
+    /// @brief Parse the bounded unique field collection.
+    hide func ParseComponentFields(
+        raw: Any,
+        component: SceneComponentModel.SceneComponentDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var rawFields = Map.Get(raw, "fields");
+        if rawFields == null or Json.TypeOf(rawFields) != "array" {
+            Reject(
+                schema,
+                "Component \"" + component.name + "\" requires a fields array.");
+            return false;
+        }
+        var fieldCount = Seq.get_Count(rawFields);
+        if fieldCount <= 0 or fieldCount > SceneComponentModel.MAX_FIELDS_PER_COMPONENT {
+            Reject(
+                schema,
+                "Component \"" + component.name
+                    + "\" requires between 1 and 64 fields.");
+            return false;
+        }
+
+        var seenKeys = Map.New();
+        var fieldIndex = 0;
+        while fieldIndex < fieldCount {
+            var field = ParseField(
+                Seq.Get(rawFields, fieldIndex),
+                component.name,
+                fieldIndex,
+                seenKeys,
+                schema);
+            if field == null { return false; }
+            component.fields.add(field);
+            fieldIndex = fieldIndex + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse one scalar field and canonicalize its default as editor text.
+    hide override func ParseField(raw: Any,
+                    componentName: String,
+                    index: Integer,
+                    seenKeys: Any,
+                    schema: SceneComponentModel.SceneComponentSchema) -> SceneComponentModel.SceneComponentField {
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(
+                schema,
+                "Field " + index + " in \"" + componentName
+                    + "\" must be an object.");
+            return null;
+        }
+
+        var field = new SceneComponentModel.SceneComponentField();
+        field.key = Str.Trim(Map.GetStr(raw, "key"));
+        if PortableIdentifier(field.key, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "Field " + index + " in \"" + componentName
+                    + "\" requires a portable key of at most 128 characters.");
+            return null;
+        }
+        if Map.Has(seenKeys, field.key) {
+            Reject(
+                schema,
+                "Duplicate field key \"" + field.key
+                    + "\" in component \"" + componentName + "\".");
+            return null;
+        }
+        Map.SetBool(seenKeys, field.key, true);
+
+        field.kind = Str.ToLower(Str.Trim(Map.GetStr(raw, "type")));
+        var versionTwoKind = field.kind == "enum" or field.kind == "asset";
+        if versionTwoKind and schema.version < 2 {
+            Reject(
+                schema,
+                "Field \"" + field.key
+                    + "\" uses type " + field.kind
+                    + ", which requires schema version 2.");
+            return null;
+        }
+        if IsScalarKind(field.kind) == false and versionTwoKind == false {
+            Reject(
+                schema,
+                "Field \"" + field.key
+                    + "\" type must be string, int, float, bool, null, enum, "
+                    + "or asset.");
+            return null;
+        }
+        if field.kind == "enum" and ParseEnumChoices(raw, field, schema) == false {
+            return null;
+        }
+        if field.kind == "asset" and ParseAssetKinds(raw, field, schema) == false {
+            return null;
+        }
+
+        field.label = field.key;
+        if Map.Has(raw, "label") {
+            if Json.TypeOf(Map.Get(raw, "label")) != "string" {
+                Reject(
+                    schema,
+                    "Field \"" + field.key + "\" label must be a string.");
+                return null;
+            }
+            field.label = Str.Trim(Map.GetStr(raw, "label"));
+            if field.label == ""
+               or Str.get_Length(field.label) > SceneComponentModel.MAX_LABEL_CHARS {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" label must contain at most 128 characters.");
+                return null;
+            }
+        }
+        if Map.Has(raw, "description") {
+            if Json.TypeOf(Map.Get(raw, "description")) != "string" {
+                Reject(
+                    schema,
+                    "Field \"" + field.key + "\" description must be a string.");
+                return null;
+            }
+            field.description = Map.GetStr(raw, "description");
+            if Str.get_Length(field.description) > SceneComponentModel.MAX_DESCRIPTION_CHARS {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" description exceeds 1,024 characters.");
+                return null;
+            }
+        }
+
+        if CanonicalizeDefault(raw, field, schema) == false {
+            if schema.error == "" {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" has a default that does not match " + field.kind + ".");
+            }
+            return null;
+        }
+        return field;
+    }
+
+    /// @brief Parse and validate one enum field's declared choice list (ADR 0178).
+    hide override func ParseEnumChoices(raw: Any,
+                          field: SceneComponentModel.SceneComponentField,
+                          schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var rawChoices = Map.Get(raw, "choices");
+        if rawChoices == null or Json.TypeOf(rawChoices) != "array" {
+            Reject(
+                schema,
+                "Field \"" + field.key + "\" requires a choices array.");
+            return false;
+        }
+        var count = Seq.get_Count(rawChoices);
+        if count <= 0 or count > SceneComponentModel.MAX_ENUM_CHOICES {
+            Reject(
+                schema,
+                "Field \"" + field.key
+                    + "\" requires between 1 and 64 choices.");
+            return false;
+        }
+        var seen = Map.New();
+        var index = 0;
+        while index < count {
+            var value = Seq.Get(rawChoices, index);
+            if value == null or Json.TypeOf(value) != "string" {
+                Reject(
+                    schema,
+                    "Field \"" + field.key + "\" choices must be strings.");
+                return false;
+            }
+            var choice = Str.Trim(Seq.GetStr(rawChoices, index));
+            if PortableIdentifier(choice, SceneComponentModel.MAX_ENUM_CHOICE_CHARS) == false {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" choices must be portable identifiers of at most "
+                        + "64 characters.");
+                return false;
+            }
+            var folded = Str.ToLower(choice);
+            if Map.Has(seen, folded) {
+                Reject(
+                    schema,
+                    "Field \"" + field.key + "\" has duplicate choice \""
+                        + choice + "\".");
+                return false;
+            }
+            Map.SetBool(seen, folded, true);
+            field.choices.add(choice);
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse one asset field's optional browser-kind filter (ADR 0178).
+    hide override func ParseAssetKinds(raw: Any,
+                         field: SceneComponentModel.SceneComponentField,
+                         schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "assetKinds") == false {
+            field.assetKinds.add("any");
+            return true;
+        }
+        var rawKinds = Map.Get(raw, "assetKinds");
+        if Json.TypeOf(rawKinds) != "array" {
+            Reject(
+                schema,
+                "Field \"" + field.key + "\" assetKinds must be an array.");
+            return false;
+        }
+        var count = Seq.get_Count(rawKinds);
+        if count <= 0 or count > SceneComponentModel.MAX_ASSET_KINDS {
+            Reject(
+                schema,
+                "Field \"" + field.key
+                    + "\" assetKinds needs between 1 and 4 entries.");
+            return false;
+        }
+        var index = 0;
+        while index < count {
+            var value = Seq.Get(rawKinds, index);
+            if value == null or Json.TypeOf(value) != "string" {
+                Reject(
+                    schema,
+                    "Field \"" + field.key + "\" assetKinds must be strings.");
+                return false;
+            }
+            var kind = Str.ToLower(Str.Trim(Seq.GetStr(rawKinds, index)));
+            if kind != "image" and kind != "audio" and kind != "scene"
+               and kind != "any" {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" assetKinds must be image, audio, scene, or any.");
+                return false;
+            }
+            var existing = 0;
+            while existing < field.assetKinds.count() {
+                if field.assetKinds.get(existing) == kind {
+                    Reject(
+                        schema,
+                        "Field \"" + field.key
+                            + "\" has duplicate asset kind \"" + kind + "\".");
+                    return false;
+                }
+                existing = existing + 1;
+            }
+            field.assetKinds.add(kind);
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Validate one optional JSON default and produce exact editor text.
+    hide override func CanonicalizeDefault(raw: Any,
+                             field: SceneComponentModel.SceneComponentField,
+                             schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "default") == false {
+            if field.kind == "int" or field.kind == "float" {
+                field.defaultText = "0";
+            }
+            if field.kind == "bool" { field.defaultText = "false"; }
+            if field.kind == "enum" and field.choices.count() > 0 {
+                field.defaultText = field.choices.get(0);
+            }
+            return true;
+        }
+
+        var value = Map.Get(raw, "default");
+        var valueType = Json.TypeOf(value);
+        if field.kind == "enum" {
+            if valueType != "string" { return false; }
+            field.defaultText = Str.Trim(Map.GetStr(raw, "default"));
+            if field.HasChoice(field.defaultText) == false {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" default must be one of its declared choices.");
+                return false;
+            }
+            return true;
+        }
+        if field.kind == "string" or field.kind == "asset" {
+            if valueType != "string" { return false; }
+            field.defaultText = Map.GetStr(raw, "default");
+            if Str.get_Length(field.defaultText) > SceneComponentModel.MAX_DEFAULT_STRING_CHARS {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" string default exceeds 16,384 characters.");
+                return false;
+            }
+            return true;
+        }
+        if field.kind == "int" {
+            if valueType != "number" { return false; }
+            var parsedInt = Parse.TryInt(Json.Format(value));
+            if parsedInt.IsNone { return false; }
+            field.defaultText = Fmt.Int(parsedInt.UnwrapI64());
+            return true;
+        }
+        if field.kind == "float" {
+            if valueType != "number" { return false; }
+            var parsedFloat = Parse.TryDouble(Json.Format(value));
+            if parsedFloat.IsNone { return false; }
+            field.defaultText = Fmt.Num(parsedFloat.UnwrapF64());
+            return true;
+        }
+        if field.kind == "bool" {
+            if valueType != "boolean" { return false; }
+            field.defaultText = Fmt.Bool(Map.GetBool(raw, "default"));
+            return true;
+        }
+        if valueType != "null" { return false; }
+        field.defaultText = "";
+        return true;
+    }
+
+    /// @brief Return whether one schema kind maps to supported runtime metadata.
+    expose override func IsScalarKind(kind: String) -> Boolean {
+        return kind == "string" or kind == "int" or kind == "float"
+            or kind == "bool" or kind == "null";
+    }
+
+    /// @brief Return the runtime scalar kind one schema field authors (ADR 0178).
+    /// @details Enum and asset values are ordinary string properties at runtime;
+    ///          every other kind maps to itself.
+    expose override func ValueKind(kind: String) -> String {
+        if kind == "enum" or kind == "asset" { return "string"; }
+        return kind;
+    }
+
+    /// @brief Return the lowest schema version a field kind requires.
+    expose override func KindVersion(kind: String) -> Integer {
+        if kind == "enum" or kind == "asset" { return 2; }
+        return SceneComponentModel.SCHEMA_VERSION;
+    }
+
+    /// @brief Restrict stable schema identities to single-byte portable characters.
+    /// @details Labels and descriptions remain Unicode. Keys stay ASCII so the
+    ///          character limit is also an exact UTF-8 byte limit for both runtimes.
+    hide override func PortableIdentifier(value: String,
+                            maximum: Integer) -> Boolean {
+        var length = Str.get_Length(value);
+        if length <= 0 or length > maximum { return false; }
+        var allowed =
+            "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789._:-";
+        var index = 1;
+        while index <= length {
+            if Str.IndexOf(allowed, Str.MidLen(value, index, 1)) == 0 {
+                return false;
+            }
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Invalidate a schema and erase any staged/public component state.
+    hide override func Reject(schema: SceneComponentModel.SceneComponentSchema,
+                message: String) -> SceneComponentModel.SceneComponentSchema {
+        schema.valid = false;
+        schema.error = message;
+        schema.components = [];
+        schema.objectPreviews = [];
+        schema.scenePreview2D = new SceneComponentModel.ScenePreview2DDefinition();
+        schema.scenePreview3D = new SceneComponentModel.ScenePreview3DDefinition();
+        schema.nodePreviews3D = [];
+        schema.nodePreviewFilter3D =
+            new SceneComponentModel.SceneNodePreviewFilter3DDefinition();
+        schema.materialPreviews3D = [];
+        return schema;
+    }
+
+}

@@ -1,0 +1,831 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/intellisense_probe_part_2.zia
+// Purpose: Serial IntelliSense probe scenarios, part 2 of 2.
+// Key invariants:
+//   - Scenarios preserve the original execution order and async ownership.
+//   - Failure paths retain their original RESULT diagnostics.
+// Ownership/Lifetime: Borrows one IntellisenseProbeContext from the entry probe.
+// Links: zannastudio/src/probes/intellisense_probe.zia,
+//        zannastudio/src/probes/intellisense_probe_support.zia
+//
+//===----------------------------------------------------------------------===//
+
+module intellisense_probe_part_2;
+
+bind "../ui/app_shell";
+bind "../editor/editor_engine";
+bind "../editor/completion";
+bind "../editor/signature";
+bind "../editor/hover";
+bind "../editor/symbols";
+bind "../editor/diagnostics";
+bind "../editor/inlay_hints";
+bind "../editor/project_index";
+bind "../commands/edit_commands";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../services/locations";
+bind "../services/workspace_edits";
+
+bind Zanna.GUI;
+bind ZiaCompletion = Zanna.Zia.Completion;
+bind ZiaToolchain = Zanna.Zia.Toolchain;
+bind BasicCompletion = Zanna.Basic.LanguageService;
+bind BasicToolchain = Zanna.Basic.LanguageService;
+bind SemanticJob = Zanna.Zia.SemanticJob;
+bind Clock = Zanna.Time.Clock;
+bind TempFile = Zanna.IO.TempFile;
+bind File = Zanna.IO.File;
+bind Dir = Zanna.IO.Dir;
+bind Path = Zanna.IO.Path;
+bind Terminal = Zanna.Terminal;
+bind Str = Zanna.String;
+bind Obj = Zanna.Core.Object;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
+
+bind "intellisense_probe_support" as Probe;
+
+/// @brief Run the VerifyRuntimeDocsAndFolding scenario against the shared fixture.
+expose func VerifyRuntimeDocsAndFolding(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var docMgr = ctx.docMgr;
+
+    var boundDocsRoot = TempFile.CreateDirWithPrefix("zannastudio_bound_docs_");
+    var boundDepPath = Path.Join(boundDocsRoot, "dep.zia");
+    var boundMainPath = Path.Join(boundDocsRoot, "main.zia");
+    File.WriteAllText(boundDepPath,
+        "module Dep;\n"
+        + "/// Exported helper docs.\n"
+        + "expose func exportedThing(count: Integer) -> Integer { return count; }\n");
+    var boundMainSource = "module Main;\n"
+        + "bind \"./dep\";\n"
+        + "func main() {\n"
+        + "    Dep.exportedThing(1);\n"
+        + "}\n";
+    File.WriteAllText(boundMainPath, boundMainSource);
+    var boundSig = ZiaCompletion.SignatureInfoForFile(boundMainSource, boundMainPath, 4, 22);
+    if Str.IndexOf(Map.GetStr(boundSig, "documentation"), "Exported helper docs.") == 0 {
+        Probe.fail(shell, "bound signature declaration documentation");
+        return false;
+    }
+    var boundSigJob = ZiaCompletion.BeginSignatureInfoForFile(boundMainSource, boundMainPath, 4, 22);
+    if Probe.waitSemanticJob(boundSigJob, SEMANTIC_JOB_WAIT_MS) == false {
+        Probe.fail(shell, "async bound signature job did not finish");
+        return false;
+    }
+    var boundAsyncSig = SemanticJob.SignatureInfo(boundSigJob);
+    if Str.IndexOf(Map.GetStr(boundAsyncSig, "documentation"), "Exported helper docs.") == 0 {
+        Probe.fail(shell, "async bound signature declaration documentation");
+        return false;
+    }
+    var boundHover = ZiaCompletion.HoverInfoForFile(boundMainSource, boundMainPath, 4, 10);
+    if Str.IndexOf(Map.GetStr(boundHover, "documentation"), "Exported helper docs.") == 0 {
+        Probe.fail(shell, "bound hover declaration documentation");
+        return false;
+    }
+    var boundHoverJob = ZiaCompletion.BeginHoverInfoForFile(boundMainSource, boundMainPath, 4, 10);
+    if Probe.waitSemanticJob(boundHoverJob, SEMANTIC_JOB_WAIT_MS) == false {
+        Probe.fail(shell, "async bound hover job did not finish");
+        return false;
+    }
+    var boundAsyncHover = SemanticJob.HoverInfo(boundHoverJob);
+    if Str.IndexOf(Map.GetStr(boundAsyncHover, "documentation"), "Exported helper docs.") == 0 {
+        Probe.fail(shell, "async bound hover declaration documentation");
+        return false;
+    }
+    Dir.RemoveAll(boundDocsRoot);
+
+    var foldSource = "module IntelliProbe;\n"
+        + "func alpha() -> Integer {\n"
+        + "    return 1;\n"
+        + "}\n"
+        + "func beta() -> Integer { return 2; }\n";
+    var foldRaw = ZiaCompletion.SymbolsForFile(foldSource, "intellisense_probe.zia");
+    if symbols.SemanticFoldEndLine(foldSource, 2) != 4 {
+        Probe.fail(shell, "semantic fold range");
+        return false;
+    }
+    engine.SetText(foldSource);
+    if symbols.ApplySemanticFoldRegions(engine, foldRaw, 0, foldSource) != 1 {
+        Probe.fail(shell, "semantic fold region count");
+        return false;
+    }
+    engine.editor.Fold(1);
+    if !engine.editor.IsFolded(1) {
+        Probe.fail(shell, "semantic fold function not foldable");
+        return false;
+    }
+    engine.editor.Fold(0);
+    if engine.editor.IsFolded(0) {
+        Probe.fail(shell, "semantic fold should skip module line");
+        return false;
+    }
+
+    engine.SetText("module IntelliProbe;\n    value\n");
+    engine.editor.SetCursor(1, 9);
+    edit_commands.handleToggleLineComment(shell, docMgr, engine);
+    if engine.editor.GetLine(1) != "    // value" {
+        Probe.fail(shell, "toggle line comment add");
+        return false;
+    }
+    edit_commands.handleToggleLineComment(shell, docMgr, engine);
+    if engine.editor.GetLine(1) != "    value" {
+        Probe.fail(shell, "toggle line comment remove");
+        return false;
+    }
+    var lineCommentRange = "module IntelliProbe;\n    alpha\n    beta\n";
+    engine.SetText(lineCommentRange);
+    engine.editor.SetCursorSelection(0, 1, 0, 2, 8);
+    edit_commands.handleToggleLineComment(shell, docMgr, engine);
+    if engine.editor.GetLine(1) != "    // alpha"
+       or engine.editor.GetLine(2) != "    // beta" {
+        Probe.fail(shell, "toggle line comment selection add");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != lineCommentRange {
+        Probe.fail(shell, "toggle line comment selection undo");
+        return false;
+    }
+    engine.editor.SetCursorSelection(0, 1, 0, 2, 8);
+    edit_commands.handleToggleLineComment(shell, docMgr, engine);
+    engine.editor.SetCursorSelection(0, 1, 0, 2, 11);
+    edit_commands.handleToggleLineComment(shell, docMgr, engine);
+    if engine.GetTextSnapshot() != lineCommentRange {
+        Probe.fail(shell, "toggle line comment selection remove");
+        return false;
+    }
+
+    var undoRoot = TempFile.CreateDirWithPrefix("zannastudio_inactive_rename_undo_");
+    var activeRenamePath = Path.Join(undoRoot, "active.zia");
+    var inactiveRenamePath = Path.Join(undoRoot, "inactive.zia");
+    File.WriteAllText(activeRenamePath, "old\n");
+    File.WriteAllText(inactiveRenamePath, "old\n");
+    var undoDocMgr = new document_manager.DocumentManager();
+    undoDocMgr.OpenFile(activeRenamePath);
+    undoDocMgr.OpenFile(inactiveRenamePath);
+    undoDocMgr.SetActive(0);
+    engine.LoadDocument(undoDocMgr.GetActive()!);
+    var renameEdits = Seq.New();
+    var editA = Map.New();
+    Map.SetStr(editA, "file", activeRenamePath);
+    Map.SetInt(editA, "startLine", 1);
+    Map.SetInt(editA, "startColumn", 1);
+    Map.SetInt(editA, "endLine", 1);
+    Map.SetInt(editA, "endColumn", 4);
+    Map.SetStr(editA, "newText", "new");
+    Seq.Push(renameEdits, editA);
+    var editB = Map.New();
+    Map.SetStr(editB, "file", inactiveRenamePath);
+    Map.SetInt(editB, "startLine", 1);
+    Map.SetInt(editB, "startColumn", 1);
+    Map.SetInt(editB, "endLine", 1);
+    Map.SetInt(editB, "endColumn", 4);
+    Map.SetStr(editB, "newText", "new");
+    Seq.Push(renameEdits, editB);
+    var undoRoots = new List();
+    undoRoots.Push(undoRoot);
+    var renameUndoResult = workspace_edits.ApplyRenameEdits(renameEdits,
+                                                            undoDocMgr,
+                                                            undoRoots);
+    if renameUndoResult.success == false
+       or undoDocMgr.documents.get(1).hasPendingWorkspaceUndo == false
+       or undoDocMgr.documents.get(1).content != "new\n" {
+        Probe.fail(shell, "inactive rename pending undo snapshot");
+        return false;
+    }
+    undoDocMgr.SetActive(1);
+    engine.LoadDocument(undoDocMgr.GetActive()!);
+    edit_commands.handleUndo(engine, undoDocMgr);
+    if undoDocMgr.documents.get(1).content != "old\n"
+       or engine.GetTextSnapshot() != "old\n"
+       or undoDocMgr.documents.get(1).hasPendingWorkspaceUndo {
+        Probe.fail(shell, "inactive rename undo restore");
+        return false;
+    }
+    Dir.RemoveAll(undoRoot);
+
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    ctx.docMgr = docMgr;
+    return true;
+}
+
+/// @brief Run the VerifyCommentingAndRefactors scenario against the shared fixture.
+expose func VerifyCommentingAndRefactors(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+
+    var inlineSource = "module InlineProbe;\n"
+        + "func main() {\n"
+        + "    var total = count + 1;\n"
+        + "    Say(total);\n"
+        + "    var label = \"total\"; // total stays in trivia\n"
+        + "}\n";
+    var inlineText = edit_commands.InlineLocalVariableText(inlineSource, 2);
+    if Str.IndexOf(inlineText, "var total") != 0
+       or Str.IndexOf(inlineText, "Say((count + 1))") == 0
+       or Str.IndexOf(inlineText, "\"total\"") == 0
+       or Str.IndexOf(inlineText, "trivia") == 0 {
+        Probe.fail(shell, "inline local variable text");
+        return false;
+    }
+    var inlineUnsafe = "module InlineProbe;\n"
+        + "func main() {\n"
+        + "    var total = count + 1;\n"
+        + "    total = 3;\n"
+        + "    Say(total);\n"
+        + "}\n";
+    if edit_commands.InlineLocalVariableText(inlineUnsafe, 2) != inlineUnsafe {
+        Probe.fail(shell, "inline local rejects reassignment");
+        return false;
+    }
+    var inlineComparison = "module InlineProbe;\n"
+        + "func main() {\n"
+        + "    var total = count + 1;\n"
+        + "    if total == 3 {\n"
+        + "        Say(total);\n"
+        + "    }\n"
+        + "}\n";
+    var inlineComparisonText = edit_commands.InlineLocalVariableText(inlineComparison, 2);
+    if Str.IndexOf(inlineComparisonText, "if (count + 1) == 3") == 0
+       or Str.IndexOf(inlineComparisonText, "Say((count + 1))") == 0 {
+        Probe.fail(shell, "inline local allows equality comparison");
+        return false;
+    }
+    var inlineCompound = "module InlineProbe;\n"
+        + "func main() {\n"
+        + "    var total = count + 1;\n"
+        + "    total += 1;\n"
+        + "    Say(total);\n"
+        + "}\n";
+    if edit_commands.InlineLocalVariableText(inlineCompound, 2) != inlineCompound {
+        Probe.fail(shell, "inline local rejects compound assignment");
+        return false;
+    }
+    var extractSource = "module ExtractProbe;\n"
+        + "func main() {\n"
+        + "    Say(count + 1);\n"
+        + "}\n";
+    var extractText = edit_commands.ExtractLocalVariableText(extractSource, 2, 8, 2, 17, "total");
+    if Str.IndexOf(extractText, "var total = count + 1;") == 0
+       or Str.IndexOf(extractText, "Say(total);") == 0 {
+        Probe.fail(shell, "extract local variable text");
+        return false;
+    }
+    var extractDuplicate = "module ExtractProbe;\n"
+        + "func main() {\n"
+        + "    var total = 0;\n"
+        + "    Say(count + 1);\n"
+        + "}\n";
+    if edit_commands.ExtractLocalVariableText(extractDuplicate, 3, 8, 3, 17, "total") != extractDuplicate {
+        Probe.fail(shell, "extract local rejects duplicate name");
+        return false;
+    }
+    if edit_commands.ExtractLocalVariableText(extractSource, 1, 0, 2, 8, "total") != extractSource {
+        Probe.fail(shell, "extract local rejects multi-line selection");
+        return false;
+    }
+    var extractFunctionSource = "module ExtractFunctionProbe;\n"
+        + "func main() {\n"
+        + "    Terminal.Say(\"one\");\n"
+        + "    Terminal.Say(\"two\");\n"
+        + "    Terminal.Say(\"done\");\n"
+        + "}\n";
+    var extractFunctionText = edit_commands.ExtractFunctionText(extractFunctionSource,
+                                                                 2,
+                                                                 0,
+                                                                 3,
+                                                                 Str.get_Length("    Terminal.Say(\"two\");"),
+                                                                 "sayBoth");
+    if Str.IndexOf(extractFunctionText, "    sayBoth();") == 0
+       or Str.IndexOf(extractFunctionText, "func sayBoth() {") == 0
+       or Str.IndexOf(extractFunctionText, "    Terminal.Say(\"one\");") == 0
+       or Str.IndexOf(extractFunctionText, "    Terminal.Say(\"two\");") == 0 {
+        Probe.fail(shell, "extract function text");
+        return false;
+    }
+    var captureFunctionSource = "module ExtractFunctionProbe;\n"
+        + "func main() {\n"
+        + "    var count = 1;\n"
+        + "    Terminal.Say(count);\n"
+        + "}\n";
+    if edit_commands.ExtractFunctionText(captureFunctionSource,
+                                         3,
+                                         0,
+                                         3,
+                                         Str.get_Length("    Terminal.Say(count);"),
+                                         "sayCount") != captureFunctionSource {
+        Probe.fail(shell, "extract function rejects captured local");
+        return false;
+    }
+    var escapingLocalSource = "module ExtractFunctionProbe;\n"
+        + "func main() {\n"
+        + "    var count = 1;\n"
+        + "    Terminal.Say(count);\n"
+        + "}\n";
+    if edit_commands.ExtractFunctionText(escapingLocalSource,
+                                         2,
+                                         0,
+                                         2,
+                                         Str.get_Length("    var count = 1;"),
+                                         "makeCount") != escapingLocalSource {
+        Probe.fail(shell, "extract function rejects escaping local");
+        return false;
+    }
+    if edit_commands.ExtractFunctionText(extractFunctionSource,
+                                         2,
+                                         0,
+                                         2,
+                                         Str.get_Length("    Terminal.Say(\"one\");"),
+                                         "main") != extractFunctionSource {
+        Probe.fail(shell, "extract function rejects duplicate function");
+        return false;
+    }
+    var inlineDocMgr = new document_manager.DocumentManager();
+    var inlineDoc = inlineDocMgr.NewDocument();
+    inlineDoc.content = inlineSource;
+    inlineDoc.language = "zia";
+    engine.LoadDocument(inlineDoc);
+    engine.editor.SetCursor(2, 8);
+    edit_commands.handleInlineLocalVariable(shell, inlineDocMgr, engine);
+    if Str.IndexOf(engine.GetTextSnapshot(), "Say((count + 1))") == 0 {
+        Probe.fail(shell, "inline local command");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != inlineSource {
+        Probe.fail(shell, "inline local undo");
+        return false;
+    }
+
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    return true;
+}
+
+/// @brief Run the VerifyFormattingAndSelection scenario against the shared fixture.
+expose func VerifyFormattingAndSelection(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var docMgr = ctx.docMgr;
+
+    var messyBinds = "module BindProbe;\n"
+        + "bind Zeta = Zanna.Zeta;\n"
+        + "bind Alpha = Zanna.Alpha;\n"
+        + "bind Zeta = Zanna.Zeta;\n"
+        + "\n"
+        + "func main() {\n"
+        + "}\n";
+    var expectedBinds = "module BindProbe;\n"
+        + "bind Alpha = Zanna.Alpha;\n"
+        + "bind Zeta = Zanna.Zeta;\n"
+        + "\n"
+        + "func main() {\n"
+        + "}\n";
+    if edit_commands.OrganizeZiaBindsText(messyBinds) != expectedBinds {
+        Probe.fail(shell, "organize binds pure helper");
+        return false;
+    }
+    engine.SetText(messyBinds);
+    edit_commands.handleOrganizeBinds(shell, docMgr, engine);
+    if engine.GetTextSnapshot() != expectedBinds {
+        Probe.fail(shell, "organize binds command");
+        return false;
+    }
+    var messyWhitespace = "module TrimProbe;  \n"
+        + "func main() {\t\n"
+        + "    var value = 1;   \n"
+        + "}\n";
+    var expectedWhitespace = "module TrimProbe;\n"
+        + "func main() {\n"
+        + "    var value = 1;\n"
+        + "}\n";
+    if edit_commands.TrimTrailingWhitespaceText(messyWhitespace) != expectedWhitespace {
+        Probe.fail(shell, "trim trailing whitespace pure helper");
+        return false;
+    }
+    engine.SetText(messyWhitespace);
+    edit_commands.handleTrimTrailingWhitespace(shell, docMgr, engine);
+    if engine.GetTextSnapshot() != expectedWhitespace {
+        Probe.fail(shell, "trim trailing whitespace command");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != messyWhitespace {
+        Probe.fail(shell, "trim trailing whitespace undo");
+        return false;
+    }
+    if edit_commands.ZiaFunctionNameFromLine("expose func visible(value: Integer) -> Integer {") != "visible" {
+        Probe.fail(shell, "call hierarchy function parser");
+        return false;
+    }
+    var callSource = "module CallProbe;\n"
+        + "func target() -> Integer {\n"
+        + "    return 1;\n"
+        + "}\n"
+        + "func caller() -> Integer {\n"
+        + "    return target();\n"
+        + "}\n";
+    if edit_commands.EnclosingZiaFunctionName(callSource, 6) != "caller" {
+        Probe.fail(shell, "incoming call enclosing function");
+        return false;
+    }
+    var callRoot = TempFile.CreateDirWithPrefix("zannastudio_incoming_calls_");
+    var callPath = Path.Join(callRoot, "calls.zia");
+    File.WriteAllText(callPath, callSource);
+    var callDocMgr = new document_manager.DocumentManager();
+    callDocMgr.OpenFile(callPath);
+    engine.SetText(callSource);
+    engine.editor.SetCursor(1, 8);
+    var callIndexer = new project_index.ProjectIndexer();
+    callIndexer.Open(callRoot, callDocMgr);
+    callIndexer.FinishPendingIndex();
+    var callLocs = new locations.LocationStore();
+    edit_commands.handleIncomingCalls(shell, callDocMgr, engine, callIndexer, callLocs);
+    if shell.toolPanels.referencesListBox.Count < 2 or callLocs.items.count() != 1 {
+        Probe.fail(shell, "incoming calls command rows");
+        return false;
+    }
+    var foundCaller = false;
+    var refIdx = 0;
+    while refIdx < shell.toolPanels.referencesListBox.Count {
+        shell.toolPanels.referencesListBox.SelectIndex(refIdx);
+        if shell.toolPanels.referencesListBox.Selected != null {
+            var rowText = GUI.ListBox.ItemGetText(shell.toolPanels.referencesListBox.Selected);
+            if Str.IndexOf(rowText, "caller") != 0 {
+                foundCaller = true;
+            }
+        }
+        refIdx = refIdx + 1;
+    }
+    if foundCaller == false {
+        Probe.fail(shell, "incoming calls missing caller group");
+        return false;
+    }
+    if edit_commands.ZiaFunctionEndLine(callSource, 5) != 7 {
+        Probe.fail(shell, "outgoing call function end");
+        return false;
+    }
+    var outgoingTokens = edit_commands.OutgoingZiaCallTokens(callSource, 5, 7);
+    if Seq.get_Count(outgoingTokens) != 1
+       or Map.GetStr(Seq.Get(outgoingTokens, 0), "name") != "target" {
+        Probe.fail(shell, "outgoing call token scan");
+        return false;
+    }
+    engine.SetText(callSource);
+    engine.editor.SetCursor(5, 15);
+    var outLocs = new locations.LocationStore();
+    edit_commands.handleOutgoingCalls(shell, callDocMgr, engine, callIndexer, outLocs);
+    if shell.toolPanels.referencesListBox.Count < 2 or outLocs.items.count() != 1 {
+        Probe.fail(shell, "outgoing calls command rows");
+        return false;
+    }
+    var foundTarget = false;
+    refIdx = 0;
+    while refIdx < shell.toolPanels.referencesListBox.Count {
+        shell.toolPanels.referencesListBox.SelectIndex(refIdx);
+        if shell.toolPanels.referencesListBox.Selected != null {
+            var rowText2 = GUI.ListBox.ItemGetText(shell.toolPanels.referencesListBox.Selected);
+            if Str.IndexOf(rowText2, "target") != 0 {
+                foundTarget = true;
+            }
+        }
+        refIdx = refIdx + 1;
+    }
+    if foundTarget == false {
+        Probe.fail(shell, "outgoing calls missing target group");
+        return false;
+    }
+    var undoRenameBefore = "module UndoRename;\n"
+        + "func oldName() -> Integer {\n"
+        + "    return 1;\n"
+        + "}\n";
+    var undoRenameAfter = "module UndoRename;\n"
+        + "func newName() -> Integer {\n"
+        + "    return 1;\n"
+        + "}\n";
+    engine.SetText(undoRenameBefore);
+    callDocMgr.GetActive()!.content = undoRenameAfter;
+    if edit_commands.ApplyActiveDocumentContentToEditor(callDocMgr, engine, null) == false {
+        Probe.fail(shell, "active rename editor apply");
+        return false;
+    }
+    if engine.GetTextSnapshot() != undoRenameAfter {
+        Probe.fail(shell, "active rename editor content");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != undoRenameBefore {
+        Probe.fail(shell, "active rename undo step");
+        return false;
+    }
+    callIndexer.Destroy();
+    Dir.RemoveAll(callRoot);
+    engine.SetText("module IntelliProbe;\n    value\n");
+    engine.editor.SetCursor(1, 9);
+    edit_commands.handleToggleBlockComment(shell, docMgr, engine);
+    if engine.editor.GetLine(1) != "    /* value */" {
+        Probe.fail(shell, "toggle block comment add line");
+        return false;
+    }
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    ctx.docMgr = docMgr;
+    return true;
+}
+
+/// @brief Run the VerifyBlockCommentsAndEditing scenario against the shared fixture.
+expose func VerifyBlockCommentsAndEditing(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var docMgr = ctx.docMgr;
+
+    engine.editor.Undo();
+    if engine.editor.GetLine(1) != "    value" {
+        Probe.fail(shell, "toggle block comment undo line");
+        return false;
+    }
+    edit_commands.handleToggleBlockComment(shell, docMgr, engine);
+    edit_commands.handleToggleBlockComment(shell, docMgr, engine);
+    if engine.editor.GetLine(1) != "    value" {
+        Probe.fail(shell, "toggle block comment remove line");
+        return false;
+    }
+    engine.SetText("alpha beta");
+    engine.editor.SetCursorSelection(0, 0, 0, 0, 5);
+    edit_commands.handleToggleBlockComment(shell, docMgr, engine);
+    if engine.editor.GetLine(0) != "/* alpha */ beta" {
+        Probe.fail(shell, "toggle block comment add selection");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.editor.GetLine(0) != "alpha beta" {
+        Probe.fail(shell, "toggle block comment undo selection");
+        return false;
+    }
+    engine.editor.SetCursorSelection(0, 0, 0, 0, 5);
+    edit_commands.handleToggleBlockComment(shell, docMgr, engine);
+    engine.editor.SetCursorSelection(0, 0, 0, 0, 11);
+    edit_commands.handleToggleBlockComment(shell, docMgr, engine);
+    if engine.editor.GetLine(0) != "alpha beta" {
+        Probe.fail(shell, "toggle block comment remove selection");
+        return false;
+    }
+    var multiBlockBefore = "alpha\nbeta";
+    engine.SetText(multiBlockBefore);
+    engine.editor.SetCursorSelection(0, 0, 0, 1, 4);
+    edit_commands.handleToggleBlockComment(shell, docMgr, engine);
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != multiBlockBefore {
+        Probe.fail(shell, "toggle block comment undo multiline");
+        return false;
+    }
+    engine.SetText("alpha beta\ngamma");
+    engine.editor.SetCursor(0, 2);
+    edit_commands.handleExpandSelection(shell, engine);
+    if !engine.editor.CursorHasSelection(0)
+       or engine.editor.GetSelectionStartLineAt(0) != 0
+       or engine.editor.GetSelectionStartColAt(0) != 0
+       or engine.editor.GetSelectionEndColAt(0) != 5 {
+        Probe.fail(shell, "expand selection word");
+        return false;
+    }
+    edit_commands.handleExpandSelection(shell, engine);
+    if engine.editor.GetSelectionEndColAt(0) != 10 {
+        Probe.fail(shell, "expand selection line");
+        return false;
+    }
+    edit_commands.handleExpandSelection(shell, engine);
+    if engine.editor.GetSelectionEndLineAt(0) != 1
+       or engine.editor.GetSelectionEndColAt(0) != 5 {
+        Probe.fail(shell, "expand selection document");
+        return false;
+    }
+    edit_commands.handleShrinkSelection(shell, engine);
+    if engine.editor.GetSelectionEndLineAt(0) != 0
+       or engine.editor.GetSelectionEndColAt(0) != 10 {
+        Probe.fail(shell, "shrink selection line");
+        return false;
+    }
+    edit_commands.handleShrinkSelection(shell, engine);
+    if engine.editor.GetSelectionEndColAt(0) != 5 {
+        Probe.fail(shell, "shrink selection word");
+        return false;
+    }
+    edit_commands.handleShrinkSelection(shell, engine);
+    if engine.editor.CursorHasSelection(0) {
+        Probe.fail(shell, "shrink selection collapse");
+        return false;
+    }
+    var inlineExpr = "call(alpha, beta)";
+    if edit_commands.EnclosingInlineDelimiterOpenCol(inlineExpr, 7) != 4
+       or edit_commands.MatchingInlineDelimiterCloseCol(inlineExpr, 4) != 16 {
+        Probe.fail(shell, "inline delimiter helpers");
+        return false;
+    }
+    engine.SetText(inlineExpr);
+    engine.editor.SetCursor(0, 7);
+    edit_commands.handleExpandSelection(shell, engine);
+    edit_commands.handleExpandSelection(shell, engine);
+    if engine.editor.GetSelectionStartColAt(0) != 4
+       or engine.editor.GetSelectionEndColAt(0) != 17 {
+        Probe.fail(shell, "expand selection inline delimiter");
+        return false;
+    }
+    edit_commands.handleExpandSelection(shell, engine);
+    if engine.editor.GetSelectionStartColAt(0) != 0
+       or engine.editor.GetSelectionEndColAt(0) != 17 {
+        Probe.fail(shell, "expand selection line after inline delimiter");
+        return false;
+    }
+    var blockExpandSource = "module ExpandProbe;\n"
+        + "func main() {\n"
+        + "    alpha beta\n"
+        + "}\n"
+        + "func other() {}\n";
+    if edit_commands.EnclosingBraceOpenLine(blockExpandSource, 2) != 1
+       or edit_commands.MatchingBraceCloseLine(blockExpandSource, 1) != 3 {
+        Probe.fail(shell, "brace block helpers");
+        return false;
+    }
+    engine.SetText(blockExpandSource);
+    engine.editor.SetCursor(2, 6);
+    edit_commands.handleExpandSelection(shell, engine);
+    edit_commands.handleExpandSelection(shell, engine);
+    edit_commands.handleExpandSelection(shell, engine);
+    if engine.editor.GetSelectionStartLineAt(0) != 1
+       or engine.editor.GetSelectionEndLineAt(0) != 3 {
+        Probe.fail(shell, "expand selection block");
+        return false;
+    }
+    edit_commands.handleExpandSelection(shell, engine);
+    if engine.editor.GetSelectionStartLineAt(0) != 0
+       or engine.editor.GetSelectionEndLineAt(0) != 5 {
+        Probe.fail(shell, "expand selection document after block");
+        return false;
+    }
+    engine.SetText("module IntelliProbe;\n    value\n");
+    engine.editor.SetCursor(1, 9);
+    edit_commands.handleDuplicateLine(shell, engine);
+    if engine.editor.GetLine(2) != "    value" {
+        Probe.fail(shell, "duplicate line");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != "module IntelliProbe;\n    value\n" {
+        Probe.fail(shell, "duplicate line undo");
+        return false;
+    }
+    engine.SetText("one\ntwo\nthree");
+    engine.editor.SetCursor(1, 1);
+    edit_commands.handleMoveLineUp(shell, engine);
+    if engine.editor.GetLine(0) != "two" or engine.editor.GetLine(1) != "one" {
+        Probe.fail(shell, "move line up");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != "one\ntwo\nthree" {
+        Probe.fail(shell, "move line up undo");
+        return false;
+    }
+    engine.editor.SetCursor(1, 1);
+    edit_commands.handleMoveLineDown(shell, engine);
+    if engine.editor.GetLine(1) != "three" or engine.editor.GetLine(2) != "two" {
+        Probe.fail(shell, "move line down");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != "one\ntwo\nthree" {
+        Probe.fail(shell, "move line down undo");
+        return false;
+    }
+
+    ctx.shell = shell;
+    ctx.engine = engine;
+    ctx.docMgr = docMgr;
+    return true;
+}
+
+/// @brief Run the VerifyDocumentFormattingAndCleanup scenario against the shared fixture.
+expose func VerifyDocumentFormattingAndCleanup(ctx: Probe.IntellisenseProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var engine = ctx.engine;
+    var docMgr = ctx.docMgr;
+
+    var messyFormat = "module FormatProbe;\n"
+        + "func main() {\n"
+        + "var x = 1;\n"
+        + "if x {\n"
+        + "Terminal.Say(\"{\");\n"
+        + "}\n"
+        + "}\n";
+    var expectedFormat = "module FormatProbe;\n"
+        + "func main() {\n"
+        + "    var x = 1;\n"
+        + "    if x {\n"
+        + "        Terminal.Say(\"{\");\n"
+        + "    }\n"
+        + "}\n";
+    if edit_commands.FormatZiaText(messyFormat, 4, true) != expectedFormat {
+        Probe.fail(shell, "format zia helper");
+        return false;
+    }
+    if docMgr.GetActive() != null {
+        docMgr.GetActive()!.language = "zia";
+    }
+    engine.SetText(messyFormat);
+    edit_commands.handleFormatDocument(shell, docMgr, engine);
+    if engine.GetTextSnapshot() != expectedFormat {
+        Probe.fail(shell, "format document command");
+        return false;
+    }
+    engine.editor.Undo();
+    if engine.GetTextSnapshot() != messyFormat {
+        Probe.fail(shell, "format document undo");
+        return false;
+    }
+    var messySelection = "module FormatProbe;\n"
+        + "func main() {\n"
+        + "var x = 1;\n"
+        + "if x {\n"
+        + "Terminal.Say(\"}\");\n"
+        + "}\n"
+        + "}\n";
+    var expectedSelection = "module FormatProbe;\n"
+        + "func main() {\n"
+        + "    var x = 1;\n"
+        + "    if x {\n"
+        + "        Terminal.Say(\"}\");\n"
+        + "    }\n"
+        + "}\n";
+    engine.SetText(messySelection);
+    engine.editor.SetCursorSelection(0, 2, 0, 5, 1);
+    edit_commands.handleFormatSelection(shell, docMgr, engine);
+    if engine.GetTextSnapshot() != expectedSelection {
+        Probe.fail(shell, "format selection command");
+        return false;
+    }
+    if docMgr.GetActive() != null {
+        docMgr.GetActive()!.language = "text";
+    }
+    engine.SetText("alpha   \nbeta   \n");
+    engine.editor.SetCursorSelection(0, 0, 0, 0, 8);
+    edit_commands.handleFormatSelection(shell, docMgr, engine);
+    if engine.GetTextSnapshot() != "alpha\nbeta   \n" {
+        Probe.fail(shell, "format text selection");
+        return false;
+    }
+    if docMgr.GetActive() != null {
+        docMgr.GetActive()!.language = "basic";
+    }
+    engine.SetText(messyFormat);
+    edit_commands.handleFormatDocument(shell, docMgr, engine);
+    if engine.GetTextSnapshot() != messyFormat {
+        Probe.fail(shell, "format unsupported basic");
+        return false;
+    }
+
+    // ===== Zanna BASIC language services via the Zanna.Basic.* bridge (Phase 4) =====
+    // Sync, in-process: a type-mismatch must be flagged, and completion at the cursor
+    // must surface in-scope symbols (keyword TO + the DIM'd TOTAL).
+    var basicBad = "DIM x AS INTEGER\nx = \"hello\"\n";
+    var basicDiags = BasicToolchain.CheckForFile(basicBad, "probe.bas");
+    if Seq.get_Count(basicDiags) == 0 {
+        Probe.fail(shell, "basic diagnostics missing type-mismatch error");
+        return false;
+    }
+    var basicSrc = "DIM total AS INTEGER\ntotal = 1\nPRINT to";
+    var basicItems = BasicCompletion.ItemsForFile(basicSrc, "probe.bas", 3, 9);
+    if Seq.get_Count(basicItems) == 0 {
+        Probe.fail(shell, "basic completion returned no items");
+        return false;
+    }
+    // BASIC canonicalizes identifiers to uppercase, so the symbol is "GREET".
+    var basicSyms = BasicCompletion.SymbolsForFile("SUB Greet()\n  PRINT \"hi\"\nEND SUB\n", "probe.bas");
+    if Str.IndexOf(basicSyms, "GREET") == 0 {
+        Probe.fail(shell, "basic symbols missing SUB Greet");
+        return false;
+    }
+    var basicHover = BasicCompletion.HoverInfoForFile(basicSrc, "probe.bas", 2, 0);
+    if Map.GetBool(basicHover, "available") == false {
+        Probe.fail(shell, "basic hover not available for 'total'");
+        return false;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+    return true;
+}
+

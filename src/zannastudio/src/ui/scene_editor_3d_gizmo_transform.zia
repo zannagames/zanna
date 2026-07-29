@@ -1,0 +1,698 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_gizmo_transform.zia
+// Purpose: Focused gizmo transform behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_drops_gizmo_input.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_gizmo_transform;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_drops_gizmo_input" as PreviousLayer;
+
+/// @brief Gizmo Transform implementation layer.
+class SceneEditor3DGizmoTransformLayer extends PreviousLayer.SceneEditor3DDropsGizmoInputLayer {
+
+    /// @brief Apply one frame of pointer motion from the gesture origin.
+    hide override func ApplyGizmoMouseDelta() {
+        var node = SelectedNode();
+        if node == null {
+            ResetGizmoDrag(true);
+            return;
+        }
+        var deltaX = PhysicalPointerToUi(Input.Mouse.DeltaX());
+        var deltaY = PhysicalPointerToUi(Input.Mouse.DeltaY());
+        if deltaX == 0 and deltaY == 0 { return; }
+
+        var world = node.WorldPosition;
+        var origin = Project(world.X, world.Y, world.Z);
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE
+           and SceneEditor3DModel.IsGizmoAxis(gizmoDragAxis) {
+            var pointerX =
+                PhysicalPointerToUi(Input.Mouse.X())
+                - viewportImage.GetScreenX();
+            var pointerY =
+                PhysicalPointerToUi(Input.Mouse.Y())
+                - viewportImage.GetScreenY();
+            var decodedRing = GizmoRotationRingAngle(
+                node, gizmoDragAxis, pointerX, pointerY);
+            if decodedRing.valid == false {
+                gizmoDragRingAngleValid = false;
+                return;
+            }
+            if gizmoDragRingAngleValid == false {
+                gizmoDragPreviousRingAngle = decodedRing.degrees;
+                gizmoDragRingAngleValid = true;
+                return;
+            }
+            var amount = scene_transform_3d.SignedAngleDelta(
+                gizmoDragPreviousRingAngle, decodedRing.degrees);
+            gizmoDragPreviousRingAngle = decodedRing.degrees;
+            if scene_transform_3d.NearlyEqual(amount, 0.0) {
+                return;
+            }
+            gizmoDragAccumulated = gizmoDragAccumulated + amount;
+
+            var sourceValue = gizmoDragStartZ;
+            if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_X {
+                sourceValue = gizmoDragStartX;
+            } else if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_Y {
+                sourceValue = gizmoDragStartY;
+            }
+            var targetValue = scene_transform_3d.AxisTarget(
+                SceneEditor3DModel.GIZMO_MODE_ROTATE,
+                sourceValue,
+                gizmoDragAccumulated,
+                EffectiveSnapEnabled());
+            if gizmoTransformSpace
+               == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+                var applied =
+                    ApplyLiveWorldGizmoTarget(targetValue);
+                gizmoDragChanged = applied
+                    and scene_transform_3d.NearlyEqual(
+                        sourceValue, targetValue) == false;
+            } else {
+                ApplyLiveGizmoTarget(node, targetValue);
+                gizmoDragChanged =
+                    scene_transform_3d.NearlyEqual(
+                        sourceValue, targetValue) == false;
+            }
+            gizmoDragChanged =
+                FinalizeLiveGizmoMutation(gizmoDragChanged);
+            renderDirty = true;
+            return;
+        }
+        if SceneEditor3DModel.IsGizmoPlane(gizmoDragAxis) {
+            var axisA = SceneEditor3DModel.GizmoPlaneAxisA(gizmoDragAxis);
+            var axisB = SceneEditor3DModel.GizmoPlaneAxisB(gizmoDragAxis);
+            var endpointA = GizmoAxisEndpoint(node, axisA);
+            var endpointB = GizmoAxisEndpoint(node, axisB);
+            var planeDrag = scene_transform_3d.PlanarDragAmounts(
+                gizmoMode, deltaX, deltaY,
+                endpointA.x - origin.x,
+                endpointA.y - origin.y,
+                endpointB.x - origin.x,
+                endpointB.y - origin.y,
+                GizmoDragLength(node, axisA),
+                GizmoDragLength(node, axisB));
+            if planeDrag.valid == false
+               or (scene_transform_3d.NearlyEqual(
+                       planeDrag.amountA, 0.0)
+                   and scene_transform_3d.NearlyEqual(
+                       planeDrag.amountB, 0.0)) {
+                return;
+            }
+            gizmoDragAccumulated =
+                gizmoDragAccumulated + planeDrag.amountA;
+            gizmoDragAccumulatedB =
+                gizmoDragAccumulatedB + planeDrag.amountB;
+
+            var sourceA = gizmoDragStartZ;
+            if axisA == SceneEditor3DModel.GIZMO_AXIS_X { sourceA = gizmoDragStartX; }
+            else if axisA == SceneEditor3DModel.GIZMO_AXIS_Y {
+                sourceA = gizmoDragStartY;
+            }
+            var sourceB = gizmoDragStartZ;
+            if axisB == SceneEditor3DModel.GIZMO_AXIS_X { sourceB = gizmoDragStartX; }
+            else if axisB == SceneEditor3DModel.GIZMO_AXIS_Y {
+                sourceB = gizmoDragStartY;
+            }
+            var targetA = scene_transform_3d.AxisTarget(
+                gizmoMode, sourceA, gizmoDragAccumulated,
+                EffectiveSnapEnabled());
+            var targetB = scene_transform_3d.AxisTarget(
+                gizmoMode, sourceB, gizmoDragAccumulatedB,
+                EffectiveSnapEnabled());
+            if gizmoTransformSpace
+               == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+                var applied = ApplyLiveWorldGizmoPlaneTarget(
+                    targetA, targetB);
+                gizmoDragChanged = applied
+                    and (scene_transform_3d.NearlyEqual(
+                             sourceA, targetA) == false
+                         or scene_transform_3d.NearlyEqual(
+                                sourceB, targetB) == false);
+            } else {
+                ApplyLiveGizmoPlaneTarget(targetA, targetB);
+                gizmoDragChanged =
+                    scene_transform_3d.NearlyEqual(
+                        sourceA, targetA) == false
+                    or scene_transform_3d.NearlyEqual(
+                           sourceB, targetB) == false;
+            }
+            gizmoDragChanged =
+                FinalizeLiveGizmoMutation(gizmoDragChanged);
+            renderDirty = true;
+            return;
+        }
+        var endpoint = GizmoAxisEndpoint(node, gizmoDragAxis);
+        var axisX = endpoint.x - origin.x;
+        var axisY = endpoint.y - origin.y;
+        var amount = scene_transform_3d.AxisDragAmount(
+            gizmoMode, deltaX, deltaY, axisX, axisY,
+            GizmoDragLength(node, gizmoDragAxis));
+        if amount > -0.0000001 and amount < 0.0000001 { return; }
+        gizmoDragAccumulated = gizmoDragAccumulated + amount;
+
+        var sourceValue = gizmoDragStartZ;
+        if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_X { sourceValue = gizmoDragStartX; }
+        else if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_Y {
+            sourceValue = gizmoDragStartY;
+        }
+        var targetValue = scene_transform_3d.AxisTarget(
+            gizmoMode, sourceValue, gizmoDragAccumulated,
+            EffectiveSnapEnabled());
+        if gizmoTransformSpace
+           == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+            var applied = ApplyLiveWorldGizmoTarget(targetValue);
+            gizmoDragChanged = applied
+                and scene_transform_3d.NearlyEqual(
+                    sourceValue, targetValue) == false;
+        } else {
+            ApplyLiveGizmoTarget(node, targetValue);
+            gizmoDragChanged =
+                scene_transform_3d.NearlyEqual(
+                    sourceValue, targetValue) == false;
+        }
+        gizmoDragChanged =
+            FinalizeLiveGizmoMutation(gizmoDragChanged);
+        renderDirty = true;
+    }
+
+    /// @brief Ground one accepted horizontal target and align its previews.
+    /// @details A missing surface intentionally preserves the horizontal move
+    ///          at its current height. Query/conversion failure restores every
+    ///          selected node to its immutable gesture origin, so release
+    ///          cannot serialize a partial group.
+    hide override func FinalizeLiveGizmoMutation(changed: Boolean) -> Boolean {
+        if changed and SurfaceSnapActiveForHandle(gizmoDragAxis) {
+            var rootIndices = TopLevelSelectedIndices();
+            var roots = TopLevelSelectedNodes();
+            if roots.count() == 0
+               or roots.count() != rootIndices.count()
+               or roots.count() > SceneEditor3DModel.MAX_LIVE_SURFACE_SNAP_ROOTS
+               or ApplyRootsToNearestSurfaces(
+                      rootIndices,
+                      roots,
+                      surfaceAlignEnabled,
+                      SceneEditor3DModel.LIVE_SURFACE_SNAP_START_CLEARANCE) < 0 {
+                RestoreLocalTransforms(
+                    gizmoDragIndices,
+                    gizmoDragStartPositions,
+                    gizmoDragStartRotations,
+                    gizmoDragStartScales);
+                toolbarStatus.SetText("Surface Move rejected");
+                detailLabel.SetText(
+                    "Studio could not resolve every selected world bound, "
+                    + "or grounding required a sheared or singular transform. "
+                    + "The complete gesture remains uncommitted.");
+                RefreshSelectedFields();
+                SyncProjectNodePreviewTransforms();
+                return false;
+            }
+            RefreshSelectedFields();
+        }
+        SyncProjectNodePreviewTransforms();
+        return changed;
+    }
+
+    /// @brief Commit one complete axis drag as a single undoable edit.
+    hide override func FinishGizmoDrag() -> Boolean {
+        var changed = gizmoDragChanged;
+        var node = SelectedNode();
+        var completedMode = gizmoMode;
+        var completedHandle = gizmoDragAxis;
+        var transformedCount = gizmoDragIndices.count();
+        ResetGizmoDrag(true);
+        renderDirty = true;
+        if changed == false or node == null { return false; }
+        var historyLabel =
+            scene_transform_3d.ModeHistoryVerb(completedMode)
+            + " " + transformedCount + " selected node(s)";
+        if surfaceSnapEnabled
+           and completedMode == SceneEditor3DModel.GIZMO_MODE_MOVE
+           and (completedHandle == SceneEditor3DModel.GIZMO_AXIS_X
+                or completedHandle == SceneEditor3DModel.GIZMO_AXIS_Z
+                or completedHandle == SceneEditor3DModel.GIZMO_PLANE_XZ) {
+            historyLabel =
+                "Surface-moved " + transformedCount
+                + " selected node(s)";
+        }
+        if CommitScene(historyLabel) {
+            RebuildProjectNodePreviews();
+            return true;
+        }
+        return false;
+    }
+
+    /// @brief Restore the drag origin and leave document/history untouched.
+    hide override func CancelGizmoDrag() {
+        if gizmoDragAxis != SceneEditor3DModel.GIZMO_AXIS_NONE {
+            if gizmoTransformSpace
+               == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+                RestoreLocalTransforms(
+                    gizmoDragIndices,
+                    gizmoDragStartPositions,
+                    gizmoDragStartRotations,
+                    gizmoDragStartScales);
+            } else {
+                var selectionIndex = 0;
+                while selectionIndex < gizmoDragIndices.count()
+                      and selectionIndex < gizmoDragStartXs.count()
+                      and selectionIndex < gizmoDragStartYs.count()
+                      and selectionIndex < gizmoDragStartZs.count() {
+                    var nodeIndex = gizmoDragIndices.get(selectionIndex);
+                    if nodeIndex >= 0 and nodeIndex < flatNodes.count() {
+                        ApplyNodeTransformValues(
+                            flatNodes.get(nodeIndex),
+                            gizmoMode,
+                            gizmoDragStartXs.get(selectionIndex),
+                            gizmoDragStartYs.get(selectionIndex),
+                            gizmoDragStartZs.get(selectionIndex));
+                    }
+                    selectionIndex = selectionIndex + 1;
+                }
+            }
+            var node = SelectedNode();
+            if node != null {
+                if gizmoTransformSpace
+                   == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+                    RefreshSelectedFields();
+                } else if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+                    rotationX.SetValue(gizmoDragStartX);
+                    rotationY.SetValue(gizmoDragStartY);
+                    rotationZ.SetValue(gizmoDragStartZ);
+                } else if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+                    scaleX.SetValue(gizmoDragStartX);
+                    scaleY.SetValue(gizmoDragStartY);
+                    scaleZ.SetValue(gizmoDragStartZ);
+                } else {
+                    positionX.SetValue(gizmoDragStartX);
+                    positionY.SetValue(gizmoDragStartY);
+                    positionZ.SetValue(gizmoDragStartZ);
+                }
+            }
+        }
+        ResetGizmoDrag(true);
+        SyncProjectNodePreviewTransforms();
+        toolbarStatus.SetText("Transform canceled");
+        renderDirty = true;
+    }
+
+    /// @brief Apply one live world-plane target from immutable gesture origins.
+    /// @return True when every selected node accepted the exact transform.
+    hide override func ApplyLiveWorldGizmoPlaneTarget(
+        targetA: Number,
+        targetB: Number) -> Boolean {
+        var axisA = SceneEditor3DModel.GizmoPlaneAxisA(gizmoDragAxis);
+        var axisB = SceneEditor3DModel.GizmoPlaneAxisB(gizmoDragAxis);
+        var sourceA = gizmoDragStartZ;
+        if axisA == SceneEditor3DModel.GIZMO_AXIS_X { sourceA = gizmoDragStartX; }
+        else if axisA == SceneEditor3DModel.GIZMO_AXIS_Y { sourceA = gizmoDragStartY; }
+        var sourceB = gizmoDragStartZ;
+        if axisB == SceneEditor3DModel.GIZMO_AXIS_X { sourceB = gizmoDragStartX; }
+        else if axisB == SceneEditor3DModel.GIZMO_AXIS_Y { sourceB = gizmoDragStartY; }
+        var deltaA = targetA - sourceA;
+        var deltaB = targetB - sourceB;
+
+        RestoreLocalTransforms(
+            gizmoDragIndices,
+            gizmoDragStartPositions,
+            gizmoDragStartRotations,
+            gizmoDragStartScales);
+        var accepted = true;
+        var selectionIndex = 0;
+        while selectionIndex < gizmoDragIndices.count() and accepted
+              and selectionIndex < gizmoDragStartWorldMatrices.count()
+              and selectionIndex < gizmoDragStartWorldPositions.count()
+              and selectionIndex < gizmoDragStartWorldScales.count() {
+            var desired = WorldPlaneTargetMatrix(
+                gizmoDragStartWorldMatrices.get(selectionIndex),
+                gizmoDragStartWorldPositions.get(selectionIndex),
+                gizmoDragStartWorldScales.get(selectionIndex),
+                gizmoMode,
+                axisA,
+                axisB,
+                deltaA,
+                deltaB);
+            var nodeIndex = gizmoDragIndices.get(selectionIndex);
+            if desired == null
+               or nodeIndex < 0 or nodeIndex >= flatNodes.count()
+               or flatNodes.get(nodeIndex)
+                      .TrySetWorldMatrix(desired) == false {
+                accepted = false;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if accepted == false
+           or selectionIndex != gizmoDragIndices.count() {
+            RestoreLocalTransforms(
+                gizmoDragIndices,
+                gizmoDragStartPositions,
+                gizmoDragStartRotations,
+                gizmoDragStartScales);
+            detailLabel.SetText(
+                "This world-space plane drag would require a singular, "
+                + "degenerate, or sheared local transform. The gesture remains "
+                + "uncommitted.");
+            toolbarStatus.SetText("World plane transform rejected");
+            RefreshSelectedFields();
+            return false;
+        }
+        RefreshSelectedFields();
+        return true;
+    }
+
+    /// @brief Apply one local Move/Scale plane target before release history.
+    hide override func ApplyLiveGizmoPlaneTarget(
+        targetA: Number,
+        targetB: Number) {
+        var axisA = SceneEditor3DModel.GizmoPlaneAxisA(gizmoDragAxis);
+        var axisB = SceneEditor3DModel.GizmoPlaneAxisB(gizmoDragAxis);
+        var sourceA = gizmoDragStartZ;
+        if axisA == SceneEditor3DModel.GIZMO_AXIS_X { sourceA = gizmoDragStartX; }
+        else if axisA == SceneEditor3DModel.GIZMO_AXIS_Y { sourceA = gizmoDragStartY; }
+        var sourceB = gizmoDragStartZ;
+        if axisB == SceneEditor3DModel.GIZMO_AXIS_X { sourceB = gizmoDragStartX; }
+        else if axisB == SceneEditor3DModel.GIZMO_AXIS_Y { sourceB = gizmoDragStartY; }
+        var deltaA = targetA - sourceA;
+        var deltaB = targetB - sourceB;
+        var deltaX = 0.0;
+        var deltaY = 0.0;
+        var deltaZ = 0.0;
+        if axisA == SceneEditor3DModel.GIZMO_AXIS_X { deltaX = deltaA; }
+        else if axisA == SceneEditor3DModel.GIZMO_AXIS_Y { deltaY = deltaA; }
+        else { deltaZ = deltaA; }
+        if axisB == SceneEditor3DModel.GIZMO_AXIS_X { deltaX = deltaB; }
+        else if axisB == SceneEditor3DModel.GIZMO_AXIS_Y { deltaY = deltaB; }
+        else { deltaZ = deltaB; }
+
+        var selectionIndex = 0;
+        while selectionIndex < gizmoDragIndices.count()
+              and selectionIndex < gizmoDragStartXs.count()
+              and selectionIndex < gizmoDragStartYs.count()
+              and selectionIndex < gizmoDragStartZs.count() {
+            var nodeIndex = gizmoDragIndices.get(selectionIndex);
+            if nodeIndex >= 0 and nodeIndex < flatNodes.count() {
+                var startX = gizmoDragStartXs.get(selectionIndex);
+                var startY = gizmoDragStartYs.get(selectionIndex);
+                var startZ = gizmoDragStartZs.get(selectionIndex);
+                var targetX = startX + deltaX;
+                var targetY = startY + deltaY;
+                var targetZ = startZ + deltaZ;
+                if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+                    if axisA == SceneEditor3DModel.GIZMO_AXIS_X
+                       or axisB == SceneEditor3DModel.GIZMO_AXIS_X {
+                        targetX = scene_transform_3d.UsableScale(
+                            targetX, startX);
+                    }
+                    if axisA == SceneEditor3DModel.GIZMO_AXIS_Y
+                       or axisB == SceneEditor3DModel.GIZMO_AXIS_Y {
+                        targetY = scene_transform_3d.UsableScale(
+                            targetY, startY);
+                    }
+                    if axisA == SceneEditor3DModel.GIZMO_AXIS_Z
+                       or axisB == SceneEditor3DModel.GIZMO_AXIS_Z {
+                        targetZ = scene_transform_3d.UsableScale(
+                            targetZ, startZ);
+                    }
+                }
+                ApplyNodeTransformValues(
+                    flatNodes.get(nodeIndex),
+                    gizmoMode,
+                    targetX,
+                    targetY,
+                    targetZ);
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        var primaryX = gizmoDragStartX + deltaX;
+        var primaryY = gizmoDragStartY + deltaY;
+        var primaryZ = gizmoDragStartZ + deltaZ;
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            if axisA == SceneEditor3DModel.GIZMO_AXIS_X
+               or axisB == SceneEditor3DModel.GIZMO_AXIS_X {
+                primaryX = scene_transform_3d.UsableScale(
+                    primaryX, gizmoDragStartX);
+            }
+            if axisA == SceneEditor3DModel.GIZMO_AXIS_Y
+               or axisB == SceneEditor3DModel.GIZMO_AXIS_Y {
+                primaryY = scene_transform_3d.UsableScale(
+                    primaryY, gizmoDragStartY);
+            }
+            if axisA == SceneEditor3DModel.GIZMO_AXIS_Z
+               or axisB == SceneEditor3DModel.GIZMO_AXIS_Z {
+                primaryZ = scene_transform_3d.UsableScale(
+                    primaryZ, gizmoDragStartZ);
+            }
+            scaleX.SetValue(primaryX);
+            scaleY.SetValue(primaryY);
+            scaleZ.SetValue(primaryZ);
+        } else {
+            positionX.SetValue(primaryX);
+            positionY.SetValue(primaryY);
+            positionZ.SetValue(primaryZ);
+        }
+    }
+
+    /// @brief Apply one live world-space target from immutable gesture origins.
+    /// @return True when every selected node accepted the exact conversion.
+    hide override func ApplyLiveWorldGizmoTarget(targetValue: Number) -> Boolean {
+        var sourceValue = gizmoDragStartZ;
+        if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_X {
+            sourceValue = gizmoDragStartX;
+        } else if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_Y {
+            sourceValue = gizmoDragStartY;
+        }
+        var delta = targetValue - sourceValue;
+        RestoreLocalTransforms(
+            gizmoDragIndices,
+            gizmoDragStartPositions,
+            gizmoDragStartRotations,
+            gizmoDragStartScales);
+
+        var accepted = true;
+        var selectionIndex = 0;
+        while selectionIndex < gizmoDragIndices.count() and accepted
+              and selectionIndex < gizmoDragStartWorldMatrices.count()
+              and selectionIndex < gizmoDragStartWorldPositions.count()
+              and selectionIndex < gizmoDragStartWorldScales.count() {
+            var desired = WorldAxisTargetMatrix(
+                gizmoDragStartWorldMatrices.get(selectionIndex),
+                gizmoDragStartWorldPositions.get(selectionIndex),
+                gizmoDragStartWorldScales.get(selectionIndex),
+                gizmoMode,
+                gizmoDragAxis,
+                delta);
+            var nodeIndex = gizmoDragIndices.get(selectionIndex);
+            if desired == null
+               or nodeIndex < 0 or nodeIndex >= flatNodes.count()
+               or flatNodes.get(nodeIndex)
+                      .TrySetWorldMatrix(desired) == false {
+                accepted = false;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if accepted == false
+           or selectionIndex != gizmoDragIndices.count() {
+            RestoreLocalTransforms(
+                gizmoDragIndices,
+                gizmoDragStartPositions,
+                gizmoDragStartRotations,
+                gizmoDragStartScales);
+            detailLabel.SetText(
+                "This world-space drag would require local shear or a "
+                + "singular transform. The gesture remains uncommitted.");
+            toolbarStatus.SetText("World transform rejected");
+            RefreshSelectedFields();
+            return false;
+        }
+        RefreshSelectedFields();
+        return true;
+    }
+
+    /// @brief Apply one snapped target while deferring serialization to release.
+    hide override func ApplyLiveGizmoTarget(node: SceneNode,
+                                   targetValue: Number) {
+        if node == null { return; }
+        var primarySource = gizmoDragStartZ;
+        if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_X {
+            primarySource = gizmoDragStartX;
+        } else if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_Y {
+            primarySource = gizmoDragStartY;
+        }
+        var delta = targetValue - primarySource;
+        var selectionIndex = 0;
+        while selectionIndex < gizmoDragIndices.count()
+              and selectionIndex < gizmoDragStartXs.count()
+              and selectionIndex < gizmoDragStartYs.count()
+              and selectionIndex < gizmoDragStartZs.count() {
+            var targetX = gizmoDragStartXs.get(selectionIndex);
+            var targetY = gizmoDragStartYs.get(selectionIndex);
+            var targetZ = gizmoDragStartZs.get(selectionIndex);
+            if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_X {
+                targetX = targetX + delta;
+            } else if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_Y {
+                targetY = targetY + delta;
+            } else {
+                targetZ = targetZ + delta;
+            }
+            if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+                if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_X {
+                    targetX = scene_transform_3d.UsableScale(
+                        targetX, gizmoDragStartXs.get(selectionIndex));
+                } else if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_Y {
+                    targetY = scene_transform_3d.UsableScale(
+                        targetY, gizmoDragStartYs.get(selectionIndex));
+                } else {
+                    targetZ = scene_transform_3d.UsableScale(
+                        targetZ, gizmoDragStartZs.get(selectionIndex));
+                }
+            }
+            var nodeIndex = gizmoDragIndices.get(selectionIndex);
+            if nodeIndex >= 0 and nodeIndex < flatNodes.count() {
+                ApplyNodeTransformValues(
+                    flatNodes.get(nodeIndex),
+                    gizmoMode,
+                    targetX,
+                    targetY,
+                    targetZ);
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        var primaryX = gizmoDragStartX;
+        var primaryY = gizmoDragStartY;
+        var primaryZ = gizmoDragStartZ;
+        if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_X { primaryX = targetValue; }
+        else if gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_Y { primaryY = targetValue; }
+        else { primaryZ = targetValue; }
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            rotationX.SetValue(primaryX);
+            rotationY.SetValue(primaryY);
+            rotationZ.SetValue(primaryZ);
+        } else if gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            scaleX.SetValue(primaryX);
+            scaleY.SetValue(primaryY);
+            scaleZ.SetValue(primaryZ);
+        } else {
+            positionX.SetValue(primaryX);
+            positionY.SetValue(primaryY);
+            positionZ.SetValue(primaryZ);
+        }
+    }
+
+    /// @brief Apply three local transform components without serializing.
+    hide override func ApplyNodeTransformValues(node: SceneNode,
+                                       transformMode: Integer,
+                                       x: Number,
+                                       y: Number,
+                                       z: Number) {
+        if node == null { return; }
+        if transformMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            node.Rotation = Quat.FromEuler(
+                x * SceneEditor3DModel.DEG_TO_RAD,
+                y * SceneEditor3DModel.DEG_TO_RAD,
+                z * SceneEditor3DModel.DEG_TO_RAD).Normalize();
+        } else if transformMode == SceneEditor3DModel.GIZMO_MODE_SCALE {
+            node.SetScale(x, y, z);
+        } else {
+            node.SetPosition(x, y, z);
+        }
+    }
+
+    /// @brief Clear gesture-only state and release pointer capture if owned.
+    hide override func ResetGizmoDrag(releaseCapture: Boolean) {
+        var wasDragging = gizmoDragAxis != SceneEditor3DModel.GIZMO_AXIS_NONE;
+        gizmoDragAxis = SceneEditor3DModel.GIZMO_AXIS_NONE;
+        gizmoDragChanged = false;
+        gizmoDragAccumulated = 0.0;
+        gizmoDragAccumulatedB = 0.0;
+        gizmoDragPreviousRingAngle = 0.0;
+        gizmoDragRingAngleValid = false;
+        gizmoDragStartX = 0.0;
+        gizmoDragStartY = 0.0;
+        gizmoDragStartZ = 0.0;
+        gizmoDragIndices = [];
+        gizmoDragStartXs = [];
+        gizmoDragStartYs = [];
+        gizmoDragStartZs = [];
+        gizmoDragStartPositions = [];
+        gizmoDragStartRotations = [];
+        gizmoDragStartScales = [];
+        gizmoDragStartWorldMatrices = [];
+        gizmoDragStartWorldPositions = [];
+        gizmoDragStartWorldScales = [];
+        if releaseCapture and wasDragging and Input.Mouse.IsCaptured() {
+            Input.Mouse.Release();
+        }
+    }
+}

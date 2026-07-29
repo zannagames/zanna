@@ -1,0 +1,615 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_editor_2d_probe_part_2_hierarchy.zia
+// Purpose: Focused 2D hierarchy and tileset probe scenarios.
+// Key invariants:
+//   - Scenarios preserve the original execution order and shared fixture.
+//   - Failure paths retain their original cleanup and RESULT diagnostics.
+// Ownership/Lifetime: Borrows one SceneEditor2DProbeContext from the entry probe.
+// Links: zannastudio/src/probes/scene_editor_2d_probe.zia,
+//        zannastudio/src/probes/scene_editor_2d_probe_context.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_probe_part_2_hierarchy;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../core/recovery_store";
+bind "../commands/command_context";
+bind "../commands/file_commands";
+bind "../commands/main_command_dispatcher";
+bind "../editor/editor_engine";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_asset_browser";
+bind "../ui/scene_clipboard";
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+bind "../ui/scene_tileset_2d";
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Terminal = Zanna.Terminal;
+
+// ============================================================================
+// MODULE: scene_editor_2d_probe
+// PURPOSE: Pin the 2D visual surface's document, gesture, tileset, and history
+//          contracts through the same public controller used by Studio.
+//
+// WHERE-THIS-FITS: This display probe complements SceneDocument runtime tests
+//          by exercising real widgets, Pixels assets, and document ownership.
+//
+// TEACHING-NOTE: Reloading external pixels is intentionally tested separately
+//          from assigning their path because only assignment is scene data.
+// ============================================================================
+
+bind "scene_editor_2d_probe_context" as Probe;
+
+/// @brief Run the VerifyHierarchySelectionAndHistory scenario against the shared fixture.
+expose func VerifyHierarchySelectionAndHistory(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var otherBaseline = ctx.otherBaseline;
+    var hierarchyDoc = ctx.hierarchyDoc;
+    var oneObject = ctx.oneObject;
+
+    var hierarchyRoots: List[Integer] = [];
+    hierarchyRoots.add(1);
+    hierarchyRoots.add(2);
+    editor.SelectSceneObjects(hierarchyRoots, 2);
+    var hierarchyGroupBaseline = hierarchyDoc.content;
+    var hierarchyGroupRevision = editor.GetRevision();
+    if editor.ApplyObjectHierarchyDrop(
+           2, 4, 1) == false
+       or editor.GetRevision() != hierarchyGroupRevision + 1
+       or editor.scene.ObjectId(0) != "hierarchy-a"
+       or editor.scene.ObjectId(1) != "hierarchy-e"
+       or editor.scene.ObjectId(2) != "hierarchy-d"
+       or editor.scene.ObjectId(3) != "hierarchy-b"
+       or editor.scene.ObjectId(4) != "hierarchy-c"
+       or editor.scene.ObjectParent(2) != 1
+       or editor.scene.ObjectParent(3) != 1
+       or editor.scene.ObjectParent(4) != 3
+       or editor.selectedObjects.count() != 2
+       or editor.selectedObject != 3 {
+        Probe.fail(shell, "2D multi-root INTO drop was not one exact subtree edit");
+        return false;
+    }
+    var hierarchyGroupAccepted = hierarchyDoc.content;
+    var hierarchyNoOpRevision = editor.GetRevision();
+    if editor.ApplyObjectHierarchyDrop(
+           3, 1, 1)
+       or editor.GetRevision() != hierarchyNoOpRevision
+       or hierarchyDoc.content != hierarchyGroupAccepted
+       or editor.Undo() == false
+       or hierarchyDoc.content != hierarchyGroupBaseline
+       or editor.Redo() == false
+       or hierarchyDoc.content != hierarchyGroupAccepted {
+        Probe.fail(shell, "2D hierarchy no-op, undo, or redo was not exact");
+        return false;
+    }
+
+    var hierarchyBranch: List[Integer] = [];
+    hierarchyBranch.add(3);
+    hierarchyBranch.add(4);
+    editor.SelectSceneObjects(hierarchyBranch, 3);
+    var hierarchyDuplicateRevision = editor.GetRevision();
+    if editor.DuplicateSelectedSceneObjects() != 2
+       or editor.GetRevision() != hierarchyDuplicateRevision + 1
+       or editor.scene.ObjectCount() != 7
+       or editor.scene.ObjectId(4) != "hierarchy-b-copy"
+       or editor.scene.ObjectId(6) != "hierarchy-c-copy"
+       or editor.scene.ObjectParent(4) != 1
+       or editor.scene.ObjectParent(6) != 4
+       or editor.Undo() == false
+       or hierarchyDoc.content != hierarchyGroupAccepted {
+        Probe.fail(shell, "2D hierarchy duplication did not preserve internal parents");
+        return false;
+    }
+
+    editor.SelectSceneObjects(hierarchyBranch, 3);
+    if editor.CopySelectedSceneObjects() == false {
+        Probe.fail(shell, "2D hierarchy branch was not copied");
+        return false;
+    }
+    var hierarchyPasteDoc = new document.Document();
+    hierarchyPasteDoc.fileName = "hierarchy-paste.scene";
+    hierarchyPasteDoc.language = "scene";
+    hierarchyPasteDoc.kind = file_utils.DOC_KIND_SCENE_2D;
+    hierarchyPasteDoc.content = otherBaseline;
+    editor.Pump(hierarchyPasteDoc);
+    var hierarchyPasteRevision = editor.GetRevision();
+    if editor.PasteSceneObjectsFromClipboard() == false
+       or editor.GetRevision() != hierarchyPasteRevision + 1
+       or editor.scene.ObjectCount() != 2
+       or editor.scene.ObjectParent(0) != -1
+       or editor.scene.ObjectParent(1) != 0
+       or editor.Undo() == false
+       or editor.scene.ObjectCount() != 0 {
+        Probe.fail(shell, "2D hierarchy paste flattened an internal parent link");
+        return false;
+    }
+    GUI.ClipboardText.Clear();
+
+    // Child creation and explicit parent selection must make hierarchy
+    // authoring accessible without a precise row drop. Each accepted command
+    // is one history entry and absolute authored positions never change.
+    var hierarchyAuthoringDoc = new document.Document();
+    hierarchyAuthoringDoc.fileName = "hierarchy-authoring.scene";
+    hierarchyAuthoringDoc.language = "scene";
+    hierarchyAuthoringDoc.kind = file_utils.DOC_KIND_SCENE_2D;
+    hierarchyAuthoringDoc.content = otherBaseline;
+    editor.Pump(hierarchyAuthoringDoc);
+    if editor.AddSceneObject("group", "authoring-root", 10, 20) != 0 {
+        Probe.fail(shell, "2D hierarchy authoring fixture could not add its root");
+        return false;
+    }
+    var addChildBaseline = hierarchyAuthoringDoc.content;
+    var addChildRevision = editor.GetRevision();
+    if editor.AddSceneChildObject(
+           0, "actor", "authoring-child", 30, 40) != 1
+       or editor.GetRevision() != addChildRevision + 1
+       or editor.scene.ObjectParent(1) != 0
+       or editor.scene.ObjectX(1) != 30
+       or editor.scene.ObjectY(1) != 40
+       or editor.Undo() == false
+       or hierarchyAuthoringDoc.content != addChildBaseline
+       or editor.scene.ObjectCount() != 1
+       or editor.Redo() == false
+       or editor.scene.ObjectParent(1) != 0 {
+        Probe.fail(shell, "2D Add Child was not one exact hierarchy transaction");
+        return false;
+    }
+    if editor.AddSceneChildObject(
+           1, "actor", "authoring-grandchild", 50, 60) != 2
+       or editor.AddSceneObject(
+              "group", "authoring-target", 70, 80) != 3 {
+        Probe.fail(shell, "2D hierarchy authoring fixture could not add descendants");
+        return false;
+    }
+
+    oneObject = [];
+    oneObject.add(1);
+    editor.SelectSceneObjects(oneObject, 1);
+    var explicitParentBaseline = hierarchyAuthoringDoc.content;
+    var explicitParentRevision = editor.GetRevision();
+    if editor.addChildObjectButton.IsEnabled() == false
+       or editor.objectParentDropdown.IsEnabled() == false
+       or editor.reparentObjectButton.IsEnabled()
+       or editor.SelectObjectParentTarget(3) == false
+       or editor.reparentObjectButton.IsEnabled() == false
+       or editor.ReparentSelectedSceneObjects(3) == false
+       or editor.GetRevision() != explicitParentRevision + 1
+       or editor.scene.ObjectId(0) != "authoring-root"
+       or editor.scene.ObjectId(1) != "authoring-target"
+       or editor.scene.ObjectId(2) != "authoring-child"
+       or editor.scene.ObjectId(3) != "authoring-grandchild"
+       or editor.scene.ObjectParent(2) != 1
+       or editor.scene.ObjectParent(3) != 2
+       or editor.scene.ObjectX(2) != 30
+       or editor.scene.ObjectY(3) != 60
+       or editor.selectedObject != 2
+       or editor.Undo() == false
+       or hierarchyAuthoringDoc.content != explicitParentBaseline
+       or editor.Redo() == false
+       or editor.scene.ObjectParent(2) != 1 {
+        Probe.fail(shell, "2D explicit parent selection was not exact or reversible");
+        return false;
+    }
+
+    oneObject = [];
+    oneObject.add(2);
+    editor.SelectSceneObjects(oneObject, 2);
+    var rootParentRevision = editor.GetRevision();
+    if editor.ReparentSelectedSceneObjects(-1) == false
+       or editor.GetRevision() != rootParentRevision + 1
+       or editor.scene.ObjectParent(2) != -1
+       or editor.scene.ObjectParent(3) != 2
+       or editor.scene.ObjectX(2) != 30
+       or editor.scene.ObjectY(3) != 60
+       or editor.Undo() == false
+       or editor.scene.ObjectParent(2) != 1 {
+        Probe.fail(shell, "2D reparent-to-root changed positions or history shape");
+        return false;
+    }
+
+    oneObject = [];
+    oneObject.add(1);
+    editor.SelectSceneObjects(oneObject, 1);
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.hierarchyAuthoringDoc = hierarchyAuthoringDoc;
+    return true;
+}
+
+/// @brief Run the VerifyHierarchyAuthoringAndTilesetSetup scenario against the shared fixture.
+expose func VerifyHierarchyAuthoringAndTilesetSetup(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var hierarchyAuthoringDoc = ctx.hierarchyAuthoringDoc;
+
+    var explicitCycleContent = hierarchyAuthoringDoc.content;
+    var explicitCycleRevision = editor.GetRevision();
+    if editor.ReparentSelectedSceneObjects(3)
+       or editor.GetRevision() != explicitCycleRevision
+       or hierarchyAuthoringDoc.content != explicitCycleContent
+       or editor.scene.ObjectParent(1) != -1 {
+       Probe.fail(shell, "2D explicit parent chooser accepted a descendant cycle");
+        return false;
+    }
+
+    var explicitRoots: List[Integer] = [];
+    explicitRoots.add(0);
+    explicitRoots.add(2);
+    editor.SelectSceneObjects(explicitRoots, 2);
+    var explicitGroupBaseline = hierarchyAuthoringDoc.content;
+    var explicitGroupRevision = editor.GetRevision();
+    if editor.addChildObjectButton.IsEnabled()
+       or editor.SelectObjectParentTarget(1) == false
+       or editor.reparentObjectButton.IsEnabled() == false
+       or editor.ReparentSelectedSceneObjects(1) == false
+       or editor.GetRevision() != explicitGroupRevision + 1
+       or editor.scene.ObjectId(0) != "authoring-target"
+       or editor.scene.ObjectId(1) != "authoring-root"
+       or editor.scene.ObjectId(2) != "authoring-child"
+       or editor.scene.ObjectId(3) != "authoring-grandchild"
+       or editor.scene.ObjectParent(1) != 0
+       or editor.scene.ObjectParent(2) != 0
+       or editor.scene.ObjectParent(3) != 2
+       or editor.selectedObjects.count() != 2
+       or editor.selectedObject != 2
+       or editor.Undo() == false
+       or hierarchyAuthoringDoc.content != explicitGroupBaseline {
+        Probe.fail(shell, "2D explicit parent chooser lost its multi-root transaction");
+        return false;
+    }
+
+    editor.Pump(sceneDoc);
+
+    // Layer assets now drive real canvas pixels and a bounded tile palette
+    // instead of acting as an inert path field beside colored placeholders.
+    var tilesetDir =
+        TempFile.CreateDirWithPrefix("zannastudio_scene2d_tileset_");
+    var tilesetPath = Path.Join(tilesetDir, "terrain.png");
+    var invalidTilesetPath = Path.Join(tilesetDir, "broken.png");
+    var atlas = Pixels.New(64, 64);
+    if tilesetDir == "" or atlas == null {
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "could not create visual tileset fixture");
+        return false;
+    }
+    atlas.DrawBox(0, 0, 32, 32, Color.RGB(224, 36, 28));
+    atlas.DrawBox(32, 0, 32, 32, Color.RGB(35, 198, 76));
+    atlas.DrawBox(0, 32, 32, 32, Color.RGB(48, 96, 226));
+    atlas.DrawBox(32, 32, 32, 32, Color.RGB(230, 190, 38));
+    atlas.DrawBox(8, 8, 16, 16, Color.RGBA(224, 36, 28, 128));
+    File.WriteAllText(invalidTilesetPath, "not an image");
+    if Pixels.SavePng(atlas, tilesetPath) != 1
+       or File.Exists(invalidTilesetPath) == false {
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "could not write visual tileset fixtures");
+        return false;
+    }
+
+    var previousScenePath = sceneDoc.filePath;
+    sceneDoc.filePath = Path.Join(tilesetDir, "authored.scene");
+    var relativeTilesetPath = Path.Name(tilesetPath);
+    var normalizedImageExtensions =
+        scene_asset_browser.NormalizeAssetExtensions(
+            ".png,.jpg,.jpeg,.bmp,.gif");
+    if scene_asset_browser.PortableReferencePath(
+           tilesetPath, sceneDoc.filePath) != relativeTilesetPath
+       or scene_asset_browser.AssetExtensionAllowed(
+              tilesetPath, normalizedImageExtensions) == false
+       or scene_asset_browser.AssetExtensionAllowed(
+              tilesetPath + ".bak", normalizedImageExtensions)
+       or scene_asset_browser.AssetMatchesFilter(
+              relativeTilesetPath, tilesetPath, "TERRAIN") == false {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "portable scene-asset matching or path spelling drifted");
+        return false;
+    }
+
+    var assetProject = new project_manager.ProjectManager();
+    assetProject.Setup(null);
+    editor.SetWorkspaceContext(assetProject);
+    var assetBrowser = editor.tilesetInspector.assetBrowser;
+    assetBrowser.Open();
+    assetBrowser.filterInput.SetText("terrain");
+    var browserPumps = 0;
+    if assetProject.OpenFolder(tilesetDir) {
+        while browserPumps < 16 and assetBrowser.assetList.Count == 0 {
+            assetBrowser.Pump(assetProject, true);
+            browserPumps = browserPumps + 1;
+        }
+    }
+    if assetBrowser.assetList.Count != 1 {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "project asset browser did not find the filtered image");
+        return false;
+    }
+    assetBrowser.assetList.SelectIndex(0);
+    assetBrowser.Pump(assetProject, true);
+    if Path.Normalize(assetBrowser.SelectedPath())
+          != Path.Normalize(tilesetPath)
+       or assetBrowser.previewPixels == null {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "project asset selection or bounded preview was stale");
+        return false;
+    }
+    assetBrowser.Close();
+
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.tilesetDir = tilesetDir;
+    ctx.tilesetPath = tilesetPath;
+    ctx.invalidTilesetPath = invalidTilesetPath;
+    ctx.atlas = atlas;
+    ctx.previousScenePath = previousScenePath;
+    ctx.relativeTilesetPath = relativeTilesetPath;
+    ctx.assetProject = assetProject;
+    return true;
+}
+
+/// @brief Run the VerifyTilesetImportAndRefresh scenario against the shared fixture.
+expose func VerifyTilesetImportAndRefresh(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var tilesetDir = ctx.tilesetDir;
+    var tilesetPath = ctx.tilesetPath;
+    var invalidTilesetPath = ctx.invalidTilesetPath;
+    var atlas = ctx.atlas;
+    var previousScenePath = ctx.previousScenePath;
+    var relativeTilesetPath = ctx.relativeTilesetPath;
+    var assetProject = ctx.assetProject;
+
+    var beforeTilesetRevision = editor.GetRevision();
+    if scene_tileset_2d.ResolveAssetPath(
+           relativeTilesetPath, sceneDoc.filePath)
+          != Path.Normalize(tilesetPath)
+       or scene_tileset_2d.PaletteTileAt(4, 31, 1) != 2
+       or scene_tileset_2d.PaletteTileAt(4, 1, 31) != 0
+       or editor.ApplyLayerAssetPath(0, relativeTilesetPath) == false
+       or editor.GetRevision() != beforeTilesetRevision + 1
+       or editor.scene.LayerAsset(0) != relativeTilesetPath
+       or editor.tilesets.TileCount(0) != 4
+       or editor.tilesetInspector.palettePixels == null {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "relative tileset did not build a bounded visual palette");
+        return false;
+    }
+    if editor.ApplyLayerAssetPath(0, relativeTilesetPath)
+       or editor.GetRevision() != beforeTilesetRevision + 1
+       or editor.SetSceneTile(0, 0, 0, 1) == false {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "tileset no-op or tile history state was not canonical");
+        return false;
+    }
+    // The frame buffer holds only the visible window, so anchor the window at
+    // content origin before sampling cell (0,0) in window coordinates.
+    editor.canvasScroll.SetScroll(0.0, 0.0);
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    var tileSample = editor.framePixels.GetColor(
+        editor.displayCellSize / 2, editor.displayCellSize / 2);
+    if Color.GetRed(tileSample) < 115
+       or Color.GetRed(tileSample) > 135
+       or Color.GetGreen(tileSample) < 25
+       or Color.GetGreen(tileSample) > 40
+       or Color.GetBlue(tileSample) < 25
+       or Color.GetBlue(tileSample) > 40 {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "translucent tileset frame did not composite source-over"
+             + " sample=" + Color.GetRed(tileSample) + ","
+             + Color.GetGreen(tileSample) + "," + Color.GetBlue(tileSample)
+             + " cell=" + editor.displayCellSize
+             + " origin=" + editor.viewOriginX + "," + editor.viewOriginY
+             + " zoom=" + editor.zoomPercent
+             + " rendered=" + editor.renderedColumns + "x"
+             + editor.renderedRows);
+        return false;
+    }
+    var reloadContent = sceneDoc.content;
+    var reloadRevision = editor.GetRevision();
+    atlas.DrawBox(0, 0, 32, 32, Color.RGB(128, 44, 214));
+    var noisyY = 32;
+    while noisyY < 64 {
+        var noisyX = 32;
+        while noisyX < 64 {
+            atlas.SetColor(
+                noisyX,
+                noisyY,
+                Color.RGB(
+                    (noisyX * 17 + noisyY * 11) % 256,
+                    (noisyX * 7 + noisyY * 23) % 256,
+                    (noisyX * 29 + noisyY * 3) % 256));
+            noisyX = noisyX + 1;
+        }
+        noisyY = noisyY + 1;
+    }
+    if Pixels.SavePng(atlas, tilesetPath) != 1 {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "could not update the tileset reload fixture");
+        return false;
+    }
+    if editor.PollTilesetExternalChanges(0) == false {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "external tileset metadata change was not detected");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Render();
+    editor.Pump(sceneDoc);
+    tileSample = editor.framePixels.GetColor(
+        editor.displayCellSize / 2, editor.displayCellSize / 2);
+    if editor.GetRevision() != reloadRevision
+       or sceneDoc.content != reloadContent
+       or Color.GetRed(tileSample) < 115
+       or Color.GetRed(tileSample) > 140
+       or Color.GetGreen(tileSample) < 35
+       or Color.GetGreen(tileSample) > 55
+       or Color.GetBlue(tileSample) < 200
+       or editor.SelectPaletteTile(4) == false
+       or Convert.NumToInt(editor.tileSpinner.Value) != 4
+       or editor.mode != scene_editor_2d.MODE_PAINT {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "tileset reload or palette selection changed history");
+        return false;
+    }
+
+    var tilesetContent = sceneDoc.content;
+    if editor.GetRevision() != beforeTilesetRevision + 2
+       or editor.Undo() == false
+       or editor.scene.LayerAsset(0) != relativeTilesetPath
+       or editor.scene.GetTile(0, 0, 0) != 0
+       or editor.Redo() == false
+       or sceneDoc.content != tilesetContent {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "visual tileset assignment/paint did not undo and redo exactly");
+        return false;
+    }
+    var tilesetRoundTrip = SceneDocument.LoadJsonResult(sceneDoc.content);
+    if tilesetRoundTrip.IsOk == false
+       or (tilesetRoundTrip.Unwrap() as SceneDocument).LayerAsset(0)
+            != relativeTilesetPath {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "layer tileset reference did not survive canonical JSON");
+        return false;
+    }
+    var invalidAssetRevision = editor.GetRevision();
+    if editor.ApplyLayerAssetPath(0, Path.Name(invalidTilesetPath))
+       or editor.GetRevision() != invalidAssetRevision
+       or sceneDoc.content != tilesetContent
+       or editor.scene.LayerAsset(0) != relativeTilesetPath {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "invalid tileset changed the scene or history");
+        return false;
+    }
+    var clearAssetRevision = editor.GetRevision();
+    if editor.ApplyLayerAssetPath(0, "") == false
+       or editor.GetRevision() != clearAssetRevision + 1
+       or editor.scene.LayerAsset(0) != ""
+       or editor.tilesets.TileCount(0) != 0
+       or editor.Undo() == false
+       or sceneDoc.content != tilesetContent
+       or editor.tilesets.TileCount(0) != 4 {
+        sceneDoc.filePath = previousScenePath;
+        Probe.removeTempDir(tilesetDir);
+        Probe.fail(shell, "clear layer image was not one reversible transaction");
+        return false;
+    }
+    sceneDoc.filePath = previousScenePath;
+    assetProject.CloseProject();
+    Probe.removeTempDir(tilesetDir);
+
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}
+
+/// @brief Run the VerifySaveAndInvalidDocument scenario against the shared fixture.
+expose func VerifySaveAndInvalidDocument(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var hiddenEngine = ctx.hiddenEngine;
+    var originalContent = ctx.originalContent;
+
+    // The hidden CodeEditor still contains the pre-edit scene text. Recovery
+    // must snapshot the visual controller's canonical Document content instead.
+    var recoveryDir = TempFile.CreateDirWithPrefix("zannastudio_scene2d_recovery_");
+    var recovery = new recovery_store.RecoveryStore();
+    if recovery.Setup(recoveryDir) == false
+       or recovery.WriteSwaps(documents, hiddenEngine) == false {
+        Probe.removeTempDir(recoveryDir);
+        Probe.fail(shell, "visual scene recovery snapshot failed");
+        return false;
+    }
+    var recovered = recovery.CollectRecovered();
+    if recovered.count() != 1
+       or (recovered.get(0) as recovery_store.RecoveryRecord).content
+          != sceneDoc.content
+       or (recovered.get(0) as recovery_store.RecoveryRecord).content
+          == originalContent {
+        recovery.MarkCleanExit();
+        Probe.removeTempDir(recoveryDir);
+        Probe.fail(shell, "recovery used stale hidden CodeEditor scene text");
+        return false;
+    }
+    recovery.MarkCleanExit();
+    Probe.removeTempDir(recoveryDir);
+
+    var saveDir = TempFile.CreateDirWithPrefix("zannastudio_scene2d_save_");
+    var saveStem = Path.Join(saveDir, "level");
+    var wrongPath = Path.Join(saveDir, "level.txt");
+    var canonicalBeforeSave = sceneDoc.content;
+    file_commands.SetSaveFormatOptions(true, true);
+    file_commands.NormalizeDocumentForSave(
+        documents, hiddenEngine, documents.activeIndex);
+    if sceneDoc.content != canonicalBeforeSave
+       or documents.SaveAsBlockReason(documents.activeIndex, wrongPath) == ""
+       or documents.SaveAs(saveStem) == false
+       or sceneDoc.filePath != saveStem + ".scene2d"
+       or sceneDoc.kind != file_utils.DOC_KIND_SCENE_2D
+       or File.Exists(sceneDoc.filePath) == false {
+        Probe.removeTempDir(saveDir);
+        Probe.fail(shell, "2D save normalization or extension safety failed");
+        return false;
+    }
+    Probe.removeTempDir(saveDir);
+
+    var invalidDoc = new document.Document();
+    invalidDoc.fileName = "broken.scene";
+    invalidDoc.language = "scene";
+    invalidDoc.kind = file_utils.DOC_KIND_SCENE_2D;
+    invalidDoc.content = "{\"version\":1,";
+    var invalidOriginal = invalidDoc.content;
+    editor.Activate(invalidDoc);
+    editor.Pump(invalidDoc);
+    if editor.scene != null or editor.loadError == ""
+       or invalidDoc.content != invalidOriginal or invalidDoc.isModified {
+        Probe.fail(shell, "invalid JSON was not preserved transactionally");
+        return false;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+    return true;
+}

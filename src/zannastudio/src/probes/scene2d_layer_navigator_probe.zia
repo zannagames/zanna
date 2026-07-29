@@ -146,7 +146,16 @@ func LayerRowText(editor: scene_editor_2d.SceneEditor2D,
         editor.layerListItems.get(layer));
 }
 
-func main() {
+/// @brief State shared by layer-state and structural navigation scenarios.
+class LayerNavigatorProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_2d.SceneEditor2D editor;
+    expose document.Document sceneDoc;
+    expose GUI.TestHarness harness;
+}
+
+/// @brief Verify layer creation, visibility, and document-owned Lock/Solo.
+func VerifyLayerState(ctx: LayerNavigatorProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio 2D Layer Navigator Probe", 1500, 850);
     shell.SetSceneWorkspaceMode(true);
@@ -165,7 +174,7 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
 
     if WidgetContained(editor.sceneTabHost, editor.addLayerButton) == false
@@ -175,7 +184,7 @@ func main() {
        or WidgetContained(
            editor.sceneTabHost, editor.layerDownButton) == false {
         Fail(shell, harness, "wide layer action containment");
-        return;
+        return false;
     }
 
     // Build four layers through the production pointer-routed Add action.
@@ -185,7 +194,7 @@ func main() {
         ClickWidget(shell, harness, editor.addLayerButton);
         if Pump(editor, sceneDoc, shell) == false {
             Fail(shell, harness, "real Add layer action " + add);
-            return;
+            return false;
         }
         add = add + 1;
     }
@@ -195,7 +204,7 @@ func main() {
        or editor.layerUpButton.IsEnabled() == false
        or editor.layerDownButton.IsEnabled() {
         Fail(shell, harness, "layer count or boundary action state");
-        return;
+        return false;
     }
 
     // Enter on the focused navigator is the keyboard equivalent of a
@@ -214,13 +223,13 @@ func main() {
        or editor.undoStack.count() != visibilityUndo + 1
        or Str.Contains(LayerRowText(editor, 1), "○ ") == false {
         Fail(shell, harness, "Enter visibility transaction");
-        return;
+        return false;
     }
     if editor.Undo() == false
        or sceneDoc.content != visibilityBaseline
        or editor.scene.LayerVisible(1) == false {
         Fail(shell, harness, "layer visibility exact undo");
-        return;
+        return false;
     }
     Pump(editor, sceneDoc, shell);
 
@@ -240,7 +249,7 @@ func main() {
        or editor.GetRevision() != workspaceRevision
        or editor.undoStack.count() != workspaceUndo {
         Fail(shell, harness, "workspace-only layer cues");
-        return;
+        return false;
     }
 
     // Appending must not erase state from an existing layer.
@@ -251,7 +260,7 @@ func main() {
        or editor.LayerLocked(1) == false
        or editor.soloLayer != 1 {
         Fail(shell, harness, "Add discarded existing Lock/Solo state");
-        return;
+        return false;
     }
 
     // The shared controller cannot leak that state into another scene tab.
@@ -260,15 +269,29 @@ func main() {
     if editor.LayerLocked(0) or editor.soloLayer != -1
        or otherDoc.scene2DWorkspace.lockedLayers.count() != 0 {
         Fail(shell, harness, "layer workspace state leaked across tabs");
-        return;
+        return false;
     }
     editor.Pump(sceneDoc);
     if editor.LayerLocked(1) == false
        or editor.soloLayer != 1
        or sceneDoc.scene2DWorkspace.lockedLayers.count() != 1 {
         Fail(shell, harness, "layer workspace state did not follow its tab");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify drag reordering, state remapping, removal, and compact layout.
+func VerifyLayerStructure(ctx: LayerNavigatorProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
 
     // A real retained-row drag is application-directed: the ListBox requests
     // the move, then Studio remaps workspace identity and commits one history.
@@ -289,7 +312,7 @@ func main() {
        or editor.undoStack.count() != dragUndo + 1
        or Str.Contains(LayerRowText(editor, 3), "⊘") == false {
         Fail(shell, harness, "real layer drag transaction");
-        return;
+        return false;
     }
     if editor.Undo() == false
        or sceneDoc.content != dragBaseline
@@ -297,13 +320,13 @@ func main() {
        or sceneDoc.scene2DWorkspace.lockedLayers.count() != 0
        or editor.soloLayer != -1 {
         Fail(shell, harness, "real layer drag exact undo");
-        return;
+        return false;
     }
     Pump(editor, sceneDoc, shell);
     if editor.SetLayerLocked(1, true) == false
        or editor.SetSoloLayer(1) == false {
         Fail(shell, harness, "layer workspace restoration after undo");
-        return;
+        return false;
     }
 
     // Move the active locked layer up and back down. Lock and Solo must follow
@@ -321,7 +344,7 @@ func main() {
        or editor.layerDownButton.IsEnabled() == false
        or Str.Contains(LayerRowText(editor, 0), "⊘") == false {
         Fail(shell, harness, "layer state did not remap upward");
-        return;
+        return false;
     }
     RevealLayerActions(editor, sceneDoc, shell);
     ClickWidget(shell, harness, editor.layerDownButton);
@@ -330,7 +353,7 @@ func main() {
        or editor.LayerLocked(1) == false
        or editor.soloLayer != 1 {
         Fail(shell, harness, "layer state did not remap downward");
-        return;
+        return false;
     }
 
     // Removing a preceding row shifts state; removing the owned row prunes it.
@@ -342,7 +365,7 @@ func main() {
        or editor.LayerLocked(0) == false
        or editor.soloLayer != 0 {
         Fail(shell, harness, "preceding removal did not shift layer state");
-        return;
+        return false;
     }
     editor.layerList.SelectIndex(0);
     Pump(editor, sceneDoc, shell);
@@ -353,7 +376,7 @@ func main() {
        or editor.soloLayer != -1
        or sceneDoc.scene2DWorkspace.lockedLayers.count() != 0 {
         Fail(shell, harness, "owned layer removal did not prune state");
-        return;
+        return false;
     }
 
     // Compact mode presents the inspector at full width; wrapped layer actions
@@ -372,7 +395,7 @@ func main() {
        or WidgetContained(
            editor.sceneTabHost, editor.layerDownButton) == false {
         Fail(shell, harness, "narrow layer action containment");
-        return;
+        return false;
     }
 
     var narrowMetric = Convert.NumToInt(
@@ -381,5 +404,13 @@ func main() {
     Terminal.Say(
         "METRIC: layers=3 narrow_width=" + narrowMetric
         + " tab_local_state=ok structural_remap=ok direct_reorder=ok");
+    return true;
+}
+
+func main() {
+    var ctx = new LayerNavigatorProbeContext();
+    if VerifyLayerState(ctx) == false { return; }
+    if VerifyLayerStructure(ctx) == false { return; }
+
     Terminal.Say("RESULT: ok");
 }

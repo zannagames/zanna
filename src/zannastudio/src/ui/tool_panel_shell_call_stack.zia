@@ -1,0 +1,274 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_call_stack.zia
+// Purpose: Focused call stack behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_debug_console.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_call_stack;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_debug_console" as PreviousLayer;
+
+class ToolPanelCallStackLayer extends PreviousLayer.ToolPanelDebugConsoleLayer {
+
+    /// @brief Apply semantic text color to one debug row.
+    /// @param item Debug row item.
+    /// @param line Row text used to infer severity.
+    hide override func ApplyDebugLineColor(item: Any,
+                                  line: String) {
+        if item == null { return; }
+        var lower = Str.ToLower(line);
+        if Str.IndexOf(lower, "error") != 0
+           or Str.IndexOf(lower, "failed") != 0
+           or Str.IndexOf(lower, "trap") != 0
+           or Str.IndexOf(lower, "not found") != 0 {
+            GUI.ListBox.ItemSetTextColor(item, ToolPanelModel.ToolColorError());
+        } else if Str.IndexOf(lower, "warning") != 0
+                  or Str.IndexOf(lower, "warn") != 0 {
+            GUI.ListBox.ItemSetTextColor(item, ToolPanelModel.ToolColorWarning());
+        } else if Str.IndexOf(lower, "stopped") != 0
+                  or Str.IndexOf(lower, "breakpoint") != 0 {
+            GUI.ListBox.ItemSetTextColor(item, ToolPanelModel.ToolColorInfo());
+        } else if Str.IndexOf(lower, "terminated") != 0
+                  or Str.IndexOf(lower, "exited") != 0
+                  or Str.IndexOf(lower, "exit") != 0 {
+            GUI.ListBox.ItemSetTextColor(item, ToolPanelModel.ToolColorSuccess());
+        } else if Str.StartsWith(lower, "[debug]") {
+            GUI.ListBox.ItemSetTextColor(item, ToolPanelModel.ToolColorMuted());
+        }
+    }
+
+    /// @brief Start one debugger-owned Call Stack snapshot.
+    /// @param state Human-readable debugger state such as Paused or Running.
+    expose override func BeginCallStack(state: String) {
+        callStackStateText = state;
+        if callStackStateText == "" { callStackStateText = "Idle"; }
+        if callStackListBox != null { callStackListBox.Clear(); }
+        if callStackRows != null { callStackRows.Clear(); }
+        visibleCallStackFrameCount = 0;
+        UpdateCallStackToolbarState();
+        ApplyCallStackSurfaceVisibility();
+    }
+
+    /// @brief Add one stable frame identity to the current Call Stack snapshot.
+    /// @return Concrete row handle, or null while filtered out.
+    expose override func AddCallStackFrame(frameIndex: Integer,
+                                  label: String) -> Any {
+        if callStackListBox == null or callStackRows == null { return null; }
+        var wasAtCapacity = callStackRows.maxRows > 0
+            and callStackRows.Count() >= callStackRows.maxRows;
+        EnsureToolRowsCapacity(callStackListBox, callStackRows);
+        if wasAtCapacity { RefreshCallStackRows(); }
+        var row = callStackRows.Add("#" + frameIndex + "  " + label, 0);
+        row.searchText = label;
+        row.data = "" + frameIndex;
+        if frameIndex == 0 { row.color = ToolPanelModel.ToolColorInfo(); }
+        var item: Any = null;
+        if CallStackRowMatches(row) {
+            item = RenderCallStackRow(row);
+            visibleCallStackFrameCount = visibleCallStackFrameCount + 1;
+        }
+        UpdateCallStackToolbarState();
+        ApplyCallStackSurfaceVisibility();
+        return item;
+    }
+
+    /// @brief Render one durable Call Stack frame with its original frame index.
+    hide override func RenderCallStackRow(
+        row: tool_panel_model.ToolPanelRow) -> Any {
+        if row == null or callStackListBox == null { return null; }
+        var item = callStackListBox.AddItem(row.text);
+        row.item = item;
+        GUI.ListBox.ItemSetData(item, row.data);
+        if row.color != 0 {
+            GUI.ListBox.ItemSetTextColor(item, row.color);
+        }
+        return item;
+    }
+
+    /// @brief Return whether one Call Stack frame passes the live filter.
+    hide override func CallStackRowMatches(
+        row: tool_panel_model.ToolPanelRow) -> Boolean {
+        if row == null { return false; }
+        if callStackFilterText == "" { return true; }
+        return Str.Contains(Str.ToLower(row.searchText), callStackFilterText);
+    }
+
+    /// @brief Rebuild filtered Call Stack rows without renumbering frames.
+    hide override func RefreshCallStackRows() {
+        if callStackListBox == null or callStackRows == null { return; }
+        callStackListBox.Clear();
+        visibleCallStackFrameCount = 0;
+        var i = 0;
+        while i < callStackRows.rows.count() {
+            var row = callStackRows.rows.get(i);
+            if row != null {
+                row.item = null;
+                if CallStackRowMatches(row) {
+                    RenderCallStackRow(row);
+                    visibleCallStackFrameCount =
+                        visibleCallStackFrameCount + 1;
+                }
+            }
+            i = i + 1;
+        }
+        UpdateCallStackToolbarState();
+        ApplyCallStackSurfaceVisibility();
+    }
+
+    /// @brief Set the case-insensitive Call Stack filter.
+    expose override func SetCallStackFilter(filter: String) {
+        var filterHadFocus =
+            callStackFilterInput != null and callStackFilterInput.IsFocused();
+        if callStackFilterInput != null
+           and callStackFilterInput.get_Text() != filter {
+            callStackFilterInput.SetText(filter);
+            callStackFilterInput.WasChanged();
+        }
+        callStackFilterText = Str.ToLower(Str.Trim(filter));
+        RefreshCallStackRows();
+        if filterHadFocus { callStackFilterInput.Focus(); }
+    }
+
+    /// @brief Return the original debugger frame index for the visible selection.
+    expose override func GetSelectedCallStackFrameIndex() -> Integer {
+        if callStackListBox == null or callStackListBox.Selected == null {
+            return -1;
+        }
+        var data = GUI.ListBox.ItemGetData(callStackListBox.Selected);
+        if data == "" { return -1; }
+        return Convert.ToInt64(data);
+    }
+
+    /// @brief Copy the complete unfiltered paused call stack.
+    expose override func CopyCallStackText() -> Boolean {
+        if callStackRows == null or callStackRows.Count() == 0 {
+            return false;
+        }
+        var text = "";
+        var i = 0;
+        while i < callStackRows.rows.count() {
+            var row = callStackRows.rows.get(i);
+            if row != null {
+                if text != "" { text = text + "\n"; }
+                text = text + row.text;
+            }
+            i = i + 1;
+        }
+        if text == "" { return false; }
+        GUI.ClipboardText.SetText(text);
+        return true;
+    }
+
+    /// @brief Return whether a paused stack snapshot contains frames.
+    expose override func HasCallStackFrames() -> Boolean {
+        return callStackRows != null and callStackRows.Count() > 0;
+    }
+
+    /// @brief Poll Call Stack filtering and copy controls.
+    hide override func PumpCallStackToolbar() {
+        if callStackFilterInput == null { return; }
+        if callStackFilterInput.WasChanged() {
+            callStackFilterText =
+                Str.ToLower(Str.Trim(callStackFilterInput.get_Text()));
+            RefreshCallStackRows();
+        }
+        if callStackFilterClearButton != null
+           and callStackFilterClearButton.WasClicked() {
+            callStackFilterInput.SetText("");
+            callStackFilterInput.WasChanged();
+            callStackFilterText = "";
+            RefreshCallStackRows();
+            callStackFilterInput.Focus();
+        }
+        if callStackCopyButton != null
+           and callStackCopyButton.WasClicked() {
+            CopyCallStackText();
+        }
+        UpdateCallStackToolbarState();
+    }
+
+    /// @brief Synchronize Call Stack counts, debugger state, and actions.
+    hide override func UpdateCallStackToolbarState() {
+        var total = 0;
+        if callStackRows != null { total = callStackRows.Count(); }
+        if callStackCountLabel != null {
+            var countText = "";
+            if callStackFilterText != "" {
+                countText = "" + visibleCallStackFrameCount + " of "
+                    + total + " frames · " + callStackStateText;
+            } else {
+                countText = "" + total + " frame";
+                if total != 1 { countText = countText + "s"; }
+                countText = countText + " · " + callStackStateText;
+            }
+            callStackCountLabel.SetText(countText);
+        }
+        if callStackFilterClearButton != null {
+            callStackFilterClearButton.SetEnabled(
+                callStackFilterInput != null
+                and callStackFilterInput.get_Text() != "");
+        }
+        if callStackCopyButton != null {
+            callStackCopyButton.SetEnabled(total > 0);
+        }
+        if callStackEmptyLabel != null {
+            var emptyText =
+                "Start debugging to inspect the call stack";
+            if total > 0 and visibleCallStackFrameCount == 0 {
+                emptyText = "No frames match the current filter";
+            } else if callStackStateText == "Paused" {
+                emptyText = "No stack frames were reported at this stop";
+            } else if callStackStateText == "Running"
+                      or callStackStateText == "Pausing" {
+                emptyText = "Pause the debugger to inspect the call stack";
+            } else if callStackStateText == "Stopping" {
+                emptyText = "Waiting for the debugger to stop";
+            } else if callStackStateText == "Restarting" {
+                emptyText = "Waiting for the debugger to restart";
+            } else if callStackStateText == "Terminated" {
+                emptyText = "The debug session has ended";
+            }
+            callStackEmptyLabel.SetText(emptyText);
+            callStackEmptyLabel.SetAccessibleName(emptyText);
+        }
+    }
+
+    /// @brief Reveal either Call Stack frames or its state-aware empty message.
+    hide override func ApplyCallStackSurfaceVisibility() {
+        var panelVisible =
+            IsToolPanelSelected(tool_panel_model.PANEL_CALL_STACK)
+            and callStackPanel != null and callStackPanel.IsVisible();
+        if callStackListBox != null {
+            callStackListBox.SetVisible(
+                panelVisible and visibleCallStackFrameCount > 0);
+        }
+        if callStackEmptyLabel != null {
+            callStackEmptyLabel.SetVisible(
+                panelVisible and visibleCallStackFrameCount == 0);
+        }
+    }
+}

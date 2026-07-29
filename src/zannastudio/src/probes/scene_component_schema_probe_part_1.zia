@@ -1,0 +1,801 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_component_schema_probe_part_1.zia
+// Purpose: Serial schema-version scenarios, part 1 of 2.
+// Key invariants:
+//   - Each scenario owns a complete versioned fixture with no cross-state.
+//   - Failure paths retain their original RESULT diagnostics.
+// Ownership/Lifetime: Owns only in-memory schema fixtures.
+// Links: zannastudio/src/probes/scene_component_schema_probe.zia,
+//        zannastudio/src/probes/scene_component_schema_probe_support.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_probe_part_1;
+
+bind "../ui/scene_component_schema";
+bind "../services/project_locator";
+
+bind Terminal = Zanna.Terminal;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+
+bind "scene_component_schema_probe_support" as Probe;
+
+/// @brief Run the VerifyV1SchemaAndDefaults schema scenario.
+expose func VerifyV1SchemaAndDefaults() -> Boolean {
+    var validText =
+        "{"
+        + "\"version\":1,"
+        + "\"components\":["
+        + "{"
+        + "\"name\":\"enemy-spawn\","
+        + "\"label\":\"Enemy Spawn\","
+        + "\"target\":\"both\","
+        + "\"description\":\"Reusable enemy placement data.\","
+        + "\"fields\":["
+        + "{\"key\":\"enemy.archetype\",\"label\":\"Archetype\","
+        + "\"type\":\"string\",\"default\":\"grunt\"},"
+        + "{\"key\":\"enemy.level\",\"type\":\"int\",\"default\":3},"
+        + "{\"key\":\"enemy.radius\",\"type\":\"float\",\"default\":4.0},"
+        + "{\"key\":\"enemy.active\",\"type\":\"bool\",\"default\":true},"
+        + "{\"key\":\"enemy.target\",\"type\":\"null\"}"
+        + "]"
+        + "},"
+        + "{"
+        + "\"name\":\"checkpoint\","
+        + "\"target\":\"3d-node\","
+        + "\"fields\":["
+        + "{\"key\":\"checkpoint.id\",\"type\":\"string\",\"default\":\"start\"}"
+        + "]"
+        + "}"
+        + "]"
+        + "}";
+    var schema = scene_component_schema.ParseText(validText, "memory");
+    if schema.found == false or schema.valid == false
+       or schema.error != "" or schema.components.count() != 2
+       or schema.CountForTarget(scene_component_schema.TARGET_2D_OBJECT) != 1
+       or schema.CountForTarget(scene_component_schema.TARGET_3D_NODE) != 2 {
+        Probe.fail("valid schema did not publish deterministic target components: "
+             + schema.error);
+        return false;
+    }
+
+    var enemy = schema.Find(
+        "enemy-spawn", scene_component_schema.TARGET_2D_OBJECT);
+    if enemy == null or enemy.label != "Enemy Spawn"
+       or enemy.fields.count() != 5
+       or enemy.FieldNamed("enemy.archetype").defaultText != "grunt"
+       or enemy.FieldNamed("enemy.level").defaultText != "3"
+       or enemy.FieldNamed("enemy.radius").defaultText != "4"
+       or enemy.FieldNamed("enemy.active").defaultText != "true"
+       or enemy.FieldNamed("enemy.target").kind != "null"
+       or enemy.FieldNamed("enemy.target").defaultText != "" {
+        Probe.fail("typed defaults changed kind, lookup, or canonical text");
+        return false;
+    }
+    if schema.Find(
+           "checkpoint", scene_component_schema.TARGET_2D_OBJECT) != null
+       or schema.Find(
+              "checkpoint", scene_component_schema.TARGET_3D_NODE) == null {
+        Probe.fail("component target filtering accepted an incompatible scope");
+        return false;
+    }
+
+    var implicitDefaults = scene_component_schema.ParseText(
+        "{\"version\":1,\"components\":["
+        + "{\"name\":\"defaults\",\"target\":\"both\",\"fields\":["
+        + "{\"key\":\"s\",\"type\":\"string\"},"
+        + "{\"key\":\"i\",\"type\":\"int\"},"
+        + "{\"key\":\"f\",\"type\":\"float\"},"
+        + "{\"key\":\"b\",\"type\":\"bool\"},"
+        + "{\"key\":\"n\",\"type\":\"null\"}]}"
+        + "]}",
+        "implicit-defaults");
+    var defaults = implicitDefaults.Find(
+        "defaults", scene_component_schema.TARGET_2D_OBJECT);
+    if implicitDefaults.valid == false or defaults == null
+       or defaults.FieldNamed("s").defaultText != ""
+       or defaults.FieldNamed("i").defaultText != "0"
+       or defaults.FieldNamed("f").defaultText != "0"
+       or defaults.FieldNamed("b").defaultText != "false"
+       or defaults.FieldNamed("n").defaultText != "" {
+        Probe.fail("omitted scalar defaults were not canonical and applicable");
+        return false;
+    }
+
+    var duplicateName = scene_component_schema.ParseText(
+        "{\"version\":1,\"components\":["
+        + "{\"name\":\"Enemy\",\"target\":\"2d-object\","
+        + "\"fields\":[{\"key\":\"a\",\"type\":\"int\"}]},"
+        + "{\"name\":\"enemy\",\"target\":\"3d-node\","
+        + "\"fields\":[{\"key\":\"b\",\"type\":\"int\"}]}"
+        + "]}",
+        "duplicate-name");
+    var duplicateKey = scene_component_schema.ParseText(
+        "{\"version\":1,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"2d-object\",\"fields\":["
+        + "{\"key\":\"hp\",\"type\":\"int\"},"
+        + "{\"key\":\"hp\",\"type\":\"float\"}]}"
+        + "]}",
+        "duplicate-key");
+    var badDefault = scene_component_schema.ParseText(
+        "{\"version\":1,\"components\":["
+        + "{\"name\":\"enemy\",\"target\":\"2d-object\",\"fields\":["
+        + "{\"key\":\"hp\",\"type\":\"int\",\"default\":1.5}]}"
+        + "]}",
+        "bad-default");
+    var badVersion = scene_component_schema.ParseText(
+        "{\"version\":19,\"components\":[]}", "bad-version");
+    if duplicateName.valid or duplicateName.components.count() != 0
+       or duplicateKey.valid or duplicateKey.components.count() != 0
+       or badDefault.valid or badDefault.components.count() != 0
+       or badVersion.valid or badVersion.components.count() != 0 {
+        Probe.fail("invalid schema published partial component state");
+        return false;
+    }
+
+    var absent = scene_component_schema.LoadPath("");
+    if absent.found or absent.valid == false
+       or absent.components.count() != 0 {
+        Probe.fail("absent schema was not a valid empty configuration");
+        return false;
+    }
+
+    // ADR 0178: version-2 enum and asset fields parse with full validation.
+    var v2Text =
+        "{"
+        + "\"version\":2,"
+        + "\"components\":[{"
+        + "\"name\":\"spawn\",\"target\":\"both\",\"fields\":["
+        + "{\"key\":\"spawn.archetype\",\"type\":\"enum\","
+        + "\"choices\":[\"grunt\",\"ranged\",\"elite\"],"
+        + "\"default\":\"ranged\"},"
+        + "{\"key\":\"spawn.kind\",\"type\":\"enum\","
+        + "\"choices\":[\"walker\"]},"
+        + "{\"key\":\"spawn.sprite\",\"type\":\"asset\","
+        + "\"assetKinds\":[\"image\"],\"default\":\"art/slime.png\"},"
+        + "{\"key\":\"spawn.cue\",\"type\":\"asset\"}"
+        + "]}]}";
+    var v2 = scene_component_schema.ParseText(v2Text, "memory");
+    if v2.valid == false or v2.version != 2 {
+        Probe.fail("valid version-2 schema was rejected: " + v2.error);
+        return false;
+    }
+    var spawn = v2.Find("spawn", "2d-object");
+    var archetype = spawn.FieldNamed("spawn.archetype");
+    var kindField = spawn.FieldNamed("spawn.kind");
+    var spriteField = spawn.FieldNamed("spawn.sprite");
+    var cueField = spawn.FieldNamed("spawn.cue");
+    if archetype.kind != "enum"
+       or archetype.choices.count() != 3
+       or archetype.defaultText != "ranged"
+       or archetype.HasChoice("elite") == false
+       or kindField.defaultText != "walker"
+       or spriteField.kind != "asset"
+       or spriteField.assetKinds.count() != 1
+       or spriteField.assetKinds.get(0) != "image"
+       or cueField.assetKinds.get(0) != "any"
+       or scene_component_schema.ValueKind("enum") != "string"
+       or scene_component_schema.ValueKind("asset") != "string"
+       or scene_component_schema.ValueKind("int") != "int" {
+        Probe.fail("version-2 enum/asset parsing lost validated structure");
+        return false;
+    }
+
+    return true;
+}
+
+/// @brief Run the VerifyCompatibilityAndObjectProfiles schema scenario.
+expose func VerifyCompatibilityAndObjectProfiles() -> Boolean {
+    // Version-1 files must reject version-2 kinds and stay fail-closed.
+    var v1EnumText =
+        "{\"version\":1,\"components\":[{\"name\":\"spawn\","
+        + "\"target\":\"both\",\"fields\":[{\"key\":\"spawn.kind\","
+        + "\"type\":\"enum\",\"choices\":[\"walker\"]}]}]}";
+    var v1Enum = scene_component_schema.ParseText(v1EnumText, "memory");
+    var v2BadDefaultText =
+        "{\"version\":2,\"components\":[{\"name\":\"spawn\","
+        + "\"target\":\"both\",\"fields\":[{\"key\":\"spawn.kind\","
+        + "\"type\":\"enum\",\"choices\":[\"walker\"],"
+        + "\"default\":\"flier\"}]}]}";
+    var v2BadDefault = scene_component_schema.ParseText(v2BadDefaultText, "memory");
+    var dupChoiceText =
+        "{\"version\":2,\"components\":[{\"name\":\"spawn\","
+        + "\"target\":\"both\",\"fields\":[{\"key\":\"spawn.kind\","
+        + "\"type\":\"enum\",\"choices\":[\"walker\",\"Walker\"]}]}]}";
+    var dupChoice = scene_component_schema.ParseText(dupChoiceText, "memory");
+    var badKindText =
+        "{\"version\":2,\"components\":[{\"name\":\"spawn\","
+        + "\"target\":\"both\",\"fields\":[{\"key\":\"spawn.sprite\","
+        + "\"type\":\"asset\",\"assetKinds\":[\"video\"]}]}]}";
+    var badKind = scene_component_schema.ParseText(badKindText, "memory");
+    if v1Enum.valid or v1Enum.components.count() != 0
+       or v2BadDefault.valid or dupChoice.valid or badKind.valid {
+        Probe.fail("invalid version-2 content was not rejected fail-closed");
+        return false;
+    }
+
+    // ADR 0197: one project-owned rule can select a linear or mapped atlas
+    // frame from an existing integer object property.
+    var v3Text =
+        "{\"version\":3,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/actors.png\","
+        + "\"frame\":7,\"frameProperty\":\"enemy.type\","
+        + "\"frameOffset\":10},"
+        + "{\"objectType\":\"pickup\",\"sprite\":\"art/items.png\","
+        + "\"frame\":2,\"frameProperty\":\"pickup.type\","
+        + "\"frameMap\":[4,8,12]}"
+        + "]}";
+    var v3 = scene_component_schema.ParseText(v3Text, "memory");
+    var enemyPreview = v3.PreviewForObjectType("Enemy");
+    var pickupPreview = v3.PreviewForObjectType("pickup");
+    if v3.valid == false or v3.version != 3
+       or v3.objectPreviews.count() != 2
+       or enemyPreview == null
+       or enemyPreview.sprite != "art/actors.png"
+       or enemyPreview.FrameForValue(3) != 13
+       or enemyPreview.FrameForValue(-1) != 7
+       or pickupPreview == null
+       or pickupPreview.FrameForValue(0) != 4
+       or pickupPreview.FrameForValue(2) != 12
+       or pickupPreview.FrameForValue(3) != 2
+       or v3.PreviewForObjectType("missing") != null {
+        Probe.fail("version-3 project preview mapping lost bounded lookup semantics");
+        return false;
+    }
+
+    var v2Preview = scene_component_schema.ParseText(
+        "{\"version\":2,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\"}]}",
+        "v2-preview");
+    var duplicatePreview = scene_component_schema.ParseText(
+        "{\"version\":3,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"Enemy\",\"sprite\":\"art/a.png\"},"
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/b.png\"}]}",
+        "duplicate-preview");
+    var orphanOffset = scene_component_schema.ParseText(
+        "{\"version\":3,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"frameOffset\":2}]}",
+        "orphan-offset");
+    var conflictingFrames = scene_component_schema.ParseText(
+        "{\"version\":3,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"frameProperty\":\"enemy.type\",\"frameOffset\":2,"
+        + "\"frameMap\":[1,2]}]}",
+        "conflicting-frames");
+    var negativeFrame = scene_component_schema.ParseText(
+        "{\"version\":3,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"frame\":-1}]}",
+        "negative-frame");
+    if v2Preview.valid or duplicatePreview.valid or orphanOffset.valid
+       or conflictingFrames.valid or negativeFrame.valid
+       or duplicatePreview.objectPreviews.count() != 0 {
+        Probe.fail("invalid version-3 preview content was not rejected fail-closed");
+        return false;
+    }
+
+    // ADR 0198: projects map their root metadata vocabulary onto a bounded
+    // gameplay view and shaded environment without executing game code.
+    var v4Text =
+        "{\"version\":4,\"components\":[],\"scenePreview3D\":{"
+        + "\"startXProperty\":\"af.startX\","
+        + "\"startYProperty\":\"af.startY\","
+        + "\"startZProperty\":\"af.startZ\","
+        + "\"startYawProperty\":\"af.startYaw\","
+        + "\"startEyeHeight\":1.62,"
+        + "\"ambientRProperty\":\"lenv.ambR\","
+        + "\"ambientGProperty\":\"lenv.ambG\","
+        + "\"ambientBProperty\":\"lenv.ambB\","
+        + "\"clearRProperty\":\"lenv.zenR\","
+        + "\"clearGProperty\":\"lenv.zenG\","
+        + "\"clearBProperty\":\"lenv.zenB\","
+        + "\"fogRProperty\":\"lenv.horR\","
+        + "\"fogGProperty\":\"lenv.horG\","
+        + "\"fogBProperty\":\"lenv.horB\","
+        + "\"fogNearProperty\":\"lenv.fogNear\","
+        + "\"fogFarProperty\":\"lenv.fogFar\","
+        + "\"showGrid\":false,\"showMarkers\":false,"
+        + "\"showLights\":false,\"showCameras\":false,"
+        + "\"showColliders\":false,\"showRoutes\":true}}";
+    var v4 = scene_component_schema.ParseText(v4Text, "memory");
+    var profile3D = v4.scenePreview3D;
+    if v4.valid == false or v4.version != 4
+       or profile3D == null or profile3D.present == false
+       or profile3D.HasStart() == false
+       or profile3D.startXProperty != "af.startX"
+       or profile3D.startYawProperty != "af.startYaw"
+       or profile3D.hasStartEyeHeight == false
+       or Probe.near(profile3D.startEyeHeight, 1.62) == false
+       or profile3D.HasAmbient() == false
+       or profile3D.HasClear() == false
+       or profile3D.HasFog() == false
+       or profile3D.hasShowGrid == false
+       or profile3D.showGrid
+       or profile3D.hasShowMarkers == false
+       or profile3D.showMarkers
+       or profile3D.hasShowLights == false
+       or profile3D.showLights
+       or profile3D.hasShowCameras == false
+       or profile3D.showCameras
+       or profile3D.hasShowColliders == false
+       or profile3D.showColliders
+       or profile3D.hasShowRoutes == false
+       or profile3D.showRoutes == false {
+        Probe.fail("version-4 3D preview profile lost validated mappings");
+        return false;
+    }
+
+    return true;
+}
+
+/// @brief Run the VerifyDrawStacksAndNodePrefabs schema scenario.
+expose func VerifyDrawStacksAndNodePrefabs() -> Boolean {
+    var v3Profile = scene_component_schema.ParseText(
+        "{\"version\":3,\"components\":[],\"scenePreview3D\":{"
+        + "\"showMarkers\":false}}", "v3-profile");
+    var partialAmbient = scene_component_schema.ParseText(
+        "{\"version\":4,\"components\":[],\"scenePreview3D\":{"
+        + "\"ambientRProperty\":\"a.r\"}}", "partial-ambient");
+    var orphanYaw = scene_component_schema.ParseText(
+        "{\"version\":4,\"components\":[],\"scenePreview3D\":{"
+        + "\"startYawProperty\":\"view.yaw\"}}", "orphan-yaw");
+    var wrongOverlay = scene_component_schema.ParseText(
+        "{\"version\":4,\"components\":[],\"scenePreview3D\":{"
+        + "\"showLights\":\"no\"}}", "wrong-overlay");
+    var orphanEyeHeight = scene_component_schema.ParseText(
+        "{\"version\":4,\"components\":[],\"scenePreview3D\":{"
+        + "\"startXProperty\":\"view.x\","
+        + "\"startYProperty\":\"view.y\","
+        + "\"startZProperty\":\"view.z\","
+        + "\"startEyeHeight\":1.6}}", "orphan-eye-height");
+    if v3Profile.valid or partialAmbient.valid or orphanYaw.valid
+       or wrongOverlay.valid or orphanEyeHeight.valid
+       or partialAmbient.scenePreview3D.present {
+        Probe.fail("invalid version-4 profile was not rejected fail-closed");
+        return false;
+    }
+
+    // ADR 0199: empty gameplay nodes select transient project prefabs by one
+    // exact string discriminator and an optional bounded integer variant.
+    var v5Text =
+        "{\"version\":5,\"components\":[],\"nodePreviews3D\":["
+        + "{\"matchProperty\":\"af.kind\",\"matchValue\":\"prop\","
+        + "\"prefab\":\"assets/editor/props/default.scene3d\","
+        + "\"variantProperty\":\"prop.kind\",\"variantPrefabs\":["
+        + "\"assets/editor/props/crate.scene3d\","
+        + "\"assets/editor/props/barrel.vscn\"],"
+        + "\"yawProperty\":\"prop.yaw\",\"yawUnit\":\"radians\","
+        + "\"scaleProperty\":\"prop.scale\"},"
+        + "{\"matchProperty\":\"af.kind\",\"matchValue\":\"pickup\","
+        + "\"prefab\":\"assets/editor/pickup.scene3d\"}]}";
+    var v5 = scene_component_schema.ParseText(v5Text, "memory");
+    var propPreview =
+        v5.NodePreview3DForMatch("af.kind", "prop");
+    var pickup3DPreview =
+        v5.NodePreview3DForMatch("af.kind", "pickup");
+    if v5.valid == false or v5.version != 5
+       or v5.nodePreviews3D.count() != 2
+       or propPreview == null
+       or propPreview.variantProperty != "prop.kind"
+       or propPreview.yawProperty != "prop.yaw"
+       or propPreview.yawUnit != "radians"
+       or propPreview.scaleProperty != "prop.scale"
+       or propPreview.PrefabForVariant(0)
+          != "assets/editor/props/crate.scene3d"
+       or propPreview.PrefabForVariant(1)
+          != "assets/editor/props/barrel.vscn"
+       or propPreview.PrefabForVariant(2)
+          != "assets/editor/props/default.scene3d"
+       or propPreview.PrefabForVariant(-1)
+          != "assets/editor/props/default.scene3d"
+       or pickup3DPreview == null
+       or pickup3DPreview.prefab
+          != "assets/editor/pickup.scene3d"
+       or v5.NodePreview3DForMatch("af.kind", "Prop") != null {
+        Probe.fail("version-5 node prefab mapping lost exact variant semantics");
+        return false;
+    }
+
+    // ADR 0200: a complete project sky palette and directional key/fill rig
+    // travel as portable root-metadata mappings without executing game code.
+    var v6Text =
+        "{\"version\":6,\"components\":[],\"scenePreview3D\":{"
+        + "\"clearRProperty\":\"sky.horR\","
+        + "\"clearGProperty\":\"sky.horG\","
+        + "\"clearBProperty\":\"sky.horB\","
+        + "\"zenithRProperty\":\"sky.zenR\","
+        + "\"zenithGProperty\":\"sky.zenG\","
+        + "\"zenithBProperty\":\"sky.zenB\","
+        + "\"groundRProperty\":\"sky.grdR\","
+        + "\"groundGProperty\":\"sky.grdG\","
+        + "\"groundBProperty\":\"sky.grdB\","
+        + "\"cloudProperty\":\"sky.cloud\","
+        + "\"starsProperty\":\"sky.stars\","
+        + "\"sunXProperty\":\"sun.x\","
+        + "\"sunYProperty\":\"sun.y\","
+        + "\"sunZProperty\":\"sun.z\","
+        + "\"sunRProperty\":\"sun.r\","
+        + "\"sunGProperty\":\"sun.g\","
+        + "\"sunBProperty\":\"sun.b\","
+        + "\"sunIntensityProperty\":\"sun.i\","
+        + "\"fillXProperty\":\"fill.x\","
+        + "\"fillYProperty\":\"fill.y\","
+        + "\"fillZProperty\":\"fill.z\","
+        + "\"fillRProperty\":\"fill.r\","
+        + "\"fillGProperty\":\"fill.g\","
+        + "\"fillBProperty\":\"fill.b\","
+        + "\"fillIntensityProperty\":\"fill.i\"}}";
+    var v6 = scene_component_schema.ParseText(v6Text, "memory");
+    var profile6 = v6.scenePreview3D;
+    if v6.valid == false or v6.version != 6
+       or profile6 == null or profile6.present == false
+       or profile6.HasSkyPalette() == false
+       or profile6.HasSun() == false
+       or profile6.HasFill() == false
+       or profile6.zenithRProperty != "sky.zenR"
+       or profile6.groundBProperty != "sky.grdB"
+       or profile6.cloudProperty != "sky.cloud"
+       or profile6.starsProperty != "sky.stars"
+       or profile6.sunIntensityProperty != "sun.i"
+       or profile6.fillIntensityProperty != "fill.i" {
+        Probe.fail("version-6 sky/light preview mapping lost complete groups");
+        return false;
+    }
+
+    var v5Sky = scene_component_schema.ParseText(
+        "{\"version\":5,\"components\":[],\"scenePreview3D\":{"
+        + "\"zenithRProperty\":\"sky.r\"}}", "v5-sky");
+    var partialSky = scene_component_schema.ParseText(
+        "{\"version\":6,\"components\":[],\"scenePreview3D\":{"
+        + "\"clearRProperty\":\"h.r\","
+        + "\"clearGProperty\":\"h.g\","
+        + "\"clearBProperty\":\"h.b\","
+        + "\"zenithRProperty\":\"z.r\","
+        + "\"zenithGProperty\":\"z.g\","
+        + "\"zenithBProperty\":\"z.b\"}}", "partial-sky");
+    var orphanCloud = scene_component_schema.ParseText(
+        "{\"version\":6,\"components\":[],\"scenePreview3D\":{"
+        + "\"cloudProperty\":\"sky.cloud\"}}", "orphan-cloud");
+    var partialSun = scene_component_schema.ParseText(
+        "{\"version\":6,\"components\":[],\"scenePreview3D\":{"
+        + "\"sunXProperty\":\"sun.x\"}}", "partial-sun");
+    var partialFill = scene_component_schema.ParseText(
+        "{\"version\":6,\"components\":[],\"scenePreview3D\":{"
+        + "\"fillXProperty\":\"fill.x\","
+        + "\"fillYProperty\":\"fill.y\","
+        + "\"fillZProperty\":\"fill.z\","
+        + "\"fillRProperty\":\"fill.r\","
+        + "\"fillGProperty\":\"fill.g\","
+        + "\"fillBProperty\":\"fill.b\"}}", "partial-fill");
+    if v5Sky.valid or partialSky.valid or orphanCloud.valid
+       or partialSun.valid or partialFill.valid
+       or partialSky.scenePreview3D.present {
+        Probe.fail("invalid version-6 sky/light profiles were not fail-closed");
+        return false;
+    }
+
+    return true;
+}
+
+/// @brief Run the VerifySkyRigsAndLensProfiles schema scenario.
+expose func VerifySkyRigsAndLensProfiles() -> Boolean {
+    // ADR 0201: project lens and atmospheric parameters are static, bounded
+    // authoring data while height-fog enablement remains typed scene metadata.
+    var v7Text =
+        "{\"version\":7,\"components\":[],\"scenePreview3D\":{"
+        + "\"clearRProperty\":\"sky.horR\","
+        + "\"clearGProperty\":\"sky.horG\","
+        + "\"clearBProperty\":\"sky.horB\","
+        + "\"zenithRProperty\":\"sky.zenR\","
+        + "\"zenithGProperty\":\"sky.zenG\","
+        + "\"zenithBProperty\":\"sky.zenB\","
+        + "\"groundRProperty\":\"sky.grdR\","
+        + "\"groundGProperty\":\"sky.grdG\","
+        + "\"groundBProperty\":\"sky.grdB\","
+        + "\"cameraFov\":90,"
+        + "\"iblIntensity\":0.28,"
+        + "\"heightFogProperty\":\"sky.heightFog\","
+        + "\"heightFogBase\":1.6,"
+        + "\"heightFogFalloff\":0.35,"
+        + "\"heightFogDensity\":0.06,"
+        + "\"heightFogOpacity\":0.65}}";
+    var v7 = scene_component_schema.ParseText(v7Text, "memory");
+    var profile7 = v7.scenePreview3D;
+    if v7.valid == false or v7.version != 7
+       or profile7 == null or profile7.present == false
+       or profile7.hasCameraFov == false
+       or Probe.near(profile7.cameraFov, 90.0) == false
+       or profile7.hasIblIntensity == false
+       or Probe.near(profile7.iblIntensity, 0.28) == false
+       or profile7.HasHeightFog() == false
+       or profile7.heightFogProperty != "sky.heightFog"
+       or Probe.near(profile7.heightFogBase, 1.6) == false
+       or Probe.near(profile7.heightFogOpacity, 0.65) == false {
+        Probe.fail("version-7 lens/atmosphere preview mapping lost bounded values");
+        return false;
+    }
+
+    var v6Lens = scene_component_schema.ParseText(
+        "{\"version\":6,\"components\":[],\"scenePreview3D\":{"
+        + "\"cameraFov\":90}}", "v6-lens");
+    var orphanIbl = scene_component_schema.ParseText(
+        "{\"version\":7,\"components\":[],\"scenePreview3D\":{"
+        + "\"iblIntensity\":0.3}}", "orphan-ibl");
+    var partialHeightFog = scene_component_schema.ParseText(
+        "{\"version\":7,\"components\":[],\"scenePreview3D\":{"
+        + "\"heightFogProperty\":\"sky.heightFog\","
+        + "\"heightFogBase\":1.6}}", "partial-height-fog");
+    var invalidFov = scene_component_schema.ParseText(
+        "{\"version\":7,\"components\":[],\"scenePreview3D\":{"
+        + "\"cameraFov\":180}}", "invalid-fov");
+    if v6Lens.valid or orphanIbl.valid or partialHeightFog.valid
+       or invalidFov.valid
+       or partialHeightFog.scenePreview3D.present {
+        Probe.fail("invalid version-7 lens/atmosphere profiles were not fail-closed");
+        return false;
+    }
+
+    var v8Text =
+        "{\"version\":8,\"components\":[],\"scenePreview2D\":{"
+        + "\"background\":\"assets/backgrounds/fallback.png\","
+        + "\"variantProperty\":\"region\","
+        + "\"variantOffset\":-1,"
+        + "\"variantImages\":["
+        + "\"assets/backgrounds/region-01.png\","
+        + "\"assets/backgrounds/region-02.png\"],"
+        + "\"fit\":\"contain\",\"showGrid\":false}}";
+    var v8 = scene_component_schema.ParseText(v8Text, "v8");
+    var profile8 = v8.scenePreview2D;
+    if v8.valid == false or v8.version != 8
+       or profile8 == null or profile8.present == false
+       or profile8.background
+          != "assets/backgrounds/fallback.png"
+       or profile8.variantProperty != "region"
+       or profile8.variantOffset != -1
+       or profile8.variantImages.count() != 2
+       or profile8.BackgroundForVariant(1)
+          != "assets/backgrounds/region-01.png"
+       or profile8.BackgroundForVariant(2)
+          != "assets/backgrounds/region-02.png"
+       or profile8.BackgroundForVariant(3)
+          != "assets/backgrounds/fallback.png"
+       or profile8.fit != scene_component_schema.BACKGROUND_FIT_CONTAIN
+       or profile8.hasShowGrid == false or profile8.showGrid {
+        Probe.fail("valid version-8 2D scene preview profile did not round trip");
+        return false;
+    }
+    var v7Backdrop = scene_component_schema.ParseText(
+        "{\"version\":7,\"components\":[],\"scenePreview2D\":{"
+        + "\"background\":\"assets/background.png\"}}",
+        "v7-backdrop");
+    var orphanBackdropVariants = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"scenePreview2D\":{"
+        + "\"variantImages\":[\"assets/background.png\"]}}",
+        "orphan-backdrop-variants");
+    var unsafeBackdrop = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"scenePreview2D\":{"
+        + "\"background\":\"../outside.png\"}}",
+        "unsafe-backdrop");
+    var invalidBackdropFit = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"scenePreview2D\":{"
+        + "\"background\":\"assets/background.png\","
+        + "\"fit\":\"tile\"}}",
+        "invalid-backdrop-fit");
+    var orphanBackdropOffset = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"scenePreview2D\":{"
+        + "\"showGrid\":false,\"variantOffset\":1}}",
+        "orphan-backdrop-offset");
+    if v7Backdrop.valid or orphanBackdropVariants.valid
+       or unsafeBackdrop.valid or invalidBackdropFit.valid
+       or orphanBackdropOffset.valid
+       or unsafeBackdrop.scenePreview2D.present {
+        Probe.fail("invalid version-8 2D scene previews were not fail-closed");
+        return false;
+    }
+
+    // ADR 0203: project environment prefabs visualize runtime-generated scene
+    // structure without entering the canonical graph or executing project code.
+    var v9Text =
+        "{\"version\":9,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentPrefab\":"
+        + "\"assets/editor-previews/environment-fallback.scene3d\","
+        + "\"environmentVariantProperty\":\"af.terrain\","
+        + "\"environmentVariantOffset\":-1,"
+        + "\"environmentVariantPrefabs\":["
+        + "\"assets/editor-previews/terrain-01.scene3d\","
+        + "\"assets/editor-previews/terrain-02.vscn\"]}}";
+    var v9 = scene_component_schema.ParseText(v9Text, "v9");
+    var profile9 = v9.scenePreview3D;
+    if v9.valid == false or v9.version != 9
+       or profile9 == null or profile9.present == false
+       or profile9.environmentPrefab
+          != "assets/editor-previews/environment-fallback.scene3d"
+       or profile9.environmentVariantProperty != "af.terrain"
+       or profile9.environmentVariantOffset != -1
+       or profile9.environmentVariantPrefabs.count() != 2
+       or profile9.EnvironmentPrefabForVariant(1)
+          != "assets/editor-previews/terrain-01.scene3d"
+       or profile9.EnvironmentPrefabForVariant(2)
+          != "assets/editor-previews/terrain-02.vscn"
+       or profile9.EnvironmentPrefabForVariant(3)
+          != "assets/editor-previews/environment-fallback.scene3d" {
+        Probe.fail("valid version-9 3D environment preview did not round trip");
+        return false;
+    }
+    return true;
+}
+
+/// @brief Run the VerifyBackdropsAndEnvironmentPrefabs schema scenario.
+expose func VerifyBackdropsAndEnvironmentPrefabs() -> Boolean {
+    var v8Environment = scene_component_schema.ParseText(
+        "{\"version\":8,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentPrefab\":\"assets/environment.scene3d\"}}",
+        "v8-environment");
+    var orphanEnvironmentVariants = scene_component_schema.ParseText(
+        "{\"version\":9,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentVariantPrefabs\":["
+        + "\"assets/environment.scene3d\"]}}",
+        "orphan-environment-variants");
+    var unsafeEnvironment = scene_component_schema.ParseText(
+        "{\"version\":9,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentPrefab\":\"../outside.scene3d\"}}",
+        "unsafe-environment");
+    var fractionalEnvironmentOffset = scene_component_schema.ParseText(
+        "{\"version\":9,\"components\":[],\"scenePreview3D\":{"
+        + "\"environmentVariantProperty\":\"terrain\","
+        + "\"environmentVariantPrefabs\":["
+        + "\"assets/environment.scene3d\"],"
+        + "\"environmentVariantOffset\":0.5}}",
+        "fractional-environment-offset");
+    if v8Environment.valid or orphanEnvironmentVariants.valid
+       or unsafeEnvironment.valid or fractionalEnvironmentOffset.valid
+       or unsafeEnvironment.scenePreview3D.present {
+        Probe.fail("invalid version-9 3D environments were not fail-closed");
+        return false;
+    }
+
+    // ADR 0204: portable post-processing values mirror the runtime's
+    // deterministic color pipeline without project code or backend-only passes.
+    var v10Text =
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"tonemapMode\":2,\"tonemapExposure\":1.17,"
+        + "\"bloomThreshold\":0.9,\"bloomIntensity\":0.25,"
+        + "\"bloomPasses\":3,"
+        + "\"colorGradeBrightness\":0.03,"
+        + "\"colorGradeContrast\":1.03,"
+        + "\"colorGradeSaturation\":1.07,"
+        + "\"vignetteRadius\":0.98,\"vignetteSoftness\":0.12,"
+        + "\"fxaa\":true}}";
+    var v10 =
+        scene_component_schema.ParseText(v10Text, "v10-postfx");
+    var profile10 = v10.scenePreview3D;
+    if v10.valid == false or v10.version != 10
+       or profile10 == null or profile10.present == false
+       or profile10.hasTonemap == false
+       or profile10.tonemapMode != 2
+       or Probe.near(profile10.tonemapExposure, 1.17) == false
+       or profile10.hasBloom == false
+       or Probe.near(profile10.bloomThreshold, 0.9) == false
+       or Probe.near(profile10.bloomIntensity, 0.25) == false
+       or profile10.bloomPasses != 3
+       or profile10.hasColorGrade == false
+       or Probe.near(profile10.colorGradeBrightness, 0.03) == false
+       or Probe.near(profile10.colorGradeContrast, 1.03) == false
+       or Probe.near(profile10.colorGradeSaturation, 1.07) == false
+       or profile10.hasVignette == false
+       or Probe.near(profile10.vignetteRadius, 0.98) == false
+       or Probe.near(profile10.vignetteSoftness, 0.12) == false
+       or profile10.hasFxaa == false or profile10.fxaa == false
+       or profile10.HasPostFX() == false
+       or profile10.PostFXEffectCount() != 5 {
+        Probe.fail("valid version-10 3D post-FX preview did not round trip");
+        return false;
+    }
+    var v9PostFX = scene_component_schema.ParseText(
+        "{\"version\":9,\"components\":[],\"scenePreview3D\":{"
+        + "\"tonemapMode\":2,\"tonemapExposure\":1.0}}",
+        "v9-postfx");
+    var partialTonemap = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"tonemapMode\":2}}",
+        "partial-tonemap");
+    var fractionalTonemap = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"tonemapMode\":1.5,\"tonemapExposure\":1.0}}",
+        "fractional-tonemap");
+    var partialBloom = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"bloomThreshold\":0.8,\"bloomPasses\":3}}",
+        "partial-bloom");
+    var invalidGrade = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"colorGradeBrightness\":0.0,"
+        + "\"colorGradeContrast\":5.0,"
+        + "\"colorGradeSaturation\":1.0}}",
+        "invalid-grade");
+    var invalidVignette = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"vignetteRadius\":0.8,\"vignetteSoftness\":0.0}}",
+        "invalid-vignette");
+    var invalidFxaa = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"scenePreview3D\":{"
+        + "\"fxaa\":\"yes\"}}",
+        "invalid-fxaa");
+    if v9PostFX.valid or partialTonemap.valid
+       or fractionalTonemap.valid or partialBloom.valid
+       or invalidGrade.valid or invalidVignette.valid
+       or invalidFxaa.valid
+       or invalidFxaa.scenePreview3D.present {
+        Probe.fail("invalid version-10 3D post-FX previews were not fail-closed");
+        return false;
+    }
+
+    // ADR 0206: project rules can reproduce game category order and place
+    // object art on either side of authored foreground tile layers.
+    var v11Text =
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/actors.png\","
+        + "\"drawOrder\":30,\"afterLayer\":0},"
+        + "{\"objectType\":\"pickup\",\"sprite\":\"art/items.png\","
+        + "\"drawOrder\":-128,\"afterLayer\":-1},"
+        + "{\"objectType\":\"default\",\"sprite\":\"art/default.png\"}"
+        + "]}";
+    var v11 = scene_component_schema.ParseText(
+        v11Text, "v11-object-stack");
+    var enemyStack = v11.PreviewForObjectType("ENEMY");
+    var pickupStack = v11.PreviewForObjectType("pickup");
+    var defaultStack = v11.PreviewForObjectType("default");
+    if v11.valid == false or v11.version != 11
+       or enemyStack == null or enemyStack.drawOrder != 30
+       or enemyStack.afterLayer != 0
+       or pickupStack == null or pickupStack.drawOrder != -128
+       or pickupStack.afterLayer != -1
+       or defaultStack == null or defaultStack.drawOrder != 0
+       or defaultStack.afterLayer != 15 {
+        Probe.fail("valid version-11 object preview stack did not round trip");
+        return false;
+    }
+    var v10DrawStack = scene_component_schema.ParseText(
+        "{\"version\":10,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"drawOrder\":1}]}",
+        "v10-object-stack");
+    var lowDrawOrder = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"drawOrder\":-129}]}",
+        "low-draw-order");
+    var highDrawOrder = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"drawOrder\":128}]}",
+        "high-draw-order");
+    var lowAfterLayer = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"afterLayer\":-2}]}",
+        "low-after-layer");
+    var highAfterLayer = scene_component_schema.ParseText(
+        "{\"version\":11,\"components\":[],\"objectPreviews\":["
+        + "{\"objectType\":\"enemy\",\"sprite\":\"art/a.png\","
+        + "\"afterLayer\":16}]}",
+        "high-after-layer");
+    if v10DrawStack.valid or lowDrawOrder.valid or highDrawOrder.valid
+       or lowAfterLayer.valid or highAfterLayer.valid
+       or v10DrawStack.objectPreviews.count() != 0 {
+        Probe.fail("invalid version-11 object preview stacks were not fail-closed");
+        return false;
+    }
+
+    return true;
+}
+

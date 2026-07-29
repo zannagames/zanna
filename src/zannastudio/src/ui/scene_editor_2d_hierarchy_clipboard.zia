@@ -1,0 +1,748 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_2d_hierarchy_clipboard.zia
+// Purpose: Focused hierarchy clipboard behavior for the 2D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor2D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_2d.zia, zannastudio/src/ui/scene_editor_2d_scene_editing.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_hierarchy_clipboard;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/project_locator";
+bind "scene_asset_browser";
+bind "scene_clipboard";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_history";
+bind "inspector_rows";
+bind "scene_layout_2d";
+bind "scene_object_draw_stack_2d";
+bind "scene_pane_docking";
+bind "scene_camera_lighting_2d";
+bind "property_rows";
+bind "scene_property_inspector_2d";
+bind "scene_tile_behavior_2d";
+bind "scene_selection";
+bind "scene_tileset_2d";
+bind "scene_tileset_inspector_2d";
+bind Zanna.GUI as GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind Seq = Zanna.Collections.Seq;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Box = Zanna.Core.Box;
+bind Clock = Zanna.Time.Clock;
+bind "scene_editor_2d_model" as SceneEditor2DModel;
+bind "scene_editor_2d_scene_editing" as PreviousLayer;
+
+/// @brief Hierarchy Clipboard implementation layer.
+class SceneEditor2DHierarchyClipboardLayer extends PreviousLayer.SceneEditor2DSceneEditingLayer {
+
+    /// @brief Reveal and focus the hierarchy Find field without editing scene data.
+    /// @return True when a loaded scene owns a usable search field.
+    expose override func FocusHierarchySearch() -> Boolean {
+        if scene == null or hierarchySearchInput == null { return false; }
+        if hierarchyDock.floating == false
+           and SceneEditor2DModel.UsesDockedHierarchy(lastHostWidth) == false {
+            compactHierarchyShown = true;
+            compactInspectorShown = false;
+            compactPaletteShown = false;
+        }
+        ApplyInspectorLayout();
+        ApplyPaletteLayout();
+        hierarchySearchInput.Focus();
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Select and reveal one bounded id/type hierarchy match.
+    /// @param query Case-insensitive object id or type fragment.
+    /// @param direction Negative for previous; zero or positive for next.
+    /// @return True when a matching represented row was selected.
+    expose override func FindHierarchy(query: String,
+                              direction: Integer) -> Boolean {
+        if scene == null or hierarchySearchInput == null { return false; }
+        var normalized = scene_hierarchy_search.Normalize(query);
+        var resetCursor = normalized != hierarchySearchQuery;
+        if hierarchySearchInput.Text != query {
+            hierarchySearchInput.SetText(query);
+        }
+        RefreshHierarchySearch(resetCursor);
+        return NavigateHierarchySearch(direction);
+    }
+
+    /// @brief Rebuild match indices from represented rows only.
+    /// @details Canonical objects hidden by hierarchy safety bounds remain
+    ///          untouched and are never offered as an impossible-to-reveal hit.
+    hide override func RefreshHierarchySearch(resetCursor: Boolean) {
+        if hierarchySearchInput == null { return; }
+        hierarchySearchQuery = scene_hierarchy_search.Normalize(
+            hierarchySearchInput.Text);
+        hierarchySearchMatches = [];
+        if scene != null and hierarchySearchQuery != "" {
+            var index = 0;
+            while index < scene.ObjectCount()
+                  and index < objectTreeNodes.count() {
+                if objectTreeNodes.get(index) != null
+                   and scene_hierarchy_search.MatchesNormalized(
+                       hierarchySearchQuery,
+                       scene.ObjectId(index),
+                       scene.ObjectType(index)) {
+                    hierarchySearchMatches.add(index);
+                }
+                index = index + 1;
+            }
+        }
+
+        hierarchySearchCursor = -1;
+        if resetCursor == false {
+            var match = 0;
+            while match < hierarchySearchMatches.count() {
+                if hierarchySearchMatches.get(match) == selectedObject {
+                    hierarchySearchCursor = match;
+                    break;
+                }
+                match = match + 1;
+            }
+        }
+        UpdateHierarchySearchControls();
+    }
+
+    /// @brief Apply one previous/next hierarchy jump without scene mutation.
+    hide override func NavigateHierarchySearch(direction: Integer) -> Boolean {
+        hierarchySearchCursor = scene_hierarchy_search.NextCursor(
+            hierarchySearchMatches.count(),
+            hierarchySearchCursor,
+            direction);
+        if hierarchySearchCursor < 0
+           or hierarchySearchCursor >= hierarchySearchMatches.count() {
+            UpdateHierarchySearchControls();
+            return false;
+        }
+        var target = hierarchySearchMatches.get(hierarchySearchCursor);
+        var selection = scene_selection.Single(
+            target, scene.ObjectCount());
+        var selected = SelectSceneObjects(selection, target);
+        UpdateHierarchySearchControls();
+        return selected;
+    }
+
+    /// @brief Pump search text and navigation controls without scene history.
+    hide override func PumpHierarchySearchControls() {
+        if hierarchySearchInput == null { return; }
+        var query = scene_hierarchy_search.Normalize(
+            hierarchySearchInput.Text);
+        if query != hierarchySearchQuery {
+            RefreshHierarchySearch(true);
+        }
+        var direction = 0;
+        var requested = false;
+        if hierarchySearchPreviousButton.WasClicked() {
+            direction = -1;
+            requested = true;
+        }
+        if hierarchySearchNextButton.WasClicked()
+           or hierarchySearchInput.WasSubmitted() {
+            direction = 1;
+            requested = true;
+        }
+        if requested { NavigateHierarchySearch(direction); }
+    }
+
+    /// @brief Reflect query, match cursor, and safety bounds in compact UI.
+    hide override func UpdateHierarchySearchControls() {
+        if hierarchySearchInput == null { return; }
+        var available = editorControlsEnabled and scene != null;
+        hierarchySearchInput.SetEnabled(available);
+        var canNavigate =
+            available and hierarchySearchMatches.count() > 0;
+        hierarchySearchPreviousButton.SetEnabled(canNavigate);
+        hierarchySearchNextButton.SetEnabled(canNavigate);
+
+        var suffix = "";
+        if objectHierarchyClipped {
+            suffix = " within the bounded visible hierarchy";
+        }
+        if hierarchySearchQuery == "" {
+            hierarchySearchStatus.SetText(
+                "Find by object id or type" + suffix);
+        } else if hierarchySearchMatches.count() == 0 {
+            hierarchySearchStatus.SetText(
+                "No matching objects" + suffix);
+        } else if hierarchySearchCursor < 0 {
+            hierarchySearchStatus.SetText(
+                hierarchySearchMatches.count()
+                + " matching object(s)" + suffix
+                + "; press Enter to jump");
+        } else {
+            hierarchySearchStatus.SetText(
+                "Match " + (hierarchySearchCursor + 1)
+                + " of " + hierarchySearchMatches.count()
+                + suffix);
+        }
+    }
+
+    /// @brief Return whether at least one valid object is selected.
+    expose override func HasSceneObjectSelection() -> Boolean {
+        if scene == null { return false; }
+        var normalized = scene_selection.Normalize(
+            selectedObjects, scene.ObjectCount(), selectedObject);
+        return normalized.count() > 0;
+    }
+
+    /// @brief Return whether Select All has an object target.
+    expose override func CanSelectAllSceneObjects() -> Boolean {
+        return scene != null and scene.ObjectCount() > 0;
+    }
+
+    /// @brief Return whether the text clipboard may contain pasteable data.
+    /// @details Kind and payload validation happen only on explicit paste so
+    ///          Studio does not copy a potentially large native clipboard every
+    ///          render frame merely to update menu chrome.
+    expose override func CanPasteSceneObjects() -> Boolean {
+        return scene != null and GUI.ClipboardText.HasText();
+    }
+
+    /// @brief Select every authored object without changing scene history.
+    expose override func SelectAllSceneObjects() -> Boolean {
+        if CanSelectAllSceneObjects() == false { return false; }
+        var all: List[Integer] = [];
+        var index = 0;
+        while index < scene.ObjectCount() {
+            all.add(index);
+            index = index + 1;
+        }
+        var primary = selectedObject;
+        if primary < 0 or primary >= scene.ObjectCount() { primary = 0; }
+        if SelectSceneObjects(all, primary) == false { return false; }
+        toolbarStatus.SetText(
+            "Selected all " + selectedObjects.count() + " scene objects");
+        detailLabel.SetText("");
+        return true;
+    }
+
+    /// @brief Copy selected objects as canonical typed scene data.
+    expose override func CopySelectedSceneObjects() -> Boolean {
+        if scene == null or currentSerialized == "" { return false; }
+        selectedObjects = scene_selection.Normalize(
+            selectedObjects, scene.ObjectCount(), selectedObject);
+        if selectedObjects.count() == 0 { return false; }
+        if selectedObject < 0
+           or scene_selection.Contains(selectedObjects, selectedObject) == false {
+            selectedObject = selectedObjects.get(0);
+        }
+        var encoded = scene_clipboard.Encode(
+            "2d", selectedObjects, selectedObject, currentSerialized);
+        if encoded == "" {
+            toolbarStatus.SetText("Scene objects not copied");
+            detailLabel.SetText(
+                "The selected objects exceed Studio's scene clipboard limit.");
+            return false;
+        }
+        GUI.ClipboardText.SetText(encoded);
+        toolbarStatus.SetText(
+            "Copied " + selectedObjects.count() + " scene object(s)");
+        detailLabel.SetText("");
+        return true;
+    }
+
+    /// @brief Copy and remove selected objects as one undoable edit.
+    expose override func CutSelectedSceneObjects() -> Boolean {
+        var count = selectedObjects.count();
+        if CopySelectedSceneObjects() == false { return false; }
+        if RemoveSelectedSceneObjects() == false {
+            detailLabel.SetText(
+                "The objects were copied, but Studio could not remove them.");
+            return false;
+        }
+        toolbarStatus.SetText("Cut " + count + " scene object(s)");
+        return true;
+    }
+
+    /// @brief Paste typed 2D objects into this scene as one history action.
+    /// @details Source metadata and custom null/bool/int/float/string values are
+    ///          reconstructed through SceneDocument's typed APIs. Any rejected
+    ///          object restores the exact pre-paste canonical snapshot.
+    expose override func PasteSceneObjectsFromClipboard() -> Boolean {
+        if scene == null or currentDoc == null { return false; }
+        var payload = scene_clipboard.Decode(GUI.ClipboardText.GetText());
+        if payload.valid == false {
+            toolbarStatus.SetText("Nothing pasted");
+            detailLabel.SetText(payload.error);
+            return false;
+        }
+        if payload.kind != "2d" {
+            toolbarStatus.SetText("Nothing pasted");
+            detailLabel.SetText(
+                "Clipboard contains 3D nodes. Paste them into a 3D scene.");
+            return false;
+        }
+        var parsed = SceneDocument.LoadJsonResult(payload.content);
+        if parsed.IsOk == false {
+            toolbarStatus.SetText("Nothing pasted");
+            detailLabel.SetText(
+                "Clipboard contains invalid or unsupported 2D scene data.");
+            return false;
+        }
+        var source = parsed.Unwrap() as SceneDocument;
+        var sourceSelection = scene_selection.Normalize(
+            payload.indices, source.ObjectCount(), payload.primary);
+        if sourceSelection.count() != payload.indices.count()
+           or payload.primary < 0
+           or payload.primary >= source.ObjectCount() {
+            toolbarStatus.SetText("Nothing pasted");
+            detailLabel.SetText(
+                "Clipboard object identities no longer match its scene data.");
+            return false;
+        }
+
+        var snapshot = currentSerialized;
+        var previousSelection = selectedObjects;
+        var previousPrimary = selectedObject;
+        var pasted: List[Integer] = [];
+        var pastedPrimary = -1;
+        var index = 0;
+        while index < sourceSelection.count() {
+            var sourceIndex = sourceSelection.get(index);
+            var destination = CopyObjectFromScene(source, sourceIndex);
+            if destination < 0 {
+                RestoreSceneSnapshot(snapshot);
+                selectedObjects = previousSelection;
+                selectedObject = previousPrimary;
+                RefreshInspector();
+                toolbarStatus.SetText("Paste rolled back");
+                detailLabel.SetText(
+                    "Studio could not reconstruct every copied object. "
+                    + "No scene data was changed.");
+                return false;
+            }
+            pasted.add(destination);
+            if sourceIndex == payload.primary { pastedPrimary = destination; }
+            index = index + 1;
+        }
+        index = 0;
+        while index < sourceSelection.count() {
+            var sourceParent =
+                source.ObjectParent(sourceSelection.get(index));
+            var parentSelectionIndex =
+                IntegerIndexOf(sourceSelection, sourceParent);
+            if parentSelectionIndex >= 0
+               and scene.TrySetObjectParent(
+                      pasted.get(index),
+                      pasted.get(parentSelectionIndex)) == false {
+                RestoreSceneSnapshot(snapshot);
+                selectedObjects = previousSelection;
+                selectedObject = previousPrimary;
+                RefreshInspector();
+                toolbarStatus.SetText("Paste rolled back");
+                detailLabel.SetText(
+                    "Studio could not restore the copied object hierarchy. "
+                    + "No scene data was changed.");
+                return false;
+            }
+            index = index + 1;
+        }
+        if pastedPrimary < 0 and pasted.count() > 0 {
+            pastedPrimary = pasted.get(0);
+        }
+        selectedObjects = pasted;
+        selectedObject = pastedPrimary;
+        selectedObjectProperty = -1;
+        var message = "Pasted " + pasted.count() + " scene objects";
+        if pasted.count() == 1 { message = "Pasted scene object"; }
+        if pasted.count() == 0 or CommitScene(message) == false {
+            RestoreSceneSnapshot(snapshot);
+            selectedObjects = previousSelection;
+            selectedObject = previousPrimary;
+            RefreshInspector();
+            toolbarStatus.SetText("Paste rolled back");
+            detailLabel.SetText(
+                "The pasted objects could not be committed. "
+                + "No scene data was changed.");
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Reconstruct one object from another loaded scene.
+    hide override func CopyObjectFromScene(source: SceneDocument,
+                                  sourceIndex: Integer) -> Integer {
+        if scene == null or source == null
+           or sourceIndex < 0 or sourceIndex >= source.ObjectCount() {
+            return -1;
+        }
+        var nextId = UniqueObjectId(
+            source.ObjectId(sourceIndex) + "-copy");
+        var destination = scene.AddObject(
+            source.ObjectType(sourceIndex),
+            nextId,
+            source.ObjectX(sourceIndex) + scene.TileWidth,
+            source.ObjectY(sourceIndex) + scene.TileHeight);
+        if destination < 0 { return -1; }
+
+        var keys = source.ObjectKeys(sourceIndex);
+        var keyIndex = 0;
+        while keyIndex < Seq.get_Count(keys) {
+            var key = Seq.GetStr(keys, keyIndex);
+            var kind = source.ObjectPropertyKind(sourceIndex, key);
+            if kind == "string" {
+                scene.ObjectSetStr(
+                    destination, key,
+                    source.ObjectGetStr(sourceIndex, key, ""));
+            } else if kind == "int" {
+                scene.ObjectSetInt(
+                    destination, key,
+                    source.ObjectGetInt(sourceIndex, key, 0));
+            } else if kind == "float" {
+                scene.ObjectSetFloat(
+                    destination, key,
+                    source.ObjectGetFloat(sourceIndex, key, 0.0));
+            } else if kind == "bool" {
+                scene.ObjectSetBool(
+                    destination, key,
+                    source.ObjectGetBool(sourceIndex, key, false));
+            } else if kind == "null" {
+                scene.ObjectSetNull(destination, key);
+            } else {
+                scene.RemoveObject(destination);
+                return -1;
+            }
+            if scene.ObjectHas(destination, key) == false
+               or scene.ObjectPropertyKind(destination, key) != kind {
+                scene.RemoveObject(destination);
+                return -1;
+            }
+            keyIndex = keyIndex + 1;
+        }
+        return destination;
+    }
+
+    /// @brief Duplicate every selected object as one lossless history action.
+    /// @return Number of duplicated objects, or zero when the action fails.
+    expose override func DuplicateSelectedSceneObjects() -> Integer {
+        if scene == null { return 0; }
+        selectedObjects = scene_selection.Normalize(
+            selectedObjects, scene.ObjectCount(), selectedObject);
+        if selectedObjects.count() == 0 { return 0; }
+
+        var snapshot = currentSerialized;
+        var previousSelection = selectedObjects;
+        var previousPrimary = selectedObject;
+        var sourceIndices = selectedObjects;
+        var sourceParents: List[Integer] = [];
+        var duplicateIds: List[String] = [];
+        var sourceIndex = 0;
+        while sourceIndex < sourceIndices.count() {
+            sourceParents.add(
+                scene.ObjectParent(sourceIndices.get(sourceIndex)));
+            duplicateIds.add("");
+            sourceIndex = sourceIndex + 1;
+        }
+        var primaryDuplicateId = "";
+        var source = scene.ObjectCount() - 1;
+        while source >= 0 {
+            if scene_selection.Contains(selectedObjects, source) {
+                var selectionPosition =
+                    IntegerIndexOf(sourceIndices, source);
+                var nextId = UniqueObjectId(
+                    scene.ObjectId(source) + "-copy");
+                var duplicate = scene.DuplicateObject(source, nextId);
+                if duplicate < 0 {
+                    selectedObjects = previousSelection;
+                    selectedObject = previousPrimary;
+                    RestoreSceneSnapshot(snapshot);
+                    detailLabel.SetText(
+                        "The selected objects could not all be duplicated. "
+                        + "No objects were changed.");
+                    return 0;
+                }
+                scene.SetObjectPosition(
+                    duplicate,
+                    scene.ObjectX(source) + scene.TileWidth,
+                    scene.ObjectY(source) + scene.TileHeight);
+                if selectionPosition >= 0 {
+                    duplicateIds.set(selectionPosition, nextId);
+                }
+                if source == previousPrimary {
+                    primaryDuplicateId = nextId;
+                }
+            }
+            source = source - 1;
+        }
+
+        sourceIndex = 0;
+        while sourceIndex < sourceIndices.count() {
+            var parentPosition = IntegerIndexOf(
+                sourceIndices, sourceParents.get(sourceIndex));
+            if parentPosition >= 0 {
+                var duplicateIndex =
+                    ObjectIndexWithId(duplicateIds.get(sourceIndex));
+                var duplicateParent = ObjectIndexWithId(
+                    duplicateIds.get(parentPosition));
+                if duplicateIndex < 0 or duplicateParent < 0
+                   or scene.TrySetObjectParent(
+                          duplicateIndex, duplicateParent) == false {
+                    selectedObjects = previousSelection;
+                    selectedObject = previousPrimary;
+                    RestoreSceneSnapshot(snapshot);
+                    detailLabel.SetText(
+                        "The selected hierarchy could not be duplicated. "
+                        + "No objects were changed.");
+                    return 0;
+                }
+            }
+            sourceIndex = sourceIndex + 1;
+        }
+
+        var duplicates: List[Integer] = [];
+        var nextPrimary = -1;
+        var objectIndex = 0;
+        while objectIndex < scene.ObjectCount() {
+            var candidateId = scene.ObjectId(objectIndex);
+            var idIndex = 0;
+            while idIndex < duplicateIds.count() {
+                if candidateId == duplicateIds.get(idIndex) {
+                    duplicates.add(objectIndex);
+                    if candidateId == primaryDuplicateId {
+                        nextPrimary = objectIndex;
+                    }
+                    break;
+                }
+                idIndex = idIndex + 1;
+            }
+            objectIndex = objectIndex + 1;
+        }
+        if nextPrimary < 0 and duplicates.count() > 0 {
+            nextPrimary = duplicates.get(0);
+        }
+        selectedObjects = duplicates;
+        selectedObject = nextPrimary;
+        selectedObjectProperty = -1;
+        var count = duplicates.count();
+        var message = "Duplicated " + count + " objects";
+        if count == 1 { message = "Duplicated scene object"; }
+        if count == 0 or CommitScene(message) == false {
+            selectedObjects = previousSelection;
+            selectedObject = previousPrimary;
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The selected objects could not be committed.");
+            return 0;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return count;
+    }
+
+    /// @brief Remove every selected object in one descending-index transaction.
+    expose override func RemoveSelectedSceneObjects() -> Boolean {
+        if scene == null { return false; }
+        selectedObjects = scene_selection.Normalize(
+            selectedObjects, scene.ObjectCount(), selectedObject);
+        var count = selectedObjects.count();
+        if count == 0 { return false; }
+
+        var snapshot = currentSerialized;
+        var previousSelection = selectedObjects;
+        var previousPrimary = selectedObject;
+        var firstRemoved = scene.ObjectCount();
+        var index = scene.ObjectCount() - 1;
+        while index >= 0 {
+            if scene_selection.Contains(selectedObjects, index) {
+                if index < firstRemoved { firstRemoved = index; }
+                scene.RemoveObject(index);
+            }
+            index = index - 1;
+        }
+
+        var remaining = scene.ObjectCount();
+        selectedObject = firstRemoved;
+        if selectedObject >= remaining { selectedObject = remaining - 1; }
+        selectedObjects = scene_selection.Single(selectedObject, remaining);
+        selectedObjectProperty = -1;
+        var message = "Removed " + count + " objects";
+        if count == 1 { message = "Removed object"; }
+        if CommitScene(message) == false {
+            selectedObjects = previousSelection;
+            selectedObject = previousPrimary;
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The selected objects could not be removed.");
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Translate every selected object by one pixel delta and commit once.
+    expose override func TranslateSelectedSceneObjects(deltaX: Integer,
+                                              deltaY: Integer) -> Boolean {
+        if scene == null or (deltaX == 0 and deltaY == 0) {
+            return false;
+        }
+        selectedObjects = scene_selection.Normalize(
+            selectedObjects, scene.ObjectCount(), selectedObject);
+        if selectedObjects.count() == 0 { return false; }
+        var snapshot = currentSerialized;
+        if TranslateSelectedObjectsUncommitted(deltaX, deltaY) == false {
+            return false;
+        }
+        var count = selectedObjects.count();
+        var message = "Moved " + count + " objects";
+        if count == 1 { message = "Moved scene object"; }
+        if CommitScene(message) == false {
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The selected object move could not be committed.");
+            return false;
+        }
+        RefreshInspector();
+        return true;
+    }
+
+    /// @brief Apply one group delta without creating an intermediate history row.
+    hide override func TranslateSelectedObjectsUncommitted(deltaX: Integer,
+                                                  deltaY: Integer) -> Boolean {
+        if scene == null or (deltaX == 0 and deltaY == 0) {
+            return false;
+        }
+        var changed = false;
+        var selectionIndex = 0;
+        while selectionIndex < selectedObjects.count() {
+            var objectIndex = selectedObjects.get(selectionIndex);
+            if objectIndex >= 0 and objectIndex < scene.ObjectCount() {
+                scene.SetObjectPosition(
+                    objectIndex,
+                    scene.ObjectX(objectIndex) + deltaX,
+                    scene.ObjectY(objectIndex) + deltaY);
+                changed = true;
+            }
+            selectionIndex = selectionIndex + 1;
+        }
+        if changed { renderDirty = true; }
+        return changed;
+    }
+
+    /// @brief Align or distribute the selected authored point positions once.
+    /// @details Align uses selectedObject as the explicit anchor. Distribution
+    ///          leaves both extrema fixed and deterministically rounds every
+    ///          intermediate integer position. Rejected/no-op layouts do not
+    ///          create history.
+    expose override func ArrangeSelectedSceneObjects(operation: Integer) -> Boolean {
+        if scene == null or scene_layout_2d.IsOperation(operation) == false {
+            return false;
+        }
+        selectedObjects = scene_selection.Normalize(
+            selectedObjects, scene.ObjectCount(), selectedObject);
+        var minimum = scene_layout_2d.MinimumSelection(operation);
+        if selectedObjects.count() < minimum
+           or selectedObject < 0
+           or selectedObject >= scene.ObjectCount() {
+            detailLabel.SetText(
+                scene_layout_2d.OperationLabel(operation)
+                + " needs at least " + minimum + " selected objects.");
+            return false;
+        }
+
+        var snapshot = currentSerialized;
+        var previousSelection = selectedObjects;
+        var previousPrimary = selectedObject;
+        var useX = scene_layout_2d.UsesX(operation);
+        var changed = false;
+        if scene_layout_2d.IsDistribution(operation) {
+            var ordered = scene_layout_2d.OrderedIndices(
+                scene, selectedObjects, useX);
+            if ordered.count() < minimum { return false; }
+            var minimumCoordinate = scene_layout_2d.Coordinate(
+                scene, ordered.get(0), useX);
+            var maximumCoordinate = scene_layout_2d.Coordinate(
+                scene, ordered.get(ordered.count() - 1), useX);
+            var position = 0;
+            while position < ordered.count() {
+                var objectIndex = ordered.get(position);
+                var target = scene_layout_2d.DistributedCoordinate(
+                    minimumCoordinate,
+                    maximumCoordinate,
+                    position,
+                    ordered.count());
+                var current = scene_layout_2d.Coordinate(
+                    scene, objectIndex, useX);
+                if current != target {
+                    if useX {
+                        scene.SetObjectPosition(
+                            objectIndex, target, scene.ObjectY(objectIndex));
+                    } else {
+                        scene.SetObjectPosition(
+                            objectIndex, scene.ObjectX(objectIndex), target);
+                    }
+                    changed = true;
+                }
+                position = position + 1;
+            }
+        } else {
+            var anchor = scene_layout_2d.Coordinate(
+                scene, selectedObject, useX);
+            var selectionIndex = 0;
+            while selectionIndex < selectedObjects.count() {
+                var objectIndex = selectedObjects.get(selectionIndex);
+                var current = scene_layout_2d.Coordinate(
+                    scene, objectIndex, useX);
+                if current != anchor {
+                    if useX {
+                        scene.SetObjectPosition(
+                            objectIndex, anchor, scene.ObjectY(objectIndex));
+                    } else {
+                        scene.SetObjectPosition(
+                            objectIndex, scene.ObjectX(objectIndex), anchor);
+                    }
+                    changed = true;
+                }
+                selectionIndex = selectionIndex + 1;
+            }
+        }
+
+        if changed == false {
+            detailLabel.SetText(
+                "The selection already satisfies "
+                + scene_layout_2d.OperationLabel(operation) + ".");
+            return false;
+        }
+        var message = scene_layout_2d.OperationLabel(operation)
+            + " (" + selectedObjects.count() + " objects)";
+        if CommitScene(message) == false {
+            selectedObjects = previousSelection;
+            selectedObject = previousPrimary;
+            RestoreSceneSnapshot(snapshot);
+            detailLabel.SetText(
+                "The selected object layout could not be committed.");
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshInspector();
+        return true;
+    }
+}

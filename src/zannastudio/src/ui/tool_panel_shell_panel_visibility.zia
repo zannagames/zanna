@@ -1,0 +1,316 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_panel_visibility.zia
+// Purpose: Focused panel visibility behavior for ToolPanelShell.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia, zannastudio/src/ui/tool_panel_shell_panel_layout.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_panel_visibility;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_panel_layout" as PreviousLayer;
+
+class ToolPanelVisibilityLayer extends PreviousLayer.ToolPanelPanelLayoutLayer {
+
+    /// @brief Prepare one group for selection without hiding sibling groups.
+    hide override func PrepareToolPanel(kind: Integer,
+                               minimumBottomHeight: Number) {
+        var id = tool_panel_model.TabIdForPanelKind(kind);
+        var location = toolPanelGroups.LocationForId(id);
+        var root = ToolGroupRootAt(location);
+        var bar = ToolTabBarAt(location);
+        var tab = ToolTabForKind(kind);
+        if id == tool_panel_model.TAB_ID_NONE
+           or root == null or bar == null or tab == null {
+            return;
+        }
+
+        HideToolPanelsAt(location);
+        root.SetVisible(true);
+        bar.SetVisible(true);
+        ExpandToolDockAt(location, minimumBottomHeight);
+        bar.SetActive(tab);
+        SetActiveToolPanelKindAt(location, kind);
+        SetActiveToolPanelKind(kind);
+        UpdateToolGroupLabel(location, kind);
+    }
+
+    /// @brief Keep auxiliary headers specific and useful at narrow widths.
+    hide override func UpdateToolGroupLabel(location: Integer, kind: Integer) {
+        if location == dockLocation { return; }
+        if location == workspace_dock.DOCK_FLOATING {
+            if floatingToolMoveHandle != null and !floatingPanelMoving {
+                floatingToolMoveHandle.SetText(
+                    DefaultFloatingToolHeaderText());
+                floatingToolMoveHandle.SetAccessibleName(
+                    "Move floating tool window, "
+                    + tool_panel_model.PanelName(kind) + " selected");
+            }
+            return;
+        }
+        var prefix = "Bottom";
+        var label = bottomToolGroupLabel;
+        if location == workspace_dock.DOCK_LEFT {
+            prefix = "Left";
+            label = leftToolGroupLabel;
+        } else if location == workspace_dock.DOCK_RIGHT {
+            prefix = "Right";
+            label = rightToolGroupLabel;
+        }
+        if label == null { return; }
+        var text = prefix + " · " + tool_panel_model.PanelName(kind);
+        label.SetText(text);
+        label.SetAccessibleName(
+            prefix + " tool group, " + tool_panel_model.PanelName(kind));
+    }
+
+    /// @brief Hide and collapse one complete group while siblings stay live.
+    hide override func HideToolGroupAt(location: Integer) {
+        HideToolPanelsAt(location);
+        var bar = ToolTabBarAt(location);
+        var root = ToolGroupRootAt(location);
+        if bar != null { bar.SetVisible(false); }
+        if root != null { root.SetVisible(false); }
+        SetActiveToolPanelKindAt(location, tool_panel_model.PANEL_NONE);
+        CollapseToolDockAt(location);
+        var activeId =
+            tool_panel_model.TabIdForPanelKind(activeToolPanelKind);
+        if toolPanelGroups.LocationForId(activeId) == location {
+            SetActiveToolPanelKind(AnyActiveToolPanelKind());
+        }
+    }
+
+    /// @brief Hide every tool surface across all physical dock groups.
+    hide override func HideAllToolPanels() {
+        HideToolPanelSurface(tool_panel_model.PANEL_PROBLEMS);
+        HideToolPanelSurface(tool_panel_model.PANEL_OUTPUT);
+        HideToolPanelSurface(tool_panel_model.PANEL_SEARCH);
+        HideToolPanelSurface(tool_panel_model.PANEL_REFERENCES);
+        HideToolPanelSurface(tool_panel_model.PANEL_VARIABLES);
+        HideToolPanelSurface(tool_panel_model.PANEL_CALL_STACK);
+        HideToolPanelSurface(tool_panel_model.PANEL_DEBUG);
+        HideToolPanelSurface(tool_panel_model.PANEL_TERMINAL);
+    }
+
+    /// @brief Hide the entire panel area while retaining its buffered content.
+    /// @details Any later panel command reopens the current dock; no terminal,
+    ///          diagnostic, search, or output state is destroyed.
+    expose override func HidePanelArea() {
+        HideAllToolPanels();
+        if toolTabBar != null { toolTabBar.SetVisible(false); }
+        if leftToolTabBar != null { leftToolTabBar.SetVisible(false); }
+        if bottomToolTabBar != null { bottomToolTabBar.SetVisible(false); }
+        if rightToolTabBar != null { rightToolTabBar.SetVisible(false); }
+        if floatingToolTabBar != null {
+            floatingToolTabBar.SetVisible(false);
+        }
+        if panelRoot != null { panelRoot.SetVisible(false); }
+        if leftToolGroupRoot != null {
+            leftToolGroupRoot.SetVisible(false);
+        }
+        if bottomToolGroupRoot != null {
+            bottomToolGroupRoot.SetVisible(false);
+        }
+        if rightToolGroupRoot != null {
+            rightToolGroupRoot.SetVisible(false);
+        }
+        if floatingToolGroupRoot != null {
+            floatingToolGroupRoot.SetVisible(false);
+        }
+        if floatingToolPanel != null {
+            floatingToolPanel.SetVisible(false);
+        }
+        activeLeftToolPanelKind = tool_panel_model.PANEL_NONE;
+        activeBottomToolPanelKind = tool_panel_model.PANEL_NONE;
+        activeRightToolPanelKind = tool_panel_model.PANEL_NONE;
+        activeFloatingToolPanelKind = tool_panel_model.PANEL_NONE;
+        SetActiveToolPanelKind(tool_panel_model.PANEL_NONE);
+        CollapseAllDockSplits();
+    }
+
+    /// @brief Temporarily reclaim every outer tool dock for a focused surface.
+    /// @details Group membership, order, split restore positions, and each
+    ///          independent group's selected panel remain unchanged.
+    expose override func EnterFocusPresentation() {
+        if focusPresentationActive { return; }
+        focusRestoreLeftToolPanelKind = activeLeftToolPanelKind;
+        focusRestoreBottomToolPanelKind = activeBottomToolPanelKind;
+        focusRestoreRightToolPanelKind = activeRightToolPanelKind;
+        focusRestoreFloatingToolPanelKind = activeFloatingToolPanelKind;
+        focusRestoreActiveToolPanelKind = activeToolPanelKind;
+        focusPresentationActive = true;
+        HidePanelArea();
+    }
+
+    /// @brief Restore every tool group captured by EnterFocusPresentation.
+    expose override func ExitFocusPresentation() {
+        if focusPresentationActive == false { return; }
+        focusPresentationActive = false;
+        if focusRestoreLeftToolPanelKind != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(focusRestoreLeftToolPanelKind);
+        }
+        if focusRestoreBottomToolPanelKind != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(focusRestoreBottomToolPanelKind);
+        }
+        if focusRestoreRightToolPanelKind != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(focusRestoreRightToolPanelKind);
+        }
+        if focusRestoreFloatingToolPanelKind != tool_panel_model.PANEL_NONE {
+            ShowToolPanelKind(focusRestoreFloatingToolPanelKind);
+        }
+        if focusRestoreActiveToolPanelKind != tool_panel_model.PANEL_NONE {
+            SetActiveToolPanelKind(focusRestoreActiveToolPanelKind);
+        }
+        focusRestoreLeftToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreBottomToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreRightToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreFloatingToolPanelKind = tool_panel_model.PANEL_NONE;
+        focusRestoreActiveToolPanelKind = tool_panel_model.PANEL_NONE;
+    }
+
+    /// @brief Return whether tool docks are hidden by focus presentation.
+    expose override func IsFocusPresentationActive() -> Boolean {
+        return focusPresentationActive;
+    }
+
+    /// @brief Return the durable stable ID of the visible tool panel.
+    /// @return A built-in tab ID, or "none" while the dock is hidden.
+    expose override func GetActiveToolPanelId() -> String {
+        if focusPresentationActive {
+            return tool_panel_model.TabIdForPanelKind(
+                focusRestoreActiveToolPanelKind);
+        }
+        return tool_panel_model.TabIdForPanelKind(activeToolPanelKind);
+    }
+
+    /// @brief Restore one durable panel selection without relying on tab order.
+    /// @details Unknown/future IDs collapse safely instead of choosing a nearby
+    ///          visual tab. Panel contents remain owned by their live controllers.
+    expose override func SetActiveToolPanelId(id: String) {
+        var kind = tool_panel_model.PanelKindForTabId(id);
+        if kind == tool_panel_model.PANEL_PROBLEMS {
+            ShowProblemsPanel();
+        } else if kind == tool_panel_model.PANEL_OUTPUT {
+            ShowOutputPanel();
+        } else if kind == tool_panel_model.PANEL_SEARCH {
+            ShowSearchPanel();
+        } else if kind == tool_panel_model.PANEL_REFERENCES {
+            ShowReferencesPanel();
+        } else if kind == tool_panel_model.PANEL_VARIABLES {
+            ShowVariablesPanel();
+        } else if kind == tool_panel_model.PANEL_CALL_STACK {
+            ShowCallStackPanel();
+        } else if kind == tool_panel_model.PANEL_DEBUG {
+            ShowDebugPanel();
+        } else if kind == tool_panel_model.PANEL_TERMINAL {
+            ShowTerminalPanel();
+        } else {
+            HidePanelArea();
+        }
+    }
+
+    /// @brief Show the Problems panel and select its tab.
+    expose override func ShowProblemsPanel() {
+        if focusPresentationActive { return; }
+        var filterHadFocus =
+            problemsFilterInput != null and problemsFilterInput.IsFocused();
+        ApplyResponsiveProblemsToolbar();
+        PrepareToolPanel(tool_panel_model.PANEL_PROBLEMS, 0.0);
+        if problemsPanel != null { problemsPanel.SetVisible(true); }
+        diagListBox.SetVisible(true);
+        if filterHadFocus { problemsFilterInput.Focus(); }
+        UpdateProblemsToolbarState();
+    }
+
+    /// @brief Hide Problems and select a fallback panel if content remains.
+    expose override func HideProblemsPanel() {
+        var location = toolPanelGroups.LocationForId(
+            tool_panel_model.TAB_ID_PROBLEMS);
+        var wasSelected =
+            ActiveToolPanelKindAt(location)
+                == tool_panel_model.PANEL_PROBLEMS;
+        if problemsPanel != null { problemsPanel.SetVisible(false); }
+        diagListBox.SetVisible(false);
+        if wasSelected { ShowFallbackToolPanelAt(location); }
+    }
+
+    /// @brief Show the Output panel and select its tab.
+    expose override func ShowOutputPanel() {
+        if focusPresentationActive { return; }
+        var filterHadFocus =
+            outputFilterInput != null and outputFilterInput.IsFocused();
+        ApplyResponsiveOutputToolbar();
+        PrepareToolPanel(tool_panel_model.PANEL_OUTPUT, 0.0);
+        if outputPanel != null { outputPanel.SetVisible(true); }
+        if outputPaneMode {
+            outputPane.SetVisible(true);
+        } else {
+            outputListBox.SetVisible(true);
+        }
+        if filterHadFocus { outputFilterInput.Focus(); }
+        UpdateOutputToolbarState();
+    }
+
+    /// @brief Hide Output and select a fallback panel if content remains.
+    expose override func HideOutputPanel() {
+        var location = toolPanelGroups.LocationForId(
+            tool_panel_model.TAB_ID_OUTPUT);
+        var wasSelected =
+            ActiveToolPanelKindAt(location)
+                == tool_panel_model.PANEL_OUTPUT;
+        if outputPanel != null { outputPanel.SetVisible(false); }
+        outputPane.SetVisible(false);
+        outputListBox.SetVisible(false);
+        if wasSelected { ShowFallbackToolPanelAt(location); }
+    }
+
+    /// @brief Show the Search panel and select its tab.
+    /// @details A queued TabBar change can replay this call one frame after an
+    ///          explicit command focused an input. Preserve that ownership
+    ///          across the temporary HideAllToolPanels visibility transition.
+    expose override func ShowSearchPanel() {
+        if focusPresentationActive { return; }
+        var queryHadFocus =
+            searchQueryInput != null and searchQueryInput.IsFocused();
+        var replaceHadFocus =
+            searchReplaceInput != null and searchReplaceInput.IsFocused();
+        var kindsHadFocus =
+            searchKindsInput != null and searchKindsInput.IsFocused();
+        var includeHadFocus =
+            searchIncludeInput != null and searchIncludeInput.IsFocused();
+        var excludeHadFocus =
+            searchExcludeInput != null and searchExcludeInput.IsFocused();
+        ApplyResponsiveSearchControls();
+        PrepareToolPanel(tool_panel_model.PANEL_SEARCH,
+                         SearchPanelMinimumHeight());
+        searchPanel.SetVisible(true);
+        searchListBox.SetVisible(true);
+        if queryHadFocus { searchQueryInput.Focus(); }
+        else if replaceHadFocus { searchReplaceInput.Focus(); }
+        else if kindsHadFocus { searchKindsInput.Focus(); }
+        else if includeHadFocus { searchIncludeInput.Focus(); }
+        else if excludeHadFocus { searchExcludeInput.Focus(); }
+    }
+}

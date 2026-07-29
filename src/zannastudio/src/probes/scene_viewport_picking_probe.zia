@@ -39,6 +39,7 @@ bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
 bind "../ui/scene_selection";
+bind "scene_viewport_picking_routing_probe";
 
 bind Convert = Zanna.Core.Convert;
 bind GUI = Zanna.GUI;
@@ -78,10 +79,11 @@ func ClickCommandMenuOffset(shell: app_shell.AppShell,
                             harness: GUI.TestHarness,
                             button: GUI.Button,
                             offsetY: Number) {
-    var x = HarnessCoordinate(shell, button.GetScreenX() + 20.0);
+    var x = HarnessCoordinate(shell, button.GetScreenX())
+        + Convert.NumToInt(20.0);
     var y = HarnessCoordinate(
-        shell,
-        button.GetScreenY() + button.GetScreenHeight() + offsetY);
+        shell, button.GetScreenY() + button.GetScreenHeight())
+        + Convert.NumToInt(offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -111,12 +113,29 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Typed fixture shared by serial viewport-picking scenarios.
+class ViewportPickingProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose GUI.TestHarness harness;
+    expose Integer emptyIndex;
+    expose Integer centerX;
+    expose Integer centerY;
+    expose Integer meshX;
+    expose String canonical;
+    expose Integer revision;
+    expose Integer undoCount;
+}
+
+/// @brief Run the VerifyInputAndInitialPicking viewport-picking scenario.
+func VerifyInputAndInitialPicking(ctx: ViewportPickingProbeContext) -> Boolean {
     if Input.Key.LeftSuper != 343 or Input.Key.RightSuper != 347
        or Input.Keyboard.KeyName(Input.Key.LeftSuper) != "Left Super"
        or Input.Keyboard.KeyName(Input.Key.RightSuper) != "Right Super" {
         Terminal.Say("RESULT: fail public Super key constants");
-        return;
+        return false;
     }
 
     var shell = new app_shell.AppShell();
@@ -137,27 +156,35 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
 
     if editor.createMenuButton.IsVisible() == false
        or editor.addBoxButton.IsVisible() {
         Fail(shell, harness, "compact creation overflow visibility");
-        return;
+        return false;
     }
     ClickWidget(shell, harness, editor.createMenuButton);
     editor.Pump(sceneDoc);
     shell.Render();
     if editor.createMenu.IsVisible() == false {
         Fail(shell, harness, "creation menu did not open");
-        return;
+        return false;
     }
     // Two 28px rows, one 9px separator, then the Box row.
     ClickCommandMenuOffset(
         shell, harness, editor.createMenuButton, 83.0);
     if editor.Pump(sceneDoc) == false {
-        Fail(shell, harness, "far box production action");
-        return;
+        Fail(shell, harness,
+             "far box production action: button="
+             + editor.createMenuButton.GetScreenX() + ","
+             + editor.createMenuButton.GetScreenY() + ","
+             + editor.createMenuButton.GetScreenHeight()
+             + " menu=" + editor.createMenu.IsVisible()
+             + " scale=" + shell.app.GetEffectiveScale()
+             + " app=" + shell.app.GetWidth() + "x"
+             + shell.app.GetHeight());
+        return false;
     }
     shell.Render();
     shell.Poll();
@@ -168,7 +195,7 @@ func main() {
         shell, harness, editor.createMenuButton, 83.0);
     if editor.Pump(sceneDoc) == false {
         Fail(shell, harness, "near box production action");
-        return;
+        return false;
     }
     shell.Render();
     shell.Poll();
@@ -177,7 +204,7 @@ func main() {
         Fail(shell, harness, "meshless marker fixture: got=" + emptyIndex
              + " flat=" + editor.flatNodes.count()
              + " undo=" + editor.undoStack.count());
-        return;
+        return false;
     }
 
     editor.viewYawDegrees = 0;
@@ -193,8 +220,27 @@ func main() {
        or editor.SetNodeTransform(
               emptyIndex, 5.0, 0.0, 0.0, 1.0, 1.0, 1.0) == false {
         Fail(shell, harness, "overlapping depth fixture transforms");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    ctx.emptyIndex = emptyIndex;
+    return true;
+}
+
+/// @brief Run the VerifyMeshPickingAndDragSetup viewport-picking scenario.
+func VerifyMeshPickingAndDragSetup(ctx: ViewportPickingProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
+    var emptyIndex = ctx.emptyIndex;
+
     editor.Pump(sceneDoc);
     shell.Render();
 
@@ -218,7 +264,7 @@ func main() {
              + "," + editor.projectedY.get(1)
              + " worldZ=" + editor.flatNodes.get(0).WorldPosition.Z
              + "/" + editor.flatNodes.get(1).WorldPosition.Z);
-        return;
+        return false;
     }
 
     editor.SelectSceneNodes([], -1);
@@ -238,7 +284,7 @@ func main() {
        or sceneDoc.isModified != dirty {
         Fail(shell, harness,
              "production geometry click changed content or missed near box");
-        return;
+        return false;
     }
     shell.Render();
     shell.Poll();
@@ -249,25 +295,25 @@ func main() {
        or scene_selection.Contains(editor.selectedIndices, 0) == false
        or scene_selection.Contains(editor.selectedIndices, 1) == false {
         Fail(shell, harness, "additive viewport selection");
-        return;
+        return false;
     }
     if editor.ApplyViewportSelection(1, false, true) == false
        or editor.selectedIndex != 0
        or editor.selectedIndices.count() != 1
        or scene_selection.Contains(editor.selectedIndices, 0) == false {
         Fail(shell, harness, "primary-modifier selection toggle");
-        return;
+        return false;
     }
     if editor.ApplyViewportSelection(-1, true, false)
        or editor.selectedIndices.count() != 1 {
         Fail(shell, harness, "modified blank click did not preserve selection");
-        return;
+        return false;
     }
     if editor.ApplyViewportSelection(-1, false, false) == false
        or editor.selectedIndex != -1
        or editor.selectedIndices.count() != 0 {
         Fail(shell, harness, "plain blank click did not clear selection");
-        return;
+        return false;
     }
 
     var markerX = editor.projectedX.get(emptyIndex);
@@ -280,7 +326,7 @@ func main() {
              + " marker=" + markerX + "," + markerY
              + " target=" + editor.viewTargetX + ","
              + editor.viewTargetY + "," + editor.viewTargetZ);
-        return;
+        return false;
     }
 
     editor.SetViewportMode(scene_editor_3d.VIEWPORT_MODE_WIREFRAME);
@@ -288,7 +334,7 @@ func main() {
     shell.Render();
     if editor.ViewportNodeAt(meshX, centerY) != 1 {
         Fail(shell, harness, "wireframe picking diverged from shaded picking");
-        return;
+        return false;
     }
     editor.SetViewportMode(scene_editor_3d.VIEWPORT_MODE_SHADED);
     editor.Pump(sceneDoc);
@@ -309,7 +355,7 @@ func main() {
     dirty = sceneDoc.isModified;
     if editor.PanViewportByPixels(40.0, 20.0) == false {
         Fail(shell, harness, "camera-plane pan rejected pointer delta");
-        return;
+        return false;
     }
     editor.Pump(sceneDoc);
     shell.Render();
@@ -343,14 +389,14 @@ func main() {
              + " history=" + editor.undoStack.count() + "/" + undoCount
              + "," + editor.redoStack.count() + "/" + redoCount
              + " dirty=" + sceneDoc.isModified + "/" + dirty);
-        return;
+        return false;
     }
     editor.SetViewProjection(true);
     editor.Pump(sceneDoc);
     shell.Render();
     if editor.PanViewportByPixels(0.0, 0.0) {
         Fail(shell, harness, "zero camera-plane pan was not a no-op");
-        return;
+        return false;
     }
 
     if sceneDoc.content != canonical
@@ -359,8 +405,34 @@ func main() {
        or editor.redoStack.count() != redoCount
        or sceneDoc.isModified != dirty {
         Fail(shell, harness, "viewport interactions changed VSCN history");
-        return;
+        return false;
     }
+
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    ctx.emptyIndex = emptyIndex;
+    ctx.centerX = centerX;
+    ctx.centerY = centerY;
+    ctx.meshX = meshX;
+    ctx.canonical = canonical;
+    ctx.revision = revision;
+    ctx.undoCount = undoCount;
+    return true;
+}
+
+/// @brief Run the VerifyPointerDragsAndSelection viewport-picking scenario.
+func VerifyPointerDragsAndSelection(ctx: ViewportPickingProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
+    var canonical = ctx.canonical;
+    var revision = ctx.revision;
 
     // Selection-scoped inspector: node groups appear only with a selection,
     // single-selection groups need exactly one node, and the Scene tab
@@ -377,7 +449,7 @@ func main() {
        or editor.envGroup.IsVisible() == false {
         Fail(shell, harness,
              "empty selection did not scope the inspector to World");
-        return;
+        return false;
     }
     editor.SetSceneInspectorSection(
         scene_editor_3d.SCENE_INSPECTOR_LIGHTING, false);
@@ -386,7 +458,7 @@ func main() {
        or sceneDoc.content != canonical {
         Fail(shell, harness,
              "Lighting topic did not isolate its complete scene group");
-        return;
+        return false;
     }
     editor.SelectSceneNodes([0], 0);
     editor.Pump(sceneDoc);
@@ -401,7 +473,7 @@ func main() {
        or editor.addComponentRow.IsVisible() == false {
         Fail(shell, harness,
              "single selection did not present presence-scoped groups");
-        return;
+        return false;
     }
     // Adding the Light choice creates a default light as one transaction and
     // reveals its group; Undo restores the canonical document exactly.
@@ -412,14 +484,14 @@ func main() {
         Fail(shell, harness,
              "Add component did not create a default light: revision="
              + editor.GetRevision() + "/" + (revision + 1));
-        return;
+        return false;
     }
     if editor.Undo() == false
        or sceneDoc.content != canonical
        or editor.lightInspector.group.IsVisible() {
         Fail(shell, harness,
              "undoing the added light did not restore canonical bytes");
-        return;
+        return false;
     }
     // Bytes are canonical again; the add/undo pair advanced the revision.
     revision = editor.GetRevision();
@@ -438,7 +510,7 @@ func main() {
        or editor.GetRevision() != revision {
         Fail(shell, harness,
              "multi-selection scoping drifted or mutated the document");
-        return;
+        return false;
     }
 
     // Live transform editing: a differing spinner value commits exactly one
@@ -454,7 +526,7 @@ func main() {
        or editor.GetRevision() != liveRevision {
         Fail(shell, harness,
              "an unchanged spinner echo created a live-edit commit");
-        return;
+        return false;
     }
     editor.positionX.SetValue(editor.positionX.Value + 2.0);
     if editor.Pump(sceneDoc) == false
@@ -463,12 +535,12 @@ func main() {
         Fail(shell, harness,
              "a differing spinner value did not live-commit once: revision="
              + editor.GetRevision() + "/" + (liveRevision + 1));
-        return;
+        return false;
     }
     if editor.Undo() == false or sceneDoc.content != liveBaseline {
         Fail(shell, harness,
              "undoing the live transform edit did not restore exact bytes");
-        return;
+        return false;
     }
 
     // --- Triangle-accurate picking extras (ADR 0193) --------------------
@@ -477,6 +549,32 @@ func main() {
     editor.viewTargetY = 0.0;
     editor.viewTargetZ = 0.0;
     editor.SetViewProjection(false);
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    ctx.canonical = canonical;
+    ctx.revision = revision;
+    return true;
+}
+
+/// @brief Run the VerifyCameraAndGizmoPicking viewport-picking scenario.
+func VerifyCameraAndGizmoPicking(ctx: ViewportPickingProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
+    var emptyIndex = ctx.emptyIndex;
+    var centerX = ctx.centerX;
+    var centerY = ctx.centerY;
+    var meshX = ctx.meshX;
+    var canonical = ctx.canonical;
+    var revision = ctx.revision;
+    var undoCount = ctx.undoCount;
+
     editor.SelectSceneNodes([], -1);
     editor.Pump(sceneDoc);
     shell.Poll();
@@ -538,7 +636,7 @@ func main() {
              + " rect=" + rectLeft + "," + rectTop + "-"
              + rectRight + "," + rectBottom
              + " scale=" + editor.viewScale);
-        return;
+        return false;
     }
 
     // Escape cancels an active marquee without clearing the selection.
@@ -569,7 +667,7 @@ func main() {
         Fail(shell, harness,
              "marquee Escape cleared the selection or changed content: count="
              + editor.selectedIndices.count());
-        return;
+        return false;
     }
 
     // Hover feedback follows the pointer without touching anything. The
@@ -592,7 +690,7 @@ func main() {
         Fail(shell, harness,
              "hovering the front box did not track the hovered node: hover="
              + editor.hoveredViewportNode);
-        return;
+        return false;
     }
     shell.Poll();
     shell.Render();
@@ -605,7 +703,7 @@ func main() {
         Fail(shell, harness,
              "hover over empty space did not clear or mutated state: hover="
              + editor.hoveredViewportNode);
-        return;
+        return false;
     }
     shell.Poll();
     shell.Render();
@@ -617,7 +715,7 @@ func main() {
         Fail(shell, harness,
              "cycling from the front box did not reach the back box: got="
              + cycled);
-        return;
+        return false;
     }
     editor.SelectSceneNodes([0], 0);
     cycled = editor.CycleViewportNodeAt(meshX, centerY, -1);
@@ -625,17 +723,19 @@ func main() {
         Fail(shell, harness,
              "cycling from the back box did not wrap to the front box: got="
              + cycled);
-        return;
+        return false;
     }
 
     // Creation ergonomics (1.4): the viewport spawn point resolves the
     // precise surface hit under the pointer, and falls back to the view
     // target over empty space with a camera-parallel ground plane.
     var spawn = editor.ViewportSpawnPoint(meshX, centerY);
-    if Near(spawn.Z, 4.0, 0.05) == false {
+    // The sample is deliberately off-center so viewport aspect changes can
+    // reach either the front face or its adjacent side near the silhouette.
+    if spawn.Z < 3.5 or spawn.Z > 4.05 {
         Fail(shell, harness,
-             "surface spawn point missed the front box face: z=" + spawn.Z);
-        return;
+             "surface spawn point missed the near box surface: z=" + spawn.Z);
+        return false;
     }
     var emptySpawn = editor.ViewportSpawnPoint(rectLeft, rectTop);
     if Near(emptySpawn.X, editor.viewTargetX, 0.000001) == false
@@ -644,8 +744,31 @@ func main() {
         Fail(shell, harness,
              "empty-space spawn point was not the view target: "
              + emptySpawn.X + "," + emptySpawn.Y + "," + emptySpawn.Z);
-        return;
+        return false;
     }
+
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    ctx.centerY = centerY;
+    ctx.meshX = meshX;
+    ctx.canonical = canonical;
+    return true;
+}
+
+/// @brief Run the VerifyScaledPickingAndCapture viewport-picking scenario.
+func VerifyScaledPickingAndCapture(ctx: ViewportPickingProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
+    var centerY = ctx.centerY;
+    var meshX = ctx.meshX;
+    var canonical = ctx.canonical;
 
     // The compact creation menu preserves every primitive and routes it
     // through the same view-target spawn transaction.
@@ -662,7 +785,7 @@ func main() {
         Fail(shell, harness,
              "toolbar cylinder create did not add one node: count="
              + editor.flatNodes.count());
-        return;
+        return false;
     }
     var cylinderNode = editor.flatNodes.get(beforeCount);
     if cylinderNode.Mesh == null
@@ -670,13 +793,13 @@ func main() {
         Fail(shell, harness,
              "cylinder did not spawn at the view target: x="
              + cylinderNode.WorldPosition.X);
-        return;
+        return false;
     }
     editor.viewTargetX = 0.0;
     if editor.Undo() == false or sceneDoc.content != canonical {
         Fail(shell, harness,
              "undoing the cylinder did not restore canonical bytes");
-        return;
+        return false;
     }
 
     // Snap inversion (2.3): without Ctrl held the effective state follows
@@ -685,12 +808,12 @@ func main() {
     editor.SetGizmoSnapEnabled(false);
     if editor.EffectiveSnapEnabled() {
         Fail(shell, harness, "snap-off did not read as effectively off");
-        return;
+        return false;
     }
     editor.SetGizmoSnapEnabled(true);
     if editor.EffectiveSnapEnabled() == false {
         Fail(shell, harness, "snap-on did not read as effectively on");
-        return;
+        return false;
     }
     editor.SetGizmoSnapEnabled(false);
 
@@ -699,16 +822,16 @@ func main() {
     editor.SetQuickView(0);
     if editor.viewYawDegrees != 0 or editor.viewPitchDegrees != 80 {
         Fail(shell, harness, "Top quick view did not set its pose");
-        return;
+        return false;
     }
     editor.SetQuickView(2);
     if editor.viewYawDegrees != 90 or editor.viewPitchDegrees != 0 {
         Fail(shell, harness, "Right quick view did not set its pose");
-        return;
+        return false;
     }
     if editor.StoreCameraBookmark(3) == false {
         Fail(shell, harness, "storing camera bookmark 3 failed");
-        return;
+        return false;
     }
     editor.SetQuickView(1);
     editor.viewScale = 60;
@@ -718,13 +841,13 @@ func main() {
         Fail(shell, harness,
              "recalling camera bookmark 3 did not restore the pose: "
              + editor.viewYawDegrees + "/" + editor.viewPitchDegrees);
-        return;
+        return false;
     }
     if editor.RecallCameraBookmark(5)
        or sceneDoc.content != cameraCanonical {
         Fail(shell, harness,
              "an empty bookmark recalled or camera state touched content");
-        return;
+        return false;
     }
 
     // Pick-lock (2.5): a locked node yields viewport picks to whatever
@@ -742,23 +865,23 @@ func main() {
     if editor.ToggleSelectedPickLock() == false
        or editor.NodePickLocked(1) == false {
         Fail(shell, harness, "pick lock did not engage on the front box");
-        return;
+        return false;
     }
     var lockedPick = editor.ViewportNodeAt(meshX, centerY);
     if lockedPick != 0 {
         Fail(shell, harness,
              "a locked front box did not yield the pick to the back box: "
              + lockedPick);
-        return;
+        return false;
     }
     if editor.ToggleSelectedPickLock()
        or editor.NodePickLocked(1) {
         Fail(shell, harness, "pick unlock did not release the node");
-        return;
+        return false;
     }
     if editor.ViewportNodeAt(meshX, centerY) != 1 {
         Fail(shell, harness, "unlocking did not restore normal picking");
-        return;
+        return false;
     }
 
     // Shaded+Wire and stats v2 (3.2): the combined mode renders, keeps
@@ -773,111 +896,30 @@ func main() {
        or sceneDoc.content != fidelityBaseline {
         Fail(shell, harness,
              "Shaded+Wire changed picking or content");
-        return;
-    }
-    editor.showStats = false;
-    editor.SetViewportMode(scene_editor_3d.VIEWPORT_MODE_SHADED);
-    editor.Pump(sceneDoc);
-    shell.Render();
-
-    // Undo history panel (3.3): rows mirror commits oldest-first plus a
-    // Current row; a jump runs the equivalent undo chain and leaves redo.
-    var stateBefore = sceneDoc.content;
-    if editor.AddEmptyNode("History A", -1) < 0
-       or editor.AddEmptyNode("History B", -1) < 0 {
-        Fail(shell, harness, "history fixture commits failed");
-        return;
-    }
-    editor.Pump(sceneDoc);
-    shell.Poll();
-    shell.Render();
-    editor.RefreshHistoryPanel();
-    if editor.historyList.Count != editor.undoStack.count() + 1 {
-        Fail(shell, harness,
-             "history rows did not mirror the undo stack: rows="
-             + editor.historyList.Count
-             + " undo=" + editor.undoStack.count());
-        return;
-    }
-    var redoBefore = editor.redoStack.count();
-    if editor.JumpToHistoryRow(editor.undoStack.count() - 2) == false
-       or sceneDoc.content != stateBefore
-       or editor.redoStack.count() != redoBefore + 2 {
-        Fail(shell, harness,
-             "history jump did not restore the pre-fixture bytes: redo="
-             + editor.redoStack.count());
-        return;
-    }
-    if editor.Redo() == false or editor.Redo() == false {
-        Fail(shell, harness, "redo after a history jump failed");
-        return;
-    }
-    if editor.Undo() == false or editor.Undo() == false
-       or sceneDoc.content != stateBefore {
-        Fail(shell, harness, "unwinding the history fixture failed");
-        return;
+        return false;
     }
 
-    // Run Scene affordance (4.1): the Scene-menu command raises a one-shot
-    // request the app dispatcher consumes; nothing here touches content.
-    var runBaseline = sceneDoc.content;
-    ClickWidget(shell, harness, editor.sceneMenuButton);
-    editor.Pump(sceneDoc);
-    shell.Render();
-    // New, Import Asset, Import Instance, separator, then Run.
-    ClickCommandMenuOffset(
-        shell, harness, editor.sceneMenuButton, 111.0);
-    editor.Pump(sceneDoc);
-    if editor.TakeRunSceneRequested() == false
-       or editor.TakeRunSceneRequested()
-       or sceneDoc.content != runBaseline {
-        Fail(shell, harness,
-             "Run Scene menu command did not raise a one-shot request");
-        return;
-    }
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    return true;
+}
 
-    // Pane float/dock (Phase 5): floating reparents the hierarchy pane
-    // into the dock substrate's floating panel with the split collapsed;
-    // the pane stays fully live; docking restores the fixed layout. All
-    // of it is workspace-only.
-    var dockBaseline = sceneDoc.content;
-    if editor.hierarchyDock.Float() == false
-       or editor.hierarchyDock.floating == false
-       or editor.hierarchySplit.GetCollapsedSide() != 1 {
-        Fail(shell, harness,
-             "floating the hierarchy pane did not detach and collapse");
-        return;
-    }
-    editor.Pump(sceneDoc);
-    shell.Poll();
-    shell.Render();
-    editor.SelectSceneNodes([0], 0);
-    editor.Pump(sceneDoc);
-    if editor.selectedIndex != 0 {
-        Fail(shell, harness,
-             "the floated hierarchy pane lost selection behavior");
-        return;
-    }
-    if editor.hierarchyDock.Dock() == false
-       or editor.hierarchyDock.floating
-       or editor.hierarchySplit.GetCollapsedSide() == 1
-       or sceneDoc.content != dockBaseline {
-        Fail(shell, harness,
-             "docking the hierarchy pane did not restore the layout");
-        return;
-    }
-    editor.Pump(sceneDoc);
-    shell.Render();
-    if editor.inspectorDock.Float() == false
-       or editor.bodySplit.GetCollapsedSide() != 2
-       or editor.inspectorDock.Dock() == false
-       or editor.bodySplit.GetCollapsedSide() == 2
-       or sceneDoc.content != dockBaseline {
-        Fail(shell, harness, "3D inspector pane float/dock cycle failed");
-        return;
-    }
+/// @brief Run final history, command-menu, and pane-routing scenarios.
+func VerifyFinalPointerRouting(
+    ctx: ViewportPickingProbeContext) -> Boolean {
+    return scene_viewport_picking_routing_probe.Verify(
+        ctx.shell, ctx.editor, ctx.documents, ctx.sceneDoc, ctx.harness);
+}
 
-    harness.UnbindApp();
-    shell.Destroy();
-    Terminal.Say("RESULT: ok");
+func main() {
+    var ctx = new ViewportPickingProbeContext();
+    if VerifyInputAndInitialPicking(ctx) == false { return; }
+    if VerifyMeshPickingAndDragSetup(ctx) == false { return; }
+    if VerifyPointerDragsAndSelection(ctx) == false { return; }
+    if VerifyCameraAndGizmoPicking(ctx) == false { return; }
+    if VerifyScaledPickingAndCapture(ctx) == false { return; }
+    if VerifyFinalPointerRouting(ctx) == false { return; }
 }

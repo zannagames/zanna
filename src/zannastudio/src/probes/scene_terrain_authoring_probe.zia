@@ -101,10 +101,11 @@ func clickMenuOffset(shell: app_shell.AppShell,
                      harness: GUI.TestHarness,
                      button: GUI.Button,
                      offsetY: Number) {
-    var x = harnessCoordinate(shell, button.GetScreenX() + 20.0);
+    var x = harnessCoordinate(shell, button.GetScreenX())
+        + Convert.NumToInt(20.0);
     var y = harnessCoordinate(
-        shell,
-        button.GetScreenY() + button.GetScreenHeight() + offsetY);
+        shell, button.GetScreenY() + button.GetScreenHeight())
+        + Convert.NumToInt(offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -135,7 +136,19 @@ func centerHeight(node: SceneNode,
     return point.Y;
 }
 
-func main() {
+/// @brief Typed state shared by serial terrain-authoring scenarios.
+class TerrainAuthoringProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_3d.SceneEditor3D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose GUI.TestHarness harness;
+    expose scene_terrain_3d.TerrainState3D state;
+    expose Number sculptedHeight;
+}
+
+/// @brief Verify canonical topology and deterministic brush math.
+func VerifyTerrainMath() -> Boolean {
     // ------------------------------------------------------------------
     // Pure canonical topology and brush math.
     // ------------------------------------------------------------------
@@ -153,7 +166,7 @@ func main() {
        or near(last.X, 4.0) == false
        or near(last.Z, 4.0) == false {
         Terminal.Say("RESULT: fail canonical terrain topology");
-        return;
+        return false;
     }
     var raised = scene_terrain_3d.ApplyBrush(
         flat,
@@ -178,7 +191,7 @@ func main() {
        or scene_terrain_3d.SampleHeight(
               raised, 9, 9, 1.0, 0.0, 0.0) <= 0.9 {
         Terminal.Say("RESULT: fail deterministic terrain brush math");
-        return;
+        return false;
     }
     var protectedMesh = SceneNode.New();
     protectedMesh.Mesh = mesh;
@@ -187,9 +200,15 @@ func main() {
         scene_terrain_3d.KIND_HEIGHTFIELD_MESH);
     if scene_terrain_3d.IsTerrainNode(protectedMesh) {
         Terminal.Say("RESULT: fail incomplete terrain convention was accepted");
-        return;
+        return false;
     }
 
+    return true;
+}
+
+/// @brief Verify menu creation and one transactional viewport stroke.
+func VerifyTerrainCreationAndStroke(
+    ctx: TerrainAuthoringProbeContext) -> Boolean {
     // ------------------------------------------------------------------
     // Real creation control and viewport stroke.
     // ------------------------------------------------------------------
@@ -209,13 +228,13 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         fail(shell, harness, "input harness binding");
-        return;
+        return false;
     }
     if editor.createMenuButton.IsVisible() == false
        or editor.createMenuButton.IsEnabled() == false
        or editor.addTerrainButton.IsVisible() {
         fail(shell, harness, "progressive Create menu state");
-        return;
+        return false;
     }
     var createBaseline = sceneDoc.content;
     var createRevision = editor.GetRevision();
@@ -224,7 +243,7 @@ func main() {
     if editor.createMenu.IsVisible() == false
        or editor.createTerrainItem.IsEnabled() == false {
         fail(shell, harness, "Create Terrain menu item missing");
-        return;
+        return false;
     }
     // Empty, Child, separator, Box, Sphere, Plane, Cylinder, then Terrain.
     clickMenuOffset(shell, harness, editor.createMenuButton, 195.0);
@@ -236,7 +255,7 @@ func main() {
        or editor.IsTerrainSculptEnabled() == false
        or editor.terrainInspector.group.IsVisible() == false {
         fail(shell, harness, "Create Terrain was not one ready-to-sculpt edit");
-        return;
+        return false;
     }
 
     var node = editor.flatNodes.get(0);
@@ -257,7 +276,7 @@ func main() {
           > editor.inspectorScroll.GetScreenX()
               + editor.inspectorScroll.GetScreenWidth() + 1.0 {
         fail(shell, harness, "terrain contract or inspector layout");
-        return;
+        return false;
     }
 
     var centerScreen = editor.ProjectWorldPoint(
@@ -277,7 +296,7 @@ func main() {
             + " node=" + editor.ViewportNodeAt(
                 centerScreen.x, centerScreen.y)
             + " screen=" + centerScreen.x + "," + centerScreen.y);
-        return;
+        return false;
     }
     var pointerX = viewportPhysicalX(
         shell, editor, centerScreen.x);
@@ -299,7 +318,7 @@ func main() {
        or editor.GetRevision() != strokeRevision
        or editor.undoStack.count() != strokeUndo {
         fail(shell, harness, "live terrain stroke changed history or missed");
-        return;
+        return false;
     }
     harness.SendMouse("up", pointerX, pointerY, 0);
     harness.DispatchPending();
@@ -309,7 +328,7 @@ func main() {
        or editor.undoStack.count() != strokeUndo + 1
        or sceneDoc.content == strokeBaseline {
         fail(shell, harness, "terrain release was not one transaction");
-        return;
+        return false;
     }
     var sculptedContent = sceneDoc.content;
     var sculptedHeight = centerHeight(
@@ -328,9 +347,29 @@ func main() {
                editor.flatNodes.get(0), state.columns, state.rows),
            sculptedHeight) == false {
         fail(shell, harness, "terrain stroke did not round-trip undo/redo");
-        return;
+        return false;
     }
     pump(editor, sceneDoc, shell);
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.harness = harness;
+    ctx.state = state;
+    ctx.sculptedHeight = sculptedHeight;
+    return true;
+}
+
+/// @brief Verify Escape rollback, flatten, regeneration, and reload.
+func VerifyTerrainRollbackAndRegeneration(
+    ctx: TerrainAuthoringProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
+    var state = ctx.state;
+    var sculptedHeight = ctx.sculptedHeight;
 
     // ------------------------------------------------------------------
     // Escape rollback and explicit mesh-wide transactions.
@@ -338,14 +377,14 @@ func main() {
     editor.SelectSceneNodes([0], 0);
     editor.SetTerrainSculptEnabled(true);
     pump(editor, sceneDoc, shell);
-    node = editor.flatNodes.get(0);
-    centerScreen = editor.ProjectWorldPoint(
+    var node = editor.flatNodes.get(0);
+    var centerScreen = editor.ProjectWorldPoint(
         node.WorldPosition.X,
         node.WorldPosition.Y + sculptedHeight,
         node.WorldPosition.Z);
-    pointerX = viewportPhysicalX(
+    var pointerX = viewportPhysicalX(
         shell, editor, centerScreen.x);
-    pointerY = viewportPhysicalY(
+    var pointerY = viewportPhysicalY(
         shell, editor, centerScreen.y);
     var cancelContent = sceneDoc.content;
     var cancelRevision = editor.GetRevision();
@@ -369,7 +408,7 @@ func main() {
                editor.flatNodes.get(0), state.columns, state.rows),
            cancelHeight) == false {
         fail(shell, harness, "Escape did not restore exact terrain mesh");
-        return;
+        return false;
     }
 
     editor.SetTerrainSculptEnabled(false);
@@ -383,7 +422,7 @@ func main() {
            0.0) == false
        or editor.FlattenSelectedTerrain() {
         fail(shell, harness, "Flatten All transaction or no-op handling");
-        return;
+        return false;
     }
     var flatContent = sceneDoc.content;
     editor.terrainInspector.columnsSpinner.SetValue(17.0);
@@ -393,7 +432,7 @@ func main() {
     if editor.RegenerateSelectedTerrain() == false
        or editor.GetRevision() != regenerateRevision + 1 {
         fail(shell, harness, "Regenerate Flat did not commit once");
-        return;
+        return false;
     }
     node = editor.flatNodes.get(0);
     state = scene_terrain_3d.FromNode(node);
@@ -408,7 +447,7 @@ func main() {
        or editor.Redo() == false
        or sceneDoc.content != regeneratedContent {
         fail(shell, harness, "terrain regeneration contract or reload");
-        return;
+        return false;
     }
     node = editor.flatNodes.get(0);
     state = scene_terrain_3d.FromNode(node);
@@ -417,10 +456,18 @@ func main() {
        or node.Mesh.VertexCount != 323
        or node.Mesh.TriangleCount != 576 {
         fail(shell, harness, "reloaded terrain lost canonical geometry");
-        return;
+        return false;
     }
 
-    harness.UnbindApp();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    if VerifyTerrainMath() == false { return; }
+    var ctx = new TerrainAuthoringProbeContext();
+    if VerifyTerrainCreationAndStroke(ctx) == false { return; }
+    if VerifyTerrainRollbackAndRegeneration(ctx) == false { return; }
+    ctx.harness.UnbindApp();
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

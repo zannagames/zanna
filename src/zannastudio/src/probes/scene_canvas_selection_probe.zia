@@ -33,6 +33,7 @@ module scene_canvas_selection_probe;
 //          real-input test therefore proves rectangle membership, not a click.
 // ============================================================================
 
+bind "../core/document";
 bind "../core/document_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
@@ -92,7 +93,23 @@ func Fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief Typed state shared by serial canvas-selection scenarios.
+class CanvasSelectionProbeContext {
+    expose app_shell.AppShell shell;
+    expose scene_editor_2d.SceneEditor2D editor;
+    expose document_manager.DocumentManager documents;
+    expose document.Document sceneDoc;
+    expose String canonical;
+    expose Integer revision;
+    expose Integer undoCount;
+    expose Integer redoCount;
+    expose Boolean dirty;
+    expose GUI.TestHarness harness;
+}
+
+/// @brief Build the scene and verify point/marquee selection policies.
+func VerifySelectionModel(
+    ctx: CanvasSelectionProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio 2D Canvas Selection Probe", 1120, 760);
     shell.SetSceneWorkspaceMode(true);
@@ -118,7 +135,7 @@ func main() {
        or editor.AddSceneObject(
            "spawn", "outside", 8 * tileWidth, 8 * tileHeight) != 2 {
         Fail(shell, null, "object fixture");
-        return;
+        return false;
     }
     editor.Pump(sceneDoc);
     shell.Render();
@@ -137,13 +154,13 @@ func main() {
        or scene_selection.Contains(editor.selectedObjects, 0) == false
        or scene_selection.Contains(editor.selectedObjects, 1) == false {
         Fail(shell, null, "point replace/add selection");
-        return;
+        return false;
     }
     if editor.ApplyCanvasPointSelection(0, false, false) == false
        or editor.selectedObjects.count() != 2
        or editor.selectedObject != 0 {
         Fail(shell, null, "selected point did not preserve the draggable group");
-        return;
+        return false;
     }
     if editor.ApplyCanvasPointSelection(0, false, true) == false
        or editor.selectedObjects.count() != 1
@@ -154,13 +171,13 @@ func main() {
        or editor.selectedObjects.count() != 0
        or editor.selectedObject != -1 {
         Fail(shell, null, "point toggle or blank selection policy");
-        return;
+        return false;
     }
 
     var hits = editor.CanvasObjectsInCellRect(4, 3, 1, 1);
     if hits.count() != 2 or hits.get(0) != 0 or hits.get(1) != 1 {
         Fail(shell, null, "reverse inclusive marquee query");
-        return;
+        return false;
     }
     editor.SelectSceneObjects([2], 2);
     if editor.ApplyCanvasMarqueeSelection(1, 1, 4, 3, true, false)
@@ -177,13 +194,37 @@ func main() {
           == false
        or editor.selectedObjects.count() != 0 {
         Fail(shell, null, "marquee add/toggle/blank policy");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.sceneDoc = sceneDoc;
+    ctx.canonical = canonical;
+    ctx.revision = revision;
+    ctx.undoCount = undoCount;
+    ctx.redoCount = redoCount;
+    ctx.dirty = dirty;
+    return true;
+}
+
+/// @brief Verify real marquee input, Escape, and inspector scoping.
+func VerifyMarqueeInputAndInspector(
+    ctx: CanvasSelectionProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var canonical = ctx.canonical;
+    var revision = ctx.revision;
+    var undoCount = ctx.undoCount;
+    var redoCount = ctx.redoCount;
+    var dirty = ctx.dirty;
 
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         Fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
     var startX = CanvasCoordinate(shell, editor, 1, true);
     var startY = CanvasCoordinate(shell, editor, 1, false);
@@ -225,7 +266,7 @@ func main() {
              + "->" + endX + "," + endY
              + " image=" + editor.canvasImage.GetScreenX() + ","
              + editor.canvasImage.GetScreenY());
-        return;
+        return false;
     }
     harness.SendMouse("up", endX, endY, 0);
     harness.DispatchPending();
@@ -237,7 +278,7 @@ func main() {
        or editor.selectedObjects.get(1) != 1
        or editor.selectedObject != 1 {
         Fail(shell, harness, "real marquee release selection");
-        return;
+        return false;
     }
     shell.Render();
 
@@ -257,7 +298,7 @@ func main() {
        or editor.selectedObjects.count() != 1
        or editor.selectedObject != 2 {
         Fail(shell, harness, "Escape did not cancel the captured marquee");
-        return;
+        return false;
     }
     harness.SendMouse("up", endX, endY, 0);
     harness.DispatchPending();
@@ -270,7 +311,7 @@ func main() {
        or sceneDoc.isModified != dirty {
         Fail(shell, harness,
              "canvas selection changed canonical document or history");
-        return;
+        return false;
     }
 
     // The canvas is a real focusable surface: clicks grant it keyboard
@@ -278,7 +319,7 @@ func main() {
     // edge) clears the selection workspace-only.
     if editor.canvasImage.IsFocused() == false {
         Fail(shell, harness, "canvas click did not grant surface focus");
-        return;
+        return false;
     }
     editor.SelectSceneObjects([0, 1], 1);
     harness.SendKey("escape", 0);
@@ -290,7 +331,7 @@ func main() {
         Fail(shell, harness,
              "focused-canvas Escape did not clear selection workspace-only: "
              + "selected=" + editor.selectedObjects.count());
-        return;
+        return false;
     }
 
     // Selection-scoped inspector: object fields appear only with selected
@@ -306,7 +347,7 @@ func main() {
        or editor.sceneProperties.group.IsVisible() == false {
         Fail(shell, harness,
              "empty selection did not scope the 2D inspector");
-        return;
+        return false;
     }
     editor.SelectSceneObjects([0], 0);
     editor.Pump(sceneDoc);
@@ -317,8 +358,20 @@ func main() {
        or editor.GetRevision() != revision {
         Fail(shell, harness,
              "object selection did not reveal 2D object fields");
-        return;
+        return false;
     }
+
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify live transforms and workspace-only pane docking.
+func VerifyLiveTransformsAndDocking(
+    ctx: CanvasSelectionProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var harness = ctx.harness;
 
     // Live position editing: a differing X value commits exactly one
     // canonical transaction once the spinners are unfocused, and Undo
@@ -332,7 +385,7 @@ func main() {
        or editor.GetRevision() != liveRevision {
         Fail(shell, harness,
              "an unchanged 2D spinner echo created a live-edit commit");
-        return;
+        return false;
     }
     var liveTargetX =
         Convert.NumToInt(editor.objectXSpinner.Value) + 32;
@@ -345,12 +398,12 @@ func main() {
              "a differing 2D X value did not live-commit once: revision="
              + editor.GetRevision() + "/" + (liveRevision + 1)
              + " x=" + editor.scene.ObjectX(0) + "/" + liveTargetX);
-        return;
+        return false;
     }
     if editor.Undo() == false or sceneDoc.content != liveBaseline {
         Fail(shell, harness,
              "undoing the 2D live position edit did not restore exact bytes");
-        return;
+        return false;
     }
 
     // ADR 0192: rotation/scale spinners share the live-commit gesture and
@@ -367,14 +420,14 @@ func main() {
         Fail(shell, harness,
              "a rotation edit did not live-commit a first-class key: rot="
              + editor.scene.ObjectRotation(0));
-        return;
+        return false;
     }
     editor.objectScaleXSpinner.SetValue(2.0);
     if editor.Pump(sceneDoc) == false
        or NumbersNear(editor.scene.ObjectScaleX(0), 2.0) == false
        or Str.IndexOf(sceneDoc.content, "\"scaleX\"") <= 0 {
         Fail(shell, harness, "a scale edit did not live-commit");
-        return;
+        return false;
     }
     if editor.Undo() == false or editor.Undo() == false
        or sceneDoc.content != transformBaseline
@@ -382,7 +435,7 @@ func main() {
        or NumbersNear(editor.scene.ObjectScaleX(0), 1.0) == false {
         Fail(shell, harness,
              "undoing transform edits did not restore default bytes");
-        return;
+        return false;
     }
 
     // Flip toggles commit immediately as one transaction each. The row
@@ -396,13 +449,13 @@ func main() {
        or editor.scene.ObjectFlipX(0) == false
        or Str.IndexOf(sceneDoc.content, "\"flipX\"") <= 0 {
         Fail(shell, harness, "a flip toggle did not commit one edit");
-        return;
+        return false;
     }
     if editor.Undo() == false
        or sceneDoc.content != transformBaseline
        or editor.scene.ObjectFlipX(0) {
         Fail(shell, harness, "undoing the flip did not restore bytes");
-        return;
+        return false;
     }
 
     // Pane float/dock (Phase 5): every 2D pane floats into the dock
@@ -414,14 +467,14 @@ func main() {
        or editor.hierarchyDock.Dock() == false
        or editor.hierarchySplit.GetCollapsedSide() == 1 {
         Fail(shell, harness, "2D objects pane float/dock cycle failed");
-        return;
+        return false;
     }
     if editor.inspectorDock.Float() == false
        or editor.bodySplit.GetCollapsedSide() != 2
        or editor.inspectorDock.Dock() == false
        or editor.bodySplit.GetCollapsedSide() == 2 {
         Fail(shell, harness, "2D inspector pane float/dock cycle failed");
-        return;
+        return false;
     }
     if editor.paletteDock.Float() == false
        or editor.canvasSplit.GetCollapsedSide() != 2
@@ -429,12 +482,20 @@ func main() {
        or editor.canvasSplit.GetCollapsedSide() == 2
        or sceneDoc.content != paneBaseline {
         Fail(shell, harness, "2D palette pane float/dock cycle failed");
-        return;
+        return false;
     }
     editor.Pump(sceneDoc);
     shell.Render();
 
-    harness.UnbindApp();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new CanvasSelectionProbeContext();
+    if VerifySelectionModel(ctx) == false { return; }
+    if VerifyMarqueeInputAndInspector(ctx) == false { return; }
+    if VerifyLiveTransformsAndDocking(ctx) == false { return; }
+    ctx.harness.UnbindApp();
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

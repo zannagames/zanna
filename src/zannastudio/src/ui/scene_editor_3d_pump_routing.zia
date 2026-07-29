@@ -1,0 +1,692 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_pump_routing.zia
+// Purpose: Route one bounded 3D editor frame through focused control groups.
+// Key invariants:
+//   - Each frame publishes at most one canonical document change.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited state; this layer owns none.
+// Links: zannastudio/src/ui/scene_editor_3d_project_instances.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_pump_routing;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_project_instances" as PreviousLayer;
+
+/// @brief Bounded frame-pump routing implementation layer.
+class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectInstancesLayer {
+    /// @brief Pump the active document and return true when VSCN content changed.
+    expose override func Pump(activeDoc: document.Document) -> Boolean {
+        if activeDoc == null or activeDoc.kind != file_utils.DOC_KIND_SCENE_3D {
+            return false;
+        }
+        insetFrameCounter = insetFrameCounter + 1;
+        if activeDoc != currentDoc or activeDoc.content != currentSerialized {
+            Activate(activeDoc);
+        }
+        EnsureComponentSchema(false);
+        UpdateProjectViewButton();
+        if activeDoc == currentDoc and activeDoc.isModified == false
+           and activeDoc.content == currentSerialized {
+            cleanSerialized = currentSerialized;
+        }
+
+        RefreshResponsiveLayout();
+        PumpCommandMenuButtons();
+        if hierarchyButton.WasClicked()
+           or viewHierarchyItem.WasClicked() {
+            ToggleHierarchyPane();
+        }
+        if inspectorButton.WasClicked()
+           or viewInspectorItem.WasClicked() {
+            ToggleInspectorPane();
+        }
+        if workspaceButton.WasClicked()
+           or viewWorkspaceItem.WasClicked() {
+            RequestWorkspaceModeToggle();
+        }
+        if focusButton.WasClicked()
+           or viewFocusItem.WasClicked() {
+            RequestFocusModeToggle();
+        }
+        if objectTabButton.WasClicked() { SetInspectorSceneTab(false); }
+        if sceneTabButton.WasClicked() { SetInspectorSceneTab(true); }
+        if sceneSectionDropdown.WasChanged() {
+            SetSceneInspectorSection(
+                sceneSectionDropdown.Selected, true);
+        }
+
+        var changed = PumpDocumentAndImportControls();
+        changed = PumpViewportToolbarControls() or changed;
+        if scene == null {
+            if renderDirty { RenderViewport(); }
+            ApplyPendingWorkspaceScroll();
+            ApplyInspectorLayout();
+            CaptureWorkspaceState();
+            return changed;
+        }
+
+        changed = PumpHierarchyAndCreationControls() or changed;
+        changed = PumpMetadataAndTransformControls() or changed;
+        changed = PumpComponentInspectorControls() or changed;
+        PumpCameraAndFrameControls();
+        return CompletePumpFrame(changed);
+    }
+
+    /// @brief Pump document creation, import, baking, and material-map requests.
+    hide func PumpDocumentAndImportControls() -> Boolean {
+        var changed = false;
+        // Commit or cancel a pending live transform edit before selection
+        // and document handlers can observe uncommitted live-node state.
+        changed = PumpTransformDraft() or changed;
+        if addComponentButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            changed = AddSelectedComponentChoice() or changed;
+        }
+        if newSceneButton.WasClicked()
+           or sceneNewItem.WasClicked() {
+            scene = SceneGraph.New();
+            loadError = "";
+            selectedIndex = -1;
+            selectedIndices = [];
+            selectedNodeMetadata = -1;
+            metadataOwnerIndex = -1;
+            viewTargetX = 0.0;
+            viewTargetY = 0.0;
+            viewTargetZ = 0.0;
+            ReleaseGameplayViewAnchor();
+            SetEditorControlsEnabled(true);
+            RefreshHierarchy(null);
+            changed = CommitScene("Created empty 3D scene") or changed;
+        }
+        if importAssetButton.WasClicked()
+           or sceneImportAssetItem.WasClicked() {
+            importBrowserInstanceMode = false;
+            importAssetBrowser.SetExtensions(
+                ".scene3d,.vscn,.gltf,.glb,.fbx,.obj,.stl");
+            changed = ImportAsset() or changed;
+        }
+        if importInstanceButton.WasClicked()
+           or sceneImportInstanceItem.WasClicked() {
+            importBrowserInstanceMode = true;
+            importAssetBrowser.SetExtensions(".scene3d,.vscn");
+            importAssetBrowser.Open();
+        }
+        var projectImportPath = importAssetBrowser.Pump(
+            projectManager, currentDoc != null);
+        if projectImportPath != "" {
+            if envBrowseMode {
+                envBrowseMode = false;
+                var documentPath = "";
+                if currentDoc != null {
+                    documentPath = currentDoc.filePath;
+                }
+                envSkyboxInput.SetText(
+                    scene_asset_browser.PortableReferencePath(
+                        projectImportPath, documentPath));
+                importAssetBrowser.Close();
+            } else if importBrowserInstanceMode {
+                changed = ImportInstancePath(projectImportPath) or changed;
+            } else {
+                changed = ImportAssetPath(projectImportPath) or changed;
+            }
+        }
+        if openPrefabSourceButton.WasClicked() {
+            RequestOpenPrefabSource();
+        }
+        if reloadInstancesButton.WasClicked() {
+            ReloadPrefabInstances();
+        }
+        if unpackInstanceButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = UnpackSelectedInstance() or changed;
+        }
+        if relinkInstanceButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            importBrowserInstanceMode = true;
+            importAssetBrowser.SetExtensions(".scene3d,.vscn");
+            importAssetBrowser.Open();
+            detailLabel.SetText(
+                "Choose the new referenced scene for "
+                + NodeDisplayName(SelectedNode()) + ".");
+        }
+        PumpBakeControls();
+        changed = PumpBakeSteps() or changed;
+        var projectMapPath = materialInspector.assetBrowser.Pump(
+            projectManager,
+            scene != null and SelectedNode() != null
+            and selectedIndices.count() > 0);
+        if projectMapPath != "" {
+            changed = ApplySelectedMaterialMapPath(
+                materialInspector.mapSlot.Selected,
+                projectMapPath) or changed;
+        }
+        return changed;
+    }
+
+    /// @brief Pump viewport mode, placement, snapping, and view-option controls.
+    hide func PumpViewportToolbarControls() -> Boolean {
+        var changed = false;
+        UpdateViewportSize();
+        if initialProjectPreviewPending {
+            ApplyInitialProjectPreview();
+            initialProjectPreviewPending = false;
+        }
+        if gameOutputFramePending {
+            ApplyGameOutputFrame();
+            gameOutputFramePending = false;
+        }
+        if viewportModeButton.WasClicked() {
+            var nextViewportMode = SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME;
+            if viewportMode == SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME {
+                nextViewportMode = SceneEditor3DModel.VIEWPORT_MODE_SHADED_WIRE;
+            } else if viewportMode == SceneEditor3DModel.VIEWPORT_MODE_SHADED_WIRE {
+                nextViewportMode = SceneEditor3DModel.VIEWPORT_MODE_SHADED;
+            }
+            SetViewportMode(nextViewportMode);
+        }
+        if moveToolButton.WasClicked() { SetGizmoMode(SceneEditor3DModel.GIZMO_MODE_MOVE); }
+        if rotateToolButton.WasClicked() { SetGizmoMode(SceneEditor3DModel.GIZMO_MODE_ROTATE); }
+        if scaleToolButton.WasClicked() { SetGizmoMode(SceneEditor3DModel.GIZMO_MODE_SCALE); }
+        if dropToSurfaceButton.WasClicked()
+           or placementDropItem.WasClicked() {
+            changed = DropSelectedToSurface() or changed;
+        }
+        if transformSpaceButton.WasClicked() {
+            var nextSpace = scene_transform_3d.TRANSFORM_SPACE_WORLD;
+            if gizmoTransformSpace
+               == scene_transform_3d.TRANSFORM_SPACE_WORLD {
+                nextSpace = scene_transform_3d.TRANSFORM_SPACE_LOCAL;
+            }
+            SetGizmoTransformSpace(nextSpace);
+        }
+        var nextSnapRevision = snapTransformCheck.GetRevision();
+        if nextSnapRevision != snapTransformRevision {
+            snapTransformRevision = nextSnapRevision;
+            SetGizmoSnapEnabled(snapTransformCheck.IsChecked());
+        }
+        var nextSurfaceRevision = surfaceSnapCheck.GetRevision();
+        if nextSurfaceRevision != surfaceSnapRevision {
+            surfaceSnapRevision = nextSurfaceRevision;
+            SetSurfaceSnapEnabled(surfaceSnapCheck.IsChecked());
+        }
+        var nextAlignRevision = surfaceAlignCheck.GetRevision();
+        if nextAlignRevision != surfaceAlignRevision {
+            surfaceAlignRevision = nextAlignRevision;
+            SetSurfaceAlignEnabled(surfaceAlignCheck.IsChecked());
+        }
+        var nextVertexRevision = vertexSnapCheck.GetRevision();
+        if nextVertexRevision != vertexSnapRevision {
+            vertexSnapRevision = nextVertexRevision;
+            SetVertexSnapEnabled(vertexSnapCheck.IsChecked());
+        }
+        if placementSurfaceItem.WasClicked() {
+            SetSurfaceSnapEnabled(!surfaceSnapEnabled);
+        }
+        if placementAlignItem.WasClicked() {
+            SetSurfaceAlignEnabled(!surfaceAlignEnabled);
+        }
+        if placementVertexItem.WasClicked() {
+            SetVertexSnapEnabled(!vertexSnapEnabled);
+        }
+        if projectionButton.WasClicked()
+           or viewProjectionItem.WasClicked() {
+            SetViewProjection(!viewPerspective);
+        }
+        if gameViewButton.WasClicked() {
+            SetGameViewActive(gameViewActive == false);
+        }
+        if projectPreviewFilterDropdown.WasChanged() {
+            SetProjectPreviewFilterIndex(
+                projectPreviewFilterDropdown.Selected);
+        }
+        if projectViewButton.WasClicked()
+           or viewGameplayItem.WasClicked() {
+            ApplyProjectPreviewView();
+        }
+        if viewOptionsButton.WasClicked()
+           or viewOptionsItem.WasClicked() {
+            SetViewOptionsVisible(!viewOptionsVisible);
+        }
+        PumpViewOptionControls();
+        PumpProjectWaterPreviewAnimation();
+        return changed;
+    }
+
+    /// @brief Pump hierarchy visibility, creation, selection, drop, and rename actions.
+    hide func PumpHierarchyAndCreationControls() -> Boolean {
+        var changed = false;
+        PumpHierarchySearchControls();
+        if hierarchyShowButton.WasClicked() {
+            changed = ApplySelectedVisibility(true) or changed;
+        }
+        if hierarchyHideButton.WasClicked() {
+            changed = ApplySelectedVisibility(false) or changed;
+        }
+        if hierarchyPickLockButton.WasClicked() {
+            ToggleSelectedPickLocks();
+        }
+        if addEmptyButton.WasClicked()
+           or createEmptyItem.WasClicked() {
+            changed = AddPrimitive(SceneEditor3DModel.PRIMITIVE_EMPTY, false) or changed;
+        }
+        if addChildButton.WasClicked()
+           or createChildItem.WasClicked() {
+            changed = AddPrimitive(SceneEditor3DModel.PRIMITIVE_EMPTY, true) or changed;
+        }
+        if addBoxButton.WasClicked()
+           or createBoxItem.WasClicked() {
+            changed = AddPrimitive(SceneEditor3DModel.PRIMITIVE_BOX, false) or changed;
+        }
+        if addSphereButton.WasClicked()
+           or createSphereItem.WasClicked() {
+            changed = AddPrimitive(SceneEditor3DModel.PRIMITIVE_SPHERE, false) or changed;
+        }
+        if addPlaneButton.WasClicked()
+           or createPlaneItem.WasClicked() {
+            changed = AddPrimitive(SceneEditor3DModel.PRIMITIVE_PLANE, false) or changed;
+        }
+        if addCylinderButton.WasClicked()
+           or createCylinderItem.WasClicked() {
+            changed = AddPrimitive(SceneEditor3DModel.PRIMITIVE_CYLINDER, false) or changed;
+        }
+        if addTerrainButton.WasClicked()
+           or createTerrainItem.WasClicked() {
+            changed = AddTerrainAt(
+                viewTargetX, viewTargetY, viewTargetZ, false) or changed;
+        }
+        if addLightButton.WasClicked()
+           or createLightItem.WasClicked() {
+            changed = AddLightNode(
+                "Point Light " + scene.NodeCount, -1) >= 0 or changed;
+        }
+        if addCameraButton.WasClicked()
+           or createCameraItem.WasClicked() {
+            changed = AddCameraNode(
+                "Camera " + scene.NodeCount, -1) >= 0 or changed;
+        }
+        if duplicateNodeButton.WasClicked()
+           or createDuplicateItem.WasClicked() {
+            changed = DuplicateSelectedNodes() > 0 or changed;
+        }
+        if deleteNodeButton.WasClicked()
+           or createDeleteItem.WasClicked() {
+            changed = DeleteSelectedNodes() or changed;
+        }
+        if hierarchyTree.WasSelectionChanged() {
+            var primaryRow = hierarchyTree.GetSelected();
+            selectedIndex = -1;
+            if primaryRow != null {
+                selectedIndex = Parse.IntOr(
+                    GUI.TreeView.Node.GetData(primaryRow), -1);
+            }
+            selectedIndices = ResolveInstanceOwnerSelection(
+                scene_selection.FromData(
+                    hierarchyTree.GetSelectedData(),
+                    flatNodes.count(),
+                    selectedIndex));
+            selectedIndex = ResolveInstanceOwnerIndex(selectedIndex);
+            if selectedIndex < 0 and selectedIndices.count() > 0 {
+                selectedIndex = selectedIndices.get(0);
+            }
+            RefreshSelectedFields();
+            SetEditorControlsEnabled(scene != null);
+            renderDirty = true;
+        }
+        if hierarchyTree.WasDropReceived() {
+            var sourceIndex = Parse.IntOr(
+                hierarchyTree.GetDropSourceData(), -1);
+            var targetIndex = Parse.IntOr(
+                hierarchyTree.GetDropTargetData(), -1);
+            var dropPosition = hierarchyTree.GetDropPosition();
+            hierarchyTree.ClearDrop();
+            changed = ApplyHierarchyDrop(
+                sourceIndex, targetIndex, dropPosition) or changed;
+        }
+        if hierarchyTree.WasEditCommitted() {
+            changed = ApplyHierarchyRename() or changed;
+        }
+        changed = PumpViewportDrops() or changed;
+        return changed;
+    }
+
+    /// @brief Pump metadata, component, hierarchy-transform, and node-transform actions.
+    hide func PumpMetadataAndTransformControls() -> Boolean {
+        var changed = false;
+        var metadataNode = SelectedNode();
+        metadataInspector.Pump(metadataNode);
+        selectedNodeMetadata = metadataInspector.selectedProperty;
+        var metadataCommitRow = metadataInspector.TakeCommitRow();
+        if metadataCommitRow >= 0
+           and selectedIndices.count() == 1 {
+            changed = SetNodeMetadata(
+                selectedIndex,
+                metadataInspector.CanonicalKeyAt(metadataCommitRow),
+                metadataInspector.KeyTextAt(metadataCommitRow),
+                metadataInspector.KindTokenAt(metadataCommitRow),
+                metadataInspector.ValueTextAt(metadataCommitRow)) or changed;
+        }
+        var metadataRemoveRow = metadataInspector.TakeRemoveRow();
+        if metadataRemoveRow >= 0
+           and selectedIndices.count() == 1 {
+            changed = RemoveNodeMetadata(
+                selectedIndex,
+                metadataInspector.CanonicalKeyAt(metadataRemoveRow)) or changed;
+        }
+        changed = PumpComponentControls() or changed;
+        if parentDropdown.WasChanged() {
+            UpdateParentControlAvailability();
+        }
+        if preserveWorldReparentCheck.WasChanged() {
+            UpdateParentControlAvailability();
+        }
+        if reparentButton.WasClicked() {
+            changed = ReparentSelectedNodes(
+                SelectedParentTargetIndex()) or changed;
+        }
+        if moveSiblingEarlierButton.WasClicked() {
+            changed = MoveSelectedSiblings(-1) or changed;
+        }
+        if moveSiblingLaterButton.WasClicked() {
+            changed = MoveSelectedSiblings(1) or changed;
+        }
+        if applyTransformButton.WasClicked() {
+            if selectedIndices.count() > 1 {
+                changed = ApplySelectedTransformDeltas(
+                    positionX.Value, positionY.Value, positionZ.Value,
+                    rotationX.Value, rotationY.Value, rotationZ.Value,
+                    scaleX.Value, scaleY.Value, scaleZ.Value) or changed;
+            } else if selectedIndices.count() == 1 {
+                changed = ApplySelectedNode() or changed;
+            }
+        }
+        if nameInput.WasSubmitted() and selectedIndices.count() == 1 {
+            changed = ApplySelectedNode() or changed;
+        }
+        return changed;
+    }
+
+    /// @brief Pump light, camera, collider, terrain, material, and flag inspectors.
+    hide func PumpComponentInspectorControls() -> Boolean {
+        var changed = false;
+        if lightInspector.typeDropdown.WasChanged() {
+            lightInspector.UpdateTypeControls();
+        }
+        lightInspector.PumpDraftIntent();
+        if lightInspector.applyButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            changed = ApplySelectedLightFromControls() or changed;
+        }
+        if lightInspector.removeButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            changed = RemoveSelectedLights() or changed;
+        }
+        if cameraInspector.projectionDropdown.WasChanged() {
+            cameraInspector.UpdateProjectionControls();
+        }
+        if cameraInspector.applyButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = ApplySelectedCameraFromControls() or changed;
+        }
+        if cameraInspector.removeButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = RemoveNodeCamera(selectedIndex) or changed;
+        }
+        if cameraInspector.lookThroughButton.WasClicked() {
+            ToggleLookThrough();
+        }
+        if cameraInspector.previewCheck.WasChanged() {
+            insetEnabled = cameraInspector.previewCheck.IsChecked();
+            renderDirty = true;
+        }
+        if colliderInspector.kindDropdown.WasChanged() {
+            colliderInspector.UpdateKindControls();
+        }
+        if colliderInspector.applyButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = ApplySelectedColliderFromControls() or changed;
+        }
+        if colliderInspector.removeButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = RemoveNodeColliderConvention(selectedIndex) or changed;
+        }
+        if terrainInspector.sculptButton.WasClicked() {
+            SetTerrainSculptEnabled(terrainSculptEnabled == false);
+        }
+        if terrainInspector.modeDropdown.WasChanged()
+           and terrainSculptEnabled {
+            toolbarStatus.SetText(
+                scene_terrain_3d.BrushModeName(
+                    terrainInspector.BrushMode())
+                + " terrain brush selected");
+            renderDirty = true;
+        }
+        if terrainInspector.regenerateButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = RegenerateSelectedTerrain() or changed;
+        }
+        if terrainInspector.flattenAllButton.WasClicked()
+           and selectedIndices.count() == 1 {
+            changed = FlattenSelectedTerrain() or changed;
+        }
+        var componentAssetPath = componentAssetBrowser.Pump(
+            projectManager,
+            scene != null and selectedIndices.count() == 1
+            and SelectedAssetComponentField() != null);
+        if componentAssetPath != "" {
+            ApplyComponentAssetPath(componentAssetPath);
+        }
+        materialInspector.PumpDraftIntent();
+        PumpMaterialLibraryControls();
+        if materialInspector.applyButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            changed = ApplySelectedMaterialFromControls() or changed;
+        }
+        if materialInspector.removeButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            changed = RemoveSelectedMaterials() or changed;
+        }
+        if materialInspector.mapSlot.WasChanged() {
+            materialInspector.RefreshMapSummarySelection(
+                SelectedMaterialNodes());
+            UpdateMaterialControls(true);
+        }
+        if materialInspector.chooseMapButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            changed = ChooseMaterialMap() or changed;
+        }
+        if materialInspector.clearMapButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            changed = ClearSelectedMaterialMap(
+                materialInspector.mapSlot.Selected) or changed;
+        }
+        var nextVisibleRevision = visibleCheck.GetRevision();
+        if nextVisibleRevision != visibleRevision {
+            visibleRevision = nextVisibleRevision;
+            if selectedIndices.count() > 0
+               and visibleCheck.IsIndeterminate() == false {
+                changed = ApplySelectedVisibility(
+                    visibleCheck.IsChecked()) or changed;
+            }
+        }
+        var nextStaticRevision = staticCheck.GetRevision();
+        if nextStaticRevision != staticRevision {
+            staticRevision = nextStaticRevision;
+            if selectedIndices.count() > 0
+               and staticCheck.IsIndeterminate() == false {
+                changed = ApplySelectedStatic(
+                    staticCheck.IsChecked()) or changed;
+            }
+        }
+
+        return changed;
+    }
+
+    /// @brief Pump run, quick-view, orbit, zoom, and framing controls.
+    hide func PumpCameraAndFrameControls() {
+        if runSceneButton.WasClicked()
+           or sceneRunItem.WasClicked() {
+            runSceneRequested = true;
+        }
+        if topViewButton.WasClicked()
+           or viewTopItem.WasClicked() {
+            SetQuickView(0);
+        }
+        if frontViewButton.WasClicked()
+           or viewFrontItem.WasClicked() {
+            SetQuickView(1);
+        }
+        if rightViewButton.WasClicked()
+           or viewRightItem.WasClicked() {
+            SetQuickView(2);
+        }
+        if orbitLeftButton.WasClicked()
+           or viewOrbitLeftItem.WasClicked() {
+            ReleaseGameplayViewAnchor();
+            viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(viewYawDegrees - 15);
+            renderDirty = true;
+        }
+        if orbitRightButton.WasClicked()
+           or viewOrbitRightItem.WasClicked() {
+            ReleaseGameplayViewAnchor();
+            viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(viewYawDegrees + 15);
+            renderDirty = true;
+        }
+        if orbitUpButton.WasClicked()
+           or viewOrbitUpItem.WasClicked() {
+            ReleaseGameplayViewAnchor();
+            viewPitchDegrees = SceneEditor3DModel.ClampInt3D(viewPitchDegrees + 10, -80, 80);
+            renderDirty = true;
+        }
+        if orbitDownButton.WasClicked()
+           or viewOrbitDownItem.WasClicked() {
+            ReleaseGameplayViewAnchor();
+            viewPitchDegrees = SceneEditor3DModel.ClampInt3D(viewPitchDegrees - 10, -80, 80);
+            renderDirty = true;
+        }
+        if zoomOutButton.WasClicked()
+           or viewZoomOutItem.WasClicked() {
+            ReleaseGameplayViewAnchor();
+            viewScale = SceneEditor3DModel.ClampInt3D(viewScale - 4, 4, 120);
+            renderDirty = true;
+        }
+        if zoomInButton.WasClicked()
+           or viewZoomInItem.WasClicked() {
+            ReleaseGameplayViewAnchor();
+            viewScale = SceneEditor3DModel.ClampInt3D(viewScale + 4, 4, 120);
+            renderDirty = true;
+        }
+        if frameButton.WasClicked()
+           or viewFrameAllItem.WasClicked() {
+            FrameAll();
+            renderDirty = true;
+        }
+        if frameSelectedButton.WasClicked()
+           or viewFrameSelectedItem.WasClicked() {
+            FrameSelected();
+            renderDirty = true;
+        }
+
+    }
+
+    /// @brief Finish one frame after all authoring controls have been pumped.
+    hide func CompletePumpFrame(changedBeforeCompletion: Boolean) -> Boolean {
+        var changed = changedBeforeCompletion;
+        PumpCameraBookmarks();
+        PumpHistoryPanel();
+        if hierarchyDock.Pump() {
+            ApplyInspectorLayout();
+            renderDirty = true;
+        }
+        if inspectorDock.Pump() {
+            ApplyInspectorLayout();
+            renderDirty = true;
+        }
+        if changed { RefreshHistoryPanel(); }
+        changed = PumpViewportNavigation() or changed;
+        if viewportTargetWidth != 0
+           and InteractiveDegradeActive() == false
+           and (viewportTargetWidth != ViewportContentWidth()
+                or viewportTargetHeight != ViewportContentHeight()) {
+            // The last interactive frame rendered at reduced resolution;
+            // re-render once at full resolution now that the drag ended.
+            renderDirty = true;
+        }
+        if renderDirty { RenderViewport(); }
+        ApplyPendingWorkspaceScroll();
+        // User input only arrives between frames, so any transform-spinner
+        // change edges still set here came from this pump's programmatic
+        // refreshes; drain them so the live-edit path never mistakes them
+        // for user edits.
+        DrainTransformSpinnerEdges();
+        CaptureWorkspaceState();
+        return changed;
+    }
+}
+

@@ -1,0 +1,773 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_renderer.zia
+// Purpose: Focused renderer behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_renderer_setup.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_renderer;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_renderer_setup" as PreviousLayer;
+
+/// @brief Renderer implementation layer.
+class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetupLayer {
+
+    /// @brief Submit every runtime-backed water surface to one active frame.
+    hide override func DrawProjectWaterPreviews(
+        canvas: Canvas3D,
+        camera: Camera3D) {
+        if canvas == null or camera == null { return; }
+        var index = 0;
+        while index < projectWaterPreviews.count() {
+            Canvas3D.DrawWater(
+                canvas, projectWaterPreviews.get(index), camera);
+            index = index + 1;
+        }
+    }
+
+    /// @brief Rasterize authored meshes and materials into the embedded image.
+    hide override func RenderAuthoredViewport() -> Boolean {
+        if ConfigureViewportCamera() == false { return false; }
+        var renderMode = EffectiveViewportMode();
+        viewportRenderCanvas.Wireframe =
+            renderMode == SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME;
+        var authoredSkyPresent =
+            ApplyEnvironmentToCanvas(viewportRenderCanvas);
+        var projectPreview = ProjectPreviewRenderState();
+        // Project profiles can supply the runtime-like sky/key/fill rig for
+        // metadata-driven games. Editor assist remains only the fallback
+        // ambient floor when that profile omits ambient.
+        ApplyProjectPreviewEnvironment(
+            viewportRenderCanvas,
+            projectPreview,
+            authoredSkyPresent,
+            editorLightAssist and gameViewActive == false);
+        ApplyProjectPreviewPostFX();
+        // One explicit frame is essential: every SceneGraph.Draw otherwise
+        // opens and finalizes its own queue, resetting depth/transparency
+        // between canonical, prefab, and procedural presentation.
+        Canvas3D.Begin(
+            viewportRenderCanvas, viewportRenderCamera);
+        if renderMode != SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME {
+            ApplyProjectMaterialPreviews();
+        }
+        scene.Draw(viewportRenderCanvas, viewportRenderCamera);
+        if projectPreviewScene != null {
+            projectPreviewScene.Draw(
+                viewportRenderCanvas, viewportRenderCamera);
+        }
+        DrawProjectWaterPreviews(
+            viewportRenderCanvas, viewportRenderCamera);
+        if renderMode == SceneEditor3DModel.VIEWPORT_MODE_SHADED_WIRE {
+            // Combined mode: the wire pass draws over the shaded frame
+            // without clearing, giving Unity's Shaded Wireframe look.
+            viewportRenderCanvas.Wireframe = true;
+            scene.Draw(viewportRenderCanvas, viewportRenderCamera);
+            if projectPreviewScene != null {
+                projectPreviewScene.Draw(
+                    viewportRenderCanvas, viewportRenderCamera);
+            }
+            DrawProjectWaterPreviews(
+                viewportRenderCanvas, viewportRenderCamera);
+            viewportRenderCanvas.Wireframe = false;
+        }
+        Canvas3D.End(viewportRenderCanvas);
+        RestoreProjectMaterialPreviews();
+        var rendered: Pixels = null;
+        if viewportRenderPostFX != null
+           and renderMode != SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME {
+            // RenderTarget.AsPixels is the pre-finalization attachment.
+            // ScreenshotFinal is the runtime boundary that actually applies
+            // the retained chain before readback (ADR 0204).
+            rendered =
+                viewportRenderCanvas.ScreenshotFinal() as Pixels;
+        } else {
+            rendered = viewportRenderTarget.AsPixels() as Pixels;
+        }
+        if rendered == null { return false; }
+        var contentWidth = ViewportContentWidth();
+        var contentHeight = ViewportContentHeight();
+        if viewportTargetWidth != contentWidth
+           or viewportTargetHeight != contentHeight {
+            // Reduced-resolution interactive frame: upscale so overlays,
+            // picking, and the embedded image keep logical-frame coordinates.
+            rendered = rendered.Scale(
+                contentWidth, contentHeight) as Pixels;
+            if rendered == null { return false; }
+        }
+        if gameViewOutputFramed {
+            var composite = Pixels.New(
+                renderedViewportWidth, renderedViewportHeight);
+            if composite == null { return false; }
+            composite.FillColor(SceneEditor3DModel.GAME_VIEW_MATTE_COLOR);
+            composite.Copy(
+                ViewportContentX(),
+                ViewportContentY(),
+                rendered,
+                0, 0,
+                contentWidth,
+                contentHeight);
+            viewportPixels = composite;
+        } else {
+            viewportPixels = rendered;
+        }
+        return true;
+    }
+
+    /// @brief Draw authored geometry plus deterministic editor overlays.
+    hide override func RenderViewport() {
+        PrepareViewportFrame();
+        DrawViewportGrid();
+        DrawSceneViewportOverlays();
+        FinalizeViewportImage();
+        UpdateViewportStatus();
+    }
+
+    /// @brief Prepare the authored frame or deterministic software fallback.
+    hide func PrepareViewportFrame() {
+        renderDirty = false;
+        viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(viewYawDegrees);
+        viewPitchDegrees = SceneEditor3DModel.ClampInt3D(viewPitchDegrees, -80, 80);
+        viewScale = SceneEditor3DModel.ClampInt3D(viewScale, 4, 120);
+        viewportPixels = null;
+        viewportRenderFallback = false;
+        if scene != null and RenderAuthoredViewport() == false {
+            viewportRenderFallback = true;
+        }
+        if viewportPixels == null {
+            viewportPixels = Pixels.New(
+                renderedViewportWidth, renderedViewportHeight);
+            viewportPixels.FillColor(Color.RGB(22, 26, 34));
+        }
+        projectedX = [];
+        projectedY = [];
+    }
+
+    /// @brief Draw the editor ground grid in logical viewport coordinates.
+    hide func DrawViewportGrid() {
+        var gridColor = Color.RGB(47, 55, 67);
+        var axisX = Color.RGB(170, 70, 70);
+        var axisZ = Color.RGB(70, 110, 180);
+        var gridCenterX = Convert.NumToInt(viewTargetX);
+        var gridCenterZ = Convert.NumToInt(viewTargetZ);
+        if showGrid and gameViewActive == false {
+            var line = -10;
+            while line <= 10 {
+                var worldX = gridCenterX + line;
+                var worldZ = gridCenterZ + line;
+                var a = Project(worldX, 0.0, gridCenterZ - 10);
+                var b = Project(worldX, 0.0, gridCenterZ + 10);
+                var c = Project(gridCenterX - 10, 0.0, worldZ);
+                var d = Project(gridCenterX + 10, 0.0, worldZ);
+                var colorA = gridColor;
+                var colorB = gridColor;
+                if viewPerspective {
+                    var fade = line;
+                    if fade < 0 { fade = 0 - fade; }
+                    if fade > 7 {
+                        colorA = Color.RGB(33, 39, 48);
+                        colorB = Color.RGB(33, 39, 48);
+                    } else if fade > 3 {
+                        colorA = Color.RGB(40, 47, 58);
+                        colorB = Color.RGB(40, 47, 58);
+                    }
+                }
+                if worldX == 0 { colorA = axisZ; }
+                if worldZ == 0 { colorB = axisX; }
+                // Behind-eye projections mirror in perspective; draw only
+                // segments whose endpoints are both in front of the camera.
+                if a.visible and b.visible {
+                    viewportPixels.DrawLine(a.x, a.y, b.x, b.y, colorA);
+                }
+                if c.visible and d.visible {
+                    viewportPixels.DrawLine(c.x, c.y, d.x, d.y, colorB);
+                }
+                line = line + 1;
+            }
+        }
+    }
+
+    /// @brief Draw scene markers, gizmos, and editor-only node overlays.
+    hide func DrawSceneViewportOverlays() {
+        if scene == null {
+            DrawUnavailableSceneMessage();
+            return;
+        }
+        var index = 0;
+        while index < flatNodes.count() {
+            DrawSceneNodeViewportOverlay(flatNodes.get(index), index);
+            index = index + 1;
+        }
+        if gameViewActive == false {
+            DrawRouteOverlays();
+            DrawSelectionFeedback();
+            DrawTerrainBrushFeedback();
+            DrawVertexSnapFeedback();
+        }
+    }
+
+    /// @brief Draw the deterministic fallback message for an invalid scene.
+    hide func DrawUnavailableSceneMessage() {
+        var messageY = renderedViewportHeight / 2 - 12;
+        viewportPixels.DrawTextCentered(
+            messageY, "Unable to display this 3D scene",
+            Color.RGB(230, 115, 115));
+        viewportPixels.DrawTextCentered(
+            messageY + 22, "Repair the VSCN or create a new scene",
+            Color.RGB(180, 188, 202));
+    }
+
+    /// @brief Draw one node's marker, hierarchy link, gizmo, and components.
+    hide func DrawSceneNodeViewportOverlay(node: SceneNode,
+                                           index: Integer) {
+        var point = RegisterNodeProjection(node);
+        DrawNodeParentLink(node, point);
+        var markerColor = ViewportNodeMarkerColor(node, index);
+        if gameViewActive == false
+           and terrainSculptEnabled == false
+           and index == selectedIndex and point.visible {
+            markerColor = Color.RGB(255, 195, 78);
+            DrawSelectedNodeGizmo(node, point);
+        }
+        DrawNodeMarkerAndComponentOverlays(
+            node, index, point, markerColor);
+    }
+
+    /// @brief Register one node's stable pick point and return its origin.
+    hide func RegisterNodeProjection(node: SceneNode)
+        -> SceneEditor3DModel.ProjectedPoint {
+        var world = node.WorldPosition;
+        var point = Project(world.X, world.Y, world.Z);
+        var pickPoint = point;
+        if node.Light != null and node.Mesh == null {
+            var lightWorld = LightWorldPosition(node, node.Light);
+            pickPoint = Project(lightWorld.X, lightWorld.Y, lightWorld.Z);
+        }
+        if pickPoint.visible {
+            projectedX.add(pickPoint.x);
+            projectedY.add(pickPoint.y);
+        } else {
+            // Behind-eye projections mirror; keep them unpickable.
+            projectedX.add(-100000);
+            projectedY.add(-100000);
+        }
+        return point;
+    }
+
+    /// @brief Draw one visible parent link without exposing mirrored points.
+    hide func DrawNodeParentLink(
+        node: SceneNode,
+        point: SceneEditor3DModel.ProjectedPoint) {
+        var parent = node.Parent;
+        var parentIndex = FindFlatIndex(parent);
+        if gameViewActive or showMarkers == false or parentIndex < 0 {
+            return;
+        }
+        var parentWorld = parent.WorldPosition;
+        var parentPoint = Project(
+            parentWorld.X, parentWorld.Y, parentWorld.Z);
+        if point.visible and parentPoint.visible {
+            viewportPixels.DrawLine(
+                parentPoint.x, parentPoint.y, point.x, point.y,
+                Color.RGB(86, 96, 112));
+        }
+    }
+
+    /// @brief Resolve one node's marker color from type and selection state.
+    hide func ViewportNodeMarkerColor(node: SceneNode,
+                                      index: Integer) -> Integer {
+        var markerColor = Color.RGB(150, 165, 188);
+        if node.Mesh != null {
+            markerColor = Color.RGB(91, 180, 235);
+        } else if node.Light != null {
+            markerColor = Color.RGB(255, 190, 74);
+        } else if node.Camera != null {
+            markerColor = Color.RGB(126, 214, 204);
+        } else {
+            var componentTint = NodeComponentTint(node);
+            if componentTint != 0 { markerColor = componentTint; }
+        }
+        if node.Visible == false {
+            markerColor = Color.RGB(92, 98, 108);
+        }
+        if scene_selection.Contains(selectedIndices, index) {
+            markerColor = Color.RGB(104, 220, 255);
+        }
+        return markerColor;
+    }
+
+    /// @brief Draw the active transform gizmo for one selected node.
+    hide func DrawSelectedNodeGizmo(
+        node: SceneNode,
+        point: SceneEditor3DModel.ProjectedPoint) {
+        var xEnd = GizmoAxisEndpoint(node, SceneEditor3DModel.GIZMO_AXIS_X);
+        var yEnd = GizmoAxisEndpoint(node, SceneEditor3DModel.GIZMO_AXIS_Y);
+        var zEnd = GizmoAxisEndpoint(node, SceneEditor3DModel.GIZMO_AXIS_Z);
+        var selectedXColor = Color.RGB(170, 70, 70);
+        var selectedYColor = Color.RGB(80, 190, 105);
+        var selectedZColor = Color.RGB(70, 110, 180);
+        if gizmoHoverAxis == SceneEditor3DModel.GIZMO_AXIS_X
+           or gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_X {
+            selectedXColor = Color.RGB(255, 105, 105);
+        }
+        if gizmoHoverAxis == SceneEditor3DModel.GIZMO_AXIS_Y
+           or gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_Y {
+            selectedYColor = Color.RGB(115, 240, 140);
+        }
+        if gizmoHoverAxis == SceneEditor3DModel.GIZMO_AXIS_Z
+           or gizmoDragAxis == SceneEditor3DModel.GIZMO_AXIS_Z {
+            selectedZColor = Color.RGB(105, 165, 255);
+        }
+        if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+            DrawGizmoRotationRing(point, yEnd, zEnd, selectedXColor);
+            DrawGizmoRotationRing(point, zEnd, xEnd, selectedYColor);
+            DrawGizmoRotationRing(point, xEnd, yEnd, selectedZColor);
+            return;
+        }
+        DrawSelectedNodeGizmoPlanes(point, xEnd, yEnd, zEnd);
+        viewportPixels.DrawLine(
+            point.x, point.y, xEnd.x, xEnd.y, selectedXColor);
+        viewportPixels.DrawLine(
+            point.x, point.y, yEnd.x, yEnd.y, selectedYColor);
+        viewportPixels.DrawLine(
+            point.x, point.y, zEnd.x, zEnd.y, selectedZColor);
+        DrawGizmoHandle(xEnd, selectedXColor);
+        DrawGizmoHandle(yEnd, selectedYColor);
+        DrawGizmoHandle(zEnd, selectedZColor);
+    }
+
+    /// @brief Draw highlighted move/scale planes for the active gizmo.
+    hide func DrawSelectedNodeGizmoPlanes(
+        point: SceneEditor3DModel.ProjectedPoint,
+        xEnd: SceneEditor3DModel.ProjectedPoint,
+        yEnd: SceneEditor3DModel.ProjectedPoint,
+        zEnd: SceneEditor3DModel.ProjectedPoint) {
+        if gizmoMode != SceneEditor3DModel.GIZMO_MODE_MOVE
+           and gizmoMode != SceneEditor3DModel.GIZMO_MODE_SCALE {
+            return;
+        }
+        var xyFill = Color.RGB(84, 78, 38);
+        var xyOutline = Color.RGB(176, 158, 68);
+        var xzFill = Color.RGB(82, 48, 72);
+        var xzOutline = Color.RGB(184, 92, 154);
+        var yzFill = Color.RGB(36, 80, 82);
+        var yzOutline = Color.RGB(72, 174, 178);
+        if gizmoHoverAxis == SceneEditor3DModel.GIZMO_PLANE_XY
+           or gizmoDragAxis == SceneEditor3DModel.GIZMO_PLANE_XY {
+            xyFill = Color.RGB(154, 132, 44);
+            xyOutline = Color.RGB(255, 222, 96);
+        }
+        if gizmoHoverAxis == SceneEditor3DModel.GIZMO_PLANE_XZ
+           or gizmoDragAxis == SceneEditor3DModel.GIZMO_PLANE_XZ {
+            xzFill = Color.RGB(148, 66, 122);
+            xzOutline = Color.RGB(255, 132, 218);
+        }
+        if gizmoHoverAxis == SceneEditor3DModel.GIZMO_PLANE_YZ
+           or gizmoDragAxis == SceneEditor3DModel.GIZMO_PLANE_YZ {
+            yzFill = Color.RGB(44, 142, 146);
+            yzOutline = Color.RGB(104, 238, 242);
+        }
+        var crossed = gizmoMode == SceneEditor3DModel.GIZMO_MODE_SCALE;
+        DrawGizmoPlane(
+            point, xEnd, yEnd, xyFill, xyOutline, crossed);
+        DrawGizmoPlane(
+            point, xEnd, zEnd, xzFill, xzOutline, crossed);
+        DrawGizmoPlane(
+            point, yEnd, zEnd, yzFill, yzOutline, crossed);
+    }
+
+    /// @brief Draw one node's marker and authored component overlays.
+    hide func DrawNodeMarkerAndComponentOverlays(
+        node: SceneNode,
+        index: Integer,
+        point: SceneEditor3DModel.ProjectedPoint,
+        markerColor: Integer) {
+        if gameViewActive == false and showMarkers and point.visible {
+            if node.Mesh != null {
+                viewportPixels.DrawFrame(
+                    point.x - 6, point.y - 6, 13, 13, markerColor);
+            } else {
+                viewportPixels.DrawDisc(
+                    point.x, point.y, 4, markerColor);
+            }
+        }
+        if gameViewActive == false
+           and node.Light != null and showLightOverlays {
+            DrawLightOverlay(node, node.Light, index == selectedIndex);
+        }
+        if gameViewActive == false
+           and node.Camera != null and showCameraOverlays {
+            DrawCameraOverlay(node, index == selectedIndex);
+        }
+        if gameViewActive == false and showColliderOverlays {
+            DrawColliderOverlay(node, index == selectedIndex);
+        }
+    }
+
+    /// @brief Publish the completed pixels and logical viewport dimensions.
+    hide func FinalizeViewportImage() {
+        if gameViewActive == false {
+            DrawCameraPreviewInset();
+            DrawOrientationNavigator();
+        }
+        viewportImage.SetPixels(
+            viewportPixels, renderedViewportWidth, renderedViewportHeight);
+        viewportImage.SetSize(renderedViewportWidth, renderedViewportHeight);
+        SetLogicalContentSize(
+            viewportScroll,
+            renderedViewportWidth, renderedViewportHeight);
+    }
+
+    /// @brief Publish detailed, compact, and accessible viewport status.
+    hide func UpdateViewportStatus() {
+        var clipped = "";
+        if hierarchyClipped { clipped = "  |  hierarchy preview clipped"; }
+        var count = 0;
+        if scene != null { count = scene.NodeCount - 1; }
+        var lightCount = AuthoredLightCount();
+        var interaction = ViewportInteractionStatus();
+        var snapStatus = ViewportSnapStatus();
+        var renderStatus = ViewportModeLabel(EffectiveViewportMode());
+        if viewportRenderFallback {
+            renderStatus = renderStatus + " fallback";
+        }
+        var projectionLabel = "persp";
+        if viewPerspective == false { projectionLabel = "ortho"; }
+        var statsStatus = ViewportStatsStatus();
+        var navigationStatus = ViewportNavigationStatus();
+        var previewStatus = DetailedProjectPreviewStatus();
+        var previewStateStatus = ProjectPreviewStateStatus();
+        var accessiblePreviewState = AccessibleProjectPreviewState();
+        var compactPreviewStatus = CompactProjectPreviewStatus();
+        var compactClipped = CompactViewportClippedStatus();
+        var detailStatus =
+            count + " nodes  |  view " + viewYawDegrees
+            + "/" + viewPitchDegrees + "  |  " + viewScale + " px/u"
+            + "  |  " + projectionLabel
+            + "  |  " + lightCount + " light(s)"
+            + "  |  " + renderStatus
+            + "  |  " + scene_transform_3d.ModeLabel(gizmoMode)
+            + snapStatus + statsStatus + navigationStatus
+            + previewStatus + clipped + interaction;
+        viewStatusLabel.SetTooltip(detailStatus);
+        if gameViewActive {
+            if gameViewOutputFramed {
+                viewStatusLabel.SetText(
+                    "Game View  |  " + GameOutputSizeLabel()
+                    + previewStateStatus
+                    + compactPreviewStatus + compactClipped);
+                viewportImage.SetAccessibleDescription(
+                    count + " scene nodes and " + lightCount
+                    + " authored lights plus " + projectPreviewInstanceCount
+                    + " active project previews, "
+                    + projectPreviewFilteredCount
+                    + " filtered project previews, and "
+                    + projectMaterialPreviewCount
+                    + " runtime materials in the locked "
+                    + GameOutputSizeLabel()
+                    + " project gameplay frame using "
+                    + accessiblePreviewState
+                    + ". Exit Game View to navigate "
+                    + "or edit.");
+            } else {
+                viewStatusLabel.SetText(
+                    "Game View  |  " + projectionLabel
+                    + "  |  " + viewScale + " px/u"
+                    + previewStateStatus + compactPreviewStatus
+                    + compactClipped);
+                viewportImage.SetAccessibleDescription(
+                    count + " scene nodes and " + lightCount
+                    + " authored lights plus "
+                    + projectPreviewInstanceCount
+                    + " active project previews, "
+                    + projectPreviewFilteredCount
+                    + " filtered project previews, and "
+                    + projectMaterialPreviewCount
+                    + " runtime materials in clean shaded Game View. "
+                    + "Middle or right drag orbits, Shift pans, the wheel "
+                    + "dollies, and right-drag enables fly navigation. "
+                    + "Exit to edit.");
+            }
+        } else {
+            viewStatusLabel.SetText(
+                count + " nodes  |  " + lightCount + " lights"
+                + previewStateStatus + compactPreviewStatus
+                + "  |  " + renderStatus
+                + "  |  " + scene_transform_3d.ModeLabel(gizmoMode)
+                + snapStatus + statsStatus + navigationStatus
+                + compactClipped + interaction);
+            viewportImage.SetAccessibleDescription(
+                count + " scene nodes and " + lightCount
+                + " authored lights plus " + projectPreviewInstanceCount
+                + " active project previews, "
+                + projectPreviewFilteredCount
+                + " filtered project previews, and "
+                + projectMaterialPreviewCount
+                + " runtime materials in " + renderStatus
+                + " mode at " + viewScale + " pixels per world unit using "
+                + accessiblePreviewState + ". "
+                + "Click visible meshes to select; Shift adds and Control or "
+                + "Command toggles. Middle or right drag orbits; add Shift "
+                + "to pan. Terrain sculpting paints the selected canonical "
+                + "game mesh with one history entry per stroke. Hold V to "
+                + "drag a selected mesh vertex or pivot "
+                + "onto another vertex or visible surface; Shift+V toggles "
+                + "that mode. The top-right View navigator exposes Top, Front, "
+                + "Right, Bottom, Back, Left, and the projection toggle.");
+        }
+    }
+
+    /// @brief Describe the active or hovered direct-manipulation gesture.
+    hide func ViewportInteractionStatus() -> String {
+        if terrainStrokeActive {
+            return "  |  "
+                + Str.ToLower(
+                    scene_terrain_3d.BrushModeName(
+                        EffectiveTerrainBrushMode()))
+                + " terrain stroke";
+        }
+        if terrainSculptEnabled and terrainBrushHoverValid {
+            return "  |  "
+                + Str.ToLower(
+                    scene_terrain_3d.BrushModeName(
+                        EffectiveTerrainBrushMode()))
+                + " terrain brush";
+        }
+        if vertexSnapDragActive {
+            var status = "  |  vertex move";
+            if vertexSnapTarget.valid {
+                status = status + " to "
+                    + Str.ToLower(
+                        VertexSnapKindLabel(vertexSnapTarget.kind));
+            }
+            return status;
+        }
+        if vertexSnapSource.valid {
+            return "  |  "
+                + Str.ToLower(VertexSnapKindLabel(vertexSnapSource.kind))
+                + " snap source";
+        }
+        if gizmoDragAxis != SceneEditor3DModel.GIZMO_AXIS_NONE {
+            var status = "  |  "
+                + Str.ToLower(scene_transform_3d.ModeAction(gizmoMode))
+                + " " + GizmoHandleLabel(gizmoDragAxis);
+            if gizmoMode == SceneEditor3DModel.GIZMO_MODE_ROTATE {
+                var tenths = Convert.NumToInt(gizmoDragAccumulated * 10.0);
+                var fraction = tenths % 10;
+                if fraction < 0 { fraction = 0 - fraction; }
+                status = status + " "
+                    + (tenths / 10) + "." + fraction + " deg";
+            }
+            return status;
+        }
+        if gizmoHoverAxis != SceneEditor3DModel.GIZMO_AXIS_NONE {
+            return "  |  " + GizmoHandleLabel(gizmoHoverAxis);
+        }
+        if orientationHoverFace
+           != SceneEditor3DModel.ORIENTATION_FACE_NONE {
+            return "  |  view "
+                + OrientationFaceLabel(orientationHoverFace);
+        }
+        return "";
+    }
+
+    /// @brief Describe active transform and vertex snapping.
+    hide func ViewportSnapStatus() -> String {
+        var status = "";
+        if gizmoSnapEnabled {
+            status = " snap "
+                + scene_transform_3d.SnapDescription(gizmoMode);
+        }
+        if vertexSnapEnabled { status = status + " vertex"; }
+        return status;
+    }
+
+    /// @brief Describe optional visible-node and renderer timing statistics.
+    hide func ViewportStatsStatus() -> String {
+        if gameViewActive or showStats == false or scene == null {
+            return "";
+        }
+        var status = "  |  visible " + scene.VisibleNodeCount
+            + " culled " + scene.CulledCount;
+        if viewportRenderCanvas != null {
+            status = status
+                + "  |  cpu "
+                + PassMsTenths(0) + "/"
+                + PassMsTenths(1) + "/"
+                + PassMsTenths(2) + "/"
+                + PassMsTenths(3) + " ms";
+        }
+        return status;
+    }
+
+    /// @brief Describe active fly and camera look-through navigation.
+    hide func ViewportNavigationStatus() -> String {
+        var status = "";
+        if flyActive { status = "  |  fly WASD/QE (wheel speed)"; }
+        if ActiveLookThroughNode() != null {
+            status = status + "  |  look-through "
+                + NodeDisplayName(lookThroughNode);
+        }
+        return status;
+    }
+
+    /// @brief Describe complete project-preview counts for the tooltip.
+    hide func DetailedProjectPreviewStatus() -> String {
+        var status = "";
+        if projectPreviewInstanceCount > 0 {
+            status = "  |  "
+                + projectPreviewInstanceCount + " project preview(s)";
+        }
+        if projectPreviewDirectModelCount > 0 {
+            status = status + "  |  "
+                + projectPreviewDirectModelCount + " direct model(s)";
+        }
+        if projectPreviewFallbackCount > 0 {
+            status = status + "  |  "
+                + projectPreviewFallbackCount + " preview fallback(s)";
+        }
+        if projectMaterialPreviewCount > 0 {
+            status = status + "  |  "
+                + projectMaterialPreviewCount + " runtime material(s)";
+        }
+        if projectPreviewMissingCount > 0 {
+            status = status + "  |  "
+                + projectPreviewMissingCount + " preview missing";
+        }
+        if projectMaterialPreviewMissingCount > 0 {
+            status = status + "  |  "
+                + projectMaterialPreviewMissingCount
+                + " material preview missing";
+        }
+        if projectPreviewClipped {
+            status = status + "  |  preview cap";
+        }
+        if projectPreviewFilteredCount > 0 {
+            status = status + "  |  "
+                + projectPreviewFilteredCount + " preview(s) filtered";
+        }
+        if HasProjectPreviewFilter() {
+            status = status + "  |  "
+                + componentSchema.nodePreviewFilter3D.label + " "
+                + ProjectPreviewFilterSelectionLabel();
+        }
+        return status;
+    }
+
+    /// @brief Describe the selected preview state in compact chrome.
+    hide func ProjectPreviewStateStatus() -> String {
+        if HasProjectPreviewFilter() == false { return ""; }
+        return "  |  " + ProjectPreviewFilterSelectionLabel();
+    }
+
+    /// @brief Describe the selected preview state for accessibility text.
+    hide func AccessibleProjectPreviewState() -> String {
+        if HasProjectPreviewFilter() == false {
+            return "all project-authored preview content";
+        }
+        return componentSchema.nodePreviewFilter3D.label + " "
+            + ProjectPreviewFilterSelectionLabel();
+    }
+
+    /// @brief Describe preview/model/filter counts in compact chrome.
+    hide func CompactProjectPreviewStatus() -> String {
+        var status = "";
+        if projectPreviewInstanceCount > 0 {
+            status = "  |  " + projectPreviewInstanceCount + " previews";
+        }
+        if projectPreviewDirectModelCount <= 0
+           and projectPreviewFilteredCount <= 0 {
+            return status;
+        }
+        if status == "" { status = "  |  0 previews"; }
+        status = status + " (";
+        if projectPreviewDirectModelCount > 0 {
+            status = status + projectPreviewDirectModelCount + " models";
+        }
+        if projectPreviewFilteredCount > 0 {
+            if projectPreviewDirectModelCount > 0 {
+                status = status + ", ";
+            }
+            status = status + projectPreviewFilteredCount + " filtered";
+        }
+        return status + ")";
+    }
+
+    /// @brief Collapse hierarchy and preview clipping into one status token.
+    hide func CompactViewportClippedStatus() -> String {
+        if hierarchyClipped or projectPreviewClipped {
+            return "  |  clipped";
+        }
+        return "";
+    }
+}

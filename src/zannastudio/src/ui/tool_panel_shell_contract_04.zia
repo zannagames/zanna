@@ -1,0 +1,168 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/tool_panel_shell_contract_04.zia
+// Purpose: Virtual tool-panel method contract segment 4.
+// Key invariants:
+//   - Focused layers preserve stable ToolPanelShell state and bounded row behavior.
+// Ownership/Lifetime:
+//   - AppShell owns widgets; the public facade owns inherited controller state.
+// Links: zannastudio/src/ui/tool_panel_shell.zia
+//
+//===----------------------------------------------------------------------===//
+
+module tool_panel_shell_contract_04;
+
+bind "../ui/output_cache";
+bind "../ui/tool_panel_groups";
+bind "../ui/tool_panel_model";
+bind "../ui/tool_panel_text";
+bind "../ui/workspace_dock";
+bind "../services/theme_colors";
+bind Zanna.GUI as GUI;
+bind Zanna.Collections.Seq as Seq;
+bind Input = Zanna.Input;
+bind Obj = Zanna.Core.Object;
+bind Convert = Zanna.Core.Convert;
+bind Str = Zanna.String;
+bind "tool_panel_shell_model" as ToolPanelModel;
+bind "tool_panel_shell_contract_03" as PreviousContract;
+
+class ToolPanelShellContract04 extends PreviousContract.ToolPanelShellContract03 {
+    hide func SearchPanelMinimumHeight() -> Number { return 0.0; }
+
+    hide func ApplyBottomPanelSplit(_minimumPanelHeight: Number) {}
+
+    hide func ApplySidePanelSplitAt(_location: Integer) {}
+
+    hide func CollapseToolDockAt(_location: Integer) {}
+
+    hide func CaptureSplitDrag() {}
+
+    hide func CaptureSideSplitDragAt(_location: Integer) {}
+
+    expose func SetBottomSplitPct(_pct: Integer) {}
+
+    expose func TakeChangedSplitPercent() -> Integer { return 0; }
+
+    hide func ApplyResponsiveToolTabLabels() {}
+
+    hide func HideToolPanelSurface(_kind: Integer) {}
+
+    hide func HideToolPanelsAt(_location: Integer) {}
+
+    hide func PrepareToolPanel(_kind: Integer,
+                               _minimumBottomHeight: Number) {}
+
+    hide func UpdateToolGroupLabel(_location: Integer, _kind: Integer) {}
+
+    hide func HideToolGroupAt(_location: Integer) {}
+
+    hide func HideAllToolPanels() {}
+
+    expose func HidePanelArea() {}
+
+    expose func EnterFocusPresentation() {}
+
+    expose func ExitFocusPresentation() {}
+
+    expose func IsFocusPresentationActive() -> Boolean { return false; }
+
+    expose func GetActiveToolPanelId() -> String { return ""; }
+
+    expose func SetActiveToolPanelId(_id: String) {}
+
+    expose func ShowProblemsPanel() {}
+
+    expose func HideProblemsPanel() {}
+
+    expose func ShowOutputPanel() {}
+
+    expose func HideOutputPanel() {}
+
+    expose func ShowSearchPanel() {}
+
+    expose func HideSearchPanel() {}
+
+    expose func ShowReferencesPanel() {}
+
+    expose func HideReferencesPanel() {}
+
+    expose func ShowVariablesPanel() {}
+
+    expose func ShowCallStackPanel() {}
+
+    expose func HideCallStackPanel() {}
+
+    expose func ShowDebugPanel() {}
+
+    expose func ShowTerminalPanel() {}
+
+    expose func HideTerminalPanel() {}
+
+    expose func ToggleTerminalPanel() {}
+
+    expose func IsTerminalPanelVisible() -> Boolean { return false; }
+
+    expose func GetWatchExpressionText() -> String { return ""; }
+
+    expose func SetWatchExpressionText(_text: String) {}
+
+    expose func ClearWatchExpression() {}
+
+    expose func FocusWatchExpression() {}
+
+    expose func IsWatchExpressionFocused() -> Boolean { return false; }
+
+    expose func WatchAddWasRequested() -> Boolean { return false; }
+
+    expose func WatchRemoveWasRequested() -> Boolean { return false; }
+
+    expose func WatchRefreshWasRequested() -> Boolean { return false; }
+
+    expose func WatchClearWasRequested() -> Boolean { return false; }
+
+    expose func SetWatchToolbarState(_sessionAvailable: Boolean,
+                                     _selectedWatch: Boolean,
+                                     _stopped: Boolean,
+                                     _watchCount: Integer) {}
+
+    expose func IsSearchInputFocused() -> Boolean { return false; }
+
+    expose func IsSearchRunInputFocused() -> Boolean { return false; }
+
+    expose func FocusSearchQuery() {}
+
+    expose func IsSearchPanelActive() -> Boolean { return false; }
+
+    expose func IsOutputPanelActive() -> Boolean { return false; }
+
+    expose func IsProblemsPanelActive() -> Boolean { return false; }
+
+    expose func IsReferencesPanelActive() -> Boolean { return false; }
+
+    expose func IsDebugPanelActive() -> Boolean { return false; }
+
+    expose func IsCallStackPanelActive() -> Boolean { return false; }
+
+    expose func GetPanelSelectionRevision() -> Integer { return 0; }
+
+    hide func SetActiveToolPanelKind(_kind: Integer) {}
+
+    expose func HideDebugPanel() {}
+
+    hide func ShowFallbackToolPanelAt(_location: Integer) {}
+
+    hide func ShowFallbackToolPanelWithoutTerminal() {}
+
+    hide func HasActiveProblemsContent() -> Boolean { return false; }
+
+    expose func PumpToolTabs() {}
+
+    hide func PumpToolTabSelectionAt(_location: Integer) {}
+
+}

@@ -71,7 +71,16 @@ func fail(shell: app_shell.AppShell,
     Terminal.Say("RESULT: fail " + reason);
 }
 
-func main() {
+/// @brief State shared by watch layout and interaction scenarios.
+class WatchToolbarProbeContext {
+    expose app_shell.AppShell shell;
+    expose debug_session.DebugSession session;
+    expose GUI.TestHarness harness;
+}
+
+/// @brief Verify initial state and responsive watch-toolbar containment.
+func VerifyWatchToolbarLayout(
+    ctx: WatchToolbarProbeContext) -> Boolean {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Watch Toolbar Probe", 720, 520);
     var session = new debug_session.DebugSession();
@@ -91,7 +100,7 @@ func main() {
        or shell.toolPanels.watchRefreshButton.IsEnabled()
        or shell.toolPanels.watchClearButton.IsEnabled() {
         fail(shell, null, "initial watch surface state");
-        return;
+        return false;
     }
 
     // Side docking and whole-UI zoom must reflow one stable control tree rather
@@ -148,7 +157,7 @@ func main() {
                + shell.toolPanels.watchClearButton.GetScreenWidth())
             + " listY=" + shell.toolPanels.variablesListBox.GetScreenY());
         fail(shell, null, "watch controls overflowed the zoomed side dock");
-        return;
+        return false;
     }
 
     shell.app.SetUiScale(1.0);
@@ -162,8 +171,21 @@ func main() {
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
         fail(shell, harness, "automation app binding");
-        return;
+        return false;
     }
+
+    ctx.shell = shell;
+    ctx.session = session;
+    ctx.harness = harness;
+    return true;
+}
+
+/// @brief Verify keyboard and pointer add, remove, duplicate, and clear flows.
+func VerifyWatchToolbarActions(
+    ctx: WatchToolbarProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var session = ctx.session;
+    var harness = ctx.harness;
 
     // The command route seeds and focuses the persistent Variables field.
     debug_commands.OpenWatchInput(shell, "score + 1");
@@ -176,7 +198,7 @@ func main() {
        or shell.statusShell.lastLeftStatus
           != "Enter a watch expression and press Enter" {
         fail(shell, harness, "Add Watch did not focus the inline field");
-        return;
+        return false;
     }
 
     // Submit through the real keyboard path.
@@ -191,7 +213,7 @@ func main() {
        or shell.toolPanels.watchClearButton.IsEnabled() == false
        or shell.toolPanels.watchRefreshButton.IsEnabled() {
         fail(shell, harness, "Enter did not add exactly one watch");
-        return;
+        return false;
     }
 
     // A rejected duplicate remains editable instead of disappearing.
@@ -208,7 +230,7 @@ func main() {
        or Str.IndexOf(shell.statusShell.lastLeftStatus,
                       "Watch already exists") == 0 {
         fail(shell, harness, "duplicate watch did not remain inline");
-        return;
+        return false;
     }
 
     // Select the structured watch row and remove it through a real button hit.
@@ -219,7 +241,7 @@ func main() {
     shell.Render();
     if shell.toolPanels.watchRemoveButton.IsEnabled() == false {
         fail(shell, harness, "selected watch did not enable Remove");
-        return;
+        return false;
     }
     Click(shell, harness, shell.toolPanels.watchRemoveButton);
     var removed = debug_commands.HandleWatchToolbar(shell, session);
@@ -237,7 +259,7 @@ func main() {
             + " clearEnabled=" + shell.toolPanels.watchClearButton.IsEnabled()
             + " status=" + shell.statusShell.lastLeftStatus);
         fail(shell, harness, "Remove did not target the selected watch");
-        return;
+        return false;
     }
 
     // Add two expressions, then clear them through the visible toolbar.
@@ -249,7 +271,7 @@ func main() {
     if debug_commands.HandleWatchToolbar(shell, session) == false
        or session.WatchCount() != 1 {
         fail(shell, harness, "pointer Add did not create a watch");
-        return;
+        return false;
     }
     shell.Poll();
     shell.toolPanels.SetWatchExpressionText("right");
@@ -259,7 +281,7 @@ func main() {
     if debug_commands.HandleWatchToolbar(shell, session) == false
        or session.WatchCount() != 2 {
         fail(shell, harness, "second pointer Add did not create a watch");
-        return;
+        return false;
     }
     shell.Poll();
     debug_commands.HandleWatchToolbar(shell, session);
@@ -287,10 +309,18 @@ func main() {
             + "x" + shell.toolPanels.watchToolbar.GetScreenHeight()
             + " status=" + shell.statusShell.lastLeftStatus);
         fail(shell, harness, "Clear did not remove every watch");
-        return;
+        return false;
     }
 
-    harness.UnbindApp();
-    shell.Destroy();
+    return true;
+}
+
+func main() {
+    var ctx = new WatchToolbarProbeContext();
+    if VerifyWatchToolbarLayout(ctx) == false { return; }
+    if VerifyWatchToolbarActions(ctx) == false { return; }
+
+    ctx.harness.UnbindApp();
+    ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

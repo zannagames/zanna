@@ -1,0 +1,636 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_editor_2d_probe_part_2.zia
+// Purpose: Serial 2D editor probe scenarios, part 2 of 2.
+// Key invariants:
+//   - Scenarios preserve the original execution order and shared fixture.
+//   - Failure paths retain their original cleanup and RESULT diagnostics.
+// Ownership/Lifetime: Borrows one SceneEditor2DProbeContext from the entry probe.
+// Links: zannastudio/src/probes/scene_editor_2d_probe.zia,
+//        zannastudio/src/probes/scene_editor_2d_probe_context.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_2d_probe_part_2;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../core/recovery_store";
+bind "../commands/command_context";
+bind "../commands/file_commands";
+bind "../commands/main_command_dispatcher";
+bind "../editor/editor_engine";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_asset_browser";
+bind "../ui/scene_clipboard";
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+bind "../ui/scene_tileset_2d";
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind Terminal = Zanna.Terminal;
+
+// ============================================================================
+// MODULE: scene_editor_2d_probe
+// PURPOSE: Pin the 2D visual surface's document, gesture, tileset, and history
+//          contracts through the same public controller used by Studio.
+//
+// WHERE-THIS-FITS: This display probe complements SceneDocument runtime tests
+//          by exercising real widgets, Pixels assets, and document ownership.
+//
+// TEACHING-NOTE: Reloading external pixels is intentionally tested separately
+//          from assigning their path because only assignment is scene data.
+// ============================================================================
+
+bind "scene_editor_2d_probe_context" as Probe;
+bind "scene_editor_2d_probe_part_2_hierarchy" as HierarchyScenarios;
+
+/// @brief Run the VerifyComponentsAndBatchProperties scenario against the shared fixture.
+expose func VerifyComponentsAndBatchProperties(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var authoredContent = ctx.authoredContent;
+    var groupSelection = ctx.groupSelection;
+    var componentDir = ctx.componentDir;
+    var componentProject = ctx.componentProject;
+    var previousComponentScenePath = ctx.previousComponentScenePath;
+
+    var singleComponentSelection: List[Integer] = [];
+    singleComponentSelection.add(0);
+    editor.componentPalette.SelectComponent("enemy-spawn");
+    editor.componentPalette.SelectField("hp");
+    editor.SelectSceneObjects(singleComponentSelection, 0);
+    editor.componentPalette.SelectField("hp");
+    var hpRow = -1;
+    var propScan = 0;
+    while propScan < editor.objectPropertyKeys.count() {
+        if editor.objectPropertyKeys.get(propScan) == "hp" {
+            hpRow = propScan;
+        }
+        propScan = propScan + 1;
+    }
+    if editor.EditSelectedComponentField() == false
+       or hpRow < 0
+       or editor.objectProperties.KeyTextAt(hpRow) != "hp"
+       or editor.objectProperties.KindIndexAt(hpRow)
+          != scene_editor_2d.PROPERTY_TYPE_INT
+       or editor.objectProperties.ValueTextAt(hpRow) != "25"
+       or sceneDoc.content != authoredContent {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, "2D schema field did not populate the raw typed editor");
+        return false;
+    }
+    sceneDoc.filePath = previousComponentScenePath;
+    componentProject.CloseProject();
+    editor.SetWorkspaceContext(null);
+    Probe.removeTempDir(componentDir);
+
+    if editor.SelectSceneObjects(groupSelection, 1) == false
+       or editor.selectedObjects.count() != 2
+       or editor.applyObjectButton.IsEnabled()
+       or editor.objectTypeInput.IsEnabled()
+       or editor.objectArrangeDropdown.IsEnabled() == false
+       or editor.arrangeObjectButton.IsEnabled() == false
+       or editor.objectProperties.RowCount() != 1
+       or editor.objectProperties.hasDraftRow == false
+       or editor.removeObjectPropertyButton.IsEnabled() == false
+       or editor.duplicateObjectButton.IsEnabled() == false
+       or editor.removeObjectButton.IsEnabled() == false {
+        Probe.fail(shell, "2D group selection left single-object actions ambiguous");
+        return false;
+    }
+
+    var batchDraftRow = editor.objectProperties.rows.get(0);
+    batchDraftRow.keyInput.Focus();
+    if batchDraftRow.keyInput.IsFocused() == false
+       or editor.SceneSelectionCommandsOwnFocus() {
+        Probe.fail(shell, "2D scene selection shortcuts escaped a property input");
+        return false;
+    }
+    var hierarchyWasMaster = editor.objectPaneBox.IsVisible() == false;
+    if hierarchyWasMaster {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
+    editor.objectTree.Focus();
+    if editor.objectTree.IsFocused() == false
+       or editor.SceneSelectionCommandsOwnFocus() == false {
+        Probe.fail(shell, "2D hierarchy focus did not own scene selection shortcuts");
+        return false;
+    }
+    if hierarchyWasMaster {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(sceneDoc);
+        shell.Render();
+    }
+
+    // Arrow nudging belongs only to the canvas focus proxy. A property field
+    // keeps its native arrow behavior, while one viewport keypress moves the
+    // complete selection and creates exactly one history entry.
+    var nudgeHarness = GUI.TestHarness.New();
+    if nudgeHarness.BindApp(shell.app) == false {
+        Probe.fail(shell, "2D precision nudge harness did not bind");
+        return false;
+    }
+    var nudgeBaseline = sceneDoc.content;
+    var nudgeRevision = editor.GetRevision();
+    var nudgeFirstX = editor.scene.ObjectX(0);
+    var nudgeSecondX = editor.scene.ObjectX(1);
+    batchDraftRow.keyInput.Focus();
+    nudgeHarness.SendKey("right", 0);
+    nudgeHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    if sceneDoc.content != nudgeBaseline
+       or editor.GetRevision() != nudgeRevision {
+        nudgeHarness.UnbindApp();
+        Probe.fail(shell, "2D arrow nudge escaped a focused property input");
+        return false;
+    }
+    editor.mode = scene_editor_2d.MODE_SELECT;
+    editor.selectButton.Focus();
+    nudgeHarness.SendKey("right", 0);
+    nudgeHarness.DispatchPending();
+    editor.Pump(sceneDoc);
+    if editor.scene.ObjectX(0) != nudgeFirstX + 1
+       or editor.scene.ObjectX(1) != nudgeSecondX + 1
+       or editor.GetRevision() != nudgeRevision + 1
+       or editor.Undo() == false
+       or sceneDoc.content != nudgeBaseline {
+        nudgeHarness.UnbindApp();
+        Probe.fail(shell, "2D viewport nudge was not one exact group history action");
+        return false;
+    }
+    editor.mode = scene_editor_2d.MODE_PAINT;
+    nudgeHarness.UnbindApp();
+
+    var batchRevision = editor.GetRevision();
+    if editor.SetSelectedSceneObjectProperty(
+           "spawnWeight", "float", "2.25") == false
+       or editor.GetRevision() != batchRevision + 1
+       or editor.selectedObjects.count() != 2
+       or Probe.near(editor.scene.ObjectGetFloat(0, "spawnWeight", 0.0), 2.25)
+            == false
+       or Probe.near(editor.scene.ObjectGetFloat(1, "spawnWeight", 0.0), 2.25)
+            == false
+       or editor.SetSelectedSceneObjectProperty(
+              "spawnWeight", "float", "2.25")
+       or editor.GetRevision() != batchRevision + 1
+       or editor.Undo() == false
+       or sceneDoc.content != authoredContent {
+        Probe.fail(shell, "2D batch property set was not one exact history action");
+        return false;
+    }
+
+    editor.SelectSceneObjects(groupSelection, 1);
+    batchRevision = editor.GetRevision();
+    if editor.RemoveSelectedSceneObjectProperty("displayName") == false
+       or editor.GetRevision() != batchRevision + 1
+       or editor.scene.ObjectHas(0, "displayName")
+       or editor.scene.ObjectHas(1, "displayName")
+       or editor.selectedObjects.count() != 2
+       or editor.Undo() == false
+       or sceneDoc.content != authoredContent
+       or editor.scene.ObjectGetStr(0, "displayName", "")
+            != "Slime King"
+       or editor.scene.ObjectGetStr(1, "displayName", "")
+            != "Slime King" {
+        Probe.fail(shell, "2D batch property removal lost data or exact undo");
+        return false;
+    }
+
+    editor.SelectSceneObjects(groupSelection, 1);
+    batchRevision = editor.GetRevision();
+    if editor.SetSelectedSceneObjectProperty(
+           "broken", "int", "not-a-number")
+       or editor.GetRevision() != batchRevision
+       or sceneDoc.content != authoredContent
+       or editor.scene.ObjectHas(0, "broken")
+       or editor.scene.ObjectHas(1, "broken") {
+        Probe.fail(shell, "2D invalid batch property changed scene data");
+        return false;
+    }
+
+    // Alignment uses the primary object as its explicit anchor. Distribution
+    // keeps the two extrema and deterministically rounds intermediate integer
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.authoredContent = authoredContent;
+    ctx.groupSelection = groupSelection;
+    return true;
+}
+
+/// @brief Run the VerifyAlignmentAndClipboard scenario against the shared fixture.
+expose func VerifyAlignmentAndClipboard(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var otherSceneDoc = ctx.otherSceneDoc;
+    var authoredContent = ctx.authoredContent;
+    var groupSelection = ctx.groupSelection;
+
+    // positions. Repeating an already-satisfied layout is a history no-op.
+    editor.SelectSceneObjects(groupSelection, 1);
+    var arrangeRevision = editor.GetRevision();
+    var anchorX = editor.scene.ObjectX(1);
+    if editor.ArrangeSelectedSceneObjects(
+           scene_editor_2d.ARRANGE_ALIGN_X) == false
+       or editor.scene.ObjectX(0) != anchorX
+       or editor.scene.ObjectX(1) != anchorX
+       or editor.GetRevision() != arrangeRevision + 1
+       or editor.ArrangeSelectedSceneObjects(
+              scene_editor_2d.ARRANGE_ALIGN_X)
+       or editor.GetRevision() != arrangeRevision + 1
+       or editor.Undo() == false
+       or sceneDoc.content != authoredContent {
+        Probe.fail(shell, "2D primary-axis alignment was not exact or no-op safe");
+        return false;
+    }
+
+    var thirdObject = editor.AddSceneObject(
+        "marker", "distribution-marker", anchorX + 120, 144);
+    if thirdObject != 2 {
+        Probe.fail(shell, "2D distribution setup could not add a third object");
+        return false;
+    }
+    var distributionBaseline = sceneDoc.content;
+    var distributionSelection: List[Integer] = [];
+    distributionSelection.add(0);
+    distributionSelection.add(1);
+    distributionSelection.add(2);
+    editor.SelectSceneObjects(distributionSelection, 1);
+    arrangeRevision = editor.GetRevision();
+    if editor.ArrangeSelectedSceneObjects(
+           scene_editor_2d.ARRANGE_DISTRIBUTE_X) == false
+       or editor.scene.ObjectX(1) != anchorX
+       or editor.scene.ObjectX(0) != anchorX + 60
+       or editor.scene.ObjectX(2) != anchorX + 120
+       or editor.GetRevision() != arrangeRevision + 1
+       or editor.ArrangeSelectedSceneObjects(
+              scene_editor_2d.ARRANGE_DISTRIBUTE_X)
+       or editor.GetRevision() != arrangeRevision + 1
+       or editor.Undo() == false
+       or sceneDoc.content != distributionBaseline
+       or editor.Undo() == false
+       or sceneDoc.content != authoredContent {
+        Probe.fail(shell, "2D distribution was not deterministic or exactly undoable");
+        return false;
+    }
+
+    editor.SelectSceneObjects(groupSelection, 1);
+    var groupRevision = editor.GetRevision();
+    if editor.TranslateSelectedSceneObjects(32, -16) == false
+       or editor.GetRevision() != groupRevision + 1
+       or editor.scene.ObjectX(0) != 144
+       or editor.scene.ObjectY(0) != 128
+       or editor.scene.ObjectX(1) != 112
+       or editor.scene.ObjectY(1) != 96
+       or editor.Undo() == false
+       or sceneDoc.content != authoredContent {
+        Probe.fail(shell, "2D group move was not one exact history transaction");
+        return false;
+    }
+
+    editor.SelectSceneObjects(groupSelection, 1);
+    groupRevision = editor.GetRevision();
+    if editor.DuplicateSelectedSceneObjects() != 2
+       or editor.GetRevision() != groupRevision + 1
+       or editor.scene.ObjectCount() != 4
+       or editor.selectedObjects.count() != 2
+       or editor.scene.ObjectGetInt(1, "hp", -1) != 25
+       or editor.scene.ObjectGetInt(3, "hp", -1) != 25
+       or editor.scene.ObjectPropertyKind(3, "target") != "null"
+       or editor.Undo() == false
+       or sceneDoc.content != authoredContent
+       or editor.scene.ObjectCount() != 2 {
+        Probe.fail(shell, "2D group duplication lost typed data or exact undo");
+        return false;
+    }
+
+    editor.SelectSceneObjects(groupSelection, 1);
+    groupRevision = editor.GetRevision();
+    if editor.RemoveSelectedSceneObjects() == false
+       or editor.GetRevision() != groupRevision + 1
+       or editor.scene.ObjectCount() != 0
+       or editor.Undo() == false
+       or sceneDoc.content != authoredContent
+       or editor.scene.ObjectCount() != 2 {
+        Probe.fail(shell, "2D group removal was not subtree-free exact undo");
+        return false;
+    }
+
+    // Standard Edit commands use one typed text envelope. Pasting into another
+    // scene must reconstruct custom property kinds rather than flattening them
+    // to inspector strings, and Cut/Paste each own exactly one history row.
+    editor.SelectSceneObjects(groupSelection, 1);
+    if editor.SelectAllSceneObjects() == false
+       or editor.selectedObjects.count() != 2
+       or editor.CopySelectedSceneObjects() == false {
+        Probe.fail(shell, "2D Select All or Copy did not use the scene selection");
+        return false;
+    }
+    var copied2D = scene_clipboard.Decode(GUI.ClipboardText.GetText());
+    if copied2D.valid == false or copied2D.kind != "2d"
+       or copied2D.primary != 1 or copied2D.indices.count() != 2
+       or copied2D.content != authoredContent
+       or scene_clipboard.HasKind(
+              GUI.ClipboardText.GetText(), "2d") == false {
+        Probe.fail(shell, "2D clipboard envelope lost kind, primary, or canonical data");
+        return false;
+    }
+    var malformed2D = scene_clipboard.Decode(
+        "ZANNA_STUDIO_SCENE_CLIPBOARD_V1\n2d\n0\n0,0\n{}");
+    if malformed2D.valid {
+        Probe.fail(shell, "2D clipboard accepted duplicate object identities");
+        return false;
+    }
+
+    var otherBaseline = otherSceneDoc.content;
+    editor.Pump(otherSceneDoc);
+    var crossPasteRevision = editor.GetRevision();
+    if editor.PasteSceneObjectsFromClipboard() == false
+       or editor.GetRevision() != crossPasteRevision + 1
+       or editor.scene.ObjectCount() != 2
+       or editor.selectedObjects.count() != 2
+       or editor.selectedObject != 1
+       or editor.scene.ObjectType(0) != "boss"
+       or editor.scene.ObjectX(0) != 144
+       or editor.scene.ObjectY(0) != 176
+       or editor.scene.ObjectX(1) != 112
+       or editor.scene.ObjectY(1) != 144
+       or editor.scene.ObjectGetInt(0, "hp", -1) != 25
+       or editor.scene.ObjectGetStr(1, "displayName", "")
+            != "Slime King"
+       or editor.scene.ObjectHas(0, "target")
+       or editor.scene.ObjectPropertyKind(1, "target") != "null"
+       or editor.Undo() == false
+       or otherSceneDoc.content != otherBaseline
+       or editor.scene.ObjectCount() != 0 {
+        Probe.fail(shell, "cross-scene 2D paste lost typed data or exact undo");
+        return false;
+    }
+
+    editor.Pump(sceneDoc);
+    editor.SelectSceneObjects(groupSelection, 1);
+    var cutRevision = editor.GetRevision();
+    if editor.CutSelectedSceneObjects() == false
+       or editor.GetRevision() != cutRevision + 1
+       or editor.scene.ObjectCount() != 0
+       or editor.Undo() == false
+       or sceneDoc.content != authoredContent
+       or editor.scene.ObjectCount() != 2 {
+        Probe.fail(shell, "2D Cut was not one exact clipboard/history transaction");
+        return false;
+    }
+    var wrongKindSelection: List[Integer] = [];
+    wrongKindSelection.add(0);
+    GUI.ClipboardText.SetText(scene_clipboard.Encode(
+        "3d", wrongKindSelection, 0, "{}"));
+    var rejectedPasteContent = sceneDoc.content;
+    var rejectedPasteRevision = editor.GetRevision();
+    if editor.PasteSceneObjectsFromClipboard()
+       or sceneDoc.content != rejectedPasteContent
+       or editor.GetRevision() != rejectedPasteRevision {
+        Probe.fail(shell, "2D paste accepted a 3D clipboard or changed history");
+        return false;
+    }
+    GUI.ClipboardText.Clear();
+
+    // The object inspector is a retained hierarchy. Row drops move complete
+    // subtrees, keep absolute coordinates, reject cycles without history, and
+    // preserve internal parent links through duplicate and cross-scene paste.
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.otherBaseline = otherBaseline;
+    return true;
+}
+
+/// @brief Run the VerifyHierarchyRoundTrip scenario against the shared fixture.
+expose func VerifyHierarchyRoundTrip(ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var documents = ctx.documents;
+    var otherBaseline = ctx.otherBaseline;
+
+    var hierarchyDoc = new document.Document();
+    hierarchyDoc.fileName = "hierarchy.scene";
+    hierarchyDoc.language = "scene";
+    hierarchyDoc.kind = file_utils.DOC_KIND_SCENE_2D;
+    hierarchyDoc.content = otherBaseline;
+    editor.Pump(hierarchyDoc);
+    if editor.AddSceneObject("group", "hierarchy-a", 10, 20) != 0
+       or editor.AddSceneObject("group", "hierarchy-b", 30, 40) != 1
+       or editor.AddSceneObject("actor", "hierarchy-c", 50, 60) != 2
+       or editor.AddSceneObject("actor", "hierarchy-d", 70, 80) != 3 {
+        Probe.fail(shell, "2D hierarchy fixture could not add stable objects");
+        return false;
+    }
+    var oneObject: List[Integer] = [];
+    oneObject.add(1);
+    editor.SelectSceneObjects(oneObject, 1);
+    if editor.ApplyObjectHierarchyDrop(
+           1, 0, 1) == false {
+        Probe.fail(shell, "2D hierarchy could not parent its first child");
+        return false;
+    }
+    oneObject = [];
+    oneObject.add(2);
+    editor.SelectSceneObjects(oneObject, 2);
+    if editor.ApplyObjectHierarchyDrop(
+           2, 1, 1) == false
+       or editor.scene.ObjectParent(1) != 0
+       or editor.scene.ObjectParent(2) != 1
+       or editor.scene.ObjectX(1) != 30
+       or editor.scene.ObjectY(2) != 60
+       or editor.objectTreeNodes.count() != 4 {
+        Probe.fail(shell, "2D retained hierarchy changed positions or lost rows");
+        return false;
+    }
+
+    // Find keeps the complete hierarchy visible and merely selects/reveals a
+    // bounded match. It must never create scene history, dirty the document,
+    // or flatten a nested object into a filtered presentation.
+    editor.objectTree.Collapse(editor.objectTreeNodes.get(0));
+    var hierarchySearchContent = hierarchyDoc.content;
+    var hierarchySearchRevision = editor.GetRevision();
+    var hierarchySearchUndoCount = editor.undoStack.count();
+    var hierarchySearchRedoCount = editor.redoStack.count();
+    if editor.FindHierarchy("ACTOR", 1) == false
+       or editor.hierarchySearchMatches.count() != 2
+       or editor.hierarchySearchCursor != 0
+       or editor.selectedObject != 2
+       or GUI.TreeView.Node.IsExpanded(editor.objectTreeNodes.get(0)) == false
+       or GUI.TreeView.Node.IsExpanded(editor.objectTreeNodes.get(1)) == false
+       or editor.FindHierarchy("ACTOR", 1) == false
+       or editor.hierarchySearchCursor != 1
+       or editor.selectedObject != 3
+       or editor.FindHierarchy("ACTOR", 1) == false
+       or editor.hierarchySearchCursor != 0
+       or editor.selectedObject != 2
+       or editor.FindHierarchy("ACTOR", -1) == false
+       or editor.hierarchySearchCursor != 1
+       or editor.selectedObject != 3
+       or editor.FindHierarchy("HIERARCHY-B", 1) == false
+       or editor.hierarchySearchMatches.count() != 1
+       or editor.selectedObject != 1
+       or hierarchyDoc.content != hierarchySearchContent
+       or editor.GetRevision() != hierarchySearchRevision
+       or editor.undoStack.count() != hierarchySearchUndoCount
+       or editor.redoStack.count() != hierarchySearchRedoCount {
+        Probe.fail(shell, "2D hierarchy find did not wrap, reveal, or stay read-only");
+        return false;
+    }
+    var findContext2D = new command_context.CommandContext();
+    findContext2D.shell = shell;
+    findContext2D.docMgr = documents;
+    findContext2D.scene2DEditor = editor;
+    var findInspectorTemporarilyHidden = false;
+    if editor.compactLayout == false
+       and editor.inspectorRequestedVisible {
+        editor.ToggleInspectorPane();
+        shell.Render();
+        findInspectorTemporarilyHidden = true;
+    }
+    var findHierarchyWasHidden = editor.objectPaneBox.IsVisible() == false;
+    var findInspectorRequested = editor.inspectorRequestedVisible;
+    if main_command_dispatcher.HandleSurfaceFind(findContext2D) == false
+       or editor.hierarchySearchInput.IsFocused() == false
+       or editor.SceneSelectionCommandsOwnFocus()
+       or editor.objectPaneBox.IsVisible() == false
+       or editor.inspectorRequestedVisible != findInspectorRequested
+       or hierarchyDoc.content != hierarchySearchContent
+       or editor.GetRevision() != hierarchySearchRevision {
+        Probe.fail(shell, "standard Find did not focus the 2D hierarchy safely");
+        return false;
+    }
+    shell.Render();
+    var hierarchySearchTop =
+        editor.hierarchySearchInput.GetScreenY();
+    var hierarchySearchBottom = hierarchySearchTop
+        + editor.hierarchySearchInput.GetScreenHeight();
+    var expectedFindHierarchySide = 0;
+    if findHierarchyWasHidden { expectedFindHierarchySide = 2; }
+    if editor.hierarchySplit.GetCollapsedSide()
+          != expectedFindHierarchySide
+       or hierarchySearchTop < editor.objectPaneBox.GetScreenY() - 1.0
+       or hierarchySearchBottom
+          > editor.objectPaneBox.GetScreenY()
+            + editor.objectPaneBox.GetScreenHeight() + 1.0 {
+        Probe.fail(shell, "2D Find did not reveal its hierarchy query");
+        return false;
+    }
+    if editor.FindHierarchy("", 1)
+       or editor.hierarchySearchMatches.count() != 0 {
+        Probe.fail(shell, "empty 2D hierarchy search produced a match");
+        return false;
+    }
+    if findHierarchyWasHidden {
+        editor.ToggleHierarchyPane();
+        shell.Render();
+        editor.Pump(hierarchyDoc);
+        shell.Render();
+    }
+    if findInspectorTemporarilyHidden {
+        editor.ToggleInspectorPane();
+        shell.Render();
+        editor.Pump(hierarchyDoc);
+        shell.Render();
+    }
+
+    editor.objectTree.Collapse(editor.objectTreeNodes.get(0));
+    if editor.AddSceneObject("group", "hierarchy-e", 90, 100) != 4
+       or GUI.TreeView.Node.IsExpanded(editor.objectTreeNodes.get(0)) {
+        Probe.fail(shell, "2D hierarchy collapse state did not survive refresh");
+        return false;
+    }
+
+    oneObject = [];
+    oneObject.add(0);
+    editor.SelectSceneObjects(oneObject, 0);
+    var rejectedHierarchyContent = hierarchyDoc.content;
+    var rejectedHierarchyRevision = editor.GetRevision();
+    if editor.ApplyObjectHierarchyDrop(
+           0, 2, 1)
+       or hierarchyDoc.content != rejectedHierarchyContent
+       or editor.GetRevision() != rejectedHierarchyRevision
+       or editor.scene.ObjectParent(0) != -1 {
+        Probe.fail(shell, "2D hierarchy cycle rejection changed scene history");
+        return false;
+    }
+
+    oneObject = [];
+    oneObject.add(3);
+    editor.SelectSceneObjects(oneObject, 3);
+    if editor.ApplyObjectHierarchyDrop(
+           3, 1, 0) == false
+       or editor.scene.ObjectId(0) != "hierarchy-a"
+       or editor.scene.ObjectId(1) != "hierarchy-d"
+       or editor.scene.ObjectId(2) != "hierarchy-b"
+       or editor.scene.ObjectId(3) != "hierarchy-c"
+       or editor.scene.ObjectParent(1) != 0
+       or editor.scene.ObjectParent(2) != 0
+       or editor.scene.ObjectParent(3) != 2 {
+        Probe.fail(shell, "2D BEFORE drop did not establish subtree sibling order");
+        return false;
+    }
+
+
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.documents = documents;
+    ctx.otherBaseline = otherBaseline;
+    ctx.hierarchyDoc = hierarchyDoc;
+    ctx.oneObject = oneObject;
+    return true;
+}
+
+/// @brief Verify hierarchy selection and history.
+expose func VerifyHierarchySelectionAndHistory(
+    ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    return HierarchyScenarios.VerifyHierarchySelectionAndHistory(ctx);
+}
+
+/// @brief Verify hierarchy authoring and tileset setup.
+expose func VerifyHierarchyAuthoringAndTilesetSetup(
+    ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    return HierarchyScenarios.VerifyHierarchyAuthoringAndTilesetSetup(ctx);
+}
+
+/// @brief Verify tileset import and refresh.
+expose func VerifyTilesetImportAndRefresh(
+    ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    return HierarchyScenarios.VerifyTilesetImportAndRefresh(ctx);
+}
+
+/// @brief Verify save behavior and invalid-document handling.
+expose func VerifySaveAndInvalidDocument(
+    ctx: Probe.SceneEditor2DProbeContext) -> Boolean {
+    return HierarchyScenarios.VerifySaveAndInvalidDocument(ctx);
+}

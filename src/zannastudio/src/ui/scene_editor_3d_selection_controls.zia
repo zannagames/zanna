@@ -1,0 +1,817 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_selection_controls.zia
+// Purpose: Focused selection controls behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_hierarchy_surface.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_selection_controls;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_selection_inspector" as PreviousLayer;
+
+/// @brief Selection Controls implementation layer.
+class SceneEditor3DSelectionControlsLayer extends PreviousLayer.SceneEditor3DSelectionInspectorLayer {
+
+    hide override func SelectedNode() -> SceneNode {
+        if selectedIndex < 0 or selectedIndex >= flatNodes.count() { return null; }
+        return flatNodes.get(selectedIndex);
+    }
+
+    hide override func SelectIndex(index: Integer) {
+        if terrainStrokeActive { CancelTerrainStroke(); }
+        if vertexSnapDragActive { CancelVertexSnapDrag(); }
+        vertexSnapSourceCacheValid = false;
+        if index < 0 or index >= flatNodes.count() {
+            selectedIndex = -1;
+            selectedIndices = [];
+        } else {
+            selectedIndex = index;
+            selectedIndices = scene_selection.Single(
+                index, flatNodes.count());
+        }
+        RevealHierarchyTreeSelection();
+        RefreshSelectedFields();
+        SetEditorControlsEnabled(scene != null);
+        renderDirty = true;
+    }
+
+    /// @brief Select validated hierarchy rows with one explicit primary node.
+    expose override func SelectSceneNodes(indices: List[Integer],
+                                 primary: Integer) -> Boolean {
+        if terrainStrokeActive { CancelTerrainStroke(); }
+        if vertexSnapDragActive { CancelVertexSnapDrag(); }
+        vertexSnapSourceCacheValid = false;
+        var resolved = ResolveInstanceOwnerSelection(indices);
+        selectedIndices = scene_selection.Normalize(
+            resolved, flatNodes.count(), primary);
+        selectedIndex = ResolveInstanceOwnerIndex(primary);
+        if selectedIndex < 0 or selectedIndex >= flatNodes.count() {
+            selectedIndex = -1;
+            if selectedIndices.count() > 0 {
+                selectedIndex = selectedIndices.get(0);
+            }
+        }
+        RevealHierarchyTreeSelection();
+        RefreshSelectedFields();
+        SetEditorControlsEnabled(scene != null);
+        renderDirty = true;
+        CaptureWorkspaceState();
+        return selectedIndices.count() > 0;
+    }
+
+    /// @brief Reveal and focus the hierarchy Find field without editing VSCN.
+    /// @return True when a loaded scene owns a usable search field.
+    expose override func FocusHierarchySearch() -> Boolean {
+        if scene == null or hierarchySearchInput == null { return false; }
+        if hierarchyDock.floating == false
+           and SceneEditor3DModel.UsesDockedHierarchy(lastHostWidth) == false {
+            compactHierarchyShown = true;
+            compactInspectorShown = false;
+        }
+        ApplyInspectorLayout();
+        hierarchySearchInput.Focus();
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Select and reveal one bounded node-name hierarchy match.
+    /// @param query Case-insensitive node-name fragment.
+    /// @param direction Negative for previous; zero or positive for next.
+    /// @return True when a matching represented row was selected.
+    expose override func FindHierarchy(query: String,
+                              direction: Integer) -> Boolean {
+        if scene == null or hierarchySearchInput == null { return false; }
+        var normalized = scene_hierarchy_search.Normalize(query);
+        var resetCursor = normalized != hierarchySearchQuery;
+        if hierarchySearchInput.Text != query {
+            hierarchySearchInput.SetText(query);
+        }
+        RefreshHierarchySearch(resetCursor);
+        return NavigateHierarchySearch(direction);
+    }
+
+    /// @brief Rebuild match indices from represented bounded rows only.
+    hide override func RefreshHierarchySearch(resetCursor: Boolean) {
+        if hierarchySearchInput == null { return; }
+        hierarchySearchQuery = scene_hierarchy_search.Normalize(
+            hierarchySearchInput.Text);
+        hierarchySearchMatches = [];
+        if scene != null and hierarchySearchQuery != "" {
+            var index = 0;
+            while index < flatNodes.count()
+                  and index < hierarchyTreeNodes.count() {
+                if hierarchyTreeNodes.get(index) != null
+                   and scene_hierarchy_search.MatchesNormalized(
+                       hierarchySearchQuery,
+                       flatNodes.get(index).Name,
+                       "") {
+                    hierarchySearchMatches.add(index);
+                }
+                index = index + 1;
+            }
+        }
+
+        hierarchySearchCursor = -1;
+        if resetCursor == false {
+            var match = 0;
+            while match < hierarchySearchMatches.count() {
+                if hierarchySearchMatches.get(match) == selectedIndex {
+                    hierarchySearchCursor = match;
+                    break;
+                }
+                match = match + 1;
+            }
+        }
+        UpdateHierarchySearchControls();
+    }
+
+    /// @brief Apply one previous/next hierarchy jump without scene mutation.
+    hide override func NavigateHierarchySearch(direction: Integer) -> Boolean {
+        hierarchySearchCursor = scene_hierarchy_search.NextCursor(
+            hierarchySearchMatches.count(),
+            hierarchySearchCursor,
+            direction);
+        if hierarchySearchCursor < 0
+           or hierarchySearchCursor >= hierarchySearchMatches.count() {
+            UpdateHierarchySearchControls();
+            return false;
+        }
+        var target = hierarchySearchMatches.get(hierarchySearchCursor);
+        var selection = scene_selection.Single(
+            target, flatNodes.count());
+        var selected = SelectSceneNodes(selection, target);
+        UpdateHierarchySearchControls();
+        return selected;
+    }
+
+    /// @brief Pump search text and navigation controls without VSCN history.
+    hide override func PumpHierarchySearchControls() {
+        if hierarchySearchInput == null { return; }
+        var query = scene_hierarchy_search.Normalize(
+            hierarchySearchInput.Text);
+        if query != hierarchySearchQuery {
+            RefreshHierarchySearch(true);
+        }
+        var direction = 0;
+        var requested = false;
+        if hierarchySearchPreviousButton.WasClicked() {
+            direction = -1;
+            requested = true;
+        }
+        if hierarchySearchNextButton.WasClicked()
+           or hierarchySearchInput.WasSubmitted() {
+            direction = 1;
+            requested = true;
+        }
+        if requested { NavigateHierarchySearch(direction); }
+    }
+
+    /// @brief Reflect query, match cursor, and safety bounds in compact UI.
+    hide override func UpdateHierarchySearchControls() {
+        if hierarchySearchInput == null { return; }
+        var available = scene != null;
+        hierarchySearchInput.SetEnabled(available);
+        var canNavigate =
+            available and hierarchySearchMatches.count() > 0;
+        hierarchySearchPreviousButton.SetEnabled(canNavigate);
+        hierarchySearchNextButton.SetEnabled(canNavigate);
+
+        var suffix = "";
+        if hierarchyClipped {
+            suffix = " within the bounded visible hierarchy";
+        }
+        if hierarchySearchQuery == "" {
+            hierarchySearchStatus.SetText(
+                "Find by node name" + suffix);
+        } else if hierarchySearchMatches.count() == 0 {
+            hierarchySearchStatus.SetText(
+                "No matching nodes" + suffix);
+        } else if hierarchySearchCursor < 0 {
+            hierarchySearchStatus.SetText(
+                hierarchySearchMatches.count()
+                + " matching node(s)" + suffix
+                + "; press Enter to jump");
+        } else {
+            hierarchySearchStatus.SetText(
+                "Match " + (hierarchySearchCursor + 1)
+                + " of " + hierarchySearchMatches.count()
+                + suffix);
+        }
+    }
+
+    /// @brief Return whether at least one valid hierarchy node is selected.
+    expose override func HasSceneNodeSelection() -> Boolean {
+        var normalized = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        return scene != null and normalized.count() > 0;
+    }
+
+    /// @brief Return whether Select All has a hierarchy target.
+    expose override func CanSelectAllSceneNodes() -> Boolean {
+        return scene != null and flatNodes.count() > 0;
+    }
+
+    /// @brief Return whether the text clipboard may contain pasteable data.
+    /// @details Explicit paste performs typed envelope and VSCN validation;
+    ///          per-frame menu state only asks the cheap native HasText query.
+    expose override func CanPasteSceneNodes() -> Boolean {
+        return scene != null and GUI.ClipboardText.HasText();
+    }
+
+    /// @brief Select every editable hierarchy row without changing history.
+    expose override func SelectAllSceneNodes() -> Boolean {
+        if CanSelectAllSceneNodes() == false { return false; }
+        var all: List[Integer] = [];
+        var index = 0;
+        while index < flatNodes.count() {
+            all.add(index);
+            index = index + 1;
+        }
+        var primary = selectedIndex;
+        if primary < 0 or primary >= flatNodes.count() { primary = 0; }
+        if SelectSceneNodes(all, primary) == false { return false; }
+        toolbarStatus.SetText(
+            "Selected all " + selectedIndices.count() + " scene nodes");
+        detailLabel.SetText("");
+        return true;
+    }
+
+    /// @brief Copy selected hierarchy identities with canonical VSCN content.
+    expose override func CopySelectedNodes() -> Boolean {
+        if scene == null or currentSerialized == "" { return false; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return false; }
+        if selectedIndex < 0
+           or scene_selection.Contains(selectedIndices, selectedIndex) == false {
+            selectedIndex = selectedIndices.get(0);
+        }
+        var encoded = scene_clipboard.Encode(
+            "3d", selectedIndices, selectedIndex, currentSerialized);
+        if encoded == "" {
+            toolbarStatus.SetText("Scene nodes not copied");
+            detailLabel.SetText(
+                "The selected hierarchy exceeds Studio's scene clipboard limit.");
+            return false;
+        }
+        GUI.ClipboardText.SetText(encoded);
+        toolbarStatus.SetText(
+            "Copied " + selectedIndices.count() + " scene node(s)");
+        detailLabel.SetText("");
+        return true;
+    }
+
+    /// @brief Copy and remove selected hierarchy roots as one undoable edit.
+    expose override func CutSelectedNodes() -> Boolean {
+        var count = selectedIndices.count();
+        if CopySelectedNodes() == false { return false; }
+        if DeleteSelectedNodes() == false {
+            detailLabel.SetText(
+                "The nodes were copied, but Studio could not remove them.");
+            return false;
+        }
+        toolbarStatus.SetText("Cut " + count + " scene node(s)");
+        return true;
+    }
+
+    /// @brief Paste selected VSCN subtrees as siblings of the primary node.
+    /// @details A source graph is instantiated from the clipboard's canonical
+    ///          VSCN. Selected descendants remain attached to selected roots,
+    ///          and any attachment/serialization failure restores the complete
+    ///          destination document and its prior selection.
+    expose override func PasteSceneNodesFromClipboard() -> Boolean {
+        if scene == null or currentDoc == null { return false; }
+        var payload = scene_clipboard.Decode(GUI.ClipboardText.GetText());
+        if payload.valid == false {
+            toolbarStatus.SetText("Nothing pasted");
+            detailLabel.SetText(payload.error);
+            return false;
+        }
+        if payload.kind != "3d" {
+            toolbarStatus.SetText("Nothing pasted");
+            detailLabel.SetText(
+                "Clipboard contains 2D objects. Paste them into a 2D scene.");
+            return false;
+        }
+
+        var sourceGraph = LoadGraphFromContent(payload.content);
+        var sourceNodes = FlattenGraph(sourceGraph);
+        if sourceGraph == null
+           or sourceGraph.NodeCount - 1 != sourceNodes.count()
+           or sourceNodes.count() > SceneEditor3DModel.MAX_EDITOR_NODES {
+            toolbarStatus.SetText("Nothing pasted");
+            detailLabel.SetText(
+                "Clipboard contains invalid, incomplete, or oversized VSCN data.");
+            return false;
+        }
+        var sourceSelection = scene_selection.Normalize(
+            payload.indices, sourceNodes.count(), payload.primary);
+        if sourceSelection.count() != payload.indices.count()
+           or payload.primary < 0
+           or payload.primary >= sourceNodes.count() {
+            toolbarStatus.SetText("Nothing pasted");
+            detailLabel.SetText(
+                "Clipboard node identities no longer match its VSCN data.");
+            return false;
+        }
+        var sourceRoots = TopLevelIndicesFor(
+            sourceNodes, sourceSelection, payload.primary);
+        if sourceRoots.count() == 0 {
+            toolbarStatus.SetText("Nothing pasted");
+            detailLabel.SetText("Clipboard contains no pasteable hierarchy roots.");
+            return false;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var selectionNodes: List[SceneNode] = [];
+        var index = 0;
+        while index < sourceSelection.count() {
+            selectionNodes.add(
+                sourceNodes.get(sourceSelection.get(index)));
+            index = index + 1;
+        }
+        var primaryNode = sourceNodes.get(payload.primary);
+        var destinationParent = scene.Root;
+        if selectedIndex >= 0 and selectedIndex < flatNodes.count()
+           and flatNodes.get(selectedIndex).Parent != null {
+            destinationParent = flatNodes.get(selectedIndex).Parent;
+        }
+
+        index = 0;
+        while index < sourceRoots.count() {
+            var rootIndex = sourceRoots.get(index);
+            var rootNode = sourceNodes.get(rootIndex);
+            var sourceParent = rootNode.Parent;
+            if sourceParent == null {
+                RollBackGroupEdit(
+                    previousSelection, previousPrimary,
+                    "Clipboard hierarchy had no valid parent.");
+                return false;
+            }
+            sourceParent.RemoveChild(rootNode);
+            rootNode.Name = UniqueDuplicateNodeName(rootNode);
+            var position = rootNode.Position;
+            rootNode.SetPosition(
+                position.X + 1.0, position.Y, position.Z);
+            if destinationParent.TryAddChild(rootNode) == false {
+                RollBackGroupEdit(
+                    previousSelection, previousPrimary,
+                    "Studio could not attach every pasted subtree. "
+                    + "The document was restored.");
+                return false;
+            }
+            index = index + 1;
+        }
+        if scene.NodeCount - 1 > SceneEditor3DModel.MAX_EDITOR_NODES {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "Pasting this hierarchy would exceed Studio's "
+                + SceneEditor3DModel.MAX_EDITOR_NODES + "-node editing limit.");
+            return false;
+        }
+
+        // Resolve selection identities before serialization. The canonical
+        // VSCN is reloaded below so the active edit graph is independent from
+        // the temporary clipboard graph and its retained shared resources.
+        var destinationNodes = FlattenGraph(scene);
+        var pastedIndices: List[Integer] = [];
+        index = 0;
+        while index < selectionNodes.count() {
+            var pastedIndex = FindNodeIndex(
+                destinationNodes, selectionNodes.get(index));
+            if pastedIndex >= 0 { pastedIndices.add(pastedIndex); }
+            index = index + 1;
+        }
+        var pastedPrimary = FindNodeIndex(
+            destinationNodes, primaryNode);
+        if pastedPrimary < 0 and pastedIndices.count() > 0 {
+            pastedPrimary = pastedIndices.get(0);
+        }
+        if pastedIndices.count() != selectionNodes.count()
+           or pastedPrimary < 0 {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "Studio could not retain the pasted hierarchy selection.");
+            return false;
+        }
+
+        var message = "Pasted " + sourceRoots.count()
+            + " hierarchy root(s)";
+        if CommitScene(message) == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The pasted hierarchy could not be committed.");
+            return false;
+        }
+        var acceptedDoc = currentDoc;
+        if acceptedDoc == null {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The pasted hierarchy lost its destination document.");
+            return false;
+        }
+        LoadDocumentModel(acceptedDoc, true);
+        if scene == null {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "Studio could not reload the accepted pasted hierarchy.");
+            return false;
+        }
+        SelectSceneNodes(pastedIndices, pastedPrimary);
+        detailLabel.SetText("");
+        return pastedIndices.count() > 0;
+    }
+
+    /// @brief Expand every retained ancestor and scroll the primary into view.
+    hide override func RevealHierarchyTreeSelection() {
+        if hierarchyTree == null { return; }
+        if selectedIndex >= 0 and selectedIndex < flatNodes.count() {
+            var parent = flatNodes.get(selectedIndex).Parent;
+            var steps = 0;
+            while parent != null and steps <= flatNodes.count() {
+                if scene != null and parent == scene.Root { break; }
+                var parentIndex = FindNodeIndex(flatNodes, parent);
+                if parentIndex < 0
+                   or parentIndex >= hierarchyTreeNodes.count() {
+                    break;
+                }
+                hierarchyTree.Expand(
+                    hierarchyTreeNodes.get(parentIndex));
+                parent = parent.Parent;
+                steps = steps + 1;
+            }
+        }
+        RestoreHierarchyTreeSelection();
+        if selectedIndex >= 0
+           and selectedIndex < hierarchyTreeNodes.count()
+           and hierarchyTreeNodes.get(selectedIndex) != null {
+            hierarchyTree.ScrollTo(
+                hierarchyTreeNodes.get(selectedIndex));
+        }
+    }
+
+    /// @brief Restore all retained hierarchy rows while keeping one primary.
+    hide override func RestoreHierarchyTreeSelection() {
+        if hierarchyTree == null { return; }
+        hierarchyTree.Select(null);
+        var index = 0;
+        while index < selectedIndices.count() {
+            var selected = selectedIndices.get(index);
+            if selected != selectedIndex
+               and selected >= 0
+               and selected < hierarchyTreeNodes.count() {
+                hierarchyTree.Select(hierarchyTreeNodes.get(selected));
+            }
+            index = index + 1;
+        }
+        if selectedIndex >= 0
+           and selectedIndex < hierarchyTreeNodes.count() {
+            hierarchyTree.Select(hierarchyTreeNodes.get(selectedIndex));
+        }
+    }
+
+    /// @brief Resolve the current dropdown row to its flattened target identity.
+    hide override func SelectedParentTargetIndex() -> Integer {
+        if parentDropdown == null
+           or parentDropdown.Selected < 0
+           or parentDropdown.Selected >= parentTargetIndices.count() {
+            return SceneEditor3DModel.PARENT_TARGET_MIXED;
+        }
+        return parentTargetIndices.get(parentDropdown.Selected);
+    }
+
+    /// @brief Select one currently offered parent target by stable node index.
+    /// @details This mirrors a dropdown choice for command/probe callers without
+    ///          synthesizing native pointer input. It never changes scene data.
+    expose override func SelectParentTarget(targetIndex: Integer) -> Boolean {
+        if parentDropdown == null { return false; }
+        var option = 0;
+        while option < parentTargetIndices.count() {
+            if parentTargetIndices.get(option) == targetIndex {
+                parentDropdown.SetSelected(option);
+                UpdateParentControlAvailability();
+                return true;
+            }
+            option = option + 1;
+        }
+        return false;
+    }
+
+    /// @brief Resolve -1/root or one current flattened hierarchy target.
+    hide override func ParentTargetNode(targetIndex: Integer) -> SceneNode {
+        if scene == null { return null; }
+        if targetIndex == -1 { return scene.Root; }
+        if targetIndex >= 0 and targetIndex < flatNodes.count() {
+            return flatNodes.get(targetIndex);
+        }
+        return null;
+    }
+
+    /// @brief Rebuild cycle-safe parent choices from stable live node handles.
+    hide override func RefreshParentTargets() {
+        if parentDropdown == null or reparentButton == null { return; }
+        parentDropdown.Clear();
+        parentTargetIndices = [];
+        if scene == null or selectedIndices.count() == 0 {
+            parentDropdown.SetPlaceholder("Select a node");
+            parentDropdown.SetEnabled(false);
+            reparentButton.SetEnabled(false);
+            preserveWorldReparentCheck.SetEnabled(false);
+            reparentButton.SetText("Reparent");
+            return;
+        }
+
+        var roots = TopLevelSelectedNodes();
+        if roots.count() == 0 {
+            parentDropdown.SetPlaceholder("Select a node");
+            parentDropdown.SetEnabled(false);
+            reparentButton.SetEnabled(false);
+            preserveWorldReparentCheck.SetEnabled(false);
+            return;
+        }
+        var commonParent = scene_hierarchy_3d.CommonParent(roots);
+        var mixedParents = commonParent == null and roots.count() > 1;
+        var selectedOption = -1;
+        if mixedParents {
+            parentDropdown.AddItem("Multiple parents — choose target");
+            parentTargetIndices.add(SceneEditor3DModel.PARENT_TARGET_MIXED);
+            selectedOption = 0;
+        }
+
+        if scene_hierarchy_3d.TargetAllowed(scene.Root, roots)
+           and ParentTargetFits(-1, roots) {
+            var option = parentDropdown.AddItem("Scene root");
+            parentTargetIndices.add(-1);
+            if mixedParents == false
+               and (commonParent == scene.Root or commonParent == null) {
+                selectedOption = option;
+            }
+        }
+
+        var candidateIndex = 0;
+        while candidateIndex < flatNodes.count() {
+            var candidate = flatNodes.get(candidateIndex);
+            if scene_hierarchy_3d.TargetAllowed(candidate, roots)
+               and ParentTargetFits(candidateIndex, roots) {
+                var prefix = "";
+                var depth = flatDepths.get(candidateIndex);
+                var indent = 0;
+                while indent < depth and indent < 16 {
+                    prefix = prefix + "  ";
+                    indent = indent + 1;
+                }
+                var option = parentDropdown.AddItem(
+                    prefix + NodeDisplayName(candidate));
+                parentTargetIndices.add(candidateIndex);
+                if mixedParents == false and commonParent == candidate {
+                    selectedOption = option;
+                }
+            }
+            candidateIndex = candidateIndex + 1;
+        }
+
+        if selectedOption < 0 and parentTargetIndices.count() > 0 {
+            selectedOption = 0;
+        }
+        if selectedOption >= 0 { parentDropdown.SetSelected(selectedOption); }
+        parentDropdown.SetPlaceholder("Choose parent");
+        UpdateParentControlAvailability();
+    }
+
+    /// @brief Enable Reparent only for a valid, changed, depth-safe target.
+    hide override func UpdateParentControlAvailability() {
+        if parentDropdown == null or reparentButton == null { return; }
+        var roots = TopLevelSelectedNodes();
+        var targetIndex = SelectedParentTargetIndex();
+        var target = ParentTargetNode(targetIndex);
+        var available = roots.count() > 0
+            and target != null
+            and scene_hierarchy_3d.TargetAllowed(target, roots)
+            and ParentTargetFits(targetIndex, roots)
+            and scene_hierarchy_3d.AllAlreadyParented(roots, target) == false;
+        parentDropdown.SetEnabled(roots.count() > 0
+                                  and parentTargetIndices.count() > 0);
+        preserveWorldReparentCheck.SetEnabled(roots.count() > 0);
+        reparentButton.SetEnabled(available);
+        reparentButton.SetText("Reparent");
+        if roots.count() > 1 {
+            reparentButton.SetText("Reparent (" + roots.count() + ")");
+        }
+        var transformMode = "local transforms stay unchanged";
+        if preserveWorldReparentCheck.IsChecked() {
+            transformMode =
+                "world transforms stay unchanged; lossy conversions are rejected";
+        }
+        reparentButton.SetTooltip(
+            "Move " + roots.count() + " selected hierarchy root(s) beneath "
+            + "the chosen parent; " + transformMode);
+    }
+
+    /// @brief Enable ordering only for a movable contiguous sibling block.
+    hide override func UpdateSiblingControlAvailability() {
+        if moveSiblingEarlierButton == null
+           or moveSiblingLaterButton == null {
+            return;
+        }
+        var block = SelectedSiblingBlock();
+        var canMoveEarlier = false;
+        var canMoveLater = false;
+        if block.count() > 0 {
+            var parent = block.get(0).Parent;
+            var first = DirectChildIndex(parent, block.get(0));
+            if first >= 0 {
+                canMoveEarlier = first > 0;
+                canMoveLater =
+                    first + block.count() < parent.ChildCount;
+            }
+        }
+        moveSiblingEarlierButton.SetEnabled(canMoveEarlier);
+        moveSiblingLaterButton.SetEnabled(canMoveLater);
+        var count = block.count();
+        moveSiblingEarlierButton.SetTooltip(
+            "Move " + count
+            + " contiguous sibling node(s) one position earlier");
+        moveSiblingLaterButton.SetTooltip(
+            "Move " + count
+            + " contiguous sibling node(s) one position later");
+    }
+
+    /// @brief Show only inspector groups relevant to the current selection.
+    /// @details Node groups appear with a selection; single-selection groups
+    ///          (metadata, camera, collider, terrain, prefab instance, probe grid,
+    ///          component asset field) need exactly one node, and the prefab
+    ///          group additionally needs an instance. Scene-scoped groups
+    ///          (imports, bake, environment, material library) stay visible
+    ///          with any loaded scene until the Object/Scene inspector tabs
+    ///          give them their own surface. Pure presentation: no canonical
+    ///          bytes, history, or selection state changes here.
+    hide override func UpdateInspectorScope() {
+        if nameLabel == null { return; }
+        var hasScene = scene != null;
+        var hasSelection = hasScene and selectedIndices.count() > 0;
+        var single = hasScene and selectedIndices.count() == 1;
+        var objectTab = hasScene and inspectorSceneTab == false;
+        var sceneTab = hasScene and inspectorSceneTab;
+        var selectedIsInstance = false;
+        if single {
+            var scopeNode = SelectedNode();
+            selectedIsInstance =
+                scopeNode != null and scopeNode.PrefabPath != "";
+        }
+        var nodeScope = objectTab and hasSelection;
+        var singleScope = objectTab and single;
+        var selectionHasLight = SelectionHasLight();
+        var selectionHasMaterial = SelectionHasMaterial();
+        var singleHasCamera = false;
+        var singleHasCollider = false;
+        var singleHasTerrain = false;
+        if single {
+            var presenceNode = SelectedNode();
+            if presenceNode != null {
+                singleHasCamera = presenceNode.Camera != null;
+                singleHasCollider =
+                    presenceNode.MetadataHas("collider.kind");
+                singleHasTerrain =
+                    scene_terrain_3d.IsTerrainNode(presenceNode);
+            }
+        }
+        objectTabButton.SetVisible(hasScene);
+        sceneTabButton.SetVisible(hasScene);
+        objectTabButton.SetStyle(0);
+        sceneTabButton.SetStyle(0);
+        if sceneTab { sceneTabButton.SetStyle(1); }
+        if objectTab { objectTabButton.SetStyle(1); }
+        sceneSectionRow.SetVisible(sceneTab);
+        selectionInfo.SetVisible(objectTab);
+        nameLabel.SetVisible(nodeScope);
+        nameInput.SetVisible(nodeScope);
+        visibleCheck.SetVisible(nodeScope);
+        staticCheck.SetVisible(nodeScope);
+        positionLabel.SetVisible(nodeScope);
+        positionRow.SetVisible(nodeScope);
+        rotationLabel.SetVisible(nodeScope);
+        rotationRow.SetVisible(nodeScope);
+        scaleLabel.SetVisible(nodeScope);
+        scaleRow.SetVisible(nodeScope);
+        // Single-node transforms commit live from the spinners; the explicit
+        // relative Apply remains for deliberate multi-node batches.
+        applyTransformButton.SetVisible(
+            nodeScope and selectedIndices.count() > 1);
+        metadataInspector.group.SetVisible(singleScope);
+        // Keep project recipes available on the Object tab without a
+        // selection so gameplay-ready nodes need no generic placeholder.
+        componentPalette.group.SetVisible(objectTab);
+        componentAssetHost.SetVisible(singleScope);
+        // Component groups appear only when the component is present; the
+        // Add-component row covers creation for the absent ones.
+        lightInspector.group.SetVisible(nodeScope and selectionHasLight);
+        cameraInspector.group.SetVisible(singleScope and singleHasCamera);
+        colliderInspector.group.SetVisible(
+            singleScope and singleHasCollider);
+        terrainInspector.group.SetVisible(
+            singleScope and singleHasTerrain);
+        instanceGroup.SetVisible(objectTab and selectedIsInstance);
+        materialInspector.group.SetVisible(
+            nodeScope and selectionHasMaterial);
+        probeGroup.SetVisible(singleScope);
+        addComponentRow.SetVisible(
+            nodeScope and addComponentKinds.count() > 0);
+        importGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor3DModel.SCENE_INSPECTOR_ASSETS);
+        bakeGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor3DModel.SCENE_INSPECTOR_LIGHTING);
+        historyGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor3DModel.SCENE_INSPECTOR_HISTORY);
+        envGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor3DModel.SCENE_INSPECTOR_WORLD);
+        materialLibraryGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor3DModel.SCENE_INSPECTOR_ASSETS);
+        // Programmatic visibility toggles advance widget revisions; re-baseline
+        // the write-through checkbox trackers so scoping can never masquerade
+        // as a user resolving the Visible or Static state onto the selection.
+        visibleRevision = visibleCheck.GetRevision();
+        staticRevision = staticCheck.GetRevision();
+        // Scope storms reflow the whole inspector column; force a complete
+        // re-measure/arrange/repaint so no child keeps partial-pass geometry.
+        if inspectorScroll != null {
+            inspectorScroll.InvalidateLayout();
+            inspectorScroll.InvalidatePaint();
+        }
+    }
+}

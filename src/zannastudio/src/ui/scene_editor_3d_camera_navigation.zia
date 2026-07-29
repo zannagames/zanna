@@ -1,0 +1,902 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_editor_3d_camera_navigation.zia
+// Purpose: Focused camera navigation behavior for the 3D scene editor controller.
+// Key invariants:
+//   - Each method overrides one contract slot while preserving shared controller state and transactional behavior.
+// Ownership/Lifetime:
+//   - The SceneEditor3D facade owns inherited resources; this layer adds no independent lifetime.
+// Links: zannastudio/src/ui/scene_editor_3d.zia, zannastudio/src/ui/scene_editor_3d_inspector_hierarchy.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_camera_navigation;
+
+bind "../core/document";
+bind "../core/project_manager";
+bind "../services/file_utils";
+bind "../services/material_library_3d";
+bind "../services/project_locator";
+bind "../services/safe_io";
+bind "scene_asset_browser";
+bind "scene_bake_3d";
+bind "scene_camera_3d";
+bind "scene_camera_inspector_3d";
+bind "scene_clipboard";
+bind "scene_collider_3d";
+bind "scene_collider_inspector_3d";
+bind "scene_component_authoring_controller";
+bind "scene_component_palette";
+bind "scene_component_schema";
+bind "scene_hierarchy_search";
+bind "scene_hierarchy_3d";
+bind "scene_history";
+bind "scene_selection";
+bind "scene_light_inspector_3d";
+bind "scene_light_3d";
+bind "scene_material_inspector_3d";
+bind "scene_material_3d";
+bind "scene_metadata_inspector_3d";
+bind "scene_pane_docking";
+bind "scene_terrain_3d";
+bind "scene_terrain_inspector_3d";
+bind "scene_transform_3d";
+bind Zanna.GUI as GUI;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind SceneAsset = Zanna.Graphics3D.SceneAsset;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Light3D = Zanna.Graphics3D.Light3D;
+bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
+bind Camera3D = Zanna.Graphics3D.Camera3D;
+bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
+bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
+bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
+bind Water3D = Zanna.Graphics3D.Water3D;
+bind Mesh3D2 = Zanna.Graphics3D.Mesh3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind RayHit3D = Zanna.Graphics3D.RayHit3D;
+bind Seq = Zanna.Collections.Seq;
+bind Math = Zanna.Math;
+bind Convert = Zanna.Core.Convert;
+bind Input = Zanna.Input;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind "scene_editor_3d_model" as SceneEditor3DModel;
+bind "scene_editor_3d_inspector_hierarchy" as PreviousLayer;
+
+/// @brief Camera Navigation implementation layer.
+class SceneEditor3DCameraNavigationLayer extends PreviousLayer.SceneEditor3DInspectorHierarchyLayer {
+
+    expose override func FrameAll() {
+        if gameViewOutputFramed { return; }
+        ReleaseGameplayViewAnchor();
+        if flatNodes.count() == 0 {
+            viewScale = 28;
+            viewTargetX = 0.0;
+            viewTargetY = 0.0;
+            viewTargetZ = 0.0;
+            return;
+        }
+        var first = flatNodes.get(0).WorldPosition;
+        var minimumX = first.X;
+        var minimumY = first.Y;
+        var minimumZ = first.Z;
+        var maximumX = first.X;
+        var maximumY = first.Y;
+        var maximumZ = first.Z;
+        var i = 0;
+        while i < flatNodes.count() {
+            var p = flatNodes.get(i).WorldPosition;
+            if p.X < minimumX { minimumX = p.X; }
+            if p.Y < minimumY { minimumY = p.Y; }
+            if p.Z < minimumZ { minimumZ = p.Z; }
+            if p.X > maximumX { maximumX = p.X; }
+            if p.Y > maximumY { maximumY = p.Y; }
+            if p.Z > maximumZ { maximumZ = p.Z; }
+            i = i + 1;
+        }
+        viewTargetX = (minimumX + maximumX) * 0.5;
+        viewTargetY = (minimumY + maximumY) * 0.5;
+        viewTargetZ = (minimumZ + maximumZ) * 0.5;
+
+        var furthest = 1.0;
+        i = 0;
+        while i < flatNodes.count() {
+            var p = flatNodes.get(i).WorldPosition;
+            var dx = p.X - viewTargetX;
+            var dy = p.Y - viewTargetY;
+            var dz = p.Z - viewTargetZ;
+            var distance = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+            if distance > furthest { furthest = distance; }
+            i = i + 1;
+        }
+        var available = renderedViewportWidth;
+        if renderedViewportHeight < available {
+            available = renderedViewportHeight;
+        }
+        viewScale = SceneEditor3DModel.ClampInt3D(Convert.NumToInt(
+            (available * 0.38) / furthest), 4, 120);
+    }
+
+    expose override func FrameSelected() {
+        if gameViewOutputFramed { return; }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 { return; }
+        ReleaseGameplayViewAnchor();
+        var first = flatNodes.get(selectedIndices.get(0)).WorldPosition;
+        var minimumX = first.X;
+        var minimumY = first.Y;
+        var minimumZ = first.Z;
+        var maximumX = first.X;
+        var maximumY = first.Y;
+        var maximumZ = first.Z;
+        var index = 1;
+        while index < selectedIndices.count() {
+            var world = flatNodes.get(
+                selectedIndices.get(index)).WorldPosition;
+            if world.X < minimumX { minimumX = world.X; }
+            if world.Y < minimumY { minimumY = world.Y; }
+            if world.Z < minimumZ { minimumZ = world.Z; }
+            if world.X > maximumX { maximumX = world.X; }
+            if world.Y > maximumY { maximumY = world.Y; }
+            if world.Z > maximumZ { maximumZ = world.Z; }
+            index = index + 1;
+        }
+        viewTargetX = (minimumX + maximumX) * 0.5;
+        viewTargetY = (minimumY + maximumY) * 0.5;
+        viewTargetZ = (minimumZ + maximumZ) * 0.5;
+
+        var furthest = 1.0;
+        index = 0;
+        while index < selectedIndices.count() {
+            var world = flatNodes.get(
+                selectedIndices.get(index)).WorldPosition;
+            var dx = world.X - viewTargetX;
+            var dy = world.Y - viewTargetY;
+            var dz = world.Z - viewTargetZ;
+            var distance = Math.Sqrt(dx * dx + dy * dy + dz * dz);
+            if distance > furthest { furthest = distance; }
+            index = index + 1;
+        }
+        var available = renderedViewportWidth;
+        if renderedViewportHeight < available {
+            available = renderedViewportHeight;
+        }
+        viewScale = SceneEditor3DModel.ClampInt3D(Convert.NumToInt(
+            (available * 0.38) / furthest), 4, 120);
+        if selectedIndices.count() == 1 and viewScale < 48 {
+            viewScale = 48;
+        }
+    }
+
+    hide override func UpdateViewportSize() {
+        if viewportScroll == null { return; }
+        var width = Convert.NumToInt(
+            viewportScroll.GetLogicalWidth() - 2.0);
+        var height = Convert.NumToInt(
+            viewportScroll.GetLogicalHeight() - 2.0);
+        if width <= 0 { width = SceneEditor3DModel.DEFAULT_VIEWPORT_WIDTH; }
+        if height <= 0 { height = SceneEditor3DModel.DEFAULT_VIEWPORT_HEIGHT; }
+        width = SceneEditor3DModel.ClampInt3D(
+            width, SceneEditor3DModel.MIN_VIEWPORT_WIDTH, SceneEditor3DModel.MAX_VIEWPORT_WIDTH);
+        height = SceneEditor3DModel.ClampInt3D(
+            height, SceneEditor3DModel.MIN_VIEWPORT_HEIGHT, SceneEditor3DModel.MAX_VIEWPORT_HEIGHT);
+        if width != renderedViewportWidth
+           or height != renderedViewportHeight {
+            renderedViewportWidth = width;
+            renderedViewportHeight = height;
+            ReanchorGameplayViewTarget();
+            renderDirty = true;
+        }
+    }
+
+    /// @brief Project one world point through the shared viewport camera.
+    /// @details The retained render camera is the single projection authority
+    ///          (ADR 0183): overlays and picking read the exact camera that
+    ///          rendered the shaded frame, in both projections. The hand math
+    ///          below serves surfaces with no configured camera (fallback
+    ///          wireframe rendering) and mirrors the camera formulas exactly,
+    ///          including the perspective divide about the derived eye.
+    hide override func Project(x: Number, y: Number, z: Number) -> SceneEditor3DModel.ProjectedPoint {
+        var projected = new SceneEditor3DModel.ProjectedPoint();
+        var contentWidth = ViewportContentWidth();
+        var contentHeight = ViewportContentHeight();
+        var contentX = ViewportContentX();
+        var contentY = ViewportContentY();
+        if projectionCameraReady and viewportRenderCamera != null {
+            var screen = viewportRenderCamera.WorldToScreen(
+                Vec3.New(x, y, z),
+                contentWidth,
+                contentHeight) as Vec3;
+            projected.x =
+                contentX + Convert.NumToInt(Math.Round(screen.X));
+            projected.y =
+                contentY + Convert.NumToInt(Math.Round(screen.Y));
+            projected.visible = screen.Z > 0.5;
+            return projected;
+        }
+        var yaw = viewYawDegrees * SceneEditor3DModel.DEG_TO_RAD;
+        var pitch = viewPitchDegrees * SceneEditor3DModel.DEG_TO_RAD;
+        var cosYaw = Math.Cos(yaw);
+        var sinYaw = Math.Sin(yaw);
+        var cosPitch = Math.Cos(pitch);
+        var sinPitch = Math.Sin(pitch);
+        var relativeX = x - viewTargetX;
+        var relativeY = y - viewTargetY;
+        var relativeZ = z - viewTargetZ;
+        var rotatedX = relativeX * cosYaw - relativeZ * sinYaw;
+        var rotatedZ = relativeX * sinYaw + relativeZ * cosYaw;
+        var rotatedY = relativeY * cosPitch - rotatedZ * sinPitch;
+        if viewPerspective {
+            var towardEye =
+                rotatedZ * cosPitch + relativeY * sinPitch;
+            var depth = PerspectiveEyeDistance() - towardEye;
+            if depth < 0.000001 {
+                projected.visible = false;
+                depth = 0.000001;
+            }
+            var focal = contentHeight
+                / (2.0 * ActiveViewportFovHalfTan());
+            projected.x = Convert.NumToInt(
+                contentX + contentWidth / 2.0
+                    + rotatedX * focal / depth);
+            projected.y = Convert.NumToInt(
+                contentY + contentHeight / 2.0
+                    - rotatedY * focal / depth);
+            return projected;
+        }
+        projected.x = Convert.NumToInt(
+            contentX + contentWidth / 2.0 + rotatedX * viewScale);
+        projected.y = Convert.NumToInt(
+            contentY + contentHeight / 2.0 - rotatedY * viewScale);
+        return projected;
+    }
+
+    /// @brief Return whether either side-specific Shift key is held.
+    hide override func ViewportShiftDown() -> Boolean {
+        return Input.Keyboard.IsDown(Input.Key.LeftShift)
+            or Input.Keyboard.IsDown(Input.Key.RightShift);
+    }
+
+    /// @brief Return whether the conventional Control/Command key is held.
+    hide override func ViewportPrimaryModifierDown() -> Boolean {
+        return Input.Keyboard.IsDown(Input.Key.LeftControl)
+            or Input.Keyboard.IsDown(Input.Key.RightControl)
+            or Input.Keyboard.IsDown(Input.Key.LeftSuper)
+            or Input.Keyboard.IsDown(Input.Key.RightSuper);
+    }
+
+    /// @brief Move the camera target in its exact screen-plane basis.
+    /// @details Positive deltas move rendered content with the pointer. This
+    ///          updates workspace state only and never commits VSCN content.
+    expose override func PanViewportByPixels(deltaX: Number,
+                                    deltaY: Number) -> Boolean {
+        if gameViewOutputFramed { return false; }
+        var stationaryX = deltaX > -0.000001 and deltaX < 0.000001;
+        var stationaryY = deltaY > -0.000001 and deltaY < 0.000001;
+        if (stationaryX and stationaryY) or viewScale <= 0 {
+            return false;
+        }
+        ReleaseGameplayViewAnchor();
+        ShiftViewTargetInScreenBasis(
+            (0.0 - deltaX) / viewScale,
+            deltaY / viewScale);
+        CaptureWorkspaceState();
+        return true;
+    }
+
+    /// @brief Translate the view target along the exact screen right/up basis.
+    hide override func ShiftViewTargetInScreenBasis(rightAmount: Number,
+                                           upAmount: Number) {
+        var yaw = viewYawDegrees * SceneEditor3DModel.DEG_TO_RAD;
+        var pitch = viewPitchDegrees * SceneEditor3DModel.DEG_TO_RAD;
+        var cosYaw = Math.Cos(yaw);
+        var sinYaw = Math.Sin(yaw);
+        var cosPitch = Math.Cos(pitch);
+        var sinPitch = Math.Sin(pitch);
+        viewTargetX = SceneEditor3DModel.ClampNumber3D(
+            viewTargetX
+                + cosYaw * rightAmount
+                - sinYaw * sinPitch * upAmount,
+            -1000000.0, 1000000.0);
+        viewTargetY = SceneEditor3DModel.ClampNumber3D(
+            viewTargetY + cosPitch * upAmount,
+            -1000000.0, 1000000.0);
+        viewTargetZ = SceneEditor3DModel.ClampNumber3D(
+            viewTargetZ
+                - sinYaw * rightAmount
+                - cosYaw * sinPitch * upAmount,
+            -1000000.0, 1000000.0);
+        renderDirty = true;
+    }
+
+    /// @brief Zoom one wheel step keeping the point under the pointer fixed.
+    /// @details Scale change plus a target-plane shift toward the cursor is
+    ///          the dolly-to-cursor contract for both projections (ADR 0183):
+    ///          in perspective the derived eye distance shortens toward the
+    ///          cursor ray; in ortho it is exact zoom-about-point.
+    hide override func DollyViewportAtPointer(direction: Integer) {
+        var previousScale = viewScale;
+        viewScale = SceneEditor3DModel.ClampInt3D(viewScale + direction * 4, 4, 120);
+        if viewScale == previousScale { return; }
+        ReleaseGameplayViewAnchor();
+        renderDirty = true;
+        var mouseX = PhysicalPointerToUi(Input.Mouse.X())
+            - viewportImage.GetScreenX();
+        var mouseY = PhysicalPointerToUi(Input.Mouse.Y())
+            - viewportImage.GetScreenY();
+        var offsetX = mouseX - renderedViewportWidth / 2.0;
+        var offsetY = mouseY - renderedViewportHeight / 2.0;
+        var factor = 1.0 / previousScale - 1.0 / viewScale;
+        ShiftViewTargetInScreenBasis(
+            offsetX * factor, (0.0 - offsetY) * factor);
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Unit vector from the view target toward the camera eye.
+    hide override func ViewportEyeUnit() -> Vec3 {
+        var yaw = viewYawDegrees * SceneEditor3DModel.DEG_TO_RAD;
+        var pitch = viewPitchDegrees * SceneEditor3DModel.DEG_TO_RAD;
+        return Vec3.New(
+            Math.Sin(yaw) * Math.Cos(pitch),
+            Math.Sin(pitch),
+            Math.Cos(yaw) * Math.Cos(pitch));
+    }
+
+    /// @brief Eye distance the active projection places behind the target.
+    hide override func CurrentEyeDistance() -> Number {
+        if viewPerspective { return PerspectiveEyeDistance(); }
+        return ViewportCameraRange().X;
+    }
+
+    /// @brief Begin captured right-mouse fly-look with WASD movement.
+    hide override func BeginFlyNavigation() {
+        ReleaseGameplayViewAnchor();
+        flyActive = true;
+        flyLastMs = Zanna.Time.Clock.NowMs();
+        flyYawRemainder = 0.0;
+        flyPitchRemainder = 0.0;
+        FocusActiveGizmoButton();
+        renderDirty = true;
+    }
+
+    /// @brief One frame of fly navigation; owns viewport input while active.
+    /// @details Workspace-only camera motion: mouse-look about the fixed eye,
+    ///          WASD in the camera basis, Q/E world down/up, Shift fast, and
+    ///          the wheel retunes the bounded speed multiplier (ADR 0183).
+    hide override func PumpFlyFrame() {
+        if Input.Keyboard.WasPressed(Input.Key.Escape)
+           or Input.Mouse.IsDown(Input.Mouse.ButtonRight) == false {
+            flyActive = false;
+            flyLastMs = -1;
+            renderDirty = true;
+            CaptureWorkspaceState();
+            return;
+        }
+        var now = Zanna.Time.Clock.NowMs();
+        var deltaMs = now - flyLastMs;
+        flyLastMs = now;
+        if deltaMs < 0 { deltaMs = 0; }
+        if deltaMs > 100 { deltaMs = 100; }
+        var deltaSeconds = deltaMs / 1000.0;
+
+        var wheel = Input.Mouse.WheelYFloat();
+        if wheel > 0.0 {
+            flySpeedMultiplier = SceneEditor3DModel.ClampNumber3D(
+                flySpeedMultiplier * 1.25,
+                SceneEditor3DModel.FLY_MIN_SPEED_MULTIPLIER,
+                SceneEditor3DModel.FLY_MAX_SPEED_MULTIPLIER);
+        } else if wheel < 0.0 {
+            flySpeedMultiplier = SceneEditor3DModel.ClampNumber3D(
+                flySpeedMultiplier / 1.25,
+                SceneEditor3DModel.FLY_MIN_SPEED_MULTIPLIER,
+                SceneEditor3DModel.FLY_MAX_SPEED_MULTIPLIER);
+        }
+
+        var changed = FlyLookByPixels(
+            PhysicalPointerToUi(Input.Mouse.DeltaX()),
+            PhysicalPointerToUi(Input.Mouse.DeltaY()));
+
+        var moving = false;
+        var forwardInput = 0.0;
+        if Input.Keyboard.IsDown(Input.Key.W) {
+            forwardInput = 1.0;
+            moving = true;
+        }
+        if Input.Keyboard.IsDown(Input.Key.S) {
+            forwardInput = forwardInput - 1.0;
+            moving = true;
+        }
+        var rightInput = 0.0;
+        if Input.Keyboard.IsDown(Input.Key.D) {
+            rightInput = 1.0;
+            moving = true;
+        }
+        if Input.Keyboard.IsDown(Input.Key.A) {
+            rightInput = rightInput - 1.0;
+            moving = true;
+        }
+        var upInput = 0.0;
+        if Input.Keyboard.IsDown(Input.Key.E) {
+            upInput = 1.0;
+            moving = true;
+        }
+        if Input.Keyboard.IsDown(Input.Key.Q) {
+            upInput = upInput - 1.0;
+            moving = true;
+        }
+        if moving {
+            var speed = SceneEditor3DModel.FLY_BASE_SPEED_PER_SECOND
+                * CurrentEyeDistance() * flySpeedMultiplier;
+            if ViewportShiftDown() { speed = speed * SceneEditor3DModel.FLY_FAST_MULTIPLIER; }
+            var step = speed * deltaSeconds;
+            var eyeUnit = ViewportEyeUnit();
+            var yaw = viewYawDegrees * SceneEditor3DModel.DEG_TO_RAD;
+            var rightX = Math.Cos(yaw);
+            var rightZ = 0.0 - Math.Sin(yaw);
+            viewTargetX = SceneEditor3DModel.ClampNumber3D(
+                viewTargetX
+                    - eyeUnit.X * forwardInput * step
+                    + rightX * rightInput * step,
+                -1000000.0, 1000000.0);
+            viewTargetY = SceneEditor3DModel.ClampNumber3D(
+                viewTargetY
+                    - eyeUnit.Y * forwardInput * step
+                    + upInput * step,
+                -1000000.0, 1000000.0);
+            viewTargetZ = SceneEditor3DModel.ClampNumber3D(
+                viewTargetZ
+                    - eyeUnit.Z * forwardInput * step
+                    + rightZ * rightInput * step,
+                -1000000.0, 1000000.0);
+            changed = true;
+        }
+        if changed {
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+    }
+
+    /// @brief Rotate the look direction about the fixed eye (not the target).
+    /// @details Integer yaw/pitch state keeps every existing viewport contract;
+    ///          fractional remainders accumulate sub-degree motion so slow
+    ///          mouse movement still turns smoothly.
+    hide override func FlyLookByPixels(deltaX: Number,
+                              deltaY: Number) -> Boolean {
+        var eyeDistance = CurrentEyeDistance();
+        var eyeUnit = ViewportEyeUnit();
+        var eyeX = viewTargetX + eyeUnit.X * eyeDistance;
+        var eyeY = viewTargetY + eyeUnit.Y * eyeDistance;
+        var eyeZ = viewTargetZ + eyeUnit.Z * eyeDistance;
+        flyYawRemainder = flyYawRemainder
+            - deltaX * SceneEditor3DModel.FLY_LOOK_DEGREES_PER_PIXEL;
+        flyPitchRemainder = flyPitchRemainder
+            + deltaY * SceneEditor3DModel.FLY_LOOK_DEGREES_PER_PIXEL;
+        var yawStep = Convert.NumToInt(flyYawRemainder);
+        var pitchStep = Convert.NumToInt(flyPitchRemainder);
+        if yawStep == 0 and pitchStep == 0 { return false; }
+        flyYawRemainder = flyYawRemainder - yawStep;
+        flyPitchRemainder = flyPitchRemainder - pitchStep;
+        var nextYaw = SceneEditor3DModel.NormalizeYawDegrees(viewYawDegrees + yawStep);
+        var nextPitch = SceneEditor3DModel.ClampInt3D(
+            viewPitchDegrees + pitchStep, -80, 80);
+        if nextYaw == viewYawDegrees
+           and nextPitch == viewPitchDegrees {
+            return false;
+        }
+        viewYawDegrees = nextYaw;
+        viewPitchDegrees = nextPitch;
+        viewTargetX = SceneEditor3DModel.ClampNumber3D(
+            eyeX - ViewportEyeUnit().X * eyeDistance,
+            -1000000.0, 1000000.0);
+        viewTargetY = SceneEditor3DModel.ClampNumber3D(
+            eyeY - ViewportEyeUnit().Y * eyeDistance,
+            -1000000.0, 1000000.0);
+        viewTargetZ = SceneEditor3DModel.ClampNumber3D(
+            eyeZ - ViewportEyeUnit().Z * eyeDistance,
+            -1000000.0, 1000000.0);
+        return true;
+    }
+
+    /// @brief Report whether right-mouse fly navigation owns the viewport.
+    expose override func IsFlyNavigationActive() -> Boolean {
+        return flyActive;
+    }
+
+    /// @brief Report whether the viewport fell back to marker-only drawing.
+    expose override func IsViewportRenderFallback() -> Boolean {
+        return viewportRenderFallback;
+    }
+
+    /// @brief Switch the shared viewport camera projection; workspace-only.
+    expose override func SetViewProjection(perspective: Boolean) {
+        if gameViewOutputFramed { return; }
+        if viewPerspective == perspective { return; }
+        ReleaseGameplayViewAnchor();
+        viewPerspective = perspective;
+        UpdateProjectionControls();
+        renderDirty = true;
+        CaptureWorkspaceState();
+    }
+
+    /// @brief Return whether this document is presenting clean gameplay pixels.
+    expose override func GameViewActive() -> Boolean {
+        return gameViewActive;
+    }
+
+    /// @brief Enter or leave the non-destructive clean gameplay presentation.
+    /// @details Selection, camera, shading mode, overlay preferences, editor
+    ///          light, canonical bytes, revision, dirty state, and history all
+    ///          survive beneath the mode. Legacy profiles retain navigation;
+    ///          schema-v12 output frames use the project gameplay camera.
+    expose override func SetGameViewActive(active: Boolean) {
+        if active == gameViewActive {
+            UpdateGameViewButton();
+            return;
+        }
+        if active and gizmoDragAxis != SceneEditor3DModel.GIZMO_AXIS_NONE {
+            CancelGizmoDrag();
+        }
+        if active and vertexSnapDragActive {
+            CancelVertexSnapDrag();
+        }
+        if active and terrainSculptEnabled {
+            SetTerrainSculptEnabled(false);
+        }
+        marqueeCandidate = false;
+        marqueeActive = false;
+        marqueeCancelled = false;
+        gizmoHoverAxis = SceneEditor3DModel.GIZMO_AXIS_NONE;
+        hoveredViewportNode = -1;
+        orientationHoverFace = SceneEditor3DModel.ORIENTATION_FACE_NONE;
+        if active { CaptureWorkspaceState(); }
+        var restoreFramedView = gameViewOutputFramed;
+        gameViewActive = active;
+        if active {
+            gameViewOutputFramed = ProjectGameOutputAvailable();
+            gameOutputFramePending = false;
+            if gameViewOutputFramed { ApplyGameOutputFrame(); }
+        } else {
+            if restoreFramedView { RestoreGameOutputEditorView(); }
+            gameViewOutputFramed = false;
+            gameOutputFramePending = false;
+        }
+        SetViewOptionsVisible(viewOptionsVisible);
+        SetEditorControlsEnabled(scene != null);
+        UpdateViewportModeControls();
+        UpdateGameViewButton();
+        renderDirty = true;
+        if active or restoreFramedView == false {
+            CaptureWorkspaceState();
+        }
+        if active {
+            if gameViewOutputFramed {
+                toolbarStatus.SetText(
+                    "Game View: project " + GameOutputSizeLabel()
+                    + " output; exit to navigate");
+            } else {
+                toolbarStatus.SetText(
+                    "Game View: authored rendering with navigation");
+            }
+        } else {
+            toolbarStatus.SetText(
+                "Editor overlays, lighting assist, and selection restored");
+        }
+    }
+
+    /// @brief Keep the clean-view action and accessibility text truthful.
+    hide override func UpdateGameViewButton() {
+        if gameViewButton == null { return; }
+        if viewportImage != null {
+            viewportImage.SetDropTarget(gameViewActive == false);
+            if gameViewActive {
+                if gameViewOutputFramed {
+                    viewportImage.SetTooltip(
+                        "Clean " + GameOutputSizeLabel()
+                        + " project output. The gameplay frame and camera "
+                        + "are locked; exit Game View to navigate or edit.");
+                } else {
+                    viewportImage.SetTooltip(
+                        "Clean Game View: middle/right-drag orbits, Shift "
+                        + "pans, the wheel dollies, and right-drag enables "
+                        + "fly. Exit Game View to select or edit.");
+                }
+            } else {
+                viewportImage.SetTooltip(
+                    "Click visible meshes to select; Shift adds and Ctrl/Cmd "
+                    + "toggles. Drag colored transform handles. Middle/right-"
+                    + "drag to orbit, or add Shift to pan. Use the wheel to "
+                    + "zoom. W/E/R switch tools, F frames, and Escape clears "
+                    + "the selection while the viewport owns focus.");
+            }
+        }
+        var concise = compactChrome
+            or SceneEditor3DModel.UsesDockedHierarchy(lastHostWidth) == false;
+        if gameViewActive {
+            if concise { gameViewButton.SetText("Exit Game"); }
+            else { gameViewButton.SetText("Exit Game View"); }
+            gameViewButton.SetStyle(1);
+            gameViewButton.SetTooltip(
+                "Restore grid, gizmos, markers, selection, camera inset, "
+                + "navigator, editor light, and the prior shading mode");
+            gameViewButton.SetAccessibleName("Exit 3D Game View");
+            return;
+        }
+        if concise { gameViewButton.SetText("Game"); }
+        else { gameViewButton.SetText("Game View"); }
+        gameViewButton.SetStyle(2);
+        gameViewButton.SetTooltip(
+            "Show authored gameplay rendering without grids, gizmos, markers, "
+            + "selection, camera inset, navigator, or editor light");
+        gameViewButton.SetAccessibleName("Enter 3D Game View");
+    }
+
+    /// @brief Return whether the active project declares an exact 3D output.
+    hide override func ProjectGameOutputAvailable() -> Boolean {
+        return componentSchema != null and componentSchema.valid
+            and componentSchema.scenePreview3D != null
+            and componentSchema.scenePreview3D.present
+            and componentSchema.scenePreview3D.HasOutputSize();
+    }
+
+    /// @brief Project-authored output width, or zero when absent.
+    expose override func GameOutputWidth() -> Integer {
+        if ProjectGameOutputAvailable() == false { return 0; }
+        return componentSchema.scenePreview3D.outputWidth;
+    }
+
+    /// @brief Project-authored output height, or zero when absent.
+    expose override func GameOutputHeight() -> Integer {
+        if ProjectGameOutputAvailable() == false { return 0; }
+        return componentSchema.scenePreview3D.outputHeight;
+    }
+
+    /// @brief Human-readable exact project output dimensions.
+    hide override func GameOutputSizeLabel() -> String {
+        var width = GameOutputWidth();
+        var height = GameOutputHeight();
+        if width <= 0 or height <= 0 { return "authored"; }
+        return width + "x" + height;
+    }
+
+    /// @brief Largest centered project-aspect width inside one viewport.
+    expose override func GameOutputFrameWidthFor(
+        viewportWidth: Integer,
+        viewportHeight: Integer) -> Integer {
+        var outputWidth = GameOutputWidth();
+        var outputHeight = GameOutputHeight();
+        if viewportWidth <= 0 or viewportHeight <= 0
+           or outputWidth <= 0 or outputHeight <= 0 {
+            return viewportWidth;
+        }
+        if viewportWidth * outputHeight
+           <= viewportHeight * outputWidth {
+            return viewportWidth;
+        }
+        var width = viewportHeight * outputWidth / outputHeight;
+        if width < 1 { width = 1; }
+        return width;
+    }
+
+    /// @brief Largest centered project-aspect height inside one viewport.
+    expose override func GameOutputFrameHeightFor(
+        viewportWidth: Integer,
+        viewportHeight: Integer) -> Integer {
+        var outputWidth = GameOutputWidth();
+        var outputHeight = GameOutputHeight();
+        if viewportWidth <= 0 or viewportHeight <= 0
+           or outputWidth <= 0 or outputHeight <= 0 {
+            return viewportHeight;
+        }
+        if viewportWidth * outputHeight
+           <= viewportHeight * outputWidth {
+            var height = viewportWidth * outputHeight / outputWidth;
+            if height < 1 { height = 1; }
+            return height;
+        }
+        return viewportHeight;
+    }
+
+    /// @brief Active content width used by render and projection.
+    expose override func ViewportContentWidth() -> Integer {
+        if gameViewOutputFramed == false {
+            return renderedViewportWidth;
+        }
+        return GameOutputFrameWidthFor(
+            renderedViewportWidth, renderedViewportHeight);
+    }
+
+    /// @brief Active content height used by render and projection.
+    expose override func ViewportContentHeight() -> Integer {
+        if gameViewOutputFramed == false {
+            return renderedViewportHeight;
+        }
+        return GameOutputFrameHeightFor(
+            renderedViewportWidth, renderedViewportHeight);
+    }
+
+    /// @brief Centered horizontal content origin in the embedded viewport.
+    expose override func ViewportContentX() -> Integer {
+        return (renderedViewportWidth - ViewportContentWidth()) / 2;
+    }
+
+    /// @brief Centered vertical content origin in the embedded viewport.
+    expose override func ViewportContentY() -> Integer {
+        return (renderedViewportHeight - ViewportContentHeight()) / 2;
+    }
+
+    /// @brief Apply the project gameplay camera without changing scene bytes.
+    hide override func ApplyGameOutputFrame() {
+        if gameViewActive == false or gameViewOutputFramed == false {
+            return;
+        }
+        flyActive = false;
+        flyLastMs = -1;
+        if ActiveLookThroughNode() == null {
+            ApplyInitialProjectPreview();
+        }
+        ReanchorGameplayViewTarget();
+        renderDirty = true;
+    }
+
+    /// @brief Restore the exact pre-Game-View editor camera and overlays.
+    hide override func RestoreGameOutputEditorView() {
+        if currentDoc == null or currentDoc.scene3DWorkspace == null {
+            return;
+        }
+        var state = currentDoc.scene3DWorkspace;
+        viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(
+            SceneEditor3DModel.ClampInt3D(state.viewYawDegrees, -36000, 36000));
+        viewPitchDegrees = SceneEditor3DModel.ClampInt3D(state.viewPitchDegrees, -80, 80);
+        viewScale = SceneEditor3DModel.ClampInt3D(state.viewScale, 4, 120);
+        viewTargetX = SceneEditor3DModel.ClampNumber3D(
+            state.viewTargetX, -1000000.0, 1000000.0);
+        viewTargetY = SceneEditor3DModel.ClampNumber3D(
+            state.viewTargetY, -1000000.0, 1000000.0);
+        viewTargetZ = SceneEditor3DModel.ClampNumber3D(
+            state.viewTargetZ, -1000000.0, 1000000.0);
+        gameplayViewAnchored = state.gameplayViewAnchored;
+        gameplayEyeX = SceneEditor3DModel.ClampNumber3D(
+            state.gameplayEyeX, -1000000.0, 1000000.0);
+        gameplayEyeY = SceneEditor3DModel.ClampNumber3D(
+            state.gameplayEyeY, -1000000.0, 1000000.0);
+        gameplayEyeZ = SceneEditor3DModel.ClampNumber3D(
+            state.gameplayEyeZ, -1000000.0, 1000000.0);
+        viewPerspective = state.viewPerspective;
+        showGrid = state.showGrid;
+        showMarkers = state.showMarkers;
+        showLightOverlays = state.showLightOverlays;
+        showCameraOverlays = state.showCameraOverlays;
+        showColliderOverlays = state.showColliderOverlays;
+        showRouteOverlays = state.showRouteOverlays;
+        showStats = state.showStats;
+        flyActive = false;
+        flyLastMs = -1;
+        SyncViewOptionControls();
+    }
+
+    /// @brief Show or hide the overlay/snap options row.
+    expose override func SetViewOptionsVisible(visible: Boolean) {
+        viewOptionsVisible = visible;
+        if viewOptionsRow != null {
+            viewOptionsRow.SetVisible(
+                viewOptionsVisible and gameViewActive == false);
+        }
+        UpdateViewOptionsChrome();
+        UpdateCommandMenuButtons();
+    }
+
+    /// @brief Reserve wrapped rows for the options row at compact widths.
+    /// @details Flex cannot infer wrapped cross-axis height before its parent
+    ///          assigns a width, mirroring the toolbar reservations above.
+    hide override func UpdateViewOptionsChrome() {
+        if viewOptionsRow == null { return; }
+        if viewOptionsVisible and gameViewActive == false
+           and compactLayout {
+            viewOptionsRow.SetPreferredSize(0.0, 96.0);
+        } else {
+            viewOptionsRow.SetPreferredSize(0.0, 0.0);
+        }
+    }
+
+    /// @brief Project one world point for display probes.
+    /// @details Probes assert through the shared camera instead of
+    ///          duplicating projection math (ADR 0183).
+    expose override func ProjectWorldPoint(x: Number,
+                                  y: Number,
+                                  z: Number) -> SceneEditor3DModel.ProjectedPoint {
+        return Project(x, y, z);
+    }
+
+    /// @brief Keep the projection toggle label naming the active mode.
+    hide override func UpdateProjectionControls() {
+        if projectionButton == null { return; }
+        if viewPerspective {
+            projectionButton.SetText("Persp");
+            projectionButton.SetTooltip(
+                "Perspective projection (click for orthographic)");
+        } else {
+            projectionButton.SetText("Ortho");
+            projectionButton.SetTooltip(
+                "Orthographic projection (click for perspective)");
+        }
+    }
+
+    /// @brief Apply overlay and snap chrome edits; all workspace-only state.
+    hide override func PumpViewOptionControls() {
+        if gridCheck == null { return; }
+        if gridCheck.WasChanged() {
+            showGrid = gridCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if markersCheck.WasChanged() {
+            showMarkers = markersCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if lightsCheck.WasChanged() {
+            showLightOverlays = lightsCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if camerasCheck.WasChanged() {
+            showCameraOverlays = camerasCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if collidersCheck.WasChanged() {
+            showColliderOverlays = collidersCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if routesCheck.WasChanged() {
+            showRouteOverlays = routesCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if statsCheck.WasChanged() {
+            showStats = statsCheck.IsChecked();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+        if editorLightCheck.WasChanged() {
+            editorLightAssist = editorLightCheck.IsChecked();
+            renderDirty = true;
+        }
+        var snapChanged = false;
+        if snapMoveSpinner.WasChanged() {
+            snapMoveIncrement = snapMoveSpinner.Value;
+            snapChanged = true;
+        }
+        if snapRotateSpinner.WasChanged() {
+            snapRotateIncrement = snapRotateSpinner.Value;
+            snapChanged = true;
+        }
+        if snapScaleSpinner.WasChanged() {
+            snapScaleIncrement = snapScaleSpinner.Value;
+            snapChanged = true;
+        }
+        if snapChanged {
+            ApplySnapIncrements();
+            renderDirty = true;
+            CaptureWorkspaceState();
+        }
+    }
+}

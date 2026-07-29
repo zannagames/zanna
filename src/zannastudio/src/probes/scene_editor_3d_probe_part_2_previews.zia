@@ -1,0 +1,562 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_editor_3d_probe_part_2_previews.zia
+// Purpose: Focused 3D project-preview probe scenarios.
+// Key invariants:
+//   - Scenarios preserve the original execution order and shared fixture.
+//   - Failure paths retain their original cleanup and RESULT diagnostics.
+// Ownership/Lifetime: Borrows one SceneEditor3DProbeContext from the entry probe.
+// Links: zannastudio/src/probes/scene_editor_3d_probe.zia,
+//        zannastudio/src/probes/scene_editor_3d_probe_context.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_editor_3d_probe_part_2_previews;
+
+bind "../core/document";
+bind "../core/document_manager";
+bind "../core/project_manager";
+bind "../commands/command_context";
+bind "../commands/file_commands";
+bind "../editor/editor_engine";
+bind "../services/file_utils";
+bind "../services/safe_io";
+bind "../ui/app_shell";
+bind "../ui/scene_clipboard";
+bind "../ui/scene_component_authoring";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+bind "../ui/scene_material_3d";
+bind "../ui/scene_transform_3d";
+
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind Material3D = Zanna.Graphics3D.Material3D;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Quat = Zanna.Math.Quat;
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+bind TempFile = Zanna.IO.TempFile;
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Terminal = Zanna.Terminal;
+bind Seq = Zanna.Collections.Seq;
+bind "scene_editor_3d_probe_context" as Probe;
+
+/// @brief Run the VerifyPreviewRenderingAndFilters scenario against the shared fixture.
+expose func VerifyPreviewRenderingAndFilters(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var componentDir = ctx.componentDir;
+    var componentProject = ctx.componentProject;
+    var previousComponentScenePath = ctx.previousComponentScenePath;
+    var previewGraph = ctx.previewGraph;
+    var previewDoc = ctx.previewDoc;
+    var previewBaseline = ctx.previewBaseline;
+    var previewRevision = ctx.previewRevision;
+
+    if editor.viewportPixels == null
+       or editor.viewportRenderCamera == null
+       or Probe.near(editor.viewportRenderCamera.Fov, 90.0) == false
+       or editor.viewportRenderCanvas == null
+       or editor.viewportRenderCanvas.IblEnabled == false
+       or Probe.near(editor.viewportRenderCanvas.IblIntensity, 0.28) == false
+       or editor.viewportRenderCanvas.HeightFogEnabled == false
+       or Pixels.Get(editor.viewportPixels, 4, 4)
+          == Pixels.Get(
+              editor.viewportPixels,
+              4,
+              editor.renderedViewportHeight - 5) {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "version-6 project sky did not produce a visible gradient");
+        return false;
+    }
+    if editor.projectPreviewScene == null
+       or editor.projectPreviewInstanceCount != 1
+       or editor.projectPreviewDirectModelCount != 0
+       or editor.projectPreviewFilteredCount != 0
+       or editor.projectPreviewFallbackCount != 1
+       or editor.projectPreviewMissingCount != 0
+       or editor.projectPreviewFilterIndex != 2
+       or editor.ProjectPreviewFilterSelectionLabel() != "Variant 1"
+       or editor.projectPreviewFilterDropdown.IsVisible() == false
+       or editor.projectPreviewFilterDropdown.Selected != 2
+       or editor.projectPreviewClipped {
+        var previewReason = "3D node prefab did not build its transient graph";
+        if editor.projectPreviewScene == null {
+            previewReason = previewReason + " (no graph)";
+        } else if editor.projectPreviewInstanceCount != 1 {
+            previewReason = previewReason + " (instance count "
+                + editor.projectPreviewInstanceCount + ")";
+        } else if editor.projectPreviewDirectModelCount != 0 {
+            previewReason = previewReason + " (direct model count "
+                + editor.projectPreviewDirectModelCount + ")";
+        } else if editor.projectPreviewFallbackCount != 1 {
+            previewReason = previewReason + " (fallback count "
+                + editor.projectPreviewFallbackCount + ")";
+        } else if editor.projectPreviewMissingCount != 0 {
+            previewReason = previewReason + " (missing count "
+                + editor.projectPreviewMissingCount + ")";
+        } else {
+            previewReason = previewReason + " (node cap)";
+        }
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath, previewReason);
+        return false;
+    }
+
+    var filterPreviewRevision = editor.GetRevision();
+    var filterPreviewUndo = editor.undoStack.count();
+    if editor.SetProjectPreviewFilterIndex(1) == false
+       or editor.projectPreviewFilterIndex != 1
+       or editor.ProjectPreviewFilterSelectionLabel() != "Variant 0"
+       or editor.projectPreviewScene != null
+       or editor.projectPreviewInstanceCount != 0
+       or editor.projectPreviewDirectModelCount != 0
+       or editor.projectPreviewFallbackCount != 0
+       or editor.projectPreviewMissingCount != 0
+       or editor.projectPreviewFilteredCount != 1
+       or editor.SetProjectPreviewFilterIndex(0) == false
+       or editor.ProjectPreviewFilterSelectionLabel() != "All variants"
+       or editor.projectPreviewInstanceCount != 1
+       or editor.projectPreviewFallbackCount != 1
+       or editor.projectPreviewFilteredCount != 0
+       or editor.SetProjectPreviewFilterIndex(2) == false
+       or editor.ProjectPreviewFilterSelectionLabel() != "Variant 1"
+       or editor.projectPreviewInstanceCount != 1
+       or editor.projectPreviewFallbackCount != 1
+       or editor.projectPreviewFilteredCount != 0
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified
+       or editor.GetRevision() != filterPreviewRevision
+       or editor.undoStack.count() != filterPreviewUndo
+       or editor.redoStack.count() != 0 {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(
+            shell,
+            tempPath,
+            "project preview-state selector changed canonical state "
+            + "or failed exact typed filtering");
+        return false;
+    }
+
+    // Manual navigation and older persisted workspaces can always return to
+    // the project-authored presentation without touching the scene document.
+    editor.viewTargetX = -900.0;
+    editor.viewTargetY = 800.0;
+    editor.viewTargetZ = 700.0;
+    editor.viewYawDegrees = 75;
+    editor.viewPitchDegrees = -45;
+    editor.showGrid = true;
+    editor.showMarkers = true;
+    editor.showLightOverlays = true;
+    editor.showCameraOverlays = true;
+    editor.showColliderOverlays = true;
+    editor.showRouteOverlays = false;
+    if editor.CanApplyProjectPreviewView() == false
+       or editor.ApplyProjectPreviewView() == false
+       or Probe.near(editor.viewTargetX, 12.5) == false
+       or Probe.near(editor.viewTargetY, 2.75) == false
+       or editor.viewTargetZ >= -7.75
+       or editor.viewTargetZ < -100.0
+       or editor.viewYawDegrees != 0
+       or editor.viewPitchDegrees != 0
+       or editor.showGrid
+       or editor.showMarkers
+       or editor.showLightOverlays
+       or editor.showCameraOverlays
+       or editor.showColliderOverlays
+       or editor.showRouteOverlays == false
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified
+       or editor.GetRevision() != previewRevision {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "Gameplay View did not restore the read-only project profile");
+        return false;
+    }
+    var previewWrapper =
+        editor.projectPreviewScene.Root.GetChild(0);
+    var previewVisual = previewWrapper.GetChild(0);
+    if previewVisual == null or previewVisual.Material == null
+       or previewVisual.Material.Color.Z < 0.8
+       or Probe.near(previewWrapper.WorldScale.X, 2.0) == false
+       or Probe.near(previewWrapper.WorldScale.Y, 2.0) == false
+       or Probe.near(previewWrapper.WorldScale.Z, 2.0) == false
+       or editor.ViewportNodeAt(
+              editor.renderedViewportWidth / 2,
+              editor.renderedViewportHeight / 2) != 0
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "3D node prefab variant did not render/pick as its source marker");
+        return false;
+    }
+
+    // One wrong scalar kind rejects only its complete atmosphere group.
+    previewGraph = null;
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.componentDir = componentDir;
+    ctx.componentProject = componentProject;
+    ctx.previousComponentScenePath = previousComponentScenePath;
+    ctx.previewDoc = previewDoc;
+    ctx.previewBaseline = previewBaseline;
+    return true;
+}
+
+/// @brief Run the VerifyPreviewFallbackAndSchemaIsolation scenario against the shared fixture.
+expose func VerifyPreviewFallbackAndSchemaIsolation(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var componentDir = ctx.componentDir;
+    var componentPath = ctx.componentPath;
+    var componentProject = ctx.componentProject;
+    var previousComponentScenePath = ctx.previousComponentScenePath;
+    var previewDoc = ctx.previewDoc;
+    var previewBaseline = ctx.previewBaseline;
+
+    editor.scene.Root.MetadataRemove("world.ambientB");
+    editor.scene.Root.MetadataSetInt("world.ambientB", 1);
+    var wrongTypePreview = editor.ProjectPreviewRenderState();
+    if wrongTypePreview.hasAmbient
+       or wrongTypePreview.hasClear == false
+       or wrongTypePreview.hasFog == false
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "wrong-typed 3D atmosphere metadata did not fall back cleanly");
+        return false;
+    }
+    editor.scene.Root.MetadataRemove("world.ambientB");
+    editor.scene.Root.MetadataSetFloat("world.ambientB", 1.4);
+
+    // Once captured, user camera and overlay choices win over project defaults.
+    editor.viewTargetX = 77.0;
+    editor.viewTargetY = 8.0;
+    editor.viewTargetZ = -9.0;
+    editor.viewYawDegrees = -31;
+    editor.showMarkers = true;
+    editor.showColliderOverlays = true;
+    editor.showRouteOverlays = false;
+    if editor.SetProjectPreviewFilterIndex(1) == false {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "preview state could not be prepared for tab isolation");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    var otherDocumentFilterIndex =
+        editor.projectPreviewFilterIndex;
+    editor.Pump(previewDoc);
+    shell.Render();
+    if Probe.near(editor.viewTargetX, 77.0) == false
+       or Probe.near(editor.viewTargetY, 8.0) == false
+       or Probe.near(editor.viewTargetZ, -9.0) == false
+       or editor.viewYawDegrees != -31
+       or editor.showMarkers == false
+       or editor.showColliderOverlays == false
+       or editor.showRouteOverlays
+       or otherDocumentFilterIndex != 2
+       or editor.projectPreviewFilterIndex != 1
+       or editor.ProjectPreviewFilterSelectionLabel() != "Variant 0"
+       or previewDoc.content != previewBaseline
+       or previewDoc.isModified {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "restored 3D workspace was overwritten by project defaults");
+        return false;
+    }
+    if editor.SetProjectPreviewFilterIndex(2) == false {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "preview state could not be restored after tab isolation");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+
+    editor.componentPalette.SetSchemaEditorVisible(true);
+    editor.componentPalette.SelectAuthoredComponent("conflicting-spawn");
+    if editor.componentPalette.componentLaterButton.IsEnabled() == false {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "3D schema ordering used the target-filtered component list");
+        return false;
+    }
+    editor.componentPalette.SelectAuthoredComponent("two-d-only");
+    var schemaSceneBaseline = sceneDoc.content;
+    var schemaSceneRevision = editor.GetRevision();
+    var schemaFileBaseline = File.ReadAllText(componentPath);
+    var incompatibleDefinition =
+        editor.componentPalette.SelectedAuthoredComponent();
+    var crossTargetEdit = scene_component_authoring.UpdateComponent(
+        editor.componentAuthoring.session.currentText,
+        "two-d-only",
+        "two-d-only",
+        "2D Only",
+        scene_component_schema.TARGET_2D_OBJECT,
+        "Edited safely from the shared 3D schema form.",
+        "",
+        "");
+    if editor.componentSchema.components.count() != 3
+       or editor.componentPalette.components.count() != 2
+       or editor.componentPalette.schemaEditorGroup.IsVisible() == false
+       or incompatibleDefinition == null
+       or incompatibleDefinition.name != "two-d-only"
+       or editor.componentAuthoring.ApplyStructuredEdit(
+              crossTargetEdit,
+              editor.componentPalette,
+              "Updated cross-target schema component.") == false
+       or editor.componentAuthoring.schema.Find(
+              "two-d-only",
+              scene_component_schema.TARGET_2D_OBJECT).label != "2D Only"
+       or sceneDoc.content != schemaSceneBaseline
+       or editor.GetRevision() != schemaSceneRevision
+       or editor.componentAuthoring.Undo(
+              editor.componentPalette) == false
+       or File.ReadAllText(componentPath) != schemaFileBaseline
+       or sceneDoc.content != schemaSceneBaseline
+       or editor.GetRevision() != schemaSceneRevision {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "3D shared schema editor hid cross-target data or dirtied VSCN");
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    ctx.componentDir = componentDir;
+    ctx.componentProject = componentProject;
+    ctx.previousComponentScenePath = previousComponentScenePath;
+    return true;
+}
+
+/// @brief Run the VerifyComponentApplication scenario against the shared fixture.
+expose func VerifyComponentApplication(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+    var rootIndex = ctx.rootIndex;
+    var childIndex = ctx.childIndex;
+    var metadataContent = ctx.metadataContent;
+    var componentDir = ctx.componentDir;
+    var componentProject = ctx.componentProject;
+    var previousComponentScenePath = ctx.previousComponentScenePath;
+
+    var componentSelection: List[Integer] = [];
+    componentSelection.add(rootIndex);
+    componentSelection.add(childIndex);
+    editor.componentPalette.SelectComponent("enemy-spawn");
+    editor.SelectSceneNodes(componentSelection, childIndex);
+    var enemyComponent = editor.componentPalette.SelectedComponent();
+    var componentRevision = editor.GetRevision();
+    if editor.componentSchema.found == false
+       or editor.componentSchema.valid == false
+       or editor.componentSchema.components.count() != 3
+       or editor.componentPalette.components.count() != 2
+       or enemyComponent == null
+       or editor.componentPalette.applyButton.IsEnabled() == false
+       or editor.componentPalette.editFieldButton.IsEnabled()
+       or editor.ApplySelectedComponent(enemyComponent) == false
+       or editor.GetRevision() != componentRevision + 1
+       or editor.flatNodes.get(rootIndex).MetadataGetInt(
+              "health", -1) != 100
+       or editor.flatNodes.get(childIndex).MetadataGetInt(
+              "health", -1) != 125
+       or editor.flatNodes.get(rootIndex).MetadataGetString(
+              "enemy.archetype", "") != "grunt"
+       or editor.flatNodes.get(childIndex).MetadataGetInt(
+              "enemy.level", -1) != 3
+       or Probe.near(editor.flatNodes.get(rootIndex).MetadataGetFloat(
+                   "radius", 0.0), 4.5) == false
+       or Probe.near(editor.flatNodes.get(childIndex).MetadataGetFloat(
+                   "radius", 0.0), 4.0) == false
+       or editor.flatNodes.get(rootIndex).MetadataGetBool(
+              "active", false) == false
+       or editor.flatNodes.get(childIndex).MetadataKind("target") != "null" {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "3D project component did not add exact missing defaults");
+        return false;
+    }
+    var componentContent = sceneDoc.content;
+    if safe_io.WriteAllText(tempPath, componentContent) == false {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath, "could not stage component-bearing VSCN");
+        return false;
+    }
+    var componentRoundTrip = SceneGraph.Load(tempPath);
+    if componentRoundTrip == null
+       or componentRoundTrip.Find("Root Node").IsNone
+       or componentRoundTrip.Find("Child Node").IsNone
+       or (componentRoundTrip.Find("Root Node").Unwrap() as SceneNode)
+              .MetadataGetInt("health", -1) != 100
+       or (componentRoundTrip.Find("Child Node").Unwrap() as SceneNode)
+              .MetadataGetInt("health", -1) != 125
+       or editor.ApplySelectedComponent(enemyComponent)
+       or editor.GetRevision() != componentRevision + 1
+       or editor.Undo() == false
+       or sceneDoc.content != metadataContent
+       or editor.Redo() == false
+       or sceneDoc.content != componentContent
+       or editor.Undo() == false
+       or sceneDoc.content != metadataContent {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "3D component round trip, no-op, or history was not exact");
+        return false;
+    }
+
+    editor.componentPalette.SelectComponent("conflicting-spawn");
+    editor.SelectSceneNodes(componentSelection, childIndex);
+    var conflictRevision = editor.GetRevision();
+    if editor.ApplySelectedComponent(
+           editor.componentPalette.SelectedComponent())
+       or editor.GetRevision() != conflictRevision
+       or sceneDoc.content != metadataContent
+       or editor.flatNodes.get(rootIndex).MetadataHas("would.add")
+       or editor.flatNodes.get(childIndex).MetadataHas("would.add") {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath, "3D component type conflict was not fail-closed");
+        return false;
+    }
+
+    var singleComponentSelection: List[Integer] = [];
+    singleComponentSelection.add(childIndex);
+    editor.componentPalette.SelectComponent("enemy-spawn");
+    editor.SelectSceneNodes(singleComponentSelection, childIndex);
+    editor.componentPalette.SelectField("health");
+    var healthRow = -1;
+    var metaScan = 0;
+    while metaScan < editor.metadataInspector.keys.count() {
+        if editor.metadataInspector.keys.get(metaScan) == "health" {
+            healthRow = metaScan;
+        }
+        metaScan = metaScan + 1;
+    }
+    if editor.componentPalette.editFieldButton.IsEnabled() == false
+       or editor.EditSelectedComponentField() == false
+       or healthRow < 0
+       or editor.metadataInspector.KeyTextAt(healthRow) != "health"
+       or editor.metadataInspector.KindTokenAt(healthRow) != "int"
+       or editor.metadataInspector.ValueTextAt(healthRow) != "125"
+       or sceneDoc.content != metadataContent {
+        sceneDoc.filePath = previousComponentScenePath;
+        componentProject.CloseProject();
+        editor.SetWorkspaceContext(null);
+        Probe.removeTempDir(componentDir);
+        Probe.fail(shell, tempPath,
+             "3D schema field did not populate the raw typed editor");
+        return false;
+    }
+    sceneDoc.filePath = previousComponentScenePath;
+    componentProject.CloseProject();
+    editor.SetWorkspaceContext(null);
+    Probe.removeTempDir(componentDir);
+
+    var modeRevision = editor.GetRevision();
+    if editor.TransformNodeAlongGizmoAxis(
+           childIndex, scene_editor_3d.GIZMO_MODE_ROTATE,
+           scene_editor_3d.GIZMO_AXIS_Y, 8.0, true) == false {
+        Probe.fail(shell, tempPath, "snapped Rotate command was not committed");
+        return false;
+    }
+    if editor.flatNodes.get(childIndex).Name != "Child Node" {
+        Probe.fail(shell, tempPath, "Rotate command lost node identity");
+        return false;
+    }
+    if editor.TransformNodeAlongGizmoAxis(
+           childIndex, scene_editor_3d.GIZMO_MODE_SCALE,
+           scene_editor_3d.GIZMO_AXIS_Z, 0.26, true) == false {
+        Probe.fail(shell, tempPath, "snapped Scale command was not committed");
+        return false;
+    }
+    if editor.flatNodes.get(childIndex).Name != "Child Node" {
+        Probe.fail(shell, tempPath, "Scale command lost node identity");
+        return false;
+    }
+    if editor.TransformNodeAlongGizmoAxis(
+           childIndex, scene_editor_3d.GIZMO_MODE_MOVE,
+           scene_editor_3d.GIZMO_AXIS_Z, 0.26, true) == false {
+        Probe.fail(shell, tempPath, "snapped Move command was not committed");
+        return false;
+    }
+    if editor.flatNodes.get(childIndex).Name != "Child Node"
+       or editor.GetRevision() != modeRevision + 3 {
+        Probe.fail(shell, tempPath,
+             "snapped Move/Rotate/Scale commands were not committed");
+        return false;
+    }
+
+    ctx.tempPath = tempPath;
+    ctx.shell = shell;
+    ctx.editor = editor;
+    ctx.sceneDoc = sceneDoc;
+    return true;
+}

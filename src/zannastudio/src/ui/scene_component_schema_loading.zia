@@ -1,0 +1,439 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_loading.zia
+// Purpose: Schema loading and top-level parse orchestration.
+// Key invariants:
+//   - Malformed or out-of-bounds input rejects the complete staged schema.
+// Ownership/Lifetime:
+//   - Parsed records own value-only data; parser layers own no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema.zia,
+//        zannastudio/src/ui/scene_component_authoring.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_loading;
+
+bind "../services/safe_io";
+
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+bind Parse = Zanna.Core.Parse;
+bind Fmt = Zanna.Text.Fmt;
+bind "scene_component_schema_model" as SceneComponentModel;
+bind "scene_component_schema_contract" as PreviousLayer;
+
+class SceneComponentSchemaLoadingLayer extends PreviousLayer.SceneComponentSchemaParserContract {
+
+    /// @brief Return the fixed schema path beneath a workspace root.
+    expose override func PathForRoot(root: String) -> String {
+        if root == "" { return ""; }
+        return Path.Join(root, SceneComponentModel.SCHEMA_FILE_NAME);
+    }
+
+    /// @brief Load one bounded schema path without propagating filesystem failures.
+    /// @details Missing files are valid empty configurations. Existing unreadable
+    ///          or oversized files are found-but-invalid so Studio can surface the
+    ///          problem without applying stale definitions.
+    expose override func LoadPath(path: String) -> SceneComponentModel.SceneComponentSchema {
+        var empty = new SceneComponentModel.SceneComponentSchema();
+        empty.sourcePath = path;
+        if path == "" { return empty; }
+
+        var exists = false;
+        try {
+            exists = File.Exists(path);
+        } catch {
+            empty.found = true;
+            return Reject(empty, "Could not inspect the component schema file.");
+        }
+        if exists == false { return empty; }
+
+        empty.found = true;
+        var read = safe_io.ReadAllTextBounded(path, SceneComponentModel.MAX_SCHEMA_BYTES);
+        if read.ok == false {
+            return Reject(
+                empty,
+                "Could not read the component schema within the 1 MB limit.");
+        }
+        return ParseText(read.text, path);
+    }
+
+    /// @brief Parse one complete schema string into staged value records.
+    /// @return A valid complete schema, or a fail-closed result with no components.
+    expose override func ParseText(text: String,
+                          sourcePath: String) -> SceneComponentModel.SceneComponentSchema {
+        var schema = new SceneComponentModel.SceneComponentSchema();
+        schema.found = true;
+        schema.sourcePath = sourcePath;
+        if Str.get_Length(text) > SceneComponentModel.MAX_SCHEMA_BYTES {
+            return Reject(schema, "Component schema exceeds the 1 MB limit.");
+        }
+        if Json.IsValid(text) == false {
+            return Reject(schema, "Component schema is not valid JSON.");
+        }
+
+        var root = Json.Parse(text);
+        if Json.TypeOf(root) != "object" {
+            return Reject(schema, "Component schema root must be an object.");
+        }
+        if Map.Has(root, "version") == false
+           or Json.TypeOf(Map.Get(root, "version")) != "number" {
+            return Reject(schema, "Component schema requires numeric version 1.");
+        }
+        var parsedVersion =
+            Parse.TryInt(Json.Format(Map.Get(root, "version")));
+        if parsedVersion.IsNone
+           or parsedVersion.UnwrapI64() < SceneComponentModel.SCHEMA_VERSION
+           or parsedVersion.UnwrapI64() > SceneComponentModel.SCHEMA_VERSION_MAX {
+            return Reject(schema, "Unsupported component schema version.");
+        }
+        schema.version = parsedVersion.UnwrapI64();
+
+        var rawComponents = Map.Get(root, "components");
+        if rawComponents == null or Json.TypeOf(rawComponents) != "array" {
+            return Reject(schema, "Component schema requires a components array.");
+        }
+        var componentCount = Seq.get_Count(rawComponents);
+        if componentCount > SceneComponentModel.MAX_COMPONENTS {
+            return Reject(schema, "Component schema exceeds 128 components.");
+        }
+
+        var staged: List[SceneComponentModel.SceneComponentDefinition] = [];
+        var componentNames = Map.New();
+        var totalFields = 0;
+        var componentIndex = 0;
+        while componentIndex < componentCount {
+            var rawComponent = Seq.Get(rawComponents, componentIndex);
+            var component = ParseComponent(
+                rawComponent, componentIndex, componentNames, schema);
+            if component == null { return schema; }
+            totalFields = totalFields + component.fields.count();
+            if totalFields > SceneComponentModel.MAX_TOTAL_FIELDS {
+                return Reject(schema, "Component schema exceeds 2,048 fields.");
+            }
+            staged.add(component);
+            componentIndex = componentIndex + 1;
+        }
+
+        schema.components = staged;
+        if ParseObjectPreviews(root, schema) == false { return schema; }
+        if ParseScenePreview2D(root, schema) == false { return schema; }
+        if ParseScenePreview3D(root, schema) == false { return schema; }
+        if ParseNodePreviews3D(root, schema) == false { return schema; }
+        if ParseNodePreviewFilter3D(root, schema) == false { return schema; }
+        if ParseMaterialPreviews3D(root, schema) == false { return schema; }
+        schema.valid = true;
+        schema.error = "";
+        return schema;
+    }
+
+    /// @brief Parse optional schema-v5 transient 3D node prefab rules.
+    hide override func ParseNodePreviews3D(root: Any,
+                             schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(root, "nodePreviews3D") == false { return true; }
+        if schema.version < SceneComponentModel.NODE_PREVIEW_3D_SCHEMA_VERSION {
+            Reject(schema, "Project 3D node previews require schema version 5.");
+            return false;
+        }
+        var rawPreviews = Map.Get(root, "nodePreviews3D");
+        if rawPreviews == null or Json.TypeOf(rawPreviews) != "array" {
+            Reject(schema, "nodePreviews3D must be an array.");
+            return false;
+        }
+        var count = Seq.get_Count(rawPreviews);
+        if count > SceneComponentModel.MAX_NODE_PREVIEWS_3D {
+            Reject(schema, "Component schema exceeds 128 3D node previews.");
+            return false;
+        }
+        var staged: List[SceneComponentModel.SceneNodePreview3DDefinition] = [];
+        var seenMatches = Map.New();
+        var index = 0;
+        while index < count {
+            var preview = ParseNodePreview3D(
+                Seq.Get(rawPreviews, index), index, seenMatches, schema);
+            if preview == null { return false; }
+            staged.add(preview);
+            index = index + 1;
+        }
+        schema.nodePreviews3D = staged;
+        return true;
+    }
+
+    /// @brief Parse one schema-v18 session-only transient-preview selector.
+    /// @details Nodes without the configured property remain visible. Index zero
+    ///          is always an explicit All option; authored states begin at one.
+    hide override func ParseNodePreviewFilter3D(
+        root: Any,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(root, "nodePreviewFilter3D") == false { return true; }
+        if schema.version < SceneComponentModel.NODE_PREVIEW_FILTER_3D_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "Project 3D node-preview filters require schema version 18.");
+            return false;
+        }
+        if schema.nodePreviews3D.count() == 0 {
+            Reject(
+                schema,
+                "nodePreviewFilter3D requires at least one nodePreviews3D rule.");
+            return false;
+        }
+        var raw = Map.Get(root, "nodePreviewFilter3D");
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(schema, "nodePreviewFilter3D must be an object.");
+            return false;
+        }
+        var filter = new SceneComponentModel.SceneNodePreviewFilter3DDefinition();
+        if ParseNodePreviewFilterHeader(raw, filter, schema) == false {
+            return false;
+        }
+        var stateCount =
+            ParseNodePreviewFilterStates(raw, filter, schema);
+        if stateCount < 0 { return false; }
+        if ParseNodePreviewFilterDefault(
+               raw, stateCount, filter, schema) == false {
+            return false;
+        }
+        filter.present = true;
+        schema.nodePreviewFilter3D = filter;
+        return true;
+    }
+
+    /// @brief Parse the labels and metadata key shared by every filter state.
+    hide func ParseNodePreviewFilterHeader(
+        raw: Any,
+        filter: SceneComponentModel.SceneNodePreviewFilter3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "label") == false
+           or Json.TypeOf(Map.Get(raw, "label")) != "string" {
+            Reject(schema, "nodePreviewFilter3D requires a label string.");
+            return false;
+        }
+        filter.label = Str.Trim(Map.GetStr(raw, "label"));
+        if Str.get_Length(filter.label) <= 0
+           or Str.get_Length(filter.label)
+              > SceneComponentModel.MAX_NODE_PREVIEW_FILTER_LABEL_CHARS {
+            Reject(
+                schema,
+                "nodePreviewFilter3D label must contain 1 to 64 characters.");
+            return false;
+        }
+        if Map.Has(raw, "allLabel") {
+            if Json.TypeOf(Map.Get(raw, "allLabel")) != "string" {
+                Reject(schema, "nodePreviewFilter3D allLabel must be a string.");
+                return false;
+            }
+            filter.allLabel = Str.Trim(Map.GetStr(raw, "allLabel"));
+            if Str.get_Length(filter.allLabel) <= 0
+               or Str.get_Length(filter.allLabel)
+                  > SceneComponentModel.MAX_NODE_PREVIEW_FILTER_LABEL_CHARS {
+                Reject(
+                    schema,
+                    "nodePreviewFilter3D allLabel must contain "
+                        + "1 to 64 characters.");
+                return false;
+            }
+        }
+        if Map.Has(raw, "matchProperty") == false
+           or Json.TypeOf(Map.Get(raw, "matchProperty")) != "string" {
+            Reject(
+                schema,
+                "nodePreviewFilter3D requires a matchProperty string.");
+            return false;
+        }
+        filter.matchProperty =
+            Str.Trim(Map.GetStr(raw, "matchProperty"));
+        if PortableIdentifier(
+               filter.matchProperty, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "nodePreviewFilter3D matchProperty must be a portable key.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse all unique project-owned values for one node filter.
+    /// @return The authored state count, or -1 after rejecting the schema.
+    hide func ParseNodePreviewFilterStates(
+        raw: Any,
+        filter: SceneComponentModel.SceneNodePreviewFilter3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Integer {
+        if Map.Has(raw, "states") == false
+           or Json.TypeOf(Map.Get(raw, "states")) != "array" {
+            Reject(schema, "nodePreviewFilter3D requires a states array.");
+            return -1;
+        }
+        var rawStates = Map.Get(raw, "states");
+        var stateCount = Seq.get_Count(rawStates);
+        if stateCount <= 0
+           or stateCount > SceneComponentModel.MAX_NODE_PREVIEW_FILTER_STATES {
+            Reject(
+                schema,
+                "nodePreviewFilter3D requires between 1 and 32 states.");
+            return -1;
+        }
+        var seenLabels = Map.New();
+        var seenValues = Map.New();
+        Map.SetBool(
+            seenLabels, Str.ToLower(filter.allLabel), true);
+        var stateIndex = 0;
+        while stateIndex < stateCount {
+            var rawState = Seq.Get(rawStates, stateIndex);
+            var state = ParseNodePreviewFilterState(
+                rawState, stateIndex, seenLabels, seenValues, schema);
+            if state == null { return -1; }
+            filter.states.add(state);
+            stateIndex = stateIndex + 1;
+        }
+        return stateCount;
+    }
+
+    /// @brief Parse one labeled exact typed node-preview filter value.
+    hide func ParseNodePreviewFilterState(
+        rawState: Any,
+        stateIndex: Integer,
+        seenLabels: Any,
+        seenValues: Any,
+        schema: SceneComponentModel.SceneComponentSchema)
+        -> SceneComponentModel.SceneNodePreviewFilterState3DDefinition {
+        if rawState == null or Json.TypeOf(rawState) != "object" {
+            Reject(
+                schema,
+                "3D node-preview filter state " + stateIndex
+                    + " must be an object.");
+            return null;
+        }
+        var state =
+            new SceneComponentModel.SceneNodePreviewFilterState3DDefinition();
+        if Map.Has(rawState, "label") == false
+           or Json.TypeOf(Map.Get(rawState, "label")) != "string" {
+            Reject(
+                schema,
+                "3D node-preview filter state " + stateIndex
+                    + " requires a label string.");
+            return null;
+        }
+        state.label = Str.Trim(Map.GetStr(rawState, "label"));
+        if Str.get_Length(state.label) <= 0
+           or Str.get_Length(state.label)
+              > SceneComponentModel.MAX_NODE_PREVIEW_FILTER_LABEL_CHARS {
+            Reject(
+                schema,
+                "3D node-preview filter state labels must contain "
+                    + "1 to 64 characters.");
+            return null;
+        }
+        var foldedLabel = Str.ToLower(state.label);
+        if Map.Has(seenLabels, foldedLabel) {
+            Reject(
+                schema,
+                "Duplicate 3D node-preview filter label \""
+                    + state.label + "\".");
+            return null;
+        }
+        Map.SetBool(seenLabels, foldedLabel, true);
+        var matchIdentity =
+            ParseNodePreviewFilterMatch(rawState, stateIndex, state, schema);
+        if schema.valid == false { return null; }
+        var valueKey = state.matchKind + "\n" + matchIdentity;
+        if Map.Has(seenValues, valueKey) {
+            Reject(schema, "Duplicate 3D node-preview filter matchValue.");
+            return null;
+        }
+        Map.SetBool(seenValues, valueKey, true);
+        return state;
+    }
+
+    /// @brief Parse the Boolean, integer, or string identity for one filter state.
+    hide func ParseNodePreviewFilterMatch(
+        rawState: Any,
+        stateIndex: Integer,
+        state: SceneComponentModel.SceneNodePreviewFilterState3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> String {
+        if Map.Has(rawState, "matchValue") == false {
+            Reject(
+                schema,
+                "3D node-preview filter state " + stateIndex
+                    + " requires a Boolean, integer, or string matchValue.");
+            return "";
+        }
+        var rawMatch = Map.Get(rawState, "matchValue");
+        var matchType = Json.TypeOf(rawMatch);
+        if matchType == "boolean" {
+            state.matchKind = "bool";
+            state.matchBoolean = Map.GetBool(rawState, "matchValue");
+            return "" + state.matchBoolean;
+        }
+        if matchType == "number" {
+            var parsedMatch = Parse.TryInt(Json.Format(rawMatch));
+            if parsedMatch.IsNone {
+                Reject(
+                    schema,
+                    "3D node-preview filter state " + stateIndex
+                        + " numeric matchValue must be an integer.");
+                return "";
+            }
+            state.matchKind = "int";
+            state.matchInteger = parsedMatch.UnwrapI64();
+            return "" + state.matchInteger;
+        }
+        if matchType == "string" {
+            state.matchKind = "string";
+            state.matchString = Map.GetStr(rawState, "matchValue");
+            if Str.get_Length(state.matchString)
+               > SceneComponentModel.MAX_FIELD_KEY_CHARS {
+                Reject(
+                    schema,
+                    "3D node-preview filter state " + stateIndex
+                        + " string matchValue exceeds 128 characters.");
+                return "";
+            }
+            return state.matchString;
+        }
+        Reject(
+            schema,
+            "3D node-preview filter state " + stateIndex
+                + " matchValue must be Boolean, integer, or string.");
+        return "";
+    }
+
+    /// @brief Parse the optional initial filter selection.
+    hide func ParseNodePreviewFilterDefault(
+        raw: Any,
+        stateCount: Integer,
+        filter: SceneComponentModel.SceneNodePreviewFilter3DDefinition,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "defaultIndex") {
+            if Json.TypeOf(Map.Get(raw, "defaultIndex")) != "number" {
+                Reject(
+                    schema,
+                    "nodePreviewFilter3D defaultIndex must be an integer.");
+                return false;
+            }
+            var parsedDefault =
+                Parse.TryInt(Json.Format(Map.Get(raw, "defaultIndex")));
+            if parsedDefault.IsNone
+               or parsedDefault.UnwrapI64() < 0
+               or parsedDefault.UnwrapI64() > stateCount {
+                Reject(
+                    schema,
+                    "nodePreviewFilter3D defaultIndex must select "
+                        + "All or one declared state.");
+                return false;
+            }
+            filter.defaultIndex = parsedDefault.UnwrapI64();
+        }
+        return true;
+    }
+
+}
