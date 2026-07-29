@@ -32,6 +32,27 @@ typedef enum {
 static void metal_bound_texture_cache(VGFXMetalContext *ctx, NSValue *protected_key);
 static void metal_bound_cubemap_cache(VGFXMetalContext *ctx, NSValue *protected_key);
 
+/// @brief Select the complete texture that may be bound for a cache entry.
+/// @details A candidate texture is not visible until its streamed upload publishes. While that
+///          work is pending, the previous complete entry remains usable as a fallback.
+/// @param entry Borrowed texture-cache entry, or nil.
+/// @return The active complete texture, the candidate's complete fallback, or nil.
+static id<MTLTexture> metal_visible_texture(VGFXMetalTextureCacheEntry *entry) {
+    if (!entry)
+        return nil;
+    return entry.uploadInProgress ? entry.fallbackEntry.texture : entry.texture;
+}
+
+/// @brief Select the complete cubemap that may be bound for a cache entry.
+/// @details Never exposes a partially uploaded candidate to shader reads.
+/// @param entry Borrowed cubemap-cache entry, or nil.
+/// @return The active complete cubemap, the candidate's complete fallback, or nil.
+static id<MTLTexture> metal_visible_cubemap(VGFXMetalCubemapCacheEntry *entry) {
+    if (!entry)
+        return nil;
+    return entry.uploadInProgress ? entry.fallbackEntry.texture : entry.texture;
+}
+
 /// @brief Retire a texture upload that cannot make progress and memoize its generation.
 /// @param ctx Borrowed Metal context used to stamp the cache entry's last-used frame; may be NULL.
 /// @param entry Borrowed texture-cache entry whose partial resource and cursors are cleared.
@@ -548,7 +569,8 @@ static void metal_bound_texture_cache(VGFXMetalContext *ctx, NSValue *protected_
 ///          a fresh image to an older GPU upload. Conversion is RGBA→BGRA and may span frames.
 /// @param ctx Borrowed Metal context owning the texture cache and upload budget.
 /// @param pixels_ptr Borrowed runtime Pixels object used as both source and cache identity.
-/// @return The complete cached texture, or nil while uploading or after a memoized failure.
+/// @return The complete cached texture, the previous complete generation while replacement is
+///         pending/failed, or nil when no complete generation exists.
 static id<MTLTexture> metal_get_cached_texture(VGFXMetalContext *ctx, const void *pixels_ptr) {
     uint64_t cache_key;
     NSValue *key;
@@ -560,8 +582,10 @@ static id<MTLTexture> metal_get_cached_texture(VGFXMetalContext *ctx, const void
     key = [NSValue valueWithPointer:pixels_ptr];
     cached = ctx.textureCache[key];
     cache_key = vgfx3d_get_pixels_cache_key(pixels_ptr);
-    if (cached && cached.failedGeneration == cache_key)
-        return nil;
+    if (cached && cached.failedGeneration == cache_key) {
+        cached.lastUsedFrame = ctx.frameSerial;
+        return metal_visible_texture(cached);
+    }
     if (cached && cached.texture && cached.generation == cache_key) {
         cached.lastUsedFrame = ctx.frameSerial;
         return cached.texture;
@@ -573,33 +597,35 @@ static id<MTLTexture> metal_get_cached_texture(VGFXMetalContext *ctx, const void
         } else if (status == METAL_UPLOAD_COMPLETE) {
             cached.fallbackEntry = nil;
         }
-        return status == METAL_UPLOAD_COMPLETE ? cached.texture : nil;
+        return status == METAL_UPLOAD_COMPLETE ? cached.texture
+                                               : metal_visible_texture(ctx.textureCache[key]);
     }
     VGFXMetalTextureCacheEntry *candidate = [[VGFXMetalTextureCacheEntry alloc] init];
     if (!candidate)
-        return nil;
+        return metal_visible_texture(cached);
     candidate.fallbackEntry = cached.uploadInProgress ? cached.fallbackEntry : cached;
     status = metal_start_texture_upload(ctx, candidate, pixels_ptr, cache_key);
     if (status == METAL_UPLOAD_FAILED) {
         metal_fail_texture_upload(ctx, candidate, key, cache_key);
-        return nil;
+        return metal_visible_texture(ctx.textureCache[key]);
     }
     ctx.textureCache[key] = candidate;
     if (status == METAL_UPLOAD_COMPLETE)
         candidate.fallbackEntry = nil;
     metal_bound_texture_cache(ctx, key);
-    return status == METAL_UPLOAD_COMPLETE ? candidate.texture : nil;
+    return status == METAL_UPLOAD_COMPLETE ? candidate.texture : metal_visible_texture(candidate);
 }
 
 /// @brief Get the Metal texture for a native TextureAsset3D, creating/streaming it on a cache miss.
-/// @details Keyed by the asset's native cache key; returns nil while an upload is still in
-/// progress.
+/// @details Keyed by the asset's native cache key. A previous complete resident range stays
+///          visible while its replacement is still in progress.
 /// @param ctx Borrowed Metal context owning the texture cache and native-format capabilities.
 /// @param asset Borrowed native `TextureAsset3D` source and cache identity.
 /// @param cache_key Stable native snapshot key, or zero to query it from @p asset.
 /// @param mip_start First resident mip, or a negative value to query it from @p asset.
 /// @param mip_count Resident mip count, or a non-positive value to query it from @p asset.
-/// @return The complete cached native texture, or nil while uploading/unsupported/failed.
+/// @return The complete cached native texture, the previous complete generation during
+///         replacement, or nil when unsupported or no complete generation exists.
 static id<MTLTexture> metal_get_cached_native_texture(
     VGFXMetalContext *ctx, void *asset, uint64_t cache_key, int64_t mip_start, int64_t mip_count) {
     NSValue *key;
@@ -620,8 +646,10 @@ static id<MTLTexture> metal_get_cached_native_texture(
         return nil;
     key = [NSValue valueWithPointer:asset];
     cached = ctx.textureCache[key];
-    if (cached && cached.failedGeneration == cache_key)
-        return nil;
+    if (cached && cached.failedGeneration == cache_key) {
+        cached.lastUsedFrame = ctx.frameSerial;
+        return metal_visible_texture(cached);
+    }
     if (cached && cached.texture && cached.textureAsset == asset &&
         cached.generation == cache_key && cached.nativeMipStart == mip_start &&
         cached.nativeMipCount == mip_count) {
@@ -637,23 +665,24 @@ static id<MTLTexture> metal_get_cached_native_texture(
         } else if (status == METAL_UPLOAD_COMPLETE) {
             cached.fallbackEntry = nil;
         }
-        return status == METAL_UPLOAD_COMPLETE ? cached.texture : nil;
+        return status == METAL_UPLOAD_COMPLETE ? cached.texture
+                                               : metal_visible_texture(ctx.textureCache[key]);
     }
     VGFXMetalTextureCacheEntry *candidate = [[VGFXMetalTextureCacheEntry alloc] init];
     if (!candidate)
-        return nil;
+        return metal_visible_texture(cached);
     candidate.fallbackEntry = cached.uploadInProgress ? cached.fallbackEntry : cached;
     status =
         metal_start_native_texture_upload(ctx, candidate, asset, cache_key, mip_start, mip_count);
     if (status == METAL_UPLOAD_FAILED) {
         metal_fail_texture_upload(ctx, candidate, key, cache_key);
-        return nil;
+        return metal_visible_texture(ctx.textureCache[key]);
     }
     ctx.textureCache[key] = candidate;
     if (status == METAL_UPLOAD_COMPLETE)
         candidate.fallbackEntry = nil;
     metal_bound_texture_cache(ctx, key);
-    return status == METAL_UPLOAD_COMPLETE ? candidate.texture : nil;
+    return status == METAL_UPLOAD_COMPLETE ? candidate.texture : metal_visible_texture(candidate);
 }
 
 /// @brief Resolve a material's texture to an MTLTexture, preferring native blocks then RGBA Pixels.
@@ -1004,10 +1033,11 @@ static void metal_bound_cubemap_cache(VGFXMetalContext *ctx, NSValue *protected_
 }
 
 /// @brief Get the Metal cubemap texture for a Cubemap3D, creating/streaming it on a cache miss.
-/// @details Returns nil while the cubemap upload is still in progress.
+/// @details Keeps a previous complete cubemap visible while a replacement upload is in progress.
 /// @param ctx Borrowed Metal context owning the cubemap cache and upload budget.
 /// @param cubemap Borrowed runtime cubemap used as source and cache identity.
-/// @return The complete cached cubemap texture, or nil while uploading or after failure.
+/// @return The complete cached cubemap, its previous complete generation during replacement, or
+///         nil when no complete generation exists.
 static id<MTLTexture> metal_get_cached_cubemap(VGFXMetalContext *ctx, const rt_cubemap3d *cubemap) {
     uint64_t generation;
     NSValue *key;
@@ -1020,8 +1050,10 @@ static id<MTLTexture> metal_get_cached_cubemap(VGFXMetalContext *ctx, const rt_c
     key = [NSValue valueWithPointer:cubemap];
     cached = ctx.cubemapCache[key];
     generation = vgfx3d_get_cubemap_generation(cubemap);
-    if (cached && cached.failedGeneration == generation)
-        return nil;
+    if (cached && cached.failedGeneration == generation) {
+        cached.lastUsedFrame = ctx.frameSerial;
+        return metal_visible_cubemap(cached);
+    }
     if (cached && cached.texture && cached.generation == generation) {
         cached.lastUsedFrame = ctx.frameSerial;
         metal_apply_ibl_mips(ctx, cached, cubemap);
@@ -1035,22 +1067,23 @@ static id<MTLTexture> metal_get_cached_cubemap(VGFXMetalContext *ctx, const rt_c
         } else if (status == METAL_UPLOAD_COMPLETE) {
             cached.fallbackEntry = nil;
         }
-        return status == METAL_UPLOAD_COMPLETE ? cached.texture : nil;
+        return status == METAL_UPLOAD_COMPLETE ? cached.texture
+                                               : metal_visible_cubemap(ctx.cubemapCache[key]);
     }
     VGFXMetalCubemapCacheEntry *candidate = [[VGFXMetalCubemapCacheEntry alloc] init];
     if (!candidate)
-        return nil;
+        return metal_visible_cubemap(cached);
     candidate.fallbackEntry = cached.uploadInProgress ? cached.fallbackEntry : cached;
     status = metal_start_cubemap_upload(ctx, candidate, cubemap, generation);
     if (status == METAL_UPLOAD_FAILED) {
         metal_fail_cubemap_upload(ctx, candidate, key, generation);
-        return nil;
+        return metal_visible_cubemap(ctx.cubemapCache[key]);
     }
     ctx.cubemapCache[key] = candidate;
     if (status == METAL_UPLOAD_COMPLETE)
         candidate.fallbackEntry = nil;
     metal_bound_cubemap_cache(ctx, key);
-    return status == METAL_UPLOAD_COMPLETE ? candidate.texture : nil;
+    return status == METAL_UPLOAD_COMPLETE ? candidate.texture : metal_visible_cubemap(candidate);
 }
 
 typedef struct {

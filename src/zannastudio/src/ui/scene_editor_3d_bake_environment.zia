@@ -25,6 +25,7 @@ bind "../services/project_locator";
 bind "../services/safe_io";
 bind "scene_asset_browser";
 bind "scene_bake_3d";
+bind NavMesh3D = Zanna.Graphics3D.NavMesh3D;
 bind "scene_camera_3d";
 bind "scene_camera_inspector_3d";
 bind "scene_clipboard";
@@ -117,6 +118,9 @@ class SceneEditor3DBakeEnvironmentLayer extends PreviousLayer.SceneEditor3DCompo
         if bakeProbesButton.WasClicked()
            and selectedIndices.count() == 1 {
             BakeSelectedProbeGrid();
+        }
+        if bakeNavmeshButton.WasClicked() {
+            BakeSceneNavmesh();
         }
         if envBrowseButton.WasClicked() {
             envBrowseMode = true;
@@ -416,6 +420,43 @@ class SceneEditor3DBakeEnvironmentLayer extends PreviousLayer.SceneEditor3DCompo
         probeStatus.SetText(
             "Baked " + grid.ProbeCount + " probes to "
             + Path.Name(sidecarPath)
+            + "; the scene document is untouched.");
+        return true;
+    }
+
+    /// @brief Voxel-bake walkable navigation and save the .vnavmsh sidecar.
+    /// @details Reads the nav.* root settings (schema-editable through the
+    ///          Scene Settings forms) with truthful defaults; the sidecar
+    ///          never dirties the scene document (ADR 0225).
+    expose func BakeSceneNavmesh() -> Boolean {
+        if scene == null { return false; }
+        if currentDoc == null or currentDoc.filePath == "" {
+            detailLabel.SetText(
+                "Save the scene first so the .vnavmsh sidecar has a home.");
+            return false;
+        }
+        var root = scene.Root;
+        var agentRadius = root.MetadataGetFloat("nav.agentRadius", 0.4);
+        var agentHeight = root.MetadataGetFloat("nav.agentHeight", 1.8);
+        var maxSlope = root.MetadataGetFloat("nav.maxSlope", 45.0);
+        var cellSize = root.MetadataGetFloat("nav.cellSize", 0.25);
+        var navmesh = NavMesh3D.Bake(
+            scene, agentRadius, agentHeight, maxSlope, cellSize);
+        if navmesh == null {
+            detailLabel.SetText(
+                "Navmesh bake produced no walkable surface; check the "
+                + "nav.* settings against the scene's geometry scale.");
+            return false;
+        }
+        var sidecarPath = SceneSidecarPath(".vnavmsh");
+        if navmesh.Export(sidecarPath) == false {
+            detailLabel.SetText(
+                "The navmesh sidecar could not be written: "
+                + sidecarPath);
+            return false;
+        }
+        detailLabel.SetText(
+            "Baked navmesh to " + Path.Name(sidecarPath)
             + "; the scene document is untouched.");
         return true;
     }

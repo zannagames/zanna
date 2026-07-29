@@ -2289,18 +2289,26 @@ static void test_d3d11_backend_source_contracts(void) {
     EXPECT_TRUE(text_appears_in_order_after(source,
                                             "d3d11_start_native_texture_upload",
                                             "&new_tex, &new_srv);",
-                                            "d3d11_release_texture_cache_entry(entry);"),
+                                            "d3d11_stage_texture_replacement(entry);"),
                 "Native texture uploads allocate before evicting a good cache entry");
     EXPECT_TRUE(text_appears_in_order_after(source,
                                             "d3d11_start_texture_upload",
                                             "&new_tex, &new_srv);",
-                                            "d3d11_release_texture_cache_entry(entry);"),
+                                            "d3d11_stage_texture_replacement(entry);"),
                 "RGBA texture uploads allocate before evicting a good cache entry");
     EXPECT_TRUE(text_appears_in_order_after(source,
                                             "d3d11_start_cubemap_upload",
                                             "&new_tex, &new_srv);",
-                                            "d3d11_release_cubemap_cache_entry(entry);"),
+                                            "d3d11_stage_cubemap_replacement(entry);"),
                 "Cubemap uploads allocate before evicting a good cache entry");
+    EXPECT_TRUE(
+        strstr(source, "d3d11_discard_texture_candidate(entry);") != NULL &&
+            strstr(source, "d3d11_discard_cubemap_candidate(entry);") != NULL &&
+            strstr(source, "d3d11_previous_texture_or_white_srv(ctx, entry)") != NULL &&
+            strstr(source,
+                   "d3d11_previous_cubemap_or_white_srv(ctx, "
+                   "&ctx->cubemap_cache[i])") != NULL,
+        "D3D11 keeps previous complete textures visible across pending and failed replacements");
     EXPECT_TRUE(text_appears_in_order_after(source,
                                             "d3d11_acquire_mesh_buffers",
                                             "&new_ib);",

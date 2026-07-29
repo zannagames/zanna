@@ -38,7 +38,6 @@ func main() {
     var particles = new ParticleSystem(pal);
     var level = new Level();
     level.loadLevel(10);
-    level.enrichEnemies(10);
     var enemies = new EnemyManager();
     enemies.setDifficultyProfile(DIFFICULTY_VETERAN);
     enemies.setNewGamePlusActive(true);

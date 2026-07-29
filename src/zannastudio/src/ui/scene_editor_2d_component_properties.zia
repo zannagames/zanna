@@ -54,6 +54,9 @@ bind Box = Zanna.Core.Box;
 bind Clock = Zanna.Time.Clock;
 bind "scene_editor_2d_model" as SceneEditor2DModel;
 bind "scene_editor_2d_game_preview" as PreviousLayer;
+bind "scene_collider_2d";
+bind "scene_collider_inspector_2d";
+bind "scene_sprite_clip_2d";
 
 /// @brief Component Properties implementation layer.
 class SceneEditor2DComponentPropertiesLayer extends PreviousLayer.SceneEditor2DGamePreviewLayer {
@@ -179,6 +182,85 @@ class SceneEditor2DComponentPropertiesLayer extends PreviousLayer.SceneEditor2DG
     }
 
     /// @brief Remove one typed object property through the shared history path.
+    /// @brief Apply the collider inspector to one object as a single
+    ///        undoable transaction (ADR 0221/0225).
+    expose func ApplyObjectCollider(index: Integer) -> Boolean {
+        if scene == null or index < 0 or index >= scene.ObjectCount() {
+            return false;
+        }
+        var state = colliderInspector.BuildState();
+        var before = scene.ToJson();
+        var applied = false;
+        if state.kind == scene_collider_2d.COLLIDER_NONE {
+            applied = scene_collider_2d.RemoveFromObject(scene, index);
+        } else {
+            applied = scene_collider_2d.WriteToObject(
+                scene, index, state);
+        }
+        if applied == false { return false; }
+        if scene.ToJson() == before { return false; }
+        if CommitScene("Updated object collider") == false {
+            return false;
+        }
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Apply the sprite-clip inspector to one object as a single
+    ///        undoable transaction (ADR 0221/0225).
+    expose func ApplyObjectSpriteClip(index: Integer) -> Boolean {
+        if scene == null or index < 0 or index >= scene.ObjectCount() {
+            return false;
+        }
+        var state = clipInspector.BuildState();
+        var before = scene.ToJson();
+        if scene_sprite_clip_2d.WriteToObject(scene, index, state)
+           == false {
+            return false;
+        }
+        if scene.ToJson() == before { return false; }
+        if CommitScene("Updated object sprite clip") == false {
+            return false;
+        }
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Remove one object's sprite clip as one transaction.
+    expose func RemoveObjectSpriteClip(index: Integer) -> Boolean {
+        if scene == null or index < 0 or index >= scene.ObjectCount() {
+            return false;
+        }
+        var before = scene.ToJson();
+        if scene_sprite_clip_2d.RemoveFromObject(scene, index)
+           == false {
+            return false;
+        }
+        if scene.ToJson() == before { return false; }
+        if CommitScene("Removed object sprite clip") == false {
+            return false;
+        }
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Remove one object's collider convention as one transaction.
+    expose func RemoveObjectCollider(index: Integer) -> Boolean {
+        if scene == null or index < 0 or index >= scene.ObjectCount() {
+            return false;
+        }
+        var before = scene.ToJson();
+        if scene_collider_2d.RemoveFromObject(scene, index) == false {
+            return false;
+        }
+        if scene.ToJson() == before { return false; }
+        if CommitScene("Removed object collider") == false {
+            return false;
+        }
+        renderDirty = true;
+        return true;
+    }
+
     expose override func RemoveSceneObjectProperty(index: Integer,
                                           key: String) -> Boolean {
         if scene == null or index < 0 or index >= scene.ObjectCount()

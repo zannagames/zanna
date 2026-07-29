@@ -54,6 +54,9 @@ bind Box = Zanna.Core.Box;
 bind Clock = Zanna.Time.Clock;
 bind "scene_editor_2d_model" as SceneEditor2DModel;
 bind "scene_editor_2d_inspector_controls" as PreviousLayer;
+bind "scene_collider_2d";
+bind "scene_sprite_clip_2d";
+bind "scene_collider_inspector_2d";
 
 /// @brief Layer Controls implementation layer.
 class SceneEditor2DLayerControlsLayer extends PreviousLayer.SceneEditor2DInspectorControlsLayer {
@@ -559,6 +562,51 @@ class SceneEditor2DLayerControlsLayer extends PreviousLayer.SceneEditor2DInspect
             objectTypeCanonical = objectTypeInput.Text;
             objectIdCanonical = objectIdInput.Text;
         }
+        // Collider convention (ADR 0221/0225): existing colliders edit
+        // live per control gesture; creation and removal stay verbs.
+        var colliderKindChanged =
+            colliderInspector.kindDropdown.WasChanged();
+        if colliderKindChanged {
+            colliderInspector.UpdateKindControls();
+        }
+        var colliderEdited = colliderInspector.PumpDraftIntent();
+        if selectedObjects.count() == 1
+           and selectedObject >= 0
+           and selectedObject < scene.ObjectCount() {
+            var hadCollider =
+                scene_collider_2d.FromObject(scene, selectedObject).kind
+                != scene_collider_2d.COLLIDER_NONE;
+            if (colliderKindChanged or colliderEdited) and hadCollider {
+                changed = ApplyObjectCollider(selectedObject) or changed;
+            } else if colliderInspector.createButton.WasClicked() {
+                changed = ApplyObjectCollider(selectedObject) or changed;
+            }
+            if colliderInspector.removeButton.WasClicked() {
+                changed = RemoveObjectCollider(selectedObject) or changed;
+            }
+        }
+
+        // Sprite clip (ADR 0221/0225): existing clips edit live per
+        // control gesture; creation and removal stay verbs.
+        var clipEdited = clipInspector.PumpDraftIntent();
+        if selectedObjects.count() == 1
+           and selectedObject >= 0
+           and selectedObject < scene.ObjectCount() {
+            var hadClip = scene_sprite_clip_2d.FromObject(
+                scene, selectedObject).present;
+            if clipEdited and hadClip {
+                changed = ApplyObjectSpriteClip(selectedObject)
+                    or changed;
+            } else if clipInspector.createButton.WasClicked() {
+                changed = ApplyObjectSpriteClip(selectedObject)
+                    or changed;
+            }
+            if clipInspector.removeButton.WasClicked() {
+                changed = RemoveObjectSpriteClip(selectedObject)
+                    or changed;
+            }
+        }
+
         // The layer/priority pair mirrors two canonical object fields, so
         // changing either commits live (ADR 0221).
         var drawStackEdited = objectAfterLayerDropdown.WasChanged();

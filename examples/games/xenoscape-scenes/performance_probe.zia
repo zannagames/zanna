@@ -57,7 +57,6 @@ func runCampaignStressPass() -> Integer {
     var region = 1;
     while region <= LEVEL_COUNT {
         level.loadLevel(region);
-        level.enrichEnemies(region);
         enemies.reset();
         enemies.setDifficultyProfile(DIFFICULTY_VETERAN);
         enemies.setNewGamePlusActive(true);

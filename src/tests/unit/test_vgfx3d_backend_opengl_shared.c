@@ -522,6 +522,12 @@ static void test_opengl_source_contracts_are_context_safe(void) {
     EXPECT_TRUE(strstr(source, "vgfx3d_validate_cubemap_ibl_layout") != NULL &&
                     strstr(source, "entry->applied_ibl_identity == env_cm->ibl_identity") != NULL,
                 "OpenGL enables IBL only after the exact validated overlay is resident");
+    EXPECT_TRUE(
+        strstr(source,
+               "entry->fallback_tex ? entry->fallback_tex : gl_fallback_white_cubemap(ctx)") !=
+                NULL &&
+            strstr(source, "if (entry->fallback_tex)") != NULL,
+        "OpenGL keeps the previous complete cubemap visible during replacement and failure");
     EXPECT_TRUE(strstr(source,
                        "gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, "
                        "&state->draw_framebuffer)") != NULL &&
@@ -541,6 +547,8 @@ static void test_opengl_source_contracts_are_context_safe(void) {
     EXPECT_TRUE(strstr(source, "static int gl_target_extent_is_valid") != NULL &&
                     strstr(source, "width <= ctx->max_texture_size") != NULL,
                 "OpenGL rejects target dimensions beyond the live device limit");
+    EXPECT_TRUE(strstr(source, "face_size > ctx->max_texture_size") != NULL,
+                "OpenGL rejects cubemap faces beyond the live device limit");
     EXPECT_TRUE(strstr(source, "GLuint scene_postfx_tex;") != NULL &&
                     strstr(source,
                            "source_is_scene_color ? GL_COLOR_ATTACHMENT2 : "

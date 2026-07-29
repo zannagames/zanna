@@ -35,6 +35,8 @@ bind "scene_pane_docking";
 bind "scene_camera_lighting_2d";
 bind "property_rows";
 bind "scene_property_inspector_2d";
+bind "scene_collider_inspector_2d";
+bind "scene_sprite_clip_2d";
 bind "scene_settings_inspector_2d";
 bind "scene_tile_behavior_2d";
 bind "scene_selection";
@@ -202,6 +204,9 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
         sceneProperties;
     expose scene_settings_inspector_2d.SceneSettingsInspector2D
         sceneSettingsInspector;
+    expose scene_collider_inspector_2d.SceneColliderInspector2D
+        colliderInspector;
+    expose scene_sprite_clip_2d.SpriteClipInspector2D clipInspector;
     expose GUI.GroupBox sceneSettingsGroup;
     expose GUI.VBox sceneSettingsHost;
     hide Integer sceneSettingsRevision;
@@ -543,6 +548,9 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
             new scene_property_inspector_2d.ScenePropertyInspector2D();
         sceneSettingsInspector =
             new scene_settings_inspector_2d.SceneSettingsInspector2D();
+        colliderInspector =
+            new scene_collider_inspector_2d.SceneColliderInspector2D();
+        clipInspector = new scene_sprite_clip_2d.SpriteClipInspector2D();
         sceneSettingsGroup = null;
         sceneSettingsHost = null;
         sceneSettingsRevision = -1;

@@ -415,13 +415,21 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
         var commandInputAction = commandInputOverlay.Pump(shell);
         if commandInputAction == command_input.COMMAND_INPUT_NEW_PROJECT_CONSOLE
            or commandInputAction == command_input.COMMAND_INPUT_NEW_PROJECT_GUI
-           or commandInputAction == command_input.COMMAND_INPUT_NEW_PROJECT_LIBRARY {
+           or commandInputAction == command_input.COMMAND_INPUT_NEW_PROJECT_LIBRARY
+           or commandInputAction == command_input.COMMAND_INPUT_NEW_PROJECT_GAME_2D
+           or commandInputAction == command_input.COMMAND_INPUT_NEW_PROJECT_GAME_3D {
             var templateKind = project_templates.KIND_CONSOLE;
             if commandInputAction == command_input.COMMAND_INPUT_NEW_PROJECT_GUI {
                 templateKind = project_templates.KIND_GUI;
             }
             if commandInputAction == command_input.COMMAND_INPUT_NEW_PROJECT_LIBRARY {
                 templateKind = project_templates.KIND_LIBRARY;
+            }
+            if commandInputAction == command_input.COMMAND_INPUT_NEW_PROJECT_GAME_2D {
+                templateKind = project_templates.KIND_GAME_2D;
+            }
+            if commandInputAction == command_input.COMMAND_INPUT_NEW_PROJECT_GAME_3D {
+                templateKind = project_templates.KIND_GAME_3D;
             }
             var projectName = Str.Trim(commandInputOverlay.ReadValue());
             var projectsBase = project_templates.DefaultProjectsBase();

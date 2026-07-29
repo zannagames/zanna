@@ -54,6 +54,7 @@ bind Box = Zanna.Core.Box;
 bind Clock = Zanna.Time.Clock;
 bind "scene_editor_2d_model" as SceneEditor2DModel;
 bind "scene_editor_2d_rulers" as PreviousLayer;
+bind "scene_collider_2d";
 
 /// @brief Renderer implementation layer.
 class SceneEditor2DRendererLayer extends PreviousLayer.SceneEditor2DRulersLayer {
@@ -331,6 +332,54 @@ class SceneEditor2DRendererLayer extends PreviousLayer.SceneEditor2DRulersLayer 
         scroll.SetContentSize(width * scale, height * scale);
     }
 
+    /// @brief Draw one object's collider convention wireframe (ADR 0225).
+    /// @details Object-local pixel offsets/extents scale by the display
+    ///          cell ratio; triggers render dashed-feeling via a second
+    ///          inset outline so blocking and overlap volumes read apart.
+    hide func DrawColliderOverlay2D(objectIndex: Integer,
+                                    objectX: Integer,
+                                    objectY: Integer,
+                                    tint: Integer) {
+        var state = scene_collider_2d.FromObject(scene, objectIndex);
+        if state.kind == scene_collider_2d.COLLIDER_NONE { return; }
+        var scaleX = 1.0 * displayCellSize / scene.TileWidth;
+        var scaleY = 1.0 * displayCellSize / scene.TileHeight;
+        var centerX = objectX + displayCellSize / 2
+            + Convert.NumToInt(state.offsetX * scaleX);
+        var centerY = objectY + displayCellSize / 2
+            + Convert.NumToInt(state.offsetY * scaleY);
+        var outline = Color.RGB(120, 235, 170);
+        if state.trigger { outline = Color.RGB(240, 200, 90); }
+        if scene_collider_2d.HasRadius(state.kind) {
+            framePixels.DrawRing(
+                centerX, centerY,
+                SceneEditor2DModel.ClampInt(
+                    Convert.NumToInt(state.radius * scaleX), 2, 512),
+                outline);
+            if state.trigger {
+                framePixels.DrawRing(
+                    centerX, centerY,
+                    SceneEditor2DModel.ClampInt(
+                        Convert.NumToInt(state.radius * scaleX) - 3,
+                        1, 509),
+                    outline);
+            }
+            return;
+        }
+        var halfW = SceneEditor2DModel.ClampInt(
+            Convert.NumToInt(state.halfW * scaleX), 2, 1024);
+        var halfH = SceneEditor2DModel.ClampInt(
+            Convert.NumToInt(state.halfH * scaleY), 2, 1024);
+        framePixels.DrawFrame(
+            centerX - halfW, centerY - halfH,
+            halfW * 2, halfH * 2, outline);
+        if state.trigger {
+            framePixels.DrawFrame(
+                centerX - halfW + 3, centerY - halfH + 3,
+                halfW * 2 - 6, halfH * 2 - 6, outline);
+        }
+    }
+
     /// @brief Render a bounded, dependency-free scene preview into GUI.Image.
     hide override func RenderScene() {
         renderDirty = false;
@@ -567,6 +616,8 @@ class SceneEditor2DRendererLayer extends PreviousLayer.SceneEditor2DRulersLayer 
                     SceneEditor2DModel.ClampInt(displayCellSize / 2 + 3, 5, 24),
                     Color.RGB(255, 236, 150));
             }
+            DrawColliderOverlay2D(
+                objectIndex, objectX, objectY, objectColor);
             // The outline follows the transformed sprite footprint
             // (ADR 0192); markers keep their legacy one-cell frame.
             if objectIndex == selectedObject and RectToolEligible() {

@@ -7,9 +7,9 @@
   "tileHeight": 64,
   "tilesetAsset": "",
   "properties": {
-    "region": 10,
     "playerStartX": 192,
     "playerStartY": 1152,
+    "region": 10,
     "theme": 10
   },
   "layers": [
@@ -523,6 +523,87 @@
       "y": 1040,
       "properties": {
         "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-40",
+      "x": 6080,
+      "y": 256,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-41",
+      "x": 7360,
+      "y": 448,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-42",
+      "x": 8640,
+      "y": 640,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-43",
+      "x": 9920,
+      "y": 832,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-44",
+      "x": 11200,
+      "y": 384,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-45",
+      "x": 960,
+      "y": 576,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-46",
+      "x": 11200,
+      "y": 640,
+      "properties": {
+        "pickup.type": 1
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-47",
+      "x": 11520,
+      "y": 768,
+      "properties": {
+        "pickup.type": 1
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-48",
+      "x": 10880,
+      "y": 512,
+      "properties": {
+        "pickup.type": 3
       }
     },
     {

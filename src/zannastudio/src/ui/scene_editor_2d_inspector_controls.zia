@@ -569,6 +569,10 @@ class SceneEditor2DInspectorControlsLayer extends PreviousLayer.SceneEditor2DIns
         objectIdInput.SetText(scene.ObjectId(selectedObject));
         objectTypeCanonical = objectTypeInput.Text;
         objectIdCanonical = objectIdInput.Text;
+        colliderInspector.Refresh(
+            scene, selectedObject, editorControlsEnabled);
+        clipInspector.Refresh(
+            scene, selectedObject, editorControlsEnabled);
         objectXSpinner.SetValue(scene.ObjectX(selectedObject));
         objectYSpinner.SetValue(scene.ObjectY(selectedObject));
         objectRotationSpinner.SetValue(

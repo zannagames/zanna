@@ -20,7 +20,7 @@
 //
 // Ownership/Lifetime:
 //   - Software backend context is owned by Canvas3D; freed in its destroy_ctx hook.
-//   - Z-buffer and vertex scratch are heap allocations resized on demand.
+//   - Z-buffer, vertex, and merged triangle scratch are heap allocations resized on demand.
 //   - The context owns one persistent worker pool, created once and shut down
 //     before the context storage is released.
 //
@@ -85,6 +85,10 @@ typedef struct {
     size_t zbuf_capacity;
     pipe_vert_t *vertex_scratch;
     uint32_t vertex_scratch_capacity;
+    void *color_triangle_scratch;
+    uint32_t color_triangle_scratch_capacity;
+    void *shadow_triangle_scratch;
+    uint32_t shadow_triangle_scratch_capacity;
     int32_t width, height;
     float vp[16]; /* view * projection (float, row-major) */
     float cam_pos[3];
@@ -366,6 +370,19 @@ static int sw_rgba_surface_is_valid(const uint8_t *pixels,
         return 0;
     final_offset = (size_t)(height - 1) * (size_t)stride + row_bytes;
     return final_offset >= row_bytes;
+}
+
+/// @brief Compute a tightly packed RGBA8 row stride without signed overflow.
+/// @param width Positive pixel width.
+/// @param out_stride Receives `width * 4` on success and zero on failure.
+/// @return Non-zero when the stride is positive and representable by the backend's signed API.
+static int sw_rgba_stride_checked(int32_t width, int32_t *out_stride) {
+    if (out_stride)
+        *out_stride = 0;
+    if (!out_stride || width <= 0 || width > INT32_MAX / 4)
+        return 0;
+    *out_stride = width * 4;
+    return 1;
 }
 
 /// @brief Floor a finite screen coordinate and clamp it to an inclusive pixel extent.
@@ -1406,6 +1423,44 @@ int32_t vgfx3d_software_backend_rgba_surface_valid_for_test(const uint8_t *pixel
                                                             int32_t height,
                                                             int32_t stride) {
     return sw_rgba_surface_is_valid(pixels, width, height, stride);
+}
+
+/// @brief Expose checked tightly packed RGBA8 stride calculation to native robustness tests.
+/// @param width Signed pixel width.
+/// @param out_stride Receives the representable byte stride or zero.
+/// @return Non-zero when `width * 4` is representable by an `int32_t`.
+int32_t vgfx3d_software_backend_rgba_stride_for_test(int32_t width, int32_t *out_stride) {
+    return sw_rgba_stride_checked(width, out_stride);
+}
+
+/// @brief Expose the software fragment opaque-write decision to native robustness tests.
+/// @param alpha_mode Runtime material alpha mode.
+/// @param additive_blend Non-zero for additive blending.
+/// @param fragment_alpha Resolved fragment alpha.
+/// @return Non-zero when the fragment may overwrite color and update depth.
+int32_t vgfx3d_software_backend_fragment_uses_opaque_write_for_test(int32_t alpha_mode,
+                                                                    int32_t additive_blend,
+                                                                    float fragment_alpha) {
+    vgfx3d_draw_cmd_t cmd;
+    memset(&cmd, 0, sizeof(cmd));
+    cmd.alpha_mode = alpha_mode;
+    cmd.additive_blend = additive_blend != 0;
+    cmd.alpha = 1.0f;
+    cmd.diffuse_color[3] = 1.0f;
+    return sw_fragment_uses_opaque_write(&cmd, fragment_alpha);
+}
+
+/// @brief Expose retained merged-triangle scratch capacity to native performance tests.
+/// @param ctx_ptr Borrowed software backend context.
+/// @param shadow_pass Non-zero selects shadow scratch; zero selects color scratch.
+/// @return Retained element capacity, or zero for an invalid context/unpopulated path.
+int64_t vgfx3d_software_backend_triangle_scratch_capacity_for_test(const void *ctx_ptr,
+                                                                   int32_t shadow_pass) {
+    const sw_context_t *ctx = (const sw_context_t *)ctx_ptr;
+    if (!ctx)
+        return 0;
+    return shadow_pass ? (int64_t)ctx->shadow_triangle_scratch_capacity
+                       : (int64_t)ctx->color_triangle_scratch_capacity;
 }
 
 /*==========================================================================

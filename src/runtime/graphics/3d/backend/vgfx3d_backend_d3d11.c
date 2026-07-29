@@ -106,6 +106,8 @@ typedef struct {
     uint64_t failed_generation;
     ID3D11Texture2D *tex;
     ID3D11ShaderResourceView *srv;
+    ID3D11Texture2D *fallback_tex;
+    ID3D11ShaderResourceView *fallback_srv;
     int32_t width;
     int32_t height;
     int32_t upload_next_row;
@@ -127,6 +129,8 @@ typedef struct {
     uint64_t failed_generation;
     ID3D11Texture2D *tex;
     ID3D11ShaderResourceView *srv;
+    ID3D11Texture2D *fallback_tex;
+    ID3D11ShaderResourceView *fallback_srv;
     int32_t face_size;
     int32_t upload_face;
     int32_t upload_next_row;

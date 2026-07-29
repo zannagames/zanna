@@ -22,7 +22,7 @@
 ///   budgeted upload and shader-resource-view creation paths.
 /// @details Cache entries own their COM resources, retain stable runtime identities,
 ///   and publish new generations only after upload completion. In-progress uploads
-///   use white fallback views when rendering may continue safely.
+///   keep the previous complete view bindable and use white only when none exists.
 
 // Texture and cubemap caches — keyed by stable host identity + generation so
 // re-uploaded textures (Pixels.Set) get fresh GPU resources without
@@ -38,14 +38,22 @@ static HRESULT d3d11_allocate_cubemap_srv(d3d11_context_t *ctx,
                                           ID3D11Texture2D **out_tex,
                                           ID3D11ShaderResourceView **out_srv);
 
+/// @brief Record one bind of either a preserved or shared-white fallback texture.
+/// @param[in,out] ctx Context whose saturating diagnostics counter is advanced.
+static void d3d11_record_texture_fallback_bind(d3d11_context_t *ctx) {
+    if (!ctx)
+        return;
+    ctx->stats.texture_fallback_binds =
+        vgfx3d_d3d11_saturating_add_u64(ctx->stats.texture_fallback_binds, 1u);
+}
+
 /// @brief Return the white 2D fallback SRV and record the fallback bind.
 /// @param[in,out] ctx Context containing the fallback view and diagnostics counters.
 /// @return Borrowed white 2D SRV, or `NULL` when unavailable.
 static ID3D11ShaderResourceView *d3d11_fallback_white_srv(d3d11_context_t *ctx) {
     if (!ctx || !ctx->fallback_white_srv)
         return NULL;
-    ctx->stats.texture_fallback_binds =
-        vgfx3d_d3d11_saturating_add_u64(ctx->stats.texture_fallback_binds, 1u);
+    d3d11_record_texture_fallback_bind(ctx);
     return ctx->fallback_white_srv;
 }
 
@@ -55,9 +63,64 @@ static ID3D11ShaderResourceView *d3d11_fallback_white_srv(d3d11_context_t *ctx) 
 static ID3D11ShaderResourceView *d3d11_fallback_white_cubemap_srv(d3d11_context_t *ctx) {
     if (!ctx || !ctx->fallback_white_cube_srv)
         return NULL;
-    ctx->stats.texture_fallback_binds =
-        vgfx3d_d3d11_saturating_add_u64(ctx->stats.texture_fallback_binds, 1u);
+    d3d11_record_texture_fallback_bind(ctx);
     return ctx->fallback_white_cube_srv;
+}
+
+/// @brief Return an older complete 2D SRV retained during replacement.
+/// @details Before a candidate is staged, the active complete SRV is also eligible so an
+///          allocation failure can leave it visible without moving ownership.
+/// @param[in,out] ctx Context whose fallback-bind counter is advanced on success.
+/// @param[in] entry Cache entry that may own an active or staged previous generation.
+/// @return Borrowed previous complete SRV, or `NULL` when none exists.
+static ID3D11ShaderResourceView *d3d11_previous_texture_srv(d3d11_context_t *ctx,
+                                                            const d3d_tex_cache_entry_t *entry) {
+    ID3D11ShaderResourceView *srv = NULL;
+    if (entry && entry->fallback_tex && entry->fallback_srv)
+        srv = entry->fallback_srv;
+    else if (entry && !entry->upload_in_progress && entry->generation != 0 && entry->tex &&
+             entry->srv)
+        srv = entry->srv;
+    if (srv)
+        d3d11_record_texture_fallback_bind(ctx);
+    return srv;
+}
+
+/// @brief Return an older complete cubemap SRV retained during replacement.
+/// @param[in,out] ctx Context whose fallback-bind counter is advanced on success.
+/// @param[in] entry Cache entry that may own an active or staged previous generation.
+/// @return Borrowed previous complete cube SRV, or `NULL` when none exists.
+static ID3D11ShaderResourceView *d3d11_previous_cubemap_srv(
+    d3d11_context_t *ctx, const d3d_cubemap_cache_entry_t *entry) {
+    ID3D11ShaderResourceView *srv = NULL;
+    if (entry && entry->fallback_tex && entry->fallback_srv)
+        srv = entry->fallback_srv;
+    else if (entry && !entry->upload_in_progress && entry->generation != 0 && entry->tex &&
+             entry->srv)
+        srv = entry->srv;
+    if (srv)
+        d3d11_record_texture_fallback_bind(ctx);
+    return srv;
+}
+
+/// @brief Prefer a previous complete 2D resource, otherwise bind the shared white texture.
+/// @param[in,out] ctx Context containing fallback resources and telemetry.
+/// @param[in] entry Cache entry whose previous generation may still be complete.
+/// @return Borrowed previous or white fallback SRV, or `NULL` if neither exists.
+static ID3D11ShaderResourceView *d3d11_previous_texture_or_white_srv(
+    d3d11_context_t *ctx, const d3d_tex_cache_entry_t *entry) {
+    ID3D11ShaderResourceView *previous = d3d11_previous_texture_srv(ctx, entry);
+    return previous ? previous : d3d11_fallback_white_srv(ctx);
+}
+
+/// @brief Prefer a previous complete cubemap, otherwise bind the shared white cube.
+/// @param[in,out] ctx Context containing fallback resources and telemetry.
+/// @param[in] entry Cache entry whose previous generation may still be complete.
+/// @return Borrowed previous or white cube SRV, or `NULL` if neither exists.
+static ID3D11ShaderResourceView *d3d11_previous_cubemap_or_white_srv(
+    d3d11_context_t *ctx, const d3d_cubemap_cache_entry_t *entry) {
+    ID3D11ShaderResourceView *previous = d3d11_previous_cubemap_srv(ctx, entry);
+    return previous ? previous : d3d11_fallback_white_cubemap_srv(ctx);
 }
 
 /// @brief Release one 2D-texture cache slot and clear all identity/upload metadata.
@@ -67,7 +130,53 @@ static void d3d11_release_texture_cache_entry(d3d_tex_cache_entry_t *entry) {
         return;
     SAFE_RELEASE(entry->srv);
     SAFE_RELEASE(entry->tex);
+    SAFE_RELEASE(entry->fallback_srv);
+    SAFE_RELEASE(entry->fallback_tex);
     memset(entry, 0, sizeof(*entry));
+}
+
+/// @brief Move a complete 2D resource aside and clear the current candidate metadata.
+/// @details A superseded partial candidate is discarded, while one older complete fallback
+///          remains owned by the slot until the replacement publishes or the slot is released.
+/// @param[in,out] entry Cache entry being prepared for a replacement candidate.
+static void d3d11_stage_texture_replacement(d3d_tex_cache_entry_t *entry) {
+    ID3D11Texture2D *fallback_tex;
+    ID3D11ShaderResourceView *fallback_srv;
+
+    if (!entry)
+        return;
+    if (entry->generation != 0 && entry->tex && entry->srv) {
+        SAFE_RELEASE(entry->fallback_srv);
+        SAFE_RELEASE(entry->fallback_tex);
+        entry->fallback_tex = entry->tex;
+        entry->fallback_srv = entry->srv;
+        entry->tex = NULL;
+        entry->srv = NULL;
+    }
+    fallback_tex = entry->fallback_tex;
+    fallback_srv = entry->fallback_srv;
+    SAFE_RELEASE(entry->srv);
+    SAFE_RELEASE(entry->tex);
+    memset(entry, 0, sizeof(*entry));
+    entry->fallback_tex = fallback_tex;
+    entry->fallback_srv = fallback_srv;
+}
+
+/// @brief Discard a partial 2D candidate without releasing its complete fallback.
+/// @param[in,out] entry Cache entry whose candidate and metadata are reset.
+static void d3d11_discard_texture_candidate(d3d_tex_cache_entry_t *entry) {
+    ID3D11Texture2D *fallback_tex;
+    ID3D11ShaderResourceView *fallback_srv;
+
+    if (!entry)
+        return;
+    fallback_tex = entry->fallback_tex;
+    fallback_srv = entry->fallback_srv;
+    SAFE_RELEASE(entry->srv);
+    SAFE_RELEASE(entry->tex);
+    memset(entry, 0, sizeof(*entry));
+    entry->fallback_tex = fallback_tex;
+    entry->fallback_srv = fallback_srv;
 }
 
 /// @brief Hash an object identity into the direct-mapped texture-cache hint table.
@@ -139,10 +248,55 @@ static void d3d11_release_cubemap_cache_entry(d3d_cubemap_cache_entry_t *entry) 
         return;
     SAFE_RELEASE(entry->srv);
     SAFE_RELEASE(entry->tex);
+    SAFE_RELEASE(entry->fallback_srv);
+    SAFE_RELEASE(entry->fallback_tex);
     memset(entry, 0, sizeof(*entry));
 }
 
+/// @brief Move a complete cubemap aside and clear the current candidate metadata.
+/// @param[in,out] entry Cache entry being prepared for a replacement candidate.
+static void d3d11_stage_cubemap_replacement(d3d_cubemap_cache_entry_t *entry) {
+    ID3D11Texture2D *fallback_tex;
+    ID3D11ShaderResourceView *fallback_srv;
+
+    if (!entry)
+        return;
+    if (entry->generation != 0 && entry->tex && entry->srv) {
+        SAFE_RELEASE(entry->fallback_srv);
+        SAFE_RELEASE(entry->fallback_tex);
+        entry->fallback_tex = entry->tex;
+        entry->fallback_srv = entry->srv;
+        entry->tex = NULL;
+        entry->srv = NULL;
+    }
+    fallback_tex = entry->fallback_tex;
+    fallback_srv = entry->fallback_srv;
+    SAFE_RELEASE(entry->srv);
+    SAFE_RELEASE(entry->tex);
+    memset(entry, 0, sizeof(*entry));
+    entry->fallback_tex = fallback_tex;
+    entry->fallback_srv = fallback_srv;
+}
+
+/// @brief Discard a partial cubemap candidate without releasing its complete fallback.
+/// @param[in,out] entry Cache entry whose candidate and metadata are reset.
+static void d3d11_discard_cubemap_candidate(d3d_cubemap_cache_entry_t *entry) {
+    ID3D11Texture2D *fallback_tex;
+    ID3D11ShaderResourceView *fallback_srv;
+
+    if (!entry)
+        return;
+    fallback_tex = entry->fallback_tex;
+    fallback_srv = entry->fallback_srv;
+    SAFE_RELEASE(entry->srv);
+    SAFE_RELEASE(entry->tex);
+    memset(entry, 0, sizeof(*entry));
+    entry->fallback_tex = fallback_tex;
+    entry->fallback_srv = fallback_srv;
+}
+
 /// @brief Release a failed partial 2D upload while remembering the rejected generation.
+/// @details Any older complete resource staged in the slot remains available to rendering.
 /// @param[in,out] entry Cache entry to reset and mark failed.
 /// @param[in] pixels Optional Pixels identity associated with the upload.
 /// @param[in] asset Optional native asset identity associated with the upload.
@@ -159,7 +313,7 @@ static void d3d11_mark_texture_upload_failed(d3d_tex_cache_entry_t *entry,
                                              uint64_t frame_serial) {
     if (!entry)
         return;
-    d3d11_release_texture_cache_entry(entry);
+    d3d11_discard_texture_candidate(entry);
     entry->pixels_ptr = pixels;
     entry->texture_asset = asset;
     entry->failed_generation = generation;
@@ -169,6 +323,7 @@ static void d3d11_mark_texture_upload_failed(d3d_tex_cache_entry_t *entry,
 }
 
 /// @brief Release a failed partial cubemap upload while remembering the rejected generation.
+/// @details Any older complete cubemap staged in the slot remains available to rendering.
 /// @param[in,out] entry Cache entry to reset and mark failed.
 /// @param[in] cubemap Stable cubemap identity associated with the upload.
 /// @param[in] generation Rejected cubemap generation.
@@ -179,7 +334,7 @@ static void d3d11_mark_cubemap_upload_failed(d3d_cubemap_cache_entry_t *entry,
                                              uint64_t frame_serial) {
     if (!entry)
         return;
-    d3d11_release_cubemap_cache_entry(entry);
+    d3d11_discard_cubemap_candidate(entry);
     entry->cubemap_ptr = cubemap;
     entry->failed_generation = generation;
     entry->last_used_frame = frame_serial;
@@ -1044,6 +1199,8 @@ static vgfx3d_d3d11_upload_result_t d3d11_continue_native_texture_upload(
         d3d11_refresh_pending_native_bytes(entry, asset);
         entry->last_used_frame = ctx->frame_serial;
     }
+    SAFE_RELEASE(entry->fallback_srv);
+    SAFE_RELEASE(entry->fallback_tex);
     entry->generation = entry->pending_generation;
     entry->pending_generation = 0;
     entry->upload_in_progress = 0;
@@ -1082,7 +1239,7 @@ static int d3d11_start_native_texture_upload(d3d11_context_t *ctx,
         return 0;
     }
     d3d11_unbind_draw_resources(ctx);
-    d3d11_release_texture_cache_entry(entry);
+    d3d11_stage_texture_replacement(entry);
     entry->tex = new_tex;
     entry->srv = new_srv;
 
@@ -1110,7 +1267,8 @@ static int d3d11_start_native_texture_upload(d3d11_context_t *ctx,
     }
     if (ctx->texture_upload_budget_bytes == UINT64_MAX && entry->upload_in_progress) {
         d3d11_unbind_draw_resources(ctx);
-        d3d11_release_texture_cache_entry(entry);
+        d3d11_mark_texture_upload_failed(
+            entry, NULL, asset, cache_key, mip_start, mip_count, ctx->frame_serial);
         return 0;
     }
     return 1;
@@ -1192,6 +1350,8 @@ static vgfx3d_d3d11_upload_result_t d3d11_continue_texture_upload(d3d11_context_
         ID3D11DeviceContext_GenerateMips(ctx->ctx, entry->srv);
         if (FAILED(d3d11_device_status_after_void_command(ctx, "GenerateMips(streamed texture)")))
             return VGFX3D_D3D11_UPLOAD_FAILED;
+        SAFE_RELEASE(entry->fallback_srv);
+        SAFE_RELEASE(entry->fallback_tex);
         entry->generation = entry->pending_generation;
         entry->pending_generation = 0;
         entry->upload_in_progress = 0;
@@ -1225,7 +1385,7 @@ static int d3d11_start_texture_upload(d3d11_context_t *ctx,
         return 0;
     }
     d3d11_unbind_draw_resources(ctx);
-    d3d11_release_texture_cache_entry(entry);
+    d3d11_stage_texture_replacement(entry);
     entry->tex = new_tex;
     entry->srv = new_srv;
 
@@ -1250,7 +1410,7 @@ static int d3d11_start_texture_upload(d3d11_context_t *ctx,
     }
     if (ctx->texture_upload_budget_bytes == UINT64_MAX && entry->upload_in_progress) {
         d3d11_unbind_draw_resources(ctx);
-        d3d11_release_texture_cache_entry(entry);
+        d3d11_mark_texture_upload_failed(entry, pixels, NULL, cache_key, 0, 0, ctx->frame_serial);
         return 0;
     }
     return 1;
@@ -1266,7 +1426,8 @@ static int d3d11_start_texture_upload(d3d11_context_t *ctx,
 /// @param[in] index Known cache slot associated with @p pixels.
 /// @param[in] pixels Borrowed Pixels source identity.
 /// @param[in] cache_key Current Pixels generation key.
-/// @return Resident SRV, white fallback while upload is pending, or `NULL` on failure.
+/// @return Resident SRV, previous/white fallback while upload is pending, or `NULL` when no
+///         complete resource exists after failure.
 static ID3D11ShaderResourceView *d3d11_resolve_pixels_cache_entry(d3d11_context_t *ctx,
                                                                   int32_t index,
                                                                   const void *pixels,
@@ -1278,8 +1439,10 @@ static ID3D11ShaderResourceView *d3d11_resolve_pixels_cache_entry(d3d11_context_
     if (entry->pixels_ptr != pixels)
         return NULL;
     d3d11_texture_cache_remember(ctx, pixels, index);
-    if (entry->failed_generation == cache_key)
-        return NULL;
+    if (entry->failed_generation == cache_key) {
+        entry->last_used_frame = ctx->frame_serial;
+        return d3d11_previous_texture_srv(ctx, entry);
+    }
     if (entry->generation == cache_key && entry->tex && entry->srv) {
         entry->last_used_frame = ctx->frame_serial;
         return entry->srv;
@@ -1293,14 +1456,15 @@ static ID3D11ShaderResourceView *d3d11_resolve_pixels_cache_entry(d3d11_context_
         if (result == VGFX3D_D3D11_UPLOAD_FAILED) {
             d3d11_mark_texture_upload_failed(
                 entry, pixels, NULL, cache_key, 0, 0, ctx->frame_serial);
-            return NULL;
+            return d3d11_previous_texture_srv(ctx, entry);
         }
-        return d3d11_fallback_white_srv(ctx);
+        return d3d11_previous_texture_or_white_srv(ctx, entry);
     }
+    entry->last_used_frame = ctx->frame_serial;
     if (!d3d11_start_texture_upload(ctx, entry, pixels, cache_key))
-        return NULL;
+        return d3d11_previous_texture_srv(ctx, entry);
     d3d11_texture_cache_remember(ctx, pixels, index);
-    return entry->upload_in_progress ? d3d11_fallback_white_srv(ctx) : entry->srv;
+    return entry->upload_in_progress ? d3d11_previous_texture_or_white_srv(ctx, entry) : entry->srv;
 }
 
 /// @brief Resolve an RGBA Pixels source through the persistent texture cache.
@@ -1371,7 +1535,8 @@ static ID3D11ShaderResourceView *d3d11_get_or_create_srv(d3d11_context_t *ctx,
 /// @param[in] cache_key Current native snapshot key.
 /// @param[in] mip_start First resident source mip.
 /// @param[in] mip_count Resident source mip count.
-/// @return Resident SRV, white fallback while upload is pending, or `NULL` on failure.
+/// @return Resident SRV, previous/white fallback while upload is pending, or `NULL` when no
+///         complete resource exists after failure.
 static ID3D11ShaderResourceView *d3d11_resolve_native_cache_entry(d3d11_context_t *ctx,
                                                                   int32_t index,
                                                                   void *asset,
@@ -1386,8 +1551,10 @@ static ID3D11ShaderResourceView *d3d11_resolve_native_cache_entry(d3d11_context_
         return NULL;
     d3d11_texture_cache_remember(ctx, asset, index);
     if (entry->failed_generation == cache_key && entry->native_mip_start == mip_start &&
-        entry->native_mip_count == mip_count)
-        return NULL;
+        entry->native_mip_count == mip_count) {
+        entry->last_used_frame = ctx->frame_serial;
+        return d3d11_previous_texture_srv(ctx, entry);
+    }
     if (entry->generation == cache_key && entry->native_mip_start == mip_start &&
         entry->native_mip_count == mip_count && entry->tex && entry->srv) {
         entry->last_used_frame = ctx->frame_serial;
@@ -1403,14 +1570,15 @@ static ID3D11ShaderResourceView *d3d11_resolve_native_cache_entry(d3d11_context_
         if (result == VGFX3D_D3D11_UPLOAD_FAILED) {
             d3d11_mark_texture_upload_failed(
                 entry, NULL, asset, cache_key, mip_start, mip_count, ctx->frame_serial);
-            return NULL;
+            return d3d11_previous_texture_srv(ctx, entry);
         }
-        return d3d11_fallback_white_srv(ctx);
+        return d3d11_previous_texture_or_white_srv(ctx, entry);
     }
+    entry->last_used_frame = ctx->frame_serial;
     if (!d3d11_start_native_texture_upload(ctx, entry, asset, cache_key, mip_start, mip_count))
-        return NULL;
+        return d3d11_previous_texture_srv(ctx, entry);
     d3d11_texture_cache_remember(ctx, asset, index);
-    return entry->upload_in_progress ? d3d11_fallback_white_srv(ctx) : entry->srv;
+    return entry->upload_in_progress ? d3d11_previous_texture_or_white_srv(ctx, entry) : entry->srv;
 }
 
 /// @brief Get the SRV for a native TextureAsset3D, creating/streaming it on a cache miss.
@@ -1746,6 +1914,8 @@ static vgfx3d_d3d11_upload_result_t d3d11_continue_cubemap_upload(d3d11_context_
     ID3D11DeviceContext_GenerateMips(ctx->ctx, entry->srv);
     if (FAILED(d3d11_device_status_after_void_command(ctx, "GenerateMips(streamed cubemap)")))
         return VGFX3D_D3D11_UPLOAD_FAILED;
+    SAFE_RELEASE(entry->fallback_srv);
+    SAFE_RELEASE(entry->fallback_tex);
     entry->generation = entry->pending_generation;
     entry->pending_generation = 0;
     entry->upload_in_progress = 0;
@@ -1777,7 +1947,7 @@ static int d3d11_start_cubemap_upload(d3d11_context_t *ctx,
         return 0;
     }
     d3d11_unbind_draw_resources(ctx);
-    d3d11_release_cubemap_cache_entry(entry);
+    d3d11_stage_cubemap_replacement(entry);
     entry->tex = new_tex;
     entry->srv = new_srv;
 
@@ -1799,7 +1969,7 @@ static int d3d11_start_cubemap_upload(d3d11_context_t *ctx,
     }
     if (ctx->texture_upload_budget_bytes == UINT64_MAX && entry->upload_in_progress) {
         d3d11_unbind_draw_resources(ctx);
-        d3d11_release_cubemap_cache_entry(entry);
+        d3d11_mark_cubemap_upload_failed(entry, cubemap, generation, ctx->frame_serial);
         return 0;
     }
     return 1;
@@ -1807,8 +1977,8 @@ static int d3d11_start_cubemap_upload(d3d11_context_t *ctx,
 
 /// @brief Cubemap-cache lookup analogous to `d3d11_get_or_create_srv`.
 ///
-/// Same hit/stale/miss flow as the 2D texture cache; returns NULL while a
-/// cubemap is still uploading under the current per-frame budget.
+/// Same hit/stale/miss flow as the 2D texture cache; keeps an older complete
+/// cubemap visible while a replacement uploads under the current per-frame budget.
 /// @param[in,out] ctx Context containing the cubemap cache and upload budget.
 /// @param[in] cubemap Borrowed runtime cubemap source.
 /// @param[out] out_temp Optional receiver for a one-draw cubemap resource.
@@ -1826,8 +1996,10 @@ static ID3D11ShaderResourceView *d3d11_get_or_create_cubemap_srv(d3d11_context_t
 
     for (int32_t i = 0; i < ctx->cubemap_cache_count; i++) {
         if (ctx->cubemap_cache[i].cubemap_ptr == cubemap &&
-            ctx->cubemap_cache[i].failed_generation == generation)
-            return NULL;
+            ctx->cubemap_cache[i].failed_generation == generation) {
+            ctx->cubemap_cache[i].last_used_frame = ctx->frame_serial;
+            return d3d11_previous_cubemap_srv(ctx, &ctx->cubemap_cache[i]);
+        }
         if (ctx->cubemap_cache[i].cubemap_ptr == cubemap &&
             ctx->cubemap_cache[i].generation == generation && ctx->cubemap_cache[i].tex &&
             ctx->cubemap_cache[i].srv) {
@@ -1846,18 +2018,20 @@ static ID3D11ShaderResourceView *d3d11_get_or_create_cubemap_srv(d3d11_context_t
             if (result == VGFX3D_D3D11_UPLOAD_FAILED) {
                 d3d11_mark_cubemap_upload_failed(
                     &ctx->cubemap_cache[i], cubemap, generation, ctx->frame_serial);
-                return NULL;
+                return d3d11_previous_cubemap_srv(ctx, &ctx->cubemap_cache[i]);
             }
-            return d3d11_fallback_white_cubemap_srv(ctx);
+            return d3d11_previous_cubemap_or_white_srv(ctx, &ctx->cubemap_cache[i]);
         }
     }
 
     for (int32_t i = 0; i < ctx->cubemap_cache_count; i++) {
         if (ctx->cubemap_cache[i].cubemap_ptr == cubemap) {
+            ctx->cubemap_cache[i].last_used_frame = ctx->frame_serial;
             if (!d3d11_start_cubemap_upload(ctx, &ctx->cubemap_cache[i], cubemap, generation))
-                return NULL;
-            return ctx->cubemap_cache[i].upload_in_progress ? d3d11_fallback_white_cubemap_srv(ctx)
-                                                            : ctx->cubemap_cache[i].srv;
+                return d3d11_previous_cubemap_srv(ctx, &ctx->cubemap_cache[i]);
+            return ctx->cubemap_cache[i].upload_in_progress
+                       ? d3d11_previous_cubemap_or_white_srv(ctx, &ctx->cubemap_cache[i])
+                       : ctx->cubemap_cache[i].srv;
         }
     }
 

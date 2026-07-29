@@ -401,6 +401,21 @@ hide func DispatchFileCommands(ctx: command_context.CommandContext,
         ctx.commandInputOverlay.OpenNewProject(ctx.shell,
             command_input.COMMAND_INPUT_NEW_PROJECT_LIBRARY, "Library");
     }
+    if dispatch_helpers.TriggeredNoMenu("packageproject", cpSelected) {
+        if dispatch_helpers.CanStartBuildCommand(
+               ctx.shell, ctx.dbgSession, "Package Project") {
+            build_commands.handlePackageProject(
+                ctx.shell, ctx.projMgr, ctx.buildSys, ctx.locStore);
+        }
+    }
+    if dispatch_helpers.TriggeredNoMenu("newproject2dgame", cpSelected) {
+        ctx.commandInputOverlay.OpenNewProject(ctx.shell,
+            command_input.COMMAND_INPUT_NEW_PROJECT_GAME_2D, "2D Game");
+    }
+    if dispatch_helpers.TriggeredNoMenu("newproject3dgame", cpSelected) {
+        ctx.commandInputOverlay.OpenNewProject(ctx.shell,
+            command_input.COMMAND_INPUT_NEW_PROJECT_GAME_3D, "3D Game");
+    }
     if dispatch_helpers.TriggeredNoMenu("comparewithsaved", cpSelected) {
         var activeDocOpt = ctx.docMgr.GetDocument(ctx.docMgr.activeIndex);
         if activeDocOpt != null and ctx.diffOverlay != null

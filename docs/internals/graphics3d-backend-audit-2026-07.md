@@ -14,7 +14,7 @@ program](graphics3d-runtime-hardening-2026-07.md).
 The review combined line-by-line ownership and arithmetic analysis, backend
 parity comparisons, shader review, whole-tree cppcheck analysis, targeted unit
 tests, source-contract tests for platform-excluded translation units, and
-headless production renders. The 215 findings below are fixed; none changes a
+headless production renders. The 237 findings below are fixed; none changes a
 registered scripting API.
 
 ## Regression suites
@@ -252,6 +252,28 @@ The evidence column uses these abbreviations:
 | G3D-213 | glTF import | Robustness | Camera-node pointer-array sizing used correct manual division guards that the scoped analyzer could not prove and duplicated established overflow logic. It now uses the shared checked add/multiply helpers and allocates from the verified byte counts. | `GLTF` |
 | G3D-214 | OpenGL | Portability | The shared readback allocator exposed byte-typed storage even when an HDR path consumed the naturally aligned allocation as floats, obscuring the allocation's generic effective type. It now returns raw `void *` storage and callers select the destination type. | `GL` |
 | G3D-215 | D3D11 | Robustness | Cluster-table selection relied on the validator returning false for null before the conditional expression dereferenced the table. The call site now includes an explicit null guard and records usability once. | `D3` |
+| G3D-216 | OpenGL | Resource | A changed cubemap generation reused and overwrote the resident GL texture before every replacement face and mip was complete. Replacement now uploads into a candidate while the previous complete cube remains bindable until publication. | `GL` |
+| G3D-217 | OpenGL | Portability | Cubemap allocation trusted only the runtime face validator and could exceed the live context's `GL_MAX_TEXTURE_SIZE`. Upload now rejects faces above the queried implementation limit before creating storage. | `GL` |
+| G3D-218 | D3D11 | Resource | A streamed RGBA replacement released the complete SRV before all rows and generated mips succeeded. The cache now owns separate candidate and fallback COM pairs and publishes transactionally. | `D3` |
+| G3D-219 | D3D11 | Resource | Native compressed texture replacement had the same destructive continuation-failure window. Its prior mip range remains visible until the candidate completes. | `D3` |
+| G3D-220 | D3D11 | Resource | Cubemap replacement likewise discarded the resident cube before all faces and mip generation completed. A failed candidate now leaves the previous complete cube authoritative. | `D3` |
+| G3D-221 | D3D11 | Correctness | RGBA replacement allocation/start failure preserved the old COM objects internally but returned no SRV for the current draw, producing avoidable white/empty frames. Resolution now returns the still-complete resident SRV. | `D3` |
+| G3D-222 | D3D11 | Correctness | Native texture replacement allocation/start failure also hid the still-resident prior mip range. The resolver now binds it and records the fallback use. | `D3` |
+| G3D-223 | D3D11 | Correctness | Cubemap replacement allocation/start failure returned no cube despite retaining the prior one. The resolver now keeps that complete cube visible. | `D3` |
+| G3D-224 | D3D11 | Performance | A continuously requested terminal-failure sentinel did not refresh its LRU age, so pruning eventually retried the same doomed upload. Failed 2D/native/cubemap generations now age on use while still exposing any complete fallback. | `D3` |
+| G3D-225 | Metal | Performance | Metal's memoized failed texture and cubemap generations had the same stale-LRU behavior and could resume repeated allocation/decode work after pruning. Failure hits now refresh their cache age. | `MTL` |
+| G3D-226 | Metal | Correctness | RGBA replacement retained the prior entry after failure but every pending/failure return still produced nil, hiding the known-good texture. A visibility selector now binds only the complete active or fallback texture. | `MTL` |
+| G3D-227 | Metal | Correctness | Native compressed replacement retained but hid its prior complete mip range. Pending, immediate-failure, continuation-failure, and memoized-failure paths now return that range. | `MTL` |
+| G3D-228 | Metal | Correctness | Cubemap replacement similarly retained a fallback object that no lookup path exposed. The complete previous cube now remains visible without exposing partial candidate faces. | `MTL` |
+| G3D-229 | Software | Correctness | An explicit BLEND material switched to the opaque/depth-writing path whenever an individual fragment reached alpha one, making occlusion depend on texel alpha. Opaque-write selection now follows the draw's invariant blend classification. | `PROD` |
+| G3D-230 | Software | Bug | An additive fragment at alpha one overwrote color instead of adding and wrote depth, unlike all native backends. Additive draws now always use the additive, non-depth-writing branch. | `PROD` |
+| G3D-231 | Software | Correctness | Reduced-resolution rendering multiplied a signed width by four after validating only pixel-count allocation, so an extreme internal extent could trigger signed stride overflow. A checked RGBA stride helper now gates allocation, clear, and target resolution. | `PROD` |
+| G3D-232 | Software | Performance | Parallel color rasterization freed its merged projected-triangle array after every draw, forcing allocator traffic and geometric regrowth for stable meshes. The context now retains and reuses that scratch capacity. | `PROD` |
+| G3D-233 | Software | Performance | The parallel shadow pass independently repeated the same merged-triangle allocation churn. It now owns a separate reusable context scratch array, released during context teardown. | `PROD` |
+| G3D-234 | Metal | Correctness | RGBA replacement-entry allocation failure returned nil even though the prior complete texture remained cached. The resolver now returns that resident texture without mutating cache ownership. | `MTL` |
+| G3D-235 | Metal | Correctness | Native compressed replacement-entry allocation failure had the same avoidable loss of the prior mip range for the current draw. It now remains visible. | `MTL` |
+| G3D-236 | Metal | Correctness | Cubemap replacement-entry allocation failure likewise hid the resident complete cube. The resolver now binds it while leaving later retry possible. | `MTL` |
+| G3D-237 | Metal | Correctness | Post-FX readback assigned but never checked the compositor result, then replaced it with the active texture after commit. An encoder failure could therefore read a stale texture; readback now rejects the failed composite and releases its copied chain. | `MTL` |
 
 ## Compatibility and maintenance rules
 
@@ -268,7 +290,7 @@ The evidence column uses these abbreviations:
 
 ## Validation record
 
-Revalidated on 2026-07-29 for G3D-103 through G3D-215:
+Revalidated on 2026-07-29 for G3D-103 through G3D-237:
 
 - The canonical macOS arm64 build completed in incremental, build-only mode with
   `ZANNA_SKIP_CLEAN=1` and `ZANNA_SKIP_TESTS=1`. Lint, audit, smoke, and install stages inside the
@@ -280,12 +302,13 @@ Revalidated on 2026-07-29 for G3D-103 through G3D-215:
 - Targeted native Metal validation passed 3/3: the Ashfall authored visual gate, Ridgebound release
   scene smoke test, and Canvas3D render-scale probe.
 - The platform-policy lint passed. Cppcheck reported no warning, performance, portability, or
-  inconclusive findings across the scoped Graphics3D tree; separately configured OpenGL and
-  D3D11 translation-unit checks were also clean.
+  inconclusive findings across the changed backend translation units; separately configured
+  OpenGL and D3D11 translation-unit checks were also clean.
 - The complete Metal Objective-C translation unit and changed C/C++ units passed the project's
-  warning-as-error syntax checks. The actual D3D11 translation unit also passed an x86_64
-  MinGW-w64 warning-as-error syntax compile (with only the pre-existing embedded-HLSL line-length
-  diagnostic excluded).
+  warning-as-error syntax checks; the final Metal translation unit also passed Clang static
+  analysis with no findings. The actual D3D11 translation unit passed an x86_64 MinGW-w64
+  warning-as-error syntax compile (with only the pre-existing embedded-HLSL line-length diagnostic
+  excluded).
 - The full CTest suite was intentionally not run because other work was active in the shared
   worktree, as requested.
 

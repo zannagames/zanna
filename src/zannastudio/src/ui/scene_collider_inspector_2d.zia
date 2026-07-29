@@ -1,0 +1,208 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_collider_inspector_2d.zia
+// Purpose: Presentation-only 2D collider convention inspector with
+//          kind-aware rows and ADR 0221 live-commit edges.
+// Key invariants:
+//   - Single-object scope: an existing collider edits live; creation
+//     keeps its explicit verb button.
+//   - Refresh consumes every control edge it raises (the load-bearing
+//     live-commit invariant).
+// Ownership/Lifetime:
+//   - The host widget tree owns the widgets; SceneEditor2D owns document
+//     mutation, transactions, and history.
+// Links: zannastudio/src/ui/scene_collider_2d.zia,
+//        docs/adr/0221-live-commit-inspector-contract.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_collider_inspector_2d;
+
+bind "scene_collider_2d";
+bind "inspector_rows";
+bind "layout_metrics";
+
+bind GUI = Zanna.GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+
+/// @brief Kind-aware 2D collider inspector rows.
+class SceneColliderInspector2D {
+    expose GUI.GroupBox group;
+    expose GUI.Label summary;
+    expose GUI.Dropdown kindDropdown;
+    expose GUI.Spinner halfW;
+    expose GUI.Spinner halfH;
+    expose GUI.Spinner radius;
+    expose GUI.Spinner offsetX;
+    expose GUI.Spinner offsetY;
+    expose GUI.Checkbox triggerCheck;
+    expose GUI.Button createButton;
+    expose GUI.Button removeButton;
+    expose GUI.Flex extentRow;
+    expose GUI.Flex shapeRow;
+
+    expose func init() {
+        group = null;
+        summary = null;
+        kindDropdown = null;
+        halfW = null;
+        halfH = null;
+        radius = null;
+        offsetX = null;
+        offsetY = null;
+        triggerCheck = null;
+        createButton = null;
+        removeButton = null;
+        extentRow = null;
+        shapeRow = null;
+    }
+
+    /// @brief Build the retained collider rows under @p parent.
+    expose func Setup(parent: GUI.VBox) {
+        group = GUI.GroupBox.New(parent, "Collider");
+        summary = GUI.Label.New(group, "");
+        var kindRow = inspector_rows.NewWrapRow();
+        group.AddChild(kindRow);
+        GUI.Label.New(kindRow, "Kind");
+        kindDropdown = GUI.Dropdown.New(kindRow);
+        kindDropdown.AddItem("None");
+        kindDropdown.AddItem("Box");
+        kindDropdown.AddItem("Circle");
+        kindDropdown.AddItem("Tile rect");
+        kindDropdown.SetAccessibleName("2D collider kind");
+        extentRow = inspector_rows.NewWrapRow();
+        group.AddChild(extentRow);
+        halfW = AddSpinner(extentRow, "Half W", 32.0);
+        halfH = AddSpinner(extentRow, "Half H", 32.0);
+        shapeRow = inspector_rows.NewWrapRow();
+        group.AddChild(shapeRow);
+        radius = AddSpinner(shapeRow, "Radius", 32.0);
+        var offsetRow = inspector_rows.NewWrapRow();
+        group.AddChild(offsetRow);
+        offsetX = AddSpinner(offsetRow, "Offset X", 0.0);
+        offsetY = AddSpinner(offsetRow, "Offset Y", 0.0);
+        triggerCheck = GUI.Checkbox.New(group, "Trigger only");
+        triggerCheck.SetTooltip(
+            "Report overlaps without blocking movement");
+        var actions = GUI.HBox.New();
+        actions.SetSpacing(layout_metrics.GAP_ROW);
+        group.AddChild(actions);
+        createButton = GUI.Button.New(actions, "Create Collider");
+        createButton.SetTooltip(
+            "Write the collider convention keys in one undoable edit");
+        removeButton = GUI.Button.New(actions, "Remove");
+        removeButton.SetTooltip(
+            "Remove the collider convention keys in one undoable edit");
+    }
+
+    /// @brief Refresh from one selected object edge-free (ADR 0221).
+    expose func Refresh(scene: SceneDocument,
+                        index: Integer,
+                        enabled: Boolean) {
+        if kindDropdown == null { return; }
+        var state = scene_collider_2d.FromObject(scene, index);
+        kindDropdown.SetSelected(state.kind);
+        halfW.SetValue(state.halfW);
+        halfH.SetValue(state.halfH);
+        radius.SetValue(state.radius);
+        offsetX.SetValue(state.offsetX);
+        offsetY.SetValue(state.offsetY);
+        triggerCheck.SetChecked(state.trigger);
+        // Programmatic refresh must not look like user edit intent.
+        kindDropdown.WasChanged();
+        halfW.WasChanged();
+        halfH.WasChanged();
+        radius.WasChanged();
+        offsetX.WasChanged();
+        offsetY.WasChanged();
+        triggerCheck.WasChanged();
+        UpdateKindControls();
+        var hasObject = scene != null and index >= 0
+            and index < scene.ObjectCount();
+        var hasCollider =
+            state.kind != scene_collider_2d.COLLIDER_NONE;
+        group.SetEnabled(enabled);
+        kindDropdown.SetEnabled(enabled and hasObject);
+        halfW.SetEnabled(enabled and hasObject);
+        halfH.SetEnabled(enabled and hasObject);
+        radius.SetEnabled(enabled and hasObject);
+        offsetX.SetEnabled(enabled and hasObject);
+        offsetY.SetEnabled(enabled and hasObject);
+        triggerCheck.SetEnabled(enabled and hasObject);
+        // An existing collider edits live; the button remains only for
+        // creation (ADR 0221).
+        createButton.SetVisible(hasCollider == false);
+        createButton.SetEnabled(enabled and hasObject);
+        removeButton.SetEnabled(enabled and hasObject and hasCollider);
+        if hasObject == false {
+            summary.SetText(
+                "Select one object to author its collider convention.");
+        } else if hasCollider == false {
+            summary.SetText(
+                "No collider convention. Games derive physics from "
+                + "these typed properties at spawn.");
+        } else {
+            summary.SetText(
+                scene_collider_2d.KindLabel(state.kind)
+                + " • object-local pixels; triggers report overlaps "
+                + "without blocking.");
+        }
+    }
+
+    /// @brief Consume control edges; report whether any field changed.
+    expose func PumpDraftIntent() -> Boolean {
+        if kindDropdown == null { return false; }
+        var edited = false;
+        if halfW.WasChanged() { edited = true; }
+        if halfH.WasChanged() { edited = true; }
+        if radius.WasChanged() { edited = true; }
+        if offsetX.WasChanged() { edited = true; }
+        if offsetY.WasChanged() { edited = true; }
+        if triggerCheck.WasChanged() { edited = true; }
+        return edited;
+    }
+
+    /// @brief Build one complete normalized draft from the controls.
+    expose func BuildState() -> scene_collider_2d.ColliderState2D {
+        var state = new scene_collider_2d.ColliderState2D();
+        if kindDropdown == null { return state; }
+        state.kind = kindDropdown.Selected;
+        state.halfW = halfW.Value;
+        state.halfH = halfH.Value;
+        state.radius = radius.Value;
+        state.offsetX = offsetX.Value;
+        state.offsetY = offsetY.Value;
+        state.trigger = triggerCheck.IsChecked();
+        return scene_collider_2d.Normalize(state);
+    }
+
+    /// @brief Show only rows meaningful for the selected kind.
+    expose func UpdateKindControls() {
+        if kindDropdown == null { return; }
+        var kind = kindDropdown.Selected;
+        extentRow.SetVisible(
+            scene_collider_2d.HasHalfExtents(kind));
+        shapeRow.SetVisible(scene_collider_2d.HasRadius(kind));
+        triggerCheck.SetVisible(
+            kind != scene_collider_2d.COLLIDER_NONE);
+    }
+
+    hide func AddSpinner(parent: GUI.Flex,
+                         label: String,
+                         value: Number) -> GUI.Spinner {
+        GUI.Label.New(parent, label);
+        var spinner = GUI.Spinner.New(parent);
+        spinner.SetRange(-4096.0, 4096.0);
+        spinner.SetStep(1.0);
+        spinner.SetDecimals(0);
+        spinner.SetValue(value);
+        spinner.SetPreferredSize(72.0, 0.0);
+        spinner.SetAccessibleName("2D collider " + label);
+        return spinner;
+    }
+}

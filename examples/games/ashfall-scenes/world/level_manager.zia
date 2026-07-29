@@ -12,6 +12,8 @@ module level_manager;
 
 bind Zanna.Game3D as Game3D;
 bind Zanna.Graphics3D as G3D;
+bind Zanna.IO.File as File;
+bind Zanna.String as Str;
 bind "../config" as config;
 bind "../core/events" as events;
 bind "./level_base" as level_base;
@@ -108,10 +110,28 @@ class LevelManager {
         loaded = false;
     }
 
+    /// Editor-baked walkable-surface mesh, or null when no sidecar exists.
+    expose navmesh: G3D.NavMesh3D;
+
+    /// @brief Swap a scene path's extension for the navmesh sidecar's.
+    hide func navSidecarPath(scenePath: String) -> String {
+        if scenePath == "" { return ""; }
+        var dot = Str.LastIndexOf(scenePath, ".");
+        if dot <= 0 { return scenePath + ".vnavmsh"; }
+        return Str.MidLen(scenePath, 1, dot - 1) + ".vnavmsh";
+    }
+
     expose func load(levelId: Integer) {
         unload();
         currentLevel = levelId;
         levels.build(levelId, lb, obj);
+        // An editor-baked navmesh sidecar beside the scene loads for AI
+        // consumers when present; its absence is not an error (ADR 0225).
+        navmesh = null;
+        var navPath = navSidecarPath(levels.lastScenePath());
+        if navPath != "" and File.Exists(navPath) {
+            navmesh = G3D.NavMesh3D.Import(navPath);
+        }
         lb.build(world, phys, canvas, texLib);
         enemies.clearCovers();
         enemies.clearFlanks();

@@ -269,6 +269,33 @@ func handleRunScene(shell: app_shell.AppShell,
     StartExecutionConfig(shell, buildSys, locStore, cfg);
 }
 
+/// @brief Package the open project as one streamed zanna package job.
+expose func handlePackageProject(shell: app_shell.AppShell,
+                                 projMgr: project_manager.ProjectManager,
+                                 buildSys: build_system.BuildSystem,
+                                 locStore: locations.LocationStore) {
+    if CanStartExecutionJob(shell, buildSys, "package the project")
+       == false {
+        return;
+    }
+    if projMgr == null or projMgr.IsOpen() == false {
+        shell.SetStatusLeft("Open a project before packaging it");
+        return;
+    }
+    var root = projMgr.RootPath();
+    var cfg = new run_config.RunConfig();
+    cfg.name = "Package " + projMgr.project.name;
+    cfg.action = run_config.ACTION_BUILD;
+    cfg.kind = run_config.KIND_PROJECT_ENTRY;
+    cfg.program = "zanna";
+    cfg.args = Seq.New();
+    Seq.Push(cfg.args, "package");
+    Seq.Push(cfg.args, root);
+    cfg.workingDirectory = root;
+    shell.SetStatusLeft("Packaging " + projMgr.project.name);
+    StartExecutionConfig(shell, buildSys, locStore, cfg);
+}
+
 /// @brief Embedded Play: create the frame channel, then run the native
 ///        scene chain with ZANNA_EMBED_CHANNEL injected (ADR 0225).
 expose func handlePlayScene(shell: app_shell.AppShell,

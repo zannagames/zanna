@@ -665,6 +665,7 @@ typedef struct {
     uint64_t pending_generation;
     uint64_t failed_generation;
     GLuint tex;
+    GLuint fallback_tex;
     int32_t face_size;
     int32_t upload_face;
     int32_t upload_next_row;

@@ -335,6 +335,7 @@ class SceneEditor3DStateInitialization extends PreviousLayer.SceneEditor3DState 
         sceneSettingsRevision = -1;
         hierarchyEmptyLabel = null;
         playSceneButton = null;
+        bakeNavmeshButton = null;
         playController =
             new scene_play_controller.ScenePlayController();
         playSceneRequested = false;

@@ -1,0 +1,155 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_collider_2d_probe.zia
+// Purpose: 2D collider convention coverage: vocabulary round trip and the
+//          editor's one-transaction create/live/remove contract
+//          (ADR 0221/0225).
+// Key invariants:
+//   - Create is a verb; an existing collider live-commits per gesture;
+//     one Undo restores the pre-gesture bytes exactly.
+// Ownership/Lifetime:
+//   - Standalone probe process.
+// Links: zannastudio/src/ui/scene_collider_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_collider_2d";
+bind "../ui/scene_editor_2d";
+bind "../ui/scene_panels_2d";
+
+bind GUI = Zanna.GUI;
+bind Terminal = Zanna.Terminal;
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio 2D Collider Probe", 1120, 760);
+    var editor = new scene_editor_2d.SceneEditor2D();
+    scene_panels_2d.Build(editor, shell.workbench.scene2DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene2DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_2D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+
+    if editor.AddSceneObject("crate", "crate-1", 4, 3) < 0 {
+        fail("could not add the probe object");
+        return;
+    }
+    var selection: List[Integer] = [];
+    selection.add(0);
+    if editor.SelectSceneObjects(selection, 0) == false {
+        fail("could not select the probe object");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+
+    // Creation is a verb: choose Box, then Create commits one entry.
+    editor.colliderInspector.kindDropdown.SetSelected(
+        scene_collider_2d.COLLIDER_BOX);
+    editor.colliderInspector.kindDropdown.WasChanged();
+    editor.colliderInspector.UpdateKindControls();
+    var createRevision = editor.GetRevision();
+    if editor.ApplyObjectCollider(0) == false
+       or editor.GetRevision() != createRevision + 1 {
+        fail("collider creation was not one transaction");
+        return;
+    }
+    var created = scene_collider_2d.FromObject(editor.scene, 0);
+    if created.kind != scene_collider_2d.COLLIDER_BOX
+       or editor.scene.ObjectGetStr(0, "collider.kind", "") != "box" {
+        fail("created collider did not round-trip through properties");
+        return;
+    }
+
+    // An existing collider live-commits one gesture, one entry.
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    var liveRevision = editor.GetRevision();
+    editor.colliderInspector.halfW.SetValue(48.0);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    if editor.GetRevision() != liveRevision + 1
+       or editor.scene.ObjectGetFloat(0, "collider.halfW", 0.0)
+          != 48.0 {
+        fail("half-width gesture did not live-commit exactly once ("
+             + "revision=" + editor.GetRevision() + ")");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    if editor.GetRevision() != liveRevision + 1 {
+        fail("idle pump after live collider commit created history");
+        return;
+    }
+    var beforeUndo = sceneDoc.content;
+    if editor.Undo() == false
+       or sceneDoc.content == beforeUndo
+       or editor.scene.ObjectGetFloat(0, "collider.halfW", 0.0)
+          == 48.0 {
+        fail("undo did not restore the pre-gesture collider bytes");
+        return;
+    }
+
+    // Removal is a verb and one transaction.
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    var removeRevision = editor.GetRevision();
+    if editor.RemoveObjectCollider(0) == false
+       or editor.GetRevision() != removeRevision + 1
+       or editor.scene.ObjectPropertyKind(0, "collider.kind") != "" {
+        fail("collider removal was not one clean transaction");
+        return;
+    }
+    // Sprite clip contract (ADR 0221/0225): create verb, live commit,
+    // no phantom history, one-transaction removal.
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    var clipCreateRevision = editor.GetRevision();
+    if editor.ApplyObjectSpriteClip(0) == false
+       or editor.GetRevision() != clipCreateRevision + 1
+       or editor.scene.ObjectGetInt(0, "anim.count", 0) < 1 {
+        fail("sprite clip creation was not one transaction");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    var clipLiveRevision = editor.GetRevision();
+    editor.clipInspector.frameCount.SetValue(6.0);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    if editor.GetRevision() != clipLiveRevision + 1
+       or editor.scene.ObjectGetInt(0, "anim.count", 0) != 6 {
+        fail("frame-count gesture did not live-commit exactly once");
+        return;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    if editor.GetRevision() != clipLiveRevision + 1 {
+        fail("idle pump after live clip commit created history");
+        return;
+    }
+    var clipRemoveRevision = editor.GetRevision();
+    if editor.RemoveObjectSpriteClip(0) == false
+       or editor.GetRevision() != clipRemoveRevision + 1
+       or editor.scene.ObjectPropertyKind(0, "anim.start") != "" {
+        fail("sprite clip removal was not one clean transaction");
+        return;
+    }
+    Terminal.Say("RESULT: ok");
+}

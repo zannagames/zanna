@@ -1308,6 +1308,17 @@ static float sw_linearize_ndc_depth(const sw_context_t *ctx, float ndc_z) {
     return (2.0f * zn * zf) / (zf + zn - ndc_z * (zf - zn));
 }
 
+/// @brief Decide whether a resolved fragment may use the opaque color/depth write path.
+/// @details The draw's blend state is invariant across its fragments. In particular, an explicit
+///          BLEND or additive material remains non-depth-writing even when one sampled fragment
+///          happens to have alpha one.
+/// @param cmd Borrowed sanitized draw command.
+/// @param fragment_alpha Resolved fragment alpha after material effects.
+/// @return Non-zero only for fully opaque fragments from an opaque/masked draw.
+static int sw_fragment_uses_opaque_write(const vgfx3d_draw_cmd_t *cmd, float fragment_alpha) {
+    return fragment_alpha >= 1.0f && !vgfx3d_draw_cmd_uses_transparent_blend(cmd);
+}
+
 /// @brief Apply alpha mode (mask/opaque/blend), the shading_model==4 fresnel-alpha
 ///   term, then write or blend the fragment into the framebuffer (with optional
 ///   depth write). Returns 1 if a pixel was written, 0 if discarded.
@@ -1385,7 +1396,7 @@ static int sw_blend_and_write(const sw_fragment_ctx *fc,
     }
 
     uint8_t *dst = pixels + (size_t)y * (size_t)stride + (size_t)x * 4u;
-    if (!discard_fragment && fa >= 1.0f) {
+    if (!discard_fragment && sw_fragment_uses_opaque_write(cmd, fa)) {
         /* Opaque: overwrite pixel; screen-space overlays skip Z writes.
          * Round to nearest (+0.5) like GPU backends so quantization does not
          * carry a consistent half-LSB darkening bias versus native output. */

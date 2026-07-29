@@ -1450,6 +1450,20 @@ building/waiting/live/exited truthfully. `build/run_config.zia` builds
 the native build→launch chain and `commands/build_commands.zia` starts
 it with the channel environment injected.
 
+### `ui/scene_collider_2d.zia`, `ui/scene_collider_inspector_2d.zia`
+
+The 2D collider convention (typed `collider.*` object properties; box,
+circle, tile-rect) and its live-commit inspector group; the canvas draws
+wireframe overlays per collider-bearing object. `SceneEditor2D` owns the
+one-transaction apply/remove.
+
+### `services/project_templates_games.zia`
+
+Generated content for the "2D Game" and "3D Game" templates: manifests
+with run profiles, starter scenes (the 3D scene builds through the
+runtime writer so the VSCN dialect never drifts), v19 schemas, and
+`--scene/--scene-watch/--smoke`-conformant mains.
+
 **Live-commit convention (ADR 0221).** Component inspectors expose
 `PumpDraftIntent() -> Boolean` aggregating their state-shaped control edges;
 `scene_editor_3d_pump_routing.zia` applies the component live when a single

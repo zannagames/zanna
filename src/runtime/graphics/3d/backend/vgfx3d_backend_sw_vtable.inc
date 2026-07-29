@@ -77,6 +77,8 @@ static void sw_destroy_ctx(void *ctx_ptr) {
     free(ctx->zbuf);
     free(ctx->opaque_zbuf);
     free(ctx->vertex_scratch);
+    free(ctx->color_triangle_scratch);
+    free(ctx->shadow_triangle_scratch);
     free(ctx->scaled_color);
     free(ctx);
 }
@@ -112,9 +114,10 @@ static void sw_scaled_dims(
 /// @param h Positive scaled height in pixels.
 /// @return 1 when sufficient storage is ready, otherwise 0 for invalid input, overflow, or OOM.
 static int sw_ensure_scaled_color(sw_context_t *ctx, int32_t w, int32_t h) {
+    int32_t stride;
     size_t allocation_count;
     size_t pixel_count;
-    if (!ctx || !sw_pixel_count_checked(w, h, &pixel_count))
+    if (!ctx || !sw_rgba_stride_checked(w, &stride) || !sw_pixel_count_checked(w, h, &pixel_count))
         return 0;
     if (ctx->scaled_color && ctx->scaled_color_capacity >= pixel_count) {
         ctx->scaled_w = w;
@@ -244,11 +247,13 @@ static void sw_clear(void *ctx_ptr, vgfx_window_t win, float r, float g, float b
             if (sw_render_scale_active(ctx)) {
                 int32_t sw_w;
                 int32_t sw_h;
+                int32_t sw_stride;
                 sw_scaled_dims(ctx, fb.width, fb.height, &sw_w, &sw_h);
-                if (!sw_ensure_scaled_color(ctx, sw_w, sw_h) ||
+                if (!sw_rgba_stride_checked(sw_w, &sw_stride) ||
+                    !sw_ensure_scaled_color(ctx, sw_w, sw_h) ||
                     !sw_ensure_zbuf_capacity(ctx, sw_w, sw_h))
                     return;
-                sw_fill_rgba_rows((uint8_t *)ctx->scaled_color, sw_w, sw_h, sw_w * 4, cr, cg, cb);
+                sw_fill_rgba_rows((uint8_t *)ctx->scaled_color, sw_w, sw_h, sw_stride, cr, cg, cb);
                 ctx->scaled_frame_active = 1;
             } else {
                 if (!sw_ensure_zbuf_capacity(ctx, fb.width, fb.height))
@@ -492,8 +497,10 @@ static int sw_resolve_output_target(sw_context_t *ctx,
         if (sw_render_scale_active(ctx)) {
             int32_t sw_w;
             int32_t sw_h;
+            int32_t sw_stride;
             sw_scaled_dims(ctx, fb.width, fb.height, &sw_w, &sw_h);
-            if (!sw_ensure_scaled_color(ctx, sw_w, sw_h) ||
+            if (!sw_rgba_stride_checked(sw_w, &sw_stride) ||
+                !sw_ensure_scaled_color(ctx, sw_w, sw_h) ||
                 !sw_ensure_zbuf_capacity(ctx, sw_w, sw_h))
                 return 0;
             ctx->scaled_frame_active = 1;
@@ -501,7 +508,7 @@ static int sw_resolve_output_target(sw_context_t *ctx,
             *out_zbuf = ctx->zbuf;
             *out_w = sw_w;
             *out_h = sw_h;
-            *out_stride = sw_w * 4;
+            *out_stride = sw_stride;
             return 1;
         }
         if (!sw_ensure_zbuf_capacity(ctx, fb.width, fb.height))
@@ -1504,6 +1511,10 @@ static int sw_submit_draw_parallel(void *ctx_ptr,
     if (!sw_parallel_transform_vertices(
             ctx, cmd, pv, vc, mvp, normal_matrix, lights, light_count, ambient))
         return 0;
+    tris.items = (sw_screen_tri_t *)ctx->color_triangle_scratch;
+    tris.capacity = ctx->color_triangle_scratch_capacity;
+    ctx->color_triangle_scratch = NULL;
+    ctx->color_triangle_scratch_capacity = 0;
     if (!sw_collect_screen_triangles_parallel(
             ctx, cmd, pv, vc, index_count, (float)out_w * 0.5f, (float)out_h * 0.5f, &tris))
         goto cleanup;
@@ -1538,7 +1549,8 @@ static int sw_submit_draw_parallel(void *ctx_ptr,
 
 cleanup:
     sw_tile_grid_free(&grid);
-    sw_screen_tri_list_free(&tris);
+    ctx->color_triangle_scratch = tris.items;
+    ctx->color_triangle_scratch_capacity = tris.capacity;
     return ok;
 }
 

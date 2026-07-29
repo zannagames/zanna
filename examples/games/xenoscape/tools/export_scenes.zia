@@ -61,6 +61,10 @@ func ExportLavaAnimation(scene: SceneDocument) {
 func ExportRegion(num: Integer, path: String) -> Boolean {
     var region = new Level();
     region.loadLevel(num);
+    // Scene-author the full gameplay population: the same enrichment the
+    // game applied at runtime now bakes into the exported scene, so every
+    // enemy and gem the player meets is editable in Zanna Studio.
+    region.enrichEnemies(num);
     var scene = SceneDocument.New(
         region.levelWidth, region.levelHeight, TILE_SIZE, TILE_SIZE);
     scene.SetLayerName(0, "terrain");

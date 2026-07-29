@@ -73,6 +73,9 @@ class CommandSpec {
 expose func DefaultCommandSpecs() -> List[CommandSpec] {
     var specs: List[CommandSpec] = [];
     AddSpec(specs, "new", "New File", "Create a new untitled file", "Ctrl+N", "", true);
+    AddSpec(specs, "packageproject", "Package Project", "Run zanna package on the open project as a streamed job", "", "", true);
+    AddSpec(specs, "newproject2dgame", "New Project: 2D Game", "Scaffold a scene-driven 2D game playable through Run Scene", "", "", true);
+    AddSpec(specs, "newproject3dgame", "New Project: 3D Game", "Scaffold a native scene-driven 3D game playable through Play", "", "", true);
     AddSpec(specs, "newscene2d", "New 2D Scene", "Create an editable tile and object scene", "", "", true);
     AddSpec(specs, "newscene3d", "New 3D Scene", "Create an editable VSCN hierarchy", "", "", true);
     AddSpec(specs, "open", "Open File...", "Open a file from disk", "Ctrl+O", "", true);

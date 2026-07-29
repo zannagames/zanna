@@ -120,7 +120,6 @@ class LevelValidator {
 
         var lvl = new Level();
         lvl.loadLevel(levelNum);
-        lvl.enrichEnemies(levelNum);
 
         if lvl.levelWidth <= 0 {
             fail(levelNum, "level width must be positive");

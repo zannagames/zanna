@@ -20,6 +20,7 @@ src/runtime/*_linux.h
 src/runtime/io/rt_archive_fs.c
 src/runtime/io/rt_archive_internal.h
 src/lib/graphics/src/vgfx_platform_*
+src/lib/graphics/src/vgfx_embed_channel.c
 src/lib/audio/src/vaud_platform_*
 src/lib/gui/src/widgets/vg_filedialog_platform_*
 src/lib/gui/src/dialogs/vg_filedialog_native.m

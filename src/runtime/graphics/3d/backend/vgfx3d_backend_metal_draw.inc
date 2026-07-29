@@ -639,6 +639,10 @@ static int metal_readback_rgba(
                         chain = &chain_copy;
                 }
                 texture = metal_encode_postfx_if_needed(ctx, chain);
+                if (!texture) {
+                    vgfx3d_postfx_chain_free(&chain_copy);
+                    return 0;
+                }
             } else if (ctx.currentTargetKind == VGFX3D_METAL_TARGET_SWAPCHAIN &&
                        !metal_capture_current_drawable_to_display_texture(ctx)) {
                 return 0;

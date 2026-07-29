@@ -1,0 +1,546 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/services/project_templates_games.zia
+// Purpose: Generated content for the "2D Game" and "3D Game" project
+//          templates (ADR 0225 conformance: --scene, --scene-watch,
+//          --smoke; playable through Studio's play loop).
+// Key invariants:
+//   - Every generated file is a deterministic literal: no timestamps or
+//     randomness, so template smokes are byte-stable.
+//   - Generated games compile clean and exit "RESULT: ok" under --smoke
+//     with no window; the template CTest smokes enforce it.
+//   - The 2D game declares run-profile vm, the 3D game native, so Run
+//     Scene and Play take their documented paths without editing.
+// Ownership/Lifetime:
+//   - Stateless module functions returning file text.
+// Links: zannastudio/src/services/project_templates.zia,
+//        docs/adr/0225-play-loop-and-embedded-play.md
+//
+//===----------------------------------------------------------------------===//
+
+module project_templates_games;
+
+bind G3D = Zanna.Graphics3D;
+
+/// @brief zanna.project for one game template.
+expose func GameManifestText(name: String, profile: String) -> String {
+    return "# " + name + " — created with Zanna Studio\n"
+        + "project " + name + "\n"
+        + "version 0.1.0\n"
+        + "lang zia\n"
+        + "entry src/main.zia\n"
+        + "run-profile " + profile + "\n";
+}
+
+/// @brief Comma-joined zero tiles for one width*height layer.
+hide func ZeroTiles(count: Integer) -> String {
+    var out = "";
+    var index = 0;
+    while index < count {
+        if index > 0 { out = out + ", "; }
+        out = out + "0";
+        index = index + 1;
+    }
+    return out;
+}
+
+/// @brief Starter authored 2D scene (16×9 grid, three typed objects).
+expose func Scene2DText() -> String {
+    return "{\n"
+        + "  \"version\": 1,\n"
+        + "  \"name\": \"level-01\",\n"
+        + "  \"width\": 16,\n"
+        + "  \"height\": 9,\n"
+        + "  \"tileWidth\": 64,\n"
+        + "  \"tileHeight\": 64,\n"
+        + "  \"tilesetAsset\": \"\",\n"
+        + "  \"properties\": {\n"
+        + "    \"playerStartX\": 128,\n"
+        + "    \"playerStartY\": 384\n"
+        + "  },\n"
+        + "  \"layers\": [\n"
+        + "    {\"name\": \"ground\", \"visible\": true,"
+        + " \"asset\": \"\", \"tiles\": [" + ZeroTiles(144) + "]}\n"
+        + "  ],\n"
+        + "  \"objects\": [\n"
+        + "    {\"type\": \"pickup\", \"id\": \"gem-1\","
+        + " \"x\": 320, \"y\": 320, \"properties\": {}},\n"
+        + "    {\"type\": \"pickup\", \"id\": \"gem-2\","
+        + " \"x\": 640, \"y\": 256, \"properties\": {}},\n"
+        + "    {\"type\": \"goal\", \"id\": \"exit\","
+        + " \"x\": 896, \"y\": 384, \"properties\": {}}\n"
+        + "  ],\n"
+        + "  \"collision\": {},\n"
+        + "  \"tileProperties\": {}\n"
+        + "}\n";
+}
+
+/// @brief Starter authored 3D scene built through the runtime writer so
+///        the VSCN dialect (mesh/material tables, node flags) is always
+///        exactly what the loader expects.
+expose func Scene3DText() -> String {
+    var scene = G3D.SceneGraph.New();
+    scene.Root.MetadataSetString("game.name", "level-01");
+    scene.Root.MetadataSetFloat("game.startX", 0.0);
+    scene.Root.MetadataSetFloat("game.startZ", 6.0);
+
+    var ground = G3D.SceneNode.New();
+    ground.Name = "Ground";
+    ground.SetPosition(0.0, -0.5, 0.0);
+    ground.Mesh = G3D.Mesh3D.Box(20.0, 1.0, 20.0);
+    ground.Material = G3D.Material3D.PBR(0.30, 0.42, 0.30);
+    scene.Add(ground);
+
+    var pickupA = G3D.SceneNode.New();
+    pickupA.Name = "Pickup A";
+    pickupA.SetPosition(-3.0, 0.5, 0.0);
+    pickupA.Mesh = G3D.Mesh3D.Sphere(0.4, 16);
+    pickupA.Material = G3D.Material3D.PBR(0.9, 0.8, 0.2);
+    pickupA.MetadataSetString("game.kind", "pickup");
+    scene.Add(pickupA);
+
+    var pickupB = G3D.SceneNode.New();
+    pickupB.Name = "Pickup B";
+    pickupB.SetPosition(3.0, 0.5, -2.0);
+    pickupB.Mesh = G3D.Mesh3D.Sphere(0.4, 16);
+    pickupB.Material = G3D.Material3D.PBR(0.9, 0.8, 0.2);
+    pickupB.MetadataSetString("game.kind", "pickup");
+    scene.Add(pickupB);
+
+    var goal = G3D.SceneNode.New();
+    goal.Name = "Goal";
+    goal.SetPosition(0.0, 0.75, -6.0);
+    goal.Mesh = G3D.Mesh3D.Box(1.0, 1.5, 1.0);
+    goal.Material = G3D.Material3D.PBR(0.3, 0.6, 0.9);
+    goal.MetadataSetString("game.kind", "goal");
+    scene.Add(goal);
+
+    return scene.SaveToText();
+}
+
+/// @brief v19 scene-components.json shared by both game templates.
+expose func SchemaText(target2d: Boolean) -> String {
+    var objectTarget = "3d-node";
+    var sceneTarget = "3d-scene";
+    var startFields = "{\"key\": \"game.startX\", \"type\": \"vec2\","
+        + " \"label\": \"Player start\","
+        + " \"keys\": [\"game.startX\", \"game.startZ\"],"
+        + " \"group\": \"Player\"}";
+    if target2d {
+        objectTarget = "2d-object";
+        sceneTarget = "2d-scene";
+        startFields = "{\"key\": \"playerStartX\", \"type\": \"vec2\","
+            + " \"label\": \"Player start\","
+            + " \"keys\": [\"playerStartX\", \"playerStartY\"],"
+            + " \"group\": \"Player\"}";
+    }
+    return "{\n"
+        + "  \"version\": 19,\n"
+        + "  \"components\": [\n"
+        + "    {\"name\": \"pickup\", \"label\": \"Pickup\","
+        + " \"target\": \"" + objectTarget + "\",\n"
+        + "     \"description\": \"Collectible the starter game counts\","
+        + "\n"
+        + "     \"fields\": [{\"key\": \"game.value\", \"type\":"
+        + " \"int\", \"label\": \"Value\", \"default\": 1}]}\n"
+        + "  ],\n"
+        + "  \"sceneComponents\": [\n"
+        + "    {\"name\": \"level-settings\", \"label\": \"Level\","
+        + " \"target\": \"" + sceneTarget + "\",\n"
+        + "     \"description\": \"Settings the starter game reads at"
+        + " load\",\n"
+        + "     \"fields\": [" + startFields + "]}\n"
+        + "  ]\n"
+        + "}\n";
+}
+
+/// @brief Minimal per-project asset library.
+expose func AssetLibraryText() -> String {
+    return "{\n"
+        + "  \"version\": 1,\n"
+        + "  \"assets\": []\n"
+        + "}\n";
+}
+
+/// @brief Starter 2D game main: scene-driven, watchable, smokeable.
+expose func Game2DMainText(name: String) -> String {
+    return "// " + name + " — scene-driven 2D starter (created with Zanna"
+        + " Studio).\n"
+        + "//\n"
+        + "// Conformance: --scene <path> loads that authored scene,\n"
+        + "// --scene-watch hot-reloads it after a parseable save, and\n"
+        + "// --smoke runs a bounded headless simulation then prints\n"
+        + "// RESULT: ok — exactly the contract Zanna Studio's Run Scene\n"
+        + "// and save-reload flows expect (ADR 0225).\n"
+        + "\n"
+        + "bind Canvas = Zanna.Graphics.Canvas;\n"
+        + "bind Color = Zanna.Graphics.Color;\n"
+        + "bind SceneDocument = Zanna.Game2D.SceneDocument;\n"
+        + "bind Env = Zanna.System.Environment;\n"
+        + "bind Clock = Zanna.Time.Clock;\n"
+        + "bind File = Zanna.IO.File;\n"
+        + "bind Input = Zanna.Input;\n"
+        + "bind Terminal = Zanna.Terminal;\n"
+        + "\n"
+        + "var scenePath = \"assets/scenes/level-01.scene2d\";\n"
+        + "var watchArmed = false;\n"
+        + "var watchStamp = 0;\n"
+        + "var watchCheckedMs = 0;\n"
+        + "\n"
+        + "var levelWidth = 16;\n"
+        + "var levelHeight = 9;\n"
+        + "var playerX = 128.0;\n"
+        + "var playerY = 384.0;\n"
+        + "var objectXs: List[Number] = [];\n"
+        + "var objectYs: List[Number] = [];\n"
+        + "var objectKinds: List[String] = [];\n"
+        + "var objectTaken: List[Boolean] = [];\n"
+        + "var score = 0;\n"
+        + "var won = false;\n"
+        + "\n"
+        + "func argValue(flag: String) -> String {\n"
+        + "    var index = 0;\n"
+        + "    while index + 1 < Env.GetArgumentCount() {\n"
+        + "        if Env.GetArgument(index) == flag {\n"
+        + "            return Env.GetArgument(index + 1);\n"
+        + "        }\n"
+        + "        index = index + 1;\n"
+        + "    }\n"
+        + "    return \"\";\n"
+        + "}\n"
+        + "\n"
+        + "func hasArg(flag: String) -> Boolean {\n"
+        + "    var index = 0;\n"
+        + "    while index < Env.GetArgumentCount() {\n"
+        + "        if Env.GetArgument(index) == flag { return true; }\n"
+        + "        index = index + 1;\n"
+        + "    }\n"
+        + "    return false;\n"
+        + "}\n"
+        + "\n"
+        + "func loadScene() -> Boolean {\n"
+        + "    var loaded = SceneDocument.LoadResult(scenePath);\n"
+        + "    if loaded.IsOk == false { return false; }\n"
+        + "    var scene = loaded.Unwrap() as SceneDocument;\n"
+        + "    levelWidth = scene.Width;\n"
+        + "    levelHeight = scene.Height;\n"
+        + "    playerX = 1.0 * scene.GetInt(\"playerStartX\", 128);\n"
+        + "    playerY = 1.0 * scene.GetInt(\"playerStartY\", 384);\n"
+        + "    objectXs = [];\n"
+        + "    objectYs = [];\n"
+        + "    objectKinds = [];\n"
+        + "    objectTaken = [];\n"
+        + "    var index = 0;\n"
+        + "    while index < scene.ObjectCount() {\n"
+        + "        objectKinds.add(scene.ObjectType(index));\n"
+        + "        objectXs.add(1.0 * scene.ObjectX(index));\n"
+        + "        objectYs.add(1.0 * scene.ObjectY(index));\n"
+        + "        objectTaken.add(false);\n"
+        + "        index = index + 1;\n"
+        + "    }\n"
+        + "    score = 0;\n"
+        + "    won = false;\n"
+        + "    return true;\n"
+        + "}\n"
+        + "\n"
+        + "func pollWatch() {\n"
+        + "    if watchArmed == false { return; }\n"
+        + "    var now = Clock.NowMs();\n"
+        + "    if now - watchCheckedMs < 250 { return; }\n"
+        + "    watchCheckedMs = now;\n"
+        + "    if File.Exists(scenePath) == false { return; }\n"
+        + "    var stamp = File.Modified(scenePath);\n"
+        + "    if stamp == watchStamp { return; }\n"
+        + "    var probe = SceneDocument.LoadResult(scenePath);\n"
+        + "    if probe.IsOk == false { return; }\n"
+        + "    watchStamp = stamp;\n"
+        + "    loadScene();\n"
+        + "}\n"
+        + "\n"
+        + "func tick(dtMs: Integer) {\n"
+        + "    var speed = 0.24 * dtMs;\n"
+        + "    if Input.Keyboard.IsDown(Input.Key.Left) {\n"
+        + "        playerX = playerX - speed;\n"
+        + "    }\n"
+        + "    if Input.Keyboard.IsDown(Input.Key.Right) {\n"
+        + "        playerX = playerX + speed;\n"
+        + "    }\n"
+        + "    if Input.Keyboard.IsDown(Input.Key.Up) {\n"
+        + "        playerY = playerY - speed;\n"
+        + "    }\n"
+        + "    if Input.Keyboard.IsDown(Input.Key.Down) {\n"
+        + "        playerY = playerY + speed;\n"
+        + "    }\n"
+        + "    var index = 0;\n"
+        + "    while index < objectXs.count() {\n"
+        + "        if objectTaken.get(index) == false {\n"
+        + "            var dx = playerX - objectXs.get(index);\n"
+        + "            var dy = playerY - objectYs.get(index);\n"
+        + "            if dx * dx + dy * dy < 40.0 * 40.0 {\n"
+        + "                if objectKinds.get(index) == \"pickup\" {\n"
+        + "                    objectTaken.set(index, true);\n"
+        + "                    score = score + 1;\n"
+        + "                }\n"
+        + "                if objectKinds.get(index) == \"goal\" {\n"
+        + "                    won = true;\n"
+        + "                }\n"
+        + "            }\n"
+        + "        }\n"
+        + "        index = index + 1;\n"
+        + "    }\n"
+        + "}\n"
+        + "\n"
+        + "func draw(canvas: Canvas) {\n"
+        + "    canvas.Clear(Color.RGB(24, 28, 36));\n"
+        + "    var index = 0;\n"
+        + "    while index < objectXs.count() {\n"
+        + "        if objectTaken.get(index) == false {\n"
+        + "            var tint = Color.RGB(240, 200, 60);\n"
+        + "            if objectKinds.get(index) == \"goal\" {\n"
+        + "                tint = Color.RGB(90, 170, 240);\n"
+        + "            }\n"
+        + "            canvas.Box(\n"
+        + "                Zanna.Core.Convert.NumToInt(\n"
+        + "                    objectXs.get(index)) - 16,\n"
+        + "                Zanna.Core.Convert.NumToInt(\n"
+        + "                    objectYs.get(index)) - 16, 32, 32, tint);\n"
+        + "        }\n"
+        + "        index = index + 1;\n"
+        + "    }\n"
+        + "    canvas.Box(\n"
+        + "        Zanna.Core.Convert.NumToInt(playerX) - 20,\n"
+        + "        Zanna.Core.Convert.NumToInt(playerY) - 20, 40, 40,\n"
+        + "        Color.RGB(120, 220, 130));\n"
+        + "    canvas.Text(\n"
+        + "        16, 24, \"Score \" + score, Color.RGB(230, 230, 230));\n"
+        + "    if won {\n"
+        + "        canvas.Text(\n"
+        + "            16, 48, \"You reached the goal!\",\n"
+        + "            Color.RGB(120, 220, 130));\n"
+        + "    }\n"
+        + "}\n"
+        + "\n"
+        + "func runSmoke() {\n"
+        + "    if loadScene() == false {\n"
+        + "        Terminal.Say(\"RESULT: fail scene did not load\");\n"
+        + "        return;\n"
+        + "    }\n"
+        + "    playerY = 320.0;\n"
+        + "    var frame = 0;\n"
+        + "    while frame < 200 {\n"
+        + "        playerX = playerX + 4.0;\n"
+        + "        tick(16);\n"
+        + "        frame = frame + 1;\n"
+        + "    }\n"
+        + "    if score == 0 and won == false {\n"
+        + "        Terminal.Say(\"RESULT: fail nothing was reachable\");\n"
+        + "        return;\n"
+        + "    }\n"
+        + "    Terminal.Say(\"RESULT: ok\");\n"
+        + "}\n"
+        + "\n"
+        + "func main() {\n"
+        + "    var sceneArg = argValue(\"--scene\");\n"
+        + "    if sceneArg != \"\" { scenePath = sceneArg; }\n"
+        + "    if hasArg(\"--scene-watch\") {\n"
+        + "        watchArmed = true;\n"
+        + "        if File.Exists(scenePath) {\n"
+        + "            watchStamp = File.Modified(scenePath);\n"
+        + "        }\n"
+        + "    }\n"
+        + "    if hasArg(\"--smoke\") {\n"
+        + "        runSmoke();\n"
+        + "        return;\n"
+        + "    }\n"
+        + "    if loadScene() == false {\n"
+        + "        Terminal.Say(\"Could not load \" + scenePath);\n"
+        + "        return;\n"
+        + "    }\n"
+        + "    var canvas = Canvas.New(\n"
+        + "        \"" + name + "\", levelWidth * 64, levelHeight * 64);\n"
+        + "    while canvas.BeginFrame() != 0 {\n"
+        + "        pollWatch();\n"
+        + "        tick(canvas.DeltaTime);\n"
+        + "        draw(canvas);\n"
+        + "        canvas.Flip();\n"
+        + "    }\n"
+        + "}\n";
+}
+
+/// @brief Starter 3D game main: scene-driven, watchable, smokeable.
+expose func Game3DMainText(name: String) -> String {
+    return "// " + name + " — scene-driven 3D starter (created with Zanna"
+        + " Studio).\n"
+        + "//\n"
+        + "// Conformance: --scene, --scene-watch, --smoke (ADR 0225).\n"
+        + "// The project declares run-profile native, so Zanna Studio's\n"
+        + "// Run Scene builds this binary and Play embeds it.\n"
+        + "\n"
+        + "bind G3D = Zanna.Graphics3D;\n"
+        + "bind Game3D = Zanna.Game3D;\n"
+        + "bind Vec3 = Zanna.Math.Vec3;\n"
+        + "bind Env = Zanna.System.Environment;\n"
+        + "bind Clock = Zanna.Time.Clock;\n"
+        + "bind File = Zanna.IO.File;\n"
+        + "bind Input = Zanna.Input;\n"
+        + "bind Terminal = Zanna.Terminal;\n"
+        + "\n"
+        + "var scenePath = \"assets/scenes/level-01.scene3d\";\n"
+        + "var watchArmed = false;\n"
+        + "var watchStamp = 0;\n"
+        + "var watchCheckedMs = 0;\n"
+        + "\n"
+        + "var scene: G3D.SceneGraph = null;\n"
+        + "var playerX = 0.0;\n"
+        + "var playerZ = 6.0;\n"
+        + "var score = 0;\n"
+        + "var won = false;\n"
+        + "\n"
+        + "func argValue(flag: String) -> String {\n"
+        + "    var index = 0;\n"
+        + "    while index + 1 < Env.GetArgumentCount() {\n"
+        + "        if Env.GetArgument(index) == flag {\n"
+        + "            return Env.GetArgument(index + 1);\n"
+        + "        }\n"
+        + "        index = index + 1;\n"
+        + "    }\n"
+        + "    return \"\";\n"
+        + "}\n"
+        + "\n"
+        + "func hasArg(flag: String) -> Boolean {\n"
+        + "    var index = 0;\n"
+        + "    while index < Env.GetArgumentCount() {\n"
+        + "        if Env.GetArgument(index) == flag { return true; }\n"
+        + "        index = index + 1;\n"
+        + "    }\n"
+        + "    return false;\n"
+        + "}\n"
+        + "\n"
+        + "func loadScene() -> Boolean {\n"
+        + "    var loaded = G3D.SceneGraph.Load(scenePath);\n"
+        + "    if loaded == null { return false; }\n"
+        + "    scene = loaded;\n"
+        + "    playerX = scene.Root.MetadataGetFloat(\"game.startX\", 0.0);\n"
+        + "    playerZ = scene.Root.MetadataGetFloat(\"game.startZ\", 6.0);\n"
+        + "    score = 0;\n"
+        + "    won = false;\n"
+        + "    return true;\n"
+        + "}\n"
+        + "\n"
+        + "func attachScene(target: G3D.SceneGraph) {\n"
+        + "    if scene == null or target == null { return; }\n"
+        + "    var moved: List[G3D.SceneNode] = [];\n"
+        + "    var index = 0;\n"
+        + "    while index < scene.Root.ChildCount {\n"
+        + "        moved.add(scene.Root.GetChild(index));\n"
+        + "        index = index + 1;\n"
+        + "    }\n"
+        + "    index = 0;\n"
+        + "    while index < moved.count() {\n"
+        + "        target.Add(moved.get(index));\n"
+        + "        index = index + 1;\n"
+        + "    }\n"
+        + "    scene = target;\n"
+        + "}\n"
+        + "\n"
+        + "func pollWatch() {\n"
+        + "    if watchArmed == false { return; }\n"
+        + "    var now = Clock.NowMs();\n"
+        + "    if now - watchCheckedMs < 250 { return; }\n"
+        + "    watchCheckedMs = now;\n"
+        + "    if File.Exists(scenePath) == false { return; }\n"
+        + "    var stamp = File.Modified(scenePath);\n"
+        + "    if stamp == watchStamp { return; }\n"
+        + "    var probe = G3D.SceneGraph.Load(scenePath);\n"
+        + "    if probe == null { return; }\n"
+        + "    watchStamp = stamp;\n"
+        + "}\n"
+        + "\n"
+        + "func tick(dtMs: Integer) {\n"
+        + "    var speed = 0.006 * dtMs;\n"
+        + "    if Input.Keyboard.IsDown(Input.Key.W) { playerZ = playerZ"
+        + " - speed; }\n"
+        + "    if Input.Keyboard.IsDown(Input.Key.S) { playerZ = playerZ"
+        + " + speed; }\n"
+        + "    if Input.Keyboard.IsDown(Input.Key.A) { playerX = playerX"
+        + " - speed; }\n"
+        + "    if Input.Keyboard.IsDown(Input.Key.D) { playerX = playerX"
+        + " + speed; }\n"
+        + "    if scene == null { return; }\n"
+        + "    var root = scene.Root;\n"
+        + "    var index = 0;\n"
+        + "    while index < root.ChildCount {\n"
+        + "        var node = root.GetChild(index);\n"
+        + "        var kind = node.MetadataGetString(\"game.kind\", \"\");\n"
+        + "        if kind != \"\" and node.Visible {\n"
+        + "            var dx = playerX - node.Position.X;\n"
+        + "            var dz = playerZ - node.Position.Z;\n"
+        + "            if dx * dx + dz * dz < 1.2 {\n"
+        + "                if kind == \"pickup\" {\n"
+        + "                    node.Visible = false;\n"
+        + "                    score = score + 1;\n"
+        + "                }\n"
+        + "                if kind == \"goal\" { won = true; }\n"
+        + "            }\n"
+        + "        }\n"
+        + "        index = index + 1;\n"
+        + "    }\n"
+        + "}\n"
+        + "\n"
+        + "func runSmoke() {\n"
+        + "    if loadScene() == false {\n"
+        + "        Terminal.Say(\"RESULT: fail scene did not load\");\n"
+        + "        return;\n"
+        + "    }\n"
+        + "    var frame = 0;\n"
+        + "    while frame < 240 {\n"
+        + "        playerZ = playerZ - 0.05;\n"
+        + "        tick(16);\n"
+        + "        frame = frame + 1;\n"
+        + "    }\n"
+        + "    if won == false {\n"
+        + "        Terminal.Say(\"RESULT: fail goal was not reachable\");\n"
+        + "        return;\n"
+        + "    }\n"
+        + "    Terminal.Say(\"RESULT: ok\");\n"
+        + "}\n"
+        + "\n"
+        + "func main() {\n"
+        + "    var sceneArg = argValue(\"--scene\");\n"
+        + "    if sceneArg != \"\" { scenePath = sceneArg; }\n"
+        + "    if hasArg(\"--scene-watch\") {\n"
+        + "        watchArmed = true;\n"
+        + "        if File.Exists(scenePath) {\n"
+        + "            watchStamp = File.Modified(scenePath);\n"
+        + "        }\n"
+        + "    }\n"
+        + "    if hasArg(\"--smoke\") {\n"
+        + "        runSmoke();\n"
+        + "        return;\n"
+        + "    }\n"
+        + "    if loadScene() == false {\n"
+        + "        Terminal.Say(\"Could not load \" + scenePath);\n"
+        + "        return;\n"
+        + "    }\n"
+        + "    var world = Game3D.World3D.WithCamera(\n"
+        + "        \"" + name + "\", 1280, 720, 0.0, 6.0, 12.0);\n"
+        + "    attachScene(world.Scene);\n"
+        + "    var camera = world.Camera;\n"
+        + "    var canvas = world.Canvas;\n"
+        + "    while world.Update() {\n"
+        + "        pollWatch();\n"
+        + "        tick(canvas.DeltaTime);\n"
+        + "        world.BeginFrame();\n"
+        + "        camera.LookAt(\n"
+        + "            Vec3.New(playerX, 6.0, playerZ + 6.0),\n"
+        + "            Vec3.New(playerX, 0.0, playerZ),\n"
+        + "            Vec3.New(0.0, 1.0, 0.0));\n"
+        + "        world.DrawScene();\n"
+        + "    }\n"
+        + "}\n";
+}

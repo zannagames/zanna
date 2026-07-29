@@ -7,9 +7,9 @@
   "tileHeight": 64,
   "tilesetAsset": "",
   "properties": {
-    "region": 9,
     "playerStartX": 192,
     "playerStartY": 832,
+    "region": 9,
     "theme": 3
   },
   "layers": [
@@ -206,6 +206,51 @@
       "id": "enemy-20",
       "x": 11200,
       "y": 896,
+      "properties": {
+        "enemy.type": 29
+      }
+    },
+    {
+      "type": "enemy",
+      "id": "enemy-21",
+      "x": 1920,
+      "y": 640,
+      "properties": {
+        "enemy.type": 26
+      }
+    },
+    {
+      "type": "enemy",
+      "id": "enemy-22",
+      "x": 3840,
+      "y": 512,
+      "properties": {
+        "enemy.type": 26
+      }
+    },
+    {
+      "type": "enemy",
+      "id": "enemy-23",
+      "x": 2880,
+      "y": 896,
+      "properties": {
+        "enemy.type": 27
+      }
+    },
+    {
+      "type": "enemy",
+      "id": "enemy-24",
+      "x": 4800,
+      "y": 896,
+      "properties": {
+        "enemy.type": 27
+      }
+    },
+    {
+      "type": "enemy",
+      "id": "enemy-25",
+      "x": 3520,
+      "y": 256,
       "properties": {
         "enemy.type": 29
       }
@@ -568,6 +613,69 @@
       "y": 720,
       "properties": {
         "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-40",
+      "x": 5632,
+      "y": 768,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-41",
+      "x": 6912,
+      "y": 320,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-42",
+      "x": 8192,
+      "y": 512,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-43",
+      "x": 9472,
+      "y": 704,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-44",
+      "x": 10752,
+      "y": 256,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-45",
+      "x": 9600,
+      "y": 384,
+      "properties": {
+        "pickup.type": 7
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-46",
+      "x": 4224,
+      "y": 512,
+      "properties": {
+        "pickup.type": 2
       }
     },
     {

@@ -1949,7 +1949,6 @@ class Game {
         }
 
         level.loadLevel(currentLevel);
-        level.enrichEnemies(currentLevel);
         level.applyPersistentInteractionState(worldState.getSwitchMask(),
                                               worldState.getDoorMask(),
                                               worldState.getShrineMask());
@@ -3320,7 +3319,6 @@ class Game {
         enemiesKilled = 0;        // per-level kill tally resets each level (#7)
         achSys.onLevelReached(num);
         level.loadLevel(num);
-        level.enrichEnemies(num); // Add new enemy types
         worldState.discoverTeleporter(num - 1);
         level.applyPersistentInteractionState(worldState.getSwitchMask(),
                                               worldState.getDoorMask(),

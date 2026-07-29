@@ -7,9 +7,9 @@
   "tileHeight": 64,
   "tilesetAsset": "",
   "properties": {
-    "region": 4,
     "playerStartX": 192,
     "playerStartY": 832,
+    "region": 4,
     "theme": 4
   },
   "layers": [
@@ -206,6 +206,33 @@
       "id": "enemy-20",
       "x": 7872,
       "y": 512,
+      "properties": {
+        "enemy.type": 29
+      }
+    },
+    {
+      "type": "enemy",
+      "id": "enemy-21",
+      "x": 1600,
+      "y": 512,
+      "properties": {
+        "enemy.type": 23
+      }
+    },
+    {
+      "type": "enemy",
+      "id": "enemy-22",
+      "x": 5120,
+      "y": 896,
+      "properties": {
+        "enemy.type": 25
+      }
+    },
+    {
+      "type": "enemy",
+      "id": "enemy-23",
+      "x": 6400,
+      "y": 384,
       "properties": {
         "enemy.type": 29
       }
@@ -640,6 +667,69 @@
       "y": 464,
       "properties": {
         "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-48",
+      "x": 3392,
+      "y": 768,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-49",
+      "x": 4672,
+      "y": 320,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-50",
+      "x": 5952,
+      "y": 512,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-51",
+      "x": 7232,
+      "y": 704,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-52",
+      "x": 8512,
+      "y": 256,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-53",
+      "x": 1472,
+      "y": 448,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-54",
+      "x": 6080,
+      "y": 128,
+      "properties": {
+        "pickup.type": 6
       }
     },
     {

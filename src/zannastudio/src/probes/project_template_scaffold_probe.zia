@@ -1,0 +1,75 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/project_template_scaffold_probe.zia
+// Purpose: Scaffold both game templates into a target directory and
+//          verify the generated project shape (the CTest smoke then runs
+//          each generated game under --smoke).
+// Key invariants:
+//   - Prints "RESULT: ok" only when both projects scaffold with their
+//     scene, schema, and asset-library files present and the schema
+//     parses valid at v19.
+// Ownership/Lifetime:
+//   - The caller owns the target directory lifecycle.
+// Links: zannastudio/src/services/project_templates_games.zia
+//
+//===----------------------------------------------------------------------===//
+
+bind "../services/project_templates";
+bind "../ui/scene_component_schema";
+bind Env = Zanna.System.Environment;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
+bind Terminal = Zanna.Terminal;
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func verifyProject(root: String, sceneName: String) -> Boolean {
+    if File.Exists(Path.Join(root, "zanna.project")) == false
+       or File.Exists(Path.Join(
+              Path.Join(Path.Join(root, "assets"), "scenes"),
+              sceneName)) == false
+       or File.Exists(Path.Join(root, "asset-library.json")) == false {
+        return false;
+    }
+    var schemaPath = Path.Join(root, "scene-components.json");
+    if File.Exists(schemaPath) == false { return false; }
+    var schema = scene_component_schema.LoadPath(schemaPath);
+    return schema != null and schema.valid and schema.version == 19
+        and schema.sceneSettings.count() == 1;
+}
+
+func main() {
+    var base = Env.GetArgument(0);
+    if base == "" {
+        fail("usage: probe <target-dir>");
+        return;
+    }
+    var twoD = project_templates.Scaffold(
+        base, "starter2d", project_templates.KIND_GAME_2D);
+    if twoD == "" {
+        fail("2D game template did not scaffold");
+        return;
+    }
+    var threeD = project_templates.Scaffold(
+        base, "starter3d", project_templates.KIND_GAME_3D);
+    if threeD == "" {
+        fail("3D game template did not scaffold");
+        return;
+    }
+    if verifyProject(twoD, "level-01.scene2d") == false {
+        fail("2D project shape or schema was wrong");
+        return;
+    }
+    if verifyProject(threeD, "level-01.scene3d") == false {
+        fail("3D project shape or schema was wrong");
+        return;
+    }
+    Terminal.Say("RESULT: ok");
+}

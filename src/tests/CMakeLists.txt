@@ -1565,6 +1565,14 @@ set_tests_properties(zia_zannastudio_embed_channel PROPERTIES
         LABELS "zia;zannastudio;runtime"
         TIMEOUT 60)
 
+add_test(NAME zia_zannastudio_scene_collider_2d
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_collider_2d_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_collider_2d PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 120)
+
 add_test(NAME zia_zannastudio_scene_settings_forms
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_settings_forms_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")

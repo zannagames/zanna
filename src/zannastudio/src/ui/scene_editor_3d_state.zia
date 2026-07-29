@@ -168,6 +168,7 @@ class SceneEditor3DState extends SceneEditor3DContract.SceneEditor3DContract06 {
     expose GUI.Button bakeButton;
     expose GUI.Button makeUniqueButton;
     expose GUI.Button bakeProbesButton;
+    expose GUI.Button bakeNavmeshButton;
     expose GUI.GroupBox probeGroup;
     expose GUI.Label probeStatus;
     expose GUI.Spinner probeMinXSpinner;

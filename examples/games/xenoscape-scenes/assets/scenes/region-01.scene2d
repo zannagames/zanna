@@ -202,6 +202,24 @@
       }
     },
     {
+      "type": "enemy",
+      "id": "enemy-20",
+      "x": 3840,
+      "y": 512,
+      "properties": {
+        "enemy.type": 29
+      }
+    },
+    {
+      "type": "enemy",
+      "id": "enemy-21",
+      "x": 5760,
+      "y": 896,
+      "properties": {
+        "enemy.type": 30
+      }
+    },
+    {
       "type": "pickup",
       "id": "pickup-0",
       "x": 464,
@@ -557,6 +575,60 @@
       "id": "pickup-39",
       "x": 7952,
       "y": 720,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-40",
+      "x": 2048,
+      "y": 384,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-41",
+      "x": 3328,
+      "y": 576,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-42",
+      "x": 4608,
+      "y": 768,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-43",
+      "x": 5888,
+      "y": 320,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-44",
+      "x": 7168,
+      "y": 512,
+      "properties": {
+        "pickup.type": 5
+      }
+    },
+    {
+      "type": "pickup",
+      "id": "pickup-45",
+      "x": 8448,
+      "y": 704,
       "properties": {
         "pickup.type": 5
       }

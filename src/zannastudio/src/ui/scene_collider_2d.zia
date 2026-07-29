@@ -1,0 +1,186 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_collider_2d.zia
+// Purpose: The 2D collider convention vocabulary (ADR 0225 program):
+//          typed object properties games read at spawn — no runtime
+//          physics changes, exactly like the 3D convention (ADR 0185).
+// Key invariants:
+//   - Kinds: box (half extents), circle (radius), tile-rect (grid-aligned
+//     rectangle in tile units); offsets are object-local pixels.
+//   - FromObject never mutates; Normalize clamps every field to its
+//     bounded range so hostile values cannot leave the editor.
+// Ownership/Lifetime:
+//   - Value-only state records; callers own documents and history.
+// Links: zannastudio/src/ui/scene_collider_3d.zia,
+//        zannastudio/src/ui/scene_collider_inspector_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_collider_2d;
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+
+final COLLIDER_NONE = 0;
+final COLLIDER_BOX = 1;
+final COLLIDER_CIRCLE = 2;
+final COLLIDER_TILE_RECT = 3;
+
+final KEY_KIND = "collider.kind";
+final KEY_HALF_W = "collider.halfW";
+final KEY_HALF_H = "collider.halfH";
+final KEY_RADIUS = "collider.radius";
+final KEY_OFFSET_X = "collider.offsetX";
+final KEY_OFFSET_Y = "collider.offsetY";
+final KEY_TRIGGER = "collider.trigger";
+
+final MAX_EXTENT = 4096.0;
+final MAX_OFFSET = 4096.0;
+
+/// @brief Complete normalized 2D collider convention state.
+class ColliderState2D {
+    expose Integer kind;
+    expose Number halfW;
+    expose Number halfH;
+    expose Number radius;
+    expose Number offsetX;
+    expose Number offsetY;
+    expose Boolean trigger;
+
+    expose func init() {
+        kind = COLLIDER_NONE;
+        halfW = 32.0;
+        halfH = 32.0;
+        radius = 32.0;
+        offsetX = 0.0;
+        offsetY = 0.0;
+        trigger = false;
+    }
+}
+
+/// @brief Map one stored kind token to its editor constant.
+expose func KindFromToken(token: String) -> Integer {
+    if token == "box" { return COLLIDER_BOX; }
+    if token == "circle" { return COLLIDER_CIRCLE; }
+    if token == "tile-rect" { return COLLIDER_TILE_RECT; }
+    return COLLIDER_NONE;
+}
+
+/// @brief Stored token for one editor kind.
+expose func TokenForKind(kind: Integer) -> String {
+    if kind == COLLIDER_BOX { return "box"; }
+    if kind == COLLIDER_CIRCLE { return "circle"; }
+    if kind == COLLIDER_TILE_RECT { return "tile-rect"; }
+    return "";
+}
+
+/// @brief Human label for one kind.
+expose func KindLabel(kind: Integer) -> String {
+    if kind == COLLIDER_BOX { return "Box"; }
+    if kind == COLLIDER_CIRCLE { return "Circle"; }
+    if kind == COLLIDER_TILE_RECT { return "Tile rect"; }
+    return "None";
+}
+
+/// @brief Whether one kind uses half extents.
+expose func HasHalfExtents(kind: Integer) -> Boolean {
+    return kind == COLLIDER_BOX or kind == COLLIDER_TILE_RECT;
+}
+
+/// @brief Whether one kind uses a radius.
+expose func HasRadius(kind: Integer) -> Boolean {
+    return kind == COLLIDER_CIRCLE;
+}
+
+/// @brief Read one object's collider convention without mutating it.
+expose func FromObject(scene: SceneDocument,
+                       index: Integer) -> ColliderState2D {
+    var state = new ColliderState2D();
+    if scene == null or index < 0 or index >= scene.ObjectCount() {
+        return state;
+    }
+    state.kind = KindFromToken(
+        scene.ObjectGetStr(index, KEY_KIND, ""));
+    state.halfW = scene.ObjectGetFloat(index, KEY_HALF_W, 32.0);
+    state.halfH = scene.ObjectGetFloat(index, KEY_HALF_H, 32.0);
+    state.radius = scene.ObjectGetFloat(index, KEY_RADIUS, 32.0);
+    state.offsetX = scene.ObjectGetFloat(index, KEY_OFFSET_X, 0.0);
+    state.offsetY = scene.ObjectGetFloat(index, KEY_OFFSET_Y, 0.0);
+    state.trigger = scene.ObjectGetBool(index, KEY_TRIGGER, false);
+    return Normalize(state);
+}
+
+/// @brief Clamp every field to its bounded range.
+expose func Normalize(state: ColliderState2D) -> ColliderState2D {
+    if state == null { return new ColliderState2D(); }
+    if state.kind < COLLIDER_NONE or state.kind > COLLIDER_TILE_RECT {
+        state.kind = COLLIDER_NONE;
+    }
+    state.halfW = ClampNumber(state.halfW, 1.0, MAX_EXTENT);
+    state.halfH = ClampNumber(state.halfH, 1.0, MAX_EXTENT);
+    state.radius = ClampNumber(state.radius, 1.0, MAX_EXTENT);
+    state.offsetX = ClampNumber(state.offsetX, 0.0 - MAX_OFFSET, MAX_OFFSET);
+    state.offsetY = ClampNumber(state.offsetY, 0.0 - MAX_OFFSET, MAX_OFFSET);
+    return state;
+}
+
+/// @brief Write one normalized state onto an object (no history; the
+///        caller commits the transaction).
+expose func WriteToObject(scene: SceneDocument,
+                          index: Integer,
+                          state: ColliderState2D) -> Boolean {
+    if scene == null or index < 0 or index >= scene.ObjectCount()
+       or state == null {
+        return false;
+    }
+    var normalized = Normalize(state);
+    if normalized.kind == COLLIDER_NONE {
+        return RemoveFromObject(scene, index);
+    }
+    scene.ObjectSetStr(index, KEY_KIND, TokenForKind(normalized.kind));
+    if HasHalfExtents(normalized.kind) {
+        scene.ObjectSetFloat(index, KEY_HALF_W, normalized.halfW);
+        scene.ObjectSetFloat(index, KEY_HALF_H, normalized.halfH);
+    } else {
+        scene.ObjectRemove(index, KEY_HALF_W);
+        scene.ObjectRemove(index, KEY_HALF_H);
+    }
+    if HasRadius(normalized.kind) {
+        scene.ObjectSetFloat(index, KEY_RADIUS, normalized.radius);
+    } else {
+        scene.ObjectRemove(index, KEY_RADIUS);
+    }
+    scene.ObjectSetFloat(index, KEY_OFFSET_X, normalized.offsetX);
+    scene.ObjectSetFloat(index, KEY_OFFSET_Y, normalized.offsetY);
+    scene.ObjectSetBool(index, KEY_TRIGGER, normalized.trigger);
+    return true;
+}
+
+/// @brief Remove every collider convention key from one object.
+expose func RemoveFromObject(scene: SceneDocument,
+                             index: Integer) -> Boolean {
+    if scene == null or index < 0 or index >= scene.ObjectCount() {
+        return false;
+    }
+    scene.ObjectRemove(index, KEY_KIND);
+    scene.ObjectRemove(index, KEY_HALF_W);
+    scene.ObjectRemove(index, KEY_HALF_H);
+    scene.ObjectRemove(index, KEY_RADIUS);
+    scene.ObjectRemove(index, KEY_OFFSET_X);
+    scene.ObjectRemove(index, KEY_OFFSET_Y);
+    scene.ObjectRemove(index, KEY_TRIGGER);
+    return true;
+}
+
+/// @brief Bounded clamp helper.
+hide func ClampNumber(value: Number,
+                      minimum: Number,
+                      maximum: Number) -> Number {
+    if value < minimum { return minimum; }
+    if value > maximum { return maximum; }
+    return value;
+}

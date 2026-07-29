@@ -1153,6 +1153,58 @@
           "label": "Optional"
         }
       ]
+    },
+    {
+      "name": "navigation",
+      "label": "Navigation",
+      "target": "3d-scene",
+      "description": "Navmesh bake settings the Bake Navmesh command reads.",
+      "fields": [
+        {
+          "key": "nav.agentRadius",
+          "type": "float",
+          "label": "Agent radius",
+          "min": 0.1,
+          "max": 2,
+          "step": 0.05,
+          "slider": true,
+          "unit": "m",
+          "group": "Agent"
+        },
+        {
+          "key": "nav.agentHeight",
+          "type": "float",
+          "label": "Agent height",
+          "min": 0.5,
+          "max": 4,
+          "step": 0.1,
+          "slider": true,
+          "unit": "m",
+          "group": "Agent"
+        },
+        {
+          "key": "nav.maxSlope",
+          "type": "float",
+          "label": "Max slope",
+          "min": 5,
+          "max": 85,
+          "step": 1,
+          "slider": true,
+          "unit": "deg",
+          "group": "Surface"
+        },
+        {
+          "key": "nav.cellSize",
+          "type": "float",
+          "label": "Cell size",
+          "min": 0.05,
+          "max": 2,
+          "step": 0.05,
+          "slider": true,
+          "unit": "m",
+          "group": "Surface"
+        }
+      ]
     }
   ]
 }

@@ -32,9 +32,14 @@ bind "./scene_levels" as scene_levels;
 
 // One-shot explicit scene override (set from --scene; cleared after use).
 var overridePath: String = "";
+// The path build() actually read, for sidecar discovery (ADR 0225).
+var builtScenePath: String = "";
 
 /// Redirect the next build() to one explicit scene file.
 func setSceneOverride(path: String) { overridePath = path; }
+
+/// Return the scene path the most recent build() consumed.
+func lastScenePath() -> String { return builtScenePath; }
 
 /// Return the authored scene path for one campaign level id.
 func scenePathFor(levelId: Integer) -> String {
@@ -51,6 +56,7 @@ func build(levelId: Integer, lb: level_base.LevelBuilder, obj: objectives.Object
         path = overridePath;
         overridePath = "";
     }
+    builtScenePath = path;
     if scene_levels.loadInto(path, lb, obj) { return; }
     buildRecoveryRoom(lb, obj, path);
 }

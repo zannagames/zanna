@@ -32,7 +32,10 @@ directly.
 `asset-library.json` tags the canonical tileset with its 64x64 grid for the
 Studio asset browser.
 
-Post-load `enrichEnemies()` (newer enemy types and gem placement) still runs
+Every enemy, gem, and upgrade the player meets is authored in the region
+scenes themselves (the exporter bakes the historical enrichment pass), so
+Zanna Studio edits cover the complete gameplay population; no post-load
+injection runs
 in code, exactly as it does in the original, so the two games remain
 behaviorally identical.
 

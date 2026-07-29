@@ -1061,6 +1061,10 @@ static int sw_shadow_draw_parallel(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) 
     half_w = (float)ctx->shadow_w[slot] * 0.5f;
     half_h = (float)ctx->shadow_h[slot] * 0.5f;
 
+    tris.items = (sw_shadow_screen_tri_t *)ctx->shadow_triangle_scratch;
+    tris.capacity = ctx->shadow_triangle_scratch_capacity;
+    ctx->shadow_triangle_scratch = NULL;
+    ctx->shadow_triangle_scratch_capacity = 0;
     if (!sw_shadow_collect_triangles_parallel(ctx, cmd, index_count, lmvp, half_w, half_h, &tris))
         goto cleanup;
     if (tris.count == 0) {
@@ -1088,7 +1092,8 @@ static int sw_shadow_draw_parallel(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) 
 
 cleanup:
     sw_shadow_tile_grid_free(&grid);
-    sw_shadow_tri_list_free(&tris);
+    ctx->shadow_triangle_scratch = tris.items;
+    ctx->shadow_triangle_scratch_capacity = tris.capacity;
     return ok;
 }
 

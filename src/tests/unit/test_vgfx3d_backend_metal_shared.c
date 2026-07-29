@@ -540,6 +540,20 @@ static char *read_text_file(const char *path) {
     return text;
 }
 
+static size_t count_text_occurrences(const char *text, const char *needle) {
+    size_t count = 0;
+    size_t needle_length;
+
+    if (!text || !needle || !needle[0])
+        return 0;
+    needle_length = strlen(needle);
+    while ((text = strstr(text, needle)) != NULL) {
+        count++;
+        text += needle_length;
+    }
+    return count;
+}
+
 /// @brief Read and concatenate the Metal backend's translation unit and its .inc chunks.
 /// @details The backend is one TU split into sequential textual chunks; shader-source
 ///   regression checks must scan the whole set (the MSL library lives in the shaders
@@ -705,6 +719,13 @@ static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
                     strstr(source, "command_buffer.status != MTLCommandBufferStatusCompleted") !=
                         NULL,
                 "Metal readback rejects every non-completed command-buffer state");
+    EXPECT_TRUE(strstr(source,
+                       "texture = metal_encode_postfx_if_needed(ctx, chain);\n"
+                       "                if (!texture) {\n"
+                       "                    vgfx3d_postfx_chain_free(&chain_copy);\n"
+                       "                    return 0;\n"
+                       "                }") != NULL,
+                "Metal readback rejects a failed post-FX composite without using a stale texture");
     EXPECT_TRUE(strstr(source, "metal_install_render_target_release(ctx, rt)") != NULL &&
                     strstr(source, "vgfx3d_rendertarget_release_backend(target)") != NULL,
                 "Metal cached render targets register an explicit shell-lifetime hook");
@@ -739,6 +760,20 @@ static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
             strstr(source, "ctx.textureCache[key] = fallback;") != NULL &&
             strstr(source, "ctx.cubemapCache[key] = fallback;") != NULL,
         "Metal restores complete texture and cubemap generations after replacement failure");
+    EXPECT_TRUE(
+        strstr(source,
+               "return entry.uploadInProgress ? entry.fallbackEntry.texture : entry.texture;") !=
+                NULL &&
+            strstr(source, "metal_visible_texture(ctx.textureCache[key])") != NULL &&
+            strstr(source, "metal_visible_cubemap(ctx.cubemapCache[key])") != NULL,
+        "Metal binds the previous complete texture or cubemap while replacement is unavailable");
+    EXPECT_TRUE(count_text_occurrences(source,
+                                       "if (!candidate)\n"
+                                       "        return metal_visible_texture(cached);") == 2 &&
+                    strstr(source,
+                           "if (!candidate)\n"
+                           "        return metal_visible_cubemap(cached);") != NULL,
+                "Metal preserves resident resources when replacement-entry allocation fails");
     EXPECT_TRUE(strstr(source, "static int metal_ensure_instance_storage") != NULL &&
                     strstr(source, "if (!replacement || replacement.length < byte_count)") != NULL,
                 "Metal instance scratch growth publishes capacity only after allocation");

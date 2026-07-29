@@ -62,14 +62,18 @@ static void gl_fail_texture_upload(gl_texture_cache_entry_t *entry,
     entry->native_next_mip = 0;
 }
 
-/// @brief Retire an unrecoverable cubemap upload and memoize its source generation.
-/// @param entry Cache entry whose texture and upload cursors are reset; null is a no-op.
+/// @brief Retire an unrecoverable cubemap upload while preserving an older complete cubemap.
+/// @param entry Cache entry whose candidate texture and upload cursors are reset; null is a no-op.
 /// @param generation Cubemap source generation that failed and must not be retried unchanged.
 static void gl_fail_cubemap_upload(gl_cubemap_cache_entry_t *entry, uint64_t generation) {
     if (!entry)
         return;
-    if (entry->tex)
-        gl.DeleteTextures(1, &entry->tex);
+    if (entry->tex) {
+        if (entry->generation != 0 && !entry->fallback_tex)
+            entry->fallback_tex = entry->tex;
+        else
+            gl.DeleteTextures(1, &entry->tex);
+    }
     entry->tex = 0;
     entry->generation = 0;
     entry->pending_generation = 0;
@@ -82,6 +86,7 @@ static void gl_fail_cubemap_upload(gl_cubemap_cache_entry_t *entry, uint64_t gen
     entry->pending_ibl_identity = 0;
     entry->pending_ibl_bytes = 0;
 }
+
 /// @brief Compare two `uint64_t` values for ascending `qsort()` ordering.
 /// @param lhs Pointer to the first unsigned 64-bit value.
 /// @param rhs Pointer to the second unsigned 64-bit value.
@@ -210,6 +215,8 @@ static void cubemap_cache_release_entry(gl_cubemap_cache_entry_t *entry) {
         return;
     if (entry->tex)
         gl.DeleteTextures(1, &entry->tex);
+    if (entry->fallback_tex)
+        gl.DeleteTextures(1, &entry->fallback_tex);
     memset(entry, 0, sizeof(*entry));
 }
 
@@ -1546,6 +1553,10 @@ static gl_upload_status_t gl_continue_cubemap_upload(gl_context_t *ctx,
     gl.GenerateMipmap(GL_TEXTURE_CUBE_MAP);
     if (!gl_upload_ok())
         return GL_UPLOAD_FAILED;
+    if (entry->fallback_tex) {
+        gl.DeleteTextures(1, &entry->fallback_tex);
+        entry->fallback_tex = 0;
+    }
     entry->generation = entry->pending_generation;
     entry->pending_generation = 0;
     entry->upload_in_progress = 0;
@@ -1569,6 +1580,17 @@ static gl_upload_status_t gl_start_cubemap_upload(gl_context_t *ctx,
 
     if (!ctx || !entry || !cubemap || !vgfx3d_get_cubemap_face_size(cubemap, &face_size))
         return GL_UPLOAD_FAILED;
+    if (ctx->max_texture_size > 0 && face_size > ctx->max_texture_size)
+        return GL_UPLOAD_FAILED;
+    if (entry->tex && entry->generation != 0 && entry->generation != generation) {
+        if (entry->fallback_tex)
+            gl.DeleteTextures(1, &entry->fallback_tex);
+        entry->fallback_tex = entry->tex;
+        entry->tex = 0;
+    } else if (entry->tex && entry->upload_in_progress && entry->pending_generation != generation) {
+        gl.DeleteTextures(1, &entry->tex);
+        entry->tex = 0;
+    }
     if (!entry->tex) {
         gl.GenTextures(1, &entry->tex);
         if (!entry->tex)
@@ -1627,7 +1649,7 @@ static GLuint gl_get_cached_cubemap(gl_context_t *ctx, const rt_cubemap3d *cubem
         gl_cubemap_cache_entry_t *entry = &ctx->cubemap_cache[i];
         if (entry->cubemap == cubemap && entry->failed_generation == generation) {
             ctx->stats.texture_fallback_binds++;
-            return gl_fallback_white_cubemap(ctx);
+            return entry->fallback_tex ? entry->fallback_tex : gl_fallback_white_cubemap(ctx);
         }
         if (entry->cubemap == cubemap && entry->generation == generation && entry->tex) {
             entry->last_used_frame = ctx->frame_serial;
@@ -1643,7 +1665,7 @@ static GLuint gl_get_cached_cubemap(gl_context_t *ctx, const rt_cubemap3d *cubem
             if (status == GL_UPLOAD_FAILED)
                 gl_fail_cubemap_upload(entry, generation);
             ctx->stats.texture_fallback_binds++;
-            return gl_fallback_white_cubemap(ctx);
+            return entry->fallback_tex ? entry->fallback_tex : gl_fallback_white_cubemap(ctx);
         }
     }
 
@@ -1655,7 +1677,8 @@ static GLuint gl_get_cached_cubemap(gl_context_t *ctx, const rt_cubemap3d *cubem
             if (status == GL_UPLOAD_COMPLETE)
                 return ctx->cubemap_cache[i].tex;
             ctx->stats.texture_fallback_binds++;
-            return gl_fallback_white_cubemap(ctx);
+            return ctx->cubemap_cache[i].fallback_tex ? ctx->cubemap_cache[i].fallback_tex
+                                                      : gl_fallback_white_cubemap(ctx);
         }
     }
 

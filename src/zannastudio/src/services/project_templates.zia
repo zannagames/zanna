@@ -20,6 +20,8 @@
 
 module project_templates;
 
+bind "project_templates_games";
+
 bind "safe_io";
 
 bind Dir = Zanna.IO.Dir;
@@ -31,6 +33,8 @@ bind Machine = Zanna.System.Machine;
 final KIND_CONSOLE = "console";
 final KIND_GUI = "gui";
 final KIND_LIBRARY = "library";
+final KIND_GAME_2D = "game2d";
+final KIND_GAME_3D = "game3d";
 
 /// @brief Return the cross-platform default parent for newly scaffolded projects.
 /// @details Machine.Home uses USERPROFILE/HOMEDRIVE on Windows and HOME/passwd
@@ -111,7 +115,8 @@ expose func ValidName(name: String) -> Boolean {
 /// @return Absolute project path, or "" on failure/existing target.
 expose func Scaffold(baseDir: String, name: String, kind: String) -> String {
     if baseDir == "" or ValidName(name) == false { return ""; }
-    if kind != KIND_CONSOLE and kind != KIND_GUI and kind != KIND_LIBRARY { return ""; }
+    if kind != KIND_CONSOLE and kind != KIND_GUI and kind != KIND_LIBRARY
+       and kind != KIND_GAME_2D and kind != KIND_GAME_3D { return ""; }
     var projectDir = Path.Join(baseDir, name);
     if Dir.Exists(projectDir) or File.Exists(projectDir) { return ""; }
 
@@ -137,13 +142,49 @@ expose func Scaffold(baseDir: String, name: String, kind: String) -> String {
         safe_io.DeleteDirectoryTree(stagingDir);
         return "";
     }
-    if safe_io.WriteAllText(Path.Join(stagingDir, "zanna.project"), ManifestText(name)) == false {
+    var manifest = ManifestText(name);
+    var starter = StarterSource(name, kind);
+    if kind == KIND_GAME_2D {
+        manifest = project_templates_games.GameManifestText(name, "vm");
+        starter = project_templates_games.Game2DMainText(name);
+    }
+    if kind == KIND_GAME_3D {
+        manifest = project_templates_games.GameManifestText(name, "native");
+        starter = project_templates_games.Game3DMainText(name);
+    }
+    if safe_io.WriteAllText(Path.Join(stagingDir, "zanna.project"), manifest) == false {
         safe_io.DeleteDirectoryTree(stagingDir);
         return "";
     }
-    if safe_io.WriteAllText(Path.Join(srcDir, "main.zia"), StarterSource(name, kind)) == false {
+    if safe_io.WriteAllText(Path.Join(srcDir, "main.zia"), starter) == false {
         safe_io.DeleteDirectoryTree(stagingDir);
         return "";
+    }
+    if kind == KIND_GAME_2D or kind == KIND_GAME_3D {
+        var sceneDir = Path.Join(Path.Join(stagingDir, "assets"), "scenes");
+        if safe_io.MakeAll(sceneDir) == false {
+            safe_io.DeleteDirectoryTree(stagingDir);
+            return "";
+        }
+        var sceneName = "level-01.scene2d";
+        var sceneText = project_templates_games.Scene2DText();
+        var schemaText = project_templates_games.SchemaText(true);
+        if kind == KIND_GAME_3D {
+            sceneName = "level-01.scene3d";
+            sceneText = project_templates_games.Scene3DText();
+            schemaText = project_templates_games.SchemaText(false);
+        }
+        if safe_io.WriteAllText(
+               Path.Join(sceneDir, sceneName), sceneText) == false
+           or safe_io.WriteAllText(
+               Path.Join(stagingDir, "scene-components.json"),
+               schemaText) == false
+           or safe_io.WriteAllText(
+               Path.Join(stagingDir, "asset-library.json"),
+               project_templates_games.AssetLibraryText()) == false {
+            safe_io.DeleteDirectoryTree(stagingDir);
+            return "";
+        }
     }
     if Dir.Exists(projectDir) or File.Exists(projectDir)
        or safe_io.MoveDirectory(stagingDir, projectDir) == false {

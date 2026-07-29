@@ -59,6 +59,12 @@ int32_t vgfx3d_software_backend_rgba_surface_valid_for_test(const uint8_t *pixel
                                                             int32_t width,
                                                             int32_t height,
                                                             int32_t stride);
+int32_t vgfx3d_software_backend_rgba_stride_for_test(int32_t width, int32_t *out_stride);
+int32_t vgfx3d_software_backend_fragment_uses_opaque_write_for_test(int32_t alpha_mode,
+                                                                    int32_t additive_blend,
+                                                                    float fragment_alpha);
+int64_t vgfx3d_software_backend_triangle_scratch_capacity_for_test(const void *ctx,
+                                                                   int32_t shadow_pass);
 void *rt_pixels_new(int64_t width, int64_t height);
 void rt_pixels_set_rgba(void *pixels, int64_t x, int64_t y, int64_t rgba);
 }
@@ -177,6 +183,8 @@ struct SoftwareSceneRenderResult {
     float lit_left_luma = 0.0f;
     float lit_right_luma = 0.0f;
     int64_t worker_count = 1;
+    int64_t color_triangle_scratch_capacity = 0;
+    int64_t shadow_triangle_scratch_capacity = 0;
     std::vector<uint8_t> rgba;
 };
 
@@ -682,6 +690,7 @@ static void test_software_backend_numeric_guards() {
     float b0 = -1.0f;
     float b1 = -1.0f;
     float b2 = -1.0f;
+    int32_t stride = -1;
     uint8_t rgba[16] = {};
 
     EXPECT_NEAR(vgfx3d_software_backend_clamp01_for_test(NAN),
@@ -724,6 +733,26 @@ static void test_software_backend_numeric_guards() {
                 "Software framebuffer layout accepts complete RGBA rows");
     EXPECT_TRUE(!vgfx3d_software_backend_rgba_surface_valid_for_test(rgba, 2, 2, 7),
                 "Software framebuffer layout rejects a short row stride");
+    EXPECT_TRUE(vgfx3d_software_backend_rgba_stride_for_test(INT32_MAX / 4, &stride),
+                "Software packed RGBA stride accepts its largest signed width");
+    EXPECT_EQ_I64(stride,
+                  (INT32_MAX / 4) * 4,
+                  "Software packed RGBA stride returns the representable byte count");
+    EXPECT_TRUE(!vgfx3d_software_backend_rgba_stride_for_test(INT32_MAX / 4 + 1, &stride),
+                "Software packed RGBA stride rejects signed multiplication overflow");
+    EXPECT_EQ_I64(stride, 0, "Rejected software packed RGBA stride clears its output");
+    EXPECT_TRUE(vgfx3d_software_backend_fragment_uses_opaque_write_for_test(
+                    RT_MATERIAL3D_ALPHA_MODE_OPAQUE, 0, 1.0f),
+                "Software opaque fragments may update depth");
+    EXPECT_TRUE(vgfx3d_software_backend_fragment_uses_opaque_write_for_test(
+                    RT_MATERIAL3D_ALPHA_MODE_MASK, 0, 1.0f),
+                "Software accepted mask fragments may update depth");
+    EXPECT_TRUE(!vgfx3d_software_backend_fragment_uses_opaque_write_for_test(
+                    RT_MATERIAL3D_ALPHA_MODE_BLEND, 0, 1.0f),
+                "Software blend draws remain non-depth-writing at alpha one");
+    EXPECT_TRUE(!vgfx3d_software_backend_fragment_uses_opaque_write_for_test(
+                    RT_MATERIAL3D_ALPHA_MODE_OPAQUE, 1, 1.0f),
+                "Software additive draws remain non-depth-writing at alpha one");
 }
 
 static void test_software_depth_probe_uses_active_render_target() {
@@ -863,6 +892,10 @@ static int render_software_spot_light_shadow_scene(SoftwareSceneRenderResult *re
         result->lit_left_luma = lit_left_luma;
         result->lit_right_luma = lit_right_luma;
         result->worker_count = vgfx3d_software_backend_thread_count_for_test(canvas.backend_ctx);
+        result->color_triangle_scratch_capacity =
+            vgfx3d_software_backend_triangle_scratch_capacity_for_test(canvas.backend_ctx, 0);
+        result->shadow_triangle_scratch_capacity =
+            vgfx3d_software_backend_triangle_scratch_capacity_for_test(canvas.backend_ctx, 1);
         result->rgba.assign((size_t)width * (size_t)height * 4u, 0u);
         for (int32_t y = 0; y < height; y++) {
             std::memcpy(&result->rgba[(size_t)y * (size_t)width * 4u],
@@ -947,6 +980,10 @@ static void test_software_tiled_raster_threads_are_deterministic() {
     if (four.hash == 0)
         return;
     EXPECT_EQ_I64(four.worker_count, 4, "ZANNA_3D_SW_THREADS=4 creates four workers");
+    EXPECT_TRUE(four.color_triangle_scratch_capacity > 0,
+                "Four-worker color rasterization retains merged-triangle scratch");
+    EXPECT_TRUE(four.shadow_triangle_scratch_capacity > 0,
+                "Four-worker shadow rasterization retains merged-triangle scratch");
     EXPECT_EQ_U64(four.hash, one.hash, "Four-worker software raster hash matches serial");
     EXPECT_TRUE(rgba_equal(one, four), "Four-worker software raster pixels match serial");
 

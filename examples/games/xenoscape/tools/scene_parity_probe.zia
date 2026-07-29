@@ -44,6 +44,10 @@ func ScenePath(num: Integer) -> String {
 func CheckRegion(num: Integer) -> Boolean {
     var region = new Level();
     region.loadLevel(num);
+    // Scene-author the full gameplay population: the same enrichment the
+    // game applied at runtime now bakes into the exported scene, so every
+    // enemy and gem the player meets is editable in Zanna Studio.
+    region.enrichEnemies(num);
     var loaded = SceneDocument.LoadResult(ScenePath(num));
     if loaded.IsOk == false {
         fail("region " + num + " scene did not load");

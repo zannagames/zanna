@@ -135,6 +135,85 @@
           "default": "landmark"
         }
       ]
+    },
+    {
+      "name": "collider",
+      "label": "Collider",
+      "target": "2d-object",
+      "description": "2D collider convention games read at spawn (ADR 0225).",
+      "fields": [
+        {
+          "key": "collider.kind",
+          "type": "enum",
+          "label": "Kind",
+          "choices": [
+            "box",
+            "circle",
+            "tile-rect"
+          ]
+        },
+        {
+          "key": "collider.halfW",
+          "type": "float",
+          "label": "Half width"
+        },
+        {
+          "key": "collider.halfH",
+          "type": "float",
+          "label": "Half height"
+        },
+        {
+          "key": "collider.radius",
+          "type": "float",
+          "label": "Radius"
+        },
+        {
+          "key": "collider.offsetX",
+          "type": "float",
+          "label": "Offset X"
+        },
+        {
+          "key": "collider.offsetY",
+          "type": "float",
+          "label": "Offset Y"
+        },
+        {
+          "key": "collider.trigger",
+          "type": "bool",
+          "label": "Trigger"
+        }
+      ]
+    },
+    {
+      "name": "sprite-clip",
+      "label": "Sprite Clip",
+      "target": "2d-object",
+      "description": "AnimationClip2D frames games play at spawn (ADR 0225).",
+      "fields": [
+        {
+          "key": "anim.start",
+          "type": "int",
+          "label": "Start frame",
+          "default": 0
+        },
+        {
+          "key": "anim.count",
+          "type": "int",
+          "label": "Frame count",
+          "default": 1
+        },
+        {
+          "key": "anim.delayMs",
+          "type": "int",
+          "label": "Frame delay ms",
+          "default": 120
+        },
+        {
+          "key": "anim.loop",
+          "type": "bool",
+          "label": "Loop"
+        }
+      ]
     }
   ],
   "objectPreviews": [

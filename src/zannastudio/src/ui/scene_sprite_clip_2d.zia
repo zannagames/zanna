@@ -1,0 +1,239 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_sprite_clip_2d.zia
+// Purpose: The 2D sprite-clip convention (typed `anim.*` object
+//          properties matching AnimationClip2D's four-value shape) and
+//          its live-commit inspector group (ADR 0221/0225).
+// Key invariants:
+//   - Keys: anim.start, anim.count, anim.delayMs (ints), anim.loop
+//     (bool); Normalize clamps to bounded ranges.
+//   - An existing clip edits live per control gesture; creation and
+//     removal keep explicit verb buttons.
+//   - Refresh consumes every control edge it raises.
+// Ownership/Lifetime:
+//   - Value-only state plus presentation rows; SceneEditor2D owns
+//     document mutation, transactions, and history.
+// Links: zannastudio/src/ui/scene_collider_2d.zia,
+//        docs/adr/0221-live-commit-inspector-contract.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_sprite_clip_2d;
+
+bind "inspector_rows";
+bind "layout_metrics";
+
+bind GUI = Zanna.GUI;
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+
+final KEY_START = "anim.start";
+final KEY_COUNT = "anim.count";
+final KEY_DELAY_MS = "anim.delayMs";
+final KEY_LOOP = "anim.loop";
+
+final MAX_FRAME = 65535;
+final MAX_DELAY_MS = 60000;
+
+/// @brief Complete normalized sprite-clip convention state.
+class SpriteClipState2D {
+    expose Boolean present;
+    expose Integer start;
+    expose Integer count;
+    expose Integer delayMs;
+    expose Boolean loop;
+
+    expose func init() {
+        present = false;
+        start = 0;
+        count = 1;
+        delayMs = 120;
+        loop = true;
+    }
+}
+
+/// @brief Read one object's clip convention without mutating it.
+expose func FromObject(scene: SceneDocument,
+                       index: Integer) -> SpriteClipState2D {
+    var state = new SpriteClipState2D();
+    if scene == null or index < 0 or index >= scene.ObjectCount() {
+        return state;
+    }
+    state.present =
+        scene.ObjectPropertyKind(index, KEY_START) == "int";
+    state.start = scene.ObjectGetInt(index, KEY_START, 0);
+    state.count = scene.ObjectGetInt(index, KEY_COUNT, 1);
+    state.delayMs = scene.ObjectGetInt(index, KEY_DELAY_MS, 120);
+    state.loop = scene.ObjectGetBool(index, KEY_LOOP, true);
+    return Normalize(state);
+}
+
+/// @brief Clamp every field to its bounded range.
+expose func Normalize(state: SpriteClipState2D) -> SpriteClipState2D {
+    if state == null { return new SpriteClipState2D(); }
+    if state.start < 0 { state.start = 0; }
+    if state.start > MAX_FRAME { state.start = MAX_FRAME; }
+    if state.count < 1 { state.count = 1; }
+    if state.count > MAX_FRAME { state.count = MAX_FRAME; }
+    if state.delayMs < 1 { state.delayMs = 1; }
+    if state.delayMs > MAX_DELAY_MS { state.delayMs = MAX_DELAY_MS; }
+    return state;
+}
+
+/// @brief Write one normalized state onto an object (caller commits).
+expose func WriteToObject(scene: SceneDocument,
+                          index: Integer,
+                          state: SpriteClipState2D) -> Boolean {
+    if scene == null or index < 0 or index >= scene.ObjectCount()
+       or state == null {
+        return false;
+    }
+    var normalized = Normalize(state);
+    scene.ObjectSetInt(index, KEY_START, normalized.start);
+    scene.ObjectSetInt(index, KEY_COUNT, normalized.count);
+    scene.ObjectSetInt(index, KEY_DELAY_MS, normalized.delayMs);
+    scene.ObjectSetBool(index, KEY_LOOP, normalized.loop);
+    return true;
+}
+
+/// @brief Remove every clip convention key from one object.
+expose func RemoveFromObject(scene: SceneDocument,
+                             index: Integer) -> Boolean {
+    if scene == null or index < 0 or index >= scene.ObjectCount() {
+        return false;
+    }
+    scene.ObjectRemove(index, KEY_START);
+    scene.ObjectRemove(index, KEY_COUNT);
+    scene.ObjectRemove(index, KEY_DELAY_MS);
+    scene.ObjectRemove(index, KEY_LOOP);
+    return true;
+}
+
+/// @brief Sprite-clip inspector rows with ADR 0221 live-commit edges.
+class SpriteClipInspector2D {
+    expose GUI.GroupBox group;
+    expose GUI.Label summary;
+    expose GUI.Spinner startFrame;
+    expose GUI.Spinner frameCount;
+    expose GUI.Spinner delayMs;
+    expose GUI.Checkbox loopCheck;
+    expose GUI.Button createButton;
+    expose GUI.Button removeButton;
+
+    expose func init() {
+        group = null;
+        summary = null;
+        startFrame = null;
+        frameCount = null;
+        delayMs = null;
+        loopCheck = null;
+        createButton = null;
+        removeButton = null;
+    }
+
+    /// @brief Build the retained clip rows under @p parent.
+    expose func Setup(parent: GUI.VBox) {
+        group = GUI.GroupBox.New(parent, "Sprite clip");
+        summary = GUI.Label.New(group, "");
+        var frameRow = inspector_rows.NewWrapRow();
+        group.AddChild(frameRow);
+        startFrame = AddSpinner(frameRow, "Start", 0.0, 65535.0);
+        frameCount = AddSpinner(frameRow, "Frames", 1.0, 65535.0);
+        var timingRow = inspector_rows.NewWrapRow();
+        group.AddChild(timingRow);
+        delayMs = AddSpinner(timingRow, "Delay ms", 1.0, 60000.0);
+        loopCheck = GUI.Checkbox.New(timingRow, "Loop");
+        loopCheck.SetTooltip(
+            "Restart from the first frame after the last");
+        var actions = GUI.HBox.New();
+        actions.SetSpacing(layout_metrics.GAP_ROW);
+        group.AddChild(actions);
+        createButton = GUI.Button.New(actions, "Create Clip");
+        createButton.SetTooltip(
+            "Write the anim.* clip keys (AnimationClip2D's shape) in "
+            + "one undoable edit");
+        removeButton = GUI.Button.New(actions, "Remove");
+        removeButton.SetTooltip(
+            "Remove the anim.* clip keys in one undoable edit");
+    }
+
+    /// @brief Refresh from one selected object edge-free (ADR 0221).
+    expose func Refresh(scene: SceneDocument,
+                        index: Integer,
+                        enabled: Boolean) {
+        if startFrame == null { return; }
+        var state = FromObject(scene, index);
+        startFrame.SetValue(1.0 * state.start);
+        frameCount.SetValue(1.0 * state.count);
+        delayMs.SetValue(1.0 * state.delayMs);
+        loopCheck.SetChecked(state.loop);
+        // Programmatic refresh must not look like user edit intent.
+        startFrame.WasChanged();
+        frameCount.WasChanged();
+        delayMs.WasChanged();
+        loopCheck.WasChanged();
+        var hasObject = scene != null and index >= 0
+            and index < scene.ObjectCount();
+        group.SetEnabled(enabled);
+        startFrame.SetEnabled(enabled and hasObject);
+        frameCount.SetEnabled(enabled and hasObject);
+        delayMs.SetEnabled(enabled and hasObject);
+        loopCheck.SetEnabled(enabled and hasObject);
+        createButton.SetVisible(state.present == false);
+        createButton.SetEnabled(enabled and hasObject);
+        removeButton.SetEnabled(enabled and hasObject and state.present);
+        if hasObject == false {
+            summary.SetText(
+                "Select one object to author its sprite clip.");
+        } else if state.present == false {
+            summary.SetText(
+                "No clip. Games play these frames through "
+                + "AnimationClip2D at spawn.");
+        } else {
+            summary.SetText(
+                state.count + " frame(s) from " + state.start
+                + " at " + state.delayMs + " ms.");
+        }
+    }
+
+    /// @brief Consume control edges; report whether any field changed.
+    expose func PumpDraftIntent() -> Boolean {
+        if startFrame == null { return false; }
+        var edited = false;
+        if startFrame.WasChanged() { edited = true; }
+        if frameCount.WasChanged() { edited = true; }
+        if delayMs.WasChanged() { edited = true; }
+        if loopCheck.WasChanged() { edited = true; }
+        return edited;
+    }
+
+    /// @brief Build one complete normalized draft from the controls.
+    expose func BuildState() -> SpriteClipState2D {
+        var state = new SpriteClipState2D();
+        if startFrame == null { return state; }
+        state.present = true;
+        state.start = Zanna.Core.Convert.NumToInt(startFrame.Value);
+        state.count = Zanna.Core.Convert.NumToInt(frameCount.Value);
+        state.delayMs = Zanna.Core.Convert.NumToInt(delayMs.Value);
+        state.loop = loopCheck.IsChecked();
+        return Normalize(state);
+    }
+
+    hide func AddSpinner(parent: GUI.Flex,
+                         label: String,
+                         minimum: Number,
+                         maximum: Number) -> GUI.Spinner {
+        GUI.Label.New(parent, label);
+        var spinner = GUI.Spinner.New(parent);
+        spinner.SetRange(minimum, maximum);
+        spinner.SetStep(1.0);
+        spinner.SetDecimals(0);
+        spinner.SetPreferredSize(72.0, 0.0);
+        spinner.SetAccessibleName("Sprite clip " + label);
+        return spinner;
+    }
+}

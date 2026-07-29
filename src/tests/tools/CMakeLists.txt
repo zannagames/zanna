@@ -143,6 +143,16 @@ function(zanna_add_tools_tests)
         zanna_add_test_labels(macos_toolchain_installer_smoke installer tools requires_macos requires_privileged_install slow)
     endif ()
 
+    add_test(NAME zia_project_template_smoke
+            COMMAND ${CMAKE_COMMAND}
+            -DZIA_BIN=$<TARGET_FILE:zia>
+            -DSOURCE_DIR=${CMAKE_SOURCE_DIR}
+            -DWORK_DIR=${CMAKE_BINARY_DIR}/template-smoke
+            -P ${_ZANNA_TOOLS_DIR}/ProjectTemplateSmoke.cmake)
+    set_tests_properties(zia_project_template_smoke PROPERTIES
+            TIMEOUT 240)
+    zanna_add_test_labels(zia_project_template_smoke zia tools)
+
     if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
         zanna_add_ctest(linux_headless_graphics_smoke
                 ${CMAKE_COMMAND}

@@ -50,6 +50,7 @@ bind "../ui/scene_panels_3d";
 bind SceneGraph = Zanna.Graphics3D.SceneGraph;
 bind SceneNode = Zanna.Graphics3D.SceneNode;
 bind Mesh3D = Zanna.Graphics3D.Mesh3D;
+bind NavMesh3D = Zanna.Graphics3D.NavMesh3D;
 bind Terminal = Zanna.Terminal;
 bind TempFile = Zanna.IO.TempFile;
 bind Dir = Zanna.IO.Dir;
@@ -296,6 +297,36 @@ func VerifyBakeExecutionAndEnvironment(
     var sidecarPath = Path.Join(workDir, "bake.vlpg");
     if File.Exists(sidecarPath) == false {
         fail(shell, workDir, "the .vlpg sidecar was not written");
+        return false;
+    }
+
+    // Navmesh sidecar loop (ADR 0225): bake from the live scene using the
+    // nav.* defaults, then re-import the sidecar and confirm walkability
+    // over the ground geometry. Never a scene edit.
+    var navBaseline = sceneDoc.content;
+    var navWasModified = sceneDoc.isModified;
+    // Probe geometry is a 1×0.2×1 box; shrink the agent so erosion
+    // leaves a walkable surface (also proves the nav.* read path).
+    editor.scene.Root.MetadataSetFloat("nav.agentRadius", 0.05);
+    editor.scene.Root.MetadataSetFloat("nav.agentHeight", 0.3);
+    editor.scene.Root.MetadataSetFloat("nav.cellSize", 0.1);
+    if editor.BakeSceneNavmesh() == false {
+        fail(shell, workDir, "navmesh bake failed on the bake scene");
+        return false;
+    }
+    var navPath = Path.Join(workDir, "bake.vnavmsh");
+    if File.Exists(navPath) == false {
+        fail(shell, workDir, "the .vnavmsh sidecar was not written");
+        return false;
+    }
+    if sceneDoc.content != navBaseline
+       or sceneDoc.isModified != navWasModified {
+        fail(shell, workDir, "navmesh bake dirtied the scene document");
+        return false;
+    }
+    var importedNav = NavMesh3D.Import(navPath);
+    if importedNav == null {
+        fail(shell, workDir, "the navmesh sidecar did not re-import");
         return false;
     }
     if sceneDoc.content != sidecarBaseline {

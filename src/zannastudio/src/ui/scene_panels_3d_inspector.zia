@@ -388,6 +388,12 @@ func BuildBakeInspector(editor: scene_editor_3d.SceneEditor3D,
         editor.bakeProbesButton.SetTooltip(
             "Bake the selected probe grid against the last lightmap "
             + "bake and save the .vlpg sidecar beside the scene");
+        editor.bakeNavmeshButton =
+            GUI.Button.New(bakeActionRow, "Bake Navmesh");
+        editor.bakeNavmeshButton.SetTooltip(
+            "Voxel-bake walkable navigation from this scene's geometry "
+            + "using the nav.* root settings and save the .vnavmsh "
+            + "sidecar beside the scene (not a scene edit)");
 
         editor.probeGroup = GUI.GroupBox.New(inspector, "Light probe grid");
         editor.probeStatus = GUI.Label.New(

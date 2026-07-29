@@ -54,6 +54,8 @@ bind Box = Zanna.Core.Box;
 bind Clock = Zanna.Time.Clock;
 bind "scene_editor_2d_model" as SceneEditor2DModel;
 bind "scene_editor_2d_layers_history" as PreviousLayer;
+bind "scene_collider_inspector_2d";
+bind "scene_sprite_clip_2d";
 bind "scene_settings_inspector_2d";
 bind "style_tokens";
 
@@ -423,6 +425,10 @@ class SceneEditor2DInspectorStateLayer extends PreviousLayer.SceneEditor2DLayers
         objectIdInput.SetVisible(objectScope);
         objectPositionRow.SetVisible(objectScope);
         objectTransformRow.SetVisible(
+            objectScope and selectedObjects.count() == 1);
+        colliderInspector.group.SetVisible(
+            objectScope and selectedObjects.count() == 1);
+        clipInspector.group.SetVisible(
             objectScope and selectedObjects.count() == 1);
         objectDrawStackGroup.SetVisible(
             objectScope and selectedObjects.count() == 1);
