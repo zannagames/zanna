@@ -726,6 +726,41 @@ static void test_software_backend_numeric_guards() {
                 "Software framebuffer layout rejects a short row stride");
 }
 
+static void test_software_depth_probe_uses_active_render_target() {
+    void *ctx = vgfx3d_software_backend.create_ctx(nullptr, 4, 4);
+    void *target_obj = rt_rendertarget3d_new(2, 2);
+    auto *target_owner = static_cast<rt_rendertarget3d *>(target_obj);
+    vgfx3d_rendertarget_t *target = target_owner ? target_owner->target : nullptr;
+
+    EXPECT_TRUE(ctx != nullptr && target != nullptr,
+                "Software depth-probe render-target fixture allocates");
+    if (!ctx || !target)
+        goto cleanup;
+    vgfx3d_software_backend.set_render_target(ctx, target);
+    EXPECT_TRUE(target->depth_buf != nullptr, "Binding a software render target allocates depth");
+    if (!target->depth_buf)
+        goto cleanup;
+
+    /* NDC (0, 0) maps to the lower-right sample of this 2x2 target. An NDC depth
+     * of -0.5 converts to canonical window depth 0.25. */
+    target->depth_buf[3] = -0.5f;
+    {
+        const int32_t slot = vgfx3d_software_backend.queue_depth_probe(ctx, 0.0f, 0.0f);
+        EXPECT_TRUE(slot >= 0, "Software depth probe queues against an active render target");
+        EXPECT_NEAR(vgfx3d_software_backend.read_depth_probe(ctx, slot),
+                    0.25f,
+                    1e-6f,
+                    "Software depth probe samples the active RTT depth instead of window depth");
+    }
+
+cleanup:
+    if (ctx) {
+        vgfx3d_software_backend.set_render_target(ctx, nullptr);
+        vgfx3d_software_backend.destroy_ctx(ctx);
+    }
+    release_obj(target_obj);
+}
+
 static int render_software_spot_light_shadow_scene(SoftwareSceneRenderResult *result) {
     const int32_t width = 96;
     const int32_t height = 96;
@@ -1072,6 +1107,7 @@ int main() {
     test_frustum_culling_aliases_share_state();
     test_canvas_render_state_sanitizes_inputs();
     test_software_backend_numeric_guards();
+    test_software_depth_probe_uses_active_render_target();
     test_render_target_notifies_native_cache_before_finalization();
     test_software_tiled_raster_threads_are_deterministic();
     test_software_spot_light_shadow_render_is_stable();

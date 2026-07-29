@@ -20,8 +20,8 @@
 //     first-match conflict queries use newest-first order.
 //   - rt_action_update() rebuilds cached state from the current device snapshot;
 //     registry and query entry points are restricted to the runtime's main thread.
-//   - Axis sources accumulate without clamping internally. Axis() clamps the
-//     cached sum while AxisRaw() exposes it unchanged.
+//   - Finite axis sources accumulate with finite saturation. Axis() clamps the
+//     cached sum while AxisRaw() exposes its finite, unclamped magnitude.
 //
 // Ownership/Lifetime:
 //   - Action names and all Action/Binding nodes are private malloc-owned data.
@@ -45,6 +45,9 @@
 #include "rt_string_builder.h"
 #include "rt_trap.h"
 
+#include <float.h>
+#include <math.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -71,12 +74,64 @@ static Action *find_action_str(rt_string name) {
 
     Action *a = g_actions;
     while (a) {
-        size_t a_len = strlen(a->name);
-        if ((int64_t)a_len == name_len && memcmp(a->name, name_data, a_len) == 0)
+        if (a->name_len == name_len && memcmp(a->name, name_data, (size_t)a->name_len) == 0)
             return a;
         a = a->next;
     }
     return NULL;
+}
+
+/// @brief Validate that an action name is nonempty, NUL-free, strict UTF-8.
+/// @param name Borrowed runtime string.
+/// @return Nonzero when the name can be represented losslessly in JSON and in
+///         the registry's trailing-NUL C-string storage.
+static int action_name_valid(rt_string name) {
+    if (!name)
+        return 0;
+    int64_t signed_len = rt_str_len(name);
+    if (signed_len <= 0 || (uint64_t)signed_len > SIZE_MAX - 1u)
+        return 0;
+
+    const unsigned char *data = (const unsigned char *)name->data;
+    size_t len = (size_t)signed_len;
+    size_t i = 0;
+    while (i < len) {
+        unsigned char lead = data[i++];
+        if (lead == 0)
+            return 0;
+        if (lead <= 0x7Fu)
+            continue;
+
+        size_t continuation_count;
+        unsigned char second_min = 0x80u;
+        unsigned char second_max = 0xBFu;
+        if (lead >= 0xC2u && lead <= 0xDFu) {
+            continuation_count = 1;
+        } else if (lead >= 0xE0u && lead <= 0xEFu) {
+            continuation_count = 2;
+            if (lead == 0xE0u)
+                second_min = 0xA0u;
+            else if (lead == 0xEDu)
+                second_max = 0x9Fu;
+        } else if (lead >= 0xF0u && lead <= 0xF4u) {
+            continuation_count = 3;
+            if (lead == 0xF0u)
+                second_min = 0x90u;
+            else if (lead == 0xF4u)
+                second_max = 0x8Fu;
+        } else {
+            return 0;
+        }
+
+        if (continuation_count > len - i || data[i] < second_min || data[i] > second_max)
+            return 0;
+        ++i;
+        for (size_t ci = 1; ci < continuation_count; ++ci, ++i) {
+            if (data[i] < 0x80u || data[i] > 0xBFu)
+                return 0;
+        }
+    }
+    return 1;
 }
 
 /// @brief Heap-allocate a NUL-terminated C string from an `rt_string`.
@@ -90,7 +145,7 @@ static char *strdup_rt_string(rt_string s) {
     if (!s)
         return NULL;
     int64_t len = rt_str_len(s);
-    if (len == 0)
+    if (len <= 0 || (uint64_t)len > SIZE_MAX - 1u)
         return NULL;
     char *result = (char *)malloc((size_t)len + 1);
     if (!result)
@@ -98,26 +153,6 @@ static char *strdup_rt_string(rt_string s) {
     memcpy(result, s->data, (size_t)len);
     result[len] = '\0';
     return result;
-}
-
-/// @brief Walk and free a singly-linked binding list.
-/// @param b Owned head of the list to destroy; may be `NULL`.
-static void free_bindings(Binding *b) {
-    while (b) {
-        Binding *next = b->next;
-        free(b);
-        b = next;
-    }
-}
-
-/// @brief Free an action's name + bindings + the action node itself.
-/// @param a Owned action node to destroy; may be `NULL`.
-static void free_action(Action *a) {
-    if (a) {
-        free(a->name);
-        free_bindings(a->bindings);
-        free(a);
-    }
 }
 
 /// @brief Remove the first binding matching `(type, code, pad_index)`.
@@ -137,6 +172,7 @@ static int8_t remove_binding(Action *action, BindingType type, int64_t code, int
         if (b->type == type && b->code == code && b->pad_index == pad_index) {
             *pp = b->next;
             free(b);
+            action->binding_count--;
             return 1;
         }
         pp = &b->next;
@@ -188,16 +224,16 @@ static int8_t mouse_released(int64_t button) {
 
 /// @brief Pad button held query, with `pad_index < 0` = any connected pad.
 ///
-/// Loops over pads 0..3 when `pad_index` is negative, returning true on
+/// Loops over every supported pad when `pad_index` is negative, returning true on
 /// the first connected pad with the button held.
 /// @param pad_index Controller index, or any negative value for any connected
-///        controller among indices 0..3.
+///        controller.
 /// @param button Runtime gamepad-button code to query.
 /// @return Nonzero when a matching controller has the button down.
 static int8_t pad_held(int64_t pad_index, int64_t button) {
     if (pad_index < 0) {
         // Any controller
-        for (int64_t i = 0; i < 4; i++) {
+        for (int64_t i = 0; i < ZANNA_PAD_MAX; i++) {
             if (rt_pad_is_connected(i) && rt_pad_is_down(i, button))
                 return 1;
         }
@@ -207,12 +243,12 @@ static int8_t pad_held(int64_t pad_index, int64_t button) {
 }
 
 /// @brief Pad button down-edge query (any-pad fallback for `pad_index < 0`).
-/// @param pad_index Controller index, or a negative value for indices 0..3.
+/// @param pad_index Controller index, or a negative value for any controller.
 /// @param button Runtime gamepad-button code to query.
 /// @return Nonzero on a matching button's current-frame down edge.
 static int8_t pad_pressed(int64_t pad_index, int64_t button) {
     if (pad_index < 0) {
-        for (int64_t i = 0; i < 4; i++) {
+        for (int64_t i = 0; i < ZANNA_PAD_MAX; i++) {
             if (rt_pad_is_connected(i) && rt_pad_was_pressed(i, button))
                 return 1;
         }
@@ -222,12 +258,12 @@ static int8_t pad_pressed(int64_t pad_index, int64_t button) {
 }
 
 /// @brief Pad button up-edge query (any-pad fallback for `pad_index < 0`).
-/// @param pad_index Controller index, or a negative value for indices 0..3.
+/// @param pad_index Controller index, or a negative value for any controller.
 /// @param button Runtime gamepad-button code to query.
 /// @return Nonzero on a matching button's current-frame up edge.
 static int8_t pad_released(int64_t pad_index, int64_t button) {
     if (pad_index < 0) {
-        for (int64_t i = 0; i < 4; i++) {
+        for (int64_t i = 0; i < ZANNA_PAD_MAX; i++) {
             if (rt_pad_is_connected(i) && rt_pad_was_released(i, button))
                 return 1;
         }
@@ -239,17 +275,17 @@ static int8_t pad_released(int64_t pad_index, int64_t button) {
 /// @brief Read a gamepad axis value (-1..1 sticks, 0..1 triggers).
 ///
 /// `axis` is one of `ZANNA_AXIS_*`. With `pad_index < 0`, returns the
-/// first non-zero value across pads 0..3 — useful when you want
+/// largest-magnitude finite value across connected pads — useful when you want
 /// "any controller's left stick" without binding to a specific index.
 /// @param pad_index Controller index, or a negative value for any connected
-///        controller among indices 0..3.
+///        controller.
 /// @param axis One of the supported `ZANNA_AXIS_*` codes.
 /// @return Raw device-axis value, or `0.0` for disconnected pads, unknown
 ///         axes, or no nonzero any-pad value.
 static double pad_axis_value(int64_t pad_index, int64_t axis) {
     if (pad_index < 0) {
-        // Return value from first connected controller with non-zero input
-        for (int64_t i = 0; i < 4; i++) {
+        double strongest = 0.0;
+        for (int64_t i = 0; i < ZANNA_PAD_MAX; i++) {
             if (!rt_pad_is_connected(i))
                 continue;
             double v = 0.0;
@@ -273,28 +309,40 @@ static double pad_axis_value(int64_t pad_index, int64_t axis) {
                     v = rt_pad_right_trigger(i);
                     break;
             }
-            if (v != 0.0)
-                return v;
+            if (isfinite(v) && fabs(v) > fabs(strongest))
+                strongest = v;
         }
-        return 0.0;
+        return strongest;
     }
 
     if (!rt_pad_is_connected(pad_index))
         return 0.0;
 
     switch (axis) {
-        case ZANNA_AXIS_LEFT_X:
-            return rt_pad_left_x(pad_index);
-        case ZANNA_AXIS_LEFT_Y:
-            return rt_pad_left_y(pad_index);
-        case ZANNA_AXIS_RIGHT_X:
-            return rt_pad_right_x(pad_index);
-        case ZANNA_AXIS_RIGHT_Y:
-            return rt_pad_right_y(pad_index);
-        case ZANNA_AXIS_LEFT_TRIGGER:
-            return rt_pad_left_trigger(pad_index);
-        case ZANNA_AXIS_RIGHT_TRIGGER:
-            return rt_pad_right_trigger(pad_index);
+        case ZANNA_AXIS_LEFT_X: {
+            double value = rt_pad_left_x(pad_index);
+            return isfinite(value) ? value : 0.0;
+        }
+        case ZANNA_AXIS_LEFT_Y: {
+            double value = rt_pad_left_y(pad_index);
+            return isfinite(value) ? value : 0.0;
+        }
+        case ZANNA_AXIS_RIGHT_X: {
+            double value = rt_pad_right_x(pad_index);
+            return isfinite(value) ? value : 0.0;
+        }
+        case ZANNA_AXIS_RIGHT_Y: {
+            double value = rt_pad_right_y(pad_index);
+            return isfinite(value) ? value : 0.0;
+        }
+        case ZANNA_AXIS_LEFT_TRIGGER: {
+            double value = rt_pad_left_trigger(pad_index);
+            return isfinite(value) ? value : 0.0;
+        }
+        case ZANNA_AXIS_RIGHT_TRIGGER: {
+            double value = rt_pad_right_trigger(pad_index);
+            return isfinite(value) ? value : 0.0;
+        }
         default:
             return 0.0;
     }
@@ -302,13 +350,41 @@ static double pad_axis_value(int64_t pad_index, int64_t axis) {
 
 /// @brief Clamp `value` into `[-1, 1]` for axis output normalization.
 /// @param value Accumulated axis value.
-/// @return @p value constrained to -1..1; NaN passes through unchanged.
+/// @return @p value constrained to -1..1; non-finite input becomes neutral.
 static double clamp_axis(double value) {
+    if (!isfinite(value))
+        return 0.0;
     if (value < -1.0)
         return -1.0;
     if (value > 1.0)
         return 1.0;
     return value;
+}
+
+/// @brief Add one finite contribution without allowing the raw sum to overflow.
+/// @param total Borrowed accumulated raw-axis value.
+/// @param contribution Candidate contribution from one binding.
+static void action_axis_add(double *total, double contribution) {
+    if (!total || !isfinite(contribution))
+        return;
+    if (contribution > 0.0 && *total > DBL_MAX - contribution) {
+        *total = DBL_MAX;
+    } else if (contribution < 0.0 && *total < -DBL_MAX - contribution) {
+        *total = -DBL_MAX;
+    } else {
+        *total += contribution;
+    }
+}
+
+/// @brief Multiply a source by a scale and add it with finite saturation.
+static void action_axis_scale_add(double *total, double source, double scale) {
+    if (!total || !isfinite(source) || !isfinite(scale) || source == 0.0 || scale == 0.0)
+        return;
+    if (fabs(scale) > DBL_MAX / fabs(source)) {
+        action_axis_add(total, signbit(source) == signbit(scale) ? DBL_MAX : -DBL_MAX);
+        return;
+    }
+    action_axis_add(total, source * scale);
 }
 
 /// @brief Initialize the global action mapping system.
@@ -361,7 +437,7 @@ void rt_action_update(void) {
                 case BIND_KEY:
                     if (a->is_axis) {
                         if (key_held(b->code))
-                            a->axis_value += b->value;
+                            action_axis_add(&a->axis_value, b->value);
                     } else {
                         if (key_pressed(b->code))
                             a->pressed = 1;
@@ -385,22 +461,22 @@ void rt_action_update(void) {
 
                 case BIND_MOUSE_X:
                     if (a->is_axis)
-                        a->axis_value += (double)rt_mouse_delta_x() * b->value;
+                        action_axis_scale_add(&a->axis_value, (double)rt_mouse_delta_x(), b->value);
                     break;
 
                 case BIND_MOUSE_Y:
                     if (a->is_axis)
-                        a->axis_value += (double)rt_mouse_delta_y() * b->value;
+                        action_axis_scale_add(&a->axis_value, (double)rt_mouse_delta_y(), b->value);
                     break;
 
                 case BIND_SCROLL_X:
                     if (a->is_axis)
-                        a->axis_value += rt_mouse_wheel_xf() * b->value;
+                        action_axis_scale_add(&a->axis_value, rt_mouse_wheel_xf(), b->value);
                     break;
 
                 case BIND_SCROLL_Y:
                     if (a->is_axis)
-                        a->axis_value += rt_mouse_wheel_yf() * b->value;
+                        action_axis_scale_add(&a->axis_value, rt_mouse_wheel_yf(), b->value);
                     break;
 
                 case BIND_PAD_BUTTON:
@@ -416,13 +492,14 @@ void rt_action_update(void) {
 
                 case BIND_PAD_AXIS:
                     if (a->is_axis)
-                        a->axis_value += pad_axis_value(b->pad_index, b->code) * b->value;
+                        action_axis_scale_add(
+                            &a->axis_value, pad_axis_value(b->pad_index, b->code), b->value);
                     break;
 
                 case BIND_PAD_BUTTON_AXIS:
                     if (a->is_axis) {
                         if (pad_held(b->pad_index, b->code))
-                            a->axis_value += b->value;
+                            action_axis_add(&a->axis_value, b->value);
                     }
                     break;
 
@@ -471,13 +548,33 @@ void rt_action_update(void) {
 /// is also safe.
 void rt_action_clear(void) {
     RT_ASSERT_MAIN_THREAD();
-    Action *a = g_actions;
-    while (a) {
-        Action *next = a->next;
-        free_action(a);
-        a = next;
-    }
+    action_free_list(g_actions);
     g_actions = NULL;
+}
+
+/// @brief Define one validated action kind without duplicating initialization.
+static int8_t action_define_impl(rt_string name, int8_t is_axis) {
+    if (!action_name_valid(name) || find_action_str(name))
+        return 0;
+    int64_t action_count = 0;
+    for (Action *existing = g_actions; existing; existing = existing->next) {
+        if (++action_count >= ACTION_MAX_ACTIONS)
+            return 0;
+    }
+
+    Action *action = (Action *)calloc(1, sizeof(Action));
+    if (!action)
+        return 0;
+    action->name = strdup_rt_string(name);
+    if (!action->name) {
+        free(action);
+        return 0;
+    }
+    action->name_len = rt_str_len(name);
+    action->is_axis = is_axis != 0;
+    action->next = g_actions;
+    g_actions = action;
+    return 1;
 }
 
 /// @brief Register a new named action for input mapping.
@@ -491,30 +588,7 @@ int8_t rt_action_define(rt_string name) {
     if (!g_initialized)
         rt_action_init();
 
-    if (!name || rt_str_len(name) == 0)
-        return 0;
-
-    if (find_action_str(name))
-        return 0; // Already exists
-
-    Action *a = (Action *)malloc(sizeof(Action));
-    if (!a)
-        return 0;
-
-    a->name = strdup_rt_string(name);
-    if (!a->name) {
-        free(a);
-        return 0;
-    }
-    a->is_axis = 0;
-    a->bindings = NULL;
-    a->pressed = 0;
-    a->released = 0;
-    a->held = 0;
-    a->axis_value = 0.0;
-    a->next = g_actions;
-    g_actions = a;
-    return 1;
+    return action_define_impl(name, 0);
 }
 
 /// @brief `Action.DefineAxis(name)` — register an axis-style action.
@@ -531,30 +605,7 @@ int8_t rt_action_define_axis(rt_string name) {
     if (!g_initialized)
         rt_action_init();
 
-    if (!name || rt_str_len(name) == 0)
-        return 0;
-
-    if (find_action_str(name))
-        return 0; // Already exists
-
-    Action *a = (Action *)malloc(sizeof(Action));
-    if (!a)
-        return 0;
-
-    a->name = strdup_rt_string(name);
-    if (!a->name) {
-        free(a);
-        return 0;
-    }
-    a->is_axis = 1;
-    a->bindings = NULL;
-    a->pressed = 0;
-    a->released = 0;
-    a->held = 0;
-    a->axis_value = 0.0;
-    a->next = g_actions;
-    g_actions = a;
-    return 1;
+    return action_define_impl(name, 1);
 }
 
 /// @brief `Action.Exists(name)` — true if an action with that name is defined.
@@ -591,10 +642,9 @@ int8_t rt_action_remove(rt_string name) {
     Action **pp = &g_actions;
     while (*pp) {
         Action *a = *pp;
-        size_t a_len = strlen(a->name);
-        if ((int64_t)a_len == name_len && memcmp(a->name, name_data, a_len) == 0) {
+        if (a->name_len == name_len && memcmp(a->name, name_data, (size_t)a->name_len) == 0) {
             *pp = a->next;
-            free_action(a);
+            action_free_node(a);
             return 1;
         }
         pp = &a->next;
@@ -613,7 +663,8 @@ int8_t rt_action_remove(rt_string name) {
 int8_t rt_action_bind_key(rt_string action, int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a || a->is_axis)
+    if (!a || a->is_axis || !action_key_code_valid(key) ||
+        a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     Binding *b = create_binding(BIND_KEY, key, 0, 1.0);
     if (!b)
@@ -629,13 +680,14 @@ int8_t rt_action_bind_key(rt_string action, int64_t key) {
 /// `Right` → +1.0 for a horizontal-axis "MoveX" action).
 /// @param action Borrowed axis-action name.
 /// @param key Runtime keyboard code to bind.
-/// @param value Unvalidated contribution added on each update while held.
+/// @param value Finite contribution added on each update while held.
 /// @return `1` when the binding is added; `0` if the action is missing,
 ///         button-style, or allocation fails.
 int8_t rt_action_bind_key_axis(rt_string action, int64_t key, double value) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a || !a->is_axis)
+    if (!a || !a->is_axis || !action_key_code_valid(key) || !isfinite(value) ||
+        a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     Binding *b = create_binding(BIND_KEY, key, 0, value);
     if (!b)
@@ -652,7 +704,7 @@ int8_t rt_action_bind_key_axis(rt_string action, int64_t key, double value) {
 int8_t rt_action_unbind_key(rt_string action, int64_t key) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a)
+    if (!a || !action_key_code_valid(key))
         return 0;
     return remove_binding(a, BIND_KEY, key, 0);
 }
@@ -670,9 +722,10 @@ int8_t rt_action_unbind_key(rt_string action, int64_t key) {
 int8_t rt_action_bind_chord(rt_string action, void *keys) {
     RT_ASSERT_MAIN_THREAD();
     int64_t len, i;
+    int64_t chord_keys[MAX_CHORD_KEYS];
     Binding *b;
     Action *a = find_action_str(action);
-    if (!a || a->is_axis)
+    if (!a || a->is_axis || a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     if (!keys)
         return 0;
@@ -681,13 +734,22 @@ int8_t rt_action_bind_chord(rt_string action, void *keys) {
     if (len < 2 || len > MAX_CHORD_KEYS)
         return 0;
 
+    for (i = 0; i < len; i++) {
+        chord_keys[i] = rt_unbox_i64(rt_seq_get(keys, i));
+        if (!action_key_code_valid(chord_keys[i]))
+            return 0;
+        for (int64_t previous = 0; previous < i; ++previous) {
+            if (chord_keys[previous] == chord_keys[i])
+                return 0;
+        }
+    }
+
     b = create_binding(BIND_CHORD, 0, 0, 1.0);
     if (!b)
         return 0;
 
     b->chord_len = (int32_t)len;
-    for (i = 0; i < len; i++)
-        b->chord_keys[i] = rt_unbox_i64(rt_seq_get(keys, i));
+    memcpy(b->chord_keys, chord_keys, (size_t)len * sizeof(chord_keys[0]));
 
     add_binding(a, b);
     return 1;
@@ -703,6 +765,7 @@ int8_t rt_action_bind_chord(rt_string action, void *keys) {
 int8_t rt_action_unbind_chord(rt_string action, void *keys) {
     RT_ASSERT_MAIN_THREAD();
     int64_t len, i;
+    int64_t chord_keys[MAX_CHORD_KEYS];
     Binding **pp;
     Action *a = find_action_str(action);
     if (!a || !keys)
@@ -711,6 +774,11 @@ int8_t rt_action_unbind_chord(rt_string action, void *keys) {
     len = rt_seq_len(keys);
     if (len < 2 || len > MAX_CHORD_KEYS)
         return 0;
+    for (i = 0; i < len; ++i) {
+        chord_keys[i] = rt_unbox_i64(rt_seq_get(keys, i));
+        if (!action_key_code_valid(chord_keys[i]))
+            return 0;
+    }
 
     pp = &a->bindings;
     while (*pp) {
@@ -718,7 +786,7 @@ int8_t rt_action_unbind_chord(rt_string action, void *keys) {
         if (b->type == BIND_CHORD && b->chord_len == (int32_t)len) {
             int8_t match = 1;
             for (i = 0; i < len; i++) {
-                if (b->chord_keys[i] != rt_unbox_i64(rt_seq_get(keys, i))) {
+                if (b->chord_keys[i] != chord_keys[i]) {
                     match = 0;
                     break;
                 }
@@ -726,6 +794,7 @@ int8_t rt_action_unbind_chord(rt_string action, void *keys) {
             if (match) {
                 *pp = b->next;
                 free(b);
+                a->binding_count--;
                 return 1;
             }
         }
@@ -761,7 +830,8 @@ int64_t rt_action_chord_count(rt_string action) {
 int8_t rt_action_bind_mouse(rt_string action, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a || a->is_axis)
+    if (!a || a->is_axis || !action_mouse_button_valid(button) ||
+        a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     Binding *b = create_binding(BIND_MOUSE_BUTTON, button, 0, 1.0);
     if (!b)
@@ -778,7 +848,7 @@ int8_t rt_action_bind_mouse(rt_string action, int64_t button) {
 int8_t rt_action_unbind_mouse(rt_string action, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a)
+    if (!a || !action_mouse_button_valid(button))
         return 0;
     return remove_binding(a, BIND_MOUSE_BUTTON, button, 0);
 }
@@ -788,12 +858,13 @@ int8_t rt_action_unbind_mouse(rt_string action, int64_t button) {
 /// Per-frame mouse delta (in pixels) is multiplied by `sensitivity`
 /// and added to the axis. Typical mouselook setup uses ~0.001-0.01.
 /// @param action Borrowed axis-action name.
-/// @param sensitivity Unvalidated multiplier applied to horizontal pixel delta.
+/// @param sensitivity Finite multiplier applied to horizontal pixel delta.
 /// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_mouse_x(rt_string action, double sensitivity) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a || !a->is_axis)
+    if (!a || !a->is_axis || !isfinite(sensitivity) ||
+        a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     Binding *b = create_binding(BIND_MOUSE_X, 0, 0, sensitivity);
     if (!b)
@@ -804,12 +875,13 @@ int8_t rt_action_bind_mouse_x(rt_string action, double sensitivity) {
 
 /// @brief `Action.BindMouseY(action, sensitivity)` — bind mouse Y-delta to an axis.
 /// @param action Borrowed axis-action name.
-/// @param sensitivity Unvalidated multiplier applied to vertical pixel delta.
+/// @param sensitivity Finite multiplier applied to vertical pixel delta.
 /// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_mouse_y(rt_string action, double sensitivity) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a || !a->is_axis)
+    if (!a || !a->is_axis || !isfinite(sensitivity) ||
+        a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     Binding *b = create_binding(BIND_MOUSE_Y, 0, 0, sensitivity);
     if (!b)
@@ -820,12 +892,13 @@ int8_t rt_action_bind_mouse_y(rt_string action, double sensitivity) {
 
 /// @brief `Action.BindScrollX(action, sensitivity)` — bind horizontal scroll wheel to an axis.
 /// @param action Borrowed axis-action name.
-/// @param sensitivity Unvalidated multiplier applied to horizontal wheel delta.
+/// @param sensitivity Finite multiplier applied to horizontal wheel delta.
 /// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_scroll_x(rt_string action, double sensitivity) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a || !a->is_axis)
+    if (!a || !a->is_axis || !isfinite(sensitivity) ||
+        a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     Binding *b = create_binding(BIND_SCROLL_X, 0, 0, sensitivity);
     if (!b)
@@ -836,12 +909,13 @@ int8_t rt_action_bind_scroll_x(rt_string action, double sensitivity) {
 
 /// @brief `Action.BindScrollY(action, sensitivity)` — bind vertical scroll wheel to an axis.
 /// @param action Borrowed axis-action name.
-/// @param sensitivity Unvalidated multiplier applied to vertical wheel delta.
+/// @param sensitivity Finite multiplier applied to vertical wheel delta.
 /// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_scroll_y(rt_string action, double sensitivity) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a || !a->is_axis)
+    if (!a || !a->is_axis || !isfinite(sensitivity) ||
+        a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     Binding *b = create_binding(BIND_SCROLL_Y, 0, 0, sensitivity);
     if (!b)
@@ -859,7 +933,8 @@ int8_t rt_action_bind_scroll_y(rt_string action, double sensitivity) {
 int8_t rt_action_bind_pad_button(rt_string action, int64_t pad_index, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a || a->is_axis)
+    if (!a || a->is_axis || !action_pad_index_valid(pad_index) ||
+        !action_pad_button_valid(button) || a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     Binding *b = create_binding(BIND_PAD_BUTTON, button, pad_index, 1.0);
     if (!b)
@@ -877,7 +952,7 @@ int8_t rt_action_bind_pad_button(rt_string action, int64_t pad_index, int64_t bu
 int8_t rt_action_unbind_pad_button(rt_string action, int64_t pad_index, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a)
+    if (!a || !action_pad_index_valid(pad_index) || !action_pad_button_valid(button))
         return 0;
     return remove_binding(a, BIND_PAD_BUTTON, button, pad_index);
 }
@@ -889,12 +964,13 @@ int8_t rt_action_unbind_pad_button(rt_string action, int64_t pad_index, int64_t 
 /// @param action Borrowed axis-action name.
 /// @param pad_index Controller index, conventionally 0..3, or `-1` for any.
 /// @param axis One of the `ZANNA_AXIS_*` source codes.
-/// @param scale Unvalidated multiplier applied to the raw device value.
+/// @param scale Finite multiplier applied to the raw device value.
 /// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_pad_axis(rt_string action, int64_t pad_index, int64_t axis, double scale) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a || !a->is_axis)
+    if (!a || !a->is_axis || !action_pad_index_valid(pad_index) || !action_pad_axis_valid(axis) ||
+        !isfinite(scale) || a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     Binding *b = create_binding(BIND_PAD_AXIS, axis, pad_index, scale);
     if (!b)
@@ -911,7 +987,7 @@ int8_t rt_action_bind_pad_axis(rt_string action, int64_t pad_index, int64_t axis
 int8_t rt_action_unbind_pad_axis(rt_string action, int64_t pad_index, int64_t axis) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a)
+    if (!a || !action_pad_index_valid(pad_index) || !action_pad_axis_valid(axis))
         return 0;
     return remove_binding(a, BIND_PAD_AXIS, axis, pad_index);
 }
@@ -924,7 +1000,7 @@ int8_t rt_action_unbind_pad_axis(rt_string action, int64_t pad_index, int64_t ax
 /// @param action Borrowed axis-action name.
 /// @param pad_index Controller index, conventionally 0..3, or `-1` for any.
 /// @param button Runtime gamepad-button code to bind.
-/// @param value Unvalidated contribution added while the button is held.
+/// @param value Finite contribution added while the button is held.
 /// @return `1` when added; `0` for a missing/button action or allocation failure.
 int8_t rt_action_bind_pad_button_axis(rt_string action,
                                       int64_t pad_index,
@@ -932,7 +1008,9 @@ int8_t rt_action_bind_pad_button_axis(rt_string action,
                                       double value) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a || !a->is_axis)
+    if (!a || !a->is_axis || !action_pad_index_valid(pad_index) ||
+        !action_pad_button_valid(button) || !isfinite(value) ||
+        a->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION)
         return 0;
     Binding *b = create_binding(BIND_PAD_BUTTON_AXIS, button, pad_index, value);
     if (!b)
@@ -996,8 +1074,8 @@ double rt_action_strength(rt_string action) {
 ///   mouse movement). Button bindings contribute their configured `value` field
 ///   (typically ±1.0). The result is clamped to [-1.0, 1.0].
 /// @param action Borrowed action name, normally defined with DefineAxis.
-/// @return Axis value clamped to [-1.0, 1.0], `0.0` for missing actions, or
-///         NaN if a binding caused the cached sum to become NaN.
+/// @return Finite axis value clamped to [-1.0, 1.0], or `0.0` for missing
+///         actions.
 double rt_action_axis(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
@@ -1024,13 +1102,17 @@ double rt_action_axis_raw(rt_string action) {
 void *rt_action_list(void) {
     RT_ASSERT_MAIN_THREAD();
     void *seq = rt_seq_new();
+    if (!seq)
+        return NULL;
     /* Make the seq own its elements and drop our creation reference after each push
      * (the runtime seq<str> convention, cf. rt_dir_list.c) — otherwise every string
      * keeps an extra reference that nothing ever releases, leaking one per action. */
     rt_seq_set_owns_elements(seq, 1);
     Action *a = g_actions;
     while (a) {
-        rt_string name = rt_string_from_bytes(a->name, strlen(a->name));
+        rt_string name = rt_string_from_bytes(a->name, (size_t)a->name_len);
+        if (!name)
+            return seq;
         rt_seq_push(seq, (void *)name);
         rt_string_unref(name);
         a = a->next;
@@ -1056,12 +1138,19 @@ static int action_bindings_append_cstr(rt_string_builder *sb, const char *text) 
 /// @param key Runtime key code.
 /// @param fallback Borrowed text used when no key name is available.
 /// @return `1` on success; `0` if appending to the builder failed.
-static int action_bindings_append_key_name(rt_string_builder *sb, int64_t key, const char *fallback) {
+static int action_bindings_append_key_name(rt_string_builder *sb,
+                                           int64_t key,
+                                           const char *fallback) {
     rt_string key_name = rt_keyboard_key_name(key);
     int64_t key_len = key_name ? rt_str_len(key_name) : 0;
+    int appended;
     if (key_len > 0)
-        return rt_sb_append_bytes(sb, key_name->data, (size_t)key_len) == RT_SB_OK;
-    return action_bindings_append_cstr(sb, fallback ? fallback : "Key");
+        appended = rt_sb_append_bytes(sb, key_name->data, (size_t)key_len) == RT_SB_OK;
+    else
+        appended = action_bindings_append_cstr(sb, fallback ? fallback : "Key");
+    if (key_name)
+        rt_string_unref(key_name);
+    return appended;
 }
 
 /// @brief Append a human-readable description for one action binding.
@@ -1194,7 +1283,10 @@ rt_string rt_action_bindings_str(rt_string action) {
 
     rt_string result = rt_string_from_bytes(sb.data, sb.len);
     rt_sb_free(&sb);
-    return result ? result : rt_str_empty();
+    if (result)
+        return result;
+    rt_trap("Action.BindingsStr: result allocation failed");
+    return rt_str_empty();
 
 failed:
     rt_sb_free(&sb);
@@ -1208,16 +1300,7 @@ failed:
 int64_t rt_action_binding_count(rt_string action) {
     RT_ASSERT_MAIN_THREAD();
     Action *a = find_action_str(action);
-    if (!a)
-        return 0;
-
-    int64_t count = 0;
-    Binding *b = a->bindings;
-    while (b) {
-        count++;
-        b = b->next;
-    }
-    return count;
+    return a ? a->binding_count : 0;
 }
 
 /// @brief `Action.KeyBoundTo(key)` — name of the first action bound to `key`, or "".
@@ -1227,12 +1310,14 @@ int64_t rt_action_binding_count(rt_string action) {
 /// @return Newly owned matching action name, or the immortal empty string.
 rt_string rt_action_key_bound_to(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
+    if (!action_key_code_valid(key))
+        return rt_str_empty();
     Action *a = g_actions;
     while (a) {
         Binding *b = a->bindings;
         while (b) {
             if (b->type == BIND_KEY && b->code == key)
-                return rt_string_from_bytes(a->name, strlen(a->name));
+                return rt_string_from_bytes(a->name, (size_t)a->name_len);
             b = b->next;
         }
         a = a->next;
@@ -1245,12 +1330,14 @@ rt_string rt_action_key_bound_to(int64_t key) {
 /// @return Newly owned newest matching action name, or the immortal empty string.
 rt_string rt_action_mouse_bound_to(int64_t button) {
     RT_ASSERT_MAIN_THREAD();
+    if (!action_mouse_button_valid(button))
+        return rt_str_empty();
     Action *a = g_actions;
     while (a) {
         Binding *b = a->bindings;
         while (b) {
             if (b->type == BIND_MOUSE_BUTTON && b->code == button)
-                return rt_string_from_bytes(a->name, strlen(a->name));
+                return rt_string_from_bytes(a->name, (size_t)a->name_len);
             b = b->next;
         }
         a = a->next;
@@ -1268,13 +1355,15 @@ rt_string rt_action_mouse_bound_to(int64_t button) {
 /// @return Newly owned newest matching action name, or the immortal empty string.
 rt_string rt_action_pad_button_bound_to(int64_t pad_index, int64_t button) {
     RT_ASSERT_MAIN_THREAD();
+    if (!action_pad_index_valid(pad_index) || !action_pad_button_valid(button))
+        return rt_str_empty();
     Action *a = g_actions;
     while (a) {
         Binding *b = a->bindings;
         while (b) {
             if ((b->type == BIND_PAD_BUTTON || b->type == BIND_PAD_BUTTON_AXIS) &&
                 b->code == button && (b->pad_index == pad_index || b->pad_index == -1))
-                return rt_string_from_bytes(a->name, strlen(a->name));
+                return rt_string_from_bytes(a->name, (size_t)a->name_len);
             b = b->next;
         }
         a = a->next;

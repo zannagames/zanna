@@ -13,7 +13,7 @@
 //
 // Key invariants:
 //   - The atlas retains a reference to its backing Pixels object.
-//   - Region names longer than 31 bytes are rejected.
+//   - Region names must contain 1..31 bytes and no embedded NUL.
 //   - Maximum 512 named regions per atlas.
 //   - Region coordinates are bounds-checked against the Pixels dimensions at add
 //     time; a region that falls outside the backing Pixels is rejected (traps).
@@ -68,8 +68,8 @@ void *rt_texatlas_load_grid(void *pixels, int64_t frame_w, int64_t frame_h);
 
 /// @brief Add a named rectangular region to the atlas.
 /// @details Reusing a case-sensitive name replaces the existing rectangle.
-///          Empty/overlong names, nonpositive sizes, out-of-bounds rectangles,
-///          and adding beyond 512 regions trap.
+///          Empty, overlong, or embedded-NUL names, nonpositive sizes,
+///          out-of-bounds rectangles, and adding beyond 512 regions trap.
 /// @param atlas Candidate TextureAtlas.
 /// @param name Borrowed runtime region name of at most 31 bytes.
 /// @param x Nonnegative left edge in the backing Pixels.

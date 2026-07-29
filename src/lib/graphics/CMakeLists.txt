@@ -38,6 +38,7 @@ include(GNUInstallDirs)
 set(VGFX_CORE_SOURCES
         src/vgfx.c
         src/vgfx_draw.c
+        src/vgfx_embed_channel.c
 )
 
 set(ZANNAGFX_AVAILABLE OFF CACHE INTERNAL "Whether ZannaGFX is available in this build" FORCE)
@@ -205,6 +206,10 @@ endif ()
 
 # Link platform-specific libraries
 target_link_libraries(zannagfx PRIVATE ${VGFX_PLATFORM_LIBS})
+if (UNIX AND NOT APPLE)
+    # shm_open lives in librt on older glibc; harmless where merged into libc.
+    target_link_libraries(zannagfx PRIVATE rt)
+endif ()
 
 # Set output name
 set_target_properties(zannagfx PROPERTIES

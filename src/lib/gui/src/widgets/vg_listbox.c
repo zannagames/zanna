@@ -37,6 +37,7 @@
 #include "../../../graphics/include/vgfx.h"
 #include "../../include/vg_draw.h"
 #include "../../include/vg_event.h"
+#include "../../include/vg_icon_vector.h"
 #include "../../include/vg_theme.h"
 #include "../../include/vg_widgets.h"
 #include <math.h>
@@ -216,6 +217,18 @@ void vg_listbox_item_set_text_color(vg_listbox_item_t *item, uint32_t color) {
         return;
     item->text_color = color;
     item->has_text_color = true;
+    item->owner->base.needs_paint = true;
+}
+
+/// @brief Attach or clear a leading vector icon on one live item (ADR 0220).
+/// @param item Live item to modify; invalid or retired records are ignored.
+/// @param vector_id Icon id from vg_icon_vector_find; negative clears it.
+void vg_listbox_item_set_icon_vector(vg_listbox_item_t *item, int32_t vector_id) {
+    if (!vg_listbox_item_is_live(item))
+        return;
+    if (item->icon_vector_id == vector_id)
+        return;
+    item->icon_vector_id = vector_id;
     item->owner->base.needs_paint = true;
 }
 
@@ -1204,16 +1217,35 @@ static void listbox_paint(vg_widget_t *widget, void *canvas) {
             }
 
             if (item->text && lb->font) {
-                const char *paint_text = listbox_fit_text(lb, item->text, (float)text_clip_w);
+                uint32_t row_color = item->has_text_color ? item->text_color : lb->text_color;
+                float text_x = widget->x + text_padding;
+                float row_clip_w = (float)text_clip_w;
+                if (item->icon_vector_id >= 0) {
+                    float icon_sz = lb->font_size + 2.0f;
+                    if (icon_sz > ih - 6.0f)
+                        icon_sz = ih - 6.0f;
+                    if (icon_sz > 0.0f) {
+                        float icon_y = item_y + (ih - icon_sz) * 0.5f;
+                        vg_icon_vector_draw(win,
+                                            item->icon_vector_id,
+                                            (int32_t)(text_x + 0.5f),
+                                            (int32_t)(icon_y + 0.5f),
+                                            (int32_t)(icon_sz + 0.5f),
+                                            row_color);
+                        text_x += icon_sz + 6.0f;
+                        row_clip_w -= icon_sz + 6.0f;
+                    }
+                }
+                const char *paint_text = listbox_fit_text(lb, item->text, row_clip_w);
                 if (text_clip_w > 0 && text_clip_h > 0)
                     vgfx_set_clip(win, text_clip_x, text_clip_y, text_clip_w, text_clip_h);
                 vg_font_draw_text(canvas,
                                   lb->font,
                                   lb->font_size,
-                                  widget->x + text_padding,
+                                  text_x,
                                   listbox_text_baseline(lb, item_y, ih),
                                   paint_text,
-                                  item->has_text_color ? item->text_color : lb->text_color);
+                                  row_color);
                 if (text_clip_w > 0 && text_clip_h > 0)
                     vgfx_set_clip(win, x, y, w, h);
             }
@@ -1604,6 +1636,7 @@ vg_listbox_item_t *vg_listbox_add_item(vg_listbox_t *listbox, const char *text, 
     item->text_len = strlen(item->text);
     item->magic = VG_LISTBOX_ITEM_MAGIC;
     item->owner = listbox;
+    item->icon_vector_id = -1;
     item->user_data = user_data;
 
     // Add to end of list

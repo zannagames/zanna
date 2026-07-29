@@ -1264,7 +1264,9 @@ same sequence order supplied to `BindChord()`.
 | `UnbindPadButton(action, pad, button)`          | `Boolean(String, Integer, Integer)`         | Remove a gamepad button binding                  |
 
 **Note:** Use pad index `-1` to match any connected controller. An any-pad axis binding uses the
-first nonzero value found in slot order; it does not sum the same axis across controllers.
+largest-magnitude finite value across connected controllers; it does not sum the same axis across
+controllers. This prevents low-level drift on an earlier controller from masking intentional input
+on a later one.
 
 ### Button Action Query Methods
 
@@ -1280,7 +1282,7 @@ first nonzero value found in slot order; it does not sum the same axis across co
 | Method             | Signature         | Description                                                   |
 |--------------------|-------------------|---------------------------------------------------------------|
 | `Axis(action)`     | `Double(String)`  | Returns combined axis value, clamped to -1.0 to 1.0           |
-| `AxisRaw(action)`  | `Double(String)`  | Returns combined axis value, not clamped                      |
+| `AxisRaw(action)`  | `Double(String)`  | Returns finite combined axis value, not magnitude-clamped     |
 
 ### Introspection Methods
 
@@ -1305,10 +1307,18 @@ first nonzero value found in slot order; it does not sum the same axis across co
 | `Load(json)`  | `Boolean(String)`  | Atomically replace all actions from JSON; false preserves current state |
 | `Save()`      | `String()`         | Serialize all actions and bindings to a JSON string                   |
 
+`Load()` preserves the saved action and binding order. It rejects duplicate recognized fields,
+duplicate action names, non-integral source codes, non-finite values, invalid device identifiers,
+incompatible action/binding kinds, and malformed chords. Rejection is transactional: the current
+registry remains unchanged. Unknown object members and unknown future binding tags are skipped for
+forward compatibility.
+
 ### Action Presets
 
-`LoadPreset()` loads a predefined action set and returns false for an unknown preset name. Existing
-actions are retained; compatible preset bindings are added to them instead of replacing them.
+`LoadPreset()` loads a predefined action set. Existing actions are retained, and compatible preset
+bindings are added without duplicating exact bindings, so repeated calls are idempotent. The method
+returns false for an unknown preset name, an existing action with a conflicting button/axis kind,
+or an allocation failure. A failed preset load rolls back the entire overlay.
 
 #### Available Presets
 
@@ -1332,7 +1342,7 @@ func start() {
     Action.LoadPreset("platformer");
     Action.LoadPreset("menu_navigation");
 
-    // Compatible preset bindings are added to existing actions.
+    // Compatible preset bindings are added once; repeating either preset is safe.
     Action.Define("special_attack");
     Action.BindKey("special_attack", Key.Q);
     Action.Clear();

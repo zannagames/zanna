@@ -149,6 +149,8 @@ func start() {
         if sceneStartRegion == 0 {
             Terminal.Say(
                 "XENOSCAPE: --scene expects an exported region-NN.scene2d");
+        } else if hasArg("--scene-watch") {
+            sceneWatchPath = scenePath;
         }
     }
 

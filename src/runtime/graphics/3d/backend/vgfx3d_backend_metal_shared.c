@@ -61,6 +61,15 @@ static void vgfx3d_metal_store_identity4x4(float *dst) {
     dst[15] = 1.0f;
 }
 
+/// @brief Validate a Metal 2D texture extent against the cross-device runtime ceiling.
+/// @param width Requested positive width.
+/// @param height Requested positive height.
+/// @return Non-zero only when both dimensions are in the portable supported range.
+int vgfx3d_metal_is_valid_texture2d_extent(int32_t width, int32_t height) {
+    return width > 0 && height > 0 && width <= VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION &&
+           height <= VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION;
+}
+
 /// @brief Pack a bone palette into a fixed-size MTLBuffer slot (identity-pads unused bones).
 /// @details Valid row-major matrices are transposed for MSL's column-major layout;
 ///   unusable matrices become identity. Oversized inputs are clamped to the

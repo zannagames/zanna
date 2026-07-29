@@ -124,6 +124,27 @@ static int rt_canvas_next_codepoint(const char *str,
     return 1;
 }
 
+/// @brief Validate a runtime text string and expose its counted byte range.
+/// @param text Borrowed runtime string.
+/// @param bytes_out Required output receiving the borrowed byte pointer.
+/// @param byte_len_out Required output receiving the safe `size_t` length.
+/// @return Non-zero for a valid string representation, including an empty one.
+static int8_t rt_canvas_text_bytes(rt_string text, const char **bytes_out, size_t *byte_len_out) {
+    if (bytes_out)
+        *bytes_out = NULL;
+    if (byte_len_out)
+        *byte_len_out = 0;
+    if (!text || !bytes_out || !byte_len_out)
+        return 0;
+    const char *bytes = rt_string_cstr(text);
+    int64_t raw_len = rt_str_len(text);
+    if (!bytes || raw_len < 0 || (uint64_t)raw_len > SIZE_MAX)
+        return 0;
+    *bytes_out = bytes;
+    *byte_len_out = (size_t)raw_len;
+    return 1;
+}
+
 /// @brief Measure rendered text width by counting UTF-8 codepoints (not bytes).
 /// @details The 8×8 bitmap font is monospace, so width is simply
 ///          `codepoints * 8 * scale`. Counting *codepoints* (not raw
@@ -137,11 +158,10 @@ static int64_t rt_canvas_text_codepoint_width(rt_string text, int64_t scale) {
     if (!text || scale < 1)
         return 0;
 
-    const char *str = rt_string_cstr(text);
-    if (!str)
+    const char *str = NULL;
+    size_t byte_len = 0;
+    if (!rt_canvas_text_bytes(text, &str, &byte_len) || byte_len == 0)
         return 0;
-
-    size_t byte_len = (size_t)rt_str_len(text);
     size_t index = 0;
     int64_t count = 0;
     int codepoint = 0;
@@ -155,6 +175,8 @@ static int64_t rt_canvas_text_codepoint_width(rt_string text, int64_t scale) {
 /// @param value Finite value to convert.
 /// @return Nearest int64 with ties away from zero and endpoint saturation.
 static int64_t rt_canvas_round_ld_to_i64_sat(long double value) {
+    if (isnan(value))
+        return 0;
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
     if (value <= (long double)INT64_MIN)
@@ -166,6 +188,8 @@ static int64_t rt_canvas_round_ld_to_i64_sat(long double value) {
 /// @param value Finite value to convert.
 /// @return Mathematical floor saturated to the int64 range.
 static int64_t rt_canvas_floor_ld_to_i64_sat(long double value) {
+    if (isnan(value))
+        return 0;
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
     if (value <= (long double)INT64_MIN)
@@ -177,6 +201,8 @@ static int64_t rt_canvas_floor_ld_to_i64_sat(long double value) {
 /// @param value Finite value to convert.
 /// @return Mathematical ceiling saturated to the int64 range.
 static int64_t rt_canvas_ceil_ld_to_i64_sat(long double value) {
+    if (isnan(value))
+        return 0;
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
     if (value <= (long double)INT64_MIN)
@@ -184,45 +210,95 @@ static int64_t rt_canvas_ceil_ld_to_i64_sat(long double value) {
     return (int64_t)ceill(value);
 }
 
-/// @brief Liang-Barsky parametric line-clip test against one half-plane.
-/// @details Tightens the parametric range [u1, u2] for one of the four clip
-///          edges and returns 0 when the segment is fully rejected. Called four
-///          times by rt_canvas_clip_line_to_logical (left, right, top, bottom).
-/// @param p   Half-plane direction: negative for "entering" edges (left/top),
-///            positive for "exiting" edges (right/bottom). Zero means the line
-///            is parallel to this edge — kept iff @p q is non-negative.
-/// @param q   Distance from the segment start to the half-plane.
-/// @param u1  In/out: lower parametric bound, advanced when entering.
-/// @param u2  In/out: upper parametric bound, retreated when exiting.
-/// @return 1 if the segment may still be visible after this edge, 0 if rejected.
-static int8_t rt_canvas_clip_line_test(long double p,
-                                       long double q,
-                                       long double *u1,
-                                       long double *u2) {
-    if (p == 0.0L)
-        return q >= 0.0L;
-    long double r = q / p;
-    if (p < 0.0L) {
-        if (r > *u2)
-            return 0;
-        if (r > *u1)
-            *u1 = r;
-    } else {
-        if (r < *u1)
-            return 0;
-        if (r < *u2)
-            *u2 = r;
-    }
-    return 1;
+/// @brief Convert two's-complement unsigned bits to int64 without an
+///        implementation-defined out-of-range cast.
+static int64_t rt_canvas_i64_from_bits(uint64_t bits) {
+    if (bits <= (uint64_t)INT64_MAX)
+        return (int64_t)bits;
+    return INT64_MIN + (int64_t)(bits - (UINT64_C(1) << 63u));
 }
 
-/// @brief Clip a line segment to the canvas's logical clip rect (Liang-Barsky in long-double).
-/// @details Applies the four-edge clip via rt_canvas_clip_line_test and rewrites
-///          the endpoints to the visible portion. Uses long double for the
-///          parametric arithmetic so int64 endpoints far apart don't lose
-///          precision during the (q / p) division. Final endpoints are rounded
-///          back to int64 with saturation, then verified to fit in int32 (the
-///          ZannaGFX backend takes int32 coordinates).
+/// @brief Compute round(value * numerator / denominator) for a unit ratio.
+/// @details A bitwise quotient/remainder recurrence avoids compiler-specific
+///          128-bit integers and platform-dependent floating-point precision.
+static uint64_t rt_canvas_scale_by_ratio_u64(uint64_t value,
+                                             uint64_t numerator,
+                                             uint64_t denominator) {
+    if (value == 0 || numerator == 0 || denominator == 0)
+        return 0;
+    if (numerator >= denominator)
+        return value;
+
+    uint64_t quotient = 0;
+    uint64_t remainder = 0;
+    for (int bit = 63; bit >= 0; bit--) {
+        uint64_t carry = 0;
+        if (remainder >= denominator - remainder) {
+            remainder -= denominator - remainder;
+            carry = 1;
+        } else {
+            remainder += remainder;
+        }
+        quotient = quotient * 2u + carry;
+
+        if (((value >> (unsigned)bit) & 1u) != 0u) {
+            if (remainder >= denominator - numerator) {
+                remainder -= denominator - numerator;
+                quotient++;
+            } else {
+                remainder += numerator;
+            }
+        }
+    }
+
+    if (remainder >= denominator / 2u + denominator % 2u)
+        quotient++;
+    return quotient;
+}
+
+/// @brief Interpolate one signed coordinate at an exact segment ratio.
+static int64_t rt_canvas_interpolate_i64(int64_t start,
+                                         int64_t end,
+                                         uint64_t numerator,
+                                         uint64_t denominator) {
+    if (numerator == 0 || start == end)
+        return start;
+    if (numerator >= denominator)
+        return end;
+    uint64_t full_magnitude =
+        start >= end ? (uint64_t)start - (uint64_t)end : (uint64_t)end - (uint64_t)start;
+    uint64_t magnitude = rt_canvas_scale_by_ratio_u64(full_magnitude, numerator, denominator);
+    uint64_t bits = end >= start ? (uint64_t)start + magnitude : (uint64_t)start - magnitude;
+    return rt_canvas_i64_from_bits(bits);
+}
+
+enum {
+    RT_CANVAS_CLIP_LEFT = 1u,
+    RT_CANVAS_CLIP_RIGHT = 2u,
+    RT_CANVAS_CLIP_TOP = 4u,
+    RT_CANVAS_CLIP_BOTTOM = 8u
+};
+
+/// @brief Return the Cohen-Sutherland outcode for one signed point.
+static uint8_t rt_canvas_clip_outcode(
+    int64_t min_x, int64_t min_y, int64_t max_x, int64_t max_y, int64_t x, int64_t y) {
+    uint8_t code = 0;
+    if (x < min_x)
+        code |= RT_CANVAS_CLIP_LEFT;
+    else if (x > max_x)
+        code |= RT_CANVAS_CLIP_RIGHT;
+    if (y < min_y)
+        code |= RT_CANVAS_CLIP_TOP;
+    else if (y > max_y)
+        code |= RT_CANVAS_CLIP_BOTTOM;
+    return code;
+}
+
+/// @brief Clip a line segment to the canvas's logical clip rect.
+/// @details Cohen-Sutherland iteration computes boundary crossings with exact
+///          unsigned ratio arithmetic. This keeps int64-extreme endpoints
+///          deterministic on Windows (where long double is double precision)
+///          and on platforms with extended-precision long double.
 /// @param canvas Canvas whose clip rect provides the bounds.
 /// @param x1 In/out line-start X, replaced with the clipped value on success.
 /// @param y1 In/out line-start Y, replaced with the clipped value on success.
@@ -232,6 +308,9 @@ static int8_t rt_canvas_clip_line_test(long double p,
 ///         fully outside the clip rect or if endpoints don't fit int32.
 static int8_t rt_canvas_clip_line_to_logical(
     rt_canvas *canvas, int64_t *x1, int64_t *y1, int64_t *x2, int64_t *y2) {
+    if (!x1 || !y1 || !x2 || !y2)
+        return 0;
+
     int64_t clip_x = 0;
     int64_t clip_y = 0;
     int64_t clip_w = 0;
@@ -239,29 +318,54 @@ static int8_t rt_canvas_clip_line_to_logical(
     if (!rt_canvas_get_logical_clip_bounds(canvas, &clip_x, &clip_y, &clip_w, &clip_h))
         return 0;
 
-    long double lx1 = (long double)*x1;
-    long double ly1 = (long double)*y1;
-    long double dx = (long double)*x2 - lx1;
-    long double dy = (long double)*y2 - ly1;
-    long double min_x = (long double)clip_x;
-    long double min_y = (long double)clip_y;
-    long double max_x = (long double)(rtg_add_sat64(clip_x, clip_w) - 1);
-    long double max_y = (long double)(rtg_add_sat64(clip_y, clip_h) - 1);
-    long double u1 = 0.0L;
-    long double u2 = 1.0L;
+    int64_t min_x = clip_x;
+    int64_t min_y = clip_y;
+    int64_t max_x = rtg_add_sat64(clip_x, clip_w - 1);
+    int64_t max_y = rtg_add_sat64(clip_y, clip_h - 1);
+    uint8_t code1 = rt_canvas_clip_outcode(min_x, min_y, max_x, max_y, *x1, *y1);
+    uint8_t code2 = rt_canvas_clip_outcode(min_x, min_y, max_x, max_y, *x2, *y2);
 
-    if (!rt_canvas_clip_line_test(-dx, lx1 - min_x, &u1, &u2) ||
-        !rt_canvas_clip_line_test(dx, max_x - lx1, &u1, &u2) ||
-        !rt_canvas_clip_line_test(-dy, ly1 - min_y, &u1, &u2) ||
-        !rt_canvas_clip_line_test(dy, max_y - ly1, &u1, &u2))
-        return 0;
+    for (int iteration = 0; iteration < 8; iteration++) {
+        if ((code1 | code2) == 0)
+            return rtg_i64_fits_i32(*x1) && rtg_i64_fits_i32(*y1) && rtg_i64_fits_i32(*x2) &&
+                   rtg_i64_fits_i32(*y2);
+        if ((code1 & code2) != 0)
+            return 0;
 
-    *x1 = rt_canvas_round_ld_to_i64_sat(lx1 + u1 * dx);
-    *y1 = rt_canvas_round_ld_to_i64_sat(ly1 + u1 * dy);
-    *x2 = rt_canvas_round_ld_to_i64_sat(lx1 + u2 * dx);
-    *y2 = rt_canvas_round_ld_to_i64_sat(ly1 + u2 * dy);
-    return rtg_i64_fits_i32(*x1) && rtg_i64_fits_i32(*y1) && rtg_i64_fits_i32(*x2) &&
-           rtg_i64_fits_i32(*y2);
+        uint8_t code = code1 != 0 ? code1 : code2;
+        int64_t next_x = 0;
+        int64_t next_y = 0;
+        if ((code & (RT_CANVAS_CLIP_TOP | RT_CANVAS_CLIP_BOTTOM)) != 0) {
+            next_y = (code & RT_CANVAS_CLIP_TOP) != 0 ? min_y : max_y;
+            uint64_t denominator =
+                *y1 >= *y2 ? (uint64_t)*y1 - (uint64_t)*y2 : (uint64_t)*y2 - (uint64_t)*y1;
+            uint64_t numerator =
+                next_y >= *y1 ? (uint64_t)next_y - (uint64_t)*y1 : (uint64_t)*y1 - (uint64_t)next_y;
+            if (denominator == 0 || numerator > denominator)
+                return 0;
+            next_x = rt_canvas_interpolate_i64(*x1, *x2, numerator, denominator);
+        } else {
+            next_x = (code & RT_CANVAS_CLIP_LEFT) != 0 ? min_x : max_x;
+            uint64_t denominator =
+                *x1 >= *x2 ? (uint64_t)*x1 - (uint64_t)*x2 : (uint64_t)*x2 - (uint64_t)*x1;
+            uint64_t numerator =
+                next_x >= *x1 ? (uint64_t)next_x - (uint64_t)*x1 : (uint64_t)*x1 - (uint64_t)next_x;
+            if (denominator == 0 || numerator > denominator)
+                return 0;
+            next_y = rt_canvas_interpolate_i64(*y1, *y2, numerator, denominator);
+        }
+
+        if (code == code1) {
+            *x1 = next_x;
+            *y1 = next_y;
+            code1 = rt_canvas_clip_outcode(min_x, min_y, max_x, max_y, *x1, *y1);
+        } else {
+            *x2 = next_x;
+            *y2 = next_y;
+            code2 = rt_canvas_clip_outcode(min_x, min_y, max_x, max_y, *x2, *y2);
+        }
+    }
+    return 0;
 }
 
 /// @brief Compute the last inclusive pixel of a rect span: start + max(length-1, 0), saturating.
@@ -448,7 +552,8 @@ void rt_canvas_disc(void *canvas_ptr, int64_t cx, int64_t cy, int64_t radius, in
          * only the visible rows (O(clip_h)); vgfx_fill_circle would spin the full
          * O(radius) octant even when almost everything is off-screen. */
         if (have_clip && radius > clip_w + clip_h) {
-            rt_canvas_disc_clipped_safe(canvas, cx, cy, radius, rgb, clip_x, clip_y, clip_w, clip_h);
+            rt_canvas_disc_clipped_safe(
+                canvas, cx, cy, radius, rgb, clip_x, clip_y, clip_w, clip_h);
             return;
         }
         if (rtg_i64_fits_i32(cx) && rtg_i64_fits_i32(cy) && rtg_i64_fits_i32(radius)) {
@@ -488,7 +593,8 @@ void rt_canvas_ring(void *canvas_ptr, int64_t cx, int64_t cy, int64_t radius, in
         /* Huge radius vs a small viewport: the clipped scanline path visits only the
          * visible rows rather than vgfx_circle's full O(radius) octant. */
         if (have_clip && radius > clip_w + clip_h) {
-            rt_canvas_ring_clipped_safe(canvas, cx, cy, radius, rgb, clip_x, clip_y, clip_w, clip_h);
+            rt_canvas_ring_clipped_safe(
+                canvas, cx, cy, radius, rgb, clip_x, clip_y, clip_w, clip_h);
             return;
         }
         if (rtg_i64_fits_i32(cx) && rtg_i64_fits_i32(cy) && rtg_i64_fits_i32(radius)) {
@@ -707,10 +813,10 @@ static void rt_canvas_fill_rect_clipped(rt_canvas *canvas,
 static int64_t rt_canvas_span_width_sat(int64_t x0, int64_t x1) {
     if (x1 < x0)
         return 0;
-    long double width = (long double)x1 - (long double)x0 + 1.0L;
-    if (width >= (long double)INT64_MAX)
+    uint64_t difference = (uint64_t)x1 - (uint64_t)x0;
+    if (difference >= (uint64_t)INT64_MAX)
         return INT64_MAX;
-    return (int64_t)width;
+    return (int64_t)difference + 1;
 }
 
 /// @brief Fill an inclusive horizontal span [x0..x1] at logical row @p y.
@@ -823,6 +929,7 @@ static void rt_canvas_ring_clipped_safe(rt_canvas *canvas,
         return;
 
     long double r2 = (long double)radius * (long double)radius;
+    int64_t clip_x1 = rtg_add_sat64(clip_x, clip_w) - 1;
     int64_t prev_left = 0, prev_right = 0;
     int8_t have_prev = 0;
     for (int64_t py = y0; py <= y1; py++) {
@@ -842,6 +949,10 @@ static void rt_canvas_ring_clipped_safe(rt_canvas *canvas,
         if (have_prev) {
             int64_t l_lo = left < prev_left ? left : prev_left;
             int64_t l_hi = left < prev_left ? prev_left : left;
+            if (l_lo < clip_x)
+                l_lo = clip_x;
+            if (l_hi > clip_x1)
+                l_hi = clip_x1;
             for (int64_t x = l_lo; x <= l_hi; x++) {
                 rt_canvas_pset_clipped(canvas, x, py, color, clip_x, clip_y, clip_w, clip_h);
                 if (x == INT64_MAX)
@@ -849,6 +960,10 @@ static void rt_canvas_ring_clipped_safe(rt_canvas *canvas,
             }
             int64_t r_lo = right < prev_right ? right : prev_right;
             int64_t r_hi = right < prev_right ? prev_right : right;
+            if (r_lo < clip_x)
+                r_lo = clip_x;
+            if (r_hi > clip_x1)
+                r_hi = clip_x1;
             for (int64_t x = r_lo; x <= r_hi; x++) {
                 rt_canvas_pset_clipped(canvas, x, py, color, clip_x, clip_y, clip_w, clip_h);
                 if (x == INT64_MAX)
@@ -889,8 +1004,9 @@ void rt_canvas_text(void *canvas_ptr, int64_t x, int64_t y, rt_string text, int6
         return;
     rt_canvas_resync_window_state(canvas);
 
-    const char *str = rt_string_cstr(text);
-    if (!str)
+    const char *str = NULL;
+    size_t byte_len = 0;
+    if (!rt_canvas_text_bytes(text, &str, &byte_len))
         return;
 
     int64_t cx = x;
@@ -901,27 +1017,34 @@ void rt_canvas_text(void *canvas_ptr, int64_t x, int64_t y, rt_string text, int6
     int64_t clip_h = 0;
     if (!rt_canvas_get_logical_clip_bounds(canvas, &clip_x, &clip_y, &clip_w, &clip_h))
         return;
-    size_t byte_len = (size_t)rt_str_len(text);
+    int64_t clip_x1 = rtg_add_sat64(clip_x, clip_w);
+    int64_t clip_y1 = rtg_add_sat64(clip_y, clip_h);
+    if (x >= clip_x1 || y >= clip_y1 || rtg_add_sat64(y, 8) <= clip_y)
+        return;
     size_t index = 0;
     int codepoint = 0;
 
     while (rt_canvas_next_codepoint(str, byte_len, &index, &codepoint)) {
+        if (cx >= clip_x1)
+            break;
         int glyph_cp = (codepoint >= 32 && codepoint <= 126) ? codepoint : '?';
         const uint8_t *glyph = rt_font_get_glyph(glyph_cp);
 
-        // Draw 8x8 glyph
-        for (int row = 0; row < 8; row++) {
-            uint8_t bits = glyph[row];
-            for (int col_idx = 0; col_idx < 8; col_idx++) {
-                if (bits & (0x80 >> col_idx)) {
-                    rt_canvas_pset_clipped(canvas,
-                                           rtg_add_sat64(cx, col_idx),
-                                           rtg_add_sat64(y, row),
-                                           col,
-                                           clip_x,
-                                           clip_y,
-                                           clip_w,
-                                           clip_h);
+        if (rtg_add_sat64(cx, 7) >= clip_x) {
+            // Draw 8x8 glyph
+            for (int row = 0; row < 8; row++) {
+                uint8_t bits = glyph[row];
+                for (int col_idx = 0; col_idx < 8; col_idx++) {
+                    if (bits & (0x80 >> col_idx)) {
+                        rt_canvas_pset_clipped(canvas,
+                                               rtg_add_sat64(cx, col_idx),
+                                               rtg_add_sat64(y, row),
+                                               col,
+                                               clip_x,
+                                               clip_y,
+                                               clip_w,
+                                               clip_h);
+                    }
                 }
             }
         }
@@ -950,8 +1073,9 @@ void rt_canvas_text_bg(
         return;
     rt_canvas_resync_window_state(canvas);
 
-    const char *str = rt_string_cstr(text);
-    if (!str)
+    const char *str = NULL;
+    size_t byte_len = 0;
+    if (!rt_canvas_text_bytes(text, &str, &byte_len))
         return;
 
     int64_t cx = x;
@@ -963,26 +1087,35 @@ void rt_canvas_text_bg(
     int64_t clip_h = 0;
     if (!rt_canvas_get_logical_clip_bounds(canvas, &clip_x, &clip_y, &clip_w, &clip_h))
         return;
-    size_t byte_len = (size_t)rt_str_len(text);
+    int64_t clip_x1 = rtg_add_sat64(clip_x, clip_w);
+    int64_t clip_y1 = rtg_add_sat64(clip_y, clip_h);
+    if (x >= clip_x1 || y >= clip_y1 || rtg_add_sat64(y, 8) <= clip_y)
+        return;
     size_t index = 0;
     int codepoint = 0;
 
     while (rt_canvas_next_codepoint(str, byte_len, &index, &codepoint)) {
+        if (cx >= clip_x1)
+            break;
         int glyph_cp = (codepoint >= 32 && codepoint <= 126) ? codepoint : '?';
         const uint8_t *glyph = rt_font_get_glyph(glyph_cp);
 
-        // Draw 8x8 glyph with background
-        for (int row = 0; row < 8; row++) {
-            uint8_t bits = glyph[row];
-            for (int col_idx = 0; col_idx < 8; col_idx++) {
-                rt_canvas_pset_clipped(canvas,
-                                       rtg_add_sat64(cx, col_idx),
-                                       rtg_add_sat64(y, row),
-                                       (bits & (0x80 >> col_idx)) ? fg_col : bg_col,
-                                       clip_x,
-                                       clip_y,
-                                       clip_w,
-                                       clip_h);
+        if (rtg_add_sat64(cx, 7) >= clip_x) {
+            rt_canvas_fill_rect_clipped(
+                canvas, cx, y, 8, 8, bg_col, clip_x, clip_y, clip_w, clip_h);
+            for (int row = 0; row < 8; row++) {
+                uint8_t bits = glyph[row];
+                for (int col_idx = 0; col_idx < 8; col_idx++) {
+                    if (bits & (0x80 >> col_idx))
+                        rt_canvas_pset_clipped(canvas,
+                                               rtg_add_sat64(cx, col_idx),
+                                               rtg_add_sat64(y, row),
+                                               fg_col,
+                                               clip_x,
+                                               clip_y,
+                                               clip_w,
+                                               clip_h);
+                }
             }
         }
         cx = rtg_add_sat64(cx, 8);
@@ -1026,8 +1159,9 @@ void rt_canvas_text_scaled(
         return;
     rt_canvas_resync_window_state(canvas);
 
-    const char *str = rt_string_cstr(text);
-    if (!str)
+    const char *str = NULL;
+    size_t byte_len = 0;
+    if (!rt_canvas_text_bytes(text, &str, &byte_len))
         return;
 
     int64_t cx = x;
@@ -1038,32 +1172,41 @@ void rt_canvas_text_scaled(
     int64_t clip_h = 0;
     if (!rt_canvas_get_logical_clip_bounds(canvas, &clip_x, &clip_y, &clip_w, &clip_h))
         return;
-    size_t byte_len = (size_t)rt_str_len(text);
+    int64_t cell_width = rtg_mul_sat64(8, scale);
+    int64_t clip_x1 = rtg_add_sat64(clip_x, clip_w);
+    int64_t clip_y1 = rtg_add_sat64(clip_y, clip_h);
+    if (x >= clip_x1 || y >= clip_y1 || rtg_add_sat64(y, cell_width) <= clip_y)
+        return;
     size_t index = 0;
     int codepoint = 0;
 
     while (rt_canvas_next_codepoint(str, byte_len, &index, &codepoint)) {
+        if (cx >= clip_x1)
+            break;
         int glyph_cp = (codepoint >= 32 && codepoint <= 126) ? codepoint : '?';
         const uint8_t *glyph = rt_font_get_glyph(glyph_cp);
 
-        for (int row = 0; row < 8; row++) {
-            uint8_t bits = glyph[row];
-            for (int col_idx = 0; col_idx < 8; col_idx++) {
-                if (bits & (0x80 >> col_idx)) {
-                    rt_canvas_fill_rect_clipped(canvas,
-                                                rtg_add_sat64(cx, rtg_mul_sat64(col_idx, scale)),
-                                                rtg_add_sat64(y, rtg_mul_sat64(row, scale)),
-                                                scale,
-                                                scale,
-                                                col,
-                                                clip_x,
-                                                clip_y,
-                                                clip_w,
-                                                clip_h);
+        if (rtg_add_sat64(cx, cell_width - 1) >= clip_x) {
+            for (int row = 0; row < 8; row++) {
+                uint8_t bits = glyph[row];
+                for (int col_idx = 0; col_idx < 8; col_idx++) {
+                    if (bits & (0x80 >> col_idx)) {
+                        rt_canvas_fill_rect_clipped(
+                            canvas,
+                            rtg_add_sat64(cx, rtg_mul_sat64(col_idx, scale)),
+                            rtg_add_sat64(y, rtg_mul_sat64(row, scale)),
+                            scale,
+                            scale,
+                            col,
+                            clip_x,
+                            clip_y,
+                            clip_w,
+                            clip_h);
+                    }
                 }
             }
         }
-        cx = rtg_add_sat64(cx, rtg_mul_sat64(8, scale));
+        cx = rtg_add_sat64(cx, cell_width);
     }
 }
 
@@ -1085,8 +1228,9 @@ void rt_canvas_text_scaled_bg(
         return;
     rt_canvas_resync_window_state(canvas);
 
-    const char *str = rt_string_cstr(text);
-    if (!str)
+    const char *str = NULL;
+    size_t byte_len = 0;
+    if (!rt_canvas_text_bytes(text, &str, &byte_len))
         return;
 
     int64_t cx = x;
@@ -1098,30 +1242,42 @@ void rt_canvas_text_scaled_bg(
     int64_t clip_h = 0;
     if (!rt_canvas_get_logical_clip_bounds(canvas, &clip_x, &clip_y, &clip_w, &clip_h))
         return;
-    size_t byte_len = (size_t)rt_str_len(text);
+    int64_t cell_width = rtg_mul_sat64(8, scale);
+    int64_t clip_x1 = rtg_add_sat64(clip_x, clip_w);
+    int64_t clip_y1 = rtg_add_sat64(clip_y, clip_h);
+    if (x >= clip_x1 || y >= clip_y1 || rtg_add_sat64(y, cell_width) <= clip_y)
+        return;
     size_t index = 0;
     int codepoint = 0;
 
     while (rt_canvas_next_codepoint(str, byte_len, &index, &codepoint)) {
+        if (cx >= clip_x1)
+            break;
         int glyph_cp = (codepoint >= 32 && codepoint <= 126) ? codepoint : '?';
         const uint8_t *glyph = rt_font_get_glyph(glyph_cp);
 
-        for (int row = 0; row < 8; row++) {
-            uint8_t bits = glyph[row];
-            for (int col_idx = 0; col_idx < 8; col_idx++) {
-                rt_canvas_fill_rect_clipped(canvas,
-                                            rtg_add_sat64(cx, rtg_mul_sat64(col_idx, scale)),
-                                            rtg_add_sat64(y, rtg_mul_sat64(row, scale)),
-                                            scale,
-                                            scale,
-                                            (bits & (0x80 >> col_idx)) ? fg_col : bg_col,
-                                            clip_x,
-                                            clip_y,
-                                            clip_w,
-                                            clip_h);
+        if (rtg_add_sat64(cx, cell_width - 1) >= clip_x) {
+            rt_canvas_fill_rect_clipped(
+                canvas, cx, y, cell_width, cell_width, bg_col, clip_x, clip_y, clip_w, clip_h);
+            for (int row = 0; row < 8; row++) {
+                uint8_t bits = glyph[row];
+                for (int col_idx = 0; col_idx < 8; col_idx++) {
+                    if (bits & (0x80 >> col_idx))
+                        rt_canvas_fill_rect_clipped(
+                            canvas,
+                            rtg_add_sat64(cx, rtg_mul_sat64(col_idx, scale)),
+                            rtg_add_sat64(y, rtg_mul_sat64(row, scale)),
+                            scale,
+                            scale,
+                            fg_col,
+                            clip_x,
+                            clip_y,
+                            clip_w,
+                            clip_h);
+                }
             }
         }
-        cx = rtg_add_sat64(cx, rtg_mul_sat64(8, scale));
+        cx = rtg_add_sat64(cx, cell_width);
     }
 }
 
@@ -1150,7 +1306,7 @@ void rt_canvas_text_centered(void *canvas_ptr, int64_t y, rt_string text, int64_
         return;
     int64_t w = rt_canvas_width(canvas_ptr);
     int64_t tw = rt_canvas_text_width(text);
-    int64_t x = (w - tw) / 2;
+    int64_t x = rtg_sub_sat64(w, tw) / 2;
     rt_canvas_text(canvas_ptr, x, y, text, color);
 }
 
@@ -1166,7 +1322,7 @@ void rt_canvas_text_right(
         return;
     int64_t w = rt_canvas_width(canvas_ptr);
     int64_t tw = rt_canvas_text_width(text);
-    int64_t x = w - tw - margin;
+    int64_t x = rtg_sub_sat64(rtg_sub_sat64(w, tw), margin);
     rt_canvas_text(canvas_ptr, x, y, text, color);
 }
 
@@ -1182,7 +1338,7 @@ void rt_canvas_text_centered_scaled(
         return;
     int64_t w = rt_canvas_width(canvas_ptr);
     int64_t tw = rt_canvas_text_scaled_width(text, scale);
-    int64_t x = (w - tw) / 2;
+    int64_t x = rtg_sub_sat64(w, tw) / 2;
     rt_canvas_text_scaled(canvas_ptr, x, y, text, scale, color);
 }
 
@@ -1261,12 +1417,8 @@ void rt_canvas_disc_alpha(
 
     if (alpha <= 0)
         return;
-    if (alpha >= 255 && rtg_i64_fits_i32(cx) && rtg_i64_fits_i32(cy) && rtg_i64_fits_i32(radius)) {
-        vgfx_fill_circle(canvas->gfx_win,
-                         (int32_t)cx,
-                         (int32_t)cy,
-                         (int32_t)radius,
-                         rt_canvas_color_to_vgfx_rgb(color));
+    if (alpha >= 255) {
+        rt_canvas_disc(canvas_ptr, cx, cy, radius, color);
         return;
     }
 
@@ -1304,17 +1456,7 @@ void rt_canvas_disc_alpha(
         if (x1 > clip_x1)
             x1 = clip_x1;
         for (int64_t px = x0; px <= x1; px++) {
-            if (alpha >= 255)
-                rt_canvas_pset_clipped(canvas,
-                                       px,
-                                       py,
-                                       rt_canvas_color_to_vgfx_rgb(color),
-                                       clip_x,
-                                       clip_y,
-                                       clip_w,
-                                       clip_h);
-            else if (rt_canvas_point_in_clip_i64(px, py, clip_x, clip_y, clip_w, clip_h))
-                vgfx_pset_alpha(canvas->gfx_win, (int32_t)px, (int32_t)py, argb);
+            vgfx_pset_alpha(canvas->gfx_win, (int32_t)px, (int32_t)py, argb);
             if (px == INT64_MAX)
                 break;
         }
@@ -1427,7 +1569,7 @@ void rt_canvas_blit(void *canvas_ptr, int64_t x, int64_t y, void *pixels_ptr) {
     rt_canvas_resync_window_state(canvas);
 
     vgfx_framebuffer_t fb;
-    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb))
+    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb))
         return;
 
     int64_t dx = x;
@@ -1518,7 +1660,7 @@ void rt_canvas_blit_region(void *canvas_ptr,
     rt_canvas_resync_window_state(canvas);
 
     vgfx_framebuffer_t fb;
-    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb))
+    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb))
         return;
 
     if (!rt_canvas_prepare_blit_region(canvas, pixels, &dx, &dy, &sx, &sy, &w, &h))
@@ -1606,7 +1748,7 @@ void rt_canvas_blit_region_alpha(void *canvas_ptr,
     rt_canvas_resync_window_state(canvas);
 
     vgfx_framebuffer_t fb;
-    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb))
+    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb))
         return;
 
     if (!rt_canvas_prepare_blit_region(canvas, pixels, &dx, &dy, &sx, &sy, &w, &h))
@@ -1710,7 +1852,7 @@ void rt_canvas_blit_alpha(void *canvas_ptr, int64_t x, int64_t y, void *pixels_p
     rt_canvas_resync_window_state(canvas);
 
     vgfx_framebuffer_t fb;
-    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb))
+    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb))
         return;
 
     int64_t dx = x;
@@ -1867,7 +2009,7 @@ void *rt_canvas_copy_rect(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int
     // Copy pixels from canvas to buffer via direct framebuffer access — avoids
     // O(w*h) vgfx_point() calls (each involves clipping + bounds checking).
     vgfx_framebuffer_t fb;
-    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb)) {
+    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb)) {
         if (rt_obj_release_check0(pixels))
             rt_obj_free(pixels);
         return NULL;
@@ -1877,8 +2019,11 @@ void *rt_canvas_copy_rect(void *canvas_ptr, int64_t x, int64_t y, int64_t w, int
     float scale = rt_canvas_effective_coord_scale(canvas);
 
     rt_pixels_impl *pix = rt_pixels_checked_impl_or_null(pixels);
-    if (!pix || !pix->data)
-        return pixels;
+    if (!pix || !pix->data) {
+        if (rt_obj_release_check0(pixels))
+            rt_obj_free(pixels);
+        return NULL;
+    }
 
     for (int64_t py = 0; py < h; py++) {
         int64_t src_y = rtg_scale_up_i64(rtg_add_sat64(y, py), scale);

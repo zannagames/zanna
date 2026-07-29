@@ -1,5 +1,5 @@
 {
-  "version": 18,
+  "version": 19,
   "components": [
     {
       "name": "enemy-spawn",
@@ -17,20 +17,54 @@
           "key": "spawn.archetype",
           "type": "enum",
           "choices": [
-            "0",
-            "1",
-            "2",
-            "3",
-            "4",
-            "5",
-            "6",
-            "7",
-            "8",
-            "9",
-            "10",
-            "11",
-            "12",
-            "13"
+            {
+              "value": "0",
+              "label": "Husk"
+            },
+            {
+              "value": "1",
+              "label": "Sapper"
+            },
+            {
+              "value": "2",
+              "label": "Drone"
+            },
+            {
+              "value": "3",
+              "label": "Ranger"
+            },
+            {
+              "value": "4",
+              "label": "Marauder"
+            },
+            {
+              "value": "5",
+              "label": "Vanguard"
+            },
+            {
+              "value": "6",
+              "label": "Stalker"
+            },
+            {
+              "value": "7",
+              "label": "Wraith"
+            },
+            {
+              "value": "8",
+              "label": "Turret"
+            },
+            {
+              "value": "9",
+              "label": "Mite"
+            },
+            {
+              "value": "10",
+              "label": "Shrike"
+            },
+            {
+              "value": "11",
+              "label": "WARDEN Goliath"
+            }
           ],
           "default": "0"
         },
@@ -697,5 +731,428 @@
         "matchValue": 3
       }
     ]
-  }
+  },
+  "sceneComponents": [
+    {
+      "name": "mission-identity",
+      "label": "Mission",
+      "target": "3d-scene",
+      "description": "Level identity the campaign flow reads at load.",
+      "fields": [
+        {
+          "key": "af.levelId",
+          "type": "int",
+          "label": "Level id",
+          "group": "Identity"
+        },
+        {
+          "key": "af.name",
+          "type": "string",
+          "label": "Mission name",
+          "group": "Identity"
+        },
+        {
+          "key": "af.terrain",
+          "type": "int",
+          "label": "Terrain preset",
+          "group": "Identity",
+          "description": "Index into the game's terrain generator presets."
+        }
+      ]
+    },
+    {
+      "name": "player-start",
+      "label": "Player Start",
+      "target": "3d-scene",
+      "description": "Spawn pose applied when the mission begins.",
+      "fields": [
+        {
+          "key": "af.startX",
+          "type": "vec3",
+          "label": "Position",
+          "keys": [
+            "af.startX",
+            "af.startY",
+            "af.startZ"
+          ],
+          "group": "Player Start"
+        },
+        {
+          "key": "af.startYaw",
+          "type": "angle",
+          "label": "Facing yaw",
+          "unit": "deg",
+          "group": "Player Start"
+        }
+      ]
+    },
+    {
+      "name": "mission-ambient",
+      "label": "Mission Ambient",
+      "target": "3d-scene",
+      "description": "Fallback ambient color used before the light rig.",
+      "fields": [
+        {
+          "key": "af.ambR",
+          "type": "color",
+          "label": "Ambient color",
+          "group": "Ambient",
+          "description": "",
+          "keys": [
+            "af.ambR",
+            "af.ambG",
+            "af.ambB"
+          ]
+        }
+      ]
+    },
+    {
+      "name": "mission-water",
+      "label": "Water",
+      "target": "3d-scene",
+      "description": "Optional water volume the mission composes.",
+      "fields": [
+        {
+          "key": "af.wantWater",
+          "type": "bool",
+          "label": "Enable water",
+          "group": "Water"
+        },
+        {
+          "key": "af.watX",
+          "type": "vec3",
+          "label": "Center",
+          "keys": [
+            "af.watX",
+            "af.watY",
+            "af.watZ"
+          ],
+          "group": "Water"
+        },
+        {
+          "key": "af.watW",
+          "type": "float",
+          "label": "Width",
+          "unit": "m",
+          "group": "Water"
+        },
+        {
+          "key": "af.watD",
+          "type": "float",
+          "label": "Depth",
+          "unit": "m",
+          "group": "Water"
+        }
+      ]
+    },
+    {
+      "name": "terrain-offset",
+      "label": "Terrain Offset",
+      "target": "3d-scene",
+      "description": "Offset applied to the generated terrain mesh.",
+      "fields": [
+        {
+          "key": "af.terraOffX",
+          "type": "vec3",
+          "label": "Offset",
+          "keys": [
+            "af.terraOffX",
+            "af.terraOffY",
+            "af.terraOffZ"
+          ],
+          "group": "Terrain"
+        }
+      ]
+    },
+    {
+      "name": "sky-light-rig",
+      "label": "Sky & Light Rig",
+      "target": "3d-scene",
+      "description": "The lenv.* sun, sky dome, fog, and flag rig.",
+      "fields": [
+        {
+          "key": "lenv.sunR",
+          "type": "color",
+          "label": "Sun color",
+          "group": "Sun",
+          "description": "",
+          "keys": [
+            "lenv.sunR",
+            "lenv.sunG",
+            "lenv.sunB"
+          ]
+        },
+        {
+          "key": "lenv.sunI",
+          "type": "float",
+          "label": "Sun intensity",
+          "min": 0,
+          "max": 4,
+          "step": 0.05,
+          "slider": true,
+          "group": "Sun"
+        },
+        {
+          "key": "lenv.sunX",
+          "type": "vec3",
+          "label": "Sun direction",
+          "keys": [
+            "lenv.sunX",
+            "lenv.sunY",
+            "lenv.sunZ"
+          ],
+          "group": "Sun"
+        },
+        {
+          "key": "lenv.ambR",
+          "type": "color",
+          "label": "Ambient color",
+          "group": "Light Rig",
+          "description": "",
+          "keys": [
+            "lenv.ambR",
+            "lenv.ambG",
+            "lenv.ambB"
+          ]
+        },
+        {
+          "key": "lenv.accR",
+          "type": "color",
+          "label": "Accent color",
+          "group": "Light Rig",
+          "description": "",
+          "keys": [
+            "lenv.accR",
+            "lenv.accG",
+            "lenv.accB"
+          ]
+        },
+        {
+          "key": "lenv.filR",
+          "type": "color",
+          "label": "Fill color",
+          "group": "Light Rig",
+          "description": "",
+          "keys": [
+            "lenv.filR",
+            "lenv.filG",
+            "lenv.filB"
+          ]
+        },
+        {
+          "key": "lenv.filI",
+          "type": "float",
+          "label": "Fill intensity",
+          "min": 0,
+          "max": 4,
+          "step": 0.05,
+          "slider": true,
+          "group": "Light Rig"
+        },
+        {
+          "key": "lenv.filX",
+          "type": "vec3",
+          "label": "Fill direction",
+          "keys": [
+            "lenv.filX",
+            "lenv.filY",
+            "lenv.filZ"
+          ],
+          "group": "Light Rig"
+        },
+        {
+          "key": "lenv.zenR",
+          "type": "color",
+          "label": "Zenith color",
+          "group": "Sky Dome",
+          "description": "",
+          "keys": [
+            "lenv.zenR",
+            "lenv.zenG",
+            "lenv.zenB"
+          ]
+        },
+        {
+          "key": "lenv.horR",
+          "type": "color",
+          "label": "Horizon color",
+          "group": "Sky Dome",
+          "description": "",
+          "keys": [
+            "lenv.horR",
+            "lenv.horG",
+            "lenv.horB"
+          ]
+        },
+        {
+          "key": "lenv.grdR",
+          "type": "color",
+          "label": "Ground color",
+          "group": "Sky Dome",
+          "description": "",
+          "keys": [
+            "lenv.grdR",
+            "lenv.grdG",
+            "lenv.grdB"
+          ]
+        },
+        {
+          "key": "lenv.cloud",
+          "type": "float",
+          "label": "Cloud cover",
+          "min": 0,
+          "max": 1,
+          "step": 0.01,
+          "slider": true,
+          "group": "Sky Dome"
+        },
+        {
+          "key": "lenv.atmo",
+          "type": "int",
+          "label": "Atmosphere preset",
+          "group": "Fog & Atmosphere"
+        },
+        {
+          "key": "lenv.fogNear",
+          "type": "float",
+          "label": "Fog near",
+          "unit": "m",
+          "group": "Fog & Atmosphere"
+        },
+        {
+          "key": "lenv.fogFar",
+          "type": "float",
+          "label": "Fog far",
+          "unit": "m",
+          "group": "Fog & Atmosphere"
+        },
+        {
+          "key": "lenv.vanX",
+          "type": "vec3",
+          "label": "Vantage point",
+          "keys": [
+            "lenv.vanX",
+            "lenv.vanY",
+            "lenv.vanZ"
+          ],
+          "group": "Fog & Atmosphere"
+        },
+        {
+          "key": "lenv.flare",
+          "type": "bool",
+          "label": "Lens flare",
+          "group": "Flags"
+        },
+        {
+          "key": "lenv.stars",
+          "type": "bool",
+          "label": "Stars",
+          "group": "Flags"
+        },
+        {
+          "key": "lenv.heightFog",
+          "type": "bool",
+          "label": "Height fog",
+          "group": "Flags"
+        },
+        {
+          "key": "lenv.terrain",
+          "type": "bool",
+          "label": "Terrain lighting",
+          "group": "Flags"
+        }
+      ]
+    },
+    {
+      "name": "mission-objectives",
+      "label": "Objectives",
+      "target": "3d-scene",
+      "description": "Ordered objective list the HUD and flow consume.",
+      "repeat": {
+        "countKey": "obj.count",
+        "indexPattern": "obj.{i}.",
+        "max": 8,
+        "itemLabel": "Objective"
+      },
+      "fields": [
+        {
+          "key": "kind",
+          "type": "enum",
+          "label": "Kind",
+          "choices": [
+            {
+              "value": "0",
+              "label": "Reach"
+            },
+            {
+              "value": "1",
+              "label": "Kill"
+            },
+            {
+              "value": "2",
+              "label": "Activate"
+            },
+            {
+              "value": "3",
+              "label": "Survive"
+            },
+            {
+              "value": "4",
+              "label": "Collect"
+            },
+            {
+              "value": "5",
+              "label": "Clear"
+            }
+          ],
+          "storedKind": "int"
+        },
+        {
+          "key": "text",
+          "type": "string",
+          "label": "Log text"
+        },
+        {
+          "key": "prompt",
+          "type": "string",
+          "label": "HUD prompt"
+        },
+        {
+          "key": "x",
+          "type": "vec2",
+          "label": "Position XZ",
+          "keys": [
+            "x",
+            "z"
+          ]
+        },
+        {
+          "key": "radius",
+          "type": "float",
+          "label": "Radius",
+          "min": 0,
+          "max": 60,
+          "step": 0.5,
+          "slider": true,
+          "unit": "m"
+        },
+        {
+          "key": "count",
+          "type": "int",
+          "label": "Target count"
+        },
+        {
+          "key": "prereq",
+          "type": "int",
+          "label": "Prerequisite",
+          "description": "Objective index that must complete first; -1 for none."
+        },
+        {
+          "key": "optional",
+          "type": "bool",
+          "label": "Optional"
+        }
+      ]
+    }
+  ]
 }

@@ -1,0 +1,429 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_settings_forms_probe.zia
+// Purpose: Schema-v19 scene-settings coverage: parser accept/reject bounds
+//          and the 3D Scene Settings live-commit contract (ADR 0221/0222).
+// Key invariants:
+//   - Every new v19 accept/reject bound has one exact assertion.
+//   - Editor coverage proves one-gesture-one-transaction, no phantom
+//     history, byte-exact undo, and dirty-free browsing.
+// Ownership/Lifetime:
+//   - Standalone probe process; temp dirs removed on every path.
+// Links: zannastudio/src/ui/scene_component_schema_forms.zia,
+//        docs/adr/0222-schema-v19-typed-scene-settings.md
+//
+//===----------------------------------------------------------------------===//
+
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_component_schema";
+bind "../ui/scene_component_schema_forms_model";
+bind "../core/project_manager";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_settings_inspector_3d";
+bind "../ui/scene_panels_3d";
+bind "scene_probe_support";
+
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind GUI = Zanna.GUI;
+bind Path = Zanna.IO.Path;
+bind TempFile = Zanna.IO.TempFile;
+bind Terminal = Zanna.Terminal;
+bind Str = Zanna.String;
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func near(actual: Number, expected: Number) -> Boolean {
+    var delta = actual - expected;
+    if delta < 0.0 { delta = 0.0 - delta; }
+    return delta < 0.01;
+}
+
+func header(version: Integer) -> String {
+    return "{\n  \"version\": " + version + ",\n  \"components\": [],\n";
+}
+
+func settings(body: String) -> String {
+    return header(19) + "  \"sceneComponents\": [" + body + "]\n}\n";
+}
+
+func componentJson(fieldsBody: String) -> String {
+    return "{\"name\": \"probe\", \"target\": \"3d-scene\", "
+        + "\"fields\": [" + fieldsBody + "]}";
+}
+
+/// @brief Exercise every parser accept path in one schema.
+func VerifyParserAccepts() -> Boolean {
+    var text = settings(
+        "{\"name\": \"rig\", \"label\": \"Rig\", \"target\": \"3d-scene\","
+        + " \"description\": \"d\", \"fields\": ["
+        + "{\"key\": \"p.sunR\", \"type\": \"color\", \"label\": \"Sun\","
+        + "  \"keys\": [\"p.sunR\", \"p.sunG\", \"p.sunB\"],"
+        + "  \"group\": \"Sun\"},"
+        + "{\"key\": \"p.sunI\", \"type\": \"float\", \"label\": \"I\","
+        + "  \"min\": 0, \"max\": 4, \"step\": 0.1, \"slider\": true,"
+        + "  \"unit\": \"x\"},"
+        + "{\"key\": \"p.yaw\", \"type\": \"angle\", \"label\": \"Yaw\","
+        + "  \"storageUnit\": \"radians\"},"
+        + "{\"key\": \"p.dir\", \"type\": \"vec3\", \"label\": \"Dir\","
+        + "  \"keys\": [\"p.dirX\", \"p.dirY\", \"p.dirZ\"]},"
+        + "{\"key\": \"p.uv\", \"type\": \"vec2\", \"label\": \"UV\","
+        + "  \"keys\": [\"p.u\", \"p.v\"]},"
+        + "{\"key\": \"p.kind\", \"type\": \"enum\", \"label\": \"K\","
+        + "  \"storedKind\": \"int\","
+        + "  \"choices\": [{\"value\": \"0\", \"label\": \"Reach\"},"
+        + "               \"1\"]},"
+        + "{\"key\": \"p.on\", \"type\": \"bool\", \"label\": \"On\"},"
+        + "{\"key\": \"p.route\", \"type\": \"ref\", \"label\": \"R\","
+        + "  \"ref\": {\"kind\": \"metadata-int\", \"match\": \"route\"}}"
+        + "]},"
+        + "{\"name\": \"objectives\", \"target\": \"3d-scene\","
+        + " \"repeat\": {\"countKey\": \"o.count\","
+        + "  \"indexPattern\": \"o.{i}.\", \"max\": 8,"
+        + "  \"itemLabel\": \"Objective\"},"
+        + " \"fields\": [{\"key\": \"kind\", \"type\": \"int\","
+        + "  \"label\": \"Kind\"}]}");
+    var schema = scene_component_schema.ParseText(text, "memory");
+    if schema == null or schema.valid == false {
+        fail("v19 accept parse rejected: " + schema.error);
+        return false;
+    }
+    if schema.sceneSettings.count() != 2 {
+        fail("expected 2 scene components, got "
+             + schema.sceneSettings.count());
+        return false;
+    }
+    var rig = schema.sceneSettings.get(0);
+    if rig.label != "Rig" or rig.fields.count() != 8 {
+        fail("rig component shape wrong");
+        return false;
+    }
+    var sun = rig.fields.get(0);
+    if sun.kind != "color" or sun.keys.count() != 3
+       or sun.keys.get(2) != "p.sunB" or sun.group != "Sun" {
+        fail("color field did not parse keys/group");
+        return false;
+    }
+    var intensity = rig.fields.get(1);
+    if intensity.hasRange == false or intensity.slider == false
+       or intensity.maximum != 4.0 or intensity.unit != "x" {
+        fail("slider range hints did not parse");
+        return false;
+    }
+    var yaw = rig.fields.get(2);
+    if yaw.storageUnit != "radians" {
+        fail("angle storageUnit did not parse");
+        return false;
+    }
+    var kindField = rig.fields.get(5);
+    if kindField.choiceValues.count() != 2
+       or kindField.choiceLabels.get(0) != "Reach"
+       or kindField.choiceLabels.get(1) != "1"
+       or kindField.storedKind != "int"
+       or kindField.ChoiceLabelFor("0") != "Reach" {
+        fail("labeled enum did not parse values/labels/storedKind");
+        return false;
+    }
+    var route = rig.fields.get(7);
+    if route.refKind != "metadata-int" or route.refMatch != "route" {
+        fail("ref field did not parse");
+        return false;
+    }
+    var objectives = schema.sceneSettings.get(1);
+    if objectives.repeat.IsActive() == false
+       or objectives.repeat.maximum != 8
+       or objectives.repeat.PrefixFor(3) != "o.3." {
+        fail("repeat group did not parse or expand");
+        return false;
+    }
+    return true;
+}
+
+/// @brief One exact assertion per new reject bound.
+func VerifyParserRejects() -> Boolean {
+    var cases: List[String] = [];
+    var reasons: List[String] = [];
+    cases.add(header(18)
+        + "  \"sceneComponents\": []\n}\n");
+    reasons.add("sceneComponents below v19 must reject");
+    cases.add(settings("{\"name\": \"x\", \"target\": \"nope\","
+        + " \"fields\": []}"));
+    reasons.add("bad target must reject");
+    cases.add(settings(componentJson(
+        "{\"key\": \"a\", \"type\": \"vec3\", \"label\": \"A\"}")));
+    reasons.add("vec3 without keys must reject");
+    cases.add(settings(componentJson(
+        "{\"key\": \"a\", \"type\": \"vec2\", \"label\": \"A\","
+        + " \"keys\": [\"a\", \"b\", \"c\"]}")));
+    reasons.add("vec2 with 3 keys must reject");
+    cases.add(settings(componentJson(
+        "{\"key\": \"a\", \"type\": \"float\", \"label\": \"A\","
+        + " \"slider\": true}")));
+    reasons.add("slider without range must reject");
+    cases.add(settings(componentJson(
+        "{\"key\": \"a\", \"type\": \"float\", \"label\": \"A\","
+        + " \"min\": 2, \"max\": 1}")));
+    reasons.add("min >= max must reject");
+    cases.add(settings(componentJson(
+        "{\"key\": \"a\", \"type\": \"int\", \"label\": \"A\"},"
+        + "{\"key\": \"a\", \"type\": \"int\", \"label\": \"B\"}")));
+    reasons.add("duplicate keys must reject");
+    cases.add(settings(
+        "{\"name\": \"r\", \"target\": \"3d-scene\","
+        + " \"repeat\": {\"countKey\": \"c\","
+        + "  \"indexPattern\": \"o.\", \"max\": 4},"
+        + " \"fields\": [{\"key\": \"k\", \"type\": \"int\","
+        + "  \"label\": \"K\"}]}"));
+    reasons.add("repeat without {i} must reject");
+    cases.add(settings(
+        "{\"name\": \"r\", \"target\": \"3d-scene\","
+        + " \"repeat\": {\"countKey\": \"c\","
+        + "  \"indexPattern\": \"o.{i}.\", \"max\": 64},"
+        + " \"fields\": [{\"key\": \"k\", \"type\": \"int\","
+        + "  \"label\": \"K\"}]}"));
+    reasons.add("repeat max above bound must reject");
+    cases.add(settings(componentJson(
+        "{\"key\": \"a\", \"type\": \"enum\", \"label\": \"A\","
+        + " \"choices\": [{\"value\": \"0\", \"label\": \"X\"},"
+        + "              {\"value\": \"0\", \"label\": \"Y\"}]}")));
+    reasons.add("duplicate labeled enum values must reject");
+    cases.add(settings(componentJson(
+        "{\"key\": \"a\", \"type\": \"enum\", \"label\": \"A\","
+        + " \"storedKind\": \"int\","
+        + " \"choices\": [\"zero\"]}")));
+    reasons.add("storedKind int with non-int choice must reject");
+    cases.add(settings(componentJson(
+        "{\"key\": \"a\", \"type\": \"ref\", \"label\": \"A\","
+        + " \"ref\": {\"kind\": \"mystery\"}}")));
+    reasons.add("unknown ref kind must reject");
+
+    var index = 0;
+    while index < cases.count() {
+        var schema =
+            scene_component_schema.ParseText(cases.get(index), "memory");
+        if schema == null or schema.valid {
+            fail(reasons.get(index));
+            return false;
+        }
+        index = index + 1;
+    }
+    return true;
+}
+
+/// @brief Editor coverage: sections build from the workspace schema and
+///        every gesture follows the ADR 0221 live-commit contract.
+func VerifyEditorForms() -> Boolean {
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Scene Settings Probe", 1120, 760);
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(editor, shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var sceneDoc = documents.NewScene3DDocument();
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+    editor.Activate(sceneDoc);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+
+    var fixtureDir =
+        TempFile.CreateDirWithPrefix("zannastudio_scene_settings_");
+    var schemaPath = Path.Join(fixtureDir, "scene-components.json");
+    var scenePath = Path.Join(fixtureDir, "level.vscn");
+    File.WriteAllText(schemaPath, settings(
+        "{\"name\": \"rig\", \"label\": \"Rig\","
+        + " \"target\": \"3d-scene\", \"fields\": ["
+        + "{\"key\": \"p.sunI\", \"type\": \"float\","
+        + "  \"label\": \"Intensity\", \"min\": 0, \"max\": 4,"
+        + "  \"step\": 0.1, \"slider\": true},"
+        + "{\"key\": \"p.sunR\", \"type\": \"color\","
+        + "  \"label\": \"Sun\","
+        + "  \"keys\": [\"p.sunR\", \"p.sunG\", \"p.sunB\"]},"
+        + "{\"key\": \"p.name\", \"type\": \"string\","
+        + "  \"label\": \"Name\"}"
+        + "]},"
+        + "{\"name\": \"objectives\", \"target\": \"3d-scene\","
+        + " \"repeat\": {\"countKey\": \"o.count\","
+        + "  \"indexPattern\": \"o.{i}.\", \"max\": 4,"
+        + "  \"itemLabel\": \"Objective\"},"
+        + " \"fields\": [{\"key\": \"kind\", \"type\": \"int\","
+        + "  \"label\": \"Kind\"}]}"));
+    var project = new project_manager.ProjectManager();
+    project.Setup(null);
+    var previousPath = sceneDoc.filePath;
+    sceneDoc.filePath = scenePath;
+    if project.OpenFolder(fixtureDir) == false {
+        fail("could not open the scene-settings fixture project");
+        return false;
+    }
+    editor.SetWorkspaceContext(project);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+
+    var inspector = editor.sceneSettingsInspector;
+    if inspector.sections.count() != 2 {
+        fail("workspace schema did not build 2 sections, got "
+             + inspector.sections.count());
+        return false;
+    }
+    var rig = inspector.sections.get(0);
+    if rig.form.rows.count() != 3
+       or rig.form.rows.get(0).slider == null
+       or rig.form.rows.get(1).color == null
+       or rig.form.rows.get(2).text == null {
+        fail("rig section rows did not build slider/color/text");
+        return false;
+    }
+
+    // Slider settle-commit: one revision after movement stops; the value
+    // reaches root metadata as a float.
+    var baseline = sceneDoc.content;
+    var revision = editor.GetRevision();
+    rig.form.rows.get(0).slider.SetValue(2.5);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    var root = editor.scene.Root;
+    if editor.GetRevision() != revision + 1
+       or near(root.MetadataGetFloat("p.sunI", 0.0), 2.5) == false
+       or sceneDoc.content == baseline {
+        fail("slider settle did not commit exactly one root edit ("
+             + "revision=" + editor.GetRevision()
+             + ", value=" + root.MetadataGetFloat("p.sunI", 0.0) + ")");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    if editor.GetRevision() != revision + 1 {
+        fail("idle pump after slider commit created phantom history");
+        return false;
+    }
+
+    // Color picker: one gesture writes all three keys in one transaction.
+    var colorRevision = editor.GetRevision();
+    rig.form.rows.get(1).color.SetColor(16711680);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    if editor.GetRevision() != colorRevision + 1
+       or near(root.MetadataGetFloat("p.sunR", 0.0), 1.0) == false
+       or near(root.MetadataGetFloat("p.sunG", 1.0), 0.0) == false
+       or near(root.MetadataGetFloat("p.sunB", 1.0), 0.0) == false {
+        fail("color gesture did not write three keys as one edit");
+        return false;
+    }
+
+    // One undo removes the freshly created color keys exactly.
+    var beforeUndo = sceneDoc.content;
+    if editor.Undo() == false {
+        fail("undo after the color gesture failed");
+        return false;
+    }
+    root = editor.scene.Root;
+    if root.MetadataHas("p.sunR")
+       or sceneDoc.content == beforeUndo {
+        fail("undo did not restore the pre-color bytes");
+        return false;
+    }
+
+    // Repeat add: one transaction writes the item defaults + count.
+    var objectives = inspector.sections.get(1);
+    if objectives.addItemButton == null {
+        fail("repeat section did not build add/remove verbs");
+        return false;
+    }
+    // The verbs surface on the World topic; the repeat contract itself is
+    // asserted through the exact commit batches the buttons produce.
+    editor.SetInspectorSceneTab(true);
+    editor.SetSceneInspectorSection(
+        scene_editor_3d.SCENE_INSPECTOR_WORLD, false);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    if objectives.addItemButton.IsEnabled() == false
+       or objectives.removeItemButton.IsEnabled() {
+        fail("repeat verbs did not reflect the empty item state");
+        return false;
+    }
+    var addRevision = editor.GetRevision();
+    var addCommit =
+        new scene_settings_inspector_3d.SceneSettingsCommit();
+    scene_settings_inspector_3d.AppendDefaultWritesFor(
+        addCommit, objectives.component.fields.get(0), "o.0.");
+    addCommit.keys.add("o.count");
+    addCommit.kinds.add("int");
+    addCommit.values.add("1");
+    addCommit.label = "Added Objective 0";
+    if editor.ApplySceneSettingsCommit(addCommit) == false
+       or editor.GetRevision() != addRevision + 1
+       or root.MetadataGetInt("o.count", -1) != 1
+       or root.MetadataHas("o.0.kind") == false {
+        fail("repeat add was not one transaction (count="
+             + root.MetadataGetInt("o.count", -1) + ")");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    // The count change re-stamps the schema, so sections rebuilt.
+    objectives = inspector.sections.get(1);
+    if objectives.form.rows.count() != 1
+       or objectives.removeItemButton.IsEnabled() == false {
+        fail("remove verb did not enable with one item present (rows="
+             + objectives.form.rows.count() + ")");
+        return false;
+    }
+    var removeRevision = editor.GetRevision();
+    var removeCommit =
+        new scene_settings_inspector_3d.SceneSettingsCommit();
+    scene_settings_inspector_3d.AppendRemovalKeysFor(
+        removeCommit, objectives.component.fields.get(0), "o.0.");
+    removeCommit.keys.add("o.count");
+    removeCommit.kinds.add("int");
+    removeCommit.values.add("0");
+    removeCommit.label = "Removed Objective 0";
+    if editor.ApplySceneSettingsCommit(removeCommit) == false
+       or editor.GetRevision() != removeRevision + 1
+       or root.MetadataGetInt("o.count", -1) != 0
+       or root.MetadataHas("o.0.kind") {
+        fail("repeat remove-last was not one transaction");
+        return false;
+    }
+
+    // Browsing refreshes never dirty the document.
+    sceneDoc.isModified = false;
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    shell.Render();
+    editor.Pump(sceneDoc);
+    if sceneDoc.isModified {
+        fail("browsing scene settings dirtied the document");
+        return false;
+    }
+
+    sceneDoc.filePath = previousPath;
+    project.CloseProject();
+    editor.SetWorkspaceContext(null);
+    removeTempDir(fixtureDir);
+    return true;
+}
+
+func removeTempDir(path: String) {
+    if path != "" { Dir.RemoveAll(path); }
+}
+
+func main() {
+    if VerifyParserAccepts() == false { return; }
+    if VerifyParserRejects() == false { return; }
+    if VerifyEditorForms() == false { return; }
+    Terminal.Say("RESULT: ok");
+}

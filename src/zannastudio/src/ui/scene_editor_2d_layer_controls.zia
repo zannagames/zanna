@@ -536,6 +536,17 @@ class SceneEditor2DLayerControlsLayer extends PreviousLayer.SceneEditor2DInspect
         var applyRequested = applyObjectButton.WasClicked();
         if objectTypeInput.WasSubmitted() { applyRequested = true; }
         if objectIdInput.WasSubmitted() { applyRequested = true; }
+        // Focus leaving a changed type/id draft commits live (ADR 0221);
+        // Enter still commits immediately via WasSubmitted above.
+        var objectTextFocused = objectTypeInput.IsFocused()
+            or objectIdInput.IsFocused();
+        if applyRequested == false and objectTextWasFocused
+           and objectTextFocused == false
+           and (objectTypeInput.Text != objectTypeCanonical
+                or objectIdInput.Text != objectIdCanonical) {
+            applyRequested = true;
+        }
+        objectTextWasFocused = objectTextFocused;
         if applyRequested and selectedObjects.count() == 1
            and selectedObject >= 0
            and selectedObject < scene.ObjectCount() {
@@ -545,8 +556,14 @@ class SceneEditor2DLayerControlsLayer extends PreviousLayer.SceneEditor2DInspect
                 objectIdInput.Text,
                 Convert.NumToInt(objectXSpinner.Value),
                 Convert.NumToInt(objectYSpinner.Value)) or changed;
+            objectTypeCanonical = objectTypeInput.Text;
+            objectIdCanonical = objectIdInput.Text;
         }
-        if objectDrawStackApplyButton.WasClicked()
+        // The layer/priority pair mirrors two canonical object fields, so
+        // changing either commits live (ADR 0221).
+        var drawStackEdited = objectAfterLayerDropdown.WasChanged();
+        if objectDrawOrderSpinner.WasChanged() { drawStackEdited = true; }
+        if (drawStackEdited or objectDrawStackApplyButton.WasClicked())
            and selectedObjects.count() == 1
            and selectedObject >= 0
            and selectedObject < scene.ObjectCount() {

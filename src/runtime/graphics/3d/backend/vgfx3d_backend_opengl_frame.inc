@@ -501,8 +501,7 @@ static void gl_submit_draw(void *ctx_ptr,
                 (int)cmd->disable_depth_test);
     }
     gl.DrawElements(GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT, NULL);
-    gl_end_material_program(
-        ctx, specialized_program, saved_uniform_locations, saved_program);
+    gl_end_material_program(ctx, specialized_program, saved_uniform_locations, saved_program);
     ctx->stats.draw_calls++;
     if (gl_debug_enabled()) {
         GLenum err = gl.GetError();
@@ -721,23 +720,36 @@ static void gl_resize(void *ctx_ptr, int32_t w, int32_t h) {
 /// @brief Ensure the context has a reusable host-side RGBA readback buffer.
 /// @details GPU readback paths are called by screenshots, overlays, and the X11 fallback
 ///          presenter. Keeping one scratch buffer on the context avoids allocating and freeing
-///          a large temporary every frame while still preserving the exact byte-count overflow
-///          checks in each caller.
+///          a large temporary every frame. Geometric growth also avoids reallocating for every
+///          small resolution increase while preserving the exact byte-count overflow checks in
+///          each caller.
 /// @param ctx OpenGL backend context that owns the scratch allocation.
 /// @param bytes Minimum number of bytes required by the caller.
-/// @return Pointer to at least @p bytes of writable storage, or NULL on allocation failure.
-static uint8_t *gl_ensure_readback_scratch(gl_context_t *ctx, size_t bytes) {
+/// @return Naturally aligned raw storage for at least @p bytes, or NULL on allocation failure.
+static void *gl_ensure_readback_scratch(gl_context_t *ctx, size_t bytes) {
+    size_t capacity;
     uint8_t *next;
 
     if (!ctx || bytes == 0)
         return NULL;
     if (ctx->readback_scratch_rgba && ctx->readback_scratch_bytes >= bytes)
         return ctx->readback_scratch_rgba;
-    next = (uint8_t *)realloc(ctx->readback_scratch_rgba, bytes);
+    capacity = ctx->readback_scratch_bytes;
+    if (capacity < 4096u)
+        capacity = 4096u;
+    while (capacity < bytes) {
+        const size_t increment = capacity / 2u + 1u;
+        if (increment > SIZE_MAX - capacity) {
+            capacity = bytes;
+            break;
+        }
+        capacity += increment;
+    }
+    next = (uint8_t *)realloc(ctx->readback_scratch_rgba, capacity);
     if (!next)
         return NULL;
     ctx->readback_scratch_rgba = next;
-    ctx->readback_scratch_bytes = bytes;
+    ctx->readback_scratch_bytes = capacity;
     return next;
 }
 
@@ -1183,14 +1195,26 @@ static void gl_set_render_target(void *ctx_ptr, vgfx3d_rendertarget_t *rt) {
     ctx->scene_postfx_pending = 0;
     ctx->scene_composited_to_backbuffer = 0;
     if (!rt) {
+        /* A void target-switch API cannot report readback failure. Keep the dirty target and its
+         * synchronization hook live so a later retry can still recover the only authoritative
+         * GPU copy instead of deleting it during teardown. */
+        if (ctx->rtt_target && (ctx->rtt_color_dirty || ctx->rtt_target->color_dirty) &&
+            !gl_sync_render_target_color(ctx, ctx->rtt_target)) {
+            return;
+        }
         destroy_rtt_targets(ctx);
         gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
         return;
     }
     if (ensure_rtt_targets(ctx, rt) != 0) {
-        destroy_rtt_targets(ctx);
-        ctx->active_target_kind = VGFX3D_OPENGL_TARGET_SWAPCHAIN;
-        gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+        /* ensure_rtt_targets is transactional. Preserve a prior active RTT after either
+         * replacement allocation or dirty synchronization fails; only select the swapchain when
+         * no complete RTT existed before this request. */
+        if (!ctx->rtt_fbo || !ctx->rtt_color_tex || !ctx->rtt_depth_rbo || !ctx->rtt_target) {
+            ctx->rtt_active = 0;
+            ctx->active_target_kind = VGFX3D_OPENGL_TARGET_SWAPCHAIN;
+            gl.BindFramebuffer(GL_FRAMEBUFFER, 0);
+        }
     }
 }
 
@@ -1554,14 +1578,12 @@ static void gl_submit_draw_instanced(void *ctx_ptr,
                     instance_count))) {
         set_identity_instance_constants();
         ctx->stats.dropped_draws++;
-        gl_end_material_program(
-            ctx, specialized_program, saved_uniform_locations, saved_program);
+        gl_end_material_program(ctx, specialized_program, saved_uniform_locations, saved_program);
         return;
     }
     gl.DrawElementsInstanced(
         GL_TRIANGLES, (GLsizei)index_count, GL_UNSIGNED_INT, NULL, (GLsizei)instance_count);
-    gl_end_material_program(
-        ctx, specialized_program, saved_uniform_locations, saved_program);
+    gl_end_material_program(ctx, specialized_program, saved_uniform_locations, saved_program);
     ctx->stats.draw_calls++;
     set_identity_instance_constants();
 }

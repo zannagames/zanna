@@ -1,0 +1,226 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_play_controller.zia
+// Purpose: Embedded play session state for the scene editors: hosts the
+//          frame/input channel, presents game frames into the viewport
+//          image, and forwards focused input (ADR 0225).
+// Key invariants:
+//   - Frames present through the single-copy AcquireFrameToImage path.
+//   - Input forwards only while the pane image has focus; coordinates map
+//     from pane-local logical space to game-frame pixels.
+//   - Status is truthful: waiting → live → exited(code unknown here; the
+//     build system reports the exit) — never a stale frame pretending.
+// Ownership/Lifetime:
+//   - The controller owns the channel handle; Stop() closes it and is
+//     idempotent. The editor owns the controller.
+// Links: docs/adr/0225-play-loop-and-embedded-play.md,
+//        src/runtime/graphics/common/rt_embed_host.c
+//
+//===----------------------------------------------------------------------===//
+
+module scene_play_controller;
+
+bind EmbedHost = Zanna.System.EmbedHost;
+bind GUI = Zanna.GUI;
+bind Input = Zanna.Input;
+bind Clock = Zanna.Time.Clock;
+
+final EVENT_MOUSE_MOVE = 1;
+final EVENT_MOUSE_DOWN = 2;
+final EVENT_MOUSE_UP = 3;
+final EVENT_KEY_DOWN = 5;
+final EVENT_KEY_UP = 6;
+final EVENT_CLOSE = 9;
+
+final CHANNEL_MAX_WIDTH = 1920;
+final CHANNEL_MAX_HEIGHT = 1080;
+
+/// @brief One embedded play session over the shared-memory channel.
+class ScenePlayController {
+    expose Boolean active;
+    expose String channelName;
+    expose String statusText;
+    hide EmbedHost.EmbedChannel channel;
+    hide Boolean sawFrame;
+    hide Boolean mouseWasDown;
+    hide Number lastMouseX;
+    hide Number lastMouseY;
+    hide List[Integer] trackedKeys;
+    hide List[Boolean] trackedDown;
+
+    expose func init() {
+        active = false;
+        channelName = "";
+        statusText = "";
+        channel = null;
+        sawFrame = false;
+        mouseWasDown = false;
+        lastMouseX = -1.0;
+        lastMouseY = -1.0;
+        trackedKeys = [];
+        trackedDown = [];
+    }
+
+    /// @brief Create the host channel for one play session.
+    /// @return The channel name for ZANNA_EMBED_CHANNEL, or "" on failure.
+    expose func Start() -> String {
+        Stop();
+        var name = "studio-play-" + Clock.NowMs();
+        var host = EmbedHost.Create(
+            name, CHANNEL_MAX_WIDTH, CHANNEL_MAX_HEIGHT);
+        if host == null { return ""; }
+        channel = host;
+        channelName = name;
+        active = true;
+        sawFrame = false;
+        mouseWasDown = false;
+        statusText = "Play: building…";
+        SeedTrackedKeys();
+        return name;
+    }
+
+    /// @brief End the session; asks the game to close and drops the channel.
+    expose func Stop() {
+        if channel != null {
+            channel.PushEvent(EVENT_CLOSE, 0, 0, 0);
+            channel.Close();
+        }
+        channel = null;
+        active = false;
+        channelName = "";
+        statusText = "";
+        sawFrame = false;
+    }
+
+    /// @brief Present the newest frame and refresh truthful status.
+    /// @return True when a new frame landed in @p image this pump.
+    expose func PumpFrames(image: GUI.Image) -> Boolean {
+        if active == false or channel == null or image == null {
+            return false;
+        }
+        var host = channel;
+        var presented = host.AcquireFrameToImage(image);
+        if presented {
+            if sawFrame == false {
+                image.SetSize(host.FrameWidth(), host.FrameHeight());
+            }
+            sawFrame = true;
+            statusText = "Play: live "
+                + host.FrameWidth() + "×" + host.FrameHeight();
+        } else if host.ProducerExited() {
+            statusText = "Play: the game exited";
+        } else if sawFrame == false {
+            if host.ProducerAttached() {
+                statusText = "Play: waiting for the first frame";
+            }
+        }
+        return presented;
+    }
+
+    /// @brief Whether the game process ended (frames will not resume).
+    expose func GameExited() -> Boolean {
+        if channel == null { return false; }
+        return channel.ProducerExited();
+    }
+
+    /// @brief Forward focused pane input to the game.
+    /// @param image The pane image (focus + geometry source).
+    /// @param pointerX Logical pointer X in window space.
+    /// @param pointerY Logical pointer Y in window space.
+    expose func PumpInput(image: GUI.Image,
+                          pointerX: Number,
+                          pointerY: Number) {
+        if active == false or channel == null or image == null {
+            return;
+        }
+        if image.IsFocused() == false { return; }
+        var host = channel;
+        var frameW = host.FrameWidth();
+        var frameH = host.FrameHeight();
+        if frameW <= 0 or frameH <= 0 { return; }
+        var paneX = image.GetScreenX();
+        var paneY = image.GetScreenY();
+        var paneW = image.GetScreenWidth();
+        var paneH = image.GetScreenHeight();
+        if paneW <= 0.0 or paneH <= 0.0 { return; }
+        var localX = (pointerX - paneX) * frameW / paneW;
+        var localY = (pointerY - paneY) * frameH / paneH;
+        var inside = localX >= 0.0 and localY >= 0.0
+            and localX < frameW and localY < frameH;
+        if inside
+           and (localX != lastMouseX or localY != lastMouseY) {
+            host.PushEvent(
+                EVENT_MOUSE_MOVE,
+                Zanna.Core.Convert.NumToInt(localX),
+                Zanna.Core.Convert.NumToInt(localY), 0);
+            lastMouseX = localX;
+            lastMouseY = localY;
+        }
+        var down = Input.Mouse.IsDown(0);
+        if down != mouseWasDown and inside {
+            var kind = EVENT_MOUSE_UP;
+            if down { kind = EVENT_MOUSE_DOWN; }
+            host.PushEvent(
+                kind,
+                Zanna.Core.Convert.NumToInt(localX),
+                Zanna.Core.Convert.NumToInt(localY), 0);
+        }
+        mouseWasDown = down;
+        PumpTrackedKeys(host);
+    }
+
+    // ---- keys -------------------------------------------------------------
+
+    /// @brief The bounded key set forwarded to embedded games.
+    hide func SeedTrackedKeys() {
+        trackedKeys = [];
+        trackedDown = [];
+        AddKey(Input.Key.W);
+        AddKey(Input.Key.A);
+        AddKey(Input.Key.S);
+        AddKey(Input.Key.D);
+        AddKey(Input.Key.Q);
+        AddKey(Input.Key.E);
+        AddKey(Input.Key.R);
+        AddKey(Input.Key.F);
+        AddKey(Input.Key.Space);
+        AddKey(Input.Key.LeftShift);
+        AddKey(Input.Key.LeftControl);
+        AddKey(Input.Key.Tab);
+        AddKey(Input.Key.Escape);
+        AddKey(Input.Key.Enter);
+        AddKey(Input.Key.Up);
+        AddKey(Input.Key.Down);
+        AddKey(Input.Key.Left);
+        AddKey(Input.Key.Right);
+        AddKey(Input.Key.Digit1);
+        AddKey(Input.Key.Digit2);
+        AddKey(Input.Key.Digit3);
+    }
+
+    hide func AddKey(code: Integer) {
+        trackedKeys.add(code);
+        trackedDown.add(false);
+    }
+
+    /// @brief Edge-forward the tracked key states.
+    hide func PumpTrackedKeys(host: EmbedHost.EmbedChannel) {
+        var index = 0;
+        while index < trackedKeys.count() {
+            var code = trackedKeys.get(index);
+            var down = Input.Keyboard.IsDown(code);
+            if down != trackedDown.get(index) {
+                var kind = EVENT_KEY_UP;
+                if down { kind = EVENT_KEY_DOWN; }
+                host.PushEvent(kind, code, 0, 0);
+                trackedDown.set(index, down);
+            }
+            index = index + 1;
+        }
+    }
+}

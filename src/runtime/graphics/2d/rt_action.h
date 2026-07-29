@@ -12,7 +12,8 @@
 // Key invariants:
 //   - Action names are unique across all registered actions.
 //   - Button and axis actions are disjoint; a name cannot be both.
-//   - Axis() clamps accumulated values to [-1.0, 1.0]; AxisRaw() does not.
+//   - Axis() clamps accumulated values to [-1.0, 1.0]; AxisRaw() remains
+//     finite but does not clamp finite magnitude.
 //   - All state queries reflect the current frame after rt_action_update.
 //   - Actions and bindings enumerate newest-first because both registries use
 //     head insertion.
@@ -92,15 +93,16 @@ void rt_action_clear(void);
 //=========================================================================
 
 /// @brief Define a new button action.
-/// @details Copies the nonempty name and initializes all cached state to zero.
+/// @details Copies a nonempty, NUL-free strict UTF-8 name and initializes all
+///          cached state to zero.
 /// @param name Borrowed action name (for example, `"jump"` or `"pause"`).
 /// @return `1` on success; `0` if the name is invalid/duplicate or allocation
 ///         fails.
 int8_t rt_action_define(rt_string name);
 
 /// @brief Define a new axis action.
-/// @details Copies the nonempty name and initializes the accumulated value to
-///          zero.
+/// @details Copies a nonempty, NUL-free strict UTF-8 name and initializes the
+///          accumulated value to zero.
 /// @param name Borrowed action name (for example, `"move_x"` or `"look_y"`).
 /// @return `1` on success; `0` if the name is invalid/duplicate or allocation
 ///         fails.
@@ -134,8 +136,8 @@ int8_t rt_action_remove(rt_string name);
 int8_t rt_action_bind_key(rt_string action, int64_t key);
 
 /// @brief Bind a keyboard key to an axis action with a specific value.
-/// @details The configured contribution is added on every update while the key
-///          is held. It is not validated or clamped before accumulation.
+/// @details The configured finite contribution is added on every update while
+///          the key is held. It is not magnitude-clamped before accumulation.
 /// @param action Borrowed axis-action name.
 /// @param key Key code.
 /// @param value Axis contribution while held, conventionally in -1.0..1.0.
@@ -170,28 +172,28 @@ int8_t rt_action_unbind_mouse(rt_string action, int64_t button);
 
 /// @brief Bind mouse X delta to an axis action.
 /// @param action Borrowed axis-action name.
-/// @param sensitivity Unvalidated multiplier for per-frame horizontal pixel delta.
+/// @param sensitivity Finite multiplier for per-frame horizontal pixel delta.
 /// @return `1` on success; `0` if the action is missing/button-style or
 ///         allocation fails.
 int8_t rt_action_bind_mouse_x(rt_string action, double sensitivity);
 
 /// @brief Bind mouse Y delta to an axis action.
 /// @param action Borrowed axis-action name.
-/// @param sensitivity Unvalidated multiplier for per-frame vertical pixel delta.
+/// @param sensitivity Finite multiplier for per-frame vertical pixel delta.
 /// @return `1` on success; `0` if the action is missing/button-style or
 ///         allocation fails.
 int8_t rt_action_bind_mouse_y(rt_string action, double sensitivity);
 
 /// @brief Bind mouse scroll X to an axis action.
 /// @param action Borrowed axis-action name.
-/// @param sensitivity Unvalidated multiplier for horizontal wheel delta.
+/// @param sensitivity Finite multiplier for horizontal wheel delta.
 /// @return `1` on success; `0` if the action is missing/button-style or
 ///         allocation fails.
 int8_t rt_action_bind_scroll_x(rt_string action, double sensitivity);
 
 /// @brief Bind mouse scroll Y to an axis action.
 /// @param action Borrowed axis-action name.
-/// @param sensitivity Unvalidated multiplier for vertical wheel delta.
+/// @param sensitivity Finite multiplier for vertical wheel delta.
 /// @return `1` on success; `0` if the action is missing/button-style or
 ///         allocation fails.
 int8_t rt_action_bind_scroll_y(rt_string action, double sensitivity);
@@ -221,7 +223,7 @@ int8_t rt_action_unbind_pad_button(rt_string action, int64_t pad_index, int64_t 
 /// @param action Borrowed axis-action name.
 /// @param pad_index Controller index (0-3), or -1 for any controller.
 /// @param axis Axis constant (ZANNA_AXIS_*).
-/// @param scale Unvalidated multiplier for the raw value (use -1.0 to invert).
+/// @param scale Finite multiplier for the raw value (use -1.0 to invert).
 /// @return `1` on success; `0` if the action is missing/button-style or
 ///         allocation fails.
 int8_t rt_action_bind_pad_axis(rt_string action, int64_t pad_index, int64_t axis, double scale);
@@ -240,7 +242,7 @@ int8_t rt_action_unbind_pad_axis(rt_string action, int64_t pad_index, int64_t ax
 /// @param action Borrowed axis-action name.
 /// @param pad_index Controller index (0-3), or -1 for any controller.
 /// @param button Gamepad button.
-/// @param value Unvalidated axis contribution while held.
+/// @param value Finite axis contribution while held.
 /// @return `1` on success; `0` if the action is missing/button-style or
 ///         allocation fails.
 int8_t rt_action_bind_pad_button_axis(rt_string action,
@@ -286,15 +288,15 @@ double rt_action_strength(rt_string action);
 //=========================================================================
 
 /// @brief Get the current value of an axis action.
-/// @details Sources are summed during rt_action_update(). NaN contributions
-///          remain NaN because the clamp only compares numeric bounds.
+/// @details Finite sources are summed with finite saturation during
+///          rt_action_update(); non-finite device samples are neutralized.
 /// @param action Borrowed action name.
 /// @return Combined value clamped to -1.0..1.0, or `0.0` if not found.
 double rt_action_axis(rt_string action);
 
 /// @brief Get the raw value of an axis action (not clamped).
 /// @param action Borrowed action name.
-/// @return Unclamped combined value, or `0.0` if not found.
+/// @return Finite, unclamped combined value, or `0.0` if not found.
 double rt_action_axis_raw(rt_string action);
 
 //=========================================================================
@@ -351,21 +353,24 @@ rt_string rt_action_pad_button_bound_to(int64_t pad_index, int64_t button);
 
 /// @brief Serialize all actions and bindings to a JSON string.
 /// @details Preserves current newest-first action and binding order and emits
-///          chord key arrays where applicable.
+///          chord key arrays where applicable. Invalid private registry state
+///          or allocation failure traps.
 /// @return Newly owned JSON string representing the current configuration.
-///         Builder failure returns an owned empty string when possible; final
-///         string allocation failure can return `NULL`.
+///         A trapped failure returns the immortal empty string fallback.
 rt_string rt_action_save(void);
 
 /// @brief Load actions and bindings from a JSON string.
 /// @details Parses into a temporary registry and replaces existing actions only
 ///          after the complete document succeeds. Failure restores the prior
 ///          registry unchanged. Unknown object members and binding types are
-///          skipped. Individual action/binding allocation failures can omit
-///          entries without failing an otherwise valid parse.
+///          skipped. Recognized fields are strict and may not be duplicated;
+///          source identifiers, finite numeric values, action/binding
+///          compatibility, and chord shape are validated. Input order is
+///          preserved exactly. Allocation failure rejects the transaction.
 /// @param json Borrowed JSON string, normally produced by rt_action_save().
 /// @return `1` when a top-level actions array is fully loaded; `0` on null,
-///         parse, shape, name/chord bound, parser, or pending-buffer failure.
+///         parse, schema, validation, resource-bound, parser, or allocation
+///         failure.
 int8_t rt_action_load(rt_string json);
 
 //=========================================================================
@@ -378,7 +383,7 @@ int8_t rt_action_load(rt_string json);
 ///          action to register as pressed. Example: Ctrl+Shift+S.
 /// @param action Borrowed button-action name.
 /// @param keys Borrowed sequence containing two through eight boxed int64 key
-///        codes in the order to preserve.
+///        codes in the order to preserve. Every key must be valid and distinct.
 /// @return `1` on success; `0` if the action is missing/axis-style, the
 ///         sequence is invalid, or allocation fails.
 int8_t rt_action_bind_chord(rt_string action, void *keys);
@@ -402,13 +407,14 @@ int64_t rt_action_chord_count(rt_string action);
 
 /// @brief Load a predefined set of actions with standard bindings.
 /// @details Recognized presets overlay the existing registry rather than
-///          clearing it. Existing names are reused, and calling a preset again
-///          can append duplicate bindings. The function initializes the
-///          registry lazily.
+///          clearing it. Existing compatible names and exact bindings are
+///          reused, so repeated loads are idempotent. A conflicting action
+///          kind or allocation failure rolls back the complete overlay. The
+///          function initializes the registry lazily.
 /// @param preset_name Borrowed name: `"standard_movement"`,
 ///        `"menu_navigation"`, `"platformer"`, `"topdown"`, or `"fps3d"`.
-/// @return `1` when the preset name is recognized; `0` for null, empty, or
-///         unknown names.
+/// @return `1` after the complete preset is present; `0` for null, empty,
+///         unknown names, a kind conflict, or allocation failure.
 int8_t rt_action_load_preset(rt_string preset_name);
 
 //=========================================================================

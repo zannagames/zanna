@@ -1,0 +1,191 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_forms_model.zia
+// Purpose: Schema-v19 typed scene-settings form records (ADR 0222).
+// Key invariants:
+//   - Records are value-only: parsed bounds, keys, labels, and presentation
+//     hints; no GUI or document state.
+//   - Every list is bounded by the named finals here; parsers reject the
+//     whole file when any bound is exceeded (house whole-file-reject rule).
+//   - Field kinds extend the component vocabulary presentation-side only:
+//     stored scene scalars keep their v1 kinds and bytes.
+// Ownership/Lifetime:
+//   - Owned by the parsed SceneComponentSchema; dropped with it on reload.
+// Links: zannastudio/src/ui/scene_component_schema_model.zia,
+//        zannastudio/src/ui/scene_component_schema_forms.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_forms_model;
+
+bind Str = Zanna.String;
+
+/// @brief Schema version introducing scene-level typed settings forms.
+final SCENE_SETTINGS_SCHEMA_VERSION: Integer = 19;
+
+/// @brief Scene-level form targets (distinct from object/node targets).
+final TARGET_3D_SCENE: String = "3d-scene";
+final TARGET_2D_SCENE: String = "2d-scene";
+
+/// @brief Extended presentation kinds for scene-settings fields.
+final KIND_COLOR: String = "color";
+final KIND_ANGLE: String = "angle";
+final KIND_VEC2: String = "vec2";
+final KIND_VEC3: String = "vec3";
+final KIND_REF: String = "ref";
+
+/// @brief Reference-picker vocabularies for `ref` fields.
+final REF_POSITION_XZ: String = "position-xz";
+final REF_METADATA_INT: String = "metadata-int";
+final REF_NODE_NAME: String = "node-name";
+final REF_OBJECT_ID: String = "object-id";
+
+/// @brief Angle storage units.
+final ANGLE_DEGREES: String = "degrees";
+final ANGLE_RADIANS: String = "radians";
+
+final MAX_SCENE_COMPONENTS: Integer = 32;
+final MAX_SCENE_FORM_FIELDS: Integer = 96;
+final MAX_REPEAT_ITEMS: Integer = 32;
+final MAX_GROUP_CHARS: Integer = 64;
+final MAX_UNIT_CHARS: Integer = 16;
+final MAX_LABELED_CHOICES: Integer = 64;
+
+/// @brief One typed scene-settings field bound to root/scene metadata keys.
+class SceneFormField {
+    expose String key;
+    expose String label;
+    expose String kind;
+    expose String group;
+    expose String description;
+    expose String defaultText;
+    /// Color/vec fields bind multiple scalar keys in declared order.
+    expose List[String] keys;
+    /// Sliders: bounded floats with optional unit suffix.
+    expose Boolean hasRange;
+    expose Number minimum;
+    expose Number maximum;
+    expose Number step;
+    expose Boolean slider;
+    expose String unit;
+    /// Angle fields: unit the stored scalar uses.
+    expose String storageUnit;
+    /// Labeled enums: parallel stored-value / display-label lists.
+    expose List[String] choiceValues;
+    expose List[String] choiceLabels;
+    /// Ref fields: picker vocabulary plus an optional match filter.
+    expose String refKind;
+    expose String refMatch;
+    /// Enum storage: "" stores strings; "int" stores integer values.
+    expose String storedKind;
+
+    expose func init() {
+        key = "";
+        label = "";
+        kind = "";
+        group = "";
+        description = "";
+        defaultText = "";
+        keys = [];
+        hasRange = false;
+        minimum = 0.0;
+        maximum = 0.0;
+        step = 0.0;
+        slider = false;
+        unit = "";
+        storageUnit = ANGLE_DEGREES;
+        choiceValues = [];
+        choiceLabels = [];
+        refKind = "";
+        refMatch = "";
+        storedKind = "";
+    }
+
+    /// @brief Display label for one stored enum value, or the value itself.
+    expose func ChoiceLabelFor(value: String) -> String {
+        var index = 0;
+        while index < choiceValues.count() {
+            if choiceValues.get(index) == value {
+                return choiceLabels.get(index);
+            }
+            index = index + 1;
+        }
+        return value;
+    }
+
+    /// @brief Whether one stored value is a declared enum choice.
+    expose func HasChoiceValue(value: String) -> Boolean {
+        var index = 0;
+        while index < choiceValues.count() {
+            if choiceValues.get(index) == value { return true; }
+            index = index + 1;
+        }
+        return false;
+    }
+}
+
+/// @brief Bounded repeating group over indexed metadata keys.
+class SceneFormRepeat {
+    expose String countKey;
+    expose String indexPattern;
+    expose Integer maximum;
+    expose String itemLabel;
+
+    expose func init() {
+        countKey = "";
+        indexPattern = "";
+        maximum = 0;
+        itemLabel = "";
+    }
+
+    /// @brief Whether this component declares a repeat group at all.
+    expose func IsActive() -> Boolean {
+        return countKey != "" and indexPattern != "" and maximum > 0;
+    }
+
+    /// @brief Expand the index pattern for one item index.
+    /// @details `Str.IndexOf` is 1-based (0 = absent); `Str.Substring`
+    ///          takes a 0-based start and a length.
+    expose func PrefixFor(index: Integer) -> String {
+        var at = Str.IndexOf(indexPattern, "{i}");
+        if at == 0 { return indexPattern; }
+        var before = "";
+        if at > 1 { before = Str.Substring(indexPattern, 0, at - 1); }
+        var afterStart = at + 2;
+        var afterLength = Str.get_Length(indexPattern) - afterStart;
+        var after = "";
+        if afterLength > 0 {
+            after = Str.Substring(indexPattern, afterStart, afterLength);
+        }
+        return before + index + after;
+    }
+}
+
+/// @brief One scene-level typed settings component (v19).
+class SceneSettingsComponent {
+    expose String name;
+    expose String label;
+    expose String target;
+    expose String description;
+    expose List[SceneFormField] fields;
+    expose SceneFormRepeat repeat;
+
+    expose func init() {
+        name = "";
+        label = "";
+        target = "";
+        description = "";
+        fields = [];
+        repeat = new SceneFormRepeat();
+    }
+
+    /// @brief Whether this component applies to one scene-level target.
+    expose func SupportsTarget(requested: String) -> Boolean {
+        return target == requested;
+    }
+}

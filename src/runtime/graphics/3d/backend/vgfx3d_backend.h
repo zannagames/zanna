@@ -956,15 +956,16 @@ typedef struct vgfx3d_backend {
     /// @return Nonzero when the backend accepted and applied the scale.
     int8_t (*set_render_scale)(void *ctx, float scale);
 
-    /* Optional scene-depth probes for occlusion-aware effects (lens flares).
+    /* Optional active-target depth probes for occlusion-aware effects (lens flares).
      * queue_depth_probe registers one NDC point (x, y in [-1, 1]) during frame
      * building and returns its slot id, or -1 when unsupported/full. Slot ids
      * restart at 0 each frame, so a stable per-frame request order yields stable
-     * slots. read_depth_probe returns the scene window depth ([0, 1], larger =
-     * farther) captured for that slot on a PREVIOUS completed frame, or a
-     * negative value while no result is available. GPU backends read the depth
-     * back asynchronously (typically one frame of latency, never a pipeline
-     * stall); the software backend answers from its CPU z-buffer. */
+     * slots. read_depth_probe returns canonical window depth ([0, 1], larger =
+     * farther) from the active window/scene/RTT destination, captured for that
+     * slot on a PREVIOUS completed frame, or a negative value while no result is
+     * available. GPU backends read the depth back asynchronously (typically one
+     * frame of latency, never a pipeline stall); the software backend answers
+     * from the active CPU depth buffer. */
     /// @brief Queue one normalized-device-coordinate depth sample for asynchronous resolution.
     /// @param[in,out] ctx Backend context.
     /// @param[in] ndc_x Horizontal normalized-device coordinate in the range -1 to 1.
@@ -974,7 +975,8 @@ typedef struct vgfx3d_backend {
     /// @brief Read a depth-probe result from a previously completed frame.
     /// @param[in] ctx Backend context.
     /// @param[in] slot Slot returned by @ref queue_depth_probe.
-    /// @return Window depth in the range 0-1, or a negative value when unavailable.
+    /// @return Canonical active-target depth in the range 0-1, or a negative value when
+    /// unavailable.
     float (*read_depth_probe)(void *ctx, int32_t slot);
 } vgfx3d_backend_t;
 

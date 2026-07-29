@@ -24,6 +24,8 @@ bind "../services/file_utils";
 bind "scene_bake_3d";
 bind "scene_editor_3d";
 bind "scene_pane_docking";
+bind "layout_metrics";
+bind "scene_settings_inspector_3d";
 
 bind GUI = Zanna.GUI;
 
@@ -36,7 +38,7 @@ func BuildInspectorHeader(editor: scene_editor_3d.SceneEditor3D,
         // library) on the Scene tab. Selection changes auto-follow, and a
         // manual choice holds until the next selection change.
         var inspectorTabRow = GUI.HBox.New();
-        inspectorTabRow.SetSpacing(4.0);
+        inspectorTabRow.SetSpacing(layout_metrics.GAP_ROW);
         inspector.AddChild(inspectorTabRow);
         editor.inspectorDock.Setup(
             app,
@@ -55,7 +57,7 @@ func BuildInspectorHeader(editor: scene_editor_3d.SceneEditor3D,
             "Author scene-wide imports, bake, environment, and the "
             + "material library");
         editor.sceneSectionRow = GUI.HBox.New();
-        editor.sceneSectionRow.SetSpacing(4.0);
+        editor.sceneSectionRow.SetSpacing(layout_metrics.GAP_ROW);
         inspector.AddChild(editor.sceneSectionRow);
         GUI.Label.New(editor.sceneSectionRow, "Topic");
         editor.sceneSectionDropdown =
@@ -80,7 +82,7 @@ func BuildHierarchy(editor: scene_editor_3d.SceneEditor3D,
         var hierarchyPane = editor.hierarchyPaneBox;
         GUI.Label.New(hierarchyPane, "Scene hierarchy");
         var hierarchySearchRow = GUI.HBox.New();
-        hierarchySearchRow.SetSpacing(4.0);
+        hierarchySearchRow.SetSpacing(layout_metrics.GAP_ROW);
         hierarchyPane.AddChild(hierarchySearchRow);
         editor.hierarchyDock.Setup(
             app,
@@ -139,6 +141,11 @@ func BuildHierarchy(editor: scene_editor_3d.SceneEditor3D,
             "Keep the selected nodes visible but ignore them during viewport "
             + "click and marquee selection; this follows the scene tab");
         editor.hierarchyTree = GUI.TreeView.New(hierarchyPane);
+        editor.hierarchyEmptyLabel = GUI.Label.New(
+            hierarchyPane,
+            "No nodes yet. Use Create… for primitives or Import "
+            + "Instance for project prefabs.");
+        editor.hierarchyEmptyLabel.SetVisible(false);
         editor.hierarchyTree.SetAccessibleName("3D scene hierarchy");
         // The dedicated pane gives the tree the full remaining height
         // instead of a fixed inspector slot.
@@ -151,7 +158,7 @@ func BuildHierarchy(editor: scene_editor_3d.SceneEditor3D,
             + "Shift-click selects a range, and drag above/onto/below a row "
             + "to reorder or reparent one undoable selection.");
         var parentRow = GUI.HBox.New();
-        parentRow.SetSpacing(4.0);
+        parentRow.SetSpacing(layout_metrics.GAP_ROW);
         hierarchyPane.AddChild(parentRow);
         GUI.Label.New(parentRow, "Parent");
         editor.parentDropdown = GUI.Dropdown.New(parentRow);
@@ -171,7 +178,7 @@ func BuildHierarchy(editor: scene_editor_3d.SceneEditor3D,
             + "reject conversions that would require shear");
         editor.preserveWorldReparentCheck.SetChecked(true);
         var siblingOrderRow = GUI.HBox.New();
-        siblingOrderRow.SetSpacing(4.0);
+        siblingOrderRow.SetSpacing(layout_metrics.GAP_ROW);
         hierarchyPane.AddChild(siblingOrderRow);
         GUI.Label.New(siblingOrderRow, "Sibling order");
         editor.moveSiblingEarlierButton =
@@ -208,7 +215,7 @@ func BuildNodeInspector(editor: scene_editor_3d.SceneEditor3D,
 
         editor.positionLabel = GUI.Label.New(inspector, "Position");
         editor.positionRow = GUI.HBox.New();
-        editor.positionRow.SetSpacing(4.0);
+        editor.positionRow.SetSpacing(layout_metrics.GAP_ROW);
         inspector.AddChild(editor.positionRow);
         editor.positionX = editor.AddTransformSpinner(editor.positionRow, "X", 0.0);
         editor.positionY = editor.AddTransformSpinner(editor.positionRow, "Y", 0.0);
@@ -216,7 +223,7 @@ func BuildNodeInspector(editor: scene_editor_3d.SceneEditor3D,
 
         editor.rotationLabel = GUI.Label.New(inspector, "Rotation (degrees)");
         editor.rotationRow = GUI.HBox.New();
-        editor.rotationRow.SetSpacing(4.0);
+        editor.rotationRow.SetSpacing(layout_metrics.GAP_ROW);
         inspector.AddChild(editor.rotationRow);
         editor.rotationX = editor.AddRotationSpinner(editor.rotationRow, "X");
         editor.rotationY = editor.AddRotationSpinner(editor.rotationRow, "Y");
@@ -224,7 +231,7 @@ func BuildNodeInspector(editor: scene_editor_3d.SceneEditor3D,
 
         editor.scaleLabel = GUI.Label.New(inspector, "Scale");
         editor.scaleRow = GUI.HBox.New();
-        editor.scaleRow.SetSpacing(4.0);
+        editor.scaleRow.SetSpacing(layout_metrics.GAP_ROW);
         inspector.AddChild(editor.scaleRow);
         editor.scaleX = editor.AddTransformSpinner(editor.scaleRow, "X", 1.0);
         editor.scaleY = editor.AddTransformSpinner(editor.scaleRow, "Y", 1.0);
@@ -234,7 +241,7 @@ func BuildNodeInspector(editor: scene_editor_3d.SceneEditor3D,
             "Apply the visible local transform fields to the current selection");
 
         editor.addComponentRow = GUI.HBox.New();
-        editor.addComponentRow.SetSpacing(4.0);
+        editor.addComponentRow.SetSpacing(layout_metrics.GAP_ROW);
         inspector.AddChild(editor.addComponentRow);
         GUI.Label.New(editor.addComponentRow, "Add component");
         editor.addComponentDropdown = GUI.Dropdown.New(editor.addComponentRow);
@@ -250,6 +257,15 @@ func BuildNodeInspector(editor: scene_editor_3d.SceneEditor3D,
         // below transforms/components instead of hiding beneath generic
         // metadata and secondary component inspectors.
         editor.terrainInspector.Setup(inspector);
+        editor.sceneSettingsGroup =
+            GUI.GroupBox.New(inspector, "Scene Settings");
+        editor.sceneSettingsHost = GUI.VBox.New();
+        editor.sceneSettingsHost.SetSpacing(
+            layout_metrics.GAP_ROW);
+        editor.sceneSettingsGroup.AddChild(
+            editor.sceneSettingsHost);
+        editor.sceneSettingsInspector.Setup(
+            editor.sceneSettingsHost);
         editor.metadataInspector.Setup(inspector);
         editor.componentPalette.Setup(
             inspector,
@@ -312,7 +328,7 @@ func BuildBakeInspector(editor: scene_editor_3d.SceneEditor3D,
         // Each labeled spinner lives in its own pair box so wrapping keeps
         // the label beside its control instead of splitting them across lines.
         var texelsPair = GUI.HBox.New();
-        texelsPair.SetSpacing(4.0);
+        texelsPair.SetSpacing(layout_metrics.GAP_ROW);
         bakeSettingsRow.AddChild(texelsPair);
         GUI.Label.New(texelsPair, "Texels/u");
         editor.bakeTexelsSpinner = GUI.Spinner.New(texelsPair);
@@ -324,7 +340,7 @@ func BuildBakeInspector(editor: scene_editor_3d.SceneEditor3D,
         editor.bakeTexelsSpinner.SetPreferredSize(72.0, 0.0);
         editor.bakeTexelsSpinner.SetAccessibleName("Bake texels per unit");
         var samplesPair = GUI.HBox.New();
-        samplesPair.SetSpacing(4.0);
+        samplesPair.SetSpacing(layout_metrics.GAP_ROW);
         bakeSettingsRow.AddChild(samplesPair);
         GUI.Label.New(samplesPair, "Samples");
         editor.bakeSamplesSpinner = GUI.Spinner.New(samplesPair);
@@ -335,7 +351,7 @@ func BuildBakeInspector(editor: scene_editor_3d.SceneEditor3D,
         editor.bakeSamplesSpinner.SetPreferredSize(72.0, 0.0);
         editor.bakeSamplesSpinner.SetAccessibleName("Bake samples per texel");
         var bouncesPair = GUI.HBox.New();
-        bouncesPair.SetSpacing(4.0);
+        bouncesPair.SetSpacing(layout_metrics.GAP_ROW);
         bakeSettingsRow.AddChild(bouncesPair);
         GUI.Label.New(bouncesPair, "Bounces");
         editor.bakeBouncesSpinner = GUI.Spinner.New(bouncesPair);
@@ -346,7 +362,7 @@ func BuildBakeInspector(editor: scene_editor_3d.SceneEditor3D,
         editor.bakeBouncesSpinner.SetPreferredSize(60.0, 0.0);
         editor.bakeBouncesSpinner.SetAccessibleName("Bake light bounces");
         var bakeSkyRow = GUI.HBox.New();
-        bakeSkyRow.SetSpacing(4.0);
+        bakeSkyRow.SetSpacing(layout_metrics.GAP_ROW);
         editor.bakeGroup.AddChild(bakeSkyRow);
         GUI.Label.New(bakeSkyRow, "Sky");
         editor.bakeSkyPicker = GUI.ColorPicker.New(bakeSkyRow);
@@ -410,7 +426,7 @@ func BuildBakeInspector(editor: scene_editor_3d.SceneEditor3D,
         GUI.Label.New(probeActionRow, "Spacing");
         editor.probeSpacingSpinner =
             editor.AddProbeSpinner(probeActionRow, "spacing", 2.0);
-        editor.probeApplyButton = GUI.Button.New(probeActionRow, "Apply Grid");
+        editor.probeApplyButton = GUI.Button.New(probeActionRow, "Place Probe Grid");
         editor.probeApplyButton.SetTooltip(
             "Write the probes.* convention in one undoable edit");
         editor.probeRemoveButton = GUI.Button.New(probeActionRow, "Remove");
@@ -488,7 +504,7 @@ func BuildEnvironmentInspector(editor: scene_editor_3d.SceneEditor3D,
         editor.materialLibraryList.SetDraggable(true);
         editor.materialLibraryList.SetDragData("zanna/material", "");
         var materialLibraryNameRow = GUI.HBox.New();
-        materialLibraryNameRow.SetSpacing(4.0);
+        materialLibraryNameRow.SetSpacing(layout_metrics.GAP_ROW);
         editor.materialLibraryGroup.AddChild(materialLibraryNameRow);
         editor.materialLibraryNameInput =
             GUI.TextInput.New(materialLibraryNameRow);
@@ -507,7 +523,7 @@ func BuildEnvironmentInspector(editor: scene_editor_3d.SceneEditor3D,
             "Store an independent copy of the selected node's material "
             + "under this name; atomic, conflict-guarded write");
         editor.materialLibraryApplyButton =
-            GUI.Button.New(materialLibraryActions, "Apply from Library");
+            GUI.Button.New(materialLibraryActions, "Use Library Material");
         editor.materialLibraryApplyButton.SetTooltip(
             "Clone the chosen library material onto every selected "
             + "node as one undoable edit; scenes stay self-contained");

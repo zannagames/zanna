@@ -1588,6 +1588,7 @@ il::support::Expected<ProjectConfig> parseManifest(const std::string &manifestPa
     bool hasLang = false;
     bool hasEntry = false;
     bool hasProfile = false;
+    bool hasRunProfile = false;
     bool hasOptimize = false;
     bool hasBoundsChecks = false;
     bool hasOverflowChecks = false;
@@ -1693,6 +1694,18 @@ il::support::Expected<ProjectConfig> parseManifest(const std::string &manifestPa
             } catch (const std::exception &ex) {
                 return makeManifestErr(manifestPath, lineNum, ex.what());
             }
+        } else if (directive == "run-profile") {
+            if (hasRunProfile)
+                return makeManifestErr(manifestPath, lineNum, "duplicate directive 'run-profile'");
+            hasRunProfile = true;
+            auto scalar = parseCoreScalar(value, manifestPath, lineNum, directive);
+            if (!scalar)
+                return il::support::Expected<ProjectConfig>(scalar.error());
+            if (scalar.value() != "vm" && scalar.value() != "native")
+                return makeManifestErr(manifestPath,
+                                       lineNum,
+                                       "run-profile must be 'vm' or 'native'");
+            config.runProfile = scalar.value();
         } else if (directive == "profile" || directive == "build-profile") {
             if (hasProfile)
                 return makeManifestErr(manifestPath, lineNum, "duplicate directive 'profile'");

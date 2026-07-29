@@ -1,0 +1,540 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_form.zia
+// Purpose: Shared schema-v19 scene-settings form renderer (typed rows).
+// Key invariants:
+//   - Presentation only: rows read and produce metadata value TEXT; the
+//     caller owns documents, transactions, validation, and history.
+//   - One completed gesture yields one commit report (ADR 0221): text on
+//     Enter/blur, pickers/checks/dropdowns on change, sliders on settle
+//     (the first pump after movement stops).
+//   - Programmatic RefreshValues never raises commit edges.
+// Ownership/Lifetime:
+//   - The caller's widget tree owns the widgets; row records are plain
+//     typed state holders (List[Any] cannot cast to GUI classes).
+// Links: zannastudio/src/ui/scene_component_schema_forms_model.zia,
+//        zannastudio/src/ui/scene_field_rows.zia,
+//        docs/adr/0221-live-commit-inspector-contract.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_form;
+
+bind "scene_component_schema_forms_model" as FormsModel;
+bind "scene_field_rows";
+bind "inspector_rows";
+bind "layout_metrics";
+
+bind Convert = Zanna.Core.Convert;
+bind Fmt = Zanna.Text.Fmt;
+bind GUI = Zanna.GUI;
+bind Parse = Zanna.Core.Parse;
+bind Str = Zanna.String;
+
+final PI: Number = 3.14159265358979312;
+
+/// @brief One rendered form row bound to one field (or one repeat item).
+class SceneFormRow {
+    expose FormsModel.SceneFormField field;
+    /// Effective metadata keys for this row (repeat prefix applied).
+    expose List[String] keys;
+    expose Integer repeatIndex;
+    expose scene_field_rows.TextField text;
+    expose List[scene_field_rows.TextField] parts;
+    expose GUI.Slider slider;
+    expose GUI.Label sliderValue;
+    expose GUI.ColorPicker color;
+    expose GUI.Checkbox check;
+    expose GUI.Dropdown dropdown;
+    expose GUI.Button refPick;
+    expose Boolean sliderPending;
+    expose Number sliderLast;
+
+    expose func init() {
+        field = null;
+        keys = [];
+        repeatIndex = -1;
+        text = null;
+        parts = [];
+        slider = null;
+        sliderValue = null;
+        color = null;
+        check = null;
+        dropdown = null;
+        refPick = null;
+        sliderPending = false;
+        sliderLast = 0.0;
+    }
+}
+
+/// @brief Typed scene-settings form for one component's flat field list.
+class SceneComponentForm {
+    expose GUI.VBox host;
+    expose List[SceneFormRow] rows;
+    hide String lastGroup;
+
+    expose func init() {
+        host = null;
+        rows = [];
+        lastGroup = "";
+    }
+
+    /// @brief Build rows for @p fields under @p parent.
+    /// @param keyPrefix Prepended to every field key ("" outside repeats).
+    /// @param repeatIndex Item ordinal for repeat rows, -1 otherwise.
+    expose func Build(parent: GUI.VBox,
+                      fields: List[FormsModel.SceneFormField],
+                      keyPrefix: String,
+                      repeatIndex: Integer) {
+        if host == null {
+            host = GUI.VBox.New();
+            host.SetSpacing(layout_metrics.GAP_ROW);
+            parent.AddChild(host);
+        }
+        var index = 0;
+        while index < fields.count() {
+            BuildRow(fields.get(index), keyPrefix, repeatIndex);
+            index = index + 1;
+        }
+    }
+
+    /// @brief Remove every built row (repeat rebuilds reuse the host).
+    expose func Clear() {
+        if host != null { host.ClearChildren(); }
+        rows = [];
+        lastGroup = "";
+    }
+
+    /// @brief All effective metadata keys, in row-then-key order.
+    expose func KeysNeeded() -> List[String] {
+        var all: List[String] = [];
+        var index = 0;
+        while index < rows.count() {
+            var row = rows.get(index);
+            var keyIndex = 0;
+            while keyIndex < row.keys.count() {
+                all.add(row.keys.get(keyIndex));
+                keyIndex = keyIndex + 1;
+            }
+            index = index + 1;
+        }
+        return all;
+    }
+
+    /// @brief Load canonical value texts (KeysNeeded order) edge-free.
+    expose func RefreshValues(values: List[String]) {
+        var cursor = 0;
+        var index = 0;
+        while index < rows.count() {
+            var row = rows.get(index);
+            var first = "";
+            if cursor < values.count() { first = values.get(cursor); }
+            RefreshRow(row, values, cursor);
+            cursor = cursor + row.keys.count();
+            index = index + 1;
+        }
+    }
+
+    /// @brief Enable or disable every row's inputs.
+    expose func SetEnabled(enabled: Boolean) {
+        var index = 0;
+        while index < rows.count() {
+            var row = rows.get(index);
+            if row.text != null { row.text.SetEnabled(enabled); }
+            var part = 0;
+            while part < row.parts.count() {
+                row.parts.get(part).SetEnabled(enabled);
+                part = part + 1;
+            }
+            if row.slider != null { row.slider.SetEnabled(enabled); }
+            if row.color != null { row.color.SetEnabled(enabled); }
+            if row.check != null { row.check.SetEnabled(enabled); }
+            if row.dropdown != null { row.dropdown.SetEnabled(enabled); }
+            if row.refPick != null { row.refPick.SetEnabled(enabled); }
+            index = index + 1;
+        }
+    }
+
+    /// @brief Consume at most one committed row this pump.
+    /// @return Row index whose gesture completed, or -1.
+    expose func TakeCommittedRow() -> Integer {
+        var index = 0;
+        while index < rows.count() {
+            if PumpRow(rows.get(index)) { return index; }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Consume one ref-picker request this pump, or -1.
+    expose func TakeRefPickRow() -> Integer {
+        var index = 0;
+        while index < rows.count() {
+            var row = rows.get(index);
+            if row.refPick != null and row.refPick.WasClicked() {
+                return index;
+            }
+            index = index + 1;
+        }
+        return -1;
+    }
+
+    /// @brief Serialized value texts for one row, parallel to its keys.
+    expose func CommittedTexts(index: Integer) -> List[String] {
+        var texts: List[String] = [];
+        if index < 0 or index >= rows.count() { return texts; }
+        var row = rows.get(index);
+        var field = row.field;
+        if field.kind == FormsModel.KIND_COLOR {
+            if row.keys.count() == 3 {
+                texts.add(Fmt.Num(UnitFromByte(row.color.GetRed())));
+                texts.add(Fmt.Num(UnitFromByte(row.color.GetGreen())));
+                texts.add(Fmt.Num(UnitFromByte(row.color.GetBlue())));
+            } else {
+                texts.add("" + PackedColor(row.color));
+            }
+            return texts;
+        }
+        if field.kind == FormsModel.KIND_VEC2
+           or field.kind == FormsModel.KIND_VEC3 {
+            var part = 0;
+            while part < row.parts.count() {
+                texts.add(Str.Trim(row.parts.get(part).Text()));
+                part = part + 1;
+            }
+            return texts;
+        }
+        if field.kind == "bool" {
+            texts.add(Fmt.Bool(row.check.IsChecked()));
+            return texts;
+        }
+        if field.kind == "enum" {
+            var selected = row.dropdown.Selected;
+            if selected >= 0
+               and selected < field.choiceValues.count() {
+                texts.add(field.choiceValues.get(selected));
+            } else {
+                texts.add("");
+            }
+            return texts;
+        }
+        if row.slider != null {
+            if field.kind == "int" {
+                texts.add("" + Convert.NumToInt(row.slider.Value));
+            } else {
+                texts.add(Fmt.Num(row.slider.Value));
+            }
+            return texts;
+        }
+        if field.kind == FormsModel.KIND_ANGLE {
+            texts.add(SerializeAngle(field, row.text.Text()));
+            return texts;
+        }
+        texts.add(Str.Trim(row.text.Text()));
+        return texts;
+    }
+
+    /// @brief Kind token to store for one key of one row.
+    expose func KindTokenAt(index: Integer) -> String {
+        if index < 0 or index >= rows.count() { return "string"; }
+        var field = rows.get(index).field;
+        if field.kind == FormsModel.KIND_COLOR {
+            if rows.get(index).keys.count() == 3 { return "float"; }
+            return "int";
+        }
+        if field.kind == FormsModel.KIND_VEC2
+           or field.kind == FormsModel.KIND_VEC3
+           or field.kind == FormsModel.KIND_ANGLE {
+            return "float";
+        }
+        if field.kind == "enum" and field.storedKind == "int" {
+            return "int";
+        }
+        if field.kind == "int" { return "int"; }
+        if field.kind == "float" { return "float"; }
+        if field.kind == "bool" { return "bool"; }
+        if field.kind == FormsModel.KIND_REF {
+            if field.refKind == FormsModel.REF_METADATA_INT {
+                return "int";
+            }
+            if field.refKind == FormsModel.REF_POSITION_XZ {
+                return "float";
+            }
+            return "string";
+        }
+        return "string";
+    }
+
+    /// @brief Write one picked ref value into a row edge-free.
+    expose func SetRefValue(index: Integer, valueText: String) {
+        if index < 0 or index >= rows.count() { return; }
+        var row = rows.get(index);
+        if row.text != null { row.text.SetCanonical(valueText); }
+    }
+
+    // ---- construction -----------------------------------------------------
+
+    hide func BuildRow(field: FormsModel.SceneFormField,
+                       keyPrefix: String,
+                       repeatIndex: Integer) {
+        if field == null { return; }
+        if field.group != "" and field.group != lastGroup {
+            GUI.Label.New(host, field.group);
+            lastGroup = field.group;
+        }
+        var row = new SceneFormRow();
+        row.field = field;
+        row.repeatIndex = repeatIndex;
+        if field.keys.count() > 0 {
+            var keyIndex = 0;
+            while keyIndex < field.keys.count() {
+                row.keys.add(keyPrefix + field.keys.get(keyIndex));
+                keyIndex = keyIndex + 1;
+            }
+        } else {
+            row.keys.add(keyPrefix + field.key);
+        }
+        var line = scene_field_rows.NewFieldRow(host);
+        var caption = field.label;
+        if field.unit != "" { caption = caption + " (" + field.unit + ")"; }
+        if field.kind == FormsModel.KIND_COLOR {
+            GUI.Label.New(line, caption);
+            row.color = GUI.ColorPicker.New(line);
+            row.color.SetAccessibleName(field.label);
+            if field.description != "" {
+                row.color.SetTooltip(field.description);
+            }
+        } else if field.kind == "bool" {
+            row.check = GUI.Checkbox.New(line, caption);
+            row.check.SetAccessibleName(field.label);
+            if field.description != "" {
+                row.check.SetTooltip(field.description);
+            }
+        } else if field.kind == "enum" {
+            GUI.Label.New(line, caption);
+            row.dropdown = GUI.Dropdown.New(line);
+            var choice = 0;
+            while choice < field.choiceLabels.count() {
+                row.dropdown.AddItem(field.choiceLabels.get(choice));
+                choice = choice + 1;
+            }
+            row.dropdown.SetAccessibleName(field.label);
+            if field.description != "" {
+                row.dropdown.SetTooltip(field.description);
+            }
+        } else if (field.kind == "float" or field.kind == "int")
+                  and field.slider {
+            GUI.Label.New(line, caption);
+            row.slider = GUI.Slider.New(line, 1);
+            row.slider.SetRange(field.minimum, field.maximum);
+            if field.step > 0.0 { row.slider.SetStep(field.step); }
+            row.slider.SetAccessibleName(field.label);
+            row.sliderValue = GUI.Label.New(line, "");
+            if field.description != "" {
+                row.slider.SetTooltip(field.description);
+            }
+        } else if field.kind == FormsModel.KIND_VEC2
+                  or field.kind == FormsModel.KIND_VEC3 {
+            GUI.Label.New(line, caption);
+            var axes = ["X", "Y", "Z"];
+            var part = 0;
+            while part < row.keys.count() {
+                var partField = new scene_field_rows.TextField();
+                partField.Build(
+                    line,
+                    axes.get(part),
+                    field.label + " " + axes.get(part),
+                    "0");
+                row.parts.add(partField);
+                part = part + 1;
+            }
+        } else if field.kind == FormsModel.KIND_REF {
+            row.text = new scene_field_rows.TextField();
+            row.text.Build(line, caption, field.label, "");
+            row.refPick = GUI.Button.New(line, "Pick…");
+            row.refPick.SetTooltip(
+                "Choose a " + field.refKind + " reference");
+        } else {
+            row.text = new scene_field_rows.TextField();
+            row.text.Build(line, caption, field.label, field.defaultText);
+            if field.description != ""
+               and row.text.input != null {
+                row.text.input.SetTooltip(field.description);
+            }
+        }
+        rows.add(row);
+    }
+
+    // ---- refresh ----------------------------------------------------------
+
+    hide func RefreshRow(row: SceneFormRow,
+                         values: List[String],
+                         cursor: Integer) {
+        var field = row.field;
+        var first = "";
+        if cursor < values.count() { first = values.get(cursor); }
+        if field.kind == FormsModel.KIND_COLOR {
+            if row.keys.count() == 3 {
+                var r = ParseUnit(values, cursor);
+                var g = ParseUnit(values, cursor + 1);
+                var b = ParseUnit(values, cursor + 2);
+                row.color.SetColor(PackBytes(r, g, b));
+            } else {
+                var packedParse = Parse.TryInt(first);
+                if packedParse.IsNone == false {
+                    row.color.SetColor(packedParse.UnwrapI64());
+                }
+            }
+            row.color.WasChanged();
+            return;
+        }
+        if field.kind == "bool" {
+            row.check.SetChecked(first == "true");
+            row.check.WasChanged();
+            return;
+        }
+        if field.kind == "enum" {
+            var selected = -1;
+            var choice = 0;
+            while choice < field.choiceValues.count() {
+                if field.choiceValues.get(choice) == first {
+                    selected = choice;
+                }
+                choice = choice + 1;
+            }
+            row.dropdown.SetSelected(selected);
+            row.dropdown.WasChanged();
+            return;
+        }
+        if row.slider != null {
+            var numberParse = Parse.TryDouble(first);
+            if numberParse.IsNone == false {
+                row.slider.SetValue(numberParse.UnwrapF64());
+            }
+            row.slider.WasChanged();
+            row.sliderPending = false;
+            row.sliderLast = row.slider.Value;
+            UpdateSliderLabel(row);
+            return;
+        }
+        if field.kind == FormsModel.KIND_VEC2
+           or field.kind == FormsModel.KIND_VEC3 {
+            var part = 0;
+            while part < row.parts.count() {
+                var text = "";
+                if cursor + part < values.count() {
+                    text = values.get(cursor + part);
+                }
+                row.parts.get(part).SetCanonical(text);
+                part = part + 1;
+            }
+            return;
+        }
+        if field.kind == FormsModel.KIND_ANGLE {
+            row.text.SetCanonical(DisplayAngle(field, first));
+            return;
+        }
+        row.text.SetCanonical(first);
+    }
+
+    // ---- pumping ----------------------------------------------------------
+
+    hide func PumpRow(row: SceneFormRow) -> Boolean {
+        var field = row.field;
+        if row.color != null { return row.color.WasChanged(); }
+        if row.check != null { return row.check.WasChanged(); }
+        if row.dropdown != null { return row.dropdown.WasChanged(); }
+        if row.slider != null {
+            // Sliders settle-commit: report once movement stops (ADR 0221).
+            if row.slider.WasChanged() {
+                row.sliderPending = true;
+                row.sliderLast = row.slider.Value;
+                UpdateSliderLabel(row);
+                return false;
+            }
+            if row.sliderPending
+               and row.slider.Value == row.sliderLast {
+                row.sliderPending = false;
+                return true;
+            }
+            return false;
+        }
+        if row.parts.count() > 0 {
+            var committed = false;
+            var part = 0;
+            while part < row.parts.count() {
+                if row.parts.get(part).TakeCommit() { committed = true; }
+                part = part + 1;
+            }
+            return committed;
+        }
+        if row.text != null { return row.text.TakeCommit(); }
+        return false;
+    }
+
+    hide func UpdateSliderLabel(row: SceneFormRow) {
+        if row.sliderValue == null { return; }
+        if row.field.kind == "int" {
+            row.sliderValue.SetText(
+                "" + Convert.NumToInt(row.slider.Value));
+        } else {
+            row.sliderValue.SetText(Fmt.Num(row.slider.Value));
+        }
+    }
+
+    // ---- value helpers ----------------------------------------------------
+
+    hide func ParseUnit(values: List[String], index: Integer) -> Number {
+        if index >= values.count() { return 0.0; }
+        var parsed = Parse.TryDouble(values.get(index));
+        if parsed.IsNone { return 0.0; }
+        var value = parsed.UnwrapF64();
+        if value < 0.0 { return 0.0; }
+        if value > 1.0 { return 1.0; }
+        return value;
+    }
+
+    hide func UnitFromByte(byte: Integer) -> Number {
+        return byte / 255.0;
+    }
+
+    hide func PackBytes(r: Number, g: Number, b: Number) -> Integer {
+        var red = Convert.NumToInt(r * 255.0 + 0.5);
+        var green = Convert.NumToInt(g * 255.0 + 0.5);
+        var blue = Convert.NumToInt(b * 255.0 + 0.5);
+        return (((255 * 256 + red) * 256) + green) * 256 + blue;
+    }
+
+    hide func PackedColor(picker: GUI.ColorPicker) -> Integer {
+        return PackBytes(
+            UnitFromByte(picker.GetRed()),
+            UnitFromByte(picker.GetGreen()),
+            UnitFromByte(picker.GetBlue()));
+    }
+
+    hide func DisplayAngle(field: FormsModel.SceneFormField,
+                           stored: String) -> String {
+        if field.storageUnit != FormsModel.ANGLE_RADIANS {
+            return stored;
+        }
+        var parsed = Parse.TryDouble(stored);
+        if parsed.IsNone { return stored; }
+        return Fmt.Num(parsed.UnwrapF64() * 180.0 / PI);
+    }
+
+    hide func SerializeAngle(field: FormsModel.SceneFormField,
+                             display: String) -> String {
+        var trimmed = Str.Trim(display);
+        if field.storageUnit != FormsModel.ANGLE_RADIANS {
+            return trimmed;
+        }
+        var parsed = Parse.TryDouble(trimmed);
+        if parsed.IsNone { return trimmed; }
+        return Fmt.Num(parsed.UnwrapF64() * PI / 180.0);
+    }
+}

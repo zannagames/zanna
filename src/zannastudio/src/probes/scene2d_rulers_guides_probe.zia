@@ -40,6 +40,7 @@ bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_2d";
 bind "../ui/scene_panels_2d";
+bind "scene_probe_support";
 
 bind Color = Zanna.Graphics.Color;
 bind Convert = Zanna.Core.Convert;
@@ -101,36 +102,25 @@ func ClickButton(shell: app_shell.AppShell,
     shell.Render();
 }
 
-func ClickMenuOffset(shell: app_shell.AppShell,
-                     harness: GUI.TestHarness,
-                     button: GUI.Button,
-                     offsetY: Number) {
-    var x = HarnessCoordinate(shell, button.GetScreenX())
-        + Convert.NumToInt(20.0);
-    var y = HarnessCoordinate(
-        shell, button.GetScreenY() + button.GetScreenHeight())
-        + Convert.NumToInt(offsetY);
-    harness.SendMouse("move", x, y, 0);
-    harness.SendMouse("down", x, y, 0);
-    harness.SendMouse("up", x, y, 0);
-    harness.DispatchPending();
-}
-
 func ClickRulersControl(shell: app_shell.AppShell,
                         harness: GUI.TestHarness,
                         editor: scene_editor_2d.SceneEditor2D,
                         sceneDoc: document.Document) -> Boolean {
     if editor.rulersButton.IsVisible() {
-        ClickButton(
-            shell, harness, editor.rulersButton, editor, sceneDoc);
+        scene_probe_support.ClickToolbarItem(
+            shell, harness, editor.rulersButton);
+        editor.Pump(sceneDoc);
+        shell.Render();
         return true;
     }
-    ClickButton(
-        shell, harness, editor.viewMenuButton, editor, sceneDoc);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor.viewMenuButton);
+    editor.Pump(sceneDoc);
+    shell.Render();
     if editor.viewMenu.IsVisible() == false { return false; }
-    // Fit, Actual Size, separator, Grid, then Rulers.
-    ClickMenuOffset(
-        shell, harness, editor.viewMenuButton, 111.0);
+    // Rulers toggle, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor.viewRulersItem);
     return true;
 }
 

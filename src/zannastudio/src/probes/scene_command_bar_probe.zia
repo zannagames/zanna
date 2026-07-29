@@ -41,6 +41,7 @@ bind "../core/document";
 bind "../core/document_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
+bind "scene_probe_support";
 bind "../ui/scene_editor_2d";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_2d";
@@ -65,21 +66,6 @@ func ClickWidget(shell: app_shell.AppShell,
         shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
     var y = HarnessCoordinate(
         shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
-    harness.SendMouse("move", x, y, 0);
-    harness.SendMouse("down", x, y, 0);
-    harness.SendMouse("up", x, y, 0);
-    harness.DispatchPending();
-}
-
-func ClickMenuOffset(shell: app_shell.AppShell,
-                     harness: GUI.TestHarness,
-                     button: GUI.Button,
-                     offsetY: Number) {
-    var x = HarnessCoordinate(shell, button.GetScreenX())
-        + Convert.NumToInt(20.0);
-    var y = HarnessCoordinate(
-        shell, button.GetScreenY() + button.GetScreenHeight())
-        + Convert.NumToInt(offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -142,14 +128,18 @@ func VerifyCommandBar2D() -> Boolean {
        or editor2d.runSceneButton.IsVisible()
        or editor2d.rectangleButton.IsVisible()
        or editor2d.gridButton.IsVisible()
-       or editor2d.canvasScroll.GetScreenHeight() < 220.0
-       or editor2d.toolbar.GetScreenHeight() > 48.0
-       or editor2d.viewToolbar.GetScreenHeight() > 84.0 {
+       or editor2d.canvasScroll.GetScreenHeight()
+           < scene_probe_support.MIN_CANVAS_SCROLL_HEIGHT
+       or editor2d.toolbar.GetScreenHeight()
+           > scene_probe_support.MAX_COMMAND_TOOLBAR_HEIGHT
+       or editor2d.viewToolbar.GetScreenHeight()
+           > scene_probe_support.MAX_VIEW_TOOLBAR_HEIGHT {
         Fail(shell, harness, "2D medium command-bar geometry");
         return false;
     }
 
-    ClickWidget(shell, harness, editor2d.sceneMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor2d.sceneMenuButton);
     editor2d.Pump(doc2d);
     shell.Render();
     if editor2d.sceneMenu.IsVisible() == false
@@ -161,14 +151,16 @@ func VerifyCommandBar2D() -> Boolean {
         Fail(shell, harness, "2D Scene menu state");
         return false;
     }
-    // New, Import, separator, then animation Preview.
-    ClickMenuOffset(shell, harness, editor2d.sceneMenuButton, 83.0);
+    // Preview Animations, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor2d.scenePreviewItem);
     editor2d.Pump(doc2d);
     if editor2d.PreviewActive() == false {
         Fail(shell, harness, "2D Scene Preview dispatch");
         return false;
     }
-    ClickWidget(shell, harness, editor2d.sceneMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor2d.sceneMenuButton);
     editor2d.Pump(doc2d);
     shell.Render();
     if editor2d.scenePreviewItem.IsChecked() == false {
@@ -178,18 +170,20 @@ func VerifyCommandBar2D() -> Boolean {
     editor2d.sceneMenu.Hide();
     editor2d.SetPreviewActive(false);
 
-    ClickWidget(shell, harness, editor2d.sceneMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor2d.sceneMenuButton);
     editor2d.Pump(doc2d);
     shell.Render();
-    // New, Import, separator, Preview, then Run.
-    ClickMenuOffset(shell, harness, editor2d.sceneMenuButton, 111.0);
+    // Run Scene, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(shell, harness, editor2d.sceneRunItem);
     editor2d.Pump(doc2d);
     if editor2d.TakeRunSceneRequested() == false {
         Fail(shell, harness, "2D Scene Run dispatch");
         return false;
     }
 
-    ClickWidget(shell, harness, editor2d.toolMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor2d.toolMenuButton);
     editor2d.Pump(doc2d);
     shell.Render();
     if editor2d.toolMenu.IsVisible() == false
@@ -197,14 +191,16 @@ func VerifyCommandBar2D() -> Boolean {
         Fail(shell, harness, "2D Tools menu state");
         return false;
     }
-    // Select/Paint/Erase, separator, then Rectangle.
-    ClickMenuOffset(shell, harness, editor2d.toolMenuButton, 111.0);
+    // Rectangle tool, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor2d.toolRectangleItem);
     editor2d.Pump(doc2d);
     if editor2d.mode != scene_editor_2d.MODE_RECTANGLE {
         Fail(shell, harness, "2D Rectangle menu dispatch");
         return false;
     }
-    ClickWidget(shell, harness, editor2d.toolMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor2d.toolMenuButton);
     editor2d.Pump(doc2d);
     shell.Render();
     if editor2d.toolRectangleItem.IsChecked() == false
@@ -214,7 +210,8 @@ func VerifyCommandBar2D() -> Boolean {
     }
     editor2d.toolMenu.Hide();
 
-    ClickWidget(shell, harness, editor2d.viewMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor2d.viewMenuButton);
     editor2d.Pump(doc2d);
     shell.Render();
     if editor2d.viewMenu.IsVisible() == false
@@ -224,14 +221,15 @@ func VerifyCommandBar2D() -> Boolean {
         Fail(shell, harness, "2D View menu state");
         return false;
     }
-    // Fit, Actual Size, separator, then Grid.
-    ClickMenuOffset(shell, harness, editor2d.viewMenuButton, 83.0);
+    // Grid toggle, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(shell, harness, editor2d.viewGridItem);
     editor2d.Pump(doc2d);
     if editor2d.showGrid {
         Fail(shell, harness, "2D Grid menu dispatch");
         return false;
     }
-    ClickWidget(shell, harness, editor2d.viewMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor2d.viewMenuButton);
     editor2d.Pump(doc2d);
     shell.Render();
     if editor2d.viewGridItem.IsChecked() {
@@ -306,14 +304,18 @@ func VerifyCommandBar3D() -> Boolean {
        or editor3d.addTerrainButton.IsVisible()
        or editor3d.vertexSnapCheck.IsVisible()
        or editor3d.frameSelectedButton.IsVisible()
-       or editor3d.viewportScroll.GetScreenHeight() < 220.0
-       or editor3d.toolbar.GetScreenHeight() > 48.0
-       or editor3d.viewToolbar.GetScreenHeight() > 84.0 {
+       or editor3d.viewportScroll.GetScreenHeight()
+           < scene_probe_support.MIN_CANVAS_SCROLL_HEIGHT
+       or editor3d.toolbar.GetScreenHeight()
+           > scene_probe_support.MAX_COMMAND_TOOLBAR_HEIGHT
+       or editor3d.viewToolbar.GetScreenHeight()
+           > scene_probe_support.MAX_VIEW_TOOLBAR_HEIGHT {
         Fail(shell, harness, "3D medium command-bar geometry");
         return false;
     }
 
-    ClickWidget(shell, harness, editor3d.sceneMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor3d.sceneMenuButton);
     editor3d.Pump(doc3d);
     shell.Render();
     if editor3d.sceneMenu.IsVisible() == false
@@ -324,15 +326,16 @@ func VerifyCommandBar3D() -> Boolean {
         Fail(shell, harness, "3D Scene menu state");
         return false;
     }
-    // New, Import Asset, Import Instance, separator, then Run.
-    ClickMenuOffset(shell, harness, editor3d.sceneMenuButton, 111.0);
+    // Run Scene, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(shell, harness, editor3d.sceneRunItem);
     editor3d.Pump(doc3d);
     if editor3d.TakeRunSceneRequested() == false {
         Fail(shell, harness, "3D Scene Run dispatch");
         return false;
     }
 
-    ClickWidget(shell, harness, editor3d.createMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor3d.createMenuButton);
     editor3d.Pump(doc3d);
     shell.Render();
     if editor3d.createMenu.IsVisible() == false
@@ -340,9 +343,9 @@ func VerifyCommandBar3D() -> Boolean {
         Fail(shell, harness, "3D Create Terrain menu state");
         return false;
     }
-    // Empty, Child, separator, Box, Sphere, Plane, Cylinder, then Terrain.
-    ClickMenuOffset(
-        shell, harness, editor3d.createMenuButton, 195.0);
+    // Create Terrain, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor3d.createTerrainItem);
     editor3d.Pump(doc3d);
     if editor3d.flatNodes.count() != 2
        or editor3d.selectedIndex < 0
@@ -353,10 +356,13 @@ func VerifyCommandBar3D() -> Boolean {
         return false;
     }
 
-    ClickWidget(shell, harness, editor3d.placementMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor3d.placementMenuButton);
+    // ToolbarItem click edges clear on read (ADR 0220), so the pump must be
+    // the only consumer; the diagnostic below reads the already-drained edge.
+    editor3d.Pump(doc3d);
     var placementButtonClicked =
         editor3d.placementMenuButton.WasClicked();
-    editor3d.Pump(doc3d);
     shell.Render();
     if editor3d.placementMenu.IsVisible() == false
        or editor3d.placementVertexItem.IsChecked() {
@@ -375,15 +381,16 @@ func VerifyCommandBar3D() -> Boolean {
              + editor3d.placementVertexItem.IsChecked());
         return false;
     }
-    // Drop, separator, Surface, Align, then Vertex.
-    ClickMenuOffset(
-        shell, harness, editor3d.placementMenuButton, 111.0);
+    // Vertex Move, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor3d.placementVertexItem);
     editor3d.Pump(doc3d);
     if editor3d.vertexSnapEnabled == false {
         Fail(shell, harness, "3D Vertex Move menu dispatch");
         return false;
     }
-    ClickWidget(shell, harness, editor3d.placementMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor3d.placementMenuButton);
     editor3d.Pump(doc3d);
     shell.Render();
     if editor3d.placementVertexItem.IsChecked() == false {
@@ -392,7 +399,8 @@ func VerifyCommandBar3D() -> Boolean {
     }
     editor3d.placementMenu.Hide();
 
-    ClickWidget(shell, harness, editor3d.viewMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor3d.viewMenuButton);
     editor3d.Pump(doc3d);
     shell.Render();
     if editor3d.viewMenu.IsVisible() == false
@@ -402,14 +410,16 @@ func VerifyCommandBar3D() -> Boolean {
         Fail(shell, harness, "3D View menu state");
         return false;
     }
-    // Camera Navigation submenu, Frame Selected, Frame All, then Projection.
-    ClickMenuOffset(shell, harness, editor3d.viewMenuButton, 102.0);
+    // Perspective Projection, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor3d.viewProjectionItem);
     editor3d.Pump(doc3d);
     if editor3d.viewPerspective {
         Fail(shell, harness, "3D Projection menu dispatch");
         return false;
     }
-    ClickWidget(shell, harness, editor3d.viewMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor3d.viewMenuButton);
     editor3d.Pump(doc3d);
     shell.Render();
     if editor3d.viewProjectionItem.IsChecked() {
@@ -423,7 +433,8 @@ func VerifyCommandBar3D() -> Boolean {
     Pump3D(shell, editor3d, doc3d);
     Pump3D(shell, editor3d, doc3d);
     if editor3d.viewMenuButton.IsVisible() == false
-       or editor3d.viewportScroll.GetScreenHeight() < 100.0 {
+       or editor3d.viewportScroll.GetScreenHeight()
+           < scene_probe_support.MIN_COMPACT_VIEWPORT_HEIGHT {
         Fail(shell, harness, "3D compact View access or viewport height");
         return false;
     }

@@ -136,6 +136,13 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0165](0165-scrollview-descendant-reveal.md) — Expose ScrollView Descendant Reveal
 - [ADR 0167](0167-spinner-mixed-value-state.md) — Expose Spinner Mixed-Value State
 - [ADR 0205](0205-listbox-application-directed-reordering.md) — Add Application-Directed ListBox Reordering
+- [ADR 0219](0219-scene-probe-interaction-contract-and-menu-item-geometry.md) — Scene Probe Interaction Contract and Menu Item Geometry
+- [ADR 0220](0220-scene-editor-toolbars-and-vector-icon-set.md) — Scene Editor Toolbars and the Extended Vector Icon Set
+- [ADR 0221](0221-live-commit-inspector-contract.md) — Live-Commit Inspector Contract for Scene Editors
+- [ADR 0222](0222-schema-v19-typed-scene-settings.md) — Schema v19: Typed Scene Settings Forms and Labeled Enums
+- [ADR 0223](0223-scene-chrome-and-feedback.md) — Scene Editor Chrome and Feedback
+- [ADR 0224](0224-bounded-viewport-presentation-budget.md) — Bounded Viewport Presentation Budget and Zero-Allocation Readback
+- [ADR 0225](0225-play-loop-and-embedded-play.md) — Run Profile, Build-Launch Chain, Scene Watch, and Embedded Play
 
 ## Graphics3D & Game Systems
 

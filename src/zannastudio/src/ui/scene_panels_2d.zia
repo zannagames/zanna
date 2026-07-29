@@ -52,6 +52,8 @@ bind "scene_component_schema";
 bind "scene_editor_2d";
 bind "scene_pane_docking";
 bind "scene_layout_2d";
+bind "layout_metrics";
+bind "scene_settings_inspector_2d";
 
 bind GUI = Zanna.GUI;
 
@@ -85,19 +87,9 @@ func BuildCommandToolbar(editor: scene_editor_2d.SceneEditor2D,
         editor.root.SetAccessibleName("2D scene editor");
         host.AddChild(editor.root);
 
-        editor.toolbar = GUI.Flex.New();
-        editor.toolbar.SetDirection(GUI.FlexDirection.Row);
-        editor.toolbar.SetWrap(GUI.FlexWrap.Wrap);
-        editor.toolbar.SetAlign(GUI.Align.Center);
-        editor.toolbar.SetGap(4.0);
-        editor.toolbar.SetPadding(4.0);
-        editor.root.AddChild(editor.toolbar);
-
-        editor.sceneMenuButton =
-            GUI.Button.New(editor.toolbar, "Scene...");
-        editor.sceneMenuButton.SetAccessibleName(
-            "Open 2D scene document commands");
-        editor.sceneMenuButton.SetTooltip(
+        editor.toolbar = GUI.Toolbar.New(editor.root);
+        editor.sceneMenuButton = editor.toolbar.AddNamedButtonWithText(
+            "scene-2d", "Scene...",
             "New, import, animation preview, and run commands");
         editor.sceneMenu = GUI.ContextMenu.New();
         editor.sceneNewItem =
@@ -111,29 +103,28 @@ func BuildCommandToolbar(editor: scene_editor_2d.SceneEditor2D,
         editor.sceneRunItem =
             editor.sceneMenu.AddItemWithShortcut("Run Scene", "Ctrl+R");
 
-        editor.newSceneButton = GUI.Button.New(editor.toolbar, "New Scene");
-        editor.newSceneButton.SetTooltip(
+        editor.newSceneButton = editor.toolbar.AddNamedButtonWithText(
+            "new-file", "New Scene",
             "Replace this document using the inspector dimensions (undoable)");
         editor.newSceneButton.SetVisible(false);
-        editor.importButton = GUI.Button.New(editor.toolbar, "Import Tiled...");
-        editor.importButton.SetTooltip("Import a Tiled JSON or TMX map into this document");
+        editor.importButton = editor.toolbar.AddNamedButtonWithText(
+            "open-folder", "Import Tiled...",
+            "Import a Tiled JSON or TMX map into this document");
         editor.importButton.SetVisible(false);
-        editor.selectButton = GUI.Button.New(editor.toolbar, "Select");
-        editor.selectButton.SetTooltip(
+        editor.toolbar.AddSeparator();
+        editor.selectButton = editor.toolbar.AddNamedToggle(
+            "tool-select",
             "Select and drag objects; Arrow keys nudge one pixel and "
             + "Shift+Arrow nudges one tile");
-        editor.paintButton = GUI.Button.New(editor.toolbar, "Paint");
-        editor.paintButton.SetTooltip(
+        editor.paintButton = editor.toolbar.AddNamedToggle(
+            "tool-paint",
             "Preview the selected atlas tile, then freehand paint; Escape "
             + "cancels a captured stroke");
-        editor.eraseButton = GUI.Button.New(editor.toolbar, "Erase");
-        editor.eraseButton.SetTooltip(
+        editor.eraseButton = editor.toolbar.AddNamedToggle(
+            "tool-erase",
             "Freehand clear tiles; Escape cancels a captured stroke");
-        editor.toolMenuButton =
-            GUI.Button.New(editor.toolbar, "Tools...");
-        editor.toolMenuButton.SetAccessibleName(
-            "Open complete 2D scene tool list");
-        editor.toolMenuButton.SetTooltip(
+        editor.toolMenuButton = editor.toolbar.AddNamedButtonWithText(
+            "chevron-down", "Tools...",
             "Choose shape, fill, tile-pick, and object editing tools");
         editor.toolMenuButton.SetVisible(false);
         editor.toolMenu = GUI.ContextMenu.New();
@@ -157,79 +148,83 @@ func BuildCommandToolbar(editor: scene_editor_2d.SceneEditor2D,
         editor.toolFillItem.SetCheckable(true);
         editor.toolPickerItem.SetCheckable(true);
         editor.toolObjectItem.SetCheckable(true);
-        editor.rectangleButton = GUI.Button.New(editor.toolbar, "Rectangle");
-        editor.rectangleButton.SetTooltip(
+        editor.rectangleButton = editor.toolbar.AddNamedToggle(
+            "tool-rect",
             "Preview and drag an inclusive atlas-tile rectangle; tile 0 clears");
-        editor.lineButton = GUI.Button.New(editor.toolbar, "Line");
-        editor.lineButton.SetTooltip(
+        editor.lineButton = editor.toolbar.AddNamedToggle(
+            "tool-line",
             "Preview and drag a straight atlas-tile line; tile 0 clears");
-        editor.ellipseButton = GUI.Button.New(editor.toolbar, "Ellipse");
-        editor.ellipseButton.SetTooltip(
+        editor.ellipseButton = editor.toolbar.AddNamedToggle(
+            "tool-ellipse",
             "Preview and drag an atlas-tile ellipse outline; tile 0 clears");
-        editor.fillButton = GUI.Button.New(editor.toolbar, "Fill");
-        editor.fillButton.SetTooltip(
+        editor.fillButton = editor.toolbar.AddNamedToggle(
+            "tool-fill",
             "Preview the selected atlas tile, then replace the clicked "
             + "four-connected active-layer region");
-        editor.pickerButton = GUI.Button.New(editor.toolbar, "Pick");
-        editor.previewButton = GUI.Button.New(editor.toolbar, "Preview");
-        editor.previewButton.SetTooltip(
+        editor.pickerButton = editor.toolbar.AddNamedToggle(
+            "tool-pick",
+            "Sample one active-layer tile and return to Paint");
+        editor.objectButton = editor.toolbar.AddNamedToggle(
+            "tool-object",
+            "Create, select, and edit placed scene objects");
+        editor.toolbar.AddSeparator();
+        editor.previewButton = editor.toolbar.AddNamedToggle(
+            "eye",
             "Play authored tile animations and framing overlays without "
             + "changing the scene");
         editor.previewButton.SetVisible(false);
-        editor.runSceneButton = GUI.Button.New(editor.toolbar, "Run Scene");
-        editor.runSceneButton.SetTooltip(
+        editor.runSceneButton = editor.toolbar.AddNamedButtonWithText(
+            "run", "Run Scene",
             "Run the owning project with this saved scene's path appended");
         editor.runSceneButton.SetVisible(false);
-        editor.pickerButton.SetTooltip(
-            "Sample one active-layer tile and return to Paint");
-        editor.objectButton = GUI.Button.New(editor.toolbar, "Object");
-        editor.toolbarStatus = GUI.Label.New(editor.toolbar, "Open or create a 2D scene");
-        editor.toolbarStatus.SetMinSize(0.0, 0.0);
-        editor.toolbarStatus.SetPreferredSize(96.0, 0.0);
-        editor.toolbarStatus.SetEllipsis(true);
-        editor.toolbarStatus.SetMaxLines(1);
-        editor.toolbarStatus.SetFlex(1.0);
 }
 
 /// @brief Construct zoom, view, and responsive-layout controls.
 func BuildViewToolbar(editor: scene_editor_2d.SceneEditor2D) {
-        editor.viewToolbar = GUI.Flex.New();
-        editor.viewToolbar.SetDirection(GUI.FlexDirection.Row);
-        editor.viewToolbar.SetWrap(GUI.FlexWrap.Wrap);
-        editor.viewToolbar.SetAlign(GUI.Align.Center);
-        editor.viewToolbar.SetGap(4.0);
-        editor.viewToolbar.SetPadding(4.0);
+        editor.viewToolbar = GUI.VBox.New();
+        editor.viewToolbar.SetSpacing(layout_metrics.GAP_TIGHT);
+        editor.viewToolbar.SetPadding(0.0);
         editor.root.AddChild(editor.viewToolbar);
-        GUI.Label.New(editor.viewToolbar, "Tile");
-        editor.tileSpinner = GUI.Spinner.New(editor.viewToolbar);
+        editor.viewBar = GUI.Toolbar.New(editor.viewToolbar);
+        var viewControlRow = GUI.Flex.New();
+        viewControlRow.SetDirection(GUI.FlexDirection.Row);
+        viewControlRow.SetAlign(GUI.Align.Center);
+        viewControlRow.SetGap(4.0);
+        viewControlRow.SetPadding(layout_metrics.PAD_CHROME);
+        editor.viewToolbar.AddChild(viewControlRow);
+        GUI.Label.New(viewControlRow, "Tile");
+        editor.tileSpinner = GUI.Spinner.New(viewControlRow);
         editor.tileSpinner.SetAccessibleName("Selected tile ID");
         editor.tileSpinner.SetRange(0.0, 1000000.0);
         editor.tileSpinner.SetStep(1.0);
         editor.tileSpinner.SetDecimals(0);
         editor.tileSpinner.SetValue(1.0);
         editor.tileSpinner.SetPreferredSize(88.0, 0.0);
-        GUI.Label.New(editor.viewToolbar, "Zoom");
-        editor.zoomOutButton = GUI.Button.New(editor.viewToolbar, "-");
-        editor.zoomOutButton.SetTooltip("Zoom out");
-        editor.zoomInButton = GUI.Button.New(editor.viewToolbar, "+");
-        editor.zoomInButton.SetTooltip("Zoom in");
-        editor.fitButton = GUI.Button.New(editor.viewToolbar, "Fit");
-        editor.fitButton.SetTooltip("Fit the complete scene in the current viewport");
-        editor.actualSizeButton = GUI.Button.New(editor.viewToolbar, "1:1");
-        editor.actualSizeButton.SetTooltip(
+        editor.toolbarStatus = GUI.Label.New(
+            viewControlRow, "Open or create a 2D scene");
+        editor.toolbarStatus.SetMinSize(0.0, 0.0);
+        editor.toolbarStatus.SetPreferredSize(96.0, 0.0);
+        editor.toolbarStatus.SetEllipsis(true);
+        editor.toolbarStatus.SetMaxLines(1);
+        editor.toolbarStatus.SetFlex(1.0);
+        editor.zoomOutButton = editor.viewBar.AddNamedButton(
+            "minus", "Zoom out");
+        editor.zoomInButton = editor.viewBar.AddNamedButton(
+            "plus", "Zoom in");
+        editor.fitButton = editor.viewBar.AddNamedButton(
+            "fit-view", "Fit the complete scene in the current viewport");
+        editor.actualSizeButton = editor.viewBar.AddNamedButton(
+            "zoom-actual",
             "Show artwork at its native tile resolution (100% zoom)");
-        editor.gridButton = GUI.Button.New(editor.viewToolbar, "Grid: on");
-        editor.gridButton.SetTooltip("Toggle the tile grid overlay");
-        editor.rulersButton =
-            GUI.Button.New(editor.viewToolbar, "Rulers: on");
-        editor.rulersButton.SetTooltip(
+        editor.viewBar.AddSeparator();
+        editor.gridButton = editor.viewBar.AddNamedToggle(
+            "grid", "Toggle the tile grid overlay");
+        editor.rulersButton = editor.viewBar.AddNamedToggle(
+            "rulers",
             "Toggle scroll-aware canvas rulers; click to toggle a guide "
             + "or drag one to move it");
-        editor.viewMenuButton =
-            GUI.Button.New(editor.viewToolbar, "View...");
-        editor.viewMenuButton.SetAccessibleName(
-            "Open 2D canvas view and layout commands");
-        editor.viewMenuButton.SetTooltip(
+        editor.viewMenuButton = editor.viewBar.AddNamedButtonWithText(
+            "chevron-down", "View...",
             "Framing, overlays, pane visibility, Focus, and Scene Layout");
         editor.viewMenuButton.SetVisible(false);
         editor.viewMenu = GUI.ContextMenu.New();
@@ -257,36 +252,28 @@ func BuildViewToolbar(editor: scene_editor_2d.SceneEditor2D) {
         editor.viewWorkspaceItem =
             editor.viewMenu.AddItem("Scene Layout");
         editor.viewWorkspaceItem.SetCheckable(true);
-        editor.gameViewButton =
-            GUI.Button.New(editor.viewToolbar, "Game View");
-        editor.gameViewButton.SetStyle(2);
-        editor.gameViewButton.SetTooltip(
-            "Show only authored gameplay pixels; keep pan and zoom, and "
-            + "restore every editor overlay and tool on exit");
-        editor.hierarchyButton =
-            GUI.Button.New(editor.viewToolbar, "Objects");
-        editor.hierarchyButton.SetStyle(2);
-        editor.hierarchyButton.SetTooltip(
+        editor.viewBar.AddSeparator();
+        editor.gameViewButton = editor.viewBar.AddNamedToggle(
+            "game-view",
+            "Game View: show only authored gameplay pixels; keep pan and "
+            + "zoom, and restore every editor overlay and tool on exit");
+        editor.hierarchyButton = editor.viewBar.AddNamedButtonWithText(
+            "node-group", "Objects",
             "Open the object hierarchy at the full editor width");
         editor.hierarchyButton.SetVisible(false);
-        editor.inspectorButton = GUI.Button.New(editor.viewToolbar, "Hide Inspector");
-        editor.inspectorButton.SetStyle(2);
-        editor.inspectorButton.SetTooltip(
+        editor.inspectorButton = editor.viewBar.AddNamedButtonWithText(
+            "split", "Hide Inspector",
             "Hide the scene inspector and give the canvas the full width");
-        editor.paletteButton = GUI.Button.New(editor.viewToolbar, "Hide Palette");
-        editor.paletteButton.SetStyle(2);
-        editor.paletteButton.SetTooltip(
+        editor.paletteButton = editor.viewBar.AddNamedButtonWithText(
+            "file-image", "Hide Palette",
             "Hide the tile palette and give the canvas the full height");
-        editor.focusButton = GUI.Button.New(editor.viewToolbar, "Focus");
-        editor.focusButton.SetStyle(2);
-        editor.focusButton.SetTooltip(
+        editor.focusButton = editor.viewBar.AddButtonWithText(
+            "", "Focus",
             "Hide outer Studio docks and maximize the scene canvas");
-        editor.workspaceButton =
-            GUI.Button.New(editor.viewToolbar, "Scene Layout");
-        editor.workspaceButton.SetStyle(2);
-        editor.workspaceButton.SetTooltip(
+        editor.workspaceButton = editor.viewBar.AddButtonWithText(
+            "", "Scene Layout",
             "Hide outer Studio docks but keep scene panes available");
-        editor.viewStatusLabel = GUI.Label.New(editor.viewToolbar, "");
+        editor.viewStatusLabel = GUI.Label.New(viewControlRow, "");
         editor.viewStatusLabel.SetMinSize(0.0, 0.0);
         editor.viewStatusLabel.SetPreferredSize(96.0, 0.0);
         editor.viewStatusLabel.SetEllipsis(true);
@@ -312,8 +299,8 @@ func BuildWorkspaceScaffold(editor: scene_editor_2d.SceneEditor2D)
 
         editor.objectPaneBox = GUI.VBox.New();
         var objectPane = editor.objectPaneBox;
-        objectPane.SetSpacing(6.0);
-        objectPane.SetPadding(8.0);
+        objectPane.SetSpacing(layout_metrics.GAP_GROUP);
+        objectPane.SetPadding(layout_metrics.PAD_PANE);
         objectPane.SetFlex(1.0);
         editor.hierarchySplit.First.AddChild(objectPane);
 
@@ -408,16 +395,16 @@ func BuildWorkspaceScaffold(editor: scene_editor_2d.SceneEditor2D)
 
         editor.paletteStripBox = GUI.VBox.New();
         var paletteStrip = editor.paletteStripBox;
-        paletteStrip.SetSpacing(4.0);
-        paletteStrip.SetPadding(6.0);
+        paletteStrip.SetSpacing(layout_metrics.GAP_ROW);
+        paletteStrip.SetPadding(layout_metrics.PAD_GROUP);
         paletteStrip.SetFlex(1.0);
         editor.canvasSplit.Second.AddChild(paletteStrip);
 
         editor.inspectorScroll = GUI.ScrollView.New(editor.bodySplit.Second);
         editor.inspectorScroll.SetFlex(1.0);
         var inspector = GUI.VBox.New();
-        inspector.SetSpacing(6.0);
-        inspector.SetPadding(8.0);
+        inspector.SetSpacing(layout_metrics.GAP_GROUP);
+        inspector.SetPadding(layout_metrics.PAD_PANE);
         editor.inspectorScroll.AddChild(inspector);
         return inspector;
 }
@@ -433,7 +420,7 @@ func BuildInspectorHeader(editor: scene_editor_2d.SceneEditor2D,
         // tab. Selection changes auto-follow, and a manual choice holds
         // until the next selection change.
         var inspectorTabRow = GUI.HBox.New();
-        inspectorTabRow.SetSpacing(4.0);
+        inspectorTabRow.SetSpacing(layout_metrics.GAP_ROW);
         inspector.AddChild(inspectorTabRow);
         editor.inspectorDock.Setup(
             app,
@@ -460,14 +447,14 @@ func BuildInspectorHeader(editor: scene_editor_2d.SceneEditor2D,
             "Author scene setup, imports, properties, camera/lighting, "
             + "layers, and tile behavior");
         editor.objectTabHost = GUI.VBox.New();
-        editor.objectTabHost.SetSpacing(6.0);
+        editor.objectTabHost.SetSpacing(layout_metrics.GAP_GROUP);
         inspector.AddChild(editor.objectTabHost);
         editor.sceneTabHost = GUI.VBox.New();
-        editor.sceneTabHost.SetSpacing(6.0);
+        editor.sceneTabHost.SetSpacing(layout_metrics.GAP_GROUP);
         inspector.AddChild(editor.sceneTabHost);
 
         editor.sceneSectionRow = GUI.HBox.New();
-        editor.sceneSectionRow.SetSpacing(4.0);
+        editor.sceneSectionRow.SetSpacing(layout_metrics.GAP_ROW);
         editor.sceneTabHost.AddChild(editor.sceneSectionRow);
         GUI.Label.New(editor.sceneSectionRow, "Topic");
         editor.sceneSectionDropdown =
@@ -495,7 +482,7 @@ func BuildSceneInspector(editor: scene_editor_2d.SceneEditor2D,
         editor.sceneSetupGroup =
             GUI.GroupBox.New(editor.sceneTabHost, "Scene setup");
         var sceneSizeRow = GUI.HBox.New();
-        sceneSizeRow.SetSpacing(4.0);
+        sceneSizeRow.SetSpacing(layout_metrics.GAP_ROW);
         editor.sceneSetupGroup.AddChild(sceneSizeRow);
         GUI.Label.New(sceneSizeRow, "W");
         editor.sceneWidthSpinner = GUI.Spinner.New(sceneSizeRow);
@@ -504,7 +491,7 @@ func BuildSceneInspector(editor: scene_editor_2d.SceneEditor2D,
         editor.sceneHeightSpinner = GUI.Spinner.New(sceneSizeRow);
         editor.ConfigureSceneSpinner(editor.sceneHeightSpinner, scene_editor_2d.DEFAULT_SCENE_HEIGHT, 256);
         var tileSizeRow = GUI.HBox.New();
-        tileSizeRow.SetSpacing(4.0);
+        tileSizeRow.SetSpacing(layout_metrics.GAP_ROW);
         editor.sceneSetupGroup.AddChild(tileSizeRow);
         GUI.Label.New(tileSizeRow, "Tile size");
         editor.sceneTileSizeSpinner = GUI.Spinner.New(tileSizeRow);
@@ -529,6 +516,15 @@ func BuildSceneInspector(editor: scene_editor_2d.SceneEditor2D,
         editor.historyList.SetAccessibleName(
             "Undoable 2D scene edits oldest first; click a row to jump");
 
+        editor.sceneSettingsGroup =
+            GUI.GroupBox.New(editor.sceneTabHost, "Scene Settings");
+        editor.sceneSettingsHost = GUI.VBox.New();
+        editor.sceneSettingsHost.SetSpacing(
+            layout_metrics.GAP_ROW);
+        editor.sceneSettingsGroup.AddChild(
+            editor.sceneSettingsHost);
+        editor.sceneSettingsInspector.Setup(
+            editor.sceneSettingsHost);
         editor.sceneProperties.Setup(editor.sceneTabHost);
         editor.cameraLighting.Setup(editor.sceneTabHost);
 
@@ -610,7 +606,7 @@ func BuildHierarchy(editor: scene_editor_2d.SceneEditor2D,
         var objectPane = editor.objectPaneBox;
         GUI.Label.New(objectPane, "Objects");
         var hierarchySearchRow = GUI.HBox.New();
-        hierarchySearchRow.SetSpacing(4.0);
+        hierarchySearchRow.SetSpacing(layout_metrics.GAP_ROW);
         objectPane.AddChild(hierarchySearchRow);
         editor.hierarchyDock.Setup(
             app,
@@ -656,7 +652,7 @@ func BuildHierarchy(editor: scene_editor_2d.SceneEditor2D,
         editor.objectHierarchyStatus = GUI.Label.New(objectPane, "");
         editor.objectHierarchyStatus.SetWordWrap(true);
         var objectParentRow = GUI.HBox.New();
-        objectParentRow.SetSpacing(4.0);
+        objectParentRow.SetSpacing(layout_metrics.GAP_ROW);
         objectPane.AddChild(objectParentRow);
         GUI.Label.New(objectParentRow, "Parent");
         editor.objectParentDropdown = GUI.Dropdown.New(objectParentRow);
@@ -673,7 +669,7 @@ func BuildHierarchy(editor: scene_editor_2d.SceneEditor2D,
         // and live in its pane; identity and position editing stay with the
         // inspector's selected-object fields.
         var objectButtons = GUI.HBox.New();
-        objectButtons.SetSpacing(4.0);
+        objectButtons.SetSpacing(layout_metrics.GAP_ROW);
         objectPane.AddChild(objectButtons);
         editor.addObjectButton = GUI.Button.New(objectButtons, "Add Root");
         editor.addObjectButton.SetTooltip(
@@ -711,7 +707,7 @@ func BuildObjectTransformInspector(
         editor.objectIdInput = GUI.TextInput.New(editor.objectTabHost);
         editor.objectIdInput.SetPlaceholder("Object id");
         editor.objectPositionRow = GUI.HBox.New();
-        editor.objectPositionRow.SetSpacing(4.0);
+        editor.objectPositionRow.SetSpacing(layout_metrics.GAP_ROW);
         editor.objectTabHost.AddChild(editor.objectPositionRow);
         GUI.Label.New(editor.objectPositionRow, "X");
         editor.objectXSpinner = GUI.Spinner.New(editor.objectPositionRow);
@@ -723,7 +719,10 @@ func BuildObjectTransformInspector(
         editor.objectYSpinner.SetRange(-1000000.0, 1000000.0);
         editor.objectYSpinner.SetStep(1.0);
         editor.objectYSpinner.SetDecimals(0);
-        editor.applyObjectButton = GUI.Button.New(editor.objectPositionRow, "Apply");
+        editor.applyObjectButton = GUI.Button.New(editor.objectPositionRow, "Set Object");
+        // Type/id/position edits commit live (ADR 0221); the retained
+        // hidden button keeps the probe-visible enable contract truthful.
+        editor.applyObjectButton.SetVisible(false);
         editor.objectTransformRow = inspector_rows.NewWrapRow();
         editor.objectTabHost.AddChild(editor.objectTransformRow);
         GUI.Label.New(editor.objectTransformRow, "Rot");
@@ -802,17 +801,20 @@ func BuildObjectMetadataInspector(
         editor.objectDrawOrderSpinner.SetTooltip(
             "Smaller previews paint first; document order breaks ties");
         editor.objectDrawStackApplyButton =
-            GUI.Button.New(objectDrawStackActions, "Apply");
+            GUI.Button.New(objectDrawStackActions, "Set Draw Order");
         editor.objectDrawStackApplyButton.SetTooltip(
             "Store editor.afterLayer and editor.drawOrder together "
             + "as one undoable object edit");
+        // Layer/priority edits commit live (ADR 0221); the retained hidden
+        // button keeps the probe-visible enable contract truthful.
+        editor.objectDrawStackApplyButton.SetVisible(false);
         editor.objectDrawStackResetButton =
             GUI.Button.New(objectDrawStackActions, "Use Project");
         editor.objectDrawStackResetButton.SetTooltip(
             "Remove per-object preview-stack overrides and inherit the "
             + "project rule");
         editor.objectArrangeRow = GUI.HBox.New();
-        editor.objectArrangeRow.SetSpacing(4.0);
+        editor.objectArrangeRow.SetSpacing(layout_metrics.GAP_ROW);
         editor.objectTabHost.AddChild(editor.objectArrangeRow);
         editor.objectArrangeDropdown = GUI.Dropdown.New(editor.objectArrangeRow);
         editor.objectArrangeDropdown.AddItem(

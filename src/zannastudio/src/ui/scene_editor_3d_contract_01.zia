@@ -345,7 +345,7 @@ class SceneEditor3DContract01 {
     expose func IsFocusModeActive() -> Boolean { return false; }
 
     /// @brief Neutral dispatch slot for ShowCommandMenu.
-    hide func ShowCommandMenu(_button: GUI.Button,
+    hide func ShowCommandMenu(_button: GUI.ToolbarItem,
                               _menu: GUI.ContextMenu) {}
 
     /// @brief Neutral dispatch slot for ConfigureSceneMenu.

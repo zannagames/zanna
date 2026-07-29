@@ -69,8 +69,9 @@ void *rt_physics2d_world_new(double gravity_x, double gravity_y);
 void rt_physics2d_world_step(void *world, double dt);
 
 /// @brief Add a body to the world. Duplicate adds are ignored; storage grows on demand.
-/// @details The world retains the body. A body is intended to belong to only
-///          one world, so remove it from any prior world before adding it here.
+/// @details The world retains the body. A body can belong to only one world:
+///          adding a body that is still attached to a different world traps
+///          and leaves both worlds unchanged. Remove it first to transfer it.
 /// @param world Opaque destination world handle.
 /// @param body Opaque body handle retained on successful insertion.
 void rt_physics2d_world_add(void *world, void *body);
@@ -150,7 +151,8 @@ double rt_physics2d_world_contact_depth(void *world, int64_t index);
 /// @param w Width; non-finite or nonpositive values become one.
 /// @param h Height; non-finite or nonpositive values become one.
 /// @param mass Positive dynamic mass, or a nonpositive/non-finite value for a
-///             static body.
+///             static body. Positive subnormal values normalize to `DBL_MIN`
+///             so their inverse remains finite.
 /// @return A new opaque body handle, or `NULL` after allocation failure.
 void *rt_physics2d_body_new(double x, double y, double w, double h, double mass);
 
@@ -174,12 +176,12 @@ double rt_physics2d_body_prev_x(void *body);
 /// @return The previous top-left/center Y coordinate, or `0.0` for invalid input.
 double rt_physics2d_body_prev_y(void *body);
 
-/// @brief Get the stored AABB width; this is not a circle diameter.
+/// @brief Get the stored AABB width; circle bodies return zero rather than a diameter.
 /// @param body Opaque body handle.
 /// @return The stored width, or `0.0` for invalid input.
 double rt_physics2d_body_w(void *body);
 
-/// @brief Get the stored AABB height; this is not a circle diameter.
+/// @brief Get the stored AABB height; circle bodies return zero rather than a diameter.
 /// @param body Opaque body handle.
 /// @return The stored height, or `0.0` for invalid input.
 double rt_physics2d_body_h(void *body);
@@ -209,7 +211,8 @@ void rt_physics2d_body_set_pos(void *body, double x, double y);
 void rt_physics2d_body_set_vel(void *body, double vx, double vy);
 
 /// @brief Apply a force to the body (accumulated until next step).
-/// @details Static bodies and non-finite inputs are ignored.
+/// @details Static bodies and non-finite inputs are ignored. Finite overflow
+///          saturates instead of changing sign or producing infinity.
 /// @param body Opaque body handle to update.
 /// @param fx Horizontal force contribution.
 /// @param fy Vertical force contribution.
@@ -217,7 +220,7 @@ void rt_physics2d_body_apply_force(void *body, double fx, double fy);
 
 /// @brief Apply an impulse (instant velocity change).
 /// @details Adds `impulse * inverse_mass` to velocity. Static bodies and
-///          non-finite inputs are ignored.
+///          non-finite inputs are ignored; finite overflow saturates.
 /// @param body Opaque body handle to update.
 /// @param ix Horizontal impulse.
 /// @param iy Vertical impulse.
@@ -302,7 +305,10 @@ void rt_projectile2d_set_ground_y(void *p, double y);
 void rt_projectile2d_reset(void *p);
 /// @brief Advance the simulation clock by @p dt seconds (updates landed state).
 /// @details Nonpositive/non-finite deltas and already-landed projectiles are
-///          ignored. The elapsed time is not clamped to the exact impact time.
+///          ignored. The first analytic ground crossing at or before the new
+///          elapsed time latches landing even if the endpoint has moved back
+///          above the ground. Elapsed time saturates but is not clamped to the
+///          exact impact time.
 /// @param p Opaque Projectile2D handle to advance.
 /// @param dt Positive finite elapsed time.
 void rt_projectile2d_advance(void *p, double dt);
@@ -310,25 +316,25 @@ void rt_projectile2d_advance(void *p, double dt);
 /// @param p Opaque Projectile2D handle.
 /// @param t Absolute time since launch; nonpositive/non-finite values select the
 ///          initial position.
-/// @return The analytic X position, or `0.0` for invalid input.
+/// @return The finite-saturated analytic X position, or `0.0` for invalid input.
 double rt_projectile2d_x_at(void *p, double t);
 /// @brief Y position at absolute time @p t seconds since launch.
 /// @param p Opaque Projectile2D handle.
 /// @param t Absolute time since launch; nonpositive/non-finite values select the
 ///          initial position.
-/// @return The analytic Y position, or `0.0` for invalid input.
+/// @return The finite-saturated analytic Y position, or `0.0` for invalid input.
 double rt_projectile2d_y_at(void *p, double t);
 /// @brief X velocity at absolute time @p t seconds since launch.
 /// @param p Opaque Projectile2D handle.
 /// @param t Absolute time since launch; nonpositive/non-finite values select the
 ///          initial velocity.
-/// @return The analytic X velocity, or `0.0` for invalid input.
+/// @return The finite-saturated analytic X velocity, or `0.0` for invalid input.
 double rt_projectile2d_vx_at(void *p, double t);
 /// @brief Y velocity at absolute time @p t seconds since launch.
 /// @param p Opaque Projectile2D handle.
 /// @param t Absolute time since launch; nonpositive/non-finite values select the
 ///          initial velocity.
-/// @return The analytic Y velocity, or `0.0` for invalid input.
+/// @return The finite-saturated analytic Y velocity, or `0.0` for invalid input.
 double rt_projectile2d_vy_at(void *p, double t);
 /// @brief Whether the projectile has reached the ground plane.
 /// @param p Opaque Projectile2D handle.

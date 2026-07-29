@@ -175,6 +175,21 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
         return focusModeActive;
     }
 
+    /// @brief Open one persistent command menu beneath its toolbar anchor.
+    hide override func ShowCommandMenuForItem(item: GUI.ToolbarItem,
+                                     menu: GUI.ContextMenu) {
+        if item == null or menu == null { return; }
+        var scale = 1.0;
+        if guiApp != null {
+            scale = guiApp.GetEffectiveScale();
+            if scale <= 0.0 { scale = 1.0; }
+        }
+        menu.Show(
+            Convert.NumToInt(item.GetScreenX() * scale),
+            Convert.NumToInt(
+                (item.GetScreenY() + item.GetScreenHeight()) * scale));
+    }
+
     /// @brief Open one persistent command menu beneath its owning button.
     hide override func ShowCommandMenu(button: GUI.Button,
                               menu: GUI.ContextMenu) {
@@ -297,26 +312,28 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
     hide override func PumpCommandMenuButtons() {
         if sceneMenuButton.WasClicked() {
             ConfigureSceneMenu();
-            ShowCommandMenu(sceneMenuButton, sceneMenu);
+            ShowCommandMenuForItem(sceneMenuButton, sceneMenu);
         }
         if toolMenuButton.WasClicked() {
             ConfigureToolMenu();
-            ShowCommandMenu(toolMenuButton, toolMenu);
+            ShowCommandMenuForItem(toolMenuButton, toolMenu);
         }
         if viewMenuButton.WasClicked() {
             ConfigureViewMenu();
-            ShowCommandMenu(viewMenuButton, viewMenu);
+            ShowCommandMenuForItem(viewMenuButton, viewMenu);
         }
     }
 
     /// @brief Keep compact menu affordances visibly and accessibly truthful.
+    /// @details Toolbar anchors carry state through their tooltip text; the
+    ///          checkable menu items and the tool toggles own the visual
+    ///          active state (ADR 0220).
     hide override func UpdateCommandMenuButtons() {
         if sceneMenuButton != null {
-            sceneMenuButton.SetStyle(previewActive ? 1 : 0);
-            sceneMenuButton.SetAccessibleDescription(
+            sceneMenuButton.SetTooltip(
                 previewActive
-                ? "Animation preview is playing."
-                : "Animation preview is stopped.");
+                ? "New, import, and run commands. Animation preview is playing."
+                : "New, import, animation preview, and run commands");
         }
         if toolMenuButton != null {
             var hiddenMode =
@@ -338,14 +355,13 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
                 }
             }
             toolMenuButton.SetText(label);
-            toolMenuButton.SetStyle(hiddenMode ? 1 : 0);
-            toolMenuButton.SetAccessibleDescription(
-                "Current 2D scene tool: " + ToolModeLabel(mode) + ".");
+            toolMenuButton.SetTooltip(
+                "Current 2D scene tool: " + ToolModeLabel(mode)
+                + ". Choose shape, fill, tile-pick, and object editing tools.");
         }
         if viewMenuButton != null {
             var presentationActive =
                 focusModeActive or workspaceModeActive;
-            viewMenuButton.SetStyle(presentationActive ? 1 : 2);
             viewMenuButton.SetAccessibleDescription(
                 "Grid " + (showGrid ? "on" : "off")
                 + ", rulers " + (showRulers ? "on" : "off")
@@ -425,8 +441,6 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
         if compactChrome {
             // The progressive compact set needs one command row and at most
             // two context rows, leaving most small-window height to the canvas.
-            toolbar.SetPreferredSize(0.0, 0.0);
-            toolbar.SetMinSize(0.0, 40.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
             viewToolbar.SetMinSize(0.0, 76.0);
             sceneMenuButton.SetText("Scene");
@@ -436,15 +450,9 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             rectangleButton.SetText("Rect");
             ellipseButton.SetText("Oval");
             previewButton.SetText("Play");
-            toolbar.SetGap(2.0);
-            toolbar.SetPadding(2.0);
-            viewToolbar.SetGap(2.0);
-            viewToolbar.SetPadding(2.0);
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
         } else if lastHostWidth < SceneEditor2DModel.CONCISE_SCENE_2D_CHROME_WIDTH {
-            toolbar.SetPreferredSize(0.0, 0.0);
-            toolbar.SetMinSize(0.0, 40.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
             viewToolbar.SetMinSize(0.0, 40.0);
             sceneMenuButton.SetText("Scene");
@@ -454,18 +462,12 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             ellipseButton.SetText("Oval");
             previewButton.SetText("Play");
             runSceneButton.SetText("Run");
-            toolbar.SetGap(2.0);
-            toolbar.SetPadding(2.0);
-            viewToolbar.SetGap(2.0);
-            viewToolbar.SetPadding(2.0);
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
         } else if SceneEditor2DModel.UsesDockedHierarchy(lastHostWidth) == false {
             // Laptop-width scene-layout mode fits the concise actions in one
             // row. Do not keep the narrower tier's defensive two-row floor:
             // that would consume canvas height as an empty band.
-            toolbar.SetPreferredSize(0.0, 0.0);
-            toolbar.SetMinSize(0.0, 0.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
             viewToolbar.SetMinSize(0.0, 0.0);
             sceneMenuButton.SetText("Scene");
@@ -475,15 +477,9 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             ellipseButton.SetText("Oval");
             previewButton.SetText("Play");
             runSceneButton.SetText("Run");
-            toolbar.SetGap(4.0);
-            toolbar.SetPadding(4.0);
-            viewToolbar.SetGap(4.0);
-            viewToolbar.SetPadding(4.0);
             toolbarStatus.SetVisible(false);
             viewStatusLabel.SetVisible(false);
         } else {
-            toolbar.SetPreferredSize(0.0, 0.0);
-            toolbar.SetMinSize(0.0, 0.0);
             viewToolbar.SetPreferredSize(0.0, 0.0);
             viewToolbar.SetMinSize(0.0, 0.0);
             sceneMenuButton.SetText("Scene...");
@@ -493,10 +489,6 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             ellipseButton.SetText("Ellipse");
             previewButton.SetText("Preview");
             runSceneButton.SetText("Run Scene");
-            toolbar.SetGap(4.0);
-            toolbar.SetPadding(4.0);
-            viewToolbar.SetGap(4.0);
-            viewToolbar.SetPadding(4.0);
             toolbarStatus.SetVisible(true);
             viewStatusLabel.SetVisible(true);
         }
@@ -620,25 +612,21 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             hierarchyButton.SetText("Objects hidden");
             hierarchyButton.SetTooltip(
                 "Exit Focus to open the object hierarchy");
-            hierarchyButton.SetStyle(0);
         } else if hierarchyDock.floating {
             hierarchyButton.SetEnabled(false);
             hierarchyButton.SetText("Objects floating");
             hierarchyButton.SetTooltip(
                 "The object hierarchy is already available in its floating pane");
-            hierarchyButton.SetStyle(2);
         } else if compactHierarchyShown {
             hierarchyButton.SetEnabled(true);
             hierarchyButton.SetText("Canvas");
             hierarchyButton.SetTooltip(
                 "Return to the scene canvas");
-            hierarchyButton.SetStyle(1);
         } else {
             hierarchyButton.SetEnabled(true);
             hierarchyButton.SetText("Objects");
             hierarchyButton.SetTooltip(
                 "Open the object hierarchy at the full editor width");
-            hierarchyButton.SetStyle(2);
         }
     }
 
@@ -652,7 +640,6 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             inspectorButton.SetText("Inspector hidden");
             inspectorButton.SetTooltip(
                 "Exit Focus to restore the scene inspector");
-            inspectorButton.SetStyle(0);
             return;
         }
         inspectorButton.SetEnabled(true);
@@ -660,28 +647,23 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             inspectorButton.SetText("Inspector");
             inspectorButton.SetTooltip(
                 "Switch from objects to the scene inspector");
-            inspectorButton.SetStyle(2);
             return;
         }
         if compactLayout {
             if compactInspectorShown {
                 inspectorButton.SetText("Canvas");
                 inspectorButton.SetTooltip("Return to the full-width scene canvas");
-                inspectorButton.SetStyle(1);
             } else {
                 inspectorButton.SetText("Inspector");
                 inspectorButton.SetTooltip("Show the scene inspector at full width");
-                inspectorButton.SetStyle(2);
             }
         } else if inspectorRequestedVisible {
             inspectorButton.SetText("Hide Inspector");
             inspectorButton.SetTooltip(
                 "Hide the scene inspector and give the canvas the full width");
-            inspectorButton.SetStyle(2);
         } else {
             inspectorButton.SetText("Show Inspector");
             inspectorButton.SetTooltip("Restore the scene inspector");
-            inspectorButton.SetStyle(1);
         }
     }
 
@@ -695,13 +677,11 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             paletteButton.SetText("Palette hidden");
             paletteButton.SetTooltip(
                 "Exit Focus to restore the tile palette");
-            paletteButton.SetStyle(0);
             return;
         }
         if paletteDock.floating {
             paletteButton.SetText("Palette floating");
             paletteButton.SetEnabled(false);
-            paletteButton.SetStyle(2);
             return;
         }
         paletteButton.SetEnabled(true);
@@ -709,7 +689,6 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             paletteButton.SetText("Palette");
             paletteButton.SetTooltip(
                 "Switch from objects to the tile palette");
-            paletteButton.SetStyle(2);
             return;
         }
         if compactPaletteLayout {
@@ -717,22 +696,18 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
                 paletteButton.SetText("Canvas");
                 paletteButton.SetTooltip(
                     "Return to the full-height scene canvas");
-                paletteButton.SetStyle(1);
             } else {
                 paletteButton.SetText("Palette");
                 paletteButton.SetTooltip(
                     "Show the tile palette at full height");
-                paletteButton.SetStyle(2);
             }
         } else if paletteRequestedVisible {
             paletteButton.SetText("Hide Palette");
             paletteButton.SetTooltip(
                 "Hide the tile palette and give the canvas the full height");
-            paletteButton.SetStyle(2);
         } else {
             paletteButton.SetText("Show Palette");
             paletteButton.SetTooltip("Restore the tile palette");
-            paletteButton.SetStyle(1);
         }
     }
 
@@ -744,7 +719,6 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             workspaceButton.SetTooltip(
                 "Restore the Studio sidebar and tool docks while keeping "
                     + "this scene's internal pane layout");
-            workspaceButton.SetStyle(1);
         } else {
             if compactChrome
                or SceneEditor2DModel.UsesDockedHierarchy(lastHostWidth) == false {
@@ -755,7 +729,6 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             workspaceButton.SetTooltip(
                 "Hide outer Studio docks but keep objects, canvas, palette, "
                     + "and inspector available");
-            workspaceButton.SetStyle(2);
         }
         UpdateCommandMenuButtons();
     }
@@ -767,13 +740,11 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
             focusButton.SetText("Exit Focus");
             focusButton.SetTooltip(
                 "Restore scene panes, sidebar, and tool panels (Shift+Space)");
-            focusButton.SetStyle(1);
         } else {
             focusButton.SetText("Focus");
             focusButton.SetTooltip(
                 "Hide scene panes and outer Studio docks to maximize the canvas "
                 + "(Shift+Space)");
-            focusButton.SetStyle(2);
         }
         UpdateCommandMenuButtons();
     }

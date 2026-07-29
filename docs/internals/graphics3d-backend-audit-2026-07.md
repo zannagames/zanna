@@ -1,20 +1,20 @@
 ---
 status: active
 audience: contributors
-last-verified: 2026-07-26
+last-verified: 2026-07-29
 ---
 
 # Graphics3D Backend Correctness Audit (July 2026)
 
-This audit covers the C/Objective-C renderer boundary under
-`src/runtime/graphics/3d/backend/`, with focused review of the OpenGL 3.3,
-Direct3D 11, Metal, and software implementations. It supplements the broader
-[Graphics3D runtime hardening program](graphics3d-runtime-hardening-2026-07.md).
+This audit covers the C/Objective-C runtime under `src/runtime/graphics/3d/`,
+with focused review of the OpenGL 3.3, Direct3D 11, Metal, and software
+implementations. It supplements the broader [Graphics3D runtime hardening
+program](graphics3d-runtime-hardening-2026-07.md).
 
 The review combined line-by-line ownership and arithmetic analysis, backend
 parity comparisons, shader review, whole-tree cppcheck analysis, targeted unit
 tests, source-contract tests for platform-excluded translation units, and
-headless production renders. The 102 findings below are fixed; none changes a
+headless production renders. The 215 findings below are fixed; none changes a
 registered scripting API.
 
 ## Regression suites
@@ -28,6 +28,7 @@ The evidence column uses these abbreviations:
 | `D3` | `test_vgfx3d_backend_d3d11_shared`, including concatenated D3D11 source contracts |
 | `MTL` | `test_vgfx3d_backend_metal_shared`, including concatenated Metal source contracts |
 | `PROD` | `test_rt_canvas3d_production` deterministic software rendering and lifetime checks |
+| `GLTF` | `test_rt_gltf` import validation plus whole-Graphics3D cppcheck analysis |
 | `FBX` | `g3d_test_fbx_ascii` plus whole-Graphics3D cppcheck analysis |
 | `RIDGE` | `zia_smoke_ridgebound` Metal release-scene luminance, coverage, and frame-budget gate |
 | `ASH` | `zia_visual_ashfall_metal` authored multi-light scene and HDR post-FX visual gate |
@@ -138,6 +139,119 @@ The evidence column uses these abbreviations:
 | G3D-100 | D3D11 | Resource | Cubemap replacement had the same early-eviction window. Cube texture/SRV allocation is now staged before releasing the old entry. | `D3` |
 | G3D-101 | D3D11 shaders | Bug | FXC's DXBC validator rejected the shared shadow/light pixel shader because early-return control flow left a temporary component apparently uninitialized on one path. Both helpers now initialize one result and return it after structured control flow; real D3D11 RTT and viewmodel probes confirm hardware-backend initialization. | `D3` |
 | G3D-102 | D3D11 diagnostics | Diagnostics | Shader compilation diagnostics were truncated to the same short warning budget on failure, hiding the validator error that caused software fallback. Failed initialization now retains a bounded 7,936-byte diagnostic while successful warning output keeps the prior 768-byte cap. | `D3` |
+| G3D-103 | Shared | Correctness | Camera snapshot sanitization accepted negative shadow slope bias even though the public setter and raster backends define a nonnegative `[0,16]` contract. Snapshots now clamp to that contract and use the runtime default of `1` for non-finite input. | `U` |
+| G3D-104 | Shared | Correctness | Rectangle-light basis vectors were normalized independently, so parallel or merely nonorthogonal inputs produced a degenerate light plane. The secondary basis now uses checked Gram-Schmidt projection with a deterministic least-aligned-axis fallback. | `U` |
+| G3D-105 | Software | Bug | A depth probe queued while an RTT was bound sampled the window z-buffer and dimensions. Software probes now select the active RTT depth storage and extent, matching the GPU backends' active-target behavior. | `PROD` |
+| G3D-106 | Software | Performance | Every software depth-buffer dimension change reallocated exactly `width * height` floats, including alternating sizes that already fit prior storage. The z-buffer now retains a checked geometrically grown capacity. | `PROD` |
+| G3D-107 | Software | Performance | Increasing vertex counts reallocated the transformed-vertex scratch array to every exact count. Scratch now grows by a checked 1.5x policy and reuses the excess capacity. | `PROD` |
+| G3D-108 | Software | Performance | Render-scale color storage used exact-fit reallocations for each small resolution increase. It now shares the checked geometric-capacity policy. | `PROD` |
+| G3D-109 | Software | Performance | The opaque-depth snapshot used by soft particles also grew one exact frame size at a time. Its retained capacity now grows geometrically. | `PROD` |
+| G3D-110 | Software | Correctness | The software begin-frame path allowed a slope bias up to `1000`, diverging from the public and GPU-backend limit of `16`. It now applies the shared `[0,16]` bound. | `PROD`, `U` |
+| G3D-111 | OpenGL | Correctness | Helper passes captured one generic framebuffer binding and restored it to both read and draw targets, collapsing intentionally split bindings. They now preserve `GL_READ_FRAMEBUFFER_BINDING` and `GL_DRAW_FRAMEBUFFER_BINDING` independently. | `GL` |
+| G3D-112 | OpenGL | State | Target allocation changed the active texture unit without restoring it. The helper state snapshot now includes `GL_ACTIVE_TEXTURE`. | `GL` |
+| G3D-113 | OpenGL | State | Target allocation overwrote the active unit's 2D texture binding. The binding is now captured and restored, with a deleted live name redirected to its committed replacement. | `GL` |
+| G3D-114 | OpenGL | State | RTT allocation left its depth renderbuffer bound. `GL_RENDERBUFFER_BINDING` now participates in transactional state restoration. | `GL` |
+| G3D-115 | OpenGL | State | Full-screen helper cleanup could return with texture unit 1–3 active, while ordinary material code assumes unit 0 at entry. Main draw-state restoration now explicitly activates unit 0. | `GL` |
+| G3D-116 | OpenGL | Portability | Scene, post-effect, shadow, and RTT allocation paths trusted positive dimensions without checking the live `GL_MAX_TEXTURE_SIZE`. All target constructors now reject device-oversized extents before issuing GL calls. | `GL` |
+| G3D-117 | OpenGL | Portability | The LDR scene attachment used unsized `GL_RGBA`, leaving storage selection to the driver. It now uses the deterministic `GL_RGBA8` format. | `GL` |
+| G3D-118 | OpenGL | Resource | Scene resize destroyed the complete color/motion/depth set before any replacement attachment existed. The complete set now stages in detached names and publishes in one commit. | `GL` |
+| G3D-119 | OpenGL | Resource | A failed RGBA16F scene attempt destroyed the prior live scene before the LDR retry, and a short-circuited completeness check could leave the HDR error queued to poison that retry. HDR and fallback candidates now leave the prior complete scene authoritative until one candidate validates, consuming each attempt's error state independently. | `GL` |
+| G3D-120 | OpenGL | Bug | The in-scene post-FX fallback wrote intermediate color into the motion-vector attachment. Scene targets now include a dedicated third color attachment for fallback ping-pong. | `GL` |
+| G3D-121 | OpenGL | Correctness | HDR scene color was quantized through the RGBA8 motion attachment during fallback post-processing. The dedicated fallback attachment always matches the actual scene precision. | `GL` |
+| G3D-122 | OpenGL | Bug | Reusing the motion attachment as color destroyed motion vectors needed by later motion-blur entries. Motion data now remains immutable throughout an ordered chain. | `GL` |
+| G3D-123 | OpenGL | Correctness | The restricted in-scene fallback treated TAA and SSR entries as ordinary generic passes and reported success without their temporal/reflection work. It now rejects those entries so the caller can take its defined passthrough recovery path. | `GL` |
+| G3D-124 | OpenGL | Correctness | The in-scene fallback could mutate scene color through early passes before discovering a deterministic unsupported pass or missing bloom chain. It now preflights the entire chain and bloom allocation before its first scene write. | `GL` |
+| G3D-125 | OpenGL | Resource | Post-FX readback resize deleted its usable framebuffer and texture before replacement validation. A generic stage-then-publish color-target builder now preserves the live pair on failure. | `GL` |
+| G3D-126 | OpenGL | Resource | The secondary post-FX scratch target had the same destroy-before-create failure window. It now uses the transactional builder. | `GL` |
+| G3D-127 | OpenGL | Resource | Logical presentation-target resize discarded the prior complete target before allocation. Candidate framebuffer completeness is now established before publication. | `GL` |
+| G3D-128 | OpenGL | Resource | Bloom resize published and destroyed mips incrementally, so a late failure lost the previous chain. All mip textures, framebuffers, and extents now stage and commit as one set. | `GL` |
+| G3D-129 | OpenGL | Resource | TAA history resize could delete the old pair before the second replacement history existed. Both histories now validate before either live history changes. | `GL` |
+| G3D-130 | OpenGL | Resource | SSR resize deleted its live output target before allocating a replacement. It now follows the shared transactional color-target path. | `GL` |
+| G3D-131 | OpenGL | Resource | Shadow-map resize released the completed slot before validating a new depth texture/FBO. The replacement now stages, preserving the prior slot on allocation failure. | `GL` |
+| G3D-132 | OpenGL | Resource | RTT format/size changes destroyed the active framebuffer, color texture, and depth renderbuffer before replacement or required CPU synchronization succeeded. All three objects now stage before the old target is synchronized and retired. | `GL` |
+| G3D-133 | OpenGL | Correctness | Bloom intermediates were always RGBA16F even after a scene fell back to LDR, needlessly depending on the unsupported format that caused fallback. Bloom now follows the actual scene precision. | `GL` |
+| G3D-134 | OpenGL | Correctness | TAA histories were likewise hard-coded to RGBA16F after an LDR scene fallback. Their format now follows the active scene attachment. | `GL` |
+| G3D-135 | OpenGL | Correctness | SSR always resolved into RGBA8, clipping valid HDR reflections and downstream color. Its target now matches the actual scene precision. | `GL` |
+| G3D-136 | OpenGL | Correctness | Scratch-target precision was recomputed from policy/capabilities rather than the scene format that actually survived allocation. All post-FX intermediates now key their precision discriminator from `scene_hdr_active`. | `GL` |
+| G3D-137 | OpenGL | Bug | Scene-target reuse checked only the FBO name and dimensions, so a missing color, motion, fallback, or depth name could be treated as complete. Reuse now requires every owned attachment. | `GL` |
+| G3D-138 | OpenGL | Bug | Bloom-target reuse trusted count and dimensions even when a mip texture or FBO name was zero. Every resident mip pair is now checked before reuse. | `GL` |
+| G3D-139 | OpenGL | Bug | TAA reuse checked only the first history FBO. It now requires both FBO and texture names before preserving history. | `GL` |
+| G3D-140 | OpenGL | Bug | Single-color target reuse could accept an FBO whose texture name had been lost. The shared helper requires both live names and a matching precision/extent. | `GL` |
+| G3D-141 | OpenGL | Correctness | Bloom was prefiltered once from original scene color even when an earlier effect had already transformed the ordered-chain source. Each bloom-enabled entry now consumes its current source texture. | `GL` |
+| G3D-142 | OpenGL | Correctness | Multiple bloom entries all reused the first entry's threshold. Bloom is now regenerated per entry with that entry's sanitized threshold. | `GL` |
+| G3D-143 | OpenGL | Bug | Bloom allocation/encoding failure silently disabled bloom and let the chain report success. The failure now propagates to the chain caller. | `GL` |
+| G3D-144 | OpenGL | Bug | A failed TAA resolve silently copied the unprocessed source and advanced through the chain. Missing temporal output now fails the chain. | `GL` |
+| G3D-145 | OpenGL | Bug | A failed SSR resolve likewise degraded to a generic copy while reporting success. Missing reflection output now fails the chain. | `GL` |
+| G3D-146 | OpenGL | Performance | Every RTT synchronization allocated and freed a full-frame byte or float readback buffer. RTT, screenshot, overlay, and fallback presentation paths now share one context-owned scratch allocation. | `GL` |
+| G3D-147 | OpenGL | Performance | The shared readback scratch still reallocated at every small high-water increase. It now grows geometrically with checked overflow fallback. | `GL` |
+| G3D-148 | OpenGL | Performance | RTT readback issued redundant hard-coded pack-alignment resets on every success and failure path immediately before restoring the captured value. Cleanup now restores the exact snapshot once. | `GL` |
+| G3D-149 | OpenGL | Correctness | HDR readback narrowed `width * 16` into a signed float-row stride without proving the multiplication representable. Width is now bounded before conversion. | `GL` |
+| G3D-150 | OpenGL | Correctness | RTT readback did not independently prove the destination RGBA stride could hold a tight row. Checked destination and tight-byte products now reject short layouts. | `GL` |
+| G3D-151 | OpenGL | Bug | RTT teardown and switching consulted only the context dirty bit even though the target shell has its own dirty latch. Either authoritative dirty flag now forces synchronization. | `GL` |
+| G3D-152 | OpenGL | Bug | Rebinding the already-active RTT cleared both dirty latches, potentially discarding an outstanding lazy readback. Same-target rebinding now leaves content state unchanged. | `GL` |
+| G3D-153 | OpenGL | Performance | Switching between RTT shells with identical extent/format destroyed and rebuilt identical GPU storage. After synchronizing the old shell, the backend now reuses the complete objects. | `GL` |
+| G3D-154 | OpenGL | Correctness | Requested HDR RTTs silently allocated RGBA8 when float color targets were unavailable, then advertised HDR semantics. Unsupported HDR targets are now rejected. | `GL` |
+| G3D-155 | OpenGL | Data loss | A failed old-target synchronization during an RTT switch or unbind could be followed by destructive teardown. The candidate is now discarded and the dirty old target, storage, and synchronization hook remain bound and recoverable. | `GL` |
+| G3D-156 | OpenGL | Resource | Mesh-cache refresh deleted the resident VBO/IBO before compact packing, object creation, and both uploads succeeded. Candidate buffers now replace the cache entry only after complete upload. | `GL` |
+| G3D-157 | OpenGL | Resource | Morph-cache refresh evicted the old entry before payload-size and texture-buffer-limit validation. Validation now precedes any resident mutation. | `GL` |
+| G3D-158 | OpenGL | Resource | Failure to upload optional morph-normal deltas discarded a valid prior morph entry and the new position buffer. Both candidate channels now succeed before publication. | `GL` |
+| G3D-159 | OpenGL | Performance | Morph entries could grow without a hard same-frame ceiling and were only reduced by a later age-prune pass. Misses now append only below a 64-entry cap and otherwise replace the LRU slot. | `GL` |
+| G3D-160 | OpenGL | Bug | Morph-cache count was incremented before upload, leaving blank counted slots after allocation failure. Count now advances only when a complete candidate is published. | `GL` |
+| G3D-161 | D3D11 | State | Binding an invalid-sized render target returned before setting a viewport, leaving the previous target's viewport active. The backend now explicitly binds zero viewports for an invalid extent. | `D3` |
+| G3D-162 | D3D11 | Device loss | Generic post-FX `Draw` is a void command, so device removal during the draw was reported as success. The path now queries device health after the draw and fails the pass. | `D3` |
+| G3D-163 | D3D11 | Device loss | Bloom downsample draws did not check device status. Each level now aborts to cleanup on device removal. | `D3` |
+| G3D-164 | D3D11 | Device loss | Bloom upsample draws had the same unchecked void-command failure. Each level now validates device health. | `D3` |
+| G3D-165 | D3D11 | Device loss | TAA advanced history parity/validity even if the resolve draw lost the device. Health is checked first; history advances only after success. | `D3` |
+| G3D-166 | D3D11 | Device loss | SSR returned its output SRV without checking whether the resolve draw completed on a live device. It now returns failure on removal. | `D3` |
+| G3D-167 | D3D11 | Device loss | Overlay composition reported success after an unchecked draw. The draw now participates in the same status propagation. | `D3` |
+| G3D-168 | D3D11 | Device loss | Skybox submission never observed device removal because its draw is void. It now updates backend device-loss diagnostics immediately after submission. | `D3` |
+| G3D-169 | D3D11 | Bug | A failed bloom encoder left a null bloom SRV but the chain continued as if bloom were disabled. The chain now fails explicitly. | `D3` |
+| G3D-170 | D3D11 | Bug | A failed TAA encoder silently preserved the pre-TAA source and continued. Missing temporal output now propagates. | `D3` |
+| G3D-171 | D3D11 | Bug | A failed SSR encoder silently preserved the pre-SSR source and continued. Missing reflection output now propagates. | `D3` |
+| G3D-172 | Metal | Portability | General Metal color/depth texture helpers accepted any positive signed extent. They now enforce a documented 16,384-texel portability ceiling before `NSUInteger` conversion and allocation. | `MTL` |
+| G3D-173 | Metal | Portability | Native compressed texture upload validated block layout but not the top mip against the texture-dimension ceiling. Oversized native snapshots are now rejected before descriptor creation. | `MTL` |
+| G3D-174 | Metal | Portability | Cubemap upload likewise accepted an oversized face. Face extent now passes the same checked 2D limit. | `MTL` |
+| G3D-175 | Metal | Correctness | Shadow-atlas dimensions multiplied caller sizes by four and two without validating the expanded allocation. Per-slot and expanded atlas extents are now checked before conversion. | `MTL` |
+| G3D-176 | Metal | Bug | Mipmap generation returned void, so command-buffer or blit-encoder allocation failure was unobservable. It now returns success only when no work is needed or a complete blit is committed. | `MTL` |
+| G3D-177 | Metal | Bug | RGBA texture generation was published before the mip-generation command was known to exist. Publication now follows successful mip commit. | `MTL` |
+| G3D-178 | Metal | Bug | Cubemap generation had the same publish-before-mip ordering. It now publishes only after the mip command commits. | `MTL` |
+| G3D-179 | Metal | Resource | A changed Pixels generation mutated the resident cache entry in place; a later row/mip failure discarded the known-good texture. Streaming now occurs in a candidate that retains and restores the complete fallback generation on failure. | `MTL` |
+| G3D-180 | Metal | Resource | Native compressed replacement had the same in-place failure window. It now uses the retained fallback candidate protocol. | `MTL` |
+| G3D-181 | Metal | Resource | Cubemap replacement could discard the resident cube after a later face or mip failure. Candidate uploads now restore the prior complete entry and memoize the failed generation. | `MTL` |
+| G3D-182 | Metal | Performance | The texture cache had only age-based pruning, allowing an unbounded burst of unique textures or failed-generation sentinels in one frame. Every pending, successful, or failed insertion now enforces a 256-entry LRU ceiling while protecting the new key. | `MTL` |
+| G3D-183 | Metal | Performance | The cubemap cache had the same unbounded same-frame growth, including terminal failure entries. Every cache publication now enforces a 64-entry ceiling. | `MTL` |
+| G3D-184 | Metal | Performance | The morph cache was age-pruned but unbounded within a frame. New-key publication now evicts one LRU entry at a 64-entry ceiling. | `MTL` |
+| G3D-185 | Metal | Resource | Morph refresh overwrote the resident entry's position buffer before the complete replacement existed. Position and optional normal buffers now stage in a fresh entry. | `MTL` |
+| G3D-186 | Metal | Bug | Cached morph-normal allocation failure could publish position-only deformation for a mesh that requested normal deltas. Both requested channels are now mandatory. | `MTL` |
+| G3D-187 | Metal | Bug | The transient, uncached morph path had the same position-only fallback. It now rejects the whole morph binding when a requested normal channel cannot allocate. | `MTL` |
+| G3D-188 | Metal | Correctness | Instance scratch capacity narrowed from `NSUInteger` to `int32_t` before growth arithmetic. Oversized retained capacity is now rejected before the cast. | `MTL` |
+| G3D-189 | Metal | Bug | Instance scratch published the new capacity even when `NSMutableData` allocation returned nil or short storage. A local replacement is now validated before capacity and pointer publication. | `MTL` |
+| G3D-190 | Metal | Resource | A geometry-cache miss evicted the LRU entry before allocating either replacement buffer. Eviction now occurs only after a complete candidate exists. | `MTL` |
+| G3D-191 | Metal | Performance | Refreshing an existing geometry key still ran the capacity eviction path and could discard an unrelated mesh. Same-key replacement no longer evicts another entry. | `MTL` |
+| G3D-192 | Metal | Correctness | Bloom was always generated from original `offscreenColor`, ignoring effects earlier in the ordered chain. The encoder now takes the current source texture. | `MTL` |
+| G3D-193 | Metal | Correctness | Multiple bloom entries reused the first enabled threshold and result. Each entry now encodes its current source with its own sanitized threshold. | `MTL` |
+| G3D-194 | Metal | Bug | Failed TAA prerequisites silently passed the unprocessed source through a generic copy. Missing temporal output now fails post-FX encoding. | `MTL` |
+| G3D-195 | Metal | Bug | Failed SSR prerequisites had the same silent passthrough. Missing reflection output now fails encoding. | `MTL` |
+| G3D-196 | Metal | Correctness | Every post-FX source was labeled HDR even after the chain had entered BGRA8 ping-pong storage, causing later passes to repeat HDR transfer behavior. `sceneIsHdr` now derives from the actual source pixel format. | `MTL` |
+| G3D-197 | Metal | Resource | Drawable capture overwrote the retained display texture before replacement allocation succeeded. The candidate now publishes only after allocation. | `MTL` |
+| G3D-198 | Metal | Correctness | Drawable capture could enqueue a zero-width or zero-height blit after clamping mismatched extents. Empty copies are now rejected. | `MTL` |
+| G3D-199 | Metal | Resource | Shadow-atlas resize assigned a nil allocation directly over the usable atlas. A local replacement now preserves the old texture on failure. | `MTL` |
+| G3D-200 | Metal | Resource | Per-slot shadow texture resize had the same direct-overwrite failure. Slot replacements now stage locally. | `MTL` |
+| G3D-201 | Metal | Bug | Replacing the shared shadow atlas invalidated its contents but left completion flags set for other atlas-backed light slots. Every atlas slot is now invalidated and the published count recomputed. | `MTL` |
+| G3D-202 | Metal | Bug | The atlas “cleared this frame” serial advanced before a render encoder was created. It now advances only after the encoder exists, so a retry still clears uninitialized storage. | `MTL` |
+| G3D-203 | Metal | Bug | Shadow begin continued after command-buffer acquisition returned nil and attempted to create an encoder from no buffer. It now aborts immediately. | `MTL` |
+| G3D-204 | Metal | Portability | Main window-target reconstruction accepted oversized dimensions before allocating its multi-attachment set. It now enforces the shared Metal extent contract at entry. | `MTL` |
+| G3D-205 | Metal | Bug | A tiny scene could produce zero bloom mips yet publish an otherwise “successful” post-FX target set. Bloom-enabled reconstruction now requires at least one mip. | `MTL` |
+| G3D-206 | Metal | Bug | Failure to allocate either TAA history texture silently published a target set without temporal histories. Target reconstruction now remains transactional and fails. | `MTL` |
+| G3D-207 | Metal | Resource | Context and mutable-cache allocation results were dereferenced without validation. Base context creation now checks the object and every required dictionary before returning. | `MTL` |
+| G3D-208 | Metal | Resource | In-flight semaphore creation was unchecked, leaving frame pacing to message a nil dispatch object. Queue/default initialization now fails if the semaphore is unavailable. | `MTL` |
+| G3D-209 | Metal | Resource | Native view layer, host layer, and `CAMetalLayer` creation were assumed to succeed. Layer attachment now validates each object and reports failure. | `MTL` |
+| G3D-210 | Metal | Resource | Default white texture, sampler, cubemap, and BRDF LUT creation failures were silently published into a context that later required them. Default-resource construction now returns failure unless all exist. | `MTL` |
+| G3D-211 | Metal | Resource | Required depth states, shared samplers, and shadow pipeline/sampler/depth state were built by void helpers and never validated. Each helper now returns a required-resource status that gates context creation. | `MTL` |
+| G3D-212 | Metal | Resource | A context-initialization failure after layer attachment left an orphan `CAMetalLayer` in the host view. Failure cleanup now detaches and clears the layer before returning. | `MTL` |
+| G3D-213 | glTF import | Robustness | Camera-node pointer-array sizing used correct manual division guards that the scoped analyzer could not prove and duplicated established overflow logic. It now uses the shared checked add/multiply helpers and allocates from the verified byte counts. | `GLTF` |
+| G3D-214 | OpenGL | Portability | The shared readback allocator exposed byte-typed storage even when an HDR path consumed the naturally aligned allocation as floats, obscuring the allocation's generic effective type. It now returns raw `void *` storage and callers select the destination type. | `GL` |
+| G3D-215 | D3D11 | Robustness | Cluster-table selection relied on the validator returning false for null before the conditional expression dereferenced the table. The call site now includes an explicit null guard and records usability once. | `D3` |
 
 ## Compatibility and maintenance rules
 
@@ -153,6 +267,27 @@ The evidence column uses these abbreviations:
   complete resource remains authoritative.
 
 ## Validation record
+
+Revalidated on 2026-07-29 for G3D-103 through G3D-215:
+
+- The canonical macOS arm64 build completed in incremental, build-only mode with
+  `ZANNA_SKIP_CLEAN=1` and `ZANNA_SKIP_TESTS=1`. Lint, audit, smoke, and install stages inside the
+  build script were intentionally skipped and validated separately where applicable.
+- The focused runtime/backend slice passed 8/8 tests:
+  `test_rt_canvas3d_production`, `test_rt_gltf`, `test_rt_canvas3d_gpu_paths`,
+  `test_vgfx3d_backend_utils`, all three GPU backend source-contract suites, and
+  `test_rt_graphics3d_robustness`.
+- Targeted native Metal validation passed 3/3: the Ashfall authored visual gate, Ridgebound release
+  scene smoke test, and Canvas3D render-scale probe.
+- The platform-policy lint passed. Cppcheck reported no warning, performance, portability, or
+  inconclusive findings across the scoped Graphics3D tree; separately configured OpenGL and
+  D3D11 translation-unit checks were also clean.
+- The complete Metal Objective-C translation unit and changed C/C++ units passed the project's
+  warning-as-error syntax checks. The actual D3D11 translation unit also passed an x86_64
+  MinGW-w64 warning-as-error syntax compile (with only the pre-existing embedded-HLSL line-length
+  diagnostic excluded).
+- The full CTest suite was intentionally not run because other work was active in the shared
+  worktree, as requested.
 
 Revalidated on 2026-07-21:
 

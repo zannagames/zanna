@@ -165,6 +165,10 @@ static float get_tab_width(vg_tabbar_t *tabbar, vg_tab_t *tab) {
 
     float width = metrics.width + tabbar->tab_padding * 2;
 
+    // Add the leading vector-icon slot when one is set (ADR 0220).
+    if (tab->icon_vector_id >= 0)
+        width += tabbar->font_size + 6.0f;
+
     // Add close button width if closable
     if (tab->closable) {
         float close_gap =
@@ -759,6 +763,18 @@ static void tabbar_paint(vg_widget_t *widget, void *canvas) {
                 widget->y + (widget->height + font_metrics.ascent + font_metrics.descent) / 2.0f;
 
             float text_max_width = width - tabbar->tab_padding * 2.0f;
+            if (tab->icon_vector_id >= 0) {
+                float icon_sz = tabbar->font_size + 2.0f;
+                float icon_y = widget->y + (widget->height - icon_sz) / 2.0f;
+                vg_icon_vector_draw(win,
+                                    tab->icon_vector_id,
+                                    (int32_t)(text_x + 0.5f),
+                                    (int32_t)(icon_y + 0.5f),
+                                    (int32_t)(icon_sz + 0.5f),
+                                    text_color);
+                text_x += icon_sz + 4.0f;
+                text_max_width -= icon_sz + 4.0f;
+            }
             if (tab->closable) {
                 float close_gap =
                     (tabbar->close_button_size / TABBAR_DEFAULT_CLOSE_SIZE) * TABBAR_CLOSE_GAP;
@@ -1067,6 +1083,7 @@ vg_tab_t *vg_tabbar_add_tab(vg_tabbar_t *tabbar, const char *title, bool closabl
     vg_tab_t *tab = calloc(1, sizeof(vg_tab_t));
     if (!tab)
         return NULL;
+    tab->icon_vector_id = -1;
 
     char *title_copy = title ? vg_strdup(title) : vg_strdup("Untitled");
     if (!title_copy) {
@@ -1333,6 +1350,22 @@ void vg_tab_set_title(vg_tab_t *tab, const char *title) {
     if (tab->owner) {
         if (tab->owner->hovered_tab == tab)
             tabbar_sync_hover_tooltip(tab->owner);
+        tab->owner->base.needs_layout = true;
+        tab->owner->base.needs_paint = true;
+        vg_widget_note_revision(&tab->owner->base);
+    }
+}
+
+/// @brief Attach or clear a leading vector icon on one live tab (ADR 0220).
+/// @param tab Live tab to modify; invalid or retired records are ignored.
+/// @param vector_id Icon id from vg_icon_vector_find; negative clears it.
+void vg_tab_set_icon_vector(vg_tab_t *tab, int32_t vector_id) {
+    if (!vg_tab_is_live(tab))
+        return;
+    if (tab->icon_vector_id == vector_id)
+        return;
+    tab->icon_vector_id = vector_id;
+    if (tab->owner) {
         tab->owner->base.needs_layout = true;
         tab->owner->base.needs_paint = true;
         vg_widget_note_revision(&tab->owner->base);

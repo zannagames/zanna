@@ -357,7 +357,9 @@ void rt_renderer2d_draw_region(void *renderer,
 /// @details Unlike @ref rt_renderer2d_end, this does not clear the queue or
 ///          deactivate the renderer.  Commands remain available for another
 ///          target; replaying alpha-blended commands into the same target
-///          composites them again.
+///          composites them again. If a texture is backed by the destination
+///          Pixels, scaled and rotated draws snapshot the source before
+///          writing so results do not depend on scan order.
 void rt_renderer2d_flush_to_target(void *renderer, void *target);
 /// @brief Ends a frame by flushing queued draws to a Canvas.
 /// @param renderer Active renderer to flush and deactivate.
@@ -1011,6 +1013,8 @@ int64_t rt_transform2d_get_rotation(void *transform);
 /// @brief Sets the integer rotation without normalizing it.
 /// @param transform Transform to update.
 /// @param degrees Rotation in degrees.
+/// @details The original value remains observable through `get_rotation`;
+///          point transformation reduces it modulo 360 before trigonometry.
 void rt_transform2d_set_rotation(void *transform, int64_t degrees);
 /// @brief Sets both translation components.
 /// @param transform Transform to update.
@@ -1038,6 +1042,8 @@ void rt_transform2d_translate(void *transform, int64_t dx, int64_t dy);
 /// @param x Input point X coordinate.
 /// @param y Input point Y coordinate.
 /// @return The rounded, saturating transformed X coordinate, or @p x if invalid.
+/// @details Identity scale with zero-modulo rotation stays in exact integer
+///          arithmetic, including coordinates near the signed 64-bit limits.
 int64_t rt_transform2d_transform_x(void *transform, int64_t x, int64_t y);
 /// @brief Applies scale, rotation, origin, and translation and returns Y.
 /// @param transform Transform to apply.
@@ -1523,7 +1529,7 @@ int64_t rt_palette2d_get_count(void *palette);
 /// @param pixels Borrowed source Pixels image.
 /// @return A new owned Pixels image, or `NULL` for invalid input or allocation failure.
 /// @details Distance is squared Euclidean distance across RGBA channels.  An
-///          empty palette reproduces the source pixels unchanged.
+///          empty palette returns a distinct exact clone of the source.
 void *rt_palette2d_apply(void *palette, void *pixels);
 /// @brief Applies the legacy red-byte indexed palette mapping.
 /// @param palette Palette supplying indexed replacement colors.
@@ -1575,12 +1581,14 @@ int64_t rt_gradient2d_sample_color_normalized(void *gradient, double t);
 /// @brief Fills a Pixels image with a left-to-right gradient.
 /// @param gradient Gradient supplying sampled colors.
 /// @param pixels Destination Pixels image modified in place.
-/// @details The first and last columns use the two endpoints when width exceeds one.
+/// @details The first and last columns use the two endpoints when width exceeds
+///          one. Content mutation generation advances once only if any texel changes.
 void rt_gradient2d_fill_horizontal(void *gradient, void *pixels);
 /// @brief Fills a Pixels image with a top-to-bottom gradient.
 /// @param gradient Gradient supplying sampled colors.
 /// @param pixels Destination Pixels image modified in place.
-/// @details The first and last rows use the two endpoints when height exceeds one.
+/// @details The first and last rows use the two endpoints when height exceeds
+///          one. Content mutation generation advances once only if any texel changes.
 void rt_gradient2d_fill_vertical(void *gradient, void *pixels);
 
 //===----------------------------------------------------------------------===//

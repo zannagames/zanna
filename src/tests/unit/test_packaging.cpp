@@ -5475,7 +5475,10 @@ TEST(ToolchainInstallManifest, PreservesUtf8StagePaths) {
     const std::string relativePath = "share/zanna/\xE8\xB3\x87\xE6\x96\x99.txt";
     const fs::path tmpRoot = fs::temp_directory_path() / zanna::filesystem::pathFromUtf8(rootName);
     fs::remove_all(tmpRoot);
-    const fs::path stage = createMockToolchainStage(tmpRoot);
+    // Manifest gathering canonicalizes the stage root, so derive the expected
+    // absolute path from the canonical form (macOS tmp lives behind /var ->
+    // /private/var, and the raw form would never compare equal).
+    const fs::path stage = fs::weakly_canonical(createMockToolchainStage(tmpRoot));
     const fs::path extra = stage / zanna::filesystem::pathFromUtf8(relativePath);
     fs::create_directories(extra.parent_path());
     writeFileAtomic(extra, std::vector<uint8_t>{'d', 'a', 't', 'a'});

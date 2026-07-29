@@ -54,6 +54,7 @@ bind Box = Zanna.Core.Box;
 bind Clock = Zanna.Time.Clock;
 bind "scene_editor_2d_model" as SceneEditor2DModel;
 bind "scene_editor_2d_component_properties" as PreviousLayer;
+bind "scene_settings_inspector_3d";
 
 /// @brief Layers History implementation layer.
 class SceneEditor2DLayersHistoryLayer extends PreviousLayer.SceneEditor2DComponentPropertiesLayer {
@@ -280,6 +281,47 @@ class SceneEditor2DLayersHistoryLayer extends PreviousLayer.SceneEditor2DCompone
     }
 
     /// @brief Serialize one accepted edit into the shared Document model.
+    /// @brief Write one typed scene-settings batch to the scene
+    ///        properties as a single undoable transaction (ADR 0222).
+    expose func ApplySceneSettingsCommit2D(
+        commit: scene_settings_inspector_3d.SceneSettingsCommit) -> Boolean {
+        if scene == null or commit == null { return false; }
+        var index = 0;
+        var mutated = false;
+        while index < commit.keys.count() {
+            var key = commit.keys.get(index);
+            var kind = commit.kinds.get(index);
+            var value = Str.Trim(commit.values.get(index));
+            if kind == "remove" {
+                if scene.Has(key) {
+                    scene.Remove(key);
+                    mutated = true;
+                }
+            } else if kind == "int" {
+                var parsedInt = Parse.TryInt(value);
+                if parsedInt.IsNone { return false; }
+                scene.SetInt(key, parsedInt.UnwrapI64());
+                mutated = true;
+            } else if kind == "float" {
+                var parsedFloat = Parse.TryDouble(value);
+                if parsedFloat.IsNone { return false; }
+                scene.SetFloat(key, parsedFloat.UnwrapF64());
+                mutated = true;
+            } else if kind == "bool" {
+                var parsedBool = Parse.TryBool(value);
+                if parsedBool.IsNone { return false; }
+                scene.SetBool(key, parsedBool.UnwrapI1());
+                mutated = true;
+            } else {
+                scene.SetStr(key, value);
+                mutated = true;
+            }
+            index = index + 1;
+        }
+        if mutated == false { return false; }
+        return CommitScene(commit.label);
+    }
+
     hide override func CommitScene(message: String) -> Boolean {
         if scene == null or currentDoc == null { return false; }
         var serialized = scene.ToJson();
@@ -427,34 +469,15 @@ class SceneEditor2DLayersHistoryLayer extends PreviousLayer.SceneEditor2DCompone
         pickerButton.SetEnabled(canvasEditingEnabled);
         objectButton.SetEnabled(canvasEditingEnabled);
         toolMenuButton.SetEnabled(canvasEditingEnabled);
-        selectButton.SetStyle(0);
-        paintButton.SetStyle(0);
-        eraseButton.SetStyle(0);
-        rectangleButton.SetStyle(0);
-        lineButton.SetStyle(0);
-        ellipseButton.SetStyle(0);
-        fillButton.SetStyle(0);
-        pickerButton.SetStyle(0);
-        objectButton.SetStyle(0);
-        if mode == SceneEditor2DModel.MODE_PAINT {
-            paintButton.SetStyle(1);
-        } else if mode == SceneEditor2DModel.MODE_ERASE {
-            eraseButton.SetStyle(1);
-        } else if mode == SceneEditor2DModel.MODE_RECTANGLE {
-            rectangleButton.SetStyle(1);
-        } else if mode == SceneEditor2DModel.MODE_LINE {
-            lineButton.SetStyle(1);
-        } else if mode == SceneEditor2DModel.MODE_ELLIPSE {
-            ellipseButton.SetStyle(1);
-        } else if mode == SceneEditor2DModel.MODE_FILL {
-            fillButton.SetStyle(1);
-        } else if mode == SceneEditor2DModel.MODE_PICKER {
-            pickerButton.SetStyle(1);
-        } else if mode == SceneEditor2DModel.MODE_OBJECT {
-            objectButton.SetStyle(1);
-        } else {
-            selectButton.SetStyle(1);
-        }
+        selectButton.SetToggled(mode == SceneEditor2DModel.MODE_SELECT);
+        paintButton.SetToggled(mode == SceneEditor2DModel.MODE_PAINT);
+        eraseButton.SetToggled(mode == SceneEditor2DModel.MODE_ERASE);
+        rectangleButton.SetToggled(mode == SceneEditor2DModel.MODE_RECTANGLE);
+        lineButton.SetToggled(mode == SceneEditor2DModel.MODE_LINE);
+        ellipseButton.SetToggled(mode == SceneEditor2DModel.MODE_ELLIPSE);
+        fillButton.SetToggled(mode == SceneEditor2DModel.MODE_FILL);
+        pickerButton.SetToggled(mode == SceneEditor2DModel.MODE_PICKER);
+        objectButton.SetToggled(mode == SceneEditor2DModel.MODE_OBJECT);
         UpdateCommandMenuButtons();
     }
 }

@@ -1648,8 +1648,12 @@ static void test_camera_parameter_sanitizer(void) {
                     dst.height_fog_sun_power == 8.0f && dst.height_fog_sun_amount == 0.0f,
                 "Height-fog values use shader-safe bounds and directions");
     EXPECT_TRUE(dst.ibl_intensity == 1.0f && dst.ibl_sh[0] == 0.0f && dst.shadow_strength == 1.0f &&
-                    dst.shadow_slope_bias == 0.0f && dst.shadow_quality == 2,
+                    dst.shadow_slope_bias == 1.0f && dst.shadow_quality == 2,
                 "IBL and shadow parameters cannot carry non-finite or out-of-range values");
+    src.shadow_slope_bias = -2.0f;
+    vgfx3d_sanitize_camera_params(&src, &dst);
+    EXPECT_TRUE(dst.shadow_slope_bias == 0.0f,
+                "Camera snapshots cannot reintroduce a negative shadow slope bias");
     EXPECT_TRUE(dst.znear == 0.1f && dst.zfar == 100.0f,
                 "Invalid clip planes produce an ordered logarithmic depth range");
 }
@@ -1696,6 +1700,23 @@ static void test_light_parameter_sanitizers(void) {
     EXPECT_TRUE(dst[0].direction[0] == 0.0f && dst[0].direction[1] == -1.0f &&
                     dst[0].direction[2] == 0.0f && dst[0].position[0] == 0.0f,
                 "Malformed light vectors receive finite fallbacks");
+    EXPECT_NEAR(dst[0].basis_u[0] * dst[0].basis_v[0] + dst[0].basis_u[1] * dst[0].basis_v[1] +
+                    dst[0].basis_u[2] * dst[0].basis_v[2],
+                0.0f,
+                1e-6f,
+                "Rectangle-light basis sanitization produces perpendicular unit vectors");
+    src[0].basis_u[0] = 1.0f;
+    src[0].basis_u[1] = 0.0f;
+    src[0].basis_u[2] = 0.0f;
+    src[0].basis_v[0] = 2.0f;
+    src[0].basis_v[1] = 0.0f;
+    src[0].basis_v[2] = 0.0f;
+    vgfx3d_sanitize_light_params(&src[0], &dst[0]);
+    EXPECT_NEAR(dst[0].basis_u[0] * dst[0].basis_v[0] + dst[0].basis_u[1] * dst[0].basis_v[1] +
+                    dst[0].basis_u[2] * dst[0].basis_v[2],
+                0.0f,
+                1e-6f,
+                "Parallel rectangle-light basis vectors receive a stable perpendicular fallback");
     EXPECT_TRUE(dst[0].color[0] == 0.0f && dst[0].color[1] == 0.0f && dst[0].color[2] == 1.0f &&
                     dst[0].attenuation == 0.0f,
                 "Light colors and attenuation stay in finite shader ranges");

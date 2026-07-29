@@ -2573,7 +2573,7 @@ rt_string rt_treeview_node_get_icon(void *node) {
     RT_ASSERT_MAIN_THREAD();
     vg_tree_node_t *n = node ? rt_gui_tree_node_from_handle(node) : NULL;
     const char *icon = n ? vg_tree_node_get_icon_text(n) : NULL;
-    return icon ? rt_string_from_bytes(icon, n->icon_text_len) : rt_str_empty();
+    return icon ? rt_string_from_bytes(icon, strlen(icon)) : rt_str_empty();
 }
 
 /// @brief Set the node's materialized/lazy-child affordance.

@@ -13,6 +13,9 @@
 module config;
 
 // --- Identity / window -------------------------------------------------------
+// Absolute path of the `--scene` file when `--scene-watch` was also
+// passed (ADR 0194); empty disables watching entirely.
+var sceneWatchPath: String = "";
 var GAME_TITLE: String = "ASHFALL";
 var WINDOW_TITLE: String = "ASHFALL — Erebos-4";
 var WINDOW_WIDTH: Integer = 1600;

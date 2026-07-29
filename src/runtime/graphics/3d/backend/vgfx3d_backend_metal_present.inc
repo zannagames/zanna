@@ -623,8 +623,9 @@ static int metal_get_geometry_buffers(VGFXMetalContext *ctx,
             entry.vertexCount != cmd->vertex_count || entry.indexCount != cmd->index_count ||
             entry.compactStream != wants_compact || !entry.vertexBuffer || !entry.indexBuffer) {
             VGFXMetalGeometryCacheEntry *new_entry;
-            metal_cache_evict_if_needed(ctx);
             new_entry = [[VGFXMetalGeometryCacheEntry alloc] init];
+            if (!new_entry)
+                return 0;
             if (wants_compact) {
                 /* R20: encode into the packed 48-byte layout; the compact
                  * pipeline variants decode it via their vertex descriptor. */
@@ -647,6 +648,8 @@ static int metal_get_geometry_buffers(VGFXMetalContext *ctx,
             new_entry.vertexCount = cmd->vertex_count;
             new_entry.indexCount = cmd->index_count;
             new_entry.compactStream = wants_compact;
+            if (!entry)
+                metal_cache_evict_if_needed(ctx);
             ctx.geometryCache[key] = new_entry;
             entry = new_entry;
         }

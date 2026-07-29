@@ -89,6 +89,8 @@ static int8_t rt_canvas_points_checked(void *points_ptr,
 /// @param value Finite value to convert.
 /// @return Mathematical floor saturated to the int64 range.
 static int64_t rt_canvas_adv_floor_ld_to_i64_sat(long double value) {
+    if (isnan(value))
+        return 0;
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
     if (value <= (long double)INT64_MIN)
@@ -100,6 +102,8 @@ static int64_t rt_canvas_adv_floor_ld_to_i64_sat(long double value) {
 /// @param value Finite value to convert.
 /// @return Mathematical ceiling saturated to the int64 range.
 static int64_t rt_canvas_adv_ceil_ld_to_i64_sat(long double value) {
+    if (isnan(value))
+        return 0;
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
     if (value <= (long double)INT64_MIN)
@@ -107,11 +111,63 @@ static int64_t rt_canvas_adv_ceil_ld_to_i64_sat(long double value) {
     return (int64_t)ceill(value);
 }
 
-/// @brief Linearly interpolate the x value of a line segment at scanline @p y.
-/// @details Used by triangle/polygon scan-conversion to find the left/right
-///          edge x at a given y. Long-double arithmetic keeps precision when
-///          int64 endpoints are widely separated; the result floors to int64
-///          with saturation. Degenerate horizontal segments (y1 == y0) return x0.
+/// @brief Convert two's-complement unsigned bits to int64 without relying on an
+///        implementation-defined out-of-range cast.
+static int64_t rt_canvas_adv_i64_from_bits(uint64_t bits) {
+    if (bits <= (uint64_t)INT64_MAX)
+        return (int64_t)bits;
+    return INT64_MIN + (int64_t)(bits - (UINT64_C(1) << 63u));
+}
+
+/// @brief Exact unsigned magnitude of a signed-coordinate difference.
+static uint64_t rt_canvas_adv_abs_diff_u64(int64_t a, int64_t b) {
+    return a >= b ? (uint64_t)a - (uint64_t)b : (uint64_t)b - (uint64_t)a;
+}
+
+/// @brief Compute floor(value * numerator / denominator) without overflow.
+/// @param remainder_out Optional flag set when the exact quotient has a
+///        non-zero fractional remainder.
+static uint64_t rt_canvas_adv_scale_floor_u64(uint64_t value,
+                                              uint64_t numerator,
+                                              uint64_t denominator,
+                                              int8_t *remainder_out) {
+    if (remainder_out)
+        *remainder_out = 0;
+    if (value == 0 || numerator == 0 || denominator == 0)
+        return 0;
+    if (numerator >= denominator)
+        return value;
+
+    uint64_t quotient = 0;
+    uint64_t remainder = 0;
+    for (int bit = 63; bit >= 0; bit--) {
+        uint64_t carry = 0;
+        if (remainder >= denominator - remainder) {
+            remainder -= denominator - remainder;
+            carry = 1;
+        } else {
+            remainder += remainder;
+        }
+        quotient = quotient * 2u + carry;
+
+        if (((value >> (unsigned)bit) & 1u) != 0u) {
+            if (remainder >= denominator - numerator) {
+                remainder -= denominator - numerator;
+                quotient++;
+            } else {
+                remainder += numerator;
+            }
+        }
+    }
+    if (remainder_out)
+        *remainder_out = remainder != 0;
+    return quotient;
+}
+
+/// @brief Linearly interpolate the floored x coordinate at scanline @p y.
+/// @details Exact quotient/remainder arithmetic keeps rasterization identical
+///          across platforms even for segments spanning the full int64 range.
+///          Degenerate horizontal segments return @p x0.
 /// @param x0 First endpoint X.
 /// @param y0 First endpoint Y.
 /// @param x1 Second endpoint X.
@@ -121,9 +177,19 @@ static int64_t rt_canvas_adv_ceil_ld_to_i64_sat(long double value) {
 static int64_t rt_canvas_adv_interp_x(int64_t x0, int64_t y0, int64_t x1, int64_t y1, int64_t y) {
     if (y1 == y0)
         return x0;
-    long double t = ((long double)y - (long double)y0) / ((long double)y1 - (long double)y0);
-    long double x = (long double)x0 + ((long double)x1 - (long double)x0) * t;
-    return rt_canvas_adv_floor_ld_to_i64_sat(x);
+
+    uint64_t denominator = rt_canvas_adv_abs_diff_u64(y1, y0);
+    uint64_t numerator = rt_canvas_adv_abs_diff_u64(y, y0);
+    if (numerator >= denominator)
+        return x1;
+    uint64_t distance = rt_canvas_adv_abs_diff_u64(x1, x0);
+    int8_t has_remainder = 0;
+    uint64_t magnitude =
+        rt_canvas_adv_scale_floor_u64(distance, numerator, denominator, &has_remainder);
+    if (x1 < x0 && has_remainder)
+        magnitude++;
+    uint64_t bits = x1 >= x0 ? (uint64_t)x0 + magnitude : (uint64_t)x0 - magnitude;
+    return rt_canvas_adv_i64_from_bits(bits);
 }
 
 /// @brief Convert a Zanna packed color to a 24-bit ZannaGFX RGB value.
@@ -135,17 +201,115 @@ static vgfx_color_t rt_canvas_adv_color_to_vgfx_rgb(int64_t color) {
     return (vgfx_color_t)((rt_pixels_color_to_rgba(color) >> 8) & 0x00FFFFFFu);
 }
 
-/// @brief Squared distance between two points in long double (no sqrt, no
-///        overflow) — used only to compare relative edge lengths.
-/// @param x1 First point X.
-/// @param y1 First point Y.
-/// @param x2 Second point X.
-/// @param y2 Second point Y.
-/// @return Squared Euclidean distance in long-double precision.
-static long double rt_canvas_adv_dist2_ld(int64_t x1, int64_t y1, int64_t x2, int64_t y2) {
-    long double dx = (long double)x2 - (long double)x1;
-    long double dy = (long double)y2 - (long double)y1;
-    return dx * dx + dy * dy;
+/// @brief Interpolate one byte channel at an exact unsigned ratio.
+static uint8_t rt_canvas_adv_lerp_channel(uint8_t from,
+                                          uint8_t to,
+                                          uint64_t numerator,
+                                          uint64_t denominator) {
+    if (numerator == 0 || from == to || denominator == 0)
+        return from;
+    if (numerator >= denominator)
+        return to;
+    uint64_t distance = from >= to ? (uint64_t)from - to : (uint64_t)to - from;
+    uint64_t delta = rt_canvas_adv_scale_floor_u64(distance, numerator, denominator, NULL);
+    return (uint8_t)(to >= from ? (uint64_t)from + delta : (uint64_t)from - delta);
+}
+
+/// @brief Interpolate canonical RGBA channels without overflowing coordinates.
+static uint32_t rt_canvas_adv_lerp_rgba(uint32_t from,
+                                        uint32_t to,
+                                        uint64_t numerator,
+                                        uint64_t denominator) {
+    uint8_t r = rt_canvas_adv_lerp_channel(
+        (uint8_t)(from >> 24u), (uint8_t)(to >> 24u), numerator, denominator);
+    uint8_t g = rt_canvas_adv_lerp_channel(
+        (uint8_t)(from >> 16u), (uint8_t)(to >> 16u), numerator, denominator);
+    uint8_t b = rt_canvas_adv_lerp_channel(
+        (uint8_t)(from >> 8u), (uint8_t)(to >> 8u), numerator, denominator);
+    uint8_t a = rt_canvas_adv_lerp_channel((uint8_t)from, (uint8_t)to, numerator, denominator);
+    return ((uint32_t)r << 24u) | ((uint32_t)g << 16u) | ((uint32_t)b << 8u) | a;
+}
+
+/// @brief Portable unsigned 128-bit product represented as high/low words.
+typedef struct rt_canvas_adv_u128 {
+    uint64_t high;
+    uint64_t low;
+} rt_canvas_adv_u128;
+
+/// @brief Portable unsigned 129-bit squared-distance representation.
+typedef struct rt_canvas_adv_u129 {
+    uint8_t top;
+    uint64_t high;
+    uint64_t low;
+} rt_canvas_adv_u129;
+
+/// @brief Multiply two uint64 values without compiler-specific integer types.
+static rt_canvas_adv_u128 rt_canvas_adv_mul_u64_wide(uint64_t a, uint64_t b) {
+    uint64_t a0 = (uint32_t)a;
+    uint64_t a1 = a >> 32u;
+    uint64_t b0 = (uint32_t)b;
+    uint64_t b1 = b >> 32u;
+    uint64_t w0 = a0 * b0;
+    uint64_t t = a1 * b0 + (w0 >> 32u);
+    uint64_t w1 = t & UINT64_C(0xFFFFFFFF);
+    uint64_t w2 = t >> 32u;
+    w1 += a0 * b1;
+    rt_canvas_adv_u128 result = {
+        a1 * b1 + w2 + (w1 >> 32u),
+        (w1 << 32u) | (w0 & UINT64_C(0xFFFFFFFF)),
+    };
+    return result;
+}
+
+/// @brief Test triangle collinearity with exact determinant products.
+static int8_t rt_canvas_adv_triangle_is_collinear(
+    int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t x3, int64_t y3) {
+    uint64_t ax = rt_canvas_adv_abs_diff_u64(x2, x1);
+    uint64_t ay = rt_canvas_adv_abs_diff_u64(y2, y1);
+    uint64_t bx = rt_canvas_adv_abs_diff_u64(x3, x1);
+    uint64_t by = rt_canvas_adv_abs_diff_u64(y3, y1);
+    int left_negative = (x2 < x1) ^ (y3 < y1);
+    int right_negative = (y2 < y1) ^ (x3 < x1);
+    rt_canvas_adv_u128 left = rt_canvas_adv_mul_u64_wide(ax, by);
+    rt_canvas_adv_u128 right = rt_canvas_adv_mul_u64_wide(ay, bx);
+    int left_zero = left.high == 0 && left.low == 0;
+    int right_zero = right.high == 0 && right.low == 0;
+    if (left_zero || right_zero)
+        return left_zero && right_zero;
+    if (left_negative != right_negative)
+        return 0;
+    return left.high == right.high && left.low == right.low;
+}
+
+/// @brief Compute an exact squared edge length using a portable 129-bit sum.
+static rt_canvas_adv_u129 rt_canvas_adv_edge_distance2(int64_t x1,
+                                                       int64_t y1,
+                                                       int64_t x2,
+                                                       int64_t y2) {
+    uint64_t dx = rt_canvas_adv_abs_diff_u64(x1, x2);
+    uint64_t dy = rt_canvas_adv_abs_diff_u64(y1, y2);
+    rt_canvas_adv_u128 x2_wide = rt_canvas_adv_mul_u64_wide(dx, dx);
+    rt_canvas_adv_u128 y2_wide = rt_canvas_adv_mul_u64_wide(dy, dy);
+    rt_canvas_adv_u129 result;
+    result.low = x2_wide.low + y2_wide.low;
+    uint64_t carry = result.low < x2_wide.low;
+    result.high = x2_wide.high + y2_wide.high;
+    result.top = result.high < x2_wide.high;
+    uint64_t prior_high = result.high;
+    result.high += carry;
+    result.top = (uint8_t)(result.top + (result.high < prior_high));
+    return result;
+}
+
+/// @brief Compare two portable unsigned 129-bit values.
+static int rt_canvas_adv_u129_compare(rt_canvas_adv_u129 a, rt_canvas_adv_u129 b) {
+    if (a.top != b.top)
+        return a.top < b.top ? -1 : 1;
+    if (a.high != b.high)
+        return a.high < b.high ? -1 : 1;
+    if (a.low != b.low)
+        return a.low < b.low ? -1 : 1;
+    return 0;
 }
 
 /// @brief Degenerate-triangle fallback: when the three vertices are collinear
@@ -167,85 +331,22 @@ static void rt_canvas_adv_degenerate_triangle_line(void *canvas_ptr,
                                                    int64_t x3,
                                                    int64_t y3,
                                                    int64_t color) {
-    long double d12 = rt_canvas_adv_dist2_ld(x1, y1, x2, y2);
-    long double d23 = rt_canvas_adv_dist2_ld(x2, y2, x3, y3);
-    long double d31 = rt_canvas_adv_dist2_ld(x3, y3, x1, y1);
-    if (d12 >= d23 && d12 >= d31) {
+    rt_canvas_adv_u129 d12 = rt_canvas_adv_edge_distance2(x1, y1, x2, y2);
+    rt_canvas_adv_u129 d23 = rt_canvas_adv_edge_distance2(x2, y2, x3, y3);
+    rt_canvas_adv_u129 d31 = rt_canvas_adv_edge_distance2(x3, y3, x1, y1);
+    if (rt_canvas_adv_u129_compare(d12, d23) >= 0 && rt_canvas_adv_u129_compare(d12, d31) >= 0) {
         rt_canvas_line(canvas_ptr, x1, y1, x2, y2, color);
-    } else if (d23 >= d31) {
+    } else if (rt_canvas_adv_u129_compare(d23, d31) >= 0) {
         rt_canvas_line(canvas_ptr, x2, y2, x3, y3, color);
     } else {
         rt_canvas_line(canvas_ptr, x3, y3, x1, y1, color);
     }
 }
 
-/// @brief Plot the two clip-respecting points of one octant of a circle, mirrored into one of four
-/// corners.
-/// @details For a Bresenham circle stepper at offset (x, y) inside the
-///          first octant (x >= y >= 0), this writes the two pixels that
-///          fall in the requested @p corner — the (x, y) and (y, x)
-///          reflections within that quadrant. Used by round_box / round_frame
-///          to draw only the pixels that belong to a specific corner.
-/// @param canvas Canvas to draw into. NULL → no-op.
-/// @param cx Circle center X in logical coordinates.
-/// @param cy Circle center Y in logical coordinates.
-/// @param x Bresenham octant X offset.
-/// @param y Bresenham octant Y offset.
-/// @param corner One of RTG_CORNER_TOP_LEFT / TOP_RIGHT / BOTTOM_LEFT / BOTTOM_RIGHT.
-/// @param color  Pixel color (0xAARRGGBB packed).
-static void rt_canvas_plot_quarter_circle(rt_canvas *canvas,
-                                          int64_t cx,
-                                          int64_t cy,
-                                          int64_t x,
-                                          int64_t y,
-                                          int corner,
-                                          vgfx_color_t color) {
-    if (!canvas || !canvas->gfx_win)
-        return;
-
-    int64_t clip_x = 0;
-    int64_t clip_y = 0;
-    int64_t clip_w = 0;
-    int64_t clip_h = 0;
-    if (!rt_canvas_get_logical_clip_bounds(canvas, &clip_x, &clip_y, &clip_w, &clip_h))
-        return;
-    int64_t clip_x1 = rtg_add_sat64(clip_x, clip_w);
-    int64_t clip_y1 = rtg_add_sat64(clip_y, clip_h);
-#define RT_CANVAS_PLOT_CLIPPED(px, py)                                                             \
-    do {                                                                                           \
-        int64_t qx = (px);                                                                         \
-        int64_t qy = (py);                                                                         \
-        if (qx >= clip_x && qx < clip_x1 && qy >= clip_y && qy < clip_y1 &&                        \
-            rtg_i64_fits_i32(qx) && rtg_i64_fits_i32(qy))                                          \
-            vgfx_pset(canvas->gfx_win, (int32_t)qx, (int32_t)qy, color);                           \
-    } while (0)
-
-    switch (corner) {
-        case RTG_CORNER_TOP_LEFT:
-            RT_CANVAS_PLOT_CLIPPED(rtg_add_sat64(cx, -x), rtg_add_sat64(cy, -y));
-            RT_CANVAS_PLOT_CLIPPED(rtg_add_sat64(cx, -y), rtg_add_sat64(cy, -x));
-            break;
-        case RTG_CORNER_TOP_RIGHT:
-            RT_CANVAS_PLOT_CLIPPED(rtg_add_sat64(cx, x), rtg_add_sat64(cy, -y));
-            RT_CANVAS_PLOT_CLIPPED(rtg_add_sat64(cx, y), rtg_add_sat64(cy, -x));
-            break;
-        case RTG_CORNER_BOTTOM_LEFT:
-            RT_CANVAS_PLOT_CLIPPED(rtg_add_sat64(cx, -x), rtg_add_sat64(cy, y));
-            RT_CANVAS_PLOT_CLIPPED(rtg_add_sat64(cx, -y), rtg_add_sat64(cy, x));
-            break;
-        case RTG_CORNER_BOTTOM_RIGHT:
-            RT_CANVAS_PLOT_CLIPPED(rtg_add_sat64(cx, x), rtg_add_sat64(cy, y));
-            RT_CANVAS_PLOT_CLIPPED(rtg_add_sat64(cx, y), rtg_add_sat64(cy, x));
-            break;
-    }
-#undef RT_CANVAS_PLOT_CLIPPED
-}
-
-/// @brief Bresenham-step a circle of @p radius and emit only the pixels in the chosen @p corner.
-/// @details Standard mid-point circle rasterizer (8-way symmetry collapsed to
-///          one corner via rt_canvas_plot_quarter_circle). Used by round_box
-///          and round_frame for the four corner arcs. radius == 0 plots a
-///          single pixel at the center; negative radii are no-ops.
+/// @brief Draw one clipped quarter-circle arc with visible-row scan conversion.
+/// @details Work is bounded by the active clip height, even when @p radius is
+///          near `INT64_MAX / 2`. Adjacent-row horizontal runs keep the
+///          one-pixel outline connected near the circle's top/bottom.
 /// @param canvas Canvas. NULL → no-op.
 /// @param cx Arc center X in logical coordinates.
 /// @param cy Arc center Y in logical coordinates.
@@ -257,23 +358,47 @@ static void rt_canvas_draw_quarter_circle(
     if (!canvas || !canvas->gfx_win || radius < 0)
         return;
 
-    if (radius == 0) {
-        rt_canvas_plot(canvas, cx, cy, (int64_t)color);
+    int64_t clip_x = 0;
+    int64_t clip_y = 0;
+    int64_t clip_w = 0;
+    int64_t clip_h = 0;
+    if (!rt_canvas_get_logical_clip_bounds(canvas, &clip_x, &clip_y, &clip_w, &clip_h))
         return;
-    }
+    int64_t clip_last_x = rtg_add_sat64(clip_x, clip_w - 1);
+    int64_t clip_last_y = rtg_add_sat64(clip_y, clip_h - 1);
+    int8_t top = corner == RTG_CORNER_TOP_LEFT || corner == RTG_CORNER_TOP_RIGHT;
+    int8_t left_side = corner == RTG_CORNER_TOP_LEFT || corner == RTG_CORNER_BOTTOM_LEFT;
+    int64_t y0 = top ? rtg_sub_nonneg_sat64(cy, radius) : cy;
+    int64_t y1 = top ? cy : rtg_add_sat64(cy, radius);
+    if (y0 < clip_y)
+        y0 = clip_y;
+    if (y1 > clip_last_y)
+        y1 = clip_last_y;
+    if (y1 < y0)
+        return;
 
-    int64_t x = radius;
-    int64_t y = 0;
-    int64_t err = 1 - radius;
-    while (x >= y) {
-        rt_canvas_plot_quarter_circle(canvas, cx, cy, x, y, corner, color);
-        y++;
-        if (err < 0) {
-            err += 2 * y + 1;
-        } else {
-            x--;
-            err += 2 * (y - x) + 1;
+    long double radius2 = (long double)radius * (long double)radius;
+    int8_t have_previous = 0;
+    int64_t previous_x = 0;
+    for (int64_t y = y0; y <= y1; y++) {
+        long double dy = (long double)y - (long double)cy;
+        long double remaining = radius2 - dy * dy;
+        if (remaining < 0.0L) {
+            have_previous = 0;
+            continue;
         }
+        int64_t offset = rt_canvas_adv_floor_ld_to_i64_sat(sqrtl(remaining) + 0.5L);
+        int64_t x = left_side ? rtg_sub_nonneg_sat64(cx, offset) : rtg_add_sat64(cx, offset);
+        int64_t run_x0 = have_previous ? rtg_min64(previous_x, x) : x;
+        int64_t run_x1 = have_previous ? rtg_max64(previous_x, x) : x;
+        if (run_x0 < clip_x)
+            run_x0 = clip_x;
+        if (run_x1 > clip_last_x)
+            run_x1 = clip_last_x;
+        for (int64_t plot_x = run_x0; plot_x <= run_x1; plot_x++)
+            vgfx_pset(canvas->gfx_win, (int32_t)plot_x, (int32_t)y, color);
+        previous_x = x;
+        have_previous = 1;
     }
 }
 
@@ -495,18 +620,32 @@ void rt_canvas_round_box(
     int64_t cy_top = rtg_add_sat64(y, radius);
     int64_t cy_bottom = rtg_add_sat64(y, h - radius - 1);
     long double r2 = (long double)radius * (long double)radius;
+    int64_t clip_x = 0;
+    int64_t clip_y = 0;
+    int64_t clip_w = 0;
+    int64_t clip_h = 0;
+    if (!rt_canvas_get_logical_clip_bounds(canvas, &clip_x, &clip_y, &clip_w, &clip_h))
+        return;
+    (void)clip_x;
+    (void)clip_w;
+    int64_t clip_last_y = rtg_add_sat64(clip_y, clip_h - 1);
 
-    for (int64_t dy = -radius; dy < 0; dy++) {
-        long double rem = r2 - (long double)dy * (long double)dy;
+    int64_t top_start = rtg_max64(rtg_sub_nonneg_sat64(cy_top, radius), clip_y);
+    int64_t top_end = rtg_min64(rtg_sub_nonneg_sat64(cy_top, 1), clip_last_y);
+    for (int64_t row = top_start; row <= top_end; row++) {
+        long double dy = (long double)row - (long double)cy_top;
+        long double rem = r2 - dy * dy;
         int64_t span = rem <= 0.0L ? 0 : rt_canvas_adv_floor_ld_to_i64_sat(sqrtl(rem));
-        int64_t row = rtg_add_sat64(cy_top, dy);
         rt_canvas_fill_hspan(
             canvas, rtg_add_sat64(cx_left, -span), rtg_add_sat64(cx_right, span), row, color);
     }
-    for (int64_t dy = 1; dy <= radius; dy++) {
-        long double rem = r2 - (long double)dy * (long double)dy;
+
+    int64_t bottom_start = rtg_max64(rtg_add_sat64(cy_bottom, 1), clip_y);
+    int64_t bottom_end = rtg_min64(rtg_add_sat64(cy_bottom, radius), clip_last_y);
+    for (int64_t row = bottom_start; row <= bottom_end; row++) {
+        long double dy = (long double)row - (long double)cy_bottom;
+        long double rem = r2 - dy * dy;
         int64_t span = rem <= 0.0L ? 0 : rt_canvas_adv_floor_ld_to_i64_sat(sqrtl(rem));
-        int64_t row = rtg_add_sat64(cy_bottom, dy);
         rt_canvas_fill_hspan(
             canvas, rtg_add_sat64(cx_left, -span), rtg_add_sat64(cx_right, span), row, color);
     }
@@ -590,12 +729,58 @@ void rt_canvas_round_frame(
                                   col);
 }
 
+/// @brief One pending or completed horizontal Canvas flood-fill run.
+typedef struct rt_canvas_flood_segment {
+    int64_t left;
+    int64_t right;
+    int64_t y;
+} rt_canvas_flood_segment;
+
+/// @brief Append a flood-fill run to a geometrically grown vector.
+static int8_t rt_canvas_flood_segment_push(rt_canvas_flood_segment **segments_io,
+                                           size_t *count_io,
+                                           size_t *cap_io,
+                                           int64_t left,
+                                           int64_t right,
+                                           int64_t y) {
+    if (!segments_io || !count_io || !cap_io)
+        return 0;
+    if (*count_io >= *cap_io) {
+        size_t new_cap = *cap_io ? *cap_io * 2u : 32u;
+        if (new_cap < *cap_io || new_cap > SIZE_MAX / sizeof(**segments_io))
+            return 0;
+        rt_canvas_flood_segment *grown =
+            (rt_canvas_flood_segment *)realloc(*segments_io, new_cap * sizeof(**segments_io));
+        if (!grown)
+            return 0;
+        *segments_io = grown;
+        *cap_io = new_cap;
+    }
+    (*segments_io)[(*count_io)++] = (rt_canvas_flood_segment){left, right, y};
+    return 1;
+}
+
+/// @brief Return a pointer to one validated physical framebuffer pixel.
+static uint8_t *rt_canvas_flood_pixel(vgfx_framebuffer_t *fb, int64_t x, int64_t y) {
+    return fb->pixels + (size_t)y * (size_t)fb->stride + (size_t)x * 4u;
+}
+
+/// @brief Test whether one physical framebuffer pixel matches an RGBA color.
+static int8_t rt_canvas_flood_matches(vgfx_framebuffer_t *fb,
+                                      int64_t x,
+                                      int64_t y,
+                                      const uint8_t target[4]) {
+    uint8_t *pixel = rt_canvas_flood_pixel(fb, x, y);
+    return pixel[0] == target[0] && pixel[1] == target[1] && pixel[2] == target[2] &&
+           pixel[3] == target[3];
+}
+
 /// @brief Flood-fill a 4-connected region of identical RGBA framebuffer pixels.
-/// @details The logical starting point and active clip are converted to physical
-///          HiDPI coordinates. A dynamically growing stack traverses only
-///          pixels matching the starting pixel exactly. Filling with the same
-///          RGBA is a no-op. Initial allocation failure changes nothing;
-///          growth failure can leave a partially filled region.
+/// @details The logical seed and active clip are converted to physical HiDPI
+///          coordinates. An iterative scanline traversal stores work per run,
+///          rather than four entries per changed pixel. Every changed run is
+///          recorded in a rollback journal, so allocation failure restores the
+///          original region instead of leaving a partial fill.
 /// @param canvas_ptr Borrowed Canvas handle.
 /// @param start_x Logical starting X.
 /// @param start_y Logical starting Y.
@@ -609,7 +794,7 @@ void rt_canvas_flood_fill(void *canvas_ptr, int64_t start_x, int64_t start_y, in
         return;
 
     vgfx_framebuffer_t fb;
-    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb))
+    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb))
         return;
 
     int64_t clip_x = 0;
@@ -635,110 +820,99 @@ void rt_canvas_flood_fill(void *canvas_ptr, int64_t start_x, int64_t start_y, in
     start_x = rtg_scale_up_i64(start_x, scale);
     start_y = rtg_scale_up_i64(start_y, scale);
 
-    // Bounds check (physical, constrained to the active clip)
-    if (start_x < clip_px0 || start_x >= clip_px1 || start_y < clip_py0 || start_y >= clip_py1 ||
-        start_x < 0 || start_x >= fb.width || start_y < 0 || start_y >= fb.height)
+    if (clip_px0 < 0)
+        clip_px0 = 0;
+    if (clip_py0 < 0)
+        clip_py0 = 0;
+    if (clip_px1 > fb.width)
+        clip_px1 = fb.width;
+    if (clip_py1 > fb.height)
+        clip_py1 = fb.height;
+    if (clip_px1 <= clip_px0 || clip_py1 <= clip_py0 || start_x < clip_px0 || start_x >= clip_px1 ||
+        start_y < clip_py0 || start_y >= clip_py1)
         return;
 
-    // Get the target color (color to replace)
-    uint8_t *start_pixel = &fb.pixels[start_y * fb.stride + start_x * 4];
-    uint32_t target_r = start_pixel[0];
-    uint32_t target_g = start_pixel[1];
-    uint32_t target_b = start_pixel[2];
-    uint32_t target_a = start_pixel[3];
-
-    // Get fill color components
+    uint8_t *start_pixel = rt_canvas_flood_pixel(&fb, start_x, start_y);
+    uint8_t target[4] = {start_pixel[0], start_pixel[1], start_pixel[2], start_pixel[3]};
     uint32_t fill_rgba = rt_pixels_color_to_rgba(color);
-    uint8_t fill_r = (uint8_t)((fill_rgba >> 24) & 0xFFu);
-    uint8_t fill_g = (uint8_t)((fill_rgba >> 16) & 0xFFu);
-    uint8_t fill_b = (uint8_t)((fill_rgba >> 8) & 0xFFu);
-    uint8_t fill_a = (uint8_t)(fill_rgba & 0xFFu);
-
-    // Don't fill if target color is the same as fill color
-    if (target_r == fill_r && target_g == fill_g && target_b == fill_b && target_a == fill_a)
+    uint8_t fill[4] = {
+        (uint8_t)((fill_rgba >> 24) & 0xFFu),
+        (uint8_t)((fill_rgba >> 16) & 0xFFu),
+        (uint8_t)((fill_rgba >> 8) & 0xFFu),
+        (uint8_t)(fill_rgba & 0xFFu),
+    };
+    if (memcmp(target, fill, sizeof(target)) == 0)
         return;
 
-    /* O-03: Use a dynamically-growing stack starting at 4096 entries
-     * instead of pre-allocating the worst-case (width * height) upfront.
-     * This avoids O(r^2) allocations for small fill regions. */
-    typedef struct {
-        int64_t x;
-        int64_t y;
-    } flood_fill_point;
-
-    int64_t stack_cap = 4096;
-    flood_fill_point *stack = (flood_fill_point *)malloc((size_t)stack_cap * sizeof(*stack));
-    if (!stack)
+    rt_canvas_flood_segment *stack = NULL;
+    size_t stack_count = 0;
+    size_t stack_cap = 0;
+    rt_canvas_flood_segment *journal = NULL;
+    size_t journal_count = 0;
+    size_t journal_cap = 0;
+    int8_t failed = 0;
+    if (!rt_canvas_flood_segment_push(&stack, &stack_count, &stack_cap, start_x, start_x, start_y))
         return;
 
-    int64_t stack_top = 0;
-    stack[stack_top].x = start_x;
-    stack[stack_top].y = start_y;
-    stack_top++;
-
-    while (stack_top > 0) {
-        stack_top--;
-        int64_t x = stack[stack_top].x;
-        int64_t y = stack[stack_top].y;
-
-        // Skip if out of bounds
-        if (x < clip_px0 || x >= clip_px1 || y < clip_py0 || y >= clip_py1 || x < 0 ||
-            x >= fb.width || y < 0 || y >= fb.height)
+    while (stack_count > 0 && !failed) {
+        rt_canvas_flood_segment seed = stack[--stack_count];
+        if (seed.y < clip_py0 || seed.y >= clip_py1 || seed.left < clip_px0 ||
+            seed.left >= clip_px1)
+            continue;
+        if (!rt_canvas_flood_matches(&fb, seed.left, seed.y, target))
             continue;
 
-        uint8_t *pixel = &fb.pixels[y * fb.stride + x * 4];
+        int64_t left = seed.left;
+        int64_t right = seed.left;
+        while (left > clip_px0 && rt_canvas_flood_matches(&fb, left - 1, seed.y, target))
+            left--;
+        while (right + 1 < clip_px1 && rt_canvas_flood_matches(&fb, right + 1, seed.y, target))
+            right++;
 
-        // Skip if not target color
-        if (pixel[0] != target_r || pixel[1] != target_g || pixel[2] != target_b ||
-            pixel[3] != target_a)
-            continue;
-
-        // Fill this pixel
-        pixel[0] = fill_r;
-        pixel[1] = fill_g;
-        pixel[2] = fill_b;
-        pixel[3] = fill_a;
-
-        // Grow stack if needed before pushing 4 neighbors
-        if (stack_top > stack_cap - 4) {
-            if (stack_top > INT64_MAX - 4)
-                break;
-            int64_t required = stack_top + 4;
-            int64_t new_cap = stack_cap;
-            while (new_cap < required) {
-                if (new_cap > INT64_MAX / 2) {
-                    new_cap = required;
-                    break;
-                }
-                new_cap *= 2;
-            }
-            if (new_cap > INT64_MAX / (int64_t)sizeof(*stack))
-                break;
-            flood_fill_point *grown =
-                (flood_fill_point *)realloc(stack, (size_t)new_cap * sizeof(*stack));
-            if (!grown) {
-                free(stack);
-                return;
-            }
-            stack = grown;
-            stack_cap = new_cap;
+        if (!rt_canvas_flood_segment_push(
+                &journal, &journal_count, &journal_cap, left, right, seed.y)) {
+            failed = 1;
+            break;
+        }
+        for (int64_t x = left; x <= right; x++) {
+            uint8_t *pixel = rt_canvas_flood_pixel(&fb, x, seed.y);
+            memcpy(pixel, fill, 4u);
         }
 
-        // Push neighbors (4-connected)
-        stack[stack_top].x = x + 1;
-        stack[stack_top].y = y;
-        stack_top++;
-        stack[stack_top].x = x - 1;
-        stack[stack_top].y = y;
-        stack_top++;
-        stack[stack_top].x = x;
-        stack[stack_top].y = y + 1;
-        stack_top++;
-        stack[stack_top].x = x;
-        stack[stack_top].y = y - 1;
-        stack_top++;
+        for (int y_offset = -1; y_offset <= 1; y_offset += 2) {
+            int64_t scan_y = seed.y + y_offset;
+            if (scan_y < clip_py0 || scan_y >= clip_py1)
+                continue;
+            int64_t x = left;
+            while (x <= right) {
+                while (x <= right && !rt_canvas_flood_matches(&fb, x, scan_y, target))
+                    x++;
+                if (x > right)
+                    break;
+                int64_t run_start = x;
+                while (x <= right && rt_canvas_flood_matches(&fb, x, scan_y, target))
+                    x++;
+                if (!rt_canvas_flood_segment_push(
+                        &stack, &stack_count, &stack_cap, run_start, run_start, scan_y)) {
+                    failed = 1;
+                    break;
+                }
+            }
+            if (failed)
+                break;
+        }
     }
 
+    if (failed) {
+        for (size_t i = 0; i < journal_count; i++) {
+            rt_canvas_flood_segment span = journal[i];
+            for (int64_t x = span.left; x <= span.right; x++) {
+                uint8_t *pixel = rt_canvas_flood_pixel(&fb, x, span.y);
+                memcpy(pixel, target, 4u);
+            }
+        }
+    }
+    free(journal);
     free(stack);
 }
 
@@ -771,9 +945,7 @@ void rt_canvas_triangle(void *canvas_ptr,
     if (!canvas || !canvas->gfx_win)
         return;
 
-    long double area = ((long double)x2 - (long double)x1) * ((long double)y3 - (long double)y1) -
-                       ((long double)y2 - (long double)y1) * ((long double)x3 - (long double)x1);
-    if (area == 0.0L) {
+    if (rt_canvas_adv_triangle_is_collinear(x1, y1, x2, y2, x3, y3)) {
         rt_canvas_adv_degenerate_triangle_line(canvas_ptr, x1, y1, x2, y2, x3, y3, color);
         return;
     }
@@ -1250,7 +1422,7 @@ void rt_canvas_bezier(void *canvas_ptr,
     long double d2x = (long double)x2 - (long double)cx;
     long double d2y = (long double)y2 - (long double)cy;
     long double approx_len = sqrtl(d1x * d1x + d1y * d1y) + sqrtl(d2x * d2x + d2y * d2y);
-    int64_t steps = (int64_t)(approx_len / 4.0L);
+    int64_t steps = approx_len >= 1024.0L ? 256 : (int64_t)(approx_len / 4.0L);
     if (steps < 4)
         steps = 4;
     if (steps > 256)
@@ -1292,6 +1464,13 @@ static void rt_canvas_polyline_points(void *canvas_ptr,
         int64_t y2 = points[(i + 1) * 2 + 1];
         rt_canvas_line(canvas_ptr, x1, y1, x2, y2, color);
     }
+}
+
+/// @brief Ascending comparator for polygon scanline intersections.
+static int rt_canvas_compare_i64(const void *left_ptr, const void *right_ptr) {
+    int64_t left = *(const int64_t *)left_ptr;
+    int64_t right = *(const int64_t *)right_ptr;
+    return left < right ? -1 : left > right ? 1 : 0;
 }
 
 /// @brief Draw a filled polygon through @p count (x,y) point pairs.
@@ -1364,16 +1543,10 @@ static void rt_canvas_polygon_points(void *canvas_ptr,
             }
         }
 
-        // Sort intersections
-        for (int64_t i = 0; i < num_intersections - 1; i++) {
-            for (int64_t j = i + 1; j < num_intersections; j++) {
-                if (intersections[j] < intersections[i]) {
-                    int64_t tmp = intersections[i];
-                    intersections[i] = intersections[j];
-                    intersections[j] = tmp;
-                }
-            }
-        }
+        qsort(intersections,
+              (size_t)num_intersections,
+              sizeof(*intersections),
+              rt_canvas_compare_i64);
 
         // Fill between pairs of intersections
         for (int64_t i = 0; i + 1 < num_intersections; i += 2) {
@@ -1465,10 +1638,10 @@ static int8_t rt_canvas_path_points(void *path,
                                     int64_t min_count,
                                     int64_t **points_out,
                                     int64_t *count_out) {
-    if (points_out)
-        *points_out = NULL;
-    if (count_out)
-        *count_out = 0;
+    if (!points_out || !count_out)
+        return 0;
+    *points_out = NULL;
+    *count_out = 0;
     if (!path)
         return 0;
 
@@ -1486,10 +1659,8 @@ static int8_t rt_canvas_path_points(void *path,
         points[i * 2] = rt_path2d_get_x(path, i);
         points[i * 2 + 1] = rt_path2d_get_y(path, i);
     }
-    if (points_out)
-        *points_out = points;
-    if (count_out)
-        *count_out = count;
+    *points_out = points;
+    *count_out = count;
     return 1;
 }
 
@@ -1597,23 +1768,30 @@ void rt_canvas_gradient_h(
     if (!rt_canvas_clip_intersect_logical(canvas, &x, &y, &w, &h))
         return;
 
+    uint32_t rgba1 = rt_pixels_color_to_rgba(c1);
+    uint32_t rgba2 = rt_pixels_color_to_rgba(c2);
+    uint64_t gradient_denominator = (uint64_t)(orig_w > 1 ? orig_w - 1 : 1);
+
     // Precompute gradient colours for each column, then blit each row of height h
     // with a single memcpy-equivalent pass — avoids w*vgfx_line() call overhead.
     vgfx_framebuffer_t fb;
-    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb)) {
+    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb)) {
         // Fallback: per-column vgfx_line for mock/headless contexts.
         // vgfx_line auto-scales via coord_scale, so pass logical coords.
-        int64_t w_minus1 = orig_w > 1 ? orig_w - 1 : 1;
         for (int64_t col = 0; col < w; col++) {
             int64_t logical_x = rtg_add_sat64(x, col);
-            int64_t gradient_col = rtg_add_sat64(logical_x, -orig_x);
-            int64_t color = rt_color_lerp(c1, c2, rtg_mul_sat64(gradient_col, 100) / w_minus1);
+            uint64_t gradient_col =
+                logical_x >= orig_x ? (uint64_t)logical_x - (uint64_t)orig_x : 0;
+            if (gradient_col > gradient_denominator)
+                gradient_col = gradient_denominator;
+            uint32_t rgba =
+                rt_canvas_adv_lerp_rgba(rgba1, rgba2, gradient_col, gradient_denominator);
             vgfx_line(canvas->gfx_win,
                       rtg_clamp_i64_to_i32(logical_x),
                       rtg_clamp_i64_to_i32(y),
                       rtg_clamp_i64_to_i32(logical_x),
                       rtg_clamp_i64_to_i32(rtg_add_sat64(y, h - 1)),
-                      rt_canvas_adv_color_to_vgfx_rgb(color));
+                      (vgfx_color_t)((rgba >> 8u) & 0x00FFFFFFu));
         }
         return;
     }
@@ -1642,16 +1820,9 @@ void rt_canvas_gradient_h(
     if (!row_buf)
         return;
 
-    int64_t w_minus1 = orig_w > 1 ? orig_w - 1 : 1;
     /* Interpolate channels directly (full 256-level precision) instead of routing
      * through rt_color_lerp's 0..100 percent parameter, which quantizes a wide
      * gradient to at most 101 distinct colors and shows visible banding. */
-    uint32_t rgba1 = rt_pixels_color_to_rgba(c1);
-    uint32_t rgba2 = rt_pixels_color_to_rgba(c2);
-    int64_t r1 = (int64_t)((rgba1 >> 24) & 0xFF), g1 = (int64_t)((rgba1 >> 16) & 0xFF),
-            b1 = (int64_t)((rgba1 >> 8) & 0xFF), a1 = (int64_t)(rgba1 & 0xFF);
-    int64_t r2 = (int64_t)((rgba2 >> 24) & 0xFF), g2 = (int64_t)((rgba2 >> 16) & 0xFF),
-            b2 = (int64_t)((rgba2 >> 8) & 0xFF), a2 = (int64_t)(rgba2 & 0xFF);
     memset(row_buf, 0, row_bytes);
     for (int64_t col = 0; col < w; col++) {
         int64_t logical_x = rtg_add_sat64(x, col);
@@ -1666,15 +1837,14 @@ void rt_canvas_gradient_h(
         if (col_px1 <= col_px0)
             continue;
 
-        int64_t gc = rtg_add_sat64(logical_x, -orig_x);
-        if (gc < 0)
-            gc = 0;
-        if (gc > w_minus1)
-            gc = w_minus1;
-        uint8_t cr = (uint8_t)(r1 + (r2 - r1) * gc / w_minus1);
-        uint8_t cg = (uint8_t)(g1 + (g2 - g1) * gc / w_minus1);
-        uint8_t cb = (uint8_t)(b1 + (b2 - b1) * gc / w_minus1);
-        uint8_t ca = (uint8_t)(a1 + (a2 - a1) * gc / w_minus1);
+        uint64_t gc = logical_x >= orig_x ? (uint64_t)logical_x - (uint64_t)orig_x : 0;
+        if (gc > gradient_denominator)
+            gc = gradient_denominator;
+        uint32_t rgba = rt_canvas_adv_lerp_rgba(rgba1, rgba2, gc, gradient_denominator);
+        uint8_t cr = (uint8_t)(rgba >> 24u);
+        uint8_t cg = (uint8_t)(rgba >> 16u);
+        uint8_t cb = (uint8_t)(rgba >> 8u);
+        uint8_t ca = (uint8_t)rgba;
         for (int64_t px = col_px0; px < col_px1; px++) {
             size_t idx = (size_t)(px - px0) * 4u;
             row_buf[idx + 0u] = cr;
@@ -1720,22 +1890,29 @@ void rt_canvas_gradient_v(
     if (!rt_canvas_clip_intersect_logical(canvas, &x, &y, &w, &h))
         return;
 
+    uint32_t rgba1 = rt_pixels_color_to_rgba(c1);
+    uint32_t rgba2 = rt_pixels_color_to_rgba(c2);
+    uint64_t gradient_denominator = (uint64_t)(orig_h > 1 ? orig_h - 1 : 1);
+
     // Write each row directly into the framebuffer — one colour per row, no per-row
     // vgfx_line() overhead.
     vgfx_framebuffer_t fb;
-    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb)) {
+    if (!vgfx_get_framebuffer(canvas->gfx_win, &fb) || !rtg_framebuffer_is_valid(&fb)) {
         // Fallback: vgfx_line auto-scales via coord_scale, so pass logical coords.
-        int64_t h_minus1 = orig_h > 1 ? orig_h - 1 : 1;
         for (int64_t row = 0; row < h; row++) {
             int64_t logical_y = rtg_add_sat64(y, row);
-            int64_t gradient_row = rtg_add_sat64(logical_y, -orig_y);
-            int64_t color = rt_color_lerp(c1, c2, rtg_mul_sat64(gradient_row, 100) / h_minus1);
+            uint64_t gradient_row =
+                logical_y >= orig_y ? (uint64_t)logical_y - (uint64_t)orig_y : 0;
+            if (gradient_row > gradient_denominator)
+                gradient_row = gradient_denominator;
+            uint32_t rgba =
+                rt_canvas_adv_lerp_rgba(rgba1, rgba2, gradient_row, gradient_denominator);
             vgfx_line(canvas->gfx_win,
                       rtg_clamp_i64_to_i32(x),
                       rtg_clamp_i64_to_i32(logical_y),
                       rtg_clamp_i64_to_i32(rtg_add_sat64(x, w - 1)),
                       rtg_clamp_i64_to_i32(logical_y),
-                      rt_canvas_adv_color_to_vgfx_rgb(color));
+                      (vgfx_color_t)((rgba >> 8u) & 0x00FFFFFFu));
         }
         return;
     }
@@ -1757,8 +1934,6 @@ void rt_canvas_gradient_v(
         return;
 
     int64_t draw_w = px1 - px0;
-    int64_t h_minus1 = orig_h > 1 ? orig_h - 1 : 1;
-
     /* Each logical row is a single solid colour (the gradient runs down the rows), so build one
      * row of `draw_w` pixels and memcpy it across that row's scale-expanded scanlines instead of
      * a per-pixel inner loop — mirrors rt_canvas_gradient_h. draw_w is framebuffer-bounded. */
@@ -1768,12 +1943,6 @@ void rt_canvas_gradient_v(
     if (!row_buf)
         return;
     /* Full-precision per-channel interpolation (avoids rt_color_lerp's 101-step banding). */
-    uint32_t rgba1 = rt_pixels_color_to_rgba(c1);
-    uint32_t rgba2 = rt_pixels_color_to_rgba(c2);
-    int64_t r1 = (int64_t)((rgba1 >> 24) & 0xFF), g1 = (int64_t)((rgba1 >> 16) & 0xFF),
-            b1 = (int64_t)((rgba1 >> 8) & 0xFF), a1 = (int64_t)(rgba1 & 0xFF);
-    int64_t r2 = (int64_t)((rgba2 >> 24) & 0xFF), g2 = (int64_t)((rgba2 >> 16) & 0xFF),
-            b2 = (int64_t)((rgba2 >> 8) & 0xFF), a2 = (int64_t)(rgba2 & 0xFF);
     for (int64_t row = 0; row < h; row++) {
         int64_t logical_y = rtg_add_sat64(y, row);
         int64_t row_py0 = rtg_scale_up_i64(logical_y, scale);
@@ -1787,15 +1956,14 @@ void rt_canvas_gradient_v(
         if (row_py1 <= row_py0)
             continue;
 
-        int64_t gr = rtg_add_sat64(logical_y, -orig_y);
-        if (gr < 0)
-            gr = 0;
-        if (gr > h_minus1)
-            gr = h_minus1;
-        uint8_t cr = (uint8_t)(r1 + (r2 - r1) * gr / h_minus1);
-        uint8_t cg = (uint8_t)(g1 + (g2 - g1) * gr / h_minus1);
-        uint8_t cb = (uint8_t)(b1 + (b2 - b1) * gr / h_minus1);
-        uint8_t ca = (uint8_t)(a1 + (a2 - a1) * gr / h_minus1);
+        uint64_t gr = logical_y >= orig_y ? (uint64_t)logical_y - (uint64_t)orig_y : 0;
+        if (gr > gradient_denominator)
+            gr = gradient_denominator;
+        uint32_t rgba = rt_canvas_adv_lerp_rgba(rgba1, rgba2, gr, gradient_denominator);
+        uint8_t cr = (uint8_t)(rgba >> 24u);
+        uint8_t cg = (uint8_t)(rgba >> 16u);
+        uint8_t cb = (uint8_t)(rgba >> 8u);
+        uint8_t ca = (uint8_t)rgba;
         for (int64_t i = 0; i < draw_w; i++) {
             row_buf[i * 4 + 0] = cr;
             row_buf[i * 4 + 1] = cg;

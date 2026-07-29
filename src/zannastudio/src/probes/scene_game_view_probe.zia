@@ -476,8 +476,8 @@ func Test3DGameView() -> String {
        or editor.selectedIndices.count() != 1
        or editor.viewportMode
           != scene_editor_3d.VIEWPORT_MODE_WIREFRAME
-       or editor.viewportModeButton.GetAccessibleName()
-          != "3D viewport mode: Shaded"
+       or editor.EffectiveViewportMode()
+          != scene_editor_3d.VIEWPORT_MODE_SHADED
        or editor.showGrid == false or editor.showMarkers == false
        or editor.showLightOverlays == false
        or editor.showCameraOverlays == false
@@ -550,8 +550,8 @@ func Test3DGameView() -> String {
        or restoredNavigatorPixel != normalNavigatorPixel
        or editor.viewportMode
           != scene_editor_3d.VIEWPORT_MODE_WIREFRAME
-       or editor.viewportModeButton.GetAccessibleName()
-          != "3D viewport mode: Wireframe"
+       or editor.EffectiveViewportMode()
+          != scene_editor_3d.VIEWPORT_MODE_WIREFRAME
        or editor.viewOptionsRow.IsVisible() == false
        or editor.moveToolButton.IsEnabled() == false
        or editor.viewOptionsButton.IsEnabled() == false
@@ -569,8 +569,7 @@ func Test3DGameView() -> String {
             + " pixel=" + restoredNavigatorPixel
             + "/" + normalNavigatorPixel
             + " mode=" + editor.viewportMode
-            + " name="
-            + editor.viewportModeButton.GetAccessibleName()
+            + " effMode=" + editor.EffectiveViewportMode()
             + " options=" + editor.viewOptionsRow.IsVisible()
             + " controls=" + editor.moveToolButton.IsEnabled()
             + "/" + editor.viewOptionsButton.IsEnabled()

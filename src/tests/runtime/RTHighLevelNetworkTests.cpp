@@ -449,8 +449,15 @@ static bool tls_send_all(rt_tls_session_t *tls, const void *data, size_t len) {
     size_t sent = 0;
     while (sent < len) {
         const long rc = rt_tls_send(tls, bytes + sent, len - sent);
-        if (rc <= 0)
+        if (rc <= 0) {
+            fprintf(stderr,
+                    "tls_send_all: rt_tls_send returned %ld after %zu/%zu bytes: %s\n",
+                    rc,
+                    sent,
+                    len,
+                    rt_tls_last_error() ? rt_tls_last_error() : "(no error)");
             return false;
+        }
         sent += (size_t)rc;
     }
     return true;

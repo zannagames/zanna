@@ -44,8 +44,10 @@ static void d3d11_bind_render_targets(d3d11_context_t *ctx) {
         return;
     ID3D11DeviceContext_OMSetRenderTargets(
         ctx->ctx, ctx->current_rtv_count, ctx->current_rtvs, ctx->current_dsv);
-    if (ctx->current_width <= 0 || ctx->current_height <= 0)
+    if (ctx->current_width <= 0 || ctx->current_height <= 0) {
+        ID3D11DeviceContext_RSSetViewports(ctx->ctx, 0, NULL);
         return;
+    }
 
     memset(&viewport, 0, sizeof(viewport));
     viewport.TopLeftX = 0.0f;
@@ -515,13 +517,12 @@ static void d3d11_prepare_scene_data(d3d11_context_t *ctx,
     {
         const vgfx3d_cluster_table_t *cluster =
             (const vgfx3d_cluster_table_t *)(cmd ? cmd->cluster_table : NULL);
+        const int cluster_usable =
+            cluster && vgfx3d_d3d11_cluster_table_is_usable(
+                           cluster, cmd ? cmd->lights_revision : 0, scene_data->light_count);
         float cluster_znear;
         float cluster_zfar;
-        scene_data->cluster_global_count =
-            vgfx3d_d3d11_cluster_table_is_usable(
-                cluster, cmd ? cmd->lights_revision : 0, scene_data->light_count)
-                ? cluster->global_light_count
-                : -1;
+        scene_data->cluster_global_count = cluster_usable ? cluster->global_light_count : -1;
         scene_data->cluster_params[0] = (float)(ctx->rtt_active ? ctx->rtt_width : ctx->width);
         scene_data->cluster_params[1] = (float)(ctx->rtt_active ? ctx->rtt_height : ctx->height);
         vgfx3d_d3d11_sanitize_cluster_depth_range(

@@ -22,8 +22,8 @@
 //     mirroring; negative scale is not a mirroring mechanism.
 //   - Transform preparation never mutates a stored frame. Any required flip,
 //     scale, rotation, tint, or alpha operation works on newly allocated Pixels.
-//   - The transform cache is keyed by frame pointer and transform values. An
-//     in-place mutation of a frame is not observable until the key changes.
+//   - The transform cache is keyed by frame identity, mutation generation, and
+//     canonical transform values, so in-place frame edits invalidate it.
 //   - Invisible sprites are skipped by drawing and hit testing, but their
 //     frame timers may still advance when explicitly updated.
 //
@@ -51,6 +51,7 @@
 
 #include "rt_sprite.h"
 
+#include "rt_file_path.h"
 #include "rt_file_stdio.h"
 #include "rt_gif.h"
 #include "rt_graphics.h"
@@ -75,24 +76,25 @@
 
 /// @brief Sprite implementation structure.
 typedef struct rt_sprite_impl {
-    int64_t x;                ///< X position
-    int64_t y;                ///< Y position
-    int64_t scale_x;          ///< Horizontal scale (100 = 100%)
-    int64_t scale_y;          ///< Vertical scale (100 = 100%)
-    int64_t rotation;         ///< Rotation in degrees
-    int64_t depth;            ///< Depth used by SpriteBatch sorting
-    int64_t visible;          ///< Visibility flag
-    int64_t origin_x;         ///< Origin X for rotation/scaling
-    int64_t origin_y;         ///< Origin Y for rotation/scaling
-    int64_t current_frame;    ///< Current animation frame
-    int64_t frame_count;      ///< Number of frames
-    int64_t frame_capacity;   ///< Allocated frame slots
-    int64_t frame_delay_ms;   ///< Delay between frames
-    int64_t last_frame_time;  ///< Last frame update time
-    int64_t flip_x;           ///< Horizontal flip flag
-    int64_t flip_y;           ///< Vertical flip flag
-    void **frames;            ///< Frame pixel buffers
-    int64_t *frame_delays_ms; ///< Per-frame delays
+    int64_t x;                  ///< X position
+    int64_t y;                  ///< Y position
+    int64_t scale_x;            ///< Horizontal scale (100 = 100%)
+    int64_t scale_y;            ///< Vertical scale (100 = 100%)
+    int64_t rotation;           ///< Rotation in degrees
+    int64_t depth;              ///< Depth used by SpriteBatch sorting
+    int64_t visible;            ///< Visibility flag
+    int64_t origin_x;           ///< Origin X for rotation/scaling
+    int64_t origin_y;           ///< Origin Y for rotation/scaling
+    int64_t current_frame;      ///< Current animation frame
+    int64_t frame_count;        ///< Number of frames
+    int64_t frame_capacity;     ///< Allocated frame slots
+    int64_t frame_delay_ms;     ///< Delay between frames
+    int64_t last_frame_time;    ///< Last frame update time
+    int8_t frame_clock_started; ///< Whether last_frame_time is an initialized timer sample
+    int64_t flip_x;             ///< Horizontal flip flag
+    int64_t flip_y;             ///< Vertical flip flag
+    void **frames;              ///< Frame pixel buffers
+    int64_t *frame_delays_ms;   ///< Per-frame delays
     // Transformed-frame cache. sprite_prepare_pixels reuses cache_pixels when every
     // input below is unchanged, so a rotating/scaled/tinted sprite does not re-run
     // the flip→scale→pad→rotate→tint→alpha pipeline (and its allocations) every
@@ -100,23 +102,22 @@ typedef struct rt_sprite_impl {
     // must not release it); it is evicted on the next miss and freed in the
     // finalizer. Keyed on all transform inputs plus the frame pointer, so any
     // changed setter simply misses and recomputes — no explicit invalidation.
-    // Note: an in-place mutation of a frame's own pixels (same frame pointer, same
-    // params) is not detected; re-set the frame or a transform param to refresh.
-    void *cache_pixels;        ///< Cache-owned transformed result, or NULL.
-    void *cache_frame;         ///< Frame pointer the cached result was built from.
-    int64_t cache_flip_x;      ///< Cached flip_x.
-    int64_t cache_flip_y;      ///< Cached flip_y.
-    int64_t cache_origin_x;    ///< Cached sprite origin_x input.
-    int64_t cache_origin_y;    ///< Cached sprite origin_y input.
-    int64_t cache_scale_x;     ///< Cached (normalized) scale_x.
-    int64_t cache_scale_y;     ///< Cached (normalized) scale_y.
-    int64_t cache_rotation;    ///< Cached rotation.
-    int64_t cache_tint;        ///< Cached tint_color.
-    int64_t cache_alpha;       ///< Cached alpha.
-    int64_t cache_out_origin_x; ///< Cached computed origin_x output.
-    int64_t cache_out_origin_y; ///< Cached computed origin_y output.
-    int8_t cache_out_centered;  ///< Cached origin_centered output.
-    int8_t cache_valid;         ///< 1 when cache_pixels holds a usable result.
+    void *cache_pixels;              ///< Cache-owned transformed result, or NULL.
+    void *cache_frame;               ///< Frame pointer the cached result was built from.
+    uint64_t cache_frame_generation; ///< Source Pixels generation used by the cache.
+    int64_t cache_flip_x;            ///< Cached flip_x.
+    int64_t cache_flip_y;            ///< Cached flip_y.
+    int64_t cache_origin_x;          ///< Cached sprite origin_x input.
+    int64_t cache_origin_y;          ///< Cached sprite origin_y input.
+    int64_t cache_scale_x;           ///< Cached (normalized) scale_x.
+    int64_t cache_scale_y;           ///< Cached (normalized) scale_y.
+    int64_t cache_rotation;          ///< Cached rotation.
+    int64_t cache_tint;              ///< Cached tint_color.
+    int64_t cache_alpha;             ///< Cached alpha.
+    int64_t cache_out_origin_x;      ///< Cached computed origin_x output.
+    int64_t cache_out_origin_y;      ///< Cached computed origin_y output.
+    int8_t cache_out_centered;       ///< Cached origin_centered output.
+    int8_t cache_valid;              ///< 1 when cache_pixels holds a usable result.
 } rt_sprite_impl;
 
 /// @brief Validate-and-cast an opaque sprite pointer to its impl, trapping on failure.
@@ -267,18 +268,22 @@ static void sprite_apply_alpha(void *pixels, int64_t alpha) {
     if (alpha < 0)
         alpha = 0;
     rt_pixels_impl *impl = rt_pixels_checked_impl_or_null(pixels);
-    if (!impl)
-        return;
-    if (!impl->data)
+    if (!impl || !impl->data || impl->width <= 0 || impl->height <= 0 ||
+        (uint64_t)impl->width > SIZE_MAX / (uint64_t)impl->height)
         return;
     uint32_t *data = impl->data;
-    int64_t count = impl->width * impl->height;
-    for (int64_t i = 0; i < count; i++) {
+    size_t count = (size_t)impl->width * (size_t)impl->height;
+    int8_t changed = 0;
+    for (size_t i = 0; i < count; i++) {
         uint32_t rgba = data[i];
         uint32_t a = rgba & 0xFFu;
         a = (a * (uint32_t)alpha + 127u) / 255u;
-        data[i] = (rgba & 0xFFFFFF00u) | a;
+        uint32_t replacement = (rgba & 0xFFFFFF00u) | a;
+        changed |= replacement != rgba;
+        data[i] = replacement;
     }
+    if (changed)
+        pixels_touch(impl);
 }
 
 /// @brief Clamp a sprite scale percentage to a minimum of 1 (never zero or negative).
@@ -292,22 +297,103 @@ static int64_t sprite_normalize_scale(int64_t scale) {
     return scale < 1 ? 1 : scale;
 }
 
+/// @brief Return the unsigned magnitude of an int64 without negating INT64_MIN.
+static uint64_t sprite_i64_magnitude(int64_t value) {
+    return value < 0 ? UINT64_C(0) - (uint64_t)value : (uint64_t)value;
+}
+
+/// @brief Divide an unsigned conceptual 128-bit product by a uint64 divisor.
+/// @details The overflow path accumulates quotient/remainder pairs by binary
+///          doubling, avoiding compiler-specific wide integer extensions.
+static int8_t sprite_unsigned_mul_div(uint64_t lhs,
+                                      uint64_t rhs,
+                                      uint64_t divisor,
+                                      uint64_t limit,
+                                      uint64_t *quotient,
+                                      uint64_t *remainder) {
+    if (!quotient || !remainder || divisor == 0)
+        return 0;
+    if (lhs == 0 || rhs == 0) {
+        *quotient = 0;
+        *remainder = 0;
+        return 1;
+    }
+    if (lhs <= UINT64_MAX / rhs) {
+        uint64_t product = lhs * rhs;
+        uint64_t result = product / divisor;
+        if (result > limit)
+            return 0;
+        *quotient = result;
+        *remainder = product % divisor;
+        return 1;
+    }
+
+    uint64_t result_q = 0;
+    uint64_t result_r = 0;
+    uint64_t term_q = lhs / divisor;
+    uint64_t term_r = lhs % divisor;
+    uint64_t capped = limit + 1u;
+    while (rhs != 0) {
+        if ((rhs & 1u) != 0u) {
+            if (term_q > limit - result_q)
+                return 0;
+            result_q += term_q;
+            if (result_r >= divisor - term_r) {
+                result_r -= divisor - term_r;
+                if (result_q == limit)
+                    return 0;
+                result_q++;
+            } else {
+                result_r += term_r;
+            }
+        }
+        rhs >>= 1u;
+        if (rhs == 0)
+            break;
+
+        uint64_t carry = 0;
+        if (term_r >= divisor - term_r) {
+            term_r -= divisor - term_r;
+            carry = 1;
+        } else {
+            term_r += term_r;
+        }
+        if (term_q >= capped || term_q > (capped - carry) / 2u)
+            term_q = capped;
+        else
+            term_q = term_q * 2u + carry;
+    }
+    *quotient = result_q;
+    *remainder = result_r;
+    return 1;
+}
+
 /// @brief Multiply @p value by a percentage @p scale (e.g., 200 = double) with saturation.
-/// @details The computation `value * scale / 100` is done in `long double` to avoid
-///   integer overflow before the division. The result is rounded to the nearest
-///   integer (away from zero) rather than truncating, which keeps scaled coordinates
-///   from drifting when repeatedly scaled and unscaled. Saturates to INT64_MAX/MIN
-///   rather than wrapping on overflow.
+/// @details Exact quotient/remainder arithmetic makes full-range results
+///          deterministic across platforms with different `long double`
+///          widths. Half values round away from zero.
 /// @param value Signed coordinate or dimension to scale.
 /// @param scale Percentage scale; values below 1 are normalized to 1.
 /// @return The nearest scaled integer, saturated to the `int64_t` range.
 static int64_t sprite_saturating_scale(int64_t value, int64_t scale) {
-    long double scaled = ((long double)value * (long double)sprite_normalize_scale(scale)) / 100.0L;
-    if (scaled >= (long double)INT64_MAX)
-        return INT64_MAX;
-    if (scaled <= (long double)INT64_MIN)
+    scale = sprite_normalize_scale(scale);
+    int8_t negative = value < 0;
+    uint64_t limit = negative ? (UINT64_C(1) << 63u) : (uint64_t)INT64_MAX;
+    uint64_t quotient = 0;
+    uint64_t remainder = 0;
+    if (!sprite_unsigned_mul_div(
+            sprite_i64_magnitude(value), (uint64_t)scale, 100u, limit, &quotient, &remainder))
+        return negative ? INT64_MIN : INT64_MAX;
+    if (remainder >= 50u) {
+        if (quotient == limit)
+            return negative ? INT64_MIN : INT64_MAX;
+        quotient++;
+    }
+    if (!negative)
+        return (int64_t)quotient;
+    if (quotient == (UINT64_C(1) << 63u))
         return INT64_MIN;
-    return (int64_t)(scaled >= 0.0L ? scaled + 0.5L : scaled - 0.5L);
+    return -(int64_t)quotient;
 }
 
 /// @brief Add two int64_t values with saturation at INT64_MAX / INT64_MIN.
@@ -327,22 +413,24 @@ static int64_t sprite_add_saturating(int64_t a, int64_t b) {
     return a + b;
 }
 
-/// @brief Subtract two int64_t values with saturation, computed via long double.
-/// @details Uses long double to avoid integer overflow during the intermediate
-///   computation (INT64_MIN - 1 would wrap in signed integer arithmetic). Saturates
-///   rather than wrapping to keep pixel coordinate arithmetic predictable when
-///   dealing with extreme or adversarial dimension values.
+/// @brief Subtract two int64_t values with integer saturation.
 /// @param a Minuend.
 /// @param b Subtrahend.
 /// @return The mathematical difference when representable, otherwise the
 ///         corresponding `int64_t` limit.
 static int64_t sprite_sub_saturating(int64_t a, int64_t b) {
-    long double value = (long double)a - (long double)b;
-    if (value >= (long double)INT64_MAX)
+    if (b < 0 && a > INT64_MAX + b)
         return INT64_MAX;
-    if (value <= (long double)INT64_MIN)
+    if (b > 0 && a < INT64_MIN + b)
         return INT64_MIN;
-    return (int64_t)value;
+    return a - b;
+}
+
+/// @brief Return a nonnegative timestamp difference with saturation.
+/// @details Callers handle backwards clocks before invoking this helper.
+static int64_t sprite_elapsed_saturating(int64_t now, int64_t before) {
+    uint64_t difference = (uint64_t)now - (uint64_t)before;
+    return difference > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)difference;
 }
 
 /// @brief Test whether two 1D intervals [a0, a0+a_len) and [b0, b0+b_len) overlap.
@@ -395,24 +483,6 @@ static int64_t sprite_abs_sat(int64_t value) {
     if (value == INT64_MIN)
         return INT64_MAX;
     return value < 0 ? -value : value;
-}
-
-/// @brief Subtract @p b from @p a with saturation — distinct from `sprite_sub_saturating`
-///        in using integer range checks rather than long double arithmetic.
-/// @details Handles the `a - b` overflow cases: if b is negative and a is near
-///   INT64_MAX the result wraps upward; if b is positive and a is near INT64_MIN the
-///   result wraps downward. Both are caught by the inequality `a < INT64_MIN + b`
-///   (respectively `a > INT64_MAX + b`).
-/// @param a Minuend.
-/// @param b Subtrahend.
-/// @return The mathematical difference when representable, otherwise the
-///         corresponding `int64_t` limit.
-static int64_t sprite_saturating_sub(int64_t a, int64_t b) {
-    if (b < 0 && a > INT64_MAX + b)
-        return INT64_MAX;
-    if (b > 0 && a < INT64_MIN + b)
-        return INT64_MIN;
-    return a - b;
 }
 
 /// @brief Normalize a tint color value to either the "no tint" sentinel or a color value.
@@ -516,13 +586,13 @@ static void *sprite_replace_pixels(void *replacement, void **slot, void *frame) 
 /// transform key differs, and freed in the sprite finalizer. On internal failure
 /// the partial buffer is released here and NULL is returned.
 /// Also fills in the post-transform origin and a flag indicating whether the
-/// rotation step expanded the canvas to a centered square.
+/// rotation step expanded the canvas to a centered square. Frame generation is
+/// part of the cache key, so in-place Pixels mutations trigger regeneration.
 ///
 /// The pipeline order is horizontal/vertical flip, nearest-neighbor scale,
 /// optional transparent padding around a non-centered rotation origin, rotation,
-/// tint, and explicit alpha. The cache key does not include a Pixels mutation
-/// generation, so callers that edit a frame in place must change a key input to
-/// force regeneration.
+/// tint, and explicit alpha. The cache key includes the source Pixels mutation
+/// generation so in-place edits invalidate transformed content automatically.
 /// @param sprite Valid sprite whose current frame and flip/origin state are used.
 /// @param scale_x Horizontal percentage scale; values below 1 become 1.
 /// @param scale_y Vertical percentage scale; values below 1 become 1.
@@ -548,20 +618,32 @@ static void *sprite_prepare_pixels(rt_sprite_impl *sprite,
     void *frame = sprite_get_current_frame_ptr(sprite);
     if (!frame)
         return NULL;
+    rt_pixels_impl *frame_impl = rt_pixels_checked_impl_or_null(frame);
+    if (!frame_impl)
+        return NULL;
+    uint64_t frame_generation = frame_impl->generation;
 
     scale_x = sprite_normalize_scale(scale_x);
     scale_y = sprite_normalize_scale(scale_y);
+    rotation %= 360;
+    if (rotation < 0)
+        rotation += 360;
+    if (alpha < 0)
+        alpha = 0;
+    else if (alpha > 255)
+        alpha = 255;
 
     /* Cache lookup: if every transform input matches the last prepared result,
      * return the cache-owned buffer directly (the caller borrows it and must not
      * release it — see rt_sprite_draw_transformed). */
     int64_t tint_key = sprite_normalize_tint(tint_color);
     if (sprite->cache_valid && sprite->cache_pixels && sprite->cache_frame == frame &&
+        sprite->cache_frame_generation == frame_generation &&
         sprite->cache_flip_x == sprite->flip_x && sprite->cache_flip_y == sprite->flip_y &&
-        sprite->cache_origin_x == sprite->origin_x &&
-        sprite->cache_origin_y == sprite->origin_y && sprite->cache_scale_x == scale_x &&
-        sprite->cache_scale_y == scale_y && sprite->cache_rotation == rotation &&
-        sprite->cache_tint == tint_key && sprite->cache_alpha == alpha) {
+        sprite->cache_origin_x == sprite->origin_x && sprite->cache_origin_y == sprite->origin_y &&
+        sprite->cache_scale_x == scale_x && sprite->cache_scale_y == scale_y &&
+        sprite->cache_rotation == rotation && sprite->cache_tint == tint_key &&
+        sprite->cache_alpha == alpha) {
         if (origin_x_out)
             *origin_x_out = sprite->cache_out_origin_x;
         if (origin_y_out)
@@ -620,9 +702,9 @@ static void *sprite_prepare_pixels(rt_sprite_impl *sprite,
 
         if (origin_x != center_x || origin_y != center_y) {
             int64_t half_w = sprite_abs_sat(origin_x);
-            int64_t edge_w = sprite_abs_sat(sprite_saturating_sub(src_w, origin_x));
+            int64_t edge_w = sprite_abs_sat(sprite_sub_saturating(src_w, origin_x));
             int64_t half_h = sprite_abs_sat(origin_y);
-            int64_t edge_h = sprite_abs_sat(sprite_saturating_sub(src_h, origin_y));
+            int64_t edge_h = sprite_abs_sat(sprite_sub_saturating(src_h, origin_y));
             if (edge_w > half_w)
                 half_w = edge_w;
             if (edge_h > half_h)
@@ -689,6 +771,7 @@ static void *sprite_prepare_pixels(rt_sprite_impl *sprite,
             rt_heap_release(sprite->cache_pixels);
         sprite->cache_pixels = transformed;
         sprite->cache_frame = frame;
+        sprite->cache_frame_generation = frame_generation;
         sprite->cache_flip_x = sprite->flip_x;
         sprite->cache_flip_y = sprite->flip_y;
         sprite->cache_origin_x = sprite->origin_x;
@@ -758,11 +841,14 @@ static rt_sprite_impl *sprite_alloc(void) {
     sprite->frame_capacity = 0;
     sprite->frame_delay_ms = SPRITE_DEFAULT_FRAME_DELAY_MS;
     sprite->last_frame_time = 0;
+    sprite->frame_clock_started = 0;
     sprite->flip_x = 0;
     sprite->flip_y = 0;
     sprite->frames = NULL;
     sprite->frame_delays_ms = NULL;
     sprite->cache_pixels = NULL;
+    sprite->cache_frame = NULL;
+    sprite->cache_frame_generation = 0;
     sprite->cache_valid = 0;
 
     rt_obj_set_finalizer(sprite, sprite_finalize);
@@ -821,11 +907,14 @@ static int detect_image_format(const char *filepath) {
     fclose(f);
     if (n >= 2 && hdr[0] == 'B' && hdr[1] == 'M')
         return 1; // BMP
-    if (n >= 8 && hdr[0] == 137 && hdr[1] == 80 && hdr[2] == 78 && hdr[3] == 71)
+    static const uint8_t png_signature[8] = {137, 80, 78, 71, 13, 10, 26, 10};
+    if (n >= sizeof(png_signature) && memcmp(hdr, png_signature, sizeof(png_signature)) == 0)
         return 2; // PNG
     if (n >= 2 && hdr[0] == 0xFF && hdr[1] == 0xD8)
         return 3; // JPEG
-    if (n >= 3 && hdr[0] == 'G' && hdr[1] == 'I' && hdr[2] == 'F')
+    if (n >= 6 && memcmp(hdr, "GIF87a", 6) == 0)
+        return 4; // GIF
+    if (n >= 6 && memcmp(hdr, "GIF89a", 6) == 0)
         return 4; // GIF
     return 0;
 }
@@ -843,8 +932,9 @@ void *rt_sprite_from_file(void *path) {
     if (!path)
         return NULL;
 
-    const char *filepath = rt_string_cstr((rt_string)path);
-    if (!filepath)
+    const char *filepath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &filepath) || !filepath ||
+        filepath[0] == '\0')
         return NULL;
 
     int fmt = detect_image_format(filepath);
@@ -855,7 +945,7 @@ void *rt_sprite_from_file(void *path) {
         int gif_count = 0, gif_w = 0, gif_h = 0;
         if (gif_decode_file(filepath, &gif_frames, &gif_count, &gif_w, &gif_h) <= 0)
             return NULL;
-        if (!gif_frames || gif_count <= 0) {
+        if (!gif_frames || gif_count <= 0 || gif_w <= 0 || gif_h <= 0) {
             sprite_release_gif_frames(gif_frames, gif_count);
             return NULL;
         }
@@ -1157,7 +1247,7 @@ void rt_sprite_set_frame(void *sprite_ptr, int64_t frame) {
     if (frame < 0)
         frame += sprite->frame_count;
     sprite->current_frame = frame;
-    sprite->last_frame_time = 0; // Reset timer so animation resumes cleanly
+    sprite->frame_clock_started = 0;
 }
 
 /// @brief Total number of frames added via `_add_frame` (0 if uninitialized).
@@ -1264,9 +1354,14 @@ void rt_sprite_draw_transformed(void *sprite_ptr,
     if (!frame)
         return;
 
+    int64_t canonical_rotation = rotation % 360;
+    if (canonical_rotation < 0)
+        canonical_rotation += 360;
+    int64_t canonical_alpha = alpha < 0 ? 0 : alpha > 255 ? 255 : alpha;
+
     // If no transform at all, use simple blit
-    if (scale_x == 100 && scale_y == 100 && rotation == 0 && !sprite->flip_x && !sprite->flip_y &&
-        tint_color < 0 && alpha >= 255) {
+    if (scale_x == 100 && scale_y == 100 && canonical_rotation == 0 && !sprite->flip_x &&
+        !sprite->flip_y && tint_color < 0 && canonical_alpha == 255) {
         rt_canvas_blit_alpha(canvas_ptr,
                              sprite_sub_saturating(x, sprite->origin_x),
                              sprite_sub_saturating(y, sprite->origin_y),
@@ -1280,9 +1375,9 @@ void rt_sprite_draw_transformed(void *sprite_ptr,
     void *transformed = sprite_prepare_pixels(sprite,
                                               scale_x,
                                               scale_y,
-                                              rotation,
+                                              canonical_rotation,
                                               tint_color,
-                                              alpha,
+                                              canonical_alpha,
                                               &origin_x,
                                               &origin_y,
                                               &origin_centered);
@@ -1363,7 +1458,8 @@ void rt_sprite_add_frame(void *sprite_ptr, void *pixels) {
     rt_sprite_impl *sprite = sprite_checked(sprite_ptr, "Sprite.AddFrame: invalid sprite");
     if (!sprite)
         return;
-    if (!sprite_ensure_frame_capacity(sprite, sprite->frame_count + 1)) {
+    if (sprite->frame_count == INT64_MAX ||
+        !sprite_ensure_frame_capacity(sprite, sprite->frame_count + 1)) {
         rt_trap("Sprite.AddFrame: too many frames");
         return;
     }
@@ -1454,14 +1550,16 @@ void rt_sprite_update(void *sprite_ptr) {
         return;
 
     int64_t now = rt_timer_ms();
-    if (sprite->last_frame_time == 0)
+    if (!sprite->frame_clock_started) {
         sprite->last_frame_time = now;
-
-    int64_t elapsed = now - sprite->last_frame_time;
-    if (elapsed < 0) {
-        sprite->last_frame_time = now;
-        elapsed = 0;
+        sprite->frame_clock_started = 1;
+        return;
     }
+    if (now < sprite->last_frame_time) {
+        sprite->last_frame_time = now;
+        return;
+    }
+    int64_t elapsed = sprite_elapsed_saturating(now, sprite->last_frame_time);
     int64_t cycle_delay = sprite_cycle_delay(sprite);
     if (cycle_delay > 0 && cycle_delay < INT64_MAX && elapsed >= cycle_delay) {
         int64_t cycles = elapsed / cycle_delay;
@@ -1509,17 +1607,22 @@ int8_t rt_sprite_overlaps(void *sprite_ptr, void *other_ptr) {
     if (!s1->visible || !s2->visible)
         return false;
 
-    // A sprite with no frames has zero extent and no real hitbox — clamping to a
-    // 1×1 box below would report phantom collisions, so reject it up front.
-    if (rt_sprite_get_width(sprite_ptr) <= 0 || rt_sprite_get_height(sprite_ptr) <= 0 ||
-        rt_sprite_get_width(other_ptr) <= 0 || rt_sprite_get_height(other_ptr) <= 0)
+    void *frame1 = sprite_get_current_frame_ptr(s1);
+    void *frame2 = sprite_get_current_frame_ptr(s2);
+    int64_t source_w1 = frame1 ? rt_pixels_width(frame1) : 0;
+    int64_t source_h1 = frame1 ? rt_pixels_height(frame1) : 0;
+    int64_t source_w2 = frame2 ? rt_pixels_width(frame2) : 0;
+    int64_t source_h2 = frame2 ? rt_pixels_height(frame2) : 0;
+    // A sprite with no frame extent has no real hitbox — clamping to a 1×1 box
+    // below would report phantom collisions.
+    if (source_w1 <= 0 || source_h1 <= 0 || source_w2 <= 0 || source_h2 <= 0)
         return false;
 
     // Get bounding boxes
-    int64_t w1 = sprite_saturating_scale(rt_sprite_get_width(sprite_ptr), s1->scale_x);
-    int64_t h1 = sprite_saturating_scale(rt_sprite_get_height(sprite_ptr), s1->scale_y);
-    int64_t w2 = sprite_saturating_scale(rt_sprite_get_width(other_ptr), s2->scale_x);
-    int64_t h2 = sprite_saturating_scale(rt_sprite_get_height(other_ptr), s2->scale_y);
+    int64_t w1 = sprite_saturating_scale(source_w1, s1->scale_x);
+    int64_t h1 = sprite_saturating_scale(source_h1, s1->scale_y);
+    int64_t w2 = sprite_saturating_scale(source_w2, s2->scale_x);
+    int64_t h2 = sprite_saturating_scale(source_h2, s2->scale_y);
     if (w1 < 1)
         w1 = 1;
     if (h1 < 1)
@@ -1555,12 +1658,14 @@ int8_t rt_sprite_contains(void *sprite_ptr, int64_t px, int64_t py) {
     if (!sprite->visible)
         return false;
 
-    // Frameless sprites have no real hitbox (see rt_sprite_overlaps).
-    if (rt_sprite_get_width(sprite_ptr) <= 0 || rt_sprite_get_height(sprite_ptr) <= 0)
+    void *frame = sprite_get_current_frame_ptr(sprite);
+    int64_t source_width = frame ? rt_pixels_width(frame) : 0;
+    int64_t source_height = frame ? rt_pixels_height(frame) : 0;
+    if (source_width <= 0 || source_height <= 0)
         return false;
 
-    int64_t w = sprite_saturating_scale(rt_sprite_get_width(sprite_ptr), sprite->scale_x);
-    int64_t h = sprite_saturating_scale(rt_sprite_get_height(sprite_ptr), sprite->scale_y);
+    int64_t w = sprite_saturating_scale(source_width, sprite->scale_x);
+    int64_t h = sprite_saturating_scale(source_height, sprite->scale_y);
     if (w < 1)
         w = 1;
     if (h < 1)
@@ -1604,7 +1709,8 @@ void rt_sprite_move(void *sprite_ptr, int64_t dx, int64_t dy) {
 /// @return @p animator when its class and size are valid, otherwise `NULL`.
 static rt_sprite_animator_t *sprite_animator_checked(rt_sprite_animator_t *animator) {
     if (!animator ||
-        !rt_obj_is_instance(animator, RT_SPRITE_ANIMATOR_CLASS_ID, sizeof(rt_sprite_animator_t)))
+        !rt_obj_is_instance(animator, RT_SPRITE_ANIMATOR_CLASS_ID, sizeof(rt_sprite_animator_t)) ||
+        animator->clip_count < 0 || animator->clip_count > RT_ANIM_MAX_CLIPS)
         return NULL;
     return animator;
 }
@@ -1621,6 +1727,7 @@ rt_sprite_animator_t *rt_sprite_animator_new(void) {
         return NULL;
     memset(anim, 0, sizeof(rt_sprite_animator_t));
     anim->current_clip = -1;
+    anim->last_update_ms = INT64_MIN;
     anim->playing = 0;
     return anim;
 }
@@ -1636,6 +1743,21 @@ void rt_sprite_animator_destroy(rt_sprite_animator_t *animator) {
         return;
     if (rt_obj_release_check0(animator))
         rt_obj_free(animator);
+}
+
+/// @brief Measure a nonempty NUL-terminated clip name within the 63-byte limit.
+static int8_t sprite_clip_name_length(const char *name, size_t *length_out) {
+    if (length_out)
+        *length_out = 0;
+    if (!name || !length_out)
+        return 0;
+    size_t length = 0;
+    while (length < sizeof(((rt_anim_clip_t *)0)->name) && name[length] != '\0')
+        length++;
+    if (length == 0 || length >= sizeof(((rt_anim_clip_t *)0)->name))
+        return 0;
+    *length_out = length;
+    return 1;
 }
 
 /// @brief Register a named animation clip (frame range + per-frame delay + loop flag).
@@ -1661,12 +1783,15 @@ int rt_sprite_animator_add_clip(rt_sprite_animator_t *animator,
     animator = sprite_animator_checked(animator);
     if (!animator || !name)
         return 0;
-    if (strlen(name) >= sizeof(animator->clips[0].name))
+    size_t name_len = 0;
+    if (!sprite_clip_name_length(name, &name_len))
         return 0;
 
     int existing = -1;
     for (int i = 0; i < animator->clip_count; i++) {
-        if (strcmp(animator->clips[i].name, name) == 0) {
+        size_t stored_len = 0;
+        if (sprite_clip_name_length(animator->clips[i].name, &stored_len) &&
+            stored_len == name_len && memcmp(animator->clips[i].name, name, name_len) == 0) {
             existing = i;
             break;
         }
@@ -1676,17 +1801,12 @@ int rt_sprite_animator_add_clip(rt_sprite_animator_t *animator,
 
     rt_anim_clip_t *clip =
         existing >= 0 ? &animator->clips[existing] : &animator->clips[animator->clip_count++];
-    /* Safe string copy: name field is char[64], guarantee NUL termination */
-    int i = 0;
-    while (i < 63 && name[i]) {
-        clip->name[i] = name[i];
-        i++;
-    }
-    clip->name[i] = '\0';
+    memcpy(clip->name, name, name_len);
+    clip->name[name_len] = '\0';
     clip->start_frame = start_frame < 0 ? 0 : start_frame;
     clip->frame_count = frame_count > 0 ? frame_count : 1;
     clip->frame_delay_ms = frame_delay_ms > 0 ? frame_delay_ms : 100;
-    clip->loop = loop;
+    clip->loop = loop != 0;
     return 1;
 }
 
@@ -1702,24 +1822,17 @@ int8_t rt_sprite_animator_play(rt_sprite_animator_t *animator, const char *name)
     animator = sprite_animator_checked(animator);
     if (!animator || !name)
         return 0;
+    size_t name_len = 0;
+    if (!sprite_clip_name_length(name, &name_len))
+        return 0;
 
     for (int i = 0; i < animator->clip_count; i++) {
-        /* Simple string comparison (no strncmp dependency on all platforms) */
-        const char *a = animator->clips[i].name;
-        const char *b = name;
-        int match = 1;
-        while (*a || *b) {
-            if (*a != *b) {
-                match = 0;
-                break;
-            }
-            a++;
-            b++;
-        }
-        if (match) {
+        size_t stored_len = 0;
+        if (sprite_clip_name_length(animator->clips[i].name, &stored_len) &&
+            stored_len == name_len && memcmp(animator->clips[i].name, name, name_len) == 0) {
             animator->current_clip = i;
             animator->clip_frame = 0;
-            animator->last_update_ms = 0; /* reset on next update */
+            animator->last_update_ms = INT64_MIN;
             animator->playing = 1;
             return 1;
         }
@@ -1757,7 +1870,7 @@ void rt_sprite_animator_update(rt_sprite_animator_t *animator, void *sprite_ptr)
 
     rt_anim_clip_t *clip = &animator->clips[animator->current_clip];
     int64_t sprite_frames = rt_sprite_get_frame_count(sprite_ptr);
-    if (sprite_frames <= 0 || clip->start_frame >= sprite_frames) {
+    if (sprite_frames <= 0 || clip->start_frame < 0 || clip->start_frame >= sprite_frames) {
         animator->playing = 0;
         animator->clip_frame = 0;
         return;
@@ -1779,19 +1892,19 @@ void rt_sprite_animator_update(rt_sprite_animator_t *animator, void *sprite_ptr)
 
     int64_t now = rt_timer_ms();
 
-    if (animator->last_update_ms == 0)
+    if (animator->last_update_ms == INT64_MIN)
         animator->last_update_ms = now;
 
-    int64_t elapsed = now - animator->last_update_ms;
-    if (elapsed < 0) {
+    if (now < animator->last_update_ms) {
         animator->last_update_ms = now;
-        elapsed = 0;
     }
-    if (elapsed >= clip->frame_delay_ms) {
+    int64_t elapsed = sprite_elapsed_saturating(now, animator->last_update_ms);
+    int64_t frame_delay_ms =
+        clip->frame_delay_ms > 0 ? clip->frame_delay_ms : SPRITE_DEFAULT_FRAME_DELAY_MS;
+    if (elapsed >= frame_delay_ms) {
         /* Advance one frame (may be multiple if behind) */
-        int64_t steps = elapsed / clip->frame_delay_ms;
-        int64_t consumed =
-            steps > INT64_MAX / clip->frame_delay_ms ? INT64_MAX : steps * clip->frame_delay_ms;
+        int64_t steps = elapsed / frame_delay_ms;
+        int64_t consumed = steps > INT64_MAX / frame_delay_ms ? INT64_MAX : steps * frame_delay_ms;
         animator->last_update_ms = animator->last_update_ms > INT64_MAX - consumed
                                        ? now
                                        : animator->last_update_ms + consumed;
@@ -1833,7 +1946,9 @@ const char *rt_sprite_animator_get_current(rt_sprite_animator_t *animator) {
     if (!animator || !animator->playing || animator->current_clip < 0 ||
         animator->current_clip >= animator->clip_count)
         return NULL;
-    return animator->clips[animator->current_clip].name;
+    size_t name_len = 0;
+    const char *name = animator->clips[animator->current_clip].name;
+    return sprite_clip_name_length(name, &name_len) ? name : NULL;
 }
 
 /// @brief Zia/BASIC bridge: `add_clip` taking a Zanna `rt_string` for the name.
@@ -1852,6 +1967,10 @@ int8_t rt_sprite_animator_add_clip_str(void *animator,
                                        int64_t frame_delay_ms,
                                        int64_t loop) {
     const char *clipName = name ? rt_string_cstr(name) : NULL;
+    int64_t raw_len = name ? rt_str_len(name) : 0;
+    if (!clipName || raw_len <= 0 || raw_len >= 64 ||
+        memchr(clipName, '\0', (size_t)raw_len) != NULL)
+        return 0;
     int ok = rt_sprite_animator_add_clip((rt_sprite_animator_t *)animator,
                                          clipName,
                                          start_frame,
@@ -1867,6 +1986,10 @@ int8_t rt_sprite_animator_add_clip_str(void *animator,
 /// @return `1` when the named clip starts; otherwise `0`.
 int8_t rt_sprite_animator_play_str(void *animator, rt_string name) {
     const char *clipName = name ? rt_string_cstr(name) : NULL;
+    int64_t raw_len = name ? rt_str_len(name) : 0;
+    if (!clipName || raw_len <= 0 || raw_len >= 64 ||
+        memchr(clipName, '\0', (size_t)raw_len) != NULL)
+        return 0;
     int8_t ok = rt_sprite_animator_play((rt_sprite_animator_t *)animator, clipName);
     return ok;
 }
@@ -1880,5 +2003,8 @@ rt_string rt_sprite_animator_get_current_str(void *animator) {
     const char *name = rt_sprite_animator_get_current((rt_sprite_animator_t *)animator);
     if (!name)
         return rt_str_empty();
-    return rt_string_from_bytes(name, strlen(name));
+    size_t name_len = 0;
+    if (!sprite_clip_name_length(name, &name_len))
+        return rt_str_empty();
+    return rt_string_from_bytes(name, name_len);
 }

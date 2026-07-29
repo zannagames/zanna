@@ -636,6 +636,7 @@ enum class RuntimeTypeId : std::size_t {
     RTCLS_WorldToScreenProjection,
     RTCLS_ZiaToolchain,
     RTCLS_Process,
+    RTCLS_EmbedHostChannel,
     RTCLS_ProcessHandle,
     RTCLS_Pty,
     RTCLS_PtySession,

@@ -2166,6 +2166,19 @@ static void test_d3d11_backend_source_contracts(void) {
                     strstr(source, "GenerateMips(streamed texture)") != NULL &&
                     strstr(source, "GenerateMips(streamed cubemap)") != NULL,
                 "D3D11 validates device health before publishing void upload and copy commands");
+    EXPECT_TRUE(strstr(source, "Draw(post-FX pass)") != NULL &&
+                    strstr(source, "Draw(bloom downsample)") != NULL &&
+                    strstr(source, "Draw(bloom upsample)") != NULL &&
+                    strstr(source, "Draw(TAA resolve)") != NULL &&
+                    strstr(source, "Draw(SSR resolve)") != NULL &&
+                    strstr(source, "Draw(overlay composite)") != NULL,
+                "D3D11 validates device health after every post-effect draw family");
+    EXPECT_TRUE(strstr(source, "ID3D11DeviceContext_RSSetViewports(ctx->ctx, 0, NULL)") != NULL,
+                "D3D11 clears stale viewport state when the active target extent is invalid");
+    EXPECT_TRUE(strstr(source, "if (!ctx->postfx_current_bloom_srv)") != NULL &&
+                    strstr(source, "if (!resolved) {") != NULL &&
+                    strstr(source, "if (!reflected) {") != NULL,
+                "D3D11 propagates bloom, TAA, and SSR encoder failures to the chain caller");
     EXPECT_TRUE(strstr(source, "SyncRTTBeforeUnbind") != NULL &&
                     strstr(source, "CreateTexture2D(rttStagingRecovery)") != NULL,
                 "D3D11 preserves dirty RTT data and replaces failed staging resources");

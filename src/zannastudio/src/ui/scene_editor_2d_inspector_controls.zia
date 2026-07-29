@@ -77,6 +77,31 @@ class SceneEditor2DInspectorControlsLayer extends PreviousLayer.SceneEditor2DIns
             changed = RemoveSceneProperty(
                 sceneProperties.CanonicalKeyAt(removeRow)) or changed;
         }
+        var settingsChanged = false;
+        var settingsCommit = sceneSettingsInspector.TakeCommit(scene);
+        if settingsCommit != null {
+            settingsChanged = ApplySceneSettingsCommit2D(settingsCommit);
+        }
+        var settingsAdd = sceneSettingsInspector.TakeAddItem(scene);
+        if settingsAdd != null {
+            settingsChanged = ApplySceneSettingsCommit2D(settingsAdd)
+                or settingsChanged;
+        }
+        var settingsRemove =
+            sceneSettingsInspector.TakeRemoveItem(scene);
+        if settingsRemove != null {
+            settingsChanged = ApplySceneSettingsCommit2D(settingsRemove)
+                or settingsChanged;
+        }
+        if settingsChanged { changed = true; }
+        // Any revision change re-reads scene values; the stamp guard
+        // keeps rebuilds rare (mirrors the 3D editor).
+        if settingsChanged
+           or sceneSettingsRevision != GetRevision() {
+            sceneSettingsInspector.Refresh(
+                componentSchema, scene, editorControlsEnabled);
+            sceneSettingsRevision = GetRevision();
+        }
         return changed;
     }
 
@@ -428,6 +453,8 @@ class SceneEditor2DInspectorControlsLayer extends PreviousLayer.SceneEditor2DIns
         if hasSingle == false {
             objectAfterLayerDropdown.SetSelected(0);
             objectDrawOrderSpinner.SetValue(0.0);
+            objectAfterLayerDropdown.WasChanged();
+            objectDrawOrderSpinner.WasChanged();
             objectDrawStackResetButton.SetEnabled(false);
             objectDrawStackSummary.SetText(
                 "Select one object to inspect its game-like preview order.");
@@ -442,6 +469,10 @@ class SceneEditor2DInspectorControlsLayer extends PreviousLayer.SceneEditor2DIns
         objectAfterLayerDropdown.SetSelected(selectedLayer);
         objectDrawOrderSpinner.SetValue(
             ObjectPreviewDrawOrder(selectedObject));
+        // Programmatic refresh must not look like user edit intent
+        // (ADR 0221): consume the edges the writes above raised.
+        objectAfterLayerDropdown.WasChanged();
+        objectDrawOrderSpinner.WasChanged();
         var explicitLayer = scene.ObjectPropertyKind(
             selectedObject,
             scene_object_draw_stack_2d.EXPLICIT_AFTER_LAYER_KEY) != "";
@@ -506,6 +537,9 @@ class SceneEditor2DInspectorControlsLayer extends PreviousLayer.SceneEditor2DIns
         if hasSingle == false {
             objectTypeInput.SetText("");
             objectIdInput.SetText("");
+            objectTypeCanonical = "";
+            objectIdCanonical = "";
+            objectTextWasFocused = false;
             objectXSpinner.SetValue(0.0);
             objectYSpinner.SetValue(0.0);
             objectRotationSpinner.SetValue(0.0);
@@ -533,6 +567,8 @@ class SceneEditor2DInspectorControlsLayer extends PreviousLayer.SceneEditor2DIns
         }
         objectTypeInput.SetText(scene.ObjectType(selectedObject));
         objectIdInput.SetText(scene.ObjectId(selectedObject));
+        objectTypeCanonical = objectTypeInput.Text;
+        objectIdCanonical = objectIdInput.Text;
         objectXSpinner.SetValue(scene.ObjectX(selectedObject));
         objectYSpinner.SetValue(scene.ObjectY(selectedObject));
         objectRotationSpinner.SetValue(

@@ -14,7 +14,8 @@
 //   - Camera position is the world-space viewport origin. Viewport dimensions
 //     are fixed at construction and zoom is clamped to 10..1000 percent.
 //   - Full transforms translate around the viewport center, rotate, and scale;
-//     screen-to-world applies the mathematical inverse.
+//     screen-to-world applies the mathematical inverse. Degree values are
+//     reduced modulo 360 before trigonometric evaluation.
 //   - Bounds constrain the zoom-dependent world-space viewport rectangle.
 //   - Parallax layers retain their Pixels objects and are limited to eight slots.
 //
@@ -62,7 +63,8 @@ void *rt_camera_new(int64_t width, int64_t height);
 int64_t rt_camera_get_x(void *camera);
 
 /// @brief Set camera viewport left edge (world coordinates).
-/// @details Applies active bounds and marks the transform dirty.
+/// @details Applies active bounds and marks the transform dirty only if the
+///          final origin changes.
 /// @param camera Borrowed Camera handle.
 /// @param x Requested world-space left edge.
 void rt_camera_set_x(void *camera, int64_t x);
@@ -73,7 +75,8 @@ void rt_camera_set_x(void *camera, int64_t x);
 int64_t rt_camera_get_y(void *camera);
 
 /// @brief Set camera viewport top edge (world coordinates).
-/// @details Applies active bounds and marks the transform dirty.
+/// @details Applies active bounds and marks the transform dirty only if the
+///          final origin changes.
 /// @param camera Borrowed Camera handle.
 /// @param y Requested world-space top edge.
 void rt_camera_set_y(void *camera, int64_t y);
@@ -85,7 +88,7 @@ int64_t rt_camera_get_zoom(void *camera);
 
 /// @brief Set camera zoom level (100 = 100%).
 /// @details Clamps to 10..1000 percent, re-applies active bounds, and marks
-///          the transform dirty.
+///          the transform dirty only if zoom or the final origin changes.
 /// @param camera Borrowed Camera handle.
 /// @param zoom Requested integer zoom percentage.
 void rt_camera_set_zoom(void *camera, int64_t zoom);
@@ -137,7 +140,8 @@ void rt_camera_set_center(void *camera, int64_t x, int64_t y);
 //=========================================================================
 
 /// @brief Center the camera on a world position.
-/// @details Uses saturating arithmetic, applies bounds, and always marks dirty.
+/// @details Uses saturating arithmetic, applies bounds, and marks dirty only
+///          if the final origin changes.
 /// @param camera Borrowed Camera handle.
 /// @param x World X coordinate to center on.
 /// @param y World Y coordinate to center on.
@@ -196,7 +200,8 @@ int64_t rt_camera_to_world_x(void *camera, int64_t screen_x);
 int64_t rt_camera_to_world_y(void *camera, int64_t screen_y);
 
 /// @brief Move the camera by delta amounts.
-/// @details Adds with int64 saturation, applies active bounds, and marks dirty.
+/// @details Adds with int64 saturation, applies active bounds, and marks dirty
+///          only if the final origin changes.
 /// @param camera Borrowed Camera handle.
 /// @param dx Horizontal world-space displacement.
 /// @param dy Vertical world-space displacement.
@@ -225,7 +230,7 @@ void rt_camera_clear_bounds(void *camera);
 /// @details Respects the configured per-axis deadzone and clamps after movement.
 ///          Values at least 1000 snap, values 1..999 move by rounded
 ///          thousandths, and nonpositive values do not follow. A rounded
-///          zero step snaps the remaining coordinate difference.
+///          zero step makes one pixel of progress on that axis.
 /// @param camera Borrowed Camera handle.
 /// @param target_x Target world X (center of follow).
 /// @param target_y Target world Y (center of follow).
@@ -311,8 +316,9 @@ int64_t rt_camera_parallax_count(void *camera);
 ///          horizontally and vertically, scrolled by the scaled camera
 ///          position. Neutral transforms cover the larger of canvas/viewport;
 ///          zoomed or rotated transforms cover the inverse-transformed
-///          viewport using temporary pixel buffers. A 65,536-tile per-layer
-///          budget skips pathological coverage.
+///          canvas using generation-keyed cached pixel buffers. Counted tile
+///          loops cannot wrap at int64 limits. A 65,536-tile per-layer budget
+///          skips pathological coverage.
 /// @param camera Borrowed Camera handle.
 /// @param canvas Borrowed destination canvas.
 /// @return Number of successfully drawn layers, or `0` for invalid arguments.

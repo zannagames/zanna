@@ -87,8 +87,8 @@ the document manager rather than setting editor text directly.
 | `.zia` | code | Zia editor services. |
 | `.bas`, `.vb` | code | BASIC editor services. |
 | `.txt`, `.md`, `.json`, `.il` | text | Plain text editing. |
-| `.scene`, `.level` | 2D scene | Built-in 2D hierarchy, viewport, properties, history, and import tools. |
-| `.vscn` | 3D scene | Built-in 3D hierarchy, viewport, transform/material, history, and import tools. |
+| `.scene2d` (legacy `.scene`, `.level` accepted) | 2D scene | Built-in 2D hierarchy, viewport, properties, history, and import tools. |
+| `.scene3d` (legacy `.vscn` accepted) | 3D scene | Built-in 3D hierarchy, viewport, transform/material, history, and import tools. |
 | image extensions | binary unsupported | Read-only preview placeholder. |
 | unknown | text | Plain text editing. |
 
@@ -474,8 +474,9 @@ Limitations:
 
 ## Scene Authoring
 
-Files ending in `.scene` or `.level` open in the 2D scene editor. Files ending
-in `.vscn` open in the 3D scene editor. Both surfaces write every accepted edit
+Files ending in `.scene2d` (or the accepted legacy `.scene` / `.level`) open
+in the 2D scene editor. Files ending in `.scene3d` (or the accepted legacy
+`.vscn`) open in the 3D scene editor. Both surfaces write every accepted edit
 back to the active `Document.content`, so ordinary dirty-tab, Save, Save As,
 session, recovery, and external-change rules remain authoritative.
 
@@ -700,7 +701,7 @@ properties, and restores parent links wholly inside the copied selection.
 Parents outside the clipboard selection become scene roots.
 
 Each layer can reference a PNG, JPEG, BMP, or GIF tileset image. Relative paths
-resolve beside a saved `.scene`; untitled-scene relative paths resolve from the
+resolve beside a saved scene file; untitled-scene relative paths resolve from the
 working directory until the scene has a path. The inspector shows a scrollable
 eight-column palette for the first 512 atlas frames. **−**/**+** scales the
 palette from 50% to 300% with nearest-neighbor artwork and exact zoom-aware
@@ -711,7 +712,7 @@ to select and reveal that frame. Clicking a frame likewise selects tile ID
 across visible layers. The numeric tile field remains available for larger
 atlases.
 
-Tileset references are external and are not embedded in `.scene`. Choose Image
+Tileset references are external and are not embedded in the scene file. Choose Image
 and Clear Image each create one canonical undo entry when the reference changes;
 choosing the same image is a no-op. Invalid candidates leave content and history
 untouched. Project Layer Images opens a non-modal searchable view of supported
@@ -1353,7 +1354,8 @@ was reached; narrow the workspace. Rename never applies in that state.
 
 ### A scene opens in the wrong surface
 
-Use `.scene` or `.level` for the 2D editor and `.vscn` for the 3D editor.
+Use `.scene2d` (or legacy `.scene` / `.level`) for the 2D editor and
+`.scene3d` (or legacy `.vscn`) for the 3D editor.
 Unknown scene-like extensions intentionally fall back to the text editor because
 Studio cannot safely infer a serialized format from file contents alone.
 
@@ -1380,7 +1382,8 @@ for BASIC.
 
 ### A scene file does not show visual tools
 
-Confirm the extension is `.scene`, `.level`, or `.vscn`. Unknown scene-like
+Confirm the extension is `.scene2d` or `.scene3d` (or an accepted legacy
+`.scene`, `.level`, or `.vscn`). Unknown scene-like
 extensions intentionally remain text documents because Studio cannot safely
 infer their serialization format. If a recognized file opens the visual
 surface but shows a repair message, the original bytes failed bounded scene

@@ -52,18 +52,22 @@ struct pipe_vert {
 /// @return Context-owned storage for at least @p count vertices, or null on invalid input,
 ///         arithmetic overflow, or allocation failure.
 static pipe_vert_t *sw_acquire_pipe_vertices(sw_context_t *ctx, uint32_t count) {
+    size_t allocation_count;
+
     if (!ctx || count == 0)
         return NULL;
     if (ctx->vertex_scratch_capacity >= count)
         return ctx->vertex_scratch;
-    if ((size_t)count > SIZE_MAX / sizeof(pipe_vert_t))
+    if (!sw_geometric_capacity(
+            ctx->vertex_scratch_capacity, (size_t)count, sizeof(pipe_vert_t), &allocation_count) ||
+        allocation_count > UINT32_MAX)
         return NULL;
     pipe_vert_t *new_scratch =
-        (pipe_vert_t *)realloc(ctx->vertex_scratch, (size_t)count * sizeof(pipe_vert_t));
+        (pipe_vert_t *)realloc(ctx->vertex_scratch, allocation_count * sizeof(pipe_vert_t));
     if (!new_scratch)
         return NULL;
     ctx->vertex_scratch = new_scratch;
-    ctx->vertex_scratch_capacity = count;
+    ctx->vertex_scratch_capacity = (uint32_t)allocation_count;
     return ctx->vertex_scratch;
 }
 

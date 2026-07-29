@@ -1,0 +1,447 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_settings_inspector_3d.zia
+// Purpose: Schema-v19 Scene Settings surface for the 3D editor (typed
+//          root-metadata forms replacing raw key/value browsing).
+// Key invariants:
+//   - Presentation only: forms read root metadata and report committed
+//     key/kind/value batches; SceneEditor3D owns the one-transaction write.
+//   - Rebuilds only when the parsed schema identity or a repeat count
+//     changes; refreshes are edge-free (ADR 0221).
+//   - Repeat groups add/remove their LAST item only, always through the
+//     editor's transactional path.
+// Ownership/Lifetime:
+//   - The host widget tree owns the widgets; this class owns row records.
+// Links: zannastudio/src/ui/scene_component_form.zia,
+//        zannastudio/src/ui/scene_component_schema_forms_model.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_settings_inspector_3d;
+
+bind "scene_component_schema_model" as SceneComponentModel;
+bind "scene_component_schema_forms_model" as FormsModel;
+bind "scene_component_form";
+bind "layout_metrics";
+
+bind Fmt = Zanna.Text.Fmt;
+bind GUI = Zanna.GUI;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Str = Zanna.String;
+
+/// @brief One committed batch of root-metadata writes.
+class SceneSettingsCommit {
+    expose List[String] keys;
+    expose List[String] kinds;
+    expose List[String] values;
+    expose String label;
+
+    expose func init() {
+        keys = [];
+        kinds = [];
+        values = [];
+        label = "";
+    }
+}
+
+/// @brief One rendered scene-settings component section.
+class SceneSettingsSection {
+    expose FormsModel.SceneSettingsComponent component;
+    expose scene_component_form.SceneComponentForm form;
+    expose GUI.VBox host;
+    expose GUI.Button addItemButton;
+    expose GUI.Button removeItemButton;
+    expose Integer builtRepeatCount;
+
+    expose func init() {
+        component = null;
+        form = null;
+        host = null;
+        addItemButton = null;
+        removeItemButton = null;
+        builtRepeatCount = -1;
+    }
+}
+
+/// @brief Typed Scene Settings inspector bound to the scene root node.
+class SceneSettingsInspector3D {
+    expose GUI.VBox host;
+    expose GUI.Label summary;
+    expose List[SceneSettingsSection] sections;
+    hide String builtStamp;
+
+    expose func init() {
+        host = null;
+        summary = null;
+        sections = [];
+        builtStamp = "";
+    }
+
+    /// @brief Create the retained container under @p parent.
+    expose func Setup(parent: GUI.VBox) {
+        host = GUI.VBox.New();
+        host.SetSpacing(layout_metrics.GAP_GROUP);
+        parent.AddChild(host);
+        summary = GUI.Label.New(host, "");
+    }
+
+    /// @brief Rebuild sections when schema identity changes, then load
+    ///        current root values edge-free.
+    expose func Refresh(schema: SceneComponentModel.SceneComponentSchema,
+                        root: SceneNode,
+                        enabled: Boolean) {
+        if host == null { return; }
+        var stamp = SchemaStamp(schema, root);
+        if stamp != builtStamp {
+            Rebuild(schema, root);
+            builtStamp = stamp;
+        }
+        var index = 0;
+        while index < sections.count() {
+            var section = sections.get(index);
+            section.form.RefreshValues(
+                ValuesFor(section.form, root));
+            section.form.SetEnabled(enabled and root != null);
+            if section.addItemButton != null {
+                var count = RepeatCount(section.component, root);
+                section.addItemButton.SetEnabled(
+                    enabled and root != null
+                    and count < section.component.repeat.maximum);
+                section.removeItemButton.SetEnabled(
+                    enabled and root != null and count > 0);
+            }
+            index = index + 1;
+        }
+        if sections.count() == 0 {
+            summary.SetText(
+                "No scene-level components declared. Add a v19 "
+                + "sceneComponents section to scene-components.json to "
+                + "author root metadata as typed forms.");
+        } else {
+            summary.SetText(
+                "Typed scene settings write ordinary root metadata; the "
+                + "raw grid below stays authoritative for undeclared "
+                + "keys.");
+        }
+    }
+
+    /// @brief Consume one committed row into a keyed write batch, or null.
+    expose func TakeCommit(root: SceneNode) -> SceneSettingsCommit {
+        if root == null { return null; }
+        var index = 0;
+        while index < sections.count() {
+            var section = sections.get(index);
+            var row = section.form.TakeCommittedRow();
+            if row >= 0 {
+                var commit = new SceneSettingsCommit();
+                var formRow = section.form.rows.get(row);
+                var texts = section.form.CommittedTexts(row);
+                var kind = section.form.KindTokenAt(row);
+                var keyIndex = 0;
+                while keyIndex < formRow.keys.count() {
+                    commit.keys.add(formRow.keys.get(keyIndex));
+                    commit.kinds.add(kind);
+                    if keyIndex < texts.count() {
+                        commit.values.add(texts.get(keyIndex));
+                    } else {
+                        commit.values.add("");
+                    }
+                    keyIndex = keyIndex + 1;
+                }
+                commit.label =
+                    "Edited " + formRow.field.label + " in "
+                    + section.component.label;
+                return commit;
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+
+    /// @brief Consume one repeat-item ADD request into a write batch.
+    expose func TakeAddItem(root: SceneNode) -> SceneSettingsCommit {
+        if root == null { return null; }
+        var index = 0;
+        while index < sections.count() {
+            var section = sections.get(index);
+            if section.addItemButton != null
+               and section.addItemButton.WasClicked() {
+                var repeat = section.component.repeat;
+                var count = RepeatCount(section.component, root);
+                if count >= repeat.maximum { return null; }
+                var commit = new SceneSettingsCommit();
+                var prefix = repeat.PrefixFor(count);
+                var fieldIndex = 0;
+                while fieldIndex < section.component.fields.count() {
+                    var field =
+                        section.component.fields.get(fieldIndex);
+                    AppendDefaultWritesFor(commit, field, prefix);
+                    fieldIndex = fieldIndex + 1;
+                }
+                commit.keys.add(repeat.countKey);
+                commit.kinds.add("int");
+                commit.values.add(Fmt.Int(count + 1));
+                commit.label =
+                    "Added " + RepeatItemLabelFor(section.component)
+                    + " " + count;
+                return commit;
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+
+    /// @brief Consume one repeat-item REMOVE-last request; keys listed in
+    ///        @p removed are deleted and countKey rewritten.
+    expose func TakeRemoveItem(
+        root: SceneNode) -> SceneSettingsCommit {
+        if root == null { return null; }
+        var index = 0;
+        while index < sections.count() {
+            var section = sections.get(index);
+            if section.removeItemButton != null
+               and section.removeItemButton.WasClicked() {
+                var repeat = section.component.repeat;
+                var count = RepeatCount(section.component, root);
+                if count <= 0 { return null; }
+                var commit = new SceneSettingsCommit();
+                var prefix = repeat.PrefixFor(count - 1);
+                var fieldIndex = 0;
+                while fieldIndex < section.component.fields.count() {
+                    var field =
+                        section.component.fields.get(fieldIndex);
+                    AppendRemovalKeysFor(commit, field, prefix);
+                    fieldIndex = fieldIndex + 1;
+                }
+                commit.keys.add(repeat.countKey);
+                commit.kinds.add("int");
+                commit.values.add(Fmt.Int(count - 1));
+                commit.label =
+                    "Removed " + RepeatItemLabelFor(section.component)
+                    + " " + (count - 1);
+                return commit;
+            }
+            index = index + 1;
+        }
+        return null;
+    }
+
+    // ---- construction -----------------------------------------------------
+
+    hide func Rebuild(schema: SceneComponentModel.SceneComponentSchema,
+                      root: SceneNode) {
+        host.ClearChildren();
+        summary = GUI.Label.New(host, "");
+        sections = [];
+        if schema == null or schema.valid == false { return; }
+        var index = 0;
+        while index < schema.sceneSettings.count() {
+            var component = schema.sceneSettings.get(index);
+            if component != null
+               and component.SupportsTarget(
+                       FormsModel.TARGET_3D_SCENE) {
+                BuildSection(component, root);
+            }
+            index = index + 1;
+        }
+    }
+
+    hide func BuildSection(
+        component: FormsModel.SceneSettingsComponent,
+        root: SceneNode) {
+        var section = new SceneSettingsSection();
+        section.component = component;
+        section.host = GUI.VBox.New();
+        section.host.SetSpacing(layout_metrics.GAP_ROW);
+        host.AddChild(section.host);
+        var title = component.label;
+        if component.description != "" {
+            var heading = GUI.Label.New(section.host, title);
+            heading.SetTooltip(component.description);
+        } else {
+            GUI.Label.New(section.host, title);
+        }
+        section.form = new scene_component_form.SceneComponentForm();
+        if component.repeat.IsActive() {
+            var count = RepeatCount(component, root);
+            section.builtRepeatCount = count;
+            var item = 0;
+            while item < count {
+                section.form.Build(
+                    section.host,
+                    component.fields,
+                    component.repeat.PrefixFor(item),
+                    item);
+                item = item + 1;
+            }
+            var actions = GUI.HBox.New();
+            actions.SetSpacing(layout_metrics.GAP_ROW);
+            section.host.AddChild(actions);
+            section.addItemButton = GUI.Button.New(
+                actions, "Add " + RepeatItemLabelFor(component));
+            section.removeItemButton = GUI.Button.New(
+                actions, "Remove Last");
+            section.removeItemButton.SetTooltip(
+                "Remove the last " + RepeatItemLabelFor(component)
+                + " and its keys in one undoable edit");
+        } else {
+            section.form.Build(section.host, component.fields, "", -1);
+        }
+        sections.add(section);
+    }
+
+    // ---- values -----------------------------------------------------------
+
+    hide func ValuesFor(
+        form: scene_component_form.SceneComponentForm,
+        root: SceneNode) -> List[String] {
+        var values: List[String] = [];
+        var keys = form.KeysNeeded();
+        var index = 0;
+        while index < keys.count() {
+            values.add(RootValueText(root, keys.get(index)));
+            index = index + 1;
+        }
+        return values;
+    }
+
+    hide func RootValueText(root: SceneNode, key: String) -> String {
+        if root == null or root.MetadataHas(key) == false { return ""; }
+        var kind = root.MetadataKind(key);
+        if kind == "string" {
+            return root.MetadataGetString(key, "");
+        }
+        if kind == "int" { return Fmt.Int(root.MetadataGetInt(key, 0)); }
+        if kind == "float" {
+            return Fmt.Num(root.MetadataGetFloat(key, 0.0));
+        }
+        if kind == "bool" {
+            return Fmt.Bool(root.MetadataGetBool(key, false));
+        }
+        return "";
+    }
+
+    hide func RepeatCount(
+        component: FormsModel.SceneSettingsComponent,
+        root: SceneNode) -> Integer {
+        if root == null or component.repeat.IsActive() == false {
+            return 0;
+        }
+        var count =
+            root.MetadataGetInt(component.repeat.countKey, 0);
+        if count < 0 { return 0; }
+        if count > component.repeat.maximum {
+            return component.repeat.maximum;
+        }
+        return count;
+    }
+
+    hide func SchemaStamp(
+        schema: SceneComponentModel.SceneComponentSchema,
+        root: SceneNode) -> String {
+        if schema == null { return "none"; }
+        var stamp = schema.sourcePath + "#" + schema.version + "#"
+            + schema.sceneSettings.count();
+        var index = 0;
+        while index < schema.sceneSettings.count() {
+            var component = schema.sceneSettings.get(index);
+            if component != null and component.repeat.IsActive() {
+                stamp = stamp + "/" + component.name + ":"
+                    + RepeatCount(component, root);
+            }
+            index = index + 1;
+        }
+        return stamp;
+    }
+
+}
+
+
+/// @brief Shared: append one field's defaulted writes for a repeat item.
+expose func AppendDefaultWritesFor(commit: SceneSettingsCommit,
+                                   field: FormsModel.SceneFormField,
+                                   prefix: String) {
+    var kind = DefaultKindTokenFor(field);
+    if field.keys.count() > 0 {
+        var index = 0;
+        while index < field.keys.count() {
+            commit.keys.add(prefix + field.keys.get(index));
+            commit.kinds.add(kind);
+            commit.values.add(DefaultValueTextFor(field));
+            index = index + 1;
+        }
+        return;
+    }
+    commit.keys.add(prefix + field.key);
+    commit.kinds.add(kind);
+    commit.values.add(DefaultValueTextFor(field));
+}
+
+/// @brief Shared: append one field's removal keys for a repeat item.
+expose func AppendRemovalKeysFor(commit: SceneSettingsCommit,
+                                 field: FormsModel.SceneFormField,
+                                 prefix: String) {
+    if field.keys.count() > 0 {
+        var index = 0;
+        while index < field.keys.count() {
+            commit.keys.add(prefix + field.keys.get(index));
+            commit.kinds.add("remove");
+            commit.values.add("");
+            index = index + 1;
+        }
+        return;
+    }
+    commit.keys.add(prefix + field.key);
+    commit.kinds.add("remove");
+    commit.values.add("");
+}
+
+/// @brief Shared: display label for one repeat component's items.
+expose func RepeatItemLabelFor(
+    component: FormsModel.SceneSettingsComponent) -> String {
+    if component.repeat.itemLabel != "" {
+        return component.repeat.itemLabel;
+    }
+    return "item";
+}
+
+/// @brief Shared: stored kind token for one field's scalar writes.
+expose func DefaultKindTokenFor(
+    field: FormsModel.SceneFormField) -> String {
+    if field.kind == FormsModel.KIND_COLOR {
+        if field.keys.count() == 3 { return "float"; }
+        return "int";
+    }
+    if field.kind == FormsModel.KIND_VEC2
+       or field.kind == FormsModel.KIND_VEC3
+       or field.kind == FormsModel.KIND_ANGLE
+       or field.kind == "float" {
+        return "float";
+    }
+    if field.kind == "int" { return "int"; }
+    if field.kind == "bool" { return "bool"; }
+    if field.kind == "enum" and field.storedKind == "int" {
+        return "int";
+    }
+    if field.kind == FormsModel.KIND_REF {
+        if field.refKind == FormsModel.REF_METADATA_INT { return "int"; }
+        if field.refKind == FormsModel.REF_POSITION_XZ { return "float"; }
+    }
+    return "string";
+}
+
+/// @brief Shared: default value text for one field's stored kind.
+expose func DefaultValueTextFor(
+    field: FormsModel.SceneFormField) -> String {
+    if field.defaultText != "" { return field.defaultText; }
+    var kind = DefaultKindTokenFor(field);
+    if kind == "float" { return "0"; }
+    if kind == "int" { return "0"; }
+    if kind == "bool" { return "false"; }
+    return "";
+}

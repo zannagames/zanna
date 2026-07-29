@@ -330,12 +330,12 @@ void rt_sprite_animator_destroy(rt_sprite_animator_t *animator);
 /// @details Names are matched case-sensitively, and registering an existing name
 ///          replaces that clip in place.
 /// @param animator Animator to add the clip to.
-/// @param name NUL-terminated clip name of at most 63 bytes.
+/// @param name Nonempty NUL-terminated clip name of at most 63 bytes.
 /// @param start_frame First frame index, clamped to zero.
 /// @param frame_count Number of frames, clamped to at least one.
 /// @param frame_delay_ms Milliseconds between frames; nonpositive means 100.
 /// @param loop Zero to play once; nonzero to loop.
-/// @return `1` on success, or `0` for invalid input, an overlong name, or a
+/// @return `1` on success, or `0` for invalid input, an empty/overlong name, or a
 ///         full table when no existing clip can be replaced.
 int rt_sprite_animator_add_clip(rt_sprite_animator_t *animator,
                                 const char *name,

@@ -83,7 +83,8 @@ bool isUcrtMathSymbol(const std::string &name) {
         "cosh",      "exp",        "expf", "exp2f", "fabs",     "fabsf",     "floor",  "floorf",
         "fmax",      "fmaxf",      "fmin", "fmaxl", "fminf",    "fminl",     "fmod",   "fmodf",
         "hypot",     "ldexp",      "log",  "log10", "log2",     "logf",      "lrint",  "lrintf",
-        "nan",       "pow",        "powf", "round", "roundf",   "sin",       "sinf",   "sinh",
+        "nan",       "nextafter",  "nextafterf",
+        "pow",       "powf",       "round", "roundf",  "sin",     "sinf",   "sinh",
         "remainder", "remainderf", "sqrt", "sqrtf", "tan",      "tanf",      "tanh",   "trunc",
         "truncf",
     };

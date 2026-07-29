@@ -61,6 +61,7 @@ class SceneMaterialInspector3D {
     expose GUI.Checkbox doubleSided;
     expose GUI.Checkbox unlit;
     expose GUI.Button applyButton;
+    expose Boolean singleLiveActive;
     expose GUI.Button removeButton;
     expose GUI.GroupBox mapGroup;
     expose GUI.Dropdown mapSlot;
@@ -88,6 +89,7 @@ class SceneMaterialInspector3D {
         doubleSided = null;
         unlit = null;
         applyButton = null;
+        singleLiveActive = false;
         removeButton = null;
         mapGroup = null;
         mapSlot = null;
@@ -296,8 +298,17 @@ class SceneMaterialInspector3D {
         if doubleSidedMixed { doubleSided.SetIndeterminate(true); }
         unlit.SetChecked(primaryUnlit);
         if unlitMixed { unlit.SetIndeterminate(true); }
-        // Programmatic refresh must not look like user intent to resolve color.
+        // Programmatic refresh must not look like user edit intent
+        // (ADR 0221): consume every edge the writes above raised.
         colorPicker.WasChanged();
+        colorOverride.WasChanged();
+        alpha.WasChanged();
+        metallic.WasChanged();
+        roughness.WasChanged();
+        ambientOcclusion.WasChanged();
+        alphaMode.WasChanged();
+        doubleSided.WasChanged();
+        unlit.WasChanged();
 
         if nodes.count() == 0 {
             summary.SetText("Select one or more nodes to edit material.");
@@ -467,13 +478,18 @@ class SceneMaterialInspector3D {
         clearMapButton.SetEnabled(hasSelection and mapCount > 0);
         removeButton.SetText("Remove");
 
+        // A single node-owned material edits live (ADR 0221); the button
+        // remains for creation, batch application, and explicit forking.
+        singleLiveActive = hasSelection and nodes.count() == 1
+            and materialCount == 1 and primaryUsageCount <= 1;
+        applyButton.SetVisible(singleLiveActive == false);
         if hasSelection == false {
-            applyButton.SetText("Apply Material");
+            applyButton.SetText("Set Material");
             applyButton.SetTooltip("Select a node before editing material");
             removeButton.SetTooltip(
                 "Select one or more nodes before removing material");
         } else if nodes.count() > 1 {
-            applyButton.SetText("Apply to " + nodes.count());
+            applyButton.SetText("Set Material on " + nodes.count());
             applyButton.SetTooltip(
                 "Apply resolved PBR fields to all selected nodes; preserve "
                 + "every field still shown as Mixed");
@@ -491,21 +507,34 @@ class SceneMaterialInspector3D {
             applyButton.SetTooltip(
                 "Create a node-local PBR material from these values");
         } else if primaryUsageCount > 1 {
-            applyButton.SetText("Apply as Unique");
+            applyButton.SetText("Fork as Unique");
             applyButton.SetTooltip(
                 "Clone the shared material, preserving maps and other nodes");
         } else {
-            applyButton.SetText("Apply Material");
+            applyButton.SetText("Set Material");
             applyButton.SetTooltip(
                 "Apply these values while preserving unexposed material data");
         }
     }
 
-    /// @brief Resolve mixed color intent when the picker itself changes.
-    expose func PumpDraftIntent() {
-        if colorPicker != null and colorPicker.WasChanged() {
+    /// @brief Consume control edges; report whether any field changed.
+    /// @return True when a material control changed this pump (ADR 0221).
+    expose func PumpDraftIntent() -> Boolean {
+        if colorPicker == null { return false; }
+        var edited = false;
+        if colorPicker.WasChanged() {
             colorOverride.SetChecked(true);
+            edited = true;
         }
+        if colorOverride.WasChanged() { edited = true; }
+        if alpha.WasChanged() { edited = true; }
+        if metallic.WasChanged() { edited = true; }
+        if roughness.WasChanged() { edited = true; }
+        if ambientOcclusion.WasChanged() { edited = true; }
+        if alphaMode.WasChanged() { edited = true; }
+        if doubleSided.WasChanged() { edited = true; }
+        if unlit.WasChanged() { edited = true; }
+        return edited;
     }
 
     /// @brief Build a sparse patch from every currently determined control.

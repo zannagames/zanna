@@ -13,7 +13,7 @@
 //   - Draw calls preserve submission order unless depth sorting is enabled.
 //   - When depth sorting is enabled, equal-depth items still preserve their
 //     original submission order.
-//   - Batch size is bounded by RT_SPRITEBATCH_MAX_SPRITES per begin/end pair.
+//   - Batch size is bounded to 1,048,576 commands per begin/end pair.
 //   - Nested Begin/End pairs are not supported.
 //   - Begin discards any queued commands. End also clears commands, including
 //     when passed a null Canvas, while retaining allocation capacity for reuse.

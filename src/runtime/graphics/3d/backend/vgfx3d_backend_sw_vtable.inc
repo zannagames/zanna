@@ -112,6 +112,7 @@ static void sw_scaled_dims(
 /// @param h Positive scaled height in pixels.
 /// @return 1 when sufficient storage is ready, otherwise 0 for invalid input, overflow, or OOM.
 static int sw_ensure_scaled_color(sw_context_t *ctx, int32_t w, int32_t h) {
+    size_t allocation_count;
     size_t pixel_count;
     if (!ctx || !sw_pixel_count_checked(w, h, &pixel_count))
         return 0;
@@ -120,11 +121,14 @@ static int sw_ensure_scaled_color(sw_context_t *ctx, int32_t w, int32_t h) {
         ctx->scaled_h = h;
         return 1;
     }
-    uint32_t *grown = (uint32_t *)realloc(ctx->scaled_color, pixel_count * sizeof(uint32_t));
+    if (!sw_geometric_capacity(
+            ctx->scaled_color_capacity, pixel_count, sizeof(uint32_t), &allocation_count))
+        return 0;
+    uint32_t *grown = (uint32_t *)realloc(ctx->scaled_color, allocation_count * sizeof(uint32_t));
     if (!grown)
         return 0;
     ctx->scaled_color = grown;
-    ctx->scaled_color_capacity = pixel_count;
+    ctx->scaled_color_capacity = allocation_count;
     ctx->scaled_w = w;
     ctx->scaled_h = h;
     return 1;
@@ -322,7 +326,7 @@ static void sw_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) {
         ctx->ibl_sh[lane] = vgfx3d_clamp_float_param(
             cam->ibl_sh[lane], -SW_MATERIAL_PARAM_ABS_MAX, SW_MATERIAL_PARAM_ABS_MAX, 0.0f);
     ctx->shadow_strength = vgfx3d_clamp_float_param(cam->shadow_strength, 0.0f, 1.0f, 0.85f);
-    ctx->shadow_slope_bias = vgfx3d_clamp_float_param(cam->shadow_slope_bias, 0.0f, 1000.0f, 1.0f);
+    ctx->shadow_slope_bias = vgfx3d_clamp_float_param(cam->shadow_slope_bias, 0.0f, 16.0f, 1.0f);
     ctx->shadow_quality =
         cam->shadow_quality < 0 ? 0 : (cam->shadow_quality > 2 ? 2 : cam->shadow_quality);
     ctx->cam_znear = vgfx3d_finite_or(cam->znear, 0.0f);
@@ -380,11 +384,15 @@ static void sw_resolve_opaque_targets(void *ctx_ptr) {
     if (!src || !sw_pixel_count_checked(w, h, &total) || total == 0)
         return;
     if (ctx->opaque_zbuf_capacity < total) {
-        float *grown = (float *)realloc(ctx->opaque_zbuf, total * sizeof(float));
+        size_t allocation_count;
+        if (!sw_geometric_capacity(
+                ctx->opaque_zbuf_capacity, total, sizeof(float), &allocation_count))
+            return;
+        float *grown = (float *)realloc(ctx->opaque_zbuf, allocation_count * sizeof(float));
         if (!grown)
             return; /* no snapshot: blend draws keep hard edges this frame */
         ctx->opaque_zbuf = grown;
-        ctx->opaque_zbuf_capacity = total;
+        ctx->opaque_zbuf_capacity = allocation_count;
     }
     memcpy(ctx->opaque_zbuf, src, total * sizeof(float));
     ctx->opaque_zbuf_w = w;

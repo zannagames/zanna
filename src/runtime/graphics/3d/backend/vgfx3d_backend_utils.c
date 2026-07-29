@@ -195,6 +195,56 @@ void vgfx3d_copy_vec3_direction_or(float *dst, const float *src, const float fal
     dst[2] = (float)((double)chosen[2] * inverse_length);
 }
 
+/// @brief Make a sanitized secondary direction perpendicular to a sanitized primary direction.
+/// @details Preserves the caller's secondary direction whenever it spans a usable plane with the
+///          primary direction. Parallel, antiparallel, non-finite, and near-zero inputs select the
+///          least-aligned Cartesian axis before Gram-Schmidt projection, producing a deterministic
+///          right-angle unit pair without overflow-prone cross products.
+/// @param primary Borrowed normalized primary direction.
+/// @param requested Preferred optional secondary direction.
+/// @param fallback Secondary fallback used before the deterministic Cartesian-axis fallback.
+/// @param dst Receives a normalized direction perpendicular to @p primary.
+static void vgfx3d_make_perpendicular_direction(const float primary[3],
+                                                const float requested[3],
+                                                const float fallback[3],
+                                                float dst[3]) {
+    float secondary[3];
+    float projected[3];
+    const float axes[3][3] = {
+        {1.0f, 0.0f, 0.0f},
+        {0.0f, 1.0f, 0.0f},
+        {0.0f, 0.0f, 1.0f},
+    };
+    double dot;
+    double length_squared;
+    double inverse_length;
+
+    vgfx3d_copy_vec3_direction_or(secondary, requested, fallback);
+    dot = (double)primary[0] * (double)secondary[0] + (double)primary[1] * (double)secondary[1] +
+          (double)primary[2] * (double)secondary[2];
+    for (int32_t lane = 0; lane < 3; lane++)
+        projected[lane] = (float)((double)secondary[lane] - dot * (double)primary[lane]);
+    length_squared = (double)projected[0] * (double)projected[0] +
+                     (double)projected[1] * (double)projected[1] +
+                     (double)projected[2] * (double)projected[2];
+    if (!isfinite(length_squared) || length_squared <= 1.0e-12) {
+        int32_t axis = 0;
+        if (fabsf(primary[1]) < fabsf(primary[axis]))
+            axis = 1;
+        if (fabsf(primary[2]) < fabsf(primary[axis]))
+            axis = 2;
+        dot = (double)primary[axis];
+        for (int32_t lane = 0; lane < 3; lane++)
+            projected[lane] = axes[axis][lane] - (float)(dot * (double)primary[lane]);
+        length_squared = (double)projected[0] * (double)projected[0] +
+                         (double)projected[1] * (double)projected[1] +
+                         (double)projected[2] * (double)projected[2];
+    }
+    inverse_length = 1.0 / sqrt(length_squared);
+    for (int32_t lane = 0; lane < 3; lane++)
+        dst[lane] = (float)((double)projected[lane] * inverse_length);
+}
+
 /// @brief Select a finite requested value with deterministic fallback semantics.
 /// @param requested Preferred value.
 /// @param fallback Secondary value used when @p requested is non-finite.
@@ -470,7 +520,7 @@ void vgfx3d_sanitize_camera_params(const struct vgfx3d_camera_params *src,
         dst->ibl_sh[lane] =
             vgfx3d_clamp_float_param(src->ibl_sh[lane], -scalar_max, scalar_max, 0.0f);
     dst->shadow_strength = vgfx3d_clamp_float_param(src->shadow_strength, 0.0f, 1.0f, 1.0f);
-    dst->shadow_slope_bias = vgfx3d_clamp_float_param(src->shadow_slope_bias, -16.0f, 16.0f, 0.0f);
+    dst->shadow_slope_bias = vgfx3d_clamp_float_param(src->shadow_slope_bias, 0.0f, 16.0f, 1.0f);
     if (src->shadow_quality < 0)
         dst->shadow_quality = 0;
     else if (src->shadow_quality > 2)
@@ -520,7 +570,7 @@ void vgfx3d_sanitize_light_params(const struct vgfx3d_light_params *src,
         dst->shadow_projection_type = VGFX3D_SHADOW_PROJECTION_PERSPECTIVE;
     vgfx3d_copy_vec3_direction_or(dst->direction, src->direction, direction_fallback);
     vgfx3d_copy_vec3_direction_or(dst->basis_u, src->basis_u, basis_u_fallback);
-    vgfx3d_copy_vec3_direction_or(dst->basis_v, src->basis_v, basis_v_fallback);
+    vgfx3d_make_perpendicular_direction(dst->basis_u, src->basis_v, basis_v_fallback, dst->basis_v);
     for (int32_t lane = 0; lane < 3; lane++) {
         dst->position[lane] = vgfx3d_clamp_float_param(src->position[lane],
                                                        -VGFX3D_BACKEND_MATRIX_COMPONENT_ABS_MAX,

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-05-17
+last-verified: 2026-07-29
 ---
 
 # 2D Animation, Collision, And Camera
@@ -16,22 +16,19 @@ This page covers helpers that are usually attached to game objects or cameras ra
 | Class | Purpose |
 |-------|---------|
 | `Viewport2D` | Fixed-point screen scaler with virtual size, screen size, offsets, and world/screen transforms. |
-| `Viewport2D` | Viewport-compatible scaler with its own runtime type identity. |
 | `Transform2D` | Integer 2D transform with position, percent scale, rotation, origin, and point transforms. |
 | `AnimationClip2D` | Frame range, frame delay, and loop metadata for 2D sprite animation. |
 | `AnimatedSprite2D` | Runtime clip player that advances a `Sprite` frame from elapsed milliseconds. |
 | `CollisionMask2D` | Dense per-pixel solid mask with alpha-threshold construction and mask overlap tests. |
 | `Hitbox2D` | Axis-aligned rectangle hitbox with containment and intersection tests. |
 | `CameraRig2D` | Follow-target camera controller with smoothing, deadzone forwarding, and render shake offsets. |
-| `ParticleEmitter` | Graphics namespace alias for `Zanna.Game.ParticleEmitter`. |
-| `ParticleEmitter` | Short alias for `ParticleEmitter`. |
-| `Lighting2D` | Graphics namespace alias for `Zanna.Game.Lighting2D`. |
 
 ## Viewport Scale
 
 - `Viewport2D.Scale` is fixed-point with `1000` representing `1.0x`. For example, `4000` means `4.0x`.
 - Integer scaling snaps only scales of `1.0x` and above to whole multiples, so very small screens keep the largest fitting fractional scale instead of overflowing the viewport.
 - Viewport APIs validate that their receiver is a `Viewport2D`; invalid handles return safe defaults or no-op instead of reading unrelated graphics objects.
+- `Transform2D.Rotation` preserves the integer value that was assigned, but point transforms reduce it modulo 360 before trigonometry. Identity scale with a zero-modulo rotation uses exact saturating integer arithmetic.
 
 ## Animation, Collision, And Camera
 
@@ -55,8 +52,8 @@ rig.Update()
 `AnimatedSprite2D` starts stopped until a valid clip is set. `Play()` only starts when a valid sprite and clip are available, and restarts a finished non-looping clip from its first effective frame. `Stop()` stops playback and resets the sprite to the clip's first frame.
 `CameraRig2D.New` accepts a `Camera` or `null`, and `SetCamera` ignores invalid non-camera handles. `SetSmoothing` is a percent value clamped to `0..100`; internally it is converted to the lower-level camera smooth-follow scale. Shake offsets and render coordinates use saturating integer arithmetic at the int64 limits.
 
-## Notes
+## Related Game Utilities
 
-- `ParticleEmitter` and `ParticleEmitter` share the same implementation as `Zanna.Game.ParticleEmitter`, including `Destroy()` and `DrawToPixels`.
-- `Lighting2D` exposes the same lifecycle as `Zanna.Game.Lighting2D`, including `Destroy()`.
-- `Lighting2D.AddTileLight` adds a screen-space light for the next `Draw` call and then consumes it, so add tile lights after `Update()` and before `Draw()` each frame.
+Particle emission and 2D lighting are exposed by the live runtime as
+`Zanna.Game.ParticleEmitter` and `Zanna.Game.Lighting2D`; they are not separate
+`Zanna.Graphics` alias classes.

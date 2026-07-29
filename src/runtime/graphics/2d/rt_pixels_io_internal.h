@@ -40,6 +40,7 @@
 #include "rt_bytes.h"
 #include "rt_compress.h"
 #include "rt_crc32.h"
+#include "rt_file_path.h"
 #include "rt_file_stdio.h"
 #include "rt_internal.h"
 #include "rt_object.h"

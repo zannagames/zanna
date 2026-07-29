@@ -31,6 +31,8 @@ User-facing documentation lives in the **[main documentation index](../README.md
 
 **Other** — [Bytecode VM](codemap/bytecode-vm.md) · [Codegen](codemap/codegen.md) · [Graphics](codemap/graphics.md) · [Graphics Stubs](codemap/runtime-graphics-stubs.md) · [VM/Runtime](codemap/vm-runtime.md) · [Runtime C Library](codemap/runtime-library-c.md) · [Support](codemap/support.md) · [Tools](codemap/tools.md) · [TUI](codemap/tui.md) · [Zanna Studio](codemap/zannastudio.md) · [Zia Server](codemap/zia-server.md) · [Docs](codemap/docs.md)
 
+**Runtime audits** — [Graphics 2D runtime (July 2026)](graphics2d-runtime-audit-2026-07.md)
+
 ## Specifications
 
 - [IL Guide](../il/il-guide.md) — Normative IL specification (changes require an ADR)

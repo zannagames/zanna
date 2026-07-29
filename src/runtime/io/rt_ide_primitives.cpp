@@ -2252,6 +2252,8 @@ void *rt_project_manifest_parse_text(rt_string text_s) {
                 appendToStringSeqField(manifest, "sceneRoots", value);
             else if (canonical == "defaultscene")
                 mapSetStr(manifest, "defaultScene", value);
+            else if (canonical == "runprofile")
+                mapSetStr(manifest, "runProfile", lower(value));
             else if (canonical == "run") {
                 void *run = rt_map_new();
                 mapSetStr(run, "name", value);

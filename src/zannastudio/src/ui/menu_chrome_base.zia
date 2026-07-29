@@ -427,8 +427,8 @@ class MenuChromeBase {
         tbRun = toolbar.AddNamedButton("run", "Build & Run (F5)");
         tbStop = toolbar.AddNamedButton("stop", "Stop Running Job (Shift+F5)");
         tbDebug = toolbar.AddNamedButton("debug", "Start Debugging (F6)");
-        tbDebugContinue = toolbar.AddNamedButton("continue", "Continue Debugging (F7)");
-        tbDebugStep = toolbar.AddNamedButton("step-over", "Step Over (F10)");
+        tbDebugContinue = toolbar.AddNamedButton("debug-continue", "Continue Debugging (F7)");
+        tbDebugStep = toolbar.AddNamedButton("debug-step-over", "Step Over (F10)");
         toolbar.AddSeparator();
         tbFind = toolbar.AddNamedButton("find", "Find (Ctrl+F)");
     }

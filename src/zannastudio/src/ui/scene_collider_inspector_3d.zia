@@ -112,7 +112,7 @@ class SceneColliderInspector3D {
 
         var buttons = inspector_rows.NewWrapRow();
         group.AddChild(buttons);
-        applyButton = GUI.Button.New(buttons, "Apply Collider");
+        applyButton = GUI.Button.New(buttons, "Set Collider");
         applyButton.SetTooltip(
             "Write the collider convention keys in one undoable VSCN edit");
         removeButton = GUI.Button.New(buttons, "Remove");
@@ -135,6 +135,15 @@ class SceneColliderInspector3D {
         radius.SetValue(state.radius);
         height.SetValue(state.height);
         triggerCheck.SetChecked(state.trigger);
+        // Programmatic refresh must not look like user edit intent
+        // (ADR 0221): consume every edge the writes above raised.
+        kindDropdown.WasChanged();
+        halfX.WasChanged();
+        halfY.WasChanged();
+        halfZ.WasChanged();
+        radius.WasChanged();
+        height.WasChanged();
+        triggerCheck.WasChanged();
 
         if selectionCount == 0 {
             summary.SetText(
@@ -160,6 +169,20 @@ class SceneColliderInspector3D {
             editorEnabled,
             state.kind != scene_collider_3d.COLLIDER_NONE,
             selectionCount);
+    }
+
+    /// @brief Consume control edges; report whether any field changed.
+    /// @return True when a collider control changed this pump (ADR 0221).
+    expose func PumpDraftIntent() -> Boolean {
+        if kindDropdown == null { return false; }
+        var edited = false;
+        if halfX.WasChanged() { edited = true; }
+        if halfY.WasChanged() { edited = true; }
+        if halfZ.WasChanged() { edited = true; }
+        if radius.WasChanged() { edited = true; }
+        if height.WasChanged() { edited = true; }
+        if triggerCheck.WasChanged() { edited = true; }
+        return edited;
     }
 
     /// @brief Build one complete normalized draft from visible controls.
@@ -204,12 +227,15 @@ class SceneColliderInspector3D {
         triggerCheck.SetEnabled(hasSingle);
         applyButton.SetEnabled(hasSingle);
         removeButton.SetEnabled(hasSingle and hasCollider);
+        // An existing collider edits live (ADR 0221); the button remains
+        // only for creation.
+        applyButton.SetVisible((hasSingle and hasCollider) == false);
         if hasSingle == false {
-            applyButton.SetText("Apply Collider");
+            applyButton.SetText("Set Collider");
             applyButton.SetTooltip(
                 "Select exactly one node before editing its collider");
         } else if hasCollider {
-            applyButton.SetText("Apply Collider");
+            applyButton.SetText("Set Collider");
             applyButton.SetTooltip(
                 "Rewrite the collider convention keys in one undoable edit");
         } else {

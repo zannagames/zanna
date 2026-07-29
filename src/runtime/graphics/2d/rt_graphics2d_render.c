@@ -77,6 +77,7 @@ static int64_t clamp_i64(int64_t value, int64_t min, int64_t max) {
 #define RT2D_SDFFONT_CLASS_ID INT64_C(-0x62010D)
 #define RT2D_NINESLICE_CLASS_ID INT64_C(-0x62010E)
 #define RT2D_DEBUGDRAW_CLASS_ID INT64_C(-0x62010F)
+
 /// @}
 
 /// @brief Mutable stroke and fill state owned by a ShapeRenderer2D object.
@@ -150,6 +151,45 @@ typedef struct {
     int64_t capacity;
 } rt_debugdraw2d_impl;
 
+/// @brief Validate a ShapeRenderer2D including its complete payload size.
+static rt_shaperenderer2d_impl *shaperenderer2d_checked(void *renderer) {
+    return rt2d_has_class_min(
+               renderer, RT2D_SHAPERENDERER_CLASS_ID, sizeof(rt_shaperenderer2d_impl))
+               ? (rt_shaperenderer2d_impl *)renderer
+               : NULL;
+}
+
+/// @brief Validate a TextRenderer2D including its complete payload size.
+static rt_textrenderer2d_impl *textrenderer2d_checked(void *renderer) {
+    return rt2d_has_class_min(renderer, RT2D_TEXTRENDERER_CLASS_ID, sizeof(rt_textrenderer2d_impl))
+               ? (rt_textrenderer2d_impl *)renderer
+               : NULL;
+}
+
+/// @brief Validate an SdfFont including its complete payload size.
+static rt_sdffont_impl *sdffont_checked(void *font) {
+    return rt2d_has_class_min(font, RT2D_SDFFONT_CLASS_ID, sizeof(rt_sdffont_impl))
+               ? (rt_sdffont_impl *)font
+               : NULL;
+}
+
+/// @brief Validate a NineSlice2D including its complete payload size.
+static rt_nineslice2d_impl *nineslice2d_checked(void *slice) {
+    return rt2d_has_class_min(slice, RT2D_NINESLICE_CLASS_ID, sizeof(rt_nineslice2d_impl))
+               ? (rt_nineslice2d_impl *)slice
+               : NULL;
+}
+
+/// @brief Validate a DebugDraw2D and its command-buffer invariants.
+static rt_debugdraw2d_impl *debugdraw2d_checked(void *debug_draw) {
+    if (!rt2d_has_class_min(debug_draw, RT2D_DEBUGDRAW_CLASS_ID, sizeof(rt_debugdraw2d_impl)))
+        return NULL;
+    rt_debugdraw2d_impl *impl = (rt_debugdraw2d_impl *)debug_draw;
+    if (!impl->cmds || impl->capacity <= 0 || impl->count < 0 || impl->count > impl->capacity)
+        return NULL;
+    return impl;
+}
+
 //=============================================================================
 // ShapeRenderer2D
 //=============================================================================
@@ -177,8 +217,9 @@ void *rt_shaperenderer2d_new(void) {
 /// @param rgba Packed RGB, packed RGBA, or tagged Color value stored verbatim
 ///             until drawing; any negative value disables the stroke.
 void rt_shaperenderer2d_set_stroke(void *renderer, int64_t rgba) {
-    if (rt2d_has_class(renderer, RT2D_SHAPERENDERER_CLASS_ID))
-        ((rt_shaperenderer2d_impl *)renderer)->stroke = rgba;
+    rt_shaperenderer2d_impl *impl = shaperenderer2d_checked(renderer);
+    if (impl)
+        impl->stroke = rgba;
 }
 
 /// @brief Set the fill color; pass any negative value to disable fill (stroke-only mode).
@@ -187,8 +228,9 @@ void rt_shaperenderer2d_set_stroke(void *renderer, int64_t rgba) {
 /// @param rgba Packed RGB, packed RGBA, or tagged Color value stored verbatim
 ///             until drawing; any negative value disables the fill.
 void rt_shaperenderer2d_set_fill(void *renderer, int64_t rgba) {
-    if (rt2d_has_class(renderer, RT2D_SHAPERENDERER_CLASS_ID))
-        ((rt_shaperenderer2d_impl *)renderer)->fill = rgba;
+    rt_shaperenderer2d_impl *impl = shaperenderer2d_checked(renderer);
+    if (impl)
+        impl->fill = rgba;
 }
 
 /// @brief Draw a line from `(x0, y0)` to `(x1, y1)` using the current stroke color.
@@ -203,9 +245,9 @@ void rt_shaperenderer2d_set_fill(void *renderer, int64_t rgba) {
 /// @param y1 Ending Y coordinate.
 void rt_shaperenderer2d_line(
     void *renderer, void *pixels, int64_t x0, int64_t y0, int64_t x1, int64_t y1) {
-    if (!rt2d_has_class(renderer, RT2D_SHAPERENDERER_CLASS_ID) || !pixels)
+    rt_shaperenderer2d_impl *impl = shaperenderer2d_checked(renderer);
+    if (!impl || !pixels)
         return;
-    rt_shaperenderer2d_impl *impl = (rt_shaperenderer2d_impl *)renderer;
     if (impl->stroke < 0)
         return;
     rt_pixels_draw_line(pixels, x0, y0, x1, y1, rt2d_draw_rgb(impl->stroke));
@@ -224,9 +266,9 @@ void rt_shaperenderer2d_line(
 /// @param height Requested rectangle height passed to the Pixels primitives.
 void rt_shaperenderer2d_rect(
     void *renderer, void *pixels, int64_t x, int64_t y, int64_t width, int64_t height) {
-    if (!rt2d_has_class(renderer, RT2D_SHAPERENDERER_CLASS_ID) || !pixels)
+    rt_shaperenderer2d_impl *impl = shaperenderer2d_checked(renderer);
+    if (!impl || !pixels)
         return;
-    rt_shaperenderer2d_impl *impl = (rt_shaperenderer2d_impl *)renderer;
     if (impl->fill >= 0)
         rt_pixels_draw_box(pixels, x, y, width, height, rt2d_draw_rgb(impl->fill));
     if (impl->stroke >= 0)
@@ -243,9 +285,9 @@ void rt_shaperenderer2d_rect(
 /// @param y Y coordinate of the circle center.
 /// @param radius Requested radius passed to the Pixels primitives.
 void rt_shaperenderer2d_circle(void *renderer, void *pixels, int64_t x, int64_t y, int64_t radius) {
-    if (!rt2d_has_class(renderer, RT2D_SHAPERENDERER_CLASS_ID) || !pixels)
+    rt_shaperenderer2d_impl *impl = shaperenderer2d_checked(renderer);
+    if (!impl || !pixels)
         return;
-    rt_shaperenderer2d_impl *impl = (rt_shaperenderer2d_impl *)renderer;
     if (impl->fill >= 0)
         rt_pixels_draw_disc(pixels, x, y, radius, rt2d_draw_rgb(impl->fill));
     if (impl->stroke >= 0)
@@ -260,9 +302,9 @@ void rt_shaperenderer2d_circle(void *renderer, void *pixels, int64_t x, int64_t 
 /// @param pixels Borrowed destination Pixels handle modified in place.
 /// @param path Borrowed Path2D handle containing the line segments.
 void rt_shaperenderer2d_path(void *renderer, void *pixels, void *path) {
-    if (!rt2d_has_class(renderer, RT2D_SHAPERENDERER_CLASS_ID) || !pixels || !path)
+    rt_shaperenderer2d_impl *impl = shaperenderer2d_checked(renderer);
+    if (!impl || !pixels || !path)
         return;
-    rt_shaperenderer2d_impl *impl = (rt_shaperenderer2d_impl *)renderer;
     if (impl->stroke < 0)
         return;
     rt_path2d_draw_to_pixels(path, pixels, impl->stroke);
@@ -281,9 +323,9 @@ void rt_shaperenderer2d_path(void *renderer, void *pixels, void *path) {
 /// @param obj Opaque finalizing object expected to be a TextRenderer2D
 ///            instance; invalid handles are ignored.
 static void textrenderer2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_TEXTRENDERER_CLASS_ID))
+    rt_textrenderer2d_impl *renderer = textrenderer2d_checked(obj);
+    if (!renderer)
         return;
-    rt_textrenderer2d_impl *renderer = (rt_textrenderer2d_impl *)obj;
     rt2d_release_ref_slot(&renderer->font);
 }
 
@@ -309,10 +351,9 @@ void *rt_textrenderer2d_new(void) {
 /// @param font BitmapFont or SpriteFont handle to retain, or `NULL`; invalid
 ///             non-null font handles leave the renderer unchanged.
 void rt_textrenderer2d_set_font(void *renderer, void *font) {
-    if (!rt2d_has_class(renderer, RT2D_TEXTRENDERER_CLASS_ID) ||
-        (font && !rt2d_is_bitmap_font_handle(font)))
+    rt_textrenderer2d_impl *impl = textrenderer2d_checked(renderer);
+    if (!impl || (font && !rt2d_is_bitmap_font_handle(font)))
         return;
-    rt_textrenderer2d_impl *impl = (rt_textrenderer2d_impl *)renderer;
     rt2d_retain_ref(font);
     rt2d_release_ref_slot(&impl->font);
     impl->font = font;
@@ -323,8 +364,9 @@ void rt_textrenderer2d_set_font(void *renderer, void *font) {
 ///                 ignored.
 /// @param scale Requested positive integer glyph scale.
 void rt_textrenderer2d_set_scale(void *renderer, int64_t scale) {
-    if (rt2d_has_class(renderer, RT2D_TEXTRENDERER_CLASS_ID))
-        ((rt_textrenderer2d_impl *)renderer)->scale = clamp_i64(scale, 1, 64);
+    rt_textrenderer2d_impl *impl = textrenderer2d_checked(renderer);
+    if (impl)
+        impl->scale = clamp_i64(scale, 1, 64);
 }
 
 /// @brief Set the text color as a packed 0x00RRGGBB value (alpha bits are masked off).
@@ -332,8 +374,9 @@ void rt_textrenderer2d_set_scale(void *renderer, int64_t scale) {
 ///                 ignored.
 /// @param rgb Source value whose low 24 bits are stored.
 void rt_textrenderer2d_set_color(void *renderer, int64_t rgb) {
-    if (rt2d_has_class(renderer, RT2D_TEXTRENDERER_CLASS_ID))
-        ((rt_textrenderer2d_impl *)renderer)->color = rgb & 0x00FFFFFF;
+    rt_textrenderer2d_impl *impl = textrenderer2d_checked(renderer);
+    if (impl)
+        impl->color = rgb & 0x00FFFFFF;
 }
 
 /// @brief Measure the pixel width of `text` using the bound font and scale.
@@ -345,9 +388,9 @@ void rt_textrenderer2d_set_color(void *renderer, int64_t rgb) {
 /// @return The measured width multiplied by the configured scale and saturated
 ///         to `int64_t`; for an invalid renderer, the built-in unscaled width.
 int64_t rt_textrenderer2d_measure_width(void *renderer, rt_string text) {
-    if (!rt2d_has_class(renderer, RT2D_TEXTRENDERER_CLASS_ID))
+    rt_textrenderer2d_impl *impl = textrenderer2d_checked(renderer);
+    if (!impl)
         return rt_canvas_text_width(text);
-    rt_textrenderer2d_impl *impl = (rt_textrenderer2d_impl *)renderer;
     int64_t width =
         impl->font ? rt_bitmapfont_text_width(impl->font, text) : rt_canvas_text_width(text);
     return rt2d_saturating_mul_i64(width, impl->scale);
@@ -364,9 +407,9 @@ int64_t rt_textrenderer2d_measure_width(void *renderer, rt_string text) {
 ///         `int64_t`; for an invalid renderer, the built-in unscaled height.
 int64_t rt_textrenderer2d_measure_height(void *renderer, rt_string text) {
     (void)text;
-    if (!rt2d_has_class(renderer, RT2D_TEXTRENDERER_CLASS_ID))
+    rt_textrenderer2d_impl *impl = textrenderer2d_checked(renderer);
+    if (!impl)
         return rt_canvas_text_height();
-    rt_textrenderer2d_impl *impl = (rt_textrenderer2d_impl *)renderer;
     int64_t height = impl->font ? rt_bitmapfont_text_height(impl->font) : rt_canvas_text_height();
     return rt2d_saturating_mul_i64(height, impl->scale);
 }
@@ -380,9 +423,9 @@ int64_t rt_textrenderer2d_measure_height(void *renderer, rt_string text) {
 /// @param y Y coordinate of the text origin.
 /// @param text Runtime string to draw.
 void rt_textrenderer2d_draw(void *renderer, void *canvas, int64_t x, int64_t y, rt_string text) {
-    if (!rt2d_has_class(renderer, RT2D_TEXTRENDERER_CLASS_ID) || !canvas)
+    rt_textrenderer2d_impl *impl = textrenderer2d_checked(renderer);
+    if (!impl || !canvas)
         return;
-    rt_textrenderer2d_impl *impl = (rt_textrenderer2d_impl *)renderer;
     if (impl->font)
         rt_canvas_text_font_scaled(canvas, x, y, text, impl->font, impl->scale, impl->color);
     else
@@ -401,9 +444,9 @@ void rt_textrenderer2d_draw(void *renderer, void *canvas, int64_t x, int64_t y, 
 /// @param obj Opaque finalizing object expected to be an SdfFont instance;
 ///            invalid handles are ignored.
 static void sdffont_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_SDFFONT_CLASS_ID))
+    rt_sdffont_impl *font = sdffont_checked(obj);
+    if (!font)
         return;
-    rt_sdffont_impl *font = (rt_sdffont_impl *)obj;
     rt2d_release_ref_slot(&font->bitmap_font);
 }
 
@@ -439,15 +482,16 @@ void *rt_sdffont_new(void *bitmap_font, int64_t spread) {
 /// @return The borrowed BitmapFont or SpriteFont handle stored by @p font, or
 ///         `NULL` when the SdfFont is invalid or has no backing font.
 void *rt_sdffont_get_bitmap_font(void *font) {
-    return rt2d_has_class(font, RT2D_SDFFONT_CLASS_ID) ? ((rt_sdffont_impl *)font)->bitmap_font
-                                                       : NULL;
+    rt_sdffont_impl *impl = sdffont_checked(font);
+    return impl ? impl->bitmap_font : NULL;
 }
 
 /// @brief Return the SDF spread value stored at construction time (range [1, 64]).
 /// @param font Opaque SdfFont handle to query.
 /// @return The stored spread in `[1, 64]`, or `0` when @p font is invalid.
 int64_t rt_sdffont_get_spread(void *font) {
-    return rt2d_has_class(font, RT2D_SDFFONT_CLASS_ID) ? ((rt_sdffont_impl *)font)->spread : 0;
+    rt_sdffont_impl *impl = sdffont_checked(font);
+    return impl ? impl->spread : 0;
 }
 
 //=============================================================================
@@ -464,9 +508,9 @@ int64_t rt_sdffont_get_spread(void *font) {
 /// @param obj Opaque finalizing object expected to be a NineSlice2D instance;
 ///            invalid handles are ignored.
 static void nineslice2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_NINESLICE_CLASS_ID))
+    rt_nineslice2d_impl *slice = nineslice2d_checked(obj);
+    if (!slice)
         return;
-    rt_nineslice2d_impl *slice = (rt_nineslice2d_impl *)obj;
     rt2d_release_ref_slot(&slice->pixels);
 }
 
@@ -538,7 +582,8 @@ static void nineslice_copy_scaled(void *target,
     if (!target || !source || dw <= 0 || dh <= 0 || sw <= 0 || sh <= 0)
         return;
     if (dw == sw && dh == sh) {
-        rt2d_blit_pixels(target, dx, dy, source, sx, sy, sw, sh, -1, 255, RT_GRAPHICS2D_BLEND_ALPHA);
+        rt2d_blit_pixels(
+            target, dx, dy, source, sx, sy, sw, sh, -1, 255, RT_GRAPHICS2D_BLEND_ALPHA);
         return;
     }
     void *region = rt2d_copy_region_pixels(source, sx, sy, sw, sh);
@@ -580,11 +625,19 @@ static void nineslice_copy_scaled(void *target,
 /// @param height Positive destination height.
 void rt_nineslice2d_draw_to_pixels(
     void *slice, void *target, int64_t x, int64_t y, int64_t width, int64_t height) {
-    if (!rt2d_has_class(slice, RT2D_NINESLICE_CLASS_ID) || !target || width <= 0 || height <= 0)
+    rt_nineslice2d_impl *impl = nineslice2d_checked(slice);
+    if (!impl || !target || width <= 0 || height <= 0)
         return;
-    rt_nineslice2d_impl *impl = (rt_nineslice2d_impl *)slice;
-    int64_t source_width = rt_pixels_width(impl->pixels);
-    int64_t source_height = rt_pixels_height(impl->pixels);
+    void *source = impl->pixels;
+    void *source_snapshot = NULL;
+    if (target == source) {
+        source_snapshot = rt_pixels_clone(source);
+        if (!source_snapshot)
+            return;
+        source = source_snapshot;
+    }
+    int64_t source_width = rt_pixels_width(source);
+    int64_t source_height = rt_pixels_height(source);
     int64_t sl = clamp_i64(impl->left, 0, source_width);
     int64_t sr = clamp_i64(impl->right, 0, source_width - sl);
     int64_t st = clamp_i64(impl->top, 0, source_height);
@@ -603,18 +656,18 @@ void rt_nineslice2d_draw_to_pixels(
     int64_t y_dt = rt2d_saturating_add_i64(y, dt);
     int64_t y_dt_dch = rt2d_saturating_add_i64(y_dt, dch);
 
-    nineslice_copy_scaled(target, x, y, dl, dt, impl->pixels, 0, 0, sl, st);
-    nineslice_copy_scaled(target, x_dl, y, dcw, dt, impl->pixels, sl, 0, scw, st);
-    nineslice_copy_scaled(target, x_dl_dcw, y, dr, dt, impl->pixels, sl + scw, 0, sr, st);
+    nineslice_copy_scaled(target, x, y, dl, dt, source, 0, 0, sl, st);
+    nineslice_copy_scaled(target, x_dl, y, dcw, dt, source, sl, 0, scw, st);
+    nineslice_copy_scaled(target, x_dl_dcw, y, dr, dt, source, sl + scw, 0, sr, st);
 
-    nineslice_copy_scaled(target, x, y_dt, dl, dch, impl->pixels, 0, st, sl, sch);
-    nineslice_copy_scaled(target, x_dl, y_dt, dcw, dch, impl->pixels, sl, st, scw, sch);
-    nineslice_copy_scaled(target, x_dl_dcw, y_dt, dr, dch, impl->pixels, sl + scw, st, sr, sch);
+    nineslice_copy_scaled(target, x, y_dt, dl, dch, source, 0, st, sl, sch);
+    nineslice_copy_scaled(target, x_dl, y_dt, dcw, dch, source, sl, st, scw, sch);
+    nineslice_copy_scaled(target, x_dl_dcw, y_dt, dr, dch, source, sl + scw, st, sr, sch);
 
-    nineslice_copy_scaled(target, x, y_dt_dch, dl, db, impl->pixels, 0, st + sch, sl, sb);
-    nineslice_copy_scaled(target, x_dl, y_dt_dch, dcw, db, impl->pixels, sl, st + sch, scw, sb);
-    nineslice_copy_scaled(
-        target, x_dl_dcw, y_dt_dch, dr, db, impl->pixels, sl + scw, st + sch, sr, sb);
+    nineslice_copy_scaled(target, x, y_dt_dch, dl, db, source, 0, st + sch, sl, sb);
+    nineslice_copy_scaled(target, x_dl, y_dt_dch, dcw, db, source, sl, st + sch, scw, sb);
+    nineslice_copy_scaled(target, x_dl_dcw, y_dt_dch, dr, db, source, sl + scw, st + sch, sr, sb);
+    rt2d_release_ref_slot(&source_snapshot);
 }
 
 //=============================================================================
@@ -630,7 +683,7 @@ void rt_nineslice2d_draw_to_pixels(
 /// @param obj Opaque finalizing object expected to be a DebugDraw2D instance;
 ///            invalid handles are ignored.
 static void debugdraw2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_DEBUGDRAW_CLASS_ID))
+    if (!rt2d_has_class_min(obj, RT2D_DEBUGDRAW_CLASS_ID, sizeof(rt_debugdraw2d_impl)))
         return;
     rt_debugdraw2d_impl *debug_draw = (rt_debugdraw2d_impl *)obj;
     free(debug_draw->cmds);
@@ -664,17 +717,17 @@ void *rt_debugdraw2d_new(int64_t capacity) {
 /// @param debug_draw Opaque DebugDraw2D handle to clear; invalid handles are
 ///                   ignored.
 void rt_debugdraw2d_clear(void *debug_draw) {
-    if (rt2d_has_class(debug_draw, RT2D_DEBUGDRAW_CLASS_ID))
-        ((rt_debugdraw2d_impl *)debug_draw)->count = 0;
+    rt_debugdraw2d_impl *impl = debugdraw2d_checked(debug_draw);
+    if (impl)
+        impl->count = 0;
 }
 
 /// @brief Return the number of commands currently queued.
 /// @param debug_draw Opaque DebugDraw2D handle to query.
 /// @return The logical command count, or `0` when @p debug_draw is invalid.
 int64_t rt_debugdraw2d_count(void *debug_draw) {
-    return rt2d_has_class(debug_draw, RT2D_DEBUGDRAW_CLASS_ID)
-               ? ((rt_debugdraw2d_impl *)debug_draw)->count
-               : 0;
+    rt_debugdraw2d_impl *impl = debugdraw2d_checked(debug_draw);
+    return impl ? impl->count : 0;
 }
 
 /// @brief Ensure the debug-draw command buffer has capacity for at least @p needed entries.
@@ -689,7 +742,10 @@ int64_t rt_debugdraw2d_count(void *debug_draw) {
 /// @return Nonzero for a null queue, sufficient existing capacity, or
 ///         successful growth; zero on overflow or allocation failure.
 static int32_t debugdraw2d_reserve(rt_debugdraw2d_impl *debug_draw, int64_t needed) {
-    if (!debug_draw || needed <= debug_draw->capacity)
+    if (!debug_draw || needed < 0 || debug_draw->capacity <= 0 || debug_draw->count < 0 ||
+        debug_draw->count > debug_draw->capacity || !debug_draw->cmds)
+        return 0;
+    if (needed <= debug_draw->capacity)
         return 1;
     int64_t cap = debug_draw->capacity > 0 ? debug_draw->capacity : RT2D_INITIAL_CAP;
     while (cap < needed) {
@@ -697,7 +753,8 @@ static int32_t debugdraw2d_reserve(rt_debugdraw2d_impl *debug_draw, int64_t need
             return 0;
         cap *= 2;
     }
-    if (cap > INT64_MAX / (int64_t)sizeof(rt_debugdraw2d_cmd))
+    if (cap > INT64_MAX / (int64_t)sizeof(rt_debugdraw2d_cmd) ||
+        (uint64_t)cap > (uint64_t)(SIZE_MAX / sizeof(rt_debugdraw2d_cmd)))
         return 0;
     rt_debugdraw2d_cmd *cmds =
         (rt_debugdraw2d_cmd *)realloc(debug_draw->cmds, (size_t)cap * sizeof(*cmds));
@@ -733,7 +790,7 @@ static void debugdraw2d_add(rt_debugdraw2d_impl *debug_draw,
                             int64_t rgba) {
     if (!debug_draw)
         return;
-    if (!debugdraw2d_reserve(debug_draw, debug_draw->count + 1)) {
+    if (debug_draw->count == INT64_MAX || !debugdraw2d_reserve(debug_draw, debug_draw->count + 1)) {
         rt_trap("DebugDraw2D: capacity overflow");
         return;
     }
@@ -757,9 +814,7 @@ static void debugdraw2d_add(rt_debugdraw2d_impl *debug_draw,
 /// @param rgba Packed RGB, packed RGBA, or tagged Color value.
 void rt_debugdraw2d_line(
     void *debug_draw, int64_t x0, int64_t y0, int64_t x1, int64_t y1, int64_t rgba) {
-    rt_debugdraw2d_impl *impl = rt2d_has_class(debug_draw, RT2D_DEBUGDRAW_CLASS_ID)
-                                    ? (rt_debugdraw2d_impl *)debug_draw
-                                    : NULL;
+    rt_debugdraw2d_impl *impl = debugdraw2d_checked(debug_draw);
     debugdraw2d_add(impl, 1, x0, y0, x1, y1, 0, rgba);
 }
 
@@ -773,9 +828,9 @@ void rt_debugdraw2d_line(
 /// @param rgba Packed RGB, packed RGBA, or tagged Color value.
 void rt_debugdraw2d_rect(
     void *debug_draw, int64_t x, int64_t y, int64_t width, int64_t height, int64_t rgba) {
-    rt_debugdraw2d_impl *impl = rt2d_has_class(debug_draw, RT2D_DEBUGDRAW_CLASS_ID)
-                                    ? (rt_debugdraw2d_impl *)debug_draw
-                                    : NULL;
+    rt_debugdraw2d_impl *impl = debugdraw2d_checked(debug_draw);
+    if (width <= 0 || height <= 0)
+        return;
     debugdraw2d_add(impl, 2, x, y, width, height, 0, rgba);
 }
 
@@ -787,9 +842,9 @@ void rt_debugdraw2d_rect(
 /// @param radius Circle radius stored without normalization.
 /// @param rgba Packed RGB, packed RGBA, or tagged Color value.
 void rt_debugdraw2d_circle(void *debug_draw, int64_t x, int64_t y, int64_t radius, int64_t rgba) {
-    rt_debugdraw2d_impl *impl = rt2d_has_class(debug_draw, RT2D_DEBUGDRAW_CLASS_ID)
-                                    ? (rt_debugdraw2d_impl *)debug_draw
-                                    : NULL;
+    rt_debugdraw2d_impl *impl = debugdraw2d_checked(debug_draw);
+    if (radius < 0)
+        return;
     debugdraw2d_add(impl, 3, x, y, 0, 0, radius, rgba);
 }
 
@@ -804,9 +859,7 @@ void rt_debugdraw2d_circle(void *debug_draw, int64_t x, int64_t y, int64_t radiu
 /// @param debug_draw Opaque DebugDraw2D handle containing the retained queue.
 /// @param pixels Borrowed destination Pixels handle modified in place.
 void rt_debugdraw2d_draw_to_pixels(void *debug_draw, void *pixels) {
-    rt_debugdraw2d_impl *impl = rt2d_has_class(debug_draw, RT2D_DEBUGDRAW_CLASS_ID)
-                                    ? (rt_debugdraw2d_impl *)debug_draw
-                                    : NULL;
+    rt_debugdraw2d_impl *impl = debugdraw2d_checked(debug_draw);
     if (!impl || !pixels)
         return;
     for (int64_t i = 0; i < impl->count; i++) {

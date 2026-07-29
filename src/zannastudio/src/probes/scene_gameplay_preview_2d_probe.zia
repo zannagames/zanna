@@ -37,6 +37,7 @@ bind "../core/project_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_component_schema";
+bind "../ui/scene_component_schema_forms_model";
 bind "../ui/scene_editor_2d";
 bind "../ui/scene_panels_2d";
 
@@ -196,7 +197,9 @@ func VerifyProjectPreviewSetup(
     }
     if editor.componentSchema == null
        or editor.componentSchema.valid == false
-       or editor.componentSchema.version != 13
+       or editor.componentSchema.version
+          != scene_component_schema_forms_model
+              .SCENE_SETTINGS_SCHEMA_VERSION
        or enemyRecipe == null
        or enemyRecipe.createObjectType != "enemy"
        or enemyRecipe.CanCreateFor(

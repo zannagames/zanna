@@ -188,6 +188,9 @@ static const float metal_skybox_vertices[] = {
 static const uint64_t k_texture_cache_max_age = 240u;
 static const uint64_t k_cubemap_cache_max_age = 240u;
 static const uint64_t k_morph_cache_max_age = 240u;
+static const NSUInteger k_texture_cache_max_entries = 256u;
+static const NSUInteger k_cubemap_cache_max_entries = 64u;
+static const NSUInteger k_morph_cache_max_entries = 64u;
 
 static int metal_copy_texture_to_rgba(VGFXMetalContext *ctx,
                                       id<MTLTexture> tex,
@@ -310,7 +313,7 @@ static id<MTLTexture> metal_new_color_texture(VGFXMetalContext *ctx,
                                               MTLStorageMode storage_mode,
                                               BOOL mipmapped) {
     MTLTextureDescriptor *td;
-    if (!ctx || !ctx.device || w <= 0 || h <= 0)
+    if (!ctx || !ctx.device || !vgfx3d_metal_is_valid_texture2d_extent(w, h))
         return nil;
     td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:pixel_format
                                                             width:(NSUInteger)w
@@ -332,7 +335,7 @@ static id<MTLTexture> metal_new_depth_texture(VGFXMetalContext *ctx,
                                               int32_t h,
                                               MTLTextureUsage usage) {
     MTLTextureDescriptor *td;
-    if (!ctx || !ctx.device || w <= 0 || h <= 0)
+    if (!ctx || !ctx.device || !vgfx3d_metal_is_valid_texture2d_extent(w, h))
         return nil;
     td = [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
                                                             width:(NSUInteger)w
@@ -350,21 +353,25 @@ static id<MTLTexture> metal_new_depth_texture(VGFXMetalContext *ctx,
 ///   thread/GPU round trip and causes persistent frame hitches when content streams in.
 /// @param ctx Borrowed Metal context providing the serial command queue.
 /// @param texture Borrowed mipmapped texture whose lower levels are generated.
-static void metal_generate_mipmaps(VGFXMetalContext *ctx, id<MTLTexture> texture) {
+/// @return YES when no generation is needed or the blit was committed, otherwise NO.
+static BOOL metal_generate_mipmaps(VGFXMetalContext *ctx, id<MTLTexture> texture) {
     id<MTLCommandBuffer> cmd_buf;
     id<MTLBlitCommandEncoder> blit;
 
-    if (!ctx || !texture || texture.mipmapLevelCount <= 1)
-        return;
+    if (!ctx || !texture)
+        return NO;
+    if (texture.mipmapLevelCount <= 1)
+        return YES;
     cmd_buf = [ctx.commandQueue commandBuffer];
     if (!cmd_buf)
-        return;
+        return NO;
     blit = [cmd_buf blitCommandEncoder];
     if (!blit)
-        return;
+        return NO;
     [blit generateMipmapsForTexture:texture];
     [blit endEncoding];
     [cmd_buf commit];
+    return YES;
 }
 
 /// @brief Evict texture-cache entries that are empty or older than the max-age threshold.
@@ -825,7 +832,7 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
     id<MTLTexture> new_taa_history_b = nil;
     NSMutableArray<id<MTLTexture>> *new_bloom_mips = nil;
 
-    if (!ctx || w <= 0 || h <= 0)
+    if (!ctx || !vgfx3d_metal_is_valid_texture2d_extent(w, h))
         return 0;
 
     scene_route = metal_window_scene_route_enabled(ctx);
@@ -922,8 +929,9 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
                 mw /= 2;
                 mh /= 2;
             }
-            if (mips.count > 0)
-                new_bloom_mips = mips;
+            if (mips.count == 0)
+                return 0;
+            new_bloom_mips = mips;
         }
         /* Plan 05: TAA ping-pong history (RGBA16F, persisted across frames). */
         if (ctx.gpuPostfxEnabled && ctx.taaResolvePipeline) {
@@ -945,8 +953,7 @@ static int metal_recreate_main_targets(VGFXMetalContext *ctx, int32_t w, int32_t
                                         MTLStorageModePrivate,
                                         NO);
             if (!new_taa_history_a || !new_taa_history_b) {
-                new_taa_history_a = nil;
-                new_taa_history_b = nil;
+                return 0;
             }
         }
     } else {

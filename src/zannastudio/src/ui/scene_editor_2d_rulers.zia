@@ -429,13 +429,7 @@ class SceneEditor2DRulersLayer extends PreviousLayer.SceneEditor2DCanvasCameraLa
     hide override func RefreshRulerPresentation() {
         var rulersVisible = showRulers and gameViewActive == false;
         if rulersButton != null {
-            if showRulers {
-                rulersButton.SetText("Rulers: on");
-                rulersButton.SetStyle(1);
-            } else {
-                rulersButton.SetText("Rulers");
-                rulersButton.SetStyle(0);
-            }
+            rulersButton.SetToggled(showRulers);
         }
         if rulerTopRow != null { rulerTopRow.SetVisible(rulersVisible); }
         if verticalRulerImage != null {

@@ -3310,3 +3310,17 @@ void rt_rendertarget3d_copy_to(void *o, void *a1) {
     (void)a1;
     RT_GRAPHICS_TRAP_VOID("RenderTarget3D.CopyTo: graphics support not compiled in");
 }
+
+/// @brief Truthful stub for the non-trapping RGBA readback (graphics-disabled build).
+/// @param o Source RenderTarget3D handle (ignored).
+/// @param dst Destination buffer (ignored).
+/// @param width Expected width (ignored).
+/// @param height Expected height (ignored).
+/// @return Always 0: no frame is readable without graphics support.
+int rt_rendertarget3d_try_read_rgba(void *o, uint8_t *dst, int64_t width, int64_t height) {
+    (void)o;
+    (void)dst;
+    (void)width;
+    (void)height;
+    return 0;
+}

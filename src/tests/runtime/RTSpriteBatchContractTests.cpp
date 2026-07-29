@@ -4,12 +4,31 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/tests/runtime/RTSpriteBatchContractTests.cpp
+// Purpose: Isolated SpriteBatch ordering, transform, clipping, and arithmetic
+//   correctness contracts with fake runtime objects and drawing backends.
+//
+// Key invariants:
+//   - Equal-depth commands preserve submission order.
+//   - Region clipping is identical before fast and transformed drawing paths.
+//   - Full-range scales, rotations, and destination coordinates are handled
+//     without floating-point precision loss or signed overflow.
+//
+// Ownership/Lifetime:
+//   - Fake runtime object allocations are process-local test fixtures.
+//
+// Links: src/runtime/graphics/2d/rt_spritebatch.c,
+//        src/runtime/graphics/2d/rt_spritebatch.h
+//
+//===----------------------------------------------------------------------===//
 
 extern "C" {
 #include "rt_spritebatch.h"
 }
 
 #include <cassert>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -35,6 +54,10 @@ struct DrawCall {
     int64_t pixels_id;
     int64_t x;
     int64_t y;
+    int64_t sx;
+    int64_t sy;
+    int64_t w;
+    int64_t h;
 };
 
 DrawCall g_alpha_calls[16];
@@ -43,6 +66,13 @@ int g_alpha_call_count = 0;
 int g_region_call_count = 0;
 int g_tint_call_count = 0;
 int64_t g_last_tint = -2;
+int g_scale_call_count = 0;
+int64_t g_last_scale_width = 0;
+int64_t g_last_scale_height = 0;
+int g_rotate_call_count = 0;
+double g_last_rotation = -1.0;
+int64_t g_rotate_output_width = 0;
+int64_t g_rotate_output_height = 0;
 
 void reset_draw_calls() {
     std::memset(g_alpha_calls, 0, sizeof(g_alpha_calls));
@@ -51,6 +81,13 @@ void reset_draw_calls() {
     g_region_call_count = 0;
     g_tint_call_count = 0;
     g_last_tint = -2;
+    g_scale_call_count = 0;
+    g_last_scale_width = 0;
+    g_last_scale_height = 0;
+    g_rotate_call_count = 0;
+    g_last_rotation = -1.0;
+    g_rotate_output_width = 0;
+    g_rotate_output_height = 0;
 }
 
 } // namespace
@@ -121,11 +158,20 @@ extern "C" void *rt_pixels_new(int64_t width, int64_t height) {
 extern "C" void rt_pixels_copy(
     void *, int64_t, int64_t, void *, int64_t, int64_t, int64_t, int64_t) {}
 
-extern "C" void *rt_pixels_scale(void *pixels, int64_t, int64_t) {
+extern "C" void *rt_pixels_scale(void *pixels, int64_t width, int64_t height) {
+    g_scale_call_count++;
+    g_last_scale_width = width;
+    g_last_scale_height = height;
     return pixels;
 }
 
-extern "C" void *rt_pixels_rotate(void *pixels, double) {
+extern "C" void *rt_pixels_rotate(void *pixels, double rotation) {
+    g_rotate_call_count++;
+    g_last_rotation = rotation;
+    if (g_rotate_output_width > 0)
+        static_cast<StubPixels *>(pixels)->width = g_rotate_output_width;
+    if (g_rotate_output_height > 0)
+        static_cast<StubPixels *>(pixels)->height = g_rotate_output_height;
     return pixels;
 }
 
@@ -140,23 +186,31 @@ extern "C" int64_t rt_pixels_height(void *pixels) {
 extern "C" void rt_canvas_blit_alpha(void *canvas, int64_t x, int64_t y, void *pixels) {
     (void)canvas;
     assert(g_alpha_call_count < (int)(sizeof(g_alpha_calls) / sizeof(g_alpha_calls[0])));
-    g_alpha_calls[g_alpha_call_count++] = {static_cast<StubPixels *>(pixels)->id, x, y};
+    g_alpha_calls[g_alpha_call_count++] = {static_cast<StubPixels *>(pixels)->id, x, y, 0, 0, 0, 0};
 }
 
 extern "C" void rt_canvas_blit_region(
     void *canvas, int64_t x, int64_t y, void *pixels, int64_t, int64_t, int64_t, int64_t) {
     (void)canvas;
     assert(g_region_call_count < (int)(sizeof(g_region_calls) / sizeof(g_region_calls[0])));
-    g_region_calls[g_region_call_count++] = {static_cast<StubPixels *>(pixels)->id, x, y};
+    g_region_calls[g_region_call_count++] = {
+        static_cast<StubPixels *>(pixels)->id, x, y, 0, 0, 0, 0};
 }
 
-extern "C" void rt_canvas_blit_region_alpha(
-    void *canvas, int64_t x, int64_t y, void *pixels, int64_t, int64_t, int64_t, int64_t) {
+extern "C" void rt_canvas_blit_region_alpha(void *canvas,
+                                            int64_t x,
+                                            int64_t y,
+                                            void *pixels,
+                                            int64_t sx,
+                                            int64_t sy,
+                                            int64_t width,
+                                            int64_t height) {
     // The SpriteBatch region fast path now blends; record identically to the opaque
     // region blit so existing region-draw assertions still observe the call.
     (void)canvas;
     assert(g_region_call_count < (int)(sizeof(g_region_calls) / sizeof(g_region_calls[0])));
-    g_region_calls[g_region_call_count++] = {static_cast<StubPixels *>(pixels)->id, x, y};
+    g_region_calls[g_region_call_count++] = {
+        static_cast<StubPixels *>(pixels)->id, x, y, sx, sy, width, height};
 }
 
 extern "C" void rt_sprite_draw_transformed(
@@ -265,11 +319,89 @@ static void test_rotated_region_keeps_requested_top_left() {
     assert(g_alpha_calls[0].y == 200);
 }
 
+static void test_regions_are_source_clipped_before_queueing() {
+    StubPixels pixels{8, 6, 70};
+
+    void *batch = rt_spritebatch_new(0);
+    assert(batch != nullptr);
+    rt_spritebatch_begin(batch);
+    rt_spritebatch_draw_region_ex(batch, &pixels, 100, 200, -3, -2, 6, 5, 100, 100, 0, 0);
+    rt_spritebatch_draw_region_ex(batch, &pixels, 0, 0, 8, 0, 1, 1, 100, 100, 0, 0);
+    rt_spritebatch_draw_region_ex(batch, &pixels, 0, 0, 0, 0, 0, 1, 100, 100, 0, 0);
+    rt_spritebatch_draw_region_ex(batch, &pixels, 0, 0, INT64_MIN, 0, INT64_MAX, 1, 100, 100, 0, 0);
+    assert(rt_spritebatch_count(batch) == 1);
+
+    reset_draw_calls();
+    rt_spritebatch_end(batch, reinterpret_cast<void *>(1));
+
+    assert(g_region_call_count == 1);
+    assert(g_region_calls[0].x == 103);
+    assert(g_region_calls[0].y == 202);
+    assert(g_region_calls[0].sx == 0);
+    assert(g_region_calls[0].sy == 0);
+    assert(g_region_calls[0].w == 3);
+    assert(g_region_calls[0].h == 3);
+}
+
+static void test_full_range_scale_uses_exact_integer_arithmetic() {
+    StubPixels pixels{4, 1, 80};
+
+    void *batch = rt_spritebatch_new(0);
+    assert(batch != nullptr);
+    rt_spritebatch_begin(batch);
+    rt_spritebatch_draw_region_ex(batch, &pixels, 0, 0, 0, 0, 3, 1, INT64_MAX, 100, 0, 0);
+
+    reset_draw_calls();
+    rt_spritebatch_end(batch, reinterpret_cast<void *>(1));
+
+    assert(g_scale_call_count == 1);
+    assert(g_last_scale_width == INT64_C(276701161105643274));
+    assert(g_last_scale_height == 1);
+}
+
+static void test_full_range_rotation_is_canonicalized_before_double_conversion() {
+    StubPixels pixels{8, 8, 90};
+
+    void *batch = rt_spritebatch_new(0);
+    assert(batch != nullptr);
+    rt_spritebatch_begin(batch);
+    rt_spritebatch_draw_region_ex(batch, &pixels, 0, 0, 0, 0, 8, 8, 100, 100, INT64_MAX, 0);
+
+    reset_draw_calls();
+    rt_spritebatch_end(batch, reinterpret_cast<void *>(1));
+
+    assert(g_rotate_call_count == 1);
+    assert(g_last_rotation == 7.0);
+}
+
+static void test_rotation_recentering_saturates_extreme_destinations() {
+    StubPixels pixels{8, 8, 100};
+
+    void *batch = rt_spritebatch_new(0);
+    assert(batch != nullptr);
+    rt_spritebatch_begin(batch);
+    rt_spritebatch_draw_region_ex(
+        batch, &pixels, INT64_MAX, INT64_MIN, 0, 0, 8, 8, 100, 100, 90, 0);
+
+    reset_draw_calls();
+    g_rotate_output_width = 2;
+    g_rotate_output_height = 16;
+    rt_spritebatch_end(batch, reinterpret_cast<void *>(1));
+
+    assert(g_alpha_call_count == 1);
+    assert(g_alpha_calls[0].x == INT64_MAX);
+    assert(g_alpha_calls[0].y == INT64_MIN);
+}
+
 int main() {
     test_equal_depth_pixels_preserve_submission_order();
     test_depth_sort_preserves_submission_order_within_equal_depth();
     test_zero_tint_applies_black_and_negative_tint_disables_tint();
     test_rotated_region_keeps_requested_top_left();
+    test_regions_are_source_clipped_before_queueing();
+    test_full_range_scale_uses_exact_integer_arithmetic();
+    test_full_range_rotation_is_canonicalized_before_double_conversion();
+    test_rotation_recentering_saturates_extreme_destinations();
     std::printf("RTSpriteBatchContractTests passed.\n");
     return 0;
 }

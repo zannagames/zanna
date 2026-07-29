@@ -168,7 +168,11 @@ class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBake
                 else if maps > 1 {
                     summary = summary + "  •  " + maps + " maps";
                 }
-                materialLibraryList.AddItem(summary);
+                var libraryRow = materialLibraryList.AddItem(summary);
+                if libraryRow != null {
+                    materialLibraryList.ItemSetNamedIcon(
+                        libraryRow, "material");
+                }
                 index = index + 1;
             }
             materialLibraryStatus.SetText(

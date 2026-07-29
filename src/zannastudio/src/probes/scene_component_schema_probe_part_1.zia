@@ -132,7 +132,7 @@ expose func VerifyV1SchemaAndDefaults() -> Boolean {
         + "]}",
         "bad-default");
     var badVersion = scene_component_schema.ParseText(
-        "{\"version\":19,\"components\":[]}", "bad-version");
+        "{\"version\":20,\"components\":[]}", "bad-version");
     if duplicateName.valid or duplicateName.components.count() != 0
        or duplicateKey.valid or duplicateKey.components.count() != 0
        or badDefault.valid or badDefault.components.count() != 0

@@ -7,6 +7,13 @@
 //
 // File: src/tests/runtime/RTColorUtilsTests.cpp
 // Purpose: Tests for Zanna.Graphics.Color utility functions.
+// Key invariants:
+//   - Covers raw RGB and explicit-alpha tagged color representations.
+//   - Exercises boundary, malformed-string, and interpolation behavior.
+// Ownership/Lifetime:
+//   - Test-owned runtime strings are released after assertions where required.
+// Links: src/runtime/graphics/2d/rt_color.c,
+//        src/runtime/graphics/common/rt_graphics.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -122,6 +129,11 @@ static void test_get_hsl_components() {
     assert(rt_color_get_h(red) == 0);
     assert(rt_color_get_s(red) == 100);
     assert(rt_color_get_l(red) == 50);
+    assert(rt_color_get_s(rgb(255, 1, 1)) == 100);
+}
+
+static void test_from_hsl_preserves_fractional_channel_precision() {
+    assert(rt_color_from_hsl(210, 33, 47) == rgb(80, 119, 159));
 }
 
 static void test_lerp_midpoint() {
@@ -258,6 +270,7 @@ int main() {
     test_from_hsl_primary_red();
     test_from_hsl_wraps_large_hue();
     test_get_hsl_components();
+    test_from_hsl_preserves_fractional_channel_precision();
     test_lerp_midpoint();
     test_color_transforms_preserve_explicit_alpha();
     test_get_alpha_reports_stored_byte();

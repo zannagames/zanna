@@ -13,7 +13,7 @@
 /// coordinate scaling, clipping, color conversion, and checked arithmetic
 /// required by the split Canvas implementation units.
 ///
-// File: src/runtime/graphics/rt_graphics_internal.h
+// File: src/runtime/graphics/common/rt_graphics_internal.h
 // Purpose: Shared internal definitions for the rt_graphics subsystem. Provides
 //   the rt_canvas struct, the rt_pixels_impl forward declaration, common
 //   includes, and static helper functions used across rt_canvas.c,
@@ -89,6 +89,18 @@ static inline int64_t rtg_add_sat64(int64_t a, int64_t b) {
     return a + b;
 }
 
+/// @brief Saturating int64 subtraction for coordinate math.
+/// @param a Minuend.
+/// @param b Subtrahend.
+/// @return The mathematical difference clamped to the `int64_t` range.
+static inline int64_t rtg_sub_sat64(int64_t a, int64_t b) {
+    if (b > 0 && a < INT64_MIN + b)
+        return INT64_MIN;
+    if (b < 0 && a > INT64_MAX + b)
+        return INT64_MAX;
+    return a - b;
+}
+
 /// @brief Saturating subtract by a non-negative amount.
 /// @param a Minuend.
 /// @param b Non-negative amount to subtract; non-positive values leave @p a unchanged.
@@ -106,12 +118,24 @@ static inline int64_t rtg_sub_nonneg_sat64(int64_t a, int64_t b) {
 /// @param b Right operand.
 /// @return The mathematical product clamped to the `int64_t` range.
 static inline int64_t rtg_mul_sat64(int64_t a, int64_t b) {
-    long double value = (long double)a * (long double)b;
-    if (value >= (long double)INT64_MAX)
-        return INT64_MAX;
-    if (value <= (long double)INT64_MIN)
-        return INT64_MIN;
-    return (int64_t)value;
+    if (a == 0 || b == 0)
+        return 0;
+    if (a == -1)
+        return b == INT64_MIN ? INT64_MAX : -b;
+    if (b == -1)
+        return a == INT64_MIN ? INT64_MAX : -a;
+    if (a > 0) {
+        if (b > 0 && a > INT64_MAX / b)
+            return INT64_MAX;
+        if (b < 0 && b < INT64_MIN / a)
+            return INT64_MIN;
+    } else {
+        if (b > 0 && a < INT64_MIN / b)
+            return INT64_MIN;
+        if (b < 0 && a < INT64_MAX / b)
+            return INT64_MAX;
+    }
+    return a * b;
 }
 
 /// @brief Clamp an int64 to the int32 range accepted by ZannaGFX.
@@ -230,6 +254,7 @@ static inline int64_t rtg_sin_deg_fp(int64_t deg) {
 /// @param deg Angle in degrees; values wrap modulo 360.
 /// @return cos(deg) * 1024 for fixed-point precision.
 static inline int64_t rtg_cos_deg_fp(int64_t deg) {
+    deg %= 360;
     return rtg_sin_deg_fp(deg + 90);
 }
 
@@ -246,16 +271,15 @@ static inline void rtg_rgb_to_hsl(
     int64_t min_c = (r < g) ? (r < b ? r : b) : (g < b ? g : b);
     int64_t delta = max_c - min_c;
 
-    *l = (max_c + min_c) * 100 / 510;
+    int64_t sum = max_c + min_c;
+    *l = sum * 100 / 510;
 
     if (delta == 0) {
         *h = 0;
         *s = 0;
     } else {
-        if (*l <= 50)
-            *s = delta * 100 / (max_c + min_c);
-        else
-            *s = delta * 100 / (510 - max_c - min_c);
+        int64_t saturation_denominator = sum <= 255 ? sum : 510 - sum;
+        *s = saturation_denominator > 0 ? delta * 100 / saturation_denominator : 0;
 
         if (max_c == r)
             *h = ((g - b) * 60 / delta + 360) % 360;
@@ -273,7 +297,7 @@ static inline void rtg_rgb_to_hsl(
 /// @param p Lower intermediate HSL channel value.
 /// @param q Upper intermediate HSL channel value.
 /// @param t Hue offset in degrees; wraps modulo 360.
-/// @return Interpolated channel value in the helper's 0..100 scale.
+/// @return Interpolated channel value in the helper's 0..10000 scale.
 static inline int64_t rtg_hue_to_rgb_helper(int64_t p, int64_t q, int64_t t) {
     t %= 360;
     if (t < 0)
@@ -301,12 +325,15 @@ static inline void rtg_hsl_to_rgb(
         return;
     }
 
-    int64_t q = (l < 50) ? (l * (100 + s) / 100) : (l + s - l * s / 100);
-    int64_t p = 2 * l - q;
+    /* Keep two decimal places of percentage precision through q/p and hue
+     * interpolation. The prior 0..100 intermediates quantized channels before
+     * their final 8-bit conversion. */
+    int64_t q = (l < 50) ? l * (100 + s) : l * 100 + s * 100 - l * s;
+    int64_t p = 2 * l * 100 - q;
 
-    *r = rtg_hue_to_rgb_helper(p, q, h + 120) * 255 / 100;
-    *g = rtg_hue_to_rgb_helper(p, q, h) * 255 / 100;
-    *b = rtg_hue_to_rgb_helper(p, q, h - 120) * 255 / 100;
+    *r = rtg_hue_to_rgb_helper(p, q, h + 120) * 255 / 10000;
+    *g = rtg_hue_to_rgb_helper(p, q, h) * 255 / 10000;
+    *b = rtg_hue_to_rgb_helper(p, q, h - 120) * 255 / 10000;
 
     if (*r < 0)
         *r = 0;
@@ -331,6 +358,18 @@ static inline void rtg_hsl_to_rgb(
 #include "rt_pixels.h"
 
 #include "vgfx.h"
+
+/// @brief Validate a direct-access RGBA framebuffer descriptor.
+/// @details Rejects missing storage, non-positive extents, and inconsistent
+///          strides before runtime drawing code performs pointer arithmetic.
+/// @param fb Borrowed descriptor returned by `vgfx_get_framebuffer`.
+/// @return Non-zero when every addressable row has exactly `width * 4` bytes.
+static inline int8_t rtg_framebuffer_is_valid(const vgfx_framebuffer_t *fb) {
+    if (!fb || !fb->pixels || fb->width <= 0 || fb->height <= 0)
+        return 0;
+    int64_t required_stride = (int64_t)fb->width * 4;
+    return required_stride <= INT32_MAX && fb->stride == (int32_t)required_stride;
+}
 
 /* Internal input teardown helpers used by canvas lifecycle code. */
 /// @brief Drop any keyboard-input state bound to @p canvas if it is the
@@ -367,6 +406,13 @@ typedef struct {
     int64_t clip_w;          ///< Logical clip width
     int64_t clip_h;          ///< Logical clip height
     int8_t relative_mouse_applied; ///< Relative (raw) mouse mode currently applied to the window
+    int8_t window_state_synced;    ///< Cached scale/clip state has been applied to gfx_win
+    int8_t applied_clip_enabled;   ///< Clip-enabled value last applied to gfx_win
+    float applied_coord_scale;     ///< Coordinate scale last applied to gfx_win
+    int64_t applied_clip_x;        ///< Logical clip X last applied to gfx_win
+    int64_t applied_clip_y;        ///< Logical clip Y last applied to gfx_win
+    int64_t applied_clip_w;        ///< Logical clip width last applied to gfx_win
+    int64_t applied_clip_h;        ///< Logical clip height last applied to gfx_win
 } rt_canvas;
 
 /// @brief Safely down-cast an opaque pointer to rt_canvas.
@@ -385,20 +431,26 @@ static inline rt_canvas *rt_canvas_checked(void *canvas_ptr) {
 
 #define RT_COLOR_EXPLICIT_ALPHA_FLAG ((int64_t)1 << 56)
 
-/// @brief Clamp a HiDPI scale factor to a sane minimum of 1.0.
-/// @details Guards against zero/negative/NaN-ish scales reported by a window
-///          backend, which would otherwise blow up logical<->physical math.
+/// @brief Clamp a HiDPI scale factor to the sane range 1.0 through 16.0.
+/// @details Guards against zero, negative, non-finite, and absurd scales
+///          reported by a window backend, which would otherwise blow up
+///          logical-to-physical math.
 /// @param scale Backend-reported scale factor.
-/// @return @p scale when it is at least `1.0`; otherwise `1.0`.
+/// @return Finite @p scale clamped to `[1.0, 16.0]`.
 static inline float rtg_sanitize_scale(float scale) {
-    return scale >= 1.0f ? scale : 1.0f;
+    if (!isfinite((double)scale) || scale < 1.0f)
+        return 1.0f;
+    return scale > 16.0f ? 16.0f : scale;
 }
 
-/// @brief Round a double to the nearest int64 (half away from zero), saturating
-///        at the int64 range to avoid UB on overflow.
+/// @brief Round a double to the nearest int64 (half away from zero).
+/// @details Finite out-of-range values saturate; NaN maps to zero so conversion
+///          never invokes undefined floating-to-integer behavior.
 /// @param value Floating-point value to convert.
 /// @return The rounded value saturated to the `int64_t` range.
 static inline int64_t rtg_round_scaled(double value) {
+    if (isnan(value))
+        return 0;
     if (value >= (double)INT64_MAX)
         return INT64_MAX;
     if (value <= (double)INT64_MIN)
@@ -459,25 +511,42 @@ static inline float rt_canvas_effective_coord_scale(rt_canvas *canvas) {
 
 /// @brief Push the canvas's logical coordinate scale and clip rect into the
 ///        underlying ZannaGFX window.
-/// @details Re-reads the window HiDPI scale, applies it as the coord scale, and
-///          either sets or clears the GFX clip rectangle to mirror the canvas's
-///          logical clip state. No-op when the canvas has no window.
+/// @details Re-reads the window HiDPI scale and applies coordinate-scale/clip
+///          changes only when they differ from the cached backend state. Scale
+///          changes force clip reapplication because the backend stores the
+///          corresponding physical bounds. No-op when the canvas has no window.
 /// @param canvas Canvas whose scale and clip state are synchronized.
 static inline void rt_canvas_resync_window_state(rt_canvas *canvas) {
     if (!canvas || !canvas->gfx_win)
         return;
 
     float scale = rt_canvas_effective_coord_scale(canvas);
-    vgfx_set_coord_scale(canvas->gfx_win, scale);
-    if (canvas->clip_enabled) {
-        vgfx_set_clip(canvas->gfx_win,
-                      rtg_clamp_i64_to_i32(canvas->clip_x),
-                      rtg_clamp_i64_to_i32(canvas->clip_y),
-                      rtg_clamp_i64_to_i32(canvas->clip_w),
-                      rtg_clamp_i64_to_i32(canvas->clip_h));
-    } else {
-        vgfx_clear_clip(canvas->gfx_win);
+    int8_t scale_changed = !canvas->window_state_synced || scale != canvas->applied_coord_scale;
+    int8_t clip_changed =
+        scale_changed || canvas->clip_enabled != canvas->applied_clip_enabled ||
+        (canvas->clip_enabled &&
+         (canvas->clip_x != canvas->applied_clip_x || canvas->clip_y != canvas->applied_clip_y ||
+          canvas->clip_w != canvas->applied_clip_w || canvas->clip_h != canvas->applied_clip_h));
+    if (scale_changed)
+        vgfx_set_coord_scale(canvas->gfx_win, scale);
+    if (clip_changed) {
+        if (canvas->clip_enabled) {
+            vgfx_set_clip(canvas->gfx_win,
+                          rtg_clamp_i64_to_i32(canvas->clip_x),
+                          rtg_clamp_i64_to_i32(canvas->clip_y),
+                          rtg_clamp_i64_to_i32(canvas->clip_w),
+                          rtg_clamp_i64_to_i32(canvas->clip_h));
+        } else {
+            vgfx_clear_clip(canvas->gfx_win);
+        }
     }
+    canvas->applied_coord_scale = scale;
+    canvas->applied_clip_enabled = canvas->clip_enabled;
+    canvas->applied_clip_x = canvas->clip_x;
+    canvas->applied_clip_y = canvas->clip_y;
+    canvas->applied_clip_w = canvas->clip_w;
+    canvas->applied_clip_h = canvas->clip_h;
+    canvas->window_state_synced = 1;
 }
 
 /// @brief Compute the effective logical clip rectangle for a canvas.

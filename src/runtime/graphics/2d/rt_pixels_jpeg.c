@@ -115,9 +115,9 @@ typedef struct {
     int32_t qt[4][64];
     int qt_valid[4];
 
-    // Huffman tables (DC: 0-1, AC: 2-3)
-    jpeg_huff_t huff[4];
-    int huff_valid[4];
+    // Huffman tables (DC: 0-3, AC: 4-7)
+    jpeg_huff_t huff[8];
+    int huff_valid[8];
 
     // SOS component mapping
     uint8_t scan_comp_count;
@@ -326,7 +326,9 @@ static int jpeg_build_huff(jpeg_huff_t *h) {
         code = (code + h->bits[i]) << 1;
     }
     h->maxcode[17] = 0x7FFFFFFF;
-    return si > 0;
+    /* At least one code must remain unused so an all-ones entropy padding
+     * suffix cannot be decoded as a symbol. */
+    return si > 0 && space > 0;
 }
 
 /// @brief Decode one canonical Huffman symbol from the entropy bitstream.
@@ -431,6 +433,8 @@ static int jpeg_decode_block(jpeg_ctx_t *ctx,
             if (rrrr == 0)
                 break; // EOB
             if (rrrr == 15) {
+                if (k > 48)
+                    return -1;
                 k += 15; // ZRL: skip 16 zeros
                 continue;
             }
@@ -462,8 +466,6 @@ static int jpeg_decode_block(jpeg_ctx_t *ctx,
 // 1D IDCT in 32-bit integers without overflow. The full 8×8 IDCT
 // is `jpeg_idct_block` which calls `_row` × 8 then `_col` × 8.
 // ---------------------------------------------------------------------------
-/// Fixed-point unit at twelve fractional bits.
-#define JPEG_FIX_1 4096
 /// Convert a positive floating-point IDCT constant to 12-bit fixed point.
 /// @param x Compile-time coefficient.
 /// @return Rounded signed 32-bit fixed-point coefficient.
@@ -477,12 +479,18 @@ static int jpeg_decode_block(jpeg_ctx_t *ctx,
 /// @param shift Number of fractional bits to remove.
 /// @return Rounded integer value after descaling.
 static int64_t jpeg_descale_i64(int64_t value, int shift) {
-    int64_t bias = INT64_C(1) << (shift - 1);
-    if (value == INT64_MIN)
-        return -((INT64_MAX >> shift) + 1);
-    if (value < 0)
-        return -(((-value) + bias) >> shift);
-    return (value + bias) >> shift;
+    if (shift <= 0 || shift >= 63)
+        return value;
+    uint64_t magnitude = value < 0 ? UINT64_C(0) - (uint64_t)value : (uint64_t)value;
+    uint64_t quotient = magnitude >> (unsigned)shift;
+    uint64_t remainder_mask = (UINT64_C(1) << (unsigned)shift) - 1u;
+    if ((magnitude & remainder_mask) >= (UINT64_C(1) << (unsigned)(shift - 1)))
+        quotient++;
+    if (value >= 0)
+        return quotient > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)quotient;
+    if (quotient == (UINT64_C(1) << 63))
+        return INT64_MIN;
+    return -(int64_t)quotient;
 }
 
 /// @brief Saturate a 64-bit IDCT workspace value to int32_t.
@@ -619,7 +627,7 @@ static void jpeg_idct_block(const int32_t block[64], uint8_t out[64]) {
 
     // Level shift (+128) and clamp to [0, 255]
     for (int i = 0; i < 64; i++) {
-        int val = (int)workspace[i] + 128;
+        int64_t val = (int64_t)workspace[i] + 128;
         if (val < 0)
             val = 0;
         if (val > 255)
@@ -638,6 +646,17 @@ static uint8_t jpeg_clamp(int val) {
     if (val > 255)
         return 255;
     return (uint8_t)val;
+}
+
+/// @brief Divide a signed color numerator by 256 with symmetric rounding.
+/// @details Avoids implementation-defined right shifts of negative signed
+///          integers and the negative-side bias of a blanket positive offset.
+/// @param value Bounded signed conversion numerator.
+/// @return Nearest integer, with exact halves rounded away from zero.
+static int jpeg_round_div_256(int value) {
+    if (value < 0)
+        return -((-value + 128) / 256);
+    return (value + 128) / 256;
 }
 
 /// @brief Validate RGBA dimensions and compute their bounded pixel count.
@@ -664,7 +683,7 @@ static int jpeg_rgba_pixel_count_checked(int64_t width, int64_t height, size_t *
     return 1;
 }
 
-/// @brief Allocate zero-filled raw RGBA storage for bounded dimensions.
+/// @brief Allocate raw RGBA storage for bounded dimensions.
 /// @param width Positive decoded width.
 /// @param height Positive decoded height.
 /// @return A malloc-owned `width * height` array, or null for invalid
@@ -675,21 +694,20 @@ static uint32_t *jpeg_rgba_alloc(int64_t width, int64_t height) {
         return NULL;
     if (count > SIZE_MAX / sizeof(uint32_t))
         return NULL;
-    return (uint32_t *)calloc(count, sizeof(uint32_t));
+    return (uint32_t *)malloc(count * sizeof(uint32_t));
 }
 
 /// @brief Apply an EXIF orientation transform to malloc-owned RGBA storage.
-/// @details Orientations 2 through 8 allocate a correctly dimensioned
-///          replacement, remap every source pixel, free the original, and
-///          publish the new pointer and dimensions atomically after success.
-///          Missing storage, invalid output pointers, orientation 1, and
-///          out-of-range orientation values are treated as unchanged success.
+/// @details Mirror and 180-degree transforms (2 through 4) run in place.
+///          Axis-swapping transforms (5 through 8) allocate a correctly
+///          dimensioned replacement and publish it atomically after success.
+///          Orientation 1 and out-of-range values are unchanged success.
 /// @param pixels In/out pointer to malloc-owned raw RGBA storage.
 /// @param width In/out image width.
 /// @param height In/out image height.
 /// @param orientation EXIF orientation value.
-/// @return Nonzero when no transform is needed or replacement succeeds; zero
-///         only when required replacement allocation fails.
+/// @return Nonzero when no transform is needed or the transform succeeds; zero
+///         for invalid storage/dimensions or replacement allocation failure.
 static int jpeg_rgba_apply_orientation(uint32_t **pixels,
                                        int64_t *width,
                                        int64_t *height,
@@ -700,11 +718,47 @@ static int jpeg_rgba_apply_orientation(uint32_t **pixels,
     int64_t src_h;
     int64_t dst_w;
     int64_t dst_h;
-    if (!pixels || !*pixels || !width || !height || orientation <= 1 || orientation > 8)
+    size_t src_count;
+    if (!pixels || !*pixels || !width || !height || *width <= 0 || *height <= 0)
+        return 0;
+    if (orientation <= 1 || orientation > 8)
         return 1;
     src = *pixels;
     src_w = *width;
     src_h = *height;
+    if (!jpeg_rgba_pixel_count_checked(src_w, src_h, &src_count))
+        return 0;
+    if (orientation == 2) {
+        for (int64_t y = 0; y < src_h; ++y) {
+            uint32_t *row = src + (size_t)y * (size_t)src_w;
+            for (int64_t x = 0; x < src_w / 2; ++x) {
+                uint32_t tmp = row[x];
+                row[x] = row[src_w - 1 - x];
+                row[src_w - 1 - x] = tmp;
+            }
+        }
+        return 1;
+    }
+    if (orientation == 3) {
+        for (size_t i = 0; i < src_count / 2; ++i) {
+            uint32_t tmp = src[i];
+            src[i] = src[src_count - 1u - i];
+            src[src_count - 1u - i] = tmp;
+        }
+        return 1;
+    }
+    if (orientation == 4) {
+        for (int64_t y = 0; y < src_h / 2; ++y) {
+            uint32_t *top = src + (size_t)y * (size_t)src_w;
+            uint32_t *bottom = src + (size_t)(src_h - 1 - y) * (size_t)src_w;
+            for (int64_t x = 0; x < src_w; ++x) {
+                uint32_t tmp = top[x];
+                top[x] = bottom[x];
+                bottom[x] = tmp;
+            }
+        }
+        return 1;
+    }
     dst_w = (orientation >= 5) ? src_h : src_w;
     dst_h = (orientation >= 5) ? src_w : src_h;
     dst = jpeg_rgba_alloc(dst_w, dst_h);
@@ -790,33 +844,31 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
     jpeg_decode_status_t decode_status = JPEG_DECODE_STATUS_CORRUPT;
     if (out_status)
         *out_status = JPEG_DECODE_STATUS_CORRUPT;
-    if (!data || len < 2 || data[0] != 0xFF || data[1] != 0xD8)
-        return 0;
     if (!out_pixels || !out_width || !out_height)
-        return 0;
-    if (direct_pixels && (direct_width <= 0 || direct_height <= 0))
         return 0;
     *out_pixels = NULL;
     *out_width = 0;
     *out_height = 0;
-
-    /* jpeg_ctx_t.data is uint8_t* but we only read from it. Use memcpy
-     * to reinterpret the pointer without triggering -Wcast-qual. */
-    uint8_t *file_data;
-    memcpy(&file_data, &data, sizeof(file_data));
+    if (!data || len < 2 || data[0] != 0xFF || data[1] != 0xD8)
+        return 0;
+    if (direct_pixels && (direct_width <= 0 || direct_height <= 0))
+        return 0;
 
     jpeg_ctx_t ctx;
     memset(&ctx, 0, sizeof(ctx));
-    ctx.data = file_data;
+    ctx.data = data;
     ctx.len = len;
     ctx.pos = 2; // past SOI
 
     uint8_t **comp_data = NULL;
     int exif_orientation = 1; // default: no rotation
+    int exif_orientation_seen = 0;
+    int adobe_transform = -1;
     int64_t decoded_width = 0;
     int64_t decoded_height = 0;
     int saw_scan = 0;
     int saw_eoi = 0;
+    int saw_sof = 0;
 
     // Parse markers
     while (ctx.pos + 1 < ctx.len) {
@@ -843,9 +895,11 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
             break;
         }
 
-        // Markers without length
-        if (mk >= JPEG_RST0 && mk <= JPEG_RST0 + 7)
+        // TEM is the only lengthless marker legal between marker segments.
+        if (mk == 0xFF01u)
             continue;
+        if ((mk >= JPEG_RST0 && mk <= JPEG_RST0 + 7) || mk == JPEG_SOI)
+            goto jpeg_fail;
         if (jpeg_marker_is_unsupported_sof(mk)) {
             decode_status = JPEG_DECODE_STATUS_UNSUPPORTED;
             goto jpeg_fail;
@@ -878,7 +932,7 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
                         goto jpeg_fail;
                     for (int i = 0; i < 64; i++) {
                         int v = jpeg_read_u8(&ctx);
-                        if (v < 0)
+                        if (v <= 0)
                             goto jpeg_fail;
                         ctx.qt[table_id][jpeg_zigzag[i]] = v;
                     }
@@ -898,9 +952,9 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
                         goto jpeg_fail;
                     int table_class = (info >> 4) & 0x0F; // 0=DC, 1=AC
                     int table_id = info & 0x0F;
-                    if (table_class > 1 || table_id > 1)
+                    if (table_class > 1 || table_id > 3)
                         goto jpeg_fail;
-                    int idx = table_class * 2 + table_id; // DC0, DC1, AC0, AC1
+                    int idx = table_class * 4 + table_id;
                     jpeg_huff_t *ht = &ctx.huff[idx];
                     int total = 0;
                     ht->bits[0] = 0;
@@ -936,8 +990,9 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
             }
             case JPEG_SOF0: {
                 // Baseline DCT
-                if (data_len < 6)
+                if (saw_sof || saw_scan || data_len < 6)
                     goto jpeg_fail;
+                saw_sof = 1;
                 int prec = jpeg_read_u8(&ctx);
                 if (prec != 8)
                     goto jpeg_fail; // Only 8-bit precision
@@ -950,11 +1005,15 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
                 ctx.width = (uint16_t)w;
                 ctx.height = (uint16_t)h;
                 int nf = jpeg_read_u8(&ctx);
-                if (nf != 1 && nf != 3)
+                if (nf != 1 && nf != 3) {
+                    if (nf > 0 && nf <= 4)
+                        decode_status = JPEG_DECODE_STATUS_UNSUPPORTED;
                     goto jpeg_fail;
+                }
                 if ((size_t)nf > (seg_end - ctx.pos) / 3)
                     goto jpeg_fail;
                 ctx.num_components = (uint8_t)nf;
+                int blocks_per_mcu = 0;
                 for (int i = 0; i < nf; i++) {
                     int comp_id = jpeg_read_u8(&ctx);
                     int samp = jpeg_read_u8(&ctx);
@@ -966,9 +1025,18 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
                     if (ctx.comp_h_samp[i] < 1 || ctx.comp_h_samp[i] > 4 ||
                         ctx.comp_v_samp[i] < 1 || ctx.comp_v_samp[i] > 4 || qt > 3)
                         goto jpeg_fail;
+                    for (int j = 0; j < i; j++) {
+                        if (ctx.comp_id[j] == (uint8_t)comp_id)
+                            goto jpeg_fail;
+                    }
+                    blocks_per_mcu += ctx.comp_h_samp[i] * ctx.comp_v_samp[i];
+                    if (blocks_per_mcu > 10)
+                        goto jpeg_fail;
                     ctx.comp_id[i] = (uint8_t)comp_id;
                     ctx.comp_qt[i] = (uint8_t)qt;
                 }
+                if (nf == 1 && (ctx.comp_h_samp[0] != 1 || ctx.comp_v_samp[0] != 1))
+                    goto jpeg_fail;
                 if (ctx.pos != seg_end)
                     goto jpeg_fail;
                 break;
@@ -1024,7 +1092,7 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
                     ctx.scan_comp_idx[i] = (uint8_t)ci;
                     int dc_table = (td_ta >> 4) & 0x0F;
                     int ac_table = td_ta & 0x0F;
-                    if (dc_table > 1 || ac_table > 1)
+                    if (dc_table > 3 || ac_table > 3)
                         goto jpeg_fail;
                     ctx.scan_dc_table[i] = (uint8_t)dc_table;
                     ctx.scan_ac_table[i] = (uint8_t)ac_table;
@@ -1071,7 +1139,7 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
                     int ch = mcus_y * ctx.comp_v_samp[i] * 8;
                     if (cw <= 0 || ch <= 0 || (size_t)cw > SIZE_MAX / (size_t)ch)
                         goto jpeg_fail;
-                    comp_data[i] = (uint8_t *)calloc((size_t)cw * (size_t)ch, 1);
+                    comp_data[i] = (uint8_t *)malloc((size_t)cw * (size_t)ch);
                     if (!comp_data[i])
                         goto jpeg_fail;
                 }
@@ -1101,9 +1169,9 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
                             int v_samp = ctx.comp_v_samp[ci];
                             int qt_idx = ctx.comp_qt[ci];
                             int dc_idx = ctx.scan_dc_table[si];
-                            int ac_idx = ctx.scan_ac_table[si] + 2;
+                            int ac_idx = ctx.scan_ac_table[si] + 4;
 
-                            if (qt_idx >= 4 || dc_idx >= 2 || ac_idx >= 4 ||
+                            if (qt_idx >= 4 || dc_idx >= 4 || ac_idx >= 8 ||
                                 !ctx.qt_valid[qt_idx] || !ctx.huff_valid[dc_idx] ||
                                 !ctx.huff_valid[ac_idx])
                                 goto jpeg_fail;
@@ -1137,9 +1205,56 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
                     }
                 }
 
+                if (ctx.bits_left < 0 || ctx.bits_left > 7)
+                    goto jpeg_fail;
+                if (ctx.bits_left > 0) {
+                    uint32_t pad_mask = (UINT32_C(1) << (unsigned)ctx.bits_left) - 1u;
+                    if ((ctx.bitbuf & pad_mask) != pad_mask)
+                        goto jpeg_fail;
+                }
+                ctx.bits_left = 0;
+                ctx.bitbuf = 0;
+
                 // Convert component buffers to RGBA pixels
                 decoded_width = (int64_t)ctx.width;
                 decoded_height = (int64_t)ctx.height;
+                int y_ci = 0;
+                int cb_ci = 1;
+                int cr_ci = 2;
+                if (ctx.num_components == 3) {
+                    int id_y = -1;
+                    int id_cb = -1;
+                    int id_cr = -1;
+                    int id_r = -1;
+                    int id_g = -1;
+                    int id_b = -1;
+                    for (int i = 0; i < 3; ++i) {
+                        if (ctx.comp_id[i] == 1)
+                            id_y = i;
+                        else if (ctx.comp_id[i] == 2)
+                            id_cb = i;
+                        else if (ctx.comp_id[i] == 3)
+                            id_cr = i;
+                        if (ctx.comp_id[i] == (uint8_t)'R')
+                            id_r = i;
+                        else if (ctx.comp_id[i] == (uint8_t)'G')
+                            id_g = i;
+                        else if (ctx.comp_id[i] == (uint8_t)'B')
+                            id_b = i;
+                    }
+                    if (id_y >= 0 && id_cb >= 0 && id_cr >= 0) {
+                        y_ci = id_y;
+                        cb_ci = id_cb;
+                        cr_ci = id_cr;
+                    }
+                    if (adobe_transform > 2)
+                        goto jpeg_fail;
+                    if ((id_r >= 0 && id_g >= 0 && id_b >= 0) ||
+                        (adobe_transform >= 0 && adobe_transform != 1)) {
+                        decode_status = JPEG_DECODE_STATUS_UNSUPPORTED;
+                        goto jpeg_fail;
+                    }
+                }
                 if (direct_pixels) {
                     if (direct_width != decoded_width || direct_height != decoded_height)
                         goto jpeg_fail;
@@ -1169,35 +1284,37 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
                     }
                 } else if (ctx.num_components == 3) {
                     // YCbCr -> RGB with chroma upsampling
-                    int y_stride = mcus_x * ctx.comp_h_samp[0] * 8;
-                    int cb_stride = mcus_x * ctx.comp_h_samp[1] * 8;
-                    int cr_stride = mcus_x * ctx.comp_h_samp[2] * 8;
-                    if (ctx.comp_h_samp[1] == 0 || ctx.comp_v_samp[1] == 0 ||
-                        ctx.comp_h_samp[2] == 0 || ctx.comp_v_samp[2] == 0 ||
-                        max_h % ctx.comp_h_samp[1] != 0 || max_v % ctx.comp_v_samp[1] != 0 ||
-                        max_h % ctx.comp_h_samp[2] != 0 || max_v % ctx.comp_v_samp[2] != 0)
+                    int y_stride = mcus_x * ctx.comp_h_samp[y_ci] * 8;
+                    int cb_stride = mcus_x * ctx.comp_h_samp[cb_ci] * 8;
+                    int cr_stride = mcus_x * ctx.comp_h_samp[cr_ci] * 8;
+                    if (max_h % ctx.comp_h_samp[y_ci] != 0 || max_v % ctx.comp_v_samp[y_ci] != 0 ||
+                        max_h % ctx.comp_h_samp[cb_ci] != 0 ||
+                        max_v % ctx.comp_v_samp[cb_ci] != 0 ||
+                        max_h % ctx.comp_h_samp[cr_ci] != 0 || max_v % ctx.comp_v_samp[cr_ci] != 0)
                         goto jpeg_fail;
-                    int h_ratio = max_h / ctx.comp_h_samp[1]; // chroma upsample factor
-                    int v_ratio = max_v / ctx.comp_v_samp[1];
-                    int cr_h_ratio = max_h / ctx.comp_h_samp[2];
-                    int cr_v_ratio = max_v / ctx.comp_v_samp[2];
+                    int y_h_ratio = max_h / ctx.comp_h_samp[y_ci];
+                    int y_v_ratio = max_v / ctx.comp_v_samp[y_ci];
+                    int h_ratio = max_h / ctx.comp_h_samp[cb_ci];
+                    int v_ratio = max_v / ctx.comp_v_samp[cb_ci];
+                    int cr_h_ratio = max_h / ctx.comp_h_samp[cr_ci];
+                    int cr_v_ratio = max_v / ctx.comp_v_samp[cr_ci];
 
                     for (int y = 0; y < ctx.height; y++) {
                         for (int x = 0; x < ctx.width; x++) {
-                            int yy_val = comp_data[0][y * y_stride + x];
+                            int y_x = x / y_h_ratio;
+                            int y_y = y / y_v_ratio;
+                            int yy_val = comp_data[y_ci][y_y * y_stride + y_x];
                             int cb_x = x / h_ratio;
                             int cb_y = y / v_ratio;
                             int cr_x = x / cr_h_ratio;
                             int cr_y = y / cr_v_ratio;
-                            int cb_val = comp_data[1][cb_y * cb_stride + cb_x] - 128;
-                            int cr_val = comp_data[2][cr_y * cr_stride + cr_x] - 128;
+                            int cb_val = comp_data[cb_ci][cb_y * cb_stride + cb_x] - 128;
+                            int cr_val = comp_data[cr_ci][cr_y * cr_stride + cr_x] - 128;
 
                             // YCbCr -> RGB (ITU-R BT.601)
-                            /* +128 before the >>8 rounds to nearest instead of
-                             * truncating (removes the consistent ≤1-LSB downward bias). */
-                            int r = yy_val + ((cr_val * 359 + 128) >> 8);
-                            int g = yy_val - ((cb_val * 88 + cr_val * 183 + 128) >> 8);
-                            int b = yy_val + ((cb_val * 454 + 128) >> 8);
+                            int r = yy_val + jpeg_round_div_256(cr_val * 359);
+                            int g = yy_val - jpeg_round_div_256(cb_val * 88 + cr_val * 183);
+                            int b = yy_val + jpeg_round_div_256(cb_val * 454);
 
                             pixels[y * ctx.width + x] = ((uint32_t)jpeg_clamp(r) << 24) |
                                                         ((uint32_t)jpeg_clamp(g) << 16) |
@@ -1230,33 +1347,36 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
                         if (tiff_magic != 42u)
                             goto exif_done;
                         uint32_t ifd_off = jpeg_tiff_read_u32(tiff + 4, big);
-                        if (tiff_len >= 2u && ifd_off <= tiff_len - 2u) {
+                        if (ifd_off >= 8u && (ifd_off & 1u) == 0u && tiff_len >= 6u &&
+                            ifd_off <= tiff_len - 6u) {
                             uint16_t count = jpeg_tiff_read_u16(tiff + ifd_off, big);
-                            /* Bound the entry count to what the segment can actually hold: a
-                             * forged 16-bit count (up to 65535) would otherwise drive a long
-                             * pointer-arithmetic loop before the per-iteration bounds check below
-                             * breaks. No OOB risk either way — this is DoS-amplification hardening,
-                             * relevant on the MJPEG path where every AVI frame may carry EXIF. */
-                            size_t exif_max_entries = (tiff_len - ifd_off - 2u) / 12u;
+                            size_t entry_bytes = tiff_len - ifd_off - 2u - 4u;
+                            size_t exif_max_entries = entry_bytes / 12u;
                             if ((size_t)count > exif_max_entries)
-                                count = (uint16_t)exif_max_entries;
+                                goto exif_done;
                             for (int ei = 0; ei < count; ei++) {
                                 size_t entry = ifd_off + 2 + (size_t)ei * 12;
-                                if (entry > tiff_len || tiff_len - entry < 12u)
-                                    break;
                                 uint16_t tag = jpeg_tiff_read_u16(tiff + entry, big);
                                 if (tag == 0x0112) { // Orientation
                                     uint16_t field_type = jpeg_tiff_read_u16(tiff + entry + 2, big);
                                     uint32_t value_count =
                                         jpeg_tiff_read_u32(tiff + entry + 4, big);
-                                    if (field_type == 3u && value_count == 1u)
-                                        exif_orientation =
-                                            (int)jpeg_tiff_read_u16(tiff + entry + 8, big);
+                                    int value = (int)jpeg_tiff_read_u16(tiff + entry + 8, big);
+                                    if (!exif_orientation_seen && field_type == 3u &&
+                                        value_count == 1u && value >= 1 && value <= 8) {
+                                        exif_orientation = value;
+                                        exif_orientation_seen = 1;
+                                    }
                                     break;
                                 }
                             }
                         }
                     }
+                } else if (mk == 0xFFEE && data_len >= 12) {
+                    // Adobe APP14 color transform: this decoder supports YCbCr only.
+                    const uint8_t *app14 = ctx.data + seg_start;
+                    if (memcmp(app14, "Adobe", 5) == 0 && adobe_transform < 0)
+                        adobe_transform = (int)app14[11];
                 }
             exif_done:
                 ctx.pos = seg_end;
@@ -1266,6 +1386,20 @@ static int rt_jpeg_decode_buffer_rgba32_ex(const uint8_t *data,
 
     if (!saw_eoi)
         goto jpeg_fail;
+
+    if (ctx.num_components == 3 && adobe_transform > 2)
+        goto jpeg_fail;
+    if (ctx.num_components == 3 && adobe_transform >= 0 && adobe_transform != 1) {
+        decode_status = JPEG_DECODE_STATUS_UNSUPPORTED;
+        goto jpeg_fail;
+    }
+
+    /* APP1 is permitted after scan data, so a direct destination must also
+     * validate orientation after the complete marker stream is parsed. */
+    if (direct_pixels && exif_orientation > 1 && exif_orientation <= 8) {
+        decode_status = JPEG_DECODE_STATUS_UNSUPPORTED;
+        goto jpeg_fail;
+    }
 
     // Apply EXIF orientation transform without creating GC-managed Pixels.
     if (!direct_pixels && pixels &&
@@ -1407,8 +1541,8 @@ void *rt_pixels_load_jpeg(void *path) {
         return NULL;
     }
 
-    const char *filepath = rt_string_cstr((rt_string)path);
-    if (!filepath) {
+    const char *filepath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &filepath)) {
         rt_asset_error_end_load_failure();
         rt_trap("Pixels.LoadJpeg: invalid path");
         return NULL;

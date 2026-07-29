@@ -31,6 +31,213 @@
 static int gl_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *rt);
 static void bind_texture_unit(GLint uniform_loc, int unit, GLenum target, GLuint texture);
 
+/// @brief Validate a 2D allocation extent against the live OpenGL device limit.
+/// @param ctx Borrowed initialized context containing GL_MAX_TEXTURE_SIZE.
+/// @param width Requested positive texture width.
+/// @param height Requested positive texture height.
+/// @return Non-zero only when both dimensions are representable by the current device.
+static int gl_target_extent_is_valid(const gl_context_t *ctx, int32_t width, int32_t height) {
+    return ctx && width > 0 && height > 0 && ctx->max_texture_size > 0 &&
+           width <= ctx->max_texture_size && height <= ctx->max_texture_size;
+}
+
+typedef struct {
+    GLuint fbo;
+    GLuint color_tex;
+    GLuint motion_tex;
+    GLuint postfx_tex;
+    GLuint depth_tex;
+} gl_scene_target_set_t;
+
+/// @brief Delete every name in a detached scene-target candidate.
+/// @param set Mutable caller-owned name set, zeroed after release.
+static void gl_release_scene_target_set(gl_scene_target_set_t *set) {
+    if (!set)
+        return;
+    if (set->depth_tex)
+        gl.DeleteTextures(1, &set->depth_tex);
+    if (set->postfx_tex)
+        gl.DeleteTextures(1, &set->postfx_tex);
+    if (set->motion_tex)
+        gl.DeleteTextures(1, &set->motion_tex);
+    if (set->color_tex)
+        gl.DeleteTextures(1, &set->color_tex);
+    if (set->fbo)
+        gl.DeleteFramebuffers(1, &set->fbo);
+    memset(set, 0, sizeof(*set));
+}
+
+/// @brief Allocate and validate one detached scene-target set.
+/// @param ctx Borrowed context providing depth-format capabilities.
+/// @param width Validated texture width.
+/// @param height Validated texture height.
+/// @param hdr Non-zero to allocate float scene and post-effect color attachments.
+/// @param out_set Receives the complete candidate on success and remains empty on failure.
+/// @return Non-zero when every name exists and the framebuffer is complete.
+static int gl_build_scene_target_set(
+    gl_context_t *ctx, int32_t width, int32_t height, int hdr, gl_scene_target_set_t *out_set) {
+    gl_scene_target_set_t candidate = {0};
+    GLenum framebuffer_status;
+    int allocation_ok;
+    const GLint color_format = hdr ? GL_RGBA16F : GL_RGBA8;
+    const GLenum color_type = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
+    const GLint depth_format =
+        ctx->supports_depth_float_target ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24;
+    const GLenum depth_type = ctx->supports_depth_float_target ? GL_FLOAT : GL_UNSIGNED_INT;
+
+    if (!out_set)
+        return 0;
+    memset(out_set, 0, sizeof(*out_set));
+    gl.GenFramebuffers(1, &candidate.fbo);
+    gl.BindFramebuffer(GL_FRAMEBUFFER, candidate.fbo);
+
+    gl.GenTextures(1, &candidate.color_tex);
+    gl.BindTexture(GL_TEXTURE_2D, candidate.color_tex);
+    gl.TexImage2D(GL_TEXTURE_2D, 0, color_format, width, height, 0, GL_RGBA, color_type, NULL);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl.FramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, candidate.color_tex, 0);
+
+    gl.GenTextures(1, &candidate.motion_tex);
+    gl.BindTexture(GL_TEXTURE_2D, candidate.motion_tex);
+    gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, width, height, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl.FramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, candidate.motion_tex, 0);
+
+    gl.GenTextures(1, &candidate.postfx_tex);
+    gl.BindTexture(GL_TEXTURE_2D, candidate.postfx_tex);
+    gl.TexImage2D(GL_TEXTURE_2D, 0, color_format, width, height, 0, GL_RGBA, color_type, NULL);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl.FramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT2, GL_TEXTURE_2D, candidate.postfx_tex, 0);
+
+    gl.GenTextures(1, &candidate.depth_tex);
+    gl.BindTexture(GL_TEXTURE_2D, candidate.depth_tex);
+    gl.TexImage2D(
+        GL_TEXTURE_2D, 0, depth_format, width, height, 0, GL_DEPTH_COMPONENT, depth_type, NULL);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
+    gl.FramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, candidate.depth_tex, 0);
+    {
+        const GLenum attachments[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
+        gl.DrawBuffers(2, attachments);
+    }
+    gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
+
+    /* Always consume allocation errors before a possible HDR-to-LDR retry. Short-circuiting on
+     * an incomplete framebuffer would otherwise leave the HDR error queued, making the valid LDR
+     * candidate fail its later error check. */
+    framebuffer_status = gl.CheckFramebufferStatus(GL_FRAMEBUFFER);
+    allocation_ok = gl_upload_ok();
+    if (!candidate.fbo || !candidate.color_tex || !candidate.motion_tex || !candidate.postfx_tex ||
+        !candidate.depth_tex || framebuffer_status != GL_FRAMEBUFFER_COMPLETE || !allocation_ok) {
+        gl_release_scene_target_set(&candidate);
+        return 0;
+    }
+    *out_set = candidate;
+    return 1;
+}
+
+/// @brief Transactionally create or resize one color-texture framebuffer.
+/// @details Candidate names are fully allocated and validated before the previous live pair is
+///          released. Framebuffer, viewport, pixel-store, texture, and renderbuffer bindings are
+///          restored on every path, with bindings to the replaced pair redirected to the new pair.
+/// @param ctx Borrowed initialized OpenGL context.
+/// @param width Requested target width.
+/// @param height Requested target height.
+/// @param hdr Non-zero for RGBA16F, zero for RGBA8.
+/// @param io_fbo Mutable owner of the live framebuffer name.
+/// @param io_texture Mutable owner of the live texture name.
+/// @param io_width Mutable stored width.
+/// @param io_height Mutable stored height.
+/// @param io_hdr Optional mutable stored precision discriminator.
+/// @return Zero when a matching complete target is live, otherwise -1 with the old target intact.
+static int gl_ensure_color_target(gl_context_t *ctx,
+                                  int32_t width,
+                                  int32_t height,
+                                  int hdr,
+                                  GLuint *io_fbo,
+                                  GLuint *io_texture,
+                                  int32_t *io_width,
+                                  int32_t *io_height,
+                                  int8_t *io_hdr) {
+    gl_framebuffer_state_t saved;
+    GLuint candidate_fbo = 0;
+    GLuint candidate_texture = 0;
+    GLuint previous_fbo;
+    GLuint previous_texture;
+    const GLint internal_format = hdr ? GL_RGBA16F : GL_RGBA8;
+    const GLenum data_type = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
+
+    if (!gl_target_extent_is_valid(ctx, width, height) || !io_fbo || !io_texture || !io_width ||
+        !io_height) {
+        return -1;
+    }
+    if (*io_fbo && *io_texture && *io_width == width && *io_height == height &&
+        (!io_hdr || *io_hdr == (int8_t)(hdr != 0))) {
+        return 0;
+    }
+
+    gl_capture_framebuffer_state(&saved);
+    (void)gl_drain_errors("pre-color-target-allocation");
+    gl.GenFramebuffers(1, &candidate_fbo);
+    gl.BindFramebuffer(GL_FRAMEBUFFER, candidate_fbo);
+    gl.GenTextures(1, &candidate_texture);
+    gl.BindTexture(GL_TEXTURE_2D, candidate_texture);
+    gl.TexImage2D(GL_TEXTURE_2D, 0, internal_format, width, height, 0, GL_RGBA, data_type, NULL);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
+    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
+    gl.FramebufferTexture2D(
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, candidate_texture, 0);
+    gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
+    gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
+    if (!candidate_fbo || !candidate_texture ||
+        gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
+        if (candidate_texture)
+            gl.DeleteTextures(1, &candidate_texture);
+        if (candidate_fbo)
+            gl.DeleteFramebuffers(1, &candidate_fbo);
+        gl_restore_framebuffer_state(&saved);
+        return -1;
+    }
+
+    previous_fbo = *io_fbo;
+    previous_texture = *io_texture;
+    if ((GLuint)saved.draw_framebuffer == previous_fbo)
+        saved.draw_framebuffer = (GLint)candidate_fbo;
+    if ((GLuint)saved.read_framebuffer == previous_fbo)
+        saved.read_framebuffer = (GLint)candidate_fbo;
+    if ((GLuint)saved.texture_binding_2d == previous_texture)
+        saved.texture_binding_2d = (GLint)candidate_texture;
+    *io_fbo = candidate_fbo;
+    *io_texture = candidate_texture;
+    *io_width = width;
+    *io_height = height;
+    if (io_hdr)
+        *io_hdr = (int8_t)(hdr != 0);
+    if (previous_texture)
+        gl.DeleteTextures(1, &previous_texture);
+    if (previous_fbo)
+        gl.DeleteFramebuffers(1, &previous_fbo);
+    gl_restore_framebuffer_state(&saved);
+    return 0;
+}
+
 /// @brief Release the scene FBO and its color/motion/depth attachments.
 /// @param ctx Borrowed OpenGL context whose scene targets are released; null is a no-op.
 static void destroy_scene_targets(gl_context_t *ctx) {
@@ -40,6 +247,8 @@ static void destroy_scene_targets(gl_context_t *ctx) {
         gl.DeleteTextures(1, &ctx->scene_depth_tex);
     if (ctx->scene_motion_tex)
         gl.DeleteTextures(1, &ctx->scene_motion_tex);
+    if (ctx->scene_postfx_tex)
+        gl.DeleteTextures(1, &ctx->scene_postfx_tex);
     if (ctx->scene_color_tex)
         gl.DeleteTextures(1, &ctx->scene_color_tex);
     if (ctx->scene_fbo)
@@ -47,9 +256,11 @@ static void destroy_scene_targets(gl_context_t *ctx) {
     ctx->scene_fbo = 0;
     ctx->scene_color_tex = 0;
     ctx->scene_motion_tex = 0;
+    ctx->scene_postfx_tex = 0;
     ctx->scene_depth_tex = 0;
     ctx->scene_width = 0;
     ctx->scene_height = 0;
+    ctx->scene_hdr_active = 0;
 }
 
 /// @brief Release the post-FX readback FBO + texture.
@@ -68,6 +279,7 @@ static void destroy_postfx_readback_target(gl_context_t *ctx) {
     ctx->postfx_readback_fbo = 0;
     ctx->postfx_readback_width = 0;
     ctx->postfx_readback_height = 0;
+    ctx->postfx_readback_hdr = 0;
 }
 
 /// @brief Build a scene FBO with color (HDR/LDR), motion-vector, and depth attachments.
@@ -83,16 +295,17 @@ static void destroy_postfx_readback_target(gl_context_t *ctx) {
 /// @param h Positive scene height in pixels.
 /// @return 0 when a complete scene framebuffer of the requested size is ready, otherwise -1.
 static int ensure_scene_targets(gl_context_t *ctx, int32_t w, int32_t h) {
-    GLint color_format;
-    GLint depth_format;
-    GLenum color_type;
-    GLenum depth_type;
+    gl_framebuffer_state_t saved;
+    gl_scene_target_set_t candidate = {0};
+    gl_scene_target_set_t previous;
     int want_hdr;
 
-    if (!ctx || w <= 0 || h <= 0)
+    if (!gl_target_extent_is_valid(ctx, w, h))
         return -1;
-    if (ctx->scene_fbo && ctx->scene_width == w && ctx->scene_height == h)
+    if (ctx->scene_fbo && ctx->scene_color_tex && ctx->scene_motion_tex && ctx->scene_postfx_tex &&
+        ctx->scene_depth_tex && ctx->scene_width == w && ctx->scene_height == h) {
         return 0;
+    }
 
     /* Plan 05: the window scene target follows the shared HDR policy (RGBA16F) so bloom
      * and tonemapping operate on unclamped linear color; ancient drivers without float
@@ -103,69 +316,49 @@ static int ensure_scene_targets(gl_context_t *ctx, int32_t w, int32_t h) {
                    ? 1
                    : 0;
 
+    gl_capture_framebuffer_state(&saved);
+    (void)gl_drain_errors("pre-scene-target-allocation");
     for (;;) {
-        destroy_scene_targets(ctx);
-        color_format = want_hdr ? GL_RGBA16F : GL_RGBA;
-        color_type = want_hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
-        depth_format =
-            ctx->supports_depth_float_target ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24;
-        depth_type = ctx->supports_depth_float_target ? GL_FLOAT : GL_UNSIGNED_INT;
-
-        gl.GenFramebuffers(1, &ctx->scene_fbo);
-        gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->scene_fbo);
-
-        gl.GenTextures(1, &ctx->scene_color_tex);
-        gl.BindTexture(GL_TEXTURE_2D, ctx->scene_color_tex);
-        gl.TexImage2D(GL_TEXTURE_2D, 0, color_format, w, h, 0, GL_RGBA, color_type, NULL);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        gl.FramebufferTexture2D(
-            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctx->scene_color_tex, 0);
-        gl.GenTextures(1, &ctx->scene_motion_tex);
-        gl.BindTexture(GL_TEXTURE_2D, ctx->scene_motion_tex);
-        gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-        gl.FramebufferTexture2D(
-            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT1, GL_TEXTURE_2D, ctx->scene_motion_tex, 0);
-        {
-            const GLenum attachments[2] = {GL_COLOR_ATTACHMENT0, GL_COLOR_ATTACHMENT1};
-            gl.DrawBuffers(2, attachments);
-        }
-        gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
-
-        gl.GenTextures(1, &ctx->scene_depth_tex);
-        gl.BindTexture(GL_TEXTURE_2D, ctx->scene_depth_tex);
-        gl.TexImage2D(
-            GL_TEXTURE_2D, 0, depth_format, w, h, 0, GL_DEPTH_COMPONENT, depth_type, NULL);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
-        gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
-        gl.FramebufferTexture2D(
-            GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, ctx->scene_depth_tex, 0);
-
-        if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) == GL_FRAMEBUFFER_COMPLETE &&
-            gl_upload_ok()) {
+        if (gl_build_scene_target_set(ctx, w, h, want_hdr, &candidate))
             break;
-        }
         if (want_hdr) {
             want_hdr = 0; /* retry once with the legacy LDR layout */
             continue;
         }
-        destroy_scene_targets(ctx);
+        gl_restore_framebuffer_state(&saved);
         return -1;
     }
 
+    previous.fbo = ctx->scene_fbo;
+    previous.color_tex = ctx->scene_color_tex;
+    previous.motion_tex = ctx->scene_motion_tex;
+    previous.postfx_tex = ctx->scene_postfx_tex;
+    previous.depth_tex = ctx->scene_depth_tex;
+    if ((GLuint)saved.draw_framebuffer == previous.fbo)
+        saved.draw_framebuffer = (GLint)candidate.fbo;
+    if ((GLuint)saved.read_framebuffer == previous.fbo)
+        saved.read_framebuffer = (GLint)candidate.fbo;
+    if ((GLuint)saved.texture_binding_2d == previous.color_tex)
+        saved.texture_binding_2d = (GLint)candidate.color_tex;
+    else if ((GLuint)saved.texture_binding_2d == previous.motion_tex)
+        saved.texture_binding_2d = (GLint)candidate.motion_tex;
+    else if ((GLuint)saved.texture_binding_2d == previous.postfx_tex)
+        saved.texture_binding_2d = (GLint)candidate.postfx_tex;
+    else if ((GLuint)saved.texture_binding_2d == previous.depth_tex)
+        saved.texture_binding_2d = (GLint)candidate.depth_tex;
+    ctx->scene_fbo = candidate.fbo;
+    ctx->scene_color_tex = candidate.color_tex;
+    ctx->scene_motion_tex = candidate.motion_tex;
+    ctx->scene_postfx_tex = candidate.postfx_tex;
+    ctx->scene_depth_tex = candidate.depth_tex;
+    memset(&candidate, 0, sizeof(candidate));
     ctx->scene_hdr_active = (int8_t)want_hdr;
     /* Scene target recreation orphans any TAA history sized for the old target. */
     ctx->taa_history_valid = 0;
     ctx->scene_width = w;
     ctx->scene_height = h;
+    gl_release_scene_target_set(&previous);
+    gl_restore_framebuffer_state(&saved);
     return 0;
 }
 
@@ -177,44 +370,15 @@ static int ensure_scene_targets(gl_context_t *ctx, int32_t w, int32_t h) {
 /// @param h Positive readback height in pixels.
 /// @return 0 when a complete readback target is ready, otherwise -1 after partial cleanup.
 static int ensure_postfx_readback_target(gl_context_t *ctx, int32_t w, int32_t h) {
-    GLint color_format;
-    GLenum color_type;
-
-    if (!ctx || w <= 0 || h <= 0)
-        return -1;
-    if (ctx->postfx_readback_fbo && ctx->postfx_readback_width == w &&
-        ctx->postfx_readback_height == h) {
-        return 0;
-    }
-
-    destroy_postfx_readback_target(ctx);
-
-    /* Plan 05: ping-pong intermediates follow the scene target's precision so HDR range
-     * survives multi-pass chains; glReadPixels(GL_UNSIGNED_BYTE) still converts on read. */
-    color_format = ctx->scene_hdr_active ? GL_RGBA16F : GL_RGBA;
-    color_type = ctx->scene_hdr_active ? GL_FLOAT : GL_UNSIGNED_BYTE;
-
-    gl.GenFramebuffers(1, &ctx->postfx_readback_fbo);
-    gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->postfx_readback_fbo);
-    gl.GenTextures(1, &ctx->postfx_readback_tex);
-    gl.BindTexture(GL_TEXTURE_2D, ctx->postfx_readback_tex);
-    gl.TexImage2D(GL_TEXTURE_2D, 0, color_format, w, h, 0, GL_RGBA, color_type, NULL);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    gl.FramebufferTexture2D(
-        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctx->postfx_readback_tex, 0);
-    gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
-    gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
-    if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
-        destroy_postfx_readback_target(ctx);
-        return -1;
-    }
-
-    ctx->postfx_readback_width = w;
-    ctx->postfx_readback_height = h;
-    return 0;
+    return gl_ensure_color_target(ctx,
+                                  w,
+                                  h,
+                                  ctx ? ctx->scene_hdr_active : 0,
+                                  ctx ? &ctx->postfx_readback_fbo : NULL,
+                                  ctx ? &ctx->postfx_readback_tex : NULL,
+                                  ctx ? &ctx->postfx_readback_width : NULL,
+                                  ctx ? &ctx->postfx_readback_height : NULL,
+                                  ctx ? &ctx->postfx_readback_hdr : NULL);
 }
 
 /// @brief Release the intermediate post-FX scratch FBO + texture.
@@ -233,6 +397,7 @@ static void destroy_postfx_scratch_target(gl_context_t *ctx) {
     ctx->postfx_scratch_fbo = 0;
     ctx->postfx_scratch_width = 0;
     ctx->postfx_scratch_height = 0;
+    ctx->postfx_scratch_hdr = 0;
 }
 
 /// @brief Build a single-attachment LDR FBO used as post-FX intermediate storage.
@@ -241,46 +406,15 @@ static void destroy_postfx_scratch_target(gl_context_t *ctx) {
 /// @param h Positive scratch-target height in pixels.
 /// @return Zero on success, -1 when allocation or framebuffer completeness fails.
 static int ensure_postfx_scratch_target(gl_context_t *ctx, int32_t w, int32_t h) {
-    GLint color_format;
-    GLenum color_type;
-
-    if (!ctx || w <= 0 || h <= 0)
-        return -1;
-    if (ctx->postfx_scratch_fbo && ctx->postfx_scratch_width == w &&
-        ctx->postfx_scratch_height == h) {
-        return 0;
-    }
-
-    destroy_postfx_scratch_target(ctx);
-
-    color_format = vgfx3d_opengl_choose_color_format(VGFX3D_OPENGL_TARGET_SCENE) ==
-                               VGFX3D_OPENGL_COLOR_FORMAT_HDR16F &&
-                           ctx->supports_hdr_color_target
-                       ? GL_RGBA16F
-                       : GL_RGBA8;
-    color_type = color_format == GL_RGBA16F ? GL_FLOAT : GL_UNSIGNED_BYTE;
-
-    gl.GenFramebuffers(1, &ctx->postfx_scratch_fbo);
-    gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->postfx_scratch_fbo);
-    gl.GenTextures(1, &ctx->postfx_scratch_tex);
-    gl.BindTexture(GL_TEXTURE_2D, ctx->postfx_scratch_tex);
-    gl.TexImage2D(GL_TEXTURE_2D, 0, color_format, w, h, 0, GL_RGBA, color_type, NULL);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    gl.FramebufferTexture2D(
-        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctx->postfx_scratch_tex, 0);
-    gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
-    gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
-    if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
-        destroy_postfx_scratch_target(ctx);
-        return -1;
-    }
-
-    ctx->postfx_scratch_width = w;
-    ctx->postfx_scratch_height = h;
-    return 0;
+    return gl_ensure_color_target(ctx,
+                                  w,
+                                  h,
+                                  ctx ? ctx->scene_hdr_active : 0,
+                                  ctx ? &ctx->postfx_scratch_fbo : NULL,
+                                  ctx ? &ctx->postfx_scratch_tex : NULL,
+                                  ctx ? &ctx->postfx_scratch_width : NULL,
+                                  ctx ? &ctx->postfx_scratch_height : NULL,
+                                  ctx ? &ctx->postfx_scratch_hdr : NULL);
 }
 
 /// @brief Release the logical-output-sized OpenGL presentation FBO and color texture.
@@ -311,34 +445,15 @@ static void destroy_present_target(gl_context_t *ctx) {
 /// @return 0 when a complete target of exactly @p w × @p h is ready, otherwise -1 after cleaning
 ///         any partial objects.
 static int ensure_present_target(gl_context_t *ctx, int32_t w, int32_t h) {
-    if (!ctx || w <= 0 || h <= 0)
-        return -1;
-    if (ctx->present_fbo && ctx->present_tex && ctx->present_width == w &&
-        ctx->present_height == h) {
-        return 0;
-    }
-
-    destroy_present_target(ctx);
-    gl.GenFramebuffers(1, &ctx->present_fbo);
-    gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->present_fbo);
-    gl.GenTextures(1, &ctx->present_tex);
-    gl.BindTexture(GL_TEXTURE_2D, ctx->present_tex);
-    gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    gl.FramebufferTexture2D(
-        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctx->present_tex, 0);
-    gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
-    gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
-    if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
-        destroy_present_target(ctx);
-        return -1;
-    }
-    ctx->present_width = w;
-    ctx->present_height = h;
-    return 0;
+    return gl_ensure_color_target(ctx,
+                                  w,
+                                  h,
+                                  0,
+                                  ctx ? &ctx->present_fbo : NULL,
+                                  ctx ? &ctx->present_tex : NULL,
+                                  ctx ? &ctx->present_width : NULL,
+                                  ctx ? &ctx->present_height : NULL,
+                                  NULL);
 }
 
 /// @brief Release the Plan 05 bloom mip-chain textures and FBOs.
@@ -359,6 +474,7 @@ static void destroy_bloom_targets(gl_context_t *ctx) {
     ctx->bloom_mip_count = 0;
     ctx->bloom_base_width = 0;
     ctx->bloom_base_height = 0;
+    ctx->bloom_hdr = 0;
 }
 
 /// @brief Build the Plan 05 half-res RGBA16F bloom mip chain for a scene of (w, h).
@@ -369,47 +485,101 @@ static void destroy_bloom_targets(gl_context_t *ctx) {
 /// @param h Positive full-resolution scene height used to derive the first half-resolution mip.
 /// @return Zero on success, -1 when allocation or completeness fails.
 static int ensure_bloom_targets(gl_context_t *ctx, int32_t w, int32_t h) {
+    gl_framebuffer_state_t saved;
+    GLuint candidate_tex[6] = {0};
+    GLuint candidate_fbo[6] = {0};
+    int32_t candidate_w[6] = {0};
+    int32_t candidate_h[6] = {0};
+    GLuint previous_tex[6];
+    GLuint previous_fbo[6];
+    int32_t candidate_count = 0;
+    const int hdr = ctx ? ctx->scene_hdr_active : 0;
+    const GLint internal_format = hdr ? GL_RGBA16F : GL_RGBA8;
+    const GLenum data_type = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
     int32_t mw;
     int32_t mh;
 
-    if (!ctx || w <= 0 || h <= 0 || !ctx->bloom_down_program || !ctx->bloom_up_program)
+    if (!gl_target_extent_is_valid(ctx, w, h) || !ctx->bloom_down_program ||
+        !ctx->bloom_up_program) {
         return -1;
-    if (ctx->bloom_mip_count > 0 && ctx->bloom_base_width == w && ctx->bloom_base_height == h)
-        return 0;
+    }
+    if (ctx->bloom_mip_count > 0 && ctx->bloom_base_width == w && ctx->bloom_base_height == h &&
+        ctx->bloom_hdr == (int8_t)hdr) {
+        int complete = 1;
+        for (int32_t i = 0; i < ctx->bloom_mip_count; i++) {
+            if (!ctx->bloom_mip_tex[i] || !ctx->bloom_mip_fbo[i]) {
+                complete = 0;
+                break;
+            }
+        }
+        if (complete)
+            return 0;
+    }
 
-    destroy_bloom_targets(ctx);
+    gl_capture_framebuffer_state(&saved);
+    (void)gl_drain_errors("pre-bloom-target-allocation");
     mw = w / 2;
     mh = h / 2;
     for (int32_t i = 0; i < 6 && mw >= 1 && mh >= 1; i++) {
-        gl.GenFramebuffers(1, &ctx->bloom_mip_fbo[i]);
-        gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->bloom_mip_fbo[i]);
-        gl.GenTextures(1, &ctx->bloom_mip_tex[i]);
-        gl.BindTexture(GL_TEXTURE_2D, ctx->bloom_mip_tex[i]);
-        gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, mw, mh, 0, GL_RGBA, GL_FLOAT, NULL);
+        gl.GenFramebuffers(1, &candidate_fbo[i]);
+        gl.BindFramebuffer(GL_FRAMEBUFFER, candidate_fbo[i]);
+        gl.GenTextures(1, &candidate_tex[i]);
+        gl.BindTexture(GL_TEXTURE_2D, candidate_tex[i]);
+        gl.TexImage2D(GL_TEXTURE_2D, 0, internal_format, mw, mh, 0, GL_RGBA, data_type, NULL);
         gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         gl.FramebufferTexture2D(
-            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctx->bloom_mip_tex[i], 0);
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, candidate_tex[i], 0);
         gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
-        if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+        if (!candidate_fbo[i] || !candidate_tex[i] ||
+            gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
             !gl_upload_ok()) {
-            destroy_bloom_targets(ctx);
+            for (int32_t release = 0; release < 6; release++) {
+                if (candidate_tex[release])
+                    gl.DeleteTextures(1, &candidate_tex[release]);
+                if (candidate_fbo[release])
+                    gl.DeleteFramebuffers(1, &candidate_fbo[release]);
+            }
+            gl_restore_framebuffer_state(&saved);
             return -1;
         }
-        ctx->bloom_mip_w[i] = mw;
-        ctx->bloom_mip_h[i] = mh;
-        ctx->bloom_mip_count = i + 1;
+        candidate_w[i] = mw;
+        candidate_h[i] = mh;
+        candidate_count = i + 1;
         if (mw / 2 < 8 || mh / 2 < 8)
             break;
         mw /= 2;
         mh /= 2;
     }
-    if (ctx->bloom_mip_count <= 0)
+    if (candidate_count <= 0) {
+        gl_restore_framebuffer_state(&saved);
         return -1;
+    }
+    memcpy(previous_tex, ctx->bloom_mip_tex, sizeof(previous_tex));
+    memcpy(previous_fbo, ctx->bloom_mip_fbo, sizeof(previous_fbo));
+    for (int32_t i = 0; i < 6; i++) {
+        if ((GLuint)saved.draw_framebuffer == previous_fbo[i])
+            saved.draw_framebuffer = (GLint)candidate_fbo[i];
+        if ((GLuint)saved.read_framebuffer == previous_fbo[i])
+            saved.read_framebuffer = (GLint)candidate_fbo[i];
+        if ((GLuint)saved.texture_binding_2d == previous_tex[i])
+            saved.texture_binding_2d = (GLint)candidate_tex[i];
+        ctx->bloom_mip_tex[i] = candidate_tex[i];
+        ctx->bloom_mip_fbo[i] = candidate_fbo[i];
+        ctx->bloom_mip_w[i] = candidate_w[i];
+        ctx->bloom_mip_h[i] = candidate_h[i];
+        if (previous_tex[i])
+            gl.DeleteTextures(1, &previous_tex[i]);
+        if (previous_fbo[i])
+            gl.DeleteFramebuffers(1, &previous_fbo[i]);
+    }
+    ctx->bloom_mip_count = candidate_count;
     ctx->bloom_base_width = w;
     ctx->bloom_base_height = h;
+    ctx->bloom_hdr = (int8_t)hdr;
+    gl_restore_framebuffer_state(&saved);
     return 0;
 }
 
@@ -430,43 +600,82 @@ static void destroy_taa_targets(gl_context_t *ctx) {
     ctx->taa_history_height = 0;
     ctx->taa_history_parity = 0;
     ctx->taa_history_valid = 0;
+    ctx->taa_history_hdr = 0;
 }
 
-/// @brief Build the Plan 05 TAA ping-pong history pair (RGBA16F, scene-sized).
+/// @brief Build the Plan 05 TAA ping-pong history pair at the active scene precision.
 /// @param ctx Borrowed initialized OpenGL context that owns the history objects.
 /// @param w Positive scene width in pixels.
 /// @param h Positive scene height in pixels.
 /// @return Zero on success, -1 when allocation or completeness fails.
 static int ensure_taa_targets(gl_context_t *ctx, int32_t w, int32_t h) {
-    if (!ctx || w <= 0 || h <= 0 || !ctx->taa_program)
-        return -1;
-    if (ctx->taa_history_fbo[0] && ctx->taa_history_width == w && ctx->taa_history_height == h)
-        return 0;
+    gl_framebuffer_state_t saved;
+    GLuint candidate_tex[2] = {0, 0};
+    GLuint candidate_fbo[2] = {0, 0};
+    GLuint previous_tex[2];
+    GLuint previous_fbo[2];
+    const int hdr = ctx ? ctx->scene_hdr_active : 0;
+    const GLint internal_format = hdr ? GL_RGBA16F : GL_RGBA8;
+    const GLenum data_type = hdr ? GL_FLOAT : GL_UNSIGNED_BYTE;
 
-    destroy_taa_targets(ctx);
+    if (!gl_target_extent_is_valid(ctx, w, h) || !ctx->taa_program)
+        return -1;
+    if (ctx->taa_history_fbo[0] && ctx->taa_history_fbo[1] && ctx->taa_history_tex[0] &&
+        ctx->taa_history_tex[1] && ctx->taa_history_width == w && ctx->taa_history_height == h &&
+        ctx->taa_history_hdr == (int8_t)hdr) {
+        return 0;
+    }
+
+    gl_capture_framebuffer_state(&saved);
+    (void)gl_drain_errors("pre-taa-target-allocation");
     for (int32_t i = 0; i < 2; i++) {
-        gl.GenFramebuffers(1, &ctx->taa_history_fbo[i]);
-        gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->taa_history_fbo[i]);
-        gl.GenTextures(1, &ctx->taa_history_tex[i]);
-        gl.BindTexture(GL_TEXTURE_2D, ctx->taa_history_tex[i]);
-        gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA16F, w, h, 0, GL_RGBA, GL_FLOAT, NULL);
+        gl.GenFramebuffers(1, &candidate_fbo[i]);
+        gl.BindFramebuffer(GL_FRAMEBUFFER, candidate_fbo[i]);
+        gl.GenTextures(1, &candidate_tex[i]);
+        gl.BindTexture(GL_TEXTURE_2D, candidate_tex[i]);
+        gl.TexImage2D(GL_TEXTURE_2D, 0, internal_format, w, h, 0, GL_RGBA, data_type, NULL);
         gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
         gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
         gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
         gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
         gl.FramebufferTexture2D(
-            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctx->taa_history_tex[i], 0);
+            GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, candidate_tex[i], 0);
         gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
-        if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
+        if (!candidate_fbo[i] || !candidate_tex[i] ||
+            gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE ||
             !gl_upload_ok()) {
-            destroy_taa_targets(ctx);
+            for (int32_t release = 0; release < 2; release++) {
+                if (candidate_tex[release])
+                    gl.DeleteTextures(1, &candidate_tex[release]);
+                if (candidate_fbo[release])
+                    gl.DeleteFramebuffers(1, &candidate_fbo[release]);
+            }
+            gl_restore_framebuffer_state(&saved);
             return -1;
         }
+    }
+    memcpy(previous_tex, ctx->taa_history_tex, sizeof(previous_tex));
+    memcpy(previous_fbo, ctx->taa_history_fbo, sizeof(previous_fbo));
+    for (int32_t i = 0; i < 2; i++) {
+        if ((GLuint)saved.draw_framebuffer == previous_fbo[i])
+            saved.draw_framebuffer = (GLint)candidate_fbo[i];
+        if ((GLuint)saved.read_framebuffer == previous_fbo[i])
+            saved.read_framebuffer = (GLint)candidate_fbo[i];
+        if ((GLuint)saved.texture_binding_2d == previous_tex[i])
+            saved.texture_binding_2d = (GLint)candidate_tex[i];
+        ctx->taa_history_tex[i] = candidate_tex[i];
+        ctx->taa_history_fbo[i] = candidate_fbo[i];
+        if (previous_tex[i])
+            gl.DeleteTextures(1, &previous_tex[i]);
+        if (previous_fbo[i])
+            gl.DeleteFramebuffers(1, &previous_fbo[i]);
     }
     ctx->taa_history_width = w;
     ctx->taa_history_height = h;
     ctx->taa_history_parity = 0;
     ctx->taa_history_valid = 0;
+    ctx->taa_history_hdr = (int8_t)hdr;
+    gl_restore_framebuffer_state(&saved);
     return 0;
 }
 
@@ -508,17 +717,16 @@ static void gl_bloom_pass_draw(gl_context_t *ctx,
 ///          deeper mip and accumulates it into the one above via GL_ONE/GL_ONE blending,
 ///          leaving mip 0 with the summed octaves.
 /// @param ctx Borrowed initialized OpenGL context containing the scene and bloom resources.
+/// @param source_tex Current ordered-chain color source.
 /// @param width Positive scene width in pixels.
 /// @param height Positive scene height in pixels.
 /// @param threshold Linear-color brightness threshold applied during the first downsample.
 /// @return Mip 0's texture name, or 0 when resources are unavailable.
-static GLuint gl_encode_bloom_chain(gl_context_t *ctx,
-                                    int32_t width,
-                                    int32_t height,
-                                    float threshold) {
+static GLuint gl_encode_bloom_chain(
+    gl_context_t *ctx, GLuint source_tex, int32_t width, int32_t height, float threshold) {
     gl_framebuffer_state_t saved;
 
-    if (!ctx || !ctx->scene_color_tex || ensure_bloom_targets(ctx, width, height) != 0)
+    if (!ctx || !source_tex || ensure_bloom_targets(ctx, width, height) != 0)
         return 0;
 
     gl_capture_framebuffer_state(&saved);
@@ -532,7 +740,7 @@ static GLuint gl_encode_bloom_chain(gl_context_t *ctx,
     gl.BindVertexArray(ctx->fullscreen_vao);
 
     for (int32_t i = 0; i < ctx->bloom_mip_count; i++) {
-        GLuint src_tex = (i == 0) ? ctx->scene_color_tex : ctx->bloom_mip_tex[i - 1];
+        GLuint src_tex = (i == 0) ? source_tex : ctx->bloom_mip_tex[i - 1];
         int32_t src_w = (i == 0) ? width : ctx->bloom_mip_w[i - 1];
         int32_t src_h = (i == 0) ? height : ctx->bloom_mip_h[i - 1];
         gl.UseProgram(ctx->bloom_down_program);
@@ -661,37 +869,26 @@ static void destroy_ssr_target(gl_context_t *ctx) {
     ctx->ssr_fbo = 0;
     ctx->ssr_width = 0;
     ctx->ssr_height = 0;
+    ctx->ssr_hdr = 0;
 }
 
-/// @brief Build the Plan 10 SSR output target (RGBA8, scene-sized).
+/// @brief Build the Plan 10 SSR output target at the active scene precision.
 /// @param ctx Borrowed initialized OpenGL context that owns the SSR objects.
 /// @param w Positive scene width in pixels.
 /// @param h Positive scene height in pixels.
 /// @return Zero on success, -1 when allocation or completeness fails.
 static int ensure_ssr_target(gl_context_t *ctx, int32_t w, int32_t h) {
-    if (!ctx || w <= 0 || h <= 0 || !ctx->ssr_program)
+    if (!ctx || !ctx->ssr_program)
         return -1;
-    if (ctx->ssr_fbo && ctx->ssr_width == w && ctx->ssr_height == h)
-        return 0;
-    destroy_ssr_target(ctx);
-    gl.GenFramebuffers(1, &ctx->ssr_fbo);
-    gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->ssr_fbo);
-    gl.GenTextures(1, &ctx->ssr_tex);
-    gl.BindTexture(GL_TEXTURE_2D, ctx->ssr_tex);
-    gl.TexImage2D(GL_TEXTURE_2D, 0, GL_RGBA8, w, h, 0, GL_RGBA, GL_UNSIGNED_BYTE, NULL);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
-    gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
-    gl.FramebufferTexture2D(GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctx->ssr_tex, 0);
-    gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
-    if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
-        destroy_ssr_target(ctx);
-        return -1;
-    }
-    ctx->ssr_width = w;
-    ctx->ssr_height = h;
-    return 0;
+    return gl_ensure_color_target(ctx,
+                                  w,
+                                  h,
+                                  ctx->scene_hdr_active,
+                                  &ctx->ssr_fbo,
+                                  &ctx->ssr_tex,
+                                  &ctx->ssr_width,
+                                  &ctx->ssr_height,
+                                  &ctx->ssr_hdr);
 }
 
 /// @brief Encode the Plan 10 SSR pass: ray-march the scene depth in screen space for
@@ -769,7 +966,7 @@ static void destroy_rtt_targets(gl_context_t *ctx) {
         return;
     if (ctx->rtt_target) {
         int sync_ok = 1;
-        if (ctx->rtt_color_dirty)
+        if (ctx->rtt_color_dirty || ctx->rtt_target->color_dirty)
             sync_ok = gl_sync_render_target_color(ctx, ctx->rtt_target);
         if (sync_ok || !ctx->rtt_target->color_dirty)
             vgfx3d_rendertarget_clear_sync(ctx->rtt_target);
@@ -803,38 +1000,57 @@ static void destroy_rtt_targets(gl_context_t *ctx) {
 /// @param rt Borrowed runtime render target that receives the backend synchronization callback.
 /// @return 0 when the target is active and complete, otherwise -1 for invalid input or GL failure.
 static int ensure_rtt_targets(gl_context_t *ctx, vgfx3d_rendertarget_t *rt) {
+    gl_framebuffer_state_t saved;
+    GLuint candidate_fbo = 0;
+    GLuint candidate_color_tex = 0;
+    GLuint candidate_depth_rbo = 0;
+    GLuint previous_fbo;
+    GLuint previous_color_tex;
+    GLuint previous_depth_rbo;
+    vgfx3d_rendertarget_t *previous_target;
     GLenum color_internal_format;
     GLenum depth_internal_format;
     GLenum color_type;
 
     if (!ctx || !rt || !vgfx3d_rendertarget_valid_pixels(rt, NULL) ||
+        !gl_target_extent_is_valid(ctx, rt->width, rt->height) ||
         (rt->color_format != (int32_t)VGFX3D_RENDERTARGET_COLOR_FORMAT_UNORM8 &&
-         rt->color_format != (int32_t)VGFX3D_RENDERTARGET_COLOR_FORMAT_HDR16F))
+         rt->color_format != (int32_t)VGFX3D_RENDERTARGET_COLOR_FORMAT_HDR16F) ||
+        (vgfx3d_rendertarget_is_hdr(rt) && !ctx->supports_hdr_color_target)) {
         return -1;
-    if (ctx->rtt_fbo && ctx->rtt_width == rt->width && ctx->rtt_height == rt->height &&
-        ctx->rtt_color_format == rt->color_format) {
-        if (ctx->rtt_target && ctx->rtt_target != rt) {
-            destroy_rtt_targets(ctx);
-        } else {
+    }
+    if (ctx->rtt_fbo && ctx->rtt_color_tex && ctx->rtt_depth_rbo && ctx->rtt_width == rt->width &&
+        ctx->rtt_height == rt->height && ctx->rtt_color_format == rt->color_format) {
+        if (ctx->rtt_target == rt) {
             ctx->rtt_active = 1;
-            ctx->rtt_target = rt;
-            ctx->rtt_color_dirty = 0;
-            rt->color_dirty = 0;
             rt->sync_color = gl_sync_render_target_color;
             rt->sync_color_userdata = ctx;
             return 0;
         }
+        if (ctx->rtt_target && ctx->rtt_target != rt) {
+            if ((ctx->rtt_color_dirty || ctx->rtt_target->color_dirty) &&
+                !gl_sync_render_target_color(ctx, ctx->rtt_target)) {
+                return -1;
+            }
+            vgfx3d_rendertarget_clear_sync(ctx->rtt_target);
+        }
+        ctx->rtt_active = 1;
+        ctx->rtt_target = rt;
+        ctx->rtt_color_dirty = 0;
+        rt->color_dirty = 0;
+        rt->sync_color = gl_sync_render_target_color;
+        rt->sync_color_userdata = ctx;
+        return 0;
     }
 
-    destroy_rtt_targets(ctx);
+    gl_capture_framebuffer_state(&saved);
+    (void)gl_drain_errors("pre-rtt-target-allocation");
+    gl.GenFramebuffers(1, &candidate_fbo);
+    gl.BindFramebuffer(GL_FRAMEBUFFER, candidate_fbo);
 
-    gl.GenFramebuffers(1, &ctx->rtt_fbo);
-    gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->rtt_fbo);
-
-    gl.GenTextures(1, &ctx->rtt_color_tex);
-    gl.BindTexture(GL_TEXTURE_2D, ctx->rtt_color_tex);
-    color_internal_format =
-        (vgfx3d_rendertarget_is_hdr(rt) && ctx->supports_hdr_color_target) ? GL_RGBA16F : GL_RGBA8;
+    gl.GenTextures(1, &candidate_color_tex);
+    gl.BindTexture(GL_TEXTURE_2D, candidate_color_tex);
+    color_internal_format = vgfx3d_rendertarget_is_hdr(rt) ? GL_RGBA16F : GL_RGBA8;
     color_type = color_internal_format == GL_RGBA16F ? GL_FLOAT : GL_UNSIGNED_BYTE;
     depth_internal_format =
         ctx->supports_depth_float_target ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24;
@@ -852,21 +1068,53 @@ static int ensure_rtt_targets(gl_context_t *ctx, vgfx3d_rendertarget_t *rt) {
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_LINEAR);
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_LINEAR);
     gl.FramebufferTexture2D(
-        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, ctx->rtt_color_tex, 0);
+        GL_FRAMEBUFFER, GL_COLOR_ATTACHMENT0, GL_TEXTURE_2D, candidate_color_tex, 0);
     gl.DrawBuffer(GL_COLOR_ATTACHMENT0);
     gl.ReadBuffer(GL_COLOR_ATTACHMENT0);
 
-    gl.GenRenderbuffers(1, &ctx->rtt_depth_rbo);
-    gl.BindRenderbuffer(GL_RENDERBUFFER, ctx->rtt_depth_rbo);
+    gl.GenRenderbuffers(1, &candidate_depth_rbo);
+    gl.BindRenderbuffer(GL_RENDERBUFFER, candidate_depth_rbo);
     gl.RenderbufferStorage(GL_RENDERBUFFER, depth_internal_format, rt->width, rt->height);
     gl.FramebufferRenderbuffer(
-        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, ctx->rtt_depth_rbo);
+        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_RENDERBUFFER, candidate_depth_rbo);
 
-    if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
-        destroy_rtt_targets(ctx);
+    if (!candidate_fbo || !candidate_color_tex || !candidate_depth_rbo ||
+        gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
+        if (candidate_depth_rbo)
+            gl.DeleteRenderbuffers(1, &candidate_depth_rbo);
+        if (candidate_color_tex)
+            gl.DeleteTextures(1, &candidate_color_tex);
+        if (candidate_fbo)
+            gl.DeleteFramebuffers(1, &candidate_fbo);
+        gl_restore_framebuffer_state(&saved);
         return -1;
     }
 
+    previous_fbo = ctx->rtt_fbo;
+    previous_color_tex = ctx->rtt_color_tex;
+    previous_depth_rbo = ctx->rtt_depth_rbo;
+    previous_target = ctx->rtt_target;
+    if (previous_target && (ctx->rtt_color_dirty || previous_target->color_dirty) &&
+        !gl_sync_render_target_color(ctx, previous_target)) {
+        gl.DeleteRenderbuffers(1, &candidate_depth_rbo);
+        gl.DeleteTextures(1, &candidate_color_tex);
+        gl.DeleteFramebuffers(1, &candidate_fbo);
+        gl_restore_framebuffer_state(&saved);
+        return -1;
+    }
+    if (previous_target)
+        vgfx3d_rendertarget_clear_sync(previous_target);
+    if ((GLuint)saved.draw_framebuffer == previous_fbo)
+        saved.draw_framebuffer = (GLint)candidate_fbo;
+    if ((GLuint)saved.read_framebuffer == previous_fbo)
+        saved.read_framebuffer = (GLint)candidate_fbo;
+    if ((GLuint)saved.texture_binding_2d == previous_color_tex)
+        saved.texture_binding_2d = (GLint)candidate_color_tex;
+    if ((GLuint)saved.renderbuffer == previous_depth_rbo)
+        saved.renderbuffer = (GLint)candidate_depth_rbo;
+    ctx->rtt_fbo = candidate_fbo;
+    ctx->rtt_color_tex = candidate_color_tex;
+    ctx->rtt_depth_rbo = candidate_depth_rbo;
     ctx->rtt_width = rt->width;
     ctx->rtt_height = rt->height;
     ctx->rtt_color_format = rt->color_format;
@@ -876,6 +1124,13 @@ static int ensure_rtt_targets(gl_context_t *ctx, vgfx3d_rendertarget_t *rt) {
     rt->color_dirty = 0;
     rt->sync_color = gl_sync_render_target_color;
     rt->sync_color_userdata = ctx;
+    if (previous_depth_rbo)
+        gl.DeleteRenderbuffers(1, &previous_depth_rbo);
+    if (previous_color_tex)
+        gl.DeleteTextures(1, &previous_color_tex);
+    if (previous_fbo)
+        gl.DeleteFramebuffers(1, &previous_fbo);
+    gl_restore_framebuffer_state(&saved);
     return 0;
 }
 
@@ -952,31 +1207,31 @@ static int32_t gl_sanitize_shadow_slot(gl_context_t *ctx, int32_t shadow_index) 
 /// @param h Positive shadow-map height in pixels.
 /// @return 0 when a complete depth-only framebuffer is ready, otherwise -1.
 static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int32_t h) {
+    gl_framebuffer_state_t saved;
+    GLuint candidate_fbo = 0;
+    GLuint candidate_depth_tex = 0;
+    GLuint previous_fbo;
+    GLuint previous_depth_tex;
     GLint depth_format;
     GLenum depth_type;
-    if (!ctx || slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS || w <= 0 || h <= 0)
+    if (!gl_target_extent_is_valid(ctx, w, h) || slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS) {
         return -1;
-    if (ctx->shadow_fbo[slot] && ctx->shadow_width[slot] == w && ctx->shadow_height[slot] == h)
+    }
+    if (ctx->shadow_fbo[slot] && ctx->shadow_depth_tex[slot] && ctx->shadow_width[slot] == w &&
+        ctx->shadow_height[slot] == h) {
         return 0;
+    }
 
-    ctx->shadow_complete[slot] = 0;
-    gl_recompute_shadow_count(ctx);
-    if (ctx->shadow_depth_tex[slot])
-        gl.DeleteTextures(1, &ctx->shadow_depth_tex[slot]);
-    if (ctx->shadow_fbo[slot])
-        gl.DeleteFramebuffers(1, &ctx->shadow_fbo[slot]);
-    ctx->shadow_fbo[slot] = 0;
-    ctx->shadow_depth_tex[slot] = 0;
-    ctx->shadow_width[slot] = 0;
-    ctx->shadow_height[slot] = 0;
     depth_format = ctx->supports_depth_float_target ? GL_DEPTH_COMPONENT32F : GL_DEPTH_COMPONENT24;
     depth_type = ctx->supports_depth_float_target ? GL_FLOAT : GL_UNSIGNED_INT;
 
-    gl.GenFramebuffers(1, &ctx->shadow_fbo[slot]);
-    gl.BindFramebuffer(GL_FRAMEBUFFER, ctx->shadow_fbo[slot]);
+    gl_capture_framebuffer_state(&saved);
+    (void)gl_drain_errors("pre-shadow-target-allocation");
+    gl.GenFramebuffers(1, &candidate_fbo);
+    gl.BindFramebuffer(GL_FRAMEBUFFER, candidate_fbo);
 
-    gl.GenTextures(1, &ctx->shadow_depth_tex[slot]);
-    gl.BindTexture(GL_TEXTURE_2D, ctx->shadow_depth_tex[slot]);
+    gl.GenTextures(1, &candidate_depth_tex);
+    gl.BindTexture(GL_TEXTURE_2D, candidate_depth_tex);
     gl.TexImage2D(GL_TEXTURE_2D, 0, depth_format, w, h, 0, GL_DEPTH_COMPONENT, depth_type, NULL);
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_S, GL_CLAMP_TO_EDGE);
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
@@ -987,26 +1242,39 @@ static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_MODE, GL_COMPARE_REF_TO_TEXTURE);
     gl.TexParameteri(GL_TEXTURE_2D, GL_TEXTURE_COMPARE_FUNC, GL_LEQUAL);
     gl.FramebufferTexture2D(
-        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, ctx->shadow_depth_tex[slot], 0);
+        GL_FRAMEBUFFER, GL_DEPTH_ATTACHMENT, GL_TEXTURE_2D, candidate_depth_tex, 0);
     gl.DrawBuffer(GL_NONE);
     gl.ReadBuffer(GL_NONE);
 
-    if (gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
-        if (ctx->shadow_depth_tex[slot])
-            gl.DeleteTextures(1, &ctx->shadow_depth_tex[slot]);
-        if (ctx->shadow_fbo[slot])
-            gl.DeleteFramebuffers(1, &ctx->shadow_fbo[slot]);
-        ctx->shadow_fbo[slot] = 0;
-        ctx->shadow_depth_tex[slot] = 0;
-        ctx->shadow_width[slot] = 0;
-        ctx->shadow_height[slot] = 0;
-        ctx->shadow_complete[slot] = 0;
-        gl_recompute_shadow_count(ctx);
+    if (!candidate_fbo || !candidate_depth_tex ||
+        gl.CheckFramebufferStatus(GL_FRAMEBUFFER) != GL_FRAMEBUFFER_COMPLETE || !gl_upload_ok()) {
+        if (candidate_depth_tex)
+            gl.DeleteTextures(1, &candidate_depth_tex);
+        if (candidate_fbo)
+            gl.DeleteFramebuffers(1, &candidate_fbo);
+        gl_restore_framebuffer_state(&saved);
         return -1;
     }
 
+    previous_fbo = ctx->shadow_fbo[slot];
+    previous_depth_tex = ctx->shadow_depth_tex[slot];
+    if ((GLuint)saved.draw_framebuffer == previous_fbo)
+        saved.draw_framebuffer = (GLint)candidate_fbo;
+    if ((GLuint)saved.read_framebuffer == previous_fbo)
+        saved.read_framebuffer = (GLint)candidate_fbo;
+    if ((GLuint)saved.texture_binding_2d == previous_depth_tex)
+        saved.texture_binding_2d = (GLint)candidate_depth_tex;
+    ctx->shadow_fbo[slot] = candidate_fbo;
+    ctx->shadow_depth_tex[slot] = candidate_depth_tex;
     ctx->shadow_width[slot] = w;
     ctx->shadow_height[slot] = h;
+    ctx->shadow_complete[slot] = 0;
+    gl_recompute_shadow_count(ctx);
+    if (previous_depth_tex)
+        gl.DeleteTextures(1, &previous_depth_tex);
+    if (previous_fbo)
+        gl.DeleteFramebuffers(1, &previous_fbo);
+    gl_restore_framebuffer_state(&saved);
     return 0;
 }
 
@@ -1332,10 +1600,11 @@ static int gl_draw_texture_to_target(gl_context_t *ctx,
 ///          default drawable rejects the fullscreen resolve used by post-FX. On the affected
 ///          stack, additional single-attachment FBOs can also report complete while discarding
 ///          color writes. The scene FBO is proven writable by the main render pass, so this
-///          fallback ping-pongs between scene color attachment 0 and the motion attachment after
-///          motion vectors are no longer needed. The final color is copied back to attachment 0
-///          so final-overlay replay, readback, and presentation all consume the normal scene
-///          color target.
+///          fallback ping-pongs between scene color attachment 0 and a dedicated same-precision
+///          attachment. Motion vectors remain immutable inputs for every ordered pass, including
+///          motion blur, and HDR scenes never pass through an RGBA8 intermediate. The final color
+///          is copied back to attachment 0 so final-overlay replay, readback, and presentation all
+///          consume the normal scene color target.
 /// @param ctx Borrowed initialized OpenGL context containing the writable scene FBO.
 /// @param width Positive scene width in pixels.
 /// @param height Positive scene height in pixels.
@@ -1347,18 +1616,47 @@ static int gl_apply_postfx_chain_in_scene(gl_context_t *ctx,
                                           int32_t height,
                                           const vgfx3d_postfx_chain_t *chain) {
     GLuint source_tex;
+    int needs_bloom = 0;
 
-    if (!ctx || !ctx->scene_fbo || !ctx->scene_color_tex || !ctx->scene_motion_tex || width <= 0 ||
+    if (!ctx || !ctx->scene_fbo || !ctx->scene_color_tex || !ctx->scene_motion_tex ||
+        !ctx->scene_postfx_tex || !ctx->postfx_program || !ctx->fullscreen_vao || width <= 0 ||
         height <= 0 || !vgfx3d_postfx_chain_is_usable(chain)) {
         return 0;
     }
 
+    /* This fallback must not mutate scene color before discovering that a later pass needs
+     * resources it cannot represent inside the scene FBO. Preflight every deterministic
+     * prerequisite; runtime GL errors still abort the pass that observes them. */
+    for (int32_t i = 0; i < chain->effect_count; i++) {
+        vgfx3d_postfx_snapshot_t safe_snapshot;
+        vgfx3d_sanitize_postfx_snapshot(&chain->effects[i].snapshot, &safe_snapshot);
+        if ((chain->effects[i].type == (int32_t)VGFX3D_POSTFX_EFFECT_TAA &&
+             safe_snapshot.taa_enabled) ||
+            (chain->effects[i].type == (int32_t)VGFX3D_POSTFX_EFFECT_SSR &&
+             safe_snapshot.ssr_enabled)) {
+            return 0;
+        }
+        needs_bloom |= safe_snapshot.bloom_enabled ? 1 : 0;
+    }
+    if (needs_bloom && ensure_bloom_targets(ctx, width, height) != 0)
+        return 0;
+
     source_tex = ctx->scene_color_tex;
     for (int32_t i = 0; i < chain->effect_count; i++) {
+        vgfx3d_postfx_snapshot_t safe_snapshot;
         const int source_is_scene_color = (source_tex == ctx->scene_color_tex) ? 1 : 0;
         const GLenum dst_attachment =
-            source_is_scene_color ? GL_COLOR_ATTACHMENT1 : GL_COLOR_ATTACHMENT0;
-        const GLuint dst_tex = source_is_scene_color ? ctx->scene_motion_tex : ctx->scene_color_tex;
+            source_is_scene_color ? GL_COLOR_ATTACHMENT2 : GL_COLOR_ATTACHMENT0;
+        const GLuint dst_tex = source_is_scene_color ? ctx->scene_postfx_tex : ctx->scene_color_tex;
+
+        vgfx3d_sanitize_postfx_snapshot(&chain->effects[i].snapshot, &safe_snapshot);
+        ctx->postfx_current_bloom_tex = 0;
+        if (safe_snapshot.bloom_enabled) {
+            ctx->postfx_current_bloom_tex = gl_encode_bloom_chain(
+                ctx, source_tex, width, height, safe_snapshot.bloom_threshold);
+            if (!ctx->postfx_current_bloom_tex)
+                return 0;
+        }
         if (!gl_draw_texture_to_target(ctx,
                                        source_tex,
                                        ctx->scene_fbo,
@@ -1367,11 +1665,13 @@ static int gl_apply_postfx_chain_in_scene(gl_context_t *ctx,
                                        height,
                                        width,
                                        height,
-                                       &chain->effects[i].snapshot)) {
+                                       &safe_snapshot)) {
+            ctx->postfx_current_bloom_tex = 0;
             return 0;
         }
         source_tex = dst_tex;
     }
+    ctx->postfx_current_bloom_tex = 0;
 
     if (source_tex != ctx->scene_color_tex) {
         if (!gl_draw_texture_to_target(ctx,
@@ -1447,18 +1747,7 @@ static int gl_apply_postfx_chain(gl_context_t *ctx,
     if (ensure_postfx_scratch_target(ctx, width, height) != 0)
         return 0;
 
-    /* Plan 05: prefilter the bloom mip chain once from the scene color when any chain
-     * entry uses bloom; passes composite mip 0 via uBloomTex while it is non-zero. */
     ctx->postfx_current_bloom_tex = 0;
-    for (int32_t i = 0; i < chain->effect_count; i++) {
-        if (chain->effects[i].snapshot.bloom_enabled) {
-            vgfx3d_postfx_snapshot_t safe_snapshot;
-            vgfx3d_sanitize_postfx_snapshot(&chain->effects[i].snapshot, &safe_snapshot);
-            ctx->postfx_current_bloom_tex =
-                gl_encode_bloom_chain(ctx, width, height, safe_snapshot.bloom_threshold);
-            break;
-        }
-    }
 
     for (int32_t i = 0; i < chain->effect_count; i++) {
         vgfx3d_postfx_snapshot_t safe_snapshot;
@@ -1474,16 +1763,31 @@ static int gl_apply_postfx_chain(gl_context_t *ctx,
         if (chain->effects[i].type == (int32_t)VGFX3D_POSTFX_EFFECT_TAA &&
             safe_snapshot.taa_enabled) {
             GLuint resolved = gl_encode_taa_pass(ctx, source_tex, width, height, &safe_snapshot);
-            if (resolved)
-                source_tex = resolved;
+            if (!resolved) {
+                ctx->postfx_current_bloom_tex = 0;
+                return 0;
+            }
+            source_tex = resolved;
         }
         /* Plan 10: an SSR entry composites reflections into its own target, which
          * then feeds the remaining chain exactly like the TAA pre-resolve above. */
         if (chain->effects[i].type == (int32_t)VGFX3D_POSTFX_EFFECT_SSR &&
             safe_snapshot.ssr_enabled) {
             GLuint reflected = gl_encode_ssr_pass(ctx, source_tex, width, height, &safe_snapshot);
-            if (reflected)
-                source_tex = reflected;
+            if (!reflected) {
+                ctx->postfx_current_bloom_tex = 0;
+                return 0;
+            }
+            source_tex = reflected;
+        }
+        ctx->postfx_current_bloom_tex = 0;
+        if (safe_snapshot.bloom_enabled &&
+            chain->effects[i].type != (int32_t)VGFX3D_POSTFX_EFFECT_TAA &&
+            chain->effects[i].type != (int32_t)VGFX3D_POSTFX_EFFECT_SSR) {
+            ctx->postfx_current_bloom_tex = gl_encode_bloom_chain(
+                ctx, source_tex, width, height, safe_snapshot.bloom_threshold);
+            if (!ctx->postfx_current_bloom_tex)
+                return 0;
         }
 
         if (is_last && !force_offscreen_final) {
@@ -1593,21 +1897,23 @@ static int gl_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *rt)
     gl_context_t *ctx = (gl_context_t *)ctx_ptr;
     uint8_t *tmp;
     float *tmpf;
-    size_t bytes;
+    size_t destination_bytes;
     size_t float_count;
     size_t pixel_count;
     size_t float_bytes;
+    size_t tight_bytes;
     gl_framebuffer_state_t saved_state;
 
-    if (!ctx || !rt || rt->width <= 0 || rt->height <= 0 || !ctx->rtt_fbo ||
-        ctx->rtt_target != rt) {
+    if (!ctx || !rt || rt->width <= 0 || rt->width > INT32_MAX / 16 || rt->height <= 0 ||
+        !ctx->rtt_fbo || ctx->rtt_target != rt) {
         return 0;
     }
     if (!vgfx3d_rendertarget_ensure_color(rt)) {
         return 0;
     }
     if (!gl_checked_mul_size((size_t)rt->width, (size_t)rt->height, &pixel_count) ||
-        !gl_checked_mul_size((size_t)rt->stride, (size_t)rt->height, &bytes)) {
+        !gl_checked_mul_size((size_t)rt->stride, (size_t)rt->height, &destination_bytes) ||
+        !gl_checked_mul_size(pixel_count, 4u, &tight_bytes) || destination_bytes < tight_bytes) {
         return 0;
     }
 
@@ -1620,26 +1926,20 @@ static int gl_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *rt)
     if (vgfx3d_rendertarget_is_hdr(rt)) {
         if (!gl_checked_mul_size(pixel_count, 4u, &float_count) ||
             !gl_checked_mul_size(float_count, sizeof(float), &float_bytes)) {
-            gl.PixelStorei(GL_PACK_ALIGNMENT, 4);
-            gl_restore_framebuffer_state(&saved_state);
-            return 0;
-        }
-        tmpf = (float *)malloc(float_bytes);
-        if (!tmpf) {
-            gl.PixelStorei(GL_PACK_ALIGNMENT, 4);
             gl_restore_framebuffer_state(&saved_state);
             return 0;
         }
         if (!vgfx3d_rendertarget_ensure_hdr_color(rt)) {
-            free(tmpf);
-            gl.PixelStorei(GL_PACK_ALIGNMENT, 4);
+            gl_restore_framebuffer_state(&saved_state);
+            return 0;
+        }
+        tmpf = (float *)gl_ensure_readback_scratch(ctx, float_bytes);
+        if (!tmpf) {
             gl_restore_framebuffer_state(&saved_state);
             return 0;
         }
         gl.ReadPixels(0, 0, rt->width, rt->height, GL_RGBA, GL_FLOAT, tmpf);
         if (!gl_upload_ok()) {
-            free(tmpf);
-            gl.PixelStorei(GL_PACK_ALIGNMENT, 4);
             gl_restore_framebuffer_state(&saved_state);
             return 0;
         }
@@ -1652,24 +1952,14 @@ static int gl_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *rt)
         vgfx3d_copy_linear_rgba32f_to_rgba8(
             rt->color_buf, rt->stride, rt->width, rt->height, rt->hdr_color_buf, rt->width * 16);
         rt->hdr_color_valid = 1;
-        free(tmpf);
     } else {
-        size_t tight_bytes;
-        if (!gl_checked_mul_size(pixel_count, 4u, &tight_bytes)) {
-            gl.PixelStorei(GL_PACK_ALIGNMENT, 4);
-            gl_restore_framebuffer_state(&saved_state);
-            return 0;
-        }
-        tmp = (uint8_t *)malloc(tight_bytes);
+        tmp = gl_ensure_readback_scratch(ctx, tight_bytes);
         if (!tmp) {
-            gl.PixelStorei(GL_PACK_ALIGNMENT, 4);
             gl_restore_framebuffer_state(&saved_state);
             return 0;
         }
         gl.ReadPixels(0, 0, rt->width, rt->height, GL_RGBA, GL_UNSIGNED_BYTE, tmp);
         if (!gl_upload_ok()) {
-            free(tmp);
-            gl.PixelStorei(GL_PACK_ALIGNMENT, 4);
             gl_restore_framebuffer_state(&saved_state);
             return 0;
         }
@@ -1680,12 +1970,10 @@ static int gl_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *rt)
                    (size_t)rt->width * 4u);
         }
         rt->hdr_color_valid = 0;
-        free(tmp);
     }
 
     ctx->rtt_color_dirty = 0;
     rt->color_dirty = 0;
-    gl.PixelStorei(GL_PACK_ALIGNMENT, 4);
     gl_restore_framebuffer_state(&saved_state);
     gl_restore_main_draw_state(ctx);
     return 1;

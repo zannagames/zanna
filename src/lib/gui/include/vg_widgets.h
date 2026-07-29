@@ -822,6 +822,7 @@ typedef struct vg_listbox_item {
     struct vg_listbox *owner; ///< Owning listbox while the item is live
     char *text;               ///< Item text (owned)
     size_t text_len;          ///< Item text length in bytes
+    int32_t icon_vector_id;   ///< Vector icon before the text; negative = none.
     uint32_t text_color;      ///< Optional text color override
     void *user_data;          ///< User data
     bool owns_user_data;      ///< Free user_data when the item is destroyed
@@ -997,6 +998,11 @@ bool vg_listbox_item_is_live(const vg_listbox_item_t *item);
 /// @param item  Live ListBox item.
 /// @param color RGB/RGBA color value interpreted by the active backend.
 void vg_listbox_item_set_text_color(vg_listbox_item_t *item, uint32_t color);
+
+/// @brief Attach or clear a leading vector icon on one live item (ADR 0220).
+/// @param item Live item to modify; invalid or retired records are ignored.
+/// @param vector_id Icon id from vg_icon_vector_find; negative clears it.
+void vg_listbox_item_set_icon_vector(vg_listbox_item_t *item, int32_t vector_id);
 
 /// @brief Set the font used for item text rendering.
 /// @param listbox ListBox widget.
@@ -1582,6 +1588,19 @@ void vg_image_set_pixels(vg_image_t *image, const uint8_t *pixels, int width, in
 /// @param height Positive source height in pixels.
 /// @return true when all pixels were copied; false on invalid dimensions or allocation failure.
 bool vg_image_try_set_pixels(vg_image_t *image, const uint8_t *pixels, int width, int height);
+
+/// @brief Borrow the retained pixel buffer resized for one width*height RGBA8 frame.
+/// @param image Image widget; NULL is rejected.
+/// @param width Positive frame width in pixels.
+/// @param height Positive frame height in pixels.
+/// @return Writable buffer owned by the widget, or NULL on invalid size or allocation failure.
+uint8_t *vg_image_borrow_writable_pixels(vg_image_t *image, int width, int height);
+
+/// @brief Commit a frame previously written through vg_image_borrow_writable_pixels.
+/// @param image Image widget; NULL or an uncommittable size is ignored.
+/// @param width Committed frame width in pixels.
+/// @param height Committed frame height in pixels.
+void vg_image_commit_borrowed_pixels(vg_image_t *image, int width, int height);
 
 /// @brief Atomically copy a rectangular RGBA source region into the current image.
 /// @details Both rectangles must fit completely in their respective buffers. Validation failure

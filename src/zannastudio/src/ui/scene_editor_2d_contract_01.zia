@@ -134,6 +134,10 @@ class SceneEditor2DContract01 {
     hide func ShowCommandMenu(_button: GUI.Button,
                               _menu: GUI.ContextMenu) {}
 
+    /// @brief Neutral dispatch slot for ShowCommandMenuForItem (ADR 0220).
+    hide func ShowCommandMenuForItem(_item: GUI.ToolbarItem,
+                                     _menu: GUI.ContextMenu) {}
+
     /// @brief Neutral dispatch slot for ConfigureSceneMenu.
     hide func ConfigureSceneMenu() {}
 

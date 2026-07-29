@@ -20,6 +20,7 @@ module editor_tabs;
 
 bind "../core/document";
 bind "../core/document_manager";
+bind "../services/file_utils";
 bind Zanna.GUI as GUI;
 
 // ============================================================================
@@ -66,10 +67,14 @@ class EditorTabs {
         tabBar.SetVisible(tabBar.TabCount > 0);
     }
 
-    /// @brief Append a new tab.
+    /// @brief Append a new tab with its file-kind vector icon (ADR 0220).
     /// @param closeable 1 to show the close button, 0 to hide it.
     expose func AddTab(name: String, closeable: Integer) {
         tabBar.AddTab(name, closeable);
+        var added: GUI.Tab = tabBar.GetTabAt(tabBar.TabCount - 1);
+        if added != null {
+            added.SetNamedIcon(file_utils.FileIconName(name));
+        }
         tabBar.SetVisible(true);
     }
 
@@ -94,12 +99,15 @@ class EditorTabs {
     }
 
     /// @brief Update tab title (e.g., after Save As renames the file).
+    /// @details The file-kind icon follows the new name so a Save As across
+    ///          kinds stays truthful (ADR 0220).
     expose func SetTitle(index: Integer, title: String) {
         if index < 0 or index >= tabBar.TabCount {
             return;
         }
         var tab: GUI.Tab = tabBar.GetTabAt(index);
         tab.SetTitle(title);
+        tab.SetNamedIcon(file_utils.FileIconName(title));
     }
 
     /// @brief Update tab tooltip — usually the full file path so a

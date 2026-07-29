@@ -1139,7 +1139,12 @@ void *rt_wss_server_new(int64_t port, rt_string cert_file, rt_string key_file) {
         tls_cfg.cert_file = s->cert_file;
         tls_cfg.key_file = s->key_file;
         tls_cfg.alpn_protocol = "http/1.1";
-        tls_cfg.timeout_ms = 10000;
+        // Match the 30 s TLS-server handshake default (rt_tls_server_ctx_new).
+        // Debug builds compute the full TLS 1.3 flight in whole seconds per
+        // side, and a tighter 10 s budget loses that race on slower hosts
+        // while buying no additional protection (Stop still cancels promptly
+        // through cancel_requested polling).
+        tls_cfg.timeout_ms = 30000;
         tls_cfg.cancel_requested = ws_tls_accept_cancel_requested;
         tls_cfg.cancel_context = s;
         s->tls_ctx = rt_tls_server_ctx_new(&tls_cfg);

@@ -2,6 +2,7 @@ project ashfall-scenes
 version 0.1.0
 lang zia
 entry main.zia
+run-profile native
 
 # === Package Metadata ===
 package-name "ASHFALL: SCENES"

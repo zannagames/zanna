@@ -131,6 +131,7 @@ class SceneComponentSchemaLoadingLayer extends PreviousLayer.SceneComponentSchem
         if ParseNodePreviews3D(root, schema) == false { return schema; }
         if ParseNodePreviewFilter3D(root, schema) == false { return schema; }
         if ParseMaterialPreviews3D(root, schema) == false { return schema; }
+        if ParseSceneSettings(root, schema) == false { return schema; }
         schema.valid = true;
         schema.error = "";
         return schema;

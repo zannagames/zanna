@@ -25,6 +25,11 @@ class SceneComponentSchemaParserContract {
 
     expose func LoadPath(_path: String) -> SceneComponentModel.SceneComponentSchema { return null; }
 
+    hide func ParseSceneSettings(_root: Any,
+                          _schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        return true;
+    }
+
     expose func ParseText(_text: String,
                           _sourcePath: String) -> SceneComponentModel.SceneComponentSchema { return null; }
 

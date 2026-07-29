@@ -74,6 +74,9 @@ struct ProjectConfig {
     /// @brief True when the manifest explicitly set a build profile.
     bool buildProfileExplicit{false};
 
+    /// @brief How Run Scene launches the project ("vm" or "native").
+    std::string runProfile{"vm"};
+
     /// @brief True when the manifest explicitly set an optimization level.
     bool optimizeLevelExplicit{false};
 

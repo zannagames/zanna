@@ -141,11 +141,11 @@ static spritebatch_impl *spritebatch_checked_or_null(void *batch_ptr) {
     return (spritebatch_impl *)batch_ptr;
 }
 
-/// @brief Validate that @p pixels is a live Pixels instance.
+/// @brief Validate and return a live Pixels implementation without trapping.
 /// @param pixels Candidate opaque Pixels handle.
-/// @return Non-zero if @p pixels is a valid rt_pixels object, 0 otherwise.
-static int8_t spritebatch_pixels_checked(void *pixels) {
-    return pixels && rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl));
+/// @return Validated Pixels implementation, or null for an invalid handle.
+static rt_pixels_impl *spritebatch_pixels_checked(void *pixels) {
+    return rt_pixels_checked_impl_or_null(pixels);
 }
 
 /// @brief Clamp a scale percentage to a minimum of 1 — prevents division by zero in
@@ -178,23 +178,151 @@ static int64_t spritebatch_normalize_tint(int64_t color) {
     return color;
 }
 
+/// @brief Divide an unsigned conceptual 128-bit product by a uint64 divisor.
+/// @details Uses quotient/remainder doubling when the native product would
+///          overflow, keeping results exact on every supported compiler.
+static int8_t spritebatch_unsigned_mul_div(uint64_t lhs,
+                                           uint64_t rhs,
+                                           uint64_t divisor,
+                                           uint64_t limit,
+                                           uint64_t *quotient,
+                                           uint64_t *remainder) {
+    if (!quotient || !remainder || divisor == 0)
+        return 0;
+    if (lhs == 0 || rhs == 0) {
+        *quotient = 0;
+        *remainder = 0;
+        return 1;
+    }
+    if (lhs <= UINT64_MAX / rhs) {
+        uint64_t product = lhs * rhs;
+        uint64_t result = product / divisor;
+        if (result > limit)
+            return 0;
+        *quotient = result;
+        *remainder = product % divisor;
+        return 1;
+    }
+
+    uint64_t result_q = 0;
+    uint64_t result_r = 0;
+    uint64_t term_q = lhs / divisor;
+    uint64_t term_r = lhs % divisor;
+    uint64_t capped = limit + 1u;
+    while (rhs != 0) {
+        if ((rhs & 1u) != 0u) {
+            if (term_q > limit - result_q)
+                return 0;
+            result_q += term_q;
+            if (result_r >= divisor - term_r) {
+                result_r -= divisor - term_r;
+                if (result_q == limit)
+                    return 0;
+                result_q++;
+            } else {
+                result_r += term_r;
+            }
+        }
+        rhs >>= 1u;
+        if (rhs == 0)
+            break;
+
+        uint64_t carry = 0;
+        if (term_r >= divisor - term_r) {
+            term_r -= divisor - term_r;
+            carry = 1;
+        } else {
+            term_r += term_r;
+        }
+        if (term_q >= capped || term_q > (capped - carry) / 2u)
+            term_q = capped;
+        else
+            term_q = term_q * 2u + carry;
+    }
+    *quotient = result_q;
+    *remainder = result_r;
+    return 1;
+}
+
 /// @brief Compute a scaled pixel dimension with saturation and a minimum of 1.
-/// @details Similar to `sprite_saturating_scale` but enforces a floor of 1 instead
-///   of rounding to 0, so a very small scale never produces a zero-size allocation
-///   in the subsequent `rt_pixels_scale` call. Long double avoids intermediate
-///   overflow before the /100 division.
+/// @details Exact integer quotient/remainder arithmetic avoids the
+///          platform-dependent precision of `long double`. Half values round
+///          upward, matching the transform APIs' positive-dimension policy.
 /// @param value Nonnegative source dimension.
 /// @param scale Integer percentage, normalized to at least 1.
 /// @return Nearest scaled dimension, clamped to at least 1 and saturated to
 ///         `INT64_MAX`.
 static int64_t spritebatch_saturating_scaled_dim(int64_t value, int64_t scale) {
-    long double scaled =
-        ((long double)value * (long double)spritebatch_normalize_scale(scale)) / 100.0L;
-    if (scaled >= (long double)INT64_MAX)
-        return INT64_MAX;
-    if (scaled <= 1.0L)
+    if (value <= 0)
         return 1;
-    return (int64_t)(scaled + 0.5L);
+    uint64_t quotient = 0;
+    uint64_t remainder = 0;
+    if (!spritebatch_unsigned_mul_div((uint64_t)value,
+                                      (uint64_t)spritebatch_normalize_scale(scale),
+                                      100u,
+                                      (uint64_t)INT64_MAX,
+                                      &quotient,
+                                      &remainder))
+        return INT64_MAX;
+    if (remainder >= 50u) {
+        if (quotient == (uint64_t)INT64_MAX)
+            return INT64_MAX;
+        quotient++;
+    }
+    if (quotient == 0)
+        return 1;
+    return (int64_t)quotient;
+}
+
+/// @brief Normalize an integer rotation before conversion to floating point.
+/// @param rotation Clockwise rotation in degrees.
+/// @return Equivalent angle in the inclusive range 0 through 359.
+static int64_t spritebatch_canonical_rotation(int64_t rotation) {
+    rotation %= 360;
+    if (rotation < 0)
+        rotation += 360;
+    return rotation;
+}
+
+/// @brief Clip a queued region to its immutable Pixels source dimensions.
+/// @details Mirrors the source-bound portion of Canvas region clipping before
+///          any allocation or transform. Leading source clipping advances the
+///          destination, so transformed and fast-path draws have identical
+///          placement and neither can allocate attacker-sized off-image pads.
+static int8_t spritebatch_clip_region(rt_pixels_impl *pixels,
+                                      int64_t *dx,
+                                      int64_t *dy,
+                                      int64_t *sx,
+                                      int64_t *sy,
+                                      int64_t *sw,
+                                      int64_t *sh) {
+    if (!pixels || !pixels->data || pixels->width <= 0 || pixels->height <= 0 || !dx || !dy ||
+        !sx || !sy || !sw || !sh || *sw <= 0 || *sh <= 0)
+        return 0;
+
+    int64_t skip_x = rt_pixels_negative_skip(*sx, *sw);
+    int64_t skip_y = rt_pixels_negative_skip(*sy, *sh);
+    if (skip_x >= *sw || skip_y >= *sh || *dx > INT64_MAX - skip_x || *dy > INT64_MAX - skip_y)
+        return 0;
+    if (skip_x > 0) {
+        *dx += skip_x;
+        *sx = 0;
+        *sw -= skip_x;
+    }
+    if (skip_y > 0) {
+        *dy += skip_y;
+        *sy = 0;
+        *sh -= skip_y;
+    }
+    if (*sx >= pixels->width || *sy >= pixels->height)
+        return 0;
+    int64_t remaining_w = pixels->width - *sx;
+    int64_t remaining_h = pixels->height - *sy;
+    if (*sw > remaining_w)
+        *sw = remaining_w;
+    if (*sh > remaining_h)
+        *sh = remaining_h;
+    return *sw > 0 && *sh > 0;
 }
 
 //=============================================================================
@@ -310,7 +438,8 @@ static void spritebatch_clear_items(spritebatch_impl *batch) {
 /// @param needed Number of additional entries required.
 /// @return 1 if the batch has sufficient capacity, 0 on overflow or allocation failure.
 static int8_t ensure_capacity(spritebatch_impl *batch, int64_t needed) {
-    if (!batch || needed < 0)
+    if (!batch || !batch->items || needed < 0 || batch->count < 0 || batch->capacity <= 0 ||
+        batch->count > batch->capacity || batch->capacity > MAX_BATCH_CAPACITY)
         return 0;
     if (needed > INT64_MAX - batch->count)
         return 0;
@@ -396,31 +525,34 @@ static void *apply_batch_color(void *pixels, int64_t tint_color, int64_t alpha) 
         }
 
         rt_pixels_impl *impl = rt_pixels_checked_impl_or_null(result);
-        if (impl && impl->data) {
-            uint32_t alpha_u = alpha <= 0 ? 0u : (uint32_t)alpha;
-            if (impl->width <= 0 || impl->height <= 0) {
-                release_batch_color_temp(pixels, result);
-                return NULL;
-            }
-            uint64_t width = (uint64_t)impl->width;
-            uint64_t height = (uint64_t)impl->height;
-            if (width > UINT64_MAX / height) {
-                release_batch_color_temp(pixels, result);
-                return NULL;
-            }
-            uint64_t total = width * height;
-            if (total > (uint64_t)SIZE_MAX) {
-                release_batch_color_temp(pixels, result);
-                return NULL;
-            }
-            size_t pixel_count = (size_t)total;
-            for (size_t i = 0; i < pixel_count; ++i) {
-                uint32_t rgba = impl->data[i];
-                uint32_t a = rgba & 0xFFu;
-                a = (a * alpha_u + 127u) / 255u;
-                impl->data[i] = (rgba & 0xFFFFFF00u) | a;
-            }
+        if (!impl || !impl->data || impl->width <= 0 || impl->height <= 0) {
+            release_batch_color_temp(pixels, result);
+            return NULL;
         }
+        uint64_t width = (uint64_t)impl->width;
+        uint64_t height = (uint64_t)impl->height;
+        if (width > UINT64_MAX / height) {
+            release_batch_color_temp(pixels, result);
+            return NULL;
+        }
+        uint64_t total = width * height;
+        if (total > (uint64_t)SIZE_MAX) {
+            release_batch_color_temp(pixels, result);
+            return NULL;
+        }
+        uint32_t alpha_u = alpha <= 0 ? 0u : (uint32_t)alpha;
+        size_t pixel_count = (size_t)total;
+        int8_t changed = 0;
+        for (size_t i = 0; i < pixel_count; ++i) {
+            uint32_t rgba = impl->data[i];
+            uint32_t a = rgba & 0xFFu;
+            a = (a * alpha_u + 127u) / 255u;
+            uint32_t replacement = (rgba & 0xFFFFFF00u) | a;
+            changed |= replacement != rgba;
+            impl->data[i] = replacement;
+        }
+        if (changed)
+            pixels_touch(impl);
     }
 
     return result;
@@ -467,7 +599,7 @@ static void *extract_region_pixels(void *pixels, int64_t sx, int64_t sy, int64_t
 /// @param canvas Destination Canvas.
 /// @param item Region command containing a retained Pixels source.
 static void draw_region_item(spritebatch_impl *batch, void *canvas, const batch_item *item) {
-    if (!item->source)
+    if (!batch || !item || !item->source)
         return;
 
     int64_t scale_x = spritebatch_normalize_scale(item->scale_x);
@@ -523,8 +655,10 @@ static void draw_region_item(spritebatch_impl *batch, void *canvas, const batch_
          * the enlarged image stays centred on the original region's centre. */
         int64_t rot_w = rt_pixels_width(transformed);
         int64_t rot_h = rt_pixels_height(transformed);
-        blit_x = item->x + pre_rot_w / 2 - rot_w / 2;
-        blit_y = item->y + pre_rot_h / 2 - rot_h / 2;
+        int64_t offset_x = pre_rot_w / 2 - rot_w / 2;
+        int64_t offset_y = pre_rot_h / 2 - rot_h / 2;
+        blit_x = rtg_add_sat64(item->x, offset_x);
+        blit_y = rtg_add_sat64(item->y, offset_y);
     }
 
     void *colored = apply_batch_color(transformed, batch->tint_color, batch->alpha);
@@ -636,9 +770,9 @@ void rt_spritebatch_end(void *batch_ptr, void *canvas) {
         return;
     if (!batch->active)
         return;
+    batch->active = 0;
     if (!canvas) {
         spritebatch_clear_items(batch);
-        batch->active = 0;
         return;
     }
 
@@ -684,7 +818,6 @@ void rt_spritebatch_end(void *batch_ptr, void *canvas) {
     }
 
     spritebatch_clear_items(batch);
-    batch->active = 0;
 }
 
 /// @brief Queue a Sprite draw at 100% scale and zero rotation.
@@ -830,13 +963,16 @@ void rt_spritebatch_draw_region_ex(void *batch_ptr,
                                    int64_t scale_y,
                                    int64_t rotation,
                                    int64_t depth) {
-    if (!batch_ptr || !spritebatch_pixels_checked(pixels))
+    rt_pixels_impl *pixels_impl = spritebatch_pixels_checked(pixels);
+    if (!batch_ptr || !pixels_impl)
         return;
 
     spritebatch_impl *batch = spritebatch_checked_or_null(batch_ptr);
     if (!batch)
         return;
     if (!batch->active)
+        return;
+    if (!spritebatch_clip_region(pixels_impl, &dx, &dy, &sx, &sy, &sw, &sh))
         return;
 
     batch_item item = {0};
@@ -850,7 +986,7 @@ void rt_spritebatch_draw_region_ex(void *batch_ptr,
     item.src_h = sh;
     item.scale_x = scale_x;
     item.scale_y = scale_y;
-    item.rotation = rotation;
+    item.rotation = spritebatch_canonical_rotation(rotation);
     item.depth = depth;
 
     add_item(batch, &item);

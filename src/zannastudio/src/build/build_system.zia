@@ -233,9 +233,21 @@ class BuildSystem {
         }
         AppendReadResult(processHandle.ReadStdoutResult(), "stdout");
         AppendReadResult(processHandle.ReadStderrResult(), "stderr");
-        Finish(processHandle.ExitCode());
+        var finishedCode = processHandle.ExitCode();
         processHandle.Destroy();
         processHandle = null;
+        // A successful stage hands off to its continuation in the same
+        // job slot (build-then-launch chains, ADR 0225).
+        if finishedCode == 0 and activeConfig != null
+           and activeConfig.next != null {
+            var continuation = activeConfig.next;
+            activeConfig = null;
+            buildOutput = buildOutput
+                + "\n[stage] " + continuation.name + "\n";
+            if StartConfig(continuation) { return true; }
+            return false;
+        }
+        Finish(finishedCode);
         return false;
     }
 

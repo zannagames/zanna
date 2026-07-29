@@ -43,6 +43,7 @@
 #include <string.h>
 
 #ifdef ZANNA_ENABLE_GRAPHICS
+#include "vg_icon_vector.h"
 
 /// @brief Resolve a parent-container handle to its widget (file-local copy).
 /// @param parent Candidate parent handle, or `NULL` for a detached control.
@@ -816,6 +817,22 @@ void rt_listbox_item_set_text(void *item, rt_string text) {
     }
 }
 
+/// @brief Attach or clear a leading built-in vector icon on a listbox item (ADR 0220).
+/// @param item Live ListBox item subhandle.
+/// @param icon_name Stable vg_icon_vector name; empty or unknown names clear the icon.
+void rt_listbox_item_set_named_icon(void *item, rt_string icon_name) {
+    RT_ASSERT_MAIN_THREAD();
+    if (!item)
+        return;
+    vg_listbox_item_t *it = rt_gui_listbox_item_from_handle(item);
+    if (!it)
+        return;
+    char *cname = rt_string_to_gui_cstr(icon_name);
+    int32_t vector_id = cname && cname[0] ? vg_icon_vector_find(cname) : VG_ICON_VECTOR_INVALID;
+    free(cname);
+    vg_listbox_item_set_icon_vector(it, vector_id);
+}
+
 /// @brief Attach arbitrary string data to a listbox item (replaces previous data).
 /// @param item Live ListBox item subhandle.
 /// @param data Runtime string copied into owned item data, or null to clear it.
@@ -1233,6 +1250,14 @@ rt_string rt_listbox_item_get_text(void *item) {
 void rt_listbox_item_set_text(void *item, rt_string text) {
     (void)item;
     (void)text;
+}
+
+/// @brief Stub: ignore listbox item icon changes when graphics is disabled.
+/// @param item Ignored item subhandle.
+/// @param icon_name Ignored icon name.
+void rt_listbox_item_set_named_icon(void *item, rt_string icon_name) {
+    (void)item;
+    (void)icon_name;
 }
 
 /// @brief Attach arbitrary string data to a listbox item (replaces previous data).

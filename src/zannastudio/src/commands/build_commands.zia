@@ -23,6 +23,7 @@
 module build_commands;
 
 bind "../ui/app_shell";
+bind "../ui/scene_play_controller";
 bind "../ui/notification_policy";
 bind "../core/document_manager";
 bind "../core/project_manager";
@@ -34,6 +35,10 @@ bind "../build/run_config";
 bind "../commands/file_commands";
 bind "../services/file_utils";
 bind "../services/locations";
+
+bind Dir = Zanna.IO.Dir;
+bind File = Zanna.IO.File;
+bind Path = Zanna.IO.Path;
 bind "../services/theme_colors";
 
 bind Zanna.GUI;
@@ -249,11 +254,179 @@ func handleRunScene(shell: app_shell.AppShell,
         shell.SetStatusLeft("Save the active scene file before running it");
         return;
     }
+    if projMgr.project != null
+       and projMgr.project.runProfile == "native" {
+        StartNativeSceneRun(
+            shell, projMgr, buildSys, locStore, sceneDoc!.filePath);
+        return;
+    }
     var cfg = run_config.ForDocument(run_config.ACTION_RUN, null, projMgr);
     Seq.Push(cfg.args, "--");
     Seq.Push(cfg.args, "--scene");
     Seq.Push(cfg.args, sceneDoc!.filePath);
+    Seq.Push(cfg.args, "--scene-watch");
+    cfg.targetPath = sceneDoc!.filePath;
     StartExecutionConfig(shell, buildSys, locStore, cfg);
+}
+
+/// @brief Embedded Play: create the frame channel, then run the native
+///        scene chain with ZANNA_EMBED_CHANNEL injected (ADR 0225).
+expose func handlePlayScene(shell: app_shell.AppShell,
+                            docMgr: document_manager.DocumentManager,
+                            projMgr: project_manager.ProjectManager,
+                            engine: editor_engine.EditorEngine,
+                            tabs: editor_tabs.EditorTabs,
+                            buildSys: build_system.BuildSystem,
+                            locStore: locations.LocationStore,
+                            playController:
+                                scene_play_controller.ScenePlayController,
+                            saveAllBeforeBuild: Boolean) {
+    if CanStartExecutionJob(shell, buildSys, "start Play") == false {
+        return;
+    }
+    file_commands.SaveEditorState(docMgr, engine);
+    var sceneDoc = docMgr.GetActive();
+    if sceneDoc == null or sceneDoc!.isNew
+       or file_utils.IsSceneDocumentPath(sceneDoc!.filePath) == false {
+        shell.SetStatusLeft("Save the active scene file before playing it");
+        return;
+    }
+    if projMgr == null or projMgr.IsOpen() == false {
+        shell.SetStatusLeft(
+            "Open the scene's project before playing it");
+        return;
+    }
+    if projMgr.project == null
+       or projMgr.project.runProfile != "native" {
+        shell.SetStatusLeft(
+            "Embedded Play needs run-profile native in zanna.project; "
+            + "Run Scene covers the VM profile");
+        return;
+    }
+    var saveResult = file_commands.handleSaveForExecution(
+        shell, docMgr, engine, tabs, saveAllBeforeBuild);
+    if saveResult.success == false {
+        ReportCanceledExecution(shell, "Play Scene", saveResult);
+        return;
+    }
+    var channelName = playController.Start();
+    if channelName == "" {
+        shell.SetStatusLeft(
+            "Embedded Play could not create its frame channel");
+        return;
+    }
+    var env = Zanna.Collections.Map.New();
+    Zanna.Collections.Map.SetStr(env, "ZANNA_EMBED_CHANNEL", channelName);
+    var root = projMgr.RootPath();
+    var projectName = projMgr.project.name;
+    if projectName == "" { projectName = "game"; }
+    var runDir = Path.Join(Path.Join(root, ".zanna-studio"), "run");
+    Dir.MakeAll(runDir);
+    var binaryPath = Path.Join(runDir, projectName);
+    var chain = run_config.ForNativeScene(
+        root, projectName, sceneDoc!.filePath, binaryPath, env);
+    if File.Exists(binaryPath)
+       and File.Modified(binaryPath) > NewestSourceModified(root) {
+        shell.SetStatusLeft(
+            "Binary is fresh; playing " + projectName + " embedded");
+        StartExecutionConfig(shell, buildSys, locStore, chain.next);
+        return;
+    }
+    shell.SetStatusLeft(
+        "Building " + projectName + " for embedded Play");
+    StartExecutionConfig(shell, buildSys, locStore, chain);
+}
+
+/// @brief Launch a native run-profile scene: build (unless fresh), then
+///        run the produced binary under --scene-watch (ADR 0225).
+func StartNativeSceneRun(shell: app_shell.AppShell,
+                         projMgr: project_manager.ProjectManager,
+                         buildSys: build_system.BuildSystem,
+                         locStore: locations.LocationStore,
+                         scenePath: String) {
+    var root = projMgr.RootPath();
+    var projectName = projMgr.project.name;
+    if projectName == "" { projectName = "game"; }
+    var runDir = Path.Join(Path.Join(root, ".zanna-studio"), "run");
+    Dir.MakeAll(runDir);
+    var binaryPath = Path.Join(runDir, projectName);
+    var chain = run_config.ForNativeScene(
+        root, projectName, scenePath, binaryPath, null);
+    if File.Exists(binaryPath)
+       and File.Modified(binaryPath) > NewestSourceModified(root) {
+        // Scene-only iteration: the binary is newer than every source
+        // file, so skip straight to the launch stage.
+        shell.SetStatusLeft(
+            "Binary is fresh; launching " + projectName + " (native)");
+        StartExecutionConfig(shell, buildSys, locStore, chain.next);
+        return;
+    }
+    shell.SetStatusLeft(
+        "Building " + projectName + " for the native scene run");
+    StartExecutionConfig(shell, buildSys, locStore, chain);
+}
+
+/// @brief After a save, tell the author when the running game reloads it.
+/// @details The ADR 0194 watcher contract reloads the scene the running
+///          process was launched with; the note appears only when the
+///          saved document IS that scene, so the status line never
+///          promises a reload that will not happen.
+expose func NoteSceneWatchReload(shell: app_shell.AppShell,
+                                 docMgr: document_manager.DocumentManager,
+                                 buildSys: build_system.BuildSystem) {
+    if buildSys == null or buildSys.isRunning == false { return; }
+    if buildSys.activeConfig == null { return; }
+    var watched = buildSys.activeConfig.targetPath;
+    if watched == "" { return; }
+    var savedDoc = docMgr.GetActive();
+    if savedDoc == null { return; }
+    if savedDoc!.filePath != watched { return; }
+    shell.SetStatusLeft(
+        "Saved: " + savedDoc!.fileName
+        + " — the running game will reload it");
+}
+
+/// @brief Newest modification time across bounded project source files.
+/// @details Walks at most 6 levels and 2,000 files; hidden and
+///          .zanna-studio directories are skipped so run artifacts never
+///          look like source edits.
+func NewestSourceModified(root: String) -> Integer {
+    var newest = 0;
+    var pending: List[String] = [];
+    var depths: List[Integer] = [];
+    pending.add(root);
+    depths.add(0);
+    var visited = 0;
+    while pending.count() > 0 and visited < 2000 {
+        var dirPath = pending.get(pending.count() - 1);
+        var depth = depths.get(depths.count() - 1);
+        pending.removeAt(pending.count() - 1);
+        depths.removeAt(depths.count() - 1);
+        var files = Dir.Files(dirPath);
+        var index = 0;
+        while index < Seq.get_Count(files) and visited < 2000 {
+            var name = Seq.GetStr(files, index);
+            index = index + 1;
+            if Str.Right(name, 4) != ".zia"
+               and name != "zanna.project" {
+                continue;
+            }
+            visited = visited + 1;
+            var stamp = File.Modified(Path.Join(dirPath, name));
+            if stamp > newest { newest = stamp; }
+        }
+        if depth >= 6 { continue; }
+        var dirs = Dir.Dirs(dirPath);
+        var dirIndex = 0;
+        while dirIndex < Seq.get_Count(dirs) {
+            var childName = Seq.GetStr(dirs, dirIndex);
+            dirIndex = dirIndex + 1;
+            if Str.Left(childName, 1) == "." { continue; }
+            pending.add(Path.Join(dirPath, childName));
+            depths.add(depth + 1);
+        }
+    }
+    return newest;
 }
 
 func handleStop(shell: app_shell.AppShell,

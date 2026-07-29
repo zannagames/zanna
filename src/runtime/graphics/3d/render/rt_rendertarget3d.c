@@ -470,6 +470,41 @@ static int rendertarget3d_read_into_pixels(rt_rendertarget3d *rtd, rt_pixels_imp
 ///   GPU texture caches pick up the new contents.
 /// @param obj Render target handle.
 /// @param pixels Destination Pixels whose width/height equal the target's.
+/// @brief Non-trapping RGBA8 readback straight into a caller buffer.
+/// @details Row-copies the synced backend color mirror without any packing
+///          pass, so per-frame consumers (widget buffers, shared-memory
+///          frames) skip the uint32 round trip entirely. Any mismatch or
+///          unreadable target reports 0 and writes nothing.
+/// @param obj RenderTarget3D handle.
+/// @param dst Destination buffer of width*height*4 bytes.
+/// @param width Expected frame width in pixels.
+/// @param height Expected frame height in pixels.
+/// @return 1 when the full frame was written, otherwise 0.
+int rt_rendertarget3d_try_read_rgba(void *obj, uint8_t *dst, int64_t width, int64_t height) {
+    rt_rendertarget3d *rtd = rendertarget3d_checked(obj);
+    if (!rtd || !rtd->target || !dst || width <= 0 || height <= 0)
+        return 0;
+    size_t color_bytes = 0u;
+    if (!vgfx3d_rendertarget_valid_color_layout(rtd->target, &color_bytes) || color_bytes == 0u)
+        return 0;
+    if (!vgfx3d_rendertarget_ensure_color(rtd->target))
+        return 0;
+    if (!vgfx3d_rendertarget_sync_color_if_needed(rtd->target))
+        return 0;
+    int32_t w = rtd->target->width;
+    int32_t h = rtd->target->height;
+    int32_t stride = rtd->target->stride;
+    if (w <= 0 || h <= 0 || (int64_t)stride < (int64_t)w * 4 || !rtd->target->color_buf)
+        return 0;
+    if ((int64_t)w != width || (int64_t)h != height)
+        return 0;
+    for (int32_t y = 0; y < h; y++) {
+        const uint8_t *src = &rtd->target->color_buf[(size_t)y * (size_t)stride];
+        memcpy(&dst[(size_t)y * (size_t)w * 4u], src, (size_t)w * 4u);
+    }
+    return 1;
+}
+
 void rt_rendertarget3d_copy_to(void *obj, void *pixels) {
     rt_rendertarget3d *rtd = rendertarget3d_checked(obj);
     if (!rtd || !rtd->target) {

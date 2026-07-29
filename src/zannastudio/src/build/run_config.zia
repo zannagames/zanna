@@ -38,6 +38,8 @@ class RunConfig {
     expose Any env;
     expose String problemMatcher;
     expose String targetPath;
+    /// Optional continuation started when this config exits 0 (ADR 0225).
+    expose RunConfig next;
 
     expose func init() {
         name = "";
@@ -49,7 +51,49 @@ class RunConfig {
         env = null;
         problemMatcher = "zanna";
         targetPath = "";
+        next = null;
     }
+}
+
+/// @brief Build-then-launch chain for native run-profile scenes (ADR 0225).
+/// @details Stage 1 builds the project into a per-project run directory;
+///          stage 2 launches the produced binary with the scene under
+///          --scene-watch. Callers may skip stage 1 when the binary is
+///          fresh by starting from `.next` directly.
+expose func ForNativeScene(projectRoot: String,
+                           projectName: String,
+                           scenePath: String,
+                           binaryPath: String,
+                           extraEnv: Any) -> RunConfig {
+    var build = new RunConfig();
+    build.name = "Build " + projectName;
+    build.action = ACTION_BUILD;
+    build.kind = KIND_PROJECT_ENTRY;
+    build.program = "zanna";
+    build.args = Seq.New();
+    Seq.Push(build.args, "build");
+    Seq.Push(build.args, projectRoot);
+    Seq.Push(build.args, "--build-profile");
+    Seq.Push(build.args, "release");
+    Seq.Push(build.args, "-o");
+    Seq.Push(build.args, binaryPath);
+    build.workingDirectory = projectRoot;
+
+    var launch = new RunConfig();
+    launch.name = "Run " + projectName + " (native)";
+    launch.action = ACTION_RUN;
+    launch.kind = KIND_PROJECT_ENTRY;
+    launch.program = binaryPath;
+    launch.args = Seq.New();
+    Seq.Push(launch.args, "--scene");
+    Seq.Push(launch.args, scenePath);
+    Seq.Push(launch.args, "--scene-watch");
+    launch.workingDirectory = projectRoot;
+    launch.env = extraEnv;
+    launch.targetPath = scenePath;
+
+    build.next = launch;
+    return build;
 }
 
 func ForDocument(action: String,

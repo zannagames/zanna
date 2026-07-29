@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/unit/test_rt_tilemap_layers.cpp
+// File: src/tests/unit/test_rt_tilemap_layers.cpp
 // Purpose: Unit tests for multi-layer tilemap support. Tests layer creation,
 //   naming, per-layer tile access, visibility toggling, collision layer
 //   designation, layer removal with index shifting, and backwards compatibility
@@ -391,6 +391,24 @@ static void test_long_layer_name_rejected_without_consuming_slot(void) {
     PASS();
 }
 
+static void test_embedded_null_layer_names_do_not_alias() {
+    TEST("Embedded-NUL layer names are rejected and cannot alias prefixes");
+    void *tm = rt_tilemap_new(2, 2, 16, 16);
+    rt_string prefix = make_str("overlay");
+    const char bytes[] = {'o', 'v', 'e', 'r', 'l', 'a', 'y', '\0', 'a', 'l', 't'};
+    rt_string embedded = rt_string_from_bytes(bytes, sizeof(bytes));
+
+    assert(rt_tilemap_add_layer(tm, prefix) == 1);
+    assert(rt_tilemap_add_layer(tm, embedded) == -1);
+    assert(rt_tilemap_get_layer_count(tm) == 2);
+    assert(rt_tilemap_get_layer_by_name(tm, prefix) == 1);
+    assert(rt_tilemap_get_layer_by_name(tm, embedded) == -1);
+
+    rt_string_unref(embedded);
+    rt_string_unref(prefix);
+    PASS();
+}
+
 static void test_tile_animation_negative_and_huge_dt(void) {
     TEST("Tile animations ignore negative dt and handle huge dt in one step");
     void *tm = rt_tilemap_new(2, 2, 16, 16);
@@ -406,6 +424,18 @@ static void test_tile_animation_negative_and_huge_dt(void) {
     rt_tilemap_update_anims(tm, INT64_MAX);
     int64_t resolved = rt_tilemap_resolve_anim_tile(tm, 7);
     assert(resolved >= 7 && resolved <= 9);
+    PASS();
+}
+
+static void test_tile_animation_rejects_nonpositive_replacement_frames() {
+    TEST("Tile animation replacement frames remain positive");
+    void *tm = rt_tilemap_new(2, 2, 16, 16);
+    rt_tilemap_set_tile_anim(tm, 7, 2, 100);
+    assert(rt_tilemap_resolve_anim_tile(tm, 7) == 7);
+    rt_tilemap_set_tile_anim_frame(tm, 7, 0, 0);
+    assert(rt_tilemap_resolve_anim_tile(tm, 7) == 7);
+    rt_tilemap_set_tile_anim_frame(tm, 7, 0, -10);
+    assert(rt_tilemap_resolve_anim_tile(tm, 7) == 7);
     PASS();
 }
 
@@ -537,7 +567,9 @@ int main() {
     test_cannot_remove_base_layer();
     test_max_layers();
     test_long_layer_name_rejected_without_consuming_slot();
+    test_embedded_null_layer_names_do_not_alias();
     test_tile_animation_negative_and_huge_dt();
+    test_tile_animation_rejects_nonpositive_replacement_frames();
     test_animated_tile_collision_uses_base_tile();
     test_collision_type_validation();
     test_fill_rect_and_pixel_conversion_extremes();

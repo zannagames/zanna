@@ -422,14 +422,16 @@ expose func VerifyPointerFocusAndShortcuts(ctx: Probe.SceneEditor3DProbeContext)
         editor.Pump(sceneDoc);
         shell.Render();
     }
-    editor.moveToolButton.Focus();
+    // Toolbar items are not focusable widgets (ADR 0220); the focusable
+    // viewport image owns the W/E/R contract directly.
+    editor.viewportImage.Focus();
     focusHarness.SendKey("R", 0);
     focusHarness.DispatchPending();
     editor.Pump(sceneDoc);
     focusHarness.SendKey("E", 0);
     focusHarness.DispatchPending();
     editor.Pump(sceneDoc);
-    if editor.moveToolButton.IsFocused() == false
+    if editor.viewportImage.IsFocused() == false
        or editor.gizmoMode != scene_editor_3d.GIZMO_MODE_ROTATE {
         focusHarness.UnbindApp();
         Probe.fail(shell, tempPath,

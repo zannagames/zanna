@@ -179,9 +179,9 @@ static void body_set_center(rt_body_impl *b, double cx, double cy) {
     double dx = b->x - old_x;
     double dy = b->y - old_y;
     if (isfinite(dx))
-        b->prev_x += dx;
+        b->prev_x = rt_physics2d_saturating_add(b->prev_x, dx);
     if (isfinite(dy))
-        b->prev_y += dy;
+        b->prev_y = rt_physics2d_saturating_add(b->prev_y, dy);
 }
 
 /// @brief Allocate and zero-initialize a new joint object of the given type.
@@ -581,13 +581,16 @@ static void solve_distance(ph_joint *j, double dt) {
     if (!a || !b)
         return;
 
-    double total_inv = a->inv_mass + b->inv_mass;
-    if (total_inv < 1e-12)
+    double share_a = 0.0;
+    double share_b = 0.0;
+    if (!rt_physics2d_inverse_mass_shares(a->inv_mass, b->inv_mass, &share_a, &share_b))
         return;
 
     double dx = body_cx(b) - body_cx(a);
     double dy = body_cy(b) - body_cy(a);
-    double dist = sqrt(dx * dx + dy * dy);
+    double dist = hypot(dx, dy);
+    if (!isfinite(dist))
+        return;
     double nx = 1.0;
     double ny = 0.0;
     if (dist >= 1e-8) {
@@ -599,11 +602,11 @@ static void solve_distance(ph_joint *j, double dt) {
         dist = 0.0;
     }
 
-    double error = dist - j->length;
-    double cx_a = nx * error * (a->inv_mass / total_inv);
-    double cy_a = ny * error * (a->inv_mass / total_inv);
-    double cx_b = nx * error * (b->inv_mass / total_inv);
-    double cy_b = ny * error * (b->inv_mass / total_inv);
+    double error = rt_physics2d_saturating_add(dist, -j->length);
+    double cx_a = rt_physics2d_saturating_mul4(nx, error, share_a, 1.0);
+    double cy_a = rt_physics2d_saturating_mul4(ny, error, share_a, 1.0);
+    double cx_b = rt_physics2d_saturating_mul4(nx, error, share_b, 1.0);
+    double cy_b = rt_physics2d_saturating_mul4(ny, error, share_b, 1.0);
 
     body_set_center(a, body_cx(a) + cx_a, body_cy(a) + cy_a);
     body_set_center(b, body_cx(b) - cx_b, body_cy(b) - cy_b);
@@ -620,22 +623,23 @@ static void solve_distance(ph_joint *j, double dt) {
 static void solve_spring(ph_joint *j, double dt) {
     rt_body_impl *a = (rt_body_impl *)j->body_a;
     rt_body_impl *b = (rt_body_impl *)j->body_b;
-    if (!a || !b || dt <= 0.0)
+    if (!a || !b || dt <= 0.0 || !isfinite(dt))
         return;
 
     double dx = body_cx(b) - body_cx(a);
     double dy = body_cy(b) - body_cy(a);
-    double dist = sqrt(dx * dx + dy * dy);
-    if (dist < 1e-8)
+    double dist = hypot(dx, dy);
+    if (!isfinite(dist) || dist == 0.0)
         return;
 
     double nx = dx / dist;
     double ny = dy / dist;
 
     // Spring force: F = -k * (dist - rest) - d * relVel
-    double stretch = dist - j->length;
+    double stretch = rt_physics2d_saturating_add(dist, -j->length);
     double rel_vn = (b->vx - a->vx) * nx + (b->vy - a->vy) * ny;
-    double force = j->stiffness * stretch + j->damping * rel_vn;
+    if (!isfinite(rel_vn))
+        return;
 
     // Stability clamp. Explicit-Euler spring integration diverges once a single
     // step overshoots the rest length (the classic k > 4m/dt^2 blow-up). Cap the
@@ -644,24 +648,30 @@ static void solve_spring(ph_joint *j, double dt) {
     // within this step — never inject more. For normal frame steps |stretch|/dt is
     // large, so the clamp never engages and behaviour is bit-identical to the raw
     // Hooke integration; it only bounds the impulse on large (post-hitch) dt.
-    double total_inv = a->inv_mass + b->inv_mass;
-    if (total_inv < 1e-12)
+    double share_a = 0.0;
+    double share_b = 0.0;
+    if (!rt_physics2d_inverse_mass_shares(a->inv_mass, b->inv_mass, &share_a, &share_b))
         return;
-    double d_rel_v = force * dt * total_inv; // magnitude of induced |Δ(rel_vn)|
-    double max_d_rel_v = fabs(rel_vn) + fabs(stretch) / dt;
-    if (fabs(d_rel_v) > max_d_rel_v && fabs(d_rel_v) > 0.0)
-        force *= max_d_rel_v / fabs(d_rel_v);
-
-    double fx = force * nx;
-    double fy = force * ny;
+    double total_inv = rt_physics2d_saturating_add(a->inv_mass, b->inv_mass);
+    double spring_delta = rt_physics2d_saturating_mul4(j->stiffness, stretch, dt, total_inv);
+    double damping_delta = rt_physics2d_saturating_mul4(j->damping, rel_vn, dt, total_inv);
+    double d_rel_v = rt_physics2d_saturating_add(spring_delta, damping_delta);
+    double max_d_rel_v =
+        rt_physics2d_saturating_add(fabs(rel_vn), rt_physics2d_saturating_div(fabs(stretch), dt));
+    if (fabs(d_rel_v) > max_d_rel_v)
+        d_rel_v = copysign(max_d_rel_v, d_rel_v);
 
     if (a->inv_mass > 0.0) {
-        a->vx += fx * a->inv_mass * dt;
-        a->vy += fy * a->inv_mass * dt;
+        a->vx = rt_physics2d_saturating_add(
+            a->vx, rt_physics2d_saturating_mul4(d_rel_v, share_a, nx, 1.0));
+        a->vy = rt_physics2d_saturating_add(
+            a->vy, rt_physics2d_saturating_mul4(d_rel_v, share_a, ny, 1.0));
     }
     if (b->inv_mass > 0.0) {
-        b->vx -= fx * b->inv_mass * dt;
-        b->vy -= fy * b->inv_mass * dt;
+        b->vx = rt_physics2d_saturating_add(
+            b->vx, -rt_physics2d_saturating_mul4(d_rel_v, share_b, nx, 1.0));
+        b->vy = rt_physics2d_saturating_add(
+            b->vy, -rt_physics2d_saturating_mul4(d_rel_v, share_b, ny, 1.0));
     }
 }
 
@@ -681,8 +691,9 @@ static void solve_hinge(ph_joint *j, double dt) {
     if (!a || !b)
         return;
 
-    double total_inv = a->inv_mass + b->inv_mass;
-    if (total_inv < 1e-12)
+    double share_a = 0.0;
+    double share_b = 0.0;
+    if (!rt_physics2d_inverse_mass_shares(a->inv_mass, b->inv_mass, &share_a, &share_b))
         return;
 
     double acx = body_cx(a), acy = body_cy(a);
@@ -694,10 +705,16 @@ static void solve_hinge(ph_joint *j, double dt) {
     double dx = b_anchor_x - a_anchor_x;
     double dy = b_anchor_y - a_anchor_y;
 
-    body_set_center(a, acx + dx * (a->inv_mass / total_inv), acy + dy * (a->inv_mass / total_inv));
-    body_set_center(b, bcx - dx * (b->inv_mass / total_inv), bcy - dy * (b->inv_mass / total_inv));
-    j->anchor_x = (a_anchor_x + b_anchor_x) * 0.5;
-    j->anchor_y = (a_anchor_y + b_anchor_y) * 0.5;
+    body_set_center(a,
+                    rt_physics2d_saturating_add(acx, rt_physics2d_saturating_mul(dx, share_a)),
+                    rt_physics2d_saturating_add(acy, rt_physics2d_saturating_mul(dy, share_a)));
+    body_set_center(b,
+                    rt_physics2d_saturating_add(bcx, -rt_physics2d_saturating_mul(dx, share_b)),
+                    rt_physics2d_saturating_add(bcy, -rt_physics2d_saturating_mul(dy, share_b)));
+    j->anchor_x =
+        rt_physics2d_saturating_mul(rt_physics2d_saturating_add(a_anchor_x, b_anchor_x), 0.5);
+    j->anchor_y =
+        rt_physics2d_saturating_mul(rt_physics2d_saturating_add(a_anchor_y, b_anchor_y), 0.5);
 }
 
 /// @brief Apply one positional correction pass for a rope joint.
@@ -716,21 +733,24 @@ static void solve_rope(ph_joint *j, double dt) {
 
     double dx = body_cx(b) - body_cx(a);
     double dy = body_cy(b) - body_cy(a);
-    double dist = sqrt(dx * dx + dy * dy);
+    double dist = hypot(dx, dy);
+    if (!isfinite(dist) || dist == 0.0)
+        return;
 
     // Rope only constrains when taut (distance > max_length)
     if (dist <= j->length)
         return;
 
-    double diff = (dist - j->length) / dist;
-    double total_inv = a->inv_mass + b->inv_mass;
-    if (total_inv < 1e-12)
+    double diff = rt_physics2d_saturating_div(rt_physics2d_saturating_add(dist, -j->length), dist);
+    double share_a = 0.0;
+    double share_b = 0.0;
+    if (!rt_physics2d_inverse_mass_shares(a->inv_mass, b->inv_mass, &share_a, &share_b))
         return;
 
-    double cx_a = dx * diff * (a->inv_mass / total_inv);
-    double cy_a = dy * diff * (a->inv_mass / total_inv);
-    double cx_b = dx * diff * (b->inv_mass / total_inv);
-    double cy_b = dy * diff * (b->inv_mass / total_inv);
+    double cx_a = rt_physics2d_saturating_mul4(dx, diff, share_a, 1.0);
+    double cy_a = rt_physics2d_saturating_mul4(dy, diff, share_a, 1.0);
+    double cx_b = rt_physics2d_saturating_mul4(dx, diff, share_b, 1.0);
+    double cy_b = rt_physics2d_saturating_mul4(dy, diff, share_b, 1.0);
 
     body_set_center(a, body_cx(a) + cx_a, body_cy(a) + cy_a);
     body_set_center(b, body_cx(b) - cx_b, body_cy(b) - cy_b);
@@ -751,22 +771,27 @@ static void solve_distance_velocity(ph_joint *j) {
     rt_body_impl *b = (rt_body_impl *)j->body_b;
     if (!a || !b)
         return;
-    double total_inv = a->inv_mass + b->inv_mass;
-    if (total_inv < 1e-12)
+    double share_a = 0.0;
+    double share_b = 0.0;
+    if (!rt_physics2d_inverse_mass_shares(a->inv_mass, b->inv_mass, &share_a, &share_b))
         return;
     double dx = body_cx(b) - body_cx(a);
     double dy = body_cy(b) - body_cy(a);
-    double dist = sqrt(dx * dx + dy * dy);
-    if (dist < 1e-8)
+    double dist = hypot(dx, dy);
+    if (!isfinite(dist) || dist == 0.0)
         return;
     double nx = dx / dist;
     double ny = dy / dist;
     double rel_vn = (b->vx - a->vx) * nx + (b->vy - a->vy) * ny;
-    double jn = -rel_vn / total_inv;
-    a->vx -= jn * a->inv_mass * nx;
-    a->vy -= jn * a->inv_mass * ny;
-    b->vx += jn * b->inv_mass * nx;
-    b->vy += jn * b->inv_mass * ny;
+    double delta = -rel_vn;
+    a->vx =
+        rt_physics2d_saturating_add(a->vx, -rt_physics2d_saturating_mul4(delta, share_a, nx, 1.0));
+    a->vy =
+        rt_physics2d_saturating_add(a->vy, -rt_physics2d_saturating_mul4(delta, share_a, ny, 1.0));
+    b->vx =
+        rt_physics2d_saturating_add(b->vx, rt_physics2d_saturating_mul4(delta, share_b, nx, 1.0));
+    b->vy =
+        rt_physics2d_saturating_add(b->vy, rt_physics2d_saturating_mul4(delta, share_b, ny, 1.0));
 }
 
 /// @brief Cancel the full relative velocity at a hinge's shared anchor.
@@ -780,15 +805,16 @@ static void solve_hinge_velocity(ph_joint *j) {
     rt_body_impl *b = (rt_body_impl *)j->body_b;
     if (!a || !b)
         return;
-    double total_inv = a->inv_mass + b->inv_mass;
-    if (total_inv < 1e-12)
+    double share_a = 0.0;
+    double share_b = 0.0;
+    if (!rt_physics2d_inverse_mass_shares(a->inv_mass, b->inv_mass, &share_a, &share_b))
         return;
-    double jx = -(b->vx - a->vx) / total_inv;
-    double jy = -(b->vy - a->vy) / total_inv;
-    a->vx -= jx * a->inv_mass;
-    a->vy -= jy * a->inv_mass;
-    b->vx += jx * b->inv_mass;
-    b->vy += jy * b->inv_mass;
+    double delta_x = -(b->vx - a->vx);
+    double delta_y = -(b->vy - a->vy);
+    a->vx = rt_physics2d_saturating_add(a->vx, -rt_physics2d_saturating_mul(delta_x, share_a));
+    a->vy = rt_physics2d_saturating_add(a->vy, -rt_physics2d_saturating_mul(delta_y, share_a));
+    b->vx = rt_physics2d_saturating_add(b->vx, rt_physics2d_saturating_mul(delta_x, share_b));
+    b->vy = rt_physics2d_saturating_add(b->vy, rt_physics2d_saturating_mul(delta_y, share_b));
 }
 
 /// @brief Cancel only the separating velocity of a rope joint when it is taut.
@@ -802,24 +828,29 @@ static void solve_rope_velocity(ph_joint *j) {
     rt_body_impl *b = (rt_body_impl *)j->body_b;
     if (!a || !b)
         return;
-    double total_inv = a->inv_mass + b->inv_mass;
-    if (total_inv < 1e-12)
+    double share_a = 0.0;
+    double share_b = 0.0;
+    if (!rt_physics2d_inverse_mass_shares(a->inv_mass, b->inv_mass, &share_a, &share_b))
         return;
     double dx = body_cx(b) - body_cx(a);
     double dy = body_cy(b) - body_cy(a);
-    double dist = sqrt(dx * dx + dy * dy);
-    if (dist <= j->length || dist < 1e-8)
+    double dist = hypot(dx, dy);
+    if (!isfinite(dist) || dist <= j->length || dist == 0.0)
         return;
     double nx = dx / dist;
     double ny = dy / dist;
     double rel_vn = (b->vx - a->vx) * nx + (b->vy - a->vy) * ny;
     if (rel_vn <= 0.0)
         return; /* approaching — rope allows it to slacken */
-    double jn = -rel_vn / total_inv;
-    a->vx -= jn * a->inv_mass * nx;
-    a->vy -= jn * a->inv_mass * ny;
-    b->vx += jn * b->inv_mass * nx;
-    b->vy += jn * b->inv_mass * ny;
+    double delta = -rel_vn;
+    a->vx =
+        rt_physics2d_saturating_add(a->vx, -rt_physics2d_saturating_mul4(delta, share_a, nx, 1.0));
+    a->vy =
+        rt_physics2d_saturating_add(a->vy, -rt_physics2d_saturating_mul4(delta, share_a, ny, 1.0));
+    b->vx =
+        rt_physics2d_saturating_add(b->vx, rt_physics2d_saturating_mul4(delta, share_b, nx, 1.0));
+    b->vy =
+        rt_physics2d_saturating_add(b->vy, rt_physics2d_saturating_mul4(delta, share_b, ny, 1.0));
 }
 
 /// @brief Velocity-projection pass for positional joints, run once per step after
@@ -940,7 +971,7 @@ void *rt_physics2d_circle_body_new(double cx, double cy, double radius, double m
     cy = finite_or(cy, 0.0);
     if (!isfinite(radius) || radius <= 0.0)
         radius = 1.0;
-    mass = (isfinite(mass) && mass > 0.0) ? mass : 0.0;
+    mass = rt_physics2d_normalize_mass(mass);
 
     rt_body_impl *b =
         (rt_body_impl *)rt_obj_new_i64(RT_PHYSICS2D_BODY_CLASS_ID, (int64_t)sizeof(rt_body_impl));
@@ -968,6 +999,7 @@ void *rt_physics2d_circle_body_new(double cx, double cy, double radius, double m
     b->is_circle = 1;
     b->owner_world = NULL;
     b->world_index = -1;
+    sanitize_body_state(b);
     return b;
 }
 

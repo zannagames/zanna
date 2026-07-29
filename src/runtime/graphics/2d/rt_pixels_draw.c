@@ -92,6 +92,8 @@ int64_t rt_pixels_get_rgb(void *pixels, int64_t x, int64_t y) {
 ///        halves rounded away from zero.
 /// @return The rounded coordinate, clamped to the signed 64-bit range.
 static int64_t pixels_round_ld_to_i64_sat(long double value) {
+    if (isnan(value))
+        return 0;
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
     if (value <= (long double)INT64_MIN)
@@ -105,6 +107,8 @@ static int64_t pixels_round_ld_to_i64_sat(long double value) {
 /// @param value Floating-point coordinate to round toward negative infinity.
 /// @return The floored coordinate, clamped to the signed 64-bit range.
 static int64_t pixels_floor_ld_to_i64_sat(long double value) {
+    if (isnan(value))
+        return 0;
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
     if (value <= (long double)INT64_MIN)
@@ -118,6 +122,8 @@ static int64_t pixels_floor_ld_to_i64_sat(long double value) {
 /// @param value Floating-point coordinate to round toward positive infinity.
 /// @return The ceiling coordinate, clamped to the signed 64-bit range.
 static int64_t pixels_ceil_ld_to_i64_sat(long double value) {
+    if (isnan(value))
+        return 0;
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
     if (value <= (long double)INT64_MIN)
@@ -131,6 +137,8 @@ static int64_t pixels_ceil_ld_to_i64_sat(long double value) {
 /// @param value Floating-point coordinate to truncate toward zero.
 /// @return The truncated coordinate, clamped to the signed 64-bit range.
 static int64_t pixels_trunc_ld_to_i64_sat(long double value) {
+    if (isnan(value))
+        return 0;
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
     if (value <= (long double)INT64_MIN)
@@ -138,37 +146,89 @@ static int64_t pixels_trunc_ld_to_i64_sat(long double value) {
     return (int64_t)value;
 }
 
-/// @brief Cohen–Sutherland / Liang–Barsky inner test for one rectangle boundary.
-/// @details Called four times per line (left, right, top, bottom) to shrink the
-///   parametric interval [u1, u2] onto the visible portion of the line.  Returns 0
-///   (reject) when the line is proven entirely outside the boundary.  @p p is the
-///   component of the direction vector pointing into the boundary (negative = moving
-///   toward boundary); @p q is the signed distance from the start point to the boundary.
-/// @param p Signed direction component for the tested clip boundary.
-/// @param q Signed distance from the segment start to that boundary.
-/// @param u1 In/out lower bound of the retained parametric segment interval.
-/// @param u2 In/out upper bound of the retained parametric segment interval.
-/// @return Nonzero when the interval still intersects the boundary half-plane;
-///         zero when the segment can be rejected.
-static int8_t pixels_clip_line_test(long double p,
-                                    long double q,
-                                    long double *u1,
-                                    long double *u2) {
-    if (p == 0.0L)
-        return q >= 0.0L;
-    long double r = q / p;
-    if (p < 0.0L) {
-        if (r > *u2)
-            return 0;
-        if (r > *u1)
-            *u1 = r;
-    } else {
-        if (r < *u1)
-            return 0;
-        if (r < *u2)
-            *u2 = r;
+/// @brief Convert two's-complement unsigned bits to int64 without an
+///        implementation-defined out-of-range cast.
+static int64_t pixels_i64_from_bits(uint64_t bits) {
+    if (bits <= (uint64_t)INT64_MAX)
+        return (int64_t)bits;
+    return INT64_MIN + (int64_t)(bits - (UINT64_C(1) << 63u));
+}
+
+/// @brief Compute round(value * numerator / denominator) for a unit ratio.
+/// @details `numerator <= denominator` guarantees the result does not exceed
+///          @p value. A bitwise quotient/remainder recurrence avoids both
+///          128-bit compiler extensions and platform-dependent floating point.
+static uint64_t pixels_scale_by_ratio_u64(uint64_t value,
+                                          uint64_t numerator,
+                                          uint64_t denominator) {
+    if (value == 0 || numerator == 0 || denominator == 0)
+        return 0;
+    if (numerator >= denominator)
+        return value;
+
+    uint64_t quotient = 0;
+    uint64_t remainder = 0;
+    for (int bit = 63; bit >= 0; bit--) {
+        uint64_t carry = 0;
+        if (remainder >= denominator - remainder) {
+            remainder -= denominator - remainder;
+            carry = 1;
+        } else {
+            remainder += remainder;
+        }
+        quotient = quotient * 2u + carry;
+
+        if (((value >> (unsigned)bit) & 1u) != 0u) {
+            if (remainder >= denominator - numerator) {
+                remainder -= denominator - numerator;
+                quotient++;
+            } else {
+                remainder += numerator;
+            }
+        }
     }
-    return 1;
+
+    if (remainder >= denominator / 2u + denominator % 2u)
+        quotient++;
+    return quotient;
+}
+
+/// @brief Interpolate one signed coordinate at an exact segment ratio.
+static int64_t pixels_interpolate_i64(int64_t start,
+                                      int64_t end,
+                                      uint64_t numerator,
+                                      uint64_t denominator) {
+    if (numerator == 0 || start == end)
+        return start;
+    if (numerator >= denominator)
+        return end;
+    uint64_t full_magnitude =
+        start >= end ? (uint64_t)start - (uint64_t)end : (uint64_t)end - (uint64_t)start;
+    uint64_t magnitude = pixels_scale_by_ratio_u64(full_magnitude, numerator, denominator);
+    uint64_t bits = end >= start ? (uint64_t)start + magnitude : (uint64_t)start - magnitude;
+    return pixels_i64_from_bits(bits);
+}
+
+enum {
+    PIXELS_CLIP_LEFT = 1u,
+    PIXELS_CLIP_RIGHT = 2u,
+    PIXELS_CLIP_TOP = 4u,
+    PIXELS_CLIP_BOTTOM = 8u
+};
+
+/// @brief Return the Cohen-Sutherland outcode for one signed point.
+static uint8_t pixels_clip_outcode(
+    int64_t min_x, int64_t min_y, int64_t max_x, int64_t max_y, int64_t x, int64_t y) {
+    uint8_t code = 0;
+    if (x < min_x)
+        code |= PIXELS_CLIP_LEFT;
+    else if (x > max_x)
+        code |= PIXELS_CLIP_RIGHT;
+    if (y < min_y)
+        code |= PIXELS_CLIP_TOP;
+    else if (y > max_y)
+        code |= PIXELS_CLIP_BOTTOM;
+    return code;
 }
 
 /// @brief Forward declaration of the axis-aligned Liang-Barsky clipper.
@@ -209,11 +269,10 @@ static int8_t pixels_clip_line_to_bounds(
     return pixels_clip_line_to_rect(0, 0, p->width - 1, p->height - 1, x1, y1, x2, y2);
 }
 
-/// @brief Clip a line segment to an arbitrary axis-aligned rectangle using Liang–Barsky.
-/// @details Computes the visible sub-segment of the line defined by (x1,y1)→(x2,y2) that
-///   lies inside the rectangle [min_x, max_x] × [min_y, max_y].  Works in long double to
-///   avoid integer intermediate overflow when dealing with large coordinates.  Updates
-///   the endpoint pointers in place to the clipped values on success.
+/// @brief Clip a line segment to an arbitrary axis-aligned rectangle.
+/// @details Cohen-Sutherland iteration computes each crossing with exact
+///   unsigned ratio arithmetic, so int64-extreme segments produce the same
+///   clipped endpoints on every platform.
 /// @param min_x Inclusive rectangle left edge.
 /// @param min_y Inclusive rectangle top edge.
 /// @param max_x Inclusive rectangle right edge.
@@ -234,32 +293,48 @@ static int8_t pixels_clip_line_to_rect(int64_t min_x,
     if (!x1 || !y1 || !x2 || !y2 || min_x > max_x || min_y > max_y)
         return 0;
 
-    long double lx1 = (long double)*x1;
-    long double ly1 = (long double)*y1;
-    long double dx = (long double)*x2 - lx1;
-    long double dy = (long double)*y2 - ly1;
-    long double u1 = 0.0L;
-    long double u2 = 1.0L;
-    long double xmin = (long double)min_x;
-    long double ymin = (long double)min_y;
-    long double xmax = (long double)max_x;
-    long double ymax = (long double)max_y;
+    uint8_t code1 = pixels_clip_outcode(min_x, min_y, max_x, max_y, *x1, *y1);
+    uint8_t code2 = pixels_clip_outcode(min_x, min_y, max_x, max_y, *x2, *y2);
+    for (int iteration = 0; iteration < 8; iteration++) {
+        if ((code1 | code2) == 0)
+            return 1;
+        if ((code1 & code2) != 0)
+            return 0;
 
-    if (!pixels_clip_line_test(-dx, lx1 - xmin, &u1, &u2) ||
-        !pixels_clip_line_test(dx, xmax - lx1, &u1, &u2) ||
-        !pixels_clip_line_test(-dy, ly1 - ymin, &u1, &u2) ||
-        !pixels_clip_line_test(dy, ymax - ly1, &u1, &u2))
-        return 0;
+        uint8_t code = code1 != 0 ? code1 : code2;
+        int64_t next_x = 0;
+        int64_t next_y = 0;
+        if ((code & PIXELS_CLIP_TOP) != 0 || (code & PIXELS_CLIP_BOTTOM) != 0) {
+            next_y = (code & PIXELS_CLIP_TOP) != 0 ? min_y : max_y;
+            uint64_t denominator =
+                *y1 >= *y2 ? (uint64_t)*y1 - (uint64_t)*y2 : (uint64_t)*y2 - (uint64_t)*y1;
+            uint64_t numerator =
+                next_y >= *y1 ? (uint64_t)next_y - (uint64_t)*y1 : (uint64_t)*y1 - (uint64_t)next_y;
+            if (denominator == 0 || numerator > denominator)
+                return 0;
+            next_x = pixels_interpolate_i64(*x1, *x2, numerator, denominator);
+        } else {
+            next_x = (code & PIXELS_CLIP_LEFT) != 0 ? min_x : max_x;
+            uint64_t denominator =
+                *x1 >= *x2 ? (uint64_t)*x1 - (uint64_t)*x2 : (uint64_t)*x2 - (uint64_t)*x1;
+            uint64_t numerator =
+                next_x >= *x1 ? (uint64_t)next_x - (uint64_t)*x1 : (uint64_t)*x1 - (uint64_t)next_x;
+            if (denominator == 0 || numerator > denominator)
+                return 0;
+            next_y = pixels_interpolate_i64(*y1, *y2, numerator, denominator);
+        }
 
-    long double nx1 = lx1 + u1 * dx;
-    long double ny1 = ly1 + u1 * dy;
-    long double nx2 = lx1 + u2 * dx;
-    long double ny2 = ly1 + u2 * dy;
-    *x1 = pixels_round_ld_to_i64_sat(nx1);
-    *y1 = pixels_round_ld_to_i64_sat(ny1);
-    *x2 = pixels_round_ld_to_i64_sat(nx2);
-    *y2 = pixels_round_ld_to_i64_sat(ny2);
-    return 1;
+        if (code == code1) {
+            *x1 = next_x;
+            *y1 = next_y;
+            code1 = pixels_clip_outcode(min_x, min_y, max_x, max_y, *x1, *y1);
+        } else {
+            *x2 = next_x;
+            *y2 = next_y;
+            code2 = pixels_clip_outcode(min_x, min_y, max_x, max_y, *x2, *y2);
+        }
+    }
+    return 0;
 }
 
 /// @brief Return the last pixel coordinate of a range starting at @p start with @p length pixels.
@@ -294,8 +369,21 @@ static int8_t pixels_fill_span(
         x0 = 0;
     if (x1 >= p->width)
         x1 = p->width - 1;
-    for (int64_t x = x0; x <= x1; x++)
-        p->data[y * p->width + x] = rgba;
+    uint32_t *dst = p->data + y * p->width + x0;
+    size_t count = (size_t)(x1 - x0) + 1u;
+    size_t first_changed = 0;
+    while (first_changed < count && dst[first_changed] == rgba)
+        first_changed++;
+    if (first_changed == count)
+        return 0;
+
+    dst[0] = rgba;
+    size_t filled = 1;
+    while (filled < count) {
+        size_t chunk = filled < count - filled ? filled : count - filled;
+        memcpy(dst + filled, dst, chunk * sizeof(*dst));
+        filled += chunk;
+    }
     return 1;
 }
 
@@ -343,17 +431,61 @@ static int8_t pixels_draw_line_raw(
     return wrote;
 }
 
-/// @brief Squared distance between two points in long double (no sqrt, no
-///        overflow) — used only to compare relative edge lengths.
-/// @param x1 First point X coordinate.
-/// @param y1 First point Y coordinate.
-/// @param x2 Second point X coordinate.
-/// @param y2 Second point Y coordinate.
-/// @return Squared Euclidean distance in extended precision.
-static long double pixels_dist2_ld(int64_t x1, int64_t y1, int64_t x2, int64_t y2) {
-    long double dx = (long double)x2 - (long double)x1;
-    long double dy = (long double)y2 - (long double)y1;
-    return dx * dx + dy * dy;
+/// @brief Exact unsigned magnitude of a signed-coordinate difference.
+static uint64_t pixels_abs_diff_u64(int64_t a, int64_t b) {
+    return a >= b ? (uint64_t)a - (uint64_t)b : (uint64_t)b - (uint64_t)a;
+}
+
+/// @brief Portable unsigned 128-bit product represented as high/low words.
+typedef struct pixels_u128 {
+    uint64_t high;
+    uint64_t low;
+} pixels_u128;
+
+/// @brief Multiply two uint64 values without a compiler-specific 128-bit type.
+static pixels_u128 pixels_mul_u64_wide(uint64_t a, uint64_t b) {
+    uint64_t a0 = (uint32_t)a;
+    uint64_t a1 = a >> 32u;
+    uint64_t b0 = (uint32_t)b;
+    uint64_t b1 = b >> 32u;
+    uint64_t w0 = a0 * b0;
+    uint64_t t = a1 * b0 + (w0 >> 32u);
+    uint64_t w1 = t & UINT64_C(0xFFFFFFFF);
+    uint64_t w2 = t >> 32u;
+    w1 += a0 * b1;
+    pixels_u128 result = {
+        a1 * b1 + w2 + (w1 >> 32u),
+        (w1 << 32u) | (w0 & UINT64_C(0xFFFFFFFF)),
+    };
+    return result;
+}
+
+/// @brief Test triangle collinearity with exact 128-bit determinant products.
+static int8_t pixels_triangle_is_collinear(
+    int64_t x1, int64_t y1, int64_t x2, int64_t y2, int64_t x3, int64_t y3) {
+    uint64_t ax = pixels_abs_diff_u64(x2, x1);
+    uint64_t ay = pixels_abs_diff_u64(y2, y1);
+    uint64_t bx = pixels_abs_diff_u64(x3, x1);
+    uint64_t by = pixels_abs_diff_u64(y3, y1);
+    int left_negative = (x2 < x1) ^ (y3 < y1);
+    int right_negative = (y2 < y1) ^ (x3 < x1);
+    pixels_u128 left = pixels_mul_u64_wide(ax, by);
+    pixels_u128 right = pixels_mul_u64_wide(ay, bx);
+
+    int left_zero = left.high == 0 && left.low == 0;
+    int right_zero = right.high == 0 && right.low == 0;
+    if (left_zero || right_zero)
+        return left_zero && right_zero;
+    if (left_negative != right_negative)
+        return 0;
+    return left.high == right.high && left.low == right.low;
+}
+
+/// @brief Exact monotonic edge-length proxy for collinear vertices.
+static uint64_t pixels_edge_extent(int64_t x1, int64_t y1, int64_t x2, int64_t y2) {
+    uint64_t dx = pixels_abs_diff_u64(x1, x2);
+    uint64_t dy = pixels_abs_diff_u64(y1, y2);
+    return dx > dy ? dx : dy;
 }
 
 /// @brief Degenerate-triangle fallback: when the three vertices are collinear
@@ -375,9 +507,9 @@ static void pixels_draw_degenerate_triangle_line(void *pixels,
                                                  int64_t x3,
                                                  int64_t y3,
                                                  int64_t color) {
-    long double d12 = pixels_dist2_ld(x1, y1, x2, y2);
-    long double d23 = pixels_dist2_ld(x2, y2, x3, y3);
-    long double d31 = pixels_dist2_ld(x3, y3, x1, y1);
+    uint64_t d12 = pixels_edge_extent(x1, y1, x2, y2);
+    uint64_t d23 = pixels_edge_extent(x2, y2, x3, y3);
+    uint64_t d31 = pixels_edge_extent(x3, y3, x1, y1);
     if (d12 >= d23 && d12 >= d31) {
         rt_pixels_draw_line(pixels, x1, y1, x2, y2, color);
     } else if (d23 >= d31) {
@@ -438,17 +570,19 @@ void rt_pixels_draw_box(void *pixels, int64_t x, int64_t y, int64_t w, int64_t h
     if (!rt_pixels_clip_rect_to_bounds(p, &x, &y, &w, &h))
         return;
 
-    pixels_touch(p);
-
+    int8_t wrote = 0;
+    int64_t x1 = x + w - 1;
     for (int64_t row = y; row < y + h; row++)
-        for (int64_t col = x; col < x + w; col++)
-            p->data[row * p->width + col] = rgba;
+        wrote |= pixels_fill_span(p, row, x, x1, rgba);
+    if (wrote)
+        pixels_touch(p);
 }
 
 /// @brief Draw a clipped one-pixel-wide rectangle outline.
-/// @details Draws the top, bottom, left, and right inclusive edges by invoking
-///          `rt_pixels_draw_line()`. Non-positive dimensions are no-ops;
-///          unit dimensions may redraw the same row or column.
+/// @details Draws the top, bottom, left, and right inclusive edges through the
+///          raw rasterizer, validating and advancing generation only once.
+///          Non-positive dimensions are no-ops and unit dimensions avoid
+///          duplicate edge work.
 /// @param pixels Opaque destination Pixels handle; a null handle traps.
 /// @param x Rectangle left coordinate.
 /// @param y Rectangle top coordinate.
@@ -460,21 +594,65 @@ void rt_pixels_draw_frame(void *pixels, int64_t x, int64_t y, int64_t w, int64_t
         rt_trap("Pixels.DrawFrame: null pixels");
         return;
     }
+    rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.DrawFrame: invalid pixels");
+    if (!p)
+        return;
     if (w <= 0 || h <= 0)
         return;
 
     int64_t x1 = pixels_rect_last(x, w);
     int64_t y1 = pixels_rect_last(y, h);
-    rt_pixels_draw_line(pixels, x, y, x1, y, color);
-    rt_pixels_draw_line(pixels, x, y1, x1, y1, color);
-    rt_pixels_draw_line(pixels, x, y, x, y1, color);
-    rt_pixels_draw_line(pixels, x1, y, x1, y1, color);
+    uint32_t rgba = rt_pixels_color_to_rgba(color);
+    int8_t wrote = pixels_draw_line_raw(p, x, y, x1, y, rgba);
+    if (h > 1)
+        wrote |= pixels_draw_line_raw(p, x, y1, x1, y1, rgba);
+    if (w > 1 && h > 2) {
+        wrote |= pixels_draw_line_raw(
+            p, x, rt_pixels_add_sat64(y, 1), x, rt_pixels_sub_nonneg_sat64(y1, 1), rgba);
+        wrote |= pixels_draw_line_raw(
+            p, x1, rt_pixels_add_sat64(y, 1), x1, rt_pixels_sub_nonneg_sat64(y1, 1), rgba);
+    } else if (w == 1 && h > 2) {
+        wrote |= pixels_draw_line_raw(
+            p, x, rt_pixels_add_sat64(y, 1), x, rt_pixels_sub_nonneg_sat64(y1, 1), rgba);
+    }
+    if (wrote)
+        pixels_touch(p);
+}
+
+/// @brief Fill a clipped disc without validating or touching generation.
+static int8_t pixels_draw_disc_raw(
+    rt_pixels_impl *p, int64_t cx, int64_t cy, int64_t r, uint32_t rgba) {
+    if (!p || !p->data || p->width <= 0 || p->height <= 0 || r < 0)
+        return 0;
+
+    int64_t y0 = rt_pixels_sub_nonneg_sat64(cy, r);
+    int64_t y1 = rt_pixels_add_sat64(cy, r);
+    if (y1 < 0 || y0 >= p->height)
+        return 0;
+    if (y0 < 0)
+        y0 = 0;
+    if (y1 >= p->height)
+        y1 = p->height - 1;
+
+    long double r2 = (long double)r * (long double)r;
+    int8_t wrote = 0;
+    for (int64_t py = y0; py <= y1; py++) {
+        long double dy = (long double)py - (long double)cy;
+        long double rem = r2 - dy * dy;
+        if (rem < 0.0L)
+            continue;
+        long double dx = sqrtl(rem);
+        int64_t x0 = pixels_ceil_ld_to_i64_sat((long double)cx - dx);
+        int64_t x1 = pixels_floor_ld_to_i64_sat((long double)cx + dx);
+        wrote |= pixels_fill_span(p, py, x0, x1, rgba);
+    }
+    return wrote;
 }
 
 /// @brief Fill a clipped disc centered at an integer coordinate.
 /// @details For each visible row, solves the circle equation in `long double`
-///          and fills the resulting inclusive horizontal span. A zero radius
-///          addresses the center pixel; a negative radius is a no-op.
+///          and fills the integer-center span inside the two roots. A zero
+///          radius addresses the center pixel; a negative radius is a no-op.
 /// @param pixels Opaque destination Pixels handle; null or invalid handles
 ///        trap.
 /// @param cx Center X coordinate.
@@ -490,32 +668,7 @@ void rt_pixels_draw_disc(void *pixels, int64_t cx, int64_t cy, int64_t r, int64_
     if (!p)
         return;
     uint32_t rgba = rt_pixels_color_to_rgba(color);
-
-    if (r < 0)
-        return;
-
-    int64_t y0 = rt_pixels_sub_nonneg_sat64(cy, r);
-    int64_t y1 = rt_pixels_add_sat64(cy, r);
-    if (y1 < 0 || y0 >= p->height)
-        return;
-    if (y0 < 0)
-        y0 = 0;
-    if (y1 >= p->height)
-        y1 = p->height - 1;
-
-    long double r2 = (long double)r * (long double)r;
-    int8_t wrote = 0;
-    for (int64_t py = y0; py <= y1; py++) {
-        long double dy = (long double)py - (long double)cy;
-        long double rem = r2 - dy * dy;
-        if (rem < 0.0L)
-            continue;
-        long double dx = sqrtl(rem);
-        int64_t x0 = pixels_floor_ld_to_i64_sat((long double)cx - dx);
-        int64_t x1 = pixels_ceil_ld_to_i64_sat((long double)cx + dx);
-        wrote |= pixels_fill_span(p, py, x0, x1, rgba);
-    }
-    if (wrote)
+    if (pixels_draw_disc_raw(p, cx, cy, r, rgba))
         pixels_touch(p);
 }
 
@@ -537,6 +690,8 @@ void rt_pixels_draw_ring(void *pixels, int64_t cx, int64_t cy, int64_t r, int64_
     }
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.DrawRing: invalid pixels");
     if (!p)
+        return;
+    if (!p->data || p->width <= 0 || p->height <= 0)
         return;
     uint32_t rgba = rt_pixels_color_to_rgba(color);
 
@@ -604,6 +759,8 @@ void rt_pixels_draw_ellipse(
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.DrawEllipse: invalid pixels");
     if (!p)
         return;
+    if (!p->data || p->width <= 0 || p->height <= 0)
+        return;
     uint32_t rgba = rt_pixels_color_to_rgba(color);
 
     if (rx <= 0 || ry <= 0) {
@@ -628,8 +785,8 @@ void rt_pixels_draw_ellipse(
         if (ratio < 0.0L)
             continue;
         long double dx = rx_ld * sqrtl(ratio);
-        int64_t x0 = pixels_floor_ld_to_i64_sat((long double)cx - dx);
-        int64_t x1 = pixels_ceil_ld_to_i64_sat((long double)cx + dx);
+        int64_t x0 = pixels_ceil_ld_to_i64_sat((long double)cx - dx);
+        int64_t x1 = pixels_floor_ld_to_i64_sat((long double)cx + dx);
         wrote |= pixels_fill_span(p, py, x0, x1, rgba);
     }
     if (wrote)
@@ -655,6 +812,8 @@ void rt_pixels_draw_ellipse_frame(
     }
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.DrawEllipseFrame: invalid pixels");
     if (!p)
+        return;
+    if (!p->data || p->width <= 0 || p->height <= 0)
         return;
     uint32_t rgba = rt_pixels_color_to_rgba(color);
 
@@ -706,7 +865,8 @@ void rt_pixels_draw_ellipse_frame(
 ///          immediately above and below. This stores work per span instead of
 ///          per pixel and avoids recursion.
 typedef struct rt_pixels_fill_segment {
-    int64_t x;
+    int64_t left;
+    int64_t right;
     int64_t y;
 } rt_pixels_fill_segment;
 
@@ -717,15 +877,20 @@ typedef struct rt_pixels_fill_segment {
 /// @param stack_io In/out pointer to the segment stack.
 /// @param count_io In/out active segment count.
 /// @param cap_io In/out allocated segment capacity.
-/// @param x Seed X coordinate.
+/// @param left Inclusive first column.
+/// @param right Inclusive last column.
 /// @param y Seed Y coordinate.
 /// @return 1 on success, 0 on overflow or allocation failure.
-static int pixels_fill_segment_push(
-    rt_pixels_fill_segment **stack_io, size_t *count_io, size_t *cap_io, int64_t x, int64_t y) {
+static int pixels_fill_segment_push(rt_pixels_fill_segment **stack_io,
+                                    size_t *count_io,
+                                    size_t *cap_io,
+                                    int64_t left,
+                                    int64_t right,
+                                    int64_t y) {
     if (!stack_io || !count_io || !cap_io)
         return 0;
     if (*count_io >= *cap_io) {
-        size_t new_cap = *cap_io ? *cap_io * 2u : 1024u;
+        size_t new_cap = *cap_io ? *cap_io * 2u : 32u;
         if (new_cap < *cap_io || new_cap > SIZE_MAX / sizeof(**stack_io))
             return 0;
         rt_pixels_fill_segment *grown =
@@ -735,7 +900,7 @@ static int pixels_fill_segment_push(
         *stack_io = grown;
         *cap_io = new_cap;
     }
-    (*stack_io)[(*count_io)++] = (rt_pixels_fill_segment){x, y};
+    (*stack_io)[(*count_io)++] = (rt_pixels_fill_segment){left, right, y};
     return 1;
 }
 
@@ -743,12 +908,12 @@ static int pixels_fill_segment_push(
 /// @details Uses an iterative scanline algorithm: each popped seed expands left
 ///          and right across a contiguous target-color run, writes that run, then
 ///          scans the adjacent rows for new target-color runs. This keeps memory
-///          proportional to the boundary/run complexity of the region instead of
-///          allocating `width * height` queue and visited arrays. If stack
-///          growth fails after writes begin, the already visited part remains
-///          filled, the stack is released, and the mutation generation still
-///          advances. An out-of-bounds seed or a color already equal to the
-///          seed pixel is a no-op.
+///          proportional to the boundary/run complexity of the region instead
+///          of allocating `width * height` queue and visited arrays. Every
+///          changed span is retained in a rollback journal; if pending-work or
+///          journal growth fails, all earlier writes are restored and
+///          generation remains unchanged. An out-of-bounds seed or a color
+///          already equal to the seed pixel is a no-op.
 /// @param pixels Opaque destination Pixels handle; null or invalid handles
 ///        trap.
 /// @param x Seed X coordinate.
@@ -775,25 +940,33 @@ void rt_pixels_flood_fill(void *pixels, int64_t x, int64_t y, int64_t color) {
     rt_pixels_fill_segment *stack = NULL;
     size_t stack_count = 0;
     size_t stack_cap = 0;
+    rt_pixels_fill_segment *journal = NULL;
+    size_t journal_count = 0;
+    size_t journal_cap = 0;
     int8_t wrote = 0;
     int failed = 0;
-    if (!pixels_fill_segment_push(&stack, &stack_count, &stack_cap, x, y))
+    if (!pixels_fill_segment_push(&stack, &stack_count, &stack_cap, x, x, y))
         return;
 
     while (stack_count > 0 && !failed) {
         rt_pixels_fill_segment seed = stack[--stack_count];
-        if (seed.y < 0 || seed.y >= p->height || seed.x < 0 || seed.x >= p->width)
+        if (seed.y < 0 || seed.y >= p->height || seed.left < 0 || seed.left >= p->width)
             continue;
-        if (p->data[seed.y * p->width + seed.x] != target)
+        if (p->data[seed.y * p->width + seed.left] != target)
             continue;
 
-        int64_t left = seed.x;
-        int64_t right = seed.x;
+        int64_t left = seed.left;
+        int64_t right = seed.left;
         while (left > 0 && p->data[seed.y * p->width + (left - 1)] == target)
             left--;
         while (right + 1 < p->width && p->data[seed.y * p->width + (right + 1)] == target)
             right++;
 
+        if (!pixels_fill_segment_push(
+                &journal, &journal_count, &journal_cap, left, right, seed.y)) {
+            failed = 1;
+            break;
+        }
         uint32_t *row = p->data + seed.y * p->width;
         for (int64_t px = left; px <= right; px++)
             row[px] = fill_c;
@@ -814,7 +987,7 @@ void rt_pixels_flood_fill(void *pixels, int64_t x, int64_t y, int64_t color) {
                 while (px <= right && scan_row[px] == target)
                     px++;
                 if (!pixels_fill_segment_push(
-                        &stack, &stack_count, &stack_cap, run_start, scan_y)) {
+                        &stack, &stack_count, &stack_cap, run_start, run_start, scan_y)) {
                     failed = 1;
                     break;
                 }
@@ -822,17 +995,28 @@ void rt_pixels_flood_fill(void *pixels, int64_t x, int64_t y, int64_t color) {
         }
     }
 
+    if (failed) {
+        for (size_t i = 0; i < journal_count; i++) {
+            rt_pixels_fill_segment span = journal[i];
+            uint32_t *row = p->data + span.y * p->width;
+            for (int64_t px = span.left; px <= span.right; px++)
+                row[px] = target;
+        }
+        wrote = 0;
+    }
+    free(journal);
     free(stack);
     if (wrote)
         pixels_touch(p);
 }
 
-/// @brief Draw a rounded line by stamping filled discs along a Bresenham path.
-/// @details A thickness of one or less delegates to
-///          `rt_pixels_draw_line()`. Larger values use `thickness / 2` as the
-///          disc radius, clipped to a buffer-derived maximum so extreme input
-///          cannot create unbounded work. The expanded line is clipped before
-///          stamping, and individual disc calls perform final pixel clipping.
+/// @brief Draw a rounded line as one clipped capsule rasterization.
+/// @details A thickness of one or less delegates to `rt_pixels_draw_line()`.
+///          Larger values use `thickness / 2` as the radius. Axis-aligned
+///          capsules emit one span per visible row; other orientations test
+///          each pixel in the clipped capsule bounds once. Work is therefore
+///          bounded by the destination area instead of repeatedly stamping
+///          heavily overlapping discs.
 /// @param pixels Opaque destination Pixels handle; null or invalid handles
 ///        trap.
 /// @param x1 First centerline endpoint X coordinate.
@@ -876,34 +1060,83 @@ void rt_pixels_draw_thick_line(void *pixels,
                                   &y2))
         return;
 
-    int64_t adx = rt_pixels_abs_diff_sat64(x2, x1);
-    int64_t ady = rt_pixels_abs_diff_sat64(y2, y1);
-    int64_t sx = x2 >= x1 ? 1 : -1;
-    int64_t sy = y2 >= y1 ? 1 : -1;
+    uint32_t rgba = rt_pixels_color_to_rgba(color);
+    if (x1 == x2 && y1 == y2) {
+        if (pixels_draw_disc_raw(p, x1, y1, clip_radius, rgba))
+            pixels_touch(p);
+        return;
+    }
 
-    int64_t err = adx - ady;
-    int64_t x = x1;
-    int64_t y = y1;
+    int64_t min_x = x1 < x2 ? x1 : x2;
+    int64_t max_x = x1 > x2 ? x1 : x2;
+    int64_t min_y = y1 < y2 ? y1 : y2;
+    int64_t max_y = y1 > y2 ? y1 : y2;
+    int64_t draw_x0 = rt_pixels_sub_nonneg_sat64(min_x, clip_radius);
+    int64_t draw_x1 = rt_pixels_add_sat64(max_x, clip_radius);
+    int64_t draw_y0 = rt_pixels_sub_nonneg_sat64(min_y, clip_radius);
+    int64_t draw_y1 = rt_pixels_add_sat64(max_y, clip_radius);
+    if (draw_x0 < 0)
+        draw_x0 = 0;
+    if (draw_y0 < 0)
+        draw_y0 = 0;
+    if (draw_x1 >= p->width)
+        draw_x1 = p->width - 1;
+    if (draw_y1 >= p->height)
+        draw_y1 = p->height - 1;
+    if (draw_x0 > draw_x1 || draw_y0 > draw_y1)
+        return;
 
-    /* Stamp with the image-clamped radius, not the raw thickness/2: an enormous
-     * thickness (up to INT64_MAX) would otherwise make each Bresenham-step disc
-     * attempt to fill a radius-sized area, turning one call into an unbounded
-     * hang. A disc larger than the image already fills it, so clamping to
-     * clip_radius is visually identical while bounding the work. */
-    for (;;) {
-        rt_pixels_draw_disc(pixels, x, y, clip_radius, color);
-        if (x == x2 && y == y2)
-            break;
-        int64_t e2 = err > INT64_MAX / 2 ? INT64_MAX : err < INT64_MIN / 2 ? INT64_MIN : err * 2;
-        if (e2 > -ady) {
-            err -= ady;
-            x += sx;
+    long double radius2 = (long double)clip_radius * (long double)clip_radius;
+    int8_t wrote = 0;
+
+    if (y1 == y2) {
+        for (int64_t py = draw_y0; py <= draw_y1; py++) {
+            long double dy = (long double)py - (long double)y1;
+            long double rem = radius2 - dy * dy;
+            if (rem < 0.0L)
+                continue;
+            long double cap = sqrtl(rem);
+            int64_t span_x0 = pixels_ceil_ld_to_i64_sat((long double)min_x - cap);
+            int64_t span_x1 = pixels_floor_ld_to_i64_sat((long double)max_x + cap);
+            wrote |= pixels_fill_span(p, py, span_x0, span_x1, rgba);
         }
-        if (e2 < adx) {
-            err += adx;
-            y += sy;
+    } else if (x1 == x2) {
+        for (int64_t py = draw_y0; py <= draw_y1; py++) {
+            int64_t nearest_y = py < min_y ? min_y : py > max_y ? max_y : py;
+            long double dy = (long double)py - (long double)nearest_y;
+            long double rem = radius2 - dy * dy;
+            if (rem < 0.0L)
+                continue;
+            long double span = sqrtl(rem);
+            int64_t span_x0 = pixels_ceil_ld_to_i64_sat((long double)x1 - span);
+            int64_t span_x1 = pixels_floor_ld_to_i64_sat((long double)x1 + span);
+            wrote |= pixels_fill_span(p, py, span_x0, span_x1, rgba);
+        }
+    } else {
+        long double dx = (long double)x2 - (long double)x1;
+        long double dy = (long double)y2 - (long double)y1;
+        long double length2 = dx * dx + dy * dy;
+        for (int64_t py = draw_y0; py <= draw_y1; py++) {
+            for (int64_t px = draw_x0; px <= draw_x1; px++) {
+                long double rel_x = (long double)px - (long double)x1;
+                long double rel_y = (long double)py - (long double)y1;
+                long double t = (rel_x * dx + rel_y * dy) / length2;
+                if (t < 0.0L)
+                    t = 0.0L;
+                else if (t > 1.0L)
+                    t = 1.0L;
+                long double nearest_x = (long double)x1 + t * dx;
+                long double nearest_y = (long double)y1 + t * dy;
+                long double distance_x = (long double)px - nearest_x;
+                long double distance_y = (long double)py - nearest_y;
+                if (distance_x * distance_x + distance_y * distance_y <= radius2)
+                    wrote |= set_pixel_raw(p, px, py, rgba);
+            }
         }
     }
+
+    if (wrote)
+        pixels_touch(p);
 }
 
 /// @brief Fill a clipped solid triangle with scanline rasterization.
@@ -935,11 +1168,11 @@ void rt_pixels_draw_triangle(void *pixels,
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.DrawTriangle: invalid pixels");
     if (!p)
         return;
+    if (!p->data || p->width <= 0 || p->height <= 0)
+        return;
     uint32_t rgba = rt_pixels_color_to_rgba(color);
 
-    long double area = ((long double)x2 - (long double)x1) * ((long double)y3 - (long double)y1) -
-                       ((long double)y2 - (long double)y1) * ((long double)x3 - (long double)x1);
-    if (area == 0.0L) {
+    if (pixels_triangle_is_collinear(x1, y1, x2, y2, x3, y3)) {
         pixels_draw_degenerate_triangle_line(pixels, x1, y1, x2, y2, x3, y3, color);
         return;
     }
@@ -996,9 +1229,11 @@ void rt_pixels_draw_triangle(void *pixels,
         wrote |= pixels_fill_span(p, scan_y, ax, bx, rgba);
     }
 
-    // Lower half: y2 .. y3
+    // Lower half: skip the split scanline unless the upper edge is flat.
     int64_t lower_h = rt_pixels_abs_diff_sat64(y3, y2);
-    int64_t lower_start = y2 < 0 ? 0 : y2;
+    int64_t lower_start = upper_h == 0 ? y2 : y2 == INT64_MAX ? INT64_MAX : y2 + 1;
+    if (lower_start < 0)
+        lower_start = 0;
     int64_t lower_end = y3 >= p->height ? p->height - 1 : y3;
     for (int64_t scan_y = lower_start; scan_y <= lower_end; scan_y++) {
         long double row = (long double)scan_y - (long double)y2;
@@ -1049,7 +1284,29 @@ void rt_pixels_draw_bezier(void *pixels,
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.DrawBezier: invalid pixels");
     if (!p)
         return;
+    if (!p->data || p->width <= 0 || p->height <= 0)
+        return;
     uint32_t rgba = rt_pixels_color_to_rgba(color);
+
+    int64_t min_x = x1 < x2 ? x1 : x2;
+    int64_t max_x = x1 > x2 ? x1 : x2;
+    int64_t min_y = y1 < y2 ? y1 : y2;
+    int64_t max_y = y1 > y2 ? y1 : y2;
+    if (cx_ctrl < min_x)
+        min_x = cx_ctrl;
+    if (cx_ctrl > max_x)
+        max_x = cx_ctrl;
+    if (cy_ctrl < min_y)
+        min_y = cy_ctrl;
+    if (cy_ctrl > max_y)
+        max_y = cy_ctrl;
+    if (max_x < 0 || min_x >= p->width || max_y < 0 || min_y >= p->height)
+        return;
+    if (x1 == cx_ctrl && x1 == x2 && y1 == cy_ctrl && y1 == y2) {
+        if (set_pixel_raw(p, x1, y1, rgba))
+            pixels_touch(p);
+        return;
+    }
 
     // Adaptive step count: enough steps to avoid gaps
     int64_t adx = rt_pixels_abs_diff_sat64(x2, x1);
@@ -1114,12 +1371,11 @@ static int64_t pixels_mul_nonneg_sat64(int64_t a, int64_t b) {
 /// @param b Subtrahend.
 /// @return `a - b` clamped to the signed 64-bit range.
 static int64_t pixels_sub_sat64(int64_t a, int64_t b) {
-    long double value = (long double)a - (long double)b;
-    if (value >= (long double)INT64_MAX)
+    if (b < 0 && a > INT64_MAX + b)
         return INT64_MAX;
-    if (value <= (long double)INT64_MIN)
+    if (b > 0 && a < INT64_MIN + b)
         return INT64_MIN;
-    return (int64_t)value;
+    return a - b;
 }
 
 /// @brief Decode one UTF-8 code point with deterministic malformed-input recovery.
@@ -1200,9 +1456,23 @@ static int8_t pixels_fill_rect_raw(
     if (!rt_pixels_clip_rect_to_bounds(p, &x, &y, &w, &h))
         return 0;
 
+    int8_t wrote = 0;
+    int64_t x1 = x + w - 1;
     for (int64_t row = y; row < y + h; row++)
-        for (int64_t col = x; col < x + w; col++)
-            p->data[row * p->width + col] = rgba;
+        wrote |= pixels_fill_span(p, row, x, x1, rgba);
+    return wrote;
+}
+
+/// @brief Borrow a runtime string's complete byte span with size_t validation.
+static int8_t pixels_text_bytes(rt_string text, const char **bytes_out, size_t *length_out) {
+    if (!text || !bytes_out || !length_out)
+        return 0;
+    const char *bytes = rt_string_cstr(text);
+    int64_t length = rt_str_len(text);
+    if (!bytes || length <= 0 || (uint64_t)length > (uint64_t)SIZE_MAX)
+        return 0;
+    *bytes_out = bytes;
+    *length_out = (size_t)length;
     return 1;
 }
 
@@ -1218,11 +1488,11 @@ static int64_t pixels_text_codepoint_width(rt_string text, int64_t scale) {
     if (!text || scale < 1)
         return 0;
 
-    const char *str = rt_string_cstr(text);
-    if (!str)
+    const char *str = NULL;
+    size_t byte_len = 0;
+    if (!pixels_text_bytes(text, &str, &byte_len))
         return 0;
 
-    size_t byte_len = (size_t)rt_str_len(text);
     size_t index = 0;
     int64_t count = 0;
     int codepoint = 0;
@@ -1259,44 +1529,56 @@ static int8_t pixels_draw_text_raw(rt_pixels_impl *p,
     if (!p || !p->data || !text || scale < 1)
         return 0;
 
-    const char *str = rt_string_cstr(text);
-    if (!str)
+    int64_t advance = pixels_mul_nonneg_sat64(8, scale);
+    int64_t cell_bottom = rt_pixels_add_sat64(y, advance - 1);
+    if (y >= p->height || cell_bottom < 0)
         return 0;
 
-    size_t byte_len = (size_t)rt_str_len(text);
+    const char *str = NULL;
+    size_t byte_len = 0;
+    if (!pixels_text_bytes(text, &str, &byte_len))
+        return 0;
+
     size_t index = 0;
     int codepoint = 0;
     int64_t cx = x;
-    int64_t advance = pixels_mul_nonneg_sat64(8, scale);
     int8_t wrote = 0;
 
-    while (pixels_next_codepoint(str, byte_len, &index, &codepoint)) {
+    while (cx < p->width && pixels_next_codepoint(str, byte_len, &index, &codepoint)) {
         int glyph_cp = (codepoint >= 32 && codepoint <= 126) ? codepoint : '?';
         const uint8_t *glyph = rt_font_get_glyph(glyph_cp);
+        int64_t cell_right = rt_pixels_add_sat64(cx, advance - 1);
+        if (cell_right < 0) {
+            cx = rt_pixels_add_sat64(cx, advance);
+            continue;
+        }
+
+        if (bg)
+            wrote |= pixels_fill_rect_raw(p, cx, y, advance, advance, *bg);
 
         for (int row = 0; row < 8; row++) {
             uint8_t bits = glyph[row];
             int64_t py = rt_pixels_add_sat64(y, pixels_mul_nonneg_sat64((int64_t)row, scale));
-            /* Coalesce horizontal runs of same-state cells into one fill instead of one fill/set
-             * per cell, so a glyph row costs at most a few clipped fills rather than eight (each
-             * fill otherwise re-runs full rect clipping). A run of unlit cells is skipped when no
-             * background colour is supplied. */
+            if (py >= p->height)
+                break;
+            if (rt_pixels_add_sat64(py, scale - 1) < 0)
+                continue;
+
+            // Coalesce each contiguous foreground-bit run into one fill.
             int col = 0;
             while (col < 8) {
-                int8_t foreground = (bits & (uint8_t)(0x80u >> col)) != 0;
-                if (!foreground && !bg) {
+                if ((bits & (uint8_t)(0x80u >> col)) == 0) {
                     col++;
                     continue;
                 }
                 int run_start = col;
-                while (col < 8 && (((bits & (uint8_t)(0x80u >> col)) != 0) == foreground))
+                while (col < 8 && (bits & (uint8_t)(0x80u >> col)) != 0)
                     col++;
                 int64_t run_cols = (int64_t)(col - run_start);
                 int64_t px =
                     rt_pixels_add_sat64(cx, pixels_mul_nonneg_sat64((int64_t)run_start, scale));
-                uint32_t color = foreground ? fg : *bg;
                 wrote |= pixels_fill_rect_raw(
-                    p, px, py, pixels_mul_nonneg_sat64(run_cols, scale), scale, color);
+                    p, px, py, pixels_mul_nonneg_sat64(run_cols, scale), scale, fg);
             }
         }
         cx = rt_pixels_add_sat64(cx, advance);
@@ -1541,8 +1823,8 @@ void rt_pixels_blend_pixel(void *pixels, int64_t x, int64_t y, int64_t color, in
     // Fully opaque fast path — same as set_rgb
     if (alpha == 255) {
         uint32_t rgb = (rt_pixels_color_to_rgba(color) >> 8) & 0x00FFFFFFu;
-        p->data[y * p->width + x] = (rgb << 8) | 0xFFu;
-        pixels_touch(p);
+        if (set_pixel_raw(p, x, y, (rgb << 8) | 0xFFu))
+            pixels_touch(p);
         return;
     }
 
@@ -1556,6 +1838,6 @@ void rt_pixels_blend_pixel(void *pixels, int64_t x, int64_t y, int64_t color, in
     uint32_t dst = p->data[y * p->width + x];
     uint32_t src = (sr << 24) | (sg << 16) | (sb << 8) | sa;
 
-    p->data[y * p->width + x] = rt_pixels_alpha_over_rgba(dst, src);
-    pixels_touch(p);
+    if (set_pixel_raw(p, x, y, rt_pixels_alpha_over_rgba(dst, src)))
+        pixels_touch(p);
 }

@@ -46,6 +46,7 @@ extern "C" {
 #define VGFX3D_METAL_MAX_MORPH_SHAPES 64
 #define VGFX3D_METAL_MAX_TEXTURE_ANISOTROPY 16
 #define VGFX3D_METAL_ANISOTROPY_LEVEL_COUNT VGFX3D_METAL_MAX_TEXTURE_ANISOTROPY
+#define VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION 16384
 
 /// @brief Blend state required by a draw: opaque, standard alpha, or additive.
 typedef enum {
@@ -79,6 +80,12 @@ typedef enum {
     VGFX3D_METAL_READBACK_BACKBUFFER = 0,
     VGFX3D_METAL_READBACK_POSTFX_COMPOSITE = 1,
 } vgfx3d_metal_readback_kind_t;
+
+/// @brief Validate a 2D Metal allocation extent against the runtime portability contract.
+/// @param width Requested texture width.
+/// @param height Requested texture height.
+/// @return Non-zero only for positive dimensions no larger than the portable Metal limit.
+int vgfx3d_metal_is_valid_texture2d_extent(int32_t width, int32_t height);
 
 /// @brief Per-frame view/projection history for motion vectors (current/previous/inverse
 ///   scene VP, draw's previous VP, camera position, and scene/overlay validity flags).

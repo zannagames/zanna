@@ -330,6 +330,7 @@ if (ZANNA_BUILD_TESTING)
             tests/test_vg_draw.c
             src/core/vg_draw.c
             ${CMAKE_CURRENT_SOURCE_DIR}/../graphics/src/vgfx.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/../graphics/src/vgfx_embed_channel.c
             ${CMAKE_CURRENT_SOURCE_DIR}/../graphics/src/vgfx_draw.c
             ${CMAKE_CURRENT_SOURCE_DIR}/../graphics/src/vgfx_platform_mock.c
     )
@@ -367,6 +368,7 @@ if (ZANNA_BUILD_TESTING)
             tests/test_vg_icon_vector.c
             src/core/vg_icon_vector.c
             ${CMAKE_CURRENT_SOURCE_DIR}/../graphics/src/vgfx.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/../graphics/src/vgfx_embed_channel.c
             ${CMAKE_CURRENT_SOURCE_DIR}/../graphics/src/vgfx_draw.c
             ${CMAKE_CURRENT_SOURCE_DIR}/../graphics/src/vgfx_platform_mock.c
     )

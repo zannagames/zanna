@@ -379,6 +379,15 @@ static void test_target_kind_blend_motion_and_readback_helpers(void) {
                 "Direct rendering reads back the backbuffer");
     EXPECT_TRUE(vgfx3d_metal_choose_readback_kind(1) == VGFX3D_METAL_READBACK_POSTFX_COMPOSITE,
                 "GPU postfx readback uses the composited postfx path");
+    EXPECT_TRUE(vgfx3d_metal_is_valid_texture2d_extent(1, 1) == 1 &&
+                    vgfx3d_metal_is_valid_texture2d_extent(VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION,
+                                                           VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION) ==
+                        1,
+                "Metal accepts positive texture extents through its portable maximum");
+    EXPECT_TRUE(vgfx3d_metal_is_valid_texture2d_extent(0, 1) == 0 &&
+                    vgfx3d_metal_is_valid_texture2d_extent(VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION + 1,
+                                                           16) == 0,
+                "Metal rejects zero and oversized texture extents before allocation");
 }
 
 static void test_capacity_mip_and_morph_cache_helpers(void) {
@@ -655,7 +664,7 @@ static void test_metal_mipmap_generation_never_waits_on_cpu(void) {
                 "Metal backend source chunks are readable for mipmap synchronization checks");
     if (!source)
         return;
-    begin = strstr(source, "static void metal_generate_mipmaps");
+    begin = strstr(source, "static BOOL metal_generate_mipmaps");
     end = begin ? strstr(begin, "\n}\n") : NULL;
     EXPECT_TRUE(begin != NULL && end != NULL, "Metal mipmap helper body is present");
     if (begin && end) {
@@ -704,6 +713,47 @@ static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
             strstr(source, "Publish only after every attachment required by the selected route") !=
                 NULL,
         "Metal size-dependent attachment rebuilds publish transactionally");
+    EXPECT_TRUE(strstr(source, "vgfx3d_metal_is_valid_texture2d_extent(w, h)") != NULL &&
+                    strstr(source, "VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION / 4") != NULL,
+                "Metal validates ordinary and shadow-atlas texture extents before allocation");
+    EXPECT_TRUE(strstr(source, "if (!metal_generate_mipmaps(ctx, entry.texture))") != NULL,
+                "Metal publishes texture generations only after mip work is committed");
+    EXPECT_TRUE(strstr(source, "params->sceneIsHdr = source_is_hdr ? 1 : 0;") != NULL,
+                "Metal distinguishes HDR scene input from LDR post-effect intermediates");
+    EXPECT_TRUE(strstr(source, "ctx, source_texture, safe_snapshot.bloom_threshold") != NULL,
+                "Metal bloom consumes the current ordered-chain source");
+    EXPECT_TRUE(strstr(source, "if (!resolved)\n                    return nil;") != NULL &&
+                    strstr(source, "if (!output_texture)\n                    return nil;") != NULL,
+                "Metal propagates temporal and reflection encoder failures");
+    EXPECT_TRUE(strstr(source, "k_texture_cache_max_entries = 256u") != NULL &&
+                    strstr(source, "k_cubemap_cache_max_entries = 64u") != NULL &&
+                    strstr(source, "k_morph_cache_max_entries = 64u") != NULL,
+                "Metal GPU caches have hard same-frame cardinality limits");
+    EXPECT_TRUE(strstr(source, "replacement_delta = metal_new_shared_buffer") != NULL &&
+                    strstr(source, "cmd->morph_normal_deltas && !replacement_normal") != NULL,
+                "Metal morph-cache replacement validates both channels before publication");
+    EXPECT_TRUE(
+        strstr(source,
+               "candidate.fallbackEntry = cached.uploadInProgress ? "
+               "cached.fallbackEntry : cached;") != NULL &&
+            strstr(source, "ctx.textureCache[key] = fallback;") != NULL &&
+            strstr(source, "ctx.cubemapCache[key] = fallback;") != NULL,
+        "Metal restores complete texture and cubemap generations after replacement failure");
+    EXPECT_TRUE(strstr(source, "static int metal_ensure_instance_storage") != NULL &&
+                    strstr(source, "if (!replacement || replacement.length < byte_count)") != NULL,
+                "Metal instance scratch growth publishes capacity only after allocation");
+    EXPECT_TRUE(strstr(source, "!ctx.textureCache || !ctx.cubemapCache || !ctx.geometryCache") !=
+                        NULL &&
+                    strstr(source, "if (!ctx.inflightSemaphore)") != NULL,
+                "Metal validates required context caches and frame-pacing synchronization");
+    EXPECT_TRUE(strstr(source, "!metal_create_depth_state_variants(ctx, device)") != NULL &&
+                    strstr(source, "!metal_create_default_texture_resources(ctx, device)") !=
+                        NULL &&
+                    strstr(source, "!metal_create_shared_sampler_resources(ctx, device)") != NULL &&
+                    strstr(source, "!metal_create_shadow_resources(ctx, device, &funcs)") != NULL,
+                "Metal context creation fails when a required fallback or render state is absent");
+    EXPECT_TRUE(strstr(source, "[ctx.metalLayer removeFromSuperlayer]") != NULL,
+                "Metal detaches a layer after later context initialization failure");
     EXPECT_TRUE(strstr(source, "vgfx3d_validate_cubemap_ibl_layout") != NULL &&
                     strstr(source, "entry.appliedIblIdentity != env_cm->ibl_identity") != NULL,
                 "Metal enables IBL only after the exact validated overlay is resident");

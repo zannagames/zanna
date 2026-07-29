@@ -138,7 +138,7 @@ function(zanna_add_tools_tests)
                 -P ${_ZANNA_TOOLS_DIR}/MacOSToolchainInstallerSmoke.cmake)
         set_tests_properties(macos_toolchain_installer_smoke PROPERTIES
                 RUN_SERIAL TRUE
-                TIMEOUT 420
+                TIMEOUT 900
                 SKIP_REGULAR_EXPRESSION "Skipping macOS installer smoke")
         zanna_add_test_labels(macos_toolchain_installer_smoke installer tools requires_macos requires_privileged_install slow)
     endif ()

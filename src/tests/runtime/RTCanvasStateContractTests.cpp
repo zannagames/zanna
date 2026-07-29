@@ -4,6 +4,24 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/tests/runtime/RTCanvasStateContractTests.cpp
+// Purpose: Validate Canvas logical/window-state synchronization with a
+//   deterministic in-process ZannaGFX backend.
+//
+// Key invariants:
+//   - HiDPI scale and logical clips are applied exactly when backend state changes.
+//   - Frame timing remains defined across extreme or non-monotonic clock values.
+//   - Canvas-owned title bytes round-trip independently of C-string termination.
+//
+// Ownership/Lifetime:
+//   - Fake windows and runtime objects are heap-backed test fixtures.
+//   - Returned fake runtime strings borrow static test storage.
+//
+// Links: src/runtime/graphics/2d/rt_canvas.c,
+//        src/runtime/graphics/common/rt_graphics_internal.h
+//
+//===----------------------------------------------------------------------===//
 
 extern "C" {
 #include "rt_graphics_internal.h"
@@ -13,6 +31,7 @@ extern "C" {
 #include <cstdint>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace {
 
@@ -106,6 +125,25 @@ static void test_poll_reapplies_clip_after_scale_change() {
     assert(window->clip_h == 40);
 }
 
+static void test_resync_skips_unchanged_backend_state() {
+    g_initial_scale = 1.0f;
+    rt_canvas *canvas = new_canvas();
+    assert(canvas != nullptr);
+
+    auto *window = window_from(canvas->gfx_win);
+    int coord_calls = window->coord_scale_calls;
+    int clear_calls = window->clear_clip_calls;
+    assert(rt_canvas_width(canvas) == 100);
+    assert(rt_canvas_height(canvas) == 50);
+    assert(window->coord_scale_calls == coord_calls);
+    assert(window->clear_clip_calls == clear_calls);
+
+    rt_canvas_set_clip_rect(canvas, 1, 2, 3, 4);
+    int clip_calls = window->clip_set_calls;
+    rt_canvas_set_clip_rect(canvas, 1, 2, 3, 4);
+    assert(window->clip_set_calls == clip_calls);
+}
+
 static void test_flip_rounds_positive_submillisecond_delta_up_to_one_ms() {
     g_initial_scale = 1.0f;
     rt_canvas *canvas = new_canvas();
@@ -118,6 +156,45 @@ static void test_flip_rounds_positive_submillisecond_delta_up_to_one_ms() {
     g_clock_us = 1500;
     rt_canvas_flip(canvas);
     assert(rt_canvas_get_delta_time(canvas) == 1);
+}
+
+static void test_flip_timing_is_overflow_safe_and_recovers_after_clock_reset() {
+    g_initial_scale = 1.0f;
+    rt_canvas *canvas = new_canvas();
+    assert(canvas != nullptr);
+
+    g_clock_us = 1;
+    rt_canvas_flip(canvas);
+    g_clock_us = INT64_MAX;
+    rt_canvas_flip(canvas);
+    int64_t delta_us = INT64_MAX - 1;
+    int64_t expected_ms = delta_us / 1000 + ((delta_us % 1000) >= 500 ? 1 : 0);
+    assert(rt_canvas_get_delta_time(canvas) == expected_ms);
+
+    g_clock_us = INT64_MIN;
+    rt_canvas_flip(canvas);
+    assert(rt_canvas_get_delta_time(canvas) == 0);
+    g_clock_us = 1000;
+    rt_canvas_flip(canvas);
+    assert(rt_canvas_get_delta_time(canvas) == 0);
+    g_clock_us = 1500;
+    rt_canvas_flip(canvas);
+    assert(rt_canvas_get_delta_time(canvas) == 1);
+    g_clock_us = 0;
+}
+
+static void test_shared_graphics_integer_helpers_cover_extremes() {
+    assert(rtg_mul_sat64(INT64_MAX - 1, 1) == INT64_MAX - 1);
+    assert(rtg_mul_sat64(INT64_MAX, 2) == INT64_MAX);
+    assert(rtg_mul_sat64(INT64_MIN, 2) == INT64_MIN);
+    assert(rtg_mul_sat64(INT64_MIN, -1) == INT64_MAX);
+    assert(rtg_mul_sat64(-3, -7) == 21);
+    assert(rtg_cos_deg_fp(INT64_MAX) == rtg_cos_deg_fp(INT64_MAX % 360));
+    assert(rtg_cos_deg_fp(INT64_MIN) == rtg_cos_deg_fp(INT64_MIN % 360));
+    assert(rtg_sanitize_scale(std::numeric_limits<float>::infinity()) == 1.0f);
+    assert(rtg_sanitize_scale(std::numeric_limits<float>::quiet_NaN()) == 1.0f);
+    assert(rtg_sanitize_scale(100.0f) == 16.0f);
+    assert(rtg_round_scaled(std::numeric_limits<double>::quiet_NaN()) == 0);
 }
 
 static void test_poll_tears_down_window_when_event_pump_fails() {
@@ -518,7 +595,10 @@ extern "C" void vgfx_set_prevent_close(vgfx_window_t, int32_t) {}
 int main() {
     test_width_resyncs_coord_scale_after_display_move();
     test_poll_reapplies_clip_after_scale_change();
+    test_resync_skips_unchanged_backend_state();
     test_flip_rounds_positive_submillisecond_delta_up_to_one_ms();
+    test_flip_timing_is_overflow_safe_and_recovers_after_clock_reset();
+    test_shared_graphics_integer_helpers_cover_extremes();
     test_poll_tears_down_window_when_event_pump_fails();
     test_window_position_and_monitor_scalar_wrappers();
     test_title_cache_preserves_embedded_nul_bytes();

@@ -456,7 +456,13 @@ hide func DispatchFileCommands(ctx: command_context.CommandContext,
         if ctx.projMgr.IsOpen() { ctx.terminalCtrl.SetCwd(ctx.projMgr.RootPath()); }
         ctx.shell.toolPanels.ToggleTerminalPanel();
     }
-    if dispatch_helpers.Triggered("save", ctx.shell.menuChrome.miSave, ctx.shell.menuChrome.tbSave, cpSelected)   { file_commands.handleSave(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs); ctx.fileWatchCtrl.ResetPendingReload(); }
+    if dispatch_helpers.Triggered("save", ctx.shell.menuChrome.miSave, ctx.shell.menuChrome.tbSave, cpSelected)   {
+        if file_commands.handleSave(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs) {
+            build_commands.NoteSceneWatchReload(
+                ctx.shell, ctx.docMgr, ctx.buildSys);
+        }
+        ctx.fileWatchCtrl.ResetPendingReload();
+    }
     if dispatch_helpers.Triggered("saveas", ctx.shell.menuChrome.miSaveAs, null, cpSelected)       { file_commands.handleSaveAs(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs); }
     if dispatch_helpers.Triggered("saveall", ctx.shell.menuChrome.miSaveAll, ctx.shell.menuChrome.tbSaveAll, cpSelected) { file_commands.handleSaveAll(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs); }
     if dispatch_helpers.Triggered("reload", ctx.shell.menuChrome.miReload, null, cpSelected)       { file_commands.handleReload(ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs); ctx.fileWatchCtrl.ResetPendingReload(); }
@@ -866,6 +872,15 @@ hide func DispatchBuildDebugCommands(ctx: command_context.CommandContext,
                 ctx.shell, ctx.docMgr, ctx.engine, ctx.tabs,
                 prefabSourcePath);
         }
+    }
+    if ctx.scene3DEditor != null
+       and ctx.scene3DEditor.TakePlaySceneRequested()
+       and dispatch_helpers.CanStartBuildCommand(
+               ctx.shell, ctx.dbgSession, "Play Scene") {
+        build_commands.handlePlayScene(
+            ctx.shell, ctx.docMgr, ctx.projMgr, ctx.engine, ctx.tabs,
+            ctx.buildSys, ctx.locStore, ctx.scene3DEditor.playController,
+            ctx.appSettings.saveAllBeforeBuild);
     }
     var runSceneTriggered =
         dispatch_helpers.Triggered("runscene", null, null, cpSelected);

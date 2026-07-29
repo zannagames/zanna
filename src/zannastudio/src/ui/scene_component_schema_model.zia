@@ -18,6 +18,8 @@
 
 module scene_component_schema_model;
 
+bind "scene_component_schema_forms_model" as FormsModel;
+
 bind "../services/safe_io";
 
 bind File = Zanna.IO.File;
@@ -31,7 +33,7 @@ bind Fmt = Zanna.Text.Fmt;
 
 final SCHEMA_FILE_NAME: String = "scene-components.json";
 final SCHEMA_VERSION: Integer = 1;
-final SCHEMA_VERSION_MAX: Integer = 18;
+final SCHEMA_VERSION_MAX: Integer = 19;
 final OBJECT_PREVIEW_SCHEMA_VERSION: Integer = 3;
 final SCENE_PREVIEW_3D_SCHEMA_VERSION: Integer = 4;
 final NODE_PREVIEW_3D_SCHEMA_VERSION: Integer = 5;
@@ -122,6 +124,8 @@ class SceneComponentField {
     expose String defaultText;
     expose String description;
     expose List[String] choices;
+    expose List[String] choiceLabels;
+    expose String storedKind;
     expose List[String] assetKinds;
 
     expose func init() {
@@ -131,6 +135,8 @@ class SceneComponentField {
         defaultText = "";
         description = "";
         choices = [];
+        choiceLabels = [];
+        storedKind = "";
         assetKinds = [];
     }
 
@@ -879,6 +885,7 @@ class SceneComponentSchema {
     expose List[SceneNodePreview3DDefinition] nodePreviews3D;
     expose SceneNodePreviewFilter3DDefinition nodePreviewFilter3D;
     expose List[SceneMaterialPreview3DDefinition] materialPreviews3D;
+    expose List[FormsModel.SceneSettingsComponent] sceneSettings;
 
     expose func init() {
         found = false;
@@ -894,6 +901,7 @@ class SceneComponentSchema {
         nodePreviewFilter3D =
             new SceneNodePreviewFilter3DDefinition();
         materialPreviews3D = [];
+        sceneSettings = [];
     }
 
     /// @brief Count definitions compatible with one editor target.

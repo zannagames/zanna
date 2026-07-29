@@ -95,6 +95,10 @@ module config;
 // (Zanna Studio's Run Scene command, ADR 0181). Zero means no override.
 var sceneStartRegion = 0;
 
+// Absolute path of the `--scene` file when `--scene-watch` was also
+// passed (ADR 0194); empty disables watching entirely.
+var sceneWatchPath = "";
+
 final SCREEN_W = 1280;
 final SCREEN_H = 720;
 final TILE_SIZE = 64;         // 48→64: ~1.33x larger tiles for more visible detail

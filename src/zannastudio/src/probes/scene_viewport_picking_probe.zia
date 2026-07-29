@@ -39,6 +39,7 @@ bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
 bind "../ui/scene_selection";
+bind "scene_probe_support";
 bind "scene_viewport_picking_routing_probe";
 
 bind Convert = Zanna.Core.Convert;
@@ -68,22 +69,6 @@ func ClickWidget(shell: app_shell.AppShell,
         shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
     var y = HarnessCoordinate(
         shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
-    harness.SendMouse("move", x, y, 0);
-    harness.SendMouse("down", x, y, 0);
-    harness.SendMouse("up", x, y, 0);
-    harness.DispatchPending();
-}
-
-/// @brief Click one logical row center in a menu anchored below @p button.
-func ClickCommandMenuOffset(shell: app_shell.AppShell,
-                            harness: GUI.TestHarness,
-                            button: GUI.Button,
-                            offsetY: Number) {
-    var x = HarnessCoordinate(shell, button.GetScreenX())
-        + Convert.NumToInt(20.0);
-    var y = HarnessCoordinate(
-        shell, button.GetScreenY() + button.GetScreenHeight())
-        + Convert.NumToInt(offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -164,16 +149,17 @@ func VerifyInputAndInitialPicking(ctx: ViewportPickingProbeContext) -> Boolean {
         Fail(shell, harness, "compact creation overflow visibility");
         return false;
     }
-    ClickWidget(shell, harness, editor.createMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor.createMenuButton);
     editor.Pump(sceneDoc);
     shell.Render();
     if editor.createMenu.IsVisible() == false {
         Fail(shell, harness, "creation menu did not open");
         return false;
     }
-    // Two 28px rows, one 9px separator, then the Box row.
-    ClickCommandMenuOffset(
-        shell, harness, editor.createMenuButton, 83.0);
+    // Create Box, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor.createBoxItem);
     if editor.Pump(sceneDoc) == false {
         Fail(shell, harness,
              "far box production action: button="
@@ -188,11 +174,12 @@ func VerifyInputAndInitialPicking(ctx: ViewportPickingProbeContext) -> Boolean {
     }
     shell.Render();
     shell.Poll();
-    ClickWidget(shell, harness, editor.createMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor.createMenuButton);
     editor.Pump(sceneDoc);
     shell.Render();
-    ClickCommandMenuOffset(
-        shell, harness, editor.createMenuButton, 83.0);
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor.createBoxItem);
     if editor.Pump(sceneDoc) == false {
         Fail(shell, harness, "near box production action");
         return false;
@@ -774,12 +761,13 @@ func VerifyScaledPickingAndCapture(ctx: ViewportPickingProbeContext) -> Boolean 
     // through the same view-target spawn transaction.
     editor.viewTargetX = 2.5;
     var beforeCount = editor.flatNodes.count();
-    ClickWidget(shell, harness, editor.createMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor.createMenuButton);
     editor.Pump(sceneDoc);
     shell.Render();
-    // Cylinder follows Box, Sphere, and Plane in the same menu.
-    ClickCommandMenuOffset(
-        shell, harness, editor.createMenuButton, 167.0);
+    // Create Cylinder, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor.createCylinderItem);
     if editor.Pump(sceneDoc) == false
        or editor.flatNodes.count() != beforeCount + 1 {
         Fail(shell, harness,

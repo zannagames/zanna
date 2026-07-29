@@ -2,6 +2,27 @@
 // Part of the Zanna project, under the GNU GPL v3.
 // See LICENSE for license information.
 //
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/runtime/RTPhysics2DTests.cpp
+// Purpose: Regression tests for Physics2D worlds, bodies, collision, contacts,
+//   numerical limits, handle validation, and analytic projectiles.
+//
+// Key invariants:
+//   - A body belongs to at most one world and all retained arrays remain packed.
+//   - Shape, mass, force, collision, and projectile math stays finite at the
+//     supported numeric limits.
+//   - Same-class undersized runtime payloads are rejected before implementation
+//     fields are accessed.
+//
+// Ownership/Lifetime:
+//   - Tests retain caller references and release every explicitly allocated
+//     runtime object after the owning world has finished using it.
+//
+// Links: src/runtime/graphics/2d/rt_physics2d.c,
+//   src/runtime/graphics/2d/rt_physics2d_collision.c,
+//   src/runtime/graphics/2d/rt_physics2d_joint.c
+//
 // RTPhysics2DTests.cpp - Tests for rt_physics2d (2D physics engine)
 //===----------------------------------------------------------------------===//
 
@@ -951,8 +972,7 @@ static void test_distance_joint_no_phantom_velocity() {
 
     // Without the fix, vy ≈ g*t = 10*4 = 40 after 4s. With it, radial velocity is
     // cancelled each step so vy stays near zero.
-    ASSERT(fabs(rt_physics2d_body_vy(bob)) < 5.0,
-           "distance joint cancels phantom radial velocity");
+    ASSERT(fabs(rt_physics2d_body_vy(bob)) < 5.0, "distance joint cancels phantom radial velocity");
 
     release_obj(joint);
     release_obj(anchor);
@@ -1030,6 +1050,219 @@ static void test_high_speed_contact_still_bounces() {
     release_obj(world);
 }
 
+//=============================================================================
+// Audit regressions
+//=============================================================================
+
+static void test_body_cannot_belong_to_two_worlds() {
+    void *world_a = rt_physics2d_world_new(0.0, 0.0);
+    void *world_b = rt_physics2d_world_new(0.0, 0.0);
+    void *body = rt_physics2d_body_new(0.0, 0.0, 1.0, 1.0, 1.0);
+
+    rt_physics2d_world_add(world_a, body);
+    EXPECT_TRAP(rt_physics2d_world_add(world_b, body));
+    ASSERT(rt_physics2d_world_body_count(world_a) == 1,
+           "failed cross-world add preserves source membership");
+    ASSERT(rt_physics2d_world_body_count(world_b) == 0,
+           "failed cross-world add leaves destination empty");
+
+    rt_physics2d_world_remove(world_a, body);
+    rt_physics2d_world_add(world_b, body);
+    ASSERT(rt_physics2d_world_body_count(world_b) == 1,
+           "removed body can be added to another world");
+
+    release_obj(body);
+    release_obj(world_a);
+    release_obj(world_b);
+}
+
+static void test_circle_box_dimensions_remain_zero_after_step() {
+    void *world = rt_physics2d_world_new(0.0, 0.0);
+    void *circle = rt_physics2d_circle_body_new(0.0, 0.0, 0.25, 1.0);
+    rt_physics2d_world_add(world, circle);
+    rt_physics2d_world_step(world, 0.01);
+
+    ASSERT(rt_physics2d_body_w(circle) == 0.0, "circle width remains zero after sanitize");
+    ASSERT(rt_physics2d_body_h(circle) == 0.0, "circle height remains zero after sanitize");
+    ASSERT_NEAR(rt_physics2d_body_radius(circle), 0.25, "circle radius survives a world step");
+
+    release_obj(circle);
+    release_obj(world);
+}
+
+static void test_tiny_mass_has_finite_consistent_inverse() {
+    void *body =
+        rt_physics2d_body_new(0.0, 0.0, 1.0, 1.0, std::numeric_limits<double>::denorm_min());
+    auto *impl = static_cast<rt_body_impl *>(body);
+    ASSERT(rt_physics2d_body_is_static(body) == 0, "tiny positive mass remains dynamic");
+    ASSERT(std::isfinite(impl->inv_mass) && impl->inv_mass > 0.0,
+           "tiny positive mass has finite inverse");
+
+    impl->mass = 4.0;
+    impl->inv_mass = 99.0;
+    sanitize_body_state(impl);
+    ASSERT_NEAR(impl->inv_mass, 0.25, "sanitize derives inverse mass from mass");
+
+    release_obj(body);
+}
+
+static void test_invalid_contact_does_not_touch_capacity_or_overflow_count() {
+    void *world = rt_physics2d_world_new(0.0, 0.0);
+    void *a = rt_physics2d_body_new(0.0, 0.0, 1.0, 1.0, 1.0);
+    void *b = rt_physics2d_body_new(0.0, 0.0, 1.0, 1.0, 1.0);
+    auto *impl = static_cast<rt_world_impl *>(world);
+
+    impl->contact_count = INT64_MAX;
+    world_record_contact(impl,
+                         static_cast<rt_body_impl *>(a),
+                         static_cast<rt_body_impl *>(b),
+                         std::numeric_limits<double>::quiet_NaN(),
+                         0.0,
+                         0.0);
+    ASSERT(impl->contact_count == INT64_MAX, "invalid manifold does not increment contact count");
+    ASSERT(impl->contact_overflow == 0, "invalid manifold does not report storage overflow");
+    impl->contact_count = 0;
+
+    release_obj(a);
+    release_obj(b);
+    release_obj(world);
+}
+
+static void test_undersized_same_class_handles_trap() {
+    void *short_world =
+        rt_obj_new_i64(RT_PHYSICS2D_WORLD_CLASS_ID, static_cast<int64_t>(sizeof(void *)));
+    void *short_body =
+        rt_obj_new_i64(RT_PHYSICS2D_BODY_CLASS_ID, static_cast<int64_t>(sizeof(void *)));
+    void *short_joint =
+        rt_obj_new_i64(RT_PHYSICS2D_JOINT_CLASS_ID, static_cast<int64_t>(sizeof(void *)));
+    void *short_projectile =
+        rt_obj_new_i64(RT_PHYSICS2D_PROJECTILE_CLASS_ID, static_cast<int64_t>(sizeof(void *)));
+
+    EXPECT_TRAP(rt_physics2d_world_body_count(short_world));
+    EXPECT_TRAP(rt_physics2d_body_x(short_body));
+    EXPECT_TRAP(rt_physics2d_joint_get_type(short_joint));
+    EXPECT_TRAP(rt_projectile2d_total_time(short_projectile));
+
+    release_obj(short_world);
+    release_obj(short_body);
+    release_obj(short_joint);
+    release_obj(short_projectile);
+}
+
+static void test_subpicometer_aabb_sweep_is_not_discarded() {
+    void *world = rt_physics2d_world_new(0.0, 0.0);
+    void *mover = rt_physics2d_body_new(0.0, 0.0, 1.0e-15, 1.0e-15, 1.0);
+    void *wall = rt_physics2d_body_new(2.0e-13, 0.0, 1.0e-15, 1.0e-15, 0.0);
+    rt_physics2d_body_set_vel(mover, 1.0, 0.0);
+    rt_physics2d_world_add(world, mover);
+    rt_physics2d_world_add(world, wall);
+
+    rt_physics2d_world_step(world, 5.0e-13);
+    ASSERT(rt_physics2d_world_contact_count(world) == 1,
+           "nonzero subpicometer sweep still reaches a thin wall");
+
+    release_obj(mover);
+    release_obj(wall);
+    release_obj(world);
+}
+
+static void test_tiny_circle_overlap_keeps_geometric_normal() {
+    void *world = rt_physics2d_world_new(0.0, 0.0);
+    void *a = rt_physics2d_circle_body_new(0.0, 0.0, 1.0e-9, 0.0);
+    void *b = rt_physics2d_circle_body_new(0.0, 1.0e-9, 1.0e-9, 0.0);
+    rt_physics2d_world_add(world, a);
+    rt_physics2d_world_add(world, b);
+
+    rt_physics2d_world_step(world, 1.0e-6);
+    ASSERT(rt_physics2d_world_contact_count(world) == 1, "tiny overlapping circles contact");
+    ASSERT(std::fabs(rt_physics2d_world_contact_nx(world, 0)) < 1.0e-12,
+           "tiny circle normal does not fall back to +X");
+    ASSERT(rt_physics2d_world_contact_ny(world, 0) > 0.999999,
+           "tiny circle normal follows center separation");
+
+    release_obj(a);
+    release_obj(b);
+    release_obj(world);
+}
+
+static void test_huge_mass_collision_avoids_impulse_overflow() {
+    void *world = rt_physics2d_world_new(0.0, 0.0);
+    void *a = rt_physics2d_body_new(0.0, 0.0, 10.0, 10.0, DBL_MAX);
+    void *b = rt_physics2d_body_new(9.0, 0.0, 10.0, 10.0, DBL_MAX);
+    rt_physics2d_body_set_restitution(a, 1.0);
+    rt_physics2d_body_set_restitution(b, 1.0);
+    rt_physics2d_body_set_vel(a, 10.0, 0.0);
+    rt_physics2d_body_set_vel(b, -10.0, 0.0);
+    rt_physics2d_world_add(world, a);
+    rt_physics2d_world_add(world, b);
+
+    rt_physics2d_world_step(world, 0.001);
+    ASSERT(rt_physics2d_body_vx(a) < -9.0, "huge-mass body A bounces without infinity");
+    ASSERT(rt_physics2d_body_vx(b) > 9.0, "huge-mass body B bounces without infinity");
+
+    release_obj(a);
+    release_obj(b);
+    release_obj(world);
+}
+
+static void test_projectile_numeric_edges() {
+    void *small_drag = rt_projectile2d_new(0.0, 0.0, 10.0, 0.0, 0.0, 10.0);
+    rt_projectile2d_set_drag(small_drag, 1.0e-20);
+    ASSERT(std::fabs(rt_projectile2d_x_at(small_drag, 2.0) - 20.0) < 1.0e-9,
+           "tiny drag position is continuous with ballistic motion");
+    ASSERT(std::fabs(rt_projectile2d_y_at(small_drag, 2.0) - 20.0) < 1.0e-9,
+           "tiny drag gravity term avoids cancellation");
+
+    void *extreme = rt_projectile2d_new(DBL_MAX, 0.0, DBL_MAX, 0.0, DBL_MAX, 0.0);
+    ASSERT(std::isfinite(rt_projectile2d_x_at(extreme, DBL_MAX)),
+           "extreme projectile position saturates finite");
+    ASSERT(std::isfinite(rt_projectile2d_vx_at(extreme, DBL_MAX)),
+           "extreme projectile velocity saturates finite");
+
+    void *already_grounded = rt_projectile2d_new(0.0, 5.0, 0.0, 0.0, 0.0, 10.0);
+    rt_projectile2d_set_ground_y(already_grounded, 3.0);
+    ASSERT(rt_projectile2d_time_to_ground(already_grounded) == 0.0,
+           "projectile starting beyond ground reports zero impact time");
+
+    void *tiny_gravity = rt_projectile2d_new(0.0, 0.0, 0.0, 0.0, 0.0, 1.0e-20);
+    rt_projectile2d_set_ground_y(tiny_gravity, 1.0);
+    double tiny_gravity_time = rt_projectile2d_time_to_ground(tiny_gravity);
+    double expected_tiny_gravity_time = std::sqrt(2.0e20);
+    ASSERT(std::isfinite(tiny_gravity_time) &&
+               std::fabs(tiny_gravity_time / expected_tiny_gravity_time - 1.0) < 1.0e-12,
+           "tiny nonzero gravity uses the quadratic path");
+
+    void *cancellation = rt_projectile2d_new(0.0, 0.0, 0.0, 1.0e16, 0.0, 1.0);
+    rt_projectile2d_set_ground_y(cancellation, 1.0);
+    double cancellation_time = rt_projectile2d_time_to_ground(cancellation);
+    ASSERT(cancellation_time > 0.0 && cancellation_time < 1.0e-15,
+           "quadratic solver preserves a small positive root");
+
+    void *arch = rt_projectile2d_new(0.0, 0.0, 0.0, 10.0, 0.0, -100.0);
+    rt_projectile2d_set_drag(arch, 0.5);
+    rt_projectile2d_set_ground_y(arch, 0.2);
+    double arch_impact = rt_projectile2d_time_to_ground(arch);
+    ASSERT(std::isfinite(arch_impact) && arch_impact > 0.0 && arch_impact < 0.1,
+           "dragged upward arch finds an early crossing before returning");
+    rt_projectile2d_advance(arch, 1.0);
+    ASSERT(rt_projectile2d_has_landed(arch) == 1,
+           "advance latches a ground crossing even when the endpoint returned above ground");
+
+    void *asymptote = rt_projectile2d_new(0.0, 0.0, 0.0, 10.0, 0.0, 0.0);
+    rt_projectile2d_set_drag(asymptote, 2.0);
+    rt_projectile2d_set_ground_y(asymptote, 5.0);
+    ASSERT(std::isinf(rt_projectile2d_time_to_ground(asymptote)),
+           "drag asymptote equal to ground is not a finite crossing");
+
+    release_obj(small_drag);
+    release_obj(extreme);
+    release_obj(already_grounded);
+    release_obj(tiny_gravity);
+    release_obj(cancellation);
+    release_obj(arch);
+    release_obj(asymptote);
+}
+
 /// @brief Main.
 int main() {
     // World tests
@@ -1037,6 +1270,7 @@ int main() {
     test_world_add_remove();
     test_world_add_multiple();
     test_duplicate_body_add_ignored();
+    test_body_cannot_belong_to_two_worlds();
 
     // Body tests
     test_body_new();
@@ -1047,6 +1281,8 @@ int main() {
     test_body_inputs_sanitized();
     test_static_set_vel_ignored();
     test_restitution_friction_clamped();
+    test_circle_box_dimensions_remain_zero_after_step();
+    test_tiny_mass_has_finite_consistent_inverse();
 
     // Integration tests
     test_gravity_integration();
@@ -1074,11 +1310,17 @@ int main() {
     test_world_remove_clears_contacts();
     test_world_contact_storage_grows_past_default_capacity();
     test_extreme_forces_are_sanitized();
+    test_invalid_contact_does_not_touch_capacity_or_overflow_count();
+    test_subpicometer_aabb_sweep_is_not_discarded();
+    test_tiny_circle_overlap_keeps_geometric_normal();
+    test_huge_mass_collision_avoids_impulse_overflow();
 
     // Safety tests
     test_null_safety();
     test_wrong_handle_traps();
+    test_undersized_same_class_handles_trap();
     test_zero_dt();
+    test_projectile_numeric_edges();
 
     // GAME-H-6: collision_mask default covers all 32 layers
     test_collision_mask_default_full();

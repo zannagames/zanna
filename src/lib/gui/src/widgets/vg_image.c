@@ -836,6 +836,48 @@ bool vg_image_try_set_pixels(vg_image_t *image, const uint8_t *pixels, int width
     return true;
 }
 
+/// @brief Borrow the retained pixel buffer resized for one RGBA8 frame.
+/// @details Grows the retained allocation when needed but commits nothing:
+///          dimensions, opacity, and repaint state change only in
+///          vg_image_commit_borrowed_pixels, so a failed producer write
+///          leaves the previous frame fully intact when sizes match.
+/// @param image Image widget.
+/// @param width Frame width in pixels.
+/// @param height Frame height in pixels.
+/// @return Writable RGBA8 buffer of width*height*4 bytes, or NULL.
+uint8_t *vg_image_borrow_writable_pixels(vg_image_t *image, int width, int height) {
+    size_t size = 0;
+    if (!image || !image_rgba_size(width, height, &size))
+        return NULL;
+    if (!image->pixels || size > image->pixel_capacity) {
+        uint8_t *grown = (uint8_t *)malloc(size);
+        if (!grown)
+            return NULL;
+        free(image->pixels);
+        image->pixels = grown;
+        image->pixel_capacity = size;
+        image->img_width = 0;
+        image->img_height = 0;
+    }
+    return image->pixels;
+}
+
+/// @brief Commit a frame written through vg_image_borrow_writable_pixels.
+/// @param image Image widget.
+/// @param width Committed frame width in pixels.
+/// @param height Committed frame height in pixels.
+void vg_image_commit_borrowed_pixels(vg_image_t *image, int width, int height) {
+    size_t size = 0;
+    if (!image || !image->pixels || !image_rgba_size(width, height, &size) ||
+        size > image->pixel_capacity)
+        return;
+    const bool layout_changed = image->img_width != width || image->img_height != height;
+    image->img_width = width;
+    image->img_height = height;
+    image->pixels_opaque = image_pixels_are_opaque(image->pixels, size);
+    image_note_content_change(image, layout_changed);
+}
+
 /// @brief Determine whether two pointer-sized byte ranges overlap.
 /// @param first Start of the first range.
 /// @param first_size Size of the first range in bytes.

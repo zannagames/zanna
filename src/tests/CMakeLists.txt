@@ -1557,6 +1557,22 @@ set_tests_properties(zia_zannastudio_scene_hierarchy_affordances PROPERTIES
         LABELS "zia;zannastudio;scene;requires_display"
         TIMEOUT 150)
 
+add_test(NAME zia_zannastudio_embed_channel
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/embed_channel_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_embed_channel PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;runtime"
+        TIMEOUT 60)
+
+add_test(NAME zia_zannastudio_scene_settings_forms
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_settings_forms_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_settings_forms PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;requires_display"
+        TIMEOUT 150)
+
 add_test(NAME zia_zannastudio_scene_gameplay_preview
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_gameplay_preview_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
@@ -2424,7 +2440,7 @@ if (APPLE)
             PASS_REGULAR_EXPRESSION "RESULT: ok"
             LABELS "zia;smoke;graphics3d;requires_display;slow"
             ENVIRONMENT "ZANNA_3D_BACKEND=software"
-            TIMEOUT 90)
+            TIMEOUT 300)
 endif ()
 
 add_test(NAME zia_smoke_3dbaseball

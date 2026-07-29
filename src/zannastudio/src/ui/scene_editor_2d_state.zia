@@ -35,6 +35,7 @@ bind "scene_pane_docking";
 bind "scene_camera_lighting_2d";
 bind "property_rows";
 bind "scene_property_inspector_2d";
+bind "scene_settings_inspector_2d";
 bind "scene_tile_behavior_2d";
 bind "scene_selection";
 bind "scene_tileset_2d";
@@ -59,20 +60,21 @@ bind "scene_editor_2d_contract_05" as SceneEditor2DContract;
 class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
     expose GUI.App guiApp;
     expose GUI.VBox root;
-    expose GUI.Flex toolbar;
-    expose GUI.Flex viewToolbar;
-    expose GUI.Button sceneMenuButton;
+    expose GUI.Toolbar toolbar;
+    expose GUI.Toolbar viewBar;
+    expose GUI.VBox viewToolbar;
+    expose GUI.ToolbarItem sceneMenuButton;
     expose GUI.ContextMenu sceneMenu;
     expose GUI.MenuItem sceneNewItem;
     expose GUI.MenuItem sceneImportItem;
     expose GUI.MenuItem scenePreviewItem;
     expose GUI.MenuItem sceneRunItem;
-    expose GUI.Button newSceneButton;
-    expose GUI.Button importButton;
-    expose GUI.Button selectButton;
-    expose GUI.Button paintButton;
-    expose GUI.Button eraseButton;
-    expose GUI.Button toolMenuButton;
+    expose GUI.ToolbarItem newSceneButton;
+    expose GUI.ToolbarItem importButton;
+    expose GUI.ToolbarItem selectButton;
+    expose GUI.ToolbarItem paintButton;
+    expose GUI.ToolbarItem eraseButton;
+    expose GUI.ToolbarItem toolMenuButton;
     expose GUI.ContextMenu toolMenu;
     expose GUI.MenuItem toolSelectItem;
     expose GUI.MenuItem toolPaintItem;
@@ -83,14 +85,14 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
     expose GUI.MenuItem toolFillItem;
     expose GUI.MenuItem toolPickerItem;
     expose GUI.MenuItem toolObjectItem;
-    expose GUI.Button rectangleButton;
-    expose GUI.Button lineButton;
-    expose GUI.Button ellipseButton;
-    expose GUI.Button fillButton;
-    expose GUI.Button pickerButton;
-    expose GUI.Button previewButton;
-    expose GUI.Button gameViewButton;
-    expose GUI.Button runSceneButton;
+    expose GUI.ToolbarItem rectangleButton;
+    expose GUI.ToolbarItem lineButton;
+    expose GUI.ToolbarItem ellipseButton;
+    expose GUI.ToolbarItem fillButton;
+    expose GUI.ToolbarItem pickerButton;
+    expose GUI.ToolbarItem previewButton;
+    expose GUI.ToolbarItem gameViewButton;
+    expose GUI.ToolbarItem runSceneButton;
     hide Boolean previewActive;
     expose Boolean gameViewActive;
     expose Boolean gameViewOutputFramed;
@@ -104,15 +106,15 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
     hide Integer previewElapsedMs;
     hide String previewFrameStamp;
     hide Boolean runSceneRequested;
-    expose GUI.Button objectButton;
+    expose GUI.ToolbarItem objectButton;
     expose GUI.Spinner tileSpinner;
-    expose GUI.Button zoomOutButton;
-    expose GUI.Button zoomInButton;
-    expose GUI.Button fitButton;
-    expose GUI.Button actualSizeButton;
-    expose GUI.Button gridButton;
-    expose GUI.Button rulersButton;
-    expose GUI.Button viewMenuButton;
+    expose GUI.ToolbarItem zoomOutButton;
+    expose GUI.ToolbarItem zoomInButton;
+    expose GUI.ToolbarItem fitButton;
+    expose GUI.ToolbarItem actualSizeButton;
+    expose GUI.ToolbarItem gridButton;
+    expose GUI.ToolbarItem rulersButton;
+    expose GUI.ToolbarItem viewMenuButton;
     expose GUI.ContextMenu viewMenu;
     expose GUI.MenuItem viewFitItem;
     expose GUI.MenuItem viewActualSizeItem;
@@ -124,11 +126,11 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
     expose GUI.MenuItem viewPaletteItem;
     expose GUI.MenuItem viewFocusItem;
     expose GUI.MenuItem viewWorkspaceItem;
-    expose GUI.Button hierarchyButton;
-    expose GUI.Button inspectorButton;
-    expose GUI.Button paletteButton;
-    expose GUI.Button workspaceButton;
-    expose GUI.Button focusButton;
+    expose GUI.ToolbarItem hierarchyButton;
+    expose GUI.ToolbarItem inspectorButton;
+    expose GUI.ToolbarItem paletteButton;
+    expose GUI.ToolbarItem workspaceButton;
+    expose GUI.ToolbarItem focusButton;
     expose GUI.Label toolbarStatus;
     expose GUI.Label viewStatusLabel;
     expose GUI.SplitPane hierarchySplit;
@@ -198,6 +200,11 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
     expose scene_asset_browser.SceneAssetBrowser componentAssetBrowser;
     expose scene_property_inspector_2d.ScenePropertyInspector2D
         sceneProperties;
+    expose scene_settings_inspector_2d.SceneSettingsInspector2D
+        sceneSettingsInspector;
+    expose GUI.GroupBox sceneSettingsGroup;
+    expose GUI.VBox sceneSettingsHost;
+    hide Integer sceneSettingsRevision;
     expose scene_tileset_inspector_2d.SceneTilesetInspector2D
         tilesetInspector;
     expose scene_tile_behavior_2d.SceneTileBehavior2D tileBehavior;
@@ -210,6 +217,9 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
     expose GUI.Label objectHierarchyStatus;
     expose GUI.TextInput objectTypeInput;
     expose GUI.TextInput objectIdInput;
+    expose String objectTypeCanonical;
+    expose String objectIdCanonical;
+    expose Boolean objectTextWasFocused;
     expose GUI.Spinner objectXSpinner;
     expose GUI.Spinner objectYSpinner;
     expose GUI.Flex objectTransformRow;
@@ -531,6 +541,11 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
             new scene_asset_browser.SceneAssetBrowser();
         sceneProperties =
             new scene_property_inspector_2d.ScenePropertyInspector2D();
+        sceneSettingsInspector =
+            new scene_settings_inspector_2d.SceneSettingsInspector2D();
+        sceneSettingsGroup = null;
+        sceneSettingsHost = null;
+        sceneSettingsRevision = -1;
         tilesetInspector =
             new scene_tileset_inspector_2d.SceneTilesetInspector2D();
         tileBehavior = new scene_tile_behavior_2d.SceneTileBehavior2D();
@@ -547,6 +562,9 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
         objectHierarchyStatus = null;
         objectTypeInput = null;
         objectIdInput = null;
+        objectTypeCanonical = "";
+        objectIdCanonical = "";
+        objectTextWasFocused = false;
         objectXSpinner = null;
         objectYSpinner = null;
         objectTransformRow = null;

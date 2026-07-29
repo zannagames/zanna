@@ -42,6 +42,7 @@ typedef struct vg_tab {
     struct vg_tabbar *owner; ///< Owning tab bar for invalidation/reorder
     char *title;             ///< Tab title (owned)
     char *tooltip;           ///< Tab tooltip (owned)
+    int32_t icon_vector_id;  ///< Vector icon before the title; negative = none.
     char *stable_id;         ///< Optional application-stable identifier (owned)
     size_t stable_id_len;    ///< Stable identifier length in bytes
     void *user_data;         ///< User data
@@ -215,6 +216,11 @@ const char *vg_tab_get_title(const vg_tab_t *tab);
 /// @param tab      Tab to modify.
 /// @param modified true to show the unsaved-changes dot.
 void vg_tab_set_modified(vg_tab_t *tab, bool modified);
+
+/// @brief Attach or clear a leading vector icon on one live tab (ADR 0220).
+/// @param tab Live tab to modify; invalid or retired records are ignored.
+/// @param vector_id Icon id from vg_icon_vector_find; negative clears it.
+void vg_tab_set_icon_vector(vg_tab_t *tab, int32_t vector_id);
 
 /// @brief Set the tooltip text shown when hovering over a tab.
 /// @param tab     Tab to modify.

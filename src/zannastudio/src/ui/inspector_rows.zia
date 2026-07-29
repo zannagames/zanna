@@ -20,6 +20,7 @@
 
 module inspector_rows;
 
+bind "layout_metrics";
 bind GUI = Zanna.GUI;
 
 // ============================================================================
@@ -44,6 +45,6 @@ expose func NewWrapRow() -> GUI.Flex {
     row.SetDirection(GUI.FlexDirection.Row);
     row.SetWrap(GUI.FlexWrap.Wrap);
     row.SetAlign(GUI.Align.Center);
-    row.SetGap(4.0);
+    row.SetGap(layout_metrics.GAP_ROW);
     return row;
 }

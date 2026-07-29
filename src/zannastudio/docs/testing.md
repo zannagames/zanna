@@ -145,6 +145,31 @@ Run OutputPane low-level regressions:
 ctest --test-dir build -R test_vg_audit_fixes --output-on-failure
 ```
 
+## Probe Interaction Contract
+
+Scene probes follow a stability contract (ADR 0219) so chrome polish and
+probe coverage do not fight each other:
+
+- Probes locate widgets only through exposed editor fields (or widget
+  names). Editor field names are probe API: renaming or reparenting an
+  exposed widget updates every consuming probe in the same change.
+- Pointer interaction goes through the real input harness at coordinates
+  derived from the target's own live geometry — never at hardcoded pixel
+  offsets. Menu rows are clicked by handle via
+  `probes/scene_probe_support.zia` `ClickMenuItem`, which reads
+  `Zanna.GUI.MenuItem.GetScreenX/Y/Width/Height`.
+- Geometry assertions (toolbar heights, minimum canvas sizes) use the shared
+  named budgets in `scene_probe_support.zia`; probes do not carry private
+  geometry literals. Relaxing a budget for a deliberate chrome change is a
+  reviewed one-line edit in one place.
+- Live-commit sites (ADR 0221) are probed through the same contract: raise
+  one control edge (`SetValue`/`SetSelected`/typed text) on a single-node
+  selection, pump once, and assert exactly one revision advance; an idle
+  pump after the commit must not create phantom history, and one `Undo`
+  must restore the pre-gesture document bytes exactly. Probes that poke
+  inspector controls without wanting a commit must clear the selection
+  first, because control edges on a live-commit target are user intent.
+
 ## Probe Source Map
 
 Zanna Studio probes live in `zannastudio/src/probes/`.

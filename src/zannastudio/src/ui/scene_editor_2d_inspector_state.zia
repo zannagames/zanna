@@ -54,6 +54,8 @@ bind Box = Zanna.Core.Box;
 bind Clock = Zanna.Time.Clock;
 bind "scene_editor_2d_model" as SceneEditor2DModel;
 bind "scene_editor_2d_layers_history" as PreviousLayer;
+bind "scene_settings_inspector_2d";
+bind "style_tokens";
 
 /// @brief Inspector State implementation layer.
 class SceneEditor2DInspectorStateLayer extends PreviousLayer.SceneEditor2DLayersHistoryLayer {
@@ -377,10 +379,10 @@ class SceneEditor2DInspectorStateLayer extends PreviousLayer.SceneEditor2DLayers
         var objectScope = objectTab and hasSelection;
         objectTabButton.SetVisible(hasScene);
         sceneTabButton.SetVisible(hasScene);
-        objectTabButton.SetStyle(0);
-        sceneTabButton.SetStyle(0);
-        if sceneTab { sceneTabButton.SetStyle(1); }
-        if objectTab { objectTabButton.SetStyle(1); }
+        objectTabButton.SetStyle(style_tokens.STYLE_DEFAULT);
+        sceneTabButton.SetStyle(style_tokens.STYLE_DEFAULT);
+        if sceneTab { sceneTabButton.SetStyle(style_tokens.STYLE_PRIMARY); }
+        if objectTab { objectTabButton.SetStyle(style_tokens.STYLE_PRIMARY); }
         objectTabHost.SetVisible(objectTab);
         sceneTabHost.SetVisible(sceneTab);
         sceneSectionRow.SetVisible(sceneTab);
@@ -394,6 +396,9 @@ class SceneEditor2DInspectorStateLayer extends PreviousLayer.SceneEditor2DLayers
             sceneTab
             and sceneInspectorSection == SceneEditor2DModel.SCENE_INSPECTOR_SETUP);
         sceneProperties.group.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor2DModel.SCENE_INSPECTOR_PROPERTIES);
+        sceneSettingsGroup.SetVisible(
             sceneTab
             and sceneInspectorSection == SceneEditor2DModel.SCENE_INSPECTOR_PROPERTIES);
         cameraLighting.cameraGroup.SetVisible(
@@ -583,6 +588,8 @@ class SceneEditor2DInspectorStateLayer extends PreviousLayer.SceneEditor2DLayers
         layerList.Clear();
         layerListItems = [];
         sceneProperties.Refresh(scene, editorControlsEnabled);
+        sceneSettingsInspector.Refresh(
+            componentSchema, scene, editorControlsEnabled);
         selectedSceneProperty = sceneProperties.selectedProperty;
         cameraLighting.Refresh(scene, editorControlsEnabled);
         if scene == null {
@@ -807,8 +814,8 @@ class SceneEditor2DInspectorStateLayer extends PreviousLayer.SceneEditor2DLayers
         while index < visibleCount {
             var node = objectTreeNodes.get(index);
             if node != null {
-                var icon = "◇";
-                if hasChildren.get(index) { icon = "◆"; }
+                var icon = "vector:tool-object";
+                if hasChildren.get(index) { icon = "vector:node-group"; }
                 GUI.TreeView.Node.SetIcon(node, icon);
                 if hasChildren.get(index)
                    and ShouldExpandObjectNode(
@@ -828,6 +835,10 @@ class SceneEditor2DInspectorStateLayer extends PreviousLayer.SceneEditor2DLayers
                 + SceneEditor2DModel.MAX_OBJECT_TREE_ROWS + " rows and depth "
                 + SceneEditor2DModel.MAX_OBJECT_HIERARCHY_DEPTH
                 + "; hidden objects remain preserved in the scene.");
+        } else if objectCount == 0 {
+            objectHierarchyStatus.SetText(
+                "No objects yet. Add Object creates a root; project "
+                + "components stamp gameplay-ready objects.");
         } else {
             objectHierarchyStatus.SetText("");
         }

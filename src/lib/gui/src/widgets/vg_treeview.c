@@ -211,6 +211,8 @@ static void free_node_payload(vg_tree_node_t *node) {
     free(node->icon_text);
     node->icon_text = NULL;
     node->icon_text_len = 0;
+    free(node->icon_spec);
+    node->icon_spec = NULL;
     free(node->stable_id);
     node->stable_id = NULL;
     node->stable_id_len = 0;
@@ -2902,6 +2904,8 @@ bool vg_tree_node_set_icon_text(vg_tree_node_t *node, const char *icon_text) {
         free(node->icon_text);
         node->icon_text = NULL;
         node->icon_text_len = 0;
+        free(node->icon_spec);
+        node->icon_spec = vg_strdup(value);
         vg_icon_destroy(&node->icon);
         vg_icon_destroy(&node->expanded_icon);
         if (base_id != VG_ICON_VECTOR_INVALID)
@@ -2926,6 +2930,8 @@ bool vg_tree_node_set_icon_text(vg_tree_node_t *node, const char *icon_text) {
     free(node->icon_text);
     node->icon_text = copy;
     node->icon_text_len = copy ? strlen(copy) : 0;
+    free(node->icon_spec);
+    node->icon_spec = NULL;
     vg_icon_destroy(&node->icon);
     node->owner->base.needs_layout = true;
     node->owner->base.needs_paint = true;
@@ -2934,11 +2940,16 @@ bool vg_tree_node_set_icon_text(vg_tree_node_t *node, const char *icon_text) {
 }
 
 /// @brief Return a live node's borrowed UTF-8 icon text.
+/// @details Vector icons set through the "vector:" protocol round-trip: the
+///          original spec string is returned so callers and probes can read
+///          back what they assigned.
 /// @param node Node to inspect.
-/// @return Borrowed icon-text pointer, or `NULL` for stale nodes or nodes using
-///         resource-backed icons.
+/// @return Borrowed icon-text or "vector:" spec pointer, or `NULL` for stale
+///         nodes or nodes using directly assigned resource icons.
 const char *vg_tree_node_get_icon_text(const vg_tree_node_t *node) {
-    return vg_tree_node_is_live(node) ? node->icon_text : NULL;
+    if (!vg_tree_node_is_live(node))
+        return NULL;
+    return node->icon_text ? node->icon_text : node->icon_spec;
 }
 
 /// @brief Replace a live node's application-stable identifier atomically.
@@ -3075,6 +3086,8 @@ void vg_tree_node_set_icon(vg_tree_node_t *node, vg_icon_t icon) {
     free(node->icon_text);
     node->icon_text = NULL;
     node->icon_text_len = 0;
+    free(node->icon_spec);
+    node->icon_spec = NULL;
     vg_icon_destroy(&node->icon);
     node->icon = icon;
     node->owner->base.needs_layout = true;

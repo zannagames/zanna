@@ -70,6 +70,7 @@ bind Mat4 = Zanna.Math.Mat4;
 bind RayHit3D = Zanna.Graphics3D.RayHit3D;
 bind Seq = Zanna.Collections.Seq;
 bind Math = Zanna.Math;
+bind Clock = Zanna.Time.Clock;
 bind Convert = Zanna.Core.Convert;
 bind Input = Zanna.Input;
 bind File = Zanna.IO.File;
@@ -143,18 +144,36 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
         }
         Canvas3D.End(viewportRenderCanvas);
         RestoreProjectMaterialPreviews();
+        // Readback reuses one retained buffer so interactive frames make
+        // zero transient allocations on steady sizes (ADR 0224).
+        var readbackStartMs = Clock.NowMs();
         var rendered: Pixels = null;
+        var readbackWidth = viewportRenderTarget.Width;
+        var readbackHeight = viewportRenderTarget.Height;
+        if viewportReadbackPixels == null
+           or viewportReadbackPixels.Width != readbackWidth
+           or viewportReadbackPixels.Height != readbackHeight {
+            viewportReadbackPixels =
+                Pixels.New(readbackWidth, readbackHeight);
+        }
+        if viewportReadbackPixels == null { return false; }
         if viewportRenderPostFX != null
            and renderMode != SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME {
-            // RenderTarget.AsPixels is the pre-finalization attachment.
-            // ScreenshotFinal is the runtime boundary that actually applies
-            // the retained chain before readback (ADR 0204).
-            rendered =
-                viewportRenderCanvas.ScreenshotFinal() as Pixels;
+            // ScreenshotFinal is the runtime boundary that applies the
+            // retained post-FX chain before readback (ADR 0204).
+            if viewportRenderCanvas.TryCopyScreenshotFinalTo(
+                   viewportReadbackPixels) {
+                rendered = viewportReadbackPixels;
+            } else {
+                rendered =
+                    viewportRenderCanvas.ScreenshotFinal() as Pixels;
+            }
         } else {
-            rendered = viewportRenderTarget.AsPixels() as Pixels;
+            viewportRenderTarget.CopyTo(viewportReadbackPixels);
+            rendered = viewportReadbackPixels;
         }
         if rendered == null { return false; }
+        viewportReadbackMs = Clock.NowMs() - readbackStartMs;
         var contentWidth = ViewportContentWidth();
         var contentHeight = ViewportContentHeight();
         if viewportTargetWidth != contentWidth
@@ -665,7 +684,11 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
                 + PassMsTenths(0) + "/"
                 + PassMsTenths(1) + "/"
                 + PassMsTenths(2) + "/"
-                + PassMsTenths(3) + " ms";
+                + PassMsTenths(3) + " ms"
+                + "  |  read "
+                + Convert.NumToInt(viewportReadbackMs * 10.0) / 10
+                + "." + Convert.NumToInt(viewportReadbackMs * 10.0) % 10
+                + " ms";
         }
         return status;
     }

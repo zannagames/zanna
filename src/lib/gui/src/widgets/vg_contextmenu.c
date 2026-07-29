@@ -1338,6 +1338,57 @@ void vg_contextmenu_show_for_widget(vg_contextmenu_t *menu,
     vg_contextmenu_show_at(menu, x, y);
 }
 
+/// @brief Reports an item row's current on-screen rectangle (ADR 0219).
+///
+/// @details Row placement mirrors `get_item_at_y` exactly — top padding, then
+/// each preceding row's separator or item height — on top of `base.x/base.y`,
+/// which painting has already clamped to the window. Reading after a render
+/// therefore yields the same rectangle a pointer event would hit.
+///
+/// @param menu Context menu owning the item; may be null.
+/// @param item Item whose row is measured; may be null.
+/// @param out_x Receives the row's left edge in window coordinates.
+/// @param out_y Receives the row's top edge in window coordinates.
+/// @param out_w Receives the row's width (the menu's width).
+/// @param out_h Receives the row's height.
+/// @return true when the menu is visible and contains @p item.
+bool vg_contextmenu_get_item_rect(vg_contextmenu_t *menu,
+                                  vg_menu_item_t *item,
+                                  float *out_x,
+                                  float *out_y,
+                                  float *out_w,
+                                  float *out_h) {
+    if (out_x)
+        *out_x = 0.0f;
+    if (out_y)
+        *out_y = 0.0f;
+    if (out_w)
+        *out_w = 0.0f;
+    if (out_h)
+        *out_h = 0.0f;
+    if (!menu || !item || !menu->is_visible)
+        return false;
+
+    float row_y = ITEM_PADDING_Y;
+    for (size_t i = 0; i < menu->item_count; i++) {
+        vg_menu_item_t *candidate = menu->items[i];
+        const float row_h = get_item_height(candidate);
+        if (candidate == item) {
+            if (out_x)
+                *out_x = menu->base.x;
+            if (out_y)
+                *out_y = menu->base.y + row_y;
+            if (out_w)
+                *out_w = menu->base.width;
+            if (out_h)
+                *out_h = row_h;
+            return true;
+        }
+        row_y += row_h;
+    }
+    return false;
+}
+
 /// @brief Hides a menu and its active submenu chain.
 ///
 /// @details Active descendants are dismissed first. Input capture returns to a

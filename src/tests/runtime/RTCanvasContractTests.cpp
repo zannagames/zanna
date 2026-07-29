@@ -25,6 +25,7 @@ extern "C" {
 }
 
 #include <cassert>
+#include <climits>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -41,6 +42,15 @@ struct FakeWindow {
 };
 
 static int g_line_calls = 0;
+static int32_t g_line_x1 = 0;
+static int32_t g_line_y1 = 0;
+static int32_t g_line_x2 = 0;
+static int32_t g_line_y2 = 0;
+static int g_pset_calls = 0;
+static int g_fill_rect_calls = 0;
+static int g_fill_circle_calls = 0;
+static const char *g_string_bytes = "";
+static int64_t g_string_len = 0;
 static void *g_object_payloads[32];
 static int64_t g_object_class_ids[32];
 static size_t g_object_count = 0;
@@ -229,6 +239,102 @@ static void test_polyline_requires_sized_i64_heap_array() {
     rt_heap_release(points);
 }
 
+static void test_line_clipping_is_exact_at_int64_extremes() {
+    rt_canvas *canvas = make_canvas(8, 8, 1.0f);
+
+    g_line_calls = 0;
+    rt_canvas_line(canvas, INT64_MIN, 4, INT64_MAX, 4, 0x00FFFFFF);
+    assert(g_line_calls == 1);
+    assert(g_line_x1 == 0 && g_line_y1 == 4);
+    assert(g_line_x2 == 7 && g_line_y2 == 4);
+
+    g_line_calls = 0;
+    rt_canvas_line(canvas, INT64_MIN, INT64_MIN, INT64_MAX, INT64_MAX, 0x00FFFFFF);
+    assert(g_line_calls == 1);
+    assert(g_line_x1 == 0 && g_line_y1 == 0);
+    assert(g_line_x2 == 7 && g_line_y2 == 7);
+
+    g_line_calls = 0;
+    rt_canvas_line(canvas, INT64_MIN, -2, INT64_MAX, -1, 0x00FFFFFF);
+    assert(g_line_calls == 0);
+}
+
+static void test_triangle_degeneracy_is_exact_at_int64_extremes() {
+    rt_canvas *canvas = make_canvas(8, 8, 1.0f);
+
+    g_line_calls = 0;
+    rt_canvas_triangle(canvas, INT64_MIN, INT64_MIN, 0, 0, INT64_MAX, INT64_MAX, 0x00FFFFFF);
+    assert(g_line_calls == 1);
+    assert(g_line_x1 == 7 && g_line_y1 == 7);
+    assert(g_line_x2 == 0 && g_line_y2 == 0);
+}
+
+static void test_gradient_handles_extreme_clipped_origin_without_overflow() {
+    rt_canvas *canvas = make_canvas(1, 1, 1.0f);
+    rt_canvas_gradient_h(canvas, INT64_MIN + 2, 0, INT64_MAX, 1, 0x00FF0000, 0x000000FF);
+    assert(framebuffer_pixel(canvas, 0, 0) == opaque_rgb(0x000000FF));
+}
+
+static void test_direct_framebuffer_operations_reject_invalid_layout() {
+    rt_canvas *canvas = make_canvas(2, 2, 1.0f);
+    auto *window = reinterpret_cast<FakeWindow *>(canvas->gfx_win);
+    window->framebuffer.stride = 1;
+    rt_pixels_impl *pixels = make_pixels(1, 1);
+    pixels->data[0] = 0xFF0000FFu;
+
+    rt_canvas_blit(canvas, 0, 0, pixels);
+    rt_canvas_flood_fill(canvas, 0, 0, 0x00FFFFFF);
+    assert(framebuffer_pixel(canvas, 0, 0) == 0);
+    assert(rt_canvas_copy_rect(canvas, 0, 0, 1, 1) == nullptr);
+
+    g_line_calls = 0;
+    rt_canvas_gradient_h(canvas, 0, 0, 2, 1, 0x00FF0000, 0x000000FF);
+    assert(g_line_calls == 2);
+}
+
+static void test_text_width_rejects_negative_runtime_length() {
+    g_string_bytes = "abc";
+    g_string_len = -1;
+    assert(rt_canvas_text_width(reinterpret_cast<rt_string>(1)) == 0);
+    rt_canvas *canvas = make_canvas(2, 2, 1.0f);
+    g_pset_calls = 0;
+    rt_canvas_text_bg(canvas, 0, 0, reinterpret_cast<rt_string>(1), 0x00FFFFFF, 0);
+    rt_canvas_text_scaled_bg(canvas, 0, 0, reinterpret_cast<rt_string>(1), 2, 0x00FFFFFF, 0);
+    assert(g_pset_calls == 0);
+
+    g_string_len = 3;
+    assert(rt_canvas_text_width(reinterpret_cast<rt_string>(1)) == 24);
+    g_string_bytes = "";
+    g_string_len = 0;
+}
+
+static void test_extreme_curves_keep_work_bounded_to_visible_canvas() {
+    rt_canvas *canvas = make_canvas(1, 1, 1.0f);
+
+    rt_canvas_round_box(
+        canvas, INT64_MIN + 2, INT64_MIN + 2, INT64_MAX, INT64_MAX, INT64_MAX, 0x00FFFFFF);
+    rt_canvas_round_frame(
+        canvas, INT64_MIN + 2, INT64_MIN + 2, INT64_MAX, INT64_MAX, INT64_MAX, 0x00FFFFFF);
+
+    g_line_calls = 0;
+    rt_canvas_bezier(
+        canvas, INT64_MIN, INT64_MIN, INT64_MAX, INT64_MIN, INT64_MAX, INT64_MAX, 0x00FFFFFF);
+    assert(g_line_calls <= 256);
+}
+
+static void test_opaque_alpha_disc_uses_clip_bounded_huge_radius_path() {
+    rt_canvas *canvas = make_canvas(1, 1, 1.0f);
+    g_fill_circle_calls = 0;
+    rt_canvas_disc_alpha(canvas, 0, 0, INT32_MAX, 0x00FFFFFF, 255);
+    assert(g_fill_circle_calls == 0);
+}
+
+static void test_saturating_subtraction_extremes() {
+    assert(rtg_sub_sat64(INT64_MIN, 1) == INT64_MIN);
+    assert(rtg_sub_sat64(INT64_MAX, -1) == INT64_MAX);
+    assert(rtg_sub_sat64(7, 3) == 4);
+}
+
 } // namespace
 
 extern "C" int32_t vgfx_get_size(vgfx_window_t window, int32_t *width, int32_t *height) {
@@ -271,6 +377,7 @@ extern "C" int32_t vgfx_get_framebuffer(vgfx_window_t window, vgfx_framebuffer_t
 }
 
 extern "C" void vgfx_pset(vgfx_window_t window, int32_t x, int32_t y, vgfx_color_t color) {
+    g_pset_calls++;
     auto *fake = reinterpret_cast<FakeWindow *>(window);
     if (!fake || x < 0 || y < 0 || x >= fake->framebuffer.width || y >= fake->framebuffer.height)
         return;
@@ -314,15 +421,24 @@ extern "C" int32_t vgfx_point(vgfx_window_t window, int32_t x, int32_t y, vgfx_c
     return 1;
 }
 
-extern "C" void vgfx_line(vgfx_window_t, int32_t, int32_t, int32_t, int32_t, vgfx_color_t) {
+extern "C" void vgfx_line(
+    vgfx_window_t, int32_t x1, int32_t y1, int32_t x2, int32_t y2, vgfx_color_t) {
     g_line_calls++;
+    g_line_x1 = x1;
+    g_line_y1 = y1;
+    g_line_x2 = x2;
+    g_line_y2 = y2;
 }
 
-extern "C" void vgfx_fill_rect(vgfx_window_t, int32_t, int32_t, int32_t, int32_t, vgfx_color_t) {}
+extern "C" void vgfx_fill_rect(vgfx_window_t, int32_t, int32_t, int32_t, int32_t, vgfx_color_t) {
+    g_fill_rect_calls++;
+}
 
 extern "C" void vgfx_rect(vgfx_window_t, int32_t, int32_t, int32_t, int32_t, vgfx_color_t) {}
 
-extern "C" void vgfx_fill_circle(vgfx_window_t, int32_t, int32_t, int32_t, vgfx_color_t) {}
+extern "C" void vgfx_fill_circle(vgfx_window_t, int32_t, int32_t, int32_t, vgfx_color_t) {
+    g_fill_circle_calls++;
+}
 
 extern "C" void vgfx_circle(vgfx_window_t, int32_t, int32_t, int32_t, vgfx_color_t) {}
 
@@ -338,11 +454,11 @@ extern "C" const uint8_t *rt_font_get_glyph(int) {
 }
 
 extern "C" const char *rt_string_cstr(rt_string) {
-    return "";
+    return g_string_bytes;
 }
 
 extern "C" int64_t rt_str_len(rt_string) {
-    return 0;
+    return g_string_len;
 }
 
 extern "C" rt_string rt_string_from_bytes(const char *, size_t) {
@@ -520,6 +636,14 @@ int main() {
     test_gradient_preserves_explicit_alpha_in_framebuffer();
     test_canvas_handle_validation_rejects_non_heap_canvas();
     test_polyline_requires_sized_i64_heap_array();
+    test_line_clipping_is_exact_at_int64_extremes();
+    test_triangle_degeneracy_is_exact_at_int64_extremes();
+    test_gradient_handles_extreme_clipped_origin_without_overflow();
+    test_direct_framebuffer_operations_reject_invalid_layout();
+    test_text_width_rejects_negative_runtime_length();
+    test_extreme_curves_keep_work_bounded_to_visible_canvas();
+    test_opaque_alpha_disc_uses_clip_bounded_huge_radius_path();
+    test_saturating_subtraction_extremes();
     std::printf("RTCanvasContractTests passed.\n");
     return 0;
 }

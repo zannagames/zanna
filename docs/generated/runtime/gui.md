@@ -1330,6 +1330,7 @@ modified state remain available while the managed subhandle targets a live tab.
 | <a id="zanna-gui-tab-getstableid"></a>`GetStableId` | `str()` | `Zanna.GUI.Tab.GetStableId` |
 | <a id="zanna-gui-tab-settooltip"></a>`SetTooltip` | `void(str)` | `Zanna.GUI.Tab.SetTooltip` |
 | <a id="zanna-gui-tab-setmodified"></a>`SetModified` | `void(i1)` | `Zanna.GUI.Tab.SetModified` |
+| <a id="zanna-gui-tab-setnamedicon"></a>`SetNamedIcon` | `void(str)` | `Zanna.GUI.Tab.SetNamedIcon` |
 
 <a id="zanna-gui-splitpane"></a>
 ### `Zanna.GUI.SplitPane`
@@ -1650,6 +1651,7 @@ Constructor: `Zanna.GUI.ListBox.New`
 | <a id="zanna-gui-listbox-itemgetdata"></a>`ItemGetData` | `str(obj)` | `Zanna.GUI.ListBox.ItemGetData` |
 | <a id="zanna-gui-listbox-itemsetdata"></a>`ItemSetData` | `void(obj,str)` | `Zanna.GUI.ListBox.ItemSetData` |
 | <a id="zanna-gui-listbox-itemsettextcolor"></a>`ItemSetTextColor` | `void(obj,i64)` | `Zanna.GUI.ListBox.ItemSetTextColor` |
+| <a id="zanna-gui-listbox-itemsetnamedicon"></a>`ItemSetNamedIcon` | `void(obj,str)` | `Zanna.GUI.ListBox.ItemSetNamedIcon` |
 | <a id="zanna-gui-listbox-setfont"></a>`SetFont` | `void(obj,f64)` | `Zanna.GUI.ListBox.SetFont` |
 | <a id="zanna-gui-listbox-setvirtualmodel"></a>`SetVirtualModel` | `i1(obj)` | `Zanna.GUI.ListBox.SetVirtualModel` |
 | <a id="zanna-gui-listbox-clearvirtualmodel"></a>`ClearVirtualModel` | `void()` | `Zanna.GUI.ListBox.ClearVirtualModel` |
@@ -1975,6 +1977,7 @@ Constructor: `Zanna.GUI.Image.New`
 | Method | Signature | Runtime target |
 |---|---|---|
 | <a id="zanna-gui-image-setpixels"></a>`SetPixels` | `void(obj,i64,i64)` | `Zanna.GUI.Image.SetPixels` |
+| <a id="zanna-gui-image-trysetfromrendertarget"></a>`TrySetFromRenderTarget` | `i1(obj)` | `Zanna.GUI.Image.TrySetFromRenderTarget` |
 | <a id="zanna-gui-image-clear"></a>`Clear` | `void()` | `Zanna.GUI.Image.Clear` |
 | <a id="zanna-gui-image-setscalemode"></a>`SetScaleMode` | `void(i64)` | `Zanna.GUI.Image.SetScaleMode` |
 | <a id="zanna-gui-image-setopacity"></a>`SetOpacity` | `void(f64)` | `Zanna.GUI.Image.SetOpacity` |
@@ -2160,6 +2163,10 @@ construct the class directly. Its public surface exposes operations including `S
 | <a id="zanna-gui-menuitem-ischeckable"></a>`IsCheckable` | `i1()` | `Zanna.GUI.MenuItem.IsCheckable` |
 | <a id="zanna-gui-menuitem-isseparator"></a>`IsSeparator` | `i1()` | `Zanna.GUI.MenuItem.IsSeparator` |
 | <a id="zanna-gui-menuitem-wasclicked"></a>`WasClicked` | `i1()` | `Zanna.GUI.MenuItem.WasClicked` |
+| <a id="zanna-gui-menuitem-getscreenx"></a>`GetScreenX` | `f64()` | `Zanna.GUI.MenuItem.GetScreenX` |
+| <a id="zanna-gui-menuitem-getscreeny"></a>`GetScreenY` | `f64()` | `Zanna.GUI.MenuItem.GetScreenY` |
+| <a id="zanna-gui-menuitem-getscreenwidth"></a>`GetScreenWidth` | `f64()` | `Zanna.GUI.MenuItem.GetScreenWidth` |
+| <a id="zanna-gui-menuitem-getscreenheight"></a>`GetScreenHeight` | `f64()` | `Zanna.GUI.MenuItem.GetScreenHeight` |
 
 <a id="zanna-gui-toolbar"></a>
 ### `Zanna.GUI.Toolbar`
@@ -2220,6 +2227,12 @@ construct the class directly. Its public surface exposes operations including `S
 | <a id="zanna-gui-toolbaritem-settoggled"></a>`SetToggled` | `void(i1)` | `Zanna.GUI.ToolbarItem.SetToggled` |
 | <a id="zanna-gui-toolbaritem-istoggled"></a>`IsToggled` | `i1()` | `Zanna.GUI.ToolbarItem.IsToggled` |
 | <a id="zanna-gui-toolbaritem-wasclicked"></a>`WasClicked` | `i1()` | `Zanna.GUI.ToolbarItem.WasClicked` |
+| <a id="zanna-gui-toolbaritem-setvisible"></a>`SetVisible` | `void(i1)` | `Zanna.GUI.ToolbarItem.SetVisible` |
+| <a id="zanna-gui-toolbaritem-isvisible"></a>`IsVisible` | `i1()` | `Zanna.GUI.ToolbarItem.IsVisible` |
+| <a id="zanna-gui-toolbaritem-getscreenx"></a>`GetScreenX` | `f64()` | `Zanna.GUI.ToolbarItem.GetScreenX` |
+| <a id="zanna-gui-toolbaritem-getscreeny"></a>`GetScreenY` | `f64()` | `Zanna.GUI.ToolbarItem.GetScreenY` |
+| <a id="zanna-gui-toolbaritem-getscreenwidth"></a>`GetScreenWidth` | `f64()` | `Zanna.GUI.ToolbarItem.GetScreenWidth` |
+| <a id="zanna-gui-toolbaritem-getscreenheight"></a>`GetScreenHeight` | `f64()` | `Zanna.GUI.ToolbarItem.GetScreenHeight` |
 
 <a id="zanna-gui-statusbar"></a>
 ### `Zanna.GUI.StatusBar`
@@ -2719,6 +2732,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Tab.GetStableId` | `str(obj)` | `rt_tab_get_stable_id` |
 | `Zanna.GUI.Tab.SetTooltip` | `void(obj,str)` | `rt_tab_set_tooltip` |
 | `Zanna.GUI.Tab.SetModified` | `void(obj,i1)` | `rt_tab_set_modified` |
+| `Zanna.GUI.Tab.SetNamedIcon` | `void(obj,str)` | `rt_tab_set_named_icon` |
 | `Zanna.GUI.SplitPane.New` | `obj(obj,i64)` | `rt_splitpane_new` |
 | `Zanna.GUI.SplitPane.SetPosition` | `void(obj,f64)` | `rt_splitpane_set_position` |
 | `Zanna.GUI.SplitPane.GetPosition` | `f64(obj)` | `rt_splitpane_get_position` |
@@ -2800,6 +2814,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.ListBox.ItemGetData` | `str(obj)` | `rt_listbox_item_get_data` |
 | `Zanna.GUI.ListBox.ItemSetData` | `void(obj,str)` | `rt_listbox_item_set_data` |
 | `Zanna.GUI.ListBox.ItemSetTextColor` | `void(obj,i64)` | `rt_listbox_item_set_text_color` |
+| `Zanna.GUI.ListBox.ItemSetNamedIcon` | `void(obj,str)` | `rt_listbox_item_set_named_icon` |
 | `Zanna.GUI.ListBox.SetFont` | `void(obj,obj,f64)` | `rt_listbox_set_font` |
 | `Zanna.GUI.OutputPane.New` | `obj(obj)` | `rt_outputpane_new` |
 | `Zanna.GUI.OutputPane.Append` | `void(obj,str)` | `rt_outputpane_append` |
@@ -2937,6 +2952,7 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Image.New` | `obj(obj)` | `rt_image_new` |
 | `Zanna.GUI.Image.SetPixels` | `void(obj,obj,i64,i64)` | `rt_image_set_pixels` |
 | `Zanna.GUI.Image.TrySetPixels` | `i1(obj,obj,i64,i64)` | `rt_image_try_set_pixels` |
+| `Zanna.GUI.Image.TrySetFromRenderTarget` | `i1(obj,obj)` | `rt_image_try_set_from_render_target` |
 | `Zanna.GUI.Image.UpdateRegion` | `i1(obj,obj,i64,i64,i64,i64,i64,i64)` | `rt_image_update_region` |
 | `Zanna.GUI.Image.Clear` | `void(obj)` | `rt_image_clear` |
 | `Zanna.GUI.Image.SetScaleMode` | `void(obj,i64)` | `rt_image_set_scale_mode` |
@@ -3124,6 +3140,10 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.MenuItem.IsCheckable` | `i1(obj)` | `rt_menuitem_is_checkable` |
 | `Zanna.GUI.MenuItem.IsSeparator` | `i1(obj)` | `rt_menuitem_is_separator` |
 | `Zanna.GUI.MenuItem.WasClicked` | `i1(obj)` | `rt_menuitem_was_clicked` |
+| `Zanna.GUI.MenuItem.GetScreenX` | `f64(obj)` | `rt_menuitem_get_screen_x` |
+| `Zanna.GUI.MenuItem.GetScreenY` | `f64(obj)` | `rt_menuitem_get_screen_y` |
+| `Zanna.GUI.MenuItem.GetScreenWidth` | `f64(obj)` | `rt_menuitem_get_screen_width` |
+| `Zanna.GUI.MenuItem.GetScreenHeight` | `f64(obj)` | `rt_menuitem_get_screen_height` |
 | `Zanna.GUI.ContextMenu.New` | `obj()` | `rt_contextmenu_new` |
 | `Zanna.GUI.ContextMenu.Destroy` | `void(obj)` | `rt_contextmenu_destroy` |
 | `Zanna.GUI.ContextMenu.AddItem` | `obj(obj,str)` | `rt_contextmenu_add_item` |
@@ -3183,6 +3203,12 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.Toolbar.IsVisible` | `i1(obj)` | `rt_toolbar_is_visible` |
 | `Zanna.GUI.ToolbarItem.SetEnabled` | `void(obj,i1)` | `rt_toolbaritem_set_enabled` |
 | `Zanna.GUI.ToolbarItem.IsEnabled` | `i1(obj)` | `rt_toolbaritem_is_enabled` |
+| `Zanna.GUI.ToolbarItem.SetVisible` | `void(obj,i1)` | `rt_toolbaritem_set_visible` |
+| `Zanna.GUI.ToolbarItem.IsVisible` | `i1(obj)` | `rt_toolbaritem_is_visible` |
+| `Zanna.GUI.ToolbarItem.GetScreenX` | `f64(obj)` | `rt_toolbaritem_get_screen_x` |
+| `Zanna.GUI.ToolbarItem.GetScreenY` | `f64(obj)` | `rt_toolbaritem_get_screen_y` |
+| `Zanna.GUI.ToolbarItem.GetScreenWidth` | `f64(obj)` | `rt_toolbaritem_get_screen_width` |
+| `Zanna.GUI.ToolbarItem.GetScreenHeight` | `f64(obj)` | `rt_toolbaritem_get_screen_height` |
 | `Zanna.GUI.ToolbarItem.SetTooltip` | `void(obj,str)` | `rt_toolbaritem_set_tooltip` |
 | `Zanna.GUI.ToolbarItem.SetIcon` | `void(obj,str)` | `rt_toolbaritem_set_icon` |
 | `Zanna.GUI.ToolbarItem.SetIconPixels` | `void(obj,obj)` | `rt_toolbaritem_set_icon_pixels` |

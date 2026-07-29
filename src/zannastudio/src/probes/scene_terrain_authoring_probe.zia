@@ -45,6 +45,7 @@ bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
 bind "../ui/scene_terrain_3d";
+bind "scene_probe_support";
 
 bind Convert = Zanna.Core.Convert;
 bind GUI = Zanna.GUI;
@@ -91,21 +92,6 @@ func clickWidget(shell: app_shell.AppShell,
     var y = harnessCoordinate(
         shell,
         widget.GetScreenY() + widget.GetScreenHeight() * 0.5);
-    harness.SendMouse("move", x, y, 0);
-    harness.SendMouse("down", x, y, 0);
-    harness.SendMouse("up", x, y, 0);
-    harness.DispatchPending();
-}
-
-func clickMenuOffset(shell: app_shell.AppShell,
-                     harness: GUI.TestHarness,
-                     button: GUI.Button,
-                     offsetY: Number) {
-    var x = harnessCoordinate(shell, button.GetScreenX())
-        + Convert.NumToInt(20.0);
-    var y = harnessCoordinate(
-        shell, button.GetScreenY() + button.GetScreenHeight())
-        + Convert.NumToInt(offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -238,15 +224,17 @@ func VerifyTerrainCreationAndStroke(
     }
     var createBaseline = sceneDoc.content;
     var createRevision = editor.GetRevision();
-    clickWidget(shell, harness, editor.createMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor.createMenuButton);
     pump(editor, sceneDoc, shell);
     if editor.createMenu.IsVisible() == false
        or editor.createTerrainItem.IsEnabled() == false {
         fail(shell, harness, "Create Terrain menu item missing");
         return false;
     }
-    // Empty, Child, separator, Box, Sphere, Plane, Cylinder, then Terrain.
-    clickMenuOffset(shell, harness, editor.createMenuButton, 195.0);
+    // Create Terrain, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor.createTerrainItem);
     pump(editor, sceneDoc, shell);
     if editor.GetRevision() != createRevision + 1
        or sceneDoc.content == createBaseline

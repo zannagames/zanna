@@ -60,6 +60,7 @@
 #include <stdint.h>
 
 #ifdef ZANNA_ENABLE_GRAPHICS
+#include "vg_icon_vector.h"
 
 /// @brief Safe-cast a handle to a live TabBar widget, or NULL.
 /// @param handle Candidate opaque widget handle.
@@ -589,6 +590,20 @@ void rt_tab_set_modified(void *tab, int64_t modified) {
     vg_tab_t *t = rt_gui_tab_from_handle(tab);
     if (t)
         vg_tab_set_modified(t, modified != 0);
+}
+
+/// @brief Attach or clear a leading built-in vector icon on a tab (ADR 0220).
+/// @param tab Managed tab subhandle; invalid handles are ignored.
+/// @param icon_name Stable vg_icon_vector name; empty or unknown names clear the icon.
+void rt_tab_set_named_icon(void *tab, rt_string icon_name) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_tab_t *t = rt_gui_tab_from_handle(tab);
+    if (!t)
+        return;
+    char *cname = rt_string_to_gui_cstr(icon_name);
+    int32_t vector_id = cname && cname[0] ? vg_icon_vector_find(cname) : VG_ICON_VECTOR_INVALID;
+    free(cname);
+    vg_tab_set_icon_vector(t, vector_id);
 }
 
 /// @brief Return the currently-active tab handle (NULL when no tabs / null bar).
@@ -2792,6 +2807,14 @@ void rt_tab_set_tooltip(void *tab, rt_string tooltip) {
 void rt_tab_set_modified(void *tab, int64_t modified) {
     (void)tab;
     (void)modified;
+}
+
+/// @brief Stub: ignore tab icon changes when graphics support is disabled.
+/// @param tab Ignored tab handle.
+/// @param icon_name Ignored icon name.
+void rt_tab_set_named_icon(void *tab, rt_string icon_name) {
+    (void)tab;
+    (void)icon_name;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no active tab exists.

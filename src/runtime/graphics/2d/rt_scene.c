@@ -55,6 +55,7 @@
 #include "rt_option.h"
 #include "rt_seq.h"
 #include "rt_sprite.h"
+#include "rt_string.h"
 
 #include <limits.h>
 #include <math.h>
@@ -154,6 +155,10 @@ static int64_t scene_add_saturating(int64_t a, int64_t b) {
 /// @param value Extended-precision value to round.
 /// @return Rounded result clamped to the signed 64-bit range.
 static int64_t scene_ld_to_i64_sat(long double value) {
+    if (isnan(value))
+        return 0;
+    if (isinf(value))
+        return signbit(value) ? INT64_MIN : INT64_MAX;
     if (value >= (long double)INT64_MAX)
         return INT64_MAX;
     if (value <= (long double)INT64_MIN)
@@ -161,18 +166,50 @@ static int64_t scene_ld_to_i64_sat(long double value) {
     return (int64_t)(value >= 0.0L ? value + 0.5L : value - 0.5L);
 }
 
-/// @brief Compute (value * mul) / div in long double, saturating to int64.
-/// @details Used by scale composition (child_world = parent_world * child_local / 100)
-///          where the intermediate product can blow past int64. div == 0 returns 0
-///          rather than dividing by zero.
+/// @brief Return the unsigned magnitude of a signed 64-bit value without overflow.
+static uint64_t scene_i64_magnitude(int64_t value) {
+    return value < 0 ? (uint64_t)(-(value + 1)) + 1u : (uint64_t)value;
+}
+
+/// @brief Compute `(value * multiplier) / 100`, rounded halves away from zero.
+/// @details Decomposes both magnitudes into quotient/remainder terms before
+///          multiplication. This stays exact on every supported C compiler,
+///          including MSVC where `long double` has only binary64 precision.
 /// @param value Multiplicand.
-/// @param mul Multiplier.
-/// @param div Divisor.
-/// @return Rounded, saturated quotient, or zero when @p div is zero.
-static int64_t scene_mul_div_saturating(int64_t value, int64_t mul, int64_t div) {
-    if (div == 0)
+/// @param multiplier Percentage multiplier.
+/// @return Rounded product divided by 100, saturated to the signed range.
+static int64_t scene_mul_percent_saturating(int64_t value, int64_t multiplier) {
+    if (value == 0 || multiplier == 0)
         return 0;
-    return scene_ld_to_i64_sat(((long double)value * (long double)mul) / (long double)div);
+    int negative = (value < 0) != (multiplier < 0);
+    uint64_t a = scene_i64_magnitude(value);
+    uint64_t b = scene_i64_magnitude(multiplier);
+    uint64_t limit = negative ? (uint64_t)INT64_MAX + 1u : (uint64_t)INT64_MAX;
+    uint64_t b_quotient = b / 100u;
+    uint64_t b_remainder = b % 100u;
+    if (b_quotient != 0 && a > limit / b_quotient)
+        return negative ? INT64_MIN : INT64_MAX;
+    uint64_t result = a * b_quotient;
+    uint64_t a_quotient = a / 100u;
+    uint64_t a_remainder = a % 100u;
+    if (b_remainder != 0 && a_quotient > (limit - result) / b_remainder)
+        return negative ? INT64_MIN : INT64_MAX;
+    result += a_quotient * b_remainder;
+    uint64_t residual_product = a_remainder * b_remainder;
+    uint64_t residual_quotient = residual_product / 100u;
+    if (residual_quotient > limit - result)
+        return negative ? INT64_MIN : INT64_MAX;
+    result += residual_quotient;
+    if (residual_product % 100u >= 50u) {
+        if (result == limit)
+            return negative ? INT64_MIN : INT64_MAX;
+        result++;
+    }
+    if (!negative)
+        return (int64_t)result;
+    if (result >= (uint64_t)INT64_MAX + 1u)
+        return INT64_MIN;
+    return -(int64_t)result;
 }
 
 /// @brief Keep local node scale positive so draw-time scale normalization is explicit.
@@ -182,14 +219,38 @@ static int64_t scene_normalize_scale(int64_t scale) {
     return scale < 1 ? 1 : scale;
 }
 
-/// @brief Subtract @p b from @p a in long double, saturating to int64 on overflow.
-/// @details Used by world-to-local transform inversion where the difference
-///          can exceed int64 range mid-calculation.
+/// @brief Obtain an exact byte view for a validated runtime string.
+static int8_t scene_string_view(rt_string value, const char **bytes_out, size_t *length_out) {
+    if (!value || !bytes_out || !length_out || !rt_string_is_handle(value))
+        return 0;
+    int64_t raw_length = rt_str_len(value);
+    if (raw_length < 0 || (uint64_t)raw_length > (uint64_t)SIZE_MAX)
+        return 0;
+    const char *bytes = rt_string_cstr(value);
+    if (!bytes)
+        return 0;
+    *bytes_out = bytes;
+    *length_out = (size_t)raw_length;
+    return 1;
+}
+
+/// @brief Subtract @p b from @p a with signed-overflow checks.
+/// @details Used by camera-relative rotation where the exact difference can
+///          exceed the signed range.
 /// @param a Minuend.
 /// @param b Subtrahend.
 /// @return Rounded `a - b` clamped to the signed 64-bit range.
 static int64_t scene_sub_saturating(int64_t a, int64_t b) {
-    return scene_ld_to_i64_sat((long double)a - (long double)b);
+    if (b > 0 && a < INT64_MIN + b)
+        return INT64_MIN;
+    if (b < 0 && a > INT64_MAX + b)
+        return INT64_MAX;
+    return a - b;
+}
+
+/// @brief Add periodic degree angles without allowing irrelevant full turns to overflow.
+static int64_t scene_add_rotations(int64_t a, int64_t b) {
+    return ((a % 360) + (b % 360)) % 360;
 }
 
 // Forward declarations
@@ -209,7 +270,7 @@ static int scene_parent_chain_contains(scene_node_impl *start, scene_node_impl *
         if (cur == target)
             return 1;
         depth++;
-        if (depth > SCENE_NODE_MAX_PARENT_CHAIN) {
+        if (depth >= SCENE_NODE_MAX_PARENT_CHAIN && cur->parent) {
             rt_trap("SceneNode: parent chain too deep or cyclic");
             return 1;
         }
@@ -480,19 +541,20 @@ static void mark_transform_dirty(scene_node_impl *node) {
 static void apply_node_transform(scene_node_impl *node) {
     if (node->parent) {
         node->world_scale_x =
-            scene_mul_div_saturating(node->parent->world_scale_x, node->scale_x, 100);
+            scene_mul_percent_saturating(node->parent->world_scale_x, node->scale_x);
         node->world_scale_y =
-            scene_mul_div_saturating(node->parent->world_scale_y, node->scale_y, 100);
-        node->world_rotation = scene_add_saturating(node->parent->world_rotation, node->rotation);
+            scene_mul_percent_saturating(node->parent->world_scale_y, node->scale_y);
+        node->world_rotation = scene_add_rotations(node->parent->world_rotation, node->rotation);
 
-        int64_t scaled_x = scene_mul_div_saturating(node->x, node->parent->world_scale_x, 100);
-        int64_t scaled_y = scene_mul_div_saturating(node->y, node->parent->world_scale_y, 100);
+        int64_t scaled_x = scene_mul_percent_saturating(node->x, node->parent->world_scale_x);
+        int64_t scaled_y = scene_mul_percent_saturating(node->y, node->parent->world_scale_y);
 
         if (node->parent->world_rotation == 0) {
             node->world_x = scene_add_saturating(node->parent->world_x, scaled_x);
             node->world_y = scene_add_saturating(node->parent->world_y, scaled_y);
         } else {
-            double rad = node->parent->world_rotation * 3.14159265359 / 180.0;
+            double rad =
+                (double)(node->parent->world_rotation % 360) * 3.14159265358979323846 / 180.0;
             double cos_r = cos(rad);
             double sin_r = sin(rad);
 
@@ -508,7 +570,7 @@ static void apply_node_transform(scene_node_impl *node) {
         node->world_y = node->y;
         node->world_scale_x = node->scale_x;
         node->world_scale_y = node->scale_y;
-        node->world_rotation = node->rotation;
+        node->world_rotation = node->rotation % 360;
     }
 
     node->transform_dirty = 0;
@@ -535,7 +597,7 @@ static void update_world_transform(scene_node_impl *node) {
 
     scene_node_impl *cur = node;
     while (cur && cur->transform_dirty) {
-        if (depth > SCENE_NODE_MAX_PARENT_CHAIN) {
+        if (depth >= SCENE_NODE_MAX_PARENT_CHAIN) {
             free(heap_chain);
             rt_trap("SceneNode: transform chain too deep or cyclic");
             return;
@@ -827,6 +889,12 @@ void rt_scene_node_set_name(void *node_ptr, rt_string name) {
         return;
     if (!name)
         name = rt_const_cstr("");
+    const char *name_bytes = NULL;
+    size_t name_length = 0;
+    if (!scene_string_view(name, &name_bytes, &name_length))
+        return;
+    (void)name_bytes;
+    (void)name_length;
     if (node->name == name)
         return;
     rt_obj_retain_maybe(name);
@@ -873,13 +941,11 @@ void rt_scene_node_set_sprite(void *node_ptr, void *sprite) {
 
 /// @brief Attach @p child_ptr as a child of @p node_ptr in the scene hierarchy.
 /// @details Guards against cycles by walking the ancestor chain before attaching.
-///   If the child already has a parent, it is detached first.  Marks the child's
-///   world transforms dirty since its inherited transform will change. A
-///   temporary retain keeps the child alive across old-parent detachment; the
-///   new parent Seq then owns its own retained reference. Null, wrong-class,
-///   cyclic, corrupt-chain, or child-list insertion failure is a no-op, though
-///   a failed insertion after successful old-parent detachment leaves the
-///   child unparented.
+///   The new parent takes ownership before the old parent releases it, so an
+///   insertion failure preserves the original hierarchy. Marks the child's
+///   world transforms dirty after a successful reparent. Re-adding a direct
+///   child is an idempotent no-op. Null, wrong-class, cyclic, corrupt-chain,
+///   or child-list insertion failure is a no-op.
 /// @param node_ptr Opaque parent SceneNode handle.
 /// @param child_ptr Opaque child SceneNode handle.
 void rt_scene_node_add_child(void *node_ptr, void *child_ptr) {
@@ -894,32 +960,26 @@ void rt_scene_node_add_child(void *node_ptr, void *child_ptr) {
     if (scene_parent_chain_contains(node, child))
         return; // Would create a cycle or uses a corrupt ancestor chain.
 
-    rt_obj_retain_maybe(child);
-
-    // Detach from previous parent if any. The temporary retain above keeps a
-    // borrowed child pointer alive even if the previous parent owned the only
-    // strong reference.
-    if (child->parent) {
-        rt_scene_node_remove_child(child->parent, child);
-    }
-
-    if (!node->children) {
-        if (rt_obj_release_check0(child))
-            rt_obj_free(child);
+    if (child->parent == node)
         return;
-    }
+    if (!node->children)
+        return;
+
+    /* Append first so a failed allocation leaves the old hierarchy intact.
+     * The new owning Seq reference also keeps the child alive while its old
+     * parent releases ownership. */
     int64_t before = rt_seq_len(node->children);
-    rt_seq_push(node->children, child);
-    if (rt_seq_len(node->children) != before + 1 || rt_seq_get(node->children, before) != child) {
-        if (rt_obj_release_check0(child))
-            rt_obj_free(child);
+    if (before < 0 || before == INT64_MAX)
         return;
-    }
+    rt_seq_push(node->children, child);
+    if (rt_seq_len(node->children) != before + 1 || rt_seq_get(node->children, before) != child)
+        return;
+
+    scene_node_impl *old_parent = child->parent;
+    if (old_parent)
+        rt_scene_node_remove_child(old_parent, child);
     child->parent = node;
     mark_transform_dirty(child);
-
-    if (rt_obj_release_check0(child))
-        rt_obj_free(child);
 }
 
 /// @brief Detach @p child_ptr from @p node_ptr and release the node's reference to it.
@@ -941,9 +1001,12 @@ void rt_scene_node_remove_child(void *node_ptr, void *child_ptr) {
     int64_t count = rt_seq_len(node->children);
     for (int64_t i = 0; i < count; i++) {
         if (rt_seq_get(node->children, i) == child) {
-            child->parent = NULL;
+            int was_parent = child->parent == node;
+            if (was_parent)
+                child->parent = NULL;
             void *removed = rt_seq_remove(node->children, i);
-            mark_transform_dirty(child);
+            if (was_parent)
+                mark_transform_dirty(child);
             if (removed && rt_obj_release_check0(removed))
                 rt_obj_free(removed);
             return;
@@ -998,8 +1061,9 @@ void *rt_scene_node_find(void *node_ptr, rt_string name) {
     if (!node || !name)
         return NULL;
 
-    const char *search = rt_string_cstr(name);
-    if (!search)
+    const char *search = NULL;
+    size_t search_length = 0;
+    if (!scene_string_view(name, &search, &search_length))
         return NULL;
 
     scene_node_stack stack;
@@ -1014,8 +1078,10 @@ void *rt_scene_node_find(void *node_ptr, rt_string name) {
         scene_node_impl *cur = scene_node_stack_pop(&stack);
         if (!cur)
             continue;
-        const char *node_name = rt_string_cstr(cur->name);
-        if (node_name && strcmp(node_name, search) == 0) {
+        const char *node_name = NULL;
+        size_t node_name_length = 0;
+        if (scene_string_view(cur->name, &node_name, &node_name_length) &&
+            node_name_length == search_length && memcmp(node_name, search, search_length) == 0) {
             scene_node_stack_destroy(&stack);
             return cur;
         }
@@ -1155,8 +1221,8 @@ void rt_scene_node_draw_with_camera(void *node_ptr, void *canvas, void *camera) 
             if (camera) {
                 rt_camera_world_to_screen(camera, cur->world_x, cur->world_y, &screen_x, &screen_y);
                 int64_t zoom = rt_camera_get_zoom(camera);
-                scale_x = scene_mul_div_saturating(cur->world_scale_x, zoom, 100);
-                scale_y = scene_mul_div_saturating(cur->world_scale_y, zoom, 100);
+                scale_x = scene_mul_percent_saturating(cur->world_scale_x, zoom);
+                scale_y = scene_mul_percent_saturating(cur->world_scale_y, zoom);
                 rotation = scene_sub_saturating(rotation, rt_camera_get_rotation(camera));
             }
 
@@ -1408,8 +1474,13 @@ static int64_t scene_collect_draw_entries(scene_node_impl *root,
             continue;
         if (cur->sprite) {
             if (count >= *cap) {
+                if (*cap < 0 || (*cap > 0 && *cap > INT64_MAX / 2)) {
+                    scene_node_stack_destroy(&stack);
+                    return -1;
+                }
                 int64_t new_cap = *cap > 0 ? *cap * 2 : 64;
-                if (new_cap > INT64_MAX / (int64_t)sizeof(node_sort_entry)) {
+                if (new_cap > INT64_MAX / (int64_t)sizeof(node_sort_entry) ||
+                    (uint64_t)new_cap > (uint64_t)(SIZE_MAX / sizeof(node_sort_entry))) {
                     scene_node_stack_destroy(&stack);
                     return -1;
                 }
@@ -1523,8 +1594,8 @@ void rt_scene_draw_with_camera(void *scene_ptr, void *canvas, void *camera) {
                 rt_camera_world_to_screen(
                     camera, node->world_x, node->world_y, &screen_x, &screen_y);
                 int64_t zoom = rt_camera_get_zoom(camera);
-                final_sx = scene_mul_div_saturating(node->world_scale_x, zoom, 100);
-                final_sy = scene_mul_div_saturating(node->world_scale_y, zoom, 100);
+                final_sx = scene_mul_percent_saturating(node->world_scale_x, zoom);
+                final_sy = scene_mul_percent_saturating(node->world_scale_y, zoom);
                 rotation = scene_sub_saturating(rotation, rt_camera_get_rotation(camera));
             }
 

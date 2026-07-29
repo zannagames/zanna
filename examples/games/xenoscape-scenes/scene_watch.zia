@@ -1,0 +1,64 @@
+// ============================================================================
+// XENOSCAPE: SCENES — scene_watch.zia
+//
+// PURPOSE: The ADR 0194 editor watch contract: when the game runs under
+//   `--scene <path> --scene-watch`, this module polls the scene file's
+//   modification time (bounded to one stat every 250 ms) and reports a
+//   reload only after a full LoadResult preflight succeeds — a torn or
+//   half-written save from the editor can never drop the player into the
+//   fallback stub level.
+//
+// WHERE-THIS-FITS: `Game.updatePlaying`/menu update calls `Poll`, and on
+//   `true` re-enters the ordinary region load path for the active region.
+// ============================================================================
+
+bind SceneDocument = Zanna.Game2D.SceneDocument;
+bind Clock = Zanna.Time.Clock;
+bind File = Zanna.IO.File;
+
+final WATCH_INTERVAL_MS = 250;
+
+/// @brief Bounded mtime poller with a validity preflight.
+class SceneWatcher {
+    expose String path;
+    expose Boolean armed;
+    hide Integer lastStamp;
+    hide Integer lastCheckMs;
+
+    expose func init() {
+        path = "";
+        armed = false;
+        lastStamp = 0;
+        lastCheckMs = 0;
+    }
+
+    /// @brief Watch one scene file; a missing file arms lazily.
+    expose func Arm(watchPath: String) {
+        path = watchPath;
+        armed = watchPath != "";
+        lastStamp = 0;
+        if armed and File.Exists(path) {
+            lastStamp = File.Modified(path);
+        }
+        lastCheckMs = 0;
+    }
+
+    /// @brief Report one validated reload when the file changed on disk.
+    /// @return True at most once per completed, parseable save.
+    expose func Poll() -> Boolean {
+        if armed == false { return false; }
+        var now = Clock.NowMs();
+        if now - lastCheckMs < WATCH_INTERVAL_MS { return false; }
+        lastCheckMs = now;
+        if File.Exists(path) == false { return false; }
+        var stamp = File.Modified(path);
+        if stamp == lastStamp { return false; }
+        // Preflight the whole document before reporting the change: an
+        // in-progress editor write parses as garbage and must wait for
+        // the next completed save instead of poisoning the level state.
+        var probe = SceneDocument.LoadResult(path);
+        if probe.IsOk == false { return false; }
+        lastStamp = stamp;
+        return true;
+    }
+}

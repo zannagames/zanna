@@ -221,6 +221,25 @@ void vg_contextmenu_set_font(vg_contextmenu_t *menu, vg_font_t *font, float size
 /// @param theme Theme to copy colors from; NULL resolves the current theme.
 void vg_contextmenu_apply_theme(vg_contextmenu_t *menu, const vg_theme_t *theme);
 
+/// @brief Report an item row's current on-screen rectangle (ADR 0219).
+/// @details Walks the menu's rows with the same heights the hit-test uses on
+///          top of the menu origin that painting has already clamped to the
+///          window, so a rect read after a render matches where a click lands.
+/// @param menu Context menu owning the item; may be NULL.
+/// @param item Item whose row is measured; may be NULL.
+/// @param out_x Receives the row's left edge in window coordinates.
+/// @param out_y Receives the row's top edge in window coordinates.
+/// @param out_w Receives the row's width (the menu's width).
+/// @param out_h Receives the row's height (separator or item height).
+/// @return true when the menu is visible and contains @p item; false leaves
+///         the outputs zeroed.
+bool vg_contextmenu_get_item_rect(vg_contextmenu_t *menu,
+                                  vg_menu_item_t *item,
+                                  float *out_x,
+                                  float *out_y,
+                                  float *out_w,
+                                  float *out_h);
+
 //=============================================================================
 // TreeView Widget
 //=============================================================================
@@ -233,6 +252,7 @@ typedef struct vg_tree_node {
     size_t text_len;             ///< Node text length in bytes
     char *icon_text;             ///< Optional UTF-8 icon text rendered before the label (owned)
     size_t icon_text_len;        ///< Icon-text length in bytes
+    char *icon_spec;             ///< Original "vector:" spec preserved for get_icon_text (owned)
     char *stable_id;             ///< Optional application-stable identifier (owned)
     size_t stable_id_len;        ///< Stable-identifier length in bytes
     void *user_data;             ///< User data associated with node

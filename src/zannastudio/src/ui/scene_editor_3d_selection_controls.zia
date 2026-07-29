@@ -78,6 +78,7 @@ bind Str = Zanna.String;
 bind Parse = Zanna.Core.Parse;
 bind "scene_editor_3d_model" as SceneEditor3DModel;
 bind "scene_editor_3d_selection_inspector" as PreviousLayer;
+bind "style_tokens";
 
 /// @brief Selection Controls implementation layer.
 class SceneEditor3DSelectionControlsLayer extends PreviousLayer.SceneEditor3DSelectionInspectorLayer {
@@ -748,10 +749,10 @@ class SceneEditor3DSelectionControlsLayer extends PreviousLayer.SceneEditor3DSel
         }
         objectTabButton.SetVisible(hasScene);
         sceneTabButton.SetVisible(hasScene);
-        objectTabButton.SetStyle(0);
-        sceneTabButton.SetStyle(0);
-        if sceneTab { sceneTabButton.SetStyle(1); }
-        if objectTab { objectTabButton.SetStyle(1); }
+        objectTabButton.SetStyle(style_tokens.STYLE_DEFAULT);
+        sceneTabButton.SetStyle(style_tokens.STYLE_DEFAULT);
+        if sceneTab { sceneTabButton.SetStyle(style_tokens.STYLE_PRIMARY); }
+        if objectTab { objectTabButton.SetStyle(style_tokens.STYLE_PRIMARY); }
         sceneSectionRow.SetVisible(sceneTab);
         selectionInfo.SetVisible(objectTab);
         nameLabel.SetVisible(nodeScope);
@@ -797,6 +798,9 @@ class SceneEditor3DSelectionControlsLayer extends PreviousLayer.SceneEditor3DSel
             sceneTab
             and sceneInspectorSection == SceneEditor3DModel.SCENE_INSPECTOR_HISTORY);
         envGroup.SetVisible(
+            sceneTab
+            and sceneInspectorSection == SceneEditor3DModel.SCENE_INSPECTOR_WORLD);
+        sceneSettingsGroup.SetVisible(
             sceneTab
             and sceneInspectorSection == SceneEditor3DModel.SCENE_INSPECTOR_WORLD);
         materialLibraryGroup.SetVisible(

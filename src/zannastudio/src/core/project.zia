@@ -87,6 +87,8 @@ class Project {
     expose String  ignorePatterns;
     /// Display name from package-name (takes precedence over folder name).
     expose String  packageName;
+    /// How Run Scene launches this project: "vm" or "native" (ADR 0225).
+    expose String  runProfile;
     /// True if a zanna.project file was found and parsed.
     expose Boolean hasProjectFile;
 
@@ -106,6 +108,7 @@ class Project {
         problemMatcher = "";
         ignorePatterns = "";
         packageName = "";
+        runProfile = "vm";
         hasProjectFile = false;
     }
 
@@ -155,6 +158,7 @@ class Project {
         problemMatcher = "";
         ignorePatterns = "";
         packageName = "";
+        runProfile = "vm";
         hasProjectFile = false;
     }
 
@@ -187,6 +191,11 @@ class Project {
         if manifestLanguage != "" { lang = manifestLanguage; }
 
         var manifestEntry = Map.GetStr(manifest, "entry");
+        var manifestRunProfile = Map.GetStr(manifest, "runProfile");
+        if manifestRunProfile == "vm"
+           or manifestRunProfile == "native" {
+            runProfile = manifestRunProfile;
+        }
         if manifestEntry != "" { entryFile = manifestEntry; }
 
         ignorePatterns = JoinStringSeq(Map.Get(manifest, "excludes"), ",");
@@ -278,6 +287,10 @@ class Project {
                 }
             }
             if key == "package-name"  { packageName = value; }
+            if key == "run-profile"
+               and (value == "vm" or value == "native") {
+                runProfile = value;
+            }
         }
         hasProjectFile = true;
         // package-name takes precedence over the folder-derived name.

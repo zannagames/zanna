@@ -30,6 +30,7 @@ bind "../services/safe_io";
 bind "inspector_rows";
 bind "scene_asset_thumbnails";
 bind "scene_asset_browser_support";
+bind "style_tokens";
 
 bind GUI = Zanna.GUI;
 bind Pixels = Zanna.Graphics.Pixels;
@@ -205,7 +206,7 @@ class SceneAssetBrowser {
         clearFilterButton = GUI.Button.New(filterRow, "Clear");
         clearFilterButton.SetAccessibleName("Clear project asset filter");
         viewModeButton = GUI.Button.New(filterRow, "Grid");
-        viewModeButton.SetStyle(1);
+        viewModeButton.SetStyle(style_tokens.STYLE_PRIMARY);
         viewModeButton.SetAccessibleName(
             "Switch project asset browser to list view");
         viewModeButton.SetTooltip(
@@ -313,12 +314,12 @@ class SceneAssetBrowser {
         if viewModeButton != null {
             if enabled {
                 viewModeButton.SetText("Grid");
-                viewModeButton.SetStyle(1);
+                viewModeButton.SetStyle(style_tokens.STYLE_PRIMARY);
                 viewModeButton.SetAccessibleName(
                     "Switch project asset browser to list view");
             } else {
                 viewModeButton.SetText("List");
-                viewModeButton.SetStyle(1);
+                viewModeButton.SetStyle(style_tokens.STYLE_PRIMARY);
                 viewModeButton.SetAccessibleName(
                     "Switch project asset browser to grid view");
             }

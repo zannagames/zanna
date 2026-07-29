@@ -740,20 +740,26 @@ static void metal_shadow_begin(
         metal_leave_shadow_pass(ctx);
         if (slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS)
             return;
+        if (!ctx.device || !ctx.shadowPipeline || !vgfx3d_shadow_matrix_is_usable(light_vp) ||
+            !vgfx3d_metal_is_valid_texture2d_extent(w, h)) {
+            return;
+        }
+
+        int atlas_slot = slot >= VGFX3D_CSM_SLOTS;
+        if (atlas_slot && (w > VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION / 4 ||
+                           h > VGFX3D_METAL_MAX_TEXTURE2D_DIMENSION / 2)) {
+            return;
+        }
         ctx->_shadowComplete[slot] = 0;
         ctx->_shadowPassFailed = 0;
         metal_recompute_shadow_count(ctx);
-        if (!ctx.device || !ctx.shadowPipeline || !vgfx3d_shadow_matrix_is_usable(light_vp) ||
-            w <= 0 || h <= 0)
-            return;
-
-        int atlas_slot = slot >= VGFX3D_CSM_SLOTS;
         if (atlas_slot) {
             /* Atlas tile pass: 4x2 tiles at the per-slot resolution. */
             NSUInteger atlas_w = (NSUInteger)w * 4u;
             NSUInteger atlas_h = (NSUInteger)h * 2u;
             if (!ctx->_shadowAtlasTexture || ctx->_shadowAtlasTexture.width != atlas_w ||
                 ctx->_shadowAtlasTexture.height != atlas_h) {
+                id<MTLTexture> replacement;
                 MTLTextureDescriptor *desc = [MTLTextureDescriptor
                     texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
                                                  width:atlas_w
@@ -761,8 +767,16 @@ static void metal_shadow_begin(
                                              mipmapped:NO];
                 desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
                 desc.storageMode = MTLStorageModePrivate;
-                ctx->_shadowAtlasTexture = [ctx.device newTextureWithDescriptor:desc];
+                replacement = [ctx.device newTextureWithDescriptor:desc];
+                if (!replacement)
+                    return;
+                ctx->_shadowAtlasTexture = replacement;
                 ctx->_shadowAtlasClearedSerial = 0;
+                for (int32_t atlas_index = VGFX3D_CSM_SLOTS; atlas_index < VGFX3D_MAX_SHADOW_LIGHTS;
+                     atlas_index++) {
+                    ctx->_shadowComplete[atlas_index] = 0;
+                }
+                metal_recompute_shadow_count(ctx);
             }
             if (!ctx->_shadowAtlasTexture)
                 return;
@@ -771,6 +785,7 @@ static void metal_shadow_begin(
             if (!ctx->_shadowDepthTexture[slot] ||
                 (int32_t)ctx->_shadowDepthTexture[slot].width != w ||
                 (int32_t)ctx->_shadowDepthTexture[slot].height != h) {
+                id<MTLTexture> replacement;
                 MTLTextureDescriptor *desc = [MTLTextureDescriptor
                     texture2DDescriptorWithPixelFormat:MTLPixelFormatDepth32Float
                                                  width:(NSUInteger)w
@@ -778,7 +793,10 @@ static void metal_shadow_begin(
                                              mipmapped:NO];
                 desc.usage = MTLTextureUsageRenderTarget | MTLTextureUsageShaderRead;
                 desc.storageMode = MTLStorageModePrivate;
-                ctx->_shadowDepthTexture[slot] = [ctx.device newTextureWithDescriptor:desc];
+                replacement = [ctx.device newTextureWithDescriptor:desc];
+                if (!replacement)
+                    return;
+                ctx->_shadowDepthTexture[slot] = replacement;
             }
             if (!ctx->_shadowDepthTexture[slot])
                 return;
@@ -790,20 +808,21 @@ static void metal_shadow_begin(
         /* Start shadow render pass */
         if (!ctx.cmdBuf)
             ctx.cmdBuf = metal_acquire_command_buffer(ctx);
+        if (!ctx.cmdBuf)
+            return;
         if (ctx.encoder) {
             [ctx.encoder endEncoding];
             ctx.encoder = nil;
         }
 
         MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
+        BOOL clear_atlas = NO;
         if (atlas_slot) {
             rp.depthAttachment.texture = ctx->_shadowAtlasTexture;
             /* Clear the whole atlas on its first tile pass each frame, then
              * accumulate tiles with Load so earlier tiles survive. */
-            rp.depthAttachment.loadAction = ctx->_shadowAtlasClearedSerial == ctx.frameSerial
-                                                ? MTLLoadActionLoad
-                                                : MTLLoadActionClear;
-            ctx->_shadowAtlasClearedSerial = ctx.frameSerial;
+            clear_atlas = ctx->_shadowAtlasClearedSerial != ctx.frameSerial;
+            rp.depthAttachment.loadAction = clear_atlas ? MTLLoadActionClear : MTLLoadActionLoad;
         } else {
             rp.depthAttachment.texture = ctx->_shadowDepthTexture[slot];
             rp.depthAttachment.loadAction = MTLLoadActionClear;
@@ -817,6 +836,8 @@ static void metal_shadow_begin(
             ctx->_shadowPassSlot = -1;
             return;
         }
+        if (clear_atlas)
+            ctx->_shadowAtlasClearedSerial = ctx.frameSerial;
         ctx->_shadowPassSlot = slot;
         [ctx.encoder setRenderPipelineState:ctx.shadowPipeline];
         [ctx.encoder setDepthStencilState:ctx.shadowDepthState];
@@ -1085,8 +1106,7 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
             instance_upload_data = cmd->particle_instances;
             instance_upload_bytes = (size_t)instance_count * sizeof(vgfx3d_particle_instance_t);
         } else {
-            metal_ensure_instance_storage(ctx, instance_count);
-            if (!ctx.instanceScratch)
+            if (!metal_ensure_instance_storage(ctx, instance_count))
                 return;
             instance_data = (vgfx3d_metal_instance_data_t *)ctx.instanceScratch.mutableBytes;
             if (!instance_data)
@@ -1585,13 +1605,16 @@ static int metal_capture_current_drawable_to_display_texture(VGFXMetalContext *c
     if (!ctx.displayTexture || ctx.displayTexture.pixelFormat != MTLPixelFormatBGRA8Unorm ||
         (int32_t)ctx.displayTexture.width != ctx.width ||
         (int32_t)ctx.displayTexture.height != ctx.height) {
-        ctx.displayTexture = metal_new_color_texture(ctx,
-                                                     ctx.width,
-                                                     ctx.height,
-                                                     MTLPixelFormatBGRA8Unorm,
-                                                     MTLTextureUsageShaderRead,
-                                                     MTLStorageModeShared,
-                                                     NO);
+        id<MTLTexture> replacement = metal_new_color_texture(ctx,
+                                                             ctx.width,
+                                                             ctx.height,
+                                                             MTLPixelFormatBGRA8Unorm,
+                                                             MTLTextureUsageShaderRead,
+                                                             MTLStorageModeShared,
+                                                             NO);
+        if (!replacement)
+            return 0;
+        ctx.displayTexture = replacement;
     }
     if (!ctx.displayTexture)
         return 0;
@@ -1600,6 +1623,8 @@ static int metal_capture_current_drawable_to_display_texture(VGFXMetalContext *c
                                                                    : ctx.displayTexture.width;
     copy_h = ctx.drawable.texture.height < ctx.displayTexture.height ? ctx.drawable.texture.height
                                                                      : ctx.displayTexture.height;
+    if (copy_w == 0 || copy_h == 0)
+        return 0;
     blit = [ctx.cmdBuf blitCommandEncoder];
     if (!blit)
         return 0;
@@ -1624,6 +1649,7 @@ static int metal_capture_current_drawable_to_display_texture(VGFXMetalContext *c
 /// @param postfx Borrowed effect snapshot to sanitize and encode, or NULL for passthrough values.
 /// @param overlay_enabled Nonzero when the overlay texture will be composited by this pass.
 /// @param bloom_tex_enabled Nonzero when a prefiltered bloom texture is bound for sampling.
+/// @param source_is_hdr Nonzero when the current source is linear RGBA16F scene color.
 /// @param source_width Width of the pass's source texture in pixels.
 /// @param source_height Height of the pass's source texture in pixels.
 /// @param[out] params Destination uniform structure populated for the fragment shader.
@@ -1631,6 +1657,7 @@ static void metal_fill_postfx_params(VGFXMetalContext *ctx,
                                      const vgfx3d_postfx_snapshot_t *postfx,
                                      int overlay_enabled,
                                      int bloom_tex_enabled,
+                                     int source_is_hdr,
                                      NSUInteger source_width,
                                      NSUInteger source_height,
                                      mtl_postfx_params_t *params) {
@@ -1646,8 +1673,7 @@ static void metal_fill_postfx_params(VGFXMetalContext *ctx,
     params->invResolution[0] = source_width > 0 ? 1.0f / (float)source_width : 0.0f;
     params->invResolution[1] = source_height > 0 ? 1.0f / (float)source_height : 0.0f;
     params->overlayEnabled = overlay_enabled ? 1 : 0;
-    /* The Metal offscreen scene target is always RGBA16F (linear HDR). */
-    params->sceneIsHdr = 1;
+    params->sceneIsHdr = source_is_hdr ? 1 : 0;
     params->bloomTexEnabled = bloom_tex_enabled ? 1 : 0;
     if (!postfx)
         return;
@@ -1731,6 +1757,7 @@ static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
                              postfx,
                              overlay_enabled,
                              bloom_tex_enabled,
+                             source_texture.pixelFormat == MTLPixelFormatRGBA16Float,
                              source_texture.width,
                              source_texture.height,
                              &params);
@@ -1746,19 +1773,22 @@ static id<MTLTexture> metal_encode_postfx_pass(VGFXMetalContext *ctx,
 ///          further mip is a plain 13-tap downsample. The upsample walk tent-filters each
 ///          deeper mip and additively accumulates it into the one above, leaving mip 0
 ///          holding the summed octaves. Returns mip 0 (nil when resources are missing).
-/// @param ctx Borrowed Metal context providing the HDR scene color, bloom textures, and pipelines.
+/// @param ctx Borrowed Metal context providing bloom textures and pipelines.
+/// @param source_texture Current ordered-chain color source.
 /// @param threshold Luminance threshold applied by the first bloom downsample pass.
 /// @return The accumulated first bloom mip, or nil when encoding prerequisites are unavailable.
-static id<MTLTexture> metal_encode_bloom_chain(VGFXMetalContext *ctx, float threshold) {
+static id<MTLTexture> metal_encode_bloom_chain(VGFXMetalContext *ctx,
+                                               id<MTLTexture> source_texture,
+                                               float threshold) {
     NSUInteger levels;
 
-    if (!ctx || !ctx.cmdBuf || !ctx.bloomDownPipeline || !ctx.bloomUpPipeline ||
-        !ctx.offscreenColor || !ctx.bloomMipTextures || ctx.bloomMipTextures.count == 0)
+    if (!ctx || !ctx.cmdBuf || !ctx.bloomDownPipeline || !ctx.bloomUpPipeline || !source_texture ||
+        !ctx.bloomMipTextures || ctx.bloomMipTextures.count == 0)
         return nil;
     levels = ctx.bloomMipTextures.count;
 
     for (NSUInteger i = 0; i < levels; i++) {
-        id<MTLTexture> src = (i == 0) ? ctx.offscreenColor : ctx.bloomMipTextures[i - 1];
+        id<MTLTexture> src = (i == 0) ? source_texture : ctx.bloomMipTextures[i - 1];
         id<MTLTexture> dst = ctx.bloomMipTextures[i];
         MTLRenderPassDescriptor *rp = [MTLRenderPassDescriptor renderPassDescriptor];
         id<MTLRenderCommandEncoder> enc;
@@ -1946,41 +1976,35 @@ static id<MTLTexture> metal_encode_postfx_if_needed(VGFXMetalContext *ctx,
     source_texture = ctx.offscreenColor;
     target_texture = ctx.postfxColorTexture;
     if (vgfx3d_postfx_chain_is_usable(postfx)) {
-        /* Plan 05: prefilter the bloom mip chain once from the HDR scene color when any
-         * chain entry uses bloom; the per-effect pass then composites mip 0. */
-        id<MTLTexture> bloom_texture = nil;
-        for (int32_t i = 0; i < postfx->effect_count; i++) {
-            vgfx3d_postfx_snapshot_t safe_snapshot;
-            vgfx3d_sanitize_postfx_snapshot(&postfx->effects[i].snapshot, &safe_snapshot);
-            if (safe_snapshot.bloom_enabled) {
-                bloom_texture = metal_encode_bloom_chain(ctx, safe_snapshot.bloom_threshold);
-                break;
-            }
-        }
         for (int32_t i = 0; i < postfx->effect_count; i++) {
             id<MTLTexture> output_texture;
+            id<MTLTexture> bloom_texture = nil;
             vgfx3d_postfx_snapshot_t safe_snapshot;
             vgfx3d_sanitize_postfx_snapshot(&postfx->effects[i].snapshot, &safe_snapshot);
+            if (safe_snapshot.bloom_enabled &&
+                postfx->effects[i].type != (int32_t)VGFX3D_POSTFX_EFFECT_TAA &&
+                postfx->effects[i].type != (int32_t)VGFX3D_POSTFX_EFFECT_SSR) {
+                bloom_texture =
+                    metal_encode_bloom_chain(ctx, source_texture, safe_snapshot.bloom_threshold);
+                if (!bloom_texture)
+                    return nil;
+            }
             if (postfx->effects[i].type == (int32_t)VGFX3D_POSTFX_EFFECT_TAA &&
                 safe_snapshot.taa_enabled) {
                 /* TAA resolves into its RGBA16F history slot, then a passthrough pass
                  * feeds the resolved frame back into the LDR ping-pong chain. */
                 id<MTLTexture> resolved =
                     metal_encode_taa_pass(ctx, source_texture, &safe_snapshot);
-                if (resolved) {
-                    output_texture =
-                        metal_encode_postfx_pass(ctx, resolved, target_texture, NULL, 0, nil);
-                } else {
-                    output_texture =
-                        metal_encode_postfx_pass(ctx, source_texture, target_texture, NULL, 0, nil);
-                }
+                if (!resolved)
+                    return nil;
+                output_texture =
+                    metal_encode_postfx_pass(ctx, resolved, target_texture, NULL, 0, nil);
             } else if (postfx->effects[i].type == (int32_t)VGFX3D_POSTFX_EFFECT_SSR &&
                        safe_snapshot.ssr_enabled) {
                 output_texture =
                     metal_encode_ssr_pass(ctx, source_texture, target_texture, &safe_snapshot);
-                if (!output_texture) /* prerequisites missing: pass source through */
-                    output_texture =
-                        metal_encode_postfx_pass(ctx, source_texture, target_texture, NULL, 0, nil);
+                if (!output_texture)
+                    return nil;
             } else {
                 output_texture = metal_encode_postfx_pass(
                     ctx, source_texture, target_texture, &safe_snapshot, 0, bloom_texture);

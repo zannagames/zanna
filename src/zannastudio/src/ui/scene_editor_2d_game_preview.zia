@@ -69,27 +69,27 @@ class SceneEditor2DGamePreviewLayer extends PreviousLayer.SceneEditor2DTilePrevi
     hide override func PumpCameraLightingControls() -> Boolean {
         if scene == null or cameraLighting == null { return false; }
         var changed = false;
-        if cameraLighting.TakeCameraApplyRequested() {
+        if cameraLighting.TakeCameraEditCommitted() {
             changed = ApplyCameraSection(
                 cameraLighting.DraftCameraMode(),
-                cameraLighting.cameraMinXInput.Text,
-                cameraLighting.cameraMinYInput.Text,
-                cameraLighting.cameraMaxXInput.Text,
-                cameraLighting.cameraMaxYInput.Text,
-                cameraLighting.cameraDeadzoneWidthInput.Text,
-                cameraLighting.cameraDeadzoneHeightInput.Text,
-                cameraLighting.cameraLerpInput.Text,
-                cameraLighting.cameraZoomInput.Text) or changed;
+                cameraLighting.cameraMinXField.Text(),
+                cameraLighting.cameraMinYField.Text(),
+                cameraLighting.cameraMaxXField.Text(),
+                cameraLighting.cameraMaxYField.Text(),
+                cameraLighting.cameraDeadzoneWidthField.Text(),
+                cameraLighting.cameraDeadzoneHeightField.Text(),
+                cameraLighting.cameraLerpField.Text(),
+                cameraLighting.cameraZoomField.Text()) or changed;
         }
         if cameraLighting.TakeCameraClearRequested() {
             changed = ClearCameraSection() or changed;
         }
-        if cameraLighting.TakeLightingApplyRequested() {
+        if cameraLighting.TakeLightingEditCommitted() {
             changed = ApplyLightingSection(
-                cameraLighting.lightingDarknessInput.Text,
-                cameraLighting.lightingTintInput.Text,
-                cameraLighting.lightingPlayerRadiusInput.Text,
-                cameraLighting.lightingPlayerColorInput.Text) or changed;
+                cameraLighting.lightingDarknessField.Text(),
+                cameraLighting.lightingTintField.Text(),
+                cameraLighting.lightingPlayerRadiusField.Text(),
+                cameraLighting.lightingPlayerColorField.Text()) or changed;
         }
         if cameraLighting.TakeLightingClearRequested() {
             changed = ClearLightingSection() or changed;
@@ -374,22 +374,18 @@ class SceneEditor2DGamePreviewLayer extends PreviousLayer.SceneEditor2DTilePrevi
         var concise = compactChrome
             or lastHostWidth < SceneEditor2DModel.CONCISE_SCENE_2D_CHROME_WIDTH;
         if gameViewActive {
-            if concise { gameViewButton.SetText("Exit Game"); }
-            else { gameViewButton.SetText("Exit Game View"); }
-            gameViewButton.SetStyle(1);
+            gameViewButton.SetToggled(true);
             gameViewButton.SetTooltip(
-                "Restore canvas tools, selection, grid, rulers, guides, "
-                + "routes, handles, and other editor overlays");
-            gameViewButton.SetAccessibleName("Exit 2D Game View");
+                "Exit Game View: restore canvas tools, selection, grid, "
+                + "rulers, guides, routes, handles, and other editor "
+                + "overlays");
             UpdateCommandMenuButtons();
             return;
         }
-        if concise { gameViewButton.SetText("Game"); }
-        else { gameViewButton.SetText("Game View"); }
-        gameViewButton.SetStyle(2);
+        gameViewButton.SetToggled(false);
         gameViewButton.SetTooltip(
-            "Show only authored gameplay pixels; keep pan and zoom, and "
-            + "restore every editor overlay and tool on exit");
+            "Game View: show only authored gameplay pixels; keep pan and "
+            + "zoom, and restore every editor overlay and tool on exit");
         gameViewButton.SetAccessibleName("Enter 2D Game View");
         UpdateCommandMenuButtons();
     }

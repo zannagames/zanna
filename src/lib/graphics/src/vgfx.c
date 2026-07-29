@@ -32,7 +32,12 @@
 ///          backend (vgfx_platform_*.c).
 
 #include "vgfx.h"
+#include "vgfx_embed_channel.h"
 #include "vgfx_internal.h"
+
+/* Embedded-play tap (ADR 0225) — definitions precede vgfx_pump_events. */
+static void vgfx_embed_present_tap(vgfx_window_t window);
+static void vgfx_embed_input_tap(vgfx_window_t window);
 #include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1349,6 +1354,7 @@ int32_t vgfx_update(vgfx_window_t window) {
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to present framebuffer");
         return 0;
     }
+    vgfx_embed_present_tap(window);
 
     /* FPS limiting (only if fps > 0). No idle floor here: vgfx_update() is the
      * game/render loop entry point, and unlimited FPS must stay uncapped. */
@@ -1422,6 +1428,101 @@ int32_t vgfx_frame_time_ms(vgfx_window_t window) {
 }
 
 /// @copydoc vgfx_pump_events
+//===----------------------------------------------------------------------===//
+// Embedded-play tap (ADR 0225)
+//
+// When ZANNA_EMBED_CHANNEL names a live channel, the shared layer mirrors
+// every presented framebuffer into the channel and injects channel input
+// into the ordinary event queue. The game keeps its real platform window
+// and event loop; nothing game-side changes.
+//===----------------------------------------------------------------------===//
+
+/// @brief Process-wide embed producer state (lazy first-present attach).
+static vgfx_embed_channel_t *g_embed_channel = NULL;
+static int g_embed_state = 0; /* 0 = untried, 1 = attached, -1 = unavailable */
+
+/// @brief Attach to the host channel once per process.
+static vgfx_embed_channel_t *vgfx_embed_get(void) {
+    if (g_embed_state != 0)
+        return g_embed_channel;
+    const char *name = getenv(VGFX_EMBED_CHANNEL_ENV);
+    if (!name || !name[0]) {
+        g_embed_state = -1;
+        return NULL;
+    }
+    if (!vgfx_embed_channel_attach(name, &g_embed_channel)) {
+        g_embed_state = -1;
+        return NULL;
+    }
+    g_embed_state = 1;
+    return g_embed_channel;
+}
+
+/// @brief Mirror one presented framebuffer into the embed channel.
+static void vgfx_embed_present_tap(vgfx_window_t window) {
+    vgfx_embed_channel_t *channel = vgfx_embed_get();
+    if (!channel)
+        return;
+    vgfx_framebuffer_t fb;
+    if (!vgfx_get_framebuffer(window, &fb) || !fb.pixels)
+        return;
+    (void)vgfx_embed_channel_publish_frame(channel, fb.pixels, fb.width, fb.height);
+}
+
+/// @brief Inject queued channel input into the window's event stream.
+static void vgfx_embed_input_tap(vgfx_window_t window) {
+    vgfx_embed_channel_t *channel = vgfx_embed_get();
+    if (!channel)
+        return;
+    vgfx_embed_event_t in;
+    int budget = 64; /* bound one pump's injection work */
+    while (budget-- > 0 && vgfx_embed_channel_poll_event(channel, &in)) {
+        vgfx_event_t out;
+        memset(&out, 0, sizeof(out));
+        switch (in.kind) {
+        case VGFX_EMBED_EVENT_MOUSE_MOVE:
+            out.type = VGFX_EVENT_MOUSE_MOVE;
+            out.data.mouse_move.x = in.a;
+            out.data.mouse_move.y = in.b;
+            break;
+        case VGFX_EMBED_EVENT_MOUSE_DOWN:
+        case VGFX_EMBED_EVENT_MOUSE_UP:
+            out.type = in.kind == VGFX_EMBED_EVENT_MOUSE_DOWN ? VGFX_EVENT_MOUSE_DOWN
+                                                              : VGFX_EVENT_MOUSE_UP;
+            out.data.mouse_button.x = in.a;
+            out.data.mouse_button.y = in.b;
+            out.data.mouse_button.button = (vgfx_mouse_button_t)in.c;
+            break;
+        case VGFX_EMBED_EVENT_WHEEL:
+            out.type = VGFX_EVENT_SCROLL;
+            out.data.scroll.x = in.a;
+            out.data.scroll.y = in.b;
+            out.data.scroll.delta_y = (float)in.c / 120.0f;
+            break;
+        case VGFX_EMBED_EVENT_KEY_DOWN:
+        case VGFX_EMBED_EVENT_KEY_UP:
+            out.type = in.kind == VGFX_EMBED_EVENT_KEY_DOWN ? VGFX_EVENT_KEY_DOWN
+                                                            : VGFX_EVENT_KEY_UP;
+            out.data.key.key = (vgfx_key_t)in.a;
+            out.data.key.modifiers = in.b;
+            break;
+        case VGFX_EMBED_EVENT_TEXT:
+            out.type = VGFX_EVENT_TEXT_INPUT;
+            out.data.text.codepoint = (uint32_t)in.a;
+            break;
+        case VGFX_EMBED_EVENT_RESIZE:
+            vgfx_set_window_size(window, in.a, in.b);
+            continue;
+        case VGFX_EMBED_EVENT_CLOSE:
+            out.type = VGFX_EVENT_CLOSE;
+            break;
+        default:
+            continue;
+        }
+        (void)vgfx_internal_enqueue_event(window, &out);
+    }
+}
+
 int32_t vgfx_pump_events(vgfx_window_t window) {
     if (!window)
         return 0;
@@ -1429,6 +1530,7 @@ int32_t vgfx_pump_events(vgfx_window_t window) {
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Event processing error");
         return 0;
     }
+    vgfx_embed_input_tap(window);
     return 1;
 }
 

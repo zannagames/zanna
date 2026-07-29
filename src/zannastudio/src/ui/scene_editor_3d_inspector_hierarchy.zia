@@ -565,6 +565,10 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
         }
         ReconcilePickLocksAfterHierarchyRefresh();
         RefreshHierarchyRowLabels();
+        if hierarchyEmptyLabel != null {
+            hierarchyEmptyLabel.SetVisible(
+                scene != null and flatNodes.count() == 0);
+        }
         hierarchyDocument = currentDoc;
 
         var i = 0;
@@ -810,11 +814,11 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
         }
         GUI.TreeView.Node.SetData(treeNode, "" + flatNodes.count());
         GUI.TreeView.Node.SetStableId(treeNode, path);
-        var icon = "◇";
-        if node.PrefabPath != "" { icon = "⬒"; }
-        else if node.Mesh != null { icon = "◆"; }
-        else if node.Light != null { icon = "✦"; }
-        else if node.Camera != null { icon = "▣"; }
+        var icon = "vector:node-group";
+        if node.PrefabPath != "" { icon = "vector:prefab"; }
+        else if node.Mesh != null { icon = "vector:node-mesh"; }
+        else if node.Light != null { icon = "vector:node-light"; }
+        else if node.Camera != null { icon = "vector:node-camera"; }
         GUI.TreeView.Node.SetIcon(treeNode, icon);
         flatNodes.add(node);
         flatDepths.add(depth);

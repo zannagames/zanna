@@ -6,6 +6,20 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/tests/runtime/test_rt_sprite_consolidated.cpp
+// Purpose: Consolidated SpriteBatch, TextureAtlas, Sprite, SpriteSheet, and
+//   SpriteAnimator runtime behavior tests.
+//
+// Key invariants:
+//   - Runtime objects are released by each fixture after their assertions.
+//   - Animator restart uses the implementation's explicit uninitialized-clock
+//     sentinel so a real timestamp of zero remains valid.
+//
+// Ownership/Lifetime:
+//   - Tests own every runtime object and release it before returning.
+//
+// Links: src/runtime/graphics/2d/rt_sprite.c,
+//        src/runtime/graphics/2d/rt_spritebatch.c,
+//        src/runtime/graphics/2d/rt_spritesheet.c
 //
 //===----------------------------------------------------------------------===//
 // Consolidated Sprite runtime tests (2 files merged).
@@ -20,6 +34,7 @@
 #include "rt_texatlas.h"
 #include "tests/TestHarness.hpp"
 #include "tests/common/PosixCompat.h"
+#include <climits>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -293,6 +308,54 @@ TEST(RTSprite, TextureAtlasEmptyLookupIsAbsent) {
     release_object(pixels);
 }
 
+TEST(RTSprite, TextureAtlasLookupRejectsEmbeddedNullAliases) {
+    void *pixels = rt_pixels_new(16, 16);
+    ASSERT_TRUE(pixels != nullptr);
+    void *atlas = rt_texatlas_new(pixels);
+    ASSERT_TRUE(atlas != nullptr);
+
+    rt_string prefix = rt_const_cstr("hero");
+    const char alias_bytes[] = {'h', 'e', 'r', 'o', '\0', 'a', 'l', 't'};
+    rt_string alias = rt_string_from_bytes(alias_bytes, sizeof(alias_bytes));
+    rt_texatlas_add(atlas, prefix, 4, 5, 6, 7);
+
+    ASSERT_TRUE(rt_texatlas_has(atlas, prefix) == 1);
+    ASSERT_TRUE(rt_texatlas_has(atlas, alias) == 0);
+    ASSERT_TRUE(rt_texatlas_get_x(atlas, alias) == 0);
+    ASSERT_TRUE(rt_texatlas_get_y(atlas, alias) == 0);
+    ASSERT_TRUE(rt_texatlas_get_w(atlas, alias) == 0);
+    ASSERT_TRUE(rt_texatlas_get_h(atlas, alias) == 0);
+
+    void *batch = rt_spritebatch_new(0);
+    rt_spritebatch_begin(batch);
+    rt_spritebatch_draw_atlas(batch, atlas, alias, 0, 0);
+    ASSERT_TRUE(rt_spritebatch_count(batch) == 0);
+
+    rt_string_unref(alias);
+    rt_string_unref(prefix);
+    release_object(batch);
+    release_object(atlas);
+    release_object(pixels);
+}
+
+TEST(RTSprite, TextureAtlasAcceptsExactMaximumNameLength) {
+    void *pixels = rt_pixels_new(8, 8);
+    ASSERT_TRUE(pixels != nullptr);
+    void *atlas = rt_texatlas_new(pixels);
+    ASSERT_TRUE(atlas != nullptr);
+
+    const char bytes[] = "1234567890123456789012345678901";
+    static_assert(sizeof(bytes) - 1 == 31);
+    rt_string name = rt_string_from_bytes(bytes, sizeof(bytes) - 1);
+    rt_texatlas_add(atlas, name, 0, 0, 8, 8);
+    ASSERT_TRUE(rt_texatlas_region_count(atlas) == 1);
+    ASSERT_TRUE(rt_texatlas_has(atlas, name) == 1);
+
+    rt_string_unref(name);
+    release_object(atlas);
+    release_object(pixels);
+}
+
 TEST(RTSprite, SpritebatchDrawAtlasVariantsIncrementCount) {
     void *pixels = rt_pixels_new(32, 32);
     ASSERT_TRUE(pixels != nullptr);
@@ -482,6 +545,27 @@ TEST(RTSprite, SpriteSheetRejectsEmptyRegionName) {
     ASSERT(rt_spritesheet_has_region(sheet, empty) == 0, "empty region name is not present");
     rt_string_unref(empty);
 
+    release_object(sheet);
+    release_object(atlas);
+}
+
+TEST(RTSprite, SpriteSheetRejectsEmbeddedNullRegionNames) {
+    void *atlas = make_test_atlas(16, 16);
+    void *sheet = rt_spritesheet_new(atlas);
+    ASSERT(sheet != NULL, "spritesheet_new should return non-null");
+
+    const char bytes[] = {'h', 'e', 'r', 'o', '\0', 'a', 'l', 't'};
+    rt_string embedded = rt_string_from_bytes(bytes, sizeof(bytes));
+    rt_string prefix = rt_const_cstr("hero");
+    rt_spritesheet_set_region(sheet, embedded, 0, 0, 8, 8);
+    ASSERT(rt_spritesheet_region_count(sheet) == 0, "embedded-NUL region name is ignored");
+    ASSERT(rt_spritesheet_has_region(sheet, embedded) == 0, "embedded-NUL name cannot alias");
+    ASSERT(rt_spritesheet_has_region(sheet, prefix) == 0, "prefix name remains absent");
+    ASSERT(rt_spritesheet_get_region(sheet, embedded) == NULL, "embedded-NUL lookup is rejected");
+    ASSERT(rt_spritesheet_remove_region(sheet, embedded) == 0, "embedded-NUL removal is rejected");
+
+    rt_string_unref(prefix);
+    rt_string_unref(embedded);
     release_object(sheet);
     release_object(atlas);
 }
@@ -696,7 +780,7 @@ TEST(RTSprite, AnimatorDuplicateClipReplacesAndPlayRestarts) {
     ASSERT_TRUE(rt_sprite_animator_play(anim, "walk") == 1);
     ASSERT_TRUE(anim->current_clip == 0);
     ASSERT_TRUE(anim->clip_frame == 0);
-    ASSERT_TRUE(anim->last_update_ms == 0);
+    ASSERT_TRUE(anim->last_update_ms == INT64_MIN);
     ASSERT_TRUE(rt_sprite_animator_is_playing(anim) == 1);
 
     rt_sprite_animator_destroy(anim);

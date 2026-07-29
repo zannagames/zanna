@@ -225,6 +225,13 @@ class SceneEditor3DViewportSelectionLayer extends PreviousLayer.SceneEditor3DCam
         return true;
     }
 
+    /// @brief Consume the one-shot embedded Play request (ADR 0225).
+    expose func TakePlaySceneRequested() -> Boolean {
+        if playSceneRequested == false { return false; }
+        playSceneRequested = false;
+        return true;
+    }
+
     /// @brief Whether one flattened node is workspace pick-locked.
     /// @details The active path set follows its document. RefreshHierarchy
     ///          remaps live structural changes by node identity, preventing a

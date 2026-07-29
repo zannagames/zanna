@@ -86,6 +86,7 @@ static void rt_canvas_destroy_window(rt_canvas *canvas) {
     rt_canvas_detach_input(canvas->gfx_win);
     vgfx_destroy_window(canvas->gfx_win);
     canvas->gfx_win = NULL;
+    canvas->window_state_synced = 0;
 }
 
 /// @brief GC finalizer: destroy window, free cached title, and clear the magic number.
@@ -172,6 +173,13 @@ void *rt_canvas_new(rt_string title, int64_t width, int64_t height) {
     canvas->clip_w = 0;
     canvas->clip_h = 0;
     canvas->relative_mouse_applied = 0;
+    canvas->window_state_synced = 0;
+    canvas->applied_clip_enabled = 0;
+    canvas->applied_coord_scale = 1.0f;
+    canvas->applied_clip_x = 0;
+    canvas->applied_clip_y = 0;
+    canvas->applied_clip_w = 0;
+    canvas->applied_clip_h = 0;
     rt_obj_set_finalizer(canvas, rt_canvas_finalize);
 
     vgfx_window_params_t params = vgfx_window_params_default();
@@ -338,13 +346,13 @@ void rt_canvas_flip(void *canvas_ptr) {
 
     /* Compute delta time between consecutive Flip() calls */
     int64_t now_us = rt_clock_ticks_us();
-    if (canvas->last_flip_us > 0) {
+    if (canvas->last_flip_us > 0 && now_us > canvas->last_flip_us) {
         int64_t delta_us = now_us - canvas->last_flip_us;
-        canvas->delta_time_ms = delta_us > 0 ? (delta_us + 500) / 1000 : 0;
+        canvas->delta_time_ms = delta_us / 1000 + ((delta_us % 1000) >= 500 ? 1 : 0);
     } else {
         canvas->delta_time_ms = 0; /* first frame */
     }
-    canvas->last_flip_us = now_us;
+    canvas->last_flip_us = now_us > 0 ? now_us : 0;
 
     /* Signal close to the application; caller checks canvas.should_close */
     if (vgfx_close_requested(canvas->gfx_win)) {
@@ -484,18 +492,21 @@ int64_t rt_canvas_poll(void *canvas_ptr) {
             rt_canvas_update_mouse_from_physical(
                 canvas, canvas->last_event.data.mouse_move.x, canvas->last_event.data.mouse_move.y);
         } else if (canvas->last_event.type == VGFX_EVENT_MOUSE_DOWN) {
-            rt_canvas_update_mouse_from_physical(canvas,
-                                                 canvas->last_event.data.mouse_button.x,
-                                                 canvas->last_event.data.mouse_button.y);
+            if (!captured)
+                rt_canvas_update_mouse_from_physical(canvas,
+                                                     canvas->last_event.data.mouse_button.x,
+                                                     canvas->last_event.data.mouse_button.y);
             rt_mouse_button_down((int64_t)canvas->last_event.data.mouse_button.button);
         } else if (canvas->last_event.type == VGFX_EVENT_MOUSE_UP) {
-            rt_canvas_update_mouse_from_physical(canvas,
-                                                 canvas->last_event.data.mouse_button.x,
-                                                 canvas->last_event.data.mouse_button.y);
+            if (!captured)
+                rt_canvas_update_mouse_from_physical(canvas,
+                                                     canvas->last_event.data.mouse_button.x,
+                                                     canvas->last_event.data.mouse_button.y);
             rt_mouse_button_up((int64_t)canvas->last_event.data.mouse_button.button);
         } else if (canvas->last_event.type == VGFX_EVENT_SCROLL) {
-            rt_canvas_update_mouse_from_physical(
-                canvas, canvas->last_event.data.scroll.x, canvas->last_event.data.scroll.y);
+            if (!captured)
+                rt_canvas_update_mouse_from_physical(
+                    canvas, canvas->last_event.data.scroll.x, canvas->last_event.data.scroll.y);
             rt_mouse_update_wheel((double)canvas->last_event.data.scroll.delta_x,
                                   (double)canvas->last_event.data.scroll.delta_y);
         } else if (canvas->last_event.type == VGFX_EVENT_RESIZE) {
@@ -506,6 +517,7 @@ int64_t rt_canvas_poll(void *canvas_ptr) {
                 canvas->logical_width = (int64_t)canvas->last_event.data.resize.logical_width;
             if (canvas->last_event.data.resize.logical_height > 0)
                 canvas->logical_height = (int64_t)canvas->last_event.data.resize.logical_height;
+            canvas->window_state_synced = 0;
         }
     }
 
@@ -526,7 +538,7 @@ int64_t rt_canvas_poll(void *canvas_ptr) {
         int32_t cw = 0, ch = 0;
         vgfx_get_size(canvas->gfx_win, &cw, &ch);
         int32_t cx = cw / 2, cy = ch / 2;
-        rt_mouse_force_delta((int64_t)(mx - cx), (int64_t)(my - cy));
+        rt_mouse_force_delta((int64_t)mx - (int64_t)cx, (int64_t)my - (int64_t)cy);
     } else if (!captured) {
         rt_mouse_update_pos((int64_t)mx, (int64_t)my);
 
@@ -566,7 +578,9 @@ int64_t rt_canvas_key_held(void *canvas_ptr, int64_t key) {
     if (!canvas || !canvas->gfx_win)
         return 0;
 
-    return (int64_t)vgfx_key_down(canvas->gfx_win, (vgfx_key_t)key);
+    if (!rtg_i64_fits_i32(key))
+        return 0;
+    return (int64_t)vgfx_key_down(canvas->gfx_win, (vgfx_key_t)(int32_t)key);
 }
 
 //=============================================================================
@@ -661,6 +675,7 @@ void rt_canvas_resize(void *canvas_ptr, int64_t width, int64_t height) {
         canvas->logical_width = (int64_t)win_width;
         canvas->logical_height = (int64_t)win_height;
         vgfx_set_window_size(canvas->gfx_win, win_width, win_height);
+        canvas->window_state_synced = 0;
         rt_canvas_resync_window_state(canvas);
     }
 }
@@ -702,6 +717,7 @@ void rt_canvas_fullscreen(void *canvas_ptr) {
     rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
     if (canvas && canvas->gfx_win) {
         vgfx_set_fullscreen(canvas->gfx_win, 1);
+        canvas->window_state_synced = 0;
         rt_canvas_resync_window_state(canvas);
     }
 }
@@ -712,6 +728,7 @@ void rt_canvas_windowed(void *canvas_ptr) {
     rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
     if (canvas && canvas->gfx_win) {
         vgfx_set_fullscreen(canvas->gfx_win, 0);
+        canvas->window_state_synced = 0;
         rt_canvas_resync_window_state(canvas);
     }
 }

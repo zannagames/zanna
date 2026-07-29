@@ -1448,6 +1448,11 @@ void rt_tab_set_tooltip(void *tab, rt_string tooltip);
 /// @param modified 1 for modified, 0 for not modified.
 void rt_tab_set_modified(void *tab, int64_t modified);
 
+/// @brief Attach or clear a leading built-in vector icon on a tab (ADR 0220).
+/// @param tab Tab handle.
+/// @param icon_name Stable vg_icon_vector name; empty or unknown clears it.
+void rt_tab_set_named_icon(void *tab, rt_string icon_name);
+
 /// @brief Get the active tab.
 /// @param tabbar TabBar widget handle.
 /// @return Active tab handle, or NULL if none.
@@ -1974,6 +1979,11 @@ void rt_listbox_item_set_text(void *item, rt_string text);
 /// @param item ListBox item handle.
 /// @param data String data to store.
 void rt_listbox_item_set_data(void *item, rt_string data);
+
+/// @brief Attach or clear a leading built-in vector icon on a listbox item (ADR 0220).
+/// @param item ListBox item subhandle.
+/// @param icon_name Stable vg_icon_vector name; empty or unknown clears it.
+void rt_listbox_item_set_named_icon(void *item, rt_string icon_name);
 
 /// @brief Set a custom text color for a list box item.
 /// @param item ListBox item handle.
@@ -2765,6 +2775,9 @@ void rt_image_set_pixels(void *image, void *pixels, int64_t width, int64_t heigh
 /// @param height Requested copied height, or zero for the source height.
 /// @return 1 after a complete upload, otherwise 0.
 int64_t rt_image_try_set_pixels(void *image, void *pixels, int64_t width, int64_t height);
+int64_t rt_image_try_set_from_render_target(void *image, void *target);
+uint8_t *rt_gui_image_borrow_rgba(void *image, int64_t width, int64_t height);
+void rt_gui_image_commit_rgba(void *image, int64_t width, int64_t height);
 
 /// @brief Copy a rectangular Pixels region into an existing image.
 /// @details Source and destination rectangles must fit completely. Conversion and validation
@@ -3712,6 +3725,26 @@ int64_t rt_menuitem_is_separator(void *item);
 /// @return 1 if clicked, 0 otherwise.
 int64_t rt_menuitem_was_clicked(void *item);
 
+/// @brief On-screen left edge of a visible context-menu row (ADR 0219).
+/// @param item MenuItem handle.
+/// @return Logical window X, or 0 when the row has no on-screen geometry.
+double rt_menuitem_get_screen_x(void *item);
+
+/// @brief On-screen top edge of a visible context-menu row (ADR 0219).
+/// @param item MenuItem handle.
+/// @return Logical window Y, or 0 when the row has no on-screen geometry.
+double rt_menuitem_get_screen_y(void *item);
+
+/// @brief On-screen width of a visible context-menu row (ADR 0219).
+/// @param item MenuItem handle.
+/// @return Row width, or 0 when the row has no on-screen geometry.
+double rt_menuitem_get_screen_width(void *item);
+
+/// @brief On-screen height of a visible context-menu row (ADR 0219).
+/// @param item MenuItem handle.
+/// @return Row height, or 0 when the row has no on-screen geometry.
+double rt_menuitem_get_screen_height(void *item);
+
 //=========================================================================
 // ContextMenu Widget (Phase 2)
 //=========================================================================
@@ -4103,6 +4136,36 @@ void rt_toolbaritem_set_enabled(void *item, int64_t enabled);
 /// @param item ToolbarItem handle.
 /// @return 1 if enabled, 0 otherwise.
 int64_t rt_toolbaritem_is_enabled(void *item);
+
+/// @brief Show or hide a toolbar item without removing it (ADR 0220).
+/// @param item ToolbarItem handle.
+/// @param visible Non-zero shows the item; zero hides it and its spacing.
+void rt_toolbaritem_set_visible(void *item, int64_t visible);
+
+/// @brief Check whether a toolbar item is currently shown.
+/// @param item ToolbarItem handle.
+/// @return 1 when visible, otherwise 0.
+int64_t rt_toolbaritem_is_visible(void *item);
+
+/// @brief On-screen left edge of a directly visible toolbar item (ADR 0220).
+/// @param item ToolbarItem handle.
+/// @return Logical X, or 0 when the item has no on-screen geometry.
+double rt_toolbaritem_get_screen_x(void *item);
+
+/// @brief On-screen top edge of a directly visible toolbar item (ADR 0220).
+/// @param item ToolbarItem handle.
+/// @return Logical Y, or 0 when the item has no on-screen geometry.
+double rt_toolbaritem_get_screen_y(void *item);
+
+/// @brief On-screen width of a directly visible toolbar item (ADR 0220).
+/// @param item ToolbarItem handle.
+/// @return Item width, or 0 when the item has no on-screen geometry.
+double rt_toolbaritem_get_screen_width(void *item);
+
+/// @brief On-screen height of a directly visible toolbar item (ADR 0220).
+/// @param item ToolbarItem handle.
+/// @return Item height, or 0 when the item has no on-screen geometry.
+double rt_toolbaritem_get_screen_height(void *item);
 
 /// @brief Set toolbar item toggle state.
 /// @param item ToolbarItem handle.

@@ -52,6 +52,7 @@ bind "../core/project_manager";
 bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_component_schema";
+bind "../ui/scene_component_schema_forms_model";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
 bind "scene_gameplay_preview_water_probe";
@@ -276,8 +277,8 @@ func VerifyProjectAndPreviewContracts(ctx: GameplayPreviewProbeContext) -> Boole
     }
     if editor.componentSchema == null
        or editor.componentSchema.version
-          != scene_component_schema
-              .NODE_PREVIEW_FILTER_3D_SCHEMA_VERSION
+          != scene_component_schema_forms_model
+              .SCENE_SETTINGS_SCHEMA_VERSION
        or enemyRecipe == null
        or enemyRecipe.createNodeName != "Enemy Spawn"
        or enemyRecipe.FieldNamed("af.kind") == null
@@ -814,8 +815,8 @@ func VerifyGameViewAndCameraRestore(ctx: GameplayPreviewProbeContext) -> Boolean
        or editor.zoomInButton.IsEnabled()
        or editor.projectionButton.IsEnabled()
        or editor.projectViewButton.IsEnabled()
-       or editor.viewportModeButton.GetAccessibleName()
-          != "3D viewport mode: Shaded"
+       or editor.EffectiveViewportMode()
+          != scene_editor_3d.VIEWPORT_MODE_SHADED
        or meanLuma < 180.0 or meanLuma > 215.0
        or sceneDoc.content != baseline
        or sceneDoc.isModified
@@ -845,7 +846,7 @@ func VerifyGameViewAndCameraRestore(ctx: GameplayPreviewProbeContext) -> Boolean
              + "/" + editor.projectionButton.IsEnabled()
              + "/" + editor.projectViewButton.IsEnabled()
              + " mode="
-             + editor.viewportModeButton.GetAccessibleName()
+             + editor.EffectiveViewportMode()
              + " bytes=" + (sceneDoc.content == baseline)
              + " modified=" + sceneDoc.isModified
              + " revision=" + editor.GetRevision()

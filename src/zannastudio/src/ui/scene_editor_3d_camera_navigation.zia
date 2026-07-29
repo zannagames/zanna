@@ -629,22 +629,18 @@ class SceneEditor3DCameraNavigationLayer extends PreviousLayer.SceneEditor3DInsp
         var concise = compactChrome
             or SceneEditor3DModel.UsesDockedHierarchy(lastHostWidth) == false;
         if gameViewActive {
-            if concise { gameViewButton.SetText("Exit Game"); }
-            else { gameViewButton.SetText("Exit Game View"); }
-            gameViewButton.SetStyle(1);
+            gameViewButton.SetToggled(true);
             gameViewButton.SetTooltip(
-                "Restore grid, gizmos, markers, selection, camera inset, "
-                + "navigator, editor light, and the prior shading mode");
-            gameViewButton.SetAccessibleName("Exit 3D Game View");
+                "Exit Game View: restore grid, gizmos, markers, selection, "
+                + "camera inset, navigator, editor light, and the prior "
+                + "shading mode");
             return;
         }
-        if concise { gameViewButton.SetText("Game"); }
-        else { gameViewButton.SetText("Game View"); }
-        gameViewButton.SetStyle(2);
+        gameViewButton.SetToggled(false);
         gameViewButton.SetTooltip(
-            "Show authored gameplay rendering without grids, gizmos, markers, "
-            + "selection, camera inset, navigator, or editor light");
-        gameViewButton.SetAccessibleName("Enter 3D Game View");
+            "Game View: show authored gameplay rendering without grids, "
+            + "gizmos, markers, selection, camera inset, navigator, or "
+            + "editor light");
     }
 
     /// @brief Return whether the active project declares an exact 3D output.

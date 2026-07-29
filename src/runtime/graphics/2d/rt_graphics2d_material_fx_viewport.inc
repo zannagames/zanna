@@ -41,6 +41,16 @@
 // queue draws — `Apply(pixels)` produces a tint+alpha-processed copy of the
 // input Pixels and callers feed that to whichever draw surface they use.
 
+/// @brief Validate and cast an opaque Material2D handle.
+/// @param material Opaque candidate handle.
+/// @return The complete material payload, or `NULL` for a wrong class or an
+///         undersized same-class object.
+static rt_material2d_impl *material2d_checked(void *material) {
+    return rt2d_has_class_min(material, RT2D_MATERIAL_CLASS_ID, sizeof(rt_material2d_impl))
+               ? (rt_material2d_impl *)material
+               : NULL;
+}
+
 /// @brief Allocate a Material2D with no tint, full alpha, and alpha blending.
 /// @return A new Material2D handle, or `NULL` if the runtime object allocation
 ///         fails.
@@ -61,8 +71,9 @@ void *rt_material2d_new(void) {
 /// @param rgb Tint encoded as `0x00RRGGBB`; a negative value disables tinting,
 ///            while nonnegative values are masked to 24 bits.
 void rt_material2d_set_tint(void *material, int64_t rgb) {
-    if (rt2d_has_class(material, RT2D_MATERIAL_CLASS_ID))
-        ((rt_material2d_impl *)material)->tint = rgb < 0 ? -1 : (rgb & 0x00FFFFFF);
+    rt_material2d_impl *impl = material2d_checked(material);
+    if (impl)
+        impl->tint = rgb < 0 ? -1 : (rgb & 0x00FFFFFF);
 }
 
 /// @brief Get the material's current multiplicative tint color.
@@ -70,8 +81,8 @@ void rt_material2d_set_tint(void *material, int64_t rgb) {
 /// @return The tint encoded as `0x00RRGGBB`, or `-1` when tinting is disabled
 ///         or @p material is invalid.
 int64_t rt_material2d_get_tint(void *material) {
-    return rt2d_has_class(material, RT2D_MATERIAL_CLASS_ID) ? ((rt_material2d_impl *)material)->tint
-                                                            : -1;
+    rt_material2d_impl *impl = material2d_checked(material);
+    return impl ? impl->tint : -1;
 }
 
 /// @brief Set the alpha scale clamped to `[0, 255]`.
@@ -80,8 +91,9 @@ int64_t rt_material2d_get_tint(void *material) {
 /// @param alpha Requested alpha multiplier, where `0` is transparent and `255`
 ///              preserves the source alpha.
 void rt_material2d_set_alpha(void *material, int64_t alpha) {
-    if (rt2d_has_class(material, RT2D_MATERIAL_CLASS_ID))
-        ((rt_material2d_impl *)material)->alpha = clamp_u8_i64(alpha);
+    rt_material2d_impl *impl = material2d_checked(material);
+    if (impl)
+        impl->alpha = clamp_u8_i64(alpha);
 }
 
 /// @brief Get the current alpha scale.
@@ -89,9 +101,8 @@ void rt_material2d_set_alpha(void *material, int64_t alpha) {
 /// @return The stored alpha multiplier in `[0, 255]`, or `255` when
 ///         @p material is invalid.
 int64_t rt_material2d_get_alpha(void *material) {
-    return rt2d_has_class(material, RT2D_MATERIAL_CLASS_ID)
-               ? ((rt_material2d_impl *)material)->alpha
-               : 255;
+    rt_material2d_impl *impl = material2d_checked(material);
+    return impl ? impl->alpha : 255;
 }
 
 /// @brief Set the material's compositing blend mode.
@@ -100,8 +111,9 @@ int64_t rt_material2d_get_alpha(void *material) {
 /// @param blend_mode Requested `RT_GRAPHICS2D_BLEND_*` value, clamped to the
 ///                   supported numeric range `[0, 2]`.
 void rt_material2d_set_blend_mode(void *material, int64_t blend_mode) {
-    if (rt2d_has_class(material, RT2D_MATERIAL_CLASS_ID))
-        ((rt_material2d_impl *)material)->blend_mode = clamp_i64(blend_mode, 0, 2);
+    rt_material2d_impl *impl = material2d_checked(material);
+    if (impl)
+        impl->blend_mode = clamp_i64(blend_mode, 0, 2);
 }
 
 /// @brief Get the material's current compositing blend mode.
@@ -109,9 +121,8 @@ void rt_material2d_set_blend_mode(void *material, int64_t blend_mode) {
 /// @return The stored `RT_GRAPHICS2D_BLEND_*` value, or
 ///         `RT_GRAPHICS2D_BLEND_ALPHA` when @p material is invalid.
 int64_t rt_material2d_get_blend_mode(void *material) {
-    return rt2d_has_class(material, RT2D_MATERIAL_CLASS_ID)
-               ? ((rt_material2d_impl *)material)->blend_mode
-               : RT_GRAPHICS2D_BLEND_ALPHA;
+    rt_material2d_impl *impl = material2d_checked(material);
+    return impl ? impl->blend_mode : RT_GRAPHICS2D_BLEND_ALPHA;
 }
 
 /// @brief Produce a tint+alpha-applied copy of `pixels` using this material's state.
@@ -125,9 +136,9 @@ int64_t rt_material2d_get_blend_mode(void *material) {
 /// @return A newly allocated Pixels object containing the processed copy, or
 ///         `NULL` for invalid input or allocation failure.
 void *rt_material2d_apply(void *material, void *pixels) {
-    if (!rt2d_has_class(material, RT2D_MATERIAL_CLASS_ID) || !pixels)
+    rt_material2d_impl *impl = material2d_checked(material);
+    if (!impl || !pixels)
         return NULL;
-    rt_material2d_impl *impl = (rt_material2d_impl *)material;
     void *out = rt_pixels_clone(pixels);
     if (out)
         apply_tint_alpha_in_place(out, impl->tint, impl->alpha);

@@ -260,6 +260,7 @@ typedef struct vg_toolbar_item {
     bool enabled;                ///< Enabled state
     bool checked;                ///< For toggle items
     bool show_label;             ///< Show text label
+    bool visible;                ///< Hidden items take no space and never interact
     bool was_clicked;            ///< Set true when item is clicked (cleared on read)
 
     struct vg_menu *dropdown_menu; ///< Dropdown menu (for DROPDOWN type)
@@ -412,6 +413,26 @@ bool vg_toolbar_item_is_live(const vg_toolbar_item_t *item);
 /// @param item    Toolbar item.
 /// @param enabled true to make the item interactive.
 void vg_toolbar_item_set_enabled(vg_toolbar_item_t *item, bool enabled);
+
+/// @brief Show or hide a toolbar item without removing it (ADR 0220).
+/// @param item Toolbar item to show or hide; non-live handles are ignored.
+/// @param visible True to show the item, false to hide it.
+void vg_toolbar_item_set_visible(vg_toolbar_item_t *item, bool visible);
+
+/// @brief Report whether a toolbar item is currently shown.
+/// @param item Candidate toolbar item; non-live handles report false.
+/// @return True when the live item participates in layout and interaction.
+bool vg_toolbar_item_is_visible(const vg_toolbar_item_t *item);
+
+/// @brief Report a directly visible item's on-screen rectangle (ADR 0220).
+/// @param item Toolbar item to locate; non-live handles report false.
+/// @param out_x Optional destination for the on-screen left edge.
+/// @param out_y Optional destination for the on-screen top edge.
+/// @param out_w Optional destination for the item width.
+/// @param out_h Optional destination for the item height.
+/// @return True when the item is live, visible, and not overflowed.
+bool vg_toolbar_item_screen_rect(
+    vg_toolbar_item_t *item, float *out_x, float *out_y, float *out_w, float *out_h);
 
 /// @brief Set the checked state of a toggle item.
 /// @param item    Toolbar item (must be VG_TOOLBAR_ITEM_TOGGLE).

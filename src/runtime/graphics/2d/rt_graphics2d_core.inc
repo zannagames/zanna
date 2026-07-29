@@ -94,7 +94,7 @@ static int rt2d_normalize_angle_degrees(double *angle_deg) {
 /// @param out Receives the floor-rounded int64_t value on success.
 /// @return 1 on success, 0 if @p value cannot be represented safely.
 static int rt2d_floor_i64_checked(double value, int64_t *out) {
-    if (!out || !isfinite(value) || value <= (double)INT64_MIN || value >= (double)INT64_MAX)
+    if (!out || !isfinite(value) || value < (double)INT64_MIN || value >= (double)INT64_MAX)
         return 0;
     *out = (int64_t)floor(value);
     return 1;
@@ -110,7 +110,7 @@ static int rt2d_floor_i64_checked(double value, int64_t *out) {
 /// @param out Receives the ceil-rounded int64_t value on success.
 /// @return 1 on success, 0 if @p value cannot be represented safely.
 static int rt2d_ceil_i64_checked(double value, int64_t *out) {
-    if (!out || !isfinite(value) || value <= (double)INT64_MIN || value >= (double)INT64_MAX)
+    if (!out || !isfinite(value) || value < (double)INT64_MIN || value >= (double)INT64_MAX)
         return 0;
     *out = (int64_t)ceil(value);
     return 1;
@@ -245,18 +245,27 @@ static int64_t saturating_sub_i64(int64_t a, int64_t b) {
     return (a > INT64_MAX + b) ? INT64_MAX : a - b;
 }
 
-/// @brief Saturating integer multiplication using `long double` to detect overflow before
-/// truncation.
+/// @brief Saturating integer multiplication with exact integer overflow guards.
+/// @details Division-based checks avoid depending on `long double` precision.
+///          This matters on Windows, where `long double` commonly has the same
+///          53-bit mantissa as `double` and cannot distinguish adjacent large
+///          int64 values.
 /// @param a Left operand.
 /// @param b Right operand.
 /// @return `a * b`, saturated at the signed 64-bit limits.
 int64_t rt2d_saturating_mul_i64(int64_t a, int64_t b) {
-    long double value = (long double)a * (long double)b;
-    if (value >= (long double)INT64_MAX)
-        return INT64_MAX;
-    if (value <= (long double)INT64_MIN)
-        return INT64_MIN;
-    return (int64_t)value;
+    if (a > 0) {
+        if (b > 0 && a > INT64_MAX / b)
+            return INT64_MAX;
+        if (b < 0 && b < INT64_MIN / a)
+            return INT64_MIN;
+    } else if (a < 0) {
+        if (b > 0 && a < INT64_MIN / b)
+            return INT64_MIN;
+        if (b < 0 && a < INT64_MAX / b)
+            return INT64_MAX;
+    }
+    return a * b;
 }
 
 /// @brief Tests an opaque handle against either of two compatible runtime classes.
@@ -286,7 +295,10 @@ static rt_rendertarget2d_impl *rendertarget2d_checked(void *target) {
                                     sizeof(rt_rendertarget2d_impl)))
         return NULL;
     rt_rendertarget2d_impl *impl = (rt_rendertarget2d_impl *)target;
-    return impl->magic == RT2D_RENDERTARGET_MAGIC ? impl : NULL;
+    return impl->magic == RT2D_RENDERTARGET_MAGIC && impl->pixels &&
+                   rt_obj_is_instance(impl->pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl))
+               ? impl
+               : NULL;
 }
 
 /// @brief Validate and cast a `void *` to `rt_texture2d_impl *` by checking the magic cookie.
@@ -299,7 +311,10 @@ static rt_texture2d_impl *texture2d_checked(void *texture) {
             texture, RT2D_TEXTURE_CLASS_ID, RT2D_GPUTEXTURE_CLASS_ID, sizeof(rt_texture2d_impl)))
         return NULL;
     rt_texture2d_impl *impl = (rt_texture2d_impl *)texture;
-    return impl->magic == RT2D_TEXTURE_MAGIC ? impl : NULL;
+    return impl->magic == RT2D_TEXTURE_MAGIC && impl->pixels &&
+                   rt_obj_is_instance(impl->pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl))
+               ? impl
+               : NULL;
 }
 
 /// @brief Validate and cast a `void *` to `rt_renderer2d_impl *` by checking the magic cookie.
@@ -311,7 +326,10 @@ static rt_renderer2d_impl *renderer2d_checked(void *renderer) {
     if (!rt_obj_is_instance(renderer, RT2D_RENDERER_CLASS_ID, sizeof(rt_renderer2d_impl)))
         return NULL;
     rt_renderer2d_impl *impl = (rt_renderer2d_impl *)renderer;
-    return impl->magic == RT2D_RENDERER_MAGIC ? impl : NULL;
+    if (impl->magic != RT2D_RENDERER_MAGIC || impl->count < 0 || impl->capacity < 0 ||
+        impl->count > impl->capacity || (impl->capacity > 0 && !impl->cmds))
+        return NULL;
+    return impl;
 }
 
 /// @brief Test whether @p obj is non-NULL and has the runtime class id @p class_id.
@@ -522,7 +540,9 @@ static int64_t normalized_dim(int64_t value) {
 ///            1. `width > RT2D_MAX_DIM || height > RT2D_MAX_DIM` — reject pathological
 ///               dimensions before even multiplying.
 ///            2. `width > INT64_MAX / height` — catch the `width * height` overflow.
-///            3. `count > INT64_MAX / elem_size` — catch the byte-count overflow.
+///            3. byte-count checks against both `INT64_MAX` and `SIZE_MAX` —
+///               reject requests that cannot be represented by the allocator
+///               on a 32-bit host.
 ///          The result is also bounded by `RT2D_MAX_ELEMENTS` (currently 256Mi) so
 ///          the allocator never sees a request larger than the design ceiling even
 ///          when the math doesn't overflow. Returns 0 on any failure so the caller
@@ -543,6 +563,9 @@ int32_t rt2d_checked_count(int64_t width, int64_t height, int64_t elem_size, int
     if (count > RT2D_MAX_ELEMENTS)
         return 0;
     if (count > INT64_MAX / elem_size)
+        return 0;
+    if ((uint64_t)elem_size > (uint64_t)SIZE_MAX ||
+        (uint64_t)count > (uint64_t)SIZE_MAX / (size_t)elem_size)
         return 0;
     if (out_count)
         *out_count = count;
@@ -704,16 +727,16 @@ static uint32_t blend_pixel(uint32_t dst, uint32_t src, int64_t blend_mode) {
 /// @param alpha Alpha scale in [0, 255].
 /// @param blend_mode One of `RT_GRAPHICS2D_BLEND_*`.
 void rt2d_blit_pixels(void *dst,
-                 int64_t dx,
-                 int64_t dy,
-                 void *src,
-                 int64_t sx,
-                 int64_t sy,
-                 int64_t width,
-                 int64_t height,
-                 int64_t tint,
-                 int64_t alpha,
-                 int64_t blend_mode) {
+                      int64_t dx,
+                      int64_t dy,
+                      void *src,
+                      int64_t sx,
+                      int64_t sy,
+                      int64_t width,
+                      int64_t height,
+                      int64_t tint,
+                      int64_t alpha,
+                      int64_t blend_mode) {
     if (!dst || !src || width <= 0 || height <= 0)
         return;
 
@@ -748,6 +771,7 @@ void rt2d_blit_pixels(void *dst,
     rt_pixels_impl *dri = rt_pixels_checked_impl_or_null(read_dst);
     rt_pixels_impl *dwi = rt_pixels_checked_impl_or_null(dst);
     if (si && si->data && dri && dri->data && dwi && dwi->data) {
+        int8_t changed = 0;
         for (int64_t y = 0; y < height; y++) {
             const uint32_t *srow = &si->data[(sy + y) * si->width + sx];
             const uint32_t *drow = &dri->data[(dy + y) * dri->width + dx];
@@ -756,16 +780,21 @@ void rt2d_blit_pixels(void *dst,
                 uint32_t source = apply_tint_alpha(srow[x], tint, alpha);
                 if (blend_mode != RT_GRAPHICS2D_BLEND_OPAQUE && (source & 255u) == 0)
                     continue;
-                wrow[x] = (uint32_t)blend_pixel(drow[x], source, blend_mode);
+                uint32_t result = (uint32_t)blend_pixel(drow[x], source, blend_mode);
+                if (wrow[x] != result) {
+                    wrow[x] = result;
+                    changed = 1;
+                }
             }
         }
-        pixels_touch(dwi);
+        if (changed)
+            pixels_touch(dwi);
     } else {
         /* Defensive fallback (unreachable for valid handles): per-pixel validated. */
         for (int64_t y = 0; y < height; y++) {
             for (int64_t x = 0; x < width; x++) {
-                uint32_t source =
-                    apply_tint_alpha((uint32_t)rt_pixels_get(read_src, sx + x, sy + y), tint, alpha);
+                uint32_t source = apply_tint_alpha(
+                    (uint32_t)rt_pixels_get(read_src, sx + x, sy + y), tint, alpha);
                 if (blend_mode != RT_GRAPHICS2D_BLEND_OPAQUE && (source & 255u) == 0)
                     continue;
                 uint32_t dest = (uint32_t)rt_pixels_get(read_dst, dx + x, dy + y);
@@ -877,7 +906,7 @@ static uint32_t bilerp_premul_rgba(
                        premul_channel(c01, 16) * w01 + premul_channel(c11, 16) * w11;
     long double b_pm = premul_channel(c00, 8) * w00 + premul_channel(c10, 8) * w10 +
                        premul_channel(c01, 8) * w01 + premul_channel(c11, 8) * w11;
-    long double scale = 255.0L / (long double)alpha;
+    long double scale = 255.0L / a;
     uint32_t r = clamp_channel_ld(r_pm * scale);
     uint32_t g = clamp_channel_ld(g_pm * scale);
     uint32_t b = clamp_channel_ld(b_pm * scale);
@@ -902,7 +931,7 @@ static uint32_t bilerp_premul_rgba(
 /// @param dst_y Y coordinate relative to the destination mapping.
 /// @param wrap Source-coordinate wrap mode.
 /// @return The sampled `0xRRGGBBAA` texel, or transparent black for degenerate input.
-static uint32_t sample_pixels_nearest(void *src,
+static uint32_t sample_pixels_nearest(const rt_pixels_impl *src,
                                       int64_t sx,
                                       int64_t sy,
                                       int64_t src_span_w,
@@ -912,28 +941,22 @@ static uint32_t sample_pixels_nearest(void *src,
                                       int64_t dst_x,
                                       int64_t dst_y,
                                       int64_t wrap) {
-    int64_t src_width = rt_pixels_width(src);
-    int64_t src_height = rt_pixels_height(src);
-    if (src_width <= 0 || src_height <= 0 || src_span_w <= 0 || src_span_h <= 0 ||
-        dst_span_w <= 0 || dst_span_h <= 0)
+    if (!src || !src->data || src->width <= 0 || src->height <= 0 || src_span_w <= 0 ||
+        src_span_h <= 0 || dst_span_w <= 0 || dst_span_h <= 0)
         return 0;
+    int64_t src_width = src->width;
+    int64_t src_height = src->height;
     long double ux =
         (((long double)dst_x + 0.5L) * (long double)src_span_w) / (long double)dst_span_w;
     long double uy =
         (((long double)dst_y + 0.5L) * (long double)src_span_h) / (long double)dst_span_h;
-    int64_t off_x = (int64_t)floorl(ux);
-    int64_t off_y = (int64_t)floorl(uy);
-    if (off_x < 0)
-        off_x = 0;
-    if (off_y < 0)
-        off_y = 0;
-    if (off_x >= src_span_w)
-        off_x = src_span_w - 1;
-    if (off_y >= src_span_h)
-        off_y = src_span_h - 1;
+    int64_t off_x =
+        ux <= 0.0L ? 0 : (ux >= (long double)src_span_w ? src_span_w - 1 : (int64_t)floorl(ux));
+    int64_t off_y =
+        uy <= 0.0L ? 0 : (uy >= (long double)src_span_h ? src_span_h - 1 : (int64_t)floorl(uy));
     int64_t sample_x = sampler_region_coord_i64(sx, off_x, src_span_w, src_width, wrap);
     int64_t sample_y = sampler_region_coord_i64(sy, off_y, src_span_h, src_height, wrap);
-    return (uint32_t)rt_pixels_get(src, sample_x, sample_y);
+    return src->data[sample_y * src_width + sample_x];
 }
 
 /// @brief Sample one pixel from @p src using bilinear filtering (4-tap blend).
@@ -953,7 +976,7 @@ static uint32_t sample_pixels_nearest(void *src,
 /// @param dst_y Y coordinate relative to the destination mapping.
 /// @param wrap Source-coordinate wrap mode.
 /// @return The filtered `0xRRGGBBAA` texel, or transparent black for degenerate input.
-static uint32_t sample_pixels_linear(void *src,
+static uint32_t sample_pixels_linear(const rt_pixels_impl *src,
                                      int64_t sx,
                                      int64_t sy,
                                      int64_t src_span_w,
@@ -963,31 +986,51 @@ static uint32_t sample_pixels_linear(void *src,
                                      int64_t dst_x,
                                      int64_t dst_y,
                                      int64_t wrap) {
-    int64_t src_width = rt_pixels_width(src);
-    int64_t src_height = rt_pixels_height(src);
-    if (src_width <= 0 || src_height <= 0 || src_span_w <= 0 || src_span_h <= 0 ||
-        dst_span_w <= 0 || dst_span_h <= 0)
+    if (!src || !src->data || src->width <= 0 || src->height <= 0 || src_span_w <= 0 ||
+        src_span_h <= 0 || dst_span_w <= 0 || dst_span_h <= 0)
         return 0;
+    int64_t src_width = src->width;
+    int64_t src_height = src->height;
     long double ux =
         (((long double)dst_x + 0.5L) * (long double)src_span_w) / (long double)dst_span_w - 0.5L;
     long double uy =
         (((long double)dst_y + 0.5L) * (long double)src_span_h) / (long double)dst_span_h - 0.5L;
-    int64_t base_x = (int64_t)floorl(ux);
-    int64_t base_y = (int64_t)floorl(uy);
-    long double tx = ux - (long double)base_x;
-    long double ty = uy - (long double)base_y;
+    int64_t base_x;
+    int64_t base_y;
+    long double tx;
+    long double ty;
+    if (ux < 0.0L) {
+        base_x = -1;
+        tx = ux + 1.0L;
+    } else if (ux >= (long double)src_span_w) {
+        base_x = src_span_w - 1;
+        tx = 0.0L;
+    } else {
+        base_x = (int64_t)floorl(ux);
+        tx = ux - (long double)base_x;
+    }
+    if (uy < 0.0L) {
+        base_y = -1;
+        ty = uy + 1.0L;
+    } else if (uy >= (long double)src_span_h) {
+        base_y = src_span_h - 1;
+        ty = 0.0L;
+    } else {
+        base_y = (int64_t)floorl(uy);
+        ty = uy - (long double)base_y;
+    }
 
     int64_t x0 = sampler_region_coord_i64(sx, base_x, src_span_w, src_width, wrap);
-    int64_t x1 =
-        sampler_region_coord_i64(sx, rt2d_saturating_add_i64(base_x, 1), src_span_w, src_width, wrap);
+    int64_t x1 = sampler_region_coord_i64(
+        sx, rt2d_saturating_add_i64(base_x, 1), src_span_w, src_width, wrap);
     int64_t y0 = sampler_region_coord_i64(sy, base_y, src_span_h, src_height, wrap);
-    int64_t y1 =
-        sampler_region_coord_i64(sy, rt2d_saturating_add_i64(base_y, 1), src_span_h, src_height, wrap);
+    int64_t y1 = sampler_region_coord_i64(
+        sy, rt2d_saturating_add_i64(base_y, 1), src_span_h, src_height, wrap);
 
-    uint32_t c00 = (uint32_t)rt_pixels_get(src, x0, y0);
-    uint32_t c10 = (uint32_t)rt_pixels_get(src, x1, y0);
-    uint32_t c01 = (uint32_t)rt_pixels_get(src, x0, y1);
-    uint32_t c11 = (uint32_t)rt_pixels_get(src, x1, y1);
+    uint32_t c00 = src->data[y0 * src_width + x0];
+    uint32_t c10 = src->data[y0 * src_width + x1];
+    uint32_t c01 = src->data[y1 * src_width + x0];
+    uint32_t c11 = src->data[y1 * src_width + x1];
 
     return bilerp_premul_rgba(c00, c10, c01, c11, tx, ty);
 }
@@ -1008,7 +1051,7 @@ static uint32_t sample_pixels_linear(void *src,
 /// @param filter Requested `RT_GRAPHICS2D_FILTER_*` mode.
 /// @param wrap Requested `RT_GRAPHICS2D_WRAP_*` mode.
 /// @return The nearest- or linear-filtered `0xRRGGBBAA` texel.
-static uint32_t sample_pixels(void *src,
+static uint32_t sample_pixels(const rt_pixels_impl *src,
                               int64_t sx,
                               int64_t sy,
                               int64_t src_span_w,
@@ -1102,11 +1145,28 @@ static void blit_pixels_sampled_scaled(void *dst,
     filter = filter == RT_GRAPHICS2D_FILTER_LINEAR ? RT_GRAPHICS2D_FILTER_LINEAR
                                                    : RT_GRAPHICS2D_FILTER_NEAREST;
 
+    void *snapshot = NULL;
+    void *read_src = src;
+    if (dst == src) {
+        snapshot = rt_pixels_clone(src);
+        if (!snapshot)
+            return;
+        read_src = snapshot;
+    }
+    rt_pixels_impl *si = rt_pixels_checked_impl_or_null(read_src);
+    rt_pixels_impl *di = rt_pixels_checked_impl_or_null(dst);
+    if (!si || !si->data || !di || !di->data) {
+        rt2d_release_ref_slot(&snapshot);
+        return;
+    }
+
+    int8_t changed = 0;
     for (int64_t y = 0; y < copy_height; y++) {
         int64_t dst_local_y = clipped_y + y;
+        uint32_t *drow = &di->data[(dy + y) * di->width + dx];
         for (int64_t x = 0; x < copy_width; x++) {
             int64_t dst_local_x = clipped_x + x;
-            uint32_t source = sample_pixels(src,
+            uint32_t source = sample_pixels(si,
                                             sx,
                                             sy,
                                             src_width,
@@ -1125,10 +1185,16 @@ static void blit_pixels_sampled_scaled(void *dst,
              * source texels (they contribute nothing and skipping is faster). */
             if (blend_mode != RT_GRAPHICS2D_BLEND_OPAQUE && (source & 255u) == 0)
                 continue;
-            uint32_t dest = (uint32_t)rt_pixels_get(dst, dx + x, dy + y);
-            rt_pixels_set(dst, dx + x, dy + y, (int64_t)blend_pixel(dest, source, blend_mode));
+            uint32_t result = blend_pixel(drow[x], source, blend_mode);
+            if (drow[x] != result) {
+                drow[x] = result;
+                changed = 1;
+            }
         }
     }
+    if (changed)
+        pixels_touch(di);
+    rt2d_release_ref_slot(&snapshot);
 }
 
 /// @brief Blit a full source image rotated around a pivot inside the source rect.
@@ -1222,7 +1288,25 @@ static void blit_pixels_rotated(void *dst,
         y0 = y_lo;
     if (y1 > y_hi)
         y1 = y_hi;
+    if (x0 >= x1 || y0 >= y1)
+        return;
 
+    void *snapshot = NULL;
+    void *read_src = src;
+    if (dst == src) {
+        snapshot = rt_pixels_clone(src);
+        if (!snapshot)
+            return;
+        read_src = snapshot;
+    }
+    rt_pixels_impl *si = rt_pixels_checked_impl_or_null(read_src);
+    rt_pixels_impl *di = rt_pixels_checked_impl_or_null(dst);
+    if (!si || !si->data || !di || !di->data) {
+        rt2d_release_ref_slot(&snapshot);
+        return;
+    }
+
+    int8_t changed = 0;
     for (int64_t oy = y0; oy < y1; oy++) {
         int64_t out_y = rt2d_saturating_add_i64(dst_base_y, oy);
         if (out_y < 0 || out_y >= dh)
@@ -1236,6 +1320,14 @@ static void blit_pixels_rotated(void *dst,
             if (wrap != RT_GRAPHICS2D_WRAP_REPEAT &&
                 (sx < 0.0 || sy < 0.0 || sx >= (double)sw || sy >= (double)sh))
                 continue;
+            if (wrap == RT_GRAPHICS2D_WRAP_REPEAT) {
+                sx = fmod(sx, (double)sw);
+                sy = fmod(sy, (double)sh);
+                if (sx < 0.0)
+                    sx += (double)sw;
+                if (sy < 0.0)
+                    sy += (double)sh;
+            }
             uint32_t source;
             if (filter == RT_GRAPHICS2D_FILTER_LINEAR) {
                 int64_t base_x = (int64_t)floor(sx);
@@ -1243,13 +1335,13 @@ static void blit_pixels_rotated(void *dst,
                 long double tx = (long double)sx - (long double)base_x;
                 long double ty = (long double)sy - (long double)base_y;
                 int64_t ix0 = sampler_coord_i64(base_x, sw, wrap);
-                int64_t ix1 = sampler_coord_i64(base_x + 1, sw, wrap);
+                int64_t ix1 = sampler_coord_i64(rt2d_saturating_add_i64(base_x, 1), sw, wrap);
                 int64_t iy0 = sampler_coord_i64(base_y, sh, wrap);
-                int64_t iy1 = sampler_coord_i64(base_y + 1, sh, wrap);
-                source = bilerp_premul_rgba((uint32_t)rt_pixels_get(src, ix0, iy0),
-                                            (uint32_t)rt_pixels_get(src, ix1, iy0),
-                                            (uint32_t)rt_pixels_get(src, ix0, iy1),
-                                            (uint32_t)rt_pixels_get(src, ix1, iy1),
+                int64_t iy1 = sampler_coord_i64(rt2d_saturating_add_i64(base_y, 1), sh, wrap);
+                source = bilerp_premul_rgba(si->data[iy0 * si->width + ix0],
+                                            si->data[iy0 * si->width + ix1],
+                                            si->data[iy1 * si->width + ix0],
+                                            si->data[iy1 * si->width + ix1],
                                             tx,
                                             ty);
             } else {
@@ -1257,7 +1349,7 @@ static void blit_pixels_rotated(void *dst,
                 int64_t iy = (int64_t)floor(sy);
                 ix = sampler_coord_i64(ix, sw, wrap);
                 iy = sampler_coord_i64(iy, sh, wrap);
-                source = (uint32_t)rt_pixels_get(src, ix, iy);
+                source = si->data[iy * si->width + ix];
             }
             source = apply_tint_alpha(source, tint, alpha);
             /* OPAQUE means "source replaces destination" (rt_graphics2d.h), so it
@@ -1267,10 +1359,17 @@ static void blit_pixels_rotated(void *dst,
              * source texels (they contribute nothing and skipping is faster). */
             if (blend_mode != RT_GRAPHICS2D_BLEND_OPAQUE && (source & 255u) == 0)
                 continue;
-            uint32_t dest = (uint32_t)rt_pixels_get(dst, out_x, out_y);
-            rt_pixels_set(dst, out_x, out_y, (int64_t)blend_pixel(dest, source, blend_mode));
+            uint32_t *dest = &di->data[out_y * di->width + out_x];
+            uint32_t result = blend_pixel(*dest, source, blend_mode);
+            if (*dest != result) {
+                *dest = result;
+                changed = 1;
+            }
         }
     }
+    if (changed)
+        pixels_touch(di);
+    rt2d_release_ref_slot(&snapshot);
 }
 
 /// @brief Tint + alpha-scale every pixel in a buffer in place (no blend, no clipping).
@@ -1283,16 +1382,20 @@ static void blit_pixels_rotated(void *dst,
 /// @param tint Multiplicative `0x00RRGGBB` tint, or negative for no tint.
 /// @param alpha Additional alpha scale, clamped to `0..255` per texel.
 static void apply_tint_alpha_in_place(void *pixels, int64_t tint, int64_t alpha) {
-    if (!pixels)
+    rt_pixels_impl *impl = rt_pixels_checked_impl_or_null(pixels);
+    if (!impl || !impl->data)
         return;
-    int64_t width = rt_pixels_width(pixels);
-    int64_t height = rt_pixels_height(pixels);
-    for (int64_t y = 0; y < height; y++) {
-        for (int64_t x = 0; x < width; x++) {
-            uint32_t color = (uint32_t)rt_pixels_get(pixels, x, y);
-            rt_pixels_set(pixels, x, y, (int64_t)apply_tint_alpha(color, tint, alpha));
+    int64_t count = impl->width * impl->height;
+    int8_t changed = 0;
+    for (int64_t i = 0; i < count; i++) {
+        uint32_t result = apply_tint_alpha(impl->data[i], tint, alpha);
+        if (impl->data[i] != result) {
+            impl->data[i] = result;
+            changed = 1;
         }
     }
+    if (changed)
+        pixels_touch(impl);
 }
 
 /// @brief Extract a rectangular sub-region of @p pixels into a new Pixels buffer.

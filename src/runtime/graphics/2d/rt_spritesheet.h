@@ -15,6 +15,7 @@
 //     returning NULL when the named region does not exist.
 //   - All regions must reference valid coordinates within the atlas bounds.
 //     Invalid or empty definitions are silently ignored.
+//   - Region names are nonempty and cannot contain embedded NUL bytes.
 //   - The atlas Pixels object is retained while the spritesheet is in use.
 //
 // Ownership/Lifetime:
@@ -51,7 +52,8 @@ void *rt_spritesheet_new(void *atlas_pixels);
 /// @brief Create a sprite sheet with uniform grid layout.
 /// @details Atlas dimensions must be exactly divisible by the positive cell
 ///          dimensions. Regions are named `"0"`, `"1"`, and so on in row-major
-///          order. A later metadata-allocation failure can return a partial sheet.
+///          order. Construction is transactional: allocation failure returns
+///          `NULL`, never a partially populated sheet.
 /// @param atlas_pixels Valid Pixels atlas retained by the returned sheet.
 /// @param frame_w Positive width of each cell.
 /// @param frame_h Positive height of each cell.
@@ -62,7 +64,8 @@ void *rt_spritesheet_from_grid(void *atlas_pixels, int64_t frame_w, int64_t fram
 /// @brief Define a named region within the atlas.
 /// @details An existing case-sensitive name is updated in place. A new name is
 ///          copied and appended. Invalid sheets/strings, empty names, and
-///          nonpositive or out-of-bounds rectangles are silent no-ops.
+///          embedded-NUL names, nonpositive rectangles, and out-of-bounds
+///          rectangles are silent no-ops.
 /// @param sheet Candidate SpriteSheet handle.
 /// @param name Borrowed runtime region name, such as `"walk_0"`.
 /// @param x Nonnegative atlas-space left edge.

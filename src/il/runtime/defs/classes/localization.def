@@ -454,6 +454,30 @@ RT_CLASS_BEGIN("Zanna.System.Process", Process, "obj", none)
     RT_METHOD("StartWithEnv", "obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)", ProcessStartWithEnv)
 RT_CLASS_END()
 
+// Zanna.System.EmbedHost.EmbedChannel - embedded play frame/input channel (ADR 0225).
+/// @summary One side of the Studio-to-game shared-memory embed channel.
+/// @details
+/// Hosts create channels and consume frames/push input; game-side producers
+/// attach and publish frames/poll input. Every operation is non-trapping so
+/// editor panes render truthful waiting/exited states.
+RT_CLASS_BEGIN("Zanna.System.EmbedHost.EmbedChannel", EmbedHostChannel, "obj", none)
+    RT_METHOD("IsValid", "i1()", EmbedHostIsValid)
+    RT_METHOD("Close", "void()", EmbedHostClose)
+    RT_METHOD("FrameWidth", "i64()", EmbedHostFrameWidth)
+    RT_METHOD("FrameHeight", "i64()", EmbedHostFrameHeight)
+    RT_METHOD("AcquireFrameInto", "i1(obj)", EmbedHostAcquireFrameInto)
+    RT_METHOD("AcquireFrameToImage", "i1(obj)", EmbedHostAcquireFrameToImage)
+    RT_METHOD("PublishFrame", "i1(obj)", EmbedHostPublishFrame)
+    RT_METHOD("PushEvent", "i1(i64,i64,i64,i64)", EmbedHostPushEvent)
+    RT_METHOD("PollEvent", "i64()", EmbedHostPollEvent)
+    RT_METHOD("EventA", "i64()", EmbedHostEventA)
+    RT_METHOD("EventB", "i64()", EmbedHostEventB)
+    RT_METHOD("EventC", "i64()", EmbedHostEventC)
+    RT_METHOD("SetSize", "i1(i64,i64)", EmbedHostSetSize)
+    RT_METHOD("ProducerAttached", "i1()", EmbedHostProducerAttached)
+    RT_METHOD("ProducerExited", "i1()", EmbedHostProducerExited)
+RT_CLASS_END()
+
 /// @summary Provides Process Handle functionality for host-system integration.
 /// @details
 /// `Zanna.System.Process.ProcessHandle` exposes a registry-backed runtime surface without requiring

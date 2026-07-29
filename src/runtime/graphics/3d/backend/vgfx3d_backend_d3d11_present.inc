@@ -963,7 +963,7 @@ static int d3d11_draw_postfx_pass(d3d11_context_t *ctx,
         ctx->ctx, ctx->blend_state_opaque, blend_factor, 0xFFFFFFFF);
     ID3D11DeviceContext_Draw(ctx->ctx, 3, 0);
     ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 5, null_srvs);
-    return 1;
+    return SUCCEEDED(d3d11_device_status_after_void_command(ctx, "Draw(post-FX pass)")) ? 1 : 0;
 }
 
 /// @brief Encode the Plan 05 bloom mip chain from the scene color SRV.
@@ -1025,6 +1025,9 @@ static ID3D11ShaderResourceView *d3d11_encode_bloom_chain(d3d11_context_t *ctx,
         ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 1, &src);
         ID3D11DeviceContext_Draw(ctx->ctx, 3, 0);
         ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 1, &null_srv);
+        if (FAILED(d3d11_device_status_after_void_command(ctx, "Draw(bloom downsample)"))) {
+            goto cleanup;
+        }
     }
 
     ID3D11DeviceContext_PSSetShader(ctx->ctx, ctx->ps_bloom_up, NULL, 0);
@@ -1051,6 +1054,8 @@ static ID3D11ShaderResourceView *d3d11_encode_bloom_chain(d3d11_context_t *ctx,
         ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 1, &src);
         ID3D11DeviceContext_Draw(ctx->ctx, 3, 0);
         ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 1, &null_srv);
+        if (FAILED(d3d11_device_status_after_void_command(ctx, "Draw(bloom upsample)")))
+            goto cleanup;
     }
     result = ctx->bloom_mip_srv[0];
 
@@ -1149,6 +1154,8 @@ static ID3D11ShaderResourceView *d3d11_encode_taa_pass(d3d11_context_t *ctx,
         ctx->ctx, ctx->blend_state_opaque, blend_factor, 0xFFFFFFFF);
     ID3D11DeviceContext_Draw(ctx->ctx, 3, 0);
     ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 4, null_srvs);
+    if (FAILED(d3d11_device_status_after_void_command(ctx, "Draw(TAA resolve)")))
+        return NULL;
 
     if (!preserve_history) {
         ctx->taa_history_parity = ctx->taa_history_parity ? 0 : 1;
@@ -1227,6 +1234,8 @@ static ID3D11ShaderResourceView *d3d11_encode_ssr_pass(d3d11_context_t *ctx,
         ctx->ctx, ctx->blend_state_opaque, blend_factor, 0xFFFFFFFF);
     ID3D11DeviceContext_Draw(ctx->ctx, 3, 0);
     ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 3, null_srvs);
+    if (FAILED(d3d11_device_status_after_void_command(ctx, "Draw(SSR resolve)")))
+        return NULL;
     return ctx->ssr_srv;
 }
 
@@ -1277,7 +1286,8 @@ static int d3d11_draw_overlay_composite(d3d11_context_t *ctx,
     ID3D11DeviceContext_OMSetBlendState(ctx->ctx, blend_state, blend_factor, 0xFFFFFFFF);
     ID3D11DeviceContext_Draw(ctx->ctx, 3, 0);
     ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 4, null_srvs);
-    return 1;
+    return SUCCEEDED(d3d11_device_status_after_void_command(ctx, "Draw(overlay composite)")) ? 1
+                                                                                             : 0;
 }
 
 /// @brief Resolve the offscreen scene color to a final target without applying user effects.
@@ -1409,6 +1419,8 @@ static int d3d11_apply_postfx_chain(d3d11_context_t *ctx,
                                                                      ctx->scene_width,
                                                                      ctx->scene_height,
                                                                      safe_snapshot.bloom_threshold);
+            if (!ctx->postfx_current_bloom_srv)
+                return 0;
         }
 
         /* Plan 05: a TAA entry resolves into its own history target, which then feeds
@@ -1422,8 +1434,11 @@ static int d3d11_apply_postfx_chain(d3d11_context_t *ctx,
                                                                        ctx->scene_height,
                                                                        pass_snapshot,
                                                                        force_offscreen_final);
-            if (resolved)
-                source_srv = resolved;
+            if (!resolved) {
+                ctx->postfx_current_bloom_srv = NULL;
+                return 0;
+            }
+            source_srv = resolved;
             pass_snapshot = NULL;
         }
         /* Plan 10: an SSR entry composites reflections into its own target, which
@@ -1432,8 +1447,11 @@ static int d3d11_apply_postfx_chain(d3d11_context_t *ctx,
             safe_snapshot.ssr_enabled) {
             ID3D11ShaderResourceView *reflected = d3d11_encode_ssr_pass(
                 ctx, source_srv, ctx->scene_width, ctx->scene_height, &safe_snapshot);
-            if (reflected)
-                source_srv = reflected;
+            if (!reflected) {
+                ctx->postfx_current_bloom_srv = NULL;
+                return 0;
+            }
+            source_srv = reflected;
             pass_snapshot = NULL;
         }
 
@@ -2218,5 +2236,6 @@ static void d3d11_draw_skybox(void *ctx_ptr, const void *cubemap_ptr) {
         ID3D11ShaderResourceView *null_srv = NULL;
         ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 1, &null_srv);
     }
+    (void)d3d11_device_status_after_void_command(ctx, "Draw(skybox)");
     d3d11_release_temp_srv(&cubemap_resource);
 }

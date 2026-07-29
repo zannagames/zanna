@@ -844,17 +844,20 @@ static int gltf_import_scene_cameras(gltf_scene_info_t *scene,
     int64_t camera_def_count = jarr_len(cameras_arr);
     rt_scene_node3d **scene_nodes = NULL;
     rt_scene_node3d **stack = NULL;
+    size_t scene_nodes_bytes;
+    size_t stack_bytes;
     size_t stack_count = 0;
     size_t stack_capacity;
     int result = 1;
     if (!scene || !nodes_arr || !active_nodes || camera_def_count <= 0)
         return 1;
-    if (!scene->root || node_count <= 0 || (size_t)node_count > SIZE_MAX / sizeof(*scene_nodes) ||
-        (size_t)node_count >= SIZE_MAX / sizeof(*stack))
+    if (!scene->root || node_count <= 0 ||
+        !gltf_checked_mul_size((size_t)node_count, sizeof(*scene_nodes), &scene_nodes_bytes) ||
+        !gltf_checked_add_size((size_t)node_count, 1u, &stack_capacity) ||
+        !gltf_checked_mul_size(stack_capacity, sizeof(*stack), &stack_bytes))
         return 0;
-    scene_nodes = (rt_scene_node3d **)calloc((size_t)node_count, sizeof(*scene_nodes));
-    stack_capacity = (size_t)node_count + 1u;
-    stack = (rt_scene_node3d **)malloc(stack_capacity * sizeof(*stack));
+    scene_nodes = (rt_scene_node3d **)calloc(1u, scene_nodes_bytes);
+    stack = (rt_scene_node3d **)malloc(stack_bytes);
     if (!scene_nodes || !stack) {
         free(stack);
         free(scene_nodes);

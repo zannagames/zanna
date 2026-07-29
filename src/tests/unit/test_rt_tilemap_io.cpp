@@ -58,6 +58,10 @@ static rt_string make_str(const char *s) {
     return rt_string_from_bytes(s, strlen(s));
 }
 
+static rt_string make_bytes(const char *bytes, size_t length) {
+    return rt_string_from_bytes(bytes, length);
+}
+
 static void test_tile_properties(void) {
     TEST("Tile properties set/get/has");
     void *tm = rt_tilemap_new(4, 4, 16, 16);
@@ -81,6 +85,20 @@ static void test_tile_property_update(void) {
     assert(rt_tilemap_get_tile_property(tm, 1, key, 0) == 100);
     rt_tilemap_set_tile_property(tm, 1, key, 200);
     assert(rt_tilemap_get_tile_property(tm, 1, key, 0) == 200);
+    PASS();
+}
+
+static void test_tile_property_rejects_embedded_nul_alias(void) {
+    TEST("Tile property rejects embedded-NUL key aliases");
+    void *tm = rt_tilemap_new(1, 1, 16, 16);
+    rt_string key = make_str("damage");
+    const char alias_bytes[] = "damage\0alias";
+    rt_string alias = make_bytes(alias_bytes, sizeof(alias_bytes) - 1);
+    rt_tilemap_set_tile_property(tm, 1, key, 10);
+    rt_tilemap_set_tile_property(tm, 1, alias, 99);
+    assert(rt_tilemap_get_tile_property(tm, 1, key, 0) == 10);
+    assert(rt_tilemap_get_tile_property(tm, 1, alias, -1) == -1);
+    assert(rt_tilemap_has_tile_property(tm, 1, alias) == 0);
     PASS();
 }
 
@@ -134,6 +152,22 @@ static void test_autotile_partial_rule_falls_back_to_base(void) {
 
     assert(rt_tilemap_get_tile(tm, 0, 0) == 102);
     assert(rt_tilemap_get_tile(tm, 1, 0) == 1);
+    PASS();
+}
+
+static void test_clear_autotile_reclaims_rule_capacity(void) {
+    TEST("Cleared autotile rules reclaim fixed capacity");
+    void *tm = rt_tilemap_new(1, 1, 16, 16);
+    for (int64_t base = 1; base <= MAX_AUTOTILE_RULES; ++base) {
+        rt_tilemap_set_autotile_lo(tm, base, 0, 0, 0, 0, 0, 0, 0, 0);
+        rt_tilemap_clear_autotile(tm, base);
+    }
+    auto *impl = static_cast<rt_tilemap_impl *>(tm);
+    assert(impl->autotile_count == 0);
+    rt_tilemap_set_tile(tm, 0, 0, 999);
+    rt_tilemap_set_autotile_lo(tm, 999, 777, 0, 0, 0, 0, 0, 0, 0);
+    rt_tilemap_apply_autotile(tm);
+    assert(rt_tilemap_get_tile(tm, 0, 0) == 777);
     PASS();
 }
 
@@ -218,18 +252,15 @@ static void test_csv_import(void) {
     PASS();
 }
 
-static void test_csv_import_clamps_overflow_values(void) {
-    TEST("CSV import clamps overflowing integer values");
+static void test_csv_import_rejects_overflow_values(void) {
+    TEST("CSV import rejects overflowing integer values");
     const char *csv_path = "/tmp/test_tilemap_overflow.csv";
     FILE *f = fopen(csv_path, "w");
     assert(f != NULL);
     fprintf(f, "999999999999999999999999999999,-999999999999999999999999999999\n");
     fclose(f);
 
-    void *tm = rt_tilemap_load_csv(make_str(csv_path), 16, 16);
-    assert(tm != NULL);
-    assert(rt_tilemap_get_tile(tm, 0, 0) == INT64_MAX);
-    assert(rt_tilemap_get_tile(tm, 1, 0) == INT64_MIN);
+    assert(rt_tilemap_load_csv(make_str(csv_path), 16, 16) == NULL);
     PASS();
 }
 
@@ -243,6 +274,89 @@ static void test_csv_import_rejects_overlong_line(void) {
     fclose(f);
 
     assert(rt_tilemap_load_csv(make_str(csv_path), 16, 16) == NULL);
+    PASS();
+}
+
+static void test_csv_rejects_embedded_nul_and_invalid_tile_size(void) {
+    TEST("CSV import rejects embedded NUL and invalid tile size");
+    const char *csv_path = "/tmp/test_tilemap_nul.csv";
+    FILE *f = fopen(csv_path, "wb");
+    assert(f != NULL);
+    const char row[] = {'1', ',', '2', '\0', ',', '3', '\n'};
+    assert(fwrite(row, 1, sizeof(row), f) == sizeof(row));
+    fclose(f);
+
+    assert(rt_tilemap_load_csv(make_str(csv_path), 16, 16) == NULL);
+
+    f = fopen(csv_path, "wb");
+    assert(f != NULL);
+    fputs("1,2\n", f);
+    fclose(f);
+    assert(rt_tilemap_load_csv(make_str(csv_path), 0, 16) == NULL);
+    assert(rt_tilemap_load_csv(make_str(csv_path), 16, -1) == NULL);
+    PASS();
+}
+
+static void test_file_apis_reject_embedded_nul_paths(void) {
+    TEST("Tilemap file APIs reject embedded-NUL paths");
+    const char path_bytes[] = "/tmp/test_tilemap_path.json\0ignored";
+    rt_string path = make_bytes(path_bytes, sizeof(path_bytes) - 1);
+    void *tm = rt_tilemap_new(1, 1, 16, 16);
+    assert(rt_tilemap_save_to_file(tm, path) == 0);
+    assert(rt_tilemap_load_from_file(path) == NULL);
+    assert(rt_tilemap_load_csv(path, 16, 16) == NULL);
+    PASS();
+}
+
+static void test_json_requires_supported_version(void) {
+    TEST("JSON load requires format version 1");
+    const char *path = "/tmp/test_tilemap_bad_version.json";
+    FILE *f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f,
+            "{"
+            "\"version\":2,\"width\":1,\"height\":1,\"tileWidth\":16,\"tileHeight\":16,"
+            "\"layers\":[{\"tiles\":[0],\"visible\":1,\"name\":\"base\"}]"
+            "}");
+    fclose(f);
+    assert(rt_tilemap_load_from_file(make_str(path)) == NULL);
+
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f,
+            "{"
+            "\"width\":1,\"height\":1,\"tileWidth\":16,\"tileHeight\":16,"
+            "\"layers\":[{\"tiles\":[0],\"visible\":1,\"name\":\"base\"}]"
+            "}");
+    fclose(f);
+    assert(rt_tilemap_load_from_file(make_str(path)) == NULL);
+    PASS();
+}
+
+static void test_json_rejects_embedded_nul_and_oversized_layer_name(void) {
+    TEST("JSON load rejects NUL payloads and oversized layer names");
+    const char *path = "/tmp/test_tilemap_nul_json.json";
+    FILE *f = fopen(path, "wb");
+    assert(f != NULL);
+    const char json[] =
+        "{\"version\":1,\"width\":1,\"height\":1,\"tileWidth\":16,\"tileHeight\":16,"
+        "\"layers\":[{\"tiles\":[0],\"visible\":1,\"name\":\"base\"}]}";
+    assert(fwrite(json, 1, sizeof(json) - 1, f) == sizeof(json) - 1);
+    fputc('\0', f);
+    fputs("ignored", f);
+    fclose(f);
+    assert(rt_tilemap_load_from_file(make_str(path)) == NULL);
+
+    f = fopen(path, "w");
+    assert(f != NULL);
+    fprintf(f,
+            "{"
+            "\"version\":1,\"width\":1,\"height\":1,\"tileWidth\":16,\"tileHeight\":16,"
+            "\"layers\":[{\"tiles\":[0],\"visible\":1,"
+            "\"name\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}]"
+            "}");
+    fclose(f);
+    assert(rt_tilemap_load_from_file(make_str(path)) == NULL);
     PASS();
 }
 
@@ -297,15 +411,13 @@ static void test_json_duplicate_animation_state_applies_to_replaced_base(void) {
     PASS();
 }
 
-static void test_tile_anim_sequential_frames_saturate(void) {
-    TEST("Tile animation sequential defaults saturate near INT64_MAX");
+static void test_tile_anim_sequential_frames_reject_overflow(void) {
+    TEST("Tile animation sequential defaults reject ID overflow");
     void *tm = rt_tilemap_new(1, 1, 16, 16);
     rt_tilemap_set_tile_anim(tm, INT64_MAX - 1, 3, 100);
     assert(rt_tilemap_resolve_anim_tile(tm, INT64_MAX - 1) == INT64_MAX - 1);
     rt_tilemap_update_anims(tm, 100);
-    assert(rt_tilemap_resolve_anim_tile(tm, INT64_MAX - 1) == INT64_MAX);
-    rt_tilemap_update_anims(tm, 100);
-    assert(rt_tilemap_resolve_anim_tile(tm, INT64_MAX - 1) == INT64_MAX);
+    assert(rt_tilemap_resolve_anim_tile(tm, INT64_MAX - 1) == INT64_MAX - 1);
     PASS();
 }
 
@@ -444,8 +556,8 @@ static void test_json_rejects_truncated_tileset_pixels(void) {
     PASS();
 }
 
-static void test_json_excess_layers_are_ignored(void) {
-    TEST("JSON load ignores layers beyond maximum");
+static void test_json_rejects_excess_layers(void) {
+    TEST("JSON load rejects layers beyond maximum");
     const char *path = "/tmp/test_tilemap_excess_layers.json";
     FILE *f = fopen(path, "w");
     assert(f != NULL);
@@ -461,10 +573,7 @@ static void test_json_excess_layers_are_ignored(void) {
             "\"tileProperties\":[],\"autotiles\":[],\"animations\":[]}");
     fclose(f);
 
-    void *tm = rt_tilemap_load_from_file(make_str(path));
-    assert(tm != NULL);
-    assert(rt_tilemap_get_layer_count(tm) == 16);
-    assert(rt_tilemap_get_tile_layer(tm, 15, 0, 0) == 15);
+    assert(rt_tilemap_load_from_file(make_str(path)) == NULL);
     PASS();
 }
 
@@ -497,23 +606,29 @@ int main() {
     printf("test_rt_tilemap_io:\n");
     test_tile_properties();
     test_tile_property_update();
+    test_tile_property_rejects_embedded_nul_alias();
     test_autotile_basic();
     test_autotile_isolated();
     test_autotile_partial_rule_falls_back_to_base();
+    test_clear_autotile_reclaims_rule_capacity();
     test_json_save_load();
     test_json_save_load_preserves_extended_state();
     test_csv_import();
-    test_csv_import_clamps_overflow_values();
+    test_csv_import_rejects_overflow_values();
     test_csv_import_rejects_overlong_line();
+    test_csv_rejects_embedded_nul_and_invalid_tile_size();
+    test_file_apis_reject_embedded_nul_paths();
+    test_json_requires_supported_version();
+    test_json_rejects_embedded_nul_and_oversized_layer_name();
     test_json_negative_anim_frame_normalizes();
     test_json_duplicate_animation_state_applies_to_replaced_base();
-    test_tile_anim_sequential_frames_saturate();
+    test_tile_anim_sequential_frames_reject_overflow();
     test_tile_anim_duplicate_base_replaces();
     test_variable_tile_animation_round_trip();
     test_import_layout_round_trip();
     test_json_rejects_wrong_layer_tile_count();
     test_json_rejects_truncated_tileset_pixels();
-    test_json_excess_layers_are_ignored();
+    test_json_rejects_excess_layers();
     test_load_nonexistent();
     test_clear_autotile();
 

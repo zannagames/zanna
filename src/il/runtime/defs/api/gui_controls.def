@@ -342,6 +342,7 @@ RT_FUNC(GuiTabSetStableId, rt_tab_set_stable_id, "Zanna.GUI.Tab.SetStableId", "v
 RT_FUNC(GuiTabGetStableId, rt_tab_get_stable_id, "Zanna.GUI.Tab.GetStableId", "str(obj)")
 RT_FUNC(GuiTabSetTooltip, rt_tab_set_tooltip, "Zanna.GUI.Tab.SetTooltip", "void(obj,str)")
 RT_FUNC(GuiTabSetModified, rt_tab_set_modified, "Zanna.GUI.Tab.SetModified", "void(obj,i1)")
+RT_FUNC(GuiTabSetNamedIcon, rt_tab_set_named_icon, "Zanna.GUI.Tab.SetNamedIcon", "void(obj,str)")
 
 //=============================================================================
 // GUI - SPLITPANE
@@ -453,6 +454,7 @@ RT_FUNC(GuiListBoxItemSetText, rt_listbox_item_set_text, "Zanna.GUI.ListBox.Item
 RT_FUNC(GuiListBoxItemGetData, rt_listbox_item_get_data, "Zanna.GUI.ListBox.ItemGetData", "str(obj)")
 RT_FUNC(GuiListBoxItemSetData, rt_listbox_item_set_data, "Zanna.GUI.ListBox.ItemSetData", "void(obj,str)")
 RT_FUNC(GuiListBoxItemSetTextColor, rt_listbox_item_set_text_color, "Zanna.GUI.ListBox.ItemSetTextColor", "void(obj,i64)")
+RT_FUNC(GuiListBoxItemSetNamedIcon, rt_listbox_item_set_named_icon, "Zanna.GUI.ListBox.ItemSetNamedIcon", "void(obj,str)")
 RT_FUNC(GuiListBoxSetFont, rt_listbox_set_font, "Zanna.GUI.ListBox.SetFont", "void(obj,obj,f64)")
 
 RT_FUNC(GuiOutputPaneNew, rt_outputpane_new, "Zanna.GUI.OutputPane.New", "obj(obj)")
@@ -615,6 +617,7 @@ RT_FUNC(GuiColorPickerGetRevision, rt_colorpicker_get_revision, "Zanna.GUI.Color
 RT_FUNC(GuiImageNew, rt_image_new, "Zanna.GUI.Image.New", "obj(obj)")
 RT_FUNC(GuiImageSetPixels, rt_image_set_pixels, "Zanna.GUI.Image.SetPixels", "void(obj,obj,i64,i64)")
 RT_FUNC(GuiImageTrySetPixels, rt_image_try_set_pixels, "Zanna.GUI.Image.TrySetPixels", "i1(obj,obj,i64,i64)")
+RT_FUNC(GuiImageTrySetFromRenderTarget, rt_image_try_set_from_render_target, "Zanna.GUI.Image.TrySetFromRenderTarget", "i1(obj,obj)")
 RT_FUNC(GuiImageUpdateRegion, rt_image_update_region, "Zanna.GUI.Image.UpdateRegion", "i1(obj,obj,i64,i64,i64,i64,i64,i64)")
 RT_FUNC(GuiImageClear, rt_image_clear, "Zanna.GUI.Image.Clear", "void(obj)")
 RT_FUNC(GuiImageSetScaleMode, rt_image_set_scale_mode, "Zanna.GUI.Image.SetScaleMode", "void(obj,i64)")

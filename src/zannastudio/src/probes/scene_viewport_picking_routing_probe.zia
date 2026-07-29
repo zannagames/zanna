@@ -23,6 +23,7 @@ bind "../core/document";
 bind "../core/document_manager";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
+bind "scene_probe_support";
 
 bind Convert = Zanna.Core.Convert;
 bind GUI = Zanna.GUI;
@@ -42,21 +43,6 @@ func ClickWidget(shell: app_shell.AppShell,
         shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
     var y = HarnessCoordinate(
         shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
-    harness.SendMouse("move", x, y, 0);
-    harness.SendMouse("down", x, y, 0);
-    harness.SendMouse("up", x, y, 0);
-    harness.DispatchPending();
-}
-
-func ClickCommandMenuOffset(shell: app_shell.AppShell,
-                            harness: GUI.TestHarness,
-                            button: GUI.Button,
-                            offsetY: Number) {
-    var x = HarnessCoordinate(shell, button.GetScreenX())
-        + Convert.NumToInt(20.0);
-    var y = HarnessCoordinate(
-        shell, button.GetScreenY() + button.GetScreenHeight())
-        + Convert.NumToInt(offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -125,12 +111,13 @@ expose func Verify(
     // Run Scene affordance (4.1): the Scene-menu command raises a one-shot
     // request the app dispatcher consumes; nothing here touches content.
     var runBaseline = sceneDoc.content;
-    ClickWidget(shell, harness, editor.sceneMenuButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor.sceneMenuButton);
     editor.Pump(sceneDoc);
     shell.Render();
-    // New, Import Asset, Import Instance, separator, then Run.
-    ClickCommandMenuOffset(
-        shell, harness, editor.sceneMenuButton, 111.0);
+    // Run Scene, clicked by handle (ADR 0219).
+    scene_probe_support.ClickMenuItem(
+        shell, harness, editor.sceneRunItem);
     editor.Pump(sceneDoc);
     if editor.TakeRunSceneRequested() == false
        or editor.TakeRunSceneRequested()

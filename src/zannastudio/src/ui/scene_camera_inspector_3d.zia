@@ -149,6 +149,13 @@ class SceneCameraInspector3D {
         orthoSize.SetValue(state.orthoSize);
         nearPlane.SetValue(state.nearPlane);
         farPlane.SetValue(state.farPlane);
+        // Programmatic refresh must not look like user edit intent
+        // (ADR 0221): consume every edge the writes above raised.
+        projectionDropdown.WasChanged();
+        fov.WasChanged();
+        orthoSize.WasChanged();
+        nearPlane.WasChanged();
+        farPlane.WasChanged();
 
         if selectionCount == 0 {
             summary.SetText(
@@ -170,6 +177,18 @@ class SceneCameraInspector3D {
         UpdateProjectionControls();
         UpdateControls(
             editorEnabled, camera != null, selectionCount, lookingThrough);
+    }
+
+    /// @brief Consume control edges; report whether any field changed.
+    /// @return True when a camera control changed this pump (ADR 0221).
+    expose func PumpDraftIntent() -> Boolean {
+        if projectionDropdown == null { return false; }
+        var edited = false;
+        if fov.WasChanged() { edited = true; }
+        if orthoSize.WasChanged() { edited = true; }
+        if nearPlane.WasChanged() { edited = true; }
+        if farPlane.WasChanged() { edited = true; }
+        return edited;
     }
 
     /// @brief Build one complete normalized draft from visible controls.
@@ -209,12 +228,15 @@ class SceneCameraInspector3D {
         lookThroughButton.SetEnabled(
             (hasSingle and hasCamera) or lookingThrough);
         previewCheck.SetEnabled(hasSingle and hasCamera);
+        // An existing camera edits live (ADR 0221); the button remains
+        // only for creation.
+        applyButton.SetVisible((hasSingle and hasCamera) == false);
         if hasSingle == false {
-            applyButton.SetText("Apply Camera");
+            applyButton.SetText("Set Camera");
             applyButton.SetTooltip(
                 "Select exactly one node before editing its camera");
         } else if hasCamera {
-            applyButton.SetText("Apply Camera");
+            applyButton.SetText("Set Camera");
             applyButton.SetTooltip(
                 "Replace this component with an independent camera in one edit");
         } else {

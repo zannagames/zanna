@@ -39,6 +39,7 @@ bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
+bind "scene_probe_support";
 
 bind Convert = Zanna.Core.Convert;
 bind GUI = Zanna.GUI;
@@ -67,21 +68,6 @@ func Click(shell: app_shell.AppShell,
         shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
     var y = HarnessCoordinate(
         shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
-    harness.SendMouse("move", x, y, 0);
-    harness.SendMouse("down", x, y, 0);
-    harness.SendMouse("up", x, y, 0);
-    harness.DispatchPending();
-}
-
-func ClickCommandMenuOffset(shell: app_shell.AppShell,
-                            harness: GUI.TestHarness,
-                            button: GUI.Button,
-                            offsetY: Number) {
-    var x = HarnessCoordinate(shell, button.GetScreenX())
-        + Convert.NumToInt(20.0);
-    var y = HarnessCoordinate(
-        shell, button.GetScreenY() + button.GetScreenHeight())
-        + Convert.NumToInt(offsetY);
     harness.SendMouse("move", x, y, 0);
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
@@ -158,26 +144,26 @@ func VerifyShadedRenderer(
         Fail(shell, harness, "automation app binding");
         return false;
     }
-    if editor.viewportMode != scene_editor_3d.VIEWPORT_MODE_SHADED
-       or editor.viewportModeButton.GetAccessibleName()
-            != "3D viewport mode: Shaded" {
+    if editor.viewportMode != scene_editor_3d.VIEWPORT_MODE_SHADED {
         Fail(shell, harness, "shaded mode was not the accessible default");
         return false;
     }
 
     if editor.addBoxButton.IsVisible() {
-        Click(shell, harness, editor.addBoxButton);
+        scene_probe_support.ClickToolbarItem(
+            shell, harness, editor.addBoxButton);
     } else {
-        Click(shell, harness, editor.createMenuButton);
+        scene_probe_support.ClickToolbarItem(
+            shell, harness, editor.createMenuButton);
         editor.Pump(sceneDoc);
         shell.Render();
         if editor.createMenu.IsVisible() == false {
             Fail(shell, harness, "compact Create menu did not open");
             return false;
         }
-        // Two 28px rows, one 9px separator, then the Box row.
-        ClickCommandMenuOffset(
-            shell, harness, editor.createMenuButton, 83.0);
+        // Create Box, clicked by handle (ADR 0219).
+        scene_probe_support.ClickMenuItem(
+            shell, harness, editor.createBoxItem);
     }
     if editor.Pump(sceneDoc) == false {
         Fail(shell, harness, "the production Add Box action was not accepted");
@@ -296,11 +282,10 @@ func VerifyViewportModesAndAcceleration(
     var shadedPixels = editor.viewportPixels.Clone();
     var canonical = sceneDoc.content;
     var revision = editor.GetRevision();
-    Click(shell, harness, editor.viewportModeButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor.viewportModeButton);
     if editor.Pump(sceneDoc)
        or editor.viewportMode != scene_editor_3d.VIEWPORT_MODE_WIREFRAME
-       or editor.viewportModeButton.GetAccessibleName()
-            != "3D viewport mode: Wireframe"
        or sceneDoc.content != canonical
        or editor.GetRevision() != revision
        or sceneDoc.scene3DWorkspace.viewportMode
@@ -323,12 +308,11 @@ func VerifyViewportModesAndAcceleration(
 
     // The cycle now passes through the combined Shaded+Wire mode (3.2)
     // before returning to Shaded; every step stays workspace-only.
-    Click(shell, harness, editor.viewportModeButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor.viewportModeButton);
     if editor.Pump(sceneDoc)
        or editor.viewportMode
             != scene_editor_3d.VIEWPORT_MODE_SHADED_WIRE
-       or editor.viewportModeButton.GetAccessibleName()
-            != "3D viewport mode: Shaded+Wire"
        or sceneDoc.content != canonical
        or editor.GetRevision() != revision {
         Fail(shell, harness,
@@ -336,11 +320,10 @@ func VerifyViewportModesAndAcceleration(
              + editor.viewportMode);
         return false;
     }
-    Click(shell, harness, editor.viewportModeButton);
+    scene_probe_support.ClickToolbarItem(
+        shell, harness, editor.viewportModeButton);
     if editor.Pump(sceneDoc)
        or editor.viewportMode != scene_editor_3d.VIEWPORT_MODE_SHADED
-       or editor.viewportModeButton.GetAccessibleName()
-            != "3D viewport mode: Shaded"
        or sceneDoc.content != canonical
        or editor.GetRevision() != revision
        or sceneDoc.scene3DWorkspace.viewportMode

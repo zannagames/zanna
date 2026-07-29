@@ -33,6 +33,7 @@ bind "scene_collider_inspector_3d";
 bind "scene_component_authoring_controller";
 bind "scene_component_palette";
 bind "scene_component_schema";
+bind "scene_settings_inspector_3d";
 bind "scene_hierarchy_search";
 bind "scene_hierarchy_3d";
 bind "scene_history";
@@ -127,6 +128,15 @@ class SceneEditor3DProjectSchemaLayer extends PreviousLayer.SceneEditor3DStateIn
             projectPreviewFilterIndex = 0;
         }
         SyncProjectPreviewFilterControls();
+        if sceneSettingsInspector != null {
+            if scene != null {
+                sceneSettingsInspector.Refresh(
+                    componentSchema, scene.Root, true);
+            } else {
+                sceneSettingsInspector.Refresh(
+                    componentSchema, null, false);
+            }
+        }
         viewportPostFXDirty = true;
         renderDirty = true;
     }

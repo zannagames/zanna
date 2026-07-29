@@ -21,6 +21,7 @@
 module scene_asset_browser_support;
 
 bind "scene_asset_thumbnails";
+bind "style_tokens";
 
 bind GUI = Zanna.GUI;
 bind Pixels = Zanna.Graphics.Pixels;
@@ -63,6 +64,7 @@ class SceneAssetThumbnailCard {
         path = assetPath;
         rowIndex = listRow;
         host = GUI.VBox.New();
+        parent.AddChild(host);
         host.SetSpacing(3.0);
         host.SetAlign(GUI.Align.Center);
         host.SetPreferredSize(
@@ -71,7 +73,6 @@ class SceneAssetThumbnailCard {
             ASSET_CARD_WIDTH + 0.0, ASSET_CARD_HEIGHT + 0.0);
         host.SetMaxSize(
             ASSET_CARD_WIDTH + 0.0, ASSET_CARD_HEIGHT + 0.0);
-        parent.AddChild(host);
 
         image = GUI.Image.New(host);
         image.SetPreferredSize(
@@ -103,7 +104,7 @@ class SceneAssetThumbnailCard {
         placeholder.SetMaxSize(
             ASSET_THUMBNAIL_EDGE + 0.0,
             ASSET_THUMBNAIL_EDGE + 0.0);
-        placeholder.SetStyle(2);
+        placeholder.SetStyle(style_tokens.STYLE_SECONDARY);
         if scene_asset_thumbnails.IsImageAsset(path) {
             placeholder.SetIconName("file-image");
         } else {
@@ -119,7 +120,7 @@ class SceneAssetThumbnailCard {
         labelButton.SetPreferredSize(ASSET_CARD_WIDTH + 0.0, 28.0);
         labelButton.SetMinSize(ASSET_CARD_WIDTH + 0.0, 28.0);
         labelButton.SetMaxSize(ASSET_CARD_WIDTH + 0.0, 28.0);
-        labelButton.SetStyle(2);
+        labelButton.SetStyle(style_tokens.STYLE_SECONDARY);
         labelButton.SetAccessibleName("Select asset " + assetLabel);
         labelButton.SetTooltip(assetLabel);
         labelButton.SetDraggable(true);
@@ -148,8 +149,8 @@ class SceneAssetThumbnailCard {
     /// @brief Present the hidden list's canonical selection on this card.
     expose func SetSelected(selected: Boolean) {
         if labelButton == null { return; }
-        if selected { labelButton.SetStyle(1); }
-        else { labelButton.SetStyle(2); }
+        if selected { labelButton.SetStyle(style_tokens.STYLE_PRIMARY); }
+        else { labelButton.SetStyle(style_tokens.STYLE_SECONDARY); }
     }
 }
 

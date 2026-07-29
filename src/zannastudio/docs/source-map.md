@@ -7,8 +7,31 @@ current behavior. Use it when deciding where a change belongs.
 Zanna Studio is organized around long-lived state objects that are created by
 `main.zia` and pumped every frame. The source tree is not a plugin system and it
 is not yet a highly decoupled workbench framework. It is a practical IDE
-application with clear subsystem boundaries and several large coordinator files
-that still need pressure taken off them over time.
+application with clear subsystem boundaries.
+
+Source modules are bounded (ADR 0218): no file exceeds 1,000 lines and no
+function exceeds 200. Large controllers decompose into focused units using two
+shapes — stateless helper modules, or narrowly named inheritance layers
+assembled behind a stable facade (Zia classes cannot be reopened across
+modules, so stateful splits are deliberate inheritance chains). The recurring
+naming conventions:
+
+- `<name>.zia` — the stable facade; its public class, function, and constant
+  names never change when internals move.
+- `<name>_model.zia` — shared constants and pure helpers; `<name>_state.zia` —
+  persistent fields and deterministic initialization.
+- `<name>_<topic>.zia` — one focused behavior layer in the facade's
+  inheritance chain.
+- `<name>_contract_NN.zia` — virtual dispatch slots with neutral fallbacks so
+  lower layers can invoke behavior owned by higher layers.
+- `<name>_base.zia` — the extracted stateful core that an existing facade now
+  extends.
+- Probes split into `<probe>_part_N.zia` scenario units over a shared
+  `<probe>_support.zia` / `<probe>_context.zia` fixture; registered probe
+  identities are unchanged.
+
+ADR 0217 raised the bounded per-compilation-unit import ceiling to 512 files,
+which is what makes this decomposition compile as one program.
 
 ## Root Entry Point
 
@@ -51,10 +74,20 @@ Avoid touching `main.zia` for:
 - Command metadata.
 - Runtime binding policy.
 
+### `studio_application_surface_frame.zia`
+
+Pumps visual surfaces and language tooling for one Studio frame — the
+per-frame slice extracted from `main.zia` under ADR 0218.
+
 ## `app/`
 
 The `app/` directory contains orchestration helpers that sit near the frame loop
 but do not own the core document model or persistent widget tree.
+
+### `app/studio_application_base.zia`
+
+Shared application state, support helpers, and bounded startup phases that
+`main.zia` extends.
 
 ### `app/build_info.zia`
 
@@ -188,6 +221,11 @@ queued and launched only after the old adapter process terminates.
 Touch this file for debug protocol transport and session state. UI presentation
 belongs in `commands/debug_commands.zia`, `ui/app_shell.zia`, or debug-specific
 overlays.
+
+### `build/debug_session_base.zia`
+
+Owns debug-adapter process state, requests, watches, and restart intent; the
+`debug_session.zia` facade extends it.
 
 ## `commands/`
 
@@ -370,6 +408,20 @@ bar/theme/fullscreen/minimap, font zoom, UI zoom, settings, keybindings,
 tool-row copy, output copy/clear, output filter/wrap/autoscroll, recent files,
 and About.
 
+### `commands/` split modules (ADR 0218)
+
+| Module | Responsibility |
+| --- | --- |
+| `commands/search_controller.zia` | Owns cooperative text-search, replacement, discovery, and symbol-search state. |
+| `commands/search_controller_base.zia` | Search state, request setup, and Search panel submission core. |
+| `commands/search_commands_support.zia` | Stateless workspace, symbol, path-filter, text-match, and result helpers. |
+| `commands/semantic_command_dispatcher.zia` | Queues and executes language-aware semantic navigation commands. |
+| `commands/surface_command_dispatcher.zia` | Routes standard edit commands to text, 2D, or 3D surfaces. |
+| `commands/edit_navigation_commands.zia` | Zia definition, reference, and call-hierarchy navigation. |
+| `commands/edit_basic_navigation.zia` | BASIC definition, reference, and call-hierarchy navigation. |
+| `commands/file_save_support.zia` | Normalizes save text and synchronizes editor/document presentation. |
+| `commands/debug_panel_commands.zia` | Presents debugger state in panels and source-location decorations. |
+
 ## `core/`
 
 The `core/` directory owns persistent IDE domain state.
@@ -478,6 +530,17 @@ recovery directory, remove abandoned staging files, and retain recovered text
 under fixed record and aggregate-byte caps. Main polls and paints between scan
 entries and between recovered tabs.
 
+### `core/` split modules (ADR 0218)
+
+| Module | Responsibility |
+| --- | --- |
+| `core/document_manager_base.zia` | Open documents, safe loading, saving, and disk-state checks core. |
+| `core/project_manager_base.zia` | Workspace roots, Explorer tree state, and safe file mutations core. |
+| `core/project_manager_mutations.zia` | Safe Explorer rename, move, trash, entry-file, and bind-rewrite operations. |
+| `core/project_manager_tree.zia` | Workspace opening, incremental Explorer loading, file-cache discovery, selection. |
+| `core/session_manager.zia` | Session save, recent-history commands, and bounded restore orchestration. |
+| `core/session_state.zia` | Persists and conservatively restores workspace, document, and editor state. |
+
 ## `editor/`
 
 The `editor/` directory adapts `Zanna.GUI.CodeEditor` and language services into
@@ -558,6 +621,11 @@ The file is large. Pure filtering helpers have already been split into
 source/detail policy into `completion_workspace_source.zia`. New reusable
 completion-display logic should move into helpers instead of growing the
 controller.
+
+### `editor/completion_base.zia`
+
+Owns completion controller state, setup, and query launch; the
+`completion.zia` facade extends it.
 
 ### `editor/completion_items.zia`
 
@@ -702,6 +770,11 @@ capped declaration, reference, and call-token entry points are the worker-safe
 boundary for large projects. This scanner is deliberately not presented as the
 compiler's full semantic model.
 
+### `basic/semantic_lexing.zia`
+
+Scans BASIC tokens, comments, delimiters, and declaration text for
+`semantic_scan.zia`.
+
 ## `terminal/`
 
 ### `terminal/terminal_session.zia`
@@ -738,6 +811,10 @@ Known constraints are documented in [status.md](status.md) and
 kept for probes and older call sites, but UI code should start and pump
 `GitJob` objects.
 
+### `scm/scm_git_support.zia`
+
+Detects Git prompts and classifies common command failures for `scm_git.zia`.
+
 ### `scm/scm_view.zia`
 
 Source Control view model and UI action state. It owns the current Git snapshot,
@@ -746,6 +823,11 @@ behavior needed by AppShell. Wrapped action rows reflow with the sidebar;
 selection/index/conflict/message state drives truthful enablement; focused Enter
 submits commits and credential responses; and unmerged rows expose the safe
 edit-then-Stage path without destructive resolution shortcuts.
+
+### `scm/scm_view_base.zia`
+
+Coordinates asynchronous Git operations and Source Control UI state; the
+`scm_view.zia` facade extends it.
 
 ### `scm/scm_gutter_controller.zia`
 
@@ -788,6 +870,11 @@ Owns persistent menu, toolbar, and context-menu widgets plus their command
 availability state. Text-editor, visual-surface edit, undo/redo, and execution
 states are transition-cached: callers may publish current truth every frame,
 but identical inputs must not mutate retained widgets or trigger repaint.
+
+### `ui/menu_chrome_base.zia`
+
+Constructs and owns the Studio menu, toolbar, and context widgets; the
+`menu_chrome.zia` facade extends it with dispatch and state behavior.
 
 ### `ui/status_shell.zia`
 
@@ -842,6 +929,10 @@ breakpoint records, row filtering/formatting, count text, and responsive
 button/scroll sizing. It has no build-system or debug-session dependency.
 
 ### `ui/scene_editor_2d.zia`
+
+Stable facade for the layered 2D editor (ADR 0218): it re-exports the editor's
+public constants and pure helpers and declares `SceneEditor2D` atop the
+implementation chain listed under `ui/scene_editor_2d_*.zia` below.
 
 Document-backed 2D layer/tile/object authoring surface. It owns responsive
 canvas coordination, including stable progressive Scene/Tools/View menus at
@@ -898,11 +989,41 @@ project code. Real atlas decoding/rendering, project-asset discovery, selection
 normalization, precision-layout rules, hierarchy matching, and palette
 presentation live in smaller leaf modules.
 
+### `ui/scene_editor_2d_*.zia` (implementation layers)
+
+The `SceneEditor2D` inheritance chain, base to terminal layer. Each module is
+one focused behavior layer for the 2D scene editor controller. Boundaries
+follow the chain, so adjacent layers hold closely related behavior — grep for
+the exact function when precision matters:
+
+| Module | Layer responsibility |
+| --- | --- |
+| `scene_editor_2d_model.zia` | Shared constants, pure geometry helpers, and compact value objects. |
+| `scene_editor_2d_state.zia` | Persistent fields and deterministic initialization. |
+| `scene_editor_2d_lifecycle.zia` | Document lifecycle and per-frame pump entry. |
+| `scene_editor_2d_canvas_camera.zia` | Canvas camera (zoom, windowing) plus tile-stroke and stamp application. |
+| `scene_editor_2d_canvas_gestures.zia` | Captured canvas gestures (strokes, marquee, drops, Escape rollback). |
+| `scene_editor_2d_object_canvas.zia` | Object canvas: sprite drawing, footprints, rect-tool handles. |
+| `scene_editor_2d_scene_editing.zia` | Object creation, canvas selection application, and shape commits. |
+| `scene_editor_2d_layer_controls.zia` | Layer navigator state: visibility, opacity, lock, solo, reorder. |
+| `scene_editor_2d_layers_history.zia` | Canonical commits, Tiled import, layer assets, and the history timeline. |
+| `scene_editor_2d_hierarchy_reparent.zia` | Object hierarchy tree and transactional subtree drops. |
+| `scene_editor_2d_hierarchy_clipboard.zia` | Hierarchy duplicate/cut/copy/paste and group delete. |
+| `scene_editor_2d_inspector_state.zia` | Inspector state: object drafts, tabs, topic disclosure. |
+| `scene_editor_2d_inspector_controls.zia` | Inspector control edges and write-through commits. |
+| `scene_editor_2d_component_properties.zia` | Typed object/component property rows and batch application. |
+| `scene_editor_2d_tile_previews.zia` | Disposable tile hover/shape/stamp/autotile previews. |
+| `scene_editor_2d_rulers.zia` | Rulers and bounded tab-local guides. |
+| `scene_editor_2d_game_preview.zia` | Game View masking, output frames, and background profiles. |
+| `scene_editor_2d_layout.zia` | Responsive pane and progressive command layout. |
+| `scene_editor_2d_renderer.zia` | Terminal layer: canvas rasterization and overlay composition. |
+| `scene_editor_2d_contract_01..05.zia` | Virtual method contract segments — dispatch slots with neutral fallbacks that let lower layers invoke higher-layer behavior. |
+
 ### `ui/scene_panels_2d.zia`
 
-Constructs the complete retained 2D scene widget tree, including stable
-Scene/Tools/View menu-item handles and the compact Scene-inspector topic
-selector. `SceneEditor2D` owns their responsive labels, checked/enabled state,
+Constructs the complete retained 2D scene widget tree — the icon command
+and view `GUI.Toolbar`s (ADR 0220), stable Scene/Tools/View menu-item
+handles, and the compact Scene-inspector topic selector. `SceneEditor2D` owns their responsive labels, checked/enabled state,
 topic visibility, and dispatch through existing commands.
 
 ### `ui/scene_property_inspector_2d.zia`
@@ -950,6 +1071,25 @@ overlays, typed direct-model node rules, and bounded exact-typed 3D
 node-preview states into value-only records. It does not own widgets, scenes,
 project state, or document mutation.
 
+### `ui/scene_component_schema_*.zia` (parser layers)
+
+The schema loader is a stateless parser assembled from focused layers behind
+the `scene_component_schema.zia` facade (ADR 0218):
+
+| Module | Responsibility |
+| --- | --- |
+| `scene_component_schema_contract.zia` | Virtual contract shared by the stateless parser layers. |
+| `scene_component_schema_model.zia` | Value records and bounds for project-defined schemas. |
+| `scene_component_schema_loading.zia` | Schema loading and top-level parse orchestration. |
+| `scene_component_schema_components.zia` | Component, field, default, and portable-identifier validation. |
+| `scene_component_schema_preview_values.zia` | Shared bounded scalar and game-output preview parsing. |
+| `scene_component_schema_scene_preview_2d.zia` | Project-owned 2D scene and object-preview parsing. |
+| `scene_component_schema_scene_preview_3d.zia` | Core project-owned 3D scene-preview parsing. |
+| `scene_component_schema_node_previews.zia` | Typed 3D node-preview parsing (incl. v17 direct models, v18 states). |
+| `scene_component_schema_material_previews.zia` | Typed material-preview and portable asset parsing. |
+| `scene_component_schema_environment_3d.zia` | Additive environment, water, and post-processing preview parsing. |
+| `scene_component_schema_parser.zia` | Concrete parser class assembled from the layers above. |
+
 ### `ui/scene_component_authoring.zia`
 
 Pure structured component/field mutations plus one bounded, conflict-aware
@@ -957,6 +1097,11 @@ project-file session. Known-member changes operate on the raw JSON tree,
 preserve unknown version-1 members, reparse every candidate through
 `scene_component_schema`, and use atomic create/rooted replace operations.
 Twenty exact file-presence/text snapshots provide schema-only undo/redo.
+
+### `ui/scene_component_authoring_versioning.zia`
+
+Selects the minimum schema version required by authored features so the
+authoring session writes the smallest truthful `version` value.
 
 ### `ui/scene_component_authoring_controller.zia`
 
@@ -974,6 +1119,11 @@ complete schema. It renders bounded fields, coverage, typed drafts, ordering,
 and file-history controls, then returns intent without mutating disk or scenes.
 `SceneEditor2D` and `SceneEditor3D` own root resolution and scene transactions;
 `scene_component_authoring_controller` owns project-file transactions.
+
+### `ui/scene_component_palette_base.zia`
+
+Owns and constructs the scene-component palette widget surface; the
+`scene_component_palette.zia` facade extends it with presentation behavior.
 
 ### `ui/scene_selection.zia`
 
@@ -1008,6 +1158,11 @@ both views, schedules only visible thumbnails at one per frame, and reports
 selection/typed-drag intent without mutating a document. It also owns the
 conservative saved-scene-relative path spelling used by 2D layer assets.
 
+### `ui/scene_asset_browser_support.zia`
+
+Owns the asset-card widgets and portable asset path/filter helpers that the
+`scene_asset_browser.zia` facade composes.
+
 ### `ui/scene_asset_thumbnails.zia`
 
 Read-only bounded preview renderer for the shared browser. Common raster
@@ -1025,6 +1180,11 @@ tile IDs to atlas frames, polls one external reference's metadata per interval,
 and renders the bounded palette and canvas images. Missing or invalid references
 remain deterministic fallback state.
 
+### `ui/scene_tileset_2d_base.zia`
+
+Owns bounded 2D asset state, loading, validation, and palettes; the
+`scene_tileset_2d.zia` facade extends it with rasterization behavior.
+
 ### `ui/scene_tileset_inspector_2d.zia`
 
 Presentation-only 2D layer-image status and scrollable palette. It owns
@@ -1041,6 +1201,10 @@ the scene-wide live-autotile-preview checkbox; canonical mutation, lookup-cache
 refresh, history, and dirty state stay in the editor controller.
 
 ### `ui/scene_editor_3d.zia`
+
+Stable facade for the layered 3D editor (ADR 0218): it re-exports the editor's
+public constants and pure helpers and declares `SceneEditor3D` atop the
+implementation chain listed under `ui/scene_editor_3d_*.zia` below.
 
 Document-backed VSCN hierarchy and runtime-backed shaded/triangle-wireframe
 viewport. It retains one windowless Canvas3D, RenderTarget3D, and exactly
@@ -1107,6 +1271,46 @@ their project gameplay camera and centered aspect frame, restores every
 underlying camera/preference/selection exactly, and canonical one-step edit
 history.
 
+### `ui/scene_editor_3d_*.zia` (implementation layers)
+
+The `SceneEditor3D` inheritance chain, base to terminal layer. Boundaries
+follow the chain, so adjacent layers hold closely related behavior — grep for
+the exact function when precision matters:
+
+| Module | Layer responsibility |
+| --- | --- |
+| `scene_editor_3d_model.zia` | Shared constants, pure geometry helpers, and compact value objects. |
+| `scene_editor_3d_state.zia` | Persistent fields for the retained editor state. |
+| `scene_editor_3d_state_initialization.zia` | Deterministic initialization of the retained 3D editor state. |
+| `scene_editor_3d_workspace.zia` | Per-document workspace state capture and restore. |
+| `scene_editor_3d_camera_navigation.zia` | Orbit/fly/pan/dolly navigation, quick views, and bookmarks. |
+| `scene_editor_3d_viewport_selection.zia` | Viewport picking, Alt-cycling, marquee, and hover feedback. |
+| `scene_editor_3d_gizmo_transform.zia` | Move/Rotate/Scale gizmo drags and snapping. |
+| `scene_editor_3d_drops_gizmo_input.zia` | Asset/material drops and gizmo pointer input routing. |
+| `scene_editor_3d_vertex_snap.zia` | Bounded vertex-snap targeting for placement gestures. |
+| `scene_editor_3d_world_transform.zia` | Exact world-space group transforms. |
+| `scene_editor_3d_node_transform.zia` | Node transform drafts, live commit, and Escape restore. |
+| `scene_editor_3d_hierarchy_surface.zia` | Hierarchy tree presentation and search. |
+| `scene_editor_3d_hierarchy_reordering.zia` | Reorder, delete, and duplicate 3D hierarchy selections. |
+| `scene_editor_3d_inspector_hierarchy.zia` | Hierarchy refresh, row decoration, and inspector scoping. |
+| `scene_editor_3d_selection_controls.zia` | Selection-driven control state and batch edges. |
+| `scene_editor_3d_selection_inspector.zia` | Inspector, material, and component controls for selected nodes. |
+| `scene_editor_3d_components.zia` | Typed component conventions (colliders, markers, metadata). |
+| `scene_editor_3d_materials_terrain.zia` | Material library workflow and terrain behavior. |
+| `scene_editor_3d_terrain_authoring.zia` | Canonical terrain authoring and primitive placement. |
+| `scene_editor_3d_terrain_navigation.zia` | Terrain-aware navigation and surface probing. |
+| `scene_editor_3d_bake_environment.zia` | Lightmap bake, probe grids, and environment application. |
+| `scene_editor_3d_project_schema.zia` | Project preview-profile application (schema v4–v18). |
+| `scene_editor_3d_project_instances.zia` | Prefab instance workflow (import, reload, unpack, re-link). |
+| `scene_editor_3d_overlays.zia` | Editor overlays: grid, markers, brackets, marquee rect. |
+| `scene_editor_3d_gameplay_overlays.zia` | Collider, route, component, and gizmo gameplay overlays. |
+| `scene_editor_3d_renderer_setup.zia` | Canvas/RenderTarget/camera setup for the viewport. |
+| `scene_editor_3d_renderer.zia` | Terminal layer: frame submission, readback, and status composition. |
+| `scene_editor_3d_layout.zia` | Viewport-mode and gizmo presentation. |
+| `scene_editor_3d_responsive_layout.zia` | Responsive pane and command-menu layout. |
+| `scene_editor_3d_pump_routing.zia` | Routes one bounded 3D editor frame through focused control groups. |
+| `scene_editor_3d_contract_01..06.zia` | Virtual method contract segments — dispatch slots with neutral fallbacks that let lower layers invoke higher-layer behavior. |
+
 ### `ui/scene_panels_3d.zia`
 
 Constructs the complete retained 3D scene widget tree, including stable
@@ -1114,6 +1318,13 @@ Scene/Create/Placement/View menu-item handles and the compact Scene-inspector
 topic selector plus the contextual project preview-state dropdown.
 `SceneEditor3D` owns responsive labels, truthful check/enable state, topic
 visibility, and transactional dispatch.
+
+### `ui/scene_panels_3d_inspector.zia`
+
+Constructs the 3D hierarchy and inspector authoring surfaces (hierarchy pane,
+selection/component groups, material library, bake, environment, history).
+`scene_panels_3d.zia` builds the toolbar/viewport scaffold; `SceneEditor3D`
+owns all state and dispatch for both.
 
 ### `ui/scene_metadata_inspector_3d.zia`
 
@@ -1199,6 +1410,55 @@ enablement, and normalized draft intent. `SceneEditor3D` retains typed
 `SceneNode.Light` mutation, canonical serialization, rollback, history, and
 hierarchy/viewport marker presentation.
 
+### `ui/scene_field_rows.zia`, `ui/layout_metrics.zia`, `ui/style_tokens.zia`
+
+The ADR 0221 live-commit kit. `scene_field_rows.TextField` is the labeled
+text input whose `SetCanonical`/`TakeCommit` pair yields exactly one commit
+edge per Enter-or-blur gesture; `layout_metrics` and `style_tokens` name the
+spacing and button-style constants scene chrome must use instead of literals.
+
+### `ui/scene_component_schema_forms_model.zia`, `ui/scene_component_schema_forms.zia`
+
+The schema-v19 vocabulary (ADR 0222): value-only records for scene-level
+typed components (color/angle/vec/labeled-enum/ref fields, bounded repeat
+groups) and the parser layer that assembles above the components layer.
+The forms layer also extends object/node enum parsing with v19
+`{value,label}` choices and `storedKind: "int"`; pre-v19 files keep the
+strict identifier-only parse byte-for-byte.
+
+### `ui/scene_component_form.zia`
+
+The shared typed form renderer: builds labeled rows per field kind on the
+ADR 0221 kit, reports one commit per completed gesture (sliders settle-
+commit), and serializes committed values back to metadata text.
+
+### `ui/scene_settings_inspector_3d.zia`, `ui/scene_settings_inspector_2d.zia`
+
+Scene Settings surfaces binding v19 scene components to 3D root metadata
+and 2D scene properties. They rebuild only when the schema identity or a
+repeat count changes, refresh whenever the document revision moves, and
+report keyed write batches the editors apply through one transaction
+(`ApplySceneSettingsCommit` / `ApplySceneSettingsCommit2D`).
+
+### `ui/scene_play_controller.zia`
+
+Embedded play session state (ADR 0225): owns the `Zanna.System.EmbedHost`
+channel, presents game frames into the viewport image through the
+single-copy borrow path, forwards focused pane input (pointer mapped to
+frame pixels plus a bounded gameplay key set), and reports
+building/waiting/live/exited truthfully. `build/run_config.zia` builds
+the native build→launch chain and `commands/build_commands.zia` starts
+it with the channel environment injected.
+
+**Live-commit convention (ADR 0221).** Component inspectors expose
+`PumpDraftIntent() -> Boolean` aggregating their state-shaped control edges;
+`scene_editor_3d_pump_routing.zia` applies the component live when a single
+selected node already owns it. Every programmatic control refresh consumes
+the `WasChanged` edges it raises — a missed consume turns selection changes
+into phantom edits. Creation, batch application, and forking remain verb
+buttons; the scene environment group stays button-driven until its controls
+track loaded scene state.
+
 ### `ui/explorer_actions.zia`
 
 Overlay for explorer create/rename/duplicate/delete workflows. It collects user
@@ -1249,6 +1509,11 @@ layouts atomically, migrates legacy three-group/single-dock settings, moves one
 stable panel ID, and merges a complete primary group into an occupied
 destination without depending on GUI handles.
 
+### `ui/ide_overlays_base.zia`
+
+Builds and coordinates the Studio Settings and About overlays; the
+`ide_overlays.zia` facade extends it.
+
 ### `ui/tool_panel_shell.zia`
 
 Owns live tool widgets, simultaneous left/bottom/right group roots, one
@@ -1268,6 +1533,23 @@ for the session owner rather than clearing presentation rows optimistically.
 Pure output-cache policy for AppShell's build output: retained character
 budget, truncation marker, raw-pane versus row-list decision, and wrap width
 heuristic.
+
+### `ui/tool_panel_shell_*.zia` (implementation layers)
+
+The `ToolPanelShell` inheritance chain (ADR 0218), matching the scene-editor
+pattern behind the stable `tool_panel_shell.zia` facade:
+`tool_panel_shell_model.zia` (shared constants and responsive helpers),
+`tool_panel_shell_state.zia` (persistent fields and initialization), the
+focused layers `tool_panel_shell_setup_tabs.zia`,
+`tool_panel_shell_build_layout.zia`, `tool_panel_shell_panel_layout.zia`,
+`tool_panel_shell_panel_visibility.zia`, `tool_panel_shell_panel_queries.zia`,
+`tool_panel_shell_dock_state.zia`, `tool_panel_shell_dock_pump.zia`,
+`tool_panel_shell_output_rows.zia`,
+`tool_panel_shell_output_references.zia`,
+`tool_panel_shell_row_helpers.zia`, `tool_panel_shell_problems.zia`,
+`tool_panel_shell_call_stack.zia`, `tool_panel_shell_debug_console.zia`, and
+`tool_panel_shell_debug_panels.zia`, plus the
+`tool_panel_shell_contract_01..04.zia` virtual dispatch segments.
 
 ## `zia/`
 
@@ -1327,10 +1609,37 @@ source when unsafe or unsupported.
 Probe files are focused executable checks. They are not examples for end-user
 application structure; they are regression harnesses for IDE behavior.
 
+Large probe workflows are decomposed under ADR 0218: `<probe>_part_N.zia`
+holds serial scenario units, `<probe>_support.zia` holds the shared fixture
+and pointer/assertion helpers, and `<probe>_context.zia` (where present) owns
+shared fixture state. The registered probe identity — the file ctest runs —
+is unchanged; it binds and drives the parts. Split families today:
+`bottom_panel_probe_part_1/2` over `bottom_panel_probe_support`;
+`console_search_probe_part_1/2` over `console_search_probe_support`;
+`intellisense_probe_part_1/2` plus `intellisense_probe_part_1_symbols` over
+`intellisense_probe_support`; `scene_component_schema_probe_part_1/2` over
+`scene_component_schema_probe_support`; `scene_editor_2d_probe_part_1/2` plus
+the focused `scene_editor_2d_probe_part_1_editing` /
+`scene_editor_2d_probe_part_2_hierarchy` units over
+`scene_editor_2d_probe_context`; and `scene_editor_3d_probe_part_1..4` plus
+`scene_editor_3d_probe_part_2_previews` over
+`scene_editor_3d_probe_context`.
+
 Important probe groups:
 
 - `smoke_probe.zia`: basic app smoke.
 - `phase0_phase1_probe.zia`: core document/project/command/session behavior.
+- `phase0_phase1_models_probe.zia`: tool panels, safe I/O, commands, and core
+  model coverage split out of the phase0/phase1 workflow.
+- `scene_probe_support.zia`: the shared ADR 0219/0220 interaction module —
+  `ClickWidget`, `ClickMenuItem`, `ClickToolbarItem`, and the named
+  chrome-geometry budgets every scene probe asserts against.
+- `scene_component_authoring_persistence_probe.zia`: optional-field
+  preservation and schema-file persistence.
+- `scene_gameplay_preview_water_probe.zia`: runtime-backed water preview
+  composition and capture.
+- `scene_viewport_picking_routing_probe.zia`: 3D history, command-menu, and
+  dock pointer routing.
 - `phase2_phase3_probe.zia`: build/run/debug boundary and scene data contracts.
 - `editor_hot_path_probe.zia`: editor performance and copy/layout/index guards.
 - `intellisense_probe.zia`: completion, diagnostics, hover, signature behavior.
@@ -1570,10 +1879,11 @@ Use this practical decision table:
 
 The source map should also make current weak spots explicit:
 
-- `main.zia` and `ui/app_shell.zia` are oversized coordinator files.
-- `commands/edit_commands.zia`, `commands/search_commands.zia`, and
-  `editor/completion.zia` are also large and should be split when adding
-  cohesive new behavior.
+- The ADR 0218 decomposition bounded every module at 1,000 lines, but several
+  files sit near the ceiling (`commands/edit_commands.zia`,
+  `ui/scene_component_authoring.zia`, `ui/scene_component_schema_model.zia`,
+  `editor/completion.zia`); cohesive new behavior belongs in new layer or
+  helper modules, not in these.
 - Tool panels support independent attached groups and one in-window floating
   group, but not native secondary-window/multi-monitor detachment or true
   virtualized workbench surfaces.

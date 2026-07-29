@@ -5775,6 +5775,23 @@ static void test_rendertarget_as_pixels() {
     PASS();
 }
 
+static void test_rendertarget_try_read_rgba() {
+    TEST("RenderTarget3D try_read_rgba — exact-size non-trapping readback");
+    void *rt = rt_rendertarget3d_new(8, 4);
+    std::vector<uint8_t> frame(8u * 4u * 4u, 0xCD);
+    EXPECT_TRUE(rt_rendertarget3d_try_read_rgba(rt, frame.data(), 8, 4) == 1,
+                "matching-size readback succeeds");
+    EXPECT_TRUE(rt_rendertarget3d_try_read_rgba(rt, frame.data(), 4, 8) == 0,
+                "size mismatch reports 0 without trapping");
+    EXPECT_TRUE(rt_rendertarget3d_try_read_rgba(NULL, frame.data(), 8, 4) == 0,
+                "null target reports 0");
+    EXPECT_TRUE(rt_rendertarget3d_try_read_rgba(rt, NULL, 8, 4) == 0,
+                "null destination reports 0");
+    EXPECT_TRUE(rt_rendertarget3d_try_read_rgba(rt, frame.data(), 0, 4) == 0,
+                "non-positive dimensions report 0");
+    PASS();
+}
+
 static void test_rendertarget_null_safety() {
     TEST("RenderTarget3D — null safety");
     EXPECT_EQ(rt_rendertarget3d_get_width(NULL), 0);
@@ -10930,6 +10947,7 @@ int main() {
     test_rendertarget_dimensions();
     test_rendertarget_hdr_property();
     test_rendertarget_as_pixels();
+    test_rendertarget_try_read_rgba();
     test_rendertarget_null_safety();
     test_rendertarget_as_pixels_syncs_gpu_color_on_demand();
     test_rendertarget_clear_sync_detaches_backend_callback();

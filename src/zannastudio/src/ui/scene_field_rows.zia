@@ -1,0 +1,110 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_field_rows.zia
+// Purpose: Shared labeled live-commit field rows for scene inspectors
+//          (ADR 0221).
+// Key invariants:
+//   - Every input is visibly labeled; captions never encode field order.
+//   - A field commits exactly once per gesture: on Enter, or on blur when
+//     its text differs from the canonical snapshot; programmatic Refresh
+//     re-baselines without raising an edge.
+//   - Rows own presentation only; callers own validation, transactions,
+//     dirty state, and history.
+// Ownership/Lifetime:
+//   - The caller's widget tree owns every constructed widget; TextField
+//     records are plain typed state holders (List[Any] cannot cast to GUI
+//     classes, so callers keep typed references — the property_rows idiom).
+// Links: zannastudio/src/ui/property_rows.zia,
+//        zannastudio/src/ui/inspector_rows.zia,
+//        docs/adr/0221-live-commit-inspector-contract.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_field_rows;
+
+bind "inspector_rows";
+bind "layout_metrics";
+
+bind GUI = Zanna.GUI;
+
+/// @brief One labeled text input with live-commit edge tracking.
+class TextField {
+    expose GUI.TextInput input;
+    expose String canonicalText;
+    expose Boolean wasFocused;
+
+    expose func init() {
+        input = null;
+        canonicalText = "";
+        wasFocused = false;
+    }
+
+    /// @brief Build the caption + input pair inside @p row.
+    /// @details The pair lives in one HBox so wrapping keeps the caption
+    ///          beside its input instead of stranding it on another line.
+    expose func Build(row: GUI.Flex,
+                      caption: String,
+                      accessibleName: String,
+                      hint: String) {
+        var pair = GUI.HBox.New();
+        pair.SetSpacing(layout_metrics.GAP_ROW);
+        row.AddChild(pair);
+        var label = GUI.Label.New(pair, caption);
+        label.SetMinSize(0.0, 0.0);
+        input = GUI.TextInput.New(pair);
+        input.SetPlaceholder(hint);
+        input.SetMinSize(layout_metrics.INPUT_MIN_WIDTH, 0.0);
+        input.SetPreferredSize(layout_metrics.INPUT_PREF_WIDTH, 0.0);
+        input.SetAccessibleName(accessibleName);
+        canonicalText = "";
+        wasFocused = false;
+    }
+
+    /// @brief Load canonical text without raising a commit edge.
+    expose func SetCanonical(text: String) {
+        if input == null { return; }
+        input.SetText(text);
+        input.WasChanged();
+        canonicalText = text;
+        wasFocused = input.IsFocused();
+    }
+
+    /// @brief Consume one live-commit edge for this field.
+    /// @return True when Enter was pressed or focus left a changed draft.
+    expose func TakeCommit() -> Boolean {
+        if input == null { return false; }
+        var focused = input.IsFocused();
+        var committed = false;
+        if input.WasSubmitted() {
+            committed = input.Text != canonicalText;
+        } else if wasFocused and focused == false {
+            committed = input.Text != canonicalText;
+        }
+        wasFocused = focused;
+        if committed { canonicalText = input.Text; }
+        return committed;
+    }
+
+    /// @brief Current draft text.
+    expose func Text() -> String {
+        if input == null { return ""; }
+        return input.Text;
+    }
+
+    /// @brief Enable or disable the input.
+    expose func SetEnabled(enabled: Boolean) {
+        if input != null { input.SetEnabled(enabled); }
+    }
+}
+
+/// @brief Build a wrapping row for labeled field pairs.
+expose func NewFieldRow(host: GUI.VBox) -> GUI.Flex {
+    var row = inspector_rows.NewWrapRow();
+    host.AddChild(row);
+    return row;
+}

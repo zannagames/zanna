@@ -1,6 +1,28 @@
 //===----------------------------------------------------------------------===//
+//
 // Part of the Zanna project, under the GNU GPL v3.
-// RTCameraTests.cpp - Unit tests for rt_camera
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/unit/runtime/RTCameraTests.cpp
+/// @file
+/// @brief Exercises Camera2D transforms, bounds, follow, culling, and parallax.
+// Purpose: Validate camera arithmetic and rendering contracts, including
+//   deterministic behavior at int64 boundaries and bounded tile traversal.
+//
+// Key invariants:
+//   - Camera math saturates without signed overflow and coordinate transforms
+//     remain stable for equivalent large rotations.
+//   - Dirty state changes only when the effective transform changes.
+//   - Parallax traversal is budgeted and terminates at numeric boundaries.
+//
+// Ownership/Lifetime:
+//   - Runtime camera/pixel handles live for the test process; cameras retain
+//     parallax Pixels handles according to the production ownership contract.
+//
+// Links: rt_camera.c, rt_camera.h, rt_pixels.c
+//
 //===----------------------------------------------------------------------===//
 
 #include "rt_camera.h"
@@ -168,6 +190,28 @@ TEST(dirty_flag) {
     ASSERT(rt_camera_is_dirty(cam) == 1);
 }
 
+TEST(noop_mutations_keep_dirty_clear) {
+    void *cam = rt_camera_new(800, 600);
+    ASSERT(cam != NULL);
+    rt_camera_clear_dirty(cam);
+
+    rt_camera_set_x(cam, 0);
+    rt_camera_set_y(cam, 0);
+    rt_camera_set_zoom(cam, 100);
+    rt_camera_set_rotation(cam, 0);
+    rt_camera_move(cam, 0, 0);
+    rt_camera_follow(cam, 400, 300);
+    ASSERT(rt_camera_is_dirty(cam) == 0);
+
+    rt_camera_set_bounds(cam, 0, 0, 800, 600);
+    rt_camera_clear_dirty(cam);
+    rt_camera_set_x(cam, 123);
+    rt_camera_set_y(cam, 456);
+    ASSERT(rt_camera_get_x(cam) == 0);
+    ASSERT(rt_camera_get_y(cam) == 0);
+    ASSERT(rt_camera_is_dirty(cam) == 0);
+}
+
 TEST(center_accessors_and_set_center) {
     void *cam = rt_camera_new(800, 600);
     ASSERT(cam != NULL);
@@ -191,6 +235,58 @@ TEST(smooth_follow_noop_keeps_dirty_clear) {
     ASSERT(rt_camera_get_x(cam) == 0);
     ASSERT(rt_camera_get_y(cam) == 0);
     ASSERT(rt_camera_is_dirty(cam) == 0);
+}
+
+TEST(smooth_follow_small_fraction_makes_one_pixel_progress) {
+    void *cam = rt_camera_new(100, 100);
+    ASSERT(cam != NULL);
+    rt_camera_clear_dirty(cam);
+
+    rt_camera_smooth_follow(cam, 549, 50, 1);
+    ASSERT(rt_camera_get_x(cam) == 1);
+    ASSERT(rt_camera_get_y(cam) == 0);
+    ASSERT(rt_camera_is_dirty(cam) == 1);
+}
+
+TEST(one_pixel_deadzone_only_contains_center) {
+    void *cam = rt_camera_new(100, 100);
+    ASSERT(cam != NULL);
+    rt_camera_set_deadzone(cam, 1, 0);
+    rt_camera_clear_dirty(cam);
+
+    rt_camera_smooth_follow(cam, 51, 50, 1000);
+    ASSERT(rt_camera_get_x(cam) == 1);
+    ASSERT(rt_camera_is_dirty(cam) == 1);
+}
+
+TEST(extreme_zoom_math_is_exact_and_saturating) {
+    void *cam = rt_camera_new(INT64_MAX, INT64_MAX);
+    ASSERT(cam != NULL);
+    rt_camera_set_zoom(cam, 1000);
+    ASSERT(rt_camera_get_center_x(cam) == INT64_C(461168601842738790));
+    ASSERT(rt_camera_get_center_y(cam) == INT64_C(461168601842738790));
+
+    rt_camera_set_center(cam, INT64_MAX, INT64_MIN);
+    ASSERT(rt_camera_get_x(cam) == INT64_C(8762203435012037017));
+    ASSERT(rt_camera_get_y(cam) == INT64_MIN);
+}
+
+TEST(huge_rotation_matches_reduced_rotation) {
+    void *large = rt_camera_new(640, 480);
+    void *reduced = rt_camera_new(640, 480);
+    ASSERT(large != NULL);
+    ASSERT(reduced != NULL);
+
+    rt_camera_set_rotation(large, INT64_MAX);
+    rt_camera_set_rotation(reduced, INT64_MAX % 360);
+    int64_t large_x = 0;
+    int64_t large_y = 0;
+    int64_t reduced_x = 0;
+    int64_t reduced_y = 0;
+    rt_camera_world_to_screen(large, 123, -456, &large_x, &large_y);
+    rt_camera_world_to_screen(reduced, 123, -456, &reduced_x, &reduced_y);
+    ASSERT(large_x == reduced_x);
+    ASSERT(large_y == reduced_y);
 }
 
 TEST(set_bounds_clamp_marks_dirty) {
@@ -339,8 +435,13 @@ int main() {
     RUN_TEST(world_screen_roundtrip_with_rotation_and_zoom);
     RUN_TEST(follow_and_bounds_respect_zoom);
     RUN_TEST(dirty_flag);
+    RUN_TEST(noop_mutations_keep_dirty_clear);
     RUN_TEST(center_accessors_and_set_center);
     RUN_TEST(smooth_follow_noop_keeps_dirty_clear);
+    RUN_TEST(smooth_follow_small_fraction_makes_one_pixel_progress);
+    RUN_TEST(one_pixel_deadzone_only_contains_center);
+    RUN_TEST(extreme_zoom_math_is_exact_and_saturating);
+    RUN_TEST(huge_rotation_matches_reduced_rotation);
     RUN_TEST(set_bounds_clamp_marks_dirty);
     RUN_TEST(parallax_add_remove);
     RUN_TEST(parallax_max_layers);

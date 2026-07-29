@@ -82,6 +82,7 @@ typedef struct pipe_vert pipe_vert_t;
 
 typedef struct {
     float *zbuf;
+    size_t zbuf_capacity;
     pipe_vert_t *vertex_scratch;
     uint32_t vertex_scratch_capacity;
     int32_t width, height;
@@ -149,6 +150,43 @@ typedef struct {
     int32_t scaled_w, scaled_h;
     int8_t scaled_frame_active;
 } sw_context_t;
+
+/// @brief Select a checked geometric allocation capacity for a reusable software buffer.
+/// @details A 1.5x growth policy amortizes monotonically increasing scene sizes while preserving
+///          the old allocation when the requested element count or byte count is unrepresentable.
+/// @param current_elements Current allocation capacity in elements.
+/// @param required_elements Minimum required element count.
+/// @param element_size Size of one element in bytes.
+/// @param out_capacity Receives a capacity no smaller than @p required_elements.
+/// @return 1 when the capacity and byte product are representable, otherwise 0.
+static int sw_geometric_capacity(size_t current_elements,
+                                 size_t required_elements,
+                                 size_t element_size,
+                                 size_t *out_capacity) {
+    size_t capacity;
+    size_t max_elements;
+
+    if (!out_capacity || required_elements == 0 || element_size == 0)
+        return 0;
+    max_elements = SIZE_MAX / element_size;
+    if (required_elements > max_elements)
+        return 0;
+    capacity = current_elements;
+    if (capacity < 256u)
+        capacity = 256u;
+    if (capacity > max_elements)
+        capacity = max_elements;
+    while (capacity < required_elements) {
+        size_t increment = capacity / 2u + 1u;
+        if (increment > max_elements - capacity) {
+            capacity = required_elements;
+            break;
+        }
+        capacity += increment;
+    }
+    *out_capacity = capacity;
+    return 1;
+}
 
 /// @brief Compute the normalized world-space direction from a shaded point toward the camera.
 /// @param ctx Borrowed software context containing camera projection and pose state.
@@ -1079,23 +1117,35 @@ static int sw_draw_requires_per_pixel_lighting(const sw_context_t *ctx,
 /// @return Frame-local probe slot, or -1 when the context or probe capacity is unavailable.
 static int32_t sw_queue_depth_probe(void *ctx_ptr, float ndc_x, float ndc_y) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
+    const float *depth = NULL;
+    int32_t depth_width = 0;
+    int32_t depth_height = 0;
     int32_t slot;
     float result = -1.0f;
 
     if (!ctx || ctx->depth_probe_count >= VGFX3D_DEPTH_PROBE_MAX)
         return -1;
     slot = ctx->depth_probe_count++;
-    if (ctx->zbuf && ctx->width > 0 && ctx->height > 0 && isfinite(ndc_x) && isfinite(ndc_y)) {
+    if (ctx->render_target) {
+        depth = ctx->render_target->depth_buf;
+        depth_width = ctx->render_target->width;
+        depth_height = ctx->render_target->height;
+    } else {
+        depth = ctx->zbuf;
+        depth_width = ctx->width;
+        depth_height = ctx->height;
+    }
+    if (depth && depth_width > 0 && depth_height > 0 && isfinite(ndc_x) && isfinite(ndc_y)) {
         double bounded_x = (double)vgfx3d_clamp_float_param(ndc_x, -1.0f, 1.0f, 0.0f);
         double bounded_y = (double)vgfx3d_clamp_float_param(ndc_y, -1.0f, 1.0f, 0.0f);
-        int32_t px = (int32_t)((bounded_x * 0.5 + 0.5) * (double)ctx->width);
-        int32_t py = (int32_t)((0.5 - bounded_y * 0.5) * (double)ctx->height);
-        if (px >= ctx->width)
-            px = ctx->width - 1;
-        if (py >= ctx->height)
-            py = ctx->height - 1;
-        if (px >= 0 && px < ctx->width && py >= 0 && py < ctx->height) {
-            float ndc_z = ctx->zbuf[(size_t)py * (size_t)ctx->width + (size_t)px];
+        int32_t px = (int32_t)((bounded_x * 0.5 + 0.5) * (double)depth_width);
+        int32_t py = (int32_t)((0.5 - bounded_y * 0.5) * (double)depth_height);
+        if (px >= depth_width)
+            px = depth_width - 1;
+        if (py >= depth_height)
+            py = depth_height - 1;
+        if (px >= 0 && px < depth_width && py >= 0 && py < depth_height) {
+            float ndc_z = depth[(size_t)py * (size_t)depth_width + (size_t)px];
             if (!isfinite(ndc_z) || ndc_z > 1.0f)
                 result = 1.0f; /* cleared: nothing occludes here */
             else
@@ -1131,6 +1181,9 @@ static float sw_read_depth_probe(void *ctx_ptr, int32_t slot) {
 /// @return 1 when a matching buffer is ready, otherwise 0 for invalid dimensions, overflow, or
 ///         allocation failure.
 static int sw_ensure_zbuf_capacity(sw_context_t *ctx, int32_t width, int32_t height) {
+    size_t allocation_count;
+    size_t pixel_count;
+
     if (!ctx || width <= 0 || height <= 0)
         return 0;
     if (ctx->zbuf && ctx->width == width && ctx->height == height)
@@ -1138,15 +1191,18 @@ static int sw_ensure_zbuf_capacity(sw_context_t *ctx, int32_t width, int32_t hei
 
     if ((size_t)width > SIZE_MAX / (size_t)height)
         return 0;
-    size_t pixel_count = (size_t)width * (size_t)height;
-    if (pixel_count > SIZE_MAX / sizeof(float))
+    pixel_count = (size_t)width * (size_t)height;
+    if (!sw_geometric_capacity(ctx->zbuf_capacity, pixel_count, sizeof(float), &allocation_count))
         return 0;
 
-    float *new_zbuf = (float *)realloc(ctx->zbuf, pixel_count * sizeof(float));
-    if (!new_zbuf)
-        return 0;
+    if (ctx->zbuf_capacity < pixel_count) {
+        float *new_zbuf = (float *)realloc(ctx->zbuf, allocation_count * sizeof(float));
+        if (!new_zbuf)
+            return 0;
 
-    ctx->zbuf = new_zbuf;
+        ctx->zbuf = new_zbuf;
+        ctx->zbuf_capacity = allocation_count;
+    }
     ctx->width = width;
     ctx->height = height;
     return 1;

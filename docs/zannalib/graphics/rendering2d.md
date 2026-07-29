@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-07-29
 ---
 
 # 2D Rendering and Effects
@@ -16,7 +16,7 @@ These classes sit directly on top of `Pixels` and `Canvas`. They cover rendering
 | Class | Purpose |
 |-------|---------|
 | `RenderTarget2D` | Offscreen RGBA surface with alpha-aware `DrawPixels` and `DrawRegion`. |
-| `RenderTarget2D` | RenderTarget-compatible surface with its own runtime type identity. |
+| `Surface2D` | RenderTarget-compatible surface with its own runtime type identity. |
 | `Texture2D` | Retained `Pixels` texture handle with `Filter`, `Wrap`, `ClonePixels`, and `FromFile`. |
 | `GpuTexture2D` | Texture-compatible handle with its own runtime type identity; currently CPU-backed. |
 | `Renderer2D` | Retained draw command stream for pixels/textures with tint, alpha, blend mode, and render target flushing. |
@@ -39,8 +39,9 @@ These classes sit directly on top of `Pixels` and `Canvas`. They cover rendering
 - Blend modes use `0 = alpha`, `1 = opaque`, `2 = additive`. Alpha mode uses straight-alpha source-over, matching `Pixels.BlendPixel` and `Canvas.BlitAlpha`; additive mode scales source RGB by source alpha, adds it to the destination, and clamps each channel.
 - `Texture2D.Filter` uses `0 = nearest`, `1 = linear`. Linear sampling interpolates RGB in premultiplied-alpha space so transparent edge texels do not bleed black into partially transparent results. Texture-region draws clamp or wrap within the requested region before sampling the backing image, so atlas neighbors do not bleed into bilinear samples.
 - `Texture2D.Wrap` uses `0 = clamp`, `1 = repeat`.
-- `Texture2D.New` requires a `Pixels` object and retains it for the texture lifetime. `Renderer2D` also retains queued sources before publishing commands, so queued draw calls keep their source objects alive until `Begin`, `End`, `FlushToTarget`, or object cleanup clears the queue.
+- `Texture2D.New` requires a `Pixels` object and retains it for the texture lifetime. `Renderer2D` also retains queued sources before publishing commands, so queued draw calls keep their source objects alive until `Begin`, `End`, or object cleanup clears the queue. `FlushToTarget` replays without clearing.
 - `RenderTarget2D.DrawRegion` supports drawing from its own `Pixels` buffer. Overlapping self-copies use a source snapshot so pixels are copied from the original region rather than from already-written output.
+- Scaled and rotated renderer draws also snapshot when a texture is backed by the destination `Pixels`, making self-draws independent of scan order.
 - Graphics2D handle validators check the runtime class and minimum object size. Passing the wrong object type to render target, texture, tileset, tile layer, viewport, shader, or post-process APIs returns safe defaults or no-ops instead of interpreting unrelated memory as that type. Surface/texture/scaler compatibility APIs accept both the canonical and alias runtime classes.
 
 ## Render Targets, Textures, And Renderer
@@ -78,11 +79,11 @@ var gradient = Gradient2D.New(0x000000FF, Color.Rgba(255, 255, 255, 192), 16)
 gradient.FillHorizontal(pixels)
 ```
 
-`Palette2D.Apply` maps each source pixel to the nearest defined palette color in RGBA space and writes a new `Pixels` buffer. Empty palettes copy source pixels unchanged. `ApplyLegacy` keeps the older indexed behavior: the source red byte is the palette index, and `0x000000II` alpha-byte indices are also accepted for assets that used fully transparent pixels as palette indices.
+`Palette2D.Apply` maps each source pixel to the nearest defined palette color in RGBA space and writes a new `Pixels` buffer. Empty palettes return a distinct exact clone. `ApplyLegacy` keeps the older indexed behavior: the source red byte is the palette index, and `0x000000II` alpha-byte indices are also accepted for assets that used fully transparent pixels as palette indices.
 
 `Palette2D.GetColor(index)` and `Gradient2D.Sample(t)` return values that work with `Color.GetR/G/B/A`, preserving alpha from raw pixel storage. `Gradient2D.Sample(t)` and `Gradient2D.SampleRgba(t)` take a normalized `Number` position from `0.0` to `1.0`; values above `1.0` are accepted as legacy percent positions. `Palette2D.GetRgba(index)` and `Gradient2D.SampleRgba(t)` return raw `0xRRGGBBAA`. Use `Gradient2D.SamplePercent(percent)` and `Gradient2D.SampleRgbaPercent(percent)` when you want the explicit integer percent form.
 
-`Gradient2D` uses `Steps <= 2` as smooth interpolation. Larger `Steps` values quantize into that many discrete levels, including both endpoints. For example, a three-step gradient samples start, midpoint, and end colors; horizontal and vertical fills use the same interpolation and quantization as the sampling methods.
+`Gradient2D` uses `Steps <= 2` as smooth interpolation. Larger `Steps` values quantize into that many discrete levels, including both endpoints. For example, a three-step gradient samples start, midpoint, and end colors; horizontal and vertical fills use the same interpolation and quantization as the sampling methods. A fill advances the destination mutation generation once when content changes and preserves it for an idempotent repeat.
 
 ## Video Playback
 
@@ -145,5 +146,5 @@ canvas.Blit(0, 0, video.Frame)
 
 - `RenderTarget2D`, `GpuTexture2D`, and `Viewport2D` expose compatibility behavior while retaining distinct runtime class IDs for code that needs exact type identity.
 - `PostProcess2D` has its own runtime class. It is accepted wherever a render pass expects an effect, but it is not treated as a `Shader2D` by direct shader APIs.
-- `RenderPass2D.New` requires valid `RenderTarget2D` or `RenderTarget2D` source and target objects; invalid handles return `null`. `SetSource` and `SetTarget` accept valid render targets or `null`, and ignore unrelated handles. `SetShader` accepts either a `Shader2D`, a `PostProcess2D`, or `null`; unrelated handles are ignored.
+- `RenderPass2D.New` requires valid `RenderTarget2D` or `Surface2D` source and target objects; invalid handles return `null`. `SetSource` and `SetTarget` accept valid render surfaces or `null`, and ignore unrelated handles. `SetShader` accepts either a `Shader2D`, a `PostProcess2D`, or `null`; unrelated handles are ignored.
 - `VideoPlayer` decodes in software on the calling thread. For best results call `Update` once per frame with the actual elapsed seconds rather than a fixed timestep.

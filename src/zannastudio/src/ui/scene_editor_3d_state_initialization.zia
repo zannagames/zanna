@@ -42,6 +42,8 @@ bind "scene_light_3d";
 bind "scene_material_inspector_3d";
 bind "scene_material_3d";
 bind "scene_metadata_inspector_3d";
+bind "scene_play_controller";
+bind "scene_settings_inspector_3d";
 bind "scene_pane_docking";
 bind "scene_terrain_3d";
 bind "scene_terrain_inspector_3d";
@@ -326,6 +328,16 @@ class SceneEditor3DStateInitialization extends PreviousLayer.SceneEditor3DState 
             scene_material_inspector_3d.SceneMaterialInspector3D();
         metadataInspector = new
             scene_metadata_inspector_3d.SceneMetadataInspector3D();
+        sceneSettingsInspector = new
+            scene_settings_inspector_3d.SceneSettingsInspector3D();
+        sceneSettingsGroup = null;
+        sceneSettingsHost = null;
+        sceneSettingsRevision = -1;
+        hierarchyEmptyLabel = null;
+        playSceneButton = null;
+        playController =
+            new scene_play_controller.ScenePlayController();
+        playSceneRequested = false;
         componentPalette =
             new scene_component_palette.SceneComponentPalette();
         componentAuthoring =
@@ -378,6 +390,8 @@ class SceneEditor3DStateInitialization extends PreviousLayer.SceneEditor3DState 
     hide func InitializeSceneViewportState() {        currentDoc = null;
         scene = null;
         viewportPixels = null;
+        viewportReadbackPixels = null;
+        viewportReadbackMs = 0.0;
         viewportRenderCanvas = null;
         viewportRenderTarget = null;
         viewportRenderCamera = null;

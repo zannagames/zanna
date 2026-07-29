@@ -7,6 +7,15 @@
 //
 // File: src/tests/runtime/RTPixelsDrawTests.cpp
 // Purpose: Tests for Pixels drawing primitives (SetRGB/GetRGB and Draw* methods).
+// Key invariants:
+//   - Primitive coverage is clipped, deterministic, and uses pixel centers.
+//   - A drawing call advances generation at most once and only on content change.
+//   - Extreme geometry and empty destination shapes complete without overflow.
+// Ownership/Lifetime:
+//   - Test-created Pixels and strings are managed by the runtime object system.
+//   - No borrowed raw storage escapes an individual test.
+// Links: src/runtime/graphics/2d/rt_pixels_draw.c,
+//        src/runtime/graphics/2d/rt_pixels_internal.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -195,6 +204,21 @@ static void test_drawdisc_outside_clear() {
     printf("test_drawdisc_outside_clear: PASSED\n");
 }
 
+static void test_filled_curves_do_not_round_outside_pixel_centers() {
+    void *disc = rt_pixels_new(7, 7);
+    rt_pixels_draw_disc(disc, 3, 3, 2, 0xAA5500);
+    assert(rt_pixels_get_rgb(disc, 4, 4) == 0xAA5500);
+    assert(rt_pixels_get_rgb(disc, 5, 4) == 0);
+    assert(rt_pixels_get_rgb(disc, 1, 4) == 0);
+
+    void *ellipse = rt_pixels_new(7, 7);
+    rt_pixels_draw_ellipse(ellipse, 3, 3, 2, 2, 0x0055AA);
+    assert(rt_pixels_get_rgb(ellipse, 4, 4) == 0x0055AA);
+    assert(rt_pixels_get_rgb(ellipse, 5, 4) == 0);
+    assert(rt_pixels_get_rgb(ellipse, 1, 4) == 0);
+    printf("test_filled_curves_do_not_round_outside_pixel_centers: PASSED\n");
+}
+
 static void test_drawdisc_huge_radius_clips_to_buffer() {
     void *p = rt_pixels_new(4, 4);
     rt_pixels_draw_disc(p, 0, 0, INT64_MAX, 0x102030);
@@ -217,6 +241,57 @@ static void test_shape_generation_only_changes_on_write() {
     rt_pixels_draw_disc(p, 1, 1, 1, 0xFFFFFF);
     assert(rt_pixels_generation(p) == gen + 1);
     printf("test_shape_generation_only_changes_on_write: PASSED\n");
+}
+
+static void test_primitives_touch_once_and_idempotent_redraws_do_not_touch() {
+    void *box = rt_pixels_new(12, 12);
+    rt_pixels_draw_box(box, 1, 1, 8, 8, 0x112233);
+    assert(rt_pixels_generation(box) == 1);
+    rt_pixels_draw_box(box, 1, 1, 8, 8, 0x112233);
+    assert(rt_pixels_generation(box) == 1);
+
+    void *frame = rt_pixels_new(12, 12);
+    rt_pixels_draw_frame(frame, 1, 1, 8, 8, 0x445566);
+    assert(rt_pixels_generation(frame) == 1);
+    rt_pixels_draw_frame(frame, 1, 1, 8, 8, 0x445566);
+    assert(rt_pixels_generation(frame) == 1);
+
+    void *thick = rt_pixels_new(20, 20);
+    rt_pixels_draw_thick_line(thick, 1, 1, 18, 18, 5, 0x778899);
+    assert(rt_pixels_generation(thick) == 1);
+    rt_pixels_draw_thick_line(thick, 1, 1, 18, 18, 5, 0x778899);
+    assert(rt_pixels_generation(thick) == 1);
+
+    void *blend = rt_pixels_new(1, 1);
+    rt_pixels_set_rgba(blend, 0, 0, 0xAABBCCFF);
+    uint64_t generation = rt_pixels_generation(blend);
+    rt_pixels_blend_pixel(blend, 0, 0, 0xAABBCC, 255);
+    rt_pixels_blend_pixel(blend, 0, 0, 0xAABBCC, 128);
+    assert(rt_pixels_generation(blend) == generation);
+
+    void *text_pixels = rt_pixels_new(8, 8);
+    rt_string text = rt_str_from_lit("A", 1);
+    rt_pixels_draw_text(text_pixels, 0, 0, text, 0xFFFFFF);
+    assert(rt_pixels_generation(text_pixels) == 1);
+    rt_pixels_draw_text(text_pixels, 0, 0, text, 0xFFFFFF);
+    assert(rt_pixels_generation(text_pixels) == 1);
+    printf("test_primitives_touch_once_and_idempotent_redraws_do_not_touch: PASSED\n");
+}
+
+static void test_empty_asymmetric_surface_rejects_all_raster_work() {
+    void *p = rt_pixels_new(0, INT64_MAX);
+    assert(p != nullptr);
+    rt_pixels_draw_box(p, 0, 0, INT64_MAX, INT64_MAX, 0xFFFFFF);
+    rt_pixels_draw_frame(p, 0, 0, INT64_MAX, INT64_MAX, 0xFFFFFF);
+    rt_pixels_draw_disc(p, 0, 0, INT64_MAX, 0xFFFFFF);
+    rt_pixels_draw_ring(p, 0, 0, INT64_MAX, 0xFFFFFF);
+    rt_pixels_draw_ellipse(p, 0, 0, INT64_MAX, INT64_MAX, 0xFFFFFF);
+    rt_pixels_draw_ellipse_frame(p, 0, 0, INT64_MAX, INT64_MAX, 0xFFFFFF);
+    rt_pixels_draw_triangle(p, 0, 0, INT64_MAX, 0, 0, INT64_MAX, 0xFFFFFF);
+    rt_pixels_draw_bezier(p, 0, 0, INT64_MAX, INT64_MAX, 0, 0, 0xFFFFFF);
+    rt_pixels_draw_thick_line(p, INT64_MIN, INT64_MIN, INT64_MAX, INT64_MAX, INT64_MAX, 0xFFFFFF);
+    assert(rt_pixels_generation(p) == 0);
+    printf("test_empty_asymmetric_surface_rejects_all_raster_work: PASSED\n");
 }
 
 // ============================================================================
@@ -373,6 +448,15 @@ static void test_drawtriangle_degenerate_draws_longest_edge() {
     printf("test_drawtriangle_degenerate_draws_longest_edge: PASSED\n");
 }
 
+static void test_drawtriangle_extreme_collinear_edge_is_exact() {
+    void *p = rt_pixels_new(8, 1);
+    rt_pixels_draw_triangle(p, INT64_MIN, 0, 0, 0, INT64_MAX, 0, rt_color_rgba(1, 2, 3, 4));
+    for (int64_t x = 0; x < 8; x++)
+        assert(rt_pixels_get(p, x, 0) == 0x01020304);
+    assert(rt_pixels_generation(p) == 1);
+    printf("test_drawtriangle_extreme_collinear_edge_is_exact: PASSED\n");
+}
+
 // ============================================================================
 // DrawBezier
 // ============================================================================
@@ -497,12 +581,12 @@ static uint64_t fnv1a_pixels(void *p) {
 
 /// @brief Render a fixed composition into @p p so the same scene hashes identically.
 static void draw_golden_scene(void *p) {
-    rt_pixels_fill(p, 0x202030FF);                // dark slate background
-    rt_pixels_draw_box(p, 8, 8, 40, 24, 0x3060A0FF);   // filled panel
-    rt_pixels_draw_frame(p, 6, 6, 44, 28, 0xFFFFFFFF); // panel border
-    rt_pixels_draw_disc(p, 24, 40, 12, 0xC04040FF);    // red disc
-    rt_pixels_draw_ring(p, 48, 44, 10, 0x40C060FF);    // green ring
-    rt_pixels_draw_line(p, 2, 2, 61, 61, 0xF0F000FF);  // yellow diagonal
+    rt_pixels_fill(p, 0x202030FF);                       // dark slate background
+    rt_pixels_draw_box(p, 8, 8, 40, 24, 0x3060A0FF);     // filled panel
+    rt_pixels_draw_frame(p, 6, 6, 44, 28, 0xFFFFFFFF);   // panel border
+    rt_pixels_draw_disc(p, 24, 40, 12, 0xC04040FF);      // red disc
+    rt_pixels_draw_ring(p, 48, 44, 10, 0x40C060FF);      // green ring
+    rt_pixels_draw_line(p, 2, 2, 61, 61, 0xF0F000FF);    // yellow diagonal
     rt_pixels_draw_ellipse(p, 40, 18, 8, 5, 0x8040C0FF); // purple ellipse
 }
 
@@ -522,14 +606,16 @@ static void test_pixelhash_golden_value() {
     const uint64_t hash = fnv1a_pixels(p);
     // Golden fingerprint of the fixed scene. If a rasterization primitive changes
     // output, this fails — regenerate after confirming the new pixels are correct.
-    const uint64_t kGolden = 0xC661E50FE4007883ULL;
+    // Updated when filled circles/ellipses stopped rounding roots outward:
+    // only pixel centers mathematically inside each curve are now covered.
+    const uint64_t kGolden = 0x0040F5FA6926F3B3ULL;
     if (hash != kGolden)
         printf("test_pixelhash_golden_value: hash=0x%016llX (golden=0x%016llX)\n",
                static_cast<unsigned long long>(hash),
                static_cast<unsigned long long>(kGolden));
     assert(hash == kGolden);
     // Spot-check anchors so a hash mismatch is debuggable against known pixels.
-    assert(rt_pixels_get(p, 0, 0) == static_cast<int64_t>(0x202030FF)); // untouched bg corner
+    assert(rt_pixels_get(p, 0, 0) == static_cast<int64_t>(0x202030FF));   // untouched bg corner
     assert(rt_pixels_get(p, 24, 40) == static_cast<int64_t>(0xC04040FF)); // disc center
     printf("test_pixelhash_golden_value: PASSED\n");
 }
@@ -559,8 +645,11 @@ int main() {
     // DrawDisc
     test_drawdisc_center_set();
     test_drawdisc_outside_clear();
+    test_filled_curves_do_not_round_outside_pixel_centers();
     test_drawdisc_huge_radius_clips_to_buffer();
     test_shape_generation_only_changes_on_write();
+    test_primitives_touch_once_and_idempotent_redraws_do_not_touch();
+    test_empty_asymmetric_surface_rejects_all_raster_work();
 
     // DrawRing
     test_drawring_outline_set_interior_clear();
@@ -584,6 +673,7 @@ int main() {
     // DrawTriangle
     test_drawtriangle_interior();
     test_drawtriangle_degenerate_draws_longest_edge();
+    test_drawtriangle_extreme_collinear_edge_is_exact();
 
     // DrawBezier
     test_drawbezier_endpoints();

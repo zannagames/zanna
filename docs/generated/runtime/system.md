@@ -99,6 +99,35 @@ construct the class directly. Its public surface exposes operations including `S
 | <a id="zanna-system-process-startin"></a>`StartIn` | `obj<Zanna.System.Process.ProcessHandle>(str,obj,str)` | `Zanna.System.Process.StartIn` |
 | <a id="zanna-system-process-startwithenv"></a>`StartWithEnv` | `obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)` | `Zanna.System.Process.StartWithEnv` |
 
+<a id="zanna-system-embedhost-embedchannel"></a>
+### `Zanna.System.EmbedHost.EmbedChannel`
+
+One side of the Studio-to-game shared-memory embed channel.
+
+Hosts create channels and consume frames/push input; game-side producers
+attach and publish frames/poll input. Every operation is non-trapping so
+editor panes render truthful waiting/exited states.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-system-embedhost-embedchannel-isvalid"></a>`IsValid` | `i1()` | `Zanna.System.EmbedHost.IsValid` |
+| <a id="zanna-system-embedhost-embedchannel-close"></a>`Close` | `void()` | `Zanna.System.EmbedHost.Close` |
+| <a id="zanna-system-embedhost-embedchannel-framewidth"></a>`FrameWidth` | `i64()` | `Zanna.System.EmbedHost.FrameWidth` |
+| <a id="zanna-system-embedhost-embedchannel-frameheight"></a>`FrameHeight` | `i64()` | `Zanna.System.EmbedHost.FrameHeight` |
+| <a id="zanna-system-embedhost-embedchannel-acquireframeinto"></a>`AcquireFrameInto` | `i1(obj)` | `Zanna.System.EmbedHost.AcquireFrameInto` |
+| <a id="zanna-system-embedhost-embedchannel-acquireframetoimage"></a>`AcquireFrameToImage` | `i1(obj)` | `Zanna.System.EmbedHost.AcquireFrameToImage` |
+| <a id="zanna-system-embedhost-embedchannel-publishframe"></a>`PublishFrame` | `i1(obj)` | `Zanna.System.EmbedHost.PublishFrame` |
+| <a id="zanna-system-embedhost-embedchannel-pushevent"></a>`PushEvent` | `i1(i64,i64,i64,i64)` | `Zanna.System.EmbedHost.PushEvent` |
+| <a id="zanna-system-embedhost-embedchannel-pollevent"></a>`PollEvent` | `i64()` | `Zanna.System.EmbedHost.PollEvent` |
+| <a id="zanna-system-embedhost-embedchannel-eventa"></a>`EventA` | `i64()` | `Zanna.System.EmbedHost.EventA` |
+| <a id="zanna-system-embedhost-embedchannel-eventb"></a>`EventB` | `i64()` | `Zanna.System.EmbedHost.EventB` |
+| <a id="zanna-system-embedhost-embedchannel-eventc"></a>`EventC` | `i64()` | `Zanna.System.EmbedHost.EventC` |
+| <a id="zanna-system-embedhost-embedchannel-setsize"></a>`SetSize` | `i1(i64,i64)` | `Zanna.System.EmbedHost.SetSize` |
+| <a id="zanna-system-embedhost-embedchannel-producerattached"></a>`ProducerAttached` | `i1()` | `Zanna.System.EmbedHost.ProducerAttached` |
+| <a id="zanna-system-embedhost-embedchannel-producerexited"></a>`ProducerExited` | `i1()` | `Zanna.System.EmbedHost.ProducerExited` |
+
 <a id="zanna-system-process-processhandle"></a>
 ### `Zanna.System.Process.ProcessHandle`
 
@@ -246,6 +275,23 @@ construct the class directly. Its public surface exposes properties such as `Arc
 | <a id="zanna-system-commandresult-get-output"></a>`Zanna.System.CommandResult.get_Output` | `str(obj)` | `rt_exec_command_result_output` |
 | <a id="zanna-system-commandresult-get-exitcode"></a>`Zanna.System.CommandResult.get_ExitCode` | `i64(obj)` | `rt_exec_command_result_exit_code` |
 | <a id="zanna-system-commandresult-get-issuccess"></a>`Zanna.System.CommandResult.get_IsSuccess` | `i1(obj)` | `rt_exec_command_result_succeeded` |
+| <a id="zanna-system-embedhost-create"></a>`Zanna.System.EmbedHost.Create` | `obj<Zanna.System.EmbedHost.EmbedChannel>(str,i64,i64)` | `rt_embed_host_create` |
+| <a id="zanna-system-embedhost-attach"></a>`Zanna.System.EmbedHost.Attach` | `obj<Zanna.System.EmbedHost.EmbedChannel>(str)` | `rt_embed_host_attach` |
+| <a id="zanna-system-embedhost-close"></a>`Zanna.System.EmbedHost.Close` | `void(obj)` | `rt_embed_host_close` |
+| <a id="zanna-system-embedhost-isvalid"></a>`Zanna.System.EmbedHost.IsValid` | `i1(obj)` | `rt_embed_host_is_valid` |
+| <a id="zanna-system-embedhost-framewidth"></a>`Zanna.System.EmbedHost.FrameWidth` | `i64(obj)` | `rt_embed_host_frame_width` |
+| <a id="zanna-system-embedhost-frameheight"></a>`Zanna.System.EmbedHost.FrameHeight` | `i64(obj)` | `rt_embed_host_frame_height` |
+| <a id="zanna-system-embedhost-acquireframeinto"></a>`Zanna.System.EmbedHost.AcquireFrameInto` | `i1(obj,obj)` | `rt_embed_host_acquire_frame_into` |
+| <a id="zanna-system-embedhost-acquireframetoimage"></a>`Zanna.System.EmbedHost.AcquireFrameToImage` | `i1(obj,obj)` | `rt_embed_host_acquire_frame_to_image` |
+| <a id="zanna-system-embedhost-publishframe"></a>`Zanna.System.EmbedHost.PublishFrame` | `i1(obj,obj)` | `rt_embed_host_publish_frame` |
+| <a id="zanna-system-embedhost-pushevent"></a>`Zanna.System.EmbedHost.PushEvent` | `i1(obj,i64,i64,i64,i64)` | `rt_embed_host_push_event` |
+| <a id="zanna-system-embedhost-pollevent"></a>`Zanna.System.EmbedHost.PollEvent` | `i64(obj)` | `rt_embed_host_poll_event` |
+| <a id="zanna-system-embedhost-eventa"></a>`Zanna.System.EmbedHost.EventA` | `i64(obj)` | `rt_embed_host_event_a` |
+| <a id="zanna-system-embedhost-eventb"></a>`Zanna.System.EmbedHost.EventB` | `i64(obj)` | `rt_embed_host_event_b` |
+| <a id="zanna-system-embedhost-eventc"></a>`Zanna.System.EmbedHost.EventC` | `i64(obj)` | `rt_embed_host_event_c` |
+| <a id="zanna-system-embedhost-setsize"></a>`Zanna.System.EmbedHost.SetSize` | `i1(obj,i64,i64)` | `rt_embed_host_set_size` |
+| <a id="zanna-system-embedhost-producerattached"></a>`Zanna.System.EmbedHost.ProducerAttached` | `i1(obj)` | `rt_embed_host_producer_attached` |
+| <a id="zanna-system-embedhost-producerexited"></a>`Zanna.System.EmbedHost.ProducerExited` | `i1(obj)` | `rt_embed_host_producer_exited` |
 | `Zanna.System.Process.Start` | `obj<Zanna.System.Process.ProcessHandle>(str,obj)` | `rt_process_start` |
 | `Zanna.System.Process.StartIn` | `obj<Zanna.System.Process.ProcessHandle>(str,obj,str)` | `rt_process_start_in` |
 | `Zanna.System.Process.StartWithEnv` | `obj<Zanna.System.Process.ProcessHandle>(str,obj,str,obj)` | `rt_process_start_with_env` |

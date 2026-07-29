@@ -415,6 +415,8 @@ static VGFXMetalContext *metal_create_context_base(id<MTLDevice> device,
                                                    int32_t w,
                                                    int32_t h) {
     VGFXMetalContext *ctx = [[VGFXMetalContext alloc] init];
+    if (!ctx)
+        return nil;
     ctx.device = device;
     ctx.width = w;
     ctx.height = h;
@@ -427,6 +429,10 @@ static VGFXMetalContext *metal_create_context_base(id<MTLDevice> device,
     ctx.extraInfluenceCache = [NSMutableDictionary dictionaryWithCapacity:8];
     ctx.renderTargetCache = [NSMutableDictionary dictionaryWithCapacity:8];
     ctx.samplerCache = [NSMutableDictionary dictionaryWithCapacity:8];
+    if (!ctx.textureCache || !ctx.cubemapCache || !ctx.geometryCache || !ctx.morphCache ||
+        !ctx.extraInfluenceCache || !ctx.renderTargetCache || !ctx.samplerCache) {
+        return nil;
+    }
     ctx.currentTargetKind = VGFX3D_METAL_TARGET_SWAPCHAIN;
     ctx.textureUploadBudgetBytes = UINT64_MAX;
     return ctx;
@@ -436,11 +442,18 @@ static VGFXMetalContext *metal_create_context_base(id<MTLDevice> device,
 /// @param[in,out] ctx Context receiving the layer.
 /// @param[in,out] view Native AppKit view that hosts the layer.
 /// @param[in] device Metal device assigned to the new layer.
-static void metal_attach_layer_to_view(VGFXMetalContext *ctx, NSView *view, id<MTLDevice> device) {
+/// @return YES after a Metal layer is attached, otherwise NO.
+static BOOL metal_attach_layer_to_view(VGFXMetalContext *ctx, NSView *view, id<MTLDevice> device) {
+    if (!ctx || !view || !device)
+        return NO;
     view.wantsLayer = YES;
     if (!view.layer)
         view.layer = [CALayer layer];
+    if (!view.layer)
+        return NO;
     ctx.metalLayer = [CAMetalLayer layer];
+    if (!ctx.metalLayer)
+        return NO;
     ctx.metalLayer.device = device;
     ctx.metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
     ctx.metalLayer.framebufferOnly = NO;
@@ -448,6 +461,7 @@ static void metal_attach_layer_to_view(VGFXMetalContext *ctx, NSView *view, id<M
     ctx.metalLayer.autoresizingMask = kCALayerWidthSizable | kCALayerHeightSizable;
     [view.layer addSublayer:ctx.metalLayer];
     metal_update_layer_size(ctx);
+    return YES;
 }
 
 /// @brief Create the command queue and reset frame matrices/state.
@@ -461,6 +475,8 @@ static BOOL metal_create_command_queue_and_defaults(VGFXMetalContext *ctx, id<MT
         return NO;
     }
     ctx.inflightSemaphore = dispatch_semaphore_create(VGFX3D_METAL_MAX_INFLIGHT);
+    if (!ctx.inflightSemaphore)
+        return NO;
     ctx.transientRingCursor = 0;
     ctx.transientRingSlot = 0;
     mat4f_identity(ctx->_view);
@@ -823,7 +839,8 @@ static void metal_create_compact_pipeline_states(VGFXMetalContext *ctx,
 ///   light view-projections stay in the standard convention.
 /// @param[in,out] ctx Context receiving the depth-state variants.
 /// @param[in] device Metal device used to create the states.
-static void metal_create_depth_state_variants(VGFXMetalContext *ctx, id<MTLDevice> device) {
+/// @return YES when every required depth state exists, otherwise NO.
+static BOOL metal_create_depth_state_variants(VGFXMetalContext *ctx, id<MTLDevice> device) {
     MTLDepthStencilDescriptor *dd = [[MTLDepthStencilDescriptor alloc] init];
     dd.depthCompareFunction = MTLCompareFunctionGreater;
     dd.depthWriteEnabled = YES;
@@ -834,12 +851,15 @@ static void metal_create_depth_state_variants(VGFXMetalContext *ctx, id<MTLDevic
     ctx.depthStateDisabled = [device newDepthStencilStateWithDescriptor:dd];
     dd.depthCompareFunction = MTLCompareFunctionGreaterEqual;
     ctx.skyboxDepthState = [device newDepthStencilStateWithDescriptor:dd];
+    return ctx.depthState && ctx.depthStateNoWrite && ctx.depthStateDisabled &&
+           ctx.skyboxDepthState;
 }
 
 /// @brief Create default white 2D/cubemap textures plus the default sampler.
 /// @param[in,out] ctx Context receiving fallback textures, sampler, and BRDF LUT.
 /// @param[in] device Metal device used to create the resources.
-static void metal_create_default_texture_resources(VGFXMetalContext *ctx, id<MTLDevice> device) {
+/// @return YES when all fallback resources exist, otherwise NO.
+static BOOL metal_create_default_texture_resources(VGFXMetalContext *ctx, id<MTLDevice> device) {
     MTLTextureDescriptor *dtd =
         [MTLTextureDescriptor texture2DDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
                                                            width:1
@@ -848,6 +868,8 @@ static void metal_create_default_texture_resources(VGFXMetalContext *ctx, id<MTL
     dtd.usage = MTLTextureUsageShaderRead;
     dtd.storageMode = MTLStorageModeShared;
     ctx.defaultTexture = [device newTextureWithDescriptor:dtd];
+    if (!ctx.defaultTexture)
+        return NO;
     uint32_t white = 0xFFFFFFFF;
     [ctx.defaultTexture replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
                           mipmapLevel:0
@@ -859,6 +881,8 @@ static void metal_create_default_texture_resources(VGFXMetalContext *ctx, id<MTL
     sd.magFilter = MTLSamplerMinMagFilterLinear;
     sd.mipFilter = MTLSamplerMipFilterLinear;
     ctx.defaultSampler = [device newSamplerStateWithDescriptor:sd];
+    if (!ctx.defaultSampler)
+        return NO;
 
     MTLTextureDescriptor *cubeDesc =
         [MTLTextureDescriptor textureCubeDescriptorWithPixelFormat:MTLPixelFormatBGRA8Unorm
@@ -867,6 +891,8 @@ static void metal_create_default_texture_resources(VGFXMetalContext *ctx, id<MTL
     cubeDesc.usage = MTLTextureUsageShaderRead;
     cubeDesc.storageMode = MTLStorageModeShared;
     ctx.defaultCubemap = [device newTextureWithDescriptor:cubeDesc];
+    if (!ctx.defaultCubemap)
+        return NO;
     for (NSUInteger face = 0; face < 6; face++) {
         uint32_t cube_white = 0xFFFFFFFF;
         [ctx.defaultCubemap replaceRegion:MTLRegionMake2D(0, 0, 1, 1)
@@ -886,17 +912,21 @@ static void metal_create_default_texture_resources(VGFXMetalContext *ctx, id<MTL
     lutDesc.usage = MTLTextureUsageShaderRead;
     lutDesc.storageMode = MTLStorageModeShared;
     ctx.brdfLutTexture = [device newTextureWithDescriptor:lutDesc];
+    if (!ctx.brdfLutTexture)
+        return NO;
     [ctx.brdfLutTexture
         replaceRegion:MTLRegionMake2D(0, 0, VGFX3D_BRDF_LUT_SIZE, VGFX3D_BRDF_LUT_SIZE)
           mipmapLevel:0
             withBytes:vgfx3d_brdf_lut_data()
           bytesPerRow:(NSUInteger)VGFX3D_BRDF_LUT_SIZE * 2 * sizeof(float)];
+    return YES;
 }
 
 /// @brief Create shared texture and cubemap samplers.
 /// @param[in,out] ctx Context receiving shared 2D and cube sampler states.
 /// @param[in] device Metal device used to create the samplers.
-static void metal_create_shared_sampler_resources(VGFXMetalContext *ctx, id<MTLDevice> device) {
+/// @return YES when both shared samplers exist, otherwise NO.
+static BOOL metal_create_shared_sampler_resources(VGFXMetalContext *ctx, id<MTLDevice> device) {
     MTLSamplerDescriptor *sd = [[MTLSamplerDescriptor alloc] init];
     sd.minFilter = MTLSamplerMinMagFilterLinear;
     sd.magFilter = MTLSamplerMinMagFilterLinear;
@@ -913,13 +943,15 @@ static void metal_create_shared_sampler_resources(VGFXMetalContext *ctx, id<MTLD
     cubeSd.tAddressMode = MTLSamplerAddressModeClampToEdge;
     cubeSd.rAddressMode = MTLSamplerAddressModeClampToEdge;
     ctx.cubeSampler = [device newSamplerStateWithDescriptor:cubeSd];
+    return ctx.sharedSampler && ctx.cubeSampler;
 }
 
 /// @brief Create shadow pipeline, comparison sampler, and shadow depth state.
 /// @param[in,out] ctx Context receiving the shadow resources.
 /// @param[in] device Metal device used for resource creation.
 /// @param[in] funcs Resolved shadow vertex and fragment functions.
-static void metal_create_shadow_resources(VGFXMetalContext *ctx,
+/// @return YES when the shadow pipeline, sampler, and depth state all exist, otherwise NO.
+static BOOL metal_create_shadow_resources(VGFXMetalContext *ctx,
                                           id<MTLDevice> device,
                                           const metal_main_functions_t *funcs) {
     MTLRenderPipelineDescriptor *spd = [[MTLRenderPipelineDescriptor alloc] init];
@@ -941,6 +973,7 @@ static void metal_create_shadow_resources(VGFXMetalContext *ctx,
     sdd.depthCompareFunction = MTLCompareFunctionLess;
     sdd.depthWriteEnabled = YES;
     ctx.shadowDepthState = [device newDepthStencilStateWithDescriptor:sdd];
+    return ctx.shadowPipeline && ctx.shadowSampler && ctx.shadowDepthState;
 }
 
 /// @brief Backend vtable entry: create the Metal rendering context for window @p win sized @p w×@p
@@ -977,16 +1010,25 @@ static void *metal_create_ctx(vgfx_window_t win, int32_t w, int32_t h) {
 
         VGFXMetalContext *ctx = metal_create_context_base(device, win, w, h);
         metal_main_functions_t funcs;
-        if (view)
-            metal_attach_layer_to_view(ctx, view, device);
+        if (!ctx)
+            return NULL;
+        if (view && !metal_attach_layer_to_view(ctx, view, device))
+            return NULL;
         if (!metal_create_command_queue_and_defaults(ctx, device) ||
             !metal_compile_main_library(ctx, device) || !metal_load_main_functions(ctx, &funcs) ||
-            !metal_create_main_pipeline_states(ctx, device, &funcs))
+            !metal_create_main_pipeline_states(ctx, device, &funcs)) {
+            [ctx.metalLayer removeFromSuperlayer];
+            ctx.metalLayer = nil;
             return NULL;
-        metal_create_depth_state_variants(ctx, device);
-        metal_create_default_texture_resources(ctx, device);
-        metal_create_shared_sampler_resources(ctx, device);
-        metal_create_shadow_resources(ctx, device, &funcs);
+        }
+        if (!metal_create_depth_state_variants(ctx, device) ||
+            !metal_create_default_texture_resources(ctx, device) ||
+            !metal_create_shared_sampler_resources(ctx, device) ||
+            !metal_create_shadow_resources(ctx, device, &funcs)) {
+            [ctx.metalLayer removeFromSuperlayer];
+            ctx.metalLayer = nil;
+            return NULL;
+        }
         metal_create_compact_pipeline_states(ctx, device, &funcs);
 
         /* MTL-11: Post-processing fullscreen quad shader + pipeline */

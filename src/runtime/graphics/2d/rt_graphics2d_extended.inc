@@ -162,6 +162,84 @@ typedef struct {
     int64_t tile_height;
 } rt_tiledmaploader_impl;
 
+/// @brief Validate an extended 2D handle's class and complete payload layout.
+/// @details Every public extended-class entry point downcasts opaque handles.
+///          Requiring the concrete payload size here prevents same-class,
+///          undersized runtime objects from turning those casts into
+///          out-of-bounds reads or writes. Unknown class identifiers retain the
+///          generic class-only behavior for compatibility with shared helpers.
+/// @param obj Opaque runtime object candidate.
+/// @param class_id Expected extended 2D class identifier.
+/// @return Nonzero when the class and its minimum payload size match.
+static int32_t rt2d_extended_has_class(void *obj, int64_t class_id) {
+    size_t min_size = 0;
+    switch (class_id) {
+        case RT2D_MATERIAL_CLASS_ID:
+            min_size = sizeof(rt_material2d_impl);
+            break;
+        case RT2D_TRANSFORM_CLASS_ID:
+            min_size = sizeof(rt_transform2d_impl);
+            break;
+        case RT2D_SAMPLER_CLASS_ID:
+            min_size = sizeof(rt_sampler2d_impl);
+            break;
+        case RT2D_BLENDSTATE_CLASS_ID:
+            min_size = sizeof(rt_blendstate2d_impl);
+            break;
+        case RT2D_SPRITERENDERER_CLASS_ID:
+            min_size = sizeof(rt_spriterenderer2d_impl);
+            break;
+        case RT2D_TILECHUNKCACHE_CLASS_ID:
+            min_size = sizeof(rt_tilechunkcache2d_impl);
+            break;
+        case RT2D_TILEMAPRENDERER_CLASS_ID:
+            min_size = sizeof(rt_tilemaprenderer2d_impl);
+            break;
+        case RT2D_ANIMATIONCLIP_CLASS_ID:
+            min_size = sizeof(rt_animationclip2d_impl);
+            break;
+        case RT2D_ANIMATEDSPRITE_CLASS_ID:
+            min_size = sizeof(rt_animatedsprite2d_impl);
+            break;
+        case RT2D_TEXTLAYOUT_CLASS_ID:
+            min_size = sizeof(rt_textlayout2d_impl);
+            break;
+        case RT2D_RENDERPASS_CLASS_ID:
+            min_size = sizeof(rt_renderpass2d_impl);
+            break;
+        case RT2D_RENDERGRAPH_CLASS_ID:
+            min_size = sizeof(rt_rendergraph2d_impl);
+            break;
+        case RT2D_COLLISIONMASK_CLASS_ID:
+            min_size = sizeof(rt_collisionmask2d_impl);
+            break;
+        case RT2D_HITBOX_CLASS_ID:
+            min_size = sizeof(rt_hitbox2d_impl);
+            break;
+        case RT2D_PALETTE_CLASS_ID:
+            min_size = sizeof(rt_palette2d_impl);
+            break;
+        case RT2D_GRADIENT_CLASS_ID:
+            min_size = sizeof(rt_gradient2d_impl);
+            break;
+        case RT2D_CAMERARIG_CLASS_ID:
+            min_size = sizeof(rt_camerarig2d_impl);
+            break;
+        case RT2D_TEXTUREPACKERATLAS_CLASS_ID:
+            min_size = sizeof(rt_texturepackeratlas_impl);
+            break;
+        case RT2D_ASEPRITEIMPORTER_CLASS_ID:
+            min_size = sizeof(rt_asepriteimporter_impl);
+            break;
+        case RT2D_TILEDMAPLOADER_CLASS_ID:
+            min_size = sizeof(rt_tiledmaploader_impl);
+            break;
+        default:
+            break;
+    }
+    return rt2d_has_class_min(obj, class_id, min_size);
+}
+
 //=============================================================================
 // Second-tier classes: Transform2D / CollisionMask2D / HitBox2D / Palette2D /
 // Gradient2D / CameraRig2D / Atlas importers / TileChunkCache2D /
@@ -176,21 +254,6 @@ typedef struct {
 // same 100 == 1.0x fixed-point convention as Viewport2D's 1000 == 1.0x,
 // except Transform2D scales are per-axis integers with 100 meaning "identity."
 
-/// @brief Round a double to the nearest int64, away from zero.
-/// @param value Floating-point value to convert.
-/// @return The nearest signed 64-bit integer, saturated at the limits; negative
-///         infinity maps to `INT64_MIN`, while positive infinity and NaN map to
-///         `INT64_MAX`.
-static int64_t round_double_to_i64(double value) {
-    if (!isfinite(value))
-        return value < 0.0 ? INT64_MIN : INT64_MAX;
-    if (value >= (double)INT64_MAX)
-        return INT64_MAX;
-    if (value <= (double)INT64_MIN)
-        return INT64_MIN;
-    return (int64_t)(value >= 0.0 ? value + 0.5 : value - 0.5);
-}
-
 /// @brief Apply a Transform2D to a point: translate, pivot around origin, scale,
 ///        rotate, translate back.
 /// @details The transformation order matters. Each input point is:
@@ -198,9 +261,11 @@ static int64_t round_double_to_i64(double value) {
 ///          2. Scaled per-axis (fixed-point: `100` == 1.0x).
 ///          3. Rotated by `rotation` degrees.
 ///          4. Shifted back by `origin_x + x` (position plus origin).
-///          Rotation uses double-precision `cos/sin` since the `PI/180`
-///          conversion already forces a float round-trip. Final coordinates
-///          are rounded away from zero via `round_double_to_i64` so a point
+///          Rotation is reduced modulo one revolution before `cos/sin`, which
+///          avoids catastrophic argument-reduction loss for very large stored
+///          degree values. Coordinate intermediates use `long double`, and the
+///          identity-scale/no-rotation path stays entirely in integer space.
+///          Final coordinates are rounded away from zero so a point
 ///          that lands *exactly* between pixels snaps consistently
 ///          regardless of sign. Passing a NULL transform is a no-op —
 ///          input point is copied straight to output (identity).
@@ -219,20 +284,31 @@ static void transform2d_point(
         return;
     }
 
-    double px = ((double)x - (double)impl->origin_x) * (double)impl->scale_x / 100.0;
-    double py = ((double)y - (double)impl->origin_y) * (double)impl->scale_y / 100.0;
-    double radians = (double)impl->rotation * RT2D_PI / 180.0;
+    int64_t rotation = impl->rotation % 360;
+    if (rotation == 0 && impl->scale_x == 100 && impl->scale_y == 100) {
+        if (out_x)
+            *out_x = rt2d_saturating_add_i64(impl->x, x);
+        if (out_y)
+            *out_y = rt2d_saturating_add_i64(impl->y, y);
+        return;
+    }
+
+    long double px =
+        ((long double)x - (long double)impl->origin_x) * (long double)impl->scale_x / 100.0L;
+    long double py =
+        ((long double)y - (long double)impl->origin_y) * (long double)impl->scale_y / 100.0L;
+    double radians = (double)rotation * RT2D_PI / 180.0;
     double c = cos(radians);
     double s = sin(radians);
-    double rx = px * c - py * s;
-    double ry = px * s + py * c;
+    long double rx = px * (long double)c - py * (long double)s;
+    long double ry = px * (long double)s + py * (long double)c;
 
     if (out_x)
         *out_x = rt2d_saturating_add_i64(rt2d_saturating_add_i64(impl->x, impl->origin_x),
-                                    round_double_to_i64(rx));
+                                         round_long_double_to_i64(rx));
     if (out_y)
         *out_y = rt2d_saturating_add_i64(rt2d_saturating_add_i64(impl->y, impl->origin_y),
-                                    round_double_to_i64(ry));
+                                         round_long_double_to_i64(ry));
 }
 
 /// @brief Allocate a Transform2D with identity state (pos=0, scale=100, rotation=0, origin=0).
@@ -253,7 +329,7 @@ void *rt_transform2d_new(void) {
 /// @param transform Borrowed Transform2D handle.
 /// @return The X position, or `0` for an invalid handle.
 int64_t rt_transform2d_get_x(void *transform) {
-    return rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
+    return rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
                ? ((rt_transform2d_impl *)transform)->x
                : 0;
 }
@@ -262,7 +338,7 @@ int64_t rt_transform2d_get_x(void *transform) {
 /// @param transform Borrowed Transform2D handle to update.
 /// @param x New X position.
 void rt_transform2d_set_x(void *transform, int64_t x) {
-    if (rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
+    if (rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
         ((rt_transform2d_impl *)transform)->x = x;
 }
 
@@ -270,7 +346,7 @@ void rt_transform2d_set_x(void *transform, int64_t x) {
 /// @param transform Borrowed Transform2D handle.
 /// @return The Y position, or `0` for an invalid handle.
 int64_t rt_transform2d_get_y(void *transform) {
-    return rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
+    return rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
                ? ((rt_transform2d_impl *)transform)->y
                : 0;
 }
@@ -279,7 +355,7 @@ int64_t rt_transform2d_get_y(void *transform) {
 /// @param transform Borrowed Transform2D handle to update.
 /// @param y New Y position.
 void rt_transform2d_set_y(void *transform, int64_t y) {
-    if (rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
+    if (rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
         ((rt_transform2d_impl *)transform)->y = y;
 }
 
@@ -287,7 +363,7 @@ void rt_transform2d_set_y(void *transform, int64_t y) {
 /// @param transform Borrowed Transform2D handle.
 /// @return The X scale, or identity scale `100` for an invalid handle.
 int64_t rt_transform2d_get_scale_x(void *transform) {
-    return rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
+    return rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
                ? ((rt_transform2d_impl *)transform)->scale_x
                : 100;
 }
@@ -296,7 +372,7 @@ int64_t rt_transform2d_get_scale_x(void *transform) {
 /// @param transform Borrowed Transform2D handle to update.
 /// @param scale_x Requested fixed-point X scale.
 void rt_transform2d_set_scale_x(void *transform, int64_t scale_x) {
-    if (rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
+    if (rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
         ((rt_transform2d_impl *)transform)->scale_x = clamp_i64(scale_x, 1, 10000);
 }
 
@@ -304,7 +380,7 @@ void rt_transform2d_set_scale_x(void *transform, int64_t scale_x) {
 /// @param transform Borrowed Transform2D handle.
 /// @return The Y scale, or identity scale `100` for an invalid handle.
 int64_t rt_transform2d_get_scale_y(void *transform) {
-    return rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
+    return rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
                ? ((rt_transform2d_impl *)transform)->scale_y
                : 100;
 }
@@ -313,7 +389,7 @@ int64_t rt_transform2d_get_scale_y(void *transform) {
 /// @param transform Borrowed Transform2D handle to update.
 /// @param scale_y Requested fixed-point Y scale.
 void rt_transform2d_set_scale_y(void *transform, int64_t scale_y) {
-    if (rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
+    if (rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
         ((rt_transform2d_impl *)transform)->scale_y = clamp_i64(scale_y, 1, 10000);
 }
 
@@ -321,7 +397,7 @@ void rt_transform2d_set_scale_y(void *transform, int64_t scale_y) {
 /// @param transform Borrowed Transform2D handle.
 /// @return The stored rotation, or `0` for an invalid handle.
 int64_t rt_transform2d_get_rotation(void *transform) {
-    return rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
+    return rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
                ? ((rt_transform2d_impl *)transform)->rotation
                : 0;
 }
@@ -330,7 +406,7 @@ int64_t rt_transform2d_get_rotation(void *transform) {
 /// @param transform Borrowed Transform2D handle to update.
 /// @param degrees New unnormalized rotation.
 void rt_transform2d_set_rotation(void *transform, int64_t degrees) {
-    if (rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
+    if (rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
         ((rt_transform2d_impl *)transform)->rotation = degrees;
 }
 
@@ -339,7 +415,7 @@ void rt_transform2d_set_rotation(void *transform, int64_t degrees) {
 /// @param x New X position.
 /// @param y New Y position.
 void rt_transform2d_set_position(void *transform, int64_t x, int64_t y) {
-    if (!rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
+    if (!rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
         return;
     rt_transform2d_impl *impl = (rt_transform2d_impl *)transform;
     impl->x = x;
@@ -360,7 +436,7 @@ void rt_transform2d_set_scale(void *transform, int64_t scale_x, int64_t scale_y)
 /// @param x Origin X coordinate.
 /// @param y Origin Y coordinate.
 void rt_transform2d_set_origin(void *transform, int64_t x, int64_t y) {
-    if (!rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
+    if (!rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
         return;
     rt_transform2d_impl *impl = (rt_transform2d_impl *)transform;
     impl->origin_x = x;
@@ -372,7 +448,7 @@ void rt_transform2d_set_origin(void *transform, int64_t x, int64_t y) {
 /// @param dx X displacement.
 /// @param dy Y displacement.
 void rt_transform2d_translate(void *transform, int64_t dx, int64_t dy) {
-    if (!rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
+    if (!rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID))
         return;
     rt_transform2d_impl *impl = (rt_transform2d_impl *)transform;
     impl->x = rt2d_saturating_add_i64(impl->x, dx);
@@ -387,7 +463,7 @@ void rt_transform2d_translate(void *transform, int64_t dx, int64_t dy) {
 /// @return The transformed X coordinate, or @p x when the handle is invalid.
 int64_t rt_transform2d_transform_x(void *transform, int64_t x, int64_t y) {
     int64_t out_x = x;
-    transform2d_point(rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
+    transform2d_point(rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
                           ? (rt_transform2d_impl *)transform
                           : NULL,
                       x,
@@ -405,7 +481,7 @@ int64_t rt_transform2d_transform_x(void *transform, int64_t x, int64_t y) {
 /// @return The transformed Y coordinate, or @p y when the handle is invalid.
 int64_t rt_transform2d_transform_y(void *transform, int64_t x, int64_t y) {
     int64_t out_y = y;
-    transform2d_point(rt2d_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
+    transform2d_point(rt2d_extended_has_class(transform, RT2D_TRANSFORM_CLASS_ID)
                           ? (rt_transform2d_impl *)transform
                           : NULL,
                       x,
@@ -431,7 +507,7 @@ void *rt_sampler2d_new(void) {
 /// @param sampler Borrowed Sampler2D handle to update.
 /// @param filter Requested filter mode.
 void rt_sampler2d_set_filter(void *sampler, int64_t filter) {
-    if (rt2d_has_class(sampler, RT2D_SAMPLER_CLASS_ID))
+    if (rt2d_extended_has_class(sampler, RT2D_SAMPLER_CLASS_ID))
         ((rt_sampler2d_impl *)sampler)->filter = filter == RT_GRAPHICS2D_FILTER_LINEAR
                                                      ? RT_GRAPHICS2D_FILTER_LINEAR
                                                      : RT_GRAPHICS2D_FILTER_NEAREST;
@@ -441,15 +517,16 @@ void rt_sampler2d_set_filter(void *sampler, int64_t filter) {
 /// @param sampler Borrowed Sampler2D handle.
 /// @return The stored filter, or nearest filtering for an invalid handle.
 int64_t rt_sampler2d_get_filter(void *sampler) {
-    return rt2d_has_class(sampler, RT2D_SAMPLER_CLASS_ID) ? ((rt_sampler2d_impl *)sampler)->filter
-                                                          : RT_GRAPHICS2D_FILTER_NEAREST;
+    return rt2d_extended_has_class(sampler, RT2D_SAMPLER_CLASS_ID)
+               ? ((rt_sampler2d_impl *)sampler)->filter
+               : RT_GRAPHICS2D_FILTER_NEAREST;
 }
 
 /// @brief Set the wrap mode; unrecognised values fall back to CLAMP.
 /// @param sampler Borrowed Sampler2D handle to update.
 /// @param wrap Requested wrap mode.
 void rt_sampler2d_set_wrap(void *sampler, int64_t wrap) {
-    if (rt2d_has_class(sampler, RT2D_SAMPLER_CLASS_ID))
+    if (rt2d_extended_has_class(sampler, RT2D_SAMPLER_CLASS_ID))
         ((rt_sampler2d_impl *)sampler)->wrap = wrap == RT_GRAPHICS2D_WRAP_REPEAT
                                                    ? RT_GRAPHICS2D_WRAP_REPEAT
                                                    : RT_GRAPHICS2D_WRAP_CLAMP;
@@ -459,8 +536,9 @@ void rt_sampler2d_set_wrap(void *sampler, int64_t wrap) {
 /// @param sampler Borrowed Sampler2D handle.
 /// @return The stored wrap mode, or clamp wrapping for an invalid handle.
 int64_t rt_sampler2d_get_wrap(void *sampler) {
-    return rt2d_has_class(sampler, RT2D_SAMPLER_CLASS_ID) ? ((rt_sampler2d_impl *)sampler)->wrap
-                                                          : RT_GRAPHICS2D_WRAP_CLAMP;
+    return rt2d_extended_has_class(sampler, RT2D_SAMPLER_CLASS_ID)
+               ? ((rt_sampler2d_impl *)sampler)->wrap
+               : RT_GRAPHICS2D_WRAP_CLAMP;
 }
 
 /// @brief Push the sampler's filter and wrap settings into a Texture2D.
@@ -469,7 +547,7 @@ int64_t rt_sampler2d_get_wrap(void *sampler) {
 /// @param sampler Borrowed source Sampler2D.
 /// @param texture Borrowed destination Texture2D.
 void rt_sampler2d_apply_to_texture(void *sampler, void *texture) {
-    if (!rt2d_has_class(sampler, RT2D_SAMPLER_CLASS_ID) || !texture)
+    if (!rt2d_extended_has_class(sampler, RT2D_SAMPLER_CLASS_ID) || !texture)
         return;
     rt_texture2d_set_filter(texture, rt_sampler2d_get_filter(sampler));
     rt_texture2d_set_wrap(texture, rt_sampler2d_get_wrap(sampler));
@@ -493,7 +571,7 @@ void *rt_blendstate2d_new(void) {
 /// @param state Borrowed BlendState2D handle to update.
 /// @param blend_mode Requested blend mode.
 void rt_blendstate2d_set_blend_mode(void *state, int64_t blend_mode) {
-    if (rt2d_has_class(state, RT2D_BLENDSTATE_CLASS_ID))
+    if (rt2d_extended_has_class(state, RT2D_BLENDSTATE_CLASS_ID))
         ((rt_blendstate2d_impl *)state)->blend_mode = clamp_i64(blend_mode, 0, 2);
 }
 
@@ -501,7 +579,7 @@ void rt_blendstate2d_set_blend_mode(void *state, int64_t blend_mode) {
 /// @param state Borrowed BlendState2D handle.
 /// @return The stored mode, or alpha blending for an invalid handle.
 int64_t rt_blendstate2d_get_blend_mode(void *state) {
-    return rt2d_has_class(state, RT2D_BLENDSTATE_CLASS_ID)
+    return rt2d_extended_has_class(state, RT2D_BLENDSTATE_CLASS_ID)
                ? ((rt_blendstate2d_impl *)state)->blend_mode
                : RT_GRAPHICS2D_BLEND_ALPHA;
 }
@@ -510,7 +588,7 @@ int64_t rt_blendstate2d_get_blend_mode(void *state) {
 /// @param state Borrowed BlendState2D handle to update.
 /// @param rgb Requested tint or a negative disable sentinel.
 void rt_blendstate2d_set_tint(void *state, int64_t rgb) {
-    if (rt2d_has_class(state, RT2D_BLENDSTATE_CLASS_ID))
+    if (rt2d_extended_has_class(state, RT2D_BLENDSTATE_CLASS_ID))
         ((rt_blendstate2d_impl *)state)->tint = rgb < 0 ? -1 : (rgb & 0x00FFFFFF);
 }
 
@@ -518,15 +596,16 @@ void rt_blendstate2d_set_tint(void *state, int64_t rgb) {
 /// @param state Borrowed BlendState2D handle.
 /// @return The stored tint, or `-1` when disabled or invalid.
 int64_t rt_blendstate2d_get_tint(void *state) {
-    return rt2d_has_class(state, RT2D_BLENDSTATE_CLASS_ID) ? ((rt_blendstate2d_impl *)state)->tint
-                                                           : -1;
+    return rt2d_extended_has_class(state, RT2D_BLENDSTATE_CLASS_ID)
+               ? ((rt_blendstate2d_impl *)state)->tint
+               : -1;
 }
 
 /// @brief Set the global alpha in [0, 255]; values are clamped.
 /// @param state Borrowed BlendState2D handle to update.
 /// @param alpha Requested alpha scale.
 void rt_blendstate2d_set_alpha(void *state, int64_t alpha) {
-    if (rt2d_has_class(state, RT2D_BLENDSTATE_CLASS_ID))
+    if (rt2d_extended_has_class(state, RT2D_BLENDSTATE_CLASS_ID))
         ((rt_blendstate2d_impl *)state)->alpha = clamp_u8_i64(alpha);
 }
 
@@ -534,8 +613,9 @@ void rt_blendstate2d_set_alpha(void *state, int64_t alpha) {
 /// @param state Borrowed BlendState2D handle.
 /// @return The stored alpha, or `255` for an invalid handle.
 int64_t rt_blendstate2d_get_alpha(void *state) {
-    return rt2d_has_class(state, RT2D_BLENDSTATE_CLASS_ID) ? ((rt_blendstate2d_impl *)state)->alpha
-                                                           : 255;
+    return rt2d_extended_has_class(state, RT2D_BLENDSTATE_CLASS_ID)
+               ? ((rt_blendstate2d_impl *)state)->alpha
+               : 255;
 }
 
 /// @brief Push blend mode, alpha, and tint from this state into a Renderer2D.
@@ -544,7 +624,7 @@ int64_t rt_blendstate2d_get_alpha(void *state) {
 /// @param state Borrowed source BlendState2D.
 /// @param renderer Borrowed destination Renderer2D.
 void rt_blendstate2d_apply_to_renderer(void *state, void *renderer) {
-    if (!rt2d_has_class(state, RT2D_BLENDSTATE_CLASS_ID) || !renderer)
+    if (!rt2d_extended_has_class(state, RT2D_BLENDSTATE_CLASS_ID) || !renderer)
         return;
     rt_renderer2d_set_blend_mode(renderer, rt_blendstate2d_get_blend_mode(state));
     rt_renderer2d_set_alpha(renderer, rt_blendstate2d_get_alpha(state));
@@ -554,7 +634,7 @@ void rt_blendstate2d_apply_to_renderer(void *state, void *renderer) {
 /// @brief GC finalizer — releases retained references to material, sampler, and blend state.
 /// @param obj SpriteRenderer2D payload being finalized.
 static void spriterenderer2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_SPRITERENDERER_CLASS_ID))
+    if (!rt2d_extended_has_class(obj, RT2D_SPRITERENDERER_CLASS_ID))
         return;
     rt_spriterenderer2d_impl *impl = (rt_spriterenderer2d_impl *)obj;
     rt2d_release_ref_slot(&impl->material);
@@ -588,8 +668,8 @@ static void spriterenderer2d_set_ref(void **slot, void *value) {
 /// @param sprite_renderer Borrowed SpriteRenderer2D handle to update.
 /// @param material Borrowed Material2D to retain, or `NULL` to clear.
 void rt_spriterenderer2d_set_material(void *sprite_renderer, void *material) {
-    if (rt2d_has_class(sprite_renderer, RT2D_SPRITERENDERER_CLASS_ID) &&
-        (!material || rt2d_has_class(material, RT2D_MATERIAL_CLASS_ID)))
+    if (rt2d_extended_has_class(sprite_renderer, RT2D_SPRITERENDERER_CLASS_ID) &&
+        (!material || rt2d_extended_has_class(material, RT2D_MATERIAL_CLASS_ID)))
         spriterenderer2d_set_ref(&((rt_spriterenderer2d_impl *)sprite_renderer)->material,
                                  material);
 }
@@ -600,8 +680,8 @@ void rt_spriterenderer2d_set_material(void *sprite_renderer, void *material) {
 /// @param sprite_renderer Borrowed SpriteRenderer2D handle to update.
 /// @param sampler Borrowed Sampler2D to retain, or `NULL` to clear.
 void rt_spriterenderer2d_set_sampler(void *sprite_renderer, void *sampler) {
-    if (rt2d_has_class(sprite_renderer, RT2D_SPRITERENDERER_CLASS_ID) &&
-        (!sampler || rt2d_has_class(sampler, RT2D_SAMPLER_CLASS_ID)))
+    if (rt2d_extended_has_class(sprite_renderer, RT2D_SPRITERENDERER_CLASS_ID) &&
+        (!sampler || rt2d_extended_has_class(sampler, RT2D_SAMPLER_CLASS_ID)))
         spriterenderer2d_set_ref(&((rt_spriterenderer2d_impl *)sprite_renderer)->sampler, sampler);
 }
 
@@ -611,8 +691,8 @@ void rt_spriterenderer2d_set_sampler(void *sprite_renderer, void *sampler) {
 /// @param sprite_renderer Borrowed SpriteRenderer2D handle to update.
 /// @param blend_state Borrowed BlendState2D to retain, or `NULL` to clear.
 void rt_spriterenderer2d_set_blend_state(void *sprite_renderer, void *blend_state) {
-    if (rt2d_has_class(sprite_renderer, RT2D_SPRITERENDERER_CLASS_ID) &&
-        (!blend_state || rt2d_has_class(blend_state, RT2D_BLENDSTATE_CLASS_ID)))
+    if (rt2d_extended_has_class(sprite_renderer, RT2D_SPRITERENDERER_CLASS_ID) &&
+        (!blend_state || rt2d_extended_has_class(blend_state, RT2D_BLENDSTATE_CLASS_ID)))
         spriterenderer2d_set_ref(&((rt_spriterenderer2d_impl *)sprite_renderer)->blend_state,
                                  blend_state);
 }
@@ -678,9 +758,10 @@ static void renderer2d_restore_state(rt_renderer2d_impl *renderer,
 /// @param y Destination Y coordinate.
 void rt_spriterenderer2d_draw_pixels(
     void *sprite_renderer, void *renderer, void *pixels, int64_t x, int64_t y) {
-    rt_spriterenderer2d_impl *impl = rt2d_has_class(sprite_renderer, RT2D_SPRITERENDERER_CLASS_ID)
-                                         ? (rt_spriterenderer2d_impl *)sprite_renderer
-                                         : NULL;
+    rt_spriterenderer2d_impl *impl =
+        rt2d_extended_has_class(sprite_renderer, RT2D_SPRITERENDERER_CLASS_ID)
+            ? (rt_spriterenderer2d_impl *)sprite_renderer
+            : NULL;
     rt_renderer2d_impl *renderer_impl = renderer2d_checked(renderer);
     if (!impl || !renderer_impl)
         return;
@@ -701,9 +782,10 @@ void rt_spriterenderer2d_draw_pixels(
 /// @param y Destination Y coordinate.
 void rt_spriterenderer2d_draw_texture(
     void *sprite_renderer, void *renderer, void *texture, int64_t x, int64_t y) {
-    rt_spriterenderer2d_impl *impl = rt2d_has_class(sprite_renderer, RT2D_SPRITERENDERER_CLASS_ID)
-                                         ? (rt_spriterenderer2d_impl *)sprite_renderer
-                                         : NULL;
+    rt_spriterenderer2d_impl *impl =
+        rt2d_extended_has_class(sprite_renderer, RT2D_SPRITERENDERER_CLASS_ID)
+            ? (rt_spriterenderer2d_impl *)sprite_renderer
+            : NULL;
     rt_renderer2d_impl *renderer_impl = renderer2d_checked(renderer);
     if (!impl || !renderer_impl || !texture2d_checked(texture))
         return;
@@ -751,7 +833,7 @@ void *rt_tilechunkcache2d_new(int64_t chunk_width, int64_t chunk_height) {
 /// @param cache Borrowed TileChunkCache2D handle.
 /// @return The normalized chunk width, or `0` for an invalid handle.
 int64_t rt_tilechunkcache2d_get_chunk_width(void *cache) {
-    return rt2d_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)
+    return rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)
                ? ((rt_tilechunkcache2d_impl *)cache)->chunk_width
                : 0;
 }
@@ -760,7 +842,7 @@ int64_t rt_tilechunkcache2d_get_chunk_width(void *cache) {
 /// @param cache Borrowed TileChunkCache2D handle.
 /// @return The normalized chunk height, or `0` for an invalid handle.
 int64_t rt_tilechunkcache2d_get_chunk_height(void *cache) {
-    return rt2d_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)
+    return rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)
                ? ((rt_tilechunkcache2d_impl *)cache)->chunk_height
                : 0;
 }
@@ -768,7 +850,7 @@ int64_t rt_tilechunkcache2d_get_chunk_height(void *cache) {
 /// @brief Increment the dirty counter — signals that at least one chunk needs rebuild.
 /// @param cache Borrowed TileChunkCache2D handle to update.
 void rt_tilechunkcache2d_mark_dirty(void *cache) {
-    if (!rt2d_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID))
+    if (!rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID))
         return;
     rt_tilechunkcache2d_impl *impl = (rt_tilechunkcache2d_impl *)cache;
     if (impl->dirty_count < INT64_MAX)
@@ -778,7 +860,7 @@ void rt_tilechunkcache2d_mark_dirty(void *cache) {
 /// @brief Reset the dirty counter to zero after the renderer has processed all dirty chunks.
 /// @param cache Borrowed TileChunkCache2D handle to update.
 void rt_tilechunkcache2d_clear_dirty(void *cache) {
-    if (rt2d_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID))
+    if (rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID))
         ((rt_tilechunkcache2d_impl *)cache)->dirty_count = 0;
 }
 
@@ -786,7 +868,7 @@ void rt_tilechunkcache2d_clear_dirty(void *cache) {
 /// @param cache Borrowed TileChunkCache2D handle.
 /// @return The pending notification count, or `0` for an invalid handle.
 int64_t rt_tilechunkcache2d_get_dirty_count(void *cache) {
-    return rt2d_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)
+    return rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)
                ? ((rt_tilechunkcache2d_impl *)cache)->dirty_count
                : 0;
 }
@@ -794,7 +876,7 @@ int64_t rt_tilechunkcache2d_get_dirty_count(void *cache) {
 /// @brief GC finalizer — releases the retained TileChunkCache2D reference.
 /// @param obj TileMapRenderer2D payload being finalized.
 static void tilemaprenderer2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_TILEMAPRENDERER_CLASS_ID))
+    if (!rt2d_extended_has_class(obj, RT2D_TILEMAPRENDERER_CLASS_ID))
         return;
     rt_tilemaprenderer2d_impl *impl = (rt_tilemaprenderer2d_impl *)obj;
     rt2d_release_ref_slot(&impl->cache);
@@ -815,8 +897,8 @@ void *rt_tilemaprenderer2d_new(void) {
 /// @param renderer Borrowed TileMapRenderer2D handle to update.
 /// @param cache Borrowed TileChunkCache2D to retain, or `NULL` to clear.
 void rt_tilemaprenderer2d_set_chunk_cache(void *renderer, void *cache) {
-    if (rt2d_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID) &&
-        (!cache || rt2d_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)))
+    if (rt2d_extended_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID) &&
+        (!cache || rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)))
         spriterenderer2d_set_ref(&((rt_tilemaprenderer2d_impl *)renderer)->cache, cache);
 }
 
@@ -824,7 +906,7 @@ void rt_tilemaprenderer2d_set_chunk_cache(void *renderer, void *cache) {
 /// @param renderer Borrowed TileMapRenderer2D handle.
 /// @return The last recorded visible-tile count, or `0` for an invalid handle.
 int64_t rt_tilemaprenderer2d_get_draw_count(void *renderer) {
-    return rt2d_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID)
+    return rt2d_extended_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID)
                ? ((rt_tilemaprenderer2d_impl *)renderer)->draw_count
                : 0;
 }
@@ -839,7 +921,7 @@ int64_t rt_tilemaprenderer2d_get_draw_count(void *renderer) {
 /// @param offset_y Destination Y offset.
 void rt_tilemaprenderer2d_draw(
     void *renderer, void *tilemap, void *canvas, int64_t offset_x, int64_t offset_y) {
-    if (!rt2d_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID) || !tilemap || !canvas)
+    if (!rt2d_extended_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID) || !tilemap || !canvas)
         return;
     rt_tilemaprenderer2d_impl *impl = (rt_tilemaprenderer2d_impl *)renderer;
     impl->draw_count = rt_tilemap_count_drawn_visible(tilemap, canvas, offset_x, offset_y);
@@ -868,7 +950,7 @@ void rt_tilemaprenderer2d_draw_region(void *renderer,
                                       int64_t view_y,
                                       int64_t view_w,
                                       int64_t view_h) {
-    if (!rt2d_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID) || !tilemap || !canvas)
+    if (!rt2d_extended_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID) || !tilemap || !canvas)
         return;
     rt_tilemaprenderer2d_impl *impl = (rt_tilemaprenderer2d_impl *)renderer;
     impl->draw_count = rt_tilemap_count_drawn_region(tilemap, view_x, view_y, view_w, view_h);
@@ -906,7 +988,7 @@ void *rt_animationclip2d_new(int64_t start_frame,
 /// @param clip Borrowed AnimationClip2D handle.
 /// @return The normalized start frame, or `0` for an invalid handle.
 int64_t rt_animationclip2d_get_start_frame(void *clip) {
-    return rt2d_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
+    return rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
                ? ((rt_animationclip2d_impl *)clip)->start_frame
                : 0;
 }
@@ -915,7 +997,7 @@ int64_t rt_animationclip2d_get_start_frame(void *clip) {
 /// @param clip Borrowed AnimationClip2D handle.
 /// @return The positive frame count, or `0` for an invalid handle.
 int64_t rt_animationclip2d_get_frame_count(void *clip) {
-    return rt2d_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
+    return rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
                ? ((rt_animationclip2d_impl *)clip)->frame_count
                : 0;
 }
@@ -924,7 +1006,7 @@ int64_t rt_animationclip2d_get_frame_count(void *clip) {
 /// @param clip Borrowed AnimationClip2D handle.
 /// @return The positive frame delay, or `0` for an invalid handle.
 int64_t rt_animationclip2d_get_frame_delay_ms(void *clip) {
-    return rt2d_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
+    return rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
                ? ((rt_animationclip2d_impl *)clip)->frame_delay_ms
                : 0;
 }
@@ -933,7 +1015,7 @@ int64_t rt_animationclip2d_get_frame_delay_ms(void *clip) {
 /// @param clip Borrowed AnimationClip2D handle.
 /// @return `1` for a looping clip, otherwise `0`.
 int64_t rt_animationclip2d_get_loop(void *clip) {
-    return rt2d_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
+    return rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
                ? ((rt_animationclip2d_impl *)clip)->loop
                : 0;
 }
@@ -941,7 +1023,7 @@ int64_t rt_animationclip2d_get_loop(void *clip) {
 /// @brief GC finalizer — releases retained references to the sprite and animation clip.
 /// @param obj AnimatedSprite2D payload being finalized.
 static void animatedsprite2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_ANIMATEDSPRITE_CLASS_ID))
+    if (!rt2d_extended_has_class(obj, RT2D_ANIMATEDSPRITE_CLASS_ID))
         return;
     rt_animatedsprite2d_impl *impl = (rt_animatedsprite2d_impl *)obj;
     rt2d_release_ref_slot(&impl->sprite);
@@ -981,8 +1063,8 @@ void *rt_animatedsprite2d_new(void *sprite) {
 /// @param animated_sprite Borrowed AnimatedSprite2D handle to update.
 /// @param clip Borrowed AnimationClip2D to retain, or `NULL` to clear.
 void rt_animatedsprite2d_set_clip(void *animated_sprite, void *clip) {
-    if (!rt2d_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID) ||
-        (clip && !rt2d_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)))
+    if (!rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID) ||
+        (clip && !rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)))
         return;
     rt_animatedsprite2d_impl *impl = (rt_animatedsprite2d_impl *)animated_sprite;
     spriterenderer2d_set_ref(&impl->clip, clip);
@@ -996,12 +1078,13 @@ void rt_animatedsprite2d_set_clip(void *animated_sprite, void *clip) {
 /// @brief Resume playback after `Stop` (or after a non-looping clip finished).
 /// @param animated_sprite Borrowed AnimatedSprite2D handle to play.
 void rt_animatedsprite2d_play(void *animated_sprite) {
-    rt_animatedsprite2d_impl *impl = rt2d_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
-                                         ? (rt_animatedsprite2d_impl *)animated_sprite
-                                         : NULL;
+    rt_animatedsprite2d_impl *impl =
+        rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
+            ? (rt_animatedsprite2d_impl *)animated_sprite
+            : NULL;
     if (!impl)
         return;
-    if (!impl->sprite || !rt2d_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID)) {
+    if (!impl->sprite || !rt2d_extended_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID)) {
         impl->playing = 0;
         return;
     }
@@ -1028,13 +1111,13 @@ void rt_animatedsprite2d_play(void *animated_sprite) {
 /// @brief Stop playback and reset to the clip's first frame.
 /// @param animated_sprite Borrowed AnimatedSprite2D handle to stop.
 void rt_animatedsprite2d_stop(void *animated_sprite) {
-    if (!rt2d_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID))
+    if (!rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID))
         return;
     rt_animatedsprite2d_impl *impl = (rt_animatedsprite2d_impl *)animated_sprite;
     impl->playing = 0;
     impl->elapsed_ms = 0;
     impl->frame = 0;
-    if (impl->sprite && rt2d_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID))
+    if (impl->sprite && rt2d_extended_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID))
         rt_sprite_set_frame(impl->sprite, ((rt_animationclip2d_impl *)impl->clip)->start_frame);
 }
 
@@ -1058,12 +1141,13 @@ void rt_animatedsprite2d_stop(void *animated_sprite) {
 /// @param animated_sprite Borrowed AnimatedSprite2D handle to advance.
 /// @param delta_ms Elapsed milliseconds; negative values are treated as zero.
 void rt_animatedsprite2d_update(void *animated_sprite, int64_t delta_ms) {
-    rt_animatedsprite2d_impl *impl = rt2d_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
-                                         ? (rt_animatedsprite2d_impl *)animated_sprite
-                                         : NULL;
+    rt_animatedsprite2d_impl *impl =
+        rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
+            ? (rt_animatedsprite2d_impl *)animated_sprite
+            : NULL;
     if (!impl || !impl->sprite || !impl->clip || !impl->playing)
         return;
-    if (!rt2d_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID))
+    if (!rt2d_extended_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID))
         return;
     rt_animationclip2d_impl *clip = (rt_animationclip2d_impl *)impl->clip;
     int64_t sprite_frames = rt_sprite_get_frame_count(impl->sprite);
@@ -1118,7 +1202,7 @@ void rt_animatedsprite2d_update(void *animated_sprite, int64_t delta_ms) {
 /// @param animated_sprite Borrowed AnimatedSprite2D handle.
 /// @return The clip-local frame offset, or `0` for an invalid handle.
 int64_t rt_animatedsprite2d_get_frame(void *animated_sprite) {
-    return rt2d_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
+    return rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
                ? ((rt_animatedsprite2d_impl *)animated_sprite)->frame
                : 0;
 }
@@ -1127,11 +1211,12 @@ int64_t rt_animatedsprite2d_get_frame(void *animated_sprite) {
 /// @param animated_sprite Borrowed AnimatedSprite2D handle.
 /// @return `1` only when playing with a valid sprite and clip, otherwise `0`.
 int64_t rt_animatedsprite2d_is_playing(void *animated_sprite) {
-    rt_animatedsprite2d_impl *impl = rt2d_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
-                                         ? (rt_animatedsprite2d_impl *)animated_sprite
-                                         : NULL;
+    rt_animatedsprite2d_impl *impl =
+        rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
+            ? (rt_animatedsprite2d_impl *)animated_sprite
+            : NULL;
     return impl && impl->playing && impl->sprite &&
-                   rt2d_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID)
+                   rt2d_extended_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID)
                ? 1
                : 0;
 }
@@ -1139,7 +1224,7 @@ int64_t rt_animatedsprite2d_is_playing(void *animated_sprite) {
 /// @brief GC finalizer — releases the retained BitmapFont reference.
 /// @param obj TextLayout2D payload being finalized.
 static void textlayout2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_TEXTLAYOUT_CLASS_ID))
+    if (!rt2d_extended_has_class(obj, RT2D_TEXTLAYOUT_CLASS_ID))
         return;
     rt_textlayout2d_impl *impl = (rt_textlayout2d_impl *)obj;
     rt2d_release_ref_slot(&impl->font);
@@ -1162,7 +1247,7 @@ void *rt_textlayout2d_new(void) {
 /// @param layout Borrowed TextLayout2D handle to update.
 /// @param font Borrowed BitmapFont to retain, or `NULL` for the built-in font.
 void rt_textlayout2d_set_font(void *layout, void *font) {
-    if (rt2d_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID) &&
+    if (rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID) &&
         (!font || rt2d_is_bitmap_font_handle(font)))
         spriterenderer2d_set_ref(&((rt_textlayout2d_impl *)layout)->font, font);
 }
@@ -1171,7 +1256,7 @@ void rt_textlayout2d_set_font(void *layout, void *font) {
 /// @param layout Borrowed TextLayout2D handle to update.
 /// @param scale Requested integer scale.
 void rt_textlayout2d_set_scale(void *layout, int64_t scale) {
-    if (rt2d_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
+    if (rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
         ((rt_textlayout2d_impl *)layout)->scale = clamp_i64(scale, 1, 64);
 }
 
@@ -1179,7 +1264,7 @@ void rt_textlayout2d_set_scale(void *layout, int64_t scale) {
 /// @param layout Borrowed TextLayout2D handle to update.
 /// @param width Requested wrap width; negative values become zero.
 void rt_textlayout2d_set_wrap_width(void *layout, int64_t width) {
-    if (rt2d_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
+    if (rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
         ((rt_textlayout2d_impl *)layout)->wrap_width = width < 0 ? 0 : width;
 }
 
@@ -1187,7 +1272,7 @@ void rt_textlayout2d_set_wrap_width(void *layout, int64_t width) {
 /// @param layout Borrowed TextLayout2D handle to update.
 /// @param alignment Requested alignment value.
 void rt_textlayout2d_set_alignment(void *layout, int64_t alignment) {
-    if (rt2d_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
+    if (rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
         ((rt_textlayout2d_impl *)layout)->alignment = clamp_i64(alignment, 0, 2);
 }
 
@@ -1195,7 +1280,7 @@ void rt_textlayout2d_set_alignment(void *layout, int64_t alignment) {
 /// @param layout Borrowed TextLayout2D handle to update.
 /// @param rgb Packed text color.
 void rt_textlayout2d_set_color(void *layout, int64_t rgb) {
-    if (rt2d_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
+    if (rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
         ((rt_textlayout2d_impl *)layout)->color = rgb & 0x00FFFFFF;
 }
 
@@ -1285,7 +1370,8 @@ static void textlayout2d_commit_word(rt_textlayout2d_impl *impl,
         return;
     int64_t word_width = textlayout2d_segment_width(impl, word, word_len);
     int64_t join_width = *line_width > 0 ? *pending_space_width : 0;
-    int64_t candidate = rt2d_saturating_add_i64(*line_width, rt2d_saturating_add_i64(join_width, word_width));
+    int64_t candidate =
+        rt2d_saturating_add_i64(*line_width, rt2d_saturating_add_i64(join_width, word_width));
     if (wrap_width > 0 && *line_width > 0 && candidate > wrap_width) {
         textlayout2d_commit_line(measure, *line_width);
         measure->lines = rt2d_saturating_add_i64(measure->lines, 1);
@@ -1294,7 +1380,9 @@ static void textlayout2d_commit_word(rt_textlayout2d_impl *impl,
     }
 
     if (wrap_width > 0 && word_width > wrap_width) {
-        int64_t chunks = rt2d_saturating_add_i64(word_width, wrap_width - 1) / wrap_width;
+        int64_t chunks = word_width / wrap_width;
+        if (word_width % wrap_width != 0)
+            chunks = rt2d_saturating_add_i64(chunks, 1);
         if (chunks < 1)
             chunks = 1;
         if (chunks > 1)
@@ -1304,7 +1392,8 @@ static void textlayout2d_commit_word(rt_textlayout2d_impl *impl,
         int64_t rem = word_width % wrap_width;
         *line_width = rem == 0 ? wrap_width : rem;
     } else {
-        *line_width = rt2d_saturating_add_i64(*line_width, rt2d_saturating_add_i64(join_width, word_width));
+        *line_width =
+            rt2d_saturating_add_i64(*line_width, rt2d_saturating_add_i64(join_width, word_width));
     }
     *pending_space_width = 0;
 }
@@ -1378,8 +1467,9 @@ static rt_textlayout2d_measure textlayout2d_measure(rt_textlayout2d_impl *impl, 
 /// @param text Borrowed runtime string to measure.
 /// @return The maximum laid-out line width in pixels.
 int64_t rt_textlayout2d_measure_width(void *layout, rt_string text) {
-    rt_textlayout2d_impl *impl =
-        rt2d_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID) ? (rt_textlayout2d_impl *)layout : NULL;
+    rt_textlayout2d_impl *impl = rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID)
+                                     ? (rt_textlayout2d_impl *)layout
+                                     : NULL;
     rt_textlayout2d_measure measure = textlayout2d_measure(impl, text);
     return measure.max_width;
 }
@@ -1389,8 +1479,9 @@ int64_t rt_textlayout2d_measure_width(void *layout, rt_string text) {
 /// @param text Borrowed runtime string to measure.
 /// @return The saturating product of line height and computed line count.
 int64_t rt_textlayout2d_measure_height(void *layout, rt_string text) {
-    rt_textlayout2d_impl *impl =
-        rt2d_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID) ? (rt_textlayout2d_impl *)layout : NULL;
+    rt_textlayout2d_impl *impl = rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID)
+                                     ? (rt_textlayout2d_impl *)layout
+                                     : NULL;
     rt_textlayout2d_measure measure = textlayout2d_measure(impl, text);
     return rt2d_saturating_mul_i64(textlayout2d_line_height(impl), measure.lines);
 }
@@ -1398,7 +1489,7 @@ int64_t rt_textlayout2d_measure_height(void *layout, rt_string text) {
 /// @brief GC finalizer — releases retained references to source, target, and shader.
 /// @param obj RenderPass2D payload being finalized.
 static void renderpass2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_RENDERPASS_CLASS_ID))
+    if (!rt2d_extended_has_class(obj, RT2D_RENDERPASS_CLASS_ID))
         return;
     rt_renderpass2d_impl *impl = (rt_renderpass2d_impl *)obj;
     rt2d_release_ref_slot(&impl->source);
@@ -1443,7 +1534,7 @@ void *rt_renderpass2d_new(void *source, void *target) {
 /// @param pass Borrowed RenderPass2D handle to update.
 /// @param source Borrowed valid render surface to retain, or `NULL`.
 void rt_renderpass2d_set_source(void *pass, void *source) {
-    if (rt2d_has_class(pass, RT2D_RENDERPASS_CLASS_ID) &&
+    if (rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID) &&
         (!source || rendertarget2d_checked(source)))
         spriterenderer2d_set_ref(&((rt_renderpass2d_impl *)pass)->source, source);
 }
@@ -1452,7 +1543,7 @@ void rt_renderpass2d_set_source(void *pass, void *source) {
 /// @param pass Borrowed RenderPass2D handle to update.
 /// @param target Borrowed valid render surface to retain, or `NULL`.
 void rt_renderpass2d_set_target(void *pass, void *target) {
-    if (rt2d_has_class(pass, RT2D_RENDERPASS_CLASS_ID) &&
+    if (rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID) &&
         (!target || rendertarget2d_checked(target)))
         spriterenderer2d_set_ref(&((rt_renderpass2d_impl *)pass)->target, target);
 }
@@ -1461,7 +1552,8 @@ void rt_renderpass2d_set_target(void *pass, void *target) {
 /// @param pass Borrowed RenderPass2D handle to update.
 /// @param shader Borrowed Shader2D or PostProcess2D to retain, or `NULL`.
 void rt_renderpass2d_set_shader(void *pass, void *shader) {
-    if (rt2d_has_class(pass, RT2D_RENDERPASS_CLASS_ID) && (!shader || rt2d_is_shader_like(shader)))
+    if (rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID) &&
+        (!shader || rt2d_is_shader_like(shader)))
         spriterenderer2d_set_ref(&((rt_renderpass2d_impl *)pass)->shader, shader);
 }
 
@@ -1469,7 +1561,7 @@ void rt_renderpass2d_set_shader(void *pass, void *shader) {
 /// @param pass Borrowed RenderPass2D handle to update.
 /// @param enabled Nonzero to enable the pass.
 void rt_renderpass2d_set_enabled(void *pass, int64_t enabled) {
-    if (rt2d_has_class(pass, RT2D_RENDERPASS_CLASS_ID))
+    if (rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID))
         ((rt_renderpass2d_impl *)pass)->enabled = enabled != 0;
 }
 
@@ -1477,8 +1569,9 @@ void rt_renderpass2d_set_enabled(void *pass, int64_t enabled) {
 /// @param pass Borrowed RenderPass2D handle.
 /// @return `1` when enabled, otherwise `0`.
 int64_t rt_renderpass2d_get_enabled(void *pass) {
-    return rt2d_has_class(pass, RT2D_RENDERPASS_CLASS_ID) ? ((rt_renderpass2d_impl *)pass)->enabled
-                                                          : 0;
+    return rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID)
+               ? ((rt_renderpass2d_impl *)pass)->enabled
+               : 0;
 }
 
 /// @brief Execute this pass: apply the optional shader and blit the result to target.
@@ -1487,8 +1580,9 @@ int64_t rt_renderpass2d_get_enabled(void *pass) {
 ///          clones the source pixels directly. The target is cleared before writing.
 /// @param pass Borrowed RenderPass2D handle to execute.
 void rt_renderpass2d_execute(void *pass) {
-    rt_renderpass2d_impl *impl =
-        rt2d_has_class(pass, RT2D_RENDERPASS_CLASS_ID) ? (rt_renderpass2d_impl *)pass : NULL;
+    rt_renderpass2d_impl *impl = rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID)
+                                     ? (rt_renderpass2d_impl *)pass
+                                     : NULL;
     if (!impl || !impl->enabled || !impl->source || !impl->target)
         return;
     if (!rendertarget2d_checked(impl->source) || !rendertarget2d_checked(impl->target))
@@ -1517,7 +1611,7 @@ void rt_renderpass2d_execute(void *pass) {
 /// @brief GC finalizer — releases all retained pass references and frees the passes array.
 /// @param obj RenderGraph2D payload being finalized.
 static void rendergraph2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_RENDERGRAPH_CLASS_ID))
+    if (!rt2d_extended_has_class(obj, RT2D_RENDERGRAPH_CLASS_ID))
         return;
     rt_rendergraph2d_impl *impl = (rt_rendergraph2d_impl *)obj;
     if (!impl)
@@ -1554,7 +1648,10 @@ void *rt_rendergraph2d_new(int64_t capacity) {
 /// @param needed Minimum required pass capacity.
 /// @return 1 on success, 0 on overflow or allocation failure.
 static int32_t rendergraph2d_reserve(rt_rendergraph2d_impl *impl, int64_t needed) {
-    if (!impl || needed <= impl->capacity)
+    if (!impl || needed < 0 || impl->count < 0 || impl->capacity < 0 ||
+        impl->count > impl->capacity || (impl->capacity > 0 && !impl->passes))
+        return 0;
+    if (needed <= impl->capacity)
         return 1;
     int64_t cap = impl->capacity > 0 ? impl->capacity : RT2D_INITIAL_CAP;
     while (cap < needed) {
@@ -1563,6 +1660,8 @@ static int32_t rendergraph2d_reserve(rt_rendergraph2d_impl *impl, int64_t needed
         cap *= 2;
     }
     if (cap > INT64_MAX / (int64_t)sizeof(void *))
+        return 0;
+    if ((uint64_t)cap > (uint64_t)SIZE_MAX / sizeof(void *))
         return 0;
     void **passes = (void **)realloc(impl->passes, (size_t)cap * sizeof(void *));
     if (!passes)
@@ -1578,11 +1677,12 @@ static int32_t rendergraph2d_reserve(rt_rendergraph2d_impl *impl, int64_t needed
 /// @param graph Borrowed RenderGraph2D receiving the pass.
 /// @param pass Borrowed valid RenderPass2D to retain.
 void rt_rendergraph2d_add_pass(void *graph, void *pass) {
-    rt_rendergraph2d_impl *impl =
-        rt2d_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID) ? (rt_rendergraph2d_impl *)graph : NULL;
-    if (!impl || !rt2d_has_class(pass, RT2D_RENDERPASS_CLASS_ID))
+    rt_rendergraph2d_impl *impl = rt2d_extended_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID)
+                                      ? (rt_rendergraph2d_impl *)graph
+                                      : NULL;
+    if (!impl || !rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID))
         return;
-    if (!rendergraph2d_reserve(impl, impl->count + 1)) {
+    if (impl->count == INT64_MAX || !rendergraph2d_reserve(impl, impl->count + 1)) {
         rt_trap("RenderGraph2D: capacity overflow");
         return;
     }
@@ -1593,8 +1693,9 @@ void rt_rendergraph2d_add_pass(void *graph, void *pass) {
 /// @brief Remove all passes from the graph, releasing their retained references.
 /// @param graph Borrowed RenderGraph2D to clear.
 void rt_rendergraph2d_clear(void *graph) {
-    rt_rendergraph2d_impl *impl =
-        rt2d_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID) ? (rt_rendergraph2d_impl *)graph : NULL;
+    rt_rendergraph2d_impl *impl = rt2d_extended_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID)
+                                      ? (rt_rendergraph2d_impl *)graph
+                                      : NULL;
     if (!impl)
         return;
     for (int64_t i = 0; i < impl->count; i++)
@@ -1606,7 +1707,7 @@ void rt_rendergraph2d_clear(void *graph) {
 /// @param graph Borrowed RenderGraph2D handle.
 /// @return The pass count, or `0` for an invalid handle.
 int64_t rt_rendergraph2d_get_count(void *graph) {
-    return rt2d_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID)
+    return rt2d_extended_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID)
                ? ((rt_rendergraph2d_impl *)graph)->count
                : 0;
 }
@@ -1616,8 +1717,9 @@ int64_t rt_rendergraph2d_get_count(void *graph) {
 ///          themselves via their `enabled` flag inside `rt_renderpass2d_execute`.
 /// @param graph Borrowed RenderGraph2D to execute.
 void rt_rendergraph2d_execute(void *graph) {
-    rt_rendergraph2d_impl *impl =
-        rt2d_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID) ? (rt_rendergraph2d_impl *)graph : NULL;
+    rt_rendergraph2d_impl *impl = rt2d_extended_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID)
+                                      ? (rt_rendergraph2d_impl *)graph
+                                      : NULL;
     if (!impl)
         return;
     for (int64_t i = 0; i < impl->count; i++)
@@ -1627,7 +1729,7 @@ void rt_rendergraph2d_execute(void *graph) {
 /// @brief GC finalizer — frees the byte-per-cell solidity grid.
 /// @param obj CollisionMask2D payload being finalized.
 static void collisionmask2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_COLLISIONMASK_CLASS_ID))
+    if (!rt2d_extended_has_class(obj, RT2D_COLLISIONMASK_CLASS_ID))
         return;
     rt_collisionmask2d_impl *impl = (rt_collisionmask2d_impl *)obj;
     free(impl->bits);
@@ -1680,13 +1782,12 @@ void *rt_collisionmask2d_from_pixels(void *pixels, int64_t alpha_threshold) {
     void *mask = rt_collisionmask2d_new(width, height);
     if (!mask)
         return NULL;
+    rt_collisionmask2d_impl *mask_impl = (rt_collisionmask2d_impl *)mask;
     int64_t threshold = clamp_u8_i64(alpha_threshold);
-    for (int64_t y = 0; y < height; y++) {
-        for (int64_t x = 0; x < width; x++) {
-            uint32_t alpha = pix->data[y * width + x] & 255u;
-            int64_t solid = threshold <= 0 ? alpha > 0u : alpha >= (uint32_t)threshold;
-            rt_collisionmask2d_set(mask, x, y, solid);
-        }
+    int64_t count = width * height;
+    for (int64_t i = 0; i < count; i++) {
+        uint32_t alpha = pix->data[i] & 255u;
+        mask_impl->bits[i] = (uint8_t)(threshold <= 0 ? alpha > 0u : alpha >= (uint32_t)threshold);
     }
     return mask;
 }
@@ -1695,7 +1796,7 @@ void *rt_collisionmask2d_from_pixels(void *pixels, int64_t alpha_threshold) {
 /// @param mask Borrowed CollisionMask2D handle.
 /// @return The width, or `0` for an invalid handle.
 int64_t rt_collisionmask2d_get_width(void *mask) {
-    return rt2d_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID)
+    return rt2d_extended_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID)
                ? ((rt_collisionmask2d_impl *)mask)->width
                : 0;
 }
@@ -1704,7 +1805,7 @@ int64_t rt_collisionmask2d_get_width(void *mask) {
 /// @param mask Borrowed CollisionMask2D handle.
 /// @return The height, or `0` for an invalid handle.
 int64_t rt_collisionmask2d_get_height(void *mask) {
-    return rt2d_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID)
+    return rt2d_extended_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID)
                ? ((rt_collisionmask2d_impl *)mask)->height
                : 0;
 }
@@ -1724,8 +1825,9 @@ static int32_t collisionmask2d_in_bounds(rt_collisionmask2d_impl *impl, int64_t 
 /// @param y Cell Y coordinate.
 /// @param solid Nonzero to mark solid, zero to clear.
 void rt_collisionmask2d_set(void *mask, int64_t x, int64_t y, int64_t solid) {
-    rt_collisionmask2d_impl *impl =
-        rt2d_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID) ? (rt_collisionmask2d_impl *)mask : NULL;
+    rt_collisionmask2d_impl *impl = rt2d_extended_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID)
+                                        ? (rt_collisionmask2d_impl *)mask
+                                        : NULL;
     if (!collisionmask2d_in_bounds(impl, x, y))
         return;
     impl->bits[y * impl->width + x] = solid != 0;
@@ -1737,8 +1839,9 @@ void rt_collisionmask2d_set(void *mask, int64_t x, int64_t y, int64_t solid) {
 /// @param y Cell Y coordinate.
 /// @return `1` for a solid in-bounds cell, otherwise `0`.
 int64_t rt_collisionmask2d_get(void *mask, int64_t x, int64_t y) {
-    rt_collisionmask2d_impl *impl =
-        rt2d_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID) ? (rt_collisionmask2d_impl *)mask : NULL;
+    rt_collisionmask2d_impl *impl = rt2d_extended_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID)
+                                        ? (rt_collisionmask2d_impl *)mask
+                                        : NULL;
     if (!collisionmask2d_in_bounds(impl, x, y))
         return 0;
     return impl->bits[y * impl->width + x] ? 1 : 0;
@@ -1759,10 +1862,12 @@ int64_t rt_collisionmask2d_get(void *mask, int64_t x, int64_t y) {
 /// @return `1` if the positioned masks share a solid cell, otherwise `0`.
 int64_t rt_collisionmask2d_overlaps(
     void *a, int64_t ax, int64_t ay, void *b, int64_t bx, int64_t by) {
-    rt_collisionmask2d_impl *ma =
-        rt2d_has_class(a, RT2D_COLLISIONMASK_CLASS_ID) ? (rt_collisionmask2d_impl *)a : NULL;
-    rt_collisionmask2d_impl *mb =
-        rt2d_has_class(b, RT2D_COLLISIONMASK_CLASS_ID) ? (rt_collisionmask2d_impl *)b : NULL;
+    rt_collisionmask2d_impl *ma = rt2d_extended_has_class(a, RT2D_COLLISIONMASK_CLASS_ID)
+                                      ? (rt_collisionmask2d_impl *)a
+                                      : NULL;
+    rt_collisionmask2d_impl *mb = rt2d_extended_has_class(b, RT2D_COLLISIONMASK_CLASS_ID)
+                                      ? (rt_collisionmask2d_impl *)b
+                                      : NULL;
     if (!ma || !mb)
         return 0;
     int64_t left = ax > bx ? ax : bx;
@@ -1822,7 +1927,7 @@ void *rt_hitbox2d_new(int64_t x, int64_t y, int64_t width, int64_t height) {
 /// @param width New width; negative values become zero.
 /// @param height New height; negative values become zero.
 void rt_hitbox2d_set(void *hitbox, int64_t x, int64_t y, int64_t width, int64_t height) {
-    if (!rt2d_has_class(hitbox, RT2D_HITBOX_CLASS_ID))
+    if (!rt2d_extended_has_class(hitbox, RT2D_HITBOX_CLASS_ID))
         return;
     rt_hitbox2d_impl *impl = (rt_hitbox2d_impl *)hitbox;
     impl->x = x;
@@ -1835,28 +1940,34 @@ void rt_hitbox2d_set(void *hitbox, int64_t x, int64_t y, int64_t width, int64_t 
 /// @param hitbox Borrowed HitBox2D handle.
 /// @return The X coordinate, or `0` for an invalid handle.
 int64_t rt_hitbox2d_get_x(void *hitbox) {
-    return rt2d_has_class(hitbox, RT2D_HITBOX_CLASS_ID) ? ((rt_hitbox2d_impl *)hitbox)->x : 0;
+    return rt2d_extended_has_class(hitbox, RT2D_HITBOX_CLASS_ID) ? ((rt_hitbox2d_impl *)hitbox)->x
+                                                                 : 0;
 }
 
 /// @brief Return the Y world-position of the hitbox's top-left corner.
 /// @param hitbox Borrowed HitBox2D handle.
 /// @return The Y coordinate, or `0` for an invalid handle.
 int64_t rt_hitbox2d_get_y(void *hitbox) {
-    return rt2d_has_class(hitbox, RT2D_HITBOX_CLASS_ID) ? ((rt_hitbox2d_impl *)hitbox)->y : 0;
+    return rt2d_extended_has_class(hitbox, RT2D_HITBOX_CLASS_ID) ? ((rt_hitbox2d_impl *)hitbox)->y
+                                                                 : 0;
 }
 
 /// @brief Return the width of the hitbox in pixels.
 /// @param hitbox Borrowed HitBox2D handle.
 /// @return The nonnegative width, or `0` for an invalid handle.
 int64_t rt_hitbox2d_get_width(void *hitbox) {
-    return rt2d_has_class(hitbox, RT2D_HITBOX_CLASS_ID) ? ((rt_hitbox2d_impl *)hitbox)->width : 0;
+    return rt2d_extended_has_class(hitbox, RT2D_HITBOX_CLASS_ID)
+               ? ((rt_hitbox2d_impl *)hitbox)->width
+               : 0;
 }
 
 /// @brief Return the height of the hitbox in pixels.
 /// @param hitbox Borrowed HitBox2D handle.
 /// @return The nonnegative height, or `0` for an invalid handle.
 int64_t rt_hitbox2d_get_height(void *hitbox) {
-    return rt2d_has_class(hitbox, RT2D_HITBOX_CLASS_ID) ? ((rt_hitbox2d_impl *)hitbox)->height : 0;
+    return rt2d_extended_has_class(hitbox, RT2D_HITBOX_CLASS_ID)
+               ? ((rt_hitbox2d_impl *)hitbox)->height
+               : 0;
 }
 
 /// @brief Return non-zero if point `(x, y)` is inside this hitbox.
@@ -1867,7 +1978,7 @@ int64_t rt_hitbox2d_get_height(void *hitbox) {
 /// @return Nonzero when the point lies in both half-open intervals.
 int64_t rt_hitbox2d_contains(void *hitbox, int64_t x, int64_t y) {
     rt_hitbox2d_impl *impl =
-        rt2d_has_class(hitbox, RT2D_HITBOX_CLASS_ID) ? (rt_hitbox2d_impl *)hitbox : NULL;
+        rt2d_extended_has_class(hitbox, RT2D_HITBOX_CLASS_ID) ? (rt_hitbox2d_impl *)hitbox : NULL;
     return impl && point_in_interval_i64(impl->x, impl->width, x) &&
            point_in_interval_i64(impl->y, impl->height, y);
 }
@@ -1879,8 +1990,10 @@ int64_t rt_hitbox2d_contains(void *hitbox, int64_t x, int64_t y) {
 /// @return Nonzero for positive-area overlap; invalid handles and edge-only
 ///         contact return zero.
 int64_t rt_hitbox2d_intersects(void *a, void *b) {
-    rt_hitbox2d_impl *ha = rt2d_has_class(a, RT2D_HITBOX_CLASS_ID) ? (rt_hitbox2d_impl *)a : NULL;
-    rt_hitbox2d_impl *hb = rt2d_has_class(b, RT2D_HITBOX_CLASS_ID) ? (rt_hitbox2d_impl *)b : NULL;
+    rt_hitbox2d_impl *ha =
+        rt2d_extended_has_class(a, RT2D_HITBOX_CLASS_ID) ? (rt_hitbox2d_impl *)a : NULL;
+    rt_hitbox2d_impl *hb =
+        rt2d_extended_has_class(b, RT2D_HITBOX_CLASS_ID) ? (rt_hitbox2d_impl *)b : NULL;
     if (!ha || !hb)
         return 0;
     return intervals_overlap_i64(ha->x, ha->width, hb->x, hb->width) &&
@@ -1903,8 +2016,9 @@ void *rt_palette2d_new(void) {
 /// @param index Slot index in `0..255`.
 /// @param rgba Raw RGBA or tagged Color value to normalize and store.
 void rt_palette2d_set_color(void *palette, int64_t index, int64_t rgba) {
-    rt_palette2d_impl *impl =
-        rt2d_has_class(palette, RT2D_PALETTE_CLASS_ID) ? (rt_palette2d_impl *)palette : NULL;
+    rt_palette2d_impl *impl = rt2d_extended_has_class(palette, RT2D_PALETTE_CLASS_ID)
+                                  ? (rt_palette2d_impl *)palette
+                                  : NULL;
     if (!impl || index < 0 || index >= 256)
         return;
     impl->colors[index] = rt_pixels_rgba_or_tagged_color_to_rgba(rgba);
@@ -1918,8 +2032,9 @@ void rt_palette2d_set_color(void *palette, int64_t index, int64_t rgba) {
 /// @param index Slot index to query.
 /// @return The defined raw `0xRRGGBBAA` color, or `0` when undefined or invalid.
 int64_t rt_palette2d_get_color(void *palette, int64_t index) {
-    rt_palette2d_impl *impl =
-        rt2d_has_class(palette, RT2D_PALETTE_CLASS_ID) ? (rt_palette2d_impl *)palette : NULL;
+    rt_palette2d_impl *impl = rt2d_extended_has_class(palette, RT2D_PALETTE_CLASS_ID)
+                                  ? (rt_palette2d_impl *)palette
+                                  : NULL;
     if (!impl || index < 0 || index >= 256 || !impl->defined[index])
         return 0;
     return impl->colors[index];
@@ -1937,8 +2052,9 @@ int64_t rt_palette2d_get_color_value(void *palette, int64_t index) {
 /// @param palette Borrowed Palette2D handle.
 /// @return One greater than the highest defined index, or `0` if empty or invalid.
 int64_t rt_palette2d_get_count(void *palette) {
-    return rt2d_has_class(palette, RT2D_PALETTE_CLASS_ID) ? ((rt_palette2d_impl *)palette)->count
-                                                          : 0;
+    return rt2d_extended_has_class(palette, RT2D_PALETTE_CLASS_ID)
+               ? ((rt_palette2d_impl *)palette)->count
+               : 0;
 }
 
 /// @brief Remap indexed pixels through a palette using the red byte as the index.
@@ -1950,8 +2066,9 @@ int64_t rt_palette2d_get_count(void *palette) {
 /// @return A new owned remapped Pixels image, or `NULL` for invalid input or
 ///         allocation failure.
 static void *palette2d_apply_indexed(void *palette, void *pixels, int8_t legacy_alpha_index) {
-    rt_palette2d_impl *impl =
-        rt2d_has_class(palette, RT2D_PALETTE_CLASS_ID) ? (rt_palette2d_impl *)palette : NULL;
+    rt_palette2d_impl *impl = rt2d_extended_has_class(palette, RT2D_PALETTE_CLASS_ID)
+                                  ? (rt_palette2d_impl *)palette
+                                  : NULL;
     rt_pixels_impl *src_pixels = rt_pixels_checked_impl_or_null(pixels);
     if (!impl || !src_pixels || !src_pixels->data)
         return NULL;
@@ -1988,11 +2105,22 @@ static void *palette2d_apply_indexed(void *palette, void *pixels, int8_t legacy_
 /// @param pixels Borrowed source Pixels image.
 /// @return A new owned nearest-color Pixels image, or `NULL` on failure.
 void *rt_palette2d_apply(void *palette, void *pixels) {
-    rt_palette2d_impl *impl =
-        rt2d_has_class(palette, RT2D_PALETTE_CLASS_ID) ? (rt_palette2d_impl *)palette : NULL;
+    rt_palette2d_impl *impl = rt2d_extended_has_class(palette, RT2D_PALETTE_CLASS_ID)
+                                  ? (rt_palette2d_impl *)palette
+                                  : NULL;
     rt_pixels_impl *src_pixels = rt_pixels_checked_impl_or_null(pixels);
     if (!impl || !src_pixels || !src_pixels->data)
         return NULL;
+
+    uint32_t candidates[256];
+    int64_t candidate_count = 0;
+    int64_t palette_limit = clamp_i64(impl->count, 0, 256);
+    for (int64_t i = 0; i < palette_limit; i++) {
+        if (impl->defined[i])
+            candidates[candidate_count++] = impl->colors[i];
+    }
+    if (candidate_count == 0)
+        return rt_pixels_clone(pixels);
 
     void *out = rt_pixels_new(src_pixels->width, src_pixels->height);
     if (!out)
@@ -2008,10 +2136,8 @@ void *rt_palette2d_apply(void *palette, void *pixels) {
             uint32_t src = src_pixels->data[y * src_pixels->width + x];
             uint32_t best = src;
             uint64_t best_distance = UINT64_MAX;
-            for (int64_t i = 0; i < impl->count && i < 256; i++) {
-                if (!impl->defined[i])
-                    continue;
-                uint32_t candidate = impl->colors[i];
+            for (int64_t i = 0; i < candidate_count; i++) {
+                uint32_t candidate = candidates[i];
                 int64_t dr = (int64_t)((src >> 24) & 255u) - (int64_t)((candidate >> 24) & 255u);
                 int64_t dg = (int64_t)((src >> 16) & 255u) - (int64_t)((candidate >> 16) & 255u);
                 int64_t db = (int64_t)((src >> 8) & 255u) - (int64_t)((candidate >> 8) & 255u);
@@ -2089,7 +2215,7 @@ void *rt_gradient2d_new(int64_t start_rgba, int64_t end_rgba, int64_t steps) {
 /// @param start_rgba Raw RGBA or tagged Color start value.
 /// @param end_rgba Raw RGBA or tagged Color end value.
 void rt_gradient2d_set_colors(void *gradient, int64_t start_rgba, int64_t end_rgba) {
-    if (!rt2d_has_class(gradient, RT2D_GRADIENT_CLASS_ID))
+    if (!rt2d_extended_has_class(gradient, RT2D_GRADIENT_CLASS_ID))
         return;
     rt_gradient2d_impl *impl = (rt_gradient2d_impl *)gradient;
     impl->start = rt_pixels_rgba_or_tagged_color_to_rgba(start_rgba);
@@ -2100,8 +2226,24 @@ void rt_gradient2d_set_colors(void *gradient, int64_t start_rgba, int64_t end_rg
 /// @param gradient Borrowed Gradient2D handle to update.
 /// @param steps Requested quantization level count.
 void rt_gradient2d_set_steps(void *gradient, int64_t steps) {
-    if (rt2d_has_class(gradient, RT2D_GRADIENT_CLASS_ID))
+    if (rt2d_extended_has_class(gradient, RT2D_GRADIENT_CLASS_ID))
         ((rt_gradient2d_impl *)gradient)->steps = steps <= 0 ? 2 : steps;
+}
+
+/// @brief Sample a validated gradient implementation.
+/// @param impl Borrowed complete Gradient2D payload.
+/// @param t_pct Sample position clamped to `0..100`.
+/// @return The sampled raw `0xRRGGBBAA` color.
+static uint32_t gradient2d_sample_impl(const rt_gradient2d_impl *impl, int64_t t_pct) {
+    int64_t t = clamp_i64(t_pct, 0, 100);
+    int64_t steps = impl->steps < 2 ? 2 : impl->steps;
+    if (steps > 101)
+        steps = 101;
+    if (steps > 2) {
+        int64_t bucket = (t * (steps - 1) + 50) / 100;
+        t = bucket * 100 / (steps - 1);
+    }
+    return lerp_rgba(impl->start, impl->end, t);
 }
 
 /// @brief Sample the gradient at position `t_pct` percent [0, 100] and return RGBA.
@@ -2112,19 +2254,10 @@ void rt_gradient2d_set_steps(void *gradient, int64_t steps) {
 /// @param t_pct Sample position clamped to `0..100`.
 /// @return The sampled raw `0xRRGGBBAA` color, or `0` for an invalid handle.
 int64_t rt_gradient2d_sample(void *gradient, int64_t t_pct) {
-    rt_gradient2d_impl *impl =
-        rt2d_has_class(gradient, RT2D_GRADIENT_CLASS_ID) ? (rt_gradient2d_impl *)gradient : NULL;
-    if (!impl)
-        return 0;
-    int64_t t = clamp_i64(t_pct, 0, 100);
-    int64_t steps = impl->steps < 2 ? 2 : impl->steps;
-    if (steps > 101)
-        steps = 101;
-    if (steps > 2) {
-        int64_t bucket = (t * (steps - 1) + 50) / 100;
-        t = bucket * 100 / (steps - 1);
-    }
-    return lerp_rgba(impl->start, impl->end, t);
+    rt_gradient2d_impl *impl = rt2d_extended_has_class(gradient, RT2D_GRADIENT_CLASS_ID)
+                                   ? (rt_gradient2d_impl *)gradient
+                                   : NULL;
+    return impl ? gradient2d_sample_impl(impl, t_pct) : 0;
 }
 
 /// @brief Sample the gradient and return a Color.RGBA-compatible value.
@@ -2174,33 +2307,35 @@ int64_t rt_gradient2d_sample_color_normalized(void *gradient, double t) {
 /// @param gradient Borrowed Gradient2D supplying colors.
 /// @param pixels Borrowed destination Pixels image modified in place.
 void rt_gradient2d_fill_horizontal(void *gradient, void *pixels) {
-    rt_gradient2d_impl *impl =
-        rt2d_has_class(gradient, RT2D_GRADIENT_CLASS_ID) ? (rt_gradient2d_impl *)gradient : NULL;
-    if (!impl || !pixels)
+    rt_gradient2d_impl *impl = rt2d_extended_has_class(gradient, RT2D_GRADIENT_CLASS_ID)
+                                   ? (rt_gradient2d_impl *)gradient
+                                   : NULL;
+    rt_pixels_impl *pix = rt_pixels_checked_impl_or_null(pixels);
+    if (!impl || !pix || !pix->data)
         return;
-    int64_t width = rt_pixels_width(pixels);
-    int64_t height = rt_pixels_height(pixels);
+    int64_t width = pix->width;
+    int64_t height = pix->height;
     if (width <= 0 || height <= 0)
         return;
     int64_t denom = width > 1 ? width - 1 : 1;
-    /* The sample is constant down each column, so compute one color per column
-     * (width samples) instead of resampling the gradient for every pixel
-     * (width*height) — mirrors the vertical variant's per-row caching. */
-    uint32_t *cols = ((uint64_t)width <= SIZE_MAX / sizeof(uint32_t))
-                         ? (uint32_t *)malloc((size_t)width * sizeof(uint32_t))
-                         : NULL;
-    if (!cols) {
-        for (int64_t y = 0; y < height; y++)
-            for (int64_t x = 0; x < width; x++)
-                rt_pixels_set(pixels, x, y, rt_gradient2d_sample(gradient, x * 100 / denom));
-        return;
+    int8_t changed = 0;
+    for (int64_t x = 0; x < width; x++) {
+        uint32_t color = gradient2d_sample_impl(impl, x * 100 / denom);
+        if (pix->data[x] != color) {
+            pix->data[x] = color;
+            changed = 1;
+        }
     }
-    for (int64_t x = 0; x < width; x++)
-        cols[x] = (uint32_t)rt_gradient2d_sample(gradient, x * 100 / denom);
-    for (int64_t y = 0; y < height; y++)
-        for (int64_t x = 0; x < width; x++)
-            rt_pixels_set(pixels, x, y, cols[x]);
-    free(cols);
+    size_t row_bytes = (size_t)width * sizeof(uint32_t);
+    for (int64_t y = 1; y < height; y++) {
+        uint32_t *row = &pix->data[y * width];
+        if (memcmp(row, pix->data, row_bytes) != 0) {
+            memcpy(row, pix->data, row_bytes);
+            changed = 1;
+        }
+    }
+    if (changed)
+        pixels_touch(pix);
 }
 
 /// @brief Fill `pixels` with a top-to-bottom vertical gradient.
@@ -2209,24 +2344,36 @@ void rt_gradient2d_fill_horizontal(void *gradient, void *pixels) {
 /// @param gradient Borrowed Gradient2D supplying colors.
 /// @param pixels Borrowed destination Pixels image modified in place.
 void rt_gradient2d_fill_vertical(void *gradient, void *pixels) {
-    rt_gradient2d_impl *impl =
-        rt2d_has_class(gradient, RT2D_GRADIENT_CLASS_ID) ? (rt_gradient2d_impl *)gradient : NULL;
-    if (!impl || !pixels)
+    rt_gradient2d_impl *impl = rt2d_extended_has_class(gradient, RT2D_GRADIENT_CLASS_ID)
+                                   ? (rt_gradient2d_impl *)gradient
+                                   : NULL;
+    rt_pixels_impl *pix = rt_pixels_checked_impl_or_null(pixels);
+    if (!impl || !pix || !pix->data)
         return;
-    int64_t width = rt_pixels_width(pixels);
-    int64_t height = rt_pixels_height(pixels);
+    int64_t width = pix->width;
+    int64_t height = pix->height;
+    if (width <= 0 || height <= 0)
+        return;
     int64_t denom = height > 1 ? height - 1 : 1;
+    int8_t changed = 0;
     for (int64_t y = 0; y < height; y++) {
-        uint32_t color = (uint32_t)rt_gradient2d_sample(gradient, y * 100 / denom);
-        for (int64_t x = 0; x < width; x++)
-            rt_pixels_set(pixels, x, y, color);
+        uint32_t color = gradient2d_sample_impl(impl, y * 100 / denom);
+        uint32_t *row = &pix->data[y * width];
+        for (int64_t x = 0; x < width; x++) {
+            if (row[x] != color) {
+                row[x] = color;
+                changed = 1;
+            }
+        }
     }
+    if (changed)
+        pixels_touch(pix);
 }
 
 /// @brief GC finalizer — releases the retained Camera2D reference.
 /// @param obj CameraRig2D payload being finalized.
 static void camerarig2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_CAMERARIG_CLASS_ID))
+    if (!rt2d_extended_has_class(obj, RT2D_CAMERARIG_CLASS_ID))
         return;
     rt_camerarig2d_impl *impl = (rt_camerarig2d_impl *)obj;
     rt2d_release_ref_slot(&impl->camera);
@@ -2262,7 +2409,7 @@ void *rt_camerarig2d_new(void *camera) {
 /// @param rig Borrowed CameraRig2D handle to update.
 /// @param camera Borrowed valid Camera2D to retain, or `NULL`.
 void rt_camerarig2d_set_camera(void *rig, void *camera) {
-    if (rt2d_has_class(rig, RT2D_CAMERARIG_CLASS_ID) &&
+    if (rt2d_extended_has_class(rig, RT2D_CAMERARIG_CLASS_ID) &&
         (!camera || rt_obj_is_instance(camera, RT_CAMERA_CLASS_ID, 0)))
         spriterenderer2d_set_ref(&((rt_camerarig2d_impl *)rig)->camera, camera);
 }
@@ -2272,7 +2419,7 @@ void rt_camerarig2d_set_camera(void *rig, void *camera) {
 /// @param x Target X coordinate.
 /// @param y Target Y coordinate.
 void rt_camerarig2d_set_target(void *rig, int64_t x, int64_t y) {
-    if (!rt2d_has_class(rig, RT2D_CAMERARIG_CLASS_ID))
+    if (!rt2d_extended_has_class(rig, RT2D_CAMERARIG_CLASS_ID))
         return;
     rt_camerarig2d_impl *impl = (rt_camerarig2d_impl *)rig;
     impl->target_x = x;
@@ -2284,7 +2431,7 @@ void rt_camerarig2d_set_target(void *rig, int64_t x, int64_t y) {
 /// @param rig Borrowed CameraRig2D handle to update.
 /// @param lerp_pct Requested per-update strength.
 void rt_camerarig2d_set_smoothing(void *rig, int64_t lerp_pct) {
-    if (rt2d_has_class(rig, RT2D_CAMERARIG_CLASS_ID))
+    if (rt2d_extended_has_class(rig, RT2D_CAMERARIG_CLASS_ID))
         ((rt_camerarig2d_impl *)rig)->smoothing = clamp_i64(lerp_pct, 0, 100);
 }
 
@@ -2294,7 +2441,7 @@ void rt_camerarig2d_set_smoothing(void *rig, int64_t lerp_pct) {
 /// @param height Dead-zone height passed to Camera2D.
 void rt_camerarig2d_set_deadzone(void *rig, int64_t width, int64_t height) {
     rt_camerarig2d_impl *impl =
-        rt2d_has_class(rig, RT2D_CAMERARIG_CLASS_ID) ? (rt_camerarig2d_impl *)rig : NULL;
+        rt2d_extended_has_class(rig, RT2D_CAMERARIG_CLASS_ID) ? (rt_camerarig2d_impl *)rig : NULL;
     if (impl && impl->camera)
         rt_camera_set_deadzone(impl->camera, width, height);
 }
@@ -2304,7 +2451,7 @@ void rt_camerarig2d_set_deadzone(void *rig, int64_t width, int64_t height) {
 /// @param x X displacement to add.
 /// @param y Y displacement to add.
 void rt_camerarig2d_add_shake(void *rig, int64_t x, int64_t y) {
-    if (!rt2d_has_class(rig, RT2D_CAMERARIG_CLASS_ID))
+    if (!rt2d_extended_has_class(rig, RT2D_CAMERARIG_CLASS_ID))
         return;
     rt_camerarig2d_impl *impl = (rt_camerarig2d_impl *)rig;
     impl->shake_x = rt2d_saturating_add_i64(impl->shake_x, x);
@@ -2314,7 +2461,7 @@ void rt_camerarig2d_add_shake(void *rig, int64_t x, int64_t y) {
 /// @brief Reset the shake offset to zero.
 /// @param rig Borrowed CameraRig2D handle to update.
 void rt_camerarig2d_clear_shake(void *rig) {
-    if (!rt2d_has_class(rig, RT2D_CAMERARIG_CLASS_ID))
+    if (!rt2d_extended_has_class(rig, RT2D_CAMERARIG_CLASS_ID))
         return;
     rt_camerarig2d_impl *impl = (rt_camerarig2d_impl *)rig;
     impl->shake_x = 0;
@@ -2326,7 +2473,7 @@ void rt_camerarig2d_clear_shake(void *rig) {
 /// @param rig Borrowed CameraRig2D handle to update.
 void rt_camerarig2d_update(void *rig) {
     rt_camerarig2d_impl *impl =
-        rt2d_has_class(rig, RT2D_CAMERARIG_CLASS_ID) ? (rt_camerarig2d_impl *)rig : NULL;
+        rt2d_extended_has_class(rig, RT2D_CAMERARIG_CLASS_ID) ? (rt_camerarig2d_impl *)rig : NULL;
     if (impl && impl->camera)
         rt_camera_smooth_follow(
             impl->camera, impl->target_x, impl->target_y, clamp_i64(impl->smoothing, 0, 100) * 10);
@@ -2337,9 +2484,10 @@ void rt_camerarig2d_update(void *rig) {
 /// @return The saturating render X coordinate, or `0` if invalid or disconnected.
 int64_t rt_camerarig2d_get_render_x(void *rig) {
     rt_camerarig2d_impl *impl =
-        rt2d_has_class(rig, RT2D_CAMERARIG_CLASS_ID) ? (rt_camerarig2d_impl *)rig : NULL;
-    return impl && impl->camera ? rt2d_saturating_add_i64(rt_camera_get_x(impl->camera), impl->shake_x)
-                                : 0;
+        rt2d_extended_has_class(rig, RT2D_CAMERARIG_CLASS_ID) ? (rt_camerarig2d_impl *)rig : NULL;
+    return impl && impl->camera
+               ? rt2d_saturating_add_i64(rt_camera_get_x(impl->camera), impl->shake_x)
+               : 0;
 }
 
 /// @brief Return the Y render position: camera Y plus current shake Y offset.
@@ -2347,15 +2495,16 @@ int64_t rt_camerarig2d_get_render_x(void *rig) {
 /// @return The saturating render Y coordinate, or `0` if invalid or disconnected.
 int64_t rt_camerarig2d_get_render_y(void *rig) {
     rt_camerarig2d_impl *impl =
-        rt2d_has_class(rig, RT2D_CAMERARIG_CLASS_ID) ? (rt_camerarig2d_impl *)rig : NULL;
-    return impl && impl->camera ? rt2d_saturating_add_i64(rt_camera_get_y(impl->camera), impl->shake_y)
-                                : 0;
+        rt2d_extended_has_class(rig, RT2D_CAMERARIG_CLASS_ID) ? (rt_camerarig2d_impl *)rig : NULL;
+    return impl && impl->camera
+               ? rt2d_saturating_add_i64(rt_camera_get_y(impl->camera), impl->shake_y)
+               : 0;
 }
 
 /// @brief GC finalizer — releases the retained TexAtlas reference.
 /// @param obj TexturePackerAtlas payload being finalized.
 static void texturepackeratlas_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_TEXTUREPACKERATLAS_CLASS_ID))
+    if (!rt2d_extended_has_class(obj, RT2D_TEXTUREPACKERATLAS_CLASS_ID))
         return;
     rt_texturepackeratlas_impl *impl = (rt_texturepackeratlas_impl *)obj;
     rt2d_release_ref_slot(&impl->atlas);
@@ -2390,7 +2539,7 @@ void *rt_texturepackeratlas_new(void *pixels) {
 /// @param packer Borrowed TexturePackerAtlas handle.
 /// @return The borrowed TexAtlas, or `NULL` for an invalid handle.
 void *rt_texturepackeratlas_get_atlas(void *packer) {
-    return rt2d_has_class(packer, RT2D_TEXTUREPACKERATLAS_CLASS_ID)
+    return rt2d_extended_has_class(packer, RT2D_TEXTUREPACKERATLAS_CLASS_ID)
                ? ((rt_texturepackeratlas_impl *)packer)->atlas
                : NULL;
 }
@@ -2443,7 +2592,7 @@ void *rt_asepriteimporter_new(void) {
 /// @param frame_width Requested frame width.
 /// @param frame_height Requested frame height.
 void rt_asepriteimporter_set_grid(void *importer, int64_t frame_width, int64_t frame_height) {
-    if (!rt2d_has_class(importer, RT2D_ASEPRITEIMPORTER_CLASS_ID))
+    if (!rt2d_extended_has_class(importer, RT2D_ASEPRITEIMPORTER_CLASS_ID))
         return;
     rt_asepriteimporter_impl *impl = (rt_asepriteimporter_impl *)importer;
     impl->frame_width = frame_width > 0 ? normalized_dim(frame_width) : 0;
@@ -2454,7 +2603,7 @@ void rt_asepriteimporter_set_grid(void *importer, int64_t frame_width, int64_t f
 /// @param importer Borrowed AsepriteImporter handle.
 /// @return The frame width, or `0` when unset or invalid.
 int64_t rt_asepriteimporter_get_frame_width(void *importer) {
-    return rt2d_has_class(importer, RT2D_ASEPRITEIMPORTER_CLASS_ID)
+    return rt2d_extended_has_class(importer, RT2D_ASEPRITEIMPORTER_CLASS_ID)
                ? ((rt_asepriteimporter_impl *)importer)->frame_width
                : 0;
 }
@@ -2463,7 +2612,7 @@ int64_t rt_asepriteimporter_get_frame_width(void *importer) {
 /// @param importer Borrowed AsepriteImporter handle.
 /// @return The frame height, or `0` when unset or invalid.
 int64_t rt_asepriteimporter_get_frame_height(void *importer) {
-    return rt2d_has_class(importer, RT2D_ASEPRITEIMPORTER_CLASS_ID)
+    return rt2d_extended_has_class(importer, RT2D_ASEPRITEIMPORTER_CLASS_ID)
                ? ((rt_asepriteimporter_impl *)importer)->frame_height
                : 0;
 }
@@ -2475,9 +2624,10 @@ int64_t rt_asepriteimporter_get_frame_height(void *importer) {
 /// @param pixels Borrowed source Pixels image.
 /// @return A new owned TexAtlas, or `NULL` for invalid input or construction failure.
 void *rt_asepriteimporter_to_atlas(void *importer, void *pixels) {
-    rt_asepriteimporter_impl *impl = rt2d_has_class(importer, RT2D_ASEPRITEIMPORTER_CLASS_ID)
-                                         ? (rt_asepriteimporter_impl *)importer
-                                         : NULL;
+    rt_asepriteimporter_impl *impl =
+        rt2d_extended_has_class(importer, RT2D_ASEPRITEIMPORTER_CLASS_ID)
+            ? (rt_asepriteimporter_impl *)importer
+            : NULL;
     if (!impl || !pixels || impl->frame_width <= 0 || impl->frame_height <= 0)
         return NULL;
     return rt_texatlas_load_grid(pixels, impl->frame_width, impl->frame_height);
@@ -2501,7 +2651,7 @@ void *rt_tiledmaploader_new(void) {
 /// @param tile_width Requested tile width.
 /// @param tile_height Requested tile height.
 void rt_tiledmaploader_set_tile_size(void *loader, int64_t tile_width, int64_t tile_height) {
-    if (!rt2d_has_class(loader, RT2D_TILEDMAPLOADER_CLASS_ID))
+    if (!rt2d_extended_has_class(loader, RT2D_TILEDMAPLOADER_CLASS_ID))
         return;
     rt_tiledmaploader_impl *impl = (rt_tiledmaploader_impl *)loader;
     impl->tile_width = normalized_dim(tile_width);
@@ -2512,7 +2662,7 @@ void rt_tiledmaploader_set_tile_size(void *loader, int64_t tile_width, int64_t t
 /// @param loader Borrowed TiledMapLoader handle.
 /// @return The tile width, or `0` for an invalid handle.
 int64_t rt_tiledmaploader_get_tile_width(void *loader) {
-    return rt2d_has_class(loader, RT2D_TILEDMAPLOADER_CLASS_ID)
+    return rt2d_extended_has_class(loader, RT2D_TILEDMAPLOADER_CLASS_ID)
                ? ((rt_tiledmaploader_impl *)loader)->tile_width
                : 0;
 }
@@ -2521,7 +2671,7 @@ int64_t rt_tiledmaploader_get_tile_width(void *loader) {
 /// @param loader Borrowed TiledMapLoader handle.
 /// @return The tile height, or `0` for an invalid handle.
 int64_t rt_tiledmaploader_get_tile_height(void *loader) {
-    return rt2d_has_class(loader, RT2D_TILEDMAPLOADER_CLASS_ID)
+    return rt2d_extended_has_class(loader, RT2D_TILEDMAPLOADER_CLASS_ID)
                ? ((rt_tiledmaploader_impl *)loader)->tile_height
                : 0;
 }
@@ -2533,7 +2683,7 @@ int64_t rt_tiledmaploader_get_tile_height(void *loader) {
 /// @param height Requested map height in cells.
 /// @return A new owned Tilemap, or `NULL` for an invalid loader or allocation failure.
 void *rt_tiledmaploader_new_tilemap(void *loader, int64_t width, int64_t height) {
-    rt_tiledmaploader_impl *impl = rt2d_has_class(loader, RT2D_TILEDMAPLOADER_CLASS_ID)
+    rt_tiledmaploader_impl *impl = rt2d_extended_has_class(loader, RT2D_TILEDMAPLOADER_CLASS_ID)
                                        ? (rt_tiledmaploader_impl *)loader
                                        : NULL;
     if (!impl)

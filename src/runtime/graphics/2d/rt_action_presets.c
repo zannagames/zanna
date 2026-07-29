@@ -13,13 +13,13 @@
 //   platformer, top-down, and 3D controls). Each preset defines a set of named
 //   actions and their default bindings on top of the action core.
 //
-// Key behavior:
+// Key invariants:
 //   - Presets overlay the current global registry; they never clear it.
 //   - A missing name is defined with the preset's expected button/axis kind.
-//     Existing actions are reused, so repeated loads can add duplicates.
-//   - Helpers deliberately swallow allocation failure and type mismatches.
-//     LoadPreset reports whether the preset name was recognized, not whether
-//     every requested node was allocated.
+//     Existing compatible actions and exact bindings are reused, making each
+//     preset idempotent.
+//   - Loading is transactional: allocation failure or a conflicting action
+//     kind leaves the previous registry untouched.
 //
 // Ownership/Lifetime:
 //   - Newly defined Action names and all Binding nodes are malloc-owned by the
@@ -47,6 +47,9 @@
 /// @brief Extract an int64 value from a borrowed runtime box.
 extern int64_t rt_unbox_i64(void *box);
 
+/// @brief Sticky success flag for one main-thread-only preset transaction.
+static int g_preset_build_ok = 1;
+
 /// @brief Duplicate an action preset name with malloc-backed ownership.
 /// @details Action structures free their `name` field with `free`, so this
 ///          helper avoids depending on platform-specific `strdup` declarations
@@ -67,104 +70,213 @@ static char *action_preset_strdup(const char *text) {
     return copy;
 }
 
+/// @brief Deep-copy the action registry while preserving action/binding order.
+/// @param source Borrowed registry head.
+/// @return Owned clone, or `NULL` when the source is empty or allocation fails.
+///         Callers distinguish those cases through @p ok.
+static Action *clone_action_list(const Action *source, int *ok) {
+    Action *head = NULL;
+    Action *tail = NULL;
+    *ok = 0;
+
+    while (source) {
+        Action *copy = (Action *)calloc(1, sizeof(Action));
+        if (!copy)
+            goto failed;
+        copy->name = action_preset_strdup(source->name);
+        if (!copy->name) {
+            free(copy);
+            goto failed;
+        }
+        copy->name_len = source->name_len;
+        copy->is_axis = source->is_axis;
+        copy->pressed = source->pressed;
+        copy->released = source->released;
+        copy->held = source->held;
+        copy->axis_value = source->axis_value;
+        copy->binding_count = source->binding_count;
+
+        Binding *binding_tail = NULL;
+        for (const Binding *binding = source->bindings; binding; binding = binding->next) {
+            Binding *binding_copy = (Binding *)malloc(sizeof(Binding));
+            if (!binding_copy) {
+                action_free_node(copy);
+                goto failed;
+            }
+            *binding_copy = *binding;
+            binding_copy->next = NULL;
+            append_binding(&copy->bindings, &binding_tail, binding_copy);
+        }
+
+        if (tail)
+            tail->next = copy;
+        else
+            head = copy;
+        tail = copy;
+        source = source->next;
+    }
+    *ok = 1;
+    return head;
+
+failed:
+    action_free_list(head);
+    return NULL;
+}
+
 /// @brief Internal: define a button or axis action by C-string name.
-/// @details Inserts new actions at the global list head and silently declines
-///          names that already exist.
+/// @details Inserts new actions at the global list head, reuses compatible
+///          existing actions, and marks kind conflicts as transaction failures.
 /// @param name Borrowed null-terminated action name.
 /// @param is_axis Nonzero to create an axis action; zero for a button action.
-/// @return Borrowed pointer to the newly owned registry node, or `NULL` for a
-///         duplicate/invalid name or allocation failure.
+/// @return Borrowed pointer to the compatible registry node, or `NULL` for an
+///         invalid/conflicting name or allocation failure.
 static Action *define_action_cstr(const char *name, int8_t is_axis) {
-    if (find_action(name))
-        return NULL; /* Already exists — skip silently */
-    Action *a = (Action *)malloc(sizeof(Action));
-    if (!a)
+    if (!name || !*name) {
+        g_preset_build_ok = 0;
         return NULL;
+    }
+    Action *existing = find_action(name);
+    if (existing) {
+        if (existing->is_axis == (is_axis != 0))
+            return existing;
+        g_preset_build_ok = 0;
+        return NULL;
+    }
+    int64_t action_count = 0;
+    for (Action *action = g_actions; action; action = action->next) {
+        if (++action_count >= ACTION_MAX_ACTIONS) {
+            g_preset_build_ok = 0;
+            return NULL;
+        }
+    }
+
+    Action *a = (Action *)calloc(1, sizeof(Action));
+    if (!a) {
+        g_preset_build_ok = 0;
+        return NULL;
+    }
     a->name = action_preset_strdup(name);
     if (!a->name) {
         free(a);
+        g_preset_build_ok = 0;
         return NULL;
     }
-    a->is_axis = is_axis;
-    a->bindings = NULL;
-    a->pressed = 0;
-    a->released = 0;
-    a->held = 0;
-    a->axis_value = 0.0;
+    a->name_len = (int64_t)strlen(name);
+    a->is_axis = is_axis != 0;
     a->next = g_actions;
     g_actions = a;
     return a;
 }
 
+/// @brief Insert a binding unless an exact equivalent already exists.
+static int add_unique_binding(Action *action, Binding *binding) {
+    if (!action || !binding) {
+        free(binding);
+        g_preset_build_ok = 0;
+        return 0;
+    }
+    for (Binding *existing = action->bindings; existing; existing = existing->next) {
+        if (action_binding_equal(existing, binding)) {
+            free(binding);
+            return 1;
+        }
+    }
+    if (action->binding_count >= ACTION_MAX_BINDINGS_PER_ACTION) {
+        free(binding);
+        g_preset_build_ok = 0;
+        return 0;
+    }
+    add_binding(action, binding);
+    return 1;
+}
+
 /// @brief Internal: bind a key to a button action by C-string name.
-/// @details Missing or axis-style actions and allocation failures are ignored.
+/// @details Missing or axis-style actions and allocation failures fail the
+///          enclosing preset transaction.
 /// @param name Borrowed action name.
 /// @param key Runtime keyboard code to bind.
-static void bind_key_to(const char *name, int64_t key) {
+static int bind_key_to(const char *name, int64_t key) {
     Action *a = find_action(name);
-    if (!a || a->is_axis)
-        return;
+    if (!a || a->is_axis || !action_key_code_valid(key)) {
+        g_preset_build_ok = 0;
+        return 0;
+    }
     Binding *b = create_binding(BIND_KEY, key, 0, 1.0);
-    if (b)
-        add_binding(a, b);
+    return add_unique_binding(a, b);
 }
 
 /// @brief Internal: bind a key to an axis action with the given contribution.
-/// @details Missing or button-style actions and allocation failures are ignored.
+/// @details Missing or button-style actions and allocation failures fail the
+///          enclosing preset transaction.
 /// @param name Borrowed axis-action name.
 /// @param key Runtime keyboard code to bind.
 /// @param value Contribution added while the key is held.
-static void bind_key_axis_to(const char *name, int64_t key, double value) {
+static int bind_key_axis_to(const char *name, int64_t key, double value) {
     Action *a = find_action(name);
-    if (!a || !a->is_axis)
-        return;
+    if (!a || !a->is_axis || !action_key_code_valid(key)) {
+        g_preset_build_ok = 0;
+        return 0;
+    }
     Binding *b = create_binding(BIND_KEY, key, 0, value);
-    if (b)
-        add_binding(a, b);
+    return add_unique_binding(a, b);
+}
+
+/// @brief Internal: bind a mouse button to a button action.
+static int bind_mouse_to(const char *name, int64_t button) {
+    Action *a = find_action(name);
+    if (!a || a->is_axis || !action_mouse_button_valid(button)) {
+        g_preset_build_ok = 0;
+        return 0;
+    }
+    Binding *b = create_binding(BIND_MOUSE_BUTTON, button, 0, 1.0);
+    return add_unique_binding(a, b);
 }
 
 /// @brief Internal: bind any-pad button to a button action.
-/// @details Stores controller index `-1`; missing/axis actions and allocation
-///          failures are ignored.
+/// @details Stores controller index `-1`; invalid state or allocation failure
+///          fails the enclosing preset transaction.
 /// @param name Borrowed button-action name.
 /// @param button Runtime gamepad-button code to bind.
-static void bind_pad_to(const char *name, int64_t button) {
+static int bind_pad_to(const char *name, int64_t button) {
     Action *a = find_action(name);
-    if (!a || a->is_axis)
-        return;
+    if (!a || a->is_axis || !action_pad_button_valid(button)) {
+        g_preset_build_ok = 0;
+        return 0;
+    }
     Binding *b = create_binding(BIND_PAD_BUTTON, button, -1, 1.0);
-    if (b)
-        add_binding(a, b);
+    return add_unique_binding(a, b);
 }
 
 /// @brief Internal: bind any-pad analog axis to an axis action.
-/// @details Stores controller index `-1`; missing/button actions and allocation
-///          failures are ignored.
+/// @details Stores controller index `-1`; invalid state or allocation failure
+///          fails the enclosing preset transaction.
 /// @param name Borrowed axis-action name.
 /// @param axis One of the `ZANNA_AXIS_*` identifiers.
 /// @param scale Multiplier applied to the raw device value.
-static void bind_pad_axis_to(const char *name, int64_t axis, double scale) {
+static int bind_pad_axis_to(const char *name, int64_t axis, double scale) {
     Action *a = find_action(name);
-    if (!a || !a->is_axis)
-        return;
+    if (!a || !a->is_axis || !action_pad_axis_valid(axis)) {
+        g_preset_build_ok = 0;
+        return 0;
+    }
     Binding *b = create_binding(BIND_PAD_AXIS, axis, -1, scale);
-    if (b)
-        add_binding(a, b);
+    return add_unique_binding(a, b);
 }
 
 /// @brief Internal: bind any-pad button to an axis with a fixed contribution.
-/// @details Stores controller index `-1`; missing/button actions and allocation
-///          failures are ignored.
+/// @details Stores controller index `-1`; invalid state or allocation failure
+///          fails the enclosing preset transaction.
 /// @param name Borrowed axis-action name.
 /// @param button Runtime gamepad-button code to bind.
 /// @param value Contribution added while the button is held.
-static void bind_pad_button_axis_to(const char *name, int64_t button, double value) {
+static int bind_pad_button_axis_to(const char *name, int64_t button, double value) {
     Action *a = find_action(name);
-    if (!a || !a->is_axis)
-        return;
+    if (!a || !a->is_axis || !action_pad_button_valid(button)) {
+        g_preset_build_ok = 0;
+        return 0;
+    }
     Binding *b = create_binding(BIND_PAD_BUTTON_AXIS, button, -1, value);
-    if (b)
-        add_binding(a, b);
+    return add_unique_binding(a, b);
 }
 
 /// @brief Preset: WASD/arrows/D-pad/left-stick → `move_*` actions.
@@ -243,8 +355,8 @@ static void load_preset_fps3d(void) {
     bind_key_to("crouch", ZANNA_KEY_LCTRL);
     bind_key_to("interact", ZANNA_KEY_E);
     bind_key_to("pause", ZANNA_KEY_ESCAPE);
-    rt_action_bind_mouse(rt_const_cstr("fire"), ZANNA_MOUSE_BUTTON_LEFT);
-    rt_action_bind_mouse(rt_const_cstr("aim"), ZANNA_MOUSE_BUTTON_RIGHT);
+    bind_mouse_to("fire", ZANNA_MOUSE_BUTTON_LEFT);
+    bind_mouse_to("aim", ZANNA_MOUSE_BUTTON_RIGHT);
 
     bind_pad_to("jump", ZANNA_PAD_A);
     bind_pad_to("sprint", ZANNA_PAD_LB);
@@ -409,8 +521,9 @@ static void load_preset_topdown(void) {
 ///   - `"fps3d"` — 3D first/third-person: move axes, jump/sprint/crouch,
 ///     interact, mouse fire/aim, pause; pad face buttons + left stick.
 /// Auto-initializes the action system if not already done. Returns
-/// 0 if `name` doesn't match any preset. A recognized preset returns success
-/// even if individual definitions or bindings could not be allocated.
+/// 0 if `name` doesn't match any preset. A recognized preset also returns 0
+/// if a conflicting action kind or allocation failure prevents the complete
+/// overlay; in that case the registry is unchanged.
 /// @param preset_name Borrowed exact preset identifier.
 /// @return `1` for a recognized identifier; `0` for null, empty, or unknown
 ///         names.
@@ -424,27 +537,37 @@ int8_t rt_action_load_preset(rt_string preset_name) {
 
     int64_t len = rt_str_len(preset_name);
     const char *data = preset_name->data;
+    void (*loader)(void) = NULL;
 
     if (len == 17 && memcmp(data, "standard_movement", 17) == 0) {
-        load_preset_standard_movement();
-        return 1;
+        loader = load_preset_standard_movement;
+    } else if (len == 15 && memcmp(data, "menu_navigation", 15) == 0) {
+        loader = load_preset_menu_navigation;
+    } else if (len == 10 && memcmp(data, "platformer", 10) == 0) {
+        loader = load_preset_platformer;
+    } else if (len == 7 && memcmp(data, "topdown", 7) == 0) {
+        loader = load_preset_topdown;
+    } else if (len == 5 && memcmp(data, "fps3d", 5) == 0) {
+        loader = load_preset_fps3d;
     }
-    if (len == 15 && memcmp(data, "menu_navigation", 15) == 0) {
-        load_preset_menu_navigation();
-        return 1;
-    }
-    if (len == 10 && memcmp(data, "platformer", 10) == 0) {
-        load_preset_platformer();
-        return 1;
-    }
-    if (len == 7 && memcmp(data, "topdown", 7) == 0) {
-        load_preset_topdown();
-        return 1;
-    }
-    if (len == 5 && memcmp(data, "fps3d", 5) == 0) {
-        load_preset_fps3d();
+    if (!loader)
+        return 0;
+
+    int clone_ok = 0;
+    Action *saved_actions = g_actions;
+    Action *working_actions = clone_action_list(saved_actions, &clone_ok);
+    if (!clone_ok)
+        return 0;
+
+    g_actions = working_actions;
+    g_preset_build_ok = 1;
+    loader();
+    if (g_preset_build_ok) {
+        action_free_list(saved_actions);
         return 1;
     }
 
+    action_free_list(g_actions);
+    g_actions = saved_actions;
     return 0;
 }

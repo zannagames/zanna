@@ -1,0 +1,28 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/style_tokens.zia
+// Purpose: Named GUI.Button style variants for scene chrome (ADR 0221).
+// Key invariants:
+//   - Scene code references these names instead of bare SetStyle integers.
+//   - Values mirror the widget library's button style enum.
+// Ownership/Lifetime:
+//   - Stateless module finals.
+// Links: zannastudio/src/ui/scene_panels_2d.zia
+//
+//===----------------------------------------------------------------------===//
+
+module style_tokens;
+
+/// @brief Default button presentation.
+final STYLE_DEFAULT: Integer = 0;
+
+/// @brief Accented primary-action presentation.
+final STYLE_PRIMARY: Integer = 1;
+
+/// @brief Quiet secondary-action presentation.
+final STYLE_SECONDARY: Integer = 2;

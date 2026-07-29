@@ -216,8 +216,7 @@ static int png_chunk_is_critical(const uint8_t *chunk_type) {
 /// @details Adler-32 is the checksum carried in the trailing 4 bytes of a
 ///          zlib-compressed PNG IDAT stream. The two running sums @c a (mod 65521)
 ///          and @c b (mod 65521) are updated per byte; the result packs them as
-///          (b << 16) | a. Used by the PNG decoder to verify deflate output before
-///          touching the pixel buffer.
+///          (b << 16) | a. Used by the PNG encoder for its zlib trailer.
 /// @param data Byte sequence to checksum; callers provide readable storage for
 ///        every byte in @p len.
 /// @param len Number of bytes to process.
@@ -237,33 +236,6 @@ static uint32_t png_adler32(const uint8_t *data, size_t len) {
         len -= chunk;
     }
     return (b << 16) | a;
-}
-
-/// @brief Validate the 2-byte ZLIB header (CMF + FLG) prefix of a PNG IDAT stream.
-/// @details Performs the four checks RFC 1950 §2.2 mandates:
-///          1. CM (low 4 bits of CMF) must equal 8 (deflate).
-///          2. CINFO (high 4 bits of CMF) must be ≤ 7 (window size ≤ 32K).
-///          3. (CMF * 256 + FLG) must be a multiple of 31 (FCHECK validity).
-///          4. FDICT bit (0x20 of FLG) must be 0 — preset dictionaries are
-///             illegal in PNG IDAT streams.
-/// @param data Concatenated IDAT byte stream.
-/// @param len Total stream length, including two header and four checksum
-///        bytes.
-/// @return 1 if the header is well-formed for PNG, 0 otherwise.
-static int png_validate_zlib_header(const uint8_t *data, size_t len) {
-    if (!data || len < 6)
-        return 0;
-    uint8_t cmf = data[0];
-    uint8_t flg = data[1];
-    if ((cmf & 0x0Fu) != 8u)
-        return 0;
-    if ((cmf >> 4) > 7u)
-        return 0;
-    if ((((uint16_t)cmf << 8) | flg) % 31u != 0u)
-        return 0;
-    if ((flg & 0x20u) != 0u)
-        return 0;
-    return 1;
 }
 
 // Paeth predictor as defined by the PNG spec
@@ -371,9 +343,28 @@ static size_t png_filter_score_row(
                 break;
         }
         int residual = (int)(int8_t)(row[i] - pred);
-        score += (size_t)(residual < 0 ? -residual : residual);
+        size_t magnitude = (size_t)(residual < 0 ? -residual : residual);
+        if (magnitude > SIZE_MAX - score)
+            return SIZE_MAX;
+        score += magnitude;
     }
     return score;
+}
+
+/// @brief Validate a PNG chunk type's four ASCII letters and reserved bit.
+/// @details PNG chunk names contain only ASCII letters. The third letter's
+///          lowercase bit is reserved and must remain zero in this PNG version.
+/// @param chunk_type Pointer to the four-byte type.
+/// @return Nonzero only for a syntactically valid chunk type.
+static int png_chunk_type_is_valid(const uint8_t *chunk_type) {
+    if (!chunk_type)
+        return 0;
+    for (size_t i = 0; i < 4; i++) {
+        uint8_t c = chunk_type[i];
+        if (!((c >= (uint8_t)'A' && c <= (uint8_t)'Z') || (c >= (uint8_t)'a' && c <= (uint8_t)'z')))
+            return 0;
+    }
+    return (chunk_type[2] & 0x20u) == 0u;
 }
 
 /// @brief Encode one RGBA row with the best PNG filter by residual score.
@@ -496,7 +487,8 @@ int rt_png_decode_buffer_rgba32(const uint8_t *file_data,
         const uint8_t *chunk_type = file_data + pos + 4;
         const uint8_t *chunk_data = file_data + pos + 8;
 
-        if ((size_t)chunk_len > (size_t)file_len - pos - 12u) {
+        if (!png_chunk_type_is_valid(chunk_type) ||
+            (size_t)chunk_len > (size_t)file_len - pos - 12u) {
             free(idat_buf);
             return 0;
         }
@@ -568,8 +560,8 @@ int rt_png_decode_buffer_rgba32(const uint8_t *file_data,
             }
             ihdr_seen = 1;
         } else if (memcmp(chunk_type, "PLTE", 4) == 0) {
-            if (plte_seen || idat_seen || color_type == 0 || color_type == 4 || chunk_len == 0 ||
-                (chunk_len % 3u) != 0u || chunk_len > 768u) {
+            if (plte_seen || trns_seen || idat_seen || color_type == 0 || color_type == 4 ||
+                chunk_len == 0 || (chunk_len % 3u) != 0u || chunk_len > 768u) {
                 free(idat_buf);
                 return 0;
             }
@@ -589,7 +581,7 @@ int rt_png_decode_buffer_rgba32(const uint8_t *file_data,
                 return 0;
             }
             if (color_type == 3) {
-                if (palette_count <= 0 || chunk_len > (uint32_t)palette_count) {
+                if (palette_count <= 0 || chunk_len == 0 || chunk_len > (uint32_t)palette_count) {
                     free(idat_buf);
                     return 0;
                 }
@@ -601,12 +593,24 @@ int rt_png_decode_buffer_rgba32(const uint8_t *file_data,
             } else if (color_type == 0 && chunk_len == 2) {
                 // Grayscale key color (16-bit, even for 8-bit images)
                 trns_gray = (uint16_t)((chunk_data[0] << 8) | chunk_data[1]);
+                uint32_t max_sample =
+                    bit_depth == 16 ? UINT16_MAX : ((UINT32_C(1) << bit_depth) - 1u);
+                if ((uint32_t)trns_gray > max_sample) {
+                    free(idat_buf);
+                    return 0;
+                }
                 has_trns_gray = 1;
             } else if (color_type == 2 && chunk_len == 6) {
                 // Truecolor key color (16-bit samples, even for 8-bit images)
                 trns_rgb[0] = (uint16_t)((chunk_data[0] << 8) | chunk_data[1]);
                 trns_rgb[1] = (uint16_t)((chunk_data[2] << 8) | chunk_data[3]);
                 trns_rgb[2] = (uint16_t)((chunk_data[4] << 8) | chunk_data[5]);
+                uint32_t max_sample = bit_depth == 16 ? UINT16_MAX : UINT8_MAX;
+                if ((uint32_t)trns_rgb[0] > max_sample || (uint32_t)trns_rgb[1] > max_sample ||
+                    (uint32_t)trns_rgb[2] > max_sample) {
+                    free(idat_buf);
+                    return 0;
+                }
                 has_trns_rgb = 1;
             } else {
                 free(idat_buf);
@@ -644,6 +648,8 @@ int rt_png_decode_buffer_rgba32(const uint8_t *file_data,
                     }
                     new_cap *= 2;
                 }
+                if (idat_cap_limit > 0 && new_cap > idat_cap_limit)
+                    new_cap = idat_cap_limit;
                 uint8_t *new_buf = (uint8_t *)realloc(idat_buf, new_cap);
                 if (!new_buf) {
                     if (idat_buf)
@@ -656,6 +662,10 @@ int rt_png_decode_buffer_rgba32(const uint8_t *file_data,
             memcpy(idat_buf + idat_len, chunk_data, chunk_len);
             idat_len += chunk_len;
         } else if (memcmp(chunk_type, "IEND", 4) == 0) {
+            if (chunk_len != 0 || !idat_seen || pos + 12u != file_len) {
+                free(idat_buf);
+                return 0;
+            }
             iend_seen = 1;
             break;
         } else {
@@ -676,14 +686,6 @@ int rt_png_decode_buffer_rgba32(const uint8_t *file_data,
             free(idat_buf);
         return 0;
     }
-
-    // IDAT data is a zlib stream: 2-byte header + DEFLATE data + 4-byte Adler32.
-    if (!png_validate_zlib_header(idat_buf, idat_len)) {
-        free(idat_buf);
-        return 0;
-    }
-    size_t deflate_len = idat_len - 6; // strip 2-byte zlib header and 4-byte Adler32.
-    uint32_t expected_adler = png_read_u32(idat_buf + idat_len - 4);
 
     uint8_t *raw_data = NULL;
     size_t raw_len = 0;
@@ -712,17 +714,14 @@ int rt_png_decode_buffer_rgba32(const uint8_t *file_data,
             width, height, bit_depth, samples_per_pixel, interlace, &expected_filtered_len))
         goto cleanup;
 
-    if (!rt_compress_inflate_raw(
-            idat_buf + 2, deflate_len, expected_filtered_len, &raw_data, &raw_len)) {
-        free(idat_buf);
-        return 0;
-    }
+    raw_data = (uint8_t *)malloc(expected_filtered_len);
+    if (!raw_data)
+        goto cleanup;
+    if (!rt_compress_inflate_zlib_into(idat_buf, idat_len, raw_data, expected_filtered_len))
+        goto cleanup;
+    raw_len = expected_filtered_len;
     free(idat_buf);
     idat_buf = NULL;
-    if (raw_len != expected_filtered_len)
-        goto cleanup;
-    if (png_adler32(raw_data, raw_len) != expected_adler)
-        goto cleanup;
 
     if (interlace == 1) {
         // Adam7 interlaced PNG: 7 passes
@@ -992,8 +991,8 @@ void *rt_pixels_load_png(void *path) {
         return NULL;
     }
 
-    const char *filepath = rt_string_cstr((rt_string)path);
-    if (!filepath) {
+    const char *filepath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &filepath)) {
         rt_asset_error_end_load_failure();
         rt_trap("Pixels.LoadPng: invalid path");
         return NULL;
@@ -1104,9 +1103,9 @@ int64_t rt_pixels_save_png(void *pixels_ptr, void *path) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels_ptr, "Pixels.SavePng: invalid pixels");
     if (!p)
         return 0;
-    const char *filepath = rt_string_cstr((rt_string)path);
-    if (!filepath || p->width <= 0 || p->height <= 0 || p->width > UINT32_MAX ||
-        p->height > UINT32_MAX)
+    const char *filepath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &filepath) || p->width <= 0 ||
+        p->height <= 0 || p->width > UINT32_MAX || p->height > UINT32_MAX)
         return 0;
 
     uint32_t w = (uint32_t)p->width;

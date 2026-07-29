@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-07-29
 ---
 
 # Physics & Collision
@@ -317,7 +317,7 @@ and impulse-based collision resolution.
 
 | Method               | Signature             | Description                             |
 |----------------------|-----------------------|-----------------------------------------|
-| `Add(body)`          | `Void(Body)`          | Add a body to the world                 |
+| `Add(body)`          | `Void(Body)`          | Add a body; traps if it still belongs to another world |
 | `Remove(body)`       | `Void(Body)`          | Remove a body from the world            |
 | `AddJoint(joint)`    | `Void(Joint)`         | Add a joint whose bodies are already in this world |
 | `RemoveJoint(joint)` | `Void(Joint)`         | Remove a joint from the world |
@@ -342,10 +342,10 @@ and impulse-based collision resolution.
 |---------------|------------------------|------------------------------------------|
 | `X`           | `Double` (read-only)   | X position                               |
 | `Y`           | `Double` (read-only)   | Y position                               |
-| `PrevX`       | `Double` (read-only)   | X position at the start of the previous successful `Step` |
-| `PrevY`       | `Double` (read-only)   | Y position at the start of the previous successful `Step` |
-| `Width`       | `Double` (read-only)   | Body width                               |
-| `Height`      | `Double` (read-only)   | Body height                              |
+| `PrevX`       | `Double` (read-only)   | X position at the start of the most recent integration substep |
+| `PrevY`       | `Double` (read-only)   | Y position at the start of the most recent integration substep |
+| `Width`       | `Double` (read-only)   | AABB width; 0 for circle bodies          |
+| `Height`      | `Double` (read-only)   | AABB height; 0 for circle bodies         |
 | `VelocityX`   | `Double` (read-only)   | X velocity                               |
 | `VelocityY`   | `Double` (read-only)   | Y velocity                               |
 | `Mass`        | `Double` (read-only)   | Body mass (0 = static)                   |
@@ -394,27 +394,28 @@ Analytic projectile helper for preview arcs, lobbed attacks, and trajectory test
 | `SetDrag(drag)` | `Void(Double)` | Set non-negative linear drag coefficient |
 | `SetGroundY(y)` | `Void(Double)` | Set landing threshold on the Y axis |
 | `Reset()` | `Void()` | Reset elapsed time and landing state |
-| `Advance(dt)` | `Void(Double)` | Advance elapsed time by `dt` seconds |
-| `XAt(t)` / `YAt(t)` | `Double(Double)` | Position at time `t` |
-| `VXAt(t)` / `VYAt(t)` | `Double(Double)` | Velocity at time `t` |
-| `TimeToGround()` | `Double()` | Estimated first time where `YAt(t) >= GroundY`, or `-1` if unreachable |
+| `Advance(dt)` | `Void(Double)` | Advance elapsed time and latch any first ground crossing |
+| `XAt(t)` / `YAt(t)` | `Double(Double)` | Finite-saturated position at time `t` |
+| `VXAt(t)` / `VYAt(t)` | `Double(Double)` | Finite-saturated velocity at time `t` |
+| `TimeToGround()` | `Double()` | First absolute time where `YAt(t) >= GroundY`, or positive infinity if unreachable |
 
 ### Notes
 
 - **Static bodies** (mass = 0) are immovable — use for floors, walls, platforms
 - **Dynamic bodies** (mass > 0) are affected by gravity, forces, and collisions
-- `ContactCount` and `Contact*` methods expose contacts from the latest step; the list is cleared at the start of every `Step` and when bodies are removed
+- `ContactCount` and `Contact*` methods expose contacts from the latest step; the list is cleared at the start of every `Step` and when bodies are removed. A multi-substep `Step` can record the same pair more than once.
 - `SetPosition(x, y)` is a teleport: it updates the previous-position state too, so the next step does not treat the teleport as swept motion
 - `Step(dt)` performs integration, joint solving, AABB/circle collision detection, and shape-aware swept checks for fast AABB and circle bodies
-- Swept collisions resolve at time of impact, then advance the remaining part of the step using the post-collision velocity
+- Swept collisions resolve at time of impact and deliberately drop the untested remainder of that substep; a later substep handles subsequent motion
 - `Step(dt)` clears previous contacts, then no-ops for `dt <= 0` and for non-finite values
 - Collision response uses impulse-based resolution with restitution and friction
 - `Restitution` and `Friction` are clamped to `[0, 1]`
 - Collision layers and masks are 64-bit bitmasks; new bodies default to `CollisionLayer = 1` and `CollisionMask = -1` (all 64 bits)
-- `Body.New` sanitizes non-finite coordinates to 0, invalid size to 1, and non-finite or non-positive mass to static
+- `Body.New` sanitizes non-finite coordinates to 0, invalid size to 1, and non-finite or non-positive mass to static. Positive subnormal masses normalize to `DBL_MIN`, keeping inverse mass finite.
 - `CircleBody.New` preserves subunit positive radii; non-positive or non-finite radius falls back to `1.0`
-- Very large finite forces, impulses, positions, and velocities are clamped during stepping to keep the broad phase finite
-- `World.Add(body)` ignores duplicate body handles
+- Very large finite forces, impulses, positions, velocities, and analytic projectile results saturate instead of overflowing to infinity or changing sign
+- `World.Add(body)` ignores duplicate handles already in that world. Adding a body owned by another world traps and preserves both worlds; call `Remove` before transferring it.
+- `Projectile2D.Advance` checks the first analytic crossing, so it still latches landing when a trajectory crosses the ground and returns above it before the sampled endpoint
 - Fixed timestep recommended (e.g., `Step(1.0 / 60.0)` for 60 FPS)
 - Body, joint, contact, broad-phase pair, and force-snapshot storage are world-owned and grow on demand from the `PH_MAX_*` default reservations.
 - `ContactOverflowed()` is reserved for allocation pressure: it reports true when a valid contact could not be recorded because contact storage failed to grow.

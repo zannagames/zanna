@@ -24,6 +24,7 @@ module scene_terrain_inspector_3d;
 
 bind "inspector_rows";
 bind "scene_terrain_3d";
+bind "style_tokens";
 
 bind GUI = Zanna.GUI;
 bind SceneNode = Zanna.Graphics3D.SceneNode;

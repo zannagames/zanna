@@ -10,6 +10,7 @@ cmake_minimum_required(VERSION 3.15)
 # of real OS windowing systems. This allows tests to run without display.
 
 add_library(zannagfx_mock STATIC
+        ../src/vgfx_embed_channel.c
         # Core implementation (same as main library)
         ../src/vgfx.c
         ../src/vgfx_draw.c

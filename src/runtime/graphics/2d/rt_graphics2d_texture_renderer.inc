@@ -255,15 +255,17 @@ static void renderer2d_finalize(void *obj) {
 ///          and the byte-count level (so a malicious caller can't wrap the
 ///          multiplication by `sizeof(rt_renderer2d_cmd)` past `INT64_MAX`).
 ///          Fresh slots are zero-initialized so new commands never inherit stale
-///          pointers or state. A null renderer is treated as already satisfied
-///          because append callers reject it before reserving.
+///          pointers or state. Invalid container invariants are rejected.
 /// @param renderer Mutable Renderer2D implementation whose command buffer may
 ///                 be reallocated.
 /// @param needed Minimum number of command slots required.
-/// @return Nonzero for a null renderer, sufficient existing capacity, or
-///         successful growth; zero on overflow or allocation failure.
+/// @return Nonzero for sufficient existing capacity or successful growth;
+///         zero for an invalid renderer, overflow, or allocation failure.
 static int32_t renderer2d_reserve(rt_renderer2d_impl *renderer, int64_t needed) {
-    if (!renderer || needed <= renderer->capacity)
+    if (!renderer || needed < 0 || renderer->count < 0 || renderer->capacity < 0 ||
+        renderer->count > renderer->capacity || (renderer->capacity > 0 && !renderer->cmds))
+        return 0;
+    if (needed <= renderer->capacity)
         return 1;
     int64_t cap = renderer->capacity > 0 ? renderer->capacity : RT2D_INITIAL_CAP;
     while (cap < needed) {
@@ -272,6 +274,8 @@ static int32_t renderer2d_reserve(rt_renderer2d_impl *renderer, int64_t needed) 
         cap *= 2;
     }
     if (cap > INT64_MAX / (int64_t)sizeof(rt_renderer2d_cmd))
+        return 0;
+    if ((uint64_t)cap > (uint64_t)SIZE_MAX / sizeof(rt_renderer2d_cmd))
         return 0;
     rt_renderer2d_cmd *cmds =
         (rt_renderer2d_cmd *)realloc(renderer->cmds, (size_t)cap * sizeof(rt_renderer2d_cmd));
@@ -422,7 +426,7 @@ static void renderer2d_queue(rt_renderer2d_impl *renderer,
         return;
     if (width <= 0 || height <= 0 || dst_width <= 0 || dst_height <= 0)
         return;
-    if (!renderer2d_reserve(renderer, renderer->count + 1)) {
+    if (renderer->count == INT64_MAX || !renderer2d_reserve(renderer, renderer->count + 1)) {
         rt_trap("Renderer2D: command capacity overflow");
         return;
     }
@@ -742,16 +746,16 @@ static void renderer2d_flush_cmd_to_target(rt_renderer2d_cmd *cmd, void *target_
         return;
     }
     rt2d_blit_pixels(target_pixels,
-                cmd->x,
-                cmd->y,
-                pixels,
-                cmd->sx,
-                cmd->sy,
-                cmd->width,
-                cmd->height,
-                cmd->tint,
-                cmd->alpha,
-                cmd->blend_mode);
+                     cmd->x,
+                     cmd->y,
+                     pixels,
+                     cmd->sx,
+                     cmd->sy,
+                     cmd->width,
+                     cmd->height,
+                     cmd->tint,
+                     cmd->alpha,
+                     cmd->blend_mode);
 }
 
 /// @brief Blit a Pixels buffer to a Canvas surface using the specified blend mode.
@@ -858,9 +862,10 @@ void rt_renderer2d_flush_to_target(void *renderer, void *target) {
 ///          active renderer is then deactivated and cleared, releasing every
 ///          retained source. A subsequent `Begin` is required before queueing
 ///          more draws. Individual commands whose temporary allocation or
-///          geometry validation fails are skipped. If only the optional
-///          tint/alpha clone allocation fails, the current implementation
-///          falls back to the unprocessed image for that command.
+///          geometry validation fails are skipped. A tint/alpha clone
+///          allocation failure also skips that command; drawing the
+///          unprocessed source would silently violate the recorded material
+///          state.
 /// @param renderer Opaque active Renderer2D handle to finish.
 /// @param canvas Borrowed destination Canvas handle, or `NULL` to discard the
 ///               queue while still ending the active recording pass.
@@ -918,16 +923,16 @@ void rt_renderer2d_end(void *renderer, void *canvas) {
                 if (!rt2d_floor_i64_checked(min_x, &x0) || !rt2d_ceil_i64_checked(max_x, &x1) ||
                     !rt2d_floor_i64_checked(min_y, &y0) || !rt2d_ceil_i64_checked(max_y, &y1))
                     continue;
-                int64_t rw = x1 - x0;
-                int64_t rh = y1 - y0;
+                int64_t rw = saturating_sub_i64(x1, x0);
+                int64_t rh = saturating_sub_i64(y1, y0);
                 if (rw <= 0 || rh <= 0 || !rt2d_checked_count(rw, rh, 4, NULL))
                     continue;
                 region = rt_pixels_new(rw, rh);
                 if (!region)
                     continue;
                 blit_pixels_rotated(region,
-                                    -x0 - cmd->pivot_x,
-                                    -y0 - cmd->pivot_y,
+                                    saturating_sub_i64(saturating_sub_i64(0, x0), cmd->pivot_x),
+                                    saturating_sub_i64(saturating_sub_i64(0, y0), cmd->pivot_y),
                                     pixels,
                                     cmd->pivot_x,
                                     cmd->pivot_y,
@@ -978,9 +983,15 @@ void rt_renderer2d_end(void *renderer, void *canvas) {
                 region = rt2d_copy_region_pixels(pixels, sx, sy, width, height);
                 draw_pixels = region;
             }
-            void *processed = processed_pixels_or_null(draw_pixels,
-                                                       cmd->has_rotation ? -1 : cmd->tint,
-                                                       cmd->has_rotation ? 255 : cmd->alpha);
+            int64_t process_tint = cmd->has_rotation ? -1 : cmd->tint;
+            int64_t process_alpha = cmd->has_rotation ? 255 : cmd->alpha;
+            int8_t processing_needed =
+                draw_pixels && (process_tint >= 0 || clamp_u8_i64(process_alpha) != 255);
+            void *processed = processed_pixels_or_null(draw_pixels, process_tint, process_alpha);
+            if (processing_needed && !processed) {
+                rt2d_release_ref_slot(&region);
+                continue;
+            }
             if (processed)
                 draw_pixels = processed;
             if (draw_pixels)

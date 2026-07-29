@@ -129,6 +129,7 @@ bind Zanna.Game.DebugOverlay as Debug;
 bind Zanna.IO.File as File;
 bind Zanna.IO.Path as Path;
 bind "./config";
+bind "./scene_watch";
 bind "./palette";
 bind "./sprites";
 bind "./player";
@@ -190,6 +191,8 @@ final NEW_GAME_PLUS_CONFIRM_MS = 5000;
 ///                                       ↓ all clear
 ///                                    VICTORY
 class Game {
+    /// ADR 0194 editor watch: reloads the launched region on saved edits.
+    hide scene_watch.SceneWatcher sceneWatcher;
     hide Palette pal;
     hide Canvas canvas;
     hide SceneManager sm;
@@ -514,10 +517,17 @@ class Game {
         canvas.SetFps(60);
         canvas.SetMaxDeltaTime(DT_MAX);
         if fullscreenOn { canvas.Fullscreen(); }
+        sceneWatcher = new scene_watch.SceneWatcher();
+        if sceneWatchPath != "" { sceneWatcher.Arm(sceneWatchPath); }
 
         while canvas.BeginFrame() != 0 {
             frameDt = canvas.DeltaTime;
             dt = frameDt;
+            // Editor watch: a completed, parseable save of the launched
+            // region reloads it in place (ADR 0194).
+            if sceneWatcher.Poll() and currentLevel == sceneStartRegion {
+                loadLevel(currentLevel);
+            }
             updateRumble();
             if sm.IsScene("playing") {
                 dt = dt * settings.getValue(SETTING_GAME_SPEED) / 100;

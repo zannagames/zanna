@@ -195,10 +195,14 @@ static inline int64_t rt_pixels_rgba_to_color(uint32_t rgba) {
 /// @param x Zero-based destination column.
 /// @param y Zero-based destination row.
 /// @param c Canonical raw `0xRRGGBBAA` value.
-/// @return 1 if a pixel was written, 0 if the coordinate was outside the buffer.
+/// @return 1 if the stored value changed, 0 if the coordinate was outside the
+///         buffer or already contained @p c.
 static inline int8_t set_pixel_raw(rt_pixels_impl *p, int64_t x, int64_t y, uint32_t c) {
     if (x >= 0 && x < p->width && y >= 0 && y < p->height) {
-        p->data[y * p->width + x] = c;
+        uint32_t *pixel = &p->data[y * p->width + x];
+        if (*pixel == c)
+            return 0;
+        *pixel = c;
         return 1;
     }
     return 0;
@@ -206,13 +210,35 @@ static inline int8_t set_pixel_raw(rt_pixels_impl *p, int64_t x, int64_t y, uint
 
 /// @brief Bump the image content generation after an in-place mutation.
 /// @details Also invalidates the generation-keyed alpha classification. A null
-///          pointer is ignored. The unsigned generation intentionally wraps
-///          according to C arithmetic after `UINT64_MAX`.
+///          pointer is ignored. Generation zero is reserved for newly
+///          constructed images, so wraparound skips zero.
 /// @param p Mutated implementation, or null.
 static inline void pixels_touch(rt_pixels_impl *p) {
     if (p) {
         p->generation++;
+        if (p->generation == 0)
+            p->generation = 1;
         p->alpha_scan_valid = 0;
+    }
+}
+
+/// @brief Reuse a source image's cached alpha classification for an exact
+///        alpha-preserving result.
+/// @details The destination keeps its own generation and diagnostic scan
+///          count. A stale or absent source cache leaves the destination cache
+///          invalid instead of copying an unverified classification.
+/// @param dst Newly produced destination image.
+/// @param src Source image whose multiset of alpha values is preserved.
+static inline void pixels_copy_alpha_classification_cache(rt_pixels_impl *dst,
+                                                          const rt_pixels_impl *src) {
+    if (!dst)
+        return;
+    if (src && src->alpha_scan_valid && src->alpha_scan_generation == src->generation) {
+        dst->alpha_scan_generation = dst->generation;
+        dst->alpha_scan_classification = src->alpha_scan_classification;
+        dst->alpha_scan_valid = 1;
+    } else {
+        dst->alpha_scan_valid = 0;
     }
 }
 
@@ -284,10 +310,8 @@ static inline int64_t rt_pixels_add_sat64(int64_t a, int64_t b) {
 /// @param b Second coordinate.
 /// @return `abs(a - b)` clamped to `INT64_MAX`.
 static inline int64_t rt_pixels_abs_diff_sat64(int64_t a, int64_t b) {
-    long double diff = (long double)a - (long double)b;
-    if (diff < 0.0L)
-        diff = -diff;
-    if (diff >= (long double)INT64_MAX)
+    uint64_t diff = a >= b ? (uint64_t)a - (uint64_t)b : (uint64_t)b - (uint64_t)a;
+    if (diff > (uint64_t)INT64_MAX)
         return INT64_MAX;
     return (int64_t)diff;
 }
@@ -484,7 +508,7 @@ static inline int64_t isqrt64(int64_t n) {
     if (n <= 0)
         return 0;
     int64_t x = n;
-    int64_t y = (x + 1) / 2;
+    int64_t y = x / 2 + x % 2;
     while (y < x) {
         x = y;
         y = (x + n / x) / 2;

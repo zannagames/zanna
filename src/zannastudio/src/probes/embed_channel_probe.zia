@@ -1,0 +1,131 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/embed_channel_probe.zia
+// Purpose: Loopback coverage for the embedded-play frame/input channel
+//          (Zanna.System.EmbedHost, ADR 0225).
+// Key invariants:
+//   - Display-free: host and producer live in one process, so CI needs no
+//     window, GPU, or child process to prove ring integrity.
+//   - Frames round-trip latest-wins; input round-trips FIFO; exit state
+//     reports truthfully.
+// Ownership/Lifetime:
+//   - The probe closes both handles; the host close unlinks the OS object.
+// Links: src/lib/graphics/src/vgfx_embed_channel.c,
+//        docs/adr/0225-play-loop-and-embedded-play.md
+//
+//===----------------------------------------------------------------------===//
+
+bind EmbedHost = Zanna.System.EmbedHost;
+bind Pixels = Zanna.Graphics.Pixels;
+bind Color = Zanna.Graphics.Color;
+bind Terminal = Zanna.Terminal;
+
+func fail(reason: String) {
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    var host = EmbedHost.Create("probe-loopback", 64, 32);
+    if host == null or host.IsValid() == false {
+        fail("host channel did not create");
+        return;
+    }
+    if host.ProducerAttached() {
+        fail("producer reported attached before any producer existed");
+        return;
+    }
+
+    var producer = EmbedHost.Attach("probe-loopback");
+    if producer == null or producer.IsValid() == false {
+        fail("producer could not attach to the live channel");
+        return;
+    }
+
+    // Frame round trip: publish two frames; the host sees the LATEST.
+    var frameA = Pixels.New(16, 8);
+    frameA.FillColor(Color.RGB(255, 0, 0));
+    var frameB = Pixels.New(16, 8);
+    frameB.FillColor(Color.RGB(0, 255, 0));
+    if producer.PublishFrame(frameA) == false
+       or producer.PublishFrame(frameB) == false {
+        fail("producer could not publish frames");
+        return;
+    }
+    if host.ProducerAttached() == false {
+        fail("published frames did not mark the producer attached");
+        return;
+    }
+    if host.FrameWidth() != 16 or host.FrameHeight() != 8 {
+        fail("frame dimensions did not reach the host ("
+             + host.FrameWidth() + "x" + host.FrameHeight() + ")");
+        return;
+    }
+    var received = Pixels.New(16, 8);
+    if host.AcquireFrameInto(received) == false {
+        fail("host could not acquire the published frame");
+        return;
+    }
+    if received.Get(3, 3) != frameB.Get(3, 3)
+       or received.Get(3, 3) == frameA.Get(3, 3) {
+        fail("latest-wins frame content was wrong");
+        return;
+    }
+    if host.AcquireFrameInto(received) {
+        fail("an already-seen frame was acquired twice");
+        return;
+    }
+
+    // Input round trip: host pushes, producer drains FIFO.
+    if host.PushEvent(1, 10, 20, 0) == false
+       or host.PushEvent(5, 42, 3, 0) == false {
+        fail("host could not push input events");
+        return;
+    }
+    if producer.PollEvent() != 1
+       or producer.EventA() != 10 or producer.EventB() != 20 {
+        fail("first input event did not round trip");
+        return;
+    }
+    if producer.PollEvent() != 5
+       or producer.EventA() != 42 or producer.EventB() != 3 {
+        fail("second input event did not round trip");
+        return;
+    }
+    if producer.PollEvent() != 0 {
+        fail("drained ring still reported events");
+        return;
+    }
+
+    // Resize request arrives as an input event and clamps to capacity.
+    if host.SetSize(640, 480) == false {
+        fail("host could not request a size");
+        return;
+    }
+    if producer.PollEvent() != 8
+       or producer.EventA() != 64 or producer.EventB() != 32 {
+        fail("resize request did not clamp to channel capacity");
+        return;
+    }
+
+    // Exit truthfulness.
+    if host.ProducerExited() {
+        fail("producer reported exited while alive");
+        return;
+    }
+    producer.Close();
+    if host.ProducerExited() == false {
+        fail("producer close did not mark the channel exited");
+        return;
+    }
+    host.Close();
+    if host.IsValid() {
+        fail("closed host still reported valid");
+        return;
+    }
+    Terminal.Say("RESULT: ok");
+}

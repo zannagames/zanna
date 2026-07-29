@@ -458,6 +458,10 @@ RT_FUNC(MenuItemSetCheckable, rt_menuitem_set_checkable,  "Zanna.GUI.MenuItem.Se
 RT_FUNC(MenuItemIsCheckable,  rt_menuitem_is_checkable,   "Zanna.GUI.MenuItem.IsCheckable",  "i1(obj)")
 RT_FUNC(MenuItemIsSeparator,  rt_menuitem_is_separator,   "Zanna.GUI.MenuItem.IsSeparator",  "i1(obj)")
 RT_FUNC(MenuItemWasClicked,   rt_menuitem_was_clicked,    "Zanna.GUI.MenuItem.WasClicked",   "i1(obj)")
+RT_FUNC(MenuItemGetScreenX,      rt_menuitem_get_screen_x,      "Zanna.GUI.MenuItem.GetScreenX",      "f64(obj)")
+RT_FUNC(MenuItemGetScreenY,      rt_menuitem_get_screen_y,      "Zanna.GUI.MenuItem.GetScreenY",      "f64(obj)")
+RT_FUNC(MenuItemGetScreenWidth,  rt_menuitem_get_screen_width,  "Zanna.GUI.MenuItem.GetScreenWidth",  "f64(obj)")
+RT_FUNC(MenuItemGetScreenHeight, rt_menuitem_get_screen_height, "Zanna.GUI.MenuItem.GetScreenHeight", "f64(obj)")
 
 //=============================================================================
 // GUI - CONTEXTMENU (Phase 2)
@@ -542,6 +546,12 @@ RT_FUNC(ToolbarIsVisible,    rt_toolbar_is_visible,           "Zanna.GUI.Toolbar
 
 RT_FUNC(ToolbarItemSetEnabled,   rt_toolbaritem_set_enabled,   "Zanna.GUI.ToolbarItem.SetEnabled",   "void(obj,i1)")
 RT_FUNC(ToolbarItemIsEnabled,    rt_toolbaritem_is_enabled,    "Zanna.GUI.ToolbarItem.IsEnabled",    "i1(obj)")
+RT_FUNC(ToolbarItemSetVisible,      rt_toolbaritem_set_visible,       "Zanna.GUI.ToolbarItem.SetVisible",      "void(obj,i1)")
+RT_FUNC(ToolbarItemIsVisible,       rt_toolbaritem_is_visible,        "Zanna.GUI.ToolbarItem.IsVisible",       "i1(obj)")
+RT_FUNC(ToolbarItemGetScreenX,      rt_toolbaritem_get_screen_x,      "Zanna.GUI.ToolbarItem.GetScreenX",      "f64(obj)")
+RT_FUNC(ToolbarItemGetScreenY,      rt_toolbaritem_get_screen_y,      "Zanna.GUI.ToolbarItem.GetScreenY",      "f64(obj)")
+RT_FUNC(ToolbarItemGetScreenWidth,  rt_toolbaritem_get_screen_width,  "Zanna.GUI.ToolbarItem.GetScreenWidth",  "f64(obj)")
+RT_FUNC(ToolbarItemGetScreenHeight, rt_toolbaritem_get_screen_height, "Zanna.GUI.ToolbarItem.GetScreenHeight", "f64(obj)")
 RT_FUNC(ToolbarItemSetTooltip,   rt_toolbaritem_set_tooltip,   "Zanna.GUI.ToolbarItem.SetTooltip",   "void(obj,str)")
 RT_FUNC(ToolbarItemSetIcon,      rt_toolbaritem_set_icon,      "Zanna.GUI.ToolbarItem.SetIcon",      "void(obj,str)")
 RT_FUNC(ToolbarItemSetIconPixels,rt_toolbaritem_set_icon_pixels,"Zanna.GUI.ToolbarItem.SetIconPixels","void(obj,obj)")

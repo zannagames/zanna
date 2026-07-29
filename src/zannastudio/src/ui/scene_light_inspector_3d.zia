@@ -356,8 +356,29 @@ class SceneLightInspector3D {
         if innerMixed { innerCone.SetIndeterminate(true); }
         outerCone.SetValue(state.outerConeDegrees);
         if outerMixed { outerCone.SetIndeterminate(true); }
-        // Programmatic refresh must not look like user color intent.
+        // Programmatic refresh must not look like user edit intent
+        // (ADR 0221): consume every edge the writes above raised so the
+        // live-commit pump only sees real gestures.
+        typeDropdown.WasChanged();
         colorPicker.WasChanged();
+        colorOverride.WasChanged();
+        intensity.WasChanged();
+        enabledCheck.WasChanged();
+        castsShadowsCheck.WasChanged();
+        positionX.WasChanged();
+        positionY.WasChanged();
+        positionZ.WasChanged();
+        directionX.WasChanged();
+        directionY.WasChanged();
+        directionZ.WasChanged();
+        attenuation.WasChanged();
+        decayType.WasChanged();
+        range.WasChanged();
+        width.WasChanged();
+        height.WasChanged();
+        radius.WasChanged();
+        innerCone.WasChanged();
+        outerCone.WasChanged();
 
         if nodes.count() == 0 {
             summary.SetText(
@@ -399,10 +420,34 @@ class SceneLightInspector3D {
     }
 
     /// @brief Resolve mixed color intent when the picker itself changes.
-    expose func PumpDraftIntent() {
-        if colorPicker != null and colorPicker.WasChanged() {
+    /// @brief Consume control edges; report whether any field changed.
+    /// @return True when a light control changed this pump (ADR 0221).
+    expose func PumpDraftIntent() -> Boolean {
+        if colorPicker == null { return false; }
+        var edited = false;
+        if colorPicker.WasChanged() {
             colorOverride.SetChecked(true);
+            edited = true;
         }
+        if colorOverride.WasChanged() { edited = true; }
+        if intensity.WasChanged() { edited = true; }
+        if enabledCheck.WasChanged() { edited = true; }
+        if positionX.WasChanged() { edited = true; }
+        if positionY.WasChanged() { edited = true; }
+        if positionZ.WasChanged() { edited = true; }
+        if directionX.WasChanged() { edited = true; }
+        if directionY.WasChanged() { edited = true; }
+        if directionZ.WasChanged() { edited = true; }
+        if castsShadowsCheck.WasChanged() { edited = true; }
+        if attenuation.WasChanged() { edited = true; }
+        if decayType.WasChanged() { edited = true; }
+        if range.WasChanged() { edited = true; }
+        if width.WasChanged() { edited = true; }
+        if height.WasChanged() { edited = true; }
+        if radius.WasChanged() { edited = true; }
+        if innerCone.WasChanged() { edited = true; }
+        if outerCone.WasChanged() { edited = true; }
+        return edited;
     }
 
     /// @brief Build a sparse patch from every currently determined control.
@@ -475,8 +520,13 @@ class SceneLightInspector3D {
         directionX.SetEnabled(hasSelection);
         directionY.SetEnabled(hasSelection);
         directionZ.SetEnabled(hasSelection);
+        // A single existing light edits live (ADR 0221); the button remains
+        // for creation and for explicit batch application.
+        var singleLive =
+            hasSelection and nodes.count() == 1 and lightCount == 1;
+        applyButton.SetVisible(singleLive == false);
         if hasSelection == false {
-            applyButton.SetText("Apply Light");
+            applyButton.SetText("Set Light");
             applyButton.SetTooltip(
                 "Select one or more nodes before editing lights");
         } else if lightCount == 0 {
@@ -485,12 +535,12 @@ class SceneLightInspector3D {
                 "Create these light components in one undoable VSCN edit");
         } else if lightCount < nodes.count() {
             applyButton.SetText(
-                "Apply To " + lightCount + " Light(s)");
+                "Set " + lightCount + " Light(s)");
             applyButton.SetTooltip(
                 "Apply determined fields to light-bearing nodes; nodes "
                 + "without lights are skipped (Create first)");
         } else {
-            applyButton.SetText("Apply Light");
+            applyButton.SetText("Set " + lightCount + " Lights");
             applyButton.SetTooltip(
                 "Apply determined fields to every selected light in one "
                 + "undoable edit; mixed fields preserve node values");

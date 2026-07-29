@@ -160,7 +160,8 @@ func VerifySingleLightTransactions(
         editor.hierarchyTreeNodes.get(lightIndex));
     if Str.Contains(rowText, "[light]") == false
        or GUI.TreeView.Node.GetIcon(
-              editor.hierarchyTreeNodes.get(lightIndex)) != "✦" {
+              editor.hierarchyTreeNodes.get(lightIndex))
+            != "vector:node-light" {
         fail(shell, "hierarchy did not identify the meshless light node");
         return false;
     }
@@ -208,6 +209,53 @@ func VerifySingleLightTransactions(
         fail(shell, "equivalent light replacement created history");
         return false;
     }
+
+    // Live-commit contract (ADR 0221): with one lit node selected, a single
+    // control gesture applies the component with no button click, exactly
+    // one history entry, and no phantom follow-up commits.
+    var liveSelection: List[Integer] = [];
+    liveSelection.add(lightIndex);
+    if editor.SelectSceneNodes(liveSelection, 0) == false {
+        fail(shell, "could not select the light node for live editing");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    var liveRevision = editor.GetRevision();
+    editor.lightInspector.intensity.SetValue(5.5);
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    var liveLight = editor.flatNodes.get(lightIndex).Light;
+    if editor.GetRevision() != liveRevision + 1
+       or near(liveLight.Intensity, 5.5) == false
+       or liveLight.Type != scene_light_3d.LIGHT_SPOT
+       or near(liveLight.InnerConeDegrees, 22.0) == false {
+        fail(shell,
+             "intensity gesture did not live-commit exactly one edit ("
+             + "revision=" + editor.GetRevision()
+             + ", intensity=" + liveLight.Intensity + ")");
+        return false;
+    }
+    editor.Pump(sceneDoc);
+    shell.Poll();
+    if editor.GetRevision() != liveRevision + 1 {
+        fail(shell, "idle pump after live commit created phantom history");
+        return false;
+    }
+    // One undo restores the pre-gesture bytes exactly (ADR 0221), then
+    // restore the unselected baseline so later sections poke inspector
+    // controls without a live-commit target.
+    if editor.Undo() == false
+       or sceneDoc.content != spotContent
+       or near(editor.flatNodes.get(lightIndex).Light.Intensity,
+               3.25) == false {
+        fail(shell, "undo did not restore the pre-live-commit bytes");
+        return false;
+    }
+    var emptySelection: List[Integer] = [];
+    editor.SelectSceneNodes(emptySelection, -1);
+    editor.Pump(sceneDoc);
+    shell.Poll();
 
     editor.lightInspector.typeDropdown.SetSelected(
         scene_light_3d.LIGHT_AMBIENT);

@@ -48,7 +48,7 @@
 ///          array. Invalid or already mistyped handles are ignored.
 /// @param obj Opaque finalizing object expected to be a Path2D instance.
 static void path2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_PATH_CLASS_ID))
+    if (!rt2d_has_class_min(obj, RT2D_PATH_CLASS_ID, sizeof(rt_path2d_impl)))
         return;
     rt_path2d_impl *path = (rt_path2d_impl *)obj;
     free(path->points);
@@ -88,7 +88,10 @@ void *rt_path2d_new(int64_t capacity) {
 /// @return Nonzero if the existing or enlarged buffer can hold @p needed
 ///         entries; zero for a null path, overflow, or allocation failure.
 static int32_t path2d_reserve(rt_path2d_impl *path, int64_t needed) {
-    if (!path || needed <= path->capacity)
+    if (!path || needed < 0 || path->count < 0 || path->capacity < 0 ||
+        path->count > path->capacity || (path->capacity > 0 && !path->points))
+        return 0;
+    if (needed <= path->capacity)
         return 1;
     int64_t cap = path->capacity > 0 ? path->capacity : RT2D_INITIAL_CAP;
     while (cap < needed) {
@@ -97,6 +100,8 @@ static int32_t path2d_reserve(rt_path2d_impl *path, int64_t needed) {
         cap *= 2;
     }
     if (cap > INT64_MAX / (int64_t)sizeof(rt_path2d_point))
+        return 0;
+    if ((uint64_t)cap > (uint64_t)SIZE_MAX / sizeof(rt_path2d_point))
         return 0;
     rt_path2d_point *points =
         (rt_path2d_point *)realloc(path->points, (size_t)cap * sizeof(*points));
@@ -118,10 +123,12 @@ static int32_t path2d_reserve(rt_path2d_impl *path, int64_t needed) {
 /// @param move Nonzero for a pen-up move and zero for a pen-down line
 ///             destination; public callers pass only `1` or `0`.
 static void path2d_add(void *path, int64_t x, int64_t y, int32_t move) {
-    rt_path2d_impl *impl = rt2d_has_class(path, RT2D_PATH_CLASS_ID) ? (rt_path2d_impl *)path : NULL;
+    rt_path2d_impl *impl = rt2d_has_class_min(path, RT2D_PATH_CLASS_ID, sizeof(rt_path2d_impl))
+                               ? (rt_path2d_impl *)path
+                               : NULL;
     if (!impl)
         return;
-    if (!path2d_reserve(impl, impl->count + 1)) {
+    if (impl->count == INT64_MAX || !path2d_reserve(impl, impl->count + 1)) {
         rt_trap("Path2D: capacity overflow");
         return;
     }
@@ -136,7 +143,7 @@ static void path2d_add(void *path, int64_t x, int64_t y, int32_t move) {
 ///          by subsequent appends. Invalid handles are ignored.
 /// @param path Opaque Path2D handle to clear.
 void rt_path2d_clear(void *path) {
-    if (rt2d_has_class(path, RT2D_PATH_CLASS_ID))
+    if (rt2d_has_class_min(path, RT2D_PATH_CLASS_ID, sizeof(rt_path2d_impl)))
         ((rt_path2d_impl *)path)->count = 0;
 }
 
@@ -165,7 +172,9 @@ void rt_path2d_line_to(void *path, int64_t x, int64_t y) {
 /// @param path Opaque Path2D handle to query.
 /// @return The number of stored points, or `0` when @p path is invalid.
 int64_t rt_path2d_count(void *path) {
-    return rt2d_has_class(path, RT2D_PATH_CLASS_ID) ? ((rt_path2d_impl *)path)->count : 0;
+    return rt2d_has_class_min(path, RT2D_PATH_CLASS_ID, sizeof(rt_path2d_impl))
+               ? ((rt_path2d_impl *)path)->count
+               : 0;
 }
 
 /// @brief Return the X coordinate of the point at `index`, or 0 if out of range.
@@ -173,8 +182,11 @@ int64_t rt_path2d_count(void *path) {
 /// @param index Zero-based point index.
 /// @return The stored X coordinate, or `0` for an invalid handle or index.
 int64_t rt_path2d_get_x(void *path, int64_t index) {
-    rt_path2d_impl *impl = rt2d_has_class(path, RT2D_PATH_CLASS_ID) ? (rt_path2d_impl *)path : NULL;
-    if (!impl || index < 0 || index >= impl->count)
+    rt_path2d_impl *impl = rt2d_has_class_min(path, RT2D_PATH_CLASS_ID, sizeof(rt_path2d_impl))
+                               ? (rt_path2d_impl *)path
+                               : NULL;
+    if (!impl || !impl->points || impl->count < 0 || impl->count > impl->capacity || index < 0 ||
+        index >= impl->count)
         return 0;
     return impl->points[index].x;
 }
@@ -184,8 +196,11 @@ int64_t rt_path2d_get_x(void *path, int64_t index) {
 /// @param index Zero-based point index.
 /// @return The stored Y coordinate, or `0` for an invalid handle or index.
 int64_t rt_path2d_get_y(void *path, int64_t index) {
-    rt_path2d_impl *impl = rt2d_has_class(path, RT2D_PATH_CLASS_ID) ? (rt_path2d_impl *)path : NULL;
-    if (!impl || index < 0 || index >= impl->count)
+    rt_path2d_impl *impl = rt2d_has_class_min(path, RT2D_PATH_CLASS_ID, sizeof(rt_path2d_impl))
+                               ? (rt_path2d_impl *)path
+                               : NULL;
+    if (!impl || !impl->points || impl->count < 0 || impl->count > impl->capacity || index < 0 ||
+        index >= impl->count)
         return 0;
     return impl->points[index].y;
 }
@@ -203,8 +218,10 @@ int64_t rt_path2d_get_y(void *path, int64_t index) {
 /// @param rgba Packed or tagged source color normalized to opaque
 ///             `0x00RRGGBB`.
 void rt_path2d_draw_to_pixels(void *path, void *pixels, int64_t rgba) {
-    rt_path2d_impl *impl = rt2d_has_class(path, RT2D_PATH_CLASS_ID) ? (rt_path2d_impl *)path : NULL;
-    if (!impl || !pixels || impl->count < 2)
+    rt_path2d_impl *impl = rt2d_has_class_min(path, RT2D_PATH_CLASS_ID, sizeof(rt_path2d_impl))
+                               ? (rt_path2d_impl *)path
+                               : NULL;
+    if (!impl || !pixels || !impl->points || impl->count < 2 || impl->count > impl->capacity)
         return;
     int64_t color = rt2d_draw_rgb(rgba);
     for (int64_t i = 1; i < impl->count; i++) {

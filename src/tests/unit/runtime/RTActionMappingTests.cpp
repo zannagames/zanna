@@ -6,7 +6,21 @@
 //===----------------------------------------------------------------------===//
 //
 // File: tests/unit/runtime/RTActionMappingTests.cpp
-// Purpose: Validate the action mapping system for input abstraction.
+/// @file
+/// @brief Exercises action registry, binding, preset, and cached-input behavior.
+// Purpose: Validate the action mapping system's public input-abstraction
+//   contract and defensive handling of malformed names/source identifiers.
+//
+// Key invariants:
+//   - Names and physical-source identifiers are validated before mutation.
+//   - Axis state remains finite even when valid finite contributions overflow.
+//   - Preset application is idempotent and transactional.
+//
+// Ownership/Lifetime:
+//   - Runtime strings and sequences created by the test live for the short
+//     process lifetime; registry-owned copies are cleared between cases.
+//
+// Links: rt_action.c, rt_action_presets.c, RTActionPersistTests.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,6 +31,8 @@
 #include "rt_string.h"
 
 #include <cassert>
+#include <cfloat>
+#include <cmath>
 #include <cstring>
 
 // Helper to create an rt_string from a C string
@@ -422,6 +438,129 @@ static void test_invalid_names() {
     rt_action_clear();
 }
 
+static void test_invalid_name_encoding_and_embedded_nul() {
+    rt_action_init();
+    rt_action_clear();
+
+    const char embedded_nul[] = {'b', 'a', 'd', '\0', 'n', 'a', 'm', 'e'};
+    rt_string nul_name = rt_string_from_bytes(embedded_nul, sizeof(embedded_nul));
+    assert(rt_action_define(nul_name) == 0);
+    assert(rt_action_define_axis(nul_name) == 0);
+
+    const char overlong_utf8[] = {(char)0xC0, (char)0xAF};
+    rt_string invalid_utf8 = rt_string_from_bytes(overlong_utf8, sizeof(overlong_utf8));
+    assert(rt_action_define(invalid_utf8) == 0);
+
+    const char valid_utf8[] = "déplacement";
+    rt_string valid_name = rt_string_from_bytes(valid_utf8, strlen(valid_utf8));
+    assert(rt_action_define_axis(valid_name) == 1);
+    assert(rt_action_exists(valid_name) == 1);
+
+    rt_action_clear();
+}
+
+static void test_binding_argument_validation() {
+    rt_action_init();
+    rt_action_clear();
+    assert(rt_action_define(make_str("button")) == 1);
+    assert(rt_action_define_axis(make_str("axis")) == 1);
+
+    assert(rt_action_bind_key(make_str("button"), ZANNA_KEY_UNKNOWN) == 0);
+    assert(rt_action_bind_key(make_str("button"), ZANNA_KEY_MAX) == 0);
+    assert(rt_action_bind_key_axis(make_str("axis"), -1, 1.0) == 0);
+    assert(rt_action_bind_key_axis(make_str("axis"), ZANNA_KEY_A, NAN) == 0);
+    assert(rt_action_bind_key_axis(make_str("axis"), ZANNA_KEY_A, INFINITY) == 0);
+
+    assert(rt_action_bind_mouse(make_str("button"), -1) == 0);
+    assert(rt_action_bind_mouse(make_str("button"), ZANNA_MOUSE_BUTTON_MAX) == 0);
+    assert(rt_action_bind_mouse_x(make_str("axis"), NAN) == 0);
+    assert(rt_action_bind_mouse_y(make_str("axis"), INFINITY) == 0);
+    assert(rt_action_bind_scroll_x(make_str("axis"), -INFINITY) == 0);
+    assert(rt_action_bind_scroll_y(make_str("axis"), NAN) == 0);
+
+    assert(rt_action_bind_pad_button(make_str("button"), -2, ZANNA_PAD_A) == 0);
+    assert(rt_action_bind_pad_button(make_str("button"), ZANNA_PAD_MAX, ZANNA_PAD_A) == 0);
+    assert(rt_action_bind_pad_button(make_str("button"), 0, ZANNA_PAD_BUTTON_MAX) == 0);
+    assert(rt_action_bind_pad_axis(make_str("axis"), -2, ZANNA_AXIS_LEFT_X, 1.0) == 0);
+    assert(rt_action_bind_pad_axis(make_str("axis"), ZANNA_PAD_MAX, ZANNA_AXIS_LEFT_X, 1.0) == 0);
+    assert(rt_action_bind_pad_axis(make_str("axis"), 0, -1, 1.0) == 0);
+    assert(rt_action_bind_pad_axis(make_str("axis"), 0, ZANNA_AXIS_RIGHT_TRIGGER + 1, 1.0) == 0);
+    assert(rt_action_bind_pad_axis(make_str("axis"), 0, ZANNA_AXIS_LEFT_X, NAN) == 0);
+    assert(rt_action_bind_pad_button_axis(make_str("axis"), -2, ZANNA_PAD_A, 1.0) == 0);
+    assert(rt_action_bind_pad_button_axis(make_str("axis"), 0, ZANNA_PAD_BUTTON_MAX, 1.0) == 0);
+    assert(rt_action_bind_pad_button_axis(make_str("axis"), 0, ZANNA_PAD_A, INFINITY) == 0);
+
+    assert(rt_action_binding_count(make_str("button")) == 0);
+    assert(rt_action_binding_count(make_str("axis")) == 0);
+    assert(rt_str_len(rt_action_key_bound_to(ZANNA_KEY_MAX)) == 0);
+    assert(rt_str_len(rt_action_mouse_bound_to(ZANNA_MOUSE_BUTTON_MAX)) == 0);
+    assert(rt_str_len(rt_action_pad_button_bound_to(-2, ZANNA_PAD_A)) == 0);
+
+    rt_action_clear();
+}
+
+static void test_chord_key_validation() {
+    rt_action_init();
+    rt_action_clear();
+    assert(rt_action_define(make_str("shortcut")) == 1);
+
+    int64_t invalid_keys[] = {ZANNA_KEY_LCTRL, ZANNA_KEY_MAX};
+    assert(rt_action_bind_chord(make_str("shortcut"), make_key_seq(invalid_keys, 2)) == 0);
+
+    int64_t duplicate_keys[] = {ZANNA_KEY_LCTRL, ZANNA_KEY_LCTRL};
+    assert(rt_action_bind_chord(make_str("shortcut"), make_key_seq(duplicate_keys, 2)) == 0);
+    assert(rt_action_chord_count(make_str("shortcut")) == 0);
+
+    rt_action_clear();
+}
+
+static void test_axis_accumulation_saturates_finitely() {
+    rt_keyboard_init();
+    rt_action_init();
+    rt_action_clear();
+    assert(rt_action_define_axis(make_str("throttle")) == 1);
+    assert(rt_action_bind_key_axis(make_str("throttle"), ZANNA_KEY_A, DBL_MAX) == 1);
+    assert(rt_action_bind_key_axis(make_str("throttle"), ZANNA_KEY_A, DBL_MAX) == 1);
+
+    int64_t press_a[] = {ZANNA_KEY_A, -1};
+    sim_key_frame(press_a, NULL);
+    rt_action_update();
+    assert(std::isfinite(rt_action_axis_raw(make_str("throttle"))));
+    assert(rt_action_axis_raw(make_str("throttle")) == DBL_MAX);
+    assert(rt_action_axis(make_str("throttle")) == 1.0);
+
+    int64_t release_a[] = {ZANNA_KEY_A, -1};
+    sim_key_frame(NULL, release_a);
+    rt_action_clear();
+}
+
+static void test_presets_are_idempotent_and_transactional() {
+    rt_action_init();
+    rt_action_clear();
+
+    assert(rt_action_load_preset(make_str("platformer")) == 1);
+    rt_string first_save = rt_action_save();
+    assert(rt_action_load_preset(make_str("platformer")) == 1);
+    rt_string second_save = rt_action_save();
+    assert(rt_str_len(first_save) == rt_str_len(second_save));
+    assert(memcmp(rt_string_cstr(first_save),
+                  rt_string_cstr(second_save),
+                  (size_t)rt_str_len(first_save)) == 0);
+
+    rt_action_clear();
+    assert(rt_action_define(make_str("move_x")) == 1);
+    assert(rt_action_define(make_str("sentinel")) == 1);
+    rt_string before_conflict = rt_action_save();
+    assert(rt_action_load_preset(make_str("platformer")) == 0);
+    rt_string after_conflict = rt_action_save();
+    assert(rt_str_len(before_conflict) == rt_str_len(after_conflict));
+    assert(memcmp(rt_string_cstr(before_conflict),
+                  rt_string_cstr(after_conflict),
+                  (size_t)rt_str_len(before_conflict)) == 0);
+
+    rt_action_clear();
+}
+
 int main() {
     // Initialize keyboard for key name lookups
     rt_keyboard_init();
@@ -444,6 +583,11 @@ int main() {
     test_axis_constants();
     test_lifecycle();
     test_invalid_names();
+    test_invalid_name_encoding_and_embedded_nul();
+    test_binding_argument_validation();
+    test_chord_key_validation();
+    test_axis_accumulation_saturates_finitely();
+    test_presets_are_idempotent_and_transactional();
 
     return 0;
 }

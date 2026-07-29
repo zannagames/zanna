@@ -109,6 +109,12 @@ func start() {
         if scenePath != "" {
             levels.setSceneOverride(scenePath);
             g.setLevel(levelIdForScenePath(scenePath));
+            if hasArg("--scene-watch") {
+                config.sceneWatchPath = scenePath;
+            }
+            // Editing sessions iterate in a window unless the author
+            // explicitly forces fullscreen.
+            if hasArg("--fullscreen") == false { windowed = true; }
         }
     }
 

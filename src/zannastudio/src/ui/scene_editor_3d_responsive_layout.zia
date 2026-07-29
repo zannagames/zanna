@@ -207,7 +207,7 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
     }
 
     /// @brief Open one persistent command menu beneath its owning button.
-    hide override func ShowCommandMenu(button: GUI.Button,
+    hide override func ShowCommandMenu(button: GUI.ToolbarItem,
                               menu: GUI.ContextMenu) {
         if button == null or menu == null { return; }
         var scale = 1.0;
@@ -343,22 +343,23 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
                 surfaceSnapEnabled
                 or surfaceAlignEnabled
                 or vertexSnapEnabled;
-            placementMenuButton.SetStyle(placementActive ? 1 : 0);
-            placementMenuButton.SetAccessibleDescription(
+            placementMenuButton.SetTooltip(
                 "Surface Move " + (surfaceSnapEnabled ? "on" : "off")
                 + ", normal alignment "
                 + (surfaceAlignEnabled ? "on" : "off")
                 + ", Vertex Move "
-                + (vertexSnapEnabled ? "on" : "off") + ".");
+                + (vertexSnapEnabled ? "on" : "off")
+                + ". Drop, surface-follow, normal-align, and vertex-snap "
+                + "controls.");
         }
         if viewMenuButton != null {
             var presentationActive =
                 viewOptionsVisible
                 or focusModeActive
                 or workspaceModeActive;
-            viewMenuButton.SetStyle(presentationActive ? 1 : 2);
-            viewMenuButton.SetAccessibleDescription(
-                "Viewport options "
+            viewMenuButton.SetTooltip(
+                "Camera views, framing, projection, overlays, and scene "
+                + "layout. Viewport options "
                 + (viewOptionsVisible ? "open" : "closed")
                 + ", Focus " + (focusModeActive ? "on" : "off")
                 + ", Scene Layout "
@@ -620,25 +621,21 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
             hierarchyButton.SetText("Hierarchy hidden");
             hierarchyButton.SetTooltip(
                 "Exit Focus to open the scene hierarchy");
-            hierarchyButton.SetStyle(0);
         } else if hierarchyDock.floating {
             hierarchyButton.SetEnabled(false);
             hierarchyButton.SetText("Hierarchy floating");
             hierarchyButton.SetTooltip(
                 "The scene hierarchy is already available in its floating pane");
-            hierarchyButton.SetStyle(2);
         } else if compactHierarchyShown {
             hierarchyButton.SetEnabled(true);
             hierarchyButton.SetText("Viewport");
             hierarchyButton.SetTooltip(
                 "Return to the 3D viewport and inspector");
-            hierarchyButton.SetStyle(1);
         } else {
             hierarchyButton.SetEnabled(true);
             hierarchyButton.SetText("Hierarchy");
             hierarchyButton.SetTooltip(
                 "Open the scene hierarchy at the full editor width");
-            hierarchyButton.SetStyle(2);
         }
     }
 
@@ -652,7 +649,6 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
             inspectorButton.SetText("Inspector hidden");
             inspectorButton.SetTooltip(
                 "Exit Focus to restore the node inspector");
-            inspectorButton.SetStyle(0);
             return;
         }
         inspectorButton.SetEnabled(true);
@@ -660,28 +656,23 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
             inspectorButton.SetText("Inspector");
             inspectorButton.SetTooltip(
                 "Switch from the hierarchy to the node inspector");
-            inspectorButton.SetStyle(2);
             return;
         }
         if compactLayout {
             if compactInspectorShown {
                 inspectorButton.SetText("Viewport");
                 inspectorButton.SetTooltip("Return to the full-width 3D viewport");
-                inspectorButton.SetStyle(1);
             } else {
                 inspectorButton.SetText("Inspector");
                 inspectorButton.SetTooltip("Show the node inspector at full width");
-                inspectorButton.SetStyle(2);
             }
         } else if inspectorRequestedVisible {
             inspectorButton.SetText("Hide Inspector");
             inspectorButton.SetTooltip(
                 "Hide the node inspector and give the viewport the full width");
-            inspectorButton.SetStyle(2);
         } else {
             inspectorButton.SetText("Show Inspector");
             inspectorButton.SetTooltip("Restore the node inspector");
-            inspectorButton.SetStyle(1);
         }
     }
 
@@ -693,7 +684,6 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
             workspaceButton.SetTooltip(
                 "Restore the Studio sidebar and tool docks while keeping "
                     + "this scene's internal pane layout");
-            workspaceButton.SetStyle(1);
         } else {
             if compactChrome
                or SceneEditor3DModel.UsesDockedHierarchy(lastHostWidth) == false {
@@ -704,7 +694,6 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
             workspaceButton.SetTooltip(
                 "Hide outer Studio docks but keep the scene hierarchy, "
                     + "viewport, and inspector available");
-            workspaceButton.SetStyle(2);
         }
         UpdateCommandMenuButtons();
     }
@@ -716,13 +705,11 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
             focusButton.SetText("Exit Focus");
             focusButton.SetTooltip(
                 "Restore scene panes, sidebar, and tool panels (Shift+Space)");
-            focusButton.SetStyle(1);
         } else {
             focusButton.SetText("Focus");
             focusButton.SetTooltip(
                 "Hide scene panes and outer Studio docks to maximize the viewport "
                 + "(Shift+Space)");
-            focusButton.SetStyle(2);
         }
         UpdateCommandMenuButtons();
     }

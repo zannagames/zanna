@@ -150,6 +150,8 @@ typedef void *GLsync;
 #define GL_DEPTH_COMPONENT24 0x81A6
 #define GL_DEPTH_COMPONENT32F 0x8CAC
 #define GL_TEXTURE0 0x84C0
+#define GL_ACTIVE_TEXTURE 0x84E0
+#define GL_TEXTURE_BINDING_2D 0x8069
 #define GL_TEXTURE_WRAP_S 0x2802
 #define GL_TEXTURE_WRAP_T 0x2803
 #define GL_TEXTURE_WRAP_R 0x8072
@@ -216,6 +218,7 @@ typedef void *GLsync;
 #define GL_ONE_MINUS_SRC_ALPHA 0x0303
 #define GL_FRAMEBUFFER 0x8D40
 #define GL_DRAW_FRAMEBUFFER_BINDING 0x8CA6
+#define GL_READ_FRAMEBUFFER_BINDING 0x8CAA
 #define GL_READ_FRAMEBUFFER 0x8CA8
 #define GL_DRAW_FRAMEBUFFER 0x8CA9
 #define GL_DRAW_BUFFER 0x0C01
@@ -223,8 +226,10 @@ typedef void *GLsync;
 #define GL_SCISSOR_TEST 0x0C11
 #define GL_COLOR_WRITEMASK 0x0C23
 #define GL_RENDERBUFFER 0x8D41
+#define GL_RENDERBUFFER_BINDING 0x8CA7
 #define GL_COLOR_ATTACHMENT0 0x8CE0
 #define GL_COLOR_ATTACHMENT1 0x8CE1
+#define GL_COLOR_ATTACHMENT2 0x8CE2
 #define GL_DEPTH_ATTACHMENT 0x8D00
 #define GL_FRAMEBUFFER_COMPLETE 0x8CD5
 #define GL_LINE 0x1B01
@@ -757,6 +762,7 @@ typedef struct {
     GLuint scene_fbo;
     GLuint scene_color_tex;
     GLuint scene_motion_tex;
+    GLuint scene_postfx_tex;
     GLuint scene_depth_tex;
     int32_t scene_width;
     int32_t scene_height;
@@ -765,10 +771,12 @@ typedef struct {
     GLuint postfx_readback_tex;
     int32_t postfx_readback_width;
     int32_t postfx_readback_height;
+    int8_t postfx_readback_hdr;
     GLuint postfx_scratch_fbo;
     GLuint postfx_scratch_tex;
     int32_t postfx_scratch_width;
     int32_t postfx_scratch_height;
+    int8_t postfx_scratch_hdr;
     GLuint present_fbo;
     GLuint present_tex;
     int32_t present_width;
@@ -784,6 +792,7 @@ typedef struct {
     int32_t bloom_mip_count;
     int32_t bloom_base_width;
     int32_t bloom_base_height;
+    int8_t bloom_hdr;
     /* Transient: mip-0 result bound as uBloomTex while a chain pass composites bloom. */
     GLuint postfx_current_bloom_tex;
     /* Plan 05: TAA ping-pong history (RGBA16F, persisted across frames) + jitter state. */
@@ -793,6 +802,7 @@ typedef struct {
     int32_t taa_history_height;
     int32_t taa_history_parity;
     int8_t taa_history_valid;
+    int8_t taa_history_hdr;
     int8_t scene_hdr_active;
     float taa_jitter_clip[2];
     float taa_prev_jitter_clip[2];
@@ -973,6 +983,7 @@ typedef struct {
     GLuint ssr_tex;
     GLuint ssr_fbo;
     int32_t ssr_width, ssr_height;
+    int8_t ssr_hdr;
     GLint ssr_uSceneTex, ssr_uDepthTex, ssr_uMotionTex;
     GLint ssr_uInvResolution, ssr_uParams0, ssr_uCamPos;
     GLint ssr_uInvViewProjection, ssr_uViewProjection;
@@ -1172,10 +1183,8 @@ static void destroy_ssr_target(gl_context_t *ctx);
 static int ensure_bloom_targets(gl_context_t *ctx, int32_t w, int32_t h);
 static int ensure_taa_targets(gl_context_t *ctx, int32_t w, int32_t h);
 static int ensure_ssr_target(gl_context_t *ctx, int32_t w, int32_t h);
-static GLuint gl_encode_bloom_chain(gl_context_t *ctx,
-                                    int32_t width,
-                                    int32_t height,
-                                    float threshold);
+static GLuint gl_encode_bloom_chain(
+    gl_context_t *ctx, GLuint source_tex, int32_t width, int32_t height, float threshold);
 static GLuint gl_encode_taa_pass(gl_context_t *ctx,
                                  GLuint source_tex,
                                  int32_t width,
@@ -1190,12 +1199,16 @@ static GLuint gl_encode_taa_pass(gl_context_t *ctx,
 /// helpers restore the caller's binding instead of approximating it through
 /// `bind_main_framebuffer`, which can be wrong for nested operations.
 typedef struct {
-    GLint framebuffer;
+    GLint draw_framebuffer;
+    GLint read_framebuffer;
     GLint draw_buffer;
     GLint read_buffer;
     GLint viewport[4];
     GLint pack_alignment;
     GLint unpack_alignment;
+    GLint active_texture;
+    GLint texture_binding_2d;
+    GLint renderbuffer;
 } gl_framebuffer_state_t;
 
 /// @brief Capture the current framebuffer/read/draw/viewport state.
@@ -1204,12 +1217,16 @@ static void gl_capture_framebuffer_state(gl_framebuffer_state_t *state) {
     if (!state)
         return;
     memset(state, 0, sizeof(*state));
-    gl.GetIntegerv(GL_FRAMEBUFFER_BINDING, &state->framebuffer);
+    gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, &state->draw_framebuffer);
+    gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, &state->read_framebuffer);
     gl.GetIntegerv(GL_DRAW_BUFFER, &state->draw_buffer);
     gl.GetIntegerv(GL_READ_BUFFER, &state->read_buffer);
     gl.GetIntegerv(GL_VIEWPORT, state->viewport);
     gl.GetIntegerv(GL_PACK_ALIGNMENT, &state->pack_alignment);
     gl.GetIntegerv(GL_UNPACK_ALIGNMENT, &state->unpack_alignment);
+    gl.GetIntegerv(GL_ACTIVE_TEXTURE, &state->active_texture);
+    gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &state->texture_binding_2d);
+    gl.GetIntegerv(GL_RENDERBUFFER_BINDING, &state->renderbuffer);
 }
 
 /// @brief Restore framebuffer/read/draw/viewport state captured by
@@ -1218,12 +1235,16 @@ static void gl_capture_framebuffer_state(gl_framebuffer_state_t *state) {
 static void gl_restore_framebuffer_state(const gl_framebuffer_state_t *state) {
     if (!state)
         return;
-    gl.BindFramebuffer(GL_FRAMEBUFFER, (GLuint)state->framebuffer);
+    gl.BindFramebuffer(GL_DRAW_FRAMEBUFFER, (GLuint)state->draw_framebuffer);
     gl.DrawBuffer((GLenum)state->draw_buffer);
+    gl.BindFramebuffer(GL_READ_FRAMEBUFFER, (GLuint)state->read_framebuffer);
     gl.ReadBuffer((GLenum)state->read_buffer);
     gl.Viewport(state->viewport[0], state->viewport[1], state->viewport[2], state->viewport[3]);
     gl.PixelStorei(GL_PACK_ALIGNMENT, state->pack_alignment);
     gl.PixelStorei(GL_UNPACK_ALIGNMENT, state->unpack_alignment);
+    gl.ActiveTexture((GLenum)state->active_texture);
+    gl.BindTexture(GL_TEXTURE_2D, (GLuint)state->texture_binding_2d);
+    gl.BindRenderbuffer(GL_RENDERBUFFER, (GLuint)state->renderbuffer);
 }
 
 /// @brief Restore the default draw state expected after helper full-screen passes.
@@ -1247,6 +1268,7 @@ static void gl_restore_main_draw_state(gl_context_t *ctx) {
     gl.FrontFace(GL_CCW);
     gl.Disable(GL_POLYGON_OFFSET_FILL);
     gl.PolygonMode(GL_FRONT_AND_BACK, GL_FILL);
+    gl.ActiveTexture(GL_TEXTURE0);
     gl.UseProgram(ctx->program);
     gl.BindVertexArray(ctx->vao);
 }

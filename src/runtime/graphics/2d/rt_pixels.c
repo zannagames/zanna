@@ -72,7 +72,7 @@ static uint64_t g_next_pixels_cache_identity = 1;
 static uint64_t pixels_next_cache_identity(void) {
     uint64_t id;
     do {
-        id = __atomic_fetch_add(&g_next_pixels_cache_identity, UINT64_C(1), __ATOMIC_RELAXED);
+        id = rt_atomic_fetch_add_u64(&g_next_pixels_cache_identity, UINT64_C(1), __ATOMIC_RELAXED);
     } while (id == 0);
     return id;
 }
@@ -118,6 +118,9 @@ static int32_t pixels_checked_layout(int64_t width,
     }
 
     if (pixel_count > (INT64_MAX - (int64_t)sizeof(rt_pixels_impl)) / (int64_t)sizeof(uint32_t))
+        return 0;
+    if ((uint64_t)pixel_count >
+        ((uint64_t)SIZE_MAX - (uint64_t)sizeof(rt_pixels_impl)) / sizeof(uint32_t))
         return 0;
 
     size_t data_size = (size_t)pixel_count * sizeof(uint32_t);
@@ -302,7 +305,8 @@ int64_t rt_pixels_get_color(void *pixels, int64_t x, int64_t y) {
 /// @details Shared implementation for rt_pixels_set, rt_pixels_set_rgba, and
 ///   rt_pixels_set_color.  Traps on NULL with the caller-supplied @p trap_op message.
 ///   Out-of-bounds coordinates are silently ignored (no trap).  Bumps the
-///   generation counter via pixels_touch so GPU caches know the content changed.
+///   generation counter only when the stored value changes, so render caches
+///   are not invalidated by idempotent writes.
 /// @param pixels   Pixels buffer; traps if NULL.
 /// @param x        Column coordinate (0 = left); silently ignored if out of bounds.
 /// @param y        Row coordinate (0 = top); silently ignored if out of bounds.
@@ -318,9 +322,8 @@ static void rt_pixels_set_raw_internal(
     if (x < 0 || x >= p->width || y < 0 || y >= p->height)
         return;
 
-    int64_t idx = y * p->width + x;
-    p->data[idx] = color;
-    pixels_touch(p);
+    if (set_pixel_raw(p, x, y, color))
+        pixels_touch(p);
 }
 
 /// @brief Write `color` at (x, y). Out-of-bounds is a silent no-op.
@@ -376,7 +379,7 @@ const uint32_t *rt_pixels_raw_buffer(void *pixels) {
 /// @details Shared implementation for rt_pixels_fill, rt_pixels_fill_rgba, and
 ///   rt_pixels_fill_color.  Uses memset when color == 0 (transparent black) for
 ///   maximum performance, and a simple loop otherwise.  Traps on NULL; no-ops on
-///   empty buffers.  Bumps the generation counter via pixels_touch.
+///   empty buffers. Idempotent fills preserve the generation and alpha cache.
 /// @param pixels   Pixels buffer; traps if NULL.
 /// @param color    Raw 0xRRGGBBAA value to broadcast to every pixel.
 /// @param trap_op  Trap message used when @p pixels is NULL.
@@ -393,6 +396,16 @@ static void rt_pixels_fill_raw_internal(void *pixels, uint32_t color, const char
     }
     if (pixel_count == 0 || !p->data)
         return;
+
+    size_t total = (size_t)pixel_count;
+    if (p->data[0] == color) {
+        size_t i = 1;
+        while (i < total && p->data[i] == color)
+            i++;
+        if (i == total)
+            return;
+    }
+
     if (color == 0) {
         memset(p->data, 0, size);
         pixels_touch(p);
@@ -403,7 +416,6 @@ static void rt_pixels_fill_raw_internal(void *pixels, uint32_t color, const char
      * clear win on the common "clear to an opaque background" path. */
     p->data[0] = color;
     size_t filled = 1;
-    size_t total = (size_t)pixel_count;
     while (filled < total) {
         size_t chunk = filled;
         if (chunk > total - filled)
@@ -441,8 +453,8 @@ void rt_pixels_fill_color(void *pixels, int64_t color) {
 }
 
 /// @brief Reset every pixel to 0 (transparent black). Equivalent to `_fill(pixels, 0)`.
-/// @details Nonempty buffers advance their generation; empty buffers remain
-///          unchanged.
+/// @details Nonempty buffers advance their generation only when at least one
+///          pixel was nonzero; empty and already-clear buffers remain unchanged.
 /// @param pixels Opaque destination Pixels handle; invalid input traps.
 void rt_pixels_clear(void *pixels) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.Clear: invalid pixels");
@@ -454,10 +466,18 @@ void rt_pixels_clear(void *pixels) {
         rt_trap("Pixels.Clear: invalid pixels layout");
         return;
     }
-    if (p->data && size > 0) {
-        memset(p->data, 0, size);
-        pixels_touch(p);
-    }
+    if (!p->data || size == 0)
+        return;
+
+    size_t word_count = size / sizeof(uint32_t);
+    size_t i = 0;
+    while (i < word_count && p->data[i] == 0)
+        i++;
+    if (i == word_count)
+        return;
+
+    memset(p->data, 0, size);
+    pixels_touch(p);
 }
 
 //=============================================================================
@@ -468,7 +488,8 @@ void rt_pixels_clear(void *pixels) {
 /// to both source and dest bounds; out-of-range pixels are skipped silently.
 /// @details Overlapping self-copies use `memmove` and select bottom-up row order
 ///          when the destination begins below the source. A nonempty clipped
-///          copy advances the destination generation.
+///          copy advances the destination generation only when at least one
+///          stored word changes.
 /// @param dst Opaque destination Pixels handle modified in place.
 /// @param dx Destination X coordinate before clipping.
 /// @param dy Destination Y coordinate before clipping.
@@ -489,20 +510,34 @@ void rt_pixels_copy(
         return;
 
     int same_buffer = (d == s);
+    if (same_buffer && dx == sx && dy == sy)
+        return;
+
     int overlap = same_buffer && !(dx + w <= sx || sx + w <= dx || dy + h <= sy || sy + h <= dy);
     int copy_backwards = overlap && dy > sy;
+    size_t row_bytes = (size_t)w * sizeof(uint32_t);
+    int changed = 0;
 
     // Copy row by row. memmove is required for overlapping self-copies.
     for (int64_t row_idx = 0; row_idx < h; row_idx++) {
         int64_t row = copy_backwards ? (h - 1 - row_idx) : row_idx;
         int64_t src_idx = (sy + row) * s->width + sx;
         int64_t dst_idx = (dy + row) * d->width + dx;
+        if (memcmp(&d->data[dst_idx], &s->data[src_idx], row_bytes) == 0)
+            continue;
+        changed = 1;
         if (overlap)
-            memmove(&d->data[dst_idx], &s->data[src_idx], (size_t)w * sizeof(uint32_t));
+            memmove(&d->data[dst_idx], &s->data[src_idx], row_bytes);
         else
-            memcpy(&d->data[dst_idx], &s->data[src_idx], (size_t)w * sizeof(uint32_t));
+            memcpy(&d->data[dst_idx], &s->data[src_idx], row_bytes);
     }
+    if (!changed)
+        return;
+
     pixels_touch(d);
+    if (!same_buffer && dx == 0 && dy == 0 && sx == 0 && sy == 0 && w == d->width &&
+        h == d->height && w == s->width && h == s->height)
+        pixels_copy_alpha_classification_cache(d, s);
 }
 
 /// @brief Return a deep copy of the buffer (independent storage). Useful before applying
@@ -530,6 +565,7 @@ void *rt_pixels_clone(void *pixels) {
         }
         memcpy(clone->data, p->data, size);
     }
+    pixels_copy_alpha_classification_cache(clone, p);
     return clone;
 }
 
@@ -626,7 +662,7 @@ void *rt_pixels_from_bytes(int64_t width, int64_t height, void *bytes) {
             p->data[i] = ((uint32_t)src[i * 4 + 0] << 24) | ((uint32_t)src[i * 4 + 1] << 16) |
                          ((uint32_t)src[i * 4 + 2] << 8) | (uint32_t)src[i * 4 + 3];
         }
-        pixels_touch(p);
+        p->alpha_scan_valid = 0;
     }
 
     return p;

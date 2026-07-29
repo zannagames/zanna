@@ -72,16 +72,20 @@
 /// @brief Fixed-size named atlas rectangle.
 typedef struct {
     char name[TEXATLAS_NAME_LEN]; ///< Owned NUL-terminated region name.
+    uint32_t name_hash;           ///< Cached FNV-1a hash of the exact name bytes.
+    uint8_t name_len;             ///< Exact name length, excluding the terminator.
     /// @brief Atlas-space left, top, width, and height coordinates.
     int64_t x, y, w, h;
 } texatlas_region;
 
 /// @brief Private runtime-managed atlas and open-addressing lookup state.
 typedef struct {
-    void *pixels; ///< Retained backing Pixels object.
+    void *pixels;                                  ///< Retained backing Pixels object.
     texatlas_region regions[TEXATLAS_MAX_REGIONS]; ///< Embedded region records.
-    int32_t region_count; ///< Number of initialized entries in @ref regions.
+    int32_t region_count;                     ///< Number of initialized entries in @ref regions.
     int32_t region_slots[TEXATLAS_HASH_SIZE]; ///< Region index plus one; zero is empty.
+    int64_t pixel_width;                      ///< Immutable backing-image width.
+    int64_t pixel_height;                     ///< Immutable backing-image height.
 } texatlas_impl;
 
 //=============================================================================
@@ -95,7 +99,10 @@ typedef struct {
 static texatlas_impl *get_impl(void *atlas) {
     if (!atlas || !rt_obj_is_instance(atlas, RT_TEXATLAS_CLASS_ID, sizeof(texatlas_impl)))
         return NULL;
-    return (texatlas_impl *)atlas;
+    texatlas_impl *impl = (texatlas_impl *)atlas;
+    if (impl->region_count < 0 || impl->region_count > TEXATLAS_MAX_REGIONS)
+        return NULL;
+    return impl;
 }
 
 /// @brief FNV-1a 32-bit hash of a region name string.
@@ -105,13 +112,33 @@ static texatlas_impl *get_impl(void *atlas) {
 ///   hash table `region_slots` with linear probing.
 /// @param name Nonnull NUL-terminated byte string.
 /// @return Deterministic 32-bit FNV-1a hash.
-static uint32_t hash_name(const char *name) {
+static uint32_t hash_name(const char *name, size_t name_len) {
     uint32_t h = 2166136261u;
-    while (*name) {
-        h ^= (uint8_t)*name++;
+    for (size_t i = 0; i < name_len; i++) {
+        h ^= (uint8_t)name[i];
         h *= 16777619u;
     }
     return h;
+}
+
+/// @brief Validate a bounded nonempty NUL-free runtime atlas name.
+static int8_t texatlas_runtime_name(void *name,
+                                    const char **bytes_out,
+                                    size_t *name_len_out,
+                                    uint32_t *hash_out) {
+    if (!name || !bytes_out || !name_len_out || !hash_out)
+        return 0;
+    int64_t raw_len = rt_str_len((rt_string)name);
+    if (raw_len <= 0 || raw_len >= TEXATLAS_NAME_LEN)
+        return 0;
+    const char *bytes = rt_string_cstr((rt_string)name);
+    size_t name_len = (size_t)raw_len;
+    if (!bytes || memchr(bytes, '\0', name_len) != NULL)
+        return 0;
+    *bytes_out = bytes;
+    *name_len_out = name_len;
+    *hash_out = hash_name(bytes, name_len);
+    return 1;
 }
 
 /// @brief Look up a region by name in the open-addressing hash table.
@@ -123,17 +150,19 @@ static uint32_t hash_name(const char *name) {
 /// @param impl Atlas whose slot table should be searched.
 /// @param name Nonempty case-sensitive region name.
 /// @return Zero-based region index, or -1 if not found.
-static int find_region(texatlas_impl *impl, const char *name) {
-    if (!impl || !name || !*name)
+static int find_region(texatlas_impl *impl, const char *name, size_t name_len, uint32_t name_hash) {
+    if (!impl || !name || name_len == 0 || name_len >= TEXATLAS_NAME_LEN)
         return -1;
 
-    uint32_t h = hash_name(name);
     for (int probe = 0; probe < TEXATLAS_HASH_SIZE; ++probe) {
-        int32_t entry = impl->region_slots[(h + (uint32_t)probe) & (TEXATLAS_HASH_SIZE - 1)];
+        int32_t entry =
+            impl->region_slots[(name_hash + (uint32_t)probe) & (TEXATLAS_HASH_SIZE - 1)];
         if (entry == 0)
             return -1;
         int idx = entry - 1;
-        if (idx >= 0 && idx < impl->region_count && strcmp(impl->regions[idx].name, name) == 0)
+        if (idx >= 0 && idx < impl->region_count && impl->regions[idx].name_hash == name_hash &&
+            impl->regions[idx].name_len == name_len &&
+            memcmp(impl->regions[idx].name, name, name_len) == 0)
             return idx;
     }
     return -1;
@@ -148,18 +177,20 @@ static int find_region(texatlas_impl *impl, const char *name) {
 ///   so a well-formed atlas never exhausts the table.
 /// @param impl Valid atlas implementation containing the named region.
 /// @param idx Valid zero-based index to bind.
-static void bind_region_slot(texatlas_impl *impl, int idx) {
-    const char *name = impl->regions[idx].name;
-    uint32_t h = hash_name(name);
+static int8_t bind_region_slot(texatlas_impl *impl, int idx) {
+    if (!impl || idx < 0 || idx >= TEXATLAS_MAX_REGIONS)
+        return 0;
+    uint32_t hash = impl->regions[idx].name_hash;
     for (int probe = 0; probe < TEXATLAS_HASH_SIZE; ++probe) {
-        int32_t *slot = &impl->region_slots[(h + (uint32_t)probe) & (TEXATLAS_HASH_SIZE - 1)];
+        int32_t *slot = &impl->region_slots[(hash + (uint32_t)probe) & (TEXATLAS_HASH_SIZE - 1)];
         if (*slot == 0 || *slot == idx + 1) {
             *slot = idx + 1;
-            return;
+            return 1;
         }
     }
 
     rt_trap("TextureAtlas: lookup table exhausted");
+    return 0;
 }
 
 //=============================================================================
@@ -193,7 +224,8 @@ void *rt_texatlas_new(void *pixels) {
         rt_trap("TextureAtlas.New: null pixels");
         return NULL;
     }
-    if (!rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl))) {
+    rt_pixels_impl *pixel_impl = rt_pixels_checked_impl_or_null(pixels);
+    if (!pixel_impl) {
         rt_trap("TextureAtlas.New: invalid pixels");
         return NULL;
     }
@@ -208,6 +240,8 @@ void *rt_texatlas_new(void *pixels) {
 
     memset(impl, 0, sizeof(texatlas_impl));
     impl->pixels = pixels;
+    impl->pixel_width = pixel_impl->width;
+    impl->pixel_height = pixel_impl->height;
     rt_obj_set_finalizer(impl, texatlas_finalize);
     return impl;
 }
@@ -236,8 +270,8 @@ void *rt_texatlas_load_grid(void *pixels, int64_t frame_w, int64_t frame_h) {
     texatlas_impl *impl = get_impl(atlas);
     if (!impl)
         return NULL;
-    int64_t img_w = rt_pixels_width(pixels);
-    int64_t img_h = rt_pixels_height(pixels);
+    int64_t img_w = impl->pixel_width;
+    int64_t img_h = impl->pixel_height;
     int64_t cols = img_w / frame_w;
     int64_t rows = img_h / frame_h;
 
@@ -245,13 +279,22 @@ void *rt_texatlas_load_grid(void *pixels, int64_t frame_w, int64_t frame_h) {
     for (int64_t row = 0; row < rows && idx < TEXATLAS_MAX_REGIONS; row++) {
         for (int64_t col = 0; col < cols && idx < TEXATLAS_MAX_REGIONS; col++) {
             texatlas_region *r = &impl->regions[idx];
-            snprintf(r->name, TEXATLAS_NAME_LEN, "%d", idx);
+            int written = snprintf(r->name, TEXATLAS_NAME_LEN, "%d", idx);
+            if (written <= 0 || written >= TEXATLAS_NAME_LEN) {
+                rt_heap_release(atlas);
+                return NULL;
+            }
+            r->name_len = (uint8_t)written;
+            r->name_hash = hash_name(r->name, r->name_len);
             r->x = col * frame_w;
             r->y = row * frame_h;
             r->w = frame_w;
             r->h = frame_h;
+            if (!bind_region_slot(impl, idx)) {
+                rt_heap_release(atlas);
+                return NULL;
+            }
             impl->region_count = idx + 1;
-            bind_region_slot(impl, idx);
             idx++;
         }
     }
@@ -279,30 +322,26 @@ void rt_texatlas_add(void *atlas, void *name, int64_t x, int64_t y, int64_t w, i
     texatlas_impl *impl = get_impl(atlas);
     if (!impl)
         return;
-    const char *cname = rt_string_cstr(name);
-    if (!cname)
-        return;
-    if (!*cname) {
-        rt_trap("TextureAtlas.Add: name must not be empty");
-        return;
-    }
-    if (strlen(cname) >= TEXATLAS_NAME_LEN) {
-        rt_trap("TextureAtlas.Add: name too long (max 31 bytes)");
+    const char *cname = NULL;
+    size_t name_len = 0;
+    uint32_t name_hash = 0;
+    if (!texatlas_runtime_name(name, &cname, &name_len, &name_hash)) {
+        rt_trap("TextureAtlas.Add: name must be 1..31 bytes without embedded NUL");
         return;
     }
     if (w <= 0 || h <= 0) {
         rt_trap("TextureAtlas.Add: width/height must be positive");
         return;
     }
-    int64_t atlas_w = rt_pixels_width(impl->pixels);
-    int64_t atlas_h = rt_pixels_height(impl->pixels);
+    int64_t atlas_w = impl->pixel_width;
+    int64_t atlas_h = impl->pixel_height;
     if (x < 0 || y < 0 || x > atlas_w || y > atlas_h || w > atlas_w - x || h > atlas_h - y) {
         rt_trap("TextureAtlas.Add: region outside backing pixels");
         return;
     }
 
     // Overwrite if name already exists
-    int existing = find_region(impl, cname);
+    int existing = find_region(impl, cname, name_len, name_hash);
     if (existing < 0 && impl->region_count >= TEXATLAS_MAX_REGIONS) {
         rt_trap("TextureAtlas.Add: region limit exceeded (512)");
         return;
@@ -312,16 +351,24 @@ void rt_texatlas_add(void *atlas, void *name, int64_t x, int64_t y, int64_t w, i
         r = &impl->regions[existing];
     } else {
         r = &impl->regions[impl->region_count];
-        impl->region_count++;
     }
 
-    strncpy(r->name, cname, TEXATLAS_NAME_LEN - 1);
-    r->name[TEXATLAS_NAME_LEN - 1] = '\0';
+    memcpy(r->name, cname, name_len);
+    r->name[name_len] = '\0';
+    r->name_len = (uint8_t)name_len;
+    r->name_hash = name_hash;
     r->x = x;
     r->y = y;
     r->w = w;
     r->h = h;
-    bind_region_slot(impl, existing >= 0 ? existing : impl->region_count - 1);
+    if (existing < 0) {
+        int new_index = impl->region_count;
+        if (!bind_region_slot(impl, new_index)) {
+            memset(r, 0, sizeof(*r));
+            return;
+        }
+        impl->region_count++;
+    }
 }
 
 /// @brief Test whether a case-sensitive region name exists.
@@ -334,10 +381,12 @@ int8_t rt_texatlas_has(void *atlas, void *name) {
     texatlas_impl *impl = get_impl(atlas);
     if (!impl)
         return 0;
-    const char *cname = rt_string_cstr(name);
-    if (!cname)
+    const char *cname = NULL;
+    size_t name_len = 0;
+    uint32_t name_hash = 0;
+    if (!texatlas_runtime_name(name, &cname, &name_len, &name_hash))
         return 0;
-    return find_region(impl, cname) >= 0 ? 1 : 0;
+    return find_region(impl, cname, name_len, name_hash) >= 0 ? 1 : 0;
 }
 
 /// @brief Get a named region's source X coordinate.
@@ -350,10 +399,12 @@ int64_t rt_texatlas_get_x(void *atlas, void *name) {
     texatlas_impl *impl = get_impl(atlas);
     if (!impl)
         return 0;
-    const char *cname = rt_string_cstr(name);
-    if (!cname)
+    const char *cname = NULL;
+    size_t name_len = 0;
+    uint32_t name_hash = 0;
+    if (!texatlas_runtime_name(name, &cname, &name_len, &name_hash))
         return 0;
-    int idx = find_region(impl, cname);
+    int idx = find_region(impl, cname, name_len, name_hash);
     return idx >= 0 ? impl->regions[idx].x : 0;
 }
 
@@ -367,10 +418,12 @@ int64_t rt_texatlas_get_y(void *atlas, void *name) {
     texatlas_impl *impl = get_impl(atlas);
     if (!impl)
         return 0;
-    const char *cname = rt_string_cstr(name);
-    if (!cname)
+    const char *cname = NULL;
+    size_t name_len = 0;
+    uint32_t name_hash = 0;
+    if (!texatlas_runtime_name(name, &cname, &name_len, &name_hash))
         return 0;
-    int idx = find_region(impl, cname);
+    int idx = find_region(impl, cname, name_len, name_hash);
     return idx >= 0 ? impl->regions[idx].y : 0;
 }
 
@@ -384,10 +437,12 @@ int64_t rt_texatlas_get_w(void *atlas, void *name) {
     texatlas_impl *impl = get_impl(atlas);
     if (!impl)
         return 0;
-    const char *cname = rt_string_cstr(name);
-    if (!cname)
+    const char *cname = NULL;
+    size_t name_len = 0;
+    uint32_t name_hash = 0;
+    if (!texatlas_runtime_name(name, &cname, &name_len, &name_hash))
         return 0;
-    int idx = find_region(impl, cname);
+    int idx = find_region(impl, cname, name_len, name_hash);
     return idx >= 0 ? impl->regions[idx].w : 0;
 }
 
@@ -401,10 +456,12 @@ int64_t rt_texatlas_get_h(void *atlas, void *name) {
     texatlas_impl *impl = get_impl(atlas);
     if (!impl)
         return 0;
-    const char *cname = rt_string_cstr(name);
-    if (!cname)
+    const char *cname = NULL;
+    size_t name_len = 0;
+    uint32_t name_hash = 0;
+    if (!texatlas_runtime_name(name, &cname, &name_len, &name_hash))
         return 0;
-    int idx = find_region(impl, cname);
+    int idx = find_region(impl, cname, name_len, name_hash);
     return idx >= 0 ? impl->regions[idx].h : 0;
 }
 
@@ -449,10 +506,12 @@ void rt_spritebatch_draw_atlas(void *batch, void *atlas, void *name, int64_t x, 
     texatlas_impl *impl = get_impl(atlas);
     if (!impl)
         return;
-    const char *cname = rt_string_cstr(name);
-    if (!cname)
+    const char *cname = NULL;
+    size_t name_len = 0;
+    uint32_t name_hash = 0;
+    if (!texatlas_runtime_name(name, &cname, &name_len, &name_hash))
         return;
-    int idx = find_region(impl, cname);
+    int idx = find_region(impl, cname, name_len, name_hash);
     if (idx < 0)
         return; // Silent no-op for missing region
 
@@ -477,10 +536,12 @@ void rt_spritebatch_draw_atlas_scaled(
     texatlas_impl *impl = get_impl(atlas);
     if (!impl)
         return;
-    const char *cname = rt_string_cstr(name);
-    if (!cname)
+    const char *cname = NULL;
+    size_t name_len = 0;
+    uint32_t name_hash = 0;
+    if (!texatlas_runtime_name(name, &cname, &name_len, &name_hash))
         return;
-    int idx = find_region(impl, cname);
+    int idx = find_region(impl, cname, name_len, name_hash);
     if (idx < 0)
         return;
 
@@ -513,10 +574,12 @@ void rt_spritebatch_draw_atlas_ex(void *batch,
     texatlas_impl *impl = get_impl(atlas);
     if (!impl)
         return;
-    const char *cname = rt_string_cstr(name);
-    if (!cname)
+    const char *cname = NULL;
+    size_t name_len = 0;
+    uint32_t name_hash = 0;
+    if (!texatlas_runtime_name(name, &cname, &name_len, &name_hash))
         return;
-    int idx = find_region(impl, cname);
+    int idx = find_region(impl, cname, name_len, name_hash);
     if (idx < 0)
         return;
 

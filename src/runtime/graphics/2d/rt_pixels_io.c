@@ -237,8 +237,8 @@ void *rt_pixels_load_bmp(void *path) {
         return NULL;
     }
 
-    const char *filepath = rt_string_cstr((rt_string)path);
-    if (!filepath) {
+    const char *filepath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &filepath)) {
         rt_asset_error_end_load_failure();
         rt_trap("Pixels.LoadBmp: invalid path");
         return NULL;
@@ -270,8 +270,9 @@ void *rt_pixels_load_bmp(void *path) {
         goto bmp_cleanup;
 
     // Only support BITMAPINFOHEADER, 24-bit, uncompressed BMP.
-    if (info_hdr.header_size != sizeof(bmp_info_header) || info_hdr.bit_count != 24 ||
-        info_hdr.compression != 0)
+    if (info_hdr.header_size != sizeof(bmp_info_header) || info_hdr.planes != 1 ||
+        info_hdr.bit_count != 24 || info_hdr.compression != 0 || file_hdr.reserved1 != 0 ||
+        file_hdr.reserved2 != 0)
         goto bmp_cleanup;
 
     int32_t width = info_hdr.width;
@@ -299,6 +300,8 @@ void *rt_pixels_load_bmp(void *path) {
     size_t row_size = (row_payload + 3u) & ~(size_t)3u;
     size_t data_size = 0;
     if (!px_mul_size(row_size, (size_t)height, &data_size))
+        goto bmp_cleanup;
+    if (info_hdr.image_size != 0 && (uint64_t)info_hdr.image_size != (uint64_t)data_size)
         goto bmp_cleanup;
 
     uint64_t min_data_offset = (uint64_t)sizeof(bmp_file_header) + (uint64_t)info_hdr.header_size;
@@ -398,8 +401,8 @@ int64_t rt_pixels_save_bmp(void *pixels, void *path) {
     rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.SaveBmp: invalid pixels");
     if (!p)
         return 0;
-    const char *filepath = rt_string_cstr((rt_string)path);
-    if (!filepath)
+    const char *filepath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &filepath))
         return 0;
 
     if (p->width <= 0 || p->height <= 0 || p->width > INT32_MAX || p->height > INT32_MAX)
@@ -528,8 +531,8 @@ void *rt_pixels_load_gif(void *path) {
         return NULL;
     }
 
-    const char *filepath = rt_string_cstr((rt_string)path);
-    if (!filepath) {
+    const char *filepath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &filepath)) {
         rt_asset_error_end_load_failure();
         rt_trap("Pixels.LoadGif: invalid path");
         return NULL;
@@ -609,8 +612,8 @@ void *rt_pixels_load(void *path) {
         return NULL;
     }
 
-    const char *filepath = rt_string_cstr((rt_string)path);
-    if (!filepath) {
+    const char *filepath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &filepath)) {
         rt_asset_error_begin_load();
         rt_asset_error_end_load_failure();
         rt_trap("Pixels.Load: invalid path");

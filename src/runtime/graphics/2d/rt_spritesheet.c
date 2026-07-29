@@ -66,18 +66,22 @@
 typedef struct {
     /// @brief Atlas-space left, top, width, and height coordinates.
     int64_t x, y, w, h;
+    size_t name_len;    ///< Exact byte length of the parallel copied name.
+    uint64_t name_hash; ///< Cached FNV-1a hash for inexpensive lookup rejection.
 } ss_region;
 
 /// @brief Private runtime-managed SpriteSheet state.
 /// @details `regions[i]` and `names[i]` describe the same entry for every
 ///          index below @c count. The atlas reference and every name are owned.
 typedef struct {
-    void *vptr;        ///< Reserved runtime virtual-table slot.
-    void *atlas;       ///< Retained Pixels atlas.
-    ss_region *regions; ///< Owned region array parallel to @ref names.
-    char **names;       ///< Owned copied names parallel to @ref regions.
-    int64_t count;      ///< Number of initialized region/name entries.
-    int64_t capacity;   ///< Number of allocated parallel-array slots.
+    void *vptr;           ///< Reserved runtime virtual-table slot.
+    void *atlas;          ///< Retained Pixels atlas.
+    ss_region *regions;   ///< Owned region array parallel to @ref names.
+    char **names;         ///< Owned copied names parallel to @ref regions.
+    int64_t count;        ///< Number of initialized region/name entries.
+    int64_t capacity;     ///< Number of allocated parallel-array slots.
+    int64_t atlas_width;  ///< Immutable retained-atlas width.
+    int64_t atlas_height; ///< Immutable retained-atlas height.
 } rt_spritesheet_impl;
 
 /// @brief Initial number of named-region slots allocated for a sheet.
@@ -100,8 +104,47 @@ static rt_spritesheet_impl *spritesheet_checked_or_null(void *obj) {
 ///          handles before they reach rt_pixels_get / rt_pixels_blit.
 /// @param pixels Candidate opaque Pixels handle.
 /// @return Nonzero when @p pixels has a valid Pixels class and payload size.
-static int8_t spritesheet_is_valid_pixels(void *pixels) {
-    return pixels && rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl));
+static rt_pixels_impl *spritesheet_valid_pixels(void *pixels) {
+    return rt_pixels_checked_impl_or_null(pixels);
+}
+
+/// @brief Release one runtime-managed object reference.
+static void spritesheet_release_object(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
+/// @brief Compute a stable byte-wise FNV-1a hash for a region name.
+static uint64_t spritesheet_name_hash(const char *bytes, size_t len) {
+    uint64_t hash = UINT64_C(1469598103934665603);
+    for (size_t i = 0; i < len; i++) {
+        hash ^= (uint8_t)bytes[i];
+        hash *= UINT64_C(1099511628211);
+    }
+    return hash;
+}
+
+/// @brief Validate a nonempty NUL-free runtime region name.
+/// @details Runtime strings carry an explicit byte count and may contain NUL,
+///          so C-string scans alone would alias distinct names. Length is also
+///          checked against the host allocation range before conversion.
+static int8_t spritesheet_runtime_name(rt_string name,
+                                       const char **bytes_out,
+                                       size_t *len_out,
+                                       uint64_t *hash_out) {
+    if (!name || !bytes_out || !len_out || !hash_out)
+        return 0;
+    int64_t raw_len = rt_str_len(name);
+    if (raw_len <= 0 || (uint64_t)raw_len > (uint64_t)SIZE_MAX - 1u)
+        return 0;
+    const char *bytes = rt_string_cstr(name);
+    size_t len = (size_t)raw_len;
+    if (!bytes || memchr(bytes, '\0', len) != NULL)
+        return 0;
+    *bytes_out = bytes;
+    *len_out = len;
+    *hash_out = spritesheet_name_hash(bytes, len);
+    return 1;
 }
 
 /// @brief GC finalizer for a SpriteSheet — frees the name strings, region/name arrays,
@@ -139,10 +182,15 @@ static void ss_finalizer(void *obj) {
 /// @param ss Valid SpriteSheet implementation.
 /// @param name NUL-terminated case-sensitive name to find.
 /// @return Zero-based region index, or `-1` when absent.
-static int64_t find_region(rt_spritesheet_impl *ss, const char *name) {
-    int64_t i;
-    for (i = 0; i < ss->count; i++) {
-        if (strcmp(ss->names[i], name) == 0)
+static int64_t find_region(rt_spritesheet_impl *ss,
+                           const char *name,
+                           size_t name_len,
+                           uint64_t name_hash) {
+    if (!ss || !name)
+        return -1;
+    for (int64_t i = 0; i < ss->count; i++) {
+        if (ss->regions[i].name_hash == name_hash && ss->regions[i].name_len == name_len &&
+            memcmp(ss->names[i], name, name_len) == 0)
             return i;
     }
     return -1;
@@ -163,8 +211,8 @@ static int8_t spritesheet_region_valid(
     rt_spritesheet_impl *ss, int64_t x, int64_t y, int64_t w, int64_t h) {
     if (!ss || !ss->atlas || x < 0 || y < 0 || w <= 0 || h <= 0)
         return 0;
-    int64_t atlas_w = rt_pixels_width(ss->atlas);
-    int64_t atlas_h = rt_pixels_height(ss->atlas);
+    int64_t atlas_w = ss->atlas_width;
+    int64_t atlas_h = ss->atlas_height;
     if (atlas_w <= 0 || atlas_h <= 0 || x >= atlas_w || y >= atlas_h)
         return 0;
     if (w > atlas_w - x || h > atlas_h - y)
@@ -181,18 +229,27 @@ static int8_t spritesheet_region_valid(
 ///   one realloc succeeding and the other failing.
 /// @param ss SpriteSheet whose parallel arrays may need to grow.
 /// @return 1 if capacity is sufficient (or was successfully grown), 0 on overflow/OOM.
-static int8_t ensure_cap(rt_spritesheet_impl *ss) {
-    if (ss->count < ss->capacity)
+static int8_t spritesheet_reserve(rt_spritesheet_impl *ss, int64_t required) {
+    if (!ss || !ss->regions || !ss->names || required < 0 || ss->count < 0 || ss->capacity <= 0 ||
+        ss->count > ss->capacity)
+        return 0;
+    if (required <= ss->capacity)
         return 1;
-    if (ss->capacity > INT64_MAX / 2) {
+
+    int64_t new_cap = ss->capacity;
+    while (new_cap < required) {
+        if (new_cap > INT64_MAX / 2) {
+            new_cap = required;
+            break;
+        }
+        new_cap *= 2;
+    }
+    if ((uint64_t)new_cap > (uint64_t)SIZE_MAX / sizeof(ss_region) ||
+        (uint64_t)new_cap > (uint64_t)SIZE_MAX / sizeof(char *)) {
         rt_trap("SpriteSheet: capacity overflow");
         return 0;
     }
-    int64_t new_cap = ss->capacity * 2;
 
-    // Use malloc+memcpy so both arrays can be freed independently on partial failure.
-    // realloc cannot be rolled back after success, so sequential reallocs risk leaving
-    // the struct with mismatched array sizes if the second call fails.
     ss_region *tmp_regions = (ss_region *)malloc((size_t)new_cap * sizeof(ss_region));
     if (!tmp_regions) {
         rt_trap("SpriteSheet: memory allocation failed");
@@ -214,6 +271,15 @@ static int8_t ensure_cap(rt_spritesheet_impl *ss) {
     return 1;
 }
 
+/// @brief Ensure space for one more metadata entry.
+static int8_t ensure_cap(rt_spritesheet_impl *ss) {
+    if (!ss || ss->count == INT64_MAX) {
+        rt_trap("SpriteSheet: capacity overflow");
+        return 0;
+    }
+    return spritesheet_reserve(ss, ss->count + 1);
+}
+
 //=============================================================================
 // Public API
 //=============================================================================
@@ -226,7 +292,8 @@ static int8_t ensure_cap(rt_spritesheet_impl *ss) {
 ///         handle or allocation failure.
 void *rt_spritesheet_new(void *atlas_pixels) {
     rt_spritesheet_impl *ss;
-    if (!spritesheet_is_valid_pixels(atlas_pixels))
+    rt_pixels_impl *atlas = spritesheet_valid_pixels(atlas_pixels);
+    if (!atlas)
         return NULL;
 
     ss = (rt_spritesheet_impl *)rt_obj_new_i64(RT_SPRITESHEET_CLASS_ID,
@@ -240,6 +307,8 @@ void *rt_spritesheet_new(void *atlas_pixels) {
     rt_obj_retain_maybe(atlas_pixels);
     ss->count = 0;
     ss->capacity = SS_INITIAL_CAP;
+    ss->atlas_width = atlas->width;
+    ss->atlas_height = atlas->height;
     ss->regions = (ss_region *)calloc((size_t)SS_INITIAL_CAP, sizeof(ss_region));
     ss->names = (char **)calloc((size_t)SS_INITIAL_CAP, sizeof(char *));
     if (!ss->regions || !ss->names) {
@@ -275,11 +344,12 @@ void *rt_spritesheet_new(void *atlas_pixels) {
 void *rt_spritesheet_from_grid(void *atlas_pixels, int64_t frame_w, int64_t frame_h) {
     void *sheet;
     int64_t atlas_w, atlas_h, cols, rows, idx, iy, ix;
-    if (!spritesheet_is_valid_pixels(atlas_pixels) || frame_w <= 0 || frame_h <= 0)
+    rt_pixels_impl *atlas = spritesheet_valid_pixels(atlas_pixels);
+    if (!atlas || frame_w <= 0 || frame_h <= 0)
         return NULL;
 
-    atlas_w = rt_pixels_width(atlas_pixels);
-    atlas_h = rt_pixels_height(atlas_pixels);
+    atlas_w = atlas->width;
+    atlas_h = atlas->height;
     if (atlas_w <= 0 || atlas_h <= 0 || atlas_w % frame_w != 0 || atlas_h % frame_h != 0)
         return NULL;
 
@@ -291,15 +361,32 @@ void *rt_spritesheet_from_grid(void *atlas_pixels, int64_t frame_w, int64_t fram
     sheet = rt_spritesheet_new(atlas_pixels);
     if (!sheet)
         return NULL;
+    int64_t region_total = rows * cols;
+    if (!spritesheet_reserve((rt_spritesheet_impl *)sheet, region_total)) {
+        spritesheet_release_object(sheet);
+        return NULL;
+    }
 
     idx = 0;
     for (iy = 0; iy < rows; iy++) {
         for (ix = 0; ix < cols; ix++) {
             char name_buf[32];
-            snprintf(name_buf, sizeof(name_buf), "%lld", (long long)idx);
-            rt_string name = rt_const_cstr(name_buf);
+            int written = snprintf(name_buf, sizeof(name_buf), "%lld", (long long)idx);
+            if (written <= 0 || (size_t)written >= sizeof(name_buf)) {
+                spritesheet_release_object(sheet);
+                return NULL;
+            }
+            rt_string name = rt_string_from_bytes(name_buf, (size_t)written);
+            if (!name) {
+                spritesheet_release_object(sheet);
+                return NULL;
+            }
             rt_spritesheet_set_region(sheet, name, ix * frame_w, iy * frame_h, frame_w, frame_h);
             rt_string_unref(name);
+            if (rt_spritesheet_region_count(sheet) != idx + 1) {
+                spritesheet_release_object(sheet);
+                return NULL;
+            }
             idx++;
         }
     }
@@ -321,22 +408,21 @@ void rt_spritesheet_set_region(
     void *obj, rt_string name, int64_t x, int64_t y, int64_t w, int64_t h) {
     rt_spritesheet_impl *ss;
     const char *cstr;
+    size_t name_len = 0;
+    uint64_t name_hash = 0;
     int64_t idx;
     if (!obj || !name)
         return;
     ss = spritesheet_checked_or_null(obj);
     if (!ss)
         return;
-    cstr = rt_string_cstr(name);
-    if (!cstr)
-        return;
-    if (!*cstr)
+    if (!spritesheet_runtime_name(name, &cstr, &name_len, &name_hash))
         return;
     if (!spritesheet_region_valid(ss, x, y, w, h))
         return;
 
     /* Update existing region if name matches */
-    idx = find_region(ss, cstr);
+    idx = find_region(ss, cstr, name_len, name_hash);
     if (idx >= 0) {
         ss->regions[idx].x = x;
         ss->regions[idx].y = y;
@@ -349,15 +435,19 @@ void rt_spritesheet_set_region(
     if (!ensure_cap(ss))
         return;
     {
-        size_t name_len = strlen(cstr);
         ss->names[ss->count] = (char *)malloc(name_len + 1);
-        if (!ss->names[ss->count])
+        if (!ss->names[ss->count]) {
+            rt_trap("SpriteSheet: memory allocation failed");
             return;
-        memcpy(ss->names[ss->count], cstr, name_len + 1);
+        }
+        memcpy(ss->names[ss->count], cstr, name_len);
+        ss->names[ss->count][name_len] = '\0';
         ss->regions[ss->count].x = x;
         ss->regions[ss->count].y = y;
         ss->regions[ss->count].w = w;
         ss->regions[ss->count].h = h;
+        ss->regions[ss->count].name_len = name_len;
+        ss->regions[ss->count].name_hash = name_hash;
         ss->count++;
     }
 }
@@ -372,6 +462,8 @@ void rt_spritesheet_set_region(
 void *rt_spritesheet_get_region(void *obj, rt_string name) {
     rt_spritesheet_impl *ss;
     const char *cstr;
+    size_t name_len = 0;
+    uint64_t name_hash = 0;
     int64_t idx;
     ss_region *r;
     void *dst;
@@ -380,11 +472,10 @@ void *rt_spritesheet_get_region(void *obj, rt_string name) {
     ss = spritesheet_checked_or_null(obj);
     if (!ss)
         return NULL;
-    cstr = rt_string_cstr(name);
-    if (!cstr)
+    if (!spritesheet_runtime_name(name, &cstr, &name_len, &name_hash))
         return NULL;
 
-    idx = find_region(ss, cstr);
+    idx = find_region(ss, cstr, name_len, name_hash);
     if (idx < 0)
         return NULL;
 
@@ -404,15 +495,16 @@ void *rt_spritesheet_get_region(void *obj, rt_string name) {
 int8_t rt_spritesheet_has_region(void *obj, rt_string name) {
     rt_spritesheet_impl *ss;
     const char *cstr;
+    size_t name_len = 0;
+    uint64_t name_hash = 0;
     if (!obj || !name)
         return 0;
     ss = spritesheet_checked_or_null(obj);
     if (!ss)
         return 0;
-    cstr = rt_string_cstr(name);
-    if (!cstr)
+    if (!spritesheet_runtime_name(name, &cstr, &name_len, &name_hash))
         return 0;
-    return find_region(ss, cstr) >= 0 ? 1 : 0;
+    return find_region(ss, cstr, name_len, name_hash) >= 0 ? 1 : 0;
 }
 
 /// @brief Get the number of defined named regions.
@@ -432,7 +524,7 @@ int64_t rt_spritesheet_width(void *obj) {
     rt_spritesheet_impl *ss = spritesheet_checked_or_null(obj);
     if (!ss)
         return 0;
-    return rt_pixels_width(ss->atlas);
+    return ss->atlas_width;
 }
 
 /// @brief Get the retained atlas height.
@@ -442,7 +534,7 @@ int64_t rt_spritesheet_height(void *obj) {
     rt_spritesheet_impl *ss = spritesheet_checked_or_null(obj);
     if (!ss)
         return 0;
-    return rt_pixels_height(ss->atlas);
+    return ss->atlas_height;
 }
 
 /// @brief Return a Seq of all defined region names (as rt_strings) in insertion order. Empty
@@ -462,10 +554,20 @@ void *rt_spritesheet_region_names(void *obj) {
     if (!ss)
         return rt_seq_new_owned();
     seq = rt_seq_new_owned();
+    if (!seq)
+        return NULL;
     for (i = 0; i < ss->count; i++) {
-        rt_string s = rt_const_cstr(ss->names[i]);
+        rt_string s = rt_string_from_bytes(ss->names[i], ss->regions[i].name_len);
+        if (!s) {
+            spritesheet_release_object(seq);
+            return NULL;
+        }
         rt_seq_push(seq, (void *)s);
         rt_str_release_maybe(s);
+        if (rt_seq_len(seq) != i + 1) {
+            spritesheet_release_object(seq);
+            return NULL;
+        }
     }
     return seq;
 }
@@ -479,17 +581,18 @@ void *rt_spritesheet_region_names(void *obj) {
 int8_t rt_spritesheet_remove_region(void *obj, rt_string name) {
     rt_spritesheet_impl *ss;
     const char *cstr;
+    size_t name_len = 0;
+    uint64_t name_hash = 0;
     int64_t idx, j;
     if (!obj || !name)
         return 0;
     ss = spritesheet_checked_or_null(obj);
     if (!ss)
         return 0;
-    cstr = rt_string_cstr(name);
-    if (!cstr)
+    if (!spritesheet_runtime_name(name, &cstr, &name_len, &name_hash))
         return 0;
 
-    idx = find_region(ss, cstr);
+    idx = find_region(ss, cstr, name_len, name_hash);
     if (idx < 0)
         return 0;
 

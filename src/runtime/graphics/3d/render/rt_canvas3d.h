@@ -820,6 +820,7 @@ void *rt_rendertarget3d_as_pixels(void *obj);
 /// @param obj Borrowed RenderTarget3D handle.
 /// @param pixels Borrowed writable same-size Pixels destination.
 void rt_rendertarget3d_copy_to(void *obj, void *pixels);
+int rt_rendertarget3d_try_read_rgba(void *obj, uint8_t *dst, int64_t width, int64_t height);
 
 /// @brief Redirect subsequent draws to @p target instead of the swapchain.
 /// @details The canvas retains a validated target and releases any previous target binding.

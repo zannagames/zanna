@@ -7,6 +7,14 @@
 //
 // File: src/tests/runtime/RTGraphics2DTests.cpp
 // Purpose: Tests for Zanna.Graphics 2D rendering, tilemap, UI, and game helpers.
+// Key invariants:
+//   - Rendering tests compare exact RGBA storage or bounded channel rounding.
+//   - Adversarial handles and integer limits must fail safely without OOB access.
+// Ownership/Lifetime:
+//   - Runtime objects remain test-owned for the process lifetime unless a test
+//     explicitly releases them to exercise finalization.
+// Links: src/runtime/graphics/2d/rt_graphics2d.c,
+//        src/runtime/graphics/2d/rt_graphics2d.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,6 +34,10 @@
 #include <cstdint>
 #include <cstdio>
 #include <limits>
+
+extern "C" {
+#include "rt_graphics2d_internal.h"
+}
 
 extern "C" void vm_trap(const char *msg) {
     rt_abort(msg);
@@ -163,6 +175,234 @@ static void test_render_target_self_overlap_region_uses_snapshot() {
     assert(rt_pixels_get(pixels, 2, 0) == 0x00FF00FF);
     assert(rt_pixels_get(pixels, 3, 0) == 0x0000FFFF);
     printf("test_render_target_self_overlap_region_uses_snapshot: PASSED\n");
+}
+
+static void test_core_arithmetic_payload_and_generation_guards() {
+    assert(rt2d_saturating_mul_i64(INT64_MAX - 1, 1) == INT64_MAX - 1);
+    assert(rt2d_saturating_mul_i64(INT64_MAX, 2) == INT64_MAX);
+    assert(rt2d_saturating_mul_i64(INT64_MIN, -1) == INT64_MAX);
+    assert(rt2d_saturating_mul_i64(INT64_MIN, 1) == INT64_MIN);
+    assert(rt2d_saturating_mul_i64(-3037000500LL, 3037000500LL) == INT64_MIN);
+#if SIZE_MAX < UINT64_MAX
+    assert(rt2d_checked_count(1000000, 100, 64, nullptr) == 0);
+#endif
+
+    void *path = rt_path2d_new(1);
+    assert(path != nullptr);
+    void *undersized = rt_obj_new_i64(rt_obj_class_id(path), 1);
+    assert(undersized != nullptr);
+    void *pixels = rt_pixels_new(1, 1);
+    assert(pixels != nullptr);
+    rt_path2d_clear(undersized);
+    rt_path2d_move_to(undersized, 1, 2);
+    rt_path2d_line_to(undersized, 3, 4);
+    rt_path2d_draw_to_pixels(undersized, pixels, 0xFFFFFF);
+    assert(rt_path2d_count(undersized) == 0);
+    assert(rt_path2d_get_x(undersized, 0) == 0);
+    assert(rt_path2d_get_y(undersized, 0) == 0);
+
+    void *target = rt_rendertarget2d_new(1, 1);
+    void *transparent = rt_pixels_new(1, 1);
+    assert(target != nullptr);
+    assert(transparent != nullptr);
+    void *target_pixels = rt_rendertarget2d_get_pixels(target);
+    assert(rt_pixels_generation(target_pixels) == 0);
+    rt_rendertarget2d_draw_pixels(target, 0, 0, transparent);
+    assert(rt_pixels_generation(target_pixels) == 0);
+
+    void *material_source = rt_pixels_new(2, 2);
+    assert(material_source != nullptr);
+    rt_pixels_fill(material_source, 0x808080FF);
+    void *material = rt_material2d_new();
+    assert(material != nullptr);
+    rt_material2d_set_tint(material, 0x00FF0000);
+    void *processed = rt_material2d_apply(material, material_source);
+    assert(processed != nullptr);
+    assert(rt_pixels_generation(processed) == 1);
+    printf("test_core_arithmetic_payload_and_generation_guards: PASSED\n");
+}
+
+static void test_sampled_self_blits_snapshot_and_low_alpha_unpremultiply() {
+    constexpr int64_t kA = 0xFF0000FF;
+    constexpr int64_t kB = 0x00FF00FF;
+    constexpr int64_t kC = 0x0000FFFF;
+    constexpr int64_t kD = 0xFFFFFFFF;
+    void *target = rt_rendertarget2d_new(4, 1);
+    assert(target != nullptr);
+    void *pixels = rt_rendertarget2d_get_pixels(target);
+    assert(pixels != nullptr);
+    void *texture = rt_texture2d_new(pixels);
+    void *renderer = rt_renderer2d_new(1);
+    assert(texture != nullptr);
+    assert(renderer != nullptr);
+
+    rt_pixels_set(pixels, 0, 0, kA);
+    rt_pixels_set(pixels, 1, 0, kB);
+    rt_pixels_set(pixels, 2, 0, kC);
+    rt_pixels_set(pixels, 3, 0, kD);
+    rt_renderer2d_begin(renderer);
+    rt_renderer2d_draw_texture_scaled(renderer, texture, 1, 0, 4, 1);
+    rt_renderer2d_flush_to_target(renderer, target);
+    assert(rt_pixels_get(pixels, 0, 0) == kA);
+    assert(rt_pixels_get(pixels, 1, 0) == kA);
+    assert(rt_pixels_get(pixels, 2, 0) == kB);
+    assert(rt_pixels_get(pixels, 3, 0) == kC);
+    rt_renderer2d_end(renderer, nullptr);
+
+    rt_pixels_set(pixels, 0, 0, kA);
+    rt_pixels_set(pixels, 1, 0, kB);
+    rt_pixels_set(pixels, 2, 0, kC);
+    rt_pixels_set(pixels, 3, 0, kD);
+    rt_renderer2d_begin(renderer);
+    rt_renderer2d_draw_texture_rotated_at(renderer, texture, 1, 0, 0, 0, 0.0);
+    rt_renderer2d_flush_to_target(renderer, target);
+    assert(rt_pixels_get(pixels, 0, 0) == kA);
+    assert(rt_pixels_get(pixels, 1, 0) == kA);
+    assert(rt_pixels_get(pixels, 2, 0) == kB);
+    assert(rt_pixels_get(pixels, 3, 0) == kC);
+    rt_renderer2d_end(renderer, nullptr);
+
+    void *low_alpha_source = rt_pixels_new(2, 1);
+    assert(low_alpha_source != nullptr);
+    rt_pixels_set(low_alpha_source, 0, 0, 0xFF000001);
+    void *low_alpha_texture = rt_texture2d_new(low_alpha_source);
+    assert(low_alpha_texture != nullptr);
+    rt_texture2d_set_filter(low_alpha_texture, RT_GRAPHICS2D_FILTER_LINEAR);
+    rt_texture2d_set_wrap(low_alpha_texture, RT_GRAPHICS2D_WRAP_CLAMP);
+    rt_rendertarget2d_resize(target, 3, 1);
+    rt_rendertarget2d_clear(target, 0);
+    rt_renderer2d_begin(renderer);
+    rt_renderer2d_set_blend_mode(renderer, RT_GRAPHICS2D_BLEND_OPAQUE);
+    rt_renderer2d_draw_texture_scaled(renderer, low_alpha_texture, 0, 0, 3, 1);
+    rt_renderer2d_flush_to_target(renderer, target);
+    int64_t middle = rt_pixels_get(rt_rendertarget2d_get_pixels(target), 1, 0);
+    assert(red_of(middle) == 255);
+    assert((middle & 255) == 1);
+    rt_renderer2d_end(renderer, nullptr);
+    printf("test_sampled_self_blits_snapshot_and_low_alpha_unpremultiply: PASSED\n");
+}
+
+static void *undersized_like(void *valid_object) {
+    assert(valid_object != nullptr);
+    void *undersized = rt_obj_new_i64(rt_obj_class_id(valid_object), 1);
+    assert(undersized != nullptr);
+    return undersized;
+}
+
+static void test_extended_payload_transform_and_bulk_fill_guards() {
+    void *pixels = rt_pixels_new(4, 3);
+    assert(pixels != nullptr);
+    void *target_a = rt_rendertarget2d_new(1, 1);
+    void *target_b = rt_rendertarget2d_new(1, 1);
+    void *sprite = rt_sprite_new(pixels);
+    assert(target_a != nullptr);
+    assert(target_b != nullptr);
+    assert(sprite != nullptr);
+
+    void *material = rt_material2d_new();
+    void *transform = rt_transform2d_new();
+    void *sampler = rt_sampler2d_new();
+    void *blend = rt_blendstate2d_new();
+    void *sprite_renderer = rt_spriterenderer2d_new();
+    void *chunk_cache = rt_tilechunkcache2d_new(1, 1);
+    void *tile_renderer = rt_tilemaprenderer2d_new();
+    void *clip = rt_animationclip2d_new(0, 1, 1, 0);
+    void *animated = rt_animatedsprite2d_new(sprite);
+    void *layout = rt_textlayout2d_new();
+    void *pass = rt_renderpass2d_new(target_a, target_b);
+    void *graph = rt_rendergraph2d_new(1);
+    void *mask = rt_collisionmask2d_new(1, 1);
+    void *hitbox = rt_hitbox2d_new(0, 0, 1, 1);
+    void *palette = rt_palette2d_new();
+    void *gradient = rt_gradient2d_new(0x000000FF, 0xFFFFFFFF, 2);
+    void *rig = rt_camerarig2d_new(nullptr);
+    void *packer = rt_texturepackeratlas_new(pixels);
+    void *aseprite = rt_asepriteimporter_new();
+    void *tiled = rt_tiledmaploader_new();
+    assert(material && transform && sampler && blend && sprite_renderer && chunk_cache &&
+           tile_renderer && clip && animated && layout && pass && graph && mask && hitbox &&
+           palette && gradient && rig && packer && aseprite && tiled);
+
+    void *bad_material = undersized_like(material);
+    void *bad_transform = undersized_like(transform);
+    void *bad_sampler = undersized_like(sampler);
+    void *bad_blend = undersized_like(blend);
+    void *bad_sprite_renderer = undersized_like(sprite_renderer);
+    void *bad_chunk_cache = undersized_like(chunk_cache);
+    void *bad_tile_renderer = undersized_like(tile_renderer);
+    void *bad_clip = undersized_like(clip);
+    void *bad_animated = undersized_like(animated);
+    void *bad_layout = undersized_like(layout);
+    void *bad_pass = undersized_like(pass);
+    void *bad_graph = undersized_like(graph);
+    void *bad_mask = undersized_like(mask);
+    void *bad_hitbox = undersized_like(hitbox);
+    void *bad_palette = undersized_like(palette);
+    void *bad_gradient = undersized_like(gradient);
+    void *bad_rig = undersized_like(rig);
+    void *bad_packer = undersized_like(packer);
+    void *bad_aseprite = undersized_like(aseprite);
+    void *bad_tiled = undersized_like(tiled);
+
+    rt_material2d_set_alpha(bad_material, 1);
+    assert(rt_material2d_get_alpha(bad_material) == 255);
+    rt_transform2d_set_x(bad_transform, 1);
+    assert(rt_transform2d_get_x(bad_transform) == 0);
+    rt_sampler2d_set_filter(bad_sampler, RT_GRAPHICS2D_FILTER_LINEAR);
+    assert(rt_sampler2d_get_filter(bad_sampler) == RT_GRAPHICS2D_FILTER_NEAREST);
+    rt_blendstate2d_set_alpha(bad_blend, 1);
+    assert(rt_blendstate2d_get_alpha(bad_blend) == 255);
+    rt_spriterenderer2d_set_material(bad_sprite_renderer, material);
+    assert(rt_tilechunkcache2d_get_chunk_width(bad_chunk_cache) == 0);
+    assert(rt_tilemaprenderer2d_get_draw_count(bad_tile_renderer) == 0);
+    assert(rt_animationclip2d_get_frame_count(bad_clip) == 0);
+    assert(rt_animatedsprite2d_is_playing(bad_animated) == 0);
+    assert(rt_textlayout2d_measure_width(bad_layout, rt_str_from_lit("x", 1)) > 0);
+    rt_renderpass2d_execute(bad_pass);
+    assert(rt_rendergraph2d_get_count(bad_graph) == 0);
+    assert(rt_collisionmask2d_get(bad_mask, 0, 0) == 0);
+    assert(rt_hitbox2d_contains(bad_hitbox, 0, 0) == 0);
+    assert(rt_palette2d_get_count(bad_palette) == 0);
+    assert(rt_gradient2d_sample(bad_gradient, 50) == 0);
+    assert(rt_camerarig2d_get_render_x(bad_rig) == 0);
+    assert(rt_texturepackeratlas_get_atlas(bad_packer) == nullptr);
+    assert(rt_asepriteimporter_get_frame_width(bad_aseprite) == 0);
+    assert(rt_tiledmaploader_get_tile_width(bad_tiled) == 0);
+
+    rt_transform2d_set_origin(transform, INT64_MAX - 1, 0);
+    assert(rt_transform2d_transform_x(transform, INT64_MAX, 0) == INT64_MAX);
+    rt_transform2d_set_origin(transform, 0, 0);
+    rt_transform2d_set_rotation(transform, INT64_MAX);
+    int64_t huge_rotation_x = rt_transform2d_transform_x(transform, 1000, 200);
+    int64_t huge_rotation_y = rt_transform2d_transform_y(transform, 1000, 200);
+    rt_transform2d_set_rotation(transform, INT64_MAX % 360);
+    assert(rt_transform2d_transform_x(transform, 1000, 200) == huge_rotation_x);
+    assert(rt_transform2d_transform_y(transform, 1000, 200) == huge_rotation_y);
+
+    assert(rt_pixels_generation(pixels) == 0);
+    rt_gradient2d_fill_horizontal(gradient, pixels);
+    assert(rt_pixels_generation(pixels) == 1);
+    rt_gradient2d_fill_horizontal(gradient, pixels);
+    assert(rt_pixels_generation(pixels) == 1);
+    rt_gradient2d_fill_vertical(gradient, pixels);
+    assert(rt_pixels_generation(pixels) == 2);
+    rt_gradient2d_fill_vertical(gradient, pixels);
+    assert(rt_pixels_generation(pixels) == 2);
+
+    void *empty_palette = rt_palette2d_new();
+    void *palette_clone = rt_palette2d_apply(empty_palette, pixels);
+    assert(palette_clone != nullptr);
+    assert(rt_pixels_generation(palette_clone) == 0);
+    assert(rt_pixels_get(palette_clone, 3, 2) == rt_pixels_get(pixels, 3, 2));
+
+    void *alpha_pixels = rt_pixels_new(2, 1);
+    rt_pixels_set(alpha_pixels, 0, 0, 0x00000000);
+    rt_pixels_set(alpha_pixels, 1, 0, 0x00000001);
+    void *alpha_mask = rt_collisionmask2d_from_pixels(alpha_pixels, 0);
+    assert(alpha_mask != nullptr);
+    assert(rt_collisionmask2d_get(alpha_mask, 0, 0) == 0);
+    assert(rt_collisionmask2d_get(alpha_mask, 1, 0) == 1);
+    printf("test_extended_payload_transform_and_bulk_fill_guards: PASSED\n");
 }
 
 static void test_texture_renderer_material_and_effects() {
@@ -336,6 +576,7 @@ static void test_viewport_tiles_and_objects() {
     assert(rt_objectlayer2d_get_height(objects, 1) == 20);
     assert(rt_objectlayer2d_add_rect(objects, 0, 0, 0, 1, 7) == -1);
     assert(rt_objectlayer2d_add_rect(objects, 0, 0, INT64_MIN, 1, 7) == -1);
+    assert(rt_objectlayer2d_add_rect(objects, INT64_MIN, 0, -1, 1, 7) == -1);
     assert(rt_objectlayer2d_count(objects) == 2);
 
     void *autotile = rt_autotile2d_new();
@@ -401,10 +642,31 @@ static void test_paths_shapes_text_nineslice_and_debugdraw() {
     assert(rt_pixels_get(target, 0, 4) == 0x0000FFFF);
     assert(rt_pixels_get(target, 4, 4) == 0xFFFF00FF);
 
+    void *overlap_source = rt_pixels_new(5, 5);
+    for (int64_t py = 0; py < 5; ++py) {
+        for (int64_t px = 0; px < 5; ++px) {
+            uint32_t value =
+                (uint32_t)(((px + 1) * 31) << 24) | (uint32_t)(((py + 1) * 37) << 16) | 0x000055FFu;
+            rt_pixels_set(overlap_source, px, py, value);
+        }
+    }
+    void *overlap_expected = rt_pixels_clone(overlap_source);
+    void *overlap_slice = rt_nineslice2d_new(overlap_source, 1, 1, 1, 1);
+    rt_nineslice2d_draw_to_pixels(overlap_slice, overlap_expected, 1, 0, 4, 5);
+    rt_nineslice2d_draw_to_pixels(overlap_slice, overlap_source, 1, 0, 4, 5);
+    for (int64_t py = 0; py < 5; ++py) {
+        for (int64_t px = 0; px < 5; ++px)
+            assert(rt_pixels_get(overlap_source, px, py) ==
+                   rt_pixels_get(overlap_expected, px, py));
+    }
+
     void *debug = rt_debugdraw2d_new(1);
     rt_debugdraw2d_line(debug, 0, 2, 3, 2, 0x000000FF);
     rt_debugdraw2d_rect(debug, 1, 1, 3, 3, 0x00FFFFFF);
     rt_debugdraw2d_line(debug, 0, 4, 3, 4, rt_color_rgba(0, 255, 0, 255));
+    assert(rt_debugdraw2d_count(debug) == 3);
+    rt_debugdraw2d_rect(debug, 0, 0, 0, 3, 0x00FFFFFF);
+    rt_debugdraw2d_circle(debug, 0, 0, -1, 0x00FFFFFF);
     assert(rt_debugdraw2d_count(debug) == 3);
     rt_debugdraw2d_draw_to_pixels(debug, pixels);
     assert(rt_pixels_get(pixels, 0, 2) == 0x0000FFFF);
@@ -791,6 +1053,9 @@ int main() {
     test_graphics2d_handles_have_unique_classes_and_reject_wrong_types();
     test_render_target_alpha_blend();
     test_render_target_self_overlap_region_uses_snapshot();
+    test_core_arithmetic_payload_and_generation_guards();
+    test_sampled_self_blits_snapshot_and_low_alpha_unpremultiply();
+    test_extended_payload_transform_and_bulk_fill_guards();
     test_texture_renderer_material_and_effects();
     test_viewport_tiles_and_objects();
     test_paths_shapes_text_nineslice_and_debugdraw();

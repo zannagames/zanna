@@ -7,6 +7,14 @@
 //
 // File: src/tests/runtime/RTSceneTests.cpp
 // Purpose: Tests for Zanna.Graphics2D.SceneGraph and SceneNode.
+// Key invariants:
+//   - Parent/child ownership, traversal order, and cycle rejection are covered.
+//   - Extreme transforms and malformed handles must remain memory-safe.
+// Ownership/Lifetime:
+//   - Tests release objects explicitly when finalizer or reference behavior is
+//     part of the assertion; remaining fixtures live for the process lifetime.
+// Links: src/runtime/graphics/2d/rt_scene.c,
+//        src/runtime/graphics/2d/rt_scene.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -179,6 +187,19 @@ static void test_scene_node_rotation_inheritance() {
     printf("test_scene_node_rotation_inheritance: PASSED\n");
 }
 
+static void test_scene_node_extreme_rotation_stays_periodic() {
+    void *parent = rt_scene_node_new();
+    void *child = rt_scene_node_new();
+    rt_scene_node_set_rotation(parent, INT64_MAX);
+    rt_scene_node_set_rotation(child, 1);
+    rt_scene_node_add_child(parent, child);
+
+    assert(rt_scene_node_get_world_rotation(parent) == INT64_MAX % 360);
+    assert(rt_scene_node_get_world_rotation(child) == ((INT64_MAX % 360) + 1) % 360);
+
+    printf("test_scene_node_extreme_rotation_stays_periodic: PASSED\n");
+}
+
 static void test_scene_node_transform_overflow_saturates() {
     void *parent = rt_scene_node_new();
     void *child = rt_scene_node_new();
@@ -191,6 +212,17 @@ static void test_scene_node_transform_overflow_saturates() {
     rt_scene_node_set_scale_x(parent, INT64_MAX);
     rt_scene_node_set_scale_x(child, INT64_MAX);
     assert(rt_scene_node_get_world_scale_x(child) == INT64_MAX);
+
+    void *exact_parent = rt_scene_node_new();
+    void *exact_child = rt_scene_node_new();
+    rt_scene_node_set_scale_x(exact_parent, 1);
+    rt_scene_node_set_x(exact_child, INT64_MAX);
+    rt_scene_node_add_child(exact_parent, exact_child);
+    assert(rt_scene_node_get_world_x(exact_child) == INT64_C(92233720368547758));
+
+    rt_scene_node_set_scale_x(exact_parent, 50);
+    rt_scene_node_set_x(exact_child, -1);
+    assert(rt_scene_node_get_world_x(exact_child) == -1);
 
     printf("test_scene_node_transform_overflow_saturates: PASSED\n");
 }
@@ -229,6 +261,42 @@ static void test_scene_node_find() {
     assert(rt_scene_node_find(root, nullptr) == nullptr);
 
     printf("test_scene_node_find: PASSED\n");
+}
+
+static void test_scene_node_names_compare_complete_runtime_strings() {
+    void *root = rt_scene_node_new();
+    void *prefix_node = rt_scene_node_new();
+    void *embedded_node = rt_scene_node_new();
+    rt_string prefix = rt_string_from_bytes("enemy", 5);
+    const char embedded_bytes[] = "enemy\0boss";
+    rt_string embedded = rt_string_from_bytes(embedded_bytes, sizeof(embedded_bytes) - 1);
+    rt_scene_node_set_name(prefix_node, prefix);
+    rt_scene_node_set_name(embedded_node, embedded);
+    rt_scene_node_add_child(root, prefix_node);
+    rt_scene_node_add_child(root, embedded_node);
+
+    assert(rt_scene_node_find(root, prefix) == prefix_node);
+    assert(rt_scene_node_find(root, embedded) == embedded_node);
+
+    rt_scene_node_set_name(embedded_node, (rt_string)root);
+    assert(rt_scene_node_find(root, embedded) == embedded_node);
+
+    printf("test_scene_node_names_compare_complete_runtime_strings: PASSED\n");
+}
+
+static void test_readding_child_is_idempotent() {
+    void *parent = rt_scene_node_new();
+    void *first = rt_scene_node_new();
+    void *second = rt_scene_node_new();
+    rt_scene_node_add_child(parent, first);
+    rt_scene_node_add_child(parent, second);
+    rt_scene_node_add_child(parent, first);
+
+    assert(rt_scene_node_child_count(parent) == 2);
+    assert(rt_scene_node_get_child(parent, 0) == first);
+    assert(rt_scene_node_get_child(parent, 1) == second);
+
+    printf("test_readding_child_is_idempotent: PASSED\n");
 }
 
 static void test_scene_deep_hierarchy_iterative_traversal() {
@@ -430,11 +498,14 @@ int main() {
     test_scene_node_transform_inheritance();
     test_scene_node_scale_inheritance();
     test_scene_node_rotation_inheritance();
+    test_scene_node_extreme_rotation_stays_periodic();
     test_scene_node_transform_overflow_saturates();
 
     // SceneNode name/find
     test_scene_node_name();
     test_scene_node_find();
+    test_scene_node_names_compare_complete_runtime_strings();
+    test_readding_child_is_idempotent();
     test_scene_deep_hierarchy_iterative_traversal();
 
     // SceneNode methods

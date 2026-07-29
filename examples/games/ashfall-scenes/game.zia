@@ -51,6 +51,8 @@ bind "./assets/registry" as registry;
 bind "./assets/enemy_models" as enemy_models;
 bind "./world/pickups" as pickups;
 bind "./world/level_manager" as level_manager;
+bind "./world/levels" as levels;
+bind "./world/scene_watch" as scene_watch;
 bind "./world/objectives" as objectives;
 bind "./weapons/weapon_defs" as weapon_defs;
 bind "./weapons/targets" as targets;
@@ -71,6 +73,8 @@ bind "./meta/difficulty" as difficulty;
 bind "./meta/scoring" as scoring;
 
 class Game {
+    /// ADR 0194 editor watch: reloads the launched mission on saved edits.
+    hide sceneWatcher: scene_watch.SceneWatcher;
     // --- Core logic systems --------------------------------------------------
     hide entity.EntityReg reg;
     hide events.EventBus bus;
@@ -1776,7 +1780,18 @@ class Game {
                          " scale=" + Fmt.NumFixed(canvas.RenderScale, 3));
         }
 
+        sceneWatcher = new scene_watch.SceneWatcher();
+        if config.sceneWatchPath != "" {
+            sceneWatcher.Arm(config.sceneWatchPath);
+        }
+
         while running {
+            // Editor watch: a completed, parseable save of the launched
+            // scene re-arms the one-shot override and reloads in place.
+            if sceneWatcher.Poll() {
+                levels.setSceneOverride(config.sceneWatchPath);
+                loadCampaignLevel(currentLevel);
+            }
             var frameStartUs = 0;
             var stageStartUs = 0;
             var updateUs = 0;

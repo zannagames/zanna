@@ -34,6 +34,9 @@
 #include "rt_gui_internal.h"
 #include "rt_pixels.h"
 #include "rt_platform.h"
+#ifdef ZANNA_ENABLE_GRAPHICS
+#include "../3d/render/rt_canvas3d.h"
+#endif
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
@@ -183,6 +186,60 @@ int64_t rt_image_try_set_pixels(void *image, void *pixels, int64_t width, int64_
     if (!pixels)
         return 0;
     return rt_image_set_from_pixels_object(rt_image_checked(image), pixels, width, height) ? 1 : 0;
+}
+
+/// @brief Present one RenderTarget3D frame directly into the widget buffer.
+/// @details Borrows the image's retained RGBA8 buffer and row-copies the
+///          target's synced color mirror into it — no transient Pixels, no
+///          packing pass, no allocation on steady frame sizes. Any failure
+///          reports 0 and leaves the previous frame intact.
+/// @param image Image widget handle.
+/// @param target Runtime RenderTarget3D object.
+/// @return `1` when the frame was presented; otherwise `0`.
+int64_t rt_image_try_set_from_render_target(void *image, void *target) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_image_t *img = rt_image_checked(image);
+    if (!img || !target)
+        return 0;
+    int64_t width = rt_rendertarget3d_get_width(target);
+    int64_t height = rt_rendertarget3d_get_height(target);
+    if (width <= 0 || height <= 0 || width > INT32_MAX || height > INT32_MAX)
+        return 0;
+    uint8_t *dst = vg_image_borrow_writable_pixels(img, (int)width, (int)height);
+    if (!dst)
+        return 0;
+    if (!rt_rendertarget3d_try_read_rgba(target, dst, width, height))
+        return 0;
+    vg_image_commit_borrowed_pixels(img, (int)width, (int)height);
+    return 1;
+}
+
+/// @brief Borrow the widget's retained RGBA8 buffer for external producers.
+/// @details Embed-channel and future compositing consumers write frames
+///          straight into the widget allocation, then commit; nothing is
+///          published until rt_gui_image_commit_rgba runs.
+/// @param image Image widget handle.
+/// @param width Frame width in pixels.
+/// @param height Frame height in pixels.
+/// @return Writable buffer of width*height*4 bytes, or NULL.
+uint8_t *rt_gui_image_borrow_rgba(void *image, int64_t width, int64_t height) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_image_t *img = rt_image_checked(image);
+    if (!img || width <= 0 || height <= 0 || width > INT32_MAX || height > INT32_MAX)
+        return NULL;
+    return vg_image_borrow_writable_pixels(img, (int)width, (int)height);
+}
+
+/// @brief Commit a frame written through rt_gui_image_borrow_rgba.
+/// @param image Image widget handle.
+/// @param width Committed frame width in pixels.
+/// @param height Committed frame height in pixels.
+void rt_gui_image_commit_rgba(void *image, int64_t width, int64_t height) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_image_t *img = rt_image_checked(image);
+    if (!img || width <= 0 || height <= 0 || width > INT32_MAX || height > INT32_MAX)
+        return;
+    vg_image_commit_borrowed_pixels(img, (int)width, (int)height);
 }
 
 /// @brief Convert and atomically copy a rectangular Pixels region into an existing image.
@@ -530,6 +587,38 @@ int rt_gui_image_try_set_rgba_bytes(void *image,
     (void)rgba;
     (void)width;
     (void)height;
+    return 0;
+}
+
+/// @brief Stub: graphics disabled — no widget buffer exists to borrow.
+/// @param image Ignored Image handle.
+/// @param width Ignored frame width.
+/// @param height Ignored frame height.
+/// @return Always `NULL`.
+uint8_t *rt_gui_image_borrow_rgba(void *image, int64_t width, int64_t height) {
+    (void)image;
+    (void)width;
+    (void)height;
+    return NULL;
+}
+
+/// @brief Stub: graphics disabled — nothing to commit.
+/// @param image Ignored Image handle.
+/// @param width Ignored frame width.
+/// @param height Ignored frame height.
+void rt_gui_image_commit_rgba(void *image, int64_t width, int64_t height) {
+    (void)image;
+    (void)width;
+    (void)height;
+}
+
+/// @brief Stub: graphics disabled — render-target presentation never succeeds.
+/// @param image Ignored Image handle.
+/// @param target Ignored RenderTarget3D handle.
+/// @return Always `0`.
+int64_t rt_image_try_set_from_render_target(void *image, void *target) {
+    (void)image;
+    (void)target;
     return 0;
 }
 

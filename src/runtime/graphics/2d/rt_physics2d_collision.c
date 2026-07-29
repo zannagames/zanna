@@ -74,6 +74,7 @@ static int8_t shape_overlap(rt_body_impl *a, rt_body_impl *b, double *nx, double
 static int8_t swept_bounds_pair(
     rt_body_impl *a, rt_body_impl *b, double *nx, double *ny, double *entry);
 static void resolve_collision(rt_body_impl *a, rt_body_impl *b, double nx, double ny, double pen);
+
 /// @}
 
 /// @brief Filter, detect, record, and resolve one broad-phase candidate pair.
@@ -205,19 +206,18 @@ static int8_t circle_circle_overlap(
     double dx = b->x - a->x;
     double dy = b->y - a->y;
     double radii = a->radius + b->radius;
-    double dist_sq = dx * dx + dy * dy;
+    double dist = hypot(dx, dy);
 
-    if (dist_sq >= radii * radii)
+    if (!isfinite(dist) || dist >= radii)
         return 0;
 
-    if (dist_sq < 1e-12) {
+    if (dist == 0.0) {
         *nx = 1.0;
         *ny = 0.0;
         *pen = radii;
         return 1;
     }
 
-    double dist = sqrt(dist_sq);
     *nx = dx / dist;
     *ny = dy / dist;
     *pen = radii - dist;
@@ -248,14 +248,13 @@ static int8_t circle_aabb_overlap(
     double closest_y = cy < ry1 ? ry1 : (cy > ry2 ? ry2 : cy);
     double dx = closest_x - cx;
     double dy = closest_y - cy;
-    double dist_sq = dx * dx + dy * dy;
+    double dist = hypot(dx, dy);
     double radius = circle->radius;
 
-    if (dist_sq >= radius * radius)
+    if (!isfinite(dist) || dist >= radius)
         return 0;
 
-    if (dist_sq > 1e-12) {
-        double dist = sqrt(dist_sq);
+    if (dist > 0.0) {
         *nx = dx / dist;
         *ny = dy / dist;
         *pen = radius - dist;
@@ -344,6 +343,10 @@ static int8_t swept_axis(double a_min,
                          double rel,
                          double *entry,
                          double *exit) {
+    if (!entry || !exit || !isfinite(a_min) || !isfinite(a_max) || !isfinite(b_min) ||
+        !isfinite(b_max) || !isfinite(rel) || a_min > a_max || b_min > b_max) {
+        return 0;
+    }
     if (rel > 0.0) {
         *entry = (b_min - a_max) / rel;
         *exit = (b_max - a_min) / rel;
@@ -359,6 +362,71 @@ static int8_t swept_axis(double a_min,
         return 0;
     *entry = -INFINITY;
     *exit = INFINITY;
+    return 1;
+}
+
+/// @brief Solve the earliest entering intersection of a moving point and circle.
+/// @details Coordinates are scaled before forming the quadratic, preventing
+///          overflow and reducing cancellation. The stable `q` quadratic form
+///          preserves a small entry root when the exit root is much larger.
+/// @param px Relative point X at the start of the sweep.
+/// @param py Relative point Y at the start of the sweep.
+/// @param vx Relative X displacement across normalized time `[0, 1]`.
+/// @param vy Relative Y displacement across normalized time `[0, 1]`.
+/// @param radius Positive target-circle radius.
+/// @param entry_out Receives the earliest entering time in `[0, 1]`.
+/// @return Nonzero for an entering surface hit.
+static int8_t swept_point_circle_root(
+    double px, double py, double vx, double vy, double radius, double *entry_out) {
+    if (!entry_out || !isfinite(px) || !isfinite(py) || !isfinite(vx) || !isfinite(vy) ||
+        !isfinite(radius) || radius <= 0.0) {
+        return 0;
+    }
+    double scale = fmax(fmax(fabs(px), fabs(py)), fmax(fabs(vx), fabs(vy)));
+    scale = fmax(scale, radius);
+    if (!(scale > 0.0) || !isfinite(scale))
+        return 0;
+    px /= scale;
+    py /= scale;
+    vx /= scale;
+    vy /= scale;
+    radius /= scale;
+
+    double aa = fma(vx, vx, vy * vy);
+    double bb = 2.0 * fma(px, vx, py * vy);
+    double cc = fma(px, px, py * py) - radius * radius;
+    if (!(aa > 0.0) || !isfinite(aa) || !isfinite(bb) || !isfinite(cc) || cc < 0.0)
+        return 0;
+    if (cc == 0.0 && bb >= 0.0)
+        return 0;
+
+    double bb_sq = bb * bb;
+    double four_ac = 4.0 * aa * cc;
+    double disc = fma(bb, bb, -four_ac);
+    double disc_tolerance = 8.0 * DBL_EPSILON * fmax(bb_sq, four_ac);
+    if (disc < 0.0) {
+        if (disc < -disc_tolerance)
+            return 0;
+        disc = 0.0;
+    }
+    double root = sqrt(disc);
+    double q = -0.5 * (bb + copysign(root, bb));
+    double t0 = q != 0.0 ? q / aa : -bb / (2.0 * aa);
+    double t1 = q != 0.0 ? cc / q : t0;
+    double entry = INFINITY;
+    if (t0 >= 0.0 && t0 <= 1.0)
+        entry = t0;
+    if (t1 >= 0.0 && t1 <= 1.0 && t1 < entry)
+        entry = t1;
+    if (!isfinite(entry))
+        return 0;
+
+    /* A zero-time root while moving away is an exit, not a new impact. */
+    double hx = px + vx * entry;
+    double hy = py + vy * entry;
+    if (fma(hx, vx, hy * vy) > 8.0 * DBL_EPSILON)
+        return 0;
+    *entry_out = entry;
     return 1;
 }
 
@@ -385,16 +453,8 @@ static int8_t swept_circle_circle_pair(
     double vx = adx - bdx;
     double vy = ady - bdy;
     double radii = a->radius + b->radius;
-    double aa = vx * vx + vy * vy;
-    double bb = 2.0 * (px * vx + py * vy);
-    double cc = px * px + py * py - radii * radii;
-    if (aa < 1e-18 || !isfinite(aa) || !isfinite(bb) || !isfinite(cc) || cc < 0.0)
-        return 0;
-    double disc = bb * bb - 4.0 * aa * cc;
-    if (disc < 0.0 || !isfinite(disc))
-        return 0;
-    double t = (-bb - sqrt(disc)) / (2.0 * aa);
-    if (t < 0.0 || t > 1.0 || !isfinite(t))
+    double t = 0.0;
+    if (!swept_point_circle_root(px, py, vx, vy, radii, &t))
         return 0;
 
     double ahx = a->prev_x + adx * t;
@@ -403,8 +463,8 @@ static int8_t swept_circle_circle_pair(
     double bhy = b->prev_y + bdy * t;
     double hx = bhx - ahx;
     double hy = bhy - ahy;
-    double len = sqrt(hx * hx + hy * hy);
-    if (len < 1e-12) {
+    double len = hypot(hx, hy);
+    if (len == 0.0 || !isfinite(len)) {
         *nx = 1.0;
         *ny = 0.0;
     } else {
@@ -489,7 +549,7 @@ static int8_t swept_circle_aabb_pair(
     double rdy = rect->y - rect->prev_y;
     double rvx = cdx - rdx;
     double rvy = cdy - rdy;
-    if (fabs(rvx) < 1e-12 && fabs(rvy) < 1e-12)
+    if (rvx == 0.0 && rvy == 0.0)
         return 0;
 
     double best_entry = INFINITY;
@@ -520,7 +580,7 @@ static int8_t swept_circle_aabb_pair(
         double closest_y = hy < ry1 ? ry1 : (hy > ry2 ? ry2 : hy);
         double ddx = closest_x - hx;
         double ddy = closest_y - hy;
-        if (ddx * ddx + ddy * ddy <= circle->radius * circle->radius + 1e-9) {
+        if (hypot(ddx, ddy) <= circle->radius) {
             best_entry = entry;
             best_nx = cand_nx;
             best_ny = cand_ny;
@@ -528,25 +588,22 @@ static int8_t swept_circle_aabb_pair(
     }
 
     double corners[4][2] = {{rx1, ry1}, {rx2, ry1}, {rx1, ry2}, {rx2, ry2}};
-    double aa = rvx * rvx + rvy * rvy;
-    if (aa > 1e-18 && isfinite(aa)) {
+    if (rvx != 0.0 || rvy != 0.0) {
         for (int i = 0; i < 4; i++) {
             double px = circle->prev_x - corners[i][0];
             double py = circle->prev_y - corners[i][1];
-            double bb = 2.0 * (px * rvx + py * rvy);
-            double cc = px * px + py * py - circle->radius * circle->radius;
-            double disc = bb * bb - 4.0 * aa * cc;
-            if (disc < 0.0 || !isfinite(disc))
+            double t = 0.0;
+            if (!swept_point_circle_root(px, py, rvx, rvy, circle->radius, &t))
                 continue;
-            double t = (-bb - sqrt(disc)) / (2.0 * aa);
-            if (t < 0.0 || t > 1.0 || t >= best_entry || !isfinite(t))
+            double tie_tolerance = 16.0 * DBL_EPSILON * fmax(1.0, fmax(fabs(t), fabs(best_entry)));
+            if (t > best_entry + tie_tolerance)
                 continue;
             double hx = circle->prev_x + rvx * t;
             double hy = circle->prev_y + rvy * t;
             double nnx = corners[i][0] - hx;
             double nny = corners[i][1] - hy;
-            double len = sqrt(nnx * nnx + nny * nny);
-            if (len < 1e-12)
+            double len = hypot(nnx, nny);
+            if (len == 0.0 || !isfinite(len))
                 continue;
             best_entry = t;
             best_nx = nnx / len;
@@ -596,7 +653,7 @@ static int8_t swept_aabb_pair(
 
     double rvx = adx - bdx;
     double rvy = ady - bdy;
-    if (fabs(rvx) < 1e-12 && fabs(rvy) < 1e-12)
+    if (rvx == 0.0 && rvy == 0.0)
         return 0;
 
     double x_entry, x_exit, y_entry, y_exit;
@@ -697,74 +754,77 @@ static int8_t swept_bounds_pair(
 /// @param ny  Contact normal Y (from A toward B, magnitude 1).
 /// @param pen Penetration depth along the contact normal.
 static void resolve_collision(rt_body_impl *a, rt_body_impl *b, double nx, double ny, double pen) {
-    double rvx, rvy, vel_along_n, total_inv, correction;
-
-    /* Both static — neither body can move, skip entirely */
-    if (a->inv_mass == 0.0 && b->inv_mass == 0.0)
+    if (!a || !b || !isfinite(nx) || !isfinite(ny) || !isfinite(pen))
         return;
-    total_inv = a->inv_mass + b->inv_mass;
-    if (total_inv <= 0.0 || !isfinite(total_inv))
+    double normal_len = hypot(nx, ny);
+    if (!(normal_len > 0.0) || !isfinite(normal_len))
+        return;
+    nx /= normal_len;
+    ny /= normal_len;
+
+    double share_a = 0.0;
+    double share_b = 0.0;
+    if (!rt_physics2d_inverse_mass_shares(a->inv_mass, b->inv_mass, &share_a, &share_b))
         return;
 
     /* Relative velocity of B w.r.t. A along all axes */
-    rvx = b->vx - a->vx;
-    rvy = b->vy - a->vy;
+    double rvx = b->vx - a->vx;
+    double rvy = b->vy - a->vy;
 
     /* Project relative velocity onto the contact normal */
-    vel_along_n = rvx * nx + rvy * ny;
+    double vel_along_n = fma(rvx, nx, rvy * ny);
 
     if (vel_along_n <= 0.0 && isfinite(vel_along_n)) {
-        double e, j;
-
         /* Use the less elastic material's coefficient so a rubber ball bouncing on
          * concrete uses the concrete's zero restitution, not the ball's high one */
-        e = a->restitution < b->restitution ? a->restitution : b->restitution;
+        double e = a->restitution < b->restitution ? a->restitution : b->restitution;
 
         /* Suppress restitution for low-speed contacts so resting bodies settle
          * instead of jittering on the per-frame velocity gravity injects. */
         if (-vel_along_n < PHYSICS2D_RESTITUTION_THRESHOLD)
             e = 0.0;
 
-        /* Scalar impulse magnitude. Derivation: we want the post-collision relative
-         * velocity along n to equal -e * vel_along_n (restitution). Solving for j
-         * gives: j = -(1+e)*vel_along_n / (1/mA + 1/mB) */
-        j = -(1.0 + e) * vel_along_n / total_inv;
-
-        /* Apply the normal impulse to each body proportional to its inverse mass */
-        a->vx -= j * a->inv_mass * nx;
-        a->vy -= j * a->inv_mass * ny;
-        b->vx += j * b->inv_mass * nx;
-        b->vy += j * b->inv_mass * ny;
+        /* Work in relative-velocity space instead of first computing the scalar
+         * impulse J. J can overflow for two extremely massive bodies even though
+         * each body's mass-weighted velocity change is small and representable. */
+        double normal_delta_rel = rt_physics2d_saturating_mul(-(1.0 + e), vel_along_n);
+        a->vx = rt_physics2d_saturating_add(
+            a->vx, -rt_physics2d_saturating_mul4(normal_delta_rel, share_a, nx, 1.0));
+        a->vy = rt_physics2d_saturating_add(
+            a->vy, -rt_physics2d_saturating_mul4(normal_delta_rel, share_a, ny, 1.0));
+        b->vx = rt_physics2d_saturating_add(
+            b->vx, rt_physics2d_saturating_mul4(normal_delta_rel, share_b, nx, 1.0));
+        b->vy = rt_physics2d_saturating_add(
+            b->vy, rt_physics2d_saturating_mul4(normal_delta_rel, share_b, ny, 1.0));
 
         /* Friction impulse: computed from the post-normal-impulse relative
          * velocity in the tangent direction. */
         rvx = b->vx - a->vx;
         rvy = b->vy - a->vy;
         {
-            double vel_n_after = rvx * nx + rvy * ny;
+            double vel_n_after = fma(rvx, nx, rvy * ny);
             double tx = rvx - vel_n_after * nx;
             double ty = rvy - vel_n_after * ny;
-            double t_len = sqrt(tx * tx + ty * ty);
+            double t_len = hypot(tx, ty);
             if (t_len > 1e-9) {
-                double mu, jt, vel_along_t;
                 tx /= t_len; /* Normalise tangent */
                 ty /= t_len;
-                vel_along_t = rvx * tx + rvy * ty;
-                mu = (a->friction + b->friction) * 0.5; /* Average both surfaces */
-                jt = -vel_along_t / total_inv;
-                /* Clamp to the Coulomb friction cone. j >= 0 here (vel_along_n <= 0
-                 * above), so fabs(j) == j; using fabs keeps the cone well-formed even
-                 * if a future caller reaches this path with a negative normal impulse
-                 * (e.g. the swept-CCD entry where pen==0 but velocities are full). */
-                double jmax = fabs(j) * mu;
-                if (jt > jmax)
-                    jt = jmax;
-                else if (jt < -jmax)
-                    jt = -jmax;
-                a->vx -= jt * a->inv_mass * tx;
-                a->vy -= jt * a->inv_mass * ty;
-                b->vx += jt * b->inv_mass * tx;
-                b->vy += jt * b->inv_mass * ty;
+                double vel_along_t = fma(rvx, tx, rvy * ty);
+                double mu = (a->friction + b->friction) * 0.5;
+                double friction_delta_rel = -vel_along_t;
+                double max_friction_delta = rt_physics2d_saturating_mul(normal_delta_rel, mu);
+                if (friction_delta_rel > max_friction_delta)
+                    friction_delta_rel = max_friction_delta;
+                else if (friction_delta_rel < -max_friction_delta)
+                    friction_delta_rel = -max_friction_delta;
+                a->vx = rt_physics2d_saturating_add(
+                    a->vx, -rt_physics2d_saturating_mul4(friction_delta_rel, share_a, tx, 1.0));
+                a->vy = rt_physics2d_saturating_add(
+                    a->vy, -rt_physics2d_saturating_mul4(friction_delta_rel, share_a, ty, 1.0));
+                b->vx = rt_physics2d_saturating_add(
+                    b->vx, rt_physics2d_saturating_mul4(friction_delta_rel, share_b, tx, 1.0));
+                b->vy = rt_physics2d_saturating_add(
+                    b->vy, rt_physics2d_saturating_mul4(friction_delta_rel, share_b, ty, 1.0));
             }
         }
     }
@@ -774,12 +834,14 @@ static void resolve_collision(rt_body_impl *a, rt_body_impl *b, double nx, doubl
      * each other. A small slop is tolerated before correcting to avoid
      * jittering on resting contacts. The correction factor spreads the correction
      * over several frames rather than snapping immediately (prevents bouncing). */
-    {
-        correction = (pen - PHYSICS2D_CONTACT_SLOP > 0.0 ? pen - PHYSICS2D_CONTACT_SLOP : 0.0) *
-                     PHYSICS2D_CONTACT_CORRECTION_PERCENT / total_inv;
-        a->x -= correction * a->inv_mass * nx;
-        a->y -= correction * a->inv_mass * ny;
-        b->x += correction * b->inv_mass * nx;
-        b->y += correction * b->inv_mass * ny;
-    }
+    double correction = (pen > PHYSICS2D_CONTACT_SLOP ? pen - PHYSICS2D_CONTACT_SLOP : 0.0) *
+                        PHYSICS2D_CONTACT_CORRECTION_PERCENT;
+    a->x = rt_physics2d_saturating_add(a->x,
+                                       -rt_physics2d_saturating_mul4(correction, share_a, nx, 1.0));
+    a->y = rt_physics2d_saturating_add(a->y,
+                                       -rt_physics2d_saturating_mul4(correction, share_a, ny, 1.0));
+    b->x = rt_physics2d_saturating_add(b->x,
+                                       rt_physics2d_saturating_mul4(correction, share_b, nx, 1.0));
+    b->y = rt_physics2d_saturating_add(b->y,
+                                       rt_physics2d_saturating_mul4(correction, share_b, ny, 1.0));
 }

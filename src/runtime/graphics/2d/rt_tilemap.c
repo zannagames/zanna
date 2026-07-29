@@ -76,34 +76,13 @@
 static int64_t tilemap_floor_div(int64_t value, int64_t divisor) {
     if (divisor == 0)
         return 0;
+    if (value == INT64_MIN && divisor == -1)
+        return INT64_MAX;
     int64_t quot = value / divisor;
     int64_t rem = value % divisor;
     if (rem != 0 && ((rem < 0) != (divisor < 0)))
         quot--;
     return quot;
-}
-
-/// @brief Convert a double to int64_t with saturation, writing the result to *out.
-/// @details Handles NaN/infinity (returns 0) and values at or beyond the int64_t bounds
-///          (saturates to INT64_MAX / INT64_MIN). Used to convert floating-point camera
-///          scroll positions to tile coordinates without undefined-behavior casts.
-/// @param value Floating-point value to truncate toward zero after range handling.
-/// @param out Required destination for the converted integer.
-/// @return 1 on success (finite value in range or saturated); 0 if `out` is NULL or value is
-/// non-finite.
-static int8_t tilemap_double_to_i64_sat(double value, int64_t *out) {
-    if (!out || !isfinite(value))
-        return 0;
-    if (value >= (double)INT64_MAX) {
-        *out = INT64_MAX;
-        return 1;
-    }
-    if (value <= (double)INT64_MIN) {
-        *out = INT64_MIN;
-        return 1;
-    }
-    *out = (int64_t)value;
-    return 1;
 }
 
 /// @brief Validate tilemap dimensions and compute allocation sizes without overflow.
@@ -152,7 +131,16 @@ static rt_tilemap_impl *tilemap_checked(void *tilemap_ptr, const char *trap_mess
     }
     if (!rt_obj_is_instance(tilemap_ptr, RT_TILEMAP_CLASS_ID, sizeof(rt_tilemap_impl)))
         return NULL;
-    return (rt_tilemap_impl *)tilemap_ptr;
+    rt_tilemap_impl *tilemap = (rt_tilemap_impl *)tilemap_ptr;
+    if (tilemap->width <= 0 || tilemap->height <= 0 || tilemap->tile_width <= 0 ||
+        tilemap->tile_height <= 0 || tilemap->source_frame_width <= 0 ||
+        tilemap->source_frame_height <= 0 || !tilemap->tiles || tilemap->layer_count < 1 ||
+        tilemap->layer_count > TM_MAX_LAYERS || tilemap->collision_layer < 0 ||
+        tilemap->collision_layer >= tilemap->layer_count || tilemap->tile_anim_count < 0 ||
+        tilemap->tile_anim_count > TM_MAX_TILE_ANIMS || tilemap->autotile_count < 0 ||
+        tilemap->autotile_count > MAX_AUTOTILE_RULES)
+        return NULL;
+    return tilemap;
 }
 
 /// @brief Resolve a tile id to its current animation frame, given an already-validated impl.
@@ -165,11 +153,13 @@ static rt_tilemap_impl *tilemap_checked(void *tilemap_ptr, const char *trap_mess
 /// @param tile_id Base tile identifier to resolve.
 /// @return Current animation frame tile when configured, otherwise @p tile_id.
 static inline int64_t tilemap_resolve_anim_tile_fast(rt_tilemap_impl *tm, int64_t tile_id) {
-    if (!tm || tm->tile_anim_count == 0)
+    if (!tm || tm->tile_anim_count <= 0 || tm->tile_anim_count > TM_MAX_TILE_ANIMS)
         return tile_id;
     for (int32_t i = 0; i < tm->tile_anim_count; i++) {
-        if (tm->tile_anims[i].base_tile_id == tile_id)
-            return tm->tile_anims[i].frame_tiles[tm->tile_anims[i].current_frame];
+        tm_tile_anim *anim = &tm->tile_anims[i];
+        if (anim->base_tile_id == tile_id && anim->frame_tiles && anim->frame_count > 0 &&
+            anim->current_frame >= 0 && anim->current_frame < anim->frame_count)
+            return anim->frame_tiles[anim->current_frame];
     }
     return tile_id;
 }
@@ -250,13 +240,61 @@ static int64_t tilemap_mul_saturating(int64_t a, int64_t b) {
 }
 
 /// @brief Scale a positive dimension by an integer percentage with saturation.
+/// @details Decomposes the percentage into quotient/remainder terms so the
+///          exact divide-by-100 occurs before any potentially overflowing
+///          addition. This avoids the severe under-scaling caused by
+///          saturating `dim * scale_percent` before dividing.
 /// @param dim Source dimension.
 /// @param scale_percent Scale percentage.
 /// @return Truncated scaled dimension, clamped to at least one.
 static int64_t tilemap_scale_dimension(int64_t dim, int64_t scale_percent) {
-    int64_t scaled = tilemap_mul_saturating(dim, scale_percent);
-    scaled /= 100;
-    return scaled <= 0 ? 1 : scaled;
+    if (dim <= 0 || scale_percent <= 0)
+        return 1;
+    uint64_t udim = (uint64_t)dim;
+    uint64_t uscale = (uint64_t)scale_percent;
+    uint64_t scale_quotient = uscale / 100u;
+    uint64_t scale_remainder = uscale % 100u;
+    uint64_t limit = (uint64_t)INT64_MAX;
+    if (scale_quotient != 0 && udim > limit / scale_quotient)
+        return INT64_MAX;
+    uint64_t result = udim * scale_quotient;
+    uint64_t remainder_term =
+        (udim / 100u) * scale_remainder + ((udim % 100u) * scale_remainder) / 100u;
+    if (remainder_term > limit - result)
+        return INT64_MAX;
+    result += remainder_term;
+    return result == 0 ? 1 : (int64_t)result;
+}
+
+/// @brief Validate a layer name from a length-bearing runtime string.
+/// @details Null names map to the empty name. Nonnull names must fit the
+///          fixed slot and cannot contain embedded NUL bytes.
+static int8_t tilemap_runtime_layer_name(rt_string name,
+                                         const char **bytes_out,
+                                         size_t *length_out) {
+    if (!bytes_out || !length_out)
+        return 0;
+    if (!name) {
+        *bytes_out = "";
+        *length_out = 0;
+        return 1;
+    }
+    int64_t raw_length = rt_str_len(name);
+    if (raw_length < 0 || raw_length >= (int64_t)sizeof(((tm_layer *)0)->name))
+        return 0;
+    const char *bytes = rt_string_cstr(name);
+    size_t length = (size_t)raw_length;
+    if (!bytes || memchr(bytes, '\0', length) != NULL)
+        return 0;
+    *bytes_out = bytes;
+    *length_out = length;
+    return 1;
+}
+
+/// @brief Return the bounded byte length of a stored layer name.
+static size_t tilemap_stored_layer_name_length(const char name[32]) {
+    const char *terminator = (const char *)memchr(name, '\0', 32);
+    return terminator ? (size_t)(terminator - name) : 32u;
 }
 
 /// @brief Round a floating-point value to nearest with half ties away from zero.
@@ -472,11 +510,13 @@ static void tilemap_inverse_project_source(const rt_tilemap_impl *tilemap,
 }
 
 /// @brief Floor a double and saturate it to `int64_t`.
-/// @param value Value to floor; infinities saturate by sign.
+/// @param value Value to floor; NaN maps to zero and infinities saturate by sign.
 /// @return Floored and saturated integer.
 static int64_t tilemap_floor_double_saturating(double value) {
-    if (!isfinite(value))
-        return value < 0.0 ? INT64_MIN : INT64_MAX;
+    if (isnan(value))
+        return 0;
+    if (isinf(value))
+        return signbit(value) ? INT64_MIN : INT64_MAX;
     value = floor(value);
     if (value <= (double)INT64_MIN)
         return INT64_MIN;
@@ -486,11 +526,13 @@ static int64_t tilemap_floor_double_saturating(double value) {
 }
 
 /// @brief Ceil a double and saturate it to `int64_t`.
-/// @param value Value to ceil; infinities saturate by sign.
+/// @param value Value to ceil; NaN maps to zero and infinities saturate by sign.
 /// @return Ceiled and saturated integer.
 static int64_t tilemap_ceil_double_saturating(double value) {
-    if (!isfinite(value))
-        return value < 0.0 ? INT64_MIN : INT64_MAX;
+    if (isnan(value))
+        return 0;
+    if (isinf(value))
+        return signbit(value) ? INT64_MIN : INT64_MAX;
     value = ceil(value);
     if (value <= (double)INT64_MIN)
         return INT64_MIN;
@@ -501,9 +543,9 @@ static int64_t tilemap_ceil_double_saturating(double value) {
 
 /// @brief Diagonal neighbor choices used by staggered diamond corner tests.
 enum tilemap_stagger_neighbor {
-    TILEMAP_NEIGHBOR_TOP_LEFT = 0,    ///< Diagonal cell above and to the left.
-    TILEMAP_NEIGHBOR_TOP_RIGHT = 1,   ///< Diagonal cell above and to the right.
-    TILEMAP_NEIGHBOR_BOTTOM_LEFT = 2, ///< Diagonal cell below and to the left.
+    TILEMAP_NEIGHBOR_TOP_LEFT = 0,     ///< Diagonal cell above and to the left.
+    TILEMAP_NEIGHBOR_TOP_RIGHT = 1,    ///< Diagonal cell above and to the right.
+    TILEMAP_NEIGHBOR_BOTTOM_LEFT = 2,  ///< Diagonal cell below and to the left.
     TILEMAP_NEIGHBOR_BOTTOM_RIGHT = 3, ///< Diagonal cell below and to the right.
 };
 
@@ -555,11 +597,21 @@ static void tilemap_projected_pixel_to_cell(const rt_tilemap_impl *tilemap,
                                             int64_t *tile_y) {
     if (!tilemap || !tile_x || !tile_y)
         return;
+    if (!isfinite(pixel_x) || !isfinite(pixel_y)) {
+        *tile_x = 0;
+        *tile_y = 0;
+        return;
+    }
     if (tilemap->import_orientation != RT_TILEMAP_IMPORT_STAGGERED &&
         tilemap->import_orientation != RT_TILEMAP_IMPORT_HEXAGONAL) {
         double projected_x = 0.0;
         double projected_y = 0.0;
         tilemap_inverse_project_source(tilemap, pixel_x, pixel_y, &projected_x, &projected_y);
+        if (!isfinite(projected_x) || !isfinite(projected_y)) {
+            *tile_x = 0;
+            *tile_y = 0;
+            return;
+        }
         *tile_x = tilemap_floor_double_saturating(projected_x);
         *tile_y = tilemap_floor_double_saturating(projected_y);
         return;
@@ -758,6 +810,8 @@ static int32_t tilemap_visible_import_region(rt_tilemap_impl *tilemap,
             double tile_x = 0.0;
             double tile_y = 0.0;
             tilemap_inverse_project_source(tilemap, screen_x[x], screen_y[y], &tile_x, &tile_y);
+            if (!isfinite(tile_x) || !isfinite(tile_y))
+                return 0;
             minimum_x = fmin(minimum_x, tile_x);
             minimum_y = fmin(minimum_y, tile_y);
             maximum_x = fmax(maximum_x, tile_x);
@@ -829,6 +883,8 @@ static int32_t tilemap_visible_import_region_scaled(rt_tilemap_impl *tilemap,
             double tile_x = 0.0;
             double tile_y = 0.0;
             tilemap_inverse_project_source(tilemap, screen_x[x], screen_y[y], &tile_x, &tile_y);
+            if (!isfinite(tile_x) || !isfinite(tile_y))
+                return 0;
             minimum_x = fmin(minimum_x, tile_x);
             minimum_y = fmin(minimum_y, tile_y);
             maximum_x = fmax(maximum_x, tile_x);
@@ -1150,10 +1206,12 @@ int8_t rt_tilemap_configure_import_layout(void *tilemap_ptr,
     int64_t hex_axis = stagger_axis == 0 ? tilemap->tile_width : tilemap->tile_height;
     if (orientation == RT_TILEMAP_IMPORT_HEXAGONAL && hex_side_length > hex_axis)
         return 0;
-    if (orientation == RT_TILEMAP_IMPORT_OBLIQUE &&
-        fabs(1.0 - (skew_x / (double)tilemap->tile_height) *
-                       (skew_y / (double)tilemap->tile_width)) < 1.0e-12)
-        return 0;
+    if (orientation == RT_TILEMAP_IMPORT_OBLIQUE) {
+        double determinant =
+            1.0 - (skew_x / (double)tilemap->tile_height) * (skew_y / (double)tilemap->tile_width);
+        if (!isfinite(determinant) || fabs(determinant) < 1.0e-12)
+            return 0;
+    }
     tilemap->import_orientation = (int32_t)orientation;
     tilemap->import_origin_tile_x = origin_tile_x;
     tilemap->import_origin_tile_y = origin_tile_y;
@@ -1204,7 +1262,9 @@ int8_t rt_tilemap_configure_import_layer(void *tilemap_ptr,
 /// @return `1` when stored for the base map/layer, otherwise `0`.
 int8_t rt_tilemap_set_import_tile_count(void *tilemap_ptr, int64_t tile_count) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
-    if (!tilemap || tile_count <= 0 || tile_count > tilemap->tileset_cols * tilemap->tileset_rows)
+    if (!tilemap || tile_count <= 0 || tilemap->tileset_cols <= 0 || tilemap->tileset_rows <= 0 ||
+        tilemap->tileset_rows > INT64_MAX / tilemap->tileset_cols ||
+        tile_count > tilemap->tileset_cols * tilemap->tileset_rows)
         return 0;
     tilemap->tile_count = tile_count;
     tilemap->layers[0].tile_count = tile_count;
@@ -1238,27 +1298,22 @@ void rt_tilemap_set_tileset(void *tilemap_ptr, void *pixels) {
     if (!cloned)
         return;
 
-    if (tilemap->tileset)
-        rt_heap_release(tilemap->tileset);
-
-    tilemap->tileset = cloned;
-
-    // Calculate tileset dimensions
     int64_t ts_width = rt_pixels_width(cloned);
     int64_t ts_height = rt_pixels_height(cloned);
-
-    tilemap->tileset_cols = ts_width / tilemap->source_frame_width;
-    tilemap->tileset_rows = ts_height / tilemap->source_frame_height;
-    if (tilemap->tileset_cols > 0 && tilemap->tileset_rows > INT64_MAX / tilemap->tileset_cols) {
-        tilemap->tileset_cols = 0;
-        tilemap->tileset_rows = 0;
-        tilemap->tile_count = 0;
-        tilemap->layers[0].tileset_cols = 0;
-        tilemap->layers[0].tileset_rows = 0;
-        tilemap->layers[0].tile_count = 0;
+    int64_t columns = ts_width / tilemap->source_frame_width;
+    int64_t rows = ts_height / tilemap->source_frame_height;
+    if (columns > 0 && rows > INT64_MAX / columns) {
+        rt_heap_release(cloned);
         return;
     }
-    tilemap->tile_count = tilemap->tileset_cols * tilemap->tileset_rows;
+    int64_t tile_count = columns * rows;
+
+    if (tilemap->tileset)
+        rt_heap_release(tilemap->tileset);
+    tilemap->tileset = cloned;
+    tilemap->tileset_cols = columns;
+    tilemap->tileset_rows = rows;
+    tilemap->tile_count = tile_count;
 
     // Sync layer 0 tileset info
     tilemap->layers[0].tileset_cols = tilemap->tileset_cols;
@@ -1880,27 +1935,27 @@ static void tilemap_scaled_cache_release(tilemap_scaled_tile_cache_entry *entrie
 
 /// @brief Shared state for scaled-cell callbacks during one layer traversal.
 typedef struct {
-    rt_tilemap_impl *tilemap; ///< Borrowed map being rendered.
-    void *canvas;             ///< Borrowed destination Canvas.
-    tm_layer *layer;          ///< Borrowed layer traversed by the callback.
-    void *tileset;            ///< Borrowed Pixels source for this layer.
-    int64_t tileset_cols;     ///< Number of source frames per tileset row.
-    int64_t tile_count;       ///< Number of complete source frames.
-    int64_t source_width;     ///< Unscaled source frame width.
-    int64_t source_height;    ///< Unscaled source frame height.
-    int64_t destination_width; ///< Scaled source-frame draw width.
-    int64_t destination_height; ///< Scaled source-frame draw height.
-    int64_t logical_destination_width; ///< Scaled logical cell width.
-    int64_t logical_destination_height; ///< Scaled logical cell height.
-    int64_t camera_x;         ///< Destination-pixel camera X.
-    int64_t camera_y;         ///< Destination-pixel camera Y.
-    double map_scale;         ///< Positive editor zoom multiplier.
-    double layer_offset_x;    ///< Effective scaled destination X offset.
-    double layer_offset_y;    ///< Effective scaled destination Y offset.
-    int default_layout;       ///< Nonzero for direct logical-grid placement.
+    rt_tilemap_impl *tilemap;                ///< Borrowed map being rendered.
+    void *canvas;                            ///< Borrowed destination Canvas.
+    tm_layer *layer;                         ///< Borrowed layer traversed by the callback.
+    void *tileset;                           ///< Borrowed Pixels source for this layer.
+    int64_t tileset_cols;                    ///< Number of source frames per tileset row.
+    int64_t tile_count;                      ///< Number of complete source frames.
+    int64_t source_width;                    ///< Unscaled source frame width.
+    int64_t source_height;                   ///< Unscaled source frame height.
+    int64_t destination_width;               ///< Scaled source-frame draw width.
+    int64_t destination_height;              ///< Scaled source-frame draw height.
+    int64_t logical_destination_width;       ///< Scaled logical cell width.
+    int64_t logical_destination_height;      ///< Scaled logical cell height.
+    int64_t camera_x;                        ///< Destination-pixel camera X.
+    int64_t camera_y;                        ///< Destination-pixel camera Y.
+    double map_scale;                        ///< Positive editor zoom multiplier.
+    double layer_offset_x;                   ///< Effective scaled destination X offset.
+    double layer_offset_y;                   ///< Effective scaled destination Y offset.
+    int default_layout;                      ///< Nonzero for direct logical-grid placement.
     tilemap_scaled_tile_cache_entry **cache; ///< Shared cache allocation address.
-    size_t *cache_count;      ///< Shared occupied-entry count.
-    size_t *cache_capacity;   ///< Shared hash-slot capacity.
+    size_t *cache_count;                     ///< Shared occupied-entry count.
+    size_t *cache_capacity;                  ///< Shared hash-slot capacity.
 } tilemap_scaled_draw_context;
 
 /// @brief Scale and draw one source-frame cell at its projected zoomed position.
@@ -1918,6 +1973,7 @@ static void tilemap_draw_scaled_cell(int64_t tile_x, int64_t tile_y, void *opaqu
 
     void *scaled = tilemap_scaled_cache_find(
         *context->cache, *context->cache_capacity, context->tileset, tile_index);
+    int release_after_draw = 0;
     if (!scaled) {
         int64_t source_index = tile_index - 1;
         int64_t source_x =
@@ -1943,8 +1999,7 @@ static void tilemap_draw_scaled_cell(int64_t tile_x, int64_t tile_y, void *opaqu
                                                    context->tileset,
                                                    tile_index,
                                                    scaled)) {
-            tilemap_release_temp(scaled);
-            scaled = NULL;
+            release_after_draw = 1;
         }
     }
     if (!scaled)
@@ -1967,6 +2022,8 @@ static void tilemap_draw_scaled_cell(int64_t tile_x, int64_t tile_y, void *opaqu
                                                       context->layer_offset_y);
     }
     rt_canvas_blit(context->canvas, screen_x, screen_y, scaled);
+    if (release_after_draw)
+        tilemap_release_temp(scaled);
 }
 
 /// @brief Draw the tilemap using scaled destination tile cells.
@@ -2270,11 +2327,14 @@ void *rt_tilemap_hit_test_scaled(void *tilemap_ptr,
                                  int64_t offset_y,
                                  int64_t scale_percent) {
     void *result = rt_map_new();
+    if (!result)
+        return NULL;
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     int64_t tx = 0;
     int64_t ty = 0;
     int8_t in_bounds = 0;
     int64_t tile = 0;
+    int8_t coordinate_valid = 0;
     if (tilemap && scale_percent > 0) {
         tm_layer *base_layer = &tilemap->layers[0];
         if (tilemap_layer_uses_default_layout(tilemap, base_layer)) {
@@ -2282,6 +2342,7 @@ void *rt_tilemap_hit_test_scaled(void *tilemap_ptr,
             int64_t dst_h = tilemap_scale_dimension(tilemap->tile_height, scale_percent);
             tx = tilemap_floor_div(tilemap_sub_saturating(screen_x, offset_x), dst_w);
             ty = tilemap_floor_div(tilemap_sub_saturating(screen_y, offset_y), dst_h);
+            coordinate_valid = 1;
         } else {
             double map_scale = (double)scale_percent / 100.0;
             double layer_offset_x = 0.0;
@@ -2295,9 +2356,15 @@ void *rt_tilemap_hit_test_scaled(void *tilemap_ptr,
                                                   &layer_offset_y);
             double projected_x = ((double)screen_x - layer_offset_x) / map_scale;
             double projected_y = ((double)screen_y - layer_offset_y) / map_scale;
-            tilemap_projected_pixel_to_cell(tilemap, projected_x, projected_y, &tx, &ty);
+            if (isfinite(projected_x) && isfinite(projected_y)) {
+                tilemap_projected_pixel_to_cell(tilemap, projected_x, projected_y, &tx, &ty);
+                coordinate_valid = 1;
+            }
         }
-        in_bounds = (tx >= 0 && ty >= 0 && tx < tilemap->width && ty < tilemap->height) ? 1 : 0;
+        in_bounds =
+            coordinate_valid && tx >= 0 && ty >= 0 && tx < tilemap->width && ty < tilemap->height
+                ? 1
+                : 0;
         if (in_bounds)
             tile = rt_tilemap_get_tile(tilemap_ptr, tx, ty);
     }
@@ -2524,6 +2591,8 @@ int8_t rt_tilemap_collide_body(void *tilemap_ptr, void *body_ptr) {
     double bvx = rt_physics2d_body_vx(body_ptr);
     double bvy = rt_physics2d_body_vy(body_ptr);
     double prev_by = rt_physics2d_body_prev_y(body_ptr);
+    if (!isfinite(bx) || !isfinite(by) || !isfinite(bw) || !isfinite(bh) || bw <= 0.0 || bh <= 0.0)
+        return 0;
     if (!isfinite(bvx))
         bvx = 0.0;
     if (!isfinite(bvy))
@@ -2531,25 +2600,18 @@ int8_t rt_tilemap_collide_body(void *tilemap_ptr, void *body_ptr) {
     if (!isfinite(prev_by))
         prev_by = by;
 
-    if (bw <= 0.0 || bh <= 0.0)
-        return 0;
-
     for (int pass = 0; pass < 4; pass++) {
-        double right_d = bx + bw - 1.0;
-        double bottom_d = by + bh - 1.0;
-        int64_t bx_i = 0;
-        int64_t by_i = 0;
-        int64_t right_i = 0;
-        int64_t bottom_i = 0;
-        if (!tilemap_double_to_i64_sat(bx, &bx_i) || !tilemap_double_to_i64_sat(by, &by_i) ||
-            !tilemap_double_to_i64_sat(right_d, &right_i) ||
-            !tilemap_double_to_i64_sat(bottom_d, &bottom_i))
+        double right_edge = bx + bw;
+        double bottom_edge = by + bh;
+        if (!isfinite(right_edge) || !isfinite(bottom_edge))
             break;
 
-        int64_t left = tilemap_floor_div(bx_i, tw);
-        int64_t right = tilemap_floor_div(right_i, tw);
-        int64_t top = tilemap_floor_div(by_i, th);
-        int64_t bottom = tilemap_floor_div(bottom_i, th);
+        double right_sample = nextafter(right_edge, -INFINITY);
+        double bottom_sample = nextafter(bottom_edge, -INFINITY);
+        int64_t left = tilemap_floor_double_saturating(bx / (double)tw);
+        int64_t right = tilemap_floor_double_saturating(right_sample / (double)tw);
+        int64_t top = tilemap_floor_double_saturating(by / (double)th);
+        int64_t bottom = tilemap_floor_double_saturating(bottom_sample / (double)th);
 
         if (left < 0)
             left = 0;
@@ -2566,7 +2628,7 @@ int8_t rt_tilemap_collide_body(void *tilemap_ptr, void *body_ptr) {
         for (int64_t ty = top; ty <= bottom; ty++) {
             for (int64_t tx = left; tx <= right; tx++) {
                 int64_t tile_id = coll_tiles[ty * tilemap->width + tx];
-                if (tile_id < 0 || tile_id >= MAX_TILE_COLLISION_IDS)
+                if (tile_id <= 0 || tile_id >= MAX_TILE_COLLISION_IDS)
                     continue;
                 int8_t ctype = tilemap->collision[tile_id];
                 if (ctype == TILE_COLLISION_NONE)
@@ -2654,17 +2716,10 @@ int64_t rt_tilemap_add_layer(void *tilemap_ptr, rt_string name) {
     }
 
     int32_t idx = tilemap->layer_count;
-    char layer_name[sizeof(tilemap->layers[0].name)];
-    memset(layer_name, 0, sizeof(layer_name));
-    if (name) {
-        const char *cstr = rt_string_cstr(name);
-        if (cstr) {
-            size_t len = strlen(cstr);
-            if (len >= sizeof(layer_name))
-                return -1;
-            memcpy(layer_name, cstr, len);
-        }
-    }
+    const char *name_bytes = NULL;
+    size_t name_length = 0;
+    if (!tilemap_runtime_layer_name(name, &name_bytes, &name_length))
+        return -1;
 
     int64_t *grid = (int64_t *)malloc(grid_size);
     if (!grid)
@@ -2672,6 +2727,7 @@ int64_t rt_tilemap_add_layer(void *tilemap_ptr, rt_string name) {
     memset(grid, 0, grid_size);
 
     tm_layer *layer = &tilemap->layers[idx];
+    memset(layer, 0, sizeof(*layer));
     layer->tiles = grid;
     layer->tileset = NULL;
     layer->tileset_cols = 0;
@@ -2682,7 +2738,8 @@ int64_t rt_tilemap_add_layer(void *tilemap_ptr, rt_string name) {
     layer->import_parallax_x = 1.0;
     layer->import_parallax_y = 1.0;
 
-    memcpy(layer->name, layer_name, sizeof(layer->name));
+    memcpy(layer->name, name_bytes, name_length);
+    layer->name[name_length] = '\0';
 
     tilemap->layer_count = idx + 1;
     return (int64_t)idx;
@@ -2704,12 +2761,15 @@ int64_t rt_tilemap_get_layer_by_name(void *tilemap_ptr, rt_string name) {
     rt_tilemap_impl *tilemap = tilemap_checked(tilemap_ptr, NULL);
     if (!tilemap || !name)
         return -1;
-    const char *cstr = rt_string_cstr(name);
-    if (!cstr)
+    const char *name_bytes = NULL;
+    size_t name_length = 0;
+    if (!tilemap_runtime_layer_name(name, &name_bytes, &name_length))
         return -1;
 
     for (int32_t i = 0; i < tilemap->layer_count; i++) {
-        if (strcmp(tilemap->layers[i].name, cstr) == 0)
+        size_t stored_length = tilemap_stored_layer_name_length(tilemap->layers[i].name);
+        if (stored_length == name_length &&
+            memcmp(tilemap->layers[i].name, name_bytes, name_length) == 0)
             return (int64_t)i;
     }
     return -1;
@@ -2899,17 +2959,22 @@ void rt_tilemap_set_layer_tileset(void *tilemap_ptr, int64_t layer, void *pixels
     if (!cloned)
         return;
 
-    if (lyr->tileset)
-        rt_heap_release(lyr->tileset);
-
-    lyr->tileset = cloned;
-
     int64_t ts_width = rt_pixels_width(cloned);
     int64_t ts_height = rt_pixels_height(cloned);
+    int64_t columns = ts_width / tilemap->source_frame_width;
+    int64_t rows = ts_height / tilemap->source_frame_height;
+    if (columns > 0 && rows > INT64_MAX / columns) {
+        rt_heap_release(cloned);
+        return;
+    }
+    int64_t tile_count = columns * rows;
 
-    lyr->tileset_cols = ts_width / tilemap->source_frame_width;
-    lyr->tileset_rows = ts_height / tilemap->source_frame_height;
-    lyr->tile_count = lyr->tileset_cols * lyr->tileset_rows;
+    if (lyr->tileset)
+        rt_heap_release(lyr->tileset);
+    lyr->tileset = cloned;
+    lyr->tileset_cols = columns;
+    lyr->tileset_rows = rows;
+    lyr->tile_count = tile_count;
 }
 
 //=============================================================================
@@ -3109,10 +3174,12 @@ void rt_tilemap_set_tile_anim(void *tilemap_ptr,
     rt_tilemap_impl *tm = tilemap_checked(tilemap_ptr, NULL);
     if (!tm)
         return;
+    if (frame_count - 1 > INT64_MAX - base_tile_id)
+        return;
     int64_t frames[TM_MAX_ANIM_FRAMES];
     int64_t durations[TM_MAX_ANIM_FRAMES];
     for (int64_t i = 0; i < frame_count; ++i) {
-        frames[i] = base_tile_id > INT64_MAX - i ? INT64_MAX : base_tile_id + i;
+        frames[i] = base_tile_id + i;
         durations[i] = ms_per_frame;
     }
     (void)tilemap_assign_anim(tm, base_tile_id, frame_count, frames, durations, ms_per_frame);
@@ -3136,7 +3203,7 @@ void rt_tilemap_set_tile_anim_frame(void *tilemap_ptr,
         return;
     for (int32_t i = 0; i < tm->tile_anim_count; i++) {
         if (tm->tile_anims[i].base_tile_id == base_tile_id) {
-            if (frame_idx >= 0 && frame_idx < tm->tile_anims[i].frame_count)
+            if (frame_idx >= 0 && frame_idx < tm->tile_anims[i].frame_count && tile_id > 0)
                 tm->tile_anims[i].frame_tiles[frame_idx] = tile_id;
             return;
         }
@@ -3174,7 +3241,8 @@ void rt_tilemap_update_anims(void *tilemap_ptr, int64_t dt_ms) {
         return;
     for (int32_t i = 0; i < tm->tile_anim_count; i++) {
         tm_tile_anim *anim = &tm->tile_anims[i];
-        if (!anim->frame_tiles || !anim->frame_durations || anim->frame_count <= 0)
+        if (!anim->frame_tiles || !anim->frame_durations || anim->frame_count <= 0 ||
+            anim->current_frame < 0 || anim->current_frame >= anim->frame_count || anim->timer < 0)
             continue;
         int64_t current_duration = anim->frame_durations[anim->current_frame];
         if (current_duration <= 0)
@@ -3230,8 +3298,10 @@ int64_t rt_tilemap_resolve_anim_tile(void *tilemap_ptr, int64_t tile_id) {
     if (!tm)
         return tile_id;
     for (int32_t i = 0; i < tm->tile_anim_count; i++) {
-        if (tm->tile_anims[i].base_tile_id == tile_id)
-            return tm->tile_anims[i].frame_tiles[tm->tile_anims[i].current_frame];
+        tm_tile_anim *anim = &tm->tile_anims[i];
+        if (anim->base_tile_id == tile_id && anim->frame_tiles && anim->frame_count > 0 &&
+            anim->current_frame >= 0 && anim->current_frame < anim->frame_count)
+            return anim->frame_tiles[anim->current_frame];
     }
     return tile_id;
 }

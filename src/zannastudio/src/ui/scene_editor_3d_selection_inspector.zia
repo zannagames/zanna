@@ -42,6 +42,7 @@ bind "scene_light_3d";
 bind "scene_material_inspector_3d";
 bind "scene_material_3d";
 bind "scene_metadata_inspector_3d";
+bind "scene_settings_inspector_3d";
 bind "scene_pane_docking";
 bind "scene_terrain_3d";
 bind "scene_terrain_inspector_3d";
@@ -428,6 +429,10 @@ class SceneEditor3DSelectionInspectorLayer extends PreviousLayer.SceneEditor3DHi
         applyTransformButton.SetEnabled(hasSelection);
         duplicateNodeButton.SetText("Duplicate");
         deleteNodeButton.SetText("Delete");
+        // Single-node name/visibility/transform edits commit live via the
+        // draft pumps (ADR 0221); the button appears only for multi-select
+        // delta application.
+        applyTransformButton.SetVisible(false);
         applyTransformButton.SetText("Apply node properties");
         applyTransformButton.SetTooltip(
             "Set the selected node's name, visibility, and local transform");
@@ -438,6 +443,7 @@ class SceneEditor3DSelectionInspectorLayer extends PreviousLayer.SceneEditor3DHi
                 "Duplicate (" + selectedIndices.count() + ")");
             deleteNodeButton.SetText(
                 "Delete (" + selectedIndices.count() + ")");
+            applyTransformButton.SetVisible(true);
             applyTransformButton.SetText(
                 "Apply deltas to " + selectedIndices.count());
             applyTransformButton.SetTooltip(
@@ -545,6 +551,12 @@ class SceneEditor3DSelectionInspectorLayer extends PreviousLayer.SceneEditor3DHi
         var enabled = scene != null and node != null
             and selectedIndices.count() == 1;
         metadataInspector.Refresh(node, enabled);
+        if sceneSettingsInspector != null and scene != null {
+            sceneSettingsInspector.Refresh(
+                componentSchema, scene.Root, true);
+        } else if sceneSettingsInspector != null {
+            sceneSettingsInspector.Refresh(componentSchema, null, false);
+        }
         selectedNodeMetadata = metadataInspector.selectedProperty;
     }
 

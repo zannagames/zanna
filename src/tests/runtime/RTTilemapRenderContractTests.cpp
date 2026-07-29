@@ -26,10 +26,13 @@ extern "C" {
 }
 
 #include <cassert>
+#include <climits>
+#include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 #ifndef RT_PIXELS_CLASS_ID
 #define RT_PIXELS_CLASS_ID INT64_C(-0x600201)
@@ -80,6 +83,7 @@ int g_blit_count = 0;
 StubPixels *g_clones[16];
 int g_clone_count = 0;
 int g_pixels_freed = 0;
+bool g_fail_map_new = false;
 
 void reset_blits() {
     std::memset(g_blits, 0, sizeof(g_blits));
@@ -183,6 +187,10 @@ extern "C" const char *rt_string_cstr(rt_string) {
     return "";
 }
 
+extern "C" int64_t rt_str_len(rt_string) {
+    return 0;
+}
+
 extern "C" int64_t rt_canvas_width(void *canvas) {
     return canvas ? static_cast<StubCanvas *>(canvas)->width : 0;
 }
@@ -250,6 +258,8 @@ extern "C" void rt_obj_free(void *obj) {
 }
 
 extern "C" void *rt_map_new(void) {
+    if (g_fail_map_new)
+        return nullptr;
     return rt_obj_new_i64(0, 1);
 }
 
@@ -734,6 +744,39 @@ static void test_scaled_import_preserves_projection_and_source_frame() {
     assert(rt_tilemap_count_drawn_visible_scaled(count_map, &small_canvas, 0, 0, 200) == 1);
 }
 
+static void test_full_range_scale_divides_before_saturating() {
+    reset_pixels_tracking();
+    StubPixels atlas{3, 1, 598, 0, false};
+    StubCanvas canvas{1, 1};
+    void *tm = rt_tilemap_new(1, 1, 3, 1);
+    rt_tilemap_set_tileset(tm, &atlas);
+    rt_tilemap_set_tile(tm, 0, 0, 1);
+
+    reset_blits();
+    rt_tilemap_draw_scaled(tm, &canvas, 0, 0, INT64_MAX);
+
+    assert(g_blit_count == 1);
+    assert(g_blits[0].w == INT64_C(276701161105643274));
+    assert(g_blits[0].h == INT64_C(92233720368547758));
+}
+
+static void test_tileset_grid_overflow_preserves_existing_binding() {
+    reset_pixels_tracking();
+    StubPixels valid{16, 16, 599, 0, false};
+    StubPixels impossible{INT64_MAX, INT64_MAX, 600, 0, false};
+    void *tm = rt_tilemap_new(1, 1, 16, 16);
+    rt_tilemap_set_tileset(tm, &valid);
+    assert(rt_tilemap_get_tile_count(tm) == 1);
+    assert(g_clone_count == 1);
+    assert(!g_clones[0]->freed);
+
+    rt_tilemap_set_tileset(tm, &impossible);
+    assert(rt_tilemap_get_tile_count(tm) == 1);
+    assert(g_clone_count == 2);
+    assert(!g_clones[0]->freed);
+    assert(g_clones[1]->freed);
+}
+
 static void test_one_way_platform_tolerance_rejects_starting_inside_surface() {
     void *tm = rt_tilemap_new(1, 2, 16, 16);
     assert(tm != nullptr);
@@ -744,6 +787,38 @@ static void test_one_way_platform_tolerance_rejects_starting_inside_surface() {
     assert(rt_tilemap_collide_body(tm, &body) == 0);
     assert(body.y == 13.0);
     assert(body.vy == 1.0);
+}
+
+static void test_fractional_aabb_checks_every_overlapped_tile() {
+    void *tm = rt_tilemap_new(2, 1, 16, 16);
+    assert(tm != nullptr);
+    rt_tilemap_set_tile(tm, 1, 0, 1);
+    rt_tilemap_set_collision(tm, 1, RT_TILE_COLLISION_SOLID);
+
+    StubBody body{15.5, 0.0, 0.0, 1.0, 8.0, 2.0, 0.0};
+    assert(rt_tilemap_collide_body(tm, &body) == 1);
+    assert(body.x == 15.0);
+    assert(body.vx == 0.0);
+}
+
+static void test_collision_rejects_nonfinite_body_geometry() {
+    void *tm = rt_tilemap_new(1, 1, 16, 16);
+    assert(tm != nullptr);
+    rt_tilemap_set_tile(tm, 0, 0, 1);
+    rt_tilemap_set_collision(tm, 1, RT_TILE_COLLISION_SOLID);
+
+    StubBody body{std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0, 8.0, 8.0, 1.0, 1.0};
+    assert(rt_tilemap_collide_body(tm, &body) == 0);
+    assert(std::isnan(body.x));
+    assert(body.vx == 1.0 && body.vy == 1.0);
+}
+
+static void test_hit_test_propagates_result_allocation_failure() {
+    void *tm = rt_tilemap_new(1, 1, 16, 16);
+    assert(tm != nullptr);
+    g_fail_map_new = true;
+    assert(rt_tilemap_hit_test_scaled(tm, 0, 0, 0, 0, 100) == nullptr);
+    g_fail_map_new = false;
 }
 
 static void test_finalizer_releases_owned_tilesets() {
@@ -777,7 +852,12 @@ int main() {
     test_import_parallax_and_variable_animation_durations();
     test_import_render_order_and_isometric_depth_order();
     test_scaled_import_preserves_projection_and_source_frame();
+    test_full_range_scale_divides_before_saturating();
+    test_tileset_grid_overflow_preserves_existing_binding();
     test_one_way_platform_tolerance_rejects_starting_inside_surface();
+    test_fractional_aabb_checks_every_overlapped_tile();
+    test_collision_rejects_nonfinite_body_geometry();
+    test_hit_test_propagates_result_allocation_failure();
     test_finalizer_releases_owned_tilesets();
     std::printf("RTTilemapRenderContractTests passed.\n");
     return 0;

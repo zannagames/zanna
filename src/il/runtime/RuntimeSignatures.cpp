@@ -223,6 +223,7 @@
 #include "rt_postfx3d.h"
 #include "rt_pqueue.h"
 #include "rt_printf_compat.h"
+#include "rt_embed_host.h"
 #include "rt_process.h"
 #include "rt_pty.h"
 #include "rt_quadtree.h"

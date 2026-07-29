@@ -13,7 +13,7 @@
 //   getters, lerp, brighten/darken, saturate/desaturate, complement,
 //   grayscale, invert, and hex parse/format. Pure color math (no canvas).
 //
-// Color representation:
+// Key invariants:
 //   - Plain RGB values occupy 0xRRGGBB and imply full opacity when rendered.
 //   - Color.RGBA values occupy 0xAARRGGBB and carry
 //     RT_COLOR_EXPLICIT_ALPHA_FLAG outside the component bytes.
@@ -339,7 +339,7 @@ int64_t rt_color_from_hex(rt_string hex) {
     if (!s)
         return 0;
     int64_t raw_len = rt_str_len(hex);
-    if (raw_len <= 0)
+    if (raw_len <= 0 || (uint64_t)raw_len > SIZE_MAX)
         return 0;
     size_t offset = (s[0] == '#') ? 1u : 0u;
     if ((uint64_t)raw_len < offset)

@@ -305,7 +305,7 @@ static void toolbar_draw_image_icon(
 /// @return `true` for an enabled button, toggle, or dropdown; `false` for
 ///         separators, spacers, custom widgets, disabled items, and `NULL`.
 static bool toolbar_item_can_focus(const vg_toolbar_item_t *item) {
-    if (!item || !item->enabled)
+    if (!item || !item->enabled || !item->visible)
         return false;
     return item->type == VG_TOOLBAR_ITEM_BUTTON || item->type == VG_TOOLBAR_ITEM_TOGGLE ||
            item->type == VG_TOOLBAR_ITEM_DROPDOWN;
@@ -465,6 +465,7 @@ static vg_toolbar_item_t *create_item(vg_toolbar_item_type_t type, const char *i
     item->enabled = true;
     item->checked = false;
     item->show_label = false;
+    item->visible = true;
     item->dropdown_menu = NULL;
     item->custom_widget = NULL;
     item->user_data = NULL;
@@ -523,6 +524,8 @@ static float get_overflow_button_extent(vg_toolbar_t *tb) {
 /// @return Intrinsic width for a horizontal toolbar or height for a vertical
 ///         toolbar.
 static float get_item_extent(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
+    if (item && !item->visible)
+        return 0.0f;
     return tb->orientation == VG_TOOLBAR_HORIZONTAL ? get_item_width(tb, item)
                                                     : get_item_height(tb, item);
 }
@@ -707,7 +710,7 @@ static float toolbar_layout_extent(vg_toolbar_t *tb,
                                    int max_index,
                                    float spacer_extent) {
     (void)max_index;
-    if (!item)
+    if (!item || !item->visible)
         return 0.0f;
     if (item->type == VG_TOOLBAR_ITEM_SPACER)
         return spacer_extent;
@@ -742,6 +745,8 @@ static bool toolbar_get_item_rect(vg_toolbar_t *tb,
         float item_x = 0.0f;
         float item_y = 0.0f;
         float extent = toolbar_layout_extent(tb, item, max_index, spacer_extent);
+        if (extent <= 0.0f)
+            continue;
 
         if (tb->orientation == VG_TOOLBAR_HORIZONTAL) {
             item_width = extent;
@@ -1207,7 +1212,7 @@ static void toolbar_rebuild_overflow_popup(vg_toolbar_t *tb) {
     bool pending_separator = false;
     for (size_t i = (size_t)tb->overflow_start_index; i < tb->item_count; i++) {
         vg_toolbar_item_t *item = tb->items[i];
-        if (!item)
+        if (!item || !item->visible)
             continue;
 
         if (item->type == VG_TOOLBAR_ITEM_SEPARATOR) {
@@ -1322,6 +1327,8 @@ static bool toolbar_forward_popup_event(vg_toolbar_t *tb, vg_event_t *event) {
 /// @param item Item to measure.
 /// @return Intrinsic width in layout units.
 static float get_item_width(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
+    if (item && !item->visible)
+        return 0.0f;
     float icon_px = get_scaled_icon_pixels(tb);
     float padding = (float)tb->item_padding;
     float spacing = (float)tb->item_spacing;
@@ -1373,6 +1380,8 @@ static float get_item_width(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
 /// @param item Item to measure.
 /// @return Intrinsic height in layout units.
 static float get_item_height(vg_toolbar_t *tb, vg_toolbar_item_t *item) {
+    if (item && !item->visible)
+        return 0.0f;
     float icon_px = get_scaled_icon_pixels(tb);
     float padding = (float)tb->item_padding;
 
@@ -1573,6 +1582,8 @@ static void toolbar_arrange(vg_widget_t *widget, float x, float y, float width, 
     for (int i = 0; i < max_index; i++) {
         vg_toolbar_item_t *item = tb->items[i];
         float extent = toolbar_layout_extent(tb, item, max_index, spacer_extent);
+        if (extent <= 0.0f)
+            continue;
 
         if (tb->orientation == VG_TOOLBAR_HORIZONTAL) {
             float item_width = extent;
@@ -1823,6 +1834,8 @@ static void toolbar_paint(vg_widget_t *widget, void *canvas) {
         float item_width, item_height;
         float item_x, item_y;
         float extent = toolbar_layout_extent(tb, item, max_index, spacer_extent);
+        if (extent <= 0.0f)
+            continue;
 
         if (tb->orientation == VG_TOOLBAR_HORIZONTAL) {
             item_width = extent;
@@ -2200,6 +2213,8 @@ static vg_toolbar_item_t *find_item_at(vg_toolbar_t *tb, float px, float py) {
         float item_width, item_height;
         float item_x, item_y;
         float extent = toolbar_layout_extent(tb, item, max_index, spacer_extent);
+        if (extent <= 0.0f)
+            continue;
 
         if (tb->orientation == VG_TOOLBAR_HORIZONTAL) {
             item_width = extent;
@@ -2790,6 +2805,75 @@ vg_toolbar_item_t *vg_toolbar_get_item(vg_toolbar_t *tb, const char *id) {
 /// @param item    Item to modify; may be NULL (no-op).
 /// @param enabled true to enable, false to disable (item paints with disabled colour and ignores
 /// input).
+/// @brief Show or hide a toolbar item without removing it (ADR 0220).
+/// @details Hidden items report zero extent, so layout, painting, hit-testing,
+///          focus traversal, and the overflow popup all skip them and their
+///          spacing. Toggling visibility invalidates layout because the
+///          toolbar's content extent changes.
+/// @param item Toolbar item to show or hide; non-live handles are ignored.
+/// @param visible True to show the item, false to hide it.
+void vg_toolbar_item_set_visible(vg_toolbar_item_t *item, bool visible) {
+    if (!vg_toolbar_item_is_live(item))
+        return;
+    if (item->visible == visible)
+        return;
+    item->visible = visible;
+    if (item->owner) {
+        item->owner->overflow_popup_dirty = true;
+        item->owner->base.needs_layout = true;
+        item->owner->base.needs_paint = true;
+        if (item->owner->hovered_item == item)
+            toolbar_sync_hover_tooltip(item->owner);
+    }
+}
+
+/// @brief Report whether a toolbar item is currently shown.
+/// @param item Candidate toolbar item; non-live handles report false.
+/// @return True when the live item participates in layout and interaction.
+bool vg_toolbar_item_is_visible(const vg_toolbar_item_t *item) {
+    if (!vg_toolbar_item_is_live(item))
+        return false;
+    return item->visible;
+}
+
+/// @brief Report a directly visible item's on-screen rectangle (ADR 0220).
+/// @details Combines the toolbar widget's screen bounds with the arranged
+///          local rectangle so callers can anchor popups or drive pointer
+///          input at the item, mirroring MenuItem geometry (ADR 0219).
+/// @param item Toolbar item to locate; non-live handles report false.
+/// @param out_x Optional destination for the on-screen left edge.
+/// @param out_y Optional destination for the on-screen top edge.
+/// @param out_w Optional destination for the item width.
+/// @param out_h Optional destination for the item height.
+/// @return True when the item is live, visible, and not overflowed.
+bool vg_toolbar_item_screen_rect(
+    vg_toolbar_item_t *item, float *out_x, float *out_y, float *out_w, float *out_h) {
+    if (out_x)
+        *out_x = 0.0f;
+    if (out_y)
+        *out_y = 0.0f;
+    if (out_w)
+        *out_w = 0.0f;
+    if (out_h)
+        *out_h = 0.0f;
+    if (!vg_toolbar_item_is_live(item) || !item->owner || !item->visible)
+        return false;
+    float local_x = 0.0f, local_y = 0.0f, local_w = 0.0f, local_h = 0.0f;
+    if (!toolbar_get_item_rect(item->owner, item, &local_x, &local_y, &local_w, &local_h))
+        return false;
+    float origin_x = 0.0f, origin_y = 0.0f;
+    vg_widget_get_screen_bounds(&item->owner->base, &origin_x, &origin_y, NULL, NULL);
+    if (out_x)
+        *out_x = origin_x + local_x;
+    if (out_y)
+        *out_y = origin_y + local_y;
+    if (out_w)
+        *out_w = local_w;
+    if (out_h)
+        *out_h = local_h;
+    return true;
+}
+
 void vg_toolbar_item_set_enabled(vg_toolbar_item_t *item, bool enabled) {
     if (!vg_toolbar_item_is_live(item))
         return;

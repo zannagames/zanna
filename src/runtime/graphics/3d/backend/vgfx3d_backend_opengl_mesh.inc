@@ -110,6 +110,9 @@ static int gl_lookup_cached_mesh_buffers(gl_context_t *ctx,
     if (slot->key != cmd->geometry_key || slot->revision != cmd->geometry_revision ||
         slot->vertex_count != cmd->vertex_count || slot->index_count != cmd->index_count ||
         slot->compact != wants_compact || !slot->vbo || !slot->ibo) {
+        gl_mesh_cache_entry_t replacement;
+        GLuint candidate_vbo = 0;
+        GLuint candidate_ibo = 0;
         size_t vbytes;
         size_t ibytes;
         ctx->stats.mesh_cache_misses++;
@@ -118,34 +121,27 @@ static int gl_lookup_cached_mesh_buffers(gl_context_t *ctx,
             (size_t)cmd->index_count > (size_t)PTRDIFF_MAX / sizeof(uint32_t)) {
             return 0;
         }
-        if (slot->vbo)
-            gl.DeleteBuffers(1, &slot->vbo);
-        if (slot->ibo)
-            gl.DeleteBuffers(1, &slot->ibo);
-        memset(slot, 0, sizeof(*slot));
 
-        gl.GenBuffers(1, &slot->vbo);
-        gl.GenBuffers(1, &slot->ibo);
-        if (!slot->vbo || !slot->ibo) {
-            if (slot->vbo)
-                gl.DeleteBuffers(1, &slot->vbo);
-            if (slot->ibo)
-                gl.DeleteBuffers(1, &slot->ibo);
-            memset(slot, 0, sizeof(*slot));
+        gl.GenBuffers(1, &candidate_vbo);
+        gl.GenBuffers(1, &candidate_ibo);
+        if (!candidate_vbo || !candidate_ibo) {
+            if (candidate_vbo)
+                gl.DeleteBuffers(1, &candidate_vbo);
+            if (candidate_ibo)
+                gl.DeleteBuffers(1, &candidate_ibo);
             return 0;
         }
         vbytes = (size_t)cmd->vertex_count * sizeof(vgfx3d_vertex_t);
         ibytes = (size_t)cmd->index_count * sizeof(uint32_t);
-        gl.BindBuffer(GL_ARRAY_BUFFER, slot->vbo);
+        gl.BindBuffer(GL_ARRAY_BUFFER, candidate_vbo);
         if (wants_compact) {
             /* R20: encode into the packed 48-byte layout; configure_mesh_attributes'
              * compact branch decodes it via fixed-function attribute conversion. */
             size_t compact_bytes = (size_t)cmd->vertex_count * VGFX3D_COMPACT_VERTEX_STRIDE;
             uint8_t *packed = (uint8_t *)malloc(compact_bytes);
             if (!packed) {
-                gl.DeleteBuffers(1, &slot->vbo);
-                gl.DeleteBuffers(1, &slot->ibo);
-                memset(slot, 0, sizeof(*slot));
+                gl.DeleteBuffers(1, &candidate_vbo);
+                gl.DeleteBuffers(1, &candidate_ibo);
                 return 0;
             }
             vgfx3d_encode_compact_vertices(cmd->vertices, cmd->vertex_count, packed);
@@ -154,22 +150,27 @@ static int gl_lookup_cached_mesh_buffers(gl_context_t *ctx,
         } else {
             gl.BufferData(GL_ARRAY_BUFFER, (GLsizeiptr)vbytes, cmd->vertices, GL_STATIC_DRAW);
         }
-        gl.BindBuffer(GL_ELEMENT_ARRAY_BUFFER, slot->ibo);
+        gl.BindBuffer(GL_ELEMENT_ARRAY_BUFFER, candidate_ibo);
         gl.BufferData(GL_ELEMENT_ARRAY_BUFFER, (GLsizeiptr)ibytes, cmd->indices, GL_STATIC_DRAW);
         if (!gl_upload_ok()) {
-            if (slot->vbo)
-                gl.DeleteBuffers(1, &slot->vbo);
-            if (slot->ibo)
-                gl.DeleteBuffers(1, &slot->ibo);
-            memset(slot, 0, sizeof(*slot));
+            gl.DeleteBuffers(1, &candidate_vbo);
+            gl.DeleteBuffers(1, &candidate_ibo);
             return 0;
         }
 
-        slot->key = cmd->geometry_key;
-        slot->revision = cmd->geometry_revision;
-        slot->vertex_count = cmd->vertex_count;
-        slot->index_count = cmd->index_count;
-        slot->compact = wants_compact;
+        memset(&replacement, 0, sizeof(replacement));
+        replacement.key = cmd->geometry_key;
+        replacement.revision = cmd->geometry_revision;
+        replacement.vertex_count = cmd->vertex_count;
+        replacement.index_count = cmd->index_count;
+        replacement.vbo = candidate_vbo;
+        replacement.ibo = candidate_ibo;
+        replacement.compact = wants_compact;
+        if (slot->vbo)
+            gl.DeleteBuffers(1, &slot->vbo);
+        if (slot->ibo)
+            gl.DeleteBuffers(1, &slot->ibo);
+        *slot = replacement;
     } else {
         ctx->stats.mesh_cache_hits++;
     }
@@ -703,12 +704,18 @@ static int gl_compute_morph_payload_bytes(uint32_t vertex_count,
 static gl_morph_cache_entry_t *gl_get_cached_morph_entry(gl_context_t *ctx,
                                                          const vgfx3d_draw_cmd_t *cmd,
                                                          int32_t morph_count) {
-    gl_morph_cache_entry_t *slot = NULL;
-    gl_morph_cache_entry_t *oldest = NULL;
+    gl_morph_cache_entry_t candidate;
+    int32_t slot_index = -1;
+    int32_t oldest_index = -1;
+    int append_slot = 0;
     size_t bytes;
 
     if (!ctx || !cmd || morph_count <= 0 || !cmd->morph_key || cmd->morph_revision == 0)
         return NULL;
+    if (!gl_compute_morph_payload_bytes(cmd->vertex_count, morph_count, &bytes) ||
+        !gl_morph_payload_fits_texture_buffer(ctx, bytes)) {
+        return NULL;
+    }
 
     for (int32_t i = 0; i < ctx->morph_cache_count; i++) {
         gl_morph_cache_entry_t *entry = &ctx->morph_cache[i];
@@ -722,64 +729,68 @@ static gl_morph_cache_entry_t *gl_get_cached_morph_entry(gl_context_t *ctx,
             return entry;
         }
         if (entry->key == cmd->morph_key)
-            slot = entry;
-        if (!oldest || entry->last_used_frame < oldest->last_used_frame)
-            oldest = entry;
+            slot_index = i;
+        if (oldest_index < 0 ||
+            entry->last_used_frame < ctx->morph_cache[oldest_index].last_used_frame) {
+            oldest_index = i;
+        }
     }
 
-    if (!slot && ctx->morph_cache_count < ctx->morph_cache_capacity) {
-        slot = &ctx->morph_cache[ctx->morph_cache_count++];
-        memset(slot, 0, sizeof(*slot));
+    if (slot_index < 0 && ctx->morph_cache_count < GL_MORPH_CACHE_MAX_RESIDENT) {
+        if (ctx->morph_cache_count == ctx->morph_cache_capacity) {
+            int32_t new_cap = vgfx3d_opengl_next_capacity(
+                ctx->morph_cache_capacity, ctx->morph_cache_count + 1, 8);
+            if (new_cap > GL_MORPH_CACHE_MAX_RESIDENT)
+                new_cap = GL_MORPH_CACHE_MAX_RESIDENT;
+            if (new_cap <= ctx->morph_cache_count ||
+                (size_t)new_cap > SIZE_MAX / sizeof(gl_morph_cache_entry_t)) {
+                return NULL;
+            }
+            gl_morph_cache_entry_t *nv = (gl_morph_cache_entry_t *)realloc(
+                ctx->morph_cache, (size_t)new_cap * sizeof(gl_morph_cache_entry_t));
+            if (!nv)
+                return NULL;
+            memset(nv + ctx->morph_cache_capacity,
+                   0,
+                   (size_t)(new_cap - ctx->morph_cache_capacity) * sizeof(gl_morph_cache_entry_t));
+            ctx->morph_cache = nv;
+            ctx->morph_cache_capacity = new_cap;
+        }
+        slot_index = ctx->morph_cache_count;
+        append_slot = 1;
     }
-    if (!slot && ctx->morph_cache_count == ctx->morph_cache_capacity) {
-        if (ctx->morph_cache_count >= INT_MAX)
-            return NULL;
-        int32_t new_cap =
-            vgfx3d_opengl_next_capacity(ctx->morph_cache_capacity, ctx->morph_cache_count + 1, 8);
-        if (new_cap <= ctx->morph_cache_count ||
-            (size_t)new_cap > SIZE_MAX / sizeof(gl_morph_cache_entry_t))
-            return NULL;
-        gl_morph_cache_entry_t *nv = (gl_morph_cache_entry_t *)realloc(
-            ctx->morph_cache, (size_t)new_cap * sizeof(gl_morph_cache_entry_t));
-        if (!nv)
-            return NULL;
-        memset(nv + ctx->morph_cache_capacity,
-               0,
-               (size_t)(new_cap - ctx->morph_cache_capacity) * sizeof(gl_morph_cache_entry_t));
-        ctx->morph_cache = nv;
-        ctx->morph_cache_capacity = new_cap;
-        slot = &ctx->morph_cache[ctx->morph_cache_count++];
-    }
-    if (!slot)
-        slot = oldest;
-    if (!slot)
+    if (slot_index < 0)
+        slot_index = oldest_index;
+    if (slot_index < 0)
         return NULL;
 
-    morph_cache_release_entry(slot);
-    if (!gl_compute_morph_payload_bytes(cmd->vertex_count, morph_count, &bytes))
-        return NULL;
-    if (!gl_morph_payload_fits_texture_buffer(ctx, bytes))
-        return NULL;
+    memset(&candidate, 0, sizeof(candidate));
     if (!gl_upload_morph_payload_texture(
-            &slot->morph_buffer, &slot->morph_tbo, cmd->morph_deltas, bytes)) {
-        morph_cache_release_entry(slot);
+            &candidate.morph_buffer, &candidate.morph_tbo, cmd->morph_deltas, bytes)) {
+        morph_cache_release_entry(&candidate);
         return NULL;
     }
-    if (cmd->morph_normal_deltas &&
-        !gl_upload_morph_payload_texture(
-            &slot->morph_normal_buffer, &slot->morph_normal_tbo, cmd->morph_normal_deltas, bytes)) {
-        morph_cache_release_entry(slot);
+    if (cmd->morph_normal_deltas && !gl_upload_morph_payload_texture(&candidate.morph_normal_buffer,
+                                                                     &candidate.morph_normal_tbo,
+                                                                     cmd->morph_normal_deltas,
+                                                                     bytes)) {
+        morph_cache_release_entry(&candidate);
         return NULL;
     }
-    slot->key = cmd->morph_key;
-    slot->revision = cmd->morph_revision;
-    slot->shape_count = morph_count;
-    slot->vertex_count = cmd->vertex_count;
-    slot->has_normal_deltas = cmd->morph_normal_deltas ? 1 : 0;
-    slot->morph_bytes = bytes;
-    slot->morph_normal_bytes = cmd->morph_normal_deltas ? bytes : 0;
-    slot->last_used_frame = ctx->frame_serial;
-    return slot;
+    candidate.key = cmd->morph_key;
+    candidate.revision = cmd->morph_revision;
+    candidate.shape_count = morph_count;
+    candidate.vertex_count = cmd->vertex_count;
+    candidate.has_normal_deltas = cmd->morph_normal_deltas ? 1 : 0;
+    candidate.morph_bytes = bytes;
+    candidate.morph_normal_bytes = cmd->morph_normal_deltas ? bytes : 0;
+    candidate.last_used_frame = ctx->frame_serial;
+    if (!append_slot)
+        morph_cache_release_entry(&ctx->morph_cache[slot_index]);
+    ctx->morph_cache[slot_index] = candidate;
+    if (append_slot)
+        ctx->morph_cache_count++;
+    return &ctx->morph_cache[slot_index];
 }
 
 /// @brief Push skinning + morph state into the program.

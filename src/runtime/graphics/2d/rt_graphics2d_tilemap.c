@@ -75,6 +75,7 @@ static int64_t clamp_i64(int64_t value, int64_t min, int64_t max) {
 #define RT2D_TILELAYER_CLASS_ID INT64_C(-0x620107)
 #define RT2D_OBJECTLAYER_CLASS_ID INT64_C(-0x620108)
 #define RT2D_AUTOTILE_CLASS_ID INT64_C(-0x620109)
+
 /// @}
 
 /// @brief Retained image and fixed cell dimensions owned by a TileSet2D.
@@ -136,9 +137,13 @@ typedef struct {
 /// @return The implementation pointer when class and payload size match, or
 ///         `NULL` otherwise.
 static rt_tileset2d_impl *tileset2d_checked(void *tileset) {
-    return rt2d_has_class_min(tileset, RT2D_TILESET_CLASS_ID, sizeof(rt_tileset2d_impl))
-               ? (rt_tileset2d_impl *)tileset
-               : NULL;
+    if (!rt2d_has_class_min(tileset, RT2D_TILESET_CLASS_ID, sizeof(rt_tileset2d_impl)))
+        return NULL;
+    rt_tileset2d_impl *impl = (rt_tileset2d_impl *)tileset;
+    if (!impl->pixels || impl->tile_width <= 0 || impl->tile_height <= 0 ||
+        !rt_obj_is_instance(impl->pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl)))
+        return NULL;
+    return impl;
 }
 
 /// @brief Safe-cast an opaque handle to rt_tilelayer2d_impl, or NULL.
@@ -146,8 +151,29 @@ static rt_tileset2d_impl *tileset2d_checked(void *tileset) {
 /// @return The implementation pointer when class and payload size match, or
 ///         `NULL` otherwise.
 static rt_tilelayer2d_impl *tilelayer2d_checked(void *layer) {
-    return rt2d_has_class_min(layer, RT2D_TILELAYER_CLASS_ID, sizeof(rt_tilelayer2d_impl))
-               ? (rt_tilelayer2d_impl *)layer
+    if (!rt2d_has_class_min(layer, RT2D_TILELAYER_CLASS_ID, sizeof(rt_tilelayer2d_impl)))
+        return NULL;
+    rt_tilelayer2d_impl *impl = (rt_tilelayer2d_impl *)layer;
+    if (!impl->tiles ||
+        !rt2d_checked_count(impl->width, impl->height, (int64_t)sizeof(*impl->tiles), NULL))
+        return NULL;
+    return impl;
+}
+
+/// @brief Validate an ObjectLayer2D and all dynamic-array invariants.
+static rt_objectlayer2d_impl *objectlayer2d_checked(void *layer) {
+    if (!rt2d_has_class_min(layer, RT2D_OBJECTLAYER_CLASS_ID, sizeof(rt_objectlayer2d_impl)))
+        return NULL;
+    rt_objectlayer2d_impl *impl = (rt_objectlayer2d_impl *)layer;
+    if (!impl->items || impl->capacity <= 0 || impl->count < 0 || impl->count > impl->capacity)
+        return NULL;
+    return impl;
+}
+
+/// @brief Validate an AutoTile2D including its complete fixed-table payload.
+static rt_autotile2d_impl *autotile2d_checked(void *autotile) {
+    return rt2d_has_class_min(autotile, RT2D_AUTOTILE_CLASS_ID, sizeof(rt_autotile2d_impl))
+               ? (rt_autotile2d_impl *)autotile
                : NULL;
 }
 
@@ -161,9 +187,9 @@ static rt_tilelayer2d_impl *tilelayer2d_checked(void *layer) {
 /// @param obj Opaque finalizing object expected to be a TileSet2D instance;
 ///            invalid handles are ignored.
 static void tileset2d_finalize(void *obj) {
-    rt_tileset2d_impl *tileset = tileset2d_checked(obj);
-    if (!tileset)
+    if (!rt2d_has_class_min(obj, RT2D_TILESET_CLASS_ID, sizeof(rt_tileset2d_impl)))
         return;
+    rt_tileset2d_impl *tileset = (rt_tileset2d_impl *)obj;
     rt2d_release_ref_slot(&tileset->pixels);
 }
 
@@ -231,7 +257,11 @@ int64_t rt_tileset2d_rows(void *tileset) {
 /// @return The number of accessible whole tile cells, or `0` when @p tileset
 ///         is invalid.
 int64_t rt_tileset2d_tile_count(void *tileset) {
-    return rt_tileset2d_columns(tileset) * rt_tileset2d_rows(tileset);
+    int64_t columns = rt_tileset2d_columns(tileset);
+    int64_t rows = rt_tileset2d_rows(tileset);
+    if (columns <= 0 || rows <= 0 || columns > INT64_MAX / rows)
+        return 0;
+    return columns * rows;
 }
 
 /// @brief Extract one tile by index and return it as a new Pixels buffer.
@@ -267,9 +297,9 @@ void *rt_tileset2d_get_tile_pixels(void *tileset, int64_t tile_index) {
 /// @param obj Opaque finalizing object expected to be a TileLayer2D instance;
 ///            invalid handles are ignored.
 static void tilelayer2d_finalize(void *obj) {
-    rt_tilelayer2d_impl *layer = tilelayer2d_checked(obj);
-    if (!layer)
+    if (!rt2d_has_class_min(obj, RT2D_TILELAYER_CLASS_ID, sizeof(rt_tilelayer2d_impl)))
         return;
+    rt_tilelayer2d_impl *layer = (rt_tilelayer2d_impl *)obj;
     free(layer->tiles);
 }
 
@@ -429,7 +459,7 @@ int64_t rt_tilelayer2d_get_opacity(void *layer) {
 /// @param obj Opaque finalizing object expected to be an ObjectLayer2D
 ///            instance; invalid handles are ignored.
 static void objectlayer2d_finalize(void *obj) {
-    if (!rt2d_has_class(obj, RT2D_OBJECTLAYER_CLASS_ID))
+    if (!rt2d_has_class_min(obj, RT2D_OBJECTLAYER_CLASS_ID, sizeof(rt_objectlayer2d_impl)))
         return;
     rt_objectlayer2d_impl *layer = (rt_objectlayer2d_impl *)obj;
     free(layer->items);
@@ -472,7 +502,10 @@ void *rt_objectlayer2d_new(int64_t capacity) {
 /// @return Nonzero for a null layer, sufficient existing capacity, or
 ///         successful growth; zero on overflow or allocation failure.
 static int32_t objectlayer2d_reserve(rt_objectlayer2d_impl *layer, int64_t needed) {
-    if (!layer || needed <= layer->capacity)
+    if (!layer || needed < 0 || !layer->items || layer->capacity <= 0 || layer->count < 0 ||
+        layer->count > layer->capacity)
+        return 0;
+    if (needed <= layer->capacity)
         return 1;
     int64_t cap = layer->capacity > 0 ? layer->capacity : RT2D_INITIAL_CAP;
     while (cap < needed) {
@@ -480,7 +513,8 @@ static int32_t objectlayer2d_reserve(rt_objectlayer2d_impl *layer, int64_t neede
             return 0;
         cap *= 2;
     }
-    if (cap > INT64_MAX / (int64_t)sizeof(rt_objectlayer2d_entry))
+    if (cap > INT64_MAX / (int64_t)sizeof(rt_objectlayer2d_entry) ||
+        (uint64_t)cap > (uint64_t)(SIZE_MAX / sizeof(rt_objectlayer2d_entry)))
         return 0;
     rt_objectlayer2d_entry *items =
         (rt_objectlayer2d_entry *)realloc(layer->items, (size_t)cap * sizeof(*items));
@@ -498,8 +532,8 @@ static int32_t objectlayer2d_reserve(rt_objectlayer2d_impl *layer, int64_t neede
 ///          The `type` field is opaque — callers use it as a category tag
 ///          (e.g. collision=1, trigger=2, spawn=3). Negative widths or heights
 ///          are normalized by moving the corresponding origin toward the
-///          negative axis with saturating addition and negating the extent.
-///          Zero extents and `INT64_MIN` extents are rejected.
+///          negative axis and negating the extent. Zero extents, `INT64_MIN`
+///          extents, and origins whose adjustment would overflow are rejected.
 /// @param layer Opaque ObjectLayer2D handle to append to.
 /// @param x Rectangle X coordinate; adjusted when @p width is negative.
 /// @param y Rectangle Y coordinate; adjusted when @p height is negative.
@@ -510,26 +544,29 @@ static int32_t objectlayer2d_reserve(rt_objectlayer2d_impl *layer, int64_t neede
 ///         input, overflow, or allocation failure.
 int64_t rt_objectlayer2d_add_rect(
     void *layer, int64_t x, int64_t y, int64_t width, int64_t height, int64_t type) {
-    rt_objectlayer2d_impl *impl =
-        rt2d_has_class(layer, RT2D_OBJECTLAYER_CLASS_ID) ? (rt_objectlayer2d_impl *)layer : NULL;
+    rt_objectlayer2d_impl *impl = objectlayer2d_checked(layer);
     if (!impl)
         return -1;
-    if (!objectlayer2d_reserve(impl, impl->count + 1)) {
-        rt_trap("ObjectLayer2D: capacity overflow");
-        return -1;
-    }
     if (width == INT64_MIN || height == INT64_MIN)
         return -1;
     if (width < 0) {
-        x = rt2d_saturating_add_i64(x, width);
+        if (x < INT64_MIN - width)
+            return -1;
+        x += width;
         width = -width;
     }
     if (height < 0) {
-        y = rt2d_saturating_add_i64(y, height);
+        if (y < INT64_MIN - height)
+            return -1;
+        y += height;
         height = -height;
     }
     if (width <= 0 || height <= 0)
         return -1;
+    if (impl->count == INT64_MAX || !objectlayer2d_reserve(impl, impl->count + 1)) {
+        rt_trap("ObjectLayer2D: capacity overflow");
+        return -1;
+    }
     int64_t index = impl->count++;
     impl->items[index].x = x;
     impl->items[index].y = y;
@@ -543,9 +580,8 @@ int64_t rt_objectlayer2d_add_rect(
 /// @param layer Opaque ObjectLayer2D handle to query.
 /// @return The logical entry count, or `0` when @p layer is invalid.
 int64_t rt_objectlayer2d_count(void *layer) {
-    return rt2d_has_class(layer, RT2D_OBJECTLAYER_CLASS_ID)
-               ? ((rt_objectlayer2d_impl *)layer)->count
-               : 0;
+    rt_objectlayer2d_impl *impl = objectlayer2d_checked(layer);
+    return impl ? impl->count : 0;
 }
 
 /// @brief Reset the entry count to zero without freeing the backing array.
@@ -554,8 +590,9 @@ int64_t rt_objectlayer2d_count(void *layer) {
 /// @param layer Opaque ObjectLayer2D handle to clear; invalid handles are
 ///              ignored.
 void rt_objectlayer2d_clear(void *layer) {
-    if (rt2d_has_class(layer, RT2D_OBJECTLAYER_CLASS_ID))
-        ((rt_objectlayer2d_impl *)layer)->count = 0;
+    rt_objectlayer2d_impl *impl = objectlayer2d_checked(layer);
+    if (impl)
+        impl->count = 0;
 }
 
 /// @brief Return a pointer to the entry at @p index in the object layer, or NULL if out of range.
@@ -565,8 +602,7 @@ void rt_objectlayer2d_clear(void *layer) {
 ///         invalid handle or index. The pointer is invalidated by array growth
 ///         or object finalization.
 static rt_objectlayer2d_entry *objectlayer2d_get_entry(void *layer, int64_t index) {
-    rt_objectlayer2d_impl *impl =
-        rt2d_has_class(layer, RT2D_OBJECTLAYER_CLASS_ID) ? (rt_objectlayer2d_impl *)layer : NULL;
+    rt_objectlayer2d_impl *impl = objectlayer2d_checked(layer);
     if (!impl || index < 0 || index >= impl->count)
         return NULL;
     return &impl->items[index];
@@ -641,9 +677,10 @@ void *rt_autotile2d_new(void) {
 /// @param mask Neighbor mask whose low four bits select the variant slot.
 /// @param tile Signed application-defined tile identifier to store.
 void rt_autotile2d_set_variant(void *autotile, int64_t mask, int64_t tile) {
-    if (!rt2d_has_class(autotile, RT2D_AUTOTILE_CLASS_ID))
+    rt_autotile2d_impl *impl = autotile2d_checked(autotile);
+    if (!impl)
         return;
-    ((rt_autotile2d_impl *)autotile)->variants[mask & 15] = tile;
+    impl->variants[mask & 15] = tile;
 }
 
 /// @brief Look up the tile ID for a given 4-bit neighbour `mask`.
@@ -654,9 +691,8 @@ void rt_autotile2d_set_variant(void *autotile, int64_t mask, int64_t tile) {
 /// @return The configured tile identifier, or `0` for an invalid handle or an
 ///         untouched slot.
 int64_t rt_autotile2d_resolve(void *autotile, int64_t mask) {
-    return rt2d_has_class(autotile, RT2D_AUTOTILE_CLASS_ID)
-               ? ((rt_autotile2d_impl *)autotile)->variants[mask & 15]
-               : 0;
+    rt_autotile2d_impl *impl = autotile2d_checked(autotile);
+    return impl ? impl->variants[mask & 15] : 0;
 }
 
 /// @brief Resolve `mask` to a tile ID and write it into the TileLayer2D cell at `(x, y)`.
@@ -670,7 +706,7 @@ int64_t rt_autotile2d_resolve(void *autotile, int64_t mask) {
 /// @param y Zero-based destination row.
 /// @param mask Neighbor mask whose low four bits select the tile identifier.
 void rt_autotile2d_apply(void *autotile, void *layer, int64_t x, int64_t y, int64_t mask) {
-    if (!rt2d_has_class(autotile, RT2D_AUTOTILE_CLASS_ID) || !layer)
+    if (!autotile2d_checked(autotile) || !tilelayer2d_checked(layer))
         return;
     rt_tilelayer2d_set(layer, x, y, rt_autotile2d_resolve(autotile, mask));
 }

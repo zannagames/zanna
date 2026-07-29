@@ -74,6 +74,7 @@
 #define PHYSICS2D_MAX_PUBLIC_STEP_DT 8.0
 #define PHYSICS2D_MAX_SUBSTEP_DT 1.0
 #define PHYSICS2D_MAX_SUBSTEPS 8
+
 /// @}
 
 //=============================================================================
@@ -267,6 +268,8 @@ static int8_t ensure_pair_scratch_capacity(rt_world_impl *w, int64_t needed) {
 /// @param jj Second body-array index.
 /// @return 1 on success, 0 if the scratch could not grow (caller must fall back).
 static int8_t pair_scratch_push(rt_world_impl *w, int ii, int jj) {
+    if (!w || ii < 0 || jj < 0)
+        return 0;
     if (ii == jj)
         return 1;
     if (ii > jj) {
@@ -274,7 +277,8 @@ static int8_t pair_scratch_push(rt_world_impl *w, int ii, int jj) {
         ii = jj;
         jj = t;
     }
-    if (!ensure_pair_scratch_capacity(w, w->pair_scratch_count + 1))
+    if (w->pair_scratch_count < 0 || w->pair_scratch_count == INT64_MAX ||
+        !ensure_pair_scratch_capacity(w, w->pair_scratch_count + 1))
         return 0;
     w->pair_scratch[w->pair_scratch_count++] =
         ((uint64_t)(uint32_t)ii << 32) | (uint64_t)(uint32_t)jj;
@@ -327,12 +331,13 @@ void world_record_contact(
     rt_world_impl *w, rt_body_impl *a, rt_body_impl *b, double nx, double ny, double pen) {
     if (!w || !a || !b)
         return;
-    if (!ensure_contact_capacity(w, w->contact_count + 1)) {
+    if (!isfinite(nx) || !isfinite(ny) || !isfinite(pen))
+        return;
+    if (w->contact_count < 0 || w->contact_count == INT64_MAX ||
+        !ensure_contact_capacity(w, w->contact_count + 1)) {
         w->contact_overflow = 1;
         return;
     }
-    if (!isfinite(nx) || !isfinite(ny) || !isfinite(pen))
-        return;
     int64_t idx = w->contact_count++;
     rt_obj_retain_maybe(a);
     rt_obj_retain_maybe(b);
@@ -435,8 +440,9 @@ static rt_body_impl *checked_body(void *obj, const char *api) {
 ///   ensure NaN/Inf values and wildly out-of-range quantities from user code cannot
 ///   propagate.  Enforces: positions clamped to ±1e12, dimensions in (0, 1e9],
 ///   velocities/forces in ±1e9/±1e12, mass/inv_mass consistent (static bodies keep
-///   both at 0), restitution/friction in [0,1].  Circle bodies with radius ≤ 0 get
-///   a fallback radius of 1.0; box bodies have radius forced to 0.
+///   both at 0), restitution/friction in [0,1]. Circle bodies preserve zero box
+///   dimensions and receive a fallback radius of 1.0 when necessary; box bodies
+///   have radius forced to 0.
 /// @param b Mutable body implementation to sanitize; `NULL` is accepted as a
 ///          no-op.
 void sanitize_body_state(rt_body_impl *b) {
@@ -454,24 +460,26 @@ void sanitize_body_state(rt_body_impl *b) {
     b->y = clamp_abs_finite(b->y, fallback_y, max_pos);
     b->prev_x = clamp_abs_finite(b->prev_x, b->x, max_pos);
     b->prev_y = clamp_abs_finite(b->prev_y, b->y, max_pos);
-    b->w = (isfinite(b->w) && b->w > 0.0) ? (b->w > max_size ? max_size : b->w) : 1.0;
-    b->h = (isfinite(b->h) && b->h > 0.0) ? (b->h > max_size ? max_size : b->h) : 1.0;
-    b->radius = (isfinite(b->radius) && b->radius > 0.0)
-                    ? (b->radius > max_size ? max_size : b->radius)
-                    : (b->is_circle ? 1.0 : 0.0);
+    b->is_circle = b->is_circle ? 1 : 0;
+    if (b->is_circle) {
+        b->w = 0.0;
+        b->h = 0.0;
+        b->radius = (isfinite(b->radius) && b->radius > 0.0)
+                        ? (b->radius > max_size ? max_size : b->radius)
+                        : 1.0;
+    } else {
+        b->w = (isfinite(b->w) && b->w > 0.0) ? (b->w > max_size ? max_size : b->w) : 1.0;
+        b->h = (isfinite(b->h) && b->h > 0.0) ? (b->h > max_size ? max_size : b->h) : 1.0;
+        b->radius = 0.0;
+    }
     b->vx = clamp_abs_finite(b->vx, 0.0, max_vel);
     b->vy = clamp_abs_finite(b->vy, 0.0, max_vel);
     b->fx = clamp_abs_finite(b->fx, 0.0, max_force);
     b->fy = clamp_abs_finite(b->fy, 0.0, max_force);
-    b->mass = (isfinite(b->mass) && b->mass > 0.0) ? b->mass : 0.0;
-    b->inv_mass = (isfinite(b->inv_mass) && b->inv_mass > 0.0) ? b->inv_mass : 0.0;
-    if (b->mass <= 0.0)
-        b->inv_mass = 0.0;
+    b->mass = rt_physics2d_normalize_mass(b->mass);
+    b->inv_mass = b->mass > 0.0 ? 1.0 / b->mass : 0.0;
     b->restitution = clamp01(b->restitution);
     b->friction = clamp01(b->friction);
-    b->is_circle = b->is_circle ? 1 : 0;
-    if (!b->is_circle)
-        b->radius = 0.0;
 }
 
 /* AABB edge accessors. The world uses positive-y-downward screen coordinates, so
@@ -744,8 +752,12 @@ static void physics2d_world_step_once(void *obj, rt_world_impl *w, double dt) {
             b->fy = 0.0;
             continue; /* Skip static bodies */
         }
-        b->vx += (b->fx * b->inv_mass + w->gravity_x) * dt;
-        b->vy += (b->fy * b->inv_mass + w->gravity_y) * dt;
+        double ax = rt_physics2d_saturating_add(rt_physics2d_saturating_mul(b->fx, b->inv_mass),
+                                                w->gravity_x);
+        double ay = rt_physics2d_saturating_add(rt_physics2d_saturating_mul(b->fy, b->inv_mass),
+                                                w->gravity_y);
+        b->vx = rt_physics2d_saturating_add(b->vx, rt_physics2d_saturating_mul(ax, dt));
+        b->vy = rt_physics2d_saturating_add(b->vy, rt_physics2d_saturating_mul(ay, dt));
         b->fx = 0.0;
         b->fy = 0.0;
         sanitize_body_state(b);
@@ -769,8 +781,8 @@ static void physics2d_world_step_once(void *obj, rt_world_impl *w, double dt) {
         rt_body_impl *b = w->bodies[i];
         if (!b || b->inv_mass == 0.0)
             continue;
-        b->x += b->vx * dt;
-        b->y += b->vy * dt;
+        b->x = rt_physics2d_saturating_add(b->x, rt_physics2d_saturating_mul(b->vx, dt));
+        b->y = rt_physics2d_saturating_add(b->y, rt_physics2d_saturating_mul(b->vy, dt));
         sanitize_body_state(b);
     }
 
@@ -954,10 +966,7 @@ static void physics2d_world_step_once(void *obj, rt_world_impl *w, double dt) {
             /* --- Step 3c: Sort collected pairs and resolve each unique pair once.
              * Sorting by packed (ii, jj) key gives a deterministic sweep order so
              * VM and native runs agree. */
-            qsort(w->pair_scratch,
-                  (size_t)w->pair_scratch_count,
-                  sizeof(uint64_t),
-                  pair_key_cmp);
+            qsort(w->pair_scratch, (size_t)w->pair_scratch_count, sizeof(uint64_t), pair_key_cmp);
             uint64_t prev_key = ~(uint64_t)0;
             for (int64_t p = 0; p < w->pair_scratch_count; p++) {
                 uint64_t key = w->pair_scratch[p];
@@ -1050,17 +1059,15 @@ void rt_physics2d_world_add(void *obj, void *body) {
     }
     rt_body_impl *bd = (rt_body_impl *)body;
     sanitize_body_state(bd);
-    /* Duplicate detection in O(1) for the common single-world case: a body tracks
-     * its owning world. owner_world == w means it is already here; owner_world ==
-     * NULL means it belongs to no world and therefore cannot be a duplicate. Only
-     * the rare "already in a different world" case needs the linear scan. */
+    /* Duplicate detection is O(1): a body tracks its owning world. Registering
+     * the same body in two worlds would make both worlds retain, integrate, and
+     * eventually detach the same mutable payload, so callers must remove it from
+     * its current world before adding it elsewhere. */
     if (bd->owner_world == w)
         return;
     if (bd->owner_world != NULL) {
-        for (int64_t i = 0; i < w->body_count; i++) {
-            if (w->bodies[i] == bd)
-                return;
-        }
+        rt_trap("Physics2D.World.Add: body already belongs to another world");
+        return;
     }
     if (w->body_count >= INT_MAX) {
         rt_trap("Physics2D.World.Add: body count exceeds solver index range");
@@ -1268,7 +1275,7 @@ void *rt_physics2d_body_new(double x, double y, double w, double h, double mass)
     y = finite_or(y, 0.0);
     w = positive_or(w, 1.0);
     h = positive_or(h, 1.0);
-    mass = (isfinite(mass) && mass > 0.0) ? mass : 0.0;
+    mass = rt_physics2d_normalize_mass(mass);
     b->x = x;
     b->y = y;
     b->prev_x = x;
@@ -1289,6 +1296,7 @@ void *rt_physics2d_body_new(double x, double y, double w, double h, double mass)
     b->is_circle = 0;
     b->owner_world = NULL;
     b->world_index = -1;
+    sanitize_body_state(b);
     return b;
 }
 
@@ -1395,6 +1403,7 @@ void rt_physics2d_body_set_pos(void *obj, double x, double y) {
     body->y = y;
     body->prev_x = x;
     body->prev_y = y;
+    sanitize_body_state(body);
 }
 
 /// @brief Override the body's linear velocity directly.
@@ -1445,8 +1454,8 @@ void rt_physics2d_body_apply_force(void *obj, double fx, double fy) {
         return;
     /* Forces accumulate until the next Step(); they are additive so multiple
      * ApplyForce calls in the same frame combine correctly. */
-    body->fx += fx;
-    body->fy += fy;
+    body->fx = rt_physics2d_saturating_add(body->fx, fx);
+    body->fy = rt_physics2d_saturating_add(body->fy, fy);
     sanitize_body_state(body);
 }
 
@@ -1471,8 +1480,8 @@ void rt_physics2d_body_apply_impulse(void *obj, double ix, double iy) {
         return; /* Static bodies cannot be moved by impulses */
     /* An impulse is an instantaneous velocity change: Δv = impulse / mass,
      * equivalently: Δv = impulse * inv_mass. */
-    b->vx += ix * b->inv_mass;
-    b->vy += iy * b->inv_mass;
+    b->vx = rt_physics2d_saturating_add(b->vx, rt_physics2d_saturating_mul(ix, b->inv_mass));
+    b->vy = rt_physics2d_saturating_add(b->vy, rt_physics2d_saturating_mul(iy, b->inv_mass));
     sanitize_body_state(b);
 }
 
@@ -1602,7 +1611,7 @@ typedef struct {
 static rt_projectile2d_impl *checked_projectile(void *obj, const char *api) {
     if (!obj)
         return NULL;
-    if (rt_obj_class_id(obj) != RT_PHYSICS2D_PROJECTILE_CLASS_ID) {
+    if (!rt_obj_is_instance(obj, RT_PHYSICS2D_PROJECTILE_CLASS_ID, sizeof(rt_projectile2d_impl))) {
         rt_trap(api);
         return NULL;
     }
@@ -1690,14 +1699,45 @@ void rt_projectile2d_reset(void *obj) {
 /// @param g Constant acceleration on the selected axis.
 /// @param drag Nonnegative linear drag coefficient.
 /// @param t Time since launch; nonpositive or non-finite values select @p p0.
-/// @return The closed-form position at @p t.
+/// @return The closed-form position at @p t, saturated to a finite double when
+///         the mathematical result exceeds the representable range.
 static double projectile_pos_at(double p0, double v0, double g, double drag, double t) {
     if (!isfinite(t) || t <= 0.0)
         return p0;
-    if (drag <= 0.0)
-        return p0 + v0 * t + 0.5 * g * t * t;
-    double e = exp(-drag * t);
-    return p0 + (v0 / drag) * (1.0 - e) + (g / drag) * t - (g / (drag * drag)) * (1.0 - e);
+    double velocity_term = 0.0;
+    double gravity_term = 0.0;
+    if (drag <= 0.0) {
+        velocity_term = rt_physics2d_saturating_mul(v0, t);
+        gravity_term = rt_physics2d_saturating_mul4(0.5, g, t, t);
+    } else if (drag > DBL_MAX / t) {
+        /* z=drag*t exceeds the representable range, so exp(-z) is
+         * indistinguishable from zero. Evaluate the limiting form directly. */
+        double inv_drag = rt_physics2d_saturating_div(1.0, drag);
+        velocity_term = rt_physics2d_saturating_mul(v0, inv_drag);
+        double transient_time = rt_physics2d_saturating_add(t, -inv_drag);
+        gravity_term = rt_physics2d_saturating_mul4(g, inv_drag, transient_time, 1.0);
+    } else {
+        double z = drag * t;
+        double q_over_z = 0.0;
+        double phi2 = 0.0;
+        if (z < 1.0e-3) {
+            /* Stable Taylor forms for (1-exp(-z))/z and
+             * (z-(1-exp(-z)))/z^2 near zero. */
+            q_over_z =
+                1.0 +
+                z * (-0.5 + z * (1.0 / 6.0 + z * (-1.0 / 24.0 + z * (1.0 / 120.0 - z / 720.0))));
+            phi2 =
+                0.5 + z * (-1.0 / 6.0 +
+                           z * (1.0 / 24.0 + z * (-1.0 / 120.0 + z * (1.0 / 720.0 - z / 5040.0))));
+        } else {
+            q_over_z = -expm1(-z) / z;
+            phi2 = (1.0 - q_over_z) / z;
+        }
+        velocity_term = rt_physics2d_saturating_mul4(v0, t, q_over_z, 1.0);
+        gravity_term = rt_physics2d_saturating_mul4(g, t, t, phi2);
+    }
+    return rt_physics2d_saturating_add(p0,
+                                       rt_physics2d_saturating_add(velocity_term, gravity_term));
 }
 
 /// @brief Velocity of one axis at time @p t under gravity @p g and linear
@@ -1706,21 +1746,162 @@ static double projectile_pos_at(double p0, double v0, double g, double drag, dou
 /// @param g Constant acceleration on the selected axis.
 /// @param drag Nonnegative linear drag coefficient.
 /// @param t Time since launch; nonpositive or non-finite values select @p v0.
-/// @return The closed-form velocity at @p t.
+/// @return The closed-form velocity at @p t, saturated to a finite double when
+///         the mathematical result exceeds the representable range.
 static double projectile_vel_at(double v0, double g, double drag, double t) {
     if (!isfinite(t) || t <= 0.0)
         return v0;
     if (drag <= 0.0)
-        return v0 + g * t;
-    double e = exp(-drag * t);
-    return v0 * e + (g / drag) * (1.0 - e);
+        return rt_physics2d_saturating_add(v0, rt_physics2d_saturating_mul(g, t));
+    if (drag > DBL_MAX / t)
+        return rt_physics2d_saturating_div(g, drag);
+    double z = drag * t;
+    double q_over_z = 0.0;
+    if (z < 1.0e-3) {
+        q_over_z =
+            1.0 + z * (-0.5 + z * (1.0 / 6.0 + z * (-1.0 / 24.0 + z * (1.0 / 120.0 - z / 720.0))));
+    } else {
+        q_over_z = -expm1(-z) / z;
+    }
+    return rt_physics2d_saturating_add(rt_physics2d_saturating_mul(v0, exp(-z)),
+                                       rt_physics2d_saturating_mul4(g, t, q_over_z, 1.0));
+}
+
+/// @brief Bisect the earliest ground crossing in a known sign-changing bracket.
+/// @param p Borrowed projectile parameters.
+/// @param lo Time known to be strictly above the positive-Y-down ground threshold.
+/// @param hi Time known to be at or below that threshold.
+/// @return The upper edge of the converged crossing bracket.
+static double projectile_bisect_ground(const rt_projectile2d_impl *p, double lo, double hi) {
+    for (int i = 0; i < 80; ++i) {
+        double mid = lo + (hi - lo) * 0.5;
+        double y = projectile_pos_at(p->p0y, p->v0y, p->gy, p->drag, mid);
+        if (y >= p->ground_y)
+            hi = mid;
+        else
+            lo = mid;
+    }
+    return hi;
+}
+
+/// @brief Compute a stable positive turning time for upward terminal gravity.
+/// @details Used when `gy < 0`, `v0y > 0`, and linear drag causes a single
+///          maximum positive-Y excursion. The logarithmic form avoids overflow
+///          in `drag*v0y/(-gy)`.
+/// @param drag Positive finite drag.
+/// @param v0y Positive initial vertical velocity.
+/// @param gy Negative vertical acceleration.
+/// @return Finite turning time when representable, otherwise `DBL_MAX`.
+static double projectile_turning_time(double drag, double v0y, double gy) {
+    double log_ratio = log(drag) + log(v0y) - log(-gy);
+    double log_one_plus_ratio = 0.0;
+    if (log_ratio > log(DBL_MAX))
+        log_one_plus_ratio = log_ratio;
+    else if (log_ratio < log(DBL_MIN))
+        log_one_plus_ratio = exp(log_ratio);
+    else
+        log_one_plus_ratio = log1p(exp(log_ratio));
+    return rt_physics2d_saturating_div(log_one_plus_ratio, drag);
+}
+
+/// @brief Compute the earliest absolute launch time that reaches configured ground.
+/// @param p Borrowed validated projectile.
+/// @return Nonnegative impact time, or positive infinity when unreachable.
+static double projectile_time_to_ground_impl(const rt_projectile2d_impl *p) {
+    if (!p || !isfinite(p->ground_y))
+        return INFINITY;
+    if (p->p0y >= p->ground_y)
+        return 0.0;
+
+    double c = rt_physics2d_saturating_add(p->p0y, -p->ground_y);
+    if (p->drag <= 0.0) {
+        double a = 0.5 * p->gy;
+        double b = p->v0y;
+        if (a == 0.0) {
+            if (b <= 0.0)
+                return INFINITY;
+            double t = rt_physics2d_saturating_div(-c, b);
+            return isfinite(t) && t >= 0.0 ? t : INFINITY;
+        }
+
+        /* Scale the quadratic before forming its discriminant so b*b and
+         * 4*a*c cannot overflow even for finite extreme launch parameters. */
+        double scale = fmax(fabs(a), fmax(fabs(b), fabs(c)));
+        double as = a / scale;
+        double bs = b / scale;
+        double cs = c / scale;
+        double bs_sq = bs * bs;
+        double four_ac = 4.0 * as * cs;
+        double disc = fma(bs, bs, -four_ac);
+        double tolerance = 8.0 * DBL_EPSILON * fmax(bs_sq, fabs(four_ac));
+        if (disc < 0.0) {
+            if (disc < -tolerance)
+                return INFINITY;
+            disc = 0.0;
+        }
+        double root = sqrt(disc);
+        double q = -0.5 * (bs + copysign(root, bs));
+        double t1 = q != 0.0 ? q / as : (-bs + root) / (2.0 * as);
+        double t2 = q != 0.0 ? cs / q : t1;
+        double best = INFINITY;
+        if (isfinite(t1) && t1 >= 0.0)
+            best = t1;
+        if (isfinite(t2) && t2 >= 0.0 && t2 < best)
+            best = t2;
+        return best;
+    }
+
+    double delta = rt_physics2d_saturating_add(p->ground_y, -p->p0y);
+    if (p->gy == 0.0) {
+        if (p->v0y <= 0.0)
+            return INFINITY;
+        double limit = rt_physics2d_saturating_div(p->v0y, p->drag);
+        if (limit <= delta)
+            return INFINITY; /* Equality is reached only asymptotically. */
+        double fraction = delta / limit;
+        if (!(fraction >= 0.0) || fraction >= 1.0)
+            return INFINITY;
+        return rt_physics2d_saturating_div(-log1p(-fraction), p->drag);
+    }
+
+    if (p->gy < 0.0) {
+        if (p->v0y <= 0.0)
+            return INFINITY;
+        double turn = projectile_turning_time(p->drag, p->v0y, p->gy);
+        double peak = projectile_pos_at(p->p0y, p->v0y, p->gy, p->drag, turn);
+        if (peak < p->ground_y)
+            return INFINITY;
+        if (peak == p->ground_y)
+            return turn;
+        return projectile_bisect_ground(p, 0.0, turn);
+    }
+
+    /* Positive terminal velocity guarantees one eventual crossing. A bound on
+     * the decaying transient gives a near-direct upper bracket, with a small
+     * doubling fallback for rounding at extreme scales. */
+    double terminal = rt_physics2d_saturating_div(p->gy, p->drag);
+    double transient_velocity = fabs(rt_physics2d_saturating_add(p->v0y, -terminal));
+    double transient_bound = rt_physics2d_saturating_div(transient_velocity, p->drag);
+    double hi =
+        rt_physics2d_saturating_div(rt_physics2d_saturating_add(delta, transient_bound), terminal);
+    if (!isfinite(hi) || hi < 1.0)
+        hi = 1.0;
+    double hi_y = projectile_pos_at(p->p0y, p->v0y, p->gy, p->drag, hi);
+    for (int i = 0; i < 64 && hi_y < p->ground_y && hi < DBL_MAX; ++i) {
+        hi = hi > DBL_MAX * 0.5 ? DBL_MAX : hi * 2.0;
+        hi_y = projectile_pos_at(p->p0y, p->v0y, p->gy, p->drag, hi);
+    }
+    if (hi_y < p->ground_y)
+        return INFINITY;
+    return projectile_bisect_ground(p, 0.0, hi);
 }
 
 /// @brief Advance the projectile's elapsed-time tracker and update landing state.
 /// @details Positive finite @p dt is added only while the projectile is not
-///          landed. Landing latches when the analytic Y position at the new
-///          total time is at or below the configured screen-space ground
-///          (`y >= ground_y`). The time is not clamped back to the exact impact.
+///          landed. Landing latches when the earliest analytic ground crossing
+///          is at or before the new total time, including trajectories that
+///          cross and then return above the ground before the sampled endpoint.
+///          The time is not clamped back to the exact impact.
 /// @param obj Opaque Projectile2D handle to advance.
 /// @param dt Positive finite elapsed time.
 void rt_projectile2d_advance(void *obj, double dt) {
@@ -1728,8 +1909,9 @@ void rt_projectile2d_advance(void *obj, double dt) {
         checked_projectile(obj, "Projectile2D.Advance: expected Projectile2D");
     if (!p || !isfinite(dt) || dt <= 0.0 || p->landed)
         return;
-    p->total_time += dt;
-    if (rt_projectile2d_y_at(obj, p->total_time) >= p->ground_y)
+    p->total_time = rt_physics2d_saturating_add(p->total_time, dt);
+    double impact_time = projectile_time_to_ground_impl(p);
+    if (impact_time <= p->total_time)
         p->landed = 1;
 }
 
@@ -1807,43 +1989,5 @@ double rt_projectile2d_total_time(void *obj) {
 double rt_projectile2d_time_to_ground(void *obj) {
     rt_projectile2d_impl *p =
         checked_projectile(obj, "Projectile2D.TimeToGround: expected Projectile2D");
-    if (!p || !isfinite(p->ground_y))
-        return INFINITY;
-    if (p->drag > 0.0) {
-        double lo = 0.0;
-        double hi = 1.0;
-        for (int i = 0; i < 64 && rt_projectile2d_y_at(obj, hi) < p->ground_y; i++)
-            hi *= 2.0;
-        if (!isfinite(hi) || rt_projectile2d_y_at(obj, hi) < p->ground_y)
-            return INFINITY;
-        for (int i = 0; i < 64; i++) {
-            double mid = (lo + hi) * 0.5;
-            if (rt_projectile2d_y_at(obj, mid) >= p->ground_y)
-                hi = mid;
-            else
-                lo = mid;
-        }
-        return hi;
-    }
-    double a = 0.5 * p->gy;
-    double b = p->v0y;
-    double c = p->p0y - p->ground_y;
-    if (fabs(a) < 1e-12) {
-        if (fabs(b) < 1e-12)
-            return c >= 0.0 ? 0.0 : INFINITY;
-        double t = -c / b;
-        return t >= 0.0 ? t : INFINITY;
-    }
-    double disc = b * b - 4.0 * a * c;
-    if (disc < 0.0 || !isfinite(disc))
-        return INFINITY;
-    double root = sqrt(disc);
-    double t1 = (-b - root) / (2.0 * a);
-    double t2 = (-b + root) / (2.0 * a);
-    double best = INFINITY;
-    if (t1 >= 0.0)
-        best = t1;
-    if (t2 >= 0.0 && t2 < best)
-        best = t2;
-    return best;
+    return projectile_time_to_ground_impl(p);
 }

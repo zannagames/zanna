@@ -6,7 +6,22 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/tests/runtime/RTActionPersistTests.cpp
-// Purpose: Tests for action binding save/load persistence.
+/// @file
+/// @brief Exercises action binding JSON save/load and rollback behavior.
+// Purpose: Validate deterministic action persistence, strict schema handling,
+//   resource-safe parsing, and transactional rejection of malformed documents.
+//
+// Key invariants:
+//   - A successful save/load round trip preserves action and binding order.
+//   - Invalid or ambiguous documents leave the live registry byte-for-byte
+//     equivalent to its pre-load state.
+//   - Forward-compatible unknown binding tags are skipped, not materialized.
+//
+// Ownership/Lifetime:
+//   - Runtime strings are process-local test values. Registry-owned action and
+//     binding copies are cleared between cases.
+//
+// Links: rt_action_io.c, rt_action.c, RTActionMappingTests.cpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,6 +33,7 @@
 #include <cassert>
 #include <cstdio>
 #include <cstring>
+#include <string>
 
 extern "C" void vm_trap(const char *msg) {
     rt_abort(msg);
@@ -25,6 +41,17 @@ extern "C" void vm_trap(const char *msg) {
 
 static rt_string make_str(const char *s) {
     return rt_const_cstr(s);
+}
+
+static rt_string make_bytes(const std::string &s) {
+    return rt_string_from_bytes(s.data(), s.size());
+}
+
+static void assert_same_string(rt_string lhs, rt_string rhs) {
+    assert(lhs != nullptr);
+    assert(rhs != nullptr);
+    assert(rt_str_len(lhs) == rt_str_len(rhs));
+    assert(memcmp(rt_string_cstr(lhs), rt_string_cstr(rhs), (size_t)rt_str_len(lhs)) == 0);
 }
 
 // ============================================================================
@@ -205,6 +232,99 @@ static void test_save_json_is_valid() {
     printf("test_save_json_is_valid: PASSED\n");
 }
 
+static void test_roundtrip_preserves_exact_order() {
+    rt_action_init();
+    rt_action_clear();
+
+    assert(rt_action_define(make_str("first")) == 1);
+    assert(rt_action_bind_key(make_str("first"), ZANNA_KEY_A) == 1);
+    assert(rt_action_bind_key(make_str("first"), ZANNA_KEY_B) == 1);
+    assert(rt_action_define_axis(make_str("second")) == 1);
+    assert(rt_action_bind_key_axis(make_str("second"), ZANNA_KEY_LEFT, -1.0) == 1);
+    assert(rt_action_bind_key_axis(make_str("second"), ZANNA_KEY_RIGHT, 1.0) == 1);
+
+    rt_string before = rt_action_save();
+    assert(rt_action_load(before) == 1);
+    rt_string after = rt_action_save();
+    assert_same_string(before, after);
+
+    printf("test_roundtrip_preserves_exact_order: PASSED\n");
+}
+
+static void assert_rejected_document_preserves_registry(const char *document) {
+    rt_action_clear();
+    assert(rt_action_define(make_str("sentinel")) == 1);
+    assert(rt_action_bind_key(make_str("sentinel"), ZANNA_KEY_SPACE) == 1);
+    rt_string before = rt_action_save();
+    assert(rt_action_load(make_str(document)) == 0);
+    rt_string after = rt_action_save();
+    assert_same_string(before, after);
+}
+
+static void test_malformed_schema_is_transactional() {
+    static const char *documents[] = {
+        "{\"actions\":[{\"type\":\"button\",\"bindings\":[]}]}",
+        "{\"actions\":[{\"name\":\"\",\"type\":\"button\",\"bindings\":[]}]}",
+        "{\"actions\":[{\"name\":\"bad\\u0000name\",\"type\":\"button\",\"bindings\":[]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"name\":\"b\",\"type\":\"button\",\"bindings\":[]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"button\",\"type\":\"axis\",\"bindings\":[]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"other\",\"bindings\":[]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"button\",\"bindings\":[],\"bindings\":[]}]}",
+        "{\"actions\":[{\"name\":\"same\",\"type\":\"button\",\"bindings\":[]},"
+        "{\"name\":\"same\",\"type\":\"button\",\"bindings\":[]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"button\",\"bindings\":["
+        "{\"type\":\"key\",\"type\":\"key\",\"code\":65,\"pad\":0,\"value\":1}]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"button\",\"bindings\":["
+        "{\"type\":\"key\",\"code\":65.5,\"pad\":0,\"value\":1}]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"button\",\"bindings\":["
+        "{\"type\":\"key\",\"code\":512,\"pad\":0,\"value\":1}]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"button\",\"bindings\":["
+        "{\"type\":\"mouse_x\",\"code\":0,\"pad\":0,\"value\":1}]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"axis\",\"bindings\":["
+        "{\"type\":\"mouse\",\"code\":0,\"pad\":0,\"value\":1}]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"axis\",\"bindings\":["
+        "{\"type\":\"pad_axis\",\"code\":0,\"pad\":4,\"value\":1}]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"button\",\"bindings\":["
+        "{\"type\":\"chord\",\"code\":0,\"pad\":0,\"value\":1,\"keys\":[341]}]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"button\",\"bindings\":["
+        "{\"type\":\"chord\",\"code\":0,\"pad\":0,\"value\":1,\"keys\":[341,341]}]}]}",
+        "{\"actions\":[{\"name\":\"a\",\"type\":\"button\",\"bindings\":["
+        "{\"type\":\"key\",\"code\":65,\"pad\":0}]}]}",
+    };
+
+    rt_action_init();
+    for (const char *document : documents)
+        assert_rejected_document_preserves_registry(document);
+
+    printf("test_malformed_schema_is_transactional: PASSED\n");
+}
+
+static void test_unknown_binding_tags_are_forward_compatible() {
+    rt_action_init();
+    rt_action_clear();
+    const char *document = "{\"actions\":[{\"name\":\"future\",\"type\":\"button\",\"bindings\":["
+                           "{\"type\":\"future_device\",\"vendor\":7}]}]}";
+    assert(rt_action_load(make_str(document)) == 1);
+    assert(rt_action_exists(make_str("future")) == 1);
+    assert(rt_action_binding_count(make_str("future")) == 0);
+
+    printf("test_unknown_binding_tags_are_forward_compatible: PASSED\n");
+}
+
+static void test_names_longer_than_legacy_stack_buffer_roundtrip() {
+    rt_action_init();
+    rt_action_clear();
+    std::string long_name(600, 'n');
+    std::string document =
+        "{\"actions\":[{\"name\":\"" + long_name + "\",\"type\":\"button\",\"bindings\":[]}]}";
+    assert(rt_action_load(make_bytes(document)) == 1);
+    assert(rt_action_exists(make_bytes(long_name)) == 1);
+    rt_string saved = rt_action_save();
+    assert(rt_str_len(saved) > (int64_t)long_name.size());
+
+    printf("test_names_longer_than_legacy_stack_buffer_roundtrip: PASSED\n");
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -220,6 +340,10 @@ int main() {
     test_load_clears_existing();
     test_load_null_returns_zero();
     test_save_json_is_valid();
+    test_roundtrip_preserves_exact_order();
+    test_malformed_schema_is_transactional();
+    test_unknown_binding_tags_are_forward_compatible();
+    test_names_longer_than_legacy_stack_buffer_roundtrip();
 
     printf("\nAll Action Persistence tests passed!\n");
     return 0;

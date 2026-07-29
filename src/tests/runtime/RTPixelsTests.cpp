@@ -7,6 +7,16 @@
 //
 // File: src/tests/runtime/RTPixelsTests.cpp
 // Purpose: Tests for Zanna.Graphics.Pixels software image buffer.
+// Key invariants:
+//   - Raw RGBA storage and all transforms preserve documented channel order.
+//   - Mutation generations change only when observable pixel content changes.
+//   - Extreme dimensions, coordinates, and encoded input fail without overflow.
+// Ownership/Lifetime:
+//   - Test-created runtime objects are owned by the runtime object system.
+//   - Temporary files are confined to test-scoped platform paths.
+// Links: src/runtime/graphics/2d/rt_pixels.c,
+//        src/runtime/graphics/2d/rt_pixels_transform.c,
+//        src/runtime/graphics/2d/rt_pixels_internal.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,6 +24,7 @@
 #include "rt_graphics.h"
 #include "rt_internal.h"
 #include "rt_pixels.h"
+#include "rt_pixels_internal.h"
 #include "rt_string.h"
 
 #include "tests/common/PlatformSkip.h"
@@ -116,6 +127,15 @@ static bool test_write_file(const char *path, const std::vector<uint8_t> &data) 
     bool ok = data.empty() || fwrite(data.data(), 1, data.size(), f) == data.size();
     fclose(f);
     return ok;
+}
+
+static void test_png_expect_rejected(const char *path, const std::vector<uint8_t> &png) {
+    assert(test_write_file(path, png));
+    rt_string runtime_path = rt_string_from_bytes(path, strlen(path));
+    assert(runtime_path != nullptr);
+    assert(rt_pixels_load_png(runtime_path) == nullptr);
+    rt_string_unref(runtime_path);
+    unlink(path);
 }
 
 // ============================================================================
@@ -258,6 +278,49 @@ static void test_corners() {
     assert(rt_pixels_get(p, 4, 4) == br);
 
     printf("test_corners: PASSED\n");
+}
+
+static void test_integer_helpers_cover_signed_extremes() {
+    assert(rt_pixels_abs_diff_sat64(INT64_MIN, INT64_MAX) == INT64_MAX);
+    assert(rt_pixels_abs_diff_sat64(INT64_MAX, INT64_MIN) == INT64_MAX);
+    assert(rt_pixels_abs_diff_sat64(INT64_MIN, INT64_MIN + 7) == 7);
+    assert(rt_pixels_abs_diff_sat64(INT64_MAX - 9, INT64_MAX) == 9);
+
+    assert(isqrt64(-1) == 0);
+    assert(isqrt64(0) == 0);
+    assert(isqrt64(1) == 1);
+    assert(isqrt64(2) == 1);
+    assert(isqrt64(4) == 2);
+    assert(isqrt64(INT64_MAX) == INT64_C(3037000499));
+    printf("test_integer_helpers_cover_signed_extremes: PASSED\n");
+}
+
+static void test_generation_changes_only_for_content_changes() {
+    void *p = rt_pixels_new(3, 2);
+    assert(rt_pixels_generation(p) == 0);
+
+    rt_pixels_set_rgba(p, 1, 1, 0);
+    assert(rt_pixels_generation(p) == 0);
+    rt_pixels_set_rgba(p, 1, 1, 0x10203040);
+    assert(rt_pixels_generation(p) == 1);
+    rt_pixels_set_rgba(p, 1, 1, 0x10203040);
+    assert(rt_pixels_generation(p) == 1);
+
+    rt_pixels_fill_rgba(p, 0xAABBCCDD);
+    assert(rt_pixels_generation(p) == 2);
+    rt_pixels_fill_rgba(p, 0xAABBCCDD);
+    assert(rt_pixels_generation(p) == 2);
+
+    rt_pixels_clear(p);
+    assert(rt_pixels_generation(p) == 3);
+    rt_pixels_clear(p);
+    assert(rt_pixels_generation(p) == 3);
+
+    rt_pixels_impl *impl = static_cast<rt_pixels_impl *>(p);
+    impl->generation = UINT64_MAX;
+    rt_pixels_set_rgba(p, 0, 0, 1);
+    assert(rt_pixels_generation(p) == 1);
+    printf("test_generation_changes_only_for_content_changes: PASSED\n");
 }
 
 // ============================================================================
@@ -447,6 +510,36 @@ static void test_clone() {
     printf("test_clone: PASSED\n");
 }
 
+static void test_copy_generation_and_alpha_cache_are_exact() {
+    void *src = rt_pixels_new(2, 2);
+    void *dst = rt_pixels_new(2, 2);
+    rt_pixels_set_rgba(src, 0, 0, 0x112233FF);
+    rt_pixels_set_rgba(src, 1, 0, 0x44556680);
+
+    rt_pixels_impl *src_impl = static_cast<rt_pixels_impl *>(src);
+    rt_pixels_impl *dst_impl = static_cast<rt_pixels_impl *>(dst);
+    assert(rt_pixels_alpha_classification_cached(src_impl) == RT_PIXELS_ALPHA_FRACTIONAL);
+    assert(src_impl->alpha_classification_scan_count == 1);
+
+    rt_pixels_copy(dst, 0, 0, src, 0, 0, 2, 2);
+    assert(rt_pixels_generation(dst) == 1);
+    assert(dst_impl->alpha_scan_valid == 1);
+    assert(rt_pixels_alpha_classification_cached(dst_impl) == RT_PIXELS_ALPHA_FRACTIONAL);
+    assert(dst_impl->alpha_classification_scan_count == 0);
+
+    rt_pixels_copy(dst, 0, 0, src, 0, 0, 2, 2);
+    assert(rt_pixels_generation(dst) == 1);
+    rt_pixels_copy(dst, 0, 0, dst, 0, 0, 2, 2);
+    assert(rt_pixels_generation(dst) == 1);
+
+    void *clone = rt_pixels_clone(src);
+    rt_pixels_impl *clone_impl = static_cast<rt_pixels_impl *>(clone);
+    assert(clone_impl->alpha_scan_valid == 1);
+    assert(rt_pixels_alpha_classification_cached(clone_impl) == RT_PIXELS_ALPHA_FRACTIONAL);
+    assert(clone_impl->alpha_classification_scan_count == 0);
+    printf("test_copy_generation_and_alpha_cache_are_exact: PASSED\n");
+}
+
 // ============================================================================
 // Byte Conversion Tests
 // ============================================================================
@@ -513,6 +606,7 @@ static void test_from_bytes() {
 
     void *p = rt_pixels_from_bytes(2, 2, bytes);
     assert(p != nullptr);
+    assert(rt_pixels_generation(p) == 0);
     assert(rt_pixels_width(p) == 2);
     assert(rt_pixels_height(p) == 2);
 
@@ -757,9 +851,63 @@ static void test_bmp_load_rejects_invalid_header_extents() {
     assert(test_write_file(bmppath, data));
     assert(rt_pixels_load_bmp(path) == nullptr);
 
+    assert(rt_pixels_save_bmp(p, path) == 1);
+    assert(test_read_file(bmppath, data));
+    assert(data.size() >= 54);
+    data[6] = 1; // reserved fields must be zero
+    assert(test_write_file(bmppath, data));
+    assert(rt_pixels_load_bmp(path) == nullptr);
+
+    assert(rt_pixels_save_bmp(p, path) == 1);
+    assert(test_read_file(bmppath, data));
+    assert(data.size() >= 54);
+    data[26] = 2; // BITMAPINFOHEADER planes must be exactly one
+    assert(test_write_file(bmppath, data));
+    assert(rt_pixels_load_bmp(path) == nullptr);
+
+    assert(rt_pixels_save_bmp(p, path) == 1);
+    assert(test_read_file(bmppath, data));
+    assert(data.size() >= 54);
+    data[34] = 3; // nonzero image_size must match the padded pixel payload
+    assert(test_write_file(bmppath, data));
+    assert(rt_pixels_load_bmp(path) == nullptr);
+
     unlink(bmppath);
     rt_string_unref(path);
     printf("test_bmp_load_rejects_invalid_header_extents: PASSED\n");
+}
+
+static void test_image_paths_reject_embedded_nul() {
+    static const char prefix[] = "/tmp/zanna_test_embedded_nul.bmp";
+    static const char embedded_path[] = "/tmp/zanna_test_embedded_nul.bmp\0ignored";
+    rt_string normal = rt_string_from_bytes(prefix, strlen(prefix));
+    rt_string embedded = rt_string_from_bytes(embedded_path, sizeof(embedded_path) - 1u);
+    assert(normal != nullptr);
+    assert(embedded != nullptr);
+
+    void *pixels = rt_pixels_new(1, 1);
+    assert(pixels != nullptr);
+    rt_pixels_set(pixels, 0, 0, 0x123456FF);
+    assert(rt_pixels_save_bmp(pixels, normal) == 1);
+
+    std::vector<uint8_t> before;
+    std::vector<uint8_t> after;
+    assert(test_read_file(prefix, before));
+    assert(rt_pixels_save_bmp(pixels, embedded) == 0);
+    assert(rt_pixels_save_png(pixels, embedded) == 0);
+    assert(test_read_file(prefix, after));
+    assert(after == before);
+
+    EXPECT_TRAP((void)rt_pixels_load(embedded));
+    EXPECT_TRAP((void)rt_pixels_load_bmp(embedded));
+    EXPECT_TRAP((void)rt_pixels_load_png(embedded));
+    EXPECT_TRAP((void)rt_pixels_load_jpeg(embedded));
+    EXPECT_TRAP((void)rt_pixels_load_gif(embedded));
+
+    unlink(prefix);
+    rt_string_unref(embedded);
+    rt_string_unref(normal);
+    printf("test_image_paths_reject_embedded_nul: PASSED\n");
 }
 
 static void test_png_load_rejects_bad_chunk_crc() {
@@ -879,6 +1027,99 @@ static std::vector<uint8_t> test_png_stored_idat(const uint8_t *scanline, size_t
     idat.insert(idat.end(), scanline, scanline + len);
     test_png_write_u32(idat, test_png_adler32(scanline, len));
     return idat;
+}
+
+static std::vector<uint8_t> test_png_prefix(uint8_t bit_depth, uint8_t color_type) {
+    std::vector<uint8_t> png;
+    static const uint8_t signature[8] = {0x89, 'P', 'N', 'G', '\r', '\n', 0x1A, '\n'};
+    png.insert(png.end(), signature, signature + 8);
+    uint8_t ihdr[13] = {0};
+    ihdr[3] = 1;
+    ihdr[7] = 1;
+    ihdr[8] = bit_depth;
+    ihdr[9] = color_type;
+    test_png_append_chunk(png, "IHDR", ihdr, sizeof(ihdr));
+    return png;
+}
+
+static void test_png_append_stored_scanline(std::vector<uint8_t> &png,
+                                            const uint8_t *scanline,
+                                            size_t len) {
+    std::vector<uint8_t> idat = test_png_stored_idat(scanline, len);
+    test_png_append_chunk(png, "IDAT", idat.data(), idat.size());
+}
+
+static void test_png_rejects_invalid_chunk_types() {
+    static const uint8_t scanline[5] = {0, 1, 2, 3, 255};
+
+    std::vector<uint8_t> nonletter = test_png_prefix(8, 6);
+    test_png_append_chunk(nonletter, "a1CD", nullptr, 0);
+    test_png_append_stored_scanline(nonletter, scanline, sizeof(scanline));
+    test_png_append_chunk(nonletter, "IEND", nullptr, 0);
+    test_png_expect_rejected("/tmp/zanna_test_png_nonletter_chunk.png", nonletter);
+
+    std::vector<uint8_t> reserved = test_png_prefix(8, 6);
+    test_png_append_chunk(reserved, "abcD", nullptr, 0);
+    test_png_append_stored_scanline(reserved, scanline, sizeof(scanline));
+    test_png_append_chunk(reserved, "IEND", nullptr, 0);
+    test_png_expect_rejected("/tmp/zanna_test_png_reserved_chunk_bit.png", reserved);
+
+    printf("test_png_rejects_invalid_chunk_types: PASSED\n");
+}
+
+static void test_png_rejects_malformed_end() {
+    static const uint8_t scanline[5] = {0, 1, 2, 3, 255};
+
+    std::vector<uint8_t> payload_end = test_png_prefix(8, 6);
+    test_png_append_stored_scanline(payload_end, scanline, sizeof(scanline));
+    uint8_t payload = 0;
+    test_png_append_chunk(payload_end, "IEND", &payload, 1);
+    test_png_expect_rejected("/tmp/zanna_test_png_iend_payload.png", payload_end);
+
+    std::vector<uint8_t> trailing = test_png_prefix(8, 6);
+    test_png_append_stored_scanline(trailing, scanline, sizeof(scanline));
+    test_png_append_chunk(trailing, "IEND", nullptr, 0);
+    trailing.push_back(0);
+    test_png_expect_rejected("/tmp/zanna_test_png_trailing_data.png", trailing);
+
+    printf("test_png_rejects_malformed_end: PASSED\n");
+}
+
+static void test_png_rejects_invalid_transparency_metadata() {
+    std::vector<uint8_t> gray = test_png_prefix(1, 0);
+    uint8_t gray_trns[2] = {0, 2}; // outside the one-bit sample range
+    test_png_append_chunk(gray, "tRNS", gray_trns, sizeof(gray_trns));
+    uint8_t gray_scanline[2] = {0, 0};
+    test_png_append_stored_scanline(gray, gray_scanline, sizeof(gray_scanline));
+    test_png_append_chunk(gray, "IEND", nullptr, 0);
+    test_png_expect_rejected("/tmp/zanna_test_png_gray_trns_range.png", gray);
+
+    std::vector<uint8_t> rgb = test_png_prefix(8, 2);
+    uint8_t rgb_trns[6] = {1, 0, 0, 0, 0, 0}; // red key 256 is not an 8-bit sample
+    test_png_append_chunk(rgb, "tRNS", rgb_trns, sizeof(rgb_trns));
+    uint8_t rgb_scanline[4] = {0, 0, 0, 0};
+    test_png_append_stored_scanline(rgb, rgb_scanline, sizeof(rgb_scanline));
+    test_png_append_chunk(rgb, "IEND", nullptr, 0);
+    test_png_expect_rejected("/tmp/zanna_test_png_rgb_trns_range.png", rgb);
+
+    std::vector<uint8_t> empty_palette_trns = test_png_prefix(8, 3);
+    uint8_t palette[3] = {0, 0, 0};
+    test_png_append_chunk(empty_palette_trns, "PLTE", palette, sizeof(palette));
+    test_png_append_chunk(empty_palette_trns, "tRNS", nullptr, 0);
+    uint8_t indexed_scanline[2] = {0, 0};
+    test_png_append_stored_scanline(empty_palette_trns, indexed_scanline, sizeof(indexed_scanline));
+    test_png_append_chunk(empty_palette_trns, "IEND", nullptr, 0);
+    test_png_expect_rejected("/tmp/zanna_test_png_empty_trns.png", empty_palette_trns);
+
+    std::vector<uint8_t> wrong_order = test_png_prefix(8, 2);
+    uint8_t valid_rgb_trns[6] = {0, 0, 0, 0, 0, 0};
+    test_png_append_chunk(wrong_order, "tRNS", valid_rgb_trns, sizeof(valid_rgb_trns));
+    test_png_append_chunk(wrong_order, "PLTE", palette, sizeof(palette));
+    test_png_append_stored_scanline(wrong_order, rgb_scanline, sizeof(rgb_scanline));
+    test_png_append_chunk(wrong_order, "IEND", nullptr, 0);
+    test_png_expect_rejected("/tmp/zanna_test_png_plte_after_trns.png", wrong_order);
+
+    printf("test_png_rejects_invalid_transparency_metadata: PASSED\n");
 }
 
 static void test_png_rejects_invalid_ihdr_methods() {
@@ -1270,6 +1511,37 @@ static void test_zero_dimension_flip_v_returns_zero_dimension_copy() {
     printf("test_zero_dimension_flip_v_returns_zero_dimension_copy: PASSED\n");
 }
 
+static void test_empty_rotation_validates_angle_and_preserves_shape() {
+    void *p = rt_pixels_new(0, 5);
+    assert(p != nullptr);
+    EXPECT_TRAP(rt_pixels_rotate(p, NAN));
+
+    void *same = rt_pixels_rotate(p, 0.0);
+    assert(same != nullptr);
+    assert(rt_pixels_width(same) == 0);
+    assert(rt_pixels_height(same) == 5);
+
+    void *quarter = rt_pixels_rotate(p, 90.0);
+    assert(quarter != nullptr);
+    assert(rt_pixels_width(quarter) == 5);
+    assert(rt_pixels_height(quarter) == 0);
+
+    void *arbitrary = rt_pixels_rotate(p, 45.0);
+    assert(arbitrary != nullptr);
+    assert(rt_pixels_width(arbitrary) == 0);
+    assert(rt_pixels_height(arbitrary) == 5);
+    printf("test_empty_rotation_validates_angle_and_preserves_shape: PASSED\n");
+}
+
+static void test_near_cardinal_rotation_is_not_aliased() {
+    void *p = rt_pixels_new(3, 2);
+    rt_pixels_fill_rgba(p, 0x112233FF);
+    void *rotated = rt_pixels_rotate(p, 90.0005);
+    assert(rotated != nullptr);
+    assert(rt_pixels_width(rotated) != 2 || rt_pixels_height(rotated) != 3);
+    printf("test_near_cardinal_rotation_is_not_aliased: PASSED\n");
+}
+
 static void test_scale_and_resize_reject_nonpositive_target_dimensions() {
     void *p = rt_pixels_new(2, 2);
     assert(p != nullptr);
@@ -1413,6 +1685,20 @@ static void test_tint_multiplies_tagged_alpha() {
     printf("test_tint_multiplies_tagged_alpha: PASSED\n");
 }
 
+static void test_tint_rounds_instead_of_darkening() {
+    void *p = rt_pixels_new(1, 1);
+    rt_pixels_set_rgba(p, 0, 0, pack_rgba(1, 1, 1, 1));
+
+    void *tinted = rt_pixels_tint(p, rt_color_rgba(128, 128, 128, 128));
+    assert(tinted != nullptr);
+    int64_t color = rt_pixels_get(tinted, 0, 0);
+    assert(channel_r(color) == 1);
+    assert(channel_g(color) == 1);
+    assert(channel_b(color) == 1);
+    assert(channel_a(color) == 1);
+    printf("test_tint_rounds_instead_of_darkening: PASSED\n");
+}
+
 static int64_t bilerp_rgba_premul(
     int64_t p00, int64_t p10, int64_t p01, int64_t p11, int frac_x, int frac_y) {
     int inv_frac_x = 256 - frac_x;
@@ -1423,31 +1709,28 @@ static int64_t bilerp_rgba_premul(
     int a01 = channel_a(p01);
     int a11 = channel_a(p11);
 
-    int a = (a00 * inv_frac_x * inv_frac_y + a10 * frac_x * inv_frac_y + a01 * inv_frac_x * frac_y +
-             a11 * frac_x * frac_y) >>
-            16;
+    int weighted_a = a00 * inv_frac_x * inv_frac_y + a10 * frac_x * inv_frac_y +
+                     a01 * inv_frac_x * frac_y + a11 * frac_x * frac_y;
+    int a = (weighted_a + 32768) >> 16;
     if (a <= 0)
         return 0;
 
-    int premul_r =
-        ((channel_r(p00) * a00) * inv_frac_x * inv_frac_y +
-         (channel_r(p10) * a10) * frac_x * inv_frac_y +
-         (channel_r(p01) * a01) * inv_frac_x * frac_y + (channel_r(p11) * a11) * frac_x * frac_y) >>
-        16;
-    int premul_g =
-        ((channel_g(p00) * a00) * inv_frac_x * inv_frac_y +
-         (channel_g(p10) * a10) * frac_x * inv_frac_y +
-         (channel_g(p01) * a01) * inv_frac_x * frac_y + (channel_g(p11) * a11) * frac_x * frac_y) >>
-        16;
-    int premul_b =
-        ((channel_b(p00) * a00) * inv_frac_x * inv_frac_y +
-         (channel_b(p10) * a10) * frac_x * inv_frac_y +
-         (channel_b(p01) * a01) * inv_frac_x * frac_y + (channel_b(p11) * a11) * frac_x * frac_y) >>
-        16;
+    int weighted_r = (channel_r(p00) * a00) * inv_frac_x * inv_frac_y +
+                     (channel_r(p10) * a10) * frac_x * inv_frac_y +
+                     (channel_r(p01) * a01) * inv_frac_x * frac_y +
+                     (channel_r(p11) * a11) * frac_x * frac_y;
+    int weighted_g = (channel_g(p00) * a00) * inv_frac_x * inv_frac_y +
+                     (channel_g(p10) * a10) * frac_x * inv_frac_y +
+                     (channel_g(p01) * a01) * inv_frac_x * frac_y +
+                     (channel_g(p11) * a11) * frac_x * frac_y;
+    int weighted_b = (channel_b(p00) * a00) * inv_frac_x * inv_frac_y +
+                     (channel_b(p10) * a10) * frac_x * inv_frac_y +
+                     (channel_b(p01) * a01) * inv_frac_x * frac_y +
+                     (channel_b(p11) * a11) * frac_x * frac_y;
 
-    int r = (premul_r + a / 2) / a;
-    int g = (premul_g + a / 2) / a;
-    int b = (premul_b + a / 2) / a;
+    int r = (weighted_r + weighted_a / 2) / weighted_a;
+    int g = (weighted_g + weighted_a / 2) / weighted_a;
+    int b = (weighted_b + weighted_a / 2) / weighted_a;
     return pack_rgba(r, g, b, a);
 }
 
@@ -1459,13 +1742,13 @@ static int64_t average_rgba_premul(int64_t p0, int64_t p1, int64_t p2) {
     if (a <= 0)
         return 0;
 
-    int premul_r = (channel_r(p0) * a0 + channel_r(p1) * a1 + channel_r(p2) * a2 + 1) / 3;
-    int premul_g = (channel_g(p0) * a0 + channel_g(p1) * a1 + channel_g(p2) * a2 + 1) / 3;
-    int premul_b = (channel_b(p0) * a0 + channel_b(p1) * a1 + channel_b(p2) * a2 + 1) / 3;
-
-    int r = (premul_r + a / 2) / a;
-    int g = (premul_g + a / 2) / a;
-    int b = (premul_b + a / 2) / a;
+    int sum_a = a0 + a1 + a2;
+    int sum_r = channel_r(p0) * a0 + channel_r(p1) * a1 + channel_r(p2) * a2;
+    int sum_g = channel_g(p0) * a0 + channel_g(p1) * a1 + channel_g(p2) * a2;
+    int sum_b = channel_b(p0) * a0 + channel_b(p1) * a1 + channel_b(p2) * a2;
+    int r = (sum_r + sum_a / 2) / sum_a;
+    int g = (sum_g + sum_a / 2) / sum_a;
+    int b = (sum_b + sum_a / 2) / sum_a;
     return pack_rgba(r, g, b, a);
 }
 
@@ -1588,6 +1871,62 @@ static void test_resize_preserves_source_endpoints() {
     printf("test_resize_preserves_source_endpoints: PASSED\n");
 }
 
+static void test_resize_odd_ratio_uses_rounded_area_filter() {
+    void *p = rt_pixels_new(5, 1);
+    rt_pixels_set_rgba(p, 0, 0, pack_rgba(0, 0, 0, 255));
+    rt_pixels_set_rgba(p, 1, 0, pack_rgba(100, 0, 0, 255));
+    rt_pixels_set_rgba(p, 2, 0, pack_rgba(0, 0, 0, 255));
+    rt_pixels_set_rgba(p, 3, 0, pack_rgba(1, 0, 0, 255));
+    rt_pixels_set_rgba(p, 4, 0, pack_rgba(1, 0, 0, 255));
+
+    void *resized = rt_pixels_resize(p, 2, 1);
+    assert(resized != nullptr);
+    assert(channel_r(rt_pixels_get(resized, 0, 0)) == 50);
+    assert(channel_r(rt_pixels_get(resized, 1, 0)) == 1);
+    printf("test_resize_odd_ratio_uses_rounded_area_filter: PASSED\n");
+}
+
+static void test_resize_hybrid_preserves_upscaled_axis_interpolation() {
+    void *p = rt_pixels_new(5, 2);
+    for (int64_t x = 0; x < 5; x++) {
+        rt_pixels_set_rgba(p, x, 0, pack_rgba(0, 0, 0, 255));
+        rt_pixels_set_rgba(p, x, 1, pack_rgba(200, 0, 0, 255));
+    }
+
+    void *resized = rt_pixels_resize(p, 2, 3);
+    assert(resized != nullptr);
+    assert(channel_r(rt_pixels_get(resized, 0, 0)) == 0);
+    assert(channel_r(rt_pixels_get(resized, 0, 1)) == 100);
+    assert(channel_r(rt_pixels_get(resized, 0, 2)) == 200);
+    assert(channel_r(rt_pixels_get(resized, 1, 1)) == 100);
+    printf("test_resize_hybrid_preserves_upscaled_axis_interpolation: PASSED\n");
+}
+
+static void test_alpha_preserving_transforms_reuse_classification() {
+    void *p = rt_pixels_new(2, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0x112233FF);
+    rt_pixels_set_rgba(p, 1, 0, 0x44556680);
+    rt_pixels_impl *source = static_cast<rt_pixels_impl *>(p);
+    assert(rt_pixels_alpha_classification_cached(source) == RT_PIXELS_ALPHA_FRACTIONAL);
+
+    void *results[] = {rt_pixels_flip_h(p),
+                       rt_pixels_flip_v(p),
+                       rt_pixels_rotate_cw(p),
+                       rt_pixels_rotate_ccw(p),
+                       rt_pixels_rotate_180(p),
+                       rt_pixels_invert(p),
+                       rt_pixels_grayscale(p),
+                       rt_pixels_tint(p, rt_color_rgb(255, 255, 255))};
+    for (void *result : results) {
+        assert(result != nullptr);
+        rt_pixels_impl *impl = static_cast<rt_pixels_impl *>(result);
+        assert(impl->alpha_scan_valid == 1);
+        assert(rt_pixels_alpha_classification_cached(impl) == RT_PIXELS_ALPHA_FRACTIONAL);
+        assert(impl->alpha_classification_scan_count == 0);
+    }
+    printf("test_alpha_preserving_transforms_reuse_classification: PASSED\n");
+}
+
 // ============================================================================
 // BlendPixel Tests
 // ============================================================================
@@ -1675,6 +2014,8 @@ int main() {
     test_get_out_of_bounds();
     test_set_out_of_bounds();
     test_corners();
+    test_integer_helpers_cover_signed_extremes();
+    test_generation_changes_only_for_content_changes();
 
     // Fill operations
     test_fill();
@@ -1688,6 +2029,7 @@ int main() {
     test_copy_overlap_backward();
     test_copy_extreme_coordinates_noop();
     test_clone();
+    test_copy_generation_and_alpha_cache_are_exact();
 
     // Byte conversion
     test_to_bytes();
@@ -1705,6 +2047,7 @@ int main() {
     test_bmp_save_null_inputs();
     test_bmp_odd_dimensions();
     test_bmp_load_rejects_invalid_header_extents();
+    test_image_paths_reject_embedded_nul();
     test_png_load_rejects_bad_chunk_crc();
     test_png_load_rejects_bad_zlib_adler();
     test_png_truecolor_trns_transparency();
@@ -1715,6 +2058,9 @@ int main() {
     test_png_rejects_trns_for_alpha_color_type();
     test_png_rejects_wrong_truecolor_trns_length();
     test_png_adam7_invalid_filter_rejected();
+    test_png_rejects_invalid_chunk_types();
+    test_png_rejects_malformed_end();
+    test_png_rejects_invalid_transparency_metadata();
 
     // Transforms
     test_flip_h();
@@ -1726,11 +2072,14 @@ int main() {
     test_rotate_single_pixel_keeps_centered_extent();
     test_rotate_nonfinite_traps();
     test_zero_dimension_flip_v_returns_zero_dimension_copy();
+    test_empty_rotation_validates_angle_and_preserves_shape();
+    test_near_cardinal_rotation_is_not_aliased();
     test_scale_up();
     test_scale_down();
     test_scale_preserves_source_endpoints();
     test_scale_and_resize_reject_nonpositive_target_dimensions();
     test_tint_multiplies_tagged_alpha();
+    test_tint_rounds_instead_of_darkening();
     test_blur_zero_returns_exact_copy();
     test_blur_empty_image_returns_empty_pixels();
     test_blur_rgba_channel_order();
@@ -1738,6 +2087,9 @@ int main() {
     test_resize_rgba_channel_order();
     test_resize_alpha_aware_preserves_edge_color();
     test_resize_preserves_source_endpoints();
+    test_resize_odd_ratio_uses_rounded_area_filter();
+    test_resize_hybrid_preserves_upscaled_axis_interpolation();
+    test_alpha_preserving_transforms_reuse_classification();
 
     // BlendPixel
     test_blend_fully_opaque();

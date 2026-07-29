@@ -1,0 +1,698 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_component_schema_forms.zia
+// Purpose: Schema-v19 parser layer for scene-level typed settings forms.
+// Key invariants:
+//   - Additive and bounded: absent `sceneComponents` parses to an empty
+//     list; any malformed entry rejects the whole file with one message.
+//   - Presentation-only vocabulary: parsed fields describe how existing
+//     scalar metadata is edited, never how it is stored.
+//   - The layer keeps the stateless-parser contract: no GUI, no documents.
+// Ownership/Lifetime:
+//   - Assembled into the concrete parser facade; owns no persistent state.
+// Links: zannastudio/src/ui/scene_component_schema_forms_model.zia,
+//        zannastudio/src/ui/scene_component_schema_components.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_component_schema_forms;
+
+bind "scene_component_schema_model" as SceneComponentModel;
+bind "scene_component_schema_forms_model" as FormsModel;
+bind "scene_component_schema_components" as PreviousLayer;
+
+bind Json = Zanna.Data.Json;
+bind Map = Zanna.Collections.Map;
+bind Parse = Zanna.Core.Parse;
+bind Seq = Zanna.Collections.Seq;
+bind Str = Zanna.String;
+
+/// @brief Parser layer adding bounded v19 scene-settings form parsing.
+class SceneComponentSchemaFormsLayer extends PreviousLayer.SceneComponentSchemaComponentsLayer {
+
+    /// @brief v19 object/node component enums: accept `{value,label}`
+    ///        objects mixed with legacy strings, plus `storedKind: "int"`.
+    /// @details Pre-v19 schemas keep the strict string-only parse.
+    hide override func ParseEnumChoices(raw: Any,
+                          field: SceneComponentModel.SceneComponentField,
+                          schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var strictLegacy = schema.version
+            < FormsModel.SCENE_SETTINGS_SCHEMA_VERSION;
+        var rawChoices = Map.Get(raw, "choices");
+        if rawChoices == null or Json.TypeOf(rawChoices) != "array" {
+            Reject(
+                schema,
+                "Field \"" + field.key + "\" requires a choices array.");
+            return false;
+        }
+        var count = Seq.get_Count(rawChoices);
+        if count <= 0
+           or count > SceneComponentModel.MAX_ENUM_CHOICES {
+            Reject(
+                schema,
+                "Field \"" + field.key
+                    + "\" requires between 1 and 64 choices.");
+            return false;
+        }
+        var index = 0;
+        while index < count {
+            var one = Seq.Get(rawChoices, index);
+            var value = "";
+            var label = "";
+            if Json.TypeOf(one) == "string" {
+                value = Str.Trim(Seq.GetStr(rawChoices, index));
+                label = value;
+                // Pre-v19 choices stay strict portable identifiers.
+                if strictLegacy
+                   and PortableIdentifier(
+                           value,
+                           SceneComponentModel.MAX_ENUM_CHOICE_CHARS)
+                       == false {
+                    Reject(
+                        schema,
+                        "Field \"" + field.key
+                            + "\" choices must be portable identifiers "
+                            + "of at most 64 characters.");
+                    return false;
+                }
+            } else if Json.TypeOf(one) == "object"
+                      and strictLegacy == false {
+                value = Str.Trim(Map.GetStr(one, "value"));
+                label = Str.Trim(Map.GetStr(one, "label"));
+                if label == "" { label = value; }
+            } else {
+                Reject(
+                    schema,
+                    "Field \"" + field.key + "\" choice " + index
+                        + " must be a string or a value/label object.");
+                return false;
+            }
+            if value == ""
+               or Str.get_Length(value)
+                  > SceneComponentModel.MAX_ENUM_CHOICE_CHARS
+               or Str.get_Length(label)
+                  > SceneComponentModel.MAX_ENUM_CHOICE_CHARS {
+                Reject(
+                    schema,
+                    "Field \"" + field.key + "\" choice " + index
+                        + " requires bounded non-empty value and label.");
+                return false;
+            }
+            var duplicate = field.HasChoice(value);
+            if strictLegacy and duplicate == false {
+                // Pre-v19 duplicates were rejected case-insensitively.
+                var folded = Str.ToLower(value);
+                var seenIndex = 0;
+                while seenIndex < field.choices.count() {
+                    if Str.ToLower(field.choices.get(seenIndex))
+                       == folded {
+                        duplicate = true;
+                    }
+                    seenIndex = seenIndex + 1;
+                }
+            }
+            if duplicate {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" repeats choice value \"" + value + "\".");
+                return false;
+            }
+            field.choices.add(value);
+            field.choiceLabels.add(label);
+            index = index + 1;
+        }
+        if Map.Has(raw, "storedKind") and strictLegacy == false {
+            var stored =
+                Str.ToLower(Str.Trim(Map.GetStr(raw, "storedKind")));
+            if stored != "int" {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" storedKind supports only int.");
+                return false;
+            }
+            var checkIndex = 0;
+            while checkIndex < field.choices.count() {
+                if Parse.TryInt(
+                       field.choices.get(checkIndex)).IsNone {
+                    Reject(
+                        schema,
+                        "Field \"" + field.key + "\" choice value \""
+                            + field.choices.get(checkIndex)
+                            + "\" must be an integer for storedKind "
+                            + "int.");
+                    return false;
+                }
+                checkIndex = checkIndex + 1;
+            }
+            field.storedKind = stored;
+        }
+        return true;
+    }
+
+    /// @brief Parse the optional v19 `sceneComponents` section.
+    hide override func ParseSceneSettings(
+        root: Any,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(root, "sceneComponents") == false { return true; }
+        if schema.version
+           < FormsModel.SCENE_SETTINGS_SCHEMA_VERSION {
+            Reject(
+                schema,
+                "sceneComponents requires schema version "
+                    + FormsModel.SCENE_SETTINGS_SCHEMA_VERSION + ".");
+            return false;
+        }
+        var raw = Map.Get(root, "sceneComponents");
+        if Json.TypeOf(raw) != "array" {
+            Reject(schema, "sceneComponents must be an array.");
+            return false;
+        }
+        if Seq.get_Count(raw) > FormsModel.MAX_SCENE_COMPONENTS {
+            Reject(
+                schema,
+                "sceneComponents allows at most "
+                    + FormsModel.MAX_SCENE_COMPONENTS + " entries.");
+            return false;
+        }
+        var index = 0;
+        while index < Seq.get_Count(raw) {
+            var component =
+                ParseSceneSettingsComponent(
+                    Seq.Get(raw, index), index, schema);
+            if component == null { return false; }
+            schema.sceneSettings.add(component);
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse one scene-settings component object.
+    hide func ParseSceneSettingsComponent(
+        raw: Any,
+        index: Integer,
+        schema: SceneComponentModel.SceneComponentSchema)
+            -> FormsModel.SceneSettingsComponent {
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(
+                schema,
+                "sceneComponents entry " + index + " must be an object.");
+            return null;
+        }
+        var component = new FormsModel.SceneSettingsComponent();
+        component.name = Str.Trim(Map.GetStr(raw, "name"));
+        if PortableIdentifier(
+               component.name,
+               SceneComponentModel.MAX_COMPONENT_NAME_CHARS) == false {
+            Reject(
+                schema,
+                "sceneComponents entry " + index
+                    + " requires a portable name.");
+            return null;
+        }
+        component.target = Str.Trim(Map.GetStr(raw, "target"));
+        if component.target != FormsModel.TARGET_3D_SCENE
+           and component.target != FormsModel.TARGET_2D_SCENE {
+            Reject(
+                schema,
+                "Scene component \"" + component.name
+                    + "\" target must be 3d-scene or 2d-scene.");
+            return null;
+        }
+        component.label = component.name;
+        if Map.Has(raw, "label") {
+            component.label = Str.Trim(Map.GetStr(raw, "label"));
+            if component.label == "" {
+                Reject(
+                    schema,
+                    "Scene component \"" + component.name
+                        + "\" label must not be empty.");
+                return null;
+            }
+        }
+        component.description = Str.Trim(Map.GetStr(raw, "description"));
+        if Map.Has(raw, "repeat") {
+            if ParseSceneFormRepeat(
+                   Map.Get(raw, "repeat"), component, schema) == false {
+                return null;
+            }
+        }
+        if Map.Has(raw, "fields") == false
+           or Json.TypeOf(Map.Get(raw, "fields")) != "array" {
+            Reject(
+                schema,
+                "Scene component \"" + component.name
+                    + "\" requires a fields array.");
+            return null;
+        }
+        var fields = Map.Get(raw, "fields");
+        if Seq.get_Count(fields) > FormsModel.MAX_SCENE_FORM_FIELDS {
+            Reject(
+                schema,
+                "Scene component \"" + component.name
+                    + "\" allows at most "
+                    + FormsModel.MAX_SCENE_FORM_FIELDS + " fields.");
+            return null;
+        }
+        var seen = Map.New();
+        var fieldIndex = 0;
+        while fieldIndex < Seq.get_Count(fields) {
+            var field = ParseSceneFormField(
+                Seq.Get(fields, fieldIndex),
+                component,
+                fieldIndex,
+                seen,
+                schema);
+            if field == null { return null; }
+            component.fields.add(field);
+            fieldIndex = fieldIndex + 1;
+        }
+        return component;
+    }
+
+    /// @brief Parse one bounded repeat-group declaration.
+    hide func ParseSceneFormRepeat(
+        raw: Any,
+        component: FormsModel.SceneSettingsComponent,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(
+                schema,
+                "Scene component \"" + component.name
+                    + "\" repeat must be an object.");
+            return false;
+        }
+        component.repeat.countKey =
+            Str.Trim(Map.GetStr(raw, "countKey"));
+        component.repeat.indexPattern =
+            Str.Trim(Map.GetStr(raw, "indexPattern"));
+        component.repeat.itemLabel =
+            Str.Trim(Map.GetStr(raw, "itemLabel"));
+        var maxParse = Parse.TryInt(Json.Format(Map.Get(raw, "max")));
+        if maxParse.IsNone { component.repeat.maximum = 0; }
+        else { component.repeat.maximum = maxParse.UnwrapI64(); }
+        if component.repeat.countKey == ""
+           or component.repeat.indexPattern == ""
+           or Str.IndexOf(component.repeat.indexPattern, "{i}") == 0
+           or component.repeat.maximum < 1
+           or component.repeat.maximum
+              > FormsModel.MAX_REPEAT_ITEMS {
+            Reject(
+                schema,
+                "Scene component \"" + component.name
+                    + "\" repeat requires countKey, an indexPattern "
+                    + "containing {i}, and max between 1 and "
+                    + FormsModel.MAX_REPEAT_ITEMS + ".");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse one typed scene-settings field.
+    hide func ParseSceneFormField(
+        raw: Any,
+        component: FormsModel.SceneSettingsComponent,
+        index: Integer,
+        seenKeys: Any,
+        schema: SceneComponentModel.SceneComponentSchema)
+            -> FormsModel.SceneFormField {
+        if raw == null or Json.TypeOf(raw) != "object" {
+            Reject(
+                schema,
+                "Field " + index + " in scene component \""
+                    + component.name + "\" must be an object.");
+            return null;
+        }
+        var field = new FormsModel.SceneFormField();
+        field.kind = Str.ToLower(Str.Trim(Map.GetStr(raw, "type")));
+        if SceneFormKindValid(field.kind) == false {
+            Reject(
+                schema,
+                "Field " + index + " in scene component \""
+                    + component.name
+                    + "\" type must be string, int, float, bool, enum, "
+                    + "color, angle, vec2, vec3, or ref.");
+            return null;
+        }
+        if ParseSceneFormFieldKeys(
+               raw, field, component, index, seenKeys, schema) == false {
+            return null;
+        }
+        field.label = field.key;
+        if Map.Has(raw, "label") {
+            field.label = Str.Trim(Map.GetStr(raw, "label"));
+        }
+        if field.label == "" {
+            Reject(
+                schema,
+                "Field \"" + field.key + "\" in scene component \""
+                    + component.name + "\" label must not be empty.");
+            return null;
+        }
+        field.group = Str.Trim(Map.GetStr(raw, "group"));
+        if Str.get_Length(field.group) > FormsModel.MAX_GROUP_CHARS {
+            Reject(
+                schema,
+                "Field \"" + field.key + "\" group exceeds "
+                    + FormsModel.MAX_GROUP_CHARS + " characters.");
+            return null;
+        }
+        field.description = Str.Trim(Map.GetStr(raw, "description"));
+        field.defaultText = Str.Trim(Map.GetStr(raw, "default"));
+        if ParseSceneFormRange(raw, field, component, schema) == false {
+            return null;
+        }
+        if field.kind == FormsModel.KIND_ANGLE {
+            field.storageUnit = FormsModel.ANGLE_DEGREES;
+            if Map.Has(raw, "storageUnit") {
+                field.storageUnit =
+                    Str.ToLower(Str.Trim(Map.GetStr(raw, "storageUnit")));
+            }
+            if field.storageUnit != FormsModel.ANGLE_DEGREES
+               and field.storageUnit != FormsModel.ANGLE_RADIANS {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" storageUnit must be degrees or radians.");
+                return null;
+            }
+        }
+        if field.kind == "enum" {
+            if ParseSceneFormChoices(
+                   raw, field, component, schema) == false {
+                return null;
+            }
+            if ParseStoredKind(raw, field, schema) == false {
+                return null;
+            }
+        }
+        if field.kind == FormsModel.KIND_REF
+           and ParseSceneFormRef(raw, field, component, schema) == false {
+            return null;
+        }
+        return field;
+    }
+
+    /// @brief Validate the extended scene-form kind vocabulary.
+    hide func SceneFormKindValid(kind: String) -> Boolean {
+        if kind == "string" or kind == "int" or kind == "float"
+           or kind == "bool" or kind == "enum" {
+            return true;
+        }
+        return kind == FormsModel.KIND_COLOR
+            or kind == FormsModel.KIND_ANGLE
+            or kind == FormsModel.KIND_VEC2
+            or kind == FormsModel.KIND_VEC3
+            or kind == FormsModel.KIND_REF;
+    }
+
+    /// @brief Parse `key` or the multi-key `keys` array for one field.
+    hide func ParseSceneFormFieldKeys(
+        raw: Any,
+        field: FormsModel.SceneFormField,
+        component: FormsModel.SceneSettingsComponent,
+        index: Integer,
+        seenKeys: Any,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        var wantsKeys = field.kind == FormsModel.KIND_COLOR
+            or field.kind == FormsModel.KIND_VEC2
+            or field.kind == FormsModel.KIND_VEC3;
+        if wantsKeys and Map.Has(raw, "keys") {
+            var keys = Map.Get(raw, "keys");
+            if Json.TypeOf(keys) != "array" {
+                Reject(
+                    schema,
+                    "Field " + index + " in scene component \""
+                        + component.name + "\" keys must be an array.");
+                return false;
+            }
+            var expected = 3;
+            if field.kind == FormsModel.KIND_VEC2 { expected = 2; }
+            if Seq.get_Count(keys) != expected {
+                Reject(
+                    schema,
+                    "Field " + index + " in scene component \""
+                        + component.name + "\" requires exactly "
+                        + expected + " keys.");
+                return false;
+            }
+            var keyIndex = 0;
+            while keyIndex < Seq.get_Count(keys) {
+                var one = Str.Trim(Seq.GetStr(keys, keyIndex));
+                if RegisterSceneFormKey(
+                       one, component, index, seenKeys, schema) == false {
+                    return false;
+                }
+                field.keys.add(one);
+                keyIndex = keyIndex + 1;
+            }
+            field.key = field.keys.get(0);
+            return true;
+        }
+        if field.kind == FormsModel.KIND_VEC2
+           or field.kind == FormsModel.KIND_VEC3 {
+            Reject(
+                schema,
+                "Field " + index + " in scene component \""
+                    + component.name
+                    + "\" requires a keys array for vec fields.");
+            return false;
+        }
+        field.key = Str.Trim(Map.GetStr(raw, "key"));
+        if RegisterSceneFormKey(
+               field.key, component, index, seenKeys, schema) == false {
+            return false;
+        }
+        if field.kind == FormsModel.KIND_COLOR {
+            field.keys.add(field.key);
+        }
+        return true;
+    }
+
+    /// @brief Validate and de-duplicate one bound metadata key.
+    hide func RegisterSceneFormKey(
+        key: String,
+        component: FormsModel.SceneSettingsComponent,
+        index: Integer,
+        seenKeys: Any,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if PortableIdentifier(
+               key, SceneComponentModel.MAX_FIELD_KEY_CHARS) == false {
+            Reject(
+                schema,
+                "Field " + index + " in scene component \""
+                    + component.name
+                    + "\" requires a portable metadata key.");
+            return false;
+        }
+        if Map.Has(seenKeys, key) {
+            Reject(
+                schema,
+                "Duplicate key \"" + key + "\" in scene component \""
+                    + component.name + "\".");
+            return false;
+        }
+        Map.SetBool(seenKeys, key, true);
+        return true;
+    }
+
+    /// @brief Parse optional numeric range/slider presentation hints.
+    hide func ParseSceneFormRange(
+        raw: Any,
+        field: FormsModel.SceneFormField,
+        component: FormsModel.SceneSettingsComponent,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "min") and Map.Has(raw, "max") {
+            var minParse =
+                Parse.TryDouble(Json.Format(Map.Get(raw, "min")));
+            var maxParse =
+                Parse.TryDouble(Json.Format(Map.Get(raw, "max")));
+            if minParse.IsNone or maxParse.IsNone
+               or minParse.UnwrapF64() >= maxParse.UnwrapF64() {
+                Reject(
+                    schema,
+                    "Field \"" + field.key + "\" in scene component \""
+                        + component.name
+                        + "\" requires numeric min < max.");
+                return false;
+            }
+            field.hasRange = true;
+            field.minimum = minParse.UnwrapF64();
+            field.maximum = maxParse.UnwrapF64();
+        }
+        if Map.Has(raw, "step") {
+            var stepParse =
+                Parse.TryDouble(Json.Format(Map.Get(raw, "step")));
+            if stepParse.IsNone or stepParse.UnwrapF64() <= 0.0 {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" step must be a positive number.");
+                return false;
+            }
+            field.step = stepParse.UnwrapF64();
+        }
+        if Map.Has(raw, "slider") {
+            if Json.TypeOf(Map.Get(raw, "slider")) != "boolean" {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" slider must be true or false.");
+                return false;
+            }
+            field.slider = Map.GetBool(raw, "slider");
+            if field.slider and field.hasRange == false {
+                Reject(
+                    schema,
+                    "Field \"" + field.key
+                        + "\" slider requires min and max.");
+                return false;
+            }
+        }
+        field.unit = Str.Trim(Map.GetStr(raw, "unit"));
+        if Str.get_Length(field.unit) > FormsModel.MAX_UNIT_CHARS {
+            Reject(
+                schema,
+                "Field \"" + field.key + "\" unit exceeds "
+                    + FormsModel.MAX_UNIT_CHARS + " characters.");
+            return false;
+        }
+        return true;
+    }
+
+    /// @brief Parse mixed plain/labeled enum choices.
+    hide func ParseSceneFormChoices(
+        raw: Any,
+        field: FormsModel.SceneFormField,
+        component: FormsModel.SceneSettingsComponent,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "choices") == false
+           or Json.TypeOf(Map.Get(raw, "choices")) != "array" {
+            Reject(
+                schema,
+                "Enum field \"" + field.key + "\" in scene component \""
+                    + component.name + "\" requires a choices array.");
+            return false;
+        }
+        var choices = Map.Get(raw, "choices");
+        if Seq.get_Count(choices) < 1
+           or Seq.get_Count(choices) > FormsModel.MAX_LABELED_CHOICES {
+            Reject(
+                schema,
+                "Enum field \"" + field.key + "\" allows between 1 and "
+                    + FormsModel.MAX_LABELED_CHOICES + " choices.");
+            return false;
+        }
+        var index = 0;
+        while index < Seq.get_Count(choices) {
+            var one = Seq.Get(choices, index);
+            var value = "";
+            var label = "";
+            if Json.TypeOf(one) == "string" {
+                value = Seq.GetStr(choices, index);
+                label = value;
+            } else if Json.TypeOf(one) == "object" {
+                value = Str.Trim(Map.GetStr(one, "value"));
+                label = Str.Trim(Map.GetStr(one, "label"));
+                if label == "" { label = value; }
+            } else {
+                Reject(
+                    schema,
+                    "Enum field \"" + field.key + "\" choice " + index
+                        + " must be a string or a value/label object.");
+                return false;
+            }
+            if value == ""
+               or Str.get_Length(value)
+                  > SceneComponentModel.MAX_ENUM_CHOICE_CHARS
+               or Str.get_Length(label)
+                  > SceneComponentModel.MAX_ENUM_CHOICE_CHARS {
+                Reject(
+                    schema,
+                    "Enum field \"" + field.key + "\" choice " + index
+                        + " requires bounded non-empty value and label.");
+                return false;
+            }
+            if field.HasChoiceValue(value) {
+                Reject(
+                    schema,
+                    "Enum field \"" + field.key
+                        + "\" repeats choice value \"" + value + "\".");
+                return false;
+            }
+            field.choiceValues.add(value);
+            field.choiceLabels.add(label);
+            index = index + 1;
+        }
+        return true;
+    }
+
+    /// @brief Parse and validate the optional enum storedKind.
+    hide func ParseStoredKind(
+        raw: Any,
+        field: FormsModel.SceneFormField,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "storedKind") == false { return true; }
+        var stored = Str.ToLower(Str.Trim(Map.GetStr(raw, "storedKind")));
+        if stored != "int" {
+            Reject(
+                schema,
+                "Field \"" + field.key
+                    + "\" storedKind supports only int.");
+            return false;
+        }
+        var index = 0;
+        while index < field.choiceValues.count() {
+            var parsed =
+                Parse.TryInt(field.choiceValues.get(index));
+            if parsed.IsNone {
+                Reject(
+                    schema,
+                    "Field \"" + field.key + "\" choice value \""
+                        + field.choiceValues.get(index)
+                        + "\" must be an integer for storedKind int.");
+                return false;
+            }
+            index = index + 1;
+        }
+        field.storedKind = stored;
+        return true;
+    }
+
+    /// @brief Parse the `ref` picker declaration.
+    hide func ParseSceneFormRef(
+        raw: Any,
+        field: FormsModel.SceneFormField,
+        component: FormsModel.SceneSettingsComponent,
+        schema: SceneComponentModel.SceneComponentSchema) -> Boolean {
+        if Map.Has(raw, "ref") == false
+           or Json.TypeOf(Map.Get(raw, "ref")) != "object" {
+            Reject(
+                schema,
+                "Ref field \"" + field.key + "\" in scene component \""
+                    + component.name + "\" requires a ref object.");
+            return false;
+        }
+        var ref = Map.Get(raw, "ref");
+        field.refKind = Str.ToLower(Str.Trim(Map.GetStr(ref, "kind")));
+        if field.refKind != FormsModel.REF_POSITION_XZ
+           and field.refKind != FormsModel.REF_METADATA_INT
+           and field.refKind != FormsModel.REF_NODE_NAME
+           and field.refKind != FormsModel.REF_OBJECT_ID {
+            Reject(
+                schema,
+                "Ref field \"" + field.key
+                    + "\" kind must be position-xz, metadata-int, "
+                    + "node-name, or object-id.");
+            return false;
+        }
+        field.refMatch = Str.Trim(Map.GetStr(ref, "match"));
+        return true;
+    }
+}

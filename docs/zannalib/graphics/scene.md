@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-07-29
 ---
 
 # Scene Graph
@@ -52,6 +52,17 @@ Camera methods validate their receiver as a real `Camera` object; invalid handle
 `X` and `Y` are the viewport origin, not the followed target. Use `CenterX`/`CenterY`
 when you need the world coordinate currently centered in the view. `Follow` and
 `SetCenter` center the viewport on the provided world position.
+
+Camera transforms reduce rotation modulo 360 before trigonometric evaluation, so
+very large degree values behave like their reduced angle. `SmoothFollow` makes
+one-pixel progress when a small positive interpolation fraction rounds to zero;
+a one-unit dead zone therefore contains only the exact center. Transform setters,
+`Move`, and `Follow` leave the dirty flag clear when bounds or identical inputs
+produce no effective movement.
+
+Parallax rendering covers the larger of the camera viewport and current canvas.
+Zoomed/rotated tiles are cached by source-pixel generation and transform, and each
+layer is capped at 65,536 counted tile draws.
 
 ### Zia Example
 

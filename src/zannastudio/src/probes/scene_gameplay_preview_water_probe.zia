@@ -23,6 +23,7 @@ bind "../core/document";
 bind "../core/project_manager";
 bind "../ui/app_shell";
 bind "../ui/scene_component_schema";
+bind "../ui/scene_component_schema_forms_model";
 bind "../ui/scene_editor_3d";
 
 bind Path = Zanna.IO.Path;
@@ -111,8 +112,8 @@ expose func Verify(
         editor.componentSchema.scenePreview3D.waterLayers.get(0);
     var waterCenter = editor.ProjectWorldPoint(-12.0, 0.28, -14.0);
     if editor.componentSchema.version
-          != scene_component_schema
-              .NODE_PREVIEW_FILTER_3D_SCHEMA_VERSION
+          != scene_component_schema_forms_model
+              .SCENE_SETTINGS_SCHEMA_VERSION
        or editor.componentSchema.scenePreview3D
               .environmentLayers.count() != 0
        or editor.componentSchema.scenePreview3D.waterLayers.count() != 1

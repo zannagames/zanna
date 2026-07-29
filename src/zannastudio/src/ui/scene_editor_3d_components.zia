@@ -42,6 +42,7 @@ bind "scene_light_3d";
 bind "scene_material_inspector_3d";
 bind "scene_material_3d";
 bind "scene_metadata_inspector_3d";
+bind "scene_settings_inspector_3d";
 bind "scene_pane_docking";
 bind "scene_terrain_3d";
 bind "scene_terrain_inspector_3d";
@@ -81,6 +82,68 @@ bind "scene_editor_3d_world_transform" as PreviousLayer;
 
 /// @brief Components implementation layer.
 class SceneEditor3DComponentsLayer extends PreviousLayer.SceneEditor3DWorldTransformLayer {
+
+    /// @brief Write one typed scene-settings batch to the scene root
+    ///        as a single undoable transaction (ADR 0222).
+    expose override func ApplySceneSettingsCommit(
+        commit: scene_settings_inspector_3d.SceneSettingsCommit) -> Boolean {
+        if scene == null or commit == null { return false; }
+        var root = scene.Root;
+        if root == null { return false; }
+        var index = 0;
+        var mutated = false;
+        while index < commit.keys.count() {
+            var key = commit.keys.get(index);
+            var kind = commit.kinds.get(index);
+            var value = Str.Trim(commit.values.get(index));
+            if kind == "remove" {
+                if root.MetadataHas(key) {
+                    if root.MetadataRemove(key) == false {
+                        RestoreNodeMetadataEdit(
+                            -1, "Scene settings edit was rejected.");
+                        return false;
+                    }
+                    mutated = true;
+                }
+            } else if ApplySceneSettingsValue(
+                           root, key, kind, value) == false {
+                RestoreNodeMetadataEdit(
+                    -1, "Enter a valid value for " + key + ".");
+                return false;
+            } else {
+                mutated = true;
+            }
+            index = index + 1;
+        }
+        if mutated == false { return false; }
+        if CommitScene(commit.label) == false { return false; }
+        renderDirty = true;
+        detailLabel.SetText(commit.label + ".");
+        return true;
+    }
+
+    /// @brief Parse and write one scene-settings scalar; false on bad input.
+    hide func ApplySceneSettingsValue(root: SceneNode,
+                                      key: String,
+                                      kind: String,
+                                      value: String) -> Boolean {
+        if kind == "int" {
+            var parsedInt = Parse.TryInt(value);
+            if parsedInt.IsNone { return false; }
+            return root.MetadataSetInt(key, parsedInt.UnwrapI64());
+        }
+        if kind == "float" {
+            var parsedFloat = Parse.TryDouble(value);
+            if parsedFloat.IsNone { return false; }
+            return root.MetadataSetFloat(key, parsedFloat.UnwrapF64());
+        }
+        if kind == "bool" {
+            var parsedBool = Parse.TryBool(value);
+            if parsedBool.IsNone { return false; }
+            return root.MetadataSetBool(key, parsedBool.UnwrapI1());
+        }
+        return root.MetadataSetString(key, value);
+    }
 
     /// @brief Replace one node light with an independent all-field value.
     /// @details No live light mutates before staging completes. Imported or

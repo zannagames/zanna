@@ -284,6 +284,7 @@
 
 @interface VGFXMetalTextureCacheEntry : NSObject
 @property(nonatomic, strong) id<MTLTexture> texture;
+@property(nonatomic, strong) VGFXMetalTextureCacheEntry *fallbackEntry;
 @property(nonatomic) uint64_t generation;
 @property(nonatomic) uint64_t pendingGeneration;
 @property(nonatomic) uint64_t failedGeneration;
@@ -308,6 +309,7 @@
 
 @interface VGFXMetalCubemapCacheEntry : NSObject
 @property(nonatomic, strong) id<MTLTexture> texture;
+@property(nonatomic, strong) VGFXMetalCubemapCacheEntry *fallbackEntry;
 @property(nonatomic) uint64_t generation;
 @property(nonatomic) uint64_t pendingGeneration;
 @property(nonatomic) uint64_t failedGeneration;

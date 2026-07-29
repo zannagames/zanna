@@ -29,15 +29,24 @@ typedef enum {
     METAL_UPLOAD_COMPLETE = 1,
 } metal_upload_status_t;
 
+static void metal_bound_texture_cache(VGFXMetalContext *ctx, NSValue *protected_key);
+static void metal_bound_cubemap_cache(VGFXMetalContext *ctx, NSValue *protected_key);
+
 /// @brief Retire a texture upload that cannot make progress and memoize its generation.
 /// @param ctx Borrowed Metal context used to stamp the cache entry's last-used frame; may be NULL.
 /// @param entry Borrowed texture-cache entry whose partial resource and cursors are cleared.
+/// @param key Cache key whose previous complete entry is restored when available.
 /// @param generation Failed source generation to memoize and avoid repeated work.
 static void metal_fail_texture_upload(VGFXMetalContext *ctx,
                                       VGFXMetalTextureCacheEntry *entry,
+                                      NSValue *key,
                                       uint64_t generation) {
+    VGFXMetalTextureCacheEntry *fallback;
+
     if (!entry)
         return;
+    fallback = entry.fallbackEntry;
+    entry.fallbackEntry = nil;
     entry.texture = nil;
     entry.generation = 0;
     entry.pendingGeneration = 0;
@@ -46,19 +55,36 @@ static void metal_fail_texture_upload(VGFXMetalContext *ctx,
     entry.uploadNextRow = 0;
     entry.nativeNextBlockRow = 0;
     entry.nativeNextMip = 0;
-    if (ctx)
+    if (ctx) {
         entry.lastUsedFrame = ctx.frameSerial;
+        if (key) {
+            if (fallback) {
+                fallback.failedGeneration = generation;
+                fallback.lastUsedFrame = ctx.frameSerial;
+                ctx.textureCache[key] = fallback;
+            } else {
+                ctx.textureCache[key] = entry;
+            }
+            metal_bound_texture_cache(ctx, key);
+        }
+    }
 }
 
 /// @brief Retire a cubemap upload that cannot make progress and memoize its generation.
 /// @param ctx Borrowed Metal context used to stamp the cache entry's last-used frame; may be NULL.
 /// @param entry Borrowed cubemap-cache entry whose partial resource and cursors are cleared.
+/// @param key Cache key whose previous complete entry is restored when available.
 /// @param generation Failed cubemap generation to memoize and avoid repeated work.
 static void metal_fail_cubemap_upload(VGFXMetalContext *ctx,
                                       VGFXMetalCubemapCacheEntry *entry,
+                                      NSValue *key,
                                       uint64_t generation) {
+    VGFXMetalCubemapCacheEntry *fallback;
+
     if (!entry)
         return;
+    fallback = entry.fallbackEntry;
+    entry.fallbackEntry = nil;
     entry.texture = nil;
     entry.generation = 0;
     entry.pendingGeneration = 0;
@@ -70,8 +96,19 @@ static void metal_fail_cubemap_upload(VGFXMetalContext *ctx,
     entry.failedIblIdentity = 0;
     entry.pendingIblIdentity = 0;
     entry.pendingIblBytes = 0;
-    if (ctx)
+    if (ctx) {
         entry.lastUsedFrame = ctx.frameSerial;
+        if (key) {
+            if (fallback) {
+                fallback.failedGeneration = generation;
+                fallback.lastUsedFrame = ctx.frameSerial;
+                ctx.cubemapCache[key] = fallback;
+            } else {
+                ctx.cubemapCache[key] = entry;
+            }
+            metal_bound_cubemap_cache(ctx, key);
+        }
+    }
 }
 
 /// @brief Map a native compressed mip's format/block size to the matching MTLPixelFormat (0 if
@@ -209,7 +246,8 @@ static void metal_set_texture_upload_budget(void *ctx_ptr, uint64_t bytes) {
 /// @brief Upload more of an in-progress native compressed texture, bounded by the upload budget.
 /// @param ctx Borrowed Metal context providing the current budget and accounting counters.
 /// @param entry Borrowed cache entry containing the destination texture and native upload cursor.
-/// @return `METAL_UPLOAD_COMPLETE` when all mips publish, `METAL_UPLOAD_PENDING` when budget-paused,
+/// @return `METAL_UPLOAD_COMPLETE` when all mips publish, `METAL_UPLOAD_PENDING` when
+/// budget-paused,
 ///         or `METAL_UPLOAD_FAILED` for invalid source/resource state.
 static metal_upload_status_t metal_continue_native_texture_upload(
     VGFXMetalContext *ctx, VGFXMetalTextureCacheEntry *entry) {
@@ -326,8 +364,10 @@ static metal_upload_status_t metal_start_native_texture_upload(VGFXMetalContext 
         return METAL_UPLOAD_FAILED;
     pixel_format = metal_native_texture_pixel_format(&first_mip);
     if (pixel_format == MTLPixelFormatInvalid ||
-        !vgfx3d_native_texture_block_layout_is_valid(&first_mip))
+        !vgfx3d_native_texture_block_layout_is_valid(&first_mip) ||
+        !vgfx3d_metal_is_valid_texture2d_extent(first_mip.width, first_mip.height)) {
         return METAL_UPLOAD_FAILED;
+    }
     if (mip_count <= 0 ||
         mip_count > vgfx3d_metal_compute_mip_count(first_mip.width, first_mip.height) ||
         (uint64_t)mip_count > (uint64_t)NSUIntegerMax)
@@ -371,7 +411,8 @@ static metal_upload_status_t metal_start_native_texture_upload(VGFXMetalContext 
 /// @param ctx Borrowed Metal context providing the current budget and accounting counters.
 /// @param entry Borrowed cache entry containing the destination texture and row cursor.
 /// @param pixels_ptr Borrowed runtime Pixels source.
-/// @return `METAL_UPLOAD_COMPLETE` when all rows publish, `METAL_UPLOAD_PENDING` when budget-paused,
+/// @return `METAL_UPLOAD_COMPLETE` when all rows publish, `METAL_UPLOAD_PENDING` when
+/// budget-paused,
 ///         or `METAL_UPLOAD_FAILED` for invalid source/resource state.
 static metal_upload_status_t metal_continue_texture_upload(VGFXMetalContext *ctx,
                                                            VGFXMetalTextureCacheEntry *entry,
@@ -412,10 +453,11 @@ static metal_upload_status_t metal_continue_texture_upload(VGFXMetalContext *ctx
     entry.uploadNextRow += slice_rows;
     entry.lastUsedFrame = ctx.frameSerial;
     if (entry.uploadNextRow >= entry.height) {
+        if (!metal_generate_mipmaps(ctx, entry.texture))
+            return METAL_UPLOAD_FAILED;
         entry.generation = entry.pendingGeneration;
         entry.pendingGeneration = 0;
         entry.uploadInProgress = 0;
-        metal_generate_mipmaps(ctx, entry.texture);
         return METAL_UPLOAD_COMPLETE;
     }
     return METAL_UPLOAD_PENDING;
@@ -436,8 +478,10 @@ static metal_upload_status_t metal_start_texture_upload(VGFXMetalContext *ctx,
     int32_t th = 0;
     int32_t mip_count;
 
-    if (!ctx || !entry || !pixels_ptr || !vgfx3d_get_pixels_extent(pixels_ptr, &tw, &th))
+    if (!ctx || !entry || !pixels_ptr || !vgfx3d_get_pixels_extent(pixels_ptr, &tw, &th) ||
+        !vgfx3d_metal_is_valid_texture2d_extent(tw, th)) {
         return METAL_UPLOAD_FAILED;
+    }
 
     mip_count = vgfx3d_metal_compute_mip_count(tw, th);
     if (!entry.texture || (int32_t)entry.texture.width != tw ||
@@ -477,6 +521,28 @@ static metal_upload_status_t metal_start_texture_upload(VGFXMetalContext *ctx,
     return metal_continue_texture_upload(ctx, entry, pixels_ptr);
 }
 
+/// @brief Enforce the hard 2D texture-cache cardinality limit after a successful insertion.
+/// @param ctx Borrowed cache owner.
+/// @param protected_key Newly inserted key that must not be selected for eviction.
+static void metal_bound_texture_cache(VGFXMetalContext *ctx, NSValue *protected_key) {
+    while (ctx && ctx.textureCache.count > k_texture_cache_max_entries) {
+        NSValue *oldest_key = nil;
+        uint64_t oldest_frame = UINT64_MAX;
+        for (NSValue *candidate_key in ctx.textureCache) {
+            if ([candidate_key isEqual:protected_key])
+                continue;
+            VGFXMetalTextureCacheEntry *candidate = ctx.textureCache[candidate_key];
+            if (!candidate || candidate.lastUsedFrame < oldest_frame) {
+                oldest_key = candidate_key;
+                oldest_frame = candidate ? candidate.lastUsedFrame : 0;
+            }
+        }
+        if (!oldest_key)
+            break;
+        [ctx.textureCache removeObjectForKey:oldest_key];
+    }
+}
+
 /// @brief Retrieve or create a cached Metal texture from a runtime Pixels object.
 /// @details The cache uses the stable Pixels cache key so allocator-reused addresses do not alias
 ///          a fresh image to an older GPU upload. Conversion is RGBA→BGRA and may span frames.
@@ -502,19 +568,27 @@ static id<MTLTexture> metal_get_cached_texture(VGFXMetalContext *ctx, const void
     }
     if (cached && cached.pendingGeneration == cache_key && cached.uploadInProgress) {
         status = metal_continue_texture_upload(ctx, cached, pixels_ptr);
-        if (status == METAL_UPLOAD_FAILED)
-            metal_fail_texture_upload(ctx, cached, cache_key);
+        if (status == METAL_UPLOAD_FAILED) {
+            metal_fail_texture_upload(ctx, cached, key, cache_key);
+        } else if (status == METAL_UPLOAD_COMPLETE) {
+            cached.fallbackEntry = nil;
+        }
         return status == METAL_UPLOAD_COMPLETE ? cached.texture : nil;
     }
-    if (!cached)
-        cached = [[VGFXMetalTextureCacheEntry alloc] init];
-    ctx.textureCache[key] = cached;
-    status = metal_start_texture_upload(ctx, cached, pixels_ptr, cache_key);
+    VGFXMetalTextureCacheEntry *candidate = [[VGFXMetalTextureCacheEntry alloc] init];
+    if (!candidate)
+        return nil;
+    candidate.fallbackEntry = cached.uploadInProgress ? cached.fallbackEntry : cached;
+    status = metal_start_texture_upload(ctx, candidate, pixels_ptr, cache_key);
     if (status == METAL_UPLOAD_FAILED) {
-        metal_fail_texture_upload(ctx, cached, cache_key);
+        metal_fail_texture_upload(ctx, candidate, key, cache_key);
         return nil;
     }
-    return status == METAL_UPLOAD_COMPLETE ? cached.texture : nil;
+    ctx.textureCache[key] = candidate;
+    if (status == METAL_UPLOAD_COMPLETE)
+        candidate.fallbackEntry = nil;
+    metal_bound_texture_cache(ctx, key);
+    return status == METAL_UPLOAD_COMPLETE ? candidate.texture : nil;
 }
 
 /// @brief Get the Metal texture for a native TextureAsset3D, creating/streaming it on a cache miss.
@@ -558,19 +632,28 @@ static id<MTLTexture> metal_get_cached_native_texture(
         cached.nativeMipStart == mip_start && cached.nativeMipCount == mip_count &&
         cached.uploadInProgress) {
         status = metal_continue_native_texture_upload(ctx, cached);
-        if (status == METAL_UPLOAD_FAILED)
-            metal_fail_texture_upload(ctx, cached, cache_key);
+        if (status == METAL_UPLOAD_FAILED) {
+            metal_fail_texture_upload(ctx, cached, key, cache_key);
+        } else if (status == METAL_UPLOAD_COMPLETE) {
+            cached.fallbackEntry = nil;
+        }
         return status == METAL_UPLOAD_COMPLETE ? cached.texture : nil;
     }
-    if (!cached)
-        cached = [[VGFXMetalTextureCacheEntry alloc] init];
-    ctx.textureCache[key] = cached;
-    status = metal_start_native_texture_upload(ctx, cached, asset, cache_key, mip_start, mip_count);
+    VGFXMetalTextureCacheEntry *candidate = [[VGFXMetalTextureCacheEntry alloc] init];
+    if (!candidate)
+        return nil;
+    candidate.fallbackEntry = cached.uploadInProgress ? cached.fallbackEntry : cached;
+    status =
+        metal_start_native_texture_upload(ctx, candidate, asset, cache_key, mip_start, mip_count);
     if (status == METAL_UPLOAD_FAILED) {
-        metal_fail_texture_upload(ctx, cached, cache_key);
+        metal_fail_texture_upload(ctx, candidate, key, cache_key);
         return nil;
     }
-    return status == METAL_UPLOAD_COMPLETE ? cached.texture : nil;
+    ctx.textureCache[key] = candidate;
+    if (status == METAL_UPLOAD_COMPLETE)
+        candidate.fallbackEntry = nil;
+    metal_bound_texture_cache(ctx, key);
+    return status == METAL_UPLOAD_COMPLETE ? candidate.texture : nil;
 }
 
 /// @brief Resolve a material's texture to an MTLTexture, preferring native blocks then RGBA Pixels.
@@ -780,7 +863,8 @@ cleanup:
 /// @param ctx Borrowed Metal context providing the current budget and accounting counters.
 /// @param entry Borrowed cubemap-cache entry containing the destination and face/row cursor.
 /// @param cubemap Borrowed runtime cubemap source.
-/// @return `METAL_UPLOAD_COMPLETE` when all faces publish, `METAL_UPLOAD_PENDING` when budget-paused,
+/// @return `METAL_UPLOAD_COMPLETE` when all faces publish, `METAL_UPLOAD_PENDING` when
+/// budget-paused,
 ///         or `METAL_UPLOAD_FAILED` for invalid source/resource state.
 static metal_upload_status_t metal_continue_cubemap_upload(VGFXMetalContext *ctx,
                                                            VGFXMetalCubemapCacheEntry *entry,
@@ -838,10 +922,11 @@ static metal_upload_status_t metal_continue_cubemap_upload(VGFXMetalContext *ctx
         entry.uploadNextRow = 0;
     }
 
+    if (!metal_generate_mipmaps(ctx, entry.texture))
+        return METAL_UPLOAD_FAILED;
     entry.generation = entry.pendingGeneration;
     entry.pendingGeneration = 0;
     entry.uploadInProgress = 0;
-    metal_generate_mipmaps(ctx, entry.texture);
     metal_apply_ibl_mips(ctx, entry, cubemap);
     return METAL_UPLOAD_COMPLETE;
 }
@@ -859,8 +944,10 @@ static metal_upload_status_t metal_start_cubemap_upload(VGFXMetalContext *ctx,
     int32_t face_size = 0;
     int32_t mip_count;
 
-    if (!ctx || !entry || !cubemap || !vgfx3d_get_cubemap_face_size(cubemap, &face_size))
+    if (!ctx || !entry || !cubemap || !vgfx3d_get_cubemap_face_size(cubemap, &face_size) ||
+        !vgfx3d_metal_is_valid_texture2d_extent(face_size, face_size)) {
         return METAL_UPLOAD_FAILED;
+    }
 
     mip_count = vgfx3d_metal_compute_mip_count(face_size, face_size);
     if (!entry.texture || (int32_t)entry.texture.width != face_size) {
@@ -894,6 +981,28 @@ static metal_upload_status_t metal_start_cubemap_upload(VGFXMetalContext *ctx,
     return metal_continue_cubemap_upload(ctx, entry, cubemap);
 }
 
+/// @brief Enforce the hard cubemap-cache cardinality limit after successful insertion.
+/// @param ctx Borrowed cache owner.
+/// @param protected_key Newly inserted key that must remain resident.
+static void metal_bound_cubemap_cache(VGFXMetalContext *ctx, NSValue *protected_key) {
+    while (ctx && ctx.cubemapCache.count > k_cubemap_cache_max_entries) {
+        NSValue *oldest_key = nil;
+        uint64_t oldest_frame = UINT64_MAX;
+        for (NSValue *candidate_key in ctx.cubemapCache) {
+            if ([candidate_key isEqual:protected_key])
+                continue;
+            VGFXMetalCubemapCacheEntry *candidate = ctx.cubemapCache[candidate_key];
+            if (!candidate || candidate.lastUsedFrame < oldest_frame) {
+                oldest_key = candidate_key;
+                oldest_frame = candidate ? candidate.lastUsedFrame : 0;
+            }
+        }
+        if (!oldest_key)
+            break;
+        [ctx.cubemapCache removeObjectForKey:oldest_key];
+    }
+}
+
 /// @brief Get the Metal cubemap texture for a Cubemap3D, creating/streaming it on a cache miss.
 /// @details Returns nil while the cubemap upload is still in progress.
 /// @param ctx Borrowed Metal context owning the cubemap cache and upload budget.
@@ -921,19 +1030,27 @@ static id<MTLTexture> metal_get_cached_cubemap(VGFXMetalContext *ctx, const rt_c
     if (cached && cached.pendingGeneration == generation && cached.uploadInProgress) {
         cached.lastUsedFrame = ctx.frameSerial;
         status = metal_continue_cubemap_upload(ctx, cached, cubemap);
-        if (status == METAL_UPLOAD_FAILED)
-            metal_fail_cubemap_upload(ctx, cached, generation);
+        if (status == METAL_UPLOAD_FAILED) {
+            metal_fail_cubemap_upload(ctx, cached, key, generation);
+        } else if (status == METAL_UPLOAD_COMPLETE) {
+            cached.fallbackEntry = nil;
+        }
         return status == METAL_UPLOAD_COMPLETE ? cached.texture : nil;
     }
-    if (!cached)
-        cached = [[VGFXMetalCubemapCacheEntry alloc] init];
-    ctx.cubemapCache[key] = cached;
-    status = metal_start_cubemap_upload(ctx, cached, cubemap, generation);
+    VGFXMetalCubemapCacheEntry *candidate = [[VGFXMetalCubemapCacheEntry alloc] init];
+    if (!candidate)
+        return nil;
+    candidate.fallbackEntry = cached.uploadInProgress ? cached.fallbackEntry : cached;
+    status = metal_start_cubemap_upload(ctx, candidate, cubemap, generation);
     if (status == METAL_UPLOAD_FAILED) {
-        metal_fail_cubemap_upload(ctx, cached, generation);
+        metal_fail_cubemap_upload(ctx, candidate, key, generation);
         return nil;
     }
-    return status == METAL_UPLOAD_COMPLETE ? cached.texture : nil;
+    ctx.cubemapCache[key] = candidate;
+    if (status == METAL_UPLOAD_COMPLETE)
+        candidate.fallbackEntry = nil;
+    metal_bound_cubemap_cache(ctx, key);
+    return status == METAL_UPLOAD_COMPLETE ? candidate.texture : nil;
 }
 
 typedef struct {
@@ -981,6 +1098,8 @@ static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *
                                                               int32_t morph_count) {
     NSValue *key;
     VGFXMetalMorphCacheEntry *entry;
+    id<MTLBuffer> replacement_delta;
+    id<MTLBuffer> replacement_normal;
     size_t bytes;
 
     if (!ctx || !ctx.morphCache || !cmd || morph_count <= 0 || !cmd->morph_key ||
@@ -1004,19 +1123,36 @@ static VGFXMetalMorphCacheEntry *metal_get_cached_morph_entry(VGFXMetalContext *
 
     if (!metal_compute_morph_payload_bytes(cmd->vertex_count, morph_count, &bytes))
         return nil;
-    entry = entry ? entry : [[VGFXMetalMorphCacheEntry alloc] init];
-    entry.deltaBuffer = metal_new_shared_buffer(ctx, cmd->morph_deltas, bytes);
-    entry.normalBuffer = cmd->morph_normal_deltas
+    replacement_delta = metal_new_shared_buffer(ctx, cmd->morph_deltas, bytes);
+    replacement_normal = cmd->morph_normal_deltas
                              ? metal_new_shared_buffer(ctx, cmd->morph_normal_deltas, bytes)
                              : nil;
-    if (!entry.deltaBuffer)
+    if (!replacement_delta || (cmd->morph_normal_deltas && !replacement_normal))
         return nil;
+    entry = [[VGFXMetalMorphCacheEntry alloc] init];
+    if (!entry)
+        return nil;
+    entry.deltaBuffer = replacement_delta;
+    entry.normalBuffer = replacement_normal;
     entry.key = cmd->morph_key;
     entry.revision = cmd->morph_revision;
     entry.shapeCount = morph_count;
     entry.vertexCount = cmd->vertex_count;
     entry.hasNormalDeltas = entry.normalBuffer ? 1 : 0;
     entry.lastUsedFrame = ctx.frameSerial;
+    if (!ctx.morphCache[key] && ctx.morphCache.count >= k_morph_cache_max_entries) {
+        NSValue *oldest_key = nil;
+        uint64_t oldest_frame = UINT64_MAX;
+        for (NSValue *candidate_key in ctx.morphCache) {
+            VGFXMetalMorphCacheEntry *candidate_entry = ctx.morphCache[candidate_key];
+            if (!candidate_entry || candidate_entry.lastUsedFrame < oldest_frame) {
+                oldest_key = candidate_key;
+                oldest_frame = candidate_entry ? candidate_entry.lastUsedFrame : 0;
+            }
+        }
+        if (oldest_key)
+            [ctx.morphCache removeObjectForKey:oldest_key];
+    }
     ctx.morphCache[key] = entry;
     return entry;
 }
@@ -1153,12 +1289,14 @@ static metal_morph_bind_status_t metal_bind_morph_payload(VGFXMetalContext *ctx,
         normal_buf = cmd->morph_normal_deltas
                          ? metal_new_shared_buffer(ctx, cmd->morph_normal_deltas, delta_bytes)
                          : nil;
+        if (!delta_buf || (cmd->morph_normal_deltas && !normal_buf))
+            return status;
         if (ctx.frameBuffers && delta_buf)
             [ctx.frameBuffers addObject:delta_buf];
         if (ctx.frameBuffers && normal_buf)
             [ctx.frameBuffers addObject:normal_buf];
     }
-    if (!delta_buf)
+    if (!delta_buf || (cmd->morph_normal_deltas && !normal_buf))
         return status;
 
     weight_bytes = (size_t)morph_count * sizeof(float);
@@ -1179,19 +1317,33 @@ static metal_morph_bind_status_t metal_bind_morph_payload(VGFXMetalContext *ctx,
 ///          metal_upload_transient_buffer); only the packing scratch persists here.
 /// @param ctx Borrowed Metal context owning the mutable instance scratch allocation.
 /// @param instance_count Minimum number of packed instance entries required.
-static void metal_ensure_instance_storage(VGFXMetalContext *ctx, int32_t instance_count) {
+/// @return Non-zero when scratch storage for every requested instance is ready.
+static int metal_ensure_instance_storage(VGFXMetalContext *ctx, int32_t instance_count) {
     int32_t needed_capacity;
     int32_t next_capacity;
     NSUInteger byte_count;
 
     if (!ctx || instance_count <= 0)
-        return;
+        return 0;
+    if (ctx.instanceCapacity > (NSUInteger)INT32_MAX)
+        return 0;
+    if (ctx.instanceScratch && ctx.instanceCapacity >= (NSUInteger)instance_count)
+        return 1;
 
     needed_capacity = instance_count;
     next_capacity = vgfx3d_metal_next_capacity((int32_t)ctx.instanceCapacity, needed_capacity, 64);
+    if (next_capacity < needed_capacity ||
+        (size_t)next_capacity > SIZE_MAX / sizeof(vgfx3d_metal_instance_data_t)) {
+        return 0;
+    }
     if ((NSUInteger)next_capacity > ctx.instanceCapacity || !ctx.instanceScratch) {
+        NSMutableData *replacement;
         byte_count = (NSUInteger)next_capacity * sizeof(vgfx3d_metal_instance_data_t);
-        ctx.instanceScratch = [NSMutableData dataWithLength:byte_count];
+        replacement = [NSMutableData dataWithLength:byte_count];
+        if (!replacement || replacement.length < byte_count)
+            return 0;
+        ctx.instanceScratch = replacement;
         ctx.instanceCapacity = (NSUInteger)next_capacity;
     }
+    return ctx.instanceScratch && ctx.instanceCapacity >= (NSUInteger)instance_count;
 }

@@ -21,7 +21,9 @@
 //        runtime/graphics/gui/rt_gui_internal.h,
 //        docs/adr/0163-stable-multiselect-and-row-aware-treeview-editing.md,
 //        docs/adr/0165-scrollview-descendant-reveal.md,
-//        docs/adr/0167-spinner-mixed-value-state.md
+//        docs/adr/0167-spinner-mixed-value-state.md,
+//        docs/adr/0219-scene-probe-interaction-contract-and-menu-item-geometry.md,
+//        docs/adr/0220-scene-editor-toolbars-and-vector-icon-set.md
 // Cross-platform touchpoints: Temporary-file cleanup uses the runtime platform
 //                             vocabulary to select the POSIX-only declaration.
 //
@@ -3105,6 +3107,55 @@ static void test_contextmenu_show_registers_and_clears_active_overlay(void) {
     printf("test_contextmenu_show_registers_and_clears_active_overlay: PASSED\n");
 }
 
+/// @brief Verify lightweight toolbar/menu item geometry uses public logical coordinates.
+/// @details Both lower widgets retain physical framebuffer rectangles. At 2x UI scale, the four
+///          runtime getters must divide exactly once so callers can multiply once when sending
+///          physical TestHarness input, matching the base Widget.GetScreen contract.
+static void test_toolbar_and_menu_item_geometry_uses_logical_units(void) {
+    rt_gui_app_t app;
+    reset_fake_app(&app);
+    app.user_scale = 2.0f;
+    app.root = vg_widget_create(VG_WIDGET_CONTAINER);
+    assert(app.root);
+    app.root->user_data = &app;
+    rt_gui_activate_app(&app);
+
+    vg_toolbar_t *toolbar = (vg_toolbar_t *)rt_toolbar_new(app.root);
+    assert(toolbar);
+    void *toolbar_item_handle = rt_toolbar_add_named_button_with_text(
+        toolbar, rt_const_cstr("run"), rt_const_cstr("Run"), rt_const_cstr("Run"));
+    vg_toolbar_item_t *toolbar_item = rt_gui_toolbar_item_from_handle(toolbar_item_handle);
+    assert(toolbar_item);
+    vg_widget_arrange(&toolbar->base, 40.0f, 20.0f, 400.0f, 80.0f);
+
+    float x = 0.0f;
+    float y = 0.0f;
+    float width = 0.0f;
+    float height = 0.0f;
+    assert(vg_toolbar_item_screen_rect(toolbar_item, &x, &y, &width, &height));
+    assert(fabs(rt_toolbaritem_get_screen_x(toolbar_item_handle) - x / 2.0) < 0.001);
+    assert(fabs(rt_toolbaritem_get_screen_y(toolbar_item_handle) - y / 2.0) < 0.001);
+    assert(fabs(rt_toolbaritem_get_screen_width(toolbar_item_handle) - width / 2.0) < 0.001);
+    assert(fabs(rt_toolbaritem_get_screen_height(toolbar_item_handle) - height / 2.0) < 0.001);
+
+    void *menu_handle = rt_contextmenu_new();
+    assert(menu_handle);
+    void *menu_item_handle = rt_contextmenu_add_item(menu_handle, rt_const_cstr("Open"));
+    vg_contextmenu_t *menu = rt_gui_contextmenu_from_handle(menu_handle);
+    vg_menu_item_t *menu_item = rt_gui_menu_item_from_handle(menu_item_handle);
+    assert(menu && menu_item);
+    rt_contextmenu_show(menu_handle, 80, 100);
+    assert(vg_contextmenu_get_item_rect(menu, menu_item, &x, &y, &width, &height));
+    assert(fabs(rt_menuitem_get_screen_x(menu_item_handle) - x / 2.0) < 0.001);
+    assert(fabs(rt_menuitem_get_screen_y(menu_item_handle) - y / 2.0) < 0.001);
+    assert(fabs(rt_menuitem_get_screen_width(menu_item_handle) - width / 2.0) < 0.001);
+    assert(fabs(rt_menuitem_get_screen_height(menu_item_handle) - height / 2.0) < 0.001);
+
+    rt_contextmenu_destroy(menu_handle);
+    cleanup_fake_app(&app);
+    printf("test_toolbar_and_menu_item_geometry_uses_logical_units: PASSED\n");
+}
+
 static void test_filedialog_show_without_active_window_returns_zero(void) {
     rt_gui_activate_app(NULL);
     void *dialog = rt_filedialog_new_open();
@@ -5541,6 +5592,7 @@ int main(void) {
     test_contextmenu_separator_returns_item_handle();
     test_contextmenu_item_click_updates_menuitem_was_clicked();
     test_contextmenu_show_registers_and_clears_active_overlay();
+    test_toolbar_and_menu_item_geometry_uses_logical_units();
     test_filedialog_show_without_active_window_returns_zero();
     test_filedialog_show_uses_original_owner_app();
     test_filedialog_path_list_helpers_decode_escaped_paths();

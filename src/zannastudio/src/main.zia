@@ -704,11 +704,17 @@ class StudioApplication extends SurfaceFrame.StudioApplicationSurfaceFrame {
                 visualStatus = "Canvas " + scene2DEditor.scene.Width
                     + " × " + scene2DEditor.scene.Height
                     + "  |  Layers " + scene2DEditor.scene.LayerCount()
-                    + "  |  Objects " + scene2DEditor.scene.ObjectCount();
+                    + "  |  Objects " + scene2DEditor.scene.ObjectCount()
+                    + "  |  Selected "
+                    + scene2DEditor.selectedObjects.count()
+                    + "  |  Zoom " + scene2DEditor.zoomPercent + "%";
             } else if activeVisualDoc!.kind == file_utils.DOC_KIND_SCENE_3D
                       and scene3DEditor.scene != null {
                 visualStatus = "Hierarchy " + (scene3DEditor.scene.NodeCount - 1)
-                    + " node(s)  |  VSCN";
+                    + " node(s)  |  Selected "
+                    + scene3DEditor.selectedIndices.count()
+                    + "  |  " + scene3DEditor.EffectiveViewportMode()
+                    + "  |  VSCN";
             }
             shell.SetStatusCenter(visualStatus);
         } else if curCursorLine != prevCursorLine or curCursorCol != prevCursorCol

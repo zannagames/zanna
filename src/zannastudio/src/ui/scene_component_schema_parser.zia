@@ -18,6 +18,6 @@
 
 module scene_component_schema_parser;
 
-bind "scene_component_schema_components" as ParserImplementation;
+bind "scene_component_schema_forms" as ParserImplementation;
 
-class SceneComponentSchemaParser extends ParserImplementation.SceneComponentSchemaComponentsLayer {}
+class SceneComponentSchemaParser extends ParserImplementation.SceneComponentSchemaFormsLayer {}

@@ -523,7 +523,8 @@ void rt_menu_set_title(void *menu, rt_string title) {
 }
 
 /// @brief Get the title of the menu.
-/// @details Copies the lower NUL-terminated title into a runtime string; no lower storage is exposed.
+/// @details Copies the lower NUL-terminated title into a runtime string; no lower storage is
+/// exposed.
 /// @param menu Candidate live managed Menu handle.
 /// @return Runtime title copy, or the canonical empty string for invalid handles or no title.
 rt_string rt_menu_get_title(void *menu) {
@@ -539,7 +540,8 @@ rt_string rt_menu_get_title(void *menu) {
 
 /// @brief Get the number of items in a menu.
 /// @param menu Candidate live managed Menu handle.
-/// @return Number of live direct items, including separators and submenu entries, or zero if invalid.
+/// @return Number of live direct items, including separators and submenu entries, or zero if
+/// invalid.
 int64_t rt_menu_get_item_count(void *menu) {
     RT_ASSERT_MAIN_THREAD();
     vg_menu_t *m = rt_menu_checked(menu);
@@ -826,6 +828,72 @@ int64_t rt_menuitem_was_clicked(void *item) {
     return 0;
 }
 
+/// @brief Resolve a MenuItem handle to its visible context-menu row rect (ADR 0219).
+/// @details Shared core for the four geometry getters. Only context-menu rows
+///          have on-screen geometry; menubar-owned items report all zeros.
+/// @param item Candidate live managed MenuItem handle.
+/// @param out_x Receives the row's left edge in logical window coordinates.
+/// @param out_y Receives the row's top edge in logical window coordinates.
+/// @param out_w Receives the row's width.
+/// @param out_h Receives the row's height.
+static void rt_menuitem_screen_rect(
+    void *item, float *out_x, float *out_y, float *out_w, float *out_h) {
+    *out_x = 0.0f;
+    *out_y = 0.0f;
+    *out_w = 0.0f;
+    *out_h = 0.0f;
+    vg_menu_item_t *mi = rt_menuitem_checked(item);
+    if (!mi || !mi->owner_contextmenu)
+        return;
+    if (!vg_contextmenu_get_item_rect(mi->owner_contextmenu, mi, out_x, out_y, out_w, out_h))
+        return;
+    float scale = rt_gui_app_effective_scale(rt_gui_get_active_app());
+    *out_x /= scale;
+    *out_y /= scale;
+    *out_w /= scale;
+    *out_h /= scale;
+}
+
+/// @brief Report a visible context-menu row's on-screen left edge (ADR 0219).
+/// @param item Candidate live managed MenuItem handle.
+/// @return Logical window X, or zero when the row has no on-screen geometry.
+double rt_menuitem_get_screen_x(void *item) {
+    RT_ASSERT_MAIN_THREAD();
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    rt_menuitem_screen_rect(item, &x, &y, &w, &h);
+    return (double)x;
+}
+
+/// @brief Report a visible context-menu row's on-screen top edge (ADR 0219).
+/// @param item Candidate live managed MenuItem handle.
+/// @return Logical window Y, or zero when the row has no on-screen geometry.
+double rt_menuitem_get_screen_y(void *item) {
+    RT_ASSERT_MAIN_THREAD();
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    rt_menuitem_screen_rect(item, &x, &y, &w, &h);
+    return (double)y;
+}
+
+/// @brief Report a visible context-menu row's on-screen width (ADR 0219).
+/// @param item Candidate live managed MenuItem handle.
+/// @return Row width, or zero when the row has no on-screen geometry.
+double rt_menuitem_get_screen_width(void *item) {
+    RT_ASSERT_MAIN_THREAD();
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    rt_menuitem_screen_rect(item, &x, &y, &w, &h);
+    return (double)w;
+}
+
+/// @brief Report a visible context-menu row's on-screen height (ADR 0219).
+/// @param item Candidate live managed MenuItem handle.
+/// @return Row height, or zero when the row has no on-screen geometry.
+double rt_menuitem_get_screen_height(void *item) {
+    RT_ASSERT_MAIN_THREAD();
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    rt_menuitem_screen_rect(item, &x, &y, &w, &h);
+    return (double)h;
+}
+
 //=============================================================================
 // ContextMenu Widget (Phase 2)
 //=============================================================================
@@ -843,7 +911,8 @@ void *rt_contextmenu_new(void) {
 }
 
 /// @brief Release resources and destroy the contextmenu.
-/// @details Clears the active app's detached-overlay pointer before invalidating every managed item,
+/// @details Clears the active app's detached-overlay pointer before invalidating every managed
+/// item,
 ///          submenu, and root handle, then recursively destroys the standalone toolkit tree.
 /// @param menu Candidate managed ContextMenu handle; invalid or retired handles are ignored.
 void rt_contextmenu_destroy(void *menu) {
@@ -916,7 +985,8 @@ void *rt_contextmenu_add_separator(void *menu) {
 ///          and the parent remains unchanged.
 /// @param menu Candidate live managed parent ContextMenu.
 /// @param title Runtime label for the submenu entry.
-/// @return Stable managed child ContextMenu handle, or NULL for invalid input or allocation failure.
+/// @return Stable managed child ContextMenu handle, or NULL for invalid input or allocation
+/// failure.
 void *rt_contextmenu_add_submenu(void *menu, rt_string title) {
     RT_ASSERT_MAIN_THREAD();
     vg_contextmenu_t *cm = rt_contextmenu_checked(menu);
@@ -1307,6 +1377,38 @@ int64_t rt_menuitem_is_separator(void *item) {
 int64_t rt_menuitem_was_clicked(void *item) {
     (void)item;
     return 0;
+}
+
+/// @brief Stub: report zero MenuItem screen X when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Always zero.
+double rt_menuitem_get_screen_x(void *item) {
+    (void)item;
+    return 0.0;
+}
+
+/// @brief Stub: report zero MenuItem screen Y when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Always zero.
+double rt_menuitem_get_screen_y(void *item) {
+    (void)item;
+    return 0.0;
+}
+
+/// @brief Stub: report zero MenuItem screen width when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Always zero.
+double rt_menuitem_get_screen_width(void *item) {
+    (void)item;
+    return 0.0;
+}
+
+/// @brief Stub: report zero MenuItem screen height when graphics is disabled.
+/// @param item Ignored candidate MenuItem handle.
+/// @return Always zero.
+double rt_menuitem_get_screen_height(void *item) {
+    (void)item;
+    return 0.0;
 }
 
 /// @brief Stub: graphics disabled — returns NULL; no context menu is created.

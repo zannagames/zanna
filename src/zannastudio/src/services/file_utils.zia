@@ -75,6 +75,27 @@ func DetectLanguage(path: String) -> String {
     return "text";
 }
 
+/// @brief Map a file path to its built-in vector icon name (ADR 0220).
+/// @param path Filesystem path; only the extension is examined.
+/// @return A stable vg_icon_vector name for tabs and list rows.
+expose func FileIconName(path: String) -> String {
+    var ext = Str.ToLower(Path.Extension(path));
+    if ext == ".zia" { return "file-zia"; }
+    if ext == ".bas" or ext == ".vb" { return "file-basic"; }
+    if ext == ".il" { return "file-il"; }
+    if ext == ".json" { return "file-json"; }
+    if ext == ".md" { return "file-md"; }
+    if ext == ".scene2d" or ext == ".scene" or ext == ".level" {
+        return "scene-2d";
+    }
+    if ext == ".scene3d" or ext == ".vscn" { return "scene-3d"; }
+    if ext == ".png" or ext == ".jpg" or ext == ".jpeg"
+       or ext == ".gif" or ext == ".bmp" {
+        return "file-image";
+    }
+    return "file";
+}
+
 /// @brief Return whether one path is a 2D or 3D scene document (ADR 0181).
 expose func IsSceneDocumentPath(path: String) -> Boolean {
     var kind = DetectKind(path);

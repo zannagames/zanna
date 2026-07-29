@@ -46,6 +46,7 @@
 #include "rt_tilemap_internal.h"
 
 #include "rt_box.h"
+#include "rt_file_path.h"
 #include "rt_file_stdio.h"
 #include "rt_graphics.h"
 #include "rt_heap.h"
@@ -81,6 +82,8 @@
 /// @param fp Open stream.
 #define tmio_ftell(fp) rt_file_stdio_tell64((fp))
 
+static int tilemap_io_grid_supported(int64_t width, int64_t height);
+
 /// @brief Read exactly @p len bytes from @p f into @p data.
 /// @details Tilemap files are read as complete JSON blobs. This helper avoids
 ///          assuming that one `fread` call must return the full file payload,
@@ -110,7 +113,16 @@ static int tmio_read_exact(FILE *f, void *data, size_t len) {
 static rt_tilemap_impl *tilemap_io_checked(void *tm) {
     if (!tm || !rt_obj_is_instance(tm, RT_TILEMAP_CLASS_ID, sizeof(rt_tilemap_impl)))
         return NULL;
-    return (rt_tilemap_impl *)tm;
+    rt_tilemap_impl *tilemap = (rt_tilemap_impl *)tm;
+    if (!tilemap_io_grid_supported(tilemap->width, tilemap->height) || tilemap->tile_width <= 0 ||
+        tilemap->tile_height <= 0 || tilemap->source_frame_width <= 0 ||
+        tilemap->source_frame_height <= 0 || !tilemap->tiles || tilemap->layer_count < 1 ||
+        tilemap->layer_count > TM_MAX_LAYERS || tilemap->collision_layer < 0 ||
+        tilemap->collision_layer >= tilemap->layer_count || tilemap->autotile_count < 0 ||
+        tilemap->autotile_count > MAX_AUTOTILE_RULES || tilemap->tile_anim_count < 0 ||
+        tilemap->tile_anim_count > TM_MAX_TILE_ANIMS)
+        return NULL;
+    return tilemap;
 }
 
 /// @brief Release a retained reference held in @p *slot, free the payload at refcount 0,
@@ -149,6 +161,47 @@ static int tilemap_io_grid_supported(int64_t width, int64_t height) {
     return 1;
 }
 
+/// @brief Validate a bounded length-bearing runtime string with no embedded NUL.
+/// @param value Required runtime string.
+/// @param capacity Fixed destination capacity, including its trailing NUL.
+/// @param bytes_out Required destination for borrowed string bytes.
+/// @param length_out Required destination for the exact byte length.
+/// @return `1` when the complete string fits and is C-string-compatible.
+static int8_t tilemap_io_bounded_runtime_string(rt_string value,
+                                                size_t capacity,
+                                                const char **bytes_out,
+                                                size_t *length_out) {
+    if (!value || capacity == 0 || !bytes_out || !length_out)
+        return 0;
+    int64_t raw_length = rt_str_len(value);
+    if (raw_length < 0 || (uint64_t)raw_length >= (uint64_t)capacity)
+        return 0;
+    const char *bytes = rt_string_cstr(value);
+    size_t length = (size_t)raw_length;
+    if (!bytes || memchr(bytes, '\0', length) != NULL)
+        return 0;
+    *bytes_out = bytes;
+    *length_out = length;
+    return 1;
+}
+
+/// @brief Return the length of a fixed stored string only when NUL-terminated.
+/// @param bytes Fixed storage to inspect.
+/// @param capacity Storage size in bytes.
+/// @param length_out Required destination for the length before the terminator.
+/// @return `1` when a terminator exists within the slot.
+static int8_t tilemap_io_stored_string_length(const char *bytes,
+                                              size_t capacity,
+                                              size_t *length_out) {
+    if (!bytes || capacity == 0 || !length_out)
+        return 0;
+    const char *terminator = (const char *)memchr(bytes, '\0', capacity);
+    if (!terminator)
+        return 0;
+    *length_out = (size_t)(terminator - bytes);
+    return 1;
+}
+
 /// @brief Set the tile property of the tilemap.
 /// @details Keys that exceed the fixed on-object storage slot are rejected so
 ///          two distinct long keys cannot collapse to the same truncated name.
@@ -162,17 +215,21 @@ void rt_tilemap_set_tile_property(void *tm, int64_t tile_index, rt_string key, i
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
     if (!tilemap || tile_index < 0 || tile_index >= MAX_TILE_PROPS || !key)
         return;
-    const char *ckey = rt_string_cstr(key);
-    if (!ckey)
-        return;
-    size_t klen = strlen(ckey);
-    if (klen >= MAX_PROP_KEY_LEN)
+    const char *ckey = NULL;
+    size_t klen = 0;
+    if (!tilemap_io_bounded_runtime_string(key, MAX_PROP_KEY_LEN, &ckey, &klen))
         return;
 
     tile_props *p = &tilemap->tile_props[tile_index];
+    if (p->count < 0 || p->count > MAX_PROP_KEYS)
+        return;
     // Check if key exists
     for (int32_t i = 0; i < p->count; i++) {
-        if (strcmp(p->entries[i].key, ckey) == 0) {
+        size_t stored_length = 0;
+        if (!tilemap_io_stored_string_length(
+                p->entries[i].key, sizeof(p->entries[i].key), &stored_length))
+            return;
+        if (stored_length == klen && memcmp(p->entries[i].key, ckey, klen) == 0) {
             p->entries[i].value = value;
             return;
         }
@@ -201,15 +258,20 @@ int64_t rt_tilemap_get_tile_property(void *tm,
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
     if (!tilemap || tile_index < 0 || tile_index >= MAX_TILE_PROPS || !key)
         return default_val;
-    const char *ckey = rt_string_cstr(key);
-    if (!ckey)
-        return default_val;
-    if (strlen(ckey) >= MAX_PROP_KEY_LEN)
+    const char *ckey = NULL;
+    size_t key_length = 0;
+    if (!tilemap_io_bounded_runtime_string(key, MAX_PROP_KEY_LEN, &ckey, &key_length))
         return default_val;
 
     tile_props *p = &tilemap->tile_props[tile_index];
+    if (p->count < 0 || p->count > MAX_PROP_KEYS)
+        return default_val;
     for (int32_t i = 0; i < p->count; i++) {
-        if (strcmp(p->entries[i].key, ckey) == 0)
+        size_t stored_length = 0;
+        if (!tilemap_io_stored_string_length(
+                p->entries[i].key, sizeof(p->entries[i].key), &stored_length))
+            return default_val;
+        if (stored_length == key_length && memcmp(p->entries[i].key, ckey, key_length) == 0)
             return p->entries[i].value;
     }
     return default_val;
@@ -224,15 +286,20 @@ int8_t rt_tilemap_has_tile_property(void *tm, int64_t tile_index, rt_string key)
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
     if (!tilemap || tile_index < 0 || tile_index >= MAX_TILE_PROPS || !key)
         return 0;
-    const char *ckey = rt_string_cstr(key);
-    if (!ckey)
-        return 0;
-    if (strlen(ckey) >= MAX_PROP_KEY_LEN)
+    const char *ckey = NULL;
+    size_t key_length = 0;
+    if (!tilemap_io_bounded_runtime_string(key, MAX_PROP_KEY_LEN, &ckey, &key_length))
         return 0;
 
     tile_props *p = &tilemap->tile_props[tile_index];
+    if (p->count < 0 || p->count > MAX_PROP_KEYS)
+        return 0;
     for (int32_t i = 0; i < p->count; i++) {
-        if (strcmp(p->entries[i].key, ckey) == 0)
+        size_t stored_length = 0;
+        if (!tilemap_io_stored_string_length(
+                p->entries[i].key, sizeof(p->entries[i].key), &stored_length))
+            return 0;
+        if (stored_length == key_length && memcmp(p->entries[i].key, ckey, key_length) == 0)
             return 1;
     }
     return 0;
@@ -248,6 +315,8 @@ int8_t rt_tilemap_has_tile_property(void *tm, int64_t tile_index, rt_string key)
 /// @param base_tile Raw tile identifier used as the rule key.
 /// @return Borrowed rule pointer, or `NULL` when the fixed table is full.
 static autotile_rule *find_or_create_rule(rt_tilemap_impl *tilemap, int64_t base_tile) {
+    if (!tilemap || base_tile <= 0)
+        return NULL;
     for (int32_t i = 0; i < tilemap->autotile_count; i++) {
         if (tilemap->autotile_rules[i].base_tile == base_tile)
             return &tilemap->autotile_rules[i];
@@ -288,7 +357,8 @@ void rt_tilemap_set_autotile_lo(void *tm,
                                 int64_t v6,
                                 int64_t v7) {
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
-    if (!tilemap)
+    if (!tilemap || base_tile <= 0 || v0 < 0 || v1 < 0 || v2 < 0 || v3 < 0 || v4 < 0 || v5 < 0 ||
+        v6 < 0 || v7 < 0)
         return;
     autotile_rule *r = find_or_create_rule(tilemap, base_tile);
     if (!r)
@@ -328,7 +398,8 @@ void rt_tilemap_set_autotile_hi(void *tm,
                                 int64_t v14,
                                 int64_t v15) {
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
-    if (!tilemap)
+    if (!tilemap || base_tile <= 0 || v8 < 0 || v9 < 0 || v10 < 0 || v11 < 0 || v12 < 0 ||
+        v13 < 0 || v14 < 0 || v15 < 0)
         return;
     autotile_rule *r = find_or_create_rule(tilemap, base_tile);
     if (!r)
@@ -344,7 +415,7 @@ void rt_tilemap_set_autotile_hi(void *tm,
     r->active = 1;
 }
 
-/// @brief Deactivate an auto-tile rule without reclaiming its fixed slot.
+/// @brief Remove an auto-tile rule and reclaim its fixed slot.
 /// @param tm Candidate Tilemap handle.
 /// @param base_tile Rule key to deactivate.
 void rt_tilemap_clear_autotile(void *tm, int64_t base_tile) {
@@ -353,7 +424,16 @@ void rt_tilemap_clear_autotile(void *tm, int64_t base_tile) {
         return;
     for (int32_t i = 0; i < tilemap->autotile_count; i++) {
         if (tilemap->autotile_rules[i].base_tile == base_tile) {
-            tilemap->autotile_rules[i].active = 0;
+            int32_t remaining = tilemap->autotile_count - i - 1;
+            if (remaining > 0) {
+                memmove(&tilemap->autotile_rules[i],
+                        &tilemap->autotile_rules[i + 1],
+                        (size_t)remaining * sizeof(tilemap->autotile_rules[0]));
+            }
+            tilemap->autotile_count--;
+            memset(&tilemap->autotile_rules[tilemap->autotile_count],
+                   0,
+                   sizeof(tilemap->autotile_rules[0]));
             return;
         }
     }
@@ -371,25 +451,21 @@ static autotile_rule *find_rule(rt_tilemap_impl *tilemap, int64_t tile) {
     return NULL;
 }
 
-/// @brief Test whether @p tile is the same autotile type as @p base — either an
-///        exact match or one of the 16 variants registered for @p base's rule.
+/// @brief Test whether @p tile belongs to @p rule's base or variant set.
 /// @details Used by the autotile neighbor scan to decide whether adjacent tiles should
 ///   be counted as connected. Without variant checking, placing any variant (e.g., the
 ///   corners or edge variants) next to another tile of the same type would break the
-///   connectivity mask because the neighbour would no longer equal `base` exactly.
-/// @param tilemap Tilemap containing active rules.
+///   connectivity mask because the neighbour would no longer equal the base exactly.
+/// @param rule Already-resolved active autotile rule.
 /// @param tile Candidate neighboring identifier.
-/// @param base Canonical rule identifier.
 /// @return 1 if the tiles are considered the same autotile type, 0 otherwise.
-static int8_t is_same_base(rt_tilemap_impl *tilemap, int64_t tile, int64_t base) {
-    if (tile == base)
-        return 1;
-    // Check if tile is one of the variants
-    autotile_rule *r = find_rule(tilemap, base);
-    if (!r)
+static int8_t is_same_rule(const autotile_rule *rule, int64_t tile) {
+    if (!rule)
         return 0;
+    if (tile == rule->base_tile)
+        return 1;
     for (int i = 0; i < 16; i++) {
-        if (r->variants[i] == tile)
+        if (rule->variants[i] == tile)
             return 1;
     }
     return 0;
@@ -449,7 +525,7 @@ void rt_tilemap_apply_autotile_region(void *tm, int64_t rx, int64_t ry, int64_t 
     if (region_w > INT64_MAX / region_h)
         return;
     int64_t count = region_w * region_h;
-    if (count > INT64_MAX / (int64_t)sizeof(int64_t))
+    if ((uint64_t)count > (uint64_t)(SIZE_MAX / sizeof(int64_t)))
         return;
     int64_t *resolved = (int64_t *)malloc((size_t)count * sizeof(int64_t));
     if (!resolved)
@@ -465,19 +541,18 @@ void rt_tilemap_apply_autotile_region(void *tm, int64_t rx, int64_t ry, int64_t 
             }
 
             // Compute 4-bit neighbor mask
-            int64_t base = rule->base_tile;
             int32_t mask = 0;
             // Up
-            if (y > 0 && is_same_base(tilemap, rt_tilemap_get_tile(tm, x, y - 1), base))
+            if (y > 0 && is_same_rule(rule, rt_tilemap_get_tile(tm, x, y - 1)))
                 mask |= 1;
             // Right
-            if (x < map_w - 1 && is_same_base(tilemap, rt_tilemap_get_tile(tm, x + 1, y), base))
+            if (x < map_w - 1 && is_same_rule(rule, rt_tilemap_get_tile(tm, x + 1, y)))
                 mask |= 2;
             // Down
-            if (y < map_h - 1 && is_same_base(tilemap, rt_tilemap_get_tile(tm, x, y + 1), base))
+            if (y < map_h - 1 && is_same_rule(rule, rt_tilemap_get_tile(tm, x, y + 1)))
                 mask |= 4;
             // Left
-            if (x > 0 && is_same_base(tilemap, rt_tilemap_get_tile(tm, x - 1, y), base))
+            if (x > 0 && is_same_rule(rule, rt_tilemap_get_tile(tm, x - 1, y)))
                 mask |= 8;
 
             resolved[(y - start_y) * region_w + (x - start_x)] = rule->variants[mask];
@@ -544,18 +619,6 @@ static int8_t map_get_i64_checked(void *map, const char *key, int64_t *out) {
     return boxed_to_i64_exact(rt_map_get(map, rt_const_cstr(key)), out);
 }
 
-/// @brief Read an optional integral numeric value from a JSON map, defaulting to zero.
-/// @details Compatibility wrapper for optional metadata. Invalid or missing values
-///          return zero so legacy files with absent optional fields still load.
-/// @param map Runtime Map to query.
-/// @param key NUL-terminated key.
-/// @return Exact stored integer, or `0` when absent/invalid.
-static int64_t map_get_i64(void *map, const char *key) {
-    int64_t value = 0;
-    (void)map_get_i64_checked(map, key, &value);
-    return value;
-}
-
 /// @brief Read a required finite numeric value from a JSON map.
 /// @details Both JSON integer and floating-point boxes are accepted. Non-numeric,
 ///          non-finite, and missing values are rejected so imported projection
@@ -580,7 +643,8 @@ static int8_t map_get_f64_checked(void *map, const char *key, double *out) {
 /// @return A caller-owned Seq configured to own elements, or `NULL` on allocation failure.
 static void *seq_new_owned(void) {
     void *seq = rt_seq_new();
-    rt_seq_set_owns_elements(seq, 1);
+    if (seq)
+        rt_seq_set_owns_elements(seq, 1);
     return seq;
 }
 
@@ -657,14 +721,19 @@ static int8_t tmio_write_all(FILE *f, const char *bytes, size_t len) {
 ///   is substituted when @p value is NULL so the map always contains a valid entry.
 /// @param map Destination runtime Map.
 /// @param key NUL-terminated destination key.
-/// @param value NUL-terminated bytes to copy, or `NULL` for empty.
-static void map_set_string_copy(void *map, const char *key, const char *value) {
-    rt_string copy = rt_string_from_bytes(value ? value : "", value ? strlen(value) : 0);
+/// @param value Bytes to copy; may be NULL only when @p length is zero.
+/// @param length Exact byte length to copy.
+/// @return `1` when the temporary string was allocated and stored.
+static int8_t map_set_string_copy(void *map, const char *key, const char *value, size_t length) {
+    if (!map || !key || (!value && length > 0))
+        return 0;
+    rt_string copy = rt_string_from_bytes(value ? value : "", length);
     if (!copy)
-        return;
+        return 0;
     rt_map_set(map, rt_const_cstr(key), copy);
     if (rt_obj_release_check0(copy))
         rt_obj_free(copy);
+    return 1;
 }
 
 /// @brief Serialize a Pixels object to a JSON map blob with "width", "height", and a
@@ -682,7 +751,7 @@ static void *serialize_pixels_blob(void *pixels) {
     int64_t width = rt_pixels_width(pixels);
     int64_t height = rt_pixels_height(pixels);
     const uint32_t *raw = rt_pixels_raw_buffer(pixels);
-    if (width < 0 || height < 0 || (height > 0 && width > INT64_MAX / height))
+    if (width <= 0 || height <= 0 || width > INT64_MAX / height)
         return NULL;
     int64_t expected = width * height;
     if (!raw && expected > 0)
@@ -833,8 +902,8 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
     rt_tilemap_impl *tilemap = tilemap_io_checked(tm);
     if (!tilemap || !path)
         return 0;
-    const char *cpath = rt_string_cstr(path);
-    if (!cpath)
+    const char *cpath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &cpath) || !cpath || cpath[0] == '\0')
         return 0;
 
     int64_t w = rt_tilemap_get_width(tm);
@@ -885,8 +954,9 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
 
     if (tilemap->tileset) {
         void *tileset_obj = serialize_pixels_blob(tilemap->tileset);
-        if (tileset_obj)
-            map_set_owned(root, "tileset", tileset_obj);
+        if (!tileset_obj)
+            goto cleanup;
+        map_set_owned(root, "tileset", tileset_obj);
     }
 
     // Layers array
@@ -894,6 +964,10 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
     if (!layers_arr)
         goto cleanup;
     for (int64_t li = 0; li < layer_count; li++) {
+        if (!tilemap->layers[li].tiles) {
+            tilemap_io_release_ref(&layers_arr);
+            goto cleanup;
+        }
         void *layer_obj = rt_map_new();
         // Tile array
         void *tiles_arr = seq_new_owned();
@@ -916,7 +990,14 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
         }
         map_set_owned(layer_obj, "tiles", tiles_arr);
         rt_map_set_int(layer_obj, rt_const_cstr("visible"), rt_tilemap_get_layer_visible(tm, li));
-        map_set_string_copy(layer_obj, "name", tilemap->layers[li].name);
+        size_t layer_name_length = 0;
+        if (!tilemap_io_stored_string_length(
+                tilemap->layers[li].name, sizeof(tilemap->layers[li].name), &layer_name_length) ||
+            !map_set_string_copy(layer_obj, "name", tilemap->layers[li].name, layer_name_length)) {
+            tilemap_io_release_ref(&layer_obj);
+            tilemap_io_release_ref(&layers_arr);
+            goto cleanup;
+        }
         rt_map_set_float(
             layer_obj, rt_const_cstr("importOffsetX"), tilemap->layers[li].import_offset_x);
         rt_map_set_float(
@@ -927,8 +1008,12 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
             layer_obj, rt_const_cstr("importParallaxY"), tilemap->layers[li].import_parallax_y);
         if (li > 0 && tilemap->layers[li].tileset) {
             void *tileset_obj = serialize_pixels_blob(tilemap->layers[li].tileset);
-            if (tileset_obj)
-                map_set_owned(layer_obj, "tileset", tileset_obj);
+            if (!tileset_obj) {
+                tilemap_io_release_ref(&layer_obj);
+                tilemap_io_release_ref(&layers_arr);
+                goto cleanup;
+            }
+            map_set_owned(layer_obj, "tileset", tileset_obj);
         }
         seq_push_owned(layers_arr, layer_obj);
     }
@@ -966,6 +1051,10 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
         goto cleanup;
     for (int64_t tile_id = 0; tile_id < MAX_TILE_PROPS; tile_id++) {
         tile_props *props = &tilemap->tile_props[tile_id];
+        if (props->count < 0 || props->count > MAX_PROP_KEYS) {
+            tilemap_io_release_ref(&props_arr);
+            goto cleanup;
+        }
         if (props->count <= 0)
             continue;
         void *prop_obj = rt_map_new();
@@ -985,7 +1074,16 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
                 tilemap_io_release_ref(&props_arr);
                 goto cleanup;
             }
-            map_set_string_copy(entry, "key", props->entries[i].key);
+            size_t key_length = 0;
+            if (!tilemap_io_stored_string_length(
+                    props->entries[i].key, sizeof(props->entries[i].key), &key_length) ||
+                !map_set_string_copy(entry, "key", props->entries[i].key, key_length)) {
+                tilemap_io_release_ref(&entry);
+                tilemap_io_release_ref(&entries);
+                tilemap_io_release_ref(&prop_obj);
+                tilemap_io_release_ref(&props_arr);
+                goto cleanup;
+            }
             rt_map_set_int(entry, rt_const_cstr("value"), props->entries[i].value);
             seq_push_owned(entries, entry);
         }
@@ -1001,6 +1099,16 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
         autotile_rule *rule = &tilemap->autotile_rules[i];
         if (!rule->active)
             continue;
+        if (rule->base_tile <= 0) {
+            tilemap_io_release_ref(&autotile_arr);
+            goto cleanup;
+        }
+        for (int32_t v = 0; v < 16; ++v) {
+            if (rule->variants[v] < 0) {
+                tilemap_io_release_ref(&autotile_arr);
+                goto cleanup;
+            }
+        }
         void *rule_obj = rt_map_new();
         void *variants = seq_new_owned();
         if (!rule_obj || !variants) {
@@ -1028,6 +1136,13 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
         goto cleanup;
     for (int32_t i = 0; i < tilemap->tile_anim_count; i++) {
         tm_tile_anim *anim = &tilemap->tile_anims[i];
+        if (anim->base_tile_id <= 0 || anim->frame_count <= 0 ||
+            anim->frame_count > TM_MAX_IMPORT_ANIM_FRAMES || !anim->frame_tiles ||
+            !anim->frame_durations || anim->current_frame < 0 ||
+            anim->current_frame >= anim->frame_count || anim->timer < 0) {
+            tilemap_io_release_ref(&anim_arr);
+            goto cleanup;
+        }
         void *anim_obj = rt_map_new();
         void *frames = seq_new_owned();
         void *durations = seq_new_owned();
@@ -1044,6 +1159,13 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
         rt_map_set_int(anim_obj, rt_const_cstr("timer"), anim->timer);
         rt_map_set_int(anim_obj, rt_const_cstr("currentFrame"), anim->current_frame);
         for (int32_t fidx = 0; fidx < anim->frame_count; fidx++) {
+            if (anim->frame_tiles[fidx] <= 0 || anim->frame_durations[fidx] <= 0) {
+                tilemap_io_release_ref(&frames);
+                tilemap_io_release_ref(&durations);
+                tilemap_io_release_ref(&anim_obj);
+                tilemap_io_release_ref(&anim_arr);
+                goto cleanup;
+            }
             if (!seq_push_i64_owned(frames, anim->frame_tiles[fidx])) {
                 tilemap_io_release_ref(&frames);
                 tilemap_io_release_ref(&durations);
@@ -1073,11 +1195,16 @@ int8_t rt_tilemap_save_to_file(void *tm, rt_string path) {
     const char *json_cstr = rt_string_cstr(json);
     if (!json_cstr)
         goto cleanup;
+    int64_t json_length = rt_str_len(json);
+    if (json_length <= 0 || json_length > TMIO_MAX_FILE_BYTES ||
+        (uint64_t)json_length > (uint64_t)SIZE_MAX ||
+        memchr(json_cstr, '\0', (size_t)json_length) != NULL)
+        goto cleanup;
 
     f = rt_file_stdio_open_temp_for_replace_utf8(cpath, &tmp_path);
     if (!f)
         goto cleanup;
-    size_t len = strlen(json_cstr);
+    size_t len = (size_t)json_length;
     int8_t wrote_all = tmio_write_all(f, json_cstr, len);
     int write_error = ferror(f) != 0;
     int close_error = !rt_file_stdio_flush_sync_close(f);
@@ -1111,8 +1238,8 @@ cleanup:
 void *rt_tilemap_load_from_file(rt_string path) {
     if (!path)
         return NULL;
-    const char *cpath = rt_string_cstr(path);
-    if (!cpath)
+    const char *cpath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &cpath) || !cpath || cpath[0] == '\0')
         return NULL;
 
     rt_string json_str = NULL;
@@ -1153,6 +1280,10 @@ void *rt_tilemap_load_from_file(rt_string path) {
         free(buf);
         return NULL;
     }
+    if (memchr(buf, '\0', read) != NULL) {
+        free(buf);
+        return NULL;
+    }
     buf[read] = '\0';
 
     json_str = rt_string_from_bytes(buf, read);
@@ -1162,6 +1293,10 @@ void *rt_tilemap_load_from_file(rt_string path) {
 
     root = rt_json_parse(json_str);
     if (!root)
+        goto cleanup;
+
+    int64_t version = 0;
+    if (!map_get_i64_checked(root, "version", &version) || version != 1)
         goto cleanup;
 
     // Extract dimensions as exact integers.
@@ -1256,152 +1391,173 @@ void *rt_tilemap_load_from_file(rt_string path) {
 
     // Load layers
     void *layers_arr = rt_map_get(root, rt_const_cstr("layers"));
-    if (layers_arr) {
-        int64_t lcount = rt_seq_len(layers_arr);
-        if (lcount > TM_MAX_LAYERS)
-            lcount = TM_MAX_LAYERS;
-        for (int64_t li = 0; li < lcount; li++) {
-            int64_t layer_index = li;
-            // Add layer if not layer 0
-            if (li > 0) {
-                layer_index = rt_tilemap_add_layer(tm, rt_const_cstr(""));
-                if (layer_index < 0)
-                    continue;
-            }
+    if (!layers_arr)
+        goto cleanup;
+    int64_t lcount = rt_seq_len(layers_arr);
+    if (lcount < 1 || lcount > TM_MAX_LAYERS)
+        goto cleanup;
+    for (int64_t li = 0; li < lcount; li++) {
+        void *layer_obj = rt_seq_get(layers_arr, li);
+        if (!layer_obj)
+            goto cleanup;
 
-            void *layer_obj = rt_seq_get(layers_arr, li);
-            if (!layer_obj)
-                continue;
+        rt_string lname = (rt_string)rt_map_get(layer_obj, rt_const_cstr("name"));
+        const char *layer_name_bytes = "";
+        size_t layer_name_length = 0;
+        if (lname &&
+            !tilemap_io_bounded_runtime_string(
+                lname, sizeof(tilemap->layers[0].name), &layer_name_bytes, &layer_name_length))
+            goto cleanup;
 
-            void *tiles_arr = rt_map_get(layer_obj, rt_const_cstr("tiles"));
-            if (tiles_arr) {
-                int64_t tcount = rt_seq_len(tiles_arr);
-                if (tcount != expected_tiles) {
+        int64_t layer_index = li;
+        if (li > 0) {
+            layer_index = rt_tilemap_add_layer(tm, lname ? lname : rt_const_cstr(""));
+            if (layer_index != li)
+                goto cleanup;
+        } else if (lname) {
+            memset(tilemap->layers[0].name, 0, sizeof(tilemap->layers[0].name));
+            memcpy(tilemap->layers[0].name, layer_name_bytes, layer_name_length);
+        }
+
+        void *tiles_arr = rt_map_get(layer_obj, rt_const_cstr("tiles"));
+        if (!tiles_arr || rt_seq_len(tiles_arr) != expected_tiles)
+            goto cleanup;
+        for (int64_t ti = 0; ti < expected_tiles; ti++) {
+            int64_t tile = 0;
+            if (!boxed_to_i64_exact(rt_seq_get(tiles_arr, ti), &tile))
+                goto cleanup;
+            int64_t tx = ti % w;
+            int64_t ty = ti / w;
+            rt_tilemap_set_tile_layer(tm, layer_index, tx, ty, tile);
+        }
+
+        /* Default to visible when the key is absent for legacy files. */
+        int64_t vis = 1;
+        void *visible_value = rt_map_get(layer_obj, rt_const_cstr("visible"));
+        if (visible_value && !boxed_to_i64_exact(visible_value, &vis))
+            goto cleanup;
+        rt_tilemap_set_layer_visible(tm, layer_index, (int8_t)(vis != 0));
+        if (layer_index > 0) {
+            void *layer_tileset = rt_map_get(layer_obj, rt_const_cstr("tileset"));
+            if (layer_tileset) {
+                void *pixels = deserialize_pixels_blob(layer_tileset);
+                if (!pixels) {
                     goto cleanup;
                 }
-                for (int64_t ti = 0; ti < tcount; ti++) {
-                    void *tval = rt_seq_get(tiles_arr, ti);
-                    int64_t tile = 0;
-                    if (!boxed_to_i64_exact(tval, &tile))
-                        goto cleanup;
-                    int64_t tx = ti % w;
-                    int64_t ty = ti / w;
-                    rt_tilemap_set_tile_layer(tm, layer_index, tx, ty, tile);
-                }
+                assign_layer_tileset(tilemap, layer_index, pixels);
             }
-
-            /* Default to visible when the key is absent — layers are created visible,
-             * and map_get_i64 returns 0 for a missing key, which would silently hide
-             * a hand-authored/tool-generated layer that simply omits "visible". */
-            int64_t vis = 1;
-            (void)map_get_i64_checked(layer_obj, "visible", &vis);
-            rt_tilemap_set_layer_visible(tm, layer_index, (int8_t)(vis != 0));
-            rt_string lname = (rt_string)rt_map_get(layer_obj, rt_const_cstr("name"));
-            if (lname) {
-                const char *name_cstr = rt_string_cstr(lname);
-                if (name_cstr) {
-                    memset(tilemap->layers[layer_index].name,
-                           0,
-                           sizeof(tilemap->layers[layer_index].name));
-                    strncpy(tilemap->layers[layer_index].name,
-                            name_cstr,
-                            sizeof(tilemap->layers[layer_index].name) - 1);
-                }
-            }
-            if (layer_index > 0) {
-                void *layer_tileset = rt_map_get(layer_obj, rt_const_cstr("tileset"));
-                if (layer_tileset) {
-                    void *pixels = deserialize_pixels_blob(layer_tileset);
-                    if (!pixels) {
-                        goto cleanup;
-                    }
-                    assign_layer_tileset(tilemap, layer_index, pixels);
-                }
-            }
-            void *import_offset_x = rt_map_get(layer_obj, rt_const_cstr("importOffsetX"));
-            void *import_offset_y = rt_map_get(layer_obj, rt_const_cstr("importOffsetY"));
-            void *import_parallax_x = rt_map_get(layer_obj, rt_const_cstr("importParallaxX"));
-            void *import_parallax_y = rt_map_get(layer_obj, rt_const_cstr("importParallaxY"));
-            if (import_offset_x || import_offset_y || import_parallax_x || import_parallax_y) {
-                double offset_x = 0.0;
-                double offset_y = 0.0;
-                double parallax_x = 0.0;
-                double parallax_y = 0.0;
-                if (!map_get_f64_checked(layer_obj, "importOffsetX", &offset_x) ||
-                    !map_get_f64_checked(layer_obj, "importOffsetY", &offset_y) ||
-                    !map_get_f64_checked(layer_obj, "importParallaxX", &parallax_x) ||
-                    !map_get_f64_checked(layer_obj, "importParallaxY", &parallax_y) ||
-                    !rt_tilemap_configure_import_layer(
-                        tm, layer_index, offset_x, offset_y, parallax_x, parallax_y))
-                    goto cleanup;
-            }
+        }
+        void *import_offset_x = rt_map_get(layer_obj, rt_const_cstr("importOffsetX"));
+        void *import_offset_y = rt_map_get(layer_obj, rt_const_cstr("importOffsetY"));
+        void *import_parallax_x = rt_map_get(layer_obj, rt_const_cstr("importParallaxX"));
+        void *import_parallax_y = rt_map_get(layer_obj, rt_const_cstr("importParallaxY"));
+        if (import_offset_x || import_offset_y || import_parallax_x || import_parallax_y) {
+            double offset_x = 0.0;
+            double offset_y = 0.0;
+            double parallax_x = 0.0;
+            double parallax_y = 0.0;
+            if (!map_get_f64_checked(layer_obj, "importOffsetX", &offset_x) ||
+                !map_get_f64_checked(layer_obj, "importOffsetY", &offset_y) ||
+                !map_get_f64_checked(layer_obj, "importParallaxX", &parallax_x) ||
+                !map_get_f64_checked(layer_obj, "importParallaxY", &parallax_y) ||
+                !rt_tilemap_configure_import_layer(
+                    tm, layer_index, offset_x, offset_y, parallax_x, parallax_y))
+                goto cleanup;
         }
     }
 
     // Load collision
     void *coll = rt_map_get(root, rt_const_cstr("collision"));
     if (coll) {
-        int64_t cl = map_get_i64(coll, "layer");
+        int64_t cl = 0;
+        if (!map_get_i64_checked(coll, "layer", &cl) || cl < 0 || cl >= lcount)
+            goto cleanup;
         rt_tilemap_set_collision_layer(tm, cl);
         void *types = rt_map_get(coll, rt_const_cstr("types"));
-        if (types) {
-            for (int64_t i = 0; i < rt_seq_len(types); i++) {
-                void *entry = rt_seq_get(types, i);
-                if (!entry)
-                    continue;
-                int64_t tile = 0;
-                int64_t type = 0;
-                if (map_get_i64_checked(entry, "tile", &tile) &&
-                    map_get_i64_checked(entry, "type", &type))
-                    rt_tilemap_set_collision(tm, tile, type);
-            }
+        if (!types)
+            goto cleanup;
+        int64_t type_count = rt_seq_len(types);
+        if (type_count < 0 || type_count >= MAX_TILE_COLLISION_IDS)
+            goto cleanup;
+        uint8_t collision_seen[MAX_TILE_COLLISION_IDS] = {0};
+        for (int64_t i = 0; i < type_count; i++) {
+            void *entry = rt_seq_get(types, i);
+            int64_t tile = 0;
+            int64_t type = 0;
+            if (!entry || !map_get_i64_checked(entry, "tile", &tile) ||
+                !map_get_i64_checked(entry, "type", &type) || tile <= 0 ||
+                tile >= MAX_TILE_COLLISION_IDS || collision_seen[tile] ||
+                (type != RT_TILE_COLLISION_SOLID && type != RT_TILE_COLLISION_ONE_WAY_UP))
+                goto cleanup;
+            collision_seen[tile] = 1;
+            rt_tilemap_set_collision(tm, tile, type);
         }
     }
 
     void *props_arr = rt_map_get(root, rt_const_cstr("tileProperties"));
     if (props_arr) {
-        for (int64_t i = 0; i < rt_seq_len(props_arr); i++) {
+        int64_t property_group_count = rt_seq_len(props_arr);
+        if (property_group_count < 0 || property_group_count > MAX_TILE_PROPS)
+            goto cleanup;
+        uint8_t property_seen[MAX_TILE_PROPS] = {0};
+        for (int64_t i = 0; i < property_group_count; i++) {
             void *prop_obj = rt_seq_get(props_arr, i);
             if (!prop_obj)
-                continue;
+                goto cleanup;
             int64_t tile_id = 0;
-            if (!map_get_i64_checked(prop_obj, "tile", &tile_id))
-                continue;
+            if (!map_get_i64_checked(prop_obj, "tile", &tile_id) || tile_id < 0 ||
+                tile_id >= MAX_TILE_PROPS || property_seen[tile_id])
+                goto cleanup;
+            property_seen[tile_id] = 1;
             void *entries = rt_map_get(prop_obj, rt_const_cstr("entries"));
             if (!entries)
-                continue;
-            for (int64_t j = 0; j < rt_seq_len(entries); j++) {
+                goto cleanup;
+            int64_t entry_count = rt_seq_len(entries);
+            if (entry_count < 1 || entry_count > MAX_PROP_KEYS)
+                goto cleanup;
+            for (int64_t j = 0; j < entry_count; j++) {
                 void *entry = rt_seq_get(entries, j);
                 if (!entry)
-                    continue;
+                    goto cleanup;
                 rt_string key = (rt_string)rt_map_get(entry, rt_const_cstr("key"));
                 int64_t value = 0;
-                if (map_get_i64_checked(entry, "value", &value))
-                    rt_tilemap_set_tile_property(tm, tile_id, key, value);
+                const char *key_bytes = NULL;
+                size_t key_length = 0;
+                if (!map_get_i64_checked(entry, "value", &value) ||
+                    !tilemap_io_bounded_runtime_string(
+                        key, MAX_PROP_KEY_LEN, &key_bytes, &key_length))
+                    goto cleanup;
+                (void)key_bytes;
+                (void)key_length;
+                rt_tilemap_set_tile_property(tm, tile_id, key, value);
+                if (tilemap->tile_props[tile_id].count != j + 1)
+                    goto cleanup;
             }
         }
     }
 
     void *autotiles = rt_map_get(root, rt_const_cstr("autotiles"));
     if (autotiles) {
-        for (int64_t i = 0; i < rt_seq_len(autotiles); i++) {
+        int64_t autotile_count = rt_seq_len(autotiles);
+        if (autotile_count < 0 || autotile_count > MAX_AUTOTILE_RULES)
+            goto cleanup;
+        for (int64_t i = 0; i < autotile_count; i++) {
             void *rule_obj = rt_seq_get(autotiles, i);
             if (!rule_obj)
-                continue;
-            int64_t base_tile = map_get_i64(rule_obj, "baseTile");
+                goto cleanup;
+            int64_t base_tile = 0;
+            if (!map_get_i64_checked(rule_obj, "baseTile", &base_tile) || base_tile <= 0 ||
+                find_rule(tilemap, base_tile))
+                goto cleanup;
             void *variants = rt_map_get(rule_obj, rt_const_cstr("variants"));
-            if (!variants || rt_seq_len(variants) < 16)
-                continue;
+            if (!variants || rt_seq_len(variants) != 16)
+                goto cleanup;
             int64_t variant_values[16];
-            int8_t variants_valid = 1;
             for (int32_t vi = 0; vi < 16; vi++) {
-                if (!boxed_to_i64_exact(rt_seq_get(variants, vi), &variant_values[vi])) {
-                    variants_valid = 0;
-                    break;
-                }
+                if (!boxed_to_i64_exact(rt_seq_get(variants, vi), &variant_values[vi]) ||
+                    variant_values[vi] < 0)
+                    goto cleanup;
             }
-            if (!variants_valid)
-                continue;
             rt_tilemap_set_autotile_lo(tm,
                                        base_tile,
                                        variant_values[0],
@@ -1422,34 +1578,44 @@ void *rt_tilemap_load_from_file(rt_string path) {
                                        variant_values[13],
                                        variant_values[14],
                                        variant_values[15]);
+            if (!find_rule(tilemap, base_tile))
+                goto cleanup;
         }
     }
 
     void *animations = rt_map_get(root, rt_const_cstr("animations"));
     if (animations) {
-        for (int64_t i = 0; i < rt_seq_len(animations); i++) {
+        int64_t animation_count = rt_seq_len(animations);
+        if (animation_count < 0 || animation_count > TM_MAX_TILE_ANIMS)
+            goto cleanup;
+        for (int64_t i = 0; i < animation_count; i++) {
             void *anim_obj = rt_seq_get(animations, i);
             if (!anim_obj)
-                continue;
-            int64_t base_tile = map_get_i64(anim_obj, "baseTile");
-            int64_t frame_count = map_get_i64(anim_obj, "frameCount");
-            int64_t ms_per_frame = map_get_i64(anim_obj, "msPerFrame");
+                goto cleanup;
+            int64_t base_tile = 0;
+            int64_t frame_count = 0;
+            int64_t ms_per_frame = 0;
+            if (!map_get_i64_checked(anim_obj, "baseTile", &base_tile) || base_tile <= 0 ||
+                !map_get_i64_checked(anim_obj, "frameCount", &frame_count) || frame_count <= 0 ||
+                frame_count > TM_MAX_IMPORT_ANIM_FRAMES ||
+                !map_get_i64_checked(anim_obj, "msPerFrame", &ms_per_frame))
+                goto cleanup;
             void *frames = rt_map_get(anim_obj, rt_const_cstr("frames"));
             void *durations = rt_map_get(anim_obj, rt_const_cstr("durations"));
-            if (!frames || frame_count <= 0 || frame_count > TM_MAX_IMPORT_ANIM_FRAMES)
-                continue;
-            if (rt_seq_len(frames) < frame_count)
-                continue;
+            if (!frames || rt_seq_len(frames) != frame_count)
+                goto cleanup;
             int configured = 0;
-            if (durations && rt_seq_len(durations) == frame_count &&
-                (uint64_t)frame_count <= (uint64_t)(SIZE_MAX / sizeof(int64_t))) {
+            if (durations) {
+                if (rt_seq_len(durations) != frame_count ||
+                    (uint64_t)frame_count > (uint64_t)(SIZE_MAX / sizeof(int64_t)))
+                    goto cleanup;
                 size_t bytes = (size_t)frame_count * sizeof(int64_t);
                 int64_t *frame_values = (int64_t *)malloc(bytes);
                 int64_t *duration_values = (int64_t *)malloc(bytes);
                 if (!frame_values || !duration_values) {
                     free(frame_values);
                     free(duration_values);
-                    continue;
+                    goto cleanup;
                 }
                 configured = 1;
                 for (int64_t fi = 0; fi < frame_count; ++fi) {
@@ -1466,23 +1632,32 @@ void *rt_tilemap_load_from_file(rt_string path) {
                         tm, base_tile, frame_count, frame_values, duration_values);
                 free(frame_values);
                 free(duration_values);
-            } else if (frame_count <= TM_MAX_ANIM_FRAMES && ms_per_frame > 0) {
+            } else {
+                if (frame_count > TM_MAX_ANIM_FRAMES || ms_per_frame <= 0 ||
+                    frame_count - 1 > INT64_MAX - base_tile)
+                    goto cleanup;
                 rt_tilemap_set_tile_anim(tm, base_tile, frame_count, ms_per_frame);
                 configured = find_tile_anim(tilemap, base_tile) != NULL;
                 for (int64_t fi = 0; configured && fi < frame_count; fi++) {
-                    void *boxed = rt_seq_get(frames, fi);
                     int64_t frame_tile = 0;
-                    if (boxed_to_i64_exact(boxed, &frame_tile))
-                        rt_tilemap_set_tile_anim_frame(tm, base_tile, fi, frame_tile);
+                    if (!boxed_to_i64_exact(rt_seq_get(frames, fi), &frame_tile) ||
+                        frame_tile <= 0) {
+                        configured = 0;
+                        break;
+                    }
+                    rt_tilemap_set_tile_anim_frame(tm, base_tile, fi, frame_tile);
                 }
             }
             if (!configured)
-                continue;
+                goto cleanup;
             {
                 tm_tile_anim *anim = find_tile_anim(tilemap, base_tile);
                 if (!anim)
-                    continue;
-                int64_t current = map_get_i64(anim_obj, "currentFrame");
+                    goto cleanup;
+                int64_t current = 0;
+                void *current_value = rt_map_get(anim_obj, rt_const_cstr("currentFrame"));
+                if (current_value && !boxed_to_i64_exact(current_value, &current))
+                    goto cleanup;
                 if (anim->frame_count > 0) {
                     current %= anim->frame_count;
                     if (current < 0)
@@ -1491,7 +1666,10 @@ void *rt_tilemap_load_from_file(rt_string path) {
                 } else {
                     anim->current_frame = 0;
                 }
-                anim->timer = map_get_i64(anim_obj, "timer");
+                anim->timer = 0;
+                void *timer_value = rt_map_get(anim_obj, rt_const_cstr("timer"));
+                if (timer_value && !boxed_to_i64_exact(timer_value, &anim->timer))
+                    goto cleanup;
                 if (anim->timer < 0)
                     anim->timer = 0;
                 if (anim->frame_durations && anim->frame_count > 0 &&
@@ -1514,6 +1692,35 @@ cleanup:
 //=============================================================================
 // CSV Import
 //=============================================================================
+
+/// @brief Read one bounded CSV line while rejecting embedded NUL bytes.
+/// @param file Open CSV stream.
+/// @param buffer Destination line buffer.
+/// @param capacity Buffer capacity including the trailing NUL.
+/// @param length_out Required destination for bytes read, including any newline.
+/// @return `1` for a line, `0` at clean EOF, and `-1` for I/O, NUL, or overlength errors.
+static int csv_read_line(FILE *file, char *buffer, size_t capacity, size_t *length_out) {
+    if (!file || !buffer || capacity < 2 || !length_out)
+        return -1;
+    *length_out = 0;
+    for (;;) {
+        int ch = fgetc(file);
+        if (ch == EOF) {
+            if (ferror(file))
+                return -1;
+            if (*length_out == 0)
+                return 0;
+            break;
+        }
+        if (ch == '\0' || *length_out >= capacity - 1)
+            return -1;
+        buffer[(*length_out)++] = (char)ch;
+        if (ch == '\n')
+            break;
+    }
+    buffer[*length_out] = '\0';
+    return 1;
+}
 
 /// @brief Strip trailing CR/LF bytes and horizontal whitespace from a CSV line.
 /// @details Returns a pointer to the first non-space byte and updates @p len_io to
@@ -1555,9 +1762,8 @@ static int64_t csv_count_columns(const char *line) {
 
 /// @brief Parse one CSV tile field as an int64_t tile id.
 /// @details Leading/trailing whitespace is allowed. Empty fields and suffix
-///          garbage such as `12abc` are rejected so tile IDs cannot be silently
-///          coerced. Numeric overflow preserves the legacy CSV contract by
-///          clamping to INT64_MIN or INT64_MAX after validating the token syntax.
+///          garbage such as `12abc` and numeric overflow are rejected so tile
+///          IDs cannot be silently coerced or aliased to an integer limit.
 /// @param field Mutable NUL-terminated field text.
 /// @param out Required destination for the parsed/clamped identifier.
 /// @return `1` for a syntactically valid integer field, otherwise `0`.
@@ -1571,17 +1777,12 @@ static int8_t csv_parse_tile_field(char *field, int64_t *out) {
     errno = 0;
     char *end = field;
     long long parsed = strtoll(field, &end, 10);
-    int range_error = errno == ERANGE;
-    if (end == field || (errno != 0 && !range_error))
+    if (end == field || errno != 0)
         return 0;
     while (*end && isspace((unsigned char)*end))
         end++;
     if (*end != '\0')
         return 0;
-    if (range_error) {
-        *out = (*field == '-') ? INT64_MIN : INT64_MAX;
-        return 1;
-    }
     *out = (int64_t)parsed;
     return 1;
 }
@@ -1599,24 +1800,36 @@ static int8_t csv_parse_tile_field(char *field, int64_t *out) {
 /// @return A caller-owned one-layer Tilemap, or `NULL` for invalid input, I/O,
 ///         nonrectangular/malformed data, excessive size, or allocation failure.
 void *rt_tilemap_load_csv(rt_string path, int64_t tile_w, int64_t tile_h) {
-    if (!path)
+    if (!path || tile_w <= 0 || tile_h <= 0)
         return NULL;
-    const char *cpath = rt_string_cstr(path);
-    if (!cpath)
+    const char *cpath = NULL;
+    if (!rt_file_path_from_vstr((const ZannaString *)path, &cpath) || !cpath || cpath[0] == '\0')
         return NULL;
 
     FILE *f = rt_file_stdio_open_utf8(cpath, "rb");
     if (!f)
         return NULL;
+    if (tmio_fseek(f, 0, SEEK_END) != 0) {
+        fclose(f);
+        return NULL;
+    }
+    int64_t file_size = tmio_ftell(f);
+    if (file_size <= 0 || file_size > TMIO_MAX_FILE_BYTES || tmio_fseek(f, 0, SEEK_SET) != 0) {
+        fclose(f);
+        return NULL;
+    }
 
     // First pass: count rows and require a rectangular column layout.
     int64_t expected_cols = 0;
     int64_t rows = 0;
     char line_buf[16384]; /* max CSV line length */
 
-    while (fgets(line_buf, sizeof(line_buf), f)) {
-        size_t len = strlen(line_buf);
-        if (len == sizeof(line_buf) - 1 && line_buf[len - 1] != '\n' && !feof(f)) {
+    for (;;) {
+        size_t len = 0;
+        int line_status = csv_read_line(f, line_buf, sizeof(line_buf), &len);
+        if (line_status == 0)
+            break;
+        if (line_status < 0) {
             fclose(f);
             return NULL;
         }
@@ -1632,6 +1845,10 @@ void *rt_tilemap_load_csv(rt_string path, int64_t tile_w, int64_t tile_h) {
         if (expected_cols == 0)
             expected_cols = cols;
         else if (cols != expected_cols) {
+            fclose(f);
+            return NULL;
+        }
+        if (rows == INT64_MAX) {
             fclose(f);
             return NULL;
         }
@@ -1662,9 +1879,12 @@ void *rt_tilemap_load_csv(rt_string path, int64_t tile_w, int64_t tile_h) {
     }
     int64_t y = 0;
 
-    while (fgets(line_buf, sizeof(line_buf), f) && y < rows) {
-        size_t len = strlen(line_buf);
-        if (len == sizeof(line_buf) - 1 && line_buf[len - 1] != '\n' && !feof(f)) {
+    for (;;) {
+        size_t len = 0;
+        int line_status = csv_read_line(f, line_buf, sizeof(line_buf), &len);
+        if (line_status == 0)
+            break;
+        if (line_status < 0) {
             tilemap_io_release_ref(&tm);
             fclose(f);
             return NULL;
@@ -1672,6 +1892,11 @@ void *rt_tilemap_load_csv(rt_string path, int64_t tile_w, int64_t tile_h) {
         char *trimmed = csv_trim_line(line_buf, &len);
         if (len == 0)
             continue;
+        if (y >= rows) {
+            tilemap_io_release_ref(&tm);
+            fclose(f);
+            return NULL;
+        }
 
         int64_t x = 0;
         char *tok = trimmed;
@@ -1698,6 +1923,11 @@ void *rt_tilemap_load_csv(rt_string path, int64_t tile_w, int64_t tile_h) {
         y++;
     }
 
+    if (y != rows) {
+        tilemap_io_release_ref(&tm);
+        fclose(f);
+        return NULL;
+    }
     fclose(f);
     return tm;
 }

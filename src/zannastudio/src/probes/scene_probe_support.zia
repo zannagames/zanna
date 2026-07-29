@@ -1,0 +1,94 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_probe_support.zia
+// Purpose: Shared harness interaction and geometry budgets for scene probes.
+// Key invariants:
+//   - Pointer interaction derives coordinates from the target's own live
+//     geometry; probes never click hardcoded pixel offsets (ADR 0219).
+//   - Menu rows are clicked by MenuItem handle after a render has settled
+//     the owning context menu's clamped on-screen position.
+//   - Chrome geometry budgets live here alone; probes assert against these
+//     named values so a deliberate chrome change is one reviewed edit.
+// Ownership/Lifetime:
+//   - Stateless module functions; callers own every widget and harness.
+// Links: docs/adr/0219-scene-probe-interaction-contract-and-menu-item-geometry.md,
+//        zannastudio/docs/testing.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_probe_support;
+
+bind "../ui/app_shell";
+
+bind Convert = Zanna.Core.Convert;
+bind GUI = Zanna.GUI;
+
+// Chrome geometry budgets (logical pixels). Tightened to today's chrome;
+// deliberate chrome changes relax them here, in one reviewed place.
+final MAX_COMMAND_TOOLBAR_HEIGHT: Number = 48.0;
+final MAX_VIEW_TOOLBAR_HEIGHT: Number = 84.0;
+final MIN_CANVAS_SCROLL_HEIGHT: Number = 220.0;
+final MIN_COMPACT_VIEWPORT_HEIGHT: Number = 100.0;
+
+/// @brief Convert a logical window coordinate to a physical harness one.
+expose func HarnessCoordinate(shell: app_shell.AppShell,
+                              logical: Number) -> Integer {
+    var scale = shell.app.GetEffectiveScale();
+    if scale <= 0.0 { scale = 1.0; }
+    return Convert.NumToInt(logical * scale);
+}
+
+/// @brief Click the center of a widget through the real input harness.
+expose func ClickWidget(shell: app_shell.AppShell,
+                        harness: GUI.TestHarness,
+                        widget: GUI.Widget) {
+    var x = HarnessCoordinate(
+        shell, widget.GetScreenX() + widget.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, widget.GetScreenY() + widget.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+/// @brief Click a visible toolbar item by handle (ADR 0220).
+/// @details Toolbar items are not widgets; their live on-screen rectangle
+///          comes from ToolbarItem.GetScreen*, which reports zeros for
+///          hidden or overflowed items so a stale probe fails loudly at the
+///          item's behavioral assertion instead of clicking a neighbor.
+expose func ClickToolbarItem(shell: app_shell.AppShell,
+                             harness: GUI.TestHarness,
+                             item: GUI.ToolbarItem) {
+    var x = HarnessCoordinate(
+        shell, item.GetScreenX() + item.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, item.GetScreenY() + item.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}
+
+/// @brief Click a visible context-menu row by handle (ADR 0219).
+/// @details Reads the row's live on-screen rectangle, so the click survives
+///          menu restyling, row-height changes, reordering, and icon columns.
+///          The owning menu must be visible and painted at least once so its
+///          window-edge clamp has settled; open it, pump, and render first.
+expose func ClickMenuItem(shell: app_shell.AppShell,
+                          harness: GUI.TestHarness,
+                          item: GUI.MenuItem) {
+    var x = HarnessCoordinate(
+        shell, item.GetScreenX() + item.GetScreenWidth() / 2.0);
+    var y = HarnessCoordinate(
+        shell, item.GetScreenY() + item.GetScreenHeight() / 2.0);
+    harness.SendMouse("move", x, y, 0);
+    harness.SendMouse("down", x, y, 0);
+    harness.SendMouse("up", x, y, 0);
+    harness.DispatchPending();
+}

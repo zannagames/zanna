@@ -1,0 +1,52 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/layout_metrics.zia
+// Purpose: Named spacing and sizing tokens shared by scene chrome (ADR 0221).
+// Key invariants:
+//   - Scene inspectors and panels reference these tokens instead of repeating
+//     magic pixel literals, so a deliberate spacing change is one edit.
+//   - Values match the pre-token chrome exactly; adopting a token is never a
+//     visual change by itself.
+// Ownership/Lifetime:
+//   - Stateless module finals.
+// Links: zannastudio/src/ui/inspector_rows.zia,
+//        zannastudio/src/ui/scene_field_rows.zia
+//
+//===----------------------------------------------------------------------===//
+
+module layout_metrics;
+
+/// @brief Gap between controls inside one inspector row.
+final GAP_ROW: Number = 4.0;
+
+/// @brief Gap between sibling rows or grouped controls.
+final GAP_GROUP: Number = 6.0;
+
+/// @brief Tight gap between glued controls (toggle clusters, spinners).
+final GAP_TIGHT: Number = 2.0;
+
+/// @brief Padding for full panes (hierarchy, inspector, palette).
+final PAD_PANE: Number = 8.0;
+
+/// @brief Padding for compact control rows.
+final PAD_ROW: Number = 4.0;
+
+/// @brief Padding for grouped sections inside a pane.
+final PAD_GROUP: Number = 6.0;
+
+/// @brief Padding for slim chrome rows (toolbars' companion rows).
+final PAD_CHROME: Number = 2.0;
+
+/// @brief Minimum width a value input may shrink to inside a wrap row.
+final INPUT_MIN_WIDTH: Number = 48.0;
+
+/// @brief Preferred width for compact value inputs.
+final INPUT_PREF_WIDTH: Number = 72.0;
+
+/// @brief Preferred width for compact field captions.
+final FIELD_LABEL_WIDTH: Number = 52.0;

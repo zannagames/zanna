@@ -57,6 +57,22 @@ static int tests_passed = 0;
             tests_passed++;                                                                        \
     } while (0)
 
+static size_t count_text(const char *haystack, const char *needle) {
+    size_t count = 0;
+    size_t needle_length;
+    const char *cursor;
+
+    if (!haystack || !needle || needle[0] == '\0')
+        return 0;
+    needle_length = strlen(needle);
+    cursor = haystack;
+    while ((cursor = strstr(cursor, needle)) != NULL) {
+        count++;
+        cursor += needle_length;
+    }
+    return count;
+}
+
 static void set_identity4x4(float *m) {
     memset(m, 0, sizeof(float) * 16u);
     m[0] = 1.0f;
@@ -506,6 +522,66 @@ static void test_opengl_source_contracts_are_context_safe(void) {
     EXPECT_TRUE(strstr(source, "vgfx3d_validate_cubemap_ibl_layout") != NULL &&
                     strstr(source, "entry->applied_ibl_identity == env_cm->ibl_identity") != NULL,
                 "OpenGL enables IBL only after the exact validated overlay is resident");
+    EXPECT_TRUE(strstr(source,
+                       "gl.GetIntegerv(GL_DRAW_FRAMEBUFFER_BINDING, "
+                       "&state->draw_framebuffer)") != NULL &&
+                    strstr(source,
+                           "gl.GetIntegerv(GL_READ_FRAMEBUFFER_BINDING, "
+                           "&state->read_framebuffer)") != NULL,
+                "OpenGL helper passes preserve distinct draw and read framebuffer bindings");
+    EXPECT_TRUE(strstr(source, "gl.GetIntegerv(GL_ACTIVE_TEXTURE, &state->active_texture)") !=
+                        NULL &&
+                    strstr(source,
+                           "gl.GetIntegerv(GL_TEXTURE_BINDING_2D, "
+                           "&state->texture_binding_2d)") != NULL &&
+                    strstr(source,
+                           "gl.GetIntegerv(GL_RENDERBUFFER_BINDING, "
+                           "&state->renderbuffer)") != NULL,
+                "OpenGL target helpers preserve texture-unit, texture, and renderbuffer state");
+    EXPECT_TRUE(strstr(source, "static int gl_target_extent_is_valid") != NULL &&
+                    strstr(source, "width <= ctx->max_texture_size") != NULL,
+                "OpenGL rejects target dimensions beyond the live device limit");
+    EXPECT_TRUE(strstr(source, "GLuint scene_postfx_tex;") != NULL &&
+                    strstr(source,
+                           "source_is_scene_color ? GL_COLOR_ATTACHMENT2 : "
+                           "GL_COLOR_ATTACHMENT0") != NULL,
+                "OpenGL in-scene post-FX uses a dedicated same-precision attachment");
+    EXPECT_TRUE(strstr(source,
+                       "source_is_scene_color ? ctx->scene_postfx_tex : "
+                       "ctx->scene_color_tex") != NULL,
+                "OpenGL post-FX never overwrites motion vectors while sampling them");
+    EXPECT_TRUE(strstr(source, "static int gl_ensure_color_target") != NULL &&
+                    strstr(source, "previous_fbo = *io_fbo;") != NULL,
+                "OpenGL color targets publish only after candidate framebuffer validation");
+    EXPECT_TRUE(strstr(source, "gl_scene_target_set_t candidate = {0};") != NULL &&
+                    strstr(source, "gl_release_scene_target_set(&previous);") != NULL &&
+                    strstr(source, "const GLint color_format = hdr ? GL_RGBA16F : GL_RGBA8;") !=
+                        NULL &&
+                    strstr(source, "allocation_ok = gl_upload_ok();") != NULL,
+                "OpenGL scene resize and HDR fallback publish a complete sized-format set");
+    EXPECT_TRUE(strstr(source, "gl_encode_bloom_chain(\n                ctx, source_tex") != NULL,
+                "OpenGL bloom consumes the current ordered-chain source");
+    EXPECT_TRUE(strstr(source, "if (!resolved) {") != NULL &&
+                    strstr(source, "if (!reflected) {") != NULL,
+                "OpenGL propagates TAA and SSR encoder failures");
+    EXPECT_TRUE(count_text(source, "gl_ensure_readback_scratch(ctx,") >= 3u,
+                "OpenGL reuses context-owned scratch for window and RTT readback");
+    EXPECT_TRUE(strstr(source, "while (capacity < bytes)") != NULL &&
+                    strstr(source, "ctx->readback_scratch_bytes = capacity;") != NULL,
+                "OpenGL readback scratch grows geometrically instead of reallocating per pixel");
+    EXPECT_TRUE(
+        strstr(source, "needs_bloom && ensure_bloom_targets") != NULL &&
+            strstr(source, "This fallback must not mutate scene color before discovering") != NULL,
+        "OpenGL preflights deterministic in-scene fallback requirements before drawing");
+    EXPECT_TRUE(strstr(source, "ctx->morph_cache_count < GL_MORPH_CACHE_MAX_RESIDENT") != NULL &&
+                    strstr(source, "gl_morph_cache_entry_t candidate;") != NULL,
+                "OpenGL morph cache is hard-bounded and replacement is transactional");
+    EXPECT_TRUE(
+        strstr(source, "Keep the dirty target and its") != NULL &&
+            strstr(source,
+                   "if (!ctx->rtt_fbo || !ctx->rtt_color_tex || !ctx->rtt_depth_rbo || "
+                   "!ctx->rtt_target)") != NULL,
+        "OpenGL failed RTT unbind and replacement requests preserve a recoverable dirty target");
     free(source);
 }
 

@@ -34,6 +34,8 @@
 
 #include "rt_object.h"
 
+#include <float.h>
+#include <math.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -61,6 +63,13 @@
 #define RT_PHYSICS2D_PROJECTILE_CLASS_ID INT64_C(-0x500204)
 /// @}
 
+/// @brief Smallest supported positive dynamic mass.
+/// @details Subnormal masses are normalized to the smallest normal `double`,
+///          whose reciprocal is safely finite on every supported IEEE-754
+///          platform. This is a numerical storage bound, not a gameplay-scale
+///          recommendation.
+#define PHYSICS2D_MIN_DYNAMIC_MASS DBL_MIN
+
 /// @brief Internal representation of a single rigid body (AABB or circle).
 /// @details AABB coordinates use a top-left origin, while circle coordinates
 ///          store the center. Current and previous-substep positions support
@@ -68,8 +77,8 @@
 ///          the body is registered; @c owner_world and @c world_index cache
 ///          that membership.
 typedef struct {
-    void *vptr;              ///< Zia virtual-dispatch pointer (must be first).
-    double x, y;             ///< Top-left position (AABB) or center (circle).
+    void *vptr;  ///< Zia virtual-dispatch pointer (must be first).
+    double x, y; ///< Top-left position (AABB) or center (circle).
     /// Previous integration-substep position used by swept collision tests.
     double prev_x, prev_y;   ///< Previous-step position used for one-way tile tests.
     double w, h;             ///< Width and height of the AABB (0 for circles).
@@ -159,25 +168,133 @@ struct ph_joint {
     int8_t active;
 };
 
-/// @brief Test whether an opaque handle has the Physics2D.World class ID.
+/// @brief Test whether an opaque handle is a complete Physics2D.World payload.
 /// @param obj Opaque runtime object candidate.
 /// @return Nonzero only for a non-null world handle.
 static inline int8_t rt_physics2d_is_world_handle(void *obj) {
-    return obj && rt_obj_class_id(obj) == RT_PHYSICS2D_WORLD_CLASS_ID;
+    return obj && rt_obj_is_instance(obj, RT_PHYSICS2D_WORLD_CLASS_ID, sizeof(rt_world_impl));
 }
 
-/// @brief Test whether an opaque handle has the Physics2D.Body class ID.
+/// @brief Test whether an opaque handle is a complete Physics2D.Body payload.
 /// @param obj Opaque runtime object candidate.
 /// @return Nonzero only for a non-null body handle.
 static inline int8_t rt_physics2d_is_body_handle(void *obj) {
-    return obj && rt_obj_class_id(obj) == RT_PHYSICS2D_BODY_CLASS_ID;
+    return obj && rt_obj_is_instance(obj, RT_PHYSICS2D_BODY_CLASS_ID, sizeof(rt_body_impl));
 }
 
-/// @brief Test whether an opaque handle has the Physics2D.Joint class ID.
+/// @brief Test whether an opaque handle is a complete Physics2D.Joint payload.
 /// @param obj Opaque runtime object candidate.
 /// @return Nonzero only for a non-null joint handle.
 static inline int8_t rt_physics2d_is_joint_handle(void *obj) {
-    return obj && rt_obj_class_id(obj) == RT_PHYSICS2D_JOINT_CLASS_ID;
+    return obj && rt_obj_is_instance(obj, RT_PHYSICS2D_JOINT_CLASS_ID, sizeof(ph_joint));
+}
+
+/// @brief Add two finite doubles, saturating instead of producing infinity.
+/// @param a First finite operand.
+/// @param b Second finite operand.
+/// @return The mathematical sum clamped to `[-DBL_MAX, DBL_MAX]`.
+static inline double rt_physics2d_saturating_add(double a, double b) {
+    if (!isfinite(a))
+        a = copysign(DBL_MAX, a);
+    if (!isfinite(b))
+        b = copysign(DBL_MAX, b);
+    if (b > 0.0 && a > DBL_MAX - b)
+        return DBL_MAX;
+    if (b < 0.0 && a < -DBL_MAX - b)
+        return -DBL_MAX;
+    return a + b;
+}
+
+/// @brief Multiply two finite doubles, saturating instead of producing infinity.
+/// @param a First finite operand.
+/// @param b Second finite operand.
+/// @return The mathematical product clamped to `[-DBL_MAX, DBL_MAX]`.
+static inline double rt_physics2d_saturating_mul(double a, double b) {
+    if (a == 0.0 || b == 0.0)
+        return copysign(0.0, a * b);
+    if (!isfinite(a) || !isfinite(b))
+        return copysign(DBL_MAX, a * b);
+    if (fabs(a) > DBL_MAX / fabs(b))
+        return copysign(DBL_MAX, a * b);
+    return a * b;
+}
+
+/// @brief Multiply four finite factors with one exponent-range decision.
+/// @details Decomposing each operand with `frexp` avoids losing a representable
+///          final result merely because an earlier pairwise product overflowed
+///          before a later factor reduced its magnitude.
+/// @param a First factor.
+/// @param b Second factor.
+/// @param c Third factor.
+/// @param d Fourth factor.
+/// @return The four-factor product clamped to `[-DBL_MAX, DBL_MAX]`.
+static inline double rt_physics2d_saturating_mul4(double a, double b, double c, double d) {
+    if (a == 0.0 || b == 0.0 || c == 0.0 || d == 0.0)
+        return 0.0;
+    int negative = signbit(a) ^ signbit(b) ^ signbit(c) ^ signbit(d);
+    if (!isfinite(a) || !isfinite(b) || !isfinite(c) || !isfinite(d))
+        return negative ? -DBL_MAX : DBL_MAX;
+    int ea = 0, eb = 0, ec = 0, ed = 0;
+    double mantissa =
+        frexp(fabs(a), &ea) * frexp(fabs(b), &eb) * frexp(fabs(c), &ec) * frexp(fabs(d), &ed);
+    double result = scalbn(mantissa, ea + eb + ec + ed);
+    if (!isfinite(result))
+        result = DBL_MAX;
+    return negative ? -result : result;
+}
+
+/// @brief Divide finite values, saturating overflow instead of returning infinity.
+/// @param numerator Dividend.
+/// @param denominator Nonzero divisor.
+/// @return The quotient clamped to `[-DBL_MAX, DBL_MAX]`.
+static inline double rt_physics2d_saturating_div(double numerator, double denominator) {
+    if (numerator == 0.0)
+        return 0.0;
+    if (!isfinite(numerator) || !isfinite(denominator) || denominator == 0.0)
+        return (signbit(numerator) ^ signbit(denominator)) ? -DBL_MAX : DBL_MAX;
+    double result = numerator / denominator;
+    if (!isfinite(result))
+        return copysign(DBL_MAX, result);
+    return result;
+}
+
+/// @brief Normalize a public mass to the representable dynamic/static model.
+/// @param mass Candidate mass.
+/// @return Zero for invalid/static input, otherwise a positive mass with a
+///         finite reciprocal.
+static inline double rt_physics2d_normalize_mass(double mass) {
+    if (!isfinite(mass) || mass <= 0.0)
+        return 0.0;
+    return mass < PHYSICS2D_MIN_DYNAMIC_MASS ? PHYSICS2D_MIN_DYNAMIC_MASS : mass;
+}
+
+/// @brief Compute stable normalized inverse-mass weights.
+/// @details Avoids overflowing `inv_a + inv_b` when both inverse masses are
+///          near `DBL_MAX`, and does not treat very massive dynamic bodies as
+///          static merely because their inverse masses are small.
+/// @param inv_a First nonnegative finite inverse mass.
+/// @param inv_b Second nonnegative finite inverse mass.
+/// @param share_a Receives `inv_a / (inv_a + inv_b)`.
+/// @param share_b Receives `inv_b / (inv_a + inv_b)`.
+/// @return Nonzero when at least one inverse mass is positive.
+static inline int8_t rt_physics2d_inverse_mass_shares(double inv_a,
+                                                      double inv_b,
+                                                      double *share_a,
+                                                      double *share_b) {
+    if (!share_a || !share_b || !isfinite(inv_a) || !isfinite(inv_b) || inv_a < 0.0 ||
+        inv_b < 0.0 || (inv_a == 0.0 && inv_b == 0.0)) {
+        return 0;
+    }
+    if (inv_a >= inv_b) {
+        double ratio = inv_b / inv_a;
+        *share_a = 1.0 / (1.0 + ratio);
+        *share_b = ratio * *share_a;
+    } else {
+        double ratio = inv_a / inv_b;
+        *share_b = 1.0 / (1.0 + ratio);
+        *share_a = ratio * *share_b;
+    }
+    return 1;
 }
 
 /// @brief Velocity-solve all rigid (distance/revolute) joints in @p world for

@@ -171,7 +171,7 @@ expose func VerifyComponentsAndBatchProperties(ctx: Probe.SceneEditor2DProbeCont
         return false;
     }
     editor.mode = scene_editor_2d.MODE_SELECT;
-    editor.selectButton.Focus();
+    editor.canvasImage.Focus();
     nudgeHarness.SendKey("right", 0);
     nudgeHarness.DispatchPending();
     editor.Pump(sceneDoc);

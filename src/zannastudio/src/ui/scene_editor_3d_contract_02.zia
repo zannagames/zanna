@@ -78,11 +78,12 @@ bind Str = Zanna.String;
 bind Parse = Zanna.Core.Parse;
 bind "scene_editor_3d_model" as SceneEditor3DModel;
 bind "scene_editor_3d_contract_01" as PreviousContract;
+bind "scene_settings_inspector_3d";
 
 /// @brief Dispatch declarations used by focused SceneEditor3D layers.
 class SceneEditor3DContract02 extends PreviousContract.SceneEditor3DContract01 {
     /// @brief Neutral dispatch slot for EffectiveViewportMode.
-    hide func EffectiveViewportMode() -> Integer { return 0; }
+    expose func EffectiveViewportMode() -> Integer { return 0; }
 
     /// @brief Neutral dispatch slot for UpdateViewportModeControls.
     expose func UpdateViewportModeControls() {}
@@ -298,6 +299,13 @@ class SceneEditor3DContract02 extends PreviousContract.SceneEditor3DContract01 {
 
     /// @brief Neutral dispatch slot for ApplySelectedLightFromControls.
     expose func ApplySelectedLightFromControls() -> Boolean { return false; }
+
+    /// @brief Neutral dispatch slot for ApplySceneSettingsCommit.
+    expose func ApplySceneSettingsCommit(
+        _commit: scene_settings_inspector_3d.SceneSettingsCommit)
+            -> Boolean {
+        return false;
+    }
 
     /// @brief Neutral dispatch slot for CreateLightsOnSelection.
     expose func CreateLightsOnSelection(

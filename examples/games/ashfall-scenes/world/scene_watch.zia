@@ -1,0 +1,59 @@
+// ============================================================================
+// ASHFALL: SCENES — world/scene_watch.zia
+//
+// PURPOSE: The ADR 0194 editor watch contract for `--scene <path>
+//   --scene-watch` launches: a bounded mtime poller (one stat per 250 ms)
+//   whose reload reports only after `SceneGraph.Load` preflights the file,
+//   so a torn editor write can never demote the mission to the recovery
+//   room. The caller re-arms `levels.setSceneOverride` (it self-clears on
+//   every build) before re-entering the ordinary campaign load.
+// ============================================================================
+
+bind G3D = Zanna.Graphics3D;
+bind Clock = Zanna.Time.Clock;
+bind File = Zanna.IO.File;
+
+final WATCH_INTERVAL_MS = 250;
+
+/// @brief Bounded mtime poller with a full-parse preflight.
+class SceneWatcher {
+    expose String path;
+    expose Boolean armed;
+    hide Integer lastStamp;
+    hide Integer lastCheckMs;
+
+    expose func init() {
+        path = "";
+        armed = false;
+        lastStamp = 0;
+        lastCheckMs = 0;
+    }
+
+    /// @brief Watch one scene file; empty path disarms.
+    expose func Arm(watchPath: String) {
+        path = watchPath;
+        armed = watchPath != "";
+        lastStamp = 0;
+        if armed and File.Exists(path) {
+            lastStamp = File.Modified(path);
+        }
+        lastCheckMs = 0;
+    }
+
+    /// @brief Report one validated reload when the file changed on disk.
+    expose func Poll() -> Boolean {
+        if armed == false { return false; }
+        var now = Clock.NowMs();
+        if now - lastCheckMs < WATCH_INTERVAL_MS { return false; }
+        lastCheckMs = now;
+        if File.Exists(path) == false { return false; }
+        var stamp = File.Modified(path);
+        if stamp == lastStamp { return false; }
+        // Preflight the full parse: an in-progress write stays invisible
+        // until the next completed save.
+        var probe = G3D.SceneGraph.Load(path);
+        if probe == null { return false; }
+        lastStamp = stamp;
+        return true;
+    }
+}

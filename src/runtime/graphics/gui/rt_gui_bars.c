@@ -1041,6 +1041,92 @@ void rt_toolbaritem_set_enabled(void *item, int64_t enabled) {
     vg_toolbar_item_set_enabled(ti, enabled != 0);
 }
 
+/// @brief Show or hide a toolbar item without removing it (ADR 0220).
+/// @param item ToolbarItem handle.
+/// @param visible Non-zero to show the item; zero hides it and its spacing.
+void rt_toolbaritem_set_visible(void *item, int64_t visible) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
+    if (!ti)
+        return;
+    vg_toolbar_item_set_visible(ti, visible != 0);
+}
+
+/// @brief Check whether a toolbar item is currently shown.
+/// @param item ToolbarItem handle.
+/// @return 1 when visible, otherwise 0.
+int64_t rt_toolbaritem_is_visible(void *item) {
+    RT_ASSERT_MAIN_THREAD();
+    vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
+    if (!ti)
+        return 0;
+    return vg_toolbar_item_is_visible(ti) ? 1 : 0;
+}
+
+/// @brief Shared core resolving a toolbar item's on-screen rectangle (ADR 0220).
+/// @param item Candidate ToolbarItem handle.
+/// @param out_x Receives the on-screen left edge in logical coordinates.
+/// @param out_y Receives the on-screen top edge in logical coordinates.
+/// @param out_w Receives the item width.
+/// @param out_h Receives the item height.
+static void rt_toolbaritem_screen_rect(
+    void *item, float *out_x, float *out_y, float *out_w, float *out_h) {
+    *out_x = 0.0f;
+    *out_y = 0.0f;
+    *out_w = 0.0f;
+    *out_h = 0.0f;
+    vg_toolbar_item_t *ti = rt_toolbaritem_checked(item);
+    if (!ti)
+        return;
+    if (!vg_toolbar_item_screen_rect(ti, out_x, out_y, out_w, out_h))
+        return;
+    vg_widget_t *owner = &ti->owner->base;
+    *out_x = (float)rt_gui_physical_to_logical(owner, *out_x);
+    *out_y = (float)rt_gui_physical_to_logical(owner, *out_y);
+    *out_w = (float)rt_gui_physical_to_logical(owner, *out_w);
+    *out_h = (float)rt_gui_physical_to_logical(owner, *out_h);
+}
+
+/// @brief On-screen left edge of a directly visible toolbar item (ADR 0220).
+/// @param item ToolbarItem handle.
+/// @return Logical X, or zero when the item has no on-screen geometry.
+double rt_toolbaritem_get_screen_x(void *item) {
+    RT_ASSERT_MAIN_THREAD();
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    rt_toolbaritem_screen_rect(item, &x, &y, &w, &h);
+    return (double)x;
+}
+
+/// @brief On-screen top edge of a directly visible toolbar item (ADR 0220).
+/// @param item ToolbarItem handle.
+/// @return Logical Y, or zero when the item has no on-screen geometry.
+double rt_toolbaritem_get_screen_y(void *item) {
+    RT_ASSERT_MAIN_THREAD();
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    rt_toolbaritem_screen_rect(item, &x, &y, &w, &h);
+    return (double)y;
+}
+
+/// @brief On-screen width of a directly visible toolbar item (ADR 0220).
+/// @param item ToolbarItem handle.
+/// @return Item width, or zero when the item has no on-screen geometry.
+double rt_toolbaritem_get_screen_width(void *item) {
+    RT_ASSERT_MAIN_THREAD();
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    rt_toolbaritem_screen_rect(item, &x, &y, &w, &h);
+    return (double)w;
+}
+
+/// @brief On-screen height of a directly visible toolbar item (ADR 0220).
+/// @param item ToolbarItem handle.
+/// @return Item height, or zero when the item has no on-screen geometry.
+double rt_toolbaritem_get_screen_height(void *item) {
+    RT_ASSERT_MAIN_THREAD();
+    float x = 0.0f, y = 0.0f, w = 0.0f, h = 0.0f;
+    rt_toolbaritem_screen_rect(item, &x, &y, &w, &h);
+    return (double)h;
+}
+
 /// @brief Check whether a toolbar item is currently enabled.
 /// @param item ToolbarItem handle.
 /// @return 1 when enabled, otherwise 0.
@@ -1581,6 +1667,54 @@ void rt_toolbaritem_set_tooltip(void *item, rt_string tooltip) {
 void rt_toolbaritem_set_enabled(void *item, int64_t enabled) {
     (void)item;
     (void)enabled;
+}
+
+/// @brief Stub: ignore toolbar item visibility changes when graphics is disabled.
+/// @param item Ignored ToolbarItem handle.
+/// @param visible Ignored visibility flag.
+void rt_toolbaritem_set_visible(void *item, int64_t visible) {
+    (void)item;
+    (void)visible;
+}
+
+/// @brief Stub: report toolbar items hidden when graphics is disabled.
+/// @param item Ignored ToolbarItem handle.
+/// @return Always zero.
+int64_t rt_toolbaritem_is_visible(void *item) {
+    (void)item;
+    return 0;
+}
+
+/// @brief Stub: report zero toolbar item screen X when graphics is disabled.
+/// @param item Ignored ToolbarItem handle.
+/// @return Always zero.
+double rt_toolbaritem_get_screen_x(void *item) {
+    (void)item;
+    return 0.0;
+}
+
+/// @brief Stub: report zero toolbar item screen Y when graphics is disabled.
+/// @param item Ignored ToolbarItem handle.
+/// @return Always zero.
+double rt_toolbaritem_get_screen_y(void *item) {
+    (void)item;
+    return 0.0;
+}
+
+/// @brief Stub: report zero toolbar item screen width when graphics is disabled.
+/// @param item Ignored ToolbarItem handle.
+/// @return Always zero.
+double rt_toolbaritem_get_screen_width(void *item) {
+    (void)item;
+    return 0.0;
+}
+
+/// @brief Stub: report zero toolbar item screen height when graphics is disabled.
+/// @param item Ignored ToolbarItem handle.
+/// @return Always zero.
+double rt_toolbaritem_get_screen_height(void *item) {
+    (void)item;
+    return 0.0;
 }
 
 /// @brief Check whether a toolbar item is currently enabled.
