@@ -404,7 +404,7 @@ class SceneEditor3DStateInitialization extends PreviousLayer.SceneEditor3DState 
         flatNodes = [];
         flatDepths = [];
         flatPaths = [];
-        hierarchyTreeNodes = [];
+        hierarchyModel = null;
         hierarchySearchMatches = [];
         hierarchySearchCursor = -1;
         parentTargetIndices = [];

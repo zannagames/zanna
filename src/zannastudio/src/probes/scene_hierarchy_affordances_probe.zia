@@ -40,6 +40,7 @@ bind "../services/file_utils";
 bind "../ui/app_shell";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
+bind "scene_probe_support";
 
 bind Convert = Zanna.Core.Convert;
 bind GUI = Zanna.GUI;
@@ -174,8 +175,8 @@ func main() {
        or editor.hierarchyShowButton.IsEnabled() == false
        or editor.hierarchyHideButton.IsEnabled()
        or Str.Contains(
-              GUI.TreeView.Node.GetText(
-                  editor.hierarchyTreeNodes.get(0)), "○ ") == false {
+              scene_probe_support.ModelRowText(
+                  editor.hierarchyModel, "0"), "○ ") == false {
         Fail(shell, harness, "real group Hide transaction");
         return;
     }
@@ -201,8 +202,8 @@ func main() {
        or editor.hierarchyPickLockButton.GetAccessibleName()
            != "Unlock viewport picking for selected 3D scene nodes"
        or Str.Contains(
-              GUI.TreeView.Node.GetText(
-                  editor.hierarchyTreeNodes.get(0)), "⊘") == false
+              scene_probe_support.ModelRowText(
+                  editor.hierarchyModel, "0"), "⊘") == false
        or sceneDoc.content != lockCanonical
        or editor.GetRevision() != lockRevision
        or editor.undoStack.count() != lockUndoCount {
@@ -245,11 +246,11 @@ func main() {
        or editor.NodePickLocked(0) == false
        or editor.NodePickLocked(1)
        or Str.Contains(
-              GUI.TreeView.Node.GetText(
-                  editor.hierarchyTreeNodes.get(0)), "⊘") == false
+              scene_probe_support.ModelRowText(
+                  editor.hierarchyModel, "0"), "⊘") == false
        or Str.Contains(
-              GUI.TreeView.Node.GetText(
-                  editor.hierarchyTreeNodes.get(1)), "⊘") {
+              scene_probe_support.ModelRowText(
+                  editor.hierarchyModel, "1"), "⊘") {
         Fail(shell, harness, "pick lock did not remap by live node identity");
         return;
     }

@@ -151,12 +151,13 @@ class SceneEditor3DDropsGizmoInputLayer extends PreviousLayer.SceneEditor3DTerra
     ///          edit unless the hierarchy already owns a floating pane.
     /// @return True when the row editor opened.
     expose override func BeginRenameSelected() -> Boolean {
-        if hierarchyTree == null or scene == null { return false; }
+        if hierarchyTree == null or hierarchyModel == null
+           or scene == null {
+            return false;
+        }
         if hierarchyTree.IsEditing() { return false; }
         if selectedIndices.count() != 1 { return false; }
-        if selectedIndex < 0
-           or selectedIndex >= hierarchyTreeNodes.count()
-           or hierarchyTreeNodes.get(selectedIndex) == null {
+        if selectedIndex < 0 or selectedIndex >= flatNodes.count() {
             return false;
         }
         var node = SelectedNode();
@@ -171,23 +172,19 @@ class SceneEditor3DDropsGizmoInputLayer extends PreviousLayer.SceneEditor3DTerra
             ApplyInspectorLayout();
             CaptureWorkspaceState();
         }
-        return hierarchyTree.BeginEditNode(
-            hierarchyTreeNodes.get(selectedIndex), node.Name);
+        return hierarchyModel.BeginEdit("" + selectedIndex, node.Name);
     }
 
     /// @brief Apply a committed inline hierarchy rename as one undoable edit.
-    /// @details The edited row's data carries its flat index, so a selection
-    ///          change between commit and consumption cannot retarget the
-    ///          rename. Empty and unchanged names are no-ops.
-    hide override func ApplyHierarchyRename() -> Boolean {
-        var edited = hierarchyTree.GetEditedNodeOption();
-        if edited.IsSome == false { return false; }
-        var index = Parse.IntOr(
-            GUI.TreeView.Node.GetData(edited.Unwrap()), -1);
+    /// @details The commit carries the edited row's flat index, so a
+    ///          selection change between commit and consumption cannot
+    ///          retarget the rename. Empty and unchanged names are no-ops.
+    hide override func ApplyHierarchyRename(index: Integer,
+                                            committedText: String) -> Boolean {
         if index < 0 or index >= flatNodes.count() { return false; }
         var node = flatNodes.get(index);
         if node == null { return false; }
-        var nextName = Str.Trim(hierarchyTree.GetEditText());
+        var nextName = Str.Trim(committedText);
         if nextName == "" or nextName == node.Name { return false; }
         node.Name = nextName;
         if CommitScene("Renamed node to " + nextName) == false {

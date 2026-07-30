@@ -46,6 +46,15 @@ static int32_t navmesh3d_clamped_array_count(const void *array, int32_t count, i
     return count < capacity ? count : capacity;
 }
 
+/// @brief Validate the bookkeeping for a mutable optional array.
+/// @param array Borrowed array pointer.
+/// @param count Number of initialized elements.
+/// @param capacity Number of allocated elements.
+/// @return Non-zero when appending or editing through the bookkeeping is safe.
+static int navmesh3d_array_storage_valid(const void *array, int32_t count, int32_t capacity) {
+    return count >= 0 && capacity >= 0 && count <= capacity && (capacity == 0 || array != NULL);
+}
+
 /// @brief Read a defensively bounded live-triangle count.
 /// @param nm Borrowed navigation mesh.
 /// @return Non-negative count constrained by available live and source triangle storage.
@@ -76,6 +85,15 @@ static int32_t navmesh3d_read_obstacle_count(const rt_navmesh3d *nm) {
               : 0;
 }
 
+/// @brief Read a defensively bounded authored area-name count.
+/// @param nm Borrowed navigation mesh.
+/// @return Non-negative count constrained by the owned string array capacity.
+static int32_t navmesh3d_read_area_name_count(const rt_navmesh3d *nm) {
+    return nm ? navmesh3d_clamped_array_count(
+                    nm->area_names, nm->area_name_count, nm->area_name_capacity)
+              : 0;
+}
+
 static void navmesh3d_refresh_offmesh_links(rt_navmesh3d *nm);
 static int point_in_tri_xz(float px, float pz, const float *v0, const float *v1, const float *v2);
 static void navmesh3d_voxel_emit_tri(
@@ -91,13 +109,15 @@ static void *navmesh3d_voxel_bake(
 static void navmesh3d_finalizer(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)obj;
     if (nm->offmesh_links) {
-        for (int32_t i = 0; i < nm->offmesh_link_count; i++) {
+        int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
+        for (int32_t i = 0; i < link_count; i++) {
             if (nm->offmesh_links[i].kind)
                 rt_string_unref(nm->offmesh_links[i].kind);
         }
     }
     if (nm->area_names) {
-        for (int32_t i = 0; i < nm->area_name_count; i++) {
+        int32_t area_name_count = navmesh3d_read_area_name_count(nm);
+        for (int32_t i = 0; i < area_name_count; i++) {
             if (nm->area_names[i])
                 rt_string_unref(nm->area_names[i]);
         }
@@ -643,9 +663,10 @@ static int navmesh3d_triangle_overlaps_bounds(const rt_navmesh3d *nm,
 /// @return Non-zero when any authored obstacle overlaps the triangle.
 static int navmesh3d_triangle_blocked_by_obstacle(const rt_navmesh3d *nm,
                                                   const nav_triangle_t *tri) {
-    if (!nm || !tri || !nm->obstacles || nm->obstacle_count <= 0 || !nm->vertices)
+    int32_t obstacle_count = navmesh3d_read_obstacle_count(nm);
+    if (!nm || !tri || obstacle_count <= 0 || !nm->vertices)
         return 0;
-    for (int32_t i = 0; i < nm->obstacle_count; i++) {
+    for (int32_t i = 0; i < obstacle_count; i++) {
         const nav_obstacle_t *ob = &nm->obstacles[i];
         if (!navmesh3d_triangle_overlaps_bounds(nm, tri, ob->min, ob->max))
             continue;
@@ -662,6 +683,10 @@ static int navmesh3d_triangle_blocked_by_obstacle(const rt_navmesh3d *nm,
 static int32_t navmesh3d_ensure_area_id(rt_navmesh3d *nm, rt_string area) {
     if (!nm || !area || !rt_string_is_handle(area))
         return -1;
+    if (nm->area_name_count < 0 || nm->area_name_capacity < 0 ||
+        nm->area_name_count > nm->area_name_capacity ||
+        (nm->area_name_capacity > 0 && !nm->area_names))
+        return -1;
     const char *name = rt_string_cstr(area);
     if (!name || name[0] == '\0')
         return 0;
@@ -671,8 +696,16 @@ static int32_t navmesh3d_ensure_area_id(rt_navmesh3d *nm, rt_string area) {
             return i + 1;
     }
     if (nm->area_name_count >= nm->area_name_capacity) {
-        int32_t new_cap = nm->area_name_capacity > 0 ? nm->area_name_capacity * 2 : 4;
-        if (new_cap < 0 || (size_t)new_cap > SIZE_MAX / sizeof(rt_string))
+        int32_t new_cap;
+        if (nm->area_name_count == INT32_MAX)
+            return -1;
+        if (nm->area_name_capacity <= 0)
+            new_cap = 4;
+        else if (nm->area_name_capacity > INT32_MAX / 2)
+            new_cap = nm->area_name_count + 1;
+        else
+            new_cap = nm->area_name_capacity * 2;
+        if (new_cap <= nm->area_name_count || (size_t)new_cap > SIZE_MAX / sizeof(rt_string))
             return -1;
         rt_string *areas =
             (rt_string *)realloc(nm->area_names, (size_t)new_cap * sizeof(rt_string));
@@ -694,8 +727,8 @@ static int32_t navmesh3d_ensure_area_id(rt_navmesh3d *nm, rt_string area) {
 /// @param area_id One-based area identifier.
 /// @return Retained authored name, or the shared `default` string.
 static rt_string navmesh3d_area_name(const rt_navmesh3d *nm, int32_t area_id) {
-    if (area_id > 0 && nm && nm->area_names && area_id <= nm->area_name_count &&
-        nm->area_names[area_id - 1])
+    int32_t area_name_count = navmesh3d_read_area_name_count(nm);
+    if (area_id > 0 && area_id <= area_name_count && nm->area_names[area_id - 1])
         return rt_string_ref(nm->area_names[area_id - 1]);
     return rt_const_cstr("default");
 }
@@ -1497,7 +1530,8 @@ static void *navmesh3d_build_scene_source_mesh(void *scene_obj) {
             if (mesh->index_count > before)
                 appended = 1;
         }
-        for (int32_t i = 0; i < node->child_count; i++) {
+        int32_t child_count = scene3d_node_child_count(node);
+        for (int32_t i = 0; i < child_count; i++) {
             if (stack_count >= stack_capacity) {
                 int32_t next_capacity;
                 rt_scene_node3d **grown;
@@ -1507,6 +1541,11 @@ static void *navmesh3d_build_scene_source_mesh(void *scene_obj) {
                     return NULL;
                 }
                 next_capacity = stack_capacity * 2;
+                if ((size_t)next_capacity > SIZE_MAX / sizeof(rt_scene_node3d *)) {
+                    free(stack);
+                    navmesh3d_release_local(mesh);
+                    return NULL;
+                }
                 grown = (rt_scene_node3d **)realloc(stack, (size_t)next_capacity * sizeof(*stack));
                 if (!grown) {
                     free(stack);
@@ -1730,9 +1769,9 @@ static int navmesh3d_export_v2(rt_navmesh3d *nm, FILE *f) {
     int32_t source_tc =
         (nm->source_triangles && nm->source_triangle_count > 0) ? nm->source_triangle_count : 0;
     int32_t tc = nm->triangle_count < 0 ? 0 : nm->triangle_count;
-    int32_t area_count = nm->area_name_count < 0 ? 0 : nm->area_name_count;
-    int32_t link_count = nm->offmesh_link_count < 0 ? 0 : nm->offmesh_link_count;
-    int32_t obstacle_count = nm->obstacle_count < 0 ? 0 : nm->obstacle_count;
+    int32_t area_count = navmesh3d_read_area_name_count(nm);
+    int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
+    int32_t obstacle_count = navmesh3d_read_obstacle_count(nm);
     if ((vc > 0 && !nm->vertices) || (source_tc > 0 && !nm->source_triangles) ||
         (tc > 0 && !nm->triangles) || (area_count > 0 && !nm->area_names) ||
         (link_count > 0 && !nm->offmesh_links) || (obstacle_count > 0 && !nm->obstacles))

@@ -256,7 +256,7 @@ static float centroid_dist(const rt_navmesh3d *nm, int32_t a, int32_t b) {
 static float navmesh3d_astar_heuristic(const rt_navmesh3d *nm, int32_t from, int32_t goal) {
     if (!nm)
         return 0.0f;
-    if (nm->offmesh_link_count > 0 && nm->heuristic_mode == 0)
+    if (navmesh3d_read_offmesh_link_count(nm) > 0 && nm->heuristic_mode == 0)
         return 0.0f;
     return centroid_dist(nm, from, goal);
 }
@@ -323,6 +323,7 @@ static float navmesh3d_offmesh_cost(const nav_offmesh_link_t *link) {
 /// @param cur Triangle currently being expanded.
 /// @param next Candidate triangle reached through @p link.
 /// @param goal Destination triangle used by the heuristic.
+/// @param triangle_count Defensively bounded triangle-array length.
 /// @param link Directed off-mesh traversal being relaxed.
 /// @param g_cost In/out best-known path cost for every triangle.
 /// @param parent In/out predecessor triangle for every improved node.
@@ -334,6 +335,7 @@ static void navmesh3d_astar_relax_offmesh(rt_navmesh3d *nm,
                                           int32_t cur,
                                           int32_t next,
                                           int32_t goal,
+                                          int32_t triangle_count,
                                           const nav_offmesh_link_t *link,
                                           float *g_cost,
                                           int32_t *parent,
@@ -341,8 +343,8 @@ static void navmesh3d_astar_relax_offmesh(rt_navmesh3d *nm,
                                           heap_entry_t *heap,
                                           int32_t *heap_size,
                                           int32_t heap_cap) {
-    int32_t tc = nm ? nm->triangle_count : 0;
-    if (!nm || !link || next < 0 || next >= tc || closed[next] || nm->triangles[next].blocked)
+    if (!nm || !link || next < 0 || next >= triangle_count || closed[next] ||
+        nm->triangles[next].blocked)
         return;
     float new_g = g_cost[cur] + navmesh3d_offmesh_cost(link);
     if (new_g < g_cost[next]) {
@@ -373,8 +375,12 @@ static int navmesh3d_astar_search(rt_navmesh3d *nm,
                                   int8_t *closed,
                                   heap_entry_t *heap,
                                   int32_t heap_cap) {
-    int32_t tc = nm->triangle_count;
+    int32_t tc = navmesh3d_read_triangle_count(nm);
+    int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
     int32_t heap_size = 0;
+    if (!nm || !g_cost || !parent || !closed || !heap || start < 0 || start >= tc || goal < 0 ||
+        goal >= tc || heap_cap <= 0)
+        return 0;
     g_cost[start] = 0;
     heap_push(heap, &heap_size, heap_cap, start, navmesh3d_astar_heuristic(nm, start, goal));
     while (heap_size > 0) {
@@ -387,7 +393,7 @@ static int navmesh3d_astar_search(rt_navmesh3d *nm,
 
         for (int e = 0; e < 3; e++) {
             int32_t next = nm->triangles[cur].neighbors[e];
-            if (next < 0 || closed[next] || nm->triangles[next].blocked)
+            if (next < 0 || next >= tc || closed[next] || nm->triangles[next].blocked)
                 continue;
 
             float new_g = g_cost[cur] + navmesh3d_edge_cost(nm, cur, next);
@@ -402,32 +408,51 @@ static int navmesh3d_astar_search(rt_navmesh3d *nm,
             }
         }
 
-        if (cur >= 0 && cur < tc && nm->offmesh_adjacency_starts && nm->offmesh_adjacency_edges &&
-            nm->offmesh_adjacency_edge_count > 0) {
-            int32_t begin = nm->offmesh_adjacency_starts[cur];
-            int32_t end = nm->offmesh_adjacency_starts[cur + 1];
+        int32_t begin = 0;
+        int32_t end = 0;
+        if (navmesh3d_offmesh_adjacency_range(nm, cur, tc, link_count, &begin, &end)) {
             for (int32_t ei = begin; ei < end; ei++) {
                 int32_t li = -1;
                 int reverse = 0;
                 if (!navmesh3d_unpack_offmesh_edge(nm->offmesh_adjacency_edges[ei], &li, &reverse))
                     continue;
-                if (li < 0 || li >= nm->offmesh_link_count)
+                if (li < 0 || li >= link_count)
                     continue;
                 const nav_offmesh_link_t *link = &nm->offmesh_links[li];
                 int32_t next = reverse ? link->from_tri : link->to_tri;
-                navmesh3d_astar_relax_offmesh(
-                    nm, cur, next, goal, link, g_cost, parent, closed, heap, &heap_size, heap_cap);
+                navmesh3d_astar_relax_offmesh(nm,
+                                              cur,
+                                              next,
+                                              goal,
+                                              tc,
+                                              link,
+                                              g_cost,
+                                              parent,
+                                              closed,
+                                              heap,
+                                              &heap_size,
+                                              heap_cap);
             }
         } else {
-            for (int32_t li = 0; li < nm->offmesh_link_count; li++) {
+            for (int32_t li = 0; li < link_count; li++) {
                 const nav_offmesh_link_t *link = &nm->offmesh_links[li];
                 int32_t next = -1;
                 if (link->from_tri == cur)
                     next = link->to_tri;
                 else if (link->bidirectional && link->to_tri == cur)
                     next = link->from_tri;
-                navmesh3d_astar_relax_offmesh(
-                    nm, cur, next, goal, link, g_cost, parent, closed, heap, &heap_size, heap_cap);
+                navmesh3d_astar_relax_offmesh(nm,
+                                              cur,
+                                              next,
+                                              goal,
+                                              tc,
+                                              link,
+                                              g_cost,
+                                              parent,
+                                              closed,
+                                              heap,
+                                              &heap_size,
+                                              heap_cap);
             }
         }
     }
@@ -808,7 +833,9 @@ int64_t rt_navmesh3d_copy_path_points(void *obj,
     if (!obj || !navmesh3d_read_point3f(from_v, from_p) || !navmesh3d_read_point3f(to_v, to_p))
         return 0;
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
-    if (!nm || nm->triangle_count == 0 || !nm->triangles || !nm->vertices)
+    int32_t tc = navmesh3d_read_triangle_count(nm);
+    int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
+    if (!nm || tc <= 0 || !nm->vertices)
         return 0;
     navmesh3d_store_last_path_cost(nm, 0.0);
 
@@ -848,10 +875,9 @@ int64_t rt_navmesh3d_copy_path_points(void *obj,
     }
 
     /* A* */
-    int32_t tc = nm->triangle_count;
-    if (tc <= 0 || tc > INT32_MAX / 3)
+    if (tc > INT32_MAX / 3)
         return 0;
-    int64_t heap_cap64 = (int64_t)tc * 3 + (int64_t)nm->offmesh_link_count * 2 + 8;
+    int64_t heap_cap64 = (int64_t)tc * 3 + (int64_t)link_count * 2 + 8;
     if (heap_cap64 <= 0 || heap_cap64 > INT32_MAX)
         return 0;
     int32_t heap_cap = (int32_t)heap_cap64;
@@ -1307,6 +1333,10 @@ int8_t rt_navmesh3d_add_offmesh_link(void *obj, void *from, void *to, int8_t bid
     if (from_tri < 0 || to_tri < 0)
         return 0;
 
+    if (!navmesh3d_array_storage_valid(
+            nm->offmesh_links, nm->offmesh_link_count, nm->offmesh_link_capacity) ||
+        nm->offmesh_link_count == INT32_MAX)
+        return 0;
     if (nm->offmesh_link_count >= nm->offmesh_link_capacity) {
         int32_t new_cap = 4;
         if (nm->offmesh_link_capacity > 0) {
@@ -1459,6 +1489,9 @@ int8_t rt_navmesh3d_add_obstacle(void *obj, void *min_v, void *max_v) {
     if (!navmesh3d_read_obstacle_bounds(min_v, max_v, omin, omax))
         return 0;
 
+    if (!navmesh3d_array_storage_valid(nm->obstacles, nm->obstacle_count, nm->obstacle_capacity) ||
+        nm->obstacle_count == INT32_MAX)
+        return 0;
     if (nm->obstacle_count >= nm->obstacle_capacity) {
         int32_t new_cap = 4;
         if (nm->obstacle_capacity > 0) {
@@ -1498,7 +1531,10 @@ int8_t rt_navmesh3d_add_obstacle(void *obj, void *min_v, void *max_v) {
 /// @return One when the obstacle is removed and the mesh state is updated, otherwise zero.
 int8_t rt_navmesh3d_remove_obstacle(void *obj, int64_t index) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
-    if (!navmesh3d_can_edit_obstacles(nm) || index < 0 || index >= nm->obstacle_count)
+    int32_t obstacle_count = navmesh3d_read_obstacle_count(nm);
+    if (!navmesh3d_can_edit_obstacles(nm) ||
+        !navmesh3d_array_storage_valid(nm->obstacles, nm->obstacle_count, nm->obstacle_capacity) ||
+        index < 0 || index >= obstacle_count)
         return 0;
     int32_t remove_at = (int32_t)index;
     nav_obstacle_t removed = nm->obstacles[remove_at];
@@ -1530,7 +1566,10 @@ int8_t rt_navmesh3d_update_obstacle(void *obj, int64_t index, void *min_v, void 
     float omin[3];
     float omax[3];
     nav_obstacle_t old_obstacle;
-    if (!navmesh3d_can_edit_obstacles(nm) || index < 0 || index >= nm->obstacle_count)
+    int32_t obstacle_count = navmesh3d_read_obstacle_count(nm);
+    if (!navmesh3d_can_edit_obstacles(nm) ||
+        !navmesh3d_array_storage_valid(nm->obstacles, nm->obstacle_count, nm->obstacle_capacity) ||
+        index < 0 || index >= obstacle_count)
         return 0;
     if (!navmesh3d_read_obstacle_bounds(min_v, max_v, omin, omax))
         return 0;
@@ -1673,10 +1712,11 @@ int8_t rt_navmesh3d_segment_is_offmesh_link(void *obj,
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
     if (out_kind)
         *out_kind = NULL;
-    if (!nm || !a || !b || nm->offmesh_link_count <= 0 || !nm->offmesh_links)
+    int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
+    if (!nm || !a || !b || link_count <= 0)
         return 0;
     const double tol2 = 0.25 * 0.25;
-    for (int32_t i = 0; i < nm->offmesh_link_count; i++) {
+    for (int32_t i = 0; i < link_count; i++) {
         const nav_offmesh_link_t *link = &nm->offmesh_links[i];
         double f[3] = {link->from[0], link->from[1], link->from[2]};
         double t[3] = {link->to[0], link->to[1], link->to[2]};
@@ -1751,10 +1791,17 @@ int8_t rt_navmesh3d_test_inject_obstacle(void *obj, void *min_v, void *max_v) {
     float omax[3];
     if (!navmesh3d_read_obstacle_bounds(min_v, max_v, omin, omax))
         return 0;
+    if (!navmesh3d_array_storage_valid(nm->obstacles, nm->obstacle_count, nm->obstacle_capacity) ||
+        nm->obstacle_count == INT32_MAX)
+        return 0;
     if (nm->obstacle_count >= nm->obstacle_capacity) {
-        int32_t new_cap = nm->obstacle_capacity > 0 ? nm->obstacle_capacity * 2 : 4;
-        if (nm->obstacle_capacity > INT32_MAX / 2 ||
-            (size_t)new_cap > SIZE_MAX / sizeof(nav_obstacle_t))
+        int32_t new_cap = 4;
+        if (nm->obstacle_capacity > 0) {
+            if (nm->obstacle_capacity > INT32_MAX / 2)
+                return 0;
+            new_cap = nm->obstacle_capacity * 2;
+        }
+        if ((size_t)new_cap > SIZE_MAX / sizeof(nav_obstacle_t))
             return 0;
         nav_obstacle_t *obstacles =
             (nav_obstacle_t *)realloc(nm->obstacles, (size_t)new_cap * sizeof(nav_obstacle_t));

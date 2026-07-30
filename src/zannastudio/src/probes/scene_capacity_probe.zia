@@ -8,7 +8,8 @@
 // File: zannastudio/src/probes/scene_capacity_probe.zia
 // Purpose: Verify the 3D editor's raised node capacity on a synthetic scene.
 // Key invariants:
-//   - A 2000-node document opens unclipped with every node in the hierarchy.
+//   - A 2000-node document opens unclipped with every node in the hierarchy
+//     through the virtual row model (ADR 0226).
 //   - Selection, reparenting, and undo stay usable within loose latency
 //     budgets that catch pathological regressions without timing flake.
 //   - The truthful clipping flag engages only past the documented budget.
@@ -89,7 +90,8 @@ func main() {
              + " clipped=" + editor.hierarchyClipped);
         return;
     }
-    if openMs > 120000 {
+    Terminal.Say("METRIC: capacity_open_ms=" + openMs);
+    if openMs > 30000 {
         Fail(shell, "opening 2000 nodes exceeded its budget: " + openMs);
         return;
     }
@@ -106,7 +108,8 @@ func main() {
         Fail(shell, "reparenting inside the capacity scene failed");
         return;
     }
-    if editMs > 120000 {
+    Terminal.Say("METRIC: capacity_edit_ms=" + editMs);
+    if editMs > 15000 {
         Fail(shell, "select+reparent exceeded its budget: " + editMs);
         return;
     }
@@ -116,7 +119,8 @@ func main() {
         return;
     }
     var undoMs = Clock.NowMs() - undoStart;
-    if undoMs > 120000 {
+    Terminal.Say("METRIC: capacity_undo_ms=" + undoMs);
+    if undoMs > 15000 {
         Fail(shell, "undo exceeded its budget: " + undoMs);
         return;
     }

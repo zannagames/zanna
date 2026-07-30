@@ -897,6 +897,15 @@ hide func DispatchBuildDebugCommands(ctx: command_context.CommandContext,
             ctx.buildSys, ctx.locStore, ctx.scene3DEditor.playController,
             ctx.appSettings.saveAllBeforeBuild);
     }
+    if ctx.scene2DEditor != null
+       and ctx.scene2DEditor.TakePlaySceneRequested()
+       and dispatch_helpers.CanStartBuildCommand(
+               ctx.shell, ctx.dbgSession, "Play Scene") {
+        build_commands.handlePlayScene(
+            ctx.shell, ctx.docMgr, ctx.projMgr, ctx.engine, ctx.tabs,
+            ctx.buildSys, ctx.locStore, ctx.scene2DEditor.playController,
+            ctx.appSettings.saveAllBeforeBuild);
+    }
     var runSceneTriggered =
         dispatch_helpers.Triggered("runscene", null, null, cpSelected);
     if ctx.scene2DEditor != null

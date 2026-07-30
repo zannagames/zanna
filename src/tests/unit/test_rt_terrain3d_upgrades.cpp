@@ -38,6 +38,7 @@
 #include <cstdlib>
 #include <cstring>
 #include <initializer_list>
+#include <limits>
 
 namespace {
 static std::jmp_buf g_trap_jmp;
@@ -188,6 +189,38 @@ bool test_holes_carve_render_nav_collision() {
     PASS();
 }
 
+bool test_holes_handle_extreme_coordinates_and_growth() {
+    TEST("holes clamp extreme coordinates and grow without arithmetic overflow");
+
+    void *terrain = rt_terrain3d_new(9, 9);
+    EXPECT_TRUE(terrain != nullptr, "terrain allocates");
+    rt_terrain3d_set_scale(terrain, 1.0, 1.0, 1.0);
+
+    const double largest = std::numeric_limits<double>::max();
+    const double half_largest = largest / 2.0;
+    EXPECT_EQ_INT(rt_terrain3d_set_hole(terrain, -half_largest, -half_largest, largest, largest),
+                  0,
+                  "extreme finite rectangle is accepted without unsafe integer casts");
+    int32_t cells_x = 0;
+    int32_t cells_z = 0;
+    const uint8_t *mask = rt_terrain3d_get_hole_mask_raw(terrain, &cells_x, &cells_z);
+    EXPECT_TRUE(mask != nullptr && cells_x == 8 && cells_z == 8,
+                "extreme covering rectangle produces the bounded cell mask");
+    EXPECT_TRUE((mask[0] & 1u) != 0 && (mask[7] & 0x80u) != 0,
+                "extreme rectangle covers both first and last terrain cells");
+    rt_terrain3d_clear_holes(terrain);
+
+    for (int i = 0; i < 20; ++i)
+        EXPECT_EQ_INT(rt_terrain3d_set_hole(terrain, 100.0 + i, 100.0, 0.5, 0.5),
+                      i,
+                      "hole array grows geometrically");
+    EXPECT_EQ_INT(rt_terrain3d_get_hole_count(terrain), 20, "grown hole count remains exact");
+
+    if (rt_obj_release_check0(terrain))
+        rt_obj_free(terrain);
+    PASS();
+}
+
 //=========================================================================
 // Slope/height rules generate normalized 8-layer weights
 //=========================================================================
@@ -328,6 +361,7 @@ int main() {
     std::printf("Terrain3D upgrade tests\n");
     bool ok = true;
     ok &= test_holes_carve_render_nav_collision();
+    ok &= test_holes_handle_extreme_coordinates_and_growth();
     ok &= test_rules_generate_normalized_weights();
     ok &= test_streamed_tile_manifest_holes();
     ok &= test_extended_layers_survive_setters();

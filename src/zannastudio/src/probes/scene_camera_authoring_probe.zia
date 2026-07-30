@@ -48,6 +48,7 @@ bind "../ui/app_shell";
 bind "../ui/scene_camera_3d";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
+bind "scene_probe_support";
 
 bind GUI = Zanna.GUI;
 bind Str = Zanna.String;
@@ -161,8 +162,8 @@ func VerifyCameraTransactions(
         fail(shell, "camera node was not one canonical VSCN edit");
         return false;
     }
-    var rowText = GUI.TreeView.Node.GetText(
-        editor.hierarchyTreeNodes.get(cameraIndex));
+    var rowText = scene_probe_support.ModelRowText(
+        editor.hierarchyModel, "" + cameraIndex);
     if Str.Contains(rowText, "[camera]") == false {
         fail(shell, "hierarchy row lacked the camera badge: " + rowText);
         return false;

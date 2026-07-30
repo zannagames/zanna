@@ -463,10 +463,18 @@ static char *read_opengl_backend_sources(void) {
 
 static void test_opengl_source_contracts_are_context_safe(void) {
     char *source = read_opengl_backend_sources();
+    const char *sync_target_decl;
+    const char *target_switch;
 
     EXPECT_TRUE(source != NULL, "OpenGL backend source chunks are readable for contract checks");
     if (!source)
         return;
+    sync_target_decl = strstr(source,
+                              "static int gl_sync_render_target_color(void *ctx_ptr, "
+                              "vgfx3d_rendertarget_t *rt);");
+    target_switch = strstr(source, "static void gl_set_render_target");
+    EXPECT_TRUE(sync_target_decl && target_switch && sync_target_decl < target_switch,
+                "OpenGL render-target synchronization is declared before frame target switching");
     EXPECT_TRUE(strstr(source, "static int gl_zero_to_one_clip") == NULL,
                 "OpenGL clip convention is not shared mutable process state");
     EXPECT_TRUE(strstr(source, "gl_compile_context_shaders(&shaders, ctx->zero_to_one_clip)") !=
@@ -544,6 +552,10 @@ static void test_opengl_source_contracts_are_context_safe(void) {
                            "gl.GetIntegerv(GL_RENDERBUFFER_BINDING, "
                            "&state->renderbuffer)") != NULL,
                 "OpenGL target helpers preserve texture-unit, texture, and renderbuffer state");
+    EXPECT_TRUE(strstr(source, "gl.GetIntegerv(GL_SCISSOR_TEST, &state->scissor_test)") != NULL &&
+                    strstr(source, "if (state->scissor_test)") != NULL &&
+                    strstr(source, "gl.Enable(GL_SCISSOR_TEST);") != NULL,
+                "OpenGL helper passes preserve an active caller scissor test");
     EXPECT_TRUE(strstr(source, "static int gl_target_extent_is_valid") != NULL &&
                     strstr(source, "width <= ctx->max_texture_size") != NULL,
                 "OpenGL rejects target dimensions beyond the live device limit");

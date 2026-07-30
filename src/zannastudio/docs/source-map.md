@@ -1292,7 +1292,7 @@ the exact function when precision matters:
 | `scene_editor_3d_node_transform.zia` | Node transform drafts, live commit, and Escape restore. |
 | `scene_editor_3d_hierarchy_surface.zia` | Hierarchy tree presentation and search. |
 | `scene_editor_3d_hierarchy_reordering.zia` | Reorder, delete, and duplicate 3D hierarchy selections. |
-| `scene_editor_3d_inspector_hierarchy.zia` | Hierarchy refresh, row decoration, and inspector scoping. |
+| `scene_editor_3d_inspector_hierarchy.zia` | Virtual-model hierarchy refresh (ADR 0226), row decoration, and inspector scoping. |
 | `scene_editor_3d_selection_controls.zia` | Selection-driven control state and batch edges. |
 | `scene_editor_3d_selection_inspector.zia` | Inspector, material, and component controls for selected nodes. |
 | `scene_editor_3d_components.zia` | Typed component conventions (colliders, markers, metadata). |
@@ -1323,6 +1323,8 @@ visibility, and transactional dispatch.
 
 Constructs the 3D hierarchy and inspector authoring surfaces (hierarchy pane,
 selection/component groups, material library, bake, environment, history).
+The hierarchy TreeView binds an id-keyed `GUI.VirtualTree` model at
+construction (ADR 0226), so rows are viewport-provided rather than retained.
 `scene_panels_3d.zia` builds the toolbar/viewport scaffold; `SceneEditor3D`
 owns all state and dispatch for both.
 

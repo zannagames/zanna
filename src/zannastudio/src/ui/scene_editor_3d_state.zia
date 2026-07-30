@@ -366,7 +366,7 @@ class SceneEditor3DState extends SceneEditor3DContract.SceneEditor3DContract06 {
     expose List[SceneNode] flatNodes;
     expose List[Integer] flatDepths;
     expose List[String] flatPaths;
-    expose List[Any] hierarchyTreeNodes;
+    expose GUI.VirtualTree hierarchyModel;
     expose List[Integer] hierarchySearchMatches;
     expose Integer hierarchySearchCursor;
     expose List[Integer] parentTargetIndices;

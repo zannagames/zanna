@@ -128,6 +128,7 @@ static void treeview_compute_virtual_range(vg_treeview_t *tree,
                                            size_t *out_count);
 static void treeview_paint_virtual(vg_treeview_t *tree, void *canvas);
 static void treeview_edit_finish(vg_treeview_t *tree, bool commit);
+static bool treeview_edit_place(vg_treeview_t *tree);
 static void treeview_edit_sync(vg_treeview_t *tree);
 static bool treeview_handle_virtual_event(vg_treeview_t *tree, vg_event_t *event);
 
@@ -1198,6 +1199,15 @@ vg_treeview_t *vg_treeview_create(vg_widget_t *parent) {
     tree->scrollbar_drag_offset = 0.0f;
     tree->virtual_selected_index = SIZE_MAX;
     tree->virtual_hovered_index = SIZE_MAX;
+    tree->virtual_drag_pressed = false;
+    tree->virtual_dragging = false;
+    tree->virtual_drag_source = SIZE_MAX;
+    tree->virtual_drop_target = SIZE_MAX;
+    tree->virtual_drop_latched = false;
+    tree->virtual_drop_src_latched = SIZE_MAX;
+    tree->virtual_drop_tgt_latched = SIZE_MAX;
+    tree->edit_virtual_index = SIZE_MAX;
+    tree->edit_virtual_committed_index = SIZE_MAX;
 
     // Callbacks
     tree->on_select = NULL;
@@ -1487,9 +1497,14 @@ static void treeview_paint_virtual(vg_treeview_t *tree, void *canvas) {
             ((index & 1u) == 0u)
                 ? theme->colors.bg_primary
                 : vg_color_blend(theme->colors.bg_primary, theme->colors.bg_secondary, 0.35f);
-        bool selected = index == tree->virtual_selected_index;
+        bool selected = index == tree->virtual_selected_index ||
+                        (found && (row.flags & VG_TREEVIEW_VROW_SELECTED) != 0u);
         bool hovered = index == tree->virtual_hovered_index;
         uint32_t foreground = selected ? theme->colors.fg_primary : tree->text_color;
+        if (found && row.text_color != 0u && !selected)
+            foreground = row.text_color;
+        if (found && (row.flags & VG_TREEVIEW_VROW_DIM) != 0u)
+            foreground = vg_color_blend(foreground, theme->colors.bg_primary, 0.45f);
         vgfx_fill_rect((vgfx_window_t)canvas,
                        (int32_t)tree->base.x,
                        (int32_t)display_y,
@@ -1567,6 +1582,29 @@ static void treeview_paint_virtual(vg_treeview_t *tree, void *canvas) {
             vgfx_fill_circle(
                 (vgfx_window_t)canvas, cx, cy, radius, vg_color_lighten(foreground, 0.08f));
             vgfx_fill_circle((vgfx_window_t)canvas, cx + radius * 3, cy, radius, foreground);
+        } else if (found && row.icon_name && row.icon_name[0] != '\0') {
+            int32_t icon_id = vg_icon_vector_find(row.icon_name);
+            if (icon_id >= 0) {
+                float icon_y = display_y + (tree->row_height - tree->icon_size) * 0.5f;
+                vg_icon_vector_draw((vgfx_window_t)canvas,
+                                    icon_id,
+                                    (int32_t)(icon_x + 0.5f),
+                                    (int32_t)(icon_y + 0.5f),
+                                    (int32_t)(tree->icon_size + 0.5f),
+                                    foreground);
+            }
+        } else if (found && row.icon_text && row.icon_text[0] != '\0' && tree->font) {
+            vg_font_metrics_t metrics = {0};
+            vg_font_get_metrics(tree->font, tree->icon_size, &metrics);
+            vg_font_draw_text(
+                canvas,
+                tree->font,
+                tree->icon_size,
+                icon_x,
+                display_y +
+                    (tree->row_height + (float)metrics.ascent + (float)metrics.descent) * 0.5f,
+                row.icon_text,
+                foreground);
         }
 
         if (tree->font && row.text) {
@@ -1582,6 +1620,31 @@ static void treeview_paint_virtual(vg_treeview_t *tree, void *canvas) {
                               fitted ? fitted : row.text,
                               foreground);
             free(fitted);
+        }
+
+        if (tree->virtual_dragging && index == tree->virtual_drop_target &&
+            index != tree->virtual_drag_source) {
+            uint32_t accent = theme->colors.accent_primary;
+            if (tree->virtual_drop_position == VG_TREE_DROP_INTO) {
+                vg_draw_round_rect_stroke((vgfx_window_t)canvas,
+                                          tree->base.x + 6.0f,
+                                          display_y + 1.0f,
+                                          content_width - 12.0f,
+                                          tree->row_height - 2.0f,
+                                          theme->radius.lg,
+                                          2.0f,
+                                          accent);
+            } else {
+                float line_y = tree->virtual_drop_position == VG_TREE_DROP_BEFORE
+                                   ? display_y
+                                   : display_y + tree->row_height - 2.0f;
+                vgfx_fill_rect((vgfx_window_t)canvas,
+                               (int32_t)(tree->base.x + 6.0f),
+                               (int32_t)line_y,
+                               (int32_t)(content_width - 12.0f),
+                               2,
+                               accent);
+            }
         }
     }
 }
@@ -1855,7 +1918,47 @@ static bool treeview_handle_virtual_event(vg_treeview_t *tree, vg_event_t *event
 
     vg_widget_t *widget = &tree->base;
     switch (event->type) {
+        case VG_EVENT_MOUSE_DOWN: {
+            if (event->mouse.button != VG_MOUSE_LEFT ||
+                tree->app_directed_dnd_mode != VG_TREEVIEW_APP_DND_ROW_AWARE)
+                return false;
+            size_t index = SIZE_MAX;
+            if (!treeview_virtual_row_at_y(tree, event->mouse.y, &index))
+                return false;
+            tree->virtual_drag_pressed = true;
+            tree->virtual_dragging = false;
+            tree->virtual_drag_source = index;
+            tree->virtual_drag_start_x = event->mouse.x;
+            tree->virtual_drag_start_y = event->mouse.y;
+            tree->virtual_drop_target = SIZE_MAX;
+            vg_widget_set_input_capture(widget);
+            return false;
+        }
         case VG_EVENT_MOUSE_MOVE: {
+            if (tree->virtual_drag_pressed && vg_widget_get_input_capture() == widget) {
+                float scale = treeview_scale();
+                float dx = event->mouse.x - tree->virtual_drag_start_x;
+                float dy = event->mouse.y - tree->virtual_drag_start_y;
+                if (!tree->virtual_dragging && dx * dx + dy * dy >= (6.0f * scale) * (6.0f * scale))
+                    tree->virtual_dragging = true;
+                if (tree->virtual_dragging) {
+                    size_t target = SIZE_MAX;
+                    vg_tree_drop_position_t position = VG_TREE_DROP_INTO;
+                    if (treeview_virtual_row_at_y(tree, event->mouse.y, &target)) {
+                        float row_top =
+                            (float)((double)target * (double)tree->row_height) - tree->scroll_y;
+                        float fraction = (event->mouse.y - row_top) / tree->row_height;
+                        if (fraction < 0.25f)
+                            position = VG_TREE_DROP_BEFORE;
+                        else if (fraction >= 0.75f)
+                            position = VG_TREE_DROP_AFTER;
+                    }
+                    tree->virtual_drop_target = target;
+                    tree->virtual_drop_position = position;
+                    widget->needs_paint = true;
+                    return true;
+                }
+            }
             size_t index = SIZE_MAX;
             size_t old_hover = tree->virtual_hovered_index;
             if (treeview_virtual_row_at_y(tree, event->mouse.y, &index))
@@ -1864,6 +1967,32 @@ static bool treeview_handle_virtual_event(vg_treeview_t *tree, vg_event_t *event
                 tree->virtual_hovered_index = SIZE_MAX;
             if (old_hover != tree->virtual_hovered_index)
                 widget->needs_paint = true;
+            return false;
+        }
+        case VG_EVENT_MOUSE_UP: {
+            if (event->mouse.button != VG_MOUSE_LEFT || !tree->virtual_drag_pressed)
+                return false;
+            bool completed = tree->virtual_dragging;
+            if (completed && tree->virtual_drop_target != SIZE_MAX &&
+                tree->virtual_drop_target != tree->virtual_drag_source &&
+                tree->virtual_drag_source < tree->virtual_row_count) {
+                tree->virtual_drop_latched = true;
+                tree->virtual_drop_src_latched = tree->virtual_drag_source;
+                tree->virtual_drop_tgt_latched = tree->virtual_drop_target;
+                tree->virtual_drop_pos_latched = tree->virtual_drop_position;
+                vg_widget_note_revision(widget);
+            }
+            tree->virtual_drag_pressed = false;
+            tree->virtual_dragging = false;
+            tree->virtual_drag_source = SIZE_MAX;
+            tree->virtual_drop_target = SIZE_MAX;
+            if (vg_widget_get_input_capture() == widget)
+                vg_widget_release_input_capture();
+            if (completed) {
+                tree->suppress_click = true;
+                widget->needs_paint = true;
+                return true;
+            }
             return false;
         }
         case VG_EVENT_MOUSE_LEAVE:
@@ -1875,6 +2004,10 @@ static bool treeview_handle_virtual_event(vg_treeview_t *tree, vg_event_t *event
         case VG_EVENT_CLICK: {
             if (event->mouse.button != VG_MOUSE_LEFT)
                 return false;
+            if (tree->suppress_click) {
+                tree->suppress_click = false;
+                return true;
+            }
             size_t index = 0;
             if (!treeview_virtual_row_at_y(tree, event->mouse.y, &index))
                 return false;
@@ -1893,6 +2026,23 @@ static bool treeview_handle_virtual_event(vg_treeview_t *tree, vg_event_t *event
                 if (tree->virtual_action)
                     tree->virtual_action(
                         tree, index, VG_TREEVIEW_VIRTUAL_TOGGLE, tree->virtual_model_user_data);
+            } else if (tree->multi_select &&
+                       (event->modifiers & (VG_MOD_CTRL | VG_MOD_SUPER)) != 0u) {
+                tree->virtual_selected_index = index;
+                if (tree->virtual_action)
+                    tree->virtual_action(tree,
+                                         index,
+                                         VG_TREEVIEW_VIRTUAL_SELECT_TOGGLE,
+                                         tree->virtual_model_user_data);
+                treeview_note_selection_changed(tree);
+            } else if (tree->multi_select && (event->modifiers & VG_MOD_SHIFT) != 0u) {
+                tree->virtual_selected_index = index;
+                if (tree->virtual_action)
+                    tree->virtual_action(tree,
+                                         index,
+                                         VG_TREEVIEW_VIRTUAL_SELECT_RANGE,
+                                         tree->virtual_model_user_data);
+                treeview_note_selection_changed(tree);
             } else {
                 treeview_select_virtual_internal(tree, index, true);
             }
@@ -2031,8 +2181,7 @@ static bool treeview_handle_event(vg_widget_t *widget, vg_event_t *event) {
 
     // Escape cancels an inline row edit. The focused row editor declines the
     // key, so it propagates here through the ancestor chain.
-    if (tree->edit_active && event->type == VG_EVENT_KEY_DOWN &&
-        event->key.key == VG_KEY_ESCAPE) {
+    if (tree->edit_active && event->type == VG_EVENT_KEY_DOWN && event->key.key == VG_KEY_ESCAPE) {
         treeview_edit_finish(tree, false);
         return true;
     }
@@ -2320,6 +2469,8 @@ void vg_treeview_clear_virtual_model(vg_treeview_t *tree) {
     bool was_virtual = tree->virtual_mode;
     bool had_selection = tree->virtual_selected_index != SIZE_MAX;
     treeview_notify_virtual_unbound(tree);
+    if (tree->edit_active && tree->edit_virtual_index != SIZE_MAX)
+        treeview_edit_finish(tree, false);
     tree->virtual_mode = false;
     tree->virtual_row_count = 0;
     tree->virtual_selected_index = SIZE_MAX;
@@ -2327,6 +2478,13 @@ void vg_treeview_clear_virtual_model(vg_treeview_t *tree) {
     tree->virtual_provider = NULL;
     tree->virtual_action = NULL;
     tree->virtual_model_user_data = NULL;
+    tree->virtual_drag_pressed = false;
+    tree->virtual_dragging = false;
+    tree->virtual_drag_source = SIZE_MAX;
+    tree->virtual_drop_target = SIZE_MAX;
+    tree->virtual_drop_latched = false;
+    tree->virtual_drop_src_latched = SIZE_MAX;
+    tree->virtual_drop_tgt_latched = SIZE_MAX;
     tree->scroll_y = 0.0f;
     tree->visible_start = 0;
     tree->visible_count = 0;
@@ -2415,6 +2573,98 @@ void vg_treeview_invalidate_virtual_rows(vg_treeview_t *tree) {
         return;
     tree->base.needs_paint = true;
     vg_widget_note_revision(&tree->base);
+}
+
+/// @brief Resolve the virtual row under a window-space point.
+/// @copydetails vg_treeview_virtual_index_at
+bool vg_treeview_virtual_index_at(vg_treeview_t *tree, float x, float y, size_t *out_index) {
+    if (!tree || !tree->virtual_mode || !out_index)
+        return false;
+    vg_widget_t *widget = &tree->base;
+    if (x < widget->x || y < widget->y || x >= widget->x + widget->width ||
+        y >= widget->y + widget->height)
+        return false;
+    float scrollbar_width = 0.0f;
+    if (treeview_scrollbar_geometry(tree, &scrollbar_width, NULL, NULL) &&
+        x >= widget->x + widget->width - scrollbar_width)
+        return false;
+    return treeview_virtual_row_at_y(tree, y - widget->y, out_index);
+}
+
+/// @brief Scroll one virtual row into the viewport without changing selection.
+/// @copydetails vg_treeview_reveal_virtual_index
+void vg_treeview_reveal_virtual_index(vg_treeview_t *tree, size_t index) {
+    if (!tree || !tree->virtual_mode || index >= tree->virtual_row_count)
+        return;
+    treeview_scroll_virtual_to(tree, index);
+    tree->base.needs_paint = true;
+}
+
+/// @brief Consume the latched virtual-row drop edge (see header contract).
+/// @copydetails vg_treeview_take_virtual_drop
+bool vg_treeview_take_virtual_drop(vg_treeview_t *tree,
+                                   size_t *out_source,
+                                   size_t *out_target,
+                                   vg_tree_drop_position_t *out_position) {
+    if (!tree || !tree->virtual_drop_latched)
+        return false;
+    if (out_source)
+        *out_source = tree->virtual_drop_src_latched;
+    if (out_target)
+        *out_target = tree->virtual_drop_tgt_latched;
+    if (out_position)
+        *out_position = tree->virtual_drop_pos_latched;
+    tree->virtual_drop_latched = false;
+    tree->virtual_drop_src_latched = SIZE_MAX;
+    tree->virtual_drop_tgt_latched = SIZE_MAX;
+    return true;
+}
+
+/// @brief Begin an inline edit over one visible virtual row (see header contract).
+/// @copydetails vg_treeview_begin_virtual_edit
+bool vg_treeview_begin_virtual_edit(vg_treeview_t *tree, size_t index, const char *initial_text) {
+    if (!tree || !vg_widget_is_live(&tree->base) || !tree->virtual_mode ||
+        index >= tree->virtual_row_count)
+        return false;
+
+    if (tree->edit_active)
+        treeview_edit_finish(tree, true);
+
+    if (!tree->edit_input) {
+        tree->edit_input = vg_textinput_create(&tree->base);
+        if (!tree->edit_input)
+            return false;
+    }
+    if (tree->font)
+        vg_textinput_set_font(tree->edit_input, tree->font, tree->font_size);
+
+    treeview_scroll_virtual_to(tree, index);
+    tree->edit_node = NULL;
+    tree->edit_virtual_index = index;
+    tree->edit_active = true;
+    tree->edit_committed = false;
+    tree->edit_committed_node = NULL;
+    tree->edit_virtual_committed_index = SIZE_MAX;
+
+    vg_textinput_set_text(tree->edit_input, initial_text ? initial_text : "");
+    vg_textinput_select_all(tree->edit_input);
+    vg_widget_set_visible(&tree->edit_input->base, true);
+    if (!treeview_edit_place(tree)) {
+        treeview_edit_finish(tree, false);
+        return false;
+    }
+    vg_widget_set_focus(&tree->edit_input->base);
+    /* Consume any stale submit latched before this edit began. */
+    (void)vg_textinput_was_submitted(tree->edit_input);
+    tree->base.needs_paint = true;
+    vg_widget_note_revision(&tree->base);
+    return true;
+}
+
+/// @brief Return the virtual row of the latest committed inline edit (see header contract).
+/// @copydetails vg_treeview_get_edited_virtual_index
+size_t vg_treeview_get_edited_virtual_index(const vg_treeview_t *tree) {
+    return tree ? tree->edit_virtual_committed_index : SIZE_MAX;
 }
 
 /// @brief Return the hidden sentinel root node of the tree.
@@ -3356,20 +3606,34 @@ vg_tree_node_t *vg_treeview_get_activated_node(vg_treeview_t *tree) {
 /// @param tree Tree with an active edit.
 /// @return true when the edited row remains visible in the flattened order.
 static bool treeview_edit_place(vg_treeview_t *tree) {
-    int current = 0;
-    int index = get_node_index(tree->root, tree->edit_node, &current);
-    if (index < 0)
-        return false;
+    float depth = 0.0f;
+    float row_index = 0.0f;
+    if (tree->edit_virtual_index != SIZE_MAX) {
+        if (!tree->virtual_mode || tree->edit_virtual_index >= tree->virtual_row_count)
+            return false;
+        vg_treeview_virtual_row_t row = {0};
+        if (tree->virtual_provider &&
+            tree->virtual_provider(
+                tree, tree->edit_virtual_index, &row, tree->virtual_model_user_data))
+            depth = row.depth > (size_t)INT_MAX ? (float)INT_MAX : (float)row.depth;
+        row_index = (float)tree->edit_virtual_index;
+    } else {
+        int current = 0;
+        int index = get_node_index(tree->root, tree->edit_node, &current);
+        if (index < 0)
+            return false;
+        depth = (float)tree->edit_node->depth;
+        row_index = (float)index;
+    }
 
     float outer_padding = treeview_outer_padding();
-    float x = outer_padding + (float)tree->edit_node->depth * tree->indent_size +
-              tree->indent_size + tree->icon_size + tree->icon_gap;
-    float y = (float)index * tree->row_height - tree->scroll_y;
+    float x = outer_padding + depth * tree->indent_size + tree->indent_size + tree->icon_size +
+              tree->icon_gap;
+    float y = row_index * tree->row_height - tree->scroll_y;
     float width = tree->base.width - x - outer_padding;
     if (width < 40.0f)
         width = 40.0f;
-    vg_widget_arrange(
-        &tree->edit_input->base, x, y + 2.0f, width, tree->row_height - 4.0f);
+    vg_widget_arrange(&tree->edit_input->base, x, y + 2.0f, width, tree->row_height - 4.0f);
     return true;
 }
 
@@ -3387,10 +3651,12 @@ static void treeview_edit_finish(vg_treeview_t *tree, bool commit) {
             tree->edit_text = copy;
             tree->edit_committed = true;
             tree->edit_committed_node = tree->edit_node;
+            tree->edit_virtual_committed_index = tree->edit_virtual_index;
         }
     }
     tree->edit_active = false;
     tree->edit_node = NULL;
+    tree->edit_virtual_index = SIZE_MAX;
     if (tree->edit_input) {
         if (tree->edit_input->base.state & VG_STATE_FOCUSED)
             vg_widget_set_focus(&tree->base);
@@ -3408,8 +3674,14 @@ static void treeview_edit_finish(vg_treeview_t *tree, bool commit) {
 static void treeview_edit_sync(vg_treeview_t *tree) {
     if (!tree->edit_active)
         return;
-    if (!vg_tree_node_is_live(tree->edit_node) || tree->edit_node->owner != tree ||
-        !tree->edit_input) {
+    if (tree->edit_virtual_index != SIZE_MAX) {
+        if (!tree->virtual_mode || tree->edit_virtual_index >= tree->virtual_row_count ||
+            !tree->edit_input) {
+            treeview_edit_finish(tree, false);
+            return;
+        }
+    } else if (!vg_tree_node_is_live(tree->edit_node) || tree->edit_node->owner != tree ||
+               !tree->edit_input) {
         treeview_edit_finish(tree, false);
         return;
     }
@@ -3427,9 +3699,7 @@ static void treeview_edit_sync(vg_treeview_t *tree) {
 
 /// @brief Begin an inline edit of one visible row (see header contract).
 /// @copydetails vg_treeview_begin_edit
-bool vg_treeview_begin_edit(vg_treeview_t *tree,
-                            vg_tree_node_t *node,
-                            const char *initial_text) {
+bool vg_treeview_begin_edit(vg_treeview_t *tree, vg_tree_node_t *node, const char *initial_text) {
     if (!tree || !vg_widget_is_live(&tree->base) || tree->virtual_mode ||
         !vg_tree_node_is_live(node) || node->owner != tree)
         return false;

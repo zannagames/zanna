@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-07-29
 ---
 
 # Game3D
@@ -1470,7 +1470,7 @@ state — no VM callbacks — and every world-registered piece ticks inside
 | `BehaviorTree3D` / `BehaviorTreeInstance3D` | Shared immutable node arena (`Sequence`/`Selector`/`Inverter`, `TargetVisible`, `Wait`, `MoveToTarget`, `MoveToLastKnown`, `Custom(id)`); per-entity instances hold all mutable state. `Custom` leaves park the tree and expose `PendingCustom` for the script to `Resolve(success)`. |
 | `ReverbZone3D` / `AmbientBed3D` | Listener-selected AABB reverb zones easing a dedicated `"g3d_reverb"` group insert (`Sound3D.get_ReverbWet` telemetry); zone ambient beds crossfade looping clips on `"g3d_ambience"`. `Sound3D.SetOcclusion` runs budgeted listener→source raycasts into the mixer's smoothed per-voice occlusion tap; `PlayDialogue` routes speech to the `"g3d_dialogue"` ducking trigger group. |
 | `Cloth3D` | Verlet chains/patches for capes and banners — see the Physics3D page. Registered via `World3D.AddCloth`, ticked after the facial pass. |
-| Persistence | `Entity3D.SetPersistent(key)` + `StateTag` opt into the world's delta store (alive/pose/tag, refreshed per step, killed on despawn); `WorldStream3D.SetCellFlag/GetCellFlag` + `LoadedCellEvent*` cover authored-cell state; `World3D.SaveState/LoadState(app, slot)` snapshot everything as validated `VW3DSAV1` under the per-user SaveData dir. `GetPersistentAlive/Position(key)` steer respawn logic. |
+| Persistence | `Entity3D.SetPersistent(key)` + `StateTag` opt into the world's delta store (alive/pose/tag, refreshed per step, killed on despawn); `WorldStream3D.SetCellFlag/GetCellFlag` + `LoadedCellEvent*` cover authored-cell state (cell and flag keys are non-empty and at most 255 bytes); `World3D.SaveState/LoadState(app, slot)` snapshot everything as an exact, finite, at-most-64-MiB `VW3DSAV1` under the per-user SaveData dir. Loading validates and stages the complete replacement before changing live state. `GetPersistentAlive/Position(key)` steer respawn logic. |
 | `Minimap3D` | Authored north-up map with world-rect affine (`MapX/MapY` exposed), ≤64 entity/point markers with rim clamping, compass strip, and `WorldToScreen` objective indicators. Explicit `Draw()` from the HUD pass. |
 | Profiling | `Canvas3D.PassDrawCount/PassInstanceCount(Game3D.RenderPass.*)` per-pass attribution plus the `World3D` hitch ring (`SetHitchThresholdMs`, `HitchCount/HitchFrame/HitchSource/HitchMs`, `Game3D.HitchSource` constants: StreamCommit, FrameTotal). |
 

@@ -1143,11 +1143,17 @@ static void game3d_world_release_runtime(rt_game3d_world *world, int mark_entiti
 ///          resets every freed registry pointer, count, capacity, and validity flag.
 /// @param world Borrowed world whose registry storage is freed.
 static void game3d_world_free_registries(rt_game3d_world *world) {
+    int32_t cloth_count;
     if (!world)
         return;
     game3d_world_clear_combat_events(world);
     game3d_persistence_release(world);
-    for (int32_t cl = 0; cl < world->cloth_count; ++cl)
+    cloth_count = world->cloths && world->cloth_count > 0 && world->cloth_capacity > 0
+                      ? world->cloth_count
+                      : 0;
+    if (cloth_count > world->cloth_capacity)
+        cloth_count = world->cloth_capacity;
+    for (int32_t cl = 0; cl < cloth_count; ++cl)
         game3d_release_typed_ref(&world->cloths[cl], RT_G3D_CLOTH3D_CLASS_ID);
     free(world->cloths);
     world->cloths = NULL;

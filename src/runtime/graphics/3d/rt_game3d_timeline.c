@@ -46,6 +46,15 @@
 #include <stdlib.h>
 #include <string.h>
 
+/// @brief Validate the dense Timeline3D track-array invariants before traversal.
+/// @param timeline Borrowed timeline payload.
+/// @return Nonzero when count, capacity, and backing storage agree.
+static int game3d_timeline_storage_valid(const rt_game3d_timeline *timeline) {
+    return timeline && timeline->track_count >= 0 && timeline->track_capacity >= 0 &&
+           timeline->track_count <= timeline->track_capacity &&
+           (timeline->track_capacity == 0 || timeline->tracks != NULL);
+}
+
 //=========================================================================
 // Lifecycle
 //=========================================================================
@@ -56,7 +65,8 @@ static void game3d_timeline_finalize(void *obj) {
     rt_game3d_timeline *timeline = (rt_game3d_timeline *)obj;
     if (!timeline)
         return;
-    for (int32_t i = 0; i < timeline->track_count; ++i) {
+    int32_t track_count = game3d_timeline_storage_valid(timeline) ? timeline->track_count : 0;
+    for (int32_t i = 0; i < track_count; ++i) {
         game3d_release_ref(&timeline->tracks[i].obj_a);
         game3d_release_ref(&timeline->tracks[i].obj_b);
     }
@@ -103,8 +113,24 @@ static rt_game3d_tl_track *game3d_timeline_append(
         rt_trap(api_name);
         return NULL;
     }
+    if (!game3d_timeline_storage_valid(timeline)) {
+        rt_trap("Game3D.Timeline3D: corrupt track storage");
+        return NULL;
+    }
     if (timeline->track_count >= timeline->track_capacity) {
-        int32_t new_cap = timeline->track_capacity ? timeline->track_capacity * 2 : 8;
+        if (timeline->track_count == INT32_MAX) {
+            rt_trap("Game3D.Timeline3D: track limit exceeded");
+            return NULL;
+        }
+        int32_t new_cap = 0;
+        if (!game3d_checked_capacity_i32(timeline->track_capacity,
+                                         timeline->track_count + 1,
+                                         8,
+                                         sizeof(*timeline->tracks),
+                                         &new_cap)) {
+            rt_trap("Game3D.Timeline3D: track capacity overflow");
+            return NULL;
+        }
         rt_game3d_tl_track *grown =
             (rt_game3d_tl_track *)realloc(timeline->tracks, (size_t)new_cap * sizeof(*grown));
         if (!grown)
@@ -505,13 +531,17 @@ static int game3d_timeline_track_cmp(const void *a, const void *b) {
 /// @brief Reset the playhead and fire-once latches; sort tracks once.
 /// @param timeline Timeline payload to prepare for playback.
 static void game3d_timeline_reset(rt_game3d_timeline *timeline) {
-    if (!timeline->sorted) {
+    if (!game3d_timeline_storage_valid(timeline)) {
+        rt_trap("Game3D.Timeline3D: corrupt track storage");
+        return;
+    }
+    if (!timeline->sorted && timeline->track_count > 1) {
         qsort(timeline->tracks,
               (size_t)timeline->track_count,
               sizeof(rt_game3d_tl_track),
               game3d_timeline_track_cmp);
-        timeline->sorted = 1;
     }
+    timeline->sorted = 1;
     for (int32_t i = 0; i < timeline->track_count; ++i)
         timeline->tracks[i].fired = 0;
     timeline->time = 0.0;
@@ -601,6 +631,11 @@ int game3d_world_timeline_pre(rt_game3d_world *world, double dt) {
         world->active_timeline, RT_G3D_GAME3D_TIMELINE_CLASS_ID);
     if (!timeline)
         return 0;
+    if (!game3d_timeline_storage_valid(timeline)) {
+        timeline->playing = 0;
+        rt_trap("Game3D.Timeline3D: corrupt track storage");
+        return 0;
+    }
     timeline->fired_marker_count = 0;
     timeline->just_finished = 0;
     if (!timeline->playing)
@@ -687,6 +722,11 @@ void game3d_world_timeline_camera(rt_game3d_world *world) {
         world->active_timeline, RT_G3D_GAME3D_TIMELINE_CLASS_ID);
     if (!timeline || !timeline->has_camera_tracks)
         return;
+    if (!game3d_timeline_storage_valid(timeline)) {
+        timeline->playing = 0;
+        rt_trap("Game3D.Timeline3D: corrupt track storage");
+        return;
+    }
     double now = timeline->time;
 
     /* Latest camera key at or before the playhead wins; an active move
@@ -829,6 +869,10 @@ void rt_game3d_world_play_timeline(void *world_obj, void *timeline_obj) {
         timeline_obj, "Game3D.World3D.playTimeline: timeline must be Timeline3D");
     if (!world || !timeline)
         return;
+    if (!game3d_timeline_storage_valid(timeline)) {
+        rt_trap("Game3D.World3D.playTimeline: corrupt timeline track storage");
+        return;
+    }
     void *bound_world = rt_g3d_checked_or_null(timeline->world, RT_G3D_GAME3D_WORLD_CLASS_ID);
     if (bound_world && bound_world != world) {
         rt_trap("Game3D.World3D.playTimeline: timeline belongs to another world");
@@ -875,6 +919,11 @@ void rt_game3d_timeline_skip(void *obj) {
         game3d_timeline_checked(obj, "Game3D.Timeline3D.skip: invalid timeline");
     if (!timeline || !timeline->playing || !timeline->skippable)
         return;
+    if (!game3d_timeline_storage_valid(timeline)) {
+        timeline->playing = 0;
+        rt_trap("Game3D.Timeline3D.skip: corrupt track storage");
+        return;
+    }
     rt_game3d_world *world =
         (rt_game3d_world *)rt_g3d_checked_or_null(timeline->world, RT_G3D_GAME3D_WORLD_CLASS_ID);
     if (!world)

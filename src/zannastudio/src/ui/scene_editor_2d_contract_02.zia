@@ -235,6 +235,9 @@ class SceneEditor2DContract02 extends PreviousContract.SceneEditor2DContract01 {
     /// @brief Neutral dispatch slot for TakeRunSceneRequested.
     expose func TakeRunSceneRequested() -> Boolean { return false; }
 
+    /// @brief Neutral dispatch slot for TakePlaySceneRequested.
+    expose func TakePlaySceneRequested() -> Boolean { return false; }
+
     /// @brief Neutral dispatch slot for PreviewActive.
     expose func PreviewActive() -> Boolean { return false; }
 

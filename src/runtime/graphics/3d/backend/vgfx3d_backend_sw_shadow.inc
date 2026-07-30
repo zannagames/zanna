@@ -485,15 +485,22 @@ typedef struct {
     int32_t *failed;
 } sw_shadow_collect_task_t;
 
-/// @brief Release a collected shadow-triangle list and reset its metadata.
-/// @param list Mutable list to release; null is a no-op.
-static void sw_shadow_tri_list_free(sw_shadow_tri_list_t *list) {
-    if (!list)
+/// @brief Return worker-local shadow clipping lists to their context-owned scratch slots.
+/// @param ctx Mutable software context that owns the retained allocations.
+/// @param tasks Completed task array whose list pointers are transferred back to @p ctx.
+/// @param task_count Number of initialized entries in @p tasks.
+static void sw_shadow_retain_task_scratch(sw_context_t *ctx,
+                                          sw_shadow_collect_task_t tasks[SW_MAX_TASKS],
+                                          int32_t task_count) {
+    if (!ctx || !tasks || task_count < 0 || task_count > SW_MAX_TASKS)
         return;
-    free(list->items);
-    list->items = NULL;
-    list->count = 0;
-    list->capacity = 0;
+    for (int32_t i = 0; i < task_count; i++) {
+        ctx->shadow_task_triangle_scratch[i] = tasks[i].out.items;
+        ctx->shadow_task_triangle_scratch_capacity[i] = tasks[i].out.capacity;
+        tasks[i].out.items = NULL;
+        tasks[i].out.count = 0;
+        tasks[i].out.capacity = 0;
+    }
 }
 
 /// @brief Ensure a shadow-triangle list can hold at least the requested number of entries.
@@ -868,6 +875,10 @@ static int sw_shadow_collect_triangles_parallel(sw_context_t *ctx,
         tasks[i].half_w = half_w;
         tasks[i].half_h = half_h;
         tasks[i].failed = &failed;
+        tasks[i].out.items = (sw_shadow_screen_tri_t *)ctx->shadow_task_triangle_scratch[i];
+        tasks[i].out.capacity = ctx->shadow_task_triangle_scratch_capacity[i];
+        ctx->shadow_task_triangle_scratch[i] = NULL;
+        ctx->shadow_task_triangle_scratch_capacity[i] = 0;
     }
     for (int32_t i = 1; i < task_count; i++) {
         if (!rt_threadpool_submit_fn(ctx->worker_pool, sw_shadow_collect_task_run, &tasks[i]))
@@ -880,23 +891,20 @@ static int sw_shadow_collect_triangles_parallel(sw_context_t *ctx,
     if (submitted > 0)
         rt_threadpool_wait(ctx->worker_pool);
     if (rt_atomic_load_i32(&failed, __ATOMIC_RELAXED)) {
-        for (int32_t i = 0; i < task_count; i++)
-            sw_shadow_tri_list_free(&tasks[i].out);
+        sw_shadow_retain_task_scratch(ctx, tasks, task_count);
         return 0;
     }
 
     uint32_t total = 0;
     for (int32_t i = 0; i < task_count; i++) {
         if (UINT32_MAX - total < tasks[i].out.count) {
-            for (int32_t j = 0; j < task_count; j++)
-                sw_shadow_tri_list_free(&tasks[j].out);
+            sw_shadow_retain_task_scratch(ctx, tasks, task_count);
             return 0;
         }
         total += tasks[i].out.count;
     }
     if (!sw_shadow_tri_list_reserve(out, total)) {
-        for (int32_t i = 0; i < task_count; i++)
-            sw_shadow_tri_list_free(&tasks[i].out);
+        sw_shadow_retain_task_scratch(ctx, tasks, task_count);
         return 0;
     }
     for (int32_t i = 0; i < task_count; i++) {
@@ -906,8 +914,8 @@ static int sw_shadow_collect_triangles_parallel(sw_context_t *ctx,
                    (size_t)tasks[i].out.count * sizeof(sw_shadow_screen_tri_t));
             out->count += tasks[i].out.count;
         }
-        sw_shadow_tri_list_free(&tasks[i].out);
     }
+    sw_shadow_retain_task_scratch(ctx, tasks, task_count);
     return 1;
 }
 

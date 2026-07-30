@@ -1238,12 +1238,14 @@ static int navmesh3d_build_offmesh_adjacency(rt_navmesh3d *nm) {
     nav_offmesh_edge_ref_t *edges = NULL;
 
     navmesh3d_clear_offmesh_adjacency(nm);
-    if (!nm || !nm->offmesh_links || nm->offmesh_link_count <= 0 || nm->triangle_count <= 0)
+    if (!nm)
         return 1;
-    tri_count = nm->triangle_count;
+    tri_count = navmesh3d_read_triangle_count(nm);
     link_count = navmesh3d_read_offmesh_link_count(nm);
-    if (link_count <= 0)
+    if (link_count <= 0 || tri_count <= 0)
         return 1;
+    if (link_count > INT32_MAX / 2)
+        return 0;
     if ((size_t)tri_count + 1u > SIZE_MAX / sizeof(int32_t))
         return 0;
 
@@ -1309,20 +1311,49 @@ static int navmesh3d_build_offmesh_adjacency(rt_navmesh3d *nm) {
 /// @brief Re-resolve authored off-mesh link endpoints against the current walkable triangle set.
 /// @param nm Mutable navmesh whose link endpoint indices and adjacency cache are refreshed.
 static void navmesh3d_refresh_offmesh_links(rt_navmesh3d *nm) {
+    int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
     if (!nm)
         return;
-    if (!nm->offmesh_links || nm->offmesh_link_count <= 0) {
+    if (link_count <= 0) {
         navmesh3d_clear_offmesh_adjacency(nm);
         return;
     }
     float max_dy = navmesh3d_vertical_tolerance(nm);
-    for (int32_t i = 0; i < nm->offmesh_link_count; i++) {
+    for (int32_t i = 0; i < link_count; i++) {
         nav_offmesh_link_t *link = &nm->offmesh_links[i];
         link->from_tri =
             find_tri_with_max_dy(nm, link->from[0], link->from[1], link->from[2], max_dy);
         link->to_tri = find_tri_with_max_dy(nm, link->to[0], link->to[1], link->to[2], max_dy);
     }
     (void)navmesh3d_build_offmesh_adjacency(nm);
+}
+
+/// @brief Validate and return one triangle's range in the derived off-mesh CSR cache.
+/// @param nm Borrowed navmesh containing the derived cache.
+/// @param triangle Triangle whose outgoing range is requested.
+/// @param triangle_count Defensively bounded triangle count.
+/// @param link_count Defensively bounded authored-link count.
+/// @param out_begin Receives the inclusive edge offset.
+/// @param out_end Receives the exclusive edge offset.
+/// @return Non-zero only when the cache and requested range are internally consistent.
+static int navmesh3d_offmesh_adjacency_range(const rt_navmesh3d *nm,
+                                             int32_t triangle,
+                                             int32_t triangle_count,
+                                             int32_t link_count,
+                                             int32_t *out_begin,
+                                             int32_t *out_end) {
+    if (!nm || !out_begin || !out_end || triangle < 0 || triangle >= triangle_count ||
+        link_count <= 0 || !nm->offmesh_adjacency_starts || !nm->offmesh_adjacency_edges ||
+        nm->offmesh_adjacency_edge_count <= 0 ||
+        (int64_t)nm->offmesh_adjacency_edge_count > (int64_t)link_count * 2)
+        return 0;
+    int32_t begin = nm->offmesh_adjacency_starts[triangle];
+    int32_t end = nm->offmesh_adjacency_starts[triangle + 1];
+    if (begin < 0 || end < begin || end > nm->offmesh_adjacency_edge_count)
+        return 0;
+    *out_begin = begin;
+    *out_end = end;
+    return 1;
 }
 
 /// @brief Return the authored link connecting two triangles, if any. Sets @p reverse for to->from.
@@ -1335,21 +1366,22 @@ static const nav_offmesh_link_t *navmesh3d_find_offmesh_link(const rt_navmesh3d 
                                                              int32_t from_tri,
                                                              int32_t to_tri,
                                                              int *reverse) {
+    int32_t triangle_count = navmesh3d_read_triangle_count(nm);
+    int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
+    int32_t begin = 0;
+    int32_t end = 0;
     if (reverse)
         *reverse = 0;
-    if (!nm || !nm->offmesh_links)
+    if (!nm || link_count <= 0)
         return NULL;
-    if (from_tri >= 0 && from_tri < nm->triangle_count && nm->offmesh_adjacency_starts &&
-        nm->offmesh_adjacency_edges && nm->offmesh_adjacency_edge_count > 0) {
-        int32_t begin = nm->offmesh_adjacency_starts[from_tri];
-        int32_t end = nm->offmesh_adjacency_starts[from_tri + 1];
+    if (navmesh3d_offmesh_adjacency_range(nm, from_tri, triangle_count, link_count, &begin, &end)) {
         for (int32_t ei = begin; ei < end; ei++) {
             int32_t link_index = -1;
             int edge_reverse = 0;
             if (!navmesh3d_unpack_offmesh_edge(
                     nm->offmesh_adjacency_edges[ei], &link_index, &edge_reverse))
                 continue;
-            if (link_index < 0 || link_index >= nm->offmesh_link_count)
+            if (link_index < 0 || link_index >= link_count)
                 continue;
             const nav_offmesh_link_t *link = &nm->offmesh_links[link_index];
             int32_t edge_to = edge_reverse ? link->from_tri : link->to_tri;
@@ -1361,7 +1393,7 @@ static const nav_offmesh_link_t *navmesh3d_find_offmesh_link(const rt_navmesh3d 
         }
         return NULL;
     }
-    for (int32_t i = 0; i < nm->offmesh_link_count; i++) {
+    for (int32_t i = 0; i < link_count; i++) {
         const nav_offmesh_link_t *link = &nm->offmesh_links[i];
         if (link->from_tri == from_tri && link->to_tri == to_tri)
             return link;

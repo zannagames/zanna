@@ -323,17 +323,42 @@ expose func handlePlayScene(shell: app_shell.AppShell,
             "Open the scene's project before playing it");
         return;
     }
-    if projMgr.project == null
-       or projMgr.project.runProfile != "native" {
-        shell.SetStatusLeft(
-            "Embedded Play needs run-profile native in zanna.project; "
-            + "Run Scene covers the VM profile");
-        return;
-    }
     var saveResult = file_commands.handleSaveForExecution(
         shell, docMgr, engine, tabs, saveAllBeforeBuild);
     if saveResult.success == false {
         ReportCanceledExecution(shell, "Play Scene", saveResult);
+        return;
+    }
+    if projMgr.project == null
+       or projMgr.project.runProfile != "native" {
+        // VM profile: run the project entry under the interpreter with
+        // the embed channel injected; the game's window presents into
+        // the channel exactly like a native build (ADR 0225).
+        var vmChannel = playController.Start();
+        if vmChannel == "" {
+            shell.SetStatusLeft(
+                "Embedded Play could not create its frame channel");
+            return;
+        }
+        var vmEnv = Zanna.Collections.Map.New();
+        Zanna.Collections.Map.SetStr(
+            vmEnv, "ZANNA_EMBED_CHANNEL", vmChannel);
+        // The embedded game's native window stays hidden; its frames
+        // reach the user only through the editor pane.
+        Zanna.Collections.Map.SetStr(
+            vmEnv, "ZANNA_GFX_HIDE_WINDOWS", "1");
+        var vmCfg = run_config.ForDocument(
+            run_config.ACTION_RUN, null, projMgr);
+        Seq.Push(vmCfg.args, "--");
+        Seq.Push(vmCfg.args, "--scene");
+        Seq.Push(vmCfg.args, sceneDoc!.filePath);
+        Seq.Push(vmCfg.args, "--scene-watch");
+        vmCfg.targetPath = sceneDoc!.filePath;
+        vmCfg.env = vmEnv;
+        shell.SetStatusLeft(
+            "Playing " + Path.Name(sceneDoc!.filePath)
+            + " embedded (VM)");
+        StartExecutionConfig(shell, buildSys, locStore, vmCfg);
         return;
     }
     var channelName = playController.Start();
@@ -344,6 +369,9 @@ expose func handlePlayScene(shell: app_shell.AppShell,
     }
     var env = Zanna.Collections.Map.New();
     Zanna.Collections.Map.SetStr(env, "ZANNA_EMBED_CHANNEL", channelName);
+    // The embedded game's native window stays hidden; its frames reach
+    // the user only through the editor pane.
+    Zanna.Collections.Map.SetStr(env, "ZANNA_GFX_HIDE_WINDOWS", "1");
     var root = projMgr.RootPath();
     var projectName = projMgr.project.name;
     if projectName == "" { projectName = "game"; }

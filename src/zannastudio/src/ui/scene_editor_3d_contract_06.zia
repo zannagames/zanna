@@ -82,7 +82,10 @@ bind "scene_editor_3d_contract_05" as PreviousContract;
 /// @brief Dispatch declarations used by focused SceneEditor3D layers.
 class SceneEditor3DContract06 extends PreviousContract.SceneEditor3DContract05 {
     /// @brief Neutral dispatch slot for ApplyHierarchyRename.
-    hide func ApplyHierarchyRename() -> Boolean { return false; }
+    hide func ApplyHierarchyRename(_index: Integer,
+                                   _committedText: String) -> Boolean {
+        return false;
+    }
 
     /// @brief Neutral dispatch slot for PumpGizmoShortcuts.
     hide func PumpGizmoShortcuts() {}

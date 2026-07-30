@@ -50,6 +50,7 @@ bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
 bind Terminal = Zanna.Terminal;
 bind Seq = Zanna.Collections.Seq;
+bind "scene_probe_support";
 bind "scene_editor_3d_probe_context" as Probe;
 
 /// @brief Run the VerifyTransformsAndHierarchySearch scenario against the shared fixture.
@@ -119,7 +120,7 @@ expose func VerifyTransformsAndHierarchySearch(ctx: Probe.SceneEditor3DProbeCont
     // Find operates on the retained bounded hierarchy, not a destructive
     // filter. A jump selects and reveals the exact row while canonical VSCN,
     // history, and the viewport camera stay byte/value exact.
-    editor.hierarchyTree.Collapse(editor.hierarchyTreeNodes.get(0));
+    editor.hierarchyModel.Collapse("0");
     var hierarchySearchContent = sceneDoc.content;
     var hierarchySearchRevision = editor.GetRevision();
     var hierarchySearchUndoCount = editor.undoStack.count();
@@ -137,8 +138,8 @@ expose func VerifyTransformsAndHierarchySearch(ctx: Probe.SceneEditor3DProbeCont
        or editor.FindHierarchy("NODE", 1) == false
        or editor.hierarchySearchCursor != 1
        or editor.selectedIndex != 1
-       or GUI.TreeView.Node.IsExpanded(
-              editor.hierarchyTreeNodes.get(0)) == false
+       or scene_probe_support.ModelRowExpanded(
+              editor.hierarchyModel, "0") == false
        or editor.FindHierarchy("NODE", 1) == false
        or editor.hierarchySearchCursor != 0
        or editor.selectedIndex != 0
@@ -248,8 +249,8 @@ expose func VerifyExactReparenting(ctx: Probe.SceneEditor3DProbeContext) -> Bool
     // identity after preorder changes, and undo to byte-exact snapshots.
     var collapsedContent = sceneDoc.content;
     var collapsedRevision = editor.GetRevision();
-    editor.hierarchyTree.Collapse(editor.hierarchyTreeNodes.get(0));
-    if GUI.TreeView.Node.IsExpanded(editor.hierarchyTreeNodes.get(0))
+    editor.hierarchyModel.Collapse("0");
+    if scene_probe_support.ModelRowExpanded(editor.hierarchyModel, "0")
        or sceneDoc.content != collapsedContent
        or editor.GetRevision() != collapsedRevision {
         Probe.fail(shell, tempPath,
@@ -258,14 +259,14 @@ expose func VerifyExactReparenting(ctx: Probe.SceneEditor3DProbeContext) -> Bool
     }
     var parentTargetIndex = editor.AddEmptyNode("Parent Target", -1);
     if parentTargetIndex != 2
-       or editor.hierarchyTreeNodes.count() != 3
-       or GUI.TreeView.Node.IsExpanded(
-              editor.hierarchyTreeNodes.get(0)) {
+       or editor.flatNodes.count() != 3
+       or scene_probe_support.ModelRowExpanded(
+              editor.hierarchyModel, "0") {
         Probe.fail(shell, tempPath,
              "3D hierarchy refresh lost collapse state or root-level target");
         return false;
     }
-    editor.hierarchyTree.Expand(editor.hierarchyTreeNodes.get(0));
+    editor.hierarchyModel.Expand("0");
     var targetCreatedContent = sceneDoc.content;
     if editor.preserveWorldReparentCheck.IsChecked() == false
        or editor.SetNodeTransform(
@@ -634,7 +635,7 @@ expose func VerifySiblingOrderingAndTreeDrops(ctx: Probe.SceneEditor3DProbeConte
     var rowDropBaseline = sceneDoc.content;
     editor.SelectSceneNodes(childSelection, 1);
     var rowDropWorld = editor.flatNodes.get(1).WorldPosition;
-    editor.hierarchyTree.Collapse(editor.hierarchyTreeNodes.get(0));
+    editor.hierarchyModel.Collapse("0");
     var rowDropRevision = editor.GetRevision();
     if editor.ApplyHierarchyDrop(
            1, 3, 0) == false
@@ -658,8 +659,8 @@ expose func VerifySiblingOrderingAndTreeDrops(ctx: Probe.SceneEditor3DProbeConte
                rowDropWorld.Z) == false
        or editor.selectedIndex != 2
        or editor.selectedIndices.count() != 1
-       or GUI.TreeView.Node.IsExpanded(
-              editor.hierarchyTreeNodes.get(0))
+       or scene_probe_support.ModelRowExpanded(
+              editor.hierarchyModel, "0")
        or safe_io.WriteAllText(tempPath, sceneDoc.content) == false {
         Probe.fail(shell, tempPath,
              "3D BEFORE row drop was not one preserve-world hierarchy edit");
@@ -675,7 +676,7 @@ expose func VerifySiblingOrderingAndTreeDrops(ctx: Probe.SceneEditor3DProbeConte
              "3D BEFORE row drop did not round trip or undo exactly");
         return false;
     }
-    editor.hierarchyTree.Expand(editor.hierarchyTreeNodes.get(0));
+    editor.hierarchyModel.Expand("0");
 
     var afterSelection: List[Integer] = [];
     afterSelection.add(2);

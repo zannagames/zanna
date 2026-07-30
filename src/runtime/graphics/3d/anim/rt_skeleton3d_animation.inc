@@ -731,7 +731,7 @@ static int32_t animation3d_retarget_find_bone(const rt_skeleton3d *src,
         /* Source-side alias reversal: if the source skeleton declares that a
          * canonical external name maps to this bone, try that canonical name
          * against the destination (exact, then its aliases). */
-        for (int32_t a = 0; a < src->alias_count; ++a) {
+        for (int32_t a = 0, alias_count = skeleton3d_safe_alias_count(src); a < alias_count; ++a) {
             if (strcmp(src->aliases[a].local, name) != 0)
                 continue;
             const char *canonical = src->aliases[a].external;

@@ -1,0 +1,130 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/probes/scene_capacity_65k_probe.zia
+// Purpose: Pin the 65,536-row virtual-hierarchy ceiling (ADR 0226): a
+//          full-capacity document opens unclipped through the id-keyed
+//          model, and one node past the ceiling clips truthfully.
+// Key invariants:
+//   - 65,536 nodes present exactly 65,536 flat rows with no clipping.
+//   - The 65,537th node engages hierarchyClipped without losing rows.
+//   - Budgets are generous interpreter tripwires, not product targets;
+//     the AOT editor opens the same document interactively.
+// Ownership/Lifetime:
+//   - The probe owns its shell and documents for the process lifetime.
+// Links: zannastudio/src/probes/scene_capacity_probe.zia,
+//        docs/adr/0226-virtual-scene-hierarchy.md
+//
+//===----------------------------------------------------------------------===//
+
+module scene_capacity_65k_probe;
+
+bind "../core/document_manager";
+bind "../services/file_utils";
+bind "../ui/app_shell";
+bind "../ui/scene_editor_3d";
+bind "../ui/scene_panels_3d";
+
+bind Clock = Zanna.Time.Clock;
+bind SceneGraph = Zanna.Graphics3D.SceneGraph;
+bind SceneNode = Zanna.Graphics3D.SceneNode;
+bind Terminal = Zanna.Terminal;
+
+final CAPACITY_NODES: Integer = 65536;
+
+func Fail(shell: app_shell.AppShell, reason: String) {
+    if shell != null { shell.Destroy(); }
+    Terminal.Say("RESULT: fail " + reason);
+}
+
+func main() {
+    // 256 roots x 255 children: sibling insertion walks short chains, so
+    // the fixture builds in linear time and exercises real tree depth.
+    var big = SceneGraph.New();
+    var index = 0;
+    var root = 0;
+    while root < 256 {
+        var parent = SceneNode.New();
+        parent.Name = "N" + index;
+        parent.SetPosition(root, 0.0, 0.0);
+        big.Add(parent);
+        index = index + 1;
+        var child = 0;
+        while child < 255 {
+            var node = SceneNode.New();
+            node.Name = "N" + index;
+            node.SetPosition(root, 0.0, child + 1);
+            parent.AddChild(node);
+            index = index + 1;
+            child = child + 1;
+        }
+        root = root + 1;
+    }
+    var text = big.SaveToText();
+    if text == "" {
+        Terminal.Say("RESULT: fail synthetic scene serialization");
+        return;
+    }
+
+    var shell = new app_shell.AppShell();
+    shell.Build("Zanna Studio Scene Capacity 65k Probe", 1240, 800);
+    var editor = new scene_editor_3d.SceneEditor3D();
+    scene_panels_3d.Build(editor, shell.workbench.scene3DHost, shell.app);
+    var documents = new document_manager.DocumentManager();
+    var doc = documents.NewScene3DDocument();
+    doc.content = text;
+    shell.SelectSurface(file_utils.DOC_KIND_SCENE_3D);
+
+    var openStart = Clock.NowMs();
+    editor.Activate(doc);
+    editor.Pump(doc);
+    shell.Poll();
+    shell.Render();
+    var openMs = Clock.NowMs() - openStart;
+    Terminal.Say("METRIC: capacity65k_open_ms=" + openMs);
+
+    if editor.flatNodes.count() != CAPACITY_NODES
+       or editor.hierarchyClipped {
+        Fail(shell,
+             "the 65k scene did not open unclipped: nodes="
+             + editor.flatNodes.count()
+             + " clipped=" + editor.hierarchyClipped);
+        return;
+    }
+    if openMs > 240000 {
+        Fail(shell, "opening 65536 nodes exceeded its budget: " + openMs);
+        return;
+    }
+
+    // Selection at the far end of the model stays row-exact.
+    editor.SelectSceneNodes([CAPACITY_NODES - 1], CAPACITY_NODES - 1);
+    editor.Pump(doc);
+    if editor.selectedIndex != CAPACITY_NODES - 1
+       or editor.hierarchyModel.GetSelectedId()
+           != "" + (CAPACITY_NODES - 1) {
+        Fail(shell, "far-end selection lost its model row");
+        return;
+    }
+
+    // One node past the ceiling clips truthfully without dropping rows.
+    if editor.AddEmptyNode("Overflow", -1) < 0 {
+        Fail(shell, "overflow node was rejected outright");
+        return;
+    }
+    editor.Pump(doc);
+    if editor.hierarchyClipped == false
+       or editor.flatNodes.count() != CAPACITY_NODES {
+        Fail(shell,
+             "past-ceiling document did not clip truthfully: nodes="
+             + editor.flatNodes.count()
+             + " clipped=" + editor.hierarchyClipped);
+        return;
+    }
+
+    shell.Destroy();
+    Terminal.Say("RESULT: ok");
+}

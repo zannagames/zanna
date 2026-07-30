@@ -3922,7 +3922,8 @@ void rt_game3d_bt_instance_resolve(void *instance, int8_t success);
 
 /* Audio immersion — reverb zones, occlusion, ambient beds, dialogue (plan 24). */
 /// @brief Create an axis-aligned reverb zone from two world-space corners.
-/// @details Corner components are sorted automatically; the zone starts with balanced reverb values.
+/// @details Corner components are sorted automatically; the zone starts with balanced reverb
+/// values.
 /// @param min Vec3 containing one corner of the zone.
 /// @param max Vec3 containing the opposite corner.
 /// @return A new ReverbZone3D handle, or NULL when the inputs or allocation are invalid.
@@ -4010,7 +4011,7 @@ int64_t rt_game3d_ambientbed_get_active_zone(void *bed);
 /// @brief Opt an entity into world persistence under a stable game-defined key.
 /// @details Existing live state for the key is applied immediately; duplicate live keys trap.
 /// @param entity Entity3D whose pose, alive state, and state tag should persist.
-/// @param key Non-empty key of at most 255 bytes, stable across game sessions.
+/// @param key Non-empty key of at most 255 bytes with no embedded NUL, stable across sessions.
 /// @return @p entity for fluent chaining.
 void *rt_game3d_entity_set_persistent(void *entity, rt_string key);
 /// @brief Get the stable persistence key assigned to an entity.
@@ -4039,10 +4040,11 @@ void *rt_game3d_world_get_persistent_position(void *world, rt_string key);
 /// @param world World3D whose persistence store should be saved.
 /// @param app_name Application name used to locate the platform data directory.
 /// @param slot Save-slot name used as the `.vw3dsav` file stem.
-/// @return 1 on success, or 0 on path, encoding, allocation, or I/O failure.
+/// @return 1 on success, or 0 on path, encoding, 64 MiB limit, allocation, or I/O failure.
 int8_t rt_game3d_world_save_state(void *world, rt_string app_name, rt_string slot);
 /// @brief Load a VW3DSAV1 slot and apply its persistent state to the world.
-/// @details Success replaces the delta store and cell flags and updates resident persistent entities.
+/// @details Success replaces the delta store and cell flags and updates resident persistent
+/// entities.
 /// @param world World3D that will receive the loaded state.
 /// @param app_name Application name used to locate the platform data directory.
 /// @param slot Save-slot name used as the `.vw3dsav` file stem.
@@ -4050,8 +4052,8 @@ int8_t rt_game3d_world_save_state(void *world, rt_string app_name, rt_string slo
 int8_t rt_game3d_world_load_state(void *world, rt_string app_name, rt_string slot);
 /// @brief Store an application-defined integer flag for a streamed cell.
 /// @param stream WorldStream3D whose persistent cell flags are updated.
-/// @param cell Non-empty stable cell name.
-/// @param key Non-empty flag name within the cell.
+/// @param cell Non-empty stable cell name no longer than 255 bytes and containing no embedded NUL.
+/// @param key Non-empty flag name within the cell no longer than 255 bytes and containing no NUL.
 /// @param value Integer value to store.
 void rt_game3d_world_stream_set_cell_flag(void *stream,
                                           rt_string cell,
@@ -4075,10 +4077,11 @@ rt_string rt_game3d_world_stream_loaded_event(void *stream, int64_t index);
 /// @brief Release and clear all buffered cell-loaded notifications.
 /// @param stream WorldStream3D whose notification buffer should be emptied.
 void rt_game3d_world_stream_clear_loaded_events(void *stream);
-/// @brief Validate a VW3DSAV1 buffer without applying it (fuzz/test surface).
-/// @param data Value supplied for the data argument.
-/// @param size Value supplied for the size argument.
-/// @return 1 when the documented condition holds, or 0 otherwise.
+/// @brief Validate one exact canonical VW3DSAV1 buffer without applying it.
+/// @param data Borrowed snapshot bytes.
+/// @param size Exact byte count, from 16 bytes through 64 MiB.
+/// @return One for a complete bounded snapshot with canonical keys/booleans and finite transforms;
+/// zero for invalid, truncated, or trailing data.
 int8_t rt_game3d_persistence_validate(const void *data, int64_t size);
 
 /* Minimap3D — authored-map minimap, markers, compass, indicators (plan 28). */

@@ -775,6 +775,20 @@ class SceneEditor2DInspectorControlsLayer extends PreviousLayer.SceneEditor2DIns
             index = index + 1;
         }
         objectProperties.SetRows(objectPropertyKeys, rowKinds, rowValues);
+        // Schema enum choices annotate their stored values with the
+        // declared label (schema v19); raw values stay authoritative.
+        if componentSchema != null {
+            index = 0;
+            while index < objectPropertyKeys.count() {
+                objectProperties.SetRowHint(
+                    index,
+                    componentSchema.EnumChoiceLabel(
+                        scene_component_schema.TARGET_2D_OBJECT,
+                        objectPropertyKeys.get(index),
+                        rowValues.get(index)));
+                index = index + 1;
+            }
+        }
         objectProperties.SetEnabled(true);
     }
 }

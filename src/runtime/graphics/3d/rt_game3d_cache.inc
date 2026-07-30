@@ -326,7 +326,8 @@ static void game3d_seen_ptr_set_free(game3d_seen_ptr_set *set) {
 static int game3d_seen_ptr_set_contains(const game3d_seen_ptr_set *set, void *value) {
     if (!value)
         return 1;
-    if (!set)
+    if (!set || set->count < 0 || set->capacity < 0 || set->count > set->capacity ||
+        (set->capacity > 0 && !set->items))
         return 0;
     for (int32_t i = 0; i < set->count; ++i) {
         if (set->items[i] == value)
@@ -348,12 +349,17 @@ static int game3d_seen_ptr_set_mark(game3d_seen_ptr_set *set, void *value) {
         return 0;
     if (!set || set->overflowed)
         return 1;
+    if (set->count < 0 || set->capacity < 0 || set->count > set->capacity ||
+        (set->capacity > 0 && !set->items)) {
+        set->overflowed = 1;
+        return 1;
+    }
     if (game3d_seen_ptr_set_contains(set, value))
         return 0;
     if (set->count >= set->capacity) {
-        new_capacity = set->capacity > 0 ? set->capacity * 2 : 64;
-        if (new_capacity <= set->capacity ||
-            (size_t)new_capacity > SIZE_MAX / sizeof(*set->items)) {
+        if (set->count == INT32_MAX ||
+            !game3d_checked_capacity_i32(
+                set->capacity, set->count + 1, 64, sizeof(*set->items), &new_capacity)) {
             set->overflowed = 1;
             return 1;
         }
@@ -890,22 +896,25 @@ static rt_string game3d_model_cache_key_asset_path(rt_string path) {
             }
             continue;
         }
-        if (out_len + (out_len > 8u ? 1u : 0u) + len >= sizeof(normalized)) {
+        size_t separator = out_len > 8u ? 1u : 0u;
+        if (separator > sizeof(normalized) - out_len ||
+            len >= sizeof(normalized) - out_len - separator) {
             free(segments);
-            return rt_string_ref(path ? path : rt_const_cstr(""));
+            return path ? rt_string_ref(path) : rt_const_cstr("");
         }
         if (segment_count >= segment_capacity) {
-            int32_t new_capacity = segment_capacity <= 0 ? 16 : segment_capacity * 2;
+            int32_t new_capacity;
             char **grown;
-            if (new_capacity < segment_capacity ||
-                (size_t)new_capacity > SIZE_MAX / sizeof(char *)) {
+            if (segment_count == INT32_MAX ||
+                !game3d_checked_capacity_i32(
+                    segment_capacity, segment_count + 1, 16, sizeof(*segments), &new_capacity)) {
                 free(segments);
-                return rt_string_ref(path ? path : rt_const_cstr(""));
+                return path ? rt_string_ref(path) : rt_const_cstr("");
             }
             grown = (char **)realloc(segments, (size_t)new_capacity * sizeof(char *));
             if (!grown) {
                 free(segments);
-                return rt_string_ref(path ? path : rt_const_cstr(""));
+                return path ? rt_string_ref(path) : rt_const_cstr("");
             }
             segments = grown;
             segment_capacity = new_capacity;
@@ -927,15 +936,17 @@ static rt_string game3d_model_cache_key_asset_path(rt_string path) {
 /// @param asset_path Non-zero for packed-asset normalization; zero for an absolute filesystem path.
 /// @return A new or retained runtime string containing the stable key.
 static rt_string game3d_model_cache_key_path(rt_string path, int8_t asset_path) {
-    const char *raw = path ? rt_string_cstr(path) : "";
-    if (!raw)
-        raw = "";
+    rt_string fallback;
+    rt_string absolute;
     if (asset_path)
         return game3d_model_cache_key_asset_path(path);
-    rt_string absolute = rt_path_abs(path ? path : rt_const_cstr(""));
+    fallback = path ? path : rt_const_cstr("");
+    absolute = rt_path_abs(fallback);
+    if (!path)
+        rt_string_unref(fallback);
     if (absolute)
         return absolute;
-    return rt_string_ref(path ? path : rt_const_cstr(""));
+    return path ? rt_string_ref(path) : rt_const_cstr("");
 }
 
 /// @brief Look up a model-cache entry by path + asset flag; -1 if absent.

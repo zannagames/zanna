@@ -89,9 +89,9 @@ typedef void *GLsync;
 #define GL_TU_MORPH_NORMAL_DELTAS 17
 /* Fragment units 0-15 are the GL 3.3 min-spec budget and the main FS already
  * assigns all of them; the BRDF LUT aliases the last splat layer unit, bound
- * per draw. Splat terrain draws that also run IBL sample the splat layer as
- * their environment-BRDF instead (bounded error; resolved by the planned
- * array-texture shadow/splat consolidation). */
+ * per draw. Splat terrain draws use the shader's analytic environment-BRDF
+ * approximation while layer 3 occupies this unit; non-terrain draws bind and
+ * sample the LUT. */
 #define GL_TU_BRDF_LUT (GL_TU_SPLAT_LAYER0 + 3)
 
 #define GL_TRUE 1
@@ -1136,6 +1136,7 @@ static int ensure_present_target(gl_context_t *ctx, int32_t w, int32_t h);
 static int ensure_scene_targets(gl_context_t *ctx, int32_t w, int32_t h);
 static void destroy_rtt_targets(gl_context_t *ctx);
 static int ensure_rtt_targets(gl_context_t *ctx, vgfx3d_rendertarget_t *rt);
+static int gl_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *rt);
 static void destroy_shadow_targets(gl_context_t *ctx);
 static int ensure_shadow_targets(gl_context_t *ctx, int32_t slot, int32_t w, int32_t h);
 static void gl_recompute_shadow_count(gl_context_t *ctx);
@@ -1207,6 +1208,7 @@ typedef struct {
     GLint viewport[4];
     GLint pack_alignment;
     GLint unpack_alignment;
+    GLint scissor_test;
     GLint active_texture;
     GLint texture_binding_2d;
     GLint renderbuffer;
@@ -1225,6 +1227,7 @@ static void gl_capture_framebuffer_state(gl_framebuffer_state_t *state) {
     gl.GetIntegerv(GL_VIEWPORT, state->viewport);
     gl.GetIntegerv(GL_PACK_ALIGNMENT, &state->pack_alignment);
     gl.GetIntegerv(GL_UNPACK_ALIGNMENT, &state->unpack_alignment);
+    gl.GetIntegerv(GL_SCISSOR_TEST, &state->scissor_test);
     gl.GetIntegerv(GL_ACTIVE_TEXTURE, &state->active_texture);
     gl.GetIntegerv(GL_TEXTURE_BINDING_2D, &state->texture_binding_2d);
     gl.GetIntegerv(GL_RENDERBUFFER_BINDING, &state->renderbuffer);
@@ -1243,6 +1246,10 @@ static void gl_restore_framebuffer_state(const gl_framebuffer_state_t *state) {
     gl.Viewport(state->viewport[0], state->viewport[1], state->viewport[2], state->viewport[3]);
     gl.PixelStorei(GL_PACK_ALIGNMENT, state->pack_alignment);
     gl.PixelStorei(GL_UNPACK_ALIGNMENT, state->unpack_alignment);
+    if (state->scissor_test)
+        gl.Enable(GL_SCISSOR_TEST);
+    else
+        gl.Disable(GL_SCISSOR_TEST);
     gl.ActiveTexture((GLenum)state->active_texture);
     gl.BindTexture(GL_TEXTURE_2D, (GLuint)state->texture_binding_2d);
     gl.BindRenderbuffer(GL_RENDERBUFFER, (GLuint)state->renderbuffer);

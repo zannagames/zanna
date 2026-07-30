@@ -407,6 +407,69 @@ int8_t rt_treeview_set_virtual_model(void *treeview, void *model);
 ///          handles are harmless no-ops.
 /// @param treeview TreeView handle whose external model should be cleared.
 void rt_treeview_clear_virtual_model(void *treeview);
+/// @brief Remove one node together with its whole subtree from a VirtualTree model.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param id Stable identifier of the subtree root to remove.
+/// @return One when the node existed and was removed, zero otherwise.
+int8_t rt_virtual_tree_remove_node(void *tree, rt_string id);
+/// @brief Replace a VirtualTree model's ordered multi-selection.
+/// @details The first identifier becomes the primary selection; empty entries are skipped.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param ids Borrowed sequence of stable identifier strings.
+void rt_virtual_tree_select_ids(void *tree, void *ids);
+/// @brief Snapshot a VirtualTree model's ordered multi-selection.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @return New owned sequence of stable identifiers, primary first.
+void *rt_virtual_tree_get_selected_ids(void *tree);
+/// @brief Set one virtual node's projected row icon from a spec string.
+/// @details `vector:<name>` selects a named scalable icon; other non-empty text is a
+///          literal glyph; empty clears both.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param id Stable node identifier.
+/// @param spec Icon specification string.
+/// @return One when the node existed, zero otherwise.
+int8_t rt_virtual_tree_set_node_icon(void *tree, rt_string id, rt_string spec);
+/// @brief Set one virtual node's row text color and dim state.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param id Stable node identifier.
+/// @param rgb Packed 0xRRGGBB color; zero restores the theme color.
+/// @param dim Non-zero blends the row toward the background.
+/// @return One when the node existed, zero otherwise.
+int8_t rt_virtual_tree_set_node_style(void *tree, rt_string id, int64_t rgb, int8_t dim);
+/// @brief Consume the bound TreeView's latched virtual drop as stable identifiers.
+/// @details The returned map is empty when nothing is latched; otherwise it carries
+///          `source`, `target`, and `position` (`before`/`into`/`after`) keys.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @return New owned map describing the drop, possibly empty.
+void *rt_virtual_tree_take_drop_action(void *tree);
+/// @brief Scroll the bound TreeView so one node's visible row enters the viewport.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param id Stable node identifier; hidden and unknown rows are ignored.
+void rt_virtual_tree_reveal_id(void *tree, rt_string id);
+/// @brief Begin an inline row edit over one node's visible row in the bound TreeView.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param id Stable node identifier.
+/// @param text Initial editor contents.
+/// @return One when the editor was placed, zero for hidden rows or unbound models.
+int8_t rt_virtual_tree_begin_edit(void *tree, rt_string id, rt_string text);
+/// @brief Declare whether one node's children are fully populated.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param id Stable node identifier.
+/// @param loaded Non-zero marks the node's child list as complete.
+/// @return One when the node existed, zero otherwise.
+int8_t rt_virtual_tree_set_node_loaded(void *tree, rt_string id, int8_t loaded);
+/// @brief Resolve the stable id of the visible row under a window-space point.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @param x Window-space horizontal coordinate.
+/// @param y Window-space vertical coordinate.
+/// @return New owned id string; empty when the point misses every row.
+rt_string rt_virtual_tree_row_id_at(void *tree, int64_t x, int64_t y);
+/// @brief Consume the bound TreeView's latched inline-edit commit.
+/// @details The returned map is empty when no commit is pending; otherwise it carries
+///          `id` and `text` keys. The edge is consumed on read.
+/// @param tree Managed VirtualTree object; invalid handles trap.
+/// @return New owned map describing the commit, possibly empty.
+void *rt_virtual_tree_take_edit_commit(void *tree);
 
 // --- Command state: the enabled/checked/accessibility state of a UI command,
 //     used to drive menu items, toolbar buttons and the command palette. ---

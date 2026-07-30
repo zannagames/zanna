@@ -23,6 +23,7 @@
 module property_rows;
 
 bind "inspector_rows";
+bind "../services/theme_colors";
 
 bind GUI = Zanna.GUI;
 
@@ -49,6 +50,7 @@ class PropertyRow {
     expose GUI.Dropdown kindDropdown;
     expose GUI.HBox valueBox;
     expose GUI.TextInput valueInput;
+    expose GUI.Label hintLabel;
     expose GUI.Button removeButton;
     expose String canonicalKey;
     expose String canonicalValue;
@@ -61,6 +63,7 @@ class PropertyRow {
         kindDropdown = null;
         valueBox = null;
         valueInput = null;
+        hintLabel = null;
         removeButton = null;
         canonicalKey = "";
         canonicalValue = "";
@@ -113,6 +116,9 @@ class PropertyRow {
         valueInput.SetMinSize(48.0, 0.0);
         valueInput.SetPreferredSize(72.0, 0.0);
         valueInput.SetAccessibleName(noun + " value");
+        hintLabel = GUI.Label.New(valueBox, "");
+        hintLabel.SetColor(theme_colors.Rgb("fgTertiary"));
+        hintLabel.SetVisible(false);
         removeButton = GUI.Button.New(valueBox, "×");
         removeButton.SetPreferredSize(32.0, 0.0);
         removeButton.SetTooltip("Remove this " + noun);
@@ -185,6 +191,16 @@ class PropertyRows {
             rows.add(row);
             i = i + 1;
         }
+    }
+
+    /// @brief Annotate one row with a presentation-only hint (e.g. the
+    ///        schema's enum label for the stored value); "" hides it.
+    expose func SetRowHint(index: Integer, hint: String) {
+        if index < 0 or index >= rows.count() { return; }
+        var row = rows.get(index);
+        if row.hintLabel == null { return; }
+        row.hintLabel.SetText(hint);
+        row.hintLabel.SetVisible(hint != "");
     }
 
     /// @brief Ensure one trailing editable draft row exists without focusing.

@@ -70,6 +70,7 @@ bind Quat = Zanna.Math.Quat;
 bind Mat4 = Zanna.Math.Mat4;
 bind RayHit3D = Zanna.Graphics3D.RayHit3D;
 bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
 bind Math = Zanna.Math;
 bind Convert = Zanna.Core.Convert;
 bind Input = Zanna.Input;
@@ -381,15 +382,15 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
             changed = DeleteSelectedNodes() or changed;
         }
         if hierarchyTree.WasSelectionChanged() {
-            var primaryRow = hierarchyTree.GetSelected();
+            var selectedIds = hierarchyModel.GetSelectedIds();
             selectedIndex = -1;
-            if primaryRow != null {
+            if Seq.get_Count(selectedIds) > 0 {
                 selectedIndex = Parse.IntOr(
-                    GUI.TreeView.Node.GetData(primaryRow), -1);
+                    Seq.GetStr(selectedIds, 0), -1);
             }
             selectedIndices = ResolveInstanceOwnerSelection(
                 scene_selection.FromData(
-                    hierarchyTree.GetSelectedData(),
+                    selectedIds,
                     flatNodes.count(),
                     selectedIndex));
             selectedIndex = ResolveInstanceOwnerIndex(selectedIndex);
@@ -400,18 +401,22 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
             SetEditorControlsEnabled(scene != null);
             renderDirty = true;
         }
-        if hierarchyTree.WasDropReceived() {
+        var hierarchyDrop = hierarchyModel.TakeDropAction();
+        if Map.Has(hierarchyDrop, "source") {
             var sourceIndex = Parse.IntOr(
-                hierarchyTree.GetDropSourceData(), -1);
+                Map.GetStr(hierarchyDrop, "source"), -1);
             var targetIndex = Parse.IntOr(
-                hierarchyTree.GetDropTargetData(), -1);
-            var dropPosition = hierarchyTree.GetDropPosition();
-            hierarchyTree.ClearDrop();
+                Map.GetStr(hierarchyDrop, "target"), -1);
+            var dropPosition = SceneEditor3DModel.DropPositionValue(
+                Map.GetStr(hierarchyDrop, "position"));
             changed = ApplyHierarchyDrop(
                 sourceIndex, targetIndex, dropPosition) or changed;
         }
-        if hierarchyTree.WasEditCommitted() {
-            changed = ApplyHierarchyRename() or changed;
+        var hierarchyRename = hierarchyModel.TakeEditCommit();
+        if Map.Has(hierarchyRename, "id") {
+            changed = ApplyHierarchyRename(
+                Parse.IntOr(Map.GetStr(hierarchyRename, "id"), -1),
+                Map.GetStr(hierarchyRename, "text")) or changed;
         }
         changed = PumpViewportDrops() or changed;
         return changed;

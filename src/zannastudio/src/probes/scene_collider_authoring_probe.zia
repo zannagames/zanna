@@ -52,6 +52,7 @@ bind "../ui/scene_asset_browser";
 bind "../ui/scene_collider_3d";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
+bind "scene_probe_support";
 
 bind GUI = Zanna.GUI;
 bind Str = Zanna.String;
@@ -322,8 +323,8 @@ func VerifyRouteAndAssetFieldAuthoring(
         return false;
     }
     pump(editor, sceneDoc, shell);
-    var routeRow = GUI.TreeView.Node.GetText(
-        editor.hierarchyTreeNodes.get(routeIndex));
+    var routeRow = scene_probe_support.ModelRowText(
+        editor.hierarchyModel, "" + routeIndex);
     if Str.Contains(routeRow, "[route]") == false {
         sceneDoc.filePath = previousScenePath;
         fail(shell, componentDir,

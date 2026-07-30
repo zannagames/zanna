@@ -28,7 +28,6 @@
  * and preserves/restores OpenGL state around full-screen post-processing work.
  */
 
-static int gl_sync_render_target_color(void *ctx_ptr, vgfx3d_rendertarget_t *rt);
 static void bind_texture_unit(GLint uniform_loc, int unit, GLenum target, GLuint texture);
 
 /// @brief Validate a 2D allocation extent against the live OpenGL device limit.

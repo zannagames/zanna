@@ -1439,6 +1439,14 @@ set_tests_properties(zia_zannastudio_scene_capacity PROPERTIES
         LABELS "zia;zannastudio;scene;slow;requires_display"
         TIMEOUT 600)
 
+add_test(NAME zia_zannastudio_scene_capacity_65k
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_capacity_65k_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
+set_tests_properties(zia_zannastudio_scene_capacity_65k PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;zannastudio;scene;slow;requires_display"
+        TIMEOUT 1800)
+
 add_test(NAME zia_zannastudio_scene_inline_rename
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes/scene_inline_rename_probe.zia"
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")

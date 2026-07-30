@@ -100,6 +100,17 @@ static int skeleton3d_copy_alias_name(rt_string name, char output[64]) {
     return 1;
 }
 
+/// @brief Clamp alias traversal to initialized backing storage.
+/// @param skeleton Borrowed Skeleton3D payload.
+/// @return Non-negative alias count bounded by the owned allocation.
+static int32_t skeleton3d_safe_alias_count(const rt_skeleton3d *skeleton) {
+    if (!skeleton || !skeleton->aliases || skeleton->alias_count <= 0 ||
+        skeleton->alias_capacity <= 0)
+        return 0;
+    return skeleton->alias_count < skeleton->alias_capacity ? skeleton->alias_count
+                                                            : skeleton->alias_capacity;
+}
+
 /// @brief GC finalizer for a Skeleton3D — releases every retained name and owned array.
 /// @param[in,out] obj Skeleton payload being finalized.
 /// @details Clears the bone and alias arrays and resets their logical counts
@@ -442,6 +453,12 @@ void rt_skeleton3d_set_bone_alias(void *obj, rt_string external, rt_string local
     if (!skeleton3d_copy_alias_name(local, local_buf))
         local_buf[0] = '\0';
 
+    s->alias_count = skeleton3d_safe_alias_count(s);
+    if (!s->aliases)
+        s->alias_capacity = 0;
+    if (s->alias_capacity < s->alias_count)
+        s->alias_capacity = s->alias_count;
+
     int32_t found = -1;
     for (int32_t i = 0; i < s->alias_count; i++) {
         if (strcmp(s->aliases[i].external, ext_buf) == 0) {
@@ -459,7 +476,17 @@ void rt_skeleton3d_set_bone_alias(void *obj, rt_string external, rt_string local
     }
     if (found < 0) {
         if (s->alias_count >= s->alias_capacity) {
-            int32_t cap = s->alias_capacity > 0 ? s->alias_capacity * 2 : 8;
+            int32_t cap;
+            if (s->alias_count == INT32_MAX)
+                return;
+            if (s->alias_capacity <= 0)
+                cap = 8;
+            else if (s->alias_capacity > INT32_MAX / 2)
+                cap = s->alias_count + 1;
+            else
+                cap = s->alias_capacity * 2;
+            if (cap <= s->alias_count || (size_t)cap > SIZE_MAX / sizeof(*s->aliases))
+                return;
             rt_skeleton3d_alias *grown =
                 (rt_skeleton3d_alias *)realloc(s->aliases, (size_t)cap * sizeof(*grown));
             if (!grown)
@@ -478,7 +505,7 @@ void rt_skeleton3d_set_bone_alias(void *obj, rt_string external, rt_string local
 /// @return The stored alias count, or zero for an invalid object.
 int64_t rt_skeleton3d_get_alias_count(void *obj) {
     rt_skeleton3d *s = (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
-    return s ? s->alias_count : 0;
+    return skeleton3d_safe_alias_count(s);
 }
 
 /// @brief Resolve an external bone name through the alias table.
@@ -491,7 +518,7 @@ int64_t rt_skeleton3d_get_alias_count(void *obj) {
 const char *skeleton3d_alias_lookup(const rt_skeleton3d *s, const char *external) {
     if (!s || !external || !external[0])
         return NULL;
-    for (int32_t i = 0; i < s->alias_count; i++) {
+    for (int32_t i = 0, count = skeleton3d_safe_alias_count(s); i < count; i++) {
         if (strcmp(s->aliases[i].external, external) == 0)
             return s->aliases[i].local;
     }

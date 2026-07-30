@@ -1336,7 +1336,6 @@ static void gltf_mesh_import_partitioned_primitive(gltf_mesh_load_context_t *ctx
             if (bucket_joint_count + fresh > VGFX3D_MAX_BONES) {
                 bucket_count++;
                 bucket_joint_count = 0;
-                fresh = tri_joint_count;
             }
             for (int32_t q = 0; q < tri_joint_count; q++) {
                 if (joint_bucket[tri_joints[q]] != bucket_count - 1) {
@@ -2012,7 +2011,6 @@ static void gltf_load_meshes(rt_gltf_asset *asset,
                                                &primitive_variant_mappings,
                                                load_failed_io))
                 goto finish;
-            primitive_variant_mapping_count = total_prims;
             ctx.asset = asset;
             ctx.material_infos = material_infos;
             ctx.root = root;

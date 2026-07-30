@@ -243,11 +243,14 @@ bool test_timeline_firing_math() {
     rt_game3d_timeline_add_marker(tl, 1.0, 42);
     rt_game3d_timeline_add_marker(tl, 0.0, 7);
     rt_game3d_timeline_add_marker(tl, 2.5, 99);
+    for (int i = 0; i < 24; ++i)
+        rt_game3d_timeline_add_marker(tl, 0.05 * i, 1000 + i);
     rt_game3d_world_play_timeline(world, tl);
 
     int fired_42 = 0;
     int fired_7 = 0;
     int fired_99 = 0;
+    int fired_fillers = 0;
     /* Coarse 0.4 s steps: markers must still fire exactly once. */
     for (int i = 0; i < 10; ++i) {
         rt_game3d_world_step_simulation(world, 0.4);
@@ -260,11 +263,14 @@ bool test_timeline_firing_math() {
                 ++fired_7;
             if (id == 99)
                 ++fired_99;
+            if (id >= 1000 && id < 1024)
+                ++fired_fillers;
         }
     }
     EXPECT_EQ_INT(fired_7, 1, "t=0 marker fires exactly once");
     EXPECT_EQ_INT(fired_42, 1, "t=1 marker fires exactly once");
     EXPECT_EQ_INT(fired_99, 1, "t=2.5 marker fires exactly once");
+    EXPECT_EQ_INT(fired_fillers, 24, "grown track storage preserves every marker");
     EXPECT_TRUE(rt_game3d_timeline_get_finished(tl) != 0, "timeline finished");
     rt_game3d_world_destroy(world);
     PASS();

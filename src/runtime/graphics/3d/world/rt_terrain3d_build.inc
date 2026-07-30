@@ -941,6 +941,36 @@ static void bake_splat_texture(rt_terrain3d *t) {
  * Holes — authored XZ rectangles carved out of render/collision/nav
  *=========================================================================*/
 
+/// @brief Clamp authored-hole traversal to initialized backing storage.
+/// @param terrain Borrowed Terrain3D payload.
+/// @return Non-negative hole count bounded by the owned allocation.
+static int32_t terrain_safe_hole_count(const rt_terrain3d *terrain) {
+    if (!terrain || !terrain->holes || terrain->hole_count <= 0 || terrain->hole_capacity <= 0)
+        return 0;
+    return terrain->hole_count < terrain->hole_capacity ? terrain->hole_count
+                                                        : terrain->hole_capacity;
+}
+
+/// @brief Convert a possibly huge terrain coordinate to a bounded cell edge.
+/// @param coordinate Terrain-local coordinate or endpoint.
+/// @param scale Positive world-units-per-cell scale.
+/// @param limit Exclusive cell count and maximum returned edge.
+/// @param round_up Nonzero for an exclusive upper edge, zero for a lower edge.
+/// @return Cell edge in `[0, limit]` without an out-of-range floating-to-integer cast.
+static int32_t terrain_hole_cell_edge(double coordinate,
+                                      double scale,
+                                      int32_t limit,
+                                      int round_up) {
+    if (limit <= 0 || !isfinite(scale) || scale <= 0.0)
+        return 0;
+    double scaled = coordinate / scale;
+    if (isnan(scaled) || scaled <= 0.0)
+        return 0;
+    if (!isfinite(scaled) || scaled >= (double)limit)
+        return limit;
+    return (int32_t)(round_up ? ceil(scaled) : floor(scaled));
+}
+
 /// @brief Test whether cell (cx, cz) is holed. NULL/absent mask means solid.
 /// @param t Terrain containing the rasterized cell mask.
 /// @param cx Cell x coordinate.
@@ -990,14 +1020,20 @@ static void terrain_rebuild_hole_mask(rt_terrain3d *t) {
     size_t mask_bytes;
     double sx;
     double sz;
+    int32_t hole_count;
     if (!t)
         return;
     t->holes_dirty = 0;
     free(t->hole_mask);
     t->hole_mask = NULL;
+    if (t->width <= 1 || t->depth <= 1)
+        return;
     cells_x = t->width - 1;
     cells_z = t->depth - 1;
-    if (t->hole_count <= 0 || cells_x <= 0 || cells_z <= 0)
+    hole_count = terrain_safe_hole_count(t);
+    if (hole_count <= 0)
+        return;
+    if ((size_t)cells_x > (SIZE_MAX - 7u) / (size_t)cells_z)
         return;
     mask_bytes = ((size_t)cells_x * (size_t)cells_z + 7u) / 8u;
     t->hole_mask = (uint8_t *)calloc(1, mask_bytes);
@@ -1009,23 +1045,15 @@ static void terrain_rebuild_hole_mask(rt_terrain3d *t) {
         sx = 1.0;
     if (sz <= 1e-12)
         sz = 1.0;
-    for (int32_t h = 0; h < t->hole_count; ++h) {
+    for (int32_t h = 0; h < hole_count; ++h) {
         double hx = t->holes[h][0];
         double hz = t->holes[h][1];
         double hw = t->holes[h][2];
         double hd = t->holes[h][3];
-        int32_t cx0 = (int32_t)floor(hx / sx);
-        int32_t cz0 = (int32_t)floor(hz / sz);
-        int32_t cx1 = (int32_t)ceil((hx + hw) / sx);
-        int32_t cz1 = (int32_t)ceil((hz + hd) / sz);
-        if (cx0 < 0)
-            cx0 = 0;
-        if (cz0 < 0)
-            cz0 = 0;
-        if (cx1 > cells_x)
-            cx1 = cells_x;
-        if (cz1 > cells_z)
-            cz1 = cells_z;
+        int32_t cx0 = terrain_hole_cell_edge(hx, sx, cells_x, 0);
+        int32_t cz0 = terrain_hole_cell_edge(hz, sz, cells_z, 0);
+        int32_t cx1 = terrain_hole_cell_edge(hx + hw, sx, cells_x, 1);
+        int32_t cz1 = terrain_hole_cell_edge(hz + hd, sz, cells_z, 1);
         for (int32_t cz = cz0; cz < cz1; ++cz) {
             for (int32_t cx = cx0; cx < cx1; ++cx) {
                 int64_t bit = (int64_t)cz * cells_x + cx;
@@ -1059,8 +1087,23 @@ int64_t rt_terrain3d_set_hole(void *obj, double x, double z, double width, doubl
     if (!isfinite(x) || !isfinite(z) || !isfinite(width) || !isfinite(depth) || width <= 0.0 ||
         depth <= 0.0)
         return -1;
+    t->hole_count = terrain_safe_hole_count(t);
+    if (!t->holes)
+        t->hole_capacity = 0;
+    if (t->hole_capacity < t->hole_count)
+        t->hole_capacity = t->hole_count;
     if (t->hole_count >= t->hole_capacity) {
-        int32_t new_cap = t->hole_capacity < 8 ? 8 : t->hole_capacity * 2;
+        int32_t new_cap;
+        if (t->hole_count == INT32_MAX)
+            return -1;
+        if (t->hole_capacity < 8)
+            new_cap = 8;
+        else if (t->hole_capacity > INT32_MAX / 2)
+            new_cap = t->hole_count + 1;
+        else
+            new_cap = t->hole_capacity * 2;
+        if (new_cap <= t->hole_count || (size_t)new_cap > SIZE_MAX / sizeof(*t->holes))
+            return -1;
         double (*grown)[4] = (double (*)[4])realloc(t->holes, (size_t)new_cap * sizeof(*grown));
         if (!grown)
             return -1;
@@ -1084,7 +1127,10 @@ int64_t rt_terrain3d_set_hole(void *obj, double x, double z, double width, doubl
 /// @return 1 when the hole is removed, otherwise 0.
 int8_t rt_terrain3d_remove_hole(void *obj, int64_t index) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
-    if (!t || index < 0 || index >= t->hole_count)
+    if (!t)
+        return 0;
+    t->hole_count = terrain_safe_hole_count(t);
+    if (index < 0 || index >= t->hole_count)
         return 0;
     for (int32_t i = (int32_t)index; i + 1 < t->hole_count; ++i) {
         t->holes[i][0] = t->holes[i + 1][0];
@@ -1118,7 +1164,7 @@ void rt_terrain3d_clear_holes(void *obj) {
 /// @return Current authored-hole count, or zero for an invalid handle.
 int64_t rt_terrain3d_get_hole_count(void *obj) {
     rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
-    return t ? t->hole_count : 0;
+    return terrain_safe_hole_count(t);
 }
 
 /// @brief Internal: borrow the rasterized hole bitmask for heightfield-collider handoff.
@@ -1137,7 +1183,7 @@ const uint8_t *rt_terrain3d_get_hole_mask_raw(void *obj,
     if (!t)
         return NULL;
     terrain_refresh_hole_mask(t);
-    if (!t->hole_mask)
+    if (!t->hole_mask || t->width <= 1 || t->depth <= 1)
         return NULL;
     if (out_cells_x)
         *out_cells_x = t->width - 1;

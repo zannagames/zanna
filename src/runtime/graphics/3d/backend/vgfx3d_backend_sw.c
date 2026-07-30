@@ -20,7 +20,8 @@
 //
 // Ownership/Lifetime:
 //   - Software backend context is owned by Canvas3D; freed in its destroy_ctx hook.
-//   - Z-buffer, vertex, and merged triangle scratch are heap allocations resized on demand.
+//   - Z-buffer, vertex, merged, and worker-local triangle scratch are heap allocations
+//     resized on demand.
 //   - The context owns one persistent worker pool, created once and shut down
 //     before the context storage is released.
 //
@@ -89,6 +90,10 @@ typedef struct {
     uint32_t color_triangle_scratch_capacity;
     void *shadow_triangle_scratch;
     uint32_t shadow_triangle_scratch_capacity;
+    void *color_task_triangle_scratch[SW_MAX_TASKS];
+    uint32_t color_task_triangle_scratch_capacity[SW_MAX_TASKS];
+    void *shadow_task_triangle_scratch[SW_MAX_TASKS];
+    uint32_t shadow_task_triangle_scratch_capacity[SW_MAX_TASKS];
     int32_t width, height;
     float vp[16]; /* view * projection (float, row-major) */
     float cam_pos[3];
@@ -1131,7 +1136,7 @@ static int sw_draw_requires_per_pixel_lighting(const sw_context_t *ctx,
 /// @param ctx_ptr Opaque borrowed pointer to the active @c sw_context_t.
 /// @param ndc_x Horizontal normalized-device coordinate to sample.
 /// @param ndc_y Vertical normalized-device coordinate to sample.
-/// @return Frame-local probe slot, or -1 when the context or probe capacity is unavailable.
+/// @return Frame-local probe slot, or -1 when the request is invalid or capacity is unavailable.
 static int32_t sw_queue_depth_probe(void *ctx_ptr, float ndc_x, float ndc_y) {
     sw_context_t *ctx = (sw_context_t *)ctx_ptr;
     const float *depth = NULL;
@@ -1140,7 +1145,8 @@ static int32_t sw_queue_depth_probe(void *ctx_ptr, float ndc_x, float ndc_y) {
     int32_t slot;
     float result = -1.0f;
 
-    if (!ctx || ctx->depth_probe_count >= VGFX3D_DEPTH_PROBE_MAX)
+    if (!ctx || !isfinite(ndc_x) || !isfinite(ndc_y) ||
+        ctx->depth_probe_count >= VGFX3D_DEPTH_PROBE_MAX)
         return -1;
     slot = ctx->depth_probe_count++;
     if (ctx->render_target) {
@@ -1152,7 +1158,7 @@ static int32_t sw_queue_depth_probe(void *ctx_ptr, float ndc_x, float ndc_y) {
         depth_width = ctx->width;
         depth_height = ctx->height;
     }
-    if (depth && depth_width > 0 && depth_height > 0 && isfinite(ndc_x) && isfinite(ndc_y)) {
+    if (depth && depth_width > 0 && depth_height > 0) {
         double bounded_x = (double)vgfx3d_clamp_float_param(ndc_x, -1.0f, 1.0f, 0.0f);
         double bounded_y = (double)vgfx3d_clamp_float_param(ndc_y, -1.0f, 1.0f, 0.0f);
         int32_t px = (int32_t)((bounded_x * 0.5 + 0.5) * (double)depth_width);
@@ -1450,17 +1456,29 @@ int32_t vgfx3d_software_backend_fragment_uses_opaque_write_for_test(int32_t alph
     return sw_fragment_uses_opaque_write(&cmd, fragment_alpha);
 }
 
-/// @brief Expose retained merged-triangle scratch capacity to native performance tests.
+/// @brief Expose retained merged or worker-local triangle scratch to native performance tests.
 /// @param ctx_ptr Borrowed software backend context.
-/// @param shadow_pass Non-zero selects shadow scratch; zero selects color scratch.
-/// @return Retained element capacity, or zero for an invalid context/unpopulated path.
+/// @param scratch_kind Zero selects merged color, one merged shadow, two worker-local color, and
+///        three worker-local shadow scratch.
+/// @return Retained element capacity (summed across workers where applicable), or zero for an
+///         invalid context, selector, or unpopulated path.
 int64_t vgfx3d_software_backend_triangle_scratch_capacity_for_test(const void *ctx_ptr,
-                                                                   int32_t shadow_pass) {
+                                                                   int32_t scratch_kind) {
     const sw_context_t *ctx = (const sw_context_t *)ctx_ptr;
+    int64_t total = 0;
     if (!ctx)
         return 0;
-    return shadow_pass ? (int64_t)ctx->shadow_triangle_scratch_capacity
-                       : (int64_t)ctx->color_triangle_scratch_capacity;
+    if (scratch_kind == 0)
+        return (int64_t)ctx->color_triangle_scratch_capacity;
+    if (scratch_kind == 1)
+        return (int64_t)ctx->shadow_triangle_scratch_capacity;
+    if (scratch_kind != 2 && scratch_kind != 3)
+        return 0;
+    for (int32_t i = 0; i < SW_MAX_TASKS; i++) {
+        total += scratch_kind == 3 ? (int64_t)ctx->shadow_task_triangle_scratch_capacity[i]
+                                   : (int64_t)ctx->color_task_triangle_scratch_capacity[i];
+    }
+    return total;
 }
 
 /*==========================================================================

@@ -693,6 +693,19 @@ static void test_metal_mipmap_generation_never_waits_on_cpu(void) {
 
 static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
     char *source = read_metal_backend_sources();
+    const char *required_cluster_guard = "if (!clusterBuf)\n"
+                                         "                return;\n"
+                                         "            [ctx.encoder setFragmentBuffer:clusterBuf";
+    const char *required_brdf_binding =
+        "[ctx.encoder setFragmentTexture:ctx.brdfLutTexture atIndex:18];";
+    const char *required_depth_guard =
+        "if (!opaqueDepth)\n"
+        "                return;\n"
+        "            [ctx.encoder setFragmentTexture:opaqueDepth atIndex:16];";
+    const char *required_atlas_guard =
+        "if (!atlas)\n"
+        "                return;\n"
+        "            [ctx.encoder setFragmentTexture:atlas atIndex:17];";
 
     EXPECT_TRUE(source != NULL,
                 "Metal backend source chunks are readable for target/probe regression checks");
@@ -715,6 +728,42 @@ static void test_metal_hdr_rtt_and_depth_probe_source_contracts(void) {
                 "Metal post-FX constants sanitize snapshots before shader upload");
     EXPECT_TRUE(strstr(source, "vgfx3d_cluster_table_is_usable(table, expected_revision") != NULL,
                 "Metal cluster uploads validate revision and index metadata");
+    {
+        const char *allocate = strstr(
+            source, "buffer = [ctx.device newBufferWithLength:sizeof(vgfx3d_cluster_table_t)");
+        const char *retain =
+            allocate ? strstr(allocate, "[ctx.frameBuffers addObject:buffer];") : NULL;
+        const char *publish =
+            retain ? strstr(retain, "ctx->_clusterBuffers[slot] = buffer;") : NULL;
+        EXPECT_TRUE(allocate && retain && publish && allocate < retain && retain < publish &&
+                        strstr(source, "if (!ctx->_clusterBuffers[slot])") == NULL,
+                    "Metal cluster cache misses allocate immutable backing storage and retain it "
+                    "through command-buffer completion");
+    }
+    EXPECT_TRUE(strstr(source, "memset(contents, 0, sizeof(vgfx3d_cluster_table_t));") != NULL &&
+                    strstr(source, "ctx->_clusterDummyBuffer = dummy;") != NULL,
+                "Metal publishes its fallback cluster buffer only after zero initialization");
+    {
+        const char *first_guard = strstr(source, required_cluster_guard);
+        EXPECT_TRUE(first_guard && strstr(first_guard + 1, required_cluster_guard),
+                    "Metal single and instanced draws abort when required cluster storage is "
+                    "absent");
+    }
+    {
+        const char *first_binding = strstr(source, required_brdf_binding);
+        EXPECT_TRUE(first_binding && strstr(first_binding + 1, required_brdf_binding),
+                    "Metal single and instanced draws bind the environment BRDF lookup texture");
+    }
+    {
+        const char *first_guard = strstr(source, required_depth_guard);
+        EXPECT_TRUE(first_guard && strstr(first_guard + 1, required_depth_guard),
+                    "Metal single and instanced draws require a bound opaque-depth texture");
+    }
+    {
+        const char *first_guard = strstr(source, required_atlas_guard);
+        EXPECT_TRUE(first_guard && strstr(first_guard + 1, required_atlas_guard),
+                    "Metal single and instanced draws require a bound shadow-atlas texture");
+    }
     EXPECT_TRUE(strstr(source, "status != MTLCommandBufferStatusCompleted") != NULL &&
                     strstr(source, "command_buffer.status != MTLCommandBufferStatusCompleted") !=
                         NULL,

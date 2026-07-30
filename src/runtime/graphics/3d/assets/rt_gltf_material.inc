@@ -392,7 +392,7 @@ static void gltf_populate_texture_tables(void *root,
                                      : NULL;
             gltf_read_sampler_info(sampler_json, &texture_samplers[i]);
         }
-        if (source_idx >= 0 && source_idx < image_count) {
+        if (images && source_idx >= 0 && source_idx < image_count) {
             void *image_json = rt_seq_get(images_arr, source_idx);
             if (texture_supported && gltf_image_json_supported_for_texture(image_json))
                 texture_supported[i] = 1u;

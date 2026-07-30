@@ -50,6 +50,16 @@
 // Internal helpers
 //=========================================================================
 
+/// @brief Validate dense occluder-fade bookkeeping before traversal or growth.
+/// @param controller Borrowed third-person controller payload.
+/// @return Nonzero when count, capacity, and backing storage agree.
+static int game3d_thirdperson_fade_storage_valid(
+    const rt_game3d_thirdperson_controller *controller) {
+    return controller && controller->fade_count >= 0 && controller->fade_capacity >= 0 &&
+           controller->fade_count <= controller->fade_capacity &&
+           (controller->fade_capacity == 0 || controller->fades != NULL);
+}
+
 /// @brief Return the controller's target Entity3D when still alive, else NULL.
 /// @param controller Borrowed third-person controller payload.
 /// @return Borrowed live target entity, or `NULL` when absent, stale, or invalid.
@@ -119,7 +129,9 @@ static void game3d_thirdperson_fade_entry_release(rt_game3d_tp_fade_entry *entry
 void game3d_thirdperson_reset_fades(rt_game3d_thirdperson_controller *controller) {
     if (!controller)
         return;
-    for (int32_t i = 0; i < controller->fade_count; ++i)
+    int32_t fade_count =
+        game3d_thirdperson_fade_storage_valid(controller) ? controller->fade_count : 0;
+    for (int32_t i = 0; i < fade_count; ++i)
         game3d_thirdperson_fade_entry_release(&controller->fades[i]);
     free(controller->fades);
     controller->fades = NULL;
@@ -133,6 +145,8 @@ void game3d_thirdperson_reset_fades(rt_game3d_thirdperson_controller *controller
 /// @return Zero-based fade entry index, or `-1` when absent.
 static int32_t game3d_thirdperson_fade_find(const rt_game3d_thirdperson_controller *controller,
                                             const void *node) {
+    if (!node || !game3d_thirdperson_fade_storage_valid(controller))
+        return -1;
     for (int32_t i = 0; i < controller->fade_count; ++i)
         if (controller->fades[i].node == node)
             return i;
@@ -145,6 +159,9 @@ static int32_t game3d_thirdperson_fade_find(const rt_game3d_thirdperson_controll
 /// @return Index of the new entry, or -1 on failure (no material, alloc failure).
 static int32_t game3d_thirdperson_fade_begin(rt_game3d_thirdperson_controller *controller,
                                              void *node) {
+    if (!game3d_thirdperson_fade_storage_valid(controller) ||
+        !rt_g3d_has_class(node, RT_G3D_SCENENODE3D_CLASS_ID))
+        return -1;
     void *original = rt_scene_node3d_get_material(node);
     if (!original)
         return -1;
@@ -152,7 +169,21 @@ static int32_t game3d_thirdperson_fade_begin(rt_game3d_thirdperson_controller *c
     if (!clone)
         return -1;
     if (controller->fade_count >= controller->fade_capacity) {
-        int32_t new_cap = controller->fade_capacity ? controller->fade_capacity * 2 : 4;
+        if (controller->fade_count == INT32_MAX) {
+            game3d_release_ref(&clone);
+            rt_trap("Game3D.ThirdPersonController: occluder fade limit exceeded");
+            return -1;
+        }
+        int32_t new_cap = 0;
+        if (!game3d_checked_capacity_i32(controller->fade_capacity,
+                                         controller->fade_count + 1,
+                                         4,
+                                         sizeof(*controller->fades),
+                                         &new_cap)) {
+            game3d_release_ref(&clone);
+            rt_trap("Game3D.ThirdPersonController: occluder fade capacity overflow");
+            return -1;
+        }
         rt_game3d_tp_fade_entry *grown =
             (rt_game3d_tp_fade_entry *)realloc(controller->fades, (size_t)new_cap * sizeof(*grown));
         if (!grown) {
@@ -167,7 +198,8 @@ static int32_t game3d_thirdperson_fade_begin(rt_game3d_thirdperson_controller *c
     game3d_assign_ref(&entry->node, node);
     game3d_assign_ref(&entry->original_material, original);
     entry->fade_material = clone; /* transfer make_instance ownership */
-    entry->original_alpha = game3d_clamp(rt_material3d_get_alpha(original), 0.0, 1.0);
+    entry->original_alpha =
+        game3d_clamp(game3d_finite_or(rt_material3d_get_alpha(original), 1.0), 0.0, 1.0);
     entry->alpha = entry->original_alpha;
     rt_material3d_set_alpha_mode(clone, RT_MATERIAL3D_ALPHA_MODE_BLEND);
     rt_scene_node3d_set_material(node, clone);
@@ -188,6 +220,11 @@ static void game3d_thirdperson_update_fades(rt_game3d_thirdperson_controller *co
                                             const double pivot[3],
                                             const double eye[3],
                                             double dt) {
+    if (!game3d_thirdperson_fade_storage_valid(controller)) {
+        rt_trap("Game3D.ThirdPersonController: corrupt occluder fade storage");
+        game3d_thirdperson_reset_fades(controller);
+        return;
+    }
     for (int32_t i = 0; i < controller->fade_count; ++i)
         controller->fades[i].occluding = 0;
 
@@ -200,10 +237,15 @@ static void game3d_thirdperson_update_fades(rt_game3d_thirdperson_controller *co
          * pointers into a stack buffer, so this per-frame pass allocates
          * nothing (no Vec3 handles, no boxed hit list). */
         enum { GAME3D_TP_FADE_QUERY_MAX = 64 };
+
         void *bodies[GAME3D_TP_FADE_QUERY_MAX];
         double ndir[3] = {dir[0] / len, dir[1] / len, dir[2] / len};
         int32_t hit_count = rt_world3d_raycast_all_bodies_raw(
             world->physics, pivot, ndir, len, -1, bodies, GAME3D_TP_FADE_QUERY_MAX);
+        if (hit_count < 0)
+            hit_count = 0;
+        else if (hit_count > GAME3D_TP_FADE_QUERY_MAX)
+            hit_count = GAME3D_TP_FADE_QUERY_MAX;
         for (int32_t h = 0; h < hit_count; ++h) {
             rt_game3d_entity *entity = game3d_world_find_entity_by_body(world, bodies[h]);
             if (!entity || entity == target || !game3d_entity_alive_or_record(entity))
@@ -230,15 +272,21 @@ static void game3d_thirdperson_update_fades(rt_game3d_thirdperson_controller *co
             game3d_thirdperson_fade_entry_release(entry);
             continue;
         }
+        void *fade_material =
+            rt_g3d_checked_or_null(entry->fade_material, RT_G3D_MATERIAL3D_CLASS_ID);
+        if (!fade_material) {
+            game3d_thirdperson_fade_entry_release(entry);
+            continue;
+        }
         double target_alpha = entry->occluding ? RT_GAME3D_TP_FADE_ALPHA : entry->original_alpha;
         entry->alpha += (target_alpha - entry->alpha) * blend;
         if (!entry->occluding && fabs(entry->alpha - entry->original_alpha) < 0.01) {
             game3d_thirdperson_fade_entry_release(entry);
             continue;
         }
-        rt_material3d_set_alpha(entry->fade_material, entry->alpha);
-        if (rt_scene_node3d_get_material(node) != entry->fade_material)
-            rt_scene_node3d_set_material(node, entry->fade_material);
+        rt_material3d_set_alpha(fade_material, entry->alpha);
+        if (rt_scene_node3d_get_material(node) != fade_material)
+            rt_scene_node3d_set_material(node, fade_material);
         if (write != i)
             controller->fades[write] = *entry;
         ++write;
@@ -336,8 +384,10 @@ void rt_game3d_thirdperson_controller_set_target(void *obj, void *target_entity)
                 "Game3D.ThirdPersonController.set_target: target belongs to another world"))
             return;
     }
-    if (controller)
+    if (controller && controller->target != target_entity) {
+        game3d_thirdperson_reset_fades(controller);
         game3d_assign_ref(&controller->target, target_entity);
+    }
 }
 
 /// @brief Get the optional CharacterController3D drive slot (NULL if none/invalid).
@@ -800,8 +850,15 @@ void rt_game3d_thirdperson_controller_late_update(void *obj, void *world_obj, do
             "Game3D.ThirdPersonController.lateUpdate: controller belongs to another world"))
         return;
     rt_game3d_entity *target = game3d_thirdperson_target_ref(controller);
-    if (!target)
+    if (!target) {
+        game3d_thirdperson_reset_fades(controller);
         return;
+    }
+    if (!game3d_thirdperson_fade_storage_valid(controller)) {
+        rt_trap("Game3D.ThirdPersonController.lateUpdate: corrupt occluder fade storage");
+        game3d_thirdperson_reset_fades(controller);
+        return;
+    }
     dt = game3d_clamp_dt(dt);
 
     double target_pos[3];

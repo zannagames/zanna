@@ -94,6 +94,38 @@
 #define RT_GAME3D_MODEL_CACHE_KEY_MAX 4096 ///< Max bytes snapshotted for model cache/load paths.
 #endif
 
+/// @brief Compute a geometrically grown private-array capacity without signed or byte overflow.
+/// @param current Current non-negative capacity.
+/// @param needed Required positive element count.
+/// @param initial Positive initial capacity used when @p current is zero.
+/// @param element_size Non-zero byte size of one element.
+/// @param[out] out_capacity Receives a capacity no smaller than @p needed.
+/// @return Non-zero when the requested capacity and allocation byte count are representable.
+static inline int game3d_checked_capacity_i32(
+    int32_t current, int32_t needed, int32_t initial, size_t element_size, int32_t *out_capacity) {
+    int32_t capacity;
+    if (!out_capacity || current < 0 || needed <= 0 || initial <= 0 || element_size == 0u)
+        return 0;
+    if (current >= needed) {
+        if ((size_t)current > SIZE_MAX / element_size)
+            return 0;
+        *out_capacity = current;
+        return 1;
+    }
+    capacity = current > 0 ? current : initial;
+    while (capacity < needed) {
+        if (capacity > INT32_MAX / 2) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    if (capacity < needed || (size_t)capacity > SIZE_MAX / element_size)
+        return 0;
+    *out_capacity = capacity;
+    return 1;
+}
+
 /// @brief Internal effect-item discriminator stored in rt_game3d_effect_item.type.
 enum {
     RT_GAME3D_EFFECT_PARTICLES = 1, ///< Item wraps a particle system.
@@ -1903,7 +1935,8 @@ void *game3d_layermask_new_bits(int64_t bits);
 
 /// @brief Instantiate a physics body from a reusable BodyDef payload.
 /// @param def Borrowed body definition containing the type, shape, transform, and material data.
-/// @return New GC-managed Physics3DBody handle, or `NULL` after invalid input or allocation failure.
+/// @return New GC-managed Physics3DBody handle, or `NULL` after invalid input or allocation
+/// failure.
 void *game3d_body_def_create_body(rt_game3d_body_def *def);
 
 /// @brief Ensure the tracked-audio-source array can hold a requested count.

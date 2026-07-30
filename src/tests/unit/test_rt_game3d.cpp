@@ -49,6 +49,7 @@
 #include "rt_platform.h"
 #include "rt_postfx3d.h"
 #include "rt_quat.h"
+#include "rt_savedata.h"
 #include "rt_scene3d.h"
 #include "rt_skeleton3d.h"
 #include "rt_sound3d.h"
@@ -364,6 +365,7 @@ typedef struct {
     int8_t retains_world;
 } Game3DWorldStreamTestLayout;
 
+#include <chrono>
 #include <climits>
 #include <cmath>
 #include <csetjmp>
@@ -706,6 +708,27 @@ static void game3d_test_write64(std::vector<uint8_t> &out, uint64_t v) {
         out.push_back((uint8_t)(v >> (i * 8)));
 }
 
+static std::vector<uint8_t> game3d_test_persistence_header(uint32_t records, uint32_t flags) {
+    std::vector<uint8_t> out = {'V', 'W', '3', 'D', 'S', 'A', 'V', '1'};
+    game3d_test_write32(out, 1);
+    game3d_test_write32(out, records);
+    game3d_test_write32(out, flags);
+    for (int i = 0; i < 4; ++i)
+        game3d_test_write64(out, 0);
+    return out;
+}
+
+static void game3d_test_append_persistence_record(std::vector<uint8_t> &out,
+                                                  const char *key,
+                                                  uint8_t alive) {
+    size_t key_length = std::strlen(key);
+    game3d_test_write32(out, (uint32_t)key_length);
+    out.insert(out.end(), key, key + key_length);
+    out.push_back(alive);
+    for (int i = 0; i < 11; ++i)
+        game3d_test_write64(out, 0);
+}
+
 static void game3d_test_align(std::vector<uint8_t> &out, size_t alignment) {
     size_t rem = out.size() % alignment;
     if (rem != 0)
@@ -905,6 +928,106 @@ static void *make_game3d_test_controller(double walk_distance, double event_time
         controller, rt_const_cstr("walk"), event_time, rt_const_cstr("step"));
     rt_anim_controller3d_set_root_motion_bone(controller, root);
     return controller;
+}
+
+static bool test_persistence_snapshot_validator_is_canonical_and_exact() {
+    TEST("VW3DSAV1 validator requires canonical exact snapshots");
+    std::vector<uint8_t> empty = game3d_test_persistence_header(0, 0);
+    EXPECT_TRUE(rt_game3d_persistence_validate(empty.data(), (int64_t)empty.size()) == 1,
+                "an exact empty snapshot validates");
+
+    std::vector<uint8_t> trailing = empty;
+    trailing.push_back(0x7f);
+    EXPECT_TRUE(rt_game3d_persistence_validate(trailing.data(), (int64_t)trailing.size()) == 0,
+                "trailing bytes are rejected");
+
+    std::vector<uint8_t> empty_key = game3d_test_persistence_header(1, 0);
+    game3d_test_append_persistence_record(empty_key, "", 1);
+    EXPECT_TRUE(rt_game3d_persistence_validate(empty_key.data(), (int64_t)empty_key.size()) == 0,
+                "empty entity keys are rejected before load");
+
+    std::vector<uint8_t> invalid_alive = game3d_test_persistence_header(1, 0);
+    game3d_test_append_persistence_record(invalid_alive, "crate", 2);
+    EXPECT_TRUE(
+        rt_game3d_persistence_validate(invalid_alive.data(), (int64_t)invalid_alive.size()) == 0,
+        "noncanonical alive bytes are rejected");
+
+    std::vector<uint8_t> embedded_nul = game3d_test_persistence_header(1, 0);
+    game3d_test_write32(embedded_nul, 3);
+    embedded_nul.push_back('a');
+    embedded_nul.push_back(0);
+    embedded_nul.push_back('b');
+    embedded_nul.push_back(1);
+    for (int i = 0; i < 11; ++i)
+        game3d_test_write64(embedded_nul, 0);
+    EXPECT_TRUE(rt_game3d_persistence_validate(embedded_nul.data(), (int64_t)embedded_nul.size()) ==
+                    0,
+                "embedded NUL bytes cannot alias persistence identities");
+
+    std::vector<uint8_t> record = game3d_test_persistence_header(1, 0);
+    game3d_test_append_persistence_record(record, "crate", 1);
+    EXPECT_TRUE(rt_game3d_persistence_validate(record.data(), (int64_t)record.size()) == 1,
+                "a canonical record snapshot validates");
+    PASS();
+}
+
+static bool test_persistence_duplicate_load_is_transactional() {
+    TEST("VW3DSAV1 duplicate-key load preserves the live persistence store");
+    void *world = rt_game3d_world_new(rt_const_cstr("Persistence Transaction Unit"), 32, 24);
+    void *entity = rt_game3d_entity_new();
+    rt_string key = rt_const_cstr("transactional-crate");
+    rt_game3d_entity_set_position(entity, 7.0, 8.0, 9.0);
+    rt_game3d_world_spawn(world, entity);
+    rt_game3d_entity_set_persistent(entity, key);
+
+    void *before = rt_game3d_world_get_persistent_position(world, key);
+    EXPECT_NEAR(rt_vec3_x(before), 7.0, 1e-9, "fixture publishes the live persistent pose");
+    if (rt_obj_release_check0(before))
+        rt_obj_free(before);
+
+    std::vector<uint8_t> duplicate = game3d_test_persistence_header(2, 0);
+    game3d_test_append_persistence_record(duplicate, "transactional-crate", 1);
+    game3d_test_append_persistence_record(duplicate, "transactional-crate", 1);
+    EXPECT_TRUE(rt_game3d_persistence_validate(duplicate.data(), (int64_t)duplicate.size()) == 1,
+                "duplicate-key fixture is structurally valid before semantic staging");
+
+    rt_string app = rt_const_cstr("ZannaGame3DAuditTest");
+    unsigned long long nonce =
+        (unsigned long long)std::chrono::high_resolution_clock::now().time_since_epoch().count();
+    char slot_name[64];
+    std::snprintf(slot_name,
+                  sizeof(slot_name),
+                  "transaction-%llx-%llx",
+                  nonce,
+                  (unsigned long long)(uintptr_t)world);
+    rt_string slot = rt_const_cstr(slot_name);
+    rt_string dir = rt_path_data_dir(app);
+    std::string path = std::string(rt_string_cstr(dir)) + "/" + slot_name + ".vw3dsav";
+    FILE *file = std::fopen(path.c_str(), "wb");
+    EXPECT_TRUE(file != nullptr, "transactional load fixture opens in the platform data directory");
+    bool wrote = std::fwrite(duplicate.data(), 1, duplicate.size(), file) == duplicate.size();
+    wrote = std::fclose(file) == 0 && wrote;
+    EXPECT_TRUE(wrote, "transactional load fixture is written completely");
+
+    EXPECT_TRUE(rt_game3d_world_load_state(world, app, slot) == 0,
+                "duplicate persistent identities reject during staged load");
+    EXPECT_EQ_INT(rt_game3d_world_get_persistent_alive(world, key),
+                  1,
+                  "failed staged load preserves the live record liveness");
+    void *after = rt_game3d_world_get_persistent_position(world, key);
+    EXPECT_NEAR(rt_vec3_x(after), 7.0, 1e-9, "failed staged load preserves persistent position X");
+    EXPECT_NEAR(rt_vec3_y(after), 8.0, 1e-9, "failed staged load preserves persistent position Y");
+    EXPECT_NEAR(rt_vec3_z(after), 9.0, 1e-9, "failed staged load preserves persistent position Z");
+    if (rt_obj_release_check0(after))
+        rt_obj_free(after);
+
+    std::remove(path.c_str());
+    rt_string_unref(dir);
+    rt_string_unref(slot);
+    rt_string_unref(app);
+    rt_string_unref(key);
+    rt_game3d_world_destroy(world);
+    PASS();
 }
 
 static bool test_layermasks_and_constants() {
@@ -5879,6 +6002,13 @@ static bool test_audio_repairs_wrong_class_source_slots() {
                 "Sound3D repair does not release unrelated wrong-class handles");
     rt_game3d_audio_clear_sources(audio);
 
+    layout->source_count = INT32_MAX;
+    layout->source_capacity = 2;
+    rt_game3d_world_rebase_origin(world, 1.0, 2.0, 3.0);
+    EXPECT_EQ_INT(layout->source_count,
+                  INT32_MAX,
+                  "audio rebase skips inconsistent source storage without traversing it");
+
     std::free(layout->sources);
     layout->sources = nullptr;
     layout->source_capacity = 0;
@@ -6218,6 +6348,8 @@ static bool test_entity_sweep_survives_cross_despawn() {
 int main() {
     set_software_backend_env();
     bool ok = true;
+    ok = test_persistence_snapshot_validator_is_canonical_and_exact() && ok;
+    ok = test_persistence_duplicate_load_is_transactional() && ok;
     ok = test_layermasks_and_constants() && ok;
     ok = test_behavior3d_presets_drive_entities() && ok;
     ok = test_entity_sweep_survives_cross_despawn() && ok;

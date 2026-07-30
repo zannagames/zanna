@@ -174,10 +174,9 @@ static int vgfx_wayland_dispatch_available(vgfx_wayland_platform_t *platform, in
         api->display_cancel_read(platform->connection.display);
         return 0;
     }
-    struct pollfd descriptor = {
-        .fd = api->display_get_fd(platform->connection.display),
-        .events = (short)(POLLIN | (flush_blocked ? POLLOUT : 0)),
-        .revents = 0};
+    struct pollfd descriptor = {.fd = api->display_get_fd(platform->connection.display),
+                                .events = (short)(POLLIN | (flush_blocked ? POLLOUT : 0)),
+                                .revents = 0};
     int result;
     do {
         result = poll(&descriptor, 1, timeout_ms < 0 ? -1 : timeout_ms);
@@ -221,8 +220,7 @@ static int vgfx_wayland_sync_state(struct vgfx_window *win) {
     if (platform->shell.maximized || platform->shell.fullscreen || platform->shell.resizing) {
         platform->requested_logical_width = 0;
         platform->requested_logical_height = 0;
-    } else if (platform->requested_logical_width > 0 &&
-               platform->requested_logical_height > 0) {
+    } else if (platform->requested_logical_width > 0 && platform->requested_logical_height > 0) {
         logical_width = platform->requested_logical_width;
         logical_height = platform->requested_logical_height;
     }
@@ -411,11 +409,27 @@ int vgfx_platform_process_events(struct vgfx_window *win) {
     return vgfx_wayland_sync_state(win);
 }
 
+/// @brief Check whether Wayland surfaces should stay unmapped.
+/// @details A wl_surface with no committed buffer never maps, so skipping
+///          the shm commit keeps the window invisible while frames continue
+///          to render CPU-side (embedded play and headless probes), matching
+///          `ZANNA_GFX_HIDE_WINDOWS` on the macOS/X11/Win32 adapters.
+/// @return 1 when `ZANNA_GFX_HIDE_WINDOWS` is enabled, otherwise 0.
+static int vgfx_wayland_hide_windows(void) {
+    const char *value = getenv("ZANNA_GFX_HIDE_WINDOWS");
+    if (!value || value[0] == '\0')
+        return 0;
+    return strcmp(value, "0") != 0 && strcmp(value, "false") != 0 && strcmp(value, "FALSE") != 0 &&
+           strcmp(value, "off") != 0 && strcmp(value, "OFF") != 0;
+}
+
 /// @copydoc vgfx_platform_present
 int vgfx_platform_present(struct vgfx_window *win) {
     if (!win || !win->platform_data)
         return 0;
     if (win->skip_software_present)
+        return 1;
+    if (vgfx_wayland_hide_windows())
         return 1;
     vgfx_wayland_platform_t *platform = (vgfx_wayland_platform_t *)win->platform_data;
     size_t size = (size_t)win->stride * (size_t)win->height;
@@ -720,8 +734,7 @@ vgfx_window_capabilities_t vgfx_get_window_capabilities(vgfx_window_t window) {
         result |= VGFX_CAP_CLIPBOARD_TEXT | VGFX_CAP_FILE_DROP;
     if ((globals &
          (VGFX_WAYLAND_GLOBAL_RELATIVE_POINTER_V1 | VGFX_WAYLAND_GLOBAL_POINTER_CONSTRAINTS_V1)) ==
-        (VGFX_WAYLAND_GLOBAL_RELATIVE_POINTER_V1 |
-         VGFX_WAYLAND_GLOBAL_POINTER_CONSTRAINTS_V1))
+        (VGFX_WAYLAND_GLOBAL_RELATIVE_POINTER_V1 | VGFX_WAYLAND_GLOBAL_POINTER_CONSTRAINTS_V1))
         result |= VGFX_CAP_RELATIVE_MOUSE;
     if (platform->text_input.proxy)
         result |= VGFX_CAP_TEXT_COMPOSITION;

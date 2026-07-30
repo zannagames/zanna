@@ -28,6 +28,7 @@ bind "scene_component_palette";
 bind "scene_component_schema";
 bind "scene_hierarchy_search";
 bind "scene_history";
+bind "scene_play_controller";
 bind "inspector_rows";
 bind "scene_layout_2d";
 bind "scene_object_draw_stack_2d";
@@ -95,6 +96,9 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
     expose GUI.ToolbarItem previewButton;
     expose GUI.ToolbarItem gameViewButton;
     expose GUI.ToolbarItem runSceneButton;
+    expose GUI.ToolbarItem playSceneButton;
+    expose scene_play_controller.ScenePlayController playController;
+    hide Boolean playSceneRequested;
     hide Boolean previewActive;
     expose Boolean gameViewActive;
     expose Boolean gameViewOutputFramed;
@@ -441,6 +445,10 @@ class SceneEditor2DState extends SceneEditor2DContract.SceneEditor2DContract05 {
         previewButton = null;
         gameViewButton = null;
         runSceneButton = null;
+        playSceneButton = null;
+        playController =
+            new scene_play_controller.ScenePlayController();
+        playSceneRequested = false;
         previewActive = false;
         gameViewActive = false;
         gameViewOutputFramed = false;

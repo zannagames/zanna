@@ -12,7 +12,7 @@
 //
 // Key invariants:
 //   - The software backend is always available as a fallback.
-//   - GPU backends return non-zero from init() on failure → fallback to software.
+//   - GPU backends return NULL from create_ctx() on failure → fallback to software.
 //   - Capability flags and optional hook pointers agree; unsupported hooks may be NULL.
 //   - Compact particle instances are four contiguous float4 lanes on every GPU backend.
 //

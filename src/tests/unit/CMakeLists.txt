@@ -1139,6 +1139,12 @@ function(zanna_add_runtime_tests)
     zanna_add_ctest(test_rt_gltf_draco_probe test_rt_gltf_draco_probe)
     zanna_add_test_labels(test_rt_gltf_draco_probe graphics3d unit)
 
+    zanna_add_test(test_rt_gltf_draco_internal
+            ${ZANNA_TESTS_DIR}/unit/test_rt_gltf_draco_internal.c)
+    target_link_libraries(test_rt_gltf_draco_internal PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    zanna_add_ctest(test_rt_gltf_draco_internal test_rt_gltf_draco_internal)
+    zanna_add_test_labels(test_rt_gltf_draco_internal graphics3d unit)
+
     zanna_add_test(test_rt_transform_path ${ZANNA_TESTS_DIR}/unit/test_rt_transform_path.cpp)
     target_link_libraries(test_rt_transform_path PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_transform_path test_rt_transform_path)

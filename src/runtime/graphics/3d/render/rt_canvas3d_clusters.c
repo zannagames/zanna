@@ -220,12 +220,13 @@ static float cluster_local_light_radius(const vgfx3d_light_params_t *light) {
 /// @param light Borrowed flattened local-light parameters.
 /// @param znear Sanitized positive cluster near distance.
 /// @param zfar Sanitized cluster far distance greater than @p znear.
-/// @param[out] out Inclusive X, Y, and Z cell ranges.
-static void cluster_range_for_light(const rt_canvas3d *c,
-                                    const vgfx3d_light_params_t *light,
-                                    float znear,
-                                    float zfar,
-                                    cluster_range_t *out) {
+/// @return Fully initialized inclusive X, Y, and Z cell ranges.
+static cluster_range_t cluster_range_for_light(const rt_canvas3d *c,
+                                               const vgfx3d_light_params_t *light,
+                                               float znear,
+                                               float zfar) {
+    cluster_range_t out = {
+        0, VGFX3D_CLUSTER_DIM_X - 1, 0, VGFX3D_CLUSTER_DIM_Y - 1, 0, VGFX3D_CLUSTER_DIM_Z - 1};
     float radius = cluster_local_light_radius(light);
     float depth;
     float min_x;
@@ -233,20 +234,13 @@ static void cluster_range_for_light(const rt_canvas3d *c,
     float max_x;
     float max_y;
 
-    out->x0 = 0;
-    out->x1 = VGFX3D_CLUSTER_DIM_X - 1;
-    out->y0 = 0;
-    out->y1 = VGFX3D_CLUSTER_DIM_Y - 1;
-    out->z0 = 0;
-    out->z1 = VGFX3D_CLUSTER_DIM_Z - 1;
-
     if (radius == 0.0f) {
         /* Contributes nothing: empty range. */
-        out->x1 = -1;
-        return;
+        out.x1 = -1;
+        return out;
     }
     if (radius < 0.0f)
-        return; /* unbounded: every cluster */
+        return out; /* unbounded: every cluster */
     if (radius > zfar)
         radius = zfar; /* beyond the far plane the grid is fully covered anyway */
 
@@ -255,28 +249,29 @@ static void cluster_range_for_light(const rt_canvas3d *c,
             (light->position[1] - c->cached_cam_pos[1]) * c->cached_cam_forward[1] +
             (light->position[2] - c->cached_cam_pos[2]) * c->cached_cam_forward[2];
     if (!isfinite(depth))
-        return; /* keep full coverage */
+        return out; /* keep full coverage */
     if (depth + radius < znear || depth - radius > zfar) {
-        out->x1 = -1; /* entirely outside the depth range */
-        return;
+        out.x1 = -1; /* entirely outside the depth range */
+        return out;
     }
-    out->z0 = canvas3d_cluster_z_slice(depth - radius, znear, zfar);
-    out->z1 = canvas3d_cluster_z_slice(depth + radius, znear, zfar);
+    out.z0 = canvas3d_cluster_z_slice(depth - radius, znear, zfar);
+    out.z1 = canvas3d_cluster_z_slice(depth + radius, znear, zfar);
 
     /* XY range from the projected AABB; behind-the-eye corners keep full XY. */
     if (cluster_sphere_ndc_bounds(
             c->cached_vp, light->position, radius, &min_x, &min_y, &max_x, &max_y)) {
         if (max_x < -1.0f || min_x > 1.0f || max_y < -1.0f || min_y > 1.0f) {
-            out->x1 = -1; /* fully off-screen */
-            return;
+            out.x1 = -1; /* fully off-screen */
+            return out;
         }
-        out->x0 = cluster_axis_from_ndc(min_x, VGFX3D_CLUSTER_DIM_X, 0);
-        out->x1 = cluster_axis_from_ndc(max_x, VGFX3D_CLUSTER_DIM_X, 1);
+        out.x0 = cluster_axis_from_ndc(min_x, VGFX3D_CLUSTER_DIM_X, 0);
+        out.x1 = cluster_axis_from_ndc(max_x, VGFX3D_CLUSTER_DIM_X, 1);
         /* NDC +Y is up but cluster rows follow screen space (row 0 at the top),
          * so the Y interval flips. */
-        out->y0 = cluster_axis_from_ndc(-max_y, VGFX3D_CLUSTER_DIM_Y, 0);
-        out->y1 = cluster_axis_from_ndc(-min_y, VGFX3D_CLUSTER_DIM_Y, 1);
+        out.y0 = cluster_axis_from_ndc(-max_y, VGFX3D_CLUSTER_DIM_Y, 0);
+        out.y1 = cluster_axis_from_ndc(-min_y, VGFX3D_CLUSTER_DIM_Y, 1);
     }
+    return out;
 }
 
 /// @brief Sort-order key: directional(0)/ambient(2) precede every finite local light.
@@ -304,7 +299,7 @@ void canvas3d_build_cluster_table(const rt_canvas3d *c,
     /* Per-cluster counts reused as write cursors during the fill pass. */
     static const int32_t plane = VGFX3D_CLUSTER_DIM_X * VGFX3D_CLUSTER_DIM_Y;
     uint16_t counts[VGFX3D_CLUSTER_COUNT];
-    cluster_range_t ranges[VGFX3D_MAX_LIGHTS];
+    cluster_range_t ranges[VGFX3D_MAX_LIGHTS] = {{0}};
     float znear;
     float zfar;
     int32_t global_count = 0;
@@ -333,7 +328,7 @@ void canvas3d_build_cluster_table(const rt_canvas3d *c,
     memset(counts, 0, sizeof(counts));
     for (int32_t i = global_count; i < light_count; i++) {
         cluster_range_t *r = &ranges[i];
-        cluster_range_for_light(c, &lights[i], znear, zfar, r);
+        *r = cluster_range_for_light(c, &lights[i], znear, zfar);
         for (int32_t z = r->z0; z <= r->z1; z++)
             for (int32_t y = r->y0; y <= r->y1; y++)
                 for (int32_t x = r->x0; x <= r->x1; x++)

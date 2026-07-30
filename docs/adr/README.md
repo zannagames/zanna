@@ -143,6 +143,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0223](0223-scene-chrome-and-feedback.md) — Scene Editor Chrome and Feedback
 - [ADR 0224](0224-bounded-viewport-presentation-budget.md) — Bounded Viewport Presentation Budget and Zero-Allocation Readback
 - [ADR 0225](0225-play-loop-and-embedded-play.md) — Run Profile, Build-Launch Chain, Scene Watch, and Embedded Play
+- [ADR 0226](0226-virtual-scene-hierarchy.md) — Virtual Scene Hierarchy Model
 
 ## Graphics3D & Game Systems
 

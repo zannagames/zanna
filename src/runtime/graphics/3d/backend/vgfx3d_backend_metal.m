@@ -105,9 +105,10 @@
     float _shadowStrength;
     float _shadowSlopeBias;
     int32_t _shadowQuality;
-    /* Plan 07: revision-keyed GPU cluster-table ring. Binning is camera-dependent,
-     * so the revision keys are dropped every begin_frame; within a frame a table
-     * uploads once per light revision and is shared by all draws that stamp it. */
+    /* Plan 07: last-four revision cache for GPU cluster tables. Binning is
+     * camera-dependent, so revision keys are dropped every begin_frame. Each
+     * miss gets new backing storage retained by frameBuffers through GPU
+     * completion; evicting a cache handle therefore cannot mutate encoded data. */
     id<MTLBuffer> _clusterBuffers[4];
     uint32_t _clusterBufferRevisions[4];
     int32_t _clusterBufferCursor;

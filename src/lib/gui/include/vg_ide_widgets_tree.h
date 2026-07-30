@@ -350,12 +350,22 @@ typedef void (*vg_tree_load_children_callback_t)(struct vg_treeview *tree,
 /// @brief Forward declaration; the inline row editor is a text-input child.
 struct vg_textinput;
 
+/// @brief Presentation flags for one virtual row (bitwise OR).
+enum {
+    VG_TREEVIEW_VROW_SELECTED = 1u << 0, ///< Paint the row as part of the model selection.
+    VG_TREEVIEW_VROW_DIM = 1u << 1,      ///< Blend the row text toward the background.
+};
+
 typedef struct vg_treeview_virtual_row {
-    const char *text;  ///< Borrowed UTF-8 row label; NULL renders as an empty label.
-    size_t depth;      ///< Zero-based indentation level.
-    bool expanded;     ///< Whether descendants are currently visible.
-    bool has_children; ///< Whether the row offers an expand/collapse affordance.
-    bool loading;      ///< Whether lazy children are currently being populated.
+    const char *text;      ///< Borrowed UTF-8 row label; NULL renders as an empty label.
+    size_t depth;          ///< Zero-based indentation level.
+    bool expanded;         ///< Whether descendants are currently visible.
+    bool has_children;     ///< Whether the row offers an expand/collapse affordance.
+    bool loading;          ///< Whether lazy children are currently being populated.
+    const char *icon_name; ///< Borrowed vg_icon_vector name; NULL/empty = no vector icon.
+    const char *icon_text; ///< Borrowed glyph fallback when icon_name is absent; NULL = none.
+    uint32_t text_color;   ///< 0xRRGGBB row text override; 0 keeps the theme color.
+    uint32_t flags;        ///< VG_TREEVIEW_VROW_* presentation flags.
 } vg_treeview_virtual_row_t;
 
 /// @brief Populate one viewport row from an external virtual-tree model.
@@ -373,10 +383,12 @@ typedef bool (*vg_treeview_virtual_provider_t)(struct vg_treeview *tree,
 
 /// @brief User action emitted by a virtual TreeView to its external model.
 typedef enum vg_treeview_virtual_action {
-    VG_TREEVIEW_VIRTUAL_SELECT,   ///< Make the indexed row the model selection.
-    VG_TREEVIEW_VIRTUAL_TOGGLE,   ///< Toggle the indexed row's expanded state.
-    VG_TREEVIEW_VIRTUAL_ACTIVATE, ///< Activate the indexed row.
-    VG_TREEVIEW_VIRTUAL_PARENT    ///< Select the indexed row's visible parent when available.
+    VG_TREEVIEW_VIRTUAL_SELECT,        ///< Make the indexed row the model selection.
+    VG_TREEVIEW_VIRTUAL_TOGGLE,        ///< Toggle the indexed row's expanded state.
+    VG_TREEVIEW_VIRTUAL_ACTIVATE,      ///< Activate the indexed row.
+    VG_TREEVIEW_VIRTUAL_PARENT,        ///< Select the indexed row's visible parent when available.
+    VG_TREEVIEW_VIRTUAL_SELECT_TOGGLE, ///< Toggle the indexed row's selection membership.
+    VG_TREEVIEW_VIRTUAL_SELECT_RANGE   ///< Extend the selection from the anchor to the row.
 } vg_treeview_virtual_action_t;
 
 /// @brief Deliver pointer or keyboard interaction from a virtual TreeView to its model.
@@ -443,6 +455,24 @@ typedef struct vg_treeview {
     vg_treeview_virtual_unbind_callback_t virtual_unbind; ///< Lifetime callback.
     void *virtual_model_user_data; ///< Opaque pointer shared by virtual callbacks.
 
+    // Virtual-row drag-and-drop (poll model). Active only while a virtual model
+    // is bound and app_directed_dnd_mode is VG_TREEVIEW_APP_DND_ROW_AWARE. Row
+    // indices are transient projections of the model's flattened order, so the
+    // application must consume a latched drop before mutating the model.
+    bool virtual_drag_pressed;  ///< Left button went down on a virtual row.
+    bool virtual_dragging;      ///< Pointer travel promoted the press to a drag.
+    size_t virtual_drag_source; ///< Pressed/dragged visible-row index.
+    float virtual_drag_start_x; ///< Press X in widget-local coordinates.
+    float virtual_drag_start_y; ///< Press Y in widget-local coordinates.
+    size_t virtual_drop_target; ///< Hovered target row while dragging, or SIZE_MAX.
+    vg_tree_drop_position_t virtual_drop_position; ///< Classified region for the hover target.
+    bool virtual_drop_latched;                     ///< Completed virtual drop awaits consumption.
+    size_t virtual_drop_src_latched;               ///< Source row index at latched drop.
+    size_t virtual_drop_tgt_latched;               ///< Target row index at latched drop.
+    vg_tree_drop_position_t virtual_drop_pos_latched; ///< Position at latched drop.
+    size_t edit_virtual_index;           ///< Virtual row owning the inline editor, or SIZE_MAX.
+    size_t edit_virtual_committed_index; ///< Virtual row of the latched commit, or SIZE_MAX.
+
     // Callbacks
     vg_tree_select_callback_t on_select;
     void *on_select_data;
@@ -484,12 +514,12 @@ typedef struct vg_treeview {
     // single-line text-input child arranged over the edited row; Enter and
     // focus loss commit, Escape cancels, and the application consumes the
     // committed text through the Was/Get pair like every other latched event.
-    struct vg_textinput *edit_input;      ///< Lazily created row editor child
-    vg_tree_node_t *edit_node;            ///< Node being edited while active
-    bool edit_active;                     ///< An inline row edit is in progress
-    bool edit_committed;                  ///< A committed edit awaits consumption
-    char *edit_text;                      ///< Owned committed text
-    vg_tree_node_t *edit_committed_node;  ///< Node whose edit was committed
+    struct vg_textinput *edit_input;     ///< Lazily created row editor child
+    vg_tree_node_t *edit_node;           ///< Node being edited while active
+    bool edit_active;                    ///< An inline row edit is in progress
+    bool edit_committed;                 ///< A committed edit awaits consumption
+    char *edit_text;                     ///< Owned committed text
+    vg_tree_node_t *edit_committed_node; ///< Node whose edit was committed
 
     // State
     vg_tree_node_t *hovered; ///< Currently hovered node
@@ -562,6 +592,51 @@ size_t vg_treeview_get_visible_count(vg_treeview_t *tree);
 ///          advances the widget revision. NULL and non-virtual controls are ignored.
 /// @param tree Bound virtual TreeView.
 void vg_treeview_invalidate_virtual_rows(vg_treeview_t *tree);
+
+/// @brief Scroll minimally so one virtual row is fully visible.
+/// @details Selection is untouched. NULL, non-virtual, and out-of-range inputs are ignored.
+/// @param tree Bound virtual TreeView.
+/// @param index Zero-based visible-row index to reveal.
+void vg_treeview_reveal_virtual_index(vg_treeview_t *tree, size_t index);
+
+/// @brief Resolve the virtual row under a window-space point.
+/// @details Mirrors vg_treeview_node_at for virtual mode; the scrollbar gutter never
+///          resolves to a row. Returns false outside the widget or below the last row.
+/// @param tree Bound virtual TreeView.
+/// @param x Window-space horizontal coordinate.
+/// @param y Window-space vertical coordinate.
+/// @param out_index Receives the zero-based visible-row index on success.
+/// @return true when a row lies under the point.
+bool vg_treeview_virtual_index_at(vg_treeview_t *tree, float x, float y, size_t *out_index);
+
+/// @brief Consume one latched virtual-row drop, if any.
+/// @details Latched indices reference the model's flattened order at drop time; consume before
+///          mutating the model. Returns false without writing outputs when nothing is latched.
+/// @param tree TreeView to poll.
+/// @param out_source Receives the dragged visible-row index; may be NULL.
+/// @param out_target Receives the drop-target visible-row index; may be NULL.
+/// @param out_position Receives the BEFORE/INTO/AFTER classification; may be NULL.
+/// @return true when a drop was consumed.
+bool vg_treeview_take_virtual_drop(vg_treeview_t *tree,
+                                   size_t *out_source,
+                                   size_t *out_target,
+                                   vg_tree_drop_position_t *out_position);
+
+/// @brief Begin an inline edit over one visible virtual row.
+/// @details Mirrors vg_treeview_begin_edit for virtual mode: the editor overlays the row, Enter
+///          and focus loss commit, Escape cancels, and the application consumes the result via
+///          the existing Was/Get pair. The committed row index is exposed through
+///          vg_treeview_get_edited_virtual_index. Scrolls the row into view first.
+/// @param tree Bound virtual TreeView.
+/// @param index Zero-based visible-row index to edit.
+/// @param initial_text Initial editor contents; NULL edits an empty string.
+/// @return true when the editor was placed over the row.
+bool vg_treeview_begin_virtual_edit(vg_treeview_t *tree, size_t index, const char *initial_text);
+
+/// @brief Return the virtual row index of the most recently committed inline edit.
+/// @param tree TreeView to inspect.
+/// @return Committed visible-row index, or SIZE_MAX when the last commit was not virtual.
+size_t vg_treeview_get_edited_virtual_index(const vg_treeview_t *tree);
 
 /// @brief Get the hidden root node (children of root are top-level items).
 /// @param tree Tree view widget.

@@ -179,6 +179,11 @@ func BuildCommandToolbar(editor: scene_editor_2d.SceneEditor2D,
             "run", "Run Scene",
             "Run the owning project with this saved scene's path appended");
         editor.runSceneButton.SetVisible(false);
+        editor.playSceneButton = editor.toolbar.AddNamedButtonWithText(
+            "game-view", "Play",
+            "Play this scene embedded in the editor canvas; press "
+            + "again to stop");
+        editor.playSceneButton.SetVisible(false);
 }
 
 /// @brief Construct zoom, view, and responsive-layout controls.

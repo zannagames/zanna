@@ -342,6 +342,18 @@ bool test_thirdperson_occluder_fade_and_restore() {
     EXPECT_TRUE(rt_material3d_get_alpha(faded) < 0.6,
                 "faded clone alpha animates toward the fade target");
 
+    void *replacement_target = rt_game3d_entity_new();
+    rt_game3d_entity_set_position(replacement_target, 0.0, 0.0, 0.0);
+    rt_game3d_world_spawn(world, replacement_target);
+    rt_game3d_thirdperson_controller_set_target(controller, replacement_target);
+    EXPECT_TRUE(rt_scene_node3d_get_material(node) == original_material,
+                "changing the camera target immediately restores faded materials");
+    rt_game3d_thirdperson_controller_set_target(controller, player);
+    for (int i = 0; i < 30; ++i)
+        rt_game3d_world_step_simulation(world, 1.0 / 60.0);
+    EXPECT_TRUE(rt_scene_node3d_get_material(node) != original_material,
+                "returning to the occluded target can establish a fresh fade");
+
     /* Move the wall's collision body clear of the boom ray (the ray tests the
      * physics world, so the body is the source of truth) and let the fade
      * release. */

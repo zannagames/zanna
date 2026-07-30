@@ -14,8 +14,13 @@ program](graphics3d-runtime-hardening-2026-07.md).
 The review combined line-by-line ownership and arithmetic analysis, backend
 parity comparisons, shader review, whole-tree cppcheck analysis, targeted unit
 tests, source-contract tests for platform-excluded translation units, and
-headless production renders. The 237 findings below are fixed; none changes a
+headless production renders. The 350 findings below are fixed; none changes a
 registered scripting API.
+
+The current source-wide extension begins at G3D-249. G3D-249 through G3D-348
+track the requested 100 distinct failure modes found and fixed in this pass;
+the subsequent entries record additional analyzer and final-review findings.
+Repeated unsafe sites that share one root cause are consolidated within an entry.
 
 ## Regression suites
 
@@ -29,7 +34,11 @@ The evidence column uses these abbreviations:
 | `MTL` | `test_vgfx3d_backend_metal_shared`, including concatenated Metal source contracts |
 | `PROD` | `test_rt_canvas3d_production` deterministic software rendering and lifetime checks |
 | `GLTF` | `test_rt_gltf` import validation plus whole-Graphics3D cppcheck analysis |
+| `DRACO` | `test_rt_gltf_draco_internal` checked-arithmetic and malformed-stream regressions, plus `test_rt_gltf_draco_probe` |
 | `FBX` | `g3d_test_fbx_ascii` plus whole-Graphics3D cppcheck analysis |
+| `GAME` | Focused Game3D combat, persistence, audio, timeline, third-person, and cloth unit suites |
+| `NAV` | `test_rt_navmesh_blend` navmesh metadata, serialization, and defensive-count coverage |
+| `TERRAIN` | `test_rt_terrain3d_upgrades` hole rasterization, extreme-coordinate, and growth coverage |
 | `RIDGE` | `zia_smoke_ridgebound` Metal release-scene luminance, coverage, and frame-budget gate |
 | `ASH` | `zia_visual_ashfall_metal` authored multi-light scene and HDR post-FX visual gate |
 
@@ -274,6 +283,119 @@ The evidence column uses these abbreviations:
 | G3D-235 | Metal | Correctness | Native compressed replacement-entry allocation failure had the same avoidable loss of the prior mip range for the current draw. It now remains visible. | `MTL` |
 | G3D-236 | Metal | Correctness | Cubemap replacement-entry allocation failure likewise hid the resident complete cube. The resolver now binds it while leaving later retry possible. | `MTL` |
 | G3D-237 | Metal | Correctness | Post-FX readback assigned but never checked the compositor result, then replaced it with the active texture after commit. An encoder failure could therefore read a stale texture; readback now rejects the failed composite and releases its copied chain. | `MTL` |
+| G3D-238 | Software | Correctness | Non-finite depth-probe coordinates consumed a frame-local slot before being rejected, so malformed requests could exhaust valid probe capacity and returned misleading nonnegative handles. Requests now reject non-finite coordinates before incrementing the slot count. | `PROD` |
+| G3D-239 | Software | Performance | Parallel color clipping allocated and freed every worker-local triangle list on every draw even though mesh workloads normally retain stable sizes. The context now lends each task a retained scratch allocation and takes it back after every success or failure path. | `PROD` |
+| G3D-240 | Software | Performance | Parallel shadow clipping independently repeated the same per-worker allocation churn. Shadow tasks now use a separate retained context-owned scratch set, released at context teardown. | `PROD` |
+| G3D-241 | OpenGL | Correctness | Full-screen helper passes disabled scissor testing, but the supposedly restoring framebuffer-state snapshot omitted that enable bit. Nested UI/2D clipping could therefore remain disabled after a 3D helper pass. Capture and restoration now preserve the caller's scissor-test state. | `GL` |
+| G3D-242 | Metal | Correctness | The required cluster-table fallback buffer was documented as zero-filled but newly allocated shared storage was published without initialization. Allocation now validates mapped contents, clears the complete table, and only then publishes the dummy. | `MTL` |
+| G3D-243 | Metal | Resource | Single and instanced draws continued after the required cluster table and fallback buffer both failed to allocate, leaving fragment buffer slot 3 unbound or stale. Both paths now abort the draw unless a valid buffer can be bound. | `MTL` |
+| G3D-244 | Metal | Correctness | The instanced material path omitted the BRDF integration LUT at fragment texture slot 18, unlike the single-draw path. Fresh encoders could sample an unbound resource and later draws could inherit stale state. Instanced draws now bind the required LUT explicitly. | `MTL` |
+| G3D-245 | Metal | Resource | Single and instanced draws continued when allocation of the required opaque-depth fallback texture failed, allowing the soft-particle shader to access an unbound or stale slot 16. Both paths now require a valid real or dummy depth texture. | `MTL` |
+| G3D-246 | Metal | Resource | The shadow-atlas fallback had the same continue-without-binding failure at fragment texture slot 17. Both draw paths now abort unless the real atlas or a valid dummy texture is bound. | `MTL` |
+| G3D-247 | Metal | Bug | The four-entry cluster cache rewrote shared buffer contents on eviction and across frames while earlier encoded or in-flight draws could still reference those bytes. Cache misses now allocate fresh immutable backing storage, retain it through command-buffer completion, and publish only the new handle into the last-four revision lookup. | `MTL` |
+| G3D-248 | OpenGL | Build correctness | The frame implementation called the static render-target readback helper before its declaration because that prototype lived in a later implementation fragment. Strict C11 Linux builds rejected the implicit declaration and subsequent static redeclaration. The prototype now lives in the parent translation unit before all fragments, with a source-order contract and a forced Linux warning-as-error syntax check. | `GL` |
+| G3D-249 | Draco importer | Portability | The payload plausibility check narrowed `SIZE_MAX` through a `size_t` cast of a 64-bit quotient, defeating the overflow branch on 32-bit targets. The comparison now widens the payload size before arithmetic. | `DRACO` |
+| G3D-250 | Draco importer | Crash | Byte and varint readers dereferenced null reader/data pointers, while metadata skipping advanced offsets with wrapping addition. Readers and skips now validate pointers and remaining spans before access. | `DRACO` |
+| G3D-251 | Draco importer | Correctness | A ten-byte LEB128 accepted payload bits above bit 63 and silently truncated them during the final shift. The tenth byte now permits only its single representable payload bit. | `DRACO` |
+| G3D-252 | Draco importer | Bug | Tagged and raw entropy symbol-table counts narrowed arbitrary 64-bit varints into `uint32_t`. A shared checked 32-bit varint reader now rejects oversized identifiers. | `DRACO` |
+| G3D-253 | Draco importer | Bug | Sequential indices and both sequential/edgebreaker attribute unique IDs had the same unchecked varint narrowing. All identifier reads now prove the 32-bit range before publication. | `DRACO` |
+| G3D-254 | Draco importer | Correctness | rANS initialization accepted null storage and could overflow when adding its base state. Initialization now validates both and rejects an unrepresentable state. | `DRACO` |
+| G3D-255 | Draco importer | Bug | rANS decode trusted lookup symbols, zero probabilities, inconsistent cumulative ranges, and overflowing next states. Every transition is now structurally and arithmetically validated. | `DRACO` |
+| G3D-256 | Draco importer | Bug | Binary rANS accepted invalid probabilities or an under-renormalized state, and several callers ignored decode failure. The primitive and every topology/prediction caller now fail closed. | `DRACO` |
+| G3D-257 | Draco importer | Hang | Tagged-symbol iteration added the component width to a `uint32_t` index, allowing wrap and an infinite loop near `UINT32_MAX`. It now advances by a bounded remaining group. | `DRACO` |
+| G3D-258 | Draco importer | Out-of-bounds | Tagged bit offsets and the final rounded byte count could overflow before buffer comparison. Offset, rounding, and remaining-span checks now precede every access and cursor update. | `DRACO` |
+| G3D-259 | Draco importer | Correctness | Compressed sequential connectivity decoded zigzag symbol `1` as `0` instead of `-1`, corrupting valid index deltas. All paths now use one exact zigzag decoder. | `DRACO` |
+| G3D-260 | Draco importer | Correctness | Attribute descriptors accepted unknown semantics/data types, zero or excessive components, and non-boolean normalized flags. A common descriptor validator now gates both mesh encodings. | `DRACO` |
+| G3D-261 | Draco importer | Buffer overflow | Portable and generic attribute scalar counts multiplied tuple count by components in `uint32_t` before allocation/indexing. Checked tuple-count and byte-product helpers now cover every allocation. | `DRACO` |
+| G3D-262 | Draco importer | Correctness | Prediction scheme `NONE` is serialized as byte `0xFE`; a direct signed cast was implementation-defined and other high bytes could become accepted negative schemes. Parsing now recognizes `0xFE` explicitly and rejects the rest. | `DRACO` |
+| G3D-263 | Draco importer | Correctness | Normal-octahedron and geometric-normal transforms could be paired with incompatible decoder/component layouts, desynchronizing prediction and output strides. Compatibility is now enforced before decoding. | `DRACO` |
+| G3D-264 | Draco importer | Correctness | The wrap transform adjusted an out-of-range correction only once, so large corrections could remain outside the declared interval. It now applies complete modular reduction. | `DRACO` |
+| G3D-265 | Draco importer | Undefined behavior | Canonical normal parameter derivation used signed left shifts at hostile quantization widths. A bounded unsigned derivation now rejects degenerate or unrepresentable moduli. | `DRACO` |
+| G3D-266 | Draco importer | Undefined behavior | Octahedral-normal prediction could overflow additions, negation, and narrowing for hostile corrections. It now performs checked 64-bit arithmetic followed by canonical modular mapping. | `DRACO` |
+| G3D-267 | Draco importer | Out-of-bounds | Difference prediction relied on pointer expressions the analyzer could not prove and did not return failure for invalid scalar offsets. Explicit checked offsets now gate every previous/current tuple. | `DRACO` |
+| G3D-268 | Draco importer | Buffer overflow | Edgebreaker allowed face counts whose `face * 3` corner IDs fit unsigned storage but not the decoder's signed corner representation. Faces are now capped at `INT32_MAX / 3`. | `DRACO` |
+| G3D-269 | Draco importer | Correctness | Edgebreaker vertex and split-vertex totals could exceed the signed identifiers used throughout traversal. Both source and total vertex counts now require `int32_t` representation. | `DRACO` |
+| G3D-270 | Draco importer | Buffer overflow | Corner, vertex, traversal, split, decoder-map, prediction-stack, face-map, and point-remap allocation products were unchecked on narrow `size_t` targets. Every byte product is now validated before allocation. | `DRACO` |
+| G3D-271 | Draco importer | Integer overflow | Topology split source deltas added two untrusted 64-bit values before validating the result. The addition is now checked before range comparison. | `DRACO` |
+| G3D-272 | Draco importer | Hang | DFS, prediction-degree, multi-parallelogram, and geometric-normal guards computed `corner_cap * N` in 32 bits, allowing the guard limit to wrap. Guard arithmetic now uses 64 bits. | `DRACO` |
+| G3D-273 | Draco importer | Undefined behavior | Texture-coordinate prediction used unchecked signed differences, products, squared norms, and projection sums. Checked 64-bit operations now reject overflow at each stage. | `DRACO` |
+| G3D-274 | Draco importer | Undefined behavior | Geometric-normal prediction could overflow cross products, accumulation, absolute value of `INT64_MIN`, scaling, and sign flips. Each operation is now checked and large normals are safely rescaled. | `DRACO` |
+| G3D-275 | Draco importer | Buffer overflow | Constrained-prediction flag counts narrowed 64-bit values into `uint32_t`/`size_t` after only a logical-count check. Both representation limits are now enforced before allocation and iteration. | `DRACO` |
+| G3D-276 | Draco importer | Undefined behavior | Serialized normal transform maxima and quantization widths reached shifts before validation. Transform metadata now derives and validates all canonical normal parameters first. | `DRACO` |
+| G3D-277 | Draco importer | Correctness | Generic float attributes admitted NaN and infinity into mesh output. FLOAT32 and FLOAT64 values must now be finite. | `DRACO` |
+| G3D-278 | Draco importer | Correctness | Generic FLOAT64 attributes narrowed finite values outside the float range to infinity. The decoder now proves `[-FLT_MAX, FLT_MAX]` before conversion. | `DRACO` |
+| G3D-279 | Draco importer | Correctness | Generic BOOL attributes accepted every byte value. Only canonical zero and one encodings are now accepted. | `DRACO` |
+| G3D-280 | Draco importer | Correctness | UINT32, INT64, and UINT64 generic attributes silently truncated values into the decoder's `int32_t` output representation. Out-of-range values now reject the stream. | `DRACO` |
+| G3D-281 | Draco importer | Undefined behavior | Dequantization shifted before checking width, negated possible `INT_MIN`, and trusted raw quantized ranges and non-finite transform values. Validation now precedes shifts/math and every output must remain finite and float-representable. | `DRACO` |
+| G3D-282 | Draco importer | Buffer overflow | Normal conversion trusted its two-component input pointer/count while allocating a three-component output with unchecked products. Both spans and every quantized coordinate are now validated. | `DRACO` |
+| G3D-283 | Draco importer | Buffer overflow | Copying decoded integer attributes to original form trusted decoder type, components, pointer, and allocation products. The conversion is now fully validated and byte-counted. | `DRACO` |
+| G3D-284 | Draco importer | Correctness | Edgebreaker decoder zero could declare split attribute connectivity even though it owns the unsplit position topology. The invalid layout is now rejected before traversal. | `DRACO` |
+| G3D-285 | Draco importer | Buffer overflow | Edgebreaker point remapping allocated output arrays from unchecked point/component products. Remap byte counts now use the shared checked tuple helper. | `DRACO` |
+| G3D-286 | Draco importer | Crash | The mesh entry point dereferenced a null destination and an optional unsupported-status pointer, while attribute lookup trusted a corrupt count. Entry arguments are now optional/null-safe as documented and lookup is capped to the fixed descriptor array. | `DRACO` |
+| G3D-287 | glTF materials | Crash | Texture population indexed the image table even when a parsed document had no image allocation. Image lookup now requires a non-null table as well as a valid source index. | `GLTF` |
+| G3D-288 | glTF meshes | Performance | Two assignments populated locals that were unconditionally overwritten before use, adding noise to an already complex import path and static-analysis output. The dead stores are removed. | `GLTF` |
+| G3D-289 | Game3D persistence | Buffer overflow | Persistent-record lookup and upsert trusted negative, over-capacity, or unbacked dense-array state, and doubling could overflow. State and checked capacity now gate every lookup and grow. | `GAME` |
+| G3D-290 | Game3D streaming | Buffer overflow | Cell-flag setters/getters trusted inconsistent count/capacity storage and nullable stored strings. The table now grows with checked arithmetic and reads fail closed on invalid backing state. | `GAME` |
+| G3D-291 | Game3D streaming | Out-of-bounds | Fixed loaded-event queries, clearing, and teardown trusted a corrupt logical count. Read/release paths now reject or clamp counts outside the compile-time bound. | `GAME` |
+| G3D-292 | Game3D persistence | Buffer overflow | The binary persistence writer trusted `size <= capacity`, backing-pointer consistency, and non-null source bytes. It now validates its complete structural state before copying. | `GAME` |
+| G3D-293 | Game3D cloth | Buffer overflow | World cloth append trusted dense-array state and overflow-prone doubling. Append now validates storage and grows through the shared checked-capacity helper. | `GAME` |
+| G3D-294 | Game3D combat | Buffer overflow | Entity hitbox registration, collection, and teardown trusted corrupted count/capacity state and unchecked growth. The retained hitbox array now validates its full dense-array invariant. | `GAME` |
+| G3D-295 | Game3D audio | Crash | Reverb-zone traversal and growth trusted negative, over-capacity, or unbacked array state. All reverb registry paths now validate or defensively bound the retained array. | `GAME` |
+| G3D-296 | Game3D timeline | Buffer overflow | Track traversal, finalization, append, and playback trusted dense-array invariants and signed doubling. Checked growth and fail-closed storage validation now cover every playback path. | `GAME` |
+| G3D-297 | Game3D third-person | Buffer overflow | Occluder-fade bookkeeping trusted counts/capacities and signed doubling. Every traversal and append now validates the dense array and uses checked capacity growth. | `GAME` |
+| G3D-298 | Game3D third-person | Resource correctness | Changing or losing the camera target could leave cloned transparent materials installed indefinitely. Target transitions and missing-target updates now restore all originals. | `GAME` |
+| G3D-299 | NavMesh3D | Buffer overflow | Area-name interning trusted table invariants and multiplied signed capacity before checking overflow. Count/capacity/backing state, identifier limits, and allocation bytes now gate growth. | `NAV` |
+| G3D-300 | NavMesh3D | Out-of-bounds | Finalization, reverse lookup, and export traversed raw area/link/obstacle counts. Each now uses a capacity-clamped count so corrupt private state cannot escape its allocation. | `NAV` |
+| G3D-301 | NavMesh3D | Out-of-bounds | Scene baking walked raw child counts while filling its traversal stack. It now uses the Scene3D defensive child-count helper before reading child slots. | `NAV` |
+| G3D-302 | Skeleton3D | Buffer overflow | Alias setters/getters/lookup trusted count/capacity state and overflow-prone signed doubling. Traversal is now capacity-clamped and growth proves both element and byte capacity. | `NAV` |
+| G3D-303 | Terrain3D | Buffer overflow | Authored-hole storage trusted corrupt count/capacity state and used unchecked signed doubling. Traversal is capacity-bounded and append proves signed and byte capacity before reallocating. | `TERRAIN` |
+| G3D-304 | Game3D model cache | Resource/overflow | Normalized-path output length addition could wrap, and null-path fallback created a temporary reference with ambiguous ownership. Remaining-space comparisons now precede concatenation and fallback ownership is explicit. | `GAME` |
+| G3D-305 | Scene3D queries | Buffer overflow | Precise-ray result growth could overflow signed capacity and `size_t` allocation bytes. Both representations are now checked before reallocating the result array. | `GAME` |
+| G3D-306 | Draco | Null dereference | The raw GENERIC attribute decoder read `att->data_type` before validating the descriptor pointer. Argument validation now precedes every descriptor access, with a direct null-input regression. | `DRACO` |
+| G3D-307 | Clustered lighting | Correctness | The two-pass light binning cache relied on the analyzer proving identical loop bounds before reading stack ranges. Ranges now have a defensive baseline and the helper returns a fully initialized value, preventing indeterminate state if pass control flow diverges. | `U` |
+| G3D-308 | Terrain3D | Undefined behavior | Hole-mask rebuild and export subtracted one from private signed dimensions before proving they exceeded one, so a corrupt `INT32_MIN` dimension could underflow. Dimension validation now precedes both subtractions. | `TERRAIN` |
+| G3D-309 | Game3D cloth | Out-of-bounds | World teardown still traversed the raw cloth count even though add/remove/tick had been hardened. Finalization now clamps traversal to backed capacity before releasing entries. | `GAME` |
+| G3D-310 | Game3D persistence | Out-of-bounds | Save-state serialization traversed raw persistent-record and stream-flag counts after other access paths had been hardened, and could emit counts beyond the loader's format limit. Save now validates backing state, capacity, and format maxima before writing. | `GAME` |
+| G3D-311 | Game3D persistence | Buffer overflow | Save-slot path sizing added the data-directory length, separator, slot, suffix, and terminator without checking `size_t` overflow. The complete path length is now proved before allocation and formatting. | `GAME` |
+| G3D-312 | Game3D persistence | Buffer overflow | The snapshot reader checked `cursor + count` after unchecked addition and assumed non-null reader/destination storage. It now validates state and compares against the remaining span before pointer arithmetic or copies. | `GAME` |
+| G3D-313 | Skeleton3D | Out-of-bounds | Source-side alias reversal during animation retargeting still traversed the raw alias count. Retargeting now uses the same capacity-clamped alias count as setters, lookup, and getters. | `NAV` |
+| G3D-314 | NavMesh3D | Out-of-bounds | Off-mesh refresh, lookup, heuristic selection, segment classification, and path-workspace sizing traversed or multiplied the raw authored-link count. Every read path now uses the capacity-clamped count. | `NAV` |
+| G3D-315 | NavMesh3D | Buffer overflow | Off-mesh-link and obstacle append paths accepted negative, over-capacity, or unbacked storage state before reallocating/indexing. All mutable dense arrays now reject inconsistent bookkeeping and exhausted signed counts. | `NAV` |
+| G3D-316 | NavMesh3D | Out-of-bounds | A* and link reconstruction trusted derived CSR begin/end offsets and packed link indices. One checked range helper now validates the cache against triangle, link, and edge bounds and falls back to the correct full scan when it is unusable. | `NAV` |
+| G3D-317 | NavMesh3D | Out-of-bounds | A corrupt triangle neighbor could index the closed set and live triangle array before any upper-bound check. A* now rejects neighbors outside the defensively bounded triangle span. | `NAV` |
+| G3D-318 | NavMesh3D | Undefined behavior | The test-only obstacle injection path doubled signed capacity in an initializer before checking the overflow threshold. Growth now validates the old capacity before multiplication, matching the production append path. | `NAV` |
+| G3D-319 | Game3D persistence | Correctness | The VW3DSAV1 validator accepted empty keys, noncanonical liveness bytes, and otherwise-valid snapshots with trailing data; its bounded-key helper also dereferenced a null reader. Validation now requires exact consumption, non-empty bounded keys, canonical booleans, and null-safe arguments. | `GAME` |
+| G3D-320 | Game3D persistence | State corruption | Loading destroyed the live delta store before all replacement allocations succeeded, and a failed record upsert skipped its encoded pose without advancing the reader. The complete record/flag snapshot is now decoded into owned staging arrays and committed only after every allocation and parse succeeds. | `GAME` |
+| G3D-321 | Game3D persistence | Performance | Snapshot loading performed a linear upsert search for every record and flag, producing quadratic work at the documented 100,000-record limit. Direct staging plus one sort makes loading `O(n log n)` and rejects duplicate keys deterministically. | `GAME` |
+| G3D-322 | Game3D persistence | Data loss | Oversized cell/flag keys were silently truncated during save, and non-finite world/entity values could produce a file the loader itself rejected. Input contracts now cap keys at 255 bytes, and serialization fails instead of publishing truncated or non-finite snapshots. | `GAME` |
+| G3D-323 | Game3D persistence | Portability | Floating-point bit patterns were serialized through a signed 64-bit conversion and signed values were decoded with implementation-defined unsigned-to-signed narrowing. Unsigned bit transport and an explicit, range-safe two's-complement conversion now preserve every format bit on all supported C implementations. | `GAME` |
+| G3D-324 | Game3D persistence | Correctness | Runtime keys and save-slot names were measured only through their C-string views, so an embedded NUL could silently alias a different persistent identity or path. Runtime byte lengths and C-string lengths must now agree, and encoded keys reject embedded NUL bytes. | `GAME` |
+| G3D-325 | Game3D persistence | Out-of-bounds | A corrupt negative entity count was treated as a full-capacity live span while refreshing persistent entities. Invalid entity bookkeeping now fails closed instead of traversing uninitialized or stale entries. | `GAME` |
+| G3D-326 | Game3D audio | Out-of-bounds | Origin rebasing and occlusion updates traversed the raw positional-source count without proving that the backing array and capacity agreed. Both paths now validate the dense source array before indexing it. | `GAME` |
+| G3D-327 | Game3D audio | Undefined behavior | Occlusion scheduling accepted nonpositive budgets and performed signed cursor-plus-budget arithmetic before modulo, permitting overflow and negative indices after state corruption. The cursor is normalized first and scheduling arithmetic is now bounded in 64 bits. | `GAME` |
+| G3D-328 | Game3D audio | Out-of-bounds | Ambient-bed mutation and ticking trusted a signed count for two fixed-size zone/clip arrays. Negative or oversized state is now rejected on mutation and clamped for read, tick, and finalizer traversal. | `GAME` |
+| G3D-329 | Game3D combat | Out-of-bounds | Hitbox-window binding accepted a negative fixed-array count, while liveness checks traversed the raw count. Mutation now requires the complete fixed-array invariant and liveness fails closed for inconsistent state. | `GAME` |
+| G3D-330 | Game3D persistence | Out-of-bounds | World persistence teardown released record keys through the raw logical count even when it exceeded allocated storage. Finalization now clamps releases to valid backing capacity. | `GAME` |
+| G3D-331 | Game3D streaming | Out-of-bounds | Stream teardown independently released cell/flag strings through an unchecked logical count. It now releases only the initialized portion proved by pointer, count, and capacity. | `GAME` |
+| G3D-332 | Game3D streaming | Out-of-bounds | Pushing a loaded-cell event could index the fixed event array with a negative or oversized pre-existing count. Push now repairs invalid bookkeeping before shifting or appending. | `GAME` |
+| G3D-333 | Game3D persistence | Buffer overflow | Snapshot writer append formed `size + count` before proving the sum representable. It now checks against `SIZE_MAX` before computing the required byte count. | `GAME` |
+| G3D-334 | Game3D persistence | Hang/buffer overflow | Snapshot writer geometric growth could wrap to zero and loop forever or publish an undersized buffer. Growth now detects the doubling ceiling and advances directly to the already-validated required size. | `GAME` |
+| G3D-335 | Game3D cloth | Out-of-bounds | Cloth removal and per-frame ticking still traversed raw world cloth counts independently of the append path. Both operations now reject inconsistent array bookkeeping before indexing. | `GAME` |
+| G3D-336 | Game3D combat | Out-of-bounds | Hitbox victim-deduplication trusted a signed count for its fixed victim array. Lookup and remember paths now reject counts outside the compile-time bound. | `GAME` |
+| G3D-337 | Game3D combat | Buffer overflow | Hit-event publication, query, clear, and teardown trusted the dynamic event array and overflow-prone growth. All hit-event paths now validate backing state and share checked capacity arithmetic. | `GAME` |
+| G3D-338 | Game3D combat | Buffer overflow | Damage-event publication, query, clear, and teardown had the same independent unchecked dynamic-array failure mode. The damage buffer now validates state and grows without signed or byte overflow. | `GAME` |
+| G3D-339 | Game3D audio | Crash | The audio-immersion tick dereferenced its world argument while locating the listener before checking whether the world was null. World validation now precedes every access. | `GAME` |
+| G3D-340 | Game3D timeline | Undefined behavior | Sorting an empty timeline passed a null base pointer to `qsort`, a library call whose pointer contract is not guaranteed merely because the element count is zero. Sorting now runs only for two or more backed tracks. | `GAME` |
+| G3D-341 | Game3D third-person | Out-of-bounds | The occluder-fade pass trusted a physics raycast's returned hit count before indexing a fixed stack buffer. Negative counts normalize to zero and excessive counts clamp to the buffer bound. | `GAME` |
+| G3D-342 | Game3D third-person | Use-after-free | Fade updates used the cached cloned-material handle without revalidating its runtime class. Invalid or stale material slots are now released and skipped before any material call. | `GAME` |
+| G3D-343 | NavMesh3D | Buffer overflow | Scene-bake traversal stack growth validated signed capacity but not `capacity * sizeof(pointer)` on narrow `size_t` targets. The allocation byte product is now proved before reallocation. | `NAV` |
+| G3D-344 | Terrain3D | Buffer overflow | Hole-mask rasterization multiplied two signed dimensions and rounded the bit count without proving the complete `size_t` expression. It now validates the product plus rounding term before allocation. | `TERRAIN` |
+| G3D-345 | Terrain3D | Undefined behavior | Extreme but finite hole coordinates reached `floor`/`ceil` followed by an out-of-range cast to `int32_t`. A saturating cell-edge helper now handles finite overflow, infinities produced by arithmetic, and NaN before conversion. | `TERRAIN` |
+| G3D-346 | Game3D model cache | Buffer overflow | The pointer-dedup set used unchecked signed capacity doubling and trusted corrupted count/capacity/backing state. It now validates state and grows through the shared checked-capacity helper. | `GAME` |
+| G3D-347 | Game3D model cache | Buffer overflow | Path normalization's segment-pointer table independently used unchecked signed doubling. Segment growth now proves both logical capacity and allocation bytes before appending. | `GAME` |
+| G3D-348 | Scene3D queries | Correctness | Precise-ray traversal stamped equal-distance hits with a signed 32-bit order counter that could wrap and destabilize deterministic sorting. The monotonic order and stored tie-break field are now 64-bit. | `GAME` |
+| G3D-349 | Game3D persistence | Performance | Transactional load zeroed staging counts after the corresponding owned pointers had already been transferred and nulled, leaving stores that could not influence either success or failure cleanup. The dead stores are removed. | `GAME` |
+| G3D-350 | Game3D persistence | Correctness | Save serialization enforced per-table record limits but not the format's 64 MiB byte ceiling, so maximum-length keys could produce a successfully published snapshot that LoadState always rejected. Writer append/growth, validation, and loading now share one hard byte limit and save fails before file publication. | `GAME` |
 
 ## Compatibility and maintenance rules
 
@@ -287,8 +409,51 @@ The evidence column uses these abbreviations:
   from a zero generation or missing native handle.
 - Resource replacement is stage-then-publish. On validation/allocation failure, the previous
   complete resource remains authoritative.
+- Metal buffers referenced by encoded draws are immutable until command-buffer completion. Cache
+  eviction may replace a lookup handle only after the old backing storage is retained by the
+  command buffer's `frameBuffers` lifetime set.
 
 ## Validation record
+
+Revalidated on 2026-07-29 for G3D-249 through G3D-350:
+
+- The canonical macOS arm64 build completed in incremental, build-only mode with
+  `ZANNA_SKIP_CLEAN=1` and `ZANNA_SKIP_TESTS=1`. Lint, audit, smoke, and install stages inside the
+  build script were intentionally skipped; the platform-policy lint was run separately.
+- The focused runtime slice passed 14/14 tests: Canvas3D and Scene3D, cloth, four Game3D suites,
+  terrain, glTF and both Draco suites, Skeleton3D, NavMesh3D, and the Graphics3D robustness suite.
+  The new white-box Draco test passed all 38 checks both normally and under combined AddressSanitizer
+  and UndefinedBehaviorSanitizer instrumentation.
+- All 13 affected Graphics3D translation units passed the project's warning-as-error build and
+  Clang static analysis without findings.
+- Cppcheck completed all 106 Graphics3D C translation units with warning, performance,
+  portability, and inconclusive diagnostics enabled and repository inline suppressions honored;
+  it reported no findings. Clang-format, platform-policy lint, audit-ledger continuity, and
+  whitespace/error checks also passed.
+- The full CTest suite was intentionally not run because other work was active in the shared
+  worktree, as requested.
+
+Revalidated on 2026-07-29 for G3D-238 through G3D-248:
+
+- The canonical macOS arm64 build completed in incremental, build-only mode with
+  `ZANNA_SKIP_CLEAN=1` and `ZANNA_SKIP_TESTS=1`. Lint, audit, smoke, and install stages inside the
+  build script were intentionally skipped; the platform-policy lint was run separately.
+- The focused runtime/backend slice passed 8/8 tests:
+  `test_rt_canvas3d_production`, `test_rt_gltf`, `test_rt_canvas3d_gpu_paths`,
+  `test_vgfx3d_backend_utils`, all three GPU backend source-contract suites, and
+  `test_rt_graphics3d_robustness`.
+- The complete Metal Objective-C translation unit passed the project's warning-as-error compile
+  and Clang static analysis. The forced Linux/Wayland OpenGL C path passed warning-as-error syntax
+  compilation and Clang static analysis. The actual D3D11 translation unit passed an x86_64
+  MinGW-w64 warning-as-error syntax compile with only MSVC link pragmas and the pre-existing
+  embedded-HLSL line-length diagnostic excluded.
+- Cppcheck completed all 106 Graphics3D C translation units with warning, performance,
+  portability, and inconclusive diagnostics enabled and repository inline suppressions honored;
+  it reported no findings. The final software and OpenGL translation units were separately
+  rechecked after their last scoped edits. Changed-line clang-format, platform-policy lint,
+  audit-ledger continuity, and whitespace/error checks also passed.
+- The full CTest suite was intentionally not run because other work was active in the shared
+  worktree, as requested.
 
 Revalidated on 2026-07-29 for G3D-103 through G3D-237:
 

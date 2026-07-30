@@ -1880,9 +1880,16 @@ int vgfx_platform_init_window(struct vgfx_window *win, const vgfx_window_params_
         return 0;
     }
 
-    /* Show and update window */
-    ShowWindow(w32->hwnd, SW_SHOW);
-    UpdateWindow(w32->hwnd);
+    /* Show and update window. ZANNA_GFX_HIDE_WINDOWS keeps the window
+     * created-but-invisible (embedded play and headless probes), matching
+     * the macOS and X11 adapters. */
+    const char *hide_env = getenv("ZANNA_GFX_HIDE_WINDOWS");
+    int hide_window = hide_env && hide_env[0] != '\0' && strcmp(hide_env, "0") != 0 &&
+                      strcmp(hide_env, "false") != 0 && strcmp(hide_env, "FALSE") != 0 &&
+                      strcmp(hide_env, "off") != 0 && strcmp(hide_env, "OFF") != 0;
+    ShowWindow(w32->hwnd, hide_window ? SW_HIDE : SW_SHOW);
+    if (!hide_window)
+        UpdateWindow(w32->hwnd);
     AcquireSRWLockExclusive(&g_vgfx_win32_clipboard_lock);
     g_vgfx_win32_clipboard_owner = w32->hwnd;
     ReleaseSRWLockExclusive(&g_vgfx_win32_clipboard_lock);

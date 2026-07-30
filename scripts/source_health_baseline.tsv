@@ -19,9 +19,9 @@ fuzz_targets_missing_corpus 0
 fuzz_corpus_seed_files 26
 fuzz_harness_registrations 18
 platform_skip_markers 143
-platform_policy_allowlist_entries 33
+platform_policy_allowlist_entries 34
 raw_platform_macro_occurrences 747
-mega_files_over_4000_lines 28
+mega_files_over_4000_lines 29
 manual_alloc_hotspots_over_70 28
 sanitizer_coverage_options 11
 diagnostic_json_entrypoints 50

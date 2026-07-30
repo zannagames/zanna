@@ -304,7 +304,7 @@ class SceneEditor3DContract04 extends PreviousContract.SceneEditor3DContract03 {
     hide func AppendHierarchy(_node: SceneNode,
                               _depth: Integer,
                               _path: String,
-                              _parentTreeNode: Any) {}
+                              _parentTreeNode: String) {}
 
     /// @brief Neutral dispatch slot for FrameAll.
     expose func FrameAll() {}

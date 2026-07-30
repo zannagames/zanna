@@ -377,6 +377,9 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
         importAssetButton.SetVisible(!useMenus);
         importInstanceButton.SetVisible(!useMenus);
         runSceneButton.SetVisible(!useMenus);
+        // Play is the primary loop action; it stays direct at every width
+        // like the active tools (ADR 0225).
+        playSceneButton.SetVisible(true);
         duplicateNodeButton.SetVisible(!useMenus);
         deleteNodeButton.SetVisible(!useMenus);
 

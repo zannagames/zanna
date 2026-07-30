@@ -61,12 +61,14 @@ expose func VerifyNodeRoundTripAndMetadata(ctx: Probe.SceneEditor3DProbeContext)
     var otherSceneDoc = ctx.otherSceneDoc;
     var childIndex = ctx.childIndex;
 
-    var retainedSelectionData = editor.hierarchyTree.GetSelectedData();
+    // The virtual model reports the primary id first, then the remaining
+    // selection in flat order (ADR 0226).
+    var retainedSelectionData = editor.hierarchyModel.GetSelectedIds();
     if Seq.get_Count(retainedSelectionData) != 2
-       or Seq.GetStr(retainedSelectionData, 0) != "0"
-       or Seq.GetStr(retainedSelectionData, 1) != "1" {
+       or Seq.GetStr(retainedSelectionData, 0) != "1"
+       or Seq.GetStr(retainedSelectionData, 1) != "0" {
         Probe.fail(shell, tempPath,
-             "retained hierarchy multi-selection lost structural row data");
+             "hierarchy model multi-selection lost structural row ids");
         return false;
     }
     var childOnlySelection: List[Integer] = [];

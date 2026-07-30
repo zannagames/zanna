@@ -66,6 +66,7 @@
 #include <set>
 #include <string>
 #include <unordered_map>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -337,33 +338,21 @@ static vgfx_key_t harnessKeyCode(const std::string &value, uint32_t *out_text_co
         vgfx_key_t key;
     };
 
-    static constexpr NamedKey named[] = {{"escape", VGFX_KEY_ESCAPE},
-                                         {"enter", VGFX_KEY_ENTER},
-                                         {"return", VGFX_KEY_ENTER},
-                                         {"left", VGFX_KEY_LEFT},
-                                         {"right", VGFX_KEY_RIGHT},
-                                         {"up", VGFX_KEY_UP},
-                                         {"down", VGFX_KEY_DOWN},
-                                         {"backspace", VGFX_KEY_BACKSPACE},
-                                         {"delete", VGFX_KEY_DELETE},
-                                         {"tab", VGFX_KEY_TAB},
-                                         {"home", VGFX_KEY_HOME},
-                                         {"end", VGFX_KEY_END},
-                                         {"pageup", VGFX_KEY_PAGE_UP},
-                                         {"pagedown", VGFX_KEY_PAGE_DOWN},
-                                         {"space", VGFX_KEY_SPACE},
-                                         {"f1", VGFX_KEY_F1},
-                                         {"f2", VGFX_KEY_F2},
-                                         {"f3", VGFX_KEY_F3},
-                                         {"f4", VGFX_KEY_F4},
-                                         {"f5", VGFX_KEY_F5},
-                                         {"f6", VGFX_KEY_F6},
-                                         {"f7", VGFX_KEY_F7},
-                                         {"f8", VGFX_KEY_F8},
-                                         {"f9", VGFX_KEY_F9},
-                                         {"f10", VGFX_KEY_F10},
-                                         {"f11", VGFX_KEY_F11},
-                                         {"f12", VGFX_KEY_F12}};
+    static constexpr NamedKey named[] = {
+        {"escape", VGFX_KEY_ESCAPE},  {"enter", VGFX_KEY_ENTER},
+        {"return", VGFX_KEY_ENTER},   {"left", VGFX_KEY_LEFT},
+        {"right", VGFX_KEY_RIGHT},    {"up", VGFX_KEY_UP},
+        {"down", VGFX_KEY_DOWN},      {"backspace", VGFX_KEY_BACKSPACE},
+        {"delete", VGFX_KEY_DELETE},  {"tab", VGFX_KEY_TAB},
+        {"home", VGFX_KEY_HOME},      {"end", VGFX_KEY_END},
+        {"pageup", VGFX_KEY_PAGE_UP}, {"pagedown", VGFX_KEY_PAGE_DOWN},
+        {"space", VGFX_KEY_SPACE},    {"f1", VGFX_KEY_F1},
+        {"f2", VGFX_KEY_F2},          {"f3", VGFX_KEY_F3},
+        {"f4", VGFX_KEY_F4},          {"f5", VGFX_KEY_F5},
+        {"f6", VGFX_KEY_F6},          {"f7", VGFX_KEY_F7},
+        {"f8", VGFX_KEY_F8},          {"f9", VGFX_KEY_F9},
+        {"f10", VGFX_KEY_F10},        {"f11", VGFX_KEY_F11},
+        {"f12", VGFX_KEY_F12}};
     for (const NamedKey &entry : named) {
         if (harnessAsciiEqual(value, entry.name)) {
             if (out_text_codepoint && entry.key == VGFX_KEY_SPACE)
@@ -735,6 +724,10 @@ struct TreeNode {
     bool expanded{false};
     bool loaded{false};
     bool declared{true};
+    std::string iconVector; ///< vg_icon_vector name projected to viewport rows.
+    std::string iconText;   ///< Literal glyph fallback when no vector icon is set.
+    uint32_t color{0};      ///< 0xRRGGBB row text override; 0 keeps the theme color.
+    bool dim{false};        ///< Blend the row toward the background when true.
 };
 
 struct VisibleTreeRow {
@@ -745,10 +738,16 @@ struct VisibleTreeRow {
 struct VirtualTreeState {
     std::unordered_map<std::string, TreeNode> nodes;
     std::string selectedId;
+    std::vector<std::string> selectedIds;          ///< Ordered multi-selection.
+    std::unordered_set<std::string> selectedIdSet; ///< Membership index for painting.
     std::vector<VisibleTreeRow> visibleRows;
     std::unordered_map<std::string, size_t> visibleIndexById;
     bool visibleDirty{true};
     void *boundTree{nullptr};
+    bool dropLatched{false};  ///< A consumed-on-read virtual drop is pending.
+    std::string dropSourceId; ///< Dragged node id at latch time.
+    std::string dropTargetId; ///< Target node id at latch time.
+    int dropPosition{1};      ///< 0 before / 1 into / 2 after.
 };
 
 struct VirtualTreeHandle {
@@ -919,6 +918,16 @@ static void *visibleTreeRowToMap(VirtualTreeState &state, const VisibleTreeRow &
     rt_map_set_bool(map, rt_const_cstr("expanded"), node.expanded ? 1 : 0);
     rt_map_set_bool(
         map, rt_const_cstr("needsPopulate"), (!node.loaded && node.children.empty()) ? 1 : 0);
+    if (!node.iconVector.empty()) {
+        try {
+            mapSetStr(map, "icon", "vector:" + node.iconVector);
+        } catch (const std::bad_alloc &) {
+            releaseObject(map);
+            return nullptr;
+        }
+    } else if (!node.iconText.empty()) {
+        mapSetStr(map, "icon", node.iconText);
+    }
     return map;
 }
 
@@ -942,6 +951,31 @@ static void removeVirtualTreeDescendants(VirtualTreeState &state, const std::str
         state.nodes.erase(child_it);
     }
     state.visibleDirty = true;
+}
+
+/// @brief Replace the model's multi-selection and keep the membership index coherent.
+/// @param state VirtualTree model to update.
+/// @param ids New ordered selection; the first entry becomes the primary id.
+static void setVirtualTreeSelection(VirtualTreeState &state, std::vector<std::string> ids) {
+    state.selectedIds = std::move(ids);
+    state.selectedIdSet.clear();
+    for (const auto &entry : state.selectedIds)
+        state.selectedIdSet.insert(entry);
+    state.selectedId = state.selectedIds.empty() ? std::string() : state.selectedIds.front();
+}
+
+/// @brief Drop selection entries whose nodes no longer exist in the model.
+/// @param state VirtualTree model whose selection is reconciled.
+static void pruneVirtualTreeSelection(VirtualTreeState &state) {
+    if (state.selectedIds.empty())
+        return;
+    std::vector<std::string> kept;
+    for (const auto &entry : state.selectedIds) {
+        if (state.nodes.find(entry) != state.nodes.end())
+            kept.push_back(entry);
+    }
+    if (kept.size() != state.selectedIds.size())
+        setVirtualTreeSelection(state, std::move(kept));
 }
 
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -1027,6 +1061,14 @@ static bool virtualTreeProvider(vg_treeview_t *tree,
     out_row->expanded = node.expanded;
     out_row->has_children = !node.children.empty() || !node.loaded;
     out_row->loading = node.expanded && !node.loaded && node.children.empty();
+    out_row->icon_name = node.iconVector.empty() ? nullptr : node.iconVector.c_str();
+    out_row->icon_text = node.iconText.empty() ? nullptr : node.iconText.c_str();
+    out_row->text_color = node.color;
+    out_row->flags = 0;
+    if (node.dim)
+        out_row->flags |= VG_TREEVIEW_VROW_DIM;
+    if (state->selectedIdSet.count(visible.id) != 0)
+        out_row->flags |= VG_TREEVIEW_VROW_SELECTED;
     return true;
 }
 
@@ -1069,15 +1111,46 @@ static void virtualTreeAction(vg_treeview_t *tree,
 
     try {
         if (action == VG_TREEVIEW_VIRTUAL_SELECT) {
-            state->selectedId = id;
+            setVirtualTreeSelection(*state, {id});
+            vg_treeview_invalidate_virtual_rows(tree);
+            return;
+        }
+        if (action == VG_TREEVIEW_VIRTUAL_SELECT_TOGGLE) {
+            std::vector<std::string> ids = state->selectedIds;
+            auto member = std::find(ids.begin(), ids.end(), id);
+            if (member != ids.end())
+                ids.erase(member);
+            else
+                ids.push_back(id);
+            setVirtualTreeSelection(*state, std::move(ids));
+            if (state->selectedIdSet.count(id) != 0)
+                state->selectedId = id;
+            vg_treeview_invalidate_virtual_rows(tree);
+            return;
+        }
+        if (action == VG_TREEVIEW_VIRTUAL_SELECT_RANGE) {
+            auto anchor = state->visibleIndexById.find(state->selectedId);
+            size_t anchorIndex = anchor == state->visibleIndexById.end() ? index : anchor->second;
+            size_t lo = anchorIndex < index ? anchorIndex : index;
+            size_t hi = anchorIndex < index ? index : anchorIndex;
+            std::vector<std::string> ids;
+            std::string primary = state->selectedId.empty() ? id : state->selectedId;
+            ids.push_back(primary);
+            for (size_t row = lo; row <= hi && row < state->visibleRows.size(); ++row) {
+                if (state->visibleRows[row].id != primary)
+                    ids.push_back(state->visibleRows[row].id);
+            }
+            setVirtualTreeSelection(*state, std::move(ids));
+            vg_treeview_invalidate_virtual_rows(tree);
             return;
         }
         if (action == VG_TREEVIEW_VIRTUAL_PARENT) {
             const std::string &parent = node->second.parent;
             auto parent_index = state->visibleIndexById.find(parent);
             if (!parent.empty() && parent_index != state->visibleIndexById.end()) {
-                state->selectedId = parent;
+                setVirtualTreeSelection(*state, {parent});
                 vg_treeview_select_virtual_index(tree, parent_index->second);
+                vg_treeview_invalidate_virtual_rows(tree);
             }
             return;
         }
@@ -2253,7 +2326,7 @@ void *rt_virtual_tree_new(void) {
         return nullptr;
     }
     try {
-        h->state->nodes.emplace("", TreeNode{"", "", "", {}, true, true, true});
+        h->state->nodes.emplace("", TreeNode{"", "", "", {}, true, true, true, "", "", 0, false});
     } catch (const std::bad_alloc &) {
         delete h->state;
         h->state = nullptr;
@@ -2301,15 +2374,22 @@ void rt_virtual_tree_add_node(void *tree, rt_string parent_id, rt_string id_s, r
             if (placeholder_old_parent != parent)
                 pending_child_link = id;
         } else {
-            pending_node = TreeNode{id, node_text, parent, {}, false, false, true};
+            pending_node =
+                TreeNode{id, node_text, parent, {}, false, false, true, "", "", 0, false};
             pending_child_link = id;
         }
 
         bool inserted_parent = false;
         bool needs_parent = state.nodes.find(parent) == state.nodes.end();
-        state.nodes.reserve(state.nodes.size() + (needs_parent ? 2u : 1u));
+        // Grow geometrically, never per insert: libc++ rehash(n) also
+        // shrinks, so a reserve(size+1) here oscillates bucket counts and
+        // turns bulk declaration quadratic (~800x at 65k nodes).
+        if (state.nodes.bucket_count() > 0 &&
+            static_cast<float>(state.nodes.size() + 2u) >
+                state.nodes.max_load_factor() * static_cast<float>(state.nodes.bucket_count()))
+            state.nodes.reserve(state.nodes.size() * 2u + 2u);
         if (needs_parent) {
-            TreeNode placeholder{parent, parent, "", {}, false, false, false};
+            TreeNode placeholder{parent, parent, "", {}, false, false, false, "", "", 0, false};
             std::string root_link = parent;
             auto parent_result = state.nodes.emplace(parent, std::move(placeholder));
             if (!parent_result.second)
@@ -2494,7 +2574,11 @@ void rt_virtual_tree_collapse(void *tree, rt_string id_s) {
 void rt_virtual_tree_select_id(void *tree, rt_string id) {
     RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireTree(tree));
     try {
-        h->state->selectedId = toStd(id);
+        std::string next = toStd(id);
+        if (next.empty())
+            setVirtualTreeSelection(*h->state, {});
+        else
+            setVirtualTreeSelection(*h->state, {std::move(next)});
         syncBoundVirtualTree(*h->state);
     } catch (const std::bad_alloc &) {
         return;
@@ -2560,9 +2644,7 @@ void rt_virtual_tree_refresh_subtree(void *tree, rt_string id_s) {
         if (it == h->state->nodes.end())
             return;
         removeVirtualTreeDescendants(*h->state, it->first);
-        if (!h->state->selectedId.empty() &&
-            h->state->nodes.find(h->state->selectedId) == h->state->nodes.end())
-            h->state->selectedId.clear();
+        pruneVirtualTreeSelection(*h->state);
         it = h->state->nodes.find(id);
         if (it == h->state->nodes.end())
             return;
@@ -2633,6 +2715,302 @@ void rt_treeview_clear_virtual_model(void *treeview) {
 #else
     (void)treeview;
 #endif
+}
+
+/// @brief Remove one virtual-tree node together with its whole subtree.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable node identifier.
+/// @return `1` when the node existed and was removed; otherwise `0`.
+int8_t rt_virtual_tree_remove_node(void *tree, rt_string id_s) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), 0);
+    try {
+        std::string id = toStd(id_s);
+        auto it = h->state->nodes.find(id);
+        if (it == h->state->nodes.end())
+            return 0;
+        removeVirtualTreeDescendants(*h->state, it->first);
+        it = h->state->nodes.find(id);
+        if (it != h->state->nodes.end()) {
+            eraseChildId(*h->state, it->second.parent, id);
+            h->state->nodes.erase(it);
+        }
+        pruneVirtualTreeSelection(*h->state);
+        h->state->visibleDirty = true;
+        syncBoundVirtualTree(*h->state);
+        return 1;
+    } catch (const std::bad_alloc &) {
+        return 0;
+    }
+}
+
+/// @brief Replace the model's ordered multi-selection.
+/// @param tree Managed VirtualTree handle.
+/// @param ids_seq Borrowed sequence of stable identifiers; the first is primary.
+void rt_virtual_tree_select_ids(void *tree, void *ids_seq) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireTree(tree));
+    try {
+        std::vector<std::string> ids;
+        int64_t count = ids_seq ? rt_seq_len(ids_seq) : 0;
+        for (int64_t i = 0; i < count; ++i) {
+            rt_string entry = rt_seq_get_str(ids_seq, i);
+            if (!entry)
+                continue;
+            std::string id = toStd(entry);
+            rt_string_unref(entry);
+            if (!id.empty())
+                ids.push_back(std::move(id));
+        }
+        setVirtualTreeSelection(*h->state, std::move(ids));
+        syncBoundVirtualTree(*h->state);
+    } catch (const std::bad_alloc &) {
+        return;
+    }
+}
+
+/// @brief Snapshot the model's ordered multi-selection.
+/// @param tree Managed VirtualTree handle.
+/// @return New owned sequence of stable identifiers; primary first.
+void *rt_virtual_tree_get_selected_ids(void *tree) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), nullptr);
+    void *seq = rt_seq_new_owned();
+    if (!seq)
+        return nullptr;
+    for (const auto &entry : h->state->selectedIds) {
+        rt_string value = makeString(entry);
+        if (!value)
+            continue;
+        rt_seq_push(seq, value);
+        rt_string_unref(value);
+    }
+    return seq;
+}
+
+/// @brief Set one node's projected icon from a spec string.
+/// @details Specs mirror retained TreeView icons: a `vector:<name>` prefix selects a
+///          named scalable icon (an optional `|expanded` variant suffix is accepted and
+///          ignored — virtual rows do not switch icons on expansion); any other
+///          non-empty text is a literal glyph; empty clears both.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable node identifier.
+/// @param spec_s Icon specification.
+/// @return `1` when the node existed; otherwise `0`.
+int8_t rt_virtual_tree_set_node_icon(void *tree, rt_string id_s, rt_string spec_s) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), 0);
+    try {
+        auto it = h->state->nodes.find(toStd(id_s));
+        if (it == h->state->nodes.end())
+            return 0;
+        std::string spec = toStd(spec_s);
+        it->second.iconVector.clear();
+        it->second.iconText.clear();
+        const char vectorPrefix[] = "vector:";
+        if (spec.compare(0, sizeof(vectorPrefix) - 1, vectorPrefix) == 0) {
+            std::string name = spec.substr(sizeof(vectorPrefix) - 1);
+            size_t variant = name.find('|');
+            if (variant != std::string::npos)
+                name.resize(variant);
+            it->second.iconVector = std::move(name);
+        } else {
+            it->second.iconText = std::move(spec);
+        }
+#ifdef ZANNA_ENABLE_GRAPHICS
+        if (h->state->boundTree)
+            vg_treeview_invalidate_virtual_rows(static_cast<vg_treeview_t *>(h->state->boundTree));
+#endif
+        return 1;
+    } catch (const std::bad_alloc &) {
+        return 0;
+    }
+}
+
+/// @brief Set one node's row text color and dim state.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable node identifier.
+/// @param rgb Packed 0xRRGGBB text color; 0 restores the theme color.
+/// @param dim Non-zero blends the row toward the background.
+/// @return `1` when the node existed; otherwise `0`.
+int8_t rt_virtual_tree_set_node_style(void *tree, rt_string id_s, int64_t rgb, int8_t dim) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), 0);
+    try {
+        auto it = h->state->nodes.find(toStd(id_s));
+        if (it == h->state->nodes.end())
+            return 0;
+        it->second.color = static_cast<uint32_t>(rgb & 0xffffff);
+        it->second.dim = dim != 0;
+#ifdef ZANNA_ENABLE_GRAPHICS
+        if (h->state->boundTree)
+            vg_treeview_invalidate_virtual_rows(static_cast<vg_treeview_t *>(h->state->boundTree));
+#endif
+        return 1;
+    } catch (const std::bad_alloc &) {
+        return 0;
+    }
+}
+
+/// @brief Consume the bound TreeView's latched virtual drop as stable identifiers.
+/// @details Row indices are resolved against the model's current flattened order, so the
+///          caller must consume the drop before mutating the model. Positions project as
+///          `before`/`into`/`after`.
+/// @param tree Managed VirtualTree handle.
+/// @return New owned map with `source`, `target`, and `position` keys, or an empty map
+///         when nothing is latched or a latched index no longer resolves.
+void *rt_virtual_tree_take_drop_action(void *tree) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), nullptr);
+    void *map = rt_map_new();
+    if (!map)
+        return nullptr;
+#ifdef ZANNA_ENABLE_GRAPHICS
+    auto *control = static_cast<vg_treeview_t *>(h->state->boundTree);
+    if (!control)
+        return map;
+    size_t source = SIZE_MAX;
+    size_t target = SIZE_MAX;
+    vg_tree_drop_position_t position = VG_TREE_DROP_INTO;
+    if (!vg_treeview_take_virtual_drop(control, &source, &target, &position))
+        return map;
+    if (!ensureVisibleTreeIndex(*h->state) || source >= h->state->visibleRows.size() ||
+        target >= h->state->visibleRows.size())
+        return map;
+    try {
+        const char *positionText = position == VG_TREE_DROP_BEFORE
+                                       ? "before"
+                                       : (position == VG_TREE_DROP_AFTER ? "after" : "into");
+        mapSetStr(map, "source", h->state->visibleRows[source].id);
+        mapSetStr(map, "target", h->state->visibleRows[target].id);
+        mapSetStr(map, "position", positionText);
+    } catch (const std::bad_alloc &) {
+        return map;
+    }
+#endif
+    return map;
+}
+
+/// @brief Scroll the bound TreeView so one node's row is visible.
+/// @details Hidden rows (collapsed ancestors) and unbound models are ignored.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable node identifier.
+void rt_virtual_tree_reveal_id(void *tree, rt_string id_s) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN_VOID(h, requireTree(tree));
+#ifdef ZANNA_ENABLE_GRAPHICS
+    auto *control = static_cast<vg_treeview_t *>(h->state->boundTree);
+    if (!control || !ensureVisibleTreeIndex(*h->state))
+        return;
+    try {
+        auto row = h->state->visibleIndexById.find(toStd(id_s));
+        if (row == h->state->visibleIndexById.end())
+            return;
+        vg_treeview_reveal_virtual_index(control, row->second);
+    } catch (const std::bad_alloc &) {
+        return;
+    }
+#else
+    (void)id_s;
+#endif
+}
+
+/// @brief Begin an inline edit over one node's visible row in the bound TreeView.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable node identifier.
+/// @param text_s Initial editor contents.
+/// @return `1` when the editor was placed; `0` for hidden rows or unbound models.
+int8_t rt_virtual_tree_begin_edit(void *tree, rt_string id_s, rt_string text_s) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), 0);
+#ifdef ZANNA_ENABLE_GRAPHICS
+    auto *control = static_cast<vg_treeview_t *>(h->state->boundTree);
+    if (!control || !ensureVisibleTreeIndex(*h->state))
+        return 0;
+    try {
+        auto row = h->state->visibleIndexById.find(toStd(id_s));
+        if (row == h->state->visibleIndexById.end())
+            return 0;
+        std::string text = toStd(text_s);
+        return vg_treeview_begin_virtual_edit(control, row->second, text.c_str()) ? 1 : 0;
+    } catch (const std::bad_alloc &) {
+        return 0;
+    }
+#else
+    (void)id_s;
+    (void)text_s;
+    return 0;
+#endif
+}
+
+/// @brief Declare whether one node's children are fully populated.
+/// @details Eagerly built models mark leaves loaded so rows without declared
+///          children render as true leaves instead of lazy expandables.
+/// @param tree Managed VirtualTree handle.
+/// @param id_s Stable node identifier.
+/// @param loaded Non-zero marks the node's child list as complete.
+/// @return `1` when the node existed; otherwise `0`.
+int8_t rt_virtual_tree_set_node_loaded(void *tree, rt_string id_s, int8_t loaded) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), 0);
+    try {
+        auto it = h->state->nodes.find(toStd(id_s));
+        if (it == h->state->nodes.end())
+            return 0;
+        if (it->second.loaded != (loaded != 0)) {
+            it->second.loaded = loaded != 0;
+#ifdef ZANNA_ENABLE_GRAPHICS
+            if (h->state->boundTree)
+                vg_treeview_invalidate_virtual_rows(
+                    static_cast<vg_treeview_t *>(h->state->boundTree));
+#endif
+        }
+        return 1;
+    } catch (const std::bad_alloc &) {
+        return 0;
+    }
+}
+
+/// @brief Resolve the stable id of the visible row under a window-space point.
+/// @param tree Managed VirtualTree handle.
+/// @param x Window-space horizontal coordinate.
+/// @param y Window-space vertical coordinate.
+/// @return New owned id string, empty when the point misses every row.
+rt_string rt_virtual_tree_row_id_at(void *tree, int64_t x, int64_t y) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), nullptr);
+#ifdef ZANNA_ENABLE_GRAPHICS
+    auto *control = static_cast<vg_treeview_t *>(h->state->boundTree);
+    size_t index = SIZE_MAX;
+    if (!control || !vg_treeview_virtual_index_at(control, (float)x, (float)y, &index) ||
+        !ensureVisibleTreeIndex(*h->state) || index >= h->state->visibleRows.size())
+        return rt_str_empty();
+    return makeString(h->state->visibleRows[index].id);
+#else
+    (void)x;
+    (void)y;
+    return rt_str_empty();
+#endif
+}
+
+/// @brief Consume the bound TreeView's latched inline-edit commit as a stable id.
+/// @details Returns an empty map when no virtual edit commit is pending. The map carries
+///          `id` and `text` keys; the edge is consumed on read.
+/// @param tree Managed VirtualTree handle.
+/// @return New owned map, possibly empty.
+void *rt_virtual_tree_take_edit_commit(void *tree) {
+    RT_GUI_IDE_REQUIRE_OR_RETURN(h, requireTree(tree), nullptr);
+    void *map = rt_map_new();
+    if (!map)
+        return nullptr;
+#ifdef ZANNA_ENABLE_GRAPHICS
+    auto *control = static_cast<vg_treeview_t *>(h->state->boundTree);
+    if (!control)
+        return map;
+    if (!vg_treeview_was_edit_committed(control))
+        return map;
+    size_t row = vg_treeview_get_edited_virtual_index(control);
+    const char *text = vg_treeview_get_edit_text(control);
+    if (!ensureVisibleTreeIndex(*h->state) || row >= h->state->visibleRows.size())
+        return map;
+    try {
+        mapSetStr(map, "id", h->state->visibleRows[row].id);
+        mapSetStr(map, "text", text ? text : "");
+    } catch (const std::bad_alloc &) {
+        return map;
+    }
+#endif
+    return map;
 }
 
 /// @brief Create a managed command-state record for accessibility and UI state snapshots.

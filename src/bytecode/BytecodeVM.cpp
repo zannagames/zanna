@@ -42,24 +42,24 @@
 #include "rt_async.h"
 #include "rt_future.h"
 #include "rt_game3d.h"
-#include "rt_lazy.h"
-#include "rt_option.h"
-#include "rt_result.h"
 #include "rt_http_server.h"
 #include "rt_https_server.h"
+#include "rt_lazy.h"
 #include "rt_object.h"
+#include "rt_option.h"
 #include "rt_parallel.h"
 #include "rt_platform.h"
+#include "rt_result.h"
 #include "rt_seq.h"
 #include "rt_threadpool.h"
 #include "rt_threads.h"
 #include "support/small_vector.hpp"
-#include "zanna/runtime/rt.h"
 #include "vm/OpHandlerAccess.hpp"
 #include "vm/RuntimeBridge.hpp"
 #include "vm/VM.hpp"
 #include "vm/VMContext.hpp"
 #include "vm/err_bridge.hpp"
+#include "zanna/runtime/rt.h"
 #include <algorithm>
 #include <cassert>
 #include <cmath>
@@ -1415,13 +1415,15 @@ size_t BytecodeVM::globalIndexForAddressRange(const void *ptr, size_t bytes) con
     if (width > std::numeric_limits<uintptr_t>::max() - addr)
         return SIZE_MAX;
     const uintptr_t end = addr + width;
-    for (size_t i = 0; i < globals_.size(); ++i) {
-        const uintptr_t slotBegin = reinterpret_cast<uintptr_t>(&globals_[i]);
-        const uintptr_t slotEnd = slotBegin + sizeof(BCSlot);
-        if (addr < slotEnd && end > slotBegin)
-            return i;
-    }
-    return SIZE_MAX;
+    // Global slots are one contiguous vector, so the first overlapped index
+    // is pure range arithmetic. This runs on every raw store; a per-slot
+    // scan here makes heap stores O(globals) across the whole program.
+    const uintptr_t base = reinterpret_cast<uintptr_t>(globals_.data());
+    const uintptr_t limit = base + globals_.size() * sizeof(BCSlot);
+    if (end <= base || addr >= limit)
+        return SIZE_MAX;
+    const uintptr_t offset = addr > base ? addr - base : 0;
+    return static_cast<size_t>(offset / sizeof(BCSlot));
 }
 
 /// @brief Before a raw (untyped) store through a pointer that aliases a string
@@ -6801,11 +6803,8 @@ static void unified_parallel_invoke_pool_handler(void **args, void *result) {
 /// @param seq Borrowed runtime sequence; null is a no-op.
 /// @param func Tagged or raw bytecode callback value.
 /// @param api Runtime API name included in traps.
-static void runBytecodeSeqForEach(BytecodeVM &vm,
-                                  const BytecodeModule &module,
-                                  void *seq,
-                                  void *func,
-                                  const char *api) {
+static void runBytecodeSeqForEach(
+    BytecodeVM &vm, const BytecodeModule &module, void *seq, void *func, const char *api) {
     if (!seq)
         return;
     const BytecodeFunction *fn = resolveBytecodeEntry(&module, func);
@@ -6834,11 +6833,8 @@ static void runBytecodeSeqForEach(BytecodeVM &vm,
 /// @param func Tagged or raw bytecode mapper value.
 /// @param api Runtime API name included in traps.
 /// @return Newly allocated owning runtime sequence.
-static void *runBytecodeSeqMap(BytecodeVM &vm,
-                               const BytecodeModule &module,
-                               void *seq,
-                               void *func,
-                               const char *api) {
+static void *runBytecodeSeqMap(
+    BytecodeVM &vm, const BytecodeModule &module, void *seq, void *func, const char *api) {
     void *out = rt_seq_new();
     rt_seq_set_owns_elements(out, 1);
     if (!seq)
@@ -7037,8 +7033,8 @@ static void unified_parallel_reduce_pool_handler(void **args, void *result) {
             void *seq = args && args[0] ? *reinterpret_cast<void **>(args[0]) : nullptr;
             void *func = args && args[1] ? *reinterpret_cast<void **>(args[1]) : nullptr;
             void *identity = args && args[2] ? *reinterpret_cast<void **>(args[2]) : nullptr;
-            void *reduced = runBytecodeSeqReduce(
-                *bcVm, *bcModule, seq, func, identity, "Parallel.ReducePool");
+            void *reduced =
+                runBytecodeSeqReduce(*bcVm, *bcModule, seq, func, identity, "Parallel.ReducePool");
             if (result)
                 *reinterpret_cast<void **>(result) = reduced;
             return;
@@ -7948,6 +7944,7 @@ void registerUnifiedVmRuntimeHandlers() {
         const char *name;
         void (*handler)(void **, void *);
     };
+
     static constexpr CombinatorExtern kCombinators[] = {
         {"Zanna.Option.Map", &unified_option_map_handler},
         {"Zanna.Option.AndThen", &unified_option_and_then_handler},

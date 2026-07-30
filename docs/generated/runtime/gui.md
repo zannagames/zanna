@@ -598,6 +598,17 @@ Constructor: `Zanna.GUI.VirtualTree.New`
 | <a id="zanna-gui-virtualtree-refreshsubtree"></a>`RefreshSubtree` | `void(str)` | `Zanna.GUI.VirtualTree.RefreshSubtree` |
 | <a id="zanna-gui-virtualtree-bind"></a>`Bind` | `i1(obj)` | `Zanna.GUI.VirtualTree.Bind` |
 | <a id="zanna-gui-virtualtree-unbind"></a>`Unbind` | `void()` | `Zanna.GUI.VirtualTree.Unbind` |
+| <a id="zanna-gui-virtualtree-removenode"></a>`RemoveNode` | `i1(str)` | `Zanna.GUI.VirtualTree.RemoveNode` |
+| <a id="zanna-gui-virtualtree-selectids"></a>`SelectIds` | `void(obj)` | `Zanna.GUI.VirtualTree.SelectIds` |
+| <a id="zanna-gui-virtualtree-getselectedids"></a>`GetSelectedIds` | `obj<Zanna.Collections.Seq>()` | `Zanna.GUI.VirtualTree.GetSelectedIds` |
+| <a id="zanna-gui-virtualtree-setnodeicon"></a>`SetNodeIcon` | `i1(str,str)` | `Zanna.GUI.VirtualTree.SetNodeIcon` |
+| <a id="zanna-gui-virtualtree-setnodestyle"></a>`SetNodeStyle` | `i1(str,i64,i1)` | `Zanna.GUI.VirtualTree.SetNodeStyle` |
+| <a id="zanna-gui-virtualtree-takedropaction"></a>`TakeDropAction` | `obj<Zanna.Collections.Map>()` | `Zanna.GUI.VirtualTree.TakeDropAction` |
+| <a id="zanna-gui-virtualtree-revealid"></a>`RevealId` | `void(str)` | `Zanna.GUI.VirtualTree.RevealId` |
+| <a id="zanna-gui-virtualtree-beginedit"></a>`BeginEdit` | `i1(str,str)` | `Zanna.GUI.VirtualTree.BeginEdit` |
+| <a id="zanna-gui-virtualtree-takeeditcommit"></a>`TakeEditCommit` | `obj<Zanna.Collections.Map>()` | `Zanna.GUI.VirtualTree.TakeEditCommit` |
+| <a id="zanna-gui-virtualtree-rowidat"></a>`RowIdAt` | `str(i64,i64)` | `Zanna.GUI.VirtualTree.RowIdAt` |
+| <a id="zanna-gui-virtualtree-setnodeloaded"></a>`SetNodeLoaded` | `i1(str,i1)` | `Zanna.GUI.VirtualTree.SetNodeLoaded` |
 | <a id="zanna-gui-virtualtree-new"></a>`New` | `obj<Zanna.GUI.VirtualTree>()` | `Zanna.GUI.VirtualTree.New` |
 
 <a id="zanna-gui-commandstate"></a>
@@ -3469,6 +3480,17 @@ Constructor: `Zanna.GUI.VideoWidget.New`
 | `Zanna.GUI.VirtualTree.RefreshSubtree` | `void(obj,str)` | `rt_virtual_tree_refresh_subtree` |
 | `Zanna.GUI.VirtualTree.Bind` | `i1(obj,obj)` | `rt_virtual_tree_bind` |
 | `Zanna.GUI.VirtualTree.Unbind` | `void(obj)` | `rt_virtual_tree_unbind` |
+| `Zanna.GUI.VirtualTree.RemoveNode` | `i1(obj,str)` | `rt_virtual_tree_remove_node` |
+| `Zanna.GUI.VirtualTree.SelectIds` | `void(obj,obj)` | `rt_virtual_tree_select_ids` |
+| `Zanna.GUI.VirtualTree.GetSelectedIds` | `obj<Zanna.Collections.Seq>(obj)` | `rt_virtual_tree_get_selected_ids` |
+| `Zanna.GUI.VirtualTree.SetNodeIcon` | `i1(obj,str,str)` | `rt_virtual_tree_set_node_icon` |
+| `Zanna.GUI.VirtualTree.SetNodeStyle` | `i1(obj,str,i64,i1)` | `rt_virtual_tree_set_node_style` |
+| `Zanna.GUI.VirtualTree.TakeDropAction` | `obj<Zanna.Collections.Map>(obj)` | `rt_virtual_tree_take_drop_action` |
+| `Zanna.GUI.VirtualTree.RevealId` | `void(obj,str)` | `rt_virtual_tree_reveal_id` |
+| `Zanna.GUI.VirtualTree.BeginEdit` | `i1(obj,str,str)` | `rt_virtual_tree_begin_edit` |
+| `Zanna.GUI.VirtualTree.TakeEditCommit` | `obj<Zanna.Collections.Map>(obj)` | `rt_virtual_tree_take_edit_commit` |
+| `Zanna.GUI.VirtualTree.RowIdAt` | `str(obj,i64,i64)` | `rt_virtual_tree_row_id_at` |
+| `Zanna.GUI.VirtualTree.SetNodeLoaded` | `i1(obj,str,i1)` | `rt_virtual_tree_set_node_loaded` |
 | `Zanna.GUI.TreeView.SetVirtualModel` | `i1(obj,obj)` | `rt_treeview_set_virtual_model` |
 | `Zanna.GUI.TreeView.ClearVirtualModel` | `void(obj)` | `rt_treeview_clear_virtual_model` |
 | `Zanna.GUI.CommandState.New` | `obj<Zanna.GUI.CommandState>(str,str)` | `rt_command_state_new` |

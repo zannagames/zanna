@@ -99,17 +99,119 @@ typedef struct {
 static int draco_count_fits_payload(uint64_t count, size_t payload_size) {
     if (payload_size == 0u)
         return count == 0u;
-    if (payload_size > (size_t)(UINT64_MAX / DRACO_MAX_ELEMENTS_PER_INPUT_BYTE))
+    if ((uint64_t)payload_size > UINT64_MAX / DRACO_MAX_ELEMENTS_PER_INPUT_BYTE)
         return 1; /* product would overflow; downstream size overflow guards suffice */
     return count <= (uint64_t)payload_size * DRACO_MAX_ELEMENTS_PER_INPUT_BYTE;
+}
+
+/// @brief Compute a checked `size_t` product for an allocation or byte span.
+/// @param lhs First factor.
+/// @param rhs Second factor.
+/// @param out_product Receives the product on success.
+/// @return Non-zero when the multiplication is representable.
+static int draco_size_mul(size_t lhs, size_t rhs, size_t *out_product) {
+    if (!out_product || (rhs != 0u && lhs > SIZE_MAX / rhs))
+        return 0;
+    *out_product = lhs * rhs;
+    return 1;
+}
+
+/// @brief Checked signed 64-bit addition used by integer mesh predictors.
+static int draco_i64_add(int64_t lhs, int64_t rhs, int64_t *out_value) {
+    if (!out_value || (rhs > 0 && lhs > INT64_MAX - rhs) || (rhs < 0 && lhs < INT64_MIN - rhs))
+        return 0;
+    *out_value = lhs + rhs;
+    return 1;
+}
+
+/// @brief Checked signed 64-bit subtraction used by integer mesh predictors.
+static int draco_i64_sub(int64_t lhs, int64_t rhs, int64_t *out_value) {
+    if (!out_value || (rhs > 0 && lhs < INT64_MIN + rhs) || (rhs < 0 && lhs > INT64_MAX + rhs))
+        return 0;
+    *out_value = lhs - rhs;
+    return 1;
+}
+
+/// @brief Checked signed 64-bit multiplication used by integer mesh predictors.
+static int draco_i64_mul(int64_t lhs, int64_t rhs, int64_t *out_value) {
+    if (!out_value)
+        return 0;
+    if (lhs > 0) {
+        if ((rhs > 0 && lhs > INT64_MAX / rhs) || (rhs < 0 && rhs < INT64_MIN / lhs))
+            return 0;
+    } else if (lhs < 0) {
+        if ((rhs > 0 && lhs < INT64_MIN / rhs) || (rhs < 0 && lhs < INT64_MAX / rhs))
+            return 0;
+    }
+    *out_value = lhs * rhs;
+    return 1;
+}
+
+/// @brief Add one checked product to an accumulator.
+static int draco_i64_accumulate_product(int64_t *accumulator, int64_t lhs, int64_t rhs) {
+    int64_t product;
+    int64_t sum;
+    if (!accumulator || !draco_i64_mul(lhs, rhs, &product) ||
+        !draco_i64_add(*accumulator, product, &sum))
+        return 0;
+    *accumulator = sum;
+    return 1;
+}
+
+/// @brief Checked unsigned 64-bit multiplication.
+static int draco_u64_mul(uint64_t lhs, uint64_t rhs, uint64_t *out_value) {
+    if (!out_value || (rhs != 0u && lhs > UINT64_MAX / rhs))
+        return 0;
+    *out_value = lhs * rhs;
+    return 1;
+}
+
+/// @brief Checked absolute value that rejects the unrepresentable `INT64_MIN` case.
+static int draco_i64_abs(int64_t value, int64_t *out_value) {
+    if (!out_value || value == INT64_MIN)
+        return 0;
+    *out_value = value < 0 ? -value : value;
+    return 1;
+}
+
+/// @brief Compute a scalar tuple count that remains representable by decoder APIs.
+/// @param tuple_count Number of logical tuples.
+/// @param components Scalar components in each tuple.
+/// @param out_count Receives the scalar count.
+/// @return Non-zero when the product fits both `uint32_t` and `size_t`.
+static int draco_scalar_count(uint32_t tuple_count, uint32_t components, uint32_t *out_count) {
+    uint64_t count;
+    if (!out_count || components == 0u || components > DRACO_MAX_COMPONENTS)
+        return 0;
+    count = (uint64_t)tuple_count * components;
+    if (count > UINT32_MAX || count > SIZE_MAX)
+        return 0;
+    *out_count = (uint32_t)count;
+    return 1;
+}
+
+/// @brief Compute the bytes needed for a scalar tuple array.
+/// @param tuple_count Number of logical tuples.
+/// @param components Scalar components in each tuple.
+/// @param element_size Bytes in one scalar.
+/// @param out_bytes Receives the complete byte count.
+/// @return Non-zero when both count and byte products are representable.
+static int draco_tuple_bytes(uint32_t tuple_count,
+                             uint32_t components,
+                             size_t element_size,
+                             size_t *out_bytes) {
+    uint32_t scalar_count;
+    return draco_scalar_count(tuple_count, components, &scalar_count) &&
+           draco_size_mul((size_t)scalar_count, element_size, out_bytes);
 }
 
 /// @brief Read one byte from a bounded Draco buffer.
 /// @param b Reader state advanced on success and marked failed on exhaustion.
 /// @return Decoded byte, or zero after raising the sticky failure flag.
 static uint8_t draco_read_u8(draco_buf *b) {
-    if (b->pos >= b->size) {
-        b->failed = 1;
+    if (!b || !b->data || b->pos >= b->size) {
+        if (b)
+            b->failed = 1;
         return 0;
     }
     return b->data[b->pos++];
@@ -151,8 +253,14 @@ static uint64_t draco_read_varint(draco_buf *b) {
     int shift = 0;
     for (int i = 0; i < 10; i++) {
         uint8_t byte = draco_read_u8(b);
-        if (b->failed)
+        if (!b || b->failed)
             return 0;
+        /* A 64-bit LEB128 has only one payload bit in byte ten. Without this
+         * check, hostile high bits are silently truncated by the unsigned shift. */
+        if (i == 9 && (byte & 0x7Eu) != 0u) {
+            b->failed = 1;
+            return 0;
+        }
         result |= (uint64_t)(byte & 0x7Fu) << shift;
         if ((byte & 0x80u) == 0)
             return result;
@@ -160,6 +268,44 @@ static uint64_t draco_read_varint(draco_buf *b) {
     }
     b->failed = 1;
     return 0;
+}
+
+/// @brief Read a varint that must fit the decoder's 32-bit identifiers.
+/// @param b Bounded reader state.
+/// @param out_value Receives the narrowed value on success.
+/// @return Non-zero when a complete value no larger than `UINT32_MAX` was read.
+static int draco_read_varint_u32(draco_buf *b, uint32_t *out_value) {
+    uint64_t value;
+    if (!out_value)
+        return 0;
+    value = draco_read_varint(b);
+    if (!b || b->failed || value > UINT32_MAX)
+        return 0;
+    *out_value = (uint32_t)value;
+    return 1;
+}
+
+/// @brief Convert Draco's unsigned zigzag representation to a signed correction.
+/// @param value Encoded unsigned symbol.
+/// @return Exact signed value, including `-1` for encoded symbol one.
+static int32_t draco_zigzag_decode_u32(uint32_t value) {
+    if ((value & 1u) != 0u)
+        return -(int32_t)(value >> 1) - 1;
+    return (int32_t)(value >> 1);
+}
+
+/// @brief Advance a bounded reader without allowing offset addition to wrap.
+/// @param b Reader state to advance.
+/// @param count Number of bytes to skip.
+/// @return Non-zero when all requested bytes remain available.
+static int draco_skip_bytes(draco_buf *b, size_t count) {
+    if (!b || b->failed || b->pos > b->size || count > b->size - b->pos) {
+        if (b)
+            b->failed = 1;
+        return 0;
+    }
+    b->pos += count;
+    return 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -192,7 +338,7 @@ typedef struct {
 /// @return Non-zero when a complete initial state was available.
 static int draco_rans_init(draco_rans *ans, const uint8_t *buf, size_t size, uint32_t l_base) {
     uint32_t x;
-    if (size == 0)
+    if (!ans || !buf || size == 0)
         return 0;
     ans->buf = buf;
     x = buf[size - 1] >> 6;
@@ -219,6 +365,8 @@ static int draco_rans_init(draco_rans *ans, const uint8_t *buf, size_t size, uin
                       ((uint32_t)buf[size - 2] << 16) | ((uint32_t)buf[size - 1] << 24)) &
                      0x3FFFFFFFu;
     }
+    if (ans->state > UINT32_MAX - l_base)
+        return 0;
     ans->state += l_base;
     return 1;
 }
@@ -240,6 +388,10 @@ static int draco_rans_read(draco_rans *ans,
     uint32_t quo;
     uint32_t rem;
     uint32_t symbol;
+    uint32_t probability;
+    uint32_t cumulative;
+    if (!ans || !ans->buf || !lut || !probs || !out_val || precision == 0u || l_base == 0u)
+        return 0;
     while (ans->state < l_base && ans->buf_offset > 0)
         ans->state = ans->state * 256u + ans->buf[--ans->buf_offset];
     if (ans->state < l_base)
@@ -247,7 +399,17 @@ static int draco_rans_read(draco_rans *ans,
     quo = ans->state / precision;
     rem = ans->state % precision;
     symbol = lut[rem];
-    ans->state = quo * probs[symbol].prob + rem - probs[symbol].cum_prob;
+    probability = probs[symbol].prob;
+    cumulative = probs[symbol].cum_prob;
+    if (probability == 0u || cumulative > rem || probability > precision - cumulative ||
+        rem - cumulative >= probability)
+        return 0;
+    {
+        uint64_t next_state = (uint64_t)quo * probability + rem - cumulative;
+        if (next_state > UINT32_MAX)
+            return 0;
+        ans->state = (uint32_t)next_state;
+    }
     *out_val = symbol;
     return 1;
 }
@@ -264,8 +426,12 @@ static int draco_rabs_read(draco_rans *ans, uint32_t prob_zero, uint32_t *out_va
     uint32_t rem;
     uint32_t xn;
     uint32_t val;
-    if (ans->state < 4096u && ans->buf_offset > 0)
+    if (!ans || !ans->buf || !out_val || prob_zero > 255u)
+        return 0;
+    while (ans->state < 4096u && ans->buf_offset > 0)
         ans->state = ans->state * 256u + ans->buf[--ans->buf_offset];
+    if (ans->state < 4096u)
+        return 0;
     x = ans->state;
     quot = x / 256u;
     rem = x % 256u;
@@ -293,9 +459,11 @@ static int draco_build_symbol_tables(draco_buf *b,
     uint32_t *lut = NULL;
     draco_rans_sym *probs = NULL;
     uint64_t cum_prob = 0;
+    if (!out_lut || !out_probs)
+        return 0;
     *out_lut = NULL;
     *out_probs = NULL;
-    if (num_symbols == 0 || num_symbols > (1u << 18))
+    if (!b || precision == 0u || num_symbols == 0 || num_symbols > (1u << 18))
         return 0;
     token_probs = (uint32_t *)calloc(num_symbols, sizeof(uint32_t));
     if (!token_probs)
@@ -360,21 +528,22 @@ static int draco_decode_symbols(draco_buf *b,
                                 uint32_t num_components,
                                 uint32_t *out_values) {
     uint8_t scheme = draco_read_u8(b);
-    if (b->failed || num_components == 0)
+    if (!b || b->failed || num_components == 0 || num_components > DRACO_MAX_COMPONENTS ||
+        (num_values > 0 && !out_values))
         return 0;
     if (num_values == 0)
         return 1;
     if (scheme == 0) {
         /* TAGGED_SYMBOLS: rANS-coded bit lengths + raw bits per value. */
-        uint32_t num_symbols = (uint32_t)draco_read_varint(b);
+        uint32_t num_symbols;
         uint32_t *lut = NULL;
         draco_rans_sym *probs = NULL;
         uint64_t size;
         draco_rans ans;
         int ok = 0;
-        if (b->failed ||
-            !draco_build_symbol_tables(b, num_symbols, 4096u /* TAGGED_RANS_PRECISION */, &lut,
-                                       &probs))
+        if (!draco_read_varint_u32(b, &num_symbols) ||
+            !draco_build_symbol_tables(
+                b, num_symbols, 4096u /* TAGGED_RANS_PRECISION */, &lut, &probs))
             return 0;
         size = draco_read_varint(b);
         if (b->failed || size == 0 || size > b->size - b->pos)
@@ -389,27 +558,38 @@ static int draco_decode_symbols(draco_buf *b,
             size_t bit_byte = b->pos + (size_t)size;
             size_t bit_end = b->size;
             uint64_t bit_pos = 0;
-            for (uint32_t i = 0; i < num_values; i += num_components) {
+            for (uint32_t i = 0; i < num_values;) {
                 uint32_t bit_length;
+                uint32_t group_count = num_values - i;
+                if (group_count > num_components)
+                    group_count = num_components;
                 if (!draco_rans_read(&ans, 16384u, 4096u, lut, probs, &bit_length))
                     goto tagged_done;
                 if (bit_length > 32u)
                     goto tagged_done;
-                for (uint32_t c = 0; c < num_components && i + c < num_values; c++) {
+                for (uint32_t c = 0; c < group_count; c++) {
                     uint32_t val = 0;
                     for (uint32_t k = 0; k < bit_length; k++) {
                         uint64_t idx = bit_pos + k;
-                        size_t byte = bit_byte + (size_t)(idx >> 3);
-                        if (byte >= bit_end)
+                        uint64_t byte_offset = idx >> 3;
+                        size_t byte;
+                        if (byte_offset > SIZE_MAX || (size_t)byte_offset >= bit_end - bit_byte)
                             goto tagged_done;
+                        byte = bit_byte + (size_t)byte_offset;
                         val |= (uint32_t)((b->data[byte] >> (idx & 7u)) & 1u) << k;
                     }
                     bit_pos += bit_length;
                     out_values[i + c] = val;
                 }
+                i += group_count;
             }
-            b->pos = bit_byte + (size_t)((bit_pos + 7u) >> 3);
-            ok = b->pos <= b->size;
+            {
+                uint64_t byte_count = (bit_pos + 7u) >> 3;
+                if (byte_count > SIZE_MAX || (size_t)byte_count > bit_end - bit_byte)
+                    goto tagged_done;
+                b->pos = bit_byte + (size_t)byte_count;
+                ok = 1;
+            }
         }
     tagged_done:
         free(lut);
@@ -419,7 +599,7 @@ static int draco_decode_symbols(draco_buf *b,
     if (scheme == 1) {
         /* RAW_SYMBOLS: one rANS symbol per value with adaptive precision. */
         uint8_t max_bit_length = draco_read_u8(b);
-        uint32_t num_symbols = (uint32_t)draco_read_varint(b);
+        uint32_t num_symbols;
         uint32_t precision_bits = (3u * max_bit_length) / 2u;
         uint32_t precision;
         uint32_t l_base;
@@ -434,7 +614,8 @@ static int draco_decode_symbols(draco_buf *b,
             precision_bits = 12u;
         precision = 1u << precision_bits;
         l_base = precision * 4u;
-        if (b->failed || !draco_build_symbol_tables(b, num_symbols, precision, &lut, &probs))
+        if (!draco_read_varint_u32(b, &num_symbols) ||
+            !draco_build_symbol_tables(b, num_symbols, precision, &lut, &probs))
             return 0;
         size = draco_read_varint(b);
         if (b->failed || size == 0 || size > b->size - b->pos)
@@ -462,9 +643,9 @@ static int draco_decode_symbols(draco_buf *b,
 /// @brief One decoded attribute: identification plus decoded value storage.
 typedef struct {
     /// Draco attribute semantic: position, normal, color, texture coordinate, or generic.
-    uint8_t att_type;   /* 0 pos, 1 normal, 2 color, 3 tex coord, 4 generic */
+    uint8_t att_type; /* 0 pos, 1 normal, 2 color, 3 tex coord, 4 generic */
     /// Draco scalar data-type code.
-    uint8_t data_type;  /* draco DT_* */
+    uint8_t data_type; /* draco DT_* */
     /// Number of scalar components per value.
     uint8_t components; /* 1..4 */
     /// Whether integer output carries normalized semantics.
@@ -510,9 +691,9 @@ typedef struct {
     uint32_t flip_count;
     /* final output */
     /// Owned dequantized or decoded floating-point values.
-    float *out_floats;  /* dequantized / normal-decoded values, or NULL */
+    float *out_floats; /* dequantized / normal-decoded values, or NULL */
     /// Owned original integer values when the attribute remains integral.
-    int32_t *out_ints;  /* integer values, or NULL */
+    int32_t *out_ints; /* integer values, or NULL */
     /// Number of logical attribute tuples.
     uint32_t num_values;
 } draco_attribute;
@@ -530,6 +711,15 @@ typedef struct {
     /// Number of initialized entries in @ref attributes.
     uint32_t num_attributes;
 } draco_mesh;
+
+/// @brief Validate the fixed-width portion of a Draco attribute descriptor.
+/// @param att Candidate descriptor populated from untrusted bytes.
+/// @return Non-zero for a supported semantic, scalar type, component count, and flag.
+static int draco_attribute_descriptor_valid(const draco_attribute *att) {
+    return att && att->att_type <= 4u && att->data_type >= 1u && att->data_type <= 11u &&
+           att->components >= 1u && att->components <= DRACO_MAX_COMPONENTS &&
+           att->normalized <= 1u;
+}
 
 /// @brief Release every allocation owned by a decoded Draco mesh and clear its state.
 /// @param mesh Mesh state to destroy.
@@ -555,7 +745,8 @@ static int draco_decode_sequential_connectivity(draco_buf *b, draco_mesh *mesh) 
     uint64_t num_faces = draco_read_varint(b);
     uint64_t num_points = draco_read_varint(b);
     uint8_t method = draco_read_u8(b);
-    if (b->failed || num_faces > (uint64_t)UINT32_MAX / 3u || num_points > UINT32_MAX)
+    if (!b || !mesh || b->failed || num_faces > (uint64_t)UINT32_MAX / 3u ||
+        num_points > UINT32_MAX)
         return 0;
     if (!draco_count_fits_payload(num_faces, b->size) ||
         !draco_count_fits_payload(num_points, b->size))
@@ -571,8 +762,7 @@ static int draco_decode_sequential_connectivity(draco_buf *b, draco_mesh *mesh) 
         return 0;
     if (method == 0) {
         /* SEQUENTIAL_COMPRESSED_INDICES: zigzag deltas over entropy-coded symbols. */
-        uint32_t *symbols =
-            (uint32_t *)malloc((size_t)mesh->num_faces * 3u * sizeof(uint32_t));
+        uint32_t *symbols = (uint32_t *)malloc((size_t)mesh->num_faces * 3u * sizeof(uint32_t));
         int64_t last = 0;
         if (!symbols)
             return 0;
@@ -582,9 +772,7 @@ static int draco_decode_sequential_connectivity(draco_buf *b, draco_mesh *mesh) 
         }
         for (uint32_t i = 0; i < mesh->num_faces * 3u; i++) {
             uint32_t encoded = symbols[i];
-            int64_t diff = (int64_t)(encoded >> 1);
-            if (encoded & 1u)
-                diff = -diff;
+            int64_t diff = draco_zigzag_decode_u32(encoded);
             last += diff;
             if (last < 0 || last >= (int64_t)mesh->num_points) {
                 free(symbols);
@@ -603,9 +791,10 @@ static int draco_decode_sequential_connectivity(draco_buf *b, draco_mesh *mesh) 
                 v = draco_read_u8(b);
             else if (mesh->num_points < (1u << 16))
                 v = draco_read_u16(b);
-            else if (mesh->num_points < (1u << 21))
-                v = (uint32_t)draco_read_varint(b);
-            else
+            else if (mesh->num_points < (1u << 21)) {
+                if (!draco_read_varint_u32(b, &v))
+                    return 0;
+            } else
                 v = draco_read_u32(b);
             if (b->failed || v >= mesh->num_points)
                 return 0;
@@ -627,25 +816,21 @@ static int draco_skip_metadata_element(draco_buf *b, int depth) {
         return 0;
     for (uint64_t i = 0; i < num_entries; i++) {
         uint8_t key_size = draco_read_u8(b);
-        b->pos += key_size;
+        if (b->failed || !draco_skip_bytes(b, key_size))
+            return 0;
         {
             uint8_t value_size = draco_read_u8(b);
-            b->pos += value_size;
+            if (b->failed || !draco_skip_bytes(b, value_size))
+                return 0;
         }
-        if (b->pos > b->size)
-            b->failed = 1;
-        if (b->failed)
-            return 0;
     }
     num_sub = draco_read_varint(b);
     if (b->failed || num_sub > 10000u)
         return 0;
     for (uint64_t i = 0; i < num_sub; i++) {
         uint8_t key_size = draco_read_u8(b);
-        b->pos += key_size;
-        if (b->pos > b->size)
-            b->failed = 1;
-        if (b->failed || !draco_skip_metadata_element(b, depth + 1))
+        if (b->failed || !draco_skip_bytes(b, key_size) ||
+            !draco_skip_metadata_element(b, depth + 1))
             return 0;
     }
     return 1;
@@ -679,49 +864,76 @@ static void draco_wrap_compute_original(const draco_attribute *att,
                                         const int32_t *corr,
                                         int32_t *out,
                                         int components) {
-    int64_t max_dif = 1 + (int64_t)att->wrap_max - att->wrap_min;
+    int64_t modulus = 1 + (int64_t)att->wrap_max - att->wrap_min;
     for (int c = 0; c < components; c++) {
         int64_t clamped = pred[c];
         int64_t value;
+        int64_t relative;
         if (clamped > att->wrap_max)
             clamped = att->wrap_max;
         else if (clamped < att->wrap_min)
             clamped = att->wrap_min;
         value = clamped + corr[c];
-        if (value > att->wrap_max)
-            value -= max_dif;
-        else if (value < att->wrap_min)
-            value += max_dif;
-        out[c] = (int32_t)value;
+        relative = (value - att->wrap_min) % modulus;
+        if (relative < 0)
+            relative += modulus;
+        out[c] = (int32_t)((int64_t)att->wrap_min + relative);
     }
 }
 
 /* --- Canonicalized octahedron normal transform (spec Prediction Normal Transform) --- */
+
+static int draco_msb(uint32_t n);
+
+/// @brief Validate and derive canonical octahedral-normal quantization parameters.
+/// @param source_max Serialized maximum quantized value.
+/// @param out_max_q Receives the next all-ones modulus.
+/// @param out_max_value Receives the largest canonical coordinate.
+/// @param out_center Receives the canonical diamond center.
+/// @return Non-zero when every derived signed value is representable and non-degenerate.
+static int draco_normal_quant_params(int32_t source_max,
+                                     int32_t *out_max_q,
+                                     int32_t *out_max_value,
+                                     int32_t *out_center) {
+    uint32_t max_q;
+    int bits;
+    if (!out_max_q || !out_max_value || !out_center || source_max <= 1 ||
+        (uint32_t)source_max > ((1u << 30) - 1u))
+        return 0;
+    bits = draco_msb((uint32_t)source_max) + 1;
+    if (bits <= 0 || bits > 30)
+        return 0;
+    max_q = (1u << bits) - 1u;
+    *out_max_q = (int32_t)max_q;
+    *out_max_value = (int32_t)max_q - 1;
+    *out_center = *out_max_value / 2;
+    return *out_max_value > 0;
+}
 
 /// @brief Wrap an octahedral coordinate around the quantized interval centered at @p center.
 /// @param x Coordinate to wrap.
 /// @param center Half-width of the canonical interval.
 /// @param max_q Full quantized modulus.
 /// @return Coordinate mapped into the canonical interval.
-static int32_t draco_mod_max(int32_t x, int32_t center, int32_t max_q) {
-    if (x > center)
-        return x - max_q;
-    if (x < -center)
-        return x + max_q;
-    return x;
+static int64_t draco_mod_max(int64_t x, int32_t center, int32_t max_q) {
+    int64_t shifted = (x % max_q) + center;
+    shifted %= max_q;
+    if (shifted < 0)
+        shifted += max_q;
+    return shifted - center;
 }
 
 /// @brief Reflect a signed octahedral point across the boundary of its canonical diamond.
 /// @param s In/out first signed coordinate.
 /// @param t In/out second signed coordinate.
 /// @param center Diamond extent along either axis.
-static void draco_invert_diamond(int32_t *s, int32_t *t, int32_t center) {
-    int32_t sign_s = 0;
-    int32_t sign_t = 0;
-    int32_t corner_s;
-    int32_t corner_t;
-    int32_t ss = *s;
-    int32_t tt = *t;
+static void draco_invert_diamond(int64_t *s, int64_t *t, int32_t center) {
+    int64_t sign_s = 0;
+    int64_t sign_t = 0;
+    int64_t corner_s;
+    int64_t corner_t;
+    int64_t ss = *s;
+    int64_t tt = *t;
     if (ss >= 0 && tt >= 0) {
         sign_s = 1;
         sign_t = 1;
@@ -737,11 +949,11 @@ static void draco_invert_diamond(int32_t *s, int32_t *t, int32_t center) {
     ss = 2 * ss - corner_s;
     tt = 2 * tt - corner_t;
     if (sign_s * sign_t >= 0) {
-        int32_t temp = ss;
+        int64_t temp = ss;
         ss = -tt;
         tt = -temp;
     } else {
-        int32_t temp = ss;
+        int64_t temp = ss;
         ss = tt;
         tt = temp;
     }
@@ -754,9 +966,9 @@ static void draco_invert_diamond(int32_t *s, int32_t *t, int32_t center) {
 /// @brief Determine the quarter-turn that moves an octahedral point into the bottom-left sector.
 /// @param pred Two-dimensional signed prediction coordinate.
 /// @return Clockwise rotation count from zero through three.
-static int draco_rotation_count(const int32_t *pred) {
-    int32_t sign_x = pred[0];
-    int32_t sign_y = pred[1];
+static int draco_rotation_count(const int64_t *pred) {
+    int64_t sign_x = pred[0];
+    int64_t sign_y = pred[1];
     if (sign_x == 0)
         return sign_y == 0 ? 0 : (sign_y > 0 ? 3 : 1);
     if (sign_x > 0)
@@ -768,31 +980,31 @@ static int draco_rotation_count(const int32_t *pred) {
 /// @param p Source coordinate pair.
 /// @param rotation Quarter-turn count modulo four.
 /// @param out Destination coordinate pair.
-static void draco_rotate_point(const int32_t *p, int rotation, int32_t *out) {
+static void draco_rotate_point(const int64_t *p, int rotation, int64_t *out) {
     switch (rotation) {
-    case 1:
-        out[0] = p[1];
-        out[1] = -p[0];
-        return;
-    case 2:
-        out[0] = -p[0];
-        out[1] = -p[1];
-        return;
-    case 3:
-        out[0] = -p[1];
-        out[1] = p[0];
-        return;
-    default:
-        out[0] = p[0];
-        out[1] = p[1];
-        return;
+        case 1:
+            out[0] = p[1];
+            out[1] = -p[0];
+            return;
+        case 2:
+            out[0] = -p[0];
+            out[1] = -p[1];
+            return;
+        case 3:
+            out[0] = -p[1];
+            out[1] = p[0];
+            return;
+        default:
+            out[0] = p[0];
+            out[1] = p[1];
+            return;
     }
 }
 
 /// @brief Test whether an octahedral coordinate lies in the canonical bottom-left sector.
 /// @param p Signed two-dimensional coordinate.
 /// @return Non-zero for the origin or a point with negative X and non-positive Y.
-static int draco_is_in_bottom_left(const int32_t *p) {
+static int draco_is_in_bottom_left(const int64_t *p) {
     if (p[0] == 0 && p[1] == 0)
         return 1;
     return p[0] < 0 && p[1] <= 0;
@@ -816,27 +1028,38 @@ static int draco_msb(uint32_t n) {
 /// @param corr_vals Encoded correction pair.
 /// @param out_vals Destination reconstructed coordinate pair.
 static void draco_normal_oct_compute_original(const draco_attribute *att,
-                                              const int32_t *pred_vals,
+                                              const int64_t *pred_vals,
                                               const int32_t *corr_vals,
                                               int32_t *out_vals) {
-    int32_t max_q = (1 << (draco_msb((uint32_t)att->normal_max_q) + 1)) - 1;
-    int32_t max_value = max_q - 1;
-    int32_t center = max_value / 2;
-    int32_t pred[2];
-    int32_t orig[2];
+    int32_t max_q;
+    int32_t max_value;
+    int32_t center;
+    int64_t pred[2];
+    int64_t orig[2];
     int pred_in_diamond;
     int pred_in_bottom_left;
     int rotation;
-    pred[0] = pred_vals[0] - center;
-    pred[1] = pred_vals[1] - center;
-    pred_in_diamond = (pred[0] < 0 ? -pred[0] : pred[0]) + (pred[1] < 0 ? -pred[1] : pred[1]) <=
-                      center;
+    if (!draco_normal_quant_params(att->normal_max_q, &max_q, &max_value, &center)) {
+        out_vals[0] = 0;
+        out_vals[1] = 0;
+        return;
+    }
+    pred[0] = pred_vals[0] % max_q;
+    pred[1] = pred_vals[1] % max_q;
+    if (pred[0] < 0)
+        pred[0] += max_q;
+    if (pred[1] < 0)
+        pred[1] += max_q;
+    pred[0] -= center;
+    pred[1] -= center;
+    pred_in_diamond =
+        (pred[0] < 0 ? -pred[0] : pred[0]) + (pred[1] < 0 ? -pred[1] : pred[1]) <= center;
     if (!pred_in_diamond)
         draco_invert_diamond(&pred[0], &pred[1], center);
     pred_in_bottom_left = draco_is_in_bottom_left(pred);
     rotation = draco_rotation_count(pred);
     if (!pred_in_bottom_left) {
-        int32_t rotated[2];
+        int64_t rotated[2];
         draco_rotate_point(pred, rotation, rotated);
         pred[0] = rotated[0];
         pred[1] = rotated[1];
@@ -845,15 +1068,15 @@ static void draco_normal_oct_compute_original(const draco_attribute *att,
     orig[1] = draco_mod_max(pred[1] + corr_vals[1], center, max_q);
     if (!pred_in_bottom_left) {
         int reverse = (4 - rotation) % 4;
-        int32_t rotated[2];
+        int64_t rotated[2];
         draco_rotate_point(orig, reverse, rotated);
         orig[0] = rotated[0];
         orig[1] = rotated[1];
     }
     if (!pred_in_diamond)
         draco_invert_diamond(&orig[0], &orig[1], center);
-    out_vals[0] = orig[0] + center;
-    out_vals[1] = orig[1] + center;
+    out_vals[0] = (int32_t)(orig[0] + center);
+    out_vals[1] = (int32_t)(orig[1] + center);
 }
 
 /// @brief Apply the parsed prediction transform to one value tuple.
@@ -868,10 +1091,7 @@ static void draco_transform_compute_original(const draco_attribute *att,
                                              int32_t *out,
                                              int components) {
     if (att->prediction_transform == DRACO_TRANSFORM_NORMAL_OCT_CANON) {
-        int32_t pred32[2];
-        pred32[0] = (int32_t)pred[0];
-        pred32[1] = (int32_t)pred[1];
-        draco_normal_oct_compute_original(att, pred32, corr, out);
+        draco_normal_oct_compute_original(att, pred, corr, out);
     } else {
         draco_wrap_compute_original(att, pred, corr, out, components);
     }
@@ -881,23 +1101,30 @@ static void draco_transform_compute_original(const draco_attribute *att,
 /// @param att Attribute whose portable values are reconstructed in place.
 /// @param num_values Number of logical tuples in `att->values`.
 /// @param components Portable component count (2 for octahedral normals).
-static void draco_difference_compute_original(draco_attribute *att,
-                                              uint32_t num_values,
-                                              int components) {
+/// @return Non-zero when the complete tuple span is valid and reconstructed.
+static int draco_difference_compute_original(draco_attribute *att,
+                                             uint32_t num_values,
+                                             int components) {
     int64_t pred[DRACO_MAX_COMPONENTS] = {0, 0, 0, 0};
+    uint32_t scalar_count;
+    if (!att || !att->values || components <= 0 || components > DRACO_MAX_COMPONENTS ||
+        !draco_scalar_count(num_values, (uint32_t)components, &scalar_count))
+        return 0;
     if (num_values == 0)
-        return;
+        return 1;
     draco_transform_compute_original(att, pred, att->values, att->values, components);
     for (uint32_t i = 1; i < num_values; i++) {
-        const int32_t *prev = att->values + (size_t)(i - 1) * components;
+        size_t previous_offset = (size_t)(i - 1u) * (uint32_t)components;
+        size_t output_offset = (size_t)i * (uint32_t)components;
+        if (previous_offset + (uint32_t)components > scalar_count ||
+            output_offset + (uint32_t)components > scalar_count)
+            return 0;
         for (int c = 0; c < components; c++)
-            pred[c] = prev[c];
-        draco_transform_compute_original(att,
-                                         pred,
-                                         att->values + (size_t)i * components,
-                                         att->values + (size_t)i * components,
-                                         components);
+            pred[c] = att->values[previous_offset + (uint32_t)c];
+        draco_transform_compute_original(
+            att, pred, att->values + output_offset, att->values + output_offset, components);
     }
+    return 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -914,15 +1141,15 @@ typedef struct {
     /// Byte length of @ref buf.
     size_t size;
     /// Per-corner flag marking a discontinuous attribute edge.
-    uint8_t *edge_on_seam;     /* [corner_cap] */
+    uint8_t *edge_on_seam; /* [corner_cap] */
     /// Per-position-vertex flag indicating contact with any seam.
-    uint8_t *vertex_on_seam;   /* [num_vertices] position vertex touches a seam edge */
+    uint8_t *vertex_on_seam; /* [num_vertices] position vertex touches a seam edge */
     /// Recomputed attribute vertex for each corner.
     int32_t *corner_to_vertex; /* [corner_cap] recomputed attribute vertices */
     /// Attribute-specific triangle vertex table.
-    int32_t *face_to_vertex;   /* [corner_cap] attribute face->vertex table */
+    int32_t *face_to_vertex; /* [corner_cap] attribute face->vertex table */
     /// Representative corner for each recomputed attribute vertex.
-    int32_t *leftmost_corner;  /* [corner_cap] per recomputed attribute vertex */
+    int32_t *leftmost_corner; /* [corner_cap] per recomputed attribute vertex */
     /// Number of recomputed attribute vertices.
     uint32_t vertex_count;
 } draco_eb_data;
@@ -930,13 +1157,13 @@ typedef struct {
 /// @brief Per-attributes-decoder traversal output.
 typedef struct {
     /// Attribute-connectivity data index, or `0xFF` for the position decoder.
-    uint8_t data_id;      /* 0xFF = none (position decoder) */
+    uint8_t data_id; /* 0xFF = none (position decoder) */
     /// Vertex-mapped or corner-mapped decoder mode.
     uint8_t decoder_type; /* 0 vertex-mapped, 1 corner-mapped */
     /// Depth-first or prediction-degree traversal selector.
-    uint8_t traversal;    /* 0 depth-first, 1 prediction degree */
+    uint8_t traversal; /* 0 depth-first, 1 prediction degree */
     /// First mesh attribute owned by this decoder.
-    uint32_t att_start;   /* first index into draco_mesh::attributes */
+    uint32_t att_start; /* first index into draco_mesh::attributes */
     /// Number of consecutive mesh attributes owned by this decoder.
     uint32_t att_count;
     /// Encoded value index to representative corner mapping.
@@ -946,7 +1173,7 @@ typedef struct {
     /// Traversal vertex to encoded value index, or -1 if unvisited.
     int32_t *vertex_to_value; /* [visit_cap] vertex -> encoded value index or -1 */
     /// Final point to encoded value index mapping.
-    int32_t *indices_map;     /* [point_count] point -> encoded value index */
+    int32_t *indices_map; /* [point_count] point -> encoded value index */
 } draco_eb_dec;
 
 /// @brief Whole-payload edgebreaker decode state.
@@ -966,18 +1193,18 @@ typedef struct {
     /// Allocated corner count, equal to three times @ref num_faces.
     uint32_t corner_cap; /* 3 * num_faces */
     /// Vertex-indexed scratch capacity used by traversal arrays.
-    uint32_t visit_cap;  /* max(num_vertices, corner_cap) */
+    uint32_t visit_cap; /* max(num_vertices, corner_cap) */
     /* connectivity */
     /// Position face-to-vertex table indexed by corner.
     int32_t *face_to_vertex; /* [corner_cap], corner-indexed */
     /// Number of reconstructed faces.
     uint32_t face_count;
     /// Opposite-corner table.
-    int32_t *opposite;       /* [corner_cap] */
+    int32_t *opposite; /* [corner_cap] */
     /// Representative corner for every encoded vertex.
     int32_t *vertex_corners; /* [num_vertices] */
     /// Whether each encoded vertex currently lies on a hole boundary.
-    uint8_t *is_vert_hole;   /* [num_vertices] */
+    uint8_t *is_vert_hole; /* [num_vertices] */
     /// Highest vertex identifier created by topology reconstruction.
     int32_t last_vert_added;
     /// Most recently decoded topology symbol.
@@ -1044,18 +1271,18 @@ typedef struct {
     uint32_t point_count;
     /* traversal scratch */
     /// Per-face visited flags.
-    uint8_t *face_visited;   /* [num_faces] */
+    uint8_t *face_visited; /* [num_faces] */
     /// Per-traversal-vertex visited flags.
     uint8_t *vertex_visited; /* [visit_cap] */
     /// Corner stack used by attribute traversals.
-    int32_t *trav_stack;     /* [corner_cap + 2] */
+    int32_t *trav_stack; /* [corner_cap + 2] */
     /// Number of entries in @ref trav_stack.
     uint32_t trav_size;
     /* prediction-degree traversal */
     /// Current prediction degree for each traversal vertex.
     uint32_t *pred_degree; /* [visit_cap] */
     /// Three priority stacks for prediction-degree traversal.
-    int32_t *pd_stack[3];  /* [corner_cap + 2] each */
+    int32_t *pd_stack[3]; /* [corner_cap + 2] each */
     /// Number of entries in each prediction-degree stack.
     uint32_t pd_size[3];
     /// Lowest non-empty prediction-degree priority.
@@ -1226,12 +1453,8 @@ static const int32_t *draco_eb_ftv(const draco_eb *eb, uint32_t d) {
 /// @param v Receives the vertex at @p corner.
 /// @param n Receives the vertex at the next local corner.
 /// @param p Receives the vertex at the previous local corner.
-static void draco_eb_corner_to_verts(const draco_eb *eb,
-                                     uint32_t d,
-                                     int32_t corner,
-                                     int32_t *v,
-                                     int32_t *n,
-                                     int32_t *p) {
+static void draco_eb_corner_to_verts(
+    const draco_eb *eb, uint32_t d, int32_t corner, int32_t *v, int32_t *n, int32_t *p) {
     const int32_t *ftv = draco_eb_ftv(eb, d);
     int32_t base;
     int32_t local;
@@ -1348,8 +1571,7 @@ static int draco_eb_is_topology_split(draco_eb *eb,
                                       uint32_t encoder_symbol_id,
                                       uint8_t *out_edge,
                                       uint32_t *out_split_id) {
-    if (eb->split_count == 0 ||
-        eb->split_source_symbol[eb->split_count - 1] != encoder_symbol_id)
+    if (eb->split_count == 0 || eb->split_source_symbol[eb->split_count - 1] != encoder_symbol_id)
         return 0;
     eb->split_count--;
     *out_edge = eb->split_edge[eb->split_count];
@@ -1371,170 +1593,170 @@ static int draco_eb_new_corner(draco_eb *eb, int32_t new_corner, uint32_t symbol
     if (new_corner != (int32_t)(eb->face_count * 3u))
         return 0;
     switch (eb->last_symbol) {
-    case DRACO_TOPOLOGY_C: {
-        int32_t corner_a, corner_b;
-        if (eb->stack_size == 0)
-            return 0;
-        corner_a = eb->stack[eb->stack_size - 1];
-        corner_b = draco_eb_prev(corner_a);
-        guard = 0;
-        while (draco_eb_pos_opposite(eb, corner_b) >= 0) {
-            if (guard++ > eb->corner_cap)
+        case DRACO_TOPOLOGY_C: {
+            int32_t corner_a, corner_b;
+            if (eb->stack_size == 0)
                 return 0;
-            corner_b = draco_eb_prev(draco_eb_pos_opposite(eb, corner_b));
-        }
-        if (!draco_eb_set_opposite(eb, corner_a, new_corner + 1) ||
-            !draco_eb_set_opposite(eb, corner_b, new_corner + 2))
-            return 0;
-        eb->stack[eb->stack_size - 1] = new_corner;
-        vert = draco_eb_corner_to_vert(eb, 0, draco_eb_next(corner_a));
-        next = draco_eb_corner_to_vert(eb, 0, draco_eb_next(corner_b));
-        prev = draco_eb_corner_to_vert(eb, 0, draco_eb_prev(corner_a));
-        if (vert < 0 || next < 0 || prev < 0 || (uint32_t)vert >= eb->num_vertices ||
-            (uint32_t)next >= eb->num_vertices || (uint32_t)prev >= eb->num_vertices)
-            return 0;
-        if (eb->traversal_type == DRACO_EB_VALENCE) {
-            eb->valences[next] += 1u;
-            eb->valences[prev] += 1u;
-        }
-        if (!draco_eb_push_face(eb, vert, next, prev))
-            return 0;
-        eb->is_vert_hole[vert] = 0;
-        if (!draco_eb_map_corner(eb, new_corner, vert) ||
-            !draco_eb_map_corner(eb, new_corner + 1, next) ||
-            !draco_eb_map_corner(eb, new_corner + 2, prev))
-            return 0;
-        break;
-    }
-    case DRACO_TOPOLOGY_S: {
-        int32_t corner_a, corner_b, corner_n, vertex_n;
-        if (eb->stack_size == 0)
-            return 0;
-        corner_b = eb->stack[--eb->stack_size];
-        for (uint32_t i = 0; i < eb->match_count; i++) {
-            if (eb->match_split_id[i] == (int32_t)symbol_id) {
-                if (eb->stack_size >= eb->stack_cap)
+            corner_a = eb->stack[eb->stack_size - 1];
+            corner_b = draco_eb_prev(corner_a);
+            guard = 0;
+            while (draco_eb_pos_opposite(eb, corner_b) >= 0) {
+                if (guard++ > eb->corner_cap)
                     return 0;
-                eb->stack[eb->stack_size++] = eb->match_corner[i];
+                corner_b = draco_eb_prev(draco_eb_pos_opposite(eb, corner_b));
             }
+            if (!draco_eb_set_opposite(eb, corner_a, new_corner + 1) ||
+                !draco_eb_set_opposite(eb, corner_b, new_corner + 2))
+                return 0;
+            eb->stack[eb->stack_size - 1] = new_corner;
+            vert = draco_eb_corner_to_vert(eb, 0, draco_eb_next(corner_a));
+            next = draco_eb_corner_to_vert(eb, 0, draco_eb_next(corner_b));
+            prev = draco_eb_corner_to_vert(eb, 0, draco_eb_prev(corner_a));
+            if (vert < 0 || next < 0 || prev < 0 || (uint32_t)vert >= eb->num_vertices ||
+                (uint32_t)next >= eb->num_vertices || (uint32_t)prev >= eb->num_vertices)
+                return 0;
+            if (eb->traversal_type == DRACO_EB_VALENCE) {
+                eb->valences[next] += 1u;
+                eb->valences[prev] += 1u;
+            }
+            if (!draco_eb_push_face(eb, vert, next, prev))
+                return 0;
+            eb->is_vert_hole[vert] = 0;
+            if (!draco_eb_map_corner(eb, new_corner, vert) ||
+                !draco_eb_map_corner(eb, new_corner + 1, next) ||
+                !draco_eb_map_corner(eb, new_corner + 2, prev))
+                return 0;
+            break;
         }
-        if (eb->stack_size == 0)
-            return 0;
-        corner_a = eb->stack[eb->stack_size - 1];
-        if (!draco_eb_set_opposite(eb, corner_a, new_corner + 2) ||
-            !draco_eb_set_opposite(eb, corner_b, new_corner + 1))
-            return 0;
-        eb->stack[eb->stack_size - 1] = new_corner;
-        vert = draco_eb_corner_to_vert(eb, 0, draco_eb_prev(corner_a));
-        next = draco_eb_corner_to_vert(eb, 0, draco_eb_next(corner_a));
-        prev = draco_eb_corner_to_vert(eb, 0, draco_eb_prev(corner_b));
-        if (vert < 0 || next < 0 || prev < 0 || (uint32_t)vert >= eb->num_vertices ||
-            (uint32_t)next >= eb->num_vertices || (uint32_t)prev >= eb->num_vertices)
-            return 0;
-        if (!draco_eb_map_corner(eb, new_corner, vert) ||
-            !draco_eb_map_corner(eb, new_corner + 1, next) ||
-            !draco_eb_map_corner(eb, new_corner + 2, prev))
-            return 0;
-        corner_n = draco_eb_next(corner_b);
-        vertex_n = draco_eb_corner_to_vert(eb, 0, corner_n);
-        if (vertex_n < 0 || (uint32_t)vertex_n >= eb->num_vertices)
-            return 0;
-        if (eb->traversal_type == DRACO_EB_VALENCE)
-            eb->valences[vert] += eb->valences[vertex_n];
-        draco_eb_replace_verts(eb, vertex_n, vert);
-        if (eb->traversal_type == DRACO_EB_VALENCE) {
-            eb->valences[next] += 1u;
-            eb->valences[prev] += 1u;
+        case DRACO_TOPOLOGY_S: {
+            int32_t corner_a, corner_b, corner_n, vertex_n;
+            if (eb->stack_size == 0)
+                return 0;
+            corner_b = eb->stack[--eb->stack_size];
+            for (uint32_t i = 0; i < eb->match_count; i++) {
+                if (eb->match_split_id[i] == (int32_t)symbol_id) {
+                    if (eb->stack_size >= eb->stack_cap)
+                        return 0;
+                    eb->stack[eb->stack_size++] = eb->match_corner[i];
+                }
+            }
+            if (eb->stack_size == 0)
+                return 0;
+            corner_a = eb->stack[eb->stack_size - 1];
+            if (!draco_eb_set_opposite(eb, corner_a, new_corner + 2) ||
+                !draco_eb_set_opposite(eb, corner_b, new_corner + 1))
+                return 0;
+            eb->stack[eb->stack_size - 1] = new_corner;
+            vert = draco_eb_corner_to_vert(eb, 0, draco_eb_prev(corner_a));
+            next = draco_eb_corner_to_vert(eb, 0, draco_eb_next(corner_a));
+            prev = draco_eb_corner_to_vert(eb, 0, draco_eb_prev(corner_b));
+            if (vert < 0 || next < 0 || prev < 0 || (uint32_t)vert >= eb->num_vertices ||
+                (uint32_t)next >= eb->num_vertices || (uint32_t)prev >= eb->num_vertices)
+                return 0;
+            if (!draco_eb_map_corner(eb, new_corner, vert) ||
+                !draco_eb_map_corner(eb, new_corner + 1, next) ||
+                !draco_eb_map_corner(eb, new_corner + 2, prev))
+                return 0;
+            corner_n = draco_eb_next(corner_b);
+            vertex_n = draco_eb_corner_to_vert(eb, 0, corner_n);
+            if (vertex_n < 0 || (uint32_t)vertex_n >= eb->num_vertices)
+                return 0;
+            if (eb->traversal_type == DRACO_EB_VALENCE)
+                eb->valences[vert] += eb->valences[vertex_n];
+            draco_eb_replace_verts(eb, vertex_n, vert);
+            if (eb->traversal_type == DRACO_EB_VALENCE) {
+                eb->valences[next] += 1u;
+                eb->valences[prev] += 1u;
+            }
+            if (!draco_eb_push_face(eb, vert, next, prev))
+                return 0;
+            if (!draco_eb_update_corners_after_merge(eb, new_corner + 1, vert))
+                return 0;
+            eb->vertex_corners[vertex_n] = -1;
+            break;
         }
-        if (!draco_eb_push_face(eb, vert, next, prev))
-            return 0;
-        if (!draco_eb_update_corners_after_merge(eb, new_corner + 1, vert))
-            return 0;
-        eb->vertex_corners[vertex_n] = -1;
-        break;
-    }
-    case DRACO_TOPOLOGY_R: {
-        int32_t corner_a;
-        if (eb->stack_size == 0)
-            return 0;
-        corner_a = eb->stack[eb->stack_size - 1];
-        if (!draco_eb_set_opposite(eb, new_corner + 2, corner_a))
-            return 0;
-        eb->stack[eb->stack_size - 1] = new_corner;
-        check_topology_split = 1;
-        vert = draco_eb_corner_to_vert(eb, 0, draco_eb_prev(corner_a));
-        next = draco_eb_corner_to_vert(eb, 0, draco_eb_next(corner_a));
-        prev = ++eb->last_vert_added;
-        if (vert < 0 || next < 0 || (uint32_t)vert >= eb->num_vertices ||
-            (uint32_t)next >= eb->num_vertices || (uint32_t)prev >= eb->num_vertices)
-            return 0;
-        if (eb->traversal_type == DRACO_EB_VALENCE) {
-            eb->valences[vert] += 1u;
-            eb->valences[next] += 1u;
-            eb->valences[prev] += 2u;
+        case DRACO_TOPOLOGY_R: {
+            int32_t corner_a;
+            if (eb->stack_size == 0)
+                return 0;
+            corner_a = eb->stack[eb->stack_size - 1];
+            if (!draco_eb_set_opposite(eb, new_corner + 2, corner_a))
+                return 0;
+            eb->stack[eb->stack_size - 1] = new_corner;
+            check_topology_split = 1;
+            vert = draco_eb_corner_to_vert(eb, 0, draco_eb_prev(corner_a));
+            next = draco_eb_corner_to_vert(eb, 0, draco_eb_next(corner_a));
+            prev = ++eb->last_vert_added;
+            if (vert < 0 || next < 0 || (uint32_t)vert >= eb->num_vertices ||
+                (uint32_t)next >= eb->num_vertices || (uint32_t)prev >= eb->num_vertices)
+                return 0;
+            if (eb->traversal_type == DRACO_EB_VALENCE) {
+                eb->valences[vert] += 1u;
+                eb->valences[next] += 1u;
+                eb->valences[prev] += 2u;
+            }
+            if (!draco_eb_push_face(eb, vert, next, prev))
+                return 0;
+            if (!draco_eb_map_corner(eb, new_corner + 2, prev) ||
+                !draco_eb_map_corner(eb, new_corner, vert) ||
+                !draco_eb_map_corner(eb, new_corner + 1, next))
+                return 0;
+            break;
         }
-        if (!draco_eb_push_face(eb, vert, next, prev))
-            return 0;
-        if (!draco_eb_map_corner(eb, new_corner + 2, prev) ||
-            !draco_eb_map_corner(eb, new_corner, vert) ||
-            !draco_eb_map_corner(eb, new_corner + 1, next))
-            return 0;
-        break;
-    }
-    case DRACO_TOPOLOGY_L: {
-        int32_t corner_a;
-        if (eb->stack_size == 0)
-            return 0;
-        corner_a = eb->stack[eb->stack_size - 1];
-        if (!draco_eb_set_opposite(eb, new_corner + 1, corner_a))
-            return 0;
-        eb->stack[eb->stack_size - 1] = new_corner;
-        check_topology_split = 1;
-        vert = draco_eb_corner_to_vert(eb, 0, draco_eb_next(corner_a));
-        next = ++eb->last_vert_added;
-        prev = draco_eb_corner_to_vert(eb, 0, draco_eb_prev(corner_a));
-        if (vert < 0 || prev < 0 || (uint32_t)vert >= eb->num_vertices ||
-            (uint32_t)next >= eb->num_vertices || (uint32_t)prev >= eb->num_vertices)
-            return 0;
-        if (eb->traversal_type == DRACO_EB_VALENCE) {
-            eb->valences[vert] += 1u;
-            eb->valences[next] += 2u;
-            eb->valences[prev] += 1u;
+        case DRACO_TOPOLOGY_L: {
+            int32_t corner_a;
+            if (eb->stack_size == 0)
+                return 0;
+            corner_a = eb->stack[eb->stack_size - 1];
+            if (!draco_eb_set_opposite(eb, new_corner + 1, corner_a))
+                return 0;
+            eb->stack[eb->stack_size - 1] = new_corner;
+            check_topology_split = 1;
+            vert = draco_eb_corner_to_vert(eb, 0, draco_eb_next(corner_a));
+            next = ++eb->last_vert_added;
+            prev = draco_eb_corner_to_vert(eb, 0, draco_eb_prev(corner_a));
+            if (vert < 0 || prev < 0 || (uint32_t)vert >= eb->num_vertices ||
+                (uint32_t)next >= eb->num_vertices || (uint32_t)prev >= eb->num_vertices)
+                return 0;
+            if (eb->traversal_type == DRACO_EB_VALENCE) {
+                eb->valences[vert] += 1u;
+                eb->valences[next] += 2u;
+                eb->valences[prev] += 1u;
+            }
+            if (!draco_eb_push_face(eb, vert, next, prev))
+                return 0;
+            if (!draco_eb_map_corner(eb, new_corner + 2, prev) ||
+                !draco_eb_map_corner(eb, new_corner, vert) ||
+                !draco_eb_map_corner(eb, new_corner + 1, next))
+                return 0;
+            break;
         }
-        if (!draco_eb_push_face(eb, vert, next, prev))
-            return 0;
-        if (!draco_eb_map_corner(eb, new_corner + 2, prev) ||
-            !draco_eb_map_corner(eb, new_corner, vert) ||
-            !draco_eb_map_corner(eb, new_corner + 1, next))
-            return 0;
-        break;
-    }
-    case DRACO_TOPOLOGY_E: {
-        if (eb->stack_size >= eb->stack_cap)
-            return 0;
-        eb->stack[eb->stack_size++] = new_corner;
-        check_topology_split = 1;
-        vert = eb->last_vert_added + 1;
-        next = vert + 1;
-        prev = next + 1;
-        if ((uint32_t)prev >= eb->num_vertices)
-            return 0;
-        if (eb->traversal_type == DRACO_EB_VALENCE) {
-            eb->valences[vert] += 2u;
-            eb->valences[next] += 2u;
-            eb->valences[prev] += 2u;
+        case DRACO_TOPOLOGY_E: {
+            if (eb->stack_size >= eb->stack_cap)
+                return 0;
+            eb->stack[eb->stack_size++] = new_corner;
+            check_topology_split = 1;
+            vert = eb->last_vert_added + 1;
+            next = vert + 1;
+            prev = next + 1;
+            if ((uint32_t)prev >= eb->num_vertices)
+                return 0;
+            if (eb->traversal_type == DRACO_EB_VALENCE) {
+                eb->valences[vert] += 2u;
+                eb->valences[next] += 2u;
+                eb->valences[prev] += 2u;
+            }
+            if (!draco_eb_push_face(eb, vert, next, prev))
+                return 0;
+            eb->last_vert_added = prev;
+            if (!draco_eb_map_corner(eb, new_corner, vert) ||
+                !draco_eb_map_corner(eb, new_corner + 1, next) ||
+                !draco_eb_map_corner(eb, new_corner + 2, prev))
+                return 0;
+            break;
         }
-        if (!draco_eb_push_face(eb, vert, next, prev))
+        default:
             return 0;
-        eb->last_vert_added = prev;
-        if (!draco_eb_map_corner(eb, new_corner, vert) ||
-            !draco_eb_map_corner(eb, new_corner + 1, next) ||
-            !draco_eb_map_corner(eb, new_corner + 2, prev))
-            return 0;
-        break;
-    }
-    default:
-        return 0;
     }
     if (eb->traversal_type == DRACO_EB_VALENCE) {
         uint32_t valence = eb->valences[next];
@@ -1556,8 +1778,7 @@ static int draco_eb_new_corner(draco_eb *eb, int32_t new_corner, uint32_t symbol
             act_top = eb->stack[eb->stack_size - 1];
             new_active = (split_edge == 1 /* RIGHT_FACE_EDGE */) ? draco_eb_next(act_top)
                                                                  : draco_eb_prev(act_top);
-            eb->match_split_id[eb->match_count] =
-                (int32_t)(eb->num_symbols - enc_split_id - 1u);
+            eb->match_split_id[eb->match_count] = (int32_t)(eb->num_symbols - enc_split_id - 1u);
             eb->match_corner[eb->match_count] = new_active;
             eb->match_count++;
         }
@@ -1570,8 +1791,11 @@ static int draco_eb_new_corner(draco_eb *eb, int32_t new_corner, uint32_t symbol
 /// @return Non-zero after storing a valid topology symbol in `eb->last_symbol`.
 static int draco_eb_decode_symbol(draco_eb *eb) {
     if (eb->traversal_type == DRACO_EB_VALENCE) {
-        static const int topo[5] = {DRACO_TOPOLOGY_C, DRACO_TOPOLOGY_S, DRACO_TOPOLOGY_L,
-                                    DRACO_TOPOLOGY_R, DRACO_TOPOLOGY_E};
+        static const int topo[5] = {DRACO_TOPOLOGY_C,
+                                    DRACO_TOPOLOGY_S,
+                                    DRACO_TOPOLOGY_L,
+                                    DRACO_TOPOLOGY_R,
+                                    DRACO_TOPOLOGY_E};
         int ctx = eb->active_context;
         uint32_t sym;
         if (ctx < 0) {
@@ -1609,15 +1833,15 @@ static int draco_eb_process_interior_edges(draco_eb *eb) {
     draco_rans ans;
     int have_ans = 0;
     if (eb->start_face_size > 0)
-        have_ans =
-            draco_rans_init(&ans, eb->start_face_buf, eb->start_face_size, 4096u);
+        have_ans = draco_rans_init(&ans, eb->start_face_buf, eb->start_face_size, 4096u);
     while (eb->stack_size > 0) {
         int32_t corner_a = eb->stack[--eb->stack_size];
         uint32_t interior = 0;
         uint32_t guard;
         if (!have_ans)
             return 0;
-        draco_rabs_read(&ans, eb->start_face_prob_zero, &interior);
+        if (!draco_rabs_read(&ans, eb->start_face_prob_zero, &interior))
+            return 0;
         if (!interior)
             continue;
         {
@@ -1645,10 +1869,8 @@ static int draco_eb_process_interior_edges(draco_eb *eb) {
             draco_eb_corner_to_verts(eb, 0, corner_a, &tv, &next_a, &tp);
             draco_eb_corner_to_verts(eb, 0, corner_b, &tv, &next_b, &tp);
             draco_eb_corner_to_verts(eb, 0, corner_c, &tv, &next_c, &tp);
-            if (next_a < 0 || next_b < 0 || next_c < 0 ||
-                (uint32_t)next_a >= eb->num_vertices ||
-                (uint32_t)next_b >= eb->num_vertices ||
-                (uint32_t)next_c >= eb->num_vertices)
+            if (next_a < 0 || next_b < 0 || next_c < 0 || (uint32_t)next_a >= eb->num_vertices ||
+                (uint32_t)next_b >= eb->num_vertices || (uint32_t)next_c >= eb->num_vertices)
                 return 0;
             if (!draco_eb_push_face(eb, next_b, next_c, next_a))
                 return 0;
@@ -1670,6 +1892,11 @@ static int draco_eb_process_interior_edges(draco_eb *eb) {
 /// @return Non-zero when declarations are valid and all required allocations succeed.
 static int draco_eb_parse_and_alloc(draco_buf *b, draco_eb *eb) {
     uint64_t nv, nf, ns, nss, total_verts;
+    uint64_t stack_cap;
+    size_t corner_i32_bytes;
+    size_t vertex_i32_bytes;
+    size_t stack_i32_bytes;
+    size_t traversal_i32_bytes;
     eb->traversal_type = draco_read_u8(b);
     nv = draco_read_varint(b);
     nf = draco_read_varint(b);
@@ -1682,7 +1909,10 @@ static int draco_eb_parse_and_alloc(draco_buf *b, draco_eb *eb) {
         return 0;
     if (eb->num_att_data > DRACO_EB_MAX_ATT_DATA)
         return 0;
-    if (nf == 0 || nf > (uint64_t)UINT32_MAX / 4u)
+    /* Corner IDs and all face/corner sentinels are int32_t. Limiting only the
+     * uint32_t multiplication allowed valid-looking counts above INT32_MAX/3
+     * to wrap negative whenever a corner was narrowed. */
+    if (nf == 0 || nf > (uint64_t)INT32_MAX / 3u)
         return 0;
     /* Bound the allocation drivers to the payload size; nss <= ns <= nf and
      * total_verts = nv + nss, so capping nf and nv caps every derived buffer. */
@@ -1695,11 +1925,10 @@ static int draco_eb_parse_and_alloc(draco_buf *b, draco_eb *eb) {
      * total_verts arithmetic and the uint32 narrowings below overflow-free. */
     if (nss > ns)
         return 0;
-    if (nv > (uint64_t)UINT32_MAX)
+    if (nv > (uint64_t)INT32_MAX)
         return 0;
     total_verts = nv + nss;
-    if (total_verts == 0 || total_verts > 3u * nf + nss ||
-        total_verts > (uint64_t)UINT32_MAX)
+    if (total_verts == 0 || total_verts > 3u * nf + nss || total_verts > (uint64_t)INT32_MAX)
         return 0;
     eb->num_vertices = (uint32_t)total_verts;
     eb->num_faces = (uint32_t)nf;
@@ -1710,23 +1939,30 @@ static int draco_eb_parse_and_alloc(draco_buf *b, draco_eb *eb) {
     eb->last_vert_added = -1;
     eb->last_symbol = -1;
     eb->active_context = -1;
-    eb->stack_cap = eb->num_symbols + eb->num_split_symbols + 4u;
-    eb->face_to_vertex = (int32_t *)malloc((size_t)eb->corner_cap * sizeof(int32_t));
-    eb->opposite = (int32_t *)malloc((size_t)eb->corner_cap * sizeof(int32_t));
-    eb->vertex_corners = (int32_t *)malloc((size_t)eb->num_vertices * sizeof(int32_t));
+    stack_cap = (uint64_t)eb->num_symbols + eb->num_split_symbols + 4u;
+    if (stack_cap > UINT32_MAX ||
+        !draco_size_mul((size_t)eb->corner_cap, sizeof(int32_t), &corner_i32_bytes) ||
+        !draco_size_mul((size_t)eb->num_vertices, sizeof(int32_t), &vertex_i32_bytes) ||
+        !draco_size_mul((size_t)stack_cap, sizeof(int32_t), &stack_i32_bytes) ||
+        !draco_size_mul((size_t)eb->corner_cap + 2u, sizeof(int32_t), &traversal_i32_bytes))
+        return 0;
+    eb->stack_cap = (uint32_t)stack_cap;
+    eb->face_to_vertex = (int32_t *)malloc(corner_i32_bytes);
+    eb->opposite = (int32_t *)malloc(corner_i32_bytes);
+    eb->vertex_corners = (int32_t *)malloc(vertex_i32_bytes);
     eb->is_vert_hole = (uint8_t *)malloc(eb->num_vertices);
-    eb->stack = (int32_t *)malloc((size_t)eb->stack_cap * sizeof(int32_t));
-    eb->corner_to_point = (int32_t *)malloc((size_t)eb->corner_cap * sizeof(int32_t));
+    eb->stack = (int32_t *)malloc(stack_i32_bytes);
+    eb->corner_to_point = (int32_t *)malloc(corner_i32_bytes);
     eb->face_visited = (uint8_t *)malloc(eb->num_faces);
     eb->vertex_visited = (uint8_t *)malloc(eb->visit_cap);
-    eb->trav_stack = (int32_t *)malloc(((size_t)eb->corner_cap + 2u) * sizeof(int32_t));
+    eb->trav_stack = (int32_t *)malloc(traversal_i32_bytes);
     if (!eb->face_to_vertex || !eb->opposite || !eb->vertex_corners || !eb->is_vert_hole ||
         !eb->stack || !eb->corner_to_point || !eb->face_visited || !eb->vertex_visited ||
         !eb->trav_stack)
         return 0;
-    memset(eb->face_to_vertex, 0xFF, (size_t)eb->corner_cap * sizeof(int32_t));
-    memset(eb->opposite, 0xFF, (size_t)eb->corner_cap * sizeof(int32_t));
-    memset(eb->vertex_corners, 0xFF, (size_t)eb->num_vertices * sizeof(int32_t));
+    memset(eb->face_to_vertex, 0xFF, corner_i32_bytes);
+    memset(eb->opposite, 0xFF, corner_i32_bytes);
+    memset(eb->vertex_corners, 0xFF, vertex_i32_bytes);
     memset(eb->is_vert_hole, 1, eb->num_vertices);
     if (eb->traversal_type == DRACO_EB_VALENCE) {
         eb->valences = (uint32_t *)calloc(eb->num_vertices, sizeof(uint32_t));
@@ -1742,27 +1978,35 @@ static int draco_eb_parse_and_alloc(draco_buf *b, draco_eb *eb) {
 /// @return Non-zero when all declared events are valid for reverse consumption.
 static int draco_eb_parse_splits(draco_buf *b, draco_eb *eb) {
     uint64_t n = draco_read_varint(b);
+    size_t i32_bytes;
+    size_t u32_bytes;
     if (b->failed || n > eb->num_faces)
         return 0;
     eb->split_count = (uint32_t)n;
     eb->match_cap = (uint32_t)n;
     if (n == 0)
         return 1;
-    eb->split_source_symbol = (uint32_t *)malloc((size_t)n * sizeof(uint32_t));
-    eb->split_symbol = (uint32_t *)malloc((size_t)n * sizeof(uint32_t));
+    if (!draco_size_mul((size_t)n, sizeof(uint32_t), &u32_bytes) ||
+        !draco_size_mul((size_t)n, sizeof(int32_t), &i32_bytes))
+        return 0;
+    eb->split_source_symbol = (uint32_t *)malloc(u32_bytes);
+    eb->split_symbol = (uint32_t *)malloc(u32_bytes);
     eb->split_edge = (uint8_t *)malloc((size_t)n);
-    eb->match_split_id = (int32_t *)malloc((size_t)n * sizeof(int32_t));
-    eb->match_corner = (int32_t *)malloc((size_t)n * sizeof(int32_t));
-    if (!eb->split_source_symbol || !eb->split_symbol || !eb->split_edge ||
-        !eb->match_split_id || !eb->match_corner)
+    eb->match_split_id = (int32_t *)malloc(i32_bytes);
+    eb->match_corner = (int32_t *)malloc(i32_bytes);
+    if (!eb->split_source_symbol || !eb->split_symbol || !eb->split_edge || !eb->match_split_id ||
+        !eb->match_corner)
         return 0;
     {
         uint32_t last_id = 0;
         for (uint64_t i = 0; i < n; i++) {
             uint64_t source_delta = draco_read_varint(b);
             uint64_t split_delta = draco_read_varint(b);
-            uint64_t source_id = source_delta + last_id;
-            if (b->failed || source_id >= eb->num_symbols || split_delta > source_id)
+            uint64_t source_id;
+            if (b->failed || source_delta > UINT64_MAX - last_id)
+                return 0;
+            source_id = source_delta + last_id;
+            if (source_id >= eb->num_symbols || split_delta > source_id)
                 return 0;
             eb->split_source_symbol[i] = (uint32_t)source_id;
             eb->split_symbol[i] = (uint32_t)(source_id - split_delta);
@@ -1906,8 +2150,7 @@ static int draco_eb_decode_seams(draco_buf *b, draco_eb *eb) {
         int32_t v, n, p;
         int32_t opp = draco_eb_pos_opposite(eb, (int32_t)corner);
         draco_eb_corner_to_verts(eb, 0, (int32_t)corner, &v, &n, &p);
-        if (n < 0 || p < 0 || (uint32_t)n >= eb->num_vertices ||
-            (uint32_t)p >= eb->num_vertices)
+        if (n < 0 || p < 0 || (uint32_t)n >= eb->num_vertices || (uint32_t)p >= eb->num_vertices)
             return 0;
         if (opp >= 0) {
             if (opp < (int32_t)corner)
@@ -1916,7 +2159,8 @@ static int draco_eb_decode_seams(draco_buf *b, draco_eb *eb) {
                 uint32_t val = 0;
                 if (!have[a])
                     return 0;
-                draco_rabs_read(&ans[a], eb->att_data[a].prob_zero, &val);
+                if (!draco_rabs_read(&ans[a], eb->att_data[a].prob_zero, &val))
+                    return 0;
                 if (val) {
                     int32_t ov, on, op2;
                     eb->att_data[a].edge_on_seam[corner] = 1;
@@ -1949,9 +2193,7 @@ static int draco_eb_decode_seams(draco_buf *b, draco_eb *eb) {
 static int draco_eb_recompute_vertices(draco_eb *eb, uint32_t a) {
     draco_eb_data *ad = &eb->att_data[a];
     uint32_t num_new = 0;
-    memcpy(ad->face_to_vertex,
-           eb->face_to_vertex,
-           (size_t)eb->face_count * 3u * sizeof(int32_t));
+    memcpy(ad->face_to_vertex, eb->face_to_vertex, (size_t)eb->face_count * 3u * sizeof(int32_t));
     for (uint32_t i = 0; i < eb->corner_cap; i++) {
         ad->corner_to_vertex[i] = -1;
         ad->leftmost_corner[i] = -1;
@@ -2137,7 +2379,7 @@ static int draco_eb_traverse_dfs(draco_eb *eb, uint32_t d, int32_t corner_id) {
     uint32_t a = corner_mapped ? eb->dec[d].data_id : 0u;
     int32_t face = corner_id / 3;
     int32_t v, next_vert, prev_vert;
-    uint32_t guard = 0;
+    uint64_t guard = 0;
     if (corner_id < 0 || (uint32_t)face >= eb->face_count || eb->face_visited[face])
         return 1;
     eb->trav_size = 0;
@@ -2167,7 +2409,7 @@ static int draco_eb_traverse_dfs(draco_eb *eb, uint32_t d, int32_t corner_id) {
         while (1) {
             int32_t vert_id, right_corner, left_corner, right_face, left_face;
             int right_visited, left_visited;
-            if (guard++ > eb->corner_cap * 4u + 64u)
+            if (guard++ > (uint64_t)eb->corner_cap * 4u + 64u)
                 return 0;
             face_id = corner_id / 3;
             eb->face_visited[face_id] = 1;
@@ -2181,8 +2423,7 @@ static int draco_eb_traverse_dfs(draco_eb *eb, uint32_t d, int32_t corner_id) {
                     on_boundary =
                         on_seam
                             ? 1
-                            : draco_eb_pos_boundary(eb,
-                                                    draco_eb_corner_to_vert(eb, 0, corner_id));
+                            : draco_eb_pos_boundary(eb, draco_eb_corner_to_vert(eb, 0, corner_id));
                 } else {
                     on_boundary = draco_eb_pos_boundary(eb, vert_id);
                 }
@@ -2291,7 +2532,7 @@ static int32_t draco_eb_pd_pop(draco_eb *eb) {
 /// @return Non-zero when the traversal completes within all topology and iteration bounds.
 static int draco_eb_traverse_pd(draco_eb *eb, uint32_t d, int32_t corner_id) {
     int32_t tip, next_vert, prev_vert;
-    uint32_t guard = 0;
+    uint64_t guard = 0;
     if (corner_id < 0 || (uint32_t)(corner_id / 3) >= eb->face_count)
         return 0;
     if (!draco_eb_pd_push(eb, corner_id, 0))
@@ -2323,7 +2564,7 @@ static int draco_eb_traverse_pd(draco_eb *eb, uint32_t d, int32_t corner_id) {
         while (1) {
             int32_t vert_id, right_c, left_c, right_f, left_f;
             int right_vis, left_vis;
-            if (guard++ > eb->corner_cap * 8u + 64u)
+            if (guard++ > (uint64_t)eb->corner_cap * 8u + 64u)
                 return 0;
             face_id = corner_id / 3;
             eb->face_visited[face_id] = 1;
@@ -2339,10 +2580,9 @@ static int draco_eb_traverse_pd(draco_eb *eb, uint32_t d, int32_t corner_id) {
             left_c = draco_eb_pos_opposite(eb, draco_eb_prev(corner_id));
             right_f = right_c < 0 ? -1 : right_c / 3;
             left_f = left_c < 0 ? -1 : left_c / 3;
-            right_vis = right_f < 0 || right_f >= (int32_t)eb->face_count ||
-                        eb->face_visited[right_f];
-            left_vis =
-                left_f < 0 || left_f >= (int32_t)eb->face_count || eb->face_visited[left_f];
+            right_vis =
+                right_f < 0 || right_f >= (int32_t)eb->face_count || eb->face_visited[right_f];
+            left_vis = left_f < 0 || left_f >= (int32_t)eb->face_count || eb->face_visited[left_f];
             if (!left_vis) {
                 int priority = draco_eb_pd_priority(eb, d, left_c);
                 if (right_vis && priority <= eb->pd_best) {
@@ -2455,8 +2695,7 @@ static int draco_eb_parallelogram_compute(draco_eb *eb,
     for (uint32_t p = 1; p < num_values; p++) {
         int32_t corner_id = eb->dec[d].value_to_corner[p];
         int32_t *dst = att->values + (size_t)p * (size_t)ncomp;
-        if (!draco_eb_parallelogram_pred(eb, d, (int32_t)p, corner_id, att->values, ncomp,
-                                         pred)) {
+        if (!draco_eb_parallelogram_pred(eb, d, (int32_t)p, corner_id, att->values, ncomp, pred)) {
             const int32_t *src = att->values + (size_t)(p - 1) * (size_t)ncomp;
             for (int c = 0; c < ncomp; c++)
                 pred[c] = src[c];
@@ -2490,13 +2729,13 @@ static int draco_eb_multi_parallelogram_compute(draco_eb *eb,
         int num_para = 0;
         int first_pass = 1;
         int num_used = 0;
-        uint32_t guard = 0;
+        uint64_t guard = 0;
         int32_t *dst = att->values + (size_t)p * (size_t)ncomp;
         while (corner_id >= 0) {
-            if (guard++ > eb->corner_cap * 2u + 64u)
+            if (guard++ > (uint64_t)eb->corner_cap * 2u + 64u)
                 return 0;
-            if (draco_eb_parallelogram_pred(eb, d, (int32_t)p, corner_id, att->values, ncomp,
-                                            pred[num_para])) {
+            if (draco_eb_parallelogram_pred(
+                    eb, d, (int32_t)p, corner_id, att->values, ncomp, pred[num_para])) {
                 if (++num_para == DRACO_EB_MAX_PARALLELOGRAMS)
                     break;
             }
@@ -2564,11 +2803,8 @@ static uint64_t draco_int_sqrt(uint64_t number) {
 /// @param entry_id Encoded attribute-value index.
 /// @param pos Receives the three-component quantized position.
 /// @return Non-zero when the entry resolves through a valid corner and point.
-static int draco_eb_position_for_entry(const draco_eb *eb,
-                                       const draco_mesh *mesh,
-                                       uint32_t d,
-                                       int32_t entry_id,
-                                       int64_t *pos) {
+static int draco_eb_position_for_entry(
+    const draco_eb *eb, const draco_mesh *mesh, uint32_t d, int32_t entry_id, int64_t *pos) {
     const draco_eb_dec *dec = &eb->dec[d];
     const draco_attribute *pos_att = &mesh->attributes[0];
     int32_t corner, point, mapped;
@@ -2597,11 +2833,8 @@ static int draco_eb_position_for_entry(const draco_eb *eb,
 /// @param corner Corner whose associated position is requested.
 /// @param pos Receives the three-component quantized position.
 /// @return Non-zero when the corner and its encoded value mapping are valid.
-static int draco_eb_position_for_corner(const draco_eb *eb,
-                                        const draco_mesh *mesh,
-                                        uint32_t d,
-                                        int32_t corner,
-                                        int64_t *pos) {
+static int draco_eb_position_for_corner(
+    const draco_eb *eb, const draco_mesh *mesh, uint32_t d, int32_t corner, int64_t *pos) {
     int32_t v = draco_eb_corner_to_vert(eb, d, corner);
     if (v < 0 || (uint32_t)v >= eb->visit_cap)
         return 0;
@@ -2655,10 +2888,11 @@ static int draco_eb_texcoords_compute(draco_eb *eb,
                     int64_t pn_norm2 = 0;
                     int64_t cn_dot_pn = 0;
                     for (int i = 0; i < 3; i++) {
-                        pn[i] = prev_pos[i] - next_pos[i];
-                        cn[i] = tip_pos[i] - next_pos[i];
-                        pn_norm2 += pn[i] * pn[i];
-                        cn_dot_pn += cn[i] * pn[i];
+                        if (!draco_i64_sub(prev_pos[i], next_pos[i], &pn[i]) ||
+                            !draco_i64_sub(tip_pos[i], next_pos[i], &cn[i]) ||
+                            !draco_i64_accumulate_product(&pn_norm2, pn[i], pn[i]) ||
+                            !draco_i64_accumulate_product(&cn_dot_pn, cn[i], pn[i]))
+                            return 0;
                     }
                     if (pn_norm2 != 0) {
                         int64_t pn_uv[2];
@@ -2668,30 +2902,53 @@ static int draco_eb_texcoords_compute(draco_eb *eb,
                         int64_t cx_uv[2];
                         uint64_t norm_squared;
                         uint8_t orientation;
-                        pn_uv[0] = p_uv[0] - n_uv[0];
-                        pn_uv[1] = p_uv[1] - n_uv[1];
-                        x_uv[0] = pn_uv[0] * cn_dot_pn + n_uv[0] * pn_norm2;
-                        x_uv[1] = pn_uv[1] * cn_dot_pn + n_uv[1] * pn_norm2;
-                        for (int i = 0; i < 3; i++) {
-                            int64_t sub;
-                            x_pos[i] = next_pos[i] + (pn[i] * cn_dot_pn) / pn_norm2;
-                            sub = tip_pos[i] - x_pos[i];
-                            cx_norm2 += sub * sub;
+                        if (!draco_i64_sub(p_uv[0], n_uv[0], &pn_uv[0]) ||
+                            !draco_i64_sub(p_uv[1], n_uv[1], &pn_uv[1]))
+                            return 0;
+                        for (int i = 0; i < 2; i++) {
+                            int64_t lhs;
+                            int64_t rhs;
+                            if (!draco_i64_mul(pn_uv[i], cn_dot_pn, &lhs) ||
+                                !draco_i64_mul(n_uv[i], pn_norm2, &rhs) ||
+                                !draco_i64_add(lhs, rhs, &x_uv[i]))
+                                return 0;
                         }
-                        norm_squared =
-                            draco_int_sqrt((uint64_t)cx_norm2 * (uint64_t)pn_norm2);
-                        cx_uv[0] = pn_uv[1] * (int64_t)norm_squared;
-                        cx_uv[1] = -pn_uv[0] * (int64_t)norm_squared;
+                        for (int i = 0; i < 3; i++) {
+                            int64_t product;
+                            int64_t sub;
+                            if (!draco_i64_mul(pn[i], cn_dot_pn, &product) ||
+                                !draco_i64_add(next_pos[i], product / pn_norm2, &x_pos[i]) ||
+                                !draco_i64_sub(tip_pos[i], x_pos[i], &sub) ||
+                                !draco_i64_accumulate_product(&cx_norm2, sub, sub))
+                                return 0;
+                        }
+                        {
+                            uint64_t norm_product;
+                            int64_t cx_uv_1;
+                            if (cx_norm2 < 0 || pn_norm2 < 0 ||
+                                !draco_u64_mul(
+                                    (uint64_t)cx_norm2, (uint64_t)pn_norm2, &norm_product))
+                                return 0;
+                            norm_squared = draco_int_sqrt(norm_product);
+                            if (!draco_i64_mul(pn_uv[1], (int64_t)norm_squared, &cx_uv[0]) ||
+                                !draco_i64_mul(pn_uv[0], (int64_t)norm_squared, &cx_uv_1) ||
+                                !draco_i64_sub(0, cx_uv_1, &cx_uv[1]))
+                                return 0;
+                        }
                         if (att->tex_orient_pos == 0)
                             return 0;
                         orientation = att->tex_orient[--att->tex_orient_pos];
                         if (orientation) {
-                            pred[0] = (x_uv[0] + cx_uv[0]) / pn_norm2;
-                            pred[1] = (x_uv[1] + cx_uv[1]) / pn_norm2;
+                            if (!draco_i64_add(x_uv[0], cx_uv[0], &pred[0]) ||
+                                !draco_i64_add(x_uv[1], cx_uv[1], &pred[1]))
+                                return 0;
                         } else {
-                            pred[0] = (x_uv[0] - cx_uv[0]) / pn_norm2;
-                            pred[1] = (x_uv[1] - cx_uv[1]) / pn_norm2;
+                            if (!draco_i64_sub(x_uv[0], cx_uv[0], &pred[0]) ||
+                                !draco_i64_sub(x_uv[1], cx_uv[1], &pred[1]))
+                                return 0;
                         }
+                        pred[0] /= pn_norm2;
+                        pred[1] /= pn_norm2;
                         done = 1;
                     }
                 }
@@ -2735,42 +2992,49 @@ static int draco_eb_geometric_normal_compute(draco_eb *eb,
                                              const draco_mesh *mesh,
                                              uint32_t d,
                                              draco_attribute *att) {
-    int32_t max_q = (1 << (draco_msb((uint32_t)att->normal_max_q) + 1)) - 1;
-    int32_t max_value = max_q - 1;
+    int32_t max_q;
+    int32_t max_value;
     int32_t center;
-    if (att->normal_max_q <= 0 || max_value <= 0)
+    if (!draco_normal_quant_params(att->normal_max_q, &max_q, &max_value, &center))
         return 0;
-    center = max_value / 2;
     for (uint32_t data_id = 0; data_id < att->num_values; data_id++) {
         int32_t ci = eb->dec[d].value_to_corner[data_id];
         int64_t normal[3] = {0, 0, 0};
         int64_t s, t;
-        int32_t pred_oct[2];
+        int64_t pred_oct[2];
         {
             int64_t pos_cent[3];
             int32_t corner = ci;
             int32_t start = ci;
             int left_traversal = 1;
-            uint32_t guard = 0;
+            uint64_t guard = 0;
             if (!draco_eb_position_for_corner(eb, mesh, d, ci, pos_cent))
                 return 0;
             while (corner >= 0) {
                 int64_t pos_next[3], pos_prev[3];
                 int64_t dn[3], dp[3];
-                if (guard++ > eb->corner_cap * 2u + 64u)
+                if (guard++ > (uint64_t)eb->corner_cap * 2u + 64u)
                     return 0;
-                if (!draco_eb_position_for_corner(eb, mesh, d, draco_eb_next(corner),
-                                                  pos_next) ||
-                    !draco_eb_position_for_corner(eb, mesh, d, draco_eb_prev(corner),
-                                                  pos_prev))
+                if (!draco_eb_position_for_corner(eb, mesh, d, draco_eb_next(corner), pos_next) ||
+                    !draco_eb_position_for_corner(eb, mesh, d, draco_eb_prev(corner), pos_prev))
                     return 0;
                 for (int i = 0; i < 3; i++) {
-                    dn[i] = pos_next[i] - pos_cent[i];
-                    dp[i] = pos_prev[i] - pos_cent[i];
+                    if (!draco_i64_sub(pos_next[i], pos_cent[i], &dn[i]) ||
+                        !draco_i64_sub(pos_prev[i], pos_cent[i], &dp[i]))
+                        return 0;
                 }
-                normal[0] += dn[1] * dp[2] - dn[2] * dp[1];
-                normal[1] += dn[2] * dp[0] - dn[0] * dp[2];
-                normal[2] += dn[0] * dp[1] - dn[1] * dp[0];
+                for (int axis = 0; axis < 3; axis++) {
+                    int lhs_axis = (axis + 1) % 3;
+                    int rhs_axis = (axis + 2) % 3;
+                    int64_t lhs;
+                    int64_t rhs;
+                    int64_t cross;
+                    if (!draco_i64_mul(dn[lhs_axis], dp[rhs_axis], &lhs) ||
+                        !draco_i64_mul(dn[rhs_axis], dp[lhs_axis], &rhs) ||
+                        !draco_i64_sub(lhs, rhs, &cross) ||
+                        !draco_i64_add(normal[axis], cross, &normal[axis]))
+                        return 0;
+                }
                 if (left_traversal) {
                     corner = draco_eb_swing_left(eb, d, corner);
                     if (corner < 0) {
@@ -2785,31 +3049,42 @@ static int draco_eb_geometric_normal_compute(draco_eb *eb,
             }
         }
         {
-            int64_t abs_sum = (normal[0] < 0 ? -normal[0] : normal[0]) +
-                              (normal[1] < 0 ? -normal[1] : normal[1]) +
-                              (normal[2] < 0 ? -normal[2] : normal[2]);
+            int64_t abs_sum = 0;
             int64_t upper_bound = (int64_t)1 << 29;
+            for (int i = 0; i < 3; i++) {
+                int64_t absolute;
+                if (!draco_i64_abs(normal[i], &absolute) ||
+                    !draco_i64_add(abs_sum, absolute, &abs_sum))
+                    return 0;
+            }
             if (abs_sum > upper_bound) {
-                int64_t quotient = abs_sum / upper_bound;
+                int64_t quotient = abs_sum / upper_bound + (abs_sum % upper_bound != 0 ? 1 : 0);
                 for (int i = 0; i < 3; i++)
                     normal[i] /= quotient;
             }
         }
         {
             /* CanonicalizeIntegerVector */
-            int64_t abs_sum = (normal[0] < 0 ? -normal[0] : normal[0]) +
-                              (normal[1] < 0 ? -normal[1] : normal[1]) +
-                              (normal[2] < 0 ? -normal[2] : normal[2]);
+            int64_t abs_sum = 0;
+            for (int i = 0; i < 3; i++) {
+                int64_t absolute;
+                if (!draco_i64_abs(normal[i], &absolute) ||
+                    !draco_i64_add(abs_sum, absolute, &abs_sum))
+                    return 0;
+            }
             if (abs_sum == 0) {
                 normal[0] = center;
                 normal[1] = 0;
                 normal[2] = 0;
             } else {
                 int64_t a0, a1;
-                normal[0] = (normal[0] * center) / abs_sum;
-                normal[1] = (normal[1] * center) / abs_sum;
-                a0 = normal[0] < 0 ? -normal[0] : normal[0];
-                a1 = normal[1] < 0 ? -normal[1] : normal[1];
+                if (!draco_i64_mul(normal[0], center, &normal[0]) ||
+                    !draco_i64_mul(normal[1], center, &normal[1]))
+                    return 0;
+                normal[0] /= abs_sum;
+                normal[1] /= abs_sum;
+                if (!draco_i64_abs(normal[0], &a0) || !draco_i64_abs(normal[1], &a1))
+                    return 0;
                 if (normal[2] >= 0)
                     normal[2] = center - a0 - a1;
                 else
@@ -2817,16 +3092,20 @@ static int draco_eb_geometric_normal_compute(draco_eb *eb,
             }
         }
         if (att->flip_bits && data_id < att->flip_count && att->flip_bits[data_id]) {
-            for (int i = 0; i < 3; i++)
-                normal[i] = -normal[i];
+            for (int i = 0; i < 3; i++) {
+                if (!draco_i64_sub(0, normal[i], &normal[i]))
+                    return 0;
+            }
         }
         /* IntegerVectorToQuantizedOctahedralCoords */
         if (normal[0] >= 0) {
             s = normal[1] + center;
             t = normal[2] + center;
         } else {
-            int64_t a1 = normal[1] < 0 ? -normal[1] : normal[1];
-            int64_t a2 = normal[2] < 0 ? -normal[2] : normal[2];
+            int64_t a1;
+            int64_t a2;
+            if (!draco_i64_abs(normal[1], &a1) || !draco_i64_abs(normal[2], &a2))
+                return 0;
             s = (normal[1] < 0) ? a2 : (max_value - a2);
             t = (normal[2] < 0) ? a1 : (max_value - a1);
         }
@@ -2843,8 +3122,8 @@ static int draco_eb_geometric_normal_compute(draco_eb *eb,
         } else if (t == 0 && s > center) {
             s = center - (s - center);
         }
-        pred_oct[0] = (int32_t)s;
-        pred_oct[1] = (int32_t)t;
+        pred_oct[0] = s;
+        pred_oct[1] = t;
         {
             int32_t *dst = att->values + (size_t)data_id * 2u;
             draco_normal_oct_compute_original(att, pred_oct, dst, dst);
@@ -2866,6 +3145,8 @@ static int draco_parse_prediction_rans(draco_buf *b,
                                        const uint8_t **out_buf,
                                        size_t *out_size) {
     uint64_t sz;
+    if (!b || !out_prob || !out_buf || !out_size || b->pos > b->size)
+        return 0;
     *out_prob = draco_read_u8(b);
     sz = draco_read_varint(b);
     if (b->failed || sz > b->size - b->pos)
@@ -2882,13 +3163,14 @@ static int draco_parse_prediction_rans(draco_buf *b,
 /// @param att Attribute receiving crease, orientation, flip, and transform parameters.
 /// @param num_entries Number of predicted logical values bounding side-data counts.
 /// @return Non-zero when all data required by the selected prediction scheme is valid.
-static int draco_decode_prediction_data(draco_buf *b, draco_attribute *att,
-                                        uint32_t num_entries) {
+static int draco_decode_prediction_data(draco_buf *b, draco_attribute *att, uint32_t num_entries) {
+    if (!b || !att)
+        return 0;
     if (att->prediction_scheme == DRACO_PREDICTION_CONSTRAINED_MULTI) {
         for (int i = 0; i < DRACO_EB_MAX_PARALLELOGRAMS; i++) {
             uint64_t nflags = draco_read_varint(b);
-            if (b->failed ||
-                nflags > (uint64_t)num_entries * DRACO_EB_MAX_PARALLELOGRAMS + 64u)
+            if (b->failed || nflags > (uint64_t)num_entries * DRACO_EB_MAX_PARALLELOGRAMS + 64u ||
+                nflags > UINT32_MAX || nflags > SIZE_MAX)
                 return 0;
             att->crease_count[i] = (uint32_t)nflags;
             att->crease_pos[i] = 0;
@@ -2898,14 +3180,14 @@ static int draco_decode_prediction_data(draco_buf *b, draco_attribute *att,
                 size_t size;
                 draco_rans ans;
                 att->crease_bits[i] = (uint8_t *)malloc((size_t)nflags);
-                if (!att->crease_bits[i] ||
-                    !draco_parse_prediction_rans(b, &prob, &buf, &size))
+                if (!att->crease_bits[i] || !draco_parse_prediction_rans(b, &prob, &buf, &size))
                     return 0;
                 if (size == 0 || !draco_rans_init(&ans, buf, size, 4096u))
                     return 0;
                 for (uint64_t j = 0; j < nflags; j++) {
                     uint32_t val = 0;
-                    draco_rabs_read(&ans, prob, &val);
+                    if (!draco_rabs_read(&ans, prob, &val))
+                        return 0;
                     att->crease_bits[i][j] = (uint8_t)(val > 0);
                 }
             }
@@ -2928,7 +3210,8 @@ static int draco_decode_prediction_data(draco_buf *b, draco_attribute *att,
                 return 0;
             for (uint32_t j = 0; j < n; j++) {
                 uint32_t val = 0;
-                draco_rabs_read(&ans, prob, &val);
+                if (!draco_rabs_read(&ans, prob, &val))
+                    return 0;
                 if (val == 0)
                     last_orientation = !last_orientation;
                 att->tex_orient[j] = (uint8_t)last_orientation;
@@ -2938,10 +3221,17 @@ static int draco_decode_prediction_data(draco_buf *b, draco_attribute *att,
         uint8_t prob;
         const uint8_t *buf;
         size_t size;
-        att->normal_max_q = (int32_t)draco_read_u32(b);
+        uint32_t normal_max_q = draco_read_u32(b);
+        int32_t derived_max_q;
+        int32_t derived_max_value;
+        int32_t derived_center;
         (void)draco_read_u32(b); /* unused center value */
-        if (b->failed || !draco_parse_prediction_rans(b, &prob, &buf, &size))
+        if (b->failed || normal_max_q > INT32_MAX ||
+            !draco_normal_quant_params(
+                (int32_t)normal_max_q, &derived_max_q, &derived_max_value, &derived_center) ||
+            !draco_parse_prediction_rans(b, &prob, &buf, &size))
             return 0;
+        att->normal_max_q = (int32_t)normal_max_q;
         att->flip_count = num_entries;
         if (num_entries > 0) {
             draco_rans ans;
@@ -2950,7 +3240,8 @@ static int draco_decode_prediction_data(draco_buf *b, draco_attribute *att,
                 return 0;
             for (uint32_t j = 0; j < num_entries; j++) {
                 uint32_t val = 0;
-                draco_rabs_read(&ans, prob, &val);
+                if (!draco_rabs_read(&ans, prob, &val))
+                    return 0;
                 att->flip_bits[j] = (uint8_t)(val > 0);
             }
         }
@@ -2962,8 +3253,16 @@ static int draco_decode_prediction_data(draco_buf *b, draco_attribute *att,
             if (att->wrap_min > att->wrap_max)
                 return 0;
         } else {
-            att->normal_max_q = (int32_t)draco_read_u32(b);
+            uint32_t normal_max_q = draco_read_u32(b);
+            int32_t derived_max_q;
+            int32_t derived_max_value;
+            int32_t derived_center;
             (void)draco_read_u32(b); /* unused center value */
+            if (b->failed || normal_max_q > INT32_MAX ||
+                !draco_normal_quant_params(
+                    (int32_t)normal_max_q, &derived_max_q, &derived_max_value, &derived_center))
+                return 0;
+            att->normal_max_q = (int32_t)normal_max_q;
         }
     }
     return b->failed ? 0 : 1;
@@ -2978,62 +3277,104 @@ static int draco_decode_generic_attribute(draco_buf *b, draco_attribute *att) {
     /* Draco data types: 1 INT8, 2 UINT8, 3 INT16, 4 UINT16, 5 INT32, 6 UINT32,
      * 7 INT64, 8 UINT64, 9 FLOAT32, 10 FLOAT64, 11 BOOL. */
     static const uint8_t dt_sizes[12] = {0, 1, 1, 2, 2, 4, 4, 8, 8, 4, 8, 1};
-    uint64_t total = (uint64_t)att->num_values * att->components;
-    uint32_t dt = att->data_type;
+    uint32_t total;
+    uint32_t dt;
     uint32_t esize;
+    size_t input_bytes;
+    size_t output_bytes;
+    if (!b || !att || !draco_attribute_descriptor_valid(att) ||
+        !draco_scalar_count(att->num_values, att->components, &total))
+        return 0;
+    dt = att->data_type;
     if (dt >= 12 || dt_sizes[dt] == 0)
         return 0;
     esize = dt_sizes[dt];
     if (total == 0)
         return 1;
-    if (total > (uint64_t)(b->size - b->pos) / esize || total > SIZE_MAX / 8u)
+    if (b->pos > b->size || !draco_size_mul((size_t)total, esize, &input_bytes) ||
+        input_bytes > b->size - b->pos)
         return 0;
     if (dt == 9) {
-        att->out_floats = (float *)calloc((size_t)total, sizeof(float));
+        if (!draco_size_mul((size_t)total, sizeof(float), &output_bytes))
+            return 0;
+        att->out_floats = (float *)calloc(1u, output_bytes);
         if (!att->out_floats)
             return 0;
-        for (uint64_t i = 0; i < total; i++)
+        for (uint32_t i = 0; i < total; i++) {
             att->out_floats[i] = draco_read_f32(b);
+            if (!isfinite(att->out_floats[i]))
+                return 0;
+        }
     } else if (dt == 10) {
-        att->out_floats = (float *)calloc((size_t)total, sizeof(float));
+        if (!draco_size_mul((size_t)total, sizeof(float), &output_bytes))
+            return 0;
+        att->out_floats = (float *)calloc(1u, output_bytes);
         if (!att->out_floats)
             return 0;
-        for (uint64_t i = 0; i < total; i++) {
+        for (uint32_t i = 0; i < total; i++) {
             uint64_t bits = draco_read_u32(b);
             double dv;
             bits |= (uint64_t)draco_read_u32(b) << 32;
             memcpy(&dv, &bits, sizeof(dv));
+            if (!isfinite(dv) || dv > FLT_MAX || dv < -FLT_MAX)
+                return 0;
             att->out_floats[i] = (float)dv;
         }
     } else {
-        att->out_ints = (int32_t *)calloc((size_t)total, sizeof(int32_t));
+        if (!draco_size_mul((size_t)total, sizeof(int32_t), &output_bytes))
+            return 0;
+        att->out_ints = (int32_t *)calloc(1u, output_bytes);
         if (!att->out_ints)
             return 0;
-        for (uint64_t i = 0; i < total; i++) {
+        for (uint32_t i = 0; i < total; i++) {
             switch (dt) {
-            case 1:
-                att->out_ints[i] = (int8_t)draco_read_u8(b);
-                break;
-            case 2:
-            case 11:
-                att->out_ints[i] = draco_read_u8(b);
-                break;
-            case 3:
-                att->out_ints[i] = (int16_t)draco_read_u16(b);
-                break;
-            case 4:
-                att->out_ints[i] = draco_read_u16(b);
-                break;
-            case 7:
-            case 8: {
-                uint64_t lo = draco_read_u32(b);
-                uint64_t hi = draco_read_u32(b);
-                att->out_ints[i] = (int32_t)(lo | (hi << 32));
-                break;
-            }
-            default:
-                att->out_ints[i] = (int32_t)draco_read_u32(b);
-                break;
+                case 1:
+                    att->out_ints[i] = (int8_t)draco_read_u8(b);
+                    break;
+                case 2:
+                    att->out_ints[i] = draco_read_u8(b);
+                    break;
+                case 11: {
+                    uint8_t value = draco_read_u8(b);
+                    if (value > 1u)
+                        return 0;
+                    att->out_ints[i] = value;
+                    break;
+                }
+                case 3:
+                    att->out_ints[i] = (int16_t)draco_read_u16(b);
+                    break;
+                case 4:
+                    att->out_ints[i] = draco_read_u16(b);
+                    break;
+                case 7:
+                case 8: {
+                    uint64_t lo = draco_read_u32(b);
+                    uint64_t hi = draco_read_u32(b);
+                    uint64_t raw = lo | (hi << 32);
+                    if (dt == 7) {
+                        int64_t signed_raw;
+                        memcpy(&signed_raw, &raw, sizeof(signed_raw));
+                        if (signed_raw < INT32_MIN || signed_raw > INT32_MAX)
+                            return 0;
+                        att->out_ints[i] = (int32_t)signed_raw;
+                    } else {
+                        if (raw > INT32_MAX)
+                            return 0;
+                        att->out_ints[i] = (int32_t)raw;
+                    }
+                    break;
+                }
+                case 6: {
+                    uint32_t value = draco_read_u32(b);
+                    if (value > INT32_MAX)
+                        return 0;
+                    att->out_ints[i] = (int32_t)value;
+                    break;
+                }
+                default:
+                    att->out_ints[i] = (int32_t)draco_read_u32(b);
+                    break;
             }
         }
     }
@@ -3049,18 +3390,30 @@ static int draco_decode_generic_attribute(draco_buf *b, draco_attribute *att) {
 /// @param eb Optional edgebreaker traversal state for mesh prediction schemes.
 /// @param dec_idx Attribute decoder index within @p eb.
 /// @return Non-zero when entropy decoding, prediction inversion, and side data all succeed.
-static int draco_decode_portable_attribute(draco_buf *b,
-                                           draco_mesh *mesh,
-                                           draco_attribute *att,
-                                           draco_eb *eb,
-                                           uint32_t dec_idx) {
-    int eff_comps = (att->decoder_type == DRACO_SEQ_NORMALS) ? 2 : att->components;
-    uint32_t num_values = att->num_values * (uint32_t)eff_comps;
+static int draco_decode_portable_attribute(
+    draco_buf *b, draco_mesh *mesh, draco_attribute *att, draco_eb *eb, uint32_t dec_idx) {
+    int eff_comps;
+    uint32_t num_values;
+    size_t value_bytes;
     uint32_t *symbols;
     uint8_t compressed;
+    uint8_t prediction_scheme;
+    if (!b || !mesh || !att || att->decoder_type > DRACO_SEQ_NORMALS || att->components == 0 ||
+        att->components > DRACO_MAX_COMPONENTS || (eb && dec_idx >= eb->num_decoders))
+        return 0;
+    eff_comps = (att->decoder_type == DRACO_SEQ_NORMALS) ? 2 : att->components;
+    if (!draco_scalar_count(att->num_values, (uint32_t)eff_comps, &num_values) ||
+        !draco_size_mul((size_t)num_values, sizeof(uint32_t), &value_bytes))
+        return 0;
     if (att->decoder_type == DRACO_SEQ_GENERIC)
         return draco_decode_generic_attribute(b, att);
-    att->prediction_scheme = (int8_t)draco_read_u8(b);
+    prediction_scheme = draco_read_u8(b);
+    if (prediction_scheme == (uint8_t)DRACO_PREDICTION_NONE)
+        att->prediction_scheme = DRACO_PREDICTION_NONE;
+    else if (prediction_scheme <= INT8_MAX)
+        att->prediction_scheme = (int8_t)prediction_scheme;
+    else
+        return 0;
     if (b->failed)
         return 0;
     if (att->prediction_scheme != DRACO_PREDICTION_NONE) {
@@ -3070,18 +3423,24 @@ static int draco_decode_portable_attribute(draco_buf *b,
         if (att->prediction_transform != DRACO_TRANSFORM_WRAP &&
             att->prediction_transform != DRACO_TRANSFORM_NORMAL_OCT_CANON)
             return 0;
-        switch (att->prediction_scheme) {
-        case DRACO_PREDICTION_DIFFERENCE:
-            break;
-        case DRACO_PREDICTION_PARALLELOGRAM:
-        case DRACO_PREDICTION_CONSTRAINED_MULTI:
-        case DRACO_PREDICTION_TEX_COORDS_PORTABLE:
-        case DRACO_PREDICTION_GEOMETRIC_NORMAL:
-            if (!eb)
-                return 0; /* mesh schemes need edgebreaker traversal state */
-            break;
-        default:
+        if (att->prediction_transform == DRACO_TRANSFORM_NORMAL_OCT_CANON &&
+            (att->decoder_type != DRACO_SEQ_NORMALS || eff_comps != 2))
             return 0;
+        switch (att->prediction_scheme) {
+            case DRACO_PREDICTION_DIFFERENCE:
+                break;
+            case DRACO_PREDICTION_PARALLELOGRAM:
+            case DRACO_PREDICTION_CONSTRAINED_MULTI:
+            case DRACO_PREDICTION_TEX_COORDS_PORTABLE:
+            case DRACO_PREDICTION_GEOMETRIC_NORMAL:
+                if (!eb)
+                    return 0; /* mesh schemes need edgebreaker traversal state */
+                if (att->prediction_scheme == DRACO_PREDICTION_GEOMETRIC_NORMAL &&
+                    att->decoder_type != DRACO_SEQ_NORMALS)
+                    return 0;
+                break;
+            default:
+                return 0;
         }
     }
     compressed = draco_read_u8(b);
@@ -3089,10 +3448,8 @@ static int draco_decode_portable_attribute(draco_buf *b,
         return 0; /* raw (uncompressed) integer storage is not emitted by mesh encoders */
     if (num_values == 0)
         return 1;
-    if ((uint64_t)num_values > SIZE_MAX / sizeof(uint32_t))
-        return 0;
-    symbols = (uint32_t *)calloc(num_values, sizeof(uint32_t));
-    att->values = (int32_t *)calloc(num_values, sizeof(int32_t));
+    symbols = (uint32_t *)calloc(1u, value_bytes);
+    att->values = (int32_t *)calloc(1u, value_bytes);
     if (!symbols || !att->values) {
         free(symbols);
         return 0;
@@ -3107,13 +3464,7 @@ static int draco_decode_portable_attribute(draco_buf *b,
             att->values[i] = (int32_t)symbols[i];
     } else {
         for (uint32_t i = 0; i < num_values; i++) {
-            uint32_t val = symbols[i];
-            int32_t signed_val;
-            if (val & 1u)
-                signed_val = -(int32_t)(val >> 1) - 1;
-            else
-                signed_val = (int32_t)(val >> 1);
-            att->values[i] = signed_val;
+            att->values[i] = draco_zigzag_decode_u32(symbols[i]);
         }
     }
     free(symbols);
@@ -3122,23 +3473,22 @@ static int draco_decode_portable_attribute(draco_buf *b,
     if (!draco_decode_prediction_data(b, att, att->num_values))
         return 0;
     switch (att->prediction_scheme) {
-    case DRACO_PREDICTION_DIFFERENCE:
-        draco_difference_compute_original(att, att->num_values, eff_comps);
-        return 1;
-    case DRACO_PREDICTION_PARALLELOGRAM:
-        return draco_eb_parallelogram_compute(eb, dec_idx, att, eff_comps);
-    case DRACO_PREDICTION_CONSTRAINED_MULTI:
-        return draco_eb_multi_parallelogram_compute(eb, dec_idx, att, eff_comps);
-    case DRACO_PREDICTION_TEX_COORDS_PORTABLE:
-        if (eff_comps != 2)
+        case DRACO_PREDICTION_DIFFERENCE:
+            return draco_difference_compute_original(att, att->num_values, eff_comps);
+        case DRACO_PREDICTION_PARALLELOGRAM:
+            return draco_eb_parallelogram_compute(eb, dec_idx, att, eff_comps);
+        case DRACO_PREDICTION_CONSTRAINED_MULTI:
+            return draco_eb_multi_parallelogram_compute(eb, dec_idx, att, eff_comps);
+        case DRACO_PREDICTION_TEX_COORDS_PORTABLE:
+            if (eff_comps != 2)
+                return 0;
+            return draco_eb_texcoords_compute(eb, mesh, dec_idx, att);
+        case DRACO_PREDICTION_GEOMETRIC_NORMAL:
+            if (eff_comps != 2)
+                return 0;
+            return draco_eb_geometric_normal_compute(eb, mesh, dec_idx, att);
+        default:
             return 0;
-        return draco_eb_texcoords_compute(eb, mesh, dec_idx, att);
-    case DRACO_PREDICTION_GEOMETRIC_NORMAL:
-        if (eff_comps != 2)
-            return 0;
-        return draco_eb_geometric_normal_compute(eb, mesh, dec_idx, att);
-    default:
-        return 0;
     }
 }
 
@@ -3146,24 +3496,43 @@ static int draco_decode_portable_attribute(draco_buf *b,
 /// @param att Quantized attribute whose integer values and transform data are read.
 /// @return Non-zero after allocating and filling the final floating-point array.
 static int draco_dequantize_attribute(draco_attribute *att) {
-    uint32_t max_quantized = (1u << att->quantization_bits) - 1u;
+    uint32_t max_quantized;
+    uint32_t scalar_count;
+    size_t output_bytes;
     float factor;
-    if (att->quantization_bits == 0 || att->quantization_bits > 30)
+    if (!att || att->components == 0 || att->components > DRACO_MAX_COMPONENTS ||
+        att->quantization_bits == 0 || att->quantization_bits > 30 ||
+        !draco_scalar_count(att->num_values, att->components, &scalar_count) ||
+        !draco_size_mul((size_t)scalar_count, sizeof(float), &output_bytes))
         return 0;
+    if (scalar_count == 0)
+        return 1;
+    if (!att->values || !isfinite(att->quant_range) || att->quant_range < 0.0f)
+        return 0;
+    for (int c = 0; c < att->components; c++) {
+        if (!isfinite(att->quant_min[c]))
+            return 0;
+    }
+    max_quantized = (1u << att->quantization_bits) - 1u;
+    for (uint32_t i = 0; i < scalar_count; i++) {
+        if (att->values[i] < 0 || (uint32_t)att->values[i] > max_quantized)
+            return 0;
+    }
     factor = 1.0f / (float)max_quantized;
-    att->out_floats =
-        (float *)calloc((size_t)att->num_values * att->components, sizeof(float));
+    att->out_floats = (float *)calloc(1u, output_bytes);
     if (!att->out_floats)
         return 0;
     for (uint32_t i = 0; i < att->num_values; i++) {
         for (int c = 0; c < att->components; c++) {
             int32_t raw = att->values[(size_t)i * att->components + c];
-            int neg = raw < 0;
-            float norm = (float)(neg ? -raw : raw) * factor;
-            if (neg)
-                norm = -norm;
-            att->out_floats[(size_t)i * att->components + c] =
-                norm * att->quant_range + att->quant_min[c];
+            float norm = (float)raw * factor;
+            double output = (double)norm * att->quant_range + (double)att->quant_min[c];
+            if (!isfinite(output) || output > FLT_MAX || output < -FLT_MAX) {
+                free(att->out_floats);
+                att->out_floats = NULL;
+                return 0;
+            }
+            att->out_floats[(size_t)i * att->components + c] = (float)output;
         }
     }
     return 1;
@@ -3176,18 +3545,34 @@ static int draco_dequantize_attribute(draco_attribute *att) {
 /// @param att Normal attribute containing portable octahedral coordinates.
 /// @return Non-zero after allocating and filling three-component unit-vector output.
 static int draco_decode_normals_attribute(draco_attribute *att) {
-    int32_t max_q_src = att->normal_max_q > 0
-                            ? att->normal_max_q
-                            : (att->quantization_bits > 0 && att->quantization_bits <= 30
-                                   ? (int32_t)((1u << att->quantization_bits) - 1u)
-                                   : 0);
-    int32_t max_q = (1 << (draco_msb((uint32_t)max_q_src) + 1)) - 1;
-    int32_t max_value = max_q - 1;
+    int32_t max_q_src;
+    int32_t max_q;
+    int32_t max_value;
+    int32_t center;
+    uint32_t input_count;
+    size_t output_bytes;
     float scale;
-    if (max_q_src <= 0 || max_value <= 0)
+    if (!att || att->components != 3 ||
+        (att->normal_max_q <= 0 && (att->quantization_bits == 0 || att->quantization_bits > 30)))
         return 0;
+    max_q_src =
+        att->normal_max_q > 0 ? att->normal_max_q : (int32_t)((1u << att->quantization_bits) - 1u);
+    if (!draco_normal_quant_params(max_q_src, &max_q, &max_value, &center) ||
+        !draco_scalar_count(att->num_values, 2u, &input_count) ||
+        !draco_tuple_bytes(att->num_values, 3u, sizeof(float), &output_bytes))
+        return 0;
+    (void)max_q;
+    (void)center;
+    if (input_count == 0)
+        return 1;
+    if (!att->values)
+        return 0;
+    for (uint32_t i = 0; i < input_count; i++) {
+        if (att->values[i] < 0 || att->values[i] > max_value)
+            return 0;
+    }
     scale = 1.0f / (float)max_value;
-    att->out_floats = (float *)calloc((size_t)att->num_values * 3u, sizeof(float));
+    att->out_floats = (float *)calloc(1u, output_bytes);
     if (!att->out_floats)
         return 0;
     for (uint32_t i = 0; i < att->num_values; i++) {
@@ -3253,17 +3638,25 @@ static int draco_decode_normals_attribute(draco_attribute *att) {
 /// @param att Attribute receiving quantization origin, range, and bit count.
 /// @return Non-zero when all transform parameters required by the decoder are available.
 static int draco_read_transform_data(draco_buf *b, draco_attribute *att) {
+    if (!b || !att || att->decoder_type > DRACO_SEQ_NORMALS || att->components == 0 ||
+        att->components > DRACO_MAX_COMPONENTS)
+        return 0;
     if (att->decoder_type == DRACO_SEQ_NORMALS) {
         att->quantization_bits = draco_read_u8(b);
-        if (b->failed)
+        if (b->failed || att->quantization_bits == 0 || att->quantization_bits > 30)
             return 0;
     } else if (att->decoder_type == DRACO_SEQ_QUANTIZATION) {
         for (int c = 0; c < att->components; c++)
             att->quant_min[c] = draco_read_f32(b);
         att->quant_range = draco_read_f32(b);
         att->quantization_bits = draco_read_u8(b);
-        if (b->failed)
+        if (b->failed || att->quantization_bits == 0 || att->quantization_bits > 30 ||
+            !isfinite(att->quant_range) || att->quant_range < 0.0f)
             return 0;
+        for (int c = 0; c < att->components; c++) {
+            if (!isfinite(att->quant_min[c]))
+                return 0;
+        }
     }
     return 1;
 }
@@ -3273,6 +3666,11 @@ static int draco_read_transform_data(draco_buf *b, draco_attribute *att) {
 /// @return Non-zero when the selected decoder type has valid transform data and conversion
 ///         succeeds.
 static int draco_transform_attribute_to_original(draco_attribute *att) {
+    uint32_t scalar_count;
+    size_t output_bytes;
+    if (!att || att->decoder_type > DRACO_SEQ_NORMALS || att->components == 0 ||
+        att->components > DRACO_MAX_COMPONENTS)
+        return 0;
     if (att->decoder_type == DRACO_SEQ_GENERIC)
         return 1; /* raw values are already final */
     if (att->decoder_type == DRACO_SEQ_NORMALS)
@@ -3280,13 +3678,13 @@ static int draco_transform_attribute_to_original(draco_attribute *att) {
     if (att->decoder_type == DRACO_SEQ_QUANTIZATION)
         return draco_dequantize_attribute(att);
     if (att->num_values > 0) {
-        att->out_ints =
-            (int32_t *)calloc((size_t)att->num_values * att->components, sizeof(int32_t));
-        if (!att->out_ints || !att->values)
+        if (!att->values || !draco_scalar_count(att->num_values, att->components, &scalar_count) ||
+            !draco_size_mul((size_t)scalar_count, sizeof(int32_t), &output_bytes))
             return 0;
-        memcpy(att->out_ints,
-               att->values,
-               (size_t)att->num_values * att->components * sizeof(int32_t));
+        att->out_ints = (int32_t *)calloc(1u, output_bytes);
+        if (!att->out_ints)
+            return 0;
+        memcpy(att->out_ints, att->values, output_bytes);
     }
     return 1;
 }
@@ -3321,6 +3719,8 @@ static int draco_decode_edgebreaker(draco_buf *b, draco_mesh *mesh) {
                 goto done;
             if (eb->dec[i].data_id != 0xFF && eb->dec[i].data_id >= eb->num_att_data)
                 goto done;
+            if (i == 0 && (eb->dec[i].data_id != 0xFF || eb->dec[i].decoder_type != 0))
+                goto done; /* decoder zero owns unsplit position connectivity */
             if (eb->dec[i].decoder_type == 1 &&
                 (eb->dec[i].data_id == 0xFF || eb->dec[i].traversal != 0))
                 goto done; /* corner-mapped decoders need seams + depth-first order */
@@ -3337,9 +3737,8 @@ static int draco_decode_edgebreaker(draco_buf *b, draco_mesh *mesh) {
                 att->data_type = draco_read_u8(b);
                 att->components = draco_read_u8(b);
                 att->normalized = draco_read_u8(b);
-                att->unique_id = (uint32_t)draco_read_varint(b);
-                if (b->failed || att->components == 0 ||
-                    att->components > DRACO_MAX_COMPONENTS)
+                if (!draco_read_varint_u32(b, &att->unique_id) ||
+                    !draco_attribute_descriptor_valid(att))
                     goto done;
             }
             for (uint64_t j = 0; j < natts; j++) {
@@ -3349,7 +3748,8 @@ static int draco_decode_edgebreaker(draco_buf *b, draco_mesh *mesh) {
                  * (see the stride-3 allocation in draco_decode_normals_attribute);
                  * a mismatched declared component count would desync the output
                  * stride from the reader's (value*components) indexing. */
-                if (att->decoder_type == DRACO_SEQ_NORMALS && att->components != 3)
+                if (att->decoder_type > DRACO_SEQ_NORMALS ||
+                    (att->decoder_type == DRACO_SEQ_NORMALS && att->components != 3))
                     goto done;
             }
             if (b->failed)
@@ -3379,9 +3779,18 @@ static int draco_decode_edgebreaker(draco_buf *b, draco_mesh *mesh) {
     /* GenerateSequence + UpdatePointToAttributeIndexMapping per decoder. */
     for (uint32_t d = 0; d < eb->num_decoders; d++) {
         draco_eb_dec *dec = &eb->dec[d];
-        dec->value_to_corner = (int32_t *)malloc((size_t)eb->corner_cap * sizeof(int32_t));
-        dec->vertex_to_value = (int32_t *)malloc((size_t)eb->visit_cap * sizeof(int32_t));
-        dec->indices_map = (int32_t *)malloc((size_t)eb->point_count * sizeof(int32_t));
+        size_t corner_bytes;
+        size_t visit_bytes;
+        size_t point_bytes;
+        size_t traversal_bytes;
+        if (!draco_size_mul((size_t)eb->corner_cap, sizeof(int32_t), &corner_bytes) ||
+            !draco_size_mul((size_t)eb->visit_cap, sizeof(int32_t), &visit_bytes) ||
+            !draco_size_mul((size_t)eb->point_count, sizeof(int32_t), &point_bytes) ||
+            !draco_size_mul((size_t)eb->corner_cap + 2u, sizeof(int32_t), &traversal_bytes))
+            goto done;
+        dec->value_to_corner = (int32_t *)malloc(corner_bytes);
+        dec->vertex_to_value = (int32_t *)malloc(visit_bytes);
+        dec->indices_map = (int32_t *)malloc(point_bytes);
         if (!dec->value_to_corner || !dec->vertex_to_value || !dec->indices_map)
             goto done;
         memset(dec->vertex_to_value, 0xFF, (size_t)eb->visit_cap * sizeof(int32_t));
@@ -3389,12 +3798,10 @@ static int draco_decode_edgebreaker(draco_buf *b, draco_mesh *mesh) {
         memset(eb->vertex_visited, 0, eb->visit_cap);
         if (dec->traversal == 1) {
             if (!eb->pred_degree) {
-                eb->pred_degree = (uint32_t *)malloc((size_t)eb->visit_cap * sizeof(uint32_t));
+                eb->pred_degree = (uint32_t *)malloc(visit_bytes);
                 for (int i = 0; i < 3; i++)
-                    eb->pd_stack[i] =
-                        (int32_t *)malloc(((size_t)eb->corner_cap + 2u) * sizeof(int32_t));
-                if (!eb->pred_degree || !eb->pd_stack[0] || !eb->pd_stack[1] ||
-                    !eb->pd_stack[2])
+                    eb->pd_stack[i] = (int32_t *)malloc(traversal_bytes);
+                if (!eb->pred_degree || !eb->pd_stack[0] || !eb->pd_stack[1] || !eb->pd_stack[2])
                     goto done;
             }
             memset(eb->pred_degree, 0, (size_t)eb->visit_cap * sizeof(uint32_t));
@@ -3421,8 +3828,8 @@ static int draco_decode_edgebreaker(draco_buf *b, draco_mesh *mesh) {
         for (uint32_t j = 0; j < dec->att_count; j++)
             mesh->attributes[dec->att_start + j].num_values = dec->value_count;
         for (uint32_t j = 0; j < dec->att_count; j++) {
-            if (!draco_decode_portable_attribute(b, mesh,
-                                                 &mesh->attributes[dec->att_start + j], eb, d))
+            if (!draco_decode_portable_attribute(
+                    b, mesh, &mesh->attributes[dec->att_start + j], eb, d))
                 goto done;
         }
         for (uint32_t j = 0; j < dec->att_count; j++) {
@@ -3439,7 +3846,12 @@ static int draco_decode_edgebreaker(draco_buf *b, draco_mesh *mesh) {
      * the sequential layout (identity mapping). */
     mesh->num_points = eb->point_count;
     mesh->num_faces = eb->num_faces;
-    mesh->face_to_vertex = (uint32_t *)malloc((size_t)eb->corner_cap * sizeof(uint32_t));
+    {
+        size_t face_bytes;
+        if (!draco_size_mul((size_t)eb->corner_cap, sizeof(uint32_t), &face_bytes))
+            goto done;
+        mesh->face_to_vertex = (uint32_t *)malloc(face_bytes);
+    }
     if (!mesh->face_to_vertex)
         goto done;
     for (uint32_t c = 0; c < eb->corner_cap; c++)
@@ -3450,9 +3862,14 @@ static int draco_decode_edgebreaker(draco_buf *b, draco_mesh *mesh) {
             draco_attribute *att = &mesh->attributes[dec->att_start + j];
             uint32_t out_comps =
                 (att->decoder_type == DRACO_SEQ_NORMALS) ? 3u : (uint32_t)att->components;
+            size_t output_bytes;
+            if (!draco_tuple_bytes(eb->point_count,
+                                   out_comps,
+                                   att->out_floats ? sizeof(float) : sizeof(int32_t),
+                                   &output_bytes))
+                goto done;
             if (att->out_floats) {
-                float *pf = (float *)calloc((size_t)eb->point_count * out_comps,
-                                            sizeof(float));
+                float *pf = (float *)calloc(1u, output_bytes);
                 if (!pf)
                     goto done;
                 for (uint32_t p = 0; p < eb->point_count; p++) {
@@ -3468,8 +3885,7 @@ static int draco_decode_edgebreaker(draco_buf *b, draco_mesh *mesh) {
                 free(att->out_floats);
                 att->out_floats = pf;
             } else if (att->out_ints) {
-                int32_t *pi = (int32_t *)calloc((size_t)eb->point_count * out_comps,
-                                                sizeof(int32_t));
+                int32_t *pi = (int32_t *)calloc(1u, output_bytes);
                 if (!pi)
                     goto done;
                 for (uint32_t p = 0; p < eb->point_count; p++) {
@@ -3513,13 +3929,16 @@ static int draco_decode_mesh(const uint8_t *data,
     uint8_t encoder_type;
     uint8_t encoder_method;
     uint16_t flags;
+    if (!mesh)
+        return 0;
     memset(mesh, 0, sizeof(*mesh));
-    *out_unsupported = 0;
+    if (out_unsupported)
+        *out_unsupported = 0;
     b.data = data;
     b.size = size;
     b.pos = 0;
     b.failed = 0;
-    if (size < 11 || memcmp(data, "DRACO", 5) != 0)
+    if (!data || size < 11 || memcmp(data, "DRACO", 5) != 0)
         return 0;
     b.pos = 5;
     (void)draco_read_u8(&b); /* major version */
@@ -3530,7 +3949,8 @@ static int draco_decode_mesh(const uint8_t *data,
     if (b.failed)
         return 0;
     if (encoder_type != 1 /* TRIANGULAR_MESH */) {
-        *out_unsupported = 1; /* point clouds */
+        if (out_unsupported)
+            *out_unsupported = 1; /* point clouds */
         return 0;
     }
     if ((flags & 0x8000u) && !draco_skip_metadata(&b))
@@ -3541,7 +3961,8 @@ static int draco_decode_mesh(const uint8_t *data,
         return 1;
     }
     if (encoder_method != 0 /* MESH_SEQUENTIAL_ENCODING */) {
-        *out_unsupported = 1;
+        if (out_unsupported)
+            *out_unsupported = 1;
         return 0;
     }
     if (!draco_decode_sequential_connectivity(&b, mesh))
@@ -3564,18 +3985,19 @@ static int draco_decode_mesh(const uint8_t *data,
                 att->data_type = draco_read_u8(&b);
                 att->components = draco_read_u8(&b);
                 att->normalized = draco_read_u8(&b);
-                att->unique_id = (uint32_t)draco_read_varint(&b);
+                if (!draco_read_varint_u32(&b, &att->unique_id))
+                    goto fail;
                 att->num_values = mesh->num_points;
-                if (b.failed || att->components == 0 ||
-                    att->components > DRACO_MAX_COMPONENTS)
+                if (b.failed || !draco_attribute_descriptor_valid(att))
                     goto fail;
             }
             for (uint32_t j = 0; j < total_attributes; j++) {
                 mesh->attributes[j].decoder_type = draco_read_u8(&b);
                 /* NORMALS transform emits stride-3 output regardless of the declared
                  * component count; reject a mismatch that would desync the reader. */
-                if (mesh->attributes[j].decoder_type == DRACO_SEQ_NORMALS &&
-                    mesh->attributes[j].components != 3)
+                if (mesh->attributes[j].decoder_type > DRACO_SEQ_NORMALS ||
+                    (mesh->attributes[j].decoder_type == DRACO_SEQ_NORMALS &&
+                     mesh->attributes[j].components != 3))
                     goto fail;
             }
             if (b.failed)
@@ -3609,9 +4031,9 @@ fail:
 /// @param unique_id Attribute identifier supplied by the glTF Draco extension.
 /// @return Borrowed matching attribute descriptor, or NULL when absent or out of range.
 static const draco_attribute *draco_find_attribute(const draco_mesh *mesh, int64_t unique_id) {
-    if (unique_id < 0)
+    if (!mesh || unique_id < 0)
         return NULL;
-    for (uint32_t i = 0; i < mesh->num_attributes; i++) {
+    for (uint32_t i = 0; i < mesh->num_attributes && i < DRACO_MAX_ATTRIBUTES; i++) {
         if (mesh->attributes[i].unique_id == (uint32_t)unique_id)
             return &mesh->attributes[i];
     }

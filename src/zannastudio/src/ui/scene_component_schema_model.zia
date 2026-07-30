@@ -904,6 +904,45 @@ class SceneComponentSchema {
         sceneSettings = [];
     }
 
+    /// @brief Return the declared label for one enum-choice property value.
+    /// @details Scans target-compatible component fields for @p key and
+    ///          returns the paired choice label when it adds information;
+    ///          undeclared keys, non-choice fields, unknown values, and
+    ///          label-less choices return "".
+    expose func EnumChoiceLabel(requested: String,
+                                key: String,
+                                value: String) -> String {
+        if valid == false { return ""; }
+        var c = 0;
+        while c < components.count() {
+            var component = components.get(c);
+            if component != null and component.SupportsTarget(requested) {
+                var f = 0;
+                while f < component.fields.count() {
+                    var field = component.fields.get(f);
+                    if field.key == key and field.choices.count() > 0 {
+                        var i = 0;
+                        while i < field.choices.count() {
+                            if field.choices.get(i) == value {
+                                if i < field.choiceLabels.count()
+                                   and field.choiceLabels.get(i) != ""
+                                   and field.choiceLabels.get(i) != value {
+                                    return field.choiceLabels.get(i);
+                                }
+                                return "";
+                            }
+                            i = i + 1;
+                        }
+                        return "";
+                    }
+                    f = f + 1;
+                }
+            }
+            c = c + 1;
+        }
+        return "";
+    }
+
     /// @brief Count definitions compatible with one editor target.
     expose func CountForTarget(target: String) -> Integer {
         var count = 0;

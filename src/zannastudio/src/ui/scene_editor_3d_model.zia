@@ -92,7 +92,9 @@ final GAME_VIEW_MATTE_COLOR: Integer = 0x080A0E;
 final MAX_SCENE_BYTES: Integer = 64000000;
 final MAX_3D_HISTORY_BYTES: Integer = 256000000;
 final MAX_TEXTURE_SOURCE_BYTES: Integer = 16000000;
-final MAX_EDITOR_NODES: Integer = 4096;
+// Rows project from the id-keyed virtual model (ADR 0226), so the bound is
+// model capacity, not retained widget nodes; clipping past it stays truthful.
+final MAX_EDITOR_NODES: Integer = 65536;
 final MAX_PROJECT_PREVIEW_NODES: Integer = 4096;
 final MAX_PROJECT_PREVIEW_ASSETS: Integer = 256;
 final MAX_PROJECT_MATERIAL_PREVIEW_TEXTURES: Integer = 640;
@@ -520,6 +522,21 @@ expose func ClosestGizmoRotationRing(
 }
 
 /// @brief Return whether a 3D scene width needs master/detail presentation.
+// Parent-target dropdown candidates are bounded: past this many eligible
+// rows the dropdown stops adding options (its tooltip says so) and large
+// scenes reparent through hierarchy row drops instead. Unbounded item
+// population is quadratic widget work at the 65k hierarchy ceiling.
+final MAX_PARENT_TARGET_OPTIONS: Integer = 512;
+
+/// @brief Map a virtual-drop position token onto TreeView drop values.
+/// @details Mirrors vg_tree_drop_position_t: 0 before, 1 into, 2 after.
+///          Unknown tokens resolve to the containment drop.
+expose func DropPositionValue(token: String) -> Integer {
+    if token == "before" { return 0; }
+    if token == "after" { return 2; }
+    return 1;
+}
+
 expose func UsesCompactLayout(width: Number) -> Boolean {
     return width > 0.0 and width <= COMPACT_SCENE_3D_WIDTH;
 }

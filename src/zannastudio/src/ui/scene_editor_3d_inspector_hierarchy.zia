@@ -69,6 +69,7 @@ bind Quat = Zanna.Math.Quat;
 bind Mat4 = Zanna.Math.Mat4;
 bind RayHit3D = Zanna.Graphics3D.RayHit3D;
 bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
 bind Math = Zanna.Math;
 bind Convert = Zanna.Core.Convert;
 bind Input = Zanna.Input;
@@ -541,12 +542,24 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
 
     hide override func RefreshHierarchy(preferred: SceneNode) {
         CaptureHierarchyExpansion();
+        // Detach the projection while the id-keyed model rebuilds so every
+        // mutation is a pure O(1) model edit; the rebind below re-projects
+        // the flattened order exactly once (ADR 0226). Model ids are the
+        // flat indices of the build that declared them, so the previous
+        // depth-0 rows name exactly the stale top-level subtrees.
+        if hierarchyModel != null {
+            hierarchyModel.Unbind();
+            var stale = 0;
+            while stale < flatDepths.count() {
+                if flatDepths.get(stale) == 0 {
+                    hierarchyModel.RemoveNode("" + stale);
+                }
+                stale = stale + 1;
+            }
+        }
         flatNodes = [];
         flatDepths = [];
         flatPaths = [];
-        hierarchyTreeNodes = [];
-        hierarchyTree.Clear();
-        hierarchyTree.PruneRetiredNodes();
         hierarchyClipped = false;
         hierarchyPreferredNode = preferred;
         if scene != null {
@@ -555,7 +568,7 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
             while child < sceneRoot.ChildCount
                   and flatNodes.count() < SceneEditor3DModel.MAX_EDITOR_NODES {
                 AppendHierarchy(
-                    sceneRoot.GetChild(child), 0, "" + child, null);
+                    sceneRoot.GetChild(child), 0, "" + child, "");
                 child = child + 1;
             }
             if child < sceneRoot.ChildCount { hierarchyClipped = true; }
@@ -592,6 +605,9 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
                 selectedIndex = selectedIndices.get(0);
             }
         }
+        if hierarchyModel != null and hierarchyTree != null {
+            hierarchyModel.Bind(hierarchyTree);
+        }
         RevealHierarchyTreeSelection();
         RefreshHierarchySearch(false);
         hierarchyPreferredNode = null;
@@ -604,10 +620,13 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
         renderDirty = true;
     }
 
-    /// @brief Snapshot expanded identities before rebuilding retained rows.
+    /// @brief Snapshot expanded identities before rebuilding the row model.
     /// @details Live graph refreshes match node identity, while canonical
     ///          reloads fall back to structural paths. First presentation
     ///          expands the complete bounded hierarchy for discoverability.
+    ///          Expansion reads the virtual model's visible rows, so an
+    ///          expanded row hidden under a collapsed ancestor re-collapses
+    ///          after a structural refresh (ADR 0226).
     hide override func CaptureHierarchyExpansion() {
         hierarchyExpandedNodes = [];
         hierarchyExpandedPaths = [];
@@ -618,23 +637,34 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
             sameDocument and scene != null and hierarchySceneRoot != null
             and hierarchySceneRoot == scene.Root;
         hierarchyExpandByDefault =
-            hierarchyTreeNodes.count() == 0 or sameDocument == false;
+            flatNodes.count() == 0 or sameDocument == false;
         if sameDocument == false { return; }
-        var index = 0;
-        while index < hierarchyTreeNodes.count()
-              and index < flatNodes.count()
-              and index < flatPaths.count() {
-            var treeNode = hierarchyTreeNodes.get(index);
-            if treeNode != null
-               and GUI.TreeView.Node.IsExpanded(treeNode) {
-                hierarchyExpandedNodes.add(flatNodes.get(index));
-                hierarchyExpandedPaths.add(flatPaths.get(index));
+        if hierarchyModel != null {
+            var rows = hierarchyModel.VisibleRows();
+            var rowIndex = 0;
+            while rowIndex < Seq.get_Count(rows) {
+                var row = Seq.Get(rows, rowIndex);
+                if row != null
+                   and Map.GetBoolOr(row, "expanded", false) {
+                    var index = Parse.IntOr(Map.GetStr(row, "id"), -1);
+                    if index >= 0 and index < flatNodes.count()
+                       and index < flatPaths.count() {
+                        hierarchyExpandedNodes.add(flatNodes.get(index));
+                        hierarchyExpandedPaths.add(flatPaths.get(index));
+                    }
+                }
+                rowIndex = rowIndex + 1;
             }
-            if hierarchyPreserveExpansionByIdentity
-               and PickLockedPath(flatPaths.get(index)) {
-                hierarchyPickLockedNodes.add(flatNodes.get(index));
+        }
+        if hierarchyPreserveExpansionByIdentity {
+            var lockIndex = 0;
+            while lockIndex < flatNodes.count()
+                  and lockIndex < flatPaths.count() {
+                if PickLockedPath(flatPaths.get(lockIndex)) {
+                    hierarchyPickLockedNodes.add(flatNodes.get(lockIndex));
+                }
+                lockIndex = lockIndex + 1;
             }
-            index = index + 1;
         }
     }
 
@@ -777,53 +807,54 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
         return visibleMarker + name + lockMarker + componentMarker;
     }
 
-    /// @brief Refresh retained row labels without disturbing tree identity.
+    /// @brief Refresh model row labels without disturbing row identity.
     hide override func RefreshHierarchyRowLabels() {
+        if hierarchyModel == null { return; }
         var index = 0;
-        while index < hierarchyTreeNodes.count()
-              and index < flatNodes.count()
+        while index < flatNodes.count()
               and index < flatPaths.count() {
-            var treeNode = hierarchyTreeNodes.get(index);
-            if treeNode != null {
-                GUI.TreeView.Node.SetText(
-                    treeNode,
-                    HierarchyRowLabel(
-                        flatNodes.get(index), flatPaths.get(index)));
-            }
+            hierarchyModel.SetNodeText(
+                "" + index,
+                HierarchyRowLabel(
+                    flatNodes.get(index), flatPaths.get(index)));
             index = index + 1;
         }
     }
 
-    /// @brief Append one true retained parent/child row and its bounded subtree.
+    /// @brief Append one virtual parent/child row and its bounded subtree.
+    /// @details Model ids are this build's flat indices; @p parentTreeNode
+    ///          carries the parent's id string ("" declares a top-level row).
     hide override func AppendHierarchy(node: SceneNode,
                               depth: Integer,
                               path: String,
-                              parentTreeNode: Any) {
+                              parentTreeNode: String) {
         if node == null { return; }
         if flatNodes.count() >= SceneEditor3DModel.MAX_EDITOR_NODES
            or depth > SceneEditor3DModel.MAX_HIERARCHY_DEPTH {
             hierarchyClipped = true;
             return;
         }
-        var treeNode = hierarchyTree.AddNode(
-            parentTreeNode,
-            HierarchyRowLabel(node, path));
-        if treeNode == null {
+        if hierarchyModel == null {
             hierarchyClipped = true;
             return;
         }
-        GUI.TreeView.Node.SetData(treeNode, "" + flatNodes.count());
-        GUI.TreeView.Node.SetStableId(treeNode, path);
+        var rowId = "" + flatNodes.count();
+        hierarchyModel.AddNode(
+            parentTreeNode,
+            rowId,
+            HierarchyRowLabel(node, path));
         var icon = "vector:node-group";
         if node.PrefabPath != "" { icon = "vector:prefab"; }
         else if node.Mesh != null { icon = "vector:node-mesh"; }
         else if node.Light != null { icon = "vector:node-light"; }
         else if node.Camera != null { icon = "vector:node-camera"; }
-        GUI.TreeView.Node.SetIcon(treeNode, icon);
+        hierarchyModel.SetNodeIcon(rowId, icon);
+        if PickLockedPath(path) {
+            hierarchyModel.SetNodeStyle(rowId, 0, true);
+        }
         flatNodes.add(node);
         flatDepths.add(depth);
         flatPaths.add(path);
-        hierarchyTreeNodes.add(treeNode);
         var child = 0;
         while child < node.ChildCount
               and flatNodes.count() < SceneEditor3DModel.MAX_EDITOR_NODES {
@@ -831,12 +862,15 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
                 node.GetChild(child),
                 depth + 1,
                 path + "/" + child,
-                treeNode);
+                rowId);
             child = child + 1;
         }
         if child < node.ChildCount { hierarchyClipped = true; }
+        // The walk is eager, so declare the child list complete; leaves
+        // render without lazy expand affordances.
+        hierarchyModel.SetNodeLoaded(rowId, true);
         if ShouldExpandHierarchyNode(node, path) {
-            hierarchyTree.Expand(treeNode);
+            hierarchyModel.Expand(rowId);
         }
     }
 }

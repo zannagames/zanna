@@ -118,6 +118,11 @@ static rt_game3d_health *game3d_health_checked(void *obj, const char *method) {
     return health;
 }
 
+/// @brief Validate one dense private combat array before traversal or append.
+static int game3d_combat_array_valid(int32_t count, int32_t capacity, const void *items) {
+    return count >= 0 && capacity >= 0 && count <= capacity && (capacity == 0 || items);
+}
+
 /// @brief GC finalizer for Hitbox3D: release the retained collider shape.
 /// @param obj Hitbox3D allocation being finalized.
 static void game3d_hitbox_finalize(void *obj) {
@@ -132,8 +137,18 @@ static void game3d_hitbox_finalize(void *obj) {
 /// @param hitbox Hitbox3D to append.
 /// @return 1 when retained and appended, or 0 when the array cannot grow.
 static int game3d_entity_append_hitbox(rt_game3d_entity *entity, rt_game3d_hitbox *hitbox) {
+    int32_t new_cap;
+    if (!entity || !hitbox ||
+        !game3d_combat_array_valid(entity->hitbox_count, entity->hitbox_capacity, entity->hitboxes))
+        return 0;
     if (entity->hitbox_count >= entity->hitbox_capacity) {
-        int32_t new_cap = entity->hitbox_capacity ? entity->hitbox_capacity * 2 : 4;
+        if (entity->hitbox_count == INT32_MAX ||
+            !game3d_checked_capacity_i32(entity->hitbox_capacity,
+                                         entity->hitbox_count + 1,
+                                         4,
+                                         sizeof(*entity->hitboxes),
+                                         &new_cap))
+            return 0;
         void **grown = (void **)realloc(entity->hitboxes, (size_t)new_cap * sizeof(void *));
         if (!grown)
             return 0;
@@ -151,7 +166,8 @@ static int game3d_entity_append_hitbox(rt_game3d_entity *entity, rt_game3d_hitbo
 /// @param collider Collider3D shape retained by the volume.
 /// @param bone_index Skeleton bone index, or -1 for entity-space attachment.
 /// @param api_name Trap context used when validating the owner.
-/// @return A newly registered Hitbox3D handle, or NULL on validation, allocation, or registration failure.
+/// @return A newly registered Hitbox3D handle, or NULL on validation, allocation, or registration
+/// failure.
 static void *game3d_hitbox_new_impl(void *entity_obj,
                                     void *collider,
                                     int64_t bone_index,
@@ -337,7 +353,7 @@ void *rt_game3d_hitbox_bind_window(void *obj, rt_string state_name, double t0, d
         game3d_hitbox_checked(obj, "Game3D.Hitbox3D.bindWindow: invalid hitbox");
     if (!hitbox)
         return obj;
-    if (hitbox->window_count >= RT_GAME3D_HITBOX_MAX_WINDOWS) {
+    if (hitbox->window_count < 0 || hitbox->window_count >= RT_GAME3D_HITBOX_MAX_WINDOWS) {
         rt_trap("Game3D.Hitbox3D.bindWindow: window limit reached (4)");
         return obj;
     }
@@ -439,9 +455,13 @@ static int game3d_hitbox_world_pose(rt_game3d_hitbox *hitbox,
 /// @param hitbox Hitbox3D whose manual and animator-window state is sampled.
 /// @return 1 when the volume is live for this combat step, or 0 otherwise.
 static int game3d_hitbox_is_live(rt_game3d_hitbox *hitbox) {
+    int32_t window_count;
+    if (!hitbox)
+        return 0;
     if (hitbox->active)
         return 1;
-    if (hitbox->window_count <= 0)
+    window_count = hitbox->window_count;
+    if (window_count <= 0 || window_count > RT_GAME3D_HITBOX_MAX_WINDOWS)
         return 0;
     rt_game3d_entity *entity = hitbox->entity;
     void *animator = entity ? game3d_entity_anim_ref(entity) : NULL;
@@ -453,7 +473,7 @@ static int game3d_hitbox_is_live(rt_game3d_hitbox *hitbox) {
     double state_time = rt_anim_controller3d_get_state_time(controller);
     double prev_time = hitbox->window_prev_valid ? hitbox->window_prev_time : state_time;
     int live = 0;
-    for (int32_t i = 0; i < hitbox->window_count; ++i) {
+    for (int32_t i = 0; i < window_count; ++i) {
         rt_game3d_hitbox_window *window = &hitbox->windows[i];
         int playing = rt_anim_controller3d_is_state_playing_cstr(controller, window->state) ? 1 : 0;
         if (playing && !live) {
@@ -481,6 +501,9 @@ static int game3d_hitbox_is_live(rt_game3d_hitbox *hitbox) {
 /// @return 1 when already recorded, or 0 otherwise.
 static int game3d_hitbox_victim_seen(const rt_game3d_hitbox *hitbox,
                                      const rt_game3d_entity *victim) {
+    if (!hitbox || hitbox->hit_victim_count < 0 ||
+        hitbox->hit_victim_count > RT_GAME3D_HITBOX_MAX_VICTIMS)
+        return 0;
     for (int32_t i = 0; i < hitbox->hit_victim_count; ++i)
         if (hitbox->hit_victims[i] == victim)
             return 1;
@@ -494,7 +517,8 @@ static int game3d_hitbox_victim_seen(const rt_game3d_hitbox *hitbox,
 /// @param hitbox Attacking Hitbox3D whose bounded victim set is updated.
 /// @param victim Victim entity identity to remember.
 static int game3d_hitbox_remember_victim(rt_game3d_hitbox *hitbox, rt_game3d_entity *victim) {
-    if (hitbox->hit_victim_count >= RT_GAME3D_HITBOX_MAX_VICTIMS)
+    if (!hitbox || !victim || hitbox->hit_victim_count < 0 ||
+        hitbox->hit_victim_count >= RT_GAME3D_HITBOX_MAX_VICTIMS)
         return 0;
     hitbox->hit_victims[hitbox->hit_victim_count++] = victim;
     return 1;
@@ -508,9 +532,14 @@ static int game3d_hitbox_remember_victim(rt_game3d_hitbox *hitbox, rt_game3d_ent
 ///   backrefs first so surviving handles fail closed. See internal header.
 /// @param entity Entity3D whose combat component ownership is dismantled.
 void game3d_entity_release_combat_slots(rt_game3d_entity *entity) {
+    int32_t hitbox_count;
     if (!entity)
         return;
-    for (int32_t i = 0; i < entity->hitbox_count; ++i) {
+    hitbox_count =
+        game3d_combat_array_valid(entity->hitbox_count, entity->hitbox_capacity, entity->hitboxes)
+            ? entity->hitbox_count
+            : 0;
+    for (int32_t i = 0; i < hitbox_count; ++i) {
         rt_game3d_hitbox *hitbox = (rt_game3d_hitbox *)rt_g3d_checked_or_null(
             entity->hitboxes[i], RT_G3D_GAME3D_HITBOX_CLASS_ID);
         if (hitbox)
@@ -802,9 +831,15 @@ int8_t rt_game3d_health_apply_knockback(void *obj, void *direction, double stren
 /// @brief Release every record in both combat buffers. See internal header.
 /// @param world World3D whose retained hit and damage records are cleared.
 void game3d_world_clear_combat_events(rt_game3d_world *world) {
+    int32_t hit_count;
+    int32_t damage_count;
     if (!world)
         return;
-    for (int32_t i = 0; i < world->hit_event_count; ++i) {
+    hit_count = game3d_combat_array_valid(
+                    world->hit_event_count, world->hit_event_capacity, world->hit_events)
+                    ? world->hit_event_count
+                    : 0;
+    for (int32_t i = 0; i < hit_count; ++i) {
         rt_game3d_hit_event_rec *rec = &world->hit_events[i];
         game3d_release_ref(&rec->attacker);
         game3d_release_ref(&rec->victim);
@@ -812,7 +847,12 @@ void game3d_world_clear_combat_events(rt_game3d_world *world) {
         game3d_release_ref(&rec->hurtbox);
     }
     world->hit_event_count = 0;
-    for (int32_t i = 0; i < world->damage_event_count; ++i) {
+    damage_count = game3d_combat_array_valid(world->damage_event_count,
+                                             world->damage_event_capacity,
+                                             world->damage_events)
+                       ? world->damage_event_count
+                       : 0;
+    for (int32_t i = 0; i < damage_count; ++i) {
         rt_game3d_damage_event_rec *rec = &world->damage_events[i];
         game3d_release_ref(&rec->victim);
         game3d_release_ref(&rec->source);
@@ -835,8 +875,19 @@ static void game3d_world_push_hit_event(rt_game3d_world *world,
                                         rt_game3d_hitbox *hurtbox,
                                         const double point[3],
                                         const double normal[3]) {
+    int32_t new_cap;
+    if (!world || !point || !normal ||
+        !game3d_combat_array_valid(
+            world->hit_event_count, world->hit_event_capacity, world->hit_events))
+        return;
     if (world->hit_event_count >= world->hit_event_capacity) {
-        int32_t new_cap = world->hit_event_capacity ? world->hit_event_capacity * 2 : 16;
+        if (world->hit_event_count == INT32_MAX ||
+            !game3d_checked_capacity_i32(world->hit_event_capacity,
+                                         world->hit_event_count + 1,
+                                         16,
+                                         sizeof(*world->hit_events),
+                                         &new_cap))
+            return;
         rt_game3d_hit_event_rec *grown =
             (rt_game3d_hit_event_rec *)realloc(world->hit_events, (size_t)new_cap * sizeof(*grown));
         if (!grown)
@@ -867,10 +918,19 @@ void game3d_world_push_damage_event(rt_game3d_world *world,
                                     double amount,
                                     int64_t tag,
                                     int8_t was_lethal) {
-    if (!world)
+    int32_t new_cap;
+    if (!world || !game3d_combat_array_valid(world->damage_event_count,
+                                             world->damage_event_capacity,
+                                             world->damage_events))
         return;
     if (world->damage_event_count >= world->damage_event_capacity) {
-        int32_t new_cap = world->damage_event_capacity ? world->damage_event_capacity * 2 : 16;
+        if (world->damage_event_count == INT32_MAX ||
+            !game3d_checked_capacity_i32(world->damage_event_capacity,
+                                         world->damage_event_count + 1,
+                                         16,
+                                         sizeof(*world->damage_events),
+                                         &new_cap))
+            return;
         rt_game3d_damage_event_rec *grown = (rt_game3d_damage_event_rec *)realloc(
             world->damage_events, (size_t)new_cap * sizeof(*grown));
         if (!grown)
@@ -933,6 +993,9 @@ static void game3d_combat_collect_entity(rt_game3d_entity *entity,
                                          game3d_combat_volume *hurts,
                                          int32_t *hurt_count) {
     static const double unit_scale[3] = {1.0, 1.0, 1.0};
+    if (!entity ||
+        !game3d_combat_array_valid(entity->hitbox_count, entity->hitbox_capacity, entity->hitboxes))
+        return;
     for (int32_t i = 0; i < entity->hitbox_count; ++i) {
         rt_game3d_hitbox *hitbox = (rt_game3d_hitbox *)rt_g3d_checked_or_null(
             entity->hitboxes[i], RT_G3D_GAME3D_HITBOX_CLASS_ID);
@@ -1111,7 +1174,10 @@ void game3d_world_update_combat(rt_game3d_world *world, double dt) {
 int64_t rt_game3d_world_hit_event_count(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.hitEventCount: invalid world");
-    return world ? world->hit_event_count : 0;
+    return world && game3d_combat_array_valid(
+                        world->hit_event_count, world->hit_event_capacity, world->hit_events)
+               ? world->hit_event_count
+               : 0;
 }
 
 /// @brief Validate @p obj as a HitEvent3D handle, trapping @p method on mismatch.
@@ -1167,7 +1233,10 @@ static void game3d_damage_event_finalize(void *obj) {
 /// @return A new boxed HitEvent3D snapshot, or NULL when out of range or allocation fails.
 void *rt_game3d_world_hit_event(void *obj, int64_t index) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.hitEvent: invalid world");
-    if (!world || index < 0 || index >= world->hit_event_count)
+    if (!world ||
+        !game3d_combat_array_valid(
+            world->hit_event_count, world->hit_event_capacity, world->hit_events) ||
+        index < 0 || index >= world->hit_event_count)
         return NULL;
     rt_game3d_hit_event_rec *rec = &world->hit_events[index];
     rt_game3d_hit_event *event = (rt_game3d_hit_event *)rt_obj_new_i64(
@@ -1202,7 +1271,11 @@ void rt_game3d_world_clear_hit_events(void *obj) {
 int64_t rt_game3d_world_damage_event_count(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.damageEventCount: invalid world");
-    return world ? world->damage_event_count : 0;
+    return world && game3d_combat_array_valid(world->damage_event_count,
+                                              world->damage_event_capacity,
+                                              world->damage_events)
+               ? world->damage_event_count
+               : 0;
 }
 
 /// @brief Get the @p index-th buffered damage event as a boxed DamageEvent3D.
@@ -1211,7 +1284,10 @@ int64_t rt_game3d_world_damage_event_count(void *obj) {
 /// @return A new boxed DamageEvent3D snapshot, or NULL when out of range or allocation fails.
 void *rt_game3d_world_damage_event(void *obj, int64_t index) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.damageEvent: invalid world");
-    if (!world || index < 0 || index >= world->damage_event_count)
+    if (!world ||
+        !game3d_combat_array_valid(
+            world->damage_event_count, world->damage_event_capacity, world->damage_events) ||
+        index < 0 || index >= world->damage_event_count)
         return NULL;
     rt_game3d_damage_event_rec *rec = &world->damage_events[index];
     rt_game3d_damage_event *event = (rt_game3d_damage_event *)rt_obj_new_i64(

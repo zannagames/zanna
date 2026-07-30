@@ -23,11 +23,12 @@
 ///          runtime render targets. It also maintains clustered-light buffers, shadow-slot
 ///          readiness, cache lifetimes, mip generation, channel-order conversion, and readback.
 
-/// @brief Fetch (or upload into the ring) the GPU buffer for a CPU cluster table.
+/// @brief Fetch (or upload into the cache) the GPU buffer for a CPU cluster table.
 /// @details Keyed by lights revision; keys reset each begin_frame because binning
-///          is camera-dependent. The 4-deep ring keeps in-flight frames from
-///          reading a buffer the CPU is rewriting.
-/// @param ctx Borrowed Metal context owning the clustered-light buffer ring.
+///          is camera-dependent. Cache misses allocate immutable-per-command-buffer
+///          storage retained by frameBuffers, so later cache eviction cannot rewrite
+///          bytes referenced by an encoded or in-flight draw.
+/// @param ctx Borrowed Metal context owning the clustered-light buffer cache.
 /// @param table Borrowed CPU cluster table to validate and upload.
 /// @param expected_revision Light revision that @p table must describe.
 /// @param light_count Number of lights expected by the current draw.
@@ -36,8 +37,11 @@ static id<MTLBuffer> metal_cluster_buffer_for_table(VGFXMetalContext *ctx,
                                                     const vgfx3d_cluster_table_t *table,
                                                     uint32_t expected_revision,
                                                     int32_t light_count) {
+    id<MTLBuffer> buffer;
+    void *contents;
     int32_t slot;
-    if (!ctx || !vgfx3d_cluster_table_is_usable(table, expected_revision, light_count))
+    if (!ctx || !ctx.frameBuffers ||
+        !vgfx3d_cluster_table_is_usable(table, expected_revision, light_count))
         return nil;
     for (int32_t i = 0; i < 4; i++) {
         if (ctx->_clusterBuffers[i] && ctx->_clusterBufferRevisions[i] == table->lights_revision)
@@ -45,15 +49,16 @@ static id<MTLBuffer> metal_cluster_buffer_for_table(VGFXMetalContext *ctx,
     }
     slot = ctx->_clusterBufferCursor;
     ctx->_clusterBufferCursor = (slot + 1) % 4;
-    if (!ctx->_clusterBuffers[slot]) {
-        ctx->_clusterBuffers[slot] = [ctx.device newBufferWithLength:sizeof(vgfx3d_cluster_table_t)
-                                                             options:MTLResourceStorageModeShared];
-        if (!ctx->_clusterBuffers[slot])
-            return nil;
-    }
-    memcpy([ctx->_clusterBuffers[slot] contents], table, sizeof(*table));
+    buffer = [ctx.device newBufferWithLength:sizeof(vgfx3d_cluster_table_t)
+                                     options:MTLResourceStorageModeShared];
+    contents = buffer ? [buffer contents] : NULL;
+    if (!contents)
+        return nil;
+    memcpy(contents, table, sizeof(*table));
+    [ctx.frameBuffers addObject:buffer];
+    ctx->_clusterBuffers[slot] = buffer;
     ctx->_clusterBufferRevisions[slot] = table->lights_revision;
-    return ctx->_clusterBuffers[slot];
+    return buffer;
 }
 
 /// @brief Zero-filled full-size stand-in bound when a draw has no cluster table,
@@ -61,9 +66,17 @@ static id<MTLBuffer> metal_cluster_buffer_for_table(VGFXMetalContext *ctx,
 /// @param ctx Borrowed Metal context that owns the lazily allocated dummy buffer.
 /// @return The reusable zero-initialized cluster buffer, or nil when allocation fails.
 static id<MTLBuffer> metal_cluster_dummy_buffer(VGFXMetalContext *ctx) {
-    if (!ctx->_clusterDummyBuffer)
-        ctx->_clusterDummyBuffer = [ctx.device newBufferWithLength:sizeof(vgfx3d_cluster_table_t)
-                                                           options:MTLResourceStorageModeShared];
+    if (!ctx)
+        return nil;
+    if (!ctx->_clusterDummyBuffer) {
+        id<MTLBuffer> dummy = [ctx.device newBufferWithLength:sizeof(vgfx3d_cluster_table_t)
+                                                      options:MTLResourceStorageModeShared];
+        void *contents = dummy ? [dummy contents] : NULL;
+        if (!contents)
+            return nil;
+        memset(contents, 0, sizeof(vgfx3d_cluster_table_t));
+        ctx->_clusterDummyBuffer = dummy;
+    }
     return ctx->_clusterDummyBuffer;
 }
 

@@ -297,6 +297,20 @@ class SceneEditor2DLifecycleLayer extends PreviousLayer.SceneEditor2DState {
            or sceneRunItem.WasClicked() {
             runSceneRequested = true;
         }
+        if playSceneButton.WasClicked() {
+            if playController.active { playController.Stop(); }
+            else { playSceneRequested = true; }
+        }
+        if playController.active {
+            // Embedded play presents channel frames straight into the
+            // canvas image; editor rasterization yields while live.
+            playController.PumpFrames(canvasImage);
+            playController.PumpInput(
+                canvasImage,
+                PhysicalPointerToUi(Input.Mouse.X()),
+                PhysicalPointerToUi(Input.Mouse.Y()));
+            toolbarStatus.SetText(playController.statusText);
+        }
         PumpPreviewClock();
         if objectButton.WasClicked()
            or toolObjectItem.WasClicked() {

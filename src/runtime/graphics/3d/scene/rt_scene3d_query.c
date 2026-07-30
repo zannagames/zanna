@@ -319,7 +319,7 @@ typedef struct {
     /// Normalized world-space face normal.
     double normal[3];
     /// Stable traversal order used to keep distance ties deterministic.
-    int32_t order;
+    int64_t order;
 } scene3d_precise_hit_t;
 
 /// @brief Accumulator threaded through the precise raycast traversal.
@@ -337,7 +337,7 @@ typedef struct {
     /// Allocated capacity of @ref items.
     int32_t capacity;
     /// Monotonic traversal counter stamped onto each accepted hit.
-    int32_t order_counter;
+    int64_t order_counter;
 } scene3d_precise_acc_t;
 
 /// @brief AABB-prefiltered triangle test for one candidate node.
@@ -397,6 +397,10 @@ static int scene3d_precise_consider_node(scene3d_precise_acc_t *acc,
                                          const double origin[3],
                                          const double direction[3]) {
     scene3d_precise_hit_t hit;
+    int32_t next_capacity;
+    if (!acc || acc->count < 0 || acc->capacity < 0 || acc->count > acc->capacity ||
+        (acc->capacity > 0 && !acc->items))
+        return 0;
     double cap = acc->max_distance;
     if (!acc->collect_all && acc->best.node)
         cap = acc->best.distance;
@@ -408,7 +412,16 @@ static int scene3d_precise_consider_node(scene3d_precise_acc_t *acc,
         return 1;
     }
     if (acc->count == acc->capacity) {
-        int32_t next_capacity = acc->capacity ? acc->capacity * 2 : 16;
+        if (acc->count == INT32_MAX)
+            return 0;
+        if (acc->capacity <= 0)
+            next_capacity = 16;
+        else if (acc->capacity > INT32_MAX / 2)
+            next_capacity = acc->count + 1;
+        else
+            next_capacity = acc->capacity * 2;
+        if (next_capacity <= acc->count || (size_t)next_capacity > SIZE_MAX / sizeof(*acc->items))
+            return 0;
         scene3d_precise_hit_t *grown = (scene3d_precise_hit_t *)realloc(
             acc->items, (size_t)next_capacity * sizeof(scene3d_precise_hit_t));
         if (!grown)
@@ -562,20 +575,21 @@ void *rt_scene3d_raycast_nodes_precise_all(void *obj,
     scene3d_precise_acc_t acc = {0};
     void *result;
     acc.collect_all = 1;
-    scene3d_raycast_precise_walk(
-        s,
-        origin_obj,
-        direction_obj,
-        max_distance,
-        "Scene3D.RaycastNodesPreciseAll: result allocation failed",
-        &acc);
+    scene3d_raycast_precise_walk(s,
+                                 origin_obj,
+                                 direction_obj,
+                                 max_distance,
+                                 "Scene3D.RaycastNodesPreciseAll: result allocation failed",
+                                 &acc);
     result = rt_seq_new_owned();
     if (!result) {
         free(acc.items);
         return NULL;
     }
     if (acc.count > 1)
-        qsort(acc.items, (size_t)acc.count, sizeof(scene3d_precise_hit_t),
+        qsort(acc.items,
+              (size_t)acc.count,
+              sizeof(scene3d_precise_hit_t),
               scene3d_precise_hit_compare);
     for (int32_t i = 0; i < acc.count; ++i)
         rt_seq_push(result, acc.items[i].node);

@@ -577,6 +577,14 @@ static void test_navmesh_offmesh_links_bridge_islands() {
     if (path)
         EXPECT_TRUE(rt_path3d_get_point_count(path) >= 4,
                     "NavMesh off-mesh: path includes endpoint and link waypoints");
+
+    auto *view = static_cast<NavMesh3DTestLayout *>(nm);
+    int32_t from_tri = view->offmesh_links[0].from_tri;
+    int32_t saved_begin = view->offmesh_adjacency_starts[from_tri];
+    view->offmesh_adjacency_starts[from_tri] = -1;
+    EXPECT_TRUE(rt_navmesh3d_find_path(nm, from, to) != nullptr,
+                "NavMesh off-mesh: invalid cached adjacency range falls back to link scan");
+    view->offmesh_adjacency_starts[from_tri] = saved_begin;
 }
 
 static void test_navmesh_offmesh_links_validate_and_direct() {
@@ -823,6 +831,16 @@ static void test_navmesh_area_metadata_and_traversal_costs() {
                 "NavMesh area: path remains available after metadata assignment");
     EXPECT_TRUE(rt_navmesh3d_get_last_path_cost(nm) > base_cost * 2.5,
                 "NavMesh area: polygon traversal cost contributes to A* cost");
+    char area_name[32];
+    for (int i = 0; i < 12; ++i) {
+        std::snprintf(area_name, sizeof(area_name), "growth-area-%d", i);
+        EXPECT_TRUE(
+            rt_navmesh3d_set_area(nm, min_v, max_v, rt_const_cstr(area_name), 1.0 + (double)i) != 0,
+            "NavMesh area: intern table grows without losing the assigned area");
+    }
+    EXPECT_TRUE(std::strcmp(rt_string_cstr(rt_navmesh3d_get_area(nm, center)), "growth-area-11") ==
+                    0,
+                "NavMesh area: grown intern table resolves the latest area");
     EXPECT_TRUE(rt_navmesh3d_set_area(nm, from, max_v, nullptr, 2.0) == 0,
                 "NavMesh area: invalid area string is rejected");
 }
@@ -1339,10 +1357,19 @@ static void test_navmesh_getters_clamp_corrupt_private_counts() {
     view->offmesh_link_capacity = 1;
     EXPECT_TRUE(rt_navmesh3d_get_offmesh_link_count(nm) == 1,
                 "NavMesh corrupt getters: off-mesh count caps to capacity");
+    {
+        double segment_from[3] = {-8.0, 0.0, -8.0};
+        double segment_to[3] = {8.0, 0.0, 8.0};
+        EXPECT_TRUE(rt_navmesh3d_segment_is_offmesh_link(nm, segment_from, segment_to, nullptr) ==
+                        1,
+                    "NavMesh corrupt getters: segment lookup caps the authored-link scan");
+    }
     EXPECT_TRUE(rt_navmesh3d_get_offmesh_link_state(nm, 1) == 0,
                 "NavMesh corrupt getters: off-mesh state rejects capped-out index");
     EXPECT_TRUE(rt_navmesh3d_set_offmesh_link_metadata(nm, 1, rt_const_cstr("bad"), 1.0, 1) == 0,
                 "NavMesh corrupt getters: off-mesh setter rejects capped-out index");
+    EXPECT_TRUE(rt_navmesh3d_add_offmesh_link(nm, link_from, link_to, 1) == 0,
+                "NavMesh corrupt getters: append rejects inconsistent off-mesh storage");
     view->offmesh_link_count = saved_link_count;
     view->offmesh_link_capacity = saved_link_capacity;
 
@@ -1355,11 +1382,35 @@ static void test_navmesh_getters_clamp_corrupt_private_counts() {
     view->obstacle_capacity = 1;
     EXPECT_TRUE(rt_navmesh3d_get_obstacle_count(nm) == 1,
                 "NavMesh corrupt getters: obstacle count caps to capacity");
+    void *obstacle_min = rt_vec3_new(42.0, -1.0, 42.0);
+    void *obstacle_max = rt_vec3_new(43.0, 1.0, 43.0);
+    EXPECT_TRUE(rt_navmesh3d_add_obstacle(nm, obstacle_min, obstacle_max) == 0,
+                "NavMesh corrupt getters: obstacle append rejects inconsistent storage");
+    EXPECT_TRUE(rt_navmesh3d_remove_obstacle(nm, 0) == 0,
+                "NavMesh corrupt getters: obstacle removal rejects inconsistent storage");
+    EXPECT_TRUE(rt_navmesh3d_update_obstacle(nm, 0, obstacle_min, obstacle_max) == 0,
+                "NavMesh corrupt getters: obstacle update rejects inconsistent storage");
+    EXPECT_TRUE(rt_navmesh3d_test_inject_obstacle(nm, obstacle_min, obstacle_max) == 0,
+                "NavMesh corrupt getters: test injection rejects inconsistent storage");
     view->obstacle_count = -5;
     EXPECT_TRUE(rt_navmesh3d_get_obstacle_count(nm) == 0,
                 "NavMesh corrupt getters: negative obstacle count reads as zero");
     view->obstacle_count = saved_obstacle_count;
     view->obstacle_capacity = saved_obstacle_capacity;
+}
+
+static void test_skeleton_alias_table_growth() {
+    void *skeleton = rt_skeleton3d_new();
+    EXPECT_TRUE(skeleton != nullptr, "Skeleton alias growth: skeleton allocates");
+    char external[32];
+    char local[32];
+    for (int i = 0; i < 24; ++i) {
+        std::snprintf(external, sizeof(external), "external-%d", i);
+        std::snprintf(local, sizeof(local), "local-%d", i);
+        rt_skeleton3d_set_bone_alias(skeleton, rt_const_cstr(external), rt_const_cstr(local));
+    }
+    EXPECT_TRUE(rt_skeleton3d_get_alias_count(skeleton) == 24,
+                "Skeleton alias growth: geometric growth preserves every alias");
 }
 
 int main() {
@@ -1396,6 +1447,7 @@ int main() {
     test_navmesh_getters_clamp_corrupt_private_counts();
 
     /* AnimBlend3D */
+    test_skeleton_alias_table_growth();
     test_blend_create();
     test_blend_add_state();
     test_blend_weight();

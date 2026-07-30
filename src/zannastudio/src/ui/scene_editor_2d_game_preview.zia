@@ -265,6 +265,13 @@ class SceneEditor2DGamePreviewLayer extends PreviousLayer.SceneEditor2DTilePrevi
         return requested;
     }
 
+    /// @brief Consume the toolbar embedded-Play intent for the command layer.
+    expose override func TakePlaySceneRequested() -> Boolean {
+        var requested = playSceneRequested;
+        playSceneRequested = false;
+        return requested;
+    }
+
     /// @brief Return whether animated preview mode is active for this tab.
     expose override func PreviewActive() -> Boolean {
         return previewActive;

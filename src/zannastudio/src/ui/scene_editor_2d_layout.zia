@@ -378,6 +378,9 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
         importButton.SetVisible(!useMenus);
         previewButton.SetVisible(!useMenus);
         runSceneButton.SetVisible(!useMenus);
+        // Play is the primary loop action; it stays direct at every width
+        // like the active tools (ADR 0225).
+        playSceneButton.SetVisible(true);
 
         toolMenuButton.SetVisible(useMenus);
         rectangleButton.SetVisible(!useMenus);

@@ -673,10 +673,8 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
                  * sphere — rather than a fixed world axis. */
                 double eject[3] = {0.0, 1.0, 0.0};
                 const double *prev = &cloth->prev[p * 3];
-                double away[3] = {
-                    prev[0] - closest[0], prev[1] - closest[1], prev[2] - closest[2]};
-                double away_len =
-                    sqrt(away[0] * away[0] + away[1] * away[1] + away[2] * away[2]);
+                double away[3] = {prev[0] - closest[0], prev[1] - closest[1], prev[2] - closest[2]};
+                double away_len = sqrt(away[0] * away[0] + away[1] * away[1] + away[2] * away[2]);
                 if (isfinite(away_len) && away_len > 1e-9) {
                     eject[0] = away[0] / away_len;
                     eject[1] = away[1] / away_len;
@@ -690,8 +688,7 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
                     double ab_len = sqrt(ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2]);
                     if (isfinite(ab_len) && ab_len > 1e-9) {
                         double axis[3] = {ab[0] / ab_len, ab[1] / ab_len, ab[2] / ab_len};
-                        double along =
-                            eject[0] * axis[0] + eject[1] * axis[1] + eject[2] * axis[2];
+                        double along = eject[0] * axis[0] + eject[1] * axis[1] + eject[2] * axis[2];
                         double perp[3] = {eject[0] - axis[0] * along,
                                           eject[1] - axis[1] * along,
                                           eject[2] - axis[2] * along};
@@ -993,13 +990,27 @@ void rt_game3d_world_add_cloth(void *world_obj, void *cloth_obj) {
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.World3D.AddCloth: invalid world");
     rt_cloth3d *cloth = cloth3d_checked(cloth_obj, "Game3D.World3D.AddCloth: invalid cloth");
+    int32_t new_capacity;
     if (!world || !cloth)
         return;
+    if (world->cloth_count < 0 || world->cloth_capacity < 0 ||
+        world->cloth_count > world->cloth_capacity ||
+        (world->cloth_capacity > 0 && !world->cloths)) {
+        rt_trap("Game3D.World3D.AddCloth: corrupt cloth storage");
+        return;
+    }
     for (int32_t i = 0; i < world->cloth_count; ++i)
         if (world->cloths[i] == cloth_obj)
             return;
     if (world->cloth_count >= world->cloth_capacity) {
-        int32_t new_capacity = world->cloth_capacity > 0 ? world->cloth_capacity * 2 : 8;
+        if (world->cloth_count == INT32_MAX || !game3d_checked_capacity_i32(world->cloth_capacity,
+                                                                            world->cloth_count + 1,
+                                                                            8,
+                                                                            sizeof(*world->cloths),
+                                                                            &new_capacity)) {
+            rt_trap("Game3D.World3D.AddCloth: capacity overflow");
+            return;
+        }
         void **grown = (void **)realloc(world->cloths, (size_t)new_capacity * sizeof(void *));
         if (!grown) {
             rt_trap("Game3D.World3D.AddCloth: allocation failed");
@@ -1021,6 +1032,9 @@ void rt_game3d_world_remove_cloth(void *world_obj, void *cloth_obj) {
         game3d_world_checked(world_obj, "Game3D.World3D.RemoveCloth: invalid world");
     if (!world || !cloth_obj)
         return;
+    if (world->cloth_count < 0 || world->cloth_capacity < 0 ||
+        world->cloth_count > world->cloth_capacity || (world->cloth_capacity > 0 && !world->cloths))
+        return;
     for (int32_t i = 0; i < world->cloth_count; ++i) {
         if (world->cloths[i] != cloth_obj)
             continue;
@@ -1036,6 +1050,9 @@ void rt_game3d_world_remove_cloth(void *world_obj, void *cloth_obj) {
 /// @param world Live World3D payload containing retained cloth handles.
 /// @param dt Simulation elapsed time forwarded to each valid registered cloth.
 void game3d_cloth_tick(struct rt_game3d_world *world, double dt) {
+    if (!world || world->cloth_count < 0 || world->cloth_capacity < 0 ||
+        world->cloth_count > world->cloth_capacity || (world->cloth_capacity > 0 && !world->cloths))
+        return;
     for (int32_t i = 0; i < world->cloth_count; ++i) {
         rt_cloth3d *cloth =
             (rt_cloth3d *)rt_g3d_checked_or_null(world->cloths[i], RT_G3D_CLOTH3D_CLASS_ID);

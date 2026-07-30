@@ -27,6 +27,8 @@ bind "../ui/app_shell";
 
 bind Convert = Zanna.Core.Convert;
 bind GUI = Zanna.GUI;
+bind Seq = Zanna.Collections.Seq;
+bind Map = Zanna.Collections.Map;
 
 // Chrome geometry budgets (logical pixels). Tightened to today's chrome;
 // deliberate chrome changes relax them here, in one reviewed place.
@@ -91,4 +93,48 @@ expose func ClickMenuItem(shell: app_shell.AppShell,
     harness.SendMouse("down", x, y, 0);
     harness.SendMouse("up", x, y, 0);
     harness.DispatchPending();
+}
+
+/// @brief Find one visible virtual-model row map by stable id.
+/// @details Rows hidden under a collapsed ancestor are not visible and
+///          return null; probes assert against presented truth (ADR 0226).
+hide func ModelRowMap(model: GUI.VirtualTree, id: String) -> Any {
+    if model == null { return null; }
+    var rows = model.VisibleRows();
+    var index = 0;
+    while index < Seq.get_Count(rows) {
+        var row = Seq.Get(rows, index);
+        if row != null and Map.GetStr(row, "id") == id { return row; }
+        index = index + 1;
+    }
+    return null;
+}
+
+/// @brief Return one visible model row's presented label, or "".
+expose func ModelRowText(model: GUI.VirtualTree, id: String) -> String {
+    var row = ModelRowMap(model, id);
+    if row == null { return ""; }
+    return Map.GetStr(row, "text");
+}
+
+/// @brief Return one visible model row's icon spec, or "".
+expose func ModelRowIcon(model: GUI.VirtualTree, id: String) -> String {
+    var row = ModelRowMap(model, id);
+    if row == null { return ""; }
+    return Map.GetStr(row, "icon");
+}
+
+/// @brief Return whether one visible model row is expanded.
+expose func ModelRowExpanded(model: GUI.VirtualTree,
+                             id: String) -> Boolean {
+    var row = ModelRowMap(model, id);
+    if row == null { return false; }
+    return Map.GetBoolOr(row, "expanded", false);
+}
+
+/// @brief Return one visible model row's depth, or -1 when hidden.
+expose func ModelRowDepth(model: GUI.VirtualTree, id: String) -> Integer {
+    var row = ModelRowMap(model, id);
+    if row == null { return -1; }
+    return Map.GetIntOr(row, "depth", -1);
 }

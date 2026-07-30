@@ -310,7 +310,7 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
     hide func DrawSceneNodeViewportOverlay(node: SceneNode,
                                            index: Integer) {
         var point = RegisterNodeProjection(node);
-        DrawNodeParentLink(node, point);
+        DrawNodeParentLink(node, index, point);
         var markerColor = ViewportNodeMarkerColor(node, index);
         if gameViewActive == false
            and terrainSculptEnabled == false
@@ -346,10 +346,15 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
     /// @brief Draw one visible parent link without exposing mirrored points.
     hide func DrawNodeParentLink(
         node: SceneNode,
+        index: Integer,
         point: SceneEditor3DModel.ProjectedPoint) {
         var parent = node.Parent;
-        var parentIndex = FindFlatIndex(parent);
-        if gameViewActive or showMarkers == false or parentIndex < 0 {
+        // The bounded walk presents parents before children, so a nonzero
+        // depth proves the parent is a presented row; an identity scan
+        // here would be quadratic across the frame at hierarchy scale.
+        if gameViewActive or showMarkers == false or parent == null
+           or index < 0 or index >= flatDepths.count()
+           or flatDepths.get(index) == 0 {
             return;
         }
         var parentWorld = parent.WorldPosition;

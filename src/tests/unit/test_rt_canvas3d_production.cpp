@@ -64,7 +64,7 @@ int32_t vgfx3d_software_backend_fragment_uses_opaque_write_for_test(int32_t alph
                                                                     int32_t additive_blend,
                                                                     float fragment_alpha);
 int64_t vgfx3d_software_backend_triangle_scratch_capacity_for_test(const void *ctx,
-                                                                   int32_t shadow_pass);
+                                                                   int32_t scratch_kind);
 void *rt_pixels_new(int64_t width, int64_t height);
 void rt_pixels_set_rgba(void *pixels, int64_t x, int64_t y, int64_t rgba);
 }
@@ -185,6 +185,8 @@ struct SoftwareSceneRenderResult {
     int64_t worker_count = 1;
     int64_t color_triangle_scratch_capacity = 0;
     int64_t shadow_triangle_scratch_capacity = 0;
+    int64_t color_task_triangle_scratch_capacity = 0;
+    int64_t shadow_task_triangle_scratch_capacity = 0;
     std::vector<uint8_t> rgba;
 };
 
@@ -773,9 +775,16 @@ static void test_software_depth_probe_uses_active_render_target() {
     /* NDC (0, 0) maps to the lower-right sample of this 2x2 target. An NDC depth
      * of -0.5 converts to canonical window depth 0.25. */
     target->depth_buf[3] = -0.5f;
+    EXPECT_EQ_I64(vgfx3d_software_backend.queue_depth_probe(ctx, NAN, 0.0f),
+                  -1,
+                  "Software depth probes reject a non-finite x coordinate");
+    EXPECT_EQ_I64(vgfx3d_software_backend.queue_depth_probe(ctx, 0.0f, INFINITY),
+                  -1,
+                  "Software depth probes reject a non-finite y coordinate");
     {
         const int32_t slot = vgfx3d_software_backend.queue_depth_probe(ctx, 0.0f, 0.0f);
-        EXPECT_TRUE(slot >= 0, "Software depth probe queues against an active render target");
+        EXPECT_EQ_I64(
+            slot, 0, "Rejected software depth probes do not consume frame-local capacity");
         EXPECT_NEAR(vgfx3d_software_backend.read_depth_probe(ctx, slot),
                     0.25f,
                     1e-6f,
@@ -896,6 +905,10 @@ static int render_software_spot_light_shadow_scene(SoftwareSceneRenderResult *re
             vgfx3d_software_backend_triangle_scratch_capacity_for_test(canvas.backend_ctx, 0);
         result->shadow_triangle_scratch_capacity =
             vgfx3d_software_backend_triangle_scratch_capacity_for_test(canvas.backend_ctx, 1);
+        result->color_task_triangle_scratch_capacity =
+            vgfx3d_software_backend_triangle_scratch_capacity_for_test(canvas.backend_ctx, 2);
+        result->shadow_task_triangle_scratch_capacity =
+            vgfx3d_software_backend_triangle_scratch_capacity_for_test(canvas.backend_ctx, 3);
         result->rgba.assign((size_t)width * (size_t)height * 4u, 0u);
         for (int32_t y = 0; y < height; y++) {
             std::memcpy(&result->rgba[(size_t)y * (size_t)width * 4u],
@@ -984,6 +997,10 @@ static void test_software_tiled_raster_threads_are_deterministic() {
                 "Four-worker color rasterization retains merged-triangle scratch");
     EXPECT_TRUE(four.shadow_triangle_scratch_capacity > 0,
                 "Four-worker shadow rasterization retains merged-triangle scratch");
+    EXPECT_TRUE(four.color_task_triangle_scratch_capacity > 0,
+                "Four-worker color rasterization retains worker-local triangle scratch");
+    EXPECT_TRUE(four.shadow_task_triangle_scratch_capacity > 0,
+                "Four-worker shadow rasterization retains worker-local triangle scratch");
     EXPECT_EQ_U64(four.hash, one.hash, "Four-worker software raster hash matches serial");
     EXPECT_TRUE(rgba_equal(one, four), "Four-worker software raster pixels match serial");
 

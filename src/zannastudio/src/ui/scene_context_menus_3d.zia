@@ -28,6 +28,7 @@ bind "scene_editor_3d";
 
 bind GUI = Zanna.GUI;
 bind Input = Zanna.Input;
+bind Convert = Zanna.Core.Convert;
 
 // ============================================================================
 // MODULE: scene_context_menus_3d
@@ -171,8 +172,11 @@ class SceneContextMenus3D {
         if editor.hierarchyTree != null
            and editor.hierarchyTree.IsVisible()
            and editor.hierarchyTree.IsHovered() {
-            var row = editor.hierarchyTree.GetNodeAt(x, y);
-            if row != null { editor.hierarchyTree.Select(row); }
+            if editor.hierarchyModel != null {
+                var rowId = editor.hierarchyModel.RowIdAt(
+                    Convert.NumToInt(x), Convert.NumToInt(y));
+                if rowId != "" { editor.hierarchyModel.SelectId(rowId); }
+            }
             ConfigureHierarchyItems(editor);
             hierarchyMenu.Show(x, y);
             return;

@@ -49,6 +49,7 @@ bind File = Zanna.IO.File;
 bind Path = Zanna.IO.Path;
 bind Terminal = Zanna.Terminal;
 bind Seq = Zanna.Collections.Seq;
+bind "scene_probe_support";
 bind "scene_editor_3d_probe_context" as Probe;
 
 /// @brief Run the VerifyInitialSurface scenario against the shared fixture.
@@ -894,9 +895,7 @@ expose func VerifyInspectorAndTabContinuity(ctx: Probe.SceneEditor3DProbeContext
     editor.Pump(sceneDoc);
     shell.Render();
     if editor.selectedIndex != 0
-       or editor.hierarchyTree.GetSelected() == null
-       or GUI.TreeView.Node.GetData(
-              editor.hierarchyTree.GetSelected()) != "0"
+       or editor.hierarchyModel.GetSelectedId() != "0"
        or editor.viewYawDegrees != 71
        or editor.viewPitchDegrees != -31
        or editor.viewScale != 52
@@ -935,16 +934,16 @@ expose func VerifyInspectorAndTabContinuity(ctx: Probe.SceneEditor3DProbeContext
     if sceneDoc.content == original or sceneDoc.isModified == false
        or editor.GetRevision() != originalRevision + 5
        or editor.projectedX.count() != 2
-       or editor.hierarchyTreeNodes.count() != 2
+       or editor.flatNodes.count() != 2
        or editor.flatPaths.count() != 2
        or editor.flatPaths.get(0) != "0"
        or editor.flatPaths.get(1) != "0/0"
-       or GUI.TreeView.Node.HasChildren(
-              editor.hierarchyTreeNodes.get(0)) == false
-       or GUI.TreeView.Node.HasChildren(
-              editor.hierarchyTreeNodes.get(1))
-       or GUI.TreeView.Node.IsExpanded(
-              editor.hierarchyTreeNodes.get(0)) == false
+       or scene_probe_support.ModelRowDepth(
+              editor.hierarchyModel, "0") != 0
+       or scene_probe_support.ModelRowDepth(
+              editor.hierarchyModel, "1") != 1
+       or scene_probe_support.ModelRowExpanded(
+              editor.hierarchyModel, "0") == false
        or editor.renderedViewportWidth < 320
        or editor.renderedViewportHeight < 240 {
         Probe.fail(shell, tempPath,
@@ -958,9 +957,7 @@ expose func VerifyInspectorAndTabContinuity(ctx: Probe.SceneEditor3DProbeContext
     retainedSelection.add(0);
     retainedSelection.add(1);
     if editor.SelectSceneNodes(retainedSelection, 1) == false
-       or editor.hierarchyTree.GetSelected() == null
-       or GUI.TreeView.Node.GetData(
-              editor.hierarchyTree.GetSelected()) != "1" {
+       or editor.hierarchyModel.GetSelectedId() != "1" {
         Probe.fail(shell, tempPath,
              "retained hierarchy did not restore its primary selection");
         return false;

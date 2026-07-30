@@ -302,8 +302,9 @@ static void metal_submit_draw(void *ctx_ptr,
         {
             id<MTLTexture> opaqueDepth =
                 ctx->_opaqueDepthValid ? ctx.opaqueDepthTexture : metal_opaque_depth_dummy(ctx);
-            if (opaqueDepth)
-                [ctx.encoder setFragmentTexture:opaqueDepth atIndex:16];
+            if (!opaqueDepth)
+                return;
+            [ctx.encoder setFragmentTexture:opaqueDepth atIndex:16];
         }
         [ctx.encoder setFragmentTexture:ctx.defaultCubemap atIndex:13];
         [ctx.encoder setFragmentTexture:ctx.brdfLutTexture atIndex:18];
@@ -316,8 +317,9 @@ static void metal_submit_draw(void *ctx_ptr,
              * binding valid when no atlas pass ran this frame. */
             id<MTLTexture> atlas =
                 ctx->_shadowAtlasTexture ? ctx->_shadowAtlasTexture : metal_opaque_depth_dummy(ctx);
-            if (atlas)
-                [ctx.encoder setFragmentTexture:atlas atIndex:17];
+            if (!atlas)
+                return;
+            [ctx.encoder setFragmentTexture:atlas atIndex:17];
         }
         [ctx.encoder setFragmentSamplerState:metal_get_material_sampler(
                                                  ctx, cmd, RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR)
@@ -470,8 +472,9 @@ static void metal_submit_draw(void *ctx_ptr,
             [ctx.encoder setFragmentBytes:ml length:sizeof(mtl_light_t) * buf_count atIndex:2];
             if (!clusterBuf)
                 clusterBuf = metal_cluster_dummy_buffer(ctx);
-            if (clusterBuf)
-                [ctx.encoder setFragmentBuffer:clusterBuf offset:0 atIndex:3];
+            if (!clusterBuf)
+                return;
+            [ctx.encoder setFragmentBuffer:clusterBuf offset:0 atIndex:3];
             ctx->_encoderLightsRevision = cmd->lights_revision;
             ctx->_encoderAmbient[0] = ambient[0];
             ctx->_encoderAmbient[1] = ambient[1];
@@ -1350,10 +1353,12 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         {
             id<MTLTexture> opaqueDepth =
                 ctx->_opaqueDepthValid ? ctx.opaqueDepthTexture : metal_opaque_depth_dummy(ctx);
-            if (opaqueDepth)
-                [ctx.encoder setFragmentTexture:opaqueDepth atIndex:16];
+            if (!opaqueDepth)
+                return;
+            [ctx.encoder setFragmentTexture:opaqueDepth atIndex:16];
         }
         [ctx.encoder setFragmentTexture:ctx.defaultCubemap atIndex:13];
+        [ctx.encoder setFragmentTexture:ctx.brdfLutTexture atIndex:18];
         for (int32_t slot = 0; slot < ctx->_shadowCount && slot < VGFX3D_CSM_SLOTS; slot++) {
             if (ctx->_shadowDepthTexture[slot])
                 [ctx.encoder setFragmentTexture:ctx->_shadowDepthTexture[slot] atIndex:4 + slot];
@@ -1363,8 +1368,9 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
              * binding valid when no atlas pass ran this frame. */
             id<MTLTexture> atlas =
                 ctx->_shadowAtlasTexture ? ctx->_shadowAtlasTexture : metal_opaque_depth_dummy(ctx);
-            if (atlas)
-                [ctx.encoder setFragmentTexture:atlas atIndex:17];
+            if (!atlas)
+                return;
+            [ctx.encoder setFragmentTexture:atlas atIndex:17];
         }
         [ctx.encoder setFragmentSamplerState:metal_get_material_sampler(
                                                  ctx, cmd, RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR)
@@ -1513,8 +1519,9 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
             [ctx.encoder setFragmentBytes:ml length:sizeof(mtl_light_t) * bc atIndex:2];
             if (!clusterBuf)
                 clusterBuf = metal_cluster_dummy_buffer(ctx);
-            if (clusterBuf)
-                [ctx.encoder setFragmentBuffer:clusterBuf offset:0 atIndex:3];
+            if (!clusterBuf)
+                return;
+            [ctx.encoder setFragmentBuffer:clusterBuf offset:0 atIndex:3];
             ctx->_encoderLightsRevision = cmd->lights_revision;
             ctx->_encoderAmbient[0] = ambient[0];
             ctx->_encoderAmbient[1] = ambient[1];

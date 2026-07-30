@@ -152,6 +152,10 @@ func BuildHierarchy(editor: scene_editor_3d.SceneEditor3D,
         editor.hierarchyTree.SetFlex(1.0);
         editor.hierarchyTree.SetMultiSelect(true);
         editor.hierarchyTree.SetDragDropMode(2);
+        // Rows project from a virtual model so scene scale is bounded by the
+        // id-keyed model, not by retained widget nodes (ADR 0226).
+        editor.hierarchyModel = GUI.VirtualTree.New();
+        editor.hierarchyModel.Bind(editor.hierarchyTree);
         editor.hierarchyTree.SetTooltip(
             "●/○ shows visibility and ⊘ marks viewport pick locks. Expand "
             + "real parent/child rows. Ctrl/Command-click toggles, "

@@ -169,10 +169,8 @@ class SceneEditor3DSelectionControlsLayer extends PreviousLayer.SceneEditor3DSel
         hierarchySearchMatches = [];
         if scene != null and hierarchySearchQuery != "" {
             var index = 0;
-            while index < flatNodes.count()
-                  and index < hierarchyTreeNodes.count() {
-                if hierarchyTreeNodes.get(index) != null
-                   and scene_hierarchy_search.MatchesNormalized(
+            while index < flatNodes.count() {
+                if scene_hierarchy_search.MatchesNormalized(
                        hierarchySearchQuery,
                        flatNodes.get(index).Name,
                        "") {
@@ -494,52 +492,45 @@ class SceneEditor3DSelectionControlsLayer extends PreviousLayer.SceneEditor3DSel
         return pastedIndices.count() > 0;
     }
 
-    /// @brief Expand every retained ancestor and scroll the primary into view.
+    /// @brief Expand every model ancestor and scroll the primary into view.
     hide override func RevealHierarchyTreeSelection() {
-        if hierarchyTree == null { return; }
+        if hierarchyModel == null { return; }
         if selectedIndex >= 0 and selectedIndex < flatNodes.count() {
             var parent = flatNodes.get(selectedIndex).Parent;
             var steps = 0;
             while parent != null and steps <= flatNodes.count() {
                 if scene != null and parent == scene.Root { break; }
                 var parentIndex = FindNodeIndex(flatNodes, parent);
-                if parentIndex < 0
-                   or parentIndex >= hierarchyTreeNodes.count() {
-                    break;
-                }
-                hierarchyTree.Expand(
-                    hierarchyTreeNodes.get(parentIndex));
+                if parentIndex < 0 { break; }
+                hierarchyModel.Expand("" + parentIndex);
                 parent = parent.Parent;
                 steps = steps + 1;
             }
         }
         RestoreHierarchyTreeSelection();
-        if selectedIndex >= 0
-           and selectedIndex < hierarchyTreeNodes.count()
-           and hierarchyTreeNodes.get(selectedIndex) != null {
-            hierarchyTree.ScrollTo(
-                hierarchyTreeNodes.get(selectedIndex));
+        if selectedIndex >= 0 and selectedIndex < flatNodes.count() {
+            hierarchyModel.RevealId("" + selectedIndex);
         }
     }
 
-    /// @brief Restore all retained hierarchy rows while keeping one primary.
+    /// @brief Restore all model selection rows while keeping one primary.
     hide override func RestoreHierarchyTreeSelection() {
-        if hierarchyTree == null { return; }
-        hierarchyTree.Select(null);
+        if hierarchyModel == null { return; }
+        var ids = Seq.New();
+        if selectedIndex >= 0 and selectedIndex < flatNodes.count() {
+            Seq.Push(ids, "" + selectedIndex);
+        }
         var index = 0;
         while index < selectedIndices.count() {
             var selected = selectedIndices.get(index);
             if selected != selectedIndex
                and selected >= 0
-               and selected < hierarchyTreeNodes.count() {
-                hierarchyTree.Select(hierarchyTreeNodes.get(selected));
+               and selected < flatNodes.count() {
+                Seq.Push(ids, "" + selected);
             }
             index = index + 1;
         }
-        if selectedIndex >= 0
-           and selectedIndex < hierarchyTreeNodes.count() {
-            hierarchyTree.Select(hierarchyTreeNodes.get(selectedIndex));
-        }
+        hierarchyModel.SelectIds(ids);
     }
 
     /// @brief Resolve the current dropdown row to its flattened target identity.
@@ -621,7 +612,13 @@ class SceneEditor3DSelectionControlsLayer extends PreviousLayer.SceneEditor3DSel
         }
 
         var candidateIndex = 0;
+        var clippedTargets = false;
         while candidateIndex < flatNodes.count() {
+            if parentTargetIndices.count()
+               >= SceneEditor3DModel.MAX_PARENT_TARGET_OPTIONS {
+                clippedTargets = true;
+                break;
+            }
             var candidate = flatNodes.get(candidateIndex);
             if scene_hierarchy_3d.TargetAllowed(candidate, roots)
                and ParentTargetFits(candidateIndex, roots) {
@@ -640,6 +637,17 @@ class SceneEditor3DSelectionControlsLayer extends PreviousLayer.SceneEditor3DSel
                 }
             }
             candidateIndex = candidateIndex + 1;
+        }
+        if clippedTargets {
+            parentDropdown.SetTooltip(
+                "Showing the first "
+                + SceneEditor3DModel.MAX_PARENT_TARGET_OPTIONS
+                + " parent targets; drag hierarchy rows to reparent "
+                + "anywhere in a larger scene");
+        } else {
+            parentDropdown.SetTooltip(
+                "Choose a hierarchy parent and whether to preserve the "
+                + "world transform");
         }
 
         if selectedOption < 0 and parentTargetIndices.count() > 0 {
