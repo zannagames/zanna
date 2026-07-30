@@ -7,6 +7,11 @@
 //
 // File: src/tests/runtime/RTBytesTests.cpp
 // Purpose: Comprehensive tests for Zanna.Collections.Bytes byte array.
+// Key invariants: Bounds and parser validation stop before memory access even
+//                 when the embedder trap hook returns.
+// Ownership/Lifetime: Tests release temporary forged-input fixtures and rely
+//                     on process teardown for legacy test allocations.
+// Links: src/runtime/collections/rt_bytes.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -17,8 +22,8 @@
 
 #include <cassert>
 #include <csetjmp>
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <cstring>
 
 namespace {
@@ -507,6 +512,42 @@ static void test_invalid_handle_with_returning_hook() {
     printf("test_invalid_handle_with_returning_hook: OK\n");
 }
 
+static void test_returning_hook_stops_parser_and_bounds_failures() {
+    rt_string odd_hex = rt_string_from_bytes("abc", 3);
+    rt_string bad_hex = rt_string_from_bytes("zz", 2);
+    rt_string short_b64 = rt_string_from_bytes("AAA", 3);
+    rt_string bad_b64 = rt_string_from_bytes("!!!!", 4);
+    rt_string forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(0x2468U));
+    void *bytes = rt_bytes_new(2);
+    rt_bytes_set(bytes, 0, 0x5A);
+
+    g_trap_return = true;
+    g_last_trap = nullptr;
+
+    assert(rt_bytes_from_hex(odd_hex) == nullptr);
+    assert(rt_bytes_from_hex(bad_hex) == nullptr);
+    assert(rt_bytes_from_base64(short_b64) == nullptr);
+    assert(rt_bytes_from_base64(bad_b64) == nullptr);
+    assert(rt_bytes_from_str(forged) == nullptr);
+    assert(rt_bytes_from_hex(forged) == nullptr);
+    assert(rt_bytes_from_base64(forged) == nullptr);
+    assert(rt_bytes_from_raw(nullptr, 1) == nullptr);
+
+    assert(rt_bytes_get(bytes, 99) == 0);
+    rt_bytes_set(bytes, 99, 0xFF);
+    assert(rt_bytes_get(bytes, 0) == 0x5A);
+
+    g_trap_return = false;
+    assert(g_last_trap != nullptr);
+
+    rt_string_unref(odd_hex);
+    rt_string_unref(bad_hex);
+    rt_string_unref(short_b64);
+    rt_string_unref(bad_b64);
+    if (rt_obj_release_check0(bytes))
+        rt_obj_free(bytes);
+}
+
 int main() {
     test_new_creates_zero_filled_bytes();
     test_new_with_zero_length();
@@ -549,6 +590,7 @@ int main() {
     test_extract_raw_requires_length_output();
     test_rejects_non_bytes_objects();
     test_invalid_handle_with_returning_hook();
+    test_returning_hook_stops_parser_and_bounds_failures();
 
     return 0;
 }

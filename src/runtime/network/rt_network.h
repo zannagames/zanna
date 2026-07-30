@@ -18,7 +18,9 @@
 //   - Connection objects are GC-managed opaque pointers.
 //   - Callers should not free connection objects directly.
 //
-// Links: src/runtime/network/rt_network.c (implementation), src/runtime/core/rt_string.h
+// Links: src/runtime/network/rt_network.c (implementation),
+//   docs/adr/0228-http-end-to-end-request-deadlines.md,
+//   src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -673,9 +675,12 @@ void *rt_http_req_set_body(void *obj, void *data);
 /// @return @p obj for fluent chaining.
 void *rt_http_req_set_body_str(void *obj, rt_string text);
 
-/// @brief Set the per-request network timeout.
+/// @brief Set the end-to-end deadline for this request.
+/// @details A positive value creates one monotonic budget shared by name
+///          resolution, address attempts, TLS, I/O, redirects, and response
+///          transformations. Zero disables the deadline.
 /// @param obj Required HttpReq receiver.
-/// @param timeout_ms Timeout in [0, @c INT_MAX] milliseconds.
+/// @param timeout_ms Complete request budget in [0, @c INT_MAX] milliseconds.
 /// @return @p obj for fluent chaining.
 void *rt_http_req_set_timeout(void *obj, int64_t timeout_ms);
 

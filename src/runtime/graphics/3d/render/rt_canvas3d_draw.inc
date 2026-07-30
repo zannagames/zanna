@@ -123,11 +123,16 @@ static float canvas3d_screen_vector_len(float dx, float dy) {
 ///          Final-overlay replay happens through the backend mesh path after post-FX, so the
 ///          material diffuse color must stay neutral or the overlay tint is multiplied twice.
 ///          The alpha scalar is also neutralized for this replay command because the vertex alpha
-///          remains the single source of overlay opacity.
+///          remains the single source of overlay opacity. Neutralizing it would silently
+///          reclassify a translucent overlay as opaque — GPU backends choose their pipeline
+///          blend state from the command scalars, never from vertex alpha — so the original
+///          command's blend classification is pinned first (NL-ZANNA-001).
 /// @param cmd Prepared screen-geometry command whose vertices and indices are retained elsewhere.
 /// @return A copy of `cmd` with neutral diffuse color and alpha suitable for final-overlay replay.
 static vgfx3d_draw_cmd_t canvas3d_make_final_overlay_screen_cmd(const vgfx3d_draw_cmd_t *cmd) {
     vgfx3d_draw_cmd_t overlay_cmd = *cmd;
+    if (vgfx3d_draw_cmd_uses_alpha_blend(cmd))
+        overlay_cmd.alpha_mode = RT_MATERIAL3D_ALPHA_MODE_BLEND;
     overlay_cmd.diffuse_color[0] = 1.0f;
     overlay_cmd.diffuse_color[1] = 1.0f;
     overlay_cmd.diffuse_color[2] = 1.0f;
@@ -232,7 +237,16 @@ static int canvas3d_queue_screen_geometry(rt_canvas3d *c,
     cmd.diffuse_color[1] = 1.0f;
     cmd.diffuse_color[2] = 1.0f;
     cmd.diffuse_color[3] = 1.0f;
-    cmd.alpha = a;
+    /* Vertex alpha is the single source of overlay opacity: every fragment
+     * stage multiplies diffuse.a * cmd.alpha * vertex.a, so carrying the
+     * opacity here as well double-darkened translucent overlays. A
+     * translucent queue must also classify as BLEND, or fragment stages
+     * force OPAQUE-mode alpha to 1 and composite it fully opaque while the
+     * pipeline blend classifier simultaneously infers blending from the
+     * scalar — the NL-ZANNA-001 opaque-scrim defect. */
+    cmd.alpha = 1.0f;
+    if (a < 0.999f)
+        cmd.alpha_mode = RT_MATERIAL3D_ALPHA_MODE_BLEND;
     cmd.unlit = 1;
     cmd.disable_depth_test = 1;
 

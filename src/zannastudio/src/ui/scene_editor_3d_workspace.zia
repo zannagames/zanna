@@ -216,7 +216,7 @@ class SceneEditor3DWorkspaceLayer extends PreviousLayer.SceneEditor3DPumpRouting
         if gameViewOutputFramed == false {
             state.viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(viewYawDegrees);
             state.viewPitchDegrees = SceneEditor3DModel.ClampInt3D(viewPitchDegrees, -80, 80);
-            state.viewScale = SceneEditor3DModel.ClampInt3D(viewScale, 4, 120);
+            state.viewScale = SceneEditor3DModel.ClampViewScale(viewScale);
         }
         state.viewportMode = SceneEditor3DModel.ClampInt3D(
             viewportMode, SceneEditor3DModel.VIEWPORT_MODE_SHADED, SceneEditor3DModel.VIEWPORT_MODE_SHADED_WIRE);
@@ -298,7 +298,7 @@ class SceneEditor3DWorkspaceLayer extends PreviousLayer.SceneEditor3DPumpRouting
             vertexSnapEnabled = false;
             viewYawDegrees = 35;
             viewPitchDegrees = 25;
-            viewScale = 28;
+            viewScale = SceneEditor3DModel.DEFAULT_VIEW_SCALE;
             viewportMode = SceneEditor3DModel.VIEWPORT_MODE_SHADED;
             viewTargetX = 0.0;
             viewTargetY = 0.0;
@@ -372,7 +372,7 @@ class SceneEditor3DWorkspaceLayer extends PreviousLayer.SceneEditor3DPumpRouting
         viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(
             SceneEditor3DModel.ClampInt3D(state.viewYawDegrees, -36000, 36000));
         viewPitchDegrees = SceneEditor3DModel.ClampInt3D(state.viewPitchDegrees, -80, 80);
-        viewScale = SceneEditor3DModel.ClampInt3D(state.viewScale, 4, 120);
+        viewScale = SceneEditor3DModel.ClampViewScale(state.viewScale);
         viewportMode = SceneEditor3DModel.ClampInt3D(
             state.viewportMode,
             SceneEditor3DModel.VIEWPORT_MODE_SHADED, SceneEditor3DModel.VIEWPORT_MODE_WIREFRAME);

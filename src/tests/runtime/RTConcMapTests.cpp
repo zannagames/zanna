@@ -8,7 +8,8 @@
 // File: src/tests/runtime/RTConcMapTests.cpp
 // Purpose: Tests for Zanna.Threads.ConcurrentMap thread-safe hash map.
 // Key invariants: Concurrent mutation preserves map contents, cached hashes,
-//                 ownership balance, and GC-visible managed edges.
+//                 ownership balance, GC-visible managed edges, and rejects a
+//                 forged string key without aliasing it to the empty key.
 // Ownership/Lifetime: Each test owns its map and inserted managed values and
 //                     joins all worker threads before releasing shared state.
 // Links: src/runtime/threads/rt_concmap.c,
@@ -38,7 +39,14 @@
 extern "C" void rt_trap_set_recovery(jmp_buf *buf);
 extern "C" void rt_trap_clear_recovery(void);
 
+static bool g_return_traps = false;
+static const char *g_last_returning_trap = nullptr;
+
 extern "C" void vm_trap(const char *msg) {
+    if (g_return_traps) {
+        g_last_returning_trap = msg;
+        return;
+    }
     rt_abort(msg);
 }
 
@@ -508,6 +516,40 @@ static void test_concurrent_set_if_missing() {
     printf("test_concurrent_set_if_missing: PASSED\n");
 }
 
+static void test_invalid_key_returning_trap_does_not_mutate_empty_key() {
+    void *m = rt_concmap_new();
+    rt_string empty_key = make_str("");
+    void *value = new_obj();
+    rt_concmap_set(m, empty_key, value);
+    if (rt_obj_release_check0(value))
+        rt_obj_free(value);
+
+    auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+    g_return_traps = true;
+    g_last_returning_trap = nullptr;
+    rt_concmap_set(m, forged, nullptr);
+    assert(g_last_returning_trap != nullptr);
+    assert(rt_concmap_len(m) == 1);
+
+    g_last_returning_trap = nullptr;
+    assert(rt_concmap_get(m, forged) == nullptr);
+    assert(g_last_returning_trap != nullptr);
+
+    g_last_returning_trap = nullptr;
+    assert(rt_concmap_remove(m, forged) == 0);
+    assert(g_last_returning_trap != nullptr);
+    g_return_traps = false;
+
+    void *stored = rt_concmap_get(m, empty_key);
+    assert(stored == value);
+    if (rt_obj_release_check0(stored))
+        rt_obj_free(stored);
+    rt_string_unref(empty_key);
+    if (rt_obj_release_check0(m))
+        rt_obj_free(m);
+    printf("test_invalid_key_returning_trap_does_not_mutate_empty_key: PASSED\n");
+}
+
 // ============================================================================
 // Main
 // ============================================================================
@@ -543,6 +585,7 @@ int main() {
     test_concurrent_writes();
     test_concurrent_read_write();
     test_concurrent_set_if_missing();
+    test_invalid_key_returning_trap_does_not_mutate_empty_key();
 
     printf("\nAll ConcurrentMap tests passed!\n");
     return 0;

@@ -368,6 +368,11 @@ static void light3d_init_common(rt_light3d *light, int32_t type, double r, doubl
     light->range = 0.0;
     light->decay_type = 2;
     light->enabled = 1;
+    /* Canonical identity emitter basis: the VSCN loader normalizes a
+     * degenerate basis to exactly this, so fresh lights must start here or
+     * save -> load -> save is not byte-stable (found by the VSCN golden). */
+    light->basis_u[0] = 1.0;
+    light->basis_v[1] = 1.0;
 }
 
 /// @brief Create a directional light (e.g., sun or moon).

@@ -104,6 +104,56 @@ void rt_water3d_set_sim_distance(void *water, double distance);
 /// @return Configured nonnegative distance, or zero for an invalid handle.
 double rt_water3d_get_sim_distance(void *water);
 
+/* Readback symmetry (ADR 0227). */
+/// @brief Read the surface height (world Y).
+/// @param water Water3D handle.
+/// @return Retained height, or 0.0.
+double rt_water3d_get_height(void *water);
+/// @brief Read the surface center as (centerX, height, centerZ).
+/// @param water Water3D handle.
+/// @return New Vec3 of the retained placement; origin for invalid handles.
+void *rt_water3d_get_position(void *water);
+/// @brief Read the legacy single-wave speed.
+/// @param water Water3D handle.
+/// @return Retained speed, or 0.0.
+double rt_water3d_get_wave_speed(void *water);
+/// @brief Read the legacy single-wave amplitude.
+/// @param water Water3D handle.
+/// @return Retained amplitude, or 0.0.
+double rt_water3d_get_wave_amplitude(void *water);
+/// @brief Read the legacy single-wave frequency.
+/// @param water Water3D handle.
+/// @return Retained frequency, or 0.0.
+double rt_water3d_get_wave_frequency(void *water);
+/// @brief Read the surface tint color.
+/// @param water Water3D handle.
+/// @return New Vec3 of the retained RGB tint; origin for invalid handles.
+void *rt_water3d_get_color(void *water);
+/// @brief Read the surface opacity.
+/// @param water Water3D handle.
+/// @return Retained alpha, or 0.0.
+double rt_water3d_get_alpha(void *water);
+/// @brief Read the environment-reflection strength.
+/// @param water Water3D handle.
+/// @return Retained reflectivity, or 0.0.
+double rt_water3d_get_reflectivity(void *water);
+/// @brief Read the grid resolution.
+/// @param water Water3D handle.
+/// @return Retained quads per axis, or 0.
+int64_t rt_water3d_get_resolution(void *water);
+/// @brief Read the retained surface texture.
+/// @param water Water3D handle.
+/// @return Borrowed Pixels handle, or `NULL`.
+void *rt_water3d_get_texture(void *water);
+/// @brief Read the retained wave normal map.
+/// @param water Water3D handle.
+/// @return Borrowed Pixels handle, or `NULL`.
+void *rt_water3d_get_normal_map(void *water);
+/// @brief Read the retained environment cubemap.
+/// @param water Water3D handle.
+/// @return Borrowed CubeMap3D handle, or `NULL`.
+void *rt_water3d_get_env_map(void *water);
+
 /// @brief Add a Gerstner wave (direction, speed, amplitude, wavelength). Up to 8 waves total.
 /// @param water Water3D handle; invalid handles are ignored.
 /// @param dirX Propagation-direction x component.

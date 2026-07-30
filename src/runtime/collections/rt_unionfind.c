@@ -170,6 +170,8 @@ int64_t rt_unionfind_find(void *uf_ptr, int64_t x) {
     if (!uf_ptr)
         return -1;
     rt_unionfind_impl *uf = as_unionfind(uf_ptr, "UnionFind.Find: invalid UnionFind object");
+    if (!uf)
+        return -1;
 
     if (x < 0 || x >= uf->n)
         return -1;
@@ -220,6 +222,8 @@ int64_t rt_unionfind_union(void *uf_ptr, int64_t x, int64_t y) {
     if (!uf_ptr)
         return 0;
     rt_unionfind_impl *uf = as_unionfind(uf_ptr, "UnionFind.Union: invalid UnionFind object");
+    if (!uf)
+        return 0;
 
     int64_t rx = rt_unionfind_find(uf, x);
     int64_t ry = rt_unionfind_find(uf, y);
@@ -270,7 +274,8 @@ int8_t rt_unionfind_connected(void *uf_ptr, int64_t x, int64_t y) {
 int64_t rt_unionfind_count(void *uf_ptr) {
     if (!uf_ptr)
         return 0;
-    return as_unionfind(uf_ptr, "UnionFind.Count: invalid UnionFind object")->sets;
+    rt_unionfind_impl *uf = as_unionfind(uf_ptr, "UnionFind.Count: invalid UnionFind object");
+    return uf ? uf->sets : 0;
 }
 
 /// @brief Return the number of elements in the set containing element @p x.
@@ -285,7 +290,8 @@ int64_t rt_unionfind_set_size(void *uf_ptr, int64_t x) {
     int64_t root = rt_unionfind_find(uf_ptr, x);
     if (root < 0)
         return 0;
-    return as_unionfind(uf_ptr, "UnionFind.SetSize: invalid UnionFind object")->size[root];
+    rt_unionfind_impl *uf = as_unionfind(uf_ptr, "UnionFind.SetSize: invalid UnionFind object");
+    return uf ? uf->size[root] : 0;
 }
 
 /// @brief Reset the union-find so every element is its own set.
@@ -296,6 +302,8 @@ void rt_unionfind_reset(void *uf_ptr) {
     if (!uf_ptr)
         return;
     rt_unionfind_impl *uf = as_unionfind(uf_ptr, "UnionFind.Reset: invalid UnionFind object");
+    if (!uf)
+        return;
 
     for (int64_t i = 0; i < uf->n; i++) {
         uf->parent[i] = i;

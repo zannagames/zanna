@@ -61,6 +61,16 @@ void *rt_vec2_one(void);
 /// @return Stored x component, or 0.0 after trapping for an invalid handle.
 double rt_vec2_x(void *v);
 
+/// @brief Set the X component in place (ADR 0227: parity with Vec3).
+/// @param v Mutable Vec2 handle.
+/// @param x New x component.
+void rt_vec2_set_x(void *v, double x);
+
+/// @brief Set the Y component in place (ADR 0227: parity with Vec3).
+/// @param v Mutable Vec2 handle.
+/// @param y New y component.
+void rt_vec2_set_y(void *v, double y);
+
 /// @brief Get the Y component.
 /// @param v The Vec2 object.
 /// @return Stored y component, or 0.0 after trapping for an invalid handle.

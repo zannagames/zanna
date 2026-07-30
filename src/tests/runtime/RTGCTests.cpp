@@ -956,6 +956,29 @@ static void test_heap_info_snapshot_and_failure_clearing() {
     rt_heap_release(payload);
 }
 
+/// @brief Verify zero-sized elements are rejected after capacity is clamped to length.
+/// @details A caller may request no explicit capacity while supplying a positive logical length.
+///          The allocator must reject that effective positive capacity before performing the
+///          overflow division, and the failed resize must leave the original allocation intact.
+static void test_heap_realloc_rejects_zero_element_size_with_positive_length() {
+    auto *payload = static_cast<uint8_t *>(rt_heap_alloc(RT_HEAP_ARRAY, RT_ELEM_U8, 1, 1, 1));
+    ASSERT(payload != nullptr, "zero-sized realloc test array allocated");
+    if (!payload)
+        return;
+    payload[0] = 0x5A;
+
+    void *resized = rt_heap_realloc(payload, 0, 1, 0);
+    ASSERT(resized == nullptr, "zero element size with positive effective capacity is rejected");
+
+    rt_heap_info_t info{};
+    ASSERT(rt_heap_get_info(payload, &info) == 1,
+           "failed zero-sized realloc preserves registry entry");
+    ASSERT(info.len == 1 && info.cap == 1, "failed zero-sized realloc preserves original bounds");
+    ASSERT(payload[0] == 0x5A, "failed zero-sized realloc preserves original contents");
+    ASSERT(rt_heap_release(payload) == 0,
+           "original allocation remains releasable after rejected zero-sized realloc");
+}
+
 /// @brief Verify in-place ownership transfer is rejected for aliased heap payloads.
 /// @details `rt_heap_realloc` invalidates its input address on success, so permitting a shared
 ///          allocation would strand every other owner. The recovered trap must leave the original
@@ -1313,6 +1336,7 @@ int main() {
     test_collect_reclaims_cycle_storage_and_finalizers();
     test_heap_registry_tombstone_is_not_a_payload();
     test_heap_info_snapshot_and_failure_clearing();
+    test_heap_realloc_rejects_zero_element_size_with_positive_length();
     test_heap_realloc_requires_unique_owner();
     test_collect_restores_cycle_after_finalizer_resurrection();
     test_collect_releases_untracked_external_children();

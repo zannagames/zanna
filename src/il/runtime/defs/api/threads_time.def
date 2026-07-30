@@ -342,6 +342,8 @@ RT_FUNC(Vec2One,    rt_vec2_one,    "Zanna.Math.Vec2.One",    "obj()")
 RT_FUNC(Vec2Rotate, rt_vec2_rotate, "Zanna.Math.Vec2.Rotate", "obj(obj,f64)")
 RT_FUNC(Vec2Sub,    rt_vec2_sub,    "Zanna.Math.Vec2.Sub",    "obj(obj,obj)")
 RT_FUNC(Vec2X,      rt_vec2_x,      "Zanna.Math.Vec2.get_X",  "f64(obj)")
+RT_FUNC(Vec2SetX,   rt_vec2_set_x,  "Zanna.Math.Vec2.set_X",  "void(obj,f64)")
+RT_FUNC(Vec2SetY,   rt_vec2_set_y,  "Zanna.Math.Vec2.set_Y",  "void(obj,f64)")
 RT_FUNC(Vec2Y,      rt_vec2_y,      "Zanna.Math.Vec2.get_Y",  "f64(obj)")
 RT_FUNC(Vec2Zero,   rt_vec2_zero,   "Zanna.Math.Vec2.Zero",   "obj()")
 

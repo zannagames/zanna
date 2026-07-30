@@ -25,12 +25,12 @@ static char *read_line_conn(http_conn_t *conn) {
     char *line = NULL;
     size_t len = 0;
     size_t cap = 256;
-    line = (char *)malloc(cap);
+    line = (char *)calloc(cap, 1u);
     if (!line)
         return NULL;
 
     while (1) {
-        uint8_t byte;
+        uint8_t byte = 0;
         if (http_conn_recv_byte(conn, &byte) == 0) {
             // Connection closed
             if (len == 0) {
@@ -81,6 +81,13 @@ static char *read_line_conn(http_conn_t *conn) {
 ///        phrase.
 /// @return Parsed status code, or -1 on syntax or allocation failure.
 static int parse_status_line(const char *line, int *http_minor_out, char **status_text_out) {
+    if (http_minor_out)
+        *http_minor_out = -1;
+    if (status_text_out)
+        *status_text_out = NULL;
+    if (!line || strlen(line) < 12u)
+        return -1;
+
     // Format: HTTP/1.x STATUS_CODE STATUS_TEXT
     if (strncmp(line, "HTTP/1.", 7) != 0)
         return -1;
@@ -99,6 +106,8 @@ static int parse_status_line(const char *line, int *http_minor_out, char **statu
     p++;
 
     // Parse exactly three status-code digits followed by SP or end-of-line.
+    if (strlen(p) < 3)
+        return -1;
     if (!(p[0] >= '0' && p[0] <= '9') || !(p[1] >= '0' && p[1] <= '9') ||
         !(p[2] >= '0' && p[2] <= '9'))
         return -1;

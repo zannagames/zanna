@@ -118,26 +118,32 @@ typedef struct {
 // Internal helpers
 //=============================================================================
 
-/// @brief Extract a borrowed (data, byte_length) view of a string key, normalizing NULL to empty.
+/// @brief Extract a borrowed (data, byte_length) view of a validated string key.
 /// @details Used by every Get/Set/ContainsKey/Delete entry point so the
 ///          hash and compare paths can operate on (data, len) pairs
 ///          uniformly. Hashing uses the full byte length (not strlen) so
-///          embedded NULs in keys remain distinct.
+///          embedded NULs in keys remain distinct. Null denotes the empty key;
+///          a forged handle traps and returns failure instead of aliasing it.
 /// @param key Runtime string key, or null for the empty key.
+/// @param out_data Receives borrowed key bytes.
 /// @param out_len Receives the key length in bytes.
-/// @return Borrowed key bytes valid while @p key remains alive.
-static const char *get_key_data(rt_string key, size_t *out_len) {
+/// @return One on success, otherwise zero after a recoverable trap.
+static int get_key_data(rt_string key, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
     if (!key) {
-        *out_len = 0;
-        return "";
+        return 1;
+    }
+    if (!rt_string_is_handle(key)) {
+        rt_trap("ConcurrentMap: invalid string key");
+        return 0;
     }
     const char *cstr = rt_string_cstr(key);
-    if (!cstr) {
-        *out_len = 0;
-        return "";
-    }
+    if (!cstr)
+        return 0;
+    *out_data = cstr;
     *out_len = (size_t)rt_string_len_bytes(key);
-    return cstr;
+    return 1;
 }
 
 /// @brief Linear-search a separate-chaining bucket for an entry whose key matches (key, key_len).
@@ -519,7 +525,11 @@ void rt_concmap_set(void *obj, rt_string key, void *value) {
         return;
     rt_obj_retain_maybe(obj);
     size_t key_len = 0;
-    const char *key_data = get_key_data(key, &key_len);
+    const char *key_data = NULL;
+    if (!get_key_data(key, &key_data, &key_len)) {
+        concmap_release_object(obj);
+        return;
+    }
     uint64_t h = rt_fnv1a(key_data, key_len);
 
     if (key_len == SIZE_MAX) {
@@ -595,7 +605,11 @@ void *rt_concmap_get(void *obj, rt_string key) {
         return NULL;
     rt_obj_retain_maybe(obj);
     size_t key_len = 0;
-    const char *key_data = get_key_data(key, &key_len);
+    const char *key_data = NULL;
+    if (!get_key_data(key, &key_data, &key_len)) {
+        concmap_release_object(obj);
+        return NULL;
+    }
     uint64_t h = rt_fnv1a(key_data, key_len);
 
     CM_LOCK(cm);
@@ -639,7 +653,11 @@ void *rt_concmap_get_or(void *obj, rt_string key, void *default_value) {
         return default_value;
     rt_obj_retain_maybe(obj);
     size_t key_len = 0;
-    const char *key_data = get_key_data(key, &key_len);
+    const char *key_data = NULL;
+    if (!get_key_data(key, &key_data, &key_len)) {
+        concmap_release_object(obj);
+        return default_value;
+    }
     uint64_t h = rt_fnv1a(key_data, key_len);
 
     CM_LOCK(cm);
@@ -681,7 +699,11 @@ int8_t rt_concmap_has(void *obj, rt_string key) {
         return 0;
     rt_obj_retain_maybe(obj);
     size_t key_len = 0;
-    const char *key_data = get_key_data(key, &key_len);
+    const char *key_data = NULL;
+    if (!get_key_data(key, &key_data, &key_len)) {
+        concmap_release_object(obj);
+        return 0;
+    }
     uint64_t h = rt_fnv1a(key_data, key_len);
 
     CM_LOCK(cm);
@@ -708,7 +730,11 @@ int8_t rt_concmap_set_if_missing(void *obj, rt_string key, void *value) {
         return 0;
     rt_obj_retain_maybe(obj);
     size_t key_len = 0;
-    const char *key_data = get_key_data(key, &key_len);
+    const char *key_data = NULL;
+    if (!get_key_data(key, &key_data, &key_len)) {
+        concmap_release_object(obj);
+        return 0;
+    }
     uint64_t h = rt_fnv1a(key_data, key_len);
 
     if (key_len == SIZE_MAX) {
@@ -780,7 +806,11 @@ int8_t rt_concmap_remove(void *obj, rt_string key) {
         return 0;
     rt_obj_retain_maybe(obj);
     size_t key_len = 0;
-    const char *key_data = get_key_data(key, &key_len);
+    const char *key_data = NULL;
+    if (!get_key_data(key, &key_data, &key_len)) {
+        concmap_release_object(obj);
+        return 0;
+    }
     uint64_t h = rt_fnv1a(key_data, key_len);
 
     CM_LOCK(cm);

@@ -1251,10 +1251,12 @@ cap.
 
 Both editors retain invalid source bytes unchanged and explain the parse/load
 failure instead of replacing the document. Current authoring limits include no
-tagged asset library/import-settings pipeline, cubemap/lightmap picker,
-automatic component-schema/scene-data migration, generalized runtime component
-composition, advanced Tiled margin/spacing or
-image-collection editing, or tile animation/collision/metadata editing. The 3D
+import-settings pipeline (scale/axis/unit conversion), no cubemap/lightmap
+picker, no automatic component-schema/scene-data migration, no generalized
+runtime component composition, no advanced Tiled margin/spacing or
+image-collection editing, and no tile animation/collision/metadata editing.
+(A tagged asset library does exist: an optional `asset-library.json` at each
+workspace root drives the in-inspector asset browser's tag filters — ADR 0180.) The 3D
 Local/World
 control follows the scene tab: Local uses the parent-relative basis of the
 local TRS fields, while World aligns to absolute axes and applies one snapped
@@ -1282,6 +1284,89 @@ wrap-safe movement across the ±180-degree seam. Optional snapping quantizes the
 result to 15-degree steps. Nearly edge-on rings are omitted and cannot capture
 input; one accepted group gesture creates one undo entry, while Escape or an
 inexact World conversion restores the complete selection.
+
+## Scene-Driven Game Workflows
+
+The workflows below take a scene document from authoring to a running,
+packaged game. They shipped with ADRs 0180, 0188, 0189, 0194, and 0225.
+
+### New Project Templates
+
+File → New Project scaffolds one of five project kinds: `console`, `gui`,
+`library`, `game2d`, and `game3d`. The game templates publish atomically
+(a staging directory is deleted on any failure or name collision) and
+produce a complete runnable game:
+
+- `zanna.project` with a `run-profile` directive (`native` for the game
+  templates; see Build And Run for the vm/native semantics).
+- `src/main.zia` that handles `--scene <path>`, `--scene-watch`, and
+  `--smoke`, loads the starter scene, and runs a deterministic 240-frame
+  smoke under `--smoke`.
+- A starter scene (`assets/scenes/level-01.scene3d` for `game3d`) written
+  through the live runtime serializer, so its dialect always matches the
+  binary that will load it.
+- `scene-components.json` at schema v19 with a starter component and a
+  typed scene-settings form, plus an empty `asset-library.json`.
+
+The scaffold is regression-gated by the `zia_project_template_smoke` test,
+which creates both game templates and runs their smoke modes.
+
+### Run Scene and Embedded Play
+
+`Run Scene` (Ctrl+R) launches the project entry with the active scene file
+passed as `--scene`. The Play toolbar button on a scene editor goes
+further (ADR 0225): it requires a saved scene inside an open project,
+builds the project when the binary is stale (`zanna build`, native
+run-profile) or runs the entry under the interpreter (vm run-profile),
+launches it with `--scene <path> --scene-watch`, and presents the game's
+frames inside the editor viewport through a shared-memory embed channel
+(up to 1920x1080). Pointer movement, the left button, and a fixed set of
+gameplay keys forward while the pane is focused. Stop ends the process and
+returns the pane to editing.
+
+Play is intentionally non-blocking for authoring: the editor stays fully
+editable while the game runs.
+
+### Scene Hot Reload (`--scene-watch`)
+
+`--scene-watch` is a convention argument (ADR 0194): the engine never
+intercepts it, and the template mains implement it by polling the scene
+file's modification time and reloading on change. Because Play passes it
+automatically, saving the scene in Studio hot-reloads the running embedded
+game — the edit-save-see loop needs no relaunch.
+
+### Bake: Lightmaps, Probes, and Navmesh
+
+The 3D Scene tab's Lighting & Bake topic (ADR 0188) authors `bake.*` root
+metadata (texels per unit, samples, bounces, sky color) and drives three
+bakes:
+
+- **Bake** runs the CPU lightmap baker in bounded steps inside the editor
+  pump. Two preflights refuse rather than guess: zero static mesh nodes
+  (mark participants Static first) and shared meshes (run Make Meshes
+  Unique). Completion commits charts, atlas, and settings as one history
+  entry; Cancel restores the exact prior document bytes.
+- **Bake Probes** applies a `probes.*` grid convention on one selected
+  node and writes a `.vlpg` light-probe sidecar next to the scene. It
+  requires a completed lightmap bake in the same session.
+- **Bake Navmesh** reads `nav.agentRadius`, `nav.agentHeight`,
+  `nav.maxSlope`, and `nav.cellSize` root metadata and writes a
+  `.vnavmsh` sidecar without dirtying the scene document.
+
+### Project Material Library
+
+`materials.scene3d` at the workspace root (ADR 0189) is an ordinary scene
+file whose top-level nodes are named library materials (up to 256 entries,
+16 MB). The 3D Scene tab's Assets & Materials topic lists it with
+lit-sphere swatches; Apply and drag-to-mesh copy a library material onto
+the target node's material (copies are never linked back to the library
+file). Saves are atomic and conflict-guarded.
+
+### Package Project
+
+Package Project (command palette: `packageproject`) runs `zanna package`
+on the open project as a streamed job, producing the distributable
+package the CLI would build from the same manifest.
 
 ## Settings
 

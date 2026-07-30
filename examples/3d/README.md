@@ -105,3 +105,23 @@ ZANNA_3D_BACKEND=software ../../../build/src/tools/zanna/zanna run long_traversa
 ZANNA_3D_BACKEND=metal ../../../build/src/tools/zanna/zanna run gpu_smoke.zia
 ../../../build/src/tools/zanna/zanna package . --target tarball --dry-run
 ```
+
+## overhaul_showcase/
+
+`Behavior3D` presets composed with `Environment3D` in one compact program.
+Registered as CTest `g3d_overhaul_showcase_probe`.
+
+## game3d_scenes/
+
+The reference demo for the shared `GameBase3D`/`IScene3D` scene framework
+(`examples/games/lib/`): a scene stack with fade transitions driven by
+`Behavior3D` presets.
+
+```sh
+../../build/src/tools/zanna/zanna run game3d_scenes/main.zia
+```
+
+## d3d11_rtt_readback_probe.zia
+
+Windows-only render-to-texture readback probe for the D3D11 backend,
+registered as CTest `zia_smoke_d3d11_rtt_readback`.

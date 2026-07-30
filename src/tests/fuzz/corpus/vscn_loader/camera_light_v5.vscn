@@ -1,19 +1,23 @@
 {
   "format": "vscn",
-  "version": 2,
+  "version": 5,
   "textures": [
+    {"kind": "rgba8", "width": 4, "height": 4, "rgbaBase64": "iMxE/4jMRP+IzET/iMxE/4jMRP+IzET/iMxE/4jMRP+IzET/iMxE/4jMRP+IzET/iMxE/4jMRP+IzET/iMxE/w=="}
   ],
   "cubemaps": [
   ],
   "materials": [
-    {"diffuse": [0.59999999999999998, 0.40000000000000002, 0.20000000000000001, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0.69999999999999996, "roughness": 0.29999999999999999, "ao": 0.84999999999999998, "emissiveIntensity": 1.5, "normalScale": 0.55000000000000004, "alpha": 0.59999999999999998, "alphaMode": 2, "alphaCutoff": 0.5, "doubleSided": true, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": -1, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]}
+    {"diffuse": [0.5, 0.40000000000000002, 0.29999999999999999, 1], "specular": [1, 1, 1], "shininess": 32, "workflow": 1, "emissive": [0, 0, 0], "metallic": 0, "roughness": 0.5, "ao": 1, "emissiveIntensity": 1, "normalScale": 1, "alpha": 1, "alphaMode": 0, "alphaCutoff": 0.5, "doubleSided": false, "reflectivity": 0, "unlit": false, "shadingModel": 0, "texture": 0, "normalMap": -1, "specularMap": -1, "emissiveMap": -1, "metallicRoughnessMap": -1, "aoMap": -1, "envMap": -1, "lightMap": -1, "customParams": [0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0], "textureSlots": [{"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}, {"uvSet": 0, "wrapS": 0, "wrapT": 0, "filter": 0, "minFilter": 0, "magFilter": 0, "mipFilter": 0, "anisotropy": 1, "uvTransform": [1, 0, 0, 1, 0, 0]}]}
+  ],
+  "cameras": [
+    {"isOrtho": false, "fov": 60, "aspect": 1.6000000000000001, "near": 0.10000000000000001, "far": 50, "orthoSize": 10, "eye": [0, 0, 0], "view": [1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1, 0, 0, 0, 0, 1]}
   ],
   "meshes": [
     {"vertexFormat": "vgfx3d_vertex_le_v2", "vertexCount": 24, "indexCount": 36, "boneCount": 0, "skeletonIndex": -1, "resident": true, "verticesBase64": "AAAAvwAAAL8AAAA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AAAAvwAAAD8AAAAAAAAAAAAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8AAAA/AAAAPwAAAAAAAAAAAACAPwAAgD8AAAAAAACAPwAAAAAAAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAvwAAAD8AAAA/AAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AAAAvwAAAL8AAAAAAAAAAAAAgL8AAAAAAACAPwAAAAAAAIA/AACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL8AAAC/AAAAvwAAAAAAAAAAAACAvwAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAvwAAAD8AAAC/AAAAAAAAAAAAAIC/AACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AAAAPwAAAL8AAAAAAAAAAAAAgL8AAAAAAAAAAAAAAAAAAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8AAAC/AAAAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwAAAL8AAAC/AACAPwAAAAAAAAAAAACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AAAAPwAAAL8AAIA/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8AAAA/AAAAPwAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAvwAAAL8AAAC/AACAvwAAAAAAAAAAAAAAAAAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC/AAAAvwAAAD8AAIC/AAAAAAAAAAAAAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL8AAAA/AAAAPwAAgL8AAAAAAAAAAAAAgD8AAAAAAACAPwAAAAAAAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAvwAAAD8AAAC/AACAvwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC/AAAAPwAAAD8AAAAAAACAPwAAAAAAAAAAAACAPwAAAAAAAIA/AACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD8AAAA/AAAAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwAAAD8AAAC/AAAAAAAAgD8AAAAAAACAPwAAAAAAAIA/AAAAAAAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAC/AAAAPwAAAL8AAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL8AAAC/AAAAvwAAAAAAAIC/AAAAAAAAAAAAAIA/AAAAAAAAgD8AAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAPwAAAL8AAAC/AAAAAAAAgL8AAAAAAACAPwAAgD8AAIA/AACAPwAAgD8AAIA/AACAPwAAgD8AAAAAAAAAAAAAAAAAAIA/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA/AAAAvwAAAD8AAAAAAACAvwAAAAAAAIA/AAAAAAAAgD8AAAAAAACAPwAAgD8AAIA/AACAPwAAAAAAAAAAAAAAAAAAgD8AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAL8AAAC/AAAAPwAAAAAAAIC/AAAAAAAAAAAAAAAAAAAAAAAAAAAAAIA/AACAPwAAgD8AAIA/AAAAAAAAAAAAAAAAAACAPwAAAAAAAAAAAAAAAAAAAAAAAAAA", "indicesBase64": "AAAAAAEAAAACAAAAAAAAAAIAAAADAAAABAAAAAUAAAAGAAAABAAAAAYAAAAHAAAACAAAAAkAAAAKAAAACAAAAAoAAAALAAAADAAAAA0AAAAOAAAADAAAAA4AAAAPAAAAEAAAABEAAAASAAAAEAAAABIAAAATAAAAFAAAABUAAAAWAAAAFAAAABYAAAAXAAAA"}
   ],
   "nodes": [
     {
-      "name": "node",
+      "name": "Lit Mesh",
       "position": [0, 0, 0],
       "rotation": [0, 0, 0, 1],
       "scale": [1, 1, 1],
@@ -24,6 +28,34 @@
       "hasMaterial": true,
       "mesh": 0,
       "material": 0
+    }
+,    {
+      "name": "Key",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "light": {"type": 1, "direction": [0, 0, -1], "position": [0, 3, 0], "color": [1, 0.90000000000000002, 0.80000000000000004], "intensity": 1, "attenuation": 12, "innerCos": 0, "outerCos": 0, "castsShadows": false, "enabled": true, "basisU": [0, 0, 0], "basisV": [0, 0, 0], "width": 1, "height": 1, "radius": 1, "range": 0, "decayType": 2}
+    }
+,    {
+      "name": "Cam",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "camera": 0
     }
   ]
 }

@@ -16,6 +16,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "rt_box.h"
+#include "rt_gc.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_option.h"
@@ -25,18 +26,25 @@
 
 #include <cassert>
 #include <csetjmp>
+#include <cstdint>
 #include <cstring>
 
 namespace {
 static jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
 static bool g_trap_expected = false;
+static bool g_return_traps = false;
+static int g_returned_trap_count = 0;
 } // namespace
 
 extern "C" void vm_trap(const char *msg) {
     g_last_trap = msg;
     if (g_trap_expected)
         longjmp(g_trap_jmp, 1);
+    if (g_return_traps) {
+        ++g_returned_trap_count;
+        return;
+    }
     rt_abort(msg);
 }
 
@@ -377,6 +385,34 @@ static void test_set_retain_overflow_leaves_key_absent() {
     rt_release_obj(t);
 }
 
+static void test_clone_has_independent_structure_and_retained_values() {
+    void *source = rt_trie_new();
+    void *value = new_obj();
+    rt_string alpha = make_key("alpha");
+    rt_string alpine = make_key("alpine");
+    rt_trie_set(source, alpha, value);
+    rt_trie_set(source, alpine, value);
+
+    void *clone = rt_trie_clone(source);
+    assert(clone != nullptr);
+    assert(rt_trie_len(clone) == 2);
+    assert(rt_trie_get(clone, alpha) == value);
+    assert(rt_trie_get(clone, alpine) == value);
+
+    assert(rt_trie_remove(source, alpha) == 1);
+    assert(rt_trie_has(source, alpha) == 0);
+    assert(rt_trie_has(clone, alpha) == 1);
+    rt_trie_clear(clone);
+    assert(rt_trie_len(clone) == 0);
+    assert(rt_trie_has(source, alpine) == 1);
+
+    rt_string_unref(alpha);
+    rt_string_unref(alpine);
+    rt_release_obj(value);
+    rt_release_obj(clone);
+    rt_release_obj(source);
+}
+
 static void test_clone_retain_overflow_keeps_source_unchanged() {
     void *t = rt_trie_new();
     rt_string k = make_key("clone-boom");
@@ -385,17 +421,64 @@ static void test_clone_retain_overflow_keeps_source_unchanged() {
     rt_trie_set(t, k, value);
     rt_heap_hdr_t *hdr = rt_heap_hdr(value);
     hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+    int64_t tracked_before = rt_gc_tracked_count();
 
     EXPECT_TRAP((void)rt_trie_clone(t));
     assert(rt_trie_len(t) == 1);
     assert(rt_trie_has(t, k) == 1);
     assert(rt_trie_get(t, k) == value);
     assert(hdr->refcnt == RT_HEAP_MAX_MORTAL_REFCNT);
+    assert(rt_gc_tracked_count() == tracked_before);
 
     hdr->refcnt = 2;
     rt_string_unref(k);
     rt_release_obj(value);
     rt_release_obj(t);
+}
+
+/// @brief Invalid nonnull string and object handles must not alias valid state.
+/// @details A returning embedder trap hook exercises every key family without
+///          non-local control transfer. The forged key must never address the
+///          empty-key terminal, and checked casts must return safe defaults.
+static void test_returning_traps_reject_invalid_handles() {
+    void *trie = rt_trie_new();
+    void *empty_value = new_obj();
+    void *replacement = new_obj();
+    rt_string empty = make_key("");
+    rt_trie_set(trie, empty, empty_value);
+
+    rt_string forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(0x13579U));
+    void *wrong_object = new_obj();
+    g_returned_trap_count = 0;
+    g_return_traps = true;
+
+    rt_trie_set(trie, forged, replacement);
+    assert(rt_trie_len(trie) == 1);
+    assert(rt_trie_get(trie, empty) == empty_value);
+    assert(rt_trie_get(trie, forged) == nullptr);
+    assert(rt_trie_has(trie, forged) == 0);
+    assert(rt_trie_has_prefix(trie, forged) == 0);
+    assert(rt_trie_remove(trie, forged) == 0);
+    assert(rt_trie_with_prefix(trie, forged) == nullptr);
+    assert(rt_trie_longest_prefix(trie, forged) == nullptr);
+    assert(rt_trie_longest_prefix_option(trie, forged) == nullptr);
+
+    assert(rt_trie_len(wrong_object) == 0);
+    assert(rt_trie_clone(wrong_object) == nullptr);
+    void *wrong_keys = rt_trie_keys(wrong_object);
+    assert(wrong_keys != nullptr);
+    assert(rt_seq_len(wrong_keys) == 0);
+
+    g_return_traps = false;
+    assert(g_returned_trap_count == 11);
+    assert(g_last_trap != nullptr);
+
+    rt_release_obj(wrong_keys);
+    rt_release_obj(wrong_object);
+    rt_string_unref(empty);
+    rt_release_obj(replacement);
+    rt_release_obj(empty_value);
+    rt_release_obj(trie);
 }
 
 static void test_embedded_nul_keys() {
@@ -479,7 +562,9 @@ int main() {
     test_keys();
     test_empty_key();
     test_set_retain_overflow_leaves_key_absent();
+    test_clone_has_independent_structure_and_retained_values();
     test_clone_retain_overflow_keeps_source_unchanged();
+    test_returning_traps_reject_invalid_handles();
     test_embedded_nul_keys();
     test_null_safety();
     return 0;

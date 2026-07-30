@@ -194,6 +194,8 @@ RT_FUNC(QuatSlerp,           rt_quat_slerp,           "Zanna.Math.Quat.Slerp",  
 RT_FUNC(QuatLerp,            rt_quat_lerp,            "Zanna.Math.Quat.Lerp",            "obj(obj,obj,f64)")
 RT_FUNC(QuatRotateVec3,      rt_quat_rotate_vec3,     "Zanna.Math.Quat.RotateVec3",      "obj(obj,obj)")
 RT_FUNC(QuatToMat4,          rt_quat_to_mat4,         "Zanna.Math.Quat.ToMat4",          "obj(obj)")
+RT_FUNC(QuatToEuler,         rt_quat_to_euler,        "Zanna.Math.Quat.ToEuler",         "obj(obj)")
+RT_FUNC(QuatFromMat4,        rt_quat_from_mat4,       "Zanna.Math.Quat.FromMat4",        "obj(obj)")
 RT_FUNC(QuatAxis,            rt_quat_axis,            "Zanna.Math.Quat.Axis",            "obj(obj)")
 RT_FUNC(QuatAngle,           rt_quat_angle,           "Zanna.Math.Quat.Angle",           "f64(obj)")
 

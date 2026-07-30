@@ -1124,9 +1124,9 @@ static void update_write_application_keys(rt_tls_session_t *session) {
 /// @param session TLS session currently driving cancellation-aware I/O.
 /// @return Non-zero when the current TLS operation must stop.
 static int tls_io_should_stop(rt_tls_session_t *session) {
-    if (!session || !session->io_cancel_requested)
+    if (!session)
         return 0;
-    if (session->io_cancel_requested(session->io_cancel_context)) {
+    if (session->io_cancel_requested && session->io_cancel_requested(session->io_cancel_context)) {
         session->error = "TLS: I/O cancelled";
         return 1;
     }
@@ -1135,6 +1135,44 @@ static int tls_io_should_stop(rt_tls_session_t *session) {
         return 1;
     }
     return 0;
+}
+
+/// @brief Wait for TLS socket readiness within an internal owner's deadline.
+/// @details Cancellation-aware owners use short slices so their probe remains
+///          responsive. Deadline-only owners wait for the complete remaining
+///          budget. The loop converts slice expiry into another cancellation
+///          or deadline check instead of resetting elapsed time.
+/// @param session TLS session with a positive internal deadline.
+/// @param for_write Nonzero for write readiness; zero for read readiness.
+/// @return One when ready, otherwise zero after recording a terminal error.
+static int tls_io_wait_ready(rt_tls_session_t *session, int for_write) {
+    if (!session || session->io_deadline_us <= 0)
+        return 1;
+
+    for (;;) {
+        if (tls_io_should_stop(session))
+            return 0;
+
+        int64_t remaining_us = session->io_deadline_us - rt_clock_ticks_us();
+        if (remaining_us <= 0) {
+            session->error = "TLS: I/O timeout";
+            return 0;
+        }
+        int64_t wait_ms = remaining_us / 1000 + (remaining_us % 1000 != 0 ? 1 : 0);
+        if (wait_ms > INT_MAX)
+            wait_ms = INT_MAX;
+        if (session->io_cancel_requested && wait_ms > TLS_SERVER_CANCEL_POLL_MS)
+            wait_ms = TLS_SERVER_CANCEL_POLL_MS;
+
+        int ready = wait_socket(session->socket_fd, (int)wait_ms, for_write != 0);
+        if (ready > 0)
+            return 1;
+        if (ready < 0) {
+            session->error =
+                for_write ? "TLS: send readiness failed" : "TLS: receive readiness failed";
+            return 0;
+        }
+    }
 }
 
 /// Forward declaration — definition below (send_key_update_record calls send_record).
@@ -1223,6 +1261,12 @@ static int send_record(rt_tls_session_t *session,
     uint8_t *plaintext = NULL;
     size_t record_len;
     int rc = RT_TLS_OK;
+    if (!session)
+        return RT_TLS_ERROR_INVALID_ARG;
+    if (session->socket_fd == INVALID_SOCK) {
+        session->error = "TLS: connection is closed";
+        return RT_TLS_ERROR_CLOSED;
+    }
     if (len > TLS_MAX_RECORD_SIZE || (!data && len > 0)) {
         session->error = "TLS: record payload too large";
         return RT_TLS_ERROR;
@@ -1290,6 +1334,10 @@ static int send_record(rt_tls_session_t *session,
     size_t sent = 0;
     while (sent < record_len) {
         if (tls_io_should_stop(session)) {
+            rc = RT_TLS_ERROR_SOCKET;
+            goto done;
+        }
+        if (!tls_io_wait_ready(session, 1)) {
             rc = RT_TLS_ERROR_SOCKET;
             goto done;
         }
@@ -1387,6 +1435,15 @@ static int recv_record(rt_tls_session_t *session,
                        uint8_t *content_type,
                        uint8_t *data,
                        size_t *data_len) {
+    if (!session || !content_type || !data || !data_len)
+        return RT_TLS_ERROR_INVALID_ARG;
+    *content_type = 0;
+    *data_len = 0;
+    if (session->socket_fd == INVALID_SOCK) {
+        session->error = "TLS: connection is closed";
+        return RT_TLS_ERROR_CLOSED;
+    }
+
     // Read header
     uint8_t header[5];
     size_t pos = 0;
@@ -1394,6 +1451,8 @@ static int recv_record(rt_tls_session_t *session,
     int rc = RT_TLS_OK;
     while (pos < 5) {
         if (tls_io_should_stop(session))
+            return RT_TLS_ERROR_SOCKET;
+        if (!tls_io_wait_ready(session, 0))
             return RT_TLS_ERROR_SOCKET;
         int n = recv(session->socket_fd, (char *)(header + pos), (int)(5 - pos), 0);
         if (n < 0) {
@@ -1438,6 +1497,10 @@ static int recv_record(rt_tls_session_t *session,
     pos = 0;
     while (pos < length) {
         if (tls_io_should_stop(session)) {
+            rc = RT_TLS_ERROR_SOCKET;
+            goto done;
+        }
+        if (!tls_io_wait_ready(session, 0)) {
             rc = RT_TLS_ERROR_SOCKET;
             goto done;
         }
@@ -3533,14 +3596,12 @@ static void tls_session_dispose(rt_tls_session_t *session, int graceful) {
     if (!session)
         return;
 
-    if (graceful && session->state == TLS_STATE_CONNECTED) {
+    if (graceful && session->state == TLS_STATE_CONNECTED && session->socket_fd != INVALID_SOCK) {
         const int close_timeout_ms =
             (session->timeout_ms > 0 && session->timeout_ms < 100) ? session->timeout_ms : 100;
         session->timeout_ms = close_timeout_ms;
-        if (session->socket_fd != INVALID_SOCK) {
-            set_socket_timeout(session->socket_fd, close_timeout_ms, true);
-            set_socket_timeout(session->socket_fd, close_timeout_ms, false);
-        }
+        set_socket_timeout(session->socket_fd, close_timeout_ms, true);
+        set_socket_timeout(session->socket_fd, close_timeout_ms, false);
 
         // Send close_notify alert
         uint8_t alert[2] = {1, 0}; // warning, close_notify

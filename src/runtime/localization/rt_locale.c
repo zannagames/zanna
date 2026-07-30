@@ -401,13 +401,13 @@ void rt_locale_internal_finalizer(void *obj) {
 
 /// @brief Allocate a zero-initialised rt_locale_t handle and register its finalizer.
 /// @details Uses `rt_obj_new_i64` so the handle participates in the GC lifetime system.
-///          Traps on OOM (never returns NULL to the caller in practice).
-/// @return Pointer to a fresh, zeroed rt_locale_t registered with the GC.
+///          Traps on OOM and returns NULL when an embedder's trap hook resumes.
+/// @return Pointer to a fresh, zeroed rt_locale_t registered with the GC, or NULL.
 static void *loc_alloc(void) {
     rt_locale_t *loc = (rt_locale_t *)rt_obj_new_i64(0, (int64_t)sizeof(rt_locale_t));
     if (!loc) {
         rt_trap("Zanna.Localization.Locale: memory allocation failed");
-        return NULL; // unreachable after trap
+        return NULL;
     }
     memset(loc, 0, sizeof(*loc));
     rt_obj_set_finalizer(loc, rt_locale_internal_finalizer);
@@ -427,6 +427,8 @@ static void loc_release_handle(void *obj) {
 /// @return Fresh GC-managed Locale; allocation failure traps.
 static void *loc_make_invariant(void) {
     rt_locale_t *loc = (rt_locale_t *)loc_alloc();
+    if (!loc)
+        return NULL;
     memcpy(loc->tag, "root", 5);
     loc->data = rt_locale_data_en_us();
     return loc;
@@ -437,7 +439,7 @@ static void *loc_make_invariant(void) {
 ///          fails to parse. Calls `rt_locale_manager_lookup_data_retained` so the
 ///          returned handle holds a retained reference to any matching data record.
 /// @param tag NUL-terminated canonical BCP-47 tag (e.g., "en-US"), or NULL.
-/// @return A fresh, GC-tracked Locale handle; never NULL.
+/// @return A fresh, GC-tracked Locale handle, or NULL after allocation failure.
 static void *loc_from_canonical_tag(const char *tag) {
     if (!tag || strcmp(tag, "root") == 0)
         return loc_make_invariant();
@@ -445,6 +447,8 @@ static void *loc_from_canonical_tag(const char *tag) {
     if (rt_locale_internal_parse_into(tag, strlen(tag), &parsed) != 0)
         return loc_make_invariant();
     rt_locale_t *loc = (rt_locale_t *)loc_alloc();
+    if (!loc)
+        return NULL;
     *loc = parsed;
     loc->data = rt_locale_manager_lookup_data_retained(loc->tag);
     return loc;
@@ -515,6 +519,8 @@ void *rt_locale_parse_internal(rt_string tag, int strict) {
     }
 
     rt_locale_t *loc = (rt_locale_t *)loc_alloc();
+    if (!loc)
+        return NULL;
     *loc = parsed;
 
     // Try to resolve registered locale-data.
@@ -652,6 +658,8 @@ void *rt_locale_from_parts(rt_string language, rt_string script, rt_string regio
         return NULL;
     }
     rt_locale_t *loc = (rt_locale_t *)loc_alloc();
+    if (!loc)
+        return NULL;
     *loc = parsed;
     loc->data = rt_locale_manager_lookup_data_retained(loc->tag);
     return loc;

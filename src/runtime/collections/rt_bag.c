@@ -125,24 +125,33 @@ static rt_bag_impl *as_bag(void *obj, const char *what) {
 /// Zanna string object for use with the hash table operations.
 ///
 /// @param key The Zanna string to extract data from.
+/// @param what Diagnostic raised for a stale or forged nonnull handle.
+/// @param out_data Receives borrowed string bytes.
 /// @param out_len Pointer to receive the string length.
 ///
-/// @return Pointer to the string's character data (not owned by caller).
-///         Returns "" with length 0 if key is NULL.
-static const char *get_key_data(rt_string key, size_t *out_len) {
-    if (!out_len) {
-        rt_trap("Bag: null length output");
-        return "";
-    }
+/// @return Nonzero for a null or live string handle; otherwise zero after
+///         trapping. Null continues to denote the empty key.
+static int get_key_data(rt_string key, const char *what, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
     if (!key) {
-        *out_len = 0;
-        return "";
+        return 1;
     }
-    *out_len = (size_t)rt_str_len(key);
-    if (*out_len == 0)
-        return "";
+    if (!rt_string_is_handle(key)) {
+        rt_trap(what);
+        return 0;
+    }
+    int64_t len = rt_str_len(key);
+    if (len <= 0)
+        return 1;
     const char *data = rt_string_cstr(key);
-    return data ? data : "";
+    if (!data) {
+        rt_trap(what);
+        return 0;
+    }
+    *out_data = data;
+    *out_len = (size_t)len;
+    return 1;
 }
 
 /// @brief Finds an entry in a bucket's collision chain.
@@ -379,7 +388,8 @@ void *rt_bag_new(void) {
 int64_t rt_bag_len(void *obj) {
     if (!obj)
         return 0;
-    return (int64_t)as_bag(obj, "Bag.Len: invalid Bag object")->count;
+    rt_bag_impl *bag = as_bag(obj, "Bag.Len: invalid Bag object");
+    return bag ? (int64_t)bag->count : 0;
 }
 
 /// @brief Checks whether the Bag contains no strings.
@@ -447,13 +457,15 @@ int8_t rt_bag_add(void *obj, rt_string str) {
     }
 
     rt_bag_impl *bag = as_bag(obj, "Bag.Add: invalid Bag object");
-    if (!bag || bag->capacity == 0) {
+    if (!bag || !bag->buckets || bag->capacity == 0) {
         rt_trap("Bag.Add: unavailable bucket table");
         return 0;
     }
 
-    size_t key_len;
-    const char *key_data = get_key_data(str, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(str, "Bag.Add: invalid string", &key_data, &key_len))
+        return 0;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % bag->capacity;
 
@@ -521,11 +533,13 @@ int8_t rt_bag_remove(void *obj, rt_string str) {
         return 0;
 
     rt_bag_impl *bag = as_bag(obj, "Bag.Remove: invalid Bag object");
-    if (bag->capacity == 0)
+    if (!bag || !bag->buckets || bag->capacity == 0)
         return 0;
 
-    size_t key_len;
-    const char *key_data = get_key_data(str, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(str, "Bag.Remove: invalid string", &key_data, &key_len))
+        return 0;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % bag->capacity;
 
@@ -585,11 +599,13 @@ int8_t rt_bag_has(void *obj, rt_string str) {
         return 0;
 
     rt_bag_impl *bag = as_bag(obj, "Bag.Has: invalid Bag object");
-    if (bag->capacity == 0)
+    if (!bag || !bag->buckets || bag->capacity == 0)
         return 0;
 
-    size_t key_len;
-    const char *key_data = get_key_data(str, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(str, "Bag.Has: invalid string", &key_data, &key_len))
+        return 0;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % bag->capacity;
 
@@ -632,6 +648,8 @@ void rt_bag_clear(void *obj) {
         return;
 
     rt_bag_impl *bag = as_bag(obj, "Bag.Clear: invalid Bag object");
+    if (!bag || !bag->buckets)
+        return;
     for (size_t i = 0; i < bag->capacity; ++i) {
         rt_bag_entry *entry = bag->buckets[i];
         while (entry) {
@@ -684,11 +702,15 @@ void rt_bag_clear(void *obj) {
 /// @see rt_bag_len For getting the count without creating a list
 void *rt_bag_items(void *obj) {
     void *result = rt_seq_new();
+    if (!result)
+        return NULL;
     rt_seq_set_owns_elements(result, 1);
     if (!obj)
         return result;
 
     rt_bag_impl *bag = as_bag(obj, "Bag.Items: invalid Bag object");
+    if (!bag)
+        return result;
 
     // Iterate through all buckets and entries
     for (size_t i = 0; i < bag->capacity; ++i) {
@@ -756,6 +778,8 @@ void *rt_bag_union(void *obj, void *other) {
     // Add all elements from first bag
     if (obj) {
         rt_bag_impl *bag = as_bag(obj, "Bag.Union: invalid Bag object");
+        if (!bag)
+            return result;
         for (size_t i = 0; i < bag->capacity; ++i) {
             rt_bag_entry *entry = bag->buckets[i];
             while (entry) {
@@ -770,6 +794,8 @@ void *rt_bag_union(void *obj, void *other) {
     // Add all elements from second bag
     if (other) {
         rt_bag_impl *bag = as_bag(other, "Bag.Union: invalid Bag object");
+        if (!bag)
+            return result;
         for (size_t i = 0; i < bag->capacity; ++i) {
             rt_bag_entry *entry = bag->buckets[i];
             while (entry) {
@@ -836,7 +862,9 @@ void *rt_bag_intersect(void *obj, void *other) {
         return result;
 
     rt_bag_impl *bag = as_bag(obj, "Bag.Intersect: invalid Bag object");
-    as_bag(other, "Bag.Intersect: invalid Bag object");
+    rt_bag_impl *other_bag = as_bag(other, "Bag.Intersect: invalid Bag object");
+    if (!bag || !other_bag)
+        return result;
 
     // For each element in first bag, check if it's in second
     for (size_t i = 0; i < bag->capacity; ++i) {
@@ -868,6 +896,8 @@ void *rt_bag_clone(void *obj) {
         return result;
 
     rt_bag_impl *bag = as_bag(obj, "Bag.Clone: invalid Bag object");
+    if (!bag)
+        return result;
 
     for (size_t i = 0; i < bag->capacity; ++i) {
         rt_bag_entry *entry = bag->buckets[i];
@@ -915,8 +945,9 @@ void *rt_bag_diff(void *obj, void *other) {
         return result;
 
     rt_bag_impl *bag = as_bag(obj, "Bag.Diff: invalid Bag object");
-    if (other)
-        as_bag(other, "Bag.Diff: invalid Bag object");
+    rt_bag_impl *other_bag = other ? as_bag(other, "Bag.Diff: invalid Bag object") : NULL;
+    if (!bag || (other && !other_bag))
+        return result;
 
     // For each element in first bag, check if it's NOT in second
     for (size_t i = 0; i < bag->capacity; ++i) {

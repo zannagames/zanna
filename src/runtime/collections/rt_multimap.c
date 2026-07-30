@@ -51,6 +51,7 @@
 
 #include "rt_collection_ids.h"
 #include "rt_gc.h"
+#include "rt_hash_table_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_seq.h"
@@ -64,10 +65,6 @@
 
 /// @brief Number of buckets allocated for a newly constructed MultiMap.
 #define MM_INITIAL_CAPACITY 16
-/// @brief Numerator of the maximum distinct-key load factor.
-#define MM_LOAD_FACTOR_NUM 3
-/// @brief Denominator of the maximum distinct-key load factor.
-#define MM_LOAD_FACTOR_DEN 4
 #include "rt_hash_util.h"
 
 /// @brief Install a non-local trap recovery target for the current thread.
@@ -116,28 +113,35 @@ static rt_multimap_impl *as_multimap(void *obj, const char *what) {
 }
 
 /// @brief Borrow the byte buffer and byte length of a runtime key string.
-/// @details A null, empty, or unreadable string handle is normalized to the
-///          empty byte string. The returned storage remains owned by @p key.
+/// @details A null handle denotes the empty byte string. Forged and stale
+///          nonnull handles trap and cannot address a legitimate empty key.
 /// @param key Runtime string key to inspect; `NULL` denotes the empty key.
+/// @param what Diagnostic raised for a stale or forged nonnull handle.
+/// @param out_data Receives borrowed key bytes.
 /// @param out_len Receives the number of identity bytes in the returned key.
-/// @return Borrowed key bytes, never `NULL`.
-static const char *get_key_data(rt_string key, size_t *out_len) {
+/// @return Nonzero for a null or live string handle; otherwise zero after
+///         trapping.
+static int get_key_data(rt_string key, const char *what, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
     if (!key) {
-        *out_len = 0;
-        return "";
+        return 1;
+    }
+    if (!rt_string_is_handle(key)) {
+        rt_trap(what);
+        return 0;
     }
     int64_t len = rt_str_len(key);
-    if (len <= 0) {
-        *out_len = 0;
-        return "";
-    }
+    if (len <= 0)
+        return 1;
     const char *cstr = rt_string_cstr(key);
     if (!cstr) {
-        *out_len = 0;
-        return "";
+        rt_trap(what);
+        return 0;
     }
+    *out_data = cstr;
     *out_len = (size_t)len;
-    return cstr;
+    return 1;
 }
 
 /// @brief Find an exact byte-string key in one collision chain.
@@ -214,7 +218,8 @@ static int mm_push_value_or_release_entry(rt_mm_entry *entry, void *value) {
 /// @param seq Owning result `Seq` under construction.
 /// @param value Borrowed value to append and retain; may be `NULL`.
 /// @param fallback Diagnostic used when the trapped operation supplied none.
-static void mm_push_value_or_release_seq(void *seq, void *value, const char *fallback) {
+/// @return Nonzero after append; zero after releasing @p seq and retrapping.
+static int mm_push_value_or_release_seq(void *seq, void *value, const char *fallback) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) != 0) {
@@ -223,11 +228,12 @@ static void mm_push_value_or_release_seq(void *seq, void *value, const char *fal
         rt_trap_clear_recovery();
         mm_release_object(seq);
         rt_trap(saved_error);
-        return;
+        return 0;
     }
 
     rt_seq_push(seq, value);
     rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief Copy one stored key into an owning key-snapshot `Seq`.
@@ -238,7 +244,8 @@ static void mm_push_value_or_release_seq(void *seq, void *value, const char *fal
 /// @param key Borrowed key bytes from an internal entry.
 /// @param key_len Number of bytes to copy, including any embedded NUL bytes
 ///                in the key identity.
-static void mm_append_key_or_release_seq(void *seq, const char *key, size_t key_len) {
+/// @return Nonzero after append; zero after releasing @p seq and retrapping.
+static int mm_append_key_or_release_seq(void *seq, const char *key, size_t key_len) {
     volatile rt_string key_copy = NULL;
 
     jmp_buf recovery;
@@ -251,7 +258,7 @@ static void mm_append_key_or_release_seq(void *seq, const char *key, size_t key_
             rt_str_release_maybe((rt_string)key_copy);
         mm_release_object(seq);
         rt_trap(saved_error);
-        return;
+        return 0;
     }
 
     key_copy = rt_string_from_bytes(key, key_len);
@@ -259,6 +266,7 @@ static void mm_append_key_or_release_seq(void *seq, const char *key, size_t key_
     rt_str_release_maybe((rt_string)key_copy);
     key_copy = NULL;
     rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief Rehash all entries into a fresh @p new_cap bucket array.
@@ -301,9 +309,12 @@ static int mm_resize(rt_multimap_impl *mm, size_t new_cap) {
 /// @return 1 when the existing or resized table can accept the key, or 0 after
 ///         a capacity/allocation trap.
 static int maybe_resize_for_insert(rt_multimap_impl *mm) {
+    if (mm->key_count == SIZE_MAX) {
+        rt_trap("MultiMap: length overflow");
+        return 0;
+    }
     size_t next_count = mm->key_count + 1;
-    if ((long double)next_count * (long double)MM_LOAD_FACTOR_DEN >
-        (long double)mm->capacity * (long double)MM_LOAD_FACTOR_NUM) {
+    if (rt_hash_table_exceeds_load(next_count, mm->capacity)) {
         if (mm->capacity > SIZE_MAX / 2) {
             rt_trap("MultiMap: capacity overflow");
             return 0;
@@ -387,7 +398,8 @@ void *rt_multimap_new(void) {
 int64_t rt_multimap_len(void *obj) {
     if (!obj)
         return 0;
-    return (int64_t)as_multimap(obj, "MultiMap.Len: invalid MultiMap object")->total_count;
+    rt_multimap_impl *map = as_multimap(obj, "MultiMap.Len: invalid MultiMap object");
+    return map ? (int64_t)map->total_count : 0;
 }
 
 /// @brief Return the number of distinct keys in the multimap.
@@ -398,7 +410,8 @@ int64_t rt_multimap_len(void *obj) {
 int64_t rt_multimap_key_count(void *obj) {
     if (!obj)
         return 0;
-    return (int64_t)as_multimap(obj, "MultiMap.KeyCount: invalid MultiMap object")->key_count;
+    rt_multimap_impl *map = as_multimap(obj, "MultiMap.KeyCount: invalid MultiMap object");
+    return map ? (int64_t)map->key_count : 0;
 }
 
 /// @brief Check whether the multimap has no entries.
@@ -429,14 +442,18 @@ void rt_multimap_put(void *obj, rt_string key, void *value) {
         rt_gc_mutator_exit();
         return;
     }
-    if (mm->capacity == 0) {
+    if (!mm->buckets || mm->capacity == 0) {
         rt_gc_mutator_exit();
         rt_trap("MultiMap: finalized MultiMap object");
         return;
     }
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "MultiMap.Put: invalid key", &key_data, &key_len)) {
+        rt_gc_mutator_exit();
+        return;
+    }
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % mm->capacity;
 
@@ -466,6 +483,10 @@ void rt_multimap_put(void *obj, rt_string key, void *value) {
     idx = hash % mm->capacity;
 
     void *values = rt_seq_new_owned();
+    if (!values) {
+        rt_gc_mutator_exit();
+        return;
+    }
     rt_mm_entry *entry = (rt_mm_entry *)malloc(sizeof(rt_mm_entry));
     if (!entry) {
         mm_release_object(values);
@@ -519,11 +540,13 @@ void *rt_multimap_get(void *obj, rt_string key) {
     if (!obj)
         return rt_seq_new_owned();
     rt_multimap_impl *mm = as_multimap(obj, "MultiMap.Get: invalid MultiMap object");
-    if (mm->capacity == 0)
+    if (!mm || !mm->buckets || mm->capacity == 0)
         return rt_seq_new_owned();
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "MultiMap.Get: invalid key", &key_data, &key_len))
+        return NULL;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % mm->capacity;
 
@@ -533,10 +556,13 @@ void *rt_multimap_get(void *obj, rt_string key) {
 
     // Return a copy of the values Seq
     void *result = rt_seq_new_owned();
+    if (!result)
+        return NULL;
     int64_t len = rt_seq_len(entry->values);
     for (int64_t i = 0; i < len; ++i) {
         void *value = rt_seq_get(entry->values, i);
-        mm_push_value_or_release_seq(result, value, "MultiMap.Get: failed to copy values");
+        if (!mm_push_value_or_release_seq(result, value, "MultiMap.Get: failed to copy values"))
+            return NULL;
     }
     return result;
 }
@@ -554,13 +580,17 @@ void *rt_multimap_get_first(void *obj, rt_string key) {
         return NULL;
     rt_gc_mutator_enter();
     rt_multimap_impl *mm = as_multimap(obj, "MultiMap.GetFirst: invalid MultiMap object");
-    if (!mm || mm->capacity == 0) {
+    if (!mm || !mm->buckets || mm->capacity == 0) {
         rt_gc_mutator_exit();
         return NULL;
     }
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "MultiMap.GetFirst: invalid key", &key_data, &key_len)) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % mm->capacity;
 
@@ -585,11 +615,13 @@ int8_t rt_multimap_has(void *obj, rt_string key) {
     if (!obj)
         return 0;
     rt_multimap_impl *mm = as_multimap(obj, "MultiMap.Has: invalid MultiMap object");
-    if (mm->capacity == 0)
+    if (!mm || !mm->buckets || mm->capacity == 0)
         return 0;
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "MultiMap.Has: invalid key", &key_data, &key_len))
+        return 0;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % mm->capacity;
     return find_entry(mm->buckets[idx], key_data, key_len) ? 1 : 0;
@@ -605,11 +637,13 @@ int64_t rt_multimap_count_for(void *obj, rt_string key) {
     if (!obj)
         return 0;
     rt_multimap_impl *mm = as_multimap(obj, "MultiMap.CountFor: invalid MultiMap object");
-    if (mm->capacity == 0)
+    if (!mm || !mm->buckets || mm->capacity == 0)
         return 0;
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "MultiMap.CountFor: invalid key", &key_data, &key_len))
+        return 0;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % mm->capacity;
 
@@ -629,13 +663,17 @@ int8_t rt_multimap_remove_all(void *obj, rt_string key) {
         return 0;
     rt_gc_mutator_enter();
     rt_multimap_impl *mm = as_multimap(obj, "MultiMap.RemoveAll: invalid MultiMap object");
-    if (!mm || mm->capacity == 0) {
+    if (!mm || !mm->buckets || mm->capacity == 0) {
         rt_gc_mutator_exit();
         return 0;
     }
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "MultiMap.RemoveAll: invalid key", &key_data, &key_len)) {
+        rt_gc_mutator_exit();
+        return 0;
+    }
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % mm->capacity;
 
@@ -668,7 +706,7 @@ void rt_multimap_clear(void *obj) {
         return;
     rt_gc_mutator_enter();
     rt_multimap_impl *mm = as_multimap(obj, "MultiMap.Clear: invalid MultiMap object");
-    if (!mm) {
+    if (!mm || !mm->buckets) {
         rt_gc_mutator_exit();
         return;
     }
@@ -696,15 +734,22 @@ void rt_multimap_clear(void *obj) {
 void *rt_multimap_keys(void *obj) {
     if (!obj) {
         void *empty = rt_seq_new();
+        if (!empty)
+            return NULL;
         rt_seq_set_owns_elements(empty, 1);
         return empty;
     }
     rt_multimap_impl *mm = as_multimap(obj, "MultiMap.Keys: invalid MultiMap object");
     void *result = rt_seq_new();
+    if (!result)
+        return NULL;
     rt_seq_set_owns_elements(result, 1);
+    if (!mm || !mm->buckets)
+        return result;
     for (size_t i = 0; i < mm->capacity; ++i) {
         for (rt_mm_entry *e = mm->buckets[i]; e; e = e->next) {
-            mm_append_key_or_release_seq(result, e->key, e->key_len);
+            if (!mm_append_key_or_release_seq(result, e->key, e->key_len))
+                return NULL;
         }
     }
     return result;

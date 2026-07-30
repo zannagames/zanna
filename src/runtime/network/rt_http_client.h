@@ -15,7 +15,8 @@
 // Ownership/Lifetime:
 //   - Client objects and returned HttpRes/Map handles are runtime managed.
 //   - Returned responses and cookie snapshots are independent caller-owned references.
-// Links: rt_http_client.c (implementation), rt_network_http.c (transport)
+// Links: rt_http_client.c (implementation), rt_network_http.c (transport),
+//        docs/adr/0228-http-end-to-end-request-deadlines.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -92,9 +93,12 @@ void *rt_http_client_delete(void *client, rt_string url);
 void rt_http_client_set_header(void *client, rt_string name, rt_string value);
 
 /// @brief Set the synchronized timeout for all subsequent requests.
+/// @details Each request receives one monotonic budget shared by name
+///          resolution, address attempts, TLS, I/O, redirects, and response
+///          transformations.
 /// @param client HttpClient receiver; NULL is a no-op.
 /// @param timeout_ms Milliseconds in the inclusive range 0..INT_MAX; zero
-///        disables address/socket operation deadlines.
+///        disables the request deadline.
 void rt_http_client_set_timeout(void *client, int64_t timeout_ms);
 
 /// @brief Read whether the client reuses keep-alive connections.

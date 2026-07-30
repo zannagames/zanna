@@ -49,6 +49,7 @@
 #include "rt_collection_ids.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_string.h"
 #include "rt_trap.h"
 
 #include <math.h>
@@ -82,6 +83,33 @@ static rt_bloomfilter_impl *as_bloomfilter(void *obj, const char *what) {
         return NULL;
     }
     return (rt_bloomfilter_impl *)obj;
+}
+
+/// @brief Validate a string item and borrow its complete byte span.
+/// @param item Nonnull runtime string handle.
+/// @param what Diagnostic raised for a stale or forged handle.
+/// @param out_data Receives borrowed string bytes.
+/// @param out_len Receives the byte count.
+/// @return Nonzero for a live string handle; otherwise zero after trapping.
+static int bloom_string_data(rt_string item,
+                             const char *what,
+                             const char **out_data,
+                             size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
+    if (!rt_string_is_handle(item)) {
+        rt_trap(what);
+        return 0;
+    }
+    int64_t len = rt_str_len(item);
+    const char *data = rt_string_cstr(item);
+    if (len > 0 && !data) {
+        rt_trap(what);
+        return 0;
+    }
+    *out_data = data ? data : "";
+    *out_len = len > 0 ? (size_t)len : 0;
+    return 1;
 }
 
 /// @brief Count set bits in a byte (SWAR popcount; used for cardinality est.).
@@ -227,9 +255,9 @@ void rt_bloomfilter_add(void *filter, rt_string item) {
     if (!bf)
         return;
 
-    size_t len = (size_t)rt_str_len(item);
-    const char *data = item->data;
-    if (!data)
+    size_t len = 0;
+    const char *data = NULL;
+    if (!bloom_string_data(item, "BloomFilter.Add: invalid string", &data, &len))
         return;
 
     if (bf->item_count == INT64_MAX) {
@@ -259,9 +287,9 @@ int8_t rt_bloomfilter_might_contain(void *filter, rt_string item) {
     if (!bf)
         return 0;
 
-    size_t len = (size_t)rt_str_len(item);
-    const char *data = item->data;
-    if (!data)
+    size_t len = 0;
+    const char *data = NULL;
+    if (!bloom_string_data(item, "BloomFilter.MightContain: invalid string", &data, &len))
         return 0;
 
     for (int64_t i = 0; i < bf->hash_count; i++) {

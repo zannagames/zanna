@@ -22,11 +22,11 @@ This exhaustive reference is generated from the modular runtime definition regis
 | [Game3D](game3d.md) | 61 | 803 |
 | [Graphics](graphics.md) | 47 | 573 |
 | [Graphics2D](graphics2d.md) | 4 | 109 |
-| [Graphics3D](graphics3d.md) | 64 | 1240 |
+| [Graphics3D](graphics3d.md) | 69 | 1300 |
 | [IO](io.md) | 16 | 233 |
 | [Input](input.md) | 7 | 265 |
 | [Localization](localization.md) | 10 | 121 |
-| [Math](math.md) | 12 | 264 |
+| [Math](math.md) | 12 | 268 |
 | [Memory](memory.md) | 1 | 5 |
 | [Network](network.md) | 27 | 299 |
 | [Option](option.md) | 1 | 27 |

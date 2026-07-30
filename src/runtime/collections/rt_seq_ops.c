@@ -53,6 +53,7 @@
 #include "rt_trap.h"
 
 #include <setjmp.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -136,9 +137,8 @@ static void seq_merge(void **items,
     }
 
     // Copy back to original array
-    for (int64_t x = left; x <= right; x++) {
-        items[x] = temp[x];
-    }
+    size_t copy_count = (size_t)(right - left) + 1;
+    memcpy(items + left, temp + left, copy_count * sizeof(void *));
 }
 
 /// @brief Recursive merge sort implementation.
@@ -256,13 +256,17 @@ void rt_seq_sort_by(void *obj, int64_t (*cmp)(void *, void *)) {
         cmp = seq_default_compare;
 
     // Allocate temporary buffer for merge sort
+    if ((uint64_t)seq->len > (uint64_t)(SIZE_MAX / sizeof(void *))) {
+        rt_gc_mutator_exit();
+        rt_trap("Seq.Sort: scratch size overflow");
+        return;
+    }
     void **temp = (void **)malloc((size_t)seq->len * sizeof(void *));
     if (!temp) {
         rt_gc_mutator_exit();
         rt_trap("Seq.Sort: memory allocation failed");
         return;
     }
-
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) != 0) {
@@ -274,6 +278,7 @@ void rt_seq_sort_by(void *obj, int64_t (*cmp)(void *, void *)) {
                  error && error[0] ? error : "Seq.Sort: comparator trapped");
         rt_trap_clear_recovery();
         free(temp);
+        rt_gc_mutator_exit();
         rt_trap(saved_error);
         return;
     }

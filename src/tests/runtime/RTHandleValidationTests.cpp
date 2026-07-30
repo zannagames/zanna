@@ -15,9 +15,12 @@
 // Ownership/Lifetime:
 //   - Forged managed objects are released after each probe; real resources are
 //     explicitly finalized before process exit.
-// Links: src/runtime/oop/rt_object.c, src/runtime/network/rt_network.c,
+// Links: src/runtime/oop/rt_object.c, src/runtime/core/rt_string_ops.c,
+//        src/runtime/core/rt_string_advanced.c,
+//        src/runtime/core/rt_string_specialized.c, src/runtime/network/rt_network.c,
 //        src/runtime/network/rt_network_udp.c,
-//        src/runtime/network/rt_connpool.c
+//        src/runtime/network/rt_connpool.c,
+//        src/runtime/collections/rt_map.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -611,6 +614,597 @@ int main() {
     expect_i64_handle_result(call_playlist_len_result, kPlaylistClassId, 1, 0);
     expect_i64_handle_result(call_musicgen_bpm_result, kMusicGenClassId, 1, 0);
 
+    // Constant-time collection accessors must guard the NULL returned by their
+    // checked cast when an embedder records a trap and resumes execution.
+    {
+        void *fake = make_fake(RT_RANDOM_CLASS_ID, 1);
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+
+        assert(rt_seq_len(fake) == 0);
+        assert(rt_seq_cap(fake) == 0);
+        assert(rt_seq_is_empty(fake) == 1);
+        assert(rt_stack_owns_elements(fake) == 0);
+        assert(rt_stack_len(fake) == 0);
+        assert(rt_stack_is_empty(fake) == 1);
+        assert(rt_queue_owns_elements(fake) == 0);
+        assert(rt_queue_len(fake) == 0);
+        assert(rt_queue_is_empty(fake) == 1);
+        assert(rt_map_len(fake) == 0);
+        assert(rt_multimap_len(fake) == 0);
+        assert(rt_multimap_key_count(fake) == 0);
+        assert(rt_orderedmap_len(fake) == 0);
+        assert(rt_orderedmap_is_empty(fake) == 1);
+        assert(rt_bitset_len(fake) == 0);
+        assert(rt_defaultmap_len(fake) == 0);
+        assert(rt_defaultmap_get(fake, nullptr) == nullptr);
+        assert(rt_defaultmap_has(fake, nullptr) == 0);
+        rt_defaultmap_set(fake, nullptr, nullptr);
+        assert(rt_defaultmap_remove(fake, nullptr) == 0);
+        assert(rt_defaultmap_keys(fake) == nullptr);
+        assert(rt_defaultmap_get_default(fake) == nullptr);
+        assert(rt_defaultmap_is_empty(fake) == 1);
+        assert(rt_intmap_len(fake) == 0);
+        assert(rt_sparse_len(fake) == 0);
+        assert(rt_bag_len(fake) == 0);
+        assert(rt_countmap_len(fake) == 0);
+        assert(rt_frozenmap_len(fake) == 0);
+        assert(rt_frozenset_len(fake) == 0);
+        assert(rt_lrucache_len(fake) == 0);
+        assert(rt_lrucache_cap(fake) == 0);
+        assert(rt_bimap_len(fake) == 0);
+        assert(rt_weakmap_len(fake) == 0);
+        assert(rt_weakmap_is_empty(fake) == 1);
+        rt_iter_reset(fake);
+        assert(rt_iter_index(fake) == 0);
+        assert(rt_iter_count(fake) == 0);
+        assert(rt_unionfind_find(fake, 0) == -1);
+        assert(rt_unionfind_count(fake) == 0);
+        assert(rt_unionfind_set_size(fake, 0) == 0);
+        rt_unionfind_reset(fake);
+
+        g_trap_returns = false;
+        assert(g_last_returning_trap != nullptr);
+        release_fake(fake);
+    }
+
+    // String-keyed collections must reject forged non-null strings instead of
+    // silently normalizing them to the empty key after a returning trap.
+    {
+        void *map = rt_map_new();
+        rt_string empty = rt_const_cstr("");
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *fallback = make_fake(RT_RANDOM_CLASS_ID, 1);
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(map != nullptr);
+        assert(empty != nullptr);
+
+        rt_map_set(map, empty, stored);
+        assert(rt_map_len(map) == 1);
+        assert(rt_map_get(map, empty) == stored);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        rt_map_set(map, forged, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_map_len(map) == 1);
+        assert(rt_map_get(map, empty) == stored);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_map_get(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_map_get_or(map, forged, fallback) == fallback);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_map_has(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_map_set_if_missing(map, forged, replacement) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_map_remove(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_trap_returns = false;
+
+        rt_string_unref(empty);
+        release_fake(stored);
+        release_fake(replacement);
+        release_fake(fallback);
+        release_fake(map);
+    }
+
+    // A constructor retain trap must release the incomplete DefaultMap and
+    // return NULL even when the embedder's trap hook resumes execution.
+    {
+        void *default_value = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_heap_hdr_t *header = rt_heap_hdr(default_value);
+        assert(header != nullptr);
+        header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        void *map = rt_defaultmap_new(default_value);
+        g_trap_returns = false;
+
+        assert(map == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        header->refcnt = 1;
+        release_fake(default_value);
+    }
+
+    // DefaultMap key APIs preserve a legitimate empty-key association when a
+    // forged non-null string reaches a returning trap hook.
+    {
+        void *map = rt_defaultmap_new(nullptr);
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string empty = rt_const_cstr("");
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(map != nullptr);
+        assert(empty != nullptr);
+
+        rt_defaultmap_set(map, empty, stored);
+        assert(rt_defaultmap_len(map) == 1);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        rt_defaultmap_set(map, forged, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_defaultmap_len(map) == 1);
+        assert(rt_defaultmap_get(map, empty) == stored);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_defaultmap_get(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_defaultmap_has(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_defaultmap_remove(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_trap_returns = false;
+
+        rt_string_unref(empty);
+        release_fake(stored);
+        release_fake(replacement);
+        release_fake(map);
+    }
+
+    // Bag key APIs reject a forged string without addressing the real empty
+    // element or publishing a second entry.
+    {
+        void *bag = rt_bag_new();
+        rt_string empty = rt_const_cstr("");
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(bag != nullptr);
+        assert(empty != nullptr);
+        assert(rt_bag_add(bag, empty) == 1);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        assert(rt_bag_add(bag, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_bag_len(bag) == 1);
+        assert(rt_bag_has(bag, empty) == 1);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_bag_has(bag, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_bag_remove(bag, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_trap_returns = false;
+
+        rt_string_unref(empty);
+        release_fake(bag);
+    }
+
+    // CountMap key validation must run before hashing or touching the genuine
+    // empty-key counter.
+    {
+        void *map = rt_countmap_new();
+        rt_string empty = rt_const_cstr("");
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(map != nullptr);
+        assert(empty != nullptr);
+        rt_countmap_set(map, empty, 7);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        rt_countmap_set(map, forged, 99);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_countmap_len(map) == 1);
+        assert(rt_countmap_get(map, empty) == 7);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_countmap_get(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_countmap_inc_by(map, forged, 1) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_countmap_dec(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_countmap_remove(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_trap_returns = false;
+
+        assert(rt_countmap_get(map, empty) == 7);
+        rt_string_unref(empty);
+        release_fake(map);
+    }
+
+    // BiMap validates both directions before conflict removal, so a forged key
+    // or value cannot evict a real empty-string mapping.
+    {
+        void *map = rt_bimap_new();
+        rt_string empty = rt_const_cstr("");
+        rt_string value = rt_const_cstr("value");
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(map != nullptr);
+        assert(empty != nullptr);
+        assert(value != nullptr);
+        rt_bimap_put(map, empty, value);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        rt_bimap_put(map, forged, value);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_bimap_len(map) == 1);
+        assert(rt_bimap_has_key(map, empty) == 1);
+
+        g_last_returning_trap = nullptr;
+        rt_bimap_put(map, empty, forged);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_bimap_len(map) == 1);
+        assert(rt_bimap_has_value(map, value) == 1);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_bimap_get_by_key(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_bimap_get_by_value(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_bimap_remove_by_key(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_bimap_remove_by_value(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_trap_returns = false;
+
+        assert(rt_bimap_len(map) == 1);
+        rt_string_unref(empty);
+        rt_string_unref(value);
+        release_fake(map);
+    }
+
+    // OrderedMap preserves its real empty-key entry and insertion order when a
+    // forged key traps through a returning hook.
+    {
+        void *map = rt_orderedmap_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string empty = rt_const_cstr("");
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(map != nullptr);
+        assert(empty != nullptr);
+        rt_orderedmap_set(map, empty, stored);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        rt_orderedmap_set(map, forged, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_orderedmap_len(map) == 1);
+        assert(rt_orderedmap_get(map, empty) == stored);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_orderedmap_get(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_orderedmap_has(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_orderedmap_remove(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_trap_returns = false;
+
+        assert(rt_orderedmap_len(map) == 1);
+        rt_string_unref(empty);
+        release_fake(stored);
+        release_fake(replacement);
+        release_fake(map);
+    }
+
+    // MultiMap rejects forged keys and stops immediately after a recovered
+    // snapshot-retain failure instead of continuing with a released Seq.
+    {
+        void *map = rt_multimap_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string empty = rt_const_cstr("");
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(map != nullptr);
+        assert(empty != nullptr);
+        rt_multimap_put(map, empty, stored);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        rt_multimap_put(map, forged, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_multimap_len(map) == 1);
+        assert(rt_multimap_count_for(map, empty) == 1);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_multimap_get(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_multimap_get_first(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_multimap_has(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_multimap_remove_all(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        assert(stored_header != nullptr);
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_multimap_get(map, empty) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        stored_header->refcnt = 2;
+        g_trap_returns = false;
+
+        assert(rt_multimap_len(map) == 1);
+        rt_string_unref(empty);
+        release_fake(stored);
+        release_fake(replacement);
+        release_fake(map);
+    }
+
+    // LRUCache key validation happens before lookup, promotion, eviction, or
+    // replacement of the legitimate empty-key entry.
+    {
+        void *cache = rt_lrucache_new(2);
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string empty = rt_const_cstr("");
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(cache != nullptr);
+        assert(empty != nullptr);
+        rt_lrucache_put(cache, empty, stored);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        rt_lrucache_put(cache, forged, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_lrucache_len(cache) == 1);
+        assert(rt_lrucache_peek(cache, empty) == stored);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_lrucache_get(cache, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_lrucache_peek(cache, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_lrucache_has(cache, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_lrucache_remove(cache, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_trap_returns = false;
+
+        assert(rt_lrucache_len(cache) == 1);
+        rt_string_unref(empty);
+        release_fake(stored);
+        release_fake(replacement);
+        release_fake(cache);
+    }
+
+    // TreeMap rejects forged ordered-query keys and stops snapshot iteration
+    // after releasing a failed partial values sequence.
+    {
+        void *map = rt_treemap_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string empty = rt_const_cstr("");
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(map != nullptr);
+        assert(empty != nullptr);
+        rt_treemap_set(map, empty, stored);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        rt_treemap_set(map, forged, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_treemap_len(map) == 1);
+        assert(rt_treemap_get(map, empty) == stored);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_treemap_get(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_treemap_floor(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_treemap_ceil(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_treemap_remove(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        assert(stored_header != nullptr);
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_treemap_values(map) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        stored_header->refcnt = 2;
+        g_trap_returns = false;
+
+        assert(rt_treemap_len(map) == 1);
+        rt_string_unref(empty);
+        release_fake(stored);
+        release_fake(replacement);
+        release_fake(map);
+    }
+
+    // FrozenMap/FrozenSet reject forged lookup handles, and FrozenMap
+    // construction rolls back a retained key when value retention traps.
+    {
+        void *keys = rt_seq_new_owned();
+        void *values = rt_seq_new_owned();
+        rt_string empty = rt_const_cstr("");
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *fallback = make_fake(RT_RANDOM_CLASS_ID, 1);
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(keys != nullptr);
+        assert(values != nullptr);
+        assert(empty != nullptr);
+        rt_seq_push(keys, empty);
+        rt_seq_push(values, stored);
+
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        assert(stored_header != nullptr);
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        assert(rt_frozenmap_from_seqs(keys, values) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        g_trap_returns = false;
+        stored_header->refcnt = 2;
+
+        void *map = rt_frozenmap_from_seqs(keys, values);
+        void *set = rt_frozenset_from_seq(keys);
+        assert(map != nullptr);
+        assert(set != nullptr);
+        assert(rt_frozenmap_get(map, empty) == stored);
+        assert(rt_frozenset_has(set, empty) == 1);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        assert(rt_frozenmap_get(map, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_frozenmap_has(map, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_frozenmap_get_or(map, forged, fallback) == fallback);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_frozenset_has(set, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_trap_returns = false;
+
+        release_fake(keys);
+        release_fake(values);
+        rt_string_unref(empty);
+        release_fake(stored);
+        release_fake(fallback);
+        release_fake(map);
+        release_fake(set);
+    }
+
+    // WeakMap validates keys before lookup/growth, preserves an existing
+    // association when weak-reference construction fails, and consumes a
+    // partial Keys snapshot when retaining a key traps.
+    {
+        void *map = rt_weakmap_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string key = rt_string_from_bytes("snapshot", 8);
+        rt_string other = rt_const_cstr("other");
+        auto forged_key = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        void *forged_value = reinterpret_cast<void *>(static_cast<uintptr_t>(1));
+        assert(map != nullptr);
+        assert(key != nullptr);
+        assert(other != nullptr);
+        assert(key->heap == RT_SSO_SENTINEL);
+        rt_weakmap_set(map, key, stored);
+        assert(rt_weakmap_len(map) == 1);
+
+        void *got = rt_weakmap_get(map, key);
+        assert(got == stored);
+        release_fake(got);
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        rt_weakmap_set(map, forged_key, stored);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_weakmap_len(map) == 1);
+
+        g_last_returning_trap = nullptr;
+        rt_weakmap_set(map, other, forged_value);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_weakmap_len(map) == 1);
+
+        g_last_returning_trap = nullptr;
+        rt_weakmap_set(map, key, forged_value);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_weakmap_len(map) == 1);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_weakmap_get(map, forged_key) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_weakmap_has(map, forged_key) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_weakmap_remove(map, forged_key) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        assert(key->literal_refs == 2);
+        key->literal_refs = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_weakmap_keys(map) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        key->literal_refs = 2;
+        g_trap_returns = false;
+
+        got = rt_weakmap_get(map, key);
+        assert(got == stored);
+        release_fake(got);
+
+        rt_string_unref(key);
+        rt_string_unref(other);
+        release_fake(stored);
+        release_fake(map);
+    }
+
     // VDOC-200: under a RETURNING trap hook (no setjmp recovery), the Random
     // instance methods must NOT dereference a wrong-class/null receiver — they
     // trap and return a safe sentinel instead of crashing.
@@ -657,6 +1251,129 @@ int main() {
         release_fake(fake_tcp);
         release_fake(fake_server);
         release_fake(fake_udp);
+    }
+
+    // Core string operations must stop after a returning validation trap. The
+    // tombstone value is deliberately non-null so any wrapper-field read would
+    // fault instead of silently behaving like a null string.
+    {
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        rt_string valid = rt_const_cstr("valid");
+        assert(valid != nullptr);
+        size_t valid_refs = valid->literal_refs;
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        assert(rt_string_ref(forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_string_unref_count(forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_concat(forged, valid) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(valid->literal_refs == valid_refs);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_mid(forged, 2) != nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_mid_len(forged, 2, 1) != nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_eq(forged, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_lt(forged, valid) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_le(forged, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_gt(valid, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_ge(forged, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_index_of(forged, rt_str_empty()) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_replace(forged, valid, valid) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_starts_with(forged, valid) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_pad_left(forged, 12, valid) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_split(forged, valid) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_text_char_is_identifier_start(forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_join(forged, nullptr) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_repeat(forged, 2) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_flip(forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_cmp(forged, valid) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_capitalize(forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_remove_prefix(forged, valid) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_last_index_of(forged, valid) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_levenshtein(forged, valid) == -1);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_jaro(forged, valid) == 0.0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_camel_case(forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_str_like(forged, valid) == 0);
+        assert(g_last_returning_trap != nullptr);
+
+        g_trap_returns = false;
+        rt_string_unref(valid);
     }
 
     // A returning trap from inside a GC mutator scope must unwind lexically.

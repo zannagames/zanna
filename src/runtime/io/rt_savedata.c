@@ -104,6 +104,7 @@ extern rt_string rt_json_stream_number_text(void *parser);
 #define TOK_STRING 6
 #define TOK_NUMBER 7
 #define TOK_END 11
+
 /** @} */
 
 //=========================================================================
@@ -146,10 +147,12 @@ static void savedata_save_trap_error(char *buffer, size_t buffer_size, const cha
 /// @param value Borrowed value string to retain.
 /// @param[out] out_key Receives the retained key reference.
 /// @param[out] out_value Receives the retained value reference.
-static void savedata_retain_pair_or_trap(rt_string key,
-                                         rt_string value,
-                                         rt_string *out_key,
-                                         rt_string *out_value) {
+static int savedata_retain_pair_or_trap(rt_string key,
+                                        rt_string value,
+                                        rt_string *out_key,
+                                        rt_string *out_value) {
+    *out_key = NULL;
+    *out_value = NULL;
     volatile int key_retained = 0;
     volatile int value_retained = 0;
 
@@ -164,15 +167,28 @@ static void savedata_retain_pair_or_trap(rt_string key,
             rt_string_unref(value);
         if (key_retained)
             rt_string_unref(key);
+        *out_key = NULL;
+        *out_value = NULL;
         rt_trap(saved_error);
-        return;
+        return 0;
     }
 
     *out_key = rt_string_ref(key);
+    if (!*out_key) {
+        rt_trap_clear_recovery();
+        return 0;
+    }
     key_retained = 1;
     *out_value = rt_string_ref(value);
+    if (!*out_value) {
+        rt_string_unref(*out_key);
+        *out_key = NULL;
+        rt_trap_clear_recovery();
+        return 0;
+    }
     value_retained = 1;
     rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief Validate and unwrap an opaque SaveData receiver.
@@ -180,8 +196,10 @@ static void savedata_retain_pair_or_trap(rt_string key,
 /// @param context Trap diagnostic for an invalid class identifier; may be NULL.
 /// @return SaveData implementation payload; invalid receivers trap.
 static rt_savedata_impl *savedata_require(void *obj, const char *context) {
-    if (!obj || rt_obj_class_id(obj) != RT_SAVEDATA_CLASS_ID)
+    if (!rt_obj_is_instance(obj, RT_SAVEDATA_CLASS_ID, sizeof(rt_savedata_impl))) {
         rt_trap(context ? context : "SaveData: invalid handle");
+        return NULL;
+    }
     return (rt_savedata_impl *)obj;
 }
 
@@ -268,20 +286,22 @@ static int savedata_is_valid_utf8(const char *data, size_t len) {
 /// @param context Trap diagnostic for invalid input.
 /// @return Borrowed key byte pointer on success; invalid input traps.
 static const char *savedata_require_key(rt_string key, size_t *len_out, const char *context) {
+    if (len_out)
+        *len_out = 0;
+    if (!key || !rt_string_is_handle(key)) {
+        rt_trap(context);
+        return NULL;
+    }
+    int64_t klen_i64 = rt_str_len(key);
     const char *kcstr = rt_string_cstr(key);
-    int64_t klen_i64 = key ? rt_str_len(key) : -1;
     if (!kcstr || klen_i64 <= 0) {
         rt_trap(context);
-        if (len_out)
-            *len_out = 0;
-        return "";
+        return NULL;
     }
     size_t klen = (size_t)klen_i64;
     if (memchr(kcstr, '\0', klen) || !savedata_is_valid_utf8(kcstr, klen)) {
         rt_trap(context);
-        if (len_out)
-            *len_out = 0;
-        return "";
+        return NULL;
     }
     if (len_out)
         *len_out = klen;
@@ -293,8 +313,12 @@ static const char *savedata_require_key(rt_string key, size_t *len_out, const ch
 /// @param[out] len_out Optional destination for the validated byte length.
 /// @return 1 for a nonempty well-formed UTF-8 key without embedded NUL; otherwise 0.
 static int savedata_is_valid_key(rt_string key, size_t *len_out) {
+    if (len_out)
+        *len_out = 0;
+    if (!key || !rt_string_is_handle(key))
+        return 0;
+    int64_t klen_i64 = rt_str_len(key);
     const char *kcstr = rt_string_cstr(key);
-    int64_t klen_i64 = key ? rt_str_len(key) : -1;
     if (!kcstr || klen_i64 <= 0)
         return 0;
     size_t klen = (size_t)klen_i64;
@@ -308,25 +332,32 @@ static int savedata_is_valid_key(rt_string key, size_t *len_out) {
 /// @brief Require a runtime string containing well-formed UTF-8.
 /// @param value Borrowed runtime string candidate; empty strings are valid.
 /// @param context Trap diagnostic for invalid input.
-static void savedata_require_string_value(rt_string value, const char *context) {
+static int savedata_require_string_value(rt_string value, const char *context) {
+    if (!value || !rt_string_is_handle(value)) {
+        rt_trap(context);
+        return 0;
+    }
+    int64_t len_i64 = rt_str_len(value);
     const char *data = rt_string_cstr(value);
-    int64_t len_i64 = value ? rt_str_len(value) : -1;
     if (!data || len_i64 < 0) {
         rt_trap(context);
-        return;
+        return 0;
     }
     if (!savedata_is_valid_utf8(data, (size_t)len_i64)) {
         rt_trap(context);
-        return;
+        return 0;
     }
+    return 1;
 }
 
 /// @brief Non-trapping validation for a string-valued save entry.
 /// @param value Borrowed runtime string candidate.
 /// @return 1 for a valid runtime string containing well-formed UTF-8; otherwise 0.
 static int savedata_is_valid_string_value(rt_string value) {
+    if (!value || !rt_string_is_handle(value))
+        return 0;
+    int64_t len_i64 = rt_str_len(value);
     const char *data = rt_string_cstr(value);
-    int64_t len_i64 = value ? rt_str_len(value) : -1;
     return data && len_i64 >= 0 && savedata_is_valid_utf8(data, (size_t)len_i64);
 }
 
@@ -740,8 +771,11 @@ static FILE *savedata_fopen_utf8(const char *path, const char *mode) {
     if (fd < 0)
         return NULL;
     FILE *fp = _fdopen(fd, mode);
-    if (!fp)
+    if (!fp) {
+        int open_error = errno;
         _close(fd);
+        errno = open_error;
+    }
     return fp;
 }
 
@@ -875,8 +909,11 @@ static FILE *savedata_fopen_utf8(const char *path, const char *mode) {
         (void)fcntl(fd, F_SETFD, fd_flags | FD_CLOEXEC);
 #endif
     FILE *fp = fdopen(fd, mode);
-    if (!fp)
+    if (!fp) {
+        int open_error = errno;
         close(fd);
+        errno = open_error;
+    }
     return fp;
 }
 
@@ -1045,7 +1082,7 @@ static int ensure_parent_dir(const char *file_path) {
     char *dir = savedata_parent_dir_dup(file_path);
     if (!dir)
         return 0;
-    rt_string dir_str = rt_string_from_bytes(dir, strlen(dir));
+    rt_string volatile dir_str = NULL;
     volatile int ok = 1;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -1053,10 +1090,15 @@ static int ensure_parent_dir(const char *file_path) {
         rt_trap_clear_recovery();
         ok = 0;
     } else {
-        rt_dir_make_all(dir_str);
+        dir_str = rt_string_from_bytes(dir, strlen(dir));
+        if (dir_str)
+            rt_dir_make_all((rt_string)dir_str);
+        else
+            ok = 0;
         rt_trap_clear_recovery();
     }
-    rt_string_unref(dir_str);
+    if (dir_str)
+        rt_string_unref((rt_string)dir_str);
     free(dir);
     return ok;
 }
@@ -1098,6 +1140,8 @@ static int savedata_set_int_entry(SaveEntry **head, rt_string key, int64_t value
     }
 
     rt_string retained_key = rt_string_ref(key);
+    if (!retained_key)
+        return 0;
     e = (SaveEntry *)malloc(sizeof(SaveEntry));
     if (!e) {
         rt_string_unref(retained_key);
@@ -1138,8 +1182,12 @@ static int savedata_set_string_entry(SaveEntry **head, rt_string key, rt_string 
     }
 
     rt_string stored_value = value ? value : rt_str_empty();
+    if (!stored_value)
+        return 0;
     if (e) {
         rt_string retained_value = rt_string_ref(stored_value);
+        if (!retained_value)
+            return 0;
         if (e->str_val)
             rt_string_unref(e->str_val);
         e->type = SAVE_STR;
@@ -1150,7 +1198,8 @@ static int savedata_set_string_entry(SaveEntry **head, rt_string key, rt_string 
 
     rt_string retained_key = NULL;
     rt_string retained_value = NULL;
-    savedata_retain_pair_or_trap(key, stored_value, &retained_key, &retained_value);
+    if (!savedata_retain_pair_or_trap(key, stored_value, &retained_key, &retained_value))
+        return 0;
 
     e = (SaveEntry *)malloc(sizeof(SaveEntry));
     if (!e) {
@@ -1397,8 +1446,12 @@ static void savedata_finalizer(void *obj) {
 /// @return Fresh runtime-managed empty SaveData handle; invalid names/allocation/path resolution
 ///         trap or return NULL as trap-control fallback.
 void *rt_savedata_new(rt_string game_name) {
-    int64_t raw_name_len = game_name ? rt_str_len(game_name) : 0;
-    if (!game_name || raw_name_len == 0) {
+    if (!game_name || !rt_string_is_handle(game_name)) {
+        rt_trap("SaveData.New: game name must not be empty");
+        return NULL;
+    }
+    int64_t raw_name_len = rt_str_len(game_name);
+    if (raw_name_len <= 0) {
         rt_trap("SaveData.New: game name must not be empty");
         return NULL;
     }
@@ -1444,10 +1497,14 @@ void *rt_savedata_new(rt_string game_name) {
 /// @param value Signed 64-bit value to store.
 void rt_savedata_set_int(void *obj, rt_string key, int64_t value) {
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.SetInt: invalid handle");
+    if (!sd)
+        return;
     size_t klen = 0;
-    (void)savedata_require_key(key, &klen, "SaveData.SetInt: invalid key");
+    if (!savedata_require_key(key, &klen, "SaveData.SetInt: invalid key"))
+        return;
     (void)klen;
-    savedata_set_int_entry(&sd->entries, key, value);
+    if (!savedata_set_int_entry(&sd->entries, key, value))
+        rt_trap("SaveData.SetInt: memory allocation failed");
 }
 
 /// @brief Store a string under `key`. In-memory only — call `_save` to persist.
@@ -1458,11 +1515,15 @@ void rt_savedata_set_int(void *obj, rt_string key, int64_t value) {
 /// @param value Borrowed UTF-8 string value; empty is valid.
 void rt_savedata_set_string(void *obj, rt_string key, rt_string value) {
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.SetString: invalid handle");
+    if (!sd)
+        return;
     size_t klen = 0;
-    (void)savedata_require_key(key, &klen, "SaveData.SetString: invalid key");
-    savedata_require_string_value(value, "SaveData.SetString: invalid value");
+    if (!savedata_require_key(key, &klen, "SaveData.SetString: invalid key") ||
+        !savedata_require_string_value(value, "SaveData.SetString: invalid value"))
+        return;
     (void)klen;
-    savedata_set_string_entry(&sd->entries, key, value);
+    if (!savedata_set_string_entry(&sd->entries, key, value))
+        rt_trap("SaveData.SetString: memory allocation failed");
 }
 
 /// @brief Read an int64 by `key`, returning `default_val` if missing or stored as a different type.
@@ -1474,10 +1535,12 @@ int64_t rt_savedata_get_int(void *obj, rt_string key, int64_t default_val) {
     if (!obj || !key)
         return default_val;
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.GetInt: invalid handle");
-    const char *kcstr = rt_string_cstr(key);
-    if (!kcstr)
+    if (!sd)
         return default_val;
-    SaveEntry *e = find_entry(sd, kcstr, (size_t)rt_str_len(key));
+    size_t key_len = 0;
+    if (!savedata_is_valid_key(key, &key_len))
+        return default_val;
+    SaveEntry *e = find_entry(sd, rt_string_cstr(key), key_len);
     if (!e || e->type != SAVE_INT)
         return default_val;
     return e->int_val;
@@ -1493,10 +1556,12 @@ rt_string rt_savedata_get_string(void *obj, rt_string key, rt_string default_val
     if (!obj || !key)
         return default_val ? rt_string_ref(default_val) : rt_str_empty();
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.GetString: invalid handle");
-    const char *kcstr = rt_string_cstr(key);
-    if (!kcstr)
+    if (!sd)
         return default_val ? rt_string_ref(default_val) : rt_str_empty();
-    SaveEntry *e = find_entry(sd, kcstr, (size_t)rt_str_len(key));
+    size_t key_len = 0;
+    if (!savedata_is_valid_key(key, &key_len))
+        return default_val ? rt_string_ref(default_val) : rt_str_empty();
+    SaveEntry *e = find_entry(sd, rt_string_cstr(key), key_len);
     if (!e || e->type != SAVE_STR)
         return default_val ? rt_string_ref(default_val) : rt_str_empty();
     return e->str_val ? rt_string_ref(e->str_val) : rt_str_empty();
@@ -1511,7 +1576,7 @@ int8_t rt_savedata_save(void *obj) {
     if (!obj)
         return 0;
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.Save: invalid handle");
-    if (!sd->file_path)
+    if (!sd || !sd->file_path)
         return 0;
 
     /* Ensure parent directory exists; a permission/path failure is reported as a
@@ -1581,12 +1646,14 @@ int8_t rt_savedata_load(void *obj) {
     if (!obj)
         return 0;
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.Load: invalid handle");
-    if (!sd->file_path)
+    if (!sd || !sd->file_path)
         return 0;
 
+    errno = 0;
     FILE *fp = savedata_fopen_utf8(sd->file_path, "rb");
+    int open_error = errno;
     if (!fp) {
-        if (errno == ENOENT) {
+        if (open_error == ENOENT) {
             free_all_entries(sd);
             return 1;
         }
@@ -1595,7 +1662,7 @@ int8_t rt_savedata_load(void *obj) {
 
     /* Read entire file */
     uint64_t file_size = 0;
-    if (!savedata_file_size(fp, &file_size) || file_size == 0 || file_size > SIZE_MAX) {
+    if (!savedata_file_size(fp, &file_size) || file_size == 0 || file_size >= SIZE_MAX) {
         fclose(fp);
         return 0;
     }
@@ -1605,15 +1672,11 @@ int8_t rt_savedata_load(void *obj) {
         fclose(fp);
         return 0;
     }
-    size_t read_count = 0;
-    while (read_count < (size_t)file_size) {
-        size_t n = fread(buf + read_count, 1, (size_t)file_size - read_count, fp);
-        if (n == 0) {
-            free(buf);
-            fclose(fp);
-            return 0;
-        }
-        read_count += n;
+    size_t read_count = fread(buf, 1, (size_t)file_size, fp);
+    if (read_count != (size_t)file_size) {
+        free(buf);
+        fclose(fp);
+        return 0;
     }
     fclose(fp);
     buf[read_count] = '\0';
@@ -1715,10 +1778,12 @@ int8_t rt_savedata_has_key(void *obj, rt_string key) {
     if (!obj || !key)
         return 0;
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.HasKey: invalid handle");
-    const char *kcstr = rt_string_cstr(key);
-    if (!kcstr)
+    if (!sd)
         return 0;
-    return find_entry(sd, kcstr, (size_t)rt_str_len(key)) != NULL;
+    size_t key_len = 0;
+    if (!savedata_is_valid_key(key, &key_len))
+        return 0;
+    return find_entry(sd, rt_string_cstr(key), key_len) != NULL;
 }
 
 /// @brief Remove an entry by key. Returns 1 if removed, 0 if absent. In-memory only.
@@ -1729,10 +1794,12 @@ int8_t rt_savedata_remove(void *obj, rt_string key) {
     if (!obj || !key)
         return 0;
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.Remove: invalid handle");
-    const char *kcstr = rt_string_cstr(key);
-    if (!kcstr)
+    if (!sd)
         return 0;
-    size_t klen = (size_t)rt_str_len(key);
+    size_t klen = 0;
+    if (!savedata_is_valid_key(key, &klen))
+        return 0;
+    const char *kcstr = rt_string_cstr(key);
 
     SaveEntry **pp = &sd->entries;
     while (*pp) {
@@ -1753,7 +1820,9 @@ int8_t rt_savedata_remove(void *obj, rt_string key) {
 void rt_savedata_clear(void *obj) {
     if (!obj)
         return;
-    free_all_entries(savedata_require(obj, "SaveData.Clear: invalid handle"));
+    rt_savedata_impl *sd = savedata_require(obj, "SaveData.Clear: invalid handle");
+    if (sd)
+        free_all_entries(sd);
 }
 
 /// @brief Number of entries currently in the store.
@@ -1763,6 +1832,8 @@ int64_t rt_savedata_count(void *obj) {
     if (!obj)
         return 0;
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.Count: invalid handle");
+    if (!sd)
+        return 0;
     int64_t count = 0;
     SaveEntry *e = sd->entries;
     while (e) {
@@ -1781,7 +1852,7 @@ rt_string rt_savedata_get_path(void *obj) {
     if (!obj)
         return rt_str_empty();
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.Path: invalid handle");
-    if (!sd->file_path)
+    if (!sd || !sd->file_path)
         return rt_str_empty();
     return rt_string_from_bytes(sd->file_path, strlen(sd->file_path));
 }

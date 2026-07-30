@@ -426,7 +426,9 @@ void *rt_iter_peek(void *iter) {
 void rt_iter_reset(void *iter) {
     if (!iter)
         return;
-    as_iter(iter, "Iterator.Reset: invalid Iterator object")->pos = 0;
+    rt_iter_impl *it = as_iter(iter, "Iterator.Reset: invalid Iterator object");
+    if (it)
+        it->pos = 0;
 }
 
 /// @brief Return the current position (0-based index) of the iterator.
@@ -435,7 +437,8 @@ void rt_iter_reset(void *iter) {
 int64_t rt_iter_index(void *iter) {
     if (!iter)
         return 0;
-    return as_iter(iter, "Iterator.Index: invalid Iterator object")->pos;
+    rt_iter_impl *it = as_iter(iter, "Iterator.Index: invalid Iterator object");
+    return it ? it->pos : 0;
 }
 
 /// @brief Return the total number of elements in the iterable collection.
@@ -444,7 +447,8 @@ int64_t rt_iter_index(void *iter) {
 int64_t rt_iter_count(void *iter) {
     if (!iter)
         return 0;
-    return as_iter(iter, "Iterator.Count: invalid Iterator object")->len;
+    rt_iter_impl *it = as_iter(iter, "Iterator.Count: invalid Iterator object");
+    return it ? it->len : 0;
 }
 
 /// @brief Drain the remaining iterator elements into a fresh Seq. Advances the cursor to end.

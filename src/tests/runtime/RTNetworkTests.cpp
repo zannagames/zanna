@@ -13,7 +13,8 @@
 // Ownership/Lifetime:
 //   - Each helper owns and closes any native socket it creates.
 //   - Runtime objects allocated by tests remain valid for each test scope.
-// Links: docs/zannalib/network.md
+// Links: docs/zannalib/network.md,
+//        docs/adr/0229-bounded-native-gzip-decoding.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -161,6 +162,7 @@ static bool wait_for_refcount(void *obj, size_t expected) {
 /// @brief Atomic flag for server shutdown
 static std::atomic<bool> server_ready{false};
 static std::atomic<bool> server_done{false};
+static std::atomic<size_t> http_gzip_encoded_size{0};
 static std::string http_accept_encoding_header;
 static int tcp_alloc_fail_countdown = 0;
 static int http_alloc_fail_countdown = 0;
@@ -2733,6 +2735,50 @@ static void http_gzip_server_thread(int port, const char *plain_body) {
     server_done = true;
 }
 
+/// @brief Serve a highly compressible body used to exercise HTTP expansion limits.
+/// @param port Loopback listener port.
+/// @param plain_len Decoded payload size; the payload is filled with one byte.
+static void http_gzip_expansion_server_thread(int port, size_t plain_len) {
+    void *server = rt_tcp_server_listen(port);
+    assert(server != nullptr);
+
+    server_ready = true;
+    http_gzip_encoded_size = 0;
+
+    void *client = rt_tcp_server_accept(server);
+    if (client) {
+        rt_string request_line = rt_tcp_recv_line(client);
+        rt_string_unref(request_line);
+        (void)read_http_header_value(client, "Accept-Encoding");
+
+        void *plain_bytes = rt_bytes_new((int64_t)plain_len);
+        memset(get_bytes_data(plain_bytes), 'Z', plain_len);
+        void *gzip_bytes = rt_compress_gzip(plain_bytes);
+        const size_t gzip_len = (size_t)get_bytes_len(gzip_bytes);
+        http_gzip_encoded_size = gzip_len;
+
+        char headers[512];
+        const int header_len = snprintf(headers,
+                                        sizeof(headers),
+                                        "HTTP/1.1 200 OK\r\n"
+                                        "Content-Type: application/octet-stream\r\n"
+                                        "Content-Encoding: gzip\r\n"
+                                        "Content-Length: %zu\r\n"
+                                        "\r\n",
+                                        gzip_len);
+        assert(header_len > 0 && (size_t)header_len < sizeof(headers));
+        rt_tcp_send_str(client, rt_const_cstr(headers));
+        rt_tcp_send_all(client, gzip_bytes);
+
+        release_test_object(gzip_bytes);
+        release_test_object(plain_bytes);
+        rt_tcp_close(client);
+    }
+
+    rt_tcp_server_close(server);
+    server_done = true;
+}
+
 /// @brief Mock HTTP server that records Accept-Encoding and serves an identity body.
 static void http_identity_download_server_thread(int port, const char *body) {
     void *server = rt_tcp_server_listen(port);
@@ -3410,6 +3456,43 @@ static void test_http_gzip_response() {
                 http_accept_encoding_header.find("gzip") != std::string::npos);
 }
 
+/// @brief Verify HTTP rejects excessive gzip expansion before body publication.
+static void test_http_gzip_expansion_limit() {
+    printf("\nTesting Http gzip expansion limit:\n");
+
+    constexpr size_t plain_len = 8u * 1024u * 1024u;
+    const int port = get_free_tcp_port_ipv4();
+    assert(port > 0);
+    server_ready = false;
+    server_done = false;
+    http_gzip_encoded_size = 0;
+
+    std::thread server_thread(http_gzip_expansion_server_thread, port, plain_len);
+    while (!server_ready)
+        std::this_thread::sleep_for(std::chrono::milliseconds(10));
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%d/gzip-limit", port);
+    void *req = rt_http_req_new(rt_const_cstr("GET"), rt_const_cstr(url));
+    void *result = rt_http_req_send_result(req);
+
+    server_thread.join();
+    const size_t encoded_len = http_gzip_encoded_size.load();
+    test_result("Fixture exceeds the configured expansion budget",
+                encoded_len > 0 && (uint64_t)plain_len > (uint64_t)encoded_len * UINT64_C(128) +
+                                                             UINT64_C(1024) * 1024u);
+    test_result("HttpReq rejects excessive gzip expansion",
+                result && rt_result_is_err(result) == 1);
+    if (result && rt_result_is_err(result)) {
+        rt_string error = rt_result_unwrap_err_str(result);
+        test_result("Expansion failure is a protocol error",
+                    error && strstr(rt_string_cstr(error), "invalid gzip") != nullptr);
+    }
+
+    release_test_object(result);
+    release_test_object(req);
+}
+
 /// @brief Test Http.Download writes streamed content to disk.
 static void test_http_download() {
     printf("\nTesting Http download:\n");
@@ -3944,6 +4027,7 @@ int main() {
         test_http_redirect();
         test_http_relative_redirect();
         test_http_gzip_response();
+        test_http_gzip_expansion_limit();
         test_http_download();
         test_http_download_identity_encoding();
         test_http_download_trap_and_input_cleanup();

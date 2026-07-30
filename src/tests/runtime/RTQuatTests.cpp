@@ -332,6 +332,109 @@ static void test_to_mat4_identity() {
 }
 
 // ============================================================================
+// ToEuler / FromMat4 inverses (ADR 0227)
+// ============================================================================
+
+/// Compare two rotations up to quaternion double-cover sign.
+static bool same_rotation(void *a, void *b) {
+    double dot = rt_quat_x(a) * rt_quat_x(b) + rt_quat_y(a) * rt_quat_y(b) +
+                 rt_quat_z(a) * rt_quat_z(b) + rt_quat_w(a) * rt_quat_w(b);
+    return fabs(fabs(dot) - 1.0) < 1e-6;
+}
+
+static void test_to_euler_roundtrip_sweep() {
+    /* FromEuler(ToEuler(q)) must recover q (up to sign) across a dense
+     * pitch/yaw/roll sweep including values near the gimbal poles. */
+    for (int p = -2; p <= 2; ++p) {
+        for (int y = -2; y <= 2; ++y) {
+            for (int r = -2; r <= 2; ++r) {
+                double pitch = p * (PI / 5.0);
+                double yaw = y * (PI / 5.0);
+                double roll = r * (PI / 5.0);
+                void *q = rt_quat_from_euler(pitch, yaw, roll);
+                void *euler = rt_quat_to_euler(q);
+                assert(euler != nullptr);
+                void *back = rt_quat_from_euler(
+                    rt_vec3_x(euler), rt_vec3_y(euler), rt_vec3_z(euler));
+                assert(same_rotation(q, back));
+            }
+        }
+    }
+    printf("test_to_euler_roundtrip_sweep: PASSED\n");
+}
+
+static void test_to_euler_gimbal_poles() {
+    /* Exact poles: yaw = +/-pi/2 with a twist shared between pitch and roll. */
+    for (int sign = -1; sign <= 1; sign += 2) {
+        for (int t = -3; t <= 3; ++t) {
+            double twist = t * (PI / 7.0);
+            void *q = rt_quat_from_euler(twist, sign * (PI / 2.0), 0.0);
+            void *euler = rt_quat_to_euler(q);
+            assert(euler != nullptr);
+            void *back = rt_quat_from_euler(
+                rt_vec3_x(euler), rt_vec3_y(euler), rt_vec3_z(euler));
+            assert(same_rotation(q, back));
+        }
+    }
+    printf("test_to_euler_gimbal_poles: PASSED\n");
+}
+
+static void test_to_euler_matches_reference_decomposition() {
+    /* The exact decomposition Zanna Studio shipped before ADR 0227. */
+    void *q = rt_quat_from_euler(0.3, -0.7, 1.1);
+    double x = rt_quat_x(q);
+    double y = rt_quat_y(q);
+    double z = rt_quat_z(q);
+    double w = rt_quat_w(q);
+    double ref_pitch = atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y));
+    double ref_yaw = asin(2.0 * (w * y - z * x));
+    double ref_roll = atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z));
+    void *euler = rt_quat_to_euler(q);
+    assert(approx_eq(rt_vec3_x(euler), ref_pitch));
+    assert(approx_eq(rt_vec3_y(euler), ref_yaw));
+    assert(approx_eq(rt_vec3_z(euler), ref_roll));
+    printf("test_to_euler_matches_reference_decomposition: PASSED\n");
+}
+
+static void test_from_mat4_roundtrip_sweep() {
+    /* FromMat4(ToMat4(q)) must recover q (up to sign) for every trace branch. */
+    for (int p = -2; p <= 2; ++p) {
+        for (int y = -2; y <= 2; ++y) {
+            for (int r = -2; r <= 2; ++r) {
+                void *q = rt_quat_from_euler(
+                    p * (PI / 3.0), y * (PI / 3.0), r * (PI / 3.0));
+                void *m = rt_quat_to_mat4(q);
+                void *back = rt_quat_from_mat4(m);
+                assert(back != nullptr);
+                assert(same_rotation(q, back));
+            }
+        }
+    }
+    printf("test_from_mat4_roundtrip_sweep: PASSED\n");
+}
+
+static void test_from_mat4_tolerates_scale() {
+    /* Column-normalization: a uniformly scaled rotation decomposes cleanly. */
+    void *q = rt_quat_from_euler(0.4, 0.9, -0.2);
+    void *m = rt_quat_to_mat4(q);
+    void *scale = rt_mat4_scale(3.0, 3.0, 3.0);
+    void *scaled = rt_mat4_mul(m, scale);
+    void *back = rt_quat_from_mat4(scaled);
+    assert(same_rotation(q, back));
+    printf("test_from_mat4_tolerates_scale: PASSED\n");
+}
+
+static void test_from_mat4_degenerate_is_identity() {
+    void *zero = rt_mat4_scale(0.0, 0.0, 0.0);
+    void *q = rt_quat_from_mat4(zero);
+    assert(approx_eq(rt_quat_x(q), 0.0));
+    assert(approx_eq(rt_quat_y(q), 0.0));
+    assert(approx_eq(rt_quat_z(q), 0.0));
+    assert(approx_eq(rt_quat_w(q), 1.0));
+    printf("test_from_mat4_degenerate_is_identity: PASSED\n");
+}
+
+// ============================================================================
 // Main
 // ============================================================================
 
@@ -370,6 +473,14 @@ int main() {
 
     /* ToMat4 */
     test_to_mat4_identity();
+
+    /* ToEuler / FromMat4 inverses (ADR 0227) */
+    test_to_euler_roundtrip_sweep();
+    test_to_euler_gimbal_poles();
+    test_to_euler_matches_reference_decomposition();
+    test_from_mat4_roundtrip_sweep();
+    test_from_mat4_tolerates_scale();
+    test_from_mat4_degenerate_is_identity();
 
     printf("\nAll Quat tests passed!\n");
     return 0;

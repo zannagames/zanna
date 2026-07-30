@@ -13,7 +13,8 @@
 // Ownership/Lifetime:
 //   - Every test owns and releases its runtime Bytes/String handles.
 //   - Trap state is process-local test scaffolding and retains no runtime payload.
-// Links: docs/zannalib/io.md
+// Links: docs/zannalib/io/advanced.md,
+//        docs/adr/0229-bounded-native-gzip-decoding.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -33,6 +34,7 @@ namespace {
 static jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
 static bool g_trap_expected = false;
+static int g_alloc_fail_countdown = 0;
 } // namespace
 
 extern "C" void vm_trap(const char *msg) {
@@ -40,6 +42,16 @@ extern "C" void vm_trap(const char *msg) {
     if (g_trap_expected)
         longjmp(g_trap_jmp, 1);
     rt_abort(msg);
+}
+
+/// @brief Fail one selected managed allocation in decoder cleanup tests.
+/// @param bytes Requested allocation size.
+/// @param next Default allocator to invoke when the countdown does not fire.
+/// @return Allocated storage, or NULL at the selected boundary.
+static void *compress_fail_countdown_alloc(int64_t bytes, void *(*next)(int64_t)) {
+    if (g_alloc_fail_countdown > 0 && --g_alloc_fail_countdown == 0)
+        return nullptr;
+    return next(bytes);
 }
 
 #define EXPECT_TRAP(expr)                                                                          \
@@ -378,6 +390,81 @@ static void test_gzip_concatenated_members() {
     test_result("Concatenated members inflate in order",
                 get_bytes_len(decompressed) == (int64_t)strlen(expected) &&
                     memcmp(get_bytes_data(decompressed), expected, strlen(expected)) == 0);
+}
+
+/// @brief Verify native GZIP decoding enforces limits before publishing output.
+/// @details Covers exact success, absolute and ratio rejection, configured
+///          ratio slack, and aggregate limits across concatenated members.
+static void test_gzip_native_output_limits() {
+    printf("Testing native GZIP output and expansion limits:\n");
+
+    constexpr size_t plain_len = 8192;
+    uint8_t plain[plain_len];
+    memset(plain, 'X', sizeof(plain));
+    void *original = make_bytes(plain, sizeof(plain));
+    void *compressed = rt_compress_gzip(original);
+    const size_t compressed_len = static_cast<size_t>(get_bytes_len(compressed));
+    uint8_t *decoded = nullptr;
+    size_t decoded_len = 0;
+
+    int ok = rt_compress_gunzip_raw(
+        get_bytes_data(compressed), compressed_len, plain_len, 0, 0, &decoded, &decoded_len);
+    test_result("Native exact-limit decode succeeds",
+                ok == 1 && decoded_len == plain_len && memcmp(decoded, plain, sizeof(plain)) == 0);
+    free(decoded);
+
+    decoded = reinterpret_cast<uint8_t *>(1);
+    decoded_len = 1;
+    ok = rt_compress_gunzip_raw(
+        get_bytes_data(compressed), compressed_len, plain_len - 1, 0, 0, &decoded, &decoded_len);
+    test_result("Native absolute limit rejects before publication",
+                ok == 0 && decoded == nullptr && decoded_len == 0);
+
+    decoded = reinterpret_cast<uint8_t *>(1);
+    decoded_len = 1;
+    ok = rt_compress_gunzip_raw(
+        get_bytes_data(compressed), compressed_len, plain_len, 1, 0, &decoded, &decoded_len);
+    test_result("Native expansion ratio rejects compressed amplification",
+                compressed_len < plain_len && ok == 0 && decoded == nullptr && decoded_len == 0);
+
+    ok = rt_compress_gunzip_raw(get_bytes_data(compressed),
+                                compressed_len,
+                                plain_len,
+                                1,
+                                plain_len,
+                                &decoded,
+                                &decoded_len);
+    test_result("Native expansion slack is caller configurable",
+                ok == 1 && decoded_len == plain_len);
+    free(decoded);
+
+    void *joined = rt_bytes_new(static_cast<int64_t>(compressed_len * 2));
+    memcpy(get_bytes_data(joined), get_bytes_data(compressed), compressed_len);
+    memcpy(get_bytes_data(joined) + compressed_len, get_bytes_data(compressed), compressed_len);
+    decoded = reinterpret_cast<uint8_t *>(1);
+    decoded_len = 1;
+    ok = rt_compress_gunzip_raw(get_bytes_data(joined),
+                                compressed_len * 2,
+                                plain_len * 2 - 1,
+                                0,
+                                0,
+                                &decoded,
+                                &decoded_len);
+    test_result("Concatenated members share one aggregate output limit",
+                ok == 0 && decoded == nullptr && decoded_len == 0);
+
+    g_alloc_fail_countdown = 1;
+    rt_set_alloc_hook(compress_fail_countdown_alloc);
+    EXPECT_TRAP(rt_compress_gunzip(compressed));
+    rt_set_alloc_hook(nullptr);
+    void *recovered = rt_compress_gunzip(compressed);
+    test_result("Managed allocation trap leaves gunzip reusable",
+                recovered && get_bytes_len(recovered) == (int64_t)plain_len);
+
+    release_obj(recovered);
+    release_obj(joined);
+    release_obj(compressed);
+    release_obj(original);
 }
 
 static void test_gzip_member_boundary_ignores_payload_magic() {
@@ -720,6 +807,8 @@ int main() {
     test_gzip_crc();
     printf("\n");
     test_gzip_concatenated_members();
+    printf("\n");
+    test_gzip_native_output_limits();
     printf("\n");
     test_gzip_member_boundary_ignores_payload_magic();
     printf("\n");

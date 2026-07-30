@@ -126,7 +126,7 @@ func VerifyNamedSceneWorkspaceState(
     source3D.scene3DWorkspace.transformVertexSnapEnabled = true;
     source3D.scene3DWorkspace.viewYawDegrees = -70;
     source3D.scene3DWorkspace.viewPitchDegrees = 35;
-    source3D.scene3DWorkspace.viewScale = 52;
+    source3D.scene3DWorkspace.viewScale = 52.5;
     source3D.scene3DWorkspace.viewportMode = 1;
     source3D.scene3DWorkspace.projectPreviewFilterIndex = 3;
     source3D.scene3DWorkspace.viewTargetX = 1.25;
@@ -214,7 +214,7 @@ func VerifyNamedSceneWorkspaceState(
        or restored3D.scene3DWorkspace.transformVertexSnapEnabled == false
        or restored3D.scene3DWorkspace.viewYawDegrees != -70
        or restored3D.scene3DWorkspace.viewPitchDegrees != 35
-       or restored3D.scene3DWorkspace.viewScale != 52
+       or near(restored3D.scene3DWorkspace.viewScale, 52.5) == false
        or restored3D.scene3DWorkspace.viewportMode != 1
        or restored3D.scene3DWorkspace.projectPreviewFilterIndex != 3
        or near(restored3D.scene3DWorkspace.viewTargetX, 1.25) == false
@@ -266,6 +266,7 @@ func VerifyBoundedSceneWorkspaceState(
     Ini.Set(savedIni, "session.file.1", "scene3dYaw", "-999");
     Ini.Set(savedIni, "session.file.1", "scene3dPitch", "999");
     Ini.Set(savedIni, "session.file.1", "scene3dScale", "0");
+    Ini.Set(savedIni, "session.file.1", "scene3dScale100", "999999");
     Ini.Set(savedIni, "session.file.1", "scene3dViewportMode", "999");
     Ini.Set(savedIni, "session.file.1", "scene3dPreviewFilter", "999");
     Ini.Set(savedIni, "session.file.1", "scene3dTargetX", "2000000000");
@@ -304,7 +305,7 @@ func VerifyBoundedSceneWorkspaceState(
        or bounded3D.scene3DWorkspace.transformVertexSnapEnabled == false
        or bounded3D.scene3DWorkspace.viewYawDegrees != -180
        or bounded3D.scene3DWorkspace.viewPitchDegrees != 80
-       or bounded3D.scene3DWorkspace.viewScale != 4
+       or near(bounded3D.scene3DWorkspace.viewScale, 400.0) == false
        or bounded3D.scene3DWorkspace.viewportMode != 1
        or bounded3D.scene3DWorkspace.projectPreviewFilterIndex != 32
        or near(bounded3D.scene3DWorkspace.viewTargetX, 1000000.0) == false
@@ -340,7 +341,7 @@ func VerifyUntitledSceneRecovery(
     recovery3D.scene3DWorkspace.transformSurfaceSnapEnabled = true;
     recovery3D.scene3DWorkspace.transformSurfaceAlignEnabled = true;
     recovery3D.scene3DWorkspace.transformVertexSnapEnabled = true;
-    recovery3D.scene3DWorkspace.viewScale = 64;
+    recovery3D.scene3DWorkspace.viewScale = 64.0;
     recovery3D.scene3DWorkspace.viewportMode = 1;
     recovery3D.scene3DWorkspace.projectPreviewFilterIndex = 4;
     var recoveryWriter = new session.SessionManager();
@@ -373,7 +374,7 @@ func VerifyUntitledSceneRecovery(
               .transformSurfaceAlignEnabled == false
        or recoveredDocs.documents.get(1).scene3DWorkspace
               .transformVertexSnapEnabled == false
-       or recoveredDocs.documents.get(1).scene3DWorkspace.viewScale != 64
+       or near(recoveredDocs.documents.get(1).scene3DWorkspace.viewScale, 64.0) == false
        or recoveredDocs.documents.get(1).scene3DWorkspace.viewportMode != 1
        or recoveredDocs.documents.get(1).scene3DWorkspace
               .projectPreviewFilterIndex != 4 {

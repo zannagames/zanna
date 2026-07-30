@@ -38,6 +38,7 @@
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_g3d_ref_slots.h"
+#include "rt_vec3.h"
 #include "rt_heap.h"
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
@@ -616,6 +617,111 @@ void rt_water3d_set_sim_distance(void *obj, double distance) {
 double rt_water3d_get_sim_distance(void *obj) {
     rt_water3d *w = water3d_checked(obj);
     return w ? w->sim_distance : 0.0;
+}
+
+/*==========================================================================
+ * Readback symmetry (ADR 0227): every setter over retained state has a
+ * matching reader so authored water can be inspected, not just replaced.
+ *=========================================================================*/
+
+/// @brief Read the surface height (world Y).
+/// @param obj Water3D handle.
+/// @return Retained height, or 0.0 for invalid handles.
+double rt_water3d_get_height(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    return w ? w->height : 0.0;
+}
+
+/// @brief Read the surface center as (centerX, height, centerZ).
+/// @param obj Water3D handle.
+/// @return New Vec3 of the retained placement, or origin for invalid handles.
+void *rt_water3d_get_position(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    if (!w)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(w->center_x, w->height, w->center_z);
+}
+
+/// @brief Read the legacy single-wave speed.
+/// @param obj Water3D handle.
+/// @return Retained wave speed, or 0.0 for invalid handles.
+double rt_water3d_get_wave_speed(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    return w ? w->wave_speed : 0.0;
+}
+
+/// @brief Read the legacy single-wave amplitude.
+/// @param obj Water3D handle.
+/// @return Retained amplitude, or 0.0 for invalid handles.
+double rt_water3d_get_wave_amplitude(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    return w ? w->wave_amplitude : 0.0;
+}
+
+/// @brief Read the legacy single-wave frequency.
+/// @param obj Water3D handle.
+/// @return Retained frequency, or 0.0 for invalid handles.
+double rt_water3d_get_wave_frequency(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    return w ? w->wave_frequency : 0.0;
+}
+
+/// @brief Read the surface tint color.
+/// @param obj Water3D handle.
+/// @return New Vec3 of the retained RGB tint, or origin for invalid handles.
+void *rt_water3d_get_color(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    if (!w)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(w->color[0], w->color[1], w->color[2]);
+}
+
+/// @brief Read the surface opacity.
+/// @param obj Water3D handle.
+/// @return Retained alpha, or 0.0 for invalid handles.
+double rt_water3d_get_alpha(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    return w ? w->alpha : 0.0;
+}
+
+/// @brief Read the environment-reflection strength.
+/// @param obj Water3D handle.
+/// @return Retained reflectivity, or 0.0 for invalid handles.
+double rt_water3d_get_reflectivity(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    return w ? w->reflectivity : 0.0;
+}
+
+/// @brief Read the grid resolution.
+/// @param obj Water3D handle.
+/// @return Retained quads per axis, or 0 for invalid handles.
+int64_t rt_water3d_get_resolution(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    return w ? (int64_t)w->resolution : 0;
+}
+
+/// @brief Read the retained surface texture.
+/// @param obj Water3D handle.
+/// @return Borrowed Pixels handle, or `NULL`.
+void *rt_water3d_get_texture(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    return w ? w->texture : NULL;
+}
+
+/// @brief Read the retained wave normal map.
+/// @param obj Water3D handle.
+/// @return Borrowed Pixels handle, or `NULL`.
+void *rt_water3d_get_normal_map(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    return w ? w->normal_map : NULL;
+}
+
+/// @brief Read the retained environment cubemap.
+/// @param obj Water3D handle.
+/// @return Borrowed CubeMap3D handle, or `NULL`.
+void *rt_water3d_get_env_map(void *obj) {
+    rt_water3d *w = water3d_checked(obj);
+    return w ? w->env_map : NULL;
 }
 
 /// @brief Set grid resolution (clamped to [8, 256]).

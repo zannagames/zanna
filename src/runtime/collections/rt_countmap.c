@@ -49,6 +49,7 @@
 #include "rt_countmap.h"
 
 #include "rt_collection_ids.h"
+#include "rt_hash_table_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_seq.h"
@@ -60,10 +61,6 @@
 
 /// Initial number of hash buckets.
 #define CM_INITIAL_CAPACITY 16
-/// Numerator of the table growth threshold.
-#define CM_LOAD_FACTOR_NUM 3
-/// Denominator of the table growth threshold.
-#define CM_LOAD_FACTOR_DEN 4
 #include "rt_hash_util.h"
 
 /// @brief One owned key/count entry in a bucket collision chain.
@@ -99,26 +96,32 @@ static rt_countmap_impl *as_countmap(void *obj, const char *what) {
 
 /// @brief Borrow the byte buffer + length of an rt_string (empty "" if null).
 /// @param s Runtime string to inspect; NULL denotes an empty key.
+/// @param what Diagnostic raised for a stale or forged nonnull handle.
+/// @param out_data Receives borrowed key bytes.
 /// @param out_len Receives the usable byte length.
-/// @return Borrowed key bytes, or a stable empty string for a null, empty, or
-///         inaccessible runtime string.
-static const char *get_str_data(rt_string s, size_t *out_len) {
+/// @return Nonzero for a null or live string handle; otherwise zero after
+///         trapping. Null continues to denote the empty key.
+static int get_str_data(rt_string s, const char *what, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
     if (!s) {
-        *out_len = 0;
-        return "";
+        return 1;
+    }
+    if (!rt_string_is_handle(s)) {
+        rt_trap(what);
+        return 0;
     }
     int64_t len = rt_str_len(s);
-    if (len <= 0) {
-        *out_len = 0;
-        return "";
-    }
+    if (len <= 0)
+        return 1;
     const char *cstr = rt_string_cstr(s);
     if (!cstr) {
-        *out_len = 0;
-        return "";
+        rt_trap(what);
+        return 0;
     }
+    *out_data = cstr;
     *out_len = (size_t)len;
-    return cstr;
+    return 1;
 }
 
 /// @brief Linear scan of a bucket chain for an exact key match (NULL if none).
@@ -175,8 +178,10 @@ static void countmap_finalizer(void *obj) {
 /// @return 1 after installing the larger table, or 0 when capacity cannot
 ///         double or allocation fails. The original table remains installed.
 static int resize(rt_countmap_impl *cm) {
-    if (cm->capacity > SIZE_MAX / 2)
+    if (cm->capacity > SIZE_MAX / 2) {
+        rt_trap("CountMap: capacity overflow during resize");
         return 0;
+    }
     size_t new_cap = cm->capacity * 2;
     if (new_cap > SIZE_MAX / sizeof(rt_cm_entry *)) {
         rt_trap("CountMap: allocation size overflow");
@@ -212,8 +217,7 @@ static int resize(rt_countmap_impl *cm) {
 /// @return Non-zero when the next new-key insertion should first grow the
 ///         bucket table.
 static int should_resize(rt_countmap_impl *cm) {
-    return (long double)cm->count * (long double)CM_LOAD_FACTOR_DEN >=
-           (long double)cm->capacity * (long double)CM_LOAD_FACTOR_NUM;
+    return cm->count == SIZE_MAX || rt_hash_table_exceeds_load(cm->count + 1, cm->capacity);
 }
 
 /// @brief Construct an empty count map (string → int64). Designed for tally workloads —
@@ -250,7 +254,8 @@ void *rt_countmap_new(void) {
 int64_t rt_countmap_len(void *obj) {
     if (!obj)
         return 0;
-    return (int64_t)as_countmap(obj, "CountMap.Len: invalid CountMap object")->count;
+    rt_countmap_impl *map = as_countmap(obj, "CountMap.Len: invalid CountMap object");
+    return map ? (int64_t)map->count : 0;
 }
 
 /// @brief Tests whether a CountMap contains no stored keys.
@@ -293,8 +298,10 @@ int64_t rt_countmap_inc_by(void *obj, rt_string key, int64_t n) {
         return 0;
     }
 
-    size_t klen;
-    const char *kdata = get_str_data(key, &klen);
+    size_t klen = 0;
+    const char *kdata = NULL;
+    if (!get_str_data(key, "CountMap.IncrementBy: invalid key", &kdata, &klen))
+        return 0;
 
     uint64_t h = rt_fnv1a(kdata, klen);
     size_t idx = (size_t)(h % cm->capacity);
@@ -368,8 +375,10 @@ int64_t rt_countmap_dec(void *obj, rt_string key) {
     if (cm->capacity == 0)
         return 0;
 
-    size_t klen;
-    const char *kdata = get_str_data(key, &klen);
+    size_t klen = 0;
+    const char *kdata = NULL;
+    if (!get_str_data(key, "CountMap.Decrement: invalid key", &kdata, &klen))
+        return 0;
 
     uint64_t h = rt_fnv1a(kdata, klen);
     size_t idx = (size_t)(h % cm->capacity);
@@ -410,8 +419,10 @@ int64_t rt_countmap_get(void *obj, rt_string key) {
     if (cm->capacity == 0)
         return 0;
 
-    size_t klen;
-    const char *kdata = get_str_data(key, &klen);
+    size_t klen = 0;
+    const char *kdata = NULL;
+    if (!get_str_data(key, "CountMap.Get: invalid key", &kdata, &klen))
+        return 0;
 
     uint64_t h = rt_fnv1a(kdata, klen);
     size_t idx = (size_t)(h % cm->capacity);
@@ -438,8 +449,10 @@ void rt_countmap_set(void *obj, rt_string key, int64_t count) {
         return;
     }
 
-    size_t klen;
-    const char *kdata = get_str_data(key, &klen);
+    size_t klen = 0;
+    const char *kdata = NULL;
+    if (!get_str_data(key, "CountMap.Set: invalid key", &kdata, &klen))
+        return;
 
     uint64_t h = rt_fnv1a(kdata, klen);
     size_t idx = (size_t)(h % cm->capacity);
@@ -642,11 +655,13 @@ int8_t rt_countmap_remove(void *obj, rt_string key) {
     if (!obj)
         return 0;
     rt_countmap_impl *cm = as_countmap(obj, "CountMap.Remove: invalid CountMap object");
-    if (cm->capacity == 0)
+    if (!cm || !cm->buckets || cm->capacity == 0)
         return 0;
 
-    size_t klen;
-    const char *kdata = get_str_data(key, &klen);
+    size_t klen = 0;
+    const char *kdata = NULL;
+    if (!get_str_data(key, "CountMap.Remove: invalid key", &kdata, &klen))
+        return 0;
 
     uint64_t h = rt_fnv1a(kdata, klen);
     size_t idx = (size_t)(h % cm->capacity);
@@ -672,6 +687,8 @@ void rt_countmap_clear(void *obj) {
     if (!obj)
         return;
     rt_countmap_impl *cm = as_countmap(obj, "CountMap.Clear: invalid CountMap object");
+    if (!cm || !cm->buckets)
+        return;
 
     for (size_t i = 0; i < cm->capacity; ++i) {
         rt_cm_entry *e = cm->buckets[i];

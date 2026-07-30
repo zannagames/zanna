@@ -2621,6 +2621,14 @@ void rt_canvas3d_set_wireframe(void *obj, int8_t enabled) {
         c->wireframe = enabled ? 1 : 0;
 }
 
+/// @brief Read whether wireframe rendering is enabled (ADR 0227).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Nonzero when wireframe rendering is active, or 0 for invalid handles.
+int8_t rt_canvas3d_get_wireframe(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->wireframe ? 1 : 0;
+}
+
 /// @brief Enable or disable backface culling (CCW winding = front face).
 /// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
 /// @param enabled Non-zero to cull clockwise back faces; zero to submit both sides.

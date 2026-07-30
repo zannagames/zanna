@@ -59,9 +59,9 @@
 
 /** One owned text or file part in a Multipart object. */
 typedef struct {
-    char *name;     ///< Owned field name.
-    char *filename; // NULL for text fields
-    uint8_t *data;  ///< Owned exact payload bytes.
+    char *name;      ///< Owned field name.
+    char *filename;  // NULL for text fields
+    uint8_t *data;   ///< Owned exact payload bytes.
     size_t data_len; ///< Number of bytes in @ref data.
     int is_file;     ///< Nonzero for a file part.
 } multipart_part_t;
@@ -956,16 +956,26 @@ void *rt_multipart_build(void *obj) {
         return NULL;
     }
     result = rt_bytes_new((int64_t)pos);
-    if (!result)
+    if (!result) {
         rt_trap("Multipart: result allocation failed");
+        goto returning_trap;
+    }
     uint8_t *result_data = bytes_data((void *)result);
-    if (pos > 0 && !result_data)
+    if (pos > 0 && !result_data) {
         rt_trap("Multipart: result storage unavailable");
+        goto returning_trap;
+    }
     if (pos > 0)
         memcpy(result_data, buf, pos);
     rt_trap_clear_recovery();
     free(buf);
     return (void *)result;
+
+returning_trap:
+    rt_trap_clear_recovery();
+    free(buf);
+    multipart_release_owned((void *)result);
+    return NULL;
 }
 
 /// @brief Return the count of elements in a validated Multipart.

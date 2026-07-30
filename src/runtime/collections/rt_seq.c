@@ -443,7 +443,8 @@ void rt_seq_set_owns_elements(void *obj, int8_t owns) {
 int64_t rt_seq_len(void *obj) {
     if (!obj)
         return 0;
-    return as_seq(obj, "Seq: invalid Seq object")->len;
+    rt_seq_impl *seq = as_seq(obj, "Seq: invalid Seq object");
+    return seq ? seq->len : 0;
 }
 
 /// @brief Returns the current allocated capacity of the Seq.
@@ -467,7 +468,8 @@ int64_t rt_seq_len(void *obj) {
 int64_t rt_seq_cap(void *obj) {
     if (!obj)
         return 0;
-    return as_seq(obj, "Seq: invalid Seq object")->cap;
+    rt_seq_impl *seq = as_seq(obj, "Seq: invalid Seq object");
+    return seq ? seq->cap : 0;
 }
 
 /// @brief Checks whether the Seq contains no elements.
@@ -488,7 +490,8 @@ int64_t rt_seq_cap(void *obj) {
 int8_t rt_seq_is_empty(void *obj) {
     if (!obj)
         return 1;
-    return as_seq(obj, "Seq: invalid Seq object")->len == 0 ? 1 : 0;
+    rt_seq_impl *seq = as_seq(obj, "Seq: invalid Seq object");
+    return !seq || seq->len == 0 ? 1 : 0;
 }
 
 /// @brief Returns the element at the specified index.

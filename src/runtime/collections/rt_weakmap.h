@@ -20,7 +20,7 @@
 //   - WeakMap objects are GC-managed.
 //   - Entry keys and weak-reference handles are owned by the map.
 //   - Values should be runtime-managed objects or strings so final release can zero weak refs.
-//   - Get returns a borrowed target without extending its lifetime. Keys()
+//   - Get promotes a live weak target and returns an owning reference. Keys()
 //     returns an owning Seq of retained immutable key strings.
 //
 // Links: src/runtime/collections/rt_weakmap.c (implementation), src/runtime/core/rt_string.h
@@ -62,7 +62,8 @@ void rt_weakmap_set(void *map, rt_string key, void *value);
 /// @brief Get a value from the map.
 /// @param map Weak map.
 /// @param key Length-aware string key; null denotes the empty key.
-/// @return Borrowed target, or `NULL` if not found or collected.
+/// @return Retained target, or `NULL` if not found or collected.
+/// @note The caller owns a nonnull result and must release it.
 void *rt_weakmap_get(void *map, rt_string key);
 
 /// @brief Check if a key exists in the map.

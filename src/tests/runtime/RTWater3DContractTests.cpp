@@ -149,6 +149,13 @@ extern "C" void rt_obj_set_finalizer(void *, void (*)(void *)) {}
 
 extern "C" void rt_obj_retain_maybe(void *) {}
 
+/* ADR 0227 readback getters box positions/colors as Vec3; the isolated
+ * contract build links no math objects, so a null-returning stub keeps the
+ * target minimal (no contract case dereferences the boxed value). */
+extern "C" void *rt_vec3_new(double, double, double) {
+    return nullptr;
+}
+
 extern "C" int32_t rt_obj_release_check0(void *p) {
     if (p == &g_dummy_texture || p == &g_dummy_normal || p == &g_dummy_env ||
         p == &g_dummy_incomplete_env)

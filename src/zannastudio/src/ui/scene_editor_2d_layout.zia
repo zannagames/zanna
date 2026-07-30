@@ -360,8 +360,6 @@ class SceneEditor2DLayoutLayer extends PreviousLayer.SceneEditor2DLifecycleLayer
                 + ". Choose shape, fill, tile-pick, and object editing tools.");
         }
         if viewMenuButton != null {
-            var presentationActive =
-                focusModeActive or workspaceModeActive;
             viewMenuButton.SetAccessibleDescription(
                 "Grid " + (showGrid ? "on" : "off")
                 + ", rulers " + (showRulers ? "on" : "off")

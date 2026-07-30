@@ -189,7 +189,7 @@ class SceneEditor3DState extends SceneEditor3DContract.SceneEditor3DContract06 {
     hide LightBaker3D activeBaker;
     hide LightBaker3D lastCompletedBaker;
     hide Boolean bakeActive;
-    hide Boolean envBrowseMode;
+    expose Boolean envBrowseMode;
     hide String envSkyboxCubemapPath;
     hide CubeMap3D envSkyboxCubemap;
     hide String projectEnvironmentSignature;
@@ -380,7 +380,7 @@ class SceneEditor3DState extends SceneEditor3DContract.SceneEditor3DContract06 {
     expose Integer revision;
     expose Integer viewYawDegrees;
     expose Integer viewPitchDegrees;
-    expose Integer viewScale;
+    expose Number viewScale;
     expose Integer viewportMode;
     expose Integer renderedViewportWidth;
     expose Integer renderedViewportHeight;

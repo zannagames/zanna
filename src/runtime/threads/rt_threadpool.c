@@ -58,6 +58,7 @@
 #include "rt_string.h"
 #include "rt_threads.h"
 
+#include <errno.h>
 #include <limits.h>
 #include <setjmp.h>
 #include <stdio.h>
@@ -221,8 +222,9 @@ static int64_t pool_default_max_pending(void) {
     const char *env = getenv("ZANNA_THREADPOOL_MAX_PENDING");
     if (env && env[0]) {
         char *end = NULL;
+        errno = 0;
         long long value = strtoll(env, &end, 10);
-        if (end && *end == '\0' && value > 0)
+        if (errno != ERANGE && end && *end == '\0' && value > 0)
             return (int64_t)value;
     }
     return RT_THREADPOOL_DEFAULT_MAX_PENDING;
@@ -1174,11 +1176,15 @@ int8_t rt_threadpool_wait_for(void *pool_obj, int64_t ms) {
 
     if (ms <= 0) {
         // Immediate check
-        rt_monitor_enter(pool->monitor);
+        if (!rt_monitor_try_enter(pool->monitor)) {
+            pool_release_object(pool);
+            return 0;
+        }
         int8_t done = (pool->pending_count == 0 && pool->active_count == 0) ? 1 : 0;
-        rt_monitor_exit(pool->monitor);
         char error[512];
-        int8_t has_error = done ? pool_take_error(pool, error, sizeof(error)) : 0;
+        error[0] = '\0';
+        int8_t has_error = done ? pool_take_error_locked(pool, error, sizeof(error)) : 0;
+        rt_monitor_exit(pool->monitor);
         pool_release_object(pool);
         if (has_error) {
             rt_trap(error[0] ? error : "Pool.Wait: task trapped");
@@ -1187,16 +1193,21 @@ int8_t rt_threadpool_wait_for(void *pool_obj, int64_t ms) {
         return done;
     }
 
-    rt_monitor_enter(pool->monitor);
-
 #if RT_PLATFORM_WINDOWS
-    ULONGLONG now0 = GetTickCount64();
-    ULONGLONG add = (ULONGLONG)ms;
-    ULONGLONG deadline = (ULLONG_MAX - now0 < add) ? ULLONG_MAX : now0 + add;
+    ULONGLONG deadline = rt_win32_deadline_from_now_ms(ms);
 #else
     struct timespec start;
-    clock_gettime(CLOCK_MONOTONIC, &start);
+    if (clock_gettime(CLOCK_MONOTONIC, &start) != 0) {
+        pool_release_object(pool);
+        rt_trap("Pool.WaitFor: monotonic clock failed");
+        return 0;
+    }
 #endif
+
+    if (!rt_monitor_try_enter_for(pool->monitor, ms)) {
+        pool_release_object(pool);
+        return 0;
+    }
 
     while (pool->pending_count > 0 || pool->active_count > 0) {
 #if RT_PLATFORM_WINDOWS
@@ -1205,21 +1216,32 @@ int8_t rt_threadpool_wait_for(void *pool_obj, int64_t ms) {
         int64_t remaining = delta > (ULONGLONG)INT64_MAX ? INT64_MAX : (int64_t)delta;
 #else
         struct timespec now;
-        clock_gettime(CLOCK_MONOTONIC, &now);
+        if (clock_gettime(CLOCK_MONOTONIC, &now) != 0) {
+            rt_monitor_exit(pool->monitor);
+            pool_release_object(pool);
+            rt_trap("Pool.WaitFor: monotonic clock failed");
+            return 0;
+        }
         int64_t sec = (int64_t)now.tv_sec - (int64_t)start.tv_sec;
         int64_t ns = (int64_t)now.tv_nsec - (int64_t)start.tv_nsec;
         if (ns < 0) {
             sec--;
             ns += 1000000000L;
         }
-        int64_t elapsed_ms = INT64_MAX;
-        if (sec <= INT64_MAX / 1000) {
+        int64_t elapsed_ms = 0;
+        if (sec < 0) {
+            elapsed_ms = 0;
+        } else if (sec > INT64_MAX / 1000) {
+            elapsed_ms = INT64_MAX;
+        } else {
             elapsed_ms = sec * 1000;
             int64_t frac_ms = ns / 1000000L;
             if (elapsed_ms <= INT64_MAX - frac_ms)
                 elapsed_ms += frac_ms;
+            else
+                elapsed_ms = INT64_MAX;
         }
-        int64_t remaining = ms - elapsed_ms;
+        int64_t remaining = elapsed_ms >= ms ? 0 : ms - elapsed_ms;
 #endif
         if (remaining <= 0 || !rt_monitor_wait_for(pool->monitor, remaining)) {
             if (pool->pending_count == 0 && pool->active_count == 0)

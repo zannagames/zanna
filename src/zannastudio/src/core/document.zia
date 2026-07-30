@@ -173,7 +173,7 @@ class Scene3DWorkspaceState {
     expose Number snapScaleIncrement;
     expose Integer viewYawDegrees;
     expose Integer viewPitchDegrees;
-    expose Integer viewScale;
+    expose Number viewScale;
     expose Integer viewportMode;
     expose Number viewTargetX;
     expose Number viewTargetY;
@@ -223,7 +223,7 @@ class Scene3DWorkspaceState {
         snapScaleIncrement = 0.1;
         viewYawDegrees = 35;
         viewPitchDegrees = 25;
-        viewScale = 28;
+        viewScale = 28.0;
         viewportMode = 0;
         viewTargetX = 0.0;
         viewTargetY = 0.0;

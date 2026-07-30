@@ -104,10 +104,10 @@ For a deeper look at how these systems connect, see [Architecture](architecture.
 ### Rendering
 
 - 2D Graphics *(planned)* — Canvas drawing, Pixels image buffers, bitmap fonts, color utilities
-- 3D Graphics *(planned)* — Canvas3D, meshes, materials, lighting, scene graph, skeletal animation
+- [3D Graphics](../graphics3d-guide.md) — Canvas3D, meshes, materials, lighting, scene graph, skeletal animation
 - Sprites & Animation *(planned)* — SpriteSheet, SpriteBatch, SpriteAnimation, AnimStateMachine
 - Tilemaps *(planned)* — Creation, layers, auto-tiling, tile collision, CSV import/export
-- Camera *(planned)* — Camera2D (follow, zoom, parallax, bounds) and Camera3D (perspective, orbit)
+- Camera — Camera2D *(planned)*; [Camera3D](../graphics3d-guide.md#camera3d) is covered by the 3D Graphics guide
 
 ### Gameplay
 
@@ -169,7 +169,8 @@ The topical guides above explain concepts and patterns. For exhaustive method si
 
 - [Game Utilities API](../zannalib/game/README.md) — 28 game classes (Entity, Timer, Tween, Physics2D, etc.)
 - [Graphics API](../zannalib/graphics/README.md) — Canvas, Pixels, Scene, Fonts
-- [3D Graphics API](../graphics3d-guide.md) — 45 classes (Canvas3D, Mesh3D, SceneGraph, etc.)
+- [3D Graphics API](../graphics3d-guide.md) — 69 `Zanna.Graphics3D` classes (Canvas3D, Mesh3D, SceneGraph, etc.; generated inventory: [graphics3d](../generated/runtime/graphics3d.md))
+- [Game3D API](../zannalib/graphics/game3d.md) — 61 `Zanna.Game3D` classes (World3D, Entity3D, controllers, combat, dialogue, streaming)
 - [Audio API](../zannalib/audio.md) — Sound, Music, Synth, SoundBank, Playlist
 - [Input API](../zannalib/input.md) — Keyboard, Mouse, Pad, Action, InputManager
 - [Math API](../zannalib/math.md) — Vec2/3, Mat3/4, Quaternion, Easing, Noise

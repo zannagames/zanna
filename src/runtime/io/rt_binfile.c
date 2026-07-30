@@ -141,6 +141,7 @@ static rt_binfile_impl *binfile_alloc_or_close(FILE *fp, const char *fallback) {
 #define BINFILE_OP_NONE 0
 #define BINFILE_OP_READ 1
 #define BINFILE_OP_WRITE 2
+
 /** @} */
 
 /// @brief Transition the FILE* from write mode to read mode before a read call.
@@ -555,11 +556,25 @@ void rt_binfile_write(void *obj, void *bytes, int64_t offset, int64_t count) {
     if (count > bytes_len - offset)
         count = bytes_len - offset;
 
+    if ((uint64_t)offset > (uint64_t)SIZE_MAX || (uint64_t)count > (uint64_t)SIZE_MAX) {
+        rt_trap("BinFile.Write: byte range exceeds addressable memory");
+        return;
+    }
     if (!binfile_prepare_write(bf))
         return;
-    size_t written = fwrite(bytes_data + offset, 1, (size_t)count, bf->fp);
-    if (written < (size_t)count) {
-        rt_trap("BinFile.Write: write failed");
+
+    size_t write_offset = (size_t)offset;
+    size_t total = 0;
+    size_t requested = (size_t)count;
+    while (total < requested) {
+        size_t written = fwrite(bytes_data + write_offset + total, 1, requested - total, bf->fp);
+        total += written;
+        if (total == requested)
+            return;
+        if (ferror(bf->fp) || written == 0) {
+            rt_trap("BinFile.Write: write failed");
+            return;
+        }
     }
 }
 

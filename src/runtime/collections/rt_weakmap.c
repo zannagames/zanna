@@ -27,7 +27,7 @@
 //   - WeakMap objects are GC-managed (rt_obj_new_i64).
 //   - Entry keys are retained and released with the entry.
 //   - Weak reference handles are owned by the map and freed on removal/clear.
-//   - Returned values are borrowed and are not kept alive by the lookup.
+//   - Get promotes a live weak target and returns an owning reference.
 //     Keys() returns an owning Seq that retains the live entries' immutable
 //     strings independently of subsequent map mutation.
 //
@@ -95,27 +95,34 @@ static rt_weakmap_data *as_weakmap(void *obj, const char *what) {
     return (rt_weakmap_data *)obj;
 }
 
-/// @brief Borrows the byte buffer and length of a key string.
-/// @param key Key to inspect; null or unavailable data normalizes to empty.
+/// @brief Validate a key and borrow its byte buffer and length.
+/// @param key Key to inspect; null continues to denote the empty key.
+/// @param what Diagnostic raised for a forged or stale nonnull handle.
+/// @param out_data Receives borrowed key bytes.
 /// @param out_len Receives the byte count of the returned data.
-/// @return Borrowed key bytes, or a stable empty C string for zero length.
-static const char *wm_key_data(rt_string key, size_t *out_len) {
+/// @return Nonzero for null or a live string handle; otherwise zero after
+///         trapping.
+static int wm_key_data(rt_string key, const char *what, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
     if (!key) {
-        *out_len = 0;
-        return "";
+        return 1;
+    }
+    if (!rt_string_is_handle(key)) {
+        rt_trap(what);
+        return 0;
     }
     int64_t len = rt_str_len(key);
-    if (len <= 0) {
-        *out_len = 0;
-        return "";
-    }
+    if (len <= 0)
+        return 1;
     const char *data = rt_string_cstr(key);
     if (!data) {
-        *out_len = 0;
-        return "";
+        rt_trap(what);
+        return 0;
     }
+    *out_data = data;
     *out_len = (size_t)len;
-    return data;
+    return 1;
 }
 
 /// @brief Per-process keyed hash of @p len bytes of @p data.
@@ -134,8 +141,10 @@ static uint64_t wm_hash_bytes(const char *data, size_t len) {
 static int8_t wm_entry_matches(const wm_entry *entry, const char *key, size_t key_len) {
     if (!entry->occupied)
         return 0;
+    const char *entry_key = "";
     size_t entry_len = 0;
-    const char *entry_key = wm_key_data(entry->key, &entry_len);
+    if (!wm_key_data(entry->key, "WeakMap: invalid retained key", &entry_key, &entry_len))
+        return 0;
     return entry_len == key_len && memcmp(entry_key, key, key_len) == 0 ? 1 : 0;
 }
 
@@ -177,6 +186,21 @@ static wm_entry *wm_alloc_entries(int64_t capacity) {
     return entries;
 }
 
+/// @brief True when the occupied load has reached seven tenths.
+/// @details Computes `count * 10 >= capacity * 7` without overflowing either
+///          signed or unsigned integer arithmetic.
+/// @param count Current number of occupied slots.
+/// @param capacity Current positive table capacity.
+/// @return Nonzero when a new insertion should grow the table.
+static int wm_should_grow(int64_t count, int64_t capacity) {
+    if (count < 0 || capacity <= 0)
+        return 1;
+    uint64_t cap = (uint64_t)capacity;
+    uint64_t threshold = (cap / UINT64_C(10)) * UINT64_C(7) +
+                         (((cap % UINT64_C(10)) * UINT64_C(7)) + UINT64_C(9)) / UINT64_C(10);
+    return (uint64_t)count >= threshold;
+}
+
 /// @brief Linear-probe for @p key: returns the matching slot or the first
 ///        free slot; -1 only if the table is completely full.
 /// @param data Initialized map payload with positive capacity.
@@ -184,10 +208,20 @@ static wm_entry *wm_alloc_entries(int64_t capacity) {
 /// @param key_len Query-key length in bytes.
 /// @return Matching or first free slot index, or `-1` for a full table.
 static int64_t wm_find_slot(rt_weakmap_data *data, const char *key, size_t key_len) {
+    if (!data || !data->entries || data->capacity <= 0) {
+        rt_trap("WeakMap: invalid hash table");
+        return -1;
+    }
     uint64_t h = wm_hash_bytes(key, key_len);
-    int64_t idx = (int64_t)(h % (uint64_t)data->capacity);
+    uint64_t capacity = (uint64_t)data->capacity;
+    uint64_t mask = capacity - UINT64_C(1);
+    if ((capacity & mask) != 0) {
+        rt_trap("WeakMap: invalid hash table capacity");
+        return -1;
+    }
+    uint64_t idx = h & mask;
     for (int64_t i = 0; i < data->capacity; i++) {
-        int64_t slot = (idx + i) % data->capacity;
+        int64_t slot = (int64_t)((idx + (uint64_t)i) & mask);
         if (!data->entries[slot].occupied)
             return slot;
         if (wm_entry_matches(&data->entries[slot], key, key_len))
@@ -204,17 +238,21 @@ static int64_t wm_find_slot(rt_weakmap_data *data, const char *key, size_t key_l
 ///
 /// @param data Destination table.
 /// @param entry Occupied entry whose resources transfer into @p data.
-/// @note Raises a trap if the destination has no available slot.
-static void wm_move_live_entry(rt_weakmap_data *data, wm_entry entry) {
+/// @return Nonzero after copying the entry into the destination, otherwise
+///         zero after trapping.
+static int wm_move_entry(rt_weakmap_data *data, wm_entry entry) {
+    const char *key = "";
     size_t key_len = 0;
-    const char *key = wm_key_data(entry.key, &key_len);
+    if (!wm_key_data(entry.key, "WeakMap: invalid retained key", &key, &key_len))
+        return 0;
     int64_t slot = wm_find_slot(data, key, key_len);
     if (slot < 0) {
         rt_trap("WeakMap: rehash failed");
-        return;
+        return 0;
     }
     data->entries[slot] = entry;
     data->count++;
+    return 1;
 }
 
 /// @brief Double the table; live entries are carried over and dead (collected)
@@ -234,20 +272,73 @@ static int wm_grow(rt_weakmap_data *data) {
     if (!new_entries)
         return 0;
 
-    data->entries = new_entries;
-    data->capacity = new_cap;
-    data->count = 0;
+    rt_weakmap_data replacement = {
+        .entries = new_entries,
+        .capacity = new_cap,
+        .count = 0,
+    };
 
     for (int64_t i = 0; i < old_cap; i++) {
         if (!old_entries[i].occupied)
             continue;
         if (wm_entry_alive(&old_entries[i])) {
-            wm_move_live_entry(data, old_entries[i]);
-        } else {
-            wm_release_entry(&old_entries[i]);
+            if (!wm_move_entry(&replacement, old_entries[i])) {
+                for (int64_t j = 0; j < i; j++) {
+                    if (old_entries[j].occupied == 2)
+                        old_entries[j].occupied = 1;
+                }
+                free(new_entries);
+                return 0;
+            }
+            old_entries[i].occupied = 2;
         }
     }
+
+    *data = replacement;
+    for (int64_t i = 0; i < old_cap; i++) {
+        if (old_entries[i].occupied == 1)
+            wm_release_entry(&old_entries[i]);
+    }
     free(old_entries);
+    return 1;
+}
+
+/// @brief Release one owning runtime object reference.
+/// @param obj Nullable runtime-managed object.
+static void wm_release_object(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
+/// @brief Save the active runtime diagnostic into bounded local storage.
+/// @param output Destination character buffer.
+/// @param capacity Size of @p output in bytes.
+/// @param fallback Text used when the trap subsystem has no diagnostic.
+static void wm_save_trap(char *output, size_t capacity, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(output, capacity, "%s", error && error[0] ? error : fallback);
+}
+
+/// @brief Append a retained key to an owning snapshot and clean up on failure.
+/// @details A sequence retain/growth trap consumes the partial snapshot before
+///          re-raising the original diagnostic.
+/// @param seq Owning result sequence, consumed on failure.
+/// @param key Borrowed live string key to append.
+/// @return Nonzero on success, otherwise zero after cleanup and retrapping.
+static int wm_push_key_or_release_seq(void *seq, rt_string key) {
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        wm_save_trap(saved_error, sizeof(saved_error), "WeakMap.Keys: snapshot append failed");
+        rt_trap_clear_recovery();
+        wm_release_object(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    rt_seq_push(seq, key);
+    rt_trap_clear_recovery();
     return 1;
 }
 
@@ -258,7 +349,7 @@ static void weakmap_finalizer(void *obj) {
     if (!obj)
         return;
     rt_weakmap_data *data = as_weakmap(obj, "WeakMap: invalid WeakMap object");
-    if (!data->entries)
+    if (!data || !data->entries)
         return;
     for (int64_t i = 0; i < data->capacity; i++)
         wm_release_entry(&data->entries[i]);
@@ -298,6 +389,8 @@ int64_t rt_weakmap_len(void *map) {
     if (!map)
         return 0;
     rt_weakmap_data *data = as_weakmap(map, "WeakMap.Len: invalid WeakMap object");
+    if (!data || !data->entries)
+        return 0;
     int64_t live = 0;
     for (int64_t i = 0; i < data->capacity; i++) {
         if (wm_entry_alive(&data->entries[i]))
@@ -329,31 +422,39 @@ void rt_weakmap_set(void *map, rt_string key, void *value) {
     if (!map)
         return;
     rt_weakmap_data *data = as_weakmap(map, "WeakMap.Set: invalid WeakMap object");
-    if (!data)
+    if (!data || !data->entries)
         return;
 
-    if ((long double)data->count * 10.0L >= (long double)data->capacity * 7.0L)
-        if (!wm_grow(data))
-            return;
-
+    const char *key_data = "";
     size_t key_len = 0;
-    const char *key_data = wm_key_data(key, &key_len);
-    int64_t slot = wm_find_slot(data, key_data, key_len);
-    if (slot < 0) {
-        rt_trap("WeakMap: insertion failed");
+    if (!wm_key_data(key, "WeakMap.Set: invalid key", &key_data, &key_len))
         return;
-    }
 
-    if (data->entries[slot].occupied) {
+    int64_t slot = wm_find_slot(data, key_data, key_len);
+    if (slot >= 0 && data->entries[slot].occupied) {
         rt_weakref *new_ref = rt_weakref_new(value);
+        if (!new_ref)
+            return;
         rt_weakref *old_ref = data->entries[slot].value_ref;
         data->entries[slot].value_ref = new_ref;
         rt_weakref_free(old_ref);
         return;
     }
 
+    if (slot < 0 || wm_should_grow(data->count, data->capacity)) {
+        if (!wm_grow(data))
+            return;
+        slot = wm_find_slot(data, key_data, key_len);
+    }
+    if (slot < 0) {
+        rt_trap("WeakMap: insertion failed");
+        return;
+    }
+
     rt_string stored_key = key ? key : rt_str_empty();
-    rt_weakref *new_ref = NULL;
+    if (!stored_key)
+        return;
+    rt_weakref *volatile new_ref = NULL;
     volatile int key_retained = 0;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -367,17 +468,21 @@ void rt_weakmap_set(void *map, rt_string key, void *value) {
         rt_trap_clear_recovery();
         if (key_retained)
             rt_str_release_maybe(stored_key);
-        rt_weakref_free(new_ref);
+        rt_weakref_free((rt_weakref *)new_ref);
         rt_trap(saved_error);
         return;
     }
     new_ref = rt_weakref_new(value);
+    if (!new_ref) {
+        rt_trap_clear_recovery();
+        return;
+    }
     rt_obj_retain_maybe(stored_key);
     key_retained = stored_key ? 1 : 0;
     rt_trap_clear_recovery();
 
     data->entries[slot].key = stored_key;
-    data->entries[slot].value_ref = new_ref;
+    data->entries[slot].value_ref = (rt_weakref *)new_ref;
     data->entries[slot].occupied = 1;
     data->count++;
 }
@@ -385,14 +490,18 @@ void rt_weakmap_set(void *map, rt_string key, void *value) {
 /// @brief Looks up the current referent for a string key.
 /// @param map WeakMap to query; null returns `NULL`.
 /// @param key Length-aware string key; null denotes the empty key.
-/// @return Borrowed live target, or `NULL` if the key is absent or collected.
-/// @note The returned pointer is not kept alive by the map or this call.
+/// @return Retained live target, or `NULL` if the key is absent or collected.
+/// @note The caller owns a nonnull result and must release it.
 void *rt_weakmap_get(void *map, rt_string key) {
     if (!map)
         return NULL;
     rt_weakmap_data *data = as_weakmap(map, "WeakMap.Get: invalid WeakMap object");
+    if (!data || !data->entries)
+        return NULL;
+    const char *key_data = "";
     size_t key_len = 0;
-    const char *key_data = wm_key_data(key, &key_len);
+    if (!wm_key_data(key, "WeakMap.Get: invalid key", &key_data, &key_len))
+        return NULL;
     int64_t slot = wm_find_slot(data, key_data, key_len);
     if (slot < 0 || !data->entries[slot].occupied)
         return NULL;
@@ -407,8 +516,12 @@ int8_t rt_weakmap_has(void *map, rt_string key) {
     if (!map)
         return 0;
     rt_weakmap_data *data = as_weakmap(map, "WeakMap.Has: invalid WeakMap object");
+    if (!data || !data->entries)
+        return 0;
+    const char *key_data = "";
     size_t key_len = 0;
-    const char *key_data = wm_key_data(key, &key_len);
+    if (!wm_key_data(key, "WeakMap.Has: invalid key", &key_data, &key_len))
+        return 0;
     int64_t slot = wm_find_slot(data, key_data, key_len);
     return slot >= 0 && wm_entry_alive(&data->entries[slot]) ? 1 : 0;
 }
@@ -426,8 +539,12 @@ int8_t rt_weakmap_remove(void *map, rt_string key) {
     if (!map)
         return 0;
     rt_weakmap_data *data = as_weakmap(map, "WeakMap.Remove: invalid WeakMap object");
+    if (!data || !data->entries)
+        return 0;
+    const char *key_data = "";
     size_t key_len = 0;
-    const char *key_data = wm_key_data(key, &key_len);
+    if (!wm_key_data(key, "WeakMap.Remove: invalid key", &key_data, &key_len))
+        return 0;
     int64_t slot = wm_find_slot(data, key_data, key_len);
     if (slot < 0 || !data->entries[slot].occupied)
         return 0;
@@ -442,7 +559,8 @@ int8_t rt_weakmap_remove(void *map, rt_string key) {
         data->entries[next].value_ref = NULL;
         data->entries[next].occupied = 0;
         data->count--;
-        wm_move_live_entry(data, tmp);
+        if (!wm_move_entry(data, tmp))
+            return 1;
         next = (next + 1) % data->capacity;
     }
 
@@ -455,13 +573,20 @@ int8_t rt_weakmap_remove(void *map, rt_string key) {
 /// @note Iteration follows hash-table slot order and is not sorted.
 void *rt_weakmap_keys(void *map) {
     void *seq = rt_seq_new();
+    if (!seq)
+        return NULL;
     rt_seq_set_owns_elements(seq, 1);
     if (!map)
         return seq;
     rt_weakmap_data *data = as_weakmap(map, "WeakMap.Keys: invalid WeakMap object");
+    if (!data || !data->entries) {
+        wm_release_object(seq);
+        return NULL;
+    }
     for (int64_t i = 0; i < data->capacity; i++) {
-        if (wm_entry_alive(&data->entries[i]))
-            rt_seq_push(seq, data->entries[i].key);
+        if (wm_entry_alive(&data->entries[i]) &&
+            !wm_push_key_or_release_seq(seq, data->entries[i].key))
+            return NULL;
     }
     return seq;
 }
@@ -474,6 +599,8 @@ void rt_weakmap_clear(void *map) {
     if (!map)
         return;
     rt_weakmap_data *data = as_weakmap(map, "WeakMap.Clear: invalid WeakMap object");
+    if (!data || !data->entries)
+        return;
     for (int64_t i = 0; i < data->capacity; i++)
         wm_release_entry(&data->entries[i]);
     data->count = 0;
@@ -488,6 +615,8 @@ int64_t rt_weakmap_compact(void *map) {
     if (!map)
         return 0;
     rt_weakmap_data *data = as_weakmap(map, "WeakMap.Compact: invalid WeakMap object");
+    if (!data || !data->entries)
+        return 0;
 
     int64_t removed = 0;
     for (int64_t i = 0; i < data->capacity; i++) {
@@ -499,17 +628,35 @@ int64_t rt_weakmap_compact(void *map) {
 
     wm_entry *old_entries = data->entries;
     int64_t old_cap = data->capacity;
-    data->entries = wm_alloc_entries(old_cap);
-    data->count = 0;
+    wm_entry *new_entries = wm_alloc_entries(old_cap);
+    if (!new_entries)
+        return 0;
+    rt_weakmap_data replacement = {
+        .entries = new_entries,
+        .capacity = old_cap,
+        .count = 0,
+    };
 
     for (int64_t i = 0; i < old_cap; i++) {
         if (!old_entries[i].occupied)
             continue;
         if (wm_entry_alive(&old_entries[i])) {
-            wm_move_live_entry(data, old_entries[i]);
-        } else {
-            wm_release_entry(&old_entries[i]);
+            if (!wm_move_entry(&replacement, old_entries[i])) {
+                for (int64_t j = 0; j < i; j++) {
+                    if (old_entries[j].occupied == 2)
+                        old_entries[j].occupied = 1;
+                }
+                free(new_entries);
+                return 0;
+            }
+            old_entries[i].occupied = 2;
         }
+    }
+
+    *data = replacement;
+    for (int64_t i = 0; i < old_cap; i++) {
+        if (old_entries[i].occupied == 1)
+            wm_release_entry(&old_entries[i]);
     }
     free(old_entries);
     return removed;

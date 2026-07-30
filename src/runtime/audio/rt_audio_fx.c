@@ -105,6 +105,7 @@ typedef struct rt_audio_fx {
 
 static rt_audio_fx *g_group_fx[RT_MIXGROUP_MAX_GROUPS] = {0};
 static int64_t g_next_fx_id = 1;
+static int g_fx_id_wrapped = 0;
 static volatile int g_fx_lock = 0;
 
 /// @brief Attempt to acquire the effect registry without waiting.
@@ -441,21 +442,70 @@ static void process_reverb(rt_reverb_state *rv, float *samples, int32_t frames, 
     }
 }
 
+/// @brief Check whether an effect identifier is present in any group chain.
+/// @param id Positive candidate identifier.
+/// @return Non-zero when an existing node already owns @p id.
+/// @pre The caller holds the effect registry lock.
+static int fx_id_in_use_locked(int64_t id) {
+    for (int64_t group = 0; group < RT_MIXGROUP_MAX_GROUPS; group++) {
+        for (rt_audio_fx *fx = g_group_fx[group]; fx; fx = fx->next) {
+            if (fx->id == id)
+                return 1;
+        }
+    }
+    return 0;
+}
+
+/// @brief Allocate a positive process-wide effect identifier without signed overflow.
+/// @details The normal monotonic path is O(1). After the first wrap at
+///          `INT64_MAX`, occupied identifiers are skipped so live effects never
+///          receive duplicate handles.
+/// @return Unused positive identifier, or `-1` only if the full range is occupied.
+/// @pre The caller holds the effect registry lock.
+static int64_t allocate_fx_id_locked(void) {
+    if (!g_fx_id_wrapped) {
+        int64_t id = g_next_fx_id;
+        if (id == INT64_MAX) {
+            g_next_fx_id = 1;
+            g_fx_id_wrapped = 1;
+        } else {
+            g_next_fx_id = id + 1;
+        }
+        return id;
+    }
+
+    int64_t candidate = g_next_fx_id;
+    const int64_t start = candidate;
+    do {
+        if (!fx_id_in_use_locked(candidate)) {
+            g_next_fx_id = candidate == INT64_MAX ? 1 : candidate + 1;
+            return candidate;
+        }
+        candidate = candidate == INT64_MAX ? 1 : candidate + 1;
+    } while (candidate != start);
+    return -1;
+}
+
 /// @brief Append a prepared effect node to a group's ordered insert chain.
-/// @details Assigns a positive process-wide identifier under the registry lock
-///          and preserves insertion order. Identifier wrap restarts subsequent
-///          allocation at one.
+/// @details Assigns a unique positive process-wide identifier under the
+///          registry lock and preserves insertion order.
 /// @param group Numerically valid mix-group index.
-/// @param fx Heap-allocated effect node. On success, ownership transfers to the
-///        group chain.
+/// @param fx Heap-allocated effect node whose ownership is consumed on every path.
 /// @return Assigned effect identifier, or `-1` for invalid input.
 static int64_t append_fx(int64_t group, rt_audio_fx *fx) {
-    if (!group_valid(group) || !fx)
+    if (!fx)
         return -1;
+    if (!group_valid(group)) {
+        free_fx(fx);
+        return -1;
+    }
     fx_lock();
-    fx->id = g_next_fx_id++;
-    if (g_next_fx_id <= 0)
-        g_next_fx_id = 1;
+    fx->id = allocate_fx_id_locked();
+    if (fx->id <= 0) {
+        fx_unlock();
+        free_fx(fx);
+        return -1;
+    }
     fx->next = NULL;
     rt_audio_fx **tail = &g_group_fx[group];
     while (*tail)
@@ -472,6 +522,8 @@ static int64_t append_fx(int64_t group, rt_audio_fx *fx) {
 /// @param q Resonance/quality factor.
 /// @return Positive effect identifier, or `-1` on allocation/validation failure.
 int64_t rt_audio_fx_add_lowpass(int64_t group, double cutoff_hz, double q) {
+    if (!group_valid(group))
+        return -1;
     rt_audio_fx *fx = (rt_audio_fx *)calloc(1, sizeof(rt_audio_fx));
     if (!fx)
         return -1;
@@ -486,6 +538,8 @@ int64_t rt_audio_fx_add_lowpass(int64_t group, double cutoff_hz, double q) {
 /// @param q Resonance/quality factor.
 /// @return Positive effect identifier, or `-1` on allocation/validation failure.
 int64_t rt_audio_fx_add_highpass(int64_t group, double cutoff_hz, double q) {
+    if (!group_valid(group))
+        return -1;
     rt_audio_fx *fx = (rt_audio_fx *)calloc(1, sizeof(rt_audio_fx));
     if (!fx)
         return -1;
@@ -501,6 +555,8 @@ int64_t rt_audio_fx_add_highpass(int64_t group, double cutoff_hz, double q) {
 /// @param gain_db Center-frequency gain in decibels.
 /// @return Positive effect identifier, or `-1` on allocation/validation failure.
 int64_t rt_audio_fx_add_peaking(int64_t group, double freq_hz, double q, double gain_db) {
+    if (!group_valid(group))
+        return -1;
     rt_audio_fx *fx = (rt_audio_fx *)calloc(1, sizeof(rt_audio_fx));
     if (!fx)
         return -1;
@@ -519,6 +575,8 @@ int64_t rt_audio_fx_add_peaking(int64_t group, double freq_hz, double q, double 
 /// @param wet Requested wet-signal fraction.
 /// @return Positive effect identifier, or `-1` on allocation/validation failure.
 int64_t rt_audio_fx_add_delay(int64_t group, double delay_ms, double feedback, double wet) {
+    if (!group_valid(group))
+        return -1;
     rt_audio_fx *fx = (rt_audio_fx *)calloc(1, sizeof(rt_audio_fx));
     if (!fx)
         return -1;
@@ -550,6 +608,8 @@ int64_t rt_audio_fx_add_reverb(int64_t group, double room_size, double damping, 
     static const int comb_r[8] = {1139, 1211, 1300, 1379, 1445, 1514, 1580, 1640};
     static const int all_l[4] = {556, 441, 341, 225};
     static const int all_r[4] = {579, 464, 364, 248};
+    if (!group_valid(group))
+        return -1;
     rt_audio_fx *fx = (rt_audio_fx *)calloc(1, sizeof(rt_audio_fx));
     if (!fx)
         return -1;

@@ -217,7 +217,7 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
         renderDirty = false;
         viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(viewYawDegrees);
         viewPitchDegrees = SceneEditor3DModel.ClampInt3D(viewPitchDegrees, -80, 80);
-        viewScale = SceneEditor3DModel.ClampInt3D(viewScale, 4, 120);
+        viewScale = SceneEditor3DModel.ClampViewScale(viewScale);
         viewportPixels = null;
         viewportRenderFallback = false;
         if scene != null and RenderAuthoredViewport() == false {
@@ -232,22 +232,37 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
         projectedY = [];
     }
 
+    /// @brief Return the decade grid spacing for the current zoom.
+    /// @details Lines never pack tighter than ~14 px or spread wider than
+    ///          ~140 px, so the grid stays readable from close-up detail
+    ///          work out to multi-kilometre framing.
+    expose func ViewportGridSpacing() -> Number {
+        var spacing = 1.0;
+        while spacing * viewScale < 14.0 { spacing = spacing * 10.0; }
+        while spacing * viewScale >= 140.0 { spacing = spacing / 10.0; }
+        return spacing;
+    }
+
     /// @brief Draw the editor ground grid in logical viewport coordinates.
     hide func DrawViewportGrid() {
         var gridColor = Color.RGB(47, 55, 67);
         var axisX = Color.RGB(170, 70, 70);
         var axisZ = Color.RGB(70, 110, 180);
-        var gridCenterX = Convert.NumToInt(viewTargetX);
-        var gridCenterZ = Convert.NumToInt(viewTargetZ);
+        var spacing = ViewportGridSpacing();
+        // Snapping the center to spacing multiples keeps lines fixed in
+        // world space while the camera pans instead of swimming with it.
+        var gridCenterX = Math.Round(viewTargetX / spacing) * spacing;
+        var gridCenterZ = Math.Round(viewTargetZ / spacing) * spacing;
+        var extent = 10.0 * spacing;
         if showGrid and gameViewActive == false {
             var line = -10;
             while line <= 10 {
-                var worldX = gridCenterX + line;
-                var worldZ = gridCenterZ + line;
-                var a = Project(worldX, 0.0, gridCenterZ - 10);
-                var b = Project(worldX, 0.0, gridCenterZ + 10);
-                var c = Project(gridCenterX - 10, 0.0, worldZ);
-                var d = Project(gridCenterX + 10, 0.0, worldZ);
+                var worldX = gridCenterX + line * spacing;
+                var worldZ = gridCenterZ + line * spacing;
+                var a = Project(worldX, 0.0, gridCenterZ - extent);
+                var b = Project(worldX, 0.0, gridCenterZ + extent);
+                var c = Project(gridCenterX - extent, 0.0, worldZ);
+                var d = Project(gridCenterX + extent, 0.0, worldZ);
                 var colorA = gridColor;
                 var colorB = gridColor;
                 if viewPerspective {
@@ -261,8 +276,12 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
                         colorB = Color.RGB(40, 47, 58);
                     }
                 }
-                if worldX == 0 { colorA = axisZ; }
-                if worldZ == 0 { colorB = axisX; }
+                var axisDistanceX = worldX;
+                if axisDistanceX < 0.0 { axisDistanceX = 0.0 - axisDistanceX; }
+                var axisDistanceZ = worldZ;
+                if axisDistanceZ < 0.0 { axisDistanceZ = 0.0 - axisDistanceZ; }
+                if axisDistanceX < spacing * 0.001 { colorA = axisZ; }
+                if axisDistanceZ < spacing * 0.001 { colorB = axisX; }
                 // Behind-eye projections mirror in perspective; draw only
                 // segments whose endpoints are both in front of the camera.
                 if a.visible and b.visible {
@@ -536,7 +555,8 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
         var compactClipped = CompactViewportClippedStatus();
         var detailStatus =
             count + " nodes  |  view " + viewYawDegrees
-            + "/" + viewPitchDegrees + "  |  " + viewScale + " px/u"
+            + "/" + viewPitchDegrees + "  |  "
+            + SceneEditor3DModel.FormatViewScale(viewScale) + " px/u"
             + "  |  " + projectionLabel
             + "  |  " + lightCount + " light(s)"
             + "  |  " + renderStatus
@@ -566,7 +586,9 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
             } else {
                 viewStatusLabel.SetText(
                     "Game View  |  " + projectionLabel
-                    + "  |  " + viewScale + " px/u"
+                    + "  |  "
+                    + SceneEditor3DModel.FormatViewScale(viewScale)
+                    + " px/u"
                     + previewStateStatus + compactPreviewStatus
                     + compactClipped);
                 viewportImage.SetAccessibleDescription(
@@ -598,7 +620,8 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
                 + " filtered project previews, and "
                 + projectMaterialPreviewCount
                 + " runtime materials in " + renderStatus
-                + " mode at " + viewScale + " pixels per world unit using "
+                + " mode at " + SceneEditor3DModel.FormatViewScale(viewScale)
+                + " pixels per world unit using "
                 + accessiblePreviewState + ". "
                 + "Click visible meshes to select; Shift adds and Control or "
                 + "Command toggles. Middle or right drag orbits; add Shift "

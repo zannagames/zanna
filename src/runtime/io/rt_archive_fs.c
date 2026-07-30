@@ -1015,8 +1015,11 @@ void archive_make_dirs_posix_at(int root_fd, const char *path) {
 /// @param out_leaf Receives a heap-allocated leaf name owned by the caller.
 /// @return Open parent-directory descriptor, or -1 after raising a trap.
 int archive_open_parent_for_file_posix(int root_fd, const char *name, char **out_leaf) {
-    if (out_leaf)
-        *out_leaf = NULL;
+    if (!name || !out_leaf) {
+        rt_trap("Archive: invalid file entry");
+        return -1;
+    }
+    *out_leaf = NULL;
     char *copy = strdup(name);
     if (!copy) {
         rt_trap("Archive: memory allocation failed");

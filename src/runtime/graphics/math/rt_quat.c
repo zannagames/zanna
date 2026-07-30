@@ -222,6 +222,115 @@ void *rt_quat_from_euler(double pitch, double yaw, double roll) {
     return quat_alloc(x, y, z, w);
 }
 
+/// @brief Decompose a rotation into the pitch, yaw, and roll Euler angles (ADR 0227).
+/// @details Exact algebraic inverse of `rt_quat_from_euler`: the returned Vec3
+///          carries pitch about x, yaw about y, and roll about z in radians,
+///          and feeding it back through `FromEuler` recovers the rotation (up
+///          to quaternion sign). The input is normalized first so non-unit
+///          quaternions decompose by their direction. At the gimbal poles
+///          (|sin(yaw)| = 1) pitch and roll are not independent; pitch is
+///          reported as zero and the combined twist lands in roll.
+/// @param q Quat handle to decompose.
+/// @return New Vec3 of (pitch, yaw, roll) radians, the zero vector for a
+///         degenerate quaternion, or NULL after trapping for an invalid handle.
+void *rt_quat_to_euler(void *q) {
+    ZannaQuat *quat = quat_checked(q, "Quat.ToEuler: invalid quaternion");
+    if (!quat)
+        return NULL;
+    double x = quat->x;
+    double y = quat->y;
+    double z = quat->z;
+    double w = quat->w;
+    double len = sqrt(x * x + y * y + z * z + w * w);
+    if (!isfinite(len) || len == 0.0)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    x /= len;
+    y /= len;
+    z /= len;
+    w /= len;
+    double sin_yaw = 2.0 * (w * y - z * x);
+    if (sin_yaw > 1.0)
+        sin_yaw = 1.0;
+    if (sin_yaw < -1.0)
+        sin_yaw = -1.0;
+    if (sin_yaw > 0.9999999) {
+        /* Gimbal pole (yaw = +pi/2): pitch and roll share one axis. With
+         * pitch reported as zero, x = cos(pi/4)*sin((pitch-roll)/2) and
+         * w = cos(pi/4)*cos((pitch-roll)/2), so roll = -2*atan2(x, w). */
+        return rt_vec3_new(0.0, asin(sin_yaw), -2.0 * atan2(x, w));
+    }
+    if (sin_yaw < -0.9999999) {
+        /* Gimbal pole (yaw = -pi/2): the shared angle flips sign. */
+        return rt_vec3_new(0.0, asin(sin_yaw), 2.0 * atan2(x, w));
+    }
+    double pitch = atan2(2.0 * (w * x + y * z), 1.0 - 2.0 * (x * x + y * y));
+    double yaw = asin(sin_yaw);
+    double roll = atan2(2.0 * (w * z + x * y), 1.0 - 2.0 * (y * y + z * z));
+    return rt_vec3_new(pitch, yaw, roll);
+}
+
+/// @brief Extract a matrix's rotation as a normalized quaternion (ADR 0227).
+/// @details Reads the upper-left 3x3 basis, normalizes each column so uniform
+///          or per-axis scale is tolerated, and converts via the standard
+///          trace/branch method. Feeding `rt_quat_to_mat4` output through this
+///          recovers the source rotation up to quaternion sign. Degenerate
+///          bases (zero-length or non-finite columns) return identity.
+/// @param m Mat4 handle whose rotation is extracted.
+/// @return New normalized rotation Quat, identity for a degenerate basis, or
+///         NULL after trapping for an invalid handle.
+void *rt_quat_from_mat4(void *m) {
+    double c[3][3];
+    if (!m) {
+        rt_trap("Quat.FromMat4: null matrix");
+        return NULL;
+    }
+    for (int col = 0; col < 3; ++col) {
+        double cx = rt_mat4_get(m, 0, col);
+        double cy = rt_mat4_get(m, 1, col);
+        double cz = rt_mat4_get(m, 2, col);
+        double len = sqrt(cx * cx + cy * cy + cz * cz);
+        if (!isfinite(len) || len == 0.0)
+            return quat_alloc(0.0, 0.0, 0.0, 1.0);
+        c[0][col] = cx / len;
+        c[1][col] = cy / len;
+        c[2][col] = cz / len;
+    }
+    double trace = c[0][0] + c[1][1] + c[2][2];
+    double x;
+    double y;
+    double z;
+    double w;
+    if (trace > 0.0) {
+        double s = sqrt(trace + 1.0) * 2.0;
+        w = 0.25 * s;
+        x = (c[2][1] - c[1][2]) / s;
+        y = (c[0][2] - c[2][0]) / s;
+        z = (c[1][0] - c[0][1]) / s;
+    } else if (c[0][0] > c[1][1] && c[0][0] > c[2][2]) {
+        double s = sqrt(1.0 + c[0][0] - c[1][1] - c[2][2]) * 2.0;
+        w = (c[2][1] - c[1][2]) / s;
+        x = 0.25 * s;
+        y = (c[0][1] + c[1][0]) / s;
+        z = (c[0][2] + c[2][0]) / s;
+    } else if (c[1][1] > c[2][2]) {
+        double s = sqrt(1.0 + c[1][1] - c[0][0] - c[2][2]) * 2.0;
+        w = (c[0][2] - c[2][0]) / s;
+        x = (c[0][1] + c[1][0]) / s;
+        y = 0.25 * s;
+        z = (c[1][2] + c[2][1]) / s;
+    } else {
+        double s = sqrt(1.0 + c[2][2] - c[0][0] - c[1][1]) * 2.0;
+        w = (c[1][0] - c[0][1]) / s;
+        x = (c[0][2] + c[2][0]) / s;
+        y = (c[1][2] + c[2][1]) / s;
+        z = 0.25 * s;
+    }
+    double len = sqrt(x * x + y * y + z * z + w * w);
+    if (!isfinite(len) || len == 0.0)
+        return quat_alloc(0.0, 0.0, 0.0, 1.0);
+    return quat_alloc(x / len, y / len, z / len, w / len);
+}
+
 //=============================================================================
 // Property Accessors
 //=============================================================================

@@ -30,6 +30,7 @@
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_graphics3d_ids.h"
+#include "rt_mat4.h"
 #include "rt_platform.h"
 
 #include <math.h>
@@ -1318,6 +1319,87 @@ void *rt_camera3d_get_right(void *obj) {
     double z = finite_or(cam->view[2], 0.0);
     camera_normalize_vec3_or(&x, &y, &z, 1.0, 0.0, 0.0);
     return rt_vec3_new(x, y, z);
+}
+
+/// @brief Extract the world-space up unit vector (the camera's screen-up axis, ADR 0227).
+/// Read directly from the view matrix's second row, completing the Forward/Right basis.
+/// Caller owns the returned Vec3.
+/// @param obj Borrowed heap or stack camera.
+/// @return Owned normalized up `Vec3`, or null for an invalid camera/allocation failure.
+void *rt_camera3d_get_up(void *obj) {
+    rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
+    if (!cam)
+        return NULL;
+    double x = finite_or(cam->view[4], 0.0);
+    double y = finite_or(cam->view[5], 1.0);
+    double z = finite_or(cam->view[6], 0.0);
+    camera_normalize_vec3_or(&x, &y, &z, 0.0, 1.0, 0.0);
+    return rt_vec3_new(x, y, z);
+}
+
+/// @brief Copy the retained row-major view matrix into a caller-owned Mat4 (ADR 0227).
+/// @param obj Borrowed heap or stack camera.
+/// @return Owned Mat4 copy of the view matrix, or null for an invalid camera.
+void *rt_camera3d_get_view_matrix(void *obj) {
+    rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
+    if (!cam)
+        return NULL;
+    const double *v = cam->view;
+    return rt_mat4_new(v[0],
+                       v[1],
+                       v[2],
+                       v[3],
+                       v[4],
+                       v[5],
+                       v[6],
+                       v[7],
+                       v[8],
+                       v[9],
+                       v[10],
+                       v[11],
+                       v[12],
+                       v[13],
+                       v[14],
+                       v[15]);
+}
+
+/// @brief Copy the retained row-major projection matrix into a caller-owned Mat4 (ADR 0227).
+/// @details This is exactly the projection the renderer last synced for this
+///          camera — including reversed-Z where the backend uses it — so
+///          Zia-side projection math matches the rendered result.
+/// @param obj Borrowed heap or stack camera.
+/// @return Owned Mat4 copy of the projection matrix, or null for an invalid camera.
+void *rt_camera3d_get_projection_matrix(void *obj) {
+    rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
+    if (!cam)
+        return NULL;
+    const double *p = cam->projection;
+    return rt_mat4_new(p[0],
+                       p[1],
+                       p[2],
+                       p[3],
+                       p[4],
+                       p[5],
+                       p[6],
+                       p[7],
+                       p[8],
+                       p[9],
+                       p[10],
+                       p[11],
+                       p[12],
+                       p[13],
+                       p[14],
+                       p[15]);
+}
+
+/// @brief Read the aspect ratio the retained projection was built with (ADR 0227).
+/// @param obj Borrowed heap or stack camera.
+/// @return Retained positive width-to-height ratio, or 0.0 for an invalid camera.
+double rt_camera3d_get_aspect(void *obj) {
+    rt_camera3d *cam = rt_camera3d_checked_or_stack(obj);
+    if (!cam)
+        return 0.0;
+    return finite_or(cam->aspect, 0.0);
 }
 
 /* Invert a 4x4 row-major matrix. Returns 0 on success, -1 if singular. */

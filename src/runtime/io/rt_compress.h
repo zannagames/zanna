@@ -21,7 +21,9 @@
 //   - Returned Bytes objects are GC-managed; callers should not free them directly.
 //   - Input Bytes are not consumed or modified.
 //
-// Links: src/runtime/io/rt_compress.c (implementation), src/runtime/core/rt_string.h
+// Links: src/runtime/io/rt_compress.c (implementation),
+//        docs/adr/0229-bounded-native-gzip-decoding.md,
+//        src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -129,6 +131,32 @@ void *rt_compress_gzip_lvl(void *data, int64_t level);
 /// @return New Bytes object with decompressed data.
 /// @note Traps if data is NULL, corrupted, truncated, or CRC mismatch.
 void *rt_compress_gunzip(void *data);
+
+/// @brief Decode a complete GZIP stream into bounded malloc-owned storage.
+/// @details Validates every concatenated member and enforces both an aggregate
+///          byte ceiling and, when nonzero, `encoded_size * ratio + slack`.
+///          The smaller limit is applied while DEFLATE output grows. This
+///          native integration helper catches decoder traps and never
+///          allocates managed runtime objects.
+/// @param data Borrowed complete RFC 1952 stream.
+/// @param len Encoded byte count.
+/// @param max_output Absolute aggregate decoded-byte ceiling.
+/// @param max_expansion_ratio Maximum decoded/encoded multiplier; zero
+///        disables the ratio constraint.
+/// @param expansion_slack Additional decoded bytes permitted by the ratio
+///        constraint, useful for small valid payloads.
+/// @param out_data Receives malloc-owned decoded bytes on success and NULL on
+///        failure; release with `free()`.
+/// @param out_len Receives the aggregate decoded byte count on success and zero
+///        on failure.
+/// @return One on complete checksum-valid success, otherwise zero.
+int rt_compress_gunzip_raw(const uint8_t *data,
+                           size_t len,
+                           size_t max_output,
+                           size_t max_expansion_ratio,
+                           size_t expansion_slack,
+                           uint8_t **out_data,
+                           size_t *out_len);
 
 //=========================================================================
 // String Convenience Methods

@@ -16,6 +16,7 @@
 //   - Corrupt or truncated frames return 0 without crashing or leaking.
 //   - max_output is honored as a hard budget.
 //   - Caller-owned decoding requires an exact destination and consumes the complete frame.
+//   - Zero-literal compressed blocks never pass null storage to byte-copy operations.
 //
 // Ownership/Lifetime:
 //   - Decoded buffers are freed by the test after each comparison.
@@ -223,6 +224,34 @@ static void test_honors_output_budget() {
     PASS();
 }
 
+/// @brief Decode a compressed block whose raw literals and sequence count are both zero.
+/// @details This valid empty frame reaches the zero-length literal buffer path without
+///          relying on the reference encoder choosing a compressed block representation.
+static void test_zero_literal_compressed_block() {
+    TEST("zero-literal compressed block decodes safely");
+    static const uint8_t frame[] = {
+        0x28,
+        0xB5,
+        0x2F,
+        0xFD, // magic
+        0x20,
+        0x00, // single-segment frame, content size zero
+        0x15,
+        0x00,
+        0x00, // last compressed block, two payload bytes
+        0x00, // raw literals section with regenerated size zero
+        0x00, // zero sequences
+    };
+    uint8_t *out = nullptr;
+    size_t out_len = 0;
+    EXPECT_TRUE(rt_zstd_decompress_raw(frame, sizeof(frame), 0, &out, &out_len) == 1,
+                "empty compressed block succeeds");
+    EXPECT_TRUE(out != nullptr, "successful empty output remains freeable");
+    EXPECT_TRUE(out_len == 0, "empty compressed block emits zero bytes");
+    free(out);
+    PASS();
+}
+
 /// @brief Verify the caller-owned decoder requires exact output size and complete input use.
 /// @details A known reference frame must decode byte-identically into its exact destination.
 ///          Destinations one byte short/long and otherwise-valid frames with one trailing byte all
@@ -268,6 +297,7 @@ int main() {
     test_rejects_truncation();
     test_rejects_checksum_mismatch();
     test_honors_output_budget();
+    test_zero_literal_compressed_block();
     test_exact_destination_rejects_size_mismatch_and_trailing_input();
     printf("%d/%d tests passed\n", tests_passed, tests_total);
     return tests_passed == tests_total ? 0 : 1;

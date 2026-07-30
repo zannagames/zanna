@@ -48,8 +48,9 @@ class ScenePlayController {
     hide EmbedHost.EmbedChannel channel;
     hide Boolean sawFrame;
     hide Boolean mouseWasDown;
-    hide Number lastMouseX;
-    hide Number lastMouseY;
+    /// Last forwarded pointer position in whole game pixels (-1 = none).
+    hide Integer lastMouseX;
+    hide Integer lastMouseY;
     hide List[Integer] trackedKeys;
     hide List[Boolean] trackedDown;
 
@@ -60,8 +61,8 @@ class ScenePlayController {
         channel = null;
         sawFrame = false;
         mouseWasDown = false;
-        lastMouseX = -1.0;
-        lastMouseY = -1.0;
+        lastMouseX = -1;
+        lastMouseY = -1;
         trackedKeys = [];
         trackedDown = [];
     }
@@ -152,14 +153,16 @@ class ScenePlayController {
         var localY = (pointerY - paneY) * frameH / paneH;
         var inside = localX >= 0.0 and localY >= 0.0
             and localX < frameW and localY < frameH;
-        if inside
-           and (localX != lastMouseX or localY != lastMouseY) {
-            host.PushEvent(
-                EVENT_MOUSE_MOVE,
-                Zanna.Core.Convert.NumToInt(localX),
-                Zanna.Core.Convert.NumToInt(localY), 0);
-            lastMouseX = localX;
-            lastMouseY = localY;
+        if inside {
+            // Dedupe in whole game pixels: forwarded events carry integer
+            // coordinates, so sub-pixel jitter must not re-fire moves.
+            var pixelX = Zanna.Core.Convert.NumToInt(localX);
+            var pixelY = Zanna.Core.Convert.NumToInt(localY);
+            if pixelX != lastMouseX or pixelY != lastMouseY {
+                host.PushEvent(EVENT_MOUSE_MOVE, pixelX, pixelY, 0);
+                lastMouseX = pixelX;
+                lastMouseY = pixelY;
+            }
         }
         var down = Input.Mouse.IsDown(0);
         if down != mouseWasDown and inside {

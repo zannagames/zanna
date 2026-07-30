@@ -716,7 +716,8 @@ static bool parse_chunk_size_line(const char *line, size_t len, size_t *chunk_si
 /// @param encoded_len Number of available encoded bytes.
 /// @param decoded_out Optional receiver for a malloc-owned, null-terminated decoded body.
 /// @param decoded_len_out Optional receiver for the decoded byte count.
-/// @param consumed_len_out Optional receiver for total encoded bytes through the trailer terminator.
+/// @param consumed_len_out Optional receiver for total encoded bytes through the trailer
+/// terminator.
 /// @return `CHUNK_PARSE_OK`, `CHUNK_PARSE_INCOMPLETE`, or `CHUNK_PARSE_INVALID`.
 static chunk_parse_status_t decode_chunked_body(const char *encoded,
                                                 size_t encoded_len,
@@ -996,7 +997,8 @@ static bool http_request_lines_within_limit(const char *buf, size_t buf_len) {
 /// @param buf Accumulated socket bytes.
 /// @param buf_len Number of valid bytes in @p buf.
 /// @param request_len_out Optional receiver for the complete first-request length.
-/// @param desired_cap_out Optional receiver for a sufficient future buffer capacity when incomplete.
+/// @param desired_cap_out Optional receiver for a sufficient future buffer capacity when
+/// incomplete.
 /// @return Complete, incomplete, or invalid framing status.
 static http_request_frame_status_t find_complete_http_request_frame(const char *buf,
                                                                     size_t buf_len,
@@ -1510,7 +1512,6 @@ static char *build_response(server_res_t *res, int keep_alive, size_t *out_len) 
             goto fail;
         memcpy(cursor, res->body, body_len);
         cursor += body_len;
-        remaining -= body_len;
     }
     *cursor = '\0';
     if (out_len)

@@ -201,7 +201,8 @@ static void fm_save_trap_error(char *buffer, size_t buffer_size, const char *fal
 /// @param value Value reference to retain.
 /// @details If either retain traps, any reference already acquired is released
 ///          before the saved trap is raised again.
-static void fm_retain_new_slot_refs(rt_string key, void *value) {
+/// @return Nonzero after both retains succeed; zero after rollback and retrap.
+static int fm_retain_new_slot_refs(rt_string key, void *value) {
     volatile int key_retained = 0;
     volatile int value_retained = 0;
 
@@ -216,7 +217,7 @@ static void fm_retain_new_slot_refs(rt_string key, void *value) {
         if (key_retained)
             rt_string_unref(key);
         rt_trap(saved_error);
-        return;
+        return 0;
     }
 
     rt_obj_retain_maybe(key);
@@ -224,6 +225,7 @@ static void fm_retain_new_slot_refs(rt_string key, void *value) {
     rt_obj_retain_maybe(value);
     value_retained = value ? 1 : 0;
     rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief Trap-safe replacement retain for an existing FrozenMap value slot.
@@ -233,7 +235,8 @@ static void fm_retain_new_slot_refs(rt_string key, void *value) {
 ///          stored pointer unchanged.
 /// @param slot Existing occupied slot to update.
 /// @param value Replacement value pointer.
-static void fm_replace_slot_value(fm_slot *slot, void *value) {
+/// @return Nonzero after replacement; zero after rollback and retrap.
+static int fm_replace_slot_value(fm_slot *slot, void *value) {
     void *old_value = slot ? slot->value : NULL;
     volatile int value_retained = 0;
     jmp_buf recovery;
@@ -245,13 +248,14 @@ static void fm_replace_slot_value(fm_slot *slot, void *value) {
         if (value_retained)
             fm_release_value(value);
         rt_trap(saved_error);
-        return;
+        return 0;
     }
     rt_obj_retain_maybe(value);
     value_retained = value ? 1 : 0;
     fm_release_value(old_value);
     slot->value = value;
     rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief GC finalizer: unref every occupied slot's key, release its value,
@@ -356,8 +360,9 @@ static rt_frozenmap_impl *fm_alloc(int64_t count) {
 /// @param fm FrozenMap under construction.
 /// @param key Non-null key reference to retain.
 /// @param value Value reference to retain; may be NULL.
-/// @return 1 if a new entry was added, 0 if an existing key was updated.
-static int8_t fm_insert(rt_frozenmap_impl *fm, rt_string key, void *value) {
+/// @return 1 if a new entry was added, 0 if an existing key was updated, or
+///         -1 after a retain trap was rolled back and propagated.
+static int fm_insert(rt_frozenmap_impl *fm, rt_string key, void *value) {
     uint64_t h = fm_str_hash(key);
     int64_t mask = fm->capacity - 1;
     int64_t idx = (int64_t)(h & (uint64_t)mask);
@@ -367,7 +372,8 @@ static int8_t fm_insert(rt_frozenmap_impl *fm, rt_string key, void *value) {
     for (int64_t i = 0; i < fm->capacity; i++) {
         int64_t slot = (idx + i) & mask;
         if (!fm->slots[slot].key) {
-            fm_retain_new_slot_refs(key, value);
+            if (!fm_retain_new_slot_refs(key, value))
+                return -1;
             fm->slots[slot].key = key;
             fm->slots[slot].value = value;
             fm->count++;
@@ -375,8 +381,7 @@ static int8_t fm_insert(rt_frozenmap_impl *fm, rt_string key, void *value) {
         }
         if (fm_key_equals(fm->slots[slot].key, key_data, key_len)) {
             // Update value (last writer wins)
-            fm_replace_slot_value(&fm->slots[slot], value);
-            return 0;
+            return fm_replace_slot_value(&fm->slots[slot], value) ? 0 : -1;
         }
     }
     return 0;
@@ -425,15 +430,20 @@ void *rt_frozenmap_from_seqs(void *keys, void *values) {
     int64_t n = nk < nv ? nk : nv;
 
     rt_frozenmap_impl *fm = fm_alloc(n);
+    if (!fm)
+        return NULL;
 
     for (int64_t i = 0; i < n; i++) {
         int owned_key = 0;
         rt_string k = fm_extract_str(rt_seq_get(keys, i), &owned_key);
         void *v = rt_seq_get(values, i);
-        if (k)
-            fm_insert(fm, k, v);
+        int inserted = k ? fm_insert(fm, k, v) : 0;
         if (owned_key)
             rt_str_release_maybe(k);
+        if (inserted < 0) {
+            fm_release_value(fm);
+            return NULL;
+        }
     }
     return (void *)fm;
 }
@@ -450,7 +460,8 @@ void *rt_frozenmap_empty(void) {
 int64_t rt_frozenmap_len(void *obj) {
     if (!obj)
         return 0;
-    return as_frozenmap(obj, "FrozenMap: invalid FrozenMap object")->count;
+    rt_frozenmap_impl *map = as_frozenmap(obj, "FrozenMap: invalid FrozenMap object");
+    return map ? map->count : 0;
 }
 
 /// @brief Check whether the frozen map has no entries.
@@ -467,7 +478,14 @@ int8_t rt_frozenmap_is_empty(void *obj) {
 void *rt_frozenmap_get(void *obj, rt_string key) {
     if (!obj || !key)
         return NULL;
-    fm_slot *s = fm_find(as_frozenmap(obj, "FrozenMap: invalid FrozenMap object"), key);
+    rt_frozenmap_impl *fm = as_frozenmap(obj, "FrozenMap.Get: invalid FrozenMap object");
+    if (!fm)
+        return NULL;
+    if (!rt_string_is_handle(key)) {
+        rt_trap("FrozenMap.Get: invalid key");
+        return NULL;
+    }
+    fm_slot *s = fm_find(fm, key);
     return s ? s->value : NULL;
 }
 
@@ -479,7 +497,14 @@ void *rt_frozenmap_get(void *obj, rt_string key) {
 int8_t rt_frozenmap_has(void *obj, rt_string key) {
     if (!obj || !key)
         return 0;
-    return fm_find(as_frozenmap(obj, "FrozenMap: invalid FrozenMap object"), key) != NULL ? 1 : 0;
+    rt_frozenmap_impl *fm = as_frozenmap(obj, "FrozenMap.Has: invalid FrozenMap object");
+    if (!fm)
+        return 0;
+    if (!rt_string_is_handle(key)) {
+        rt_trap("FrozenMap.Has: invalid key");
+        return 0;
+    }
+    return fm_find(fm, key) != NULL ? 1 : 0;
 }
 
 /// @brief Return a Seq of every key in the map (slot-iteration order, not insertion order).
@@ -487,11 +512,15 @@ int8_t rt_frozenmap_has(void *obj, rt_string key) {
 /// @return A new owning Seq retaining all key strings.
 void *rt_frozenmap_keys(void *obj) {
     void *seq = rt_seq_new();
+    if (!seq)
+        return NULL;
     rt_seq_set_owns_elements(seq, 1);
     if (!obj)
         return seq;
 
     rt_frozenmap_impl *fm = as_frozenmap(obj, "FrozenMap: invalid FrozenMap object");
+    if (!fm)
+        return seq;
     for (int64_t i = 0; i < fm->capacity; i++) {
         if (fm->slots[i].key)
             rt_seq_push(seq, fm->slots[i].key);
@@ -505,11 +534,15 @@ void *rt_frozenmap_keys(void *obj) {
 ///         by `rt_frozenmap_keys()`.
 void *rt_frozenmap_values(void *obj) {
     void *seq = rt_seq_new();
+    if (!seq)
+        return NULL;
     rt_seq_set_owns_elements(seq, 1);
     if (!obj)
         return seq;
 
     rt_frozenmap_impl *fm = as_frozenmap(obj, "FrozenMap: invalid FrozenMap object");
+    if (!fm)
+        return seq;
     for (int64_t i = 0; i < fm->capacity; i++) {
         if (fm->slots[i].key)
             rt_seq_push(seq, fm->slots[i].value);
@@ -527,7 +560,14 @@ void *rt_frozenmap_values(void *obj) {
 void *rt_frozenmap_get_or(void *obj, rt_string key, void *default_value) {
     if (!obj || !key)
         return default_value;
-    fm_slot *s = fm_find(as_frozenmap(obj, "FrozenMap: invalid FrozenMap object"), key);
+    rt_frozenmap_impl *fm = as_frozenmap(obj, "FrozenMap.GetOr: invalid FrozenMap object");
+    if (!fm)
+        return default_value;
+    if (!rt_string_is_handle(key)) {
+        rt_trap("FrozenMap.GetOr: invalid key");
+        return default_value;
+    }
+    fm_slot *s = fm_find(fm, key);
     return s ? s->value : default_value;
 }
 
@@ -552,21 +592,31 @@ void *rt_frozenmap_merge(void *obj, void *other) {
     // Insert from first map
     if (obj) {
         rt_frozenmap_impl *a = as_frozenmap(obj, "FrozenMap: invalid FrozenMap object");
-        if (!a)
-            return (void *)fm;
+        if (!a) {
+            fm_release_value(fm);
+            return NULL;
+        }
         for (int64_t i = 0; i < a->capacity; i++) {
             if (a->slots[i].key)
-                fm_insert(fm, a->slots[i].key, a->slots[i].value);
+                if (fm_insert(fm, a->slots[i].key, a->slots[i].value) < 0) {
+                    fm_release_value(fm);
+                    return NULL;
+                }
         }
     }
     // Insert from second map (overwrites on conflict)
     if (other) {
         rt_frozenmap_impl *b = as_frozenmap(other, "FrozenMap: invalid FrozenMap object");
-        if (!b)
-            return (void *)fm;
+        if (!b) {
+            fm_release_value(fm);
+            return NULL;
+        }
         for (int64_t i = 0; i < b->capacity; i++) {
             if (b->slots[i].key)
-                fm_insert(fm, b->slots[i].key, b->slots[i].value);
+                if (fm_insert(fm, b->slots[i].key, b->slots[i].value) < 0) {
+                    fm_release_value(fm);
+                    return NULL;
+                }
         }
     }
     return (void *)fm;
@@ -601,6 +651,8 @@ int8_t rt_frozenmap_equals(void *obj, void *other) {
 
     rt_frozenmap_impl *a = as_frozenmap(obj, "FrozenMap: invalid FrozenMap object");
     rt_frozenmap_impl *b = as_frozenmap(other, "FrozenMap: invalid FrozenMap object");
+    if (!a || !b)
+        return 0;
 
     for (int64_t i = 0; i < a->capacity; i++) {
         if (a->slots[i].key) {

@@ -51,8 +51,9 @@ Zanna BASIC. It includes:
   tabs within groups, resize active splits, or recover the defaults with Reset
   Workspace Layout.
 
-The app includes built-in visual authoring surfaces for `.scene`/`.level` and
-`.vscn` documents. The 2D editor covers layers, real atlas rendering, a tile
+The app includes built-in visual authoring surfaces for scene documents.
+`.scene2d` and `.scene3d` are the canonical extensions (ADR 0182); the legacy
+`.scene`, `.level`, and `.vscn` spellings remain recognized. The 2D editor covers layers, real atlas rendering, a tile
 palette, captured cancelable freehand paint/erase, inclusive rectangle paint,
 four-connected bucket fill, active-layer tile picking, placed objects,
 scene-wide and per-object typed properties, point and inclusive cell-marquee selection with
@@ -109,16 +110,24 @@ editor. Duplicate Selection
 hierarchy or viewport owns focus, without escaping inspector text fields. A
 typed, bounded clipboard envelope
 supports same-kind cross-document object or subtree transfer with one-step
-history and exact rollback. These are practical v1 scene editors, not yet
-replacements for automatic scene-data/schema migration, generalized runtime
-components, batch light editing, or the advanced animation, collision,
-tileset-metadata, lightmap, and asset-library tooling of a mature game engine.
+history and exact rollback. Beyond per-node authoring, the 3D editor ships scene-driven game
+workflows: VSCN v7 prefab reference instances (import as instance, reload,
+unpack, re-link), mixed-value batch light editing, terrain sculpting on
+canonical scene meshes, vertex snap and surface drop/align, a project
+material library (`materials.scene3d`), lightmap/probe/navmesh baking with
+refuse-rather-than-guess preflights, an optional tagged asset library per
+workspace root, schema-v19 typed Scene Settings forms, a non-destructive
+Game View, and embedded native Play with scene hot reload. New Project
+scaffolds runnable `game2d`/`game3d` starters. Remaining limits are honest:
+no automatic scene-data/schema migration, no generalized runtime component
+composition, no import-settings pipeline, and no animation authoring UI yet
+(see docs/status.md for the deferral list).
 The 3D viewport renders the live SceneGraph's authored meshes, PBR materials,
 and node-attached lights through a windowless runtime Canvas3D, with a
 per-scene triangle-wireframe mode and editor grid, hierarchy, selection,
 transform, and light overlays. Viewport clicks
-select the nearest visible mesh bounds before falling back to node-origin
-markers; Shift adds, Ctrl/Command toggles, and an unmodified blank click clears
+pick triangle-accurately against visible mesh geometry (ADR 0193) before
+falling back to node-origin markers; Shift adds, Ctrl/Command toggles, and an unmodified blank click clears
 the selection. Shift plus middle- or right-drag pans in the camera plane, while
 an unmodified auxiliary drag continues to orbit.
 

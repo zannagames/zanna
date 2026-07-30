@@ -121,31 +121,37 @@ static treemap_impl *as_treemap(void *obj, const char *what) {
 /// @brief Extracts raw key data and length from an rt_string.
 ///
 /// Converts a Zanna string to a C string pointer and computes its length.
-/// A null string, a non-positive runtime length, or unavailable character data
-/// is normalized to the zero-length key.
+/// A null string denotes the zero-length key. A forged or stale nonnull handle
+/// traps and is never normalized to a legitimate empty key.
 ///
 /// @param key The Zanna string to extract data from.
+/// @param what Diagnostic raised for a stale or forged nonnull handle.
+/// @param out_data Receives borrowed key bytes.
 /// @param out_len Output parameter that receives the key length in bytes.
 ///
-/// @return Borrowed pointer to @p key's bytes, or a stable empty C string for
-///         a normalized zero-length key.
-static const char *get_key_data(rt_string key, size_t *out_len) {
+/// @return Nonzero for a null or live string handle; otherwise zero after
+///         trapping.
+static int get_key_data(rt_string key, const char *what, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
     if (!key) {
-        *out_len = 0;
-        return "";
+        return 1;
+    }
+    if (!rt_string_is_handle(key)) {
+        rt_trap(what);
+        return 0;
     }
     int64_t len = rt_str_len(key);
-    if (len <= 0) {
-        *out_len = 0;
-        return "";
-    }
+    if (len <= 0)
+        return 1;
     const char *cstr = rt_string_cstr(key);
     if (!cstr) {
-        *out_len = 0;
-        return "";
+        rt_trap(what);
+        return 0;
     }
+    *out_data = cstr;
     *out_len = (size_t)len;
-    return cstr;
+    return 1;
 }
 
 /// @brief Compares two keys lexicographically.
@@ -287,7 +293,8 @@ static void treemap_save_trap_error(char *buffer, size_t buffer_size, const char
 /// @param seq Owning sequence being populated; consumed on a trapped failure.
 /// @param key Key bytes to copy into a runtime string.
 /// @param keylen Number of bytes available at @p key.
-static void treemap_push_key_or_release_seq(void *seq, const char *key, size_t keylen) {
+/// @return Nonzero after append; zero after releasing @p seq and retrapping.
+static int treemap_push_key_or_release_seq(void *seq, const char *key, size_t keylen) {
     rt_string volatile str = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -300,19 +307,17 @@ static void treemap_push_key_or_release_seq(void *seq, const char *key, size_t k
             rt_str_release_maybe((rt_string)str);
         treemap_release_object(seq);
         rt_trap(saved_error);
-        return;
+        return 0;
     }
 
     str = rt_string_from_bytes(key, keylen);
-    if (!str) {
+    if (!str)
         rt_trap("TreeMap.Keys: string allocation failed");
-        rt_trap_clear_recovery();
-        return;
-    }
     rt_seq_push(seq, (void *)str);
     rt_str_release_maybe((rt_string)str);
     str = NULL;
     rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief Appends a value to an owning snapshot sequence with trap cleanup.
@@ -323,7 +328,8 @@ static void treemap_push_key_or_release_seq(void *seq, const char *key, size_t k
 ///
 /// @param seq Owning sequence being populated; consumed on a trapped failure.
 /// @param value Nullable borrowed value to append and retain.
-static void treemap_push_value_or_release_seq(void *seq, void *value) {
+/// @return Nonzero after append; zero after releasing @p seq and retrapping.
+static int treemap_push_value_or_release_seq(void *seq, void *value) {
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) != 0) {
@@ -333,11 +339,12 @@ static void treemap_push_value_or_release_seq(void *seq, void *value) {
         rt_trap_clear_recovery();
         treemap_release_object(seq);
         rt_trap(saved_error);
-        return;
+        return 0;
     }
 
     rt_seq_push(seq, value);
     rt_trap_clear_recovery();
+    return 1;
 }
 
 //=============================================================================
@@ -473,8 +480,12 @@ void rt_treemap_set(void *obj, rt_string key, void *value) {
         return;
     }
 
-    size_t keylen;
-    const char *keydata = get_key_data(key, &keylen);
+    size_t keylen = 0;
+    const char *keydata = NULL;
+    if (!get_key_data(key, "TreeMap.Set: invalid key", &keydata, &keylen)) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     bool found;
     size_t idx = binary_search(tm, keydata, keylen, &found);
@@ -491,6 +502,11 @@ void rt_treemap_set(void *obj, rt_string key, void *value) {
             rt_obj_free(old_value);
     } else {
         // Insert new entry
+        if (tm->count == SIZE_MAX) {
+            rt_gc_mutator_exit();
+            rt_trap("TreeMap.Set: maximum size reached");
+            return;
+        }
         if (!ensure_capacity(tm)) {
             rt_gc_mutator_exit();
             return;
@@ -557,8 +573,10 @@ void *rt_treemap_get(void *obj, rt_string key) {
     if (!tm)
         return NULL;
 
-    size_t keylen;
-    const char *keydata = get_key_data(key, &keylen);
+    size_t keylen = 0;
+    const char *keydata = NULL;
+    if (!get_key_data(key, "TreeMap.Get: invalid key", &keydata, &keylen))
+        return NULL;
 
     bool found;
     size_t idx = binary_search(tm, keydata, keylen, &found);
@@ -584,8 +602,10 @@ int8_t rt_treemap_has(void *obj, rt_string key) {
     if (!tm)
         return 0;
 
-    size_t keylen;
-    const char *keydata = get_key_data(key, &keylen);
+    size_t keylen = 0;
+    const char *keydata = NULL;
+    if (!get_key_data(key, "TreeMap.Has: invalid key", &keydata, &keylen))
+        return 0;
 
     bool found;
     binary_search(tm, keydata, keylen, &found);
@@ -616,8 +636,12 @@ int8_t rt_treemap_remove(void *obj, rt_string key) {
         return 0;
     }
 
-    size_t keylen;
-    const char *keydata = get_key_data(key, &keylen);
+    size_t keylen = 0;
+    const char *keydata = NULL;
+    if (!get_key_data(key, "TreeMap.Remove: invalid key", &keydata, &keylen)) {
+        rt_gc_mutator_exit();
+        return 0;
+    }
 
     bool found;
     size_t idx = binary_search(tm, keydata, keylen, &found);
@@ -709,7 +733,8 @@ void *rt_treemap_keys(void *obj) {
         return seq;
 
     for (size_t i = 0; i < tm->count; i++) {
-        treemap_push_key_or_release_seq(seq, tm->entries[i].key, tm->entries[i].keylen);
+        if (!treemap_push_key_or_release_seq(seq, tm->entries[i].key, tm->entries[i].keylen))
+            return NULL;
     }
 
     return seq;
@@ -742,7 +767,8 @@ void *rt_treemap_values(void *obj) {
         return seq;
 
     for (size_t i = 0; i < tm->count; i++) {
-        treemap_push_value_or_release_seq(seq, tm->entries[i].value);
+        if (!treemap_push_value_or_release_seq(seq, tm->entries[i].value))
+            return NULL;
     }
 
     return seq;
@@ -857,8 +883,10 @@ rt_string rt_treemap_floor(void *obj, rt_string key) {
     if (tm->count == 0)
         return rt_const_cstr("");
 
-    size_t keylen;
-    const char *keydata = get_key_data(key, &keylen);
+    size_t keylen = 0;
+    const char *keydata = NULL;
+    if (!get_key_data(key, "TreeMap.Floor: invalid key", &keydata, &keylen))
+        return NULL;
 
     bool found;
     size_t idx = binary_search(tm, keydata, keylen, &found);
@@ -913,8 +941,10 @@ rt_string rt_treemap_ceil(void *obj, rt_string key) {
     if (tm->count == 0)
         return rt_const_cstr("");
 
-    size_t keylen;
-    const char *keydata = get_key_data(key, &keylen);
+    size_t keylen = 0;
+    const char *keydata = NULL;
+    if (!get_key_data(key, "TreeMap.Ceil: invalid key", &keydata, &keylen))
+        return NULL;
 
     bool found;
     size_t idx = binary_search(tm, keydata, keylen, &found);

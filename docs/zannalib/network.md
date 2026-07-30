@@ -70,10 +70,10 @@ a descriptive error message and clean exit.
 | Operation                    | Default |
 |------------------------------|---------|
 | TCP Connect                  | 30 sec  |
-| HTTP socket operation/phase  | 30 sec  |
+| HTTP request                 | 30 sec  |
 | WS socket operation/phase    | 30 sec  |
 
-Timeout values must fit the runtime socket timeout range: `0` disables an explicit timeout and positive values must be no larger than `2147483647` milliseconds. Negative or overflowing timeout arguments are treated as programming errors by the typed networking APIs. HTTP timeouts are reused for individual address attempts and socket-I/O or handshake phases; they are not one wall-clock deadline for an entire request or redirect chain. WebSocket connection attempts use one monotonic deadline across DNS resolution and every resolved address, then retain the configured timeout for the opening handshake and subsequent I/O phases.
+Timeout values must fit the runtime socket timeout range: `0` disables an explicit timeout and positive values must be no larger than `2147483647` milliseconds. Negative or overflowing timeout arguments are treated as programming errors by the typed networking APIs. An HTTP timeout is one monotonic deadline for the complete request, including name resolution, all resolved-address attempts, TLS, request and response I/O, redirects, and response transformations. The system resolver call cannot be interrupted portably, but its elapsed time consumes the budget and no connection attempt starts after expiry. WebSocket connection attempts use one monotonic deadline across DNS resolution and every resolved address, then retain the configured timeout for the opening handshake and subsequent I/O phases.
 
 Each individual native readiness wait does preserve one monotonic deadline across interrupted
 system calls. Repeated POSIX signals or WinSock interruptions cannot restart that wait's full
@@ -921,14 +921,18 @@ PRINT "Content-Length: "; headers.GetStr("content-length")
 - **Informational responses** - Consumes interim `1xx` responses (for example `100 Continue` and `103 Early Hints`) and returns the final response
 - **Content-Length** - Handles Content-Length bodies
 - **Chunked encoding** - Handles a single `Transfer-Encoding: chunked` response coding and rejects unsupported transfer codings
-- **Gzip decoding** - `Http`, `HttpReq`, and `HttpClient` automatically advertise `Accept-Encoding: gzip` and transparently decode `Content-Encoding: gzip` responses
+- **Gzip decoding** - `Http`, `HttpReq`, and `HttpClient` automatically advertise
+  `Accept-Encoding: gzip` and transparently decode `Content-Encoding: gzip` responses. Decoding
+  is bounded during expansion by the smaller of 256 MiB and 128 times the encoded body plus
+  1 MiB of compatibility slack.
 - **Transactional streaming download** - `Http.Download()` writes response bytes to an exclusively
   created sibling file, synchronizes it, and atomically publishes it instead of buffering the
   entire body in memory or exposing partial destination content
-- **Timeout** - Default 30 second timeout for each address attempt and socket-I/O phase; it is not
-  an overall redirect-chain deadline
-- **Input limits** - Buffered bodies are capped at 256 MiB. Response headers are capped at 256 KiB;
-  chunked trailers are capped at 64 KiB and 64 lines.
+- **Timeout** - One default 30-second monotonic deadline covers name resolution, all address
+  attempts, TLS, request and response I/O, redirects, and response transformations.
+- **Input limits** - Encoded and decoded buffered bodies are capped at 256 MiB; gzip responses also
+  obey the expansion budget above. Response headers are capped at 256 KiB; chunked trailers are
+  capped at 64 KiB and 64 lines.
 
 > **Download note:** `Http.Download()` intentionally keeps `Accept-Encoding` at identity and stays
 > on the HTTP/1.1 path over HTTPS so the response can remain fully streamed to disk without
@@ -1026,11 +1030,11 @@ HTTP request builder for advanced requests with custom headers and options.
 | `AddHeader(name, value)`  | HttpReq | Append a repeated header field without replacing (chainable) |
 | `SetForceHttp1(enabled)` | HttpReq | Force HTTP/1.1 and opt out of HTTP/2 ALPN    |
 | `SetKeepAlive(enabled)`   | HttpReq | Reuse pooled connections for this request (chainable) |
-| `SetTimeout(ms)`          | HttpReq | Set the per-address and socket-I/O timeout    |
+| `SetTimeout(ms)`          | HttpReq | Set the end-to-end request deadline           |
 | `SetTlsVerify(enabled)`   | HttpReq | Enable or disable HTTPS certificate verification |
 | `AllowInsecureCertificatesForTesting()` | HttpReq | Disable HTTPS verification for local test fixtures only |
 
-> **TLS configuration:** Certificate verification is enabled by default. Production code should keep it enabled. For local self-signed test fixtures only, call `.AllowInsecureCertificatesForTesting()` before `Send()`; the older `.SetTlsVerify(false)` form remains available for compatibility but is marked unsafe in API metadata. `SetTimeout(ms)` is reused for individual address attempts and socket-I/O phases; it is not an overall wall-clock request deadline. For raw TLS connections (without HTTP), use `Zanna.Crypto.Tls` directly.
+> **TLS configuration:** Certificate verification is enabled by default. Production code should keep it enabled. For local self-signed test fixtures only, call `.AllowInsecureCertificatesForTesting()` before `Send()`; the older `.SetTlsVerify(false)` form remains available for compatibility but is marked unsafe in API metadata. `SetTimeout(ms)` is one monotonic deadline shared by connection attempts, TLS, request and response I/O, redirects, and response transformations. Zero disables that deadline. For raw TLS connections (without HTTP), use `Zanna.Crypto.Tls` directly.
 >
 > **HTTP/2 control:** HTTPS requests advertise `h2,http/1.1` by default and use HTTP/2 automatically when the server selects it. Call `.SetForceHttp1(true)` when you need HTTP/1.1-specific behavior or want to suppress HTTP/2 ALPN negotiation for a particular request.
 >
@@ -1707,8 +1711,9 @@ Invalid header names or values are ignored rather than trapped.
 - Set `KeepAlive = false` to force one request per socket.
 - The internal pool starts at 8 entries. `SetPoolSize` normalizes nonpositive values to 1 and caps
   the effective pool at 64 entries; idle connections expire after 30 seconds.
-- The configured timeout is reused for address attempts and socket-I/O phases, not enforced as one
-  overall wall-clock deadline.
+- The configured timeout is one monotonic deadline for the complete request, including name
+  resolution, all address attempts, TLS, request and response I/O, redirects, and response
+  transformations.
 
 ### Raw HTTP Methods
 
@@ -1927,8 +1932,9 @@ DIM legacy AS OBJECT = legacyApi.GetJson("/api/v1/data")
   Updates allocate and validate before publication, so a caught allocation failure preserves the
   previous complete value.
 - **Authentication:** Built-in support for Bearer tokens and HTTP Basic auth
-- **Timeout:** Configurable per-address/socket-operation timeout (default 30 seconds); zero is
-  applied to the request and disables its deadlines.
+- **Timeout:** Configurable end-to-end request deadline (default 30 seconds), shared by name
+  resolution, connection attempts, TLS, request and response I/O, redirects, and response
+  transformations; zero is applied to the request and disables the deadline.
 - **JSON helpers:** Automatic serialization/deserialization for JSON APIs
 - **Result-returning requests:** `GetResult`, `PostResult`, `PutResult`, `PatchResult`, `DeleteResult`, and `HeadResult` return `Result<HttpRes>` so transport failures and HTTP status handling stay explicit.
 - **Explicit responses:** Each `*Result` call returns its own `Result<HttpRes>`; store that response rather than relying on mutable last-request state, so status and transport handling stay explicit at the call site.
@@ -2824,7 +2830,7 @@ Session-based HTTP client with cookie jar, auto-redirect, and persistent headers
 | `Delete(url)` | HttpRes | HTTP DELETE request |
 | `SetHeader(name, value)` | void | Set a default header for all requests (replaces case-insensitive matches) |
 | `SetPoolSize(max)` | void | Resize the internal keep-alive pool |
-| `SetTimeout(ms)` | void | Set each request's per-address/socket-operation timeout |
+| `SetTimeout(ms)` | void | Set each request's end-to-end deadline |
 | `SetMaxRedirects(max)` | void | Set maximum redirect count |
 | `SetCookie(domain, name, value)` | void | Set a validated host-only cookie for exactly that host |
 | `DeleteCookie(domain, name)` | void | Remove a stored cookie by exact domain and case-sensitive name |
@@ -2879,9 +2885,10 @@ and `sid` coexist and replace independently.
   last `SetHeader` call for a name wins regardless of spelling and no duplicates reach the wire.
 - Header names must be HTTP tokens; embedded NUL and CR/LF injection are rejected. Replacement is
   transactional, so allocation failure cannot remove the previous casing/value.
-- The default timeout is 30 seconds per address/socket-operation phase. `SetTimeout(0)` disables
-  the timeout entirely — the value is applied to every request, so a zero-timeout client issues
-  genuinely unbounded requests. Use with care for long-lived streams.
+- The default timeout is one 30-second monotonic deadline per request, shared by name resolution,
+  connection attempts, TLS, request and response I/O, redirects, and response transformations.
+  `SetTimeout(0)` disables the timeout entirely — the value is applied to every request, so a
+  zero-timeout client issues genuinely unbounded requests. Use with care for long-lived streams.
 
 Each verb copies its URL and optional String body by exact runtime length, then owns request setup,
 transport, response-cookie capture, and every redirect hop in one recoverable transaction. A trap

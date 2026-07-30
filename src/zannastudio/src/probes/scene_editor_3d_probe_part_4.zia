@@ -121,11 +121,21 @@ expose func VerifyGroupTransformsAndClipboard(ctx: Probe.SceneEditor3DProbeConte
        or editor.scene.Find("Root Node Copy").IsNone
        or (editor.scene.Find("Root Node Copy").Unwrap()
            as SceneNode).ChildCount != 1
+       or Probe.near(
+              (editor.scene.Find("Root Node Copy").Unwrap()
+               as SceneNode).Position.X,
+              (editor.scene.Find("Root Node").Unwrap()
+               as SceneNode).Position.X) == false
+       or Probe.near(
+              (editor.scene.Find("Root Node Copy").Unwrap()
+               as SceneNode).Position.Z,
+              (editor.scene.Find("Root Node").Unwrap()
+               as SceneNode).Position.Z) == false
        or editor.Undo() == false
        or sceneDoc.content != transformedContent
        or editor.scene.NodeCount != 3 {
         Probe.fail(shell, tempPath,
-             "3D subtree duplication lost hierarchy or exact undo");
+             "3D subtree duplication moved the copy or lost exact undo");
         return false;
     }
 
@@ -310,6 +320,11 @@ expose func VerifyClipboardRejectionsAndMaterialImport(ctx: Probe.SceneEditor3DP
     meshSibling.Mesh = meshNode.Mesh;
     meshSibling.Material = sharedMaterial;
     importGraph.Add(meshSibling);
+    // Importing into authored content must keep the user's camera in
+    // place; only an empty document frames the incoming asset.
+    var importViewTargetX = editor.viewTargetX;
+    var importViewTargetZ = editor.viewTargetZ;
+    var importViewScale = editor.viewScale;
     if importGraph.Save(tempPath) == 0
        or editor.ImportAssetPath(tempPath) == false
        or editor.scene == null or editor.scene.NodeCount != 5
@@ -317,9 +332,12 @@ expose func VerifyClipboardRejectionsAndMaterialImport(ctx: Probe.SceneEditor3DP
        or editor.scene.Find("Root Node").IsNone
        or editor.scene.Find("Imported Box").IsNone
        or editor.scene.Find("Imported Box Sibling").IsNone
-       or (editor.scene.Find("Imported Box").Unwrap() as SceneNode).Mesh == null {
+       or (editor.scene.Find("Imported Box").Unwrap() as SceneNode).Mesh == null
+       or Probe.near(editor.viewTargetX, importViewTargetX) == false
+       or Probe.near(editor.viewTargetZ, importViewTargetZ) == false
+       or editor.viewScale != importViewScale {
         Probe.fail(shell, tempPath,
-             "mesh asset import did not merge into the editable VSCN");
+             "mesh asset import did not merge in place into the VSCN");
         return false;
     }
 

@@ -32,6 +32,7 @@
 
 #include "rt.hpp"
 #include "rt_animcontroller3d.h"
+#include "rt_asset_error.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_internal.h"
@@ -4689,6 +4690,10 @@ static void test_scene_prefab_reference_nodes() {
 
     void *loaded = rt_scene3d_load(rt_const_cstr(world_path));
     EXPECT_TRUE(loaded != nullptr, "v7 world loads");
+    EXPECT_TRUE(rt_scene3d_get_unresolved_prefab_count(loaded) == 0,
+                "fully resolved worlds report zero unresolved prefabs");
+    EXPECT_TRUE(rt_asset_error_get_warning_count() == 0,
+                "fully resolved worlds load without prefab warnings");
     if (loaded) {
         void *root = rt_scene3d_get_root(loaded);
         EXPECT_TRUE(rt_scene_node3d_child_count(root) == 3, "world keeps three top nodes");
@@ -4729,6 +4734,13 @@ static void test_scene_prefab_reference_nodes() {
                 "broken-reference scene saves");
     void *broken_loaded = rt_scene3d_load(rt_const_cstr(broken_path));
     EXPECT_TRUE(broken_loaded != nullptr, "missing prefab source still loads the scene");
+    EXPECT_TRUE(rt_scene3d_get_unresolved_prefab_count(broken_loaded) == 1,
+                "a missing prefab source is counted as unresolved (ADR 0227)");
+    EXPECT_TRUE(rt_asset_error_get_warning_count() == 1,
+                "a missing prefab source adds exactly one load warning");
+    EXPECT_TRUE(strstr(rt_asset_error_get_warning(0), "zanna_prefab_missing.scene3d") != nullptr &&
+                    strstr(rt_asset_error_get_warning(0), "placeholder") != nullptr,
+                "the prefab warning names the unresolved reference");
     if (broken_loaded) {
         void *ghost_loaded =
             rt_scene_node3d_get_child(rt_scene3d_get_root(broken_loaded), 0);
@@ -4754,6 +4766,11 @@ static void test_scene_prefab_reference_nodes() {
     EXPECT_TRUE(rt_scene3d_save(cyclic, rt_const_cstr(cycle_path)) == 1, "cycle scene saves");
     void *cycle_loaded = rt_scene3d_load(rt_const_cstr(cycle_path));
     EXPECT_TRUE(cycle_loaded != nullptr, "self-referencing scene loads");
+    EXPECT_TRUE(rt_scene3d_get_unresolved_prefab_count(cycle_loaded) == 1,
+                "a reference cycle is counted as unresolved (ADR 0227)");
+    EXPECT_TRUE(rt_asset_error_get_warning_count() == 1 &&
+                    strstr(rt_asset_error_get_warning(0), "cycle") != nullptr,
+                "a reference cycle adds one warning naming the reason");
     if (cycle_loaded) {
         EXPECT_TRUE(rt_scene_node3d_child_count(rt_scene_node3d_get_child(
                         rt_scene3d_get_root(cycle_loaded), 0)) == 0,
@@ -4823,7 +4840,78 @@ static void test_scene_prefab_reference_nodes() {
                 "prefab-free scenes stay below v7");
 }
 
-int main() {
+static void test_scene_adopt_baked_animations() {
+    void *source = rt_scene3d_new();
+    void *destination = rt_scene3d_new();
+    void *clip_walk = rt_animation3d_new(rt_const_cstr("walk"), 1.0);
+    void *clip_run = rt_animation3d_new(rt_const_cstr("run"), 0.5);
+
+    /* Install the clip carrier exactly as InstantiateScene does. */
+    rt_scene3d *source_view = (rt_scene3d *)source;
+    source_view->baked_animations = (void **)calloc(2, sizeof(void *));
+    EXPECT_TRUE(source_view->baked_animations != NULL,
+                "adopt fixture allocates the source clip carrier");
+    source_view->baked_animations[0] = clip_walk;
+    source_view->baked_animations[1] = clip_run;
+    source_view->baked_animation_count = 2;
+    rt_obj_retain_maybe(clip_walk);
+    rt_obj_retain_maybe(clip_run);
+
+    EXPECT_TRUE(rt_scene3d_adopt_baked_animations(destination, source) == 2,
+                "adopting a two-clip carrier reports two adopted clips");
+    rt_scene3d *destination_view = (rt_scene3d *)destination;
+    EXPECT_TRUE(destination_view->baked_animation_count == 2,
+                "destination carries both adopted clips");
+    EXPECT_TRUE(destination_view->baked_animations[0] == clip_walk &&
+                    destination_view->baked_animations[1] == clip_run,
+                "adopted clips keep source order and identity");
+    EXPECT_TRUE(source_view->baked_animation_count == 2,
+                "adoption is copy-retain: the source keeps its clips");
+
+    /* Idempotent: pointer-identical clips are skipped on re-adoption. */
+    EXPECT_TRUE(rt_scene3d_adopt_baked_animations(destination, source) == 0,
+                "re-adopting the same carrier adopts nothing");
+    EXPECT_TRUE(destination_view->baked_animation_count == 2,
+                "re-adoption leaves the destination carrier unchanged");
+
+    /* Partial overlap: only the fresh clip is adopted. */
+    void *clip_idle = rt_animation3d_new(rt_const_cstr("idle"), 2.0);
+    void **grown = (void **)calloc(3, sizeof(void *));
+    EXPECT_TRUE(grown != NULL, "adopt fixture grows the source carrier");
+    grown[0] = clip_walk;
+    grown[1] = clip_run;
+    grown[2] = clip_idle;
+    rt_obj_retain_maybe(clip_idle);
+    free(source_view->baked_animations);
+    source_view->baked_animations = grown;
+    source_view->baked_animation_count = 3;
+    EXPECT_TRUE(rt_scene3d_adopt_baked_animations(destination, source) == 1,
+                "overlapping adoption reports only the fresh clip");
+    EXPECT_TRUE(destination_view->baked_animation_count == 3 &&
+                    destination_view->baked_animations[2] == clip_idle,
+                "the fresh clip appends after the existing carrier");
+
+    /* Degenerate inputs adopt nothing. */
+    EXPECT_TRUE(rt_scene3d_adopt_baked_animations(source, source) == 0,
+                "self-adoption is a no-op");
+    EXPECT_TRUE(rt_scene3d_adopt_baked_animations(NULL, source) == 0,
+                "a null destination adopts nothing");
+    EXPECT_TRUE(rt_scene3d_adopt_baked_animations(destination, NULL) == 0,
+                "a null source adopts nothing");
+    EXPECT_TRUE(rt_scene3d_adopt_baked_animations(destination, rt_scene3d_new()) == 0,
+                "an empty source adopts nothing");
+}
+
+int main(int argc, char **argv) {
+    /* The 10k spatial-index scaling fixture costs ~30 seconds and used to
+     * push this whole suite behind the slow label, which excluded every
+     * VSCN round-trip, metadata, and prefab check from the default gate.
+     * The scale fixture runs only under --scale (registered as the slow
+     * test test_rt_scene3d_scale); everything else runs by default. */
+    if (argc > 1 && std::strcmp(argv[1], "--scale") == 0) {
+        test_scene_spatial_index_10k_scaling_fixture();
+        return 0;
+    }
     test_node_animator_survives_target_removal_mid_clip();
     test_create_scene_and_node();
     test_add_remove_child();
@@ -4881,7 +4969,6 @@ int main() {
     test_scene_spatial_index_rebuilds_on_dirty_node();
     test_scene_draw_spatial_index_matches_flat_reference();
     test_scene_extreme_finite_transforms_and_queries_remain_bounded();
-    test_scene_spatial_index_10k_scaling_fixture();
     test_scene_occlusion_grid_uses_spatial_candidates();
     test_scene_shadow_caster_sweep_keeps_offscreen_casters();
     test_scene_portal_pvs_culls_unlinked_interior_zones();
@@ -4889,6 +4976,7 @@ int main() {
     test_scene_draw_reuses_active_frame();
     test_scene_draw_culling_uses_canvas_output_aspect();
     test_scene_prefab_reference_nodes();
+    test_scene_adopt_baked_animations();
     test_scene_save_escapes_json_names();
     test_scene_save_text_matches_file_bytes();
     test_scene_save_serializes_visibility_and_lod_metadata();

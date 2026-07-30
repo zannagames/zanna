@@ -62,6 +62,18 @@ void *rt_texatlas3d_get_texture(void *atlas);
 void rt_texatlas3d_get_uv_rect(
     void *atlas, int64_t id, double *u0, double *v0, double *u1, double *v1);
 
+/// @brief `TextureAtlas3D.GetUvMin(id)` — top-left UV of a packed region (ADR 0227).
+/// @param atlas Candidate TextureAtlas3D instance.
+/// @param id Region identifier returned by `rt_texatlas3d_add`.
+/// @return New Vec2 of (u0, v0); the full-atlas corner for invalid input.
+void *rt_texatlas3d_get_uv_min(void *atlas, int64_t id);
+
+/// @brief `TextureAtlas3D.GetUvMax(id)` — bottom-right UV of a packed region (ADR 0227).
+/// @param atlas Candidate TextureAtlas3D instance.
+/// @param id Region identifier returned by `rt_texatlas3d_add`.
+/// @return New Vec2 of (u1, v1); the full-atlas corner for invalid input.
+void *rt_texatlas3d_get_uv_max(void *atlas, int64_t id);
+
 #ifdef __cplusplus
 }
 #endif

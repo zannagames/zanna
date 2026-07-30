@@ -5,13 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/runtime/RTLocaleTests.cpp
+// File: src/tests/runtime/RTLocaleTests.cpp
 // Purpose: Validate Zanna.Localization.Locale parsing, canonicalization, and
-//          fallback-chain behavior. Covers the positive path for common BCP-47
-//          shapes and the rejection path for malformed input.
+//          fallback-chain behavior, including returning-trap allocation paths.
+// Key invariants:
+//   - Canonical BCP-47 casing and field classification remain consistent.
+//   - Invalid tags trap only in strict APIs.
+//   - Allocation failure cannot fall through into a null Locale payload.
+// Ownership/Lifetime:
+//   - Test-created runtime strings and Locale handles follow runtime reference
+//     ownership; allocator hooks are restored before each test returns.
+// Links: src/runtime/localization/rt_locale.c, src/runtime/localization/rt_locale.h
 //
 //===----------------------------------------------------------------------===//
 
+#include "rt_internal.h"
 #include "rt_list.h"
 #include "rt_locale.h"
 #include "rt_locale_manager.h"
@@ -29,12 +37,25 @@
 
 static jmp_buf g_trap_env;
 static int g_expect_trap = 0;
+static int g_return_traps = 0;
+static int g_returning_trap_count = 0;
 
 extern "C" void vm_trap(const char *msg) {
+    if (g_return_traps) {
+        (void)msg;
+        ++g_returning_trap_count;
+        return;
+    }
     if (g_expect_trap)
         longjmp(g_trap_env, 1);
     fprintf(stderr, "unexpected trap: %s\n", msg ? msg : "(null)");
     abort();
+}
+
+static void *fail_locale_alloc(int64_t bytes, void *(*next)(int64_t)) {
+    (void)bytes;
+    (void)next;
+    return nullptr;
 }
 
 #define EXPECT_TRAP(expr)                                                                          \
@@ -548,11 +569,49 @@ static void test_null_equals_invariant() {
     printf("\n");
 }
 
+static void test_returning_allocation_traps_stop_before_payload_access() {
+    printf("Testing returning allocation traps:\n");
+
+    g_return_traps = 1;
+    g_returning_trap_count = 0;
+    rt_set_alloc_hook(fail_locale_alloc);
+    void *invariant = rt_locale_new();
+    rt_set_alloc_hook(nullptr);
+    test_result("Locale.New returns null after resumed OOM trap",
+                invariant == nullptr && g_returning_trap_count > 0);
+
+    rt_string tag = S("en-US");
+    g_returning_trap_count = 0;
+    rt_set_alloc_hook(fail_locale_alloc);
+    void *parsed = rt_locale_parse(tag);
+    rt_set_alloc_hook(nullptr);
+    test_result("Locale.Parse returns null after resumed OOM trap",
+                parsed == nullptr && g_returning_trap_count > 0);
+    rt_string_unref(tag);
+
+    rt_string language = S("en");
+    rt_string script = S("Latn");
+    rt_string region = S("US");
+    g_returning_trap_count = 0;
+    rt_set_alloc_hook(fail_locale_alloc);
+    void *from_parts = rt_locale_from_parts(language, script, region);
+    rt_set_alloc_hook(nullptr);
+    test_result("Locale.FromParts returns null after resumed OOM trap",
+                from_parts == nullptr && g_returning_trap_count > 0);
+    rt_string_unref(language);
+    rt_string_unref(script);
+    rt_string_unref(region);
+
+    g_return_traps = 0;
+    printf("\n");
+}
+
 int main() {
     test_platform_tag_normalization();
     test_bcp47_conformance();
     test_from_parts_single_subtags();
     test_null_equals_invariant();
+    test_returning_allocation_traps_stop_before_payload_access();
     printf("=== RT Locale Tests ===\n\n");
     test_parse_basic_tags();
     test_parse_canonicalization();

@@ -532,8 +532,9 @@ static int h2_io_read_exact(rt_http2_conn_t *conn, uint8_t *buf, size_t len) {
     if (!conn || !buf || !conn->io.read)
         return h2_conn_fail(conn, "HTTP/2: invalid read callback");
     while (total < len) {
-        long n = conn->io.read(conn->io.ctx, buf + total, len - total);
-        if (n <= 0)
+        size_t remaining = len - total;
+        long n = conn->io.read(conn->io.ctx, buf + total, remaining);
+        if (n <= 0 || (uint64_t)n > (uint64_t)remaining)
             return h2_conn_fail(conn, "HTTP/2: read failed");
         total += (size_t)n;
     }
@@ -610,7 +611,7 @@ static int h2_send_frame(rt_http2_conn_t *conn,
 /// @param frame Output frame, reset before parsing.
 /// @return 1 on success; 0 on invalid input, oversized input, allocation failure, or I/O failure.
 static int h2_read_frame(rt_http2_conn_t *conn, h2_frame_t *frame) {
-    uint8_t header[9];
+    uint8_t header[9] = {0};
     size_t payload_len = 0;
     if (!conn || !frame)
         return 0;
@@ -625,7 +626,7 @@ static int h2_read_frame(rt_http2_conn_t *conn, h2_frame_t *frame) {
     frame->stream_id = h2_read_u32(header + 5) & 0x7fffffffu;
     frame->payload_len = payload_len;
     if (payload_len > 0) {
-        frame->payload = (uint8_t *)malloc(payload_len);
+        frame->payload = (uint8_t *)calloc(payload_len, 1u);
         if (!frame->payload)
             return h2_conn_fail(conn, "HTTP/2: frame allocation failed");
         if (!h2_io_read_exact(conn, frame->payload, payload_len)) {

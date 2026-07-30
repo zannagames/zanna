@@ -51,6 +51,7 @@
 #include "rt_bimap.h"
 
 #include "rt_collection_ids.h"
+#include "rt_hash_table_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_seq.h"
@@ -62,10 +63,6 @@
 
 /// Initial bucket count for both indexes.
 #define BM_INITIAL_CAPACITY 16
-/// Numerator of the table growth threshold.
-#define BM_LOAD_FACTOR_NUM 3
-/// Denominator of the table growth threshold.
-#define BM_LOAD_FACTOR_DEN 4
 #include "rt_hash_util.h"
 
 /// @brief Authoritative forward-table node for one key/value mapping.
@@ -127,22 +124,31 @@ static rt_bimap_impl *as_bimap(void *obj, const char *what) {
 
 /// @brief Borrows the byte buffer and length of a runtime string.
 /// @param s String to inspect; NULL is treated as an empty string.
+/// @param what Diagnostic raised for a stale or forged nonnull handle.
+/// @param out_data Receives borrowed string bytes.
 /// @param out_len Receives the number of usable bytes.
-/// @return Borrowed string bytes, or a stable empty string when @p s is NULL,
-///         empty, or has no accessible character buffer.
-static const char *get_str_data(rt_string s, size_t *out_len) {
-    int64_t len = rt_str_len(s);
-    if (len <= 0) {
-        *out_len = 0;
-        return "";
+/// @return Nonzero for a null or live string handle; otherwise zero after
+///         trapping. Null continues to denote the empty string.
+static int get_str_data(rt_string s, const char *what, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
+    if (!s)
+        return 1;
+    if (!rt_string_is_handle(s)) {
+        rt_trap(what);
+        return 0;
     }
+    int64_t len = rt_str_len(s);
+    if (len <= 0)
+        return 1;
     const char *data = rt_string_cstr(s);
     if (!data) {
-        *out_len = 0;
-        return "";
+        rt_trap(what);
+        return 0;
     }
+    *out_data = data;
     *out_len = (size_t)len;
-    return data;
+    return 1;
 }
 
 /// @brief Linear scan of a forward bucket chain for an exact key match.
@@ -259,8 +265,10 @@ static void bimap_finalizer(void *obj) {
 /// @return 1 after installing the larger table, or 0 if capacity cannot double
 ///         or allocation fails. The original table remains installed on 0.
 static int resize_fwd(rt_bimap_impl *bm) {
-    if (bm->fwd_capacity > SIZE_MAX / 2)
+    if (bm->fwd_capacity > SIZE_MAX / 2) {
+        rt_trap("BiMap: forward capacity overflow during resize");
         return 0;
+    }
     size_t new_cap = bm->fwd_capacity * 2;
     if (new_cap > SIZE_MAX / sizeof(rt_bm_entry *)) {
         rt_trap("BiMap: allocation size overflow");
@@ -296,8 +304,10 @@ static int resize_fwd(rt_bimap_impl *bm) {
 /// @return 1 after installing the larger index, or 0 if capacity cannot double
 ///         or allocation fails. The original index remains installed on 0.
 static int resize_inv(rt_bimap_impl *bm) {
-    if (bm->inv_capacity > SIZE_MAX / 2)
+    if (bm->inv_capacity > SIZE_MAX / 2) {
+        rt_trap("BiMap: inverse capacity overflow during resize");
         return 0;
+    }
     size_t new_cap = bm->inv_capacity * 2;
     if (new_cap > SIZE_MAX / sizeof(rt_bm_inv_link *)) {
         rt_trap("BiMap: allocation size overflow");
@@ -365,7 +375,8 @@ void *rt_bimap_new(void) {
 int64_t rt_bimap_len(void *obj) {
     if (!obj)
         return 0;
-    return (int64_t)as_bimap(obj, "BiMap.Len: invalid BiMap object")->count;
+    rt_bimap_impl *map = as_bimap(obj, "BiMap.Len: invalid BiMap object");
+    return map ? (int64_t)map->count : 0;
 }
 
 /// @brief Check whether the bidirectional map is empty.
@@ -389,21 +400,26 @@ void rt_bimap_put(void *obj, rt_string key, rt_string value) {
     if (!obj)
         return;
     rt_bimap_impl *bm = as_bimap(obj, "BiMap.Put: invalid BiMap object");
-    if (!bm)
+    if (!bm || !bm->fwd_buckets || !bm->inv_chains || bm->fwd_capacity == 0 ||
+        bm->inv_capacity == 0)
         return;
 
-    size_t klen, vlen;
-    const char *kdata = get_str_data(key, &klen);
-    const char *vdata = get_str_data(value, &vlen);
+    size_t klen = 0;
+    size_t vlen = 0;
+    const char *kdata = NULL;
+    const char *vdata = NULL;
+    if (!get_str_data(key, "BiMap.Put: invalid key", &kdata, &klen) ||
+        !get_str_data(value, "BiMap.Put: invalid value", &vdata, &vlen))
+        return;
+    if (bm->count == SIZE_MAX) {
+        rt_trap("BiMap.Put: maximum size reached");
+        return;
+    }
 
     // Check load factor on forward table
-    if ((long double)bm->count * (long double)BM_LOAD_FACTOR_DEN >=
-            (long double)bm->fwd_capacity * (long double)BM_LOAD_FACTOR_NUM &&
-        !resize_fwd(bm))
+    if (rt_hash_table_exceeds_load(bm->count + 1, bm->fwd_capacity) && !resize_fwd(bm))
         return;
-    if ((long double)bm->count * (long double)BM_LOAD_FACTOR_DEN >=
-            (long double)bm->inv_capacity * (long double)BM_LOAD_FACTOR_NUM &&
-        !resize_inv(bm))
+    if (rt_hash_table_exceeds_load(bm->count + 1, bm->inv_capacity) && !resize_inv(bm))
         return;
 
     // Create entry
@@ -470,9 +486,13 @@ rt_string rt_bimap_get_by_key(void *obj, rt_string key) {
     if (!obj)
         return rt_string_from_bytes("", 0);
     rt_bimap_impl *bm = as_bimap(obj, "BiMap.GetByKey: invalid BiMap object");
+    if (!bm || !bm->fwd_buckets || bm->fwd_capacity == 0)
+        return NULL;
 
-    size_t klen;
-    const char *kdata = get_str_data(key, &klen);
+    size_t klen = 0;
+    const char *kdata = NULL;
+    if (!get_str_data(key, "BiMap.GetByKey: invalid key", &kdata, &klen))
+        return NULL;
 
     uint64_t h = rt_fnv1a(kdata, klen);
     size_t idx = (size_t)(h % bm->fwd_capacity);
@@ -494,9 +514,13 @@ rt_string rt_bimap_get_by_value(void *obj, rt_string value) {
     if (!obj)
         return rt_string_from_bytes("", 0);
     rt_bimap_impl *bm = as_bimap(obj, "BiMap.GetByValue: invalid BiMap object");
+    if (!bm || !bm->inv_chains || bm->inv_capacity == 0)
+        return NULL;
 
-    size_t vlen;
-    const char *vdata = get_str_data(value, &vlen);
+    size_t vlen = 0;
+    const char *vdata = NULL;
+    if (!get_str_data(value, "BiMap.GetByValue: invalid value", &vdata, &vlen))
+        return NULL;
 
     uint64_t h = rt_fnv1a(vdata, vlen);
     size_t idx = (size_t)(h % bm->inv_capacity);
@@ -516,9 +540,13 @@ int8_t rt_bimap_has_key(void *obj, rt_string key) {
     if (!obj)
         return 0;
     rt_bimap_impl *bm = as_bimap(obj, "BiMap.HasKey: invalid BiMap object");
+    if (!bm || !bm->fwd_buckets || bm->fwd_capacity == 0)
+        return 0;
 
-    size_t klen;
-    const char *kdata = get_str_data(key, &klen);
+    size_t klen = 0;
+    const char *kdata = NULL;
+    if (!get_str_data(key, "BiMap.HasKey: invalid key", &kdata, &klen))
+        return 0;
 
     uint64_t h = rt_fnv1a(kdata, klen);
     size_t idx = (size_t)(h % bm->fwd_capacity);
@@ -534,9 +562,13 @@ int8_t rt_bimap_has_value(void *obj, rt_string value) {
     if (!obj)
         return 0;
     rt_bimap_impl *bm = as_bimap(obj, "BiMap.HasValue: invalid BiMap object");
+    if (!bm || !bm->inv_chains || bm->inv_capacity == 0)
+        return 0;
 
-    size_t vlen;
-    const char *vdata = get_str_data(value, &vlen);
+    size_t vlen = 0;
+    const char *vdata = NULL;
+    if (!get_str_data(value, "BiMap.HasValue: invalid value", &vdata, &vlen))
+        return 0;
 
     uint64_t h = rt_fnv1a(vdata, vlen);
     size_t idx = (size_t)(h % bm->inv_capacity);
@@ -553,9 +585,14 @@ int8_t rt_bimap_remove_by_key(void *obj, rt_string key) {
     if (!obj)
         return 0;
     rt_bimap_impl *bm = as_bimap(obj, "BiMap.RemoveByKey: invalid BiMap object");
+    if (!bm || !bm->fwd_buckets || !bm->inv_chains || bm->fwd_capacity == 0 ||
+        bm->inv_capacity == 0)
+        return 0;
 
-    size_t klen;
-    const char *kdata = get_str_data(key, &klen);
+    size_t klen = 0;
+    const char *kdata = NULL;
+    if (!get_str_data(key, "BiMap.RemoveByKey: invalid key", &kdata, &klen))
+        return 0;
 
     uint64_t h = rt_fnv1a(kdata, klen);
     size_t idx = (size_t)(h % bm->fwd_capacity);
@@ -587,9 +624,14 @@ int8_t rt_bimap_remove_by_value(void *obj, rt_string value) {
     if (!obj)
         return 0;
     rt_bimap_impl *bm = as_bimap(obj, "BiMap.RemoveByValue: invalid BiMap object");
+    if (!bm || !bm->fwd_buckets || !bm->inv_chains || bm->fwd_capacity == 0 ||
+        bm->inv_capacity == 0)
+        return 0;
 
-    size_t vlen;
-    const char *vdata = get_str_data(value, &vlen);
+    size_t vlen = 0;
+    const char *vdata = NULL;
+    if (!get_str_data(value, "BiMap.RemoveByValue: invalid value", &vdata, &vlen))
+        return 0;
 
     // Find entry via inverse lookup
     uint64_t vh = rt_fnv1a(vdata, vlen);
@@ -626,10 +668,14 @@ int8_t rt_bimap_remove_by_value(void *obj, rt_string value) {
 /// @note Invalid non-null handles raise a runtime trap.
 void *rt_bimap_keys(void *obj) {
     void *seq = rt_seq_new();
+    if (!seq)
+        return NULL;
     rt_seq_set_owns_elements(seq, 1);
     if (!obj)
         return seq;
     rt_bimap_impl *bm = as_bimap(obj, "BiMap.Keys: invalid BiMap object");
+    if (!bm)
+        return seq;
 
     for (size_t i = 0; i < bm->fwd_capacity; ++i) {
         for (rt_bm_entry *e = bm->fwd_buckets[i]; e; e = e->next) {
@@ -648,10 +694,14 @@ void *rt_bimap_keys(void *obj) {
 /// @note Invalid non-null handles raise a runtime trap.
 void *rt_bimap_values(void *obj) {
     void *seq = rt_seq_new();
+    if (!seq)
+        return NULL;
     rt_seq_set_owns_elements(seq, 1);
     if (!obj)
         return seq;
     rt_bimap_impl *bm = as_bimap(obj, "BiMap.Values: invalid BiMap object");
+    if (!bm)
+        return seq;
 
     for (size_t i = 0; i < bm->fwd_capacity; ++i) {
         for (rt_bm_entry *e = bm->fwd_buckets[i]; e; e = e->next) {
@@ -672,6 +722,8 @@ void rt_bimap_clear(void *obj) {
     if (!obj)
         return;
     rt_bimap_impl *bm = as_bimap(obj, "BiMap.Clear: invalid BiMap object");
+    if (!bm || !bm->fwd_buckets || !bm->inv_chains)
+        return;
 
     for (size_t i = 0; i < bm->fwd_capacity; ++i) {
         rt_bm_entry *e = bm->fwd_buckets[i];

@@ -88,6 +88,26 @@ int8_t rt_scene3d_try_add(void *scene, void *node);
 /// @param node Borrowed direct child to detach.
 void rt_scene3d_remove(void *scene, void *node);
 
+/// @brief Retain-append @p source's baked animation clips onto @p scene (ADR 0227).
+/// @details Clips the destination already carries (pointer identity) are
+///          skipped; the source keeps its own references. Callers merging an
+///          instantiated scene's children into another scene use this so a
+///          later save serializes the full rig instead of silently dropping it.
+/// @param scene Borrowed destination Scene3D handle.
+/// @param source Borrowed source Scene3D handle whose clips are adopted.
+/// @return Number of clips newly adopted, or 0 for invalid handles,
+///         self-adoption, or allocation failure (destination unchanged).
+int64_t rt_scene3d_adopt_baked_animations(void *scene, void *source);
+
+/// @brief Count the placeholders left by unresolved prefab references (ADR 0227).
+/// @details Every unresolved reference — missing source, cycle, depth past the
+///          format limit, exhausted instance budget, or invalid path — leaves
+///          an empty placeholder and one warning on the asset-error channel;
+///          this count includes occurrences nested inside resolved prefabs.
+/// @param scene Borrowed Scene3D handle.
+/// @return Unresolved reference count recorded at load, or 0.
+int64_t rt_scene3d_get_unresolved_prefab_count(void *scene);
+
 /// @brief Recursively search the scene for a node whose name matches @p name (NULL if none).
 /// @param scene Borrowed Scene3D handle.
 /// @param name Borrowed exact node name.
@@ -214,6 +234,18 @@ void *rt_scene3d_load(rt_string path);
 /// @return New Scene3D handle, or `NULL` on parse, validation, or allocation failure.
 void *rt_scene3d_load_from_memory(rt_string path, const char *text, size_t len);
 
+/// @brief `SceneGraph.LoadResult(path)` — Result-carrying peer of `Load` (ADR 0227).
+/// @param path Borrowed VSCN file path.
+/// @return New `Zanna.Result`: ok wraps the loaded scene, err carries diagnostics.
+void *rt_scene3d_load_result(rt_string path);
+
+/// @brief `SceneGraph.LoadTextResult(virtualPath, text)` — inverse of `SaveToText` (ADR 0227).
+/// @param virtual_path Borrowed diagnostic path naming the base directory for
+///        relative prefab references.
+/// @param text Borrowed canonical VSCN text.
+/// @return New `Zanna.Result`: ok wraps the loaded scene, err carries diagnostics.
+void *rt_scene3d_load_text_result(rt_string virtual_path, rt_string text);
+
 /// @brief Push physics body, animator root-motion, and other bindings into node transforms.
 /// Call once per frame after physics step but before draw.
 /// @param scene Borrowed Scene3D handle.
@@ -248,6 +280,14 @@ void *rt_scene_node3d_get_position(void *node);
 /// @param node Borrowed SceneNode3D handle.
 /// @param quat Borrowed quaternion handle normalized before storage.
 void rt_scene_node3d_set_rotation(void *node, void *quat);
+
+/// @brief `SceneNode.TrySetWorldPosition(x, y, z)` — translation-only world edit (ADR 0227).
+/// @param node Borrowed SceneNode3D handle.
+/// @param x Finite world-space X coordinate.
+/// @param y Finite world-space Y coordinate.
+/// @param z Finite world-space Z coordinate.
+/// @return Nonzero when applied exactly; zero when rejected (ADR 0166 contract).
+int8_t rt_scene_node3d_try_set_world_position(void *node, double x, double y, double z);
 
 /// @brief Get the node's local-space orientation as a Quaternion.
 /// @param node Borrowed SceneNode3D handle.

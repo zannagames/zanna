@@ -22,6 +22,9 @@
 
 #include "common/PlatformCapabilities.hpp"
 #include "rt.hpp"
+#include "rt_internal.h"
+#include "rt_io_class_ids.h"
+#include "rt_object.h"
 #include "rt_savedata.h"
 
 #ifdef NDEBUG
@@ -48,10 +51,13 @@ namespace {
 static jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
 static bool g_trap_expected = false;
+static bool g_trap_returns = false;
 } // namespace
 
 extern "C" void vm_trap(const char *msg) {
     g_last_trap = msg;
+    if (g_trap_returns)
+        return;
     if (g_trap_expected)
         longjmp(g_trap_jmp, 1);
     rt_abort(msg);
@@ -71,6 +77,11 @@ extern "C" void vm_trap(const char *msg) {
 /// @brief Helper: create rt_string from C literal.
 static rt_string S(const char *s) {
     return rt_const_cstr(s);
+}
+
+static void release_obj(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
 }
 
 static bool string_bytes_equal(rt_string s, const char *bytes, size_t len) {
@@ -120,6 +131,82 @@ static void test_null_safety() {
     rt_savedata_clear(nullptr);
 
     printf("  test_null_safety: PASSED\n");
+}
+
+static void test_returning_trap_safety() {
+    void *sd = rt_savedata_new(S("returning-traps"));
+    void *fake = rt_obj_new_i64(RT_SAVEDATA_CLASS_ID, 1);
+    rt_string key = rt_string_from_bytes("score", 5);
+    rt_string text_key = rt_string_from_bytes("text", 4);
+    rt_string old_value = rt_string_from_bytes("old", 3);
+    rt_string replacement = rt_string_from_bytes("replacement", 11);
+    rt_string new_key = rt_string_from_bytes("new-key", 7);
+    auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+    assert(sd != nullptr);
+    assert(fake != nullptr);
+    assert(key != nullptr);
+    assert(text_key != nullptr);
+    assert(old_value != nullptr);
+    assert(replacement != nullptr);
+    assert(new_key != nullptr);
+
+    rt_savedata_set_int(sd, key, 7);
+    rt_savedata_set_string(sd, text_key, old_value);
+    assert(rt_savedata_count(sd) == 2);
+
+    g_trap_returns = true;
+    g_last_trap = nullptr;
+    rt_savedata_set_int(fake, key, 99);
+    assert(g_last_trap != nullptr);
+    assert(rt_savedata_get_int(fake, key, -1) == -1);
+    assert(rt_savedata_has_key(fake, key) == 0);
+    assert(rt_savedata_remove(fake, key) == 0);
+    assert(rt_savedata_count(fake) == 0);
+    assert(rt_savedata_save(fake) == 0);
+    assert(rt_savedata_load(fake) == 0);
+    rt_savedata_clear(fake);
+    rt_string fake_path = rt_savedata_get_path(fake);
+    assert(fake_path != nullptr);
+    rt_string_unref(fake_path);
+
+    g_last_trap = nullptr;
+    rt_savedata_set_int(sd, forged, 99);
+    assert(g_last_trap != nullptr);
+    assert(rt_savedata_count(sd) == 2);
+    assert(rt_savedata_get_int(sd, key, -1) == 7);
+
+    g_last_trap = nullptr;
+    rt_savedata_set_string(sd, key, forged);
+    assert(g_last_trap != nullptr);
+    assert(rt_savedata_get_int(sd, key, -1) == 7);
+
+    assert(replacement->heap == RT_SSO_SENTINEL);
+    replacement->literal_refs = RT_HEAP_MAX_MORTAL_REFCNT;
+    g_last_trap = nullptr;
+    rt_savedata_set_string(sd, text_key, replacement);
+    assert(g_last_trap != nullptr);
+    replacement->literal_refs = 1;
+    rt_string retained_old = rt_savedata_get_string(sd, text_key, nullptr);
+    assert(string_bytes_equal(retained_old, "old", 3));
+    rt_string_unref(retained_old);
+
+    assert(new_key->heap == RT_SSO_SENTINEL);
+    new_key->literal_refs = RT_HEAP_MAX_MORTAL_REFCNT;
+    g_last_trap = nullptr;
+    rt_savedata_set_int(sd, new_key, 1);
+    assert(g_last_trap != nullptr);
+    new_key->literal_refs = 1;
+    assert(rt_savedata_count(sd) == 2);
+    g_trap_returns = false;
+
+    rt_string_unref(key);
+    rt_string_unref(text_key);
+    rt_string_unref(old_value);
+    rt_string_unref(replacement);
+    rt_string_unref(new_key);
+    release_obj(fake);
+    release_obj(sd);
+    printf("  test_returning_trap_safety: PASSED\n");
 }
 
 static void test_empty_name_traps() {
@@ -671,6 +758,7 @@ int main() {
     configure_test_save_root();
 
     test_null_safety();
+    test_returning_trap_safety();
     test_empty_name_traps();
     test_embedded_nul_name_traps();
     test_data_dir_embedded_nul_name_traps();

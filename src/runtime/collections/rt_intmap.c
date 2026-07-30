@@ -235,7 +235,8 @@ void *rt_intmap_new(void) {
 int64_t rt_intmap_len(void *obj) {
     if (!obj)
         return 0;
-    return (int64_t)as_intmap(obj, "IntMap.Len: invalid IntMap object")->count;
+    rt_intmap_impl *map = as_intmap(obj, "IntMap.Len: invalid IntMap object");
+    return map ? (int64_t)map->count : 0;
 }
 
 /// @brief Check whether the IntMap is empty.

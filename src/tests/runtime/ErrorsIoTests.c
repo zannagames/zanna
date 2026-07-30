@@ -151,6 +151,34 @@ static void ensure_invalid_handle_surfaces_ioerror(void) {
     assert(err.code != 0);
 }
 
+/// @brief Verify empty writes still validate descriptor lifetime.
+/// @details A null data pointer remains valid for an empty write on an open
+///          descriptor, but the same operation on a closed handle must report
+///          the stale handle rather than silently succeeding.
+static void ensure_zero_length_write_validates_handle(void) {
+    RtFile file;
+    rt_file_init(&file);
+
+    RtError err = RT_ERROR_NONE;
+    int8_t ok = rt_file_write(&file, NULL, 0, &err);
+    assert(!ok);
+    assert(err.kind == Err_IOError);
+    assert(err.code != 0);
+
+    char path[] = "/tmp/zanna_io_zero_writeXXXXXX";
+    int fd = mkstemp(path);
+    assert(fd >= 0);
+    assert(close(fd) == 0);
+
+    ok = rt_file_open(&file, path, "w", RT_F_UNSPECIFIED, &err);
+    assert(ok);
+    ok = rt_file_write(&file, NULL, 0, &err);
+    assert(ok);
+    assert(err.kind == Err_None);
+    assert(rt_file_close(&file, &err));
+    assert(unlink(path) == 0);
+}
+
 static void ensure_seek_out_of_range_reports_invalid_operation(void) {
 #if (defined(OFF_MAX) && (OFF_MAX < INT64_MAX)) || (defined(OFF_MIN) && (OFF_MIN > INT64_MIN))
     char path[] = "/tmp/zanna_io_seek_rangeXXXXXX";
@@ -235,6 +263,7 @@ int main(void) {
     ensure_read_line_reports_eof();
     ensure_read_line_trims_crlf();
     ensure_invalid_handle_surfaces_ioerror();
+    ensure_zero_length_write_validates_handle();
     ensure_seek_out_of_range_reports_invalid_operation();
     ensure_close_failure_consumes_descriptor();
     return 0;

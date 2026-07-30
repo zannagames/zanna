@@ -61,6 +61,13 @@ void rt_instbatch3d_set(void *batch, int64_t index, void *transform);
 /// @param batch InstanceBatch3D receiver; allocated capacity is retained for reuse.
 void rt_instbatch3d_clear(void *batch);
 
+/// @brief `InstanceBatch3D.GetTransform(index)` — read one instance back (ADR 0227).
+/// @param batch InstanceBatch3D receiver.
+/// @param index Zero-based instance index.
+/// @return New Mat4 copy of the authoritative transform, or identity for
+///         invalid handles or out-of-range indices.
+void *rt_instbatch3d_get(void *batch, int64_t index);
+
 /// @brief Number of instances currently in the batch.
 /// @param batch InstanceBatch3D receiver.
 /// @return Repaired nonnegative instance count, or zero for invalid/unrecoverable state.

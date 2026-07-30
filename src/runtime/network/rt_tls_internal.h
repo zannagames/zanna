@@ -15,7 +15,9 @@
 // Ownership/Lifetime:
 //   - Session objects are owned by callers of the public API (rt_tls.h).
 // Links: rt_tls.c (core TLS), rt_tls_verify.c (certificate validation),
-//        rt_smtp.c (cancellation-aware TLS owner)
+//        rt_smtp.c (cancellation-aware TLS owner),
+//        rt_network_http.c (end-to-end HTTP deadline owner),
+//        docs/adr/0228-http-end-to-end-request-deadlines.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -151,6 +153,18 @@ struct rt_tls_session {
     size_t server_cert_count;      // Number of parsed certificate entries
     uint8_t cert_transcript_hash[32]; // Transcript hash saved AFTER Certificate (for CS-3)
 };
+
+/// @brief Install or clear an owner-defined absolute I/O deadline.
+/// @details This network-internal hook does not alter the public TLS ABI.
+///          Record-layer reads and writes poll readiness against the deadline,
+///          preventing partial-record trickles from resetting an operation's
+///          elapsed-time budget. A nonpositive value clears the deadline.
+/// @param session Valid internally owned TLS session, or NULL.
+/// @param deadline_us Absolute monotonic microsecond deadline, or zero.
+static inline void rt_tls_set_internal_io_deadline(rt_tls_session_t *session, int64_t deadline_us) {
+    if (session)
+        session->io_deadline_us = deadline_us > 0 ? deadline_us : 0;
+}
 
 /// @brief Return the active end-entity certificate DER buffer for a TLS session.
 /// @details Small certificates live in @ref rt_tls_session::server_cert_der for compatibility with

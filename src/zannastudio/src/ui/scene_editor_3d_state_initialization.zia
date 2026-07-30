@@ -418,7 +418,7 @@ class SceneEditor3DStateInitialization extends PreviousLayer.SceneEditor3DState 
         revision = 0;
         viewYawDegrees = 35;
         viewPitchDegrees = 25;
-        viewScale = 28;
+        viewScale = SceneEditor3DModel.DEFAULT_VIEW_SCALE;
         viewportMode = SceneEditor3DModel.VIEWPORT_MODE_SHADED;
         renderedViewportWidth = SceneEditor3DModel.DEFAULT_VIEWPORT_WIDTH;
         renderedViewportHeight = SceneEditor3DModel.DEFAULT_VIEWPORT_HEIGHT;

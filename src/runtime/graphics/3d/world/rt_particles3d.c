@@ -874,6 +874,14 @@ void rt_particles3d_set_additive(void *o, int8_t a) {
     p->additive_blend = a ? 1 : 0;
 }
 
+/// @brief Read whether additive blending is enabled (ADR 0227).
+/// @param o Particles3D receiver.
+/// @return Nonzero for additive blending, or 0 for invalid handles.
+int8_t rt_particles3d_get_additive(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p && p->additive_blend ? 1 : 0;
+}
+
 /// @brief Velocity-aligned billboard stretching: 0 = camera-facing quads,
 ///   k scales the quad length by (1 + k * |velocity|). Clamped to [0, 8].
 /// @param o Particles3D handle; invalid handles are ignored.

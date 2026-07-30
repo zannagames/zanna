@@ -65,15 +65,15 @@ typedef struct rt_version_impl {
 /// @brief GC finalizer — release the optional prerelease and build metadata strings.
 /// @details The numeric major/minor/patch live inline in the struct,
 ///          but the optional `-pre` and `+build` portions are
-///          heap-allocated copies. `free(NULL)` is a no-op so we
+///          runtime-allocated copies. `rt_free(NULL)` is a no-op so we
 ///          don't need to guard the optional fields explicitly.
 /// @param obj Version object being finalized; null is ignored.
 static void version_finalizer(void *obj) {
     rt_version_impl *v = (rt_version_impl *)obj;
     if (!v)
         return;
-    free(v->prerelease);
-    free(v->build);
+    rt_free(v->prerelease);
+    rt_free(v->build);
 }
 
 /// @brief NUL-terminated heap copy of `s[0..len)`. Returns NULL on allocation failure.
@@ -81,7 +81,9 @@ static void version_finalizer(void *obj) {
 /// @param len Number of bytes to copy.
 /// @return Newly allocated C string, or null on allocation failure.
 static char *dup_str(const char *s, size_t len) {
-    char *r = (char *)malloc(len + 1);
+    if (!s || (uint64_t)len >= (uint64_t)INT64_MAX)
+        return NULL;
+    char *r = (char *)rt_alloc((int64_t)(len + 1));
     if (!r)
         return NULL;
     memcpy(r, s, len);
@@ -243,8 +245,10 @@ void *rt_version_parse(rt_string str) {
         if (!semver_validate_identifiers(src + start, pos - start, 1))
             return NULL;
         prerelease = dup_str(src + start, pos - start);
-        if (!prerelease)
+        if (!prerelease) {
             rt_trap("Version.Parse: memory allocation failed");
+            return NULL;
+        }
     }
 
     // Build metadata: +build.42
@@ -255,27 +259,28 @@ void *rt_version_parse(rt_string str) {
         while (pos < len)
             pos++;
         if (!semver_validate_identifiers(src + start, pos - start, 0)) {
-            free(prerelease);
+            rt_free(prerelease);
             return NULL;
         }
         build = dup_str(src + start, pos - start);
         if (!build) {
-            free(prerelease);
+            rt_free(prerelease);
             rt_trap("Version.Parse: memory allocation failed");
+            return NULL;
         }
     }
 
     // Should have consumed everything
     if (pos != len) {
-        free(prerelease);
-        free(build);
+        rt_free(prerelease);
+        rt_free(build);
         return NULL;
     }
 
     rt_version_impl *v = (rt_version_impl *)rt_obj_new_i64(0, sizeof(rt_version_impl));
     if (!v) {
-        free(prerelease);
-        free(build);
+        rt_free(prerelease);
+        rt_free(build);
         return NULL;
     }
     v->major = major;

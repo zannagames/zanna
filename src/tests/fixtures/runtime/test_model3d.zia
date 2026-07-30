@@ -5,7 +5,7 @@ bind Zanna.Math;
 bind Zanna.Terminal;
 
 func start() {
-    var path = "src/tests/fixtures/runtime/_tmp_scene_asset_surface.vscn";
+    var path = Zanna.IO.TempFile.PathWithPrefix("zia_scene_asset_surface_") + ".vscn";
     var scene = SceneGraph.New();
     var parent = SceneNode.New();
     var child = SceneNode.New();

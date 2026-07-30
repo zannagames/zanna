@@ -172,6 +172,18 @@ static int8_t scheduler_name_equals(rt_string a, rt_string b) {
     return memcmp(a_data, b_data, (size_t)a_len) == 0 ? 1 : 0;
 }
 
+/// @brief Validate a non-null public task-name argument.
+/// @param name Candidate runtime string.
+/// @param diagnostic Operation-specific invalid-name message.
+/// @return One for a live registered string, otherwise zero after trapping.
+static int scheduler_name_valid(rt_string name, const char *diagnostic) {
+    if (name && rt_string_is_handle(name))
+        return 1;
+    if (name)
+        rt_trap(diagnostic);
+    return 0;
+}
+
 //=============================================================================
 // Internal Structures
 //=============================================================================
@@ -328,6 +340,8 @@ static void scheduler_schedule_impl(void *sched,
                                     int64_t generation) {
     if (!sched || !name)
         return;
+    if (!scheduler_name_valid(name, "Scheduler.Schedule: invalid task name"))
+        return;
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return;
@@ -366,6 +380,13 @@ static void scheduler_schedule_impl(void *sched,
     }
 
     // Create new entry
+    if (data->count == INT64_MAX) {
+        SCHED_UNLOCK(data);
+        rt_string_unref(retained_name);
+        scheduler_release_object(sched);
+        rt_trap("Scheduler.Schedule: task count overflow");
+        return;
+    }
     sched_entry *entry = (sched_entry *)malloc(sizeof(sched_entry));
     if (!entry) {
         SCHED_UNLOCK(data);
@@ -411,6 +432,8 @@ void rt_scheduler_schedule_gen(void *sched, rt_string name, int64_t delay_ms, in
 int8_t rt_scheduler_cancel(void *sched, rt_string name) {
     if (!sched || !name)
         return 0;
+    if (!scheduler_name_valid(name, "Scheduler.Cancel: invalid task name"))
+        return 0;
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return 0;
@@ -422,11 +445,11 @@ int8_t rt_scheduler_cancel(void *sched, rt_string name) {
         if (scheduler_name_equals((*pp)->name, name)) {
             sched_entry *e = *pp;
             *pp = e->next;
-            rt_string_unref(e->name);
-            free(e);
             data->count--;
             SCHED_UNLOCK(data);
             scheduler_release_object(sched);
+            rt_string_unref(e->name);
+            free(e);
             return 1;
         }
         pp = &(*pp)->next;
@@ -445,6 +468,8 @@ int8_t rt_scheduler_cancel(void *sched, rt_string name) {
 /// @return 1 if due, 0 if not due or not found.
 int8_t rt_scheduler_is_due(void *sched, rt_string name) {
     if (!sched || !name)
+        return 0;
+    if (!scheduler_name_valid(name, "Scheduler.IsDue: invalid task name"))
         return 0;
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
@@ -481,6 +506,8 @@ int8_t rt_scheduler_is_due(void *sched, rt_string name) {
 int8_t rt_scheduler_is_due_gen(void *sched, rt_string name, int64_t generation) {
     if (!sched || !name)
         return 0;
+    if (!scheduler_name_valid(name, "Scheduler.IsDueGen: invalid task name"))
+        return 0;
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
         return 0;
@@ -510,6 +537,8 @@ int8_t rt_scheduler_is_due_gen(void *sched, rt_string name, int64_t generation) 
 /// @return The entry's generation, or -1 if @p name is not scheduled.
 int64_t rt_scheduler_generation_of(void *sched, rt_string name) {
     if (!sched || !name)
+        return -1;
+    if (!scheduler_name_valid(name, "Scheduler.GenerationOf: invalid task name"))
         return -1;
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)
@@ -541,6 +570,8 @@ int64_t rt_scheduler_generation_of(void *sched, rt_string name) {
 /// @return Caller-owned `Some(Int64)` for a scheduled name, or the runtime None Option.
 void *rt_scheduler_generation_of_option(void *sched, rt_string name) {
     if (!sched || !name)
+        return rt_option_none();
+    if (!scheduler_name_valid(name, "Scheduler.GenerationOfOption: invalid task name"))
         return rt_option_none();
     rt_scheduler_data *data = scheduler_require(sched, 0);
     if (!data)

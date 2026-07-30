@@ -44,6 +44,7 @@
 #include "rt_collection_ids.h"
 #include "rt_error.h"
 #include "rt_gc.h"
+#include "rt_hash_table_util.h"
 #include "rt_hash_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
@@ -111,28 +112,35 @@ static uint64_t om_hash(const char *key, size_t len) {
 }
 
 /// @brief Borrow the complete byte representation of a runtime string key.
-/// @details Null, empty, or unreadable string handles normalize to the empty
-///          key. Returned storage remains owned by @p key.
+/// @details Null denotes the empty key. A forged or stale nonnull handle traps
+///          and is never normalized to a valid empty-key lookup.
 /// @param key Runtime string key; `NULL` denotes the empty key.
+/// @param what Diagnostic raised for a stale or forged nonnull handle.
+/// @param out_data Receives borrowed key bytes.
 /// @param out_len Receives the number of key-identity bytes.
-/// @return Borrowed key bytes, never `NULL`.
-static const char *om_key_data(rt_string key, size_t *out_len) {
+/// @return Nonzero for a null or live string handle; otherwise zero after
+///         trapping.
+static int om_key_data(rt_string key, const char *what, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
     if (!key) {
-        *out_len = 0;
-        return "";
+        return 1;
+    }
+    if (!rt_string_is_handle(key)) {
+        rt_trap_raise_kind(RT_TRAP_KIND_RUNTIME_ERROR, Err_RuntimeError, -1, what);
+        return 0;
     }
     int64_t len = rt_str_len(key);
-    if (len <= 0) {
-        *out_len = 0;
-        return "";
-    }
+    if (len <= 0)
+        return 1;
     const char *cstr = rt_string_cstr(key);
     if (!cstr) {
-        *out_len = 0;
-        return "";
+        rt_trap_raise_kind(RT_TRAP_KIND_RUNTIME_ERROR, Err_RuntimeError, -1, what);
+        return 0;
     }
+    *out_data = cstr;
     *out_len = (size_t)len;
-    return cstr;
+    return 1;
 }
 
 /// @brief Drop one GC reference to a stored value and free it at zero.
@@ -302,7 +310,8 @@ void *rt_orderedmap_new(void) {
 int64_t rt_orderedmap_len(void *map) {
     if (!map)
         return 0;
-    return as_orderedmap(map, "OrderedMap.Len: invalid OrderedMap object")->count;
+    rt_orderedmap_impl *impl = as_orderedmap(map, "OrderedMap.Len: invalid OrderedMap object");
+    return impl ? impl->count : 0;
 }
 
 /// @brief Check whether the ordered map has no entries.
@@ -311,7 +320,8 @@ int64_t rt_orderedmap_len(void *map) {
 int8_t rt_orderedmap_is_empty(void *map) {
     if (!map)
         return 1;
-    return as_orderedmap(map, "OrderedMap.IsEmpty: invalid OrderedMap object")->count == 0 ? 1 : 0;
+    rt_orderedmap_impl *impl = as_orderedmap(map, "OrderedMap.IsEmpty: invalid OrderedMap object");
+    return !impl || impl->count == 0 ? 1 : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -337,8 +347,21 @@ void rt_orderedmap_set(void *map, rt_string key, void *value) {
         return;
     }
 
-    size_t klen;
-    const char *kstr = om_key_data(key, &klen);
+    if (!m->buckets || m->capacity <= 0) {
+        rt_gc_mutator_exit();
+        rt_trap_raise_kind(RT_TRAP_KIND_RUNTIME_ERROR,
+                           Err_RuntimeError,
+                           -1,
+                           "OrderedMap.Set: unavailable bucket table");
+        return;
+    }
+
+    size_t klen = 0;
+    const char *kstr = NULL;
+    if (!om_key_data(key, "OrderedMap.Set: invalid key", &kstr, &klen)) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     // Check for existing key
     rt_om_entry *existing = om_find(m, kstr, klen);
@@ -353,8 +376,15 @@ void rt_orderedmap_set(void *map, rt_string key, void *value) {
         return;
     }
 
+    if (m->count == INT64_MAX) {
+        rt_gc_mutator_exit();
+        rt_trap_raise_kind(
+            RT_TRAP_KIND_OVERFLOW, Err_Overflow, -1, "OrderedMap.Set: maximum size reached");
+        return;
+    }
+
     // Resize if needed
-    if ((long double)m->count * 4.0L >= (long double)m->capacity * 3.0L && !om_resize(m)) {
+    if (rt_hash_table_exceeds_load((size_t)m->count + 1, (size_t)m->capacity) && !om_resize(m)) {
         rt_gc_mutator_exit();
         return;
     }
@@ -429,9 +459,13 @@ void *rt_orderedmap_get(void *map, rt_string key) {
     if (!map)
         return NULL;
     rt_orderedmap_impl *m = as_orderedmap(map, "OrderedMap.Get: invalid OrderedMap object");
+    if (!m || !m->buckets || m->capacity <= 0)
+        return NULL;
 
-    size_t klen;
-    const char *kstr = om_key_data(key, &klen);
+    size_t klen = 0;
+    const char *kstr = NULL;
+    if (!om_key_data(key, "OrderedMap.Get: invalid key", &kstr, &klen))
+        return NULL;
 
     rt_om_entry *e = om_find(m, kstr, klen);
     return e ? e->value : NULL;
@@ -445,9 +479,13 @@ int8_t rt_orderedmap_has(void *map, rt_string key) {
     if (!map)
         return 0;
     rt_orderedmap_impl *m = as_orderedmap(map, "OrderedMap.Has: invalid OrderedMap object");
+    if (!m || !m->buckets || m->capacity <= 0)
+        return 0;
 
-    size_t klen;
-    const char *kstr = om_key_data(key, &klen);
+    size_t klen = 0;
+    const char *kstr = NULL;
+    if (!om_key_data(key, "OrderedMap.Has: invalid key", &kstr, &klen))
+        return 0;
 
     return om_find(m, kstr, klen) != NULL ? 1 : 0;
 }
@@ -474,8 +512,12 @@ int8_t rt_orderedmap_remove(void *map, rt_string key) {
         return 0;
     }
 
-    size_t klen;
-    const char *kstr = om_key_data(key, &klen);
+    size_t klen = 0;
+    const char *kstr = NULL;
+    if (!om_key_data(key, "OrderedMap.Remove: invalid key", &kstr, &klen)) {
+        rt_gc_mutator_exit();
+        return 0;
+    }
 
     uint64_t idx = om_hash(kstr, klen) % (uint64_t)m->capacity;
 
@@ -521,10 +563,14 @@ int8_t rt_orderedmap_remove(void *map, rt_string key) {
 /// @return New runtime-managed owning `Seq` of copied keys.
 void *rt_orderedmap_keys(void *map) {
     void *seq = rt_seq_new();
+    if (!seq)
+        return NULL;
     rt_seq_set_owns_elements(seq, 1);
     if (!map)
         return seq;
     rt_orderedmap_impl *m = as_orderedmap(map, "OrderedMap.Keys: invalid OrderedMap object");
+    if (!m)
+        return seq;
 
     rt_om_entry *e = m->head;
     while (e) {
@@ -544,10 +590,14 @@ void *rt_orderedmap_keys(void *map) {
 /// @return New runtime-managed owning `Seq` of stored values.
 void *rt_orderedmap_values(void *map) {
     void *seq = rt_seq_new();
+    if (!seq)
+        return NULL;
     rt_seq_set_owns_elements(seq, 1);
     if (!map)
         return seq;
     rt_orderedmap_impl *m = as_orderedmap(map, "OrderedMap.Values: invalid OrderedMap object");
+    if (!m)
+        return seq;
 
     rt_om_entry *e = m->head;
     while (e) {
@@ -571,6 +621,8 @@ rt_string rt_orderedmap_key_at(void *map, int64_t index) {
     if (!map)
         return NULL;
     rt_orderedmap_impl *m = as_orderedmap(map, "OrderedMap.KeyAt: invalid OrderedMap object");
+    if (!m)
+        return NULL;
 
     if (index < 0 || index >= m->count)
         return NULL;

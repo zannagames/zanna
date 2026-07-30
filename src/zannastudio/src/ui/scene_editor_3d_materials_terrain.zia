@@ -823,10 +823,18 @@ class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBake
         if importedCount > 0 {
             firstImported = importedScene.Root.GetChild(0);
         }
+        // Merging into authored content must not yank the camera away from
+        // the user's working area; only a previously empty document frames.
+        var mergingIntoExisting =
+            scene != null and scene.Root.ChildCount > 0;
         if scene == null {
             scene = importedScene;
         } else if importedCount > 0 {
             var importedRoot = importedScene.Root;
+            // Animation clips ride the instantiated scene's carrier, not
+            // its nodes: adopt them before the merge so a later Save
+            // serializes the imported rig instead of dropping it (ADR 0227).
+            scene.AdoptAnimations(importedScene);
             while importedRoot.ChildCount > 0 {
                 var importedNode = importedRoot.GetChild(0);
                 importedRoot.RemoveChild(importedNode);
@@ -852,7 +860,7 @@ class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBake
             return false;
         }
         RefreshHierarchy(firstImported);
-        FrameAll();
+        if mergingIntoExisting == false { FrameAll(); }
         return CommitScene(
             "Imported " + importedCount + " node(s) from " + Path.Name(path));
     }
@@ -931,7 +939,8 @@ class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBake
             baseDir = Path.Directory(currentDoc.filePath);
         }
         var path = GUI.FileDialog.Open(
-            "Import 3D Asset", baseDir, "*.vscn;*.gltf;*.glb;*.fbx;*.obj;*.stl");
+            "Import 3D Asset", baseDir,
+            "*.scene3d;*.vscn;*.gltf;*.glb;*.fbx;*.obj;*.stl");
         if path == "" { return false; }
         return ImportAssetPath(path);
     }

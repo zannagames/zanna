@@ -37,11 +37,11 @@
 /// @file
 /// @brief Extended runtime byte-string and strict UTF-8 operations.
 
+#include "rt_ascii.h"
 #include "rt_internal.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_string_builder.h"
-#include "rt_ascii.h"
 #include "rt_string_internal.h"
 
 #include <ctype.h>
@@ -55,6 +55,18 @@
 // Extended String Functions (Zanna.String expansion)
 //===----------------------------------------------------------------------===//
 
+/// @brief Validate an optional runtime string before reading its wrapper.
+/// @param str Candidate borrowed string; null is accepted.
+/// @param diagnostic Operation-specific invalid-handle message.
+/// @return One for null or a registered live string, otherwise zero after a
+///         recoverable trap.
+static int rt_string_arg_valid_(rt_string str, const char *diagnostic) {
+    if (!str || rt_string_is_handle(str))
+        return 1;
+    rt_trap(diagnostic);
+    return 0;
+}
+
 /// @brief Replace every non-overlapping occurrence of @p needle.
 /// @details Scans the stored bytes once, using the first needle byte to locate
 ///          candidates before verifying the complete match. A null haystack
@@ -67,6 +79,11 @@
 /// @return Owned transformed string, retained haystack, empty singleton, or
 ///         `NULL` after a builder/allocation trap.
 rt_string rt_str_replace(rt_string haystack, rt_string needle, rt_string replacement) {
+    if (!rt_string_arg_valid_(haystack, "String.Replace: invalid source") ||
+        !rt_string_arg_valid_(needle, "String.Replace: invalid needle") ||
+        !rt_string_arg_valid_(replacement, "String.Replace: invalid replacement")) {
+        return NULL;
+    }
     if (!haystack)
         return rt_empty_string();
     if (!needle || !replacement)
@@ -162,6 +179,10 @@ rt_string rt_str_replace(rt_string haystack, rt_string needle, rt_string replace
 /// @param prefix Borrowed prefix; NULL never matches.
 /// @return One when the complete prefix matches; otherwise zero.
 int64_t rt_str_starts_with(rt_string str, rt_string prefix) {
+    if (!rt_string_arg_valid_(str, "String.StartsWith: invalid source") ||
+        !rt_string_arg_valid_(prefix, "String.StartsWith: invalid prefix")) {
+        return 0;
+    }
     if (!str || !prefix)
         return 0;
 
@@ -183,6 +204,10 @@ int64_t rt_str_starts_with(rt_string str, rt_string prefix) {
 /// @param suffix Borrowed suffix; NULL never matches.
 /// @return One when the complete suffix matches; otherwise zero.
 int64_t rt_str_ends_with(rt_string str, rt_string suffix) {
+    if (!rt_string_arg_valid_(str, "String.EndsWith: invalid source") ||
+        !rt_string_arg_valid_(suffix, "String.EndsWith: invalid suffix")) {
+        return 0;
+    }
     if (!str || !suffix)
         return 0;
 
@@ -204,6 +229,10 @@ int64_t rt_str_ends_with(rt_string str, rt_string suffix) {
 /// @param needle Borrowed byte sequence; NULL never matches.
 /// @return One when a match exists; otherwise zero.
 int64_t rt_str_has(rt_string str, rt_string needle) {
+    if (!rt_string_arg_valid_(str, "String.Has: invalid source") ||
+        !rt_string_arg_valid_(needle, "String.Has: invalid needle")) {
+        return 0;
+    }
     if (!str || !needle)
         return 0;
 
@@ -232,6 +261,10 @@ int64_t rt_str_has(rt_string str, rt_string needle) {
 /// @param needle Borrowed byte sequence; may be NULL.
 /// @return Number of non-overlapping matches, or zero for invalid/no matches.
 int64_t rt_str_count(rt_string str, rt_string needle) {
+    if (!rt_string_arg_valid_(str, "String.Count: invalid source") ||
+        !rt_string_arg_valid_(needle, "String.Count: invalid needle")) {
+        return 0;
+    }
     if (!str || !needle)
         return 0;
 
@@ -275,6 +308,10 @@ int64_t rt_str_count(rt_string str, rt_string needle) {
 /// @return Owned padded string, retained source, empty singleton, or `NULL`
 ///         after validation/allocation failure.
 rt_string rt_str_pad_left(rt_string str, int64_t width, rt_string pad_str) {
+    if (!rt_string_arg_valid_(str, "String.PadLeft: invalid source") ||
+        !rt_string_arg_valid_(pad_str, "String.PadLeft: invalid padding")) {
+        return NULL;
+    }
     if (!str)
         return rt_empty_string();
 
@@ -322,6 +359,10 @@ rt_string rt_str_pad_left(rt_string str, int64_t width, rt_string pad_str) {
 /// @return Owned padded string, retained source, empty singleton, or `NULL`
 ///         after validation/allocation failure.
 rt_string rt_str_pad_right(rt_string str, int64_t width, rt_string pad_str) {
+    if (!rt_string_arg_valid_(str, "String.PadRight: invalid source") ||
+        !rt_string_arg_valid_(pad_str, "String.PadRight: invalid padding")) {
+        return NULL;
+    }
     if (!str)
         return rt_empty_string();
 
@@ -368,6 +409,10 @@ rt_string rt_str_pad_right(rt_string str, int64_t width, rt_string pad_str) {
 ///         `NULL` after a result-size trap; allocation behavior otherwise
 ///         follows the Seq and string constructors.
 void *rt_str_split(rt_string str, rt_string delim) {
+    if (!rt_string_arg_valid_(str, "String.Split: invalid source") ||
+        !rt_string_arg_valid_(delim, "String.Split: invalid delimiter")) {
+        return NULL;
+    }
     if (!str) {
         // Push empty string for null input
         void *result = rt_seq_with_capacity_owned(1);
@@ -454,6 +499,8 @@ void *rt_str_split(rt_string str, rt_string delim) {
 ///         `NULL` after a result-size trap; allocation behavior otherwise
 ///         follows the Seq and string constructors.
 void *rt_str_lines(rt_string str) {
+    if (!rt_string_arg_valid_(str, "String.Lines: invalid source"))
+        return NULL;
     if (!str) {
         // Mirror rt_str_split: a null source yields a single empty segment.
         void *result = rt_seq_with_capacity_owned(1);
@@ -520,6 +567,8 @@ static int rt_char_is_ascii_digit(unsigned char c) {
 /// @param s Borrowed source string; may be NULL or empty.
 /// @return First byte promoted as an unsigned value, or -1 for no byte.
 static int rt_char_first_byte(rt_string s) {
+    if (!rt_string_arg_valid_(s, "Text.Char: invalid string"))
+        return -1;
     if (!s)
         return -1;
     const char *d = rt_string_cstr(s);
@@ -571,6 +620,8 @@ int8_t rt_text_char_is_alnum(rt_string s) {
 /// @return Owned joined string or empty singleton, or `NULL` on overflow or
 ///         allocation failure.
 rt_string rt_str_join(rt_string sep, void *seq) {
+    if (!rt_string_arg_valid_(sep, "String.Join: invalid separator"))
+        return NULL;
     if (!seq)
         return rt_empty_string();
 
@@ -584,6 +635,8 @@ rt_string rt_str_join(rt_string sep, void *seq) {
     size_t total = 0;
     for (int64_t i = 0; i < len; i++) {
         rt_string item = (rt_string)rt_seq_get(seq, i);
+        if (!rt_string_arg_valid_(item, "String.Join: invalid sequence item"))
+            return NULL;
         size_t item_len = item ? rt_string_len_bytes(item) : 0;
         if (total > SIZE_MAX - item_len) {
             rt_trap("rt_str_join: length overflow");
@@ -606,6 +659,10 @@ rt_string rt_str_join(rt_string sep, void *seq) {
     char *dst = result->data;
     for (int64_t i = 0; i < len; i++) {
         rt_string item = (rt_string)rt_seq_get(seq, i);
+        if (!rt_string_arg_valid_(item, "String.Join: invalid sequence item")) {
+            rt_string_unref(result);
+            return NULL;
+        }
         size_t item_len = item ? rt_string_len_bytes(item) : 0;
         if (item_len > 0) {
             memcpy(dst, item->data, item_len);
@@ -631,6 +688,8 @@ rt_string rt_str_join(rt_string sep, void *seq) {
 /// @return Owned repeated string or empty singleton, or `NULL` after an
 ///         overflow trap or allocation failure.
 rt_string rt_str_repeat(rt_string str, int64_t count) {
+    if (!rt_string_arg_valid_(str, "String.Repeat: invalid source"))
+        return NULL;
     if (!str || count <= 0)
         return rt_empty_string();
 
@@ -759,6 +818,8 @@ size_t utf8_char_len(unsigned char c) {
 /// @param str Borrowed UTF-8 source string; may be NULL.
 /// @return Owned reversed string or empty singleton, or `NULL` after failure.
 rt_string rt_str_flip(rt_string str) {
+    if (!rt_string_arg_valid_(str, "String.Flip: invalid source"))
+        return NULL;
     if (!str)
         return rt_empty_string();
 
@@ -838,6 +899,10 @@ rt_string rt_str_flip(rt_string str) {
 /// @param b Borrowed second string; may be NULL.
 /// @return Exactly -1, 0, or 1 according to the total ordering.
 int64_t rt_str_cmp(rt_string a, rt_string b) {
+    if (!rt_string_arg_valid_(a, "String.Compare: invalid left operand") ||
+        !rt_string_arg_valid_(b, "String.Compare: invalid right operand")) {
+        return 0;
+    }
     if (!a && !b)
         return 0;
     if (!a)
@@ -868,6 +933,10 @@ int64_t rt_str_cmp(rt_string a, rt_string b) {
 /// @param b Borrowed second string; may be NULL.
 /// @return Exactly -1, 0, or 1 according to ASCII-folded byte ordering.
 int64_t rt_str_cmp_nocase(rt_string a, rt_string b) {
+    if (!rt_string_arg_valid_(a, "String.CompareNoCase: invalid left operand") ||
+        !rt_string_arg_valid_(b, "String.CompareNoCase: invalid right operand")) {
+        return 0;
+    }
     if (!a && !b)
         return 0;
     if (!a)

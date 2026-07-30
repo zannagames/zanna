@@ -181,6 +181,83 @@ static void test_stats(void) {
     printf("test_stats: PASSED\n");
 }
 
+/// @brief Verify invalid enum values cannot index before or after the pool table.
+static void test_stats_reject_invalid_classes(void) {
+    size_t allocated = 7;
+    size_t free_count = 9;
+    rt_pool_stats(static_cast<rt_pool_class_t>(-1), &allocated, &free_count);
+    assert(allocated == 0);
+    assert(free_count == 0);
+
+    allocated = 7;
+    free_count = 9;
+    rt_pool_stats(RT_POOL_COUNT, &allocated, &free_count);
+    assert(allocated == 0);
+    assert(free_count == 0);
+
+    printf("test_stats_reject_invalid_classes: PASSED\n");
+}
+
+/// @brief Stress concurrent freelist publication while sampling the free counter.
+/// @details Workers keep nearly every block in one slab checked out, repeatedly
+///          returning and reacquiring their final blocks. A freelist node must
+///          never become visible to another pop before its counter increment;
+///          otherwise an empty-list handoff can transiently wrap the statistic
+///          to a value near SIZE_MAX.
+static void test_live_stats_do_not_underflow(void) {
+    rt_pool_shutdown();
+
+    constexpr size_t kBlockCount = 64;
+    constexpr size_t kWorkerCount = 4;
+    constexpr int kIterations = 25000;
+    std::vector<void *> blocks(kBlockCount, nullptr);
+    for (void *&block : blocks) {
+        block = rt_pool_alloc(64);
+        assert(block != nullptr);
+    }
+
+    std::atomic<bool> start{false};
+    std::atomic<size_t> active{kWorkerCount};
+    std::atomic<int> failures{0};
+    std::vector<std::thread> workers;
+    for (size_t worker = 0; worker < kWorkerCount; ++worker) {
+        workers.emplace_back([&, worker] {
+            void *owned = blocks[kBlockCount - kWorkerCount + worker];
+            while (!start.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            for (int iteration = 0; iteration < kIterations; ++iteration) {
+                rt_pool_free(owned, 64);
+                owned = rt_pool_alloc(64);
+                if (!owned) {
+                    failures.fetch_add(1, std::memory_order_relaxed);
+                    break;
+                }
+            }
+            blocks[kBlockCount - kWorkerCount + worker] = owned;
+            active.fetch_sub(1, std::memory_order_release);
+        });
+    }
+
+    start.store(true, std::memory_order_release);
+    while (active.load(std::memory_order_acquire) != 0) {
+        size_t free_count = 0;
+        rt_pool_stats(RT_POOL_64, nullptr, &free_count);
+        if (free_count > SIZE_MAX / 2)
+            failures.fetch_add(1, std::memory_order_relaxed);
+    }
+
+    for (auto &worker : workers)
+        worker.join();
+    assert(failures.load(std::memory_order_relaxed) == 0);
+
+    for (void *block : blocks) {
+        if (block)
+            rt_pool_free(block, 64);
+    }
+    rt_pool_shutdown();
+    printf("test_live_stats_do_not_underflow: PASSED\n");
+}
+
 /// @brief Verify shutdown defers slab reclamation while a block remains live.
 /// @details A shutdown request must not invalidate outstanding allocations or
 ///          route their later release through system free. Once the last block
@@ -427,6 +504,8 @@ int main(void) {
     test_zeroed();
     test_reuse();
     test_stats();
+    test_stats_reject_invalid_classes();
+    test_live_stats_do_not_underflow();
     test_shutdown_defers_live_slab();
     test_double_free_is_rejected();
     test_concurrent_shutdown_epoch();

@@ -40,6 +40,7 @@
 
 #include "rt_asset_error.h"
 #include "rt_box.h"
+#include "rt_result.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_file_stdio.h"
@@ -2544,33 +2545,57 @@ static void vscn_mark_instance_content(rt_scene_node3d *node) {
         vscn_mark_instance_content(scene_node3d_checked(node->children[i]));
 }
 
+/// @brief Report one placeholder-producing prefab failure (ADR 0227).
+/// @param node Borrowed placeholder node carrying the retained reference.
+/// @param reason Borrowed static reason token (missing/cycle/depth/budget/invalid).
+static void vscn_warn_unresolved_prefab(const rt_scene_node3d *node, const char *reason) {
+    const char *path = node && node->prefab_path ? rt_string_cstr(node->prefab_path) : NULL;
+    const char *name = node && node->name ? rt_string_cstr(node->name) : NULL;
+    rt_asset_error_add_warningf("Scene3D prefab '%s' on node '%s' left a placeholder: %s",
+                                path ? path : "",
+                                name ? name : "",
+                                reason ? reason : "invalid");
+}
+
 /// @brief Resolve and graft one prefab node's referenced content.
 /// @details Every guard failure leaves the node an empty placeholder with
 ///          its reference retained; the surrounding load still succeeds.
+///          Each placeholder adds one asset-error warning so authors and
+///          games can tell a broken reference from an authored empty node.
 /// @param node Borrowed placeholder node containing a retained prefab path.
 /// @param base_dir Borrowed directory against which relative references resolve.
 /// @param self_frame Borrowed current file's resolution frame and shared budget.
-static void vscn_graft_one_prefab(rt_scene_node3d *node,
-                                  rt_string base_dir,
-                                  const vscn_prefab_frame *self_frame) {
+/// @return Unresolved references contributed by this node: 1 for a
+///         placeholder, or the referenced scene's own nested count.
+static int32_t vscn_graft_one_prefab(rt_scene_node3d *node,
+                                     rt_string base_dir,
+                                     const vscn_prefab_frame *self_frame) {
     rt_string joined = NULL;
     rt_string canonical = NULL;
     rt_scene3d *child_scene = NULL;
+    int32_t nested_unresolved = 0;
 
     if (!node || !node->prefab_path)
-        return;
-    if (self_frame->depth >= VSCN_PREFAB_MAX_DEPTH)
-        return;
-    if (self_frame->instance_budget && *self_frame->instance_budget <= 0)
-        return;
+        return 0;
+    if (self_frame->depth >= VSCN_PREFAB_MAX_DEPTH) {
+        vscn_warn_unresolved_prefab(node, "nesting depth limit");
+        return 1;
+    }
+    if (self_frame->instance_budget && *self_frame->instance_budget <= 0) {
+        vscn_warn_unresolved_prefab(node, "instance budget exhausted");
+        return 1;
+    }
 
     joined = rt_path_join(base_dir, node->prefab_path);
-    if (!joined)
-        return;
+    if (!joined) {
+        vscn_warn_unresolved_prefab(node, "invalid path");
+        return 1;
+    }
     canonical = rt_path_abs(joined);
     if (!canonical) {
         rt_string_unref(joined);
-        return;
+        vscn_warn_unresolved_prefab(node, "invalid path");
+        return 1;
     }
     {
         const char *canonical_cstr = rt_string_cstr(canonical);
@@ -2579,14 +2604,16 @@ static void vscn_graft_one_prefab(rt_scene_node3d *node,
             if (frame->canonical_path && strcmp(frame->canonical_path, canonical_cstr) == 0) {
                 rt_string_unref(joined);
                 rt_string_unref(canonical);
-                return; /* cycle: placeholder */
+                vscn_warn_unresolved_prefab(node, "reference cycle");
+                return 1;
             }
             frame = frame->parent;
         }
         if (!canonical_cstr) {
             rt_string_unref(joined);
             rt_string_unref(canonical);
-            return;
+            vscn_warn_unresolved_prefab(node, "invalid path");
+            return 1;
         }
         if (self_frame->instance_budget)
             (*self_frame->instance_budget)--;
@@ -2602,8 +2629,10 @@ static void vscn_graft_one_prefab(rt_scene_node3d *node,
     }
     rt_string_unref(joined);
     rt_string_unref(canonical);
-    if (!child_scene)
-        return; /* missing/invalid source: placeholder with retained ref */
+    if (!child_scene) {
+        vscn_warn_unresolved_prefab(node, "missing or unloadable source");
+        return 1;
+    }
 
     if (child_scene->root) {
         while (scene3d_node_child_count(child_scene->root) > 0) {
@@ -2614,10 +2643,12 @@ static void vscn_graft_one_prefab(rt_scene_node3d *node,
     }
     for (int32_t i = 0; i < scene3d_node_child_count(node); ++i)
         vscn_mark_instance_content(scene_node3d_checked(node->children[i]));
+    nested_unresolved = child_scene->unresolved_prefab_count;
     {
         void *scene_ref = child_scene;
         scene3d_release_ref(&scene_ref);
     }
+    return nested_unresolved;
 }
 
 /// @brief Resolve every prefab reference in one freshly parsed scene.
@@ -2665,7 +2696,8 @@ static void vscn_graft_prefabs(rt_scene3d *scene,
             if (!current)
                 continue;
             if (current->prefab_path) {
-                vscn_graft_one_prefab(current, base_dir, &self_frame);
+                scene->unresolved_prefab_count +=
+                    vscn_graft_one_prefab(current, base_dir, &self_frame);
                 continue; /* grafted content never re-resolves */
             }
             for (int32_t i = 0; i < scene3d_node_child_count(current); ++i) {
@@ -3152,6 +3184,82 @@ void *rt_scene3d_load(rt_string path) {
         rt_asset_error_end_load_failure();
     }
     return scene;
+}
+
+/// @brief Wrap one owned scene load outcome as a `Zanna.Result` (ADR 0227).
+/// @details Ok retains the scene and the local reference is released; err
+///          carries the loader's diagnostic text or @p fallback when the
+///          asset-error channel is empty.
+/// @param value Owned freshly loaded scene, or `NULL` on failure.
+/// @param fallback Borrowed static fallback message.
+/// @return New Result carrying the scene or the failure text.
+static void *scene3d_load_value_to_result(void *value, const char *fallback) {
+    if (value) {
+        void *result = rt_result_ok(value);
+        void *local = value;
+        scene3d_release_ref(&local);
+        return result;
+    }
+    {
+        const char *message = rt_asset_error_get_message();
+        if (!message || message[0] == '\0') {
+            rt_string err = rt_const_cstr(fallback ? fallback : "SceneGraph load failed");
+            void *result = rt_result_err_str(err);
+            rt_string_unref(err);
+            return result;
+        }
+        {
+            rt_string err = rt_string_from_bytes(message, strlen(message));
+            void *result = rt_result_err_str(err);
+            rt_str_release_maybe(err);
+            return result;
+        }
+    }
+}
+
+/// @brief `SceneGraph.LoadResult(path)` — Result-carrying peer of `Load` (ADR 0227).
+/// @param path Borrowed runtime-string file path.
+/// @return New Result: ok wraps the loaded SceneGraph, err carries diagnostics.
+void *rt_scene3d_load_result(rt_string path) {
+    rt_asset_error_begin_load();
+    if (!path || !rt_string_cstr(path)) {
+        rt_asset_error_end_load_failure();
+        rt_string err = rt_const_cstr("SceneGraph.LoadResult: invalid path");
+        void *result = rt_result_err_str(err);
+        rt_string_unref(err);
+        return result;
+    }
+    {
+        void *scene = rt_scene3d_load_impl(path);
+        if (scene) {
+            rt_asset_error_end_load_success();
+        } else {
+            rt_asset_error_set_if_empty(RT_ASSET_ERROR_CORRUPT,
+                                        "SceneGraph.LoadResult: failed to load scene");
+            rt_asset_error_end_load_failure();
+        }
+        return scene3d_load_value_to_result(scene, "SceneGraph.LoadResult failed");
+    }
+}
+
+/// @brief `SceneGraph.LoadTextResult(virtualPath, text)` — inverse of `SaveToText` (ADR 0227).
+/// @details @p virtualPath names the base directory for relative prefab
+///          references exactly as in `SceneAsset.LoadTextResult`; untitled
+///          documents accept that relative references cannot resolve.
+/// @param virtual_path Borrowed diagnostic/source path.
+/// @param text Borrowed canonical VSCN text.
+/// @return New Result: ok wraps the loaded SceneGraph, err carries diagnostics.
+void *rt_scene3d_load_text_result(rt_string virtual_path, rt_string text) {
+    const char *bytes = text ? rt_string_cstr(text) : NULL;
+    if (!bytes) {
+        rt_string err = rt_const_cstr("SceneGraph.LoadTextResult: invalid scene text");
+        void *result = rt_result_err_str(err);
+        rt_string_unref(err);
+        return result;
+    }
+    return scene3d_load_value_to_result(rt_scene3d_load_from_memory(virtual_path, bytes,
+                                                                    strlen(bytes)),
+                                        "SceneGraph.LoadTextResult failed");
 }
 
 #endif // ZANNA_ENABLE_GRAPHICS

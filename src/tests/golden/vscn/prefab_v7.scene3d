@@ -1,0 +1,40 @@
+{
+  "format": "vscn",
+  "version": 7,
+  "textures": [
+  ],
+  "cubemaps": [
+  ],
+  "materials": [
+  ],
+  "cameras": [
+  ],
+  "meshes": [
+  ],
+  "nodes": [
+    {
+      "name": "Golden Instance",
+      "position": [4, 0, -2],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "prefab": "golden_prefab_source.scene3d",
+      "metadata": {
+        "row": {"kind": "int", "value": "4"}
+      }
+    }
+,    {
+      "name": "Golden Plain",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1
+    }
+  ]
+}

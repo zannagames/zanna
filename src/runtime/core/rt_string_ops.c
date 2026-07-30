@@ -309,28 +309,36 @@ void rt_string_registry_shutdown(void) {
     rt_string_registry_unlock_();
 }
 
-/// @brief Retrieve the heap header associated with a runtime string.
-/// @details Validates the string handle before reading the wrapper fields.
-///          Returns `NULL` for literal strings and embedded (SSO) strings that
-///          are not backed by the shared heap. Corrupt heap-backed strings trap
-///          and return NULL if the trap hook recovers.
-/// @param s Borrowed runtime string; may be NULL.
-/// @return Borrowed heap header for heap-backed storage, or `NULL` for null,
-///         literal, embedded, invalid, or corrupt input.
-static rt_heap_hdr_t *rt_string_header(rt_string s) {
+/// @brief Require a non-null live string handle before reading wrapper fields.
+/// @param s Candidate string handle.
+/// @param diagnostic Stable operation-specific trap message.
+/// @return One for a registered live handle; otherwise zero after trapping.
+static int rt_string_require_handle_(rt_string s, const char *diagnostic) {
+    if (s && rt_string_is_handle((void *)s))
+        return 1;
+    rt_trap(diagnostic);
+    return 0;
+}
+
+/// @brief Retrieve the heap header from an already-validated string handle.
+/// @details Literal and embedded strings have no shared-heap header. A separate
+///          heap pointer is accepted only when the data payload is still in the
+///          heap registry and resolves to the exact header recorded by the
+///          wrapper; this avoids dereferencing a corrupt header pointer.
+/// @param s Registered live runtime string; may be NULL.
+/// @return Borrowed heap header, or `NULL` for non-heap/corrupt input.
+static rt_heap_hdr_t *rt_string_registered_header_(rt_string s) {
     if (!s)
         return NULL;
-    if (!rt_string_is_handle((void *)s)) {
-        rt_trap("rt_string_header: invalid string handle");
-        return NULL;
-    }
     if (!s->heap || s->heap == RT_SSO_SENTINEL)
         return NULL;
-    if (s->heap->magic != RT_MAGIC || s->heap->kind != RT_HEAP_STRING) {
+    rt_heap_hdr_t *registered = NULL;
+    if (!s->data || !rt_heap_try_get_header(s->data, &registered) || registered != s->heap ||
+        registered->magic != RT_MAGIC || registered->kind != RT_HEAP_STRING) {
         rt_trap("rt_string_header: corrupted string header");
         return NULL;
     }
-    return s->heap;
+    return registered;
 }
 
 /// @brief Report the byte length of a runtime string payload.
@@ -345,16 +353,14 @@ static rt_heap_hdr_t *rt_string_header(rt_string s) {
 size_t rt_string_len_bytes(rt_string s) {
     if (!s)
         return 0;
-    if (!rt_string_is_handle((void *)s)) {
-        rt_trap("rt_string_len_bytes: invalid string handle");
+    if (!rt_string_require_handle_(s, "rt_string_len_bytes: invalid string handle"))
         return 0;
-    }
     // Literal strings (heap == NULL) and embedded strings (heap == RT_SSO_SENTINEL)
     // both store length in literal_len
     if (!s->heap || s->heap == RT_SSO_SENTINEL)
         return s->literal_len;
-    (void)rt_string_header(s);
-    return rt_heap_len(s->data);
+    rt_heap_hdr_t *hdr = rt_string_registered_header_(s);
+    return hdr ? hdr->len : 0;
 }
 
 /// @brief Determine whether a heap-backed string should never be freed.
@@ -379,7 +385,7 @@ static int rt_string_is_immortal_hdr(const rt_heap_hdr_t *hdr) {
 /// @param required_len Required total capacity including terminator space.
 /// @return One only when safe in-place mutation is possible.
 static int rt_string_can_append_inplace(rt_string s, size_t required_len) {
-    rt_heap_hdr_t *hdr = rt_string_header(s);
+    rt_heap_hdr_t *hdr = rt_string_registered_header_(s);
     if (!hdr)
         return 0; // Not heap-backed
     if (rt_string_is_immortal_hdr(hdr))
@@ -617,8 +623,9 @@ int8_t rt_string_is_handle(const void *p) {
 rt_string rt_string_ref(rt_string s) {
     if (!s)
         return NULL;
-    rt_heap_hdr_t *hdr = rt_string_header(s);
-    if (!hdr) {
+    if (!rt_string_require_handle_(s, "rt_string_ref: invalid string handle"))
+        return NULL;
+    if (!s->heap || s->heap == RT_SSO_SENTINEL) {
         // Atomic increment for thread-safe reference counting. Do not allow a
         // mortal SSO/literal string to step into the immortal refcount sentinel.
         size_t old = __atomic_load_n(&s->literal_refs, __ATOMIC_RELAXED);
@@ -645,6 +652,9 @@ rt_string rt_string_ref(rt_string s) {
         }
         return s;
     }
+    rt_heap_hdr_t *hdr = rt_string_registered_header_(s);
+    if (!hdr)
+        return NULL;
     if (rt_string_is_immortal_hdr(hdr))
         return s;
     rt_heap_retain(s->data);
@@ -665,8 +675,9 @@ rt_string rt_string_ref(rt_string s) {
 size_t rt_string_unref_count(rt_string s) {
     if (!s)
         return 0;
-    rt_heap_hdr_t *hdr = rt_string_header(s);
-    if (!hdr) {
+    if (!rt_string_require_handle_(s, "rt_string_unref: invalid string handle"))
+        return 0;
+    if (!s->heap || s->heap == RT_SSO_SENTINEL) {
         // Atomic decrement for thread-safe reference counting
         // Skip immortal literals (SIZE_MAX indicates immortal) and already-zero refs
 #if RT_COMPILER_MSVC
@@ -705,6 +716,9 @@ size_t rt_string_unref_count(rt_string s) {
         return prev - 1;
 #endif
     }
+    rt_heap_hdr_t *hdr = rt_string_registered_header_(s);
+    if (!hdr)
+        return 0;
     if (rt_string_is_immortal_hdr(hdr))
         return SIZE_MAX;
     size_t next = rt_heap_release_deferred(s->data);
@@ -797,6 +811,9 @@ rt_string rt_str_clone(rt_string s) {
 /// @return Owned concatenation, possibly reused @p a, or `NULL` on overflow or
 ///         allocation failure.
 rt_string rt_str_concat(rt_string a, rt_string b) {
+    if ((a && !rt_string_require_handle_(a, "rt_str_concat: invalid string handle")) ||
+        (b && b != a && !rt_string_require_handle_(b, "rt_str_concat: invalid string handle")))
+        return NULL;
     size_t len_a = rt_string_len_bytes(a);
     size_t len_b = rt_string_len_bytes(b);
     if (len_a > SIZE_MAX - len_b) {
@@ -882,6 +899,8 @@ rt_string rt_str_substr(rt_string s, int64_t start, int64_t len) {
         rt_trap("rt_str_substr: null");
         return rt_empty_string();
     }
+    if (!rt_string_require_handle_(s, "rt_str_substr: invalid string handle"))
+        return rt_empty_string();
     if (start < 0)
         start = 0;
     if (len < 0)
@@ -915,6 +934,8 @@ rt_string rt_str_left(rt_string s, int64_t n) {
         rt_trap("LEFT$: null string");
         return rt_empty_string();
     }
+    if (!rt_string_require_handle_(s, "LEFT$: invalid string handle"))
+        return rt_empty_string();
     if (n < 0) {
         char buf[64];
         char numbuf[32];
@@ -946,6 +967,8 @@ rt_string rt_str_right(rt_string s, int64_t n) {
         rt_trap("RIGHT$: null string");
         return rt_empty_string();
     }
+    if (!rt_string_require_handle_(s, "RIGHT$: invalid string handle"))
+        return rt_empty_string();
     if (n < 0) {
         char buf[64];
         char numbuf[32];
@@ -983,6 +1006,8 @@ rt_string rt_str_mid(rt_string s, int64_t start) {
         rt_trap("MID$: null string");
         return rt_empty_string();
     }
+    if (!rt_string_require_handle_(s, "MID$: invalid string handle"))
+        return rt_empty_string();
     if (start < 1) {
         char buf[64];
         char numbuf[32];
@@ -1016,6 +1041,8 @@ rt_string rt_str_mid_len(rt_string s, int64_t start, int64_t len) {
         rt_trap("MID$: null string");
         return rt_empty_string();
     }
+    if (!rt_string_require_handle_(s, "MID$: invalid string handle"))
+        return rt_empty_string();
     if (start < 1) {
         char buf[64];
         char numbuf[32];
@@ -1104,6 +1131,10 @@ static int64_t rt_find(rt_string hay, int64_t start, rt_string needle) {
 int64_t rt_str_index_of(rt_string hay, rt_string needle) {
     if (!hay || !needle)
         return 0;
+    if (!rt_string_require_handle_(hay, "rt_str_index_of: invalid string handle") ||
+        (needle != hay &&
+         !rt_string_require_handle_(needle, "rt_str_index_of: invalid string handle")))
+        return 0;
     size_t needle_len = rt_string_len_bytes(needle);
     if (needle_len == 0)
         return 1;
@@ -1121,6 +1152,10 @@ int64_t rt_str_index_of(rt_string hay, rt_string needle) {
 /// @return One-based byte index of the first match, or zero when absent.
 int64_t rt_str_instr3(int64_t start, rt_string hay, rt_string needle) {
     if (!hay || !needle)
+        return 0;
+    if (!rt_string_require_handle_(hay, "rt_str_instr3: invalid string handle") ||
+        (needle != hay &&
+         !rt_string_require_handle_(needle, "rt_str_instr3: invalid string handle")))
         return 0;
     size_t len = rt_string_len_bytes(hay);
     int64_t pos = start <= 1 ? 0 : start - 1;
@@ -1164,6 +1199,8 @@ rt_string rt_str_ltrim(rt_string s) {
         rt_trap("rt_str_ltrim: null");
         return rt_empty_string();
     }
+    if (!rt_string_require_handle_(s, "rt_str_ltrim: invalid string handle"))
+        return rt_empty_string();
     size_t slen = rt_string_len_bytes(s);
     size_t i = 0;
     while (i < slen && is_trim_ws(s->data[i]))
@@ -1182,6 +1219,8 @@ rt_string rt_str_rtrim(rt_string s) {
         rt_trap("rt_str_rtrim: null");
         return rt_empty_string();
     }
+    if (!rt_string_require_handle_(s, "rt_str_rtrim: invalid string handle"))
+        return rt_empty_string();
     size_t end = rt_string_len_bytes(s);
     while (end > 0 && is_trim_ws(s->data[end - 1]))
         --end;
@@ -1199,6 +1238,8 @@ rt_string rt_str_trim(rt_string s) {
         rt_trap("rt_str_trim: null");
         return rt_empty_string();
     }
+    if (!rt_string_require_handle_(s, "rt_str_trim: invalid string handle"))
+        return rt_empty_string();
     size_t slen = rt_string_len_bytes(s);
     size_t start = 0;
     size_t end = slen;
@@ -1233,6 +1274,8 @@ rt_string rt_str_ucase(rt_string s) {
         rt_trap("rt_str_ucase: null");
         return rt_empty_string();
     }
+    if (!rt_string_require_handle_(s, "rt_str_ucase: invalid string handle"))
+        return rt_empty_string();
     size_t len = rt_string_len_bytes(s);
     rt_string r = rt_string_alloc(len, len + 1);
     if (!r)
@@ -1275,6 +1318,8 @@ rt_string rt_str_lcase(rt_string s) {
         rt_trap("rt_str_lcase: null");
         return rt_empty_string();
     }
+    if (!rt_string_require_handle_(s, "rt_str_lcase: invalid string handle"))
+        return rt_empty_string();
     size_t len = rt_string_len_bytes(s);
     rt_string r = rt_string_alloc(len, len + 1);
     if (!r)
@@ -1302,6 +1347,9 @@ rt_string rt_str_lcase(rt_string s) {
 int8_t rt_str_eq(rt_string a, rt_string b) {
     if (!a || !b)
         return 0;
+    if (!rt_string_require_handle_(a, "rt_str_eq: invalid string handle") ||
+        (b != a && !rt_string_require_handle_(b, "rt_str_eq: invalid string handle")))
+        return 0;
     if (a == b)
         return 1;
     size_t alen = rt_string_len_bytes(a);
@@ -1326,6 +1374,9 @@ int8_t rt_str_eq(rt_string a, rt_string b) {
 int64_t rt_str_lt(rt_string a, rt_string b) {
     if (!a || !b)
         return 0;
+    if (!rt_string_require_handle_(a, "rt_str_lt: invalid string handle") ||
+        (b != a && !rt_string_require_handle_(b, "rt_str_lt: invalid string handle")))
+        return 0;
     if (a == b)
         return 0;
     size_t alen = rt_string_len_bytes(a);
@@ -1346,6 +1397,9 @@ int64_t rt_str_lt(rt_string a, rt_string b) {
 int64_t rt_str_le(rt_string a, rt_string b) {
     if (!a || !b)
         return a == b;
+    if (!rt_string_require_handle_(a, "rt_str_le: invalid string handle") ||
+        (b != a && !rt_string_require_handle_(b, "rt_str_le: invalid string handle")))
+        return 0;
     if (a == b)
         return 1;
     size_t alen = rt_string_len_bytes(a);
@@ -1365,6 +1419,9 @@ int64_t rt_str_le(rt_string a, rt_string b) {
 /// @return Boolean comparison result.
 int64_t rt_str_gt(rt_string a, rt_string b) {
     if (!a || !b)
+        return 0;
+    if (!rt_string_require_handle_(a, "rt_str_gt: invalid string handle") ||
+        (b != a && !rt_string_require_handle_(b, "rt_str_gt: invalid string handle")))
         return 0;
     if (a == b)
         return 0;
@@ -1386,6 +1443,9 @@ int64_t rt_str_gt(rt_string a, rt_string b) {
 int64_t rt_str_ge(rt_string a, rt_string b) {
     if (!a || !b)
         return a == b;
+    if (!rt_string_require_handle_(a, "rt_str_ge: invalid string handle") ||
+        (b != a && !rt_string_require_handle_(b, "rt_str_ge: invalid string handle")))
+        return 0;
     if (a == b)
         return 1;
     size_t alen = rt_string_len_bytes(a);

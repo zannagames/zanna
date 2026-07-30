@@ -295,7 +295,8 @@ void *rt_sparse_new(void) {
 int64_t rt_sparse_len(void *obj) {
     if (!obj)
         return 0;
-    return as_sparse(obj, "SparseArray.Len: invalid SparseArray object")->count;
+    rt_sparse_impl *sparse = as_sparse(obj, "SparseArray.Len: invalid SparseArray object");
+    return sparse ? sparse->count : 0;
 }
 
 /// @brief Read the value stored at `index`, or NULL if absent.

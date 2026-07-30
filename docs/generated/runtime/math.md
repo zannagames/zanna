@@ -336,8 +336,8 @@ Constructor: `Zanna.Math.Vec2.New`
 
 | Property | Type | Access |
 |---|---|---|
-| <a id="zanna-math-vec2-x"></a>`X` | `f64` | read-only |
-| <a id="zanna-math-vec2-y"></a>`Y` | `f64` | read-only |
+| <a id="zanna-math-vec2-x"></a>`X` | `f64` | read/write |
+| <a id="zanna-math-vec2-y"></a>`Y` | `f64` | read/write |
 
 #### Methods
 
@@ -453,6 +453,8 @@ Constructor: `Zanna.Math.Quat.New`
 | <a id="zanna-math-quat-lerp"></a>`Lerp` | `obj(obj,f64)` | `Zanna.Math.Quat.Lerp` |
 | <a id="zanna-math-quat-rotatevec3"></a>`RotateVec3` | `obj(obj)` | `Zanna.Math.Quat.RotateVec3` |
 | <a id="zanna-math-quat-tomat4"></a>`ToMat4` | `obj()` | `Zanna.Math.Quat.ToMat4` |
+| <a id="zanna-math-quat-toeuler"></a>`ToEuler` | `obj<Zanna.Math.Vec3>()` | `Zanna.Math.Quat.ToEuler` |
+| <a id="zanna-math-quat-frommat4"></a>`FromMat4` | `obj(obj)` | `Zanna.Math.Quat.FromMat4` |
 | <a id="zanna-math-quat-axis"></a>`Axis` | `obj()` | `Zanna.Math.Quat.Axis` |
 | <a id="zanna-math-quat-angle"></a>`Angle` | `f64()` | `Zanna.Math.Quat.Angle` |
 | <a id="zanna-math-quat-new"></a>`New` | `obj(f64,f64,f64,f64)` | `Zanna.Math.Quat.New` |
@@ -644,6 +646,8 @@ operations including `CatmullRom`, `Bezier`, `Linear`, `Eval`.
 | `Zanna.Math.Vec2.Rotate` | `obj(obj,f64)` | `rt_vec2_rotate` |
 | `Zanna.Math.Vec2.Sub` | `obj(obj,obj)` | `rt_vec2_sub` |
 | <a id="zanna-math-vec2-get-x"></a>`Zanna.Math.Vec2.get_X` | `f64(obj)` | `rt_vec2_x` |
+| <a id="zanna-math-vec2-set-x"></a>`Zanna.Math.Vec2.set_X` | `void(obj,f64)` | `rt_vec2_set_x` |
+| <a id="zanna-math-vec2-set-y"></a>`Zanna.Math.Vec2.set_Y` | `void(obj,f64)` | `rt_vec2_set_y` |
 | <a id="zanna-math-vec2-get-y"></a>`Zanna.Math.Vec2.get_Y` | `f64(obj)` | `rt_vec2_y` |
 | `Zanna.Math.Vec2.Zero` | `obj()` | `rt_vec2_zero` |
 | `Zanna.Math.Vec3.Add` | `obj(obj,obj)` | `rt_vec3_add` |
@@ -742,6 +746,8 @@ operations including `CatmullRom`, `Bezier`, `Linear`, `Eval`.
 | `Zanna.Math.Quat.Lerp` | `obj(obj,obj,f64)` | `rt_quat_lerp` |
 | `Zanna.Math.Quat.RotateVec3` | `obj(obj,obj)` | `rt_quat_rotate_vec3` |
 | `Zanna.Math.Quat.ToMat4` | `obj(obj)` | `rt_quat_to_mat4` |
+| `Zanna.Math.Quat.ToEuler` | `obj(obj)` | `rt_quat_to_euler` |
+| `Zanna.Math.Quat.FromMat4` | `obj(obj)` | `rt_quat_from_mat4` |
 | `Zanna.Math.Quat.Axis` | `obj(obj)` | `rt_quat_axis` |
 | `Zanna.Math.Quat.Angle` | `f64(obj)` | `rt_quat_angle` |
 | `Zanna.Math.Spline.CatmullRom` | `obj(obj)` | `rt_spline_catmull_rom` |

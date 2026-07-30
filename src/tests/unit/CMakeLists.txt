@@ -974,10 +974,15 @@ function(zanna_add_runtime_tests)
     zanna_add_ctest(test_rt_material3d test_rt_material3d)
     zanna_add_test_labels(test_rt_material3d graphics3d unit)
 
+    # The core VSCN/scene suite runs in the default gate; only the ~30s
+    # 10k spatial-index scaling fixture stays behind the slow label, run
+    # from the same binary via --scale.
     zanna_add_test(test_rt_scene3d ${ZANNA_TESTS_DIR}/unit/test_rt_scene3d.cpp)
     target_link_libraries(test_rt_scene3d PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_scene3d test_rt_scene3d)
-    zanna_add_test_labels(test_rt_scene3d graphics3d unit slow)
+    zanna_add_test_labels(test_rt_scene3d graphics3d unit)
+    zanna_add_ctest(test_rt_scene3d_scale test_rt_scene3d --scale)
+    zanna_add_test_labels(test_rt_scene3d_scale graphics3d unit slow)
 
     zanna_add_test(test_rt_scene3d_bindings ${ZANNA_TESTS_DIR}/unit/test_rt_scene3d_bindings.cpp)
     target_link_libraries(test_rt_scene3d_bindings PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})

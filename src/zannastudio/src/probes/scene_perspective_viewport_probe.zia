@@ -56,6 +56,7 @@ bind GUI = Zanna.GUI;
 bind Terminal = Zanna.Terminal;
 bind Convert = Zanna.Core.Convert;
 bind Math = Zanna.Math;
+bind Mesh3D = Zanna.Graphics3D.Mesh3D;
 
 func near(actual: Number, expected: Number) -> Boolean {
     var difference = actual - expected;
@@ -145,7 +146,7 @@ func VerifyViewportProjection(
     // Deterministic camera pose: looking straight down -Z from +Z.
     editor.viewYawDegrees = 0;
     editor.viewPitchDegrees = 0;
-    editor.viewScale = 28;
+    editor.viewScale = 28.0;
     editor.viewTargetX = 0.0;
     editor.viewTargetY = 0.0;
     editor.viewTargetZ = 0.0;
@@ -416,11 +417,97 @@ func VerifyViewportChromePersistence(
     return true;
 }
 
+/// @brief Verify framing fits subtree mesh bounds, not just node pivots.
+func VerifyBoundsFraming(
+    ctx: PerspectiveViewportProbeContext) -> Boolean {
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    // One wide slab plus a nearby marker: pivot-only framing hugs the two
+    // origins and over-zooms; bounds framing must zoom out to fit ±20u.
+    if editor.AddEmptyNode("Framing Slab", -1) < 0
+       or editor.AddEmptyNode("Framing Marker", -1) < 0 {
+        fail(shell, "could not author the framing fixture");
+        return false;
+    }
+    var slabIndex = -1;
+    var markerIndex = -1;
+    var i = 0;
+    while i < editor.flatNodes.count() {
+        var name = editor.flatNodes.get(i).Name;
+        if name == "Framing Slab" { slabIndex = i; }
+        if name == "Framing Marker" { markerIndex = i; }
+        i = i + 1;
+    }
+    if slabIndex < 0 or markerIndex < 0 {
+        fail(shell, "framing fixture rows were not found");
+        return false;
+    }
+    editor.flatNodes.get(slabIndex).Mesh = Mesh3D.Box(40.0, 2.0, 40.0);
+    editor.flatNodes.get(slabIndex).SetPosition(0.0, 0.0, 0.0);
+    editor.flatNodes.get(markerIndex).SetPosition(3.0, 0.0, 3.0);
+    pump(editor, sceneDoc, shell);
+
+    var available = editor.renderedViewportWidth;
+    if editor.renderedViewportHeight < available {
+        available = editor.renderedViewportHeight;
+    }
+
+    editor.FrameAll();
+    if editor.viewScale * 20 > available {
+        fail(shell, "Frame All over-zoomed a 40u slab: scale="
+             + editor.viewScale);
+        return false;
+    }
+
+    var slabSelection: List[Integer] = [];
+    slabSelection.add(slabIndex);
+    editor.SelectSceneNodes(slabSelection, slabIndex);
+    editor.FrameSelected();
+    if near(editor.viewTargetX, 0.0) == false
+       or near(editor.viewTargetZ, 0.0) == false
+       or editor.viewScale * 20 > available {
+        fail(shell, "Frame Selected ignored the slab's mesh bounds: scale="
+             + editor.viewScale + " targetX=" + editor.viewTargetX);
+        return false;
+    }
+
+    // A 1000-unit slab needs sub-pixel-per-unit zoom: the continuous zoom
+    // floor and the decade grid must both adapt to large worlds.
+    editor.flatNodes.get(slabIndex).Mesh = Mesh3D.Box(1000.0, 2.0, 1000.0);
+    pump(editor, sceneDoc, shell);
+    editor.SelectSceneNodes(slabSelection, slabIndex);
+    editor.FrameSelected();
+    if editor.viewScale * 500.0 > available * 0.5 + 1.0
+       or near(editor.ViewportGridSpacing(), 100.0) == false {
+        fail(shell, "large-world framing did not fit: scale="
+             + editor.viewScale + " grid=" + editor.ViewportGridSpacing());
+        return false;
+    }
+
+    // Point-like selections keep the close-up floor.
+    var markerSelection: List[Integer] = [];
+    markerSelection.add(markerIndex);
+    editor.SelectSceneNodes(markerSelection, markerIndex);
+    editor.FrameSelected();
+    if near(editor.viewTargetX, 3.0) == false
+       or near(editor.viewTargetZ, 3.0) == false
+       or editor.viewScale < 48 {
+        fail(shell, "marker framing lost the close-up floor: scale="
+             + editor.viewScale);
+        return false;
+    }
+
+    return true;
+}
+
 func main() {
     var ctx = new PerspectiveViewportProbeContext();
     if VerifyViewportProjection(ctx) == false { return; }
     if VerifyFlyNavigation(ctx) == false { return; }
     if VerifyViewportChromePersistence(ctx) == false { return; }
+    if VerifyBoundsFraming(ctx) == false { return; }
     ctx.shell.Destroy();
     Terminal.Say("RESULT: ok");
 }

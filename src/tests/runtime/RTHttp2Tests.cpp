@@ -5,8 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/runtime/RTHttp2Tests.cpp
+// File: src/tests/runtime/RTHttp2Tests.cpp
 // Purpose: In-memory HTTP/2 transport coverage for the internal runtime.
+// Key invariants:
+//   - Callback byte counts never exceed the requested transport span.
+//   - Frame, HPACK, flow-control, and stream validation reject malformed input.
+//   - One connection can complete sequential request/response streams.
+// Ownership/Lifetime:
+//   - Each test frees connection, request, response, and header-list ownership.
+//   - In-memory pipe buffers are owned by their enclosing test scope.
+// Links: src/runtime/network/rt_http2.c,
+//        src/runtime/network/rt_http2.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -61,6 +70,62 @@ static int pipe_write_cb(void *ctx, const uint8_t *buf, size_t len) {
     }
     ep->outgoing->cv.notify_all();
     return 1;
+}
+
+/// @brief Deliberately violate the read callback's maximum-count contract.
+/// @param ctx Unused callback context.
+/// @param buf Unused destination.
+/// @param len Requested maximum byte count.
+/// @return One byte more than requested.
+static long oversized_read_cb(void *ctx, uint8_t *buf, size_t len) {
+    (void)ctx;
+    (void)buf;
+    return static_cast<long>(len + 1u);
+}
+
+/// @brief Claim success without writing bytes to exercise defensive zeroing.
+/// @param ctx Unused callback context.
+/// @param buf Intentionally untouched destination.
+/// @param len Requested byte count.
+/// @return The requested count without initializing @p buf.
+static long unwritten_read_cb(void *ctx, uint8_t *buf, size_t len) {
+    (void)ctx;
+    (void)buf;
+    return static_cast<long>(len);
+}
+
+/// @brief Accept a complete write without storing it.
+/// @return Nonzero, as required by the HTTP/2 write callback contract.
+static int sink_write_cb(void *, const uint8_t *, size_t) {
+    return 1;
+}
+
+/// @brief Validate constructor callbacks and defensive read-count handling.
+static void test_http2_callback_contract() {
+    printf("\nTesting HTTP/2 callback contract:\n");
+    rt_http2_io_t missing_read{nullptr, nullptr, sink_write_cb};
+    rt_http2_io_t missing_write{nullptr, oversized_read_cb, nullptr};
+    test_result("HTTP/2 rejects a missing read callback",
+                rt_http2_server_new(&missing_read) == nullptr);
+    test_result("HTTP/2 rejects a missing write callback",
+                rt_http2_server_new(&missing_write) == nullptr);
+
+    rt_http2_request_t request{};
+    rt_http2_io_t oversized_io{nullptr, oversized_read_cb, sink_write_cb};
+    rt_http2_conn_t *oversized = rt_http2_server_new(&oversized_io);
+    bool oversized_rejected =
+        oversized && rt_http2_server_receive_request(oversized, 1024u, &request) == 0;
+    test_result("HTTP/2 rejects callback counts above the requested span", oversized_rejected);
+    rt_http2_request_free(&request);
+    rt_http2_conn_free(oversized);
+
+    rt_http2_io_t unwritten_io{nullptr, unwritten_read_cb, sink_write_cb};
+    rt_http2_conn_t *unwritten = rt_http2_server_new(&unwritten_io);
+    bool unwritten_rejected =
+        unwritten && rt_http2_server_receive_request(unwritten, 1024u, &request) == 0;
+    test_result("HTTP/2 rejects unwritten callback bytes deterministically", unwritten_rejected);
+    rt_http2_request_free(&request);
+    rt_http2_conn_free(unwritten);
 }
 
 static void close_pipe(pipe_buffer_t &pipe) {
@@ -810,6 +875,7 @@ static void test_http2_rejects_invalid_settings_value() {
 }
 
 int main() {
+    test_http2_callback_contract();
     test_http2_roundtrip_basic();
     test_http2_reuses_connection_for_second_stream();
     test_http2_server_refuses_concurrent_streams_without_dropping_connection();

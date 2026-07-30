@@ -208,8 +208,7 @@ static int rt_url_component_is_valid(rt_string value, const char *forbidden, con
     }
     for (size_t i = 0; i < len; i++) {
         unsigned char c = (unsigned char)str[i];
-        if (c <= 0x20u || c == 0x7Fu || c == '\\' ||
-            (forbidden && strchr(forbidden, (int)c))) {
+        if (c <= 0x20u || c == 0x7Fu || c == '\\' || (forbidden && strchr(forbidden, (int)c))) {
             rt_trap_net("URL: invalid component", Err_InvalidUrl);
             return 0;
         }
@@ -754,10 +753,9 @@ static char *normalize_path(const char *path) {
         if (segment_len == 1 && cursor[0] == '.') {
             /* Drop ".". */
         } else if (segment_len == 2 && cursor[0] == '.' && cursor[1] == '.') {
-            if (segment_count > 0 &&
-                !(segments[segment_count - 1].len == 2 &&
-                  segments[segment_count - 1].start[0] == '.' &&
-                  segments[segment_count - 1].start[1] == '.')) {
+            if (segment_count > 0 && !(segments[segment_count - 1].len == 2 &&
+                                       segments[segment_count - 1].start[0] == '.' &&
+                                       segments[segment_count - 1].start[1] == '.')) {
                 segment_count--;
             } else if (!absolute) {
                 segments[segment_count].start = cursor;
@@ -1902,6 +1900,8 @@ rt_string rt_url_encode_query(void *map) {
 /// @return Owned managed Map, empty for null or empty input.
 void *rt_url_decode_query(rt_string query) {
     void *map = rt_map_new();
+    if (!map)
+        return NULL;
     const char *str = query ? rt_string_cstr(query) : NULL;
     size_t query_len = rt_url_string_len_or_trap(query, "URL.DecodeQuery: invalid query length");
 
@@ -1925,7 +1925,10 @@ void *rt_url_decode_query(rt_string query) {
             if (!dec_key || !dec_val) {
                 free(dec_key);
                 free(dec_val);
+                if (rt_obj_release_check0(map))
+                    rt_obj_free(map);
                 rt_url_trap_runtime("URL.DecodeQuery: decode allocation failed");
+                return NULL;
             }
             rt_string key_str = rt_url_string_from_bytes_or_trap(
                 dec_key, dec_key_len, "URL.DecodeQuery: key string allocation failed");

@@ -38,7 +38,12 @@ Playable games showcasing [graphics](../docs/zannalib/graphics/README.md), AI, a
 
 | Project | Description | Highlights |
 |---------|-------------|------------|
+| [Ashfall](games/ashfall/) | Nine-mission sci-fi FPS campaign (code-built levels) | World3D, Character3D, nav agents, waves and bosses, spatial audio, GLB art with procedural PBR fallbacks |
+| [Ashfall: Scenes](games/ashfall-scenes/) | The same campaign authored entirely as `.scene3d` files | Scene-driven levels, collider/gameplay metadata conventions, `--scene`/`--scene-watch` hot reload, project preview profiles, material library |
 | [Ridgebound](games/ridgebound/) | Open-world Game3D sample | Game3D world loop, procedural terrain, water, skybox, PBR materials, beacon objectives, post-FX, final overlay |
+| [3D Bowling](games/3dbowling/) | Ten-pin bowling with physics and AI rivals | Physics3D solver, six game modes, replays, post-FX, accessibility, progression |
+| [3D Baseball](games/3dbaseball/) | Minimal OBJ-model 3D scene and game | SceneGraph, SceneAsset OBJ import, CubeMap3D skybox |
+| [3D Scene](games/3dscene/) | Minimal Graphics3D walkthrough | Canvas3D, meshes, materials, lights, particles, PostFX3D |
 | [Chess](games/chess/) | Polished chess game with AI opponent | Alpha-beta AI, save slots, clocks, puzzles, themes, audio, FEN/PGN, drag-and-drop GUI |
 | [XENOSCAPE](games/xenoscape/) | Release-quality action Metroidvania | 10-region nonlinear campaign, 80 rooms, hub/economy, profiles, accessibility, ranks, Time Trials, Boss Rush, New Game+, authored/fallback art and adaptive audio |
 | [Crackman](games/crackman/) | Maze chase game with ghost AI | BFS pathfinding, scatter/chase/frightened modes, [Canvas](../docs/zannalib/graphics/canvas.md) rendering |
@@ -62,6 +67,7 @@ The [`games/lib/`](games/lib/) directory provides reusable base classes for Zia 
 
 - **`GameBase`** (221 LOC) — Game loop, scene management, input handling, frame timing
 - **`IScene`** — Scene interface for state-driven game architecture
+- **`GameBase3D`** / **`IScene3D`** — The 3D equivalents: Canvas3D loop, scene stack with fade transitions, and input plumbing (reference demo: [`examples/3d/game3d_scenes/`](../examples/3d/game3d_scenes/))
 
 ---
 

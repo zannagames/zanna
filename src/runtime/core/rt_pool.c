@@ -555,20 +555,22 @@ static rt_pool_block_t *pop_from_freelist(rt_pool_state_t *pool) {
 #if RT_POOL_USE_LOCKED_FREELIST || RT_POOL_PAC_SAFE
     rt_pool_lock_(&pool->freelist_lock);
     rt_pool_block_t *head = pool->freelist_head;
-    if (head)
+    if (head) {
+        size_t expected_state = 0;
+        if (!rt_atomic_compare_exchange_size(
+                &head->meta.state, &expected_state, 1, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE)) {
+            rt_pool_unlock_(&pool->freelist_lock);
+            rt_abort("rt_pool: freelist contains an allocated block");
+        }
         pool->freelist_head = atomic_load_next(head);
+        size_t free_count = rt_atomic_load_size(&pool->free_count, __ATOMIC_RELAXED);
+        if (free_count == 0) {
+            rt_pool_unlock_(&pool->freelist_lock);
+            rt_abort("rt_pool: free-block counter underflow");
+        }
+        rt_atomic_fetch_sub_size(&pool->free_count, 1, __ATOMIC_RELAXED);
+    }
     rt_pool_unlock_(&pool->freelist_lock);
-    if (!head)
-        return NULL;
-    size_t expected_state = 0;
-    if (!rt_atomic_compare_exchange_size(
-            &head->meta.state, &expected_state, 1, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
-        rt_abort("rt_pool: freelist contains an allocated block");
-#if RT_COMPILER_MSVC
-    rt_atomic_fetch_sub_size(&pool->free_count, 1, __ATOMIC_RELAXED);
-#else
-    __atomic_fetch_sub(&pool->free_count, 1, __ATOMIC_RELAXED);
-#endif
     return head;
 #else
     uint64_t old_tagged = atomic_load_u64(&pool->freelist_tagged);
@@ -621,6 +623,12 @@ static const char *push_to_freelist(rt_pool_state_t *pool, rt_pool_block_t *bloc
     rt_pool_lock_(&pool->freelist_lock);
     atomic_store_next(block, pool->freelist_head);
     pool->freelist_head = block;
+    size_t free_count = rt_atomic_load_size(&pool->free_count, __ATOMIC_RELAXED);
+    if (free_count == SIZE_MAX) {
+        rt_pool_unlock_(&pool->freelist_lock);
+        rt_abort("rt_pool: free-block counter overflow");
+    }
+    rt_atomic_fetch_add_size(&pool->free_count, 1, __ATOMIC_RELAXED);
     rt_pool_unlock_(&pool->freelist_lock);
 #else
     uint64_t old_tagged = atomic_load_u64(&pool->freelist_tagged);
@@ -633,10 +641,8 @@ static const char *push_to_freelist(rt_pool_state_t *pool, rt_pool_block_t *bloc
     } while (!atomic_cas_u64(&pool->freelist_tagged, &old_tagged, new_tagged));
 #endif
 
-#if RT_COMPILER_MSVC
+#if !RT_POOL_USE_LOCKED_FREELIST && !RT_POOL_PAC_SAFE
     rt_atomic_fetch_add_size(&pool->free_count, 1, __ATOMIC_RELAXED);
-#else
-    __atomic_fetch_add(&pool->free_count, 1, __ATOMIC_RELAXED);
 #endif
     return NULL;
 }
@@ -738,6 +744,13 @@ void *rt_pool_alloc(size_t size) {
             rt_pool_lock_(&pool->freelist_lock);
             atomic_store_next(last, pool->freelist_head);
             pool->freelist_head = first;
+            size_t added = slab->block_count - 1;
+            size_t free_count = rt_atomic_load_size(&pool->free_count, __ATOMIC_RELAXED);
+            if (free_count > SIZE_MAX - added) {
+                rt_pool_unlock_(&pool->freelist_lock);
+                rt_abort("rt_pool: free-block counter overflow");
+            }
+            rt_atomic_fetch_add_size(&pool->free_count, added, __ATOMIC_RELAXED);
             rt_pool_unlock_(&pool->freelist_lock);
 #else
             // Atomically prepend the chain to the freelist
@@ -751,10 +764,8 @@ void *rt_pool_alloc(size_t size) {
             } while (!atomic_cas_u64(&pool->freelist_tagged, &old_tagged, new_tagged));
 #endif
 
-#if RT_COMPILER_MSVC
+#if !RT_POOL_USE_LOCKED_FREELIST && !RT_POOL_PAC_SAFE
             rt_atomic_fetch_add_size(&pool->free_count, slab->block_count - 1, __ATOMIC_RELAXED);
-#else
-            __atomic_fetch_add(&pool->free_count, slab->block_count - 1, __ATOMIC_RELAXED);
 #endif
         }
     }
@@ -835,7 +846,7 @@ void rt_pool_free(void *ptr, size_t size) {
 /// @param out_allocated Optional destination for blocks currently in use.
 /// @param out_free Optional destination for blocks currently on the freelist.
 void rt_pool_stats(rt_pool_class_t class_idx, size_t *out_allocated, size_t *out_free) {
-    if (class_idx >= RT_POOL_COUNT) {
+    if ((int)class_idx < 0 || class_idx >= RT_POOL_COUNT) {
         if (out_allocated)
             *out_allocated = 0;
         if (out_free)

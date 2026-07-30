@@ -141,6 +141,16 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
         return CompletePumpFrame(changed);
     }
 
+    /// @brief Point the shared import browser at referenceable scene assets.
+    /// Cancels any armed environment Browse routing first so a dismissed
+    /// skybox pick can never hijack the next browser activation.
+    expose func OpenImportInstanceBrowser() {
+        envBrowseMode = false;
+        importBrowserInstanceMode = true;
+        importAssetBrowser.SetExtensions(".scene3d,.vscn");
+        importAssetBrowser.Open();
+    }
+
     /// @brief Pump document creation, import, baking, and material-map requests.
     hide func PumpDocumentAndImportControls() -> Boolean {
         var changed = false;
@@ -169,6 +179,7 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
         }
         if importAssetButton.WasClicked()
            or sceneImportAssetItem.WasClicked() {
+            envBrowseMode = false;
             importBrowserInstanceMode = false;
             importAssetBrowser.SetExtensions(
                 ".scene3d,.vscn,.gltf,.glb,.fbx,.obj,.stl");
@@ -176,9 +187,7 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
         }
         if importInstanceButton.WasClicked()
            or sceneImportInstanceItem.WasClicked() {
-            importBrowserInstanceMode = true;
-            importAssetBrowser.SetExtensions(".scene3d,.vscn");
-            importAssetBrowser.Open();
+            OpenImportInstanceBrowser();
         }
         var projectImportPath = importAssetBrowser.Pump(
             projectManager, currentDoc != null);
@@ -211,9 +220,7 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
         }
         if relinkInstanceButton.WasClicked()
            and selectedIndices.count() == 1 {
-            importBrowserInstanceMode = true;
-            importAssetBrowser.SetExtensions(".scene3d,.vscn");
-            importAssetBrowser.Open();
+            OpenImportInstanceBrowser();
             detailLabel.SetText(
                 "Choose the new referenced scene for "
                 + NodeDisplayName(SelectedNode()) + ".");
@@ -734,13 +741,15 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
         if zoomOutButton.WasClicked()
            or viewZoomOutItem.WasClicked() {
             ReleaseGameplayViewAnchor();
-            viewScale = SceneEditor3DModel.ClampInt3D(viewScale - 4, 4, 120);
+            viewScale = SceneEditor3DModel.ClampViewScale(
+                viewScale / SceneEditor3DModel.VIEW_SCALE_BUTTON_FACTOR);
             renderDirty = true;
         }
         if zoomInButton.WasClicked()
            or viewZoomInItem.WasClicked() {
             ReleaseGameplayViewAnchor();
-            viewScale = SceneEditor3DModel.ClampInt3D(viewScale + 4, 4, 120);
+            viewScale = SceneEditor3DModel.ClampViewScale(
+                viewScale * SceneEditor3DModel.VIEW_SCALE_BUTTON_FACTOR);
             renderDirty = true;
         }
         if frameButton.WasClicked()

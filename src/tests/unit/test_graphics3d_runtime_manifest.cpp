@@ -35,10 +35,10 @@
 
 namespace {
 
-constexpr std::size_t kExpectedFunctionCount = 2043;
-constexpr std::size_t kExpectedClassCount = 125;
-constexpr std::size_t kExpectedPropertyCount = 681;
-constexpr std::size_t kExpectedMethodCount = 1138;
+constexpr std::size_t kExpectedFunctionCount = 2103;
+constexpr std::size_t kExpectedClassCount = 130;
+constexpr std::size_t kExpectedPropertyCount = 713;
+constexpr std::size_t kExpectedMethodCount = 1177;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -217,7 +217,7 @@ int main() {
 
     // Filled from the canonical registry after deliberate ABI review. This one value
     // covers every function name/signature/C symbol and every class member binding.
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x32fa0ea9151aa9eb);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x2061f1b83b10977b);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

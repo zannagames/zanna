@@ -173,7 +173,7 @@ expose func Verify(
     editor.viewTargetX = -12.0;
     editor.viewTargetY = 0.28;
     editor.viewTargetZ = -14.0;
-    editor.viewScale = 28;
+    editor.viewScale = 28.0;
     editor.SetViewProjection(false);
     editor.SetQuickView(0);
     editor.viewYawDegrees = 35;

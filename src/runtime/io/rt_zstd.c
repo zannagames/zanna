@@ -296,7 +296,7 @@ typedef struct {
 /** Fixed-capacity FSE table for one decoded alphabet. */
 typedef struct {
     zstd_fse_cell cells[1 << ZSTD_MAX_TABLELOG]; ///< State transition cells.
-    int table_log;                              ///< Base-two logarithm of active cells.
+    int table_log;                               ///< Base-two logarithm of active cells.
 } zstd_fse_table;
 
 /// @brief Find the index of the highest set bit in a 32-bit value.
@@ -324,6 +324,7 @@ static int zstd_highbit32(uint32_t v) {
 static int zstd_fse_build(zstd_fse_table *t, const int16_t *norm, int max_symbol, int table_log) {
     uint32_t table_size;
     uint32_t high_threshold;
+    uint32_t normalized_total = 0;
     uint32_t position = 0;
     uint32_t step;
     uint16_t symbol_next[256];
@@ -337,13 +338,28 @@ static int zstd_fse_build(zstd_fse_table *t, const int16_t *norm, int max_symbol
     t->table_log = table_log;
 
     for (s = 0; s <= max_symbol; s++) {
+        uint32_t contribution;
+        if (norm[s] == -1) {
+            contribution = 1;
+        } else {
+            if (norm[s] < 0)
+                return 0;
+            contribution = (uint32_t)norm[s];
+        }
+        if (contribution > table_size - normalized_total)
+            return 0;
+        normalized_total += contribution;
+    }
+    if (normalized_total != table_size)
+        return 0;
+    memset(t->cells, 0, table_size * sizeof(t->cells[0]));
+
+    for (s = 0; s <= max_symbol; s++) {
         if (norm[s] == -1) {
             t->cells[high_threshold].symbol = (uint8_t)s;
             high_threshold--;
             symbol_next[s] = 1;
         } else {
-            if (norm[s] < 0)
-                return 0;
             symbol_next[s] = (uint16_t)norm[s];
         }
     }
@@ -510,7 +526,7 @@ static int zstd_huf_build(zstd_huf_table *t, const uint8_t *weights, int num_sym
     if ((total & (total - 1)) != 0)
         return 0;
     max_bits = zstd_highbit32(total);
-    if (max_bits > ZSTD_MAX_HUF_BITS)
+    if (max_bits < 1 || max_bits > ZSTD_MAX_HUF_BITS)
         return 0;
     t->table_log = max_bits;
     for (w = 1; w <= max_bits + 1; w++) {
@@ -740,6 +756,12 @@ typedef struct {
     int of_valid;          ///< Whether @ref of_fse may be repeated.
 } zstd_ctx;
 
+/// @brief Check whether @p add bytes fit after @p used inside @p capacity.
+/// @return One when the range is representable and in bounds.
+static int zstd_range_fits(size_t used, size_t add, size_t capacity) {
+    return used <= capacity && add <= capacity - used;
+}
+
 /// @brief Grow the reusable current-block literal buffer when necessary.
 /// @details Capacity starts at 4096 bytes and doubles with overflow checks.
 ///          Existing contents and capacity remain valid when realloc fails.
@@ -811,15 +833,17 @@ static size_t zstd_decode_literals(zstd_ctx *ctx, const uint8_t *data, size_t le
         if (!zstd_ensure_literals(ctx, regen))
             return 0;
         if (type == 0) {
-            if (header_bytes + regen > len)
+            if (!zstd_range_fits(header_bytes, regen, len))
                 return 0;
-            memcpy(ctx->literals, data + header_bytes, regen);
+            if (regen > 0)
+                memcpy(ctx->literals, data + header_bytes, regen);
             ctx->literals_len = regen;
             return header_bytes + regen;
         }
-        if (header_bytes + 1 > len)
+        if (!zstd_range_fits(header_bytes, 1, len))
             return 0;
-        memset(ctx->literals, data[header_bytes], regen);
+        if (regen > 0)
+            memset(ctx->literals, data[header_bytes], regen);
         ctx->literals_len = regen;
         return header_bytes + 1;
     }
@@ -861,7 +885,7 @@ static size_t zstd_decode_literals(zstd_ctx *ctx, const uint8_t *data, size_t le
             four_streams = 1;
             break;
     }
-    if (header_bytes + comp > len)
+    if (!zstd_range_fits(header_bytes, comp, len))
         return 0;
     if (!zstd_ensure_literals(ctx, regen))
         return 0;
@@ -897,19 +921,21 @@ static size_t zstd_decode_literals(zstd_ctx *ctx, const uint8_t *data, size_t le
             sizes[0] = (size_t)payload[0] | ((size_t)payload[1] << 8);
             sizes[1] = (size_t)payload[2] | ((size_t)payload[3] << 8);
             sizes[2] = (size_t)payload[4] | ((size_t)payload[5] << 8);
-            if (sizes[0] + sizes[1] + sizes[2] > payload_len - 6)
+            size_t streams_len = payload_len - 6;
+            if (!zstd_range_fits(0, sizes[0], streams_len) ||
+                !zstd_range_fits(sizes[0], sizes[1], streams_len) ||
+                !zstd_range_fits(sizes[0] + sizes[1], sizes[2], streams_len)) {
                 return 0;
+            }
             sizes[3] = payload_len - 6 - sizes[0] - sizes[1] - sizes[2];
             payload += 6;
+            if (seg != 0 && seg > regen / 3)
+                return 0;
             for (int stream = 0; stream < 4; stream++) {
                 size_t want = stream == 3 ? regen - 3 * seg : seg;
-                if (stream == 3 && 3 * seg > regen)
-                    return 0;
-                if (!zstd_huf_decode_stream(&ctx->huf,
-                                            payload + off,
-                                            sizes[stream],
-                                            ctx->literals + stream * seg,
-                                            want))
+                uint8_t *stream_output = want > 0 ? ctx->literals + (size_t)stream * seg : NULL;
+                if (!zstd_huf_decode_stream(
+                        &ctx->huf, payload + off, sizes[stream], stream_output, want))
                     return 0;
                 off += sizes[stream];
             }
@@ -1030,9 +1056,10 @@ static int zstd_decode_sequences(zstd_ctx *ctx, const uint8_t *data, size_t len)
     }
     if (num_sequences == 0) {
         /* All literals copy straight to the output. */
-        if (ctx->out_len + ctx->literals_len > ctx->out_cap)
+        if (!zstd_range_fits(ctx->out_len, ctx->literals_len, ctx->out_cap))
             return 0;
-        memcpy(ctx->out + ctx->out_len, ctx->literals, ctx->literals_len);
+        if (ctx->literals_len > 0)
+            memcpy(ctx->out + ctx->out_len, ctx->literals, ctx->literals_len);
         ctx->out_len += ctx->literals_len;
         return 1;
     }
@@ -1166,18 +1193,20 @@ static int zstd_decode_sequences(zstd_ctx *ctx, const uint8_t *data, size_t len)
                 return 0;
 
             /* Copy literals. */
-            if (literals_consumed + literal_length > ctx->literals_len)
+            if (!zstd_range_fits(literals_consumed, literal_length, ctx->literals_len))
                 return 0;
-            if (ctx->out_len + literal_length > ctx->out_cap)
+            if (!zstd_range_fits(ctx->out_len, literal_length, ctx->out_cap))
                 return 0;
-            memcpy(ctx->out + ctx->out_len, ctx->literals + literals_consumed, literal_length);
+            if (literal_length > 0) {
+                memcpy(ctx->out + ctx->out_len, ctx->literals + literals_consumed, literal_length);
+            }
             ctx->out_len += literal_length;
             literals_consumed += literal_length;
 
             /* Copy match (byte-by-byte: overlapping copies are the norm). */
             if (offset > ctx->out_len)
                 return 0;
-            if (ctx->out_len + match_length > ctx->out_cap)
+            if (!zstd_range_fits(ctx->out_len, match_length, ctx->out_cap))
                 return 0;
             for (uint32_t m = 0; m < match_length; m++) {
                 ctx->out[ctx->out_len] = ctx->out[ctx->out_len - offset];
@@ -1208,9 +1237,10 @@ static int zstd_decode_sequences(zstd_ctx *ctx, const uint8_t *data, size_t len)
         /* Trailing literals after the last sequence. */
         {
             size_t rest = ctx->literals_len - literals_consumed;
-            if (ctx->out_len + rest > ctx->out_cap)
+            if (!zstd_range_fits(ctx->out_len, rest, ctx->out_cap))
                 return 0;
-            memcpy(ctx->out + ctx->out_len, ctx->literals + literals_consumed, rest);
+            if (rest > 0)
+                memcpy(ctx->out + ctx->out_len, ctx->literals + literals_consumed, rest);
             ctx->out_len += rest;
         }
     }
@@ -1283,14 +1313,14 @@ static int zstd_decompress_impl(const uint8_t *data,
             }
             break;
         case 1:
-            if (pos + 2 > len)
+            if (!zstd_range_fits(pos, 2, len))
                 return 0;
             content_size = 256u + ((uint64_t)data[pos] | ((uint64_t)data[pos + 1] << 8));
             pos += 2;
             content_size_known = 1;
             break;
         case 2:
-            if (pos + 4 > len)
+            if (!zstd_range_fits(pos, 4, len))
                 return 0;
             content_size = (uint64_t)data[pos] | ((uint64_t)data[pos + 1] << 8) |
                            ((uint64_t)data[pos + 2] << 16) | ((uint64_t)data[pos + 3] << 24);
@@ -1298,7 +1328,7 @@ static int zstd_decompress_impl(const uint8_t *data,
             content_size_known = 1;
             break;
         case 3:
-            if (pos + 8 > len)
+            if (!zstd_range_fits(pos, 8, len))
                 return 0;
             content_size = 0;
             for (int i = 7; i >= 0; i--)
@@ -1334,7 +1364,7 @@ static int zstd_decompress_impl(const uint8_t *data,
         int block_type;
         uint32_t block_size;
 
-        if (pos + 3 > len)
+        if (!zstd_range_fits(pos, 3, len))
             goto done;
         block_header =
             (uint32_t)data[pos] | ((uint32_t)data[pos + 1] << 8) | ((uint32_t)data[pos + 2] << 16);
@@ -1345,22 +1375,28 @@ static int zstd_decompress_impl(const uint8_t *data,
 
         switch (block_type) {
             case 0: /* raw */
-                if (pos + block_size > len || ctx.out_len + block_size > ctx.out_cap)
+                if (!zstd_range_fits(pos, block_size, len) ||
+                    !zstd_range_fits(ctx.out_len, block_size, ctx.out_cap)) {
                     goto done;
-                memcpy(ctx.out + ctx.out_len, data + pos, block_size);
+                }
+                if (block_size > 0)
+                    memcpy(ctx.out + ctx.out_len, data + pos, block_size);
                 ctx.out_len += block_size;
                 pos += block_size;
                 break;
             case 1: /* RLE: block_size copies of one byte */
-                if (pos + 1 > len || ctx.out_len + block_size > ctx.out_cap)
+                if (!zstd_range_fits(pos, 1, len) ||
+                    !zstd_range_fits(ctx.out_len, block_size, ctx.out_cap)) {
                     goto done;
-                memset(ctx.out + ctx.out_len, data[pos], block_size);
+                }
+                if (block_size > 0)
+                    memset(ctx.out + ctx.out_len, data[pos], block_size);
                 ctx.out_len += block_size;
                 pos += 1;
                 break;
             case 2: { /* compressed */
                 size_t lit_bytes;
-                if (pos + block_size > len)
+                if (!zstd_range_fits(pos, block_size, len))
                     goto done;
                 lit_bytes = zstd_decode_literals(&ctx, data + pos, block_size);
                 if (lit_bytes == 0 || lit_bytes > block_size)
@@ -1383,7 +1419,7 @@ static int zstd_decompress_impl(const uint8_t *data,
         goto done;
     if (checksum_flag) {
         uint32_t stored;
-        if (pos + 4 > len)
+        if (!zstd_range_fits(pos, 4, len))
             goto done;
         stored = (uint32_t)data[pos] | ((uint32_t)data[pos + 1] << 8) |
                  ((uint32_t)data[pos + 2] << 16) | ((uint32_t)data[pos + 3] << 24);

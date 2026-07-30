@@ -416,6 +416,12 @@ These are known platform-specific limitations, tracked across the project.
 | GAP-5 | Graphics | The Linux X11 fallback adapter needs X11 development headers at configure time. `ZANNA_GRAPHICS_BACKEND=X11` fails without them; the default `AUTO` build reports the omission and continues Wayland-only | Low |
 | GAP-6 | Audio | Linux audio needs ALSA development headers at configure time. `ZANNA_AUDIO_MODE=REQUIRE` fails without them; `AUTO` reports the omission and builds without audio | Low |
 | GAP-7 | Input | macOS gamepads have no vibration path through the generic IOKit HID interface | Low |
+| GAP-8 | Graphics3D | Point/omni-directional shadows are unavailable on Linux: the OpenGL backend is the only one without the `shadow_atlas_slots` hook, so `Canvas3D.BackendSupports("shadow-point")` reports false there (directional slots and primary CSM cascades work) | Medium |
+| GAP-9 | Graphics3D | `Canvas3D.FrameGpuTimeUs` is implemented only by the D3D11 backend; it reads 0 on macOS and Linux | Low |
+| GAP-10 | Graphics3D | The seven `Canvas3D.Backend*` statistics properties (`BackendDrawCalls`, `BackendDroppedDraws`, mesh-cache and streaming counters, `BackendPresentPath`) read 0 on macOS: the Metal backend does not implement `get_backend_stats` | Low |
+| GAP-11 | Graphics3D | Windows-on-ARM64 defaults to the software rasterizer because several Windows-on-ARM GPU stacks crash inside the display driver during Present; opt in to the GPU with `ZANNA_3D_BACKEND=d3d11`. `Canvas3D.BackendFallback` reports only runtime fallback, not this policy default | Medium |
+| GAP-12 | Graphics3D | The extended GPU-skinning path (`gpu_skinning_extras`) exists only on Metal; D3D11 and OpenGL take the reduced skinning path with no capability bit distinguishing them | Low |
+| GAP-13 | Graphics3D | SSR, HDR scene color, and TAA require backend hooks the software rasterizer does not implement; the corresponding `Canvas3D` settings are silently unavailable when the portable backend is active | Low |
 
 GAP-3 and GAP-4 are closed: Windows test infrastructure uses `CreateProcess`
 self-relaunch plus a Job Object rather than `fork()`, and the x86-64 backend

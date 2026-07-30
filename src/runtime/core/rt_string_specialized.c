@@ -35,10 +35,10 @@
 /// @file
 /// @brief Specialized runtime string transforms, metrics, and LIKE matching.
 
+#include "rt_ascii.h"
 #include "rt_internal.h"
 #include "rt_string.h"
 #include "rt_string_builder.h"
-#include "rt_ascii.h"
 #include "rt_string_internal.h"
 
 #include <ctype.h>
@@ -52,6 +52,18 @@
 // Extended String Utilities
 //=============================================================================
 
+/// @brief Validate an optional runtime string before reading its wrapper.
+/// @param str Candidate borrowed string; null is accepted.
+/// @param diagnostic Operation-specific invalid-handle message.
+/// @return One for null or a registered live string, otherwise zero after a
+///         recoverable trap.
+static int rt_string_arg_valid_(rt_string str, const char *diagnostic) {
+    if (!str || rt_string_is_handle(str))
+        return 1;
+    rt_trap(diagnostic);
+    return 0;
+}
+
 /// @brief Uppercase the first byte of a newly copied string.
 /// @details Applies ASCII-only `toupper` to byte zero and leaves every remaining
 ///          byte unchanged. Null/empty input still creates an ordinary owned
@@ -59,6 +71,8 @@
 /// @param str Borrowed source string; may be NULL.
 /// @return Newly allocated owned copy, or `NULL` on allocation failure.
 rt_string rt_str_capitalize(rt_string str) {
+    if (!rt_string_arg_valid_(str, "String.Capitalize: invalid source"))
+        return NULL;
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t len = rt_string_len_bytes(str);
@@ -82,6 +96,8 @@ rt_string rt_str_capitalize(rt_string str) {
 /// @param str Borrowed source string; may be NULL.
 /// @return Newly allocated owned copy, or `NULL` on allocation failure.
 rt_string rt_str_title(rt_string str) {
+    if (!rt_string_arg_valid_(str, "String.Title: invalid source"))
+        return NULL;
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t len = rt_string_len_bytes(str);
@@ -115,6 +131,10 @@ rt_string rt_str_title(rt_string str) {
 /// @param prefix Borrowed prefix byte string; may be NULL.
 /// @return Newly allocated owned result, or `NULL` on allocation failure.
 rt_string rt_str_remove_prefix(rt_string str, rt_string prefix) {
+    if (!rt_string_arg_valid_(str, "String.RemovePrefix: invalid source") ||
+        !rt_string_arg_valid_(prefix, "String.RemovePrefix: invalid prefix")) {
+        return NULL;
+    }
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t slen = rt_string_len_bytes(str);
@@ -138,6 +158,10 @@ rt_string rt_str_remove_prefix(rt_string str, rt_string prefix) {
 /// @param suffix Borrowed suffix byte string; may be NULL.
 /// @return Newly allocated owned result, or `NULL` on allocation failure.
 rt_string rt_str_remove_suffix(rt_string str, rt_string suffix) {
+    if (!rt_string_arg_valid_(str, "String.RemoveSuffix: invalid source") ||
+        !rt_string_arg_valid_(suffix, "String.RemoveSuffix: invalid suffix")) {
+        return NULL;
+    }
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t slen = rt_string_len_bytes(str);
@@ -162,6 +186,10 @@ rt_string rt_str_remove_suffix(rt_string str, rt_string suffix) {
 /// @param needle Borrowed byte sequence; may be NULL.
 /// @return One-based byte index of the final match, or zero when absent.
 int64_t rt_str_last_index_of(rt_string haystack, rt_string needle) {
+    if (!rt_string_arg_valid_(haystack, "String.LastIndexOf: invalid source") ||
+        !rt_string_arg_valid_(needle, "String.LastIndexOf: invalid needle")) {
+        return 0;
+    }
     if (!haystack || !needle)
         return 0;
     size_t hlen = rt_string_len_bytes(haystack);
@@ -186,6 +214,10 @@ int64_t rt_str_last_index_of(rt_string haystack, rt_string needle) {
 /// @param ch Borrowed string supplying the trim byte; may be NULL.
 /// @return Newly allocated owned trimmed copy, or `NULL` on allocation failure.
 rt_string rt_str_trim_char(rt_string str, rt_string ch) {
+    if (!rt_string_arg_valid_(str, "String.TrimChar: invalid source") ||
+        !rt_string_arg_valid_(ch, "String.TrimChar: invalid character")) {
+        return NULL;
+    }
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t len = rt_string_len_bytes(str);
@@ -217,6 +249,8 @@ rt_string rt_str_trim_char(rt_string str, rt_string ch) {
 /// @param str Borrowed source string; may be NULL.
 /// @return Newly allocated owned slug, or `NULL` after allocation failure.
 rt_string rt_str_slug(rt_string str) {
+    if (!rt_string_arg_valid_(str, "String.Slug: invalid source"))
+        return NULL;
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t len = rt_string_len_bytes(str);
@@ -266,6 +300,10 @@ rt_string rt_str_slug(rt_string str) {
 /// @return Edit distance, or -1 for lengths above `INT64_MAX`, temporary-size
 ///         overflow, or allocation failure.
 int64_t rt_str_levenshtein(rt_string a, rt_string b) {
+    if (!rt_string_arg_valid_(a, "String.Levenshtein: invalid left operand") ||
+        !rt_string_arg_valid_(b, "String.Levenshtein: invalid right operand")) {
+        return -1;
+    }
     if (!a && !b)
         return 0;
     size_t alen = a ? rt_string_len_bytes(a) : 0;
@@ -332,6 +370,10 @@ int64_t rt_str_levenshtein(rt_string a, rt_string b) {
 /// @return Similarity in `[0.0, 1.0]`; zero also represents unsupported huge
 ///         lengths or match-map allocation failure.
 double rt_str_jaro(rt_string a, rt_string b) {
+    if (!rt_string_arg_valid_(a, "String.Jaro: invalid left operand") ||
+        !rt_string_arg_valid_(b, "String.Jaro: invalid right operand")) {
+        return 0.0;
+    }
     if (!a && !b)
         return 1.0;
     size_t alen = a ? rt_string_len_bytes(a) : 0;
@@ -410,6 +452,10 @@ double rt_str_jaro(rt_string a, rt_string b) {
 /// @param b Borrowed second byte string; may be NULL.
 /// @return Jaro score adjusted by the common-prefix bonus.
 double rt_str_jaro_winkler(rt_string a, rt_string b) {
+    if (!rt_string_arg_valid_(a, "String.JaroWinkler: invalid left operand") ||
+        !rt_string_arg_valid_(b, "String.JaroWinkler: invalid right operand")) {
+        return 0.0;
+    }
     double jaro = rt_str_jaro(a, b);
 
     // Compute common prefix length (up to 4)
@@ -443,6 +489,10 @@ double rt_str_jaro_winkler(rt_string a, rt_string b) {
 /// @param b Borrowed second byte string; may be NULL.
 /// @return Number of differing positions, or -1 when lengths differ.
 int64_t rt_str_hamming(rt_string a, rt_string b) {
+    if (!rt_string_arg_valid_(a, "String.Hamming: invalid left operand") ||
+        !rt_string_arg_valid_(b, "String.Hamming: invalid right operand")) {
+        return -1;
+    }
     size_t alen = a ? rt_string_len_bytes(a) : 0;
     size_t blen = b ? rt_string_len_bytes(b) : 0;
     if (alen != blen)
@@ -524,7 +574,8 @@ static int split_words(const char *src,
             }
             // Detect ACRONYM boundary: multiple uppercase followed by lowercase
             if (i + 2 < len && rt_ascii_isupper((unsigned char)src[i]) &&
-                rt_ascii_isupper((unsigned char)src[i + 1]) && rt_ascii_islower((unsigned char)src[i + 2])) {
+                rt_ascii_isupper((unsigned char)src[i + 1]) &&
+                rt_ascii_islower((unsigned char)src[i + 2])) {
                 if (bpos < buf_cap)
                     buf[bpos++] = src[i];
                 ++i;
@@ -556,7 +607,10 @@ static int split_words(const char *src,
 /// @param len Number of bytes to append.
 /// @param context Borrowed diagnostic message; may be NULL.
 /// @return One on success, or zero after a returning append-failure trap.
-static int append_case_bytes(rt_string_builder *sb, const char *bytes, size_t len, const char *context) {
+static int append_case_bytes(rt_string_builder *sb,
+                             const char *bytes,
+                             size_t len,
+                             const char *context) {
     rt_sb_status_t status = rt_sb_append_bytes(sb, bytes, len);
     if (status == RT_SB_OK)
         return 1;
@@ -604,11 +658,8 @@ static size_t like_utf8_step(const char *data, size_t remaining) {
 ///        entries refer into `*buf_out`.
 /// @param word_lens_out Optional output receiving an owned exact-length array.
 /// @return Number of words, or zero for no words or after a returning trap.
-static int split_words_dynamic(const char *src,
-                               size_t len,
-                               char **buf_out,
-                               const char ***words_out,
-                               size_t **word_lens_out) {
+static int split_words_dynamic(
+    const char *src, size_t len, char **buf_out, const char ***words_out, size_t **word_lens_out) {
     if (buf_out)
         *buf_out = NULL;
     if (words_out)
@@ -667,6 +718,8 @@ static int split_words_dynamic(const char *src,
 /// @return Newly allocated owned result, or `NULL` after scratch, builder, or
 ///         result allocation failure.
 rt_string rt_str_camel_case(rt_string str) {
+    if (!rt_string_arg_valid_(str, "String.CamelCase: invalid source"))
+        return NULL;
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t len = rt_string_len_bytes(str);
@@ -723,6 +776,8 @@ camel_fail:
 /// @param str Borrowed source string; may be NULL.
 /// @return Newly allocated owned result, or `NULL` on failure.
 rt_string rt_str_pascal_case(rt_string str) {
+    if (!rt_string_arg_valid_(str, "String.PascalCase: invalid source"))
+        return NULL;
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t len = rt_string_len_bytes(str);
@@ -778,6 +833,8 @@ pascal_fail:
 /// @param str Borrowed source string; may be NULL.
 /// @return Newly allocated owned result, or `NULL` on failure.
 rt_string rt_str_snake_case(rt_string str) {
+    if (!rt_string_arg_valid_(str, "String.SnakeCase: invalid source"))
+        return NULL;
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t len = rt_string_len_bytes(str);
@@ -829,6 +886,8 @@ snake_fail:
 /// @param str Borrowed source string; may be NULL.
 /// @return Newly allocated owned result, or `NULL` on failure.
 rt_string rt_str_kebab_case(rt_string str) {
+    if (!rt_string_arg_valid_(str, "String.KebabCase: invalid source"))
+        return NULL;
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t len = rt_string_len_bytes(str);
@@ -880,6 +939,8 @@ kebab_fail:
 /// @param str Borrowed source string; may be NULL.
 /// @return Newly allocated owned result, or `NULL` on failure.
 rt_string rt_str_screaming_snake(rt_string str) {
+    if (!rt_string_arg_valid_(str, "String.ScreamingSnake: invalid source"))
+        return NULL;
     if (!str)
         return rt_string_from_bytes("", 0);
     size_t len = rt_string_len_bytes(str);
@@ -1020,6 +1081,10 @@ static int8_t like_match(
 /// @param pattern Borrowed LIKE pattern; may be NULL.
 /// @return One for a complete match; otherwise zero.
 int8_t rt_str_like(rt_string text, rt_string pattern) {
+    if (!rt_string_arg_valid_(text, "String.Like: invalid text") ||
+        !rt_string_arg_valid_(pattern, "String.Like: invalid pattern")) {
+        return 0;
+    }
     size_t tlen = rt_string_len_bytes(text);
     size_t plen = rt_string_len_bytes(pattern);
     const char *t = tlen ? text->data : "";
@@ -1034,6 +1099,10 @@ int8_t rt_str_like(rt_string text, rt_string pattern) {
 /// @param pattern Borrowed LIKE pattern; may be NULL.
 /// @return One for a complete match; otherwise zero.
 int8_t rt_str_like_ci(rt_string text, rt_string pattern) {
+    if (!rt_string_arg_valid_(text, "String.LikeCI: invalid text") ||
+        !rt_string_arg_valid_(pattern, "String.LikeCI: invalid pattern")) {
+        return 0;
+    }
     size_t tlen = rt_string_len_bytes(text);
     size_t plen = rt_string_len_bytes(pattern);
     const char *t = tlen ? text->data : "";

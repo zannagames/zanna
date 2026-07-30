@@ -72,6 +72,10 @@ int64_t rt_path3d_get_point_count(void *path);
 /// @param path Path3D handle to modify.
 /// @param loop Nonzero to enable the closing segment and normalized-parameter wrapping.
 void rt_path3d_set_looping(void *path, int8_t loop);
+/// @brief Read whether the path loops back to its first point (ADR 0227).
+/// @param path Path3D receiver.
+/// @return Nonzero for looping paths, or 0 for invalid handles.
+int8_t rt_path3d_get_looping(void *path);
 
 /// @brief Remove all control points.
 /// @param path Path3D handle to clear while retaining its allocated storage.

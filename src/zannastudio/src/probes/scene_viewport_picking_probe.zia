@@ -196,7 +196,7 @@ func VerifyInputAndInitialPicking(ctx: ViewportPickingProbeContext) -> Boolean {
 
     editor.viewYawDegrees = 0;
     editor.viewPitchDegrees = 0;
-    editor.viewScale = 40;
+    editor.viewScale = 40.0;
     editor.viewTargetX = 0.0;
     editor.viewTargetY = 0.0;
     editor.viewTargetZ = 0.0;
@@ -822,7 +822,7 @@ func VerifyScaledPickingAndCapture(ctx: ViewportPickingProbeContext) -> Boolean 
         return false;
     }
     editor.SetQuickView(1);
-    editor.viewScale = 60;
+    editor.viewScale = 60.0;
     if editor.RecallCameraBookmark(3) == false
        or editor.viewYawDegrees != 90
        or editor.viewPitchDegrees != 0 {

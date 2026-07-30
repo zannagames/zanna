@@ -151,6 +151,75 @@ void rt_terrain3d_set_layer_texture(void *terrain, int64_t layer, void *pixels);
 /// @param scale UV tiling multiplier for the selected layer.
 void rt_terrain3d_set_layer_scale(void *terrain, int64_t layer, double scale);
 
+/* Readback symmetry (ADR 0227). */
+/// @brief Read the per-axis terrain scale.
+/// @param terrain Terrain3D handle.
+/// @return New Vec3 of (x spacing, height scale, z spacing); unit scale for invalid handles.
+void *rt_terrain3d_get_scale(void *terrain);
+/// @brief Read the retained terrain material.
+/// @param terrain Terrain3D handle.
+/// @return Borrowed Material3D handle, or `NULL`.
+void *rt_terrain3d_get_material(void *terrain);
+/// @brief Read one splat layer's retained texture reference.
+/// @param terrain Terrain3D handle.
+/// @param layer Layer index from 0 through 7.
+/// @return Borrowed Pixels/TextureAsset3D handle, or `NULL`.
+void *rt_terrain3d_get_layer_texture(void *terrain, int64_t layer);
+/// @brief Read one splat layer's UV tiling multiplier.
+/// @param terrain Terrain3D handle.
+/// @param layer Layer index from 0 through 7.
+/// @return Retained multiplier, or 1.0 for invalid input.
+double rt_terrain3d_get_layer_scale(void *terrain, int64_t layer);
+/// @brief Read one retained splat weight map.
+/// @param terrain Terrain3D handle.
+/// @param index Splat map index, 0 or 1.
+/// @return Borrowed Pixels handle, or `NULL`.
+void *rt_terrain3d_get_splat_map(void *terrain, int64_t index);
+/// @brief Read the LOD 1 switch distance.
+/// @param terrain Terrain3D handle.
+/// @return Retained distance, or 0.0.
+double rt_terrain3d_get_lod_near_distance(void *terrain);
+/// @brief Read the LOD 2 switch distance.
+/// @param terrain Terrain3D handle.
+/// @return Retained distance, or 0.0.
+double rt_terrain3d_get_lod_far_distance(void *terrain);
+/// @brief Read the LOD hysteresis band.
+/// @param terrain Terrain3D handle.
+/// @return Retained band distance, or 0.0.
+double rt_terrain3d_get_lod_hysteresis(void *terrain);
+/// @brief Read the crack-hiding skirt depth.
+/// @param terrain Terrain3D handle.
+/// @return Retained depth, or 0.0.
+double rt_terrain3d_get_skirt_depth(void *terrain);
+/// @brief Read the heightmap sample width.
+/// @param terrain Terrain3D handle.
+/// @return Sample columns, or 0.
+int64_t rt_terrain3d_get_heightmap_width(void *terrain);
+/// @brief Read the heightmap sample depth.
+/// @param terrain Terrain3D handle.
+/// @return Sample rows, or 0.
+int64_t rt_terrain3d_get_heightmap_depth(void *terrain);
+/// @brief Read one authored hole's terrain-local X origin.
+/// @param terrain Terrain3D handle.
+/// @param index Zero-based hole index.
+/// @return Retained component, or 0.0 for invalid input.
+double rt_terrain3d_get_hole_x(void *terrain, int64_t index);
+/// @brief Read one authored hole's terrain-local Z origin.
+/// @param terrain Terrain3D handle.
+/// @param index Zero-based hole index.
+/// @return Retained component, or 0.0 for invalid input.
+double rt_terrain3d_get_hole_z(void *terrain, int64_t index);
+/// @brief Read one authored hole's width.
+/// @param terrain Terrain3D handle.
+/// @param index Zero-based hole index.
+/// @return Retained component, or 0.0 for invalid input.
+double rt_terrain3d_get_hole_width(void *terrain, int64_t index);
+/// @brief Read one authored hole's depth (Z extent).
+/// @param terrain Terrain3D handle.
+/// @param index Zero-based hole index.
+/// @return Retained component, or 0.0 for invalid input.
+double rt_terrain3d_get_hole_depth(void *terrain, int64_t index);
+
 /// @brief Bilinearly interpolate the terrain height at world-space (x, z).
 /// @param terrain Terrain3D handle.
 /// @param x World-space x coordinate in the terrain's local frame.

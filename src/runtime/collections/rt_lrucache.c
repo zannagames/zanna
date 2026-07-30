@@ -50,6 +50,7 @@
 
 #include "rt_collection_ids.h"
 #include "rt_gc.h"
+#include "rt_hash_table_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_seq.h"
@@ -61,10 +62,6 @@
 
 /// Initial number of hash table buckets.
 #define LRU_INITIAL_BUCKETS 16
-
-/// Load factor threshold for resizing (0.75 = 75%).
-#define LRU_LOAD_FACTOR_NUM 3
-#define LRU_LOAD_FACTOR_DEN 4
 
 #include "rt_hash_util.h"
 
@@ -105,26 +102,32 @@ static rt_lrucache_impl *as_lrucache(void *obj, const char *what) {
 
 /// @brief Borrow the byte buffer + length of a key string (empty "" if null).
 /// @param key Runtime string to inspect; NULL denotes the empty key.
+/// @param what Diagnostic raised for a stale or forged nonnull handle.
+/// @param out_data Receives borrowed key bytes.
 /// @param out_len Receives the usable byte length.
-/// @return Borrowed key bytes, or a stable empty string for a null, empty, or
-///         inaccessible runtime string.
-static const char *get_key_data(rt_string key, size_t *out_len) {
+/// @return Nonzero for a null or live string handle; otherwise zero after
+///         trapping.
+static int get_key_data(rt_string key, const char *what, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
     if (!key) {
-        *out_len = 0;
-        return "";
+        return 1;
+    }
+    if (!rt_string_is_handle(key)) {
+        rt_trap(what);
+        return 0;
     }
     int64_t len = rt_str_len(key);
-    if (len <= 0) {
-        *out_len = 0;
-        return "";
-    }
+    if (len <= 0)
+        return 1;
     const char *cstr = rt_string_cstr(key);
     if (!cstr) {
-        *out_len = 0;
-        return "";
+        rt_trap(what);
+        return 0;
     }
+    *out_data = cstr;
     *out_len = (size_t)len;
-    return cstr;
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -264,8 +267,7 @@ static int resize_buckets(rt_lrucache_impl *cache) {
 /// @param next_count Entry count after the pending insertion and any eviction.
 /// @return 1 when insertion may proceed; 0 when growth trapped.
 static int maybe_resize_for_count(rt_lrucache_impl *cache, size_t next_count) {
-    if ((long double)next_count * (long double)LRU_LOAD_FACTOR_DEN <=
-        (long double)cache->bucket_count * (long double)LRU_LOAD_FACTOR_NUM)
+    if (!rt_hash_table_exceeds_load(next_count, cache->bucket_count))
         return 1;
     return resize_buckets(cache);
 }
@@ -353,13 +355,15 @@ void *rt_lrucache_new(int64_t capacity) {
         rt_trap("LRUCache: negative capacity");
         return NULL;
     }
+    if ((uint64_t)capacity > SIZE_MAX) {
+        rt_trap("LRUCache: capacity is not representable");
+        return NULL;
+    }
 
     size_t bucket_count = LRU_INITIAL_BUCKETS;
     // If requested capacity is large, start with more buckets to avoid
     // immediate resizing
-    while ((long double)bucket_count * (long double)LRU_LOAD_FACTOR_NUM /
-               (long double)LRU_LOAD_FACTOR_DEN <
-           (long double)capacity) {
+    while (rt_hash_table_exceeds_load((size_t)capacity, bucket_count)) {
         if (bucket_count > SIZE_MAX / 2)
             break;
         bucket_count *= 2;
@@ -402,7 +406,8 @@ void *rt_lrucache_new(int64_t capacity) {
 int64_t rt_lrucache_len(void *obj) {
     if (!obj)
         return 0;
-    return (int64_t)as_lrucache(obj, "LRUCache.Len: invalid LRUCache object")->count;
+    rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.Len: invalid LRUCache object");
+    return cache ? (int64_t)cache->count : 0;
 }
 
 /// @brief Maximum capacity (set on construction). When `len() == cap()`, a `_put` evicts.
@@ -412,7 +417,8 @@ int64_t rt_lrucache_len(void *obj) {
 int64_t rt_lrucache_cap(void *obj) {
     if (!obj)
         return 0;
-    return (int64_t)as_lrucache(obj, "LRUCache.Cap: invalid LRUCache object")->max_cap;
+    rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.Cap: invalid LRUCache object");
+    return cache ? (int64_t)cache->max_cap : 0;
 }
 
 /// @brief Returns 1 if the cache holds zero entries.
@@ -440,13 +446,17 @@ void rt_lrucache_put(void *obj, rt_string key, void *value) {
         rt_gc_mutator_exit();
         return;
     }
-    if (cache->bucket_count == 0) {
+    if (!cache->buckets || cache->bucket_count == 0) {
         rt_gc_mutator_exit();
         return;
     }
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "LRUCache.Put: invalid key", &key_data, &key_len)) {
+        rt_gc_mutator_exit();
+        return;
+    }
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % cache->bucket_count;
 
@@ -461,6 +471,13 @@ void rt_lrucache_put(void *obj, rt_string key, void *value) {
             rt_obj_free(old_value);
         list_move_to_front(cache, existing);
         rt_gc_mutator_exit();
+        return;
+    }
+
+    if ((cache->max_cap == 0 || cache->count < cache->max_cap) &&
+        cache->count >= (size_t)INT64_MAX) {
+        rt_gc_mutator_exit();
+        rt_trap("LRUCache.Put: maximum size reached");
         return;
     }
 
@@ -541,13 +558,17 @@ void *rt_lrucache_get(void *obj, rt_string key) {
 
     rt_gc_mutator_enter();
     rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.Get: invalid LRUCache object");
-    if (!cache || cache->bucket_count == 0) {
+    if (!cache || !cache->buckets || cache->bucket_count == 0) {
         rt_gc_mutator_exit();
         return NULL;
     }
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "LRUCache.Get: invalid key", &key_data, &key_len)) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % cache->bucket_count;
 
@@ -575,11 +596,13 @@ void *rt_lrucache_peek(void *obj, rt_string key) {
         return NULL;
 
     rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.Peek: invalid LRUCache object");
-    if (cache->bucket_count == 0)
+    if (!cache || !cache->buckets || cache->bucket_count == 0)
         return NULL;
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "LRUCache.Peek: invalid key", &key_data, &key_len))
+        return NULL;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % cache->bucket_count;
 
@@ -596,11 +619,13 @@ int8_t rt_lrucache_has(void *obj, rt_string key) {
         return 0;
 
     rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.Has: invalid LRUCache object");
-    if (cache->bucket_count == 0)
+    if (!cache || !cache->buckets || cache->bucket_count == 0)
         return 0;
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "LRUCache.Has: invalid key", &key_data, &key_len))
+        return 0;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % cache->bucket_count;
 
@@ -618,13 +643,17 @@ int8_t rt_lrucache_remove(void *obj, rt_string key) {
 
     rt_gc_mutator_enter();
     rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.Remove: invalid LRUCache object");
-    if (!cache || cache->bucket_count == 0) {
+    if (!cache || !cache->buckets || cache->bucket_count == 0) {
         rt_gc_mutator_exit();
         return 0;
     }
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "LRUCache.Remove: invalid key", &key_data, &key_len)) {
+        rt_gc_mutator_exit();
+        return 0;
+    }
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % cache->bucket_count;
 
@@ -697,11 +726,15 @@ void rt_lrucache_clear(void *obj) {
 /// @return New owning Seq of newly created key strings.
 void *rt_lrucache_keys(void *obj) {
     void *result = rt_seq_new();
+    if (!result)
+        return NULL;
     rt_seq_set_owns_elements(result, 1);
     if (!obj)
         return result;
 
     rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.Keys: invalid LRUCache object");
+    if (!cache)
+        return result;
 
     // Walk from head (MRU) to tail (LRU)
     for (rt_lru_node *node = cache->head; node; node = node->next) {
@@ -719,11 +752,15 @@ void *rt_lrucache_keys(void *obj) {
 /// @return New owning Seq retaining cached values.
 void *rt_lrucache_values(void *obj) {
     void *result = rt_seq_new();
+    if (!result)
+        return NULL;
     rt_seq_set_owns_elements(result, 1);
     if (!obj)
         return result;
 
     rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.Values: invalid LRUCache object");
+    if (!cache)
+        return result;
 
     // Walk from head (MRU) to tail (LRU)
     for (rt_lru_node *node = cache->head; node; node = node->next) {

@@ -960,8 +960,7 @@ static void list_merge(void **items,
     while (j <= right)
         temp[k++] = items[j++];
 
-    for (size_t x = left; x <= right; x++)
-        items[x] = temp[x];
+    memcpy(items + left, temp + left, (right - left + 1) * sizeof(void *));
 }
 
 /// @brief Recursive merge sort.
@@ -1006,7 +1005,8 @@ static void list_sort_impl(void *list, int64_t (*cmp)(void *, void *)) {
     // Allocate temporary buffer for merge sort
     if (len > SIZE_MAX / sizeof(void *)) {
         rt_gc_mutator_exit();
-        return; // Overflow — cannot allocate
+        rt_trap("List.Sort: scratch size overflow");
+        return;
     }
     void **temp = (void **)malloc(len * sizeof(void *));
     if (!temp) {
@@ -1014,7 +1014,6 @@ static void list_sort_impl(void *list, int64_t (*cmp)(void *, void *)) {
         rt_trap("List.Sort: memory allocation failed");
         return;
     }
-
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) != 0) {
@@ -1026,6 +1025,7 @@ static void list_sort_impl(void *list, int64_t (*cmp)(void *, void *)) {
                  error && error[0] ? error : "List.Sort: comparator trapped");
         rt_trap_clear_recovery();
         free(temp);
+        rt_gc_mutator_exit();
         rt_trap(saved_error);
         return;
     }

@@ -2196,6 +2196,25 @@ set_tests_properties(zia_smoke_3dbowling_trajectory PROPERTIES
         LABELS "zia;smoke;graphics3d;slow"
         TIMEOUT 120)
 
+# Overlay-composition regressions first observed on Metal (NL-ZANNA-001/002).
+# Each runs the checked-in reproduction on the platform's default backend and
+# passes only on the corrected observable output: source-over blending for
+# translucent overlay rects, and per-draw identity for same-size AA text.
+add_test(NAME zia_regress_overlay_alpha_blend
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/known_zanna_issues/overlay_alpha_repro.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/known_zanna_issues")
+set_tests_properties(zia_regress_overlay_alpha_blend PROPERTIES
+        PASS_REGULAR_EXPRESSION "alpha50=9[4-8],6[2-6],3[0-4]"
+        LABELS "zia;graphics3d"
+        TIMEOUT 120)
+add_test(NAME zia_regress_overlay_aa_text_identity
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/known_zanna_issues/overlay_aa_text_repro.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/known_zanna_issues")
+set_tests_properties(zia_regress_overlay_aa_text_identity PROPERTIES
+        PASS_REGULAR_EXPRESSION "top-green-pixels=[1-9]"
+        LABELS "zia;graphics3d"
+        TIMEOUT 120)
+
 # --- ASHFALL (FPS showcase) probes -------------------------------------------
 add_test(NAME zia_smoke_ashfall_core
         COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/core_probe.zia"
@@ -2252,6 +2271,29 @@ if (ZANNA_BASH_EXECUTABLE)
             PASS_REGULAR_EXPRESSION "RESULT: ok"
             LABELS "zia;smoke;graphics3d;requires_posix_shell"
             TIMEOUT 180)
+
+    # Cross-backend visual conformance (software vs the platform GPU backend)
+    # and the leak-guarded 3D soak previously ran only when someone invoked
+    # the shell scripts by hand. Both are registered as opt-in slow tests so
+    # `ctest -L gpu_smoke` / `-L soak` exercises them without joining the
+    # default gate (they need a display and a GPU backend).
+    add_test(NAME zia_graphics_conformance_cross_backend
+            COMMAND ${ZANNA_BASH_COMMAND} "${CMAKE_SOURCE_DIR}/scripts/run_backend_conformance.sh"
+                    --zia $<TARGET_FILE:zia>
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(zia_graphics_conformance_cross_backend PROPERTIES
+            PASS_REGULAR_EXPRESSION "RESULT: ok"
+            LABELS "zia;graphics3d;gpu_smoke;requires_display;requires_posix_shell;slow"
+            TIMEOUT 600)
+
+    add_test(NAME zia_graphics_3d_soak_short
+            COMMAND ${ZANNA_BASH_COMMAND} "${CMAKE_SOURCE_DIR}/scripts/run_3d_soak.sh"
+                    --zia $<TARGET_FILE:zia> --minutes 2
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(zia_graphics_3d_soak_short PROPERTIES
+            PASS_REGULAR_EXPRESSION "RESULT: ok"
+            LABELS "zia;graphics3d;soak;requires_posix_shell;slow"
+            TIMEOUT 900)
 endif ()
 
 add_test(NAME zia_smoke_ashfall_combat
@@ -2612,6 +2654,35 @@ add_test(NAME zia_ashfall_scenes_campaign
 set_tests_properties(zia_ashfall_scenes_campaign PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
         LABELS "zia;smoke;gameplay;scene;slow"
+        TIMEOUT 300)
+
+# The remaining ashfall-scenes probes ship with the demo but were never
+# registered; the flagship scene-authored workflow now runs the same
+# breadth as the code-built ashfall suite. Perf probes carry the perf
+# label so budget-sensitive lanes opt in explicitly.
+foreach (_ashfall_scenes_probe assets combat core enemy manifest menu meta
+        movement render stress_combat visual)
+    add_test(NAME zia_ashfall_scenes_${_ashfall_scenes_probe}
+            COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/${_ashfall_scenes_probe}_probe.zia"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
+    set_tests_properties(zia_ashfall_scenes_${_ashfall_scenes_probe} PROPERTIES
+            PASS_REGULAR_EXPRESSION "RESULT: ok"
+            LABELS "zia;smoke;gameplay;scene;slow"
+            TIMEOUT 300)
+endforeach ()
+add_test(NAME zia_ashfall_scenes_perf
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/perf_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
+set_tests_properties(zia_ashfall_scenes_perf PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;perf;gameplay;scene;slow"
+        TIMEOUT 300)
+add_test(NAME zia_ashfall_scenes_gpu_perf
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/gpu_perf_probe.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
+set_tests_properties(zia_ashfall_scenes_gpu_perf PROPERTIES
+        PASS_REGULAR_EXPRESSION "RESULT: ok"
+        LABELS "zia;perf;gpu_smoke;gameplay;scene;slow"
         TIMEOUT 300)
 
 add_test(NAME zia_xenoscape_scene_parity
@@ -3125,8 +3196,20 @@ endif ()
 # Graphics3D Zia Integration Tests (headless — no display required)
 # =============================================================================
 set(G3D_TESTS_DIR "${CMAKE_SOURCE_DIR}/src/tests/fixtures/runtime")
+# Byte-exact VSCN serialization goldens (v2/v5/v6/v7 documents built through
+# the public API, compared against src/tests/golden/vscn/, plus reload
+# byte-stability). Not slow: this is the default-gate scene-format tripwire.
+add_test(NAME g3d_vscn_golden
+        COMMAND $<TARGET_FILE:zanna> run "${CMAKE_SOURCE_DIR}/src/tests/fixtures/runtime/test_vscn_golden.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+set_tests_properties(g3d_vscn_golden PROPERTIES
+        PASS_REGULAR_EXPRESSION "PASS"
+        LABELS "runtime;graphics3d;golden"
+        TIMEOUT 60)
+
 set(G3D_ZIA_TESTS
         test_animcontroller3d
+        test_g3d_api_symmetry
         test_canvas3d_hello
         test_canvas3d_obj
         test_material3d_pbr

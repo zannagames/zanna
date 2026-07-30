@@ -113,6 +113,58 @@ entry:
                                                   "material3d_anisotropy.il",
                                                   {},
                                                   {}},
+                                                 {false, std::nullopt}},
+                                                {"SceneGraphHierarchyCounts",
+                                                 {R"(il 0.3.0
+extern @Zanna.Graphics3D.SceneGraph.New() -> ptr
+extern @Zanna.Graphics3D.SceneNode.New() -> ptr
+extern @Zanna.Graphics3D.SceneGraph.Add(ptr, ptr) -> void
+extern @Zanna.Graphics3D.SceneNode.AddChild(ptr, ptr) -> void
+extern @Zanna.Graphics3D.SceneGraph.get_NodeCount(ptr) -> i64
+extern @Zanna.Graphics3D.SceneGraph.get_UnresolvedPrefabCount(ptr) -> i64
+
+func @main() -> i64 {
+entry:
+  %scene = call @Zanna.Graphics3D.SceneGraph.New()
+  %parent = call @Zanna.Graphics3D.SceneNode.New()
+  %child = call @Zanna.Graphics3D.SceneNode.New()
+  call @Zanna.Graphics3D.SceneGraph.Add(%scene, %parent)
+  call @Zanna.Graphics3D.SceneNode.AddChild(%parent, %child)
+  %count = call @Zanna.Graphics3D.SceneGraph.get_NodeCount(%scene)
+  %unresolved = call @Zanna.Graphics3D.SceneGraph.get_UnresolvedPrefabCount(%scene)
+  %sum = iadd.ovf %count, %unresolved
+  ret %sum
+}
+)",
+                                                  "scenegraph_hierarchy_counts.il",
+                                                  {},
+                                                  {}},
+                                                 {false, std::nullopt}},
+                                                {"QuatEulerDecompositionParity",
+                                                 {R"(il 0.3.0
+extern @Zanna.Math.Quat.FromEuler(f64, f64, f64) -> ptr
+extern @Zanna.Math.Quat.ToEuler(ptr) -> ptr
+extern @Zanna.Math.Vec3.get_X(ptr) -> f64
+extern @Zanna.Math.Vec3.get_Y(ptr) -> f64
+extern @Zanna.Math.Vec3.get_Z(ptr) -> f64
+extern @rt_print_f64(f64) -> void
+
+func @main() -> i64 {
+entry:
+  %quat = call @Zanna.Math.Quat.FromEuler(0.3, -0.7, 1.1)
+  %euler = call @Zanna.Math.Quat.ToEuler(%quat)
+  %pitch = call @Zanna.Math.Vec3.get_X(%euler)
+  %yaw = call @Zanna.Math.Vec3.get_Y(%euler)
+  %roll = call @Zanna.Math.Vec3.get_Z(%euler)
+  call @rt_print_f64(%pitch)
+  call @rt_print_f64(%yaw)
+  call @rt_print_f64(%roll)
+  ret 0
+}
+)",
+                                                  "quat_euler_decomposition.il",
+                                                  {},
+                                                  {}},
                                                  {false, std::nullopt}}}};
 
 CodegenComparisonResult runScenario(CodegenFixture &fixture, const CliScenario &scenario) {

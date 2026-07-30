@@ -320,6 +320,28 @@ double rt_vec2_x(void *v) {
     return vec->x;
 }
 
+/// @brief Set the X component in place (ADR 0227: parity with Vec3).
+/// @details Raises a runtime trap and leaves memory untouched if @p v is not a compatible Vec2.
+/// @param v Mutable Vec2 handle.
+/// @param x New x component.
+void rt_vec2_set_x(void *v, double x) {
+    ZannaVec2 *vec = vec2_checked(v, "Vec2.set_X: invalid vector");
+    if (!vec)
+        return;
+    vec->x = x;
+}
+
+/// @brief Set the Y component in place (ADR 0227: parity with Vec3).
+/// @details Raises a runtime trap and leaves memory untouched if @p v is not a compatible Vec2.
+/// @param v Mutable Vec2 handle.
+/// @param y New y component.
+void rt_vec2_set_y(void *v, double y) {
+    ZannaVec2 *vec = vec2_checked(v, "Vec2.set_Y: invalid vector");
+    if (!vec)
+        return;
+    vec->y = y;
+}
+
 /// @brief Gets the Y component of the vector.
 ///
 /// Returns the vertical component of the 2D vector. In mathematical coordinates,

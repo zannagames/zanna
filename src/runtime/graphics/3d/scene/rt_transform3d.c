@@ -28,6 +28,8 @@
 
 #include "rt_transform3d.h"
 #include "rt_graphics3d_ids.h"
+#include "rt_quat.h"
+#include "rt_vec3.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -392,6 +394,29 @@ void rt_transform3d_set_position(void *obj, double x, double y, double z) {
     xf->position[2] = transform3d_clamp_abs_or(z, 0.0);
     xf->dirty = 1;
     xf->components_clean = 0;
+}
+
+/// @brief `Transform3D.GetEuler()` — degree-valued inverse of `SetEuler` (ADR 0227).
+/// @details Decomposes the retained rotation through the shared quaternion
+///          inverse so the convention can never drift from `SetEuler`.
+/// @param obj Borrowed Transform3D handle.
+/// @return New Vec3 of (pitch, yaw, roll) in degrees; zero vector for NULL.
+void *rt_transform3d_get_euler(void *obj) {
+    rt_transform3d *xf = transform3d_checked(obj);
+    void *quat;
+    void *euler;
+    if (!xf)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    transform3d_repair_components(xf);
+    quat = rt_quat_new(xf->rotation[0], xf->rotation[1], xf->rotation[2], xf->rotation[3]);
+    if (!quat)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    euler = rt_quat_to_euler(quat);
+    if (!euler)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(rt_vec3_x(euler) * (180.0 / M_PI),
+                       rt_vec3_y(euler) * (180.0 / M_PI),
+                       rt_vec3_z(euler) * (180.0 / M_PI));
 }
 
 /// @brief Get the current position as a new Vec3 (returns origin if NULL).

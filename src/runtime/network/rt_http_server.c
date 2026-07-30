@@ -1322,24 +1322,52 @@ void *rt_http_server_new(int64_t port) {
 
     server = (rt_http_server_impl *)rt_obj_new_i64(RT_HTTP_SERVER_CLASS_ID,
                                                    (int64_t)sizeof(rt_http_server_impl));
-    if (!server)
+    if (!server) {
         rt_trap("HttpServer: memory allocation failed");
+        goto returning_trap;
+    }
     memset((void *)server, 0, sizeof(rt_http_server_impl));
-    if (!HTTP_SERVER_MUTEX_INIT(&((rt_http_server_impl *)server)->state_lock))
+    if (!HTTP_SERVER_MUTEX_INIT(&((rt_http_server_impl *)server)->state_lock)) {
         rt_trap("HttpServer: state mutex initialization failed");
+        goto returning_trap;
+    }
     ((rt_http_server_impl *)server)->state_lock_initialized = true;
-    if (!HTTP_SERVER_MUTEX_INIT(&((rt_http_server_impl *)server)->lifecycle_lock))
+    if (!HTTP_SERVER_MUTEX_INIT(&((rt_http_server_impl *)server)->lifecycle_lock)) {
         rt_trap("HttpServer: lifecycle mutex initialization failed");
+        goto returning_trap;
+    }
     ((rt_http_server_impl *)server)->lifecycle_lock_initialized = true;
     rt_obj_set_finalizer((void *)server, rt_http_server_finalize);
     finalizer_installed = 1;
 
     ((rt_http_server_impl *)server)->port = port;
     ((rt_http_server_impl *)server)->router = rt_http_router_new();
-    if (!((rt_http_server_impl *)server)->router)
+    if (!((rt_http_server_impl *)server)->router) {
         rt_trap("HttpServer: router allocation failed");
+        goto returning_trap;
+    }
     rt_trap_clear_recovery();
     return (void *)server;
+
+returning_trap:
+    rt_trap_clear_recovery();
+    if (server) {
+        rt_http_server_impl *partial = (rt_http_server_impl *)server;
+        if (finalizer_installed) {
+            server_release_object(partial);
+        } else {
+            if (partial->lifecycle_lock_initialized) {
+                HTTP_SERVER_MUTEX_DESTROY(&partial->lifecycle_lock);
+                partial->lifecycle_lock_initialized = false;
+            }
+            if (partial->state_lock_initialized) {
+                HTTP_SERVER_MUTEX_DESTROY(&partial->state_lock);
+                partial->state_lock_initialized = false;
+            }
+            server_release_object(partial);
+        }
+    }
+    return NULL;
 }
 
 /// @brief Helper used by every `Get`/`Post`/`Put`/`Delete` registrar.
@@ -2194,25 +2222,37 @@ void rt_server_res_json(void *obj, rt_string json_str) {
     size_t json_len = (size_t)json_len64;
     if (json_len > 0) {
         replacement_body = (char *)malloc(json_len);
-        if (!replacement_body)
+        if (!replacement_body) {
             rt_trap("HttpServer: JSON response body allocation failed");
+            goto returning_trap;
+        }
         memcpy((void *)replacement_body, json_bytes, json_len);
     }
 
     replacement_headers = rt_map_new();
-    if (!replacement_headers)
+    if (!replacement_headers) {
         rt_trap("HttpServer: response header allocation failed");
+        goto returning_trap;
+    }
     if (res->headers) {
         keys = rt_map_keys(res->headers);
-        if (!keys)
+        if (!keys) {
             rt_trap("HttpServer: response header snapshot failed");
+            goto returning_trap;
+        }
         int64_t count = rt_seq_len((void *)keys);
-        if (count < 0)
+        if (count < 0) {
             rt_trap("HttpServer: invalid response header snapshot");
+            goto returning_trap;
+        }
         for (int64_t i = 0; i < count; i++) {
             rt_string key = (rt_string)rt_seq_get((void *)keys, i);
             void *value = rt_map_get(res->headers, key);
             rt_map_set((void *)replacement_headers, key, value);
+            if (!rt_map_has((void *)replacement_headers, key)) {
+                rt_trap("HttpServer: response header clone failed");
+                goto returning_trap;
+            }
         }
         server_release_object((void *)keys);
         keys = NULL;
@@ -2224,6 +2264,7 @@ void rt_server_res_json(void *obj, rt_string json_str) {
         !rt_http_header_map_set_ci(
             (void *)replacement_headers, (rt_string)ct_key, (void *)ct_val)) {
         rt_trap("HttpServer: response header allocation failed");
+        goto returning_trap;
     }
     rt_string_unref((rt_string)ct_val);
     rt_string_unref((rt_string)ct_key);
@@ -2241,6 +2282,15 @@ void rt_server_res_json(void *obj, rt_string json_str) {
     rt_trap_clear_recovery();
     server_release_object(old_headers);
     free(old_body);
+    return;
+
+returning_trap:
+    rt_trap_clear_recovery();
+    rt_string_unref((rt_string)ct_val);
+    rt_string_unref((rt_string)ct_key);
+    server_release_object((void *)keys);
+    server_release_object((void *)replacement_headers);
+    free((void *)replacement_body);
 }
 
 /// @brief Synchronous router entry-point — parse a raw request string

@@ -126,6 +126,8 @@ unmapped.txt
 .unmapped_by_area/
 .unmapped_counts.txt
 break.txt
+# clang --analyze / scan-build reports land in the invocation directory
+/*.plist
 
 # --- Python bytecode ---
 __pycache__/
@@ -175,3 +177,6 @@ examples/games/ashfall/ashfall_menu_probe_save/
 
 # --- zannagames.com site (separate repo: zannagames/zannaweb) ---
 /zannaweb/
+
+# Zanna Studio per-project build/run outputs (Play launches, packaged runs)
+.zanna-studio/

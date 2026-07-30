@@ -328,6 +328,10 @@ Constructor: `Zanna.Graphics3D.Camera3D.New`
 | <a id="zanna-graphics3d-camera3d-position"></a>`Position` | `obj<Zanna.Math.Vec3>` | read/write |
 | <a id="zanna-graphics3d-camera3d-forward"></a>`Forward` | `obj<Zanna.Math.Vec3>` | read-only |
 | <a id="zanna-graphics3d-camera3d-right"></a>`Right` | `obj<Zanna.Math.Vec3>` | read-only |
+| <a id="zanna-graphics3d-camera3d-up"></a>`Up` | `obj<Zanna.Math.Vec3>` | read-only |
+| <a id="zanna-graphics3d-camera3d-viewmatrix"></a>`ViewMatrix` | `obj<Zanna.Math.Mat4>` | read-only |
+| <a id="zanna-graphics3d-camera3d-projectionmatrix"></a>`ProjectionMatrix` | `obj<Zanna.Math.Mat4>` | read-only |
+| <a id="zanna-graphics3d-camera3d-aspectratio"></a>`AspectRatio` | `f64` | read-only |
 | <a id="zanna-graphics3d-camera3d-isortho"></a>`IsOrtho` | `i1` | read/write |
 | <a id="zanna-graphics3d-camera3d-orthosize"></a>`OrthoSize` | `f64` | read/write |
 | <a id="zanna-graphics3d-camera3d-yaw"></a>`Yaw` | `f64` | read/write |
@@ -535,6 +539,7 @@ Constructor: `Zanna.Graphics3D.SceneGraph.New`
 | <a id="zanna-graphics3d-scenegraph-visibilityportalcount"></a>`VisibilityPortalCount` | `i64` | read-only |
 | <a id="zanna-graphics3d-scenegraph-portalclipping"></a>`PortalClipping` | `i1` | read/write |
 | <a id="zanna-graphics3d-scenegraph-portaltraversalcount"></a>`PortalTraversalCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-scenegraph-unresolvedprefabcount"></a>`UnresolvedPrefabCount` | `i64` | read-only |
 
 #### Methods
 
@@ -558,8 +563,11 @@ Constructor: `Zanna.Graphics3D.SceneGraph.New`
 | <a id="zanna-graphics3d-scenegraph-save"></a>`Save` | `i64(str)` | `Zanna.Graphics3D.SceneGraph.Save` |
 | <a id="zanna-graphics3d-scenegraph-savetotext"></a>`SaveToText` | `str()` | `Zanna.Graphics3D.SceneGraph.SaveToText` |
 | <a id="zanna-graphics3d-scenegraph-load"></a>`Load` | `obj<Zanna.Graphics3D.SceneGraph>(str)` | `Zanna.Graphics3D.SceneGraph.Load` |
+| <a id="zanna-graphics3d-scenegraph-loadresult"></a>`LoadResult` | `obj<Zanna.Result>(str)` | `Zanna.Graphics3D.SceneGraph.LoadResult` |
+| <a id="zanna-graphics3d-scenegraph-loadtextresult"></a>`LoadTextResult` | `obj<Zanna.Result>(str,str)` | `Zanna.Graphics3D.SceneGraph.LoadTextResult` |
 | <a id="zanna-graphics3d-scenegraph-syncbindings"></a>`SyncBindings` | `void(f64)` | `Zanna.Graphics3D.SceneGraph.SyncBindings` |
 | <a id="zanna-graphics3d-scenegraph-rebaseorigin"></a>`RebaseOrigin` | `void(f64,f64,f64)` | `Zanna.Graphics3D.SceneGraph.RebaseOrigin` |
+| <a id="zanna-graphics3d-scenegraph-adoptanimations"></a>`AdoptAnimations` | `i64(obj)` | `Zanna.Graphics3D.SceneGraph.AdoptAnimations` |
 | <a id="zanna-graphics3d-scenegraph-new"></a>`New` | `obj()` | `Zanna.Graphics3D.SceneGraph.New` |
 
 <a id="zanna-graphics3d-scenenode"></a>
@@ -650,6 +658,7 @@ Constructor: `Zanna.Graphics3D.SceneNode.New`
 | <a id="zanna-graphics3d-scenenode-setimpostorframes"></a>`SetImpostorFrames` | `void(f64,obj,i64)` | `Zanna.Graphics3D.SceneNode.SetImpostorFrames` |
 | <a id="zanna-graphics3d-scenenode-setstatic"></a>`SetStatic` | `void(i1)` | `Zanna.Graphics3D.SceneNode.SetStatic` |
 | <a id="zanna-graphics3d-scenenode-getstatic"></a>`GetStatic` | `i1()` | `Zanna.Graphics3D.SceneNode.GetStatic` |
+| <a id="zanna-graphics3d-scenenode-trysetworldposition"></a>`TrySetWorldPosition` | `i1(f64,f64,f64)` | `Zanna.Graphics3D.SceneNode.TrySetWorldPosition` |
 | <a id="zanna-graphics3d-scenenode-getimpostorframeindex"></a>`GetImpostorFrameIndex` | `i64()` | `Zanna.Graphics3D.SceneNode.GetImpostorFrameIndex` |
 | <a id="zanna-graphics3d-scenenode-clearlod"></a>`ClearLod` | `void()` | `Zanna.Graphics3D.SceneNode.ClearLod` |
 | <a id="zanna-graphics3d-scenenode-getlodmesh"></a>`GetLodMesh` | `obj(i64)` | `Zanna.Graphics3D.SceneNode.GetLodMesh` |
@@ -746,6 +755,8 @@ Constructor: `Zanna.Graphics3D.Skeleton3D.New`
 | <a id="zanna-graphics3d-skeleton3d-computeinversebind"></a>`ComputeInverseBind` | `void()` | `Zanna.Graphics3D.Skeleton3D.ComputeInverseBind` |
 | <a id="zanna-graphics3d-skeleton3d-findboneoption"></a>`FindBoneOption` | `obj<Zanna.Option>(str)` | `Zanna.Graphics3D.Skeleton3D.FindBoneOption` |
 | <a id="zanna-graphics3d-skeleton3d-getbonename"></a>`GetBoneName` | `str(i64)` | `Zanna.Graphics3D.Skeleton3D.GetBoneName` |
+| <a id="zanna-graphics3d-skeleton3d-getboneparent"></a>`GetBoneParent` | `i64(i64)` | `Zanna.Graphics3D.Skeleton3D.GetBoneParent` |
+| <a id="zanna-graphics3d-skeleton3d-getbonebindpose"></a>`GetBoneBindPose` | `obj<Zanna.Math.Mat4>(i64)` | `Zanna.Graphics3D.Skeleton3D.GetBoneBindPose` |
 | <a id="zanna-graphics3d-skeleton3d-setbonealias"></a>`SetBoneAlias` | `void(str,str)` | `Zanna.Graphics3D.Skeleton3D.SetBoneAlias` |
 | <a id="zanna-graphics3d-skeleton3d-new"></a>`New` | `obj()` | `Zanna.Graphics3D.Skeleton3D.New` |
 
@@ -844,6 +855,12 @@ construct the class directly. Its public surface exposes properties such as `Mes
 |---|---|---|
 | <a id="zanna-graphics3d-gltf-meshcount"></a>`MeshCount` | `i64` | read-only |
 | <a id="zanna-graphics3d-gltf-materialcount"></a>`MaterialCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-gltf-skeletoncount"></a>`SkeletonCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-gltf-animationcount"></a>`AnimationCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-gltf-nodeanimationcount"></a>`NodeAnimationCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-gltf-cameracount"></a>`CameraCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-gltf-scenecount"></a>`SceneCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-gltf-nodecount"></a>`NodeCount` | `i64` | read-only |
 
 #### Methods
 
@@ -853,6 +870,13 @@ construct the class directly. Its public surface exposes properties such as `Mes
 | <a id="zanna-graphics3d-gltf-loadasset"></a>`LoadAsset` | `obj<Zanna.Graphics3D.Gltf>(str)` | `Zanna.Graphics3D.Gltf.LoadAsset` |
 | <a id="zanna-graphics3d-gltf-getmesh"></a>`GetMesh` | `obj<Zanna.Graphics3D.Mesh3D>(i64)` | `Zanna.Graphics3D.Gltf.GetMesh` |
 | <a id="zanna-graphics3d-gltf-getmaterial"></a>`GetMaterial` | `obj<Zanna.Graphics3D.Material3D>(i64)` | `Zanna.Graphics3D.Gltf.GetMaterial` |
+| <a id="zanna-graphics3d-gltf-getskeleton"></a>`GetSkeleton` | `obj<Zanna.Graphics3D.Skeleton3D>(i64)` | `Zanna.Graphics3D.Gltf.GetSkeleton` |
+| <a id="zanna-graphics3d-gltf-getanimation"></a>`GetAnimation` | `obj<Zanna.Graphics3D.Animation3D>(i64)` | `Zanna.Graphics3D.Gltf.GetAnimation` |
+| <a id="zanna-graphics3d-gltf-getnodeanimation"></a>`GetNodeAnimation` | `obj<Zanna.Graphics3D.NodeAnimation3D>(i64)` | `Zanna.Graphics3D.Gltf.GetNodeAnimation` |
+| <a id="zanna-graphics3d-gltf-getcamera"></a>`GetCamera` | `obj<Zanna.Graphics3D.Camera3D>(i64)` | `Zanna.Graphics3D.Gltf.GetCamera` |
+| <a id="zanna-graphics3d-gltf-getscenename"></a>`GetSceneName` | `str(i64)` | `Zanna.Graphics3D.Gltf.GetSceneName` |
+| <a id="zanna-graphics3d-gltf-getscenerootat"></a>`GetSceneRootAt` | `obj<Zanna.Graphics3D.SceneNode>(i64)` | `Zanna.Graphics3D.Gltf.GetSceneRootAt` |
+| <a id="zanna-graphics3d-gltf-getsceneroot"></a>`GetSceneRoot` | `obj<Zanna.Graphics3D.SceneNode>()` | `Zanna.Graphics3D.Gltf.GetSceneRoot` |
 
 <a id="zanna-graphics3d-fbx"></a>
 ### `Zanna.Graphics3D.Fbx`
@@ -1075,6 +1099,90 @@ Constructor: `Zanna.Graphics3D.PostFX3D.New`
 | <a id="zanna-graphics3d-postfx3d-addtaa"></a>`AddTaa` | `void(f64)` | `Zanna.Graphics3D.PostFX3D.AddTaa` |
 | <a id="zanna-graphics3d-postfx3d-addssr"></a>`AddSsr` | `void(f64,f64)` | `Zanna.Graphics3D.PostFX3D.AddSsr` |
 | <a id="zanna-graphics3d-postfx3d-new"></a>`New` | `obj()` | `Zanna.Graphics3D.PostFX3D.New` |
+
+<a id="zanna-graphics3d-ray3d"></a>
+### `Zanna.Graphics3D.Ray3D`
+
+Provides world-space ray intersection queries against triangles, meshes, and volumes.
+
+`Zanna.Graphics3D.Ray3D` exposes a registry-backed runtime surface without requiring callers to
+construct the class directly. Its public surface exposes operations including
+`IntersectTriangle`, `IntersectMesh`, `IntersectAABB`, `IntersectSphere`.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-graphics3d-ray3d-intersecttriangle"></a>`IntersectTriangle` | `f64(obj,obj,obj,obj,obj)` | `Zanna.Graphics3D.Ray3D.IntersectTriangle` |
+| <a id="zanna-graphics3d-ray3d-intersecttrianglecull"></a>`IntersectTriangleCull` | `f64(obj,obj,obj,obj,obj,i1)` | `Zanna.Graphics3D.Ray3D.IntersectTriangleCull` |
+| <a id="zanna-graphics3d-ray3d-intersectmesh"></a>`IntersectMesh` | `obj(obj,obj,obj,obj)` | `Zanna.Graphics3D.Ray3D.IntersectMesh` |
+| <a id="zanna-graphics3d-ray3d-intersectaabb"></a>`IntersectAABB` | `f64(obj,obj,obj,obj)` | `Zanna.Graphics3D.Ray3D.IntersectAABB` |
+| <a id="zanna-graphics3d-ray3d-intersectsphere"></a>`IntersectSphere` | `f64(obj,obj,obj,f64)` | `Zanna.Graphics3D.Ray3D.IntersectSphere` |
+
+<a id="zanna-graphics3d-aabb3d"></a>
+### `Zanna.Graphics3D.AABB3D`
+
+Provides axis-aligned bounding-box overlap, penetration, and closest-point queries.
+
+`Zanna.Graphics3D.AABB3D` exposes a registry-backed runtime surface without requiring callers
+to construct the class directly. Its public surface exposes operations including `Overlaps`,
+`Penetration`, `ClosestPoint`, `SphereOverlaps`.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-graphics3d-aabb3d-overlaps"></a>`Overlaps` | `i1(obj,obj,obj,obj)` | `Zanna.Graphics3D.AABB3D.Overlaps` |
+| <a id="zanna-graphics3d-aabb3d-penetration"></a>`Penetration` | `obj(obj,obj,obj,obj)` | `Zanna.Graphics3D.AABB3D.Penetration` |
+| <a id="zanna-graphics3d-aabb3d-closestpoint"></a>`ClosestPoint` | `obj(obj,obj,obj)` | `Zanna.Graphics3D.AABB3D.ClosestPoint` |
+| <a id="zanna-graphics3d-aabb3d-sphereoverlaps"></a>`SphereOverlaps` | `i1(obj,obj,obj,f64)` | `Zanna.Graphics3D.AABB3D.SphereOverlaps` |
+
+<a id="zanna-graphics3d-sphere3d"></a>
+### `Zanna.Graphics3D.Sphere3D`
+
+Provides sphere-versus-sphere overlap and penetration queries.
+
+`Zanna.Graphics3D.Sphere3D` exposes a registry-backed runtime surface without requiring callers
+to construct the class directly. Its public surface exposes operations including `Overlaps`
+and `Penetration`.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-graphics3d-sphere3d-overlaps"></a>`Overlaps` | `i1(obj,f64,obj,f64)` | `Zanna.Graphics3D.Sphere3D.Overlaps` |
+| <a id="zanna-graphics3d-sphere3d-penetration"></a>`Penetration` | `obj(obj,f64,obj,f64)` | `Zanna.Graphics3D.Sphere3D.Penetration` |
+
+<a id="zanna-graphics3d-segment3d"></a>
+### `Zanna.Graphics3D.Segment3D`
+
+Provides closest-point queries against world-space line segments.
+
+`Zanna.Graphics3D.Segment3D` exposes a registry-backed runtime surface without requiring
+callers to construct the class directly. Its public surface exposes the `ClosestPoint`
+operation.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-graphics3d-segment3d-closestpoint"></a>`ClosestPoint` | `obj(obj,obj,obj)` | `Zanna.Graphics3D.Segment3D.ClosestPoint` |
+
+<a id="zanna-graphics3d-capsule3d"></a>
+### `Zanna.Graphics3D.Capsule3D`
+
+Provides capsule-versus-sphere and capsule-versus-AABB overlap queries.
+
+`Zanna.Graphics3D.Capsule3D` exposes a registry-backed runtime surface without requiring
+callers to construct the class directly. Its public surface exposes operations including
+`SphereOverlaps` and `AABBOverlaps`.
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-graphics3d-capsule3d-sphereoverlaps"></a>`SphereOverlaps` | `i1(obj,f64,obj,f64)` | `Zanna.Graphics3D.Capsule3D.SphereOverlaps` |
+| <a id="zanna-graphics3d-capsule3d-aabboverlaps"></a>`AABBOverlaps` | `i1(obj,f64,obj,obj)` | `Zanna.Graphics3D.Capsule3D.AABBOverlaps` |
 
 <a id="zanna-graphics3d-rayhit3d"></a>
 ### `Zanna.Graphics3D.RayHit3D`
@@ -1763,6 +1871,7 @@ Constructor: `Zanna.Graphics3D.Transform3D.New`
 |---|---|---|
 | <a id="zanna-graphics3d-transform3d-setposition"></a>`SetPosition` | `void(f64,f64,f64)` | `Zanna.Graphics3D.Transform3D.SetPosition` |
 | <a id="zanna-graphics3d-transform3d-seteuler"></a>`SetEuler` | `void(f64,f64,f64)` | `Zanna.Graphics3D.Transform3D.SetEuler` |
+| <a id="zanna-graphics3d-transform3d-geteuler"></a>`GetEuler` | `obj<Zanna.Math.Vec3>()` | `Zanna.Graphics3D.Transform3D.GetEuler` |
 | <a id="zanna-graphics3d-transform3d-setscale"></a>`SetScale` | `void(f64,f64,f64)` | `Zanna.Graphics3D.Transform3D.SetScale` |
 | <a id="zanna-graphics3d-transform3d-translate"></a>`Translate` | `void(obj)` | `Zanna.Graphics3D.Transform3D.Translate` |
 | <a id="zanna-graphics3d-transform3d-rotate"></a>`Rotate` | `void(obj,f64)` | `Zanna.Graphics3D.Transform3D.Rotate` |
@@ -1815,6 +1924,8 @@ Constructor: `Zanna.Graphics3D.InstanceBatch3D.New`
 | Property | Type | Access |
 |---|---|---|
 | <a id="zanna-graphics3d-instancebatch3d-count"></a>`Count` | `i64` | read-only |
+| <a id="zanna-graphics3d-instancebatch3d-mesh"></a>`Mesh` | `obj<Zanna.Graphics3D.Mesh3D>` | read-only |
+| <a id="zanna-graphics3d-instancebatch3d-material"></a>`Material` | `obj<Zanna.Graphics3D.Material3D>` | read-only |
 
 #### Methods
 
@@ -1823,6 +1934,7 @@ Constructor: `Zanna.Graphics3D.InstanceBatch3D.New`
 | <a id="zanna-graphics3d-instancebatch3d-add"></a>`Add` | `void(obj)` | `Zanna.Graphics3D.InstanceBatch3D.Add` |
 | <a id="zanna-graphics3d-instancebatch3d-remove"></a>`Remove` | `void(i64)` | `Zanna.Graphics3D.InstanceBatch3D.Remove` |
 | <a id="zanna-graphics3d-instancebatch3d-set"></a>`Set` | `void(i64,obj)` | `Zanna.Graphics3D.InstanceBatch3D.Set` |
+| <a id="zanna-graphics3d-instancebatch3d-gettransform"></a>`GetTransform` | `obj<Zanna.Math.Mat4>(i64)` | `Zanna.Graphics3D.InstanceBatch3D.GetTransform` |
 | <a id="zanna-graphics3d-instancebatch3d-clear"></a>`Clear` | `void()` | `Zanna.Graphics3D.InstanceBatch3D.Clear` |
 | <a id="zanna-graphics3d-instancebatch3d-new"></a>`New` | `obj(obj,obj)` | `Zanna.Graphics3D.InstanceBatch3D.New` |
 
@@ -1994,6 +2106,13 @@ Constructor: `Zanna.Graphics3D.Terrain3D.New`
 | Property | Type | Access |
 |---|---|---|
 | <a id="zanna-graphics3d-terrain3d-holecount"></a>`HoleCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-terrain3d-material"></a>`Material` | `obj<Zanna.Graphics3D.Material3D>` | read-only |
+| <a id="zanna-graphics3d-terrain3d-lodneardistance"></a>`LodNearDistance` | `f64` | read-only |
+| <a id="zanna-graphics3d-terrain3d-lodfardistance"></a>`LodFarDistance` | `f64` | read-only |
+| <a id="zanna-graphics3d-terrain3d-lodhysteresis"></a>`LodHysteresis` | `f64` | read-only |
+| <a id="zanna-graphics3d-terrain3d-skirtdepth"></a>`SkirtDepth` | `f64` | read-only |
+| <a id="zanna-graphics3d-terrain3d-heightmapwidth"></a>`HeightmapWidth` | `i64` | read-only |
+| <a id="zanna-graphics3d-terrain3d-heightmapdepth"></a>`HeightmapDepth` | `i64` | read-only |
 | <a id="zanna-graphics3d-terrain3d-cpuocclusion"></a>`CpuOcclusion` | `i1` | read/write |
 | <a id="zanna-graphics3d-terrain3d-lastchunkcount"></a>`LastChunkCount` | `i64` | read-only |
 | <a id="zanna-graphics3d-terrain3d-lastdrawnchunkcount"></a>`LastDrawnChunkCount` | `i64` | read-only |
@@ -2027,6 +2146,14 @@ Constructor: `Zanna.Graphics3D.Terrain3D.New`
 | <a id="zanna-graphics3d-terrain3d-setloddistances"></a>`SetLodDistances` | `void(f64,f64)` | `Zanna.Graphics3D.Terrain3D.SetLodDistances` |
 | <a id="zanna-graphics3d-terrain3d-setlodhysteresis"></a>`SetLodHysteresis` | `void(f64)` | `Zanna.Graphics3D.Terrain3D.SetLodHysteresis` |
 | <a id="zanna-graphics3d-terrain3d-setskirtdepth"></a>`SetSkirtDepth` | `void(f64)` | `Zanna.Graphics3D.Terrain3D.SetSkirtDepth` |
+| <a id="zanna-graphics3d-terrain3d-getscale"></a>`GetScale` | `obj<Zanna.Math.Vec3>()` | `Zanna.Graphics3D.Terrain3D.GetScale` |
+| <a id="zanna-graphics3d-terrain3d-getlayertexture"></a>`GetLayerTexture` | `obj(i64)` | `Zanna.Graphics3D.Terrain3D.GetLayerTexture` |
+| <a id="zanna-graphics3d-terrain3d-getlayerscale"></a>`GetLayerScale` | `f64(i64)` | `Zanna.Graphics3D.Terrain3D.GetLayerScale` |
+| <a id="zanna-graphics3d-terrain3d-getsplatmap"></a>`GetSplatMap` | `obj(i64)` | `Zanna.Graphics3D.Terrain3D.GetSplatMap` |
+| <a id="zanna-graphics3d-terrain3d-getholex"></a>`GetHoleX` | `f64(i64)` | `Zanna.Graphics3D.Terrain3D.GetHoleX` |
+| <a id="zanna-graphics3d-terrain3d-getholez"></a>`GetHoleZ` | `f64(i64)` | `Zanna.Graphics3D.Terrain3D.GetHoleZ` |
+| <a id="zanna-graphics3d-terrain3d-getholewidth"></a>`GetHoleWidth` | `f64(i64)` | `Zanna.Graphics3D.Terrain3D.GetHoleWidth` |
+| <a id="zanna-graphics3d-terrain3d-getholedepth"></a>`GetHoleDepth` | `f64(i64)` | `Zanna.Graphics3D.Terrain3D.GetHoleDepth` |
 | <a id="zanna-graphics3d-terrain3d-new"></a>`New` | `obj(i64,i64)` | `Zanna.Graphics3D.Terrain3D.New` |
 
 <a id="zanna-graphics3d-navmesh3d"></a>
@@ -2342,6 +2469,18 @@ Constructor: `Zanna.Graphics3D.Water3D.New`
 | Property | Type | Access |
 |---|---|---|
 | <a id="zanna-graphics3d-water3d-simdistance"></a>`SimDistance` | `f64` | read/write |
+| <a id="zanna-graphics3d-water3d-height"></a>`Height` | `f64` | read-only |
+| <a id="zanna-graphics3d-water3d-position"></a>`Position` | `obj<Zanna.Math.Vec3>` | read-only |
+| <a id="zanna-graphics3d-water3d-wavespeed"></a>`WaveSpeed` | `f64` | read-only |
+| <a id="zanna-graphics3d-water3d-waveamplitude"></a>`WaveAmplitude` | `f64` | read-only |
+| <a id="zanna-graphics3d-water3d-wavefrequency"></a>`WaveFrequency` | `f64` | read-only |
+| <a id="zanna-graphics3d-water3d-color"></a>`Color` | `obj<Zanna.Math.Vec3>` | read-only |
+| <a id="zanna-graphics3d-water3d-alpha"></a>`Alpha` | `f64` | read-only |
+| <a id="zanna-graphics3d-water3d-reflectivity"></a>`Reflectivity` | `f64` | read-only |
+| <a id="zanna-graphics3d-water3d-resolution"></a>`Resolution` | `i64` | read-only |
+| <a id="zanna-graphics3d-water3d-texture"></a>`Texture` | `obj` | read-only |
+| <a id="zanna-graphics3d-water3d-normalmap"></a>`NormalMap` | `obj` | read-only |
+| <a id="zanna-graphics3d-water3d-envmap"></a>`EnvMap` | `obj` | read-only |
 
 #### Methods
 
@@ -2402,6 +2541,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 |---|---|---|
 | <a id="zanna-graphics3d-textureatlas3d-add"></a>`Add` | `i64(obj)` | `Zanna.Graphics3D.TextureAtlas3D.Add` |
 | <a id="zanna-graphics3d-textureatlas3d-gettexture"></a>`GetTexture` | `obj()` | `Zanna.Graphics3D.TextureAtlas3D.GetTexture` |
+| <a id="zanna-graphics3d-textureatlas3d-getuvmin"></a>`GetUvMin` | `obj<Zanna.Math.Vec2>(i64)` | `Zanna.Graphics3D.TextureAtlas3D.GetUvMin` |
+| <a id="zanna-graphics3d-textureatlas3d-getuvmax"></a>`GetUvMax` | `obj<Zanna.Math.Vec2>(i64)` | `Zanna.Graphics3D.TextureAtlas3D.GetUvMax` |
 | <a id="zanna-graphics3d-textureatlas3d-new"></a>`New` | `obj(i64,i64)` | `Zanna.Graphics3D.TextureAtlas3D.New` |
 
 ## Functions
@@ -2454,6 +2595,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Canvas3D.PollEvent` | `i64(obj)` | `rt_canvas3d_poll_event` |
 | <a id="zanna-graphics3d-canvas3d-get-shouldclose"></a>`Zanna.Graphics3D.Canvas3D.get_ShouldClose` | `i1(obj)` | `rt_canvas3d_should_close` |
 | <a id="zanna-graphics3d-canvas3d-set-wireframe"></a>`Zanna.Graphics3D.Canvas3D.set_Wireframe` | `void(obj,i1)` | `rt_canvas3d_set_wireframe` |
+| <a id="zanna-graphics3d-canvas3d-get-wireframe"></a>`Zanna.Graphics3D.Canvas3D.get_Wireframe` | `i1(obj)` | `rt_canvas3d_get_wireframe` |
 | `Zanna.Graphics3D.Canvas3D.SetBackfaceCull` | `void(obj,i1)` | `rt_canvas3d_set_backface_cull` |
 | <a id="zanna-graphics3d-canvas3d-get-width"></a>`Zanna.Graphics3D.Canvas3D.get_Width` | `i64(obj)` | `rt_canvas3d_get_width` |
 | <a id="zanna-graphics3d-canvas3d-get-height"></a>`Zanna.Graphics3D.Canvas3D.get_Height` | `i64(obj)` | `rt_canvas3d_get_height` |
@@ -2620,6 +2762,10 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-camera3d-set-position"></a>`Zanna.Graphics3D.Camera3D.set_Position` | `void(obj,obj<Zanna.Math.Vec3>)` | `rt_camera3d_set_position` |
 | <a id="zanna-graphics3d-camera3d-get-forward"></a>`Zanna.Graphics3D.Camera3D.get_Forward` | `obj<Zanna.Math.Vec3>(obj)` | `rt_camera3d_get_forward` |
 | <a id="zanna-graphics3d-camera3d-get-right"></a>`Zanna.Graphics3D.Camera3D.get_Right` | `obj<Zanna.Math.Vec3>(obj)` | `rt_camera3d_get_right` |
+| <a id="zanna-graphics3d-camera3d-get-up"></a>`Zanna.Graphics3D.Camera3D.get_Up` | `obj<Zanna.Math.Vec3>(obj)` | `rt_camera3d_get_up` |
+| <a id="zanna-graphics3d-camera3d-get-viewmatrix"></a>`Zanna.Graphics3D.Camera3D.get_ViewMatrix` | `obj<Zanna.Math.Mat4>(obj)` | `rt_camera3d_get_view_matrix` |
+| <a id="zanna-graphics3d-camera3d-get-projectionmatrix"></a>`Zanna.Graphics3D.Camera3D.get_ProjectionMatrix` | `obj<Zanna.Math.Mat4>(obj)` | `rt_camera3d_get_projection_matrix` |
+| <a id="zanna-graphics3d-camera3d-get-aspectratio"></a>`Zanna.Graphics3D.Camera3D.get_AspectRatio` | `f64(obj)` | `rt_camera3d_get_aspect` |
 | `Zanna.Graphics3D.Camera3D.ScreenToRay` | `obj(obj,i64,i64,i64,i64)` | `rt_camera3d_screen_to_ray` |
 | `Zanna.Graphics3D.Camera3D.WorldToScreen` | `obj(obj,obj<Zanna.Math.Vec3>,i64,i64)` | `rt_camera3d_world_to_screen_vec` |
 | `Zanna.Graphics3D.Camera3D.ScreenToRayOrigin` | `obj(obj,i64,i64,i64,i64)` | `rt_camera3d_screen_to_ray_origin` |
@@ -2759,6 +2905,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.SceneGraph.Save` | `i64(obj,str)` | `rt_scene3d_save` |
 | `Zanna.Graphics3D.SceneGraph.SaveToText` | `str(obj)` | `rt_scene3d_save_text` |
 | `Zanna.Graphics3D.SceneGraph.Load` | `obj<Zanna.Graphics3D.SceneGraph>(str)` | `rt_scene3d_load` |
+| `Zanna.Graphics3D.SceneGraph.LoadResult` | `obj<Zanna.Result>(str)` | `rt_scene3d_load_result` |
+| `Zanna.Graphics3D.SceneGraph.LoadTextResult` | `obj<Zanna.Result>(str,str)` | `rt_scene3d_load_text_result` |
 | <a id="zanna-graphics3d-scenegraph-get-nodecount"></a>`Zanna.Graphics3D.SceneGraph.get_NodeCount` | `i64(obj)` | `rt_scene3d_get_node_count` |
 | <a id="zanna-graphics3d-scenegraph-get-culledcount"></a>`Zanna.Graphics3D.SceneGraph.get_CulledCount` | `i64(obj)` | `rt_scene3d_get_culled_count` |
 | <a id="zanna-graphics3d-scenegraph-get-visiblenodecount"></a>`Zanna.Graphics3D.SceneGraph.get_VisibleNodeCount` | `i64(obj)` | `rt_scene3d_get_visible_node_count` |
@@ -2770,11 +2918,14 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-scenegraph-get-portaltraversalcount"></a>`Zanna.Graphics3D.SceneGraph.get_PortalTraversalCount` | `i64(obj)` | `rt_scene3d_get_portal_traversal_count` |
 | `Zanna.Graphics3D.SceneGraph.SyncBindings` | `void(obj,f64)` | `rt_scene3d_sync_bindings` |
 | `Zanna.Graphics3D.SceneGraph.RebaseOrigin` | `void(obj,f64,f64,f64)` | `rt_scene3d_rebase_origin` |
+| `Zanna.Graphics3D.SceneGraph.AdoptAnimations` | `i64(obj,obj)` | `rt_scene3d_adopt_baked_animations` |
+| <a id="zanna-graphics3d-scenegraph-get-unresolvedprefabcount"></a>`Zanna.Graphics3D.SceneGraph.get_UnresolvedPrefabCount` | `i64(obj)` | `rt_scene3d_get_unresolved_prefab_count` |
 | `Zanna.Graphics3D.SceneNode.New` | `obj()` | `rt_scene_node3d_new` |
 | `Zanna.Graphics3D.SceneNode.SetPosition` | `void(obj,f64,f64,f64)` | `rt_scene_node3d_set_position` |
 | <a id="zanna-graphics3d-scenenode-get-position"></a>`Zanna.Graphics3D.SceneNode.get_Position` | `obj<Zanna.Math.Vec3>(obj)` | `rt_scene_node3d_get_position` |
 | <a id="zanna-graphics3d-scenenode-set-rotation"></a>`Zanna.Graphics3D.SceneNode.set_Rotation` | `void(obj,obj<Zanna.Math.Quat>)` | `rt_scene_node3d_set_rotation` |
 | <a id="zanna-graphics3d-scenenode-get-rotation"></a>`Zanna.Graphics3D.SceneNode.get_Rotation` | `obj<Zanna.Math.Quat>(obj)` | `rt_scene_node3d_get_rotation` |
+| `Zanna.Graphics3D.SceneNode.TrySetWorldPosition` | `i1(obj,f64,f64,f64)` | `rt_scene_node3d_try_set_world_position` |
 | `Zanna.Graphics3D.SceneNode.SetScale` | `void(obj,f64,f64,f64)` | `rt_scene_node3d_set_scale` |
 | `Zanna.Graphics3D.SceneNode.SetTransform` | `void(obj,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64)` | `rt_scene_node3d_set_transform` |
 | `Zanna.Graphics3D.SceneGraph.SetNodeTransforms` | `void(obj,obj,obj)` | `rt_scene3d_set_node_transforms` |
@@ -2876,6 +3027,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-skeleton3d-get-bonecount"></a>`Zanna.Graphics3D.Skeleton3D.get_BoneCount` | `i64(obj)` | `rt_skeleton3d_get_bone_count` |
 | `Zanna.Graphics3D.Skeleton3D.FindBoneOption` | `obj<Zanna.Option>(obj,str)` | `rt_skeleton3d_find_bone_option` |
 | `Zanna.Graphics3D.Skeleton3D.GetBoneName` | `str(obj,i64)` | `rt_skeleton3d_get_bone_name` |
+| `Zanna.Graphics3D.Skeleton3D.GetBoneParent` | `i64(obj,i64)` | `rt_skeleton3d_get_bone_parent` |
+| `Zanna.Graphics3D.Skeleton3D.GetBoneBindPose` | `obj<Zanna.Math.Mat4>(obj,i64)` | `rt_skeleton3d_get_bone_bind_pose` |
 | `Zanna.Graphics3D.Animation3D.New` | `obj(str,f64)` | `rt_animation3d_new` |
 | `Zanna.Graphics3D.Animation3D.AddKeyframe` | `void(obj,i64,f64,obj,obj,obj)` | `rt_animation3d_add_keyframe` |
 | <a id="zanna-graphics3d-animation3d-set-looping"></a>`Zanna.Graphics3D.Animation3D.set_Looping` | `void(obj,i1)` | `rt_animation3d_set_looping` |
@@ -2922,6 +3075,19 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Gltf.GetMesh` | `obj<Zanna.Graphics3D.Mesh3D>(obj,i64)` | `rt_gltf_get_mesh` |
 | <a id="zanna-graphics3d-gltf-get-materialcount"></a>`Zanna.Graphics3D.Gltf.get_MaterialCount` | `i64(obj)` | `rt_gltf_material_count` |
 | `Zanna.Graphics3D.Gltf.GetMaterial` | `obj<Zanna.Graphics3D.Material3D>(obj,i64)` | `rt_gltf_get_material` |
+| <a id="zanna-graphics3d-gltf-get-skeletoncount"></a>`Zanna.Graphics3D.Gltf.get_SkeletonCount` | `i64(obj)` | `rt_gltf_skeleton_count` |
+| `Zanna.Graphics3D.Gltf.GetSkeleton` | `obj<Zanna.Graphics3D.Skeleton3D>(obj,i64)` | `rt_gltf_get_skeleton` |
+| <a id="zanna-graphics3d-gltf-get-animationcount"></a>`Zanna.Graphics3D.Gltf.get_AnimationCount` | `i64(obj)` | `rt_gltf_animation_count` |
+| `Zanna.Graphics3D.Gltf.GetAnimation` | `obj<Zanna.Graphics3D.Animation3D>(obj,i64)` | `rt_gltf_get_animation` |
+| <a id="zanna-graphics3d-gltf-get-nodeanimationcount"></a>`Zanna.Graphics3D.Gltf.get_NodeAnimationCount` | `i64(obj)` | `rt_gltf_node_animation_count` |
+| `Zanna.Graphics3D.Gltf.GetNodeAnimation` | `obj<Zanna.Graphics3D.NodeAnimation3D>(obj,i64)` | `rt_gltf_get_node_animation` |
+| <a id="zanna-graphics3d-gltf-get-cameracount"></a>`Zanna.Graphics3D.Gltf.get_CameraCount` | `i64(obj)` | `rt_gltf_camera_count` |
+| `Zanna.Graphics3D.Gltf.GetCamera` | `obj<Zanna.Graphics3D.Camera3D>(obj,i64)` | `rt_gltf_get_camera` |
+| <a id="zanna-graphics3d-gltf-get-scenecount"></a>`Zanna.Graphics3D.Gltf.get_SceneCount` | `i64(obj)` | `rt_gltf_scene_count` |
+| `Zanna.Graphics3D.Gltf.GetSceneName` | `str(obj,i64)` | `rt_gltf_get_scene_name` |
+| `Zanna.Graphics3D.Gltf.GetSceneRootAt` | `obj<Zanna.Graphics3D.SceneNode>(obj,i64)` | `rt_gltf_get_scene_root_at` |
+| <a id="zanna-graphics3d-gltf-get-nodecount"></a>`Zanna.Graphics3D.Gltf.get_NodeCount` | `i64(obj)` | `rt_gltf_node_count` |
+| `Zanna.Graphics3D.Gltf.GetSceneRoot` | `obj<Zanna.Graphics3D.SceneNode>(obj)` | `rt_gltf_get_scene_root` |
 | `Zanna.Graphics3D.SceneAsset.LoadResult` | `obj<Zanna.Result>(str)` | `rt_model3d_load_result` |
 | `Zanna.Graphics3D.SceneAsset.LoadWithOptions` | `obj(str,i1)` | `rt_model3d_load_with_options` |
 | `Zanna.Graphics3D.SceneAsset.LoadWithOptionsEx` | `obj(str,str)` | `rt_model3d_load_with_options_ex` |
@@ -2981,6 +3147,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Particles3D.SetAlpha` | `void(obj,f64,f64)` | `rt_particles3d_set_alpha` |
 | `Zanna.Graphics3D.Particles3D.SetRate` | `void(obj,f64)` | `rt_particles3d_set_rate` |
 | <a id="zanna-graphics3d-particles3d-set-additive"></a>`Zanna.Graphics3D.Particles3D.set_Additive` | `void(obj,i1)` | `rt_particles3d_set_additive` |
+| <a id="zanna-graphics3d-particles3d-get-additive"></a>`Zanna.Graphics3D.Particles3D.get_Additive` | `i1(obj)` | `rt_particles3d_get_additive` |
 | `Zanna.Graphics3D.Particles3D.SetStretch` | `void(obj,f64)` | `rt_particles3d_set_stretch` |
 | `Zanna.Graphics3D.Particles3D.SetTrail` | `void(obj,f64,i64)` | `rt_particles3d_set_trail` |
 | `Zanna.Graphics3D.Particles3D.SetSoftness` | `void(obj,f64)` | `rt_particles3d_set_softness` |
@@ -3016,20 +3183,20 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-postfx3d-get-effectcount"></a>`Zanna.Graphics3D.PostFX3D.get_EffectCount` | `i64(obj)` | `rt_postfx3d_get_effect_count` |
 | `Zanna.Graphics3D.PostFX3D.NewQuality` | `obj(obj,i64)` | `rt_postfx3d_new_quality` |
 | `Zanna.Graphics3D.Canvas3D.SetPostFX` | `void(obj,obj)` | `rt_canvas3d_set_post_fx` |
-| <a id="zanna-graphics3d-ray3d-intersecttriangle"></a>`Zanna.Graphics3D.Ray3D.IntersectTriangle` | `f64(obj,obj,obj,obj,obj)` | `rt_ray3d_intersect_triangle` |
-| <a id="zanna-graphics3d-ray3d-intersecttrianglecull"></a>`Zanna.Graphics3D.Ray3D.IntersectTriangleCull` | `f64(obj,obj,obj,obj,obj,i1)` | `rt_ray3d_intersect_triangle_cull` |
-| <a id="zanna-graphics3d-ray3d-intersectmesh"></a>`Zanna.Graphics3D.Ray3D.IntersectMesh` | `obj(obj,obj,obj,obj)` | `rt_ray3d_intersect_mesh` |
-| <a id="zanna-graphics3d-ray3d-intersectaabb"></a>`Zanna.Graphics3D.Ray3D.IntersectAABB` | `f64(obj,obj,obj,obj)` | `rt_ray3d_intersect_aabb` |
-| <a id="zanna-graphics3d-ray3d-intersectsphere"></a>`Zanna.Graphics3D.Ray3D.IntersectSphere` | `f64(obj,obj,obj,f64)` | `rt_ray3d_intersect_sphere` |
-| <a id="zanna-graphics3d-aabb3d-overlaps"></a>`Zanna.Graphics3D.AABB3D.Overlaps` | `i1(obj,obj,obj,obj)` | `rt_aabb3d_overlaps` |
-| <a id="zanna-graphics3d-aabb3d-penetration"></a>`Zanna.Graphics3D.AABB3D.Penetration` | `obj(obj,obj,obj,obj)` | `rt_aabb3d_penetration` |
-| <a id="zanna-graphics3d-aabb3d-closestpoint"></a>`Zanna.Graphics3D.AABB3D.ClosestPoint` | `obj(obj,obj,obj)` | `rt_aabb3d_closest_point` |
-| <a id="zanna-graphics3d-aabb3d-sphereoverlaps"></a>`Zanna.Graphics3D.AABB3D.SphereOverlaps` | `i1(obj,obj,obj,f64)` | `rt_aabb3d_sphere_overlaps` |
-| <a id="zanna-graphics3d-sphere3d-overlaps"></a>`Zanna.Graphics3D.Sphere3D.Overlaps` | `i1(obj,f64,obj,f64)` | `rt_sphere3d_overlaps` |
-| <a id="zanna-graphics3d-sphere3d-penetration"></a>`Zanna.Graphics3D.Sphere3D.Penetration` | `obj(obj,f64,obj,f64)` | `rt_sphere3d_penetration` |
-| <a id="zanna-graphics3d-segment3d-closestpoint"></a>`Zanna.Graphics3D.Segment3D.ClosestPoint` | `obj(obj,obj,obj)` | `rt_segment3d_closest_point` |
-| <a id="zanna-graphics3d-capsule3d-sphereoverlaps"></a>`Zanna.Graphics3D.Capsule3D.SphereOverlaps` | `i1(obj,obj,f64,obj,f64)` | `rt_capsule3d_sphere_overlaps` |
-| <a id="zanna-graphics3d-capsule3d-aabboverlaps"></a>`Zanna.Graphics3D.Capsule3D.AABBOverlaps` | `i1(obj,obj,f64,obj,obj)` | `rt_capsule3d_aabb_overlaps` |
+| `Zanna.Graphics3D.Ray3D.IntersectTriangle` | `f64(obj,obj,obj,obj,obj)` | `rt_ray3d_intersect_triangle` |
+| `Zanna.Graphics3D.Ray3D.IntersectTriangleCull` | `f64(obj,obj,obj,obj,obj,i1)` | `rt_ray3d_intersect_triangle_cull` |
+| `Zanna.Graphics3D.Ray3D.IntersectMesh` | `obj(obj,obj,obj,obj)` | `rt_ray3d_intersect_mesh` |
+| `Zanna.Graphics3D.Ray3D.IntersectAABB` | `f64(obj,obj,obj,obj)` | `rt_ray3d_intersect_aabb` |
+| `Zanna.Graphics3D.Ray3D.IntersectSphere` | `f64(obj,obj,obj,f64)` | `rt_ray3d_intersect_sphere` |
+| `Zanna.Graphics3D.AABB3D.Overlaps` | `i1(obj,obj,obj,obj)` | `rt_aabb3d_overlaps` |
+| `Zanna.Graphics3D.AABB3D.Penetration` | `obj(obj,obj,obj,obj)` | `rt_aabb3d_penetration` |
+| `Zanna.Graphics3D.AABB3D.ClosestPoint` | `obj(obj,obj,obj)` | `rt_aabb3d_closest_point` |
+| `Zanna.Graphics3D.AABB3D.SphereOverlaps` | `i1(obj,obj,obj,f64)` | `rt_aabb3d_sphere_overlaps` |
+| `Zanna.Graphics3D.Sphere3D.Overlaps` | `i1(obj,f64,obj,f64)` | `rt_sphere3d_overlaps` |
+| `Zanna.Graphics3D.Sphere3D.Penetration` | `obj(obj,f64,obj,f64)` | `rt_sphere3d_penetration` |
+| `Zanna.Graphics3D.Segment3D.ClosestPoint` | `obj(obj,obj,obj)` | `rt_segment3d_closest_point` |
+| `Zanna.Graphics3D.Capsule3D.SphereOverlaps` | `i1(obj,obj,f64,obj,f64)` | `rt_capsule3d_sphere_overlaps` |
+| `Zanna.Graphics3D.Capsule3D.AABBOverlaps` | `i1(obj,obj,f64,obj,obj)` | `rt_capsule3d_aabb_overlaps` |
 | <a id="zanna-graphics3d-rayhit3d-get-distance"></a>`Zanna.Graphics3D.RayHit3D.get_Distance` | `f64(obj)` | `rt_ray3d_hit_distance` |
 | <a id="zanna-graphics3d-rayhit3d-get-point"></a>`Zanna.Graphics3D.RayHit3D.get_Point` | `obj<Zanna.Math.Vec3>(obj)` | `rt_ray3d_hit_point` |
 | <a id="zanna-graphics3d-rayhit3d-get-normal"></a>`Zanna.Graphics3D.RayHit3D.get_Normal` | `obj<Zanna.Math.Vec3>(obj)` | `rt_ray3d_hit_normal` |
@@ -3372,6 +3539,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Transform3D.SetScale` | `void(obj,f64,f64,f64)` | `rt_transform3d_set_scale` |
 | <a id="zanna-graphics3d-transform3d-get-scale"></a>`Zanna.Graphics3D.Transform3D.get_Scale` | `obj<Zanna.Math.Vec3>(obj)` | `rt_transform3d_get_scale` |
 | <a id="zanna-graphics3d-transform3d-get-matrix"></a>`Zanna.Graphics3D.Transform3D.get_Matrix` | `obj<Zanna.Math.Mat4>(obj)` | `rt_transform3d_get_matrix` |
+| `Zanna.Graphics3D.Transform3D.GetEuler` | `obj<Zanna.Math.Vec3>(obj)` | `rt_transform3d_get_euler` |
 | `Zanna.Graphics3D.Transform3D.Translate` | `void(obj,obj)` | `rt_transform3d_translate` |
 | `Zanna.Graphics3D.Transform3D.Rotate` | `void(obj,obj,f64)` | `rt_transform3d_rotate` |
 | `Zanna.Graphics3D.Transform3D.LookAt` | `void(obj,obj,obj)` | `rt_transform3d_look_at` |
@@ -3382,6 +3550,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-path3d-get-length"></a>`Zanna.Graphics3D.Path3D.get_Length` | `f64(obj)` | `rt_path3d_get_length` |
 | <a id="zanna-graphics3d-path3d-get-pointcount"></a>`Zanna.Graphics3D.Path3D.get_PointCount` | `i64(obj)` | `rt_path3d_get_point_count` |
 | <a id="zanna-graphics3d-path3d-set-looping"></a>`Zanna.Graphics3D.Path3D.set_Looping` | `void(obj,i1)` | `rt_path3d_set_looping` |
+| <a id="zanna-graphics3d-path3d-get-looping"></a>`Zanna.Graphics3D.Path3D.get_Looping` | `i1(obj)` | `rt_path3d_get_looping` |
 | `Zanna.Graphics3D.Path3D.Clear` | `void(obj)` | `rt_path3d_clear` |
 | `Zanna.Graphics3D.InstanceBatch3D.New` | `obj(obj,obj)` | `rt_instbatch3d_new` |
 | `Zanna.Graphics3D.InstanceBatch3D.Add` | `void(obj,obj)` | `rt_instbatch3d_add` |
@@ -3389,6 +3558,9 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.InstanceBatch3D.Set` | `void(obj,i64,obj)` | `rt_instbatch3d_set` |
 | `Zanna.Graphics3D.InstanceBatch3D.Clear` | `void(obj)` | `rt_instbatch3d_clear` |
 | <a id="zanna-graphics3d-instancebatch3d-get-count"></a>`Zanna.Graphics3D.InstanceBatch3D.get_Count` | `i64(obj)` | `rt_instbatch3d_count` |
+| `Zanna.Graphics3D.InstanceBatch3D.GetTransform` | `obj<Zanna.Math.Mat4>(obj,i64)` | `rt_instbatch3d_get` |
+| <a id="zanna-graphics3d-instancebatch3d-get-mesh"></a>`Zanna.Graphics3D.InstanceBatch3D.get_Mesh` | `obj<Zanna.Graphics3D.Mesh3D>(obj)` | `rt_instbatch3d_borrow_mesh` |
+| <a id="zanna-graphics3d-instancebatch3d-get-material"></a>`Zanna.Graphics3D.InstanceBatch3D.get_Material` | `obj<Zanna.Graphics3D.Material3D>(obj)` | `rt_instbatch3d_borrow_material` |
 | `Zanna.Graphics3D.Canvas3D.DrawInstanced` | `void(obj,obj)` | `rt_canvas3d_draw_instanced` |
 | `Zanna.Graphics3D.Canvas3D.DrawInstancedSkinned` | `void(obj,obj,obj)` | `rt_canvas3d_draw_instanced_skinned` |
 | `Zanna.Graphics3D.Terrain3D.New` | `obj(i64,i64)` | `rt_terrain3d_new` |
@@ -3409,6 +3581,21 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Terrain3D.SetSlopeLayer` | `void(obj,i64,f64,f64,f64)` | `rt_terrain3d_set_slope_layer` |
 | `Zanna.Graphics3D.Terrain3D.SetHeightLayer` | `void(obj,i64,f64,f64,f64)` | `rt_terrain3d_set_height_layer` |
 | `Zanna.Graphics3D.Terrain3D.RebuildSplatWeights` | `void(obj)` | `rt_terrain3d_rebuild_splat_weights` |
+| `Zanna.Graphics3D.Terrain3D.GetScale` | `obj<Zanna.Math.Vec3>(obj)` | `rt_terrain3d_get_scale` |
+| <a id="zanna-graphics3d-terrain3d-get-material"></a>`Zanna.Graphics3D.Terrain3D.get_Material` | `obj<Zanna.Graphics3D.Material3D>(obj)` | `rt_terrain3d_get_material` |
+| `Zanna.Graphics3D.Terrain3D.GetLayerTexture` | `obj(obj,i64)` | `rt_terrain3d_get_layer_texture` |
+| `Zanna.Graphics3D.Terrain3D.GetLayerScale` | `f64(obj,i64)` | `rt_terrain3d_get_layer_scale` |
+| `Zanna.Graphics3D.Terrain3D.GetSplatMap` | `obj(obj,i64)` | `rt_terrain3d_get_splat_map` |
+| <a id="zanna-graphics3d-terrain3d-get-lodneardistance"></a>`Zanna.Graphics3D.Terrain3D.get_LodNearDistance` | `f64(obj)` | `rt_terrain3d_get_lod_near_distance` |
+| <a id="zanna-graphics3d-terrain3d-get-lodfardistance"></a>`Zanna.Graphics3D.Terrain3D.get_LodFarDistance` | `f64(obj)` | `rt_terrain3d_get_lod_far_distance` |
+| <a id="zanna-graphics3d-terrain3d-get-lodhysteresis"></a>`Zanna.Graphics3D.Terrain3D.get_LodHysteresis` | `f64(obj)` | `rt_terrain3d_get_lod_hysteresis` |
+| <a id="zanna-graphics3d-terrain3d-get-skirtdepth"></a>`Zanna.Graphics3D.Terrain3D.get_SkirtDepth` | `f64(obj)` | `rt_terrain3d_get_skirt_depth` |
+| <a id="zanna-graphics3d-terrain3d-get-heightmapwidth"></a>`Zanna.Graphics3D.Terrain3D.get_HeightmapWidth` | `i64(obj)` | `rt_terrain3d_get_heightmap_width` |
+| <a id="zanna-graphics3d-terrain3d-get-heightmapdepth"></a>`Zanna.Graphics3D.Terrain3D.get_HeightmapDepth` | `i64(obj)` | `rt_terrain3d_get_heightmap_depth` |
+| `Zanna.Graphics3D.Terrain3D.GetHoleX` | `f64(obj,i64)` | `rt_terrain3d_get_hole_x` |
+| `Zanna.Graphics3D.Terrain3D.GetHoleZ` | `f64(obj,i64)` | `rt_terrain3d_get_hole_z` |
+| `Zanna.Graphics3D.Terrain3D.GetHoleWidth` | `f64(obj,i64)` | `rt_terrain3d_get_hole_width` |
+| `Zanna.Graphics3D.Terrain3D.GetHoleDepth` | `f64(obj,i64)` | `rt_terrain3d_get_hole_depth` |
 | `Zanna.Graphics3D.LightBaker3D.New` | `obj(obj<Zanna.Graphics3D.SceneGraph>)` | `rt_lightbaker3d_new` |
 | <a id="zanna-graphics3d-lightbaker3d-set-texelsperunit"></a>`Zanna.Graphics3D.LightBaker3D.set_TexelsPerUnit` | `void(obj,f64)` | `rt_lightbaker3d_set_texels_per_unit` |
 | <a id="zanna-graphics3d-lightbaker3d-get-texelsperunit"></a>`Zanna.Graphics3D.LightBaker3D.get_TexelsPerUnit` | `f64(obj)` | `rt_lightbaker3d_get_texels_per_unit` |
@@ -3623,6 +3810,18 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Water3D.ClearWaves` | `void(obj)` | `rt_water3d_clear_waves` |
 | <a id="zanna-graphics3d-water3d-set-simdistance"></a>`Zanna.Graphics3D.Water3D.set_SimDistance` | `void(obj,f64)` | `rt_water3d_set_sim_distance` |
 | <a id="zanna-graphics3d-water3d-get-simdistance"></a>`Zanna.Graphics3D.Water3D.get_SimDistance` | `f64(obj)` | `rt_water3d_get_sim_distance` |
+| <a id="zanna-graphics3d-water3d-get-height"></a>`Zanna.Graphics3D.Water3D.get_Height` | `f64(obj)` | `rt_water3d_get_height` |
+| <a id="zanna-graphics3d-water3d-get-position"></a>`Zanna.Graphics3D.Water3D.get_Position` | `obj<Zanna.Math.Vec3>(obj)` | `rt_water3d_get_position` |
+| <a id="zanna-graphics3d-water3d-get-wavespeed"></a>`Zanna.Graphics3D.Water3D.get_WaveSpeed` | `f64(obj)` | `rt_water3d_get_wave_speed` |
+| <a id="zanna-graphics3d-water3d-get-waveamplitude"></a>`Zanna.Graphics3D.Water3D.get_WaveAmplitude` | `f64(obj)` | `rt_water3d_get_wave_amplitude` |
+| <a id="zanna-graphics3d-water3d-get-wavefrequency"></a>`Zanna.Graphics3D.Water3D.get_WaveFrequency` | `f64(obj)` | `rt_water3d_get_wave_frequency` |
+| <a id="zanna-graphics3d-water3d-get-color"></a>`Zanna.Graphics3D.Water3D.get_Color` | `obj<Zanna.Math.Vec3>(obj)` | `rt_water3d_get_color` |
+| <a id="zanna-graphics3d-water3d-get-alpha"></a>`Zanna.Graphics3D.Water3D.get_Alpha` | `f64(obj)` | `rt_water3d_get_alpha` |
+| <a id="zanna-graphics3d-water3d-get-reflectivity"></a>`Zanna.Graphics3D.Water3D.get_Reflectivity` | `f64(obj)` | `rt_water3d_get_reflectivity` |
+| <a id="zanna-graphics3d-water3d-get-resolution"></a>`Zanna.Graphics3D.Water3D.get_Resolution` | `i64(obj)` | `rt_water3d_get_resolution` |
+| <a id="zanna-graphics3d-water3d-get-texture"></a>`Zanna.Graphics3D.Water3D.get_Texture` | `obj(obj)` | `rt_water3d_get_texture` |
+| <a id="zanna-graphics3d-water3d-get-normalmap"></a>`Zanna.Graphics3D.Water3D.get_NormalMap` | `obj(obj)` | `rt_water3d_get_normal_map` |
+| <a id="zanna-graphics3d-water3d-get-envmap"></a>`Zanna.Graphics3D.Water3D.get_EnvMap` | `obj(obj)` | `rt_water3d_get_env_map` |
 | `Zanna.Graphics3D.Canvas3D.DrawWater` | `void(obj,obj,obj)` | `rt_canvas3d_draw_water` |
 | `Zanna.Graphics3D.PostFX3D.AddSsao` | `void(obj,f64,f64,i64)` | `rt_postfx3d_add_ssao` |
 | `Zanna.Graphics3D.PostFX3D.AddDof` | `void(obj,f64,f64,f64)` | `rt_postfx3d_add_dof` |
@@ -3647,5 +3846,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.TextureAtlas3D.New` | `obj(i64,i64)` | `rt_texatlas3d_new` |
 | `Zanna.Graphics3D.TextureAtlas3D.Add` | `i64(obj,obj)` | `rt_texatlas3d_add` |
 | `Zanna.Graphics3D.TextureAtlas3D.GetTexture` | `obj(obj)` | `rt_texatlas3d_get_texture` |
+| `Zanna.Graphics3D.TextureAtlas3D.GetUvMin` | `obj<Zanna.Math.Vec2>(obj,i64)` | `rt_texatlas3d_get_uv_min` |
+| `Zanna.Graphics3D.TextureAtlas3D.GetUvMax` | `obj<Zanna.Math.Vec2>(obj,i64)` | `rt_texatlas3d_get_uv_max` |
 | `Zanna.Graphics3D.Canvas3D.SetOcclusionCulling` | `void(obj,i1)` | `rt_canvas3d_set_occlusion_culling` |
 

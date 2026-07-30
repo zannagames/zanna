@@ -367,6 +367,26 @@ func VerifyBakeExecutionAndEnvironment(
         return false;
     }
 
+    // ------------------------------------------------------------------
+    // Browse routing: an environment Browse that the user dismisses must
+    // not hijack the next shared-browser import activation.
+    // ------------------------------------------------------------------
+    editor.OpenEnvironmentBrowse();
+    if editor.envBrowseMode == false {
+        fail(shell, workDir, "environment browse did not arm skybox routing");
+        return false;
+    }
+    editor.importAssetBrowser.Close();
+    pump(editor, sceneDoc, shell);
+    editor.OpenImportInstanceBrowser();
+    if editor.envBrowseMode {
+        fail(shell, workDir,
+             "a dismissed environment browse still hijacks browser imports");
+        return false;
+    }
+    editor.importAssetBrowser.Close();
+    pump(editor, sceneDoc, shell);
+
     return true;
 }
 

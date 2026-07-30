@@ -14,7 +14,13 @@ Environment used for the observations:
 
 ## NL-ZANNA-001 — Canvas3D overlay primitive opacity is ignored on Metal
 
-Status: **confirmed, deterministic (6/6 repeated runs)**
+Status: **fixed (2026-07-29)** — screen-space overlay geometry now queues
+with vertex alpha as its single opacity source and classifies translucent
+draws as BLEND (`rt_canvas3d_draw.inc`), which repairs both the opaque
+composite on GPU backends and a double-darkening of in-frame overlay alpha
+on every backend. Registered as CTest `zia_regress_overlay_alpha_blend`.
+
+Original report:
 
 Reproduction: [overlay_alpha_repro.zia](overlay_alpha_repro.zia)
 
@@ -50,7 +56,12 @@ look more opaque than intended on Metal.
 
 ## NL-ZANNA-002 — same-size DrawText2DAA textures alias on Metal
 
-Status: **confirmed, deterministic**
+Status: **no longer reproduces (2026-07-29)** — the Metal texture-lifetime
+hardening that landed with the G3D-237..350 audit tranche resolved the
+aliasing; the reproduction now renders both rows correctly. Registered as
+CTest `zia_regress_overlay_aa_text_identity` to guard against regression.
+
+Original report:
 
 Reproduction: [overlay_aa_text_repro.zia](overlay_aa_text_repro.zia)
 

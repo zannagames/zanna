@@ -4,6 +4,20 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/tests/runtime/RTVersionTests.cpp
+// Purpose: Validate SemVer parsing, formatting, comparison, constraints, and
+//          allocation-failure rollback.
+// Key invariants:
+//   - Valid components and metadata round-trip without changing precedence.
+//   - Malformed or unrepresentable versions are rejected.
+//   - A returning trap hook never permits parsing to publish partial metadata.
+// Ownership/Lifetime:
+//   - Test-created strings and injected native allocations are released by the
+//     runtime paths under test.
+// Links: src/runtime/text/rt_version.c, src/runtime/text/rt_version.h
+//
+//===----------------------------------------------------------------------===//
 
 #include "rt_internal.h"
 #include "rt_string.h"
@@ -13,8 +27,22 @@
 #include <cstring>
 #include <string>
 
+static bool g_return_traps = false;
+static const char *g_last_trap = nullptr;
+static int g_alloc_fail_countdown = 0;
+
 extern "C" void vm_trap(const char *msg) {
+    if (g_return_traps) {
+        g_last_trap = msg;
+        return;
+    }
     rt_abort(msg);
+}
+
+static void *fail_countdown_alloc(int64_t bytes, void *(*next)(int64_t)) {
+    if (g_alloc_fail_countdown > 0 && --g_alloc_fail_countdown == 0)
+        return nullptr;
+    return next(bytes);
 }
 
 static rt_string make_str(const char *s) {
@@ -125,6 +153,32 @@ static void test_is_valid() {
     rt_string invalid = make_str("not-a-version");
     assert(rt_version_is_valid(invalid) == 0);
     rt_string_unref(invalid);
+}
+
+static void test_parse_allocation_failures_stop_cleanly() {
+    rt_string prerelease = make_str("1.2.3-alpha");
+    g_return_traps = true;
+    g_last_trap = nullptr;
+    g_alloc_fail_countdown = 1;
+    rt_set_alloc_hook(fail_countdown_alloc);
+    void *failed_prerelease = rt_version_parse(prerelease);
+    rt_set_alloc_hook(nullptr);
+    assert(failed_prerelease == nullptr);
+    assert(g_last_trap != nullptr);
+    rt_string_unref(prerelease);
+
+    rt_string full = make_str("1.2.3-alpha+build");
+    g_last_trap = nullptr;
+    g_alloc_fail_countdown = 2;
+    rt_set_alloc_hook(fail_countdown_alloc);
+    void *failed_build = rt_version_parse(full);
+    rt_set_alloc_hook(nullptr);
+    assert(failed_build == nullptr);
+    assert(g_last_trap != nullptr);
+    rt_string_unref(full);
+
+    g_alloc_fail_countdown = 0;
+    g_return_traps = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -327,6 +381,7 @@ int main() {
     test_parse_rejects_invalid_semver_identifiers();
     test_parse_rejects_numeric_overflow();
     test_is_valid();
+    test_parse_allocation_failures_stop_cleanly();
 
     // ToString
     test_to_string();

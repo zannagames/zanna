@@ -85,8 +85,8 @@ void rt_pool_free(void *ptr, size_t size);
 ///          size class. The relaxed reads are individually safe but may reflect
 ///          different instants under concurrent activity. System allocations
 ///          are excluded. Either output may be null.
-/// @param class_idx Size class index (0-3). Values at or above
-///                  @ref RT_POOL_COUNT produce zeros.
+/// @param class_idx Size class index (0-3). Values outside that range produce
+///                  zeros.
 /// @param out_allocated Optional destination for blocks currently allocated.
 /// @param out_free Optional destination for blocks on the freelist.
 void rt_pool_stats(rt_pool_class_t class_idx, size_t *out_allocated, size_t *out_free);

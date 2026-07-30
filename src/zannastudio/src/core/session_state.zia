@@ -314,8 +314,13 @@ hide func WriteSceneWorkspaceState(ini: Any,
                         state3D.viewYawDegrees, -180, 180));
             Ini.Set(ini, section, "scene3dPitch",
                     "" + ClampSessionInt(state3D.viewPitchDegrees, -80, 80));
-            Ini.Set(ini, section, "scene3dScale",
-                    "" + ClampSessionInt(state3D.viewScale, 4, 120));
+            // Continuous zoom persists as hundredths so the ini stays
+            // integer-valued; the legacy integer "scene3dScale" key is
+            // read as a fallback but no longer written.
+            Ini.Set(ini, section, "scene3dScale100",
+                    "" + ClampSessionInt(
+                        Convert.NumToInt(state3D.viewScale * 100.0),
+                        5, 40000));
             Ini.Set(ini, section, "scene3dViewportMode",
                     "" + ClampSessionInt(state3D.viewportMode, 0, 1));
             Ini.Set(ini, section, "scene3dPreviewFilter",
@@ -429,8 +434,16 @@ hide func WriteSceneWorkspaceState(ini: Any,
                 ini, section, "scene3dYaw", 35, -180, 180);
             state3D.viewPitchDegrees = ReadSessionInt(
                 ini, section, "scene3dPitch", -25, -80, 80);
-            state3D.viewScale = ReadSessionInt(
-                ini, section, "scene3dScale", 28, 4, 120);
+            var scale100 = ReadSessionInt(
+                ini, section, "scene3dScale100", 0, 0, 40000);
+            if scale100 >= 5 {
+                state3D.viewScale = scale100 / 100.0;
+            } else {
+                // Sessions written before continuous zoom stored whole
+                // pixels-per-unit under "scene3dScale".
+                state3D.viewScale = ReadSessionInt(
+                    ini, section, "scene3dScale", 28, 4, 120) / 1.0;
+            }
             state3D.viewportMode = ReadSessionInt(
                 ini, section, "scene3dViewportMode", 0, 0, 1);
             state3D.projectPreviewFilterIndex = ReadSessionInt(

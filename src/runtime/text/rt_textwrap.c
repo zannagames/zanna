@@ -49,8 +49,14 @@
 /// @brief Convert a nonnegative signed length to `size_t`.
 /// @param value Length to convert.
 /// @param op Trap message for negative or unrepresentable input.
-/// @return Converted length, or zero after a recoverable trap.
-static size_t checked_i64_to_size(int64_t value, const char *op) {
+/// @param out Destination for the converted length.
+/// @return One on success, otherwise zero after a recoverable trap.
+static int checked_i64_to_size(int64_t value, const char *op, size_t *out) {
+    if (!out) {
+        rt_trap(op);
+        return 0;
+    }
+    *out = 0;
     if (value < 0) {
         rt_trap(op);
         return 0;
@@ -59,7 +65,8 @@ static size_t checked_i64_to_size(int64_t value, const char *op) {
         rt_trap(op);
         return 0;
     }
-    return (size_t)value;
+    *out = (size_t)value;
+    return 1;
 }
 
 /// @brief Compute `base + count * each` with overflow checking.
@@ -67,13 +74,20 @@ static size_t checked_i64_to_size(int64_t value, const char *op) {
 /// @param count Number of repeated units.
 /// @param each Bytes per repeated unit.
 /// @param op Trap message used on overflow.
-/// @return Checked sum, or zero after a recoverable trap.
-static size_t checked_mul_add(size_t base, size_t count, size_t each, const char *op) {
+/// @param out Destination for the checked sum.
+/// @return One on success, otherwise zero after a recoverable trap.
+static int checked_mul_add(size_t base, size_t count, size_t each, const char *op, size_t *out) {
+    if (!out) {
+        rt_trap(op);
+        return 0;
+    }
+    *out = 0;
     if (each != 0 && count > (SIZE_MAX - base) / each) {
         rt_trap(op);
         return 0;
     }
-    return base + count * each;
+    *out = base + count * each;
+    return 1;
 }
 
 /// @brief Allocate a byte buffer and trap on failure.
@@ -81,6 +95,10 @@ static size_t checked_mul_add(size_t base, size_t count, size_t each, const char
 /// @param op Trap message used on failure.
 /// @return Newly allocated buffer, or null after a recoverable trap.
 static char *checked_malloc(size_t size, const char *op) {
+    if (size == 0) {
+        rt_trap(op);
+        return NULL;
+    }
     char *ptr = (char *)malloc(size);
     if (!ptr) {
         rt_trap(op);
@@ -125,7 +143,9 @@ static rt_string textwrap_empty_string(void) {
 /// @param op Trap message used for invalid size or allocation failure.
 /// @return Newly allocated C buffer, or null after a recoverable trap.
 static char *alloc_spaces(int64_t count, const char *op) {
-    size_t n = checked_i64_to_size(count, op);
+    size_t n = 0;
+    if (!checked_i64_to_size(count, op, &n))
+        return NULL;
     size_t alloc_size = 0;
     if (!checked_add_one(n, op, &alloc_size))
         return NULL;
@@ -182,11 +202,12 @@ rt_string rt_textwrap_wrap(rt_string text, int64_t width) {
     const char *src = rt_string_cstr(text);
     int64_t src_len = rt_str_len(text);
 
-    size_t alloc_size =
-        checked_mul_add(1,
-                        checked_i64_to_size(src_len, "TextWrapper.Wrap: invalid length"),
-                        2,
-                        "TextWrapper.Wrap: output length overflow");
+    size_t src_size = 0;
+    size_t alloc_size = 0;
+    if (!checked_i64_to_size(src_len, "TextWrapper.Wrap: invalid length", &src_size) ||
+        !checked_mul_add(1, src_size, 2, "TextWrapper.Wrap: output length overflow", &alloc_size)) {
+        return textwrap_empty_string();
+    }
     char *result = checked_malloc(alloc_size, "TextWrapper.Wrap: memory allocation failed");
     if (!result)
         return textwrap_empty_string();
@@ -337,11 +358,23 @@ rt_string rt_textwrap_indent(rt_string text, rt_string prefix) {
             line_count++;
     }
 
-    size_t alloc_size =
-        checked_mul_add(checked_i64_to_size(src_len, "TextWrapper.Indent: invalid length") + 1,
-                        checked_i64_to_size(line_count, "TextWrapper.Indent: invalid line count"),
-                        checked_i64_to_size(pre_len, "TextWrapper.Indent: invalid prefix length"),
-                        "TextWrapper.Indent: output length overflow");
+    size_t src_size = 0;
+    size_t line_count_size = 0;
+    size_t prefix_size = 0;
+    size_t base_size = 0;
+    size_t alloc_size = 0;
+    if (!checked_i64_to_size(src_len, "TextWrapper.Indent: invalid length", &src_size) ||
+        !checked_i64_to_size(
+            line_count, "TextWrapper.Indent: invalid line count", &line_count_size) ||
+        !checked_i64_to_size(pre_len, "TextWrapper.Indent: invalid prefix length", &prefix_size) ||
+        !checked_add_one(src_size, "TextWrapper.Indent: output length overflow", &base_size) ||
+        !checked_mul_add(base_size,
+                         line_count_size,
+                         prefix_size,
+                         "TextWrapper.Indent: output length overflow",
+                         &alloc_size)) {
+        return textwrap_empty_string();
+    }
     char *result = checked_malloc(alloc_size, "TextWrapper.Indent: memory allocation failed");
     if (!result)
         return textwrap_empty_string();
@@ -426,9 +459,13 @@ rt_string rt_textwrap_dedent(rt_string text) {
         return rt_string_ref(text);
 
     // Build result without common indent
-    char *result =
-        checked_malloc(checked_i64_to_size(src_len, "TextWrapper.Dedent: invalid length") + 1,
-                       "TextWrapper.Dedent: memory allocation failed");
+    size_t src_size = 0;
+    size_t alloc_size = 0;
+    if (!checked_i64_to_size(src_len, "TextWrapper.Dedent: invalid length", &src_size) ||
+        !checked_add_one(src_size, "TextWrapper.Dedent: output length overflow", &alloc_size)) {
+        return textwrap_empty_string();
+    }
+    char *result = checked_malloc(alloc_size, "TextWrapper.Dedent: memory allocation failed");
     if (!result)
         return textwrap_empty_string();
 
@@ -496,11 +533,23 @@ rt_string rt_textwrap_hang(rt_string text, rt_string prefix) {
             line_count++;
     }
 
-    size_t alloc_size =
-        checked_mul_add(checked_i64_to_size(src_len, "TextWrapper.Hang: invalid length") + 1,
-                        checked_i64_to_size(line_count, "TextWrapper.Hang: invalid line count"),
-                        checked_i64_to_size(pre_len, "TextWrapper.Hang: invalid prefix length"),
-                        "TextWrapper.Hang: output length overflow");
+    size_t src_size = 0;
+    size_t line_count_size = 0;
+    size_t prefix_size = 0;
+    size_t base_size = 0;
+    size_t alloc_size = 0;
+    if (!checked_i64_to_size(src_len, "TextWrapper.Hang: invalid length", &src_size) ||
+        !checked_i64_to_size(
+            line_count, "TextWrapper.Hang: invalid line count", &line_count_size) ||
+        !checked_i64_to_size(pre_len, "TextWrapper.Hang: invalid prefix length", &prefix_size) ||
+        !checked_add_one(src_size, "TextWrapper.Hang: output length overflow", &base_size) ||
+        !checked_mul_add(base_size,
+                         line_count_size,
+                         prefix_size,
+                         "TextWrapper.Hang: output length overflow",
+                         &alloc_size)) {
+        return textwrap_empty_string();
+    }
     char *result = checked_malloc(alloc_size, "TextWrapper.Hang: memory allocation failed");
     if (!result)
         return textwrap_empty_string();

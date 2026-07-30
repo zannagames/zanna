@@ -3973,11 +3973,119 @@ For feature gating, prefer `canvas.BackendCapabilities` or `canvas.BackendSuppor
 
 **Metal** (macOS) — Near-full feature parity (94%): lit/unlit textures, the shared `Material3D` PBR path (metallic/roughness, AO, alpha modes, emissive intensity, normal scale), spot light cone attenuation, linear fog, wireframe, per-frame texture caching, GPU skinning (4-bone), morph targets, up to four directional shadow slots or primary-directional CSM cascades, instanced rendering, terrain splatting, and post-processing (bloom, FXAA, tone mapping, vignette, color grading).
 
-**OpenGL 3.3** (Linux) — Full feature parity (OGL-01 through OGL-20): all texture types, the shared `Material3D` PBR path (metallic/roughness, AO, alpha modes, emissive intensity, normal scale), spot lights, fog, wireframe, render-to-texture, up to four directional shadow slots or primary-directional CSM cascades, post-processing, instancing, skinning, morph targets, terrain splatting, cubemap skybox, environment reflections, and advanced post-FX (SSAO, depth of field, motion blur).
+**OpenGL 3.3** (Linux) — Near-full feature parity (OGL-01 through OGL-20): all texture types, the shared `Material3D` PBR path (metallic/roughness, AO, alpha modes, emissive intensity, normal scale), spot lights, fog, wireframe, render-to-texture, up to four directional shadow slots or primary-directional CSM cascades, post-processing, instancing, skinning, morph targets, terrain splatting, cubemap skybox, environment reflections, and advanced post-FX (SSAO, depth of field, motion blur). Point/omni-directional shadow atlases are not implemented on this backend (`BackendSupports("shadow-point")` reports false; GAP-8 in `docs/cross-platform/platform-differences.md`).
 
 **Direct3D 11** (Windows) — Full feature parity: same feature set as OpenGL, including the shared `Material3D` PBR path. On non-Windows hosts, validation depends on the Windows CI lane.
 
 Backend correctness rules are shared where possible: skinning weights are normalized before application, oversized GPU bone palettes are clamped to backend shader limits, unused bone palette slots are identity transforms, terrain splatting uses the real-time backend payload when the control map and all four layer textures are resident and falls back to CPU baking only for incomplete sets, masked materials alpha-test shadow casters, shadow slots are advertised only after the indexed pass completes in the current frame, failed D3D11 swapchain presents invalidate their pre-present readback snapshot, and invalid draw/readback/texture/shadow inputs are rejected or treated conservatively instead of being dereferenced. D3D11 additionally clamps backend-uploaded material/light/post-FX scalars and enum IDs, forwards all twelve material custom parameters, validates complete clustered-light tables before upload, rejects malformed post-FX chain storage before indexed iteration, validates native BC mip block layouts and complete IBL layouts before GPU upload, rejects corrupt in-progress upload cursors instead of silently restarting partial resources, keeps deferred native-texture and IBL payload metadata independent of runtime-object lifetime, rebuilds partial post-FX target sets before reuse, selects depth-probe sources from the actual RTT/offscreen/swapchain route, and limits CPU staging readback to supported RGBA8/HDR16F source formats.
+
+## Sky3D, TimeOfDay3D, ReflectionProbe3D, LensFlare3D, NodeAnimator3D
+
+Five environment and presentation classes previously documented only in
+the generated inventory:
+
+**Sky3D** — a procedural analytic sky that renders into a cubemap.
+Construct with `Sky3D.New()`, steer it with `SetSunDirection(vec3)`,
+`SetGroundAlbedo(r, g, b)`, and the `Turbidity` (atmospheric haze) and
+`Resolution` (cubemap face size) properties, then call `Update(canvas)`
+whenever `Dirty` reports true. Read `Cubemap` and assign it as the
+canvas skybox/IBL source. Cheaper than authoring HDR panoramas for
+dynamic time-of-day scenes.
+
+**TimeOfDay3D** — a day/night clock that drives a sun light, a `Sky3D`,
+and optionally a `ReflectionProbe3D` together. Set `Hours` (0–24),
+`DayLengthSeconds` (real seconds per in-game day), `LatitudeDegrees`,
+and `RefreshDegrees` (how far the sun must move before bound targets
+re-update), bind targets with `SetSunLight`, `SetSky`, and
+`SetReflectionProbe`, then call `Advance(dt, canvas)` each frame.
+`SunDirection` exposes the computed sun vector for gameplay.
+
+**ReflectionProbe3D** — a box-bounded local reflection capture.
+`ReflectionProbe3D.New(position, boundsMin, boundsMax)` places it;
+`Capture(canvas, scene)` renders the surrounding scene into its
+`Cubemap` when `CaptureDirty` is set. `InfluenceScale` sizes the blend
+region, `Contains(point)` tests membership, and `Resolution` trades
+sharpness for capture cost. Materials with reflectivity pick up the
+nearest containing probe.
+
+**LensFlare3D** — an occlusion-aware ghost chain along the light-to-
+screen-center axis. Construct per light and add ghosts with
+`AddElement(offset, size, color, intensity)`; flares fade automatically
+when the source light is occluded.
+
+**NodeAnimator3D** — playback for node TRS animation clips
+(`NodeAnimation3D`), the non-skeletal counterpart of `AnimPlayer3D`.
+Importers bind one automatically for assets with node tracks; drive it
+with `Play(name)`, `Stop`, `SetSpeed`, and inspect `ClipCount`,
+`CurrentClip`, `IsPlaying`, `Speed`, and `Time`, plus
+`GetClip(i)`/`GetClipName(i)`. Bind to scene content through
+`SceneNode.BindNodeAnimator` and advance via `SceneGraph.SyncBindings`.
+
+## Scene Serialization, Precise Picking, and Readback (ADRs 0190–0227)
+
+Late-cycle additions that previously appeared only in the generated
+reference:
+
+**In-memory scene text (ADR 0190, 0227).** `SceneGraph.SaveToText()`
+returns the canonical VSCN text byte-identical to `Save`'s file output.
+Its inverse is `SceneGraph.LoadTextResult(virtualPath, text)`, which
+returns a `Zanna.Result` (ok wraps the scene; err carries the loader
+diagnostic) and resolves relative prefab references against
+`virtualPath`'s directory. `SceneGraph.LoadResult(path)` is the
+Result-carrying peer of `Load` for files. `SceneAsset.LoadTextResult`
+is the asset-document equivalent.
+
+**Prefab diagnostics (ADR 0227).** Unresolved prefab references still
+load as empty placeholders (ADR 0187), but each one now adds a warning
+readable through `AssetDiagnostics3D` and increments the read-only
+`SceneGraph.UnresolvedPrefabCount` — including occurrences nested inside
+resolved prefabs — so a game can gate startup on a fully resolved world.
+
+**Animation adoption (ADR 0227).** `SceneGraph.AdoptAnimations(source)`
+retain-appends the source scene's baked animation clips onto the
+receiver (idempotent per clip handle) so merging an instantiated model's
+nodes into another scene no longer drops its clips on save.
+
+**Triangle-accurate raycasts (ADR 0193).** Three siblings join the
+AABB-based `RaycastNodes` on `SceneGraph`, sharing its argument
+contract: `RaycastNodesPrecise` returns the visible mesh node containing
+the nearest intersected triangle; `RaycastNodesPreciseAll` returns every
+triangle-hit node nearest-first (the overlap-cycling primitive); and
+`RaycastPreciseHit` returns the nearest `RayHit3D` itself (world point,
+normal, distance, triangle index) for spawn-at-cursor and surface
+snapping.
+
+**GPU offscreen rendering (ADR 0191).**
+`Canvas3D.NewOffscreenAccelerated(target)` creates a windowless canvas
+that renders on the platform GPU backend into a `RenderTarget3D`,
+falling back to the software rasterizer when no GPU backend is
+available. Zero-copy presentation is explicitly out of scope.
+
+**Camera readback (ADR 0227).** `Camera3D` exposes the retained state
+the renderer actually uses: `ViewMatrix`, `ProjectionMatrix` (exactly as
+last synced — including reversed-Z on backends that use it), `Up`
+(completing the `Forward`/`Right` basis), and `AspectRatio`. Prefer
+these over reconstructing projection math in Zia.
+
+**Quaternion inverses (ADR 0227).** `Quat.ToEuler()` returns
+(pitch, yaw, roll) radians as the exact algebraic inverse of
+`FromEuler`; `Quat.FromMat4(m)` extracts a normalized rotation from a
+matrix, tolerating scale via column normalization.
+`Transform3D.GetEuler()` is the degree-valued inverse of `SetEuler`.
+
+**Readback symmetry (ADR 0227).** Formerly write-only surfaces gained
+readers: `TextureAtlas3D.GetUvMin/GetUvMax(id)` (packed region UVs),
+`InstanceBatch3D.GetTransform(index)` plus `Mesh`/`Material` properties,
+`Skeleton3D.GetBoneParent/GetBoneBindPose(index)`, `Canvas3D.Wireframe`,
+`Particles3D.Additive`, and `Path3D.Looping` as read-write properties,
+`SceneNode.TrySetWorldPosition(x, y, z)` (translation-only world edit
+with ADR 0166 exact-or-reject semantics), writable `Vec2.X/Y`, and
+inspection getters across `Terrain3D` (scale, material, layer
+textures/scales, splat maps, LOD distances, heightmap dimensions, hole
+rects) and `Water3D` (placement, wave parameters, color, alpha,
+reflectivity, resolution, texture/normal/environment maps). `Gltf`
+now registers the same skeleton/animation/camera/scene accessors as
+`Fbx`.
 
 ## Performance Tips
 

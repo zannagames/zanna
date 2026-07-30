@@ -668,8 +668,9 @@ int8_t rt_file_seek(RtFile *file, int64_t offset, int origin, RtError *out_err) 
 }
 
 /// @brief Write a byte buffer to a file descriptor, retrying short writes.
-/// @details Handles zero-length writes as success, validates the input pointer,
-///          and loops until all bytes are written or an error occurs.  EINTR is
+/// @details Validates the descriptor even for zero-length writes, accepts a
+///          null data pointer only when the validated write length is zero, and
+///          loops until all bytes are written or an error occurs. EINTR is
 ///          retried automatically.
 /// @param file File handle to write to.
 /// @param data Buffer containing bytes to write.
@@ -677,6 +678,8 @@ int8_t rt_file_seek(RtFile *file, int64_t offset, int origin, RtError *out_err) 
 /// @param out_err Optional error destination.
 /// @return `true` when all bytes are written; otherwise `false`.
 int8_t rt_file_write(RtFile *file, const uint8_t *data, size_t len, RtError *out_err) {
+    if (!rt_file_check_fd(file, out_err))
+        return 0;
     if (len == 0) {
         rt_file_set_ok(out_err);
         return 1;
@@ -685,8 +688,6 @@ int8_t rt_file_write(RtFile *file, const uint8_t *data, size_t len, RtError *out
         rt_file_set_error(out_err, Err_InvalidOperation, 0);
         return 0;
     }
-    if (!rt_file_check_fd(file, out_err))
-        return 0;
 
     size_t written = 0;
     while (written < len) {

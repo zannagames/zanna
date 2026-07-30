@@ -4,6 +4,16 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/tests/runtime/RTBloomFilterTests.cpp
+// Purpose: Tests BloomFilter construction, membership, estimates, and merges.
+// Key invariants: Invalid string handles never reach the hash byte loop, and
+//                 failed additions leave the bitset and count unchanged.
+// Ownership/Lifetime: Runtime strings are released after each test; filters
+//                     remain managed by the runtime test process.
+// Links: src/runtime/collections/rt_bloomfilter.c
+//
+//===----------------------------------------------------------------------===//
 
 #include "rt_bloomfilter.h"
 #include "rt_internal.h"
@@ -12,6 +22,7 @@
 #include <cassert>
 #include <cmath>
 #include <csetjmp>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 
@@ -19,10 +30,13 @@ namespace {
 static jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
 static bool g_trap_expected = false;
+static bool g_trap_returns = false;
 } // namespace
 
 extern "C" void vm_trap(const char *msg) {
     g_last_trap = msg;
+    if (g_trap_returns)
+        return;
     if (g_trap_expected)
         longjmp(g_trap_jmp, 1);
     rt_abort(msg);
@@ -186,6 +200,20 @@ static void test_null_safety() {
     assert(rt_bloomfilter_merge(NULL, NULL) == 0);
 }
 
+static void test_returning_hook_rejects_forged_string() {
+    void *bf = rt_bloomfilter_new(100, 0.01);
+    rt_string forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(0x97531U));
+    g_trap_returns = true;
+    g_last_trap = nullptr;
+
+    rt_bloomfilter_add(bf, forged);
+    assert(g_last_trap != nullptr);
+    assert(rt_bloomfilter_count(bf) == 0);
+    assert(rt_bloomfilter_might_contain(bf, forged) == 0);
+
+    g_trap_returns = false;
+}
+
 /// @brief Main.
 int main() {
     test_new();
@@ -199,6 +227,7 @@ int main() {
     test_clear();
     test_merge();
     test_null_safety();
+    test_returning_hook_rejects_forged_string();
 
     return 0;
 }

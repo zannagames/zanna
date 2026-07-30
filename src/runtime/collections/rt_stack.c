@@ -291,7 +291,8 @@ void rt_stack_set_owns_elements(void *obj, int8_t owns) {
 int8_t rt_stack_owns_elements(void *obj) {
     if (!obj)
         return 0;
-    return as_stack(obj, "Stack: invalid Stack object")->owns_elements ? 1 : 0;
+    rt_stack_impl *stack = as_stack(obj, "Stack: invalid Stack object");
+    return stack && stack->owns_elements ? 1 : 0;
 }
 
 /// @brief Returns the number of elements currently on the Stack.
@@ -311,7 +312,8 @@ int8_t rt_stack_owns_elements(void *obj) {
 int64_t rt_stack_len(void *obj) {
     if (!obj)
         return 0;
-    return as_stack(obj, "Stack: invalid Stack object")->len;
+    rt_stack_impl *stack = as_stack(obj, "Stack: invalid Stack object");
+    return stack ? stack->len : 0;
 }
 
 /// @brief Checks whether the Stack contains no elements.
@@ -335,7 +337,8 @@ int64_t rt_stack_len(void *obj) {
 int8_t rt_stack_is_empty(void *obj) {
     if (!obj)
         return 1;
-    return as_stack(obj, "Stack: invalid Stack object")->len == 0 ? 1 : 0;
+    rt_stack_impl *stack = as_stack(obj, "Stack: invalid Stack object");
+    return !stack || stack->len == 0 ? 1 : 0;
 }
 
 /// @brief Pushes an element onto the top of the Stack.

@@ -378,8 +378,6 @@ class SceneEditor2DGamePreviewLayer extends PreviousLayer.SceneEditor2DTilePrevi
                     + "zooms around the pointer and middle-drag pans.");
             }
         }
-        var concise = compactChrome
-            or lastHostWidth < SceneEditor2DModel.CONCISE_SCENE_2D_CHROME_WIDTH;
         if gameViewActive {
             gameViewButton.SetToggled(true);
             gameViewButton.SetTooltip(

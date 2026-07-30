@@ -86,51 +86,27 @@ class SceneEditor3DCameraNavigationLayer extends PreviousLayer.SceneEditor3DInsp
         if gameViewOutputFramed { return; }
         ReleaseGameplayViewAnchor();
         if flatNodes.count() == 0 {
-            viewScale = 28;
+            viewScale = SceneEditor3DModel.DEFAULT_VIEW_SCALE;
             viewTargetX = 0.0;
             viewTargetY = 0.0;
             viewTargetZ = 0.0;
             return;
         }
-        var first = flatNodes.get(0).WorldPosition;
-        var minimumX = first.X;
-        var minimumY = first.Y;
-        var minimumZ = first.Z;
-        var maximumX = first.X;
-        var maximumY = first.Y;
-        var maximumZ = first.Z;
+        // Roots contribute their subtree mesh bounds (BoundsMin/Max include
+        // descendant meshes); deeper rows contribute their pivots so meshless
+        // markers far from any geometry still stay inside the framed volume.
+        var total = new SceneEditor3DModel.WorldBounds3D();
         var i = 0;
         while i < flatNodes.count() {
-            var p = flatNodes.get(i).WorldPosition;
-            if p.X < minimumX { minimumX = p.X; }
-            if p.Y < minimumY { minimumY = p.Y; }
-            if p.Z < minimumZ { minimumZ = p.Z; }
-            if p.X > maximumX { maximumX = p.X; }
-            if p.Y > maximumY { maximumY = p.Y; }
-            if p.Z > maximumZ { maximumZ = p.Z; }
+            if flatDepths.get(i) == 0 {
+                MergeWorldBounds(
+                    total, NodeBoundsOrPivot(flatNodes.get(i)));
+            } else {
+                MergeWorldBounds(total, PivotBounds(flatNodes.get(i)));
+            }
             i = i + 1;
         }
-        viewTargetX = (minimumX + maximumX) * 0.5;
-        viewTargetY = (minimumY + maximumY) * 0.5;
-        viewTargetZ = (minimumZ + maximumZ) * 0.5;
-
-        var furthest = 1.0;
-        i = 0;
-        while i < flatNodes.count() {
-            var p = flatNodes.get(i).WorldPosition;
-            var dx = p.X - viewTargetX;
-            var dy = p.Y - viewTargetY;
-            var dz = p.Z - viewTargetZ;
-            var distance = Math.Sqrt(dx * dx + dy * dy + dz * dz);
-            if distance > furthest { furthest = distance; }
-            i = i + 1;
-        }
-        var available = renderedViewportWidth;
-        if renderedViewportHeight < available {
-            available = renderedViewportHeight;
-        }
-        viewScale = SceneEditor3DModel.ClampInt3D(Convert.NumToInt(
-            (available * 0.38) / furthest), 4, 120);
+        FrameWorldBounds(total, false);
     }
 
     expose override func FrameSelected() {
@@ -139,49 +115,67 @@ class SceneEditor3DCameraNavigationLayer extends PreviousLayer.SceneEditor3DInsp
             selectedIndices, flatNodes.count(), selectedIndex);
         if selectedIndices.count() == 0 { return; }
         ReleaseGameplayViewAnchor();
-        var first = flatNodes.get(selectedIndices.get(0)).WorldPosition;
-        var minimumX = first.X;
-        var minimumY = first.Y;
-        var minimumZ = first.Z;
-        var maximumX = first.X;
-        var maximumY = first.Y;
-        var maximumZ = first.Z;
-        var index = 1;
+        var total = new SceneEditor3DModel.WorldBounds3D();
+        var index = 0;
         while index < selectedIndices.count() {
-            var world = flatNodes.get(
-                selectedIndices.get(index)).WorldPosition;
-            if world.X < minimumX { minimumX = world.X; }
-            if world.Y < minimumY { minimumY = world.Y; }
-            if world.Z < minimumZ { minimumZ = world.Z; }
-            if world.X > maximumX { maximumX = world.X; }
-            if world.Y > maximumY { maximumY = world.Y; }
-            if world.Z > maximumZ { maximumZ = world.Z; }
+            MergeWorldBounds(
+                total,
+                NodeBoundsOrPivot(
+                    flatNodes.get(selectedIndices.get(index))));
             index = index + 1;
         }
-        viewTargetX = (minimumX + maximumX) * 0.5;
-        viewTargetY = (minimumY + maximumY) * 0.5;
-        viewTargetZ = (minimumZ + maximumZ) * 0.5;
+        FrameWorldBounds(total, selectedIndices.count() == 1);
+    }
 
-        var furthest = 1.0;
-        index = 0;
-        while index < selectedIndices.count() {
-            var world = flatNodes.get(
-                selectedIndices.get(index)).WorldPosition;
-            var dx = world.X - viewTargetX;
-            var dy = world.Y - viewTargetY;
-            var dz = world.Z - viewTargetZ;
-            var distance = Math.Sqrt(dx * dx + dy * dy + dz * dz);
-            if distance > furthest { furthest = distance; }
-            index = index + 1;
-        }
+    /// @brief Resolve one node's framing contribution.
+    /// @details Subtree mesh bounds when available; otherwise the world
+    ///          pivot as a zero-extent point so marker nodes stay frameable.
+    hide func NodeBoundsOrPivot(node: SceneNode) -> SceneEditor3DModel.WorldBounds3D {
+        var bounds = NodeWorldBounds(node);
+        if bounds != null and bounds.valid { return bounds; }
+        return PivotBounds(node);
+    }
+
+    /// @brief Return one node's world pivot as a zero-extent bound.
+    hide func PivotBounds(node: SceneNode) -> SceneEditor3DModel.WorldBounds3D {
+        var bounds = new SceneEditor3DModel.WorldBounds3D();
+        if node == null { return bounds; }
+        var world = node.WorldPosition;
+        if world == null { return bounds; }
+        bounds.minX = world.X;
+        bounds.minY = world.Y;
+        bounds.minZ = world.Z;
+        bounds.maxX = world.X;
+        bounds.maxY = world.Y;
+        bounds.maxZ = world.Z;
+        bounds.valid = true;
+        return bounds;
+    }
+
+    /// @brief Center the orbit target on a world AABB and fit the zoom.
+    /// @details The single-selection close-up floor applies only to
+    ///          point-like bounds; a large mesh must never be over-zoomed
+    ///          past its fitted extent.
+    hide func FrameWorldBounds(bounds: SceneEditor3DModel.WorldBounds3D,
+                               singleSelection: Boolean) {
+        if bounds == null or bounds.valid == false { return; }
+        viewTargetX = (bounds.minX + bounds.maxX) * 0.5;
+        viewTargetY = (bounds.minY + bounds.maxY) * 0.5;
+        viewTargetZ = (bounds.minZ + bounds.maxZ) * 0.5;
+        var halfX = (bounds.maxX - bounds.minX) * 0.5;
+        var halfY = (bounds.maxY - bounds.minY) * 0.5;
+        var halfZ = (bounds.maxZ - bounds.minZ) * 0.5;
+        var furthest = Math.Sqrt(
+            halfX * halfX + halfY * halfY + halfZ * halfZ);
+        if furthest < 1.0 { furthest = 1.0; }
         var available = renderedViewportWidth;
         if renderedViewportHeight < available {
             available = renderedViewportHeight;
         }
-        viewScale = SceneEditor3DModel.ClampInt3D(Convert.NumToInt(
-            (available * 0.38) / furthest), 4, 120);
-        if selectedIndices.count() == 1 and viewScale < 48 {
-            viewScale = 48;
+        viewScale = SceneEditor3DModel.ClampViewScale(
+            (available * 0.38) / furthest);
+        if singleSelection and furthest <= 1.0 and viewScale < 48.0 {
+            viewScale = 48.0;
         }
     }
 
@@ -333,8 +327,22 @@ class SceneEditor3DCameraNavigationLayer extends PreviousLayer.SceneEditor3DInsp
     ///          cursor ray; in ortho it is exact zoom-about-point.
     hide override func DollyViewportAtPointer(direction: Integer) {
         var previousScale = viewScale;
-        viewScale = SceneEditor3DModel.ClampInt3D(viewScale + direction * 4, 4, 120);
-        if viewScale == previousScale { return; }
+        // Multiplicative steps give uniform zoom feel across the whole
+        // range; additive steps were unusably coarse near the floor.
+        var stepped = viewScale;
+        var remaining = direction;
+        while remaining > 0 {
+            stepped = stepped * SceneEditor3DModel.VIEW_SCALE_WHEEL_FACTOR;
+            remaining = remaining - 1;
+        }
+        while remaining < 0 {
+            stepped = stepped / SceneEditor3DModel.VIEW_SCALE_WHEEL_FACTOR;
+            remaining = remaining + 1;
+        }
+        viewScale = SceneEditor3DModel.ClampViewScale(stepped);
+        if SceneEditor3DModel.ViewScaleMatches(viewScale, previousScale) {
+            return;
+        }
         ReleaseGameplayViewAnchor();
         renderDirty = true;
         var mouseX = PhysicalPointerToUi(Input.Mouse.X())
@@ -626,8 +634,6 @@ class SceneEditor3DCameraNavigationLayer extends PreviousLayer.SceneEditor3DInsp
                     + "the selection while the viewport owns focus.");
             }
         }
-        var concise = compactChrome
-            or SceneEditor3DModel.UsesDockedHierarchy(lastHostWidth) == false;
         if gameViewActive {
             gameViewButton.SetToggled(true);
             gameViewButton.SetTooltip(
@@ -760,7 +766,7 @@ class SceneEditor3DCameraNavigationLayer extends PreviousLayer.SceneEditor3DInsp
         viewYawDegrees = SceneEditor3DModel.NormalizeYawDegrees(
             SceneEditor3DModel.ClampInt3D(state.viewYawDegrees, -36000, 36000));
         viewPitchDegrees = SceneEditor3DModel.ClampInt3D(state.viewPitchDegrees, -80, 80);
-        viewScale = SceneEditor3DModel.ClampInt3D(state.viewScale, 4, 120);
+        viewScale = SceneEditor3DModel.ClampViewScale(state.viewScale);
         viewTargetX = SceneEditor3DModel.ClampNumber3D(
             state.viewTargetX, -1000000.0, 1000000.0);
         viewTargetY = SceneEditor3DModel.ClampNumber3D(

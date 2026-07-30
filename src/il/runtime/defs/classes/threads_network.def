@@ -335,8 +335,9 @@ RT_CLASS_END()
 /// with the instance members below. Its public surface exposes properties such as `X`, `Y` and
 /// operations including `Zero`, `One`, `Add`, `Sub`.
 RT_CLASS_BEGIN("Zanna.Math.Vec2", Vec2, "obj", Vec2New)
-    RT_PROP("X", "f64", Vec2X, none)
-    RT_PROP("Y", "f64", Vec2Y, none)
+    // ADR 0227: read-write components, matching Vec3.
+    RT_PROP("X", "f64", Vec2X, Vec2SetX)
+    RT_PROP("Y", "f64", Vec2Y, Vec2SetY)
     RT_METHOD("Zero", "obj()", Vec2Zero)
     RT_METHOD("One", "obj()", Vec2One)
     RT_METHOD("Add", "obj(obj)", Vec2Add)
@@ -419,6 +420,10 @@ RT_CLASS_BEGIN("Zanna.Math.Quat", Quat, "obj", QuatNew)
     RT_METHOD("Lerp", "obj(obj,f64)", QuatLerp)
     RT_METHOD("RotateVec3", "obj(obj)", QuatRotateVec3)
     RT_METHOD("ToMat4", "obj()", QuatToMat4)
+    // ADR 0227: exact inverses of FromEuler/ToMat4 so editors never
+    // hand-roll the decomposition conventions.
+    RT_METHOD("ToEuler", "obj<Zanna.Math.Vec3>()", QuatToEuler)
+    RT_METHOD("FromMat4", "obj(obj)", QuatFromMat4)
     RT_METHOD("Axis", "obj()", QuatAxis)
     RT_METHOD("Angle", "f64()", QuatAngle)
 RT_CLASS_END()

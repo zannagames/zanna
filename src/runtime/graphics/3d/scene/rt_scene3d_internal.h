@@ -392,6 +392,9 @@ typedef struct rt_scene3d {
     /* Complete v4 SceneAsset carrier. SceneGraph callers never inspect it; the Model3D
      * loader copies its retained inventories and immutable scene definitions. */
     rt_vscn_loaded_asset3d *baked_asset;
+    /* ADR 0227: placeholders left by unresolved prefab references (missing,
+     * cycle, depth, budget, invalid), including nested occurrences. */
+    int32_t unresolved_prefab_count;
 } rt_scene3d;
 
 /// @brief Bound a private dynamic-array count by the pointer and recorded capacity.

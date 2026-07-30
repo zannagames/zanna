@@ -1,0 +1,149 @@
+// ============================================================================
+// MODULE: test_vscn_golden
+// PURPOSE: Byte-exact golden coverage for VSCN serialization. Each case
+//          builds a deterministic scene through the public runtime API,
+//          serializes it with SaveToText, and requires the bytes to match
+//          the checked-in golden exactly, then proves reload stability
+//          (load the golden text, save again, bytes identical).
+//
+// REGENERATING: after a deliberate, ADR-reviewed format change, overwrite
+//          each golden with the fixture's fresh SaveToText output (the
+//          failure message names the first divergent byte) and review the
+//          diff like any other golden.
+// ============================================================================
+
+module test_vscn_golden;
+
+bind Zanna.Graphics.Pixels as Pixels;
+bind Zanna.Graphics3D;
+bind Zanna.IO.File as File;
+bind Zanna.Math;
+bind Vec3 = Zanna.Math.Vec3;
+bind Str = Zanna.String;
+bind Zanna.Terminal;
+
+final GOLDEN_DIR: String = "src/tests/golden/vscn/";
+
+func firstDivergence(a: String, b: String) -> Integer {
+    var limit = a.Length;
+    if b.Length < limit { limit = b.Length; }
+    for (var i: Integer = 0; i < limit; i = i + 1) {
+        if Str.Substring(a, i, 1) != Str.Substring(b, i, 1) { return i; }
+    }
+    return limit;
+}
+
+func compareGolden(name: String, scene: SceneGraph) -> Boolean {
+    var text = scene.SaveToText();
+    if text == "" {
+        Say("FAIL: " + name + " produced empty canonical text");
+        return false;
+    }
+    var goldenPath = GOLDEN_DIR + name + ".scene3d";
+    var golden = File.ReadAllText(goldenPath);
+    if golden == "" {
+        Say("FAIL: golden missing or empty: " + goldenPath);
+        return false;
+    }
+    if text != golden {
+        Say("FAIL: " + name + " diverged from its golden at byte "
+            + firstDivergence(text, golden) + " (fresh " + text.Length
+            + "B vs golden " + golden.Length + "B)");
+        return false;
+    }
+
+    // Reload stability: the golden text loads and re-saves byte-identically.
+    var reloaded = SceneGraph.LoadTextResult(goldenPath, golden);
+    if reloaded == null or reloaded.IsOk == false {
+        Say("FAIL: " + name + " golden did not reload");
+        return false;
+    }
+    var resaved = (reloaded.Unwrap() as SceneGraph).SaveToText();
+    if resaved != golden {
+        Say("FAIL: " + name + " reload round-trip was not byte-stable (byte "
+            + firstDivergence(resaved, golden) + ")");
+        return false;
+    }
+    return true;
+}
+
+func plainScene() -> SceneGraph {
+    // v2: plain transforms and hierarchy, no shared assets.
+    var scene = SceneGraph.New();
+    var parent = SceneNode.New();
+    parent.Name = "Golden Parent";
+    parent.SetPosition(1.0, 2.0, 3.0);
+    parent.SetScale(2.0, 2.0, 2.0);
+    var child = SceneNode.New();
+    child.Name = "Golden Child";
+    child.SetPosition(0.0, 1.5, 0.0);
+    child.Visible = false;
+    parent.AddChild(child);
+    scene.Add(parent);
+    return scene;
+}
+
+func cameraLightScene() -> SceneGraph {
+    // v5: mesh + textured material + authored light + camera node.
+    var scene = SceneGraph.New();
+    var lit = SceneNode.New();
+    lit.Name = "Golden Lit";
+    lit.Mesh = Mesh3D.Box(1.0, 1.0, 1.0);
+    var mat = Material3D.PBR(0.5, 0.4, 0.3);
+    var tex = Pixels.New(2, 2);
+    tex.Fill(0x88CC44FF);
+    mat.SetTexture(tex);
+    lit.Material = mat;
+    scene.Add(lit);
+    var key = SceneNode.New();
+    key.Name = "Golden Key Light";
+    key.Light = Light3D.Point(Vec3.New(0.0, 3.0, 0.0), 1.0, 0.9, 0.8, 12.0);
+    scene.Add(key);
+    var cam = SceneNode.New();
+    cam.Name = "Golden Camera";
+    cam.Camera = Camera3D.New(60.0, 1.6, 0.1, 50.0);
+    scene.Add(cam);
+    return scene;
+}
+
+func metadataScene() -> SceneGraph {
+    // v6: every typed metadata kind on root and a nested node.
+    var scene = SceneGraph.New();
+    var root = SceneNode.New();
+    root.Name = "Golden Meta";
+    root.MetadataSetString("kind", "hub");
+    root.MetadataSetInt("count", 7);
+    root.MetadataSetFloat("ratio", 0.25);
+    root.MetadataSetBool("armed", true);
+    root.MetadataSetNull("marker");
+    var leaf = SceneNode.New();
+    leaf.Name = "Golden Meta Leaf";
+    leaf.MetadataSetString("zone", "plaza");
+    root.AddChild(leaf);
+    scene.Add(root);
+    return scene;
+}
+
+func prefabScene() -> SceneGraph {
+    // v7: a prefab reference node (serialization only writes the
+    // reference; resolution is covered by the unit prefab suite).
+    var scene = SceneGraph.New();
+    var instance = SceneNode.New();
+    instance.Name = "Golden Instance";
+    instance.SetPosition(4.0, 0.0, -2.0);
+    instance.SetPrefabReference("golden_prefab_source.scene3d");
+    instance.MetadataSetInt("row", 4);
+    scene.Add(instance);
+    var plain = SceneNode.New();
+    plain.Name = "Golden Plain";
+    scene.Add(plain);
+    return scene;
+}
+
+func start() {
+    if compareGolden("plain_v2", plainScene()) == false { return; }
+    if compareGolden("camera_light_v5", cameraLightScene()) == false { return; }
+    if compareGolden("metadata_v6", metadataScene()) == false { return; }
+    if compareGolden("prefab_v7", prefabScene()) == false { return; }
+    Say("PASS");
+}

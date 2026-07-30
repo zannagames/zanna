@@ -23,6 +23,7 @@ Zanna is a from-scratch compiler toolchain and game development platform: two la
 
 - [Zia Tutorial](tutorials/zia-tutorial.md) — Learn Zia by example
 - [BASIC Tutorial](tutorials/basic-tutorial.md) — Learn Zanna BASIC by example
+- [Your First 3D Game](tutorials/3d-game-tutorial.md) — Scaffold, edit, play, and package a scene-driven 3D game
 - [The Zanna Book](book/README.md) — A five-part course from first program to full applications
 
 ## Language References
@@ -71,6 +72,9 @@ Zanna is a from-scratch compiler toolchain and game development platform: two la
 - [Getting Started](gameengine/getting-started.md) — Your first game in 15 minutes
 - [Architecture](gameengine/architecture.md) — Engine systems and zero-dependency design
 - [Example Games](gameengine/examples/README.md) — Example games from arcade to Metroidvania
+- [Zanna Studio](../src/zannastudio/README.md) — The IDE with built-in 2D/3D scene editors, embedded Play, and project scaffolding
+- [3D Graphics Guide](graphics3d-guide.md) — The complete `Zanna.Graphics3D` API guide
+- [VSCN Scene Format](specs/vscn-scene-format.md) — The `.scene3d` serialization contract
 
 ## Tools
 

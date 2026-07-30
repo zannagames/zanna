@@ -153,27 +153,33 @@ static void map_save_trap(char *output, size_t capacity, const char *fallback) {
 /// Zanna string object for use with the hash table operations.
 ///
 /// @param key The Zanna string to extract data from.
+/// @param what Diagnostic raised for a stale or forged nonnull handle.
+/// @param out_data Receives borrowed key bytes.
 /// @param out_len Pointer to receive the string length.
 ///
-/// @return Pointer to the string's character data (not owned by caller).
-///         Returns "" with length 0 if key is NULL.
-static const char *get_key_data(rt_string key, size_t *out_len) {
+/// @return Nonzero for null or a live string handle; otherwise zero after
+///         trapping. Null continues to denote the empty key.
+static int get_key_data(rt_string key, const char *what, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
     if (!key) {
-        *out_len = 0;
-        return "";
+        return 1;
+    }
+    if (!rt_string_is_handle(key)) {
+        rt_trap(what);
+        return 0;
     }
     int64_t len = rt_str_len(key);
-    if (len <= 0) {
-        *out_len = 0;
-        return "";
-    }
+    if (len <= 0)
+        return 1;
     const char *cstr = rt_string_cstr(key);
     if (!cstr) {
-        *out_len = 0;
-        return "";
+        rt_trap(what);
+        return 0;
     }
+    *out_data = cstr;
     *out_len = (size_t)len;
-    return cstr;
+    return 1;
 }
 
 /// @brief Finds an entry in a bucket's collision chain.
@@ -423,7 +429,8 @@ void *rt_map_new(void) {
 int64_t rt_map_len(void *obj) {
     if (!obj)
         return 0;
-    return (int64_t)as_map(obj, "Map: invalid Map object")->count;
+    rt_map_impl *map = as_map(obj, "Map: invalid Map object");
+    return map ? (int64_t)map->count : 0;
 }
 
 /// @brief Checks whether the Map contains no entries.
@@ -489,8 +496,12 @@ void rt_map_set(void *obj, rt_string key, void *value) {
         return;
     }
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "Map.Set: invalid key", &key_data, &key_len)) {
+        rt_gc_mutator_exit();
+        return;
+    }
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % map->capacity;
 
@@ -567,11 +578,13 @@ void *rt_map_get(void *obj, rt_string key) {
         return NULL;
 
     rt_map_impl *map = as_map(obj, "Map: invalid Map object");
-    if (map->capacity == 0)
+    if (!map || map->capacity == 0)
         return NULL;
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "Map.Get: invalid key", &key_data, &key_len))
+        return NULL;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % map->capacity;
 
@@ -613,11 +626,13 @@ void *rt_map_get_or(void *obj, rt_string key, void *default_value) {
         return default_value;
 
     rt_map_impl *map = as_map(obj, "Map: invalid Map object");
-    if (map->capacity == 0)
+    if (!map || map->capacity == 0)
         return default_value;
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "Map.GetOr: invalid key", &key_data, &key_len))
+        return default_value;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % map->capacity;
 
@@ -659,8 +674,10 @@ int8_t rt_map_has(void *obj, rt_string key) {
     if (map->capacity == 0)
         return 0;
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "Map.Has: invalid key", &key_data, &key_len))
+        return 0;
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % map->capacity;
 
@@ -709,8 +726,12 @@ int8_t rt_map_set_if_missing(void *obj, rt_string key, void *value) {
         return 0;
     }
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "Map.SetIfMissing: invalid key", &key_data, &key_len)) {
+        rt_gc_mutator_exit();
+        return 0;
+    }
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % map->capacity;
 
@@ -786,8 +807,12 @@ int8_t rt_map_remove(void *obj, rt_string key) {
         return 0;
     }
 
-    size_t key_len;
-    const char *key_data = get_key_data(key, &key_len);
+    size_t key_len = 0;
+    const char *key_data = NULL;
+    if (!get_key_data(key, "Map.Remove: invalid key", &key_data, &key_len)) {
+        rt_gc_mutator_exit();
+        return 0;
+    }
     uint64_t hash = rt_fnv1a(key_data, key_len);
     size_t idx = hash % map->capacity;
 
@@ -1271,19 +1296,41 @@ rt_string rt_map_get_opt_str(void *obj, rt_string key) {
 /// @param obj Source Map pointer (may be NULL).
 /// @return New Map containing the same key-value pairs, or empty map if NULL.
 void *rt_map_clone(void *obj) {
-    void *result = rt_map_new();
-    if (!obj)
-        return result;
+    void *volatile result = NULL;
+    rt_string volatile key_string = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        map_save_trap(saved_error, sizeof(saved_error), "Map.Clone: allocation failed");
+        rt_trap_clear_recovery();
+        map_release_owned((void *)key_string);
+        map_release_owned((void *)result);
+        rt_trap(saved_error);
+        return NULL;
+    }
 
-    rt_map_impl *map = as_map(obj, "Map: invalid Map object");
+    rt_map_impl *map = obj ? as_map(obj, "Map.Clone: invalid Map object") : NULL;
+    result = rt_map_new();
+    if (!result) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    if (!map) {
+        rt_trap_clear_recovery();
+        return (void *)result;
+    }
+
     for (size_t i = 0; i < map->capacity; ++i) {
         rt_map_entry *entry = map->buckets[i];
         while (entry) {
-            rt_string key_str = rt_string_from_bytes(entry->key, entry->key_len);
-            rt_map_set(result, key_str, entry->value);
-            rt_str_release_maybe(key_str);
+            key_string = rt_string_from_bytes(entry->key, entry->key_len);
+            rt_map_set((void *)result, (rt_string)key_string, entry->value);
+            map_release_owned((void *)key_string);
+            key_string = NULL;
             entry = entry->next;
         }
     }
-    return result;
+    rt_trap_clear_recovery();
+    return (void *)result;
 }

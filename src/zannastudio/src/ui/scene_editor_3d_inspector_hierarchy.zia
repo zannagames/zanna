@@ -522,22 +522,14 @@ class SceneEditor3DInspectorHierarchyLayer extends PreviousLayer.SceneEditor3DSe
 
     hide override func QuaternionToEulerDegrees(rotation: Quat) -> Vec3 {
         if rotation == null { return Vec3.New(0.0, 0.0, 0.0); }
-        var x = rotation.X;
-        var y = rotation.Y;
-        var z = rotation.Z;
-        var w = rotation.W;
-        var pitch = Math.Atan2(
-            2.0 * (w * x + y * z),
-            1.0 - 2.0 * (x * x + y * y));
-        var yaw = Math.Asin(Math.Clamp(
-            2.0 * (w * y - z * x), -1.0, 1.0));
-        var roll = Math.Atan2(
-            2.0 * (w * z + x * y),
-            1.0 - 2.0 * (y * y + z * z));
+        // The runtime decomposition is the exact inverse of Quat.FromEuler
+        // (ADR 0227), so the inspector can never drift from the convention
+        // SetNodeEulerRotation authors with.
+        var euler = rotation.ToEuler();
         return Vec3.New(
-            pitch * SceneEditor3DModel.RAD_TO_DEG,
-            yaw * SceneEditor3DModel.RAD_TO_DEG,
-            roll * SceneEditor3DModel.RAD_TO_DEG);
+            euler.X * SceneEditor3DModel.RAD_TO_DEG,
+            euler.Y * SceneEditor3DModel.RAD_TO_DEG,
+            euler.Z * SceneEditor3DModel.RAD_TO_DEG);
     }
 
     hide override func RefreshHierarchy(preferred: SceneNode) {

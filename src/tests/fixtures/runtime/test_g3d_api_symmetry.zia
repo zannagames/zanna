@@ -1,0 +1,272 @@
+// ============================================================================
+// MODULE: test_g3d_api_symmetry
+// PURPOSE: Regress the ADR 0227 API-symmetry surface end to end: quaternion
+//          inverses, camera readback, Result-based scene loading, atlas and
+//          instance-batch readback, skeleton topology, write-only property
+//          getters, terrain/water inspection, animation adoption, and the
+//          unresolved-prefab counter.
+// ============================================================================
+
+module test_g3d_api_symmetry;
+
+bind Zanna.Graphics.Pixels as Pixels;
+bind Zanna.Graphics3D;
+bind Zanna.Math;
+bind Vec2 = Zanna.Math.Vec2;
+bind Vec3 = Zanna.Math.Vec3;
+bind Quat = Zanna.Math.Quat;
+bind Mat4 = Zanna.Math.Mat4;
+bind Zanna.Terminal;
+
+func near(a: Number, b: Number) -> Boolean {
+    var d = a - b;
+    if d < 0.0 { d = 0.0 - d; }
+    return d < 0.000001;
+}
+
+func fail(reason: String) {
+    Say("FAIL: " + reason);
+}
+
+func start() {
+    // Quat.ToEuler is the exact inverse of FromEuler.
+    var source = Quat.FromEuler(0.3, -0.7, 1.1);
+    var euler = source.ToEuler();
+    var back = Quat.FromEuler(euler.X, euler.Y, euler.Z);
+    var dot = source.Dot(back);
+    if dot < 0.0 { dot = 0.0 - dot; }
+    if near(dot, 1.0) == false {
+        fail("Quat.ToEuler did not invert FromEuler");
+        return;
+    }
+
+    // Quat.FromMat4 inverts ToMat4 up to sign.
+    var fromMatrix = Quat.FromMat4(source.ToMat4());
+    var matrixDot = source.Dot(fromMatrix);
+    if matrixDot < 0.0 { matrixDot = 0.0 - matrixDot; }
+    if near(matrixDot, 1.0) == false {
+        fail("Quat.FromMat4 did not invert ToMat4");
+        return;
+    }
+
+    // Vec2 components are writable like Vec3's.
+    var uv = Vec2.New(0.25, 0.75);
+    uv.X = 0.5;
+    uv.Y = 0.125;
+    if near(uv.X, 0.5) == false or near(uv.Y, 0.125) == false {
+        fail("Vec2 component setters did not store");
+        return;
+    }
+
+    // Camera3D exposes the retained projection state.
+    var camera = Camera3D.New(60.0, 1.5, 0.1, 100.0);
+    var view = camera.ViewMatrix;
+    var projection = camera.ProjectionMatrix;
+    var up = camera.Up;
+    if view == null or projection == null or up == null {
+        fail("Camera3D matrix/basis readback returned null");
+        return;
+    }
+    if near(camera.AspectRatio, 1.5) == false {
+        fail("Camera3D.AspectRatio did not report the constructor aspect");
+        return;
+    }
+    if near(up.Length(), 1.0) == false {
+        fail("Camera3D.Up is not unit length");
+        return;
+    }
+
+    // SceneGraph Result loaders mirror SceneAsset's contract.
+    var scene = SceneGraph.New();
+    var node = SceneNode.New();
+    node.Name = "Symmetry Node";
+    node.SetPosition(1.0, 2.0, 3.0);
+    scene.Add(node);
+    var text = scene.SaveToText();
+    if text == "" {
+        fail("SaveToText produced no canonical text");
+        return;
+    }
+    var loaded = SceneGraph.LoadTextResult("symmetry.scene3d", text);
+    if loaded == null or loaded.IsOk == false {
+        fail("SceneGraph.LoadTextResult rejected canonical SaveToText output");
+        return;
+    }
+    var reloaded = loaded.Unwrap() as SceneGraph;
+    if reloaded.Find("Symmetry Node").IsNone {
+        fail("LoadTextResult scene lost its authored node");
+        return;
+    }
+    if reloaded.UnresolvedPrefabCount != 0 {
+        fail("a prefab-free scene reported unresolved prefabs");
+        return;
+    }
+    var badLoad = SceneGraph.LoadTextResult("bad.scene3d", "{not vscn}");
+    if badLoad == null or badLoad.IsOk {
+        fail("LoadTextResult accepted invalid text");
+        return;
+    }
+    var missing = SceneGraph.LoadResult("this-file-does-not-exist.scene3d");
+    if missing == null or missing.IsOk {
+        fail("LoadResult accepted a missing path");
+        return;
+    }
+
+    // TrySetWorldPosition is a translation-only world edit.
+    var child = SceneNode.New();
+    child.Name = "World Child";
+    node.AddChild(child);
+    if child.TrySetWorldPosition(10.0, 20.0, 30.0) == false {
+        fail("TrySetWorldPosition rejected an invertible parent");
+        return;
+    }
+    var world = child.WorldPosition;
+    if near(world.X, 10.0) == false or near(world.Y, 20.0) == false
+       or near(world.Z, 30.0) == false {
+        fail("TrySetWorldPosition did not land on the requested point");
+        return;
+    }
+
+    // AdoptAnimations moves an instantiated scene's clip carrier.
+    var adopted = scene.AdoptAnimations(reloaded);
+    if adopted != 0 {
+        fail("adopting from a clip-free scene reported clips");
+        return;
+    }
+
+    // TextureAtlas3D regions report their packed UVs.
+    var atlas = TextureAtlas3D.New(64, 64);
+    var tile = Pixels.New(16, 16);
+    tile.Fill(0xFF00FFFF);
+    var region = atlas.Add(tile);
+    if region < 0 {
+        fail("atlas packing failed");
+        return;
+    }
+    var uvMin = atlas.GetUvMin(region);
+    var uvMax = atlas.GetUvMax(region);
+    if uvMin == null or uvMax == null
+       or uvMax.X <= uvMin.X or uvMax.Y <= uvMin.Y
+       or uvMax.X > 1.0 or uvMax.Y > 1.0 {
+        fail("atlas UV readback is not a normalized non-empty rect");
+        return;
+    }
+
+    // InstanceBatch3D transforms read back exactly.
+    var mesh = Mesh3D.Box(1.0, 1.0, 1.0);
+    var material = Material3D.PBR(0.5, 0.5, 0.5);
+    var batch = InstanceBatch3D.New(mesh, material);
+    batch.Add(Mat4.Translate(4.0, 5.0, 6.0));
+    if batch.Mesh == null or batch.Material == null {
+        fail("instance batch mesh/material readback returned null");
+        return;
+    }
+    var transform = batch.GetTransform(0);
+    if near(transform.Get(0, 3), 4.0) == false
+       or near(transform.Get(1, 3), 5.0) == false
+       or near(transform.Get(2, 3), 6.0) == false {
+        fail("instance batch transform readback drifted");
+        return;
+    }
+
+    // Skeleton3D topology reads back.
+    var skeleton = Skeleton3D.New();
+    var rootBone = skeleton.AddBone("root", -1, Mat4.Identity());
+    var childBone = skeleton.AddBone("child", rootBone, Mat4.Translate(0.0, 1.0, 0.0));
+    if skeleton.GetBoneParent(rootBone) != -1
+       or skeleton.GetBoneParent(childBone) != rootBone {
+        fail("skeleton bone-parent readback drifted");
+        return;
+    }
+    var bindPose = skeleton.GetBoneBindPose(childBone);
+    if bindPose == null or near(bindPose.Get(1, 3), 1.0) == false {
+        fail("skeleton bind-pose readback drifted");
+        return;
+    }
+
+    // Formerly write-only properties read back.
+    var path = Path3D.New();
+    path.AddPoint(Vec3.New(0.0, 0.0, 0.0));
+    path.AddPoint(Vec3.New(1.0, 0.0, 0.0));
+    path.Looping = true;
+    if path.Looping == false {
+        fail("Path3D.Looping getter did not report the set value");
+        return;
+    }
+    var particles = Particles3D.New(8);
+    particles.Additive = true;
+    if particles.Additive == false {
+        fail("Particles3D.Additive getter did not report the set value");
+        return;
+    }
+
+    // Transform3D.GetEuler inverts SetEuler (degrees).
+    var transform3d = Transform3D.New();
+    transform3d.SetEuler(30.0, -45.0, 60.0);
+    var degrees = transform3d.GetEuler();
+    if near(degrees.X, 30.0) == false or near(degrees.Y, -45.0) == false
+       or near(degrees.Z, 60.0) == false {
+        fail("Transform3D.GetEuler did not invert SetEuler");
+        return;
+    }
+
+    // Terrain3D inspection.
+    var terrain = Terrain3D.New(8, 8);
+    terrain.SetScale(2.0, 3.0, 4.0);
+    terrain.SetLayerScale(1, 5.0);
+    terrain.SetLodDistances(50.0, 120.0);
+    terrain.SetSkirtDepth(0.75);
+    var hole = terrain.SetHole(1.0, 2.0, 3.0, 4.0);
+    var terrainScale = terrain.GetScale();
+    if near(terrainScale.X, 2.0) == false or near(terrainScale.Y, 3.0) == false
+       or near(terrainScale.Z, 4.0) == false {
+        fail("Terrain3D.GetScale drifted");
+        return;
+    }
+    if near(terrain.GetLayerScale(1), 5.0) == false
+       or near(terrain.LodNearDistance, 50.0) == false
+       or near(terrain.LodFarDistance, 120.0) == false
+       or near(terrain.SkirtDepth, 0.75) == false {
+        fail("Terrain3D LOD/layer readback drifted");
+        return;
+    }
+    if hole < 0 or terrain.HoleCount != 1
+       or near(terrain.GetHoleX(hole), 1.0) == false
+       or near(terrain.GetHoleZ(hole), 2.0) == false
+       or near(terrain.GetHoleWidth(hole), 3.0) == false
+       or near(terrain.GetHoleDepth(hole), 4.0) == false {
+        fail("Terrain3D hole readback drifted");
+        return;
+    }
+
+    // Water3D inspection.
+    var water = Water3D.New(100.0, 100.0);
+    water.SetPosition(10.0, 2.0, -5.0);
+    water.SetWaveParams(1.5, 0.4, 2.5);
+    water.SetColor(0.1, 0.2, 0.8, 0.6);
+    water.SetReflectivity(0.35);
+    water.SetResolution(32);
+    var waterPosition = water.Position;
+    if near(water.Height, 2.0) == false
+       or near(waterPosition.X, 10.0) == false
+       or near(waterPosition.Z, -5.0) == false {
+        fail("Water3D placement readback drifted");
+        return;
+    }
+    if near(water.WaveSpeed, 1.5) == false
+       or near(water.WaveAmplitude, 0.4) == false
+       or near(water.WaveFrequency, 2.5) == false
+       or near(water.Alpha, 0.6) == false
+       or near(water.Reflectivity, 0.35) == false
+       or water.Resolution != 32 {
+        fail("Water3D wave/appearance readback drifted");
+        return;
+    }
+    var waterColor = water.Color;
+    if near(waterColor.X, 0.1) == false or near(waterColor.Z, 0.8) == false {
+        fail("Water3D color readback drifted");
+        return;
+    }
+
+    Say("PASS");
+}

@@ -547,8 +547,8 @@ class SceneEditor3DViewportSelectionLayer extends PreviousLayer.SceneEditor3DCam
             Parse.IntOr(Seq.GetStr(parts, 0), viewYawDegrees));
         viewPitchDegrees = SceneEditor3DModel.ClampInt3D(
             Parse.IntOr(Seq.GetStr(parts, 1), viewPitchDegrees), -80, 80);
-        viewScale = SceneEditor3DModel.ClampInt3D(
-            Parse.IntOr(Seq.GetStr(parts, 2), viewScale), 4, 120);
+        viewScale = SceneEditor3DModel.ClampViewScale(
+            Parse.DoubleOr(Seq.GetStr(parts, 2), viewScale));
         viewTargetX = Parse.DoubleOr(Seq.GetStr(parts, 3), viewTargetX);
         viewTargetY = Parse.DoubleOr(Seq.GetStr(parts, 4), viewTargetY);
         viewTargetZ = Parse.DoubleOr(Seq.GetStr(parts, 5), viewTargetZ);

@@ -750,6 +750,17 @@ void rt_path3d_set_looping(void *obj, int8_t loop) {
     p->spline_dirty = 1;
 }
 
+/// @brief Read whether the path loops back to its first point (ADR 0227).
+/// @param obj Path3D receiver.
+/// @return Nonzero for looping paths, or 0 for invalid handles.
+int8_t rt_path3d_get_looping(void *obj) {
+    rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
+    if (!p)
+        return 0;
+    path3d_repair(p);
+    return p->looping ? 1 : 0;
+}
+
 /// @brief Remove all control points, resetting the path to empty.
 /// @param obj Path3D handle to clear while retaining allocated coordinate capacity.
 void rt_path3d_clear(void *obj) {

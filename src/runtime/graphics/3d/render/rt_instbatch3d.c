@@ -698,6 +698,39 @@ int64_t rt_instbatch3d_count(void *obj) {
     return b->instance_count;
 }
 
+/// @brief `InstanceBatch3D.GetTransform(index)` — read one instance back (ADR 0227).
+/// @details Copies the authoritative double-precision matrix, so a value set
+///          through `Set` reads back exactly.
+/// @param obj InstanceBatch3D receiver.
+/// @param index Zero-based instance index.
+/// @return New Mat4 copy, or identity for invalid handles or out-of-range indices.
+void *rt_instbatch3d_get(void *obj, int64_t index) {
+    rt_instbatch3d *b =
+        (rt_instbatch3d *)rt_g3d_checked_or_null(obj, RT_G3D_INSTANCEBATCH3D_CLASS_ID);
+    if (!b || !instbatch_repair_state(b) || !b->transforms64 || index < 0 ||
+        index >= b->instance_count)
+        return rt_mat4_identity();
+    {
+        const double *m = b->transforms64 + (size_t)index * 16u;
+        return rt_mat4_new(m[0],
+                           m[1],
+                           m[2],
+                           m[3],
+                           m[4],
+                           m[5],
+                           m[6],
+                           m[7],
+                           m[8],
+                           m[9],
+                           m[10],
+                           m[11],
+                           m[12],
+                           m[13],
+                           m[14],
+                           m[15]);
+    }
+}
+
 /// @brief Internal bridge: borrow the batch's retained mesh (NULL for invalid handles).
 /// @param batch InstanceBatch3D receiver.
 /// @return Borrowed live Mesh3D handle, or `NULL`; the caller must not release it.

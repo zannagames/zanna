@@ -469,6 +469,53 @@ void *rt_scene_node3d_get_scale(void *obj) {
     return rt_vec3_new(n->scale_xyz[0], n->scale_xyz[1], n->scale_xyz[2]);
 }
 
+/// @brief `SceneNode.TrySetWorldPosition(x, y, z)` — translation-only world edit (ADR 0227).
+/// @details Rewrites only the world translation and routes through the exact
+///          or-reject world-matrix assignment (ADR 0166): local rotation and
+///          scale are untouched, and the edit is rejected when the parent's
+///          world basis cannot be inverted exactly.
+/// @param obj Borrowed SceneNode3D handle.
+/// @param x Finite world-space X coordinate.
+/// @param y Finite world-space Y coordinate.
+/// @param z Finite world-space Z coordinate.
+/// @return Nonzero when the world position was applied exactly.
+int8_t rt_scene_node3d_try_set_world_position(void *obj, double x, double y, double z) {
+    double world[16];
+    void *matrix;
+    int8_t applied;
+    if (!isfinite(x) || !isfinite(y) || !isfinite(z))
+        return 0;
+    if (!rt_scene_node3d_get_world_matrix_components(obj, world))
+        return 0;
+    world[3] = x;
+    world[7] = y;
+    world[11] = z;
+    matrix = rt_mat4_new(world[0],
+                         world[1],
+                         world[2],
+                         world[3],
+                         world[4],
+                         world[5],
+                         world[6],
+                         world[7],
+                         world[8],
+                         world[9],
+                         world[10],
+                         world[11],
+                         world[12],
+                         world[13],
+                         world[14],
+                         world[15]);
+    if (!matrix)
+        return 0;
+    applied = rt_scene_node3d_try_set_world_matrix(obj, matrix);
+    {
+        void *local = matrix;
+        scene3d_release_ref(&local);
+    }
+    return applied;
+}
+
 /// @brief Compose this node's local TRS with all ancestors and return the world matrix as a Mat4.
 /// @param obj Borrowed SceneNode3D handle.
 /// @return New owned Mat4 containing the composed transform, or `NULL` for an invalid node.

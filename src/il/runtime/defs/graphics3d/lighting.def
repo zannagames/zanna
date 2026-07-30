@@ -118,6 +118,8 @@ RT_FUNC(Scene3DClear,        rt_scene3d_clear,          "Zanna.Graphics3D.SceneG
 RT_FUNC(Scene3DSave,         rt_scene3d_save,           "Zanna.Graphics3D.SceneGraph.Save",          "i64(obj,str)")
 RT_FUNC(Scene3DSaveText,     rt_scene3d_save_text,      "Zanna.Graphics3D.SceneGraph.SaveToText",    "str(obj)")
 RT_FUNC(Scene3DLoad,         rt_scene3d_load,           "Zanna.Graphics3D.SceneGraph.Load",          "obj<Zanna.Graphics3D.SceneGraph>(str)")
+RT_FUNC(Scene3DLoadResult,   rt_scene3d_load_result,    "Zanna.Graphics3D.SceneGraph.LoadResult",    "obj<Zanna.Result>(str)")
+RT_FUNC(Scene3DLoadTextResult, rt_scene3d_load_text_result, "Zanna.Graphics3D.SceneGraph.LoadTextResult", "obj<Zanna.Result>(str,str)")
 RT_FUNC(Scene3DNodeCount,    rt_scene3d_get_node_count,   "Zanna.Graphics3D.SceneGraph.get_NodeCount",   "i64(obj)")
 RT_FUNC(Scene3DCulledCount,  rt_scene3d_get_culled_count, "Zanna.Graphics3D.SceneGraph.get_CulledCount", "i64(obj)")
 RT_FUNC(Scene3DVisibleNodeCount, rt_scene3d_get_visible_node_count, "Zanna.Graphics3D.SceneGraph.get_VisibleNodeCount", "i64(obj)")
@@ -129,6 +131,8 @@ RT_FUNC(Scene3DGetPortalClipping, rt_scene3d_get_portal_clipping, "Zanna.Graphic
 RT_FUNC(Scene3DPortalTraversalCount, rt_scene3d_get_portal_traversal_count, "Zanna.Graphics3D.SceneGraph.get_PortalTraversalCount", "i64(obj)")
 RT_FUNC(Scene3DSyncBindings, rt_scene3d_sync_bindings,  "Zanna.Graphics3D.SceneGraph.SyncBindings",  "void(obj,f64)")
 RT_FUNC(Scene3DRebaseOrigin, rt_scene3d_rebase_origin,  "Zanna.Graphics3D.SceneGraph.RebaseOrigin",  "void(obj,f64,f64,f64)")
+RT_FUNC(Scene3DAdoptAnimations, rt_scene3d_adopt_baked_animations, "Zanna.Graphics3D.SceneGraph.AdoptAnimations", "i64(obj,obj)")
+RT_FUNC(Scene3DUnresolvedPrefabCount, rt_scene3d_get_unresolved_prefab_count, "Zanna.Graphics3D.SceneGraph.get_UnresolvedPrefabCount", "i64(obj)")
 
 /// @summary Provides Scene Graph functionality for 3D rendering and scene applications.
 /// @details
@@ -147,6 +151,9 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.SceneGraph", Scene3D, "obj", Scene3DNew)
     // windows (default). false = legacy any-portal reachability flood-fill.
     RT_PROP("PortalClipping", "i1", Scene3DGetPortalClipping, Scene3DSetPortalClipping)
     RT_PROP("PortalTraversalCount", "i64", Scene3DPortalTraversalCount, none)
+    // ADR 0227: placeholders left by prefab references the loader could not
+    // resolve; each also adds one AssetDiagnostics3D load warning.
+    RT_PROP("UnresolvedPrefabCount", "i64", Scene3DUnresolvedPrefabCount, none)
     RT_METHOD("Add", "void(obj)", Scene3DAdd)
     RT_METHOD("TryAdd", "i1(obj)", Scene3DTryAdd)
     RT_METHOD("Remove", "void(obj)", Scene3DRemove)
@@ -165,8 +172,13 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.SceneGraph", Scene3D, "obj", Scene3DNew)
     RT_METHOD("Save", "i64(str)", Scene3DSave)
     RT_METHOD("SaveToText", "str()", Scene3DSaveText)
     RT_METHOD("Load", "obj<Zanna.Graphics3D.SceneGraph>(str)", Scene3DLoad)
+    // ADR 0227: Result-carrying loaders mirroring SceneAsset's contract;
+    // LoadTextResult is the inverse of SaveToText (ADR 0190).
+    RT_METHOD("LoadResult", "obj<Zanna.Result>(str)", Scene3DLoadResult)
+    RT_METHOD("LoadTextResult", "obj<Zanna.Result>(str,str)", Scene3DLoadTextResult)
     RT_METHOD("SyncBindings", "void(f64)", Scene3DSyncBindings)
     RT_METHOD("RebaseOrigin", "void(f64,f64,f64)", Scene3DRebaseOrigin)
+    RT_METHOD("AdoptAnimations", "i64(obj)", Scene3DAdoptAnimations)
 RT_CLASS_END()
 
 // SceneNode
@@ -175,6 +187,7 @@ RT_FUNC(SceneNode3DSetPosition,    rt_scene_node3d_set_position,   "Zanna.Graphi
 RT_FUNC(SceneNode3DGetPosition,    rt_scene_node3d_get_position,   "Zanna.Graphics3D.SceneNode.get_Position",   "obj<Zanna.Math.Vec3>(obj)")
 RT_FUNC(SceneNode3DSetRotation,    rt_scene_node3d_set_rotation,   "Zanna.Graphics3D.SceneNode.set_Rotation",   "void(obj,obj<Zanna.Math.Quat>)")
 RT_FUNC(SceneNode3DGetRotation,    rt_scene_node3d_get_rotation,   "Zanna.Graphics3D.SceneNode.get_Rotation",   "obj<Zanna.Math.Quat>(obj)")
+RT_FUNC(SceneNode3DTrySetWorldPosition, rt_scene_node3d_try_set_world_position, "Zanna.Graphics3D.SceneNode.TrySetWorldPosition", "i1(obj,f64,f64,f64)")
 RT_FUNC(SceneNode3DSetScale,       rt_scene_node3d_set_scale,      "Zanna.Graphics3D.SceneNode.SetScale",       "void(obj,f64,f64,f64)")
 RT_FUNC(SceneNode3DSetTransform,   rt_scene_node3d_set_transform,  "Zanna.Graphics3D.SceneNode.SetTransform",   "void(obj,f64,f64,f64,f64,f64,f64,f64,f64,f64,f64)")
 RT_FUNC(Scene3DSetNodeTransforms,  rt_scene3d_set_node_transforms, "Zanna.Graphics3D.SceneGraph.SetNodeTransforms", "void(obj,obj,obj)")
@@ -327,6 +340,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.SceneNode", SceneNode3D, "obj", SceneNode3DNew)
     RT_METHOD("SetImpostorFrames", "void(f64,obj,i64)", SceneNode3DSetImpostorFrames)
     RT_METHOD("SetStatic", "void(i1)", SceneNode3DSetStatic)
     RT_METHOD("GetStatic", "i1()", SceneNode3DGetStatic)
+    RT_METHOD("TrySetWorldPosition", "i1(f64,f64,f64)", SceneNode3DTrySetWorldPosition)
     RT_METHOD("GetImpostorFrameIndex", "i64()", SceneNode3DGetImpostorFrameIndex)
     RT_METHOD("ClearLod", "void()", SceneNode3DClearLOD)
     RT_METHOD("GetLodMesh", "obj(i64)", SceneNode3DGetLODMesh)
@@ -396,6 +410,8 @@ RT_FUNC(Skeleton3DComputeInverseBind,rt_skeleton3d_compute_inverse_bind,"Zanna.G
 RT_FUNC(Skeleton3DBoneCount,         rt_skeleton3d_get_bone_count,     "Zanna.Graphics3D.Skeleton3D.get_BoneCount",     "i64(obj)")
 RT_FUNC(Skeleton3DFindBoneOption,    rt_skeleton3d_find_bone_option,   "Zanna.Graphics3D.Skeleton3D.FindBoneOption",    "obj<Zanna.Option>(obj,str)")
 RT_FUNC(Skeleton3DGetBoneName,       rt_skeleton3d_get_bone_name,      "Zanna.Graphics3D.Skeleton3D.GetBoneName",       "str(obj,i64)")
+RT_FUNC(Skeleton3DGetBoneParent,     rt_skeleton3d_get_bone_parent,    "Zanna.Graphics3D.Skeleton3D.GetBoneParent",     "i64(obj,i64)")
+RT_FUNC(Skeleton3DGetBoneBindPose,   rt_skeleton3d_get_bone_bind_pose, "Zanna.Graphics3D.Skeleton3D.GetBoneBindPose",   "obj<Zanna.Math.Mat4>(obj,i64)")
 
 /// @summary Provides Skeleton 3D functionality for 3D rendering and scene applications.
 /// @details
@@ -409,6 +425,9 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Skeleton3D", Skeleton3D, "obj", Skeleton3DNew)
     RT_METHOD("ComputeInverseBind", "void()", Skeleton3DComputeInverseBind)
     RT_METHOD("FindBoneOption", "obj<Zanna.Option>(str)", Skeleton3DFindBoneOption)
     RT_METHOD("GetBoneName", "str(i64)", Skeleton3DGetBoneName)
+    // ADR 0227: rig topology readback — bones were write-only before.
+    RT_METHOD("GetBoneParent", "i64(i64)", Skeleton3DGetBoneParent)
+    RT_METHOD("GetBoneBindPose", "obj<Zanna.Math.Mat4>(i64)", Skeleton3DGetBoneBindPose)
     // Retarget alias: external rig bone name -> this skeleton's bone name.
     RT_METHOD("SetBoneAlias", "void(str,str)", Skeleton3DSetBoneAlias)
     RT_PROP("AliasCount", "i64", Skeleton3DAliasCount, none)
@@ -500,6 +519,20 @@ RT_FUNC(GLTFMeshCount,   rt_gltf_mesh_count,       "Zanna.Graphics3D.Gltf.get_Me
 RT_FUNC(GLTFGetMesh,     rt_gltf_get_mesh,         "Zanna.Graphics3D.Gltf.GetMesh",         "obj<Zanna.Graphics3D.Mesh3D>(obj,i64)")
 RT_FUNC(GLTFMatCount,    rt_gltf_material_count,   "Zanna.Graphics3D.Gltf.get_MaterialCount","i64(obj)")
 RT_FUNC(GLTFGetMaterial, rt_gltf_get_material,     "Zanna.Graphics3D.Gltf.GetMaterial",     "obj<Zanna.Graphics3D.Material3D>(obj,i64)")
+// ADR 0227: importer parity — the loader already implemented these.
+RT_FUNC(GLTFSkeletonCount, rt_gltf_skeleton_count,  "Zanna.Graphics3D.Gltf.get_SkeletonCount", "i64(obj)")
+RT_FUNC(GLTFGetSkeleton, rt_gltf_get_skeleton,      "Zanna.Graphics3D.Gltf.GetSkeleton",     "obj<Zanna.Graphics3D.Skeleton3D>(obj,i64)")
+RT_FUNC(GLTFAnimCount,   rt_gltf_animation_count,   "Zanna.Graphics3D.Gltf.get_AnimationCount", "i64(obj)")
+RT_FUNC(GLTFGetAnim,     rt_gltf_get_animation,     "Zanna.Graphics3D.Gltf.GetAnimation",    "obj<Zanna.Graphics3D.Animation3D>(obj,i64)")
+RT_FUNC(GLTFNodeAnimCount, rt_gltf_node_animation_count, "Zanna.Graphics3D.Gltf.get_NodeAnimationCount", "i64(obj)")
+RT_FUNC(GLTFGetNodeAnim, rt_gltf_get_node_animation, "Zanna.Graphics3D.Gltf.GetNodeAnimation", "obj<Zanna.Graphics3D.NodeAnimation3D>(obj,i64)")
+RT_FUNC(GLTFCameraCount, rt_gltf_camera_count,      "Zanna.Graphics3D.Gltf.get_CameraCount", "i64(obj)")
+RT_FUNC(GLTFGetCamera,   rt_gltf_get_camera,        "Zanna.Graphics3D.Gltf.GetCamera",       "obj<Zanna.Graphics3D.Camera3D>(obj,i64)")
+RT_FUNC(GLTFSceneCount,  rt_gltf_scene_count,       "Zanna.Graphics3D.Gltf.get_SceneCount",  "i64(obj)")
+RT_FUNC(GLTFGetSceneName, rt_gltf_get_scene_name,   "Zanna.Graphics3D.Gltf.GetSceneName",    "str(obj,i64)")
+RT_FUNC(GLTFGetSceneRootAt, rt_gltf_get_scene_root_at, "Zanna.Graphics3D.Gltf.GetSceneRootAt", "obj<Zanna.Graphics3D.SceneNode>(obj,i64)")
+RT_FUNC(GLTFNodeCount,   rt_gltf_node_count,        "Zanna.Graphics3D.Gltf.get_NodeCount",   "i64(obj)")
+RT_FUNC(GLTFGetSceneRoot, rt_gltf_get_scene_root,   "Zanna.Graphics3D.Gltf.GetSceneRoot",    "obj<Zanna.Graphics3D.SceneNode>(obj)")
 
 RT_FUNC(Model3DLoadResult,     rt_model3d_load_result,        "Zanna.Graphics3D.SceneAsset.LoadResult",        "obj<Zanna.Result>(str)")
 RT_FUNC(Model3DLoadWithOptions, rt_model3d_load_with_options, "Zanna.Graphics3D.SceneAsset.LoadWithOptions",   "obj(str,i1)")
@@ -564,6 +597,21 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Gltf", GLTF, "obj", none)
     RT_METHOD("LoadAsset", "obj<Zanna.Graphics3D.Gltf>(str)", GLTFLoadAsset)
     RT_METHOD("GetMesh", "obj<Zanna.Graphics3D.Mesh3D>(i64)", GLTFGetMesh)
     RT_METHOD("GetMaterial", "obj<Zanna.Graphics3D.Material3D>(i64)", GLTFGetMaterial)
+    // ADR 0227: importer parity with Fbx — the loader already implemented
+    // every accessor below; only the registrations were missing.
+    RT_PROP("SkeletonCount", "i64", GLTFSkeletonCount, none)
+    RT_METHOD("GetSkeleton", "obj<Zanna.Graphics3D.Skeleton3D>(i64)", GLTFGetSkeleton)
+    RT_PROP("AnimationCount", "i64", GLTFAnimCount, none)
+    RT_METHOD("GetAnimation", "obj<Zanna.Graphics3D.Animation3D>(i64)", GLTFGetAnim)
+    RT_PROP("NodeAnimationCount", "i64", GLTFNodeAnimCount, none)
+    RT_METHOD("GetNodeAnimation", "obj<Zanna.Graphics3D.NodeAnimation3D>(i64)", GLTFGetNodeAnim)
+    RT_PROP("CameraCount", "i64", GLTFCameraCount, none)
+    RT_METHOD("GetCamera", "obj<Zanna.Graphics3D.Camera3D>(i64)", GLTFGetCamera)
+    RT_PROP("SceneCount", "i64", GLTFSceneCount, none)
+    RT_METHOD("GetSceneName", "str(i64)", GLTFGetSceneName)
+    RT_METHOD("GetSceneRootAt", "obj<Zanna.Graphics3D.SceneNode>(i64)", GLTFGetSceneRootAt)
+    RT_PROP("NodeCount", "i64", GLTFNodeCount, none)
+    RT_METHOD("GetSceneRoot", "obj<Zanna.Graphics3D.SceneNode>()", GLTFGetSceneRoot)
 RT_CLASS_END()
 
 /// @summary Provides FBX model import for 3D rendering and scene applications.
@@ -677,6 +725,7 @@ RT_FUNC(Particles3DSetColor,     rt_particles3d_set_color,      "Zanna.Graphics3
 RT_FUNC(Particles3DSetAlpha,     rt_particles3d_set_alpha,      "Zanna.Graphics3D.Particles3D.SetAlpha",     "void(obj,f64,f64)")
 RT_FUNC(Particles3DSetRate,      rt_particles3d_set_rate,       "Zanna.Graphics3D.Particles3D.SetRate",      "void(obj,f64)")
 RT_FUNC(Particles3DSetAdditive,  rt_particles3d_set_additive,   "Zanna.Graphics3D.Particles3D.set_Additive", "void(obj,i1)")
+RT_FUNC(Particles3DGetAdditive,  rt_particles3d_get_additive,   "Zanna.Graphics3D.Particles3D.get_Additive", "i1(obj)")
 RT_FUNC(Particles3DSetStretch,   rt_particles3d_set_stretch,    "Zanna.Graphics3D.Particles3D.SetStretch",   "void(obj,f64)")
 RT_FUNC(Particles3DSetTrail,     rt_particles3d_set_trail,      "Zanna.Graphics3D.Particles3D.SetTrail",     "void(obj,f64,i64)")
 RT_FUNC(Particles3DSetSoftness,  rt_particles3d_set_softness,   "Zanna.Graphics3D.Particles3D.SetSoftness",  "void(obj,f64)")
@@ -712,7 +761,7 @@ RT_FUNC(Particles3DResetDroppedTime,rt_particles3d_reset_dropped_time,"Zanna.Gra
 RT_CLASS_BEGIN("Zanna.Graphics3D.Particles3D", Particles3D, "obj", Particles3DNew)
     RT_PROP("Count", "i64", Particles3DGetCount, none)
     RT_PROP("IsEmitting", "i1", Particles3DGetEmitting, none)
-    RT_PROP("Additive", "i1", none, Particles3DSetAdditive)
+    RT_PROP("Additive", "i1", Particles3DGetAdditive, Particles3DSetAdditive)
     // Live PRNG state: set for reproducible spawn streams (determinism/replay),
     // read to checkpoint the stream. Emitters otherwise seed from a process
     // counter, so streams depend on global construction order.
@@ -810,6 +859,64 @@ RT_FUNC(Sphere3DPenetration,   rt_sphere3d_penetration,      "Zanna.Graphics3D.S
 RT_FUNC(Segment3DClosestPoint, rt_segment3d_closest_point,   "Zanna.Graphics3D.Segment3D.ClosestPoint",   "obj(obj,obj,obj)")
 RT_FUNC(Capsule3DSphereOverlaps,rt_capsule3d_sphere_overlaps,"Zanna.Graphics3D.Capsule3D.SphereOverlaps", "i1(obj,obj,f64,obj,f64)")
 RT_FUNC(Capsule3DAABBOverlaps, rt_capsule3d_aabb_overlaps,   "Zanna.Graphics3D.Capsule3D.AABBOverlaps",   "i1(obj,obj,f64,obj,obj)")
+
+// ADR 0227: proper class blocks for the geometry helper namespaces so they
+// get --dump-runtime-api, hover, and completion entries (the Zanna.Math
+// pattern). The flat function registrations above remain the call targets.
+
+/// @summary Provides world-space ray intersection queries against triangles, meshes, and volumes.
+/// @details
+/// `Zanna.Graphics3D.Ray3D` exposes a registry-backed runtime surface without requiring callers to
+/// construct the class directly. Its public surface exposes operations including
+/// `IntersectTriangle`, `IntersectMesh`, `IntersectAABB`, `IntersectSphere`.
+RT_CLASS_BEGIN("Zanna.Graphics3D.Ray3D", Ray3D, "obj", none)
+    RT_METHOD("IntersectTriangle", "f64(obj,obj,obj,obj,obj)", Ray3DIntersectTriangle)
+    RT_METHOD("IntersectTriangleCull", "f64(obj,obj,obj,obj,obj,i1)", Ray3DIntersectTriangleCull)
+    RT_METHOD("IntersectMesh", "obj(obj,obj,obj,obj)", Ray3DIntersectMesh)
+    RT_METHOD("IntersectAABB", "f64(obj,obj,obj,obj)", Ray3DIntersectAABB)
+    RT_METHOD("IntersectSphere", "f64(obj,obj,obj,f64)", Ray3DIntersectSphere)
+RT_CLASS_END()
+
+/// @summary Provides axis-aligned bounding-box overlap, penetration, and closest-point queries.
+/// @details
+/// `Zanna.Graphics3D.AABB3D` exposes a registry-backed runtime surface without requiring callers
+/// to construct the class directly. Its public surface exposes operations including `Overlaps`,
+/// `Penetration`, `ClosestPoint`, `SphereOverlaps`.
+RT_CLASS_BEGIN("Zanna.Graphics3D.AABB3D", AABB3D, "obj", none)
+    RT_METHOD("Overlaps", "i1(obj,obj,obj,obj)", AABB3DOverlaps)
+    RT_METHOD("Penetration", "obj(obj,obj,obj,obj)", AABB3DPenetration)
+    RT_METHOD("ClosestPoint", "obj(obj,obj,obj)", AABB3DClosestPoint)
+    RT_METHOD("SphereOverlaps", "i1(obj,obj,obj,f64)", AABB3DSphereOverlaps)
+RT_CLASS_END()
+
+/// @summary Provides sphere-versus-sphere overlap and penetration queries.
+/// @details
+/// `Zanna.Graphics3D.Sphere3D` exposes a registry-backed runtime surface without requiring callers
+/// to construct the class directly. Its public surface exposes operations including `Overlaps`
+/// and `Penetration`.
+RT_CLASS_BEGIN("Zanna.Graphics3D.Sphere3D", Sphere3D, "obj", none)
+    RT_METHOD("Overlaps", "i1(obj,f64,obj,f64)", Sphere3DOverlaps)
+    RT_METHOD("Penetration", "obj(obj,f64,obj,f64)", Sphere3DPenetration)
+RT_CLASS_END()
+
+/// @summary Provides closest-point queries against world-space line segments.
+/// @details
+/// `Zanna.Graphics3D.Segment3D` exposes a registry-backed runtime surface without requiring
+/// callers to construct the class directly. Its public surface exposes the `ClosestPoint`
+/// operation.
+RT_CLASS_BEGIN("Zanna.Graphics3D.Segment3D", Segment3D, "obj", none)
+    RT_METHOD("ClosestPoint", "obj(obj,obj,obj)", Segment3DClosestPoint)
+RT_CLASS_END()
+
+/// @summary Provides capsule-versus-sphere and capsule-versus-AABB overlap queries.
+/// @details
+/// `Zanna.Graphics3D.Capsule3D` exposes a registry-backed runtime surface without requiring
+/// callers to construct the class directly. Its public surface exposes operations including
+/// `SphereOverlaps` and `AABBOverlaps`.
+RT_CLASS_BEGIN("Zanna.Graphics3D.Capsule3D", Capsule3D, "obj", none)
+    RT_METHOD("SphereOverlaps", "i1(obj,f64,obj,f64)", Capsule3DSphereOverlaps)
+    RT_METHOD("AABBOverlaps", "i1(obj,f64,obj,obj)", Capsule3DAABBOverlaps)
+RT_CLASS_END()
 RT_FUNC(RayHit3DDistance,        rt_ray3d_hit_distance,        "Zanna.Graphics3D.RayHit3D.get_Distance",    "f64(obj)")
 RT_FUNC(RayHit3DPoint,           rt_ray3d_hit_point,           "Zanna.Graphics3D.RayHit3D.get_Point",       "obj<Zanna.Math.Vec3>(obj)")
 RT_FUNC(RayHit3DNormal,          rt_ray3d_hit_normal,          "Zanna.Graphics3D.RayHit3D.get_Normal",      "obj<Zanna.Math.Vec3>(obj)")

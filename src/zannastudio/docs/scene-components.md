@@ -135,7 +135,7 @@ type or node discriminator from the component label.
 
 | Member | Required | Contract |
 | --- | --- | --- |
-| Root `version` | Yes | Numeric integer `1` through `18`; use the lowest version required by the optional members below. |
+| Root `version` | Yes | Numeric integer `1` through `19`; use the lowest version required by the optional members below. |
 | Root `components` | Yes | Array with at most 128 entries. |
 | Component `name` | Yes | Stable portable identifier, at most 64 characters; unique without regard to case. |
 | Component `target` | Yes | `2d-object`, `3d-node`, or `both`. |
@@ -750,6 +750,45 @@ See [ADR 0197](../../../docs/adr/0197-project-owned-2d-object-preview-profiles.m
 through
 [ADR 0216](../../../docs/adr/0216-project-owned-3d-node-preview-states.md)
 for the complete bounds, precedence, and 3D profile contracts.
+
+## Version 19: Typed Scene Settings Forms
+
+Schema version 19 (ADR 0222) adds a root `sceneComponents` array of
+**scene-level typed components**, plus richer field presentation kinds.
+Everything is additive, bounded, and presentation-only: stored scene
+scalars keep their version-1 kinds and byte formats, so a scene authored
+through the forms is byte-indistinguishable from one authored raw.
+
+Each entry is `{"name", "label", "target": "3d-scene" | "2d-scene",
+"description", "fields": [...], "repeat"?: {...}}`, at most 32 entries.
+`3d-scene` targets bind fields to scene **root metadata**; `2d-scene`
+targets bind to **scene properties**. Studio renders each component as a
+grouped, labeled form section in the Scene Settings group above the raw
+metadata grid, which remains authoritative for undeclared keys.
+
+Version 19 field kinds beyond the version-2 set:
+
+- `color` — one picker bound to three unit-float keys (`keys: [R,G,B]`)
+  or one packed-int key.
+- `float`/`int` with `min`/`max`/`step`/`slider`/`unit` — bounded
+  sliders with live value labels; sliders settle-commit (one history
+  entry per scrub, ADR 0221).
+- `angle` with `storageUnit: degrees|radians` — displays degrees,
+  serializes in the storage unit.
+- `vec2`/`vec3` — labeled axis inputs over a `keys` array of exact arity.
+- Labeled enums — `choices` may mix legacy strings with
+  `{"value", "label"}` objects; optional `storedKind: "int"` stores
+  integer scalars. This also applies to object/node component enums.
+- `ref` with `{"kind": position-xz|metadata-int|node-name|object-id,
+  "match"}` — a picker affordance over ordinary scalar writes.
+- `group` — sub-header text grouping the following fields.
+
+A component may declare one bounded repeat group:
+`"repeat": {"countKey", "indexPattern"` (must contain `{i}`),
+`"max"` ≤ 32, `"itemLabel"}`. Fields then use keys relative to the
+expanded prefix. Studio renders one form section per current item plus
+Add/Remove Last verbs; each verb writes all affected keys and the count
+in one undoable transaction. Arbitrary-index removal is deferred.
 
 ## Migration Assistant
 

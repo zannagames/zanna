@@ -4,9 +4,24 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/tests/runtime/RTSchedulerTests.cpp
+// Purpose: Validate synchronized scheduling, replacement, polling,
+//          generations, ownership rollback, and invalid-name handling.
+// Key invariants:
+//   - Equal byte spans replace one task while embedded NUL names remain distinct.
+//   - Poll transfers retained names and concurrent mutation preserves list state.
+//   - A returning invalid-name trap cannot alias a forged handle to an empty name.
+// Ownership/Lifetime:
+//   - Focused regression resources are explicitly released; scheduler-owned
+//     names transfer or release through the runtime paths under test.
+// Links: src/runtime/threads/rt_scheduler.c,
+//        docs/adr/0133-runtime-concurrency-and-collection-hardening.md
+//
+//===----------------------------------------------------------------------===//
 
-#include "rt_internal.h"
 #include "rt_heap.h"
+#include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_option.h"
 #include "rt_scheduler.h"
@@ -16,16 +31,24 @@
 
 #include <cassert>
 #include <csetjmp>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <thread>
 #include <vector>
+
+static bool g_return_traps = false;
+static const char *g_last_returning_trap = nullptr;
 
 extern "C" {
 void rt_trap_set_recovery(jmp_buf *buf);
 void rt_trap_clear_recovery(void);
 
 void vm_trap(const char *msg) {
+    if (g_return_traps) {
+        g_last_returning_trap = msg;
+        return;
+    }
     rt_abort(msg);
 }
 }
@@ -320,6 +343,36 @@ static void test_generation_of_option_disambiguates() {
     rt_string_unref(name);
 }
 
+static void test_invalid_name_returning_trap_does_not_alias_empty_name() {
+    void *sched = rt_scheduler_new();
+    rt_string empty_name = rt_string_from_bytes("", 0);
+    rt_scheduler_schedule_gen(sched, empty_name, 1000, 42);
+    assert(rt_scheduler_pending(sched) == 1);
+
+    auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+    g_return_traps = true;
+
+    g_last_returning_trap = nullptr;
+    rt_scheduler_schedule_gen(sched, forged, 0, 99);
+    assert(g_last_returning_trap != nullptr);
+    assert(rt_scheduler_pending(sched) == 1);
+
+    g_last_returning_trap = nullptr;
+    assert(rt_scheduler_cancel(sched, forged) == 0);
+    assert(g_last_returning_trap != nullptr);
+
+    g_last_returning_trap = nullptr;
+    assert(rt_scheduler_generation_of(sched, forged) == -1);
+    assert(g_last_returning_trap != nullptr);
+
+    g_return_traps = false;
+    assert(rt_scheduler_generation_of(sched, empty_name) == 42);
+
+    rt_string_unref(empty_name);
+    if (rt_obj_release_check0(sched))
+        rt_obj_free(sched);
+}
+
 int main() {
     test_generation_of_option_disambiguates();
     test_new_scheduler();
@@ -339,5 +392,6 @@ int main() {
     test_is_due_gen_matches_generation();
     test_generation_supersession();
     test_plain_schedule_is_generation_zero();
+    test_invalid_name_returning_trap_does_not_alias_empty_name();
     return 0;
 }

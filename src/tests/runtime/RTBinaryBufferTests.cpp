@@ -9,6 +9,11 @@
 // Purpose: Comprehensive tests for the BinaryBuffer runtime type.
 //          Covers constructors, write/read round-trips, cursor semantics,
 //          capacity growth, to_bytes/from_bytes paths, and reset behaviour.
+// Key invariants: Cursor/length updates commit only after validation and full
+//                 allocation; returning trap hooks cannot advance bad writes.
+// Ownership/Lifetime: Test fixtures are runtime-managed and remain reachable
+//                     for the duration of each focused test process.
+// Links: src/runtime/collections/rt_binbuf.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -325,8 +330,7 @@ static void test_write_bytes_invalid_data_preserves_buffer() {
     };
 
     void *bb = rt_binbuf_new();
-    FakeBytes *bad =
-        static_cast<FakeBytes *>(rt_obj_new_i64(RT_BYTES_CLASS_ID, sizeof(FakeBytes)));
+    FakeBytes *bad = static_cast<FakeBytes *>(rt_obj_new_i64(RT_BYTES_CLASS_ID, sizeof(FakeBytes)));
     bad->len = 1;
     bad->data = nullptr;
 
@@ -520,6 +524,14 @@ static void test_returning_trap_hook_is_safe() {
     assert(rt_binbuf_get_len(bb) == len_before); // nothing written
     g_last_trap = nullptr;
     rt_binbuf_write_u16be(bb, -1); // < 0 for unsigned
+    assert(g_last_trap != nullptr);
+    assert(rt_binbuf_get_len(bb) == len_before);
+
+    // A forged string must not be serialized as an empty value after its
+    // validation trap returns.
+    rt_string forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(0x8642U));
+    g_last_trap = nullptr;
+    rt_binbuf_write_str(bb, forged);
     assert(g_last_trap != nullptr);
     assert(rt_binbuf_get_len(bb) == len_before);
 

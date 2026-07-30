@@ -97,6 +97,8 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0136](0136-runtime-context-binding-lifecycle-and-state-locks.md) — Serialize Runtime Context State and Reserve Child Bindings Before Native Start
 - [ADR 0143](0143-generated-runtime-class-inheritance.md) — Generate Runtime Class Inheritance Metadata
 - [ADR 0169](0169-super-modifier-keys-and-studio-viewport-picking.md) — Add Super Keys and Geometry-Aware Studio Viewport Interaction
+- [ADR 0228](0228-http-end-to-end-request-deadlines.md) — Use One End-to-End Deadline for Each HTTP Request
+- [ADR 0229](0229-bounded-native-gzip-decoding.md) — Bound Native GZIP Decoding Before Output Allocation
 
 ## GUI & IDE
 
@@ -227,6 +229,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0193](0193-scene3d-precise-raycast.md) — Triangle-Accurate Scene Raycast Queries
 - [ADR 0194](0194-scene-watch-hot-reload.md) — The --scene-watch Hot-Reload Contract
 - [ADR 0195](0195-2d-layer-opacity.md) — Optional 2D Layer Opacity
+- [ADR 0227](0227-3d-api-symmetry-readback-and-scene-diagnostics.md) — 3D API Symmetry, Readback, and Scene Diagnostics
 
 ## Release & Packaging
 

@@ -284,7 +284,9 @@ static void rt_http_client_finalize(void *obj) {
 /// @param req Managed HTTP request receiving the snapshot.
 /// @param allow_sensitive_headers Nonzero to include credentials and other
 ///        sensitive defaults; zero filters them after a cross-origin redirect.
-static void apply_defaults(rt_http_client_impl *c, void *req, int allow_sensitive_headers) {
+/// @return Nonzero after the complete snapshot is applied; zero after a
+///         returning trap hook and local cleanup.
+static int apply_defaults(rt_http_client_impl *c, void *req, int allow_sensitive_headers) {
     typedef struct {
         rt_string key;
         rt_string value;
@@ -313,12 +315,16 @@ static void apply_defaults(rt_http_client_impl *c, void *req, int allow_sensitiv
         free((void *)headers);
         http_client_release_obj((void *)connection_pool);
         rt_trap(saved_error);
-        return;
+        return 0;
     }
 
     HTTP_CLIENT_MUTEX_LOCK(&c->lock);
     mutex_locked = 1;
     keys = rt_map_keys(c->default_headers);
+    if (!keys) {
+        rt_trap("HttpClient: default header key snapshot failed");
+        goto returning_trap;
+    }
     int64_t count = rt_seq_len(keys);
     if (count > 0) {
         if ((uint64_t)count > (uint64_t)SIZE_MAX / sizeof(*headers)) {
@@ -335,10 +341,19 @@ static void apply_defaults(rt_http_client_impl *c, void *req, int allow_sensitiv
         if (!snapshot_failed && val && key &&
             (allow_sensitive_headers ||
              !rt_http_header_is_sensitive_for_cross_origin_redirect(rt_string_cstr(key)))) {
-            rt_string_ref(key);
-            rt_string_ref((rt_string)val);
-            headers[(int64_t)header_count].key = key;
-            headers[(int64_t)header_count].value = (rt_string)val;
+            rt_string retained_key = rt_string_ref(key);
+            if (!retained_key) {
+                snapshot_failed = 1;
+                continue;
+            }
+            rt_string retained_value = rt_string_ref((rt_string)val);
+            if (!retained_value) {
+                http_client_release_obj((void *)retained_key);
+                snapshot_failed = 1;
+                continue;
+            }
+            headers[(int64_t)header_count].key = retained_key;
+            headers[(int64_t)header_count].value = retained_value;
             header_count++;
         }
     }
@@ -353,27 +368,46 @@ static void apply_defaults(rt_http_client_impl *c, void *req, int allow_sensitiv
     HTTP_CLIENT_MUTEX_UNLOCK(&c->lock);
     mutex_locked = 0;
 
-    if (snapshot_failed)
+    if (snapshot_failed) {
         rt_trap("HttpClient: memory allocation failed");
+        goto returning_trap;
+    }
 
     for (int64_t i = 0; i < (int64_t)header_count; i++) {
-        if (!rt_http_req_set_header(req, headers[i].key, headers[i].value))
+        if (!rt_http_req_set_header(req, headers[i].key, headers[i].value)) {
             rt_trap("HttpClient: default header application failed");
+            goto returning_trap;
+        }
     }
     http_client_release_header_snapshot((void *)headers, (int64_t)header_count);
     free((void *)headers);
     headers = NULL;
     header_count = 0;
 
-    if (!rt_http_req_set_timeout(req, timeout_ms))
+    if (!rt_http_req_set_timeout(req, timeout_ms)) {
         rt_trap("HttpClient: timeout application failed");
+        goto returning_trap;
+    }
     rt_http_req_set_follow_redirects(req, 0);
     rt_http_req_set_keep_alive(req, keep_alive);
-    if (!rt_http_req_set_connection_pool(req, (void *)connection_pool))
+    if (!rt_http_req_set_connection_pool(req, (void *)connection_pool)) {
         rt_trap("HttpClient: connection pool attachment failed");
+        goto returning_trap;
+    }
     http_client_release_obj((void *)connection_pool);
     connection_pool = NULL;
     rt_trap_clear_recovery();
+    return 1;
+
+returning_trap:
+    rt_trap_clear_recovery();
+    if (mutex_locked)
+        HTTP_CLIENT_MUTEX_UNLOCK(&c->lock);
+    http_client_release_obj((void *)keys);
+    http_client_release_header_snapshot((void *)headers, (int64_t)header_count);
+    free((void *)headers);
+    http_client_release_obj((void *)connection_pool);
+    return 0;
 }
 
 /// @brief Read the current wall-clock time for cookie expiration comparisons.
@@ -881,11 +915,13 @@ static void http_cookie_header_state_release(http_cookie_header_state *state) {
 /// @param c Valid HttpClient session.
 /// @param req Newly allocated HttpReq to mutate.
 /// @param url Current redirect-hop URL.
-static void apply_cookie_header(rt_http_client_impl *c, void *req, rt_string url) {
+/// @return Nonzero after applying the header or finding no matching cookies;
+///         zero after a returning trap hook and local cleanup.
+static int apply_cookie_header(rt_http_client_impl *c, void *req, rt_string url) {
     http_cookie_header_state *const state = (http_cookie_header_state *)calloc(1, sizeof(*state));
     if (!state) {
         rt_trap("HttpClient: Cookie header state allocation failed");
-        return;
+        return 0;
     }
 
     jmp_buf recovery;
@@ -900,13 +936,29 @@ static void apply_cookie_header(rt_http_client_impl *c, void *req, rt_string url
         http_cookie_header_state_release(state);
         free(state);
         rt_trap(saved_error);
-        return;
+        return 0;
     }
 
     state->parsed_url = rt_url_parse(url);
+    if (!state->parsed_url) {
+        rt_trap("HttpClient: Cookie URL parsing failed");
+        goto returning_trap;
+    }
     state->host = rt_url_host(state->parsed_url);
+    if (!state->host) {
+        rt_trap("HttpClient: Cookie URL host allocation failed");
+        goto returning_trap;
+    }
     state->path = rt_url_path(state->parsed_url);
+    if (!state->path) {
+        rt_trap("HttpClient: Cookie URL path allocation failed");
+        goto returning_trap;
+    }
     state->scheme = rt_url_scheme(state->parsed_url);
+    if (!state->scheme) {
+        rt_trap("HttpClient: Cookie URL scheme allocation failed");
+        goto returning_trap;
+    }
     const char *host = rt_string_cstr(state->host);
     const char *path = rt_string_cstr(state->path);
     const char *scheme = rt_string_cstr(state->scheme);
@@ -915,7 +967,7 @@ static void apply_cookie_header(rt_http_client_impl *c, void *req, rt_string url
         rt_trap_clear_recovery();
         http_cookie_header_state_release(state);
         free(state);
-        return;
+        return 1;
     }
 
     size_t total_len = 0;
@@ -930,24 +982,31 @@ static void apply_cookie_header(rt_http_client_impl *c, void *req, rt_string url
         }
         size_t name_len = strlen(cookie->name);
         size_t value_len = strlen(cookie->value);
-        if (name_len > SIZE_MAX - value_len - 1u)
+        if (name_len > SIZE_MAX - value_len - 1u) {
             rt_trap("HttpClient: Cookie header size overflow");
+            goto returning_trap;
+        }
         size_t item_len = name_len + 1u + value_len;
         size_t separator_len = cookie_count > 0 ? 2u : 0u;
         if (total_len > SIZE_MAX - separator_len ||
             total_len + separator_len > SIZE_MAX - item_len) {
             rt_trap("HttpClient: Cookie header size overflow");
+            goto returning_trap;
         }
         total_len += separator_len + item_len;
         cookie_count++;
     }
 
     if (cookie_count > 0) {
-        if (total_len == SIZE_MAX)
+        if (total_len == SIZE_MAX) {
             rt_trap("HttpClient: Cookie header size overflow");
+            goto returning_trap;
+        }
         state->native_header = (char *)malloc(total_len + 1u);
-        if (!state->native_header)
+        if (!state->native_header) {
             rt_trap("HttpClient: Cookie header allocation failed");
+            goto returning_trap;
+        }
         size_t offset = 0;
         size_t emitted = 0;
         for (rt_http_cookie *cookie = c->cookies; cookie; cookie = cookie->next) {
@@ -979,12 +1038,22 @@ static void apply_cookie_header(rt_http_client_impl *c, void *req, rt_string url
         if (!state->header_name || !state->header_value ||
             !rt_http_req_set_header(req, state->header_name, state->header_value)) {
             rt_trap("HttpClient: Cookie request header allocation failed");
+            goto returning_trap;
         }
     }
 
     rt_trap_clear_recovery();
     http_cookie_header_state_release(state);
     free(state);
+    return 1;
+
+returning_trap:
+    rt_trap_clear_recovery();
+    if (state->mutex_locked)
+        HTTP_CLIENT_MUTEX_UNLOCK(&c->lock);
+    http_cookie_header_state_release(state);
+    free(state);
+    return 0;
 }
 
 /// @brief Result of staging one response Set-Cookie field.
@@ -1208,12 +1277,14 @@ static void http_response_cookie_state_release(http_response_cookie_state *state
 /// @param c Valid HttpClient session.
 /// @param res Stable HttpRes for the completed hop.
 /// @param url URL that produced @p res.
-static void store_response_cookies(rt_http_client_impl *c, void *res, rt_string url) {
+/// @return Nonzero after staging and committing every cookie; zero after a
+///         returning trap hook and local cleanup.
+static int store_response_cookies(rt_http_client_impl *c, void *res, rt_string url) {
     http_response_cookie_state *const state =
         (http_response_cookie_state *)calloc(1, sizeof(*state));
     if (!state) {
         rt_trap("HttpClient: response cookie state allocation failed");
-        return;
+        return 0;
     }
 
     jmp_buf recovery;
@@ -1228,13 +1299,29 @@ static void store_response_cookies(rt_http_client_impl *c, void *res, rt_string 
         http_response_cookie_state_release(state);
         free(state);
         rt_trap(saved_error);
-        return;
+        return 0;
     }
 
     state->parsed_url = rt_url_parse(url);
+    if (!state->parsed_url) {
+        rt_trap("HttpClient: response Cookie URL parsing failed");
+        goto returning_trap;
+    }
     state->host = rt_url_host(state->parsed_url);
+    if (!state->host) {
+        rt_trap("HttpClient: response Cookie host allocation failed");
+        goto returning_trap;
+    }
     state->path = rt_url_path(state->parsed_url);
+    if (!state->path) {
+        rt_trap("HttpClient: response Cookie path allocation failed");
+        goto returning_trap;
+    }
     state->scheme = rt_url_scheme(state->parsed_url);
+    if (!state->scheme) {
+        rt_trap("HttpClient: response Cookie scheme allocation failed");
+        goto returning_trap;
+    }
     const char *host = rt_string_cstr(state->host);
     const char *path = rt_string_cstr(state->path);
     const char *scheme = rt_string_cstr(state->scheme);
@@ -1242,12 +1329,20 @@ static void store_response_cookies(rt_http_client_impl *c, void *res, rt_string 
         rt_trap_clear_recovery();
         http_response_cookie_state_release(state);
         free(state);
-        return;
+        return 1;
     }
     int host_is_ip = rt_dns_is_ip(state->host);
     int is_secure = scheme && strcasecmp(scheme, "https") == 0;
     state->header_name = rt_const_cstr("set-cookie");
+    if (!state->header_name) {
+        rt_trap("HttpClient: response Cookie header allocation failed");
+        goto returning_trap;
+    }
     state->cookie_header = rt_http_res_header(res, state->header_name);
+    if (!state->cookie_header) {
+        rt_trap("HttpClient: response Cookie lookup failed");
+        goto returning_trap;
+    }
     const char *cookies = rt_string_cstr(state->cookie_header);
     if (cookies && cookies[0]) {
         const char *line = cookies;
@@ -1260,11 +1355,15 @@ static void store_response_cookies(rt_http_client_impl *c, void *res, rt_string 
             else
                 end = end_lf ? end_lf : end_separator;
             size_t length = end ? (size_t)(end - line) : strlen(line);
-            if (length == SIZE_MAX)
+            if (length == SIZE_MAX) {
                 rt_trap("HttpClient: Set-Cookie field is too large");
+                goto returning_trap;
+            }
             state->entry = (char *)malloc(length + 1u);
-            if (!state->entry)
+            if (!state->entry) {
                 rt_trap("HttpClient: Set-Cookie staging allocation failed");
+                goto returning_trap;
+            }
             memcpy(state->entry, line, length);
             state->entry[length] = '\0';
             rt_http_cookie *candidate = NULL;
@@ -1274,8 +1373,10 @@ static void store_response_cookies(rt_http_client_impl *c, void *res, rt_string 
                                                  host_is_ip,
                                                  state->entry,
                                                  &candidate);
-            if (stage_result == HTTP_COOKIE_STAGE_OOM)
+            if (stage_result == HTTP_COOKIE_STAGE_OOM) {
                 rt_trap("HttpClient: Set-Cookie allocation failed");
+                goto returning_trap;
+            }
             if (stage_result == HTTP_COOKIE_STAGE_READY) {
                 if (state->staged_tail)
                     state->staged_tail->next = candidate;
@@ -1306,6 +1407,15 @@ static void store_response_cookies(rt_http_client_impl *c, void *res, rt_string 
     rt_trap_clear_recovery();
     http_response_cookie_state_release(state);
     free(state);
+    return 1;
+
+returning_trap:
+    rt_trap_clear_recovery();
+    if (state->mutex_locked)
+        HTTP_CLIENT_MUTEX_UNLOCK(&c->lock);
+    http_response_cookie_state_release(state);
+    free(state);
+    return 0;
 }
 
 /// @brief Heap-backed ownership state for one session request and its redirect chain.
@@ -1389,28 +1499,39 @@ static void *do_request(rt_http_client_impl *c, const char *method, rt_string ur
         return NULL;
     }
 
-    if (!method || !method[0] || !rt_string_is_handle(url))
+    if (!method || !method[0] || !rt_string_is_handle(url)) {
         rt_trap_net("HttpClient: invalid URL", Err_InvalidUrl);
+        goto returning_trap;
+    }
     const char *url_bytes = rt_string_cstr(url);
     int64_t url_len64 = rt_str_len(url);
     if (!url_bytes || url_len64 <= 0 || (uint64_t)url_len64 > (uint64_t)SIZE_MAX ||
         memchr(url_bytes, '\0', (size_t)url_len64) != NULL) {
         rt_trap_net("HttpClient: invalid URL", Err_InvalidUrl);
+        goto returning_trap;
     }
     transaction->current_url = rt_string_from_bytes(url_bytes, (size_t)url_len64);
-    if (!transaction->current_url)
+    if (!transaction->current_url) {
         rt_trap("HttpClient: URL copy allocation failed");
+        goto returning_trap;
+    }
 
     if (body) {
-        if (!rt_string_is_handle(body))
+        if (!rt_string_is_handle(body)) {
             rt_trap("HttpClient: invalid body");
+            goto returning_trap;
+        }
         const char *body_bytes = rt_string_cstr(body);
         int64_t body_len64 = rt_str_len(body);
-        if (!body_bytes || body_len64 < 0 || (uint64_t)body_len64 > (uint64_t)SIZE_MAX)
+        if (!body_bytes || body_len64 < 0 || (uint64_t)body_len64 > (uint64_t)SIZE_MAX) {
             rt_trap("HttpClient: invalid body");
+            goto returning_trap;
+        }
         transaction->current_body = rt_string_from_bytes(body_bytes, (size_t)body_len64);
-        if (!transaction->current_body)
+        if (!transaction->current_body) {
             rt_trap("HttpClient: body copy allocation failed");
+            goto returning_trap;
+        }
     }
 
     HTTP_CLIENT_MUTEX_LOCK(&c->lock);
@@ -1421,32 +1542,44 @@ static void *do_request(rt_http_client_impl *c, const char *method, rt_string ur
     for (;;) {
         transaction->method_string =
             rt_string_from_bytes(transaction->current_method, strlen(transaction->current_method));
-        if (!transaction->method_string)
+        if (!transaction->method_string) {
             rt_trap("HttpClient: method allocation failed");
+            goto returning_trap;
+        }
         transaction->request =
             rt_http_req_new(transaction->method_string, transaction->current_url);
         http_client_release_obj((void *)transaction->method_string);
         transaction->method_string = NULL;
-        if (!transaction->request)
+        if (!transaction->request) {
             rt_trap_net("HttpClient: request creation failed", Err_InvalidUrl);
+            goto returning_trap;
+        }
 
-        apply_defaults(c, transaction->request, transaction->allow_sensitive_defaults);
-        apply_cookie_header(c, transaction->request, transaction->current_url);
-        if (!rt_http_req_set_max_redirects(transaction->request, 0))
+        if (!apply_defaults(c, transaction->request, transaction->allow_sensitive_defaults) ||
+            !apply_cookie_header(c, transaction->request, transaction->current_url)) {
+            goto returning_trap;
+        }
+        if (!rt_http_req_set_max_redirects(transaction->request, 0)) {
             rt_trap("HttpClient: redirect policy application failed");
+            goto returning_trap;
+        }
 
         if (transaction->current_body && strcmp(transaction->current_method, "GET") != 0 &&
             strcmp(transaction->current_method, "DELETE") != 0 &&
             !rt_http_req_set_body_str(transaction->request, transaction->current_body)) {
             rt_trap("HttpClient: request body application failed");
+            goto returning_trap;
         }
 
         transaction->response = rt_http_req_send(transaction->request);
         http_client_release_obj(transaction->request);
         transaction->request = NULL;
-        if (!transaction->response)
+        if (!transaction->response) {
             rt_trap_net("HttpClient: request failed", Err_NetworkError);
-        store_response_cookies(c, transaction->response, transaction->current_url);
+            goto returning_trap;
+        }
+        if (!store_response_cookies(c, transaction->response, transaction->current_url))
+            goto returning_trap;
 
         int64_t status = rt_http_res_status(transaction->response);
         if (!transaction->follow_redirects || transaction->redirects_left <= 0 ||
@@ -1455,12 +1588,18 @@ static void *do_request(rt_http_client_impl *c, const char *method, rt_string ur
         }
 
         transaction->location_name = rt_const_cstr("location");
-        if (!transaction->location_name)
+        if (!transaction->location_name) {
             rt_trap("HttpClient: redirect header allocation failed");
+            goto returning_trap;
+        }
         transaction->location =
             rt_http_res_header(transaction->response, transaction->location_name);
         http_client_release_obj((void *)transaction->location_name);
         transaction->location_name = NULL;
+        if (!transaction->location) {
+            rt_trap("HttpClient: redirect header lookup failed");
+            goto returning_trap;
+        }
         const char *location_bytes = rt_string_cstr(transaction->location);
         int64_t location_len64 = rt_str_len(transaction->location);
         if (!location_bytes || location_len64 <= 0)
@@ -1470,8 +1609,10 @@ static void *do_request(rt_http_client_impl *c, const char *method, rt_string ur
             rt_http_resolve_redirect_url(transaction->current_url, transaction->location);
         http_client_release_obj((void *)transaction->location);
         transaction->location = NULL;
-        if (!transaction->next_url)
+        if (!transaction->next_url) {
             rt_trap_net("HttpClient: invalid redirect URL", Err_InvalidUrl);
+            goto returning_trap;
+        }
         if (!rt_http_url_has_same_origin(transaction->current_url, transaction->next_url))
             transaction->allow_sensitive_defaults = 0;
         http_client_release_obj((void *)transaction->current_url);
@@ -1496,6 +1637,12 @@ static void *do_request(rt_http_client_impl *c, const char *method, rt_string ur
     http_client_request_transaction_release(transaction);
     free(transaction);
     return final_response;
+
+returning_trap:
+    rt_trap_clear_recovery();
+    http_client_request_transaction_release(transaction);
+    free(transaction);
+    return NULL;
 }
 
 //=============================================================================
@@ -1968,10 +2115,14 @@ void *rt_http_client_get_cookies(void *obj, rt_string domain) {
             snapshot_failed = 1;
     }
     size_t initialized = 0;
-    if (!snapshot_failed) {
+    if (!snapshot_failed && entries) {
         for (rt_http_cookie *cookie = c->cookies; cookie; cookie = cookie->next) {
             if (!cookie_domain_matches(cookie, domain_cstr))
                 continue;
+            if (initialized >= entry_count) {
+                snapshot_failed = 1;
+                break;
+            }
             entries[initialized].name = strdup(cookie->name);
             entries[initialized].value = strdup(cookie->value);
             if (!entries[initialized].name || !entries[initialized].value) {
@@ -1980,6 +2131,8 @@ void *rt_http_client_get_cookies(void *obj, rt_string domain) {
             }
             initialized++;
         }
+        if (initialized != entry_count)
+            snapshot_failed = 1;
     }
     HTTP_CLIENT_MUTEX_UNLOCK(&c->lock);
     if (snapshot_failed) {
@@ -2006,13 +2159,17 @@ void *rt_http_client_get_cookies(void *obj, rt_string domain) {
         return NULL;
     }
     snapshot = rt_map_new();
-    if (!snapshot)
+    if (!snapshot) {
         rt_trap("HttpClient.GetCookies: Map allocation failed");
+        goto returning_trap;
+    }
     for (size_t i = 0; i < entry_count; i++) {
         key = rt_string_from_bytes(entries[i].name, strlen(entries[i].name));
         value = rt_string_from_bytes(entries[i].value, strlen(entries[i].value));
-        if (!key || !value)
+        if (!key || !value) {
             rt_trap("HttpClient.GetCookies: String allocation failed");
+            goto returning_trap;
+        }
         rt_map_set((void *)snapshot, (rt_string)key, (void *)value);
         http_client_release_obj((void *)value);
         value = NULL;
@@ -2022,4 +2179,12 @@ void *rt_http_client_get_cookies(void *obj, rt_string domain) {
     rt_trap_clear_recovery();
     http_client_cookie_snapshot_release(entries, entry_count);
     return (void *)snapshot;
+
+returning_trap:
+    rt_trap_clear_recovery();
+    http_client_release_obj((void *)value);
+    http_client_release_obj((void *)key);
+    http_client_release_obj((void *)snapshot);
+    http_client_cookie_snapshot_release(entries, entry_count);
+    return NULL;
 }

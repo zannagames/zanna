@@ -122,6 +122,11 @@ void *rt_skeleton3d_get_bone_bind_pose(void *skel, int64_t index);
 /// @return Valid direct-parent index, or `-1` for a root, malformed parent,
 ///         invalid handle, or invalid index.
 int64_t rt_skeleton3d_get_bone_parent_raw(void *skel, int64_t index);
+/// @brief `Skeleton3D.GetBoneParent(index)` — public rig-topology readback (ADR 0227).
+/// @param[in,out] skel Skeleton3D to inspect.
+/// @param[in] index Zero-based bone index.
+/// @return Valid direct-parent index, or `-1` for roots and invalid input.
+int64_t rt_skeleton3d_get_bone_parent(void *skel, int64_t index);
 /// @brief Internal: copy the bone's parent-relative bind matrix (row-major 16
 ///        doubles) into @p out16; returns 0 on out-of-range.
 /// @param[in,out] skel Skeleton3D to inspect.

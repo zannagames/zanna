@@ -119,26 +119,32 @@ static uint64_t dm_hash(const char *key, size_t len) {
 
 /// @brief Borrow the byte buffer + length of a key string (empty "" if null).
 /// @param key Runtime string to inspect; NULL denotes the empty key.
+/// @param what Diagnostic raised for a stale or forged nonnull handle.
+/// @param out_data Receives borrowed key bytes.
 /// @param out_len Receives the usable byte length.
-/// @return Borrowed bytes, or a stable empty string for a null, empty, or
-///         inaccessible runtime string.
-static const char *dm_key_data(rt_string key, size_t *out_len) {
+/// @return Nonzero for a null or live string handle; otherwise zero after
+///         trapping. Null continues to denote the empty key.
+static int dm_key_data(rt_string key, const char *what, const char **out_data, size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
     if (!key) {
-        *out_len = 0;
-        return "";
+        return 1;
+    }
+    if (!rt_string_is_handle(key)) {
+        rt_trap(what);
+        return 0;
     }
     int64_t len = rt_str_len(key);
-    if (len <= 0) {
-        *out_len = 0;
-        return "";
-    }
+    if (len <= 0)
+        return 1;
     const char *cstr = rt_string_cstr(key);
     if (!cstr) {
-        *out_len = 0;
-        return "";
+        rt_trap(what);
+        return 0;
     }
+    *out_data = cstr;
     *out_len = (size_t)len;
-    return cstr;
+    return 1;
 }
 
 /// @brief Drop one GC reference to a stored value and free it at zero.
@@ -157,31 +163,31 @@ static void defaultmap_save_trap_error(char *buffer, size_t buffer_size, const c
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
-/// @brief Retains a constructor default with cleanup if retention traps.
-/// @param m Partially constructed map to release when retention fails.
-/// @param default_value Value to retain, or NULL for no action.
-/// @details A local trap recovery target preserves the original diagnostic,
-///          releases the incomplete map, restores normal trap handling, and
-///          raises the saved error again.
-static void defaultmap_retain_default_or_release(rt_defaultmap_impl *m, void *default_value) {
-    if (!default_value)
-        return;
+/// @brief Retain a value while converting a non-local retain trap into a status.
+/// @param value Runtime value to retain, or NULL for no action.
+/// @param error Caller-owned buffer receiving the original diagnostic.
+/// @param error_size Capacity of @p error in bytes.
+/// @param fallback Diagnostic used when the trap subsystem has no message.
+/// @return Nonzero after a successful retain; otherwise zero after clearing
+///         the helper's recovery frame. The caller still owns all cleanup.
+static int defaultmap_try_retain(void *value,
+                                 char *error,
+                                 size_t error_size,
+                                 const char *fallback) {
+    if (!value)
+        return 1;
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
     if (setjmp(recovery) != 0) {
-        char saved_error[256];
-        defaultmap_save_trap_error(
-            saved_error, sizeof(saved_error), "DefaultMap: default retain failed");
+        defaultmap_save_trap_error(error, error_size, fallback);
         rt_trap_clear_recovery();
-        if (rt_obj_release_check0(m))
-            rt_obj_free(m);
-        rt_trap(saved_error);
-        return;
+        return 0;
     }
 
-    rt_obj_retain_maybe(default_value);
+    rt_obj_retain_maybe(value);
     rt_trap_clear_recovery();
+    return 1;
 }
 
 // ---------------------------------------------------------------------------
@@ -194,8 +200,10 @@ static void defaultmap_retain_default_or_release(rt_defaultmap_impl *m, void *de
 /// @return 1 after installing the larger table, or 0 when capacity cannot
 ///         double or allocation fails. The original table remains installed.
 static int dm_resize(rt_defaultmap_impl *m) {
-    if (m->capacity > INT64_MAX / 2)
+    if (m->capacity > INT64_MAX / 2) {
+        rt_trap("DefaultMap: capacity overflow during resize");
         return 0;
+    }
     int64_t new_cap = m->capacity * 2;
     if ((uint64_t)new_cap > SIZE_MAX / sizeof(rt_dm_entry *)) {
         rt_trap("DefaultMap: allocation size overflow");
@@ -228,7 +236,7 @@ static int dm_resize(rt_defaultmap_impl *m) {
 /// @param m DefaultMap whose occupancy is inspected.
 /// @return Non-zero when a new-key insertion should first grow the table.
 static int dm_should_resize(rt_defaultmap_impl *m) {
-    return (long double)m->count * 4.0L >= (long double)m->capacity * 3.0L;
+    return m->count >= m->capacity - m->capacity / 4;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,7 +319,16 @@ void *rt_defaultmap_new(void *default_value) {
         return NULL;
     }
     rt_obj_set_finalizer(m, defaultmap_finalizer);
-    defaultmap_retain_default_or_release(m, default_value);
+    char retain_error[256] = {0};
+    if (!defaultmap_try_retain(default_value,
+                               retain_error,
+                               sizeof(retain_error),
+                               "DefaultMap: default retain failed")) {
+        if (rt_obj_release_check0(m))
+            rt_obj_free(m);
+        rt_trap(retain_error);
+        return NULL;
+    }
     m->default_value = default_value;
     rt_gc_track(m, defaultmap_traverse);
     return m;
@@ -327,7 +344,8 @@ void *rt_defaultmap_new(void *default_value) {
 int64_t rt_defaultmap_len(void *map) {
     if (!map)
         return 0;
-    return as_defaultmap(map, "DefaultMap.Len: invalid DefaultMap object")->count;
+    rt_defaultmap_impl *impl = as_defaultmap(map, "DefaultMap.Len: invalid DefaultMap object");
+    return impl ? impl->count : 0;
 }
 
 // ---------------------------------------------------------------------------
@@ -345,9 +363,13 @@ void *rt_defaultmap_get(void *map, rt_string key) {
     if (!map)
         return NULL;
     rt_defaultmap_impl *m = as_defaultmap(map, "DefaultMap.Get: invalid DefaultMap object");
+    if (!m || !m->buckets || m->capacity <= 0)
+        return NULL;
 
-    size_t klen;
-    const char *kstr = dm_key_data(key, &klen);
+    size_t klen = 0;
+    const char *kstr = NULL;
+    if (!dm_key_data(key, "DefaultMap.Get: invalid key", &kstr, &klen))
+        return NULL;
 
     uint64_t idx = dm_hash(kstr, klen) % (uint64_t)m->capacity;
     rt_dm_entry *e = m->buckets[idx];
@@ -381,15 +403,26 @@ void rt_defaultmap_set(void *map, rt_string key, void *value) {
         return;
     }
 
-    size_t klen;
-    const char *kstr = dm_key_data(key, &klen);
+    size_t klen = 0;
+    const char *kstr = NULL;
+    if (!dm_key_data(key, "DefaultMap.Set: invalid key", &kstr, &klen)) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     uint64_t idx = dm_hash(kstr, klen) % (uint64_t)m->capacity;
     rt_dm_entry *e = m->buckets[idx];
     while (e) {
         if (e->key_len == klen && memcmp(e->key, kstr, klen) == 0) {
-            if (value)
-                rt_obj_retain_maybe(value);
+            char retain_error[256] = {0};
+            if (!defaultmap_try_retain(value,
+                                       retain_error,
+                                       sizeof(retain_error),
+                                       "DefaultMap.Set: value retain failed")) {
+                rt_gc_mutator_exit();
+                rt_trap(retain_error);
+                return;
+            }
             void *old_value = e->value;
             e->value = value;
             dm_release_value(old_value);
@@ -397,6 +430,12 @@ void rt_defaultmap_set(void *map, rt_string key, void *value) {
             return;
         }
         e = e->next;
+    }
+
+    if (m->count == INT64_MAX) {
+        rt_gc_mutator_exit();
+        rt_trap("DefaultMap.Set: maximum size reached");
+        return;
     }
 
     // Resize check
@@ -408,8 +447,13 @@ void rt_defaultmap_set(void *map, rt_string key, void *value) {
         idx = dm_hash(kstr, klen) % (uint64_t)m->capacity;
     }
 
-    if (value)
-        rt_obj_retain_maybe(value);
+    char retain_error[256] = {0};
+    if (!defaultmap_try_retain(
+            value, retain_error, sizeof(retain_error), "DefaultMap.Set: value retain failed")) {
+        rt_gc_mutator_exit();
+        rt_trap(retain_error);
+        return;
+    }
 
     // New entry
     rt_dm_entry *ne = (rt_dm_entry *)calloc(1, sizeof(rt_dm_entry));
@@ -460,9 +504,13 @@ int8_t rt_defaultmap_has(void *map, rt_string key) {
     if (!map)
         return 0;
     rt_defaultmap_impl *m = as_defaultmap(map, "DefaultMap.Has: invalid DefaultMap object");
+    if (!m || !m->buckets || m->capacity <= 0)
+        return 0;
 
-    size_t klen;
-    const char *kstr = dm_key_data(key, &klen);
+    size_t klen = 0;
+    const char *kstr = NULL;
+    if (!dm_key_data(key, "DefaultMap.Has: invalid key", &kstr, &klen))
+        return 0;
 
     uint64_t idx = dm_hash(kstr, klen) % (uint64_t)m->capacity;
     rt_dm_entry *e = m->buckets[idx];
@@ -491,8 +539,12 @@ int8_t rt_defaultmap_remove(void *map, rt_string key) {
         return 0;
     }
 
-    size_t klen;
-    const char *kstr = dm_key_data(key, &klen);
+    size_t klen = 0;
+    const char *kstr = NULL;
+    if (!dm_key_data(key, "DefaultMap.Remove: invalid key", &kstr, &klen)) {
+        rt_gc_mutator_exit();
+        return 0;
+    }
 
     uint64_t idx = dm_hash(kstr, klen) % (uint64_t)m->capacity;
     rt_dm_entry **pp = &m->buckets[idx];
@@ -522,22 +574,47 @@ int8_t rt_defaultmap_remove(void *map, rt_string key) {
 /// @return A new owning Seq of newly created strings in unspecified bucket
 ///         order.
 void *rt_defaultmap_keys(void *map) {
-    void *seq = rt_seq_new();
-    rt_seq_set_owns_elements(seq, 1);
-    if (!map)
-        return seq;
-    rt_defaultmap_impl *m = as_defaultmap(map, "DefaultMap.Keys: invalid DefaultMap object");
+    void *volatile seq = NULL;
+    rt_string volatile key_copy = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        defaultmap_save_trap_error(
+            saved_error, sizeof(saved_error), "DefaultMap.Keys: snapshot allocation failed");
+        rt_trap_clear_recovery();
+        if (key_copy)
+            rt_str_release_maybe((rt_string)key_copy);
+        dm_release_value((void *)seq);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
+    rt_defaultmap_impl *m =
+        map ? as_defaultmap(map, "DefaultMap.Keys: invalid DefaultMap object") : NULL;
+    seq = rt_seq_new();
+    if (!seq) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    rt_seq_set_owns_elements((void *)seq, 1);
+    if (!m) {
+        rt_trap_clear_recovery();
+        return (void *)seq;
+    }
 
     for (int64_t i = 0; i < m->capacity; i++) {
         rt_dm_entry *e = m->buckets[i];
         while (e) {
-            rt_string k = rt_string_from_bytes(e->key, e->key_len);
-            rt_seq_push(seq, k);
-            rt_str_release_maybe(k);
+            key_copy = rt_string_from_bytes(e->key, e->key_len);
+            rt_seq_push((void *)seq, (void *)key_copy);
+            rt_str_release_maybe((rt_string)key_copy);
+            key_copy = NULL;
             e = e->next;
         }
     }
-    return seq;
+    rt_trap_clear_recovery();
+    return (void *)seq;
 }
 
 // ---------------------------------------------------------------------------
@@ -551,7 +628,9 @@ void *rt_defaultmap_keys(void *map) {
 void *rt_defaultmap_get_default(void *map) {
     if (!map)
         return NULL;
-    return as_defaultmap(map, "DefaultMap.GetDefault: invalid DefaultMap object")->default_value;
+    rt_defaultmap_impl *impl =
+        as_defaultmap(map, "DefaultMap.GetDefault: invalid DefaultMap object");
+    return impl ? impl->default_value : NULL;
 }
 
 /// @brief Remove all entries from the default map.
@@ -592,5 +671,6 @@ void rt_defaultmap_clear(void *map) {
 int8_t rt_defaultmap_is_empty(void *map) {
     if (!map)
         return 1;
-    return as_defaultmap(map, "DefaultMap.IsEmpty: invalid DefaultMap object")->count == 0 ? 1 : 0;
+    rt_defaultmap_impl *impl = as_defaultmap(map, "DefaultMap.IsEmpty: invalid DefaultMap object");
+    return !impl || impl->count == 0 ? 1 : 0;
 }

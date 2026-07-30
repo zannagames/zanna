@@ -844,7 +844,7 @@ expose func VerifyInspectorAndTabContinuity(ctx: Probe.SceneEditor3DProbeContext
     var original = sceneDoc.content;
     editor.viewYawDegrees = 71;
     editor.viewPitchDegrees = -31;
-    editor.viewScale = 52;
+    editor.viewScale = 52.0;
     editor.viewTargetX = 1.25;
     editor.viewTargetY = -2.5;
     editor.viewTargetZ = 3.75;
@@ -873,7 +873,7 @@ expose func VerifyInspectorAndTabContinuity(ctx: Probe.SceneEditor3DProbeContext
     if editor.selectedIndex != -1
        or editor.viewYawDegrees != 35
        or editor.viewPitchDegrees != 25
-       or editor.viewScale != 28
+       or editor.viewScale != 28.0
        or Probe.near(editor.viewTargetX, 0.0) == false
        or editor.gizmoMode != scene_editor_3d.GIZMO_MODE_MOVE
        or editor.gizmoSnapEnabled
@@ -886,7 +886,7 @@ expose func VerifyInspectorAndTabContinuity(ctx: Probe.SceneEditor3DProbeContext
     }
     editor.viewYawDegrees = -112;
     editor.viewPitchDegrees = 42;
-    editor.viewScale = 16;
+    editor.viewScale = 16.0;
     editor.bodySplit.SetPosition(0.73);
     editor.SetGizmoMode(scene_editor_3d.GIZMO_MODE_SCALE);
     editor.SetGizmoSnapEnabled(true);
@@ -898,7 +898,7 @@ expose func VerifyInspectorAndTabContinuity(ctx: Probe.SceneEditor3DProbeContext
        or editor.hierarchyModel.GetSelectedId() != "0"
        or editor.viewYawDegrees != 71
        or editor.viewPitchDegrees != -31
-       or editor.viewScale != 52
+       or editor.viewScale != 52.0
        or Probe.near(editor.viewTargetX, 1.25) == false
        or Probe.near(editor.viewTargetY, -2.5) == false
        or Probe.near(editor.viewTargetZ, 3.75) == false

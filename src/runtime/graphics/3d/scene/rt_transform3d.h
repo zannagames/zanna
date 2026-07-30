@@ -38,6 +38,10 @@ void *rt_transform3d_new(void);
 /// @param y Position Y.
 /// @param z Position Z.
 void rt_transform3d_set_position(void *xf, double x, double y, double z);
+/// @brief `Transform3D.GetEuler()` — degree-valued inverse of `SetEuler` (ADR 0227).
+/// @param xf Borrowed Transform3D handle.
+/// @return New Vec3 of (pitch, yaw, roll) degrees; the zero vector for NULL.
+void *rt_transform3d_get_euler(void *xf);
 /// @brief Get the translation as a Vec3.
 /// @param xf Borrowed Transform3D handle.
 /// @return New owned Vec3; invalid handles produce origin.

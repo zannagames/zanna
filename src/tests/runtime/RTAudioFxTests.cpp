@@ -6,7 +6,16 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/tests/runtime/RTAudioFxTests.cpp
-// Purpose: Offline tests for runtime audio mix-group effects.
+// Purpose: Offline tests for runtime audio mix-group effects, parameter
+//          sanitation, and invalid-group ownership paths.
+// Key invariants:
+//   - Filters, delays, and reverbs produce finite deterministic output.
+//   - Invalid groups fail before retaining any effect or delay-line state.
+//   - Bypass, removal, and clearing restore identity processing.
+// Ownership/Lifetime:
+//   - Every valid effect chain is cleared before a test returns; invalid add
+//     calls retain no process-global state.
+// Links: src/runtime/audio/rt_audio_fx.c, src/runtime/audio/rt_audio_fx.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -36,9 +45,8 @@ double rms(const std::vector<float> &samples) {
 void fill_sine_pair(std::vector<float> &samples, double freq_a, double freq_b) {
     for (size_t frame = 0; frame < samples.size() / kChannels; frame++) {
         double t = static_cast<double>(frame) / static_cast<double>(kRate);
-        float sample =
-            static_cast<float>(0.45 * std::sin(2.0 * kPi * freq_a * t) +
-                               0.45 * std::sin(2.0 * kPi * freq_b * t));
+        float sample = static_cast<float>(0.45 * std::sin(2.0 * kPi * freq_a * t) +
+                                          0.45 * std::sin(2.0 * kPi * freq_b * t));
         samples[frame * kChannels] = sample;
         samples[frame * kChannels + 1] = sample;
     }
@@ -48,8 +56,7 @@ void assert_identity_after_process(int64_t group) {
     std::vector<float> original(256 * kChannels);
     fill_sine_pair(original, 330.0, 1200.0);
     std::vector<float> processed = original;
-    rt_audio_fx_process_group(
-        group, processed.data(), 256, kChannels, static_cast<int32_t>(kRate));
+    rt_audio_fx_process_group(group, processed.data(), 256, kChannels, static_cast<int32_t>(kRate));
     for (size_t i = 0; i < original.size(); i++)
         assert(std::fabs(original[i] - processed[i]) < 1.0e-6f);
 }
@@ -85,8 +92,7 @@ void test_delay_impulse_lands_at_configured_offset() {
                               kChannels,
                               static_cast<int32_t>(kRate));
     assert(std::fabs(samples[0]) < 1.0e-6f);
-    assert(std::fabs(samples[static_cast<size_t>(delay_frames) * kChannels] - 1.0f) <
-           1.0e-6f);
+    assert(std::fabs(samples[static_cast<size_t>(delay_frames) * kChannels] - 1.0f) < 1.0e-6f);
     rt_audio_fx_clear_all();
 }
 
@@ -134,6 +140,20 @@ void test_bypass_remove_clear_are_identity() {
     rt_audio_fx_clear_all();
 }
 
+void test_invalid_groups_reject_every_effect_kind() {
+    rt_audio_fx_clear_all();
+    constexpr int64_t invalid_groups[] = {-1, RT_MIXGROUP_MAX_GROUPS};
+    for (int64_t group : invalid_groups) {
+        assert(rt_audio_fx_add_lowpass(group, 1000.0, 0.707) == -1);
+        assert(rt_audio_fx_add_highpass(group, 1000.0, 0.707) == -1);
+        assert(rt_audio_fx_add_peaking(group, 1000.0, 0.707, 3.0) == -1);
+        assert(rt_audio_fx_add_delay(group, 250.0, 0.5, 0.5) == -1);
+        assert(rt_audio_fx_add_reverb(group, 0.5, 0.5, 0.5) == -1);
+        assert(rt_audio_fx_group_has_effects(group) == 0);
+    }
+    rt_audio_fx_clear_all();
+}
+
 } // namespace
 
 void test_peaking_sanitizes_gain() {
@@ -174,6 +194,7 @@ int main() {
     test_delay_impulse_lands_at_configured_offset();
     test_reverb_generates_decaying_tail();
     test_bypass_remove_clear_are_identity();
+    test_invalid_groups_reject_every_effect_kind();
     std::printf("Audio FX tests passed.\n");
     return 0;
 }

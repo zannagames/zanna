@@ -182,6 +182,42 @@ static rt_bytes_impl *rt_bytes_require(void *obj, const char *what) {
     return (rt_bytes_impl *)obj;
 }
 
+/// @brief Validate a nullable runtime string and borrow its complete byte span.
+/// @details Null remains the documented empty input. A nonnull stale or forged
+///          handle traps and returns failure instead of being normalized to an
+///          empty byte sequence when an embedder trap hook returns.
+/// @param value Runtime string to inspect, or NULL.
+/// @param what Diagnostic raised for an invalid nonnull handle.
+/// @param out_data Receives borrowed bytes, initialized to a stable empty string.
+/// @param out_len Receives the byte length, initialized to zero.
+/// @return Nonzero for null or a live string handle; otherwise zero.
+static int rt_bytes_string_data(rt_string value,
+                                const char *what,
+                                const char **out_data,
+                                size_t *out_len) {
+    *out_data = "";
+    *out_len = 0;
+    if (!value)
+        return 1;
+    if (!rt_string_is_handle(value)) {
+        rt_bytes_trap_invalid_operation(what);
+        return 0;
+    }
+
+    int64_t len = rt_str_len(value);
+    if (len <= 0)
+        return 1;
+    const char *data = rt_string_cstr(value);
+    if (!data) {
+        rt_bytes_trap_invalid_operation(what);
+        return 0;
+    }
+
+    *out_data = data;
+    *out_len = (size_t)len;
+    return 1;
+}
+
 /// @brief Base64 character lookup table for encoding (RFC 4648).
 ///
 /// Maps 6-bit values (0-63) to the standard Base64 alphabet:
@@ -277,13 +313,11 @@ void *rt_bytes_from_str(rt_string str) {
     // Use rt_str_len (stored byte count) rather than strlen so that strings
     // containing embedded null bytes (e.g. binary data) are preserved in full.
     // strlen would truncate at the first 0x00 byte (BUG-IO-001).
-    int64_t len64 = rt_str_len(str);
-    if (len64 <= 0)
-        return rt_bytes_new(0);
-
-    size_t len = (size_t)len64;
-    const char *cstr = rt_string_cstr(str);
-    if (!cstr)
+    const char *cstr = NULL;
+    size_t len = 0;
+    if (!rt_bytes_string_data(str, "Bytes.FromString: invalid string", &cstr, &len))
+        return NULL;
+    if (len == 0)
         return rt_bytes_new(0);
 
     rt_bytes_impl *bytes = rt_bytes_alloc((int64_t)len);
@@ -325,30 +359,33 @@ void *rt_bytes_from_str(rt_string str) {
 ///
 /// @see rt_bytes_to_hex For the reverse operation
 void *rt_bytes_from_hex(rt_string hex) {
-    int64_t hex_len_i64 = rt_str_len(hex);
-    if (hex_len_i64 <= 0)
+    const char *hex_str = NULL;
+    size_t hex_len = 0;
+    if (!rt_bytes_string_data(hex, "Bytes.FromHex: invalid string", &hex_str, &hex_len))
+        return NULL;
+    if (hex_len == 0)
         return rt_bytes_new(0);
 
-    const char *hex_str = rt_string_cstr(hex);
-    if (!hex_str)
-        return rt_bytes_new(0);
-
-    if ((hex_len_i64 % 2) != 0)
+    if ((hex_len % 2) != 0) {
         rt_bytes_trap_domain("Bytes.FromHex: hex string length must be even");
+        return NULL;
+    }
 
-    int64_t len = hex_len_i64 / 2;
-    for (int64_t i = 0; i < len; i++) {
+    size_t len = hex_len / 2;
+    for (size_t i = 0; i < len; i++) {
         int hi = rt_hex_digit_value(hex_str[i * 2]);
         int lo = rt_hex_digit_value(hex_str[i * 2 + 1]);
 
-        if (hi < 0 || lo < 0)
+        if (hi < 0 || lo < 0) {
             rt_bytes_trap_domain("Bytes.FromHex: invalid hex character");
+            return NULL;
+        }
     }
 
-    rt_bytes_impl *bytes = rt_bytes_alloc(len);
+    rt_bytes_impl *bytes = rt_bytes_alloc((int64_t)len);
     if (!bytes)
         return NULL; // returning-hook NULL after an allocation trap (VDOC-177)
-    for (int64_t i = 0; i < len; i++) {
+    for (size_t i = 0; i < len; i++) {
         int hi = rt_hex_digit_value(hex_str[i * 2]);
         int lo = rt_hex_digit_value(hex_str[i * 2 + 1]);
         bytes->data[i] = (uint8_t)((hi << 4) | lo);
@@ -436,15 +473,19 @@ int8_t rt_bytes_is_empty(void *obj) {
 ///
 /// @see rt_bytes_set For modifying a byte
 int64_t rt_bytes_get(void *obj, int64_t idx) {
-    if (!obj)
+    if (!obj) {
         rt_bytes_trap_invalid_operation("Bytes.Get: null bytes");
+        return 0;
+    }
 
     rt_bytes_impl *bytes = rt_bytes_require(obj, "Bytes.Get: invalid Bytes object");
     if (!bytes)
         return 0; // returning-hook NULL after a wrong-class trap (VDOC-177)
 
-    if (idx < 0 || idx >= bytes->len)
+    if (idx < 0 || idx >= bytes->len) {
         rt_bytes_trap_bounds("Bytes.Get: index out of bounds");
+        return 0;
+    }
 
     return bytes->data[idx];
 }
@@ -477,15 +518,19 @@ int64_t rt_bytes_get(void *obj, int64_t idx) {
 /// @see rt_bytes_get For reading a byte
 /// @see rt_bytes_fill For setting all bytes to the same value
 void rt_bytes_set(void *obj, int64_t idx, int64_t val) {
-    if (!obj)
+    if (!obj) {
         rt_bytes_trap_invalid_operation("Bytes.Set: null bytes");
+        return;
+    }
 
     rt_bytes_impl *bytes = rt_bytes_require(obj, "Bytes.Set: invalid Bytes object");
     if (!bytes)
         return; // returning-hook NULL after a wrong-class trap (VDOC-177)
 
-    if (idx < 0 || idx >= bytes->len)
+    if (idx < 0 || idx >= bytes->len) {
         rt_bytes_trap_bounds("Bytes.Set: index out of bounds");
+        return;
+    }
 
     bytes->data[idx] = (uint8_t)(val & 0xFF);
 }
@@ -817,17 +862,17 @@ rt_string rt_bytes_to_base64(void *obj) {
 ///
 /// @see rt_bytes_to_base64 For the reverse operation
 void *rt_bytes_from_base64(rt_string b64) {
-    int64_t b64_len_i64 = rt_str_len(b64);
-    if (b64_len_i64 <= 0)
+    const char *b64_str = NULL;
+    size_t b64_len = 0;
+    if (!rt_bytes_string_data(b64, "Bytes.FromBase64: invalid string", &b64_str, &b64_len))
+        return NULL;
+    if (b64_len == 0)
         return rt_bytes_new(0);
 
-    const char *b64_str = rt_string_cstr(b64);
-    if (!b64_str)
-        return rt_bytes_new(0);
-
-    size_t b64_len = (size_t)b64_len_i64;
-    if (b64_len % 4 != 0)
+    if (b64_len % 4 != 0) {
         rt_bytes_trap_domain("Bytes.FromBase64: base64 length must be a multiple of 4");
+        return NULL;
+    }
 
     size_t padding = 0;
     if (b64_str[b64_len - 1] == '=') {
@@ -837,16 +882,20 @@ void *rt_bytes_from_base64(rt_string b64) {
     }
 
     for (size_t i = 0; i < b64_len - padding; ++i) {
-        if (b64_str[i] == '=')
+        if (b64_str[i] == '=') {
             rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
+            return NULL;
+        }
     }
 
     size_t out_len = (b64_len / 4) * 3 - padding;
     if (out_len == 0)
         return rt_bytes_new(0);
 
-    if (out_len > (size_t)INT64_MAX)
+    if (out_len > (size_t)INT64_MAX) {
         rt_bytes_trap_overflow("Bytes.FromBase64: decoded data too large");
+        return NULL;
+    }
 
     for (size_t i = 0; i < b64_len; i += 4) {
         int v0 = b64_digit_value(b64_str[i]);
@@ -855,27 +904,40 @@ void *rt_bytes_from_base64(rt_string b64) {
         int v3 = b64_digit_value(b64_str[i + 3]);
 
         if (v0 < 0 || v1 < 0) {
-            if (v0 == -2 || v1 == -2)
+            if (v0 == -2 || v1 == -2) {
                 rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
+                return NULL;
+            }
             rt_bytes_trap_domain("Bytes.FromBase64: invalid base64 character");
+            return NULL;
         }
 
-        if (v2 == -1 || v3 == -1)
+        if (v2 == -1 || v3 == -1) {
             rt_bytes_trap_domain("Bytes.FromBase64: invalid base64 character");
+            return NULL;
+        }
 
         if (v2 == -2) {
-            if (v3 != -2 || i + 4 != b64_len)
+            if (v3 != -2 || i + 4 != b64_len) {
                 rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
-            if ((v1 & 0x0F) != 0)
+                return NULL;
+            }
+            if ((v1 & 0x0F) != 0) {
                 rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
+                return NULL;
+            }
             continue;
         }
 
         if (v3 == -2) {
-            if (i + 4 != b64_len)
+            if (i + 4 != b64_len) {
                 rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
-            if ((v2 & 0x03) != 0)
+                return NULL;
+            }
+            if ((v2 & 0x03) != 0) {
                 rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
+                return NULL;
+            }
         }
     }
 
@@ -895,32 +957,13 @@ void *rt_bytes_from_base64(rt_string b64) {
         int v2 = b64_digit_value(c2);
         int v3 = b64_digit_value(c3);
 
-        if (v0 < 0 || v1 < 0) {
-            if (v0 == -2 || v1 == -2)
-                rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
-            rt_bytes_trap_domain("Bytes.FromBase64: invalid base64 character");
-        }
-
-        if (v2 == -1 || v3 == -1)
-            rt_bytes_trap_domain("Bytes.FromBase64: invalid base64 character");
-
         if (v2 == -2) {
-            if (v3 != -2 || i + 4 != b64_len)
-                rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
-            if ((v1 & 0x0F) != 0)
-                rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
-
             uint32_t triple = ((uint32_t)v0 << 18) | ((uint32_t)v1 << 12);
             bytes->data[out_pos++] = (uint8_t)((triple >> 16) & 0xFF);
             break;
         }
 
         if (v3 == -2) {
-            if (i + 4 != b64_len)
-                rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
-            if ((v2 & 0x03) != 0)
-                rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
-
             uint32_t triple = ((uint32_t)v0 << 18) | ((uint32_t)v1 << 12) | ((uint32_t)v2 << 6);
             bytes->data[out_pos++] = (uint8_t)((triple >> 16) & 0xFF);
             bytes->data[out_pos++] = (uint8_t)((triple >> 8) & 0xFF);
@@ -934,8 +977,12 @@ void *rt_bytes_from_base64(rt_string b64) {
         bytes->data[out_pos++] = (uint8_t)(triple & 0xFF);
     }
 
-    if (out_pos != out_len)
+    if (out_pos != out_len) {
+        if (rt_obj_release_check0(bytes))
+            rt_obj_free(bytes);
         rt_bytes_trap_domain("Bytes.FromBase64: invalid padding");
+        return NULL;
+    }
 
     return bytes;
 }
@@ -1330,10 +1377,14 @@ void rt_bytes_write_i64be(void *obj, int64_t offset, int64_t value) {
 /// @return New Bytes object containing a copy of the data, or NULL after
 ///         reporting an invalid pointer, overflow, or allocation trap.
 void *rt_bytes_from_raw(const uint8_t *data, size_t len) {
-    if (len > (size_t)INT64_MAX)
+    if (len > (size_t)INT64_MAX) {
         rt_bytes_trap_overflow("Bytes.FromRaw: length exceeds maximum Bytes size");
-    if (len > 0 && !data)
+        return NULL;
+    }
+    if (len > 0 && !data) {
         rt_bytes_trap_invalid_operation("Bytes.FromRaw: null data with non-zero length");
+        return NULL;
+    }
     rt_bytes_impl *bytes = rt_bytes_alloc((int64_t)len);
     if (!bytes)
         return NULL; // returning-hook NULL after an allocation trap (VDOC-177)

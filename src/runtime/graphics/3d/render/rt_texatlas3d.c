@@ -34,6 +34,7 @@
 #include "rt_g3d_ref_slots.h"
 #include "rt_graphics3d_ids.h"
 #include "rt_pixels_internal.h"
+#include "rt_vec2.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -365,6 +366,32 @@ void rt_texatlas3d_get_uv_rect(
     *v0 = (double)r->y / a->height;
     *u1 = (double)(r->x + r->w) / a->width;
     *v1 = (double)(r->y + r->h) / a->height;
+}
+
+/// @brief `TextureAtlas3D.GetUvMin(id)` — top-left UV of a packed region (ADR 0227).
+/// @param obj Candidate TextureAtlas3D instance.
+/// @param id Region identifier returned by `Add`.
+/// @return New Vec2 of (u0, v0); the full-atlas rect for invalid input.
+void *rt_texatlas3d_get_uv_min(void *obj, int64_t id) {
+    double u0;
+    double v0;
+    double u1;
+    double v1;
+    rt_texatlas3d_get_uv_rect(obj, id, &u0, &v0, &u1, &v1);
+    return rt_vec2_new(u0, v0);
+}
+
+/// @brief `TextureAtlas3D.GetUvMax(id)` — bottom-right UV of a packed region (ADR 0227).
+/// @param obj Candidate TextureAtlas3D instance.
+/// @param id Region identifier returned by `Add`.
+/// @return New Vec2 of (u1, v1); the full-atlas rect for invalid input.
+void *rt_texatlas3d_get_uv_max(void *obj, int64_t id) {
+    double u0;
+    double v0;
+    double u1;
+    double v1;
+    rt_texatlas3d_get_uv_rect(obj, id, &u0, &v0, &u1, &v1);
+    return rt_vec2_new(u1, v1);
 }
 
 #else

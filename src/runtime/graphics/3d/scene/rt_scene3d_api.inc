@@ -158,6 +158,7 @@ void *rt_scene3d_new(void) {
     s->baked_animations = NULL;
     s->baked_animation_count = 0;
     s->baked_asset = NULL;
+    s->unresolved_prefab_count = 0;
     rt_obj_set_finalizer(s, rt_scene3d_finalize);
     return s;
 }
@@ -192,6 +193,66 @@ int8_t rt_scene3d_try_add(void *obj, void *node) {
 /// @param node Borrowed SceneNode3D retained by the root on success.
 void rt_scene3d_add(void *obj, void *node) {
     (void)rt_scene3d_try_add(obj, node);
+}
+
+/// @brief `SceneGraph.AdoptAnimations(source)` — retain-append the source
+///        scene's baked animation clips onto this scene (ADR 0227).
+/// @details Pointer-identical clips already carried by the destination are
+///          skipped so repeated adoption is idempotent. The destination array
+///          is rebuilt with exact size; on allocation failure the destination
+///          is left untouched and 0 is reported.
+/// @param obj Borrowed destination Scene3D handle.
+/// @param source Borrowed source Scene3D handle.
+/// @return Number of clips newly adopted.
+int64_t rt_scene3d_adopt_baked_animations(void *obj, void *source) {
+    rt_scene3d *dst = scene3d_checked(obj);
+    rt_scene3d *src = scene3d_checked(source);
+    int32_t fresh_count = 0;
+    void **merged;
+    if (!dst || !src || dst == src || src->baked_animation_count <= 0)
+        return 0;
+    for (int32_t i = 0; i < src->baked_animation_count; ++i) {
+        void *clip = src->baked_animations[i];
+        int already = clip == NULL;
+        for (int32_t j = 0; !already && j < dst->baked_animation_count; ++j)
+            already = dst->baked_animations[j] == clip;
+        if (!already)
+            ++fresh_count;
+    }
+    if (fresh_count == 0)
+        return 0;
+    merged = (void **)calloc(
+        (size_t)dst->baked_animation_count + (size_t)fresh_count, sizeof(void *));
+    if (!merged)
+        return 0;
+    for (int32_t i = 0; i < dst->baked_animation_count; ++i)
+        merged[i] = dst->baked_animations[i];
+    {
+        int32_t next = dst->baked_animation_count;
+        for (int32_t i = 0; i < src->baked_animation_count; ++i) {
+            void *clip = src->baked_animations[i];
+            int already = clip == NULL;
+            for (int32_t j = 0; !already && j < next; ++j)
+                already = merged[j] == clip;
+            if (already)
+                continue;
+            merged[next++] = clip;
+            rt_obj_retain_maybe(clip);
+        }
+        free(dst->baked_animations);
+        dst->baked_animations = merged;
+        dst->baked_animation_count = next;
+    }
+    return (int64_t)fresh_count;
+}
+
+/// @brief `SceneGraph.get_UnresolvedPrefabCount` — placeholders left by
+///        prefab references the loader could not resolve (ADR 0227).
+/// @param obj Borrowed Scene3D handle.
+/// @return Unresolved reference count including nested occurrences, or 0.
+int64_t rt_scene3d_get_unresolved_prefab_count(void *obj) {
+    rt_scene3d *s = scene3d_checked(obj);
+    return s ? (int64_t)s->unresolved_prefab_count : 0;
 }
 
 /// @brief `Scene3D.RebaseOrigin(dx, dy, dz)` — shift scene content by -delta.

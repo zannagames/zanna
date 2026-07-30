@@ -38,6 +38,9 @@ bind Str = Zanna.String;
 
 final PI: Number = 3.14159265358979312;
 
+/// Slider drift below this counts as "stopped" for settle-commit (ADR 0221).
+final SLIDER_SETTLE_EPSILON: Number = 0.000001;
+
 /// @brief One rendered form row bound to one field (or one repeat item).
 class SceneFormRow {
     expose FormsModel.SceneFormField field;
@@ -445,7 +448,6 @@ class SceneComponentForm {
     // ---- pumping ----------------------------------------------------------
 
     hide func PumpRow(row: SceneFormRow) -> Boolean {
-        var field = row.field;
         if row.color != null { return row.color.WasChanged(); }
         if row.check != null { return row.check.WasChanged(); }
         if row.dropdown != null { return row.dropdown.WasChanged(); }
@@ -457,10 +459,13 @@ class SceneComponentForm {
                 UpdateSliderLabel(row);
                 return false;
             }
-            if row.sliderPending
-               and row.slider.Value == row.sliderLast {
-                row.sliderPending = false;
-                return true;
+            if row.sliderPending {
+                var drift = row.slider.Value - row.sliderLast;
+                if drift < 0.0 { drift = 0.0 - drift; }
+                if drift <= SLIDER_SETTLE_EPSILON {
+                    row.sliderPending = false;
+                    return true;
+                }
             }
             return false;
         }

@@ -4,7 +4,7 @@ bind Zanna.Graphics3D;
 bind Zanna.Terminal;
 
 func start() {
-    var path = "src/tests/fixtures/runtime/_tmp_material3d_pbr.vscn";
+    var path = Zanna.IO.TempFile.PathWithPrefix("zia_material3d_pbr_") + ".vscn";
     var scene = SceneGraph.New();
     var node = SceneNode.New();
     var mesh = Mesh3D.Box(1.0, 1.0, 1.0);

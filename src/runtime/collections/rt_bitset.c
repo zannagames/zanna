@@ -225,7 +225,8 @@ void *rt_bitset_new(int64_t nbits) {
 int64_t rt_bitset_len(void *obj) {
     if (!obj)
         return 0;
-    return (int64_t)as_bitset(obj, "BitSet.Len: invalid BitSet object")->bit_count;
+    rt_bitset_impl *bitset = as_bitset(obj, "BitSet.Len: invalid BitSet object");
+    return bitset ? (int64_t)bitset->bit_count : 0;
 }
 
 /// @brief Population count: number of bits set to 1 across the entire bitset.

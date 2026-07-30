@@ -337,6 +337,154 @@ void rt_terrain3d_set_layer_scale(void *obj, int64_t layer, double scale) {
     t->splat_dirty = 1;
 }
 
+/*==========================================================================
+ * Readback symmetry (ADR 0227): every setter over retained state has a
+ * matching reader so authored terrain can be inspected, not just replaced.
+ *=========================================================================*/
+
+/// @brief Read the per-axis terrain scale (x spacing, height scale, z spacing).
+/// @param obj Terrain3D handle.
+/// @return New Vec3 of the retained scale, or unit scale for invalid handles.
+void *rt_terrain3d_get_scale(void *obj) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    if (!t)
+        return rt_vec3_new(1.0, 1.0, 1.0);
+    return rt_vec3_new(t->scale[0], t->scale[1], t->scale[2]);
+}
+
+/// @brief Read the retained terrain material.
+/// @param obj Terrain3D handle.
+/// @return Borrowed Material3D handle, or `NULL`.
+void *rt_terrain3d_get_material(void *obj) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    return t ? t->material : NULL;
+}
+
+/// @brief Read the retained texture reference of one splat layer.
+/// @param obj Terrain3D handle.
+/// @param layer Layer index from 0 through 7.
+/// @return Borrowed Pixels/TextureAsset3D handle, or `NULL`.
+void *rt_terrain3d_get_layer_texture(void *obj, int64_t layer) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    if (!t || layer < 0 || layer >= TERRAIN_MAX_SPLAT_LAYERS)
+        return NULL;
+    return t->layer_textures[layer];
+}
+
+/// @brief Read one splat layer's UV tiling multiplier.
+/// @param obj Terrain3D handle.
+/// @param layer Layer index from 0 through 7.
+/// @return Retained tiling multiplier, or 1.0 for invalid input.
+double rt_terrain3d_get_layer_scale(void *obj, int64_t layer) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    if (!t || layer < 0 || layer >= TERRAIN_MAX_SPLAT_LAYERS)
+        return 1.0;
+    return t->layer_scales[layer];
+}
+
+/// @brief Read one retained splat weight map (0 weights layers 0-3, 1 weights 4-7).
+/// @param obj Terrain3D handle.
+/// @param index Splat map index, 0 or 1.
+/// @return Borrowed Pixels handle, or `NULL`.
+void *rt_terrain3d_get_splat_map(void *obj, int64_t index) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    if (!t || index < 0 || index > 1)
+        return NULL;
+    return index == 0 ? t->splat_map : t->splat_map2;
+}
+
+/// @brief Read the LOD 1 switch distance.
+/// @param obj Terrain3D handle.
+/// @return Retained distance, or 0.0 for invalid handles.
+double rt_terrain3d_get_lod_near_distance(void *obj) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    return t ? (double)t->lod_dist1 : 0.0;
+}
+
+/// @brief Read the LOD 2 switch distance.
+/// @param obj Terrain3D handle.
+/// @return Retained distance, or 0.0 for invalid handles.
+double rt_terrain3d_get_lod_far_distance(void *obj) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    return t ? (double)t->lod_dist2 : 0.0;
+}
+
+/// @brief Read the LOD hysteresis band.
+/// @param obj Terrain3D handle.
+/// @return Retained band distance, or 0.0 for invalid handles.
+double rt_terrain3d_get_lod_hysteresis(void *obj) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    return t ? (double)t->lod_hysteresis : 0.0;
+}
+
+/// @brief Read the crack-hiding skirt depth (0 = disabled).
+/// @param obj Terrain3D handle.
+/// @return Retained skirt depth, or 0.0 for invalid handles.
+double rt_terrain3d_get_skirt_depth(void *obj) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    return t ? (double)t->skirt_depth : 0.0;
+}
+
+/// @brief Read the heightmap sample width set by SetHeightmap.
+/// @param obj Terrain3D handle.
+/// @return Sample columns, or 0 for invalid handles.
+int64_t rt_terrain3d_get_heightmap_width(void *obj) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    return t ? (int64_t)t->width : 0;
+}
+
+/// @brief Read the heightmap sample depth set by SetHeightmap.
+/// @param obj Terrain3D handle.
+/// @return Sample rows, or 0 for invalid handles.
+int64_t rt_terrain3d_get_heightmap_depth(void *obj) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    return t ? (int64_t)t->depth : 0;
+}
+
+/// @brief Shared bounds-checked accessor for one authored hole component.
+/// @param obj Terrain3D handle.
+/// @param index Zero-based hole index.
+/// @param component Component slot: 0=x, 1=z, 2=width, 3=depth.
+/// @return The retained component, or 0.0 for invalid input.
+static double terrain3d_hole_component(void *obj, int64_t index, int component) {
+    rt_terrain3d *t = (rt_terrain3d *)rt_g3d_checked_or_null(obj, RT_G3D_TERRAIN3D_CLASS_ID);
+    if (!t || !t->holes || index < 0 || index >= t->hole_count)
+        return 0.0;
+    return t->holes[index][component];
+}
+
+/// @brief Read one authored hole's terrain-local X origin.
+/// @param obj Terrain3D handle.
+/// @param index Zero-based hole index.
+/// @return Retained X origin, or 0.0 for invalid input.
+double rt_terrain3d_get_hole_x(void *obj, int64_t index) {
+    return terrain3d_hole_component(obj, index, 0);
+}
+
+/// @brief Read one authored hole's terrain-local Z origin.
+/// @param obj Terrain3D handle.
+/// @param index Zero-based hole index.
+/// @return Retained Z origin, or 0.0 for invalid input.
+double rt_terrain3d_get_hole_z(void *obj, int64_t index) {
+    return terrain3d_hole_component(obj, index, 1);
+}
+
+/// @brief Read one authored hole's width.
+/// @param obj Terrain3D handle.
+/// @param index Zero-based hole index.
+/// @return Retained width, or 0.0 for invalid input.
+double rt_terrain3d_get_hole_width(void *obj, int64_t index) {
+    return terrain3d_hole_component(obj, index, 2);
+}
+
+/// @brief Read one authored hole's depth (Z extent).
+/// @param obj Terrain3D handle.
+/// @param index Zero-based hole index.
+/// @return Retained depth, or 0.0 for invalid input.
+double rt_terrain3d_get_hole_depth(void *obj, int64_t index) {
+    return terrain3d_hole_component(obj, index, 3);
+}
+
 /// @brief Resolve a texture reference to its underlying Pixels and return it only when that is
 ///   a valid non-empty image, else NULL.
 /// @param pixels Pixels or TextureAsset3D reference to resolve.

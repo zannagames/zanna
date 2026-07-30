@@ -599,6 +599,10 @@ static void rt_sse_finalize(void *obj) {
 /// @return One after all bytes are written; zero on closure or transport
 ///         failure.
 static int sse_transport_send_all(rt_sse_impl *sse, const void *data, size_t len) {
+    if (!sse || (!data && len > 0))
+        return 0;
+    if (len == 0)
+        return 1;
     if (sse->tls) {
         size_t total = 0;
         while (total < len) {
@@ -609,6 +613,8 @@ static int sse_transport_send_all(rt_sse_impl *sse, const void *data, size_t len
         }
         return 1;
     }
+    if (sse->socket_fd == INVALID_SOCK)
+        return 0;
     size_t total = 0;
     while (total < len) {
         int sent = send(sse->socket_fd,
@@ -633,8 +639,12 @@ static int sse_transport_send_all(rt_sse_impl *sse, const void *data, size_t len
 /// @return Positive byte count, zero for orderly closure, or a negative
 ///         transport result on failure.
 static long sse_transport_read(rt_sse_impl *sse, void *buffer, size_t len) {
+    if (!sse || !buffer || len == 0)
+        return -1;
     if (sse->tls)
         return rt_tls_recv(sse->tls, buffer, len);
+    if (sse->socket_fd == INVALID_SOCK)
+        return -1;
     for (;;) {
         long received =
             recv(sse->socket_fd, (char *)buffer, (int)(len > INT_MAX ? INT_MAX : len), 0);
@@ -1457,7 +1467,7 @@ static int sse_open_url(
         (allow_resume && sse->last_event_id && *sse->last_event_id) ? sse->last_event_id : NULL;
     size_t last_event_id_len = last_event_id ? sse->last_event_id_len : 0;
     int redirects_left = 5;
-    int status = -1;
+    int status;
     int is_secure;
     int saw_stream_type = 0;
     int unsupported_content_encoding = 0;
@@ -1467,8 +1477,8 @@ static int sse_open_url(
     int saw_content_encoding = 0;
     int saw_location = 0;
     int saw_content_length = 0;
-    size_t response_head_bytes = 0;
-    size_t response_field_count = 0;
+    size_t response_head_bytes;
+    size_t response_field_count;
     size_t status_line_len = 0;
     int informational_count = 0;
     int rlen;
@@ -1518,10 +1528,6 @@ retry:
     saw_content_encoding = 0;
     saw_location = 0;
     saw_content_length = 0;
-    response_head_bytes = 0;
-    response_field_count = 0;
-    status = -1;
-
     if (!sse_connect_timeout(sse, &connect_timeout_ms)) {
         if (err_msg && err_msg_cap > 0)
             snprintf(err_msg, err_msg_cap, "SSE: reconnect timeout");
@@ -1613,7 +1619,6 @@ retry:
         goto fail;
     }
     new_tls = NULL;
-    new_socket = INVALID_SOCK;
     open_recovery.pending_tls = NULL;
     open_recovery.pending_socket = INVALID_SOCK;
 
@@ -1708,7 +1713,6 @@ retry:
 
 read_response_head:
     status_line_len = 0;
-    response_head_bytes = 0;
     response_field_count = 0;
     status_line = sse_raw_recv_line(sse, 1024u, &status_line_len);
     if (!status_line) {

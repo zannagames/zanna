@@ -593,8 +593,6 @@ class SceneEditor3DHierarchyReorderingLayer extends PreviousLayer.SceneEditor3DH
             }
             cloneParent.RemoveChild(clone);
             clone.Name = UniqueDuplicateNodeName(source);
-            var position = clone.Position;
-            clone.SetPosition(position.X + 1.0, position.Y, position.Z);
             if destinationParent.TryAddChild(clone) == false {
                 RollBackGroupEdit(
                     previousSelection, previousPrimary,

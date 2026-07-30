@@ -317,7 +317,8 @@ void rt_queue_set_owns_elements(void *obj, int8_t owns) {
 int8_t rt_queue_owns_elements(void *obj) {
     if (!obj)
         return 0;
-    return as_queue(obj, "Queue: invalid Queue object")->owns_elements ? 1 : 0;
+    rt_queue_impl *queue = as_queue(obj, "Queue: invalid Queue object");
+    return queue && queue->owns_elements ? 1 : 0;
 }
 
 /// @brief Returns the number of elements currently in the Queue.
@@ -337,7 +338,8 @@ int8_t rt_queue_owns_elements(void *obj) {
 int64_t rt_queue_len(void *obj) {
     if (!obj)
         return 0;
-    return as_queue(obj, "Queue: invalid Queue object")->len;
+    rt_queue_impl *queue = as_queue(obj, "Queue: invalid Queue object");
+    return queue ? queue->len : 0;
 }
 
 /// @brief Checks whether the Queue contains no elements.
@@ -361,7 +363,8 @@ int64_t rt_queue_len(void *obj) {
 int8_t rt_queue_is_empty(void *obj) {
     if (!obj)
         return 1;
-    return as_queue(obj, "Queue: invalid Queue object")->len == 0 ? 1 : 0;
+    rt_queue_impl *queue = as_queue(obj, "Queue: invalid Queue object");
+    return !queue || queue->len == 0 ? 1 : 0;
 }
 
 /// @brief Adds an element to the back of the Queue.

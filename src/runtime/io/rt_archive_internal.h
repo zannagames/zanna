@@ -146,8 +146,9 @@ void archive_make_dirs_posix_at(int root_fd, const char *path);
 
 /// @brief Open a file entry's verified parent directory and split out its leaf.
 /// @param root_fd Descriptor for the trusted extraction root.
-/// @param name Normalized relative file-entry name.
-/// @param out_leaf Receives a heap-allocated leaf name owned by the caller.
+/// @param name Non-null normalized relative file-entry name.
+/// @param out_leaf Non-null output receiving a heap-allocated leaf name owned
+///                 by the caller; cleared before any fallible work.
 /// @return Open parent descriptor, or -1 after raising a trap.
 int archive_open_parent_for_file_posix(int root_fd, const char *name, char **out_leaf);
 
@@ -276,6 +277,7 @@ void archive_reject_symlink_components(const char *path, size_t root_len, int in
 #define ZIP_GP_FLAG_DATA_DESCRIPTOR 0x0008u
 #define ZIP_GP_FLAG_STRONG_ENCRYPTION 0x0040u
 #define ZIP_EXTRA_ZIP64 0x0001u
+
 /** @} */
 
 /** Parsed or pending ZIP32 entry metadata owned by an archive object. */

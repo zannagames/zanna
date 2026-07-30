@@ -114,6 +114,10 @@ void rt_particles3d_set_rate(void *obj, double particles_per_second);
 /// @param obj Particles3D handle; invalid handles are ignored.
 /// @param additive Nonzero for order-independent additive blending, zero for sorted alpha blending.
 void rt_particles3d_set_additive(void *obj, int8_t additive);
+/// @brief Read whether additive blending is enabled (ADR 0227).
+/// @param obj Particles3D receiver.
+/// @return Nonzero for additive blending, or 0 for invalid handles.
+int8_t rt_particles3d_get_additive(void *obj);
 
 /// @brief Velocity-aligned stretching (0 = camera-facing; k scales length by speed).
 /// @param obj Particles3D handle; invalid handles are ignored.

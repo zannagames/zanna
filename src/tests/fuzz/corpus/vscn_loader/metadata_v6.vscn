@@ -1,0 +1,54 @@
+{
+  "format": "vscn",
+  "version": 6,
+  "textures": [
+  ],
+  "cubemaps": [
+  ],
+  "materials": [
+  ],
+  "cameras": [
+  ],
+  "meshes": [
+  ],
+  "nodes": [
+    {
+      "name": "Meta Root",
+      "position": [0, 0, 0],
+      "rotation": [0, 0, 0, 1],
+      "scale": [1, 1, 1],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "metadata": {
+        "armed": {"kind": "bool", "value": true},
+        "count": {"kind": "int", "value": "7"},
+        "kind": {"kind": "string", "value": "hub"},
+        "marker": {"kind": "null"},
+        "ratio": {"kind": "float", "value": 0.25}
+      },
+      "children": [
+        {
+          "name": "Meta Leaf",
+          "position": [0, 0, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1],
+          "visible": true,
+          "isStatic": false,
+          "syncMode": 0,
+          "hasMesh": false,
+          "hasMaterial": false,
+          "mesh": -1,
+          "material": -1,
+          "metadata": {
+            "zone": {"kind": "string", "value": "plaza"}
+          }
+        }
+      ]
+    }
+  ]
+}

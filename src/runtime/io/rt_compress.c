@@ -27,7 +27,8 @@
 //
 // Links: src/runtime/io/rt_compress.h (public API),
 //        src/runtime/core/rt_crc32.h (CRC32 used for GZIP footer validation),
-//        src/runtime/io/rt_archive.c (consumes this for ZIP DEFLATE entries)
+//        src/runtime/io/rt_archive.c (consumes this for ZIP DEFLATE entries),
+//        docs/adr/0229-bounded-native-gzip-decoding.md
 //
 //===----------------------------------------------------------------------===//
 /**
@@ -95,6 +96,7 @@ extern const char *rt_trap_get_error(void);
  * @{ */
 #define FIXED_LIT_CODES 288
 #define FIXED_DIST_CODES 32
+
 /** @} */
 
 //=============================================================================
@@ -156,6 +158,48 @@ void compress_release_temp_object(void *obj) {
 static void compress_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
+}
+
+/// @brief Consume native bytes into one newly managed Bytes object.
+/// @details A local recovery frame frees @p raw if managed allocation traps
+///          non-locally. Returning trap hooks are handled by the ordinary NULL
+///          result check. On success the native input is also freed after its
+///          bytes are copied.
+/// @param raw Malloc-owned input buffer, consumed on every path.
+/// @param len Input byte count.
+/// @param fallback Diagnostic used when allocation traps without a message.
+/// @return Fresh managed Bytes, or NULL after cleanup and failure.
+static void *compress_native_to_managed_bytes(uint8_t *raw, size_t len, const char *fallback) {
+    uint8_t *volatile owned_raw = raw;
+    void *result = NULL;
+    jmp_buf recovery;
+
+    if (len > (size_t)INT64_MAX) {
+        free(raw);
+        rt_trap("rt_compress: decoded output exceeds managed size");
+        return NULL;
+    }
+
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        compress_save_trap_error(saved_error, sizeof(saved_error), fallback);
+        rt_trap_clear_recovery();
+        free((void *)owned_raw);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
+    result = rt_bytes_new((int64_t)len);
+    rt_trap_clear_recovery();
+    if (!result) {
+        free((void *)owned_raw);
+        return NULL;
+    }
+    if (len > 0)
+        memcpy(bytes_data(result), (const void *)owned_raw, len);
+    free((void *)owned_raw);
+    return result;
 }
 
 /// @brief Compress a temporary Bytes conversion and release it transactionally.
@@ -569,6 +613,7 @@ typedef struct {
     size_t capacity;   ///< Allocated capacity of `data` in bytes.
     size_t max_output; ///< Maximum allowed decompressed bytes.
     bool owns_data;    ///< True when @c data must be freed/reallocated by this buffer.
+    const char *error; ///< Deferred capacity/allocation diagnostic, or NULL.
 } output_buffer_t;
 
 /// @brief Initialize a growable output buffer.
@@ -586,14 +631,18 @@ static int out_init(output_buffer_t *out, size_t initial_cap, size_t max_output)
     out->data = (uint8_t *)malloc(out->capacity);
     if (!out->data) {
         rt_trap("rt_compress: memory allocation failed");
+        out->data = NULL;
         out->capacity = 0;
         out->len = 0;
         out->max_output = max_output;
+        out->owns_data = false;
+        out->error = "rt_compress: memory allocation failed";
         return 0;
     }
     out->len = 0;
     out->max_output = max_output;
     out->owns_data = true;
+    out->error = NULL;
     return 1;
 }
 
@@ -613,6 +662,7 @@ static int out_init_fixed(output_buffer_t *out, uint8_t *data, size_t size) {
     out->capacity = size;
     out->max_output = size;
     out->owns_data = false;
+    out->error = NULL;
     return 1;
 }
 
@@ -627,22 +677,23 @@ static int out_init_fixed(output_buffer_t *out, uint8_t *data, size_t size) {
 /// caller-owned destinations never grow.
 /// @param out Output buffer to check or grow.
 /// @param need Additional decoded byte count.
-/// @return 1 when capacity is available; otherwise 0 after raising a trap.
+/// @return One when capacity is available; otherwise zero with
+///         `out->error` set and the prior allocation still owned by @p out.
 static int out_ensure(output_buffer_t *out, size_t need) {
     if (need > SIZE_MAX - out->len) {
-        rt_trap("Inflate: output size overflow");
+        out->error = "Inflate: output size overflow";
         return 0;
     }
     size_t required = out->len + need;
     if (required > out->max_output) {
-        rt_trap("Inflate: decompressed output exceeds limit");
+        out->error = "Inflate: decompressed output exceeds limit";
         return 0;
     }
 
     if (required <= out->capacity)
         return 1;
     if (!out->owns_data) {
-        rt_trap("Inflate: decoded output exceeds destination");
+        out->error = "Inflate: decoded output exceeds destination";
         return 0;
     }
     size_t new_cap = out->capacity ? out->capacity : 256;
@@ -657,7 +708,7 @@ static int out_ensure(output_buffer_t *out, size_t need) {
         new_cap = out->max_output;
     uint8_t *new_data = (uint8_t *)realloc(out->data, new_cap);
     if (!new_data) {
-        rt_trap("Inflate: out of memory");
+        out->error = "Inflate: out of memory";
         return 0;
     }
     out->data = new_data;
@@ -730,6 +781,7 @@ static void out_free(output_buffer_t *out) {
     out->capacity = 0;
     out->len = 0;
     out->owns_data = false;
+    out->error = NULL;
 }
 
 //=============================================================================
@@ -833,7 +885,7 @@ static bool inflate_huffman(bit_reader_t *br,
             }
 
             // Validate distance
-            if (distance > (int)out->len)
+            if ((size_t)distance > out->len)
                 return false;
 
             // Copy from output buffer
@@ -1007,6 +1059,10 @@ static uint8_t *inflate_raw_limited_to_ex(const uint8_t *data,
                                           bool allow_trailing,
                                           uint8_t *fixed_output) {
     init_fixed_trees();
+    if (!fixed_lit_tree.symbols || !fixed_dist_tree.symbols) {
+        rt_trap("Inflate: fixed Huffman tables are unavailable");
+        return NULL;
+    }
 
     bit_reader_t br;
     br_init(&br, data, len);
@@ -1027,6 +1083,7 @@ static uint8_t *inflate_raw_limited_to_ex(const uint8_t *data,
         if (!br_has_data(&br)) {
             out_free(&out);
             rt_trap("Inflate: unexpected end of data");
+            return NULL;
         }
 
         // Read block header
@@ -1035,6 +1092,7 @@ static uint8_t *inflate_raw_limited_to_ex(const uint8_t *data,
         if (br.error) {
             out_free(&out);
             rt_trap("Inflate: unexpected end of data");
+            return NULL;
         }
 
         bool ok = false;
@@ -1051,11 +1109,14 @@ static uint8_t *inflate_raw_limited_to_ex(const uint8_t *data,
             default:
                 out_free(&out);
                 rt_trap("Inflate: invalid block type");
+                return NULL;
         }
 
         if (!ok) {
+            const char *error = out.error;
             out_free(&out);
-            rt_trap("Inflate: invalid compressed data");
+            rt_trap(error ? error : "Inflate: invalid compressed data");
+            return NULL;
         }
     }
 
@@ -1066,6 +1127,7 @@ static uint8_t *inflate_raw_limited_to_ex(const uint8_t *data,
         if ((br.buffer & padding_mask) != 0) {
             out_free(&out);
             rt_trap("Inflate: trailing data after final block");
+            return NULL;
         }
     }
 
@@ -1073,6 +1135,7 @@ static uint8_t *inflate_raw_limited_to_ex(const uint8_t *data,
     if (compressed_bytes > len) {
         out_free(&out);
         rt_trap("Inflate: invalid compressed data");
+        return NULL;
     }
     if (consumed_bytes)
         *consumed_bytes = compressed_bytes;
@@ -1080,6 +1143,7 @@ static uint8_t *inflate_raw_limited_to_ex(const uint8_t *data,
     if (!allow_trailing && compressed_bytes < len) {
         out_free(&out);
         rt_trap("Inflate: trailing data after final block");
+        return NULL;
     }
 
     if (!allow_trailing && br.bits_in_buf > 0) {
@@ -1088,6 +1152,7 @@ static uint8_t *inflate_raw_limited_to_ex(const uint8_t *data,
         if ((br.buffer & padding_mask) != 0 || br.bits_in_buf > 7) {
             out_free(&out);
             rt_trap("Inflate: trailing data after final block");
+            return NULL;
         }
     }
 
@@ -1135,15 +1200,7 @@ static void *inflate_data_limited_ex(const uint8_t *data,
         inflate_raw_limited_ex(data, len, max_output, &raw_len, consumed_bytes, allow_trailing);
     if (!raw)
         return NULL;
-    void *result = rt_bytes_new(raw_len);
-    if (!result) {
-        free(raw);
-        return NULL;
-    }
-    if (raw_len > 0)
-        memcpy(bytes_data(result), raw, raw_len);
-    free(raw);
-    return result;
+    return compress_native_to_managed_bytes(raw, raw_len, "Inflate: result allocation failed");
 }
 
 /// @brief Inflate one complete raw DEFLATE stream with an explicit ceiling.
@@ -1174,10 +1231,13 @@ static void *inflate_data(const uint8_t *data, size_t len) {
 /// @param data Borrowed bytes beginning at a GZIP member header.
 /// @param len Number of accessible bytes, including any later concatenated
 /// members.
+/// @param max_output Maximum decoded bytes permitted for this member.
 /// @param member_len Receives this member's complete encoded byte length.
-/// @return Fresh Bytes containing this member's payload, or `NULL` after a
-/// format, checksum, limit, or allocation trap.
-static void *gunzip_member_data(const uint8_t *data, size_t len, size_t *member_len) {
+/// @param output_len Receives this member's decoded byte length.
+/// @return Fresh malloc-owned bytes containing this member's payload, or
+/// `NULL` after a format, checksum, limit, or allocation trap.
+static uint8_t *gunzip_member_raw(
+    const uint8_t *data, size_t len, size_t max_output, size_t *member_len, size_t *output_len) {
     if (len < 18) {
         rt_trap("Gunzip: data too short");
         return NULL;
@@ -1261,86 +1321,221 @@ static void *gunzip_member_data(const uint8_t *data, size_t len, size_t *member_
     }
 
     size_t deflate_consumed = 0;
-    void *result = inflate_data_limited_ex(
-        data + pos, len - pos, INFLATE_DEFAULT_MAX_OUTPUT, &deflate_consumed, true);
+    size_t result_len = 0;
+    uint8_t *result = inflate_raw_limited_ex(
+        data + pos, len - pos, max_output, &result_len, &deflate_consumed, true);
+    if (!result)
+        return NULL;
 
     if (deflate_consumed > len - pos || len - pos - deflate_consumed < 8) {
-        compress_release_temp_object(result);
+        free(result);
         rt_trap("Gunzip: truncated trailer");
         return NULL;
     }
 
     // Extract trailer at the byte immediately after the DEFLATE member.
     size_t trailer_pos = pos + deflate_consumed;
-    uint32_t expected_crc = data[trailer_pos] | (data[trailer_pos + 1] << 8) |
-                            (data[trailer_pos + 2] << 16) | (data[trailer_pos + 3] << 24);
-    uint32_t expected_size = data[trailer_pos + 4] | (data[trailer_pos + 5] << 8) |
-                             (data[trailer_pos + 6] << 16) | (data[trailer_pos + 7] << 24);
+    uint32_t expected_crc = (uint32_t)data[trailer_pos] | ((uint32_t)data[trailer_pos + 1] << 8) |
+                            ((uint32_t)data[trailer_pos + 2] << 16) |
+                            ((uint32_t)data[trailer_pos + 3] << 24);
+    uint32_t expected_size =
+        (uint32_t)data[trailer_pos + 4] | ((uint32_t)data[trailer_pos + 5] << 8) |
+        ((uint32_t)data[trailer_pos + 6] << 16) | ((uint32_t)data[trailer_pos + 7] << 24);
 
     // Verify CRC
-    uint32_t actual_crc = rt_crc32_compute(bytes_data(result), bytes_len(result));
+    uint32_t actual_crc = rt_crc32_compute(result, result_len);
     if (actual_crc != expected_crc) {
-        compress_release_temp_object(result);
+        free(result);
         rt_trap("Gunzip: CRC mismatch");
         return NULL;
     }
 
     // Verify size (mod 2^32)
-    if ((bytes_len(result) & 0xFFFFFFFF) != expected_size) {
-        compress_release_temp_object(result);
+    if ((result_len & UINT32_MAX) != expected_size) {
+        free(result);
         rt_trap("Gunzip: size mismatch");
         return NULL;
     }
 
     if (member_len)
         *member_len = trailer_pos + 8;
+    if (output_len)
+        *output_len = result_len;
     return result;
 }
 
-/// @brief Decode a possibly concatenated GZIP stream.
+/// @brief Derive the smaller absolute/ratio-based GZIP output ceiling.
+/// @details A zero ratio disables the ratio constraint. Multiplication and
+///          slack addition saturate so hostile encoded lengths cannot wrap the
+///          computed bound.
+/// @param encoded_len Complete encoded GZIP byte count.
+/// @param max_output Absolute decoded byte ceiling.
+/// @param max_expansion_ratio Maximum decoded/encoded multiplier, or zero.
+/// @param expansion_slack Additional bytes allowed by the ratio constraint.
+/// @return Effective decoded byte ceiling.
+static size_t gunzip_output_limit(size_t encoded_len,
+                                  size_t max_output,
+                                  size_t max_expansion_ratio,
+                                  size_t expansion_slack) {
+    if (max_expansion_ratio == 0)
+        return max_output;
+
+    size_t ratio_limit;
+    if (encoded_len > (SIZE_MAX - expansion_slack) / max_expansion_ratio)
+        ratio_limit = SIZE_MAX;
+    else
+        ratio_limit = encoded_len * max_expansion_ratio + expansion_slack;
+    return ratio_limit < max_output ? ratio_limit : max_output;
+}
+
+/// @brief Decode concatenated GZIP members into one bounded native buffer.
+/// @details The first member's allocation becomes the aggregate directly, so
+///          the common single-member path performs no decoded-body copy.
+///          Later members are limited by the aggregate remaining budget and
+///          appended after checksum validation. Local recovery frees both
+///          aggregate and in-flight member storage before converting traps to
+///          a zero status.
+/// @param data Borrowed complete GZIP stream.
+/// @param len Encoded byte count.
+/// @param max_output Absolute aggregate decoded byte ceiling.
+/// @param max_expansion_ratio Maximum decoded/encoded multiplier, or zero.
+/// @param expansion_slack Additional bytes allowed by the ratio constraint.
+/// @param out_data Receives malloc-owned aggregate bytes.
+/// @param out_len Receives aggregate decoded length.
+/// @param error_buffer Optional failure diagnostic destination.
+/// @param error_buffer_size Capacity of @p error_buffer.
+/// @return One on complete success, otherwise zero.
+static int gunzip_raw_limited(const uint8_t *data,
+                              size_t len,
+                              size_t max_output,
+                              size_t max_expansion_ratio,
+                              size_t expansion_slack,
+                              uint8_t **out_data,
+                              size_t *out_len,
+                              char *error_buffer,
+                              size_t error_buffer_size) {
+    uint8_t *volatile aggregate = NULL;
+    uint8_t *volatile member = NULL;
+    jmp_buf recovery;
+
+    if (out_data)
+        *out_data = NULL;
+    if (out_len)
+        *out_len = 0;
+    if (error_buffer && error_buffer_size > 0)
+        error_buffer[0] = '\0';
+    if (!data || !out_data || !out_len || len < 18) {
+        if (error_buffer && error_buffer_size > 0)
+            snprintf(error_buffer, error_buffer_size, "%s", "Gunzip: data too short");
+        return 0;
+    }
+
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        if (error_buffer && error_buffer_size > 0)
+            compress_save_trap_error(
+                error_buffer, error_buffer_size, "Gunzip: invalid compressed data");
+        rt_trap_clear_recovery();
+        free((void *)member);
+        free((void *)aggregate);
+        return 0;
+    }
+
+    const size_t effective_limit =
+        gunzip_output_limit(len, max_output, max_expansion_ratio, expansion_slack);
+    output_buffer_t out = {0};
+    size_t pos = 0;
+    int have_aggregate = 0;
+
+    while (pos < len) {
+        size_t member_len = 0;
+        size_t member_output_len = 0;
+        size_t remaining = have_aggregate ? effective_limit - out.len : effective_limit;
+        member =
+            gunzip_member_raw(data + pos, len - pos, remaining, &member_len, &member_output_len);
+        if (!member) {
+            rt_trap("Gunzip: member decode failed");
+            break;
+        }
+        if (member_len == 0 || member_len > len - pos) {
+            rt_trap("Gunzip: invalid member length");
+            break;
+        }
+
+        if (!have_aggregate) {
+            out.data = (uint8_t *)member;
+            out.len = member_output_len;
+            out.capacity = member_output_len;
+            out.max_output = effective_limit;
+            out.owns_data = true;
+            out.error = NULL;
+            aggregate = member;
+            member = NULL;
+            have_aggregate = 1;
+        } else {
+            if (!out_append(&out, (const uint8_t *)member, member_output_len)) {
+                rt_trap(out.error ? out.error : "Gunzip: output append failed");
+                break;
+            }
+            aggregate = out.data;
+            free((void *)member);
+            member = NULL;
+        }
+        pos += member_len;
+    }
+
+    rt_trap_clear_recovery();
+    if (pos != len || !have_aggregate) {
+        free((void *)member);
+        free((void *)aggregate);
+        if (error_buffer && error_buffer_size > 0 && error_buffer[0] == '\0')
+            snprintf(error_buffer, error_buffer_size, "%s", "Gunzip: invalid compressed data");
+        return 0;
+    }
+
+    *out_data = (uint8_t *)aggregate;
+    *out_len = out.len;
+    return 1;
+}
+
+/// @brief Decode a possibly concatenated GZIP stream into managed Bytes.
+/// @details Uses the bounded native decoder, then performs one final copy into
+///          runtime-managed storage. Allocation recovery releases the native
+///          result before re-raising.
 /// @param data Borrowed complete GZIP byte stream.
 /// @param len Encoded byte count.
 /// @return Fresh Bytes containing all member payloads concatenated in order,
 /// or `NULL` after a validation, limit, or allocation trap.
 static void *gunzip_data(const uint8_t *data, size_t len) {
-    if (len < 18) {
-        rt_trap("Gunzip: data too short");
+    uint8_t *raw = NULL;
+    size_t raw_len = 0;
+    char decode_error[256];
+    if (!gunzip_raw_limited(data,
+                            len,
+                            INFLATE_DEFAULT_MAX_OUTPUT,
+                            0,
+                            0,
+                            &raw,
+                            &raw_len,
+                            decode_error,
+                            sizeof(decode_error))) {
+        rt_trap(decode_error[0] ? decode_error : "Gunzip: invalid compressed data");
         return NULL;
     }
 
-    output_buffer_t out;
-    size_t estimate = len > INFLATE_DEFAULT_MAX_OUTPUT / 2 ? INFLATE_DEFAULT_MAX_OUTPUT : len * 2;
-    if (!out_init(&out, estimate, INFLATE_DEFAULT_MAX_OUTPUT))
-        return NULL;
+    return compress_native_to_managed_bytes(raw, raw_len, "Gunzip: result allocation failed");
+}
 
-    size_t pos = 0;
-    while (pos < len) {
-        size_t member_len = 0;
-        void *member = gunzip_member_data(data + pos, len - pos, &member_len);
-        if (member_len == 0 || member_len > len - pos) {
-            compress_release_temp_object(member);
-            out_free(&out);
-            rt_trap("Gunzip: invalid member length");
-            return NULL;
-        }
-        if (!out_append(&out, bytes_data(member), (size_t)bytes_len(member))) {
-            compress_release_temp_object(member);
-            out_free(&out);
-            return NULL;
-        }
-        compress_release_temp_object(member);
-        pos += member_len;
-    }
-
-    void *result = rt_bytes_new(out.len);
-    if (!result) {
-        out_free(&out);
-        return NULL;
-    }
-    if (out.len > 0)
-        memcpy(bytes_data(result), out.data, out.len);
-    out_free(&out);
-    return result;
+/// @copydoc rt_compress_gunzip_raw()
+int rt_compress_gunzip_raw(const uint8_t *data,
+                           size_t len,
+                           size_t max_output,
+                           size_t max_expansion_ratio,
+                           size_t expansion_slack,
+                           uint8_t **out_data,
+                           size_t *out_len) {
+    return gunzip_raw_limited(
+        data, len, max_output, max_expansion_ratio, expansion_slack, out_data, out_len, NULL, 0);
 }
 
 //=============================================================================

@@ -1070,14 +1070,13 @@ void *rt_heap_realloc(void *payload, size_t elem_size, size_t new_len, size_t ne
         return NULL;
 
     rt_gc_mutator_enter();
-    if (elem_size == 0 && new_cap > 0) {
-        rt_gc_mutator_exit();
-        return NULL;
-    }
-
     size_t cap = new_cap;
     if (cap < new_len)
         cap = new_len;
+    if (elem_size == 0 && cap > 0) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
 
     size_t payload_bytes = 0;
     if (cap > 0) {

@@ -26,6 +26,7 @@
 #include "rt_bytes.h"
 #include "rt_error.h"
 #include "rt_future.h"
+#include "rt_http_client.h"
 #include "rt_internal.h"
 #include "rt_list.h"
 #include "rt_map.h"
@@ -34,6 +35,7 @@
 
 #include <cassert>
 #include <csetjmp>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
 #include <string>
@@ -62,6 +64,7 @@ namespace {
 jmp_buf g_trap_jmp;
 const char *g_last_trap = nullptr;
 bool g_trap_expected = false;
+bool g_trap_returns = false;
 int g_trap_count = 0;
 } // namespace
 
@@ -70,6 +73,8 @@ extern "C" void vm_trap(const char *msg) {
     g_trap_count++;
     if (g_trap_expected)
         longjmp(g_trap_jmp, 1);
+    if (g_trap_returns)
+        return;
     // Unexpected trap — print and abort.
     fprintf(stderr, "UNEXPECTED TRAP: %s\n", msg ? msg : "(null)");
     _exit(1);
@@ -487,7 +492,49 @@ static void test_http_invalid_content_length() {
     server.join();
 }
 
-// ── Scenario 13: HTTP unsupported Transfer-Encoding is rejected ────────────
+// ── Scenario 13: A truncated HTTP status code is rejected safely ───────────
+static void test_http_truncated_status_code() {
+    int port = 0;
+    sock_t listener = make_listener(&port);
+    if (listener == SOCK_INVALID) {
+        printf("  SKIP: HttpTruncatedStatusCode → local bind unavailable\n");
+        return;
+    }
+
+    std::thread server([listener]() {
+        sock_t client_fd = accept(listener, NULL, NULL);
+        assert(client_fd != SOCK_INVALID);
+
+        char byte = 0;
+        char tail[4] = {0, 0, 0, 0};
+        while (recv(client_fd, &byte, 1, 0) == 1) {
+            tail[0] = tail[1];
+            tail[1] = tail[2];
+            tail[2] = tail[3];
+            tail[3] = byte;
+            if (tail[0] == '\r' && tail[1] == '\n' && tail[2] == '\r' && tail[3] == '\n')
+                break;
+        }
+
+        static const char response[] = "HTTP/1.1 \r\n";
+        send(client_fd, response, (int)(sizeof(response) - 1), 0);
+        SOCK_CLOSE(client_fd);
+        SOCK_CLOSE(listener);
+    });
+
+    char url[64];
+    snprintf(url, sizeof(url), "http://127.0.0.1:%d/short-status", port);
+    EXPECT_TRAP(rt_http_get(rt_const_cstr(url)));
+
+    assert(g_last_trap != nullptr);
+    assert(strstr(g_last_trap, "response") != nullptr || strstr(g_last_trap, "HTTP") != nullptr);
+    assert(rt_trap_get_net_code() == Err_ProtocolError);
+
+    printf("  PASS: HttpTruncatedStatusCode → rejected without an out-of-bounds read\n");
+    server.join();
+}
+
+// ── Scenario 14: HTTP unsupported Transfer-Encoding is rejected ────────────
 static void test_http_unsupported_transfer_encoding() {
     int port = 0;
     sock_t listener = make_listener(&port);
@@ -534,7 +581,7 @@ static void test_http_unsupported_transfer_encoding() {
     server.join();
 }
 
-// ── Scenario 14: UDP oversized datagrams are not silently truncated ────────
+// ── Scenario 15: UDP oversized datagrams are not silently truncated ────────
 static void test_udp_oversized_datagram_traps() {
     void *receiver = rt_udp_bind_at(rt_const_cstr("127.0.0.1"), 0);
     void *sender = rt_udp_bind_at(rt_const_cstr("127.0.0.1"), 0);
@@ -583,7 +630,7 @@ static void test_udp_oversized_datagram_traps() {
         rt_obj_free(receiver);
 }
 
-// ── Scenario 15: Async connect failure resolves as Future error ───────────
+// ── Scenario 16: Async connect failure resolves as Future error ───────────
 static void test_async_connect_failure_surfaces_as_future_error() {
     void *future = rt_async_connect_for(rt_const_cstr("127.0.0.1"), 1, 2000);
     assert(future != nullptr);
@@ -599,6 +646,27 @@ static void test_async_connect_failure_surfaces_as_future_error() {
     rt_string_unref(error);
     if (rt_obj_release_check0(future))
         rt_obj_free(future);
+}
+
+// ── Scenario 17: HttpClient stops after a returning trap hook ─────────────
+static void test_http_client_returning_trap_safety() {
+    void *client = rt_http_client_new();
+    assert(client != nullptr);
+
+    g_last_trap = nullptr;
+    g_trap_count = 0;
+    g_trap_returns = true;
+    void *response =
+        rt_http_client_get(client, reinterpret_cast<rt_string>(static_cast<uintptr_t>(0x12345u)));
+    g_trap_returns = false;
+
+    assert(response == nullptr);
+    assert(g_trap_count > 0);
+    assert(g_last_trap != nullptr);
+    if (rt_obj_release_check0(client))
+        rt_obj_free(client);
+
+    printf("  PASS: HttpClientReturningTrap -> invalid URL stops after cleanup\n");
 }
 
 // ── Main ───────────────────────────────────────────────────────────────────
@@ -692,9 +760,11 @@ int main() {
     test_dns_resolve4_nonexistent();
     test_dns_reverse_invalid();
     test_http_invalid_content_length();
+    test_http_truncated_status_code();
     test_http_unsupported_transfer_encoding();
     test_udp_oversized_datagram_traps();
     test_async_connect_failure_surfaces_as_future_error();
+    test_http_client_returning_trap_safety();
 
     net_cleanup();
 

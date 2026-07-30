@@ -5,12 +5,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/runtime/RTTextWrapTests.cpp
-// Purpose: Validate TextWrapper utility.
+// File: src/tests/runtime/RTTextWrapTests.cpp
+// Purpose: Validate TextWrapper layout behavior, handle checks, UTF-8
+//          boundaries, and recoverable size-overflow handling.
+// Key invariants:
+//   - Layout operations never split a UTF-8 continuation sequence.
+//   - Invalid handles and unrepresentable output sizes trap before data access.
+//   - A returning trap cannot turn failed size arithmetic into malloc(0)
+//     followed by an out-of-bounds write.
+// Ownership/Lifetime:
+//   - Registered stack-backed forged handles are unregistered before return.
+//   - Results created by the overflow regression are released by the test.
+// Links: src/runtime/text/rt_textwrap.c, src/runtime/text/rt_textwrap.h,
+//        src/runtime/core/rt_string_ops.c
 //
 //===----------------------------------------------------------------------===//
 
 #include "rt.hpp"
+#include "rt_internal.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_textwrap.h"
@@ -20,6 +32,22 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
+
+extern "C" {
+#include "rt_string_internal.h"
+}
+
+static bool g_return_traps = false;
+static const char *g_last_returning_trap = nullptr;
+
+extern "C" void vm_trap(const char *msg) {
+    if (g_return_traps) {
+        g_last_returning_trap = msg;
+        return;
+    }
+    rt_abort(msg);
+}
 
 /// @brief Helper to print test result.
 static void test_result(const char *name, bool passed) {
@@ -328,6 +356,38 @@ static void test_invalid_handles_trap() {
     printf("\n");
 }
 
+static void test_returning_trap_stops_size_overflow() {
+    printf("Testing TextWrapper recoverable size overflow:\n");
+
+    char prefix_bytes[] = "x";
+    rt_string_impl oversized_prefix = {
+        RT_STRING_MAGIC,
+        prefix_bytes,
+        nullptr,
+        std::numeric_limits<size_t>::max() > (size_t)std::numeric_limits<int64_t>::max()
+            ? (size_t)std::numeric_limits<int64_t>::max()
+            : std::numeric_limits<size_t>::max(),
+        1,
+    };
+    rt_string_register_handle(&oversized_prefix);
+
+    rt_string text = rt_const_cstr("a\n");
+    g_last_returning_trap = nullptr;
+    g_return_traps = true;
+    rt_string result = rt_textwrap_indent(text, &oversized_prefix);
+    g_return_traps = false;
+
+    test_result("Oversized indent reports a trap", g_last_returning_trap != nullptr);
+    test_result("Oversized indent returns a safe empty string",
+                result != nullptr && rt_str_len(result) == 0);
+
+    rt_string_unref(result);
+    rt_string_unref(text);
+    rt_string_unregister_handle(&oversized_prefix);
+
+    printf("\n");
+}
+
 static void test_utility() {
     printf("Testing TextWrapper Utility:\n");
 
@@ -435,6 +495,7 @@ int main() {
     test_shorten();
     test_alignment();
     test_invalid_handles_trap();
+    test_returning_trap_stops_size_overflow();
     test_utility();
     test_hang();
 

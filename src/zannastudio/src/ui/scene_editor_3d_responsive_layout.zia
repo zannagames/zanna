@@ -339,10 +339,6 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
     /// @brief Keep compact menu affordances visibly truthful.
     hide override func UpdateCommandMenuButtons() {
         if placementMenuButton != null {
-            var placementActive =
-                surfaceSnapEnabled
-                or surfaceAlignEnabled
-                or vertexSnapEnabled;
             placementMenuButton.SetTooltip(
                 "Surface Move " + (surfaceSnapEnabled ? "on" : "off")
                 + ", normal alignment "
@@ -353,10 +349,6 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
                 + "controls.");
         }
         if viewMenuButton != null {
-            var presentationActive =
-                viewOptionsVisible
-                or focusModeActive
-                or workspaceModeActive;
             viewMenuButton.SetTooltip(
                 "Camera views, framing, projection, overlays, and scene "
                 + "layout. Viewport options "

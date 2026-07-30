@@ -373,6 +373,15 @@ int64_t rt_skeleton3d_get_bone_parent_raw(void *obj, int64_t index) {
     return skeleton3d_valid_parent_index(s, (int32_t)index, s->bone_count);
 }
 
+/// @brief `Skeleton3D.GetBoneParent(index)` — read rig topology back (ADR 0227).
+/// @param[in,out] obj Skeleton to query.
+/// @param[in] index Zero-based bone index.
+/// @return The bone's validated direct-parent index, or `-1` for roots,
+///         invalid handles, or out-of-range indices.
+int64_t rt_skeleton3d_get_bone_parent(void *obj, int64_t index) {
+    return rt_skeleton3d_get_bone_parent_raw(obj, index);
+}
+
 /// @brief Internal: copy the bone's parent-relative bind matrix (row-major 16
 ///        doubles) into @p out16; returns 0 on out-of-range.
 /// @param[in,out] obj Skeleton to query.

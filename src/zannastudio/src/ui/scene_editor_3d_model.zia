@@ -104,6 +104,18 @@ final MAX_HIERARCHY_DEPTH: Integer = 256;
 final MAX_3D_SCENE_HISTORY: Integer = 100;
 final DEG_TO_RAD: Number = 0.017453292519943295;
 final RAD_TO_DEG: Number = 57.29577951308232;
+// Continuous zoom bounds in pixels per world unit. The floor lets a
+// minimal viewport still frame a multi-kilometre world; the ceiling keeps
+// sub-unit detail editable without degenerate projection math.
+final MIN_VIEW_SCALE: Number = 0.05;
+final MAX_VIEW_SCALE: Number = 400.0;
+final DEFAULT_VIEW_SCALE: Number = 28.0;
+// Multiplicative zoom steps: wheel dolly is fine-grained, buttons coarser.
+final VIEW_SCALE_WHEEL_FACTOR: Number = 1.15;
+final VIEW_SCALE_BUTTON_FACTOR: Number = 1.25;
+// Zoom deltas below this are no motion at all: every step is multiplicative
+// by at least 1.15, so nothing legitimate lands inside this window.
+final VIEW_SCALE_EPSILON: Number = 0.000001;
 final GIZMO_PIXEL_LENGTH: Number = 36.0;
 final GIZMO_PICK_RADIUS: Number = 7.0;
 final GIZMO_RING_PICK_RADIUS: Number = 6.0;
@@ -801,4 +813,28 @@ func ClampInt3D(value: Integer,
     if value < minimum { return minimum; }
     if value > maximum { return maximum; }
     return value;
+}
+
+/// @brief Clamp one continuous zoom value to the shared viewport bounds.
+func ClampViewScale(value: Number) -> Number {
+    if value < MIN_VIEW_SCALE { return MIN_VIEW_SCALE; }
+    if value > MAX_VIEW_SCALE { return MAX_VIEW_SCALE; }
+    return value;
+}
+
+/// @brief Return whether two zoom values are the same viewport scale.
+func ViewScaleMatches(left: Number, right: Number) -> Boolean {
+    var difference = left - right;
+    if difference < 0.0 { difference = 0.0 - difference; }
+    return difference <= VIEW_SCALE_EPSILON;
+}
+
+/// @brief Format one zoom value for status chrome (two decimals max).
+func FormatViewScale(value: Number) -> String {
+    var scaled = Math.Round(value * 100.0) / 100.0;
+    var whole = Math.Round(scaled);
+    if ViewScaleMatches(whole, scaled) {
+        return "" + Convert.NumToInt(whole);
+    }
+    return "" + scaled;
 }

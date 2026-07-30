@@ -258,6 +258,7 @@ template <std::size_t N>
         "Identity",
         "FromAxisAngle",
         "FromEuler",
+        "FromMat4",
         "Mul",
         "Conjugate",
         "Inverse",
@@ -266,6 +267,7 @@ template <std::size_t N>
         "Lerp",
         "RotateVec3",
         "ToMat4",
+        "ToEuler",
         "Axis",
     };
     constexpr std::string_view quatSymbols[] = {
@@ -273,6 +275,7 @@ template <std::size_t N>
         "identity",
         "from_axis_angle",
         "from_euler",
+        "from_mat4",
         "mul",
         "conjugate",
         "inverse",
@@ -281,6 +284,7 @@ template <std::size_t N>
         "lerp",
         "rotate_vec3",
         "to_mat4",
+        "to_euler",
         "axis",
     };
     constexpr std::string_view splineOperations[] = {
@@ -360,6 +364,12 @@ template <std::size_t N>
            name == "Zanna.Graphics3D.Material3D.get_Color" ||
            name == "Zanna.Graphics3D.Transform3D.get_Position" ||
            name == "Zanna.Graphics3D.Transform3D.get_Scale" ||
+           name == "Zanna.Graphics3D.Transform3D.GetEuler" ||
+           name == "Zanna.Graphics3D.Camera3D.get_Up" ||
+           name == "Zanna.Graphics3D.Terrain3D.GetScale" ||
+           name == "Zanna.Graphics3D.Water3D.get_Position" ||
+           name == "Zanna.Graphics3D.Water3D.get_Color" ||
+           name == "Zanna.Math.Quat.ToEuler" ||
            name == "Zanna.Graphics3D.LightProbeGrid3D.Sample" ||
            name == "Zanna.Graphics3D.TimeOfDay3D.get_SunDirection" ||
            name == "Zanna.Graphics3D.ReflectionProbe3D.get_Position" ||
@@ -397,7 +407,10 @@ template <std::size_t N>
            name == "rt_body3d_get_velocity" || name == "rt_body3d_get_angular_velocity" ||
            name == "rt_body3d_get_ground_normal" || name == "rt_character3d_get_position" ||
            name == "rt_camera3d_get_position" || name == "rt_camera3d_get_forward" ||
-           name == "rt_camera3d_get_right" || name == "rt_mesh3d_get_vertex_position" ||
+           name == "rt_camera3d_get_right" || name == "rt_camera3d_get_up" ||
+           name == "rt_terrain3d_get_scale" || name == "rt_water3d_get_position" ||
+           name == "rt_water3d_get_color" || name == "rt_transform3d_get_euler" ||
+           name == "rt_quat_to_euler" || name == "rt_mesh3d_get_vertex_position" ||
            name == "rt_material3d_get_color" || name == "rt_transform3d_get_position" ||
            name == "rt_transform3d_get_scale" || name == "rt_lightprobegrid3d_sample" ||
            name == "rt_timeofday3d_get_sun_direction" ||
@@ -424,6 +437,10 @@ template <std::size_t N>
 ///         snapshot.
 [[nodiscard]] constexpr bool returnsFresh3DMathSnapshot(std::string_view name) noexcept {
     return name == "Zanna.Graphics3D.SceneNode.get_Rotation" ||
+           name == "Zanna.Graphics3D.Camera3D.get_ViewMatrix" ||
+           name == "Zanna.Graphics3D.Camera3D.get_ProjectionMatrix" ||
+           name == "Zanna.Graphics3D.Skeleton3D.GetBoneBindPose" ||
+           name == "Zanna.Graphics3D.InstanceBatch3D.GetTransform" ||
            name == "Zanna.Graphics3D.SceneNode.get_WorldMatrix" ||
            name == "Zanna.Graphics3D.SceneNode.get_WorldRotation" ||
            name == "Zanna.Graphics3D.PhysicsBody3D.get_Orientation" ||
@@ -431,6 +448,9 @@ template <std::size_t N>
            name == "Zanna.Graphics3D.Transform3D.get_Matrix" ||
            name == "Zanna.Graphics3D.AnimController3D.GetBoneMatrix" ||
            name == "Zanna.Game3D.Animator3D.GetBoneMatrix" ||
+           name == "rt_camera3d_get_view_matrix" ||
+           name == "rt_camera3d_get_projection_matrix" ||
+           name == "rt_skeleton3d_get_bone_bind_pose" || name == "rt_instbatch3d_get" ||
            name == "rt_scene_node3d_get_rotation" || name == "rt_scene_node3d_get_world_matrix" ||
            name == "rt_scene_node3d_get_world_rotation" || name == "rt_body3d_get_orientation" ||
            name == "rt_transform3d_get_rotation" || name == "rt_transform3d_get_matrix" ||

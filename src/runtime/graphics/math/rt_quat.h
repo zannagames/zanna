@@ -76,6 +76,20 @@ void *rt_quat_from_axis_angle(void *axis, double angle);
 /// @return New unit Quat, identity for non-finite input, or NULL after an allocation trap.
 void *rt_quat_from_euler(double pitch, double yaw, double roll);
 
+/// @brief Decompose a rotation into (pitch, yaw, roll) radians (ADR 0227).
+/// @details Exact inverse of rt_quat_from_euler up to quaternion sign; at the
+///          gimbal poles pitch reports zero and roll carries the shared twist.
+/// @param q Quat handle to decompose.
+/// @return New Vec3 of Euler radians, or NULL after trapping for an invalid handle.
+void *rt_quat_to_euler(void *q);
+
+/// @brief Extract a matrix's rotation as a normalized quaternion (ADR 0227).
+/// @details Column-normalizes the upper-left 3x3 basis first, so scaled
+///          transforms decompose by their rotation; degenerate bases yield identity.
+/// @param m Mat4 handle whose rotation is extracted.
+/// @return New rotation Quat, or NULL after trapping for an invalid handle.
+void *rt_quat_from_mat4(void *m);
+
 /// @brief Read the x component of a quaternion's imaginary part.
 /// @param q Quat handle to inspect.
 /// @return Stored x component, or 0.0 after trapping for an invalid handle.

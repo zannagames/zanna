@@ -123,14 +123,21 @@ class SceneEditor3DBakeEnvironmentLayer extends PreviousLayer.SceneEditor3DCompo
             BakeSceneNavmesh();
         }
         if envBrowseButton.WasClicked() {
-            envBrowseMode = true;
-            importBrowserInstanceMode = false;
-            importAssetBrowser.SetExtensions(".hdr,.png,.jpg,.jpeg");
-            importAssetBrowser.Open();
+            OpenEnvironmentBrowse();
         }
         if envApplyButton.WasClicked() {
             ApplyEnvironmentFromControls();
         }
+    }
+
+    /// @brief Arm the shared import browser to capture one skybox pick.
+    /// The armed routing stays set only until any other import affordance
+    /// retargets the browser (see OpenImportInstanceBrowser).
+    expose func OpenEnvironmentBrowse() {
+        envBrowseMode = true;
+        importBrowserInstanceMode = false;
+        importAssetBrowser.SetExtensions(".hdr,.png,.jpg,.jpeg");
+        importAssetBrowser.Open();
     }
 
     /// @brief Read the bake settings draft from the retained controls.

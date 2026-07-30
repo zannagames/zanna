@@ -336,10 +336,11 @@ class SceneEditor2DRendererLayer extends PreviousLayer.SceneEditor2DRulersLayer 
     /// @details Object-local pixel offsets/extents scale by the display
     ///          cell ratio; triggers render dashed-feeling via a second
     ///          inset outline so blocking and overlap volumes read apart.
+    ///          Outline color is by convention (blocking vs trigger), not
+    ///          by object tint, so volumes stay comparable across objects.
     hide func DrawColliderOverlay2D(objectIndex: Integer,
                                     objectX: Integer,
-                                    objectY: Integer,
-                                    tint: Integer) {
+                                    objectY: Integer) {
         var state = scene_collider_2d.FromObject(scene, objectIndex);
         if state.kind == scene_collider_2d.COLLIDER_NONE { return; }
         var scaleX = 1.0 * displayCellSize / scene.TileWidth;
@@ -616,8 +617,7 @@ class SceneEditor2DRendererLayer extends PreviousLayer.SceneEditor2DRulersLayer 
                     SceneEditor2DModel.ClampInt(displayCellSize / 2 + 3, 5, 24),
                     Color.RGB(255, 236, 150));
             }
-            DrawColliderOverlay2D(
-                objectIndex, objectX, objectY, objectColor);
+            DrawColliderOverlay2D(objectIndex, objectX, objectY);
             // The outline follows the transformed sprite footprint
             // (ADR 0192); markers keep their legacy one-cell frame.
             if objectIndex == selectedObject and RectToolEligible() {

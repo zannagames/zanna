@@ -539,8 +539,12 @@ void rt_binbuf_write_str(void *obj, rt_string value) {
     if (!buf)
         return;
 
-    const char *cstr = value ? rt_string_cstr(value) : "";
+    if (value && !rt_string_is_handle(value)) {
+        rt_trap("BinaryBuffer: invalid string");
+        return;
+    }
     int64_t slen = value ? rt_str_len(value) : 0;
+    const char *cstr = value ? rt_string_cstr(value) : "";
     if (slen < 0) {
         rt_trap("BinaryBuffer: invalid string length");
         return;
@@ -835,6 +839,8 @@ void *rt_binbuf_read_bytes(void *obj, int64_t count) {
         return NULL;
 
     void *result = rt_bytes_new(count);
+    if (!result)
+        return NULL;
     uint8_t *dst = rt_bytes_data(result);
     if (dst && count > 0)
         memcpy(dst, buf->data + buf->position, (size_t)count);

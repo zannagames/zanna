@@ -184,6 +184,10 @@ int8_t rt_canvas3d_should_close(void *obj);
 /// @param obj Borrowed Canvas3D handle.
 /// @param enabled Non-zero for edge-only rasterization; zero for filled rasterization.
 void rt_canvas3d_set_wireframe(void *obj, int8_t enabled);
+/// @brief Read whether wireframe rendering is enabled (ADR 0227).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Nonzero when wireframe rendering is active, or 0 for invalid handles.
+int8_t rt_canvas3d_get_wireframe(void *obj);
 /// @brief Toggle backface culling (CCW = front-facing).
 /// @param obj Borrowed Canvas3D handle.
 /// @param enabled Non-zero to cull clockwise back faces; zero to render both sides.
@@ -1103,6 +1107,25 @@ void *rt_camera3d_get_forward(void *obj);
 /// @param obj Borrowed Camera3D handle.
 /// @return New GC-managed normalized Vec3, or NULL for invalid input/allocation failure.
 void *rt_camera3d_get_right(void *obj);
+/// @brief Get the unit up vector (the camera's screen-up axis, ADR 0227).
+/// @param obj Borrowed Camera3D handle.
+/// @return New GC-managed normalized Vec3, or NULL for invalid input/allocation failure.
+void *rt_camera3d_get_up(void *obj);
+/// @brief Get the camera's retained row-major view matrix (ADR 0227).
+/// @param obj Borrowed Camera3D handle.
+/// @return New GC-managed Mat4 copy, or NULL for invalid input/allocation failure.
+void *rt_camera3d_get_view_matrix(void *obj);
+/// @brief Get the camera's retained row-major projection matrix (ADR 0227).
+/// @details Exactly the projection the renderer last synced for this camera —
+///          including reversed-Z on backends that use it — so Zia-side
+///          projection math can never drift from the rendered result.
+/// @param obj Borrowed Camera3D handle.
+/// @return New GC-managed Mat4 copy, or NULL for invalid input/allocation failure.
+void *rt_camera3d_get_projection_matrix(void *obj);
+/// @brief Get the width-to-height aspect ratio the projection was built with (ADR 0227).
+/// @param obj Borrowed Camera3D handle.
+/// @return Retained positive aspect ratio, or 0.0 for an invalid camera.
+double rt_camera3d_get_aspect(void *obj);
 /// @brief Project a world point to pixels; returns 1 when in front of the camera.
 /// @param obj Borrowed Camera3D handle.
 /// @param x World-space X coordinate.

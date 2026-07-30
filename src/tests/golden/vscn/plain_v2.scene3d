@@ -1,0 +1,42 @@
+{
+  "format": "vscn",
+  "version": 2,
+  "textures": [
+  ],
+  "cubemaps": [
+  ],
+  "materials": [
+  ],
+  "meshes": [
+  ],
+  "nodes": [
+    {
+      "name": "Golden Parent",
+      "position": [1, 2, 3],
+      "rotation": [0, 0, 0, 1],
+      "scale": [2, 2, 2],
+      "visible": true,
+      "isStatic": false,
+      "syncMode": 0,
+      "hasMesh": false,
+      "hasMaterial": false,
+      "mesh": -1,
+      "material": -1,
+      "children": [
+        {
+          "name": "Golden Child",
+          "position": [0, 1.5, 0],
+          "rotation": [0, 0, 0, 1],
+          "scale": [1, 1, 1],
+          "visible": false,
+          "isStatic": false,
+          "syncMode": 0,
+          "hasMesh": false,
+          "hasMaterial": false,
+          "mesh": -1,
+          "material": -1
+        }
+      ]
+    }
+  ]
+}

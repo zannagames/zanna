@@ -71,15 +71,23 @@ typedef struct {
     bool in_use;            ///< Whether a caller currently has the entry checked out.
 } pooled_entry_t;
 
+/** Pool-owned TCP reference detached for cleanup after unlocking. */
+typedef struct {
+    void *tcp;            ///< Pool-retained reference to release.
+    uint64_t owner_token; ///< Lease token to release after optional close.
+    bool close_transport; ///< Whether cleanup closes the TCP first.
+    bool owns_claim;      ///< Whether cleanup still holds @ref owner_token.
+} connpool_discard_t;
+
 /** Complete managed ConnectionPool payload and native synchronization state. */
 typedef struct {
-    uint64_t magic;                            ///< Initialized payload sentinel.
-    uint64_t owner_token;                      ///< Exclusive TCP lease identity.
+    uint64_t magic;                           ///< Initialized payload sentinel.
+    uint64_t owner_token;                     ///< Exclusive TCP lease identity.
     pooled_entry_t entries[POOL_MAX_ENTRIES]; ///< Fixed tracked-entry storage.
-    int count;                                 ///< Number of active array slots.
-    int max_size;                              ///< Configured active-slot ceiling.
-    pool_mutex_t lock;                         ///< Native bookkeeping mutex.
-    bool lock_initialized;                     ///< Whether @ref lock may be used.
+    int count;                                ///< Number of active array slots.
+    int max_size;                             ///< Configured active-slot ceiling.
+    pool_mutex_t lock;                        ///< Native bookkeeping mutex.
+    bool lock_initialized;                    ///< Whether @ref lock may be used.
 } rt_connpool_impl;
 
 //=============================================================================
@@ -269,41 +277,81 @@ static bool connpool_entry_is_idle_expired(const pooled_entry_t *entry, int64_t 
     return age_ms >= POOL_IDLE_TIMEOUT_MS;
 }
 
-/// @brief Drop a pool entry's lease and managed reference.
-/// @details The transport is closed only when the lease is still owned by this
-///          pool (or already unleased). A foreign token indicates internal
-///          inconsistency; detaching without close avoids invalidating another
-///          pool's borrower. The entry is zeroed for safe slot reuse.
+/// @brief Detach a pool entry for destruction after the bookkeeping unlock.
+/// @details An idle transport that will be closed keeps the pool's lease until
+///          deferred cleanup, preventing another pool from adopting it in the
+///          unlock-to-close interval. A checked-out transport is unclaimed
+///          immediately so its borrower can return it after a concurrent clear.
+/// @param pool Pool that owns @p entry.
+/// @param entry Entry to detach and zero.
+/// @param close_transport Whether an exclusively owned transport should close.
+/// @param discard Destination that assumes the entry's managed reference.
+static void detach_entry(rt_connpool_impl *pool,
+                         pooled_entry_t *entry,
+                         bool close_transport,
+                         connpool_discard_t *discard) {
+    if (!pool || !entry || !discard)
+        return;
+    memset(discard, 0, sizeof(*discard));
+    discard->tcp = entry->tcp;
+    if (discard->tcp) {
+        uint64_t owner = rt_tcp_pool_owner(discard->tcp);
+        if (owner == pool->owner_token) {
+            discard->owner_token = pool->owner_token;
+            discard->close_transport = close_transport;
+            discard->owns_claim = close_transport;
+            if (!close_transport)
+                (void)rt_tcp_pool_release_claim(discard->tcp, pool->owner_token);
+        }
+    }
+    memset(entry, 0, sizeof(*entry));
+}
+
+/// @brief Finish one detached TCP cleanup without the pool mutex held.
+/// @param discard Detached ownership record to consume.
+static void connpool_discard_release(connpool_discard_t *discard) {
+    if (!discard)
+        return;
+    if (discard->tcp) {
+        if (discard->close_transport && discard->owns_claim)
+            rt_tcp_close(discard->tcp);
+        if (discard->owns_claim)
+            (void)rt_tcp_pool_release_claim(discard->tcp, discard->owner_token);
+        connpool_release_object(discard->tcp);
+    }
+    memset(discard, 0, sizeof(*discard));
+}
+
+/// @brief Drop a pool entry's lease and managed reference immediately.
+/// @details Reserved for quiescent finalization; synchronized public paths
+///          detach under the mutex and invoke cleanup only after unlocking.
 /// @param pool Pool that owns @p entry.
 /// @param entry Entry to discard.
 /// @param close_transport Whether an exclusively owned transport should close.
 static void discard_entry(rt_connpool_impl *pool, pooled_entry_t *entry, bool close_transport) {
     if (!pool || !entry)
         return;
-    void *tcp = entry->tcp;
-    if (tcp) {
-        uint64_t owner = rt_tcp_pool_owner(tcp);
-        if (owner == pool->owner_token) {
-            if (close_transport)
-                rt_tcp_close(tcp);
-            (void)rt_tcp_pool_release_claim(tcp, pool->owner_token);
-        }
-        connpool_release_object(tcp);
-    }
-    memset(entry, 0, sizeof(*entry));
+    connpool_discard_t discard;
+    detach_entry(pool, entry, close_transport, &discard);
+    connpool_discard_release(&discard);
 }
 
 /// @brief Remove the entry at @p index using swap-with-last for O(1) deletion.
 /// @details Order within the @c entries array is not meaningful — slots are
 ///          looked up linearly by `(key, in_use)` — so the cheap swap is
-///          preferred over a memmove. The vacated tail slot is zeroed.
+///          preferred over a memmove. Ownership is detached into @p discard
+///          for cleanup after the caller releases the pool mutex.
 /// @param pool Locked pool containing the entry.
 /// @param index Zero-based entry index to remove; invalid values are ignored.
 /// @param close_transport Whether to close a transport still leased to @p pool.
-static void remove_entry_at(rt_connpool_impl *pool, int index, bool close_transport) {
-    if (!pool || index < 0 || index >= pool->count)
+/// @param discard Destination for the removed entry's ownership.
+static void remove_entry_at(rt_connpool_impl *pool,
+                            int index,
+                            bool close_transport,
+                            connpool_discard_t *discard) {
+    if (!pool || !discard || index < 0 || index >= pool->count)
         return;
-    discard_entry(pool, &pool->entries[index], close_transport);
+    detach_entry(pool, &pool->entries[index], close_transport, discard);
     pool->entries[index] = pool->entries[pool->count - 1];
     memset(&pool->entries[pool->count - 1], 0, sizeof(pooled_entry_t));
     pool->count--;
@@ -391,20 +439,26 @@ static int tcp_connection_healthy(void *tcp) {
     return rt_socket_error_is_would_block(GET_LAST_ERROR()) ? 1 : 0;
 }
 
-/// @brief Close an untracked TCP while holding an exclusive temporary lease.
+/// @brief Claim an untracked TCP for deferred close outside the pool mutex.
 /// @details A zero owner is first claimed for this pool, preventing another
 ///          pool from adopting the connection between the ownership check and
-///          `close`. An existing same-pool token is accepted. A foreign token
-///          is never overwritten and leaves the transport untouched.
+///          deferred close. An existing same-pool token is accepted. A foreign
+///          token is never overwritten and leaves the transport untouched.
 /// @param pool Pool attempting to close the untracked handle.
 /// @param tcp Valid, retained TCP handle.
-/// @return True when this pool closed the transport; false for a foreign race.
-static bool connpool_close_untracked(rt_connpool_impl *pool, void *tcp) {
-    if (!pool || !tcp || !rt_tcp_pool_try_claim(tcp, pool->owner_token))
-        return false;
+/// @return True when this pool owns the close lease; false for a foreign race.
+static bool connpool_claim_untracked(rt_connpool_impl *pool, void *tcp) {
+    return pool && tcp && rt_tcp_pool_try_claim(tcp, pool->owner_token);
+}
+
+/// @brief Close a TCP while holding this pool's previously acquired lease.
+/// @param pool Pool whose token protects @p tcp.
+/// @param tcp Valid, retained TCP handle.
+static void connpool_close_claimed(rt_connpool_impl *pool, void *tcp) {
+    if (!pool || !tcp)
+        return;
     rt_tcp_close(tcp);
     (void)rt_tcp_pool_release_claim(tcp, pool->owner_token);
-    return true;
 }
 
 //=============================================================================
@@ -500,48 +554,91 @@ void *rt_connpool_acquire(void *obj, rt_string host, int64_t port) {
     }
     uint64_t endpoint_hash = connpool_endpoint_hash(host_str, host_len, (int)port);
 
-    if (!connpool_mutex_lock(&pool->lock)) {
-        connpool_release_object(pool);
-        rt_trap("ConnectionPool: mutex lock failed");
-        return NULL;
-    }
-
-    // Evict expired idle connections
-    int64_t now_ms = connpool_now_ms();
-    for (int i = 0; i < pool->count; i++) {
-        if (connpool_entry_is_idle_expired(&pool->entries[i], now_ms)) {
-            remove_entry_at(pool, i, true);
-            i--;
+    for (;;) {
+        void *candidate = NULL;
+        connpool_discard_t discards[POOL_MAX_ENTRIES];
+        size_t discard_count = 0;
+        if (!connpool_mutex_lock(&pool->lock)) {
+            connpool_release_object(pool);
+            rt_trap("ConnectionPool: mutex lock failed");
+            return NULL;
         }
-    }
 
-    // Look for an idle connection with matching endpoint.
-    for (int i = 0; i < pool->count; i++) {
-        if (!pool->entries[i].in_use &&
-            connpool_entry_matches(
-                &pool->entries[i], endpoint_hash, host_str, host_len, (int)port)) {
-            if (tcp_connection_healthy(pool->entries[i].tcp)) {
-                void *tcp = pool->entries[i].tcp;
-                int32_t retained = rt_heap_try_retain_live(tcp);
-                if (retained > 0) {
-                    pool->entries[i].in_use = true;
-                    connpool_mutex_unlock(&pool->lock);
-                    connpool_release_object(pool);
-                    return tcp;
-                }
-                if (retained < 0) {
-                    connpool_mutex_unlock(&pool->lock);
-                    connpool_release_object(pool);
-                    rt_trap("ConnectionPool.Acquire: TCP reference count overflow");
-                    return NULL;
-                }
+        // Evict expired idle connections.
+        int64_t now_ms = connpool_now_ms();
+        for (int i = 0; i < pool->count; i++) {
+            if (connpool_entry_is_idle_expired(&pool->entries[i], now_ms)) {
+                if (discard_count >= POOL_MAX_ENTRIES)
+                    rt_abort("ConnectionPool: discard capacity exhausted");
+                remove_entry_at(pool, i, true, &discards[discard_count]);
+                discard_count++;
+                i--;
             }
-            remove_entry_at(pool, i, true);
+        }
+
+        // Reserve and retain one endpoint match. Socket health is probed only
+        // after unlocking so a select/peek readiness race cannot convoy the
+        // complete pool.
+        for (int i = 0; i < pool->count; i++) {
+            pooled_entry_t *entry = &pool->entries[i];
+            if (entry->in_use ||
+                !connpool_entry_matches(entry, endpoint_hash, host_str, host_len, (int)port)) {
+                continue;
+            }
+            int32_t retained = rt_heap_try_retain_live(entry->tcp);
+            if (retained > 0) {
+                entry->in_use = true;
+                candidate = entry->tcp;
+                break;
+            }
+            if (retained < 0) {
+                connpool_mutex_unlock(&pool->lock);
+                for (size_t j = 0; j < discard_count; j++)
+                    connpool_discard_release(&discards[j]);
+                connpool_release_object(pool);
+                rt_trap("ConnectionPool.Acquire: TCP reference count overflow");
+                return NULL;
+            }
+            if (discard_count >= POOL_MAX_ENTRIES)
+                rt_abort("ConnectionPool: discard capacity exhausted");
+            remove_entry_at(pool, i, true, &discards[discard_count]);
+            discard_count++;
             i--;
         }
+        connpool_mutex_unlock(&pool->lock);
+        for (size_t i = 0; i < discard_count; i++)
+            connpool_discard_release(&discards[i]);
+
+        if (!candidate)
+            break;
+        if (tcp_connection_healthy(candidate)) {
+            connpool_release_object(pool);
+            return candidate;
+        }
+
+        if (!connpool_mutex_lock(&pool->lock)) {
+            rt_tcp_close(candidate);
+            connpool_release_object(candidate);
+            connpool_release_object(pool);
+            rt_trap("ConnectionPool: mutex lock failed");
+            return NULL;
+        }
+        connpool_discard_t discard;
+        bool detached = false;
+        for (int i = 0; i < pool->count; i++) {
+            if (pool->entries[i].tcp == candidate && pool->entries[i].in_use) {
+                remove_entry_at(pool, i, false, &discard);
+                detached = true;
+                break;
+            }
+        }
+        connpool_mutex_unlock(&pool->lock);
+        if (detached)
+            connpool_discard_release(&discard);
+        rt_tcp_close(candidate);
+        connpool_release_object(candidate);
     }
 
-    connpool_mutex_unlock(&pool->lock);
     connpool_release_object(pool);
 
     // No pooled connection available; create new one
@@ -606,6 +703,7 @@ void rt_connpool_release(void *obj, void *conn) {
         return;
     }
 
+    int healthy = tcp_connection_healthy(conn);
     if (!connpool_mutex_lock(&pool->lock)) {
         connpool_release_object(conn);
         connpool_release_object(pool);
@@ -616,9 +714,11 @@ void rt_connpool_release(void *obj, void *conn) {
     // Find the entry for this connection (if it was tracked)
     for (int i = 0; i < pool->count; i++) {
         if (pool->entries[i].tcp == conn) {
-            if (!tcp_connection_healthy(conn)) {
-                remove_entry_at(pool, i, true);
+            if (!healthy) {
+                connpool_discard_t discard;
+                remove_entry_at(pool, i, true, &discard);
                 connpool_mutex_unlock(&pool->lock);
+                connpool_discard_release(&discard);
                 connpool_release_object(conn);
                 connpool_release_object(pool);
                 return;
@@ -641,12 +741,14 @@ void rt_connpool_release(void *obj, void *conn) {
         return;
     }
 
-    if (!tcp_connection_healthy(conn)) {
-        bool closed = connpool_close_untracked(pool, conn);
+    if (!healthy) {
+        bool claimed = connpool_claim_untracked(pool, conn);
         connpool_mutex_unlock(&pool->lock);
+        if (claimed)
+            connpool_close_claimed(pool, conn);
         connpool_release_object(conn);
         connpool_release_object(pool);
-        if (!closed)
+        if (!claimed)
             rt_trap("ConnectionPool.Release: TCP belongs to another pool");
         return;
     }
@@ -670,21 +772,22 @@ void rt_connpool_release(void *obj, void *conn) {
         return;
     }
 
-    bool closed = connpool_close_untracked(pool, conn);
+    bool claimed = connpool_claim_untracked(pool, conn);
     connpool_mutex_unlock(&pool->lock);
+    if (claimed)
+        connpool_close_claimed(pool, conn);
     connpool_release_object(conn);
     connpool_release_object(pool);
-    if (!closed)
+    if (!claimed)
         rt_trap("ConnectionPool.Release: TCP belongs to another pool");
 }
 
 /// @brief Drop every pooled entry and reset the entry count to zero.
-/// @details Holds the pool mutex across the entire sweep so a concurrent
-///          `acquire`/`release` cannot observe a partially-cleared pool.
-///          Idle entries are closed; CHECKED-OUT entries are detached
-///          without closing so a handle currently held by an `Acquire`
-///          caller keeps working — it simply is no longer tracked (a later
-///          `Release` re-adopts or closes it).
+/// @details Atomically detaches the complete entry set under the pool mutex,
+///          then closes idle transports and releases managed references after
+///          unlocking. Checked-out handles are detached without closing so an
+///          `Acquire` caller keeps working; a later `Release` re-adopts or
+///          closes the handle.
 /// @param obj ConnectionPool handle to clear; NULL is a no-op.
 void rt_connpool_clear(void *obj) {
     if (!obj)
@@ -698,10 +801,16 @@ void rt_connpool_clear(void *obj) {
         rt_trap("ConnectionPool: mutex lock failed");
         return;
     }
-    for (int i = 0; i < pool->count; i++)
-        discard_entry(pool, &pool->entries[i], !pool->entries[i].in_use);
+    connpool_discard_t discards[POOL_MAX_ENTRIES];
+    size_t discard_count = 0;
+    for (int i = 0; i < pool->count; i++) {
+        detach_entry(pool, &pool->entries[i], !pool->entries[i].in_use, &discards[discard_count]);
+        discard_count++;
+    }
     pool->count = 0;
     connpool_mutex_unlock(&pool->lock);
+    for (size_t i = 0; i < discard_count; i++)
+        connpool_discard_release(&discards[i]);
     connpool_release_object(pool);
 }
 

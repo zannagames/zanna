@@ -11,14 +11,16 @@
 //   - Persistent headers (e.g., Authorization) are sent with every request.
 //   - Base URL and request path are joined by slash normalization, not RFC reference resolution.
 //   - JSON helper methods append Content-Type/Accept application/json fields.
-//   - Timeout is reused for connection attempts and socket-I/O phases.
+//   - Each request uses one monotonic deadline across every transport phase.
 //   - Mutable defaults, pool configuration, and last-response state are mutex protected.
 //
 // Ownership/Lifetime:
 //   - RestClient objects and returned response/string handles are runtime managed.
 //   - BaseUrl and LastResponse return independent caller-owned references.
 //
-// Links: src/runtime/network/rt_restclient.c (implementation), src/runtime/core/rt_string.h
+// Links: src/runtime/network/rt_restclient.c (implementation),
+//        docs/adr/0228-http-end-to-end-request-deadlines.md,
+//        src/runtime/core/rt_string.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -106,9 +108,12 @@ void rt_restclient_set_auth_basic(void *obj, rt_string username, rt_string passw
 void rt_restclient_clear_auth(void *obj);
 
 /// @brief Set the synchronized default timeout for subsequent requests.
+/// @details Each request receives one monotonic budget shared by name
+///          resolution, address attempts, TLS, I/O, redirects, and response
+///          transformations.
 /// @param obj RestClient object.
 /// @param timeout_ms Milliseconds in the inclusive range 0..INT_MAX; zero
-///        disables address/socket operation deadlines.
+///        disables the request deadline.
 void rt_restclient_set_timeout(void *obj, int64_t timeout_ms);
 
 /// @brief Read whether the client reuses keep-alive connections.
