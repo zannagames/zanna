@@ -10,7 +10,7 @@
 // Key invariants:
 //   - Conversions produce new independent collections; source collections are not modified.
 //   - Element ordering follows each source type's iteration order.
-//   - Set conversions deduplicate by pointer equality.
+//   - Set conversions deduplicate with the Set's boxed-value equality.
 //   - Variadic constructors take a count followed by that many object pointers.
 //
 // Ownership/Lifetime:
@@ -204,7 +204,7 @@ void *rt_ring_to_seq(void *ring);
 /// @param count Number of following object pointers; non-positive values
 ///        produce an empty Seq.
 /// @param ... Exactly @p count elements in desired order.
-/// @return New Seq containing the supplied pointers.
+/// @return New owning Seq containing and retaining the supplied pointers.
 void *rt_seq_of(int64_t count, ...);
 
 /// @brief Create a List from a variable number of elements.

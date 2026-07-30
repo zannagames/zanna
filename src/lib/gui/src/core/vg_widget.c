@@ -74,8 +74,37 @@ static size_t g_live_widget_table_cap = 0;
 static size_t g_live_widget_table_count = 0;
 static size_t g_live_widget_table_occupied = 0;
 
+typedef struct widget_destroy_frame {
+    vg_widget_t *widget;
+    uint64_t id;
+    struct widget_destroy_frame *previous;
+} widget_destroy_frame_t;
+
+static widget_destroy_frame_t *g_widget_destroy_stack = NULL;
+
 #define VG_WIDGET_LIVE_TABLE_MIN_CAP 256u
 #define VG_WIDGET_LIVE_TABLE_TOMBSTONE ((vg_widget_t *)(uintptr_t)UINTPTR_MAX)
+
+/// @brief Validate that a borrowed widget still denotes one live generation.
+/// @param widget Candidate widget pointer.
+/// @param id Stable identifier captured before callback-capable code.
+/// @return True only while pointer and identifier still name the same live widget.
+static bool widget_ref_is_live(const vg_widget_t *widget, uint64_t id) {
+    return widget && id != 0 && vg_widget_is_live(widget) && widget->id == id;
+}
+
+/// @brief Return whether one widget generation already has an active destroy frame.
+/// @param widget Candidate widget pointer.
+/// @param id Stable identifier of the generation being destroyed.
+/// @return True when a recursive destroy call must stop at the existing owner.
+static bool widget_destroy_is_active(const vg_widget_t *widget, uint64_t id) {
+    for (const widget_destroy_frame_t *frame = g_widget_destroy_stack; frame;
+         frame = frame->previous) {
+        if (frame->widget == widget && frame->id == id)
+            return true;
+    }
+    return false;
+}
 
 /// @brief Hash a widget pointer for the open-addressed live-widget table.
 /// @param widget Widget pointer to hash.
@@ -955,11 +984,14 @@ static void clear_interactive_state_recursive(vg_widget_t *widget) {
 /// @param widget Root of the subtree being hidden, detached, or destroyed.
 /// @param notify_hidden True to notify tooltip management that the subtree is hidden.
 static void clear_runtime_references_for_subtree(vg_widget_t *widget, bool notify_hidden) {
-    if (!widget)
+    if (!vg_widget_is_live(widget))
         return;
+    const uint64_t widget_id = widget->id;
 
     if (g_focused_widget && widget_is_ancestor(widget, g_focused_widget)) {
         vg_widget_set_focus(NULL);
+        if (!widget_ref_is_live(widget, widget_id))
+            return;
     }
     if (g_input_capture_widget && widget_is_ancestor(widget, g_input_capture_widget)) {
         g_input_capture_widget = NULL;
@@ -984,7 +1016,11 @@ static void clear_runtime_references_for_subtree(vg_widget_t *widget, bool notif
     }
     if (notify_hidden)
         vg_tooltip_manager_widget_hidden(widget);
+    if (!widget_ref_is_live(widget, widget_id))
+        return;
     vg_event_forget_widget_subtree(widget);
+    if (!widget_ref_is_live(widget, widget_id))
+        return;
     clear_interactive_state_recursive(widget);
 }
 
@@ -1143,22 +1179,81 @@ vg_widget_t *vg_widget_create(vg_widget_type_t type) {
     return widget;
 }
 
+/// @brief Unlink one child without invoking callback-capable runtime cleanup.
+/// @details Callers must validate both widgets and perform dirty/revision
+///          publication before entering any callback-capable cleanup.
+/// @param parent Current parent that owns @p child.
+/// @param child Child to detach from the sibling list.
+static void widget_unlink_child(vg_widget_t *parent, vg_widget_t *child) {
+    if (!parent || !child || child->parent != parent)
+        return;
+
+    vg_layout_on_child_detached(parent, child);
+
+    if (child->prev_sibling) {
+        child->prev_sibling->next_sibling = child->next_sibling;
+    } else {
+        parent->first_child = child->next_sibling;
+    }
+
+    if (child->next_sibling) {
+        child->next_sibling->prev_sibling = child->prev_sibling;
+    } else {
+        parent->last_child = child->prev_sibling;
+    }
+
+    child->parent = NULL;
+    child->prev_sibling = NULL;
+    child->next_sibling = NULL;
+    if (parent->child_count > 0)
+        parent->child_count--;
+}
+
 /// @brief Recursively destroys @p widget and all its children, clears global runtime references,
 /// calls vtable destroy, frees all owned data.
 /// @copydetails vg_widget_destroy
 void vg_widget_destroy(vg_widget_t *widget) {
     if (!vg_widget_is_live(widget))
         return;
+    const uint64_t widget_id = widget->id;
+    if (widget_destroy_is_active(widget, widget_id))
+        return;
+
+    widget_destroy_frame_t frame = {
+        .widget = widget,
+        .id = widget_id,
+        .previous = g_widget_destroy_stack,
+    };
+    g_widget_destroy_stack = &frame;
+
+    // Detach before callback-capable focus/tooltip cleanup. A callback may
+    // destroy the former parent, but it can no longer recurse through this
+    // in-progress child or leave the parent's sibling list pointing at it.
+    if (widget->parent) {
+        vg_widget_t *parent = widget->parent;
+        if (vg_widget_is_live(parent) && widget->parent == parent) {
+            widget_unlink_child(parent, widget);
+            widget_mark_layout_dirty(parent);
+            vg_widget_note_revision(parent);
+            vg_widget_note_revision(widget);
+        }
+    }
 
     clear_runtime_references_for_subtree(widget, true);
 
-    if (widget->parent) {
-        vg_widget_remove_child(widget->parent, widget);
-    }
-
-    // Recursively destroy children
+    // Structurally detach each child before recursive teardown. Besides
+    // guaranteeing list progress, the explicit inequality makes ownership
+    // clear to static analysis: destroying the child cannot free this frame's
+    // widget through the ordinary recursive argument.
     while (widget->first_child) {
-        vg_widget_destroy(widget->first_child);
+        vg_widget_t *child = widget->first_child;
+        if (child == widget)
+            break;
+        widget_unlink_child(widget, child);
+        widget_mark_layout_dirty(widget);
+        vg_widget_note_revision(widget);
+        vg_widget_note_revision(child);
+        vg_widget_destroy(child);
     }
 
     // Call type-specific destructor
@@ -1229,6 +1324,7 @@ void vg_widget_destroy(vg_widget_t *widget) {
     widget->next_sibling = NULL;
     widget_unregister_live(widget);
     widget->magic = VG_WIDGET_DESTROYED_MAGIC;
+    g_widget_destroy_stack = frame.previous;
     free(widget);
 }
 
@@ -1255,12 +1351,21 @@ void vg_widget_add_child(vg_widget_t *parent, vg_widget_t *child) {
         return;
     if (!vg_widget_is_live(parent) || !vg_widget_is_live(child))
         return;
+    const uint64_t parent_id = parent->id;
+    const uint64_t child_id = child->id;
+    if (widget_destroy_is_active(parent, parent_id) || widget_destroy_is_active(child, child_id)) {
+        return;
+    }
     if (parent == child || widget_is_ancestor(child, parent))
         return;
 
     // Remove from previous parent if any
     if (child->parent) {
         vg_widget_remove_child(child->parent, child);
+        if (!widget_ref_is_live(parent, parent_id) || !widget_ref_is_live(child, child_id) ||
+            child->parent) {
+            return;
+        }
     }
 
     child->parent = parent;
@@ -1289,6 +1394,11 @@ void vg_widget_insert_child(vg_widget_t *parent, vg_widget_t *child, int index) 
         return;
     if (!vg_widget_is_live(parent) || !vg_widget_is_live(child))
         return;
+    const uint64_t parent_id = parent->id;
+    const uint64_t child_id = child->id;
+    if (widget_destroy_is_active(parent, parent_id) || widget_destroy_is_active(child, child_id)) {
+        return;
+    }
     if (parent == child || widget_is_ancestor(child, parent))
         return;
     if (index < 0)
@@ -1297,6 +1407,10 @@ void vg_widget_insert_child(vg_widget_t *parent, vg_widget_t *child, int index) 
     // Remove from previous parent if any
     if (child->parent) {
         vg_widget_remove_child(child->parent, child);
+        if (!widget_ref_is_live(parent, parent_id) || !widget_ref_is_live(child, child_id) ||
+            child->parent) {
+            return;
+        }
     }
 
     if (index >= parent->child_count) {
@@ -1349,58 +1463,41 @@ void vg_widget_insert_child(vg_widget_t *parent, vg_widget_t *child, int index) 
 /// notifies the layout system.
 /// @copydetails vg_widget_remove_child
 void vg_widget_remove_child(vg_widget_t *parent, vg_widget_t *child) {
-    if (!parent || !child || child->parent != parent)
+    if (!vg_widget_is_live(parent) || !vg_widget_is_live(child) || child->parent != parent)
         return;
-
-    clear_runtime_references_for_subtree(child, true);
-    vg_layout_on_child_detached(parent, child);
-
-    if (child->prev_sibling) {
-        child->prev_sibling->next_sibling = child->next_sibling;
-    } else {
-        parent->first_child = child->next_sibling;
+    if (widget_destroy_is_active(parent, parent->id) ||
+        widget_destroy_is_active(child, child->id)) {
+        return;
     }
 
-    if (child->next_sibling) {
-        child->next_sibling->prev_sibling = child->prev_sibling;
-    } else {
-        parent->last_child = child->prev_sibling;
-    }
-
-    child->parent = NULL;
-    child->prev_sibling = NULL;
-    child->next_sibling = NULL;
-
-    parent->child_count--;
+    widget_unlink_child(parent, child);
     widget_mark_layout_dirty(parent);
     vg_widget_note_revision(parent);
     vg_widget_note_revision(child);
+    clear_runtime_references_for_subtree(child, true);
 }
 
 /// @brief Detaches all children from @p parent without destroying them; runtime references for each
 /// child subtree are cleared.
 /// @copydetails vg_widget_clear_children
 void vg_widget_clear_children(vg_widget_t *parent) {
-    if (!parent)
+    if (!vg_widget_is_live(parent))
+        return;
+    const uint64_t parent_id = parent->id;
+    if (widget_destroy_is_active(parent, parent_id))
         return;
 
-    vg_widget_t *child = parent->first_child;
-    while (child) {
-        vg_widget_t *next = child->next_sibling;
-        clear_runtime_references_for_subtree(child, true);
-        vg_layout_on_child_detached(parent, child);
-        child->parent = NULL;
-        child->prev_sibling = NULL;
-        child->next_sibling = NULL;
-        vg_widget_note_revision(child);
-        child = next;
-    }
-
-    parent->first_child = NULL;
-    parent->last_child = NULL;
-    parent->child_count = 0;
     widget_mark_layout_dirty(parent);
     vg_widget_note_revision(parent);
+
+    while (widget_ref_is_live(parent, parent_id) && parent->first_child) {
+        vg_widget_t *child = parent->first_child;
+        if (!vg_widget_is_live(child))
+            break;
+        widget_unlink_child(parent, child);
+        vg_widget_note_revision(child);
+        clear_runtime_references_for_subtree(child, true);
+    }
 }
 
 /// @brief Returns the child widget at the given @p index (0-based), or NULL if out of range.
@@ -2573,51 +2670,107 @@ void vg_widget_clear_reported_click(void) {
 // Focus Management
 //=============================================================================
 
+/// @brief Test whether the global focus slot still matches one captured generation.
+/// @param widget Focus pointer captured before callback-capable code, or NULL.
+/// @param id Captured widget ID, or zero when @p widget was NULL.
+/// @return True when neither the pointer nor its generation has changed.
+static bool widget_focus_slot_matches(const vg_widget_t *widget, uint64_t id) {
+    if (g_focused_widget != widget)
+        return false;
+    return widget ? widget_ref_is_live(widget, id) : id == 0;
+}
+
+/// @brief Detach one focused generation before notifying its focus-loss callback.
+/// @details Clearing the global and state bit before callback entry prevents a
+///          reentrant focus request from recursively losing the same widget.
+///          A callback-established replacement focus is left intact.
+/// @param previous Previously focused widget.
+/// @param previous_id Identifier captured while @p previous was live.
+static void widget_detach_focus(vg_widget_t *previous, uint64_t previous_id) {
+    if (!previous)
+        return;
+    if (!widget_ref_is_live(previous, previous_id)) {
+        if (!vg_widget_is_live(previous) && g_focused_widget == previous)
+            g_focused_widget = NULL;
+        return;
+    }
+    if (g_focused_widget != previous)
+        return;
+
+    g_focused_widget = NULL;
+    previous->state &= ~VG_STATE_FOCUSED;
+    previous->needs_paint = true;
+
+    void (*on_focus)(vg_widget_t *, bool) = previous->vtable ? previous->vtable->on_focus : NULL;
+    if (on_focus)
+        on_focus(previous, false);
+    if (widget_ref_is_live(previous, previous_id))
+        widget_note_semantic_revision(previous);
+}
+
 /// @brief Focuses @p widget (or clears focus if NULL), calling on_focus callbacks for both the old
 /// and new focused widgets.
 /// @copydetails vg_widget_set_focus
 void vg_widget_set_focus(vg_widget_t *widget) {
     if (!widget) {
-        if (g_focused_widget) {
-            vg_widget_t *previous = g_focused_widget;
-            if (g_focused_widget->vtable && g_focused_widget->vtable->on_focus) {
-                g_focused_widget->vtable->on_focus(g_focused_widget, false);
-            }
-            g_focused_widget->state &= ~VG_STATE_FOCUSED;
-            g_focused_widget->needs_paint = true;
-            g_focused_widget = NULL;
-            widget_note_semantic_revision(previous);
-        }
+        vg_widget_t *previous = g_focused_widget;
+        const uint64_t previous_id =
+            previous && vg_widget_is_live(previous) ? previous->id : UINT64_C(0);
+        widget_detach_focus(previous, previous_id);
         return;
     }
+    if (!vg_widget_is_live(widget))
+        return;
+    if (g_focused_widget && !vg_widget_is_live(g_focused_widget))
+        g_focused_widget = NULL;
+    const uint64_t widget_id = widget->id;
+    if (widget_destroy_is_active(widget, widget_id))
+        return;
     if (!widget_chain_accepts_focus(widget))
         return;
-    if (!widget->vtable || !widget->vtable->can_focus || !widget->vtable->can_focus(widget)) {
-        return;
-    }
     if (g_focused_widget == widget)
         return;
 
-    // Unfocus previous widget
+    bool (*can_focus)(vg_widget_t *) = widget->vtable ? widget->vtable->can_focus : NULL;
+    if (!can_focus)
+        return;
+
+    vg_widget_t *focus_before_query = g_focused_widget;
+    const uint64_t focus_before_query_id =
+        focus_before_query && vg_widget_is_live(focus_before_query) ? focus_before_query->id
+                                                                    : UINT64_C(0);
+    const bool accepted = can_focus(widget);
+    if (!widget_ref_is_live(widget, widget_id) ||
+        !widget_focus_slot_matches(focus_before_query, focus_before_query_id)) {
+        return;
+    }
+    if (!accepted || !widget_chain_accepts_focus(widget))
+        return;
+
+    // Unfocus the previous generation. A reentrant callback may establish a
+    // different focus; that decision supersedes this interrupted request.
     if (g_focused_widget && g_focused_widget != widget) {
         vg_widget_t *previous = g_focused_widget;
-        if (g_focused_widget->vtable && g_focused_widget->vtable->on_focus) {
-            g_focused_widget->vtable->on_focus(g_focused_widget, false);
-        }
-        g_focused_widget->state &= ~VG_STATE_FOCUSED;
-        g_focused_widget->needs_paint = true;
-        widget_note_semantic_revision(previous);
+        const uint64_t previous_id =
+            previous && vg_widget_is_live(previous) ? previous->id : UINT64_C(0);
+        widget_detach_focus(previous, previous_id);
+        if (g_focused_widget)
+            return;
     }
+
+    if (!widget_ref_is_live(widget, widget_id) || !widget_chain_accepts_focus(widget))
+        return;
 
     // Focus new widget
     g_focused_widget = widget;
     widget->state |= VG_STATE_FOCUSED;
     widget->needs_paint = true;
 
-    if (widget->vtable && widget->vtable->on_focus) {
-        widget->vtable->on_focus(widget, true);
-    }
-    widget_note_semantic_revision(widget);
+    void (*on_focus)(vg_widget_t *, bool) = widget->vtable ? widget->vtable->on_focus : NULL;
+    if (on_focus)
+        on_focus(widget, true);
+    if (g_focused_widget == widget && widget_ref_is_live(widget, widget_id))
+        widget_note_semantic_revision(widget);
 }
 
 /// @brief Returns the focused widget if it is live and within @p root's subtree; NULL if none or
@@ -2633,43 +2786,54 @@ vg_widget_t *vg_widget_get_focused(vg_widget_t *root) {
     return widget_is_ancestor(root, g_focused_widget) ? g_focused_widget : NULL;
 }
 
+typedef struct focus_ref {
+    vg_widget_t *widget;
+    uint64_t id;
+} focus_ref_t;
+
 typedef struct focus_list {
-    vg_widget_t **items;
+    focus_ref_t *items;
     int count;
     int capacity;
 } focus_list_t;
 
-/// @brief Appends @p widget to the dynamic focus list, growing the backing array as needed.
+/// @brief Appends one live widget generation to the dynamic focus list.
 /// @param list Focus-list destination that owns the dynamic array.
-/// @param widget Focusable widget to append.
+/// @param widget Structurally eligible widget to append.
 /// @return True when appended, or false for invalid input, overflow, or allocation failure.
 static bool focus_list_append(focus_list_t *list, vg_widget_t *widget) {
-    if (!list || !widget)
+    if (!list || !vg_widget_is_live(widget))
         return false;
     if (list->count == list->capacity) {
         if (list->capacity > INT_MAX / 2)
             return false;
         int new_capacity = list->capacity > 0 ? list->capacity * 2 : 32;
         if (new_capacity <= list->capacity ||
-            (size_t)new_capacity > SIZE_MAX / sizeof(vg_widget_t *)) {
+            (size_t)new_capacity > SIZE_MAX / sizeof(focus_ref_t)) {
             return false;
         }
-        vg_widget_t **items = realloc(list->items, (size_t)new_capacity * sizeof(vg_widget_t *));
+        focus_ref_t *items = realloc(list->items, (size_t)new_capacity * sizeof(focus_ref_t));
         if (!items)
             return false;
         list->items = items;
         list->capacity = new_capacity;
     }
 
-    list->items[list->count++] = widget;
+    list->items[list->count++] = (focus_ref_t){
+        .widget = widget,
+        .id = widget->id,
+    };
     return true;
 }
 
-/// @brief Recursively collects all visible, enabled, focusable descendants of @p root into @p list.
+/// @brief Snapshot visible, enabled descendants with a focus-capability hook.
+/// @details Focus-capability callbacks are deferred until traversal consumes
+///          the generation-stamped snapshot, so they cannot invalidate a DFS
+///          iterator or make an address-reused widget enter the old traversal.
 /// @param root Root of the subtree to traverse in depth-first order.
 /// @param list Destination focus list.
 /// @return True when collection completes; false when list growth fails.
-static bool collect_focusable(vg_widget_t *root, focus_list_t *list) {
+static bool collect_focus_candidates(vg_widget_t *root, focus_list_t *list) {
     if (!root)
         return true;
 
@@ -2677,12 +2841,11 @@ static bool collect_focusable(vg_widget_t *root, focus_list_t *list) {
         if (!child->visible || !child->enabled)
             continue;
 
-        if (child->vtable && child->vtable->can_focus && child->vtable->can_focus(child)) {
+        if (child->vtable && child->vtable->can_focus) {
             if (!focus_list_append(list, child))
                 return false;
         }
-
-        if (!collect_focusable(child, list))
+        if (!collect_focus_candidates(child, list))
             return false;
     }
     return true;
@@ -2695,11 +2858,21 @@ static bool collect_focusable(vg_widget_t *root, focus_list_t *list) {
 /// @param lo Inclusive beginning of the first range.
 /// @param mid Exclusive end of the first range and beginning of the second.
 /// @param hi Exclusive end of the second range.
-static void tab_merge(vg_widget_t **arr, vg_widget_t **tmp, int lo, int mid, int hi) {
-    int i = lo, j = mid, k = lo;
-    while (i < mid && j < hi) {
-        const int ia = arr[i]->tab_index;
-        const int ib = arr[j]->tab_index;
+static void tab_merge(focus_ref_t *arr, focus_ref_t *tmp, int lo, int mid, int hi) {
+    int i = lo;
+    int j = mid;
+    for (int k = lo; k < hi; ++k) {
+        if (i >= mid) {
+            tmp[k] = arr[j++];
+            continue;
+        }
+        if (j >= hi) {
+            tmp[k] = arr[i++];
+            continue;
+        }
+
+        const int ia = arr[i].widget->tab_index;
+        const int ib = arr[j].widget->tab_index;
         // Natural-order (-1) sorts after explicit (>=0)
         bool left_wins;
         if (ia >= 0 && ib < 0)
@@ -2710,14 +2883,9 @@ static void tab_merge(vg_widget_t **arr, vg_widget_t **tmp, int lo, int mid, int
             left_wins = ia <= ib; // stable: equal goes left
         else
             left_wins = true; // both natural-order: preserve DFS
-        tmp[k++] = left_wins ? arr[i++] : arr[j++];
+        tmp[k] = left_wins ? arr[i++] : arr[j++];
     }
-    while (i < mid)
-        tmp[k++] = arr[i++];
-    while (j < hi)
-        tmp[k++] = arr[j++];
-    for (int m = lo; m < hi; m++)
-        arr[m] = tmp[m];
+    memcpy(&arr[lo], &tmp[lo], (size_t)(hi - lo) * sizeof(*arr));
 }
 
 /// @brief Recursive merge sort entry-point for tab-order sorting; O(n log n) with stable DFS order
@@ -2726,7 +2894,7 @@ static void tab_merge(vg_widget_t **arr, vg_widget_t **tmp, int lo, int mid, int
 /// @param tmp Scratch array with at least as many entries as @p arr.
 /// @param lo Inclusive beginning of the range.
 /// @param hi Exclusive end of the range.
-static void tab_merge_sort(vg_widget_t **arr, vg_widget_t **tmp, int lo, int hi) {
+static void tab_merge_sort(focus_ref_t *arr, focus_ref_t *tmp, int lo, int hi) {
     if (hi - lo <= 1)
         return;
     int mid = (lo + hi) / 2;
@@ -2735,25 +2903,24 @@ static void tab_merge_sort(vg_widget_t **arr, vg_widget_t **tmp, int lo, int hi)
     tab_merge(arr, tmp, lo, mid, hi);
 }
 
-/// @brief Builds a sorted array of focusable widgets from @p root's subtree in tab order; caller
-/// must free *out_items.
+/// @brief Builds a generation-stamped tab-order snapshot from @p root's subtree.
 /// @param root Root of the subtree whose tab order is collected.
 /// @param[out] out_items Receives an owned sorted array, or NULL when empty or allocation fails.
 /// @return Number of widgets in the returned array.
-static int build_tab_order(vg_widget_t *root, vg_widget_t ***out_items) {
+static int build_tab_order(vg_widget_t *root, focus_ref_t **out_items) {
     if (!out_items)
         return 0;
     *out_items = NULL;
 
     focus_list_t list = {0};
-    if (!collect_focusable(root, &list)) {
+    if (!collect_focus_candidates(root, &list)) {
         free(list.items);
         return 0;
     }
 
     if (list.count > 1) {
         // Stable merge sort by tab_index — O(n log n) vs previous O(n²) insertion sort.
-        vg_widget_t **tmp = malloc((size_t)list.count * sizeof(vg_widget_t *));
+        focus_ref_t *tmp = malloc((size_t)list.count * sizeof(focus_ref_t));
         if (tmp) {
             tab_merge_sort(list.items, tmp, 0, list.count);
             free(tmp);
@@ -2768,26 +2935,45 @@ static int build_tab_order(vg_widget_t *root, vg_widget_t ***out_items) {
 /// @brief Moves focus to the next widget in tab order within @p root, wrapping around at the end.
 /// @copydetails vg_widget_focus_next
 void vg_widget_focus_next(vg_widget_t *root) {
-    if (!root)
+    if (!vg_widget_is_live(root))
         return;
+    const uint64_t root_id = root->id;
 
-    vg_widget_t **arr = NULL;
+    focus_ref_t *arr = NULL;
     int count = build_tab_order(root, &arr);
     if (count == 0)
         return;
 
     // Find current focused widget in the sorted list
     int cur = -1;
+    const uint64_t focused_id =
+        g_focused_widget && vg_widget_is_live(g_focused_widget) ? g_focused_widget->id : 0;
     for (int i = 0; i < count; i++) {
-        if (arr[i] == g_focused_widget) {
+        if (arr[i].widget == g_focused_widget && arr[i].id == focused_id) {
             cur = i;
             break;
         }
     }
 
-    // Advance to next (with wraparound)
     int next = (cur + 1) % count;
-    vg_widget_set_focus(arr[next]);
+    for (int attempted = 0; attempted < count; ++attempted) {
+        if (!widget_ref_is_live(root, root_id))
+            break;
+        focus_ref_t candidate = arr[next];
+        if (widget_ref_is_live(candidate.widget, candidate.id)) {
+            vg_widget_t *focus_before = g_focused_widget;
+            const uint64_t focus_before_id =
+                focus_before && vg_widget_is_live(focus_before) ? focus_before->id : 0;
+            vg_widget_set_focus(candidate.widget);
+            if (g_focused_widget == candidate.widget &&
+                widget_ref_is_live(candidate.widget, candidate.id)) {
+                break;
+            }
+            if (!widget_focus_slot_matches(focus_before, focus_before_id))
+                break;
+        }
+        next = (next + 1) % count;
+    }
     free(arr);
 }
 
@@ -2795,26 +2981,45 @@ void vg_widget_focus_next(vg_widget_t *root) {
 /// start.
 /// @copydetails vg_widget_focus_prev
 void vg_widget_focus_prev(vg_widget_t *root) {
-    if (!root)
+    if (!vg_widget_is_live(root))
         return;
+    const uint64_t root_id = root->id;
 
-    vg_widget_t **arr = NULL;
+    focus_ref_t *arr = NULL;
     int count = build_tab_order(root, &arr);
     if (count == 0)
         return;
 
     // Find current focused widget in the sorted list
     int cur = -1;
+    const uint64_t focused_id =
+        g_focused_widget && vg_widget_is_live(g_focused_widget) ? g_focused_widget->id : 0;
     for (int i = 0; i < count; i++) {
-        if (arr[i] == g_focused_widget) {
+        if (arr[i].widget == g_focused_widget && arr[i].id == focused_id) {
             cur = i;
             break;
         }
     }
 
-    // Step back (with wraparound)
     int prev = (cur <= 0) ? (count - 1) : (cur - 1);
-    vg_widget_set_focus(arr[prev]);
+    for (int attempted = 0; attempted < count; ++attempted) {
+        if (!widget_ref_is_live(root, root_id))
+            break;
+        focus_ref_t candidate = arr[prev];
+        if (widget_ref_is_live(candidate.widget, candidate.id)) {
+            vg_widget_t *focus_before = g_focused_widget;
+            const uint64_t focus_before_id =
+                focus_before && vg_widget_is_live(focus_before) ? focus_before->id : 0;
+            vg_widget_set_focus(candidate.widget);
+            if (g_focused_widget == candidate.widget &&
+                widget_ref_is_live(candidate.widget, candidate.id)) {
+                break;
+            }
+            if (!widget_focus_slot_matches(focus_before, focus_before_id))
+                break;
+        }
+        prev = (prev <= 0) ? (count - 1) : (prev - 1);
+    }
     free(arr);
 }
 

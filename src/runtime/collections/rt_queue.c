@@ -44,13 +44,26 @@
 #include "rt_collection_ids.h"
 
 #include "rt_box.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_option.h"
+#include "rt_queue_internal.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/// @brief Install a non-local recovery target for the current thread.
+/// @param buf Jump buffer that receives control after a runtime trap.
+void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's active legacy recovery target.
+void rt_trap_clear_recovery(void);
+/// @brief Borrow the most recent runtime trap diagnostic.
+/// @return Null-terminated diagnostic text, or NULL when unavailable.
+const char *rt_trap_get_error(void);
 
 /// @brief Number of pointer slots allocated for a new queue.
 #define QUEUE_DEFAULT_CAP 16
@@ -87,16 +100,6 @@
 /// - Push (enqueue) at tail: O(1)
 /// - Pop (dequeue) from head: O(1)
 /// - No element shifting needed
-typedef struct rt_queue_impl {
-    int64_t len;  ///< Number of elements currently in the queue
-    int64_t cap;  ///< Current capacity (allocated slots)
-    int64_t head; ///< Index of first element (front of queue)
-    int64_t tail; ///< Index where next element will be inserted (back of queue)
-    void **items; ///< Circular buffer of element pointers
-    /// @brief Whether live slots retain, release, and participate in GC traversal.
-    int8_t owns_elements;
-} rt_queue_impl;
-
 /// @brief Checked cast of an opaque handle to the Queue implementation;
 ///        traps with @p what if @p obj is NULL or not a Queue.
 /// @param obj Opaque runtime handle to validate.
@@ -115,6 +118,15 @@ static rt_queue_impl *as_queue(void *obj, const char *what) {
 static void queue_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
+}
+
+/// @brief Save an active trap diagnostic before clearing its recovery frame.
+/// @param buffer Destination for the bounded diagnostic copy.
+/// @param buffer_size Capacity of @p buffer including its terminator.
+/// @param fallback Message used when no active diagnostic is available.
+static void queue_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
 }
 
 /// @brief Finalizer callback invoked when a Queue is garbage collected.
@@ -418,8 +430,11 @@ void rt_queue_push(void *obj, void *elem) {
         }
     }
 
-    if (q->owns_elements)
-        rt_obj_retain_maybe(elem);
+    if (q->owns_elements &&
+        !rt_collection_retain_checked(elem, "Queue.Push: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
     q->items[q->tail] = elem;
     q->tail = (q->tail + 1) % q->cap;
     q->len++;
@@ -477,14 +492,11 @@ void *rt_queue_pop(void *obj) {
     }
 
     void *val = q->items[q->head];
-    if (q->owns_elements)
-        rt_obj_retain_maybe(val);
     q->items[q->head] = NULL;
     q->head = (q->head + 1) % q->cap;
     q->len--;
-    if (q->owns_elements) {
-        queue_release_value(val);
-    }
+    // Owning queues move their stored reference to the caller. Borrowing
+    // queues continue to return the raw pointer without changing ownership.
 
     rt_gc_mutator_exit();
     return val;
@@ -599,6 +611,8 @@ int8_t rt_queue_has(void *obj, void *elem) {
         return 0;
 
     rt_queue_impl *q = as_queue(obj, "Queue: invalid Queue object");
+    if (!q)
+        return 0;
     for (int64_t i = 0; i < q->len; i++) {
         if (rt_box_equal(q->items[(q->head + i) % q->cap], elem))
             return 1;
@@ -624,14 +638,11 @@ void *rt_queue_try_pop(void *obj) {
     }
 
     void *val = q->items[q->head];
-    if (q->owns_elements)
-        rt_obj_retain_maybe(val);
     q->items[q->head] = NULL;
     q->head = (q->head + 1) % q->cap;
     q->len--;
-    if (q->owns_elements) {
-        queue_release_value(val);
-    }
+    // Transfer the owning queue's stored reference; borrowing mode remains a
+    // raw-pointer removal.
     rt_gc_mutator_exit();
     return val;
 }
@@ -640,8 +651,8 @@ void *rt_queue_try_pop(void *obj) {
 /// @details This is the explicit optional variant of @ref rt_queue_try_pop. It
 ///          returns `None` only when the queue has no element to pop; if the
 ///          queue contains a literal NULL value, the result is `Some(NULL)`.
-///          For owning queues, the temporary retained transfer from
-///          @ref rt_queue_try_pop is released after the Option has retained it.
+///          The Option is constructed before the queue is mutated, so a failed
+///          retain leaves the queued element in place.
 /// @param obj Queue handle, or `NULL`.
 /// @return New runtime-managed `Some(value)` when an element is removed,
 ///         otherwise `None`.
@@ -649,15 +660,30 @@ void *rt_queue_try_pop_option(void *obj) {
     if (!obj)
         return rt_option_none();
 
+    rt_gc_mutator_enter();
     rt_queue_impl *q = as_queue(obj, "Queue: invalid Queue object");
-    if (!q || q->len == 0)
+    if (!q) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
+    if (q->len == 0) {
+        rt_gc_mutator_exit();
         return rt_option_none();
+    }
 
-    int8_t owns_elements = q->owns_elements;
-    void *value = rt_queue_try_pop(obj);
+    void *value = q->items[q->head];
     void *option = rt_option_some(value);
-    if (owns_elements && value && rt_obj_release_check0(value))
-        rt_obj_free(value);
+    if (!option) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
+
+    q->items[q->head] = NULL;
+    q->head = (q->head + 1) % q->cap;
+    q->len--;
+    if (q->owns_elements)
+        queue_release_value(value);
+    rt_gc_mutator_exit();
     return option;
 }
 
@@ -672,15 +698,35 @@ void *rt_queue_try_pop_option(void *obj) {
 /// @return New runtime-managed Queue with the same mode/order, or an empty
 ///         borrowing queue for `NULL`.
 void *rt_queue_clone(void *obj) {
-    void *result = rt_queue_new();
     if (!obj)
-        return result;
+        return rt_queue_new();
 
     rt_queue_impl *q = as_queue(obj, "Queue: invalid Queue object");
-    if (q->owns_elements)
-        rt_queue_set_owns_elements(result, 1);
-    for (int64_t i = 0; i < q->len; i++) {
-        rt_queue_push(result, q->items[(q->head + i) % q->cap]);
+    if (!q)
+        return NULL;
+
+    void *volatile result = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        queue_save_trap(saved_error, sizeof(saved_error), "Queue.Clone: copy failed");
+        rt_trap_clear_recovery();
+        queue_release_value((void *)result);
+        rt_trap(saved_error);
+        return NULL;
     }
-    return result;
+
+    result = rt_queue_new();
+    if (!result) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    if (q->owns_elements)
+        rt_queue_set_owns_elements((void *)result, 1);
+    for (int64_t i = 0; i < q->len; i++) {
+        rt_queue_push((void *)result, q->items[(q->head + i) % q->cap]);
+    }
+    rt_trap_clear_recovery();
+    return (void *)result;
 }

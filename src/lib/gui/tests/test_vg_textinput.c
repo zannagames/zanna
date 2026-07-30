@@ -5,7 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: lib/gui/tests/test_vg_textinput.c
+// File: src/lib/gui/tests/test_vg_textinput.c
 // Purpose: Exercise grapheme-safe TextInput editing, bounded history, public
 //          state edges, presentation modes, and atomic IME composition.
 // Key invariants:
@@ -14,9 +14,9 @@
 // Ownership/Lifetime:
 //   - Each test owns one unparented widget and destroys it before returning.
 //   - Selected-text copies returned by the widget are freed by the test.
-// Links: lib/gui/include/vg_widgets.h,
-//        lib/gui/include/vg_grapheme.h,
-//        lib/gui/src/widgets/vg_textinput.c
+// Links: src/lib/gui/include/vg_widgets.h,
+//        src/lib/gui/include/vg_grapheme.h,
+//        src/lib/gui/src/widgets/vg_textinput.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -166,6 +166,31 @@ static void test_history_and_independent_edges(void) {
     vg_widget_destroy(&input->base);
 }
 
+/// @brief Verify one oversized edit cannot retain a snapshot beyond the aggregate history budget.
+static void test_oversized_text_disables_snapshot_history(void) {
+    vg_textinput_t *input = vg_textinput_create(NULL);
+    REQUIRE(input != NULL);
+
+    const size_t oversized_len = 64u * 1024u;
+    char *oversized = (char *)malloc(oversized_len + 1u);
+    REQUIRE(oversized != NULL);
+    memset(oversized, 'x', oversized_len);
+    oversized[oversized_len] = '\0';
+
+    vg_textinput_set_text(input, oversized);
+    REQUIRE(input->text_len == oversized_len);
+    REQUIRE(input->undo_count == 0);
+    REQUIRE(!vg_textinput_can_undo(input));
+    REQUIRE(!vg_textinput_can_redo(input));
+
+    REQUIRE(vg_textinput_insert_text(input, "y"));
+    REQUIRE(input->undo_count == 0);
+    REQUIRE(!vg_textinput_can_undo(input));
+
+    free(oversized);
+    vg_widget_destroy(&input->base);
+}
+
 /// @brief Verify preedit update/cancel isolation and one-record composition commit.
 static void test_atomic_ime_composition(void) {
     vg_textinput_t *input = vg_textinput_create(NULL);
@@ -277,6 +302,7 @@ int main(void) {
     test_grapheme_indices_and_keyboard_deletion();
     test_limits_and_modes();
     test_history_and_independent_edges();
+    test_oversized_text_disables_snapshot_history();
     test_atomic_ime_composition();
     test_platform_ime_event_bridge();
     if (g_failures != 0) {

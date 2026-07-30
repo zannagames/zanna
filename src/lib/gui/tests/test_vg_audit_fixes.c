@@ -2813,6 +2813,294 @@ TEST(event_handler_can_destroy_target_during_dispatch) {
     vg_widget_destroy(root);
 }
 
+/// @brief vtable handle_event — destroys itself only after MOUSE_UP has synthesized CLICK.
+static bool destroy_self_on_synthesized_click(vg_widget_t *widget, vg_event_t *event) {
+    if (event->type == VG_EVENT_CLICK) {
+        vg_widget_destroy(widget);
+        return true;
+    }
+    return false;
+}
+
+static vg_widget_vtable_t g_destroy_self_on_click_vtable = {
+    .handle_event = destroy_self_on_synthesized_click,
+};
+
+/// @brief A synthesized-click handler may destroy its target without click-history code retaining
+/// or dereferencing the dead widget afterward.
+TEST(synthesized_click_handler_can_destroy_target) {
+    vg_widget_t *widget = vg_widget_create(VG_WIDGET_CUSTOM);
+    ASSERT_NOT_NULL(widget);
+    widget->vtable = &g_destroy_self_on_click_vtable;
+    vg_widget_arrange(widget, 0.0f, 0.0f, 80.0f, 30.0f);
+
+    vg_event_t down = vg_event_mouse(VG_EVENT_MOUSE_DOWN, 10.0f, 10.0f, VG_MOUSE_LEFT, 0);
+    (void)vg_event_send(widget, &down);
+    vg_event_t up = vg_event_mouse(VG_EVENT_MOUSE_UP, 10.0f, 10.0f, VG_MOUSE_LEFT, 0);
+    ASSERT_TRUE(vg_event_send(widget, &up));
+    ASSERT_FALSE(vg_widget_is_live(widget));
+
+    vg_widget_runtime_state_t state = {0};
+    vg_widget_get_runtime_state(&state);
+    ASSERT_NULL(state.last_click_widget);
+    ASSERT_EQ(state.last_click_widget_id, 0);
+}
+
+static vg_widget_t *g_focus_callback_replacement = NULL;
+
+/// @brief Focus-capability callback that destroys the candidate before returning.
+static bool focus_can_focus_destroys_candidate(vg_widget_t *widget) {
+    vg_widget_destroy(widget);
+    g_focus_callback_replacement = vg_widget_create(VG_WIDGET_CUSTOM);
+    return true;
+}
+
+static vg_widget_vtable_t g_focus_can_focus_destroy_vtable = {
+    .can_focus = focus_can_focus_destroys_candidate,
+};
+
+/// @brief A can-focus callback may destroy and replace the mouse-down target.
+/// @details Dispatch must not call SetFocus or the event handler through the
+///          stale generation after the capability callback returns.
+TEST(focus_capability_callback_can_destroy_target) {
+    vg_widget_t *widget = vg_widget_create(VG_WIDGET_CUSTOM);
+    ASSERT_NOT_NULL(widget);
+    const uint64_t widget_id = widget->id;
+    widget->vtable = &g_focus_can_focus_destroy_vtable;
+    g_focus_callback_replacement = NULL;
+
+    vg_event_t down = vg_event_mouse(VG_EVENT_MOUSE_DOWN, 1.0f, 1.0f, VG_MOUSE_LEFT, 0);
+    ASSERT_FALSE(vg_event_send(widget, &down));
+    ASSERT_TRUE(!vg_widget_is_live(widget) || widget->id != widget_id);
+    ASSERT_NOT_NULL(g_focus_callback_replacement);
+    ASSERT_TRUE(vg_widget_is_live(g_focus_callback_replacement));
+    ASSERT_NULL(vg_widget_get_focused(NULL));
+
+    vg_widget_destroy(g_focus_callback_replacement);
+    g_focus_callback_replacement = NULL;
+}
+
+static bool focus_callback_accepts(vg_widget_t *widget) {
+    (void)widget;
+    return true;
+}
+
+/// @brief Focus callback that destroys its widget only while losing focus.
+static void focus_loss_destroys_widget(vg_widget_t *widget, bool gained) {
+    if (!gained) {
+        vg_widget_destroy(widget);
+        g_focus_callback_replacement = vg_widget_create(VG_WIDGET_CUSTOM);
+    }
+}
+
+static vg_widget_vtable_t g_focus_loss_destroy_vtable = {
+    .can_focus = focus_callback_accepts,
+    .on_focus = focus_loss_destroys_widget,
+};
+
+static vg_widget_vtable_t g_focus_plain_vtable = {
+    .can_focus = focus_callback_accepts,
+};
+
+/// @brief A focus-loss callback may destroy its old generation while focus moves.
+/// @details The replacement must not be mutated as the old widget, and the
+///          requested live target should receive coherent focus afterward.
+TEST(focus_loss_callback_can_destroy_old_widget) {
+    vg_widget_t *previous = vg_widget_create(VG_WIDGET_CUSTOM);
+    vg_widget_t *next = vg_widget_create(VG_WIDGET_CUSTOM);
+    ASSERT_NOT_NULL(previous);
+    ASSERT_NOT_NULL(next);
+    const uint64_t previous_id = previous->id;
+    previous->vtable = &g_focus_loss_destroy_vtable;
+    next->vtable = &g_focus_plain_vtable;
+    g_focus_callback_replacement = NULL;
+
+    vg_widget_set_focus(previous);
+    ASSERT_EQ(vg_widget_get_focused(NULL), previous);
+    vg_widget_set_focus(next);
+
+    ASSERT_TRUE(!vg_widget_is_live(previous) || previous->id != previous_id);
+    ASSERT_NOT_NULL(g_focus_callback_replacement);
+    ASSERT_EQ(vg_widget_get_focused(NULL), next);
+    ASSERT_TRUE((next->state & VG_STATE_FOCUSED) != 0);
+    ASSERT_FALSE((g_focus_callback_replacement->state & VG_STATE_FOCUSED) != 0);
+
+    vg_widget_destroy(next);
+    vg_widget_destroy(g_focus_callback_replacement);
+    g_focus_callback_replacement = NULL;
+}
+
+static vg_widget_t *g_destroy_reentry_parent = NULL;
+static int g_destroy_reentry_count = 0;
+
+/// @brief Type destructor that recursively requests destruction of its owning parent.
+static void child_destroy_reenters_parent(vg_widget_t *widget) {
+    (void)widget;
+    g_destroy_reentry_count++;
+    vg_widget_destroy(g_destroy_reentry_parent);
+}
+
+static vg_widget_vtable_t g_destroy_reentry_vtable = {
+    .destroy = child_destroy_reenters_parent,
+};
+
+/// @brief A child destructor may request parent destruction without freeing the active parent
+/// frame twice.
+TEST(widget_destroy_reentry_from_child_destructor_is_guarded) {
+    vg_widget_t *parent = vg_widget_create(VG_WIDGET_CONTAINER);
+    vg_widget_t *child = vg_widget_create(VG_WIDGET_CUSTOM);
+    ASSERT_NOT_NULL(parent);
+    ASSERT_NOT_NULL(child);
+    child->vtable = &g_destroy_reentry_vtable;
+    vg_widget_add_child(parent, child);
+
+    g_destroy_reentry_parent = parent;
+    g_destroy_reentry_count = 0;
+    vg_widget_destroy(parent);
+
+    ASSERT_EQ(g_destroy_reentry_count, 1);
+    ASSERT_FALSE(vg_widget_is_live(parent));
+    ASSERT_FALSE(vg_widget_is_live(child));
+    g_destroy_reentry_parent = NULL;
+}
+
+static vg_widget_t *g_focus_loss_parent = NULL;
+
+/// @brief Focus-loss callback that destroys the widget's former parent.
+static void focus_loss_destroys_parent(vg_widget_t *widget, bool gained) {
+    (void)widget;
+    if (!gained) {
+        vg_widget_t *parent = g_focus_loss_parent;
+        g_focus_loss_parent = NULL;
+        vg_widget_destroy(parent);
+    }
+}
+
+static vg_widget_vtable_t g_focus_loss_parent_destroy_vtable = {
+    .can_focus = focus_callback_accepts,
+    .on_focus = focus_loss_destroys_parent,
+};
+
+/// @brief Child destruction detaches structurally before focus-loss callbacks can destroy the
+/// former parent.
+TEST(focused_child_destruction_can_destroy_former_parent) {
+    vg_widget_t *parent = vg_widget_create(VG_WIDGET_CONTAINER);
+    vg_widget_t *child = vg_widget_create(VG_WIDGET_CUSTOM);
+    ASSERT_NOT_NULL(parent);
+    ASSERT_NOT_NULL(child);
+    child->vtable = &g_focus_loss_parent_destroy_vtable;
+    vg_widget_add_child(parent, child);
+    vg_widget_set_focus(child);
+    ASSERT_EQ(vg_widget_get_focused(parent), child);
+
+    g_focus_loss_parent = parent;
+    vg_widget_destroy(child);
+
+    ASSERT_NULL(g_focus_loss_parent);
+    ASSERT_FALSE(vg_widget_is_live(parent));
+    ASSERT_FALSE(vg_widget_is_live(child));
+    ASSERT_NULL(vg_widget_get_focused(NULL));
+}
+
+/// @brief Focus-loss callback that destroys the widget being detached from its parent.
+static void focus_loss_destroys_detached_widget(vg_widget_t *widget, bool gained) {
+    if (!gained)
+        vg_widget_destroy(widget);
+}
+
+static vg_widget_vtable_t g_focus_loss_detached_destroy_vtable = {
+    .can_focus = focus_callback_accepts,
+    .on_focus = focus_loss_destroys_detached_widget,
+};
+
+/// @brief Runtime cleanup after remove-child tolerates the focus callback destroying the detached
+/// widget.
+TEST(remove_child_focus_callback_can_destroy_detached_widget) {
+    vg_widget_t *parent = vg_widget_create(VG_WIDGET_CONTAINER);
+    vg_widget_t *child = vg_widget_create(VG_WIDGET_CUSTOM);
+    ASSERT_NOT_NULL(parent);
+    ASSERT_NOT_NULL(child);
+    child->vtable = &g_focus_loss_detached_destroy_vtable;
+    vg_widget_add_child(parent, child);
+    vg_widget_set_focus(child);
+
+    vg_widget_remove_child(parent, child);
+
+    ASSERT_TRUE(vg_widget_is_live(parent));
+    ASSERT_FALSE(vg_widget_is_live(child));
+    ASSERT_EQ(parent->child_count, 0);
+    ASSERT_NULL(parent->first_child);
+    ASSERT_NULL(parent->last_child);
+    vg_widget_destroy(parent);
+}
+
+/// @brief Focus-capability callback that destroys only its current candidate.
+static bool focus_candidate_destroys_self(vg_widget_t *widget) {
+    vg_widget_destroy(widget);
+    return true;
+}
+
+static vg_widget_vtable_t g_focus_candidate_destroy_vtable = {
+    .can_focus = focus_candidate_destroys_self,
+};
+
+/// @brief Tab traversal snapshots generations before a capability callback destroys a candidate.
+TEST(tab_traversal_skips_candidate_destroyed_by_can_focus) {
+    vg_widget_t *root = vg_widget_create(VG_WIDGET_CONTAINER);
+    vg_widget_t *doomed = vg_widget_create(VG_WIDGET_CUSTOM);
+    vg_widget_t *stable = vg_widget_create(VG_WIDGET_CUSTOM);
+    ASSERT_NOT_NULL(root);
+    ASSERT_NOT_NULL(doomed);
+    ASSERT_NOT_NULL(stable);
+    doomed->vtable = &g_focus_candidate_destroy_vtable;
+    stable->vtable = &g_focus_plain_vtable;
+    vg_widget_add_child(root, doomed);
+    vg_widget_add_child(root, stable);
+
+    vg_widget_focus_next(root);
+
+    ASSERT_TRUE(vg_widget_is_live(root));
+    ASSERT_FALSE(vg_widget_is_live(doomed));
+    ASSERT_EQ(vg_widget_get_focused(root), stable);
+    vg_widget_destroy(root);
+}
+
+static vg_widget_t *g_focus_redirect_target = NULL;
+
+/// @brief Focus-capability callback that establishes a different focus reentrantly.
+static bool focus_candidate_redirects_focus(vg_widget_t *widget) {
+    (void)widget;
+    vg_widget_set_focus(g_focus_redirect_target);
+    return true;
+}
+
+static vg_widget_vtable_t g_focus_redirect_vtable = {
+    .can_focus = focus_candidate_redirects_focus,
+};
+
+/// @brief A focus decision made by a reentrant capability callback supersedes the outer request.
+TEST(can_focus_reentrant_focus_change_is_preserved) {
+    vg_widget_t *root = vg_widget_create(VG_WIDGET_CONTAINER);
+    vg_widget_t *candidate = vg_widget_create(VG_WIDGET_CUSTOM);
+    vg_widget_t *redirect = vg_widget_create(VG_WIDGET_CUSTOM);
+    ASSERT_NOT_NULL(root);
+    ASSERT_NOT_NULL(candidate);
+    ASSERT_NOT_NULL(redirect);
+    candidate->vtable = &g_focus_redirect_vtable;
+    redirect->vtable = &g_focus_plain_vtable;
+    vg_widget_add_child(root, candidate);
+    vg_widget_add_child(root, redirect);
+
+    g_focus_redirect_target = redirect;
+    vg_widget_set_focus(candidate);
+
+    ASSERT_EQ(vg_widget_get_focused(root), redirect);
+    ASSERT_FALSE((candidate->state & VG_STATE_FOCUSED) != 0);
+    ASSERT_TRUE((redirect->state & VG_STATE_FOCUSED) != 0);
+    g_focus_redirect_target = NULL;
+    vg_widget_destroy(root);
+}
+
 typedef struct {
     int key_count;
 } per_root_focus_state_t;
@@ -3594,6 +3882,36 @@ static void textinput_change_counter(vg_widget_t *widget, const char *text, void
     (void)text;
     (void)user_data;
     g_textinput_change_count++;
+}
+
+/// @brief on_change callback that destroys its TextInput to exercise callback lifetime safety.
+static vg_textinput_t *g_textinput_callback_replacement = NULL;
+
+static void textinput_change_destroys_widget(vg_widget_t *widget,
+                                             const char *text,
+                                             void *user_data) {
+    (void)text;
+    (void)user_data;
+    vg_widget_destroy(widget);
+    g_textinput_callback_replacement = vg_textinput_create(NULL);
+}
+
+/// @brief A committed-edit callback may destroy the TextInput without history bookkeeping or the
+/// event layer touching the freed object afterward.
+TEST(textinput_change_callback_can_destroy_widget) {
+    vg_textinput_t *input = vg_textinput_create(NULL);
+    ASSERT_NOT_NULL(input);
+    vg_widget_t *widget = &input->base;
+    uint64_t widget_id = widget->id;
+    g_textinput_callback_replacement = NULL;
+    vg_textinput_set_on_change(input, textinput_change_destroys_widget, NULL);
+
+    ASSERT_TRUE(vg_textinput_insert_text(input, "x"));
+    ASSERT_TRUE(!vg_widget_is_live(widget) || widget->id != widget_id);
+    ASSERT_NOT_NULL(g_textinput_callback_replacement);
+    ASSERT_TRUE(vg_widget_is_live(&g_textinput_callback_replacement->base));
+    vg_widget_destroy(&g_textinput_callback_replacement->base);
+    g_textinput_callback_replacement = NULL;
 }
 
 /// @brief R7 — inserting over a selection emits exactly one on_change event, not two (delete +
@@ -5484,6 +5802,14 @@ int main(void) {
     RUN(grid_auto_flow_creates_implicit_rows);
     RUN(captured_mouse_events_are_localized_once);
     RUN(event_handler_can_destroy_target_during_dispatch);
+    RUN(synthesized_click_handler_can_destroy_target);
+    RUN(focus_capability_callback_can_destroy_target);
+    RUN(focus_loss_callback_can_destroy_old_widget);
+    RUN(widget_destroy_reentry_from_child_destructor_is_guarded);
+    RUN(focused_child_destruction_can_destroy_former_parent);
+    RUN(remove_child_focus_callback_can_destroy_detached_widget);
+    RUN(tab_traversal_skips_candidate_destroyed_by_can_focus);
+    RUN(can_focus_reentrant_focus_change_is_preserved);
     RUN(event_dispatch_keeps_focus_state_per_root);
     RUN(commandpalette_and_filedialog_reject_surrogate_codepoints);
     RUN(commandpalette_filter_handles_truncated_utf8_labels);
@@ -5509,6 +5835,7 @@ int main(void) {
     RUN(radiobutton_group_selection_updates_callbacks_dirty_and_clear_state);
     RUN(checkbox_indeterminate_clears_checked_state_and_style_flag);
     RUN(textinput_replacement_insert_emits_single_change);
+    RUN(textinput_change_callback_can_destroy_widget);
     RUN(specialized_widgets_honor_preferred_size_constraints);
     RUN(specialized_widgets_honor_max_size_constraints);
     RUN(progressbar_sanitizes_nan_value_and_normalizes_phase);

@@ -107,10 +107,10 @@ int rt_crypto_module_self_test(void);
 /// @brief Switch between COMPAT and APPROVED mode.
 /// @details Switching to APPROVED initializes the module if necessary and
 ///          then runs the self-tests again. A module pinned in ERROR rejects
-///          every transition. Non-APPROVED values follow the compatibility
-///          policy path.
+///          every transition. Values other than the two declared modes are
+///          rejected without changing module state.
 /// @param mode Requested operating mode.
-/// @return 1 on success; 0 when the transition is illegal.
+/// @return 1 on success; 0 for an unknown mode or an illegal transition.
 int rt_crypto_module_set_mode(rt_crypto_module_mode_t mode);
 
 /// @brief Return the module's current operating mode.
@@ -128,7 +128,8 @@ int rt_crypto_module_is_approved_mode(void);
 /// @brief Pre-flight check whether @p service is callable right now.
 /// @details Returns non-zero for services in COMPAT unless the module is pinned
 ///          in ERROR. In APPROVED, returns zero for legacy/non-approved services
-///          so callers can fail or select an allowed operation.
+///          so callers can fail or select an allowed operation. Values outside
+///          the declared service catalogue are denied in every mode.
 /// @param service Service identifier to check.
 /// @return Non-zero when current state and mode allow @p service; otherwise zero.
 int rt_crypto_module_service_allowed(rt_crypto_module_service_t service);

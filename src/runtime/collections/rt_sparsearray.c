@@ -46,13 +46,25 @@
 
 #include "rt_box.h"
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_seq.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/// @brief Install a non-local recovery target for the current thread.
+/// @param buf Jump buffer that receives control after a runtime trap.
+void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's active legacy recovery target.
+void rt_trap_clear_recovery(void);
+/// @brief Borrow the most recent runtime trap diagnostic.
+/// @return Null-terminated diagnostic text, or NULL when unavailable.
+const char *rt_trap_get_error(void);
 
 // --- Open addressing hash map: int64_t -> void* ---
 
@@ -110,12 +122,74 @@ static void sa_release_value(void *value) {
         rt_obj_free(value);
 }
 
+/// @brief Save an active trap diagnostic before clearing its recovery frame.
+/// @param buffer Destination for the bounded diagnostic copy.
+/// @param buffer_size Capacity of @p buffer including its terminator.
+/// @param fallback Message used when no active diagnostic is available.
+static void sa_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
+}
+
+/// @brief Box and append one sparse index, consuming the snapshot on failure.
+/// @param seq Partial owning index snapshot.
+/// @param index Sparse index to box.
+/// @return One after publication; zero after cleanup and a propagated trap.
+static int sa_append_index_or_release_seq(void *seq, int64_t index) {
+    void *volatile boxed = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        sa_save_trap(
+            saved_error, sizeof(saved_error), "SparseArray.Indices: snapshot append failed");
+        rt_trap_clear_recovery();
+        sa_release_value((void *)boxed);
+        sa_release_value(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    boxed = rt_box_i64(index);
+    if (!boxed)
+        rt_trap("SparseArray.Indices: index allocation failed");
+    rt_seq_push(seq, (void *)boxed);
+    sa_release_value((void *)boxed);
+    boxed = NULL;
+    rt_trap_clear_recovery();
+    return 1;
+}
+
+/// @brief Append one retained value, consuming the snapshot on failure.
+/// @param seq Partial owning value snapshot.
+/// @param value Borrowed stored value.
+/// @return One after publication; zero after cleanup and a propagated trap.
+static int sa_append_value_or_release_seq(void *seq, void *value) {
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        sa_save_trap(
+            saved_error, sizeof(saved_error), "SparseArray.Values: snapshot append failed");
+        rt_trap_clear_recovery();
+        sa_release_value(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    rt_seq_push(seq, value);
+    rt_trap_clear_recovery();
+    return 1;
+}
+
 /// @brief GC finalizer: release every occupied slot's value, free the slots.
 /// @param obj SparseArray object being finalized; `NULL` is ignored.
 static void sa_finalizer(void *obj) {
     if (!obj)
         return;
     rt_sparse_impl *sa = as_sparse(obj, "SparseArray: invalid SparseArray object");
+    if (!sa)
+        return;
     if (sa->slots) {
         for (int64_t i = 0; i < sa->capacity; i++) {
             if (sa->slots[i].occupied) {
@@ -140,7 +214,7 @@ static void sa_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
     rt_sparse_impl *sa = as_sparse(obj, "SparseArray: invalid SparseArray object");
-    if (!sa->slots)
+    if (!sa || !sa->slots)
         return;
     for (int64_t i = 0; i < sa->capacity; i++) {
         if (sa->slots[i].occupied)
@@ -160,7 +234,9 @@ static int sa_grow(rt_sparse_impl *sa);
 /// @param sa SparseArray with at least one reachable free slot.
 /// @param key Signed integer index.
 /// @param value Non-null runtime value to retain.
-static void sa_insert_internal(rt_sparse_impl *sa, int64_t key, void *value) {
+/// @return One after insertion/replacement; zero after a returning retain or
+///         internal-capacity trap.
+static int sa_insert_internal(rt_sparse_impl *sa, int64_t key, void *value) {
     uint64_t h = sa_hash(key);
     int64_t mask = sa->capacity - 1;
     int64_t idx = (int64_t)(h & (uint64_t)mask);
@@ -168,22 +244,26 @@ static void sa_insert_internal(rt_sparse_impl *sa, int64_t key, void *value) {
     for (int64_t i = 0; i < sa->capacity; i++) {
         int64_t slot = (idx + i) & mask;
         if (!sa->slots[slot].occupied) {
-            rt_obj_retain_maybe(value);
+            if (!rt_collection_retain_checked(value, "SparseArray.Set: value retain failed"))
+                return 0;
             sa->slots[slot].key = key;
             sa->slots[slot].value = value;
             sa->slots[slot].occupied = 1;
             sa->count++;
-            return;
+            return 1;
         }
         if (sa->slots[slot].key == key) {
             // Update value
-            rt_obj_retain_maybe(value);
+            if (!rt_collection_retain_checked(value, "SparseArray.Set: value retain failed"))
+                return 0;
             void *old_value = sa->slots[slot].value;
             sa->slots[slot].value = value;
             sa_release_value(old_value);
-            return;
+            return 1;
         }
     }
+    rt_trap("SparseArray.Set: no insertion slot");
+    return 0;
 }
 
 /// @brief Double the slot table and re-insert occupied entries (ownership
@@ -342,7 +422,10 @@ void rt_sparse_set(void *obj, int64_t index, void *value) {
         return;
     }
 
-    sa_insert_internal(sa, index, value);
+    if (!sa_insert_internal(sa, index, value)) {
+        rt_gc_mutator_exit();
+        return;
+    }
     rt_gc_mutator_exit();
 }
 
@@ -416,16 +499,18 @@ int8_t rt_sparse_remove(void *obj, int64_t index) {
 /// @param obj SparseArray handle, or `NULL`.
 /// @return New runtime-managed owning Seq of boxed indices.
 void *rt_sparse_indices(void *obj) {
-    void *seq = rt_seq_new();
-    rt_seq_set_owns_elements(seq, 1);
     if (!obj)
-        return seq;
+        return rt_seq_new_owned();
     rt_sparse_impl *sa = as_sparse(obj, "SparseArray.Indices: invalid SparseArray object");
+    if (!sa || !sa->slots || sa->capacity <= 0)
+        return NULL;
+    void *seq = rt_seq_with_capacity_owned(sa->count > 0 ? sa->count : 1);
+    if (!seq)
+        return NULL;
     for (int64_t i = 0; i < sa->capacity; i++) {
         if (sa->slots[i].occupied) {
-            void *boxed = rt_box_i64(sa->slots[i].key);
-            rt_seq_push(seq, boxed);
-            sa_release_value(boxed);
+            if (!sa_append_index_or_release_seq(seq, sa->slots[i].key))
+                return NULL;
         }
     }
     return seq;
@@ -438,14 +523,17 @@ void *rt_sparse_indices(void *obj) {
 /// @param obj SparseArray handle, or `NULL`.
 /// @return New runtime-managed owning Seq of values.
 void *rt_sparse_values(void *obj) {
-    void *seq = rt_seq_new();
-    rt_seq_set_owns_elements(seq, 1);
     if (!obj)
-        return seq;
+        return rt_seq_new_owned();
     rt_sparse_impl *sa = as_sparse(obj, "SparseArray.Values: invalid SparseArray object");
+    if (!sa || !sa->slots || sa->capacity <= 0)
+        return NULL;
+    void *seq = rt_seq_with_capacity_owned(sa->count > 0 ? sa->count : 1);
+    if (!seq)
+        return NULL;
     for (int64_t i = 0; i < sa->capacity; i++) {
-        if (sa->slots[i].occupied)
-            rt_seq_push(seq, sa->slots[i].value);
+        if (sa->slots[i].occupied && !sa_append_value_or_release_seq(seq, sa->slots[i].value))
+            return NULL;
     }
     return seq;
 }

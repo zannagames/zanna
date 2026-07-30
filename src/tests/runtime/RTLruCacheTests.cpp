@@ -10,6 +10,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_lrucache.h"
 #include "rt_object.h"
@@ -18,6 +19,7 @@
 
 #include <cassert>
 #include <csetjmp>
+#include <cstdint>
 #include <cstring>
 
 namespace {
@@ -25,6 +27,22 @@ static jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
 static bool g_trap_expected = false;
 static int g_finalizer_calls = 0;
+static int g_trapping_finalizer_calls = 0;
+
+enum class ReentryAction {
+    None,
+    Clear,
+    Put,
+    Remove,
+    Resurrect,
+};
+
+static void *g_reentry_cache = nullptr;
+static rt_string g_reentry_key = nullptr;
+static void *g_reentry_value = nullptr;
+static ReentryAction g_reentry_action = ReentryAction::None;
+static int g_reentry_calls = 0;
+static int8_t g_reentry_remove_result = -1;
 } // namespace
 
 extern "C" void vm_trap(const char *msg) {
@@ -58,6 +76,40 @@ static void *new_obj() {
 
 static void count_finalizer(void *) {
     ++g_finalizer_calls;
+}
+
+static void trapping_finalizer(void *) {
+    ++g_trapping_finalizer_calls;
+    rt_trap("LRUCache test finalizer trap");
+}
+
+static void reentrant_finalizer(void *) {
+    ++g_reentry_calls;
+    switch (g_reentry_action) {
+        case ReentryAction::Clear:
+            rt_lrucache_clear(g_reentry_cache);
+            break;
+        case ReentryAction::Put:
+            rt_lrucache_put(g_reentry_cache, g_reentry_key, g_reentry_value);
+            break;
+        case ReentryAction::Remove:
+            g_reentry_remove_result = rt_lrucache_remove(g_reentry_cache, g_reentry_key);
+            break;
+        case ReentryAction::Resurrect:
+            rt_obj_resurrect(g_reentry_cache);
+            break;
+        case ReentryAction::None:
+            break;
+    }
+}
+
+static void reset_reentry_state() {
+    g_reentry_cache = nullptr;
+    g_reentry_key = nullptr;
+    g_reentry_value = nullptr;
+    g_reentry_action = ReentryAction::None;
+    g_reentry_calls = 0;
+    g_reentry_remove_result = -1;
 }
 
 static rt_string make_key(const char *text) {
@@ -340,6 +392,7 @@ static void test_keys_and_values_order() {
     // Keys should be in MRU order: c, b, a
     void *keys = rt_lrucache_keys(cache);
     assert(rt_seq_len(keys) == 3);
+    assert(rt_seq_cap(keys) == 3);
     assert(str_eq((rt_string)rt_seq_get(keys, 0), "c"));
     assert(str_eq((rt_string)rt_seq_get(keys, 1), "b"));
     assert(str_eq((rt_string)rt_seq_get(keys, 2), "a"));
@@ -347,6 +400,7 @@ static void test_keys_and_values_order() {
     // Values should also be in MRU order: v3, v2, v1
     void *vals = rt_lrucache_values(cache);
     assert(rt_seq_len(vals) == 3);
+    assert(rt_seq_cap(vals) == 3);
     assert(rt_seq_get(vals, 0) == v3);
     assert(rt_seq_get(vals, 1) == v2);
     assert(rt_seq_get(vals, 2) == v1);
@@ -429,6 +483,187 @@ static void test_finalizer_on_cache_free() {
     rt_string_unref(k1);
     rt_release_obj(cache);
     assert(g_finalizer_calls == 1);
+}
+
+static void test_replacement_commits_before_reentrant_clear() {
+    void *cache = rt_lrucache_new(2);
+    rt_string key = make_key("replace");
+    rt_string other_key = make_key("other");
+    void *old_value = new_obj();
+    void *replacement = new_obj();
+    void *other = new_obj();
+
+    rt_obj_set_finalizer(old_value, reentrant_finalizer);
+    rt_lrucache_put(cache, key, old_value);
+    rt_lrucache_put(cache, other_key, other);
+    rt_release_obj(old_value);
+
+    g_reentry_cache = cache;
+    g_reentry_action = ReentryAction::Clear;
+    rt_lrucache_put(cache, key, replacement);
+
+    assert(g_reentry_calls == 1);
+    assert(rt_lrucache_len(cache) == 0);
+    assert(rt_lrucache_is_empty(cache) == 1);
+
+    reset_reentry_state();
+    rt_string_unref(key);
+    rt_string_unref(other_key);
+    rt_release_obj(replacement);
+    rt_release_obj(other);
+    rt_release_obj(cache);
+}
+
+static void test_eviction_commits_new_entry_before_reentrant_put() {
+    void *cache = rt_lrucache_new(1);
+    rt_string victim_key = make_key("victim");
+    rt_string outer_key = make_key("outer");
+    rt_string reentry_key = make_key("reentry");
+    void *victim = new_obj();
+    void *outer = new_obj();
+    void *reentry = new_obj();
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_lrucache_put(cache, victim_key, victim);
+    rt_release_obj(victim);
+
+    g_reentry_cache = cache;
+    g_reentry_key = reentry_key;
+    g_reentry_value = reentry;
+    g_reentry_action = ReentryAction::Put;
+    rt_lrucache_put(cache, outer_key, outer);
+
+    assert(g_reentry_calls == 1);
+    assert(rt_lrucache_len(cache) == 1);
+    assert(rt_lrucache_has(cache, victim_key) == 0);
+    assert(rt_lrucache_has(cache, outer_key) == 0);
+    assert(rt_lrucache_get(cache, reentry_key) == reentry);
+
+    reset_reentry_state();
+    rt_string_unref(victim_key);
+    rt_string_unref(outer_key);
+    rt_string_unref(reentry_key);
+    rt_release_obj(outer);
+    rt_release_obj(reentry);
+    rt_release_obj(cache);
+}
+
+static void test_clear_preserves_reentrant_put() {
+    void *cache = rt_lrucache_new(2);
+    rt_string key = make_key("same-key");
+    void *victim = new_obj();
+    void *inserted = new_obj();
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_lrucache_put(cache, key, victim);
+    rt_release_obj(victim);
+
+    g_reentry_cache = cache;
+    g_reentry_key = key;
+    g_reentry_value = inserted;
+    g_reentry_action = ReentryAction::Put;
+    rt_lrucache_clear(cache);
+
+    assert(g_reentry_calls == 1);
+    assert(rt_lrucache_len(cache) == 1);
+    assert(rt_lrucache_get(cache, key) == inserted);
+
+    reset_reentry_state();
+    rt_lrucache_clear(cache);
+    rt_release_obj(inserted);
+    rt_string_unref(key);
+    rt_release_obj(cache);
+}
+
+static void test_owner_finalizer_blocks_reentrant_put() {
+    void *cache = rt_lrucache_new(2);
+    rt_string key = make_key("owner-finalizer");
+    void *victim = new_obj();
+    void *inserted = new_obj();
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_lrucache_put(cache, key, victim);
+    rt_release_obj(victim);
+
+    g_reentry_cache = cache;
+    g_reentry_key = key;
+    g_reentry_value = inserted;
+    g_reentry_action = ReentryAction::Put;
+    rt_release_obj(cache);
+
+    rt_heap_info_t inserted_info;
+    assert(g_reentry_calls == 1);
+    assert(rt_heap_get_info(inserted, &inserted_info) == 1);
+    assert(inserted_info.refcnt == 1);
+
+    reset_reentry_state();
+    rt_release_obj(inserted);
+    rt_string_unref(key);
+}
+
+static void test_resurrected_owner_is_empty_reusable_and_rearmed() {
+    void *cache = rt_lrucache_new(2);
+    rt_string key = make_key("resurrect");
+    void *victim = new_obj();
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_lrucache_put(cache, key, victim);
+    rt_release_obj(victim);
+
+    g_reentry_cache = cache;
+    g_reentry_action = ReentryAction::Resurrect;
+    rt_release_obj(cache);
+
+    assert(g_reentry_calls == 1);
+    assert(rt_lrucache_len(cache) == 0);
+    assert(rt_lrucache_cap(cache) == 2);
+    reset_reentry_state();
+
+    g_finalizer_calls = 0;
+    void *second = new_obj();
+    rt_obj_set_finalizer(second, count_finalizer);
+    rt_lrucache_put(cache, key, second);
+    rt_release_obj(second);
+    assert(rt_lrucache_get(cache, key) == second);
+
+    rt_release_obj(cache);
+    assert(g_finalizer_calls == 1);
+    rt_string_unref(key);
+}
+
+static void test_finalizer_drains_after_value_finalizer_trap() {
+    void *cache = rt_lrucache_new(2);
+    rt_string first_key = make_key("first");
+    rt_string second_key = make_key("second");
+    void *first = new_obj();
+    void *second = new_obj();
+
+    g_trapping_finalizer_calls = 0;
+    g_finalizer_calls = 0;
+    rt_obj_set_finalizer(first, trapping_finalizer);
+    rt_obj_set_finalizer(second, count_finalizer);
+    rt_lrucache_put(cache, second_key, second);
+    rt_lrucache_put(cache, first_key, first);
+    rt_release_obj(first);
+    rt_release_obj(second);
+
+    EXPECT_TRAP(rt_release_obj(cache));
+    assert(g_last_trap != nullptr);
+    assert(g_trapping_finalizer_calls == 1);
+    assert(g_finalizer_calls == 1);
+
+    rt_string_unref(first_key);
+    rt_string_unref(second_key);
+}
+
+static void test_large_eviction_limit_does_not_preallocate_limit() {
+#if SIZE_MAX >= INT64_MAX
+    void *cache = rt_lrucache_new(INT64_MAX);
+    assert(cache != nullptr);
+    assert(rt_lrucache_cap(cache) == INT64_MAX);
+    assert(rt_lrucache_len(cache) == 0);
+    rt_release_obj(cache);
+#endif
 }
 
 static void test_null_safety() {
@@ -526,6 +761,13 @@ int main() {
     test_embedded_nul_keys_are_distinct();
     test_finalizer_on_eviction();
     test_finalizer_on_cache_free();
+    test_replacement_commits_before_reentrant_clear();
+    test_eviction_commits_new_entry_before_reentrant_put();
+    test_clear_preserves_reentrant_put();
+    test_owner_finalizer_blocks_reentrant_put();
+    test_resurrected_owner_is_empty_reusable_and_rearmed();
+    test_finalizer_drains_after_value_finalizer_trap();
+    test_large_eviction_limit_does_not_preallocate_limit();
     test_null_safety();
     test_capacity_one();
     test_capacity_zero_is_unbounded();

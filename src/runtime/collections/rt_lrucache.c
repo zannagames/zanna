@@ -13,7 +13,7 @@
 //
 // Key invariants:
 //   - Hash table has initial LRU_INITIAL_BUCKETS (16) buckets with separate
-//     chaining; resizes at 75% load factor.
+//     chaining, keyed hashes, and growth at 75% load factor.
 //   - LRU order is maintained as a doubly-linked list: head = MRU (most
 //     recently used), tail = LRU (least recently used, next to evict).
 //   - Get promotes the accessed node to the head of the list (O(1)).
@@ -29,7 +29,7 @@
 //     all list nodes are freed by the GC finalizer (lrucache_finalizer).
 //
 // Links: src/runtime/collections/rt_lrucache.h (public API),
-//        src/runtime/collections/rt_hash_util.h (FNV-1a hash macro)
+//        src/runtime/collections/rt_hash_util.h (keyed hash helper)
 //
 //===----------------------------------------------------------------------===//
 
@@ -49,14 +49,18 @@
 #include "rt_lrucache.h"
 
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_hash_table_util.h"
+#include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 #include "rt_trap.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -64,6 +68,15 @@
 #define LRU_INITIAL_BUCKETS 16
 
 #include "rt_hash_util.h"
+
+/// @brief Install a non-local recovery target for the current thread.
+/// @param buf Jump buffer that receives control after a runtime trap.
+void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's active legacy recovery target.
+void rt_trap_clear_recovery(void);
+/// @brief Borrow the most recent runtime trap diagnostic.
+/// @return Null-terminated diagnostic text, or NULL when unavailable.
+const char *rt_trap_get_error(void);
 
 /// @brief Doubly-linked list node with hash table chaining.
 typedef struct rt_lru_node {
@@ -84,6 +97,7 @@ typedef struct rt_lrucache_impl {
     size_t max_cap;        ///< Maximum number of entries before eviction.
     rt_lru_node *head;     ///< Most recently used node (doubly-linked list head).
     rt_lru_node *tail;     ///< Least recently used node (doubly-linked list tail).
+    int8_t finalizing;     ///< Nonzero while owner teardown rejects reentrant mutation.
 } rt_lrucache_impl;
 
 /// @brief Checked cast of an opaque handle to the LruCache implementation.
@@ -128,6 +142,14 @@ static int get_key_data(rt_string key, const char *what, const char **out_data, 
     *out_data = cstr;
     *out_len = (size_t)len;
     return 1;
+}
+
+/// @brief Per-process keyed hash for attacker-controlled cache keys.
+/// @param key Borrowed key bytes.
+/// @param key_len Number of identity bytes.
+/// @return Process-keyed 64-bit hash.
+static uint64_t lru_hash(const char *key, size_t key_len) {
+    return rt_keyed_hash_bytes(key ? key : "", key_len);
 }
 
 // ---------------------------------------------------------------------------
@@ -198,7 +220,7 @@ static rt_lru_node *bucket_find(rt_lru_node *head, const char *key, size_t key_l
 /// @param cache Cache whose bucket chain is updated.
 /// @param node Node to unlink.
 static void bucket_remove(rt_lrucache_impl *cache, rt_lru_node *node) {
-    uint64_t hash = rt_fnv1a(node->key, node->key_len);
+    uint64_t hash = lru_hash(node->key, node->key_len);
     size_t idx = hash % cache->bucket_count;
 
     rt_lru_node **prev_ptr = &cache->buckets[idx];
@@ -219,7 +241,7 @@ static void bucket_remove(rt_lrucache_impl *cache, rt_lru_node *node) {
 /// @param cache Cache receiving the node.
 /// @param node Initialized node with owned key bytes.
 static void bucket_insert(rt_lrucache_impl *cache, rt_lru_node *node) {
-    uint64_t hash = rt_fnv1a(node->key, node->key_len);
+    uint64_t hash = lru_hash(node->key, node->key_len);
     size_t idx = hash % cache->bucket_count;
     node->bucket_next = cache->buckets[idx];
     cache->buckets[idx] = node;
@@ -248,7 +270,7 @@ static int resize_buckets(rt_lrucache_impl *cache) {
         rt_lru_node *node = cache->buckets[i];
         while (node) {
             rt_lru_node *next = node->bucket_next;
-            uint64_t hash = rt_fnv1a(node->key, node->key_len);
+            uint64_t hash = lru_hash(node->key, node->key_len);
             size_t idx = hash % new_bucket_count;
             node->bucket_next = new_buckets[idx];
             new_buckets[idx] = node;
@@ -281,23 +303,134 @@ static int maybe_resize_for_count(rt_lrucache_impl *cache, size_t next_count) {
 static void free_node(rt_lru_node *node) {
     if (!node)
         return;
+    void *value = node->value;
+    node->value = NULL;
     free(node->key);
-    if (node->value && rt_obj_release_check0(node->value))
-        rt_obj_free(node->value);
+    node->key = NULL;
     free(node);
+    if (value && rt_obj_release_check0(value))
+        rt_obj_free(value);
 }
 
-/// @brief Evict and destroy the least-recently-used node.
-/// @param cache Cache to evict from.
-static void evict_lru(rt_lrucache_impl *cache) {
+/// @brief Release one runtime object and finalize it at zero.
+/// @param obj Runtime-managed object, or NULL.
+static void lru_release_object(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
+/// @brief Save the active trap diagnostic before clearing a recovery frame.
+/// @param buffer Destination for the bounded diagnostic copy.
+/// @param buffer_size Capacity of @p buffer including its terminator.
+/// @param fallback Message used when the trap subsystem has no text.
+static void lru_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
+}
+
+/// @brief Consume a detached recency list despite trapping value finalizers.
+/// @details Advances and reclaims each native node before releasing its value.
+///          Non-local traps resume cleanup at the next node; the first
+///          diagnostic is returned only after the full detached list drains.
+/// @param head Detached list head, or NULL.
+/// @param error Buffer receiving the first trapped diagnostic.
+/// @param error_size Capacity of @p error including its terminator.
+/// @return Nonzero when at least one value cleanup trapped.
+static int lru_destroy_nodes(rt_lru_node *head, char *error, size_t error_size) {
+    rt_lru_node *volatile cursor = head;
+    volatile int trapped = 0;
+    jmp_buf recovery;
+
+    rt_gc_mutator_enter();
+    rt_trap_set_recovery(&recovery);
+    for (;;) {
+        if (setjmp(recovery) != 0) {
+            rt_gc_mutator_enter();
+            if (!trapped)
+                lru_save_trap_error(error, error_size, "LRUCache: value finalizer cleanup failed");
+            trapped = 1;
+        }
+        rt_lru_node *node = (rt_lru_node *)cursor;
+        if (!node)
+            break;
+        cursor = node->next;
+        free_node(node);
+    }
+    rt_trap_clear_recovery();
+    rt_gc_mutator_exit();
+    return trapped ? 1 : 0;
+}
+
+/// @brief Append a copied key to an owning snapshot, consuming it on failure.
+/// @param seq Partial owning snapshot.
+/// @param key Borrowed key bytes.
+/// @param key_len Number of key bytes.
+/// @return One after append; zero after consuming @p seq and retrapping.
+static int lru_append_key_or_release_seq(void *seq, const char *key, size_t key_len) {
+    volatile rt_string key_copy = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        lru_save_trap_error(
+            saved_error, sizeof(saved_error), "LRUCache.Keys: snapshot append failed");
+        rt_trap_clear_recovery();
+        if (key_copy)
+            rt_str_release_maybe((rt_string)key_copy);
+        lru_release_object(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    key_copy = rt_string_from_bytes(key, key_len);
+    if (!key_copy)
+        rt_trap("LRUCache.Keys: key allocation failed");
+    int64_t old_len = rt_seq_len(seq);
+    rt_seq_push_raw(seq, (void *)key_copy);
+    if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(seq) != old_len + 1)
+        rt_trap("LRUCache.Keys: snapshot append failed");
+    key_copy = NULL;
+    rt_trap_clear_recovery();
+    return 1;
+}
+
+/// @brief Append a retained value to an owning snapshot, consuming it on failure.
+/// @param seq Partial owning snapshot.
+/// @param value Borrowed cached value; may be NULL.
+/// @return One after append; zero after consuming @p seq and retrapping.
+static int lru_append_value_or_release_seq(void *seq, void *value) {
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        lru_save_trap_error(
+            saved_error, sizeof(saved_error), "LRUCache.Values: snapshot append failed");
+        rt_trap_clear_recovery();
+        lru_release_object(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    int64_t old_len = rt_seq_len(seq);
+    rt_seq_push(seq, value);
+    if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(seq) != old_len + 1)
+        rt_trap("LRUCache.Values: snapshot append failed");
+    rt_trap_clear_recovery();
+    return 1;
+}
+
+/// @brief Detach the least-recently-used node without running callbacks.
+/// @param cache Cache to remove from.
+/// @return Detached former tail, or NULL when empty.
+static rt_lru_node *detach_lru(rt_lrucache_impl *cache) {
     rt_lru_node *victim = cache->tail;
     if (!victim)
-        return;
+        return NULL;
 
     list_remove(cache, victim);
     bucket_remove(cache, victim);
     cache->count--;
-    free_node(victim);
+    return victim;
 }
 
 // ---------------------------------------------------------------------------
@@ -311,22 +444,36 @@ static void rt_lrucache_finalize(void *obj) {
     if (!obj)
         return;
     rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache: invalid LRUCache object");
+    if (!cache)
+        return;
 
-    // Free all nodes via the linked list (faster than iterating buckets)
-    rt_lru_node *node = cache->head;
+    rt_lru_node *nodes = cache->head;
+    rt_lru_node **buckets = cache->buckets;
+    size_t bucket_count = cache->bucket_count;
+    cache->finalizing = 1;
+    cache->buckets = NULL;
+    cache->bucket_count = 0;
     cache->head = NULL;
     cache->tail = NULL;
     cache->count = 0;
-    if (cache->buckets)
-        memset(cache->buckets, 0, cache->bucket_count * sizeof(rt_lru_node *));
-    while (node) {
-        rt_lru_node *next = node->next;
-        free_node(node);
-        node = next;
+
+    char cleanup_error[256] = {0};
+    int cleanup_trapped = lru_destroy_nodes(nodes, cleanup_error, sizeof(cleanup_error));
+
+    rt_heap_info_t info;
+    int resurrected = rt_heap_get_info(obj, &info) && info.refcnt != 0;
+    if (resurrected && buckets && bucket_count > 0) {
+        memset(buckets, 0, bucket_count * sizeof(rt_lru_node *));
+        cache->buckets = buckets;
+        cache->bucket_count = bucket_count;
+        buckets = NULL;
+        rt_obj_set_finalizer(cache, rt_lrucache_finalize);
     }
-    free(cache->buckets);
-    cache->buckets = NULL;
-    cache->bucket_count = 0;
+    cache->finalizing = 0;
+    free(buckets);
+
+    if (cleanup_trapped)
+        rt_trap(cleanup_error[0] ? cleanup_error : "LRUCache: value finalizer cleanup failed");
 }
 
 /// @brief GC traversal: visit every cached value across the node list.
@@ -337,6 +484,8 @@ static void rt_lrucache_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) 
     if (!obj || !visitor)
         return;
     rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache: invalid LRUCache object");
+    if (!cache)
+        return;
     for (rt_lru_node *node = cache->head; node; node = node->next)
         visitor(node->value, ctx);
 }
@@ -360,14 +509,9 @@ void *rt_lrucache_new(int64_t capacity) {
         return NULL;
     }
 
+    // Capacity is an eviction limit, not an initial-size request. Empty caches
+    // start small and grow with resident entries.
     size_t bucket_count = LRU_INITIAL_BUCKETS;
-    // If requested capacity is large, start with more buckets to avoid
-    // immediate resizing
-    while (rt_hash_table_exceeds_load((size_t)capacity, bucket_count)) {
-        if (bucket_count > SIZE_MAX / 2)
-            break;
-        bucket_count *= 2;
-    }
 
     if (bucket_count > SIZE_MAX / sizeof(rt_lru_node *)) {
         rt_trap("LRUCache: allocation size overflow");
@@ -395,6 +539,7 @@ void *rt_lrucache_new(int64_t capacity) {
     cache->max_cap = (size_t)capacity;
     cache->head = NULL;
     cache->tail = NULL;
+    cache->finalizing = 0;
     rt_obj_set_finalizer(cache, rt_lrucache_finalize);
     rt_gc_track(cache, rt_lrucache_traverse);
     return cache;
@@ -446,7 +591,7 @@ void rt_lrucache_put(void *obj, rt_string key, void *value) {
         rt_gc_mutator_exit();
         return;
     }
-    if (!cache->buckets || cache->bucket_count == 0) {
+    if (cache->finalizing || !cache->buckets || cache->bucket_count == 0) {
         rt_gc_mutator_exit();
         return;
     }
@@ -457,7 +602,7 @@ void rt_lrucache_put(void *obj, rt_string key, void *value) {
         rt_gc_mutator_exit();
         return;
     }
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = lru_hash(key_data, key_len);
     size_t idx = hash % cache->bucket_count;
 
     // Check if key already exists
@@ -465,12 +610,14 @@ void rt_lrucache_put(void *obj, rt_string key, void *value) {
     if (existing) {
         // Update value and promote to MRU
         void *old_value = existing->value;
-        rt_obj_retain_maybe(value);
+        if (!rt_collection_retain_checked(value, "LRUCache.Put: value retain failed")) {
+            rt_gc_mutator_exit();
+            return;
+        }
         existing->value = value;
-        if (old_value && rt_obj_release_check0(old_value))
-            rt_obj_free(old_value);
         list_move_to_front(cache, existing);
         rt_gc_mutator_exit();
+        lru_release_object(old_value);
         return;
     }
 
@@ -488,8 +635,10 @@ void rt_lrucache_put(void *obj, rt_string key, void *value) {
         return;
     }
 
-    if (value)
-        rt_obj_retain_maybe(value);
+    if (!rt_collection_retain_checked(value, "LRUCache.Put: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     // Create new node
     rt_lru_node *node = (rt_lru_node *)malloc(sizeof(rt_lru_node));
@@ -527,24 +676,18 @@ void rt_lrucache_put(void *obj, rt_string key, void *value) {
     node->next = NULL;
     node->bucket_next = NULL;
 
-    // Evict only after all fallible preparation for the replacement entry succeeds.
+    // Commit eviction and insertion as one mutation before releasing the
+    // displaced value. Its finalizer may re-enter the completed cache.
+    rt_lru_node *evicted = NULL;
     if (cache->max_cap != 0 && cache->count >= cache->max_cap)
-        evict_lru(cache);
+        evicted = detach_lru(cache);
 
     // Insert into hash table and linked list
-    if (cache->count >= (size_t)INT64_MAX) {
-        if (node->value && rt_obj_release_check0(node->value))
-            rt_obj_free(node->value);
-        free(node->key);
-        free(node);
-        rt_gc_mutator_exit();
-        rt_trap("LRUCache.Put: maximum size reached");
-        return;
-    }
     bucket_insert(cache, node);
     list_push_front(cache, node);
     cache->count++;
     rt_gc_mutator_exit();
+    free_node(evicted);
 }
 
 /// @brief Look up `key` and promote it to MRU. Returns the borrowed value pointer or NULL if
@@ -569,7 +712,7 @@ void *rt_lrucache_get(void *obj, rt_string key) {
         rt_gc_mutator_exit();
         return NULL;
     }
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = lru_hash(key_data, key_len);
     size_t idx = hash % cache->bucket_count;
 
     rt_lru_node *node = bucket_find(cache->buckets[idx], key_data, key_len);
@@ -603,7 +746,7 @@ void *rt_lrucache_peek(void *obj, rt_string key) {
     const char *key_data = NULL;
     if (!get_key_data(key, "LRUCache.Peek: invalid key", &key_data, &key_len))
         return NULL;
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = lru_hash(key_data, key_len);
     size_t idx = hash % cache->bucket_count;
 
     rt_lru_node *node = bucket_find(cache->buckets[idx], key_data, key_len);
@@ -626,7 +769,7 @@ int8_t rt_lrucache_has(void *obj, rt_string key) {
     const char *key_data = NULL;
     if (!get_key_data(key, "LRUCache.Has: invalid key", &key_data, &key_len))
         return 0;
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = lru_hash(key_data, key_len);
     size_t idx = hash % cache->bucket_count;
 
     return bucket_find(cache->buckets[idx], key_data, key_len) ? 1 : 0;
@@ -654,7 +797,7 @@ int8_t rt_lrucache_remove(void *obj, rt_string key) {
         rt_gc_mutator_exit();
         return 0;
     }
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = lru_hash(key_data, key_len);
     size_t idx = hash % cache->bucket_count;
 
     rt_lru_node *node = bucket_find(cache->buckets[idx], key_data, key_len);
@@ -666,8 +809,8 @@ int8_t rt_lrucache_remove(void *obj, rt_string key) {
     list_remove(cache, node);
     bucket_remove(cache, node);
     cache->count--;
-    free_node(node);
     rt_gc_mutator_exit();
+    free_node(node);
     return 1;
 }
 
@@ -681,13 +824,14 @@ int8_t rt_lrucache_remove_oldest(void *obj) {
 
     rt_gc_mutator_enter();
     rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.RemoveOldest: invalid LRUCache object");
-    if (!cache || !cache->tail) {
+    if (!cache || cache->finalizing || !cache->tail) {
         rt_gc_mutator_exit();
         return 0;
     }
 
-    evict_lru(cache);
+    rt_lru_node *removed = detach_lru(cache);
     rt_gc_mutator_exit();
+    free_node(removed);
     return 1;
 }
 
@@ -704,20 +848,23 @@ void rt_lrucache_clear(void *obj) {
         rt_gc_mutator_exit();
         return;
     }
+    if (cache->finalizing) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
-    // Free all nodes via the linked list
-    rt_lru_node *node = cache->head;
+    rt_lru_node *nodes = cache->head;
     cache->head = NULL;
     cache->tail = NULL;
     cache->count = 0;
     if (cache->buckets)
         memset(cache->buckets, 0, cache->bucket_count * sizeof(rt_lru_node *));
-    while (node) {
-        rt_lru_node *next = node->next;
-        free_node(node);
-        node = next;
-    }
     rt_gc_mutator_exit();
+
+    char cleanup_error[256] = {0};
+    if (lru_destroy_nodes(nodes, cleanup_error, sizeof(cleanup_error)))
+        rt_trap(cleanup_error[0] ? cleanup_error
+                                 : "LRUCache.Clear: value finalizer cleanup failed");
 }
 
 /// @brief Return a Seq of all keys in MRU→LRU order. Owned-elements Seq (will release strings
@@ -725,22 +872,24 @@ void rt_lrucache_clear(void *obj) {
 /// @param obj LRUCache handle, or NULL.
 /// @return New owning Seq of newly created key strings.
 void *rt_lrucache_keys(void *obj) {
-    void *result = rt_seq_new();
+    rt_lrucache_impl *cache = NULL;
+    if (obj) {
+        cache = as_lrucache(obj, "LRUCache.Keys: invalid LRUCache object");
+        if (!cache)
+            return NULL;
+    }
+
+    int64_t initial_capacity = cache && cache->count > 0 ? (int64_t)cache->count : 1;
+    void *result = rt_seq_with_capacity_owned(initial_capacity);
     if (!result)
         return NULL;
-    rt_seq_set_owns_elements(result, 1);
-    if (!obj)
-        return result;
-
-    rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.Keys: invalid LRUCache object");
     if (!cache)
         return result;
 
     // Walk from head (MRU) to tail (LRU)
     for (rt_lru_node *node = cache->head; node; node = node->next) {
-        rt_string key_str = rt_string_from_bytes(node->key, node->key_len);
-        rt_seq_push(result, (void *)key_str);
-        rt_str_release_maybe(key_str);
+        if (!lru_append_key_or_release_seq(result, node->key, node->key_len))
+            return NULL;
     }
 
     return result;
@@ -751,20 +900,24 @@ void *rt_lrucache_keys(void *obj) {
 /// @param obj LRUCache handle, or NULL.
 /// @return New owning Seq retaining cached values.
 void *rt_lrucache_values(void *obj) {
-    void *result = rt_seq_new();
+    rt_lrucache_impl *cache = NULL;
+    if (obj) {
+        cache = as_lrucache(obj, "LRUCache.Values: invalid LRUCache object");
+        if (!cache)
+            return NULL;
+    }
+
+    int64_t initial_capacity = cache && cache->count > 0 ? (int64_t)cache->count : 1;
+    void *result = rt_seq_with_capacity_owned(initial_capacity);
     if (!result)
         return NULL;
-    rt_seq_set_owns_elements(result, 1);
-    if (!obj)
-        return result;
-
-    rt_lrucache_impl *cache = as_lrucache(obj, "LRUCache.Values: invalid LRUCache object");
     if (!cache)
         return result;
 
     // Walk from head (MRU) to tail (LRU)
     for (rt_lru_node *node = cache->head; node; node = node->next) {
-        rt_seq_push(result, node->value);
+        if (!lru_append_value_or_release_seq(result, node->value))
+            return NULL;
     }
 
     return result;

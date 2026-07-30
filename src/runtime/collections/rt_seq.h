@@ -69,7 +69,9 @@ void *rt_seq_new_sized(int64_t len);
 void rt_seq_set_owns_elements(void *obj, int8_t owns);
 
 /// @brief Push an element without retaining it, regardless of ownership mode.
-/// @details For internal runtime use where element lifetime is managed externally.
+/// @details For internal runtime use. On an owning Seq, this transfers one
+///          already-owned reference into the sequence; on a borrowing Seq,
+///          element lifetime remains managed externally.
 /// @param obj Opaque Seq object pointer.
 /// @param val Element to add.
 void rt_seq_push_raw(void *obj, void *val);

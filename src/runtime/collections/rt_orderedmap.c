@@ -42,17 +42,30 @@
 
 #include "rt_orderedmap.h"
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_error.h"
 #include "rt_gc.h"
 #include "rt_hash_table_util.h"
 #include "rt_hash_util.h"
+#include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/// @brief Install a non-local recovery target for the current thread.
+/// @param buf Jump buffer that receives control after a runtime trap.
+void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's active legacy recovery target.
+void rt_trap_clear_recovery(void);
+/// @brief Borrow the most recent runtime trap diagnostic.
+/// @return Null-terminated diagnostic text, or NULL when unavailable.
+const char *rt_trap_get_error(void);
 
 // ---------------------------------------------------------------------------
 // Internal structure: doubly-linked list + hash table
@@ -81,6 +94,7 @@ typedef struct {
     int64_t count;
     rt_om_entry *head; // First inserted
     rt_om_entry *tail; // Last inserted
+    int8_t finalizing; // Owner teardown rejects callback-driven mutation
 } rt_orderedmap_impl;
 
 /// @brief Checked cast of an opaque handle to the OrderedMap implementation.
@@ -148,6 +162,115 @@ static int om_key_data(rt_string key, const char *what, const char **out_data, s
 static void om_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
+}
+
+/// @brief Save the active trap diagnostic before clearing a recovery frame.
+/// @param buffer Destination for the bounded diagnostic copy.
+/// @param buffer_size Capacity of @p buffer including its terminator.
+/// @param fallback Message used when the trap subsystem has no text.
+static void om_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
+}
+
+/// @brief Consume a detached insertion-order list despite trapping finalizers.
+/// @details Each native node and key is reclaimed before its value is released,
+///          so callback re-entry cannot observe or free the node again. When a
+///          value finalizer traps non-locally, cleanup resumes at the following
+///          node and the first diagnostic is returned after the whole list has
+///          been drained.
+/// @param head Detached list head, or NULL.
+/// @param error Buffer receiving the first trapped diagnostic.
+/// @param error_size Capacity of @p error including its terminator.
+/// @return Nonzero when at least one value cleanup trapped.
+static int om_destroy_entries(rt_om_entry *head, char *error, size_t error_size) {
+    rt_om_entry *volatile cursor = head;
+    volatile int trapped = 0;
+    jmp_buf recovery;
+
+    rt_gc_mutator_enter();
+    rt_trap_set_recovery(&recovery);
+    for (;;) {
+        if (setjmp(recovery) != 0) {
+            // Trap dispatch unwinds managed mutation scopes before longjmp.
+            rt_gc_mutator_enter();
+            if (!trapped)
+                om_save_trap_error(error, error_size, "OrderedMap: value finalizer cleanup failed");
+            trapped = 1;
+        }
+
+        rt_om_entry *entry = (rt_om_entry *)cursor;
+        if (!entry)
+            break;
+        cursor = entry->next;
+        void *value = entry->value;
+        entry->value = NULL;
+        free(entry->key);
+        entry->key = NULL;
+        free(entry);
+        om_release_value(value);
+    }
+    rt_trap_clear_recovery();
+    rt_gc_mutator_exit();
+    return trapped ? 1 : 0;
+}
+
+/// @brief Append a copied key to an owning snapshot, consuming it on failure.
+/// @param seq Partial owning snapshot.
+/// @param key Borrowed key bytes.
+/// @param key_len Number of key bytes.
+/// @return One after append; zero after consuming @p seq and retrapping.
+static int om_append_key_or_release_seq(void *seq, const char *key, size_t key_len) {
+    volatile rt_string key_copy = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        om_save_trap_error(
+            saved_error, sizeof(saved_error), "OrderedMap.Keys: snapshot append failed");
+        rt_trap_clear_recovery();
+        if (key_copy)
+            rt_str_release_maybe((rt_string)key_copy);
+        om_release_value(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    key_copy = rt_string_from_bytes(key, key_len);
+    if (!key_copy)
+        rt_trap("OrderedMap.Keys: key allocation failed");
+    int64_t old_len = rt_seq_len(seq);
+    rt_seq_push_raw(seq, (void *)key_copy);
+    if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(seq) != old_len + 1)
+        rt_trap("OrderedMap.Keys: snapshot append failed");
+    key_copy = NULL;
+    rt_trap_clear_recovery();
+    return 1;
+}
+
+/// @brief Append a retained value to an owning snapshot, consuming it on failure.
+/// @param seq Partial owning snapshot.
+/// @param value Borrowed stored value; may be NULL.
+/// @return One after append; zero after consuming @p seq and retrapping.
+static int om_append_value_or_release_seq(void *seq, void *value) {
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        om_save_trap_error(
+            saved_error, sizeof(saved_error), "OrderedMap.Values: snapshot append failed");
+        rt_trap_clear_recovery();
+        om_release_value(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    int64_t old_len = rt_seq_len(seq);
+    rt_seq_push(seq, value);
+    if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(seq) != old_len + 1)
+        rt_trap("OrderedMap.Values: snapshot append failed");
+    rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief Find an exact byte-string key through its collision chain.
@@ -230,21 +353,35 @@ static void orderedmap_finalizer(void *obj) {
     rt_orderedmap_impl *m = as_orderedmap(obj, "OrderedMap: invalid OrderedMap object");
     if (!m)
         return;
-    rt_om_entry *e = m->head;
-    m->head = m->tail = NULL;
-    m->count = 0;
-    if (m->buckets)
-        memset(m->buckets, 0, (size_t)m->capacity * sizeof(rt_om_entry *));
-    while (e) {
-        rt_om_entry *next = e->next;
-        free(e->key);
-        om_release_value(e->value);
-        free(e);
-        e = next;
-    }
-    free(m->buckets);
+
+    rt_om_entry *entries = m->head;
+    rt_om_entry **buckets = m->buckets;
+    int64_t capacity = m->capacity;
+    m->finalizing = 1;
     m->buckets = NULL;
     m->capacity = 0;
+    m->head = m->tail = NULL;
+    m->count = 0;
+
+    char cleanup_error[256] = {0};
+    int cleanup_trapped = om_destroy_entries(entries, cleanup_error, sizeof(cleanup_error));
+
+    rt_heap_info_t info;
+    int resurrected = rt_heap_get_info(obj, &info) && info.refcnt != 0;
+    if (resurrected && buckets && capacity > 0) {
+        memset(buckets, 0, (size_t)capacity * sizeof(rt_om_entry *));
+        m->buckets = buckets;
+        m->capacity = capacity;
+        buckets = NULL;
+        // Finalizer slots are one-shot. A resurrected owner must re-arm its
+        // cleanup before it can be reused and released a second time.
+        rt_obj_set_finalizer(m, orderedmap_finalizer);
+    }
+    m->finalizing = 0;
+    free(buckets);
+
+    if (cleanup_trapped)
+        rt_trap(cleanup_error[0] ? cleanup_error : "OrderedMap: value finalizer cleanup failed");
 }
 
 /// @brief GC traversal: visit every stored value in insertion order.
@@ -294,6 +431,7 @@ void *rt_orderedmap_new(void) {
         return NULL;
     }
     m->head = m->tail = NULL;
+    m->finalizing = 0;
     rt_obj_set_finalizer(m, orderedmap_finalizer);
     rt_gc_track(m, orderedmap_traverse);
     return m;
@@ -347,6 +485,10 @@ void rt_orderedmap_set(void *map, rt_string key, void *value) {
         return;
     }
 
+    if (m->finalizing) {
+        rt_gc_mutator_exit();
+        return;
+    }
     if (!m->buckets || m->capacity <= 0) {
         rt_gc_mutator_exit();
         rt_trap_raise_kind(RT_TRAP_KIND_RUNTIME_ERROR,
@@ -367,12 +509,14 @@ void rt_orderedmap_set(void *map, rt_string key, void *value) {
     rt_om_entry *existing = om_find(m, kstr, klen);
     if (existing) {
         // Update value in-place (preserves order)
-        if (value)
-            rt_obj_retain_maybe(value);
+        if (!rt_collection_retain_checked(value, "OrderedMap.Set: value retain failed")) {
+            rt_gc_mutator_exit();
+            return;
+        }
         void *old_value = existing->value;
         existing->value = value;
-        om_release_value(old_value);
         rt_gc_mutator_exit();
+        om_release_value(old_value);
         return;
     }
 
@@ -389,8 +533,10 @@ void rt_orderedmap_set(void *map, rt_string key, void *value) {
         return;
     }
 
-    if (value)
-        rt_obj_retain_maybe(value);
+    if (!rt_collection_retain_checked(value, "OrderedMap.Set: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     // Create new entry
     rt_om_entry *e = (rt_om_entry *)calloc(1, sizeof(rt_om_entry));
@@ -507,7 +653,7 @@ int8_t rt_orderedmap_remove(void *map, rt_string key) {
         return 0;
     rt_gc_mutator_enter();
     rt_orderedmap_impl *m = as_orderedmap(map, "OrderedMap.Remove: invalid OrderedMap object");
-    if (!m || m->capacity <= 0) {
+    if (!m || m->finalizing || !m->buckets || m->capacity <= 0) {
         rt_gc_mutator_exit();
         return 0;
     }
@@ -538,11 +684,14 @@ int8_t rt_orderedmap_remove(void *map, rt_string key) {
             else
                 m->tail = e->prev;
 
-            free(e->key);
-            om_release_value(e->value);
-            free(e);
             m->count--;
+            void *value = e->value;
+            e->value = NULL;
+            free(e->key);
+            e->key = NULL;
+            free(e);
             rt_gc_mutator_exit();
+            om_release_value(value);
             return 1;
         }
         pp = &e->hash_next;
@@ -562,21 +711,24 @@ int8_t rt_orderedmap_remove(void *map, rt_string key) {
 /// @param map Opaque OrderedMap handle, or `NULL`.
 /// @return New runtime-managed owning `Seq` of copied keys.
 void *rt_orderedmap_keys(void *map) {
-    void *seq = rt_seq_new();
+    rt_orderedmap_impl *m = NULL;
+    if (map) {
+        m = as_orderedmap(map, "OrderedMap.Keys: invalid OrderedMap object");
+        if (!m)
+            return NULL;
+    }
+
+    int64_t initial_capacity = m && m->count > 0 ? m->count : 1;
+    void *seq = rt_seq_with_capacity_owned(initial_capacity);
     if (!seq)
         return NULL;
-    rt_seq_set_owns_elements(seq, 1);
-    if (!map)
-        return seq;
-    rt_orderedmap_impl *m = as_orderedmap(map, "OrderedMap.Keys: invalid OrderedMap object");
     if (!m)
         return seq;
 
     rt_om_entry *e = m->head;
     while (e) {
-        rt_string k = rt_string_from_bytes(e->key, e->key_len);
-        rt_seq_push(seq, k);
-        rt_str_release_maybe(k);
+        if (!om_append_key_or_release_seq(seq, e->key, e->key_len))
+            return NULL;
         e = e->next;
     }
     return seq;
@@ -589,22 +741,24 @@ void *rt_orderedmap_keys(void *map) {
 /// @param map Opaque OrderedMap handle, or `NULL`.
 /// @return New runtime-managed owning `Seq` of stored values.
 void *rt_orderedmap_values(void *map) {
-    void *seq = rt_seq_new();
+    rt_orderedmap_impl *m = NULL;
+    if (map) {
+        m = as_orderedmap(map, "OrderedMap.Values: invalid OrderedMap object");
+        if (!m)
+            return NULL;
+    }
+
+    int64_t initial_capacity = m && m->count > 0 ? m->count : 1;
+    void *seq = rt_seq_with_capacity_owned(initial_capacity);
     if (!seq)
         return NULL;
-    rt_seq_set_owns_elements(seq, 1);
-    if (!map)
-        return seq;
-    rt_orderedmap_impl *m = as_orderedmap(map, "OrderedMap.Values: invalid OrderedMap object");
     if (!m)
         return seq;
 
     rt_om_entry *e = m->head;
     while (e) {
-        if (e->value)
-            rt_seq_push(seq, e->value);
-        else
-            rt_seq_push(seq, NULL);
+        if (!om_append_value_or_release_seq(seq, e->value))
+            return NULL;
         e = e->next;
     }
     return seq;
@@ -652,18 +806,20 @@ void rt_orderedmap_clear(void *map) {
         rt_gc_mutator_exit();
         return;
     }
+    if (m->finalizing) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
-    rt_om_entry *e = m->head;
+    rt_om_entry *entries = m->head;
     m->head = m->tail = NULL;
     m->count = 0;
     if (m->buckets)
         memset(m->buckets, 0, (size_t)m->capacity * sizeof(rt_om_entry *));
-    while (e) {
-        rt_om_entry *next = e->next;
-        free(e->key);
-        om_release_value(e->value);
-        free(e);
-        e = next;
-    }
     rt_gc_mutator_exit();
+
+    char cleanup_error[256] = {0};
+    if (om_destroy_entries(entries, cleanup_error, sizeof(cleanup_error)))
+        rt_trap(cleanup_error[0] ? cleanup_error
+                                 : "OrderedMap.Clear: value finalizer cleanup failed");
 }

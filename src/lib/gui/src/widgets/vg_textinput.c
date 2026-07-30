@@ -91,7 +91,9 @@ static vg_widget_vtable_t g_textinput_vtable = {.destroy = textinput_destroy,
 /// @return `true` when capacity is sufficient; `false` with the old buffer intact
 ///         on overflow or allocation failure.
 static bool ensure_capacity(vg_textinput_t *input, size_t needed) {
-    if (needed <= input->text_capacity)
+    if (!input)
+        return false;
+    if (input->text && needed <= input->text_capacity)
         return true;
 
     size_t new_capacity = input->text_capacity ? input->text_capacity : TEXTINPUT_INITIAL_CAPACITY;
@@ -163,6 +165,15 @@ static size_t textinput_char_count(const vg_textinput_t *input) {
 static void textinput_increment_revision(uint64_t *revision) {
     if (revision && *revision < UINT64_MAX)
         (*revision)++;
+}
+
+/// @brief Validate a TextInput pointer against the widget identity captured before a callback.
+/// @param input Candidate text input pointer.
+/// @param widget_id Base-widget generation observed while @p input was live.
+/// @return true only when the same TextInput allocation remains live.
+static bool textinput_ref_is_live(const vg_textinput_t *input, uint64_t widget_id) {
+    return input && widget_id != 0 && vg_widget_is_live(&input->base) &&
+           input->base.id == widget_id;
 }
 
 /// @brief Record one committed-text mutation before invoking the optional callback.
@@ -448,9 +459,9 @@ static void textinput_reset_cursor_blink(vg_textinput_t *input) {
     input->cursor_visible = true;
 }
 
-/// @brief Clears all undo/redo slots and seeds the initial state with the current text and cursor.
-/// @param input TextInput whose snapshot history is rebuilt.
-static void textinput_reset_undo_history(vg_textinput_t *input) {
+/// @brief Release every undo/redo snapshot and leave history disabled.
+/// @param input TextInput whose snapshot storage is cleared.
+static void textinput_clear_undo_history(vg_textinput_t *input) {
     if (!input)
         return;
     for (int i = 0; i < TEXTINPUT_UNDO_CAPACITY; i++) {
@@ -458,10 +469,23 @@ static void textinput_reset_undo_history(vg_textinput_t *input) {
         input->undo_stack[i] = NULL;
         input->undo_cursors[i] = 0;
     }
+    input->undo_count = 0;
+    input->undo_pos = 0;
+}
+
+/// @brief Clears all undo/redo slots and seeds a budget-fitting initial state.
+/// @details Text at or above the byte ceiling cannot fit as one NUL-terminated
+///          snapshot, so history remains disabled until a later state fits.
+/// @param input TextInput whose snapshot history is rebuilt.
+static void textinput_reset_undo_history(vg_textinput_t *input) {
+    if (!input)
+        return;
+    textinput_clear_undo_history(input);
+    if (input->text && input->text_len >= TEXTINPUT_UNDO_MAX_BYTES)
+        return;
     input->undo_stack[0] = vg_strdup(input->text ? input->text : "");
     input->undo_cursors[0] = input->cursor_pos;
     input->undo_count = input->undo_stack[0] ? 1 : 0;
-    input->undo_pos = 0;
 }
 
 /// @brief Clamps and sets cursor_pos, selection_start, and selection_end all to @p pos (collapses
@@ -778,7 +802,7 @@ static size_t textinput_move_vertical_cursor(const vg_textinput_t *input,
         input, cursor_pos, &line_index, &line_start_byte, &line_end_byte, &line_start_char);
     size_t column = cursor_pos >= line_start_char ? (cursor_pos - line_start_char) : 0;
     size_t line_count = textinput_line_count(input);
-    size_t target_line = line_index;
+    size_t target_line;
 
     if (direction < 0) {
         if (line_index == 0)
@@ -1214,13 +1238,12 @@ static void textinput_paint(vg_widget_t *widget, void *canvas) {
     input->platform_window = win;
     if (ti_focused && !ti_disabled && !input->read_only) {
         size_t cursor_byte = textinput_byte_offset(input, input->cursor_pos);
-        size_t anchor_char = input->cursor_pos == input->selection_start
-                                 ? input->selection_end
-                                 : input->selection_start;
+        size_t anchor_char = input->cursor_pos == input->selection_start ? input->selection_end
+                                                                         : input->selection_start;
         size_t anchor_byte = textinput_byte_offset(input, anchor_char);
-        float caret_x = text_x +
-                        vg_font_get_cursor_x(
-                            input->font, input->font_size, input->text, (int)input->cursor_pos);
+        float caret_x =
+            text_x + vg_font_get_cursor_x(
+                         input->font, input->font_size, input->text, (int)input->cursor_pos);
         float caret_y = widget->y + 2.0f;
         float caret_height = widget->height - 4.0f;
         if (input->multiline) {
@@ -1235,10 +1258,9 @@ static void textinput_paint(vg_widget_t *widget, void *canvas) {
             const char *line_text = input->text + line_start_byte;
             size_t column = input->cursor_pos - line_start_char;
             caret_x = widget->x + theme->input.padding_h - input->scroll_x +
-                      vg_font_get_cursor_x(
-                          input->font, input->font_size, line_text, (int)column);
-            caret_y = widget->y + 6.0f - input->scroll_y +
-                      (float)line * textinput_line_height(input);
+                      vg_font_get_cursor_x(input->font, input->font_size, line_text, (int)column);
+            caret_y =
+                widget->y + 6.0f - input->scroll_y + (float)line * textinput_line_height(input);
             caret_height = textinput_line_height(input);
         }
         vgfx_text_input_state_t native_state = {
@@ -1577,7 +1599,13 @@ static void textinput_push_undo(vg_textinput_t *input) {
     if (!input)
         return;
 
-    char *snapshot = vg_strdup(input->text ? input->text : "");
+    if (input->text && input->text_len >= TEXTINPUT_UNDO_MAX_BYTES) {
+        textinput_clear_undo_history(input);
+        return;
+    }
+
+    const char *current_text = input->text ? input->text : "";
+    char *snapshot = vg_strdup(current_text);
     if (!snapshot)
         return;
 
@@ -1598,7 +1626,7 @@ static void textinput_push_undo(vg_textinput_t *input) {
 
     // Deduplicate: skip if current text already matches the top snapshot
     if (input->undo_stack[input->undo_pos] &&
-        strcmp(input->undo_stack[input->undo_pos], input->text) == 0) {
+        strcmp(input->undo_stack[input->undo_pos], current_text) == 0) {
         free(snapshot);
         return;
     }
@@ -1653,8 +1681,8 @@ bool vg_textinput_undo(vg_textinput_t *input) {
     size_t cur = input->undo_cursors[input->undo_pos];
     textinput_set_cursor_internal(input, cur);
     textinput_ensure_cursor_visible(input);
-    textinput_note_change(input, true);
     input->base.needs_paint = true;
+    textinput_note_change(input, true);
     return true;
 }
 
@@ -1682,8 +1710,8 @@ bool vg_textinput_redo(vg_textinput_t *input) {
     size_t cur = input->undo_cursors[input->undo_pos];
     textinput_set_cursor_internal(input, cur);
     textinput_ensure_cursor_visible(input);
-    textinput_note_change(input, true);
     input->base.needs_paint = true;
+    textinput_note_change(input, true);
     return true;
 }
 
@@ -1770,6 +1798,7 @@ static void textinput_composition_replacement_range(const vg_textinput_t *input,
 /// @return True when editing, selection, focus, or composition handling consumes the event.
 static bool textinput_handle_event(vg_widget_t *widget, vg_event_t *event) {
     vg_textinput_t *input = (vg_textinput_t *)widget;
+    const uint64_t input_id = widget->id;
 
     if (widget->state & VG_STATE_DISABLED) {
         return false;
@@ -1908,6 +1937,8 @@ static bool textinput_handle_event(vg_widget_t *widget, vg_event_t *event) {
                                 vg_textinput_delete_selection_checked(input);
                             }
                         }
+                        if (!textinput_ref_is_live(input, input_id))
+                            return true;
                         widget->needs_paint = true;
                         return true;
 
@@ -1919,6 +1950,8 @@ static bool textinput_handle_event(vg_widget_t *widget, vg_event_t *event) {
                                 free(text);
                             }
                         }
+                        if (!textinput_ref_is_live(input, input_id))
+                            return true;
                         widget->needs_paint = true;
                         return true;
 
@@ -1936,12 +1969,16 @@ static bool textinput_handle_event(vg_widget_t *widget, vg_event_t *event) {
                             else
                                 vg_textinput_undo(input);
                         }
+                        if (!textinput_ref_is_live(input, input_id))
+                            return true;
                         widget->needs_paint = true;
                         return true;
 
                     case VG_KEY_Y: // Redo
                         if (!input->read_only)
                             vg_textinput_redo(input);
+                        if (!textinput_ref_is_live(input, input_id))
+                            return true;
                         widget->needs_paint = true;
                         return true;
 
@@ -2082,6 +2119,8 @@ static bool textinput_handle_event(vg_widget_t *widget, vg_event_t *event) {
                             input->text, input->text_len, input->cursor_pos);
                         vg_textinput_delete_selection_checked(input);
                     }
+                    if (!textinput_ref_is_live(input, input_id))
+                        return true;
                     textinput_ensure_cursor_visible(input);
                     break;
 
@@ -2205,6 +2244,8 @@ static bool textinput_handle_event(vg_widget_t *widget, vg_event_t *event) {
             }
             if (!handled)
                 return false;
+            if (!textinput_ref_is_live(input, input_id))
+                return true;
             widget->needs_paint = true;
             return true;
         }
@@ -2302,6 +2343,8 @@ static bool textinput_handle_event(vg_widget_t *widget, vg_event_t *event) {
                 vg_textinput_composition_start(input, replacement_start, replacement_length);
             }
             vg_textinput_composition_commit(input, event->composition.text);
+            if (!textinput_ref_is_live(input, input_id))
+                return true;
             textinput_reset_cursor_blink(input);
             return true;
 
@@ -2368,7 +2411,7 @@ void vg_textinput_set_text(vg_textinput_t *input, const char *text) {
 
     bool changed = strcmp(input->text ? input->text : "", clean) != 0;
 
-    if (len > SIZE_MAX - 1 || !ensure_capacity(input, len + 1)) {
+    if (len > SIZE_MAX - 1 || !ensure_capacity(input, len + 1) || !input->text) {
         free(clean);
         return;
     }
@@ -2758,8 +2801,11 @@ void vg_textinput_insert(vg_textinput_t *input, const char *text) {
 bool vg_textinput_insert_text(vg_textinput_t *input, const char *text) {
     if (!input || !text || input->read_only)
         return false;
+    const uint64_t input_id = input->base.id;
     uint64_t before = input->change_revision;
     vg_textinput_insert(input, text);
+    if (!textinput_ref_is_live(input, input_id))
+        return true;
     if (input->change_revision == before)
         return false;
     textinput_push_undo(input);
@@ -2814,8 +2860,11 @@ void vg_textinput_delete_selection(vg_textinput_t *input) {
 bool vg_textinput_delete_selection_checked(vg_textinput_t *input) {
     if (!input || input->read_only || input->selection_start == input->selection_end)
         return false;
+    const uint64_t input_id = input->base.id;
     uint64_t before = input->change_revision;
     textinput_delete_selection_internal(input, true);
+    if (!textinput_ref_is_live(input, input_id))
+        return true;
     if (input->change_revision == before)
         return false;
     textinput_push_undo(input);
@@ -2959,6 +3008,7 @@ bool vg_textinput_composition_update(vg_textinput_t *input,
 bool vg_textinput_composition_commit(vg_textinput_t *input, const char *text) {
     if (!input || !input->composing || input->read_only)
         return false;
+    const uint64_t input_id = input->base.id;
     size_t replacement_start = input->composition_start;
     size_t replacement_end = input->composition_end;
     textinput_clear_composition(input);
@@ -2971,6 +3021,8 @@ bool vg_textinput_composition_commit(vg_textinput_t *input, const char *text) {
         changed = vg_textinput_insert_text(input, text);
     else
         changed = vg_textinput_delete_selection_checked(input);
+    if (!textinput_ref_is_live(input, input_id))
+        return changed;
     if (!changed)
         vg_textinput_clear_selection(input);
     input->base.needs_paint = true;

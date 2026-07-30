@@ -46,6 +46,8 @@
 #include "rt_object.h"
 #include "rt_string.h"
 
+#include <float.h>
+#include <limits.h>
 #include <setjmp.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -61,6 +63,14 @@ const char *rt_trap_get_error(void);
 
 /// @brief Initial buffer capacity for new streams.
 #define MEMSTREAM_INITIAL_CAPACITY 64
+
+_Static_assert(CHAR_BIT == 8, "MemStream requires 8-bit bytes");
+_Static_assert(sizeof(float) == sizeof(uint32_t), "MemStream F32 requires a 32-bit float");
+_Static_assert(FLT_RADIX == 2 && FLT_MANT_DIG == 24 && FLT_MIN_EXP == -125 && FLT_MAX_EXP == 128,
+               "MemStream F32 requires IEEE-754 binary32");
+_Static_assert(sizeof(double) == sizeof(uint64_t), "MemStream F64 requires a 64-bit double");
+_Static_assert(DBL_MANT_DIG == 53 && DBL_MIN_EXP == -1021 && DBL_MAX_EXP == 1024,
+               "MemStream F64 requires IEEE-754 binary64");
 
 /// @brief MemStream implementation structure.
 typedef struct rt_memstream_impl {

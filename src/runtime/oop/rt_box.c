@@ -580,9 +580,8 @@ rt_string rt_unbox_str(void *box) {
         return NULL;
     rt_string s = b->data.str_val;
     // Retain before returning - use rt_string_ref for proper handling
-    if (s) {
-        rt_string_ref(s);
-    }
+    if (s && !rt_string_ref(s))
+        return NULL;
     return s;
 }
 
@@ -641,11 +640,13 @@ int8_t rt_box_try_to_i1(void *box, int8_t *out) {
     return 1;
 }
 
-/// @brief Try to extract a runtime string from @p box, never trapping. Returns 1 on success.
+/// @brief Try to extract a runtime string from @p box. Returns 1 on success.
 /// @details On success writes a *retained* string handle to @p out — caller owns the new
 ///          reference and must release it. This raw C helper is runtime-internal; the public
 ///          `Zanna.Core.Box.ToStrOption` surface returns an owned `Option<String>`.
-///          Failure paths NULL out @p out.
+///          Structural mismatch paths do not trap and NULL out @p out. Retaining
+///          a matching box's string may trap; if the trap hook returns, this
+///          reports failure without publishing the unretained pointer.
 /// @param[in] box Candidate managed box.
 /// @param[out] out Receives a caller-owned retained String, or NULL for a stored null value.
 /// @return 1 on a matching String box; otherwise 0.
@@ -657,9 +658,10 @@ int8_t rt_box_try_to_str(void *box, rt_string *out) {
     rt_box_t *b = box_maybe(box);
     if (!b || b->tag != RT_BOX_STR)
         return 0;
-    if (b->data.str_val)
-        rt_string_ref(b->data.str_val);
-    *out = b->data.str_val;
+    rt_string retained = b->data.str_val;
+    if (retained && !rt_string_ref(retained))
+        return 0;
+    *out = retained;
     return 1;
 }
 
@@ -692,11 +694,14 @@ void *rt_box_to_i1_option(void *box) {
 ///          and also on a recovered allocation trap.
 /// @param[in] box Candidate managed box.
 /// @return Caller-owned Some for a matching String box, caller-owned None for
-///         mismatch, or NULL after a returning allocation trap.
+///         mismatch, or NULL after a returning retain/allocation trap.
 void *rt_box_to_str_option(void *box) {
+    if (rt_box_type(box) != RT_BOX_STR)
+        return rt_option_none();
+
     rt_string value = NULL;
     if (!rt_box_try_to_str(box, &value))
-        return rt_option_none();
+        return NULL;
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);

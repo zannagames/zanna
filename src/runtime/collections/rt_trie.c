@@ -18,6 +18,8 @@
 // Key invariants:
 //   - Each node has a fixed 256-element children array indexed by byte value,
 //     supporting the full byte range (0-255) including UTF-8 multi-byte sequences.
+//   - Parent links and incoming-edge bytes permit allocation-free iterative
+//     traversal for GC tracing, prefix probes, and key reconstruction.
 //   - The root node is allocated at construction and freed iteratively by the
 //     trie finalizer to avoid C stack growth on deep keys.
 //   - is_terminal marks nodes where a complete key ends. A node can be both
@@ -46,6 +48,7 @@
 #include "rt_option.h"
 
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_internal.h"
 #include "rt_object.h"
@@ -80,7 +83,9 @@ const char *rt_trap_get_error(void);
 /// so terminal status—not value nullness—determines whether a key exists.
 typedef struct rt_trie_node {
     struct rt_trie_node *children[TRIE_ALPHABET_SIZE];
+    struct rt_trie_node *parent;
     void *value;         // Non-NULL if this node marks end of a key
+    uint8_t parent_edge; // Incoming byte from parent; ignored for the root
     uint8_t is_terminal; // 1 if a key ends here (value may legitimately be
                          // NULL even at a terminal node)
 } rt_trie_node;
@@ -91,26 +96,6 @@ typedef struct rt_trie_impl {
     rt_trie_node *root;
     size_t count;
 } rt_trie_impl;
-
-/// @brief Explicit depth-first traversal frame used for freeing and GC tracing.
-typedef struct {
-    rt_trie_node *node;
-    size_t next_child;
-} trie_walk_frame;
-
-/// @brief Explicit depth-first traversal frame used while reconstructing keys.
-typedef struct {
-    rt_trie_node *node;
-    size_t next_child;
-    size_t depth;
-    int8_t emitted;
-} trie_collect_frame;
-
-/// @brief Source/destination node pair awaiting iterative deep cloning.
-typedef struct {
-    rt_trie_node *src;
-    rt_trie_node *dst;
-} trie_clone_pair;
 
 /// @brief Parent edge recorded while locating a key for suffix pruning.
 typedef struct {
@@ -148,13 +133,17 @@ static void trie_save_trap_error(char *buffer, size_t buffer_size, const char *f
 }
 
 /// @brief Allocates a zero-initialized, nonterminal trie node.
+/// @param parent Parent node, or null for a detached/root node.
+/// @param parent_edge Incoming edge byte; ignored when @p parent is null.
 /// @return New node, or `NULL` after raising an out-of-memory trap.
-static rt_trie_node *new_node(void) {
+static rt_trie_node *new_node(rt_trie_node *parent, uint8_t parent_edge) {
     rt_trie_node *n = (rt_trie_node *)calloc(1, sizeof(rt_trie_node));
     if (!n) {
         rt_trap("rt_trie: memory allocation failed");
         return NULL;
     }
+    n->parent = parent;
+    n->parent_edge = parent_edge;
     return n;
 }
 
@@ -183,6 +172,10 @@ static int trie_string_data(rt_string s,
     int64_t len = rt_str_len(s);
     if (len <= 0)
         return 1;
+    if ((uint64_t)len > SIZE_MAX) {
+        rt_trap(diagnostic);
+        return 0;
+    }
 
     const char *data = rt_string_cstr(s);
     if (!data) {
@@ -193,105 +186,6 @@ static int trie_string_data(rt_string s,
     *out_data = data;
     *out_len = (size_t)len;
     return 1;
-}
-
-/// @brief Compute the next traversal-stack capacity (double, or 64 from
-///        empty); traps on size overflow. Shared by the explicit-stack walks.
-/// @param cap Current element capacity.
-/// @param elem_size Size of one stack element in bytes.
-/// @return New element capacity, or zero after raising an overflow trap.
-static size_t grow_stack_capacity(size_t cap, size_t elem_size) {
-    size_t new_cap = cap ? cap * 2 : 64;
-    if (cap && cap > SIZE_MAX / 2) {
-        rt_trap("rt_trie: traversal stack overflow");
-        return 0;
-    }
-    if (new_cap > SIZE_MAX / elem_size) {
-        rt_trap("rt_trie: traversal stack allocation overflow");
-        return 0;
-    }
-    return new_cap;
-}
-
-/// @brief Push a node onto the explicit DFS walk stack, growing it if full
-///        (NULL node ignored). Traps on OOM.
-/// @param stack Address of the heap-allocated frame buffer.
-/// @param len Address of the current frame count.
-/// @param cap Address of the current frame capacity.
-/// @param node Node to push; null is ignored.
-static void push_walk_frame(trie_walk_frame **stack, size_t *len, size_t *cap, rt_trie_node *node) {
-    if (!node)
-        return;
-    if (*len == *cap) {
-        size_t new_cap = grow_stack_capacity(*cap, sizeof(**stack));
-        if (new_cap == 0)
-            return;
-        trie_walk_frame *new_stack = (trie_walk_frame *)realloc(*stack, new_cap * sizeof(**stack));
-        if (!new_stack) {
-            rt_trap("rt_trie: memory allocation failed");
-            return;
-        }
-        *stack = new_stack;
-        *cap = new_cap;
-    }
-    (*stack)[(*len)++] = (trie_walk_frame){node, 0};
-}
-
-/// @brief Push a node (with key depth) onto the key-collection stack,
-///        growing it if full. Traps on OOM.
-/// @param stack Heap-allocated collection-frame buffer, or NULL.
-/// @param len Address of the current frame count.
-/// @param cap Address of the current frame capacity.
-/// @param node Node to push; null is ignored.
-/// @param depth Reconstructed key length represented by @p node.
-/// @return Current buffer, updated when growth relocates it.
-static trie_collect_frame *push_collect_frame(
-    trie_collect_frame *stack, size_t *len, size_t *cap, rt_trie_node *node, size_t depth) {
-    if (!node)
-        return stack;
-    if (*len == *cap) {
-        size_t new_cap = grow_stack_capacity(*cap, sizeof(*stack));
-        if (new_cap == 0)
-            return stack;
-        trie_collect_frame *new_stack =
-            (trie_collect_frame *)realloc(stack, new_cap * sizeof(*stack));
-        if (!new_stack) {
-            rt_trap("rt_trie: memory allocation failed");
-            return stack;
-        }
-        stack = new_stack;
-        *cap = new_cap;
-    }
-    stack[(*len)++] = (trie_collect_frame){node, 0, depth, 0};
-    return stack;
-}
-
-/// @brief Push a (src,dst) node pair onto the deep-clone stack, growing it
-///        if full (ignored unless both nodes are non-NULL). Traps on OOM.
-/// @param stack Heap-allocated clone-pair buffer, or NULL.
-/// @param len Address of the current pair count.
-/// @param cap Address of the current pair capacity.
-/// @param src Source node whose children remain to be copied.
-/// @param dst Corresponding destination node.
-/// @return Current buffer, updated when growth relocates it.
-static trie_clone_pair *push_clone_pair(
-    trie_clone_pair *stack, size_t *len, size_t *cap, rt_trie_node *src, rt_trie_node *dst) {
-    if (!src || !dst)
-        return stack;
-    if (*len == *cap) {
-        size_t new_cap = grow_stack_capacity(*cap, sizeof(*stack));
-        if (new_cap == 0)
-            return stack;
-        trie_clone_pair *new_stack = (trie_clone_pair *)realloc(stack, new_cap * sizeof(*stack));
-        if (!new_stack) {
-            rt_trap("rt_trie: memory allocation failed");
-            return stack;
-        }
-        stack = new_stack;
-        *cap = new_cap;
-    }
-    stack[(*len)++] = (trie_clone_pair){src, dst};
-    return stack;
 }
 
 /// @brief Grow the reusable key-reconstruction buffer to >= @p needed bytes
@@ -364,31 +258,38 @@ static void free_node(rt_trie_node *node) {
     }
 }
 
-/// @brief Iteratively visit every terminal node's value under @p node
-///        (explicit-stack DFS, GC tracing helper).
+/// @brief Iteratively visit every terminal node's value under @p node.
+/// @details Parent links make this GC traversal allocation-free and safe for
+///          arbitrarily deep keys without depending on the C call stack.
 /// @param node Root of the subtree to trace.
 /// @param visitor GC callback invoked for each terminal node's nullable value.
 /// @param ctx Opaque context forwarded unchanged to @p visitor.
 static void traverse_node(rt_trie_node *node, rt_gc_visitor_t visitor, void *ctx) {
     if (!node || !visitor)
         return;
-    trie_walk_frame *stack = NULL;
-    size_t len = 0;
-    size_t cap = 0;
-    push_walk_frame(&stack, &len, &cap, node);
-    while (len > 0) {
-        trie_walk_frame *frame = &stack[len - 1];
-        if (frame->next_child == 0 && frame->node->is_terminal)
-            visitor(frame->node->value, ctx);
-        if (frame->next_child < TRIE_ALPHABET_SIZE) {
-            rt_trie_node *child = frame->node->children[frame->next_child++];
-            if (child)
-                push_walk_frame(&stack, &len, &cap, child);
+
+    rt_trie_node *cursor = node;
+    size_t next_child = 0;
+    int entering = 1;
+    for (;;) {
+        if (entering && cursor->is_terminal)
+            visitor(cursor->value, ctx);
+        entering = 0;
+
+        while (next_child < TRIE_ALPHABET_SIZE && !cursor->children[next_child])
+            next_child++;
+        if (next_child < TRIE_ALPHABET_SIZE) {
+            cursor = cursor->children[next_child];
+            next_child = 0;
+            entering = 1;
             continue;
         }
-        len--;
+
+        if (cursor == node)
+            break;
+        next_child = (size_t)cursor->parent_edge + 1;
+        cursor = cursor->parent;
     }
-    free(stack);
 }
 
 /// @brief GC traversal entry point: visit every stored value in the trie.
@@ -407,9 +308,9 @@ static void rt_trie_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 /// @brief Collects all terminal keys in a subtree into an owning sequence.
 ///
 /// Traversal follows child indexes from 0 through 255, producing bytewise
-/// lexicographic order. On a recovered construction/append trap, the helper
-/// frees its traversal state and returns the diagnostic to its caller so the
-/// caller can release its own buffer and sequence before re-raising.
+/// lexicographic order. Parent links avoid a fallible native traversal stack.
+/// On a recovered construction/append trap, the helper releases its staged
+/// string and returns the diagnostic so the caller can destroy the sequence.
 ///
 /// @param node Subtree root corresponding to the prefix already in @p buf.
 /// @param buf Address of the reusable key reconstruction buffer.
@@ -428,9 +329,6 @@ static int collect_keys(rt_trie_node *node,
                         size_t error_size) {
     if (!node)
         return 1;
-    trie_collect_frame *volatile stack = NULL;
-    size_t len = 0;
-    size_t cap = 0;
     rt_string volatile key = NULL;
 
     jmp_buf recovery;
@@ -440,68 +338,90 @@ static int collect_keys(rt_trie_node *node,
         rt_trap_clear_recovery();
         if (key)
             rt_str_release_maybe((rt_string)key);
-        free((void *)stack);
         return 0;
     }
 
-    stack = push_collect_frame(stack, &len, &cap, node, depth);
-    while (len > 0) {
-        trie_collect_frame *frame = &((trie_collect_frame *)stack)[len - 1];
-        if (!frame->emitted) {
-            frame->emitted = 1;
-            if (frame->node->is_terminal) {
-                key = rt_string_from_bytes(*buf, frame->depth);
-                rt_seq_push(seq, (void *)key);
+    rt_trie_node *cursor = node;
+    size_t cursor_depth = depth;
+    size_t next_child = 0;
+    int entering = 1;
+    for (;;) {
+        if (entering && cursor->is_terminal) {
+            key = rt_string_from_bytes(*buf, cursor_depth);
+            if (!key) {
+                trie_save_trap_error(error, error_size, "rt_trie: key allocation failed");
+                rt_trap_clear_recovery();
+                return 0;
+            }
+            int64_t old_len = rt_seq_len(seq);
+            rt_seq_push_raw(seq, (void *)key);
+            if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(seq) != old_len + 1) {
+                trie_save_trap_error(error, error_size, "rt_trie: key append failed");
+                rt_trap_clear_recovery();
                 rt_str_release_maybe((rt_string)key);
-                key = NULL;
+                return 0;
             }
+            key = NULL;
         }
-        if (frame->next_child < TRIE_ALPHABET_SIZE) {
-            size_t child_index = frame->next_child++;
-            rt_trie_node *child = frame->node->children[child_index];
-            if (child) {
-                if (!ensure_key_buf(buf, buf_cap, frame->depth + 1)) {
-                    free((void *)stack);
-                    return 0;
-                }
-                (*buf)[frame->depth] = (char)child_index;
-                stack = push_collect_frame(stack, &len, &cap, child, frame->depth + 1);
+        entering = 0;
+
+        while (next_child < TRIE_ALPHABET_SIZE && !cursor->children[next_child])
+            next_child++;
+        if (next_child < TRIE_ALPHABET_SIZE) {
+            rt_trie_node *child = cursor->children[next_child];
+            if (!ensure_key_buf(buf, buf_cap, cursor_depth + 1)) {
+                trie_save_trap_error(error, error_size, "rt_trie: key buffer allocation failed");
+                rt_trap_clear_recovery();
+                return 0;
             }
+            (*buf)[cursor_depth] = (char)next_child;
+            cursor = child;
+            cursor_depth++;
+            next_child = 0;
+            entering = 1;
             continue;
         }
-        len--;
+
+        if (cursor == node)
+            break;
+        next_child = (size_t)cursor->parent_edge + 1;
+        cursor = cursor->parent;
+        cursor_depth--;
     }
     rt_trap_clear_recovery();
-    free((void *)stack);
     return 1;
 }
 
 /// @brief Checks whether a node or any descendant terminates a stored key.
 /// @param node Subtree root to search.
 /// @return Nonzero if a terminal node exists, otherwise zero.
-/// @note Uses an explicit stack and may raise an allocation trap.
+/// @note Parent-linked traversal performs no allocation.
 static int has_any_key(rt_trie_node *node) {
     if (!node)
         return 0;
-    trie_walk_frame *stack = NULL;
-    size_t len = 0;
-    size_t cap = 0;
-    push_walk_frame(&stack, &len, &cap, node);
-    while (len > 0) {
-        trie_walk_frame *frame = &stack[len - 1];
-        if (frame->next_child == 0 && frame->node->is_terminal) {
-            free(stack);
+
+    rt_trie_node *cursor = node;
+    size_t next_child = 0;
+    int entering = 1;
+    for (;;) {
+        if (entering && cursor->is_terminal)
             return 1;
-        }
-        if (frame->next_child < TRIE_ALPHABET_SIZE) {
-            rt_trie_node *child = frame->node->children[frame->next_child++];
-            if (child)
-                push_walk_frame(&stack, &len, &cap, child);
+        entering = 0;
+
+        while (next_child < TRIE_ALPHABET_SIZE && !cursor->children[next_child])
+            next_child++;
+        if (next_child < TRIE_ALPHABET_SIZE) {
+            cursor = cursor->children[next_child];
+            next_child = 0;
+            entering = 1;
             continue;
         }
-        len--;
+
+        if (cursor == node)
+            break;
+        next_child = (size_t)cursor->parent_edge + 1;
+        cursor = cursor->parent;
     }
-    free(stack);
     return 0;
 }
 
@@ -550,11 +470,10 @@ void *rt_trie_new(void) {
     trie->count = 0;
     rt_obj_set_finalizer(trie, rt_trie_finalize);
     rt_gc_track(trie, rt_trie_traverse);
-    trie->root = (rt_trie_node *)calloc(1, sizeof(rt_trie_node));
+    trie->root = new_node(NULL, 0);
     if (!trie->root) {
         if (rt_obj_release_check0(trie))
             rt_obj_free(trie);
-        rt_trap("rt_trie: memory allocation failed");
         return NULL;
     }
     return trie;
@@ -622,6 +541,10 @@ void rt_trie_set(void *obj, rt_string key, void *value) {
         rt_trap("Trie.Set: maximum size reached");
         return;
     }
+    if (!adding_key && node->value == value) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     rt_trie_node *volatile branch_root = NULL;
     rt_trie_node *branch_tail = NULL;
@@ -632,23 +555,39 @@ void rt_trie_set(void *obj, rt_string key, void *value) {
         trie_save_trap_error(saved_error, sizeof(saved_error), "Trie.Set: operation failed");
         rt_trap_clear_recovery();
         free_node((rt_trie_node *)branch_root);
+        rt_gc_mutator_exit();
         rt_trap(saved_error);
         return;
     }
 
     for (size_t i = missing_index; i < len; ++i) {
-        rt_trie_node *child = new_node();
+        unsigned char edge = (unsigned char)cstr[i];
+        rt_trie_node *child = new_node(branch_tail, edge);
+        if (!child) {
+            rt_trap_clear_recovery();
+            free_node((rt_trie_node *)branch_root);
+            rt_gc_mutator_exit();
+            return;
+        }
         if (!branch_root) {
             branch_root = child;
         } else {
-            branch_tail->children[(unsigned char)cstr[i]] = child;
+            branch_tail->children[edge] = child;
         }
         branch_tail = child;
     }
 
-    rt_obj_retain_maybe(value);
+    if (!rt_collection_retain_checked(value, "Trie.Set: value retain failed")) {
+        rt_trap_clear_recovery();
+        free_node((rt_trie_node *)branch_root);
+        rt_gc_mutator_exit();
+        return;
+    }
     if (branch_root) {
-        node->children[(unsigned char)cstr[missing_index]] = (rt_trie_node *)branch_root;
+        unsigned char edge = (unsigned char)cstr[missing_index];
+        ((rt_trie_node *)branch_root)->parent = node;
+        ((rt_trie_node *)branch_root)->parent_edge = edge;
+        node->children[edge] = (rt_trie_node *)branch_root;
         node = branch_tail;
         branch_root = NULL;
     }
@@ -756,38 +695,44 @@ int8_t rt_trie_has_prefix(void *obj, rt_string prefix) {
 /// @note Snapshot allocation/collection failures raise a trap and clean up the
 ///       partially constructed snapshot.
 void *rt_trie_with_prefix(void *obj, rt_string prefix) {
-    void *result = rt_seq_new();
-    if (!result)
-        return NULL;
-    rt_seq_set_owns_elements(result, 1);
     if (!obj)
-        return result;
+        return rt_seq_new_owned();
     rt_trie_impl *trie = as_trie(obj, "Trie.WithPrefix: invalid Trie object");
-    if (!trie || !trie->root)
-        return result;
+    if (!trie)
+        return NULL;
+    if (!trie->root)
+        return rt_seq_new_owned();
 
     size_t plen = 0;
     const char *cstr = NULL;
-    if (!trie_string_data(prefix, "Trie.WithPrefix: invalid prefix", &cstr, &plen)) {
-        trie_release_object(result);
+    if (!trie_string_data(prefix, "Trie.WithPrefix: invalid prefix", &cstr, &plen))
         return NULL;
-    }
 
     // Navigate to prefix node
     rt_trie_node *node = trie->root;
     for (size_t i = 0; i < plen; ++i) {
         unsigned char c = (unsigned char)cstr[i];
         if (!node->children[c])
-            return result;
+            return rt_seq_new_owned();
         node = node->children[c];
     }
 
+    void *result = rt_seq_new_owned();
+    if (!result)
+        return NULL;
+
     // Collect all keys under this node; buffer grows as needed
-    size_t buf_cap = plen + 1 > 4096 ? plen + 1 : 4096;
+    if (plen == SIZE_MAX) {
+        trie_release_object(result);
+        rt_trap("rt_trie: prefix buffer size overflow");
+        return NULL;
+    }
+    size_t buf_cap = plen + 1 > 64 ? plen + 1 : 64;
     char *buf = (char *)malloc(buf_cap);
     if (!buf) {
+        trie_release_object(result);
         rt_trap("rt_trie: memory allocation failed");
-        return result;
+        return NULL;
     }
     if (plen > 0)
         memcpy(buf, cstr, plen);
@@ -814,7 +759,9 @@ rt_string rt_trie_longest_prefix(void *obj, rt_string str) {
     if (!obj)
         return rt_string_from_bytes("", 0);
     rt_trie_impl *trie = as_trie(obj, "Trie.LongestPrefix: invalid Trie object");
-    if (!trie || !trie->root)
+    if (!trie)
+        return NULL;
+    if (!trie->root)
         return rt_string_from_bytes("", 0);
 
     size_t len = 0;
@@ -857,7 +804,9 @@ void *rt_trie_longest_prefix_option(void *obj, rt_string str) {
     if (!obj)
         return rt_option_none();
     rt_trie_impl *trie = as_trie(obj, "Trie.LongestPrefix: invalid Trie object");
-    if (!trie || !trie->root)
+    if (!trie)
+        return NULL;
+    if (!trie->root)
         return rt_option_none();
 
     size_t len = 0;
@@ -987,7 +936,7 @@ void rt_trie_clear(void *obj) {
         rt_gc_mutator_exit();
         return;
     }
-    rt_trie_node *replacement = new_node();
+    rt_trie_node *replacement = new_node(NULL, 0);
     if (!replacement) {
         rt_gc_mutator_exit();
         return;
@@ -1006,23 +955,24 @@ void rt_trie_clear(void *obj) {
 ///         `NULL` if the initial sequence allocation fails.
 /// @note Later trie mutations do not affect the returned strings.
 void *rt_trie_keys(void *obj) {
-    void *result = rt_seq_new();
-    if (!result)
-        return NULL;
-    rt_seq_set_owns_elements(result, 1);
     if (!obj)
-        return result;
+        return rt_seq_new_owned();
     rt_trie_impl *trie = as_trie(obj, "Trie.Keys: invalid Trie object");
     if (!trie)
-        return result;
+        return NULL;
     if (!trie->root)
-        return result;
+        return rt_seq_new_owned();
 
-    size_t buf_cap = 4096;
+    void *result = rt_seq_with_capacity_owned(trie->count > 0 ? (int64_t)trie->count : 1);
+    if (!result)
+        return NULL;
+
+    size_t buf_cap = 64;
     char *buf = (char *)malloc(buf_cap);
     if (!buf) {
+        trie_release_object(result);
         rt_trap("rt_trie: memory allocation failed");
-        return result;
+        return NULL;
     }
     char error[256] = {0};
     if (!collect_keys(trie->root, &buf, &buf_cap, 0, result, error, sizeof(error))) {
@@ -1047,9 +997,6 @@ static rt_trie_node *clone_node(rt_trie_node *src, char *error, size_t error_siz
         return NULL;
 
     rt_trie_node *volatile dst = NULL;
-    trie_clone_pair *volatile stack = NULL;
-    size_t len = 0;
-    size_t cap = 0;
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -1057,34 +1004,63 @@ static rt_trie_node *clone_node(rt_trie_node *src, char *error, size_t error_siz
         trie_save_trap_error(error, error_size, "rt_trie: clone failed");
         rt_trap_clear_recovery();
         free_node((rt_trie_node *)dst);
-        free((void *)stack);
         return NULL;
     }
 
-    dst = new_node();
-    if (src->value)
-        rt_obj_retain_maybe(src->value);
+    dst = new_node(NULL, 0);
+    if (!dst) {
+        trie_save_trap_error(error, error_size, "rt_trie: clone allocation failed");
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    if (src->value &&
+        !rt_collection_retain_checked(src->value, "Trie.Clone: value retain failed")) {
+        trie_save_trap_error(error, error_size, "Trie.Clone: value retain failed");
+        rt_trap_clear_recovery();
+        free_node((rt_trie_node *)dst);
+        return NULL;
+    }
     ((rt_trie_node *)dst)->is_terminal = src->is_terminal;
     ((rt_trie_node *)dst)->value = src->value;
 
-    stack = push_clone_pair(stack, &len, &cap, src, (rt_trie_node *)dst);
-    while (len > 0) {
-        trie_clone_pair pair = ((trie_clone_pair *)stack)[--len];
-        for (int i = 0; i < TRIE_ALPHABET_SIZE; ++i) {
-            rt_trie_node *child_src = pair.src->children[i];
-            if (!child_src)
-                continue;
-            rt_trie_node *child_dst = new_node();
-            pair.dst->children[i] = child_dst;
-            if (child_src->value)
-                rt_obj_retain_maybe(child_src->value);
+    rt_trie_node *src_cursor = src;
+    rt_trie_node *dst_cursor = (rt_trie_node *)dst;
+    size_t next_child = 0;
+    for (;;) {
+        while (next_child < TRIE_ALPHABET_SIZE && !src_cursor->children[next_child])
+            next_child++;
+        if (next_child < TRIE_ALPHABET_SIZE) {
+            rt_trie_node *child_src = src_cursor->children[next_child];
+            rt_trie_node *child_dst = new_node(dst_cursor, (uint8_t)next_child);
+            if (!child_dst) {
+                trie_save_trap_error(error, error_size, "rt_trie: clone allocation failed");
+                rt_trap_clear_recovery();
+                free_node((rt_trie_node *)dst);
+                return NULL;
+            }
+            dst_cursor->children[next_child] = child_dst;
+            if (child_src->value && !rt_collection_retain_checked(
+                                        child_src->value, "Trie.Clone: value retain failed")) {
+                trie_save_trap_error(error, error_size, "Trie.Clone: value retain failed");
+                rt_trap_clear_recovery();
+                free_node((rt_trie_node *)dst);
+                return NULL;
+            }
             child_dst->is_terminal = child_src->is_terminal;
             child_dst->value = child_src->value;
-            stack = push_clone_pair(stack, &len, &cap, child_src, child_dst);
+            src_cursor = child_src;
+            dst_cursor = child_dst;
+            next_child = 0;
+            continue;
         }
+
+        if (src_cursor == src)
+            break;
+        next_child = (size_t)src_cursor->parent_edge + 1;
+        src_cursor = src_cursor->parent;
+        dst_cursor = dst_cursor->parent;
     }
     rt_trap_clear_recovery();
-    free((void *)stack);
 
     return (rt_trie_node *)dst;
 }

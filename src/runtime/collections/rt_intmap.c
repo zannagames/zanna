@@ -50,6 +50,7 @@
 
 #include "rt_box.h"
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_hash_table_util.h"
 #include "rt_hash_util.h"
@@ -57,8 +58,19 @@
 #include "rt_object.h"
 #include "rt_seq.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/// @brief Install a non-local recovery target for the current thread.
+/// @param buf Jump buffer that receives control after a runtime trap.
+void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's active legacy recovery target.
+void rt_trap_clear_recovery(void);
+/// @brief Borrow the most recent runtime trap diagnostic.
+/// @return Null-terminated diagnostic text, or NULL when unavailable.
+const char *rt_trap_get_error(void);
 
 /// Initial number of buckets.
 #define MAP_INITIAL_CAPACITY 16
@@ -109,11 +121,106 @@ static rt_intmap_entry *find_entry(rt_intmap_entry *head, uint64_t hash, int64_t
 /// @brief Free an entry and release its value reference.
 /// @param entry Entry to free (NULL is a no-op).
 static void free_entry(rt_intmap_entry *entry) {
-    if (entry) {
-        if (entry->value && rt_obj_release_check0(entry->value))
-            rt_obj_free(entry->value);
-        rt_free(entry);
+    if (!entry)
+        return;
+    void *value = entry->value;
+    rt_free(entry);
+    if (value && rt_obj_release_check0(value))
+        rt_obj_free(value);
+}
+
+/// @brief Release one runtime object and finalize it at zero.
+/// @param obj Runtime-managed object, or NULL.
+static void intmap_release_object(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
+/// @brief Destroy one detached chain after its table/count change is visible.
+/// @param entries Detached IntMap entries to consume.
+static void intmap_destroy_entries(rt_intmap_entry *entries) {
+    while (entries) {
+        rt_intmap_entry *next = entries->next;
+        free_entry(entries);
+        entries = next;
     }
+}
+
+/// @brief Detach all entries while preserving the reusable bucket array.
+/// @param map Live IntMap whose entries are transferred.
+/// @return One chain owning every formerly published entry.
+static rt_intmap_entry *intmap_detach_entries(rt_intmap_impl *map) {
+    rt_intmap_entry *detached = NULL;
+    for (size_t i = 0; i < map->capacity; ++i) {
+        rt_intmap_entry *entry = map->buckets[i];
+        map->buckets[i] = NULL;
+        while (entry) {
+            rt_intmap_entry *next = entry->next;
+            entry->next = detached;
+            detached = entry;
+            entry = next;
+        }
+    }
+    map->count = 0;
+    return detached;
+}
+
+/// @brief Save an active trap diagnostic before clearing its recovery frame.
+/// @param buffer Destination for the bounded diagnostic copy.
+/// @param buffer_size Capacity of @p buffer including its terminator.
+/// @param fallback Message used when no active diagnostic is available.
+static void intmap_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
+}
+
+/// @brief Box and append one key, consuming the partial snapshot on failure.
+/// @param seq Partial owning key snapshot.
+/// @param key Integer key to box.
+/// @return One after publication; zero after cleanup and a propagated trap.
+static int intmap_append_key_or_release_seq(void *seq, int64_t key) {
+    void *volatile boxed = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        intmap_save_trap(saved_error, sizeof(saved_error), "IntMap.Keys: snapshot append failed");
+        rt_trap_clear_recovery();
+        intmap_release_object((void *)boxed);
+        intmap_release_object(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    boxed = rt_box_i64(key);
+    if (!boxed)
+        rt_trap("IntMap.Keys: key allocation failed");
+    rt_seq_push(seq, (void *)boxed);
+    intmap_release_object((void *)boxed);
+    boxed = NULL;
+    rt_trap_clear_recovery();
+    return 1;
+}
+
+/// @brief Append one retained value, consuming the partial snapshot on failure.
+/// @param seq Partial owning value snapshot.
+/// @param value Borrowed mapped value; may be NULL.
+/// @return One after publication; zero after cleanup and a propagated trap.
+static int intmap_append_value_or_release_seq(void *seq, void *value) {
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        intmap_save_trap(saved_error, sizeof(saved_error), "IntMap.Values: snapshot append failed");
+        rt_trap_clear_recovery();
+        intmap_release_object(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    rt_seq_push(seq, value);
+    rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief GC traversal: visit every stored value across all bucket chains.
@@ -142,13 +249,16 @@ static void rt_intmap_finalize(void *obj) {
     rt_intmap_impl *map = as_intmap(obj, "IntMap: invalid IntMap object");
     if (!map)
         return;
-    if (!map->buckets || map->capacity == 0)
-        return;
-    rt_intmap_clear(map);
-    rt_free(map->buckets);
+    rt_intmap_entry **buckets = map->buckets;
+    size_t capacity = map->capacity;
     map->buckets = NULL;
     map->capacity = 0;
     map->count = 0;
+    if (buckets) {
+        for (size_t i = 0; i < capacity; ++i)
+            intmap_destroy_entries(buckets[i]);
+    }
+    rt_free(buckets);
 }
 
 /// @brief Resize the hash table and rehash all entries.
@@ -261,7 +371,7 @@ void rt_intmap_set(void *obj, int64_t key, void *value) {
         rt_gc_mutator_exit();
         return;
     }
-    if (map->capacity == 0) {
+    if (!map->buckets || map->capacity == 0) {
         rt_gc_mutator_exit();
         return; // Bucket allocation failed
     }
@@ -274,11 +384,13 @@ void rt_intmap_set(void *obj, int64_t key, void *value) {
     if (existing) {
         // Update existing entry
         void *old_value = existing->value;
-        rt_obj_retain_maybe(value);
+        if (!rt_collection_retain_checked(value, "IntMap.Set: value retain failed")) {
+            rt_gc_mutator_exit();
+            return;
+        }
         existing->value = value;
-        if (old_value && rt_obj_release_check0(old_value))
-            rt_obj_free(old_value);
         rt_gc_mutator_exit();
+        intmap_release_object(old_value);
         return;
     }
 
@@ -293,8 +405,10 @@ void rt_intmap_set(void *obj, int64_t key, void *value) {
     }
     idx = hash % map->capacity;
 
-    if (value)
-        rt_obj_retain_maybe(value);
+    if (!rt_collection_retain_checked(value, "IntMap.Set: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     // Create new entry
     rt_intmap_entry *entry = (rt_intmap_entry *)rt_alloc((int64_t)sizeof(rt_intmap_entry));
@@ -327,7 +441,7 @@ void *rt_intmap_get(void *obj, int64_t key) {
         return NULL;
 
     rt_intmap_impl *map = as_intmap(obj, "IntMap.Get: invalid IntMap object");
-    if (map->capacity == 0)
+    if (!map || !map->buckets || map->capacity == 0)
         return NULL;
 
     uint64_t hash = rt_fnv1a(&key, sizeof(key));
@@ -347,7 +461,7 @@ void *rt_intmap_get_or(void *obj, int64_t key, void *default_value) {
         return default_value;
 
     rt_intmap_impl *map = as_intmap(obj, "IntMap.GetOr: invalid IntMap object");
-    if (map->capacity == 0)
+    if (!map || !map->buckets || map->capacity == 0)
         return default_value;
 
     uint64_t hash = rt_fnv1a(&key, sizeof(key));
@@ -366,7 +480,7 @@ int8_t rt_intmap_has(void *obj, int64_t key) {
         return 0;
 
     rt_intmap_impl *map = as_intmap(obj, "IntMap.Has: invalid IntMap object");
-    if (map->capacity == 0)
+    if (!map || !map->buckets || map->capacity == 0)
         return 0;
 
     uint64_t hash = rt_fnv1a(&key, sizeof(key));
@@ -385,7 +499,7 @@ int8_t rt_intmap_remove(void *obj, int64_t key) {
 
     rt_gc_mutator_enter();
     rt_intmap_impl *map = as_intmap(obj, "IntMap.Remove: invalid IntMap object");
-    if (!map || map->capacity == 0) {
+    if (!map || !map->buckets || map->capacity == 0) {
         rt_gc_mutator_exit();
         return 0;
     }
@@ -399,9 +513,9 @@ int8_t rt_intmap_remove(void *obj, int64_t key) {
     while (entry) {
         if (entry->hash == hash && entry->key == key) {
             *prev_ptr = entry->next;
-            free_entry(entry);
             map->count--;
             rt_gc_mutator_exit();
+            free_entry(entry);
             return 1;
         }
         prev_ptr = &entry->next;
@@ -425,17 +539,14 @@ void rt_intmap_clear(void *obj) {
         rt_gc_mutator_exit();
         return;
     }
-    for (size_t i = 0; i < map->capacity; ++i) {
-        rt_intmap_entry *entry = map->buckets[i];
-        map->buckets[i] = NULL;
-        while (entry) {
-            rt_intmap_entry *next = entry->next;
-            free_entry(entry);
-            entry = next;
-        }
+    if (!map->buckets || map->capacity == 0) {
+        rt_gc_mutator_exit();
+        return;
     }
-    map->count = 0;
+
+    rt_intmap_entry *detached = intmap_detach_entries(map);
     rt_gc_mutator_exit();
+    intmap_destroy_entries(detached);
 }
 
 /// @brief Compact an IntMap's bucket table without changing its entries.
@@ -481,21 +592,24 @@ int8_t rt_intmap_trim(void *obj) {
 /// @return New owning Seq containing newly boxed i64 keys in unspecified
 ///         bucket order.
 void *rt_intmap_keys(void *obj) {
-    void *result = rt_seq_new();
-    rt_seq_set_owns_elements(result, 1);
+    void *result = rt_seq_new_owned();
+    if (!result)
+        return NULL;
     if (!obj)
         return result;
 
     rt_intmap_impl *map = as_intmap(obj, "IntMap.Keys: invalid IntMap object");
+    if (!map || !map->buckets || map->capacity == 0) {
+        intmap_release_object(result);
+        return NULL;
+    }
 
     // Iterate through all buckets and entries
     for (size_t i = 0; i < map->capacity; ++i) {
         rt_intmap_entry *entry = map->buckets[i];
         while (entry) {
-            void *boxed = rt_box_i64(entry->key);
-            rt_seq_push(result, boxed);
-            if (boxed && rt_obj_release_check0(boxed))
-                rt_obj_free(boxed);
+            if (!intmap_append_key_or_release_seq(result, entry->key))
+                return NULL;
             entry = entry->next;
         }
     }
@@ -508,18 +622,24 @@ void *rt_intmap_keys(void *obj) {
 /// @return New owning Seq retaining all mapped values in unspecified bucket
 ///         order.
 void *rt_intmap_values(void *obj) {
-    void *result = rt_seq_new();
-    rt_seq_set_owns_elements(result, 1);
+    void *result = rt_seq_new_owned();
+    if (!result)
+        return NULL;
     if (!obj)
         return result;
 
     rt_intmap_impl *map = as_intmap(obj, "IntMap.Values: invalid IntMap object");
+    if (!map || !map->buckets || map->capacity == 0) {
+        intmap_release_object(result);
+        return NULL;
+    }
 
     // Iterate through all buckets and entries
     for (size_t i = 0; i < map->capacity; ++i) {
         rt_intmap_entry *entry = map->buckets[i];
         while (entry) {
-            rt_seq_push(result, entry->value);
+            if (!intmap_append_value_or_release_seq(result, entry->value))
+                return NULL;
             entry = entry->next;
         }
     }

@@ -4,16 +4,43 @@
 // See LICENSE for license information.
 //
 //===----------------------------------------------------------------------===//
+//
+// File: src/tests/runtime/RTFrozenSetTests.cpp
+// Purpose: Verify immutable FrozenSet construction, set operations, ownership,
+//          and hostile source-element handling.
+// Key invariants:
+//   - Construction deduplicates valid strings and rolls back partial sets.
+//   - Invalid Seq sources and non-string element representations trap and return null.
+// Ownership/Lifetime:
+//   - Hostile-input regressions release their strings, boxes, objects, Seqs, and sets.
+//   - Borrowing source Seqs never consume their test-owned elements.
+// Links: src/runtime/collections/rt_frozenset.c,
+//        src/runtime/collections/rt_seq.c, src/runtime/oop/rt_box.c
+//
+//===----------------------------------------------------------------------===//
 
+#include "rt_box.h"
 #include "rt_frozenset.h"
 #include "rt_internal.h"
+#include "rt_object.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 
 #include <cassert>
+#include <cstdint>
 #include <cstring>
 
+namespace {
+static bool g_trap_returns = false;
+static int g_returning_trap_count = 0;
+} // namespace
+
 extern "C" void vm_trap(const char *msg) {
+    if (g_trap_returns) {
+        (void)msg;
+        ++g_returning_trap_count;
+        return;
+    }
     rt_abort(msg);
 }
 
@@ -23,6 +50,26 @@ static rt_string make_str(const char *s) {
 
 static rt_string make_bytes(const char *s, size_t len) {
     return rt_string_from_bytes(s, len);
+}
+
+static void *new_obj() {
+    void *obj = rt_obj_new_i64(0, 8);
+    assert(obj != nullptr);
+    return obj;
+}
+
+static void release_obj(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
+static void begin_returning_traps() {
+    g_returning_trap_count = 0;
+    g_trap_returns = true;
+}
+
+static void end_returning_traps() {
+    g_trap_returns = false;
 }
 
 static void test_empty() {
@@ -226,6 +273,77 @@ static void test_null_safety() {
     assert(rt_frozenset_equals(NULL, NULL) == 1);
 }
 
+static void expect_invalid_element(void *invalid) {
+    void *items = rt_seq_new();
+    rt_string valid = make_str("valid");
+    assert(items != nullptr);
+    assert(valid != nullptr);
+    const size_t refs = valid->literal_refs;
+
+    rt_seq_push(items, valid);
+    rt_seq_push(items, invalid);
+
+    begin_returning_traps();
+    void *set = rt_frozenset_from_seq(items);
+    end_returning_traps();
+
+    assert(set == nullptr);
+    assert(g_returning_trap_count == 1);
+    assert(valid->literal_refs == refs);
+
+    release_obj(items);
+    rt_string_unref(valid);
+}
+
+static void test_rejects_invalid_elements() {
+    void *wrong_box = rt_box_i64(7);
+    void *wrong_object = new_obj();
+    assert(wrong_box != nullptr);
+
+    expect_invalid_element(wrong_box);
+    expect_invalid_element(wrong_object);
+    expect_invalid_element(reinterpret_cast<void *>(static_cast<uintptr_t>(1)));
+
+    release_obj(wrong_box);
+    release_obj(wrong_object);
+}
+
+static void test_rejects_invalid_source_sequence() {
+    void *fake = new_obj();
+
+    begin_returning_traps();
+    void *set = rt_frozenset_from_seq(fake);
+    end_returning_traps();
+
+    assert(set == nullptr);
+    assert(g_returning_trap_count == 1);
+    release_obj(fake);
+}
+
+static void test_accepts_boxed_string_elements() {
+    void *items = rt_seq_new();
+    rt_string value = make_str("boxed");
+    void *boxed_value = rt_box_str(value);
+    void *boxed_null = rt_box_str(nullptr);
+    assert(items != nullptr);
+    assert(boxed_value != nullptr);
+    assert(boxed_null != nullptr);
+
+    rt_seq_push(items, boxed_value);
+    rt_seq_push(items, boxed_null);
+
+    void *set = rt_frozenset_from_seq(items);
+    assert(set != nullptr);
+    assert(rt_frozenset_len(set) == 1);
+    assert(rt_frozenset_has(set, value) == 1);
+
+    release_obj(set);
+    release_obj(items);
+    release_obj(boxed_value);
+    release_obj(boxed_null);
+    rt_string_unref(value);
+}
+
 /// @brief Main.
 int main() {
     test_empty();
@@ -240,5 +358,8 @@ int main() {
     test_is_subset();
     test_equals();
     test_null_safety();
+    test_rejects_invalid_elements();
+    test_rejects_invalid_source_sequence();
+    test_accepts_boxed_string_elements();
     return 0;
 }

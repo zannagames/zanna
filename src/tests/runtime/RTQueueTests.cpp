@@ -355,31 +355,39 @@ static void test_owns_elements_pop_transfers_reference() {
     release_obj(queue);
 }
 
-static void test_owns_elements_pop_retain_overflow_keeps_queue_unchanged() {
+static void test_owns_elements_pops_transfer_saturated_references() {
     void *queue = rt_queue_new();
-    void *value = new_obj();
+    void *first = new_obj();
+    void *second = new_obj();
 
     g_finalizer_calls = 0;
-    rt_obj_set_finalizer(value, count_finalizer);
+    rt_obj_set_finalizer(first, count_finalizer);
+    rt_obj_set_finalizer(second, count_finalizer);
 
     rt_queue_set_owns_elements(queue, 1);
-    rt_queue_push(queue, value);
-    release_obj(value); // Queue now owns the only reference.
+    rt_queue_push(queue, first);
+    rt_queue_push(queue, second);
+    release_obj(first);
+    release_obj(second); // Queue now owns the only references.
 
-    rt_heap_hdr_t *hdr = rt_heap_hdr(value);
-    hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+    rt_heap_hdr_t *first_hdr = rt_heap_hdr(first);
+    rt_heap_hdr_t *second_hdr = rt_heap_hdr(second);
+    first_hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+    second_hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
 
-    EXPECT_TRAP(rt_queue_pop(queue));
+    void *popped = rt_queue_pop(queue);
+    assert(popped == first);
     assert(rt_queue_len(queue) == 1);
-    assert(rt_queue_peek(queue) == value);
 
-    EXPECT_TRAP(rt_queue_try_pop(queue));
-    assert(rt_queue_len(queue) == 1);
-    assert(rt_queue_peek(queue) == value);
+    void *tried = rt_queue_try_pop(queue);
+    assert(tried == second);
+    assert(rt_queue_len(queue) == 0);
 
-    hdr->refcnt = 1;
-    rt_queue_clear(queue);
-    assert(g_finalizer_calls == 1);
+    first_hdr->refcnt = 1;
+    second_hdr->refcnt = 1;
+    release_obj(popped);
+    release_obj(tried);
+    assert(g_finalizer_calls == 2);
     release_obj(queue);
 }
 
@@ -452,7 +460,7 @@ int main() {
     test_interleaved_operations();
     test_owns_elements_mode_releases_on_clear();
     test_owns_elements_pop_transfers_reference();
-    test_owns_elements_pop_retain_overflow_keeps_queue_unchanged();
+    test_owns_elements_pops_transfer_saturated_references();
     test_owns_elements_clone_retains_values();
     test_owns_elements_mode_change_non_empty_traps();
 

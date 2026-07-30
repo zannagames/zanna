@@ -44,10 +44,13 @@
 
 #include "rt_box.h"
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_object.h"
 #include "rt_seq.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 #include "rt_trap.h"
@@ -72,6 +75,18 @@ typedef struct rt_set_impl {
     size_t capacity;        ///< Number of buckets in the hash table.
     size_t count;           ///< Number of elements currently in the Set.
 } rt_set_impl;
+
+/// @brief Release one temporary runtime object reference.
+static void set_release_temp(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
+/// @brief Copy the current trap diagnostic for cleanup and rethrow.
+static void set_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
+}
 
 /// @brief Checked cast of an opaque handle to the Set implementation;
 ///        traps with @p what if @p obj is NULL or not a Set.
@@ -98,6 +113,105 @@ static rt_set_entry *find_entry(rt_set_entry *head, void *elem) {
     return NULL;
 }
 
+/// @brief Return whether a validated Set has usable bucket storage.
+static int set_storage_valid(const rt_set_impl *set) {
+    return set && set->buckets && set->capacity > 0 &&
+           set->capacity <= SIZE_MAX / sizeof(rt_set_entry *);
+}
+
+/// @brief Look up an element in a validated Set implementation.
+static int set_contains_impl(const rt_set_impl *set, void *elem) {
+    size_t index = rt_box_hash(elem) % set->capacity;
+    return find_entry(set->buckets[index], elem) ? 1 : 0;
+}
+
+/// @brief Copy one retained element into a result, accepting a duplicate.
+/// @return Nonzero when the result contains @p elem after the operation.
+static int set_add_copy_checked(void *result, void *elem) {
+    int64_t before = rt_set_len(result);
+    if (rt_set_add(result, elem))
+        return before >= 0 && before < INT64_MAX && rt_set_len(result) == before + 1;
+    return rt_set_len(result) == before && rt_set_has(result, elem);
+}
+
+typedef enum set_build_op {
+    SET_BUILD_COPY,
+    SET_BUILD_UNION,
+    SET_BUILD_INTERSECT,
+    SET_BUILD_DIFF,
+} set_build_op;
+
+/// @brief Build one Set algebra result with all-or-nothing retained ownership.
+static void *set_build_result(rt_set_impl *left,
+                              rt_set_impl *right,
+                              set_build_op op,
+                              const char *diagnostic) {
+    void *volatile result = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        set_save_trap(saved_error, sizeof(saved_error), diagnostic);
+        rt_trap_clear_recovery();
+        set_release_temp((void *)result);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
+    result = rt_set_new();
+    if (!result) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+
+    rt_set_impl *scan = left;
+    rt_set_impl *membership = right;
+    if (op == SET_BUILD_INTERSECT) {
+        if (!left || !right) {
+            scan = NULL;
+            membership = NULL;
+        } else if (right->count < left->count) {
+            scan = right;
+            membership = left;
+        }
+    }
+
+    if (scan) {
+        for (size_t index = 0; index < scan->capacity; ++index) {
+            for (rt_set_entry *entry = scan->buckets[index]; entry; entry = entry->next) {
+                int include =
+                    op == SET_BUILD_COPY || op == SET_BUILD_UNION ||
+                    (op == SET_BUILD_INTERSECT && set_contains_impl(membership, entry->elem)) ||
+                    (op == SET_BUILD_DIFF &&
+                     (!membership || !set_contains_impl(membership, entry->elem)));
+                if (include && !set_add_copy_checked((void *)result, entry->elem))
+                    goto returning_failure;
+            }
+        }
+    }
+
+    if (op == SET_BUILD_UNION && right) {
+        for (size_t index = 0; index < right->capacity; ++index) {
+            for (rt_set_entry *entry = right->buckets[index]; entry; entry = entry->next) {
+                if (!set_add_copy_checked((void *)result, entry->elem))
+                    goto returning_failure;
+            }
+        }
+    }
+
+    rt_trap_clear_recovery();
+    return (void *)result;
+
+returning_failure: {
+    char saved_error[256];
+    set_save_trap(saved_error, sizeof(saved_error), diagnostic);
+    rt_trap_clear_recovery();
+    set_release_temp((void *)result);
+    rt_trap(saved_error);
+    return NULL;
+}
+}
+
 /// @brief GC traversal: visit every stored element across all bucket chains.
 /// @param obj Set whose retained values are to be traced.
 /// @param visitor Collector callback invoked once per entry.
@@ -106,7 +220,7 @@ static void rt_set_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
     if (!obj || !visitor)
         return;
     rt_set_impl *set = as_set(obj, "Set: invalid Set object");
-    if (!set->buckets || set->capacity == 0)
+    if (!set_storage_valid(set))
         return;
     for (size_t i = 0; i < set->capacity; ++i) {
         for (rt_set_entry *e = set->buckets[i]; e; e = e->next)
@@ -163,7 +277,7 @@ static void rt_set_finalize(void *obj) {
     rt_set_impl *set = as_set(obj, "Set: invalid Set object");
     if (!set)
         return;
-    if (!set->buckets || set->capacity == 0)
+    if (!set_storage_valid(set))
         return;
     rt_set_clear(obj);
     free(set->buckets);
@@ -189,6 +303,7 @@ void *rt_set_new(void) {
     if (!set->buckets) {
         if (rt_obj_release_check0(set))
             rt_obj_free(set);
+        rt_trap("Set.New: memory allocation failed");
         return NULL;
     }
 
@@ -204,6 +319,8 @@ int64_t rt_set_len(void *obj) {
     if (!obj)
         return 0;
     rt_set_impl *set = as_set(obj, "Set: invalid Set object");
+    if (!set || set->count > (size_t)INT64_MAX)
+        return 0;
     return (int64_t)set->count;
 }
 
@@ -214,7 +331,7 @@ int8_t rt_set_is_empty(void *obj) {
     if (!obj)
         return 1;
     rt_set_impl *set = as_set(obj, "Set: invalid Set object");
-    return set->count == 0 ? 1 : 0;
+    return set && set->count == 0 ? 1 : 0;
 }
 
 /// @brief Insert `elem` into the set. Element is retained on success. Returns 1 if newly added,
@@ -241,7 +358,7 @@ int8_t rt_set_add(void *obj, void *elem) {
         return 0; // Already exists
     }
 
-    if (set->count == SIZE_MAX) {
+    if (set->count == SIZE_MAX || set->count >= (size_t)INT64_MAX) {
         rt_gc_mutator_exit();
         rt_trap("Set.Add: maximum size reached");
         return 0;
@@ -258,7 +375,10 @@ int8_t rt_set_add(void *obj, void *elem) {
 
     idx = rt_box_hash(elem) % set->capacity;
 
-    rt_obj_retain_maybe(elem);
+    if (!rt_collection_retain_checked(elem, "Set.Add: value retain failed")) {
+        rt_gc_mutator_exit();
+        return 0;
+    }
 
     // Create new entry
     rt_set_entry *entry = malloc(sizeof(rt_set_entry));
@@ -342,7 +462,7 @@ void rt_set_clear(void *obj) {
         return;
     rt_gc_mutator_enter();
     rt_set_impl *set = as_set(obj, "Set.Clear: invalid Set object");
-    if (!set) {
+    if (!set_storage_valid(set)) {
         rt_gc_mutator_exit();
         return;
     }
@@ -369,20 +489,51 @@ void rt_set_clear(void *obj) {
 /// @param obj Set handle, or `NULL`.
 /// @return New runtime-managed owning Seq.
 void *rt_set_items(void *obj) {
-    void *seq = rt_seq_new();
-    rt_seq_set_owns_elements(seq, 1);
     if (!obj)
-        return seq;
+        return rt_seq_new_owned();
 
     rt_set_impl *set = as_set(obj, "Set.Items: invalid Set object");
+    if (!set || !set->buckets || set->capacity == 0)
+        return NULL;
+    if (set->count > (size_t)INT64_MAX) {
+        rt_trap("Set.Items: snapshot is too large");
+        return NULL;
+    }
 
+    void *volatile seq = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        set_save_trap(saved_error, sizeof(saved_error), "Set.Items: snapshot failed");
+        rt_trap_clear_recovery();
+        set_release_temp((void *)seq);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
+    seq = rt_seq_with_capacity_owned(set->count > 0 ? (int64_t)set->count : 1);
+    if (!seq) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
     for (size_t i = 0; i < set->capacity; ++i) {
         for (rt_set_entry *e = set->buckets[i]; e; e = e->next) {
-            rt_seq_push(seq, e->elem);
+            int64_t before = rt_seq_len((void *)seq);
+            rt_seq_push((void *)seq, e->elem);
+            if (before < 0 || before >= INT64_MAX || rt_seq_len((void *)seq) != before + 1) {
+                char saved_error[256];
+                set_save_trap(saved_error, sizeof(saved_error), "Set.Items: append failed");
+                rt_trap_clear_recovery();
+                set_release_temp((void *)seq);
+                rt_trap(saved_error);
+                return NULL;
+            }
         }
     }
 
-    return seq;
+    rt_trap_clear_recovery();
+    return (void *)seq;
 }
 
 /// @brief Return a fresh set containing every element from either operand. Result is mutable.
@@ -392,31 +543,13 @@ void *rt_set_items(void *obj) {
 /// @param other Second Set operand, or `NULL`.
 /// @return New runtime-managed Set, or `NULL` on allocation failure.
 void *rt_set_union(void *obj, void *other) {
-    void *result = rt_set_new();
-    if (!result)
+    rt_set_impl *left = obj ? as_set(obj, "Set.Union: invalid Set object") : NULL;
+    if (obj && !set_storage_valid(left))
         return NULL;
-
-    // Add all from first set
-    if (obj) {
-        rt_set_impl *set = as_set(obj, "Set.Union: invalid Set object");
-        for (size_t i = 0; i < set->capacity; ++i) {
-            for (rt_set_entry *e = set->buckets[i]; e; e = e->next) {
-                rt_set_add(result, e->elem);
-            }
-        }
-    }
-
-    // Add all from second set
-    if (other) {
-        rt_set_impl *set2 = as_set(other, "Set.Union: invalid Set object");
-        for (size_t i = 0; i < set2->capacity; ++i) {
-            for (rt_set_entry *e = set2->buckets[i]; e; e = e->next) {
-                rt_set_add(result, e->elem);
-            }
-        }
-    }
-
-    return result;
+    rt_set_impl *right = other ? as_set(other, "Set.Union: invalid Set object") : NULL;
+    if (other && !set_storage_valid(right))
+        return NULL;
+    return set_build_result(left, right, SET_BUILD_UNION, "Set.Union: construction failed");
 }
 
 /// @brief Return a fresh set containing only elements present in both operands.
@@ -426,24 +559,13 @@ void *rt_set_union(void *obj, void *other) {
 /// @param other Second Set operand, or `NULL`.
 /// @return New runtime-managed intersection Set.
 void *rt_set_intersect(void *obj, void *other) {
-    void *result = rt_set_new();
-    if (!result)
+    rt_set_impl *left = obj ? as_set(obj, "Set.Intersect: invalid Set object") : NULL;
+    if (obj && !set_storage_valid(left))
         return NULL;
-
-    if (!obj || !other)
-        return result; // Empty intersection
-
-    rt_set_impl *set = as_set(obj, "Set.Intersect: invalid Set object");
-    as_set(other, "Set.Intersect: invalid Set object");
-    for (size_t i = 0; i < set->capacity; ++i) {
-        for (rt_set_entry *e = set->buckets[i]; e; e = e->next) {
-            if (rt_set_has(other, e->elem)) {
-                rt_set_add(result, e->elem);
-            }
-        }
-    }
-
-    return result;
+    rt_set_impl *right = other ? as_set(other, "Set.Intersect: invalid Set object") : NULL;
+    if (other && !set_storage_valid(right))
+        return NULL;
+    return set_build_result(left, right, SET_BUILD_INTERSECT, "Set.Intersect: construction failed");
 }
 
 /// @brief Return a fresh set containing elements in `obj` but not in `other`.
@@ -453,25 +575,13 @@ void *rt_set_intersect(void *obj, void *other) {
 /// @param other Subtrahend Set, or `NULL`.
 /// @return New runtime-managed difference Set.
 void *rt_set_diff(void *obj, void *other) {
-    void *result = rt_set_new();
-    if (!result)
+    rt_set_impl *left = obj ? as_set(obj, "Set.Diff: invalid Set object") : NULL;
+    if (obj && !set_storage_valid(left))
         return NULL;
-
-    if (!obj)
-        return result; // Empty difference
-
-    rt_set_impl *set = as_set(obj, "Set.Diff: invalid Set object");
-    if (other)
-        as_set(other, "Set.Diff: invalid Set object");
-    for (size_t i = 0; i < set->capacity; ++i) {
-        for (rt_set_entry *e = set->buckets[i]; e; e = e->next) {
-            if (!other || !rt_set_has(other, e->elem)) {
-                rt_set_add(result, e->elem);
-            }
-        }
-    }
-
-    return result;
+    rt_set_impl *right = other ? as_set(other, "Set.Diff: invalid Set object") : NULL;
+    if (other && !set_storage_valid(right))
+        return NULL;
+    return set_build_result(left, right, SET_BUILD_DIFF, "Set.Diff: construction failed");
 }
 
 /// @brief Returns 1 if every element of `obj` is also in `other`. Empty set is subset of anything.
@@ -480,18 +590,19 @@ void *rt_set_diff(void *obj, void *other) {
 /// @param other Candidate superset Set, or `NULL`.
 /// @return 1 when the subset relation holds, otherwise 0.
 int8_t rt_set_is_subset(void *obj, void *other) {
-    if (!obj)
-        return 1; // Empty set is subset of everything
-
-    rt_set_impl *set = as_set(obj, "Set.IsSubset: invalid Set object");
-    if (set->count == 0)
+    rt_set_impl *left = obj ? as_set(obj, "Set.IsSubset: invalid Set object") : NULL;
+    if (obj && !set_storage_valid(left))
+        return 0;
+    rt_set_impl *right = other ? as_set(other, "Set.IsSubset: invalid Set object") : NULL;
+    if (other && !set_storage_valid(right))
+        return 0;
+    if (!left || left->count == 0)
         return 1;
-    if (!other)
-        return 0; // Non-empty set can't be subset of empty
-    as_set(other, "Set.IsSubset: invalid Set object");
-    for (size_t i = 0; i < set->capacity; ++i) {
-        for (rt_set_entry *e = set->buckets[i]; e; e = e->next) {
-            if (!rt_set_has(other, e->elem))
+    if (!right)
+        return 0;
+    for (size_t index = 0; index < left->capacity; ++index) {
+        for (rt_set_entry *entry = left->buckets[index]; entry; entry = entry->next) {
+            if (!set_contains_impl(right, entry->elem))
                 return 0;
         }
     }
@@ -513,14 +624,20 @@ int8_t rt_set_is_superset(void *obj, void *other) {
 /// @param other Second Set, or `NULL`.
 /// @return 1 when there is no shared equal element, otherwise 0.
 int8_t rt_set_is_disjoint(void *obj, void *other) {
-    if (!obj || !other)
-        return 1; // Empty sets are disjoint
+    rt_set_impl *left = obj ? as_set(obj, "Set.IsDisjoint: invalid Set object") : NULL;
+    if (obj && !set_storage_valid(left))
+        return 0;
+    rt_set_impl *right = other ? as_set(other, "Set.IsDisjoint: invalid Set object") : NULL;
+    if (other && !set_storage_valid(right))
+        return 0;
+    if (!left || !right)
+        return 1;
 
-    rt_set_impl *set = as_set(obj, "Set.IsDisjoint: invalid Set object");
-    as_set(other, "Set.IsDisjoint: invalid Set object");
-    for (size_t i = 0; i < set->capacity; ++i) {
-        for (rt_set_entry *e = set->buckets[i]; e; e = e->next) {
-            if (rt_set_has(other, e->elem))
+    rt_set_impl *scan = left->count <= right->count ? left : right;
+    rt_set_impl *membership = scan == left ? right : left;
+    for (size_t index = 0; index < scan->capacity; ++index) {
+        for (rt_set_entry *entry = scan->buckets[index]; entry; entry = entry->next) {
+            if (set_contains_impl(membership, entry->elem))
                 return 0;
         }
     }
@@ -537,15 +654,11 @@ int8_t rt_set_is_disjoint(void *obj, void *other) {
 /// @details The bucket/entry structure is independent and every element is
 ///          retained again, but element objects themselves are not cloned.
 void *rt_set_clone(void *obj) {
-    void *result = rt_set_new();
     if (!obj)
-        return result;
+        return rt_set_new();
 
     rt_set_impl *set = as_set(obj, "Set.Clone: invalid Set object");
-    for (size_t i = 0; i < set->capacity; ++i) {
-        for (rt_set_entry *e = set->buckets[i]; e; e = e->next) {
-            rt_set_add(result, e->elem);
-        }
-    }
-    return result;
+    if (!set_storage_valid(set))
+        return NULL;
+    return set_build_result(set, NULL, SET_BUILD_COPY, "Set.Clone: construction failed");
 }

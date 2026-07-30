@@ -657,8 +657,14 @@ rt_string rt_string_ref(rt_string s) {
         return NULL;
     if (rt_string_is_immortal_hdr(hdr))
         return s;
-    rt_heap_retain(s->data);
-    return s;
+    int32_t retained = rt_heap_try_retain_live(s->data);
+    if (retained == 1 || retained == 2)
+        return s;
+    if (retained < 0)
+        rt_trap("refcount overflow");
+    else
+        rt_trap("rt_string_ref: invalid or released heap storage");
+    return NULL;
 }
 
 /// @brief Release a reference to a runtime string handle and return the post-release count.
@@ -846,7 +852,7 @@ rt_string rt_str_concat(rt_string a, rt_string b) {
     }
 
     // Optimization: append in-place when `a` is uniquely owned with enough capacity
-    if (rt_string_can_append_inplace(a, total + 1)) {
+    if (a && rt_string_can_append_inplace(a, total + 1)) {
         // Append `b` directly into `a`'s buffer
         if (b && b->data && len_b > 0)
             memcpy(a->data + len_a, b->data, len_b);

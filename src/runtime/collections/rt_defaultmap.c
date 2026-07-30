@@ -154,6 +154,42 @@ static void dm_release_value(void *value) {
         rt_obj_free(value);
 }
 
+/// @brief Destroy a detached entry chain, including retained values.
+/// @details Callers unlink the complete chain and publish the corresponding
+///          count change before entering this callback-capable cleanup. A
+///          value finalizer may therefore re-enter the map without observing
+///          or freeing any node in @p entries.
+/// @param entries Detached entry list to consume.
+static void dm_destroy_entries(rt_dm_entry *entries) {
+    while (entries) {
+        rt_dm_entry *next = entries->next;
+        free(entries->key);
+        void *value = entries->value;
+        free(entries);
+        dm_release_value(value);
+        entries = next;
+    }
+}
+
+/// @brief Atomically detach every entry while preserving the bucket array.
+/// @param m Live DefaultMap whose entries are transferred to the return value.
+/// @return Singly linked list owning all formerly published entries.
+static rt_dm_entry *dm_detach_entries(rt_defaultmap_impl *m) {
+    rt_dm_entry *detached = NULL;
+    for (int64_t i = 0; i < m->capacity; i++) {
+        rt_dm_entry *entry = m->buckets[i];
+        m->buckets[i] = NULL;
+        while (entry) {
+            rt_dm_entry *next = entry->next;
+            entry->next = detached;
+            detached = entry;
+            entry = next;
+        }
+    }
+    m->count = 0;
+    return detached;
+}
+
 /// @brief Copies the current trap message into a stable local buffer.
 /// @param buffer Destination character buffer.
 /// @param buffer_size Capacity of @p buffer in bytes.
@@ -252,24 +288,24 @@ static void defaultmap_finalizer(void *obj) {
     rt_defaultmap_impl *m = as_defaultmap(obj, "DefaultMap: invalid DefaultMap object");
     if (!m)
         return;
-    if (!m->buckets)
-        return;
-    for (int64_t i = 0; i < m->capacity; i++) {
-        rt_dm_entry *e = m->buckets[i];
-        while (e) {
-            rt_dm_entry *next = e->next;
-            free(e->key);
-            dm_release_value(e->value);
-            free(e);
-            e = next;
-        }
-    }
-    free(m->buckets);
-    dm_release_value(m->default_value);
+
+    // Invalidate the map before any retained value can run a finalizer. A
+    // callback that holds a non-owning map pointer then observes a closed,
+    // empty object instead of a half-destroyed table.
+    rt_dm_entry **buckets = m->buckets;
+    int64_t capacity = m->capacity;
+    void *default_value = m->default_value;
     m->buckets = NULL;
     m->capacity = 0;
     m->count = 0;
     m->default_value = NULL;
+
+    if (buckets) {
+        for (int64_t i = 0; i < capacity; i++)
+            dm_destroy_entries(buckets[i]);
+    }
+    free(buckets);
+    dm_release_value(default_value);
 }
 
 /// @brief GC traversal: visit the default value and every stored value so
@@ -402,6 +438,10 @@ void rt_defaultmap_set(void *map, rt_string key, void *value) {
         rt_gc_mutator_exit();
         return;
     }
+    if (!m->buckets || m->capacity <= 0 || m->count < 0) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     size_t klen = 0;
     const char *kstr = NULL;
@@ -425,8 +465,8 @@ void rt_defaultmap_set(void *map, rt_string key, void *value) {
             }
             void *old_value = e->value;
             e->value = value;
-            dm_release_value(old_value);
             rt_gc_mutator_exit();
+            dm_release_value(old_value);
             return;
         }
         e = e->next;
@@ -538,6 +578,10 @@ int8_t rt_defaultmap_remove(void *map, rt_string key) {
         rt_gc_mutator_exit();
         return 0;
     }
+    if (!m->buckets || m->capacity <= 0 || m->count <= 0) {
+        rt_gc_mutator_exit();
+        return 0;
+    }
 
     size_t klen = 0;
     const char *kstr = NULL;
@@ -552,11 +596,13 @@ int8_t rt_defaultmap_remove(void *map, rt_string key) {
         rt_dm_entry *e = *pp;
         if (e->key_len == klen && memcmp(e->key, kstr, klen) == 0) {
             *pp = e->next;
-            free(e->key);
-            dm_release_value(e->value);
-            free(e);
             m->count--;
+            char *owned_key = e->key;
+            void *owned_value = e->value;
+            free(e);
             rt_gc_mutator_exit();
+            free(owned_key);
+            dm_release_value(owned_value);
             return 1;
         }
         pp = &e->next;
@@ -592,12 +638,17 @@ void *rt_defaultmap_keys(void *map) {
 
     rt_defaultmap_impl *m =
         map ? as_defaultmap(map, "DefaultMap.Keys: invalid DefaultMap object") : NULL;
-    seq = rt_seq_new();
+    if (m && (!m->buckets || m->capacity <= 0 || m->count < 0)) {
+        rt_trap("DefaultMap.Keys: finalized or corrupt DefaultMap object");
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    int64_t initial_capacity = m && m->count > 0 ? m->count : 1;
+    seq = rt_seq_with_capacity_owned(initial_capacity);
     if (!seq) {
         rt_trap_clear_recovery();
         return NULL;
     }
-    rt_seq_set_owns_elements((void *)seq, 1);
     if (!m) {
         rt_trap_clear_recovery();
         return (void *)seq;
@@ -607,8 +658,12 @@ void *rt_defaultmap_keys(void *map) {
         rt_dm_entry *e = m->buckets[i];
         while (e) {
             key_copy = rt_string_from_bytes(e->key, e->key_len);
-            rt_seq_push((void *)seq, (void *)key_copy);
-            rt_str_release_maybe((rt_string)key_copy);
+            if (!key_copy)
+                rt_trap("DefaultMap.Keys: key allocation failed");
+            int64_t old_len = rt_seq_len((void *)seq);
+            rt_seq_push_raw((void *)seq, (void *)key_copy);
+            if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len((void *)seq) != old_len + 1)
+                rt_trap("DefaultMap.Keys: snapshot append failed");
             key_copy = NULL;
             e = e->next;
         }
@@ -648,20 +703,14 @@ void rt_defaultmap_clear(void *map) {
         rt_gc_mutator_exit();
         return;
     }
-
-    for (int64_t i = 0; i < m->capacity; i++) {
-        rt_dm_entry *e = m->buckets[i];
-        m->buckets[i] = NULL;
-        while (e) {
-            rt_dm_entry *next = e->next;
-            free(e->key);
-            dm_release_value(e->value);
-            free(e);
-            e = next;
-        }
+    if (!m->buckets || m->capacity <= 0) {
+        rt_gc_mutator_exit();
+        return;
     }
-    m->count = 0;
+
+    rt_dm_entry *detached = dm_detach_entries(m);
     rt_gc_mutator_exit();
+    dm_destroy_entries(detached);
 }
 
 /// @brief Check whether the default map contains no entries.

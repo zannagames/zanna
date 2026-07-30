@@ -50,6 +50,7 @@
 #include "rt_map.h"
 #include "rt_numeric.h"
 
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_hash_table_util.h"
 #include "rt_internal.h"
@@ -248,11 +249,42 @@ static rt_map_entry *map_entry_new(
 ///
 /// @param entry The entry to free. If NULL, this is a no-op.
 static void free_entry(rt_map_entry *entry) {
-    if (entry) {
-        if (entry->value && rt_obj_release_check0(entry->value))
-            rt_obj_free(entry->value);
-        rt_free(entry);
+    if (!entry)
+        return;
+    void *value = entry->value;
+    rt_free(entry);
+    map_release_owned(value);
+}
+
+/// @brief Destroy a detached entry chain.
+/// @details Native nodes are reclaimed before callback-capable value releases;
+///          callers publish the corresponding table/count change first.
+/// @param entries Detached chain to consume.
+static void map_destroy_entries(rt_map_entry *entries) {
+    while (entries) {
+        rt_map_entry *next = entries->next;
+        free_entry(entries);
+        entries = next;
     }
+}
+
+/// @brief Detach every entry while preserving the allocated bucket array.
+/// @param map Live Map whose published entries are transferred.
+/// @return One chain owning every formerly published entry.
+static rt_map_entry *map_detach_entries(rt_map_impl *map) {
+    rt_map_entry *detached = NULL;
+    for (size_t i = 0; i < map->capacity; ++i) {
+        rt_map_entry *entry = map->buckets[i];
+        map->buckets[i] = NULL;
+        while (entry) {
+            rt_map_entry *next = entry->next;
+            entry->next = detached;
+            detached = entry;
+            entry = next;
+        }
+    }
+    map->count = 0;
+    return detached;
 }
 
 /// @brief GC traversal: visit every stored value across all bucket chains.
@@ -288,13 +320,16 @@ static void rt_map_finalize(void *obj) {
     rt_map_impl *map = as_map(obj, "Map: invalid Map object");
     if (!map)
         return;
-    if (!map->buckets || map->capacity == 0)
-        return;
-    rt_map_clear(map);
-    rt_free(map->buckets);
+    rt_map_entry **buckets = map->buckets;
+    size_t capacity = map->capacity;
     map->buckets = NULL;
     map->capacity = 0;
     map->count = 0;
+    if (buckets) {
+        for (size_t i = 0; i < capacity; ++i)
+            map_destroy_entries(buckets[i]);
+    }
+    rt_free(buckets);
 }
 
 /// @brief Resizes the hash table to a new capacity and rehashes all entries.
@@ -495,6 +530,10 @@ void rt_map_set(void *obj, rt_string key, void *value) {
         rt_gc_mutator_exit();
         return;
     }
+    if (!map->buckets || map->capacity == 0) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     size_t key_len = 0;
     const char *key_data = NULL;
@@ -510,11 +549,13 @@ void rt_map_set(void *obj, rt_string key, void *value) {
     if (existing) {
         // Update existing entry
         void *old_value = existing->value;
-        rt_obj_retain_maybe(value);
+        if (!rt_collection_retain_checked(value, "Map.Set: value retain failed")) {
+            rt_gc_mutator_exit();
+            return;
+        }
         existing->value = value;
-        if (old_value && rt_obj_release_check0(old_value))
-            rt_obj_free(old_value);
         rt_gc_mutator_exit();
+        map_release_owned(old_value);
         return;
     }
 
@@ -529,8 +570,10 @@ void rt_map_set(void *obj, rt_string key, void *value) {
     }
     idx = hash % map->capacity;
 
-    if (value)
-        rt_obj_retain_maybe(value);
+    if (!rt_collection_retain_checked(value, "Map.Set: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     rt_map_entry *entry =
         map_entry_new(key_data, key_len, hash, value, "Map.Set: memory allocation failed");
@@ -721,7 +764,7 @@ int8_t rt_map_set_if_missing(void *obj, rt_string key, void *value) {
 
     rt_gc_mutator_enter();
     rt_map_impl *map = as_map(obj, "Map: invalid Map object");
-    if (!map || map->capacity == 0) {
+    if (!map || !map->buckets || map->capacity == 0) {
         rt_gc_mutator_exit();
         return 0;
     }
@@ -751,8 +794,10 @@ int8_t rt_map_set_if_missing(void *obj, rt_string key, void *value) {
     }
     idx = hash % map->capacity;
 
-    if (value)
-        rt_obj_retain_maybe(value);
+    if (!rt_collection_retain_checked(value, "Map.SetIfMissing: value retain failed")) {
+        rt_gc_mutator_exit();
+        return 0;
+    }
 
     rt_map_entry *entry =
         map_entry_new(key_data, key_len, hash, value, "Map.SetIfMissing: memory allocation failed");
@@ -802,7 +847,7 @@ int8_t rt_map_remove(void *obj, rt_string key) {
 
     rt_gc_mutator_enter();
     rt_map_impl *map = as_map(obj, "Map: invalid Map object");
-    if (!map || map->capacity == 0) {
+    if (!map || !map->buckets || map->capacity == 0) {
         rt_gc_mutator_exit();
         return 0;
     }
@@ -823,9 +868,9 @@ int8_t rt_map_remove(void *obj, rt_string key) {
         if (entry->hash == hash && entry->key_len == key_len &&
             memcmp(entry->key, key_data, key_len) == 0) {
             *prev_ptr = entry->next;
-            free_entry(entry);
             map->count--;
             rt_gc_mutator_exit();
+            free_entry(entry);
             return 1;
         }
         prev_ptr = &entry->next;
@@ -877,17 +922,14 @@ void rt_map_clear(void *obj) {
         rt_gc_mutator_exit();
         return;
     }
-    for (size_t i = 0; i < map->capacity; ++i) {
-        rt_map_entry *entry = map->buckets[i];
-        map->buckets[i] = NULL;
-        while (entry) {
-            rt_map_entry *next = entry->next;
-            free_entry(entry);
-            entry = next;
-        }
+    if (!map->buckets || map->capacity == 0) {
+        rt_gc_mutator_exit();
+        return;
     }
-    map->count = 0;
+
+    rt_map_entry *detached = map_detach_entries(map);
     rt_gc_mutator_exit();
+    map_destroy_entries(detached);
 }
 
 /// @brief Release excess bucket capacity while preserving every Map entry.

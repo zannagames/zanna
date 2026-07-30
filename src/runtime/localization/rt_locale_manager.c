@@ -1489,7 +1489,9 @@ const rt_locale_data_t *rt_locale_manager_lookup_data_retained(const char *tag) 
 
 /// @brief Increment the reference count of a locale-data record.
 /// @details No-op for NULL or baked records (arena == NULL) — baked records are
-///          immortal and need no reference tracking. Thread-safe via atomic fetch-add.
+///          immortal and need no reference tracking. A compare/exchange loop
+///          prevents signed overflow; `INT64_MAX` is a fail-safe pinned state
+///          when an embedder trap hook returns.
 /// @param data Locale-data record to retain; NULL and baked records are ignored.
 void rt_locale_manager_retain_data(const rt_locale_data_t *data) {
     if (!data || data->arena == NULL)
@@ -1497,23 +1499,51 @@ void rt_locale_manager_retain_data(const rt_locale_data_t *data) {
     // Cast away const for the atomic increment — the counter is the only
     // mutable field on a loaded record and lives behind this helper. Route
     // through uintptr_t to avoid the const-qualifier-drop warning.
-    int64_t *counter = (int64_t *)(uintptr_t)&data->formatter_refs;
-    __atomic_fetch_add(counter, 1, __ATOMIC_ACQ_REL);
+    volatile int64_t *counter = (volatile int64_t *)(uintptr_t)&data->formatter_refs;
+    int64_t observed = rt_atomic_load_i64(counter, __ATOMIC_ACQUIRE);
+    for (;;) {
+        if (observed < 0) {
+            rt_trap("Zanna.Localization.LocaleManager: locale data refcount is corrupt");
+            return;
+        }
+        if (observed == INT64_MAX) {
+            rt_trap("Zanna.Localization.LocaleManager: locale data refcount overflow");
+            return;
+        }
+        int64_t expected = observed;
+        if (__atomic_compare_exchange_n(
+                counter, &expected, observed + 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return;
+        observed = expected;
+    }
 }
 
 /// @brief Decrement the reference count of a locale-data record.
 /// @details No-op for NULL or baked records. Traps if the count would go negative
-///          (underflow guard). Does NOT free the record — that happens via
-///          `loc_free_loaded_data` when the registry removes the entry.
+///          (underflow guard). A saturated record remains pinned if traps return,
+///          because the void retain API cannot tell a later release whether its
+///          corresponding retain succeeded. Does NOT free the record — that
+///          happens via `loc_free_loaded_data` when the registry removes the entry.
 /// @param data Locale-data record to release; NULL and baked records are ignored.
 void rt_locale_manager_release_data(const rt_locale_data_t *data) {
     if (!data || data->arena == NULL)
         return;
-    int64_t *counter = (int64_t *)(uintptr_t)&data->formatter_refs;
-    int64_t old = __atomic_fetch_sub(counter, 1, __ATOMIC_ACQ_REL);
-    if (old <= 0) {
-        __atomic_fetch_add(counter, 1, __ATOMIC_ACQ_REL);
-        rt_trap("Zanna.Localization.LocaleManager: locale data refcount underflow");
+    volatile int64_t *counter = (volatile int64_t *)(uintptr_t)&data->formatter_refs;
+    int64_t observed = rt_atomic_load_i64(counter, __ATOMIC_ACQUIRE);
+    for (;;) {
+        if (observed == INT64_MAX) {
+            rt_trap("Zanna.Localization.LocaleManager: cannot release saturated locale data");
+            return;
+        }
+        if (observed <= 0) {
+            rt_trap("Zanna.Localization.LocaleManager: locale data refcount underflow");
+            return;
+        }
+        int64_t expected = observed;
+        if (__atomic_compare_exchange_n(
+                counter, &expected, observed - 1, 0, __ATOMIC_ACQ_REL, __ATOMIC_ACQUIRE))
+            return;
+        observed = expected;
     }
 }
 

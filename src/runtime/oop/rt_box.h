@@ -127,10 +127,11 @@ int8_t rt_box_try_to_f64(void *box, double *out);
 /// @return 1 on success, 0 for NULL, invalid box, wrong type, or NULL out.
 int8_t rt_box_try_to_i1(void *box, int8_t *out);
 
-/// @brief Try to unbox to string without trapping.
+/// @brief Try to unbox to string without trapping for structural mismatches.
 /// @param box Candidate boxed value.
 /// @param out Receives a retained string reference on success.
-/// @return 1 on success, 0 for NULL, invalid box, wrong type, or NULL out.
+/// @return 1 on success; 0 for NULL, invalid box, wrong type, NULL out, or a
+///         returning contained-string retain trap. On failure, @p out is NULL.
 int8_t rt_box_try_to_str(void *box, rt_string *out);
 
 /// @brief Convert to integer Option without exposing an out pointer.
@@ -151,7 +152,7 @@ void *rt_box_to_i1_option(void *box);
 /// @brief Convert to string Option without exposing an out pointer.
 /// @param[in] box Candidate managed box.
 /// @return Caller-owned Some<String> for a matching box, caller-owned None for
-///         mismatch, or NULL after a returning allocation trap.
+///         mismatch, or NULL after a returning retain/allocation trap.
 void *rt_box_to_str_option(void *box);
 
 /// @brief Get the type tag of a boxed value.

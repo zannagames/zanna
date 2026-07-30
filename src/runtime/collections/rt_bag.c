@@ -56,6 +56,8 @@
 #include "rt_string.h"
 #include "rt_trap.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -104,6 +106,18 @@ typedef struct rt_bag_impl {
     size_t capacity;        ///< Number of buckets in the hash table.
     size_t count;           ///< Number of strings currently in the Bag.
 } rt_bag_impl;
+
+/// @brief Release one temporary runtime object reference.
+static void bag_release_temp(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
+/// @brief Copy the current trap diagnostic for cleanup and rethrow.
+static void bag_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
+}
 
 /// @brief Checked cast of an opaque handle to the Bag implementation.
 /// @details Traps with the @p what message if @p obj is NULL or not a Bag.
@@ -701,30 +715,64 @@ void rt_bag_clear(void *obj) {
 ///
 /// @see rt_bag_len For getting the count without creating a list
 void *rt_bag_items(void *obj) {
-    void *result = rt_seq_new();
-    if (!result)
-        return NULL;
-    rt_seq_set_owns_elements(result, 1);
     if (!obj)
-        return result;
+        return rt_seq_new_owned();
 
     rt_bag_impl *bag = as_bag(obj, "Bag.Items: invalid Bag object");
-    if (!bag)
-        return result;
+    if (!bag || !bag->buckets || bag->capacity == 0)
+        return NULL;
+    if (bag->count > (size_t)INT64_MAX) {
+        rt_trap("Bag.Items: snapshot is too large");
+        return NULL;
+    }
 
+    void *volatile result = NULL;
+    rt_string volatile str = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        bag_save_trap(saved_error, sizeof(saved_error), "Bag.Items: snapshot failed");
+        rt_trap_clear_recovery();
+        rt_str_release_maybe((rt_string)str);
+        bag_release_temp((void *)result);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
+    result = rt_seq_with_capacity_owned(bag->count > 0 ? (int64_t)bag->count : 1);
+    if (!result) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
     // Iterate through all buckets and entries
     for (size_t i = 0; i < bag->capacity; ++i) {
         rt_bag_entry *entry = bag->buckets[i];
         while (entry) {
-            // Create a copy of the string and push to seq
-            rt_string str = rt_string_from_bytes(entry->key, entry->key_len);
-            rt_seq_push(result, (void *)str);
-            rt_str_release_maybe(str);
+            str = rt_string_from_bytes(entry->key, entry->key_len);
+            if (!str) {
+                rt_trap_clear_recovery();
+                bag_release_temp((void *)result);
+                return NULL;
+            }
+            int64_t before = rt_seq_len((void *)result);
+            rt_seq_push_raw((void *)result, (void *)str);
+            if (before < 0 || before >= INT64_MAX || rt_seq_len((void *)result) != before + 1) {
+                char saved_error[256];
+                bag_save_trap(saved_error, sizeof(saved_error), "Bag.Items: append failed");
+                rt_trap_clear_recovery();
+                rt_str_release_maybe((rt_string)str);
+                bag_release_temp((void *)result);
+                rt_trap(saved_error);
+                return NULL;
+            }
+            str = NULL;
             entry = entry->next;
         }
     }
 
-    return result;
+    rt_trap_clear_recovery();
+    return (void *)result;
 }
 
 /// @brief Creates a new Bag containing the union of two Bags.

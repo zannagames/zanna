@@ -7,6 +7,15 @@
 //
 // File: src/tests/runtime/RTMouseTests.cpp
 // Purpose: Tests for Zanna.Input.Mouse static class.
+// Key invariants:
+//   - Extreme coordinates and floating-point input never trigger undefined
+//     numeric conversions or wraparound.
+//   - Per-frame mouse state remains finite and queryable after malformed input.
+// Ownership/Lifetime:
+//   - Test hooks borrow synthetic canvas pointers only for the duration of each
+//     test and are cleared before returning.
+// Links: src/runtime/graphics/input/rt_input.c,
+//        src/runtime/graphics/input/rt_input.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -14,8 +23,11 @@
 #include "rt_internal.h"
 
 #include <cassert>
+#include <cfloat>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
+#include <limits>
 
 extern "C" void vm_trap(const char *msg) {
     rt_abort(msg);
@@ -153,6 +165,45 @@ static void test_finalize_frame_same_frame_delta() {
     printf("test_finalize_frame_same_frame_delta: PASSED\n");
 }
 
+static void test_extreme_position_deltas_saturate() {
+    rt_mouse_init();
+
+    rt_mouse_update_pos(0, 0);
+    rt_mouse_begin_frame();
+
+    rt_mouse_update_pos(INT64_MIN, INT64_MAX);
+    rt_mouse_finalize_frame();
+    assert(rt_mouse_delta_x() == INT64_MIN);
+    assert(rt_mouse_delta_y() == INT64_MAX);
+
+    rt_mouse_update_pos(INT64_MAX, INT64_MIN);
+    rt_mouse_finalize_frame();
+    assert(rt_mouse_delta_x() == INT64_MAX);
+    assert(rt_mouse_delta_y() == INT64_MIN);
+
+    rt_mouse_update_pos(0, 0);
+    rt_mouse_finalize_frame();
+
+    printf("test_extreme_position_deltas_saturate: PASSED\n");
+}
+
+static void test_nonfinite_and_extreme_forced_deltas_are_safe() {
+    rt_mouse_force_delta_f(std::numeric_limits<double>::quiet_NaN(),
+                           std::numeric_limits<double>::infinity());
+    assert(rt_mouse_delta_x() == 0);
+    assert(rt_mouse_delta_y() == 0);
+    assert(rt_mouse_delta_xf() == 0.0);
+    assert(rt_mouse_delta_yf() == 0.0);
+
+    rt_mouse_force_delta_f(DBL_MAX, -DBL_MAX);
+    assert(rt_mouse_delta_x() == INT64_MAX);
+    assert(rt_mouse_delta_y() == INT64_MIN);
+    assert(rt_mouse_delta_xf() == DBL_MAX);
+    assert(rt_mouse_delta_yf() == -DBL_MAX);
+
+    printf("test_nonfinite_and_extreme_forced_deltas_are_safe: PASSED\n");
+}
+
 // ============================================================================
 // Button State
 // ============================================================================
@@ -203,6 +254,19 @@ static void test_click_detection() {
     printf("test_click_detection: PASSED\n");
 }
 
+static void test_first_click_is_not_a_double_click() {
+    rt_mouse_begin_frame();
+
+    // X2 has not been used by an earlier test, so this is its first click since
+    // input initialization even when the complete executable runs in one process.
+    rt_mouse_button_down(ZANNA_MOUSE_BUTTON_X2);
+    rt_mouse_button_up(ZANNA_MOUSE_BUTTON_X2);
+    assert(rt_mouse_was_clicked(ZANNA_MOUSE_BUTTON_X2) == 1);
+    assert(rt_mouse_was_double_clicked(ZANNA_MOUSE_BUTTON_X2) == 0);
+
+    printf("test_first_click_is_not_a_double_click: PASSED\n");
+}
+
 // ============================================================================
 // Scroll Wheel
 // ============================================================================
@@ -250,6 +314,24 @@ static void test_scroll_wheel_precision() {
     assert(std::fabs(rt_mouse_wheel_yf()) < 1e-9);
 
     printf("test_scroll_wheel_precision: PASSED\n");
+}
+
+static void test_scroll_wheel_rejects_nonfinite_and_saturates() {
+    rt_mouse_begin_frame();
+
+    rt_mouse_update_wheel(std::numeric_limits<double>::quiet_NaN(),
+                          std::numeric_limits<double>::infinity());
+    assert(rt_mouse_wheel_xf() == 0.0);
+    assert(rt_mouse_wheel_yf() == 0.0);
+
+    rt_mouse_update_wheel(DBL_MAX, -DBL_MAX);
+    rt_mouse_update_wheel(DBL_MAX, -DBL_MAX);
+    assert(std::isfinite(rt_mouse_wheel_xf()));
+    assert(std::isfinite(rt_mouse_wheel_yf()));
+    assert(rt_mouse_wheel_x() == INT64_MAX);
+    assert(rt_mouse_wheel_y() == INT64_MIN);
+
+    printf("test_scroll_wheel_rejects_nonfinite_and_saturates: PASSED\n");
 }
 
 // ============================================================================
@@ -363,10 +445,14 @@ int main() {
     test_initial_state();
     test_position_updates();
     test_finalize_frame_same_frame_delta();
+    test_extreme_position_deltas_saturate();
+    test_nonfinite_and_extreme_forced_deltas_are_safe();
     test_button_state();
     test_click_detection();
+    test_first_click_is_not_a_double_click();
     test_scroll_wheel();
     test_scroll_wheel_precision();
+    test_scroll_wheel_rejects_nonfinite_and_saturates();
     test_cursor_control();
     test_canvas_detach();
     test_boundary_cases();

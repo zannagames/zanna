@@ -48,10 +48,12 @@
 /// mutation is otherwise unsynchronized.
 
 #include "rt_list.h"
+#include "rt_list_internal.h"
 
 #include "rt_array_obj.h"
 #include "rt_box.h"
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_heap.h"
 #include "rt_internal.h"
@@ -67,39 +69,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/// @brief Internal List implementation structure.
-///
-/// The List is a dynamic collection backed by rt_arr_obj (a managed object array).
-/// Unlike Seq which manages its own internal array, List delegates storage to
-/// the object array system which handles reference counting automatically.
-///
-/// **Memory layout:**
-/// ```
-/// List object (GC-managed):
-///   +------+-----+
-///   | vptr | arr |
-///   | NULL | --->|
-///   +------+-|---+
-///            |
-///            v
-/// rt_arr_obj (managed array):
-///   +---+---+---+...+
-///   | A | B | C |   |
-///   +---+---+---+...+
-/// ```
-///
-/// **Comparison with Seq:**
-/// - List: Uses rt_arr_obj, automatic reference management
-/// - Seq: Uses raw malloc'd array, more control
-///
-/// **Element ownership:**
-/// Elements stored in the List are managed by the underlying rt_arr_obj,
-/// which handles reference counting automatically.
-typedef struct rt_list_impl {
-    void **vptr; ///< Vtable pointer placeholder (for OOP compatibility).
-    void **arr;  ///< Pointer to the underlying object array (rt_arr_obj).
-} rt_list_impl;
 
 /// @brief Finalizer callback invoked when a List is garbage collected.
 ///
@@ -198,6 +167,15 @@ static void release_temp_obj(void *obj) {
         rt_obj_free(obj);
 }
 
+/// @brief Copy the current trap diagnostic into stable caller storage.
+/// @param buffer Destination buffer.
+/// @param buffer_size Capacity including the terminator.
+/// @param fallback Message used when no trap text is available.
+static void list_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
+}
+
 /// @brief Returns the number of elements in the List.
 ///
 /// This function returns how many elements are currently stored in the List.
@@ -215,7 +193,14 @@ int64_t rt_list_len(void *list) {
     if (!list)
         return 0;
     rt_list_impl *L = as_list(list);
-    return (int64_t)rt_arr_obj_len(L->arr);
+    if (!L)
+        return 0;
+    size_t len = rt_arr_obj_len(L->arr);
+    if (len > (size_t)INT64_MAX) {
+        rt_trap("List: length exceeds INT64_MAX");
+        return 0;
+    }
+    return (int64_t)len;
 }
 
 /// @brief Removes all elements from the List.
@@ -302,7 +287,10 @@ void rt_list_push(void *list, void *elem) {
     }
     size_t len = rt_arr_obj_len(L->arr);
 
-    rt_obj_retain_maybe(elem);
+    if (!rt_collection_retain_checked(elem, "List.Push: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
     void **arr2 = rt_arr_obj_resize(L->arr, len + 1);
     if (!arr2) {
         release_temp_obj(elem);
@@ -543,6 +531,8 @@ int64_t rt_list_find(void *list, void *elem) {
         return -1;
 
     rt_list_impl *L = as_list(list);
+    if (!L)
+        return -1;
     size_t len = rt_arr_obj_len(L->arr);
 
     for (size_t i = 0; i < len; ++i) {
@@ -655,7 +645,10 @@ void rt_list_insert(void *list, int64_t index, void *elem) {
         return;
     }
 
-    rt_obj_retain_maybe(elem);
+    if (!rt_collection_retain_checked(elem, "List.Insert: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
     void **arr2 = rt_arr_obj_resize(L->arr, len + 1);
     if (!arr2) {
         release_temp_obj(elem);
@@ -734,15 +727,17 @@ int8_t rt_list_remove(void *list, void *elem) {
 /// @note O(k) time where k = end - start.
 /// @note Thread safety: Not thread-safe.
 void *rt_list_slice(void *list, int64_t start, int64_t end) {
-    void *result = rt_list_new();
-    if (!result)
-        return NULL;
-
     if (!list)
-        return result;
+        return rt_list_new();
 
     rt_list_impl *L = as_list(list);
+    if (!L)
+        return NULL;
     size_t len = rt_arr_obj_len(L->arr);
+    if (len > (size_t)INT64_MAX) {
+        rt_trap("List.Slice: source too large");
+        return NULL;
+    }
 
     // Clamp indices
     if (start < 0)
@@ -753,17 +748,46 @@ void *rt_list_slice(void *list, int64_t start, int64_t end) {
         start = (int64_t)len;
     if ((size_t)end > len)
         end = (int64_t)len;
-    if (start >= end)
-        return result;
+    size_t count = start < end ? (size_t)(end - start) : 0;
 
-    // Copy elements
-    for (int64_t i = start; i < end; i++) {
-        void *elem = rt_arr_obj_get(L->arr, (size_t)i);
-        rt_list_push(result, elem);
-        release_temp_obj(elem);
+    void *volatile result = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        list_save_trap(saved_error, sizeof(saved_error), "List.Slice: construction failed");
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)result);
+        rt_trap(saved_error);
+        return NULL;
     }
 
-    return result;
+    result = rt_list_new();
+    if (!result) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    if (count > 0) {
+        rt_list_impl *out = (rt_list_impl *)result;
+        out->arr = rt_arr_obj_new(count);
+        if (!out->arr) {
+            rt_trap_clear_recovery();
+            release_temp_obj((void *)result);
+            return NULL;
+        }
+        for (size_t i = 0; i < count; ++i) {
+            void *elem = L->arr[(size_t)start + i];
+            if (!rt_collection_retain_checked(elem, "List.Slice: element retain failed")) {
+                rt_trap_clear_recovery();
+                release_temp_obj((void *)result);
+                return NULL;
+            }
+            out->arr[i] = elem;
+        }
+    }
+
+    rt_trap_clear_recovery();
+    return (void *)result;
 }
 
 /// @brief Reverses the order of elements in the List in place.
@@ -835,6 +859,8 @@ void *rt_list_first(void *list) {
         return NULL;
 
     rt_list_impl *L = as_list(list);
+    if (!L)
+        return NULL;
     size_t len = rt_arr_obj_len(L->arr);
     if (len == 0)
         return NULL;
@@ -864,6 +890,8 @@ void *rt_list_last(void *list) {
         return NULL;
 
     rt_list_impl *L = as_list(list);
+    if (!L)
+        return NULL;
     size_t len = rt_arr_obj_len(L->arr);
     if (len == 0)
         return NULL;
@@ -904,17 +932,18 @@ void *rt_list_pop(void *list) {
         return NULL;
     }
 
-    void *elem = rt_arr_obj_get(L->arr, len - 1);
-    rt_arr_obj_put(L->arr, len - 1, NULL);
+    void *elem = L->arr[len - 1];
+    L->arr[len - 1] = NULL;
     void **shrunk = rt_arr_obj_resize(L->arr, len - 1);
     if (len - 1 > 0 && !shrunk) {
-        rt_arr_obj_put(L->arr, len - 1, elem);
-        release_temp_obj(elem);
+        L->arr[len - 1] = elem;
         rt_gc_mutator_exit();
         rt_trap("List.Pop: memory allocation failed");
         return NULL;
     }
     L->arr = shrunk;
+    // Move the List's stored reference to the caller without a redundant
+    // retain/release pair.
     rt_gc_mutator_exit();
     return elem;
 }
@@ -1093,18 +1122,5 @@ void rt_list_shuffle(void *list) {
 /// @return New List retaining the same element pointers in order; NULL source
 ///         produces an empty List.
 void *rt_list_clone(void *list) {
-    void *result = rt_list_new();
-    if (!result || !list)
-        return result;
-
-    rt_list_impl *L = as_list(list);
-    size_t len = L->arr ? rt_arr_obj_len(L->arr) : 0;
-
-    for (size_t i = 0; i < len; ++i) {
-        void *elem = rt_arr_obj_get(L->arr, i);
-        rt_list_push(result, elem);
-        release_temp_obj(elem);
-    }
-
-    return result;
+    return rt_list_slice(list, 0, INT64_MAX);
 }

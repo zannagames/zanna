@@ -42,13 +42,16 @@
 ///          with the -1 launch-failure sentinel; callers that need the exact
 ///          value should read @ref native_exit_code. Capture or wait
 ///          diagnostics may be appended to @ref err after a successful launch.
+///          If capture storage or native pipe I/O fails, @ref capture_failed is
+///          set while the child is still drained/terminated and reaped.
 struct RunResult {
-    int exit_code{0};               ///< Normalised process exit code (or -1 on launch failure).
-    std::string out;                ///< Captured standard output text.
+    int exit_code{0}; ///< Normalised process exit code (or -1 on launch failure).
+    std::string out;  ///< Captured standard output text.
     /// Captures stderr independently; launcher diagnostics may also be appended.
-    std::string err;                ///< Captured standard error text (may be merged with stdout).
-    bool launched{false};           ///< True once the host successfully starts a child process.
-    bool launch_failed{false};      ///< True when setup or process creation failed.
+    std::string err;            ///< Captured standard error text (may be merged with stdout).
+    bool launched{false};       ///< True once the host successfully starts a child process.
+    bool launch_failed{false};  ///< True when setup or process creation failed.
+    bool capture_failed{false}; ///< True when stdout/stderr could not be captured completely.
     std::uint32_t native_exit_code{0}; ///< Exact host exit code when available.
 };
 
@@ -64,6 +67,8 @@ struct RunResult {
 /// @return Captured process result including exit code and output streams.
 ///         Empty argv, invalid launch configuration, or process-creation
 ///         failure returns `exit_code == -1` and `launch_failed == true`.
+///         Incomplete stdout/stderr capture sets `capture_failed == true`
+///         independently of the child's exit status.
 /// @note POSIX executable lookup follows `posix_spawnp`; Windows delegates
 ///       executable resolution to `CreateProcessW`.
 RunResult run_process(const std::vector<std::string> &argv,

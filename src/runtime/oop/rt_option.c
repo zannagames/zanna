@@ -40,6 +40,7 @@
 
 #include "rt_option.h"
 #include "rt_error.h"
+#include "rt_heap.h"
 #include "rt_object.h"
 #include "rt_result.h"
 #include "rt_string.h"
@@ -97,6 +98,28 @@ static void option_finalizer(void *obj) {
     }
 }
 
+/// @brief Retain a generic Option pointer payload with an explicit status.
+/// @details Preserves `rt_obj_retain_maybe` compatibility for null and
+///          unmanaged opaque pointers, but requires registered strings and
+///          managed heap payloads to acquire ownership before publication.
+/// @param value Candidate pointer payload; may be null or unmanaged.
+/// @return One when publication is safe; zero after a returning retain trap.
+static int option_retain_ptr_checked(void *value) {
+    if (!value)
+        return 1;
+    if (rt_string_is_handle(value))
+        return rt_string_ref((rt_string)value) ? 1 : 0;
+    if (!rt_heap_is_payload(value))
+        return 1;
+
+    int32_t status = rt_heap_try_retain_live(value);
+    if (status == 1 || status == 2)
+        return 1;
+    rt_trap(status < 0 ? "Option.Some: refcount overflow"
+                       : "Option.Some: invalid or released payload");
+    return 0;
+}
+
 //=============================================================================
 // Option Creation
 //=============================================================================
@@ -111,7 +134,8 @@ static void option_finalizer(void *obj) {
 /// @return Caller-owned `Some` option whose pointer payload is @p value, or
 ///         @c NULL after an allocation failure trap.
 void *rt_option_some(void *value) {
-    rt_obj_retain_maybe(value);
+    if (!option_retain_ptr_checked(value))
+        return NULL;
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -154,6 +178,8 @@ void *rt_option_some(void *value) {
 ///         allocation failure trap.
 void *rt_option_some_str(rt_string value) {
     rt_string retained = value ? rt_string_ref(value) : NULL;
+    if (value && !retained)
+        return NULL;
 
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -235,6 +261,10 @@ void *rt_option_some_f64(double value) {
 /// @return Caller-owned `None` option.
 void *rt_option_none(void) {
     Option *o = (Option *)rt_obj_new_i64(RT_OPTION_CLASS_ID, (int64_t)sizeof(Option));
+    if (!o) {
+        rt_trap("Option.None: allocation failed");
+        return NULL;
+    }
 
     o->variant = OPTION_NONE;
     o->value_type = VALUE_PTR;

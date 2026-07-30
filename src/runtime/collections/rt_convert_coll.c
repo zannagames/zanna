@@ -11,11 +11,11 @@
 //   queue, deque, bag, and ring representations.
 //
 // Key invariants:
-//   - All conversions iterate the source using the source collection's public
-//     API (e.g., rt_seq_len + rt_seq_get for Seq, rt_stack_peek + pop for
-//     Stack). No internal structure of the source is accessed directly.
+//   - Indexed conversions validate one exact private source layout and borrow
+//     stable slots directly while external synchronization excludes mutation.
 //   - Conversion creates a new destination collection and pushes/inserts each
-//     element from the source in iteration order.
+//     element from the source in iteration order as an all-or-nothing
+//     ownership transaction.
 //   - NULL source arguments return an empty (newly allocated) destination
 //     collection rather than NULL, so callers can always use the result.
 //   - Elements are not deep-copied; the destination holds the same object
@@ -24,8 +24,8 @@
 //     concurrently.
 //
 // Ownership/Lifetime:
-//   - Returned collection objects are GC-managed. The caller receives a new
-//     GC root; no manual free is needed.
+//   - Returned collection objects are GC-managed. The caller owns the returned
+//     reference and must release it when the result is no longer needed.
 //
 // Links: src/runtime/collections/rt_convert_coll.h (public API),
 //        src/runtime/collections/rt_seq.h, rt_list.h, rt_set.h, rt_stack.h,
@@ -42,27 +42,39 @@
 /// are shared under the destination collection's retain/release conventions,
 /// while Bag conversions copy string values according to the Bag API.
 ///
-/// Stack and Queue conversions traverse clones so even partially completed
-/// work cannot consume the source. Null sources produce newly allocated empty
+/// Stack and Queue conversions borrow their validated native layouts without
+/// mutating or cloning them. Null sources produce newly allocated empty
 /// destinations. Variadic constructors consume exactly @p count object
 /// pointers when the count is positive.
 
 #include "rt_convert_coll.h"
 
-#include "rt_box.h"
+#include "rt_array_obj.h"
 #include "rt_bag.h"
+#include "rt_box.h"
 #include "rt_deque.h"
+#include "rt_deque_internal.h"
+#include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_list.h"
+#include "rt_list_internal.h"
 #include "rt_map.h"
 #include "rt_object.h"
 #include "rt_queue.h"
+#include "rt_queue_internal.h"
 #include "rt_ring.h"
+#include "rt_ring_internal.h"
 #include "rt_seq.h"
+#include "rt_seq_internal.h"
 #include "rt_set.h"
 #include "rt_stack.h"
+#include "rt_stack_internal.h"
 #include "rt_string.h"
+#include "rt_trap.h"
+
+#include <setjmp.h>
 #include <stdarg.h>
+#include <stdio.h>
 #include <stdlib.h>
 
 /// @brief Drop one GC reference to a transient @p obj and free it at zero.
@@ -79,6 +91,352 @@ static void *new_owned_seq(void) {
     return rt_seq_new_owned();
 }
 
+/// @brief Copy the active trap diagnostic before removing a recovery frame.
+/// @param buffer Caller-owned diagnostic buffer.
+/// @param buffer_size Capacity of @p buffer including its terminator.
+/// @param fallback Message used when no current trap diagnostic is available.
+static void save_conversion_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
+}
+
+/// @brief Reject a source whose private layout or storage invariants are invalid.
+/// @param condition Nonzero when the source is safe to inspect.
+/// @param diagnostic Trap message for an invalid source.
+/// @return One when valid; zero after trapping.
+static int require_source(int condition, const char *diagnostic) {
+    if (condition)
+        return 1;
+    rt_trap(diagnostic);
+    return 0;
+}
+
+/// @brief Validate an indexed Seq source and return its logical length.
+static int seq_view(void *obj, int64_t *out_len) {
+    *out_len = 0;
+    if (!require_source(rt_seq_internal_is_valid(obj), "Convert: invalid Seq source"))
+        return 0;
+    rt_seq_impl *seq = (rt_seq_impl *)obj;
+    if (!require_source(seq->len >= 0 && seq->cap >= seq->len && seq->cap > 0 &&
+                            (uint64_t)seq->cap <= SIZE_MAX / sizeof(void *) && seq->items,
+                        "Convert: corrupted Seq source"))
+        return 0;
+    *out_len = seq->len;
+    return 1;
+}
+
+/// @brief Validate an indexed List source and its managed object-array backing.
+static int list_view(void *obj, int64_t *out_len) {
+    *out_len = 0;
+    if (!require_source(rt_list_internal_is_valid(obj), "Convert: invalid List source"))
+        return 0;
+    rt_list_impl *list = (rt_list_impl *)obj;
+    if (!list->arr)
+        return 1;
+
+    rt_heap_info_t info;
+    if (!require_source(rt_heap_get_info(list->arr, &info) && info.kind == RT_HEAP_ARRAY &&
+                            info.elem_kind == RT_ELEM_OBJ && info.cap >= info.len &&
+                            info.len <= (size_t)INT64_MAX,
+                        "Convert: corrupted List backing array"))
+        return 0;
+    *out_len = (int64_t)info.len;
+    return 1;
+}
+
+/// @brief Validate an indexed Stack source and return its logical length.
+static int stack_view(void *obj, int64_t *out_len) {
+    *out_len = 0;
+    if (!require_source(rt_stack_internal_is_valid(obj), "Convert: invalid Stack source"))
+        return 0;
+    rt_stack_impl *stack = (rt_stack_impl *)obj;
+    if (!require_source(stack->len >= 0 && stack->cap >= stack->len && stack->cap > 0 &&
+                            (uint64_t)stack->cap <= SIZE_MAX / sizeof(void *) && stack->items,
+                        "Convert: corrupted Stack source"))
+        return 0;
+    *out_len = stack->len;
+    return 1;
+}
+
+/// @brief Validate an indexed Queue source and return its logical length.
+static int queue_view(void *obj, int64_t *out_len) {
+    *out_len = 0;
+    if (!require_source(rt_queue_internal_is_valid(obj), "Convert: invalid Queue source"))
+        return 0;
+    rt_queue_impl *queue = (rt_queue_impl *)obj;
+    int storage_valid = queue->cap > 0 && (uint64_t)queue->cap <= SIZE_MAX / sizeof(void *) &&
+                        queue->len >= 0 && queue->len <= queue->cap && queue->head >= 0 &&
+                        queue->head < queue->cap && queue->tail >= 0 && queue->tail < queue->cap &&
+                        queue->items;
+    if (storage_valid) {
+        uint64_t expected_tail =
+            ((uint64_t)queue->head + (uint64_t)queue->len) % (uint64_t)queue->cap;
+        storage_valid = (uint64_t)queue->tail == expected_tail;
+    }
+    if (!require_source(storage_valid, "Convert: corrupted Queue source"))
+        return 0;
+    *out_len = queue->len;
+    return 1;
+}
+
+/// @brief Validate an indexed Deque source and return its logical length.
+static int deque_view(void *obj, int64_t *out_len) {
+    *out_len = 0;
+    if (!require_source(rt_deque_internal_is_valid(obj), "Convert: invalid Deque source"))
+        return 0;
+    rt_deque_impl *deque = (rt_deque_impl *)obj;
+    if (!require_source(deque->cap > 0 && (uint64_t)deque->cap <= SIZE_MAX / sizeof(void *) &&
+                            deque->len >= 0 && deque->len <= deque->cap && deque->front >= 0 &&
+                            deque->front < deque->cap && deque->data,
+                        "Convert: corrupted Deque source"))
+        return 0;
+    *out_len = deque->len;
+    return 1;
+}
+
+/// @brief Validate an indexed Ring source and return its logical length.
+static int ring_view(void *obj, int64_t *out_len) {
+    *out_len = 0;
+    if (!require_source(rt_ring_internal_is_valid(obj), "Convert: invalid Ring source"))
+        return 0;
+    rt_ring_impl *ring = (rt_ring_impl *)obj;
+    if (!require_source(ring->capacity > 0 && ring->capacity <= SIZE_MAX / sizeof(void *) &&
+                            ring->count <= ring->capacity && ring->count <= (size_t)INT64_MAX &&
+                            ring->head < ring->capacity && ring->items,
+                        "Convert: corrupted Ring source"))
+        return 0;
+    *out_len = (int64_t)ring->count;
+    return 1;
+}
+
+/// @brief Borrow an indexed Seq element after @ref seq_view succeeds.
+static void *seq_at(void *obj, int64_t index) {
+    return ((rt_seq_impl *)obj)->items[index];
+}
+
+/// @brief Borrow an indexed List element after @ref list_view succeeds.
+static void *list_at(void *obj, int64_t index) {
+    return ((rt_list_impl *)obj)->arr[index];
+}
+
+/// @brief Borrow a Stack element in bottom-to-top order.
+static void *stack_at(void *obj, int64_t index) {
+    return ((rt_stack_impl *)obj)->items[index];
+}
+
+/// @brief Borrow a Queue element in front-to-back order.
+static void *queue_at(void *obj, int64_t index) {
+    rt_queue_impl *queue = (rt_queue_impl *)obj;
+    uint64_t physical = ((uint64_t)queue->head + (uint64_t)index) % (uint64_t)queue->cap;
+    return queue->items[physical];
+}
+
+/// @brief Borrow a Deque element in front-to-back order.
+static void *deque_at(void *obj, int64_t index) {
+    rt_deque_impl *deque = (rt_deque_impl *)obj;
+    uint64_t physical = ((uint64_t)deque->front + (uint64_t)index) % (uint64_t)deque->cap;
+    return deque->data[physical];
+}
+
+/// @brief Borrow a Ring element in logical index order.
+static void *ring_at(void *obj, int64_t index) {
+    rt_ring_impl *ring = (rt_ring_impl *)obj;
+    size_t offset = (size_t)index;
+    size_t distance_to_end = ring->capacity - ring->head;
+    size_t physical = offset >= distance_to_end ? offset - distance_to_end : ring->head + offset;
+    return ring->items[physical];
+}
+
+/// @brief Borrow one pointer from a native variadic staging table.
+static void *native_pointer_at(void *table, int64_t index) {
+    return ((void **)table)[index];
+}
+
+typedef void *(*conversion_at_fn)(void *source, int64_t index);
+typedef void *(*conversion_new_fn)(int64_t source_len);
+typedef int (*conversion_append_fn)(void *result, void *element);
+
+/// @brief Allocate an owning Seq with exact known source capacity.
+static void *new_seq_result(int64_t source_len) {
+    return rt_seq_with_capacity_owned(source_len > 0 ? source_len : 1);
+}
+
+/// @brief Allocate a List conversion result.
+static void *new_list_result(int64_t source_len) {
+    (void)source_len;
+    return rt_list_new();
+}
+
+/// @brief Allocate a Set conversion result.
+static void *new_set_result(int64_t source_len) {
+    (void)source_len;
+    return rt_set_new();
+}
+
+/// @brief Allocate an owning Stack conversion result.
+static void *new_stack_result(int64_t source_len) {
+    (void)source_len;
+    void *stack = rt_stack_new();
+    if (stack)
+        rt_stack_set_owns_elements(stack, 1);
+    return stack;
+}
+
+/// @brief Allocate an owning Queue conversion result.
+static void *new_queue_result(int64_t source_len) {
+    (void)source_len;
+    void *queue = rt_queue_new();
+    if (queue)
+        rt_queue_set_owns_elements(queue, 1);
+    return queue;
+}
+
+/// @brief Allocate an exact-capacity Deque conversion result.
+static void *new_deque_result(int64_t source_len) {
+    return rt_deque_with_capacity(source_len > 0 ? source_len : 1);
+}
+
+/// @brief Return whether a void append advanced a linear destination by one.
+static int append_advanced(int64_t before, int64_t after) {
+    return before >= 0 && before < INT64_MAX && after == before + 1;
+}
+
+/// @brief Append to an owning Seq and verify returning-trap failure.
+static int append_seq(void *result, void *element) {
+    int64_t before = rt_seq_len(result);
+    rt_seq_push(result, element);
+    return append_advanced(before, rt_seq_len(result));
+}
+
+/// @brief Append to a List and verify returning-trap failure.
+static int append_list(void *result, void *element) {
+    int64_t before = rt_list_len(result);
+    rt_list_push(result, element);
+    return append_advanced(before, rt_list_len(result));
+}
+
+/// @brief Append to an owning Stack and verify returning-trap failure.
+static int append_stack(void *result, void *element) {
+    int64_t before = rt_stack_len(result);
+    rt_stack_push(result, element);
+    return append_advanced(before, rt_stack_len(result));
+}
+
+/// @brief Append to an owning Queue and verify returning-trap failure.
+static int append_queue(void *result, void *element) {
+    int64_t before = rt_queue_len(result);
+    rt_queue_push(result, element);
+    return append_advanced(before, rt_queue_len(result));
+}
+
+/// @brief Append to a Deque and verify returning-trap failure.
+static int append_deque(void *result, void *element) {
+    int64_t before = rt_deque_len(result);
+    rt_deque_push_back(result, element);
+    return append_advanced(before, rt_deque_len(result));
+}
+
+/// @brief Insert into a Set, accepting an already-present equal value.
+static int append_set(void *result, void *element) {
+    int64_t before = rt_set_len(result);
+    if (rt_set_add(result, element))
+        return append_advanced(before, rt_set_len(result));
+    return rt_set_len(result) == before && rt_set_has(result, element);
+}
+
+/// @brief Insert a copied string into a Bag, accepting an existing equal key.
+static int append_bag(void *result, rt_string element) {
+    int64_t before = rt_bag_len(result);
+    if (rt_bag_add(result, element))
+        return append_advanced(before, rt_bag_len(result));
+    return rt_bag_len(result) == before && rt_bag_has(result, element);
+}
+
+/// @brief Convert a validated indexed source as one retained transaction.
+/// @param source Validated source object or native pointer table.
+/// @param source_len Number of elements available through @p at.
+/// @param at Borrowed element accessor.
+/// @param make_result Destination constructor.
+/// @param append Checked retaining append operation.
+/// @param diagnostic Fallback failure diagnostic.
+/// @return Complete new destination, or null after destroying partial state.
+static void *convert_indexed(void *source,
+                             int64_t source_len,
+                             conversion_at_fn at,
+                             conversion_new_fn make_result,
+                             conversion_append_fn append,
+                             const char *diagnostic) {
+    void *volatile result = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        save_conversion_trap(saved_error, sizeof(saved_error), diagnostic);
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)result);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
+    result = make_result(source_len);
+    if (!result) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    for (int64_t index = 0; index < source_len; ++index) {
+        if (!append((void *)result, at(source, index))) {
+            char saved_error[256];
+            save_conversion_trap(saved_error, sizeof(saved_error), diagnostic);
+            rt_trap_clear_recovery();
+            release_temp_obj((void *)result);
+            rt_trap(saved_error);
+            return NULL;
+        }
+    }
+
+    rt_trap_clear_recovery();
+    return (void *)result;
+}
+
+/// @brief Convert and then free a native pointer staging table on every path.
+static void *convert_native_pointers(void **elements,
+                                     int64_t count,
+                                     conversion_new_fn make_result,
+                                     conversion_append_fn append,
+                                     const char *diagnostic) {
+    void *volatile result = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        save_conversion_trap(saved_error, sizeof(saved_error), diagnostic);
+        rt_trap_clear_recovery();
+        free(elements);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
+    result = convert_indexed(elements, count, native_pointer_at, make_result, append, diagnostic);
+    rt_trap_clear_recovery();
+    free(elements);
+    return (void *)result;
+}
+
+/// @brief Copy exactly @p count variadic object pointers into native storage.
+/// @param count Positive number of pointer arguments.
+/// @param args Active variadic argument cursor.
+/// @return Native pointer table, or null on overflow/allocation failure.
+static void **stage_variadic_pointers(int64_t count, va_list *args) {
+    if ((uint64_t)count > SIZE_MAX / sizeof(void *))
+        return NULL;
+    void **elements = (void **)malloc((size_t)count * sizeof(void *));
+    if (!elements)
+        return NULL;
+    for (int64_t index = 0; index < count; ++index)
+        elements[index] = va_arg(*args, void *);
+    return elements;
+}
+
 //=============================================================================
 // Seq Conversions
 //=============================================================================
@@ -88,16 +446,13 @@ static void *new_owned_seq(void) {
 /// @return A new List containing source elements in index order, or an empty
 ///         List for NULL.
 void *rt_seq_to_list(void *seq) {
-    void *list = rt_list_new();
-    if (!seq || !list)
-        return list;
-
-    int64_t len = rt_seq_len(seq);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_seq_get(seq, i);
-        rt_list_push(list, elem);
-    }
-    return list;
+    if (!seq)
+        return new_list_result(0);
+    int64_t len = 0;
+    if (!seq_view(seq, &len))
+        return NULL;
+    return convert_indexed(
+        seq, len, seq_at, new_list_result, append_list, "Seq.ToList: conversion failed");
 }
 
 /// @brief Seq to set.
@@ -105,16 +460,13 @@ void *rt_seq_to_list(void *seq) {
 /// @return A new Set populated in index order; duplicates collapse according
 ///         to Set equality semantics.
 void *rt_seq_to_set(void *seq) {
-    void *set = rt_set_new();
-    if (!seq || !set)
-        return set;
-
-    int64_t len = rt_seq_len(seq);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_seq_get(seq, i);
-        rt_set_add(set, elem);
-    }
-    return set;
+    if (!seq)
+        return new_set_result(0);
+    int64_t len = 0;
+    if (!seq_view(seq, &len))
+        return NULL;
+    return convert_indexed(
+        seq, len, seq_at, new_set_result, append_set, "Seq.ToSet: conversion failed");
 }
 
 /// @brief Seq to stack.
@@ -122,50 +474,39 @@ void *rt_seq_to_set(void *seq) {
 /// @return A new owning Stack whose bottom is element zero and whose top is
 ///         the final Seq element.
 void *rt_seq_to_stack(void *seq) {
-    void *stack = rt_stack_new();
-    if (!seq || !stack)
-        return stack;
-    rt_stack_set_owns_elements(stack, 1);
-
-    int64_t len = rt_seq_len(seq);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_seq_get(seq, i);
-        rt_stack_push(stack, elem);
-    }
-    return stack;
+    if (!seq)
+        return new_stack_result(0);
+    int64_t len = 0;
+    if (!seq_view(seq, &len))
+        return NULL;
+    return convert_indexed(
+        seq, len, seq_at, new_stack_result, append_stack, "Seq.ToStack: conversion failed");
 }
 
 /// @brief Seq to queue.
 /// @param seq Source Seq, or NULL.
 /// @return A new owning Queue whose front is element zero.
 void *rt_seq_to_queue(void *seq) {
-    void *queue = rt_queue_new();
-    if (!seq || !queue)
-        return queue;
-    rt_queue_set_owns_elements(queue, 1);
-
-    int64_t len = rt_seq_len(seq);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_seq_get(seq, i);
-        rt_queue_push(queue, elem);
-    }
-    return queue;
+    if (!seq)
+        return new_queue_result(0);
+    int64_t len = 0;
+    if (!seq_view(seq, &len))
+        return NULL;
+    return convert_indexed(
+        seq, len, seq_at, new_queue_result, append_queue, "Seq.ToQueue: conversion failed");
 }
 
 /// @brief Seq to deque.
 /// @param seq Source Seq, or NULL.
 /// @return A new Deque containing elements from front to back in Seq order.
 void *rt_seq_to_deque(void *seq) {
-    void *deque = rt_deque_new();
-    if (!seq || !deque)
-        return deque;
-
-    int64_t len = rt_seq_len(seq);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_seq_get(seq, i);
-        rt_deque_push_back(deque, elem);
-    }
-    return deque;
+    if (!seq)
+        return new_deque_result(0);
+    int64_t len = 0;
+    if (!seq_view(seq, &len))
+        return NULL;
+    return convert_indexed(
+        seq, len, seq_at, new_deque_result, append_deque, "Seq.ToDeque: conversion failed");
 }
 
 /// @brief Seq to bag.
@@ -173,17 +514,63 @@ void *rt_seq_to_deque(void *seq) {
 /// @return A new Bag containing unique copied string values.
 /// @note Non-string elements trap through `rt_seq_get_str()`.
 void *rt_seq_to_bag(void *seq) {
-    void *bag = rt_bag_new();
-    if (!seq || !bag)
-        return bag;
+    if (!seq)
+        return rt_bag_new();
+    int64_t len = 0;
+    if (!seq_view(seq, &len))
+        return NULL;
 
-    int64_t len = rt_seq_len(seq);
-    for (int64_t i = 0; i < len; i++) {
-        rt_string elem = rt_seq_get_str(seq, i);
-        rt_bag_add(bag, elem);
-        rt_str_release_maybe(elem);
+    void *volatile bag = NULL;
+    rt_string volatile retained = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        save_conversion_trap(saved_error, sizeof(saved_error), "Seq.ToBag: conversion failed");
+        rt_trap_clear_recovery();
+        rt_str_release_maybe((rt_string)retained);
+        release_temp_obj((void *)bag);
+        rt_trap(saved_error);
+        return NULL;
     }
-    return bag;
+
+    bag = rt_bag_new();
+    if (!bag) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    for (int64_t index = 0; index < len; ++index) {
+        void *raw = seq_at(seq, index);
+        rt_string element = NULL;
+        if (rt_string_is_handle(raw)) {
+            element = (rt_string)raw;
+        } else if (rt_box_type(raw) == RT_BOX_STR) {
+            if (!rt_box_try_to_str(raw, &element))
+                goto returning_failure;
+            retained = element;
+        } else {
+            rt_trap("Seq.ToBag: element is not a string");
+            goto returning_failure;
+        }
+
+        if (!append_bag((void *)bag, element))
+            goto returning_failure;
+        rt_str_release_maybe((rt_string)retained);
+        retained = NULL;
+    }
+
+    rt_trap_clear_recovery();
+    return (void *)bag;
+
+returning_failure: {
+    char saved_error[256];
+    save_conversion_trap(saved_error, sizeof(saved_error), "Seq.ToBag: conversion failed");
+    rt_trap_clear_recovery();
+    rt_str_release_maybe((rt_string)retained);
+    release_temp_obj((void *)bag);
+    rt_trap(saved_error);
+    return NULL;
+}
 }
 
 //=============================================================================
@@ -194,70 +581,52 @@ void *rt_seq_to_bag(void *seq) {
 /// @param list Source List, or NULL.
 /// @return A new owning Seq containing List elements in index order.
 void *rt_list_to_seq(void *list) {
-    void *seq = new_owned_seq();
-    if (!list || !seq)
-        return seq;
-
-    int64_t len = rt_list_len(list);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_list_get(list, i);
-        rt_seq_push(seq, elem);
-        release_temp_obj(elem);
-    }
-    return seq;
+    if (!list)
+        return new_seq_result(0);
+    int64_t len = 0;
+    if (!list_view(list, &len))
+        return NULL;
+    return convert_indexed(
+        list, len, list_at, new_seq_result, append_seq, "List.ToSeq: conversion failed");
 }
 
 /// @brief List to set.
 /// @param list Source List, or NULL.
 /// @return A new Set containing the List's unique elements.
 void *rt_list_to_set(void *list) {
-    void *set = rt_set_new();
-    if (!list || !set)
-        return set;
-
-    int64_t len = rt_list_len(list);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_list_get(list, i);
-        rt_set_add(set, elem);
-        release_temp_obj(elem);
-    }
-    return set;
+    if (!list)
+        return new_set_result(0);
+    int64_t len = 0;
+    if (!list_view(list, &len))
+        return NULL;
+    return convert_indexed(
+        list, len, list_at, new_set_result, append_set, "List.ToSet: conversion failed");
 }
 
 /// @brief List to stack.
 /// @param list Source List, or NULL.
 /// @return A new owning Stack with the first List element at the bottom.
 void *rt_list_to_stack(void *list) {
-    void *stack = rt_stack_new();
-    if (!list || !stack)
-        return stack;
-    rt_stack_set_owns_elements(stack, 1);
-
-    int64_t len = rt_list_len(list);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_list_get(list, i);
-        rt_stack_push(stack, elem);
-        release_temp_obj(elem);
-    }
-    return stack;
+    if (!list)
+        return new_stack_result(0);
+    int64_t len = 0;
+    if (!list_view(list, &len))
+        return NULL;
+    return convert_indexed(
+        list, len, list_at, new_stack_result, append_stack, "List.ToStack: conversion failed");
 }
 
 /// @brief List to queue.
 /// @param list Source List, or NULL.
 /// @return A new owning Queue with the first List element at the front.
 void *rt_list_to_queue(void *list) {
-    void *queue = rt_queue_new();
-    if (!list || !queue)
-        return queue;
-    rt_queue_set_owns_elements(queue, 1);
-
-    int64_t len = rt_list_len(list);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_list_get(list, i);
-        rt_queue_push(queue, elem);
-        release_temp_obj(elem);
-    }
-    return queue;
+    if (!list)
+        return new_queue_result(0);
+    int64_t len = 0;
+    if (!list_view(list, &len))
+        return NULL;
+    return convert_indexed(
+        list, len, list_at, new_queue_result, append_queue, "List.ToQueue: conversion failed");
 }
 
 //=============================================================================
@@ -278,10 +647,26 @@ void *rt_set_to_seq(void *set) {
 /// @param set Source Set, or NULL.
 /// @return A new List in the Set's unspecified enumeration order.
 void *rt_set_to_list(void *set) {
-    void *seq = rt_set_to_seq(set);
-    void *list = rt_seq_to_list(seq);
-    if (rt_obj_release_check0(seq))
-        rt_obj_free(seq);
+    void *volatile seq = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        save_conversion_trap(saved_error, sizeof(saved_error), "Set.ToList: conversion failed");
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)seq);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
+    seq = rt_set_to_seq(set);
+    if (!seq) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    void *list = rt_seq_to_list((void *)seq);
+    rt_trap_clear_recovery();
+    release_temp_obj((void *)seq);
     return list;
 }
 
@@ -292,58 +677,28 @@ void *rt_set_to_list(void *set) {
 /// @brief Stack to seq.
 /// @param stack Source Stack, or NULL.
 /// @return A new owning Seq ordered from stack bottom to top.
-/// @note The source is cloned before traversal and is never popped directly.
+/// @note The validated source is borrowed and never mutated.
 void *rt_stack_to_seq(void *stack) {
-    void *seq = new_owned_seq();
-    if (!stack || !seq)
-        return seq;
-
-    int64_t len = rt_stack_len(stack);
-    if (len <= 0)
-        return seq;
-    if ((uint64_t)len > SIZE_MAX / sizeof(void *)) {
-        rt_trap("stack_to_seq: size overflow");
-        return seq;
-    }
-
-    void *clone = rt_stack_clone(stack);
-    if (!clone)
-        return seq;
-    int8_t pop_returns_owned_refs = rt_stack_owns_elements(clone);
-
-    // Pop a clone so conversion never mutates the source stack on traps.
-    void **temp = malloc(sizeof(void *) * (size_t)len);
-    if (!temp) {
-        release_temp_obj(clone);
-        return seq;
-    }
-
-    int64_t count = 0;
-    while (!rt_stack_is_empty(clone)) {
-        temp[count++] = rt_stack_pop(clone);
-    }
-
-    // Add to seq in reverse order (bottom to top)
-    for (int64_t i = count - 1; i >= 0; i--) {
-        rt_seq_push(seq, temp[i]);
-        if (pop_returns_owned_refs)
-            release_temp_obj(temp[i]);
-    }
-
-    free(temp);
-    release_temp_obj(clone);
-    return seq;
+    if (!stack)
+        return new_seq_result(0);
+    int64_t len = 0;
+    if (!stack_view(stack, &len))
+        return NULL;
+    return convert_indexed(
+        stack, len, stack_at, new_seq_result, append_seq, "Stack.ToSeq: conversion failed");
 }
 
 /// @brief Stack to list.
 /// @param stack Source Stack, or NULL.
 /// @return A new List ordered from stack bottom to top.
 void *rt_stack_to_list(void *stack) {
-    void *seq = rt_stack_to_seq(stack);
-    void *list = rt_seq_to_list(seq);
-    if (rt_obj_release_check0(seq))
-        rt_obj_free(seq);
-    return list;
+    if (!stack)
+        return new_list_result(0);
+    int64_t len = 0;
+    if (!stack_view(stack, &len))
+        return NULL;
+    return convert_indexed(
+        stack, len, stack_at, new_list_result, append_list, "Stack.ToList: conversion failed");
 }
 
 //=============================================================================
@@ -353,45 +708,28 @@ void *rt_stack_to_list(void *stack) {
 /// @brief Queue to seq.
 /// @param queue Source Queue, or NULL.
 /// @return A new owning Seq ordered from queue front to back.
-/// @note The source is cloned before traversal and is never popped directly.
+/// @note The validated source is borrowed and never mutated.
 void *rt_queue_to_seq(void *queue) {
-    void *seq = new_owned_seq();
-    if (!queue || !seq)
-        return seq;
-
-    int64_t len = rt_queue_len(queue);
-    if (len <= 0)
-        return seq;
-    if ((uint64_t)len > SIZE_MAX / sizeof(void *)) {
-        rt_trap("queue_to_seq: size overflow");
-        return seq;
-    }
-
-    void *clone = rt_queue_clone(queue);
-    if (!clone)
-        return seq;
-    int8_t pop_returns_owned_refs = rt_queue_owns_elements(clone);
-
-    while (!rt_queue_is_empty(clone)) {
-        void *elem = rt_queue_pop(clone);
-        rt_seq_push(seq, elem);
-        if (pop_returns_owned_refs)
-            release_temp_obj(elem);
-    }
-
-    release_temp_obj(clone);
-    return seq;
+    if (!queue)
+        return new_seq_result(0);
+    int64_t len = 0;
+    if (!queue_view(queue, &len))
+        return NULL;
+    return convert_indexed(
+        queue, len, queue_at, new_seq_result, append_seq, "Queue.ToSeq: conversion failed");
 }
 
 /// @brief Queue to list.
 /// @param queue Source Queue, or NULL.
 /// @return A new List ordered from queue front to back.
 void *rt_queue_to_list(void *queue) {
-    void *seq = rt_queue_to_seq(queue);
-    void *list = rt_seq_to_list(seq);
-    if (rt_obj_release_check0(seq))
-        rt_obj_free(seq);
-    return list;
+    if (!queue)
+        return new_list_result(0);
+    int64_t len = 0;
+    if (!queue_view(queue, &len))
+        return NULL;
+    return convert_indexed(
+        queue, len, queue_at, new_list_result, append_list, "Queue.ToList: conversion failed");
 }
 
 //=============================================================================
@@ -402,28 +740,26 @@ void *rt_queue_to_list(void *queue) {
 /// @param deque Source Deque, or NULL.
 /// @return A new owning Seq ordered from deque front to back.
 void *rt_deque_to_seq(void *deque) {
-    void *seq = new_owned_seq();
-    if (!deque || !seq)
-        return seq;
-
-    int64_t len = rt_deque_len(deque);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_deque_get(deque, i);
-        rt_seq_push(seq, elem);
-        release_temp_obj(elem);
-    }
-    return seq;
+    if (!deque)
+        return new_seq_result(0);
+    int64_t len = 0;
+    if (!deque_view(deque, &len))
+        return NULL;
+    return convert_indexed(
+        deque, len, deque_at, new_seq_result, append_seq, "Deque.ToSeq: conversion failed");
 }
 
 /// @brief Deque to list.
 /// @param deque Source Deque, or NULL.
 /// @return A new List ordered from deque front to back.
 void *rt_deque_to_list(void *deque) {
-    void *seq = rt_deque_to_seq(deque);
-    void *list = rt_seq_to_list(seq);
-    if (rt_obj_release_check0(seq))
-        rt_obj_free(seq);
-    return list;
+    if (!deque)
+        return new_list_result(0);
+    int64_t len = 0;
+    if (!deque_view(deque, &len))
+        return NULL;
+    return convert_indexed(
+        deque, len, deque_at, new_list_result, append_list, "Deque.ToList: conversion failed");
 }
 
 //=============================================================================
@@ -468,31 +804,67 @@ void *rt_bag_to_seq(void *bag) {
 /// @param bag Source Bag, or NULL.
 /// @return A new Set of boxed string values in unspecified Bag order.
 void *rt_bag_to_set(void *bag) {
-    void *set = rt_set_new();
-    if (!bag || !set)
-        return set;
+    if (!bag)
+        return rt_set_new();
 
-    // Get unique elements
-    void *items = rt_bag_items(bag);
-    if (!items)
-        return set;
-
-    int64_t len = rt_seq_len(items);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_seq_get(items, i); // borrowed from the snapshot Seq
-        // Bag items are raw runtime strings; box them so Set membership uses
-        // boxed-string value equality like every other Set entry (VDOC-102).
-        void *entry = elem;
-        if (rt_string_is_handle(elem))
-            entry = rt_box_str((rt_string)elem);
-        rt_set_add(set, entry); // Set retains its own reference
-        if (entry != elem && rt_obj_release_check0(entry))
-            rt_obj_free(entry);
+    void *volatile set = NULL;
+    void *volatile items = NULL;
+    void *volatile entry = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        save_conversion_trap(saved_error, sizeof(saved_error), "Bag.ToSet: conversion failed");
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)entry);
+        release_temp_obj((void *)items);
+        release_temp_obj((void *)set);
+        rt_trap(saved_error);
+        return NULL;
     }
-    // Release the intermediate Seq from rt_bag_items
-    if (rt_obj_release_check0(items))
-        rt_obj_free(items);
-    return set;
+
+    items = rt_bag_items(bag);
+    if (!items) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    int64_t len = 0;
+    if (!seq_view((void *)items, &len))
+        goto returning_failure;
+
+    set = rt_set_new();
+    if (!set) {
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)items);
+        return NULL;
+    }
+    for (int64_t index = 0; index < len; ++index) {
+        void *element = seq_at((void *)items, index);
+        if (!rt_string_is_handle(element)) {
+            rt_trap("Bag.ToSet: item snapshot contains a non-string");
+            goto returning_failure;
+        }
+        entry = rt_box_str((rt_string)element);
+        if (!entry || !append_set((void *)set, (void *)entry))
+            goto returning_failure;
+        release_temp_obj((void *)entry);
+        entry = NULL;
+    }
+
+    rt_trap_clear_recovery();
+    release_temp_obj((void *)items);
+    return (void *)set;
+
+returning_failure: {
+    char saved_error[256];
+    save_conversion_trap(saved_error, sizeof(saved_error), "Bag.ToSet: conversion failed");
+    rt_trap_clear_recovery();
+    release_temp_obj((void *)entry);
+    release_temp_obj((void *)items);
+    release_temp_obj((void *)set);
+    rt_trap(saved_error);
+    return NULL;
+}
 }
 
 //=============================================================================
@@ -503,16 +875,13 @@ void *rt_bag_to_set(void *bag) {
 /// @param ring Source Ring, or NULL.
 /// @return A new owning Seq in logical Ring index order.
 void *rt_ring_to_seq(void *ring) {
-    void *seq = new_owned_seq();
-    if (!ring || !seq)
-        return seq;
-
-    int64_t len = rt_ring_len(ring);
-    for (int64_t i = 0; i < len; i++) {
-        void *elem = rt_ring_get(ring, i);
-        rt_seq_push(seq, elem);
-    }
-    return seq;
+    if (!ring)
+        return new_seq_result(0);
+    int64_t len = 0;
+    if (!ring_view(ring, &len))
+        return NULL;
+    return convert_indexed(
+        ring, len, ring_at, new_seq_result, append_seq, "Ring.ToSeq: conversion failed");
 }
 
 //=============================================================================
@@ -523,21 +892,21 @@ void *rt_ring_to_seq(void *ring) {
 /// @param count Number of following object pointers; non-positive counts
 ///        produce an empty Seq.
 /// @param ... Exactly @p count element pointers.
-/// @return A new Seq containing arguments in call order.
+/// @return A new owning Seq containing arguments in call order.
 void *rt_seq_of(int64_t count, ...) {
-    void *seq = rt_seq_new();
-    if (!seq || count <= 0)
-        return seq;
+    if (count <= 0)
+        return new_seq_result(0);
 
     va_list args;
     va_start(args, count);
-    for (int64_t i = 0; i < count; i++) {
-        void *elem = va_arg(args, void *);
-        rt_seq_push(seq, elem);
-    }
+    void **elements = stage_variadic_pointers(count, &args);
     va_end(args);
-
-    return seq;
+    if (!elements) {
+        rt_trap("Seq.Of: argument table allocation failed");
+        return NULL;
+    }
+    return convert_native_pointers(
+        elements, count, new_seq_result, append_seq, "Seq.Of: construction failed");
 }
 
 /// @brief List of.
@@ -546,19 +915,19 @@ void *rt_seq_of(int64_t count, ...) {
 /// @param ... Exactly @p count element pointers.
 /// @return A new List containing arguments in call order.
 void *rt_list_of(int64_t count, ...) {
-    void *list = rt_list_new();
-    if (!list || count <= 0)
-        return list;
+    if (count <= 0)
+        return new_list_result(0);
 
     va_list args;
     va_start(args, count);
-    for (int64_t i = 0; i < count; i++) {
-        void *elem = va_arg(args, void *);
-        rt_list_push(list, elem);
-    }
+    void **elements = stage_variadic_pointers(count, &args);
     va_end(args);
-
-    return list;
+    if (!elements) {
+        rt_trap("List.Of: argument table allocation failed");
+        return NULL;
+    }
+    return convert_native_pointers(
+        elements, count, new_list_result, append_list, "List.Of: construction failed");
 }
 
 /// @brief Set of.
@@ -568,17 +937,17 @@ void *rt_list_of(int64_t count, ...) {
 /// @return A new Set populated in call order, with duplicates collapsed by Set
 ///         equality semantics.
 void *rt_set_of(int64_t count, ...) {
-    void *set = rt_set_new();
-    if (!set || count <= 0)
-        return set;
+    if (count <= 0)
+        return new_set_result(0);
 
     va_list args;
     va_start(args, count);
-    for (int64_t i = 0; i < count; i++) {
-        void *elem = va_arg(args, void *);
-        rt_set_add(set, elem);
-    }
+    void **elements = stage_variadic_pointers(count, &args);
     va_end(args);
-
-    return set;
+    if (!elements) {
+        rt_trap("Set.Of: argument table allocation failed");
+        return NULL;
+    }
+    return convert_native_pointers(
+        elements, count, new_set_result, append_set, "Set.Of: construction failed");
 }

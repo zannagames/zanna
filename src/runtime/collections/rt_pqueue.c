@@ -41,14 +41,26 @@
 
 #include "rt_pqueue.h"
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_option.h"
 #include "rt_seq.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/// @brief Install a non-local recovery target for the current thread.
+/// @param buf Jump buffer that receives control after a runtime trap.
+void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's active legacy recovery target.
+void rt_trap_clear_recovery(void);
+/// @brief Borrow the most recent runtime trap diagnostic.
+/// @return Null-terminated diagnostic text, or NULL when unavailable.
+const char *rt_trap_get_error(void);
 
 /// @brief Number of entries allocated for a new priority queue.
 #define HEAP_DEFAULT_CAP 16
@@ -109,6 +121,15 @@ static rt_pqueue_impl *as_pqueue(void *obj, const char *what) {
 static void heap_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
+}
+
+/// @brief Save an active trap diagnostic before clearing its recovery frame.
+/// @param buffer Destination for the bounded diagnostic copy.
+/// @param buffer_size Capacity of @p buffer including its terminator.
+/// @param fallback Message used when no active diagnostic is available.
+static void heap_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
 }
 
 /// @brief GC traversal: visit every value currently stored in the heap array.
@@ -348,7 +369,10 @@ void rt_pqueue_push(void *obj, int64_t priority, void *val) {
         }
     }
 
-    rt_obj_retain_maybe(val);
+    if (!rt_collection_retain_checked(val, "Heap.Push: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
     // Add at the end
     h->items[h->len].priority = priority;
     h->items[h->len].value = val;
@@ -425,7 +449,10 @@ void *rt_pqueue_peek(void *obj) {
     }
 
     void *val = h->items[0].value;
-    rt_obj_retain_maybe(val);
+    if (!rt_collection_retain_checked(val, "Heap.Peek: result retain failed")) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
     rt_gc_mutator_exit();
     return val;
 }
@@ -468,9 +495,8 @@ void *rt_pqueue_try_pop(void *obj) {
 
 /// @brief Remove the highest-priority item as an Option.
 /// @details Returns `None` when the heap is empty and `Some(value)` otherwise.
-///          Heap storage owns a retained reference to each pushed value; after
-///          wrapping the transferred value in an Option, this helper releases
-///          the temporary transfer so the Option owns the result.
+///          The Option is constructed before the heap is mutated, so a failed
+///          retain leaves the highest-priority item in place.
 /// @param obj Opaque Heap object pointer.
 /// @return New runtime-managed `Some(value)` when an item is removed,
 ///         otherwise `None`.
@@ -478,14 +504,32 @@ void *rt_pqueue_try_pop_option(void *obj) {
     if (!obj)
         return rt_option_none();
 
+    rt_gc_mutator_enter();
     rt_pqueue_impl *h = as_pqueue(obj, "Heap: invalid Heap object");
-    if (!h || h->len == 0)
+    if (!h) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
+    if (h->len == 0) {
+        rt_gc_mutator_exit();
         return rt_option_none();
+    }
 
-    void *value = rt_pqueue_try_pop(obj);
+    void *value = h->items[0].value;
     void *option = rt_option_some(value);
-    if (value && rt_obj_release_check0(value))
-        rt_obj_free(value);
+    if (!option) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
+
+    h->len--;
+    if (h->len > 0) {
+        h->items[0] = h->items[h->len];
+        heap_sink(h, 0);
+    }
+    h->items[h->len].value = NULL;
+    heap_release_value(value);
+    rt_gc_mutator_exit();
     return option;
 }
 
@@ -513,16 +557,18 @@ void *rt_pqueue_try_peek(void *obj) {
     }
 
     void *val = h->items[0].value;
-    rt_obj_retain_maybe(val);
+    if (!rt_collection_retain_checked(val, "Heap.TryPeek: result retain failed")) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
     rt_gc_mutator_exit();
     return val;
 }
 
 /// @brief Return the highest-priority item as an Option without removing it.
 /// @details Returns `None` when the heap is empty and `Some(value)` otherwise.
-///          The underlying peek helper returns a retained reference; this
-///          wrapper releases that temporary transfer after the Option has
-///          retained the value.
+///          The Option directly retains the stored value, avoiding an extra
+///          temporary retain/release pair.
 /// @param obj Opaque Heap object pointer.
 /// @return New runtime-managed `Some(value)` when an item exists, otherwise
 ///         `None`.
@@ -531,14 +577,12 @@ void *rt_pqueue_try_peek_option(void *obj) {
         return rt_option_none();
 
     rt_pqueue_impl *h = as_pqueue(obj, "Heap: invalid Heap object");
-    if (!h || h->len == 0)
+    if (!h)
+        return NULL;
+    if (h->len == 0)
         return rt_option_none();
 
-    void *value = rt_pqueue_try_peek(obj);
-    void *option = rt_option_some(value);
-    if (value && rt_obj_release_check0(value))
-        rt_obj_free(value);
-    return option;
+    return rt_option_some(h->items[0].value);
 }
 
 /// @brief Reset the queue to empty (length 0). Capacity is preserved.
@@ -585,33 +629,54 @@ void *rt_pqueue_to_seq(void *obj) {
     if (!h)
         return NULL;
 
-    // Create a new Seq
-    void *seq = rt_seq_new();
-    if (!seq)
+    void *volatile seq = NULL;
+    rt_pqueue_impl *volatile copy = NULL;
+    void *volatile transferred = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        heap_save_trap(saved_error, sizeof(saved_error), "Heap.ToSeq: snapshot failed");
+        rt_trap_clear_recovery();
+        heap_release_value((void *)transferred);
+        heap_release_value((void *)copy);
+        heap_release_value((void *)seq);
+        rt_trap(saved_error);
         return NULL;
-    rt_seq_set_owns_elements(seq, 1);
+    }
 
-    // Pop all elements in priority order and add to Seq
-    // We need to work on a copy to avoid destroying the original
-    rt_pqueue_impl *copy = (rt_pqueue_impl *)rt_pqueue_new_max(h->is_max);
-    if (!copy)
-        return seq;
+    seq = rt_seq_with_capacity_owned(h->len > 0 ? h->len : 1);
+    if (!seq) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+
+    // Pop all elements in priority order and add to Seq. Work on a retained
+    // copy so the original heap remains unchanged.
+    copy = (rt_pqueue_impl *)rt_pqueue_new_max(h->is_max);
+    if (!copy) {
+        rt_trap_clear_recovery();
+        heap_release_value((void *)seq);
+        return NULL;
+    }
 
     // Copy all entries
     for (int64_t i = 0; i < h->len; i++) {
-        rt_pqueue_push(copy, h->items[i].priority, h->items[i].value);
+        rt_pqueue_push((void *)copy, h->items[i].priority, h->items[i].value);
     }
 
     // Pop from copy in priority order
     while (copy->len > 0) {
-        void *val = rt_pqueue_pop(copy);
-        rt_seq_push(seq, val);
-        heap_release_value(val);
+        transferred = rt_pqueue_pop((void *)copy);
+        // The pop already moved the copy's owned reference to this frame.
+        // Move it again into the owning Seq without an avoidable retain/release
+        // pair (which would also reject a saturated but otherwise valid ref).
+        rt_seq_push_raw((void *)seq, (void *)transferred);
+        transferred = NULL;
     }
 
-    // Release the copy
-    if (rt_obj_release_check0(copy))
-        rt_obj_free(copy);
-
-    return seq;
+    heap_release_value((void *)copy);
+    copy = NULL;
+    rt_trap_clear_recovery();
+    return (void *)seq;
 }

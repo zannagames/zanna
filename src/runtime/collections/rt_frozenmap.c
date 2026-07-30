@@ -54,7 +54,7 @@
 #include "rt_hash_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
-#include "rt_seq.h"
+#include "rt_seq_internal.h"
 #include "rt_string.h"
 
 #include <stdlib.h>
@@ -74,22 +74,31 @@ const char *rt_trap_get_error(void);
 
 // --- Helper: extract string from seq element (may be boxed) ---
 
-/// @brief Coerce a seq element to an rt_string, unboxing if necessary.
+/// @brief Validate and coerce a Seq element to an rt_string.
 /// @param elem Raw runtime string handle or boxed string value.
-/// @param owned Set to 1 if the result is a fresh unboxed string the caller
-///              must release; 0 if @p elem was already a borrowed handle.
-/// @return Extracted runtime string, or NULL when @p elem is NULL.
-static rt_string fm_extract_str(void *elem, int *owned) {
-    if (owned)
-        *owned = 0;
+/// @param out Receives the extracted string or NULL for a null element/string.
+/// @param owned Set to 1 if @p out owns an unboxed retain the caller must
+///              release; otherwise zero.
+/// @return One for a valid raw/boxed/null representation; zero after trapping.
+static int fm_extract_str(void *elem, rt_string *out, int *owned) {
+    *out = NULL;
+    *owned = 0;
     if (!elem)
-        return NULL;
-    if (rt_string_is_handle(elem))
-        return (rt_string)elem;
-    // Not a raw string -- assume boxed value and unbox.
-    if (owned)
-        *owned = 1;
-    return rt_unbox_str(elem);
+        return 1;
+    if (rt_string_is_handle(elem)) {
+        *out = (rt_string)elem;
+        return 1;
+    }
+    if (rt_box_type(elem) != RT_BOX_STR) {
+        rt_trap("FrozenMap: key element is not a string");
+        return 0;
+    }
+    if (!rt_box_try_to_str(elem, out)) {
+        rt_trap("FrozenMap: invalid boxed string key");
+        return 0;
+    }
+    *owned = *out ? 1 : 0;
+    return 1;
 }
 
 // --- Hash table entry (open addressing) ---
@@ -424,6 +433,14 @@ static fm_slot *fm_find(rt_frozenmap_impl *fm, rt_string key) {
 void *rt_frozenmap_from_seqs(void *keys, void *values) {
     if (!keys || !values)
         return (void *)fm_alloc(0);
+    if (!rt_seq_internal_is_valid(keys)) {
+        rt_trap("FrozenMap: invalid keys Seq");
+        return NULL;
+    }
+    if (!rt_seq_internal_is_valid(values)) {
+        rt_trap("FrozenMap: invalid values Seq");
+        return NULL;
+    }
 
     int64_t nk = rt_seq_len(keys);
     int64_t nv = rt_seq_len(values);
@@ -433,18 +450,45 @@ void *rt_frozenmap_from_seqs(void *keys, void *values) {
     if (!fm)
         return NULL;
 
+    volatile rt_string pending_key = NULL;
+    volatile int pending_key_owned = 0;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        fm_save_trap_error(
+            saved_error, sizeof(saved_error), "FrozenMap: element extraction failed");
+        rt_trap_clear_recovery();
+        if (pending_key_owned)
+            rt_str_release_maybe((rt_string)pending_key);
+        fm_release_value(fm);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
     for (int64_t i = 0; i < n; i++) {
         int owned_key = 0;
-        rt_string k = fm_extract_str(rt_seq_get(keys, i), &owned_key);
+        rt_string k = NULL;
+        if (!fm_extract_str(rt_seq_get(keys, i), &k, &owned_key)) {
+            rt_trap_clear_recovery();
+            fm_release_value(fm);
+            return NULL;
+        }
+        pending_key = k;
+        pending_key_owned = owned_key;
         void *v = rt_seq_get(values, i);
         int inserted = k ? fm_insert(fm, k, v) : 0;
         if (owned_key)
             rt_str_release_maybe(k);
+        pending_key = NULL;
+        pending_key_owned = 0;
         if (inserted < 0) {
+            rt_trap_clear_recovery();
             fm_release_value(fm);
             return NULL;
         }
     }
+    rt_trap_clear_recovery();
     return (void *)fm;
 }
 

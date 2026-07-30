@@ -42,13 +42,26 @@
 #include "rt_collection_ids.h"
 
 #include "rt_box.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_option.h"
+#include "rt_stack_internal.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/// @brief Install a non-local recovery target for the current thread.
+/// @param buf Jump buffer that receives control after a runtime trap.
+void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's active legacy recovery target.
+void rt_trap_clear_recovery(void);
+/// @brief Borrow the most recent runtime trap diagnostic.
+/// @return Null-terminated diagnostic text, or NULL when unavailable.
+const char *rt_trap_get_error(void);
 
 /// @brief Pointer slots reserved by a newly constructed Stack.
 #define STACK_DEFAULT_CAP 16
@@ -79,14 +92,6 @@
 ///         ^
 ///         | top = items[len-1] = C
 /// ```
-typedef struct rt_stack_impl {
-    int64_t len;  ///< Number of elements currently on the stack
-    int64_t cap;  ///< Current capacity (allocated slots)
-    void **items; ///< Array of element pointers
-    /// @brief Whether live slots retain, release, and participate in GC traversal.
-    int8_t owns_elements;
-} rt_stack_impl;
-
 /// @brief Checked cast of an opaque handle to the Stack implementation;
 ///        traps with @p what if @p obj is NULL or not a Stack.
 /// @param obj Opaque runtime handle to validate.
@@ -105,6 +110,15 @@ static rt_stack_impl *as_stack(void *obj, const char *what) {
 static void stack_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
+}
+
+/// @brief Save an active trap diagnostic before clearing its recovery frame.
+/// @param buffer Destination for the bounded diagnostic copy.
+/// @param buffer_size Capacity of @p buffer including its terminator.
+/// @param fallback Message used when no active diagnostic is available.
+static void stack_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
 }
 
 /// @brief Finalizer callback invoked when a Stack is garbage collected.
@@ -388,8 +402,11 @@ void rt_stack_push(void *obj, void *elem) {
         rt_gc_mutator_exit();
         return;
     }
-    if (stack->owns_elements)
-        rt_obj_retain_maybe(elem);
+    if (stack->owns_elements &&
+        !rt_collection_retain_checked(elem, "Stack.Push: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
     stack->items[stack->len] = elem;
     stack->len++;
     rt_gc_mutator_exit();
@@ -445,13 +462,10 @@ void *rt_stack_pop(void *obj) {
     }
 
     void *value = stack->items[stack->len - 1];
-    if (stack->owns_elements)
-        rt_obj_retain_maybe(value);
     stack->len--;
     stack->items[stack->len] = NULL;
-    if (stack->owns_elements) {
-        stack_release_value(value);
-    }
+    // Owning stacks move the stored reference to the caller. Borrowing stacks
+    // continue to return their raw stored pointer.
     rt_gc_mutator_exit();
     return value;
 }
@@ -561,6 +575,8 @@ int8_t rt_stack_has(void *obj, void *elem) {
         return 0;
 
     rt_stack_impl *stack = as_stack(obj, "Stack: invalid Stack object");
+    if (!stack)
+        return 0;
     for (int64_t i = 0; i < stack->len; i++) {
         if (rt_box_equal(stack->items[i], elem))
             return 1;
@@ -585,37 +601,48 @@ void *rt_stack_try_pop(void *obj) {
     }
 
     void *value = stack->items[stack->len - 1];
-    if (stack->owns_elements)
-        rt_obj_retain_maybe(value);
     stack->len--;
     stack->items[stack->len] = NULL;
-    if (stack->owns_elements) {
-        stack_release_value(value);
-    }
+    // Transfer the owning stack's stored reference; borrowing mode remains a
+    // raw-pointer removal.
     rt_gc_mutator_exit();
     return value;
 }
 
 /// @brief Pop the top element as an Option, preserving NULL as a present value.
 /// @details Returns `None` only when the stack is empty. If the top element is a
-///          literal NULL pointer, this returns `Some(NULL)`. For owning stacks,
-///          the retained transfer returned by @ref rt_stack_try_pop is released
-///          after the Option has retained the value.
+///          literal NULL pointer, this returns `Some(NULL)`. The Option is
+///          constructed before the stack is mutated, so a failed retain leaves
+///          the top element in place.
 /// @param obj Stack handle, or `NULL`.
 /// @return New runtime-managed `Some(value)` when removed, otherwise `None`.
 void *rt_stack_try_pop_option(void *obj) {
     if (!obj)
         return rt_option_none();
 
+    rt_gc_mutator_enter();
     rt_stack_impl *stack = as_stack(obj, "Stack: invalid Stack object");
-    if (!stack || stack->len == 0)
+    if (!stack) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
+    if (stack->len == 0) {
+        rt_gc_mutator_exit();
         return rt_option_none();
+    }
 
-    int8_t owns_elements = stack->owns_elements;
-    void *value = rt_stack_try_pop(obj);
+    void *value = stack->items[stack->len - 1];
     void *option = rt_option_some(value);
-    if (owns_elements && value && rt_obj_release_check0(value))
-        rt_obj_free(value);
+    if (!option) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
+
+    stack->len--;
+    stack->items[stack->len] = NULL;
+    if (stack->owns_elements)
+        stack_release_value(value);
+    rt_gc_mutator_exit();
     return option;
 }
 
@@ -629,15 +656,35 @@ void *rt_stack_try_pop_option(void *obj) {
 /// @param obj Source Stack handle, or `NULL`.
 /// @return New runtime-managed clone, or an empty borrowing Stack for `NULL`.
 void *rt_stack_clone(void *obj) {
-    void *result = rt_stack_new();
     if (!obj)
-        return result;
+        return rt_stack_new();
 
     rt_stack_impl *stack = as_stack(obj, "Stack: invalid Stack object");
-    if (stack->owns_elements)
-        rt_stack_set_owns_elements(result, 1);
-    for (int64_t i = 0; i < stack->len; i++) {
-        rt_stack_push(result, stack->items[i]);
+    if (!stack)
+        return NULL;
+
+    void *volatile result = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        stack_save_trap(saved_error, sizeof(saved_error), "Stack.Clone: copy failed");
+        rt_trap_clear_recovery();
+        stack_release_value((void *)result);
+        rt_trap(saved_error);
+        return NULL;
     }
-    return result;
+
+    result = rt_stack_new();
+    if (!result) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    if (stack->owns_elements)
+        rt_stack_set_owns_elements((void *)result, 1);
+    for (int64_t i = 0; i < stack->len; i++) {
+        rt_stack_push((void *)result, stack->items[i]);
+    }
+    rt_trap_clear_recovery();
+    return (void *)result;
 }

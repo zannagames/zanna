@@ -5,15 +5,24 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/runtime/RTLocaleManagerTests.cpp
+// File: src/tests/runtime/RTLocaleManagerTests.cpp
 // Purpose: Validate Zanna.Localization.LocaleManager bootstrap, current/system
 //          queries, registry surface, JSON loading, search-path resolution,
 //          and unload/reset behavior.
+// Key invariants:
+//   - Loaded locale data remains alive while any Locale or formatter retains it.
+//   - Refcount overflow and schema/path failures do not publish corrupt state.
+// Ownership/Lifetime:
+//   - Tests release runtime handles and strings they acquire.
+//   - Temporary JSON files live only under the process-specific test directory.
+// Links: src/runtime/localization/rt_locale_manager.c,
+//        src/runtime/localization/rt_locale_manager.h
 //
 //===----------------------------------------------------------------------===//
 
 #include "rt_list.h"
 #include "rt_locale.h"
+#include "rt_locale_data.h"
 #include "rt_locale_manager.h"
 #include "rt_object.h"
 #include "rt_string.h"
@@ -26,6 +35,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 #include <setjmp.h>
 #include <string>
 
@@ -43,10 +53,16 @@
 
 static jmp_buf g_trap_env;
 static int g_expect_trap = 0;
+static int g_return_trap = 0;
+static int g_return_trap_count = 0;
 
 extern "C" void vm_trap(const char *msg) {
     if (g_expect_trap)
         longjmp(g_trap_env, 1);
+    if (g_return_trap) {
+        g_return_trap_count++;
+        return;
+    }
     fprintf(stderr, "unexpected trap: %s\n", msg ? msg : "(null)");
     abort();
 }
@@ -380,12 +396,13 @@ static void test_load_from_json_rejects_malformed_digit_utf8() {
 
     // A valid multibyte digit set still loads (Arabic-Indic digits).
     std::string file2 = dir + "/arabic.json";
-    write_text_file(file2,
-                    "{\n  \"tag\": \"zx\",\n  \"numbers\": {\n"
-                    "    \"decimal_sep\": \".\",\n    \"group_sep\": \",\",\n"
-                    "    \"group_size\": 3,\n"
-                    "    \"digits\": \"\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669\"\n"
-                    "  }\n}\n");
+    write_text_file(
+        file2,
+        "{\n  \"tag\": \"zx\",\n  \"numbers\": {\n"
+        "    \"decimal_sep\": \".\",\n    \"group_sep\": \",\",\n"
+        "    \"group_size\": 3,\n"
+        "    \"digits\": \"\u0660\u0661\u0662\u0663\u0664\u0665\u0666\u0667\u0668\u0669\"\n"
+        "  }\n}\n");
     rt_string path2 = S(file2.c_str());
     test_result("TryLoadFromJson accepts valid multibyte digits",
                 rt_locale_manager_try_load_from_json(path2) == 1);
@@ -457,8 +474,7 @@ static void test_load_time_schema_validation() {
       "list_format": { "and": { "pair": "{0} and" } }
     })json");
     rt_string p5 = S(f5.c_str());
-    test_result("rejects list template without {1}",
-                rt_locale_manager_try_load_from_json(p5) == 0);
+    test_result("rejects list template without {1}", rt_locale_manager_try_load_from_json(p5) == 0);
     rt_string_unref(p5);
 }
 
@@ -641,6 +657,32 @@ static void test_loaded_locale_handle_blocks_unload_and_replace() {
     rt_string_unref(path);
 }
 
+static void test_locale_data_refcount_overflow_is_nonwrapping() {
+    printf("Testing locale-data refcount saturation:\n");
+
+    rt_locale_data_t data{};
+    data.arena = reinterpret_cast<void *>(static_cast<uintptr_t>(1));
+    data.formatter_refs = std::numeric_limits<int64_t>::max();
+
+    g_return_trap = 1;
+    g_return_trap_count = 0;
+    rt_locale_manager_retain_data(&data);
+    g_return_trap = 0;
+
+    test_result("Retain at INT64_MAX traps once", g_return_trap_count == 1);
+    test_result("Retain at INT64_MAX leaves the counter pinned",
+                data.formatter_refs == std::numeric_limits<int64_t>::max());
+
+    g_return_trap = 1;
+    g_return_trap_count = 0;
+    rt_locale_manager_release_data(&data);
+    g_return_trap = 0;
+
+    test_result("Release of a saturated counter traps once", g_return_trap_count == 1);
+    test_result("Release leaves a saturated counter pinned",
+                data.formatter_refs == std::numeric_limits<int64_t>::max());
+}
+
 //=============================================================================
 // Main
 //=============================================================================
@@ -667,6 +709,7 @@ int main() {
     test_load_high_level();
     test_unload_current_refused();
     test_loaded_locale_handle_blocks_unload_and_replace();
+    test_locale_data_refcount_overflow_is_nonwrapping();
     printf("\nAll LocaleManager tests passed!\n");
     return 0;
 }

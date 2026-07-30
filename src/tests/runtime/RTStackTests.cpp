@@ -289,31 +289,39 @@ static void test_owns_elements_pop_transfers_reference() {
     release_obj(stack);
 }
 
-static void test_owns_elements_pop_retain_overflow_keeps_stack_unchanged() {
+static void test_owns_elements_pops_transfer_saturated_references() {
     void *stack = rt_stack_new();
-    void *value = new_obj();
+    void *bottom = new_obj();
+    void *top = new_obj();
 
     g_finalizer_calls = 0;
-    rt_obj_set_finalizer(value, count_finalizer);
+    rt_obj_set_finalizer(bottom, count_finalizer);
+    rt_obj_set_finalizer(top, count_finalizer);
 
     rt_stack_set_owns_elements(stack, 1);
-    rt_stack_push(stack, value);
-    release_obj(value); // Stack now owns the only reference.
+    rt_stack_push(stack, bottom);
+    rt_stack_push(stack, top);
+    release_obj(bottom);
+    release_obj(top); // Stack now owns the only references.
 
-    rt_heap_hdr_t *hdr = rt_heap_hdr(value);
-    hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+    rt_heap_hdr_t *bottom_hdr = rt_heap_hdr(bottom);
+    rt_heap_hdr_t *top_hdr = rt_heap_hdr(top);
+    bottom_hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+    top_hdr->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
 
-    EXPECT_TRAP(rt_stack_pop(stack));
+    void *popped = rt_stack_pop(stack);
+    assert(popped == top);
     assert(rt_stack_len(stack) == 1);
-    assert(rt_stack_peek(stack) == value);
 
-    EXPECT_TRAP(rt_stack_try_pop(stack));
-    assert(rt_stack_len(stack) == 1);
-    assert(rt_stack_peek(stack) == value);
+    void *tried = rt_stack_try_pop(stack);
+    assert(tried == bottom);
+    assert(rt_stack_len(stack) == 0);
 
-    hdr->refcnt = 1;
-    rt_stack_clear(stack);
-    assert(g_finalizer_calls == 1);
+    bottom_hdr->refcnt = 1;
+    top_hdr->refcnt = 1;
+    release_obj(popped);
+    release_obj(tried);
+    assert(g_finalizer_calls == 2);
     release_obj(stack);
 }
 
@@ -363,7 +371,7 @@ int main() {
     test_interleaved_operations();
     test_owns_elements_mode_releases_on_clear();
     test_owns_elements_pop_transfers_reference();
-    test_owns_elements_pop_retain_overflow_keeps_stack_unchanged();
+    test_owns_elements_pops_transfer_saturated_references();
     test_owns_elements_clone_retains_values();
     test_owns_elements_mode_change_non_empty_traps();
 

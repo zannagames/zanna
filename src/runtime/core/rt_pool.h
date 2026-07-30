@@ -13,7 +13,7 @@
 //   - Size classes cover requests 0-64, 65-128, 129-256, and 257-512 bytes;
 //     a zero request is normalized to one byte.
 //   - Pooled class capacity is fully zeroed before reuse. Allocations larger
-//     than 512 bytes fall back to malloc/free and are not initialized.
+//     than 512 bytes use header-wrapped malloc/free storage and are not initialized.
 //   - Freelist management is synchronized; multiple threads may allocate concurrently.
 //   - Private per-block metadata routes frees in O(1) and detects duplicate release.
 //   - Freed blocks stay in the freelist until shutdown reclaims a quiescent class.
@@ -22,8 +22,8 @@
 //
 // Ownership/Lifetime:
 //   - Callers receive a pointer to the allocated block; no header is exposed.
-//   - rt_pool_free requires the original requested size. Small blocks carry a
-//     private aligned header that validates and identifies their owning slab.
+//   - rt_pool_free requires the exact original requested size. Every block
+//     carries a private aligned header that records its provenance and request.
 //   - The pool is process-global and supports an explicit shutdown path.
 //   - Shutdown preserves slabs with live blocks and never frees system-fallback
 //     allocations on a caller's behalf.
@@ -62,8 +62,8 @@ typedef enum {
 /// @details Allocates from the appropriate size class pool. Falls back to
 ///          `malloc` for sizes above @ref RT_POOL_MAX_SIZE. A zero request is
 ///          normalized to one byte. Pooled storage is maximally aligned and
-///          zeroed across its full class capacity; fallback storage is
-///          uninitialized.
+///          zeroed across its full class capacity; header-wrapped fallback
+///          storage is maximally aligned and uninitialized.
 /// @param size Number of caller-visible bytes requested.
 /// @return Pointer to suitable storage, or `NULL` on allocation failure.
 void *rt_pool_alloc(size_t size);
@@ -71,11 +71,12 @@ void *rt_pool_alloc(size_t size);
 /// @brief Free memory back to the pool.
 /// @details Waits for concurrent shutdown coordination, then returns the block
 ///          to its owning size-class freelist in O(1) through private metadata.
-///          A duplicate small-block release traps without modifying the
-///          freelist or statistics. For large allocations, delegates to free().
-///          Null pointers are ignored. The validated private owner controls
-///          routing among small classes, but a size on the wrong side of the
-///          pooled/system boundary violates the API contract.
+///          A duplicate slab-block release traps without modifying the
+///          freelist or statistics. Large allocations carry the same private
+///          provenance header and free their complete system block. Null
+///          pointers are ignored. Any supplied size mismatch traps without
+///          releasing the allocation, including disagreement across the
+///          pooled/system boundary.
 /// @param ptr Pointer previously returned by @ref rt_pool_alloc.
 /// @param size Exact original allocation request.
 void rt_pool_free(void *ptr, size_t size);

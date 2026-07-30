@@ -393,6 +393,59 @@ static void test_count() {
     printf("  test_count: PASSED\n");
 }
 
+/// @brief Exercise count invariants across a larger mixed mutation set.
+/// @details Replacements must not change cardinality, successful removals must
+///          decrement it exactly once, failed removals must leave it unchanged,
+///          and Clear must reset it without depending on list traversal order.
+static void test_count_tracks_bulk_mutations() {
+    void *sd = rt_savedata_new(S("test-count-bulk"));
+    assert(sd != nullptr);
+
+    constexpr int kEntryCount = 2048;
+    char key_bytes[32];
+    for (int i = 0; i < kEntryCount; ++i) {
+        int written = snprintf(key_bytes, sizeof(key_bytes), "key-%04d", i);
+        assert(written > 0 && static_cast<size_t>(written) < sizeof(key_bytes));
+        rt_string key = rt_string_from_bytes(key_bytes, static_cast<size_t>(written));
+        assert(key != nullptr);
+        rt_savedata_set_int(sd, key, i);
+        rt_string_unref(key);
+    }
+    assert(rt_savedata_count(sd) == kEntryCount);
+
+    rt_string replacement = S("replacement");
+    assert(replacement != nullptr);
+    for (int i = 0; i < kEntryCount; i += 2) {
+        int written = snprintf(key_bytes, sizeof(key_bytes), "key-%04d", i);
+        assert(written > 0 && static_cast<size_t>(written) < sizeof(key_bytes));
+        rt_string key = rt_string_from_bytes(key_bytes, static_cast<size_t>(written));
+        assert(key != nullptr);
+        rt_savedata_set_string(sd, key, replacement);
+        rt_string_unref(key);
+    }
+    rt_string_unref(replacement);
+    assert(rt_savedata_count(sd) == kEntryCount);
+
+    int64_t expected = kEntryCount;
+    for (int i = 0; i < kEntryCount; i += 3) {
+        int written = snprintf(key_bytes, sizeof(key_bytes), "key-%04d", i);
+        assert(written > 0 && static_cast<size_t>(written) < sizeof(key_bytes));
+        rt_string key = rt_string_from_bytes(key_bytes, static_cast<size_t>(written));
+        assert(key != nullptr);
+        assert(rt_savedata_remove(sd, key) == 1);
+        assert(rt_savedata_remove(sd, key) == 0);
+        rt_string_unref(key);
+        --expected;
+    }
+    assert(rt_savedata_count(sd) == expected);
+
+    rt_savedata_clear(sd);
+    assert(rt_savedata_count(sd) == 0);
+    release_obj(sd);
+
+    printf("  test_count_tracks_bulk_mutations: PASSED\n");
+}
+
 // ============================================================================
 // Path Computation
 // ============================================================================
@@ -774,6 +827,7 @@ int main() {
     test_remove();
     test_clear();
     test_count();
+    test_count_tracks_bulk_mutations();
 
     printf("\n--- Path ---\n");
     test_path_contains_game_name();

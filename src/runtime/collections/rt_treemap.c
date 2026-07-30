@@ -47,6 +47,7 @@
 #include "rt_treemap.h"
 
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_heap.h"
 #include "rt_internal.h"
@@ -103,6 +104,7 @@ typedef struct {
     treemap_entry *entries; ///< Sorted array of entries (NULL if capacity == 0).
     size_t capacity;        ///< Allocated size of entries array.
     size_t count;           ///< Number of entries currently stored.
+    int8_t finalizing;      ///< Nonzero while owner teardown rejects reentrant mutation.
 } treemap_impl;
 
 /// @brief Checked cast of an opaque handle to the TreeMap implementation;
@@ -263,9 +265,58 @@ static int ensure_capacity(treemap_impl *tm) {
 /// @note The entry itself is not cleared; callers must overwrite or zero it
 ///       before treating the slot as reusable.
 static void free_entry_contents(treemap_entry *e) {
-    free(e->key);
-    if (e->value && rt_obj_release_check0(e->value))
-        rt_obj_free(e->value);
+    if (!e)
+        return;
+    char *key = e->key;
+    void *value = e->value;
+    e->key = NULL;
+    e->keylen = 0;
+    e->value = NULL;
+    free(key);
+    if (value && rt_obj_release_check0(value))
+        rt_obj_free(value);
+}
+
+static void treemap_save_trap_error(char *buffer, size_t buffer_size, const char *fallback);
+
+/// @brief Destroy the active portion of a detached sorted-entry array.
+/// @details Native slot ownership is cleared before each callback-capable
+///          release. A non-local value-finalizer trap is recorded, cleanup
+///          resumes at the next slot, and the first diagnostic is returned
+///          after all entries have been consumed.
+/// @param entries Detached array, or NULL.
+/// @param count Number of initialized entries to consume.
+/// @param error Buffer receiving the first trapped diagnostic.
+/// @param error_size Capacity of @p error including its terminator.
+/// @return Nonzero when at least one value cleanup trapped.
+static int treemap_destroy_entries(treemap_entry *entries,
+                                   size_t count,
+                                   char *error,
+                                   size_t error_size) {
+    volatile size_t next_index = 0;
+    volatile int trapped = 0;
+    jmp_buf recovery;
+
+    rt_gc_mutator_enter();
+    rt_trap_set_recovery(&recovery);
+    for (;;) {
+        if (setjmp(recovery) != 0) {
+            // Trap dispatch unwinds managed mutation scopes before longjmp.
+            rt_gc_mutator_enter();
+            if (!trapped)
+                treemap_save_trap_error(
+                    error, error_size, "TreeMap: value finalizer cleanup failed");
+            trapped = 1;
+        }
+        if (!entries || next_index >= count)
+            break;
+        size_t index = (size_t)next_index;
+        next_index = index + 1;
+        free_entry_contents(&entries[index]);
+    }
+    rt_trap_clear_recovery();
+    rt_gc_mutator_exit();
+    return trapped ? 1 : 0;
 }
 
 /// @brief Releases one retained runtime object and frees it if its count reaches zero.
@@ -360,14 +411,26 @@ static void treemap_finalizer(void *obj) {
     treemap_impl *tm = as_treemap(obj, "TreeMap: invalid TreeMap object");
     if (!tm)
         return;
-    if (tm->entries) {
-        for (size_t i = 0; i < tm->count; i++)
-            free_entry_contents(&tm->entries[i]);
-        free(tm->entries);
-        tm->entries = NULL;
-    }
+    treemap_entry *entries = tm->entries;
+    size_t count = tm->count;
+    tm->finalizing = 1;
+    tm->entries = NULL;
     tm->count = 0;
     tm->capacity = 0;
+    char cleanup_error[256] = {0};
+    int cleanup_trapped =
+        treemap_destroy_entries(entries, count, cleanup_error, sizeof(cleanup_error));
+    free(entries);
+    // A contained value finalizer may resurrect the owner. Teardown blocks
+    // mutation while callbacks run, then leaves a resurrected object as a
+    // valid empty lazily allocated TreeMap with cleanup re-armed.
+    tm->finalizing = 0;
+    rt_heap_info_t info;
+    if (rt_heap_get_info(obj, &info) && info.refcnt != 0)
+        rt_obj_set_finalizer(tm, treemap_finalizer);
+
+    if (cleanup_trapped)
+        rt_trap(cleanup_error[0] ? cleanup_error : "TreeMap: value finalizer cleanup failed");
 }
 
 /// @brief GC traversal: visit every stored value in sorted-key order.
@@ -406,6 +469,7 @@ void *rt_treemap_new(void) {
     tm->entries = NULL;
     tm->capacity = 0;
     tm->count = 0;
+    tm->finalizing = 0;
 
     rt_obj_set_finalizer(tm, treemap_finalizer);
     rt_gc_track(tm, treemap_traverse);
@@ -479,6 +543,10 @@ void rt_treemap_set(void *obj, rt_string key, void *value) {
         rt_gc_mutator_exit();
         return;
     }
+    if (tm->finalizing) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     size_t keylen = 0;
     const char *keydata = NULL;
@@ -494,12 +562,16 @@ void rt_treemap_set(void *obj, rt_string key, void *value) {
         // Update existing entry
         treemap_entry *e = &tm->entries[idx];
         // Retain new value
-        rt_obj_retain_maybe(value);
+        if (!rt_collection_retain_checked(value, "TreeMap.Set: value retain failed")) {
+            rt_gc_mutator_exit();
+            return;
+        }
         // Release old value after retaining in case the pointer is unchanged.
         void *old_value = e->value;
         e->value = value;
-        if (old_value && rt_obj_release_check0(old_value))
-            rt_obj_free(old_value);
+        rt_gc_mutator_exit();
+        treemap_release_object(old_value);
+        return;
     } else {
         // Insert new entry
         if (tm->count == SIZE_MAX) {
@@ -512,8 +584,10 @@ void rt_treemap_set(void *obj, rt_string key, void *value) {
             return;
         }
 
-        if (value)
-            rt_obj_retain_maybe(value);
+        if (!rt_collection_retain_checked(value, "TreeMap.Set: value retain failed")) {
+            rt_gc_mutator_exit();
+            return;
+        }
 
         if (keylen == SIZE_MAX) {
             if (value && rt_obj_release_check0(value))
@@ -662,8 +736,8 @@ int8_t rt_treemap_remove(void *obj, rt_string key) {
 
     tm->count--;
     memset(&tm->entries[tm->count], 0, sizeof(treemap_entry));
-    free_entry_contents(&removed);
     rt_gc_mutator_exit();
+    free_entry_contents(&removed);
     return 1;
 }
 
@@ -686,14 +760,38 @@ void rt_treemap_clear(void *obj) {
         rt_gc_mutator_exit();
         return;
     }
+    if (tm->finalizing) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
+    treemap_entry *entries = tm->entries;
+    size_t capacity = tm->capacity;
     size_t count = tm->count;
+    tm->entries = NULL;
+    tm->capacity = 0;
     tm->count = 0;
-    for (size_t i = 0; i < count; i++) {
-        free_entry_contents(&tm->entries[i]);
-        memset(&tm->entries[i], 0, sizeof(treemap_entry));
+    rt_gc_mutator_exit();
+
+    char cleanup_error[256] = {0};
+    int cleanup_trapped =
+        treemap_destroy_entries(entries, count, cleanup_error, sizeof(cleanup_error));
+
+    // Preserve ordinary Clear's capacity without exposing old slots during
+    // callbacks. If a value finalizer inserted replacement state, that state
+    // wins and the detached array is simply released.
+    rt_gc_mutator_enter();
+    tm = as_treemap(obj, "TreeMap: invalid TreeMap object");
+    if (tm && !tm->finalizing && !tm->entries && tm->capacity == 0 && tm->count == 0) {
+        tm->entries = entries;
+        tm->capacity = capacity;
+        entries = NULL;
     }
     rt_gc_mutator_exit();
+    free(entries);
+
+    if (cleanup_trapped)
+        rt_trap(cleanup_error[0] ? cleanup_error : "TreeMap.Clear: value finalizer cleanup failed");
 }
 
 /// @brief Returns all keys in the TreeMap as a Seq, in sorted order.
@@ -729,8 +827,10 @@ void *rt_treemap_keys(void *obj) {
     if (!obj)
         return seq;
     treemap_impl *tm = as_treemap(obj, "TreeMap: invalid TreeMap object");
-    if (!tm)
-        return seq;
+    if (!tm) {
+        treemap_release_object(seq);
+        return NULL;
+    }
 
     for (size_t i = 0; i < tm->count; i++) {
         if (!treemap_push_key_or_release_seq(seq, tm->entries[i].key, tm->entries[i].keylen))
@@ -763,8 +863,10 @@ void *rt_treemap_values(void *obj) {
     if (!obj)
         return seq;
     treemap_impl *tm = as_treemap(obj, "TreeMap: invalid TreeMap object");
-    if (!tm)
-        return seq;
+    if (!tm) {
+        treemap_release_object(seq);
+        return NULL;
+    }
 
     for (size_t i = 0; i < tm->count; i++) {
         if (!treemap_push_value_or_release_seq(seq, tm->entries[i].value))

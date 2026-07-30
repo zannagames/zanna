@@ -39,6 +39,7 @@
 #include "common/Filesystem.hpp"
 
 #include <algorithm>
+#include <atomic>
 #include <cerrno>
 #include <climits>
 #include <cstdio>
@@ -47,9 +48,12 @@
 #include <cwchar>
 #include <cwctype>
 #include <filesystem>
+#include <limits>
 #include <map>
 #include <memory>
+#include <new>
 #include <optional>
+#include <stdexcept>
 #include <string>
 #include <string_view>
 #include <utility>
@@ -58,6 +62,7 @@
 #ifndef _WIN32
 #include <fcntl.h>
 #include <poll.h>
+#include <signal.h>
 #include <spawn.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -71,6 +76,200 @@ extern char **environ;
 
 namespace {
 
+/// @brief Test whether native C process APIs would truncate a byte string.
+/// @param text Length-aware command, path, or environment bytes.
+/// @return True when @p text contains a NUL before its logical end.
+bool contains_embedded_nul(std::string_view text) noexcept {
+    return text.find('\0') != std::string_view::npos;
+}
+
+/// @brief Test whether Win32's UTF-8 conversion API can represent a byte count.
+/// @param length Number of bytes in the length-aware UTF-8 input.
+/// @return True when @p length can be passed through the API's signed-int field.
+bool windows_utf8_api_length_fits(std::size_t length) noexcept {
+    return length <= static_cast<std::size_t>(INT_MAX);
+}
+
+/// Maximum CreateProcessW command-line storage, including its terminating NUL.
+constexpr std::size_t kWindowsCommandLineMaximumCodeUnits = 32767;
+/// Maximum command-line content before CreateProcessW's required terminator.
+constexpr std::size_t kWindowsCommandLineMaximumContent = kWindowsCommandLineMaximumCodeUnits - 1;
+
+/// Test-only byte threshold used to exercise post-launch capture failure cleanup.
+std::atomic<std::size_t> g_capture_failure_after_bytes{std::numeric_limits<std::size_t>::max()};
+
+/// @brief No-throw sink that retains captured bytes until storage fails.
+/// @details Once an append cannot be represented or allocate, later bytes are
+///          deliberately discarded while the native pipe continues to drain,
+///          preventing a blocked child from deadlocking cleanup.
+class CaptureSink {
+  public:
+    /// @brief Bind a destination and snapshot the current test fault threshold.
+    /// @param destination Caller-owned output string.
+    explicit CaptureSink(std::string &destination) noexcept
+        : destination_(destination),
+          failure_after_(g_capture_failure_after_bytes.load(std::memory_order_relaxed)) {}
+
+    /// @brief Append bytes without allowing an exception to cross a native I/O boundary.
+    /// @param data Read buffer containing @p length bytes.
+    /// @param length Number of bytes to retain.
+    void append(const char *data, std::size_t length) noexcept {
+        if (storage_failed_ || length == 0)
+            return;
+        if (retained_ > failure_after_ || length > failure_after_ - retained_) {
+            storage_failed_ = true;
+            return;
+        }
+        try {
+            destination_.append(data, length);
+            retained_ += length;
+        } catch (...) {
+            storage_failed_ = true;
+        }
+    }
+
+    /// @brief Report whether any bytes had to be discarded for storage reasons.
+    /// @return True after a threshold, allocation, or string-length failure.
+    [[nodiscard]] bool storage_failed() const noexcept {
+        return storage_failed_;
+    }
+
+  private:
+    std::string &destination_;   ///< Caller-owned capture buffer.
+    std::size_t failure_after_;  ///< Maximum bytes retained by this sink.
+    std::size_t retained_{0};    ///< Bytes successfully appended so far.
+    bool storage_failed_{false}; ///< Whether this sink has entered discard mode.
+};
+
+/// @brief Append one diagnostic without propagating allocation failure.
+/// @param destination Existing stderr/diagnostic buffer.
+/// @param prefix Fixed diagnostic prefix.
+/// @param detail Optional native-error detail.
+/// @return True when the complete diagnostic was appended.
+bool append_diagnostic_noexcept(std::string &destination,
+                                std::string_view prefix,
+                                std::string_view detail = {}) noexcept {
+    try {
+        if (!destination.empty())
+            destination.push_back('\n');
+        destination.append(prefix.data(), prefix.size());
+        destination.append(detail.data(), detail.size());
+        return true;
+    } catch (...) {
+        return false;
+    }
+}
+
+/// @brief Construct a minimal allocation/length failure result without throwing.
+RunResult make_process_storage_failure() noexcept {
+    RunResult result;
+    result.exit_code = -1;
+    result.launch_failed = true;
+    append_diagnostic_noexcept(result.err, "process launch/capture storage exhausted");
+    return result;
+}
+
+/// @brief Determine whether a Windows argument needs command-line quoting.
+/// @param arg Argument after UTF-16 conversion.
+/// @return True when @p arg contains whitespace or shell-sensitive punctuation.
+bool windows_argument_needs_quoting(std::wstring_view arg) noexcept {
+    if (arg.empty()) {
+        return true;
+    }
+
+    for (const wchar_t ch : arg) {
+        if (ch == L' ' || ch == L'\t' || ch == L'"' || ch == L'&' || ch == L'|' || ch == L'<' ||
+            ch == L'>' || ch == L'^' || ch == L'(' || ch == L')') {
+            return true;
+        }
+    }
+    return false;
+}
+
+/// @brief Add a command-line fragment without exceeding CreateProcessW's content budget.
+/// @param length In/out accumulated content length.
+/// @param amount Additional UTF-16 code units to account for.
+/// @return True and updates @p length when the fragment fits.
+bool windows_command_line_add_length(std::size_t &length, std::size_t amount) noexcept {
+    if (length > kWindowsCommandLineMaximumContent ||
+        amount > kWindowsCommandLineMaximumContent - length) {
+        return false;
+    }
+    length += amount;
+    return true;
+}
+
+/// @brief Compute one argument's quoted length under the Microsoft C runtime rules.
+/// @details The computation is budgeted as it walks the input, so a long run of
+///          backslashes cannot overflow before the caller rejects the command line.
+/// @param arg Raw UTF-16 argument.
+/// @return Quoted code-unit count, or no value when it alone exceeds the native limit.
+std::optional<std::size_t> windows_quoted_argument_length(std::wstring_view arg) noexcept {
+    if (!windows_argument_needs_quoting(arg)) {
+        if (arg.size() > kWindowsCommandLineMaximumContent) {
+            return std::nullopt;
+        }
+        return arg.size();
+    }
+
+    std::size_t length = 1; // Opening quote.
+    std::size_t backslash_count = 0;
+    for (const wchar_t ch : arg) {
+        if (ch == L'\\') {
+            if (backslash_count == kWindowsCommandLineMaximumContent) {
+                return std::nullopt;
+            }
+            ++backslash_count;
+            continue;
+        }
+
+        if (ch == L'"') {
+            // Existing backslashes double, one backslash escapes the quote,
+            // and the quote itself is emitted.
+            if (backslash_count > (kWindowsCommandLineMaximumContent - 2) / 2 ||
+                !windows_command_line_add_length(length, backslash_count * 2 + 2)) {
+                return std::nullopt;
+            }
+        } else if (!windows_command_line_add_length(length, backslash_count + 1)) {
+            return std::nullopt;
+        }
+        backslash_count = 0;
+    }
+
+    // Backslashes immediately before the closing quote must also double.
+    if (backslash_count > (kWindowsCommandLineMaximumContent - 1) / 2 ||
+        !windows_command_line_add_length(length, backslash_count * 2 + 1)) {
+        return std::nullopt;
+    }
+    return length;
+}
+
+/// @brief Test whether one already-quoted argument fits an aggregate command line.
+/// @param current Current content length.
+/// @param argument_length Quoted argument length.
+/// @param needs_separator Whether a separating space precedes this argument.
+/// @return True when the aggregate plus its implicit terminator stays within the native limit.
+bool windows_command_line_append_fits(std::size_t current,
+                                      std::size_t argument_length,
+                                      bool needs_separator) noexcept {
+    if (needs_separator && !windows_command_line_add_length(current, 1)) {
+        return false;
+    }
+    return windows_command_line_add_length(current, argument_length);
+}
+
+/// @brief Apply a cheap upper bound before converting a UTF-8 process argument.
+/// @details A valid UTF-8 sequence consumes at most three source bytes per
+///          resulting UTF-16 code unit (supplementary scalars use four bytes
+///          and two code units). Inputs above this bound cannot fit regardless
+///          of their contents.
+/// @param byte_length Length of one UTF-8 argument.
+/// @return True when conversion could still fit one native command line.
+bool windows_utf8_argument_may_fit_command_line(std::size_t byte_length) noexcept {
+    constexpr std::size_t maximum_possible_utf8_bytes = kWindowsCommandLineMaximumContent * 3;
+    return byte_length <= maximum_possible_utf8_bytes;
+}
+
 #if defined(_WIN32)
 /// @brief Format a Win32 error code as a compact UTF-8 diagnostic string.
 /// @param error Value returned by @c GetLastError.
@@ -82,23 +281,24 @@ std::string format_windows_error(DWORD error);
 /// @param err Receives a diagnostic when conversion fails.
 /// @return UTF-16 string on success, or @c std::nullopt on invalid input.
 std::optional<std::wstring> utf8_to_wide(std::string_view text, std::string &err) {
+    if (!windows_utf8_api_length_fits(text.size())) {
+        err = "UTF-8 text exceeds the Windows conversion length limit";
+        return std::nullopt;
+    }
     if (text.empty()) {
         return std::wstring{};
     }
-    const int needed = MultiByteToWideChar(
-        CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), static_cast<int>(text.size()), nullptr, 0);
+    const int input_length = static_cast<int>(text.size());
+    const int needed =
+        MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), input_length, nullptr, 0);
     if (needed <= 0) {
         err = "failed to convert UTF-8 text for Windows process launch: " +
               format_windows_error(GetLastError());
         return std::nullopt;
     }
     std::wstring out(static_cast<std::size_t>(needed), L'\0');
-    const int written = MultiByteToWideChar(CP_UTF8,
-                                            MB_ERR_INVALID_CHARS,
-                                            text.data(),
-                                            static_cast<int>(text.size()),
-                                            out.data(),
-                                            needed);
+    const int written = MultiByteToWideChar(
+        CP_UTF8, MB_ERR_INVALID_CHARS, text.data(), input_length, out.data(), needed);
     if (written != needed) {
         err = "failed to convert UTF-8 text for Windows process launch: " +
               format_windows_error(GetLastError());
@@ -125,30 +325,13 @@ bool validate_environment_name(std::string_view name, std::string &err) {
     return true;
 }
 
-/// @brief Determine whether a Windows argument needs command-line quoting.
-/// @param arg Argument after UTF-16 conversion.
-/// @return True when @p arg contains whitespace or shell-sensitive punctuation.
-bool needs_quoting(const std::wstring &arg) {
-    if (arg.empty()) {
-        return true;
-    }
-
-    for (const wchar_t ch : arg) {
-        if (ch == L' ' || ch == L'\t' || ch == L'"' || ch == L'&' || ch == L'|' || ch == L'<' ||
-            ch == L'>' || ch == L'^' || ch == L'(' || ch == L')') {
-            return true;
-        }
-    }
-    return false;
-}
-
 /// @brief Quote one UTF-16 command-line argument using the Win32 argv rules.
 /// @details Implements the backslash-before-quote algorithm used by the
 ///          Microsoft C runtime when it reconstructs argv from a command line.
 /// @param arg Raw UTF-16 argument.
 /// @return Argument text safe to concatenate into a Win32 command line.
 std::wstring quote_windows_argument(const std::wstring &arg) {
-    if (!needs_quoting(arg)) {
+    if (!windows_argument_needs_quoting(arg)) {
         return arg;
     }
 
@@ -204,13 +387,33 @@ std::string format_windows_error(DWORD error) {
         return "Windows error " + std::to_string(static_cast<unsigned long>(error));
     }
 
+    struct LocalBufferGuard {
+        LPSTR buffer;
+
+        ~LocalBufferGuard() {
+            if (buffer != nullptr)
+                LocalFree(buffer);
+        }
+    } buffer_guard{buffer};
+
     std::string message(buffer, buffer + size);
-    LocalFree(buffer);
     while (!message.empty() &&
            (message.back() == '\n' || message.back() == '\r' || message.back() == '.')) {
         message.pop_back();
     }
     return message;
+}
+
+/// @brief Format and append a Win32 diagnostic without propagating allocation failure.
+bool append_windows_diagnostic_noexcept(std::string &destination,
+                                        std::string_view prefix,
+                                        DWORD error) noexcept {
+    try {
+        const std::string detail = format_windows_error(error);
+        return append_diagnostic_noexcept(destination, prefix, detail);
+    } catch (...) {
+        return false;
+    }
 }
 
 /// @brief Join argv into the mutable command-line string required by CreateProcessW.
@@ -221,12 +424,24 @@ std::optional<std::wstring> join_windows_command_line(const std::vector<std::str
                                                       std::string &err) {
     std::wstring cmdline;
     for (std::size_t i = 0; i < argv.size(); ++i) {
-        if (i != 0) {
-            cmdline.push_back(L' ');
+        if (!windows_utf8_argument_may_fit_command_line(argv[i].size())) {
+            err = "process argument " + std::to_string(i) +
+                  " exceeds the Windows command-line length limit";
+            return std::nullopt;
         }
         auto wide = utf8_to_wide(argv[i], err);
         if (!wide) {
             return std::nullopt;
+        }
+        const auto quoted_length = windows_quoted_argument_length(*wide);
+        if (!quoted_length ||
+            !windows_command_line_append_fits(cmdline.size(), *quoted_length, i != 0)) {
+            err = "Windows command line exceeds the native length limit at argument " +
+                  std::to_string(i);
+            return std::nullopt;
+        }
+        if (i != 0) {
+            cmdline.push_back(L' ');
         }
         cmdline += quote_windows_argument(*wide);
     }
@@ -296,6 +511,15 @@ bool build_windows_environment_block(
         return false;
     }
 
+    struct EnvironmentBlockGuard {
+        LPWCH block;
+
+        ~EnvironmentBlockGuard() {
+            if (block != nullptr)
+                FreeEnvironmentStringsW(block);
+        }
+    } environment_guard{raw_environment};
+
     std::vector<std::wstring> entries;
     std::map<std::wstring, bool, CaseInsensitiveWideLess> emitted_names;
     for (const wchar_t *cursor = raw_environment; *cursor != L'\0';
@@ -325,8 +549,6 @@ bool build_windows_environment_block(
             entries.push_back(std::move(current));
         }
     }
-    FreeEnvironmentStringsW(raw_environment);
-
     for (const auto &entry : overrides) {
         entries.push_back(entry.second.first + L"=" + entry.second.second);
     }
@@ -350,6 +572,177 @@ void close_handle_if_valid(HANDLE &handle) noexcept {
         handle = INVALID_HANDLE_VALUE;
     }
 }
+
+void delete_handle_inheritance_list(STARTUPINFOEXW &startup) noexcept;
+
+/// @brief Move-only owner for one closeable Win32 handle.
+class UniqueWindowsHandle {
+  public:
+    UniqueWindowsHandle() noexcept = default;
+
+    explicit UniqueWindowsHandle(HANDLE handle) noexcept : handle_(handle) {}
+
+    ~UniqueWindowsHandle() {
+        reset();
+    }
+
+    UniqueWindowsHandle(const UniqueWindowsHandle &) = delete;
+    UniqueWindowsHandle &operator=(const UniqueWindowsHandle &) = delete;
+
+    UniqueWindowsHandle(UniqueWindowsHandle &&other) noexcept : handle_(other.release()) {}
+
+    UniqueWindowsHandle &operator=(UniqueWindowsHandle &&other) noexcept {
+        if (this != &other)
+            reset(other.release());
+        return *this;
+    }
+
+    /// @brief Return the borrowed native handle.
+    [[nodiscard]] HANDLE get() const noexcept {
+        return handle_;
+    }
+
+    /// @brief Return whether a closeable handle is owned.
+    [[nodiscard]] bool valid() const noexcept {
+        return handle_ != INVALID_HANDLE_VALUE && handle_ != nullptr;
+    }
+
+    /// @brief Close the current handle and optionally adopt a replacement.
+    void reset(HANDLE replacement = INVALID_HANDLE_VALUE) noexcept {
+        close_handle_if_valid(handle_);
+        handle_ = replacement;
+    }
+
+    /// @brief Relinquish ownership without closing.
+    HANDLE release() noexcept {
+        const HANDLE handle = handle_;
+        handle_ = INVALID_HANDLE_VALUE;
+        return handle;
+    }
+
+  private:
+    HANDLE handle_{INVALID_HANDLE_VALUE}; ///< Owned handle, or invalid sentinel.
+};
+
+/// @brief Joins and closes one `_beginthreadex` capture thread.
+class CaptureThreadGuard {
+  public:
+    CaptureThreadGuard() noexcept = default;
+
+    ~CaptureThreadGuard() {
+        join();
+    }
+
+    CaptureThreadGuard(const CaptureThreadGuard &) = delete;
+    CaptureThreadGuard &operator=(const CaptureThreadGuard &) = delete;
+
+    /// @brief Adopt a native capture-thread handle.
+    void reset(HANDLE handle) noexcept {
+        join();
+        handle_.reset(handle);
+    }
+
+    /// @brief Wait for completion and close the thread handle.
+    void join() noexcept {
+        if (!handle_.valid())
+            return;
+        (void)WaitForSingleObject(handle_.get(), INFINITE);
+        handle_.reset();
+    }
+
+    /// @brief Return whether a thread was created.
+    [[nodiscard]] bool valid() const noexcept {
+        return handle_.valid();
+    }
+
+  private:
+    UniqueWindowsHandle handle_; ///< Owned native thread handle.
+};
+
+/// @brief Owns a created Win32 process and guarantees terminate/wait/close on unwind.
+class WindowsChildGuard {
+  public:
+    WindowsChildGuard() noexcept = default;
+
+    ~WindowsChildGuard() {
+        terminate_and_wait();
+        close_handles();
+    }
+
+    WindowsChildGuard(const WindowsChildGuard &) = delete;
+    WindowsChildGuard &operator=(const WindowsChildGuard &) = delete;
+
+    /// @brief Prepare storage for `CreateProcessW`.
+    PROCESS_INFORMATION *put() noexcept {
+        process_ = {};
+        launched_ = false;
+        completed_ = false;
+        return &process_;
+    }
+
+    /// @brief Record whether `CreateProcessW` populated the process handles.
+    void set_launched(bool launched) noexcept {
+        launched_ = launched;
+    }
+
+    /// @brief Borrow the process handle.
+    [[nodiscard]] HANDLE process_handle() const noexcept {
+        return process_.hProcess;
+    }
+
+    /// @brief Wait for child completion.
+    /// @return Native wait result.
+    DWORD wait() noexcept {
+        if (!launched_ || process_.hProcess == nullptr)
+            return WAIT_FAILED;
+        const DWORD result = WaitForSingleObject(process_.hProcess, INFINITE);
+        if (result == WAIT_OBJECT_0)
+            completed_ = true;
+        return result;
+    }
+
+    /// @brief Mark a child known to have reached a terminal wait state.
+    void mark_completed() noexcept {
+        completed_ = true;
+    }
+
+    /// @brief Terminate and reap an outstanding child without throwing.
+    void terminate_and_wait() noexcept {
+        if (!launched_ || completed_ || process_.hProcess == nullptr)
+            return;
+        (void)TerminateProcess(process_.hProcess, 127);
+        (void)WaitForSingleObject(process_.hProcess, INFINITE);
+        completed_ = true;
+    }
+
+  private:
+    /// @brief Close both process-information handles.
+    void close_handles() noexcept {
+        close_handle_if_valid(process_.hThread);
+        close_handle_if_valid(process_.hProcess);
+        launched_ = false;
+    }
+
+    PROCESS_INFORMATION process_{}; ///< Handles populated by CreateProcessW.
+    bool launched_{false};          ///< Whether the handles name a child.
+    bool completed_{false};         ///< Whether a terminal wait completed.
+};
+
+/// @brief Deletes one initialized STARTUPINFOEX attribute list on scope exit.
+class StartupAttributeListGuard {
+  public:
+    explicit StartupAttributeListGuard(STARTUPINFOEXW &startup) noexcept : startup_(startup) {}
+
+    ~StartupAttributeListGuard() {
+        delete_handle_inheritance_list(startup_);
+    }
+
+    StartupAttributeListGuard(const StartupAttributeListGuard &) = delete;
+    StartupAttributeListGuard &operator=(const StartupAttributeListGuard &) = delete;
+
+  private:
+    STARTUPINFOEXW &startup_;
+};
 
 /// @brief Duplicate a handle so it may be inherited by a child process.
 /// @param source Source handle in the current process.
@@ -456,8 +849,8 @@ int normalize_windows_exit_code(DWORD exit_code) noexcept {
 struct CaptureThreadContext {
     ///< Parent-side pipe handle consumed by the capture thread.
     HANDLE handle = INVALID_HANDLE_VALUE;
-    ///< Caller-owned byte buffer receiving all data read before EOF.
-    std::string *buffer = nullptr;
+    ///< No-throw caller-owned sink receiving all data read before EOF.
+    CaptureSink *sink = nullptr;
     ///< First non-broken-pipe ReadFile failure, or ERROR_SUCCESS.
     DWORD error = ERROR_SUCCESS;
 };
@@ -475,7 +868,7 @@ unsigned __stdcall capture_handle_thread_proc(void *param) {
         if (ReadFile(ctx->handle, chunk, sizeof(chunk), &read, nullptr)) {
             if (read == 0)
                 return 0;
-            ctx->buffer->append(chunk, chunk + read);
+            ctx->sink->append(chunk, static_cast<std::size_t>(read));
             continue;
         }
         const DWORD error = GetLastError();
@@ -658,6 +1051,144 @@ void close_fd_if_open(int &fd) noexcept {
         fd = -1;
     }
 }
+
+/// @brief Move-only owner for one POSIX file descriptor.
+class UniqueFd {
+  public:
+    UniqueFd() noexcept = default;
+
+    explicit UniqueFd(int fd) noexcept : fd_(fd) {}
+
+    ~UniqueFd() {
+        reset();
+    }
+
+    UniqueFd(const UniqueFd &) = delete;
+    UniqueFd &operator=(const UniqueFd &) = delete;
+
+    UniqueFd(UniqueFd &&other) noexcept : fd_(other.release()) {}
+
+    UniqueFd &operator=(UniqueFd &&other) noexcept {
+        if (this != &other)
+            reset(other.release());
+        return *this;
+    }
+
+    /// @brief Return the borrowed descriptor number.
+    [[nodiscard]] int get() const noexcept {
+        return fd_;
+    }
+
+    /// @brief Return whether this object owns an open descriptor.
+    [[nodiscard]] bool valid() const noexcept {
+        return fd_ >= 0;
+    }
+
+    /// @brief Close the current descriptor and optionally adopt a replacement.
+    /// @param replacement New descriptor, or -1 to become empty.
+    void reset(int replacement = -1) noexcept {
+        close_fd_if_open(fd_);
+        fd_ = replacement;
+    }
+
+    /// @brief Relinquish ownership without closing.
+    /// @return Former descriptor number.
+    int release() noexcept {
+        const int fd = fd_;
+        fd_ = -1;
+        return fd;
+    }
+
+  private:
+    int fd_{-1}; ///< Owned descriptor, or -1.
+};
+
+/// @brief RAII owner for a POSIX spawn file-action object.
+class ScopedSpawnFileActions {
+  public:
+    ScopedSpawnFileActions() noexcept = default;
+
+    ~ScopedSpawnFileActions() {
+        if (initialised_)
+            posix_spawn_file_actions_destroy(&actions_);
+    }
+
+    ScopedSpawnFileActions(const ScopedSpawnFileActions &) = delete;
+    ScopedSpawnFileActions &operator=(const ScopedSpawnFileActions &) = delete;
+
+    /// @brief Initialise the native action list exactly once.
+    /// @return Zero on success or a POSIX error number.
+    int initialize() noexcept {
+        if (initialised_)
+            return EALREADY;
+        const int result = posix_spawn_file_actions_init(&actions_);
+        initialised_ = result == 0;
+        return result;
+    }
+
+    /// @brief Borrow the initialized native action list.
+    posix_spawn_file_actions_t *get() noexcept {
+        return &actions_;
+    }
+
+  private:
+    posix_spawn_file_actions_t actions_{};
+    bool initialised_{false};
+};
+
+/// @brief Ensures a successfully spawned POSIX child is never left running or unreaped.
+class PosixChildGuard {
+  public:
+    explicit PosixChildGuard(pid_t pid) noexcept : pid_(pid) {}
+
+    ~PosixChildGuard() {
+        terminate_and_reap();
+    }
+
+    PosixChildGuard(const PosixChildGuard &) = delete;
+    PosixChildGuard &operator=(const PosixChildGuard &) = delete;
+
+    /// @brief Wait for normal child completion, retrying interruption.
+    /// @param status Receives the native wait status on success.
+    /// @return Zero on success or the first non-interruption errno.
+    int wait(int &status) noexcept {
+        if (pid_ <= 0)
+            return ECHILD;
+        for (;;) {
+            const pid_t waited = waitpid(pid_, &status, 0);
+            if (waited == pid_) {
+                pid_ = -1;
+                return 0;
+            }
+            if (waited < 0 && errno == EINTR)
+                continue;
+            const int error = waited < 0 ? errno : ECHILD;
+            if (error == ECHILD)
+                pid_ = -1;
+            return error;
+        }
+    }
+
+    /// @brief Kill and reap an outstanding child without throwing or allocating.
+    void terminate_and_reap() noexcept {
+        if (pid_ <= 0)
+            return;
+        (void)::kill(pid_, SIGKILL);
+        int status = 0;
+        for (;;) {
+            const pid_t waited = waitpid(pid_, &status, 0);
+            if (waited == pid_ || (waited < 0 && errno == ECHILD))
+                break;
+            if (waited < 0 && errno == EINTR)
+                continue;
+            break;
+        }
+        pid_ = -1;
+    }
+
+  private:
+    pid_t pid_{-1}; ///< Outstanding child PID, or -1 once reaped.
+};
 
 /// @brief Mark one descriptor close-on-exec.
 /// @param fd Descriptor to update.
@@ -890,51 +1421,51 @@ bool add_spawn_file_actions(posix_spawn_file_actions_t *actions,
     return true;
 }
 
-/// @brief Destroy POSIX spawn file actions if they were initialised.
-/// @param actions File actions object.
-/// @param initialised Whether @p actions has been initialised.
-void destroy_spawn_file_actions(posix_spawn_file_actions_t &actions, bool initialised) noexcept {
-    if (initialised) {
-        posix_spawn_file_actions_destroy(&actions);
-    }
-}
+enum class PosixCaptureErrorKind {
+    None,
+    Poll,
+    InvalidDescriptor,
+    Read,
+};
+
+struct PosixCaptureStatus {
+    PosixCaptureErrorKind error_kind{PosixCaptureErrorKind::None};
+    int native_error{0};
+    bool storage_failed{false};
+};
 
 /// @brief Capture stdout and stderr pipes until both reach EOF or fail.
 /// @details The function polls both descriptors so one full pipe cannot block
-///          the child while the parent reads the other.  Interrupted reads and
-///          polls are retried; hard errors are reported through @p capture_error.
-/// @param stdout_fd Read end of the stdout pipe; closed before return.
-/// @param stderr_fd Read end of the stderr pipe; closed before return.
+///          the child while the parent reads the other. Interrupted reads and
+///          polls are retried. Capture storage failure switches only that sink
+///          to discard mode so both pipes are still drained to EOF.
+/// @param stdout_fd Owned read end of the stdout pipe; reset before return.
+/// @param stderr_fd Owned read end of the stderr pipe; reset before return.
 /// @param out Receives stdout bytes.
 /// @param err Receives stderr bytes.
-/// @param capture_error Receives diagnostics for pipe-level failures.
-/// @return True when capture reached EOF cleanly.
-bool capture_posix_pipes(
-    int stdout_fd, int stderr_fd, std::string &out, std::string &err, std::string &capture_error) {
-    bool stdout_open = stdout_fd >= 0;
-    bool stderr_open = stderr_fd >= 0;
+/// @return Allocation-free status describing the first native error and any
+///         discarded output.
+PosixCaptureStatus capture_posix_pipes(UniqueFd &stdout_fd,
+                                       UniqueFd &stderr_fd,
+                                       std::string &out,
+                                       std::string &err) noexcept {
+    PosixCaptureStatus status;
+    CaptureSink stdout_sink(out);
+    CaptureSink stderr_sink(err);
     char buffer[4096];
-    bool ok = true;
 
-    /// Close a descriptor copy and clear its separately tracked open state.
-    auto close_tracked = [](int fd, bool &open_flag) {
-        int close_fd = fd;
-        close_fd_if_open(close_fd);
-        open_flag = false;
-    };
-
-    while (stdout_open || stderr_open) {
+    while (stdout_fd.valid() || stderr_fd.valid()) {
         pollfd fds[2];
         nfds_t nfds = 0;
 
-        if (stdout_open) {
-            fds[nfds].fd = stdout_fd;
+        if (stdout_fd.valid()) {
+            fds[nfds].fd = stdout_fd.get();
             fds[nfds].events = POLLIN | POLLHUP;
             fds[nfds].revents = 0;
             ++nfds;
         }
-        if (stderr_open) {
-            fds[nfds].fd = stderr_fd;
+        if (stderr_fd.valid()) {
+            fds[nfds].fd = stderr_fd.get();
             fds[nfds].events = POLLIN | POLLHUP;
             fds[nfds].revents = 0;
             ++nfds;
@@ -945,15 +1476,10 @@ bool capture_posix_pipes(
             if (errno == EINTR) {
                 continue;
             }
-            capture_error =
-                "failed to poll child output pipes: " + std::string(std::strerror(errno));
-            ok = false;
-            if (stdout_open) {
-                close_tracked(stdout_fd, stdout_open);
-            }
-            if (stderr_open) {
-                close_tracked(stderr_fd, stderr_open);
-            }
+            status.error_kind = PosixCaptureErrorKind::Poll;
+            status.native_error = errno;
+            stdout_fd.reset();
+            stderr_fd.reset();
             break;
         }
 
@@ -962,48 +1488,90 @@ bool capture_posix_pipes(
                 continue;
             }
 
-            std::string *target = nullptr;
-            bool *open_flag = nullptr;
-            if (stdout_open && fds[i].fd == stdout_fd) {
-                target = &out;
-                open_flag = &stdout_open;
+            UniqueFd *source = nullptr;
+            CaptureSink *sink = nullptr;
+            if (stdout_fd.valid() && fds[i].fd == stdout_fd.get()) {
+                source = &stdout_fd;
+                sink = &stdout_sink;
             } else {
-                target = &err;
-                open_flag = &stderr_open;
+                source = &stderr_fd;
+                sink = &stderr_sink;
             }
 
             if ((fds[i].revents & POLLNVAL) != 0) {
-                capture_error = "child output pipe became invalid";
-                ok = false;
-                *open_flag = false;
+                if (status.error_kind == PosixCaptureErrorKind::None)
+                    status.error_kind = PosixCaptureErrorKind::InvalidDescriptor;
+                source->reset();
                 continue;
             }
 
             const ssize_t nread = ::read(fds[i].fd, buffer, sizeof(buffer));
             if (nread > 0) {
-                target->append(buffer, buffer + nread);
+                sink->append(buffer, static_cast<std::size_t>(nread));
                 continue;
             }
             if (nread < 0 && errno == EINTR) {
                 continue;
             }
             if (nread < 0) {
-                capture_error =
-                    "failed to read child output pipe: " + std::string(std::strerror(errno));
-                ok = false;
+                if (status.error_kind == PosixCaptureErrorKind::None) {
+                    status.error_kind = PosixCaptureErrorKind::Read;
+                    status.native_error = errno;
+                }
             }
 
-            ::close(fds[i].fd);
-            *open_flag = false;
+            source->reset();
         }
     }
-    return ok;
+    status.storage_failed = stdout_sink.storage_failed() || stderr_sink.storage_failed();
+    return status;
 }
 #endif
 
 } // namespace
 
 namespace zanna::test_support {
+/// @brief Expose the Win32 UTF-8 input-length policy to host-neutral tests.
+/// @param length Candidate UTF-8 byte count.
+/// @return True when the signed Win32 API length field can represent it.
+bool windows_utf8_length_is_representable(std::size_t length) noexcept {
+    return windows_utf8_api_length_fits(length);
+}
+
+/// @brief Expose bounded Windows quoting arithmetic to host-neutral tests.
+/// @param argument Synthetic wide argument whose code-unit count is examined.
+/// @return Quoted length, or no value when it exceeds CreateProcessW's budget.
+std::optional<std::size_t> windows_quoted_length(std::wstring_view argument) noexcept {
+    return windows_quoted_argument_length(argument);
+}
+
+/// @brief Test whether a quoted argument fits after existing command-line content.
+/// @param current Existing command-line content length.
+/// @param argument Synthetic raw wide argument.
+/// @param needs_separator Whether a separating space is required.
+/// @return True when content plus quoting, separator, and terminator fit.
+bool windows_command_line_argument_fits(std::size_t current,
+                                        std::wstring_view argument,
+                                        bool needs_separator) noexcept {
+    const auto quoted_length = windows_quoted_argument_length(argument);
+    return quoted_length &&
+           windows_command_line_append_fits(current, *quoted_length, needs_separator);
+}
+
+/// @brief Expose the lossless UTF-8 preflight ceiling to host-neutral tests.
+/// @param byte_length Candidate UTF-8 argument size.
+/// @return True when the argument could still fit after conversion.
+bool windows_utf8_argument_may_fit(std::size_t byte_length) noexcept {
+    return windows_utf8_argument_may_fit_command_line(byte_length);
+}
+
+/// @brief Configure deterministic capture-storage failure for focused tests.
+/// @param limit Per-stream bytes retained before capture enters discard mode;
+///        `SIZE_MAX` disables fault injection.
+void set_run_process_capture_failure_after_bytes(std::size_t limit) noexcept {
+    g_capture_failure_after_bytes.store(limit, std::memory_order_relaxed);
+}
+
 /// @brief Observations produced by the scoped-environment move probe.
 /// @details This private test-support record lets a separate test translation
 ///          unit verify move construction, move assignment, and final
@@ -1078,7 +1646,7 @@ ScopedEnvironmentAssignmentMoveResult scoped_environment_assignment_move_preserv
 /// @return Captured output, native/normalized status, and launch diagnostics.
 RunResult run_process(const std::vector<std::string> &argv,
                       std::optional<std::string> cwd,
-                      const std::vector<std::pair<std::string, std::string>> &env) {
+                      const std::vector<std::pair<std::string, std::string>> &env) try {
     RunResult rr{};
     /// @brief Mark a pre-launch failure and replace stderr with its diagnostic.
     /// @param message Launcher diagnostic to retain.
@@ -1092,6 +1660,23 @@ RunResult run_process(const std::vector<std::string> &argv,
 
     if (argv.empty()) {
         return fail_launch("empty argv");
+    }
+    for (std::size_t index = 0; index < argv.size(); ++index) {
+        if (contains_embedded_nul(argv[index])) {
+            return fail_launch("process argument " + std::to_string(index) +
+                               " contains embedded NUL");
+        }
+    }
+    if (cwd.has_value() && contains_embedded_nul(*cwd)) {
+        return fail_launch("working directory contains embedded NUL");
+    }
+    for (const auto &entry : env) {
+        if (contains_embedded_nul(entry.first)) {
+            return fail_launch("environment variable name contains embedded NUL");
+        }
+        if (contains_embedded_nul(entry.second)) {
+            return fail_launch("environment variable value contains embedded NUL");
+        }
     }
 
     if (!validate_working_directory(cwd, rr.err)) {
@@ -1123,67 +1708,61 @@ RunResult run_process(const std::vector<std::string> &argv,
     security.nLength = sizeof(security);
     security.bInheritHandle = TRUE;
 
-    HANDLE stdout_read = INVALID_HANDLE_VALUE;
-    HANDLE stdout_write = INVALID_HANDLE_VALUE;
-    HANDLE stderr_read = INVALID_HANDLE_VALUE;
-    HANDLE stderr_write = INVALID_HANDLE_VALUE;
+    HANDLE stdout_read_raw = INVALID_HANDLE_VALUE;
+    HANDLE stdout_write_raw = INVALID_HANDLE_VALUE;
+    if (!CreatePipe(&stdout_read_raw, &stdout_write_raw, &security, 0)) {
+        const DWORD pipe_error = GetLastError();
+        return fail_launch("failed to create process stdout pipe: " +
+                           format_windows_error(pipe_error));
+    }
+    UniqueWindowsHandle stdout_read(stdout_read_raw);
+    UniqueWindowsHandle stdout_write(stdout_write_raw);
 
-    if (!CreatePipe(&stdout_read, &stdout_write, &security, 0) ||
-        !CreatePipe(&stderr_read, &stderr_write, &security, 0)) {
-        const std::string message =
-            "failed to create process pipes: " + format_windows_error(GetLastError());
-        close_handle_if_valid(stdout_read);
-        close_handle_if_valid(stdout_write);
-        close_handle_if_valid(stderr_read);
-        close_handle_if_valid(stderr_write);
+    HANDLE stderr_read_raw = INVALID_HANDLE_VALUE;
+    HANDLE stderr_write_raw = INVALID_HANDLE_VALUE;
+    if (!CreatePipe(&stderr_read_raw, &stderr_write_raw, &security, 0)) {
+        const DWORD pipe_error = GetLastError();
+        return fail_launch("failed to create process stderr pipe: " +
+                           format_windows_error(pipe_error));
+    }
+    UniqueWindowsHandle stderr_read(stderr_read_raw);
+    UniqueWindowsHandle stderr_write(stderr_write_raw);
+
+    if (!SetHandleInformation(stdout_read.get(), HANDLE_FLAG_INHERIT, 0) ||
+        !SetHandleInformation(stderr_read.get(), HANDLE_FLAG_INHERIT, 0)) {
+        const DWORD inheritance_error = GetLastError();
+        const std::string message = "failed to configure process pipe inheritance: " +
+                                    format_windows_error(inheritance_error);
         return fail_launch(message);
     }
 
-    if (!SetHandleInformation(stdout_read, HANDLE_FLAG_INHERIT, 0) ||
-        !SetHandleInformation(stderr_read, HANDLE_FLAG_INHERIT, 0)) {
-        const std::string message =
-            "failed to configure process pipe inheritance: " + format_windows_error(GetLastError());
-        close_handle_if_valid(stdout_read);
-        close_handle_if_valid(stdout_write);
-        close_handle_if_valid(stderr_read);
-        close_handle_if_valid(stderr_write);
-        return fail_launch(message);
+    UniqueWindowsHandle stdin_for_child(
+        duplicate_inheritable_handle(GetStdHandle(STD_INPUT_HANDLE)));
+    if (!stdin_for_child.valid()) {
+        stdin_for_child.reset(open_inheritable_nul_input_handle());
     }
 
-    HANDLE stdin_for_child = duplicate_inheritable_handle(GetStdHandle(STD_INPUT_HANDLE));
-    if (stdin_for_child == INVALID_HANDLE_VALUE) {
-        stdin_for_child = open_inheritable_nul_input_handle();
-    }
-
-    if (stdin_for_child == INVALID_HANDLE_VALUE) {
-        close_handle_if_valid(stdin_for_child);
-        close_handle_if_valid(stdout_read);
-        close_handle_if_valid(stdout_write);
-        close_handle_if_valid(stderr_read);
-        close_handle_if_valid(stderr_write);
+    if (!stdin_for_child.valid()) {
+        const DWORD stdin_error = GetLastError();
         return fail_launch("failed to open child stdin handle: " +
-                           format_windows_error(GetLastError()));
+                           format_windows_error(stdin_error));
     }
 
     STARTUPINFOEXW startup = {};
     startup.StartupInfo.cb = sizeof(startup);
     startup.StartupInfo.dwFlags = STARTF_USESTDHANDLES;
-    startup.StartupInfo.hStdInput = stdin_for_child;
-    startup.StartupInfo.hStdOutput = stdout_write;
-    startup.StartupInfo.hStdError = stderr_write;
+    startup.StartupInfo.hStdInput = stdin_for_child.get();
+    startup.StartupInfo.hStdOutput = stdout_write.get();
+    startup.StartupInfo.hStdError = stderr_write.get();
+    StartupAttributeListGuard startup_guard(startup);
     std::vector<char> startup_attribute_storage;
-    std::vector<HANDLE> inherited_handles = {stdin_for_child, stdout_write, stderr_write};
+    std::vector<HANDLE> inherited_handles = {
+        stdin_for_child.get(), stdout_write.get(), stderr_write.get()};
     if (!initialize_handle_inheritance_list(
             startup, startup_attribute_storage, inherited_handles, rr.err)) {
-        close_handle_if_valid(stdin_for_child);
-        close_handle_if_valid(stdout_read);
-        close_handle_if_valid(stdout_write);
-        close_handle_if_valid(stderr_read);
-        close_handle_if_valid(stderr_write);
         return fail_launch(rr.err);
     }
 
-    PROCESS_INFORMATION process = {};
     std::vector<wchar_t> mutable_cmdline(cmdline->begin(), cmdline->end());
     mutable_cmdline.push_back(L'\0');
 
@@ -1194,6 +1773,14 @@ RunResult run_process(const std::vector<std::string> &argv,
         environment_ptr = environment_block.data();
     }
 
+    CaptureSink stdout_sink(rr.out);
+    CaptureSink stderr_sink(rr.err);
+    CaptureThreadContext stdout_ctx{stdout_read.get(), &stdout_sink, ERROR_SUCCESS};
+    CaptureThreadContext stderr_ctx{stderr_read.get(), &stderr_sink, ERROR_SUCCESS};
+    CaptureThreadGuard stdout_thread;
+    CaptureThreadGuard stderr_thread;
+    WindowsChildGuard child;
+
     const BOOL created = CreateProcessW(nullptr,
                                         mutable_cmdline.data(),
                                         nullptr,
@@ -1203,166 +1790,156 @@ RunResult run_process(const std::vector<std::string> &argv,
                                         environment_ptr,
                                         wide_cwd ? wide_cwd->c_str() : nullptr,
                                         &startup.StartupInfo,
-                                        &process);
+                                        child.put());
     const DWORD create_error = GetLastError();
+    child.set_launched(created != FALSE);
     delete_handle_inheritance_list(startup);
 
-    close_handle_if_valid(stdin_for_child);
-    close_handle_if_valid(stdout_write);
-    close_handle_if_valid(stderr_write);
+    stdin_for_child.reset();
+    stdout_write.reset();
+    stderr_write.reset();
 
     if (!created) {
         const std::string message =
             "failed to launch process: " + format_windows_error(create_error);
-        close_handle_if_valid(stdout_read);
-        close_handle_if_valid(stderr_read);
         return fail_launch(message);
     }
     rr.launched = true;
 
-    CaptureThreadContext stdout_ctx{stdout_read, &rr.out, ERROR_SUCCESS};
-    CaptureThreadContext stderr_ctx{stderr_read, &rr.err, ERROR_SUCCESS};
     const uintptr_t stdout_thread_value =
         _beginthreadex(nullptr, 0, capture_handle_thread_proc, &stdout_ctx, 0, nullptr);
     const int stdout_thread_error = errno;
     const uintptr_t stderr_thread_value =
         _beginthreadex(nullptr, 0, capture_handle_thread_proc, &stderr_ctx, 0, nullptr);
     const int stderr_thread_error = errno;
-    HANDLE stdout_thread = reinterpret_cast<HANDLE>(stdout_thread_value);
-    HANDLE stderr_thread = reinterpret_cast<HANDLE>(stderr_thread_value);
+    stdout_thread.reset(reinterpret_cast<HANDLE>(stdout_thread_value));
+    stderr_thread.reset(reinterpret_cast<HANDLE>(stderr_thread_value));
 
-    if (stdout_thread == nullptr || stderr_thread == nullptr) {
-        const int thread_error =
-            stdout_thread == nullptr ? stdout_thread_error : stderr_thread_error;
-        const std::string message =
-            "failed to create process capture thread: " + std::string(std::strerror(thread_error));
-        TerminateProcess(process.hProcess, 127);
-        WaitForSingleObject(process.hProcess, INFINITE);
-        if (stdout_thread != nullptr) {
-            WaitForSingleObject(stdout_thread, INFINITE);
-            CloseHandle(stdout_thread);
-        }
-        if (stderr_thread != nullptr) {
-            WaitForSingleObject(stderr_thread, INFINITE);
-            CloseHandle(stderr_thread);
-        }
-        CloseHandle(process.hThread);
-        CloseHandle(process.hProcess);
-        close_handle_if_valid(stdout_read);
-        close_handle_if_valid(stderr_read);
-        return fail_launch(message);
+    if (!stdout_thread.valid() || !stderr_thread.valid()) {
+        const int thread_error = !stdout_thread.valid() ? stdout_thread_error : stderr_thread_error;
+        child.terminate_and_wait();
+        stdout_thread.join();
+        stderr_thread.join();
+        rr.capture_failed = true;
+        rr.exit_code = 127;
+        rr.native_exit_code = 127;
+        append_diagnostic_noexcept(
+            rr.err, "failed to create process capture thread: ", std::strerror(thread_error));
+        return rr;
     }
 
-    const DWORD process_wait = WaitForSingleObject(process.hProcess, INFINITE);
+    const DWORD process_wait = child.wait();
     if (process_wait != WAIT_OBJECT_0) {
         const DWORD wait_error = process_wait == WAIT_FAILED ? GetLastError() : ERROR_TIMEOUT;
-        TerminateProcess(process.hProcess, 127);
-        WaitForSingleObject(process.hProcess, INFINITE);
-        rr.err += (rr.err.empty() ? "" : "\n");
-        rr.err += "failed while waiting for child process: " + format_windows_error(wait_error);
+        child.terminate_and_wait();
+        append_windows_diagnostic_noexcept(
+            rr.err, "failed while waiting for child process: ", wait_error);
     }
-    WaitForSingleObject(stdout_thread, INFINITE);
-    CloseHandle(stdout_thread);
-    WaitForSingleObject(stderr_thread, INFINITE);
-    CloseHandle(stderr_thread);
+    stdout_thread.join();
+    stderr_thread.join();
+    if (stdout_sink.storage_failed() || stderr_sink.storage_failed()) {
+        rr.capture_failed = true;
+        append_diagnostic_noexcept(rr.err, "process capture storage exhausted; output discarded");
+    }
     if (stdout_ctx.error != ERROR_SUCCESS) {
-        rr.err += (rr.err.empty() ? "" : "\n");
-        rr.err += "failed while capturing child stdout: " + format_windows_error(stdout_ctx.error);
+        rr.capture_failed = true;
+        append_windows_diagnostic_noexcept(
+            rr.err, "failed while capturing child stdout: ", stdout_ctx.error);
     }
     if (stderr_ctx.error != ERROR_SUCCESS) {
-        rr.err += (rr.err.empty() ? "" : "\n");
-        rr.err += "failed while capturing child stderr: " + format_windows_error(stderr_ctx.error);
+        rr.capture_failed = true;
+        append_windows_diagnostic_noexcept(
+            rr.err, "failed while capturing child stderr: ", stderr_ctx.error);
     }
 
     DWORD exit_code = 0;
-    if (!GetExitCodeProcess(process.hProcess, &exit_code)) {
+    if (!GetExitCodeProcess(child.process_handle(), &exit_code)) {
         const DWORD exit_error = GetLastError();
-        rr.err += (rr.err.empty() ? "" : "\n");
-        rr.err += "failed to query child exit code: " + format_windows_error(exit_error);
+        append_windows_diagnostic_noexcept(rr.err, "failed to query child exit code: ", exit_error);
         exit_code = static_cast<DWORD>(INT_MAX);
     }
     rr.native_exit_code = static_cast<std::uint32_t>(exit_code);
     rr.exit_code = normalize_windows_exit_code(exit_code);
 
-    CloseHandle(process.hThread);
-    CloseHandle(process.hProcess);
-    close_handle_if_valid(stdout_read);
-    close_handle_if_valid(stderr_read);
     return rr;
 #else
     int stdout_pipe[2] = {-1, -1};
-    int stderr_pipe[2] = {-1, -1};
-    if (!create_cloexec_pipe(stdout_pipe, rr.err) || !create_cloexec_pipe(stderr_pipe, rr.err)) {
-        close_fd_if_open(stdout_pipe[0]);
-        close_fd_if_open(stdout_pipe[1]);
-        close_fd_if_open(stderr_pipe[0]);
-        close_fd_if_open(stderr_pipe[1]);
+    if (!create_cloexec_pipe(stdout_pipe, rr.err)) {
         return fail_launch(rr.err);
     }
+    UniqueFd stdout_read(stdout_pipe[0]);
+    UniqueFd stdout_write(stdout_pipe[1]);
+
+    int stderr_pipe[2] = {-1, -1};
+    if (!create_cloexec_pipe(stderr_pipe, rr.err))
+        return fail_launch(rr.err);
+    UniqueFd stderr_read(stderr_pipe[0]);
+    UniqueFd stderr_write(stderr_pipe[1]);
 
     std::vector<std::string> env_strings;
-    if (!build_posix_environment_strings(env, env_strings, rr.err)) {
-        close_fd_if_open(stdout_pipe[0]);
-        close_fd_if_open(stdout_pipe[1]);
-        close_fd_if_open(stderr_pipe[0]);
-        close_fd_if_open(stderr_pipe[1]);
+    if (!build_posix_environment_strings(env, env_strings, rr.err))
         return fail_launch(rr.err);
-    }
 
     std::vector<char *> exec_argv = build_spawn_argv(argv);
     std::vector<char *> envp_storage = build_spawn_envp(env_strings);
     char *const *spawn_envp = env_strings.empty() ? environ : envp_storage.data();
 
-    posix_spawn_file_actions_t actions{};
-    bool actions_initialised = false;
-    if (const int code = posix_spawn_file_actions_init(&actions); code != 0) {
-        close_fd_if_open(stdout_pipe[0]);
-        close_fd_if_open(stdout_pipe[1]);
-        close_fd_if_open(stderr_pipe[0]);
-        close_fd_if_open(stderr_pipe[1]);
+    ScopedSpawnFileActions actions;
+    if (const int code = actions.initialize(); code != 0) {
         return fail_launch("failed to initialise process file actions: " +
                            std::string(std::strerror(code)));
     }
-    actions_initialised = true;
 
-    if (!add_spawn_file_actions(&actions, stdout_pipe, stderr_pipe, cwd, rr.err)) {
-        destroy_spawn_file_actions(actions, actions_initialised);
-        close_fd_if_open(stdout_pipe[0]);
-        close_fd_if_open(stdout_pipe[1]);
-        close_fd_if_open(stderr_pipe[0]);
-        close_fd_if_open(stderr_pipe[1]);
+    const int stdout_fds[2] = {stdout_read.get(), stdout_write.get()};
+    const int stderr_fds[2] = {stderr_read.get(), stderr_write.get()};
+    if (!add_spawn_file_actions(actions.get(), stdout_fds, stderr_fds, cwd, rr.err))
         return fail_launch(rr.err);
-    }
 
     pid_t pid = -1;
     const int spawn_error =
-        posix_spawnp(&pid, argv[0].c_str(), &actions, nullptr, exec_argv.data(), spawn_envp);
-    destroy_spawn_file_actions(actions, actions_initialised);
-    close_fd_if_open(stdout_pipe[1]);
-    close_fd_if_open(stderr_pipe[1]);
+        posix_spawnp(&pid, argv[0].c_str(), actions.get(), nullptr, exec_argv.data(), spawn_envp);
+    stdout_write.reset();
+    stderr_write.reset();
 
     if (spawn_error != 0) {
-        close_fd_if_open(stdout_pipe[0]);
-        close_fd_if_open(stderr_pipe[0]);
         return fail_launch("failed to launch process '" + argv[0] +
                            "': " + std::string(std::strerror(spawn_error)));
     }
+    PosixChildGuard child(pid);
     rr.launched = true;
 
-    std::string capture_error;
-    if (!capture_posix_pipes(stdout_pipe[0], stderr_pipe[0], rr.out, rr.err, capture_error)) {
-        rr.err += (rr.err.empty() ? "" : "\n");
-        rr.err += capture_error;
+    const PosixCaptureStatus capture =
+        capture_posix_pipes(stdout_read, stderr_read, rr.out, rr.err);
+    if (capture.storage_failed) {
+        rr.capture_failed = true;
+        append_diagnostic_noexcept(rr.err, "process capture storage exhausted; output discarded");
+    }
+    if (capture.error_kind != PosixCaptureErrorKind::None) {
+        rr.capture_failed = true;
+        switch (capture.error_kind) {
+            case PosixCaptureErrorKind::Poll:
+                append_diagnostic_noexcept(rr.err,
+                                           "failed to poll child output pipes: ",
+                                           std::strerror(capture.native_error));
+                break;
+            case PosixCaptureErrorKind::InvalidDescriptor:
+                append_diagnostic_noexcept(rr.err, "child output pipe became invalid");
+                break;
+            case PosixCaptureErrorKind::Read:
+                append_diagnostic_noexcept(rr.err,
+                                           "failed to read child output pipe: ",
+                                           std::strerror(capture.native_error));
+                break;
+            case PosixCaptureErrorKind::None:
+                break;
+        }
     }
 
     int status = 0;
-    while (waitpid(pid, &status, 0) < 0) {
-        if (errno != EINTR) {
-            rr.exit_code = -1;
-            rr.err += (rr.err.empty() ? "" : "\n");
-            rr.err += "failed to wait for child: " + std::string(std::strerror(errno));
-            return rr;
-        }
+    if (const int wait_error = child.wait(status); wait_error != 0) {
+        rr.exit_code = -1;
+        append_diagnostic_noexcept(rr.err, "failed to wait for child: ", std::strerror(wait_error));
+        return rr;
     }
 
     if (WIFEXITED(status)) {
@@ -1377,6 +1954,10 @@ RunResult run_process(const std::vector<std::string> &argv,
     }
     return rr;
 #endif
+} catch (const std::bad_alloc &) {
+    return make_process_storage_failure();
+} catch (const std::length_error &) {
+    return make_process_storage_failure();
 }
 
 /// @brief Launch command text through the host's explicit command shell.

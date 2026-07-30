@@ -7,6 +7,7 @@
 
 #include "rt_defaultmap.h"
 #include "rt_internal.h"
+#include "rt_object.h"
 #include "rt_seq.h"
 #include "rt_string.h"
 
@@ -23,6 +24,51 @@ static rt_string make_str(const char *s) {
 
 static rt_string make_bytes(const char *s, size_t len) {
     return rt_string_from_bytes(s, len);
+}
+
+static void release_obj(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
+enum class ReentryAction {
+    None,
+    Clear,
+    Set,
+    Remove,
+};
+
+static void *g_reentry_map = nullptr;
+static rt_string g_reentry_key = nullptr;
+static void *g_reentry_value = nullptr;
+static ReentryAction g_reentry_action = ReentryAction::None;
+static int g_reentry_calls = 0;
+static int8_t g_reentry_remove_result = -1;
+
+static void reentrant_value_finalizer(void *) {
+    g_reentry_calls++;
+    switch (g_reentry_action) {
+        case ReentryAction::Clear:
+            rt_defaultmap_clear(g_reentry_map);
+            break;
+        case ReentryAction::Set:
+            rt_defaultmap_set(g_reentry_map, g_reentry_key, g_reentry_value);
+            break;
+        case ReentryAction::Remove:
+            g_reentry_remove_result = rt_defaultmap_remove(g_reentry_map, g_reentry_key);
+            break;
+        case ReentryAction::None:
+            break;
+    }
+}
+
+static void reset_reentry_state() {
+    g_reentry_map = nullptr;
+    g_reentry_key = nullptr;
+    g_reentry_value = nullptr;
+    g_reentry_action = ReentryAction::None;
+    g_reentry_calls = 0;
+    g_reentry_remove_result = -1;
 }
 
 static void test_new() {
@@ -103,6 +149,7 @@ static void test_keys() {
 
     void *keys = rt_defaultmap_keys(m);
     assert(rt_seq_len(keys) == 2);
+    assert(rt_seq_cap(keys) == 2);
 
     rt_string_unref(k1);
     rt_string_unref(k2);
@@ -176,6 +223,86 @@ static void test_null_safety() {
     assert(rt_defaultmap_get_default(NULL) == NULL);
 }
 
+static void test_remove_commits_before_value_finalizer_reentry() {
+    void *map = rt_defaultmap_new(nullptr);
+    void *victim = rt_obj_new_i64(0, 8);
+    void *other = rt_obj_new_i64(0, 8);
+    rt_string victim_key = make_str("victim");
+    rt_string other_key = make_str("other");
+    assert(map != nullptr);
+    assert(victim != nullptr);
+    assert(other != nullptr);
+
+    rt_obj_set_finalizer(victim, reentrant_value_finalizer);
+    rt_defaultmap_set(map, victim_key, victim);
+    rt_defaultmap_set(map, other_key, other);
+    release_obj(victim);
+
+    g_reentry_map = map;
+    g_reentry_action = ReentryAction::Clear;
+    assert(rt_defaultmap_remove(map, victim_key) == 1);
+    assert(g_reentry_calls == 1);
+    assert(rt_defaultmap_len(map) == 0);
+
+    reset_reentry_state();
+    rt_string_unref(victim_key);
+    rt_string_unref(other_key);
+    release_obj(other);
+    release_obj(map);
+}
+
+static void test_clear_detaches_before_value_finalizer_reentry() {
+    void *map = rt_defaultmap_new(nullptr);
+    void *victim = rt_obj_new_i64(0, 8);
+    void *inserted = rt_obj_new_i64(0, 8);
+    rt_string key = make_str("same-bucket");
+    assert(map != nullptr);
+    assert(victim != nullptr);
+    assert(inserted != nullptr);
+
+    rt_obj_set_finalizer(victim, reentrant_value_finalizer);
+    rt_defaultmap_set(map, key, victim);
+    release_obj(victim);
+
+    g_reentry_map = map;
+    g_reentry_key = key;
+    g_reentry_value = inserted;
+    g_reentry_action = ReentryAction::Set;
+    rt_defaultmap_clear(map);
+
+    assert(g_reentry_calls == 1);
+    assert(rt_defaultmap_len(map) == 1);
+    assert(rt_defaultmap_get(map, key) == inserted);
+
+    reset_reentry_state();
+    rt_defaultmap_clear(map);
+    rt_string_unref(key);
+    release_obj(inserted);
+    release_obj(map);
+}
+
+static void test_map_finalizer_invalidates_before_value_cleanup() {
+    void *map = rt_defaultmap_new(nullptr);
+    void *victim = rt_obj_new_i64(0, 8);
+    rt_string key = make_str("finalizer");
+    assert(map != nullptr);
+    assert(victim != nullptr);
+
+    rt_obj_set_finalizer(victim, reentrant_value_finalizer);
+    rt_defaultmap_set(map, key, victim);
+    release_obj(victim);
+
+    g_reentry_map = map;
+    g_reentry_key = key;
+    g_reentry_action = ReentryAction::Remove;
+    release_obj(map);
+
+    assert(g_reentry_calls == 1);
+    assert(g_reentry_remove_result == 0);
+    reset_reentry_state();
+    rt_string_unref(key);
+}
+
 /// @brief Main.
 int main() {
     test_new();
@@ -190,6 +317,9 @@ int main() {
     test_null_key_uses_empty_key();
     test_embedded_nul_keys_are_distinct();
     test_null_safety();
+    test_remove_commits_before_value_finalizer_reentry();
+    test_clear_detaches_before_value_finalizer_reentry();
+    test_map_finalizer_invalidates_before_value_cleanup();
 
     return 0;
 }

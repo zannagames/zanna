@@ -51,18 +51,26 @@
 
 #include "rt_iter.h"
 
+#include "rt_array_obj.h"
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_deque.h"
 #include "rt_gc.h"
 #include "rt_internal.h"
 #include "rt_list.h"
+#include "rt_list_internal.h"
 #include "rt_map.h"
 #include "rt_object.h"
 #include "rt_ring.h"
+#include "rt_ring_internal.h"
 #include "rt_seq.h"
+#include "rt_seq_internal.h"
 #include "rt_set.h"
 #include "rt_stack.h"
+#include "rt_trap.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -104,6 +112,15 @@ static void release_temp_obj(void *obj) {
         rt_obj_free(obj);
 }
 
+/// @brief Save the current trap diagnostic before removing local recovery.
+/// @param buffer Caller-owned destination.
+/// @param buffer_size Capacity including the terminator.
+/// @param fallback Text used when no trap message is available.
+static void iter_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
+}
+
 /// @brief GC finalizer: release the iterator's retained source collection.
 /// @param obj Iterator object being finalized, or NULL for a no-op.
 static void iter_finalizer(void *obj) {
@@ -136,23 +153,42 @@ static void iter_traverse(void *obj, rt_gc_visitor_t visitor, void *ctx) {
 /// @return New runtime-managed iterator, or NULL for a null source or after an
 ///         allocation trap.
 static rt_iter_impl *make_iter(void *source, iter_kind kind, int64_t len) {
-    rt_iter_impl *it;
     if (!source)
         return NULL;
+
+    rt_iter_impl *volatile it = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        iter_save_trap(saved_error, sizeof(saved_error), "Iterator: construction failed");
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)it);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
     it = (rt_iter_impl *)rt_obj_new_i64(RT_ITERATOR_CLASS_ID, (int64_t)sizeof(rt_iter_impl));
     if (!it) {
+        rt_trap_clear_recovery();
         rt_trap("Iterator: allocation failed");
         return NULL;
     }
-    it->vptr = NULL;
-    it->source = source;
-    rt_obj_retain_maybe(source);
-    it->kind = kind;
-    it->pos = 0;
-    it->len = len;
-    rt_obj_set_finalizer(it, iter_finalizer);
-    rt_gc_track(it, iter_traverse);
-    return it;
+    ((rt_iter_impl *)it)->vptr = NULL;
+    ((rt_iter_impl *)it)->source = NULL;
+    ((rt_iter_impl *)it)->kind = kind;
+    ((rt_iter_impl *)it)->pos = 0;
+    ((rt_iter_impl *)it)->len = len;
+    rt_obj_set_finalizer((void *)it, iter_finalizer);
+    rt_gc_track((void *)it, iter_traverse);
+    if (!rt_collection_retain_checked(source, "Iterator: source retain failed")) {
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)it);
+        return NULL;
+    }
+    ((rt_iter_impl *)it)->source = source;
+    rt_trap_clear_recovery();
+    return (rt_iter_impl *)it;
 }
 
 /// @brief Creates an iterator that takes ownership of a Seq snapshot.
@@ -162,26 +198,41 @@ static rt_iter_impl *make_iter(void *source, iter_kind kind, int64_t len) {
 /// @return New runtime-managed iterator, or NULL after releasing an unusable
 ///         snapshot.
 static rt_iter_impl *make_iter_snapshot(void *snapshot, int64_t len) {
-    rt_iter_impl *it;
     if (!snapshot)
         return NULL;
+
+    rt_iter_impl *volatile it = NULL;
+    void *volatile owned_snapshot = snapshot;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        iter_save_trap(saved_error, sizeof(saved_error), "Iterator: construction failed");
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)it);
+        release_temp_obj((void *)owned_snapshot);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
     it = (rt_iter_impl *)rt_obj_new_i64(RT_ITERATOR_CLASS_ID, (int64_t)sizeof(rt_iter_impl));
     if (!it) {
-        /* Failed to create iterator — release the snapshot we own. */
-        if (rt_obj_release_check0(snapshot))
-            rt_obj_free(snapshot);
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)owned_snapshot);
         rt_trap("Iterator: allocation failed");
         return NULL;
     }
-    it->vptr = NULL;
-    it->source = snapshot;
-    /* No retain: we take ownership of the snapshot's creation reference. */
-    it->kind = ITER_SNAPSHOT;
-    it->pos = 0;
-    it->len = len;
-    rt_obj_set_finalizer(it, iter_finalizer);
-    rt_gc_track(it, iter_traverse);
-    return it;
+    ((rt_iter_impl *)it)->vptr = NULL;
+    ((rt_iter_impl *)it)->source = NULL;
+    ((rt_iter_impl *)it)->kind = ITER_SNAPSHOT;
+    ((rt_iter_impl *)it)->pos = 0;
+    ((rt_iter_impl *)it)->len = len;
+    rt_obj_set_finalizer((void *)it, iter_finalizer);
+    rt_gc_track((void *)it, iter_traverse);
+    ((rt_iter_impl *)it)->source = (void *)owned_snapshot;
+    owned_snapshot = NULL;
+    rt_trap_clear_recovery();
+    return (rt_iter_impl *)it;
 }
 
 //=============================================================================
@@ -203,6 +254,10 @@ static rt_iter_impl *make_iter_snapshot(void *snapshot, int64_t len) {
 void *rt_iter_from_seq(void *seq) {
     if (!seq)
         return NULL;
+    if (!rt_seq_internal_is_valid(seq)) {
+        rt_trap("Iterator.FromSeq: invalid Seq object");
+        return NULL;
+    }
     return make_iter(seq, ITER_SEQ, rt_seq_len(seq));
 }
 
@@ -213,6 +268,10 @@ void *rt_iter_from_seq(void *seq) {
 void *rt_iter_from_list(void *list) {
     if (!list)
         return NULL;
+    if (!rt_list_internal_is_valid(list)) {
+        rt_trap("Iterator.FromList: invalid List object");
+        return NULL;
+    }
     return make_iter(list, ITER_LIST, rt_list_len(list));
 }
 
@@ -220,22 +279,50 @@ void *rt_iter_from_list(void *list) {
 /// @param deque Non-null Deque to snapshot in front-to-back order.
 /// @return New snapshot iterator, or NULL if snapshot construction fails.
 void *rt_iter_from_deque(void *deque) {
-    void *snapshot;
-    int64_t len, i;
     if (!deque)
         return NULL;
-    /* Snapshot all elements into an owning Seq so iterator values survive source mutations. */
-    len = rt_deque_len(deque);
-    snapshot = rt_seq_new();
-    if (!snapshot)
+
+    void *volatile clone = NULL;
+    void *volatile snapshot = NULL;
+    void *volatile transferred = NULL;
+    int64_t len = 0;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        iter_save_trap(saved_error, sizeof(saved_error), "Iterator: deque snapshot failed");
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)transferred);
+        release_temp_obj((void *)snapshot);
+        release_temp_obj((void *)clone);
+        rt_trap(saved_error);
         return NULL;
-    rt_seq_set_owns_elements(snapshot, 1);
-    for (i = 0; i < len; i++) {
-        void *item = rt_deque_get(deque, i);
-        rt_seq_push(snapshot, item);
-        release_temp_obj(item);
     }
-    return make_iter_snapshot(snapshot, len);
+
+    clone = rt_deque_clone(deque);
+    if (!clone) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    len = rt_deque_len((void *)clone);
+    snapshot = rt_seq_with_capacity_owned(len > 0 ? len : 1);
+    if (!snapshot) {
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)clone);
+        return NULL;
+    }
+    while (rt_deque_len((void *)clone) > 0) {
+        transferred = rt_deque_pop_front((void *)clone);
+        rt_seq_push_raw((void *)snapshot, (void *)transferred);
+        transferred = NULL;
+    }
+    release_temp_obj((void *)clone);
+    clone = NULL;
+    rt_trap_clear_recovery();
+
+    void *owned_snapshot = (void *)snapshot;
+    snapshot = NULL;
+    return make_iter_snapshot(owned_snapshot, len);
 }
 
 /// @brief Build a live iterator over a Ring.
@@ -245,6 +332,10 @@ void *rt_iter_from_deque(void *deque) {
 void *rt_iter_from_ring(void *ring) {
     if (!ring)
         return NULL;
+    if (!rt_ring_internal_is_valid(ring)) {
+        rt_trap("Iterator.FromRing: invalid Ring object");
+        return NULL;
+    }
     return make_iter(ring, ITER_RING, rt_ring_len(ring));
 }
 
@@ -292,83 +383,185 @@ void *rt_iter_from_set(void *set) {
 /// @param stack Non-null Stack to snapshot.
 /// @return New snapshot iterator, or NULL after a size or allocation failure.
 void *rt_iter_from_stack(void *stack) {
-    void *snapshot;
-    void *clone;
-    void **items;
-    int64_t len;
-    int64_t count = 0;
     if (!stack)
         return NULL;
-    len = rt_stack_len(stack);
-    if (len <= 0)
-        snapshot = rt_seq_new();
-    else
-        snapshot = rt_seq_with_capacity(len);
-    if (!snapshot)
+
+    void *volatile clone = NULL;
+    void *volatile snapshot = NULL;
+    void **volatile items = NULL;
+    void *volatile transferred = NULL;
+    volatile int transferred_owned = 0;
+    volatile int clone_owns_elements = 0;
+    int64_t len = 0;
+    volatile int64_t count = 0;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        iter_save_trap(saved_error, sizeof(saved_error), "Iterator: stack snapshot failed");
+        rt_trap_clear_recovery();
+        if (transferred_owned)
+            release_temp_obj((void *)transferred);
+        if (clone_owns_elements && items) {
+            for (int64_t i = 0; i < count; ++i)
+                release_temp_obj(((void **)items)[i]);
+        }
+        free((void *)items);
+        release_temp_obj((void *)snapshot);
+        release_temp_obj((void *)clone);
+        rt_trap(saved_error);
         return NULL;
-    rt_seq_set_owns_elements(snapshot, 1);
-    if (len <= 0)
-        return make_iter_snapshot(snapshot, 0);
+    }
+
     clone = rt_stack_clone(stack);
     if (!clone) {
-        if (rt_obj_release_check0(snapshot))
-            rt_obj_free(snapshot);
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+    clone_owns_elements = rt_stack_owns_elements((void *)clone) ? 1 : 0;
+    len = rt_stack_len((void *)clone);
+    snapshot = rt_seq_with_capacity_owned(len > 0 ? len : 1);
+    if (!snapshot) {
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)clone);
         return NULL;
     }
     if ((uint64_t)len > SIZE_MAX / sizeof(void *)) {
-        if (rt_obj_release_check0(clone))
-            rt_obj_free(clone);
-        if (rt_obj_release_check0(snapshot))
-            rt_obj_free(snapshot);
         rt_trap("Iterator: stack snapshot too large");
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)snapshot);
+        release_temp_obj((void *)clone);
         return NULL;
     }
-    int8_t pop_returns_owned_refs = rt_stack_owns_elements(clone);
-    items = (void **)malloc((size_t)len * sizeof(void *));
-    if (!items) {
-        if (rt_obj_release_check0(clone))
-            rt_obj_free(clone);
-        if (rt_obj_release_check0(snapshot))
-            rt_obj_free(snapshot);
-        rt_trap("Iterator: allocation failed");
-        return NULL;
+    if (len > 0) {
+        items = (void **)calloc((size_t)len, sizeof(void *));
+        if (!items) {
+            rt_trap("Iterator: allocation failed");
+            rt_trap_clear_recovery();
+            release_temp_obj((void *)snapshot);
+            release_temp_obj((void *)clone);
+            return NULL;
+        }
     }
 
-    while (!rt_stack_is_empty(clone) && count < len)
-        items[count++] = rt_stack_pop(clone);
-
+    while (count < len) {
+        ((void **)items)[count] = rt_stack_pop((void *)clone);
+        count++;
+    }
     for (int64_t i = count; i > 0; --i) {
-        void *item = items[i - 1];
-        rt_seq_push(snapshot, item);
-        if (pop_returns_owned_refs)
-            release_temp_obj(item);
+        transferred = ((void **)items)[i - 1];
+        ((void **)items)[i - 1] = NULL;
+        transferred_owned = clone_owns_elements;
+        if (!clone_owns_elements &&
+            !rt_collection_retain_checked((void *)transferred,
+                                          "Iterator: stack element retain failed")) {
+            rt_trap_clear_recovery();
+            if (clone_owns_elements) {
+                for (int64_t j = 0; j < i - 1; ++j)
+                    release_temp_obj(((void **)items)[j]);
+            }
+            free((void *)items);
+            release_temp_obj((void *)snapshot);
+            release_temp_obj((void *)clone);
+            return NULL;
+        }
+        transferred_owned = 1;
+        rt_seq_push_raw((void *)snapshot, (void *)transferred);
+        transferred = NULL;
+        transferred_owned = 0;
     }
-    if (rt_obj_release_check0(clone))
-        rt_obj_free(clone);
-    free(items);
-    return make_iter_snapshot(snapshot, rt_seq_len(snapshot));
+
+    free((void *)items);
+    items = NULL;
+    release_temp_obj((void *)clone);
+    clone = NULL;
+    rt_trap_clear_recovery();
+
+    void *owned_snapshot = (void *)snapshot;
+    snapshot = NULL;
+    return make_iter_snapshot(owned_snapshot, len);
 }
 
 //=============================================================================
 // Core iteration
 //=============================================================================
 
-/// @brief Fetch element @p idx from the iterator's source, dispatching on
-///        its backing collection kind (seq/list/ring/…).
+/// @brief Validate an iterator's cached cursor bounds.
+/// @param it Iterator payload to inspect.
+/// @return Nonzero when `0 <= pos <= len`; otherwise zero after trapping.
+static int iter_cursor_valid(const rt_iter_impl *it) {
+    if (!it || it->pos < 0 || it->len < 0 || it->pos > it->len) {
+        rt_trap("Iterator: corrupted cursor state");
+        return 0;
+    }
+    return 1;
+}
+
+/// @brief Fetch a borrowed element from the iterator's retained source.
+/// @details Uses private sized layouts so a legitimate null slot remains
+///          distinguishable from source corruption or unsupported structural
+///          mutation. The caller decides whether and when to retain the result.
 /// @param it Iterator whose source is accessed.
 /// @param idx Zero-based source index.
-/// @return Element pointer with the source accessor's native ownership.
-static void *get_element(rt_iter_impl *it, int64_t idx) {
+/// @param out Receives the borrowed element, including a legitimate null.
+/// @return Nonzero on success; zero after trapping.
+static int iter_get_borrowed(rt_iter_impl *it, int64_t idx, void **out) {
+    if (out)
+        *out = NULL;
+    if (!it || !out || idx < 0) {
+        rt_trap("Iterator: invalid indexed access");
+        return 0;
+    }
+
     switch (it->kind) {
         case ITER_SEQ:
-        case ITER_SNAPSHOT:
-            return rt_seq_get(it->source, idx);
-        case ITER_LIST:
-            return rt_list_get(it->source, idx);
-        case ITER_RING:
-            return rt_ring_get(it->source, idx);
+        case ITER_SNAPSHOT: {
+            if (!rt_seq_internal_is_valid(it->source)) {
+                rt_trap("Iterator: invalid Seq source");
+                return 0;
+            }
+            rt_seq_impl *seq = (rt_seq_impl *)it->source;
+            if (idx >= seq->len || !seq->items) {
+                rt_trap("Iterator: Seq source was structurally modified");
+                return 0;
+            }
+            *out = seq->items[idx];
+            return 1;
+        }
+        case ITER_LIST: {
+            if (!rt_list_internal_is_valid(it->source)) {
+                rt_trap("Iterator: invalid List source");
+                return 0;
+            }
+            rt_list_impl *list = (rt_list_impl *)it->source;
+            size_t current_len = rt_arr_obj_len(list->arr);
+            if ((uint64_t)idx >= (uint64_t)current_len || !list->arr) {
+                rt_trap("Iterator: List source was structurally modified");
+                return 0;
+            }
+            *out = list->arr[(size_t)idx];
+            return 1;
+        }
+        case ITER_RING: {
+            if (!rt_ring_internal_is_valid(it->source)) {
+                rt_trap("Iterator: invalid Ring source");
+                return 0;
+            }
+            rt_ring_impl *ring = (rt_ring_impl *)it->source;
+            if ((uint64_t)idx >= (uint64_t)ring->count || !ring->items || ring->capacity == 0 ||
+                ring->count > ring->capacity || ring->head >= ring->capacity) {
+                rt_trap("Iterator: Ring source was structurally modified");
+                return 0;
+            }
+            size_t logical = (size_t)idx;
+            size_t until_wrap = ring->capacity - ring->head;
+            size_t physical = logical < until_wrap ? ring->head + logical : logical - until_wrap;
+            *out = ring->items[physical];
+            return 1;
+        }
     }
-    return NULL;
+    rt_trap("Iterator: invalid source kind");
+    return 0;
 }
 
 /// @brief Check whether the iterator has more elements.
@@ -376,10 +569,11 @@ static void *get_element(rt_iter_impl *it, int64_t idx) {
 /// @param iter Iterator handle, or NULL.
 /// @return 1 when another cached position remains; otherwise 0.
 int8_t rt_iter_has_next(void *iter) {
-    rt_iter_impl *it;
     if (!iter)
         return 0;
-    it = as_iter(iter, "Iterator.HasNext: invalid Iterator object");
+    rt_iter_impl *it = as_iter(iter, "Iterator.HasNext: invalid Iterator object");
+    if (!it || !iter_cursor_valid(it))
+        return 0;
     return (it->pos < it->len) ? 1 : 0;
 }
 
@@ -389,17 +583,20 @@ int8_t rt_iter_has_next(void *iter) {
 /// @return Current element as a retained caller-owned reference, or NULL when
 ///         exhausted. The cursor advances by one on success.
 void *rt_iter_next(void *iter) {
-    rt_iter_impl *it;
-    void *elem;
     if (!iter)
         return NULL;
-    it = as_iter(iter, "Iterator.Next: invalid Iterator object");
+    rt_iter_impl *it = as_iter(iter, "Iterator.Next: invalid Iterator object");
+    if (!it || !iter_cursor_valid(it))
+        return NULL;
     if (it->pos >= it->len)
         return NULL;
-    elem = get_element(it, it->pos);
+
+    void *elem = NULL;
+    if (!iter_get_borrowed(it, it->pos, &elem))
+        return NULL;
+    if (!rt_collection_retain_checked(elem, "Iterator.Next: result retain failed"))
+        return NULL;
     it->pos++;
-    if (it->kind != ITER_LIST)
-        rt_obj_retain_maybe(elem);
     return elem;
 }
 
@@ -408,16 +605,19 @@ void *rt_iter_next(void *iter) {
 /// @return Current element as a retained caller-owned reference, or NULL when
 ///         exhausted.
 void *rt_iter_peek(void *iter) {
-    rt_iter_impl *it;
-    void *elem;
     if (!iter)
         return NULL;
-    it = as_iter(iter, "Iterator.Peek: invalid Iterator object");
+    rt_iter_impl *it = as_iter(iter, "Iterator.Peek: invalid Iterator object");
+    if (!it || !iter_cursor_valid(it))
+        return NULL;
     if (it->pos >= it->len)
         return NULL;
-    elem = get_element(it, it->pos);
-    if (it->kind != ITER_LIST)
-        rt_obj_retain_maybe(elem);
+
+    void *elem = NULL;
+    if (!iter_get_borrowed(it, it->pos, &elem))
+        return NULL;
+    if (!rt_collection_retain_checked(elem, "Iterator.Peek: result retain failed"))
+        return NULL;
     return elem;
 }
 
@@ -456,22 +656,56 @@ int64_t rt_iter_count(void *iter) {
 /// @return A new owning Seq containing elements from the current position to
 ///         the cached end. NULL produces an empty Seq.
 void *rt_iter_to_seq(void *iter) {
-    rt_iter_impl *it;
-    void *seq;
-    if (!iter) {
-        seq = rt_seq_new();
-        rt_seq_set_owns_elements(seq, 1);
-        return seq;
+    if (!iter)
+        return rt_seq_with_capacity_owned(1);
+
+    rt_iter_impl *it = as_iter(iter, "Iterator.ToSeq: invalid Iterator object");
+    if (!it || !iter_cursor_valid(it))
+        return NULL;
+
+    int64_t start = it->pos;
+    int64_t remaining = it->len - start;
+    void *volatile seq = NULL;
+    void *volatile retained = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        iter_save_trap(saved_error, sizeof(saved_error), "Iterator.ToSeq: snapshot failed");
+        rt_trap_clear_recovery();
+        release_temp_obj((void *)retained);
+        release_temp_obj((void *)seq);
+        it->pos = start;
+        rt_trap(saved_error);
+        return NULL;
     }
-    it = as_iter(iter, "Iterator.ToSeq: invalid Iterator object");
-    seq = rt_seq_new();
-    rt_seq_set_owns_elements(seq, 1);
+
+    seq = rt_seq_with_capacity_owned(remaining > 0 ? remaining : 1);
+    if (!seq) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
     while (it->pos < it->len) {
-        void *elem = rt_iter_next(iter);
-        rt_seq_push(seq, elem);
-        release_temp_obj(elem);
+        void *borrowed = NULL;
+        if (!iter_get_borrowed(it, it->pos, &borrowed)) {
+            rt_trap_clear_recovery();
+            release_temp_obj((void *)seq);
+            it->pos = start;
+            return NULL;
+        }
+        if (!rt_collection_retain_checked(borrowed, "Iterator.ToSeq: element retain failed")) {
+            rt_trap_clear_recovery();
+            release_temp_obj((void *)seq);
+            it->pos = start;
+            return NULL;
+        }
+        retained = borrowed;
+        rt_seq_push_raw((void *)seq, (void *)retained);
+        retained = NULL;
+        it->pos++;
     }
-    return seq;
+    rt_trap_clear_recovery();
+    return (void *)seq;
 }
 
 /// @brief Advance the iterator by up to @p n positions, returning the count skipped.
@@ -481,13 +715,13 @@ void *rt_iter_to_seq(void *iter) {
 /// @param n Maximum number of elements to skip (must be positive).
 /// @return Number of elements actually skipped.
 int64_t rt_iter_skip(void *iter, int64_t n) {
-    rt_iter_impl *it;
-    int64_t remaining, skipped;
     if (!iter || n <= 0)
         return 0;
-    it = as_iter(iter, "Iterator.Skip: invalid Iterator object");
-    remaining = it->len - it->pos;
-    skipped = (n < remaining) ? n : remaining;
+    rt_iter_impl *it = as_iter(iter, "Iterator.Skip: invalid Iterator object");
+    if (!it || !iter_cursor_valid(it))
+        return 0;
+    int64_t remaining = it->len - it->pos;
+    int64_t skipped = (n < remaining) ? n : remaining;
     it->pos += skipped;
     return skipped;
 }

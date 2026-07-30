@@ -126,9 +126,10 @@ typedef struct SaveEntry {
 
 /// @brief Internal save-data store: game identity, on-disk path, and entry list.
 typedef struct {
-    char *game_name;    ///< Validated game name (alphanumeric, dash, underscore, ≤64 chars).
-    char *file_path;    ///< Absolute path to the save JSON file.
-    SaveEntry *entries; ///< Head of the singly-linked entry list.
+    char *game_name;     ///< Validated game name (alphanumeric, dash, underscore, ≤64 chars).
+    char *file_path;     ///< Absolute path to the save JSON file.
+    SaveEntry *entries;  ///< Head of the singly-linked entry list.
+    int64_t entry_count; ///< Exact number of nodes reachable from @ref entries.
 } rt_savedata_impl;
 
 /// @brief Preserve the active trap diagnostic for cleanup and rethrow.
@@ -472,6 +473,7 @@ static void free_all_entries(rt_savedata_impl *sd) {
         e = next;
     }
     sd->entries = NULL;
+    sd->entry_count = 0;
 }
 
 /// @brief Test whether a native path spelling is absolute.
@@ -1111,11 +1113,15 @@ static int ensure_parent_dir(const char *file_path) {
 /// node and pushes it to the head so the most-recently-written key
 /// stays cheap to look up in LIFO workloads. Returns 0 only on OOM.
 /// @param[in,out] head Entry-list head pointer.
+/// @param[in,out] entry_count Exact number of nodes reachable from @p head.
 /// @param key Borrowed validated key; retained when a node is created.
 /// @param value Signed value to store.
 /// @return 1 after insertion/update; 0 for invalid input or node-allocation failure.
-static int savedata_set_int_entry(SaveEntry **head, rt_string key, int64_t value) {
-    if (!head || !key)
+static int savedata_set_int_entry(SaveEntry **head,
+                                  int64_t *entry_count,
+                                  rt_string key,
+                                  int64_t value) {
+    if (!head || !entry_count || !key)
         return 0;
 
     const char *key_data = rt_string_cstr(key);
@@ -1139,6 +1145,8 @@ static int savedata_set_int_entry(SaveEntry **head, rt_string key, int64_t value
         return 1;
     }
 
+    if (*entry_count == INT64_MAX)
+        return 0;
     rt_string retained_key = rt_string_ref(key);
     if (!retained_key)
         return 0;
@@ -1155,6 +1163,7 @@ static int savedata_set_int_entry(SaveEntry **head, rt_string key, int64_t value
     e->str_val = NULL;
     e->next = *head;
     *head = e;
+    (*entry_count)++;
     return 1;
 }
 
@@ -1163,11 +1172,15 @@ static int savedata_set_int_entry(SaveEntry **head, rt_string key, int64_t value
 /// @details Retains @p value (or the shared empty string for NULL) before releasing an existing
 ///          value, so replacement is transactional across retain traps.
 /// @param[in,out] head Entry-list head pointer.
+/// @param[in,out] entry_count Exact number of nodes reachable from @p head.
 /// @param key Borrowed validated key retained when a node is created.
 /// @param value Borrowed string value; NULL is stored as empty.
 /// @return 1 after insertion/update; 0 for invalid input or node-allocation failure.
-static int savedata_set_string_entry(SaveEntry **head, rt_string key, rt_string value) {
-    if (!head || !key)
+static int savedata_set_string_entry(SaveEntry **head,
+                                     int64_t *entry_count,
+                                     rt_string key,
+                                     rt_string value) {
+    if (!head || !entry_count || !key)
         return 0;
 
     const char *key_data = rt_string_cstr(key);
@@ -1196,6 +1209,8 @@ static int savedata_set_string_entry(SaveEntry **head, rt_string key, rt_string 
         return 1;
     }
 
+    if (*entry_count == INT64_MAX)
+        return 0;
     rt_string retained_key = NULL;
     rt_string retained_value = NULL;
     if (!savedata_retain_pair_or_trap(key, stored_value, &retained_key, &retained_value))
@@ -1215,6 +1230,7 @@ static int savedata_set_string_entry(SaveEntry **head, rt_string key, rt_string 
     e->str_val = retained_value;
     e->next = *head;
     *head = e;
+    (*entry_count)++;
     return 1;
 }
 
@@ -1481,6 +1497,7 @@ void *rt_savedata_new(rt_string game_name) {
 
     sd->file_path = compute_save_path(sd->game_name);
     sd->entries = NULL;
+    sd->entry_count = 0;
     if (!sd->file_path) {
         if (rt_obj_release_check0(sd))
             rt_obj_free(sd);
@@ -1503,7 +1520,7 @@ void rt_savedata_set_int(void *obj, rt_string key, int64_t value) {
     if (!savedata_require_key(key, &klen, "SaveData.SetInt: invalid key"))
         return;
     (void)klen;
-    if (!savedata_set_int_entry(&sd->entries, key, value))
+    if (!savedata_set_int_entry(&sd->entries, &sd->entry_count, key, value))
         rt_trap("SaveData.SetInt: memory allocation failed");
 }
 
@@ -1522,7 +1539,7 @@ void rt_savedata_set_string(void *obj, rt_string key, rt_string value) {
         !savedata_require_string_value(value, "SaveData.SetString: invalid value"))
         return;
     (void)klen;
-    if (!savedata_set_string_entry(&sd->entries, key, value))
+    if (!savedata_set_string_entry(&sd->entries, &sd->entry_count, key, value))
         rt_trap("SaveData.SetString: memory allocation failed");
 }
 
@@ -1692,6 +1709,7 @@ int8_t rt_savedata_load(void *obj) {
     }
 
     SaveEntry *loaded_entries = NULL;
+    int64_t loaded_entry_count = 0;
     int success = 0;
 
     int64_t tok = rt_json_stream_next(parser);
@@ -1721,7 +1739,7 @@ int8_t rt_savedata_load(void *obj) {
                 goto done;
             }
             rt_string_unref(number_text);
-            if (!savedata_set_int_entry(&loaded_entries, key_str, int_val)) {
+            if (!savedata_set_int_entry(&loaded_entries, &loaded_entry_count, key_str, int_val)) {
                 rt_string_unref(key_str);
                 goto done;
             }
@@ -1732,7 +1750,8 @@ int8_t rt_savedata_load(void *obj) {
                 rt_string_unref(key_str);
                 goto done;
             }
-            if (!savedata_set_string_entry(&loaded_entries, key_str, val_str)) {
+            if (!savedata_set_string_entry(
+                    &loaded_entries, &loaded_entry_count, key_str, val_str)) {
                 rt_string_unref(val_str);
                 rt_string_unref(key_str);
                 goto done;
@@ -1767,6 +1786,7 @@ done:
 
     free_all_entries(sd);
     sd->entries = loaded_entries;
+    sd->entry_count = loaded_entry_count;
     return 1;
 }
 
@@ -1806,7 +1826,12 @@ int8_t rt_savedata_remove(void *obj, rt_string key) {
         SaveEntry *e = *pp;
         if (e->key && e->key_len == (int64_t)klen &&
             memcmp(rt_string_cstr(e->key), kcstr, klen) == 0) {
+            if (sd->entry_count <= 0) {
+                rt_trap("SaveData.Remove: entry count underflow");
+                return 0;
+            }
             *pp = e->next;
+            sd->entry_count--;
             free_entry(e);
             return 1;
         }
@@ -1834,13 +1859,7 @@ int64_t rt_savedata_count(void *obj) {
     rt_savedata_impl *sd = savedata_require(obj, "SaveData.Count: invalid handle");
     if (!sd)
         return 0;
-    int64_t count = 0;
-    SaveEntry *e = sd->entries;
-    while (e) {
-        count++;
-        e = e->next;
-    }
-    return count;
+    return sd->entry_count;
 }
 
 /// @brief Read the absolute path where this SaveData persists. Useful for showing the user

@@ -41,29 +41,29 @@
 ///          empty; that mode controls GC traversal and element lifetime.
 
 #include "rt_ring.h"
+#include "rt_ring_internal.h"
 
 #include "rt_box.h"
 
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
-/// @brief Ring buffer implementation structure.
-/// @details `head` names logical index zero. A logical index is translated by
-///          `(head + index) % capacity`; no separate tail field is needed
-///          because `count` determines the next write slot.
-typedef struct rt_ring_impl {
-    void **vptr;          ///< Vtable pointer placeholder.
-    void **items;         ///< Array of element pointers.
-    size_t capacity;      ///< Maximum number of elements.
-    size_t head;          ///< Index of oldest element.
-    size_t count;         ///< Number of elements currently stored.
-    int8_t owns_elements; ///< Whether stored elements are retained/released.
-} rt_ring_impl;
+/// @brief Install a non-local recovery target for the current thread.
+/// @param buf Jump buffer that receives control after a runtime trap.
+void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's active legacy recovery target.
+void rt_trap_clear_recovery(void);
+/// @brief Borrow the most recent runtime trap diagnostic.
+/// @return Null-terminated diagnostic text, or NULL when unavailable.
+const char *rt_trap_get_error(void);
 
 /// @brief Checked cast of an opaque handle to the RingBuffer implementation;
 ///        traps with @p what if @p obj is NULL or not a RingBuffer.
@@ -83,6 +83,15 @@ static rt_ring_impl *as_ring(void *obj, const char *what) {
 static void ring_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
+}
+
+/// @brief Save an active trap diagnostic before clearing its recovery frame.
+/// @param buffer Destination for the bounded diagnostic copy.
+/// @param buffer_size Capacity of @p buffer including its terminator.
+/// @param fallback Message used when no active diagnostic is available.
+static void ring_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
 }
 
 /// @brief GC traversal callback for owned Ring elements.
@@ -401,8 +410,11 @@ void rt_ring_push(void *obj, void *elem) {
         return;
     }
 
-    if (ring->owns_elements)
-        rt_obj_retain_maybe(elem);
+    if (ring->owns_elements &&
+        !rt_collection_retain_checked(elem, "Ring.Push: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
 
     // Calculate tail position (where new element goes)
     size_t tail = (ring->head + ring->count) % ring->capacity;
@@ -476,16 +488,14 @@ void *rt_ring_pop(void *obj) {
 
     // Get oldest element (at head)
     void *item = ring->items[ring->head];
-    if (ring->owns_elements)
-        rt_obj_retain_maybe(item);
     ring->items[ring->head] = NULL;
 
     // Advance head
     ring->head = (ring->head + 1) % ring->capacity;
     ring->count--;
 
-    if (ring->owns_elements)
-        ring_release_value(item);
+    // Owning rings move the stored reference to the caller. Borrowing rings
+    // continue to return the raw stored pointer.
     rt_gc_mutator_exit();
     return item;
 }
@@ -746,16 +756,31 @@ void *rt_ring_clone(void *obj) {
     if (!ring)
         return NULL;
 
-    void *new_ring = rt_ring_new((int64_t)ring->capacity);
-    if (!new_ring)
+    void *volatile new_ring = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        ring_save_trap(saved_error, sizeof(saved_error), "Ring.Clone: copy failed");
+        rt_trap_clear_recovery();
+        ring_release_value((void *)new_ring);
+        rt_trap(saved_error);
         return NULL;
+    }
+
+    new_ring = rt_ring_new((int64_t)ring->capacity);
+    if (!new_ring) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
     if (!ring->owns_elements)
-        rt_ring_set_owns_elements(new_ring, 0);
+        rt_ring_set_owns_elements((void *)new_ring, 0);
 
     for (size_t i = 0; i < ring->count; i++) {
         size_t idx = (ring->head + i) % ring->capacity;
-        rt_ring_push(new_ring, ring->items[idx]);
+        rt_ring_push((void *)new_ring, ring->items[idx]);
     }
 
-    return new_ring;
+    rt_trap_clear_recovery();
+    return (void *)new_ring;
 }

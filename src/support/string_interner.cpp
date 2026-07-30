@@ -5,9 +5,14 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the string interner that assigns stable Symbol handles to unique
-// strings.  The interner owns the canonical copies of the strings and provides
-// constant-time lookup from handles back to their original text.
+// File: src/support/string_interner.cpp
+// Purpose: Implements stable one-based symbols over canonical owned strings.
+// Key invariants:
+//   - Map keys always borrow bytes from this interner's companion deque.
+//   - Copy/move operations rebuild keys and leave no source map/storage mismatch.
+// Ownership/Lifetime:
+//   - Each interner owns its canonical deque; lookup views are borrowed.
+// Links: src/support/string_interner.hpp, src/support/symbol.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -62,13 +67,15 @@ StringInterner &StringInterner::operator=(const StringInterner &other) {
 /// @details The storage deque is moved first, then @ref rebuildMap recreates every
 ///          string_view key so it points into this object's storage. The source
 ///          remains valid but otherwise has the standard unspecified moved-from
-///          state; its stale lookup map is explicitly cleared.
+///          state; its stale lookup map and any implementation-retained
+///          moved-from deque elements are explicitly cleared.
 StringInterner::StringInterner(StringInterner &&other) : maxSymbols_(0) {
     std::lock_guard lock(other.mutex_);
     storage_ = std::move(other.storage_);
     maxSymbols_ = other.maxSymbols_;
     rebuildMap();
     other.map_.clear();
+    other.storage_.clear();
 }
 
 /// @brief Move-assign an interner and rebuild view-backed lookup keys.

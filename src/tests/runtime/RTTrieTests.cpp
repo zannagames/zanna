@@ -465,15 +465,15 @@ static void test_returning_traps_reject_invalid_handles() {
 
     assert(rt_trie_len(wrong_object) == 0);
     assert(rt_trie_clone(wrong_object) == nullptr);
-    void *wrong_keys = rt_trie_keys(wrong_object);
-    assert(wrong_keys != nullptr);
-    assert(rt_seq_len(wrong_keys) == 0);
+    assert(rt_trie_keys(wrong_object) == nullptr);
+    assert(rt_trie_with_prefix(wrong_object, empty) == nullptr);
+    assert(rt_trie_longest_prefix(wrong_object, empty) == nullptr);
+    assert(rt_trie_longest_prefix_option(wrong_object, empty) == nullptr);
 
     g_return_traps = false;
-    assert(g_returned_trap_count == 11);
+    assert(g_returned_trap_count == 14);
     assert(g_last_trap != nullptr);
 
-    rt_release_obj(wrong_keys);
     rt_release_obj(wrong_object);
     rt_string_unref(empty);
     rt_release_obj(replacement);
@@ -515,6 +515,42 @@ static void test_embedded_nul_keys() {
     rt_release_obj(t);
 }
 
+static void test_deep_parent_linked_traversal() {
+    constexpr size_t key_len = 513;
+    constexpr size_t prefix_len = 257;
+    char key_bytes[key_len];
+    for (size_t i = 0; i < key_len; ++i)
+        key_bytes[i] = (char)('a' + (i % 26));
+
+    void *trie = rt_trie_new();
+    void *value = new_obj();
+    rt_string key = make_key_bytes(key_bytes, key_len);
+    rt_string prefix = make_key_bytes(key_bytes, prefix_len);
+    rt_trie_set(trie, key, value);
+
+    assert(rt_trie_has_prefix(trie, prefix) == 1);
+    void *keys = rt_trie_keys(trie);
+    assert(rt_seq_len(keys) == 1);
+    assert(str_bytes_eq((rt_string)rt_seq_get(keys, 0), key_bytes, key_len));
+
+    void *matches = rt_trie_with_prefix(trie, prefix);
+    assert(rt_seq_len(matches) == 1);
+    assert(str_bytes_eq((rt_string)rt_seq_get(matches, 0), key_bytes, key_len));
+
+    void *clone = rt_trie_clone(trie);
+    assert(clone != nullptr);
+    assert(rt_trie_has(clone, key) == 1);
+    assert(rt_trie_get(clone, key) == value);
+
+    rt_release_obj(clone);
+    rt_release_obj(matches);
+    rt_release_obj(keys);
+    rt_string_unref(prefix);
+    rt_string_unref(key);
+    rt_release_obj(value);
+    rt_release_obj(trie);
+}
+
 static void test_null_safety() {
     rt_string k = make_key("test");
     assert(rt_trie_len(NULL) == 0);
@@ -537,14 +573,19 @@ static void test_longest_prefix_option() {
     void *none = rt_trie_longest_prefix_option(trie, probe);
     assert(rt_option_is_none(none) == 1);
 
-    rt_trie_set(trie, empty, rt_box_i64(1));
+    void *value = rt_box_i64(1);
+    rt_trie_set(trie, empty, value);
     void *some = rt_trie_longest_prefix_option(trie, probe);
     assert(rt_option_is_some(some) == 1);
     rt_string match = rt_option_unwrap_str(some);
     assert(rt_str_len(match) == 0);
 
+    rt_release_obj(some);
+    rt_release_obj(none);
+    rt_release_obj(value);
     rt_string_unref(empty);
     rt_string_unref(probe);
+    rt_release_obj(trie);
 }
 
 int main() {
@@ -566,6 +607,7 @@ int main() {
     test_clone_retain_overflow_keeps_source_unchanged();
     test_returning_traps_reject_invalid_handles();
     test_embedded_nul_keys();
+    test_deep_parent_linked_traversal();
     test_null_safety();
     return 0;
 }

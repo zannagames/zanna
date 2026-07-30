@@ -71,6 +71,14 @@ static bool event_widget_is_ancestor(const vg_widget_t *ancestor, const vg_widge
     return false;
 }
 
+/// @brief Validate a borrowed widget pointer together with the identity observed before a callback.
+/// @param widget Candidate widget pointer.
+/// @param id Widget generation captured while @p widget was known to be live.
+/// @return true only when the same widget allocation remains live.
+static bool event_widget_ref_is_live(const vg_widget_t *widget, uint64_t id) {
+    return widget && id != 0 && vg_widget_is_live(widget) && widget->id == id;
+}
+
 /// @brief Nulls all per-root state references (hover, focus, capture, modal-root, click) that point
 /// into @p subtree.
 /// @param state Per-root runtime state to sanitize.
@@ -377,8 +385,11 @@ static bool event_widget_is_in_subtree(vg_widget_t *root, vg_widget_t *widget) {
 
 /// @brief Returns the captured widget only if it resides inside the active modal; releases and
 /// returns NULL if outside.
+/// @param out_id Receives the captured widget generation, or zero when none.
 /// @return Live capture allowed by the active modal root, or NULL.
-static vg_widget_t *event_modal_safe_capture(void) {
+static vg_widget_t *event_modal_safe_capture(uint64_t *out_id) {
+    if (out_id)
+        *out_id = 0;
     vg_widget_t *capture = vg_widget_get_input_capture();
     if (capture && !vg_widget_is_live(capture)) {
         vg_widget_release_input_capture();
@@ -393,14 +404,19 @@ static vg_widget_t *event_modal_safe_capture(void) {
         vg_widget_release_input_capture();
         return NULL;
     }
+    if (capture && out_id)
+        *out_id = capture->id;
     return capture;
 }
 
 /// @brief Returns the currently hovered widget from the active root's runtime state.
+/// @param out_id Receives the stored widget generation, or zero when none.
 /// @return Borrowed hovered widget pointer, or NULL.
-static vg_widget_t *get_hovered_widget(void) {
+static vg_widget_t *get_hovered_widget(uint64_t *out_id) {
     vg_widget_runtime_state_t state = {0};
     vg_widget_get_runtime_state(&state);
+    if (out_id)
+        *out_id = state.hovered_widget_id;
     return state.hovered_widget;
 }
 
@@ -418,22 +434,31 @@ static void set_hovered_widget(vg_widget_t *widget) {
 /// MOUSE_ENTER events.
 /// @param widget Newly hovered live widget, or NULL when the pointer left the tree.
 static void update_hovered_widget(vg_widget_t *widget) {
-    vg_widget_t *previous = get_hovered_widget();
-    if (previous == widget)
+    uint64_t widget_id = 0;
+    if (widget && vg_widget_is_live(widget))
+        widget_id = widget->id;
+    else
+        widget = NULL;
+
+    uint64_t previous_id = 0;
+    vg_widget_t *previous = get_hovered_widget(&previous_id);
+    if (previous == widget && previous_id == widget_id)
         return;
 
-    if (previous) {
+    if (event_widget_ref_is_live(previous, previous_id)) {
         vg_event_t leave = {0};
         leave.type = VG_EVENT_MOUSE_LEAVE;
         leave.target = previous;
         vg_event_send(previous, &leave);
-        if (!vg_widget_is_live(widget))
+        if (!event_widget_ref_is_live(widget, widget_id)) {
             widget = NULL;
+            widget_id = 0;
+        }
     }
 
     set_hovered_widget(widget);
 
-    if (widget && vg_widget_is_live(widget)) {
+    if (event_widget_ref_is_live(widget, widget_id)) {
         vg_event_t enter = {0};
         enter.type = VG_EVENT_MOUSE_ENTER;
         enter.target = widget;
@@ -460,16 +485,20 @@ static void clear_last_click_state(void) {
 ///          count so the next mouse-up can synthesize double/triple-click
 ///          events without sharing state across root windows.
 /// @param widget Widget that received the click.
+/// @param widget_id Widget identity captured before dispatching callback code.
 /// @param event Mouse-up event that produced the click.
 /// @param click_count Count to store for the next rapid-click comparison.
-static void remember_click(vg_widget_t *widget, const vg_event_t *event, int click_count) {
-    if (!widget || !event)
+static void remember_click(vg_widget_t *widget,
+                           uint64_t widget_id,
+                           const vg_event_t *event,
+                           int click_count) {
+    if (!event || !event_widget_ref_is_live(widget, widget_id))
         return;
 
     vg_widget_runtime_state_t state = {0};
     vg_widget_get_runtime_state(&state);
     state.last_click_widget = widget;
-    state.last_click_widget_id = widget->id;
+    state.last_click_widget_id = widget_id;
     state.last_click_time_ms = event->timestamp;
     state.last_click_button = (int32_t)event->mouse.button;
     state.last_click_count = click_count;
@@ -788,8 +817,11 @@ bool vg_event_dispatch(vg_widget_t *root, vg_event_t *event) {
         return false;
     if (!vg_widget_is_live(root))
         return false;
+    const uint64_t root_id = root->id;
 
     event_activate_root_state(root);
+    if (!event_widget_ref_is_live(root, root_id))
+        return false;
 
     // Find target widget for mouse events
     if (event->type == VG_EVENT_MOUSE_MOVE || event->type == VG_EVENT_MOUSE_DOWN ||
@@ -800,10 +832,12 @@ bool vg_event_dispatch(vg_widget_t *root, vg_event_t *event) {
         // When capture is active, all mouse events route to the captured widget
         // regardless of hit testing. This allows dropdown menus to receive clicks
         // even though the dropdown renders outside the menubar's widget bounds.
-        vg_widget_t *capture = event_modal_safe_capture();
+        uint64_t capture_id = 0;
+        vg_widget_t *capture = event_modal_safe_capture(&capture_id);
         if (capture) {
             update_hovered_widget(capture);
-            if (!vg_widget_is_live(capture))
+            if (!event_widget_ref_is_live(capture, capture_id) ||
+                !event_widget_ref_is_live(root, root_id))
                 return false;
             event->target = capture;
 
@@ -815,7 +849,8 @@ bool vg_event_dispatch(vg_widget_t *root, vg_event_t *event) {
             // capture input as themselves while painting an out-of-bounds popup.
             if (event->type == VG_EVENT_MOUSE_UP) {
                 bool handled = vg_event_send(capture, event);
-                if (!vg_widget_is_live(capture))
+                if (!event_widget_ref_is_live(capture, capture_id) ||
+                    !event_widget_ref_is_live(root, root_id))
                     return handled;
                 if ((capture->type == VG_WIDGET_DROPDOWN || capture->type == VG_WIDGET_MENUBAR) &&
                     vg_widget_get_input_capture() == capture &&
@@ -825,7 +860,10 @@ bool vg_event_dispatch(vg_widget_t *root, vg_event_t *event) {
                     click_event.type = VG_EVENT_CLICK;
                     handled |= vg_event_send(capture, &click_event);
                 }
-                if (vg_widget_get_input_capture() != capture) {
+                if (!event_widget_ref_is_live(root, root_id))
+                    return handled;
+                if (!event_widget_ref_is_live(capture, capture_id) ||
+                    vg_widget_get_input_capture() != capture) {
                     vg_widget_t *modal = vg_widget_get_modal_root();
                     vg_widget_t *hit_root = (modal && modal->visible) ? modal : root;
                     vg_widget_t *target =
@@ -836,7 +874,10 @@ bool vg_event_dispatch(vg_widget_t *root, vg_event_t *event) {
             }
 
             bool handled = vg_event_send(capture, event);
-            if (vg_widget_get_input_capture() != capture) {
+            if (!event_widget_ref_is_live(root, root_id))
+                return handled;
+            if (!event_widget_ref_is_live(capture, capture_id) ||
+                vg_widget_get_input_capture() != capture) {
                 vg_widget_t *modal = vg_widget_get_modal_root();
                 vg_widget_t *hit_root = (modal && modal->visible) ? modal : root;
                 vg_widget_t *target =
@@ -849,13 +890,19 @@ bool vg_event_dispatch(vg_widget_t *root, vg_event_t *event) {
         // When a modal root is active, restrict hit-testing to its subtree so
         // that clicks on widgets behind the dialog are swallowed.
         vg_widget_t *modal = vg_widget_get_modal_root();
+        const uint64_t modal_id = modal ? modal->id : 0;
         vg_widget_t *hit_root = (modal && modal->visible) ? modal : root;
 
         vg_widget_t *target =
             vg_widget_hit_test(hit_root, event_screen_x(event), event_screen_y(event));
+        const uint64_t target_id = target ? target->id : 0;
         update_hovered_widget(target);
-        if (target && !vg_widget_is_live(target))
+        if (!event_widget_ref_is_live(target, target_id))
             target = NULL;
+        if (!event_widget_ref_is_live(root, root_id))
+            return false;
+        if (!event_widget_ref_is_live(modal, modal_id))
+            modal = NULL;
         if (!target && modal && modal->visible) {
             // Click landed outside the modal dialog: swallow the event silently.
             return true;
@@ -878,24 +925,30 @@ bool vg_event_dispatch(vg_widget_t *root, vg_event_t *event) {
         event->type == VG_EVENT_KEY_CHAR || event->type == VG_EVENT_COMPOSITION_START ||
         event->type == VG_EVENT_COMPOSITION_UPDATE || event->type == VG_EVENT_COMPOSITION_COMMIT ||
         event->type == VG_EVENT_COMPOSITION_CANCEL) {
-        vg_widget_t *capture = event_modal_safe_capture();
+        uint64_t capture_id = 0;
+        vg_widget_t *capture = event_modal_safe_capture(&capture_id);
         if (capture) {
             event->target = capture;
             if (vg_event_send(capture, event))
                 return true;
-            if (!vg_widget_is_live(capture))
+            if (!event_widget_ref_is_live(root, root_id))
+                return false;
+            if (!event_widget_ref_is_live(capture, capture_id))
                 event->target = NULL;
             // If captured widget didn't handle it, fall through to focused widget
         }
 
         vg_widget_t *focused = vg_widget_get_focused(root);
+        uint64_t focused_id = focused ? focused->id : 0;
 
         // When a modal is active, redirect keyboard events to the modal if the
         // focused widget is outside the modal's subtree.
         vg_widget_t *modal_kb = vg_widget_get_modal_root();
+        uint64_t modal_kb_id = modal_kb ? modal_kb->id : 0;
         if (modal_kb && modal_kb->visible) {
             if (!focused) {
                 focused = modal_kb;
+                focused_id = modal_kb_id;
             } else {
                 bool inside = false;
                 for (vg_widget_t *w = focused; w; w = w->parent) {
@@ -904,21 +957,26 @@ bool vg_event_dispatch(vg_widget_t *root, vg_event_t *event) {
                         break;
                     }
                 }
-                if (!inside)
+                if (!inside) {
                     focused = modal_kb;
+                    focused_id = modal_kb_id;
+                }
             }
         }
 
         vg_widget_t *focus_root = (modal_kb && modal_kb->visible) ? modal_kb : root;
+        const uint64_t focus_root_id = focus_root == modal_kb ? modal_kb_id : root_id;
 
         if (event->type == VG_EVENT_KEY_DOWN && event->key.key == VG_KEY_TAB &&
             (event->modifiers & (VG_MOD_CTRL | VG_MOD_ALT | VG_MOD_SUPER)) == 0) {
-            if (focused) {
+            if (event_widget_ref_is_live(focused, focused_id)) {
                 event->target = focused;
                 if (vg_event_send(focused, event))
                     return true;
             }
 
+            if (!event_widget_ref_is_live(focus_root, focus_root_id))
+                return true;
             if (event->modifiers & VG_MOD_SHIFT)
                 vg_widget_focus_prev(focus_root);
             else
@@ -926,7 +984,7 @@ bool vg_event_dispatch(vg_widget_t *root, vg_event_t *event) {
             return true;
         }
 
-        if (focused) {
+        if (event_widget_ref_is_live(focused, focused_id)) {
             event->target = focused;
             return vg_event_send(focused, event);
         }
@@ -952,6 +1010,7 @@ bool vg_event_send(vg_widget_t *widget, vg_event_t *event) {
     if (!vg_widget_is_live(widget))
         return false;
 
+    const uint64_t widget_id = widget->id;
     const bool restore_mouse = event_has_widget_local_mouse_coords(event->type);
     const float target_mouse_x = event->mouse.x;
     const float target_mouse_y = event->mouse.y;
@@ -977,9 +1036,8 @@ bool vg_event_send(vg_widget_t *widget, vg_event_t *event) {
         widget->state |= VG_STATE_PRESSED;
         widget->needs_paint = true;
         // Set focus on click if widget can accept focus
-        if (widget->vtable && widget->vtable->can_focus && widget->vtable->can_focus(widget)) {
+        if (widget->vtable && widget->vtable->can_focus)
             vg_widget_set_focus(widget);
-        }
     } else if (event->type == VG_EVENT_MOUSE_UP) {
         bool was_pressed = (widget->state & VG_STATE_PRESSED) != 0;
         widget->state &= ~VG_STATE_PRESSED;
@@ -997,6 +1055,14 @@ bool vg_event_send(vg_widget_t *widget, vg_event_t *event) {
         }
     }
 
+    if (!event_widget_ref_is_live(widget, widget_id)) {
+        if (restore_mouse) {
+            event->mouse.x = target_mouse_x;
+            event->mouse.y = target_mouse_y;
+        }
+        return event->handled || handled;
+    }
+
     // Call widget's event handler
     if (widget->vtable && widget->vtable->handle_event) {
         if (widget->vtable->handle_event(widget, event)) {
@@ -1005,7 +1071,7 @@ bool vg_event_send(vg_widget_t *widget, vg_event_t *event) {
         }
     }
     vg_widget_t *bubble_parent = NULL;
-    if (!vg_widget_is_live(widget)) {
+    if (!event_widget_ref_is_live(widget, widget_id)) {
         synthesize_click = false;
     } else {
         bubble_parent = widget->parent;
@@ -1016,6 +1082,7 @@ bool vg_event_send(vg_widget_t *widget, vg_event_t *event) {
     while (!event->handled && current) {
         if (!vg_widget_is_live(current))
             break;
+        const uint64_t current_id = current->id;
         event_localize_mouse_to_widget(current, event);
         if (current->vtable && current->vtable->handle_event) {
             if (current->vtable->handle_event(current, event)) {
@@ -1024,7 +1091,7 @@ bool vg_event_send(vg_widget_t *widget, vg_event_t *event) {
                 break;
             }
         }
-        if (!vg_widget_is_live(current))
+        if (!event_widget_ref_is_live(current, current_id))
             break;
         vg_widget_t *next = current->parent;
         current = vg_widget_is_live(next) ? next : NULL;
@@ -1033,29 +1100,30 @@ bool vg_event_send(vg_widget_t *widget, vg_event_t *event) {
     if (event->handled)
         synthesize_click = false;
 
-    if (synthesize_click && vg_widget_is_live(widget)) {
+    if (synthesize_click && event_widget_ref_is_live(widget, widget_id)) {
         vg_event_t click_event = click_source;
         click_event.type = VG_EVENT_CLICK;
         click_event.handled = false;
         click_event.mouse.click_count = synthesized_click_count;
         handled |= vg_event_send(widget, &click_event);
 
-        if (synthesize_double_click) {
+        if (event_widget_ref_is_live(widget, widget_id) && synthesize_double_click) {
             vg_event_t double_click_event = click_source;
             double_click_event.type = VG_EVENT_DOUBLE_CLICK;
             double_click_event.handled = false;
             double_click_event.mouse.click_count = 2;
             handled |= vg_event_send(widget, &double_click_event);
-            remember_click(widget, &click_source, 2);
-        } else if (synthesize_triple_click) {
+            remember_click(widget, widget_id, &click_source, 2);
+        } else if (event_widget_ref_is_live(widget, widget_id) && synthesize_triple_click) {
             vg_event_t triple_click_event = click_source;
             triple_click_event.type = VG_EVENT_TRIPLE_CLICK;
             triple_click_event.handled = false;
             triple_click_event.mouse.click_count = 3;
             handled |= vg_event_send(widget, &triple_click_event);
-            clear_last_click_state();
-        } else {
-            remember_click(widget, &click_source, 1);
+            if (event_widget_ref_is_live(widget, widget_id))
+                clear_last_click_state();
+        } else if (event_widget_ref_is_live(widget, widget_id)) {
+            remember_click(widget, widget_id, &click_source, 1);
         }
     }
 

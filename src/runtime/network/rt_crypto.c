@@ -283,23 +283,24 @@ void rt_sha256_final(rt_sha256_ctx *ctx, uint8_t digest[32]) {
         return;
     }
     uint64_t bits = ctx->count;
-    uint8_t pad[64];
     size_t idx = (ctx->count / 8) % 64;
-    size_t padlen = (idx < 56) ? (56 - idx) : (120 - idx);
 
-    memset(pad, 0, sizeof(pad));
-    pad[0] = 0x80;
-    rt_sha256_update(ctx, pad, padlen);
-
-    pad[0] = (bits >> 56) & 0xFF;
-    pad[1] = (bits >> 48) & 0xFF;
-    pad[2] = (bits >> 40) & 0xFF;
-    pad[3] = (bits >> 32) & 0xFF;
-    pad[4] = (bits >> 24) & 0xFF;
-    pad[5] = (bits >> 16) & 0xFF;
-    pad[6] = (bits >> 8) & 0xFF;
-    pad[7] = bits & 0xFF;
-    rt_sha256_update(ctx, pad, 8);
+    ctx->buffer[idx++] = 0x80;
+    if (idx > 56) {
+        memset(ctx->buffer + idx, 0, 64 - idx);
+        sha256_transform(ctx, ctx->buffer);
+        idx = 0;
+    }
+    memset(ctx->buffer + idx, 0, 56 - idx);
+    ctx->buffer[56] = (uint8_t)(bits >> 56);
+    ctx->buffer[57] = (uint8_t)(bits >> 48);
+    ctx->buffer[58] = (uint8_t)(bits >> 40);
+    ctx->buffer[59] = (uint8_t)(bits >> 32);
+    ctx->buffer[60] = (uint8_t)(bits >> 24);
+    ctx->buffer[61] = (uint8_t)(bits >> 16);
+    ctx->buffer[62] = (uint8_t)(bits >> 8);
+    ctx->buffer[63] = (uint8_t)bits;
+    sha256_transform(ctx, ctx->buffer);
 
     for (int i = 0; i < 8; i++) {
         digest[i * 4] = (ctx->state[i] >> 24) & 0xFF;
@@ -322,6 +323,10 @@ void rt_sha256(const void *data, size_t len, uint8_t digest[32]) {
     const uint8_t *ptr = rt_crypto_checked_input(data, len, "SHA256: input buffer is null");
     if (!ptr)
         return;
+    if ((uint64_t)len > UINT64_MAX / 8) {
+        rt_trap("SHA256: input too large");
+        return;
+    }
     rt_sha256_init(&ctx);
     rt_sha256_update(&ctx, ptr, len);
     rt_sha256_final(&ctx, digest);
@@ -506,31 +511,32 @@ static void sha512_family_final(rt_sha512_ctx_internal *ctx, uint8_t *digest, si
     }
     uint64_t bits_hi = ctx->count_hi;
     uint64_t bits_lo = ctx->count_lo;
-    uint8_t pad[128];
     size_t idx = (size_t)((ctx->count_lo >> 3) & 127u);
-    size_t pad_len = (idx < 112) ? (112 - idx) : (240 - idx);
 
-    memset(pad, 0, sizeof(pad));
-    pad[0] = 0x80;
-    sha512_family_update(ctx, pad, pad_len);
-
-    pad[0] = (uint8_t)(bits_hi >> 56);
-    pad[1] = (uint8_t)(bits_hi >> 48);
-    pad[2] = (uint8_t)(bits_hi >> 40);
-    pad[3] = (uint8_t)(bits_hi >> 32);
-    pad[4] = (uint8_t)(bits_hi >> 24);
-    pad[5] = (uint8_t)(bits_hi >> 16);
-    pad[6] = (uint8_t)(bits_hi >> 8);
-    pad[7] = (uint8_t)bits_hi;
-    pad[8] = (uint8_t)(bits_lo >> 56);
-    pad[9] = (uint8_t)(bits_lo >> 48);
-    pad[10] = (uint8_t)(bits_lo >> 40);
-    pad[11] = (uint8_t)(bits_lo >> 32);
-    pad[12] = (uint8_t)(bits_lo >> 24);
-    pad[13] = (uint8_t)(bits_lo >> 16);
-    pad[14] = (uint8_t)(bits_lo >> 8);
-    pad[15] = (uint8_t)bits_lo;
-    sha512_family_update(ctx, pad, 16);
+    ctx->buffer[idx++] = 0x80;
+    if (idx > 112) {
+        memset(ctx->buffer + idx, 0, 128 - idx);
+        sha512_transform(ctx, ctx->buffer);
+        idx = 0;
+    }
+    memset(ctx->buffer + idx, 0, 112 - idx);
+    ctx->buffer[112] = (uint8_t)(bits_hi >> 56);
+    ctx->buffer[113] = (uint8_t)(bits_hi >> 48);
+    ctx->buffer[114] = (uint8_t)(bits_hi >> 40);
+    ctx->buffer[115] = (uint8_t)(bits_hi >> 32);
+    ctx->buffer[116] = (uint8_t)(bits_hi >> 24);
+    ctx->buffer[117] = (uint8_t)(bits_hi >> 16);
+    ctx->buffer[118] = (uint8_t)(bits_hi >> 8);
+    ctx->buffer[119] = (uint8_t)bits_hi;
+    ctx->buffer[120] = (uint8_t)(bits_lo >> 56);
+    ctx->buffer[121] = (uint8_t)(bits_lo >> 48);
+    ctx->buffer[122] = (uint8_t)(bits_lo >> 40);
+    ctx->buffer[123] = (uint8_t)(bits_lo >> 32);
+    ctx->buffer[124] = (uint8_t)(bits_lo >> 24);
+    ctx->buffer[125] = (uint8_t)(bits_lo >> 16);
+    ctx->buffer[126] = (uint8_t)(bits_lo >> 8);
+    ctx->buffer[127] = (uint8_t)bits_lo;
+    sha512_transform(ctx, ctx->buffer);
 
     for (size_t i = 0, pos = 0; i < 8 && pos < digest_len; i++) {
         for (int shift = 56; shift >= 0 && pos < digest_len; shift -= 8)
@@ -1487,14 +1493,18 @@ size_t rt_chacha20_poly1305_encrypt(const uint8_t key[32],
         return 0;
     if ((!aad && aad_len > 0) || (!plaintext && plaintext_len > 0))
         return 0;
+    if (plaintext_len > SIZE_MAX - 16)
+        return 0;
     if ((uint64_t)plaintext_len > RT_CHACHA20_MAX_BYTES)
         return 0;
 
     // Generate Poly1305 key (block 0)
-    uint8_t poly_key[64];
+    uint8_t poly_key[64] = {0};
     uint8_t zeros[64] = {0};
-    if (chacha20_crypt(key, nonce, 0, zeros, poly_key, 64) != 0)
+    if (chacha20_crypt(key, nonce, 0, zeros, poly_key, 64) != 0) {
+        rt_secure_zero(poly_key, sizeof(poly_key));
         return 0;
+    }
 
     // Encrypt plaintext (starting at block 1)
     if (chacha20_crypt(key, nonce, 1, (const uint8_t *)plaintext, ciphertext, plaintext_len) != 0) {
@@ -1519,6 +1529,8 @@ size_t rt_chacha20_poly1305_encrypt(const uint8_t key[32],
     poly1305_final(&poly, ciphertext + plaintext_len);
 
     // Zero key material to prevent stack residue
+    rt_secure_zero(&poly, sizeof(poly));
+    rt_secure_zero(lens, sizeof(lens));
     rt_secure_zero(poly_key, sizeof(poly_key));
 
     return plaintext_len + 16;
@@ -1559,10 +1571,12 @@ long rt_chacha20_poly1305_decrypt(const uint8_t key[32],
     const uint8_t *tag = (const uint8_t *)ciphertext + data_len;
 
     // Generate Poly1305 key
-    uint8_t poly_key[64];
+    uint8_t poly_key[64] = {0};
     uint8_t zeros[64] = {0};
-    if (chacha20_crypt(key, nonce, 0, zeros, poly_key, 64) != 0)
+    if (chacha20_crypt(key, nonce, 0, zeros, poly_key, 64) != 0) {
+        rt_secure_zero(poly_key, sizeof(poly_key));
         return -1;
+    }
 
     // Verify tag
     poly1305_ctx poly;
@@ -1579,15 +1593,20 @@ long rt_chacha20_poly1305_decrypt(const uint8_t key[32],
 
     uint8_t computed_tag[16];
     poly1305_final(&poly, computed_tag);
+    rt_secure_zero(&poly, sizeof(poly));
+    rt_secure_zero(lens, sizeof(lens));
 
     // Constant-time comparison
     uint8_t diff = 0;
     for (int i = 0; i < 16; i++)
         diff |= computed_tag[i] ^ tag[i];
+    rt_secure_zero(computed_tag, sizeof(computed_tag));
     if (diff != 0) {
+        rt_secure_zero(&diff, sizeof(diff));
         rt_secure_zero(poly_key, sizeof(poly_key));
         return -1;
     }
+    rt_secure_zero(&diff, sizeof(diff));
 
     // Decrypt
     if (chacha20_crypt(key, nonce, 1, (const uint8_t *)ciphertext, plaintext, data_len) != 0) {
@@ -1906,6 +1925,8 @@ size_t rt_aes128_gcm_encrypt(const uint8_t key[16],
         return 0;
     if ((!aad && aad_len > 0) || (!plaintext && plaintext_len > 0))
         return 0;
+    if (plaintext_len > SIZE_MAX - 16)
+        return 0;
     if ((uint64_t)plaintext_len > RT_AES_GCM_MAX_BYTES)
         return 0;
     if (!gcm_lengths_valid(aad_len, plaintext_len))
@@ -2095,6 +2116,8 @@ size_t rt_aes256_gcm_encrypt(const uint8_t key[32],
     if (!key || !nonce || !ciphertext)
         return 0;
     if ((!aad && aad_len > 0) || (!plaintext && plaintext_len > 0))
+        return 0;
+    if (plaintext_len > SIZE_MAX - 16)
         return 0;
     if ((uint64_t)plaintext_len > RT_AES_GCM_MAX_BYTES)
         return 0;

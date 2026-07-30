@@ -139,6 +139,7 @@ static void test_keys() {
 
     void *keys = rt_weakmap_keys(m);
     assert(rt_seq_len(keys) == 2);
+    assert(rt_seq_cap(keys) == 2);
 }
 
 static void test_clear() {

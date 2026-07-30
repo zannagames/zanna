@@ -52,32 +52,50 @@
 #include "rt_hash_util.h"
 #include "rt_internal.h"
 #include "rt_object.h"
-#include "rt_seq.h"
+#include "rt_seq_internal.h"
 #include "rt_string.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
 #include "rt_trap.h"
 
+/// Installs a non-local recovery target for runtime traps.
+void rt_trap_set_recovery(jmp_buf *buf);
+/// Clears the current runtime trap recovery target.
+void rt_trap_clear_recovery(void);
+/// Returns the current runtime trap error message.
+const char *rt_trap_get_error(void);
+
 // --- Helper: extract string from seq element (may be boxed) ---
 
-/// @brief Coerce a seq element to an rt_string, unboxing if necessary.
+/// @brief Validate and coerce a Seq element to an rt_string.
 /// @param elem Raw runtime string handle or boxed string value.
-/// @param owned Set to 1 if the result is a fresh unboxed string the caller
-///              must release; 0 if @p elem was already a borrowed handle.
-/// @return Extracted runtime string, or NULL when @p elem is NULL.
-static rt_string fs_extract_str(void *elem, int *owned) {
-    if (owned)
-        *owned = 0;
+/// @param out Receives the extracted string or NULL for a null element/string.
+/// @param owned Set to 1 if @p out owns an unboxed retain the caller must
+///              release; otherwise zero.
+/// @return One for a valid raw/boxed/null representation; zero after trapping.
+static int fs_extract_str(void *elem, rt_string *out, int *owned) {
+    *out = NULL;
+    *owned = 0;
     if (!elem)
-        return NULL;
-    if (rt_string_is_handle(elem))
-        return (rt_string)elem;
-    // Not a raw string -- assume boxed value and unbox.
-    if (owned)
-        *owned = 1;
-    return rt_unbox_str(elem);
+        return 1;
+    if (rt_string_is_handle(elem)) {
+        *out = (rt_string)elem;
+        return 1;
+    }
+    if (rt_box_type(elem) != RT_BOX_STR) {
+        rt_trap("FrozenSet: element is not a string");
+        return 0;
+    }
+    if (!rt_box_try_to_str(elem, out)) {
+        rt_trap("FrozenSet: invalid boxed string element");
+        return 0;
+    }
+    *owned = *out ? 1 : 0;
+    return 1;
 }
 
 // --- Hash table entry (open addressing) ---
@@ -172,6 +190,15 @@ static int8_t fs_key_equals(rt_string key, const char *data, int64_t len) {
 static void fs_release_object(void *obj) {
     if (obj && rt_obj_release_check0(obj))
         rt_obj_free(obj);
+}
+
+/// @brief Copies the active trap message into a stable local buffer.
+/// @param buffer Destination character buffer.
+/// @param buffer_size Capacity of @p buffer in bytes.
+/// @param fallback Text used when no non-empty runtime error is available.
+static void fs_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *err = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
 }
 
 /// @brief GC finalizer: unref every occupied slot's key and free the slots.
@@ -313,23 +340,54 @@ static int8_t fs_contains(rt_frozenset_impl *fs, rt_string key) {
 void *rt_frozenset_from_seq(void *items) {
     if (!items)
         return (void *)fs_alloc(0);
+    if (!rt_seq_internal_is_valid(items)) {
+        rt_trap("FrozenSet: invalid items Seq");
+        return NULL;
+    }
 
     int64_t n = rt_seq_len(items);
     rt_frozenset_impl *fs = fs_alloc(n);
     if (!fs)
         return NULL;
 
+    volatile rt_string pending_element = NULL;
+    volatile int pending_element_owned = 0;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        fs_save_trap_error(
+            saved_error, sizeof(saved_error), "FrozenSet: element extraction failed");
+        rt_trap_clear_recovery();
+        if (pending_element_owned)
+            rt_str_release_maybe((rt_string)pending_element);
+        fs_release_object(fs);
+        rt_trap(saved_error);
+        return NULL;
+    }
+
     for (int64_t i = 0; i < n; i++) {
         int owned = 0;
-        rt_string elem = fs_extract_str(rt_seq_get(items, i), &owned);
+        rt_string elem = NULL;
+        if (!fs_extract_str(rt_seq_get(items, i), &elem, &owned)) {
+            rt_trap_clear_recovery();
+            fs_release_object(fs);
+            return NULL;
+        }
+        pending_element = elem;
+        pending_element_owned = owned;
         int8_t inserted = elem ? fs_insert(fs, elem) : 0;
         if (owned)
             rt_str_release_maybe(elem);
+        pending_element = NULL;
+        pending_element_owned = 0;
         if (inserted < 0) {
+            rt_trap_clear_recovery();
             fs_release_object(fs);
             return NULL;
         }
     }
+    rt_trap_clear_recovery();
     return (void *)fs;
 }
 

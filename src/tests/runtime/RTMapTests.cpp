@@ -31,6 +31,18 @@ static jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
 static bool g_trap_expected = false;
 static int g_finalizer_calls = 0;
+enum class ReentryAction {
+    None,
+    Clear,
+    Set,
+    Remove,
+};
+static void *g_reentry_map = nullptr;
+static rt_string g_reentry_key = nullptr;
+static void *g_reentry_value = nullptr;
+static ReentryAction g_reentry_action = ReentryAction::None;
+static int g_reentry_calls = 0;
+static int8_t g_reentry_remove_result = -1;
 } // namespace
 
 extern "C" void vm_trap(const char *msg) {
@@ -53,6 +65,32 @@ static void *new_obj() {
 
 static void count_finalizer(void *) {
     ++g_finalizer_calls;
+}
+
+static void reentrant_finalizer(void *) {
+    ++g_reentry_calls;
+    switch (g_reentry_action) {
+        case ReentryAction::Clear:
+            rt_map_clear(g_reentry_map);
+            break;
+        case ReentryAction::Set:
+            rt_map_set(g_reentry_map, g_reentry_key, g_reentry_value);
+            break;
+        case ReentryAction::Remove:
+            g_reentry_remove_result = rt_map_remove(g_reentry_map, g_reentry_key);
+            break;
+        case ReentryAction::None:
+            break;
+    }
+}
+
+static void reset_reentry_state() {
+    g_reentry_map = nullptr;
+    g_reentry_key = nullptr;
+    g_reentry_value = nullptr;
+    g_reentry_action = ReentryAction::None;
+    g_reentry_calls = 0;
+    g_reentry_remove_result = -1;
 }
 
 static rt_string make_key(const char *text) {
@@ -240,11 +278,86 @@ static void test_embedded_nul_keys_are_distinct() {
     rt_release_obj(map);
 }
 
+static void test_remove_commits_before_reentrant_finalizer() {
+    void *map = rt_map_new();
+    void *victim = new_obj();
+    void *other = new_obj();
+    rt_string victim_key = make_key("victim");
+    rt_string other_key = make_key("other");
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_map_set(map, victim_key, victim);
+    rt_map_set(map, other_key, other);
+    rt_release_obj(victim);
+
+    g_reentry_map = map;
+    g_reentry_action = ReentryAction::Clear;
+    assert(rt_map_remove(map, victim_key) == 1);
+    assert(g_reentry_calls == 1);
+    assert(rt_map_len(map) == 0);
+
+    reset_reentry_state();
+    rt_string_unref(victim_key);
+    rt_string_unref(other_key);
+    rt_release_obj(other);
+    rt_release_obj(map);
+}
+
+static void test_clear_detaches_before_reentrant_finalizer() {
+    void *map = rt_map_new();
+    void *victim = new_obj();
+    void *inserted = new_obj();
+    rt_string key = make_key("same-key");
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_map_set(map, key, victim);
+    rt_release_obj(victim);
+
+    g_reentry_map = map;
+    g_reentry_key = key;
+    g_reentry_value = inserted;
+    g_reentry_action = ReentryAction::Set;
+    rt_map_clear(map);
+
+    assert(g_reentry_calls == 1);
+    assert(rt_map_len(map) == 1);
+    assert(rt_map_get(map, key) == inserted);
+
+    reset_reentry_state();
+    rt_map_clear(map);
+    rt_string_unref(key);
+    rt_release_obj(inserted);
+    rt_release_obj(map);
+}
+
+static void test_owner_finalizer_invalidates_before_value_cleanup() {
+    void *map = rt_map_new();
+    void *victim = new_obj();
+    rt_string key = make_key("owner-finalizer");
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_map_set(map, key, victim);
+    rt_release_obj(victim);
+
+    g_reentry_map = map;
+    g_reentry_key = key;
+    g_reentry_action = ReentryAction::Remove;
+    rt_release_obj(map);
+
+    assert(g_reentry_calls == 1);
+    assert(g_reentry_remove_result == 0);
+    reset_reentry_state();
+    rt_string_unref(key);
+}
+
 int main() {
     test_failed_growth_and_trim_preserve_map();
     test_remove_frees_last_reference_without_invalid_free();
     test_overwrite_frees_old_last_reference_without_invalid_free();
     test_free_runs_map_finalizer_and_releases_values();
     test_embedded_nul_keys_are_distinct();
+    test_remove_commits_before_reentrant_finalizer();
+    test_clear_detaches_before_reentrant_finalizer();
+    test_owner_finalizer_invalidates_before_value_cleanup();
     return 0;
 }

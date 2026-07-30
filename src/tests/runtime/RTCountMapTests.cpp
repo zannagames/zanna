@@ -206,6 +206,7 @@ static void test_keys() {
 
     void *keys = rt_countmap_keys(cm);
     assert(rt_seq_len(keys) == 2);
+    assert(rt_seq_cap(keys) == 2);
 
     rt_string_unref(a);
     rt_string_unref(b);
@@ -223,6 +224,7 @@ static void test_most_common() {
 
     void *top = rt_countmap_most_common(cm, 2);
     assert(rt_seq_len(top) == 2);
+    assert(rt_seq_cap(top) == 2);
 
     // First should be "very_common" (100)
     rt_string first = (rt_string)rt_seq_get(top, 0);
@@ -231,6 +233,13 @@ static void test_most_common() {
     // Second should be "common" (10)
     rt_string second = (rt_string)rt_seq_get(top, 1);
     assert(str_eq(second, "common"));
+
+    // On 32-bit hosts this value is one past SIZE_MAX. It still means "all"
+    // rather than truncating to a zero-sized request.
+    void *all = rt_countmap_most_common(cm, INT64_C(4294967296));
+    assert(rt_seq_len(all) == 3);
+    void *none = rt_countmap_most_common(cm, 0);
+    assert(rt_seq_len(none) == 0);
 
     rt_string_unref(a);
     rt_string_unref(b);

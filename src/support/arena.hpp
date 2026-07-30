@@ -5,11 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: support/arena.hpp
+// File: src/support/arena.hpp
 // Purpose: Declares bump allocator for temporary objects.
-// Key invariants: None.
-// Ownership/Lifetime: Arena owns all allocated memory.
-// Links: docs/internals/codemap.md
+// Key invariants:
+//   - Allocation alignment and cursor arithmetic are checked before mutation.
+//   - GrowingArena destroys nontrivial objects exactly once in strict LIFO order.
+//   - Reentrant destructor callbacks cannot reset or move live arena storage.
+// Ownership/Lifetime:
+//   - Each arena uniquely owns its backing storage and invalidates all returned
+//     pointers on reset, move-from, or destruction.
+// Links: src/support/arena.cpp, docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -137,7 +142,7 @@ class GrowingArena {
             try {
                 /// @brief Destroy one nontrivial arena object during rewind or reset.
                 /// @param p Pointer to the constructed object.
-                destructors_.push_back({obj, [](void *p) { static_cast<T *>(p)->~T(); }});
+                destructors_.push_back({obj, [](void *p) noexcept { static_cast<T *>(p)->~T(); }});
             } catch (...) {
                 obj->~T();
                 rewindTo(mark);
@@ -150,7 +155,9 @@ class GrowingArena {
 
     /// @brief Reset the arena, destroying all objects and reclaiming memory.
     /// @details After reset(), the arena can be reused. All previously allocated
-    ///          pointers become invalid.
+    ///          pointers become invalid. A reset requested reentrantly by a
+    ///          tracked destructor is ignored because the active outer teardown
+    ///          will reclaim the storage after all callbacks finish.
     void reset();
 
     /// @brief Get total bytes allocated across all chunks.
@@ -200,8 +207,8 @@ class GrowingArena {
 
     /// @brief Destructor record for non-trivially-destructible objects.
     struct DestructorRecord {
-        void *object;            ///< Object whose destructor must run on reset/destroy.
-        void (*destroy)(void *); ///< Type-erased destructor thunk for @c object.
+        void *object;                     ///< Object whose destructor must run on reset/destroy.
+        void (*destroy)(void *) noexcept; ///< Type-erased nothrow destructor thunk.
     };
 
     /// @brief Saved bump-allocation position for exception rollback.
@@ -215,8 +222,9 @@ class GrowingArena {
     void allocateChunk(size_t minSize);
 
     /// @brief Destroy all tracked objects in reverse order.
-    /// @details Clears the destructor registry after invoking every nothrow thunk.
-    void destroyObjects();
+    /// @details Pops each record before invoking it, so reentrant construction
+    ///          safely appends newer work that is destroyed before older records.
+    void destroyObjects() noexcept;
 
     /// @brief Capture the current bump-allocation position.
     /// @return Mark that can be passed to @ref rewindTo.
@@ -234,5 +242,6 @@ class GrowingArena {
     std::vector<Chunk> chunks_;                 ///< Allocated chunks in creation order.
     std::vector<DestructorRecord> destructors_; ///< Pending destructors, run LIFO on reset.
     size_t growthChunkSize_;                    ///< Size of each chunk allocated after the first.
+    bool destroyingObjects_ = false;            ///< True while destructor callbacks are draining.
 };
 } // namespace il::support

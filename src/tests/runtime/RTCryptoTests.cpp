@@ -6,9 +6,17 @@
 //===----------------------------------------------------------------------===//
 //
 // File: tests/runtime/RTCryptoTests.cpp
-// Purpose: Validate HMAC, PBKDF2, and secure random functions.
-// Key invariants: Results match known test vectors (RFC 2202, RFC 6070).
-// Links: docs/zannalib/crypto.md
+// Purpose: Validate low- and high-level hashing, KDF, AEAD, key agreement,
+//          password, random, and crypto-policy behavior.
+// Key invariants:
+//   - Results match published vectors and authenticated decryption fails closed.
+//   - Invalid lengths, handles, and policy identifiers cannot mutate output or
+//     bypass the selected crypto mode.
+// Ownership/Lifetime:
+//   - Tests release managed runtime values they create; native test buffers are
+//     stack-owned and never escape their test.
+// Links: src/runtime/network/rt_crypto.c,
+//        docs/zannalib/crypto.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -46,10 +54,8 @@ extern "C" void vm_trap(const char *msg) {
     if (!g_returning_trap_enabled)
         rt_abort(msg);
     g_returning_trap_count++;
-    snprintf(g_returning_trap_last,
-             sizeof(g_returning_trap_last),
-             "%s",
-             msg ? msg : "Unknown trap");
+    snprintf(
+        g_returning_trap_last, sizeof(g_returning_trap_last), "%s", msg ? msg : "Unknown trap");
 }
 
 static void reset_returning_trap_probe() {
@@ -348,6 +354,40 @@ static void test_sha256_incremental_matches_one_shot() {
     printf("\n");
 }
 
+static void test_sha_finalization_boundaries() {
+    printf("Testing SHA finalization boundaries:\n");
+
+    rt_sha256_ctx boundary_ctx;
+    rt_sha256_init(&boundary_ctx);
+    memset(boundary_ctx.buffer, 0, sizeof(boundary_ctx.buffer));
+    boundary_ctx.count = std::numeric_limits<uint64_t>::max() - 7u;
+
+    uint8_t boundary_digest[32];
+    memset(boundary_digest, 0xa5, sizeof(boundary_digest));
+    reset_returning_trap_probe();
+    rt_sha256_final(&boundary_ctx, boundary_digest);
+    bool boundary_ok = g_returning_trap_count == 0 &&
+                       !bytes_are_value(boundary_digest, sizeof(boundary_digest), 0xa5);
+    finish_returning_trap_probe();
+    test_result("SHA-256 final padding does not overflow the message counter", boundary_ok);
+
+    bool oversized_ok = true;
+    if (std::numeric_limits<size_t>::max() > std::numeric_limits<uint64_t>::max() / UINT64_C(8)) {
+        uint8_t input = 0;
+        uint8_t digest[32];
+        memset(digest, 0xa5, sizeof(digest));
+        size_t oversized =
+            static_cast<size_t>(std::numeric_limits<uint64_t>::max() / UINT64_C(8) + UINT64_C(1));
+        reset_returning_trap_probe();
+        rt_sha256(&input, oversized, digest);
+        oversized_ok =
+            returning_trap_seen("input too large") && bytes_are_value(digest, sizeof(digest), 0xa5);
+        finish_returning_trap_probe();
+    }
+    test_result("SHA-256 one-shot stops after an oversized returning trap", oversized_ok);
+    printf("\n");
+}
+
 static void test_sha_hmac_null_zero_inputs() {
     printf("Testing SHA/HMAC NULL zero-length inputs:\n");
 
@@ -590,15 +630,15 @@ static void test_returning_trap_crypto_guards() {
 
     reset_returning_trap_probe();
     rt_string byte_hash = rt_hash_sha256_bytes(not_bytes);
-    bool byte_hash_ok = returning_trap_seen("invalid Bytes object") &&
-                        strcmp(rt_string_cstr(byte_hash), "") == 0;
+    bool byte_hash_ok =
+        returning_trap_seen("invalid Bytes object") && strcmp(rt_string_cstr(byte_hash), "") == 0;
     finish_returning_trap_probe();
     test_result("Hash invalid Bytes stops after returning trap", byte_hash_ok);
 
     reset_returning_trap_probe();
     rt_string key = rt_keyderive_pbkdf2_sha256_str(nullptr, salt, 100000, 16);
-    bool key_ok = returning_trap_seen("password must not be null") &&
-                  strcmp(rt_string_cstr(key), "") == 0;
+    bool key_ok =
+        returning_trap_seen("password must not be null") && strcmp(rt_string_cstr(key), "") == 0;
     finish_returning_trap_probe();
     test_result("KeyDerive NULL password stops after returning trap", key_ok);
 
@@ -631,8 +671,8 @@ static void test_returning_trap_crypto_guards() {
     uint8_t digest[32];
     memset(digest, 0xa5, sizeof(digest));
     rt_sha256(nullptr, 1, digest);
-    bool sha_ok =
-        returning_trap_seen("input buffer is null") && bytes_are_value(digest, sizeof(digest), 0xa5);
+    bool sha_ok = returning_trap_seen("input buffer is null") &&
+                  bytes_are_value(digest, sizeof(digest), 0xa5);
     finish_returning_trap_probe();
     test_result("SHA one-shot preserves output after returning trap", sha_ok);
 
@@ -874,11 +914,10 @@ static void test_aead_tamper_detection() {
     printf("Testing AEAD tamper detection:\n");
 
     {
-        static const uint8_t key[32] = {
-            0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
-            0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
-            0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
-            0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f};
+        static const uint8_t key[32] = {0x80, 0x81, 0x82, 0x83, 0x84, 0x85, 0x86, 0x87,
+                                        0x88, 0x89, 0x8a, 0x8b, 0x8c, 0x8d, 0x8e, 0x8f,
+                                        0x90, 0x91, 0x92, 0x93, 0x94, 0x95, 0x96, 0x97,
+                                        0x98, 0x99, 0x9a, 0x9b, 0x9c, 0x9d, 0x9e, 0x9f};
         static const uint8_t nonce[12] = {
             0x07, 0x00, 0x00, 0x00, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47};
         static const uint8_t aad[12] = {
@@ -887,17 +926,16 @@ static void test_aead_tamper_detection() {
             "Ladies and Gentlemen of the class of '99: If I could offer you only one tip "
             "for the future, sunscreen would be it.";
         static const uint8_t expected[] = {
-            0xd3, 0x1a, 0x8d, 0x34, 0x64, 0x8e, 0x60, 0xdb, 0x7b, 0x86, 0xaf, 0xbc,
-            0x53, 0xef, 0x7e, 0xc2, 0xa4, 0xad, 0xed, 0x51, 0x29, 0x6e, 0x08, 0xfe,
-            0xa9, 0xe2, 0xb5, 0xa7, 0x36, 0xee, 0x62, 0xd6, 0x3d, 0xbe, 0xa4, 0x5e,
-            0x8c, 0xa9, 0x67, 0x12, 0x82, 0xfa, 0xfb, 0x69, 0xda, 0x92, 0x72, 0x8b,
-            0x1a, 0x71, 0xde, 0x0a, 0x9e, 0x06, 0x0b, 0x29, 0x05, 0xd6, 0xa5, 0xb6,
-            0x7e, 0xcd, 0x3b, 0x36, 0x92, 0xdd, 0xbd, 0x7f, 0x2d, 0x77, 0x8b, 0x8c,
-            0x98, 0x03, 0xae, 0xe3, 0x28, 0x09, 0x1b, 0x58, 0xfa, 0xb3, 0x24, 0xe4,
-            0xfa, 0xd6, 0x75, 0x94, 0x55, 0x85, 0x80, 0x8b, 0x48, 0x31, 0xd7, 0xbc,
-            0x3f, 0xf4, 0xde, 0xf0, 0x8e, 0x4b, 0x7a, 0x9d, 0xe5, 0x76, 0xd2, 0x65,
-            0x86, 0xce, 0xc6, 0x4b, 0x61, 0x16, 0x1a, 0xe1, 0x0b, 0x59, 0x4f, 0x09,
-            0xe2, 0x6a, 0x7e, 0x90, 0x2e, 0xcb, 0xd0, 0x60, 0x06, 0x91};
+            0xd3, 0x1a, 0x8d, 0x34, 0x64, 0x8e, 0x60, 0xdb, 0x7b, 0x86, 0xaf, 0xbc, 0x53,
+            0xef, 0x7e, 0xc2, 0xa4, 0xad, 0xed, 0x51, 0x29, 0x6e, 0x08, 0xfe, 0xa9, 0xe2,
+            0xb5, 0xa7, 0x36, 0xee, 0x62, 0xd6, 0x3d, 0xbe, 0xa4, 0x5e, 0x8c, 0xa9, 0x67,
+            0x12, 0x82, 0xfa, 0xfb, 0x69, 0xda, 0x92, 0x72, 0x8b, 0x1a, 0x71, 0xde, 0x0a,
+            0x9e, 0x06, 0x0b, 0x29, 0x05, 0xd6, 0xa5, 0xb6, 0x7e, 0xcd, 0x3b, 0x36, 0x92,
+            0xdd, 0xbd, 0x7f, 0x2d, 0x77, 0x8b, 0x8c, 0x98, 0x03, 0xae, 0xe3, 0x28, 0x09,
+            0x1b, 0x58, 0xfa, 0xb3, 0x24, 0xe4, 0xfa, 0xd6, 0x75, 0x94, 0x55, 0x85, 0x80,
+            0x8b, 0x48, 0x31, 0xd7, 0xbc, 0x3f, 0xf4, 0xde, 0xf0, 0x8e, 0x4b, 0x7a, 0x9d,
+            0xe5, 0x76, 0xd2, 0x65, 0x86, 0xce, 0xc6, 0x4b, 0x61, 0x16, 0x1a, 0xe1, 0x0b,
+            0x59, 0x4f, 0x09, 0xe2, 0x6a, 0x7e, 0x90, 0x2e, 0xcb, 0xd0, 0x60, 0x06, 0x91};
         uint8_t ciphertext[sizeof(expected)];
         uint8_t opened[sizeof(plaintext) - 1];
 
@@ -986,6 +1024,23 @@ static void test_aead_tamper_detection() {
     printf("\n");
 }
 
+static void test_aead_rejects_unrepresentable_tagged_lengths() {
+    uint8_t key128[16] = {0};
+    uint8_t key256[32] = {0};
+    uint8_t nonce[12] = {0};
+    uint8_t byte = 0;
+    const size_t impossible = std::numeric_limits<size_t>::max();
+
+    test_result("ChaCha20 rejects plaintext length whose tag would wrap",
+                rt_chacha20_poly1305_encrypt(key256, nonce, nullptr, 0, &byte, impossible, &byte) ==
+                    0);
+    test_result("AES-128-GCM rejects plaintext length whose tag would wrap",
+                rt_aes128_gcm_encrypt(key128, nonce, nullptr, 0, &byte, impossible, &byte) == 0);
+    test_result("AES-256-GCM rejects plaintext length whose tag would wrap",
+                rt_aes256_gcm_encrypt(key256, nonce, nullptr, 0, &byte, impossible, &byte) == 0);
+    printf("\n");
+}
+
 static void test_x25519_shared_secret_agreement() {
     printf("Testing X25519 shared secret agreement:\n");
 
@@ -1054,6 +1109,13 @@ static void test_crypto_module_approved_mode() {
     printf("Testing Crypto.Module approved mode:\n");
 
     test_result("Module self-test passes", rt_crypto_module_self_test() == 1);
+    rt_crypto_module_mode_t original_mode = rt_crypto_module_get_mode();
+    test_result("Invalid module mode is rejected",
+                rt_crypto_module_set_mode(static_cast<rt_crypto_module_mode_t>(99)) == 0);
+    test_result("Invalid module mode preserves prior policy",
+                rt_crypto_module_get_mode() == original_mode);
+    test_result("Unknown crypto service is denied",
+                rt_crypto_module_service_allowed(static_cast<rt_crypto_module_service_t>(99)) == 0);
     test_result("Enable approved mode succeeds", rt_crypto_module_enable_approved_mode() == 1);
     test_result("Approved mode flag is set", rt_crypto_module_is_approved_mode() == 1);
     test_result("AES-GCM is allowed",
@@ -1122,6 +1184,7 @@ int main() {
     test_hmac_sha256();
     test_hmac_sha384_sha512();
     test_sha256_incremental_matches_one_shot();
+    test_sha_finalization_boundaries();
     test_sha_hmac_null_zero_inputs();
     test_string_inputs_preserve_embedded_nul();
     test_pbkdf2_sha256();
@@ -1131,6 +1194,7 @@ int main() {
     test_high_level_aead_wrappers();
     test_crypto_rand();
     test_aead_tamper_detection();
+    test_aead_rejects_unrepresentable_tagged_lengths();
     test_x25519_shared_secret_agreement();
     test_p256_ecdh_shared_secret_agreement();
     test_crypto_module_approved_mode();

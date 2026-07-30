@@ -31,6 +31,7 @@
 #include <setjmp.h>
 
 extern "C" {
+#include "rt_array_obj.h"
 #include "rt_bag.h"
 #include "rt_bimap.h"
 #include "rt_binbuf.h"
@@ -44,6 +45,7 @@ extern "C" {
 #include "rt_concmap.h"
 #include "rt_concqueue.h"
 #include "rt_connpool.h"
+#include "rt_convert_coll.h"
 #include "rt_countmap.h"
 #include "rt_debounce.h"
 #include "rt_defaultmap.h"
@@ -69,6 +71,7 @@ extern "C" {
 #include "rt_musicgen.h"
 #include "rt_network.h"
 #include "rt_object.h"
+#include "rt_option.h"
 #include "rt_orderedmap.h"
 #include "rt_playlist.h"
 #include "rt_pqueue.h"
@@ -624,6 +627,8 @@ int main() {
         assert(rt_seq_len(fake) == 0);
         assert(rt_seq_cap(fake) == 0);
         assert(rt_seq_is_empty(fake) == 1);
+        assert(rt_seq_slice(fake, 0, 1) == nullptr);
+        assert(rt_seq_clone(fake) == nullptr);
         assert(rt_stack_owns_elements(fake) == 0);
         assert(rt_stack_len(fake) == 0);
         assert(rt_stack_is_empty(fake) == 1);
@@ -631,10 +636,14 @@ int main() {
         assert(rt_queue_len(fake) == 0);
         assert(rt_queue_is_empty(fake) == 1);
         assert(rt_map_len(fake) == 0);
+        assert(rt_map_keys(fake) == nullptr);
+        assert(rt_map_values(fake) == nullptr);
         assert(rt_multimap_len(fake) == 0);
         assert(rt_multimap_key_count(fake) == 0);
         assert(rt_orderedmap_len(fake) == 0);
         assert(rt_orderedmap_is_empty(fake) == 1);
+        assert(rt_orderedmap_keys(fake) == nullptr);
+        assert(rt_orderedmap_values(fake) == nullptr);
         assert(rt_bitset_len(fake) == 0);
         assert(rt_defaultmap_len(fake) == 0);
         assert(rt_defaultmap_get(fake, nullptr) == nullptr);
@@ -645,19 +654,68 @@ int main() {
         assert(rt_defaultmap_get_default(fake) == nullptr);
         assert(rt_defaultmap_is_empty(fake) == 1);
         assert(rt_intmap_len(fake) == 0);
+        assert(rt_intmap_get(fake, 1) == nullptr);
+        assert(rt_intmap_get_or(fake, 1, fake) == fake);
+        assert(rt_intmap_has(fake, 1) == 0);
+        assert(rt_intmap_keys(fake) == nullptr);
+        assert(rt_intmap_values(fake) == nullptr);
         assert(rt_sparse_len(fake) == 0);
+        assert(rt_sparse_get(fake, 1) == nullptr);
+        assert(rt_sparse_has(fake, 1) == 0);
+        assert(rt_sparse_remove(fake, 1) == 0);
+        assert(rt_sparse_indices(fake) == nullptr);
+        assert(rt_sparse_values(fake) == nullptr);
+        assert(rt_list_len(fake) == 0);
+        assert(rt_list_find(fake, nullptr) == -1);
+        assert(rt_list_first(fake) == nullptr);
+        assert(rt_list_last(fake) == nullptr);
+        assert(rt_list_slice(fake, 0, 1) == nullptr);
+        assert(rt_list_clone(fake) == nullptr);
+        assert(rt_sortedset_first(fake) == nullptr);
+        assert(rt_sortedset_last(fake) == nullptr);
+        assert(rt_sortedset_floor(fake, nullptr) == nullptr);
+        assert(rt_sortedset_ceil(fake, nullptr) == nullptr);
+        assert(rt_sortedset_lower(fake, nullptr) == nullptr);
+        assert(rt_sortedset_higher(fake, nullptr) == nullptr);
+        assert(rt_sortedset_at(fake, 0) == nullptr);
+        assert(rt_sortedset_range(fake, nullptr, nullptr) == nullptr);
+        assert(rt_sortedset_items(fake) == nullptr);
+        assert(rt_sortedset_take(fake, 1) == nullptr);
+        assert(rt_sortedset_skip(fake, 1) == nullptr);
+        assert(rt_sortedset_union(fake, nullptr) == nullptr);
+        assert(rt_sortedset_intersect(fake, nullptr) == nullptr);
+        assert(rt_sortedset_diff(fake, nullptr) == nullptr);
         assert(rt_bag_len(fake) == 0);
         assert(rt_countmap_len(fake) == 0);
+        assert(rt_countmap_keys(fake) == nullptr);
+        assert(rt_countmap_most_common(fake, 1) == nullptr);
         assert(rt_frozenmap_len(fake) == 0);
         assert(rt_frozenset_len(fake) == 0);
         assert(rt_lrucache_len(fake) == 0);
         assert(rt_lrucache_cap(fake) == 0);
+        assert(rt_lrucache_keys(fake) == nullptr);
+        assert(rt_lrucache_values(fake) == nullptr);
+        assert(rt_treemap_keys(fake) == nullptr);
+        assert(rt_treemap_values(fake) == nullptr);
         assert(rt_bimap_len(fake) == 0);
+        assert(rt_bimap_keys(fake) == nullptr);
+        assert(rt_bimap_values(fake) == nullptr);
         assert(rt_weakmap_len(fake) == 0);
         assert(rt_weakmap_is_empty(fake) == 1);
+        assert(rt_weakmap_keys(fake) == nullptr);
         rt_iter_reset(fake);
+        assert(rt_iter_has_next(fake) == 0);
+        assert(rt_iter_next(fake) == nullptr);
+        assert(rt_iter_peek(fake) == nullptr);
         assert(rt_iter_index(fake) == 0);
         assert(rt_iter_count(fake) == 0);
+        assert(rt_iter_to_seq(fake) == nullptr);
+        assert(rt_iter_skip(fake, 1) == 0);
+        assert(rt_iter_from_seq(fake) == nullptr);
+        assert(rt_iter_from_list(fake) == nullptr);
+        assert(rt_iter_from_ring(fake) == nullptr);
+        assert(rt_iter_from_deque(fake) == nullptr);
+        assert(rt_iter_from_stack(fake) == nullptr);
         assert(rt_unionfind_find(fake, 0) == -1);
         assert(rt_unionfind_count(fake) == 0);
         assert(rt_unionfind_set_size(fake, 0) == 0);
@@ -676,9 +734,11 @@ int main() {
         void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
         void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
         void *fallback = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string other = rt_const_cstr("other");
         auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
         assert(map != nullptr);
         assert(empty != nullptr);
+        assert(other != nullptr);
 
         rt_map_set(map, empty, stored);
         assert(rt_map_len(map) == 1);
@@ -710,9 +770,41 @@ int main() {
         g_last_returning_trap = nullptr;
         assert(rt_map_remove(map, forged) == 0);
         assert(g_last_returning_trap != nullptr);
+
+        rt_heap_hdr_t *replacement_header = rt_heap_hdr(replacement);
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        assert(replacement_header != nullptr);
+        assert(stored_header != nullptr);
+        replacement_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+
+        g_last_returning_trap = nullptr;
+        rt_map_set(map, empty, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_map_len(map) == 1);
+        assert(rt_map_get(map, empty) == stored);
+
+        g_last_returning_trap = nullptr;
+        rt_map_set(map, other, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_map_len(map) == 1);
+        assert(rt_map_has(map, other) == 0);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_map_set_if_missing(map, other, replacement) == 0);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_map_len(map) == 1);
+        assert(rt_map_has(map, other) == 0);
+        replacement_header->refcnt = 1;
+
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_map_values(map) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        stored_header->refcnt = 2;
         g_trap_returns = false;
 
         rt_string_unref(empty);
+        rt_string_unref(other);
         release_fake(stored);
         release_fake(replacement);
         release_fake(fallback);
@@ -736,6 +828,958 @@ int main() {
         assert(g_last_returning_trap != nullptr);
         header->refcnt = 1;
         release_fake(default_value);
+    }
+
+    // Option constructors must not publish Some with an unowned or silently
+    // null-normalized payload when a returning hook reports retain failure.
+    {
+        void *value = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string short_text = rt_string_from_bytes("short", 5);
+        static const char kHeapText[] =
+            "this Option string is intentionally longer than inline storage";
+        rt_string heap_text = rt_string_from_bytes(kHeapText, sizeof(kHeapText) - 1);
+        rt_heap_hdr_t *value_header = rt_heap_hdr(value);
+        rt_heap_hdr_t *heap_text_header = rt_heap_hdr((void *)heap_text->data);
+        assert(short_text != nullptr);
+        assert(heap_text != nullptr);
+        assert(value_header != nullptr);
+        assert(heap_text_header != nullptr);
+
+        g_trap_returns = true;
+        value_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_option_some(value) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        value_header->refcnt = 1;
+
+        short_text->literal_refs = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_option_some(short_text) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        short_text->literal_refs = 1;
+
+        heap_text_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_option_some_str(heap_text) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        heap_text_header->refcnt = 1;
+        g_trap_returns = false;
+
+        release_fake(value);
+        rt_string_unref(short_text);
+        rt_string_unref(heap_text);
+    }
+
+    // Every owning Seq mutation must acquire the new/result reference before
+    // changing visible contents. Bulk copies roll back all earlier retains
+    // when a later element cannot be retained.
+    {
+        void *seq = rt_seq_new_owned();
+        void *source = rt_seq_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *candidate = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *staged = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string short_text = rt_string_from_bytes("short", 5);
+        static const char kHeapText[] =
+            "this string is intentionally longer than the inline string storage";
+        rt_string heap_text = rt_string_from_bytes(kHeapText, sizeof(kHeapText) - 1);
+        assert(seq != nullptr);
+        assert(source != nullptr);
+        assert(short_text != nullptr);
+        assert(heap_text != nullptr);
+
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        rt_heap_hdr_t *candidate_header = rt_heap_hdr(candidate);
+        rt_heap_hdr_t *staged_header = rt_heap_hdr(staged);
+        assert(stored_header != nullptr);
+        assert(candidate_header != nullptr);
+        assert(staged_header != nullptr);
+
+        rt_seq_push(seq, stored);
+        assert(rt_seq_len(seq) == 1);
+        assert(stored_header->refcnt == 2);
+
+        candidate_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+
+        g_last_returning_trap = nullptr;
+        rt_seq_set(seq, 0, candidate);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_seq_len(seq) == 1);
+        assert(rt_seq_get(seq, 0) == stored);
+
+        g_last_returning_trap = nullptr;
+        rt_seq_push(seq, candidate);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_seq_len(seq) == 1);
+
+        g_last_returning_trap = nullptr;
+        rt_seq_insert(seq, 0, candidate);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_seq_len(seq) == 1);
+        assert(rt_seq_get(seq, 0) == stored);
+        candidate_header->refcnt = 1;
+
+        short_text->literal_refs = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        rt_seq_push(seq, short_text);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_seq_len(seq) == 1);
+        short_text->literal_refs = 1;
+
+        rt_heap_hdr_t *heap_text_header = rt_heap_hdr((void *)heap_text->data);
+        assert(heap_text_header != nullptr);
+        heap_text_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        rt_seq_push(seq, heap_text);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_seq_len(seq) == 1);
+        heap_text_header->refcnt = 1;
+
+        rt_seq_push_raw(source, staged);
+        rt_seq_push_raw(source, candidate);
+        candidate_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        rt_seq_push_all(seq, source);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_seq_len(seq) == 1);
+        assert(rt_seq_get(seq, 0) == stored);
+        assert(staged_header->refcnt == 1);
+        candidate_header->refcnt = 1;
+
+        // Owning destructive reads transfer the references already held by the
+        // Seq. They therefore remain valid even when another retain would
+        // overflow, and do not change the saturated count.
+        rt_seq_push(seq, stored);
+        assert(rt_seq_len(seq) == 2);
+        assert(stored_header->refcnt == 3);
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        void *popped = rt_seq_pop(seq);
+        assert(popped == stored);
+        assert(g_last_returning_trap == nullptr);
+        assert(rt_seq_len(seq) == 1);
+        g_last_returning_trap = nullptr;
+        void *removed = rt_seq_remove(seq, 0);
+        assert(removed == stored);
+        assert(g_last_returning_trap == nullptr);
+        assert(rt_seq_len(seq) == 0);
+        stored_header->refcnt = 3;
+
+        g_trap_returns = false;
+        release_fake(source);
+        release_fake(seq);
+        release_fake(popped);
+        release_fake(removed);
+        release_fake(stored);
+        release_fake(candidate);
+        release_fake(staged);
+        rt_string_unref(short_text);
+        rt_string_unref(heap_text);
+    }
+
+    // Self-append, Slice, and Clone use the same all-or-nothing retain
+    // transaction and must consume an unpublished result after failure.
+    {
+        void *seq = rt_seq_new_owned();
+        void *first = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *blocked = make_fake(RT_RANDOM_CLASS_ID, 1);
+        assert(seq != nullptr);
+        rt_seq_push(seq, first);
+        rt_seq_push(seq, blocked);
+
+        rt_heap_hdr_t *first_header = rt_heap_hdr(first);
+        rt_heap_hdr_t *blocked_header = rt_heap_hdr(blocked);
+        assert(first_header != nullptr);
+        assert(blocked_header != nullptr);
+        assert(first_header->refcnt == 2);
+        assert(blocked_header->refcnt == 2);
+
+        blocked_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+
+        g_last_returning_trap = nullptr;
+        rt_seq_push_all(seq, seq);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_seq_len(seq) == 2);
+        assert(rt_seq_get(seq, 0) == first);
+        assert(rt_seq_get(seq, 1) == blocked);
+        assert(first_header->refcnt == 2);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_seq_slice(seq, 0, 2) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(first_header->refcnt == 2);
+        assert(rt_seq_len(seq) == 2);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_seq_clone(seq) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(first_header->refcnt == 2);
+        assert(rt_seq_len(seq) == 2);
+
+        blocked_header->refcnt = 2;
+        g_trap_returns = false;
+        release_fake(seq);
+        release_fake(first);
+        release_fake(blocked);
+    }
+
+    // IntMap replacement, insertion, and snapshot construction must stop
+    // before publication when a value retain fails.
+    {
+        void *map = rt_intmap_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        assert(map != nullptr);
+        rt_intmap_set(map, 1, stored);
+        assert(rt_intmap_len(map) == 1);
+        assert(rt_intmap_get(map, 1) == stored);
+
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        rt_heap_hdr_t *replacement_header = rt_heap_hdr(replacement);
+        assert(stored_header != nullptr);
+        assert(replacement_header != nullptr);
+        replacement_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+
+        g_last_returning_trap = nullptr;
+        rt_intmap_set(map, 1, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_intmap_len(map) == 1);
+        assert(rt_intmap_get(map, 1) == stored);
+
+        g_last_returning_trap = nullptr;
+        rt_intmap_set(map, 2, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_intmap_len(map) == 1);
+        assert(rt_intmap_has(map, 2) == 0);
+        replacement_header->refcnt = 1;
+
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_intmap_values(map) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_intmap_len(map) == 1);
+        stored_header->refcnt = 2;
+        g_trap_returns = false;
+
+        release_fake(map);
+        release_fake(stored);
+        release_fake(replacement);
+    }
+
+    // SparseArray follows the same checked-retain and all-or-nothing snapshot
+    // contract as IntMap despite using open addressing.
+    {
+        void *array = rt_sparse_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        assert(array != nullptr);
+        rt_sparse_set(array, 1, stored);
+        assert(rt_sparse_len(array) == 1);
+        assert(rt_sparse_get(array, 1) == stored);
+
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        rt_heap_hdr_t *replacement_header = rt_heap_hdr(replacement);
+        assert(stored_header != nullptr);
+        assert(replacement_header != nullptr);
+        replacement_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+
+        g_last_returning_trap = nullptr;
+        rt_sparse_set(array, 1, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_sparse_len(array) == 1);
+        assert(rt_sparse_get(array, 1) == stored);
+
+        g_last_returning_trap = nullptr;
+        rt_sparse_set(array, 2, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_sparse_len(array) == 1);
+        assert(rt_sparse_has(array, 2) == 0);
+        replacement_header->refcnt = 1;
+
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_sparse_values(array) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_sparse_len(array) == 1);
+        stored_header->refcnt = 2;
+        g_trap_returns = false;
+
+        assert(rt_sparse_remove(array, 1) == 1);
+        assert(rt_sparse_len(array) == 0);
+        release_fake(array);
+        release_fake(stored);
+        release_fake(replacement);
+    }
+
+    // List and Set must not publish a candidate after their permissive legacy
+    // retain hook reports that managed ownership was not acquired.
+    {
+        void *list = rt_list_new();
+        void *set = rt_set_new();
+        void *blocked = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_heap_hdr_t *blocked_header = rt_heap_hdr(blocked);
+        assert(list != nullptr);
+        assert(set != nullptr);
+        assert(blocked_header != nullptr);
+        blocked_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+
+        g_last_returning_trap = nullptr;
+        rt_list_push(list, blocked);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_list_len(list) == 0);
+
+        g_last_returning_trap = nullptr;
+        rt_list_insert(list, 0, blocked);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_list_len(list) == 0);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_set_add(set, blocked) == 0);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_set_len(set) == 0);
+        assert(rt_set_has(set, blocked) == 0);
+
+        blocked_header->refcnt = 1;
+        rt_list_push(list, blocked);
+        assert(rt_list_len(list) == 1);
+        assert(blocked_header->refcnt == 2);
+        blocked_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+
+        g_last_returning_trap = nullptr;
+        assert(rt_list_slice(list, 0, 1) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_list_len(list) == 1);
+        g_last_returning_trap = nullptr;
+        assert(rt_list_clone(list) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_list_len(list) == 1);
+
+        g_last_returning_trap = nullptr;
+        void *popped = rt_list_pop(list);
+        assert(popped == blocked);
+        assert(g_last_returning_trap == nullptr);
+        assert(rt_list_len(list) == 0);
+
+        blocked_header->refcnt = 2;
+        g_trap_returns = false;
+        release_fake(list);
+        release_fake(set);
+        release_fake(popped);
+        release_fake(blocked);
+    }
+
+    // Object-array access and copy-on-write must distinguish a failed managed
+    // retain from a legitimate null slot. Self-assignment needs no new owner.
+    {
+        void **array = rt_arr_obj_new(1);
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        assert(array != nullptr);
+        rt_arr_obj_put(array, 0, stored);
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        rt_heap_hdr_t *replacement_header = rt_heap_hdr(replacement);
+        assert(stored_header != nullptr);
+        assert(replacement_header != nullptr);
+        assert(stored_header->refcnt == 2);
+
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        assert(rt_arr_obj_get(array, 0) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(array[0] == stored);
+
+        g_last_returning_trap = nullptr;
+        rt_arr_obj_put(array, 0, stored);
+        assert(g_last_returning_trap == nullptr);
+        assert(array[0] == stored);
+
+        replacement_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        rt_arr_obj_put(array, 0, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(array[0] == stored);
+
+        stored_header->refcnt = 2;
+        rt_heap_retain(array);
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_arr_obj_resize(array, 2) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_arr_obj_len(array) == 1);
+        assert(array[0] == stored);
+
+        stored_header->refcnt = 2;
+        replacement_header->refcnt = 1;
+        g_trap_returns = false;
+        rt_arr_obj_release(array);
+        rt_arr_obj_release(array);
+        release_fake(stored);
+        release_fake(replacement);
+    }
+
+    // Collection conversions validate the exact source layout before
+    // allocating and destroy every partial destination on retain failure.
+    {
+        void *wrong = make_fake(RT_RANDOM_CLASS_ID, 1);
+        auto expect_conversion_failure = [](void *result) {
+            assert(result == nullptr);
+            assert(g_last_returning_trap != nullptr);
+            g_last_returning_trap = nullptr;
+        };
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        expect_conversion_failure(rt_seq_to_list(wrong));
+        expect_conversion_failure(rt_seq_to_set(wrong));
+        expect_conversion_failure(rt_seq_to_stack(wrong));
+        expect_conversion_failure(rt_seq_to_queue(wrong));
+        expect_conversion_failure(rt_seq_to_deque(wrong));
+        expect_conversion_failure(rt_seq_to_bag(wrong));
+        expect_conversion_failure(rt_list_to_seq(wrong));
+        expect_conversion_failure(rt_list_to_set(wrong));
+        expect_conversion_failure(rt_list_to_stack(wrong));
+        expect_conversion_failure(rt_list_to_queue(wrong));
+        expect_conversion_failure(rt_set_to_seq(wrong));
+        expect_conversion_failure(rt_set_to_list(wrong));
+        expect_conversion_failure(rt_stack_to_seq(wrong));
+        expect_conversion_failure(rt_stack_to_list(wrong));
+        expect_conversion_failure(rt_queue_to_seq(wrong));
+        expect_conversion_failure(rt_queue_to_list(wrong));
+        expect_conversion_failure(rt_deque_to_seq(wrong));
+        expect_conversion_failure(rt_deque_to_list(wrong));
+        expect_conversion_failure(rt_map_keys_to_seq(wrong));
+        expect_conversion_failure(rt_map_values_to_seq(wrong));
+        expect_conversion_failure(rt_bag_to_seq(wrong));
+        expect_conversion_failure(rt_bag_to_set(wrong));
+        expect_conversion_failure(rt_ring_to_seq(wrong));
+
+        assert(rt_set_len(wrong) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+        assert(rt_set_is_empty(wrong) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+        expect_conversion_failure(rt_set_items(wrong));
+        expect_conversion_failure(rt_set_clone(wrong));
+        expect_conversion_failure(rt_set_union(wrong, nullptr));
+        expect_conversion_failure(rt_set_intersect(nullptr, wrong));
+        expect_conversion_failure(rt_set_diff(wrong, nullptr));
+        assert(rt_set_is_subset(wrong, nullptr) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+        assert(rt_set_is_subset(nullptr, wrong) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+        assert(rt_set_is_superset(wrong, nullptr) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+        assert(rt_set_is_disjoint(wrong, nullptr) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+
+        g_trap_returns = false;
+        release_fake(wrong);
+    }
+
+    {
+        void *source = rt_seq_new();
+        void *blocked = make_fake(RT_RANDOM_CLASS_ID, 1);
+        assert(source != nullptr);
+        rt_seq_push(source, blocked); // Borrowing Seq: no retained source edge.
+        assert(rt_seq_len(source) == 1);
+
+        rt_heap_hdr_t *blocked_header = rt_heap_hdr(blocked);
+        assert(blocked_header != nullptr);
+        blocked_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+        auto expect_retain_failure = [](void *result) {
+            assert(result == nullptr);
+            assert(g_last_returning_trap != nullptr);
+            g_last_returning_trap = nullptr;
+        };
+
+        g_last_returning_trap = nullptr;
+        expect_retain_failure(rt_seq_to_list(source));
+        expect_retain_failure(rt_seq_to_set(source));
+        expect_retain_failure(rt_seq_to_stack(source));
+        expect_retain_failure(rt_seq_to_queue(source));
+        expect_retain_failure(rt_seq_to_deque(source));
+        expect_retain_failure(rt_seq_of(1, blocked));
+        expect_retain_failure(rt_list_of(1, blocked));
+        expect_retain_failure(rt_set_of(1, blocked));
+        expect_retain_failure(rt_seq_of(INT64_MAX));
+        expect_retain_failure(rt_list_of(INT64_MAX));
+        expect_retain_failure(rt_set_of(INT64_MAX));
+        assert(rt_seq_len(source) == 1);
+        assert(rt_seq_get(source, 0) == blocked);
+        assert(blocked_header->refcnt == RT_HEAP_MAX_MORTAL_REFCNT);
+
+        blocked_header->refcnt = 1;
+        g_trap_returns = false;
+        release_fake(source);
+        release_fake(blocked);
+    }
+
+    {
+        void *list = rt_list_new();
+        void *set = rt_set_new();
+        void *stack = rt_stack_new();
+        void *queue = rt_queue_new();
+        void *deque = rt_deque_new();
+        void *ring = rt_ring_new(2);
+        void *blocked = make_fake(RT_RANDOM_CLASS_ID, 1);
+        assert(list && set && stack && queue && deque && ring);
+        rt_list_push(list, blocked);
+        assert(rt_set_add(set, blocked) == 1);
+        rt_stack_push(stack, blocked);
+        rt_queue_push(queue, blocked);
+        rt_deque_push_back(deque, blocked);
+        rt_ring_push(ring, blocked);
+
+        rt_heap_hdr_t *blocked_header = rt_heap_hdr(blocked);
+        assert(blocked_header != nullptr);
+        assert(blocked_header->refcnt == 5);
+        blocked_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+        auto expect_retain_failure = [](void *result) {
+            assert(result == nullptr);
+            assert(g_last_returning_trap != nullptr);
+            g_last_returning_trap = nullptr;
+        };
+
+        g_last_returning_trap = nullptr;
+        expect_retain_failure(rt_list_to_seq(list));
+        expect_retain_failure(rt_list_to_set(list));
+        expect_retain_failure(rt_list_to_stack(list));
+        expect_retain_failure(rt_list_to_queue(list));
+        expect_retain_failure(rt_set_items(set));
+        expect_retain_failure(rt_set_clone(set));
+        expect_retain_failure(rt_set_union(set, nullptr));
+        expect_retain_failure(rt_set_intersect(set, set));
+        expect_retain_failure(rt_set_diff(set, nullptr));
+        expect_retain_failure(rt_set_to_seq(set));
+        expect_retain_failure(rt_set_to_list(set));
+        expect_retain_failure(rt_stack_to_seq(stack));
+        expect_retain_failure(rt_stack_to_list(stack));
+        expect_retain_failure(rt_queue_to_seq(queue));
+        expect_retain_failure(rt_queue_to_list(queue));
+        expect_retain_failure(rt_deque_to_seq(deque));
+        expect_retain_failure(rt_deque_to_list(deque));
+        expect_retain_failure(rt_ring_to_seq(ring));
+        assert(rt_list_len(list) == 1);
+        assert(rt_set_len(set) == 1);
+        assert(rt_stack_len(stack) == 1);
+        assert(rt_queue_len(queue) == 1);
+        assert(rt_deque_len(deque) == 1);
+        assert(rt_ring_len(ring) == 1);
+
+        blocked_header->refcnt = 5;
+        g_trap_returns = false;
+        release_fake(list);
+        release_fake(set);
+        release_fake(stack);
+        release_fake(queue);
+        release_fake(deque);
+        release_fake(ring);
+        release_fake(blocked);
+    }
+
+    // Seq.Of is an owning constructor, matching the conversion header's
+    // retained-element contract rather than returning a borrowing Seq.
+    {
+        void *value = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_heap_hdr_t *header = rt_heap_hdr(value);
+        assert(header != nullptr);
+        void *seq = rt_seq_of(1, value);
+        assert(seq != nullptr);
+        assert(header->refcnt == 2);
+        release_fake(value);
+        assert(header->refcnt == 1);
+        release_fake(seq);
+    }
+
+    // Every retained-element linear container must reject an unretainable
+    // candidate before changing its visible length.
+    {
+        void *queue = rt_queue_new();
+        void *stack = rt_stack_new();
+        void *ring = rt_ring_new(2);
+        void *deque = rt_deque_new();
+        void *heap = rt_pqueue_new();
+        void *blocked = make_fake(RT_RANDOM_CLASS_ID, 1);
+        assert(queue != nullptr);
+        assert(stack != nullptr);
+        assert(ring != nullptr);
+        assert(deque != nullptr);
+        assert(heap != nullptr);
+        rt_queue_set_owns_elements(queue, 1);
+        rt_stack_set_owns_elements(stack, 1);
+
+        rt_heap_hdr_t *blocked_header = rt_heap_hdr(blocked);
+        assert(blocked_header != nullptr);
+        blocked_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+
+        g_last_returning_trap = nullptr;
+        rt_queue_push(queue, blocked);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_queue_len(queue) == 0);
+
+        g_last_returning_trap = nullptr;
+        rt_stack_push(stack, blocked);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_stack_len(stack) == 0);
+
+        g_last_returning_trap = nullptr;
+        rt_ring_push(ring, blocked);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_ring_len(ring) == 0);
+
+        g_last_returning_trap = nullptr;
+        rt_deque_push_front(deque, blocked);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_deque_len(deque) == 0);
+
+        g_last_returning_trap = nullptr;
+        rt_deque_push_back(deque, blocked);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_deque_len(deque) == 0);
+
+        g_last_returning_trap = nullptr;
+        rt_pqueue_push(heap, 1, blocked);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_pqueue_len(heap) == 0);
+
+        blocked_header->refcnt = 1;
+        g_trap_returns = false;
+        release_fake(queue);
+        release_fake(stack);
+        release_fake(ring);
+        release_fake(deque);
+        release_fake(heap);
+        release_fake(blocked);
+    }
+
+    // Non-destructive retained results, Option adapters, clones, and snapshots
+    // remain unchanged when new ownership cannot be acquired. Destructive
+    // reads from owning containers instead move their existing stored
+    // references and therefore still succeed at refcount saturation.
+    {
+        void *queue = rt_queue_new();
+        void *stack = rt_stack_new();
+        void *ring = rt_ring_new(2);
+        void *deque = rt_deque_new();
+        void *heap = rt_pqueue_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        assert(queue != nullptr);
+        assert(stack != nullptr);
+        assert(ring != nullptr);
+        assert(deque != nullptr);
+        assert(heap != nullptr);
+        rt_queue_set_owns_elements(queue, 1);
+        rt_stack_set_owns_elements(stack, 1);
+        rt_queue_push(queue, stored);
+        rt_queue_push(queue, stored);
+        rt_stack_push(stack, stored);
+        rt_stack_push(stack, stored);
+        rt_ring_push(ring, stored);
+        rt_ring_push(ring, stored);
+        rt_deque_push_back(deque, stored);
+        rt_deque_push_back(deque, stored);
+        rt_deque_push_back(deque, stored);
+        rt_deque_push_back(deque, stored);
+        rt_pqueue_push(heap, 1, stored);
+        rt_pqueue_push(heap, 2, stored);
+
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        rt_heap_hdr_t *replacement_header = rt_heap_hdr(replacement);
+        assert(stored_header != nullptr);
+        assert(replacement_header != nullptr);
+        assert(stored_header->refcnt == 13);
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        replacement_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+
+        g_last_returning_trap = nullptr;
+        assert(rt_queue_try_pop_option(queue) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_queue_len(queue) == 2);
+        g_last_returning_trap = nullptr;
+        assert(rt_queue_clone(queue) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_queue_len(queue) == 2);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_stack_try_pop_option(stack) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_stack_len(stack) == 2);
+        g_last_returning_trap = nullptr;
+        assert(rt_stack_clone(stack) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_stack_len(stack) == 2);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_ring_clone(ring) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_ring_len(ring) == 2);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_deque_peek_front(deque) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+        assert(rt_deque_peek_back(deque) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+        assert(rt_deque_get(deque, 0) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+        rt_deque_set(deque, 0, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_deque_len(deque) == 4);
+        g_last_returning_trap = nullptr;
+        assert(rt_deque_try_pop_front_option(deque) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_deque_len(deque) == 4);
+        g_last_returning_trap = nullptr;
+        assert(rt_deque_try_pop_back_option(deque) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_deque_len(deque) == 4);
+        g_last_returning_trap = nullptr;
+        assert(rt_deque_clone(deque) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_deque_len(deque) == 4);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_pqueue_peek(heap) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_pqueue_len(heap) == 2);
+        g_last_returning_trap = nullptr;
+        assert(rt_pqueue_try_peek(heap) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_pqueue_len(heap) == 2);
+        g_last_returning_trap = nullptr;
+        assert(rt_pqueue_try_peek_option(heap) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_pqueue_len(heap) == 2);
+        g_last_returning_trap = nullptr;
+        assert(rt_pqueue_try_pop_option(heap) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_pqueue_len(heap) == 2);
+        g_last_returning_trap = nullptr;
+        assert(rt_pqueue_to_seq(heap) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_pqueue_len(heap) == 2);
+
+        g_last_returning_trap = nullptr;
+        void *transferred[] = {
+            rt_queue_pop(queue),
+            rt_queue_try_pop(queue),
+            rt_stack_pop(stack),
+            rt_stack_try_pop(stack),
+            rt_ring_pop(ring),
+            rt_ring_pop(ring),
+            rt_deque_pop_front(deque),
+            rt_deque_pop_back(deque),
+            rt_deque_try_pop_front(deque),
+            rt_deque_try_pop_back(deque),
+            rt_pqueue_pop(heap),
+            rt_pqueue_try_pop(heap),
+        };
+        for (void *value : transferred)
+            assert(value == stored);
+        assert(rt_queue_len(queue) == 0);
+        assert(rt_stack_len(stack) == 0);
+        assert(rt_ring_len(ring) == 0);
+        assert(rt_deque_len(deque) == 0);
+        assert(rt_pqueue_len(heap) == 0);
+        assert(g_last_returning_trap == nullptr);
+
+        stored_header->refcnt = 13;
+        replacement_header->refcnt = 1;
+        g_trap_returns = false;
+        release_fake(queue);
+        release_fake(stack);
+        release_fake(ring);
+        release_fake(deque);
+        release_fake(heap);
+        for (void *value : transferred)
+            release_fake(value);
+        release_fake(stored);
+        release_fake(replacement);
+    }
+
+    // PriorityQueue.ToSeq can move the clone's popped ownership directly into
+    // its result. A value one retain below saturation reaches the ceiling
+    // while cloning but must not require another retain during publication.
+    {
+        void *heap = rt_pqueue_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        assert(heap != nullptr);
+        rt_pqueue_push(heap, 1, stored);
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        assert(stored_header != nullptr);
+        assert(stored_header->refcnt == 2);
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT - 1;
+
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        void *snapshot = rt_pqueue_to_seq(heap);
+        assert(snapshot != nullptr);
+        assert(g_last_returning_trap == nullptr);
+        assert(rt_seq_len(snapshot) == 1);
+        assert(rt_seq_get(snapshot, 0) == stored);
+        assert(rt_pqueue_len(heap) == 1);
+
+        stored_header->refcnt = 3;
+        g_trap_returns = false;
+        release_fake(snapshot);
+        release_fake(heap);
+        release_fake(stored);
+    }
+
+    // Iterator source/result ownership is transactional: a saturated source
+    // cannot be published, and a saturated element cannot advance the cursor
+    // or leak a partial ToSeq result.
+    {
+        void *source = rt_seq_new();
+        assert(source != nullptr);
+        rt_heap_hdr_t *source_header = rt_heap_hdr(source);
+        assert(source_header != nullptr);
+        source_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        assert(rt_iter_from_seq(source) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        source_header->refcnt = 1;
+        g_trap_returns = false;
+        release_fake(source);
+    }
+    {
+        void *source = rt_seq_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        assert(source != nullptr);
+        rt_seq_set_owns_elements(source, 1);
+        rt_seq_push(source, stored);
+        void *iter = rt_iter_from_seq(source);
+        assert(iter != nullptr);
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        assert(stored_header != nullptr);
+        assert(stored_header->refcnt == 2);
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+
+        g_last_returning_trap = nullptr;
+        assert(rt_iter_peek(iter) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_iter_index(iter) == 0);
+        g_last_returning_trap = nullptr;
+        assert(rt_iter_next(iter) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_iter_index(iter) == 0);
+        g_last_returning_trap = nullptr;
+        assert(rt_iter_to_seq(iter) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_iter_index(iter) == 0);
+
+        stored_header->refcnt = 2;
+        g_trap_returns = false;
+        release_fake(iter);
+        release_fake(source);
+        release_fake(stored);
+    }
+
+    // SortedSet must reject forged string handles instead of comparing them as
+    // empty, and ordered getters must not publish a string whose retain failed.
+    {
+        void *set = rt_sortedset_new();
+        auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
+        assert(set != nullptr);
+        g_trap_returns = true;
+
+        g_last_returning_trap = nullptr;
+        assert(rt_sortedset_add(set, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_sortedset_len(set) == 0);
+        g_last_returning_trap = nullptr;
+        assert(rt_sortedset_has(set, forged) == 0);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+        assert(rt_sortedset_floor(set, forged) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        g_last_returning_trap = nullptr;
+        assert(rt_sortedset_range(set, forged, nullptr) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_trap_returns = false;
+        rt_string alpha = rt_const_cstr("alpha");
+        assert(rt_sortedset_add(set, alpha) == 1);
+        rt_string stored = rt_sortedset_first(set);
+        assert(stored != nullptr);
+        assert(stored->literal_refs == 2);
+        stored->literal_refs = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        assert(rt_sortedset_first(set) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        stored->literal_refs = 2;
+        g_trap_returns = false;
+        rt_str_release_maybe(stored);
+        release_fake(set);
+    }
+
+    // Trie replacement, insertion, and clone must stop on returning retain
+    // failure; exact self-assignment is a refcount-neutral no-op.
+    {
+        void *trie = rt_trie_new();
+        void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string key_a = rt_const_cstr("a");
+        rt_string key_b = rt_const_cstr("b");
+        assert(trie != nullptr);
+        rt_trie_set(trie, key_a, stored);
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        rt_heap_hdr_t *replacement_header = rt_heap_hdr(replacement);
+        assert(stored_header != nullptr);
+        assert(replacement_header != nullptr);
+        assert(stored_header->refcnt == 2);
+
+        replacement_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+        g_last_returning_trap = nullptr;
+        rt_trie_set(trie, key_a, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_trie_len(trie) == 1);
+        assert(rt_trie_get(trie, key_a) == stored);
+        g_last_returning_trap = nullptr;
+        rt_trie_set(trie, key_b, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_trie_len(trie) == 1);
+        assert(rt_trie_has(trie, key_b) == 0);
+
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        rt_trie_set(trie, key_a, stored);
+        assert(g_last_returning_trap == nullptr);
+        assert(rt_trie_len(trie) == 1);
+        g_last_returning_trap = nullptr;
+        assert(rt_trie_clone(trie) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_trie_len(trie) == 1);
+
+        stored_header->refcnt = 2;
+        replacement_header->refcnt = 1;
+        g_trap_returns = false;
+        release_fake(trie);
+        release_fake(stored);
+        release_fake(replacement);
     }
 
     // DefaultMap key APIs preserve a legitimate empty-key association when a
@@ -902,9 +1946,11 @@ int main() {
         void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
         void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
         rt_string empty = rt_const_cstr("");
+        rt_string other = rt_const_cstr("other");
         auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
         assert(map != nullptr);
         assert(empty != nullptr);
+        assert(other != nullptr);
         rt_orderedmap_set(map, empty, stored);
 
         g_trap_returns = true;
@@ -925,10 +1971,36 @@ int main() {
         g_last_returning_trap = nullptr;
         assert(rt_orderedmap_remove(map, forged) == 0);
         assert(g_last_returning_trap != nullptr);
+
+        rt_heap_hdr_t *replacement_header = rt_heap_hdr(replacement);
+        rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        assert(replacement_header != nullptr);
+        assert(stored_header != nullptr);
+        replacement_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+
+        g_last_returning_trap = nullptr;
+        rt_orderedmap_set(map, empty, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_orderedmap_len(map) == 1);
+        assert(rt_orderedmap_get(map, empty) == stored);
+
+        g_last_returning_trap = nullptr;
+        rt_orderedmap_set(map, other, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_orderedmap_len(map) == 1);
+        assert(rt_orderedmap_has(map, other) == 0);
+        replacement_header->refcnt = 1;
+
+        stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_orderedmap_values(map) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        stored_header->refcnt = 2;
         g_trap_returns = false;
 
         assert(rt_orderedmap_len(map) == 1);
         rt_string_unref(empty);
+        rt_string_unref(other);
         release_fake(stored);
         release_fake(replacement);
         release_fake(map);
@@ -969,11 +2041,26 @@ int main() {
         assert(rt_multimap_remove_all(map, forged) == 0);
         assert(g_last_returning_trap != nullptr);
 
+        rt_heap_hdr_t *replacement_header = rt_heap_hdr(replacement);
         rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        assert(replacement_header != nullptr);
         assert(stored_header != nullptr);
+        replacement_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        rt_multimap_put(map, empty, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_multimap_len(map) == 1);
+        assert(rt_multimap_key_count(map) == 1);
+        assert(rt_multimap_count_for(map, empty) == 1);
+        replacement_header->refcnt = 1;
+
         stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
         g_last_returning_trap = nullptr;
         assert(rt_multimap_get(map, empty) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+
+        g_last_returning_trap = nullptr;
+        assert(rt_multimap_get_first(map, empty) == nullptr);
         assert(g_last_returning_trap != nullptr);
         stored_header->refcnt = 2;
         g_trap_returns = false;
@@ -1028,6 +2115,74 @@ int main() {
         release_fake(cache);
     }
 
+    // Failed LRUCache retains neither replace nor promote an existing node,
+    // and a failed full-cache insertion cannot evict the current LRU entry.
+    {
+        void *cache = rt_lrucache_new(2);
+        void *value_a = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *value_b = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *value_c = make_fake(RT_RANDOM_CLASS_ID, 1);
+        void *blocked = make_fake(RT_RANDOM_CLASS_ID, 1);
+        rt_string key_a = rt_const_cstr("a");
+        rt_string key_b = rt_const_cstr("b");
+        rt_string key_c = rt_const_cstr("c");
+        assert(cache != nullptr);
+        assert(key_a != nullptr);
+        assert(key_b != nullptr);
+        assert(key_c != nullptr);
+
+        rt_lrucache_put(cache, key_a, value_a);
+        rt_lrucache_put(cache, key_b, value_b);
+        assert(rt_lrucache_len(cache) == 2);
+
+        rt_heap_hdr_t *blocked_header = rt_heap_hdr(blocked);
+        rt_heap_hdr_t *value_b_header = rt_heap_hdr(value_b);
+        assert(blocked_header != nullptr);
+        assert(value_b_header != nullptr);
+        blocked_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_trap_returns = true;
+
+        g_last_returning_trap = nullptr;
+        rt_lrucache_put(cache, key_a, blocked);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_lrucache_len(cache) == 2);
+        assert(rt_lrucache_peek(cache, key_a) == value_a);
+        assert(rt_lrucache_peek(cache, key_b) == value_b);
+
+        g_last_returning_trap = nullptr;
+        rt_lrucache_put(cache, key_c, blocked);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_lrucache_len(cache) == 2);
+        assert(rt_lrucache_has(cache, key_a) == 1);
+        assert(rt_lrucache_has(cache, key_b) == 1);
+        assert(rt_lrucache_has(cache, key_c) == 0);
+        blocked_header->refcnt = 1;
+
+        // If the failed replacement above promoted "a", this successful
+        // insertion would evict "b" instead of the still-LRU "a".
+        rt_lrucache_put(cache, key_c, value_c);
+        assert(rt_lrucache_len(cache) == 2);
+        assert(rt_lrucache_has(cache, key_a) == 0);
+        assert(rt_lrucache_has(cache, key_b) == 1);
+        assert(rt_lrucache_has(cache, key_c) == 1);
+
+        value_b_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+        g_last_returning_trap = nullptr;
+        assert(rt_lrucache_values(cache) == nullptr);
+        assert(g_last_returning_trap != nullptr);
+        value_b_header->refcnt = 2;
+        g_trap_returns = false;
+
+        rt_string_unref(key_a);
+        rt_string_unref(key_b);
+        rt_string_unref(key_c);
+        release_fake(cache);
+        release_fake(value_a);
+        release_fake(value_b);
+        release_fake(value_c);
+        release_fake(blocked);
+    }
+
     // TreeMap rejects forged ordered-query keys and stops snapshot iteration
     // after releasing a failed partial values sequence.
     {
@@ -1035,9 +2190,11 @@ int main() {
         void *stored = make_fake(RT_RANDOM_CLASS_ID, 1);
         void *replacement = make_fake(RT_RANDOM_CLASS_ID, 1);
         rt_string empty = rt_const_cstr("");
+        rt_string other = rt_const_cstr("other");
         auto forged = reinterpret_cast<rt_string>(static_cast<uintptr_t>(1));
         assert(map != nullptr);
         assert(empty != nullptr);
+        assert(other != nullptr);
         rt_treemap_set(map, empty, stored);
 
         g_trap_returns = true;
@@ -1063,8 +2220,25 @@ int main() {
         assert(rt_treemap_remove(map, forged) == 0);
         assert(g_last_returning_trap != nullptr);
 
+        rt_heap_hdr_t *replacement_header = rt_heap_hdr(replacement);
         rt_heap_hdr_t *stored_header = rt_heap_hdr(stored);
+        assert(replacement_header != nullptr);
         assert(stored_header != nullptr);
+        replacement_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
+
+        g_last_returning_trap = nullptr;
+        rt_treemap_set(map, empty, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_treemap_len(map) == 1);
+        assert(rt_treemap_get(map, empty) == stored);
+
+        g_last_returning_trap = nullptr;
+        rt_treemap_set(map, other, replacement);
+        assert(g_last_returning_trap != nullptr);
+        assert(rt_treemap_len(map) == 1);
+        assert(rt_treemap_has(map, other) == 0);
+        replacement_header->refcnt = 1;
+
         stored_header->refcnt = RT_HEAP_MAX_MORTAL_REFCNT;
         g_last_returning_trap = nullptr;
         assert(rt_treemap_values(map) == nullptr);
@@ -1074,6 +2248,7 @@ int main() {
 
         assert(rt_treemap_len(map) == 1);
         rt_string_unref(empty);
+        rt_string_unref(other);
         release_fake(stored);
         release_fake(replacement);
         release_fake(map);

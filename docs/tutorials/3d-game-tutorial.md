@@ -1,3 +1,9 @@
+---
+status: active
+audience: public
+last-verified: 2026-07-30
+---
+
 # Your First 3D Game
 
 This tutorial takes you from a fresh checkout to a running, scene-driven

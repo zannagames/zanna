@@ -99,6 +99,7 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0169](0169-super-modifier-keys-and-studio-viewport-picking.md) — Add Super Keys and Geometry-Aware Studio Viewport Interaction
 - [ADR 0228](0228-http-end-to-end-request-deadlines.md) — Use One End-to-End Deadline for Each HTTP Request
 - [ADR 0229](0229-bounded-native-gzip-decoding.md) — Bound Native GZIP Decoding Before Output Allocation
+- [ADR 0231](0231-fail-closed-crypto-policy-identifiers.md) — Fail Closed on Unknown Crypto Policy Identifiers
 
 ## GUI & IDE
 

@@ -111,17 +111,18 @@ void ogg_reader_free(ogg_reader_t *r);
 /// @brief Read the next complete packet.
 /// @param r Open reader.
 /// @param out_data Receives reader-owned bytes valid until the next packet call,
-///        rewind, or free.
-/// @param out_len Receives packet length in bytes.
+///        rewind, or free. Set to NULL on failure when non-NULL.
+/// @param out_len Receives packet length in bytes. Set to zero on failure.
 /// @return `1` if a packet was read, or `0` on EOF/error.
 int ogg_reader_next_packet(ogg_reader_t *r, const uint8_t **out_data, size_t *out_len);
 
 /// @brief Read the next complete packet plus stream metadata.
 /// @param r Open reader.
 /// @param out_data Receives reader-owned bytes valid until the next packet call,
-///        rewind, or free.
-/// @param out_len Receives packet length in bytes.
-/// @param out_info Optional destination for serial/granule/BOS/EOS metadata.
+///        rewind, or free. Set to NULL on failure when non-NULL.
+/// @param out_len Receives packet length in bytes. Set to zero on failure.
+/// @param out_info Optional destination for serial/granule/BOS/EOS metadata;
+///        zero-initialized on failure.
 /// @return `1` if a packet was read, or `0` on EOF/error.
 int ogg_reader_next_packet_ex(ogg_reader_t *r,
                               const uint8_t **out_data,

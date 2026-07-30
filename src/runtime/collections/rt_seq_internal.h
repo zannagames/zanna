@@ -12,7 +12,8 @@
 //
 // Key invariants:
 //   - This header is INTERNAL to the runtime — never include from public APIs.
-//   - Only rt_seq.c and rt_seq_ops.c should include this header.
+//   - Seq implementation units and collection constructors that must validate
+//     Seq identity may include this header; public callers use rt_seq.h.
 //   - The public API header (rt_seq.h) remains the sole interface for callers.
 //
 // Ownership/Lifetime:
@@ -21,7 +22,9 @@
 //
 // Links: src/runtime/collections/rt_seq.h (public API),
 //        src/runtime/collections/rt_seq.c (core operations),
-//        src/runtime/collections/rt_seq_ops.c (sorting and functional operations)
+//        src/runtime/collections/rt_seq_ops.c (sorting and functional operations),
+//        src/runtime/collections/rt_frozenmap.c,
+//        src/runtime/collections/rt_frozenset.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -34,6 +37,7 @@
 
 #pragma once
 
+#include "rt_object.h"
 #include "rt_seq.h"
 
 #include <stdint.h>
@@ -78,3 +82,13 @@ typedef struct rt_seq_impl {
     void **items;         ///< Array of element pointers
     int8_t owns_elements; ///< 1 = retain on push, release on finalize/clear
 } rt_seq_impl;
+
+/// @brief Test whether @p obj is a live, sufficiently large Seq payload.
+/// @details This non-trapping predicate lets internal callers distinguish an
+///          invalid non-null source handle from the public `NULL`-as-empty
+///          convention before querying its length.
+/// @param obj Candidate runtime payload.
+/// @return One only for a managed Seq with the complete private layout.
+static inline int8_t rt_seq_internal_is_valid(void *obj) {
+    return obj && rt_obj_is_instance(obj, RT_SEQ_CLASS_ID, sizeof(rt_seq_impl)) ? 1 : 0;
+}

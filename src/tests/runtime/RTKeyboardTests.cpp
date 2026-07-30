@@ -6,7 +6,18 @@
 //===----------------------------------------------------------------------===//
 //
 // File: src/tests/runtime/RTKeyboardTests.cpp
-// Purpose: Tests for Zanna.Input.Key constants and Keyboard state/query APIs.
+// Purpose: Validate Zanna.Input.Key constants and frame-coherent keyboard APIs.
+// Key invariants:
+//   - Public and backend key vocabularies map without collisions.
+//   - Pressed/released snapshots contain each key at most once per frame.
+//   - Text input retains valid UTF-8 and rejects controls/private-use scalars.
+// Ownership/Lifetime:
+//   - Legacy short-lived runtime handles are process-scoped in this executable;
+//     the high-churn regression explicitly releases its snapshot sequences.
+//   - Platform query hooks borrow synthetic canvas pointers for one test scope.
+// Links: src/runtime/graphics/input/rt_input.c,
+//        src/runtime/graphics/input/rt_input.h,
+//        docs/adr/0169-super-modifier-keys-and-studio-viewport-picking.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -163,6 +174,41 @@ static void test_frame_events() {
     assert(rt_seq_len(released) == 0);
 
     printf("test_frame_events: PASSED\n");
+}
+
+static void test_frame_edges_are_unique_and_bounded() {
+    rt_keyboard_init();
+    rt_keyboard_begin_frame();
+
+    const int64_t key_a = rt_keyboard_key_a();
+    const int64_t key_z = rt_keyboard_key_z();
+    for (int iteration = 0; iteration < 10000; ++iteration) {
+        rt_keyboard_on_key_down(key_a);
+        rt_keyboard_on_key_up(key_a);
+    }
+    rt_keyboard_on_key_down(key_z);
+    rt_keyboard_on_key_up(key_z);
+
+    void *pressed = rt_keyboard_get_pressed();
+    void *released = rt_keyboard_get_released();
+    assert(pressed != nullptr);
+    assert(released != nullptr);
+    assert(rt_seq_len(pressed) == 2);
+    assert(rt_seq_len(released) == 2);
+    assert(rt_unbox_i64(rt_seq_get(pressed, 0)) == key_a);
+    assert(rt_unbox_i64(rt_seq_get(pressed, 1)) == key_z);
+    assert(rt_unbox_i64(rt_seq_get(released, 0)) == key_a);
+    assert(rt_unbox_i64(rt_seq_get(released, 1)) == key_z);
+    assert(rt_keyboard_was_pressed(key_a) == 1);
+    assert(rt_keyboard_was_released(key_a) == 1);
+    assert(rt_keyboard_is_up(key_a) == 1);
+
+    if (rt_obj_release_check0(pressed))
+        rt_obj_free(pressed);
+    if (rt_obj_release_check0(released))
+        rt_obj_free(released);
+
+    printf("test_frame_edges_are_unique_and_bounded: PASSED\n");
 }
 
 // ============================================================================
@@ -371,6 +417,7 @@ int main() {
     test_initial_state();
     test_key_press_release();
     test_frame_events();
+    test_frame_edges_are_unique_and_bounded();
     test_key_name();
     test_modifier_state();
     test_caps_lock_query();

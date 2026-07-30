@@ -48,9 +48,11 @@
 #include "rt_heap.h"
 #include "rt_object.h"
 #include "rt_platform.h"
+#include "rt_string.h"
 
 #include <assert.h>
 #include <stddef.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -114,22 +116,55 @@ static void rt_arr_obj_release_element(void *p) {
         rt_obj_free(p);
 }
 
+/// @brief Retain an object-array element and report whether ownership exists.
+/// @details Preserves the permissive raw-pointer behavior of
+///          `rt_obj_retain_maybe`, but requires registered strings and heap
+///          payloads to acquire a real reference before publication or return.
+/// @param value Candidate element; null and unmanaged pointers are accepted.
+/// @param failure Diagnostic raised when a managed retain cannot complete.
+/// @return Nonzero after successful ownership acquisition, otherwise zero
+///         after a returning trap.
+static int rt_arr_obj_retain_checked(void *value, const char *failure) {
+    if (!value)
+        return 1;
+    if (rt_string_is_handle(value))
+        return rt_string_ref((rt_string)value) ? 1 : 0;
+    if (!rt_heap_is_payload(value))
+        return 1;
+
+    int32_t status = rt_heap_try_retain_live(value);
+    if (status == 1 || status == 2)
+        return 1;
+    rt_trap(failure ? failure : "rt_array_obj: element retain failed");
+    return 0;
+}
+
+/// @brief Copy the current trap message into caller-owned storage.
+/// @param buffer Destination buffer.
+/// @param buffer_size Capacity including the terminator.
+/// @param fallback Diagnostic used when no trap text is available.
+static void rt_arr_obj_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
+}
+
 /// @brief Copy retained object references into a fresh array.
 /// @details Each non-NULL element copied from @p src is retained before being
 ///          stored in @p dst so the destination array owns independent strong
-///          references. If a recovering trap hook returns after a retain error,
-///          the partially-copied destination remains valid and can be released
-///          normally by the caller.
+///          references. A failed retain leaves the current destination slot
+///          empty; the caller owns and releases all earlier copied slots.
 /// @param dst Destination object-array payload.
 /// @param src Source object-array payload.
 /// @param count Number of elements to copy.
-static void rt_arr_obj_copy_retained(void **dst, void **src, size_t count) {
+/// @return Nonzero after copying every element, otherwise zero.
+static int rt_arr_obj_copy_retained(void **dst, void **src, size_t count) {
     for (size_t i = 0; i < count; ++i) {
         void *value = src[i];
-        if (value)
-            rt_obj_retain_maybe(value);
+        if (!rt_arr_obj_retain_checked(value, "rt_array_obj: copy retain failed"))
+            return 0;
         dst[i] = value;
     }
+    return 1;
 }
 
 /// @brief Compute an amortized-growth capacity for a resizable object array.
@@ -231,7 +266,8 @@ void *rt_arr_obj_get(void **arr, size_t idx) {
     if (idx >= hdr->len)
         return NULL;
     void *p = arr[idx];
-    rt_obj_retain_maybe(p);
+    if (!rt_arr_obj_retain_checked(p, "rt_arr_obj_get: result retain failed"))
+        return NULL;
     return p;
 }
 
@@ -248,34 +284,28 @@ void rt_arr_obj_put(void **arr, size_t idx, void *obj) {
         rt_trap("rt_arr_obj_put: null array");
         return;
     }
-    rt_gc_mutator_enter();
     rt_heap_hdr_t *hdr = rt_arr_obj_hdr(arr);
-    if (!rt_arr_obj_header_valid(hdr)) {
-        rt_gc_mutator_exit();
+    if (!rt_arr_obj_header_valid(hdr))
         return;
-    }
     rt_arr_obj_assert_header(hdr);
     if (rt_arr_obj_is_shared(hdr)) {
-        rt_gc_mutator_exit();
         rt_trap("rt_arr_obj_put: cannot mutate shared array");
         return;
     }
     if (idx >= hdr->len)
         rt_arr_oob_panic(idx, hdr->len);
-    if (idx >= hdr->len) {
-        rt_gc_mutator_exit();
+    if (idx >= hdr->len)
         return;
-    }
-
-    // Retain new first to handle self-assignment safely
-    rt_obj_retain_maybe(obj);
 
     void *old = arr[idx];
+    if (old == obj)
+        return;
+    if (!rt_arr_obj_retain_checked(obj, "rt_arr_obj_put: value retain failed"))
+        return;
+
+    rt_gc_mutator_enter();
     arr[idx] = obj;
-    if (old) {
-        if (rt_obj_release_check0(old))
-            rt_obj_free(old);
-    }
+    rt_arr_obj_release_element(old);
     rt_gc_mutator_exit();
 }
 
@@ -328,7 +358,26 @@ void **rt_arr_obj_resize(void **arr, size_t len) {
             return NULL;
         }
         size_t copy_len = old_len < len ? old_len : len;
-        rt_arr_obj_copy_retained(fresh, arr, copy_len);
+
+        jmp_buf recovery;
+        rt_trap_set_recovery(&recovery);
+        if (setjmp(recovery) != 0) {
+            char saved_error[256];
+            rt_arr_obj_save_trap(
+                saved_error, sizeof(saved_error), "rt_array_obj: copy retain failed");
+            rt_trap_clear_recovery();
+            rt_arr_obj_release(fresh);
+            rt_gc_mutator_exit();
+            rt_trap(saved_error);
+            return NULL;
+        }
+        if (!rt_arr_obj_copy_retained(fresh, arr, copy_len)) {
+            rt_trap_clear_recovery();
+            rt_arr_obj_release(fresh);
+            rt_gc_mutator_exit();
+            return NULL;
+        }
+        rt_trap_clear_recovery();
         rt_arr_obj_release(arr);
         rt_gc_mutator_exit();
         return fresh;

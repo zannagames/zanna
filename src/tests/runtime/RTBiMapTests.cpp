@@ -137,6 +137,34 @@ static void test_overwrite_value() {
     rt_string_unref(v);
 }
 
+static void test_idempotent_and_two_sided_conflicts() {
+    void *bm = rt_bimap_new();
+    rt_string k1 = make_str("k1");
+    rt_string k2 = make_str("k2");
+    rt_string v1 = make_str("v1");
+    rt_string v2 = make_str("v2");
+
+    rt_bimap_put(bm, k1, v1);
+    rt_bimap_put(bm, k1, v1);
+    assert(rt_bimap_len(bm) == 1);
+    assert(rt_bimap_has_key(bm, k1) == 1);
+    assert(rt_bimap_has_value(bm, v1) == 1);
+
+    rt_bimap_put(bm, k2, v2);
+    assert(rt_bimap_len(bm) == 2);
+    rt_bimap_put(bm, k1, v2);
+    assert(rt_bimap_len(bm) == 1);
+    assert(rt_bimap_has_key(bm, k1) == 1);
+    assert(rt_bimap_has_key(bm, k2) == 0);
+    assert(rt_bimap_has_value(bm, v1) == 0);
+    assert(rt_bimap_has_value(bm, v2) == 1);
+
+    rt_string_unref(k1);
+    rt_string_unref(k2);
+    rt_string_unref(v1);
+    rt_string_unref(v2);
+}
+
 static void test_remove_by_key() {
     void *bm = rt_bimap_new();
     rt_string k = make_str("x");
@@ -181,9 +209,11 @@ static void test_keys_values() {
 
     void *keys = rt_bimap_keys(bm);
     assert(rt_seq_len(keys) == 2);
+    assert(rt_seq_cap(keys) == 2);
 
     void *vals = rt_bimap_values(bm);
     assert(rt_seq_len(vals) == 2);
+    assert(rt_seq_cap(vals) == 2);
 
     rt_string_unref(k1);
     rt_string_unref(v1);
@@ -295,6 +325,7 @@ int main() {
     test_has_key_value();
     test_overwrite_key();
     test_overwrite_value();
+    test_idempotent_and_two_sided_conflicts();
     test_remove_by_key();
     test_remove_by_value();
     test_keys_values();

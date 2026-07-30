@@ -1,3 +1,9 @@
+---
+status: active
+audience: public
+last-verified: 2026-07-30
+---
+
 # VSCN Scene Format (`.scene3d` / `.vscn`)
 
 VSCN is Zanna's canonical 3D scene serialization: a UTF-8 JSON document

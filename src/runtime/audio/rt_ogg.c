@@ -32,8 +32,10 @@
 
 struct ogg_stream_state_t {
     uint32_t serial_number;
+    uint32_t next_page_sequence;
     ogg_packet_t partial;
     int saw_bos;
+    int has_page_sequence;
     struct ogg_stream_state_t *next;
 };
 
@@ -43,6 +45,33 @@ struct ogg_packet_node_t {
     ogg_packet_info_t info;
     struct ogg_packet_node_t *next;
 };
+
+/// @brief Maximum number of simultaneously retained logical-stream states.
+/// @details Legitimate Ogg/Vorbis/Theora containers use only a handful of
+///          concurrent serials. The ceiling prevents hostile pages with unique
+///          unfinished serials from growing the reader's state list without bound.
+#define OGG_MAX_LOGICAL_STREAMS 64u
+
+/// @brief Maximum assembled byte length of one logical Ogg packet.
+/// @details Large enough for practical audio/video headers and frames while
+///          preventing a file-backed continuation chain from exhausting memory.
+#define OGG_MAX_PACKET_BYTES ((size_t)64 * 1024u * 1024u)
+
+/// @brief Maximum aggregate capacity retained by partial-packet buffers.
+/// @details Completed/returned packet storage is separately bounded by
+///          @ref OGG_MAX_PACKET_BYTES; a page can publish at most one such
+///          cross-page packet plus 65,025 bytes of page-local completions.
+#define OGG_MAX_PARTIAL_BUFFER_BYTES ((size_t)64 * 1024u * 1024u)
+
+/// @brief Maximum completed packets that one parsed page may queue.
+/// @details Ogg's one-byte segment count makes 255 the format-level maximum,
+///          but the explicit parser check protects the list invariant.
+#define OGG_MAX_READY_PACKETS 255u
+
+/// @brief Maximum aggregate payload bytes in the completed-packet queue.
+/// @details At most one packet can carry bytes from earlier pages; all other
+///          queued completions are bounded by the current page's 65,025-byte body.
+#define OGG_MAX_READY_BYTES (OGG_MAX_PACKET_BYTES + (size_t)255u * 255u)
 
 //===----------------------------------------------------------------------===//
 // CRC-32 for OGG (polynomial 0x04C11DB7, init 0)
@@ -229,29 +258,39 @@ static int ogg_read_page(ogg_reader_t *r, uint8_t **body_out, size_t *body_len_o
 ///          guards so a truncated/malicious stream cannot wrap `size_t`.
 ///          Returns 0 if any size math overflows or `realloc` fails;
 ///          callers treat that as a fatal packet-assembly error.
+/// @param r     Reader owning every partial-packet buffer.
 /// @param pkt   Target packet (must be zero-initialised on first use).
 /// @param data  Bytes to append (NULL allowed only when `len == 0`).
 /// @param len   Number of bytes to append.
 /// @return 1 on success, 0 on failure.
-static int packet_append(ogg_packet_t *pkt, const uint8_t *data, size_t len) {
-    if (!pkt || (!data && len > 0))
+static int packet_append(ogg_reader_t *r, ogg_packet_t *pkt, const uint8_t *data, size_t len) {
+    if (!r || !pkt || (!data && len > 0))
         return 0;
     if (len > ((size_t)-1) - pkt->len)
         return 0;
     size_t needed = pkt->len + len;
+    if (needed > OGG_MAX_PACKET_BYTES)
+        return 0;
     if (needed > pkt->cap) {
-        size_t new_cap = pkt->cap ? pkt->cap * 2 : 4096;
-        if (new_cap < pkt->cap)
-            return 0;
-        if (new_cap < needed)
-            new_cap = needed;
+        size_t new_cap = pkt->cap ? pkt->cap : 4096u;
         while (new_cap < needed) {
-            if (new_cap > ((size_t)-1) / 2) {
+            if (new_cap > OGG_MAX_PACKET_BYTES / 2u) {
                 new_cap = needed;
                 break;
             }
             new_cap *= 2;
         }
+
+        size_t retained_capacity = 0;
+        for (ogg_stream_state_t *state = r->streams; state; state = state->next) {
+            if (state->partial.cap > OGG_MAX_PARTIAL_BUFFER_BYTES - retained_capacity)
+                return 0;
+            retained_capacity += state->partial.cap;
+        }
+        size_t growth = new_cap - pkt->cap;
+        if (growth > OGG_MAX_PARTIAL_BUFFER_BYTES - retained_capacity)
+            return 0;
+
         uint8_t *new_data = (uint8_t *)realloc(pkt->data, new_cap);
         if (!new_data)
             return 0;
@@ -275,23 +314,6 @@ static void packet_reset(ogg_packet_t *pkt) {
     pkt->complete = 0;
 }
 
-/// @brief Locate the per-stream state by serial number, returning NULL if unknown.
-/// @details Logical OGG bitstreams are multiplexed by serial number;
-///          each one keeps its own partial-packet buffer so concurrent
-///          streams don't corrupt each other.
-/// @param r Reader containing the stream-state list.
-/// @param serial_number Logical bitstream serial number.
-/// @return Matching reader-owned state, or NULL when absent.
-static ogg_stream_state_t *find_stream_state(ogg_reader_t *r, uint32_t serial_number) {
-    ogg_stream_state_t *cur = r->streams;
-    while (cur) {
-        if (cur->serial_number == serial_number)
-            return cur;
-        cur = cur->next;
-    }
-    return NULL;
-}
-
 /// @brief Find-or-create the per-stream state for @p serial_number.
 /// @details Inserts a freshly-zeroed entry at the head of the reader's
 ///          singly-linked stream list when no match exists, so subsequent
@@ -300,9 +322,16 @@ static ogg_stream_state_t *find_stream_state(ogg_reader_t *r, uint32_t serial_nu
 /// @param serial_number Logical bitstream serial number.
 /// @return Existing/new state, or NULL on allocation failure.
 static ogg_stream_state_t *get_stream_state(ogg_reader_t *r, uint32_t serial_number) {
-    ogg_stream_state_t *state = find_stream_state(r, serial_number);
-    if (state)
-        return state;
+    size_t stream_count = 0;
+    for (ogg_stream_state_t *state = r->streams; state; state = state->next) {
+        if (state->serial_number == serial_number)
+            return state;
+        stream_count++;
+    }
+    if (stream_count >= OGG_MAX_LOGICAL_STREAMS)
+        return NULL;
+
+    ogg_stream_state_t *state = NULL;
     state = (ogg_stream_state_t *)calloc(1, sizeof(*state));
     if (!state)
         return NULL;
@@ -352,26 +381,42 @@ static void clear_ready_packets(ogg_reader_t *r) {
 /// @param granule_position Page-level granule, or -1 for non-terminal segments.
 /// @param bos              Beginning-of-stream flag.
 /// @param eos              End-of-stream flag.
-/// @return 1 on success, 0 on allocation failure or empty partial.
+/// @return 1 on success, 0 on allocation failure or queue-budget exhaustion.
 static int queue_completed_packet(ogg_reader_t *r,
                                   ogg_stream_state_t *state,
                                   int64_t granule_position,
                                   uint8_t bos,
                                   uint8_t eos) {
-    if (!r || !state || state->partial.len == 0)
+    if (!r || !state)
+        return 0;
+
+    size_t ready_count = 0;
+    size_t ready_bytes = 0;
+    for (ogg_packet_node_t *queued = r->ready_head; queued; queued = queued->next) {
+        if (ready_count == OGG_MAX_READY_PACKETS || queued->len > OGG_MAX_READY_BYTES - ready_bytes)
+            return 0;
+        ready_count++;
+        ready_bytes += queued->len;
+    }
+    if (ready_count == OGG_MAX_READY_PACKETS ||
+        state->partial.len > OGG_MAX_READY_BYTES - ready_bytes)
         return 0;
 
     ogg_packet_node_t *node = (ogg_packet_node_t *)calloc(1, sizeof(*node));
     if (!node)
         return 0;
 
-    node->data = (uint8_t *)malloc(state->partial.len);
+    // Keep successful empty packets distinguishable from failure for callers
+    // that use both the return status and the output pointer.
+    size_t allocation_size = state->partial.len > 0 ? state->partial.len : 1u;
+    node->data = (uint8_t *)malloc(allocation_size);
     if (!node->data) {
         free(node);
         return 0;
     }
 
-    memcpy(node->data, state->partial.data, state->partial.len);
+    if (state->partial.len > 0)
+        memcpy(node->data, state->partial.data, state->partial.len);
     node->len = state->partial.len;
     node->info.serial_number = state->serial_number;
     node->info.granule_position = granule_position;
@@ -393,7 +438,10 @@ static int queue_completed_packet(ogg_reader_t *r,
 ///          segment `< 255` terminates it. A page whose `header_type`
 ///          continuation flag is set but whose state has no partial
 ///          buffer is treated as resync junk and that one packet is
-///          discarded (preventing corrupted-stream pollution). Completed
+///          discarded (preventing corrupted-stream pollution). Once a
+///          serial has been observed, page sequence numbers must remain
+///          contiguous modulo 2^32, and an unfinished packet requires the
+///          next page's continuation flag. Completed
 ///          packets land on the ready queue via
 ///          @ref queue_completed_packet, carrying the page-level granule
 ///          on the *last* terminating segment of the page.
@@ -405,6 +453,17 @@ static int process_page_packets(ogg_reader_t *r, const uint8_t *body, size_t bod
     ogg_stream_state_t *state = get_stream_state(r, r->page.serial_number);
     if (!state)
         return 0;
+
+    if (state->has_page_sequence && r->page.page_sequence != state->next_page_sequence) {
+        packet_reset(&state->partial);
+        return 0;
+    }
+    if (state->partial.len > 0 && (r->page.header_type & 0x01) == 0) {
+        packet_reset(&state->partial);
+        return 0;
+    }
+    state->has_page_sequence = 1;
+    state->next_page_sequence = r->page.page_sequence + UINT32_C(1);
 
     int last_complete_segment = -1;
     for (int i = 0; i < r->page.num_segments; i++) {
@@ -420,7 +479,9 @@ static int process_page_packets(ogg_reader_t *r, const uint8_t *body, size_t bod
         if (offset + seg_size > body_len)
             return 0;
 
-        if (!discarding_continuation && !packet_append(&state->partial, body + offset, seg_size)) {
+        const uint8_t *segment_data = seg_size > 0 ? body + offset : NULL;
+        if (!discarding_continuation &&
+            !packet_append(r, &state->partial, segment_data, seg_size)) {
             packet_reset(&state->partial);
             return 0;
         }
@@ -545,6 +606,12 @@ int ogg_reader_next_packet_ex(ogg_reader_t *r,
                               const uint8_t **out_data,
                               size_t *out_len,
                               ogg_packet_info_t *out_info) {
+    if (out_data)
+        *out_data = NULL;
+    if (out_len)
+        *out_len = 0;
+    if (out_info)
+        memset(out_info, 0, sizeof(*out_info));
     if (!r || !out_data || !out_len)
         return 0;
 

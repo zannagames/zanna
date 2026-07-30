@@ -164,12 +164,15 @@ const rt_locale_data_t *rt_locale_manager_lookup_data_retained(const char *tag);
 
 /// @brief Increment the live formatter count on a registered locale data
 ///        record. No-op when @p data is NULL or is the baked invariant.
+/// @details Counter overflow traps without wrapping. If an embedder trap hook
+///          returns, the record remains pinned at `INT64_MAX`.
 /// @param data Locale-data record to retain.
 void rt_locale_manager_retain_data(const rt_locale_data_t *data);
 
 /// @brief Decrement the live formatter count on a registered locale data
 ///        record. No-op when @p data is NULL or is the baked invariant.
-/// @details Counter underflow traps; this function never frees the record.
+/// @details Counter underflow traps; a saturated counter also traps and remains
+///          pinned. This function never frees the record.
 /// @param data Locale-data record to release.
 void rt_locale_manager_release_data(const rt_locale_data_t *data);
 

@@ -14,7 +14,7 @@
 //
 // Key invariants:
 //   - Backed by a hash table with initial capacity MM_INITIAL_CAPACITY (16)
-//     buckets and separate chaining using FNV-1a hashing.
+//     buckets and separate chaining using a per-process keyed hash.
 //   - Resizes (doubles) when key_count/capacity exceeds 75%.
 //   - `key_count` tracks distinct keys; `total_count` tracks total values added.
 //   - Each published bucket entry owns a non-empty Seq; adding a value appends
@@ -50,8 +50,10 @@
 #include "rt_multimap.h"
 
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_hash_table_util.h"
+#include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_seq.h"
@@ -97,6 +99,7 @@ typedef struct rt_multimap_impl {
     size_t capacity;
     size_t key_count;
     size_t total_count;
+    int8_t finalizing;
 } rt_multimap_impl;
 
 /// @brief Checked cast of an opaque handle to the MultiMap implementation.
@@ -144,6 +147,14 @@ static int get_key_data(rt_string key, const char *what, const char **out_data, 
     return 1;
 }
 
+/// @brief Per-process keyed hash for attacker-controlled multimap keys.
+/// @param key Borrowed key bytes.
+/// @param key_len Number of identity bytes.
+/// @return Process-keyed 64-bit hash.
+static uint64_t mm_hash(const char *key, size_t key_len) {
+    return rt_keyed_hash_bytes(key ? key : "", key_len);
+}
+
 /// @brief Find an exact byte-string key in one collision chain.
 /// @param head First entry in the bucket chain, or `NULL`.
 /// @param key Key bytes to compare.
@@ -171,9 +182,12 @@ static void mm_release_object(void *obj) {
 static void free_entry(rt_mm_entry *entry) {
     if (!entry)
         return;
+    void *values = entry->values;
+    entry->values = NULL;
     free(entry->key);
-    mm_release_object(entry->values);
+    entry->key = NULL;
     free(entry);
+    mm_release_object(values);
 }
 
 /// @brief Copy the active trap diagnostic into bounded local storage.
@@ -185,6 +199,62 @@ static void free_entry(rt_mm_entry *entry) {
 static void mm_save_trap_error(char *buffer, size_t buffer_size, const char *fallback) {
     const char *err = rt_trap_get_error();
     snprintf(buffer, buffer_size, "%s", err && err[0] ? err : fallback);
+}
+
+/// @brief Publish an empty table and collect every old entry into one list.
+/// @details All buckets and both counts are cleared before any callback-capable
+///          release. Rewriting the detached collision links requires no
+///          allocation and lets callback-created entries remain independent.
+/// @param mm Valid MultiMap with a live bucket array.
+/// @return Head of a detached list containing every formerly published entry.
+static rt_mm_entry *mm_detach_all_entries(rt_multimap_impl *mm) {
+    rt_mm_entry *detached = NULL;
+    for (size_t i = 0; i < mm->capacity; ++i) {
+        rt_mm_entry *entry = mm->buckets[i];
+        mm->buckets[i] = NULL;
+        while (entry) {
+            rt_mm_entry *next = entry->next;
+            entry->next = detached;
+            detached = entry;
+            entry = next;
+        }
+    }
+    mm->key_count = 0;
+    mm->total_count = 0;
+    return detached;
+}
+
+/// @brief Consume detached entries despite trapping per-key Seq finalizers.
+/// @details Native entry/key ownership is reclaimed before releasing each
+///          value Seq. Cleanup resumes at the following entry after a
+///          non-local trap and reports the first diagnostic after draining all.
+/// @param head Detached entry list, or NULL.
+/// @param error Buffer receiving the first trapped diagnostic.
+/// @param error_size Capacity of @p error including its terminator.
+/// @return Nonzero when at least one entry cleanup trapped.
+static int mm_destroy_entries(rt_mm_entry *head, char *error, size_t error_size) {
+    rt_mm_entry *volatile cursor = head;
+    volatile int trapped = 0;
+    jmp_buf recovery;
+
+    rt_gc_mutator_enter();
+    rt_trap_set_recovery(&recovery);
+    for (;;) {
+        if (setjmp(recovery) != 0) {
+            rt_gc_mutator_enter();
+            if (!trapped)
+                mm_save_trap_error(error, error_size, "MultiMap: value finalizer cleanup failed");
+            trapped = 1;
+        }
+        rt_mm_entry *entry = (rt_mm_entry *)cursor;
+        if (!entry)
+            break;
+        cursor = entry->next;
+        free_entry(entry);
+    }
+    rt_trap_clear_recovery();
+    rt_gc_mutator_exit();
+    return trapped ? 1 : 0;
 }
 
 /// @brief Append the first value to a not-yet-published entry transactionally.
@@ -206,7 +276,37 @@ static int mm_push_value_or_release_entry(rt_mm_entry *entry, void *value) {
         return 0;
     }
 
+    int64_t old_len = rt_seq_len(entry->values);
     rt_seq_push(entry->values, value);
+    if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(entry->values) != old_len + 1)
+        rt_trap("MultiMap: value append failed");
+    rt_trap_clear_recovery();
+    return 1;
+}
+
+/// @brief Append to a published value sequence without changing map metadata
+///        after a failed retain or allocation.
+/// @details The entry and its owning `Seq` remain published and unchanged when
+///          `Seq.Push` traps. The original diagnostic is propagated after the
+///          local recovery frame is removed.
+/// @param seq Published owning `Seq` belonging to an existing entry.
+/// @param value Value to append and retain; `NULL` is valid.
+/// @return Nonzero after append; zero after propagating a trapped failure.
+static int mm_push_value_checked(void *seq, void *value) {
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        mm_save_trap_error(saved_error, sizeof(saved_error), "MultiMap: value retain failed");
+        rt_trap_clear_recovery();
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    int64_t old_len = rt_seq_len(seq);
+    rt_seq_push(seq, value);
+    if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(seq) != old_len + 1)
+        rt_trap("MultiMap: value append failed");
     rt_trap_clear_recovery();
     return 1;
 }
@@ -231,7 +331,10 @@ static int mm_push_value_or_release_seq(void *seq, void *value, const char *fall
         return 0;
     }
 
+    int64_t old_len = rt_seq_len(seq);
     rt_seq_push(seq, value);
+    if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(seq) != old_len + 1)
+        rt_trap(fallback);
     rt_trap_clear_recovery();
     return 1;
 }
@@ -262,8 +365,12 @@ static int mm_append_key_or_release_seq(void *seq, const char *key, size_t key_l
     }
 
     key_copy = rt_string_from_bytes(key, key_len);
-    rt_seq_push(seq, (void *)key_copy);
-    rt_str_release_maybe((rt_string)key_copy);
+    if (!key_copy)
+        rt_trap("MultiMap.Keys: failed to copy key");
+    int64_t old_len = rt_seq_len(seq);
+    rt_seq_push_raw(seq, (void *)key_copy);
+    if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(seq) != old_len + 1)
+        rt_trap("MultiMap.Keys: failed to append key");
     key_copy = NULL;
     rt_trap_clear_recovery();
     return 1;
@@ -290,7 +397,7 @@ static int mm_resize(rt_multimap_impl *mm, size_t new_cap) {
         rt_mm_entry *e = mm->buckets[i];
         while (e) {
             rt_mm_entry *next = e->next;
-            uint64_t h = rt_fnv1a(e->key, e->key_len);
+            uint64_t h = mm_hash(e->key, e->key_len);
             size_t idx = h % new_cap;
             e->next = new_buckets[idx];
             new_buckets[idx] = e;
@@ -324,8 +431,7 @@ static int maybe_resize_for_insert(rt_multimap_impl *mm) {
     return 1;
 }
 
-/// @brief GC finalizer: clear all entries (via rt_multimap_clear) then free
-///        the bucket array.
+/// @brief GC finalizer: detach and destroy all entries, then free the table.
 /// @param obj MultiMap object being finalized; `NULL` is ignored.
 static void rt_multimap_finalize(void *obj) {
     if (!obj)
@@ -335,10 +441,31 @@ static void rt_multimap_finalize(void *obj) {
         return;
     if (!mm->buckets)
         return;
-    rt_multimap_clear(mm);
-    free(mm->buckets);
+
+    mm->finalizing = 1;
+    rt_mm_entry *entries = mm_detach_all_entries(mm);
+    rt_mm_entry **buckets = mm->buckets;
+    size_t capacity = mm->capacity;
     mm->buckets = NULL;
     mm->capacity = 0;
+
+    char cleanup_error[256] = {0};
+    int cleanup_trapped = mm_destroy_entries(entries, cleanup_error, sizeof(cleanup_error));
+
+    rt_heap_info_t info;
+    int resurrected = rt_heap_get_info(obj, &info) && info.refcnt != 0;
+    if (resurrected && buckets && capacity > 0) {
+        memset(buckets, 0, capacity * sizeof(rt_mm_entry *));
+        mm->buckets = buckets;
+        mm->capacity = capacity;
+        buckets = NULL;
+        rt_obj_set_finalizer(mm, rt_multimap_finalize);
+    }
+    mm->finalizing = 0;
+    free(buckets);
+
+    if (cleanup_trapped)
+        rt_trap(cleanup_error[0] ? cleanup_error : "MultiMap: value finalizer cleanup failed");
 }
 
 /// @brief Visit every runtime object directly retained by a MultiMap.
@@ -385,6 +512,7 @@ void *rt_multimap_new(void) {
     mm->capacity = MM_INITIAL_CAPACITY;
     mm->key_count = 0;
     mm->total_count = 0;
+    mm->finalizing = 0;
     rt_obj_set_finalizer(mm, rt_multimap_finalize);
     rt_gc_track(mm, rt_multimap_traverse);
     return mm;
@@ -442,6 +570,10 @@ void rt_multimap_put(void *obj, rt_string key, void *value) {
         rt_gc_mutator_exit();
         return;
     }
+    if (mm->finalizing) {
+        rt_gc_mutator_exit();
+        return;
+    }
     if (!mm->buckets || mm->capacity == 0) {
         rt_gc_mutator_exit();
         rt_trap("MultiMap: finalized MultiMap object");
@@ -454,7 +586,7 @@ void rt_multimap_put(void *obj, rt_string key, void *value) {
         rt_gc_mutator_exit();
         return;
     }
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = mm_hash(key_data, key_len);
     size_t idx = hash % mm->capacity;
 
     rt_mm_entry *existing = find_entry(mm->buckets[idx], key_data, key_len);
@@ -464,7 +596,10 @@ void rt_multimap_put(void *obj, rt_string key, void *value) {
             rt_trap("MultiMap: length overflow");
             return;
         }
-        rt_seq_push(existing->values, value);
+        if (!mm_push_value_checked(existing->values, value)) {
+            rt_gc_mutator_exit();
+            return;
+        }
         mm->total_count++;
         rt_gc_mutator_exit();
         return;
@@ -482,7 +617,7 @@ void rt_multimap_put(void *obj, rt_string key, void *value) {
     }
     idx = hash % mm->capacity;
 
-    void *values = rt_seq_new_owned();
+    void *values = rt_seq_with_capacity_owned(1);
     if (!values) {
         rt_gc_mutator_exit();
         return;
@@ -538,27 +673,31 @@ void rt_multimap_put(void *obj, rt_string key, void *value) {
 /// @return New caller-owned `Seq`, never `NULL` unless allocation traps.
 void *rt_multimap_get(void *obj, rt_string key) {
     if (!obj)
-        return rt_seq_new_owned();
+        return rt_seq_with_capacity_owned(1);
     rt_multimap_impl *mm = as_multimap(obj, "MultiMap.Get: invalid MultiMap object");
-    if (!mm || !mm->buckets || mm->capacity == 0)
-        return rt_seq_new_owned();
+    if (!mm)
+        return NULL;
+    if (!mm->buckets || mm->capacity == 0)
+        return rt_seq_with_capacity_owned(1);
 
     size_t key_len = 0;
     const char *key_data = NULL;
     if (!get_key_data(key, "MultiMap.Get: invalid key", &key_data, &key_len))
         return NULL;
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = mm_hash(key_data, key_len);
     size_t idx = hash % mm->capacity;
 
     rt_mm_entry *entry = find_entry(mm->buckets[idx], key_data, key_len);
     if (!entry)
-        return rt_seq_new_owned();
+        return rt_seq_with_capacity_owned(1);
 
     // Return a copy of the values Seq
-    void *result = rt_seq_new_owned();
+    int64_t len = rt_seq_len(entry->values);
+    if (len < 0)
+        return NULL;
+    void *result = rt_seq_with_capacity_owned(len > 0 ? len : 1);
     if (!result)
         return NULL;
-    int64_t len = rt_seq_len(entry->values);
     for (int64_t i = 0; i < len; ++i) {
         void *value = rt_seq_get(entry->values, i);
         if (!mm_push_value_or_release_seq(result, value, "MultiMap.Get: failed to copy values"))
@@ -591,7 +730,7 @@ void *rt_multimap_get_first(void *obj, rt_string key) {
         rt_gc_mutator_exit();
         return NULL;
     }
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = mm_hash(key_data, key_len);
     size_t idx = hash % mm->capacity;
 
     rt_mm_entry *entry = find_entry(mm->buckets[idx], key_data, key_len);
@@ -600,7 +739,10 @@ void *rt_multimap_get_first(void *obj, rt_string key) {
         return NULL;
     }
     void *value = rt_seq_get(entry->values, 0);
-    rt_obj_retain_maybe(value);
+    if (!rt_collection_retain_checked(value, "MultiMap.GetFirst: result retain failed")) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
     rt_gc_mutator_exit();
     return value;
 }
@@ -622,7 +764,7 @@ int8_t rt_multimap_has(void *obj, rt_string key) {
     const char *key_data = NULL;
     if (!get_key_data(key, "MultiMap.Has: invalid key", &key_data, &key_len))
         return 0;
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = mm_hash(key_data, key_len);
     size_t idx = hash % mm->capacity;
     return find_entry(mm->buckets[idx], key_data, key_len) ? 1 : 0;
 }
@@ -644,7 +786,7 @@ int64_t rt_multimap_count_for(void *obj, rt_string key) {
     const char *key_data = NULL;
     if (!get_key_data(key, "MultiMap.CountFor: invalid key", &key_data, &key_len))
         return 0;
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = mm_hash(key_data, key_len);
     size_t idx = hash % mm->capacity;
 
     rt_mm_entry *entry = find_entry(mm->buckets[idx], key_data, key_len);
@@ -674,7 +816,7 @@ int8_t rt_multimap_remove_all(void *obj, rt_string key) {
         rt_gc_mutator_exit();
         return 0;
     }
-    uint64_t hash = rt_fnv1a(key_data, key_len);
+    uint64_t hash = mm_hash(key_data, key_len);
     size_t idx = hash % mm->capacity;
 
     rt_mm_entry **prev_ptr = &mm->buckets[idx];
@@ -684,8 +826,8 @@ int8_t rt_multimap_remove_all(void *obj, rt_string key) {
             *prev_ptr = entry->next;
             mm->total_count -= (size_t)rt_seq_len(entry->values);
             mm->key_count--;
-            free_entry(entry);
             rt_gc_mutator_exit();
+            free_entry(entry);
             return 1;
         }
         prev_ptr = &entry->next;
@@ -710,18 +852,18 @@ void rt_multimap_clear(void *obj) {
         rt_gc_mutator_exit();
         return;
     }
-    for (size_t i = 0; i < mm->capacity; ++i) {
-        rt_mm_entry *entry = mm->buckets[i];
-        mm->buckets[i] = NULL;
-        while (entry) {
-            rt_mm_entry *next = entry->next;
-            free_entry(entry);
-            entry = next;
-        }
+    if (mm->finalizing) {
+        rt_gc_mutator_exit();
+        return;
     }
-    mm->key_count = 0;
-    mm->total_count = 0;
+
+    rt_mm_entry *entries = mm_detach_all_entries(mm);
     rt_gc_mutator_exit();
+
+    char cleanup_error[256] = {0};
+    if (mm_destroy_entries(entries, cleanup_error, sizeof(cleanup_error)))
+        rt_trap(cleanup_error[0] ? cleanup_error
+                                 : "MultiMap.Clear: value finalizer cleanup failed");
 }
 
 /// @brief Return a Seq of every distinct key in the multimap (bucket-iteration order).
@@ -732,18 +874,17 @@ void rt_multimap_clear(void *obj) {
 /// @param obj Opaque MultiMap object, or `NULL`.
 /// @return New caller-owned `Seq` of copied string handles.
 void *rt_multimap_keys(void *obj) {
-    if (!obj) {
-        void *empty = rt_seq_new();
-        if (!empty)
+    rt_multimap_impl *mm = NULL;
+    if (obj) {
+        mm = as_multimap(obj, "MultiMap.Keys: invalid MultiMap object");
+        if (!mm)
             return NULL;
-        rt_seq_set_owns_elements(empty, 1);
-        return empty;
     }
-    rt_multimap_impl *mm = as_multimap(obj, "MultiMap.Keys: invalid MultiMap object");
-    void *result = rt_seq_new();
+
+    int64_t initial_capacity = mm && mm->key_count > 0 ? (int64_t)mm->key_count : 1;
+    void *result = rt_seq_with_capacity_owned(initial_capacity);
     if (!result)
         return NULL;
-    rt_seq_set_owns_elements(result, 1);
     if (!mm || !mm->buckets)
         return result;
     for (size_t i = 0; i < mm->capacity; ++i) {

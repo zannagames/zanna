@@ -69,6 +69,7 @@
 #include <X11/Xlib.h>
 #endif
 
+#include <float.h>
 #include <limits.h>
 #include <math.h>
 #include <stdbool.h>
@@ -181,15 +182,13 @@ static bool g_key_state[ZANNA_KEY_MAX];
 static bool g_pressed_this_frame[ZANNA_KEY_MAX];
 static bool g_released_this_frame[ZANNA_KEY_MAX];
 
-// Keys pressed this frame
-static int64_t *g_pressed_keys;
+// Unique keys pressed this frame, in first-edge arrival order.
+static int64_t g_pressed_keys[ZANNA_KEY_MAX];
 static int g_pressed_count;
-static int g_pressed_capacity;
 
-// Keys released this frame
-static int64_t *g_released_keys;
+// Unique keys released this frame, in first-edge arrival order.
+static int64_t g_released_keys[ZANNA_KEY_MAX];
 static int g_released_count;
-static int g_released_capacity;
 
 // Text input buffer
 static char *g_text_buffer;
@@ -206,46 +205,6 @@ static void *g_active_canvas;
 // Track if initialized
 static bool g_initialized;
 
-/// @brief Ensure a per-frame keyboard edge buffer can hold at least @p needed entries.
-/// @details Buffers grow geometrically from 64 entries and retain their capacity across frames.
-///          This prevents high-churn frames from silently dropping key-down/key-up edges.
-/// @param keys Pointer to the edge-buffer pointer to grow.
-/// @param capacity Pointer to the current capacity field.
-/// @param needed Minimum number of entries required.
-/// @return true when capacity is available, false on allocation overflow/failure.
-static bool rt_keyboard_reserve_key_events(int64_t **keys, int *capacity, int needed) {
-    if (!keys || !capacity || needed < 0)
-        return false;
-    if (*capacity >= needed)
-        return true;
-    int new_capacity = *capacity > 0 ? *capacity : 64;
-    while (new_capacity < needed) {
-        if (new_capacity > INT_MAX / 2)
-            return false;
-        new_capacity *= 2;
-    }
-    if ((size_t)new_capacity > SIZE_MAX / sizeof(**keys))
-        return false;
-    int64_t *grown = (int64_t *)realloc(*keys, (size_t)new_capacity * sizeof(**keys));
-    if (!grown)
-        return false;
-    *keys = grown;
-    *capacity = new_capacity;
-    return true;
-}
-
-/// @brief Append one key edge event after the caller has reserved the destination slot.
-/// @details Key state changes reserve storage before mutating level state, then call this helper to
-///          keep the actual append operation allocation-free and therefore non-trapping.
-/// @param keys Edge-buffer pointer with capacity for one additional entry.
-/// @param count Pointer to the active entry count.
-/// @param key Public ZANNA_KEY_* code to append.
-static void rt_keyboard_append_reserved_key_event(int64_t *keys, int *count, int64_t key) {
-    if (!keys || !count || *count < 0)
-        return;
-    keys[(*count)++] = key;
-}
-
 /// @brief Clamp a runtime int64 coordinate to the platform cursor-warp int32 range.
 /// @param value Runtime coordinate in canvas pixels.
 /// @return @p value saturated to the signed 32-bit range accepted by graphics backends.
@@ -261,6 +220,59 @@ static int32_t rt_input_clamp_i64_to_i32(int64_t value) {
     return (int32_t)value;
 }
 #endif
+
+/// @brief Subtract signed coordinates without invoking overflow.
+/// @param value Current coordinate.
+/// @param previous Coordinate from the prior frame.
+/// @return Exact difference when representable, otherwise the nearest signed 64-bit endpoint.
+static int64_t rt_input_saturating_sub_i64(int64_t value, int64_t previous) {
+    if (previous > 0 && value < INT64_MIN + previous)
+        return INT64_MIN;
+    if (previous < 0 && value > INT64_MAX + previous)
+        return INT64_MAX;
+    return value - previous;
+}
+
+/// @brief Round a finite floating-point delta into the signed 64-bit range.
+/// @param value Raw delta supplied by an input backend.
+/// @return Rounded value, zero for non-finite input, or a saturated endpoint.
+static int64_t rt_input_saturating_round_f64_to_i64(double value) {
+    if (!isfinite(value))
+        return 0;
+    if (value >= (double)INT64_MAX)
+        return INT64_MAX;
+    if (value <= (double)INT64_MIN)
+        return INT64_MIN;
+    return (int64_t)llround(value);
+}
+
+/// @brief Truncate a finite floating-point accumulator into the signed 64-bit range.
+/// @param value Wheel accumulator to convert.
+/// @return Truncated value, zero for non-finite input, or a saturated endpoint.
+static int64_t rt_input_saturating_trunc_f64_to_i64(double value) {
+    if (!isfinite(value))
+        return 0;
+    if (value >= (double)INT64_MAX)
+        return INT64_MAX;
+    if (value <= (double)INT64_MIN)
+        return INT64_MIN;
+    return (int64_t)value;
+}
+
+/// @brief Add one finite wheel delta while keeping the accumulator finite.
+/// @param current Existing finite per-frame accumulator.
+/// @param delta New backend delta; non-finite values are ignored.
+/// @return Exact sum when finite, otherwise the matching finite double endpoint.
+static double rt_input_saturating_add_f64(double current, double delta) {
+    if (!isfinite(delta))
+        return isfinite(current) ? current : 0.0;
+    if (!isfinite(current))
+        current = 0.0;
+    double sum = current + delta;
+    if (isfinite(sum))
+        return sum;
+    return signbit(sum) ? -DBL_MAX : DBL_MAX;
+}
 
 /// @brief Ensure the UTF-8 text buffer can append @p needed bytes this frame.
 /// @details Text input can arrive in bursts from IME or paste-like platform events. The buffer
@@ -322,6 +334,7 @@ static void rt_input_warp_mouse_platform(int64_t x, int64_t y);
 ///             should return non-zero when caps-lock is asserted. NULL
 ///             clears the hook.
 void rt_input_set_caps_lock_query_hook(rt_caps_lock_query_hook_fn hook) {
+    RT_ASSERT_MAIN_THREAD();
     g_caps_lock_query_hook = hook;
 }
 
@@ -336,6 +349,7 @@ void rt_input_set_caps_lock_query_hook(rt_caps_lock_query_hook_fn hook) {
 /// @param hook Test callback invoked with `(canvas, x, y)`. NULL clears
 ///             the hook.
 void rt_input_set_mouse_warp_hook(rt_mouse_warp_hook_fn hook) {
+    RT_ASSERT_MAIN_THREAD();
     g_mouse_warp_hook = hook;
 }
 
@@ -345,6 +359,7 @@ void rt_input_set_mouse_warp_hook(rt_mouse_warp_hook_fn hook) {
 /// so the next test sees a clean platform-default state. Idempotent:
 /// safe to call when no hooks are currently installed.
 void rt_input_reset_test_hooks(void) {
+    RT_ASSERT_MAIN_THREAD();
     g_caps_lock_query_hook = NULL;
     g_mouse_warp_hook = NULL;
 }
@@ -486,8 +501,9 @@ void rt_keyboard_begin_frame(void) {
 }
 
 /// @brief Apply one normalized key-down transition to level and per-frame edge state.
-/// @details Repeat-down input is ignored. Storage is reserved before state mutation, and an
-///          allocation failure traps without partially recording the transition.
+/// @details Repeat-down input is ignored. A key is appended only for its first
+///          down edge in the frame, so the fixed edge array is bounded by the
+///          public key-code domain while preserving first-edge arrival order.
 /// @param key Public `ZANNA_KEY_*` code.
 static void rt_keyboard_record_key_down(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
@@ -496,23 +512,22 @@ static void rt_keyboard_record_key_down(int64_t key) {
 
     // Only record press if key wasn't already down
     if (!g_key_state[key]) {
-        if (g_pressed_count == INT_MAX || !rt_keyboard_reserve_key_events(&g_pressed_keys,
-                                                                          &g_pressed_capacity,
-                                                                          g_pressed_count + 1)) {
-            rt_trap("Keyboard: key event buffer allocation failed");
-            return;
-        }
         g_key_state[key] = true;
-        g_pressed_this_frame[key] = true;
-        rt_keyboard_append_reserved_key_event(g_pressed_keys, &g_pressed_count, key);
+        if (!g_pressed_this_frame[key]) {
+            if (g_pressed_count >= ZANNA_KEY_MAX)
+                rt_abort("Keyboard: unique pressed-key invariant violated");
+            g_pressed_keys[g_pressed_count++] = key;
+            g_pressed_this_frame[key] = true;
+        }
     }
 
     // Caps Lock state is queried from the platform on demand.
 }
 
 /// @brief Apply one normalized key-up transition to level and per-frame edge state.
-/// @details Up events for keys not currently held are ignored. Storage is reserved before state
-///          mutation so allocation failure cannot create a partial release.
+/// @details Up events for keys not currently held are ignored. A key is appended
+///          only for its first up edge in the frame, bounding storage while
+///          retaining the frame-level "was released" semantics.
 /// @param key Public `ZANNA_KEY_*` code.
 static void rt_keyboard_record_key_up(int64_t key) {
     RT_ASSERT_MAIN_THREAD();
@@ -520,15 +535,13 @@ static void rt_keyboard_record_key_up(int64_t key) {
         return;
 
     if (g_key_state[key]) {
-        if (g_released_count == INT_MAX || !rt_keyboard_reserve_key_events(&g_released_keys,
-                                                                           &g_released_capacity,
-                                                                           g_released_count + 1)) {
-            rt_trap("Keyboard: key event buffer allocation failed");
-            return;
-        }
         g_key_state[key] = false;
-        g_released_this_frame[key] = true;
-        rt_keyboard_append_reserved_key_event(g_released_keys, &g_released_count, key);
+        if (!g_released_this_frame[key]) {
+            if (g_released_count >= ZANNA_KEY_MAX)
+                rt_abort("Keyboard: unique released-key invariant violated");
+            g_released_keys[g_released_count++] = key;
+            g_released_this_frame[key] = true;
+        }
     }
 }
 
@@ -1593,7 +1606,7 @@ void rt_mouse_init(void) {
         g_mouse_button_pressed[i] = false;
         g_mouse_button_released[i] = false;
         g_mouse_press_time[i] = 0;
-        g_mouse_last_click_time[i] = 0;
+        g_mouse_last_click_time[i] = -1;
         g_mouse_clicked[i] = false;
         g_mouse_double_clicked[i] = false;
     }
@@ -1614,8 +1627,8 @@ void rt_mouse_begin_frame(void) {
     // Calculate delta from previous position. Poll paths that pump events after
     // this call refresh the delta via rt_mouse_finalize_frame() so it describes
     // this frame's motion instead of lagging one poll behind Mouse.X/Y.
-    g_mouse_delta_x = g_mouse_x - g_mouse_prev_x;
-    g_mouse_delta_y = g_mouse_y - g_mouse_prev_y;
+    g_mouse_delta_x = rt_input_saturating_sub_i64(g_mouse_x, g_mouse_prev_x);
+    g_mouse_delta_y = rt_input_saturating_sub_i64(g_mouse_y, g_mouse_prev_y);
     g_mouse_prev_x = g_mouse_x;
     g_mouse_prev_y = g_mouse_y;
     g_mouse_delta_fx = (double)g_mouse_delta_x;
@@ -1643,8 +1656,8 @@ void rt_mouse_begin_frame(void) {
 /// Canvas3D poll and take precedence.
 void rt_mouse_finalize_frame(void) {
     RT_ASSERT_MAIN_THREAD();
-    g_mouse_delta_x = g_mouse_x - g_mouse_prev_x;
-    g_mouse_delta_y = g_mouse_y - g_mouse_prev_y;
+    g_mouse_delta_x = rt_input_saturating_sub_i64(g_mouse_x, g_mouse_prev_x);
+    g_mouse_delta_y = rt_input_saturating_sub_i64(g_mouse_y, g_mouse_prev_y);
     g_mouse_prev_x = g_mouse_x;
     g_mouse_prev_y = g_mouse_y;
     g_mouse_delta_fx = (double)g_mouse_delta_x;
@@ -1694,10 +1707,10 @@ void rt_mouse_force_delta(int64_t dx, int64_t dy) {
 /// @param dy Sub-pixel vertical motion for this frame (positive = down).
 void rt_mouse_force_delta_f(double dx, double dy) {
     RT_ASSERT_MAIN_THREAD();
-    g_mouse_delta_fx = dx;
-    g_mouse_delta_fy = dy;
-    g_mouse_delta_x = (int64_t)llround(dx);
-    g_mouse_delta_y = (int64_t)llround(dy);
+    g_mouse_delta_fx = isfinite(dx) ? dx : 0.0;
+    g_mouse_delta_fy = isfinite(dy) ? dy : 0.0;
+    g_mouse_delta_x = rt_input_saturating_round_f64_to_i64(dx);
+    g_mouse_delta_y = rt_input_saturating_round_f64_to_i64(dy);
 }
 
 /// @brief Forward an OS mouse-button-press event into the runtime state.
@@ -1746,13 +1759,14 @@ void rt_mouse_button_up(int64_t button) {
 
         // Check for click (quick press and release)
         int64_t now = get_time_ms();
-        int64_t press_duration = now - g_mouse_press_time[button];
-        if (press_duration <= CLICK_MAX_DURATION_MS) {
+        int64_t press_time = g_mouse_press_time[button];
+        if (now >= press_time && now - press_time <= CLICK_MAX_DURATION_MS) {
             g_mouse_clicked[button] = true;
 
             // Check for double-click
-            int64_t since_last_click = now - g_mouse_last_click_time[button];
-            if (since_last_click <= DOUBLE_CLICK_MAX_INTERVAL_MS) {
+            int64_t last_click_time = g_mouse_last_click_time[button];
+            if (last_click_time >= 0 && now >= last_click_time &&
+                now - last_click_time <= DOUBLE_CLICK_MAX_INTERVAL_MS) {
                 g_mouse_double_clicked[button] = true;
             }
             g_mouse_last_click_time[button] = now;
@@ -1773,8 +1787,8 @@ void rt_mouse_button_up(int64_t button) {
 /// @param dy Vertical wheel delta (positive = up).
 void rt_mouse_update_wheel(double dx, double dy) {
     RT_ASSERT_MAIN_THREAD();
-    g_mouse_wheel_x += dx;
-    g_mouse_wheel_y += dy;
+    g_mouse_wheel_x = rt_input_saturating_add_f64(g_mouse_wheel_x, dx);
+    g_mouse_wheel_y = rt_input_saturating_add_f64(g_mouse_wheel_y, dy);
 }
 
 /// @brief Bind the mouse to a specific Canvas window.
@@ -1986,7 +2000,7 @@ int8_t rt_mouse_was_double_clicked(int64_t button) {
 ///         truncated to int64.
 int64_t rt_mouse_wheel_x(void) {
     RT_ASSERT_MAIN_THREAD();
-    return (int64_t)g_mouse_wheel_x;
+    return rt_input_saturating_trunc_f64_to_i64(g_mouse_wheel_x);
 }
 
 /// @brief Get the integer-truncated vertical scroll delta for this frame.
@@ -1994,7 +2008,7 @@ int64_t rt_mouse_wheel_x(void) {
 ///         truncated to int64.
 int64_t rt_mouse_wheel_y(void) {
     RT_ASSERT_MAIN_THREAD();
-    return (int64_t)g_mouse_wheel_y;
+    return rt_input_saturating_trunc_f64_to_i64(g_mouse_wheel_y);
 }
 
 /// @brief Get the fractional horizontal scroll delta for this frame.

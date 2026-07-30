@@ -46,6 +46,7 @@
 
 #include "rt_seq.h"
 #include "rt_box.h"
+#include "rt_collection_ownership.h"
 #include "rt_gc.h"
 #include "rt_internal.h"
 #include "rt_object.h"
@@ -223,6 +224,64 @@ static int seq_ensure_capacity_or_release(
     if (!ok && retained)
         seq_release_element(retained_value);
     return ok;
+}
+
+/// @brief Retain and stage a contiguous pointer range for one owning append.
+/// @details The destination length is not changed until every retain succeeds.
+///          A trap releases all staged references, clears their slots, restores
+///          balanced mutator participation, and propagates the diagnostic.
+/// @param seq Owning destination sequence with capacity for @p count new slots.
+/// @param base First unpublished destination slot.
+/// @param source Borrowed source pointer array; may alias @p seq storage.
+/// @param count Number of elements to stage.
+/// @param consume_seq_on_failure Nonzero to release @p seq after rolling back.
+/// @param fallback Diagnostic used if the trap subsystem has no message.
+/// @return One after every slot is staged; zero after rollback and retrapping.
+static int seq_retain_range_or_rollback(rt_seq_impl *seq,
+                                        int64_t base,
+                                        void *const *source,
+                                        int64_t count,
+                                        int consume_seq_on_failure,
+                                        const char *fallback) {
+    volatile int64_t staged = 0;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        seq_save_trap_error(saved_error, sizeof(saved_error), fallback);
+        rt_trap_clear_recovery();
+        rt_gc_mutator_enter();
+        for (int64_t i = 0; i < staged; ++i) {
+            seq_release_element(seq->items[base + i]);
+            seq->items[base + i] = NULL;
+        }
+        if (consume_seq_on_failure)
+            seq_release_element(seq);
+        rt_gc_mutator_exit();
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    for (int64_t i = 0; i < count; ++i) {
+        void *item = source[i];
+        if (!rt_collection_retain_checked(item, fallback)) {
+            rt_trap_clear_recovery();
+            rt_gc_mutator_enter();
+            for (int64_t j = 0; j < staged; ++j) {
+                seq_release_element(seq->items[base + j]);
+                seq->items[base + j] = NULL;
+            }
+            if (consume_seq_on_failure)
+                seq_release_element(seq);
+            rt_gc_mutator_exit();
+            rt_trap(fallback);
+            return 0;
+        }
+        seq->items[base + i] = item;
+        staged++;
+    }
+    rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief Creates a new empty Seq (sequence) with default capacity.
@@ -614,8 +673,10 @@ void rt_seq_set(void *obj, int64_t idx, void *val) {
 
     void *old = seq->items[idx];
     if (seq->owns_elements) {
-        if (val)
-            rt_obj_retain_maybe(val);
+        if (!rt_collection_retain_checked(val, "Seq.Set: value retain failed")) {
+            rt_gc_mutator_exit();
+            return;
+        }
     }
     seq->items[idx] = val;
     if (seq->owns_elements)
@@ -712,7 +773,10 @@ void rt_seq_push(void *obj, void *val) {
     }
     int retained = 0;
     if (seq->owns_elements && val) {
-        rt_obj_retain_maybe(val);
+        if (!rt_collection_retain_checked(val, "Seq.Push: value retain failed")) {
+            rt_gc_mutator_exit();
+            return;
+        }
         retained = 1;
     }
     if (!seq_ensure_capacity_or_release(
@@ -725,13 +789,16 @@ void rt_seq_push(void *obj, void *val) {
     rt_gc_mutator_exit();
 }
 
-/// @brief Push without retaining the element — for sequences that don't own their values.
+/// @brief Push without retaining the element.
 ///
 /// Used by typed-view paths (e.g. `Seq[Int]` over a packed int64
 /// array) where the underlying storage is not GC-managed and a
-/// retain would be a noop. Public-facing code should use `rt_seq_push`.
+/// retain would be a noop. Internal construction paths may also use this with
+/// an owning Seq to transfer one already-owned reference into the sequence.
+/// Public-facing code should use `rt_seq_push`.
 /// @param obj Non-null Seq to mutate.
-/// @param val Raw pointer appended without a retain.
+/// @param val Raw pointer appended without a retain. On success, an owning Seq
+///            assumes responsibility for the caller's existing reference.
 void rt_seq_push_raw(void *obj, void *val) {
     if (!obj) {
         rt_trap("Seq.Push: null sequence");
@@ -835,13 +902,16 @@ void rt_seq_push_all(void *obj, void *other) {
                 rt_gc_mutator_exit();
                 return;
             }
-            for (int64_t i = 0; i < original_len; i++) {
-                void *item = seq->items[i];
-                if (item)
-                    rt_obj_retain_maybe(item);
-                seq->items[seq->len] = item;
-                seq->len++;
+            if (!seq_retain_range_or_rollback(seq,
+                                              original_len,
+                                              seq->items,
+                                              original_len,
+                                              0,
+                                              "Seq.PushAll: value retain failed")) {
+                rt_gc_mutator_exit();
+                return;
             }
+            seq->len = original_len + original_len;
             rt_gc_mutator_exit();
             return;
         }
@@ -865,13 +935,13 @@ void rt_seq_push_all(void *obj, void *other) {
             rt_gc_mutator_exit();
             return;
         }
-        for (int64_t i = 0; i < src->len; i++) {
-            void *item = src->items[i];
-            if (item)
-                rt_obj_retain_maybe(item);
-            seq->items[seq->len] = item;
-            seq->len++;
+        int64_t original_len = seq->len;
+        if (!seq_retain_range_or_rollback(
+                seq, original_len, src->items, src->len, 0, "Seq.PushAll: value retain failed")) {
+            rt_gc_mutator_exit();
+            return;
         }
+        seq->len = original_len + src->len;
         rt_gc_mutator_exit();
         return;
     }
@@ -941,12 +1011,10 @@ void *rt_seq_pop(void *obj) {
     }
 
     void *val = seq->items[seq->len - 1];
-    if (seq->owns_elements)
-        rt_obj_retain_maybe(val);
     seq->len--;
     seq->items[seq->len] = NULL; // Clear slot to prevent stale pointer access
-    if (seq->owns_elements)
-        seq_release_element(val);
+    // In owning mode, move the Seq's stored reference to the caller. Borrowing
+    // mode continues to return the raw pointer under its lower-level contract.
     rt_gc_mutator_exit();
     return val;
 }
@@ -1158,7 +1226,10 @@ void rt_seq_insert(void *obj, int64_t idx, void *val) {
 
     int retained = 0;
     if (seq->owns_elements && val) {
-        rt_obj_retain_maybe(val);
+        if (!rt_collection_retain_checked(val, "Seq.Insert: value retain failed")) {
+            rt_gc_mutator_exit();
+            return;
+        }
         retained = 1;
     }
     if (!seq_ensure_capacity_or_release(
@@ -1235,8 +1306,6 @@ void *rt_seq_remove(void *obj, int64_t idx) {
     }
 
     void *val = seq->items[idx];
-    if (seq->owns_elements)
-        rt_obj_retain_maybe(val);
 
     // Shift elements to the left
     if (idx < seq->len - 1) {
@@ -1246,8 +1315,8 @@ void *rt_seq_remove(void *obj, int64_t idx) {
 
     seq->items[seq->len - 1] = NULL;
     seq->len--;
-    if (seq->owns_elements)
-        seq_release_element(val);
+    // The removed slot's owned reference transfers to the caller. Borrowing
+    // sequences return the raw pointer without changing ownership.
     rt_gc_mutator_exit();
     return val;
 }
@@ -1561,6 +1630,8 @@ void *rt_seq_slice(void *obj, int64_t start, int64_t end) {
         return seq_new_empty_like(NULL);
 
     rt_seq_impl *seq = as_seq(obj, "Seq: invalid Seq object");
+    if (!seq)
+        return NULL;
 
     // Clamp bounds
     if (start < 0)
@@ -1573,11 +1644,19 @@ void *rt_seq_slice(void *obj, int64_t start, int64_t end) {
 
     int64_t new_len = end - start;
     rt_seq_impl *result = rt_seq_with_capacity(new_len);
+    if (!result)
+        return NULL;
     if (seq->owns_elements)
         rt_seq_set_owns_elements(result, 1);
 
-    for (int64_t i = start; i < end; i++)
-        rt_seq_push(result, seq->items[i]);
+    if (result->owns_elements) {
+        if (!seq_retain_range_or_rollback(
+                result, 0, &seq->items[start], new_len, 1, "Seq.Slice: value retain failed"))
+            return NULL;
+    } else {
+        memcpy(result->items, &seq->items[start], (size_t)new_len * sizeof(void *));
+    }
+    result->len = new_len;
 
     return result;
 }
@@ -1630,5 +1709,7 @@ void *rt_seq_clone(void *obj) {
         return seq_new_empty_like(NULL);
 
     rt_seq_impl *seq = as_seq(obj, "Seq: invalid Seq object");
+    if (!seq)
+        return NULL;
     return rt_seq_slice(obj, 0, seq->len);
 }

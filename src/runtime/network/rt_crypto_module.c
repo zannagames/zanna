@@ -450,9 +450,12 @@ int rt_crypto_module_init(void) {
 ///          always known to be in a passing state. COMPAT transitions are
 ///          accepted from READY but rejected once ERROR pins the module.
 /// @param mode Requested mode. APPROVED triggers initialization and a fresh
-///             self-test; other values follow the non-approved policy path.
-/// @return 1 on success; 0 when self-tests block the APPROVED move.
+///             self-test; unknown values are rejected without mutation.
+/// @return 1 on success; 0 for an unknown mode or when self-tests block the
+///         APPROVED move.
 int rt_crypto_module_set_mode(rt_crypto_module_mode_t mode) {
+    if (mode != RT_CRYPTO_MODULE_MODE_COMPAT && mode != RT_CRYPTO_MODULE_MODE_APPROVED)
+        return 0;
     if (mode == RT_CRYPTO_MODULE_MODE_APPROVED) {
         if (!rt_crypto_module_init())
             return 0;
@@ -510,10 +513,14 @@ int rt_crypto_module_is_approved_mode(void) {
 ///          HKDF-SHA-2, PBKDF2-SHA-256, DRBG, ECDSA-P256, RSA-PSS)
 ///          returns non-zero — legacy services refuse.
 /// @param service Service identifier to check against current policy.
-/// @return Non-zero when callable; zero in ERROR or when APPROVED policy rejects it.
+/// @return Non-zero when callable; zero for an unknown identifier, in ERROR,
+///         or when APPROVED policy rejects it.
 int rt_crypto_module_service_allowed(rt_crypto_module_service_t service) {
     rt_crypto_module_mode_t mode;
     rt_crypto_module_state_t state;
+
+    if (service < RT_CRYPTO_SERVICE_AES_GCM || service > RT_CRYPTO_SERVICE_SIPHASH)
+        return 0;
 
     module_lock();
     mode = g_mode;

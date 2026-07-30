@@ -17,12 +17,31 @@
 #include "rt_treemap.h"
 
 #include <cassert>
+#include <csetjmp>
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
 
+extern "C" void rt_trap_set_recovery(jmp_buf *buf);
+extern "C" void rt_trap_clear_recovery(void);
+extern "C" const char *rt_trap_get_error(void);
+
 namespace {
 static int g_finalizer_calls = 0;
+static int g_trapping_finalizer_calls = 0;
+enum class ReentryAction {
+    None,
+    Clear,
+    Set,
+    Remove,
+    Resurrect,
+};
+static void *g_reentry_map = nullptr;
+static rt_string g_reentry_key = nullptr;
+static void *g_reentry_value = nullptr;
+static ReentryAction g_reentry_action = ReentryAction::None;
+static int g_reentry_calls = 0;
+static int8_t g_reentry_remove_result = -1;
 } // namespace
 
 extern "C" void vm_trap(const char *msg) {
@@ -59,6 +78,40 @@ static void release_obj(void *p) {
 
 static void count_finalizer(void *) {
     ++g_finalizer_calls;
+}
+
+static void trapping_finalizer(void *) {
+    ++g_trapping_finalizer_calls;
+    rt_trap("TreeMap test finalizer trap");
+}
+
+static void reentrant_finalizer(void *) {
+    ++g_reentry_calls;
+    switch (g_reentry_action) {
+        case ReentryAction::Clear:
+            rt_treemap_clear(g_reentry_map);
+            break;
+        case ReentryAction::Set:
+            rt_treemap_set(g_reentry_map, g_reentry_key, g_reentry_value);
+            break;
+        case ReentryAction::Remove:
+            g_reentry_remove_result = rt_treemap_remove(g_reentry_map, g_reentry_key);
+            break;
+        case ReentryAction::Resurrect:
+            rt_obj_resurrect(g_reentry_map);
+            break;
+        case ReentryAction::None:
+            break;
+    }
+}
+
+static void reset_reentry_state() {
+    g_reentry_map = nullptr;
+    g_reentry_key = nullptr;
+    g_reentry_value = nullptr;
+    g_reentry_action = ReentryAction::None;
+    g_reentry_calls = 0;
+    g_reentry_remove_result = -1;
 }
 
 // ============================================================================
@@ -220,6 +273,133 @@ static void test_clear() {
     assert(rt_treemap_is_empty(tm) == 1);
 
     printf("test_clear: PASSED\n");
+}
+
+static void test_remove_commits_before_reentrant_finalizer() {
+    void *tm = rt_treemap_new();
+    void *victim = new_test_obj();
+    void *other = new_test_obj();
+    rt_string victim_key = make_str("victim");
+    rt_string other_key = make_str("other");
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_treemap_set(tm, victim_key, victim);
+    rt_treemap_set(tm, other_key, other);
+    release_obj(victim);
+
+    g_reentry_map = tm;
+    g_reentry_action = ReentryAction::Clear;
+    assert(rt_treemap_remove(tm, victim_key) == 1);
+    assert(g_reentry_calls == 1);
+    assert(rt_treemap_len(tm) == 0);
+
+    reset_reentry_state();
+    release_obj(other);
+    release_obj(tm);
+}
+
+static void test_clear_detaches_array_before_reentrant_finalizer() {
+    void *tm = rt_treemap_new();
+    void *victim = new_test_obj();
+    void *inserted = new_test_obj();
+    rt_string key = make_str("same-key");
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_treemap_set(tm, key, victim);
+    release_obj(victim);
+
+    g_reentry_map = tm;
+    g_reentry_key = key;
+    g_reentry_value = inserted;
+    g_reentry_action = ReentryAction::Set;
+    rt_treemap_clear(tm);
+
+    assert(g_reentry_calls == 1);
+    assert(rt_treemap_len(tm) == 1);
+    assert(rt_treemap_get(tm, key) == inserted);
+
+    reset_reentry_state();
+    rt_treemap_clear(tm);
+    release_obj(inserted);
+    release_obj(tm);
+}
+
+static void test_owner_finalizer_blocks_reentrant_mutation() {
+    void *tm = rt_treemap_new();
+    void *victim = new_test_obj();
+    rt_string key = make_str("owner-finalizer");
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_treemap_set(tm, key, victim);
+    release_obj(victim);
+
+    g_reentry_map = tm;
+    g_reentry_key = key;
+    g_reentry_action = ReentryAction::Remove;
+    release_obj(tm);
+
+    assert(g_reentry_calls == 1);
+    assert(g_reentry_remove_result == 0);
+    reset_reentry_state();
+}
+
+static void test_resurrected_owner_is_empty_reusable_and_rearmed() {
+    void *tm = rt_treemap_new();
+    void *victim = new_test_obj();
+    rt_string key = make_str("resurrect");
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_treemap_set(tm, key, victim);
+    release_obj(victim);
+
+    g_reentry_map = tm;
+    g_reentry_action = ReentryAction::Resurrect;
+    release_obj(tm);
+
+    assert(g_reentry_calls == 1);
+    assert(rt_treemap_len(tm) == 0);
+    assert(rt_treemap_is_empty(tm) == 1);
+    reset_reentry_state();
+
+    g_finalizer_calls = 0;
+    void *second = new_test_obj();
+    rt_obj_set_finalizer(second, count_finalizer);
+    rt_treemap_set(tm, key, second);
+    release_obj(second);
+    assert(rt_treemap_get(tm, key) == second);
+
+    release_obj(tm);
+    assert(g_finalizer_calls == 1);
+}
+
+static void test_finalizer_drains_after_value_finalizer_trap() {
+    void *tm = rt_treemap_new();
+    void *first = new_test_obj();
+    void *second = new_test_obj();
+
+    g_trapping_finalizer_calls = 0;
+    g_finalizer_calls = 0;
+    rt_obj_set_finalizer(first, trapping_finalizer);
+    rt_obj_set_finalizer(second, count_finalizer);
+    rt_treemap_set(tm, make_str("first"), first);
+    rt_treemap_set(tm, make_str("second"), second);
+    release_obj(first);
+    release_obj(second);
+
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) == 0) {
+        release_obj(tm);
+        assert(false && "trapping value finalizer should propagate");
+    } else {
+        const char *error = rt_trap_get_error();
+        assert(error != nullptr);
+        assert(strstr(error, "TreeMap test finalizer trap") != nullptr);
+        rt_trap_clear_recovery();
+    }
+
+    assert(g_trapping_finalizer_calls == 1);
+    assert(g_finalizer_calls == 1);
 }
 
 // ============================================================================
@@ -414,6 +594,11 @@ int main() {
     // Drop/Clear
     test_drop();
     test_clear();
+    test_remove_commits_before_reentrant_finalizer();
+    test_clear_detaches_array_before_reentrant_finalizer();
+    test_owner_finalizer_blocks_reentrant_mutation();
+    test_resurrected_owner_is_empty_reusable_and_rearmed();
+    test_finalizer_drains_after_value_finalizer_trap();
 
     // Keys/Values (sorted)
     test_keys_sorted();

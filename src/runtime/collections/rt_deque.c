@@ -49,13 +49,25 @@
 
 #include "rt_box.h"
 #include "rt_collection_ids.h"
+#include "rt_collection_ownership.h"
+#include "rt_deque_internal.h"
 #include "rt_gc.h"
 #include "rt_object.h"
 #include "rt_option.h"
 
+#include <setjmp.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+/// @brief Install a non-local recovery target for the current thread.
+/// @param buf Jump buffer that receives control after a runtime trap.
+void rt_trap_set_recovery(jmp_buf *buf);
+/// @brief Remove the current thread's active legacy recovery target.
+void rt_trap_clear_recovery(void);
+/// @brief Borrow the most recent runtime trap diagnostic.
+/// @return Null-terminated diagnostic text, or NULL when unavailable.
+const char *rt_trap_get_error(void);
 
 //=============================================================================
 // Internal Structure
@@ -63,14 +75,6 @@
 
 /// Default number of ring-buffer slots.
 #define DEFAULT_CAPACITY 16
-
-/// @brief Internal circular-buffer state for a Deque object.
-typedef struct {
-    void **data;   // Circular buffer
-    int64_t cap;   // Capacity
-    int64_t len;   // Number of elements
-    int64_t front; // Index of front element
-} Deque;
 
 //=============================================================================
 // Helper Functions
@@ -103,6 +107,15 @@ static Deque *as_deque(void *obj, const char *what) {
 static void deque_release_value(void *value) {
     if (value && rt_obj_release_check0(value))
         rt_obj_free(value);
+}
+
+/// @brief Save an active trap diagnostic before clearing its recovery frame.
+/// @param buffer Destination for the bounded diagnostic copy.
+/// @param buffer_size Capacity of @p buffer including its terminator.
+/// @param fallback Message used when no active diagnostic is available.
+static void deque_save_trap(char *buffer, size_t buffer_size, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(buffer, buffer_size, "%s", error && error[0] ? error : fallback);
 }
 
 /// @brief Grow the ring buffer to hold at least @p required elements.
@@ -300,7 +313,10 @@ void rt_deque_push_front(void *obj, void *elem) {
         return;
     }
 
-    rt_obj_retain_maybe(elem);
+    if (!rt_collection_retain_checked(elem, "Deque.PushFront: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
     // Move front pointer backward (with wrap-around)
     d->front = (d->front - 1 + d->cap) % d->cap;
     d->data[d->front] = elem;
@@ -330,11 +346,10 @@ void *rt_deque_pop_front(void *obj) {
     }
 
     void *val = d->data[d->front];
-    rt_obj_retain_maybe(val);
     d->data[d->front] = NULL;
     d->front = (d->front + 1) % d->cap;
     d->len--;
-    deque_release_value(val);
+    // Move the deque's stored reference to the caller.
     rt_gc_mutator_exit();
     return val;
 }
@@ -361,7 +376,10 @@ void *rt_deque_peek_front(void *obj) {
     }
 
     void *val = d->data[d->front];
-    rt_obj_retain_maybe(val);
+    if (!rt_collection_retain_checked(val, "Deque.PeekFront: result retain failed")) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
     rt_gc_mutator_exit();
     return val;
 }
@@ -396,7 +414,10 @@ void rt_deque_push_back(void *obj, void *elem) {
     }
 
     int64_t back = (d->front + d->len) % d->cap;
-    rt_obj_retain_maybe(elem);
+    if (!rt_collection_retain_checked(elem, "Deque.PushBack: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
     d->data[back] = elem;
     d->len++;
     rt_gc_mutator_exit();
@@ -425,10 +446,9 @@ void *rt_deque_pop_back(void *obj) {
 
     int64_t back = (d->front + d->len - 1) % d->cap;
     void *val = d->data[back];
-    rt_obj_retain_maybe(val);
     d->data[back] = NULL;
     d->len--;
-    deque_release_value(val);
+    // Move the deque's stored reference to the caller.
     rt_gc_mutator_exit();
     return val;
 }
@@ -456,7 +476,10 @@ void *rt_deque_peek_back(void *obj) {
 
     int64_t back = (d->front + d->len - 1) % d->cap;
     void *val = d->data[back];
-    rt_obj_retain_maybe(val);
+    if (!rt_collection_retain_checked(val, "Deque.PeekBack: result retain failed")) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
     rt_gc_mutator_exit();
     return val;
 }
@@ -489,7 +512,10 @@ void *rt_deque_get(void *obj, int64_t idx) {
 
     int64_t actual = (d->front + idx) % d->cap;
     void *val = d->data[actual];
-    rt_obj_retain_maybe(val);
+    if (!rt_collection_retain_checked(val, "Deque.Get: result retain failed")) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
     rt_gc_mutator_exit();
     return val;
 }
@@ -517,7 +543,10 @@ void rt_deque_set(void *obj, int64_t idx, void *elem) {
     }
 
     int64_t actual = (d->front + idx) % d->cap;
-    rt_obj_retain_maybe(elem);
+    if (!rt_collection_retain_checked(elem, "Deque.Set: value retain failed")) {
+        rt_gc_mutator_exit();
+        return;
+    }
     void *old_elem = d->data[actual];
     d->data[actual] = elem;
     deque_release_value(old_elem);
@@ -611,16 +640,31 @@ void *rt_deque_clone(void *obj) {
     if (!d)
         return NULL;
 
-    void *new_d = rt_deque_with_capacity(d->cap);
-    if (!new_d)
+    void *volatile new_d = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        deque_save_trap(saved_error, sizeof(saved_error), "Deque.Clone: copy failed");
+        rt_trap_clear_recovery();
+        deque_release_value((void *)new_d);
+        rt_trap(saved_error);
         return NULL;
+    }
+
+    new_d = rt_deque_with_capacity(d->cap);
+    if (!new_d) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
 
     for (int64_t i = 0; i < d->len; i++) {
         int64_t idx = (d->front + i) % d->cap;
-        rt_deque_push_back(new_d, d->data[idx]);
+        rt_deque_push_back((void *)new_d, d->data[idx]);
     }
 
-    return new_d;
+    rt_trap_clear_recovery();
+    return (void *)new_d;
 }
 
 /// @brief Pop the front element, or return NULL if empty (no trap).
@@ -630,38 +674,57 @@ void *rt_deque_clone(void *obj) {
 void *rt_deque_try_pop_front(void *obj) {
     if (!obj)
         return NULL;
+    rt_gc_mutator_enter();
     Deque *d = as_deque(obj, "Deque: invalid Deque object");
-    if (!d)
+    if (!d) {
+        rt_gc_mutator_exit();
         return NULL;
-    if (d->len == 0)
+    }
+    if (d->len == 0) {
+        rt_gc_mutator_exit();
         return NULL;
+    }
 
     void *val = d->data[d->front];
-    rt_obj_retain_maybe(val);
-    deque_release_value(d->data[d->front]);
     d->data[d->front] = NULL;
     d->front = (d->front + 1) % d->cap;
     d->len--;
+    // Move the deque's stored reference to the caller.
+    rt_gc_mutator_exit();
     return val;
 }
 
 /// @brief Pop the front element as an Option, preserving NULL as a present value.
-/// @details Returns `None` only when the deque is empty. The deque retains
-///          stored values; after wrapping the transferred value in an Option,
-///          this helper releases the temporary transfer.
+/// @details Returns `None` only when the deque is empty. The Option is
+///          constructed before the deque is mutated, so a failed retain leaves
+///          the front element in place.
 /// @param obj Opaque Deque object pointer.
 /// @return `Some(value)` when an element is removed, otherwise `None`.
 void *rt_deque_try_pop_front_option(void *obj) {
     if (!obj)
         return rt_option_none();
+    rt_gc_mutator_enter();
     Deque *d = as_deque(obj, "Deque: invalid Deque object");
-    if (!d || d->len == 0)
+    if (!d) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
+    if (d->len == 0) {
+        rt_gc_mutator_exit();
         return rt_option_none();
+    }
 
-    void *value = rt_deque_try_pop_front(obj);
+    void *value = d->data[d->front];
     void *option = rt_option_some(value);
-    if (value && rt_obj_release_check0(value))
-        rt_obj_free(value);
+    if (!option) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
+    d->data[d->front] = NULL;
+    d->front = (d->front + 1) % d->cap;
+    d->len--;
+    deque_release_value(value);
+    rt_gc_mutator_exit();
     return option;
 }
 
@@ -672,37 +735,56 @@ void *rt_deque_try_pop_front_option(void *obj) {
 void *rt_deque_try_pop_back(void *obj) {
     if (!obj)
         return NULL;
+    rt_gc_mutator_enter();
     Deque *d = as_deque(obj, "Deque: invalid Deque object");
-    if (!d)
+    if (!d) {
+        rt_gc_mutator_exit();
         return NULL;
-    if (d->len == 0)
+    }
+    if (d->len == 0) {
+        rt_gc_mutator_exit();
         return NULL;
+    }
 
     int64_t back = (d->front + d->len - 1) % d->cap;
     void *val = d->data[back];
-    rt_obj_retain_maybe(val);
-    deque_release_value(d->data[back]);
     d->data[back] = NULL;
     d->len--;
+    // Move the deque's stored reference to the caller.
+    rt_gc_mutator_exit();
     return val;
 }
 
 /// @brief Pop the back element as an Option, preserving NULL as a present value.
-/// @details Returns `None` only when the deque is empty. The deque retains
-///          stored values; after wrapping the transferred value in an Option,
-///          this helper releases the temporary transfer.
+/// @details Returns `None` only when the deque is empty. The Option is
+///          constructed before the deque is mutated, so a failed retain leaves
+///          the back element in place.
 /// @param obj Opaque Deque object pointer.
 /// @return `Some(value)` when an element is removed, otherwise `None`.
 void *rt_deque_try_pop_back_option(void *obj) {
     if (!obj)
         return rt_option_none();
+    rt_gc_mutator_enter();
     Deque *d = as_deque(obj, "Deque: invalid Deque object");
-    if (!d || d->len == 0)
+    if (!d) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
+    if (d->len == 0) {
+        rt_gc_mutator_exit();
         return rt_option_none();
+    }
 
-    void *value = rt_deque_try_pop_back(obj);
+    int64_t back = (d->front + d->len - 1) % d->cap;
+    void *value = d->data[back];
     void *option = rt_option_some(value);
-    if (value && rt_obj_release_check0(value))
-        rt_obj_free(value);
+    if (!option) {
+        rt_gc_mutator_exit();
+        return NULL;
+    }
+    d->data[back] = NULL;
+    d->len--;
+    deque_release_value(value);
+    rt_gc_mutator_exit();
     return option;
 }

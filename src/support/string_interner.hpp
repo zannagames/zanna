@@ -5,11 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: support/string_interner.hpp
+// File: src/support/string_interner.hpp
 // Purpose: Declares string interning and symbol types.
-// Key invariants: Symbol id 0 is invalid.
-// Ownership/Lifetime: Interner owns stored strings.
-// Links: docs/internals/codemap.md
+// Key invariants:
+//   - Symbol id 0 is invalid; live symbols are one-based storage indices.
+//   - Every map string_view points into the same object's owned deque.
+//   - A successfully moved-from interner is empty and reusable.
+// Ownership/Lifetime:
+//   - The interner owns canonical string storage; returned views borrow it.
+// Links: src/support/string_interner.cpp, src/support/symbol.hpp,
+//        docs/internals/codemap.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -103,14 +108,16 @@ class StringInterner {
 
     /// @brief Move constructor.
     /// @details Moves the owned string storage and rebuilds the string_view-keyed
-    ///          lookup table so every key points into the destination object.
-    /// @param other Interner to move from; left in a valid but unspecified state.
+    ///          lookup table so every key points into the destination object. On
+    ///          success, @p other is empty and can intern new symbol 1.
+    /// @param other Interner to move from; left empty and reusable on success.
     StringInterner(StringInterner &&other);
 
     /// @brief Move assignment operator.
     /// @details Replaces this interner with @p other's storage and rebuilds the
-    ///          lookup table from the moved strings.
-    /// @param other Interner to move from; left in a valid but unspecified state.
+    ///          lookup table from the moved strings. On success, @p other is
+    ///          empty and reusable.
+    /// @param other Interner to move from; left empty on success.
     /// @return Reference to this interner.
     StringInterner &operator=(StringInterner &&other);
 

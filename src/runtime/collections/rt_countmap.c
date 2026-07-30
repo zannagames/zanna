@@ -56,6 +56,8 @@
 #include "rt_string.h"
 #include "rt_trap.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -144,6 +146,60 @@ static void free_entry(rt_cm_entry *entry) {
         return;
     free(entry->key);
     free(entry);
+}
+
+/// @brief Release a runtime-managed object reference at zero.
+/// @param obj Nullable runtime object to release.
+static void countmap_release_object(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
+/// @brief Copy the active trap diagnostic into stable local storage.
+/// @param output Destination buffer.
+/// @param capacity Size of @p output including its terminator.
+/// @param fallback Diagnostic used when no current trap text exists.
+static void countmap_save_trap(char *output, size_t capacity, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(output, capacity, "%s", error && error[0] ? error : fallback);
+}
+
+/// @brief Copy and transfer a key into an owning snapshot.
+/// @details On a trap, releases the temporary string, partial sequence, and
+///          optional native scratch allocation before re-raising.
+/// @param seq Owning Seq to append to; consumed on failure.
+/// @param key Key bytes to copy.
+/// @param key_len Number of bytes in @p key.
+/// @param scratch Optional native allocation consumed only on failure.
+/// @param fallback Diagnostic used when no active trap message exists.
+/// @return One after a checked append; zero after cleanup and retrapping.
+static int countmap_append_key_or_release(
+    void *seq, const char *key, size_t key_len, void *scratch, const char *fallback) {
+    rt_string volatile copy = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        countmap_save_trap(saved_error, sizeof(saved_error), fallback);
+        rt_trap_clear_recovery();
+        if (copy)
+            rt_str_release_maybe((rt_string)copy);
+        free(scratch);
+        countmap_release_object(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    copy = rt_string_from_bytes(key, key_len);
+    if (!copy)
+        rt_trap(fallback);
+    int64_t old_len = rt_seq_len(seq);
+    rt_seq_push_raw(seq, (void *)copy);
+    if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(seq) != old_len + 1)
+        rt_trap(fallback);
+    copy = NULL;
+    rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief GC finalizer: free every chain entry, the bucket array, and reset.
@@ -319,13 +375,6 @@ int64_t rt_countmap_inc_by(void *obj, rt_string key, int64_t n) {
         return e->count;
     }
 
-    // New entry
-    if (should_resize(cm)) {
-        if (!resize(cm))
-            return 0;
-        idx = (size_t)(h % cm->capacity);
-    }
-
     if (n > INT64_MAX - cm->total) {
         rt_trap("CountMap: total overflow");
         return 0;
@@ -334,6 +383,15 @@ int64_t rt_countmap_inc_by(void *obj, rt_string key, int64_t n) {
         rt_trap("CountMap: length overflow");
         return 0;
     }
+
+    // New entry. Reject deterministic arithmetic limits before performing a
+    // fallible representation-only resize.
+    if (should_resize(cm)) {
+        if (!resize(cm))
+            return 0;
+        idx = (size_t)(h % cm->capacity);
+    }
+
     e = (rt_cm_entry *)malloc(sizeof(rt_cm_entry));
     if (!e) {
         rt_trap("CountMap: memory allocation failed");
@@ -490,13 +548,6 @@ void rt_countmap_set(void *obj, rt_string key, int64_t count) {
         return;
     }
 
-    // New entry
-    if (should_resize(cm)) {
-        if (!resize(cm))
-            return;
-        idx = (size_t)(h % cm->capacity);
-    }
-
     if (count > INT64_MAX - cm->total) {
         rt_trap("CountMap: total overflow");
         return;
@@ -505,6 +556,15 @@ void rt_countmap_set(void *obj, rt_string key, int64_t count) {
         rt_trap("CountMap: length overflow");
         return;
     }
+
+    // New entry. Preserve the old representation when the requested count
+    // cannot be represented regardless of allocation success.
+    if (should_resize(cm)) {
+        if (!resize(cm))
+            return;
+        idx = (size_t)(h % cm->capacity);
+    }
+
     e = (rt_cm_entry *)malloc(sizeof(rt_cm_entry));
     if (!e) {
         rt_trap("CountMap: memory allocation failed");
@@ -554,22 +614,37 @@ int64_t rt_countmap_total(void *obj) {
 /// @return A new owning Seq of newly created key strings in unspecified
 ///         bucket order, or NULL if Seq allocation fails.
 void *rt_countmap_keys(void *obj) {
-    void *seq = rt_seq_new();
+    rt_countmap_impl *cm = NULL;
+    if (obj) {
+        cm = as_countmap(obj, "CountMap.Keys: invalid CountMap object");
+        if (!cm)
+            return NULL;
+        if (!cm->buckets || cm->capacity == 0 || cm->count > (size_t)INT64_MAX) {
+            rt_trap("CountMap.Keys: corrupt CountMap object");
+            return NULL;
+        }
+    }
+
+    int64_t capacity = cm && cm->count > 0 ? (int64_t)cm->count : 1;
+    void *seq = rt_seq_with_capacity_owned(capacity);
     if (!seq)
         return NULL;
-    rt_seq_set_owns_elements(seq, 1);
-    if (!obj)
-        return seq;
-    rt_countmap_impl *cm = as_countmap(obj, "CountMap.Keys: invalid CountMap object");
     if (!cm)
         return seq;
 
+    size_t appended = 0;
     for (size_t i = 0; i < cm->capacity; ++i) {
         for (rt_cm_entry *e = cm->buckets[i]; e; e = e->next) {
-            rt_string k = rt_string_from_bytes(e->key, e->key_len);
-            rt_seq_push(seq, (void *)k);
-            rt_str_release_maybe(k);
+            if (!countmap_append_key_or_release(
+                    seq, e->key, e->key_len, NULL, "CountMap.Keys: snapshot append failed"))
+                return NULL;
+            appended++;
         }
+    }
+    if (appended != cm->count) {
+        countmap_release_object(seq);
+        rt_trap("CountMap.Keys: count invariant violation");
+        return NULL;
     }
     return seq;
 }
@@ -598,49 +673,66 @@ static int cmp_entries_desc(const void *a, const void *b) {
 ///         Seq allocation fails.
 /// @note Equal-count keys have unspecified relative order.
 void *rt_countmap_most_common(void *obj, int64_t n) {
-    void *seq = rt_seq_new();
+    rt_countmap_impl *cm = NULL;
+    if (obj) {
+        cm = as_countmap(obj, "CountMap.MostCommon: invalid CountMap object");
+        if (!cm)
+            return NULL;
+        if (!cm->buckets || cm->capacity == 0 || cm->count > (size_t)INT64_MAX) {
+            rt_trap("CountMap.MostCommon: corrupt CountMap object");
+            return NULL;
+        }
+    }
+    if (!cm || n <= 0 || cm->count == 0)
+        return rt_seq_with_capacity_owned(1);
+
+    size_t limit = (uint64_t)n < (uint64_t)cm->count ? (size_t)n : cm->count;
+    void *seq = rt_seq_with_capacity_owned((int64_t)limit);
     if (!seq)
         return NULL;
-    rt_seq_set_owns_elements(seq, 1);
-    if (!obj || n <= 0)
-        return seq;
-    rt_countmap_impl *cm = as_countmap(obj, "CountMap.MostCommon: invalid CountMap object");
-    if (!cm)
-        return seq;
-
-    if (cm->count == 0)
-        return seq;
 
     // Collect all entries into a flat array
     if (cm->count > SIZE_MAX / sizeof(rt_cm_entry *)) {
+        countmap_release_object(seq);
         rt_trap("CountMap.MostCommon: allocation size overflow");
-        return seq;
+        return NULL;
     }
     rt_cm_entry **entries = (rt_cm_entry **)malloc(cm->count * sizeof(rt_cm_entry *));
     if (!entries) {
+        countmap_release_object(seq);
         rt_trap("CountMap.MostCommon: memory allocation failed");
-        return seq;
+        return NULL;
     }
 
     size_t idx = 0;
     for (size_t i = 0; i < cm->capacity; ++i) {
         for (rt_cm_entry *e = cm->buckets[i]; e; e = e->next) {
+            if (idx >= cm->count) {
+                free(entries);
+                countmap_release_object(seq);
+                rt_trap("CountMap.MostCommon: count invariant violation");
+                return NULL;
+            }
             entries[idx++] = e;
         }
+    }
+    if (idx != cm->count) {
+        free(entries);
+        countmap_release_object(seq);
+        rt_trap("CountMap.MostCommon: count invariant violation");
+        return NULL;
     }
 
     // Sort by count descending
     qsort(entries, cm->count, sizeof(rt_cm_entry *), cmp_entries_desc);
 
-    // Take top N
-    size_t limit = (size_t)n;
-    if (limit > cm->count)
-        limit = cm->count;
-
     for (size_t i = 0; i < limit; ++i) {
-        rt_string k = rt_string_from_bytes(entries[i]->key, entries[i]->key_len);
-        rt_seq_push(seq, (void *)k);
-        rt_str_release_maybe(k);
+        if (!countmap_append_key_or_release(seq,
+                                            entries[i]->key,
+                                            entries[i]->key_len,
+                                            entries,
+                                            "CountMap.MostCommon: snapshot append failed"))
+            return NULL;
     }
 
     free(entries);

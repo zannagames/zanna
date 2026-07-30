@@ -58,6 +58,8 @@
 #include "rt_string.h"
 #include "rt_trap.h"
 
+#include <setjmp.h>
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -178,12 +180,16 @@ static rt_bm_inv_link *find_inv(rt_bm_inv_link *head, const char *val, size_t va
     return NULL;
 }
 
+/// Forward declaration for the entry destructor used by index-removal helpers.
+static void free_entry(rt_bm_entry *entry);
+
 /// @brief Unlink and free the inverse-chain node for value @p val (if present).
 /// @param bm Map whose inverse index is searched.
 /// @param val Value bytes identifying the link.
 /// @param val_len Number of bytes in @p val.
+/// @return One when a link was removed, otherwise zero.
 /// @note The referenced forward entry is not freed.
-static void remove_inv_link(rt_bimap_impl *bm, const char *val, size_t val_len) {
+static int remove_inv_link(rt_bimap_impl *bm, const char *val, size_t val_len) {
     uint64_t h = rt_fnv1a(val, val_len);
     size_t idx = (size_t)(h % bm->inv_capacity);
     rt_bm_inv_link **pp = &bm->inv_chains[idx];
@@ -192,10 +198,47 @@ static void remove_inv_link(rt_bimap_impl *bm, const char *val, size_t val_len) 
             rt_bm_inv_link *old = *pp;
             *pp = old->next;
             free(old);
-            return;
+            return 1;
         }
         pp = &(*pp)->next;
     }
+    return 0;
+}
+
+/// @brief Remove one known authoritative entry from both indexes.
+/// @details Both index positions are located before either is changed, so an
+///          invariant failure leaves the map untouched. The map is
+///          unsynchronized; callers must provide external exclusion.
+/// @param bm Map containing @p entry.
+/// @param entry Exact forward entry to remove.
+/// @return One after removing and freeing both nodes, otherwise zero.
+static int remove_known_entry(rt_bimap_impl *bm, rt_bm_entry *entry) {
+    if (!bm || !entry || bm->count == 0)
+        return 0;
+
+    uint64_t key_hash = rt_fnv1a(entry->key, entry->key_len);
+    size_t key_index = (size_t)(key_hash % bm->fwd_capacity);
+    rt_bm_entry **forward = &bm->fwd_buckets[key_index];
+    while (*forward && *forward != entry)
+        forward = &(*forward)->next;
+    if (!*forward)
+        return 0;
+
+    uint64_t value_hash = rt_fnv1a(entry->value, entry->value_len);
+    size_t value_index = (size_t)(value_hash % bm->inv_capacity);
+    rt_bm_inv_link **inverse = &bm->inv_chains[value_index];
+    while (*inverse && (*inverse)->entry != entry)
+        inverse = &(*inverse)->next;
+    if (!*inverse)
+        return 0;
+
+    rt_bm_inv_link *owned_link = *inverse;
+    *forward = entry->next;
+    *inverse = owned_link->next;
+    bm->count--;
+    free(owned_link);
+    free_entry(entry);
+    return 1;
 }
 
 /// @brief Push @p link onto the inverse chain bucket for its entry's value.
@@ -219,6 +262,61 @@ static void free_entry(rt_bm_entry *entry) {
     free(entry);
 }
 
+/// @brief Release a runtime-managed object reference at zero.
+/// @param obj Nullable object to release.
+static void bimap_release_object(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
+/// @brief Preserve the current trap diagnostic across cleanup.
+/// @param output Destination buffer.
+/// @param capacity Size of @p output including its terminator.
+/// @param fallback Diagnostic used when the trap subsystem has none.
+static void bimap_save_trap(char *output, size_t capacity, const char *fallback) {
+    const char *error = rt_trap_get_error();
+    snprintf(output, capacity, "%s", error && error[0] ? error : fallback);
+}
+
+/// @brief Copy and transfer one string into an owning snapshot.
+/// @details The partial sequence is consumed if string construction or append
+///          traps. Raw insertion transfers the newly created string reference,
+///          avoiding a redundant retain/release pair.
+/// @param seq Owning Seq to append to; consumed on failure.
+/// @param bytes String bytes to copy.
+/// @param length Number of bytes in @p bytes.
+/// @param fallback Diagnostic used if no active trap text exists.
+/// @return One after a checked append; zero after cleanup and retrapping.
+static int bimap_append_copy_or_release_seq(void *seq,
+                                            const char *bytes,
+                                            size_t length,
+                                            const char *fallback) {
+    rt_string volatile copy = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        bimap_save_trap(saved_error, sizeof(saved_error), fallback);
+        rt_trap_clear_recovery();
+        if (copy)
+            rt_str_release_maybe((rt_string)copy);
+        bimap_release_object(seq);
+        rt_trap(saved_error);
+        return 0;
+    }
+
+    copy = rt_string_from_bytes(bytes, length);
+    if (!copy)
+        rt_trap(fallback);
+    int64_t old_len = rt_seq_len(seq);
+    rt_seq_push_raw(seq, (void *)copy);
+    if (old_len < 0 || old_len >= INT64_MAX || rt_seq_len(seq) != old_len + 1)
+        rt_trap(fallback);
+    copy = NULL;
+    rt_trap_clear_recovery();
+    return 1;
+}
+
 /// @brief GC finalizer: free all forward entries, inverse links, and the
 ///        bucket/chain arrays, then zero the struct fields.
 /// @param obj BiMap object being finalized, or NULL for a no-op.
@@ -226,6 +324,8 @@ static void bimap_finalizer(void *obj) {
     if (!obj)
         return;
     rt_bimap_impl *bm = as_bimap(obj, "BiMap: invalid BiMap object");
+    if (!bm)
+        return;
 
     // Free forward entries
     if (bm->fwd_buckets) {
@@ -376,7 +476,13 @@ int64_t rt_bimap_len(void *obj) {
     if (!obj)
         return 0;
     rt_bimap_impl *map = as_bimap(obj, "BiMap.Len: invalid BiMap object");
-    return map ? (int64_t)map->count : 0;
+    if (!map)
+        return 0;
+    if (map->count > (size_t)INT64_MAX) {
+        rt_trap("BiMap.Len: length exceeds Integer range");
+        return INT64_MAX;
+    }
+    return (int64_t)map->count;
 }
 
 /// @brief Check whether the bidirectional map is empty.
@@ -411,15 +517,39 @@ void rt_bimap_put(void *obj, rt_string key, rt_string value) {
     if (!get_str_data(key, "BiMap.Put: invalid key", &kdata, &klen) ||
         !get_str_data(value, "BiMap.Put: invalid value", &vdata, &vlen))
         return;
-    if (bm->count == SIZE_MAX) {
+
+    uint64_t key_hash = rt_fnv1a(kdata, klen);
+    size_t key_index = (size_t)(key_hash % bm->fwd_capacity);
+    rt_bm_entry *key_conflict = find_fwd(bm->fwd_buckets[key_index], kdata, klen);
+    uint64_t value_hash = rt_fnv1a(vdata, vlen);
+    size_t value_index = (size_t)(value_hash % bm->inv_capacity);
+    rt_bm_inv_link *value_conflict = find_inv(bm->inv_chains[value_index], vdata, vlen);
+    int distinct_value_conflict = value_conflict && value_conflict->entry != key_conflict ? 1 : 0;
+
+    // An exact mapping is already the requested fixed point. Avoid allocating,
+    // resizing, and replacing byte-identical storage.
+    if (key_conflict && value_conflict && value_conflict->entry == key_conflict)
+        return;
+
+    size_t conflicts = key_conflict ? 1 : 0;
+    if (distinct_value_conflict)
+        conflicts++;
+    if (conflicts > bm->count) {
+        rt_trap("BiMap.Put: index count invariant violation");
+        return;
+    }
+    size_t final_count = bm->count - conflicts;
+    if (final_count >= (size_t)INT64_MAX) {
         rt_trap("BiMap.Put: maximum size reached");
         return;
     }
+    final_count++;
 
-    // Check load factor on forward table
-    if (rt_hash_table_exceeds_load(bm->count + 1, bm->fwd_capacity) && !resize_fwd(bm))
+    // Replacement operations do not need to grow tables merely because the
+    // pre-eviction count is near the load threshold.
+    if (rt_hash_table_exceeds_load(final_count, bm->fwd_capacity) && !resize_fwd(bm))
         return;
-    if (rt_hash_table_exceeds_load(bm->count + 1, bm->inv_capacity) && !resize_inv(bm))
+    if (rt_hash_table_exceeds_load(final_count, bm->inv_capacity) && !resize_inv(bm))
         return;
 
     // Create entry
@@ -460,12 +590,21 @@ void rt_bimap_put(void *obj, rt_string key, rt_string value) {
 
     // All allocations for the replacement entry have succeeded. It is now safe
     // to remove any conflicting key or value mappings before committing.
-    rt_bimap_remove_by_key(obj, key);
-    rt_bimap_remove_by_value(obj, value);
+    if (key_conflict && !remove_known_entry(bm, key_conflict)) {
+        free(inv_link);
+        free_entry(entry);
+        rt_trap("BiMap.Put: failed to remove conflicting key");
+        return;
+    }
+    if (distinct_value_conflict && !remove_known_entry(bm, value_conflict->entry)) {
+        free(inv_link);
+        free_entry(entry);
+        rt_trap("BiMap.Put: failed to remove conflicting value");
+        return;
+    }
 
     // Insert into forward table
-    uint64_t fh = rt_fnv1a(kdata, klen);
-    size_t fidx = (size_t)(fh % bm->fwd_capacity);
+    size_t fidx = (size_t)(key_hash % bm->fwd_capacity);
     entry->next = bm->fwd_buckets[fidx];
     bm->fwd_buckets[fidx] = entry;
 
@@ -601,12 +740,24 @@ int8_t rt_bimap_remove_by_key(void *obj, rt_string key) {
     while (*pp) {
         rt_bm_entry *e = *pp;
         if (e->key_len == klen && memcmp(e->key, kdata, klen) == 0) {
+            uint64_t value_hash = rt_fnv1a(e->value, e->value_len);
+            size_t value_index = (size_t)(value_hash % bm->inv_capacity);
+            rt_bm_inv_link *inverse = find_inv(bm->inv_chains[value_index], e->value, e->value_len);
+            if (!inverse || inverse->entry != e || bm->count == 0) {
+                rt_trap("BiMap.RemoveByKey: index invariant violation");
+                return 0;
+            }
             // Remove from forward chain
             *pp = e->next;
             // Remove from inverse chain
-            remove_inv_link(bm, e->value, e->value_len);
-            free_entry(e);
+            if (!remove_inv_link(bm, e->value, e->value_len)) {
+                e->next = *pp;
+                *pp = e;
+                rt_trap("BiMap.RemoveByKey: inverse unlink failed");
+                return 0;
+            }
             bm->count--;
+            free_entry(e);
             return 1;
         }
         pp = &(*pp)->next;
@@ -646,19 +797,76 @@ int8_t rt_bimap_remove_by_value(void *obj, rt_string value) {
     uint64_t fh = rt_fnv1a(entry->key, entry->key_len);
     size_t fidx = (size_t)(fh % bm->fwd_capacity);
     rt_bm_entry **pp = &bm->fwd_buckets[fidx];
+    int found_forward = 0;
     while (*pp) {
         if (*pp == entry) {
-            *pp = entry->next;
+            found_forward = 1;
             break;
         }
         pp = &(*pp)->next;
     }
+    if (!found_forward || bm->count == 0) {
+        rt_trap("BiMap.RemoveByValue: index invariant violation");
+        return 0;
+    }
 
     // Remove from inverse chain
-    remove_inv_link(bm, entry->value, entry->value_len);
-    free_entry(entry);
+    if (!remove_inv_link(bm, entry->value, entry->value_len)) {
+        rt_trap("BiMap.RemoveByValue: inverse unlink failed");
+        return 0;
+    }
+    *pp = entry->next;
     bm->count--;
+    free_entry(entry);
     return 1;
+}
+
+/// @brief Build a checked key or value snapshot.
+/// @param obj BiMap handle, or NULL for an empty snapshot.
+/// @param values Nonzero to copy values; zero to copy keys.
+/// @return Exact-capacity owning Seq, or NULL after a trap.
+static void *bimap_snapshot(void *obj, int values) {
+    rt_bimap_impl *bm = NULL;
+    if (obj) {
+        bm = as_bimap(obj,
+                      values ? "BiMap.Values: invalid BiMap object"
+                             : "BiMap.Keys: invalid BiMap object");
+        if (!bm)
+            return NULL;
+        if (!bm->fwd_buckets || !bm->inv_chains || bm->fwd_capacity == 0 || bm->inv_capacity == 0 ||
+            bm->count > (size_t)INT64_MAX) {
+            rt_trap(values ? "BiMap.Values: corrupt BiMap object"
+                           : "BiMap.Keys: corrupt BiMap object");
+            return NULL;
+        }
+    }
+
+    int64_t capacity = bm && bm->count > 0 ? (int64_t)bm->count : 1;
+    void *seq = rt_seq_with_capacity_owned(capacity);
+    if (!seq)
+        return NULL;
+    if (!bm)
+        return seq;
+
+    size_t appended = 0;
+    const char *fallback =
+        values ? "BiMap.Values: snapshot append failed" : "BiMap.Keys: snapshot append failed";
+    for (size_t i = 0; i < bm->fwd_capacity; ++i) {
+        for (rt_bm_entry *entry = bm->fwd_buckets[i]; entry; entry = entry->next) {
+            const char *bytes = values ? entry->value : entry->key;
+            size_t length = values ? entry->value_len : entry->key_len;
+            if (!bimap_append_copy_or_release_seq(seq, bytes, length, fallback))
+                return NULL;
+            appended++;
+        }
+    }
+    if (appended != bm->count) {
+        bimap_release_object(seq);
+        rt_trap(values ? "BiMap.Values: count invariant violation"
+                       : "BiMap.Keys: count invariant violation");
+        return NULL;
+    }
+    return seq;
 }
 
 /// @brief Return a Seq of every key (forward-table iteration order). Snapshot of current state.
@@ -667,24 +875,7 @@ int8_t rt_bimap_remove_by_value(void *obj, rt_string value) {
 /// @note Order reflects the forward hash table and is unspecified.
 /// @note Invalid non-null handles raise a runtime trap.
 void *rt_bimap_keys(void *obj) {
-    void *seq = rt_seq_new();
-    if (!seq)
-        return NULL;
-    rt_seq_set_owns_elements(seq, 1);
-    if (!obj)
-        return seq;
-    rt_bimap_impl *bm = as_bimap(obj, "BiMap.Keys: invalid BiMap object");
-    if (!bm)
-        return seq;
-
-    for (size_t i = 0; i < bm->fwd_capacity; ++i) {
-        for (rt_bm_entry *e = bm->fwd_buckets[i]; e; e = e->next) {
-            rt_string k = rt_string_from_bytes(e->key, e->key_len);
-            rt_seq_push(seq, (void *)k);
-            rt_str_release_maybe(k);
-        }
-    }
-    return seq;
+    return bimap_snapshot(obj, 0);
 }
 
 /// @brief Return a Seq of every value as a snapshot of current state.
@@ -693,24 +884,7 @@ void *rt_bimap_keys(void *obj) {
 /// @note Order reflects the forward hash table and is unspecified.
 /// @note Invalid non-null handles raise a runtime trap.
 void *rt_bimap_values(void *obj) {
-    void *seq = rt_seq_new();
-    if (!seq)
-        return NULL;
-    rt_seq_set_owns_elements(seq, 1);
-    if (!obj)
-        return seq;
-    rt_bimap_impl *bm = as_bimap(obj, "BiMap.Values: invalid BiMap object");
-    if (!bm)
-        return seq;
-
-    for (size_t i = 0; i < bm->fwd_capacity; ++i) {
-        for (rt_bm_entry *e = bm->fwd_buckets[i]; e; e = e->next) {
-            rt_string v = rt_string_from_bytes(e->value, e->value_len);
-            rt_seq_push(seq, (void *)v);
-            rt_str_release_maybe(v);
-        }
-    }
-    return seq;
+    return bimap_snapshot(obj, 1);
 }
 
 /// @brief Remove all entries from both forward and reverse tables.

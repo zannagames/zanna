@@ -5,11 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/unit/test_run_process_quotes.cpp
-// Purpose: Verify run_process correctly preserves shell-sensitive characters when quoting
-// Key invariants: To be documented.
-// Ownership/Lifetime: To be documented.
-// Links: docs/internals/architecture.md
+// File: src/tests/unit/test_run_process_quotes.cpp
+// Purpose: Verify shell-free subprocess argument, environment, output, and
+//          working-directory behavior.
+// Key invariants:
+//   - Direct launch preserves argument bytes that native process APIs can
+//     represent and rejects embedded NUL instead of truncating.
+//   - Launch failure is distinct from a child that exits with a nonzero status.
+// Ownership/Lifetime:
+//   - RunResult owns captured output; each test removes any temporary
+//     filesystem state it creates.
+// Links: src/common/RunProcess.cpp, src/common/RunProcess.hpp,
+//        docs/internals/architecture.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -18,10 +25,14 @@
 #include "common/RunProcess.hpp"
 #include "tests/TestHarness.hpp"
 #include <chrono>
+#include <climits>
+#include <cstddef>
 #include <cstdlib>
 #include <filesystem>
+#include <limits>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <system_error>
 #include <vector>
 
@@ -35,6 +46,14 @@ std::string trim_trailing_newlines(std::string text) {
 } // namespace
 
 namespace zanna::test_support {
+bool windows_utf8_length_is_representable(std::size_t length) noexcept;
+std::optional<std::size_t> windows_quoted_length(std::wstring_view argument) noexcept;
+bool windows_command_line_argument_fits(std::size_t current,
+                                        std::wstring_view argument,
+                                        bool needs_separator) noexcept;
+bool windows_utf8_argument_may_fit(std::size_t byte_length) noexcept;
+void set_run_process_capture_failure_after_bytes(std::size_t limit) noexcept;
+
 struct ScopedEnvironmentAssignmentMoveResult {
     bool value_visible_after_move_ctor;
     bool value_visible_after_move_assign;
@@ -45,6 +64,45 @@ struct ScopedEnvironmentAssignmentMoveResult {
 ScopedEnvironmentAssignmentMoveResult scoped_environment_assignment_move_preserves(
     const std::string &name, const std::string &source_value, const std::string &receiver_value);
 } // namespace zanna::test_support
+
+TEST(RunProcess, ChecksWindowsUtf8ConversionLengthBeforeNarrowing) {
+    const std::size_t maximum = static_cast<std::size_t>(INT_MAX);
+
+    EXPECT_TRUE(zanna::test_support::windows_utf8_length_is_representable(maximum));
+    EXPECT_FALSE(zanna::test_support::windows_utf8_length_is_representable(maximum + 1U));
+}
+
+TEST(RunProcess, EnforcesWindowsCommandLineLimitBeforeQuoting) {
+    constexpr std::size_t maximumContent = 32766;
+    constexpr std::size_t maximumUtf8BytesThatCouldFit = maximumContent * 3;
+
+    const std::wstring unquotedAtLimit(maximumContent, L'a');
+    const std::wstring unquotedOverLimit(maximumContent + 1U, L'a');
+    EXPECT_TRUE(zanna::test_support::windows_command_line_argument_fits(0, unquotedAtLimit, false));
+    EXPECT_FALSE(
+        zanna::test_support::windows_command_line_argument_fits(0, unquotedOverLimit, false));
+
+    std::wstring quotedAtLimit(maximumContent - 2U, L'a');
+    quotedAtLimit.back() = L' ';
+    std::wstring quotedOverLimit(maximumContent - 1U, L'a');
+    quotedOverLimit.back() = L' ';
+    EXPECT_TRUE(zanna::test_support::windows_command_line_argument_fits(0, quotedAtLimit, false));
+    EXPECT_FALSE(
+        zanna::test_support::windows_command_line_argument_fits(0, quotedOverLimit, false));
+
+    const std::wstring escapedQuote = L"\\\"";
+    const auto escapedLength = zanna::test_support::windows_quoted_length(escapedQuote);
+    ASSERT_TRUE(escapedLength.has_value());
+    EXPECT_EQ(static_cast<std::size_t>(6), *escapedLength);
+    EXPECT_TRUE(zanna::test_support::windows_command_line_argument_fits(
+        maximumContent - 7U, escapedQuote, true));
+    EXPECT_FALSE(zanna::test_support::windows_command_line_argument_fits(
+        maximumContent - 6U, escapedQuote, true));
+
+    EXPECT_TRUE(zanna::test_support::windows_utf8_argument_may_fit(maximumUtf8BytesThatCouldFit));
+    EXPECT_FALSE(
+        zanna::test_support::windows_utf8_argument_may_fit(maximumUtf8BytesThatCouldFit + 1U));
+}
 
 TEST(RunProcess, PreservesQuotesAndBackslashes) {
     const std::string trickyArg = "value \"with quotes\" and backslash \\\\ tail";
@@ -103,6 +161,38 @@ TEST(RunProcess, RejectsInvalidEnvironmentName) {
     EXPECT_FALSE(result.launched);
     EXPECT_TRUE(result.launch_failed);
     EXPECT_NE(std::string::npos, result.err.find("invalid environment variable name"));
+}
+
+TEST(RunProcess, RejectsEmbeddedNulArgument) {
+    const std::string malformed{"visible\0hidden", 14};
+    const RunResult result = run_process({"cmake", "-E", "echo", malformed});
+
+    EXPECT_EQ(-1, result.exit_code);
+    EXPECT_FALSE(result.launched);
+    EXPECT_TRUE(result.launch_failed);
+    EXPECT_NE(std::string::npos, result.err.find("embedded NUL"));
+}
+
+TEST(RunProcess, RejectsEmbeddedNulEnvironmentValue) {
+    const std::string malformed{"before\0after", 12};
+    const RunResult result =
+        run_process({"cmake", "-E", "environment"}, std::nullopt, {{"ZANNA_NUL_TEST", malformed}});
+
+    EXPECT_EQ(-1, result.exit_code);
+    EXPECT_FALSE(result.launched);
+    EXPECT_TRUE(result.launch_failed);
+    EXPECT_NE(std::string::npos, result.err.find("embedded NUL"));
+}
+
+TEST(RunProcess, RejectsEmbeddedNulWorkingDirectory) {
+    std::string malformed = zanna::filesystem::pathToUtf8(std::filesystem::temp_directory_path());
+    malformed.append("\0ignored", 8);
+    const RunResult result = run_process({"cmake", "-E", "echo", "not-run"}, malformed);
+
+    EXPECT_EQ(-1, result.exit_code);
+    EXPECT_FALSE(result.launched);
+    EXPECT_TRUE(result.launch_failed);
+    EXPECT_NE(std::string::npos, result.err.find("embedded NUL"));
 }
 
 TEST(RunProcess, ScopedEnvironmentAssignmentSurvivesMove) {
@@ -192,6 +282,25 @@ TEST(RunProcess, CapturesWindowsStderr) {
     EXPECT_EQ("", trim_trailing_newlines(result.out));
 }
 #endif
+
+TEST(RunProcess, CaptureStorageFailureStillReapsChild) {
+    zanna::test_support::set_run_process_capture_failure_after_bytes(0);
+    const RunResult result = run_process({"cmake", "-E", "echo", "discarded-output"});
+    zanna::test_support::set_run_process_capture_failure_after_bytes(
+        std::numeric_limits<std::size_t>::max());
+
+    EXPECT_TRUE(result.launched);
+    EXPECT_FALSE(result.launch_failed);
+    EXPECT_TRUE(result.capture_failed);
+    EXPECT_EQ(0, result.exit_code);
+    EXPECT_TRUE(result.out.empty());
+    EXPECT_NE(std::string::npos, result.err.find("capture storage exhausted"));
+
+    const RunResult followup = run_process({"cmake", "-E", "echo", "capture-restored"});
+    EXPECT_TRUE(followup.launched);
+    EXPECT_FALSE(followup.capture_failed);
+    EXPECT_EQ("capture-restored", trim_trailing_newlines(followup.out));
+}
 
 int main(int argc, char **argv) {
     zanna_test::init(&argc, argv);

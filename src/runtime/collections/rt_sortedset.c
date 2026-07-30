@@ -87,8 +87,23 @@ static rt_sortedset as_sortedset(void *obj, const char *what) {
     return (rt_sortedset)obj;
 }
 
+/// @brief Validate a nullable SortedSet string argument.
+/// @param s Candidate runtime string; null denotes the empty string.
+/// @param what Diagnostic emitted for a non-null invalid handle.
+/// @return Nonzero for null or a live string handle, otherwise zero.
+static int sortedset_string_valid(rt_string s, const char *what) {
+    if (!s)
+        return 1;
+    if (!rt_string_is_handle(s)) {
+        rt_trap(what);
+        return 0;
+    }
+    return 1;
+}
+
 /// @brief Copy a runtime string by its complete length-aware byte sequence.
-/// @details Null and unreadable/empty handles normalize to the empty string.
+/// @details Callers validate non-null handles before invoking this helper.
+///          Null and empty strings produce an independent empty representation.
 /// @param s Source runtime string, or `NULL`.
 /// @return New independent string handle representing the same key.
 static rt_string copy_string(rt_string s) {
@@ -108,8 +123,7 @@ static rt_string copy_string(rt_string s) {
 static rt_string retain_result_string(rt_string s) {
     if (!s)
         return rt_const_cstr("");
-    rt_string_ref(s);
-    return s;
+    return rt_string_ref(s);
 }
 
 /// @brief Release a temporary runtime object and free it at zero references.
@@ -135,7 +149,7 @@ static void sortedset_save_trap_error(char *buffer, size_t buffer_size, const ch
 ///          snapshot before propagating the saved diagnostic.
 /// @param seq Owning snapshot Seq under construction.
 /// @param s Stored source string to copy.
-static void seq_push_string_copy(void *seq, rt_string s) {
+static int seq_push_string_copy(void *seq, rt_string s) {
     rt_string volatile copy = NULL;
     jmp_buf recovery;
     rt_trap_set_recovery(&recovery);
@@ -148,19 +162,21 @@ static void seq_push_string_copy(void *seq, rt_string s) {
             rt_str_release_maybe((rt_string)copy);
         sortedset_release_object(seq);
         rt_trap(saved_error);
-        return;
+        return 0;
     }
 
     copy = copy_string(s);
     if (!copy) {
-        rt_trap("SortedSet: string allocation failed");
         rt_trap_clear_recovery();
-        return;
+        sortedset_release_object(seq);
+        return 0;
     }
-    rt_seq_push(seq, (void *)copy);
-    rt_str_release_maybe((rt_string)copy);
+    // Transfer the newly created string directly into the pre-sized owning
+    // snapshot instead of retaining and immediately releasing it.
+    rt_seq_push_raw(seq, (void *)copy);
     copy = NULL;
     rt_trap_clear_recovery();
+    return 1;
 }
 
 /// @brief Lexicographic byte comparison of two strings (NULL treated as "");
@@ -234,6 +250,10 @@ static int ensure_capacity(rt_sortedset set, int64_t needed) {
     if (set->cap >= needed)
         return 1;
 
+    if (set->cap > INT64_MAX / 2) {
+        rt_trap("SortedSet: capacity overflow");
+        return 0;
+    }
     int64_t new_cap = set->cap == 0 ? 8 : set->cap * 2;
     while (new_cap < needed) {
         if (new_cap > INT64_MAX / 2) {
@@ -324,6 +344,8 @@ int8_t rt_sortedset_add(void *obj, rt_string str) {
     rt_sortedset set = as_sortedset(obj, "SortedSet.Add: invalid SortedSet object");
     if (!set)
         return 0;
+    if (!sortedset_string_valid(str, "SortedSet.Add: invalid string"))
+        return 0;
 
     int8_t found;
     int64_t idx = binary_search(set, str, &found);
@@ -331,11 +353,12 @@ int8_t rt_sortedset_add(void *obj, rt_string str) {
     if (found)
         return 0; // Already present
 
-    if (!ensure_capacity(set, set->len + 1))
-        return 0;
     rt_string copy = copy_string(str);
     if (!copy) {
-        rt_trap("SortedSet.Add: string allocation failed");
+        return 0;
+    }
+    if (!ensure_capacity(set, set->len + 1)) {
+        rt_str_release_maybe(copy);
         return 0;
     }
 
@@ -362,6 +385,8 @@ int8_t rt_sortedset_remove(void *obj, rt_string str) {
         return 0;
     rt_sortedset set = as_sortedset(obj, "SortedSet.Remove: invalid SortedSet object");
     if (!set)
+        return 0;
+    if (!sortedset_string_valid(str, "SortedSet.Remove: invalid string"))
         return 0;
 
     int8_t found;
@@ -394,6 +419,8 @@ int8_t rt_sortedset_has(void *obj, rt_string str) {
         return 0;
     rt_sortedset set = as_sortedset(obj, "SortedSet.Has: invalid SortedSet object");
     if (!set)
+        return 0;
+    if (!sortedset_string_valid(str, "SortedSet.Has: invalid string"))
         return 0;
 
     int8_t found;
@@ -430,6 +457,8 @@ void rt_sortedset_clear(void *obj) {
 ///         no element exists.
 rt_string rt_sortedset_first(void *obj) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.First: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
     if (!set || set->len == 0)
         return rt_const_cstr("");
     return retain_result_string(set->data[0]);
@@ -441,6 +470,8 @@ rt_string rt_sortedset_first(void *obj) {
 /// @return Caller-retained largest string, or an empty-string sentinel.
 rt_string rt_sortedset_last(void *obj) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Last: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
     if (!set || set->len == 0)
         return rt_const_cstr("");
     return retain_result_string(set->data[set->len - 1]);
@@ -456,6 +487,10 @@ rt_string rt_sortedset_last(void *obj) {
 ///         exists.
 rt_string rt_sortedset_floor(void *obj, rt_string str) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Floor: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
+    if (!sortedset_string_valid(str, "SortedSet.Floor: invalid string"))
+        return NULL;
     if (!set || set->len == 0)
         return rt_const_cstr("");
 
@@ -478,6 +513,10 @@ rt_string rt_sortedset_floor(void *obj, rt_string str) {
 /// @return Caller-retained ceiling string, or an empty-string sentinel.
 rt_string rt_sortedset_ceil(void *obj, rt_string str) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Ceil: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
+    if (!sortedset_string_valid(str, "SortedSet.Ceil: invalid string"))
+        return NULL;
     if (!set || set->len == 0)
         return rt_const_cstr("");
 
@@ -498,6 +537,10 @@ rt_string rt_sortedset_ceil(void *obj, rt_string str) {
 /// @return Caller-retained lower string, or an empty-string sentinel.
 rt_string rt_sortedset_lower(void *obj, rt_string str) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Lower: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
+    if (!sortedset_string_valid(str, "SortedSet.Lower: invalid string"))
+        return NULL;
     if (!set || set->len == 0)
         return rt_const_cstr("");
 
@@ -520,6 +563,10 @@ rt_string rt_sortedset_lower(void *obj, rt_string str) {
 /// @return Caller-retained higher string, or an empty-string sentinel.
 rt_string rt_sortedset_higher(void *obj, rt_string str) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Higher: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
+    if (!sortedset_string_valid(str, "SortedSet.Higher: invalid string"))
+        return NULL;
     if (!set || set->len == 0)
         return rt_const_cstr("");
 
@@ -542,6 +589,8 @@ rt_string rt_sortedset_higher(void *obj, rt_string str) {
 /// @return Caller-retained string at @p index, or an empty-string sentinel.
 rt_string rt_sortedset_at(void *obj, int64_t index) {
     rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.At: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
     if (!set || index < 0 || index >= set->len)
         return rt_const_cstr("");
     return retain_result_string(set->data[index]);
@@ -557,6 +606,8 @@ int64_t rt_sortedset_index_of(void *obj, rt_string str) {
         return -1;
     rt_sortedset set = as_sortedset(obj, "SortedSet.IndexOf: invalid SortedSet object");
     if (!set)
+        return -1;
+    if (!sortedset_string_valid(str, "SortedSet.IndexOf: invalid string"))
         return -1;
 
     int8_t found;
@@ -577,24 +628,34 @@ int64_t rt_sortedset_index_of(void *obj, rt_string str) {
 /// @param to Inclusive upper bound, or `NULL` for no upper bound.
 /// @return New runtime-managed owning Seq of copied strings.
 void *rt_sortedset_range(void *obj, rt_string from, rt_string to) {
-    void *seq = rt_seq_new();
-    if (!seq)
+    if (!sortedset_string_valid(from, "SortedSet.Range: invalid lower bound") ||
+        !sortedset_string_valid(to, "SortedSet.Range: invalid upper bound"))
         return NULL;
-    rt_seq_set_owns_elements(seq, 1);
-    if (!obj)
-        return seq;
-    rt_sortedset set = as_sortedset(obj, "SortedSet.Range: invalid SortedSet object");
+    rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Range: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
     if (!set)
-        return seq;
+        return rt_seq_with_capacity_owned(1);
 
     int8_t found;
     int64_t start = from ? binary_search(set, from, &found) : 0;
-
-    for (int64_t i = start; i < set->len; i++) {
-        if (to && compare_strings(set->data[i], to) > 0)
-            break;
-        seq_push_string_copy(seq, set->data[i]);
+    int64_t end = set->len;
+    if (to) {
+        end = binary_search(set, to, &found);
+        if (found)
+            end++;
     }
+    if (end < start)
+        end = start;
+
+    int64_t count = end - start;
+    void *seq = rt_seq_with_capacity_owned(count > 0 ? count : 1);
+    if (!seq)
+        return NULL;
+
+    for (int64_t i = start; i < end; i++)
+        if (!seq_push_string_copy(seq, set->data[i]))
+            return NULL;
 
     return seq;
 }
@@ -604,19 +665,17 @@ void *rt_sortedset_range(void *obj, rt_string from, rt_string to) {
 /// @param obj SortedSet handle, or `NULL`.
 /// @return New runtime-managed owning Seq of independent string copies.
 void *rt_sortedset_items(void *obj) {
-    void *seq = rt_seq_new();
+    rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Items: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
+    int64_t count = set ? set->len : 0;
+    void *seq = rt_seq_with_capacity_owned(count > 0 ? count : 1);
     if (!seq)
         return NULL;
-    rt_seq_set_owns_elements(seq, 1);
-    if (!obj)
-        return seq;
-    rt_sortedset set = as_sortedset(obj, "SortedSet.Items: invalid SortedSet object");
-    if (!set)
-        return seq;
 
-    for (int64_t i = 0; i < set->len; i++) {
-        seq_push_string_copy(seq, set->data[i]);
-    }
+    for (int64_t i = 0; i < count; i++)
+        if (!seq_push_string_copy(seq, set->data[i]))
+            return NULL;
 
     return seq;
 }
@@ -626,20 +685,17 @@ void *rt_sortedset_items(void *obj) {
 /// @param n Maximum number of leading elements; nonpositive values select none.
 /// @return New runtime-managed owning Seq of independent string copies.
 void *rt_sortedset_take(void *obj, int64_t n) {
-    void *seq = rt_seq_new();
+    rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Take: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
+
+    int64_t count = set && n > 0 ? (n < set->len ? n : set->len) : 0;
+    void *seq = rt_seq_with_capacity_owned(count > 0 ? count : 1);
     if (!seq)
         return NULL;
-    rt_seq_set_owns_elements(seq, 1);
-    if (!obj || n <= 0)
-        return seq;
-    rt_sortedset set = as_sortedset(obj, "SortedSet.Take: invalid SortedSet object");
-    if (!set)
-        return seq;
-
-    int64_t count = n < set->len ? n : set->len;
-    for (int64_t i = 0; i < count; i++) {
-        seq_push_string_copy(seq, set->data[i]);
-    }
+    for (int64_t i = 0; i < count; i++)
+        if (!seq_push_string_copy(seq, set->data[i]))
+            return NULL;
 
     return seq;
 }
@@ -649,22 +705,18 @@ void *rt_sortedset_take(void *obj, int64_t n) {
 /// @param n Number of elements to skip; negative values skip zero.
 /// @return New runtime-managed owning Seq of independent string copies.
 void *rt_sortedset_skip(void *obj, int64_t n) {
-    void *seq = rt_seq_new();
+    rt_sortedset set = obj ? as_sortedset(obj, "SortedSet.Skip: invalid SortedSet object") : NULL;
+    if (obj && !set)
+        return NULL;
+
+    int64_t start = set ? (n < 0 ? 0 : (n < set->len ? n : set->len)) : 0;
+    int64_t count = set ? set->len - start : 0;
+    void *seq = rt_seq_with_capacity_owned(count > 0 ? count : 1);
     if (!seq)
         return NULL;
-    rt_seq_set_owns_elements(seq, 1);
-    if (!obj)
-        return seq;
-    rt_sortedset set = as_sortedset(obj, "SortedSet.Skip: invalid SortedSet object");
-    if (!set)
-        return seq;
-    if (n >= set->len)
-        return seq;
-
-    int64_t start = n < 0 ? 0 : n;
-    for (int64_t i = start; i < set->len; i++) {
-        seq_push_string_copy(seq, set->data[i]);
-    }
+    for (int64_t i = start; set && i < set->len; i++)
+        if (!seq_push_string_copy(seq, set->data[i]))
+            return NULL;
 
     return seq;
 }
@@ -680,26 +732,53 @@ void *rt_sortedset_skip(void *obj, int64_t n) {
 /// @param other Second SortedSet, or `NULL`.
 /// @return New runtime-managed union.
 void *rt_sortedset_union(void *obj, void *other) {
-    void *result = rt_sortedset_new();
-    if (!result)
-        return NULL;
     rt_sortedset a = obj ? as_sortedset(obj, "SortedSet.Union: invalid SortedSet object") : NULL;
     rt_sortedset b =
         other ? as_sortedset(other, "SortedSet.Union: invalid SortedSet object") : NULL;
+    if ((obj && !a) || (other && !b))
+        return NULL;
+
+    void *volatile result = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        sortedset_save_trap_error(
+            saved_error, sizeof(saved_error), "SortedSet.Union: construction failed");
+        rt_trap_clear_recovery();
+        sortedset_release_object((void *)result);
+        rt_trap(saved_error);
+        return NULL;
+    }
+    result = rt_sortedset_new();
+    if (!result) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
 
     if (a) {
         for (int64_t i = 0; i < a->len; i++) {
-            rt_sortedset_add(result, a->data[i]);
+            if (!rt_sortedset_add((void *)result, a->data[i])) {
+                rt_trap_clear_recovery();
+                sortedset_release_object((void *)result);
+                return NULL;
+            }
         }
     }
 
     if (b) {
         for (int64_t i = 0; i < b->len; i++) {
-            rt_sortedset_add(result, b->data[i]);
+            if (!rt_sortedset_has((void *)result, b->data[i]) &&
+                !rt_sortedset_add((void *)result, b->data[i])) {
+                rt_trap_clear_recovery();
+                sortedset_release_object((void *)result);
+                return NULL;
+            }
         }
     }
 
-    return result;
+    rt_trap_clear_recovery();
+    return (void *)result;
 }
 
 /// @brief Return a fresh sorted set containing only elements present in both operands. Uses a
@@ -708,23 +787,46 @@ void *rt_sortedset_union(void *obj, void *other) {
 /// @param other Second SortedSet, or `NULL` as empty.
 /// @return New runtime-managed intersection containing independent copies.
 void *rt_sortedset_intersect(void *obj, void *other) {
-    void *result = rt_sortedset_new();
-    if (!result)
-        return NULL;
     rt_sortedset a =
         obj ? as_sortedset(obj, "SortedSet.Intersect: invalid SortedSet object") : NULL;
     rt_sortedset b =
         other ? as_sortedset(other, "SortedSet.Intersect: invalid SortedSet object") : NULL;
+    if ((obj && !a) || (other && !b))
+        return NULL;
 
-    if (!a || !b)
-        return result;
+    void *volatile result = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        sortedset_save_trap_error(
+            saved_error, sizeof(saved_error), "SortedSet.Intersect: construction failed");
+        rt_trap_clear_recovery();
+        sortedset_release_object((void *)result);
+        rt_trap(saved_error);
+        return NULL;
+    }
+    result = rt_sortedset_new();
+    if (!result) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+
+    if (!a || !b) {
+        rt_trap_clear_recovery();
+        return (void *)result;
+    }
 
     // Use merge-style intersection for sorted sets
     int64_t i = 0, j = 0;
     while (i < a->len && j < b->len) {
         int cmp = compare_strings(a->data[i], b->data[j]);
         if (cmp == 0) {
-            rt_sortedset_add(result, a->data[i]);
+            if (!rt_sortedset_add((void *)result, a->data[i])) {
+                rt_trap_clear_recovery();
+                sortedset_release_object((void *)result);
+                return NULL;
+            }
             i++;
             j++;
         } else if (cmp < 0) {
@@ -734,7 +836,8 @@ void *rt_sortedset_intersect(void *obj, void *other) {
         }
     }
 
-    return result;
+    rt_trap_clear_recovery();
+    return (void *)result;
 }
 
 /// @brief Return a fresh sorted set containing elements present in `obj` but not in `other`.
@@ -742,32 +845,64 @@ void *rt_sortedset_intersect(void *obj, void *other) {
 /// @param other Subtrahend SortedSet, or `NULL` as empty.
 /// @return New runtime-managed difference containing independent copies.
 void *rt_sortedset_diff(void *obj, void *other) {
-    void *result = rt_sortedset_new();
-    if (!result)
-        return NULL;
     rt_sortedset a = obj ? as_sortedset(obj, "SortedSet.Diff: invalid SortedSet object") : NULL;
     rt_sortedset b = other ? as_sortedset(other, "SortedSet.Diff: invalid SortedSet object") : NULL;
+    if ((obj && !a) || (other && !b))
+        return NULL;
 
-    if (!a)
-        return result;
+    void *volatile result = NULL;
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) != 0) {
+        char saved_error[256];
+        sortedset_save_trap_error(
+            saved_error, sizeof(saved_error), "SortedSet.Diff: construction failed");
+        rt_trap_clear_recovery();
+        sortedset_release_object((void *)result);
+        rt_trap(saved_error);
+        return NULL;
+    }
+    result = rt_sortedset_new();
+    if (!result) {
+        rt_trap_clear_recovery();
+        return NULL;
+    }
+
+    if (!a) {
+        rt_trap_clear_recovery();
+        return (void *)result;
+    }
     if (!b) {
         // All elements in a
         for (int64_t i = 0; i < a->len; i++) {
-            rt_sortedset_add(result, a->data[i]);
+            if (!rt_sortedset_add((void *)result, a->data[i])) {
+                rt_trap_clear_recovery();
+                sortedset_release_object((void *)result);
+                return NULL;
+            }
         }
-        return result;
+        rt_trap_clear_recovery();
+        return (void *)result;
     }
 
     // Use merge-style difference for sorted sets
     int64_t i = 0, j = 0;
     while (i < a->len) {
         if (j >= b->len) {
-            rt_sortedset_add(result, a->data[i]);
+            if (!rt_sortedset_add((void *)result, a->data[i])) {
+                rt_trap_clear_recovery();
+                sortedset_release_object((void *)result);
+                return NULL;
+            }
             i++;
         } else {
             int cmp = compare_strings(a->data[i], b->data[j]);
             if (cmp < 0) {
-                rt_sortedset_add(result, a->data[i]);
+                if (!rt_sortedset_add((void *)result, a->data[i])) {
+                    rt_trap_clear_recovery();
+                    sortedset_release_object((void *)result);
+                    return NULL;
+                }
                 i++;
             } else if (cmp > 0) {
                 j++;
@@ -778,7 +913,8 @@ void *rt_sortedset_diff(void *obj, void *other) {
         }
     }
 
-    return result;
+    rt_trap_clear_recovery();
+    return (void *)result;
 }
 
 /// @brief Check whether this set is a subset of another sorted set.

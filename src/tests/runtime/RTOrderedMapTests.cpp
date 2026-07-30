@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_orderedmap.h"
@@ -12,8 +13,13 @@
 #include "rt_string.h"
 
 #include <cassert>
+#include <csetjmp>
 #include <cstdio>
 #include <cstring>
+
+extern "C" void rt_trap_set_recovery(jmp_buf *buf);
+extern "C" void rt_trap_clear_recovery(void);
+extern "C" const char *rt_trap_get_error(void);
 
 extern "C" void vm_trap(const char *msg) {
     rt_abort(msg);
@@ -28,9 +34,59 @@ static rt_string make_bytes(const char *s, size_t len) {
 }
 
 static int g_finalizer_calls = 0;
+static int g_trapping_finalizer_calls = 0;
+
+enum class ReentryAction {
+    None,
+    Clear,
+    Set,
+    Remove,
+    Resurrect,
+};
+
+static void *g_reentry_map = nullptr;
+static rt_string g_reentry_key = nullptr;
+static void *g_reentry_value = nullptr;
+static ReentryAction g_reentry_action = ReentryAction::None;
+static int g_reentry_calls = 0;
+static int8_t g_reentry_remove_result = -1;
 
 static void count_finalizer(void *) {
     ++g_finalizer_calls;
+}
+
+static void trapping_finalizer(void *) {
+    ++g_trapping_finalizer_calls;
+    rt_trap("OrderedMap test finalizer trap");
+}
+
+static void reentrant_finalizer(void *) {
+    ++g_reentry_calls;
+    switch (g_reentry_action) {
+        case ReentryAction::Clear:
+            rt_orderedmap_clear(g_reentry_map);
+            break;
+        case ReentryAction::Set:
+            rt_orderedmap_set(g_reentry_map, g_reentry_key, g_reentry_value);
+            break;
+        case ReentryAction::Remove:
+            g_reentry_remove_result = rt_orderedmap_remove(g_reentry_map, g_reentry_key);
+            break;
+        case ReentryAction::Resurrect:
+            rt_obj_resurrect(g_reentry_map);
+            break;
+        case ReentryAction::None:
+            break;
+    }
+}
+
+static void reset_reentry_state() {
+    g_reentry_map = nullptr;
+    g_reentry_key = nullptr;
+    g_reentry_value = nullptr;
+    g_reentry_action = ReentryAction::None;
+    g_reentry_calls = 0;
+    g_reentry_remove_result = -1;
 }
 
 static void *new_obj() {
@@ -133,9 +189,14 @@ static void test_insertion_order() {
     // Keys should be in insertion order
     void *keys = rt_orderedmap_keys(m);
     assert(rt_seq_len(keys) == 3);
+    assert(rt_seq_cap(keys) == 3);
     assert(str_eq((rt_string)rt_seq_get(keys, 0), "alpha"));
     assert(str_eq((rt_string)rt_seq_get(keys, 1), "beta"));
     assert(str_eq((rt_string)rt_seq_get(keys, 2), "gamma"));
+
+    void *values = rt_orderedmap_values(m);
+    assert(rt_seq_len(values) == 3);
+    assert(rt_seq_cap(values) == 3);
 
     rt_string_unref(ka);
     rt_string_unref(kb);
@@ -224,6 +285,149 @@ static void test_value_release_on_clear() {
     rt_string_unref(k);
 }
 
+static void test_remove_commits_before_reentrant_clear() {
+    void *m = rt_orderedmap_new();
+    rt_string victim_key = make_str("victim");
+    rt_string other_key = make_str("other");
+    void *victim = new_obj();
+    void *other = new_obj();
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_orderedmap_set(m, victim_key, victim);
+    rt_orderedmap_set(m, other_key, other);
+    release_obj(victim);
+    release_obj(other);
+
+    g_reentry_map = m;
+    g_reentry_action = ReentryAction::Clear;
+    assert(rt_orderedmap_remove(m, victim_key) == 1);
+    assert(g_reentry_calls == 1);
+    assert(rt_orderedmap_len(m) == 0);
+    assert(rt_orderedmap_is_empty(m) == 1);
+
+    reset_reentry_state();
+    rt_string_unref(victim_key);
+    rt_string_unref(other_key);
+    release_obj(m);
+}
+
+static void test_clear_preserves_reentrant_insert() {
+    void *m = rt_orderedmap_new();
+    rt_string key = make_str("same-key");
+    void *victim = new_obj();
+    void *inserted = new_obj();
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_orderedmap_set(m, key, victim);
+    release_obj(victim);
+
+    g_reentry_map = m;
+    g_reentry_key = key;
+    g_reentry_value = inserted;
+    g_reentry_action = ReentryAction::Set;
+    rt_orderedmap_clear(m);
+
+    assert(g_reentry_calls == 1);
+    assert(rt_orderedmap_len(m) == 1);
+    assert(rt_orderedmap_get(m, key) == inserted);
+
+    reset_reentry_state();
+    rt_orderedmap_clear(m);
+    release_obj(inserted);
+    rt_string_unref(key);
+    release_obj(m);
+}
+
+static void test_owner_finalizer_blocks_reentrant_insert() {
+    void *m = rt_orderedmap_new();
+    rt_string key = make_str("owner-finalizer");
+    void *victim = new_obj();
+    void *inserted = new_obj();
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_orderedmap_set(m, key, victim);
+    release_obj(victim);
+
+    g_reentry_map = m;
+    g_reentry_key = key;
+    g_reentry_value = inserted;
+    g_reentry_action = ReentryAction::Set;
+    release_obj(m);
+
+    rt_heap_info_t inserted_info;
+    assert(g_reentry_calls == 1);
+    assert(rt_heap_get_info(inserted, &inserted_info) == 1);
+    assert(inserted_info.refcnt == 1);
+
+    reset_reentry_state();
+    release_obj(inserted);
+    rt_string_unref(key);
+}
+
+static void test_resurrected_owner_is_empty_reusable_and_rearmed() {
+    void *m = rt_orderedmap_new();
+    rt_string key = make_str("resurrect");
+    void *victim = new_obj();
+
+    rt_obj_set_finalizer(victim, reentrant_finalizer);
+    rt_orderedmap_set(m, key, victim);
+    release_obj(victim);
+
+    g_reentry_map = m;
+    g_reentry_action = ReentryAction::Resurrect;
+    release_obj(m);
+
+    assert(g_reentry_calls == 1);
+    assert(rt_orderedmap_len(m) == 0);
+    assert(rt_orderedmap_is_empty(m) == 1);
+    reset_reentry_state();
+
+    g_finalizer_calls = 0;
+    void *second = new_obj();
+    rt_obj_set_finalizer(second, count_finalizer);
+    rt_orderedmap_set(m, key, second);
+    release_obj(second);
+    assert(rt_orderedmap_get(m, key) == second);
+
+    release_obj(m);
+    assert(g_finalizer_calls == 1);
+    rt_string_unref(key);
+}
+
+static void test_finalizer_drains_after_value_finalizer_trap() {
+    void *m = rt_orderedmap_new();
+    rt_string first_key = make_str("first");
+    rt_string second_key = make_str("second");
+    void *first = new_obj();
+    void *second = new_obj();
+
+    g_trapping_finalizer_calls = 0;
+    g_finalizer_calls = 0;
+    rt_obj_set_finalizer(first, trapping_finalizer);
+    rt_obj_set_finalizer(second, count_finalizer);
+    rt_orderedmap_set(m, first_key, first);
+    rt_orderedmap_set(m, second_key, second);
+    release_obj(first);
+    release_obj(second);
+
+    jmp_buf recovery;
+    rt_trap_set_recovery(&recovery);
+    if (setjmp(recovery) == 0) {
+        release_obj(m);
+        assert(false && "trapping value finalizer should propagate");
+    } else {
+        const char *error = rt_trap_get_error();
+        assert(error != nullptr);
+        assert(strstr(error, "OrderedMap test finalizer trap") != nullptr);
+        rt_trap_clear_recovery();
+    }
+
+    assert(g_trapping_finalizer_calls == 1);
+    assert(g_finalizer_calls == 1);
+    rt_string_unref(first_key);
+    rt_string_unref(second_key);
+}
+
 static void test_embedded_nul_keys_are_distinct() {
     void *m = rt_orderedmap_new();
     const char bytes[] = {'a', '\0', 'b'};
@@ -264,6 +468,11 @@ int main() {
     test_clear();
     test_many_entries();
     test_value_release_on_clear();
+    test_remove_commits_before_reentrant_clear();
+    test_clear_preserves_reentrant_insert();
+    test_owner_finalizer_blocks_reentrant_insert();
+    test_resurrected_owner_is_empty_reusable_and_rearmed();
+    test_finalizer_drains_after_value_finalizer_trap();
     test_embedded_nul_keys_are_distinct();
     test_null_safety();
 

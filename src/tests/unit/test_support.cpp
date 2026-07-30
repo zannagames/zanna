@@ -5,11 +5,18 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/unit/test_support.cpp
-// Purpose: Test suite for this component.
-// Key invariants: To be documented.
-// Ownership/Lifetime: To be documented.
-// Links: docs/internals/architecture.md
+// File: src/tests/unit/test_support.cpp
+// Purpose: Validate support-layer allocators, containers, diagnostics, source
+//          tracking, string interning, and filesystem helpers.
+// Key invariants:
+//   - Arena allocation arithmetic never wraps and preserves requested alignment.
+//   - GrowingArena destroys tracked objects exactly once in LIFO-safe batches.
+//   - Stable symbols and source identifiers keep their documented value semantics.
+// Ownership/Lifetime:
+//   - Test-local support objects own all temporary allocations and streams.
+//   - Temporary filesystem paths are removed by their existing scoped fixtures.
+// Links: src/support/arena.hpp, src/support/string_interner.hpp,
+//        src/support/source_manager.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -68,9 +75,17 @@ int main() {
     auto movedSym = moveSource.intern("moved");
     il::support::StringInterner moveConstructed(std::move(moveSource));
     assert(moveConstructed.lookup(movedSym) == "moved");
+    assert(moveSource.size() == 0);
+    auto reusedSourceSym = moveSource.intern("source-reused");
+    assert(reusedSourceSym.id == 1);
+    assert(moveSource.lookup(reusedSourceSym) == "source-reused");
     il::support::StringInterner moveAssigned;
     moveAssigned = std::move(moveConstructed);
     assert(moveAssigned.lookup(movedSym) == "moved");
+    assert(moveConstructed.size() == 0);
+    auto reusedConstructedSym = moveConstructed.intern("move-assigned-source-reused");
+    assert(reusedConstructedSym.id == 1);
+    assert(moveConstructed.lookup(reusedConstructedSym) == "move-assigned-source-reused");
     il::support::StringInterner copyAssigned;
     copyAssigned.intern("old");
     copyAssigned = moveAssigned;
@@ -693,6 +708,71 @@ int main() {
             // Will be destroyed on scope exit
         }
         assert(destructorCount == 3);
+    }
+
+    // A tracked destructor may construct another tracked object. The new
+    // destructor must join the same reset cycle without invalidating iteration.
+    {
+        int spawnerDestructions = 0;
+        int spawnedDestructions = 0;
+
+        struct SpawnedObj {
+            int *counter;
+
+            ~SpawnedObj() {
+                ++(*counter);
+            }
+        };
+
+        struct SpawnerObj {
+            il::support::GrowingArena *arena;
+            int *spawnerCounter;
+            int *spawnedCounter;
+
+            ~SpawnerObj() {
+                ++(*spawnerCounter);
+                arena->create<SpawnedObj>(spawnedCounter);
+            }
+        };
+
+        il::support::GrowingArena reentrantArena(256);
+        reentrantArena.create<SpawnerObj>(
+            &reentrantArena, &spawnerDestructions, &spawnedDestructions);
+        reentrantArena.reset();
+        assert(spawnerDestructions == 1);
+        assert(spawnedDestructions == 1);
+    }
+
+    // Reentrant reset must not invalidate objects still awaiting destruction.
+    {
+        int resetterDestructions = 0;
+        int olderDestructions = 0;
+
+        struct OlderObj {
+            int *counter;
+
+            ~OlderObj() {
+                ++(*counter);
+            }
+        };
+
+        struct ResettingObj {
+            il::support::GrowingArena *arena;
+            int *counter;
+
+            ~ResettingObj() {
+                ++(*counter);
+                arena->reset();
+            }
+        };
+
+        il::support::GrowingArena resetReentrantArena(256);
+        resetReentrantArena.create<OlderObj>(&olderDestructions);
+        resetReentrantArena.create<ResettingObj>(&resetReentrantArena, &resetterDestructions);
+        resetReentrantArena.reset();
+        assert(resetterDestructions == 1);
+        assert(olderDestructions == 1);
+        assert(resetReentrantArena.totalAllocated() == 0);
     }
 
     {

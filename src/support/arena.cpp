@@ -5,12 +5,17 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// Implements the bump-pointer arena used throughout Zanna's support library.
-// The arena manages a single contiguous buffer and satisfies allocation
-// requests by monotonically advancing an offset.  Callers can request memory
-// with an explicit alignment and the arena will compute the correct aligned
-// address while guarding against overflow.  All allocations remain valid until
-// `reset()` is invoked, at which point the arena reuses the entire buffer.
+// File: src/support/arena.cpp
+// Purpose: Implements fixed and chunk-growing bump allocators for compiler
+//          support objects.
+// Key invariants:
+//   - Alignment/capacity arithmetic is checked before advancing a cursor.
+//   - Nontrivial GrowingArena objects are destroyed once in strict LIFO order.
+//   - Reentrant destruction cannot reset or move storage still in use.
+// Ownership/Lifetime:
+//   - Arena instances uniquely own their backing buffers and destructor records.
+//   - Returned pointers remain valid only until reset, move-from, or destruction.
+// Links: src/support/arena.hpp, src/support/alignment.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -172,8 +177,12 @@ GrowingArena::~GrowingArena() {
 /// @brief Move all chunks, destructor records, and growth policy from another arena.
 /// @param other Arena whose owned storage is transferred.
 GrowingArena::GrowingArena(GrowingArena &&other) noexcept
-    : chunks_(std::move(other.chunks_)), destructors_(std::move(other.destructors_)),
-      growthChunkSize_(other.growthChunkSize_) {}
+    : growthChunkSize_(other.growthChunkSize_) {
+    if (other.destroyingObjects_)
+        return;
+    chunks_ = std::move(other.chunks_);
+    destructors_ = std::move(other.destructors_);
+}
 
 /// @brief Replace this arena with another arena's owned state.
 /// @details Existing tracked objects are destroyed before the move. Self-move
@@ -181,12 +190,12 @@ GrowingArena::GrowingArena(GrowingArena &&other) noexcept
 /// @param other Arena whose owned storage is transferred.
 /// @return Reference to this arena.
 GrowingArena &GrowingArena::operator=(GrowingArena &&other) noexcept {
-    if (this != &other) {
-        destroyObjects();
-        chunks_ = std::move(other.chunks_);
-        destructors_ = std::move(other.destructors_);
-        growthChunkSize_ = other.growthChunkSize_;
-    }
+    if (this == &other || destroyingObjects_ || other.destroyingObjects_)
+        return *this;
+    destroyObjects();
+    chunks_ = std::move(other.chunks_);
+    destructors_ = std::move(other.destructors_);
+    growthChunkSize_ = other.growthChunkSize_;
     return *this;
 }
 
@@ -225,6 +234,8 @@ void *GrowingArena::allocate(size_t size, size_t align) {
 /// @details The first chunk is retained for reuse and every later chunk is
 ///          released. All pointers previously returned by the arena become invalid.
 void GrowingArena::reset() {
+    if (destroyingObjects_)
+        return;
     destroyObjects();
     // Keep the first chunk, clear the rest
     if (!chunks_.empty()) {
@@ -279,15 +290,21 @@ void GrowingArena::allocateChunk(size_t minSize) {
     chunks_.emplace_back(std::max<size_t>(1, minSize));
 }
 
-/// @brief Invoke every registered object destructor in reverse construction order.
-/// @details Destructor records are cleared after invocation. Arena object types
-///          are constrained to nothrow destruction.
-void GrowingArena::destroyObjects() {
-    // Destroy in reverse order (LIFO)
-    for (auto it = destructors_.rbegin(); it != destructors_.rend(); ++it) {
-        it->destroy(it->object);
+/// @brief Invoke every registered object destructor in strict reverse construction order.
+/// @details Each record is removed before its callback. If that callback creates
+///          another tracked object, the new record is appended and therefore
+///          destroyed before any older pending object. Reentrant reset/move
+///          requests observe @c destroyingObjects_ and cannot invalidate storage.
+void GrowingArena::destroyObjects() noexcept {
+    if (destroyingObjects_)
+        return;
+    destroyingObjects_ = true;
+    while (!destructors_.empty()) {
+        DestructorRecord record = destructors_.back();
+        destructors_.pop_back();
+        record.destroy(record.object);
     }
-    destructors_.clear();
+    destroyingObjects_ = false;
 }
 
 } // namespace il::support

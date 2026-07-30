@@ -318,6 +318,112 @@ static void test_double_free_is_rejected(void) {
     printf("test_double_free_is_rejected: PASSED\n");
 }
 
+/// @brief Verify a caller-supplied size cannot disagree with private slab ownership.
+/// @details A rejected free must leave the block allocated so a caller whose trap
+///          hook returns can release it with the original size.
+static void test_mismatched_small_size_class_is_rejected(void) {
+    struct MismatchCase {
+        size_t allocated_size;
+        size_t wrong_size;
+        rt_pool_class_t owner_class;
+    };
+
+    constexpr MismatchCase cases[] = {
+        {1, 65, RT_POOL_64},
+        {65, 129, RT_POOL_128},
+        {129, 257, RT_POOL_256},
+        {257, 1, RT_POOL_512},
+    };
+
+    for (const MismatchCase &test_case : cases) {
+        rt_pool_shutdown();
+        void *block = rt_pool_alloc(test_case.allocated_size);
+        assert(block != nullptr);
+
+        g_pool_trap_message.clear();
+        g_return_pool_traps = true;
+        rt_pool_free(block, test_case.wrong_size);
+        g_return_pool_traps = false;
+
+        assert(g_pool_trap_message.find("size class mismatch") != std::string::npos);
+        size_t allocated = 0;
+        rt_pool_stats(test_case.owner_class, &allocated, nullptr);
+        assert(allocated == 1);
+
+        rt_pool_free(block, test_case.allocated_size);
+        rt_pool_shutdown();
+    }
+
+    printf("test_mismatched_small_size_class_is_rejected: PASSED\n");
+}
+
+/// @brief Verify caller size cannot choose the wrong slab/system free path.
+/// @details Both directions must trap before releasing or reading through the
+///          wrong provenance, and the allocation must remain retryable with its
+///          exact original size under a returning trap hook.
+static void test_pooled_fallback_boundary_mismatch_is_rejected(void) {
+    rt_pool_shutdown();
+
+    void *pooled = rt_pool_alloc(64);
+    assert(pooled != nullptr);
+    g_pool_trap_message.clear();
+    g_return_pool_traps = true;
+    rt_pool_free(pooled, 513);
+    g_return_pool_traps = false;
+    assert(g_pool_trap_message.find("provenance mismatch") != std::string::npos);
+    size_t pooled_allocated = 0;
+    rt_pool_stats(RT_POOL_64, &pooled_allocated, nullptr);
+    assert(pooled_allocated == 1);
+    std::memset(pooled, 0xA5, 64);
+    rt_pool_free(pooled, 64);
+
+    void *fallback = rt_pool_alloc(513);
+    assert(fallback != nullptr);
+    g_pool_trap_message.clear();
+    g_return_pool_traps = true;
+    rt_pool_free(fallback, 64);
+    g_return_pool_traps = false;
+    assert(g_pool_trap_message.find("provenance mismatch") != std::string::npos);
+    std::memset(fallback, 0x5A, 513);
+    rt_pool_free(fallback, 513);
+
+    rt_pool_shutdown();
+    printf("test_pooled_fallback_boundary_mismatch_is_rejected: PASSED\n");
+}
+
+/// @brief Verify the documented exact-size contract within one provenance class.
+/// @details Same-class slab sizes and two system-fallback sizes previously
+///          reached the same release route despite disagreeing with allocation.
+static void test_exact_request_size_is_enforced(void) {
+    rt_pool_shutdown();
+
+    void *pooled = rt_pool_alloc(32);
+    assert(pooled != nullptr);
+    g_pool_trap_message.clear();
+    g_return_pool_traps = true;
+    rt_pool_free(pooled, 64);
+    g_return_pool_traps = false;
+    assert(g_pool_trap_message.find("allocation size mismatch") != std::string::npos);
+    rt_pool_free(pooled, 32);
+
+    void *fallback = rt_pool_alloc(1024);
+    assert(fallback != nullptr);
+    g_pool_trap_message.clear();
+    g_return_pool_traps = true;
+    rt_pool_free(fallback, 2048);
+    g_return_pool_traps = false;
+    assert(g_pool_trap_message.find("allocation size mismatch") != std::string::npos);
+    rt_pool_free(fallback, 1024);
+
+    void *zero = rt_pool_alloc(0);
+    assert(zero != nullptr);
+    rt_pool_free(zero, 0);
+
+    assert(rt_pool_alloc(SIZE_MAX) == nullptr);
+    rt_pool_shutdown();
+    printf("test_exact_request_size_is_enforced: PASSED\n");
+}
+
 /// @brief Stress the lock-free lifecycle epoch against allocation/free traffic.
 /// @details Worker threads repeatedly touch caller-visible payloads while a
 ///          coordinator requests shutdown. A shutdown may reclaim only a
@@ -402,7 +508,7 @@ static void test_many_allocs(void) {
 
 /// @brief Verify every pooled class preserves fundamental maximum alignment.
 static void test_max_alignment(void) {
-    constexpr size_t kRequests[] = {1, 64, 65, 128, 129, 256, 257, 512};
+    constexpr size_t kRequests[] = {1, 64, 65, 128, 129, 256, 257, 512, 513, 1024};
     for (size_t request : kRequests) {
         void *payload = rt_pool_alloc(request);
         assert(payload != nullptr);
@@ -508,6 +614,9 @@ int main(void) {
     test_live_stats_do_not_underflow();
     test_shutdown_defers_live_slab();
     test_double_free_is_rejected();
+    test_mismatched_small_size_class_is_rejected();
+    test_pooled_fallback_boundary_mismatch_is_rejected();
+    test_exact_request_size_is_enforced();
     test_concurrent_shutdown_epoch();
     test_many_allocs();
     test_max_alignment();
