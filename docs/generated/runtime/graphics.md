@@ -223,8 +223,8 @@ Constructor: `Zanna.Graphics.Pixels.New`
 | <a id="zanna-graphics-pixels-clear"></a>`Clear` | `void()` | `Zanna.Graphics.Pixels.Clear` |
 | <a id="zanna-graphics-pixels-copy"></a>`Copy` | `void(i64,i64,obj,i64,i64,i64,i64)` | `Zanna.Graphics.Pixels.Copy` |
 | <a id="zanna-graphics-pixels-clone"></a>`Clone` | `obj()` | `Zanna.Graphics.Pixels.Clone` |
-| <a id="zanna-graphics-pixels-tobytes"></a>`ToBytes` | `obj()` | `Zanna.Graphics.Pixels.ToBytes` |
-| <a id="zanna-graphics-pixels-frombytes"></a>`FromBytes` | `obj<Zanna.Graphics.Pixels>(i64,i64,obj)` | `Zanna.Graphics.Pixels.FromBytes` |
+| <a id="zanna-graphics-pixels-tobytes"></a>`ToBytes` | `obj<Zanna.Collections.Bytes>()` | `Zanna.Graphics.Pixels.ToBytes` |
+| <a id="zanna-graphics-pixels-frombytes"></a>`FromBytes` | `obj<Zanna.Graphics.Pixels>(i64,i64,obj<Zanna.Collections.Bytes>)` | `Zanna.Graphics.Pixels.FromBytes` |
 | <a id="zanna-graphics-pixels-savebmp"></a>`SaveBmp` | `i64(str)` | `Zanna.Graphics.Pixels.SaveBmp` |
 | <a id="zanna-graphics-pixels-savepng"></a>`SavePng` | `i64(str)` | `Zanna.Graphics.Pixels.SavePng` |
 | <a id="zanna-graphics-pixels-fliph"></a>`FlipH` | `obj()` | `Zanna.Graphics.Pixels.FlipH` |
@@ -1631,7 +1631,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Pixels.Fill` | `void(obj,i64)` | `rt_pixels_fill` |
 | `Zanna.Graphics.Pixels.FillRgba` | `void(obj,i64)` | `rt_pixels_fill_rgba` |
 | `Zanna.Graphics.Pixels.FillColor` | `void(obj,i64)` | `rt_pixels_fill_color` |
-| `Zanna.Graphics.Pixels.FromBytes` | `obj<Zanna.Graphics.Pixels>(i64,i64,obj)` | `rt_pixels_from_bytes` |
+| `Zanna.Graphics.Pixels.FromBytes` | `obj<Zanna.Graphics.Pixels>(i64,i64,obj<Zanna.Collections.Bytes>)` | `rt_pixels_from_bytes` |
 | `Zanna.Graphics.Pixels.Get` | `i64(obj,i64,i64)` | `rt_pixels_get` |
 | `Zanna.Graphics.Pixels.GetRgba` | `i64(obj,i64,i64)` | `rt_pixels_get_rgba` |
 | `Zanna.Graphics.Pixels.GetColor` | `i64(obj,i64,i64)` | `rt_pixels_get_color` |
@@ -1640,7 +1640,7 @@ to construct the class directly. Its public surface exposes properties such as `
 | `Zanna.Graphics.Pixels.Set` | `void(obj,i64,i64,i64)` | `rt_pixels_set` |
 | `Zanna.Graphics.Pixels.SetRgba` | `void(obj,i64,i64,i64)` | `rt_pixels_set_rgba` |
 | `Zanna.Graphics.Pixels.SetColor` | `void(obj,i64,i64,i64)` | `rt_pixels_set_color` |
-| `Zanna.Graphics.Pixels.ToBytes` | `obj(obj)` | `rt_pixels_to_bytes` |
+| `Zanna.Graphics.Pixels.ToBytes` | `obj<Zanna.Collections.Bytes>(obj)` | `rt_pixels_to_bytes` |
 | <a id="zanna-graphics-pixels-get-width"></a>`Zanna.Graphics.Pixels.get_Width` | `i64(obj)` | `rt_pixels_width` |
 | `Zanna.Graphics.Pixels.LoadBmp` | `obj(str)` | `rt_pixels_load_bmp` |
 | `Zanna.Graphics.Pixels.SaveBmp` | `i64(obj,str)` | `rt_pixels_save_bmp` |
