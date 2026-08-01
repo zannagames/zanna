@@ -19,6 +19,8 @@
 //     next advance() moves to the following line.
 //   - Choice prompts block line advance until confirmed; results are polled
 //     (choiceMade one-shot + lastChoice), never callbacks.
+//   - Localized lookup temporaries and queued voice clips have balanced
+//     ownership; empty and choice-only conversations cannot wedge playback.
 // Ownership/Lifetime:
 //   - GC-managed; finalizer releases world/bundle/entity/clip references. The
 //     world retains the shown dialogue until hidden or finished.
@@ -35,6 +37,7 @@
 ///          speaker bubble. Text is resolved when queued, so subsequent locale
 ///          changes affect only newly added lines and choices.
 
+#include "rt_audio.h"
 #include "rt_canvas3d.h"
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
@@ -51,6 +54,42 @@
 #define GAME3D_DLG_DEFAULT_REVEAL_SPEED 40.0
 #define GAME3D_DLG_AUTO_HOLD_SECONDS 1.2
 
+/// @brief Clamp the dialogue line count to its fixed backing-array extent.
+/// @param dialogue Dialogue whose private count is inspected.
+/// @return Safe line count in `[0, RT_GAME3D_DLG_MAX_LINES]`.
+static int32_t game3d_dialogue_line_count_safe(const rt_game3d_dialogue *dialogue) {
+    if (!dialogue || dialogue->line_count <= 0)
+        return 0;
+    return dialogue->line_count > RT_GAME3D_DLG_MAX_LINES ? RT_GAME3D_DLG_MAX_LINES
+                                                          : dialogue->line_count;
+}
+
+/// @brief Clamp the choice count to its fixed backing-array extent.
+/// @param dialogue Dialogue whose private count is inspected.
+/// @return Safe choice count in `[0, RT_GAME3D_DLG_MAX_CHOICES]`.
+static int32_t game3d_dialogue_choice_count_safe(const rt_game3d_dialogue *dialogue) {
+    if (!dialogue || dialogue->choice_count <= 0)
+        return 0;
+    return dialogue->choice_count > RT_GAME3D_DLG_MAX_CHOICES ? RT_GAME3D_DLG_MAX_CHOICES
+                                                              : dialogue->choice_count;
+}
+
+/// @brief Return the retained speaker only while it remains a live Entity3D.
+/// @details A destroyed speaker is released in place so a long-lived dialogue
+///          cannot retain a dead entity indefinitely.
+/// @param dialogue Dialogue whose optional anchor is inspected.
+/// @return Borrowed live speaker entity, or `NULL` after clearing stale state.
+static rt_game3d_entity *game3d_dialogue_speaker_ref(rt_game3d_dialogue *dialogue) {
+    if (!dialogue || !dialogue->speaker_entity)
+        return NULL;
+    rt_game3d_entity *speaker = (rt_game3d_entity *)rt_g3d_checked_or_null(
+        dialogue->speaker_entity, RT_G3D_GAME3D_ENTITY_CLASS_ID);
+    if (game3d_entity_alive_or_record(speaker))
+        return speaker;
+    game3d_release_ref(&dialogue->speaker_entity);
+    return NULL;
+}
+
 //=========================================================================
 // Lifecycle
 //=========================================================================
@@ -61,7 +100,7 @@ static void game3d_dialogue_finalize(void *obj) {
     rt_game3d_dialogue *dialogue = (rt_game3d_dialogue *)obj;
     if (!dialogue)
         return;
-    for (int32_t i = 0; i < dialogue->line_count; ++i)
+    for (int32_t i = 0; i < RT_GAME3D_DLG_MAX_LINES; ++i)
         game3d_release_ref(&dialogue->lines[i].voice_clip);
     game3d_release_ref(&dialogue->world);
     game3d_release_ref(&dialogue->bundle);
@@ -107,13 +146,18 @@ static void game3d_dialogue_resolve_text(rt_game3d_dialogue *dialogue,
     if (!text)
         return;
     rt_string resolved = text;
-    if (dialogue->bundle && rt_message_bundle_has(dialogue->bundle, text))
+    int owns_resolved = 0;
+    if (dialogue->bundle && rt_message_bundle_has(dialogue->bundle, text)) {
         resolved = rt_message_bundle_get(dialogue->bundle, text);
+        owns_resolved = 1;
+    }
     const char *cstr = resolved ? rt_string_cstr(resolved) : NULL;
     if (cstr) {
         strncpy(dst, cstr, dst_size - 1);
         dst[dst_size - 1] = '\0';
     }
+    if (owns_resolved && resolved)
+        rt_string_unref(resolved);
 }
 
 //=========================================================================
@@ -132,11 +176,17 @@ static void *game3d_dialogue_say_impl(
     rt_game3d_dialogue *dialogue = game3d_dialogue_checked(obj, api_name);
     if (!dialogue)
         return obj;
+    if (voice_clip && !rt_sound_is_handle(voice_clip)) {
+        rt_trap("Game3D.Dialogue3D.sayVoiced: clip must be Sound or null");
+        return obj;
+    }
+    dialogue->line_count = game3d_dialogue_line_count_safe(dialogue);
     if (dialogue->line_count >= RT_GAME3D_DLG_MAX_LINES) {
         rt_trap("Game3D.Dialogue3D.say: line queue limit reached (32)");
         return obj;
     }
     rt_game3d_dlg_line *line = &dialogue->lines[dialogue->line_count];
+    game3d_release_ref(&line->voice_clip);
     memset(line, 0, sizeof(*line));
     const char *speaker_cstr = speaker ? rt_string_cstr(speaker) : NULL;
     if (speaker_cstr) {
@@ -214,6 +264,15 @@ void rt_game3d_dialogue_show(void *obj) {
         (rt_game3d_world *)rt_g3d_checked_or_null(dialogue->world, RT_G3D_GAME3D_WORLD_CLASS_ID);
     if (!world)
         return;
+    dialogue->line_count = game3d_dialogue_line_count_safe(dialogue);
+    dialogue->choice_count = game3d_dialogue_choice_count_safe(dialogue);
+    if (dialogue->line_count == 0 && dialogue->choice_count == 0) {
+        dialogue->active = 0;
+        dialogue->choice_active = 0;
+        if (world->active_dialogue == (void *)dialogue)
+            game3d_release_typed_ref(&world->active_dialogue, RT_G3D_GAME3D_DIALOGUE_CLASS_ID);
+        return;
+    }
     rt_game3d_dialogue *previous = (rt_game3d_dialogue *)rt_g3d_checked_or_null(
         world->active_dialogue, RT_G3D_GAME3D_DIALOGUE_CLASS_ID);
     if (previous && previous != dialogue)
@@ -225,6 +284,9 @@ void rt_game3d_dialogue_show(void *obj) {
     dialogue->hold_remaining = 0.0;
     dialogue->line_started = 0;
     dialogue->choice_made = 0;
+    dialogue->choice_active = dialogue->line_count == 0 && dialogue->choice_count > 0 ? 1 : 0;
+    if (dialogue->choice_selected < 0 || dialogue->choice_selected >= dialogue->choice_count)
+        dialogue->choice_selected = 0;
 }
 
 /// @brief Hide the conversation (releases the world slot).
@@ -247,7 +309,8 @@ void rt_game3d_dialogue_hide(void *obj) {
 /// @param dialogue Dialogue whose current queue position is inspected.
 /// @return The byte length of the current resolved line, or zero outside the queue.
 static size_t game3d_dialogue_line_len(const rt_game3d_dialogue *dialogue) {
-    if (dialogue->line_index < 0 || dialogue->line_index >= dialogue->line_count)
+    int32_t line_count = game3d_dialogue_line_count_safe(dialogue);
+    if (!dialogue || dialogue->line_index < 0 || dialogue->line_index >= line_count)
         return 0;
     return strlen(dialogue->lines[dialogue->line_index].text);
 }
@@ -262,18 +325,30 @@ void rt_game3d_dialogue_advance(void *obj) {
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.advance: invalid dialogue");
     if (!dialogue || !dialogue->active || dialogue->choice_active)
         return;
+    int32_t line_count = game3d_dialogue_line_count_safe(dialogue);
+    int32_t choice_count = game3d_dialogue_choice_count_safe(dialogue);
+    dialogue->line_count = line_count;
+    dialogue->choice_count = choice_count;
+    if (dialogue->line_index < 0 || dialogue->line_index >= line_count) {
+        if (choice_count > 0 && !dialogue->choice_made)
+            dialogue->choice_active = 1;
+        else
+            rt_game3d_dialogue_hide(obj);
+        return;
+    }
     size_t len = game3d_dialogue_line_len(dialogue);
     if (dialogue->reveal_chars < (double)len) {
         /* Two-stage skip: first press completes the reveal. */
         dialogue->reveal_chars = (double)len;
         return;
     }
-    dialogue->line_index += 1;
+    dialogue->line_index =
+        dialogue->line_index < line_count - 1 ? dialogue->line_index + 1 : line_count;
     dialogue->reveal_chars = 0.0;
     dialogue->hold_remaining = 0.0;
     dialogue->line_started = 0;
-    if (dialogue->line_index >= dialogue->line_count) {
-        if (dialogue->choice_count > 0 && !dialogue->choice_made) {
+    if (dialogue->line_index >= line_count) {
+        if (choice_count > 0 && !dialogue->choice_made) {
             dialogue->choice_active = 1; /* block until confirmed */
         } else {
             rt_game3d_dialogue_hide(obj);
@@ -299,11 +374,23 @@ void rt_game3d_dialogue_move_choice(void *obj, int64_t delta) {
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.moveChoice: invalid dialogue");
     if (!dialogue || !dialogue->choice_active)
         return;
-    int64_t next = dialogue->choice_selected + delta;
-    if (next < 0)
+    int32_t choice_count = game3d_dialogue_choice_count_safe(dialogue);
+    if (choice_count <= 0) {
+        dialogue->choice_active = 0;
+        return;
+    }
+    int64_t current = dialogue->choice_selected;
+    if (current < 0)
+        current = 0;
+    else if (current >= choice_count)
+        current = choice_count - 1;
+    int64_t next;
+    if (delta > 0 && delta >= (int64_t)choice_count - current)
+        next = choice_count - 1;
+    else if (delta < 0 && delta <= -current)
         next = 0;
-    if (next >= dialogue->choice_count)
-        next = dialogue->choice_count - 1;
+    else
+        next = current + delta;
     dialogue->choice_selected = (int32_t)next;
 }
 
@@ -316,6 +403,17 @@ void rt_game3d_dialogue_confirm_choice(void *obj) {
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.confirmChoice: invalid dialogue");
     if (!dialogue || !dialogue->choice_active)
         return;
+    int32_t choice_count = game3d_dialogue_choice_count_safe(dialogue);
+    if (choice_count <= 0) {
+        dialogue->choice_active = 0;
+        dialogue->choice_count = 0;
+        return;
+    }
+    dialogue->choice_count = choice_count;
+    if (dialogue->choice_selected < 0)
+        dialogue->choice_selected = 0;
+    else if (dialogue->choice_selected >= choice_count)
+        dialogue->choice_selected = choice_count - 1;
     dialogue->last_choice = dialogue->choice_selected;
     dialogue->choice_made = 1;
     dialogue->choice_active = 0;
@@ -342,7 +440,7 @@ int8_t rt_game3d_dialogue_get_active(void *obj) {
 int64_t rt_game3d_dialogue_get_line_count(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.get_lineCount: invalid dialogue");
-    return dialogue ? dialogue->line_count : 0;
+    return game3d_dialogue_line_count_safe(dialogue);
 }
 
 /// @brief Report whether playback is blocked on a visible choice prompt.
@@ -351,7 +449,7 @@ int64_t rt_game3d_dialogue_get_line_count(void *obj) {
 int8_t rt_game3d_dialogue_get_choice_pending(void *obj) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.choicePending: invalid dialogue");
-    return dialogue ? dialogue->choice_active : 0;
+    return dialogue && dialogue->choice_active && game3d_dialogue_choice_count_safe(dialogue) > 0;
 }
 
 /// @brief One-shot: a choice was confirmed since the last query.
@@ -389,12 +487,14 @@ rt_string rt_game3d_dialogue_current_text(void *obj) {
      * hazards (the overlay path already uses a stack buffer). */
     char revealed[RT_GAME3D_TL_TEXT_MAX];
     revealed[0] = '\0';
-    if (dialogue && dialogue->active && dialogue->line_index < dialogue->line_count) {
+    int32_t line_count = game3d_dialogue_line_count_safe(dialogue);
+    if (dialogue && dialogue->active && dialogue->line_index >= 0 &&
+        dialogue->line_index < line_count) {
         const char *full = dialogue->lines[dialogue->line_index].text;
         size_t len = strlen(full);
-        size_t shown = (size_t)dialogue->reveal_chars;
-        if (shown > len)
-            shown = len;
+        size_t shown = 0;
+        if (isfinite(dialogue->reveal_chars) && dialogue->reveal_chars > 0.0)
+            shown = dialogue->reveal_chars >= (double)len ? len : (size_t)dialogue->reveal_chars;
         memcpy(revealed, full, shown);
         revealed[shown] = '\0';
     }
@@ -408,12 +508,16 @@ rt_string rt_game3d_dialogue_current_text(void *obj) {
 void rt_game3d_dialogue_set_speaker_entity(void *obj, void *entity) {
     rt_game3d_dialogue *dialogue =
         game3d_dialogue_checked(obj, "Game3D.Dialogue3D.setSpeakerEntity: invalid dialogue");
-    if (entity && !rt_g3d_has_class(entity, RT_G3D_GAME3D_ENTITY_CLASS_ID)) {
-        rt_trap("Game3D.Dialogue3D.setSpeakerEntity: value must be Entity3D");
+    if (!dialogue)
+        return;
+    if (!entity) {
+        game3d_release_ref(&dialogue->speaker_entity);
         return;
     }
-    if (dialogue)
-        game3d_assign_ref(&dialogue->speaker_entity, entity);
+    rt_game3d_entity *speaker = game3d_entity_checked(
+        entity, "Game3D.Dialogue3D.setSpeakerEntity: value must be a live Entity3D");
+    if (speaker)
+        game3d_assign_ref(&dialogue->speaker_entity, speaker);
 }
 
 /// @brief Enable or disable speaker-anchored bubble presentation.
@@ -492,8 +596,18 @@ void game3d_world_dialogue_tick(rt_game3d_world *world, double dt) {
     if (!dialogue || !dialogue->active)
         return;
     dt = game3d_clamp_dt(dt);
-    if (dialogue->line_index >= dialogue->line_count)
-        return; /* waiting on a choice */
+    int32_t line_count = game3d_dialogue_line_count_safe(dialogue);
+    int32_t choice_count = game3d_dialogue_choice_count_safe(dialogue);
+    dialogue->line_count = line_count;
+    dialogue->choice_count = choice_count;
+    (void)game3d_dialogue_speaker_ref(dialogue);
+    if (dialogue->line_index < 0 || dialogue->line_index >= line_count) {
+        if (choice_count > 0 && !dialogue->choice_made)
+            dialogue->choice_active = 1;
+        else
+            rt_game3d_dialogue_hide(dialogue);
+        return;
+    }
     rt_game3d_dlg_line *line = &dialogue->lines[dialogue->line_index];
     if (!dialogue->line_started) {
         dialogue->line_started = 1;
@@ -501,6 +615,12 @@ void game3d_world_dialogue_tick(rt_game3d_world *world, double dt) {
             (void)rt_game3d_audio_play2d(world->audio, line->voice_clip);
     }
     size_t len = strlen(line->text);
+    dialogue->reveal_speed = game3d_positive_clamped_or(
+        dialogue->reveal_speed, GAME3D_DLG_DEFAULT_REVEAL_SPEED, 10000.0);
+    if (!isfinite(dialogue->reveal_chars) || dialogue->reveal_chars < 0.0)
+        dialogue->reveal_chars = 0.0;
+    else if (dialogue->reveal_chars > (double)len)
+        dialogue->reveal_chars = (double)len;
     if (dialogue->reveal_chars < (double)len) {
         dialogue->reveal_chars += dialogue->reveal_speed * dt;
         if (dialogue->reveal_chars >= (double)len) {
@@ -508,6 +628,8 @@ void game3d_world_dialogue_tick(rt_game3d_world *world, double dt) {
             dialogue->hold_remaining = GAME3D_DLG_AUTO_HOLD_SECONDS;
         }
     } else if (dialogue->auto_advance) {
+        if (!isfinite(dialogue->hold_remaining))
+            dialogue->hold_remaining = 0.0;
         dialogue->hold_remaining -= dt;
         if (dialogue->hold_remaining <= 0.0)
             rt_game3d_dialogue_advance(dialogue);
@@ -549,11 +671,14 @@ void game3d_world_dialogue_overlay(rt_game3d_world *world) {
 
     if (dialogue->choice_active) {
         /* Choice prompt: centered list with a highlight marker. */
-        int64_t panel_h = (int64_t)(dialogue->choice_count + 2) * 14;
+        int32_t choice_count = game3d_dialogue_choice_count_safe(dialogue);
+        if (choice_count <= 0)
+            return;
+        int64_t panel_h = (int64_t)(choice_count + 2) * 14;
         int64_t top = height - panel_h - 16;
         rt_canvas3d_draw_rect2d_alpha(
             world->canvas, 12, top, width - 24, panel_h, 0x101418, dialogue->panel_alpha);
-        for (int32_t i = 0; i < dialogue->choice_count; ++i) {
+        for (int32_t i = 0; i < choice_count; ++i) {
             char row[RT_GAME3D_TL_TEXT_MAX + 4];
             snprintf(row,
                      sizeof(row),
@@ -568,25 +693,24 @@ void game3d_world_dialogue_overlay(rt_game3d_world *world) {
         }
         return;
     }
-    if (dialogue->line_index >= dialogue->line_count)
+    int32_t line_count = game3d_dialogue_line_count_safe(dialogue);
+    if (dialogue->line_index < 0 || dialogue->line_index >= line_count)
         return;
 
     rt_game3d_dlg_line *line = &dialogue->lines[dialogue->line_index];
     char revealed[RT_GAME3D_TL_TEXT_MAX];
     size_t len = strlen(line->text);
-    size_t shown = (size_t)dialogue->reveal_chars;
-    if (shown > len)
-        shown = len;
+    size_t shown = 0;
+    if (isfinite(dialogue->reveal_chars) && dialogue->reveal_chars > 0.0)
+        shown = dialogue->reveal_chars >= (double)len ? len : (size_t)dialogue->reveal_chars;
     memcpy(revealed, line->text, shown);
     revealed[shown] = '\0';
 
     /* Anchored bubble above the speaker entity when projectable. */
     if (dialogue->anchored) {
-        rt_game3d_entity *speaker = (rt_game3d_entity *)rt_g3d_checked_or_null(
-            dialogue->speaker_entity, RT_G3D_GAME3D_ENTITY_CLASS_ID);
+        rt_game3d_entity *speaker = game3d_dialogue_speaker_ref(dialogue);
         double pos[3];
-        if (speaker && game3d_entity_alive_or_record(speaker) && world->camera &&
-            game3d_entity_world_position_components(speaker, pos)) {
+        if (speaker && world->camera && game3d_entity_world_position_components(speaker, pos)) {
             double sx = 0.0;
             double sy = 0.0;
             if (rt_camera3d_world_to_screen(

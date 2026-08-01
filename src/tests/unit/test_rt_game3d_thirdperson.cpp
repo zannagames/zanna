@@ -34,6 +34,7 @@
 #include "rt_string.h"
 #include "rt_vec3.h"
 
+#include <cfloat>
 #include <cmath>
 #include <csetjmp>
 #include <cstdint>
@@ -530,6 +531,62 @@ bool test_targetlock_locked_move_bias() {
     PASS();
 }
 
+bool test_targetlock_health_death_and_clear_flags() {
+    TEST("TargetLock3D excludes dead Health3D targets and Clear resets transition flags");
+    LockFixture fx = lock_fixture_new("Lock Health");
+    rt_game3d_targetlock_set_require_los(fx.lock, 0);
+    EXPECT_TRUE(rt_game3d_targetlock_acquire(fx.lock) != 0, "center target acquires");
+    EXPECT_TRUE(rt_game3d_targetlock_get_target(fx.lock) == fx.center, "center starts locked");
+    EXPECT_TRUE(rt_game3d_targetlock_just_acquired(fx.lock) != 0, "acquisition flag starts armed");
+    rt_game3d_targetlock_clear(fx.lock);
+    EXPECT_TRUE(rt_game3d_targetlock_just_acquired(fx.lock) == 0 &&
+                    rt_game3d_targetlock_just_lost(fx.lock) == 0,
+                "explicit Clear removes stale transition notifications");
+
+    EXPECT_TRUE(rt_game3d_targetlock_acquire(fx.lock) != 0, "center reacquires");
+    void *health = rt_game3d_health_new(100.0);
+    rt_game3d_entity_attach_health(fx.center, health);
+    (void)rt_game3d_health_damage(health, 100.0, nullptr, 0);
+    EXPECT_TRUE(rt_game3d_health_is_dead(health) != 0, "fixture target is dead");
+    rt_game3d_targetlock_update(fx.lock, 1.0 / 60.0);
+    EXPECT_TRUE(rt_game3d_targetlock_get_target(fx.lock) == nullptr,
+                "death releases the current target immediately");
+    EXPECT_TRUE(rt_game3d_targetlock_just_lost(fx.lock) != 0,
+                "death-driven release raises JustLost");
+    rt_game3d_targetlock_clear(fx.lock);
+    EXPECT_TRUE(rt_game3d_targetlock_acquire(fx.lock) != 0,
+                "another live candidate remains acquirable");
+    void *replacement = rt_game3d_targetlock_get_target(fx.lock);
+    EXPECT_TRUE(replacement == fx.left || replacement == fx.right,
+                "dead center is excluded from future acquisition");
+    if (rt_obj_release_check0(health))
+        rt_obj_free(health);
+    rt_game3d_world_destroy(fx.world);
+    PASS();
+}
+
+bool test_targetlock_huge_move_bias_is_bounded() {
+    TEST("TargetLock3D LockedMoveBias bounds extreme finite vector arithmetic");
+    LockFixture fx = lock_fixture_new("Lock Huge Bias");
+    rt_game3d_targetlock_set_require_los(fx.lock, 0);
+    EXPECT_TRUE(rt_game3d_targetlock_acquire(fx.lock) != 0, "target acquired");
+    void *move = rt_vec3_new(DBL_MAX, DBL_MAX, DBL_MAX);
+    void *biased = rt_game3d_targetlock_locked_move_bias(fx.lock, move);
+    EXPECT_TRUE(biased != nullptr, "extreme input still returns a vector");
+    EXPECT_TRUE(std::isfinite(rt_vec3_x(biased)) && std::isfinite(rt_vec3_y(biased)) &&
+                    std::isfinite(rt_vec3_z(biased)),
+                "biased vector contains only finite lanes");
+    EXPECT_TRUE(std::fabs(rt_vec3_x(biased)) <= 1.5e12 && std::fabs(rt_vec3_y(biased)) <= 1.5e12 &&
+                    std::fabs(rt_vec3_z(biased)) <= 1.5e12,
+                "extreme lanes are bounded to the Game3D coordinate scale");
+    if (rt_obj_release_check0(biased))
+        rt_obj_free(biased);
+    if (rt_obj_release_check0(move))
+        rt_obj_free(move);
+    rt_game3d_world_destroy(fx.world);
+    PASS();
+}
+
 //=========================================================================
 // Plan 03 — Character3D upgrades
 //=========================================================================
@@ -852,6 +909,8 @@ int main() {
     ok = test_targetlock_break_distance_release() && ok;
     ok = test_targetlock_framing_converges() && ok;
     ok = test_targetlock_locked_move_bias() && ok;
+    ok = test_targetlock_health_death_and_clear_flags() && ok;
+    ok = test_targetlock_huge_move_bias_is_bounded() && ok;
     ok = test_character_push_and_block_dynamics() && ok;
     ok = test_character_crouch_and_try_stand() && ok;
     ok = test_character_rides_kinematic_platform() && ok;

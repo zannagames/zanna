@@ -2617,7 +2617,7 @@ void rt_game3d_rail_camera_late_update(void *controller, void *world, double dt)
 /// @param owner_entity Value supplied for the owner entity argument.
 /// @return A new GC-managed runtime handle, or NULL on failure.
 void *rt_game3d_targetlock_new(void *world, void *owner_entity);
-/// @brief Get the currently locked entity (NULL when unlocked).
+/// @brief Get the currently locked live entity (NULL when unlocked, destroyed, or health-dead).
 /// @param lock Value supplied for the lock argument.
 /// @return The runtime handle described above, or NULL when unavailable.
 void *rt_game3d_targetlock_get_target(void *lock);
@@ -2677,11 +2677,11 @@ double rt_game3d_targetlock_get_los_grace_seconds(void *lock);
 /// @param lock Value supplied for the lock argument.
 /// @param seconds Value supplied for the seconds argument.
 void rt_game3d_targetlock_set_los_grace_seconds(void *lock, double seconds);
-/// @brief Acquire the best candidate in view; true when a target is locked.
+/// @brief Acquire the best live, health-nondead candidate in view; true when a target is locked.
 /// @param lock Value supplied for the lock argument.
 /// @return 1 when the documented condition holds, or 0 otherwise.
 int8_t rt_game3d_targetlock_acquire(void *lock);
-/// @brief Release the current target without firing JustLost.
+/// @brief Release the current target and clear transition flags without firing JustLost.
 /// @param lock Value supplied for the lock argument.
 void rt_game3d_targetlock_clear(void *lock);
 /// @brief Cycle to the nearest candidate left (-1) / right (+1); true on change.
@@ -2861,7 +2861,7 @@ void *rt_game3d_dialogue_new(void *world);
 /// @param text Value supplied for the text argument.
 /// @return The runtime handle described above, or NULL when unavailable.
 void *rt_game3d_dialogue_say(void *dialogue, rt_string speaker, rt_string text);
-/// @brief Fluent: queue a voiced line (clip plays when the line starts).
+/// @brief Fluent: queue a voiced line (a valid Sound clip plays when the line starts).
 /// @param dialogue Value supplied for the dialogue argument.
 /// @param speaker Value supplied for the speaker argument.
 /// @param text Value supplied for the text argument.
@@ -2874,6 +2874,7 @@ void *rt_game3d_dialogue_say_voiced(void *dialogue, rt_string speaker, rt_string
 /// @return The runtime handle described above, or NULL when unavailable.
 void *rt_game3d_dialogue_ask_choice(void *dialogue, void *options_seq);
 /// @brief Show: install as the world's active conversation.
+/// @details Empty dialogues remain inactive; choice-only dialogues show their prompt immediately.
 /// @param dialogue Value supplied for the dialogue argument.
 void rt_game3d_dialogue_show(void *dialogue);
 /// @brief Hide: release the world slot without clearing queued lines.
@@ -2916,7 +2917,7 @@ int64_t rt_game3d_dialogue_last_choice(void *dialogue);
 /// @param dialogue Value supplied for the dialogue argument.
 /// @return A runtime string containing the documented result.
 rt_string rt_game3d_dialogue_current_text(void *dialogue);
-/// @brief Anchor bubbles above this entity (NULL clears).
+/// @brief Anchor bubbles above a live entity (NULL clears; later destruction releases the anchor).
 /// @param dialogue Value supplied for the dialogue argument.
 /// @param entity Entity3D instance used by the operation.
 void rt_game3d_dialogue_set_speaker_entity(void *dialogue, void *entity);
@@ -2974,7 +2975,7 @@ void *rt_game3d_lipsync_bind_head_bone(void *lipsync, rt_string bone_name);
 /// @param lipsync Value supplied for the lipsync argument.
 /// @param voice_id Value supplied for the voice id argument.
 void rt_game3d_lipsync_drive(void *lipsync, int64_t voice_id);
-/// @brief Drive from an explicit level 0..1 (dialogue/tests).
+/// @brief Inject one explicit 0..1 level sample; subsequent ticks release toward zero.
 /// @param lipsync Value supplied for the lipsync argument.
 /// @param level Value supplied for the level argument.
 void rt_game3d_lipsync_drive_level(void *lipsync, double level);
@@ -3637,7 +3638,7 @@ int64_t rt_game3d_surfaces_count(void);
 /// @brief Create an empty per-surface footstep table (row 0 = untyped default).
 /// @return A new GC-managed runtime handle, or NULL on failure.
 void *rt_game3d_surface_table_new(void);
-/// @brief Append a clip variant for a surface id (fluent; up to 8 per row).
+/// @brief Append a Sound clip variant for a surface id (fluent; up to 8 per row).
 /// @param table Value supplied for the table argument.
 /// @param surface_id Value supplied for the surface id argument.
 /// @param clip Value supplied for the clip argument.
@@ -3669,7 +3670,7 @@ void *rt_game3d_footsteps_set_event_prefix(void *steps, rt_string prefix);
 /// @param mask Value supplied for the mask argument.
 /// @return The receiver handle for fluent chaining, or NULL when unavailable.
 void *rt_game3d_footsteps_set_ground_mask(void *steps, int64_t mask);
-/// @brief Playback volume scale (fluent; default 1).
+/// @brief Playback volume scale applied to the audio master volume (fluent; 0..4, default 1).
 /// @param steps Value supplied for the steps argument.
 /// @param scale Value supplied for the scale argument.
 /// @return The receiver handle for fluent chaining, or NULL when unavailable.
@@ -3727,7 +3728,7 @@ void rt_game3d_interactable_set_enabled(void *item, int8_t enabled);
 int8_t rt_game3d_interactable_get_enabled(void *item);
 /// @brief Set the priority used to break competing focus candidates.
 /// @param item Interactable3D component to configure.
-/// @param priority Finite focus-priority value.
+/// @param priority Finite focus-priority value, bounded to the runtime coordinate limit.
 void rt_game3d_interactable_set_focus_priority(void *item, double priority);
 /// @brief Get an interactable's focus priority.
 /// @param item Interactable3D component to query.
@@ -3778,7 +3779,7 @@ int8_t rt_game3d_interactor_focus_changed(void *scanner);
 int8_t rt_game3d_interactor_interact(void *scanner);
 /// @brief Get the lifetime number of successful interaction requests.
 /// @param scanner Interactor3D component to query.
-/// @return The interaction count, or 0 for an invalid scanner.
+/// @return The saturating interaction count, or 0 for an invalid scanner.
 int64_t rt_game3d_interactor_get_interact_count(void *scanner);
 /// @brief Get the target of the most recent successful interaction.
 /// @param scanner Interactor3D component to query.
@@ -3795,7 +3796,7 @@ void *rt_game3d_perception_new(void *entity);
 /// @param sense Perception3D component to configure.
 /// @param range Maximum sight distance in world units; positive values are clamped to 512.
 /// @param fov_degrees Full field-of-view angle; valid values are clamped to 360 degrees.
-/// @param eye_height Vertical offset of the sight origin from the owner.
+/// @param eye_height Finite vertical sight-origin offset, bounded to the coordinate limit.
 void rt_game3d_perception_set_sight(void *sense,
                                     double range,
                                     double fov_degrees,
@@ -3819,7 +3820,7 @@ int64_t rt_game3d_perception_seen_count(void *sense);
 /// @brief Get a visible target by its compact visible-list index.
 /// @param sense Perception3D component to query.
 /// @param index Zero-based index in the currently visible target list.
-/// @return A retained Entity3D handle, or NULL when @p index is out of range.
+/// @return A retained live Entity3D handle, or NULL for an invalid index or stale stable id.
 void *rt_game3d_perception_seen_target(void *sense, int64_t index);
 /// @brief Get the most recently observed world position of a tracked target.
 /// @details While the target is visible, the returned position follows its live position.
@@ -3890,10 +3891,11 @@ int64_t rt_game3d_btree_move_to_target(void *tree, double speed, double arrive_d
 int64_t rt_game3d_btree_move_to_last_known(void *tree, double speed, double arrive_distance);
 /// @brief Append an application-resolved custom leaf to a behavior tree.
 /// @param tree BehaviorTree3D definition to extend.
-/// @param id Application-defined identifier exposed while the leaf is pending.
+/// @param id Nonzero application-defined identifier exposed while the leaf is pending.
 /// @return The new node index, or -1 when the tree is invalid or full.
 int64_t rt_game3d_btree_custom(void *tree, int64_t id);
-/// @brief Append a child relationship to a composite or decorator node.
+/// @brief Append an acyclic child relationship to a composite or decorator node.
+/// @details Duplicate edges and leaf parents are rejected; an inverter accepts exactly one child.
 /// @param tree BehaviorTree3D containing both nodes.
 /// @param parent Index of the node that will own the child.
 /// @param child Index of the node to append.
@@ -4092,7 +4094,7 @@ int8_t rt_game3d_persistence_validate(const void *data, int64_t size);
 void *rt_game3d_minimap_new(void *world, int64_t size_px);
 /// @brief Set the authored north-up map image and its world-space bounds.
 /// @param minimap Minimap3D to configure.
-/// @param pixels Image or pixel resource drawn as the map backdrop.
+/// @param pixels Pixels resource drawn as the map backdrop, or NULL for the fallback panel.
 /// @param min_x Minimum world X coordinate represented by the image.
 /// @param min_z Minimum world Z coordinate represented by the image.
 /// @param max_x Maximum world X coordinate represented by the image.
@@ -4105,10 +4107,10 @@ void rt_game3d_minimap_set_map_image(
 void rt_game3d_minimap_set_tracked_entity(void *minimap, void *entity);
 /// @brief Set the minimap's screen-space viewport.
 /// @param minimap Minimap3D to configure.
-/// @param x Left edge in canvas pixels.
-/// @param y Top edge in canvas pixels.
-/// @param w Positive viewport width in pixels.
-/// @param h Positive viewport height in pixels.
+/// @param x Finite bounded left edge in canvas pixels.
+/// @param y Finite bounded top edge in canvas pixels.
+/// @param w Positive finite bounded viewport width in pixels.
+/// @param h Positive finite bounded viewport height in pixels.
 void rt_game3d_minimap_set_viewport(void *minimap, double x, double y, double w, double h);
 /// @brief Configure the optional top-center compass strip.
 /// @param minimap Minimap3D to configure.
@@ -4118,14 +4120,14 @@ void rt_game3d_minimap_set_compass(void *minimap, int8_t enabled, double width_p
 /// @brief Add a minimap marker that follows an entity.
 /// @param minimap Minimap3D that will own the marker.
 /// @param entity Entity3D whose world position drives the marker.
-/// @param icon Optional image resource; NULL selects the fallback marker shape.
+/// @param icon Optional Pixels resource; NULL selects the fallback marker shape.
 /// @param color Packed runtime color used to tint or draw the marker.
 /// @return A positive marker identifier, or 0 when the marker cannot be created.
 int64_t rt_game3d_minimap_add_marker(void *minimap, void *entity, void *icon, int64_t color);
 /// @brief Add a minimap marker fixed at a world-space position.
 /// @param minimap Minimap3D that will own the marker.
 /// @param point Vec3 containing the fixed marker position.
-/// @param icon Optional image resource; NULL selects the fallback marker shape.
+/// @param icon Optional Pixels resource; NULL selects the fallback marker shape.
 /// @param color Packed runtime color used to tint or draw the marker.
 /// @return A positive marker identifier, or 0 when the marker cannot be created.
 int64_t rt_game3d_minimap_add_marker_at(void *minimap, void *point, void *icon, int64_t color);
@@ -4158,14 +4160,14 @@ void rt_game3d_minimap_set_objective_indicator(void *minimap, int64_t id, int8_t
 /// @return The number of occupied marker slots, or 0 for an invalid minimap.
 int64_t rt_game3d_minimap_get_marker_count(void *minimap);
 /// @brief Map a world X/Z coordinate to the viewport's horizontal coordinate.
-/// @details The affine result is intentionally not clamped to the viewport.
+/// @details The affine result is not clamped to the viewport, but is finite and coordinate-bounded.
 /// @param minimap Minimap3D supplying the world bounds and viewport.
 /// @param world_x World-space X coordinate.
 /// @param world_z World-space Z coordinate; accepted for API symmetry and otherwise ignored.
 /// @return The corresponding canvas X coordinate, or 0 for an invalid minimap.
 double rt_game3d_minimap_map_x(void *minimap, double world_x, double world_z);
 /// @brief Map a world X/Z coordinate to the viewport's vertical coordinate.
-/// @details The affine result is intentionally not clamped to the viewport.
+/// @details The affine result is not clamped to the viewport, but is finite and coordinate-bounded.
 /// @param minimap Minimap3D supplying the world bounds and viewport.
 /// @param world_x World-space X coordinate; accepted for API symmetry and otherwise ignored.
 /// @param world_z World-space Z coordinate.

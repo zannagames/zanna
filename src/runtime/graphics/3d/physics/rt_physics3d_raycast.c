@@ -1473,7 +1473,8 @@ void *rt_world3d_raycast_all(
 /// @param mask Collision-layer bit mask used to select candidate bodies.
 /// @param[out] out_bodies Caller-owned array that receives borrowed non-trigger body pointers.
 /// @param out_cap Maximum number of pointers writable to @p out_bodies.
-/// @return Number of bodies written (bounded by @p out_cap), or 0 on invalid input.
+/// @return Number of bodies written (bounded by @p out_cap), or -1 for invalid input or query
+/// failure.
 int32_t rt_world3d_raycast_all_bodies_raw(void *obj,
                                           const double *origin_in,
                                           const double *direction_in,
@@ -1486,10 +1487,12 @@ int32_t rt_world3d_raycast_all_bodies_raw(void *obj,
     double origin[3], dir[3];
     int32_t written = 0;
     if (!w || !hits || !origin_in || !direction_in || !out_bodies || out_cap <= 0)
-        return 0;
+        return -1;
     memcpy(origin, origin_in, sizeof(origin));
     memcpy(dir, direction_in, sizeof(dir));
     int32_t hit_count = world3d_raycast_all_core(w, hits, origin, dir, max_distance, mask, NULL);
+    if (hit_count < 0)
+        return -1;
     for (int32_t i = 0; i < hit_count && written < out_cap; ++i) {
         if (hits[i].is_trigger || !hits[i].body)
             continue;

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developers
-last-verified: 2026-07-26
+last-verified: 2026-07-31
 ---
 
 # Testing Guide
@@ -80,6 +80,10 @@ ctest --test-dir build -L slow             # Opt-in long-running tests only
 
 # Run a specific test
 ctest --test-dir build -R test_zia_lexer
+
+# Run the focused Game3D gameplay-runtime audit regressions
+ctest --test-dir build -R 'test_rt_game3d_(runtime_audit|dialogue_facial|thirdperson)$' \
+  --output-on-failure
 
 # Prove the dependency-free Linux headless graphics configuration
 ctest --test-dir build -R linux_headless_graphics_smoke --output-on-failure
@@ -207,6 +211,9 @@ ctest --test-dir build -R '^test_frontend_common$' --output-on-failure
 - Runtime audio coverage, including `test_rt_audio_fx`,
   `test_rt_audio_integration`, `test_rt_sound3d_contract`, and
   `test_rt_sound3d_objects`
+- Game3D gameplay-runtime hardening in `test_rt_game3d_runtime_audit`, with
+  companion dialogue/facial and third-person target-lock cases; see the
+  [July 2026 audit ledger](graphics3d-game-runtime-audit-2026-07.md)
 - Frontend parser, sema, lowerer for both Zia and BASIC
 
 ### Golden Tests

@@ -350,7 +350,7 @@ void *rt_world3d_raycast_all(
 /// @param mask Collision-layer mask used to filter bodies.
 /// @param out_bodies Caller-owned array receiving borrowed Body3D handles.
 /// @param out_cap Number of available slots in @p out_bodies.
-/// @return Number of borrowed body handles written.
+/// @return Number of borrowed body handles written, or -1 for invalid input or query failure.
 int32_t rt_world3d_raycast_all_bodies_raw(void *world,
                                           const double *origin,
                                           const double *direction,

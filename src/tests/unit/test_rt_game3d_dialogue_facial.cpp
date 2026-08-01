@@ -26,6 +26,7 @@
 #include "rt_game3d.h"
 #include "rt_map.h"
 #include "rt_message_bundle.h"
+#include "rt_morphtarget3d.h"
 #include "rt_object.h"
 #include "rt_seq.h"
 #include "rt_string.h"
@@ -99,6 +100,23 @@ extern "C" void vm_trap(const char *msg) {
     } while (0)
 
 namespace {
+
+template <typename Fn> bool expect_trap_contains(Fn &&fn, const char *needle) {
+    g_last_trap = nullptr;
+    g_expect_trap = true;
+    if (setjmp(g_trap_jmp) == 0) {
+        fn();
+        g_expect_trap = false;
+        return false;
+    }
+    g_expect_trap = false;
+    return g_last_trap && (!needle || std::strstr(g_last_trap, needle));
+}
+
+void release_creation_ref(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
 
 //=========================================================================
 // Camera3D.WorldToScreen
@@ -240,6 +258,74 @@ bool test_dialogue_localization() {
     PASS();
 }
 
+bool test_dialogue_localization_balances_owned_lookup() {
+    TEST("Dialogue3D releases the owned string returned by localization lookup");
+    void *world = rt_game3d_world_new(rt_const_cstr("Dlg Locale Ownership"), 64, 48);
+    void *map = rt_map_new();
+    rt_string translated = rt_string_from_bytes("Bonjour", 7);
+    rt_map_set(map, rt_const_cstr("greet.owned"), translated);
+    void *bundle = rt_message_bundle_from_map(nullptr, map);
+    void *dialogue = rt_game3d_dialogue_new(world);
+    rt_game3d_dialogue_set_locale(dialogue, bundle);
+    rt_game3d_dialogue_say(dialogue, rt_const_cstr("Ada"), rt_const_cstr("greet.owned"));
+    EXPECT_EQ_INT(rt_string_unref_count(translated),
+                  1,
+                  "only the backing map retains the translated string after Say");
+    release_creation_ref(dialogue);
+    release_creation_ref(bundle);
+    release_creation_ref(map);
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
+bool test_dialogue_choice_only_extremes_and_voice_type() {
+    TEST("Dialogue3D handles choice-only queues, extreme moves, and voice types");
+    void *world = rt_game3d_world_new(rt_const_cstr("Dlg edge cases"), 64, 48);
+    void *empty = rt_game3d_dialogue_new(world);
+    rt_game3d_dialogue_show(empty);
+    EXPECT_TRUE(rt_game3d_dialogue_get_active(empty) == 0,
+                "showing an empty dialogue remains inactive");
+    EXPECT_TRUE(expect_trap_contains(
+                    [&] {
+                        (void)rt_game3d_dialogue_say_voiced(
+                            empty, rt_const_cstr("Ada"), rt_const_cstr("Bad clip"), world);
+                    },
+                    "Sound"),
+                "wrong-class voice clip is rejected");
+    EXPECT_EQ_INT(rt_game3d_dialogue_get_line_count(empty),
+                  0,
+                  "invalid voice clip does not partially append a line");
+
+    void *options = rt_seq_new();
+    rt_seq_push(options, rt_const_cstr("First"));
+    rt_seq_push(options, rt_const_cstr("Middle"));
+    rt_seq_push(options, rt_const_cstr("Last"));
+    void *high = rt_game3d_dialogue_new(world);
+    rt_game3d_dialogue_ask_choice(high, options);
+    rt_game3d_dialogue_show(high);
+    EXPECT_TRUE(rt_game3d_dialogue_get_active(high) != 0 &&
+                    rt_game3d_dialogue_get_choice_pending(high) != 0,
+                "choice-only dialogue activates the prompt immediately");
+    rt_game3d_dialogue_move_choice(high, INT64_MAX);
+    rt_game3d_dialogue_confirm_choice(high);
+    EXPECT_EQ_INT(rt_game3d_dialogue_last_choice(high), 2, "INT64_MAX clamps to last choice");
+
+    void *low = rt_game3d_dialogue_new(world);
+    rt_game3d_dialogue_ask_choice(low, options);
+    rt_game3d_dialogue_show(low);
+    rt_game3d_dialogue_move_choice(low, 1);
+    rt_game3d_dialogue_move_choice(low, INT64_MIN);
+    rt_game3d_dialogue_confirm_choice(low);
+    EXPECT_EQ_INT(rt_game3d_dialogue_last_choice(low), 0, "INT64_MIN clamps to first choice");
+
+    release_creation_ref(low);
+    release_creation_ref(high);
+    release_creation_ref(options);
+    release_creation_ref(empty);
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
 //=========================================================================
 // LipSync3D
 //=========================================================================
@@ -261,6 +347,8 @@ bool test_lipsync_envelope_and_blink_determinism() {
         /* Inject a loud level: envelope attacks fast. */
         rt_game3d_lipsync_drive_level(lipsync, 1.0);
         rt_game3d_world_step_simulation(world, 1.0 / 60.0);
+        EXPECT_TRUE(rt_game3d_lipsync_get_driving(lipsync) == 0,
+                    "injected DriveLevel is a one-tick impulse, not a stuck voice");
         EXPECT_TRUE(rt_game3d_lipsync_get_level(lipsync) > 0.5,
                     "attack reaches most of the level within one step");
         /* Silence: release decays within ~0.5 s. */
@@ -279,6 +367,26 @@ bool test_lipsync_envelope_and_blink_determinism() {
     PASS();
 }
 
+bool test_lipsync_coarse_step_samples_blink_peak() {
+    TEST("LipSync3D coarse steps crossing a blink midpoint still close the eyelid");
+    void *world = rt_game3d_world_new(rt_const_cstr("LipSync coarse blink"), 64, 48);
+    rt_game3d_world_set_gravity(world, 0.0, 0.0, 0.0);
+    void *actor = rt_game3d_entity_new();
+    rt_game3d_world_spawn(world, actor);
+    void *morph = rt_morphtarget3d_new(1);
+    int64_t blink = rt_morphtarget3d_add_shape(morph, rt_const_cstr("blink"));
+    void *lipsync = rt_game3d_lipsync_new(actor);
+    rt_game3d_lipsync_bind_morph(lipsync, morph);
+    rt_game3d_lipsync_set_blink(lipsync, 1, rt_const_cstr("blink"), 0.01, 0.01);
+    rt_game3d_world_step_simulation(world, 1.0 / 60.0); /* schedule the blink */
+    rt_game3d_world_step_simulation(world, 0.25);       /* cross its full envelope */
+    EXPECT_TRUE(rt_morphtarget3d_get_weight(morph, blink) > 0.99,
+                "crossing the midpoint samples the closed-eye peak");
+    release_creation_ref(morph);
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
 } // namespace
 
 int main() {
@@ -288,7 +396,10 @@ int main() {
     ok = test_dialogue_queue_reveal_advance() && ok;
     ok = test_dialogue_choices() && ok;
     ok = test_dialogue_localization() && ok;
+    ok = test_dialogue_localization_balances_owned_lookup() && ok;
+    ok = test_dialogue_choice_only_extremes_and_voice_type() && ok;
     ok = test_lipsync_envelope_and_blink_determinism() && ok;
+    ok = test_lipsync_coarse_step_samples_blink_peak() && ok;
     std::printf("\nDialogue + facial tests: %d/%d passed\n", g_tests_passed, g_tests_total);
     return ok && g_tests_passed == g_tests_total ? 0 : 1;
 }

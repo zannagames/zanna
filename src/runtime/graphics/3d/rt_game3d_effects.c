@@ -9,6 +9,9 @@
 // Purpose: EffectRegistry3D + Effects3D spawners for the Zanna.Game3D layer —
 //   particle/decal item management and explosion/sparks/dust/smoke/impact helpers.
 //   Split out of rt_game3d.c; shares private types/helpers via rt_game3d_internal.h.
+// Key invariants:
+//   - Stock spawners return an object only after registry ownership succeeds;
+//     every partial allocation is released on failure.
 // Links: rt_game3d_internal.h, rt_particles3d.h, rt_decal3d.h, rt_postfx3d.h
 //
 //===----------------------------------------------------------------------===//
@@ -378,7 +381,10 @@ void *rt_game3d_effects3d_explosion(void *world_obj, void *position) {
     rt_particles3d_set_alpha(particles, 1.0, 0.0);
     rt_particles3d_set_additive(particles, 1);
     rt_particles3d_burst(particles, 90);
-    rt_game3d_effects_add_particles(effects, particles, 1.15);
+    if (!rt_game3d_effects_add_particles(effects, particles, 1.15)) {
+        game3d_release_ref(&particles);
+        return NULL;
+    }
     return particles;
 }
 
@@ -416,7 +422,10 @@ void *rt_game3d_effects3d_sparks(void *world_obj, void *position, void *directio
     rt_particles3d_set_alpha(particles, 1.0, 0.0);
     rt_particles3d_set_additive(particles, 1);
     rt_particles3d_burst(particles, 48);
-    rt_game3d_effects_add_particles(effects, particles, 0.8);
+    if (!rt_game3d_effects_add_particles(effects, particles, 0.8)) {
+        game3d_release_ref(&particles);
+        return NULL;
+    }
     return particles;
 }
 
@@ -447,7 +456,10 @@ void *rt_game3d_effects3d_dust(void *world_obj, void *position) {
     rt_particles3d_set_color(particles, 0xB7AA92, 0x6D6556);
     rt_particles3d_set_alpha(particles, 0.55, 0.0);
     rt_particles3d_burst(particles, 45);
-    rt_game3d_effects_add_particles(effects, particles, 1.4);
+    if (!rt_game3d_effects_add_particles(effects, particles, 1.4)) {
+        game3d_release_ref(&particles);
+        return NULL;
+    }
     return particles;
 }
 
@@ -478,7 +490,10 @@ void *rt_game3d_effects3d_smoke(void *world_obj, void *position) {
     rt_particles3d_set_color(particles, 0x5D6168, 0x24282E);
     rt_particles3d_set_alpha(particles, 0.45, 0.0);
     rt_particles3d_burst(particles, 55);
-    rt_game3d_effects_add_particles(effects, particles, 2.2);
+    if (!rt_game3d_effects_add_particles(effects, particles, 2.2)) {
+        game3d_release_ref(&particles);
+        return NULL;
+    }
     return particles;
 }
 
@@ -524,11 +539,16 @@ void *rt_game3d_effects3d_impact_decal(void *world_obj, void *position, void *no
         return NULL;
     }
     void *texture = game3d_effects_make_impact_texture();
+    if (!texture)
+        return NULL;
     void *decal = rt_decal3d_new(position, normal, 0.55, texture);
     game3d_release_ref(&texture);
     if (!decal)
         return NULL;
     rt_decal3d_set_lifetime(decal, 2.0);
-    rt_game3d_effects_add_decal(effects, decal);
+    if (!rt_game3d_effects_add_decal(effects, decal)) {
+        game3d_release_ref(&decal);
+        return NULL;
+    }
     return decal;
 }

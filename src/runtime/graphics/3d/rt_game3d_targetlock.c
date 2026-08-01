@@ -13,8 +13,10 @@
 //   plus a soft input-magnetism helper.
 // Key invariants:
 //   - Only entities registered through Entity3D.attachBody resolve as candidates.
-//   - LoS is judged origin-to-origin via raycast_all, skipping the owner's own
-//     body; the first foreign hit must belong to the candidate.
+//   - Entity liveness includes an attached Health3D death latch; dead combat
+//     targets are neither acquired nor retained.
+//   - LoS is judged origin-to-origin via the allocation-free raw all-body ray,
+//     skipping the owner's own body; the first foreign hit must be the candidate.
 //   - One-shot flags follow the just_landed pattern: set on transition, cleared
 //     at the start of the next Update.
 // Ownership/Lifetime:
@@ -56,6 +58,17 @@ static rt_game3d_entity *game3d_targetlock_owner_ref(const rt_game3d_targetlock 
     return game3d_entity_alive_or_record(entity) ? entity : NULL;
 }
 
+/// @brief Test whether an entity is live and not latched dead by Health3D.
+/// @param entity Borrowed Entity3D candidate.
+/// @return Nonzero when the entity may participate in target locking.
+static int game3d_targetlock_entity_targetable(rt_game3d_entity *entity) {
+    if (!game3d_entity_alive_or_record(entity))
+        return 0;
+    rt_game3d_health *health =
+        (rt_game3d_health *)rt_g3d_checked_or_null(entity->health, RT_G3D_GAME3D_HEALTH_CLASS_ID);
+    return !health || !health->dead;
+}
+
 /// @brief Return the locked Entity3D when still alive, else NULL.
 /// @param lock Borrowed target-lock payload.
 /// @return Borrowed live target entity, or `NULL` when unlocked, stale, or invalid.
@@ -63,7 +76,7 @@ static rt_game3d_entity *game3d_targetlock_target_ref(const rt_game3d_targetlock
     rt_game3d_entity *entity = lock ? (rt_game3d_entity *)rt_g3d_checked_or_null(
                                           lock->target, RT_G3D_GAME3D_ENTITY_CLASS_ID)
                                     : NULL;
-    return game3d_entity_alive_or_record(entity) ? entity : NULL;
+    return game3d_targetlock_entity_targetable(entity) ? entity : NULL;
 }
 
 /// @brief Return the lock's world when still valid, else NULL.
@@ -76,9 +89,9 @@ static rt_game3d_world *game3d_targetlock_world_ref(const rt_game3d_targetlock *
 }
 
 /// @brief True when @p candidate has line of sight from @p owner (origin-to-origin).
-/// @details Casts owner→candidate through all layers and walks the sorted hits:
-///   hits on the owner's or candidate's own bodies are transparent; any other solid
-///   hit before the candidate blocks. Triggers never block.
+/// @details Casts owner→candidate through all layers and walks the bounded raw
+///   non-trigger body results: the owner's body is transparent; the first
+///   foreign body must be the candidate.
 /// @param world Borrowed world providing physics and body-to-entity lookup.
 /// @param owner Borrowed live owner entity.
 /// @param candidate Borrowed live candidate entity.
@@ -94,31 +107,25 @@ static int game3d_targetlock_has_los(rt_game3d_world *world,
         !game3d_entity_world_position_components(candidate, to))
         return 0;
     double dir[3] = {to[0] - from[0], to[1] - from[1], to[2] - from[2]};
-    double len = sqrt(dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]);
-    if (!isfinite(len) || len <= 1e-6)
+    double len = hypot(hypot(dir[0], dir[1]), dir[2]);
+    if (!isfinite(len))
+        return 0;
+    if (len <= 1e-6)
         return 1; /* coincident: trivially visible */
-    void *origin = rt_vec3_new(from[0], from[1], from[2]);
-    void *direction = rt_vec3_new(dir[0] / len, dir[1] / len, dir[2] / len);
-    void *hits = rt_world3d_raycast_all(world->physics, origin, direction, len, -1);
-    int visible = 1;
-    int64_t hit_count = hits ? rt_physics_hit_list3d_get_count(hits) : 0;
-    for (int64_t i = 0; i < hit_count; ++i) {
-        void *hit = rt_physics_hit_list3d_get(hits, i);
-        if (!hit || rt_physics_hit3d_get_is_trigger(hit))
-            continue;
-        void *body = rt_physics_hit3d_get_body(hit);
+    double direction[3] = {dir[0] / len, dir[1] / len, dir[2] / len};
+    void *bodies[2] = {NULL, NULL};
+    int32_t hit_count =
+        rt_world3d_raycast_all_bodies_raw(world->physics, from, direction, len, -1, bodies, 2);
+    if (hit_count < 0)
+        return 0;
+    for (int32_t i = 0; i < hit_count; ++i) {
+        void *body = bodies[i];
         rt_game3d_entity *entity = body ? game3d_world_find_entity_by_body(world, body) : NULL;
         if (entity == owner)
             continue;
-        if (entity == candidate)
-            break; /* reached the candidate first: visible */
-        visible = 0;
-        break;
+        return entity == candidate;
     }
-    game3d_release_ref(&hits);
-    game3d_release_ref(&direction);
-    game3d_release_ref(&origin);
-    return visible;
+    return 1;
 }
 
 /// @brief Candidate record produced by the shared collection pass.
@@ -178,6 +185,8 @@ static int32_t game3d_targetlock_collect(rt_game3d_targetlock *lock,
     }
 
     void *center = rt_vec3_new(owner_pos[0], owner_pos[1], owner_pos[2]);
+    if (!center)
+        return 0;
     void *hits =
         rt_world3d_overlap_sphere(world->physics, center, lock->max_distance, lock->candidate_mask);
     int32_t count = 0;
@@ -186,7 +195,7 @@ static int32_t game3d_targetlock_collect(rt_game3d_targetlock *lock,
         void *hit = rt_physics_hit_list3d_get(hits, i);
         void *body = hit ? rt_physics_hit3d_get_body(hit) : NULL;
         rt_game3d_entity *entity = body ? game3d_world_find_entity_by_body(world, body) : NULL;
-        if (!entity || entity == owner || !game3d_entity_alive_or_record(entity))
+        if (!entity || entity == owner || !game3d_targetlock_entity_targetable(entity))
             continue;
         int already = 0;
         for (int32_t c = 0; c < count; ++c)
@@ -496,6 +505,10 @@ void rt_game3d_targetlock_clear(void *obj) {
         game3d_release_ref(&lock->target);
         lock->los_broken_time = 0.0;
     }
+    if (lock) {
+        lock->just_acquired = 0;
+        lock->just_lost = 0;
+    }
 }
 
 /// @brief Cycle to the nearest candidate left (-1) or right (+1) of the current
@@ -621,12 +634,12 @@ void *rt_game3d_targetlock_locked_move_bias(void *obj, void *move) {
         rt_trap("Game3D.TargetLock3D.LockedMoveBias: move must be Vec3");
         return NULL;
     }
-    double mx = game3d_finite_or(rt_vec3_x(move), 0.0);
-    double my = game3d_finite_or(rt_vec3_y(move), 0.0);
-    double mz = game3d_finite_or(rt_vec3_z(move), 0.0);
+    double mx = game3d_clamp_coord_or(rt_vec3_x(move), 0.0);
+    double my = game3d_clamp_coord_or(rt_vec3_y(move), 0.0);
+    double mz = game3d_clamp_coord_or(rt_vec3_z(move), 0.0);
     rt_game3d_entity *target = lock ? game3d_targetlock_target_ref(lock) : NULL;
     rt_game3d_entity *owner = lock ? game3d_targetlock_owner_ref(lock) : NULL;
-    double move_len = sqrt(mx * mx + mz * mz);
+    double move_len = hypot(mx, mz);
     if (!target || !owner || move_len <= 1e-9)
         return rt_vec3_new(mx, my, mz);
     double owner_pos[3];
@@ -636,7 +649,7 @@ void *rt_game3d_targetlock_locked_move_bias(void *obj, void *move) {
         return rt_vec3_new(mx, my, mz);
     double bx = target_pos[0] - owner_pos[0];
     double bz = target_pos[2] - owner_pos[2];
-    double bearing_len = sqrt(bx * bx + bz * bz);
+    double bearing_len = hypot(bx, bz);
     if (bearing_len <= 1e-9)
         return rt_vec3_new(mx, my, mz);
     double move_angle = atan2(mx, mz);

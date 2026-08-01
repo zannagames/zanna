@@ -15,11 +15,14 @@
 // Key invariants:
 //   - Deterministic: world-entity-list scan order, fixed hysteresis windows,
 //     no wall-clock reads; custom leaves park Running and resume on resolve.
+//   - Bounded private counts fail closed; behavior-tree topology is acyclic,
+//     decorators have one child, and leaf nodes cannot own children.
 //   - Trees are shared immutable data; per-entity state lives in the
 //     BehaviorTreeInstance attached to the entity slot.
 // Ownership/Lifetime:
 //   - Components hold plain entity backrefs (NULLed at teardown); instances
-//     retain their tree; perception retains nothing beyond bookkeeping.
+//     retain their tree and keep targets through zeroing weak references;
+//     perception retains nothing beyond bookkeeping.
 // Links: misc/plans/thirdpersonupgrade/22-ai-perception-bt.md, ADR 0094.
 //
 //===----------------------------------------------------------------------===//
@@ -57,8 +60,8 @@
  *=========================================================================*/
 
 typedef struct rt_game3d_percept_track {
-    void *entity;      /* plain pointer key; validated against the world list */
-    int64_t entity_id; /* stable id guard: a reused heap address never aliases */
+    void *entity;      /* zeroing weak Entity3D slot */
+    int64_t entity_id; /* stable id guard for logical entity identity */
     double visible_time;
     double lost_time;
     double last_known[3];
@@ -90,12 +93,72 @@ typedef struct rt_game3d_perception {
     int8_t seen_changed; /* one-shot: any seen/lost transition this step */
 } rt_game3d_perception;
 
+/// @brief Clamp a perception track count to the fixed backing-array extent.
+/// @param sense Perception component whose private count is inspected.
+/// @return A safe count in `[0, PERCEPTION3D_MAX_TRACKED]`.
+static int32_t game3d_perception_track_count(const rt_game3d_perception *sense) {
+    if (!sense || sense->track_count <= 0)
+        return 0;
+    return sense->track_count > PERCEPTION3D_MAX_TRACKED ? PERCEPTION3D_MAX_TRACKED
+                                                         : sense->track_count;
+}
+
+/// @brief Clamp a perception heard-event count to the fixed backing-array extent.
+/// @param sense Perception component whose private count is inspected.
+/// @return A safe count in `[0, PERCEPTION3D_MAX_HEARD]`.
+static int32_t game3d_perception_heard_count_safe(const rt_game3d_perception *sense) {
+    if (!sense || sense->heard_count <= 0)
+        return 0;
+    return sense->heard_count > PERCEPTION3D_MAX_HEARD ? PERCEPTION3D_MAX_HEARD
+                                                       : sense->heard_count;
+}
+
+/// @brief Return a fail-closed world entity count for gameplay scans.
+/// @param world World whose dense entity storage is inspected.
+/// @return A safe logical count, or zero for missing/corrupt storage.
+static int32_t game3d_ai_world_entity_count(const rt_game3d_world *world) {
+    if (!world || !world->entities || world->entity_count <= 0 || world->entity_capacity <= 0)
+        return 0;
+    return world->entity_count > world->entity_capacity ? world->entity_capacity
+                                                        : world->entity_count;
+}
+
 /// @brief Detach a perception component from its non-owning entity back-reference.
 /// @param obj Perception3D allocation being finalized.
 static void game3d_perception_finalize(void *obj) {
     rt_game3d_perception *sense = (rt_game3d_perception *)obj;
-    if (sense)
-        sense->entity = NULL;
+    if (!sense)
+        return;
+    sense->entity = NULL;
+    for (int32_t i = 0; i < PERCEPTION3D_MAX_TRACKED; ++i)
+        rt_weak_store(&sense->tracks[i].entity, NULL);
+}
+
+/// @brief Promote and validate a perception track's zeroing weak entity slot.
+/// @param track Mutable track whose weak handle is loaded.
+/// @return Retained live Entity3D with the recorded stable id, or NULL.
+static rt_game3d_entity *game3d_perception_track_retain_target(rt_game3d_percept_track *track) {
+    rt_game3d_entity *target = track ? (rt_game3d_entity *)rt_weak_load(&track->entity) : NULL;
+    if (game3d_entity_alive_or_record(target) && track->entity_id == target->id)
+        return target;
+    if (target)
+        rt_weak_store(&track->entity, NULL);
+    game3d_release_ref((void **)&target);
+    return NULL;
+}
+
+/// @brief Test a track against a live entity without exposing a weak raw pointer.
+/// @param track Track whose target and stable id are checked.
+/// @param target Borrowed live entity candidate.
+/// @return Nonzero only for the same live logical entity.
+static int game3d_perception_track_matches(rt_game3d_percept_track *track,
+                                           const rt_game3d_entity *target) {
+    if (!track || !target || track->entity_id != target->id)
+        return 0;
+    rt_game3d_entity *tracked = game3d_perception_track_retain_target(track);
+    int matches = tracked && tracked == target;
+    game3d_release_ref((void **)&tracked);
+    return matches;
 }
 
 /// @brief Allocate a perception component and attach it to an entity.
@@ -104,9 +167,8 @@ static void game3d_perception_finalize(void *obj) {
 /// @return A new Perception3D handle, or NULL when validation or allocation fails.
 void *rt_game3d_perception_new(void *entity_obj) {
     rt_game3d_entity *entity =
-        (rt_game3d_entity *)rt_g3d_checked_or_null(entity_obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
+        game3d_entity_checked(entity_obj, "Game3D.Perception3D.New: invalid entity");
     if (!entity) {
-        rt_trap("Game3D.Perception3D.New: invalid entity");
         return NULL;
     }
     rt_game3d_perception *sense = (rt_game3d_perception *)rt_obj_new_i64(
@@ -165,7 +227,8 @@ void rt_game3d_perception_set_sight(void *obj,
     if (isfinite(fov_degrees) && fov_degrees > 1.0)
         sense->fov_degrees = fov_degrees > 360.0 ? 360.0 : fov_degrees;
     if (isfinite(eye_height))
-        sense->eye_height = eye_height;
+        sense->eye_height =
+            game3d_clamp_abs_or(eye_height, sense->eye_height, RT_GAME3D_COORD_ABS_MAX);
 }
 
 /// @brief Configure the range at which a unit-loudness sound is audible.
@@ -207,9 +270,15 @@ int64_t rt_game3d_perception_seen_count(void *obj) {
     if (!sense)
         return 0;
     int64_t count = 0;
-    for (int32_t i = 0; i < sense->track_count; ++i)
-        if (sense->tracks[i].seen)
+    int32_t track_count = game3d_perception_track_count(sense);
+    for (int32_t i = 0; i < track_count; ++i) {
+        if (!sense->tracks[i].seen)
+            continue;
+        rt_game3d_entity *target = game3d_perception_track_retain_target(&sense->tracks[i]);
+        if (target)
             count++;
+        game3d_release_ref((void **)&target);
+    }
     return count;
 }
 
@@ -220,20 +289,19 @@ int64_t rt_game3d_perception_seen_count(void *obj) {
 void *rt_game3d_perception_seen_target(void *obj, int64_t index) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.SeenTarget: invalid component");
-    if (!sense)
+    if (!sense || index < 0)
         return NULL;
     int64_t seen_index = 0;
-    for (int32_t i = 0; i < sense->track_count; ++i) {
+    int32_t track_count = game3d_perception_track_count(sense);
+    for (int32_t i = 0; i < track_count; ++i) {
         if (!sense->tracks[i].seen)
             continue;
-        if (seen_index == index) {
-            rt_game3d_entity *target = (rt_game3d_entity *)rt_g3d_checked_or_null(
-                sense->tracks[i].entity, RT_G3D_GAME3D_ENTITY_CLASS_ID);
-            if (!target || !target->alive)
-                return NULL;
-            rt_obj_retain_maybe(target);
+        rt_game3d_entity *target = game3d_perception_track_retain_target(&sense->tracks[i]);
+        if (!target)
+            continue;
+        if (seen_index == index)
             return target;
-        }
+        game3d_release_ref((void **)&target);
         seen_index++;
     }
     return NULL;
@@ -248,8 +316,16 @@ void *rt_game3d_perception_last_known_position(void *obj, void *target) {
         game3d_perception_checked(obj, "Game3D.Perception3D.LastKnownPosition: invalid component");
     if (!sense)
         return rt_vec3_new(0.0, 0.0, 0.0);
-    for (int32_t i = 0; i < sense->track_count; ++i) {
-        if (sense->tracks[i].entity == target)
+    rt_game3d_entity *target_entity =
+        target
+            ? game3d_entity_checked(
+                  target, "Game3D.Perception3D.LastKnownPosition: target must be a live Entity3D")
+            : NULL;
+    if (!target_entity)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    int32_t track_count = game3d_perception_track_count(sense);
+    for (int32_t i = 0; i < track_count; ++i) {
+        if (game3d_perception_track_matches(&sense->tracks[i], target_entity))
             return rt_vec3_new(sense->tracks[i].last_known[0],
                                sense->tracks[i].last_known[1],
                                sense->tracks[i].last_known[2]);
@@ -276,7 +352,7 @@ int8_t rt_game3d_perception_seen_changed(void *obj) {
 int64_t rt_game3d_perception_heard_count(void *obj) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.HeardCount: invalid component");
-    return sense ? sense->heard_count : 0;
+    return game3d_perception_heard_count_safe(sense);
 }
 
 /// @brief Retrieve the world-space origin of a buffered sound stimulus.
@@ -286,7 +362,7 @@ int64_t rt_game3d_perception_heard_count(void *obj) {
 void *rt_game3d_perception_heard_position(void *obj, int64_t index) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.HeardPosition: invalid component");
-    if (!sense || index < 0 || index >= sense->heard_count)
+    if (!sense || index < 0 || index >= game3d_perception_heard_count_safe(sense))
         return rt_vec3_new(0.0, 0.0, 0.0);
     return rt_vec3_new(sense->heard[index].position[0],
                        sense->heard[index].position[1],
@@ -300,7 +376,7 @@ void *rt_game3d_perception_heard_position(void *obj, int64_t index) {
 int64_t rt_game3d_perception_heard_tag(void *obj, int64_t index) {
     rt_game3d_perception *sense =
         game3d_perception_checked(obj, "Game3D.Perception3D.HeardTag: invalid component");
-    if (!sense || index < 0 || index >= sense->heard_count)
+    if (!sense || index < 0 || index >= game3d_perception_heard_count_safe(sense))
         return 0;
     return sense->heard[index].tag;
 }
@@ -314,8 +390,9 @@ int64_t rt_game3d_perception_heard_tag(void *obj, int64_t index) {
 /// @return The mutable matching track, or NULL when the entity is not tracked.
 static rt_game3d_percept_track *game3d_perception_find_track(rt_game3d_perception *sense,
                                                              const rt_game3d_entity *target) {
-    for (int32_t i = 0; i < sense->track_count; ++i)
-        if (sense->tracks[i].entity == target && sense->tracks[i].entity_id == target->id)
+    int32_t track_count = game3d_perception_track_count(sense);
+    for (int32_t i = 0; i < track_count; ++i)
+        if (game3d_perception_track_matches(&sense->tracks[i], target))
             return &sense->tracks[i];
     return NULL;
 }
@@ -330,12 +407,20 @@ static rt_game3d_percept_track *game3d_perception_find_track(rt_game3d_perceptio
 /// @return The zero-initialized track, or NULL when all track slots are occupied.
 static rt_game3d_percept_track *game3d_perception_create_track(rt_game3d_perception *sense,
                                                                rt_game3d_entity *target) {
+    if (sense->track_count < 0)
+        sense->track_count = 0;
+    else if (sense->track_count > PERCEPTION3D_MAX_TRACKED)
+        sense->track_count = PERCEPTION3D_MAX_TRACKED;
     if (sense->track_count >= PERCEPTION3D_MAX_TRACKED)
         return NULL;
-    rt_game3d_percept_track *track = &sense->tracks[sense->track_count++];
+    rt_game3d_percept_track *track = &sense->tracks[sense->track_count];
+    rt_weak_store(&track->entity, NULL);
     memset(track, 0, sizeof(*track));
-    track->entity = target;
+    rt_weak_store(&track->entity, target);
+    if (!track->entity)
+        return NULL;
     track->entity_id = target->id;
+    sense->track_count++;
     return track;
 }
 
@@ -344,11 +429,17 @@ static rt_game3d_percept_track *game3d_perception_create_track(rt_game3d_percept
 /// @param sense Perception component whose track table is compacted in place.
 static void game3d_perception_compact_tracks(rt_game3d_perception *sense) {
     int32_t kept = 0;
-    for (int32_t i = 0; i < sense->track_count; ++i) {
-        if (!sense->tracks[i].touched)
+    int32_t track_count = game3d_perception_track_count(sense);
+    for (int32_t i = 0; i < track_count; ++i) {
+        if (!sense->tracks[i].touched) {
+            rt_weak_store(&sense->tracks[i].entity, NULL);
+            memset(&sense->tracks[i], 0, sizeof(sense->tracks[i]));
             continue;
-        if (kept != i)
+        }
+        if (kept != i) {
             sense->tracks[kept] = sense->tracks[i];
+            memset(&sense->tracks[i], 0, sizeof(sense->tracks[i]));
+        }
         kept++;
     }
     sense->track_count = kept;
@@ -368,13 +459,15 @@ void game3d_perception_tick(rt_game3d_world *world, rt_game3d_entity *owner, dou
     /* Heard events expire every step; World3D.ReportSound refills them. */
     sense->heard_count = 0;
     /* Tracks touched by this tick survive; the rest are compacted away below. */
+    sense->track_count = game3d_perception_track_count(sense);
     for (int32_t i = 0; i < sense->track_count; ++i)
         sense->tracks[i].touched = 0;
 
     double origin[3];
     if (!game3d_entity_world_position_components(owner, origin))
         return;
-    origin[1] += sense->eye_height;
+    origin[1] =
+        game3d_clamp_abs_or(origin[1] + sense->eye_height, origin[1], RT_GAME3D_COORD_ABS_MAX);
     double forward[3] = {0.0, 0.0, -1.0};
     if (owner->node) {
         double qx, qy, qz, qw;
@@ -390,9 +483,7 @@ void game3d_perception_tick(rt_game3d_world *world, rt_game3d_entity *owner, dou
     }
     double cone_cos = cos(sense->fov_degrees * 0.5 * (3.14159265358979323846 / 180.0));
 
-    int32_t count = world->entity_count;
-    if (count < 0 || count > world->entity_capacity)
-        count = world->entity_capacity > 0 ? world->entity_capacity : 0;
+    int32_t count = game3d_ai_world_entity_count(world);
     double sight_range_sq = sense->sight_range * sense->sight_range;
     for (int32_t i = 0; i < count; ++i) {
         rt_game3d_entity *target = world->entities ? world->entities[i] : NULL;
@@ -422,6 +513,8 @@ void game3d_perception_tick(rt_game3d_world *world, rt_game3d_entity *owner, dou
                  * created two Vec3 handles plus a hit object per in-cone
                  * target per perceiver per step. */
                 if (world->physics && dist > 0.05) {
+                    void *owner_body = game3d_entity_body_ref(owner);
+                    void *target_body = game3d_entity_body_ref(target);
                     void *hit_body = rt_world3d_raycast_closest_body_raw(world->physics,
                                                                          origin[0],
                                                                          origin[1],
@@ -431,9 +524,9 @@ void game3d_perception_tick(rt_game3d_world *world, rt_game3d_entity *owner, dou
                                                                          to[2] / dist,
                                                                          dist - 0.05,
                                                                          sense->los_mask,
-                                                                         NULL,
+                                                                         owner_body,
                                                                          NULL);
-                    if (hit_body && hit_body != target->body)
+                    if (hit_body && hit_body != target_body)
                         visible = 0;
                 }
             }
@@ -482,16 +575,17 @@ void rt_game3d_world_report_sound(void *world_obj, void *position, double loudne
         return;
     if (!isfinite(loudness) || loudness <= 0.0)
         return;
-    int32_t count = world->entity_count;
-    if (count < 0 || count > world->entity_capacity)
-        count = world->entity_capacity > 0 ? world->entity_capacity : 0;
+    int32_t count = game3d_ai_world_entity_count(world);
     for (int32_t i = 0; i < count; ++i) {
         rt_game3d_entity *entity = world->entities ? world->entities[i] : NULL;
         if (!entity || !entity->alive || !entity->perception)
             continue;
         rt_game3d_perception *sense = (rt_game3d_perception *)rt_g3d_checked_or_null(
             entity->perception, RT_G3D_GAME3D_PERCEPTION_CLASS_ID);
-        if (!sense || sense->hearing_range <= 0.0 || sense->heard_count >= PERCEPTION3D_MAX_HEARD)
+        if (!sense || sense->hearing_range <= 0.0)
+            continue;
+        sense->heard_count = game3d_perception_heard_count_safe(sense);
+        if (sense->heard_count >= PERCEPTION3D_MAX_HEARD)
             continue;
         double epos[3];
         if (!game3d_entity_world_position_components(entity, epos))
@@ -502,7 +596,7 @@ void rt_game3d_world_report_sound(void *world_obj, void *position, double loudne
         /* Squared-distance compare: skips a sqrt per entity per sound event. */
         double dist_sq = dx * dx + dy * dy + dz * dz;
         double reach = sense->hearing_range * loudness;
-        if (!isfinite(dist_sq) || !isfinite(reach) || reach < 0.0 || dist_sq > reach * reach)
+        if (!isfinite(dist_sq) || reach <= 0.0 || (isfinite(reach) && dist_sq > reach * reach))
             continue;
         rt_game3d_heard_event *event = &sense->heard[sense->heard_count++];
         memcpy(event->position, pos, sizeof(event->position));
@@ -552,7 +646,7 @@ typedef struct rt_game3d_bt_instance {
     void *vptr;
     void *entity; /* owner backref */
     void *tree;   /* retained BehaviorTree3D */
-    void *target; /* plain entity pointer (validated against liveness) */
+    void *target; /* zeroing weak Entity3D slot */
     double timers[BT3D_MAX_NODES];
     int32_t running_child[BT3D_MAX_NODES];
     int8_t custom_pending[BT3D_MAX_NODES];
@@ -599,7 +693,7 @@ static rt_game3d_btree *game3d_btree_checked(void *obj, const char *method) {
 /// @param type One of the internal BT3D_NODE_* discriminants.
 /// @return The new node index, or -1 after reporting an invalid or full tree.
 static int64_t game3d_btree_add_node(rt_game3d_btree *tree, int32_t type) {
-    if (!tree || tree->node_count >= BT3D_MAX_NODES) {
+    if (!tree || tree->node_count < 0 || tree->node_count >= BT3D_MAX_NODES) {
         rt_trap("Game3D.BehaviorTree3D: node budget (128) exceeded");
         return -1;
     }
@@ -670,9 +764,9 @@ int64_t rt_game3d_btree_move_to_target(void *obj, double speed, double arrive_di
         return -1;
     int64_t node = game3d_btree_add_node(tree, BT3D_NODE_MOVE_TO_TARGET);
     if (node >= 0) {
-        tree->nodes[node].p0 = isfinite(speed) && speed > 0.0 ? speed : 2.0;
+        tree->nodes[node].p0 = game3d_positive_clamped_or(speed, 2.0, RT_GAME3D_COORD_ABS_MAX);
         tree->nodes[node].p1 =
-            isfinite(arrive_distance) && arrive_distance > 0.0 ? arrive_distance : 0.5;
+            game3d_positive_clamped_or(arrive_distance, 0.5, RT_GAME3D_COORD_ABS_MAX);
     }
     return node;
 }
@@ -689,9 +783,9 @@ int64_t rt_game3d_btree_move_to_last_known(void *obj, double speed, double arriv
         return -1;
     int64_t node = game3d_btree_add_node(tree, BT3D_NODE_MOVE_TO_LAST_KNOWN);
     if (node >= 0) {
-        tree->nodes[node].p0 = isfinite(speed) && speed > 0.0 ? speed : 2.0;
+        tree->nodes[node].p0 = game3d_positive_clamped_or(speed, 2.0, RT_GAME3D_COORD_ABS_MAX);
         tree->nodes[node].p1 =
-            isfinite(arrive_distance) && arrive_distance > 0.0 ? arrive_distance : 0.5;
+            game3d_positive_clamped_or(arrive_distance, 0.5, RT_GAME3D_COORD_ABS_MAX);
     }
     return node;
 }
@@ -704,24 +798,94 @@ int64_t rt_game3d_btree_custom(void *obj, int64_t id) {
     rt_game3d_btree *tree = game3d_btree_checked(obj, "Game3D.BehaviorTree3D.Custom: invalid tree");
     if (!tree)
         return -1;
+    if (id == 0) {
+        rt_trap("Game3D.BehaviorTree3D.Custom: id zero is reserved for no pending leaf");
+        return -1;
+    }
     int64_t node = game3d_btree_add_node(tree, BT3D_NODE_CUSTOM);
     if (node >= 0)
         tree->nodes[node].i0 = id;
     return node;
 }
 
+/// @brief Test whether @p start already reaches @p sought through child edges.
+/// @details The iterative fixed-budget traversal also fails closed when private
+///          node or child counts are corrupt.
+/// @param tree Behavior tree whose existing edges are traversed.
+/// @param start First node to visit.
+/// @param sought Node whose reachability would close a cycle.
+/// @return Nonzero when reachable or when corrupt topology cannot be proven safe.
+static int game3d_btree_reaches(const rt_game3d_btree *tree, int32_t start, int32_t sought) {
+    if (!tree || tree->node_count < 0 || tree->node_count > BT3D_MAX_NODES || start < 0 ||
+        start >= tree->node_count || sought < 0 || sought >= tree->node_count)
+        return 1;
+    int32_t stack[BT3D_MAX_NODES];
+    int32_t stack_count = 0;
+    uint8_t visited[BT3D_MAX_NODES];
+    memset(visited, 0, sizeof(visited));
+    stack[stack_count++] = start;
+    visited[start] = 1;
+    while (stack_count > 0) {
+        int32_t current = stack[--stack_count];
+        if (current == sought)
+            return 1;
+        const rt_game3d_bt_node *node = &tree->nodes[current];
+        if (node->child_count < 0 || node->child_count > BT3D_MAX_CHILDREN)
+            return 1;
+        for (int32_t i = 0; i < node->child_count; ++i) {
+            int32_t child = node->children[i];
+            if (child < 0 || child >= tree->node_count)
+                return 1;
+            if (!visited[child]) {
+                if (stack_count >= BT3D_MAX_NODES)
+                    return 1;
+                visited[child] = 1;
+                stack[stack_count++] = child;
+            }
+        }
+    }
+    return 0;
+}
+
 /// @brief Append a child index to a composite or decorator node.
-/// @details Invalid indices and self-links are ignored; exceeding eight children reports a trap.
+/// @details Relationships that would create a cycle, duplicate an edge, add a
+///          child to a leaf, or overfill an inverter are rejected with a trap.
 /// @param obj BehaviorTree3D containing both nodes.
 /// @param parent Index of the node that will own the child.
 /// @param child Index of the node to append.
 void rt_game3d_btree_add_child(void *obj, int64_t parent, int64_t child) {
     rt_game3d_btree *tree =
         game3d_btree_checked(obj, "Game3D.BehaviorTree3D.AddChild: invalid tree");
-    if (!tree || parent < 0 || parent >= tree->node_count || child < 0 ||
-        child >= tree->node_count || parent == child)
+    if (!tree || parent < 0 || parent >= tree->node_count || child < 0 || child >= tree->node_count)
         return;
+    if (parent == child) {
+        rt_trap("Game3D.BehaviorTree3D.AddChild: relationship would create a cycle");
+        return;
+    }
     rt_game3d_bt_node *node = &tree->nodes[parent];
+    if (node->type != BT3D_NODE_SEQUENCE && node->type != BT3D_NODE_SELECTOR &&
+        node->type != BT3D_NODE_INVERTER) {
+        rt_trap("Game3D.BehaviorTree3D.AddChild: leaf nodes cannot own children");
+        return;
+    }
+    if (node->child_count < 0 || node->child_count > BT3D_MAX_CHILDREN) {
+        rt_trap("Game3D.BehaviorTree3D.AddChild: corrupt child count");
+        return;
+    }
+    for (int32_t i = 0; i < node->child_count; ++i) {
+        if (node->children[i] == child) {
+            rt_trap("Game3D.BehaviorTree3D.AddChild: duplicate child relationship");
+            return;
+        }
+    }
+    if (node->type == BT3D_NODE_INVERTER && node->child_count >= 1) {
+        rt_trap("Game3D.BehaviorTree3D.AddChild: inverter accepts exactly one child");
+        return;
+    }
+    if (game3d_btree_reaches(tree, (int32_t)child, (int32_t)parent)) {
+        rt_trap("Game3D.BehaviorTree3D.AddChild: relationship would create a cycle");
+        return;
+    }
     if (node->child_count >= BT3D_MAX_CHILDREN) {
         rt_trap("Game3D.BehaviorTree3D.AddChild: child budget (8) exceeded");
         return;
@@ -750,6 +914,7 @@ static void game3d_bt_instance_finalize(void *obj) {
     if (!instance)
         return;
     instance->entity = NULL;
+    rt_weak_store(&instance->target, NULL);
     game3d_release_ref(&instance->tree);
 }
 
@@ -759,10 +924,13 @@ static void game3d_bt_instance_finalize(void *obj) {
 /// @return A new BehaviorTreeInstance3D handle, or NULL when validation or allocation fails.
 void *rt_game3d_bt_instance_new(void *entity_obj, void *tree_obj) {
     rt_game3d_entity *entity =
-        (rt_game3d_entity *)rt_g3d_checked_or_null(entity_obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
+        game3d_entity_checked(entity_obj, "Game3D.BehaviorTreeInstance3D.New: invalid entity");
     rt_game3d_btree *tree =
         (rt_game3d_btree *)rt_g3d_checked_or_null(tree_obj, RT_G3D_GAME3D_BTREE_CLASS_ID);
-    if (!entity || !tree || tree->root < 0) {
+    if (!entity)
+        return NULL;
+    if (!tree || tree->node_count <= 0 || tree->node_count > BT3D_MAX_NODES || tree->root < 0 ||
+        tree->root >= tree->node_count) {
         rt_trap("Game3D.BehaviorTreeInstance3D.New: entity and a rooted tree required");
         return NULL;
     }
@@ -808,9 +976,50 @@ void rt_game3d_bt_instance_set_target(void *obj, void *target_entity) {
         obj, "Game3D.BehaviorTreeInstance3D.SetTarget: invalid instance");
     if (!instance)
         return;
+    if (!target_entity) {
+        rt_weak_store(&instance->target, NULL);
+        return;
+    }
+    rt_game3d_entity *target = game3d_entity_checked(
+        target_entity, "Game3D.BehaviorTreeInstance3D.SetTarget: target must be a live Entity3D");
+    if (!target)
+        return;
+    rt_weak_store(&instance->target, target);
+}
+
+/// @brief Promote and validate an instance's zeroing weak target reference.
+/// @param instance Behavior-tree instance whose target is requested.
+/// @return A retained live Entity3D, or NULL when the target was cleared or destroyed.
+static rt_game3d_entity *game3d_bt_instance_retain_target(rt_game3d_bt_instance *instance) {
     rt_game3d_entity *target =
-        (rt_game3d_entity *)rt_g3d_checked_or_null(target_entity, RT_G3D_GAME3D_ENTITY_CLASS_ID);
-    instance->target = target;
+        instance ? (rt_game3d_entity *)rt_weak_load(&instance->target) : NULL;
+    if (game3d_entity_alive_or_record(target))
+        return target;
+    if (target)
+        rt_weak_store(&instance->target, NULL);
+    game3d_release_ref((void **)&target);
+    return NULL;
+}
+
+/// @brief Validate and, when necessary, clear the single pending custom-leaf slot.
+/// @param instance Behavior-tree instance whose private pending state is inspected.
+/// @return Nonzero only when the pending node, id, type, and per-node flag agree.
+static int game3d_bt_instance_pending_valid(rt_game3d_bt_instance *instance) {
+    if (!instance)
+        return 0;
+    int32_t node = instance->pending_custom_node;
+    rt_game3d_btree *tree =
+        (rt_game3d_btree *)rt_g3d_checked_or_null(instance->tree, RT_G3D_GAME3D_BTREE_CLASS_ID);
+    int valid = instance->pending_custom_id != 0 && node >= 0 && node < BT3D_MAX_NODES && tree &&
+                tree->node_count > 0 && tree->node_count <= BT3D_MAX_NODES &&
+                node < tree->node_count && tree->nodes[node].type == BT3D_NODE_CUSTOM &&
+                instance->custom_pending[node];
+    if (valid)
+        return 1;
+    memset(instance->custom_pending, 0, sizeof(instance->custom_pending));
+    instance->pending_custom_id = 0;
+    instance->pending_custom_node = -1;
+    return 0;
 }
 
 /// @brief Pending Custom-leaf id awaiting game resolution (0 = none).
@@ -819,7 +1028,7 @@ void rt_game3d_bt_instance_set_target(void *obj, void *target_entity) {
 int64_t rt_game3d_bt_instance_pending_custom(void *obj) {
     rt_game3d_bt_instance *instance = game3d_bt_instance_checked(
         obj, "Game3D.BehaviorTreeInstance3D.get_PendingCustom: invalid instance");
-    return instance ? instance->pending_custom_id : 0;
+    return game3d_bt_instance_pending_valid(instance) ? instance->pending_custom_id : 0;
 }
 
 /// @brief Resolve the pending Custom leaf (1 = success, 0 = failure).
@@ -828,10 +1037,11 @@ int64_t rt_game3d_bt_instance_pending_custom(void *obj) {
 void rt_game3d_bt_instance_resolve(void *obj, int8_t success) {
     rt_game3d_bt_instance *instance =
         game3d_bt_instance_checked(obj, "Game3D.BehaviorTreeInstance3D.Resolve: invalid instance");
-    if (!instance || instance->pending_custom_node < 0)
+    if (!game3d_bt_instance_pending_valid(instance))
         return;
-    instance->custom_result[instance->pending_custom_node] = success ? 1 : 2;
-    instance->custom_pending[instance->pending_custom_node] = 0;
+    int32_t node = instance->pending_custom_node;
+    instance->custom_result[node] = success ? 1 : 2;
+    instance->custom_pending[node] = 0;
     instance->pending_custom_id = 0;
     instance->pending_custom_node = -1;
 }
@@ -850,7 +1060,9 @@ static int game3d_bt_move_toward(
         return BT3D_FAILURE;
     double to[3] = {target[0] - pos[0], target[1] - pos[1], target[2] - pos[2]};
     double dist = sqrt(to[0] * to[0] + to[1] * to[1] + to[2] * to[2]);
-    if (!isfinite(dist) || dist <= arrive)
+    if (!isfinite(dist))
+        return BT3D_FAILURE;
+    if (dist <= arrive)
         return BT3D_SUCCESS;
     double step = speed * dt;
     if (step >= dist)
@@ -890,6 +1102,8 @@ static int game3d_bt_tick_composite(rt_game3d_world *world,
                                     double dt,
                                     int stop_on) {
     rt_game3d_bt_node *node = &tree->nodes[node_index];
+    if (node->child_count < 0 || node->child_count > BT3D_MAX_CHILDREN)
+        return BT3D_FAILURE;
     int32_t start = instance->running_child[node_index];
     if (start < 0 || start >= node->child_count)
         start = 0;
@@ -922,7 +1136,8 @@ static int game3d_bt_tick_node(rt_game3d_world *world,
                                rt_game3d_btree *tree,
                                int32_t node_index,
                                double dt) {
-    if (node_index < 0 || node_index >= tree->node_count)
+    if (!tree || tree->node_count <= 0 || tree->node_count > BT3D_MAX_NODES || node_index < 0 ||
+        node_index >= tree->node_count)
         return BT3D_FAILURE;
     rt_game3d_bt_node *node = &tree->nodes[node_index];
     rt_game3d_entity *owner =
@@ -935,7 +1150,7 @@ static int game3d_bt_tick_node(rt_game3d_world *world,
         case BT3D_NODE_SELECTOR:
             return game3d_bt_tick_composite(world, instance, tree, node_index, dt, BT3D_SUCCESS);
         case BT3D_NODE_INVERTER: {
-            if (node->child_count < 1)
+            if (node->child_count != 1)
                 return BT3D_FAILURE;
             int status = game3d_bt_tick_node(world, instance, tree, node->children[0], dt);
             if (status == BT3D_RUNNING)
@@ -945,11 +1160,20 @@ static int game3d_bt_tick_node(rt_game3d_world *world,
         case BT3D_NODE_CAN_SEE: {
             rt_game3d_perception *sense = (rt_game3d_perception *)rt_g3d_checked_or_null(
                 owner->perception, RT_G3D_GAME3D_PERCEPTION_CLASS_ID);
-            if (!sense || !instance->target)
+            if (!sense)
                 return BT3D_FAILURE;
-            for (int32_t i = 0; i < sense->track_count; ++i)
-                if (sense->tracks[i].entity == instance->target && sense->tracks[i].seen)
+            rt_game3d_entity *target = game3d_bt_instance_retain_target(instance);
+            if (!target)
+                return BT3D_FAILURE;
+            int32_t track_count = game3d_perception_track_count(sense);
+            for (int32_t i = 0; i < track_count; ++i) {
+                if (sense->tracks[i].seen &&
+                    game3d_perception_track_matches(&sense->tracks[i], target)) {
+                    game3d_release_ref((void **)&target);
                     return BT3D_SUCCESS;
+                }
+            }
+            game3d_release_ref((void **)&target);
             return BT3D_FAILURE;
         }
         case BT3D_NODE_WAIT: {
@@ -961,25 +1185,34 @@ static int game3d_bt_tick_node(rt_game3d_world *world,
             return BT3D_RUNNING;
         }
         case BT3D_NODE_MOVE_TO_TARGET: {
-            rt_game3d_entity *target = (rt_game3d_entity *)rt_g3d_checked_or_null(
-                instance->target, RT_G3D_GAME3D_ENTITY_CLASS_ID);
-            if (!target || !target->alive)
+            rt_game3d_entity *target = game3d_bt_instance_retain_target(instance);
+            if (!target)
                 return BT3D_FAILURE;
             double tpos[3];
-            if (!game3d_entity_world_position_components(target, tpos))
+            int has_position = game3d_entity_world_position_components(target, tpos);
+            game3d_release_ref((void **)&target);
+            if (!has_position)
                 return BT3D_FAILURE;
             return game3d_bt_move_toward(owner, tpos, node->p0, node->p1, dt);
         }
         case BT3D_NODE_MOVE_TO_LAST_KNOWN: {
             rt_game3d_perception *sense = (rt_game3d_perception *)rt_g3d_checked_or_null(
                 owner->perception, RT_G3D_GAME3D_PERCEPTION_CLASS_ID);
-            if (!sense || !instance->target)
+            if (!sense)
                 return BT3D_FAILURE;
-            for (int32_t i = 0; i < sense->track_count; ++i) {
-                if (sense->tracks[i].entity == instance->target)
-                    return game3d_bt_move_toward(
-                        owner, sense->tracks[i].last_known, node->p0, node->p1, dt);
+            rt_game3d_entity *target = game3d_bt_instance_retain_target(instance);
+            if (!target)
+                return BT3D_FAILURE;
+            int32_t track_count = game3d_perception_track_count(sense);
+            for (int32_t i = 0; i < track_count; ++i) {
+                if (game3d_perception_track_matches(&sense->tracks[i], target)) {
+                    double last_known[3];
+                    memcpy(last_known, sense->tracks[i].last_known, sizeof(last_known));
+                    game3d_release_ref((void **)&target);
+                    return game3d_bt_move_toward(owner, last_known, node->p0, node->p1, dt);
+                }
             }
+            game3d_release_ref((void **)&target);
             return BT3D_FAILURE;
         }
         case BT3D_NODE_CUSTOM: {
@@ -1015,7 +1248,8 @@ void game3d_ai_tick(rt_game3d_world *world, rt_game3d_entity *entity, double dt)
         rt_game3d_btree *tree = instance ? (rt_game3d_btree *)rt_g3d_checked_or_null(
                                                instance->tree, RT_G3D_GAME3D_BTREE_CLASS_ID)
                                          : NULL;
-        if (instance && tree && tree->root >= 0)
+        if (instance && tree && tree->node_count > 0 && tree->node_count <= BT3D_MAX_NODES &&
+            tree->root >= 0 && tree->root < tree->node_count)
             (void)game3d_bt_tick_node(world, instance, tree, tree->root, dt);
     }
 }

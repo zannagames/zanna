@@ -1030,6 +1030,11 @@ function(zanna_add_runtime_tests)
     zanna_add_ctest(test_rt_game3d_dialogue_facial test_rt_game3d_dialogue_facial)
     zanna_add_test_labels(test_rt_game3d_dialogue_facial graphics3d unit)
 
+    zanna_add_test(test_rt_game3d_runtime_audit ${ZANNA_TESTS_DIR}/unit/test_rt_game3d_runtime_audit.cpp)
+    target_link_libraries(test_rt_game3d_runtime_audit PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    zanna_add_ctest(test_rt_game3d_runtime_audit test_rt_game3d_runtime_audit)
+    zanna_add_test_labels(test_rt_game3d_runtime_audit graphics3d unit)
+
     zanna_add_test(test_rt_game3d_streaming_async ${ZANNA_TESTS_DIR}/unit/test_rt_game3d_streaming_async.cpp)
     target_link_libraries(test_rt_game3d_streaming_async PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_game3d_streaming_async test_rt_game3d_streaming_async)

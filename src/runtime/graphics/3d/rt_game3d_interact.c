@@ -13,10 +13,12 @@
 // Key invariants:
 //   - Scanning walks the world entity list (no physics query): deterministic
 //     candidate order, stale/despawned entities fail closed.
-//   - The current focus receives a 1.10 score multiplier to reduce focus churn.
+//   - Line-of-sight probes are allocation-free and ignore the scanner owner's
+//     body; retained focus is revalidated before every public action/query.
+//   - The current focus receives a sign-safe 10% score boost to reduce focus churn.
 // Ownership/Lifetime:
-//   - Components hold plain backrefs to their owner entity (NULLed at entity
-//     teardown); the interactor retains its focused interactable.
+//   - Components hold zeroing weak owner-entity slots; the interactor retains
+//     its focused interactable without extending the target entity's lifetime.
 // Links: misc/plans/thirdpersonupgrade/21-interaction-system.md, ADR 0093.
 //
 //===----------------------------------------------------------------------===//
@@ -42,6 +44,8 @@
 #include "rt_trap.h"
 #include "rt_vec3.h"
 
+#include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -50,7 +54,7 @@
 /// @brief Per-entity interaction target metadata.
 typedef struct rt_game3d_interactable {
     void *vptr;
-    void *entity; /* plain backref; NULLed at teardown */
+    void *entity; /* zeroing weak owner Entity3D slot */
     rt_string prompt;
     int64_t kind;
     double radius;
@@ -61,7 +65,7 @@ typedef struct rt_game3d_interactable {
 /// @brief Per-entity focus scanner and interaction telemetry.
 typedef struct rt_game3d_interactor {
     void *vptr;
-    void *entity; /* owner backref; NULLed at teardown */
+    void *entity; /* zeroing weak owner Entity3D slot */
     double cone_degrees;
     int64_t los_mask;
     int8_t require_los;
@@ -82,21 +86,20 @@ static void game3d_interactable_finalize(void *obj) {
     rt_game3d_interactable *item = (rt_game3d_interactable *)obj;
     if (!item)
         return;
-    item->entity = NULL;
+    rt_weak_store(&item->entity, NULL);
     game3d_release_ref((void **)&item->prompt);
 }
 
 /// @brief Create and install an enabled interaction target on an entity.
-/// @details The entity retains the new component and clears the plain back-reference
+/// @details The entity retains the new component and clears the weak back-reference
 ///          of any previous target. The returned creation reference remains owned
 ///          by the caller.
 /// @param entity_obj Entity3D that receives the component.
 /// @return A newly allocated Interactable3D, or NULL after validation or allocation failure.
 void *rt_game3d_interactable_new(void *entity_obj) {
     rt_game3d_entity *entity =
-        (rt_game3d_entity *)rt_g3d_checked_or_null(entity_obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
+        game3d_entity_checked(entity_obj, "Game3D.Interactable3D.New: invalid entity");
     if (!entity) {
-        rt_trap("Game3D.Interactable3D.New: invalid entity");
         return NULL;
     }
     rt_game3d_interactable *item = (rt_game3d_interactable *)rt_obj_new_i64(
@@ -107,7 +110,11 @@ void *rt_game3d_interactable_new(void *entity_obj) {
     }
     memset(item, 0, sizeof(*item));
     rt_obj_set_finalizer(item, game3d_interactable_finalize);
-    item->entity = entity;
+    rt_weak_store(&item->entity, entity);
+    if (!item->entity) {
+        game3d_release_ref((void **)&item);
+        return NULL;
+    }
     item->prompt = rt_const_cstr("Use");
     item->radius = 2.0;
     item->enabled = 1;
@@ -115,7 +122,7 @@ void *rt_game3d_interactable_new(void *entity_obj) {
         rt_game3d_interactable *previous = (rt_game3d_interactable *)rt_g3d_checked_or_null(
             entity->interactable, RT_G3D_GAME3D_INTERACTABLE_CLASS_ID);
         if (previous && previous != item)
-            previous->entity = NULL;
+            rt_weak_store(&previous->entity, NULL);
         game3d_assign_typed_ref(&entity->interactable, item, RT_G3D_GAME3D_INTERACTABLE_CLASS_ID);
     }
     return item;
@@ -225,7 +232,8 @@ void rt_game3d_interactable_set_focus_priority(void *obj, double priority) {
     rt_game3d_interactable *item = game3d_interactable_checked(
         obj, "Game3D.Interactable3D.set_FocusPriority: invalid component");
     if (item && isfinite(priority))
-        item->focus_priority = priority;
+        item->focus_priority =
+            game3d_clamp(priority, -RT_GAME3D_COORD_ABS_MAX, RT_GAME3D_COORD_ABS_MAX);
 }
 
 /// @brief Return the additive focus score bias.
@@ -247,22 +255,21 @@ static void game3d_interactor_finalize(void *obj) {
     rt_game3d_interactor *scanner = (rt_game3d_interactor *)obj;
     if (!scanner)
         return;
-    scanner->entity = NULL;
+    rt_weak_store(&scanner->entity, NULL);
     game3d_release_ref(&scanner->focused);
     game3d_release_ref(&scanner->last_interacted);
 }
 
 /// @brief Create and install a focus scanner on an entity.
-/// @details The entity retains the new component and clears the plain back-reference
+/// @details The entity retains the new component and clears the weak back-reference
 ///          of any previous scanner. The returned creation reference remains owned
 ///          by the caller.
 /// @param entity_obj Entity3D that owns the scanner origin and forward direction.
 /// @return A newly allocated Interactor3D, or NULL after validation or allocation failure.
 void *rt_game3d_interactor_new(void *entity_obj) {
     rt_game3d_entity *entity =
-        (rt_game3d_entity *)rt_g3d_checked_or_null(entity_obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
+        game3d_entity_checked(entity_obj, "Game3D.Interactor3D.New: invalid entity");
     if (!entity) {
-        rt_trap("Game3D.Interactor3D.New: invalid entity");
         return NULL;
     }
     rt_game3d_interactor *scanner = (rt_game3d_interactor *)rt_obj_new_i64(
@@ -273,7 +280,11 @@ void *rt_game3d_interactor_new(void *entity_obj) {
     }
     memset(scanner, 0, sizeof(*scanner));
     rt_obj_set_finalizer(scanner, game3d_interactor_finalize);
-    scanner->entity = entity;
+    rt_weak_store(&scanner->entity, entity);
+    if (!scanner->entity) {
+        game3d_release_ref((void **)&scanner);
+        return NULL;
+    }
     scanner->cone_degrees = 70.0;
     scanner->los_mask = -1;
     scanner->require_los = 1;
@@ -281,7 +292,7 @@ void *rt_game3d_interactor_new(void *entity_obj) {
         rt_game3d_interactor *previous = (rt_game3d_interactor *)rt_g3d_checked_or_null(
             entity->interactor, RT_G3D_GAME3D_INTERACTOR_CLASS_ID);
         if (previous && previous != scanner)
-            previous->entity = NULL;
+            rt_weak_store(&previous->entity, NULL);
         game3d_assign_typed_ref(&entity->interactor, scanner, RT_G3D_GAME3D_INTERACTOR_CLASS_ID);
     }
     return scanner;
@@ -297,6 +308,40 @@ static rt_game3d_interactor *game3d_interactor_checked(void *obj, const char *me
     if (!scanner)
         rt_trap(method);
     return scanner;
+}
+
+/// @brief Revalidate and, when stale, clear the scanner's retained focus.
+/// @details A target becomes stale when disabled, destroyed, or replaced in its
+///          entity's one-component slot. Clearing here prevents an interaction
+///          between world ticks from acting on a detached component.
+/// @param scanner Scanner whose retained focus is inspected.
+/// @return Borrowed live enabled Interactable3D, or NULL.
+static rt_game3d_interactable *game3d_interactor_focus_ref(rt_game3d_interactor *scanner) {
+    rt_game3d_interactable *item = scanner
+                                       ? (rt_game3d_interactable *)rt_g3d_checked_or_null(
+                                             scanner->focused, RT_G3D_GAME3D_INTERACTABLE_CLASS_ID)
+                                       : NULL;
+    rt_game3d_entity *entity = item ? (rt_game3d_entity *)rt_weak_load(&item->entity) : NULL;
+    int valid = item && item->enabled && entity && entity->alive && !entity->destroyed &&
+                entity->interactable == (void *)item;
+    game3d_release_ref((void **)&entity);
+    if (valid)
+        return item;
+    if (scanner && scanner->focused) {
+        game3d_release_ref(&scanner->focused);
+        scanner->focus_changed = 1;
+    }
+    return NULL;
+}
+
+/// @brief Return a fail-closed world entity count for interaction scans.
+/// @param world World whose dense entity array is inspected.
+/// @return Safe logical count, or zero for missing/corrupt storage.
+static int32_t game3d_interactor_world_count(const rt_game3d_world *world) {
+    if (!world || !world->entities || world->entity_count <= 0 || world->entity_capacity <= 0)
+        return 0;
+    return world->entity_count > world->entity_capacity ? world->entity_capacity
+                                                        : world->entity_count;
 }
 
 /// @brief Configure the full horizontal/vertical focus cone angle.
@@ -363,10 +408,11 @@ int64_t rt_game3d_interactor_get_los_mask(void *obj) {
 void *rt_game3d_interactor_get_focused(void *obj) {
     rt_game3d_interactor *scanner =
         game3d_interactor_checked(obj, "Game3D.Interactor3D.get_Focused: invalid scanner");
-    if (!scanner || !scanner->focused)
+    rt_game3d_interactable *focused = game3d_interactor_focus_ref(scanner);
+    if (!focused)
         return NULL;
-    rt_obj_retain_maybe(scanner->focused);
-    return scanner->focused;
+    rt_obj_retain_maybe(focused);
+    return focused;
 }
 
 /// @brief One-shot: true when the focused target changed since the last call.
@@ -391,10 +437,12 @@ int8_t rt_game3d_interactor_focus_changed(void *obj) {
 int8_t rt_game3d_interactor_interact(void *obj) {
     rt_game3d_interactor *scanner =
         game3d_interactor_checked(obj, "Game3D.Interactor3D.Interact: invalid scanner");
-    if (!scanner || !scanner->focused)
+    rt_game3d_interactable *focused = game3d_interactor_focus_ref(scanner);
+    if (!focused)
         return 0;
-    scanner->interact_count++;
-    game3d_assign_ref(&scanner->last_interacted, scanner->focused);
+    if (scanner->interact_count < INT64_MAX)
+        scanner->interact_count++;
+    game3d_assign_ref(&scanner->last_interacted, focused);
     return 1;
 }
 
@@ -445,6 +493,10 @@ static void game3d_interactor_forward(rt_game3d_entity *entity, double out_fwd[3
         out_fwd[0] /= len;
         out_fwd[1] /= len;
         out_fwd[2] /= len;
+    } else {
+        out_fwd[0] = 0.0;
+        out_fwd[1] = 0.0;
+        out_fwd[2] = -1.0;
     }
 }
 
@@ -471,10 +523,9 @@ void game3d_interactor_tick(rt_game3d_world *world, rt_game3d_entity *owner, dou
     double cone_cos = cos(scanner->cone_degrees * 0.5 * (3.14159265358979323846 / 180.0));
 
     void *best = NULL;
-    double best_score = -1e30;
-    int32_t count = world->entity_count;
-    if (count < 0 || count > world->entity_capacity)
-        count = world->entity_capacity > 0 ? world->entity_capacity : 0;
+    double best_score = -DBL_MAX;
+    int32_t count = game3d_interactor_world_count(world);
+    void *owner_body = game3d_entity_body_ref(owner);
     for (int32_t i = 0; i < count; ++i) {
         rt_game3d_entity *candidate = world->entities ? world->entities[i] : NULL;
         if (!candidate || !candidate->alive || candidate == owner || !candidate->interactable)
@@ -499,29 +550,25 @@ void game3d_interactor_tick(rt_game3d_world *world, rt_game3d_entity *owner, dou
         /* Near-touching candidates (dist <= 0.05) skip the occlusion ray: the
          * epsilon pull-back would drive the ray length negative. */
         if (scanner->require_los && world->physics && dist > 0.05) {
-            void *o = rt_vec3_new(origin[0], origin[1], origin[2]);
-            void *d = rt_vec3_new(to[0] / dist, to[1] / dist, to[2] / dist);
-            int blocked = 0;
-            if (o && d) {
-                void *hit =
-                    rt_world3d_raycast(world->physics, o, d, dist - 0.05, scanner->los_mask);
-                if (hit) {
-                    /* A hit on any body other than the target's blocks focus.
-                     * rt_physics_hit3d_get_body returns a borrowed reference. */
-                    void *hit_body = rt_physics_hit3d_get_body(hit);
-                    blocked = hit_body != candidate->body;
-                    game3d_release_ref(&hit);
-                }
-            }
-            game3d_release_ref(&o);
-            game3d_release_ref(&d);
-            if (blocked)
+            void *candidate_body = game3d_entity_body_ref(candidate);
+            void *hit_body = rt_world3d_raycast_closest_body_raw(world->physics,
+                                                                 origin[0],
+                                                                 origin[1],
+                                                                 origin[2],
+                                                                 to[0] / dist,
+                                                                 to[1] / dist,
+                                                                 to[2] / dist,
+                                                                 dist - 0.05,
+                                                                 scanner->los_mask,
+                                                                 owner_body,
+                                                                 NULL);
+            if (hit_body && hit_body != candidate_body)
                 continue;
         }
         double score = (1.0 - dist / item->radius) +
                        0.5 * ((align - cone_cos) / (1.0 - cone_cos + 1e-9)) + item->focus_priority;
         if ((void *)item == scanner->focused)
-            score *= 1.10; /* hysteresis: the current focus wins ties */
+            score *= score >= 0.0 ? 1.10 : 0.90; /* sign-safe hysteresis boost */
         if (score > best_score) {
             best_score = score;
             best = item;

@@ -14,9 +14,11 @@
 //   - Variant selection uses a per-component LCG seeded at bind: replays are
 //     byte-identical. Row 0 is the untyped-surface fallback; a fully unset
 //     table is a silent no-op.
+//   - Surface rows retain only Sound handles and fixed-array counts are always
+//     clamped before indexing or finalization.
 // Ownership/Lifetime:
 //   - Tables retain their clips; Footsteps3D retains its table and holds a
-//     plain backref to the owning entity (cleared at entity teardown).
+//     zeroing weak reference to the owning entity.
 // Links: misc/plans/thirdpersonupgrade/23-footstep-surface-events.md, ADR 0092.
 //
 //===----------------------------------------------------------------------===//
@@ -32,15 +34,19 @@
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+#include "rt_audio.h"
+#include "rt_collider3d.h"
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
 #include "rt_graphics3d_ids.h"
 #include "rt_object.h"
 #include "rt_physics3d.h"
+#include "rt_soundsource3d.h"
 #include "rt_string.h"
 #include "rt_trap.h"
 #include "rt_vec3.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -66,7 +72,7 @@ typedef struct rt_game3d_surface_table {
 /// @brief Per-entity footstep event consumer and deterministic selector state.
 typedef struct rt_game3d_footsteps {
     void *vptr;
-    void *entity; /* plain backref; NULLed at entity teardown */
+    void *entity; /* zeroing weak owner Entity3D slot */
     void *table;  /* retained SurfaceTable3D */
     rt_string event_prefix;
     int64_t ground_mask;
@@ -76,6 +82,15 @@ typedef struct rt_game3d_footsteps {
     int64_t step_count;
     int64_t last_surface; /* surface id of the most recent step (tests/telemetry) */
 } rt_game3d_footsteps;
+
+/// @brief Clamp a surface row's logical clip count to its fixed backing array.
+/// @param row Surface row whose private count is inspected.
+/// @return Safe count in `[0, FOOTSTEPS3D_MAX_CLIPS]`.
+static int32_t game3d_surface_row_clip_count(const rt_game3d_surface_row *row) {
+    if (!row || row->clip_count <= 0)
+        return 0;
+    return row->clip_count > FOOTSTEPS3D_MAX_CLIPS ? FOOTSTEPS3D_MAX_CLIPS : row->clip_count;
+}
 
 /*==========================================================================
  * SurfaceTable3D
@@ -88,7 +103,7 @@ static void game3d_surface_table_finalize(void *obj) {
     if (!table)
         return;
     for (int32_t r = 0; r <= FOOTSTEPS3D_MAX_SURFACE; ++r) {
-        for (int32_t c = 0; c < table->rows[r].clip_count; ++c)
+        for (int32_t c = 0; c < FOOTSTEPS3D_MAX_CLIPS; ++c)
             game3d_release_ref(&table->rows[r].clips[c]);
         table->rows[r].clip_count = 0;
     }
@@ -135,9 +150,15 @@ void *rt_game3d_surface_table_add_clip(void *obj, int64_t surface_id, void *clip
         return obj;
     if (surface_id < 0 || surface_id > FOOTSTEPS3D_MAX_SURFACE)
         return obj;
+    if (!rt_sound_is_handle(clip)) {
+        rt_trap("Game3D.SurfaceTable3D.addClip: clip must be Sound");
+        return obj;
+    }
     rt_game3d_surface_row *row = &table->rows[surface_id];
+    row->clip_count = game3d_surface_row_clip_count(row);
     if (row->clip_count >= FOOTSTEPS3D_MAX_CLIPS)
         return obj;
+    game3d_release_ref(&row->clips[row->clip_count]);
     rt_obj_retain_maybe(clip);
     row->clips[row->clip_count++] = clip;
     return obj;
@@ -168,7 +189,7 @@ int64_t rt_game3d_surface_table_clip_count(void *obj, int64_t surface_id) {
         game3d_surface_table_checked(obj, "Game3D.SurfaceTable3D.clipCount: invalid table");
     if (!table || surface_id < 0 || surface_id > FOOTSTEPS3D_MAX_SURFACE)
         return 0;
-    return table->rows[surface_id].clip_count;
+    return game3d_surface_row_clip_count(&table->rows[surface_id]);
 }
 
 /// @brief Resolve the effective row for a surface id (row 0 fallback, NULL when empty).
@@ -180,9 +201,9 @@ static rt_game3d_surface_row *game3d_surface_table_resolve(rt_game3d_surface_tab
     if (!table)
         return NULL;
     if (surface_id >= 1 && surface_id <= FOOTSTEPS3D_MAX_SURFACE &&
-        table->rows[surface_id].clip_count > 0)
+        game3d_surface_row_clip_count(&table->rows[surface_id]) > 0)
         return &table->rows[surface_id];
-    if (table->rows[0].clip_count > 0)
+    if (game3d_surface_row_clip_count(&table->rows[0]) > 0)
         return &table->rows[0];
     return NULL;
 }
@@ -197,25 +218,27 @@ static void game3d_footsteps_finalize(void *obj) {
     rt_game3d_footsteps *steps = (rt_game3d_footsteps *)obj;
     if (!steps)
         return;
-    steps->entity = NULL;
+    rt_weak_store(&steps->entity, NULL);
     game3d_release_ref(&steps->table);
     game3d_release_ref((void **)&steps->event_prefix);
 }
 
 /// @brief Create and install one footstep component on an entity.
 /// @details The component retains @p table_obj and the entity retains the
-///          component; any prior Footsteps3D has its plain entity back-reference
+///          component; any prior Footsteps3D has its weak entity back-reference
 ///          cleared. The returned creation reference remains owned by the caller.
 /// @param entity_obj Entity3D that receives the component.
 /// @param table_obj SurfaceTable3D used to resolve clip variants.
 /// @return A newly allocated Footsteps3D, or NULL after validation or allocation failure.
 void *rt_game3d_footsteps_new(void *entity_obj, void *table_obj) {
     rt_game3d_entity *entity =
-        (rt_game3d_entity *)rt_g3d_checked_or_null(entity_obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
+        game3d_entity_checked(entity_obj, "Game3D.Footsteps3D.New: invalid entity");
     rt_game3d_surface_table *table = (rt_game3d_surface_table *)rt_g3d_checked_or_null(
         table_obj, RT_G3D_GAME3D_SURFACETABLE_CLASS_ID);
-    if (!entity || !table) {
-        rt_trap("Game3D.Footsteps3D.New: entity and SurfaceTable3D required");
+    if (!entity)
+        return NULL;
+    if (!table) {
+        rt_trap("Game3D.Footsteps3D.New: SurfaceTable3D required");
         return NULL;
     }
     rt_game3d_footsteps *steps = (rt_game3d_footsteps *)rt_obj_new_i64(
@@ -226,7 +249,11 @@ void *rt_game3d_footsteps_new(void *entity_obj, void *table_obj) {
     }
     memset(steps, 0, sizeof(*steps));
     rt_obj_set_finalizer(steps, game3d_footsteps_finalize);
-    steps->entity = entity;
+    rt_weak_store(&steps->entity, entity);
+    if (!steps->entity) {
+        game3d_release_ref((void **)&steps);
+        return NULL;
+    }
     rt_obj_retain_maybe(table_obj);
     steps->table = table_obj;
     steps->event_prefix = rt_const_cstr("footstep");
@@ -238,7 +265,7 @@ void *rt_game3d_footsteps_new(void *entity_obj, void *table_obj) {
         rt_game3d_footsteps *previous = (rt_game3d_footsteps *)rt_g3d_checked_or_null(
             entity->footsteps, RT_G3D_GAME3D_FOOTSTEPS_CLASS_ID);
         if (previous && previous != steps)
-            previous->entity = NULL;
+            rt_weak_store(&previous->entity, NULL);
         game3d_assign_typed_ref(&entity->footsteps, steps, RT_G3D_GAME3D_FOOTSTEPS_CLASS_ID);
     }
     return steps;
@@ -331,30 +358,43 @@ static void game3d_footsteps_fire(rt_game3d_world *world,
     }
     int64_t surface = 0;
     if (world->physics) {
-        void *o = rt_vec3_new(origin[0], origin[1] + 0.25, origin[2]);
-        void *d = rt_vec3_new(0.0, -1.0, 0.0);
-        if (o && d) {
-            void *hit = rt_world3d_raycast(world->physics, o, d, 1.5, steps->ground_mask);
-            if (hit) {
-                surface = rt_physics_hit3d_get_surface_type(hit);
-                game3d_release_ref(&hit);
-            }
-        }
-        game3d_release_ref(&o);
-        game3d_release_ref(&d);
+        void *owner_body = game3d_entity_body_ref(entity);
+        void *ground_body = rt_world3d_raycast_closest_body_raw(world->physics,
+                                                                origin[0],
+                                                                origin[1] + 0.25,
+                                                                origin[2],
+                                                                0.0,
+                                                                -1.0,
+                                                                0.0,
+                                                                1.5,
+                                                                steps->ground_mask,
+                                                                owner_body,
+                                                                NULL);
+        void *collider = ground_body ? rt_body3d_get_collider(ground_body) : NULL;
+        if (collider)
+            surface = rt_collider3d_get_surface_type(collider);
     }
     steps->last_surface = surface;
     rt_game3d_surface_table *table = (rt_game3d_surface_table *)rt_g3d_checked_or_null(
         steps->table, RT_G3D_GAME3D_SURFACETABLE_CLASS_ID);
     rt_game3d_surface_row *row = game3d_surface_table_resolve(table, surface);
-    steps->step_count++;
+    if (steps->step_count < INT64_MAX)
+        steps->step_count++;
     if (!row || !world->audio)
         return;
+    int32_t clip_count = game3d_surface_row_clip_count(row);
+    if (clip_count <= 0)
+        return;
     steps->rng = steps->rng * 1664525u + 1013904223u;
-    void *clip = row->clips[(steps->rng >> 8) % (uint32_t)row->clip_count];
+    void *clip = row->clips[(steps->rng >> 8) % (uint32_t)clip_count];
     void *pos = rt_vec3_new(origin[0], origin[1], origin[2]);
     if (clip && pos) {
         void *voice = rt_game3d_audio_play_at(world->audio, clip, pos);
+        if (voice) {
+            double scaled = (double)rt_game3d_audio_get_volume(world->audio) * steps->volume_scale;
+            int64_t volume = (int64_t)(scaled > 100.0 ? 100.0 : scaled + 0.5);
+            rt_soundsource3d_set_volume(voice, volume);
+        }
         game3d_release_ref(&voice);
     }
     game3d_release_ref(&pos);
