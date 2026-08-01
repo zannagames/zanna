@@ -48,7 +48,7 @@ double rt_timeofday3d_get_hours(void *tod);
 
 /// @brief Real seconds per 24h day; 0 pauses the clock (drive Hours manually).
 /// @param tod TimeOfDay3D handle; invalid handles trap and are ignored.
-/// @param seconds Nonnegative simulated-day duration; zero pauses automatic advancement.
+/// @param seconds Finite nonnegative simulated-day duration; zero pauses automatic advancement.
 void rt_timeofday3d_set_day_length_seconds(void *tod, double seconds);
 
 /// @brief Return the configured duration of a simulated day.
@@ -103,7 +103,8 @@ void *rt_timeofday3d_get_sun_direction(void *tod);
 
 /// @brief Advance by @p dt seconds and drive bound consumers (canvas may be NULL).
 /// @param tod TimeOfDay3D handle; invalid handles trap and are ignored.
-/// @param dt Positive finite scaled simulation delta in seconds.
+/// @param dt Positive finite scaled simulation delta in seconds; whole simulated days are reduced
+/// modulo the configured day length before conversion to hours.
 /// @param canvas Optional Canvas3D handle that receives procedural-sky refreshes.
 void rt_timeofday3d_advance(void *tod, double dt, void *canvas);
 

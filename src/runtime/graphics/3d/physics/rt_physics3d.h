@@ -1135,8 +1135,9 @@ void *rt_character3d_get_ground_body(void *ctrl);
 
 /// @brief Create a raycast vehicle around @p chassis (a dynamic Body3D in @p world).
 /// @param world World3D handle used for suspension queries.
-/// @param chassis Dynamic Body3D handle that receives suspension and tire forces.
-/// @return Newly allocated Vehicle3D handle, or NULL for invalid input or allocation failure.
+/// @param chassis Dynamic Body3D already registered in @p world; receives suspension/tire forces.
+/// @return Newly allocated Vehicle3D handle, or NULL after trapping for invalid input,
+///         unregistered/static chassis, or allocation failure.
 void *rt_vehicle3d_new(void *world, void *chassis);
 
 /// @brief Add a suspension wheel (chassis-local anchor, radius, suspension tuning).

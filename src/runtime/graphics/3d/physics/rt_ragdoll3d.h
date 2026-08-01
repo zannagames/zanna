@@ -51,7 +51,7 @@ double rt_ragdoll3d_get_total_mass(void *ragdoll);
 
 /// @brief Set the distributed total mass (rebuilds an inactive rig).
 /// @param ragdoll Borrowed inactive `Ragdoll3D` handle.
-/// @param mass Positive finite total mass in kilograms; invalid values are ignored.
+/// @param mass Positive finite total mass in kilograms no greater than 1e9; invalid values ignored.
 void rt_ragdoll3d_set_total_mass(void *ragdoll, double mass);
 
 /// @brief Capsule radius as a fraction of bone length (default 0.22).
@@ -71,7 +71,7 @@ double rt_ragdoll3d_get_min_bone_length(void *ragdoll);
 
 /// @brief Set the minimum bodied bone length (rebuilds an inactive rig).
 /// @param ragdoll Borrowed inactive `Ragdoll3D` handle.
-/// @param length Positive finite threshold in model units.
+/// @param length Positive finite threshold in model units no greater than 1e9.
 void rt_ragdoll3d_set_min_bone_length(void *ragdoll, double length);
 
 /// @brief Number of rig bodies (builds the rig on first query).
@@ -98,15 +98,16 @@ void rt_ragdoll3d_set_joint_limits(void *ragdoll,
 ///   @p world, and start palette write-back. Node supplies the world transform.
 /// @param ragdoll Borrowed inactive `Ragdoll3D` handle.
 /// @param world Borrowed `World3D` retained while the rig is active.
-/// @param controller Borrowed `AnimController3D` retained through active/blending states.
+/// @param controller Borrowed `AnimController3D` for the same skeleton, retained through
+///        active/blending states.
 /// @param node Borrowed `SceneNode3D` retained through active/blending states.
 void rt_ragdoll3d_activate(void *ragdoll, void *world, void *controller, void *node);
 
 /// @brief Remove the rig from the world and blend the palette back to live
 ///   animation over @p blend_seconds.
 /// @param ragdoll Borrowed active `Ragdoll3D` handle.
-/// @param blend_seconds Positive finite blend duration, or a non-positive value for immediate
-///        animation-object release.
+/// @param blend_seconds Positive finite blend duration clamped to 1e9 seconds, or a non-positive
+///        value for immediate animation-object release.
 void rt_ragdoll3d_deactivate(void *ragdoll, double blend_seconds);
 
 /// @brief Drive masked joints toward the animated pose with proportional-derivative impulses.
@@ -122,7 +123,7 @@ void rt_ragdoll3d_set_powered(void *ragdoll, int64_t bone_mask, double stiffness
 ///   (active), or blend-out progression (deactivating). Game3D calls this
 ///   between the physics step and scene sync; raw users call it manually.
 /// @param ragdoll Borrowed `Ragdoll3D` handle.
-/// @param dt Positive elapsed time in seconds; invalid values use 1/60 second.
+/// @param dt Positive finite elapsed time in seconds; invalid/non-positive values are ignored.
 void rt_ragdoll3d_step(void *ragdoll, double dt);
 
 /// @brief Borrowed rig body for a bone name (NULL when unmapped).

@@ -152,6 +152,37 @@ typedef struct {
     int32_t child_capacity;
 } Collider3DTestLayout;
 
+typedef struct {
+    double local_anchor[3];
+    double radius;
+    double suspension_rest;
+    double stiffness;
+    double damping;
+    int8_t steers;
+    int8_t driven;
+    int8_t in_contact;
+    double travel;
+    double contact_load;
+    double contact_point[3];
+} VehicleWheelTestLayout;
+
+typedef struct {
+    void *vptr;
+    void *world;
+    void *chassis;
+    VehicleWheelTestLayout wheels[8];
+    int32_t wheel_count;
+    double throttle;
+    double brake;
+    double steer;
+    double drive_force;
+    double brake_force;
+    double max_steer_rad;
+    double long_grip;
+    double lat_grip;
+    int64_t collision_mask;
+} VehicleTestLayout;
+
 static int64_t encode_height16(uint16_t value) {
     return ((int64_t)((value >> 8) & 0xFF) << 24) | ((int64_t)(value & 0xFF) << 16) | 0xFF;
 }
@@ -4498,6 +4529,117 @@ static void test_vehicle_drives_and_steers() {
                 "full brake brings the vehicle near rest");
 }
 
+static void test_vehicle_validates_membership_and_repairs_private_counts() {
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *unregistered = rt_body3d_new_aabb(1.0, 0.5, 2.0, 100.0);
+    EXPECT_TRUE(expect_trap_contains([&] { rt_vehicle3d_new(world, unregistered); },
+                                     "dynamic body already added"),
+                "vehicle rejects an unregistered chassis");
+
+    void *static_chassis = rt_body3d_new_aabb(1.0, 0.5, 2.0, 0.0);
+    rt_world3d_add(world, static_chassis);
+    EXPECT_TRUE(expect_trap_contains([&] { rt_vehicle3d_new(world, static_chassis); },
+                                     "dynamic body already added"),
+                "vehicle rejects a static chassis");
+
+    void *chassis = rt_body3d_new_aabb(1.0, 0.5, 2.0, 100.0);
+    rt_world3d_add(world, chassis);
+    auto *vehicle = static_cast<VehicleTestLayout *>(rt_vehicle3d_new(world, chassis));
+    EXPECT_TRUE(vehicle != nullptr, "vehicle accepts a registered dynamic chassis");
+
+    vehicle->wheel_count = -123;
+    EXPECT_TRUE(rt_vehicle3d_get_wheel_count(vehicle) == 0,
+                "negative private wheel count repairs to zero");
+    EXPECT_TRUE(
+        rt_vehicle3d_add_wheel(vehicle, 0.0, -0.25, 0.0, 0.25, 0.75, 10000.0, 1000.0, 0, 1) == 0,
+        "wheel packing resumes safely after a negative count repair");
+    vehicle->wheel_count = INT32_MAX;
+    EXPECT_TRUE(rt_vehicle3d_get_wheel_count(vehicle) == 8,
+                "oversized private wheel count clamps to fixed storage");
+    EXPECT_TRUE(rt_vehicle3d_add_wheel(vehicle, 0.0, 0.0, 0.0, 0.25, 0.75, 10000.0, 1000.0, 0, 0) ==
+                    -1,
+                "full repaired wheel storage rejects another wheel");
+
+    auto *body = static_cast<rt_body3d *>(chassis);
+    body->velocity[2] = NAN;
+    EXPECT_TRUE(rt_vehicle3d_get_speed(vehicle) == 0.0,
+                "non-finite chassis velocity cannot escape the speed getter");
+    body->velocity[2] = 0.0;
+    vehicle->wheel_count = 1;
+    vehicle->wheels[0].in_contact = 1;
+    vehicle->wheels[0].contact_load = 123.0;
+    rt_world3d_remove(world, chassis);
+    rt_vehicle3d_step(vehicle, 1.0 / 60.0);
+    EXPECT_TRUE(rt_vehicle3d_wheel_in_contact(vehicle, 0) == 0 &&
+                    rt_vehicle3d_wheel_load(vehicle, 0) == 0.0,
+                "removing the chassis clears stale wheel observations");
+}
+
+static void test_vehicle_uses_relative_contact_motion_and_reaction_forces() {
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *platform = rt_body3d_new_aabb(5.0, 0.5, 5.0, 1000.0);
+    void *chassis = rt_body3d_new_aabb(1.0, 0.5, 2.0, 100.0);
+    rt_body3d_set_position(platform, 0.0, -0.5, 0.0);
+    rt_body3d_set_position(chassis, 0.0, 1.0, 0.0);
+    rt_body3d_set_velocity(platform, 0.0, 1.0, 2.0);
+    rt_body3d_set_velocity(chassis, 0.0, 1.0, 2.0);
+    rt_world3d_add(world, platform);
+    rt_world3d_add(world, chassis);
+    void *vehicle = rt_vehicle3d_new(world, chassis);
+    rt_vehicle3d_add_wheel(vehicle, 0.0, -0.25, 0.0, 0.25, 0.75, 10000.0, 1000.0, 0, 1);
+    rt_vehicle3d_set_input(vehicle, 0.0, 1.0, 0.0);
+    rt_vehicle3d_step(vehicle, 1.0 / 60.0);
+
+    auto *chassis_body = static_cast<rt_body3d *>(chassis);
+    auto *platform_body = static_cast<rt_body3d *>(platform);
+    EXPECT_TRUE(rt_vehicle3d_wheel_in_contact(vehicle, 0) == 1,
+                "wheel ray contacts a dynamic platform");
+    EXPECT_NEAR(rt_vehicle3d_wheel_load(vehicle, 0),
+                2500.0,
+                1.0,
+                "matched vertical platform motion contributes no artificial damping");
+    EXPECT_NEAR(chassis_body->force[1],
+                -platform_body->force[1],
+                1e-9,
+                "dynamic platform receives the opposite suspension force");
+    EXPECT_NEAR(chassis_body->force[2],
+                0.0,
+                1e-9,
+                "matched platform forward motion contributes no artificial brake slip");
+    EXPECT_NEAR(platform_body->force[2],
+                0.0,
+                1e-9,
+                "matched forward motion leaves the platform without a brake reaction");
+
+    std::memset(chassis_body->force, 0, sizeof(chassis_body->force));
+    std::memset(chassis_body->torque, 0, sizeof(chassis_body->torque));
+    std::memset(platform_body->force, 0, sizeof(platform_body->force));
+    std::memset(platform_body->torque, 0, sizeof(platform_body->torque));
+    rt_vehicle3d_set_input(vehicle, 1.0, 0.0, 0.0);
+    rt_vehicle3d_step(vehicle, 1.0 / 60.0);
+    EXPECT_TRUE(std::fabs(chassis_body->force[2]) > 1000.0,
+                "driven wheel applies a longitudinal tire force");
+    EXPECT_NEAR(chassis_body->force[2],
+                -platform_body->force[2],
+                1e-9,
+                "dynamic platform receives the opposite tire force");
+
+    std::memset(chassis_body->force, 0, sizeof(chassis_body->force));
+    std::memset(chassis_body->torque, 0, sizeof(chassis_body->torque));
+    std::memset(platform_body->force, 0, sizeof(platform_body->force));
+    std::memset(platform_body->torque, 0, sizeof(platform_body->torque));
+    rt_body3d_set_velocity(platform, 0.0, 0.0, 0.0);
+    rt_body3d_set_velocity(chassis, 10.0, 0.0, 0.0);
+    rt_vehicle3d_set_drive_force(vehicle, 12000.0);
+    rt_vehicle3d_set_grip(vehicle, 1.0, 4.0);
+    rt_vehicle3d_step(vehicle, 1.0 / 60.0);
+    double load = rt_vehicle3d_wheel_load(vehicle, 0);
+    double ellipse =
+        std::hypot(chassis_body->force[2] / load, chassis_body->force[0] / (4.0 * load));
+    EXPECT_TRUE(std::isfinite(ellipse) && ellipse <= 1.000001,
+                "asymmetric longitudinal/lateral grip obeys its friction ellipse");
+}
+
 /* --- Joint wake + sleep gating (joint3d_pair_begin_solve) --- */
 
 static void test_joint_wakes_sleeping_partner() {
@@ -4813,6 +4955,8 @@ int main() {
     /* Vehicle3D */
     test_vehicle_settles_on_suspension();
     test_vehicle_drives_and_steers();
+    test_vehicle_validates_membership_and_repairs_private_counts();
+    test_vehicle_uses_relative_contact_motion_and_reaction_forces();
 
     /* Joint sleep/wake gating */
     test_joint_wakes_sleeping_partner();

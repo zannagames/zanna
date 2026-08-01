@@ -27,6 +27,7 @@
 #include "rt_mat4.h"
 #include "rt_object.h"
 #include "rt_physics3d.h"
+#include "rt_quat.h"
 #include "rt_ragdoll3d.h"
 #include "rt_scene3d.h"
 #include "rt_skeleton3d.h"
@@ -38,6 +39,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 namespace {
 static std::jmp_buf g_trap_jmp;
@@ -100,9 +102,21 @@ extern "C" void vm_trap(const char *msg) {
         }                                                                                          \
     } while (0)
 
+template <typename Fn> bool expect_trap_contains(Fn &&fn, const char *needle) {
+    g_last_trap = nullptr;
+    g_expect_trap = true;
+    if (setjmp(g_trap_jmp) == 0) {
+        fn();
+        g_expect_trap = false;
+        return false;
+    }
+    g_expect_trap = false;
+    return g_last_trap && (!needle || std::strstr(g_last_trap, needle) != nullptr);
+}
+
 namespace {
 
-/// @brief Five-bone vertical chain skeleton (root at origin, +Y links of 0.3).
+/// @brief Five-bone vertical chain skeleton (root at Y=1.5, +Y links of 0.3).
 void *chain_skeleton_new() {
     void *skeleton = rt_skeleton3d_new();
     const char *names[5] = {"root", "spine", "chest", "neck", "head"};
@@ -114,19 +128,56 @@ void *chain_skeleton_new() {
                                  0.0,
                                  1.0,
                                  0.0,
-                                 0.0,
+                                 i == 0 ? 1.5 : 0.3,
                                  0.0,
                                  0.0,
                                  1.0,
                                  0.0,
                                  0.0,
-                                 i == 0 ? 1.5 : 0.3,
+                                 0.0,
                                  0.0,
                                  1.0);
         rt_skeleton3d_add_bone(skeleton, rt_const_cstr(names[i]), i - 1, bind);
         if (rt_obj_release_check0(bind))
             rt_obj_free(bind);
     }
+    rt_skeleton3d_compute_inverse_bind(skeleton);
+    return skeleton;
+}
+
+void *translation_matrix_new(double x, double y, double z) {
+    return rt_mat4_new(1.0, 0.0, 0.0, x, 0.0, 1.0, 0.0, y, 0.0, 0.0, 1.0, z, 0.0, 0.0, 0.0, 1.0);
+}
+
+void add_bone_with_matrix(void *skeleton, const char *name, int64_t parent, void *matrix) {
+    rt_skeleton3d_add_bone(skeleton, rt_const_cstr(name), parent, matrix);
+    if (rt_obj_release_check0(matrix))
+        rt_obj_free(matrix);
+}
+
+void *branched_skeleton_new() {
+    void *skeleton = rt_skeleton3d_new();
+    add_bone_with_matrix(skeleton, "root", -1, translation_matrix_new(0.0, 0.0, 0.0));
+    add_bone_with_matrix(skeleton, "helper", 0, translation_matrix_new(0.05, 0.0, 0.0));
+    add_bone_with_matrix(skeleton, "limb", 0, translation_matrix_new(0.0, 1.0, 0.0));
+    add_bone_with_matrix(skeleton, "tip", 2, translation_matrix_new(0.0, 0.5, 0.0));
+    rt_skeleton3d_compute_inverse_bind(skeleton);
+    return skeleton;
+}
+
+void *short_child_skeleton_new() {
+    void *skeleton = rt_skeleton3d_new();
+    add_bone_with_matrix(skeleton, "root", -1, translation_matrix_new(0.0, 0.0, 0.0));
+    add_bone_with_matrix(skeleton, "tip", 0, translation_matrix_new(0.0, 0.02, 0.0));
+    rt_skeleton3d_compute_inverse_bind(skeleton);
+    return skeleton;
+}
+
+void *rotated_terminal_skeleton_new() {
+    void *skeleton = rt_skeleton3d_new();
+    void *root = rt_mat4_new(
+        0.0, -1.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+    add_bone_with_matrix(skeleton, "root", -1, root);
     rt_skeleton3d_compute_inverse_bind(skeleton);
     return skeleton;
 }
@@ -152,6 +203,124 @@ bool test_ragdoll_builder_chain() {
         mass_sum += rt_body3d_get_mass(body);
     }
     EXPECT_NEAR(mass_sum, 70.0, 0.5, "masses sum to the configured total");
+    void *root_body = rt_ragdoll3d_get_body(ragdoll, rt_const_cstr("root"));
+    void *root_position = rt_body3d_get_position(root_body);
+    EXPECT_NEAR(rt_vec3_y(root_position), 1.65, 1e-6, "root center uses Mat4 column translation");
+
+    rt_ragdoll3d_set_total_mass(ragdoll, rt_ragdoll3d_get_total_mass(ragdoll));
+    rt_ragdoll3d_set_radius_scale(ragdoll, rt_ragdoll3d_get_radius_scale(ragdoll));
+    rt_ragdoll3d_set_min_bone_length(ragdoll, rt_ragdoll3d_get_min_bone_length(ragdoll));
+    rt_ragdoll3d_set_total_mass(ragdoll, std::numeric_limits<double>::max());
+    EXPECT_TRUE(rt_ragdoll3d_get_body(ragdoll, rt_const_cstr("root")) == root_body,
+                "unchanged and out-of-range configuration preserves the built rig");
+    PASS();
+}
+
+bool test_ragdoll_builder_handles_branches_short_children_and_rotated_terminals() {
+    TEST("Ragdoll3D builder uses longest children and column-vector terminal bases");
+    void *branched = rt_ragdoll3d_from_skeleton(branched_skeleton_new());
+    void *branched_root = rt_ragdoll3d_get_body(branched, rt_const_cstr("root"));
+    void *branched_pos = rt_body3d_get_position(branched_root);
+    EXPECT_NEAR(
+        rt_vec3_x(branched_pos), 0.0, 1e-9, "tiny helper is not selected by insertion order");
+    EXPECT_NEAR(rt_vec3_y(branched_pos), 0.5, 1e-9, "root follows its farthest direct child");
+
+    void *short_ragdoll = rt_ragdoll3d_from_skeleton(short_child_skeleton_new());
+    void *short_root = rt_ragdoll3d_get_body(short_ragdoll, rt_const_cstr("root"));
+    void *short_pos = rt_body3d_get_position(short_root);
+    EXPECT_NEAR(rt_vec3_y(short_pos),
+                0.01,
+                1e-9,
+                "a real short child is not replaced by the terminal fallback length");
+
+    void *rotated_skeleton = rotated_terminal_skeleton_new();
+    void *rotated_ragdoll = rt_ragdoll3d_from_skeleton(rotated_skeleton);
+    void *rotated_root = rt_ragdoll3d_get_body(rotated_ragdoll, rt_const_cstr("root"));
+    void *rotated_pos = rt_body3d_get_position(rotated_root);
+    EXPECT_NEAR(rt_vec3_x(rotated_pos),
+                -0.075,
+                1e-6,
+                "terminal extension reads the transformed +Y basis column");
+    EXPECT_NEAR(rt_vec3_y(rotated_pos), 0.0, 1e-9, "rotated terminal center stays on its axis");
+
+    void *rotated_controller = rt_anim_controller3d_new(rotated_skeleton);
+    void *rotated_world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *rotated_node = rt_scene_node3d_new();
+    rt_anim_controller3d_update(rotated_controller, 1.0 / 60.0);
+    rt_ragdoll3d_activate(rotated_ragdoll, rotated_world, rotated_controller, rotated_node);
+    rt_ragdoll3d_step(rotated_ragdoll, 1.0 / 60.0);
+    void *rotated_matrix = rt_anim_controller3d_get_bone_matrix(rotated_controller, 0);
+    EXPECT_NEAR(rt_mat4_get(rotated_matrix, 0, 1),
+                -1.0,
+                1e-6,
+                "quaternion extraction preserves positive quarter-turn handedness");
+    EXPECT_NEAR(rt_mat4_get(rotated_matrix, 1, 0),
+                1.0,
+                1e-6,
+                "quaternion composition writes the row-major rotation convention");
+    rt_ragdoll3d_deactivate(rotated_ragdoll, 0.0);
+    PASS();
+}
+
+bool test_ragdoll_requires_matching_controller_and_follows_parented_world_motion() {
+    TEST("Ragdoll3D validates controller identity and root-follows in world space");
+    void *skeleton = chain_skeleton_new();
+    void *ragdoll = rt_ragdoll3d_from_skeleton(skeleton);
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *node = rt_scene_node3d_new();
+    void *wrong_controller = rt_anim_controller3d_new(chain_skeleton_new());
+    EXPECT_TRUE(
+        expect_trap_contains([&] { rt_ragdoll3d_activate(ragdoll, world, wrong_controller, node); },
+                             "ragdoll skeleton"),
+        "activation rejects a controller built from another skeleton instance");
+    EXPECT_EQ_INT(rt_world3d_body_count(world), 0, "mismatched activation registers no bodies");
+
+    void *scene = rt_scene3d_new();
+    void *parent = rt_scene_node3d_new();
+    rt_scene3d_add(scene, parent);
+    rt_scene_node3d_add_child(parent, node);
+    rt_scene_node3d_set_position(parent, 10.0, 20.0, 0.0);
+    void *quarter_turn =
+        rt_quat_from_axis_angle(rt_vec3_new(0.0, 0.0, 1.0), 3.14159265358979323846 * 0.5);
+    rt_scene_node3d_set_rotation(parent, quarter_turn);
+    rt_scene_node3d_set_position(node, 1.0, 0.0, 0.0);
+
+    void *controller = rt_anim_controller3d_new(skeleton);
+    rt_anim_controller3d_update(controller, 1.0 / 60.0);
+    rt_ragdoll3d_activate(ragdoll, world, controller, node);
+    double before_x = 0.0, before_y = 0.0, before_z = 0.0;
+    EXPECT_TRUE(
+        rt_scene_node3d_get_world_position_components(node, &before_x, &before_y, &before_z) != 0,
+        "parented node has a world pose");
+    void *root = rt_ragdoll3d_get_body(ragdoll, rt_const_cstr("root"));
+    void *body_pos = rt_body3d_get_position(root);
+    rt_body3d_set_position(
+        root, rt_vec3_x(body_pos) + 1.0, rt_vec3_y(body_pos), rt_vec3_z(body_pos));
+    rt_ragdoll3d_step(ragdoll, 1.0 / 60.0);
+    double after_x = 0.0, after_y = 0.0, after_z = 0.0;
+    rt_scene_node3d_get_world_position_components(node, &after_x, &after_y, &after_z);
+    EXPECT_NEAR(after_x, before_x + 1.0, 1e-9, "world-X corpse motion advances node world X");
+    EXPECT_NEAR(after_y, before_y, 1e-9, "parent rotation does not rotate world motion twice");
+    EXPECT_NEAR(after_z, before_z, 1e-9, "root follow preserves orthogonal world position");
+    rt_ragdoll3d_deactivate(ragdoll, 0.0);
+    PASS();
+}
+
+bool test_ragdoll_finalizer_unregisters_active_world_objects() {
+    TEST("Ragdoll3D finalizer removes active bodies and joints from its world");
+    void *skeleton = chain_skeleton_new();
+    void *controller = rt_anim_controller3d_new(skeleton);
+    rt_anim_controller3d_update(controller, 1.0 / 60.0);
+    void *node = rt_scene_node3d_new();
+    void *world = rt_world3d_new(0.0, 0.0, 0.0);
+    void *ragdoll = rt_ragdoll3d_from_skeleton(skeleton);
+    rt_ragdoll3d_activate(ragdoll, world, controller, node);
+    EXPECT_TRUE(rt_world3d_body_count(world) > 0 && rt_world3d_joint_count(world) > 0,
+                "active rig registered bodies and joints");
+    EXPECT_TRUE(rt_obj_release_check0(ragdoll) != 0, "test owns the active ragdoll");
+    rt_obj_free(ragdoll);
+    EXPECT_EQ_INT(rt_world3d_body_count(world), 0, "finalizer removed every rig body");
+    EXPECT_EQ_INT(rt_world3d_joint_count(world), 0, "finalizer removed every rig joint");
     PASS();
 }
 
@@ -208,6 +377,11 @@ bool test_ragdoll_activate_settle_deactivate() {
      * root bone matrix translation matches the skeleton bind (1.5). */
     void *root_mat = rt_anim_controller3d_get_bone_matrix(controller, 0);
     EXPECT_TRUE(root_mat != nullptr, "root bone matrix readable after blend");
+    EXPECT_NEAR(rt_mat4_get(root_mat, 0, 0), 1.0, 1e-6, "completed blend restores exact basis");
+    EXPECT_NEAR(rt_mat4_get(root_mat, 1, 3),
+                1.5,
+                1e-6,
+                "completed blend reaches the exact animated translation");
     if (root_mat && rt_obj_release_check0(root_mat))
         rt_obj_free(root_mat);
     PASS();
@@ -385,6 +559,9 @@ int main() {
     std::printf("Game3D ragdoll + time-control tests\n");
     bool ok = true;
     ok = test_ragdoll_builder_chain() && ok;
+    ok = test_ragdoll_builder_handles_branches_short_children_and_rotated_terminals() && ok;
+    ok = test_ragdoll_requires_matching_controller_and_follows_parented_world_motion() && ok;
+    ok = test_ragdoll_finalizer_unregisters_active_world_objects() && ok;
     ok = test_ragdoll_activate_settle_deactivate() && ok;
     ok = test_ragdoll_game3d_sugar() && ok;
     ok = test_time_pause_freezes_simulation() && ok;

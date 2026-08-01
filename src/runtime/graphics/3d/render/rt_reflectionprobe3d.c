@@ -29,6 +29,8 @@
 
 #include "rt_reflectionprobe3d.h"
 #include "rt_canvas3d.h"
+#include "rt_canvas3d_internal.h"
+#include "rt_g3d_ref_slots.h"
 #include "rt_graphics3d_ids.h"
 #include "rt_scene3d.h"
 #include "rt_trap.h"
@@ -48,10 +50,10 @@ extern double rt_vec3_x(void *v);
 extern double rt_vec3_y(void *v);
 extern double rt_vec3_z(void *v);
 extern void *rt_vec3_new(double x, double y, double z);
-extern void *rt_rendertarget3d_new(int64_t width, int64_t height);
 extern void *rt_rendertarget3d_as_pixels(void *obj);
 extern void *rt_camera3d_new(double fov_deg, double aspect, double near_val, double far_val);
-extern void rt_camera3d_look_at(void *obj, void *eye, void *target, void *up);
+
+#define REFLECTIONPROBE3D_COORD_ABS_MAX 1.0e12
 
 typedef struct rt_reflectionprobe3d {
     void *vptr;
@@ -74,17 +76,38 @@ static int probe_read_vec3(void *v, double out[3]) {
     out[0] = rt_vec3_x(v);
     out[1] = rt_vec3_y(v);
     out[2] = rt_vec3_z(v);
-    return 1;
+    return isfinite(out[0]) && isfinite(out[1]) && isfinite(out[2]);
+}
+
+/// @brief Clamp one finite authored coordinate to the shared stable world range.
+/// @param value Finite coordinate read from a validated Vec3.
+/// @return Coordinate in `[-REFLECTIONPROBE3D_COORD_ABS_MAX, +max]`.
+static double probe_clamp_coord(double value) {
+    if (value > REFLECTIONPROBE3D_COORD_ABS_MAX)
+        return REFLECTIONPROBE3D_COORD_ABS_MAX;
+    if (value < -REFLECTIONPROBE3D_COORD_ABS_MAX)
+        return -REFLECTIONPROBE3D_COORD_ABS_MAX;
+    return value;
+}
+
+/// @brief Release a retained cubemap slot without operating on a wrong-class pointer.
+/// @param[in,out] slot Probe cubemap ownership slot.
+static void probe_release_cubemap(void **slot) {
+    if (!slot || !*slot)
+        return;
+    if (!rt_g3d_has_class(*slot, RT_G3D_CUBEMAP3D_CLASS_ID)) {
+        rt_g3d_ref_slot_clear_unowned(slot);
+        return;
+    }
+    rt_g3d_ref_slot_release(slot);
 }
 
 /// @brief Release the cubemap retained by a finalized reflection probe.
 /// @param obj ReflectionProbe3D object being finalized; ignored when `NULL`.
 static void reflectionprobe3d_finalize(void *obj) {
     rt_reflectionprobe3d *probe = (rt_reflectionprobe3d *)obj;
-    if (probe && probe->cubemap && rt_obj_release_check0(probe->cubemap))
-        rt_obj_free(probe->cubemap);
     if (probe)
-        probe->cubemap = NULL;
+        probe_release_cubemap(&probe->cubemap);
 }
 
 /// @brief Create a reflection probe with normalized axis-aligned influence bounds.
@@ -108,6 +131,11 @@ void *rt_reflectionprobe3d_new(void *position, void *box_min, void *box_max) {
     }
     memset(probe, 0, sizeof(*probe));
     rt_obj_set_finalizer(probe, reflectionprobe3d_finalize);
+    for (int a = 0; a < 3; ++a) {
+        pos[a] = probe_clamp_coord(pos[a]);
+        bmin[a] = probe_clamp_coord(bmin[a]);
+        bmax[a] = probe_clamp_coord(bmax[a]);
+    }
     memcpy(probe->position, pos, sizeof(pos));
     for (int a = 0; a < 3; ++a) {
         probe->box_min[a] = bmin[a] < bmax[a] ? bmin[a] : bmax[a];
@@ -174,7 +202,10 @@ void rt_reflectionprobe3d_set_resolution(void *obj, int64_t resolution) {
         resolution = 16;
     if (resolution > 512)
         resolution = 512;
-    probe->resolution = resolution;
+    if (probe->resolution != resolution) {
+        probe->resolution = resolution;
+        probe->capture_dirty = 1;
+    }
 }
 
 /// @brief Return the configured cubemap face resolution.
@@ -216,9 +247,15 @@ int8_t rt_reflectionprobe3d_contains(void *obj, void *position) {
     if (!probe || !probe_read_vec3(position, pos))
         return 0;
     for (int a = 0; a < 3; ++a) {
-        double center = (probe->box_min[a] + probe->box_max[a]) * 0.5;
-        double half = (probe->box_max[a] - probe->box_min[a]) * 0.5 * probe->influence_scale;
-        if (pos[a] < center - half || pos[a] > center + half)
+        double scale =
+            fmax(1.0, fmax(fabs(pos[a]), fmax(fabs(probe->box_min[a]), fabs(probe->box_max[a]))));
+        double lo = probe->box_min[a] / scale;
+        double hi = probe->box_max[a] / scale;
+        double point = pos[a] / scale;
+        double center = lo * 0.5 + hi * 0.5;
+        double half = (hi * 0.5 - lo * 0.5) * probe->influence_scale;
+        if (!isfinite(lo) || !isfinite(hi) || !isfinite(point) || !isfinite(half) ||
+            point < center - half || point > center + half)
             return 0;
     }
     return 1;
@@ -233,6 +270,11 @@ void *rt_reflectionprobe3d_get_cubemap(void *obj) {
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.get_Cubemap: invalid probe");
     if (!probe || !probe->cubemap)
         return NULL;
+    if (!rt_cubemap3d_is_complete(probe->cubemap)) {
+        probe_release_cubemap(&probe->cubemap);
+        probe->capture_dirty = 1;
+        return NULL;
+    }
     rt_obj_retain_maybe(probe->cubemap);
     return probe->cubemap;
 }
@@ -249,8 +291,45 @@ void *rt_reflectionprobe3d_get_cubemap(void *obj) {
 int8_t rt_reflectionprobe3d_capture(void *obj, void *canvas, void *scene) {
     rt_reflectionprobe3d *probe =
         reflectionprobe3d_checked(obj, "ReflectionProbe3D.Capture: invalid probe");
-    if (!probe || !canvas || !scene)
+    rt_canvas3d *canvas_impl;
+    void *previous_target = NULL;
+    void *captured_cubemap = NULL;
+    int target_bound = 0;
+    if (!probe)
         return 0;
+    /* Capture only becomes current after all six faces and target restoration commit. */
+    probe->capture_dirty = 1;
+    if (!rt_g3d_has_class(canvas, RT_G3D_CANVAS3D_CLASS_ID) ||
+        !rt_g3d_has_class(scene, RT_G3D_SCENE3D_CLASS_ID))
+        return 0;
+    canvas_impl = (rt_canvas3d *)canvas;
+    if (canvas_impl->in_frame)
+        return 0;
+    if (canvas_impl->render_target_owner) {
+        rt_rendertarget3d *previous;
+        if (!rt_g3d_has_class(canvas_impl->render_target_owner, RT_G3D_RENDERTARGET3D_CLASS_ID))
+            return 0;
+        previous = canvas_impl->render_target_owner;
+        if (!previous->target || canvas_impl->render_target != previous->target ||
+            previous->width != previous->target->width ||
+            previous->height != previous->target->height ||
+            !vgfx3d_rendertarget_valid_pixels(previous->target, NULL))
+            return 0;
+        previous_target = previous;
+    } else if (canvas_impl->offscreen || canvas_impl->render_target) {
+        return 0;
+    }
+    if (probe->resolution < 16)
+        probe->resolution = 16;
+    if (probe->resolution > 512)
+        probe->resolution = 512;
+    for (int lane = 0; lane < 3; ++lane) {
+        if (!isfinite(probe->position[lane])) {
+            probe->capture_dirty = 1;
+            return 0;
+        }
+        probe->position[lane] = probe_clamp_coord(probe->position[lane]);
+    }
     static const double face_fwd[6][3] = {
         {1, 0, 0}, {-1, 0, 0}, {0, 1, 0}, {0, -1, 0}, {0, 0, 1}, {0, 0, -1}};
     static const double face_up[6][3] = {
@@ -263,46 +342,62 @@ int8_t rt_reflectionprobe3d_capture(void *obj, void *canvas, void *scene) {
     void *target = rt_rendertarget3d_new_hdr(probe->resolution, probe->resolution);
     void *camera = rt_camera3d_new(90.0, 1.0, 0.05, 10000.0);
     int ok = target && camera;
+    if (ok && previous_target)
+        rt_obj_retain_maybe(previous_target);
+    else if (!ok)
+        previous_target = NULL;
+    if (ok) {
+        rt_canvas3d_set_render_target(canvas, target);
+        target_bound = canvas_impl->render_target_owner == target;
+        ok = target_bound;
+    }
     for (int f = 0; f < 6 && ok; ++f) {
-        void *eye = rt_vec3_new(probe->position[0], probe->position[1], probe->position[2]);
-        void *look = rt_vec3_new(probe->position[0] + face_fwd[f][0],
-                                 probe->position[1] + face_fwd[f][1],
-                                 probe->position[2] + face_fwd[f][2]);
-        void *up = rt_vec3_new(face_up[f][0], face_up[f][1], face_up[f][2]);
-        if (eye && look && up) {
-            rt_camera3d_look_at(camera, eye, look, up);
-            rt_canvas3d_set_render_target(canvas, target);
-            rt_scene3d_draw(scene, canvas, camera);
-            rt_canvas3d_reset_render_target(canvas);
-            faces[f] = rt_rendertarget3d_as_pixels(target);
-            if (!faces[f])
-                ok = 0;
-        } else {
+        rt_camera3d_look_at_components(camera,
+                                       probe->position[0],
+                                       probe->position[1],
+                                       probe->position[2],
+                                       probe->position[0] + face_fwd[f][0],
+                                       probe->position[1] + face_fwd[f][1],
+                                       probe->position[2] + face_fwd[f][2],
+                                       face_up[f][0],
+                                       face_up[f][1],
+                                       face_up[f][2]);
+        rt_scene3d_draw(scene, canvas, camera);
+        faces[f] = rt_rendertarget3d_as_pixels(target);
+        if (!faces[f])
             ok = 0;
-        }
-        if (eye && rt_obj_release_check0(eye))
-            rt_obj_free(eye);
-        if (look && rt_obj_release_check0(look))
-            rt_obj_free(look);
-        if (up && rt_obj_release_check0(up))
-            rt_obj_free(up);
     }
     if (ok) {
-        void *cubemap =
+        captured_cubemap =
             rt_cubemap3d_new(faces[0], faces[1], faces[2], faces[3], faces[4], faces[5]);
-        if (cubemap) {
-            if (probe->cubemap && rt_obj_release_check0(probe->cubemap))
-                rt_obj_free(probe->cubemap);
-            probe->cubemap = cubemap;
-            probe->capture_dirty = 0;
-        } else {
+        if (!captured_cubemap)
             ok = 0;
-        }
     }
     for (int f = 0; f < 6; ++f) {
         if (faces[f] && rt_obj_release_check0(faces[f]))
             rt_obj_free(faces[f]);
     }
+    if (target_bound) {
+        if (previous_target)
+            rt_canvas3d_set_render_target(canvas, previous_target);
+        else
+            rt_canvas3d_reset_render_target(canvas);
+        if ((previous_target && canvas_impl->render_target_owner != previous_target) ||
+            (!previous_target && canvas_impl->render_target_owner))
+            ok = 0;
+    }
+    if (previous_target && rt_obj_release_check0(previous_target))
+        rt_obj_free(previous_target);
+    if (ok && captured_cubemap) {
+        probe_release_cubemap(&probe->cubemap);
+        probe->cubemap = captured_cubemap;
+        captured_cubemap = NULL;
+        probe->capture_dirty = 0;
+    } else {
+        probe->capture_dirty = 1;
+    }
+    if (captured_cubemap && rt_obj_release_check0(captured_cubemap))
+        rt_obj_free(captured_cubemap);
     if (target && rt_obj_release_check0(target))
         rt_obj_free(target);
     if (camera && rt_obj_release_check0(camera))

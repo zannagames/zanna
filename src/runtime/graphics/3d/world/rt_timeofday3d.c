@@ -33,6 +33,7 @@
 
 #include "rt_timeofday3d.h"
 #include "rt_canvas3d.h"
+#include "rt_g3d_ref_slots.h"
 #include "rt_graphics3d_ids.h"
 #include "rt_reflectionprobe3d.h"
 #include "rt_sky3d.h"
@@ -67,12 +68,65 @@ typedef struct rt_timeofday3d {
     int8_t has_refresh_dir;
 } rt_timeofday3d;
 
-/// @brief Release and clear one retained TimeOfDay3D consumer slot.
-/// @param slot Address of a valid retained-object slot.
-static void timeofday3d_release(void **slot) {
-    if (*slot && rt_obj_release_check0(*slot))
-        rt_obj_free(*slot);
-    *slot = NULL;
+/// @brief Release and clear one retained consumer slot without touching a wrong-class pointer.
+/// @param slot Address of the retained-object slot.
+/// @param class_id Runtime class the slot is allowed to own.
+static void timeofday3d_release(void **slot, int64_t class_id) {
+    if (!slot || !*slot)
+        return;
+    if (!rt_g3d_has_class(*slot, class_id)) {
+        rt_g3d_ref_slot_clear_unowned(slot);
+        return;
+    }
+    rt_g3d_ref_slot_release(slot);
+}
+
+/// @brief Restore finite, bounded clock configuration before derived arithmetic.
+/// @param[in,out] tod Clock state to repair; null is ignored.
+static void timeofday3d_repair_state(rt_timeofday3d *tod) {
+    if (!tod)
+        return;
+    if (!isfinite(tod->hours))
+        tod->hours = 12.0;
+    else {
+        tod->hours = fmod(tod->hours, 24.0);
+        if (tod->hours < 0.0)
+            tod->hours += 24.0;
+    }
+    if (!isfinite(tod->day_length_seconds) || tod->day_length_seconds < 0.0)
+        tod->day_length_seconds = 0.0;
+    if (!isfinite(tod->latitude_degrees) || tod->latitude_degrees < -85.0 ||
+        tod->latitude_degrees > 85.0)
+        tod->latitude_degrees = 35.0;
+    if (!isfinite(tod->refresh_degrees) || tod->refresh_degrees <= 0.1 ||
+        tod->refresh_degrees > 45.0)
+        tod->refresh_degrees = 2.0;
+    tod->has_refresh_dir = tod->has_refresh_dir ? 1 : 0;
+    if (tod->has_refresh_dir) {
+        double scale = fmax(fabs(tod->last_refresh_dir[0]),
+                            fmax(fabs(tod->last_refresh_dir[1]), fabs(tod->last_refresh_dir[2])));
+        if (!isfinite(scale) || scale <= 1e-12) {
+            tod->has_refresh_dir = 0;
+        } else {
+            double x = tod->last_refresh_dir[0] / scale;
+            double y = tod->last_refresh_dir[1] / scale;
+            double z = tod->last_refresh_dir[2] / scale;
+            double len = sqrt(x * x + y * y + z * z);
+            if (!isfinite(len) || len <= 1e-12) {
+                tod->has_refresh_dir = 0;
+            } else {
+                tod->last_refresh_dir[0] = x / len;
+                tod->last_refresh_dir[1] = y / len;
+                tod->last_refresh_dir[2] = z / len;
+            }
+        }
+    }
+    if (tod->sun_light && !rt_g3d_has_class(tod->sun_light, RT_G3D_LIGHT3D_CLASS_ID))
+        rt_g3d_ref_slot_clear_unowned(&tod->sun_light);
+    if (tod->sky && !rt_g3d_has_class(tod->sky, RT_G3D_SKY3D_CLASS_ID))
+        rt_g3d_ref_slot_clear_unowned(&tod->sky);
+    if (tod->probe && !rt_g3d_has_class(tod->probe, RT_G3D_REFLECTIONPROBE3D_CLASS_ID))
+        rt_g3d_ref_slot_clear_unowned(&tod->probe);
 }
 
 /// @brief Release every light, sky, and reflection-probe reference owned by a clock.
@@ -81,9 +135,9 @@ static void timeofday3d_finalize(void *obj) {
     rt_timeofday3d *tod = (rt_timeofday3d *)obj;
     if (!tod)
         return;
-    timeofday3d_release(&tod->sun_light);
-    timeofday3d_release(&tod->sky);
-    timeofday3d_release(&tod->probe);
+    timeofday3d_release(&tod->sun_light, RT_G3D_LIGHT3D_CLASS_ID);
+    timeofday3d_release(&tod->sky, RT_G3D_SKY3D_CLASS_ID);
+    timeofday3d_release(&tod->probe, RT_G3D_REFLECTIONPROBE3D_CLASS_ID);
 }
 
 /// @brief Allocate a paused noon clock with default latitude and refresh threshold.
@@ -134,6 +188,7 @@ void rt_timeofday3d_set_hours(void *obj, double hours) {
 /// @return Hour in `[0, 24)`, or zero when validation fails.
 double rt_timeofday3d_get_hours(void *obj) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.get_Hours: invalid clock");
+    timeofday3d_repair_state(tod);
     return tod ? tod->hours : 0.0;
 }
 
@@ -153,6 +208,7 @@ void rt_timeofday3d_set_day_length_seconds(void *obj, double seconds) {
 double rt_timeofday3d_get_day_length_seconds(void *obj) {
     rt_timeofday3d *tod =
         timeofday3d_checked(obj, "TimeOfDay3D.get_DayLengthSeconds: invalid clock");
+    timeofday3d_repair_state(tod);
     return tod ? tod->day_length_seconds : 0.0;
 }
 
@@ -172,6 +228,7 @@ void rt_timeofday3d_set_latitude_degrees(void *obj, double degrees) {
 double rt_timeofday3d_get_latitude_degrees(void *obj) {
     rt_timeofday3d *tod =
         timeofday3d_checked(obj, "TimeOfDay3D.get_LatitudeDegrees: invalid clock");
+    timeofday3d_repair_state(tod);
     return tod ? tod->latitude_degrees : 0.0;
 }
 
@@ -190,6 +247,7 @@ void rt_timeofday3d_set_refresh_degrees(void *obj, double degrees) {
 /// @return Threshold in degrees, or zero when validation fails.
 double rt_timeofday3d_get_refresh_degrees(void *obj) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.get_RefreshDegrees: invalid clock");
+    timeofday3d_repair_state(tod);
     return tod ? tod->refresh_degrees : 0.0;
 }
 
@@ -203,9 +261,11 @@ static void timeofday3d_bind(void **slot, void *value, int64_t class_id, const c
         rt_trap(trap);
         return;
     }
+    if (*slot == value)
+        return;
     if (value)
         rt_obj_retain_maybe(value);
-    timeofday3d_release(slot);
+    timeofday3d_release(slot, class_id);
     *slot = value;
 }
 
@@ -247,9 +307,15 @@ void rt_timeofday3d_set_reflection_probe(void *obj, void *probe) {
 /// @param obj TimeOfDay3D handle; invalid handles trap.
 /// @param out_dir Three-element output array receiving a normalized direction.
 void rt_timeofday3d_get_sun_direction_raw(void *obj, double out_dir[3]) {
+    if (out_dir) {
+        out_dir[0] = 0.0;
+        out_dir[1] = 1.0;
+        out_dir[2] = 0.0;
+    }
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.SunDirection: invalid clock");
     if (!tod || !out_dir)
         return;
+    timeofday3d_repair_state(tod);
     /* Hour angle: 12h = solar noon; the sun wheels east (-X at 6h) to west.
      * The horizontal component traces a full CIRCLE over the day (bearing =
      * hour angle), so both the direction and its time-derivative stay
@@ -293,14 +359,20 @@ void *rt_timeofday3d_get_sun_direction(void *obj) {
 ///   the horizon); the sky and probe refresh only when the sun has moved more
 ///   than RefreshDegrees since the last refresh (IBL/capture cost throttle).
 /// @param obj TimeOfDay3D handle; invalid handles trap and are ignored.
-/// @param dt Positive finite scaled simulation delta in seconds; invalid values do not advance time.
+/// @param dt Positive finite scaled simulation delta in seconds; invalid values do not advance
+/// time.
 /// @param canvas Optional Canvas3D handle on which a refreshed procedural sky is installed.
 void rt_timeofday3d_advance(void *obj, double dt, void *canvas) {
     rt_timeofday3d *tod = timeofday3d_checked(obj, "TimeOfDay3D.Advance: invalid clock");
     if (!tod)
         return;
+    timeofday3d_repair_state(tod);
     if (isfinite(dt) && dt > 0.0 && tod->day_length_seconds > 0.0) {
-        tod->hours += dt / tod->day_length_seconds * 24.0;
+        double remainder = fmod(dt, tod->day_length_seconds);
+        double advance_hours = remainder / tod->day_length_seconds * 24.0;
+        if (!isfinite(advance_hours))
+            advance_hours = 0.0;
+        tod->hours += advance_hours;
         tod->hours = fmod(tod->hours, 24.0);
         if (tod->hours < 0.0)
             tod->hours += 24.0;
@@ -333,19 +405,25 @@ void rt_timeofday3d_advance(void *obj, double dt, void *canvas) {
                            : -1.0;
     double threshold_cos = cos(tod->refresh_degrees * (3.14159265358979323846 / 180.0));
     if (!tod->has_refresh_dir || moved_cos < threshold_cos) {
+        int refresh_ok = 1;
         if (tod->sky) {
             void *sun_vec = rt_vec3_new(dir[0], dir[1], dir[2]);
             if (sun_vec) {
                 rt_sky3d_set_sun_direction(tod->sky, sun_vec);
                 if (rt_obj_release_check0(sun_vec))
                     rt_obj_free(sun_vec);
+                if (!rt_sky3d_update(tod->sky, canvas))
+                    refresh_ok = 0;
+            } else {
+                refresh_ok = 0;
             }
-            (void)rt_sky3d_update(tod->sky, canvas);
         }
         if (tod->probe)
             rt_reflectionprobe3d_set_capture_dirty(tod->probe, 1);
-        memcpy(tod->last_refresh_dir, dir, sizeof(tod->last_refresh_dir));
-        tod->has_refresh_dir = 1;
+        if (refresh_ok) {
+            memcpy(tod->last_refresh_dir, dir, sizeof(tod->last_refresh_dir));
+            tod->has_refresh_dir = 1;
+        }
     }
 }
 

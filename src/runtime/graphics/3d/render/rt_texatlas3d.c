@@ -56,6 +56,9 @@ typedef struct {
 typedef struct {
     void *vptr;
     uint32_t *data;
+    uint32_t *allocated_data;
+    size_t data_pixel_count;
+    int32_t allocated_width, allocated_height;
     int32_t width, height;
     atlas_region_t regions[ATLAS_MAX_REGIONS];
     int32_t region_count;
@@ -70,6 +73,18 @@ static void texatlas3d_release_ref(void **slot) {
     rt_g3d_ref_slot_release(slot);
 }
 
+/// @brief Release the cached Pixels mirror only when its class/layout is still valid.
+/// @param[in,out] slot Atlas cache ownership slot.
+static void texatlas3d_release_pixels_ref(void **slot) {
+    if (!slot || !*slot)
+        return;
+    if (!rt_pixels_checked_impl_or_null(*slot)) {
+        rt_g3d_ref_slot_clear_unowned(slot);
+        return;
+    }
+    texatlas3d_release_ref(slot);
+}
+
 /// @brief GC finalizer — free the atlas backing pixel buffer and cached Pixels copy.
 /// @details The atlas owns its `data` buffer directly and owns `cached_pixels`
 ///   as a separate Pixels object rebuilt from the backing buffer.
@@ -78,9 +93,10 @@ static void texatlas3d_finalizer(void *obj) {
     rt_texatlas3d *a = (rt_texatlas3d *)obj;
     if (!a)
         return;
-    free(a->data);
+    free(a->allocated_data);
+    a->allocated_data = NULL;
     a->data = NULL;
-    texatlas3d_release_ref(&a->cached_pixels);
+    texatlas3d_release_pixels_ref(&a->cached_pixels);
 }
 
 /// @brief Compute `width * height` as a checked size_t pixel count.
@@ -114,41 +130,104 @@ static int32_t texatlas3d_safe_region_count(const rt_texatlas3d *a) {
     return a->region_count < ATLAS_MAX_REGIONS ? a->region_count : ATLAS_MAX_REGIONS;
 }
 
+/// @brief Validate that a Pixels object's declared image fits its embedded runtime payload.
+/// @param pixels Original runtime handle owning @p pv.
+/// @param pv Validated Pixels header.
+/// @param[out] out_count Optional pixel-count destination.
+/// @return Nonzero when dimensions, embedded pointer, and allocation size agree.
+static int texatlas3d_pixels_storage_valid(void *pixels,
+                                           const rt_pixels_impl *pv,
+                                           size_t *out_count) {
+    size_t count;
+    size_t bytes;
+    size_t total;
+    if (out_count)
+        *out_count = 0u;
+    if (!pixels || !pv || !pv->data || pv->width <= 0 || pv->height <= 0)
+        return 0;
+    if ((uint64_t)pv->width > SIZE_MAX / (uint64_t)pv->height)
+        return 0;
+    count = (size_t)pv->width * (size_t)pv->height;
+    if (count > (SIZE_MAX - sizeof(rt_pixels_impl)) / sizeof(uint32_t))
+        return 0;
+    bytes = count * sizeof(uint32_t);
+    total = sizeof(rt_pixels_impl) + bytes;
+    if (pv->data != (const uint32_t *)((const uint8_t *)pv + sizeof(rt_pixels_impl)) ||
+        !rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, total))
+        return 0;
+    if (out_count)
+        *out_count = count;
+    return 1;
+}
+
 /// @brief Validate and compact atlas metadata before reads or packing mutations.
 /// @param a Atlas whose backing storage, regions, shelf cursor, and cache state are normalized.
 static void texatlas3d_repair(rt_texatlas3d *a) {
     if (!a)
         return;
     size_t pixel_count = 0u;
-    if (!a->data || a->width < 16 || a->height < 16 || a->width > 8192 || a->height > 8192 ||
-        !texatlas3d_pixel_count(a->width, a->height, &pixel_count)) {
+    if (a->cached_pixels) {
+        rt_pixels_impl *cached = rt_pixels_checked_impl_or_null(a->cached_pixels);
+        if (!cached) {
+            rt_g3d_ref_slot_clear_unowned(&a->cached_pixels);
+            a->dirty = 1;
+        } else if (cached->width != a->allocated_width || cached->height != a->allocated_height ||
+                   !texatlas3d_pixels_storage_valid(a->cached_pixels, cached, NULL)) {
+            texatlas3d_release_pixels_ref(&a->cached_pixels);
+            a->dirty = 1;
+        }
+    }
+    if (a->allocated_width < 16 || a->allocated_height < 16 || a->allocated_width > 8192 ||
+        a->allocated_height > 8192 ||
+        !texatlas3d_pixel_count(a->allocated_width, a->allocated_height, &pixel_count) ||
+        pixel_count != a->data_pixel_count || !a->allocated_data) {
+        a->data = NULL;
         a->region_count = 0;
         a->shelf_x = 0;
         a->shelf_y = 0;
         a->shelf_h = 0;
         a->dirty = 1;
-        texatlas3d_release_ref(&a->cached_pixels);
+        texatlas3d_release_pixels_ref(&a->cached_pixels);
         return;
     }
-    (void)pixel_count;
+    a->data = a->allocated_data;
+    a->width = a->allocated_width;
+    a->height = a->allocated_height;
     int32_t count = texatlas3d_safe_region_count(a);
-    int32_t write = 0;
+    int32_t valid_count = 0;
+    int32_t shelf_x = 0;
+    int32_t shelf_y = 0;
+    int32_t shelf_h = 0;
     for (int32_t read = 0; read < count; ++read) {
         atlas_region_t r = a->regions[read];
-        if (r.w <= 0 || r.h <= 0 || r.x < 0 || r.y < 0 || r.x > a->width || r.y > a->height ||
-            r.w > a->width - r.x || r.h > a->height - r.y)
-            continue;
-        a->regions[write++] = r;
+        if (r.w <= 0 || r.h <= 0 || r.x < 1 || r.y < 1 || r.x >= a->width || r.y >= a->height ||
+            r.w >= a->width - r.x + 1 || r.h >= a->height - r.y + 1)
+            break;
+        int32_t top = r.y - 1;
+        if (top == shelf_y && r.x == shelf_x + 1) {
+            /* Continue the current shelf. */
+        } else if (r.x == 1 && top == shelf_y + shelf_h) {
+            shelf_y += shelf_h;
+            shelf_x = 0;
+            shelf_h = 0;
+        } else {
+            break;
+        }
+        if (r.w + 2 > a->width - shelf_x || r.h + 2 > a->height - shelf_y)
+            break;
+        shelf_x += r.w + 2;
+        if (r.h + 2 > shelf_h)
+            shelf_h = r.h + 2;
+        valid_count++;
     }
-    for (int32_t i = write; i < count; ++i)
+    for (int32_t i = valid_count; i < count; ++i)
         memset(&a->regions[i], 0, sizeof(a->regions[i]));
-    a->region_count = write;
-    if (a->shelf_x < 0 || a->shelf_x > a->width)
-        a->shelf_x = 0;
-    if (a->shelf_y < 0 || a->shelf_y > a->height)
-        a->shelf_y = 0;
-    if (a->shelf_h < 0 || a->shelf_h > a->height - a->shelf_y)
-        a->shelf_h = 0;
+    if (valid_count != count)
+        a->dirty = 1;
+    a->region_count = valid_count;
+    a->shelf_x = shelf_x;
+    a->shelf_y = shelf_y;
+    a->shelf_h = shelf_h;
     a->dirty = a->dirty ? 1 : 0;
 }
 
@@ -194,6 +273,9 @@ void *rt_texatlas3d_new(int64_t width, int64_t height) {
     a->vptr = NULL;
     a->width = (int32_t)width;
     a->height = (int32_t)height;
+    a->allocated_width = (int32_t)width;
+    a->allocated_height = (int32_t)height;
+    a->data_pixel_count = pixel_count;
     a->data = (uint32_t *)calloc(pixel_count, sizeof(uint32_t));
     if (!a->data) {
         if (rt_obj_release_check0(a))
@@ -201,6 +283,7 @@ void *rt_texatlas3d_new(int64_t width, int64_t height) {
         rt_trap("TextureAtlas3D.New: allocation failed");
         return NULL;
     }
+    a->allocated_data = a->data;
     a->region_count = 0;
     a->shelf_x = 0;
     a->shelf_y = 0;
@@ -226,11 +309,11 @@ int64_t rt_texatlas3d_add(void *obj, void *pixels) {
     if (!a)
         return -1;
     texatlas3d_repair(a);
-    if (a->region_count >= ATLAS_MAX_REGIONS)
+    if (!a->data || a->region_count < 0 || a->region_count >= ATLAS_MAX_REGIONS)
         return -1;
 
-    rt_pixels_impl *pv = rt_pixels_checked_impl(pixels, "TextureAtlas3D.Add: expected Pixels");
-    if (!pv || !pv->data || pv->width <= 0 || pv->height <= 0 || pv->width > INT32_MAX - 2 ||
+    rt_pixels_impl *pv = rt_pixels_checked_impl_or_null(pixels);
+    if (!pv || !texatlas3d_pixels_storage_valid(pixels, pv, NULL) || pv->width > INT32_MAX - 2 ||
         pv->height > INT32_MAX - 2)
         return -1;
 
@@ -255,14 +338,10 @@ int64_t rt_texatlas3d_add(void *obj, void *pixels) {
     int32_t dx = a->shelf_x + 1;
     int32_t dy = a->shelf_y + 1;
 
-    for (int32_t y = 0; y < ph; y++) {
-        for (int32_t x = 0; x < pw; x++) {
-            int32_t ax = dx + x, ay = dy + y;
-            if (ax < a->width && ay < a->height)
-                a->data[(size_t)ay * (size_t)a->width + (size_t)ax] =
-                    pv->data[(int64_t)y * pv->width + x];
-        }
-    }
+    for (int32_t y = 0; y < ph; y++)
+        memcpy(&a->data[(size_t)(dy + y) * (size_t)a->width + (size_t)dx],
+               &pv->data[(size_t)y * (size_t)pw],
+               (size_t)pw * sizeof(uint32_t));
 
     for (int32_t x = 0; x < pw; x++) {
         uint32_t top = pv->data[x];
@@ -331,7 +410,8 @@ void *rt_texatlas3d_get_texture(void *obj) {
             return NULL;
         }
         memcpy(pv->data, a->data, pixel_count * sizeof(uint32_t));
-        texatlas3d_release_ref(&a->cached_pixels);
+        pixels_touch(pv);
+        texatlas3d_release_pixels_ref(&a->cached_pixels);
         a->cached_pixels = new_pixels;
         a->dirty = 0;
     }

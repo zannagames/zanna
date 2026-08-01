@@ -53,7 +53,7 @@ void rt_reflectionprobe3d_set_influence_scale(void *probe, double scale);
 /// @return The configured scale, or zero for an invalid probe.
 double rt_reflectionprobe3d_get_influence_scale(void *probe);
 
-/// @brief Capture face resolution (16..512, default 64).
+/// @brief Capture face resolution (16..512, default 64); changes request recapture.
 /// @param probe ReflectionProbe3D instance.
 /// @param resolution Requested square face resolution, clamped from 16 through 512.
 void rt_reflectionprobe3d_set_resolution(void *probe, int64_t resolution);

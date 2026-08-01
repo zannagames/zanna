@@ -33,7 +33,10 @@
 
 #include "rt_sky3d.h"
 #include "rt_canvas3d.h"
+#include "rt_canvas3d_internal.h"
+#include "rt_g3d_ref_slots.h"
 #include "rt_graphics3d_ids.h"
+#include "rt_pixels_internal.h"
 #include "rt_trap.h"
 
 #include <math.h>
@@ -51,7 +54,6 @@ extern double rt_vec3_x(void *v);
 extern double rt_vec3_y(void *v);
 extern double rt_vec3_z(void *v);
 extern void *rt_pixels_new(int64_t width, int64_t height);
-extern void rt_pixels_set(void *pixels, int64_t x, int64_t y, int64_t color);
 extern void rt_canvas3d_set_skybox(void *canvas, void *cubemap);
 
 typedef struct rt_sky3d {
@@ -64,14 +66,24 @@ typedef struct rt_sky3d {
     void *cubemap; /* retained generated CubeMap3D */
 } rt_sky3d;
 
+/// @brief Release a retained cubemap only when its runtime class is still valid.
+/// @param[in,out] slot Sky cubemap ownership slot.
+static void sky3d_release_cubemap(void **slot) {
+    if (!slot || !*slot)
+        return;
+    if (!rt_g3d_has_class(*slot, RT_G3D_CUBEMAP3D_CLASS_ID)) {
+        rt_g3d_ref_slot_clear_unowned(slot);
+        return;
+    }
+    rt_g3d_ref_slot_release(slot);
+}
+
 /// @brief Release the generated cubemap retained by a Sky3D object.
 /// @param obj Sky3D runtime object being finalized; NULL is accepted.
 static void sky3d_finalize(void *obj) {
     rt_sky3d *sky = (rt_sky3d *)obj;
-    if (sky && sky->cubemap && rt_obj_release_check0(sky->cubemap))
-        rt_obj_free(sky->cubemap);
     if (sky)
-        sky->cubemap = NULL;
+        sky3d_release_cubemap(&sky->cubemap);
 }
 
 /// @brief Allocate a procedural sky with clear-day defaults and a dirty 64-pixel cubemap.
@@ -119,13 +131,22 @@ void rt_sky3d_set_sun_direction(void *obj, void *direction) {
     if (!sky || !direction || rt_obj_class_id(direction) != RT_VEC3_CLASS_ID)
         return;
     double d[3] = {rt_vec3_x(direction), rt_vec3_y(direction), rt_vec3_z(direction)};
-    double len = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
-    if (!isfinite(len) || len < 1e-9)
+    double scale = fmax(fabs(d[0]), fmax(fabs(d[1]), fabs(d[2])));
+    if (!isfinite(d[0]) || !isfinite(d[1]) || !isfinite(d[2]) || !isfinite(scale) || scale < 1e-12)
         return;
-    sky->sun_dir[0] = d[0] / len;
-    sky->sun_dir[1] = d[1] / len;
-    sky->sun_dir[2] = d[2] / len;
-    sky->dirty = 1;
+    d[0] /= scale;
+    d[1] /= scale;
+    d[2] /= scale;
+    double len = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if (!isfinite(len) || len < 1e-12)
+        return;
+    d[0] /= len;
+    d[1] /= len;
+    d[2] /= len;
+    if (sky->sun_dir[0] != d[0] || sky->sun_dir[1] != d[1] || sky->sun_dir[2] != d[2]) {
+        memcpy(sky->sun_dir, d, sizeof(d));
+        sky->dirty = 1;
+    }
 }
 
 /// @brief Set the atmospheric turbidity controlling horizon haze and sun-halo width.
@@ -162,10 +183,13 @@ void rt_sky3d_set_ground_albedo(void *obj, double r, double g, double b) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.SetGroundAlbedo: invalid sky");
     if (!sky)
         return;
-    sky->ground_albedo[0] = isfinite(r) && r > 0.0 ? (r > 1.0 ? 1.0 : r) : 0.0;
-    sky->ground_albedo[1] = isfinite(g) && g > 0.0 ? (g > 1.0 ? 1.0 : g) : 0.0;
-    sky->ground_albedo[2] = isfinite(b) && b > 0.0 ? (b > 1.0 ? 1.0 : b) : 0.0;
-    sky->dirty = 1;
+    double albedo[3] = {isfinite(r) && r > 0.0 ? (r > 1.0 ? 1.0 : r) : 0.0,
+                        isfinite(g) && g > 0.0 ? (g > 1.0 ? 1.0 : g) : 0.0,
+                        isfinite(b) && b > 0.0 ? (b > 1.0 ? 1.0 : b) : 0.0};
+    if (memcmp(sky->ground_albedo, albedo, sizeof(albedo)) != 0) {
+        memcpy(sky->ground_albedo, albedo, sizeof(albedo));
+        sky->dirty = 1;
+    }
 }
 
 /// @brief Set the square pixel resolution generated for each cubemap face.
@@ -310,6 +334,58 @@ int8_t rt_sky3d_update(void *obj, void *canvas) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.Update: invalid sky");
     if (!sky)
         return 0;
+    if (canvas && !rt_g3d_has_class(canvas, RT_G3D_CANVAS3D_CLASS_ID))
+        return 0;
+    if (sky->resolution < 16) {
+        sky->resolution = 16;
+        sky->dirty = 1;
+    } else if (sky->resolution > 256) {
+        sky->resolution = 256;
+        sky->dirty = 1;
+    }
+    if (!isfinite(sky->turbidity) || sky->turbidity < 1.0 || sky->turbidity > 10.0) {
+        sky->turbidity = 2.5;
+        sky->dirty = 1;
+    }
+    for (int lane = 0; lane < 3; ++lane) {
+        if (!isfinite(sky->ground_albedo[lane]) || sky->ground_albedo[lane] < 0.0 ||
+            sky->ground_albedo[lane] > 1.0) {
+            sky->ground_albedo[lane] = 0.25;
+            sky->dirty = 1;
+        }
+    }
+    {
+        double old_dir[3] = {sky->sun_dir[0], sky->sun_dir[1], sky->sun_dir[2]};
+        double dir_scale =
+            fmax(fabs(sky->sun_dir[0]), fmax(fabs(sky->sun_dir[1]), fabs(sky->sun_dir[2])));
+        if (!isfinite(dir_scale) || dir_scale < 1e-12) {
+            sky->sun_dir[0] = 0.0;
+            sky->sun_dir[1] = 1.0;
+            sky->sun_dir[2] = 0.0;
+            sky->dirty = 1;
+        } else {
+            double sx = sky->sun_dir[0] / dir_scale;
+            double sy = sky->sun_dir[1] / dir_scale;
+            double sz = sky->sun_dir[2] / dir_scale;
+            double len = sqrt(sx * sx + sy * sy + sz * sz);
+            if (!isfinite(len) || len < 1e-12) {
+                sky->sun_dir[0] = 0.0;
+                sky->sun_dir[1] = 1.0;
+                sky->sun_dir[2] = 0.0;
+            } else {
+                sky->sun_dir[0] = sx / len;
+                sky->sun_dir[1] = sy / len;
+                sky->sun_dir[2] = sz / len;
+            }
+        }
+        if (old_dir[0] != sky->sun_dir[0] || old_dir[1] != sky->sun_dir[1] ||
+            old_dir[2] != sky->sun_dir[2])
+            sky->dirty = 1;
+    }
+    if (sky->cubemap && !rt_cubemap3d_is_complete(sky->cubemap)) {
+        sky3d_release_cubemap(&sky->cubemap);
+        sky->dirty = 1;
+    }
     if (sky->dirty || !sky->cubemap) {
         int64_t dim = sky->resolution;
         void *faces[6] = {NULL, NULL, NULL, NULL, NULL, NULL};
@@ -317,6 +393,11 @@ int8_t rt_sky3d_update(void *obj, void *canvas) {
         for (int f = 0; f < 6 && ok; ++f) {
             faces[f] = rt_pixels_new(dim, dim);
             if (!faces[f]) {
+                ok = 0;
+                break;
+            }
+            rt_pixels_impl *face = rt_pixels_checked_impl_or_null(faces[f]);
+            if (!face || !face->data || face->width != dim || face->height != dim) {
                 ok = 0;
                 break;
             }
@@ -331,16 +412,17 @@ int8_t rt_sky3d_update(void *obj, void *canvas) {
                     int64_t ir = (int64_t)(fmin(fmax(rgb[0], 0.0), 1.0) * 255.0 + 0.5);
                     int64_t ig = (int64_t)(fmin(fmax(rgb[1], 0.0), 1.0) * 255.0 + 0.5);
                     int64_t ib = (int64_t)(fmin(fmax(rgb[2], 0.0), 1.0) * 255.0 + 0.5);
-                    rt_pixels_set(faces[f], x, y, (ir << 24) | (ig << 16) | (ib << 8) | 0xFF);
+                    face->data[(size_t)y * (size_t)dim + (size_t)x] =
+                        (uint32_t)((ir << 24) | (ig << 16) | (ib << 8) | 0xFF);
                 }
             }
+            pixels_touch(face);
         }
         if (ok) {
             void *cubemap =
                 rt_cubemap3d_new(faces[0], faces[1], faces[2], faces[3], faces[4], faces[5]);
             if (cubemap) {
-                if (sky->cubemap && rt_obj_release_check0(sky->cubemap))
-                    rt_obj_free(sky->cubemap);
+                sky3d_release_cubemap(&sky->cubemap);
                 sky->cubemap = cubemap;
                 sky->dirty = 0;
             } else {
@@ -367,6 +449,11 @@ void *rt_sky3d_get_cubemap(void *obj) {
     rt_sky3d *sky = sky3d_checked(obj, "Sky3D.get_Cubemap: invalid sky");
     if (!sky || !sky->cubemap)
         return NULL;
+    if (!rt_cubemap3d_is_complete(sky->cubemap)) {
+        sky3d_release_cubemap(&sky->cubemap);
+        sky->dirty = 1;
+        return NULL;
+    }
     rt_obj_retain_maybe(sky->cubemap);
     return sky->cubemap;
 }

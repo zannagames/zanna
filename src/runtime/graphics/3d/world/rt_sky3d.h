@@ -36,7 +36,7 @@ extern "C" {
 /// @return New GC-managed Sky3D handle, or NULL after allocation failure.
 void *rt_sky3d_new(void);
 
-/// @brief Set the (normalized internally) direction TOWARD the sun; marks dirty.
+/// @brief Set the normalized direction TOWARD the sun; marks dirty only when it changes.
 /// @param sky Sky3D handle; invalid handles trap and are ignored.
 /// @param direction Vec3 handle containing a finite nonzero direction toward the sun.
 void rt_sky3d_set_sun_direction(void *sky, void *direction);
@@ -51,7 +51,7 @@ void rt_sky3d_set_turbidity(void *sky, double turbidity);
 /// @return Turbidity in `[1, 10]`, or zero when validation fails.
 double rt_sky3d_get_turbidity(void *sky);
 
-/// @brief Ground hemisphere albedo used below the horizon; marks dirty.
+/// @brief Ground hemisphere albedo used below the horizon; marks dirty on change.
 /// @param sky Sky3D handle; invalid handles trap and are ignored.
 /// @param r Red albedo component, clamped to `[0, 1]`.
 /// @param g Green albedo component, clamped to `[0, 1]`.

@@ -39,15 +39,19 @@ extern "C" {
 #include "rt_perlin.h"
 #include "rt_physics3d.h"
 #include "rt_pixels.h"
+#include "rt_pixels_internal.h"
 #include "rt_quat.h"
 #include "rt_raycast3d.h"
+#include "rt_reflectionprobe3d.h"
 #include "rt_scene3d.h"
 #include "rt_scene3d_internal.h"
 #include "rt_skeleton3d.h"
+#include "rt_sky3d.h"
 #include "rt_sprite3d.h"
 #include "rt_string.h"
 #include "rt_terrain3d.h"
 #include "rt_texatlas3d.h"
+#include "rt_timeofday3d.h"
 #include "rt_transform3d.h"
 #include "rt_vec3.h"
 #include "rt_vegetation3d.h"
@@ -222,8 +226,8 @@ struct ParticleView {
     double accumulator;
     int8_t emitting;
     int8_t additive_blend;
-    double stretch_k;      /* velocity-aligned stretch factor */
-    float trail_lifetime;  /* ribbon trail history seconds */
+    double stretch_k;     /* velocity-aligned stretch factor */
+    float trail_lifetime; /* ribbon trail history seconds */
     int32_t trail_segments;
     float *trail_pos;
     float *trail_age;
@@ -308,6 +312,65 @@ struct InstBatchView {
     int32_t prev_count;
     int64_t last_motion_frame;
     int8_t has_prev_snapshot;
+};
+
+struct AtlasRegionView {
+    int32_t x;
+    int32_t y;
+    int32_t w;
+    int32_t h;
+};
+
+struct AtlasView {
+    void *vptr;
+    uint32_t *data;
+    uint32_t *allocated_data;
+    size_t data_pixel_count;
+    int32_t allocated_width;
+    int32_t allocated_height;
+    int32_t width;
+    int32_t height;
+    AtlasRegionView regions[256];
+    int32_t region_count;
+    int32_t shelf_x;
+    int32_t shelf_y;
+    int32_t shelf_h;
+    void *cached_pixels;
+    int8_t dirty;
+};
+
+struct SkyView {
+    void *vptr;
+    double sun_dir[3];
+    double turbidity;
+    double ground_albedo[3];
+    int64_t resolution;
+    int8_t dirty;
+    void *cubemap;
+};
+
+struct TimeOfDayView {
+    void *vptr;
+    double hours;
+    double day_length_seconds;
+    double latitude_degrees;
+    double refresh_degrees;
+    void *sun_light;
+    void *sky;
+    void *probe;
+    double last_refresh_dir[3];
+    int8_t has_refresh_dir;
+};
+
+struct ReflectionProbeView {
+    void *vptr;
+    double position[3];
+    double box_min[3];
+    double box_max[3];
+    double influence_scale;
+    int64_t resolution;
+    int8_t capture_dirty;
+    void *cubemap;
 };
 
 static double triangle_area_sq(const rt_mesh3d *mesh, uint32_t i0, uint32_t i1, uint32_t i2) {
@@ -1578,6 +1641,234 @@ static void release_retained_probe(void *probe) {
         rt_obj_free(probe);
 }
 
+static void test_texture_atlas_repairs_corrupt_storage_and_preserves_stable_ids() {
+    auto *atlas = static_cast<AtlasView *>(rt_texatlas3d_new(32, 16));
+    auto *pixels = rt_pixels_checked_impl_or_null(rt_pixels_new(2, 2));
+    assert(atlas != nullptr && pixels != nullptr);
+    rt_pixels_set(pixels, 0, 0, 0x01020304);
+    rt_pixels_set(pixels, 1, 0, 0x11121314);
+    rt_pixels_set(pixels, 0, 1, 0x21222324);
+    rt_pixels_set(pixels, 1, 1, 0x31323334);
+
+    assert(rt_texatlas3d_add(atlas, pixels) == 0);
+    void *first_texture = rt_texatlas3d_get_texture(atlas);
+    assert(first_texture != nullptr);
+    uint64_t first_generation = vgfx3d_get_pixels_generation(first_texture);
+    assert(first_generation > 0);
+    assert(rt_texatlas3d_get_texture(atlas) == first_texture);
+    assert(vgfx3d_get_pixels_generation(first_texture) == first_generation);
+
+    atlas->width = INT32_MAX;
+    atlas->height = -1;
+    atlas->shelf_x = INT32_MAX;
+    atlas->shelf_y = INT32_MAX;
+    atlas->shelf_h = INT32_MAX;
+    assert(rt_texatlas3d_add(atlas, pixels) == 1);
+    assert(atlas->width == 32 && atlas->height == 16);
+    assert(atlas->regions[1].x == 5 && atlas->regions[1].y == 1);
+
+    atlas->data = reinterpret_cast<uint32_t *>(uintptr_t{1});
+    assert(rt_texatlas3d_get_texture(atlas) != nullptr);
+    assert(atlas->data == atlas->allocated_data);
+
+    int64_t source_width = pixels->width;
+    uint32_t *source_data = pixels->data;
+    pixels->width = std::numeric_limits<int64_t>::max();
+    assert(rt_texatlas3d_add(atlas, pixels) == -1);
+    pixels->width = source_width;
+    pixels->data = source_data + 1;
+    assert(rt_texatlas3d_add(atlas, pixels) == -1);
+    pixels->data = source_data;
+    assert(rt_texatlas3d_add(atlas, rt_obj_new_i64(0, 8)) == -1);
+
+    assert(rt_texatlas3d_add(atlas, pixels) == 2);
+    atlas->regions[1].x = 17;
+    double u0 = -1.0, v0 = -1.0, u1 = -1.0, v1 = -1.0;
+    rt_texatlas3d_get_uv_rect(atlas, 2, &u0, &v0, &u1, &v1);
+    assert(u0 == 0.0 && v0 == 0.0 && u1 == 1.0 && v1 == 1.0);
+    assert(atlas->region_count == 1);
+    rt_texatlas3d_get_uv_rect(atlas, 0, &u0, &v0, &u1, &v1);
+    assert(std::fabs(u0 - 1.0 / 32.0) < 1e-12);
+
+    atlas->regions[0].y = INT32_MIN;
+    atlas->region_count = 1;
+    rt_texatlas3d_get_uv_rect(atlas, 0, &u0, &v0, &u1, &v1);
+    assert(atlas->region_count == 0);
+    assert(u0 == 0.0 && v0 == 0.0 && u1 == 1.0 && v1 == 1.0);
+
+    auto *wrong_cache_atlas = static_cast<AtlasView *>(rt_texatlas3d_new(16, 16));
+    void *wrong_cache = rt_obj_new_i64(0, 8);
+    assert(wrong_cache_atlas != nullptr && wrong_cache != nullptr);
+    rt_obj_retain_maybe(wrong_cache);
+    wrong_cache_atlas->cached_pixels = wrong_cache;
+    wrong_cache_atlas->dirty = 0;
+    assert(rt_texatlas3d_get_texture(wrong_cache_atlas) != nullptr);
+    assert(rt_obj_class_id(wrong_cache_atlas->cached_pixels) == RT_PIXELS_CLASS_ID);
+    release_retained_probe(wrong_cache);
+}
+
+static void test_sky_and_timeofday_repair_extreme_and_wrong_class_state() {
+    auto *sky = static_cast<SkyView *>(rt_sky3d_new());
+    assert(sky != nullptr);
+    rt_sky3d_set_resolution(sky, 16);
+    void *huge_direction = rt_vec3_new(std::numeric_limits<double>::max(),
+                                       std::numeric_limits<double>::max() * 0.5,
+                                       -std::numeric_limits<double>::max() * 0.25);
+    rt_sky3d_set_sun_direction(sky, huge_direction);
+    assert(std::isfinite(sky->sun_dir[0]) && std::isfinite(sky->sun_dir[1]) &&
+           std::isfinite(sky->sun_dir[2]));
+    double sun_length =
+        std::sqrt(sky->sun_dir[0] * sky->sun_dir[0] + sky->sun_dir[1] * sky->sun_dir[1] +
+                  sky->sun_dir[2] * sky->sun_dir[2]);
+    assert(std::fabs(sun_length - 1.0) < 1e-12);
+    rt_sky3d_set_ground_albedo(sky, 0.2, 0.3, 0.4);
+    assert(rt_sky3d_update(sky, nullptr) == 1);
+    assert(sky->dirty == 0 && rt_cubemap3d_is_complete(sky->cubemap));
+    auto *cubemap = static_cast<rt_cubemap3d *>(sky->cubemap);
+    for (void *face : cubemap->faces) {
+        uint64_t generation = vgfx3d_get_pixels_generation(face);
+        assert(generation > 0 && generation <= 2);
+    }
+
+    rt_sky3d_set_sun_direction(sky, huge_direction);
+    rt_sky3d_set_ground_albedo(sky, 0.2, 0.3, 0.4);
+    assert(sky->dirty == 0);
+
+    sky->sun_dir[0] *= 7.0;
+    sky->sun_dir[1] *= 7.0;
+    sky->sun_dir[2] *= 7.0;
+    sky->turbidity = std::numeric_limits<double>::quiet_NaN();
+    sky->ground_albedo[1] = std::numeric_limits<double>::infinity();
+    sky->resolution = -99;
+    sky->dirty = 0;
+    assert(rt_sky3d_update(sky, nullptr) == 1);
+    assert(sky->resolution == 16 && sky->turbidity == 2.5 && sky->ground_albedo[1] == 0.25);
+    sun_length = std::sqrt(sky->sun_dir[0] * sky->sun_dir[0] + sky->sun_dir[1] * sky->sun_dir[1] +
+                           sky->sun_dir[2] * sky->sun_dir[2]);
+    assert(std::fabs(sun_length - 1.0) < 1e-12 && sky->dirty == 0);
+    assert(rt_sky3d_update(sky, rt_vec3_new(0.0, 0.0, 0.0)) == 0);
+
+    auto *wrong_cubemap_sky = static_cast<SkyView *>(rt_sky3d_new());
+    void *wrong_cubemap = rt_obj_new_i64(0, 8);
+    assert(wrong_cubemap_sky != nullptr && wrong_cubemap != nullptr);
+    rt_obj_retain_maybe(wrong_cubemap);
+    wrong_cubemap_sky->cubemap = wrong_cubemap;
+    wrong_cubemap_sky->dirty = 0;
+    assert(rt_sky3d_get_cubemap(wrong_cubemap_sky) == nullptr);
+    assert(wrong_cubemap_sky->cubemap == nullptr && wrong_cubemap_sky->dirty == 1);
+    release_retained_probe(wrong_cubemap);
+
+    auto *tod = static_cast<TimeOfDayView *>(rt_timeofday3d_new());
+    assert(tod != nullptr);
+    rt_timeofday3d_set_day_length_seconds(tod, std::numeric_limits<double>::denorm_min());
+    rt_timeofday3d_advance(tod, std::numeric_limits<double>::max(), nullptr);
+    assert(std::isfinite(tod->hours) && tod->hours >= 0.0 && tod->hours < 24.0);
+
+    tod->hours = std::numeric_limits<double>::quiet_NaN();
+    tod->day_length_seconds = -1.0;
+    tod->latitude_degrees = std::numeric_limits<double>::infinity();
+    tod->refresh_degrees = std::numeric_limits<double>::quiet_NaN();
+    tod->last_refresh_dir[0] = std::numeric_limits<double>::quiet_NaN();
+    tod->has_refresh_dir = 2;
+    assert(rt_timeofday3d_get_hours(tod) == 12.0);
+    assert(rt_timeofday3d_get_day_length_seconds(tod) == 0.0);
+    assert(rt_timeofday3d_get_latitude_degrees(tod) == 35.0);
+    assert(rt_timeofday3d_get_refresh_degrees(tod) == 2.0);
+    assert(tod->has_refresh_dir == 0);
+
+    double raw_direction[3] = {9.0, 9.0, 9.0};
+    void *wrong_clock = rt_obj_new_i64(0, 8);
+    assert(expect_trap_contains(
+        [&] { rt_timeofday3d_get_sun_direction_raw(wrong_clock, raw_direction); },
+        "invalid clock"));
+    assert(raw_direction[0] == 0.0 && raw_direction[1] == 1.0 && raw_direction[2] == 0.0);
+
+    auto *refresh_sky = static_cast<SkyView *>(rt_sky3d_new());
+    rt_sky3d_set_resolution(refresh_sky, 16);
+    rt_timeofday3d_set_sky(tod, refresh_sky);
+    tod->has_refresh_dir = 0;
+    rt_timeofday3d_advance(tod, 0.0, wrong_clock);
+    assert(tod->has_refresh_dir == 0);
+    rt_timeofday3d_advance(tod, 0.0, nullptr);
+    assert(tod->has_refresh_dir == 1);
+
+    auto *wrong_refs = static_cast<TimeOfDayView *>(rt_timeofday3d_new());
+    void *wrong_ref = rt_obj_new_i64(0, 8);
+    assert(wrong_refs != nullptr && wrong_ref != nullptr);
+    rt_obj_retain_maybe(wrong_ref);
+    wrong_refs->sun_light = wrong_ref;
+    wrong_refs->sky = wrong_ref;
+    wrong_refs->probe = wrong_ref;
+    (void)rt_timeofday3d_get_hours(wrong_refs);
+    assert(wrong_refs->sun_light == nullptr && wrong_refs->sky == nullptr &&
+           wrong_refs->probe == nullptr);
+    release_retained_probe(wrong_ref);
+}
+
+static void test_reflection_probe_repairs_bounds_and_restores_render_targets() {
+    void *origin = rt_vec3_new(0.0, 0.0, 0.0);
+    void *minimum = rt_vec3_new(-1.0, -2.0, -3.0);
+    void *maximum = rt_vec3_new(1.0, 2.0, 3.0);
+    auto *probe =
+        static_cast<ReflectionProbeView *>(rt_reflectionprobe3d_new(origin, minimum, maximum));
+    assert(probe != nullptr);
+    rt_reflectionprobe3d_set_resolution(probe, 16);
+
+    void *target = rt_rendertarget3d_new(16, 16);
+    void *canvas = rt_canvas3d_new_offscreen(target);
+    void *scene = rt_scene3d_new();
+    assert(target != nullptr && canvas != nullptr && scene != nullptr);
+    auto *canvas_view = static_cast<rt_canvas3d *>(canvas);
+    assert(canvas_view->render_target_owner == target);
+    assert(rt_reflectionprobe3d_capture(probe, canvas, scene) == 1);
+    assert(canvas_view->render_target_owner == target);
+    assert(probe->capture_dirty == 0 && rt_cubemap3d_is_complete(probe->cubemap));
+
+    rt_reflectionprobe3d_set_resolution(probe, 32);
+    assert(probe->resolution == 32 && probe->capture_dirty == 1);
+    probe->box_min[0] = -std::numeric_limits<double>::max();
+    probe->box_max[0] = std::numeric_limits<double>::max();
+    probe->box_min[1] = probe->box_min[2] = -1.0;
+    probe->box_max[1] = probe->box_max[2] = 1.0;
+    probe->influence_scale = 1.0;
+    assert(rt_reflectionprobe3d_contains(probe, origin) == 1);
+    probe->influence_scale = std::numeric_limits<double>::quiet_NaN();
+    assert(rt_reflectionprobe3d_contains(probe, origin) == 0);
+
+    void *wrong = rt_obj_new_i64(0, 8);
+    rt_reflectionprobe3d_set_capture_dirty(probe, 0);
+    assert(rt_reflectionprobe3d_capture(probe, wrong, scene) == 0);
+    assert(rt_reflectionprobe3d_get_capture_dirty(probe) == 1);
+    rt_reflectionprobe3d_set_capture_dirty(probe, 0);
+    assert(rt_reflectionprobe3d_capture(probe, canvas, wrong) == 0);
+    assert(rt_reflectionprobe3d_get_capture_dirty(probe) == 1);
+    canvas_view->in_frame = 1;
+    assert(rt_reflectionprobe3d_capture(probe, canvas, scene) == 0);
+    canvas_view->in_frame = 0;
+
+    void *saved_target = canvas_view->render_target_owner;
+    void *wrong_target = rt_obj_new_i64(0, 8);
+    rt_obj_retain_maybe(wrong_target);
+    canvas_view->render_target_owner = static_cast<rt_rendertarget3d *>(wrong_target);
+    assert(rt_reflectionprobe3d_capture(probe, canvas, scene) == 0);
+    canvas_view->render_target_owner = static_cast<rt_rendertarget3d *>(saved_target);
+    release_retained_probe(wrong_target);
+
+    auto *wrong_map_probe =
+        static_cast<ReflectionProbeView *>(rt_reflectionprobe3d_new(origin, minimum, maximum));
+    void *wrong_map = rt_obj_new_i64(0, 8);
+    rt_obj_retain_maybe(wrong_map);
+    wrong_map_probe->cubemap = wrong_map;
+    wrong_map_probe->capture_dirty = 0;
+    assert(rt_reflectionprobe3d_get_cubemap(wrong_map_probe) == nullptr);
+    assert(wrong_map_probe->cubemap == nullptr && wrong_map_probe->capture_dirty == 1);
+    release_retained_probe(wrong_map);
+
+    void *nonfinite = rt_vec3_new(std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0);
+    assert(expect_trap_contains([&] { rt_reflectionprobe3d_new(nonfinite, minimum, maximum); },
+                                "must be Vec3"));
+}
+
 static void test_mesh_animation_refs_clear_wrong_class_without_release() {
     auto *mesh = static_cast<rt_mesh3d *>(rt_mesh3d_new());
     assert(mesh != nullptr);
@@ -1838,6 +2129,9 @@ int main() {
     test_water_extreme_wave_directions_and_cached_resources_are_repaired();
     test_water_wrong_class_private_resources_clear_without_release();
     test_vegetation_wrong_class_private_resources_clear_without_release();
+    test_texture_atlas_repairs_corrupt_storage_and_preserves_stable_ids();
+    test_sky_and_timeofday_repair_extreme_and_wrong_class_state();
+    test_reflection_probe_repairs_bounds_and_restores_render_targets();
     test_mesh_animation_refs_clear_wrong_class_without_release();
     test_scene_node_private_refs_clear_wrong_class_without_release();
     test_billboard_cached_resource_slots_clear_wrong_class_without_release();
