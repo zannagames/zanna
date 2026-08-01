@@ -37,6 +37,7 @@
 #include "rt_graphics3d_ids.h"
 #include "rt_pixels_internal.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -81,9 +82,10 @@ typedef struct {
     double lifetime;
     double max_lifetime;
     double alpha;
-    double depth_bias; /* constant depth bias override; 0 = auto (size-scaled) */
-    void *mesh;        /* built on first draw */
-    void *material;    /* built on first draw */
+    double depth_bias;      /* constant depth bias override; 0 = auto (size-scaled) */
+    void *mesh;             /* built on first draw */
+    void *material;         /* built on first draw */
+    void *material_texture; /* unowned source identity used to invalidate cached material */
 } rt_decal3d;
 
 /// @brief Idempotent release of a GC-managed reference held in `**slot`.
@@ -133,7 +135,9 @@ static double decal3d_alpha_or(double value, double fallback) {
 /// @param texture Candidate runtime object.
 /// @return Nonzero when @p texture resolves to a live Pixels implementation.
 static int decal3d_texture_valid(void *texture) {
-    return texture && rt_pixels_checked_impl_or_null(texture) != NULL;
+    rt_pixels_impl *pixels = rt_pixels_checked_impl_or_null(texture);
+    return pixels && pixels->data && pixels->width > 0 && pixels->height > 0 &&
+           pixels->width <= INT32_MAX && pixels->height <= INT32_MAX;
 }
 
 /// @brief Release a retained Pixels slot only if it still points at Pixels.
@@ -142,7 +146,7 @@ static int decal3d_texture_valid(void *texture) {
 static void decal3d_release_texture_slot(void **slot) {
     if (!slot || !*slot)
         return;
-    if (!decal3d_texture_valid(*slot)) {
+    if (rt_obj_class_id(*slot) != RT_PIXELS_CLASS_ID) {
         rt_g3d_ref_slot_clear_unowned(slot);
         return;
     }
@@ -204,23 +208,86 @@ static void decal3d_normalize_or_default(double *x, double *y, double *z) {
         *z = 0.0;
         return;
     }
-    *x = sx / len;
-    *y = sy / len;
-    *z = sz / len;
+    {
+        double nx = sx / len;
+        double ny = sy / len;
+        double nz = sz / len;
+        /* Re-normalizing an already-unit vector can toggle a lane by one ULP. Preserve the
+         * retained bits in that case so numeric repair does not invalidate the cached quad. */
+        if (fabs(nx - *x) <= 1e-15 && fabs(ny - *y) <= 1e-15 && fabs(nz - *z) <= 1e-15)
+            return;
+        *x = nx;
+        *y = ny;
+        *z = nz;
+    }
 }
 
 /// @brief Release invalid cached refs before draw/update paths use them.
 /// @param d Decal whose texture, mesh, and material slots are repaired;
 ///   `NULL` is ignored.
 static void decal3d_repair_refs(rt_decal3d *d) {
+    void *old_texture;
     if (!d)
         return;
+    old_texture = d->texture;
     if (d->texture && !decal3d_texture_valid(d->texture))
         decal3d_release_texture_slot(&d->texture);
     if (d->mesh && !rt_g3d_has_class(d->mesh, RT_G3D_MESH3D_CLASS_ID))
         decal3d_release_mesh_slot(&d->mesh);
     if (d->material && !rt_g3d_has_class(d->material, RT_G3D_MATERIAL3D_CLASS_ID))
         decal3d_release_material_slot(&d->material);
+    if (!d->material)
+        d->material_texture = NULL;
+    else if (d->material_texture != d->texture || old_texture != d->texture) {
+        decal3d_release_material_slot(&d->material);
+        d->material_texture = NULL;
+    }
+}
+
+/// @brief Repair retained placement, lifetime, alpha, and depth-bias state.
+/// @details A repaired placement/normal/size invalidates the derived quad so the next draw cannot
+///   submit geometry built from stale private values.
+/// @param d Decal payload to normalize; `NULL` is accepted.
+static void decal3d_repair_numeric_state(rt_decal3d *d) {
+    double old_position[3];
+    double old_normal[3];
+    double old_size;
+    if (!d)
+        return;
+    memcpy(old_position, d->position, sizeof(old_position));
+    memcpy(old_normal, d->normal, sizeof(old_normal));
+    old_size = d->size;
+    d->position[0] = decal3d_coord_or(d->position[0], 0.0);
+    d->position[1] = decal3d_coord_or(d->position[1], 0.0);
+    d->position[2] = decal3d_coord_or(d->position[2], 0.0);
+    decal3d_normalize_or_default(&d->normal[0], &d->normal[1], &d->normal[2]);
+    if (!isfinite(d->size) || d->size <= 0.0)
+        d->size = 1.0;
+    if (d->size > DECAL3D_SIZE_MAX)
+        d->size = DECAL3D_SIZE_MAX;
+    if (!isfinite(d->lifetime) || !isfinite(d->max_lifetime) || d->max_lifetime < 0.0) {
+        d->lifetime = -1.0;
+        d->max_lifetime = -1.0;
+        d->alpha = 1.0;
+    } else {
+        if (d->max_lifetime > DECAL3D_LIFETIME_MAX)
+            d->max_lifetime = DECAL3D_LIFETIME_MAX;
+        if (d->lifetime > d->max_lifetime)
+            d->lifetime = d->max_lifetime;
+        d->alpha = decal3d_alpha_or(d->alpha, d->lifetime > 0.0 ? 1.0 : 0.0);
+        if (d->lifetime <= 0.0)
+            d->alpha = 0.0;
+    }
+    if (!isfinite(d->depth_bias))
+        d->depth_bias = 0.0;
+    if (d->depth_bias > 0.05)
+        d->depth_bias = 0.05;
+    if (d->depth_bias < -0.05)
+        d->depth_bias = -0.05;
+    if ((memcmp(old_position, d->position, sizeof(old_position)) != 0 ||
+         memcmp(old_normal, d->normal, sizeof(old_normal)) != 0 || old_size != d->size) &&
+        d->mesh)
+        decal3d_release_mesh_slot(&d->mesh);
 }
 
 /// @brief Add one decal vertex after clamping world coordinates.
@@ -260,6 +327,7 @@ static void decal3d_finalizer(void *obj) {
     decal3d_release_texture_slot(&d->texture);
     decal3d_release_mesh_slot(&d->mesh);
     decal3d_release_material_slot(&d->material);
+    d->material_texture = NULL;
 }
 
 /// @brief Create a new 3D decal projected onto a surface.
@@ -302,6 +370,7 @@ void *rt_decal3d_new(void *pos_v, void *normal_v, double size, void *texture) {
     d->depth_bias = 0.0; /* auto: size-scaled */
     d->mesh = NULL;
     d->material = NULL;
+    d->material_texture = NULL;
     rt_obj_set_finalizer(d, decal3d_finalizer);
     return d;
 }
@@ -316,6 +385,8 @@ void rt_decal3d_set_depth_bias(void *obj, double bias) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!d)
         return;
+    decal3d_repair_refs(d);
+    decal3d_repair_numeric_state(d);
     if (!isfinite(bias))
         bias = 0.0;
     if (bias > 0.05)
@@ -362,15 +433,9 @@ void rt_decal3d_update(void *obj, double dt) {
         return;
     if (dt > DECAL3D_DT_MAX)
         dt = DECAL3D_DT_MAX;
-    d->alpha = decal3d_alpha_or(d->alpha, 1.0);
-    if (!isfinite(d->lifetime))
-        d->lifetime = -1.0;
-    if (!isfinite(d->max_lifetime))
-        d->max_lifetime = d->lifetime;
+    decal3d_repair_numeric_state(d);
     if (d->lifetime < 0)
         return; /* permanent */
-    if (d->max_lifetime <= 0.0)
-        d->max_lifetime = d->lifetime;
     d->lifetime -= dt;
     /* Fade alpha over last 20% of lifetime */
     if (d->max_lifetime > 0 && d->lifetime < d->max_lifetime * 0.2) {
@@ -392,12 +457,7 @@ int8_t rt_decal3d_is_expired(void *obj) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!d)
         return 1;
-    if (!isfinite(d->max_lifetime) || !isfinite(d->lifetime)) {
-        d->lifetime = -1.0;
-        d->max_lifetime = -1.0;
-        d->alpha = 1.0;
-        return 0;
-    }
+    decal3d_repair_numeric_state(d);
     if (d->max_lifetime < 0)
         return 0; /* permanent */
     return d->lifetime <= 0 ? 1 : 0;
@@ -413,6 +473,7 @@ void rt_decal3d_rebase_origin(void *obj, double dx, double dy, double dz) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!d)
         return;
+    decal3d_repair_numeric_state(d);
     double delta[3] = {
         decal3d_coord_or(dx, 0.0), decal3d_coord_or(dy, 0.0), decal3d_coord_or(dz, 0.0)};
     if (delta[0] == 0.0 && delta[1] == 0.0 && delta[2] == 0.0)
@@ -432,9 +493,11 @@ void rt_decal3d_get_position(void *obj, double out[3]) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!out)
         return;
-    out[0] = d ? decal3d_coord_or(d->position[0], 0.0) : 0.0;
-    out[1] = d ? decal3d_coord_or(d->position[1], 0.0) : 0.0;
-    out[2] = d ? decal3d_coord_or(d->position[2], 0.0) : 0.0;
+    if (d)
+        decal3d_repair_numeric_state(d);
+    out[0] = d ? d->position[0] : 0.0;
+    out[1] = d ? d->position[1] : 0.0;
+    out[2] = d ? d->position[2] : 0.0;
 }
 
 /// @brief Build the decal's quad mesh + material on first draw (lazy init).
@@ -460,6 +523,7 @@ static void ensure_decal_mesh(rt_decal3d *d) {
     if (!d)
         return;
     decal3d_repair_refs(d);
+    decal3d_repair_numeric_state(d);
     if (d->mesh && d->material)
         return;
 
@@ -550,6 +614,14 @@ static void ensure_decal_mesh(rt_decal3d *d) {
                                    1.0);
         rt_mesh3d_add_triangle(d->mesh, 0, 1, 2);
         rt_mesh3d_add_triangle(d->mesh, 0, 2, 3);
+        {
+            rt_mesh3d *built = (rt_mesh3d *)rt_g3d_checked_or_null(d->mesh, RT_G3D_MESH3D_CLASS_ID);
+            if (!built || rt_mesh3d_safe_vertex_count(built) != 4u ||
+                rt_mesh3d_validated_index_count(built) != 6u) {
+                decal3d_release_mesh_slot(&d->mesh);
+                return;
+            }
+        }
     }
 
     /* Create material with texture and alpha */
@@ -558,6 +630,7 @@ static void ensure_decal_mesh(rt_decal3d *d) {
         return;
     if (d->texture)
         rt_material3d_set_texture(d->material, d->texture);
+    d->material_texture = d->texture;
     d->alpha = decal3d_alpha_or(d->alpha, 1.0);
     rt_material3d_set_alpha(d->material, d->alpha);
     rt_material3d_set_unlit(d->material, 1); /* decals are unlit — they show texture only */
@@ -565,8 +638,8 @@ static void ensure_decal_mesh(rt_decal3d *d) {
      * decal size — larger decals span more depth at grazing angles, where a fixed constant
      * shimmers in the far field. Units are NDC-scale (VGFX3D_DEPTH_BIAS_CONSTANT_SCALE);
      * SetDepthBias overrides for content that needs its own tuning. */
-    double bias = d->depth_bias != 0.0 ? d->depth_bias
-                                       : -fmax(0.0005, fmin(0.005, d->size * 0.0005));
+    double bias =
+        d->depth_bias != 0.0 ? d->depth_bias : -fmax(0.0005, fmin(0.005, d->size * 0.0005));
     rt_material3d_set_depth_bias(d->material, bias, -1.0);
 }
 
@@ -582,10 +655,10 @@ void rt_canvas3d_draw_decal(void *canvas, void *obj) {
     rt_decal3d *d = (rt_decal3d *)rt_g3d_checked_or_null(obj, RT_G3D_DECAL3D_CLASS_ID);
     if (!d)
         return;
+    decal3d_repair_refs(d);
+    decal3d_repair_numeric_state(d);
     if (d->max_lifetime >= 0 && d->lifetime <= 0)
         return; /* expired */
-
-    decal3d_repair_refs(d);
     ensure_decal_mesh(d);
     if (!d->mesh || !d->material)
         return;
@@ -593,6 +666,11 @@ void rt_canvas3d_draw_decal(void *canvas, void *obj) {
     /* Update material alpha for fade */
     d->alpha = decal3d_alpha_or(d->alpha, 1.0);
     rt_material3d_set_alpha(d->material, d->alpha);
+    {
+        double bias =
+            d->depth_bias != 0.0 ? d->depth_bias : -fmax(0.0005, fmin(0.005, d->size * 0.0005));
+        rt_material3d_set_depth_bias(d->material, bias, -1.0);
+    }
 
     {
         static const double identity[16] = {

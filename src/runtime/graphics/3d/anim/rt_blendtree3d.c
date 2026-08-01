@@ -16,7 +16,8 @@
 //     inverse-distance-squared weighting available explicitly.
 //   - A parameter landing exactly on a sample snaps fully to it (1D shares
 //     weight equally among ties; legacy 2D takes the first exact match).
-//   - Weights are recomputed eagerly on every add_sample/set_param/update.
+//   - Weights are recomputed eagerly after sample/parameter changes and updates;
+//     an identical SetParam is an O(1) no-op.
 //
 // Ownership/Lifetime:
 //   - BlendTree3D is GC-managed; it owns the underlying AnimBlend3D and the
@@ -176,15 +177,84 @@ static int32_t blend_tree3d_safe_sample_count(const rt_blend_tree3d *tree) {
     return count;
 }
 
-/// @brief Clamp the blend tree's sample_count to its safe value (defensive).
+/// @brief Repair blend-tree metadata, parameters, samples, and cached triangulation.
 /// @details A wrong-class backend reference is cleared without releasing it.
 /// @param[in,out] tree Tree whose backend slot and sample count to repair.
-static void blend_tree3d_repair_sample_count(rt_blend_tree3d *tree) {
+/// @return Nonzero when observable weighting state or cache metadata changed.
+static int blend_tree3d_repair_sample_count(rt_blend_tree3d *tree) {
+    int changed = 0;
+    int triangulation_changed = 0;
+    int32_t safe_count;
     if (!tree)
-        return;
-    if (!blend_tree3d_blend_valid(tree))
+        return 0;
+    if (!blend_tree3d_blend_valid(tree)) {
         blend_tree3d_release_blend_ref(&tree->blend);
-    tree->sample_count = blend_tree3d_safe_sample_count(tree);
+        tree->sample_count = 0;
+        tree->tri_count = 0;
+        tree->tris_dirty = 1;
+        return 1;
+    }
+    if (tree->dimensions != 1 && tree->dimensions != 2) {
+        tree->dimensions = 1;
+        changed = 1;
+        triangulation_changed = 1;
+    }
+    safe_count = blend_tree3d_safe_sample_count(tree);
+    if (tree->sample_count != safe_count) {
+        tree->sample_count = safe_count;
+        changed = 1;
+        triangulation_changed = 1;
+    }
+    {
+        double param_x = blend_tree3d_finite_or_zero(tree->param_x);
+        double param_y = blend_tree3d_finite_or_zero(tree->param_y);
+        if (tree->param_x != param_x || tree->param_y != param_y)
+            changed = 1;
+        tree->param_x = param_x;
+        tree->param_y = param_y;
+    }
+    if (tree->blend_mode_2d != 0 && tree->blend_mode_2d != 1) {
+        tree->blend_mode_2d = 0;
+        changed = 1;
+    }
+    for (int32_t i = 0; i < tree->sample_count; i++) {
+        double x = blend_tree3d_finite_or_zero(tree->samples[i].x);
+        double y = blend_tree3d_finite_or_zero(tree->samples[i].y);
+        if (tree->samples[i].x != x || tree->samples[i].y != y) {
+            tree->samples[i].x = x;
+            tree->samples[i].y = y;
+            changed = 1;
+            triangulation_changed = 1;
+        }
+    }
+    if (tree->tris_dirty != 0 && tree->tris_dirty != 1) {
+        tree->tris_dirty = 1;
+        changed = 1;
+        triangulation_changed = 1;
+    }
+    if (tree->tri_count < 0 || tree->tri_count > RT_BLENDTREE3D_MAX_TRIS) {
+        tree->tri_count = 0;
+        tree->tris_dirty = 1;
+        changed = 1;
+        triangulation_changed = 1;
+    }
+    if (triangulation_changed) {
+        tree->tri_count = 0;
+        tree->tris_dirty = 1;
+    } else if (!tree->tris_dirty) {
+        for (int32_t t = 0; !tree->tris_dirty && t < tree->tri_count; t++) {
+            int32_t a = tree->tris[t * 3];
+            int32_t b = tree->tris[t * 3 + 1];
+            int32_t c = tree->tris[t * 3 + 2];
+            if (a < 0 || b < 0 || c < 0 || a >= tree->sample_count || b >= tree->sample_count ||
+                c >= tree->sample_count || a == b || b == c || a == c) {
+                tree->tri_count = 0;
+                tree->tris_dirty = 1;
+                changed = 1;
+            }
+        }
+    }
+    return changed;
 }
 
 /// @brief Zero every sample's blend weight so a fresh weighting can be written.
@@ -512,13 +582,20 @@ static void blend_tree3d_apply_2d_freeform(rt_blend_tree3d *tree) {
         double wc = 1.0 - wa - wb;
         const double tol = -1e-9;
         if (wa >= tol && wb >= tol && wc >= tol) {
+            double sum;
+            wa = wa < 0.0 ? 0.0 : wa;
+            wb = wb < 0.0 ? 0.0 : wb;
+            wc = wc < 0.0 ? 0.0 : wc;
+            sum = wa + wb + wc;
+            if (!isfinite(sum) || sum <= DBL_MIN)
+                continue;
+            wa /= sum;
+            wb /= sum;
+            wc /= sum;
             blend_tree3d_clear_weights(tree);
-            rt_anim_blend3d_set_weight(
-                tree->blend, tree->samples[a].blend_index, wa < 0.0 ? 0.0 : wa);
-            rt_anim_blend3d_set_weight(
-                tree->blend, tree->samples[b].blend_index, wb < 0.0 ? 0.0 : wb);
-            rt_anim_blend3d_set_weight(
-                tree->blend, tree->samples[c].blend_index, wc < 0.0 ? 0.0 : wc);
+            rt_anim_blend3d_set_weight(tree->blend, tree->samples[a].blend_index, wa);
+            rt_anim_blend3d_set_weight(tree->blend, tree->samples[b].blend_index, wb);
+            rt_anim_blend3d_set_weight(tree->blend, tree->samples[c].blend_index, wc);
             return;
         }
     }
@@ -687,11 +764,18 @@ int64_t rt_blend_tree3d_add_sample(void *obj, void *animation, double x, double 
 /// @param[in] y Vertical parameter coordinate, sanitized and range-clamped.
 void rt_blend_tree3d_set_param(void *obj, double x, double y) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
+    double sanitized_x;
+    double sanitized_y;
+    int repaired;
     if (!tree)
         return;
-    blend_tree3d_repair_sample_count(tree);
-    tree->param_x = blend_tree3d_finite_or_zero(x);
-    tree->param_y = blend_tree3d_finite_or_zero(y);
+    repaired = blend_tree3d_repair_sample_count(tree);
+    sanitized_x = blend_tree3d_finite_or_zero(x);
+    sanitized_y = blend_tree3d_finite_or_zero(y);
+    if (!repaired && tree->param_x == sanitized_x && tree->param_y == sanitized_y)
+        return;
+    tree->param_x = sanitized_x;
+    tree->param_y = sanitized_y;
     blend_tree3d_apply_weights(tree);
 }
 
@@ -717,7 +801,11 @@ void rt_blend_tree3d_update(void *obj, double dt) {
 /// @return Sanitized readable sample count.
 int64_t rt_blend_tree3d_get_sample_count(void *obj) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
-    return tree ? blend_tree3d_safe_sample_count(tree) : 0;
+    if (!tree)
+        return 0;
+    if (blend_tree3d_repair_sample_count(tree))
+        blend_tree3d_apply_weights(tree);
+    return tree->sample_count;
 }
 
 /// @brief Borrow the underlying AnimBlend3D handle (not retained; NULL if invalid).
@@ -738,10 +826,20 @@ void *rt_blend_tree3d_get_blend(void *obj) {
 ///                 value selects freeform weighting.
 void rt_blend_tree3d_set_blend_mode(void *obj, int64_t mode) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
+    int32_t sanitized;
+    int repaired;
     if (!tree)
         return;
-    tree->blend_mode_2d = mode == 1 ? 1 : 0;
-    blend_tree3d_repair_sample_count(tree);
+    repaired = blend_tree3d_repair_sample_count(tree);
+    if (tree->dimensions != 2) {
+        if (repaired)
+            blend_tree3d_apply_weights(tree);
+        return;
+    }
+    sanitized = mode == 1 ? 1 : 0;
+    if (!repaired && tree->blend_mode_2d == sanitized)
+        return;
+    tree->blend_mode_2d = sanitized;
     blend_tree3d_apply_weights(tree);
 }
 
@@ -750,7 +848,11 @@ void rt_blend_tree3d_set_blend_mode(void *obj, int64_t mode) {
 /// @return Stored normalized mode, or zero for an invalid handle.
 int64_t rt_blend_tree3d_get_blend_mode(void *obj) {
     rt_blend_tree3d *tree = blend_tree3d_checked(obj);
-    return tree ? tree->blend_mode_2d : 0;
+    if (!tree)
+        return 0;
+    if (blend_tree3d_repair_sample_count(tree))
+        blend_tree3d_apply_weights(tree);
+    return tree->dimensions == 2 ? tree->blend_mode_2d : 0;
 }
 
 #else

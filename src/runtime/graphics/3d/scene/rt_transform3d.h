@@ -32,7 +32,7 @@ extern "C" {
 /// @brief Create a Transform3D at the origin with identity rotation and unit scale.
 /// @return New owned Transform3D handle, or `NULL` on allocation failure.
 void *rt_transform3d_new(void);
-/// @brief Set the translation component (marks the matrix dirty).
+/// @brief Set the translation component (marks the matrix dirty only when changed).
 /// @param xf Borrowed Transform3D handle.
 /// @param x Position X.
 /// @param y Position Y.
@@ -74,7 +74,7 @@ void *rt_transform3d_get_scale(void *xf);
 /// @param xf Borrowed Transform3D handle.
 /// @return New owned row-major Mat4; invalid handles produce identity.
 void *rt_transform3d_get_matrix(void *xf);
-/// @brief Add @p delta (Vec3) to the current position.
+/// @brief Add @p delta (Vec3) to the current position; an effective no-op leaves the cache clean.
 /// @param xf Borrowed Transform3D handle.
 /// @param delta Borrowed displacement Vec3.
 void rt_transform3d_translate(void *xf, void *delta);

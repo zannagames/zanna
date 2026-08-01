@@ -30,6 +30,7 @@ extern "C" {
 #include "rt_graphics3d_ids.h"
 #include "rt_instbatch3d.h"
 #include "rt_joints3d.h"
+#include "rt_lensflare3d.h"
 #include "rt_mat4.h"
 #include "rt_morphtarget3d.h"
 #include "rt_navmesh3d.h"
@@ -56,6 +57,7 @@ extern "C" {
 #include "rt_vec3.h"
 #include "rt_vegetation3d.h"
 #include "rt_water3d.h"
+#include "vgfx3d_backend.h"
 #include "vgfx3d_backend_utils.h"
 }
 
@@ -162,46 +164,10 @@ struct DecalView {
     double depth_bias; /* constant depth bias override; 0 = auto (size-scaled) */
     void *mesh;
     void *material;
+    void *material_texture;
 };
 
-struct MaterialView {
-    void *vptr;
-    double diffuse[4];
-    double specular[3];
-    double shininess;
-    int32_t workflow;
-    void *texture;
-    void *normal_map;
-    void *specular_map;
-    void *emissive_map;
-    void *metallic_roughness_map;
-    void *ao_map;
-    double emissive[3];
-    double metallic;
-    double roughness;
-    double ao;
-    double emissive_intensity;
-    double normal_scale;
-    double alpha;
-    double alpha_cutoff;
-    void *env_map;
-    double reflectivity;
-    int8_t unlit;
-    int8_t double_sided;
-    int8_t additive_blend;
-    int32_t alpha_mode;
-    int8_t alpha_mode_auto;
-    int32_t texture_wrap_s;
-    int32_t texture_wrap_t;
-    int32_t texture_filter;
-    int32_t texture_slot_wrap_s[6];
-    int32_t texture_slot_wrap_t[6];
-    int32_t texture_slot_filter[6];
-    int32_t texture_slot_uv_set[6];
-    double texture_slot_uv_transform[6][6];
-    int32_t shading_model;
-    double custom_params[8];
-};
+using MaterialView = rt_material3d;
 
 struct ParticleView {
     void *vptr;
@@ -312,7 +278,74 @@ struct InstBatchView {
     int32_t prev_count;
     int64_t last_motion_frame;
     int8_t has_prev_snapshot;
+    double *transforms64;
+    float *visible_transforms;
+    float *visible_prev_transforms;
+    int32_t visible_capacity;
+    int32_t visible_prev_capacity;
+    float *prev_submit_transforms;
+    int32_t prev_submit_capacity;
+    int32_t allocation_capacity;
+    double *current_snapshot64;
+    double *prev_transforms64;
+    uint8_t *visibility_mask;
+    int32_t visibility_mask_capacity;
+    int8_t motion_frame_initialized;
+    float *owned_transforms;
+    float *owned_current_snapshot;
+    float *owned_prev_transforms;
+    double *owned_transforms64;
+    double *owned_current_snapshot64;
+    double *owned_prev_transforms64;
 };
+
+struct TransformView {
+    void *vptr;
+    double position[3];
+    double rotation[4];
+    double scale[3];
+    double matrix[16];
+    int8_t dirty;
+    int8_t components_clean;
+};
+
+struct PathView {
+    void *vptr;
+    double *xs;
+    double *ys;
+    double *zs;
+    int32_t point_count;
+    int32_t point_capacity;
+    int8_t looping;
+    double cached_length;
+    int8_t length_dirty;
+    double *spline_cumulative;
+    int32_t spline_sample_count;
+    int8_t spline_dirty;
+    int32_t point_allocation_capacity;
+    int32_t spline_capacity;
+    double *owned_xs;
+    double *owned_ys;
+    double *owned_zs;
+    double *owned_spline_cumulative;
+};
+
+struct LensFlareElementView {
+    float axis_offset;
+    float size;
+    void *ghost;
+};
+
+struct LensFlareView {
+    void *vptr;
+    void *light;
+    LensFlareElementView elements[16];
+    int32_t element_count;
+    float smoothed_visibility;
+    uint64_t smoothed_frame_serial;
+};
+
+static void release_retained_probe(void *probe);
 
 struct AtlasRegionView {
     int32_t x;
@@ -898,6 +931,283 @@ static void test_path3d_extreme_points_keep_length_and_direction_finite() {
     assert(std::isfinite(rt_path3d_get_length(path)));
 }
 
+static void test_transform_and_path_private_state_repairs_are_cache_coherent() {
+    auto *transform = static_cast<TransformView *>(rt_transform3d_new());
+    assert(transform != nullptr);
+    assert(transform->dirty == 0 && transform->components_clean == 1);
+
+    rt_transform3d_set_position(transform, 5.0, 6.0, 7.0);
+    assert(transform->dirty == 1);
+    void *matrix = rt_transform3d_get_matrix(transform);
+    assert(rt_mat4_get(matrix, 0, 3) == 5.0);
+    assert(transform->dirty == 0);
+
+    rt_transform3d_set_position(transform, 5.0, 6.0, 7.0);
+    rt_transform3d_set_scale(transform, 1.0, 1.0, 1.0);
+    rt_transform3d_set_rotation(transform, rt_quat_new(0.0, 0.0, 0.0, 1.0));
+    rt_transform3d_set_euler(transform, 0.0, 0.0, 0.0);
+    rt_transform3d_translate(transform, rt_vec3_new(0.0, 0.0, 0.0));
+    rt_transform3d_rotate(transform, rt_vec3_new(0.0, 1.0, 0.0), 6.28318530717958647692);
+    assert(transform->dirty == 0);
+
+    transform->position[0] = 9.0;
+    transform->components_clean = 2;
+    transform->dirty = 0;
+    matrix = rt_transform3d_get_matrix(transform);
+    assert(rt_mat4_get(matrix, 0, 3) == 9.0);
+    assert(transform->components_clean == 1 && transform->dirty == 0);
+
+    transform->matrix[0] = std::numeric_limits<double>::quiet_NaN();
+    matrix = rt_transform3d_get_matrix(transform);
+    for (int row = 0; row < 4; row++)
+        for (int col = 0; col < 4; col++)
+            assert(std::isfinite(rt_mat4_get(matrix, row, col)));
+
+    rt_transform3d_set_position(transform, 1000000000000.0, 0.0, 0.0);
+    (void)rt_transform3d_get_matrix(transform);
+    rt_transform3d_translate(transform, rt_vec3_new(1.0, 0.0, 0.0));
+    assert(transform->position[0] == 1000000000000.0 && transform->dirty == 0);
+
+    rt_transform3d_look_at(
+        transform, rt_vec3_new(1000000000000.0, 0.0, -1.0), rt_vec3_new(0.0, 1.0, 0.0));
+    (void)rt_transform3d_get_matrix(transform);
+    rt_transform3d_look_at(
+        transform, rt_vec3_new(1000000000000.0, 0.0, -1.0), rt_vec3_new(0.0, 1.0, 0.0));
+    assert(transform->dirty == 0);
+
+    auto *path = static_cast<PathView *>(rt_path3d_new());
+    assert(path != nullptr);
+    rt_path3d_add_point(path, rt_vec3_new(0.0, 0.0, 0.0));
+    rt_path3d_add_point(path, rt_vec3_new(2.0, 0.0, 0.0));
+    rt_path3d_add_point(path, rt_vec3_new(4.0, 1.0, 0.0));
+    assert(rt_path3d_get_length(path) > 0.0);
+    double spline_position[3] = {};
+    double spline_tangent[3] = {};
+    rt_path3d_eval_spline_raw(path, 0.5, spline_position, spline_tangent);
+    assert(path->owned_spline_cumulative != nullptr && path->spline_dirty == 0);
+
+    double *owned_xs = path->owned_xs;
+    double *owned_ys = path->owned_ys;
+    double *owned_zs = path->owned_zs;
+    double *owned_spline = path->owned_spline_cumulative;
+    const int32_t owned_capacity = path->point_allocation_capacity;
+    path->xs = reinterpret_cast<double *>(uintptr_t{1});
+    path->ys = nullptr;
+    path->zs = reinterpret_cast<double *>(uintptr_t{3});
+    path->point_capacity = INT32_MAX;
+    path->spline_cumulative = reinterpret_cast<double *>(uintptr_t{5});
+    path->spline_sample_count = INT32_MAX;
+    assert(rt_path3d_get_point_count(path) == 3);
+    assert(path->xs == owned_xs && path->ys == owned_ys && path->zs == owned_zs);
+    assert(path->point_capacity == owned_capacity);
+    assert(path->spline_cumulative == owned_spline && path->spline_dirty == 1);
+
+    path->xs[1] = std::numeric_limits<double>::quiet_NaN();
+    path->cached_length = 123.0;
+    path->length_dirty = 0;
+    path->spline_dirty = 0;
+    double repaired_length = rt_path3d_get_length(path);
+    assert(std::isfinite(repaired_length) && repaired_length != 123.0);
+    assert(path->xs[1] == 0.0 && path->length_dirty == 0);
+
+    rt_path3d_eval_spline_raw(path, 0.5, spline_position, spline_tangent);
+    assert(path->spline_dirty == 0 && path->spline_sample_count > 1);
+    path->spline_cumulative[1] = -1.0;
+    path->spline_dirty = 0;
+    rt_path3d_eval_spline_raw(path, 0.5, spline_position, spline_tangent);
+    assert(path->spline_dirty == 0 && path->spline_cumulative[1] >= 0.0);
+    for (double value : spline_position)
+        assert(std::isfinite(value));
+    for (double value : spline_tangent)
+        assert(std::isfinite(value));
+
+    const int8_t length_dirty = path->length_dirty;
+    const int8_t spline_dirty = path->spline_dirty;
+    rt_path3d_set_looping(path, 0);
+    assert(path->length_dirty == length_dirty && path->spline_dirty == spline_dirty);
+
+    rt_path3d_clear(path);
+    assert(path->point_count == 0 && path->cached_length == 0.0);
+    assert(path->owned_xs == owned_xs && path->point_allocation_capacity == owned_capacity);
+    assert(path->owned_spline_cumulative == nullptr && path->spline_capacity == 0);
+
+    auto *finalized_path = static_cast<PathView *>(rt_path3d_new());
+    assert(finalized_path != nullptr);
+    finalized_path->xs = reinterpret_cast<double *>(uintptr_t{1});
+    finalized_path->ys = reinterpret_cast<double *>(uintptr_t{2});
+    finalized_path->zs = reinterpret_cast<double *>(uintptr_t{3});
+    if (rt_obj_release_check0(finalized_path))
+        rt_obj_free(finalized_path);
+}
+
+static void test_material_texture_repairs_are_transactional_and_complete() {
+    auto *material = static_cast<MaterialView *>(rt_material3d_new());
+    void *wrong = rt_obj_new_i64(0, 8);
+    assert(material != nullptr && wrong != nullptr);
+    const int32_t workflow = material->workflow;
+
+    assert(expect_trap_contains([&] { rt_material3d_set_metallic_roughness_map(material, wrong); },
+                                "texture"));
+    assert(material->workflow == workflow && material->metallic_roughness_map == nullptr);
+    assert(expect_trap_contains([&] { rt_material3d_set_ao_map(material, wrong); }, "texture"));
+    assert(material->workflow == workflow && material->ao_map == nullptr);
+
+    rt_obj_retain_maybe(wrong);
+    material->lightmap = wrong;
+    assert(rt_material3d_get_persisted_texture_ref(
+               material, RT_MATERIAL3D_PERSISTED_TEXTURE_SLOT_LIGHTMAP) == nullptr);
+    assert(material->lightmap == nullptr);
+    release_retained_probe(wrong);
+
+    void *clone_wrong = rt_obj_new_i64(0, 8);
+    rt_obj_retain_maybe(clone_wrong);
+    material->lightmap = clone_wrong;
+    auto *clone = static_cast<MaterialView *>(rt_material3d_clone(material));
+    assert(clone != nullptr && clone->lightmap == nullptr && material->lightmap == nullptr);
+    release_retained_probe(clone_wrong);
+}
+
+static void test_sprite_decal_and_lensflare_repair_cached_render_state() {
+    auto *pixels = rt_pixels_checked_impl_or_null(rt_pixels_new(4, 4));
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
+    rt_canvas3d canvas = {};
+    assert(pixels != nullptr && camera != nullptr);
+    canvas.width = 100;
+    canvas.height = 100;
+
+    auto *sprite = static_cast<SpriteView *>(rt_sprite3d_new(pixels));
+    assert(sprite != nullptr);
+    rt_sprite3d_set_additive(sprite, 0);
+    rt_canvas3d_draw_sprite3d(&canvas, sprite, camera);
+    auto *sprite_material = static_cast<rt_material3d *>(sprite->cached_material);
+    assert(sprite_material != nullptr);
+    assert(sprite_material->alpha_mode == RT_MATERIAL3D_ALPHA_MODE_BLEND);
+
+    sprite->position[0] = std::numeric_limits<double>::quiet_NaN();
+    sprite->position[1] = std::numeric_limits<double>::infinity();
+    sprite->scale_wh[0] = -1.0;
+    sprite->scale_wh[1] = std::numeric_limits<double>::quiet_NaN();
+    sprite->anchor[0] = -4.0;
+    sprite->anchor[1] = 4.0;
+    sprite->tex_w = INT32_MAX;
+    sprite->tex_h = -1;
+    sprite->frame_x = INT32_MAX;
+    sprite->frame_y = -7;
+    sprite->frame_w = INT32_MAX;
+    sprite->frame_h = INT32_MAX;
+    sprite->additive = -7;
+    sprite->tint[0] = std::numeric_limits<double>::quiet_NaN();
+    sprite->tint[1] = -1.0;
+    sprite->tint[2] = 2.0;
+    rt_canvas3d_draw_sprite3d(&canvas, sprite, camera);
+    assert(sprite->position[0] == 0.0 && sprite->position[1] == 0.0);
+    assert(sprite->scale_wh[0] == 1.0 && sprite->scale_wh[1] == 1.0);
+    assert(sprite->anchor[0] == 0.0 && sprite->anchor[1] == 1.0);
+    assert(sprite->tex_w == 4 && sprite->tex_h == 4);
+    assert(sprite->frame_x == 3 && sprite->frame_y == 0);
+    assert(sprite->frame_w == 1 && sprite->frame_h == 4);
+    assert(sprite->additive == 1);
+    assert(sprite->tint[0] == 1.0 && sprite->tint[1] == 0.0 && sprite->tint[2] == 1.0);
+
+    uint32_t *pixel_data = pixels->data;
+    pixels->data = nullptr;
+    assert(expect_trap_contains([&] { (void)rt_sprite3d_new(pixels); }, "non-empty Pixels"));
+    pixels->data = pixel_data;
+
+    auto *decal = static_cast<DecalView *>(
+        rt_decal3d_new(rt_vec3_new(5.0, 0.0, 0.0), rt_vec3_new(0.0, 1.0, 0.0), 2.0, pixels));
+    assert(decal != nullptr);
+    rt_canvas3d_draw_decal(&canvas, decal);
+    assert(decal->mesh != nullptr && decal->material != nullptr &&
+           decal->material_texture == pixels);
+    decal->position[0] = std::numeric_limits<double>::quiet_NaN();
+    decal->normal[0] = decal->normal[1] = decal->normal[2] = 0.0;
+    decal->size = std::numeric_limits<double>::quiet_NaN();
+    decal->depth_bias = 1.0;
+    decal->lifetime = std::numeric_limits<double>::quiet_NaN();
+    decal->max_lifetime = 10.0;
+    rt_canvas3d_draw_decal(&canvas, decal);
+    assert(decal->position[0] == 0.0 && decal->normal[1] == 1.0 && decal->size == 1.0);
+    assert(decal->max_lifetime == -1.0 && decal->alpha == 1.0);
+    assert(decal->depth_bias == 0.05);
+    auto *decal_mesh = static_cast<rt_mesh3d *>(decal->mesh);
+    auto *decal_material = static_cast<rt_material3d *>(decal->material);
+    assert(decal_mesh != nullptr && decal_mesh->vertex_count == 4);
+    assert(std::fabs(decal_mesh->vertices[0].pos[0]) < 2.0f);
+    assert(decal_material->depth_bias == 0.05);
+
+    void *decal_wrong = rt_obj_new_i64(0, 8);
+    rt_obj_retain_maybe(decal_wrong);
+    decal->texture = decal_wrong;
+    rt_canvas3d_draw_decal(&canvas, decal);
+    assert(decal->texture == nullptr && decal->material_texture == nullptr);
+    assert(static_cast<rt_material3d *>(decal->material)->texture == nullptr);
+    release_retained_probe(decal_wrong);
+
+    pixels->data = nullptr;
+    auto *empty_texture_decal = static_cast<DecalView *>(
+        rt_decal3d_new(rt_vec3_new(0.0, 0.0, 0.0), rt_vec3_new(0.0, 1.0, 0.0), 1.0, pixels));
+    assert(empty_texture_decal != nullptr && empty_texture_decal->texture == nullptr);
+    pixels->data = pixel_data;
+
+    void *light = rt_light3d_new_point(rt_vec3_new(0.0, 0.0, 0.0), 1.0, 1.0, 1.0, 0.1);
+    auto *flare = static_cast<LensFlareView *>(rt_lensflare3d_new(light));
+    assert(flare != nullptr);
+    flare->element_count = -7;
+    rt_lensflare3d_add_element(flare, -4.0, -1.0, -1, 0.0);
+    assert(flare->element_count == 1);
+    assert(flare->elements[0].axis_offset == -1.0f && flare->elements[0].size == 32.0f);
+
+    canvas.in_frame = 1;
+    canvas.frame_is_2d = 0;
+    canvas.cached_vp[0] = canvas.cached_vp[5] = canvas.cached_vp[10] = canvas.cached_vp[15] = 1.0f;
+    flare->elements[0].axis_offset = std::numeric_limits<float>::quiet_NaN();
+    flare->elements[0].size = std::numeric_limits<float>::infinity();
+    flare->smoothed_visibility = 0.5f;
+    flare->smoothed_frame_serial = UINT64_MAX;
+    void *flare_wrong = rt_obj_new_i64(0, 8);
+    rt_obj_retain_maybe(flare_wrong);
+    flare->elements[1].ghost = flare_wrong;
+    void *undersized_pixels = rt_obj_new_i64(RT_PIXELS_CLASS_ID, 8);
+    rt_obj_retain_maybe(undersized_pixels);
+    flare->elements[2].ghost = undersized_pixels;
+    flare->element_count = INT32_MAX;
+    rt_canvas3d_draw_lens_flare(&canvas, flare);
+    assert(flare->element_count == 16);
+    assert(flare->elements[0].axis_offset == 0.0f && flare->elements[0].size == 32.0f);
+    assert(std::isfinite(flare->smoothed_visibility));
+    assert(flare->elements[1].ghost == nullptr && flare->elements[2].ghost == nullptr);
+    release_retained_probe(flare_wrong);
+    assert(rt_obj_release_check0(undersized_pixels) == 1);
+    rt_obj_free(undersized_pixels);
+
+    constexpr double large_origin = 999999999999.0;
+    void *relative_light =
+        rt_light3d_new_point(rt_vec3_new(large_origin + 0.25, 0.0, 0.0), 1.0, 1.0, 1.0, 0.1);
+    auto *relative_flare = static_cast<LensFlareView *>(rt_lensflare3d_new(relative_light));
+    assert(relative_flare != nullptr);
+    rt_lensflare3d_add_element(relative_flare, 0.0, 16.0, 0xFFFFFF, 0.0);
+    relative_flare->elements[0].axis_offset = std::numeric_limits<float>::quiet_NaN();
+    canvas.camera_relative_upload = 1;
+    canvas.camera_relative_origin[0] = large_origin;
+    rt_canvas3d_draw_lens_flare(&canvas, relative_flare);
+    assert(relative_flare->elements[0].axis_offset == 0.0f);
+    canvas.camera_relative_upload = 0;
+    canvas.camera_relative_origin[0] = 0.0;
+
+    auto *sparse_flare = static_cast<LensFlareView *>(rt_lensflare3d_new(light));
+    rt_lensflare3d_add_element(sparse_flare, 0.0, 16.0, 0xFFFFFF, 0.0);
+    void *sparse_ghost = sparse_flare->elements[0].ghost;
+    rt_obj_retain_maybe(sparse_ghost);
+    sparse_flare->elements[15].ghost = sparse_ghost;
+    sparse_flare->elements[0].ghost = nullptr;
+    sparse_flare->element_count = -1;
+    if (rt_obj_release_check0(sparse_flare))
+        rt_obj_free(sparse_flare);
+    assert(rt_obj_release_check0(sparse_ghost) == 1);
+    rt_obj_free(sparse_ghost);
+}
+
 static void test_navmesh_sample_position_handles_empty_mesh() {
     void *mesh = rt_mesh3d_new();
     rt_mesh3d_add_vertex(mesh, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0);
@@ -1258,6 +1568,210 @@ static void test_light_and_material_boolean_state_is_initialized() {
     assert(mat->unlit == 1);
     rt_material3d_set_unlit(mat, 0);
     assert(mat->unlit == 0);
+}
+
+static void test_light_noop_mutations_and_getters_repair_renderer_state() {
+    void *position = rt_vec3_new(1.0, 2.0, 3.0);
+    void *direction = rt_vec3_new(0.0, -1.0, 0.0);
+    auto *point = static_cast<rt_light3d *>(rt_light3d_new_point(position, 1.0, 0.25, 0.5, 0.25));
+    auto *directional =
+        static_cast<rt_light3d *>(rt_light3d_new_directional(direction, 1.0, 1.0, 1.0));
+    auto *rectangle = static_cast<rt_light3d *>(
+        rt_light3d_new_area_rectangle(position, direction, 2.0, 3.0, 0.5, 0.5, 0.5, 0.2, 8.0));
+    auto *sphere =
+        static_cast<rt_light3d *>(rt_light3d_new_area_sphere(position, 2.0, 0.5, 0.5, 0.5, 8.0));
+    auto *volume =
+        static_cast<rt_light3d *>(rt_light3d_new_volume(position, 2.0, 0.5, 0.5, 0.5, 8.0));
+    auto *spot = static_cast<rt_light3d *>(
+        rt_light3d_new_spot(position, direction, 1.0, 1.0, 1.0, 0.25, 10.0, 20.0));
+    assert(point && directional && rectangle && sphere && volume && spot);
+
+    auto expect_no_revision = [](auto &&operation) {
+        const uint64_t before = rt_light3d_mutation_revision();
+        operation();
+        assert(rt_light3d_mutation_revision() == before);
+    };
+    expect_no_revision([&] { rt_light3d_set_intensity(point, 1.0); });
+    expect_no_revision([&] { rt_light3d_set_attenuation(point, 0.25); });
+    expect_no_revision([&] { rt_light3d_set_color(point, 1.0, 0.25, 0.5); });
+    expect_no_revision([&] { rt_light3d_set_enabled(point, 1); });
+    expect_no_revision([&] { rt_light3d_set_casts_shadows(point, 0); });
+    expect_no_revision([&] { rt_light3d_set_position(point, position); });
+    expect_no_revision([&] { rt_light3d_set_direction(directional, direction); });
+    expect_no_revision([&] { rt_light3d_set_width(rectangle, 2.0); });
+    expect_no_revision([&] { rt_light3d_set_height(rectangle, 3.0); });
+    expect_no_revision([&] { rt_light3d_set_attenuation(rectangle, 0.2); });
+    expect_no_revision([&] { rt_light3d_set_range(rectangle, 8.0); });
+    expect_no_revision([&] { rt_light3d_set_decay_type(rectangle, 2); });
+    expect_no_revision([&] { rt_light3d_set_radius(sphere, 2.0); });
+    expect_no_revision([&] { rt_light3d_set_range(sphere, 8.0); });
+    expect_no_revision([&] { rt_light3d_set_radius(volume, 2.0); });
+    expect_no_revision([&] { rt_light3d_set_range(volume, 8.0); });
+    expect_no_revision([&] { rt_light3d_set_casts_shadows(volume, 1); });
+    rt_light3d_set_spot_cone(spot, 10.0, 20.0);
+    expect_no_revision([&] { rt_light3d_set_spot_cone(spot, 10.0, 20.0); });
+
+    point->intensity = std::numeric_limits<double>::quiet_NaN();
+    uint64_t before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_intensity(point) == 0.0);
+    assert(point->intensity == 0.0 && rt_light3d_mutation_revision() == before + 1);
+    expect_no_revision([&] { (void)rt_light3d_get_intensity(point); });
+
+    point->color[0] = std::numeric_limits<double>::quiet_NaN();
+    point->color[1] = -1.0;
+    point->color[2] = 2.0;
+    before = rt_light3d_mutation_revision();
+    void *color = rt_light3d_get_color(point);
+    assert(rt_vec3_x(color) == 0.0 && rt_vec3_y(color) == 0.0 && rt_vec3_z(color) == 1.0);
+    assert(rt_light3d_mutation_revision() == before + 1);
+
+    point->position[0] = std::numeric_limits<double>::infinity();
+    point->position[1] = -1.0e300;
+    before = rt_light3d_mutation_revision();
+    void *repaired_position = rt_light3d_get_position(point);
+    assert(rt_vec3_x(repaired_position) == 0.0);
+    assert(rt_vec3_y(repaired_position) == -1000000000000.0);
+    assert(rt_light3d_mutation_revision() == before + 1);
+
+    point->enabled = -7;
+    before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_enabled(point) == 1);
+    assert(point->enabled == 1 && rt_light3d_mutation_revision() == before + 1);
+    point->casts_shadows = -3;
+    before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_casts_shadows(point) == 1);
+    assert(point->casts_shadows == 1 && rt_light3d_mutation_revision() == before + 1);
+    point->attenuation = std::numeric_limits<double>::quiet_NaN();
+    before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_attenuation(point) == RT_LIGHT3D_DEFAULT_ATTENUATION);
+    assert(rt_light3d_mutation_revision() == before + 1);
+
+    rectangle->basis_u[0] = std::numeric_limits<double>::quiet_NaN();
+    rectangle->basis_v[2] = std::numeric_limits<double>::infinity();
+    before = rt_light3d_mutation_revision();
+    void *repaired_direction = rt_light3d_get_direction(rectangle);
+    assert(std::isfinite(rt_vec3_x(repaired_direction)));
+    for (double lane : rectangle->basis_u)
+        assert(std::isfinite(lane));
+    for (double lane : rectangle->basis_v)
+        assert(std::isfinite(lane));
+    assert(rt_light3d_mutation_revision() == before + 1);
+
+    rectangle->width = std::numeric_limits<double>::quiet_NaN();
+    before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_width(rectangle) == 1.0);
+    assert(rt_light3d_mutation_revision() == before + 1);
+    rectangle->height = 0.0;
+    before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_height(rectangle) == 1.0);
+    assert(rt_light3d_mutation_revision() == before + 1);
+    rectangle->range = std::numeric_limits<double>::infinity();
+    before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_range(rectangle) == 1.0);
+    assert(rt_light3d_mutation_revision() == before + 1);
+    rectangle->decay_type = 99;
+    before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_decay_type(rectangle) == 2);
+    assert(rt_light3d_mutation_revision() == before + 1);
+
+    sphere->radius = -1.0;
+    before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_radius(sphere) == 1.0);
+    assert(rt_light3d_mutation_revision() == before + 1);
+    volume->casts_shadows = 1;
+    before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_casts_shadows(volume) == 0);
+    assert(rt_light3d_mutation_revision() == before + 1);
+
+    spot->inner_cos = -1.0;
+    spot->outer_cos = 2.0;
+    before = rt_light3d_mutation_revision();
+    double inner = rt_light3d_get_inner_cone_degrees(spot);
+    double outer = rt_light3d_get_outer_cone_degrees(spot);
+    assert(std::isfinite(inner) && std::isfinite(outer) && inner < outer);
+    assert(rt_light3d_mutation_revision() == before + 1);
+
+    point->type = 99;
+    before = rt_light3d_mutation_revision();
+    assert(rt_light3d_get_type(point) == 0);
+    assert(point->type == 0 && rt_light3d_mutation_revision() == before + 1);
+}
+
+static void test_instance_batch_repairs_storage_and_preserves_relative_motion_history() {
+    void *mesh = rt_mesh3d_new_box(1.0, 1.0, 1.0);
+    void *material = rt_material3d_new();
+    auto *batch = static_cast<InstBatchView *>(rt_instbatch3d_new(mesh, material));
+    assert(batch != nullptr);
+    rt_instbatch3d_add(batch, rt_mat4_identity());
+    assert(rt_instbatch3d_count(batch) == 1);
+
+    batch->transforms = reinterpret_cast<float *>(uintptr_t{1});
+    batch->current_snapshot = nullptr;
+    batch->prev_transforms = reinterpret_cast<float *>(uintptr_t{3});
+    batch->transforms64 = reinterpret_cast<double *>(uintptr_t{5});
+    batch->current_snapshot64 = nullptr;
+    batch->prev_transforms64 = reinterpret_cast<double *>(uintptr_t{7});
+    batch->instance_capacity = INT32_MAX;
+    assert(rt_instbatch3d_count(batch) == 1);
+    assert(batch->transforms == batch->owned_transforms);
+    assert(batch->current_snapshot == batch->owned_current_snapshot);
+    assert(batch->prev_transforms == batch->owned_prev_transforms);
+    assert(batch->transforms64 == batch->owned_transforms64);
+    assert(batch->current_snapshot64 == batch->owned_current_snapshot64);
+    assert(batch->prev_transforms64 == batch->owned_prev_transforms64);
+    assert(batch->instance_capacity == batch->allocation_capacity);
+
+    batch->instance_count = INT32_MAX;
+    batch->motion_snapshot_count = INT32_MAX;
+    batch->prev_count = INT32_MAX;
+    batch->has_prev_snapshot = -7;
+    assert(rt_instbatch3d_count(batch) == batch->allocation_capacity);
+    assert(batch->motion_snapshot_count == batch->allocation_capacity);
+    assert(batch->prev_count == batch->allocation_capacity);
+    assert(batch->has_prev_snapshot == 1);
+    batch->instance_count = 1;
+    batch->motion_snapshot_count = 0;
+    batch->prev_count = 0;
+    batch->has_prev_snapshot = 0;
+
+    rt_canvas3d canvas = {};
+    canvas.width = 100;
+    canvas.height = 100;
+    canvas.in_frame = 1;
+    canvas.frame_is_2d = 0;
+    canvas.backend = &vgfx3d_software_backend;
+    canvas.cached_vp[0] = canvas.cached_vp[5] = canvas.cached_vp[10] = canvas.cached_vp[15] = 1.0f;
+    canvas.frame_serial = 0;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->motion_frame_initialized == 1);
+    assert(batch->motion_snapshot_count == 1 && batch->last_motion_frame == 0);
+
+    void *translated =
+        rt_mat4_new(1.0, 0.0, 0.0, 2.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+    rt_instbatch3d_set(batch, 0, translated);
+    canvas.frame_serial = 1;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->has_prev_snapshot == 1 && batch->prev_count == 1);
+    assert(batch->prev_transforms64[3] == 0.0);
+    assert(batch->current_snapshot64[3] == 2.0);
+
+    const double origin = 999999999999.0;
+    void *large_translation = rt_mat4_new(
+        1.0, 0.0, 0.0, origin + 0.25, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0, 0.0, 1.0);
+    rt_instbatch3d_set(batch, 0, large_translation);
+    canvas.camera_relative_upload = 1;
+    canvas.camera_relative_origin[0] = origin;
+    canvas.frame_serial = 2;
+    rt_canvas3d_draw_instanced(&canvas, batch);
+    assert(batch->visible_transforms != nullptr);
+    assert(std::fabs(batch->visible_transforms[3] - 0.25f) < 1e-6f);
+    assert(batch->current_snapshot64[3] == origin + 0.25);
+    assert(batch->prev_transforms64[3] == 2.0);
+
+    rt_instbatch3d_clear(batch);
+    assert(batch->instance_count == 0 && batch->motion_snapshot_count == 0);
+    assert(batch->prev_count == 0 && batch->has_prev_snapshot == 0);
+    assert(batch->motion_frame_initialized == 0);
 }
 
 static void test_physics_joints_deduplicate_and_raycast_is_true_ray() {
@@ -2101,6 +2615,9 @@ int main() {
     test_path3d_growth_preserves_points();
     test_path3d_looping_includes_closing_segment();
     test_path3d_extreme_points_keep_length_and_direction_finite();
+    test_transform_and_path_private_state_repairs_are_cache_coherent();
+    test_material_texture_repairs_are_transactional_and_complete();
+    test_sprite_decal_and_lensflare_repair_cached_render_state();
     test_navmesh_sample_position_handles_empty_mesh();
     test_navmesh_slope_refilter_and_sloped_height_projection();
     test_navmesh_sample_position_uses_closest_triangle_point();
@@ -2116,6 +2633,8 @@ int main() {
     test_obj_loader_recalculates_mixed_missing_normals();
     test_skeleton_bind_pose_and_animation_duration_sanitize();
     test_light_and_material_boolean_state_is_initialized();
+    test_light_noop_mutations_and_getters_repair_renderer_state();
+    test_instance_batch_repairs_storage_and_preserves_relative_motion_history();
     test_physics_joints_deduplicate_and_raycast_is_true_ray();
     test_raycast_math_and_backend_guards_are_strict();
     test_physics_oriented_boxes_do_not_collide_as_aabbs();

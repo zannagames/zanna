@@ -55,6 +55,7 @@ extern double rt_vec3_z(void *v);
 #define PATH3D_LENGTH_MAX 1000000000000000000.0
 
 #define PATH3D_SPLINE_SUBSTEPS 64
+#define PATH3D_MAX_SPLINE_SAMPLES 1000001
 
 /**
  * @brief Mutable storage and derived-data caches for one Path3D object.
@@ -82,6 +83,15 @@ typedef struct {
     int32_t spline_sample_count;
     ///< Nonzero when the centripetal cumulative-length table is stale.
     int8_t spline_dirty;
+    /* Private allocation metadata. Public white-box corruption tests intentionally
+     * mutate the legacy fields above, so ownership and real bounds live in appended
+     * fields that ordinary APIs never expose. */
+    int32_t point_allocation_capacity;
+    int32_t spline_capacity;
+    double *owned_xs;
+    double *owned_ys;
+    double *owned_zs;
+    double *owned_spline_cumulative;
 } rt_path3d;
 
 /// @brief GC finalizer — release the three parallel coordinate arrays.
@@ -97,14 +107,18 @@ static void path3d_finalizer(void *obj) {
     rt_path3d *p = (rt_path3d *)obj;
     if (!p)
         return;
-    free(p->xs);
-    free(p->ys);
-    free(p->zs);
+    free(p->owned_xs);
+    free(p->owned_ys);
+    free(p->owned_zs);
     p->xs = p->ys = p->zs = NULL;
+    p->owned_xs = p->owned_ys = p->owned_zs = NULL;
     p->point_count = p->point_capacity = 0;
-    free(p->spline_cumulative);
+    p->point_allocation_capacity = 0;
+    free(p->owned_spline_cumulative);
     p->spline_cumulative = NULL;
+    p->owned_spline_cumulative = NULL;
     p->spline_sample_count = 0;
+    p->spline_capacity = 0;
 }
 
 /// @brief Sanitize one coordinate lane, capping finite extremes so interpolation stays finite.
@@ -123,14 +137,16 @@ static double path3d_coord_or(double value, double fallback) {
     return value;
 }
 
-/// @brief Repair defensive invariants before public operations touch the parallel point arrays.
+/// @brief Repair pointer/count metadata in constant time before touching path storage.
+/// @details Restores mutable legacy pointers/capacity from private ownership metadata and clamps
+///   counts to the real allocation. It deliberately does not scan point contents, keeping append
+///   and count queries amortized O(1).
 /// @param p Path storage to normalize; a null pointer is ignored.
-static void path3d_repair(rt_path3d *p) {
+static void path3d_repair_storage(rt_path3d *p) {
     if (!p)
         return;
-    if (p->point_capacity < 0)
-        p->point_capacity = 0;
-    if (!p->xs || !p->ys || !p->zs || p->point_capacity == 0) {
+    if (p->point_allocation_capacity <= 0 || !p->owned_xs || !p->owned_ys || !p->owned_zs) {
+        p->xs = p->ys = p->zs = NULL;
         p->point_count = 0;
         p->point_capacity = 0;
         p->length_dirty = 1;
@@ -138,20 +154,97 @@ static void path3d_repair(rt_path3d *p) {
         p->cached_length = 0.0;
         return;
     }
-    if (p->point_count < 0)
+    p->xs = p->owned_xs;
+    p->ys = p->owned_ys;
+    p->zs = p->owned_zs;
+    p->point_capacity = p->point_allocation_capacity;
+    if (p->point_count < 0) {
         p->point_count = 0;
-    if (p->point_count > p->point_capacity)
-        p->point_count = p->point_capacity;
-    for (int32_t i = 0; i < p->point_count; ++i) {
-        p->xs[i] = path3d_coord_or(p->xs[i], 0.0);
-        p->ys[i] = path3d_coord_or(p->ys[i], 0.0);
-        p->zs[i] = path3d_coord_or(p->zs[i], 0.0);
+        p->length_dirty = 1;
+        p->spline_dirty = 1;
     }
-    p->looping = p->looping ? 1 : 0;
-    if (!isfinite(p->cached_length) || p->cached_length < 0.0) {
+    if (p->point_count > p->point_capacity) {
+        p->point_count = p->point_capacity;
+        p->length_dirty = 1;
+        p->spline_dirty = 1;
+    }
+    if (p->owned_spline_cumulative && p->spline_capacity > 0) {
+        p->spline_cumulative = p->owned_spline_cumulative;
+        if (p->spline_sample_count < 0 || p->spline_sample_count > p->spline_capacity) {
+            p->spline_sample_count = 0;
+            p->spline_dirty = 1;
+        }
+    } else {
+        p->spline_cumulative = NULL;
+        p->owned_spline_cumulative = NULL;
+        p->spline_capacity = 0;
+        p->spline_sample_count = 0;
+        p->spline_dirty = 1;
+    }
+}
+
+/// @brief Return the bounded spline-table sample count required by current path topology.
+/// @param p Repaired path storage.
+/// @return Zero for a degenerate path, otherwise a count in `[2, PATH3D_MAX_SPLINE_SAMPLES]`.
+static int32_t path3d_required_spline_samples(const rt_path3d *p) {
+    int64_t segments;
+    int64_t samples;
+    if (!p || p->point_count < 2)
+        return 0;
+    segments = p->looping ? p->point_count : (int64_t)p->point_count - 1;
+    if (segments <= 0)
+        return 0;
+    samples = segments * (int64_t)PATH3D_SPLINE_SUBSTEPS + 1;
+    if (samples > PATH3D_MAX_SPLINE_SAMPLES)
+        samples = PATH3D_MAX_SPLINE_SAMPLES;
+    return (int32_t)samples;
+}
+
+/// @brief Repair defensive invariants before evaluators expose path contents or caches.
+/// @param p Path storage to normalize; a null pointer is ignored.
+static void path3d_repair(rt_path3d *p) {
+    int changed = 0;
+    if (!p)
+        return;
+    path3d_repair_storage(p);
+    for (int32_t i = 0; i < p->point_count; ++i) {
+        double x = path3d_coord_or(p->xs[i], 0.0);
+        double y = path3d_coord_or(p->ys[i], 0.0);
+        double z = path3d_coord_or(p->zs[i], 0.0);
+        if (x != p->xs[i] || y != p->ys[i] || z != p->zs[i])
+            changed = 1;
+        p->xs[i] = x;
+        p->ys[i] = y;
+        p->zs[i] = z;
+    }
+    if (p->looping != 0 && p->looping != 1) {
+        p->looping = p->looping ? 1 : 0;
+        changed = 1;
+    }
+    if (!isfinite(p->cached_length) || p->cached_length < 0.0 ||
+        p->cached_length > PATH3D_LENGTH_MAX) {
         p->cached_length = 0.0;
         p->length_dirty = 1;
         p->spline_dirty = 1;
+    }
+    if (changed) {
+        p->length_dirty = 1;
+        p->spline_dirty = 1;
+    }
+    if (!p->spline_dirty) {
+        int32_t required = path3d_required_spline_samples(p);
+        int cache_valid = required == 0
+                              ? (!p->spline_cumulative && p->spline_sample_count == 0)
+                              : (p->spline_cumulative && p->spline_sample_count == required);
+        double previous = 0.0;
+        for (int32_t i = 0; cache_valid && i < required; i++) {
+            double value = p->spline_cumulative[i];
+            if (!isfinite(value) || value < previous || value > PATH3D_LENGTH_MAX)
+                cache_valid = 0;
+            previous = value;
+        }
+        if (!cache_valid)
+            p->spline_dirty = 1;
     }
 }
 
@@ -167,7 +260,7 @@ static void path3d_repair(rt_path3d *p) {
 static int path3d_reserve(rt_path3d *p, int32_t min_capacity) {
     if (!p || min_capacity < 0)
         return 0;
-    path3d_repair(p);
+    path3d_repair_storage(p);
     if (min_capacity <= p->point_capacity)
         return 1;
     int32_t new_cap = p->point_capacity > 0 ? p->point_capacity : PATH3D_INIT_CAP;
@@ -197,13 +290,17 @@ static int path3d_reserve(rt_path3d *p, int32_t min_capacity) {
         memcpy(new_ys, p->ys, (size_t)p->point_count * sizeof(double));
         memcpy(new_zs, p->zs, (size_t)p->point_count * sizeof(double));
     }
-    free(p->xs);
-    free(p->ys);
-    free(p->zs);
+    free(p->owned_xs);
+    free(p->owned_ys);
+    free(p->owned_zs);
     p->xs = new_xs;
     p->ys = new_ys;
     p->zs = new_zs;
+    p->owned_xs = new_xs;
+    p->owned_ys = new_ys;
+    p->owned_zs = new_zs;
     p->point_capacity = new_cap;
+    p->point_allocation_capacity = new_cap;
     return 1;
 }
 
@@ -220,9 +317,12 @@ void *rt_path3d_new(void) {
         return NULL;
     }
     p->vptr = NULL;
-    p->xs = (double *)calloc(PATH3D_INIT_CAP, sizeof(double));
-    p->ys = (double *)calloc(PATH3D_INIT_CAP, sizeof(double));
-    p->zs = (double *)calloc(PATH3D_INIT_CAP, sizeof(double));
+    p->owned_xs = (double *)calloc(PATH3D_INIT_CAP, sizeof(double));
+    p->owned_ys = (double *)calloc(PATH3D_INIT_CAP, sizeof(double));
+    p->owned_zs = (double *)calloc(PATH3D_INIT_CAP, sizeof(double));
+    p->xs = p->owned_xs;
+    p->ys = p->owned_ys;
+    p->zs = p->owned_zs;
     if (!p->xs || !p->ys || !p->zs) {
         path3d_finalizer(p);
         if (rt_obj_release_check0(p))
@@ -232,12 +332,15 @@ void *rt_path3d_new(void) {
     }
     p->point_count = 0;
     p->point_capacity = PATH3D_INIT_CAP;
+    p->point_allocation_capacity = PATH3D_INIT_CAP;
     p->looping = 0;
     p->cached_length = 0.0;
     p->length_dirty = 1;
     p->spline_dirty = 1;
     p->spline_cumulative = NULL;
+    p->owned_spline_cumulative = NULL;
     p->spline_sample_count = 0;
+    p->spline_capacity = 0;
     rt_obj_set_finalizer(p, path3d_finalizer);
     return p;
 }
@@ -251,7 +354,7 @@ void rt_path3d_add_point(void *obj, void *pos) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     if (!p)
         return;
-    path3d_repair(p);
+    path3d_repair_storage(p);
 
     if (p->point_count == INT32_MAX || !path3d_reserve(p, p->point_count + 1))
         return;
@@ -338,7 +441,7 @@ static void path3d_eval_position(rt_path3d *p, double t, double *ox, double *oy,
         *ox = *oy = *oz = 0.0;
         return;
     }
-    path3d_repair(p);
+    path3d_repair_storage(p);
     if (!isfinite(t))
         t = 0.0;
     if (p->point_count < 2) {
@@ -415,6 +518,7 @@ void *rt_path3d_get_position_at(void *obj, double t) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     if (!p)
         return rt_vec3_new(0, 0, 0);
+    path3d_repair(p);
     double ox, oy, oz;
     path3d_eval_position(p, t, &ox, &oy, &oz);
     return rt_vec3_new(ox, oy, oz);
@@ -435,6 +539,7 @@ void *rt_path3d_get_direction_at(void *obj, double t) {
     if (!p) {
         return rt_vec3_new(0, 0, 0);
     }
+    path3d_repair(p);
     path3d_eval_position(p, t - eps, &p0x, &p0y, &p0z);
     path3d_eval_position(p, t + eps, &p1x, &p1y, &p1z);
     double dx = p1x - p0x;
@@ -507,7 +612,7 @@ static void path3d_eval_spline_position(rt_path3d *p, double t, double out[3]) {
     out[0] = out[1] = out[2] = 0.0;
     if (!p)
         return;
-    path3d_repair(p);
+    path3d_repair_storage(p);
     if (!isfinite(t))
         t = 0.0;
     if (p->point_count < 2) {
@@ -560,22 +665,31 @@ static void path3d_eval_spline_position(rt_path3d *p, double t, double out[3]) {
 ///   PATH3D_SPLINE_SUBSTEPS points per segment of the Catmull-Rom curve.
 /// @param p Path whose centripetal cumulative-length cache is refreshed when dirty.
 static void path3d_spline_refresh(rt_path3d *p) {
+    double *table;
+    int32_t samples;
     if (!p || !p->spline_dirty)
         return;
     path3d_repair(p);
-    int n = p->point_count;
-    int segment_count = n >= 2 ? (p->looping ? n : n - 1) : 0;
-    int32_t samples = segment_count > 0 ? segment_count * PATH3D_SPLINE_SUBSTEPS + 1 : 0;
+    samples = path3d_required_spline_samples(p);
     if (samples <= 0) {
-        free(p->spline_cumulative);
+        free(p->owned_spline_cumulative);
         p->spline_cumulative = NULL;
+        p->owned_spline_cumulative = NULL;
         p->spline_sample_count = 0;
+        p->spline_capacity = 0;
         p->spline_dirty = 0;
         return;
     }
-    double *table = (double *)realloc(p->spline_cumulative, (size_t)samples * sizeof(double));
-    if (!table)
-        return; /* stay dirty; retry next call */
+    table = p->owned_spline_cumulative;
+    if (!table || p->spline_capacity < samples) {
+        double *grown = (double *)malloc((size_t)samples * sizeof(*grown));
+        if (!grown)
+            return; /* keep the previous cache and retry later */
+        free(p->owned_spline_cumulative);
+        table = grown;
+        p->owned_spline_cumulative = grown;
+        p->spline_capacity = samples;
+    }
     p->spline_cumulative = table;
     p->spline_sample_count = samples;
     double prev_x = 0.0, prev_y = 0.0, prev_z = 0.0;
@@ -589,9 +703,18 @@ static void path3d_spline_refresh(rt_path3d *p) {
             double dx = x - prev_x;
             double dy = y - prev_y;
             double dz = z - prev_z;
-            double d = sqrt(dx * dx + dy * dy + dz * dz);
-            if (isfinite(d))
+            double max_abs = fmax(fabs(dx), fmax(fabs(dy), fabs(dz)));
+            double d = 0.0;
+            if (isfinite(max_abs) && max_abs > 0.0) {
+                double sx = dx / max_abs;
+                double sy = dy / max_abs;
+                double sz = dz / max_abs;
+                d = max_abs * sqrt(sx * sx + sy * sy + sz * sz);
+            }
+            if (isfinite(d) && total <= PATH3D_LENGTH_MAX - d)
                 total += d;
+            else if (d > 0.0)
+                total = PATH3D_LENGTH_MAX;
         }
         table[i] = total;
         prev_x = x;
@@ -622,6 +745,7 @@ void rt_path3d_eval_spline_raw(void *obj, double t, double *pos_out, double *tan
         tan_out[0] = tan_out[1] = tan_out[2] = 0.0;
     if (!p || !pos_out)
         return;
+    path3d_repair(p);
     if (!isfinite(t))
         t = 0.0;
     if (p->looping) {
@@ -636,7 +760,9 @@ void rt_path3d_eval_spline_raw(void *obj, double t, double *pos_out, double *tan
     }
     path3d_spline_refresh(p);
     double u = t;
-    if (p->spline_cumulative && p->spline_sample_count >= 2) {
+    /* A failed growth keeps the old allocation for a later retry, but that table no longer
+     * describes the current topology. Fall back to raw parameterization while it remains dirty. */
+    if (!p->spline_dirty && p->spline_cumulative && p->spline_sample_count >= 2) {
         double total = p->spline_cumulative[p->spline_sample_count - 1];
         if (isfinite(total) && total > 1e-12) {
             double target = t * total;
@@ -666,7 +792,14 @@ void rt_path3d_eval_spline_raw(void *obj, double t, double *pos_out, double *tan
         double dx = bx - ax;
         double dy = by - ay;
         double dz = bz - az;
-        double len = sqrt(dx * dx + dy * dy + dz * dz);
+        double max_abs = fmax(fabs(dx), fmax(fabs(dy), fabs(dz)));
+        double len = 0.0;
+        if (isfinite(max_abs) && max_abs > 0.0) {
+            double sx = dx / max_abs;
+            double sy = dy / max_abs;
+            double sz = dz / max_abs;
+            len = max_abs * sqrt(sx * sx + sy * sy + sz * sz);
+        }
         if (isfinite(len) && len > 1e-12) {
             tan_out[0] = dx / len;
             tan_out[1] = dy / len;
@@ -733,7 +866,7 @@ int64_t rt_path3d_get_point_count(void *obj) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     if (!p)
         return 0;
-    path3d_repair(p);
+    path3d_repair_storage(p);
     return p->point_count;
 }
 
@@ -744,8 +877,11 @@ void rt_path3d_set_looping(void *obj, int8_t loop) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     if (!p)
         return;
-    path3d_repair(p);
-    p->looping = loop ? 1 : 0;
+    path3d_repair_storage(p);
+    loop = loop ? 1 : 0;
+    if (p->looping == loop)
+        return;
+    p->looping = loop;
     p->length_dirty = 1;
     p->spline_dirty = 1;
 }
@@ -767,10 +903,16 @@ void rt_path3d_clear(void *obj) {
     rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
     if (!p)
         return;
-    path3d_repair(p);
+    path3d_repair_storage(p);
     p->point_count = 0;
+    p->cached_length = 0.0;
     p->length_dirty = 1;
-    p->spline_dirty = 1;
+    free(p->owned_spline_cumulative);
+    p->owned_spline_cumulative = NULL;
+    p->spline_cumulative = NULL;
+    p->spline_sample_count = 0;
+    p->spline_capacity = 0;
+    p->spline_dirty = 0;
 }
 
 #else

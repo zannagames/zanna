@@ -31,8 +31,8 @@
 /// @file
 /// @brief Implements finite mutable state for all Light3D emitter types.
 /// @details Constructors copy and sanitize authoring inputs, mutations advance
-///   a process-wide renderer cache generation, and type-aware accessors expose
-///   directional, local, area, volume, shadow, and spot-cone properties.
+///   a process-wide renderer cache generation only on observable changes, and type-aware accessors
+///   expose directional, local, area, volume, shadow, and spot-cone properties.
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
@@ -234,6 +234,30 @@ static void light3d_get_spot_angles(const rt_light3d *light,
         *inner_angle = inner;
     if (outer_angle)
         *outer_angle = outer;
+}
+
+/// @brief Repair malformed stored spot-cone cosines and invalidate renderer snapshots on change.
+/// @param light Mutable spot light; other types are ignored.
+static void light3d_repair_spot_cone(rt_light3d *light) {
+    double inner;
+    double outer;
+    double inner_cos;
+    double outer_cos;
+    const double degrees_to_radians = 0.01745329251994329577;
+    if (!light || light->type != 3)
+        return;
+    if (isfinite(light->inner_cos) && isfinite(light->outer_cos) && light->inner_cos >= 0.0 &&
+        light->inner_cos <= 1.0 && light->outer_cos >= 0.0 && light->outer_cos <= 1.0 &&
+        light->inner_cos > light->outer_cos)
+        return;
+    light3d_get_spot_angles(light, &inner, &outer);
+    inner_cos = cos(inner * degrees_to_radians);
+    outer_cos = cos(outer * degrees_to_radians);
+    if (light->inner_cos == inner_cos && light->outer_cos == outer_cos)
+        return;
+    light->inner_cos = inner_cos;
+    light->outer_cos = outer_cos;
+    light3d_note_mutation();
 }
 
 /// @brief Normalize a light's direction vector, defaulting to down on zero input.
@@ -631,9 +655,13 @@ void *rt_light3d_new_volume(
 /// @param intensity Brightness multiplier (default 1.0).
 void rt_light3d_set_intensity(void *obj, double intensity) {
     rt_light3d *light = light3d_checked(obj);
+    double sanitized;
     if (!light)
         return;
-    light->intensity = clamp_param_min0(intensity);
+    sanitized = clamp_param_min0(intensity);
+    if (light->intensity == sanitized)
+        return;
+    light->intensity = sanitized;
     light3d_note_mutation();
 }
 
@@ -646,11 +674,15 @@ void rt_light3d_set_intensity(void *obj, double intensity) {
 /// @param attenuation Distance falloff factor (values <= 0 use the default falloff floor).
 void rt_light3d_set_attenuation(void *obj, double attenuation) {
     rt_light3d *light = light3d_checked(obj);
+    double sanitized;
     if (!light)
         return;
     if (light->type != 1 && light->type != 3 && light->type != 4 && light->type != 5)
         return;
-    light->attenuation = sanitize_local_attenuation(attenuation);
+    sanitized = sanitize_local_attenuation(attenuation);
+    if (light->attenuation == sanitized)
+        return;
+    light->attenuation = sanitized;
     light3d_note_mutation();
 }
 
@@ -659,7 +691,19 @@ void rt_light3d_set_attenuation(void *obj, double attenuation) {
 /// @return Stored attenuation, or zero for an invalid handle.
 double rt_light3d_get_attenuation(void *obj) {
     rt_light3d *light = light3d_checked(obj);
-    return light ? light->attenuation : 0.0;
+    double sanitized;
+    if (!light)
+        return 0.0;
+    if (light->type != 1 && light->type != 3 && light->type != 4 && light->type != 5 &&
+        light->type != 6)
+        sanitized = 0.0;
+    else
+        sanitized = sanitize_local_attenuation(light->attenuation);
+    if (light->attenuation != sanitized) {
+        light->attenuation = sanitized;
+        light3d_note_mutation();
+    }
+    return sanitized;
 }
 
 /// @brief Change the RGB color of a light after creation.
@@ -669,11 +713,15 @@ double rt_light3d_get_attenuation(void *obj) {
 /// @param b   Blue component [0.0–1.0].
 void rt_light3d_set_color(void *obj, double r, double g, double b) {
     rt_light3d *l = light3d_checked(obj);
+    double color[3];
     if (!l)
         return;
-    l->color[0] = clamp01(r);
-    l->color[1] = clamp01(g);
-    l->color[2] = clamp01(b);
+    color[0] = clamp01(r);
+    color[1] = clamp01(g);
+    color[2] = clamp01(b);
+    if (l->color[0] == color[0] && l->color[1] == color[1] && l->color[2] == color[2])
+        return;
+    memcpy(l->color, color, sizeof(color));
     light3d_note_mutation();
 }
 
@@ -685,8 +733,10 @@ int64_t rt_light3d_get_type(void *obj) {
     rt_light3d *light = light3d_checked(obj);
     if (!light)
         return 0;
-    if (light->type < 0 || light->type > 6)
+    if (light->type < 0 || light->type > 6) {
         light->type = 0;
+        light3d_note_mutation();
+    }
     return light->type;
 }
 
@@ -696,10 +746,17 @@ int64_t rt_light3d_get_type(void *obj) {
 ///   for an invalid receiver; allocation failure follows Vec3 construction semantics.
 void *rt_light3d_get_color(void *obj) {
     rt_light3d *light = light3d_checked(obj);
+    double color[3];
     if (!light)
         return rt_vec3_new(0.0, 0.0, 0.0);
-    return rt_vec3_new(
-        clamp01(light->color[0]), clamp01(light->color[1]), clamp01(light->color[2]));
+    color[0] = clamp01(light->color[0]);
+    color[1] = clamp01(light->color[1]);
+    color[2] = clamp01(light->color[2]);
+    if (memcmp(light->color, color, sizeof(color)) != 0) {
+        memcpy(light->color, color, sizeof(color));
+        light3d_note_mutation();
+    }
+    return rt_vec3_new(color[0], color[1], color[2]);
 }
 
 /// @brief Read the light intensity.
@@ -707,9 +764,15 @@ void *rt_light3d_get_color(void *obj) {
 /// @return Finite nonnegative intensity capped at the parameter maximum, or zero.
 double rt_light3d_get_intensity(void *obj) {
     rt_light3d *light = light3d_checked(obj);
+    double sanitized;
     if (!light)
         return 0.0;
-    return clamp_param_min0(light->intensity);
+    sanitized = clamp_param_min0(light->intensity);
+    if (light->intensity != sanitized) {
+        light->intensity = sanitized;
+        light3d_note_mutation();
+    }
+    return sanitized;
 }
 
 /// @brief Enable or disable a light without removing it from its owning slot.
@@ -717,9 +780,13 @@ double rt_light3d_get_intensity(void *obj) {
 /// @param enabled Nonzero to contribute to rendering, zero to disable.
 void rt_light3d_set_enabled(void *obj, int8_t enabled) {
     rt_light3d *light = light3d_checked(obj);
+    int8_t sanitized;
     if (!light)
         return;
-    light->enabled = enabled ? 1 : 0;
+    sanitized = enabled ? 1 : 0;
+    if (light->enabled == sanitized)
+        return;
+    light->enabled = sanitized;
     light3d_note_mutation();
 }
 
@@ -728,9 +795,15 @@ void rt_light3d_set_enabled(void *obj, int8_t enabled) {
 /// @return Normalized `1` or `0`; invalid handles return zero.
 int8_t rt_light3d_get_enabled(void *obj) {
     rt_light3d *light = light3d_checked(obj);
+    int8_t sanitized;
     if (!light)
         return 0;
-    return light->enabled ? 1 : 0;
+    sanitized = light->enabled ? 1 : 0;
+    if (light->enabled != sanitized) {
+        light->enabled = sanitized;
+        light3d_note_mutation();
+    }
+    return sanitized;
 }
 
 /// @brief Toggle whether this light can be selected for shadow-map rendering.
@@ -738,9 +811,13 @@ int8_t rt_light3d_get_enabled(void *obj) {
 /// @param enabled Nonzero to request eligibility. Volume lights always store disabled.
 void rt_light3d_set_casts_shadows(void *obj, int8_t enabled) {
     rt_light3d *light = light3d_checked(obj);
+    int8_t sanitized;
     if (!light)
         return;
-    light->casts_shadows = light->type == 6 ? 0 : (enabled ? 1 : 0);
+    sanitized = light->type == 6 ? 0 : (enabled ? 1 : 0);
+    if (light->casts_shadows == sanitized)
+        return;
+    light->casts_shadows = sanitized;
     light3d_note_mutation();
 }
 
@@ -749,9 +826,15 @@ void rt_light3d_set_casts_shadows(void *obj, int8_t enabled) {
 /// @return Normalized shadow-eligibility flag, or zero for invalid handles.
 int8_t rt_light3d_get_casts_shadows(void *obj) {
     rt_light3d *light = light3d_checked(obj);
+    int8_t sanitized;
     if (!light)
         return 0;
-    return light->casts_shadows ? 1 : 0;
+    sanitized = light->type == 6 ? 0 : (light->casts_shadows ? 1 : 0);
+    if (light->casts_shadows != sanitized) {
+        light->casts_shadows = sanitized;
+        light3d_note_mutation();
+    }
+    return sanitized;
 }
 
 /// @brief Read the light direction as a fresh Vec3.
@@ -760,13 +843,26 @@ int8_t rt_light3d_get_casts_shadows(void *obj) {
 ///   degenerate state.
 void *rt_light3d_get_direction(void *obj) {
     rt_light3d *light = light3d_checked(obj);
+    rt_light3d repaired;
     if (!light)
         return rt_vec3_new(0.0, -1.0, 0.0);
-    double x = light->direction[0];
-    double y = light->direction[1];
-    double z = light->direction[2];
-    normalize_light_direction(&x, &y, &z);
-    return rt_vec3_new(x, y, z);
+    repaired = *light;
+    normalize_light_direction(
+        &repaired.direction[0], &repaired.direction[1], &repaired.direction[2]);
+    if (repaired.type == 4)
+        light3d_build_emitter_basis(&repaired);
+    if (memcmp(light->direction, repaired.direction, sizeof(light->direction)) != 0 ||
+        (repaired.type == 4 &&
+         (memcmp(light->basis_u, repaired.basis_u, sizeof(light->basis_u)) != 0 ||
+          memcmp(light->basis_v, repaired.basis_v, sizeof(light->basis_v)) != 0))) {
+        memcpy(light->direction, repaired.direction, sizeof(light->direction));
+        if (repaired.type == 4) {
+            memcpy(light->basis_u, repaired.basis_u, sizeof(light->basis_u));
+            memcpy(light->basis_v, repaired.basis_v, sizeof(light->basis_v));
+        }
+        light3d_note_mutation();
+    }
+    return rt_vec3_new(repaired.direction[0], repaired.direction[1], repaired.direction[2]);
 }
 
 /// @brief Read the light position as a fresh Vec3.
@@ -774,11 +870,17 @@ void *rt_light3d_get_direction(void *obj) {
 /// @return New sanitized position Vec3, or a new zero Vec3 for invalid input.
 void *rt_light3d_get_position(void *obj) {
     rt_light3d *light = light3d_checked(obj);
+    double position[3];
     if (!light)
         return rt_vec3_new(0.0, 0.0, 0.0);
-    return rt_vec3_new(light_coord_or_zero(light->position[0]),
-                       light_coord_or_zero(light->position[1]),
-                       light_coord_or_zero(light->position[2]));
+    position[0] = light_coord_or_zero(light->position[0]);
+    position[1] = light_coord_or_zero(light->position[1]);
+    position[2] = light_coord_or_zero(light->position[2]);
+    if (memcmp(light->position, position, sizeof(position)) != 0) {
+        memcpy(light->position, position, sizeof(position));
+        light3d_note_mutation();
+    }
+    return rt_vec3_new(position[0], position[1], position[2]);
 }
 
 /// @brief Move the light to a new world position.
@@ -787,15 +889,20 @@ void *rt_light3d_get_position(void *obj) {
 ///   vector input reports a trap without mutation.
 void rt_light3d_set_position(void *obj, void *position) {
     rt_light3d *light = light3d_checked(obj);
+    double sanitized[3];
     if (!light)
         return;
     if (!rt_g3d_is_vec3(position)) {
         rt_trap("Light3D.Position: position must be a Vec3");
         return;
     }
-    light->position[0] = light_coord_or_zero(rt_vec3_x(position));
-    light->position[1] = light_coord_or_zero(rt_vec3_y(position));
-    light->position[2] = light_coord_or_zero(rt_vec3_z(position));
+    sanitized[0] = light_coord_or_zero(rt_vec3_x(position));
+    sanitized[1] = light_coord_or_zero(rt_vec3_y(position));
+    sanitized[2] = light_coord_or_zero(rt_vec3_z(position));
+    if (light->position[0] == sanitized[0] && light->position[1] == sanitized[1] &&
+        light->position[2] == sanitized[2])
+        return;
+    memcpy(light->position, sanitized, sizeof(sanitized));
     light3d_note_mutation();
 }
 
@@ -806,18 +913,30 @@ void rt_light3d_set_position(void *obj, void *position) {
 ///   trap without mutation.
 void rt_light3d_set_direction(void *obj, void *direction) {
     rt_light3d *light = light3d_checked(obj);
+    rt_light3d updated;
     if (!light)
         return;
     if (!rt_g3d_is_vec3(direction)) {
         rt_trap("Light3D.Direction: direction must be a Vec3");
         return;
     }
-    light->direction[0] = rt_vec3_x(direction);
-    light->direction[1] = rt_vec3_y(direction);
-    light->direction[2] = rt_vec3_z(direction);
-    normalize_light_direction(&light->direction[0], &light->direction[1], &light->direction[2]);
-    if (light->type == 4)
-        light3d_build_emitter_basis(light);
+    updated = *light;
+    updated.direction[0] = rt_vec3_x(direction);
+    updated.direction[1] = rt_vec3_y(direction);
+    updated.direction[2] = rt_vec3_z(direction);
+    normalize_light_direction(&updated.direction[0], &updated.direction[1], &updated.direction[2]);
+    if (updated.type == 4)
+        light3d_build_emitter_basis(&updated);
+    if (memcmp(light->direction, updated.direction, sizeof(light->direction)) == 0 &&
+        (updated.type != 4 ||
+         (memcmp(light->basis_u, updated.basis_u, sizeof(light->basis_u)) == 0 &&
+          memcmp(light->basis_v, updated.basis_v, sizeof(light->basis_v)) == 0)))
+        return;
+    memcpy(light->direction, updated.direction, sizeof(light->direction));
+    if (updated.type == 4) {
+        memcpy(light->basis_u, updated.basis_u, sizeof(light->basis_u));
+        memcpy(light->basis_v, updated.basis_v, sizeof(light->basis_v));
+    }
     light3d_note_mutation();
 }
 
@@ -826,7 +945,15 @@ void rt_light3d_set_direction(void *obj, void *direction) {
 /// @return Positive width for rectangle lights, otherwise zero.
 double rt_light3d_get_width(void *obj) {
     rt_light3d *light = light3d_checked(obj);
-    return light && light->type == 4 ? sanitize_positive_light_param(light->width) : 0.0;
+    double sanitized;
+    if (!light || light->type != 4)
+        return 0.0;
+    sanitized = sanitize_positive_light_param(light->width);
+    if (light->width != sanitized) {
+        light->width = sanitized;
+        light3d_note_mutation();
+    }
+    return sanitized;
 }
 
 /// @brief Set a rectangle area's emitter width.
@@ -834,9 +961,13 @@ double rt_light3d_get_width(void *obj) {
 /// @param width Positive world-unit width; invalid or near-zero values become one.
 void rt_light3d_set_width(void *obj, double width) {
     rt_light3d *light = light3d_checked(obj);
+    double sanitized;
     if (!light || light->type != 4)
         return;
-    light->width = sanitize_positive_light_param(width);
+    sanitized = sanitize_positive_light_param(width);
+    if (light->width == sanitized)
+        return;
+    light->width = sanitized;
     light3d_note_mutation();
 }
 
@@ -845,7 +976,15 @@ void rt_light3d_set_width(void *obj, double width) {
 /// @return Positive height for rectangle lights, otherwise zero.
 double rt_light3d_get_height(void *obj) {
     rt_light3d *light = light3d_checked(obj);
-    return light && light->type == 4 ? sanitize_positive_light_param(light->height) : 0.0;
+    double sanitized;
+    if (!light || light->type != 4)
+        return 0.0;
+    sanitized = sanitize_positive_light_param(light->height);
+    if (light->height != sanitized) {
+        light->height = sanitized;
+        light3d_note_mutation();
+    }
+    return sanitized;
 }
 
 /// @brief Set a rectangle area's emitter height.
@@ -853,9 +992,13 @@ double rt_light3d_get_height(void *obj) {
 /// @param height Positive world-unit height; invalid or near-zero values become one.
 void rt_light3d_set_height(void *obj, double height) {
     rt_light3d *light = light3d_checked(obj);
+    double sanitized;
     if (!light || light->type != 4)
         return;
-    light->height = sanitize_positive_light_param(height);
+    sanitized = sanitize_positive_light_param(height);
+    if (light->height == sanitized)
+        return;
+    light->height = sanitized;
     light3d_note_mutation();
 }
 
@@ -864,9 +1007,15 @@ void rt_light3d_set_height(void *obj, double height) {
 /// @return Positive radius for supported types, otherwise zero.
 double rt_light3d_get_radius(void *obj) {
     rt_light3d *light = light3d_checked(obj);
-    return light && (light->type == 5 || light->type == 6)
-               ? sanitize_positive_light_param(light->radius)
-               : 0.0;
+    double sanitized;
+    if (!light || (light->type != 5 && light->type != 6))
+        return 0.0;
+    sanitized = sanitize_positive_light_param(light->radius);
+    if (light->radius != sanitized) {
+        light->radius = sanitized;
+        light3d_note_mutation();
+    }
+    return sanitized;
 }
 
 /// @brief Set a sphere-area or volume light's radius.
@@ -874,9 +1023,13 @@ double rt_light3d_get_radius(void *obj) {
 /// @param radius Positive world-unit radius; invalid or near-zero values become one.
 void rt_light3d_set_radius(void *obj, double radius) {
     rt_light3d *light = light3d_checked(obj);
+    double sanitized;
     if (!light || (light->type != 5 && light->type != 6))
         return;
-    light->radius = sanitize_positive_light_param(radius);
+    sanitized = sanitize_positive_light_param(radius);
+    if (light->radius == sanitized)
+        return;
+    light->radius = sanitized;
     light3d_note_mutation();
 }
 
@@ -888,8 +1041,10 @@ int64_t rt_light3d_get_decay_type(void *obj) {
     rt_light3d *light = light3d_checked(obj);
     if (!light)
         return 0;
-    if (light->decay_type < 0 || light->decay_type > 3)
+    if (light->decay_type < 0 || light->decay_type > 3) {
         light->decay_type = 2;
+        light3d_note_mutation();
+    }
     return light->decay_type;
 }
 
@@ -900,6 +1055,8 @@ void rt_light3d_set_decay_type(void *obj, int64_t decay_type) {
     rt_light3d *light = light3d_checked(obj);
     if (!light || decay_type < 0 || decay_type > 3)
         return;
+    if (light->decay_type == (int32_t)decay_type)
+        return;
     light->decay_type = (int32_t)decay_type;
     light3d_note_mutation();
 }
@@ -909,9 +1066,15 @@ void rt_light3d_set_decay_type(void *obj, int64_t decay_type) {
 /// @return Positive range for types `4..6`, otherwise zero.
 double rt_light3d_get_range(void *obj) {
     rt_light3d *light = light3d_checked(obj);
-    return light && light->type >= 4 && light->type <= 6
-               ? sanitize_positive_light_param(light->range)
-               : 0.0;
+    double sanitized;
+    if (!light || light->type < 4 || light->type > 6)
+        return 0.0;
+    sanitized = sanitize_positive_light_param(light->range);
+    if (light->range != sanitized) {
+        light->range = sanitized;
+        light3d_note_mutation();
+    }
+    return sanitized;
 }
 
 /// @brief Set an area or volume light's influence range.
@@ -919,9 +1082,13 @@ double rt_light3d_get_range(void *obj) {
 /// @param range Positive world-unit range; invalid or near-zero values become one.
 void rt_light3d_set_range(void *obj, double range) {
     rt_light3d *light = light3d_checked(obj);
+    double sanitized;
     if (!light || light->type < 4 || light->type > 6)
         return;
-    light->range = sanitize_positive_light_param(range);
+    sanitized = sanitize_positive_light_param(range);
+    if (light->range == sanitized)
+        return;
+    light->range = sanitized;
     light3d_note_mutation();
 }
 
@@ -931,6 +1098,7 @@ void rt_light3d_set_range(void *obj, double range) {
 double rt_light3d_get_inner_cone_degrees(void *obj) {
     rt_light3d *light = light3d_checked(obj);
     double inner = 0.0;
+    light3d_repair_spot_cone(light);
     light3d_get_spot_angles(light, &inner, NULL);
     return inner;
 }
@@ -941,6 +1109,7 @@ double rt_light3d_get_inner_cone_degrees(void *obj) {
 double rt_light3d_get_outer_cone_degrees(void *obj) {
     rt_light3d *light = light3d_checked(obj);
     double outer = 0.0;
+    light3d_repair_spot_cone(light);
     light3d_get_spot_angles(light, NULL, &outer);
     return outer;
 }
@@ -955,12 +1124,18 @@ double rt_light3d_get_outer_cone_degrees(void *obj) {
 ///   enforces a minimum `0.01` degree gap above the inner angle.
 void rt_light3d_set_spot_cone(void *obj, double inner_angle, double outer_angle) {
     rt_light3d *light = light3d_checked(obj);
+    double inner_cos;
+    double outer_cos;
     if (!light || light->type != 3)
         return;
     const double degrees_to_radians = 0.01745329251994329577;
     sanitize_spot_angles(&inner_angle, &outer_angle);
-    light->inner_cos = cos(inner_angle * degrees_to_radians);
-    light->outer_cos = cos(outer_angle * degrees_to_radians);
+    inner_cos = cos(inner_angle * degrees_to_radians);
+    outer_cos = cos(outer_angle * degrees_to_radians);
+    if (light->inner_cos == inner_cos && light->outer_cos == outer_cos)
+        return;
+    light->inner_cos = inner_cos;
+    light->outer_cos = outer_cos;
     light3d_note_mutation();
 }
 

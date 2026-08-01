@@ -78,9 +78,8 @@ void *rt_blend_tree3d_get_blend(void *tree);
 
 /// @brief 2D weighting mode: 0 = freeform-directional (default), 1 = legacy IDW.
 /// @details Exactly one selects inverse-distance-squared weighting; every
-///          other value selects freeform mode. The setting is stored for a 1D
-///          tree but does not affect its weighting. Weights are recomputed
-///          immediately.
+///          other value selects freeform mode. One-dimensional trees ignore
+///          the request. Changed 2D modes recompute weights immediately.
 /// @param[in,out] tree BlendTree3D to configure.
 /// @param[in] mode Requested weighting-mode value.
 void rt_blend_tree3d_set_blend_mode(void *tree, int64_t mode);

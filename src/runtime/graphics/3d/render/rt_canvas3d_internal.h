@@ -826,9 +826,9 @@ typedef struct {
     int8_t casts_shadows;
 } rt_light3d;
 
-/* Minimum point/spot attenuation used by constructors and importers to avoid unbounded local
- * lights. Directional and ambient lights keep zero attenuation because they are not distance
- * falloff lights. */
+/* Minimum local-light attenuation used by constructors and importers to avoid unbounded point,
+ * spot, rectangle, and sphere lights. Directional and ambient lights keep zero attenuation
+ * because they are not distance-falloff lights. */
 #define RT_LIGHT3D_DEFAULT_ATTENUATION 0.001
 
 //=============================================================================

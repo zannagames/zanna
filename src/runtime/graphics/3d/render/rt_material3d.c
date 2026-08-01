@@ -135,8 +135,8 @@ static void material_release_env_map_slot(void **slot) {
     material_release_ref(slot);
 }
 
-/// @brief GC finalizer for Material3D. Walks all seven texture slots (diffuse, normal,
-/// specular, emissive, metallic-roughness, AO, environment) and releases each, regardless
+/// @brief GC finalizer for Material3D. Walks all eight texture slots (diffuse, normal,
+/// specular, emissive, metallic-roughness, AO, lightmap, environment) and releases each, regardless
 /// of which subset the material actually used. Unused slots are NULL and release is
 /// NULL-safe, so legacy-Phong materials pay the same teardown cost as full PBR ones.
 /// @param obj Material3D instance being finalized; NULL is ignored.
@@ -223,26 +223,37 @@ void *rt_material3d_resolve_texture_native_asset(void *texture_ref) {
 ///         unsupported slot identifier.
 void *rt_material3d_get_persisted_texture_ref(void *obj, int64_t slot) {
     rt_material3d *material = material_checked(obj);
+    void **texture_slot = NULL;
     if (!material)
         return NULL;
     switch (slot) {
         case RT_MATERIAL3D_TEXTURE_SLOT_BASE_COLOR:
-            return material->texture;
+            texture_slot = &material->texture;
+            break;
         case RT_MATERIAL3D_TEXTURE_SLOT_NORMAL:
-            return material->normal_map;
+            texture_slot = &material->normal_map;
+            break;
         case RT_MATERIAL3D_TEXTURE_SLOT_SPECULAR:
-            return material->specular_map;
+            texture_slot = &material->specular_map;
+            break;
         case RT_MATERIAL3D_TEXTURE_SLOT_EMISSIVE:
-            return material->emissive_map;
+            texture_slot = &material->emissive_map;
+            break;
         case RT_MATERIAL3D_TEXTURE_SLOT_METALLIC_ROUGHNESS:
-            return material->metallic_roughness_map;
+            texture_slot = &material->metallic_roughness_map;
+            break;
         case RT_MATERIAL3D_TEXTURE_SLOT_AO:
-            return material->ao_map;
+            texture_slot = &material->ao_map;
+            break;
         case RT_MATERIAL3D_PERSISTED_TEXTURE_SLOT_LIGHTMAP:
-            return material->lightmap;
+            texture_slot = &material->lightmap;
+            break;
         default:
             return NULL;
     }
+    if (*texture_slot && !material_texture_ref_supported(*texture_slot))
+        rt_g3d_ref_slot_clear_unowned(texture_slot);
+    return *texture_slot;
 }
 
 /// @brief Borrow the currently drawable Pixels fallback for one persisted material slot.
@@ -348,6 +359,7 @@ static void material_repair_texture_refs(rt_material3d *mat) {
     (void)material_texture_slot_has_drawable_source(&mat->emissive_map);
     (void)material_texture_slot_has_drawable_source(&mat->metallic_roughness_map);
     (void)material_texture_slot_has_drawable_source(&mat->ao_map);
+    (void)material_texture_slot_has_drawable_source(&mat->lightmap);
 }
 
 /// @brief Clear an invalid env-map reference before exposing it to inspectors/renderers.
@@ -1407,11 +1419,11 @@ void rt_material3d_set_metallic_roughness_map(void *obj, void *pixels) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
         return;
-    material_promote_to_pbr(mat);
-    (void)material_assign_texture_ref_checked(&mat->metallic_roughness_map,
-                                              pixels,
-                                              "Material3D.SetMetallicRoughnessMap: texture must be "
-                                              "Pixels, TextureAsset3D, or RenderTarget3D");
+    if (material_assign_texture_ref_checked(&mat->metallic_roughness_map,
+                                            pixels,
+                                            "Material3D.SetMetallicRoughnessMap: texture must be "
+                                            "Pixels, TextureAsset3D, or RenderTarget3D"))
+        material_promote_to_pbr(mat);
 }
 
 /// @brief Return whether the metallic-roughness texture slot is populated.
@@ -1430,11 +1442,11 @@ void rt_material3d_set_ao_map(void *obj, void *pixels) {
     rt_material3d *mat = material_checked(obj);
     if (!mat)
         return;
-    material_promote_to_pbr(mat);
-    (void)material_assign_texture_ref_checked(
-        &mat->ao_map,
-        pixels,
-        "Material3D.SetAOMap: texture must be Pixels, TextureAsset3D, or RenderTarget3D");
+    if (material_assign_texture_ref_checked(
+            &mat->ao_map,
+            pixels,
+            "Material3D.SetAOMap: texture must be Pixels, TextureAsset3D, or RenderTarget3D"))
+        material_promote_to_pbr(mat);
 }
 
 /// @brief Assign a baked lightmap atlas sampled with TEXCOORD_1. When present, the

@@ -1542,7 +1542,7 @@ void *rt_light3d_new_volume(
 /// @param obj Borrowed Light3D handle.
 /// @param intensity Requested finite non-negative brightness multiplier.
 void rt_light3d_set_intensity(void *obj, double intensity);
-/// @brief Set the distance-falloff factor of a point/spot light (no-op for other types).
+/// @brief Set the distance-falloff factor of a point, spot, rectangle, or sphere light.
 /// @param obj Borrowed Light3D handle.
 /// @param attenuation Requested finite non-negative falloff factor.
 void rt_light3d_set_attenuation(void *obj, double attenuation);
@@ -1556,7 +1556,8 @@ double rt_light3d_get_attenuation(void *obj);
 /// @param g Non-negative green radiance channel.
 /// @param b Non-negative blue radiance channel.
 void rt_light3d_set_color(void *obj, double r, double g, double b);
-/// @brief Get the light type (0=directional, 1=point, 2=ambient, 3=spot).
+/// @brief Get the light type (0=directional, 1=point, 2=ambient, 3=spot,
+///   4=rectangle, 5=sphere, 6=volume).
 /// @param obj Borrowed Light3D handle.
 /// @return Registered light-type identifier, or the implementation default for invalid input.
 int64_t rt_light3d_get_type(void *obj);

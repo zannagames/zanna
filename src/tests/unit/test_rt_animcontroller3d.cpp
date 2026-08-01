@@ -164,6 +164,10 @@ struct BlendTree3DTestLayout {
     double param_x;
     double param_y;
     BlendTree3DSampleTest samples[16];
+    int32_t blend_mode_2d;
+    int32_t tris[64 * 3];
+    int32_t tri_count;
+    int8_t tris_dirty;
 };
 
 struct IKSolver3DTestPrefix {
@@ -1167,6 +1171,83 @@ static void test_animation_objects_repair_corrupt_private_counts() {
     EXPECT_TRUE(corrupt_coord_locals != nullptr && corrupt_coord_bones == 1 &&
                     std::isfinite(corrupt_coord_locals[3]),
                 "BlendTree3D falls back safely when all 1D sample coordinates are corrupt");
+    rt_blend_tree3d_set_blend_mode(bad_coord_tree, 1);
+    EXPECT_TRUE(bad_coord_bits->blend_mode_2d == 0 &&
+                    rt_blend_tree3d_get_blend_mode(bad_coord_tree) == 0,
+                "BlendTree3D ignores 2D mode changes on a 1D tree");
+    bad_coord_bits->samples[0].x = 0.0;
+    bad_coord_bits->samples[1].x = 1.0;
+    rt_blend_tree3d_set_param(bad_coord_tree, 1.0, 0.0);
+    bad_coord_bits->param_x = NAN;
+    EXPECT_TRUE(rt_blend_tree3d_get_sample_count(bad_coord_tree) == 2,
+                "BlendTree3D count getter retains live samples while repairing parameters");
+    EXPECT_NEAR(rt_anim_blend3d_get_weight(rt_blend_tree3d_get_blend(bad_coord_tree), 0),
+                1.0,
+                1e-12,
+                "BlendTree3D getter repair refreshes the first backend weight");
+    EXPECT_NEAR(rt_anim_blend3d_get_weight(rt_blend_tree3d_get_blend(bad_coord_tree), 1),
+                0.0,
+                1e-12,
+                "BlendTree3D getter repair clears the stale second backend weight");
+
+    void *tree_2d = rt_blend_tree3d_new_2d(skel);
+    rt_blend_tree3d_add_sample(tree_2d, move, 0.0, 0.0);
+    rt_blend_tree3d_add_sample(tree_2d, move, 1.0, 0.0);
+    rt_blend_tree3d_add_sample(tree_2d, move, 0.0, 1.0);
+    auto *tree_2d_bits = reinterpret_cast<BlendTree3DTestLayout *>(tree_2d);
+    tree_2d_bits->tri_count = INT32_MAX;
+    tree_2d_bits->tris_dirty = 0;
+    rt_blend_tree3d_set_param(tree_2d, 0.25, 0.25);
+    EXPECT_TRUE(tree_2d_bits->tri_count >= 0 && tree_2d_bits->tri_count <= 64 &&
+                    tree_2d_bits->tris_dirty == 0,
+                "BlendTree3D bounds a corrupt triangulation count before rebuilding it");
+
+    tree_2d_bits->tri_count = 1;
+    tree_2d_bits->tris_dirty = 0;
+    tree_2d_bits->tris[0] = INT32_MAX;
+    tree_2d_bits->tris[1] = -1;
+    tree_2d_bits->tris[2] = 0;
+    rt_blend_tree3d_set_param(tree_2d, 0.3, 0.2);
+    EXPECT_TRUE(tree_2d_bits->tri_count >= 0 && tree_2d_bits->tri_count <= 64,
+                "BlendTree3D rejects cached triangle indexes outside the sample table");
+    for (int32_t t = 0; t < tree_2d_bits->tri_count; t++) {
+        EXPECT_TRUE(tree_2d_bits->tris[t * 3] >= 0 && tree_2d_bits->tris[t * 3] < 3 &&
+                        tree_2d_bits->tris[t * 3 + 1] >= 0 && tree_2d_bits->tris[t * 3 + 1] < 3 &&
+                        tree_2d_bits->tris[t * 3 + 2] >= 0 && tree_2d_bits->tris[t * 3 + 2] < 3,
+                    "BlendTree3D rebuilt triangles contain only live sample indexes");
+    }
+
+    tree_2d_bits->tris_dirty = -7;
+    tree_2d_bits->param_x = NAN;
+    tree_2d_bits->param_y = INFINITY;
+    tree_2d_bits->samples[0].x = NAN;
+    tree_2d_bits->samples[1].y = INFINITY;
+    rt_blend_tree3d_update(tree_2d, 0.0);
+    EXPECT_TRUE(std::isfinite(tree_2d_bits->param_x) && std::isfinite(tree_2d_bits->param_y) &&
+                    std::isfinite(tree_2d_bits->samples[0].x) &&
+                    std::isfinite(tree_2d_bits->samples[1].y) &&
+                    (tree_2d_bits->tris_dirty == 0 || tree_2d_bits->tris_dirty == 1),
+                "BlendTree3D repairs parameters, sample coordinates, and cache flags together");
+
+    tree_2d_bits->samples[0].x = 0.0;
+    tree_2d_bits->samples[0].y = 0.0;
+    tree_2d_bits->samples[1].x = 1.0;
+    tree_2d_bits->samples[1].y = 0.0;
+    tree_2d_bits->samples[2].x = 0.0;
+    tree_2d_bits->samples[2].y = 1.0;
+    tree_2d_bits->tris_dirty = 1;
+    rt_blend_tree3d_set_param(tree_2d, -5e-10, 0.25);
+    double weight_sum = 0.0;
+    for (int64_t state = 0; state < 3; state++) {
+        double weight = rt_anim_blend3d_get_weight(rt_blend_tree3d_get_blend(tree_2d), state);
+        EXPECT_TRUE(std::isfinite(weight) && weight >= 0.0,
+                    "BlendTree3D publishes finite non-negative barycentric weights");
+        weight_sum += weight;
+    }
+    EXPECT_NEAR(weight_sum,
+                1.0,
+                1e-12,
+                "BlendTree3D renormalizes barycentric weights after tolerance clamping");
 
     void *ik_skel = rt_skeleton3d_new();
     int64_t root = rt_skeleton3d_add_bone(ik_skel, rt_const_cstr("root"), -1, rt_mat4_identity());

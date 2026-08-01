@@ -41,9 +41,11 @@
 #include "rt_lensflare3d.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
+#include "rt_g3d_ref_slots.h"
 #include "rt_pixels_internal.h"
 #include "vgfx3d_backend.h"
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -75,7 +77,7 @@ typedef struct {
      * the GPU readback carries one frame of latency, so blending toward the raw value
      * hides both instead of letting the flare pop at occluder edges. Negative = unset. */
     float smoothed_visibility;
-    int64_t smoothed_frame_serial;
+    uint64_t smoothed_frame_serial;
 } rt_lensflare3d;
 
 /// @brief Resolve a validated LensFlare3D payload.
@@ -85,24 +87,64 @@ static rt_lensflare3d *lensflare3d_checked(void *obj) {
     return (rt_lensflare3d *)rt_g3d_checked_or_null(obj, RT_G3D_LENSFLARE3D_CLASS_ID);
 }
 
+/// @brief Release a retained Light3D slot, clearing wrong-class corruption as unowned.
+/// @param slot Address of the flare's retained light slot.
+static void lensflare3d_release_light_slot(void **slot) {
+    if (!slot || !*slot)
+        return;
+    if (!rt_g3d_has_class(*slot, RT_G3D_LIGHT3D_CLASS_ID)) {
+        rt_g3d_ref_slot_clear_unowned(slot);
+        return;
+    }
+    rt_g3d_ref_slot_release(slot);
+}
+
+/// @brief Return whether a ghost is the exact writable procedural Pixels layout expected here.
+/// @param ghost Candidate retained Pixels handle.
+/// @return Nonzero for a live 32x32 Pixels object with writable storage.
+static int lensflare3d_ghost_valid(void *ghost) {
+    rt_pixels_impl *pixels = rt_pixels_checked_impl_or_null(ghost);
+    return pixels && pixels->data && pixels->width == LENSFLARE3D_GHOST_SIZE &&
+           pixels->height == LENSFLARE3D_GHOST_SIZE;
+}
+
+/// @brief Release a retained ghost slot, clearing wrong-class corruption as unowned.
+/// @param slot Address of one element's retained ghost slot.
+static void lensflare3d_release_ghost_slot(void **slot) {
+    if (!slot || !*slot)
+        return;
+    if (rt_obj_class_id(*slot) != RT_PIXELS_CLASS_ID) {
+        rt_g3d_ref_slot_clear_unowned(slot);
+        return;
+    }
+    rt_g3d_ref_slot_release(slot);
+}
+
+/// @brief Clamp the mutable element count to the inline array's safe range.
+/// @param lf Flare whose count is repaired; `NULL` is accepted.
+/// @return Repaired count in `[0, LENSFLARE3D_MAX_ELEMENTS]`.
+static int32_t lensflare3d_safe_element_count(rt_lensflare3d *lf) {
+    if (!lf)
+        return 0;
+    if (lf->element_count < 0)
+        lf->element_count = 0;
+    if (lf->element_count > LENSFLARE3D_MAX_ELEMENTS)
+        lf->element_count = LENSFLARE3D_MAX_ELEMENTS;
+    return lf->element_count;
+}
+
 /// @brief GC finalizer — release the bound light and every ghost sprite.
 /// @param obj LensFlare3D payload being finalized; `NULL` is ignored.
 static void lensflare3d_finalize(void *obj) {
     rt_lensflare3d *lf = (rt_lensflare3d *)obj;
     if (!lf)
         return;
-    if (lf->light) {
-        if (rt_obj_release_check0(lf->light))
-            rt_obj_free(lf->light);
-        lf->light = NULL;
-    }
-    for (int32_t i = 0; i < lf->element_count && i < LENSFLARE3D_MAX_ELEMENTS; i++) {
-        if (lf->elements[i].ghost) {
-            if (rt_obj_release_check0(lf->elements[i].ghost))
-                rt_obj_free(lf->elements[i].ghost);
-            lf->elements[i].ghost = NULL;
-        }
-    }
+    lensflare3d_release_light_slot(&lf->light);
+    /* Walk the complete inline array rather than trusting mutable count metadata. A
+     * damaged count or a sparse private table must not leak retained Pixels. */
+    for (int32_t i = 0; i < LENSFLARE3D_MAX_ELEMENTS; i++)
+        lensflare3d_release_ghost_slot(&lf->elements[i].ghost);
+    lf->element_count = 0;
 }
 
 /// @brief Create a lens flare bound to @p light (retained).
@@ -139,8 +181,12 @@ void *rt_lensflare3d_new(void *light) {
 static void *lensflare3d_make_ghost(double r, double g, double b) {
     void *pixels = rt_pixels_new(LENSFLARE3D_GHOST_SIZE, LENSFLARE3D_GHOST_SIZE);
     rt_pixels_impl *pv = rt_pixels_checked_impl_or_null(pixels);
-    if (!pv || !pv->data)
-        return pixels;
+    if (!pv || !pv->data || pv->width != LENSFLARE3D_GHOST_SIZE ||
+        pv->height != LENSFLARE3D_GHOST_SIZE) {
+        if (pixels && rt_obj_release_check0(pixels))
+            rt_obj_free(pixels);
+        return NULL;
+    }
     const float half = (float)LENSFLARE3D_GHOST_SIZE * 0.5f;
     uint32_t rr = (uint32_t)(r * 255.0);
     uint32_t gg = (uint32_t)(g * 255.0);
@@ -179,7 +225,7 @@ void rt_lensflare3d_add_element(
     rt_lensflare3d *lf = lensflare3d_checked(obj);
     if (!lf)
         return;
-    if (lf->element_count >= LENSFLARE3D_MAX_ELEMENTS)
+    if (lensflare3d_safe_element_count(lf) >= LENSFLARE3D_MAX_ELEMENTS)
         return;
     if (!isfinite(axis_offset))
         axis_offset = 0.0;
@@ -191,9 +237,10 @@ void rt_lensflare3d_add_element(
         size = 32.0;
     if (size > 1024.0)
         size = 1024.0;
-    double r = (double)((color_rgb >> 16) & 0xFF) / 255.0;
-    double g = (double)((color_rgb >> 8) & 0xFF) / 255.0;
-    double b = (double)(color_rgb & 0xFF) / 255.0;
+    uint64_t packed_rgb = (uint64_t)color_rgb;
+    double r = (double)((packed_rgb >> 16) & UINT64_C(0xFF)) / 255.0;
+    double g = (double)((packed_rgb >> 8) & UINT64_C(0xFF)) / 255.0;
+    double b = (double)(packed_rgb & UINT64_C(0xFF)) / 255.0;
     void *ghost = lensflare3d_make_ghost(r, g, b);
     if (!ghost)
         return;
@@ -221,7 +268,10 @@ static float lensflare3d_visibility(
     const float *depth = NULL;
     int32_t dw = 0;
     int32_t dh = 0;
-    if (c->render_target && c->render_target->depth_buf) {
+    if (!c || !isfinite(px) || !isfinite(py) || !isfinite(light_ndc_z) || w <= 0 || h <= 0)
+        return 0.0f;
+    if (c->render_target && c->render_target->depth_buf &&
+        vgfx3d_rendertarget_valid_pixels(c->render_target, NULL)) {
         depth = c->render_target->depth_buf;
         dw = c->render_target->width;
         dh = c->render_target->height;
@@ -236,6 +286,12 @@ static float lensflare3d_visibility(
             c->backend_ctx && w > 0 && h > 0) {
             float ref =
                 c->backend->reversed_z ? 0.5f - light_ndc_z * 0.5f : light_ndc_z * 0.5f + 0.5f;
+            if (!isfinite(ref))
+                return 1.0f;
+            if (ref < 0.0f)
+                ref = 0.0f;
+            if (ref > 1.0f)
+                ref = 1.0f;
             int visible = 0;
             int total = 0;
             for (int dy = -1; dy <= 1; dy++) {
@@ -255,7 +311,7 @@ static float lensflare3d_visibility(
                     d = c->backend->read_depth_probe(c->backend_ctx, slot);
                     /* No result yet (first frames): count as visible; smoothing hides
                      * the transient. */
-                    if (d < 0.0f || d >= ref - 1e-4f)
+                    if (!isfinite(d) || d < 0.0f || d >= ref - 1e-4f)
                         visible++;
                 }
             }
@@ -263,6 +319,9 @@ static float lensflare3d_visibility(
         }
         return 1.0f; /* no depth source at all: draw unoccluded */
     }
+    if (px < (float)INT32_MIN + 2.0f || px > (float)INT32_MAX - 2.0f ||
+        py < (float)INT32_MIN + 2.0f || py > (float)INT32_MAX - 2.0f)
+        return 0.0f;
     int visible = 0;
     int total = 0;
     for (int dy = -1; dy <= 1; dy++) {
@@ -273,7 +332,7 @@ static float lensflare3d_visibility(
                 continue;
             total++;
             float d = depth[(size_t)sy * (size_t)dw + (size_t)sx];
-            if (d > 1.0f || d >= light_ndc_z - 1e-4f)
+            if (!isfinite(d) || d > 1.0f || d >= light_ndc_z - 1e-4f)
                 visible++;
         }
     }
@@ -293,10 +352,16 @@ void rt_canvas3d_draw_lens_flare(void *canvas, void *flare) {
     const float *vp;
     int32_t w;
     int32_t h;
-    float light_screen[3];
-    float light_world[3];
+    double light_screen[3];
+    double light_world[3];
+    int32_t element_count;
 
-    if (!c || !lf || !lf->light || lf->element_count <= 0)
+    if (!c || !lf)
+        return;
+    if (lf->light && !rt_g3d_has_class(lf->light, RT_G3D_LIGHT3D_CLASS_ID))
+        lensflare3d_release_light_slot(&lf->light);
+    element_count = lensflare3d_safe_element_count(lf);
+    if (!lf->light || element_count <= 0)
         return;
     const rt_light3d *l =
         (const rt_light3d *)rt_g3d_checked_or_null(lf->light, RT_G3D_LIGHT3D_CLASS_ID);
@@ -311,66 +376,111 @@ void rt_canvas3d_draw_lens_flare(void *canvas, void *flare) {
         return;
     if (l->type == 0) {
         /* Directional: place the "sun" far along the reverse light direction. */
-        float len =
-            (float)sqrt(l->direction[0] * l->direction[0] + l->direction[1] * l->direction[1] +
-                        l->direction[2] * l->direction[2]);
-        if (!isfinite(len) || len < 1e-6f)
+        double direction[3] = {l->direction[0], l->direction[1], l->direction[2]};
+        double max_component =
+            fmax(fabs(direction[0]), fmax(fabs(direction[1]), fabs(direction[2])));
+        if (!isfinite(max_component) || max_component < 1e-12)
             return;
-        light_world[0] = c->cached_render_cam_pos[0] - (float)(l->direction[0] / len) * 10000.0f;
-        light_world[1] = c->cached_render_cam_pos[1] - (float)(l->direction[1] / len) * 10000.0f;
-        light_world[2] = c->cached_render_cam_pos[2] - (float)(l->direction[2] / len) * 10000.0f;
+        direction[0] /= max_component;
+        direction[1] /= max_component;
+        direction[2] /= max_component;
+        double len = hypot(direction[0], hypot(direction[1], direction[2]));
+        if (!isfinite(len) || len < 1e-12)
+            return;
+        for (int axis = 0; axis < 3; axis++) {
+            if (!isfinite(c->cached_render_cam_pos[axis]))
+                return;
+            light_world[axis] =
+                (double)c->cached_render_cam_pos[axis] - direction[axis] / len * 10000.0;
+        }
     } else {
-        light_world[0] = (float)l->position[0];
-        light_world[1] = (float)l->position[1];
-        light_world[2] = (float)l->position[2];
+        for (int axis = 0; axis < 3; axis++) {
+            double origin =
+                canvas3d_uses_camera_relative_upload(c) ? c->camera_relative_origin[axis] : 0.0;
+            if (!isfinite(l->position[axis]) || !isfinite(origin))
+                return;
+            light_world[axis] = l->position[axis] - origin;
+            if (!isfinite(light_world[axis]))
+                return;
+        }
     }
     {
-        float cx = vp[0] * light_world[0] + vp[1] * light_world[1] + vp[2] * light_world[2] + vp[3];
-        float cy = vp[4] * light_world[0] + vp[5] * light_world[1] + vp[6] * light_world[2] + vp[7];
-        float cz =
+        double cx =
+            vp[0] * light_world[0] + vp[1] * light_world[1] + vp[2] * light_world[2] + vp[3];
+        double cy =
+            vp[4] * light_world[0] + vp[5] * light_world[1] + vp[6] * light_world[2] + vp[7];
+        double cz =
             vp[8] * light_world[0] + vp[9] * light_world[1] + vp[10] * light_world[2] + vp[11];
-        float cw =
+        double cw =
             vp[12] * light_world[0] + vp[13] * light_world[1] + vp[14] * light_world[2] + vp[15];
-        if (!isfinite(cw) || cw <= 1e-6f)
+        if (!isfinite(cx) || !isfinite(cy) || !isfinite(cz) || !isfinite(cw) || cw <= 1e-12)
             return; /* behind the camera */
-        light_screen[0] = (cx / cw * 0.5f + 0.5f) * (float)w;
-        light_screen[1] = (1.0f - cy / cw) * 0.5f * (float)h;
+        light_screen[0] = (cx / cw * 0.5 + 0.5) * (double)w;
+        light_screen[1] = (1.0 - cy / cw) * 0.5 * (double)h;
         light_screen[2] = cz / cw;
         if (!isfinite(light_screen[0]) || !isfinite(light_screen[1]) ||
-            light_screen[0] < -(float)w || light_screen[0] > 2.0f * (float)w ||
-            light_screen[1] < -(float)h || light_screen[1] > 2.0f * (float)h)
+            !isfinite(light_screen[2]) || light_screen[0] < -(double)w ||
+            light_screen[0] > 2.0 * (double)w || light_screen[1] < -(double)h ||
+            light_screen[1] > 2.0 * (double)h ||
+            (l->type != 0 && (light_screen[2] < -1.0 || light_screen[2] > 1.0)))
             return;
     }
-    float visibility =
-        lensflare3d_visibility(c, light_screen[0], light_screen[1], light_screen[2], w, h);
+    float visibility = lensflare3d_visibility(
+        c, (float)light_screen[0], (float)light_screen[1], (float)light_screen[2], w, h);
+    if (!isfinite(visibility))
+        visibility = 0.0f;
+    if (visibility < 0.0f)
+        visibility = 0.0f;
+    if (visibility > 1.0f)
+        visibility = 1.0f;
     {
         /* Temporal smoothing: raw visibility quantizes to ninths and the GPU probe
          * readback is a frame late, so blend toward the raw value instead of snapping.
          * A gap in draws (light off-screen, flare disabled) resets to the raw value. */
-        int64_t serial = (int64_t)c->frame_serial;
-        if (lf->smoothed_visibility < 0.0f || serial < lf->smoothed_frame_serial ||
-            serial - lf->smoothed_frame_serial > 4) {
+        uint64_t serial = c->frame_serial;
+        if (!isfinite(lf->smoothed_visibility) || lf->smoothed_visibility < 0.0f ||
+            serial - lf->smoothed_frame_serial > UINT64_C(4)) {
             lf->smoothed_visibility = visibility;
         } else if (serial != lf->smoothed_frame_serial) {
             lf->smoothed_visibility += (visibility - lf->smoothed_visibility) * 0.2f;
         }
+        if (lf->smoothed_visibility < 0.0f)
+            lf->smoothed_visibility = 0.0f;
+        if (lf->smoothed_visibility > 1.0f)
+            lf->smoothed_visibility = 1.0f;
         lf->smoothed_frame_serial = serial;
         visibility = lf->smoothed_visibility;
     }
     if (visibility <= 0.01f)
         return;
     {
-        float center_x = (float)w * 0.5f;
-        float center_y = (float)h * 0.5f;
-        float axis_x = center_x - light_screen[0];
-        float axis_y = center_y - light_screen[1];
-        for (int32_t i = 0; i < lf->element_count; i++) {
-            const lensflare3d_element_t *e = &lf->elements[i];
+        double center_x = (double)w * 0.5;
+        double center_y = (double)h * 0.5;
+        double axis_x = center_x - light_screen[0];
+        double axis_y = center_y - light_screen[1];
+        for (int32_t i = 0; i < element_count; i++) {
+            lensflare3d_element_t *e = &lf->elements[i];
             if (!e->ghost)
                 continue;
-            float ex = light_screen[0] + axis_x * e->axis_offset;
-            float ey = light_screen[1] + axis_y * e->axis_offset;
-            float sz = e->size * (0.5f + 0.5f * visibility);
+            if (!lensflare3d_ghost_valid(e->ghost)) {
+                lensflare3d_release_ghost_slot(&e->ghost);
+                continue;
+            }
+            double axis_offset = isfinite(e->axis_offset) ? e->axis_offset : 0.0;
+            double base_size = isfinite(e->size) && e->size > 0.0f ? e->size : 32.0;
+            if (axis_offset < -1.0)
+                axis_offset = -1.0;
+            if (axis_offset > 2.0)
+                axis_offset = 2.0;
+            if (base_size > 1024.0)
+                base_size = 1024.0;
+            e->axis_offset = (float)axis_offset;
+            e->size = (float)base_size;
+            double ex = light_screen[0] + axis_x * axis_offset;
+            double ey = light_screen[1] + axis_y * axis_offset;
+            double sz = base_size * (0.5 + 0.5 * (double)visibility);
+            if (!isfinite(ex) || !isfinite(ey) || !isfinite(sz) || sz < 1.0)
+                continue;
             rt_canvas3d_draw_image2d_region(canvas,
                                             (int64_t)(ex - sz * 0.5f),
                                             (int64_t)(ey - sz * 0.5f),

@@ -64,6 +64,8 @@ void *rt_path3d_get_direction_at(void *path, double t);
 double rt_path3d_get_length(void *path);
 
 /// @brief Number of control points.
+/// @details The query repairs pointer/count metadata in constant time without
+///   rescanning control-point contents.
 /// @param path Path3D handle to inspect.
 /// @return Non-negative control-point count, or zero for an invalid handle.
 int64_t rt_path3d_get_point_count(void *path);
@@ -78,7 +80,9 @@ void rt_path3d_set_looping(void *path, int8_t loop);
 int8_t rt_path3d_get_looping(void *path);
 
 /// @brief Remove all control points.
-/// @param path Path3D handle to clear while retaining its allocated storage.
+/// @details Retains coordinate capacity for reuse and releases the derived
+///   constant-speed lookup table.
+/// @param path Path3D handle to clear while retaining its allocated coordinate storage.
 void rt_path3d_clear(void *path);
 
 /// @brief Internal: arclength-normalized spline evaluation (constant-speed t in

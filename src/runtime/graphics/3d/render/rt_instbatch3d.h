@@ -75,7 +75,9 @@ int64_t rt_instbatch3d_count(void *batch);
 
 /// @brief Queue the batch through the canvas instanced-rendering path.
 /// @details Performs camera-relative conversion or per-instance culling and
-///   motion-history capture before downstream native or software submission.
+///   once-per-frame double-precision motion-history capture before downstream
+///   native or software submission. Camera-relative current and previous matrices
+///   are culled and submitted in the same frame space.
 /// @param canvas Canvas3D receiver with an active frame.
 /// @param batch InstanceBatch3D receiver borrowed during queue construction.
 void rt_canvas3d_draw_instanced(void *canvas, void *batch);

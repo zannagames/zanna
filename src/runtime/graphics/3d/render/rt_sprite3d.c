@@ -97,7 +97,9 @@ static void sprite3d_release_ref(void **slot) {
 /// @param texture Candidate runtime object.
 /// @return 1 when the object validates as Pixels, or 0 otherwise.
 static int sprite3d_texture_valid(void *texture) {
-    return rt_pixels_checked_impl_or_null(texture) != NULL;
+    rt_pixels_impl *pixels = rt_pixels_checked_impl_or_null(texture);
+    return pixels && pixels->data && pixels->width > 0 && pixels->height > 0 &&
+           pixels->width <= INT32_MAX && pixels->height <= INT32_MAX;
 }
 
 /// @brief Release a retained Pixels slot only if it still points at Pixels.
@@ -106,7 +108,7 @@ static int sprite3d_texture_valid(void *texture) {
 static void sprite3d_release_texture_slot(void **slot) {
     if (!slot || !*slot)
         return;
-    if (!sprite3d_texture_valid(*slot)) {
+    if (rt_obj_class_id(*slot) != RT_PIXELS_CLASS_ID) {
         rt_g3d_ref_slot_clear_unowned(slot);
         return;
     }
@@ -269,6 +271,47 @@ static double sprite3d_clamp01(double value) {
     return value;
 }
 
+/// @brief Clamp a tint channel to `[0,1]`, using white for nonfinite corruption.
+/// @param value Candidate retained tint lane.
+/// @return Canonical finite tint multiplier.
+static double sprite3d_tint_or_white(double value) {
+    if (!isfinite(value))
+        return 1.0;
+    if (value < 0.0)
+        return 0.0;
+    if (value > 1.0)
+        return 1.0;
+    return value;
+}
+
+/// @brief Repair retained numeric state and rederive texture dimensions from the live Pixels.
+/// @param s Sprite payload to repair; `NULL` is accepted.
+static void sprite3d_repair_numeric_state(rt_sprite3d *s) {
+    rt_pixels_impl *pixels;
+    if (!s)
+        return;
+    s->position[0] = sprite3d_coord_or(s->position[0], 0.0);
+    s->position[1] = sprite3d_coord_or(s->position[1], 0.0);
+    s->position[2] = sprite3d_coord_or(s->position[2], 0.0);
+    s->scale_wh[0] = sprite3d_positive_scale_or(s->scale_wh[0], 1.0);
+    s->scale_wh[1] = sprite3d_positive_scale_or(s->scale_wh[1], 1.0);
+    s->anchor[0] = sprite3d_clamp01(s->anchor[0]);
+    s->anchor[1] = sprite3d_clamp01(s->anchor[1]);
+    s->additive = s->additive ? 1 : 0;
+    s->tint[0] = sprite3d_tint_or_white(s->tint[0]);
+    s->tint[1] = sprite3d_tint_or_white(s->tint[1]);
+    s->tint[2] = sprite3d_tint_or_white(s->tint[2]);
+    pixels = rt_pixels_checked_impl_or_null(s->texture);
+    if (sprite3d_texture_valid(s->texture)) {
+        s->tex_w = (int32_t)pixels->width;
+        s->tex_h = (int32_t)pixels->height;
+    } else {
+        s->tex_w = 0;
+        s->tex_h = 0;
+    }
+    rt_sprite3d_set_frame(s, s->frame_x, s->frame_y, s->frame_w, s->frame_h);
+}
+
 /// @brief Clamp an int64 frame component to int32: negatives become @p fallback, values above
 ///   INT32_MAX saturate to INT32_MAX.
 /// @param value Candidate frame offset or extent.
@@ -343,8 +386,7 @@ void *rt_sprite3d_new(void *texture) {
     rt_pixels_impl *pixels = NULL;
     if (texture) {
         pixels = rt_pixels_checked_impl_or_null(texture);
-        if (!pixels || pixels->width <= 0 || pixels->height <= 0 || pixels->width > INT32_MAX ||
-            pixels->height > INT32_MAX) {
+        if (!sprite3d_texture_valid(texture)) {
             rt_trap("Sprite3D.New: texture must be non-empty Pixels");
             return NULL;
         }
@@ -476,7 +518,10 @@ void rt_sprite3d_set_additive(void *obj, int8_t additive) {
 /// @return 1 when additive blending is enabled, or 0 for non-additive or invalid input.
 int8_t rt_sprite3d_get_additive(void *obj) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
-    return s ? s->additive : 0;
+    if (!s)
+        return 0;
+    s->additive = s->additive ? 1 : 0;
+    return s->additive;
 }
 
 /// @brief Set a packed 0xRRGGBB tint multiplied into the texture (Particles3D convention).
@@ -484,11 +529,12 @@ int8_t rt_sprite3d_get_additive(void *obj) {
 /// @param rgb Packed red, green, and blue bytes; higher bits are ignored.
 void rt_sprite3d_set_color(void *obj, int64_t rgb) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
+    uint64_t packed = (uint64_t)rgb;
     if (!s)
         return;
-    s->tint[0] = (double)((rgb >> 16) & 0xFF) / 255.0;
-    s->tint[1] = (double)((rgb >> 8) & 0xFF) / 255.0;
-    s->tint[2] = (double)(rgb & 0xFF) / 255.0;
+    s->tint[0] = (double)((packed >> 16) & UINT64_C(0xFF)) / 255.0;
+    s->tint[1] = (double)((packed >> 8) & UINT64_C(0xFF)) / 255.0;
+    s->tint[2] = (double)(packed & UINT64_C(0xFF)) / 255.0;
 }
 
 /// @brief Shift standalone Sprite3D world-space position by -delta for floating-origin rebases.
@@ -500,11 +546,9 @@ void rt_sprite3d_rebase_origin(void *obj, double dx, double dy, double dz) {
     rt_sprite3d *s = (rt_sprite3d *)rt_g3d_checked_or_null(obj, RT_G3D_SPRITE3D_CLASS_ID);
     if (!s)
         return;
+    sprite3d_repair_numeric_state(s);
     double delta[3] = {
-        sprite3d_coord_or(dx, 0.0),
-        sprite3d_coord_or(dy, 0.0),
-        sprite3d_coord_or(dz, 0.0),
-    };
+        sprite3d_coord_or(dx, 0.0), sprite3d_coord_or(dy, 0.0), sprite3d_coord_or(dz, 0.0)};
     if (delta[0] == 0.0 && delta[1] == 0.0 && delta[2] == 0.0)
         return;
     s->position[0] = sprite3d_coord_or(s->position[0] - delta[0], 0.0);
@@ -527,6 +571,7 @@ void rt_canvas3d_draw_sprite3d(void *canvas, void *obj, void *camera) {
     if (!s || !cam)
         return;
     sprite3d_repair_refs(s);
+    sprite3d_repair_numeric_state(s);
 
     /* Extract right and up vectors from camera view matrix (row-major) */
     double rx = cam->view[0], ry = cam->view[1], rz = cam->view[2];
@@ -616,9 +661,7 @@ void rt_canvas3d_draw_sprite3d(void *canvas, void *obj, void *camera) {
        Same recipe as Particles3D: additive routes through the transparent queue. */
     rt_material3d_set_color(s->cached_material, s->tint[0], s->tint[1], s->tint[2]);
     ((rt_material3d *)s->cached_material)->additive_blend = s->additive ? 1 : 0;
-    rt_material3d_set_alpha_mode(s->cached_material,
-                                 s->additive ? RT_MATERIAL3D_ALPHA_MODE_BLEND
-                                             : RT_MATERIAL3D_ALPHA_MODE_OPAQUE);
+    rt_material3d_set_alpha_mode(s->cached_material, RT_MATERIAL3D_ALPHA_MODE_BLEND);
 
     /* Rebuild billboard quad each frame (orientation changes with camera).
        Clear resets vertex/index counts without freeing the backing arrays. */
@@ -666,6 +709,14 @@ void rt_canvas3d_draw_sprite3d(void *canvas, void *obj, void *camera) {
                          v0);
     rt_mesh3d_add_triangle(mesh, 0, 1, 2);
     rt_mesh3d_add_triangle(mesh, 0, 2, 3);
+    {
+        rt_mesh3d *built = (rt_mesh3d *)rt_g3d_checked_or_null(mesh, RT_G3D_MESH3D_CLASS_ID);
+        if (!built || rt_mesh3d_safe_vertex_count(built) != 4u ||
+            rt_mesh3d_validated_index_count(built) != 6u) {
+            sprite3d_release_mesh_slot(&s->cached_mesh);
+            return;
+        }
+    }
 
     /* Keep cached runtime objects alive until the deferred frame submission completes. */
     if (!rt_canvas3d_add_temp_object(canvas, mesh))

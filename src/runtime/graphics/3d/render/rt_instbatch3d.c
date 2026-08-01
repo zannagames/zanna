@@ -15,8 +15,8 @@
 //   - Mesh/material are retained by the batch because it stores them across frames.
 //   - The legacy float buffer layout is preserved for tests/tools that inspect
 //     batch internals; the double transform buffer is appended after those fields.
-//   - Four parallel transform buffers are kept: authoritative double transforms,
-//     live float mirrors, start-of-frame snapshots, and previous-frame transforms.
+//   - Six parallel transform buffers are kept: authoritative double transforms
+//     plus float mirrors for live, start-of-frame, and previous-frame matrices.
 //
 // Ownership/Lifetime:
 //   - InstanceBatch3D is GC-managed; finalizer releases mesh, material,
@@ -82,6 +82,20 @@ typedef struct {
     int32_t visible_prev_capacity;
     float *prev_submit_transforms;
     int32_t prev_submit_capacity;
+    int32_t allocation_capacity; /* private bound for the six primary matrix buffers */
+    double *current_snapshot64;
+    double *prev_transforms64;
+    uint8_t *visibility_mask;
+    int32_t visibility_mask_capacity;
+    int8_t motion_frame_initialized;
+    /* Stable ownership identities for the six primary buffers. The legacy pointers above are
+     * intentionally retained for white-box tools and restored from these fields before use. */
+    float *owned_transforms;
+    float *owned_current_snapshot;
+    float *owned_prev_transforms;
+    double *owned_transforms64;
+    double *owned_current_snapshot64;
+    double *owned_prev_transforms64;
 } rt_instbatch3d;
 
 /// @brief Compute the next geometric growth capacity for the instance buffer.
@@ -281,6 +295,36 @@ static int instbatch_ensure_matrix_scratch(float **slot, int32_t *capacity, int3
     return 1;
 }
 
+/// @brief Ensure the reusable one-byte-per-instance visibility mask can hold @p needed entries.
+/// @param b Batch owning the scratch mask.
+/// @param needed Required instance capacity.
+/// @return Nonzero when the mask is available; zero on invalid input, overflow, or allocation
+/// failure.
+static int instbatch_ensure_visibility_mask(rt_instbatch3d *b, int32_t needed) {
+    uint8_t *grown;
+    int32_t capacity;
+    if (!b || needed < 0)
+        return 0;
+    if (needed == 0)
+        return 1;
+    if (b->visibility_mask && b->visibility_mask_capacity >= needed)
+        return 1;
+    capacity = b->visibility_mask_capacity > 0 ? b->visibility_mask_capacity : INST_INIT_CAP;
+    while (capacity < needed) {
+        if (capacity > INT32_MAX / 2) {
+            capacity = needed;
+            break;
+        }
+        capacity *= 2;
+    }
+    grown = (uint8_t *)realloc(b->visibility_mask, (size_t)capacity);
+    if (!grown)
+        return 0;
+    b->visibility_mask = grown;
+    b->visibility_mask_capacity = capacity;
+    return 1;
+}
+
 /// @brief Convert a double matrix to the active canvas frame's float render space.
 /// @details Camera-relative canvases subtract the current origin before narrowing translation, so
 ///          large world coordinates retain precision without decomposing the batch into individual
@@ -359,57 +403,71 @@ static void instbatch_repair_resource_handles(rt_instbatch3d *b) {
 }
 
 /// @brief Repair count/buffer invariants before mutating or drawing a batch.
-/// @details Reconstructs a missing authoritative double mirror when legacy float
-///   buffers are intact. Otherwise it discards inconsistent arrays and creates
-///   a fresh empty initial-capacity set. Counts are clamped to live capacities,
-///   and motion-history flags are normalized.
+/// @details Uses private ownership identities and allocation capacity before traversing any
+///   mutable count, restores damaged legacy pointers, and publishes a fresh empty primary set only
+///   after every replacement allocation succeeds. Counts and flags are normalized against the
+///   real allocation bound.
 /// @param b Batch to repair in place.
-/// @return Nonzero when four coherent primary matrix buffers are available;
+/// @return Nonzero when six coherent primary matrix buffers are available;
 ///   zero for null input or reconstruction/allocation failure.
 static int instbatch_repair_state(rt_instbatch3d *b) {
     if (!b)
         return 0;
     instbatch_repair_resource_handles(b);
-    if (b->instance_capacity > 0 && b->transforms && b->current_snapshot && b->prev_transforms &&
-        !b->transforms64) {
-        b->transforms64 = (double *)calloc((size_t)b->instance_capacity * 16u, sizeof(double));
-        if (!b->transforms64)
+    if (b->allocation_capacity <= 0 ||
+        (size_t)b->allocation_capacity > SIZE_MAX / (16u * sizeof(double)) ||
+        !b->owned_transforms || !b->owned_current_snapshot || !b->owned_prev_transforms ||
+        !b->owned_transforms64 || !b->owned_current_snapshot64 || !b->owned_prev_transforms64) {
+        double *new_transforms64 = (double *)calloc(INST_INIT_CAP * 16u, sizeof(double));
+        double *new_current64 = (double *)calloc(INST_INIT_CAP * 16u, sizeof(double));
+        double *new_prev64 = (double *)calloc(INST_INIT_CAP * 16u, sizeof(double));
+        float *new_transforms = (float *)calloc(INST_INIT_CAP * 16u, sizeof(float));
+        float *new_current = (float *)calloc(INST_INIT_CAP * 16u, sizeof(float));
+        float *new_prev = (float *)calloc(INST_INIT_CAP * 16u, sizeof(float));
+        if (!new_transforms64 || !new_current64 || !new_prev64 || !new_transforms || !new_current ||
+            !new_prev) {
+            free(new_transforms64);
+            free(new_current64);
+            free(new_prev64);
+            free(new_transforms);
+            free(new_current);
+            free(new_prev);
             return 0;
-        for (int32_t i = 0; i < b->instance_count; i++)
-            for (int j = 0; j < 16; j++)
-                b->transforms64[(size_t)i * 16u + (size_t)j] =
-                    (double)b->transforms[(size_t)i * 16u + (size_t)j];
-    }
-    if (b->instance_capacity <= 0 || !b->transforms || !b->current_snapshot ||
-        !b->prev_transforms || !b->transforms64) {
-        free(b->transforms);
-        free(b->current_snapshot);
-        free(b->prev_transforms);
-        free(b->transforms64);
-        b->transforms64 = (double *)calloc(INST_INIT_CAP * 16, sizeof(double));
-        b->transforms = (float *)calloc(INST_INIT_CAP * 16, sizeof(float));
-        b->current_snapshot = (float *)calloc(INST_INIT_CAP * 16, sizeof(float));
-        b->prev_transforms = (float *)calloc(INST_INIT_CAP * 16, sizeof(float));
+        }
+        free(b->owned_transforms64);
+        free(b->owned_current_snapshot64);
+        free(b->owned_prev_transforms64);
+        free(b->owned_transforms);
+        free(b->owned_current_snapshot);
+        free(b->owned_prev_transforms);
+        b->owned_transforms64 = new_transforms64;
+        b->owned_current_snapshot64 = new_current64;
+        b->owned_prev_transforms64 = new_prev64;
+        b->owned_transforms = new_transforms;
+        b->owned_current_snapshot = new_current;
+        b->owned_prev_transforms = new_prev;
+        b->transforms64 = new_transforms64;
+        b->current_snapshot64 = new_current64;
+        b->prev_transforms64 = new_prev64;
+        b->transforms = new_transforms;
+        b->current_snapshot = new_current;
+        b->prev_transforms = new_prev;
         b->instance_count = 0;
         b->motion_snapshot_count = 0;
         b->prev_count = 0;
         b->has_prev_snapshot = 0;
-        b->instance_capacity =
-            (b->transforms64 && b->transforms && b->current_snapshot && b->prev_transforms)
-                ? INST_INIT_CAP
-                : 0;
-        if (b->instance_capacity == 0) {
-            free(b->transforms64);
-            free(b->transforms);
-            free(b->current_snapshot);
-            free(b->prev_transforms);
-            b->transforms64 = NULL;
-            b->transforms = NULL;
-            b->current_snapshot = NULL;
-            b->prev_transforms = NULL;
-        }
-        return b->instance_capacity > 0;
+        b->motion_frame_initialized = 0;
+        b->instance_capacity = INST_INIT_CAP;
+        b->allocation_capacity = INST_INIT_CAP;
+        return 1;
     }
+    b->transforms = b->owned_transforms;
+    b->current_snapshot = b->owned_current_snapshot;
+    b->prev_transforms = b->owned_prev_transforms;
+    b->transforms64 = b->owned_transforms64;
+    b->current_snapshot64 = b->owned_current_snapshot64;
+    b->prev_transforms64 = b->owned_prev_transforms64;
+    b->instance_capacity = b->allocation_capacity;
     if (b->instance_count < 0)
         b->instance_count = 0;
     if (b->instance_count > b->instance_capacity)
@@ -423,6 +481,15 @@ static int instbatch_repair_state(rt_instbatch3d *b) {
     if (b->prev_count > b->instance_count)
         b->prev_count = b->instance_count;
     b->has_prev_snapshot = (b->has_prev_snapshot && b->prev_count > 0) ? 1 : 0;
+    b->motion_frame_initialized = b->motion_frame_initialized ? 1 : 0;
+    if (!b->visible_transforms)
+        b->visible_capacity = 0;
+    if (!b->visible_prev_transforms)
+        b->visible_prev_capacity = 0;
+    if (!b->prev_submit_transforms)
+        b->prev_submit_capacity = 0;
+    if (!b->visibility_mask)
+        b->visibility_mask_capacity = 0;
     return 1;
 }
 
@@ -459,37 +526,50 @@ static int instbatch_instance_visible(const vgfx3d_frustum_t *frustum,
 }
 
 /// @brief GC finalizer — release the current-frame and motion-history buffers.
-/// @details Instance batches keep one authoritative double-matrix array plus
-///   three parallel float-matrix arrays: the live `transforms` mirror, the
-///   start-of-frame `current_snapshot` captured by motion-vector logic, and
-///   last frame's `prev_transforms` used as the motion "from" pose. All four
-///   are plain heap allocations with no downstream refs to release. Counters are zeroed post-free
-///   so a lingering post-finalize read sees an empty batch rather than
+/// @details Instance batches keep three authoritative double-matrix arrays and
+///   three parallel float-matrix mirrors for live, start-of-frame, and previous-frame state.
+///   All six are plain heap allocations with no downstream refs to release. Counters are zeroed
+///   post-free so a lingering post-finalize read sees an empty batch rather than
 ///   capacity-matches-missing-buffer.
 /// @param obj InstanceBatch3D payload being finalized; `NULL` is ignored.
 static void instbatch_finalizer(void *obj) {
     rt_instbatch3d *b = (rt_instbatch3d *)obj;
     if (!b)
         return;
-    free(b->transforms);
-    free(b->transforms64);
-    free(b->current_snapshot);
-    free(b->prev_transforms);
+    free(b->owned_transforms);
+    free(b->owned_transforms64);
+    free(b->owned_current_snapshot);
+    free(b->owned_prev_transforms);
+    free(b->owned_current_snapshot64);
+    free(b->owned_prev_transforms64);
     free(b->visible_transforms);
     free(b->visible_prev_transforms);
     free(b->prev_submit_transforms);
+    free(b->visibility_mask);
     b->transforms = NULL;
     b->transforms64 = NULL;
     b->current_snapshot = NULL;
     b->prev_transforms = NULL;
+    b->current_snapshot64 = NULL;
+    b->prev_transforms64 = NULL;
     b->visible_transforms = NULL;
     b->visible_prev_transforms = NULL;
     b->prev_submit_transforms = NULL;
+    b->visibility_mask = NULL;
+    b->owned_transforms = NULL;
+    b->owned_transforms64 = NULL;
+    b->owned_current_snapshot = NULL;
+    b->owned_prev_transforms = NULL;
+    b->owned_current_snapshot64 = NULL;
+    b->owned_prev_transforms64 = NULL;
     b->instance_count = b->instance_capacity = 0;
+    b->allocation_capacity = 0;
     b->visible_capacity = b->visible_prev_capacity = b->prev_submit_capacity = 0;
     b->motion_snapshot_count = b->prev_count = 0;
+    b->visibility_mask_capacity = 0;
     b->last_motion_frame = 0;
     b->has_prev_snapshot = 0;
+    b->motion_frame_initialized = 0;
     instbatch_release_mesh_slot(&b->mesh);
     instbatch_release_material_slot(&b->material);
 }
@@ -521,17 +601,28 @@ void *rt_instbatch3d_new(void *mesh, void *material) {
     b->material = material;
     rt_obj_retain_maybe(mesh);
     rt_obj_retain_maybe(material);
-    b->transforms64 = (double *)calloc(INST_INIT_CAP * 16, sizeof(double));
-    b->transforms = (float *)calloc(INST_INIT_CAP * 16, sizeof(float));
-    b->current_snapshot = (float *)calloc(INST_INIT_CAP * 16, sizeof(float));
-    b->prev_transforms = (float *)calloc(INST_INIT_CAP * 16, sizeof(float));
+    b->owned_transforms64 = (double *)calloc(INST_INIT_CAP * 16, sizeof(double));
+    b->owned_transforms = (float *)calloc(INST_INIT_CAP * 16, sizeof(float));
+    b->owned_current_snapshot = (float *)calloc(INST_INIT_CAP * 16, sizeof(float));
+    b->owned_prev_transforms = (float *)calloc(INST_INIT_CAP * 16, sizeof(float));
+    b->owned_current_snapshot64 = (double *)calloc(INST_INIT_CAP * 16, sizeof(double));
+    b->owned_prev_transforms64 = (double *)calloc(INST_INIT_CAP * 16, sizeof(double));
+    b->transforms64 = b->owned_transforms64;
+    b->transforms = b->owned_transforms;
+    b->current_snapshot = b->owned_current_snapshot;
+    b->prev_transforms = b->owned_prev_transforms;
+    b->current_snapshot64 = b->owned_current_snapshot64;
+    b->prev_transforms64 = b->owned_prev_transforms64;
     b->instance_count = 0;
     b->instance_capacity = INST_INIT_CAP;
+    b->allocation_capacity = INST_INIT_CAP;
     b->motion_snapshot_count = 0;
     b->prev_count = 0;
     b->last_motion_frame = 0;
     b->has_prev_snapshot = 0;
-    if (!b->transforms64 || !b->transforms || !b->current_snapshot || !b->prev_transforms) {
+    b->motion_frame_initialized = 0;
+    if (!b->owned_transforms64 || !b->owned_transforms || !b->owned_current_snapshot ||
+        !b->owned_prev_transforms || !b->owned_current_snapshot64 || !b->owned_prev_transforms64) {
         instbatch_finalizer(b);
         if (rt_obj_release_check0(b))
             rt_obj_free(b);
@@ -544,7 +635,7 @@ void *rt_instbatch3d_new(void *mesh, void *material) {
 
 /// @brief Add an instance with the given transform (grows array if full).
 /// @details Copies and sanitizes the Mat4 into authoritative double storage and
-///   its float submit mirror. All four parallel arrays grow transactionally and
+///   its float submit mirror. All six primary arrays grow transactionally and
 ///   geometrically; allocation or overflow failure reports a trap without
 ///   incrementing the instance count.
 /// @param obj InstanceBatch3D receiver; invalid handles are ignored.
@@ -570,11 +661,16 @@ void rt_instbatch3d_add(void *obj, void *transform) {
         size_t old_bytes64 = (size_t)b->instance_capacity * 16u * sizeof(double);
         size_t new_bytes64 = (size_t)new_cap * 16u * sizeof(double);
         double *new_transforms64 = (double *)malloc(new_bytes64);
+        double *new_current64 = (double *)malloc(new_bytes64);
+        double *new_prev64 = (double *)malloc(new_bytes64);
         float *new_transforms = (float *)malloc(new_bytes);
         float *new_snapshot = (float *)malloc(new_bytes);
         float *new_prev = (float *)malloc(new_bytes);
-        if (!new_transforms64 || !new_transforms || !new_snapshot || !new_prev) {
+        if (!new_transforms64 || !new_current64 || !new_prev64 || !new_transforms ||
+            !new_snapshot || !new_prev) {
             free(new_transforms64);
+            free(new_current64);
+            free(new_prev64);
             free(new_transforms);
             free(new_snapshot);
             free(new_prev);
@@ -583,19 +679,32 @@ void rt_instbatch3d_add(void *obj, void *transform) {
         }
         if (old_bytes > 0) {
             memcpy(new_transforms64, b->transforms64, old_bytes64);
+            memcpy(new_current64, b->current_snapshot64, old_bytes64);
+            memcpy(new_prev64, b->prev_transforms64, old_bytes64);
             memcpy(new_transforms, b->transforms, old_bytes);
             memcpy(new_snapshot, b->current_snapshot, old_bytes);
             memcpy(new_prev, b->prev_transforms, old_bytes);
         }
-        free(b->transforms64);
-        free(b->transforms);
-        free(b->current_snapshot);
-        free(b->prev_transforms);
+        free(b->owned_transforms64);
+        free(b->owned_current_snapshot64);
+        free(b->owned_prev_transforms64);
+        free(b->owned_transforms);
+        free(b->owned_current_snapshot);
+        free(b->owned_prev_transforms);
+        b->owned_transforms64 = new_transforms64;
+        b->owned_current_snapshot64 = new_current64;
+        b->owned_prev_transforms64 = new_prev64;
+        b->owned_transforms = new_transforms;
+        b->owned_current_snapshot = new_snapshot;
+        b->owned_prev_transforms = new_prev;
         b->transforms64 = new_transforms64;
+        b->current_snapshot64 = new_current64;
+        b->prev_transforms64 = new_prev64;
         b->transforms = new_transforms;
         b->current_snapshot = new_snapshot;
         b->prev_transforms = new_prev;
         b->instance_capacity = new_cap;
+        b->allocation_capacity = new_cap;
     }
 
     double *dst64 = &b->transforms64[(size_t)b->instance_count * 16u];
@@ -642,6 +751,16 @@ void rt_instbatch3d_remove(void *obj, int64_t index) {
             b->prev_count = (int32_t)index;
             b->has_prev_snapshot = b->prev_count > 0 ? 1 : 0;
         }
+        if (last_idx < b->motion_snapshot_count) {
+            memcpy(&b->current_snapshot64[(size_t)index * 16u],
+                   &b->current_snapshot64[(size_t)last_idx * 16u],
+                   16u * sizeof(double));
+        }
+        if (last_idx < b->prev_count) {
+            memcpy(&b->prev_transforms64[(size_t)index * 16u],
+                   &b->prev_transforms64[(size_t)last_idx * 16u],
+                   16u * sizeof(double));
+        }
     }
     b->instance_count--;
     if (b->motion_snapshot_count > b->instance_count)
@@ -684,6 +803,7 @@ void rt_instbatch3d_clear(void *obj) {
     b->motion_snapshot_count = 0;
     b->prev_count = 0;
     b->has_prev_snapshot = 0;
+    b->motion_frame_initialized = 0;
 }
 
 /// @brief Get the current number of instances in the batch.
@@ -810,9 +930,40 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
         (rt_material3d *)rt_g3d_checked_or_null(b->material, RT_G3D_MATERIAL3D_CLASS_ID);
     if (!mat)
         return;
-    if (canvas3d_uses_camera_relative_upload(c) && b->transforms64) {
+    instbatch_sanitize_active_matrices(b);
+    {
+        int64_t frame_serial = rt_canvas3d_get_frame_serial(canvas_obj);
+        if (!b->motion_frame_initialized || b->last_motion_frame != frame_serial) {
+            if (b->motion_snapshot_count > 0) {
+                memcpy(b->prev_transforms,
+                       b->current_snapshot,
+                       (size_t)b->motion_snapshot_count * 16u * sizeof(float));
+                memcpy(b->prev_transforms64,
+                       b->current_snapshot64,
+                       (size_t)b->motion_snapshot_count * 16u * sizeof(double));
+                b->prev_count = b->motion_snapshot_count;
+                b->has_prev_snapshot = 1;
+            }
+            memcpy(b->current_snapshot,
+                   b->transforms,
+                   (size_t)b->instance_count * 16u * sizeof(float));
+            memcpy(b->current_snapshot64,
+                   b->transforms64,
+                   (size_t)b->instance_count * 16u * sizeof(double));
+            b->motion_snapshot_count = b->instance_count;
+            b->last_motion_frame = frame_serial;
+            b->motion_frame_initialized = 1;
+        }
+    }
+
+    if (canvas3d_uses_camera_relative_upload(c)) {
+        int8_t has_prev = b->has_prev_snapshot && b->prev_count > 0 ? 1 : 0;
+        int32_t visible_count = b->instance_count;
         if (!instbatch_ensure_matrix_scratch(
-                &b->visible_transforms, &b->visible_capacity, b->instance_count)) {
+                &b->visible_transforms, &b->visible_capacity, b->instance_count) ||
+            (has_prev && !instbatch_ensure_matrix_scratch(&b->prev_submit_transforms,
+                                                          &b->prev_submit_capacity,
+                                                          b->instance_count))) {
             rt_trap("InstanceBatch3D.Draw: camera-relative matrix scratch allocation failed");
             return;
         }
@@ -823,24 +974,48 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
                 rt_trap("InstanceBatch3D.Draw: camera-relative matrix is out of float range");
                 return;
             }
+            if (has_prev) {
+                const double *previous =
+                    i < b->prev_count ? &b->prev_transforms64[(size_t)i * 16u] : model;
+                if (!instbatch_matrix64_to_canvas_frame(
+                        c, previous, &b->prev_submit_transforms[(size_t)i * 16u])) {
+                    rt_trap("InstanceBatch3D.Draw: previous camera-relative matrix is out of float "
+                            "range");
+                    return;
+                }
+            }
         }
-        rt_canvas3d_queue_instanced_batch_frame_matrices(
-            canvas_obj, mesh, mat, b->visible_transforms, b->instance_count, NULL, 0);
+        if (mesh->bsphere_radius > 0.0f) {
+            int32_t write_index = 0;
+            for (int32_t i = 0; i < b->instance_count; i++) {
+                float *current = &b->visible_transforms[(size_t)i * 16u];
+                if (!instbatch_instance_visible(&frustum, mesh_min, mesh_max, current))
+                    continue;
+                if (write_index != i) {
+                    memcpy(&b->visible_transforms[(size_t)write_index * 16u],
+                           current,
+                           16u * sizeof(float));
+                    if (has_prev) {
+                        memcpy(&b->prev_submit_transforms[(size_t)write_index * 16u],
+                               &b->prev_submit_transforms[(size_t)i * 16u],
+                               16u * sizeof(float));
+                    }
+                }
+                write_index++;
+            }
+            visible_count = write_index;
+            if (visible_count == 0)
+                return;
+        }
+        rt_canvas3d_queue_instanced_batch_frame_matrices(canvas_obj,
+                                                         mesh,
+                                                         mat,
+                                                         b->visible_transforms,
+                                                         visible_count,
+                                                         has_prev ? b->prev_submit_transforms
+                                                                  : NULL,
+                                                         has_prev);
         return;
-    }
-    instbatch_sanitize_active_matrices(b);
-
-    if (b->last_motion_frame != rt_canvas3d_get_frame_serial(canvas_obj)) {
-        if (b->motion_snapshot_count > 0) {
-            memcpy(b->prev_transforms,
-                   b->current_snapshot,
-                   (size_t)b->motion_snapshot_count * 16 * sizeof(float));
-            b->prev_count = b->motion_snapshot_count;
-            b->has_prev_snapshot = 1;
-        }
-        memcpy(b->current_snapshot, b->transforms, (size_t)b->instance_count * 16u * sizeof(float));
-        b->motion_snapshot_count = b->instance_count;
-        b->last_motion_frame = rt_canvas3d_get_frame_serial(canvas_obj);
     }
 
     {
@@ -852,63 +1027,61 @@ void rt_canvas3d_draw_instanced(void *canvas_obj, void *batch_obj) {
             if (b->prev_count == b->instance_count) {
                 submit_prev = b->prev_transforms;
                 has_prev = 1;
-            } else {
-                if (instbatch_ensure_matrix_scratch(
-                        &b->prev_submit_transforms, &b->prev_submit_capacity, b->instance_count)) {
-                    int32_t preserved =
-                        b->prev_count < b->instance_count ? b->prev_count : b->instance_count;
-                    if (preserved > 0) {
-                        memcpy(b->prev_submit_transforms,
-                               b->prev_transforms,
-                               (size_t)preserved * 16u * sizeof(float));
-                    }
-                    if (preserved < b->instance_count) {
-                        memcpy(&b->prev_submit_transforms[(size_t)preserved * 16u],
-                               &b->transforms[(size_t)preserved * 16u],
-                               (size_t)(b->instance_count - preserved) * 16u * sizeof(float));
-                    }
-                    submit_prev = b->prev_submit_transforms;
-                    has_prev = 1;
+            } else if (instbatch_ensure_matrix_scratch(&b->prev_submit_transforms,
+                                                       &b->prev_submit_capacity,
+                                                       b->instance_count)) {
+                int32_t preserved =
+                    b->prev_count < b->instance_count ? b->prev_count : b->instance_count;
+                if (preserved > 0) {
+                    memcpy(b->prev_submit_transforms,
+                           b->prev_transforms,
+                           (size_t)preserved * 16u * sizeof(float));
                 }
+                if (preserved < b->instance_count) {
+                    memcpy(&b->prev_submit_transforms[(size_t)preserved * 16u],
+                           &b->transforms[(size_t)preserved * 16u],
+                           (size_t)(b->instance_count - preserved) * 16u * sizeof(float));
+                }
+                submit_prev = b->prev_submit_transforms;
+                has_prev = 1;
             }
         }
-        if (mesh->bsphere_radius > 0.0f && b->instance_count > 0) {
+        if (mesh->bsphere_radius > 0.0f && b->instance_count > 0 &&
+            instbatch_ensure_visibility_mask(b, b->instance_count)) {
             int32_t visible_count = 0;
             for (int32_t i = 0; i < b->instance_count; i++) {
                 const float *src = &b->transforms[(size_t)i * 16u];
-                if (instbatch_instance_visible(&frustum, mesh_min, mesh_max, src))
-                    visible_count++;
+                b->visibility_mask[i] =
+                    instbatch_instance_visible(&frustum, mesh_min, mesh_max, src) ? 1u : 0u;
+                visible_count += b->visibility_mask[i] ? 1 : 0;
             }
-            if (visible_count == 0) {
+            if (visible_count == 0)
                 return;
-            }
-            if (visible_count < b->instance_count) {
-                if (instbatch_ensure_matrix_scratch(
-                        &b->visible_transforms, &b->visible_capacity, visible_count) &&
-                    (!has_prev || instbatch_ensure_matrix_scratch(&b->visible_prev_transforms,
-                                                                  &b->visible_prev_capacity,
-                                                                  visible_count))) {
-                    int32_t write_index = 0;
-                    float *visible_prev = has_prev ? b->visible_prev_transforms : NULL;
-                    for (int32_t i = 0; i < b->instance_count; i++) {
-                        const float *src = &b->transforms[(size_t)i * 16u];
-                        if (!instbatch_instance_visible(&frustum, mesh_min, mesh_max, src))
-                            continue;
-                        memcpy(&b->visible_transforms[(size_t)write_index * 16u],
-                               src,
+            if (visible_count < b->instance_count &&
+                instbatch_ensure_matrix_scratch(
+                    &b->visible_transforms, &b->visible_capacity, visible_count) &&
+                (!has_prev || instbatch_ensure_matrix_scratch(&b->visible_prev_transforms,
+                                                              &b->visible_prev_capacity,
+                                                              visible_count))) {
+                int32_t write_index = 0;
+                float *visible_prev = has_prev ? b->visible_prev_transforms : NULL;
+                for (int32_t i = 0; i < b->instance_count; i++) {
+                    if (!b->visibility_mask[i])
+                        continue;
+                    memcpy(&b->visible_transforms[(size_t)write_index * 16u],
+                           &b->transforms[(size_t)i * 16u],
+                           16u * sizeof(float));
+                    if (visible_prev) {
+                        memcpy(&visible_prev[(size_t)write_index * 16u],
+                               &submit_prev[(size_t)i * 16u],
                                16u * sizeof(float));
-                        if (visible_prev) {
-                            memcpy(&visible_prev[(size_t)write_index * 16u],
-                                   &submit_prev[(size_t)i * 16u],
-                                   16u * sizeof(float));
-                        }
-                        write_index++;
                     }
-                    submit_transforms = b->visible_transforms;
-                    submit_prev = visible_prev;
-                    submit_count = visible_count;
-                    has_prev = visible_prev ? 1 : 0;
+                    write_index++;
                 }
+                submit_transforms = b->visible_transforms;
+                submit_prev = visible_prev;
+                submit_count = visible_count;
+                has_prev = visible_prev ? 1 : 0;
             }
         }
         rt_canvas3d_queue_instanced_batch(

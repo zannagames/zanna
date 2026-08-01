@@ -24,7 +24,9 @@
 /// @brief Declares Light3D-bound, occlusion-aware lens flare overlays.
 /// @details A flare retains one light and up to sixteen pre-tinted ghost
 ///   elements. Drawing projects the light, smooths sampled visibility, and
-///   queues each ghost after scene rendering but before presentation.
+///   queues each ghost after scene rendering but before presentation. Mutable
+///   counts, ghost handles, numeric element state, and smoothing state are
+///   bounded or repaired before use.
 
 #include <stdint.h>
 
