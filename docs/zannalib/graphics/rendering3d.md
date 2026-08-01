@@ -1343,7 +1343,12 @@ with `SceneNode.SetStatic(true)`, register bake lights with `AddLight`, tune
 `TexelsPerUnit`/`Samples`/`Bounces`/`SetSkyColor`, then loop `BakeStep()`
 until it returns `true` (chunked; `Progress` reads [0,1]). The bake is
 deterministic — identical scenes and options produce identical atlases.
-`Apply()` installs the atlas on each baked node via material instances and
+Bake inputs freeze when the first scene gather begins. Chart capacity, source
+node bindings/transforms, bake-relevant material fields, mesh revisions, and
+all allocations are validated before publication; a
+terminal failure returns from `BakeStep()` with `Atlas` null and leaves chart
+UVs unpublished. `Apply()` atomically and idempotently installs the atlas on
+each baked node via material instances and
 `Material3D.SetLightmap` (TEXCOORD_1 charts are written into the meshes);
 `Atlas` exposes the page. The software renderer replaces the flat-ambient
 term with `lightmap x albedo` for lightmapped draws (GPU backends keep flat
@@ -1352,10 +1357,14 @@ per frame.
 
 `LightProbeGrid3D.New(min, max, spacing)` + `Bake(baker)` bakes an SH-9
 irradiance probe grid with the same tracer so dynamic objects agree with the
-lightmaps; probes inside geometry are detected and in-filled from neighbors.
-`Sample(position, normal)` returns trilinear-interpolated irradiance as a
-Vec3 (drive character ambient or fill lights from it), and `Save`/`Load`
-round-trip `.vlpg` files.
+lightmaps; bounds must be finite and component-wise ordered, and exact-multiple
+extents use `ceil(extent / spacing) + 1` probes per axis. Probes inside geometry
+are detected and in-filled from the nearest valid region. `Sample(position,
+normal)` renormalizes interpolation over valid probes and returns black for an
+unbaked grid or invalid position (a missing/zero normal uses positive Y).
+`Save`/`Load` round-trip strict, fixed-width IEEE little-endian `.vlpg` files;
+malformed, non-finite, noncanonical, truncated, or overlong input leaves the
+existing grid unchanged.
 
 ## Skeletal Animation
 

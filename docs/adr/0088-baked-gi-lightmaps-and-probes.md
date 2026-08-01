@@ -58,8 +58,9 @@ with strict determinism and zero dependencies.
 - `.vlm` atlas serialization is deferred; `Apply` is in-session and `Atlas`
   exposes the Pixels for games that persist it through existing image paths.
   `.vlpg` (the runtime-critical half) ships now.
-- The atlas is one 1024 page; charts that overflow stop the bake at the cap
-  (documented — density and scene size are the knobs).
+- The atlas is one 1024 page; all charts are capacity-checked before sampling,
+  and overflow fails the complete bake without publishing a partial atlas or
+  chart UVs (density and scene size are the knobs).
 - Tests: `test_rt_lightbaker3d` — direct bake lights the atlas and Apply
   installs lightmap instances; a red wall skews bounced floor light toward
   red vs a white wall and identical bakes hash identically; probe gradients
