@@ -5,19 +5,21 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file WindowsInstallerVersion.cpp
-/// @brief Implements installer-version comparison with SemVer-compatible prerelease rules.
-///
-/// Build metadata never affects precedence. Numeric prerelease identifiers compare numerically and
-/// sort before text identifiers, while dotted numeric cores retain compatibility with Zanna's
-/// four-part builds. All helpers are pure and retain no state.
+// File: src/tools/windows_installer/WindowsInstallerVersion.cpp
+// Purpose: Validate and compare Windows installer versions with SemVer precedence.
+// Key invariants:
+//   - Versions fit the bounded four-part numeric identity embedded in Windows packages.
+//   - Build metadata does not affect precedence and prerelease ordering is deterministic.
+// Ownership/Lifetime:
+//   - Input views are borrowed only during each comparison.
+//   - Parsed components are owned by the call and no global state is retained.
+// Links: src/tools/windows_installer/WindowsInstallerHost.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "WindowsInstallerHost.hpp"
 
 #include <algorithm>
-#include <cctype>
 #include <charconv>
 #include <stdexcept>
 #include <string>
@@ -27,6 +29,10 @@
 
 namespace zanna::installer {
 namespace {
+
+constexpr std::size_t kMaximumInstallerVersionBytes = 128U;
+constexpr std::size_t kMaximumCoreComponents = 4U;
+constexpr int kMaximumWindowsVersionComponent = 65535;
 
 /// @brief Validated precedence-bearing portions of an installer version.
 struct ParsedVersion {
@@ -48,7 +54,9 @@ void validateIdentifiers(std::string_view value, std::string_view field, bool nu
     if (value.empty() || value.front() == '.' || value.back() == '.' ||
         value.find("..") != std::string_view::npos ||
         std::any_of(value.begin(), value.end(), [](unsigned char ch) {
-            return !(std::isalnum(ch) || ch == '-' || ch == '.');
+            const bool asciiAlpha = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+            const bool asciiDigit = ch >= '0' && ch <= '9';
+            return !(asciiAlpha || asciiDigit || ch == '-' || ch == '.');
         })) {
         throw std::runtime_error("package version has invalid " + std::string(field));
     }
@@ -77,6 +85,8 @@ void validateIdentifiers(std::string_view value, std::string_view field, bool nu
 /// @return Numeric core and precedence-bearing prerelease identifiers.
 /// @throws std::runtime_error If core, prerelease, build metadata, or integer range is invalid.
 ParsedVersion parseInstallerVersion(std::string_view version) {
+    if (version.empty() || version.size() > kMaximumInstallerVersionBytes)
+        throw std::runtime_error("package version is not a supported semantic version");
     ParsedVersion result;
     const std::size_t plus = version.find('+');
     if (plus != std::string_view::npos) {
@@ -91,6 +101,8 @@ ParsedVersion parseInstallerVersion(std::string_view version) {
     }
     std::size_t start = 0;
     while (start <= version.size()) {
+        if (result.core.size() == kMaximumCoreComponents)
+            throw std::runtime_error("package version has more than four numeric components");
         const std::size_t dot = version.find('.', start);
         const std::string_view part = version.substr(
             start, dot == std::string_view::npos ? version.size() - start : dot - start);
@@ -98,8 +110,10 @@ ParsedVersion parseInstallerVersion(std::string_view version) {
             throw std::runtime_error("package version is not a supported semantic version");
         int parsedValue = 0;
         const auto parsed = std::from_chars(part.data(), part.data() + part.size(), parsedValue);
-        if (parsed.ec != std::errc{} || parsed.ptr != part.data() + part.size() || parsedValue < 0)
+        if (parsed.ec != std::errc{} || parsed.ptr != part.data() + part.size() ||
+            parsedValue < 0 || parsedValue > kMaximumWindowsVersionComponent) {
             throw std::runtime_error("package version is not a supported semantic version");
+        }
         result.core.push_back(parsedValue);
         if (dot == std::string_view::npos)
             break;

@@ -91,6 +91,7 @@ static void d3d11_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
     vgfx3d_sanitize_camera_params(cam, &safe_cam);
     cam = &safe_cam;
     ctx->frame_active = 1;
+    ctx->frame_submission_failed = 0;
     if (!ctx->rtt_active)
         ctx->frame_pending_present = 1;
     if (!vgfx3d_compute_scaled_scene_extent(
@@ -261,6 +262,15 @@ static void d3d11_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
         return;
     }
 
+    hr = d3d11_clear_current_targets(
+        ctx, ctx->current_load_existing_color, cam->load_existing_depth);
+    if (FAILED(hr)) {
+        d3d11_clear_current_target_bindings(ctx);
+        ctx->frame_active = 0;
+        ctx->frame_pending_present = prior_pending_present;
+        return;
+    }
+
     if (!ctx->current_pass_is_overlay) {
         ctx->texture_upload_bytes = 0;
         ctx->shadow_count = 0;
@@ -295,7 +305,6 @@ static void d3d11_begin_frame(void *ctx_ptr, const vgfx3d_camera_params_t *cam) 
         ctx->overlay_used_this_frame = history.overlay_used_this_frame;
     }
 
-    d3d11_clear_current_targets(ctx, ctx->current_load_existing_color, cam->load_existing_depth);
     d3d11_bind_common_state(ctx, NULL);
     d3d11_begin_frame_timing(ctx);
     if ((ctx->frame_serial & 31u) == 0u) {
@@ -530,6 +539,14 @@ static void d3d11_end_frame(void *ctx_ptr) {
     if (!ctx || !ctx->frame_active)
         return;
     ctx->frame_active = 0;
+    if (ctx->frame_submission_failed) {
+        ctx->frame_pending_present = 0;
+        ctx->scene_composited_to_swapchain = 0;
+        ctx->presented_color_valid = 0;
+        ctx->depth_probe_request_count = 0;
+        d3d11_end_frame_timing(ctx);
+        return;
+    }
     d3d11_issue_depth_probes(ctx);
     d3d11_end_frame_timing(ctx);
     if (!vgfx3d_d3d11_should_mark_rtt_dirty(ctx->rtt_active,
@@ -1884,9 +1901,10 @@ static void d3d11_shadow_begin(void *ctx_ptr,
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     D3D11_VIEWPORT viewport;
     HRESULT hr;
+    int atlas_clear_pending = 0;
 
     (void)depth_buf;
-    if (!ctx || !ctx->frame_active)
+    if (!ctx || !ctx->frame_active || ctx->frame_submission_failed)
         return;
     d3d11_leave_shadow_pass(ctx);
     if (slot < 0 || slot >= VGFX3D_MAX_SHADOW_LIGHTS)
@@ -1914,9 +1932,9 @@ static void d3d11_shadow_begin(void *ctx_ptr,
         d3d11_unbind_shadow_resources(ctx);
         ID3D11DeviceContext_OMSetRenderTargets(ctx->ctx, 0, NULL, ctx->shadow_atlas_dsv);
         if (!ctx->shadow_atlas_cleared) {
+            atlas_clear_pending = 1;
             ID3D11DeviceContext_ClearDepthStencilView(
                 ctx->ctx, ctx->shadow_atlas_dsv, D3D11_CLEAR_DEPTH, 1.0f, 0);
-            ctx->shadow_atlas_cleared = 1;
         }
         memset(&viewport, 0, sizeof(viewport));
         viewport.TopLeftX = (FLOAT)((tile % VGFX3D_D3D11_SHADOW_ATLAS_COLUMNS) * width);
@@ -1933,6 +1951,12 @@ static void d3d11_shadow_begin(void *ctx_ptr,
         ID3D11DeviceContext_IASetPrimitiveTopology(ctx->ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         ID3D11DeviceContext_VSSetShader(ctx->ctx, ctx->vs_shadow, NULL, 0);
         ID3D11DeviceContext_PSSetShader(ctx->ctx, NULL, NULL, 0);
+        if (FAILED(d3d11_record_frame_device_status(ctx, "Begin(shadow atlas pass)"))) {
+            ctx->shadow_pass_failed = 1;
+            return;
+        }
+        if (atlas_clear_pending)
+            ctx->shadow_atlas_cleared = 1;
         return;
     }
     hr = d3d11_ensure_shadow_targets(ctx, slot, width, height);
@@ -1963,6 +1987,8 @@ static void d3d11_shadow_begin(void *ctx_ptr,
     ID3D11DeviceContext_IASetPrimitiveTopology(ctx->ctx, D3D11_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
     ID3D11DeviceContext_VSSetShader(ctx->ctx, ctx->vs_shadow, NULL, 0);
     ID3D11DeviceContext_PSSetShader(ctx->ctx, NULL, NULL, 0);
+    if (FAILED(d3d11_record_frame_device_status(ctx, "Begin(shadow pass)")))
+        ctx->shadow_pass_failed = 1;
 }
 
 /// @brief Backend `shadow_draw` — emit a single mesh into the shadow depth buffer.
@@ -1991,7 +2017,7 @@ static void d3d11_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
     uint32_t index_count;
     vgfx3d_draw_cmd_t safe_cmd;
 
-    if (!ctx || !ctx->frame_active)
+    if (!ctx || !ctx->frame_active || ctx->frame_submission_failed)
         return;
     if (!cmd || ctx->shadow_pass_slot < 0 || ctx->shadow_pass_slot >= VGFX3D_MAX_SHADOW_LIGHTS ||
         !cmd->vertices || !cmd->indices || cmd->vertex_count == 0 || cmd->index_count == 0) {
@@ -2103,6 +2129,8 @@ static void d3d11_shadow_draw(void *ctx_ptr, const vgfx3d_draw_cmd_t *cmd) {
         ID3D11DeviceContext_VSSetShaderResources(ctx->ctx, 0, 2, vs_srvs);
     }
     ID3D11DeviceContext_DrawIndexed(ctx->ctx, index_count, 0, 0);
+    if (FAILED(d3d11_record_frame_device_status(ctx, "DrawIndexed(shadow)")))
+        ctx->shadow_pass_failed = 1;
     ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 1, null_shadow_ps_srv);
     ID3D11DeviceContext_PSSetShader(ctx->ctx, NULL, NULL, 0);
     d3d11_release_temp_srv(&shadow_diffuse);
@@ -2154,8 +2182,8 @@ static int8_t d3d11_shadow_reuse(
     void *ctx_ptr, int32_t slot, float *depth_buf, int32_t w, int32_t h, const float *light_vp) {
     d3d11_context_t *ctx = (d3d11_context_t *)ctx_ptr;
     (void)depth_buf;
-    if (!ctx || !ctx->frame_active || slot < 0 || slot >= VGFX3D_CSM_SLOTS || !light_vp || w <= 0 ||
-        h <= 0)
+    if (!ctx || !ctx->frame_active || ctx->frame_submission_failed || slot < 0 ||
+        slot >= VGFX3D_CSM_SLOTS || !light_vp || w <= 0 || h <= 0)
         return 0;
     if (!vgfx3d_d3d11_shadow_matrix_is_usable(light_vp))
         return 0;
@@ -2188,7 +2216,8 @@ static void d3d11_draw_skybox(void *ctx_ptr, const void *cubemap_ptr) {
     D3D11_VIEWPORT viewport;
     float blend_factor[4] = {0, 0, 0, 0};
 
-    if (!ctx || !cubemap || !ctx->vs_skybox || !ctx->ps_skybox || !ctx->skybox_vb ||
+    if (!ctx || ctx->frame_submission_failed || !cubemap || !ctx->vs_skybox || !ctx->ps_skybox ||
+        !ctx->skybox_vb ||
         !vgfx3d_d3d11_draw_submission_is_ready(ctx->frame_active,
                                                ctx->shadow_pass_slot,
                                                ctx->ctx != NULL,
@@ -2236,6 +2265,6 @@ static void d3d11_draw_skybox(void *ctx_ptr, const void *cubemap_ptr) {
         ID3D11ShaderResourceView *null_srv = NULL;
         ID3D11DeviceContext_PSSetShaderResources(ctx->ctx, 0, 1, &null_srv);
     }
-    (void)d3d11_device_status_after_void_command(ctx, "Draw(skybox)");
+    (void)d3d11_record_frame_device_status(ctx, "Draw(skybox)");
     d3d11_release_temp_srv(&cubemap_resource);
 }

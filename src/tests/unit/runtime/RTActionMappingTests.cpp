@@ -447,8 +447,9 @@ static void test_invalid_name_encoding_and_embedded_nul() {
     assert(rt_action_define(nul_name) == 0);
     assert(rt_action_define_axis(nul_name) == 0);
 
-    const char overlong_utf8[] = {(char)0xC0, (char)0xAF};
-    rt_string invalid_utf8 = rt_string_from_bytes(overlong_utf8, sizeof(overlong_utf8));
+    const unsigned char overlong_utf8[] = {0xC0u, 0xAFu};
+    rt_string invalid_utf8 =
+        rt_string_from_bytes(reinterpret_cast<const char *>(overlong_utf8), sizeof(overlong_utf8));
     assert(rt_action_define(invalid_utf8) == 0);
 
     const char valid_utf8[] = "déplacement";

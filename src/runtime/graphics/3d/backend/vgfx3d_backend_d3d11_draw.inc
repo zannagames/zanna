@@ -149,15 +149,17 @@ static void d3d11_bind_swapchain_target(d3d11_context_t *ctx) {
 /// @param[in,out] ctx Backend context holding the current RTV/DSV set.
 /// @param[in] load_existing_color Nonzero to preserve all current color targets.
 /// @param[in] load_existing_depth Nonzero to preserve the current depth target.
-static void d3d11_clear_current_targets(d3d11_context_t *ctx,
-                                        int8_t load_existing_color,
-                                        int8_t load_existing_depth) {
+/// @return `S_OK` after successful/no-op clears, otherwise the device-removal reason.
+static HRESULT d3d11_clear_current_targets(d3d11_context_t *ctx,
+                                           int8_t load_existing_color,
+                                           int8_t load_existing_depth) {
     float clear_color[4];
     static const float overlay_clear[4] = {0.0f, 0.0f, 0.0f, 0.0f};
     float motion_clear[4] = {0.5f, 0.5f, 0.0f, 0.0f}; /* alpha = SSR mask; empty = 0 */
+    int issued_clear = 0;
 
-    if (!ctx)
-        return;
+    if (!ctx || !ctx->ctx)
+        return E_POINTER;
 
     if (ctx->current_target_kind == VGFX3D_D3D11_TARGET_OVERLAY) {
         memcpy(clear_color, overlay_clear, sizeof(clear_color));
@@ -168,15 +170,22 @@ static void d3d11_clear_current_targets(d3d11_context_t *ctx,
         clear_color[3] = 1.0f;
     }
 
-    if (!load_existing_color && ctx->current_rtv_count > 0 && ctx->current_rtvs[0])
+    if (!load_existing_color && ctx->current_rtv_count > 0 && ctx->current_rtvs[0]) {
         ID3D11DeviceContext_ClearRenderTargetView(ctx->ctx, ctx->current_rtvs[0], clear_color);
+        issued_clear = 1;
+    }
     if (!load_existing_color && ctx->current_target_kind == VGFX3D_D3D11_TARGET_SCENE &&
-        ctx->current_rtv_count > 1 && ctx->current_rtvs[1])
+        ctx->current_rtv_count > 1 && ctx->current_rtvs[1]) {
         ID3D11DeviceContext_ClearRenderTargetView(ctx->ctx, ctx->current_rtvs[1], motion_clear);
-    if (!load_existing_depth && ctx->current_dsv)
+        issued_clear = 1;
+    }
+    if (!load_existing_depth && ctx->current_dsv) {
         /* Reversed-Z: 0 is the far plane; scene depth states compare Greater. */
         ID3D11DeviceContext_ClearDepthStencilView(
             ctx->ctx, ctx->current_dsv, D3D11_CLEAR_DEPTH, 0.0f, 0);
+        issued_clear = 1;
+    }
+    return issued_clear ? d3d11_record_frame_device_status(ctx, "Clear(frame targets)") : S_OK;
 }
 
 /// @brief Bind the three sampler states the pixel shader expects.
@@ -1510,8 +1519,8 @@ static void d3d11_submit_draw(void *ctx_ptr,
     float safe_ambient[3];
 
     (void)win;
-    if (!ctx || !cmd || !cmd->vertices || !cmd->indices || cmd->vertex_count == 0 ||
-        cmd->index_count == 0 ||
+    if (!ctx || ctx->frame_submission_failed || !cmd || !cmd->vertices || !cmd->indices ||
+        cmd->vertex_count == 0 || cmd->index_count == 0 ||
         !vgfx3d_d3d11_draw_submission_is_ready(ctx->frame_active,
                                                ctx->shadow_pass_slot,
                                                ctx->ctx != NULL,
@@ -1615,6 +1624,7 @@ static void d3d11_submit_draw(void *ctx_ptr,
     ID3D11DeviceContext_IASetIndexBuffer(ctx->ctx, mesh_ib, DXGI_FORMAT_R32_UINT, 0);
     d3d11_bind_main_pipeline(ctx, cmd, wireframe, backface_cull, 0);
     ID3D11DeviceContext_DrawIndexed(ctx->ctx, index_count, 0, 0);
+    (void)d3d11_record_frame_device_status(ctx, "DrawIndexed(main)");
 
     d3d11_unbind_draw_resources(ctx);
     d3d11_release_temporary_resources(&draw_resources);
@@ -1670,8 +1680,8 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
     float safe_ambient[3];
 
     (void)win;
-    if (!ctx || !cmd || instance_count <= 0 || !cmd->vertices || !cmd->indices ||
-        (!instance_matrices && !cmd->particle_instances) ||
+    if (!ctx || ctx->frame_submission_failed || !cmd || instance_count <= 0 || !cmd->vertices ||
+        !cmd->indices || (!instance_matrices && !cmd->particle_instances) ||
         !vgfx3d_d3d11_draw_submission_is_ready(ctx->frame_active,
                                                ctx->shadow_pass_slot,
                                                ctx->ctx != NULL,
@@ -1821,6 +1831,7 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
         ID3D11DeviceContext_VSSetShader(ctx->ctx, ctx->vs_particles, NULL, 0);
     }
     ID3D11DeviceContext_DrawIndexedInstanced(ctx->ctx, index_count, instance_count, 0, 0, 0);
+    (void)d3d11_record_frame_device_status(ctx, "DrawIndexedInstanced(main)");
 
     d3d11_unbind_draw_resources(ctx);
     d3d11_release_temporary_resources(&draw_resources);

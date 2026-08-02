@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developers
-last-verified: 2026-07-26
+last-verified: 2026-08-01
 ---
 
 # Windows Runtime Reliability Audit
@@ -10,8 +10,8 @@ This audit covers the Direct3D 11 backend and the Windows-specific runtime adapt
 entropy, TLS verification, process/ConPTY launch, paths and assets, locale detection, file watching,
 large-file I/O, environment access, concurrency, stack safety, graphics, audio, native dialogs,
 native builds, UI Automation, installer lifecycle, signing, and demo automation. It is a robustness
-pass only: no IL opcode, grammar, verifier rule, or runtime C ABI changed. ADRs 0155 and 0196
-record the native-link cross-layer dependencies required by current MSVC object code.
+pass only: no IL opcode, grammar, verifier rule, or runtime C ABI changed. ADRs 0155, 0196, and
+0232 record the native-link cross-layer dependencies required by current MSVC object code.
 
 ## Repaired findings
 
@@ -23,7 +23,9 @@ repairs aimed at alpha-quality failure behavior. The 2026-07-25 pass adds WR-503
 demo-automation repairs. The 2026-07-26 pass adds WR-561 through WR-657: 97 Direct3D resource,
 PE/installer, Windows storage, WASAPI, native-dialog, build/publication, and native-link hardening
 repairs. A second 2026-07-26 pass adds WR-658 through WR-715: 58 checked-synchronization,
-Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link repairs.
+Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link repairs. The
+2026-08-01 alpha-hardening pass adds WR-716 through WR-805: 90 shared-preview IPC, Direct3D
+frame-transaction, installer/update, Win32 runtime, audio, window-adapter, and validation repairs.
 
 | ID | Area | Finding and repair |
 |----|------|--------------------|
@@ -742,6 +744,96 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
 | WR-713 | installer reboot cleanup | `MoveFileExW(..., MOVEFILE_DELAY_UNTIL_REBOOT)` was unchecked, yet the log always claimed cleanup had been scheduled. Scheduling failure is now reported with its native error and the cache remains available for later repair. |
 | WR-714 | installer cleanup idempotence | A file that disappeared after attribute inspection but before `DeleteFileW` was treated as a cleanup failure unless it had originally been read-only. Both post-inspection not-found results are now idempotent success. |
 | WR-715 | D3D11 native GUID linkage | The new COM identity checks compiled under MSVC but referenced `IID_IUnknown` and `IID_ID3D11Device` as external `dxguid` data, which the zero-dependency native linker intentionally does not import. SDK-identical file-local GUID constants now preserve the checks without expanding the native import surface. |
+| WR-716 | embed IPC layout | Frame-slot and complete mapping sizes were derived with unchecked multiplication/addition. A single checked layout helper now rejects invalid dimensions and every `size_t` overflow before mapping or copying. |
+| WR-717 | embed IPC Windows ownership | `CreateFileMappingA` could open an existing named section and let a second host reinitialize live shared memory. `ERROR_ALREADY_EXISTS` now fails creation without touching the established channel. |
+| WR-718 | embed IPC POSIX ownership | Host creation unconditionally unlinked the name before `O_EXCL`, allowing a second host to hide a live channel and create a split-brain replacement. Creation now leaves existing objects intact and fails closed. |
+| WR-719 | embed IPC atomics | `memset` was treated as initialization for C11 atomic objects. Every shared atomic now receives `atomic_init` before either process may access it. |
+| WR-720 | embed IPC portability | The protocol assumed process-shared atomics were lock-free; a library-backed atomic may contain process-local synchronization state. Creation and attachment now require every shared atomic type to be lock-free. |
+| WR-721 | embed IPC publication | The magic sentinel was written before version, bounds, and atomic state, so a concurrent attach could accept a partially initialized header. The sentinel is now published last after initialization and a release fence. |
+| WR-722 | embed IPC POSIX probing | Attachment mapped a complete header without proving the shared-memory object was that large, permitting a truncated object to fault on access. `fstat` now verifies the probe extent first. |
+| WR-723 | embed IPC POSIX extent | After trusting dimensions from the probe, attachment did not prove the object matched the derived complete layout. It now requires the exact mapping size before the full `mmap`. |
+| WR-724 | embed IPC mapping cleanup | Probe-view unmap failures were ignored before remapping the full channel. Both Win32 and POSIX attachment now fail and release handles when the probe cannot be unmapped cleanly. |
+| WR-725 | embed IPC remap race | Header metadata was validated only through the temporary probe, leaving a size/replacement race before the full view was used. The established view is revalidated against the captured layout before publication. |
+| WR-726 | embed IPC metadata trust | Copy and allocation bounds were repeatedly read from mutable shared header fields. Each handle now retains validated immutable dimensions and rejects later header tampering. |
+| WR-727 | embed IPC producer ownership | Any number of game processes could attach and write the same frame slots and input tail. An atomic claim now permits exactly one producer handle. |
+| WR-728 | embed IPC attach publication | A new producer could become visible while the prior producer's exited flag was still set. Attachment now reserves an intermediate state, clears stale exit state, then release-publishes the live producer. |
+| WR-729 | embed IPC restart state | Reattaching after an orderly producer exit retained `producer_exited`, making a healthy restarted preview look dead. Successful exclusive attachment now resets it. |
+| WR-730 | embed IPC detach state | Producer close marked exit but left `producer_attached` true forever. Close now publishes exited, clears attached, and relinquishes the local claim. |
+| WR-731 | embed IPC explicit exit | `mark_exited` left the same handle authorized to continue publishing. It now atomically exposes exit, revokes attachment, and invalidates the producer claim. |
+| WR-732 | embed IPC frame roles | Host handles could publish and producer handles could acquire frames. Frame operations now enforce their protocol roles and require a live producer claim. |
+| WR-733 | embed IPC event roles | Either side could push or consume host-to-game input, violating the SPSC assumptions. Push is host-only and poll is exclusive-producer-only. |
+| WR-734 | embed IPC control roles | Producer handles could issue host resize requests and producer-side callers could query host-only frame state. Control and inspection operations now validate roles; resize state is published only after its event is queued. |
+| WR-735 | embed IPC abandoned frame | A producer interrupted while the sequence was odd left every future frame odd as well. Publication now advances an abandoned odd value to the next valid write transaction. |
+| WR-736 | embed IPC sequence wrap | Incrementing a near-`UINT64_MAX` frame sequence could wrap through an invalid completion value. The publisher now restarts through a valid odd/even pair and readers detect the new frame. |
+| WR-737 | embed IPC failure outputs | Failed frame acquisition could expose stale width/height values supplied by the caller. Outputs are cleared before validation and remain zero on every failure path. |
+| WR-738 | embed IPC dimension snapshot | `frame_size` read width and height without checking the frame sequence, allowing dimensions from different publications. It now performs a bounded stable-even seqlock read with range validation. |
+| WR-739 | embed IPC event validation | Invalid event kinds entered the ring, failed polls preserved stale records, and corrupted producer/consumer distance was not detected. Kinds are bounded, outputs clear first, and impossible ring distance fails closed. |
+| WR-740 | embed IPC full ring | The host advanced the consumer-owned tail and overwrote a slot the game could be copying, creating cross-process data races. A full ring now rejects the newest event while preserving all published records. |
+| WR-741 | D3D11 frame clear | Render-target and depth clears are void D3D11 commands whose device-loss result was never checked. Clear now returns a checked frame status before submission continues. |
+| WR-742 | D3D11 begin transaction | Per-frame counters and history could claim a new frame after target clear had already failed. Clear succeeds before those CPU-side completion states are published, and early failure restores pending-present state. |
+| WR-743 | D3D11 indexed draws | Main `DrawIndexed` submission could be discarded by a removed device while the frame remained publishable. Device health is checked and latched after the command. |
+| WR-744 | D3D11 instanced draws | `DrawIndexedInstanced` had the same unchecked void-command failure. It now participates in the frame failure latch. |
+| WR-745 | D3D11 skybox draw | Skybox health checks logged device removal but did not reliably poison the active frame transaction. The draw now records failure through the common frame-status helper. |
+| WR-746 | D3D11 constant buffers | Invalid constant-buffer arguments or incompatible native descriptors returned errors without invalidating an active frame, allowing stale constants to be presented. Both contract failures now latch submission failure. |
+| WR-747 | D3D11 constant maps | A failed dynamic-constant `Map`, or success with null mapped storage, could leave stale constants while the frame completed. Both paths now poison the frame after safe unmap where required. |
+| WR-748 | D3D11 dynamic buffers | Dynamic buffer creation failure or an impossible post-create capacity mismatch merely dropped one draw. The complete frame is now invalidated so partial geometry is never presented as successful. |
+| WR-749 | D3D11 dynamic maps | Failed or null dynamic vertex/index/instance mappings could publish a frame missing only some geometry. These failures now latch the frame transaction before returning. |
+| WR-750 | D3D11 failed-frame continuation | Later main, instanced, skybox, shadow, and reuse calls continued encoding after a fatal submission error. Every affected entry point now short-circuits once the frame latch is set. |
+| WR-751 | D3D11 failed depth probes | `end_frame` issued and published depth-probe work even after rendering failed. Failed frames now discard queued probes without copying or exposing invalid depth. |
+| WR-752 | D3D11 failed RTT publication | A failed render-to-texture frame still marked host readback dirty and could replace good pixels with incomplete GPU output. Dirty/HDR state is no longer published for failed frames. |
+| WR-753 | D3D11 failed presentation | A failed on-screen frame remained pending for post-processing or Present. `end_frame` clears the pending transaction and presented-color validity before returning. |
+| WR-754 | D3D11 shadow entry | Shadow passes could begin after the active frame had already failed, mutating targets and cache state that would never be valid. Begin and reuse now reject failed-frame state. |
+| WR-755 | D3D11 shadow atlas | The atlas-cleared flag was set immediately after the void clear command, even if the device discarded it. The flag is published only after checked pass setup succeeds. |
+| WR-756 | D3D11 shadow setup | Per-slot and atlas render-target/shader setup used only void calls and could fail through device removal without marking the pass. Both setup families now record device status and shadow failure. |
+| WR-757 | D3D11 shadow completion | A removed-device shadow draw could still make `shadow_end` mark its slot complete and reusable. Draw health now latches both frame and shadow-pass failure; later shadow work is suppressed. |
+| WR-758 | D3D11 IBL telemetry | A cubemap identity whose IBL upload had failed remained reported as pending forever and was reconsidered on every refresh. Failed identities now clear pending bytes and are excluded until identity changes. |
+| WR-759 | installer cleanup UTF-16 | Cleanup accepted unpaired surrogates in deletion targets, creating strings with no stable Win32 interpretation. The policy now validates every UTF-16 pair before parsing a path. |
+| WR-760 | installer cleanup extended paths | Extended-length paths accepted forward-slash aliases even though the `\\?\` namespace is interpreted literally. Extended drive and UNC spellings now require backslashes throughout. |
+| WR-761 | installer cleanup devices | `CONIN$` and `CONOUT$` were not rejected as reserved console devices. Both aliases now fail the same component check as `CON`, `NUL`, and `CLOCK$`. |
+| WR-762 | installer cleanup equality | Deduplication compared only ASCII case, so Unicode-equivalent Windows path spellings could execute cleanup twice. Components now use locale-independent `CompareStringOrdinal` case-insensitive equality. |
+| WR-763 | installer cleanup namespaces | Ordinary and extended drive/UNC spellings of the same target compared different. Safe namespace prefixes are normalized before component-wise equality. |
+| WR-764 | installer cleanup PID grammar | `wcstoul` accepted leading whitespace and a plus sign in the trusted parent-process option. A digits-only, nonzero decimal parser now defines the command-line contract. |
+| WR-765 | installer cleanup PID range | PID conversion depended on CRT `errno`/width behavior and did not deterministically clear output. Checked `uint32_t` accumulation rejects overflow and leaves zero on failure. |
+| WR-766 | Windows package versions | The PE resource builder stripped any `-`/`+` suffix without validating the complete package version, allowing packages the installer could not consume. It now validates the full SemVer-compatible text first. |
+| WR-767 | Windows VERSIONINFO | Zero-padded numeric core components produced noncanonical package identities. Resource-version parsing now rejects them before emitting PE metadata. |
+| WR-768 | Windows package version bounds | Package version parsing was unbounded and used locale-sensitive digit classification. Input is capped at 128 bytes and every core/suffix character is validated as explicit ASCII. |
+| WR-769 | Windows prerelease metadata | Empty/double-dot identifiers and zero-padded numeric prereleases were accepted or silently truncated by the resource path. Complete prerelease and build grammar is now enforced. |
+| WR-770 | installer version identifiers | `std::isalnum` made accepted prerelease/build bytes depend on the process locale. Installer precedence now recognizes only ASCII letters, digits, hyphen, and period. |
+| WR-771 | installer version resource limits | Arbitrarily long versions could drive allocations and parsing in package load/update paths. Installer versions now share the package builder's 128-byte bound. |
+| WR-772 | installer version identity | The installer accepted more than four numeric components and values larger than PE `VERSIONINFO`'s 16-bit fields. Both limits now match the package identity exactly. |
+| WR-773 | installer host validation | A package with an unusable version could load and reach UI/lifecycle work before a later comparison rejected it. Package load now self-compares the version immediately after metadata parsing. |
+| WR-774 | installer minimum OS parser | Minimum-Windows checks reused the package SemVer parser and therefore accepted prerelease/build syntax that has no OS-version meaning. A dedicated one-to-three-part dotted parser now rejects suffixes. |
+| WR-775 | installer OS-version arithmetic | OS components were narrowed from native `DWORD` values to signed `int`, and test/metadata spellings allowed zero padding. Comparison now uses canonical `uint32_t` components without narrowing. |
+| WR-776 | installer metadata devices | Package leaf-name validation missed `CLOCK$`, console aliases, and the Win32 superscript COM/LPT device forms. All are rejected before archive or shortcut metadata is accepted. |
+| WR-777 | installer update signed bytes | CRLF manifests were normalized to LF before signature verification, so accepted transport bytes differed from authenticated bytes. Signed manifests now require canonical LF exclusively. |
+| WR-778 | installer update framing | A manifest without a final newline was reconstructed with one for signature verification. The exact downloaded message must now end with LF. |
+| WR-779 | installer update JSON | Unknown `UpdateStatus` enum values serialized as `unconfigured`, concealing memory/caller corruption. JSON serialization now uses an exhaustive switch and rejects invalid state. |
+| WR-780 | installer update UI | Update presentation treated every non-current/non-unconfigured value as available and offered an open-link action. The dialog path now rejects unknown enum values before constructing controls. |
+| WR-781 | installer update result identity | The UI trusted a mutable result record after verification. It now rechecks package version, channel, architecture, and status/version precedence immediately before presentation. |
+| WR-782 | installer update result digest | A forged result could reach presentation with an invalid download digest. The final boundary requires exactly 64 lowercase hexadecimal SHA-256 characters. |
+| WR-783 | installer update launch origin | Download and release-note URLs were not revalidated at the `ShellExecuteW` boundary. Both are reparsed as HTTPS and required to match the pinned manifest origin. |
+| WR-784 | installer update TLS | Update discovery requested only TLS 1.2 even where WinHTTP supports TLS 1.3. It now offers TLS 1.3 with a TLS-1.2 floor and safely retries the floor on older WinHTTP versions. |
+| WR-785 | installer update unconfigured state | A forged unconfigured result could carry a different identity or be paired with a package that was actually configured. Presentation now verifies empty configuration and exact package identity. |
+| WR-786 | Windows FILETIME epoch | Millisecond and microsecond conversion subtracted the Unix offset in unsigned arithmetic, wrapping any pre-1970 value far into the future. A signed-direction helper now handles both sides of the epoch. |
+| WR-787 | Windows FILETIME range | The general conversion helper could narrow a large positive quotient beyond `int64_t`. It now saturates at `INT64_MAX` for every documented divisor. |
+| WR-788 | Windows sleep duration | Positive 64-bit sleeps narrowed directly to `DWORD`, could wrap short, or become Win32's infinite sentinel. Large waits are now split into finite `INFINITE - 1` chunks. |
+| WR-789 | terminal cursor wrapper | A nonzero i64 such as `2^32` narrowed to zero and hid the cursor. The wrapper canonicalizes boolean truth before crossing the i32 ABI. |
+| WR-790 | terminal alternate screen | The alternate-screen wrapper had the same nonzero-to-zero narrowing. It now passes an explicit boolean. |
+| WR-791 | terminal sleep wrapper | Negative or large i64 durations could wrap through the i32 adapter. The wrapper now clamps to `[0, INT32_MAX]` deterministically. |
+| WR-792 | Windows threadpool build | The threadpool called `rt_win32_deadline_from_now_ms` without including its declaration, producing an implicit declaration and unresolved MSVC link. The Windows wait header is now included in the owning translation unit. |
+| WR-793 | Windows audio refill wait | Destruction could wait forever if a refill event signal was lost after the in-progress flag cleared. Windows now polls the event for one millisecond and rechecks protected state. |
+| WR-794 | Windows audio event errors | Refill-event reset, signal, wait, and close failures were silently ignored. Every failed operation now publishes a bounded platform diagnostic. |
+| WR-795 | WASAPI shutdown signal | Failure to signal the render thread's stop event was ignored. Shutdown now records a backend write failure and reports the platform error before the bounded join. |
+| WR-796 | WASAPI client stop | `IAudioClient::Stop` failure disappeared during teardown. The HRESULT is now checked and reflected in diagnostics/statistics. |
+| WR-797 | WASAPI handle cleanup | Render, stop, and ready event `CloseHandle` results were discarded. Each failed close is now observable rather than silently leaking native state. |
+| WR-798 | Win32 DPI transition | `WM_DPICHANGED` ignored failure to apply the suggested bounds, leaving logical and native sizing out of sync without explanation. `SetWindowPos` failure is now diagnosed. |
+| WR-799 | Win32 frame pacing | A waitable timer used an infinite wait, ignored wait/close failures, and slept the full interval again after a timeout. It now uses a finite grace deadline, reports native failures, returns after timeout, and falls back only for immediate failures. |
+| WR-800 | Win32 resize constraints | Programmatic resize ignored `GetClientRect` failure, and minimum-size refresh ignored `SetWindowPos` failure. Both operations now fail visibly and avoid publishing guessed backing-store dimensions. |
+| WR-801 | Windows native preview imports | The standalone native Studio reached four embed-channel file-mapping symbols that the fixed import planner did not map. `CreateFileMappingA`, `OpenFileMappingA`, `MapViewOfFile`, and `UnmapViewOfFile` now resolve to Kernel32 under ADR 0232. |
+| WR-802 | Windows native physics imports | Range-safe 2D physics arithmetic reached `expm1`, `fma`, `frexp`, `log1p`, and `scalbn`, but the Windows planner's maintained UCRT math set omitted them. Release and debug native links now map all five to the appropriate UCRT. |
+| WR-803 | Windows CTest scenario table | The VM/native parity test declared a three-element `std::array` after growing to five scenarios, so clean MSVC all-target builds failed with excess initializers. The scenario table now uses a size-deduced native array and cannot drift from its initializer count. |
+| WR-804 | Windows warning-as-error fixture | The action-mapping malformed UTF-8 fixture cast `0xC0` and `0xAF` directly to signed `char`; MSVC reports constant truncation and the Windows build treats it as an error. Unsigned bytes are now reinterpreted only at the byte-string API boundary. |
+| WR-805 | Windows CTest Python discovery | Git Bash's `command -v python3` accepted a nonfunctional Microsoft Store application alias, causing `benchmark_compare_self_test` to fail despite an installed interpreter. Discovery now executes a probe, honors only a working `PYTHON` override, and falls back through `python3`, `python`, and the standard `py -3` launcher. |
 
 ## Regression coverage
 
@@ -753,8 +845,9 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
   exact thread-handle joining, ordinal comparison, fail-closed deletion guards, processor-count
   validity, drive-root temp preservation, long environment-backed home paths, CRT-aware network
   workers, restricted child handle inheritance, checked capture/wait failures, explicit Unicode
-  event creation, checked critical-section construction and parallel completion signaling, and the
-  bounded WASAPI thread/format/routing/buffer/control-thread source contracts.
+  event creation, checked critical-section construction and parallel completion signaling,
+  signed pre-epoch FILETIME conversion, terminal-wrapper narrowing, finite window pacing, and the
+  bounded/checked WASAPI thread, event, format, routing, buffer, and control-thread contracts.
   `native_run_windows_environment` additionally compiles and runs an ephemeral `TcpServer` through
   the CRT-less native PE startup path.
 - `test_rt_file_ext` creates a 3 GiB sparse file and verifies 64-bit seek, stat, visibility, and
@@ -770,6 +863,10 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
   stale bridge generations, deterministic failure outputs, and normalized range values.
 - `test_rt_watcher`, `test_rt_future`, `test_rt_concqueue`, `test_rt_threads_monitor`,
   `test_rt_threads_thread`, and `test_rt_threads_primitives` cover the affected runtime contracts.
+- `test_embed_channel` exercises name collision, exclusive attachment, producer restart/exit,
+  strict host/producer roles, stable frame publication and dimensions, cleared failure outputs,
+  full-ring rejection and FIFO order, and resize clamping. `test_input` is also enabled on Windows
+  again, and the graphics test aggregate now depends on both tests on every platform.
 - `test_vgfx3d_backend_d3d11_shared` covers timestamp/depth-probe poll budgets and source contracts
   requiring stage-before-publish ordering for all repaired D3D11 replacement paths, required
   startup-object validation, exact presentation status, bounded texture caches, render-scale
@@ -782,7 +879,8 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
   exact texture/buffer/query/sampler descriptors, RTV/DSV/SRV backing-resource identity and
   subresource ranges, controlling-`IUnknown` device identity for core interfaces and every repaired
   device child, exact depth/blend/rasterizer state behavior, biased-state cache revalidation, exact
-  morph SRV/resource pairing, partial-output cleanup, presented-snapshot validation, and initialized
+  morph SRV/resource pairing, partial-output cleanup, presented-snapshot validation, failed-frame
+  clear/draw/shadow/RTT/present suppression, retired failed-IBL telemetry, and initialized
   diagnostic formatting;
   `zia_smoke_d3d11_rtt_readback`,
   `g3d_test_canvas3d_viewmodel_sprite`, `g3d_test_canvas3d_point_shadows_d3d11`, and the Ridgebound
@@ -804,9 +902,10 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
   compatibility shim and pins installer-wrapper help, equals-form input detection, required
   Studio output checks, and the distinct package/product version domains used during lifecycle
   validation.
-- `test_windows_installer_cleanup_policy` covers supported drive/UNC namespaces, root and traversal
-  refusal, reserved devices, alternate streams, illegal/trailing characters, and ordinal path
-  identity. `test_vg_filedialog_platform_win32` covers root-preserving parent navigation, strict
+- `test_windows_installer_cleanup_policy` covers supported drive/UNC namespaces, strict process
+  identifiers, well-formed UTF-16, extended-path separator rules, namespace-alias and Unicode
+  ordinal identity, root/traversal refusal, reserved devices, alternate streams, and illegal or
+  trailing characters. `test_vg_filedialog_platform_win32` covers root-preserving parent navigation, strict
   UTF-8 path handling, path joining, complete extended roots, device-namespace rejection,
   absolute-only home fallback, and bounded enumeration.
 - `test_packaging_WindowsInstallerMetadata_all` covers strict UTF-8 and bounded collections,
@@ -817,16 +916,19 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
   to prove that every native packaging consumer shares the same bounded PE32+ policy.
   `ToolchainWindowsPackageBuilder` coverage rejects partial, stale, wrong-architecture,
   non-executable, and hash-mismatched Studio pairs and proves buildinfo rebinding after nested
-  signing.
+  signing. `test_packaging_WindowsPackageBuilder_all` and `test_windows_installer_version` pin the
+  shared ASCII, length, four-component, 16-bit, and complete prerelease/build version contract.
 - `test_windows_installer_update` covers partial pinned configurations, key/digest/signature bounds,
-  strict signed result fields, ambiguous URLs, and ordinal origin matching.
+  canonical LF-terminated signed bytes, strict signed and presentation result fields, invalid enum
+  states, ambiguous URLs, and ordinal origin matching at the final launch boundary.
   `test_windows_installer_lifecycle_contract` protects exact recovery schemas, durable staging,
   validated PATH mutation, required Shell Link outputs, typed registry/elevation handling, bounded
   destination probes, upgrade filtering, fail-closed destination/shortcut cleanup, paired internal
   worker arguments, cache/elevation proof before handoff waiting, verified installer class reuse,
   guarded painting, per-monitor DPI transitions, quit preservation, bounded/coalesced progress,
   exact non-reparse cleanup-helper snapshots, checked helper termination/reaping, truthful reboot
-  scheduling, and read-only attribute restoration after failed cleanup.
+  scheduling, read-only attribute restoration after failed cleanup, canonical unsigned Windows OS
+  versions, and early package-version validation in the host.
   `test_windows_installer_brand_validation` directly exercises page/progress UTF-16 and size
   bounds, action identity, accessible labels, default/close results, verification gates, and work
   presence. Host source contracts additionally pin mutation-denying package snapshots, exact
@@ -839,6 +941,9 @@ Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link
   `test_tools_frontend_native_compiler`, and `test_tools_asset_compiler` cover the corresponding
   SourceManager, child-process, native-build, and asset filesystem boundaries. The process tests
   also prove that the restricted inherited-handle array remains live through `CreateProcessW`.
+- `benchmark_compare_self_test` verifies the benchmark regression classifier through the same
+  probed-interpreter path used by Windows Git Bash, including fallback around nonfunctional
+  application-execution aliases.
 - The Studio phase, welcome, bottom-panel, diagnostic-action, BASIC workspace-query, file-tree, and
   project-index regressions cover bounded verifier work, high-DPI logical layouts, canonical
   Windows query paths, monitor-feasible zoom, deterministic concurrent snapshot startup, and
@@ -853,6 +958,30 @@ The `.cmd` demo shim delegates to that canonical PowerShell implementation under
 remains mandatory for future changes in these adapters.
 
 ## Validation record
+
+Final alpha-hardening revalidation on Windows x64/MSVC on 2026-08-01:
+
+- A frozen-source, no-skip clean `scripts/build_zanna_win.ps1` run rebuilt the complete
+  warning-as-error Debug tree and exited zero in 2,395.1 seconds with empty stderr. It passed
+  1,876/1,876 CTests in 521.01 seconds, strict platform-policy lint, the runtime-surface audit,
+  every cross-platform host smoke, and installation. The audit accounted for 7,723 runtime
+  functions, 530 classes, and 9,068 header declarations, and its eight focused tests passed.
+- Before the clean proof, a frozen-source incremental canonical run exited zero in 665.0 seconds,
+  passed the same 1,876/1,876 CTests in 498.90 seconds, and repeated every downstream gate with
+  empty stderr. The preceding clean integration iterations exposed the missing standalone-native
+  imports in WR-801/WR-802 and warning-as-error test drift in WR-803/WR-804; the complete
+  incremental rehearsal then exposed the Windows application-alias defect in WR-805. Each was
+  repaired and covered before the final clean run.
+- `powershell -NoProfile -NonInteractive -ExecutionPolicy Bypass -File
+  scripts/build_demos_win.ps1 --clean --run` rebuilt, PE-validated, privately launch-smoked, and
+  atomically published all ten curated native x64 demos in 328.0 seconds with empty stderr:
+  Ashfall, Ashfall Scenes, 3D Bowling, Ridgebound, Xenoscape, Crackman, Chess, Baseball, Paint,
+  and ZannaSQL.
+- `clang-format --dry-run --Werror` passed for all 37 changed/new native source files. The
+  source-header audit found zero missing file headers; `scripts/check_docs.sh`, strict
+  changed-only platform lint, shell syntax validation, `git diff --check`, and explicit untracked
+  whitespace/final-newline checks passed. The documentation auditor's 66 existing undocumented
+  runtime prototypes remain informational debt.
 
 Final alpha-hardening revalidation on Windows x64/MSVC on 2026-07-26:
 

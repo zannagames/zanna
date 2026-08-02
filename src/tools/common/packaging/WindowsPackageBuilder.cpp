@@ -1343,74 +1343,115 @@ std::string windowsManifestForLayout(const WindowsPackageLayout &layout,
                                  : generateUacManifest(minOsWindows);
 }
 
+/// @brief Validate dot-delimited Windows package-version identifiers.
+/// @param value Nonempty prerelease or build-metadata identifiers.
+/// @param field Field name included in diagnostics.
+/// @param rejectNumericLeadingZero Whether numeric identifiers must be canonical.
+/// @throws std::runtime_error If an identifier is empty or contains a non-ASCII
+///         SemVer character, or a numeric prerelease is zero-padded.
+void validateWindowsVersionIdentifiers(std::string_view value,
+                                       std::string_view field,
+                                       bool rejectNumericLeadingZero) {
+    if (value.empty() || value.front() == '.' || value.back() == '.' ||
+        value.find("..") != std::string_view::npos) {
+        throw std::runtime_error("Windows package version has invalid " + std::string(field));
+    }
+    for (const unsigned char ch : value) {
+        const bool asciiAlpha = (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
+        const bool asciiDigit = ch >= '0' && ch <= '9';
+        if (!asciiAlpha && !asciiDigit && ch != '-' && ch != '.')
+            throw std::runtime_error("Windows package version has invalid " + std::string(field));
+    }
+    if (!rejectNumericLeadingZero)
+        return;
+    size_t start = 0;
+    for (;;) {
+        const size_t dot = value.find('.', start);
+        const std::string_view identifier =
+            value.substr(start, dot == std::string_view::npos ? value.size() - start : dot - start);
+        const bool numeric = std::all_of(
+            identifier.begin(), identifier.end(), [](char ch) { return ch >= '0' && ch <= '9'; });
+        if (numeric && identifier.size() > 1U && identifier.front() == '0') {
+            throw std::runtime_error(
+                "Windows package version has a zero-padded numeric prerelease");
+        }
+        if (dot == std::string_view::npos)
+            break;
+        start = dot + 1U;
+    }
+}
+
 /// @brief Parse a Windows VERSIONINFO numeric core into a {a,b,c,d} array.
-/// @details Package versions may include a semver-style suffix such as
-///          `1.2.3-beta`; the PE VERSIONINFO numeric fields can only store the
-///          leading dotted numeric core. This parser accepts one to four numeric
-///          components followed either by end-of-string or by `-`/`+` suffix
-///          metadata. Other malformed versions are rejected instead of being
-///          silently truncated.
+/// @details The complete version is validated before its SemVer suffix is omitted
+///          from the numeric PE fields. This prevents the packager from emitting
+///          metadata that the installer or update checker cannot later consume.
 /// @param version Package version text.
 /// @return Four 16-bit numeric components, zero-filling omitted trailing parts.
-/// @throws std::runtime_error If the numeric core is malformed or out of range.
-std::array<uint16_t, 4> windowsVersionPartsForResource(const std::string &version) {
+/// @throws std::runtime_error If any version portion is malformed or out of range.
+std::array<uint16_t, 4> windowsVersionPartsForResourceImpl(std::string_view version) {
     std::array<uint16_t, 4> parts{0, 0, 0, 0};
-    if (version.empty())
-        throw std::runtime_error("Windows VERSIONINFO version must not be empty");
-    std::vector<uint32_t> parsed;
+    if (version.empty() || version.size() > 128U)
+        throw std::runtime_error("Windows package version must contain 1 to 128 bytes");
+
+    const size_t plus = version.find('+');
+    if (plus != std::string_view::npos) {
+        validateWindowsVersionIdentifiers(version.substr(plus + 1U), "build metadata", false);
+        version = version.substr(0, plus);
+    }
+    const size_t dash = version.find('-');
+    if (dash != std::string_view::npos) {
+        validateWindowsVersionIdentifiers(version.substr(dash + 1U), "prerelease identifier", true);
+        version = version.substr(0, dash);
+    }
+
     size_t pos = 0;
+    size_t component = 0;
     while (pos < version.size()) {
-        if (parsed.size() == parts.size()) {
-            if (version[pos] == '-' || version[pos] == '+')
-                break;
+        if (component == parts.size()) {
             throw std::runtime_error("Windows VERSIONINFO version must have at most 4 numeric "
                                      "components: " +
-                                     version);
+                                     std::string(version));
         }
-        if (!std::isdigit(static_cast<unsigned char>(version[pos]))) {
-            if (!parsed.empty() && (version[pos] == '-' || version[pos] == '+'))
-                break;
+        const size_t start = pos;
+        if (version[pos] < '0' || version[pos] > '9') {
             throw std::runtime_error("Windows VERSIONINFO version must start with a dotted "
                                      "numeric core: " +
-                                     version);
+                                     std::string(version));
         }
         uint32_t value = 0;
-        while (pos < version.size() && std::isdigit(static_cast<unsigned char>(version[pos]))) {
+        while (pos < version.size() && version[pos] >= '0' && version[pos] <= '9') {
             const uint32_t digit = static_cast<uint32_t>(version[pos] - '0');
             if (value > (65535u - digit) / 10u) {
                 throw std::runtime_error("Windows VERSIONINFO version component exceeds 65535: " +
-                                         version);
+                                         std::string(version));
             }
             value = value * 10u + digit;
             ++pos;
         }
-        parsed.push_back(value);
+        if (pos - start > 1U && version[start] == '0') {
+            throw std::runtime_error(
+                "Windows VERSIONINFO version has a zero-padded numeric component: " +
+                std::string(version));
+        }
+        parts[component++] = static_cast<uint16_t>(value);
         if (pos >= version.size())
             break;
         if (version[pos] == '.') {
             ++pos;
-            if (pos >= version.size() || !std::isdigit(static_cast<unsigned char>(version[pos]))) {
+            if (pos >= version.size() || version[pos] < '0' || version[pos] > '9') {
                 throw std::runtime_error("Windows VERSIONINFO version has an empty numeric "
                                          "component: " +
-                                         version);
+                                         std::string(version));
             }
             continue;
         }
-        if (version[pos] == '-' || version[pos] == '+')
-            break;
-        throw std::runtime_error("Windows VERSIONINFO version has invalid suffix: " + version);
+        throw std::runtime_error("Windows VERSIONINFO version has invalid numeric core: " +
+                                 std::string(version));
     }
-    if (parsed.empty()) {
+    if (component == 0) {
         throw std::runtime_error("Windows VERSIONINFO version must start with a numeric core: " +
-                                 version);
+                                 std::string(version));
     }
-    if (parsed.size() > parts.size()) {
-        throw std::runtime_error("Windows VERSIONINFO version must have at most 4 numeric "
-                                 "components: " +
-                                 version);
-    }
-    for (size_t i = 0; i < parsed.size(); ++i)
-        parts[i] = static_cast<uint16_t>(parsed[i]);
     return parts;
 }
 
@@ -1924,14 +1965,15 @@ std::vector<uint8_t> buildNativeInstallerPair(ZipWriter &outer,
         throw std::runtime_error("Windows native installer size overflow");
     }
     metadata.installedSizeBytes += maintenanceExe.size();
-    const auto core = std::find_if(metadata.components.begin(),
-                                   metadata.components.end(),
-                                   /// @brief Determine whether metadata describes the core component.
-                                   /// @param component Component metadata to inspect.
-                                   /// @return `true` when the normalized component identifier is `core`.
-                                   [](const WindowsInstallerComponentMetadata &component) {
-                                       return lowerAscii(component.id) == "core";
-                                   });
+    const auto core =
+        std::find_if(metadata.components.begin(),
+                     metadata.components.end(),
+                     /// @brief Determine whether metadata describes the core component.
+                     /// @param component Component metadata to inspect.
+                     /// @return `true` when the normalized component identifier is `core`.
+                     [](const WindowsInstallerComponentMetadata &component) {
+                         return lowerAscii(component.id) == "core";
+                     });
     if (core == metadata.components.end())
         throw std::runtime_error("Windows native installer metadata has no core component");
     if (maintenanceExe.size() > std::numeric_limits<uint64_t>::max() - core->sizeBytes) {
@@ -1991,6 +2033,14 @@ fs::path toolchainNativeCleanupPath(const WindowsToolchainBuildParams &params) {
 }
 
 } // namespace
+
+/// @brief Validate a package version and extract its four-field Windows identity.
+/// @param version SemVer-compatible package version.
+/// @return Four 16-bit components with omitted trailing values zero-filled.
+/// @throws std::runtime_error If the installer cannot consume the complete version.
+std::array<uint16_t, 4> windowsVersionPartsForResource(std::string_view version) {
+    return windowsVersionPartsForResourceImpl(version);
+}
 
 /// @brief Extract imported DLL names from a safely parseable PE32+ import table.
 /// @param data Complete candidate PE bytes.

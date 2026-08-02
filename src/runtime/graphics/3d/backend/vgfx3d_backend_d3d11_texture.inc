@@ -775,6 +775,7 @@ static void d3d11_refresh_pending_ibl_metadata(d3d_cubemap_cache_entry_t *entry,
     entry->pending_ibl_identity = 0;
     entry->pending_ibl_bytes = 0;
     if (!cubemap || entry->applied_ibl_identity == cubemap->ibl_identity ||
+        entry->failed_ibl_identity == cubemap->ibl_identity ||
         !d3d11_measure_ibl_upload(cubemap, entry->face_size, &level_base, &bytes))
         return;
     (void)level_base;
@@ -1750,8 +1751,11 @@ static int d3d11_apply_ibl_mips(d3d11_context_t *ctx,
     if (!ctx || !ctx->ctx || !entry || !entry->tex || entry->upload_in_progress || !cubemap ||
         !cubemap->ibl_ready || cubemap->ibl_identity == 0)
         return 0;
-    if (entry->failed_ibl_identity == cubemap->ibl_identity)
+    if (entry->failed_ibl_identity == cubemap->ibl_identity) {
+        entry->pending_ibl_identity = 0;
+        entry->pending_ibl_bytes = 0;
         return 0;
+    }
     if (entry->applied_ibl_identity == cubemap->ibl_identity) {
         entry->pending_ibl_identity = 0;
         entry->pending_ibl_bytes = 0;

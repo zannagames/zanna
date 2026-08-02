@@ -29,6 +29,7 @@
 #include "rt_internal.h"
 #include "rt_object.h"
 
+#include <limits.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -42,7 +43,7 @@
 /// @brief Managed embed-channel handle payload.
 typedef struct {
     vgfx_embed_channel_t *channel;
-    uint8_t *scratch;      ///< Conversion buffer (frame capacity), lazily grown.
+    uint8_t *scratch; ///< Conversion buffer (frame capacity), lazily grown.
     size_t scratch_bytes;
     vgfx_embed_event_t last_event;
     int32_t is_host;
@@ -71,9 +72,8 @@ static int embed_copy_name(rt_string name, char *out, size_t out_size) {
 
 /// @brief Allocate one managed handle around an open channel.
 static void *embed_wrap(vgfx_embed_channel_t *channel, int32_t is_host) {
-    rt_embed_host_impl *impl =
-        (rt_embed_host_impl *)rt_obj_new_i64(RT_EMBED_HOST_CLASS_ID,
-                                             (int64_t)sizeof(rt_embed_host_impl));
+    rt_embed_host_impl *impl = (rt_embed_host_impl *)rt_obj_new_i64(
+        RT_EMBED_HOST_CLASS_ID, (int64_t)sizeof(rt_embed_host_impl));
     if (!impl) {
         vgfx_embed_channel_close(channel);
         return NULL;
@@ -160,7 +160,13 @@ int64_t rt_embed_host_frame_height(void *handle) {
 
 int64_t rt_embed_host_acquire_frame_into(void *handle, void *pixels) {
     rt_embed_host_impl *impl = embed_checked(handle);
-    if (!impl || !impl->channel || !pixels)
+    if (!impl || !impl->channel || !impl->is_host || !pixels)
+        return 0;
+    rt_pixels_impl *pv = rt_pixels_checked_impl_or_null(pixels);
+    int32_t expected_w = 0, expected_h = 0;
+    if (!pv || !pv->data ||
+        !vgfx_embed_channel_frame_size(impl->channel, &expected_w, &expected_h) ||
+        pv->width != (int64_t)expected_w || pv->height != (int64_t)expected_h)
         return 0;
     int32_t max_w = 0, max_h = 0;
     vgfx_embed_channel_capacity(impl->channel, &max_w, &max_h);
@@ -172,14 +178,13 @@ int64_t rt_embed_host_acquire_frame_into(void *handle, void *pixels) {
     int32_t w = 0, h = 0;
     if (!vgfx_embed_channel_acquire_frame(impl->channel, scratch, &w, &h))
         return 0;
-    rt_pixels_impl *pv = rt_pixels_checked_impl_or_null(pixels);
-    if (!pv || !pv->data || pv->width != (int64_t)w || pv->height != (int64_t)h)
+    if (pv->width != (int64_t)w || pv->height != (int64_t)h)
         return 0;
     size_t count = (size_t)w * (size_t)h;
     for (size_t i = 0; i < count; i++) {
         const uint8_t *px = &scratch[i * 4u];
-        pv->data[i] = ((uint32_t)px[0] << 24) | ((uint32_t)px[1] << 16) |
-                      ((uint32_t)px[2] << 8) | (uint32_t)px[3];
+        pv->data[i] = ((uint32_t)px[0] << 24) | ((uint32_t)px[1] << 16) | ((uint32_t)px[2] << 8) |
+                      (uint32_t)px[3];
     }
     pixels_touch(pv);
     return 1;
@@ -187,7 +192,7 @@ int64_t rt_embed_host_acquire_frame_into(void *handle, void *pixels) {
 
 int64_t rt_embed_host_acquire_frame_to_image(void *handle, void *image) {
     rt_embed_host_impl *impl = embed_checked(handle);
-    if (!impl || !impl->channel || !image)
+    if (!impl || !impl->channel || !impl->is_host || !image)
         return 0;
     int32_t max_w = 0, max_h = 0;
     vgfx_embed_channel_capacity(impl->channel, &max_w, &max_h);
@@ -205,12 +210,14 @@ int64_t rt_embed_host_acquire_frame_to_image(void *handle, void *image) {
 
 int64_t rt_embed_host_publish_frame(void *handle, void *pixels) {
     rt_embed_host_impl *impl = embed_checked(handle);
-    if (!impl || !impl->channel || !pixels)
+    if (!impl || !impl->channel || impl->is_host || !pixels)
         return 0;
     int64_t w = rt_pixels_width(pixels);
     int64_t h = rt_pixels_height(pixels);
     const uint32_t *src = rt_pixels_raw_buffer(pixels);
-    if (w <= 0 || h <= 0 || !src)
+    int32_t max_w = 0, max_h = 0;
+    vgfx_embed_channel_capacity(impl->channel, &max_w, &max_h);
+    if (w <= 0 || h <= 0 || w > max_w || h > max_h || !src)
         return 0;
     uint8_t *scratch = embed_scratch(impl, (size_t)w * (size_t)h * 4u);
     if (!scratch)
@@ -229,7 +236,9 @@ int64_t rt_embed_host_publish_frame(void *handle, void *pixels) {
 
 int64_t rt_embed_host_push_event(void *handle, int64_t kind, int64_t a, int64_t b, int64_t c) {
     rt_embed_host_impl *impl = embed_checked(handle);
-    if (!impl || !impl->channel)
+    if (!impl || !impl->channel || !impl->is_host || kind <= VGFX_EMBED_EVENT_NONE ||
+        kind > VGFX_EMBED_EVENT_CLOSE || a < INT32_MIN || a > INT32_MAX || b < INT32_MIN ||
+        b > INT32_MAX || c < INT32_MIN || c > INT32_MAX)
         return 0;
     vgfx_embed_event_t event;
     event.kind = (int32_t)kind;
@@ -241,7 +250,7 @@ int64_t rt_embed_host_push_event(void *handle, int64_t kind, int64_t a, int64_t 
 
 int64_t rt_embed_host_poll_event(void *handle) {
     rt_embed_host_impl *impl = embed_checked(handle);
-    if (!impl || !impl->channel)
+    if (!impl || !impl->channel || impl->is_host)
         return 0;
     if (!vgfx_embed_channel_poll_event(impl->channel, &impl->last_event))
         return 0;
@@ -265,8 +274,16 @@ int64_t rt_embed_host_event_c(void *handle) {
 
 int64_t rt_embed_host_set_size(void *handle, int64_t width, int64_t height) {
     rt_embed_host_impl *impl = embed_checked(handle);
-    if (!impl || !impl->channel || width <= 0 || height <= 0)
+    if (!impl || !impl->channel || !impl->is_host || width <= 0 || height <= 0)
         return 0;
+    int32_t max_w = 0, max_h = 0;
+    vgfx_embed_channel_capacity(impl->channel, &max_w, &max_h);
+    if (max_w <= 0 || max_h <= 0)
+        return 0;
+    if (width > max_w)
+        width = max_w;
+    if (height > max_h)
+        height = max_h;
     return vgfx_embed_channel_set_size(impl->channel, (int32_t)width, (int32_t)height);
 }
 
@@ -298,7 +315,9 @@ void *rt_embed_host_attach(rt_string name) {
     return NULL;
 }
 
-void rt_embed_host_close(void *handle) { (void)handle; }
+void rt_embed_host_close(void *handle) {
+    (void)handle;
+}
 
 int64_t rt_embed_host_is_valid(void *handle) {
     (void)handle;

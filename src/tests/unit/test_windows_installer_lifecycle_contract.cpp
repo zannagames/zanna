@@ -146,6 +146,10 @@ int main() {
            "Writable-parent probes retry bounded name collisions");
     expect(source.find("cannot inspect an existing installation entry") != std::string::npos,
            "Disk preflight fails closed when existing entry attributes are unreadable");
+    expect(source.find("std::array<uint32_t, 3> parseWindowsVersion") != std::string::npos &&
+               source.find("part.size() > 1U && part.front() == '0'") != std::string::npos &&
+               source.find("optional prerelease and build metadata") == std::string::npos,
+           "Minimum-Windows checks use canonical unsigned OS components only");
     expect(hostSource.find("FILE_SHARE_READ") != std::string::npos &&
                hostSource.find("FILE_FLAG_SEQUENTIAL_SCAN") != std::string::npos &&
                hostSource.find("installer executable changed while it was being read") !=
@@ -249,6 +253,10 @@ int main() {
     expect(hostSource.find("metadata architecture is unsupported") != std::string::npos &&
                hostSource.find("else if (architecture == \"x64\")") != std::string::npos,
            "Installer PE checks reject unknown architecture metadata");
+    expect(hostSource.find(
+               "compareInstallerVersions(package.metadata.version, package.metadata.version)") !=
+               std::string::npos,
+           "Installer packages reject versions the lifecycle and update checker cannot consume");
     expect(hostSource.find("(ch >= 0x202A && ch <= 0x202E)") != std::string::npos &&
                hostSource.find("(ch >= 0x2066 && ch <= 0x2069)") != std::string::npos &&
                hostSource.find("static_cast<wchar_t>(0xFFFD)") != std::string::npos,

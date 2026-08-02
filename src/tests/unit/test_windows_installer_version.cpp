@@ -24,6 +24,7 @@
 
 #include <array>
 #include <stdexcept>
+#include <string>
 #include <string_view>
 
 using zanna::installer::compareInstallerVersions;
@@ -61,6 +62,17 @@ TEST(WindowsInstallerVersion, RejectsAmbiguousOrMalformedVersions) {
     EXPECT_THROWS(compareInstallerVersions("1.2.3-rc.01", "1.2.3"), std::runtime_error);
     EXPECT_THROWS(compareInstallerVersions("1.2.3-alpha..1", "1.2.3"), std::runtime_error);
     EXPECT_THROWS(compareInstallerVersions("1.2.3+", "1.2.3"), std::runtime_error);
+    EXPECT_THROWS(compareInstallerVersions("1.2.3.4.5", "1.2.3"), std::runtime_error);
+    EXPECT_THROWS(compareInstallerVersions("1.65536.0", "1.2.3"), std::runtime_error);
+    EXPECT_THROWS(compareInstallerVersions("1.2.3-rc_1", "1.2.3"), std::runtime_error);
+    EXPECT_THROWS(compareInstallerVersions("1.2.3-\xc3\xa4", "1.2.3"), std::runtime_error);
+    EXPECT_THROWS(compareInstallerVersions("1.2.3+build.\xc3\xa4", "1.2.3"), std::runtime_error);
+    EXPECT_THROWS(compareInstallerVersions(std::string("1.2.3+") + std::string(123, 'a'), "1.2.3"),
+                  std::runtime_error);
+}
+
+TEST(WindowsInstallerVersion, AcceptsMaximumWindowsNumericIdentity) {
+    EXPECT_EQ(compareInstallerVersions("65535.65535.65535.65535", "65535.65535.65535.65535"), 0);
 }
 
 int main(int argc, char **argv) {

@@ -5,18 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
-/// @brief Implements installer package discovery, Unicode conversion, strict
-///        command parsing, deterministic inspection, and session logging.
-///
-/// The ZIP overlay is derived from its EOCD and central-directory relationship.
-/// Metadata, PE images, inventory, hashes, and archive entries are verified
-/// before lifecycle mutation. Options reject conflicts, and logs use sanitized
-/// single-line UTF-8 records. Archive readers borrow buffers only within loading.
-///
-/// @see WindowsInstallerHost.hpp
-/// @see ZipReader.hpp
-/// @see WindowsInstallerMetadata.hpp
+// File: src/tools/windows_installer/WindowsInstallerHost.cpp
+// Purpose: Discover and validate Windows installer packages, commands, and logs.
+// Key invariants:
+//   - Overlay structure, metadata, versions, PE images, inventories, and hashes fail closed.
+//   - Options reject conflicts and logs contain sanitized single-line UTF-8 records.
+// Ownership/Lifetime:
+//   - Loaded packages own executable, payload, metadata, and cleanup bytes.
+//   - Archive readers borrow buffers only within the package-loading operation.
+// Links: src/tools/windows_installer/WindowsInstallerHost.hpp,
+//        src/tools/common/packaging/WindowsInstallerMetadata.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -1093,6 +1091,7 @@ HostPackage loadHostPackage(const fs::path &executablePath) {
         throw std::runtime_error("installer metadata entry is missing");
     const std::vector<uint8_t> metadataBytes = outer.extract(*metadataEntry);
     package.metadata = zanna::pkg::parseWindowsInstallerMetadata(bytesToString(metadataBytes));
+    (void)compareInstallerVersions(package.metadata.version, package.metadata.version);
     requirePeArchitecture(
         package.executableBytes, package.metadata.architecture, "installer executable");
     requireOuterInventory(outer, package.metadata);

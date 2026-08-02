@@ -421,7 +421,11 @@ void validateWindowsLeafName(std::string_view value, std::string_view fieldName)
     const bool numberedDevice = base.size() == 4U &&
                                 (base.rfind("com", 0) == 0 || base.rfind("lpt", 0) == 0) &&
                                 base[3] >= '1' && base[3] <= '9';
-    if (base == "con" || base == "prn" || base == "aux" || base == "nul" || numberedDevice) {
+    const bool superscriptDevice = (base.rfind("com", 0) == 0 || base.rfind("lpt", 0) == 0) &&
+                                   (base.substr(3) == "\xc2\xb9" || base.substr(3) == "\xc2\xb2" ||
+                                    base.substr(3) == "\xc2\xb3");
+    if (base == "con" || base == "prn" || base == "aux" || base == "nul" || base == "clock$" ||
+        base == "conin$" || base == "conout$" || numberedDevice || superscriptDevice) {
         throw std::runtime_error("reserved installer metadata " + std::string(fieldName));
     }
 }
@@ -440,8 +444,8 @@ void validateDottedVersion(std::string_view value) {
             value.substr(start, dot == std::string_view::npos ? value.size() - start : dot - start);
         uint32_t number = 0;
         const auto parsed = std::from_chars(part.data(), part.data() + part.size(), number);
-        if (part.empty() || parsed.ec != std::errc{} || parsed.ptr != part.data() + part.size() ||
-            ++fields > 3U) {
+        if (part.empty() || (part.size() > 1U && part.front() == '0') || parsed.ec != std::errc{} ||
+            parsed.ptr != part.data() + part.size() || ++fields > 3U) {
             throw std::runtime_error("invalid minimum Windows version in installer metadata");
         }
         if (dot == std::string_view::npos)

@@ -1,6 +1,20 @@
 #!/usr/bin/env bash
-# Script: benchmark_compare.sh
+#===----------------------------------------------------------------------===#
+#
+# Part of the Zanna project, under the GNU GPL v3.
+# See LICENSE for license information.
+#
+#===----------------------------------------------------------------------===#
+#
+# File: scripts/benchmark_compare.sh
 # Purpose: Compare benchmark result files and flag Zanna performance regressions.
+# Key invariants:
+#   - Interpreter discovery verifies that a candidate can actually execute Python.
+#   - Only regressions in Zanna modes determine the script's failure status.
+# Ownership/Lifetime: Temporary comparison files exist only for this invocation.
+# Links: docs/internals/testing.md, src/tests/CMakeLists.txt
+#
+#===----------------------------------------------------------------------===#
 
 set -euo pipefail
 
@@ -119,19 +133,36 @@ echo "$BASE_JSON" > "$TMPBASE"
 echo "$HEAD_JSON" > "$TMPHEAD"
 
 # --- Run comparison via python ---
-PYTHON_BIN="${PYTHON:-}"
-if [[ -z "$PYTHON_BIN" ]]; then
-    if command -v python3 >/dev/null 2>&1; then
-        PYTHON_BIN=python3
-    elif command -v python >/dev/null 2>&1; then
-        PYTHON_BIN=python
-    else
-        echo "error: Python interpreter not found (tried python3 and python)" >&2
+# Windows application-execution aliases can make command -v report python3 even
+# when invoking it only prints a Microsoft Store prompt. Probe each candidate
+# before selecting it, and support the standard Windows py launcher as a final
+# fallback.
+PYTHON_CMD=()
+if [[ -n "${PYTHON:-}" ]]; then
+    if ! "$PYTHON" -c 'import sys' >/dev/null 2>&1; then
+        echo "error: PYTHON does not name a working interpreter: $PYTHON" >&2
+        exit 1
+    fi
+    PYTHON_CMD=("$PYTHON")
+else
+    for candidate in python3 python; do
+        if command -v "$candidate" >/dev/null 2>&1 &&
+                "$candidate" -c 'import sys' >/dev/null 2>&1; then
+            PYTHON_CMD=("$candidate")
+            break
+        fi
+    done
+    if [[ ${#PYTHON_CMD[@]} -eq 0 ]] && command -v py >/dev/null 2>&1 &&
+            py -3 -c 'import sys' >/dev/null 2>&1; then
+        PYTHON_CMD=(py -3)
+    fi
+    if [[ ${#PYTHON_CMD[@]} -eq 0 ]]; then
+        echo "error: Python interpreter not found (tried python3, python, and py -3)" >&2
         exit 1
     fi
 fi
 
-"$PYTHON_BIN" - "$TMPBASE" "$TMPHEAD" << 'PYEOF'
+"${PYTHON_CMD[@]}" - "$TMPBASE" "$TMPHEAD" << 'PYEOF'
 import json, sys
 
 RED = '\033[0;31m'

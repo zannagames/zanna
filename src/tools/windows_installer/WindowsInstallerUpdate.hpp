@@ -5,12 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file WindowsInstallerUpdate.hpp
-/// @brief Declares authenticated, opt-in Windows installer update discovery.
-///
-/// Update manifests are HTTPS-only, same-origin, bounded, and RSA-SHA256 signed. Discovery never
-/// downloads or executes an installer; the user explicitly chooses whether to open an
-/// authenticated release URL. Results own every parsed string and retain no network handles.
+// File: src/tools/windows_installer/WindowsInstallerUpdate.hpp
+// Purpose: Declare authenticated, opt-in Windows installer update discovery.
+// Key invariants:
+//   - Manifests are bounded, canonical, RSA-SHA256 signed, HTTPS, and same-origin.
+//   - Discovery never downloads or launches an installer automatically.
+// Ownership/Lifetime:
+//   - Results own all parsed strings and retain no networking or cryptographic handles.
+//   - Package and manifest views are borrowed only for each call.
+// Links: src/tools/windows_installer/WindowsInstallerUpdate.cpp
 //
 //===----------------------------------------------------------------------===//
 

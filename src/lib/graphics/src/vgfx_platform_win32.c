@@ -1200,13 +1200,16 @@ static LRESULT CALLBACK vgfx_win32_wndproc(HWND hwnd, UINT msg, WPARAM wparam, L
                 int64_t suggested_height = (int64_t)suggested->bottom - suggested->top;
                 if (suggested_width > 0 && suggested_width <= INT_MAX && suggested_height > 0 &&
                     suggested_height <= INT_MAX) {
-                    (void)SetWindowPos(hwnd,
-                                       NULL,
-                                       suggested->left,
-                                       suggested->top,
-                                       (int)suggested_width,
-                                       (int)suggested_height,
-                                       SWP_NOZORDER | SWP_NOACTIVATE);
+                    if (!SetWindowPos(hwnd,
+                                      NULL,
+                                      suggested->left,
+                                      suggested->top,
+                                      (int)suggested_width,
+                                      (int)suggested_height,
+                                      SWP_NOZORDER | SWP_NOACTIVATE)) {
+                        vgfx_internal_set_error(VGFX_ERR_PLATFORM,
+                                                "Failed to apply Win32 DPI window bounds");
+                    }
                 }
             }
             if (w32 && w32->hwnd) {
@@ -2164,12 +2167,20 @@ void vgfx_platform_sleep_ms(int32_t ms) {
         LARGE_INTEGER due_time;
         due_time.QuadPart = -(LONGLONG)ms * 10000LL;
         if (SetWaitableTimer(timer, &due_time, 0, NULL, NULL, FALSE)) {
-            DWORD wait_result = WaitForSingleObject(timer, INFINITE);
-            CloseHandle(timer);
+            const DWORD wait_timeout = (DWORD)ms + 1000U;
+            const DWORD wait_result = WaitForSingleObject(timer, wait_timeout);
+            if (!CloseHandle(timer))
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to close Win32 pacing timer");
             if (wait_result == WAIT_OBJECT_0)
                 return;
+            if (wait_result == WAIT_TIMEOUT) {
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Win32 pacing timer timed out");
+                return;
+            }
+            vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Win32 pacing timer wait failed");
         } else {
-            CloseHandle(timer);
+            if (!CloseHandle(timer))
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to close Win32 pacing timer");
         }
     }
 
@@ -2714,11 +2725,13 @@ void vgfx_platform_set_window_size(struct vgfx_window *win, int32_t w, int32_t h
         return;
     }
     RECT client = {0};
-    if (GetClientRect(data->hwnd, &client)) {
-        int client_w = (int)(client.right - client.left);
-        int client_h = (int)(client.bottom - client.top);
-        (void)win32_resize_backing_store(win, client_w, client_h, vgfx_platform_now_ms());
+    if (!GetClientRect(data->hwnd, &client)) {
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to read resized Win32 client bounds");
+        return;
     }
+    int actual_client_w = (int)(client.right - client.left);
+    int actual_client_h = (int)(client.bottom - client.top);
+    (void)win32_resize_backing_store(win, actual_client_w, actual_client_h, vgfx_platform_now_ms());
 }
 
 /// @brief Notify Win32 that minimum tracking constraints have changed.
@@ -2733,13 +2746,16 @@ void vgfx_platform_set_window_min_size(struct vgfx_window *win, int32_t w, int32
     vgfx_win32_data *data = (vgfx_win32_data *)win->platform_data;
     if (!data->hwnd)
         return;
-    SetWindowPos(data->hwnd,
-                 NULL,
-                 0,
-                 0,
-                 0,
-                 0,
-                 SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
+    if (!SetWindowPos(data->hwnd,
+                      NULL,
+                      0,
+                      0,
+                      0,
+                      0,
+                      SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM,
+                                "Failed to refresh Win32 minimum-size constraints");
+    }
 }
 
 /// @brief Return the absent Win32 display-connection handle.

@@ -78,14 +78,15 @@ std::string stripLeadingUnderscores(const std::string &name) {
 /// @return `true` when @p name belongs to the maintained UCRT math set.
 bool isUcrtMathSymbol(const std::string &name) {
     static const std::unordered_set<std::string> kMath = {
-        "acos",      "acosf",      "asin", "asinf", "atan",     "atan2",     "atan2f", "atanf",
-        "cbrt",      "cbrtf",      "ceil", "ceilf", "copysign", "copysignf", "cos",    "cosf",
-        "cosh",      "exp",        "expf", "exp2f", "fabs",     "fabsf",     "floor",  "floorf",
-        "fmax",      "fmaxf",      "fmin", "fmaxl", "fminf",    "fminl",     "fmod",   "fmodf",
-        "hypot",     "ldexp",      "log",  "log10", "log2",     "logf",      "lrint",  "lrintf",
-        "nan",       "nextafter",  "nextafterf",
-        "pow",       "powf",       "round", "roundf",  "sin",     "sinf",   "sinh",
-        "remainder", "remainderf", "sqrt", "sqrtf", "tan",      "tanf",      "tanh",   "trunc",
+        "acos",       "acosf",  "asin",   "asinf",  "atan",      "atan2",      "atan2f",
+        "atanf",      "cbrt",   "cbrtf",  "ceil",   "ceilf",     "copysign",   "copysignf",
+        "cos",        "cosf",   "cosh",   "exp",    "expf",      "exp2f",      "expm1",
+        "fabs",       "fabsf",  "floor",  "floorf", "fma",       "fmax",       "fmaxf",
+        "fmin",       "fmaxl",  "fminf",  "fminl",  "fmod",      "fmodf",      "frexp",
+        "hypot",      "ldexp",  "log",    "log10",  "log1p",     "log2",       "logf",
+        "lrint",      "lrintf", "scalbn", "nan",    "nextafter", "nextafterf", "pow",
+        "powf",       "round",  "roundf", "sin",    "sinf",      "sinh",       "remainder",
+        "remainderf", "sqrt",   "sqrtf",  "tan",    "tanf",      "tanh",       "trunc",
         "truncf",
     };
     return kMath.count(name) != 0;
@@ -205,6 +206,7 @@ bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllNa
         "CreateFile2",
         "CreateFileW",
         "CreateHardLinkW",
+        "CreateFileMappingA",
         "CreatePipe",
         "CreateProcessA",
         "CreateProcessW",
@@ -251,6 +253,8 @@ bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllNa
         "ReplaceFileW",
         "MoveFileExA",
         "MoveFileExW",
+        "MapViewOfFile",
+        "OpenFileMappingA",
         "RemoveDirectoryW",
         "SetConsoleCP",
         "SetConsoleCtrlHandler",
@@ -269,6 +273,7 @@ bool dllForImport(const std::string &name, bool debugRuntime, std::string &dllNa
         "TryAcquireSRWLockExclusive",
         "TryAcquireSRWLockShared",
         "UnlockFileEx",
+        "UnmapViewOfFile",
         "UpdateProcThreadAttribute",
         "WaitForMultipleObjects",
         "WaitForSingleObject",

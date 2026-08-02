@@ -1055,6 +1055,19 @@ TEST(WindowsInstallerMetadata, RejectsTraversalDuplicatesAndSizeMismatch) {
     EXPECT_THROWS(serializeWindowsInstallerMetadata(metadata), std::runtime_error);
 }
 
+TEST(WindowsInstallerMetadata, RejectsEveryWindowsDeviceAliasAndAmbiguousOsVersion) {
+    for (const std::string_view leaf :
+         {"CLOCK$", "conin$.txt", "CONOUT$", "COM\xc2\xb9.log", "lpt\xc2\xb2", "COM\xc2\xb3.bin"}) {
+        WindowsInstallerMetadata metadata = sampleWindowsInstallerMetadata();
+        metadata.payloadFiles[0].path = "bin/" + std::string(leaf);
+        EXPECT_THROWS(serializeWindowsInstallerMetadata(metadata), std::runtime_error);
+    }
+
+    WindowsInstallerMetadata metadata = sampleWindowsInstallerMetadata();
+    metadata.minimumWindowsVersion = "010.0.19045";
+    EXPECT_THROWS(serializeWindowsInstallerMetadata(metadata), std::runtime_error);
+}
+
 TEST(WindowsInstallerMetadata, RejectsUnknownFieldsAndComponentReferences) {
     const std::string encoded = serializeWindowsInstallerMetadata(sampleWindowsInstallerMetadata());
     std::string unknown = encoded;
@@ -3542,6 +3555,20 @@ TEST(StubGenA64, ResolvesDataAndIATAddressFixups) {
 // ============================================================================
 // InstallerStub Integration Tests
 // ============================================================================
+
+TEST(WindowsPackageBuilder, ValidatesCompleteVersionBeforeExtractingResourceCore) {
+    EXPECT_EQ(windowsVersionPartsForResource("1.2.3-rc.1+win-x64"),
+              (std::array<uint16_t, 4>{1, 2, 3, 0}));
+    EXPECT_EQ(windowsVersionPartsForResource("65535.4"), (std::array<uint16_t, 4>{65535, 4, 0, 0}));
+    EXPECT_THROWS(windowsVersionPartsForResource("01.2.3"), std::runtime_error);
+    EXPECT_THROWS(windowsVersionPartsForResource("1.2.3.4.5"), std::runtime_error);
+    EXPECT_THROWS(windowsVersionPartsForResource("1.2.3-rc.01"), std::runtime_error);
+    EXPECT_THROWS(windowsVersionPartsForResource("1.2.3-alpha..1"), std::runtime_error);
+    EXPECT_THROWS(windowsVersionPartsForResource("1.2.3+"), std::runtime_error);
+    EXPECT_THROWS(windowsVersionPartsForResource("1.2.3+meta+extra"), std::runtime_error);
+    EXPECT_THROWS(windowsVersionPartsForResource("1.2.3-\xc3\xa4"), std::runtime_error);
+    EXPECT_THROWS(windowsVersionPartsForResource("1.65536.0"), std::runtime_error);
+}
 
 TEST(InstallerStub, GeneratesValidPE) {
     WindowsPackageLayout layout;

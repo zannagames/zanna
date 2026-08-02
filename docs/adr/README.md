@@ -261,3 +261,4 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0214](0214-project-owned-3d-material-previews.md) — Render Project-Owned 3D Material Previews
 - [ADR 0215](0215-project-owned-direct-model-previews.md) — Render Project-Owned Direct Model Previews
 - [ADR 0216](0216-project-owned-3d-node-preview-states.md) — Add Project-Owned 3D Node Preview States
+- [ADR 0232](0232-map-embedded-preview-and-physics-windows-imports.md) — Map Embedded Preview and Physics Windows Imports

@@ -5,22 +5,25 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
-/// @brief Implements allocation-free validation for exact paths accepted by the
-///        detached Windows installer cleanup helper.
-///
-/// Namespace parsing explicitly accepts drive and UNC forms while rejecting
-/// arbitrary NT device paths. Every accepted target lies below a root and every
-/// component has one stable Win32 interpretation.
-///
-/// @see WindowsInstallerCleanupPolicy.hpp
-/// @see WindowsInstallerCleanup.cpp
+// File: src/tools/windows_installer/WindowsInstallerCleanupPolicy.cpp
+// Purpose: Implement fail-closed command-line and exact-path validation for the
+//          detached Windows installer cleanup helper.
+// Key invariants:
+//   - Accepted paths have one stable, well-formed Win32 interpretation below a root.
+//   - Equality follows Windows ordinal case rules and normalizes safe namespace aliases.
+// Ownership/Lifetime:
+//   - All string views are borrowed and never retained.
+//   - Validation performs no allocation and never accesses the filesystem.
+// Links: src/tools/windows_installer/WindowsInstallerCleanupPolicy.hpp
 //
 //===----------------------------------------------------------------------===//
 
 #include "WindowsInstallerCleanupPolicy.hpp"
 
+#include <windows.h>
+
 #include <cstddef>
+#include <limits>
 
 namespace zanna::installer::cleanup {
 namespace {
@@ -46,18 +49,33 @@ constexpr wchar_t asciiUpper(wchar_t ch) noexcept {
     return ch >= L'a' && ch <= L'z' ? static_cast<wchar_t>(ch - (L'a' - L'A')) : ch;
 }
 
-/// @brief Compare a path prefix case-insensitively with normalized separators.
+/// @brief Compare a literal path prefix using ASCII-only case folding.
 /// @param text Candidate complete path.
 /// @param prefix Prefix to match.
 /// @return @c true when every prefix code unit matches under ASCII folding.
-bool startsWithInsensitive(std::wstring_view text, std::wstring_view prefix) noexcept {
+bool startsWithAsciiInsensitive(std::wstring_view text, std::wstring_view prefix) noexcept {
     if (text.size() < prefix.size())
         return false;
     for (size_t i = 0; i < prefix.size(); ++i) {
-        const wchar_t left = isSeparator(text[i]) ? L'\\' : asciiUpper(text[i]);
-        const wchar_t right = isSeparator(prefix[i]) ? L'\\' : asciiUpper(prefix[i]);
-        if (left != right)
+        if (asciiUpper(text[i]) != asciiUpper(prefix[i]))
             return false;
+    }
+    return true;
+}
+
+/// @brief Validate UTF-16 surrogate pairing before a path reaches Win32.
+/// @param text Candidate UTF-16 string.
+/// @return @c true when every high surrogate has one low surrogate and no low
+///         surrogate appears by itself.
+bool isWellFormedUtf16(std::wstring_view text) noexcept {
+    for (size_t i = 0; i < text.size(); ++i) {
+        const wchar_t ch = text[i];
+        if (ch >= 0xd800 && ch <= 0xdbff) {
+            if (++i >= text.size() || text[i] < 0xdc00 || text[i] > 0xdfff)
+                return false;
+        } else if (ch >= 0xdc00 && ch <= 0xdfff) {
+            return false;
+        }
     }
     return true;
 }
@@ -81,7 +99,8 @@ bool isReservedDeviceBase(std::wstring_view component) noexcept {
         return true;
     };
 
-    if (equals(L"CON") || equals(L"PRN") || equals(L"AUX") || equals(L"NUL") || equals(L"CLOCK$")) {
+    if (equals(L"CON") || equals(L"PRN") || equals(L"AUX") || equals(L"NUL") || equals(L"CLOCK$") ||
+        equals(L"CONIN$") || equals(L"CONOUT$")) {
         return true;
     }
     if (base.size() == 4) {
@@ -146,16 +165,27 @@ bool consumeUncRoot(std::wstring_view path, size_t start, size_t &cursor) noexce
 /// @return @c true only when the path is bounded, NUL-free, lies beneath a
 ///         recognized root, and contains safe nonempty child components.
 bool isSafeAbsolutePath(std::wstring_view path) noexcept {
-    if (path.size() < 4 || path.size() >= 32760 || path.find(L'\0') != std::wstring_view::npos)
+    if (path.size() < 4 || path.size() >= 32760 || path.find(L'\0') != std::wstring_view::npos ||
+        !isWellFormedUtf16(path)) {
         return false;
+    }
 
     size_t cursor = 0;
-    if (path.size() >= 7 && isSeparator(path[0]) && isSeparator(path[1]) && path[2] == L'?' &&
-        isSeparator(path[3]) && isAsciiAlpha(path[4]) && path[5] == L':' && isSeparator(path[6])) {
-        cursor = 7;
-    } else if (path.size() >= 8 && startsWithInsensitive(path, L"\\\\?\\UNC\\")) {
-        if (!consumeUncRoot(path, 8, cursor))
+    const bool isExtended = path.size() >= 4 && path[0] == L'\\' && path[1] == L'\\' &&
+                            path[2] == L'?' && path[3] == L'\\';
+    if (isExtended) {
+        // Extended paths are passed to Win32 literally, so accepting slash aliases
+        // here would validate a spelling different from the one Win32 interprets.
+        if (path.find(L'/') != std::wstring_view::npos)
             return false;
+        if (path.size() >= 7 && isAsciiAlpha(path[4]) && path[5] == L':' && path[6] == L'\\') {
+            cursor = 7;
+        } else if (path.size() >= 8 && startsWithAsciiInsensitive(path, L"\\\\?\\UNC\\")) {
+            if (!consumeUncRoot(path, 8, cursor))
+                return false;
+        } else {
+            return false;
+        }
     } else if (isAsciiAlpha(path[0]) && path[1] == L':' && isSeparator(path[2])) {
         cursor = 3;
     } else if (isSeparator(path[0]) && isSeparator(path[1]) && path[2] != L'.' && path[2] != L'?') {
@@ -182,20 +212,108 @@ bool isSafeAbsolutePath(std::wstring_view path) noexcept {
     return true;
 }
 
+/// @brief Canonical view of a validated drive or UNC path.
+struct ComparablePath {
+    std::wstring_view body;
+    bool unc{false};
+};
+
+/// @brief Remove an accepted extended-length prefix without allocating.
+/// @param path Validated absolute path.
+/// @param comparable Receives a comparable root kind and path body.
+/// @return @c true when the path uses a recognized drive or UNC spelling.
+bool makeComparablePath(std::wstring_view path, ComparablePath &comparable) noexcept {
+    if (path.size() >= 8 && startsWithAsciiInsensitive(path, L"\\\\?\\UNC\\")) {
+        comparable = {path.substr(8), true};
+        return true;
+    }
+    if (path.size() >= 4 && path[0] == L'\\' && path[1] == L'\\' && path[2] == L'?' &&
+        path[3] == L'\\') {
+        comparable = {path.substr(4), false};
+        return true;
+    }
+    if (path.size() >= 2 && isSeparator(path[0]) && isSeparator(path[1])) {
+        comparable = {path.substr(2), true};
+        return true;
+    }
+    if (path.size() >= 3 && isAsciiAlpha(path[0]) && path[1] == L':' && isSeparator(path[2])) {
+        comparable = {path, false};
+        return true;
+    }
+    return false;
+}
+
+/// @brief Compare one path component using Win32's locale-independent case rules.
+/// @param left First component.
+/// @param right Second component.
+/// @return @c true when CompareStringOrdinal reports equality ignoring case.
+bool componentsEqual(std::wstring_view left, std::wstring_view right) noexcept {
+    if (left.size() > static_cast<size_t>((std::numeric_limits<int>::max)()) ||
+        right.size() > static_cast<size_t>((std::numeric_limits<int>::max)())) {
+        return false;
+    }
+    return CompareStringOrdinal(left.data(),
+                                static_cast<int>(left.size()),
+                                right.data(),
+                                static_cast<int>(right.size()),
+                                TRUE) == CSTR_EQUAL;
+}
+
 /// @brief Compare Windows path spellings without filesystem access.
 /// @param left First validated path.
 /// @param right Second validated path.
-/// @return @c true when lengths match and every code unit matches after ASCII
-///         case folding and slash normalization.
+/// @return @c true when namespace aliases, separators, and Unicode case compare
+///         equal under Windows ordinal rules.
 bool pathsEqual(std::wstring_view left, std::wstring_view right) noexcept {
-    if (left.size() != right.size())
+    ComparablePath leftPath;
+    ComparablePath rightPath;
+    if (!makeComparablePath(left, leftPath) || !makeComparablePath(right, rightPath) ||
+        leftPath.unc != rightPath.unc) {
         return false;
-    for (size_t i = 0; i < left.size(); ++i) {
-        const wchar_t leftCh = isSeparator(left[i]) ? L'\\' : asciiUpper(left[i]);
-        const wchar_t rightCh = isSeparator(right[i]) ? L'\\' : asciiUpper(right[i]);
-        if (leftCh != rightCh)
-            return false;
     }
+
+    size_t leftCursor = 0;
+    size_t rightCursor = 0;
+    for (;;) {
+        size_t leftEnd = leftCursor;
+        size_t rightEnd = rightCursor;
+        while (leftEnd < leftPath.body.size() && !isSeparator(leftPath.body[leftEnd]))
+            ++leftEnd;
+        while (rightEnd < rightPath.body.size() && !isSeparator(rightPath.body[rightEnd]))
+            ++rightEnd;
+        if (!componentsEqual(leftPath.body.substr(leftCursor, leftEnd - leftCursor),
+                             rightPath.body.substr(rightCursor, rightEnd - rightCursor))) {
+            return false;
+        }
+        const bool leftDone = leftEnd == leftPath.body.size();
+        const bool rightDone = rightEnd == rightPath.body.size();
+        if (leftDone || rightDone)
+            return leftDone && rightDone;
+        leftCursor = leftEnd + 1;
+        rightCursor = rightEnd + 1;
+    }
+}
+
+/// @brief Parse one strict nonzero decimal process identifier.
+/// @param text Candidate decimal text.
+/// @param processId Receives the parsed value on success and zero on failure.
+/// @return @c true when every character is a digit and the value fits uint32_t.
+bool parseProcessId(std::wstring_view text, std::uint32_t &processId) noexcept {
+    processId = 0;
+    if (text.empty())
+        return false;
+    std::uint32_t value = 0;
+    for (const wchar_t ch : text) {
+        if (ch < L'0' || ch > L'9')
+            return false;
+        const std::uint32_t digit = static_cast<std::uint32_t>(ch - L'0');
+        if (value > ((std::numeric_limits<std::uint32_t>::max)() - digit) / 10U)
+            return false;
+        value = value * 10U + digit;
+    }
+    if (value == 0)
+        return false;
+    processId = value;
     return true;
 }
 

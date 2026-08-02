@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-01
 ---
 
 # Platform Behavioral Differences
@@ -18,26 +18,25 @@ For a contributor-oriented checklist of which source files to modify when adding
 |---|---|---|---|
 | Core Runtime (VM, IL, Zia) | ✅ Full | ✅ Full | ✅ Full |
 | Terminal I/O | ✅ Full | ✅ Full | ✅ Full |
-| Filesystem I/O | ⚠️ Partial [1] | ✅ Full | ✅ Full |
+| Filesystem I/O | ✅ Full | ✅ Full | ✅ Full |
 | File Watching | ✅ Full | ✅ Full | ✅ Full |
 | Networking (TCP/UDP/HTTP) | ✅ Full | ✅ Full | ✅ Full |
 | TLS/SSL | ✅ Full (Schannel + in-tree handshake) | ✅ Full (in-tree TLS/X.509 runtime) | ✅ Full (in-tree TLS/X.509 runtime) |
 | Threading | ✅ Full | ✅ Full | ✅ Full |
-| Graphics | ✅ Full (Win32 GDI) | ✅ Full (Cocoa) | ✅ Full (Wayland + X11) [2] |
-| Audio | ✅ Full (WASAPI) | ✅ Full (AudioQueue) | ⚠️ Partial [3] |
-| Game Controllers | ✅ Full (XInput) | ⚠️ Partial [4] (IOKit HID) | ✅ Full (evdev) |
-| Native Codegen (x86-64) | ✅ Full | ❌ Not supported [5] | ✅ Full |
-| Native Codegen (AArch64) | ⚠️ Partial [6] | ✅ Full | ✅ Full |
+| Graphics | ✅ Full (Win32 GDI) | ✅ Full (Cocoa) | ✅ Full (Wayland + X11) [1] |
+| Audio | ✅ Full (WASAPI) | ✅ Full (AudioQueue) | ⚠️ Partial [2] |
+| Game Controllers | ✅ Full (XInput) | ⚠️ Partial [3] (IOKit HID) | ✅ Full (evdev) |
+| Native Codegen (x86-64) | ✅ Full | ❌ Not supported [4] | ✅ Full |
+| Native Codegen (AArch64) | ⚠️ Partial [5] | ✅ Full | ✅ Full |
 | Process Execution | ✅ Full | ✅ Full | ✅ Full |
 
 **Footnotes:**
 
-1. Windows directory operations are limited to `MAX_PATH` (260 characters). No Unicode long-path support.
-2. The default Linux build (`ZANNA_GRAPHICS_BACKEND=AUTO`) always includes the native Wayland adapter, which resolves the Wayland, xkbcommon, cursor, and EGL ABIs at runtime and needs no development packages. The X11 fallback adapter is added only when `find_package(X11)` succeeds at configure time; without it, `AUTO` is a valid Wayland-only build.
-3. Linux audio requires ALSA development headers (`libasound2-dev` / `alsa-lib-devel`) at configure time. Without them CMake reports `ZannaAUD: disabled` and the audio library is omitted; `-DZANNA_AUDIO_MODE=REQUIRE` turns that into a configure error instead.
-4. macOS gamepad vibration is a no-op. The generic IOKit HID interface exposes no force-feedback output reports, so rumble would require vendor-specific extensions. Buttons, axes, and hot-plug detection are fully supported.
-5. macOS is supported on Apple Silicon (ARM64) only. Intel (x86-64) macOS is not a supported target: the native linker does not implement Mach-O x86-64 dynamic imports, and the x86-64 native-link backend is not built on macOS hosts.
-6. The AArch64 Windows PE/COFF target is defined but not exercised in CI.
+1. The default Linux build (`ZANNA_GRAPHICS_BACKEND=AUTO`) always includes the native Wayland adapter, which resolves the Wayland, xkbcommon, cursor, and EGL ABIs at runtime and needs no development packages. The X11 fallback adapter is added only when `find_package(X11)` succeeds at configure time; without it, `AUTO` is a valid Wayland-only build.
+2. Linux audio requires ALSA development headers (`libasound2-dev` / `alsa-lib-devel`) at configure time. Without them CMake reports `ZannaAUD: disabled` and the audio library is omitted; `-DZANNA_AUDIO_MODE=REQUIRE` turns that into a configure error instead.
+3. macOS gamepad vibration is a no-op. The generic IOKit HID interface exposes no force-feedback output reports, so rumble would require vendor-specific extensions. Buttons, axes, and hot-plug detection are fully supported.
+4. macOS is supported on Apple Silicon (ARM64) only. Intel (x86-64) macOS is not a supported target: the native linker does not implement Mach-O x86-64 dynamic imports, and the x86-64 native-link backend is not built on macOS hosts.
+5. The AArch64 Windows PE/COFF target is defined but not exercised in CI.
 
 ---
 
@@ -301,7 +300,7 @@ The runtime's path functions (`Zanna.Path.*`) normalize paths using the platform
 
 | Platform | Source | Typical Value |
 |----------|--------|---------------|
-| Windows | `GetTempPathA()` | `C:\Users\alice\AppData\Local\Temp` |
+| Windows | growing `GetTempPathW()` query | `C:\Users\alice\AppData\Local\Temp` |
 | macOS | `$TMPDIR` env, fallback to `/tmp` | `/var/folders/xx/.../T` (randomized) |
 | Linux | `$TMPDIR` env, fallback to `/tmp` | `/tmp` |
 
@@ -309,11 +308,13 @@ The runtime's path functions (`Zanna.Path.*`) normalize paths using the platform
 
 | Platform | Limit | Constant |
 |----------|-------|----------|
-| Windows | 260 characters | `MAX_PATH` |
+| Windows | About 32,767 UTF-16 code units | Win32 extended-length path namespace |
 | macOS | 1024 characters | `PATH_MAX` |
 | Linux | 4096 characters | `PATH_MAX` |
 
-**User-visible difference:** Windows directory operations will fail for paths exceeding 260 characters. This is a known limitation (GAP-2). macOS and Linux support significantly longer paths.
+**User-visible difference:** Windows runtime directory operations use strict UTF-16 wide APIs and
+extended drive/UNC paths, so they are not limited by legacy `MAX_PATH`. The filesystem, individual
+path components, and the approximately 32,767-code-unit Win32 extended-path ceiling still apply.
 
 ---
 
@@ -412,7 +413,6 @@ These are known platform-specific limitations, tracked across the project.
 
 | ID | Category | Description | Severity |
 |----|----------|-------------|----------|
-| GAP-2 | Filesystem | Windows `MAX_PATH` (260 char) limit on directory operations | Medium |
 | GAP-5 | Graphics | The Linux X11 fallback adapter needs X11 development headers at configure time. `ZANNA_GRAPHICS_BACKEND=X11` fails without them; the default `AUTO` build reports the omission and continues Wayland-only | Low |
 | GAP-6 | Audio | Linux audio needs ALSA development headers at configure time. `ZANNA_AUDIO_MODE=REQUIRE` fails without them; `AUTO` reports the omission and builds without audio | Low |
 | GAP-7 | Input | macOS gamepads have no vibration path through the generic IOKit HID interface | Low |
@@ -423,6 +423,7 @@ These are known platform-specific limitations, tracked across the project.
 | GAP-12 | Graphics3D | The extended GPU-skinning path (`gpu_skinning_extras`) exists only on Metal; D3D11 and OpenGL take the reduced skinning path with no capability bit distinguishing them | Low |
 | GAP-13 | Graphics3D | SSR, HDR scene color, and TAA require backend hooks the software rasterizer does not implement; the corresponding `Canvas3D` settings are silently unavailable when the portable backend is active | Low |
 
-GAP-3 and GAP-4 are closed: Windows test infrastructure uses `CreateProcess`
-self-relaunch plus a Job Object rather than `fork()`, and the x86-64 backend
+GAP-2 is closed: Windows directory operations use strict wide-character APIs and extended-length
+drive/UNC paths. GAP-3 and GAP-4 are also closed: Windows test infrastructure uses
+`CreateProcess` self-relaunch plus a Job Object rather than `fork()`, and the x86-64 backend
 implements both the System V AMD64 and Windows x64 ABIs.

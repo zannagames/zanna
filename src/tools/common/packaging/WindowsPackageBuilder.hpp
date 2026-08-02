@@ -37,6 +37,7 @@
 #include "PackageConfig.hpp"
 #include "ToolchainInstallManifest.hpp"
 
+#include <array>
 #include <cstdint>
 #include <functional>
 #include <string>
@@ -44,6 +45,12 @@
 #include <vector>
 
 namespace zanna::pkg {
+
+/// @brief Validate a Windows package version and extract its VERSIONINFO core.
+/// @param version Bounded SemVer-compatible version with one to four numeric components.
+/// @return Four 16-bit components with omitted trailing values zero-filled.
+/// @throws std::runtime_error If the version cannot be consumed by the Windows installer.
+std::array<uint16_t, 4> windowsVersionPartsForResource(std::string_view version);
 
 /// @brief Transform one complete PE image into its signed form before packaging.
 /// @details The logical name is an install-relative path used for diagnostics and

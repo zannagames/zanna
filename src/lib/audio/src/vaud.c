@@ -436,7 +436,8 @@ static void vaud_event_destroy(vaud_event_t *event) {
         return;
 #if defined(VAUD_PLATFORM_WINDOWS)
     if (*event) {
-        CloseHandle(*event);
+        if (!CloseHandle(*event))
+            vaud_set_error(VAUD_ERR_PLATFORM, "Failed to close a music refill event");
         *event = NULL;
     }
 #else
@@ -451,8 +452,8 @@ static void vaud_event_reset(vaud_event_t *event) {
     if (!event)
         return;
 #if defined(VAUD_PLATFORM_WINDOWS)
-    if (*event)
-        ResetEvent(*event);
+    if (*event && !ResetEvent(*event))
+        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to reset a music refill event");
 #else
     pthread_mutex_lock(&event->mutex);
     event->signaled = 0;
@@ -466,8 +467,8 @@ static void vaud_event_set(vaud_event_t *event) {
     if (!event)
         return;
 #if defined(VAUD_PLATFORM_WINDOWS)
-    if (*event)
-        SetEvent(*event);
+    if (*event && !SetEvent(*event))
+        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to signal music refill completion");
 #else
     pthread_mutex_lock(&event->mutex);
     event->signaled = 1;
@@ -476,16 +477,20 @@ static void vaud_event_set(vaud_event_t *event) {
 #endif
 }
 
-/// @brief Wait until the refill event is signaled.
+/// @brief Wait until the refill event is signaled or a short poll interval elapses.
 /// @details This is only used by non-realtime control paths. The mixer callback
-///          must never block on this helper.
+///          must never block on this helper. Windows uses a bounded wait so an
+///          invalid handle or lost signal cannot deadlock context destruction.
 /// @param event Event object previously initialized by vaud_event_init().
 static void vaud_event_wait(vaud_event_t *event) {
     if (!event)
         return;
 #if defined(VAUD_PLATFORM_WINDOWS)
-    if (*event)
-        WaitForSingleObject(*event, INFINITE);
+    if (*event) {
+        const DWORD wait_result = WaitForSingleObject(*event, 1U);
+        if (wait_result == WAIT_FAILED)
+            vaud_set_error(VAUD_ERR_PLATFORM, "Failed waiting for music refill completion");
+    }
 #else
     pthread_mutex_lock(&event->mutex);
     while (!event->signaled)

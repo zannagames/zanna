@@ -677,6 +677,39 @@ TEST(PlatformImportPlanners, WindowsHardenedRuntimeSymbolsResolveToSystemDlls) {
     EXPECT_TRUE(importPlanDllHasFunction(debugPlan, "ucrtbased.dll", "_wsopen_s"));
 }
 
+TEST(PlatformImportPlanners, WindowsEmbeddedPreviewAndPhysicsSymbolsResolveToSystemDlls) {
+    const std::unordered_set<std::string> mappingSymbols = {
+        "CreateFileMappingA", "OpenFileMappingA", "MapViewOfFile", "UnmapViewOfFile"};
+    const std::unordered_set<std::string> mathSymbols = {
+        "expm1", "fma", "frexp", "log1p", "scalbn"};
+    std::unordered_set<std::string> symbols = mappingSymbols;
+    symbols.insert(mathSymbols.begin(), mathSymbols.end());
+
+    for (const auto &symbol : mappingSymbols) {
+        EXPECT_TRUE(isKnownDynamicSymbol(symbol, LinkPlatform::Windows));
+        EXPECT_FALSE(isKnownDynamicSymbol(symbol, LinkPlatform::Linux));
+        EXPECT_FALSE(isKnownDynamicSymbol(symbol, LinkPlatform::macOS));
+    }
+    for (const auto &symbol : mathSymbols)
+        EXPECT_TRUE(isKnownDynamicSymbol(symbol, LinkPlatform::Windows));
+
+    WindowsImportPlan plan;
+    std::ostringstream err;
+    ASSERT_TRUE(generateWindowsImports(LinkArch::X86_64, symbols, false, plan, err));
+    for (const auto &symbol : mappingSymbols)
+        EXPECT_TRUE(importPlanDllHasFunction(plan, "kernel32.dll", symbol));
+    for (const auto &symbol : mathSymbols)
+        EXPECT_TRUE(importPlanDllHasFunction(plan, "ucrtbase.dll", symbol));
+
+    WindowsImportPlan debugPlan;
+    std::ostringstream debugErr;
+    ASSERT_TRUE(generateWindowsImports(LinkArch::X86_64, symbols, true, debugPlan, debugErr));
+    for (const auto &symbol : mappingSymbols)
+        EXPECT_TRUE(importPlanDllHasFunction(debugPlan, "kernel32.dll", symbol));
+    for (const auto &symbol : mathSymbols)
+        EXPECT_TRUE(importPlanDllHasFunction(debugPlan, "ucrtbased.dll", symbol));
+}
+
 int main(int argc, char **argv) {
     zanna_test::init(&argc, argv);
     return zanna_test::run_all_tests();

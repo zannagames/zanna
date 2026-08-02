@@ -5,19 +5,16 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
-/// @brief Implements native Windows install, upgrade, modify, repair, recovery,
-///        and removal using verified same-volume directory transactions.
-///
-/// A package/scope/destination mutex serializes lifecycle work. Selected payload
-/// bytes are verified before the current tree moves, journals make each swap
-/// state recoverable, and unowned upgrade files are preserved. Integration
-/// metadata changes only after activation and is rolled back on synchronous
-/// failure. RAII wrappers close every handle, key, mutex, and Restart Manager session.
-///
-/// @see WindowsInstallerHost.hpp
-/// @see WindowsInstallerMetadata.hpp
-/// @see ZipReader.hpp
+// File: src/tools/windows_installer/WindowsInstallerLifecycle.cpp
+// Purpose: Implement transactional Windows install, maintenance, and removal.
+// Key invariants:
+//   - Verified payloads move through recoverable same-volume transaction states.
+//   - Path, ownership, OS-version, integration, and concurrency checks fail closed.
+// Ownership/Lifetime:
+//   - RAII wrappers own every handle, registry key, mutex, and Restart Manager session.
+//   - Transaction artifacts persist only when needed for deterministic recovery.
+// Links: src/tools/windows_installer/WindowsInstallerHost.hpp,
+//        src/tools/common/packaging/WindowsInstallerMetadata.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -390,13 +387,6 @@ std::string lowerAscii(std::string value) {
 /// @return @c true for A-Z or a-z.
 bool isAsciiAlpha(unsigned char ch) {
     return (ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z');
-}
-
-/// @brief Test whether a byte is an ASCII letter or digit.
-/// @param ch Candidate byte.
-/// @return @c true for an ASCII letter or 0-9.
-bool isAsciiAlnum(unsigned char ch) {
-    return isAsciiAlpha(ch) || (ch >= '0' && ch <= '9');
 }
 
 /// @brief Normalize path separators to forward slashes.
@@ -892,64 +882,33 @@ int relaunchElevated(const HostPackage &package,
     return static_cast<int>(exitCode);
 }
 
-/// @brief Parse a bounded dotted semantic-version core and prerelease.
-/// @param version Version text with optional prerelease and build metadata.
-/// @param prerelease Receives the prerelease identifier, or empty.
-/// @return Numeric core components padded to at least three elements.
-/// @throws std::runtime_error On malformed identifiers, numbers, or metadata.
-std::vector<int> parseVersion(std::string_view version, std::string &prerelease) {
-    const size_t plus = version.find('+');
-    if (plus != std::string_view::npos) {
-        const std::string_view build = version.substr(plus + 1);
-        if (build.empty() ||
-            std::any_of(build.begin(),
-                        build.end(),
-                        /// @brief Identify a byte forbidden in semantic build metadata.
-                        /// @param ch Byte to inspect.
-                        /// @return `true` unless `ch` is alphanumeric, hyphen, or period.
-                        [](char ch) {
-                            return !(isAsciiAlnum(static_cast<unsigned char>(ch)) || ch == '-' ||
-                                     ch == '.');
-                        }) ||
-            build.front() == '.' || build.back() == '.' || build.find("..") != std::string::npos) {
-            throw std::runtime_error("package version has invalid build metadata");
-        }
-    }
-    version = version.substr(0, plus);
-    const size_t dash = version.find('-');
-    if (dash != std::string_view::npos) {
-        prerelease = std::string(version.substr(dash + 1));
-        version = version.substr(0, dash);
-        if (prerelease.empty() || prerelease.front() == '.' || prerelease.back() == '.' ||
-            prerelease.find("..") != std::string::npos ||
-            /// @brief Identify a byte forbidden in semantic prerelease metadata.
-            /// @param ch Byte to inspect.
-            /// @return `true` unless `ch` is alphanumeric, hyphen, or period.
-            std::any_of(prerelease.begin(), prerelease.end(), [](char ch) {
-                return !(isAsciiAlnum(static_cast<unsigned char>(ch)) || ch == '-' || ch == '.');
-            })) {
-            throw std::runtime_error("package version has an invalid prerelease identifier");
-        }
-    }
-    std::vector<int> parts;
+/// @brief Parse a canonical one-to-three-part Windows OS version.
+/// @param version Dotted decimal major, minor, and optional build number.
+/// @return Three unsigned components with omitted trailing parts zero-filled.
+/// @throws std::runtime_error On empty, zero-padded, overflowing, or extra components.
+std::array<uint32_t, 3> parseWindowsVersion(std::string_view version) {
+    if (version.empty() || version.size() > 64U)
+        throw std::runtime_error("invalid Windows version");
+    std::array<uint32_t, 3> parts{};
+    size_t field = 0;
     size_t start = 0;
     while (start <= version.size()) {
+        if (field == parts.size())
+            throw std::runtime_error("invalid Windows version");
         const size_t dot = version.find('.', start);
         const std::string_view part = version.substr(
             start, dot == std::string_view::npos ? version.size() - start : dot - start);
-        if (part.empty() || part.size() > 9)
-            throw std::runtime_error("package version is not a supported semantic version");
-        int value = 0;
+        uint32_t value = 0;
         const auto parsed = std::from_chars(part.data(), part.data() + part.size(), value);
-        if (parsed.ec != std::errc{} || parsed.ptr != part.data() + part.size() || value < 0)
-            throw std::runtime_error("package version is not a supported semantic version");
-        parts.push_back(value);
+        if (part.empty() || (part.size() > 1U && part.front() == '0') || parsed.ec != std::errc{} ||
+            parsed.ptr != part.data() + part.size()) {
+            throw std::runtime_error("invalid Windows version");
+        }
+        parts[field++] = value;
         if (dot == std::string_view::npos)
             break;
-        start = dot + 1;
+        start = dot + 1U;
     }
-    while (parts.size() < 3)
-        parts.push_back(0);
     return parts;
 }
 
@@ -959,16 +918,11 @@ std::vector<int> parseVersion(std::string_view version, std::string &prerelease)
 /// @throws InstallerError When Windows is too old.
 /// @throws std::runtime_error On version metadata or OS-query failure.
 void preflightWindowsVersion(const HostPackage &package, Logger &logger) {
-    std::array<int, 3> installed{};
+    std::array<uint32_t, 3> installed{};
     bool testOverride = false;
 #if defined(ZANNA_INSTALLER_ENABLE_TEST_HOOKS)
     if (const wchar_t *value = _wgetenv(L"ZANNA_INSTALLER_TEST_WINDOWS_VERSION")) {
-        std::string testPrerelease;
-        std::vector<int> testVersion = parseVersion(wideToUtf8(value), testPrerelease);
-        if (!testPrerelease.empty() || testVersion.size() > installed.size())
-            throw std::runtime_error("invalid Windows-version test override");
-        testVersion.resize(installed.size());
-        std::copy(testVersion.begin(), testVersion.end(), installed.begin());
+        installed = parseWindowsVersion(wideToUtf8(value));
         testOverride = true;
     }
 #endif
@@ -984,16 +938,11 @@ void preflightWindowsVersion(const HostPackage &package, Logger &logger) {
         current.dwOSVersionInfoSize = sizeof(current);
         if (rtlGetVersion(&current) != 0)
             throw std::runtime_error("cannot query the installed Windows version");
-        installed = {static_cast<int>(current.dwMajorVersion),
-                     static_cast<int>(current.dwMinorVersion),
-                     static_cast<int>(current.dwBuildNumber)};
+        installed = {current.dwMajorVersion, current.dwMinorVersion, current.dwBuildNumber};
     }
 
-    std::string prerelease;
-    std::vector<int> minimum = parseVersion(package.metadata.minimumWindowsVersion, prerelease);
-    if (!prerelease.empty() || minimum.size() > 3U)
-        throw std::runtime_error("package contains an invalid minimum Windows version");
-    minimum.resize(3U);
+    const std::array<uint32_t, 3> minimum =
+        parseWindowsVersion(package.metadata.minimumWindowsVersion);
     logger.info(L"Windows version: " + std::to_wstring(installed[0]) + L"." +
                 std::to_wstring(installed[1]) + L"." + std::to_wstring(installed[2]) +
                 (testOverride ? L" (test override)" : L""));

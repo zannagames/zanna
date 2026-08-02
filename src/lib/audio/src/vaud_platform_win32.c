@@ -1026,7 +1026,10 @@ int vaud_platform_shutdown(vaud_context_t ctx) {
 
     /* Signal thread to stop */
     InterlockedExchange(&plat->running, 0);
-    SetEvent(plat->stop_event);
+    if (plat->stop_event && !SetEvent(plat->stop_event)) {
+        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
+        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to signal the WASAPI audio thread to stop");
+    }
 
     /* Wait for thread */
     if (!vaud_win32_join_thread(ctx, plat, 5000, 0))
@@ -1034,7 +1037,11 @@ int vaud_platform_shutdown(vaud_context_t ctx) {
 
     /* Stop audio client */
     if (plat->client) {
-        IAudioClient_Stop(plat->client);
+        const HRESULT stop_hr = IAudioClient_Stop(plat->client);
+        if (FAILED(stop_hr)) {
+            vaud_stats_add(&ctx->stats.backend_write_failures, 1);
+            vaud_set_error(VAUD_ERR_PLATFORM, "Failed to stop the WASAPI audio client");
+        }
     }
 
     /* Release interfaces */
@@ -1046,12 +1053,18 @@ int vaud_platform_shutdown(vaud_context_t ctx) {
         IMMDevice_Release(plat->device);
 
     /* Close handles */
-    if (plat->event)
-        CloseHandle(plat->event);
-    if (plat->stop_event)
-        CloseHandle(plat->stop_event);
-    if (plat->ready_event)
-        CloseHandle(plat->ready_event);
+    if (plat->event && !CloseHandle(plat->event)) {
+        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
+        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to close the WASAPI render event");
+    }
+    if (plat->stop_event && !CloseHandle(plat->stop_event)) {
+        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
+        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to close the WASAPI stop event");
+    }
+    if (plat->ready_event && !CloseHandle(plat->ready_event)) {
+        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
+        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to close the WASAPI readiness event");
+    }
 
     int com_initialized = plat->com_initialized;
     vaud_win32_free_render_buffers(plat);

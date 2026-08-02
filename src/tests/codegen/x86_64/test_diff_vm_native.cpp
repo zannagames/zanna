@@ -20,7 +20,6 @@
 
 #include "common/CodegenFixture.hpp"
 
-#include <array>
 #include <cstdlib>
 #include <iostream>
 #include <optional>
@@ -38,8 +37,8 @@ struct CliScenario {
     CodegenComparisonOptions options;
 };
 
-const std::array<CliScenario, 3> kScenarios = {{{"BranchPrint",
-                                                 {R"(il 0.3.0
+const CliScenario kScenarios[] = {{"BranchPrint",
+                                   {R"(il 0.3.0
 extern @rt_print_i64(i64) -> void
 extern @rt_print_f64(f64) -> void
 
@@ -59,12 +58,12 @@ exit:
   ret 7
 }
 )",
-                                                  "branch_print.il",
-                                                  {},
-                                                  {}},
-                                                 {false, std::nullopt}},
-                                                {"BranchPrintSpecialChar",
-                                                 {R"(il 0.3.0
+                                    "branch_print.il",
+                                    {},
+                                    {}},
+                                   {false, std::nullopt}},
+                                  {"BranchPrintSpecialChar",
+                                   {R"(il 0.3.0
 extern @rt_print_i64(i64) -> void
 extern @rt_print_f64(f64) -> void
 
@@ -84,12 +83,12 @@ exit:
   ret 7
 }
 )",
-                                                  "branch_print$literal.il",
-                                                  {},
-                                                  {}},
-                                                 {false, std::nullopt}},
-                                                {"Material3DAnisotropyRoundTrip",
-                                                 {R"(il 0.3.0
+                                    "branch_print$literal.il",
+                                    {},
+                                    {}},
+                                   {false, std::nullopt}},
+                                  {"Material3DAnisotropyRoundTrip",
+                                   {R"(il 0.3.0
 extern @Zanna.Graphics3D.Material3D.New() -> ptr
 extern @Zanna.Graphics3D.Material3D.set_Anisotropy(ptr, i64) -> void
 extern @Zanna.Graphics3D.Material3D.get_Anisotropy(ptr) -> i64
@@ -110,12 +109,12 @@ entry:
   ret %sum
 }
 )",
-                                                  "material3d_anisotropy.il",
-                                                  {},
-                                                  {}},
-                                                 {false, std::nullopt}},
-                                                {"SceneGraphHierarchyCounts",
-                                                 {R"(il 0.3.0
+                                    "material3d_anisotropy.il",
+                                    {},
+                                    {}},
+                                   {false, std::nullopt}},
+                                  {"SceneGraphHierarchyCounts",
+                                   {R"(il 0.3.0
 extern @Zanna.Graphics3D.SceneGraph.New() -> ptr
 extern @Zanna.Graphics3D.SceneNode.New() -> ptr
 extern @Zanna.Graphics3D.SceneGraph.Add(ptr, ptr) -> void
@@ -136,12 +135,12 @@ entry:
   ret %sum
 }
 )",
-                                                  "scenegraph_hierarchy_counts.il",
-                                                  {},
-                                                  {}},
-                                                 {false, std::nullopt}},
-                                                {"QuatEulerDecompositionParity",
-                                                 {R"(il 0.3.0
+                                    "scenegraph_hierarchy_counts.il",
+                                    {},
+                                    {}},
+                                   {false, std::nullopt}},
+                                  {"QuatEulerDecompositionParity",
+                                   {R"(il 0.3.0
 extern @Zanna.Math.Quat.FromEuler(f64, f64, f64) -> ptr
 extern @Zanna.Math.Quat.ToEuler(ptr) -> ptr
 extern @Zanna.Math.Vec3.get_X(ptr) -> f64
@@ -162,10 +161,10 @@ entry:
   ret 0
 }
 )",
-                                                  "quat_euler_decomposition.il",
-                                                  {},
-                                                  {}},
-                                                 {false, std::nullopt}}}};
+                                    "quat_euler_decomposition.il",
+                                    {},
+                                    {}},
+                                   {false, std::nullopt}}};
 
 CodegenComparisonResult runScenario(CodegenFixture &fixture, const CliScenario &scenario) {
     return fixture.compareVmAndNative(scenario.config, scenario.options);

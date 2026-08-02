@@ -5,17 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
-/// @brief Implements the detached helper that removes installer maintenance
-///        caches after their owning process exits.
-///
-/// The host supplies explicit validated files and directories. The helper marks
-/// its own base file for POSIX-style deletion, waits for the parent, retries
-/// exact file deletion, and removes directories non-recursively. The self-test
-/// path exits before any deletion. Command-line storage and process handles are
-/// always released.
-///
-/// @see WindowsInstallerLifecycle.cpp
+// File: src/tools/windows_installer/WindowsInstallerCleanup.cpp
+// Purpose: Remove exact installer maintenance-cache targets after their owner exits.
+// Key invariants:
+//   - Every deletion target passes the fail-closed cleanup policy and is deduplicated.
+//   - Directories are removed non-recursively and reparse points are never traversed.
+// Ownership/Lifetime:
+//   - Command-line storage and Win32 handles are released on every completed path.
+//   - The detached helper owns its copied executable and marks it for self-deletion.
+// Links: src/tools/windows_installer/WindowsInstallerCleanupPolicy.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -26,9 +24,8 @@
 #include <shellapi.h>
 
 #include <algorithm>
-#include <cerrno>
 #include <cstddef>
-#include <cstdlib>
+#include <cstdint>
 #include <cstring>
 #include <string>
 #include <vector>
@@ -267,14 +264,12 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
         if ((isParent || isDelete || isRemoveDirectory || isRemoveIfEmpty) && i + 1 < argc) {
             const std::wstring value(argv[++i]);
             if (isParent) {
-                wchar_t *end = nullptr;
-                errno = 0;
-                const unsigned long parsed = std::wcstoul(value.c_str(), &end, 10);
-                const bool parsedParent = !sawParent && errno == 0 && end && *end == L'\0' &&
-                                          parsed != 0 && parsed <= MAXDWORD;
+                std::uint32_t parsed = 0;
+                const bool parsedParent =
+                    !sawParent && zanna::installer::cleanup::parseProcessId(value, parsed);
                 valid = valid && parsedParent;
                 if (parsedParent) {
-                    parentId = static_cast<DWORD>(parsed);
+                    parentId = parsed;
                     sawParent = true;
                 }
             } else if (!zanna::installer::cleanup::isSafeAbsolutePath(value) ||

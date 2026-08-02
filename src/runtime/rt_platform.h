@@ -1029,6 +1029,22 @@ typedef long long ssize_t;
 #define RT_PATH_SEPARATOR '\\'
 #define RT_PATH_SEPARATOR_STR "\\"
 
+/// @brief Convert Windows FILETIME ticks to signed units from the Unix epoch.
+/// @param ticks Unsigned 100-nanosecond intervals since 1601-01-01.
+/// @param ticks_per_unit Positive number of FILETIME ticks in one result unit.
+/// @return Signed units before or after 1970-01-01 without unsigned underflow.
+static inline int64_t rt_windows_filetime_to_unix_units(uint64_t ticks, uint64_t ticks_per_unit) {
+    const uint64_t unix_epoch_ticks = UINT64_C(116444736000000000);
+    uint64_t units;
+    if (ticks_per_unit == 0)
+        return 0;
+    if (ticks >= unix_epoch_ticks) {
+        units = (ticks - unix_epoch_ticks) / ticks_per_unit;
+        return units > (uint64_t)INT64_MAX ? INT64_MAX : (int64_t)units;
+    }
+    return -(int64_t)((unix_epoch_ticks - ticks) / ticks_per_unit);
+}
+
 /// @brief Return milliseconds since Unix epoch (Windows implementation).
 /// @details Converts Windows FILETIME (100-ns ticks since 1601) to Unix epoch ms.
 /// @return Current system wall-clock time as whole milliseconds since
@@ -1036,11 +1052,8 @@ typedef long long ssize_t;
 static inline int64_t rt_windows_time_ms(void) {
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
-    // Convert 100-nanosecond intervals since 1601 to milliseconds since Unix epoch
-    uint64_t time = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
-    // Subtract difference between 1601 and 1970 (in 100-ns intervals)
-    time -= 116444736000000000ULL;
-    return (int64_t)(time / 10000);
+    const uint64_t ticks = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return rt_windows_filetime_to_unix_units(ticks, UINT64_C(10000));
 }
 
 /// @brief Return microseconds since Unix epoch (Windows implementation).
@@ -1049,17 +1062,19 @@ static inline int64_t rt_windows_time_ms(void) {
 static inline int64_t rt_windows_time_us(void) {
     FILETIME ft;
     GetSystemTimeAsFileTime(&ft);
-    uint64_t time = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
-    time -= 116444736000000000ULL;
-    return (int64_t)(time / 10);
+    const uint64_t ticks = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    return rt_windows_filetime_to_unix_units(ticks, UINT64_C(10));
 }
 
 /// @brief Sleep for a positive millisecond interval on Windows.
-/// @param ms Signed interval; nonpositive values are ignored and positive
-///        values narrow to the `DWORD` accepted by `Sleep`.
+/// @param ms Signed interval; nonpositive values are ignored and large values
+///        are split into finite DWORD-sized waits.
 static inline void rt_windows_sleep_ms(int64_t ms) {
-    if (ms > 0)
-        Sleep((DWORD)ms);
+    while (ms > 0) {
+        const DWORD chunk = ms >= (int64_t)INFINITE ? (DWORD)(INFINITE - 1U) : (DWORD)ms;
+        Sleep(chunk);
+        ms -= (int64_t)chunk;
+    }
 }
 
 #else // POSIX systems (macOS, Linux)

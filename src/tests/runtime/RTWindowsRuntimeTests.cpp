@@ -94,6 +94,16 @@ static void test_finite_wait_deadlines() {
     assert(RT_WIN32_MAX_FINITE_WAIT_MS != INFINITE);
 }
 
+static void test_windows_filetime_conversion_contracts() {
+    constexpr uint64_t epoch = UINT64_C(116444736000000000);
+    assert(rt_windows_filetime_to_unix_units(epoch, UINT64_C(10000)) == 0);
+    assert(rt_windows_filetime_to_unix_units(epoch + UINT64_C(10000), UINT64_C(10000)) == 1);
+    assert(rt_windows_filetime_to_unix_units(epoch - UINT64_C(10000), UINT64_C(10000)) == -1);
+    assert(rt_windows_filetime_to_unix_units(0, UINT64_C(10000)) == INT64_C(-11644473600000));
+    assert(rt_windows_filetime_to_unix_units(UINT64_MAX, 1) == INT64_MAX);
+    assert(rt_windows_filetime_to_unix_units(epoch, 0) == 0);
+}
+
 static unsigned __stdcall completed_thread_entry(void *) {
     return 0;
 }
@@ -372,6 +382,8 @@ static void test_machine_windows_snapshots() {
     rt_str_release_maybe(home);
 }
 
+static std::string read_source(std::initializer_list<const char *> components);
+
 static void test_wasapi_backend_source_contracts() {
     const std::filesystem::path sourcePath = std::filesystem::path(ZANNA_SOURCE_DIR) / "src" /
                                              "lib" / "audio" / "src" / "vaud_platform_win32.c";
@@ -404,6 +416,15 @@ static void test_wasapi_backend_source_contracts() {
     assert(source.find("whole_seconds") != std::string::npos);
     assert(source.find("CreateEventW") != std::string::npos);
     assert(source.find("CreateEvent(NULL") == std::string::npos);
+    assert(source.find("Failed to signal the WASAPI audio thread to stop") != std::string::npos);
+    assert(source.find("Failed to stop the WASAPI audio client") != std::string::npos);
+    assert(source.find("Failed to close the WASAPI render event") != std::string::npos);
+
+    const std::string coordinator = read_source({"src", "lib", "audio", "src", "vaud.c"});
+    assert(coordinator.find("WaitForSingleObject(*event, INFINITE)") == std::string::npos);
+    assert(coordinator.find("WaitForSingleObject(*event, 1U)") != std::string::npos);
+    assert(coordinator.find("Failed to reset a music refill event") != std::string::npos);
+    assert(coordinator.find("Failed to signal music refill completion") != std::string::npos);
 }
 
 static std::string read_source(std::initializer_list<const char *> components) {
@@ -561,6 +582,12 @@ static void test_win32_window_source_contracts() {
     assert(source.find("SetWindowLongW(") != std::string::npos);
     assert(source.find("GetWindowLongA(") == std::string::npos);
     assert(source.find("SetWindowLongA(") == std::string::npos);
+    assert(source.find("WaitForSingleObject(timer, INFINITE)") == std::string::npos);
+    assert(source.find("Failed to apply Win32 DPI window bounds") != std::string::npos);
+    assert(source.find("Failed to close Win32 pacing timer") != std::string::npos);
+    assert(source.find("Win32 pacing timer timed out") != std::string::npos);
+    assert(source.find("Win32 pacing timer wait failed") != std::string::npos);
+    assert(source.find("Failed to refresh Win32 minimum-size constraints") != std::string::npos);
 }
 
 static void test_windows_machine_source_contracts() {
@@ -568,6 +595,13 @@ static void test_windows_machine_source_contracts() {
     assert(source.find("machine_win32_clamp_u64") != std::string::npos);
     assert(source.find("GetVersionExW(") != std::string::npos);
     assert(source.find("GetVersionExA(") == std::string::npos);
+}
+
+static void test_windows_terminal_wrapper_source_contracts() {
+    const std::string source = read_source({"src", "runtime", "core", "rt_term.c"});
+    assert(source.find("rt_term_cursor_visible_i32(show != 0)") != std::string::npos);
+    assert(source.find("rt_term_alt_screen_i32(enable != 0)") != std::string::npos);
+    assert(source.find("if (ms > INT32_MAX)") != std::string::npos);
 }
 
 static void test_windows_run_process_source_contracts() {
@@ -585,6 +619,7 @@ static void test_windows_run_process_source_contracts() {
 
 int main() {
     test_finite_wait_deadlines();
+    test_windows_filetime_conversion_contracts();
     test_checked_win32_thread_join();
     test_msvc_atomic_subtraction_wraparound();
     test_concurrent_winsock_initialization();
@@ -601,6 +636,7 @@ int main() {
     test_windows_unicode_storage_source_contracts();
     test_win32_window_source_contracts();
     test_windows_machine_source_contracts();
+    test_windows_terminal_wrapper_source_contracts();
     test_windows_run_process_source_contracts();
     std::puts("RTWindowsRuntimeTests passed");
     return 0;

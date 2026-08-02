@@ -270,6 +270,24 @@ TEST(WindowsInstallerUpdate, RejectsSignatureTampering) {
                   std::runtime_error);
 }
 
+TEST(WindowsInstallerUpdate, RequiresCanonicalLfTerminatedManifestBytes) {
+    const TestSigner signer;
+    const auto package = packageFor(signer);
+    std::string manifest = signedManifest(signer, "1.3.0");
+    manifest.pop_back();
+    EXPECT_THROWS(zanna::installer::verifyUpdateManifest(package, manifest), std::runtime_error);
+
+    manifest = signedManifest(signer, "1.3.0");
+    std::string crlf;
+    crlf.reserve(manifest.size() + 8U);
+    for (const char ch : manifest) {
+        if (ch == '\n')
+            crlf.push_back('\r');
+        crlf.push_back(ch);
+    }
+    EXPECT_THROWS(zanna::installer::verifyUpdateManifest(package, crlf), std::runtime_error);
+}
+
 TEST(WindowsInstallerUpdate, RejectsCrossOriginAndWrongArchitecture) {
     const TestSigner signer;
     EXPECT_THROWS(zanna::installer::verifyUpdateManifest(
@@ -347,6 +365,28 @@ TEST(WindowsInstallerUpdate, BoundsDigestAndSignatureBeforeDecoding) {
     const std::size_t signature = manifest.find("signature\t");
     manifest.replace(signature + std::strlen("signature\t"), signer.modulus.size(), "00");
     EXPECT_THROWS(zanna::installer::verifyUpdateManifest(packageFor(signer), manifest),
+                  std::runtime_error);
+}
+
+TEST(WindowsInstallerUpdate, RejectsForgedStatusAndPresentationUrl) {
+    const TestSigner signer;
+    const auto package = packageFor(signer);
+    auto result = zanna::installer::verifyUpdateManifest(package, signedManifest(signer, "1.3.0"));
+    result.status = static_cast<zanna::installer::UpdateStatus>(99);
+    EXPECT_THROWS(zanna::installer::updateResultJson(result), std::runtime_error);
+    EXPECT_THROWS(zanna::installer::showUpdateResult(nullptr, package, result), std::runtime_error);
+
+    result = zanna::installer::verifyUpdateManifest(package, signedManifest(signer, "1.3.0"));
+    result.releaseNotesUrl = "https://evil.example/release-notes";
+    EXPECT_THROWS(zanna::installer::showUpdateResult(nullptr, package, result), std::runtime_error);
+
+    auto unconfigured = package;
+    unconfigured.metadata.updateManifestUrl.clear();
+    unconfigured.metadata.updateRsaModulus.clear();
+    unconfigured.metadata.updateRsaExponent.clear();
+    result = zanna::installer::verifyUpdateManifest(unconfigured, {});
+    result.channel = "forged";
+    EXPECT_THROWS(zanna::installer::showUpdateResult(nullptr, unconfigured, result),
                   std::runtime_error);
 }
 

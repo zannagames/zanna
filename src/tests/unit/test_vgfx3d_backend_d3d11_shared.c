@@ -2173,6 +2173,18 @@ static void test_d3d11_backend_source_contracts(void) {
                     strstr(source, "Draw(SSR resolve)") != NULL &&
                     strstr(source, "Draw(overlay composite)") != NULL,
                 "D3D11 validates device health after every post-effect draw family");
+    EXPECT_TRUE(strstr(source, "frame_submission_failed") != NULL &&
+                    strstr(source, "Clear(frame targets)") != NULL &&
+                    strstr(source, "DrawIndexed(main)") != NULL &&
+                    strstr(source, "DrawIndexedInstanced(main)") != NULL &&
+                    strstr(source, "DrawIndexed(shadow)") != NULL &&
+                    strstr(source, "Begin(shadow atlas pass)") != NULL,
+                "D3D11 latches device failures across clear and indexed draw families");
+    EXPECT_TRUE(text_appears_in_order_after(source,
+                                            "if (ctx->frame_submission_failed) {",
+                                            "ctx->frame_pending_present = 0;",
+                                            "return;"),
+                "D3D11 discards a failed frame before publishing it for Present");
     EXPECT_TRUE(strstr(source, "ID3D11DeviceContext_RSSetViewports(ctx->ctx, 0, NULL)") != NULL,
                 "D3D11 clears stale viewport state when the active target extent is invalid");
     EXPECT_TRUE(strstr(source, "if (!ctx->postfx_current_bloom_srv)") != NULL &&
@@ -2193,6 +2205,13 @@ static void test_d3d11_backend_source_contracts(void) {
     EXPECT_TRUE(strstr(source, "vgfx3d_d3d11_validate_ibl_layout") != NULL &&
                     strstr(source, "entry->applied_ibl_identity == env_cm->ibl_identity") != NULL,
                 "D3D11 enables IBL only after the exact validated overlay is resident");
+    EXPECT_TRUE(text_appears_in_order_after(source,
+                                            "entry->failed_ibl_identity == cubemap->ibl_identity",
+                                            "entry->pending_ibl_identity = 0;",
+                                            "entry->pending_ibl_bytes = 0;") &&
+                    strstr(source, "entry->failed_ibl_identity == cubemap->ibl_identity ||") !=
+                        NULL,
+                "D3D11 retires failed IBL uploads instead of reporting them as pending forever");
     EXPECT_TRUE(strstr(source, "target->width > INT32_MAX / 4") != NULL,
                 "D3D11 HDR readback rejects a float-stride narrowing overflow");
     EXPECT_TRUE(text_appears_in_order_after(source,

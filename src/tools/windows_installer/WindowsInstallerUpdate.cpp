@@ -5,14 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file WindowsInstallerUpdate.cpp
-/// @brief Implements bounded HTTPS update discovery with pinned RSA signatures.
-///
-/// Redirects, oversized responses, cross-origin links, and unsigned manifests are rejected before
-/// any result reaches the user. Signature verification reconstructs canonical bytes from strictly
-/// ordered fields. This module never downloads or launches an installer automatically.
-///
-/// Local RAII wrappers close every WinHTTP and CNG handle on all exit paths.
+// File: src/tools/windows_installer/WindowsInstallerUpdate.cpp
+// Purpose: Implement bounded HTTPS update discovery with pinned RSA signatures.
+// Key invariants:
+//   - Redirects, noncanonical text, cross-origin links, and unsigned data fail closed.
+//   - Only a revalidated authenticated HTTPS URL can reach ShellExecuteW.
+// Ownership/Lifetime:
+//   - Local RAII wrappers close every WinHTTP and CNG handle on all exit paths.
+//   - Returned update records own their text and retain no system handles.
+// Links: src/tools/windows_installer/WindowsInstallerUpdate.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -310,7 +311,8 @@ void validateManifestValue(std::string_view value,
 /// @param utf8 URL text to validate and crack.
 /// @param field Field name included in diagnostics.
 /// @return Scheme, host, effective port, and request resource.
-/// @throws std::runtime_error If characters, encoding, scheme, authority, or credentials are unsafe.
+/// @throws std::runtime_error If characters, encoding, scheme, authority, or credentials are
+/// unsafe.
 ParsedUrl parseHttpsUrl(std::string_view utf8, std::string_view field) {
     validateManifestValue(utf8, field);
     if (utf8.find('#') != std::string_view::npos || utf8.find('\\') != std::string_view::npos ||
@@ -361,7 +363,7 @@ bool sameOrigin(const ParsedUrl &left, const ParsedUrl &right) {
                                 TRUE) == CSTR_EQUAL;
 }
 
-/// @brief Download a bounded manifest over TLS 1.2 without redirects.
+/// @brief Download a bounded manifest over TLS 1.2 or 1.3 without redirects.
 /// @param manifestUrl Configured HTTPS manifest URL.
 /// @param version Current package version included in the user agent.
 /// @return Nonempty response body no larger than 64 KiB.
@@ -378,11 +380,23 @@ std::string downloadManifest(std::string_view manifestUrl, std::string_view vers
     if (!session)
         throw std::runtime_error("cannot initialize secure update networking");
     DWORD secureProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+#ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
+    secureProtocols |= WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3;
+#endif
     if (!WinHttpSetOption(session.get(),
                           WINHTTP_OPTION_SECURE_PROTOCOLS,
                           &secureProtocols,
                           sizeof(secureProtocols))) {
-        throw std::runtime_error("cannot require TLS 1.2 for update networking");
+#ifdef WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_3
+        // Older WinHTTP implementations reject the newer flag. Retain TLS 1.2
+        // as the floor without enabling any legacy protocol.
+        secureProtocols = WINHTTP_FLAG_SECURE_PROTOCOL_TLS1_2;
+        if (!WinHttpSetOption(session.get(),
+                              WINHTTP_OPTION_SECURE_PROTOCOLS,
+                              &secureProtocols,
+                              sizeof(secureProtocols)))
+#endif
+            throw std::runtime_error("cannot require TLS 1.2 for update networking");
     }
     if (!WinHttpSetTimeouts(session.get(), 5000, 5000, 10000, 10000))
         throw std::runtime_error("cannot configure update network timeouts");
@@ -542,13 +556,66 @@ void verifySignature(const zanna::pkg::WindowsInstallerMetadata &metadata,
     }
 }
 
+/// @brief Revalidate an update record before presenting or opening its URL.
+/// @param package Verified package identity and pinned update origin.
+/// @param result Candidate result, normally returned by verifyUpdateManifest().
+/// @throws std::runtime_error If status, identity, precedence, digest, or URLs are inconsistent.
+void validateUpdateResultForPresentation(const HostPackage &package,
+                                         const UpdateCheckResult &result) {
+    switch (result.status) {
+        case UpdateStatus::Unconfigured:
+            if (result.currentVersion != package.metadata.version ||
+                result.channel != package.metadata.channel ||
+                result.architecture != package.metadata.architecture ||
+                !package.metadata.updateManifestUrl.empty() ||
+                !package.metadata.updateRsaModulus.empty() ||
+                !package.metadata.updateRsaExponent.empty() || !result.availableVersion.empty() ||
+                !result.downloadUrl.empty() || !result.downloadSha256.empty() ||
+                !result.releaseNotesUrl.empty()) {
+                throw std::runtime_error("inconsistent unconfigured update result");
+            }
+            return;
+        case UpdateStatus::Current:
+        case UpdateStatus::Available:
+            break;
+        default:
+            throw std::runtime_error("invalid update result status");
+    }
+    if (result.currentVersion != package.metadata.version ||
+        result.channel != package.metadata.channel ||
+        result.architecture != package.metadata.architecture) {
+        throw std::runtime_error("update result identity does not match this installer");
+    }
+    const int precedence = compareInstallerVersions(result.availableVersion, result.currentVersion);
+    if ((result.status == UpdateStatus::Available && precedence <= 0) ||
+        (result.status == UpdateStatus::Current && precedence > 0)) {
+        throw std::runtime_error("update result status does not match version precedence");
+    }
+    if (result.downloadSha256.size() != 64U || !isLowerHex(result.downloadSha256))
+        throw std::runtime_error("update result has an invalid download SHA-256");
+
+    const ParsedUrl manifestUrl = parseHttpsUrl(package.metadata.updateManifestUrl, "manifest URL");
+    const ParsedUrl downloadUrl = parseHttpsUrl(result.downloadUrl, "download URL");
+    if (!sameOrigin(manifestUrl, downloadUrl))
+        throw std::runtime_error("update result download URL does not match the pinned origin");
+    if (!result.releaseNotesUrl.empty()) {
+        const ParsedUrl releaseNotesUrl =
+            parseHttpsUrl(result.releaseNotesUrl, "release notes URL");
+        if (!sameOrigin(manifestUrl, releaseNotesUrl)) {
+            throw std::runtime_error(
+                "update result release-notes URL does not match the pinned origin");
+        }
+    }
+}
+
 } // namespace
 
 /// @brief Parse, constrain, and authenticate a canonical update manifest.
 /// @param package Verified package providing pinned update identity and public key.
 /// @param manifestText Complete downloaded manifest bytes.
 /// @return Matching release data with current, available, or unconfigured status.
-/// @throws std::runtime_error If configuration, schema, fields, origins, digest, or signature fails.
+/// @throws std::runtime_error If configuration, schema, fields, origins, digest, or signature
+/// fails.
 UpdateCheckResult verifyUpdateManifest(const HostPackage &package, std::string_view manifestText) {
     const bool hasUpdateUrl = !package.metadata.updateManifestUrl.empty();
     const bool hasUpdateModulus = !package.metadata.updateRsaModulus.empty();
@@ -567,15 +634,14 @@ UpdateCheckResult verifyUpdateManifest(const HostPackage &package, std::string_v
         throw std::runtime_error("incomplete pinned update configuration");
     validatePinnedKey(package.metadata);
     if (manifestText.empty() || manifestText.size() > kMaximumManifestBytes ||
-        manifestText.find('\0') != std::string_view::npos) {
+        manifestText.find('\0') != std::string_view::npos || manifestText.back() != '\n' ||
+        manifestText.find('\r') != std::string_view::npos) {
         throw std::runtime_error("invalid update manifest size or encoding");
     }
     std::istringstream input{std::string(manifestText)};
     std::vector<std::string> lines;
     std::string line;
     while (std::getline(input, line)) {
-        if (!line.empty() && line.back() == '\r')
-            line.pop_back();
         lines.push_back(line);
     }
     if (lines.size() != 8U || lines[0] != "ZANNA-WINDOWS-UPDATE\t1")
@@ -644,10 +710,20 @@ UpdateCheckResult checkForUpdates(const HostPackage &package) {
 /// @param result Authenticated result to encode.
 /// @return Pretty-printed JSON with stable field order and a trailing newline.
 std::wstring updateResultJson(const UpdateCheckResult &result) {
-    const char *status =
-        result.status == UpdateStatus::Available
-            ? "available"
-            : (result.status == UpdateStatus::Current ? "current" : "unconfigured");
+    const char *status = nullptr;
+    switch (result.status) {
+        case UpdateStatus::Unconfigured:
+            status = "unconfigured";
+            break;
+        case UpdateStatus::Current:
+            status = "current";
+            break;
+        case UpdateStatus::Available:
+            status = "available";
+            break;
+        default:
+            throw std::runtime_error("invalid update result status");
+    }
     std::ostringstream out;
     out << "{\n"
         << "  \"status\": \"" << status << "\",\n"
@@ -670,26 +746,34 @@ std::wstring updateResultJson(const UpdateCheckResult &result) {
 void showUpdateResult(HINSTANCE instance,
                       const HostPackage &package,
                       const UpdateCheckResult &result) {
+    validateUpdateResultForPresentation(package, result);
     std::wstring instruction;
     std::wstring content;
     std::array<TASKDIALOG_BUTTON, 2> buttons{};
     UINT buttonCount = 0;
-    if (result.status == UpdateStatus::Unconfigured) {
-        instruction = L"Update discovery is not configured";
-        content = L"This development package has no pinned signed update service.";
-    } else if (result.status == UpdateStatus::Current) {
-        instruction = L"Zanna is up to date";
-        content = L"Installed/package version: " + utf8ToWide(result.currentVersion) +
-                  L"\r\nChannel: " + utf8ToWide(result.channel) + L"  |  " +
-                  utf8ToWide(result.architecture);
-    } else {
-        instruction = L"A newer Zanna version is available";
-        content = L"Current: " + utf8ToWide(result.currentVersion) + L"\r\nAvailable: " +
-                  utf8ToWide(result.availableVersion) + L"\r\nChannel: " +
-                  utf8ToWide(result.channel) + L"  |  " + utf8ToWide(result.architecture) +
-                  L"\r\n\r\nThe release link was authenticated by the public key pinned in this "
-                  L"installer.";
-        buttons[buttonCount++] = {kOpenUpdate, L"Open authenticated release page"};
+    switch (result.status) {
+        case UpdateStatus::Unconfigured:
+            instruction = L"Update discovery is not configured";
+            content = L"This development package has no pinned signed update service.";
+            break;
+        case UpdateStatus::Current:
+            instruction = L"Zanna is up to date";
+            content = L"Installed/package version: " + utf8ToWide(result.currentVersion) +
+                      L"\r\nChannel: " + utf8ToWide(result.channel) + L"  |  " +
+                      utf8ToWide(result.architecture);
+            break;
+        case UpdateStatus::Available:
+            instruction = L"A newer Zanna version is available";
+            content =
+                L"Current: " + utf8ToWide(result.currentVersion) + L"\r\nAvailable: " +
+                utf8ToWide(result.availableVersion) + L"\r\nChannel: " +
+                utf8ToWide(result.channel) + L"  |  " + utf8ToWide(result.architecture) +
+                L"\r\n\r\nThe release link was authenticated by the public key pinned in this "
+                L"installer.";
+            buttons[buttonCount++] = {kOpenUpdate, L"Open authenticated release page"};
+            break;
+        default:
+            throw std::runtime_error("invalid update result status");
     }
     buttons[buttonCount++] = {IDCLOSE, L"Close"};
     TASKDIALOGCONFIG config{sizeof(config)};

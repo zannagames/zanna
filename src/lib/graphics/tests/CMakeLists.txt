@@ -29,6 +29,7 @@ target_compile_features(zannagfx_mock PUBLIC c_std_11)
 # POSIX feature test macros for Linux (posix_memalign, etc.)
 if (NOT WIN32 AND NOT APPLE)
     target_compile_definitions(zannagfx_mock PRIVATE _POSIX_C_SOURCE=200809L _DEFAULT_SOURCE)
+    target_link_libraries(zannagfx_mock PRIVATE rt)
 endif ()
 
 # Compiler warnings
@@ -67,10 +68,8 @@ endfunction()
 add_vgfx_test(test_window test_window.c)
 add_vgfx_test(test_pixels test_pixels.c)
 add_vgfx_test(test_drawing test_drawing.c)
-if (NOT WIN32)
-    # Skip on Windows: aligned memory allocation/free mismatch in mock platform
-    add_vgfx_test(test_input test_input.c)
-endif ()
+add_vgfx_test(test_input test_input.c)
+add_vgfx_test(test_embed_channel test_embed_channel.c)
 
 if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
     add_executable(test_wayland_loader
@@ -151,16 +150,8 @@ endif ()
 # ============================================================================
 
 # Custom target to run all tests
-if (WIN32)
-    add_custom_target(run_zannagfx_tests
-            COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-            DEPENDS test_window test_pixels test_drawing
-            COMMENT "Running all ZannaGFX tests..."
-    )
-else ()
-    add_custom_target(run_zannagfx_tests
-            COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
-            DEPENDS test_window test_pixels test_drawing test_input
-            COMMENT "Running all ZannaGFX tests..."
-    )
-endif ()
+add_custom_target(run_zannagfx_tests
+        COMMAND ${CMAKE_CTEST_COMMAND} --output-on-failure
+        DEPENDS test_window test_pixels test_drawing test_input test_embed_channel
+        COMMENT "Running all ZannaGFX tests..."
+)

@@ -857,23 +857,28 @@ void rt_term_show_cursor(void) {
 }
 
 /// @brief Set cursor visibility (i64 wrapper for ZannaLang).
-/// @details Narrows by direct C cast to int32; zero hides and nonzero shows.
+/// @details Converts to a canonical boolean before crossing the i32 ABI.
 /// @param show Visibility value.
 void rt_term_cursor_visible(int64_t show) {
-    rt_term_cursor_visible_i32((int32_t)show);
+    rt_term_cursor_visible_i32(show != 0);
 }
 
 /// @brief Set alt screen mode (i64 wrapper for ZannaLang).
-/// @details Narrows by direct C cast to int32 before boolean interpretation.
+/// @details Converts to a canonical boolean before crossing the i32 ABI.
 /// @param enable Alternate-screen value.
 void rt_term_alt_screen(int64_t enable) {
-    rt_term_alt_screen_i32((int32_t)enable);
+    rt_term_alt_screen_i32(enable != 0);
 }
 
 /// @brief Sleep for specified milliseconds (i64 wrapper).
-/// @details Narrows by direct C cast to int32 before delegating.
-/// @param ms Millisecond count.
+/// @details Saturates the duration instead of allowing a large positive value
+///          to wrap negative and become an unintended zero-duration sleep.
+/// @param ms Millisecond count clamped to the int32 range.
 void rt_sleep_ms_i64(int64_t ms) {
+    if (ms < 0)
+        ms = 0;
+    if (ms > INT32_MAX)
+        ms = INT32_MAX;
     rt_sleep_ms((int32_t)ms);
 }
 

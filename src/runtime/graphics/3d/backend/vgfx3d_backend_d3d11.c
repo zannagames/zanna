@@ -663,6 +663,7 @@ typedef struct {
     int8_t gpu_postfx_chain_valid;
     int8_t frame_active;
     int8_t frame_pending_present;
+    int8_t frame_submission_failed;
     int8_t current_pass_is_overlay;
     int8_t current_load_existing_color;
     int8_t overlay_used_this_frame;
@@ -1352,10 +1353,10 @@ static void d3d11_log_device_removed_reason(d3d11_context_t *ctx, const char *ms
 }
 
 /// @brief Validate device health after a D3D11 command that returns no HRESULT.
-/// @details `UpdateSubresource`, `GenerateMips`, and `CopyResource` are void
-///   commands. A removed device can therefore discard the command without a
-///   direct failure result. Callers use this check before publishing CPU-side
-///   cursors, generations, or validity flags that claim the GPU work completed.
+/// @details `UpdateSubresource`, `GenerateMips`, `CopyResource`, and draws are
+///   void commands. A removed device can therefore discard the command without
+///   a direct failure result. During an active frame, failure is latched before
+///   callers can publish CPU-side cursors, generations, or completed-frame state.
 /// @param[in] ctx Backend context containing the device.
 /// @param[in] operation Bounded diagnostic label for the preceding command.
 /// @return `S_OK` while the device remains usable, otherwise the removal reason.
@@ -1365,9 +1366,22 @@ static HRESULT d3d11_device_status_after_void_command(d3d11_context_t *ctx, cons
         return E_POINTER;
     hr = ID3D11Device_GetDeviceRemovedReason(ctx->device);
     if (FAILED(hr)) {
+        if (ctx->frame_active)
+            ctx->frame_submission_failed = 1;
         d3d11_log_hresult(operation, hr);
         d3d11_log_device_removed_reason(ctx, operation, hr);
     }
+    return hr;
+}
+
+/// @brief Check a void GPU command and remember that this frame cannot be published.
+/// @param[in,out] ctx Backend context whose frame failure state is updated.
+/// @param[in] operation Bounded diagnostic label for the preceding command.
+/// @return `S_OK` while the device remains usable, otherwise the removal reason.
+static HRESULT d3d11_record_frame_device_status(d3d11_context_t *ctx, const char *operation) {
+    HRESULT hr = d3d11_device_status_after_void_command(ctx, operation);
+    if (ctx && FAILED(hr))
+        ctx->frame_submission_failed = 1;
     return hr;
 }
 
@@ -2153,8 +2167,11 @@ static HRESULT d3d11_update_constant_buffer(d3d11_context_t *ctx,
     D3D11_MAPPED_SUBRESOURCE mapped;
     HRESULT hr;
 
-    if (!ctx || !ctx->ctx || !buffer || !data || size == 0)
+    if (!ctx || !ctx->ctx || !buffer || !data || size == 0) {
+        if (ctx && ctx->frame_active)
+            ctx->frame_submission_failed = 1;
         return E_INVALIDARG;
+    }
     ID3D11Buffer_GetDesc(buffer, &desc);
     if (!vgfx3d_d3d11_constant_buffer_desc_is_usable(desc.ByteWidth,
                                                      desc.Usage == D3D11_USAGE_DYNAMIC,
@@ -2162,16 +2179,23 @@ static HRESULT d3d11_update_constant_buffer(d3d11_context_t *ctx,
                                                      desc.CPUAccessFlags == D3D11_CPU_ACCESS_WRITE,
                                                      desc.MiscFlags,
                                                      desc.StructureByteStride) ||
-        size > desc.ByteWidth)
+        size > desc.ByteWidth) {
+        if (ctx->frame_active)
+            ctx->frame_submission_failed = 1;
         return E_INVALIDARG;
+    }
     hr = ID3D11DeviceContext_Map(
         ctx->ctx, (ID3D11Resource *)buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
     if (FAILED(hr)) {
+        if (ctx->frame_active)
+            ctx->frame_submission_failed = 1;
         d3d11_log_device_removed_reason(ctx, "Map(dynamic constant buffer)", hr);
         return hr;
     }
     if (!mapped.pData) {
         ID3D11DeviceContext_Unmap(ctx->ctx, (ID3D11Resource *)buffer, 0);
+        if (ctx->frame_active)
+            ctx->frame_submission_failed = 1;
         return E_POINTER;
     }
     if ((size_t)desc.ByteWidth > size)
@@ -2297,21 +2321,30 @@ static int d3d11_upload_dynamic_buffer(d3d11_context_t *ctx,
         return 0;
     hr = d3d11_ensure_dynamic_buffer(ctx, buffer, capacity, bind_flags, bytes, initial_size);
     if (FAILED(hr)) {
+        if (ctx->frame_active)
+            ctx->frame_submission_failed = 1;
         d3d11_log_hresult("CreateBuffer(dynamic)", hr);
         d3d11_log_device_removed_reason(ctx, "CreateBuffer(dynamic)", hr);
         return 0;
     }
-    if (!*buffer || *capacity < bytes)
+    if (!*buffer || *capacity < bytes) {
+        if (ctx->frame_active)
+            ctx->frame_submission_failed = 1;
         return 0;
+    }
     hr = ID3D11DeviceContext_Map(
         ctx->ctx, (ID3D11Resource *)*buffer, 0, D3D11_MAP_WRITE_DISCARD, 0, &mapped);
     if (FAILED(hr)) {
+        if (ctx->frame_active)
+            ctx->frame_submission_failed = 1;
         d3d11_log_hresult("Map(dynamic)", hr);
         d3d11_log_device_removed_reason(ctx, "Map(dynamic)", hr);
         return 0;
     }
     if (!mapped.pData) {
         ID3D11DeviceContext_Unmap(ctx->ctx, (ID3D11Resource *)*buffer, 0);
+        if (ctx->frame_active)
+            ctx->frame_submission_failed = 1;
         d3d11_log_hresult("Map(dynamic)", E_POINTER);
         return 0;
     }

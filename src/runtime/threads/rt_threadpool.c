@@ -57,6 +57,9 @@
 #include "rt_platform.h"
 #include "rt_string.h"
 #include "rt_threads.h"
+#if RT_PLATFORM_WINDOWS
+#include "rt_win32_wait.h"
+#endif
 
 #include <errno.h>
 #include <limits.h>

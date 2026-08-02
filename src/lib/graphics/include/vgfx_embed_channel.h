@@ -14,8 +14,8 @@
 //   - Frames use a two-slot seqlock: the producer publishes into slot
 //     (seq & 1) and the consumer copies latest-wins, retrying on torn
 //     reads; neither side ever blocks the other.
-//   - Input travels game-ward through a fixed-record ring; overflow drops
-//     the oldest events (the game resynchronizes from fresh state).
+//   - Input travels game-ward through a fixed-record SPSC ring; overflow
+//     rejects the newest event without racing the consumer's tail index.
 //   - All cross-process fields are C11 atomics in a flat POD header.
 // Ownership/Lifetime:
 //   - Each side owns only its handle; the OS object lives until both
@@ -38,15 +38,15 @@ extern "C" {
 /// @brief Embed input event kinds (host → game).
 enum {
     VGFX_EMBED_EVENT_NONE = 0,
-    VGFX_EMBED_EVENT_MOUSE_MOVE = 1,   ///< a=x, b=y
-    VGFX_EMBED_EVENT_MOUSE_DOWN = 2,   ///< a=x, b=y, c=button
-    VGFX_EMBED_EVENT_MOUSE_UP = 3,     ///< a=x, b=y, c=button
-    VGFX_EMBED_EVENT_WHEEL = 4,        ///< a=x, b=y, c=deltaY*120
-    VGFX_EMBED_EVENT_KEY_DOWN = 5,     ///< a=keycode, b=mods
-    VGFX_EMBED_EVENT_KEY_UP = 6,       ///< a=keycode, b=mods
-    VGFX_EMBED_EVENT_TEXT = 7,         ///< a=unicode codepoint
-    VGFX_EMBED_EVENT_RESIZE = 8,       ///< a=width, b=height
-    VGFX_EMBED_EVENT_CLOSE = 9,        ///< host asked the game to quit
+    VGFX_EMBED_EVENT_MOUSE_MOVE = 1, ///< a=x, b=y
+    VGFX_EMBED_EVENT_MOUSE_DOWN = 2, ///< a=x, b=y, c=button
+    VGFX_EMBED_EVENT_MOUSE_UP = 3,   ///< a=x, b=y, c=button
+    VGFX_EMBED_EVENT_WHEEL = 4,      ///< a=x, b=y, c=deltaY*120
+    VGFX_EMBED_EVENT_KEY_DOWN = 5,   ///< a=keycode, b=mods
+    VGFX_EMBED_EVENT_KEY_UP = 6,     ///< a=keycode, b=mods
+    VGFX_EMBED_EVENT_TEXT = 7,       ///< a=unicode codepoint
+    VGFX_EMBED_EVENT_RESIZE = 8,     ///< a=width, b=height
+    VGFX_EMBED_EVENT_CLOSE = 9,      ///< host asked the game to quit
 };
 
 /// @brief One fixed-size input record.
@@ -65,11 +65,13 @@ typedef struct vgfx_embed_channel vgfx_embed_channel_t;
 /// @param max_w Maximum frame width the ring can carry (1..8192).
 /// @param max_h Maximum frame height the ring can carry (1..8192).
 /// @param out Receives the handle on success.
-/// @return 1 on success, 0 on failure (unsupported platform, bad args, OS error).
-int vgfx_embed_channel_create(const char *name, int32_t max_w, int32_t max_h,
+/// @return 1 on success, 0 on failure (including an existing channel name).
+int vgfx_embed_channel_create(const char *name,
+                              int32_t max_w,
+                              int32_t max_h,
                               vgfx_embed_channel_t **out);
 
-/// @brief Attach to an existing channel as the GAME producer.
+/// @brief Attach to an existing channel as the exclusive GAME producer.
 /// @param name Channel name from VGFX_EMBED_CHANNEL_ENV.
 /// @param out Receives the handle on success.
 /// @return 1 on success, 0 on failure.
@@ -80,19 +82,23 @@ void vgfx_embed_channel_close(vgfx_embed_channel_t *channel);
 
 /// @brief GAME: publish one RGBA8 frame (latest-wins, never blocks).
 /// @return 1 when the frame was published, 0 on size overflow or bad args.
-int vgfx_embed_channel_publish_frame(vgfx_embed_channel_t *channel, const uint8_t *rgba,
-                                     int32_t width, int32_t height);
+int vgfx_embed_channel_publish_frame(vgfx_embed_channel_t *channel,
+                                     const uint8_t *rgba,
+                                     int32_t width,
+                                     int32_t height);
 
 /// @brief HOST: copy the newest unseen frame into @p dst (capacity max_w*max_h*4).
 /// @param dst Destination buffer.
 /// @param width Receives the frame width.
 /// @param height Receives the frame height.
 /// @return 1 when a new frame was copied, 0 when nothing new arrived.
-int vgfx_embed_channel_acquire_frame(vgfx_embed_channel_t *channel, uint8_t *dst,
-                                     int32_t *width, int32_t *height);
+int vgfx_embed_channel_acquire_frame(vgfx_embed_channel_t *channel,
+                                     uint8_t *dst,
+                                     int32_t *width,
+                                     int32_t *height);
 
-/// @brief HOST: queue one input event for the game (drops oldest on overflow).
-/// @return 1 on success, 0 on bad args.
+/// @brief HOST: queue one input event for the game (rejects newest on overflow).
+/// @return 1 on success, 0 on bad args or a full ring.
 int vgfx_embed_channel_push_event(vgfx_embed_channel_t *channel, const vgfx_embed_event_t *event);
 
 /// @brief GAME: drain one queued input event.
@@ -108,16 +114,18 @@ void vgfx_embed_channel_mark_exited(vgfx_embed_channel_t *channel);
 /// @brief Whether the producer marked the channel exited.
 int vgfx_embed_channel_producer_exited(const vgfx_embed_channel_t *channel);
 
-/// @brief Whether a producer has attached and published at least one frame.
+/// @brief Whether the exclusive producer is currently attached.
 int vgfx_embed_channel_producer_attached(const vgfx_embed_channel_t *channel);
 
 /// @brief Peek the newest published frame's dimensions without copying.
 /// @return 1 when a frame has been published, otherwise 0.
-int vgfx_embed_channel_frame_size(const vgfx_embed_channel_t *channel, int32_t *width,
+int vgfx_embed_channel_frame_size(const vgfx_embed_channel_t *channel,
+                                  int32_t *width,
                                   int32_t *height);
 
 /// @brief Channel frame capacity as configured by the host.
-void vgfx_embed_channel_capacity(const vgfx_embed_channel_t *channel, int32_t *max_w,
+void vgfx_embed_channel_capacity(const vgfx_embed_channel_t *channel,
+                                 int32_t *max_w,
                                  int32_t *max_h);
 
 #ifdef __cplusplus
