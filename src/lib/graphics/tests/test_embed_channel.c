@@ -26,27 +26,20 @@
 #include <string.h>
 #include <time.h>
 
-#if defined(_WIN32)
-#include <process.h>
-#else
-#include <unistd.h>
-#endif
-
 static unsigned int channel_counter;
 
 /// @brief Build a collision-resistant portable name for one test channel.
 static void next_channel_name(char name[97]) {
-#if defined(_WIN32)
-    unsigned long process_id = (unsigned long)_getpid();
-#else
-    unsigned long process_id = (unsigned long)getpid();
-#endif
+    struct timespec now = {0};
+    if (timespec_get(&now, TIME_UTC) != TIME_UTC)
+        now.tv_sec = time(NULL);
     channel_counter++;
     snprintf(name,
              97,
-             "zanna_embed_test_%lu_%llu_%u",
-             process_id,
-             (unsigned long long)time(NULL),
+             "zanna_embed_test_%llu_%lu_%llx_%u",
+             (unsigned long long)now.tv_sec,
+             (unsigned long)now.tv_nsec,
+             (unsigned long long)(uintptr_t)&channel_counter,
              channel_counter);
 }
 

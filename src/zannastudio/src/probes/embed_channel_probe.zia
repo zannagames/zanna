@@ -24,13 +24,17 @@ bind EmbedHost = Zanna.System.EmbedHost;
 bind Pixels = Zanna.Graphics.Pixels;
 bind Color = Zanna.Graphics.Color;
 bind Terminal = Zanna.Terminal;
+bind Clock = Zanna.Time.Clock;
 
 func fail(reason: String) {
     Terminal.Say("RESULT: fail " + reason);
 }
 
 func main() {
-    var host = EmbedHost.Create("probe-loopback", 64, 32);
+    // A prior probe may be terminated before its POSIX host can unlink the
+    // native object. A per-run name keeps that abandoned object isolated.
+    var channelName = "probe-loopback-" + Clock.NowMicros();
+    var host = EmbedHost.Create(channelName, 64, 32);
     if host == null or host.IsValid() == false {
         fail("host channel did not create");
         return;
@@ -40,7 +44,7 @@ func main() {
         return;
     }
 
-    var producer = EmbedHost.Attach("probe-loopback");
+    var producer = EmbedHost.Attach(channelName);
     if producer == null or producer.IsValid() == false {
         fail("producer could not attach to the live channel");
         return;

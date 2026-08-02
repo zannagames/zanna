@@ -46,6 +46,38 @@
 #define EMBED_INPUT_CAPACITY 256u /* power of two */
 #define EMBED_MAX_DIMENSION 8192
 
+#if !defined(_WIN32)
+/// @brief Derive a stable POSIX object name within Darwin's short shm-name limit.
+/// @details The public channel name remains portable and may contain up to 96 bytes. Two
+///          independent hashes keep the native key bounded without truncating that identity.
+static void embed_posix_name(const char *name, char out[128]) {
+    uint64_t primary = UINT64_C(14695981039346656037);
+    uint32_t secondary = UINT32_C(5381);
+    for (const unsigned char *cursor = (const unsigned char *)name; *cursor; cursor++) {
+        primary ^= (uint64_t)*cursor;
+        primary *= UINT64_C(1099511628211);
+        secondary = ((secondary << 5u) + secondary) ^ (uint32_t)*cursor;
+    }
+    snprintf(out, 128, "/ze-%016llx%08x", (unsigned long long)primary, (unsigned int)secondary);
+}
+
+/// @brief Accept the requested extent or one native-page rounding of it.
+/// @details Darwin reports shm sizes rounded up to the VM page while Linux reports the exact
+///          ftruncate size. Larger or non-page-aligned extents still fail closed.
+static int embed_posix_extent_matches(off_t actual, size_t expected) {
+    off_t requested = (off_t)expected;
+    if (requested < 0 || (size_t)requested != expected || actual < requested)
+        return 0;
+    if (actual == requested)
+        return 1;
+    long page_size = sysconf(_SC_PAGESIZE);
+    if (page_size <= 0)
+        return 0;
+    off_t page = (off_t)page_size;
+    return actual % page == 0 && actual - requested < page;
+}
+#endif
+
 /// @brief Flat shared header both processes map at offset zero.
 typedef struct {
     uint32_t magic;
@@ -217,7 +249,7 @@ int vgfx_embed_channel_create(const char *name,
         return 0;
     }
 #else
-    snprintf(ch->shm_name, sizeof(ch->shm_name), "/zanna-embed-%s", name);
+    embed_posix_name(name, ch->shm_name);
     int fd = shm_open(ch->shm_name, O_CREAT | O_EXCL | O_RDWR, 0600);
     if (fd < 0) {
         free(ch);
@@ -270,7 +302,7 @@ int vgfx_embed_channel_attach(const char *name, vgfx_embed_channel_t **out) {
         return 0;
     }
 #else
-    snprintf(ch->shm_name, sizeof(ch->shm_name), "/zanna-embed-%s", name);
+    embed_posix_name(name, ch->shm_name);
     int fd = shm_open(ch->shm_name, O_RDWR, 0600);
     if (fd < 0) {
         free(ch);
@@ -325,7 +357,7 @@ int vgfx_embed_channel_attach(const char *name, vgfx_embed_channel_t **out) {
     }
 #else
     if (munmap(probe, sizeof(vgfx_embed_header_t)) != 0 || fstat(fd, &mapping_stat) != 0 ||
-        mapping_stat.st_size != (off_t)ch->map_bytes) {
+        !embed_posix_extent_matches(mapping_stat.st_size, ch->map_bytes)) {
         close(fd);
         free(ch);
         return 0;
