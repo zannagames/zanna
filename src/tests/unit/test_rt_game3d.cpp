@@ -35,6 +35,7 @@
 #include "rt_decal3d.h"
 #include "rt_game3d.h"
 #include "rt_game3d_diagnostics.h"
+#include "rt_graphics3d_ids.h"
 #include "rt_heap.h"
 #include "rt_iksolver3d.h"
 #include "rt_input.h"
@@ -44,6 +45,7 @@
 #include "rt_object.h"
 #include "rt_option.h"
 #include "rt_particles3d.h"
+#include "rt_path3d.h"
 #include "rt_physics3d.h"
 #include "rt_pixels.h"
 #include "rt_platform.h"
@@ -79,7 +81,16 @@ typedef struct {
     uint8_t mouse_released[ZANNA_MOUSE_BUTTON_MAX];
     int64_t mouse_dx;
     int64_t mouse_dy;
+    double mouse_fdx;
+    double mouse_fdy;
     double wheel_y;
+    int64_t bound_pad;
+    double pad_look_sensitivity;
+    double pad_lx;
+    double pad_ly;
+    double pad_rx;
+    double pad_ry;
+    int8_t pad_connected;
 } Game3DInputTestLayout;
 
 typedef struct {
@@ -168,10 +179,22 @@ typedef struct {
     void **children;
     int32_t child_count;
     int32_t child_capacity;
+    int32_t registry_index;
     int8_t group;
     int8_t alive;
     int8_t spawned;
     int8_t destroyed;
+    double interp_prev_position[3];
+    double interp_prev_rotation[4];
+    double interp_saved_position[3];
+    double interp_saved_rotation[4];
+    int8_t interp_has_prev;
+    int8_t interp_pose_blended;
+    rt_string persistent_key;
+    int64_t state_tag;
+    uint32_t sim_tick_stamp;
+    int32_t child_storage_capacity;
+    uint64_t child_storage_cookie;
 } Game3DEntityTestLayout;
 
 typedef struct {
@@ -244,6 +267,10 @@ typedef struct {
     double gravity;
     double vertical_velocity;
     double eye_height;
+    double stand_height;
+    double crouch_height;
+    double capsule_radius;
+    int8_t crouching;
 } Game3DCharacterControllerTestLayout;
 
 typedef struct {
@@ -384,6 +411,8 @@ namespace {
 static std::jmp_buf g_trap_jmp;
 static const char *g_last_trap = nullptr;
 static bool g_expect_trap = false;
+static bool g_return_trap = false;
+static int g_returning_trap_count = 0;
 static int g_tests_passed = 0;
 static int g_tests_total = 0;
 static int g_update_calls = 0;
@@ -404,6 +433,10 @@ extern "C" void vm_trap(const char *msg) {
     g_last_trap = msg;
     if (g_expect_trap)
         std::longjmp(g_trap_jmp, 1);
+    if (g_return_trap) {
+        ++g_returning_trap_count;
+        return;
+    }
     std::fprintf(stderr, "unexpected runtime trap: %s\n", msg ? msg : "(null)");
     std::abort();
 }
@@ -1186,6 +1219,296 @@ static bool test_input_update_snapshots_frame_state() {
     PASS();
 }
 
+static bool test_input_repairs_corrupt_snapshots_and_rejects_undersized_handles() {
+    TEST("Input3D repairs corrupt snapshots and rejects undersized handles");
+    rt_keyboard_init();
+    rt_mouse_init();
+    rt_keyboard_begin_frame();
+    rt_mouse_begin_frame();
+
+    void *input = rt_game3d_input_new();
+    auto *view = static_cast<Game3DInputTestLayout *>(input);
+    view->look_sensitivity = INFINITY;
+    view->has_snapshot = 9;
+    view->mouse_dx = INT64_MAX;
+    view->mouse_dy = INT64_MIN;
+    view->mouse_fdx = INFINITY;
+    view->mouse_fdy = -INFINITY;
+    view->wheel_y = NAN;
+    view->bound_pad = INT64_MAX;
+    view->pad_look_sensitivity = INFINITY;
+    view->pad_lx = INFINITY;
+    view->pad_ly = -INFINITY;
+    view->pad_rx = 3.0;
+    view->pad_ry = -3.0;
+    view->pad_connected = 7;
+
+    EXPECT_EQ_INT(rt_game3d_input_get_pad_bound(input), -1, "invalid pad binding repairs to none");
+    EXPECT_NEAR(view->look_sensitivity, 0.01, 0.0001, "look sensitivity repair persists");
+    EXPECT_EQ_INT(view->has_snapshot, 1, "snapshot flag repair persists canonically");
+    EXPECT_EQ_INT(view->mouse_dx,
+                  1000000000000LL,
+                  "oversized integer mouse X repair persists at the controller bound");
+    EXPECT_EQ_INT(view->mouse_dy,
+                  -1000000000000LL,
+                  "oversized integer mouse Y repair persists at the controller bound");
+    EXPECT_NEAR(view->mouse_fdx, 0.0, 0.0001, "non-finite mouse X repair persists");
+    EXPECT_NEAR(view->mouse_fdy, 0.0, 0.0001, "non-finite mouse Y repair persists");
+    EXPECT_NEAR(view->wheel_y, 0.0, 0.0001, "non-finite wheel repair persists");
+    EXPECT_EQ_INT(view->pad_connected, 0, "invalid binding clears stale connection state");
+    EXPECT_NEAR(view->pad_lx, 0.0, 0.0001, "invalid binding clears stale left stick");
+    EXPECT_NEAR(view->pad_rx, 0.0, 0.0001, "invalid binding clears stale right stick");
+    EXPECT_TRUE(rt_game3d_input_is_down(input, -1) == 0,
+                "negative key codes never fall through to live input");
+    EXPECT_TRUE(rt_game3d_input_pressed(input, ZANNA_KEY_MAX) == 0,
+                "oversized key codes never read past snapshots");
+    EXPECT_TRUE(rt_game3d_input_mouse_button(input, -1) == 0,
+                "negative mouse buttons never reach the backend");
+    EXPECT_TRUE(rt_game3d_input_mouse_pressed(input, ZANNA_MOUSE_BUTTON_MAX) == 0,
+                "oversized mouse buttons never read past snapshots");
+
+    rt_game3d_input_bind_pad(input, 0);
+    view->pad_connected = 4;
+    view->pad_lx = 8.0;
+    view->pad_ly = -8.0;
+    view->pad_rx = INFINITY;
+    view->pad_ry = -INFINITY;
+    void *move = rt_game3d_input_move_axis(input);
+    void *look = rt_game3d_input_look_axis(input);
+    EXPECT_EQ_INT(view->pad_connected, 1, "connected flag is canonicalized");
+    EXPECT_NEAR(view->pad_lx, 1.0, 0.0001, "left-stick X clamps to its backend range");
+    EXPECT_NEAR(view->pad_ly, -1.0, 0.0001, "left-stick Y clamps to its backend range");
+    EXPECT_NEAR(view->pad_rx, 0.0, 0.0001, "non-finite right-stick X repairs to zero");
+    EXPECT_NEAR(view->pad_ry, 0.0, 0.0001, "non-finite right-stick Y repairs to zero");
+    EXPECT_TRUE(std::isfinite(rt_vec3_x(move)) && std::isfinite(rt_vec3_z(move)),
+                "repaired move axes stay finite");
+    EXPECT_TRUE(std::isfinite(rt_vec2_x(look)) && std::isfinite(rt_vec2_y(look)),
+                "repaired look axes stay finite");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { rt_game3d_input_bind_pad(input, ZANNA_PAD_MAX); }, "pad index"),
+        "out-of-range pad binding traps");
+    EXPECT_EQ_INT(rt_game3d_input_get_pad_bound(input),
+                  0,
+                  "failed pad binding preserves the previous selection");
+
+    void *undersized = rt_obj_new_i64(RT_G3D_GAME3D_INPUT_CLASS_ID, (int64_t)sizeof(double));
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_input_get_look_sensitivity(undersized); },
+                             "invalid input"),
+        "class-id spoof with an undersized Input3D payload is rejected");
+    if (undersized && rt_obj_release_check0(undersized))
+        rt_obj_free(undersized);
+    PASS();
+}
+
+static bool test_game3d_core_rejects_undersized_class_id_spoofs() {
+    TEST("Game3D core rejects undersized class-id spoofs");
+    void *entity = rt_obj_new_i64(RT_G3D_GAME3D_ENTITY_CLASS_ID, 1);
+    void *world = rt_obj_new_i64(RT_G3D_GAME3D_WORLD_CLASS_ID, 1);
+    void *character = rt_obj_new_i64(RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID, 1);
+    void *first_person = rt_obj_new_i64(RT_G3D_GAME3D_FIRSTPERSON_CLASS_ID, 1);
+    void *free_fly = rt_obj_new_i64(RT_G3D_GAME3D_FREEFLY_CLASS_ID, 1);
+    void *orbit = rt_obj_new_i64(RT_G3D_GAME3D_ORBIT_CLASS_ID, 1);
+    void *follow = rt_obj_new_i64(RT_G3D_GAME3D_FOLLOW_CLASS_ID, 1);
+    void *third_person = rt_obj_new_i64(RT_G3D_GAME3D_THIRDPERSON_CLASS_ID, 1);
+    void *rail = rt_obj_new_i64(RT_G3D_GAME3D_RAILCAMERA_CLASS_ID, 1);
+    void *layer_mask = rt_obj_new_i64(RT_G3D_GAME3D_LAYERMASK_CLASS_ID, 1);
+    void *sound = rt_obj_new_i64(RT_G3D_GAME3D_SOUND_CLASS_ID, 1);
+    void *effects = rt_obj_new_i64(RT_G3D_GAME3D_EFFECTS_CLASS_ID, 1);
+    void *body_def = rt_obj_new_i64(RT_G3D_GAME3D_BODYDEF_CLASS_ID, 1);
+    void *collision_event = rt_obj_new_i64(RT_G3D_GAME3D_COLLISION_EVENT_CLASS_ID, 1);
+    void *animator = rt_obj_new_i64(RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID, 1);
+    void *model_template = rt_obj_new_i64(RT_G3D_GAME3D_MODEL_TEMPLATE_CLASS_ID, 1);
+    void *asset_handle = rt_obj_new_i64(RT_G3D_GAME3D_ASSET_HANDLE3D_CLASS_ID, 1);
+    void *world_stream = rt_obj_new_i64(RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID, 1);
+    void *lipsync = rt_obj_new_i64(RT_G3D_GAME3D_LIPSYNC_CLASS_ID, 1);
+    void *dialogue = rt_obj_new_i64(RT_G3D_GAME3D_DIALOGUE_CLASS_ID, 1);
+    void *timeline = rt_obj_new_i64(RT_G3D_GAME3D_TIMELINE_CLASS_ID, 1);
+    void *target_lock = rt_obj_new_i64(RT_G3D_GAME3D_TARGETLOCK_CLASS_ID, 1);
+    void *canvas = rt_obj_new_i64(RT_G3D_CANVAS3D_CLASS_ID, 1);
+    void *camera = rt_obj_new_i64(RT_G3D_CAMERA3D_CLASS_ID, 1);
+    void *scene = rt_obj_new_i64(RT_G3D_SCENE3D_CLASS_ID, 1);
+    void *scene_node = rt_obj_new_i64(RT_G3D_SCENENODE3D_CLASS_ID, 1);
+    void *physics_world = rt_obj_new_i64(RT_G3D_WORLD3D_CLASS_ID, 1);
+    void *body = rt_obj_new_i64(RT_G3D_BODY3D_CLASS_ID, 1);
+    void *physics_character = rt_obj_new_i64(RT_G3D_CHARACTER3D_CLASS_ID, 1);
+    void *trigger = rt_obj_new_i64(RT_G3D_TRIGGER3D_CLASS_ID, 1);
+    void *mesh = rt_obj_new_i64(RT_G3D_MESH3D_CLASS_ID, 1);
+    void *material = rt_obj_new_i64(RT_G3D_MATERIAL3D_CLASS_ID, 1);
+    void *light = rt_obj_new_i64(RT_G3D_LIGHT3D_CLASS_ID, 1);
+    void *postfx = rt_obj_new_i64(RT_G3D_POSTFX3D_CLASS_ID, 1);
+    void *path = rt_obj_new_i64(RT_G3D_PATH3D_CLASS_ID, 1);
+    void *live_entity = rt_game3d_entity_new();
+
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_entity_get_layer(entity); }, "invalid entity"),
+        "undersized Entity3D payload is rejected before field access");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_world_get_frame(world); }, "invalid world"),
+        "undersized World3D payload is rejected before field access");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_character_controller_get_speed(character); },
+                             "invalid controller"),
+        "undersized CharacterController3D payload is rejected");
+    EXPECT_TRUE(expect_trap_contains(
+                    [&] { (void)rt_game3d_first_person_controller_get_speed(first_person); },
+                    "invalid controller"),
+                "undersized FirstPersonController payload is rejected");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_free_fly_controller_get_speed(free_fly); },
+                             "invalid controller"),
+        "undersized FreeFlyController payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_orbit_controller_get_yaw(orbit); },
+                                     "invalid controller"),
+                "undersized OrbitController payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_follow_controller_get_damping(follow); },
+                                     "invalid controller"),
+                "undersized FollowController payload is rejected");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_thirdperson_controller_get_yaw(third_person); },
+                             "invalid controller"),
+        "undersized ThirdPersonController payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_rail_camera_get_progress(rail); },
+                                     "invalid rail"),
+                "undersized RailCamera3D payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_layermask_get_bits(layer_mask); },
+                                     "invalid mask"),
+                "undersized LayerMask payload is rejected");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_audio_get_volume(sound); }, "invalid audio"),
+        "undersized Sound3D payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_effects_get_count(effects); },
+                                     "invalid effects"),
+                "undersized EffectRegistry3D payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_body_def_get_mass(body_def); },
+                                     "invalid BodyDef"),
+                "undersized BodyDef payload is rejected");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_entity_attach_body(live_entity, body_def); },
+                             "expected Physics3DBody or BodyDef"),
+        "Entity3D.attachBody rejects an undersized BodyDef before reading private fields");
+    EXPECT_TRUE(rt_game3d_entity_get_body(live_entity) == nullptr,
+                "failed undersized BodyDef attachment preserves the previous empty binding");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_collision_event_get_phase(collision_event); },
+                             "invalid event"),
+        "undersized Collision3DEvent payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_animator_get_controller(animator); },
+                                     "invalid animator"),
+                "undersized Animator3D payload is rejected");
+    EXPECT_TRUE(expect_trap_contains(
+                    [&] { (void)rt_game3d_model_template_get_scene_count(model_template); },
+                    "invalid template"),
+                "undersized ModelTemplate payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_asset_handle_get_ready(asset_handle); },
+                                     "invalid handle"),
+                "undersized AssetHandle3D payload is rejected");
+    EXPECT_TRUE(expect_trap_contains(
+                    [&] { (void)rt_game3d_world_stream_get_resident_cell_count(world_stream); },
+                    "invalid stream"),
+                "undersized WorldStream3D payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_lipsync_get_driving(lipsync); },
+                                     "invalid lip sync"),
+                "undersized LipSync3D payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_dialogue_get_active(dialogue); },
+                                     "invalid dialogue"),
+                "undersized Dialogue3D payload is rejected");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_timeline_get_duration(timeline); },
+                                     "invalid timeline"),
+                "undersized Timeline3D payload is rejected");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_targetlock_get_max_distance(target_lock); },
+                             "invalid lock"),
+        "undersized TargetLock3D payload is rejected");
+
+    EXPECT_EQ_INT(rt_canvas3d_get_light_count(canvas),
+                  0,
+                  "undersized Canvas3D payload returns a neutral light count");
+    EXPECT_NEAR(rt_camera3d_get_fov(camera),
+                0.0,
+                0.0001,
+                "undersized Camera3D payload returns a neutral FOV");
+    EXPECT_EQ_INT(rt_scene3d_get_node_count(scene),
+                  0,
+                  "undersized Scene3D payload returns a neutral node count");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_entity_from_node(scene_node); }, "SceneNode3D"),
+        "undersized SceneNode3D payload is rejected before FromNode field access");
+    EXPECT_EQ_INT(rt_scene_node3d_child_count(scene_node),
+                  0,
+                  "undersized SceneNode3D payload returns a neutral child count");
+    EXPECT_EQ_INT(rt_world3d_get_collision_count(physics_world),
+                  0,
+                  "undersized Physics3D World payload returns a neutral contact count");
+    EXPECT_NEAR(
+        rt_body3d_get_mass(body), 0.0, 0.0001, "undersized Body3D payload returns a neutral mass");
+    EXPECT_EQ_INT(rt_character3d_is_grounded(physics_character),
+                  0,
+                  "undersized Character3D payload returns a neutral grounded state");
+    EXPECT_EQ_INT(rt_trigger3d_get_enter_count(trigger),
+                  0,
+                  "undersized Trigger3D payload returns a neutral enter count");
+    EXPECT_EQ_INT(rt_mesh3d_get_triangle_count(mesh),
+                  0,
+                  "undersized Mesh3D payload returns a neutral triangle count");
+    EXPECT_NEAR(rt_material3d_get_roughness(material),
+                0.5,
+                0.0001,
+                "undersized Material3D payload returns the documented default roughness");
+    EXPECT_NEAR(rt_light3d_get_intensity(light),
+                0.0,
+                0.0001,
+                "undersized Light3D payload returns a neutral intensity");
+    EXPECT_EQ_INT(rt_postfx3d_get_effect_count(postfx),
+                  0,
+                  "undersized PostFX3D payload returns a neutral effect count");
+    EXPECT_EQ_INT(rt_path3d_get_point_count(path),
+                  0,
+                  "undersized Path3D payload returns a neutral point count");
+
+    void *objects[] = {entity,
+                       world,
+                       character,
+                       first_person,
+                       free_fly,
+                       orbit,
+                       follow,
+                       third_person,
+                       rail,
+                       layer_mask,
+                       sound,
+                       effects,
+                       body_def,
+                       collision_event,
+                       animator,
+                       model_template,
+                       asset_handle,
+                       world_stream,
+                       lipsync,
+                       dialogue,
+                       timeline,
+                       target_lock,
+                       canvas,
+                       camera,
+                       scene,
+                       scene_node,
+                       physics_world,
+                       body,
+                       physics_character,
+                       trigger,
+                       mesh,
+                       material,
+                       light,
+                       postfx,
+                       path,
+                       live_entity};
+    for (void *object : objects) {
+        if (object && rt_obj_release_check0(object))
+            rt_obj_free(object);
+    }
+    PASS();
+}
+
 static bool test_world_entity_registry_and_collision_clear() {
     TEST("World3D owns entities, bodies, names, and collision events");
     void *world = rt_game3d_world_new(rt_const_cstr("Game3D Unit Registry"), 80, 60);
@@ -1405,6 +1728,15 @@ static bool test_world_entity_registry_and_collision_clear() {
     EXPECT_TRUE(
         expect_trap_contains([&] { (void)rt_game3d_world_get_frame(world); }, "world is destroyed"),
         "destroyed world handles trap with a clear diagnostic");
+    g_returning_trap_count = 0;
+    g_return_trap = true;
+    int64_t destroyed_frame = rt_game3d_world_get_frame(world);
+    g_return_trap = false;
+    EXPECT_EQ_INT(
+        g_returning_trap_count, 1, "destroyed world getter reports exactly one returning trap");
+    EXPECT_EQ_INT(destroyed_frame,
+                  0,
+                  "destroyed world getter does not dereference state after a returning trap");
     rt_game3d_diagnostics_reset();
     void *destroyed_pos = rt_game3d_entity_position(other);
     EXPECT_NEAR(
@@ -1680,7 +2012,9 @@ static bool test_entity_private_slots_reject_wrong_class_refs() {
     view->name = reinterpret_cast<rt_string>(material_b);
     EXPECT_TRUE(std::strcmp(rt_string_cstr(rt_game3d_entity_get_name(entity)), "") == 0,
                 "Entity3D.GetName rejects wrong-class private string slots");
+    rt_string repaired_name = view->name;
     view->name = saved_name;
+    rt_string_unref(repaired_name);
 
     size_t material_b_ref = rt_heap_hdr(material_b)->refcnt;
     view->node = material_b;
@@ -1853,9 +2187,13 @@ static bool test_entity_child_count_repair_bounds_tree_walks() {
     void *parent = rt_game3d_entity_new();
     void *first = rt_game3d_entity_new();
     void *second = rt_game3d_entity_new();
+    void *third = rt_game3d_entity_new();
+    void *fourth = rt_game3d_entity_new();
     rt_game3d_entity_set_name(parent, rt_const_cstr("CorruptCountParent"));
     rt_game3d_entity_set_name(first, rt_const_cstr("CorruptCountFirst"));
     rt_game3d_entity_set_name(second, rt_const_cstr("CorruptCountSecond"));
+    rt_game3d_entity_set_name(third, rt_const_cstr("CorruptCountThird"));
+    rt_game3d_entity_set_name(fourth, rt_const_cstr("CorruptCountFourth"));
 
     rt_game3d_entity_add_child(parent, first);
     Game3DEntityTestLayout *parent_layout = static_cast<Game3DEntityTestLayout *>(parent);
@@ -1869,19 +2207,63 @@ static bool test_entity_child_count_repair_bounds_tree_walks() {
                   2,
                   "addChild repairs corrupt child count before appending");
 
+    parent_layout->child_count = 0;
+    parent_layout->child_capacity = 0;
+    rt_game3d_entity_add_child(parent, third);
+    EXPECT_EQ_INT(rt_scene_node3d_child_count(rt_game3d_entity_get_node(parent)),
+                  3,
+                  "addChild recovers an underreported dense child prefix");
+
     parent_layout->child_count = INT32_MAX;
-    parent_layout->child_capacity = 2;
+    parent_layout->child_capacity = INT32_MAX;
+    rt_game3d_entity_add_child(parent, fourth);
+    EXPECT_EQ_INT(rt_scene_node3d_child_count(rt_game3d_entity_get_node(parent)),
+                  4,
+                  "addChild bounds corrupt capacity by trusted allocation metadata");
+    EXPECT_EQ_INT(parent_layout->child_capacity,
+                  parent_layout->child_storage_capacity,
+                  "child capacity repair restores the owned allocation bound");
+
+    void **saved_children = parent_layout->children;
+    int32_t saved_child_count = parent_layout->child_count;
+    int32_t saved_child_capacity = parent_layout->child_capacity;
+    int32_t saved_storage_capacity = parent_layout->child_storage_capacity;
+    uint64_t saved_storage_cookie = parent_layout->child_storage_cookie;
+    int8_t saved_group = parent_layout->group;
+    void *wrong_storage = rt_material3d_new_color(0.1, 0.2, 0.3);
+    parent_layout->children = reinterpret_cast<void **>(wrong_storage);
+    parent_layout->group = 0;
+    EXPECT_EQ_INT(rt_game3d_entity_is_group(parent),
+                  0,
+                  "child traversal rejects a pointer that does not match its storage marker");
+    parent_layout->children = saved_children;
+    parent_layout->child_count = saved_child_count;
+    parent_layout->child_capacity = saved_child_capacity;
+    parent_layout->child_storage_capacity = saved_storage_capacity;
+    parent_layout->child_storage_cookie = saved_storage_cookie;
+    parent_layout->group = saved_group;
+    if (wrong_storage && rt_obj_release_check0(wrong_storage))
+        rt_obj_free(wrong_storage);
+
+    parent_layout->child_count = INT32_MAX;
+    parent_layout->child_capacity = 4;
     void *world = rt_game3d_world_new(rt_const_cstr("Game3D Corrupt Child Count Unit"), 80, 60);
     rt_game3d_world_spawn(world, parent);
     EXPECT_EQ_INT(rt_game3d_world_get_entity_count(world),
-                  3,
+                  5,
                   "spawn clamps corrupt entity child count while visiting the tree");
     EXPECT_TRUE(rt_game3d_world_find_node(world, rt_const_cstr("CorruptCountSecond")) ==
                     rt_game3d_entity_get_node(second),
                 "spawn still reaches valid children under the clamped count");
+    EXPECT_TRUE(rt_game3d_world_find_node(world, rt_const_cstr("CorruptCountThird")) ==
+                    rt_game3d_entity_get_node(third),
+                "spawn reaches children after capacity repair");
+    EXPECT_TRUE(rt_game3d_world_find_node(world, rt_const_cstr("CorruptCountFourth")) ==
+                    rt_game3d_entity_get_node(fourth),
+                "spawn reaches the complete recovered dense child prefix");
 
     parent_layout->child_count = INT32_MAX;
-    parent_layout->child_capacity = 2;
+    parent_layout->child_capacity = 4;
     rt_game3d_world_despawn(world, parent);
     EXPECT_EQ_INT(rt_game3d_world_get_entity_count(world),
                   0,
@@ -1890,6 +2272,20 @@ static bool test_entity_child_count_repair_bounds_tree_walks() {
                 "despawn reaches all valid children under the clamped count");
 
     rt_game3d_world_destroy(world);
+
+    void *finalizer_parent = rt_game3d_entity_new();
+    void *finalizer_child = rt_game3d_entity_new();
+    rt_game3d_entity_add_child(finalizer_parent, finalizer_child);
+    auto *finalizer_layout = static_cast<Game3DEntityTestLayout *>(finalizer_parent);
+    size_t child_refcount = rt_heap_hdr(finalizer_child)->refcnt;
+    finalizer_layout->child_count = 0;
+    finalizer_layout->child_capacity = 0;
+    if (rt_obj_release_check0(finalizer_parent))
+        rt_obj_free(finalizer_parent);
+    EXPECT_TRUE(rt_heap_hdr(finalizer_child)->refcnt + 1 == child_refcount,
+                "finalization releases owned children despite underreported public mirrors");
+    if (rt_obj_release_check0(finalizer_child))
+        rt_obj_free(finalizer_child);
     PASS();
 }
 
@@ -2260,6 +2656,69 @@ static bool test_world_getters_sanitize_corrupt_private_state() {
     EXPECT_TRUE(rt_heap_hdr(wrong)->refcnt == wrong_ref,
                 "World3D component getters do not release wrong-class private handles");
 
+    void *undersized_canvas = rt_obj_new_i64(RT_G3D_CANVAS3D_CLASS_ID, 1);
+    void *undersized_camera = rt_obj_new_i64(RT_G3D_CAMERA3D_CLASS_ID, 1);
+    void *undersized_scene = rt_obj_new_i64(RT_G3D_SCENE3D_CLASS_ID, 1);
+    void *undersized_input = rt_obj_new_i64(RT_G3D_GAME3D_INPUT_CLASS_ID, 1);
+    void *undersized_audio = rt_obj_new_i64(RT_G3D_GAME3D_SOUND_CLASS_ID, 1);
+    void *undersized_effects = rt_obj_new_i64(RT_G3D_GAME3D_EFFECTS_CLASS_ID, 1);
+    void *undersized_stream = rt_obj_new_i64(RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID, 1);
+    EXPECT_TRUE(undersized_canvas && undersized_camera && undersized_scene && undersized_input &&
+                    undersized_audio && undersized_effects && undersized_stream,
+                "same-class undersized component fixtures allocate");
+
+    layout->canvas = undersized_canvas;
+    EXPECT_TRUE(rt_game3d_world_get_canvas(world) == nullptr,
+                "World3D.GetCanvas rejects an undersized same-class payload");
+    rt_game3d_world_set_skybox(world, nullptr);
+    rt_game3d_world_set_quality(world, RT_GAME3D_QUALITY_BALANCED);
+    layout->canvas = saved_canvas;
+    layout->camera = undersized_camera;
+    EXPECT_TRUE(rt_game3d_world_get_camera(world) == nullptr,
+                "World3D.GetCamera rejects an undersized same-class payload");
+    layout->camera = saved_camera;
+    layout->scene = undersized_scene;
+    EXPECT_TRUE(rt_game3d_world_get_scene(world) == nullptr,
+                "World3D.GetScene rejects an undersized same-class payload");
+    layout->scene = saved_scene;
+    layout->input = undersized_input;
+    EXPECT_TRUE(rt_game3d_world_get_input(world) == nullptr,
+                "World3D.GetInput rejects an undersized same-class payload");
+    layout->input = saved_input;
+    layout->audio = undersized_audio;
+    EXPECT_TRUE(rt_game3d_world_get_audio(world) == nullptr,
+                "World3D.GetAudio rejects an undersized same-class payload");
+    layout->audio = saved_audio;
+    layout->effects = undersized_effects;
+    EXPECT_TRUE(rt_game3d_world_get_effects(world) == nullptr,
+                "World3D.GetEffects rejects an undersized same-class payload");
+    rt_game3d_world_set_quality(world, RT_GAME3D_QUALITY_BALANCED);
+    layout->effects = saved_effects;
+
+    layout->stream = nullptr;
+    release_runtime_ref(stream);
+    rt_obj_retain_maybe(undersized_stream);
+    layout->stream = undersized_stream;
+    EXPECT_EQ_INT(rt_game3d_world_get_stream_resident_bytes(world),
+                  0,
+                  "World3D stream telemetry rejects an undersized same-class payload");
+    stream = rt_game3d_world_get_stream(world);
+    EXPECT_TRUE(stream != nullptr && stream != undersized_stream,
+                "World3D.GetStream replaces an undersized same-class payload");
+    EXPECT_EQ_INT(rt_heap_hdr(undersized_stream)->refcnt,
+                  1,
+                  "World3D.GetStream releases only its retained undersized slot reference");
+
+    void *undersized_components[] = {undersized_canvas,
+                                     undersized_camera,
+                                     undersized_scene,
+                                     undersized_input,
+                                     undersized_audio,
+                                     undersized_effects,
+                                     undersized_stream};
+    for (void *component : undersized_components)
+        release_runtime_ref(component);
+
     layout->dt = NAN;
     layout->elapsed = -10.0;
     layout->frame = -11;
@@ -2290,7 +2749,37 @@ static bool test_world_getters_sanitize_corrupt_private_state() {
     EXPECT_NEAR(
         rt_vec3_z(origin), -1000000000000.0, 0.001, "World3D.worldOrigin clamps oversized Z");
 
+    void *owned_components[] = {layout->stream,
+                                layout->effects,
+                                layout->audio,
+                                layout->input,
+                                layout->physics,
+                                layout->scene,
+                                layout->camera,
+                                layout->canvas};
+    layout->stream = nullptr;
+    layout->effects = nullptr;
+    layout->audio = nullptr;
+    layout->input = nullptr;
+    layout->physics = nullptr;
+    layout->scene = nullptr;
+    layout->camera = nullptr;
+    layout->canvas = nullptr;
+    for (void *component : owned_components)
+        release_runtime_ref(component);
+    layout->stream = wrong;
+    layout->effects = wrong;
+    layout->audio = wrong;
+    layout->input = wrong;
+    layout->physics = wrong;
+    layout->scene = wrong;
+    layout->camera = wrong;
+    layout->canvas = wrong;
     rt_game3d_world_destroy(world);
+    EXPECT_EQ_INT(rt_heap_hdr(wrong)->refcnt,
+                  wrong_ref,
+                  "World3D teardown clears wrong-class component corruption as unowned");
+    release_runtime_ref(wrong);
     PASS();
 }
 
@@ -2568,6 +3057,8 @@ static bool test_free_fly_controller_synthetic_input() {
                 0.01,
                 0.0001,
                 "free-fly look sensitivity getter sanitizes corrupt private state");
+    EXPECT_NEAR(fly_view->speed, 6.0, 0.0001, "free-fly speed repair persists");
+    EXPECT_NEAR(fly_view->look_sensitivity, 0.01, 0.0001, "free-fly sensitivity repair persists");
     fly_view->speed = 10.0;
     fly_view->look_sensitivity = 0.10;
     rt_game3d_world_set_camera_controller(world, controller);
@@ -2585,6 +3076,107 @@ static bool test_free_fly_controller_synthetic_input() {
     EXPECT_EQ_INT(
         rt_game3d_world_get_frame(world), 1, "controller frame increments with runFramesOnly");
     rt_canvas3d_clear_synthetic_input(canvas);
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
+static bool test_camera_and_character_controllers_preserve_zero_delta_pauses() {
+    TEST("Game3D controllers preserve zero-delta pauses");
+    rt_keyboard_init();
+    rt_mouse_init();
+    rt_keyboard_begin_frame();
+    rt_mouse_begin_frame();
+    rt_keyboard_on_key_down(rt_game3d_key_w());
+    rt_mouse_force_delta(24, -12);
+    rt_mouse_button_down(rt_game3d_mouse_left());
+    rt_mouse_update_wheel(0.0, 2.0);
+
+    void *world = rt_game3d_world_new(rt_const_cstr("Game3D Controller Pause Unit"), 80, 60);
+    void *camera = rt_game3d_world_get_camera(world);
+    void *input = rt_game3d_world_get_input(world);
+
+    void *free_fly = rt_game3d_free_fly_controller_new(world);
+    void *before = rt_camera3d_get_position(camera);
+    rt_game3d_free_fly_controller_update(free_fly, world, 0.0);
+    void *after = rt_camera3d_get_position(camera);
+    EXPECT_NEAR(rt_vec3_x(after), rt_vec3_x(before), 0.000001, "paused free-fly keeps camera X");
+    EXPECT_NEAR(rt_vec3_y(after), rt_vec3_y(before), 0.000001, "paused free-fly keeps camera Y");
+    EXPECT_NEAR(rt_vec3_z(after), rt_vec3_z(before), 0.000001, "paused free-fly keeps camera Z");
+
+    void *first_person = rt_game3d_first_person_controller_new(world);
+    before = rt_camera3d_get_position(camera);
+    rt_game3d_first_person_controller_update(first_person, world, NAN);
+    after = rt_camera3d_get_position(camera);
+    EXPECT_NEAR(rt_vec3_x(after),
+                rt_vec3_x(before),
+                0.000001,
+                "non-finite first-person delta keeps camera X");
+    EXPECT_NEAR(rt_vec3_z(after),
+                rt_vec3_z(before),
+                0.000001,
+                "non-finite first-person delta keeps camera Z");
+
+    void *orbit_target = rt_vec3_new(0.0, 1.0, 0.0);
+    void *orbit = rt_game3d_orbit_controller_new(world, orbit_target);
+    double orbit_yaw = rt_game3d_orbit_controller_get_yaw(orbit);
+    double orbit_distance = rt_game3d_orbit_controller_get_distance(orbit);
+    rt_game3d_orbit_controller_update(orbit, world, 0.0);
+    EXPECT_NEAR(rt_game3d_orbit_controller_get_yaw(orbit),
+                orbit_yaw,
+                0.000001,
+                "paused orbit does not consume mouse drag");
+    EXPECT_NEAR(rt_game3d_orbit_controller_get_distance(orbit),
+                orbit_distance,
+                0.000001,
+                "paused orbit does not consume wheel input");
+
+    void *follow_target = rt_game3d_entity_new();
+    rt_game3d_entity_set_position(follow_target, 20.0, 3.0, -10.0);
+    void *follow_offset = rt_vec3_new(0.0, 4.0, 8.0);
+    void *follow = rt_game3d_follow_controller_new(world, follow_target, follow_offset);
+    before = rt_camera3d_get_position(camera);
+    rt_game3d_follow_controller_late_update(follow, world, 0.0);
+    after = rt_camera3d_get_position(camera);
+    EXPECT_NEAR(rt_vec3_x(after), rt_vec3_x(before), 0.000001, "paused follow keeps camera X");
+    EXPECT_NEAR(rt_vec3_y(after), rt_vec3_y(before), 0.000001, "paused follow keeps camera Y");
+    EXPECT_NEAR(rt_vec3_z(after), rt_vec3_z(before), 0.000001, "paused follow keeps camera Z");
+
+    void *path = rt_path3d_new();
+    void *path_a = rt_vec3_new(0.0, 0.0, 0.0);
+    void *path_b = rt_vec3_new(10.0, 0.0, 0.0);
+    rt_path3d_add_point(path, path_a);
+    rt_path3d_add_point(path, path_b);
+    void *rail = rt_game3d_rail_camera_new(world, path);
+    rt_game3d_rail_camera_set_progress(rail, 0.25);
+    rt_game3d_rail_camera_set_speed(rail, 10.0);
+    rt_game3d_rail_camera_update(rail, world, 0.0);
+    EXPECT_NEAR(rt_game3d_rail_camera_get_progress(rail),
+                0.25,
+                0.000001,
+                "paused rail does not auto-advance");
+
+    void *character_entity = rt_game3d_entity_new();
+    void *character = rt_game3d_character_controller_new(world, character_entity, 0.3, 1.8, 70.0);
+    auto *character_view = static_cast<Game3DCharacterControllerTestLayout *>(character);
+    character_view->vertical_velocity = 3.0;
+    void *character_before = rt_game3d_entity_position(character_entity);
+    rt_game3d_character_controller_update(character, input, camera, 0.0);
+    void *character_after = rt_game3d_entity_position(character_entity);
+    EXPECT_NEAR(rt_vec3_x(character_after),
+                rt_vec3_x(character_before),
+                0.000001,
+                "paused character keeps entity X");
+    EXPECT_NEAR(rt_vec3_y(character_after),
+                rt_vec3_y(character_before),
+                0.000001,
+                "paused character keeps entity Y");
+    EXPECT_NEAR(character_view->vertical_velocity,
+                3.0,
+                0.000001,
+                "paused character preserves vertical integration state");
+
+    rt_keyboard_on_key_up(rt_game3d_key_w());
+    rt_mouse_button_up(rt_game3d_mouse_left());
     rt_game3d_world_destroy(world);
     PASS();
 }
@@ -2675,6 +3267,12 @@ static bool test_character_controller_syncs_world_position_under_parent() {
     controller_view->speed = -INFINITY;
     controller_view->jump_speed = INFINITY;
     controller_view->gravity = NAN;
+    controller_view->vertical_velocity = INFINITY;
+    controller_view->eye_height = -INFINITY;
+    controller_view->stand_height = -1.0;
+    controller_view->crouch_height = INFINITY;
+    controller_view->capsule_radius = NAN;
+    controller_view->crouching = 7;
     EXPECT_NEAR(rt_game3d_character_controller_get_speed(controller),
                 6.0,
                 0.0001,
@@ -2687,6 +3285,21 @@ static bool test_character_controller_syncs_world_position_under_parent() {
                 20.0,
                 0.0001,
                 "character gravity getter sanitizes corrupt private state");
+    EXPECT_NEAR(controller_view->speed, 6.0, 0.0001, "character speed repair persists");
+    EXPECT_NEAR(controller_view->jump_speed, 5.5, 0.0001, "character jump repair persists");
+    EXPECT_NEAR(controller_view->gravity, 20.0, 0.0001, "character gravity repair persists");
+    EXPECT_NEAR(controller_view->vertical_velocity,
+                0.0,
+                0.0001,
+                "character vertical velocity repair persists");
+    EXPECT_NEAR(
+        controller_view->capsule_radius, 0.3, 0.0001, "character capsule radius repair persists");
+    EXPECT_TRUE(controller_view->stand_height >= controller_view->capsule_radius * 2.0,
+                "character stand height remains valid for the capsule radius");
+    EXPECT_TRUE(controller_view->crouch_height >= controller_view->capsule_radius * 2.0 &&
+                    controller_view->crouch_height <= controller_view->stand_height,
+                "character crouch height remains inside capsule bounds");
+    EXPECT_EQ_INT(controller_view->crouching, 1, "character crouch flag is canonicalized");
     controller_view->character = wrong_ref;
     controller_view->entity = wrong_ref;
     EXPECT_TRUE(rt_game3d_character_controller_get_character(controller) == nullptr,
@@ -2696,18 +3309,44 @@ static bool test_character_controller_syncs_world_position_under_parent() {
     EXPECT_EQ_INT(rt_game3d_character_controller_grounded(controller),
                   0,
                   "wrong-class CharacterController3D character reports not grounded");
+    void *undersized_entity = rt_obj_new_i64(RT_G3D_GAME3D_ENTITY_CLASS_ID, 1);
+    controller_view->entity = undersized_entity;
+    EXPECT_TRUE(rt_game3d_character_controller_get_entity(controller) == nullptr,
+                "undersized private CharacterController3D entity slots are quarantined");
+    if (undersized_entity && rt_obj_release_check0(undersized_entity))
+        rt_obj_free(undersized_entity);
     rt_game3d_character_controller_teleport(controller, 12.0, 0.0, 0.0);
     controller_view->character = saved_character;
     controller_view->entity = saved_entity;
     controller_view->speed = 6.0;
     controller_view->jump_speed = 5.5;
     controller_view->gravity = 20.0;
+    controller_view->vertical_velocity = 0.0;
+    controller_view->eye_height = 0.81;
+    controller_view->stand_height = 1.8;
+    controller_view->crouch_height = 0.9;
+    controller_view->capsule_radius = 0.3;
+    controller_view->crouching = 0;
+    rt_game3d_character_controller_set_gravity(controller, -9.0);
+    EXPECT_NEAR(rt_game3d_character_controller_get_gravity(controller),
+                20.0,
+                0.0001,
+                "negative gravity resets to a downward default magnitude");
+    rt_game3d_character_controller_set_gravity(controller, 20.0);
 
     rt_game3d_character_controller_teleport(controller, 14.0, 0.0, 0.0);
     void *world_pos = rt_scene_node3d_get_world_position(rt_game3d_entity_get_node(child));
     void *local_pos = rt_game3d_entity_position(child);
     EXPECT_NEAR(rt_vec3_x(world_pos), 14.0, 0.0001, "child world position follows character");
     EXPECT_NEAR(rt_vec3_x(local_pos), 2.0, 0.0001, "child local position compensates parent scale");
+
+    rt_game3d_entity_set_scale_xyz(parent, 2.0, 3.0, 4.0);
+    rt_game3d_entity_set_rotation_euler(parent, 15.0, 60.0, -10.0);
+    rt_game3d_character_controller_teleport(controller, -7.0, 8.0, 9.0);
+    world_pos = rt_scene_node3d_get_world_position(rt_game3d_entity_get_node(child));
+    EXPECT_NEAR(rt_vec3_x(world_pos), -7.0, 0.0001, "affine parent inverse preserves world X");
+    EXPECT_NEAR(rt_vec3_y(world_pos), 8.0, 0.0001, "affine parent inverse preserves world Y");
+    EXPECT_NEAR(rt_vec3_z(world_pos), 9.0, 0.0001, "affine parent inverse preserves world Z");
 
     rt_game3d_world_destroy(world);
     PASS();
@@ -2743,6 +3382,16 @@ static bool test_orbit_and_follow_controllers() {
                 85.0,
                 0.0001,
                 "orbit pitch getter clamps corrupt private state");
+    EXPECT_NEAR(orbit_view->distance, 4.0, 0.0001, "orbit distance repair persists");
+    EXPECT_NEAR(orbit_view->max_distance, 4.0, 0.0001, "orbit range repair persists");
+    EXPECT_NEAR(orbit_view->yaw, 0.0, 0.0001, "orbit yaw repair persists");
+    EXPECT_NEAR(orbit_view->pitch, 85.0, 0.0001, "orbit pitch repair persists");
+    void *undersized_orbit_target = rt_obj_new_i64(RT_G3D_GAME3D_ENTITY_CLASS_ID, 1);
+    orbit_view->target = undersized_orbit_target;
+    EXPECT_TRUE(rt_game3d_orbit_controller_get_target(orbit) == nullptr,
+                "undersized private OrbitController entity targets are quarantined");
+    if (undersized_orbit_target && rt_obj_release_check0(undersized_orbit_target))
+        rt_obj_free(undersized_orbit_target);
     rt_game3d_orbit_controller_late_update(orbit, world, 0.0);
     orbit_view->target = saved_orbit_target;
     orbit_view->distance = 6.0;
@@ -2783,6 +3432,13 @@ static bool test_orbit_and_follow_controllers() {
                 12.0,
                 0.0001,
                 "follow damping getter sanitizes corrupt private state");
+    EXPECT_NEAR(follow_view->damping, 12.0, 0.0001, "follow damping repair persists");
+    void *undersized_follow_target = rt_obj_new_i64(RT_G3D_GAME3D_ENTITY_CLASS_ID, 1);
+    follow_view->target_entity = undersized_follow_target;
+    EXPECT_TRUE(rt_game3d_follow_controller_get_target(follow) == nullptr,
+                "undersized private FollowController entity targets are quarantined");
+    if (undersized_follow_target && rt_obj_release_check0(undersized_follow_target))
+        rt_obj_free(undersized_follow_target);
     rt_game3d_follow_controller_late_update(follow, world, 0.1);
     follow_view->target_entity = saved_follow_target;
     follow_view->offset = saved_follow_offset;
@@ -2802,6 +3458,46 @@ static bool test_orbit_and_follow_controllers() {
     EXPECT_NEAR(rt_vec3_z(pos), 2.0, 0.0001, "follow tracks post-physics entity z");
 
     rt_game3d_world_destroy(world);
+    PASS();
+}
+
+static bool test_controllers_release_destroyed_entity_targets() {
+    TEST("Controllers release destroyed entity targets during repair");
+    void *world = rt_game3d_world_new(rt_const_cstr("Game3D Orbit Stale Target Unit"), 64, 48);
+    void *entity = rt_game3d_entity_new();
+    rt_game3d_world_spawn(world, entity);
+    void *orbit = rt_game3d_orbit_controller_new(world, entity);
+    void *offset = rt_vec3_new(0.0, 2.0, 4.0);
+    void *follow = rt_game3d_follow_controller_new(world, entity, offset);
+    void *character = rt_game3d_character_controller_new(world, entity, 0.3, 1.8, 70.0);
+    auto *orbit_view = static_cast<Game3DOrbitControllerTestLayout *>(orbit);
+    auto *follow_view = static_cast<Game3DFollowControllerTestLayout *>(follow);
+    auto *character_view = static_cast<Game3DCharacterControllerTestLayout *>(character);
+
+    rt_game3d_world_destroy(world);
+    size_t before = rt_heap_hdr(entity)->refcnt;
+    EXPECT_TRUE(rt_game3d_orbit_controller_get_target(orbit) == nullptr,
+                "destroyed entity no longer resolves as an orbit target");
+    EXPECT_TRUE(orbit_view->target == nullptr,
+                "destroyed orbit target slot is cleared persistently");
+    EXPECT_TRUE(rt_heap_hdr(entity)->refcnt + 1 == before,
+                "clearing a valid stale target releases its retained reference");
+
+    before = rt_heap_hdr(entity)->refcnt;
+    EXPECT_TRUE(rt_game3d_follow_controller_get_target(follow) == nullptr,
+                "destroyed entity no longer resolves as a follow target");
+    EXPECT_TRUE(follow_view->target_entity == nullptr,
+                "destroyed follow target slot is cleared persistently");
+    EXPECT_TRUE(rt_heap_hdr(entity)->refcnt + 1 == before,
+                "clearing a stale follow target releases its retained reference");
+
+    before = rt_heap_hdr(entity)->refcnt;
+    EXPECT_TRUE(rt_game3d_character_controller_get_entity(character) == nullptr,
+                "destroyed entity no longer resolves as a character binding");
+    EXPECT_TRUE(character_view->entity == nullptr,
+                "destroyed character entity slot is cleared persistently");
+    EXPECT_TRUE(rt_heap_hdr(entity)->refcnt + 1 == before,
+                "clearing a stale character binding releases its retained reference");
     PASS();
 }
 
@@ -2840,6 +3536,22 @@ static bool test_first_person_character_controller_same_frame_motion() {
                 0.01,
                 0.0001,
                 "first-person look sensitivity getter sanitizes corrupt private state");
+    EXPECT_NEAR(fps_view->speed, 6.0, 0.0001, "first-person speed repair persists");
+    EXPECT_NEAR(
+        fps_view->look_sensitivity, 0.01, 0.0001, "first-person sensitivity repair persists");
+    void *undersized_character = rt_obj_new_i64(RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID, 1);
+    EXPECT_TRUE(
+        expect_trap_contains(
+            [&] { rt_game3d_first_person_controller_set_character(fps, undersized_character); },
+            "invalid character"),
+        "first-person setter rejects an undersized CharacterController payload");
+    EXPECT_TRUE(fps_view->character_controller == nullptr,
+                "rejected undersized character does not mutate the first-person binding");
+    fps_view->character_controller = undersized_character;
+    EXPECT_TRUE(rt_game3d_first_person_controller_get_character(fps) == nullptr,
+                "undersized private first-person character slots are quarantined");
+    if (undersized_character && rt_obj_release_check0(undersized_character))
+        rt_obj_free(undersized_character);
     fps_view->character_controller = saved_fps_character;
     fps_view->speed = 5.0;
     fps_view->look_sensitivity = 0.01;
@@ -2956,6 +3668,20 @@ static bool test_character_controller_gravity_and_planar_input() {
                 "Space still launches the character upward");
 
     rt_canvas3d_clear_synthetic_input(canvas);
+    rt_game3d_input_update(input);
+    rt_game3d_character_controller_teleport(controller, 0.0, 1.0, 0.0);
+    auto *input_view = static_cast<Game3DInputTestLayout *>(input);
+    input_view->bound_pad = 0;
+    input_view->pad_connected = 1;
+    input_view->pad_lx = 1.0;
+    input_view->pad_ly = 0.0;
+    void *before_pad = rt_game3d_entity_position(player);
+    rt_game3d_character_controller_update(controller, input, camera, 0.1);
+    void *after_pad = rt_game3d_entity_position(player);
+    EXPECT_TRUE(rt_vec3_x(after_pad) > rt_vec3_x(before_pad) + 0.05,
+                "bound left-stick input drives the walking character laterally");
+    rt_game3d_input_bind_pad(input, -1);
+
     rt_game3d_world_destroy(world);
     PASS();
 }
@@ -3014,6 +3740,47 @@ static bool test_phase3_material_presets_and_prefabs() {
     EXPECT_EQ_INT(rt_game3d_entity_get_layer(ground),
                   rt_game3d_layers_world(),
                   "Ground prefab uses world layer");
+
+    void *cylinder_low = rt_game3d_prefab_cylinder(0.5, 1.0, -1, plastic);
+    void *cylinder_fallback = rt_game3d_prefab_cylinder(0.5, 1.0, 24, plastic);
+    void *cylinder_high = rt_game3d_prefab_cylinder(0.5, 1.0, INT64_MAX, plastic);
+    void *cylinder_cap = rt_game3d_prefab_cylinder(0.5, 1.0, 256, plastic);
+    EXPECT_EQ_INT(rt_mesh3d_get_triangle_count(rt_game3d_entity_get_mesh(cylinder_low)),
+                  rt_mesh3d_get_triangle_count(rt_game3d_entity_get_mesh(cylinder_fallback)),
+                  "low segment requests use the bounded cylinder fallback");
+    EXPECT_EQ_INT(rt_mesh3d_get_triangle_count(rt_game3d_entity_get_mesh(cylinder_high)),
+                  rt_mesh3d_get_triangle_count(rt_game3d_entity_get_mesh(cylinder_cap)),
+                  "oversized segment requests clamp to the mesh budget");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_prefab_box(1.0, pixels); }, "material"),
+                "prefabs reject a wrong-class material before construction");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_materials_from_albedo_map(plastic); }, "Pixels"),
+        "FromAlbedoMap rejects non-Pixels objects");
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_entity_of(plastic, nullptr); }, "mesh"),
+                "Entity3D.Of rejects a wrong-class mesh before allocating an entity");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_entity_of(nullptr, pixels); }, "material"),
+        "Entity3D.Of rejects a wrong-class material before allocating an entity");
+    void *undersized_material = rt_obj_new_i64(RT_G3D_MATERIAL3D_CLASS_ID, 1);
+    void *undersized_mesh = rt_obj_new_i64(RT_G3D_MESH3D_CLASS_ID, 1);
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_prefab_box(1.0, undersized_material); },
+                                     "material"),
+                "prefabs reject undersized Material3D class-id spoofs before mesh allocation");
+    EXPECT_TRUE(
+        expect_trap_contains([&] { (void)rt_game3d_entity_of(undersized_mesh, nullptr); }, "mesh"),
+        "Entity3D.Of rejects undersized Mesh3D class-id spoofs");
+    EXPECT_TRUE(expect_trap_contains(
+                    [&] { (void)rt_game3d_entity_of(nullptr, undersized_material); }, "material"),
+                "Entity3D.Of rejects undersized Material3D class-id spoofs");
+    EXPECT_NEAR(rt_material3d_get_alpha(undersized_material),
+                1.0,
+                0.0,
+                "Material3D accessors reject undersized payloads before field reads");
+    void *undersized_objects[] = {undersized_material, undersized_mesh};
+    for (void *undersized : undersized_objects) {
+        if (undersized && rt_obj_release_check0(undersized))
+            rt_obj_free(undersized);
+    }
     PASS();
 }
 
@@ -6356,6 +7123,8 @@ int main() {
     ok = test_world_worker_controls() && ok;
     ok = test_input_axes() && ok;
     ok = test_input_update_snapshots_frame_state() && ok;
+    ok = test_input_repairs_corrupt_snapshots_and_rejects_undersized_handles() && ok;
+    ok = test_game3d_core_rejects_undersized_class_id_spoofs() && ok;
     ok = test_world_entity_registry_and_collision_clear() && ok;
     ok = test_world_body_index_deletion_tombstones_and_duplicate_names() && ok;
     ok = test_world_navmesh_bake_hooks() && ok;
@@ -6375,10 +7144,12 @@ int main() {
     ok = test_world_floating_origin_rendered_parity_and_flag_off_bytes() && ok;
     ok = test_step_simulation_clamps_invalid_dt() && ok;
     ok = test_free_fly_controller_synthetic_input() && ok;
+    ok = test_camera_and_character_controllers_preserve_zero_delta_pauses() && ok;
     ok = test_run_frames_only_preserves_synthetic_holds() && ok;
     ok = test_camera_controller_moves_between_worlds() && ok;
     ok = test_character_controller_syncs_world_position_under_parent() && ok;
     ok = test_orbit_and_follow_controllers() && ok;
+    ok = test_controllers_release_destroyed_entity_targets() && ok;
     ok = test_first_person_character_controller_same_frame_motion() && ok;
     ok = test_character_controller_gravity_and_planar_input() && ok;
     ok = test_phase3_material_presets_and_prefabs() && ok;

@@ -175,7 +175,9 @@ static void material_assign_ref(void **slot, void *value) {
 /// @param obj Candidate runtime object handle.
 /// @return Borrowed Material3D pointer, or NULL when @p obj is NULL or has another class.
 static rt_material3d *material_checked(void *obj) {
-    return (rt_material3d *)rt_g3d_checked_or_null(obj, RT_G3D_MATERIAL3D_CLASS_ID);
+    return rt_obj_is_instance(obj, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))
+               ? (rt_material3d *)obj
+               : NULL;
 }
 
 /// @brief Validate that @p pixels is a live `Zanna.Graphics.Pixels` handle.

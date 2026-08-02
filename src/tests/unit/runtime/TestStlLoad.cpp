@@ -37,8 +37,6 @@ void *rt_mesh3d_from_stl(void *path);
 int64_t rt_mesh3d_get_vertex_count(void *obj);
 int64_t rt_mesh3d_get_triangle_count(void *obj);
 rt_string rt_const_cstr(const char *str);
-int64_t rt_obj_release_check0(void *obj);
-void rt_obj_free(void *obj);
 }
 
 namespace {

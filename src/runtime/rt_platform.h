@@ -744,6 +744,26 @@ static inline int64_t rt_atomic_load_i64(const volatile int64_t *ptr, int order)
     return __atomic_load_n(ptr, order);
 }
 
+/// @brief Atomically store a 64-bit signed integer on GCC/Clang platforms.
+/// @param ptr Naturally aligned storage to update.
+/// @param value Value to publish.
+/// @param order GCC-style memory-order constant.
+static inline void rt_atomic_store_i64(volatile int64_t *ptr, int64_t value, int order) {
+    __atomic_store_n(ptr, value, order);
+}
+
+/// @brief Atomically compare-and-swap a 64-bit signed integer on GCC/Clang platforms.
+/// @param ptr Storage to update when it equals @p expected.
+/// @param expected In/out expected value; receives the observed value on failure.
+/// @param desired Value to store on success.
+/// @param success_order Memory order for a successful exchange.
+/// @param fail_order Memory order for a failed exchange.
+/// @return 1 on success, 0 when @p expected did not match.
+static inline int rt_atomic_compare_exchange_i64(
+    volatile int64_t *ptr, int64_t *expected, int64_t desired, int success_order, int fail_order) {
+    return __atomic_compare_exchange_n(ptr, expected, desired, 0, success_order, fail_order);
+}
+
 /// @brief Atomically add to a 64-bit signed integer on GCC/Clang platforms.
 /// @param ptr Storage to update.
 /// @param value Increment to apply.

@@ -36,6 +36,8 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <thread>
+#include <vector>
 
 extern "C" {
 extern void *rt_mat4_identity(void);
@@ -149,6 +151,64 @@ static void test_summary_is_stable_and_resettable() {
     EXPECT_EQ_I64(rt_str_len(rt_game3d_diagnostics_summary()), 0, "Reset clears Summary output");
 }
 
+static void test_counters_are_atomic_and_saturating() {
+    rt_game3d_diagnostics_reset();
+    constexpr int worker_count = 8;
+    constexpr int iterations = 10000;
+    std::vector<std::thread> workers;
+    workers.reserve(worker_count);
+    for (int worker = 0; worker < worker_count; ++worker) {
+        workers.emplace_back([] {
+            for (int iteration = 0; iteration < iterations; ++iteration) {
+                rt_game3d_diag_record_broadphase_fallback();
+                rt_game3d_diag_record_ccd_clamp(2);
+                rt_game3d_diag_record_anim_events_dropped(3);
+                rt_game3d_diag_record_audio_voice_evicted();
+                rt_game3d_diag_record_stale_async_load_dropped();
+            }
+        });
+    }
+    for (std::thread &worker : workers)
+        worker.join();
+
+    constexpr int64_t event_count = (int64_t)worker_count * iterations;
+    EXPECT_EQ_I64(rt_game3d_diagnostics_get_broadphase_fallback_count(),
+                  event_count,
+                  "Concurrent broadphase records are never lost");
+    EXPECT_EQ_I64(rt_game3d_diagnostics_get_ccd_clamped_frames(),
+                  event_count,
+                  "Concurrent CCD frame records are never lost");
+    EXPECT_EQ_I64(rt_game3d_diagnostics_get_ccd_clamped_bodies(),
+                  event_count * 2,
+                  "Concurrent CCD body additions are exact");
+    EXPECT_EQ_I64(rt_game3d_diagnostics_get_anim_events_dropped(),
+                  event_count * 3,
+                  "Concurrent animation-event additions are exact");
+    EXPECT_EQ_I64(rt_game3d_diagnostics_get_audio_voices_evicted(),
+                  event_count,
+                  "Concurrent bridged audio records are never lost");
+    EXPECT_EQ_I64(rt_game3d_diagnostics_get_stale_async_loads_dropped(),
+                  event_count,
+                  "Concurrent streaming records are never lost");
+
+    rt_game3d_diagnostics_reset();
+    rt_game3d_diag_record_ccd_clamp(INT64_MAX);
+    rt_game3d_diag_record_ccd_clamp(INT64_MAX);
+    rt_game3d_diag_record_anim_events_dropped(INT64_MAX);
+    rt_game3d_diag_record_anim_events_dropped(1);
+    rt_game3d_diag_record_auto_instanced_draws(INT64_MAX);
+    rt_game3d_diag_record_auto_instanced_draws(1);
+    EXPECT_EQ_I64(rt_game3d_diagnostics_get_ccd_clamped_bodies(),
+                  INT64_MAX,
+                  "CCD body counter saturates without signed overflow");
+    EXPECT_EQ_I64(rt_game3d_diagnostics_get_anim_events_dropped(),
+                  INT64_MAX,
+                  "Animation counter saturates without signed overflow");
+    EXPECT_EQ_I64(rt_game3d_diagnostics_get_auto_instanced_draws(),
+                  INT64_MAX,
+                  "Auto-instancing counter saturates without signed overflow");
+}
+
 static void test_physics_broadphase_fallback_counter() {
     rt_game3d_diagnostics_reset();
 
@@ -256,6 +316,7 @@ static void test_nav_grid_fallback_counter() {
 
 int main() {
     test_summary_is_stable_and_resettable();
+    test_counters_are_atomic_and_saturating();
     test_physics_broadphase_fallback_counter();
     test_physics_ccd_body_counter();
     test_anim_event_drop_counter();

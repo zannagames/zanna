@@ -33,12 +33,14 @@
 /// occlusion fading.
 
 #include "rt_canvas3d.h"
+#include "rt_canvas3d_internal.h"
 #include "rt_game3d.h"
 #include "rt_game3d_internal.h"
 #include "rt_graphics3d_ids.h"
 #include "rt_object.h"
 #include "rt_physics3d.h"
 #include "rt_scene3d.h"
+#include "rt_scene3d_internal.h"
 #include "rt_trap.h"
 #include "rt_vec2.h"
 #include "rt_vec3.h"
@@ -55,29 +57,120 @@
 /// @return Nonzero when count, capacity, and backing storage agree.
 static int game3d_thirdperson_fade_storage_valid(
     const rt_game3d_thirdperson_controller *controller) {
-    return controller && controller->fade_count >= 0 && controller->fade_capacity >= 0 &&
-           controller->fade_count <= controller->fade_capacity &&
-           (controller->fade_capacity == 0 || controller->fades != NULL);
+    if (!controller)
+        return 0;
+    if (!controller->fades)
+        return controller->fade_count == 0 && controller->fade_capacity == 0 &&
+               controller->fade_storage_capacity == 0 && controller->fade_storage_cookie == 0;
+    return controller->fade_storage_capacity > 0 &&
+           controller->fade_storage_cookie ==
+               game3d_thirdperson_fade_storage_cookie_value(controller->fades,
+                                                            controller->fade_storage_capacity) &&
+           controller->fade_capacity == controller->fade_storage_capacity &&
+           controller->fade_count >= 0 &&
+           controller->fade_count <= controller->fade_storage_capacity;
+}
+
+/// @brief Return whether the raw fade allocation has a trusted ownership marker.
+/// @param controller Borrowed third-person controller payload.
+/// @return Nonzero only when `fades` may safely be traversed and freed.
+static int game3d_thirdperson_fade_storage_owned(
+    const rt_game3d_thirdperson_controller *controller) {
+    return controller && controller->fades && controller->fade_storage_capacity > 0 &&
+           controller->fade_storage_cookie ==
+               game3d_thirdperson_fade_storage_cookie_value(controller->fades,
+                                                            controller->fade_storage_capacity);
+}
+
+/// @brief Release a retained private slot only when its complete payload remains valid.
+/// @details Invalid same-class or wrong-class values are treated as unowned corruption sentinels.
+/// @param[in,out] slot Address of the retained slot.
+/// @param class_id Required runtime class identifier.
+/// @param payload_size Minimum complete payload size.
+static void game3d_thirdperson_release_instance_ref(void **slot,
+                                                    int64_t class_id,
+                                                    size_t payload_size) {
+    if (!slot || !*slot)
+        return;
+    if (!rt_obj_is_instance(*slot, class_id, payload_size)) {
+        *slot = NULL;
+        return;
+    }
+    game3d_release_ref(slot);
+}
+
+/// @brief Transactionally replace a complete retained private object slot.
+/// @param[in,out] slot Address of the retained slot.
+/// @param value Borrowed complete replacement, or NULL.
+/// @param class_id Required runtime class identifier.
+/// @param payload_size Minimum complete payload size.
+static void game3d_thirdperson_assign_instance_ref(void **slot,
+                                                   void *value,
+                                                   int64_t class_id,
+                                                   size_t payload_size) {
+    if (!slot || *slot == value || (value && !rt_obj_is_instance(value, class_id, payload_size)))
+        return;
+    rt_obj_retain_maybe(value);
+    game3d_thirdperson_release_instance_ref(slot, class_id, payload_size);
+    *slot = value;
 }
 
 /// @brief Return the controller's target Entity3D when still alive, else NULL.
 /// @param controller Borrowed third-person controller payload.
 /// @return Borrowed live target entity, or `NULL` when absent, stale, or invalid.
 static rt_game3d_entity *game3d_thirdperson_target_ref(
-    const rt_game3d_thirdperson_controller *controller) {
-    rt_game3d_entity *entity = controller ? (rt_game3d_entity *)rt_g3d_checked_or_null(
-                                                controller->target, RT_G3D_GAME3D_ENTITY_CLASS_ID)
-                                          : NULL;
-    return game3d_entity_alive_or_record(entity) ? entity : NULL;
+    rt_game3d_thirdperson_controller *controller) {
+    rt_game3d_entity *entity = controller && rt_obj_is_instance(controller->target,
+                                                                RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                                sizeof(rt_game3d_entity))
+                                   ? (rt_game3d_entity *)controller->target
+                                   : NULL;
+    if (!entity)
+        return NULL;
+    if (game3d_entity_alive_or_record(entity))
+        return entity;
+    game3d_thirdperson_release_instance_ref(
+        &controller->target, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
+    return NULL;
 }
 
 /// @brief Return the controller's CharacterController3D slot when valid, else NULL.
 /// @param controller Borrowed third-person controller payload.
 /// @return Borrowed CharacterController3D handle, or `NULL` when absent or type-mismatched.
-static void *game3d_thirdperson_character_ref(const rt_game3d_thirdperson_controller *controller) {
-    return controller ? rt_g3d_checked_or_null(controller->character,
-                                               RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID)
-                      : NULL;
+static void *game3d_thirdperson_character_ref(rt_game3d_thirdperson_controller *controller) {
+    return controller && rt_obj_is_instance(controller->character,
+                                            RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID,
+                                            sizeof(rt_game3d_character_controller))
+               ? controller->character
+               : NULL;
+}
+
+/// @brief Return the controller's TargetLock3D slot when complete, else NULL.
+/// @param controller Borrowed third-person controller payload.
+/// @return Borrowed complete TargetLock3D handle, or NULL.
+static rt_game3d_targetlock *game3d_thirdperson_lock_ref(
+    rt_game3d_thirdperson_controller *controller) {
+    return controller && rt_obj_is_instance(controller->lock,
+                                            RT_G3D_GAME3D_TARGETLOCK_CLASS_ID,
+                                            sizeof(rt_game3d_targetlock))
+               ? (rt_game3d_targetlock *)controller->lock
+               : NULL;
+}
+
+/// @brief Return the controller's retained live World3D slot when complete.
+/// @param controller Borrowed third-person controller payload.
+/// @return Borrowed live World3D payload, or NULL for detached/corrupt state.
+static rt_game3d_world *game3d_thirdperson_world_ref(rt_game3d_thirdperson_controller *controller) {
+    rt_game3d_world *world = controller && rt_obj_is_instance(controller->world,
+                                                              RT_G3D_GAME3D_WORLD_CLASS_ID,
+                                                              sizeof(rt_game3d_world))
+                                 ? (rt_game3d_world *)controller->world
+                                 : NULL;
+    if (!world || !world->destroyed)
+        return world;
+    game3d_thirdperson_release_instance_ref(
+        &controller->world, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world));
+    return NULL;
 }
 
 /// @brief Wrap yaw into [-180, 180) so orbit state never grows unbounded.
@@ -90,6 +183,83 @@ static double game3d_thirdperson_wrap_yaw(double yaw) {
     if (yaw < 0.0)
         yaw += 360.0;
     return yaw - 180.0;
+}
+
+/// @brief Repair private third-person state before any public field access.
+/// @param controller Complete controller payload; NULL is ignored.
+void game3d_thirdperson_repair_state(rt_game3d_thirdperson_controller *controller) {
+    if (!controller)
+        return;
+    if (controller->world && !rt_obj_is_instance(controller->world,
+                                                 RT_G3D_GAME3D_WORLD_CLASS_ID,
+                                                 sizeof(rt_game3d_world)))
+        controller->world = NULL;
+    if (controller->target && !rt_obj_is_instance(controller->target,
+                                                  RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                  sizeof(rt_game3d_entity)))
+        controller->target = NULL;
+    if (controller->character && !rt_obj_is_instance(controller->character,
+                                                     RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID,
+                                                     sizeof(rt_game3d_character_controller)))
+        controller->character = NULL;
+    if (controller->lock && !rt_obj_is_instance(controller->lock,
+                                                RT_G3D_GAME3D_TARGETLOCK_CLASS_ID,
+                                                sizeof(rt_game3d_targetlock)))
+        controller->lock = NULL;
+
+    controller->min_distance = game3d_nonnegative_clamped_or(
+        controller->min_distance, RT_GAME3D_TP_DEFAULT_MIN_DISTANCE, RT_GAME3D_COORD_ABS_MAX);
+    controller->max_distance = game3d_positive_clamped_or(
+        controller->max_distance, RT_GAME3D_TP_DEFAULT_MAX_DISTANCE, RT_GAME3D_COORD_ABS_MAX);
+    if (controller->max_distance < controller->min_distance)
+        controller->max_distance = controller->min_distance;
+    controller->distance =
+        game3d_clamp(game3d_finite_or(controller->distance, RT_GAME3D_TP_DEFAULT_DISTANCE),
+                     controller->min_distance,
+                     controller->max_distance);
+    controller->yaw = game3d_thirdperson_wrap_yaw(controller->yaw);
+    controller->pitch_min = game3d_clamp(
+        game3d_finite_or(controller->pitch_min, RT_GAME3D_TP_DEFAULT_PITCH_MIN), -89.0, 89.0);
+    controller->pitch_max = game3d_clamp(
+        game3d_finite_or(controller->pitch_max, RT_GAME3D_TP_DEFAULT_PITCH_MAX), -89.0, 89.0);
+    if (controller->pitch_max < controller->pitch_min) {
+        controller->pitch_min = RT_GAME3D_TP_DEFAULT_PITCH_MIN;
+        controller->pitch_max = RT_GAME3D_TP_DEFAULT_PITCH_MAX;
+    }
+    controller->pitch = game3d_clamp(
+        game3d_finite_or(controller->pitch, 0.0), controller->pitch_min, controller->pitch_max);
+    for (int i = 0; i < 3; ++i) {
+        controller->shoulder_offset[i] = game3d_clamp_coord_or(controller->shoulder_offset[i], 0.0);
+        controller->aim_shoulder_offset[i] =
+            game3d_clamp_coord_or(controller->aim_shoulder_offset[i], 0.0);
+    }
+    controller->pivot_height =
+        game3d_clamp_coord_or(controller->pivot_height, RT_GAME3D_TP_DEFAULT_PIVOT_HEIGHT);
+    controller->damping = game3d_nonnegative_clamped_or(
+        controller->damping, RT_GAME3D_DEFAULT_FOLLOW_DAMPING, RT_GAME3D_DAMPING_MAX);
+    controller->collision_radius = game3d_positive_clamped_or(controller->collision_radius,
+                                                              RT_GAME3D_TP_DEFAULT_COLLISION_RADIUS,
+                                                              RT_GAME3D_SCALE_ABS_MAX);
+    controller->occlusion_fade = controller->occlusion_fade ? 1 : 0;
+    controller->aiming = controller->aiming ? 1 : 0;
+    controller->aim_blend = game3d_clamp(game3d_finite_or(controller->aim_blend, 0.0), 0.0, 1.0);
+    controller->aim_distance = game3d_positive_clamped_or(
+        controller->aim_distance, RT_GAME3D_TP_DEFAULT_AIM_DISTANCE, RT_GAME3D_COORD_ABS_MAX);
+    controller->aim_fov = game3d_clamp(
+        game3d_finite_or(controller->aim_fov, RT_GAME3D_TP_DEFAULT_AIM_FOV), 1.0, 179.0);
+    controller->base_fov_valid = controller->base_fov_valid ? 1 : 0;
+    if (controller->base_fov_valid && !isfinite(controller->base_fov)) {
+        controller->base_fov = 0.0;
+        controller->base_fov_valid = 0;
+    } else if (controller->base_fov_valid) {
+        controller->base_fov = game3d_clamp(controller->base_fov, 1.0, 179.0);
+    }
+    controller->current_distance =
+        game3d_clamp(game3d_finite_or(controller->current_distance, controller->distance),
+                     controller->min_distance,
+                     controller->max_distance);
+    if (!game3d_thirdperson_fade_storage_valid(controller))
+        game3d_thirdperson_reset_fades(controller);
 }
 
 /// @brief Camera-forward unit vector from orbit yaw/pitch (degrees).
@@ -113,13 +283,27 @@ static void game3d_thirdperson_forward(double yaw_deg, double pitch_deg, double 
 static void game3d_thirdperson_fade_entry_release(rt_game3d_tp_fade_entry *entry) {
     if (!entry)
         return;
-    void *node = rt_g3d_checked_or_null(entry->node, RT_G3D_SCENENODE3D_CLASS_ID);
-    void *original = rt_g3d_checked_or_null(entry->original_material, RT_G3D_MATERIAL3D_CLASS_ID);
-    if (node && original && rt_scene_node3d_get_material(node) == entry->fade_material)
+    void *node =
+        rt_obj_is_instance(entry->node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d))
+            ? entry->node
+            : NULL;
+    void *original = rt_obj_is_instance(entry->original_material,
+                                        RT_G3D_MATERIAL3D_CLASS_ID,
+                                        sizeof(rt_material3d))
+                         ? entry->original_material
+                         : NULL;
+    void *fade_material =
+        rt_obj_is_instance(entry->fade_material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))
+            ? entry->fade_material
+            : NULL;
+    if (node && original && fade_material && rt_scene_node3d_get_material(node) == fade_material)
         rt_scene_node3d_set_material(node, original);
-    game3d_release_ref(&entry->node);
-    game3d_release_ref(&entry->original_material);
-    game3d_release_ref(&entry->fade_material);
+    game3d_thirdperson_release_instance_ref(
+        &entry->node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d));
+    game3d_thirdperson_release_instance_ref(
+        &entry->original_material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d));
+    game3d_thirdperson_release_instance_ref(
+        &entry->fade_material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d));
     memset(entry, 0, sizeof(*entry));
 }
 
@@ -129,14 +313,18 @@ static void game3d_thirdperson_fade_entry_release(rt_game3d_tp_fade_entry *entry
 void game3d_thirdperson_reset_fades(rt_game3d_thirdperson_controller *controller) {
     if (!controller)
         return;
+    int storage_is_owned = game3d_thirdperson_fade_storage_owned(controller);
     int32_t fade_count =
         game3d_thirdperson_fade_storage_valid(controller) ? controller->fade_count : 0;
     for (int32_t i = 0; i < fade_count; ++i)
         game3d_thirdperson_fade_entry_release(&controller->fades[i]);
-    free(controller->fades);
+    if (storage_is_owned)
+        free(controller->fades);
     controller->fades = NULL;
     controller->fade_count = 0;
     controller->fade_capacity = 0;
+    controller->fade_storage_capacity = 0;
+    controller->fade_storage_cookie = 0;
 }
 
 /// @brief Find an existing fade entry for @p node, or -1.
@@ -160,13 +348,13 @@ static int32_t game3d_thirdperson_fade_find(const rt_game3d_thirdperson_controll
 static int32_t game3d_thirdperson_fade_begin(rt_game3d_thirdperson_controller *controller,
                                              void *node) {
     if (!game3d_thirdperson_fade_storage_valid(controller) ||
-        !rt_g3d_has_class(node, RT_G3D_SCENENODE3D_CLASS_ID))
+        !rt_obj_is_instance(node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d)))
         return -1;
     void *original = rt_scene_node3d_get_material(node);
-    if (!original)
+    if (!rt_obj_is_instance(original, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d)))
         return -1;
     void *clone = rt_material3d_make_instance(original);
-    if (!clone)
+    if (!rt_obj_is_instance(clone, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d)))
         return -1;
     if (controller->fade_count >= controller->fade_capacity) {
         if (controller->fade_count == INT32_MAX) {
@@ -192,11 +380,16 @@ static int32_t game3d_thirdperson_fade_begin(rt_game3d_thirdperson_controller *c
         }
         controller->fades = grown;
         controller->fade_capacity = new_cap;
+        controller->fade_storage_capacity = new_cap;
+        controller->fade_storage_cookie =
+            game3d_thirdperson_fade_storage_cookie_value(grown, new_cap);
     }
     rt_game3d_tp_fade_entry *entry = &controller->fades[controller->fade_count];
     memset(entry, 0, sizeof(*entry));
-    game3d_assign_ref(&entry->node, node);
-    game3d_assign_ref(&entry->original_material, original);
+    game3d_thirdperson_assign_instance_ref(
+        &entry->node, node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d));
+    game3d_thirdperson_assign_instance_ref(
+        &entry->original_material, original, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d));
     entry->fade_material = clone; /* transfer make_instance ownership */
     entry->original_alpha =
         game3d_clamp(game3d_finite_or(rt_material3d_get_alpha(original), 1.0), 0.0, 1.0);
@@ -262,18 +455,24 @@ static void game3d_thirdperson_update_fades(rt_game3d_thirdperson_controller *co
     }
 
     /* Animate alphas; restore and compact entries that finished releasing. */
-    double blend = 1.0 - exp(-RT_GAME3D_TP_FADE_RATE * game3d_clamp_dt(dt));
+    double blend = 1.0 - exp(-RT_GAME3D_TP_FADE_RATE * game3d_clamp_controller_dt(dt));
     int32_t write = 0;
     for (int32_t i = 0; i < controller->fade_count; ++i) {
         rt_game3d_tp_fade_entry *entry = &controller->fades[i];
-        void *node = rt_g3d_checked_or_null(entry->node, RT_G3D_SCENENODE3D_CLASS_ID);
+        void *node =
+            rt_obj_is_instance(entry->node, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d))
+                ? entry->node
+                : NULL;
         if (!node) {
             /* Node died (despawn/world teardown): drop the clone without touching it. */
             game3d_thirdperson_fade_entry_release(entry);
             continue;
         }
-        void *fade_material =
-            rt_g3d_checked_or_null(entry->fade_material, RT_G3D_MATERIAL3D_CLASS_ID);
+        void *fade_material = rt_obj_is_instance(entry->fade_material,
+                                                 RT_G3D_MATERIAL3D_CLASS_ID,
+                                                 sizeof(rt_material3d))
+                                  ? entry->fade_material
+                                  : NULL;
         if (!fade_material) {
             game3d_thirdperson_fade_entry_release(entry);
             continue;
@@ -301,10 +500,15 @@ static void game3d_thirdperson_controller_finalize(void *obj) {
     if (!controller)
         return;
     game3d_thirdperson_reset_fades(controller);
-    game3d_release_ref(&controller->world);
-    game3d_release_ref(&controller->target);
-    game3d_release_ref(&controller->character);
-    game3d_release_ref(&controller->lock);
+    game3d_thirdperson_release_instance_ref(
+        &controller->world, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world));
+    game3d_thirdperson_release_instance_ref(
+        &controller->target, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
+    game3d_thirdperson_release_instance_ref(&controller->character,
+                                            RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID,
+                                            sizeof(rt_game3d_character_controller));
+    game3d_thirdperson_release_instance_ref(
+        &controller->lock, RT_G3D_GAME3D_TARGETLOCK_CLASS_ID, sizeof(rt_game3d_targetlock));
 }
 
 //=========================================================================
@@ -337,8 +541,10 @@ void *rt_game3d_thirdperson_controller_new(void *world_obj, void *target_entity)
     }
     memset(controller, 0, sizeof(*controller));
     rt_obj_set_finalizer(controller, game3d_thirdperson_controller_finalize);
-    game3d_assign_ref(&controller->world, world);
-    game3d_assign_ref(&controller->target, entity);
+    game3d_thirdperson_assign_instance_ref(
+        &controller->world, world, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world));
+    game3d_thirdperson_assign_instance_ref(
+        &controller->target, entity, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
     controller->distance = RT_GAME3D_TP_DEFAULT_DISTANCE;
     controller->min_distance = RT_GAME3D_TP_DEFAULT_MIN_DISTANCE;
     controller->max_distance = RT_GAME3D_TP_DEFAULT_MAX_DISTANCE;
@@ -371,22 +577,27 @@ void *rt_game3d_thirdperson_controller_get_target(void *obj) {
 void rt_game3d_thirdperson_controller_set_target(void *obj, void *target_entity) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_target: invalid controller");
-    if (target_entity &&
-        !game3d_entity_checked(target_entity,
-                               "Game3D.ThirdPersonController.set_target: target must be Entity3D"))
+    if (!controller)
         return;
-    if (controller && target_entity) {
-        rt_game3d_world *world = (rt_game3d_world *)rt_g3d_checked_or_null(
-            controller->world, RT_G3D_GAME3D_WORLD_CLASS_ID);
+    rt_game3d_entity *target =
+        target_entity
+            ? game3d_entity_checked(
+                  target_entity, "Game3D.ThirdPersonController.set_target: target must be Entity3D")
+            : NULL;
+    if (target_entity && !target)
+        return;
+    if (target) {
+        rt_game3d_world *world = game3d_thirdperson_world_ref(controller);
         if (!game3d_entity_validate_controller_world(
-                (rt_game3d_entity *)target_entity,
+                target,
                 world,
                 "Game3D.ThirdPersonController.set_target: target belongs to another world"))
             return;
     }
-    if (controller && controller->target != target_entity) {
+    if (controller->target != target) {
         game3d_thirdperson_reset_fades(controller);
-        game3d_assign_ref(&controller->target, target_entity);
+        game3d_thirdperson_assign_instance_ref(
+            &controller->target, target, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
     }
 }
 
@@ -405,24 +616,27 @@ void *rt_game3d_thirdperson_controller_get_character(void *obj) {
 void rt_game3d_thirdperson_controller_set_character(void *obj, void *character_controller) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_character: invalid controller");
-    if (character_controller &&
-        !rt_g3d_has_class(character_controller, RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID)) {
-        rt_trap("Game3D.ThirdPersonController.set_character: value must be CharacterController3D");
+    if (!controller)
         return;
-    }
-    if (controller && character_controller) {
-        rt_game3d_world *world = (rt_game3d_world *)rt_g3d_checked_or_null(
-            controller->world, RT_G3D_GAME3D_WORLD_CLASS_ID);
-        rt_game3d_character_controller *character = game3d_character_controller_checked(
-            character_controller, "Game3D.ThirdPersonController.set_character: invalid character");
+    rt_game3d_character_controller *character =
+        character_controller ? game3d_character_controller_checked(
+                                   character_controller,
+                                   "Game3D.ThirdPersonController.set_character: invalid character")
+                             : NULL;
+    if (character_controller && !character)
+        return;
+    if (character) {
+        rt_game3d_world *world = game3d_thirdperson_world_ref(controller);
         if (!game3d_character_controller_validate_world(
                 character,
                 world,
                 "Game3D.ThirdPersonController.set_character: character belongs to another world"))
             return;
     }
-    if (controller)
-        game3d_assign_ref(&controller->character, character_controller);
+    game3d_thirdperson_assign_instance_ref(&controller->character,
+                                           character,
+                                           RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID,
+                                           sizeof(rt_game3d_character_controller));
 }
 
 /// @brief Get the desired (pre-collision) boom length.
@@ -738,8 +952,7 @@ void rt_game3d_thirdperson_controller_set_aim_fov(void *obj, double fov) {
 void *rt_game3d_thirdperson_controller_get_lock_target(void *obj) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.get_lockTarget: invalid controller");
-    return controller ? rt_g3d_checked_or_null(controller->lock, RT_G3D_GAME3D_TARGETLOCK_CLASS_ID)
-                      : NULL;
+    return game3d_thirdperson_lock_ref(controller);
 }
 
 /// @brief Install a TargetLock3D framing source (NULL to clear); traps on wrong class.
@@ -748,12 +961,28 @@ void *rt_game3d_thirdperson_controller_get_lock_target(void *obj) {
 void rt_game3d_thirdperson_controller_set_lock_target(void *obj, void *lock) {
     rt_game3d_thirdperson_controller *controller = game3d_thirdperson_controller_checked(
         obj, "Game3D.ThirdPersonController.set_lockTarget: invalid controller");
-    if (lock && !rt_g3d_has_class(lock, RT_G3D_GAME3D_TARGETLOCK_CLASS_ID)) {
-        rt_trap("Game3D.ThirdPersonController.set_lockTarget: value must be TargetLock3D");
+    if (!controller)
+        return;
+    rt_game3d_targetlock *target_lock =
+        lock ? game3d_targetlock_checked(
+                   lock, "Game3D.ThirdPersonController.set_lockTarget: value must be TargetLock3D")
+             : NULL;
+    if (lock && !target_lock)
+        return;
+    rt_game3d_world *controller_world = game3d_thirdperson_world_ref(controller);
+    rt_game3d_world *lock_world = target_lock && rt_obj_is_instance(target_lock->world,
+                                                                    RT_G3D_GAME3D_WORLD_CLASS_ID,
+                                                                    sizeof(rt_game3d_world))
+                                      ? (rt_game3d_world *)target_lock->world
+                                      : NULL;
+    if (target_lock && controller_world && lock_world != controller_world) {
+        rt_trap("Game3D.ThirdPersonController.set_lockTarget: lock belongs to another world");
         return;
     }
-    if (controller)
-        game3d_assign_ref(&controller->lock, lock);
+    game3d_thirdperson_assign_instance_ref(&controller->lock,
+                                           target_lock,
+                                           RT_G3D_GAME3D_TARGETLOCK_CLASS_ID,
+                                           sizeof(rt_game3d_targetlock));
 }
 
 //=========================================================================
@@ -770,20 +999,26 @@ void rt_game3d_thirdperson_controller_update(void *obj, void *world_obj, double 
         obj, "Game3D.ThirdPersonController.update: invalid controller");
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.ThirdPersonController.update: invalid world");
-    if (!controller || !world || !world->input)
+    rt_game3d_input *input = world && rt_obj_is_instance(world->input,
+                                                         RT_G3D_GAME3D_INPUT_CLASS_ID,
+                                                         sizeof(rt_game3d_input))
+                                 ? (rt_game3d_input *)world->input
+                                 : NULL;
+    if (!controller || !world || !input)
         return;
     if (!game3d_camera_controller_validate_world(
             controller,
             world,
             "Game3D.ThirdPersonController.update: controller belongs to another world"))
         return;
-    dt = game3d_clamp_dt(dt);
+    dt = game3d_clamp_controller_dt(dt);
+    if (dt <= 0.0)
+        return;
 
     /* Lock maintenance: tick the installed TargetLock3D once per world step. */
-    rt_game3d_targetlock *lock = (rt_game3d_targetlock *)rt_g3d_checked_or_null(
-        controller->lock, RT_G3D_GAME3D_TARGETLOCK_CLASS_ID);
+    rt_game3d_targetlock *lock = game3d_thirdperson_lock_ref(controller);
     int8_t lock_engaged = 0;
-    if (lock) {
+    if (lock && (!lock->world || lock->world == world)) {
         rt_game3d_targetlock_update(lock, dt);
         lock_engaged = rt_game3d_targetlock_get_target(lock) != NULL;
     }
@@ -791,7 +1026,7 @@ void rt_game3d_thirdperson_controller_update(void *obj, void *world_obj, double 
     /* Look input: Input3D.lookAxis merges mouse + pad with sensitivity applied.
      * Ignored while lock framing owns yaw/pitch (Cycle gestures are game-side). */
     if (!lock_engaged) {
-        void *look = rt_game3d_input_look_axis(world->input);
+        void *look = rt_game3d_input_look_axis(input);
         if (look) {
             double look_x = game3d_finite_or(rt_vec2_x(look), 0.0);
             double look_y = game3d_finite_or(rt_vec2_y(look), 0.0);
@@ -827,7 +1062,7 @@ void rt_game3d_thirdperson_controller_update(void *obj, void *world_obj, double 
         /* right = cross(forward, up) for the planar basis. */
         double rx = -fz;
         double rz = fx;
-        game3d_character_controller_drive(character, world->input, fx, fz, rx, rz, dt);
+        game3d_character_controller_drive(character, input, fx, fz, rx, rz, dt);
     }
 }
 
@@ -842,7 +1077,8 @@ void rt_game3d_thirdperson_controller_late_update(void *obj, void *world_obj, do
         obj, "Game3D.ThirdPersonController.lateUpdate: invalid controller");
     rt_game3d_world *world =
         game3d_world_checked(world_obj, "Game3D.ThirdPersonController.lateUpdate: invalid world");
-    if (!controller || !world || !world->camera)
+    void *camera = world ? rt_camera3d_checked_or_stack(world->camera) : NULL;
+    if (!controller || !world || !camera)
         return;
     if (!game3d_camera_controller_validate_world(
             controller,
@@ -859,7 +1095,9 @@ void rt_game3d_thirdperson_controller_late_update(void *obj, void *world_obj, do
         game3d_thirdperson_reset_fades(controller);
         return;
     }
-    dt = game3d_clamp_dt(dt);
+    dt = game3d_clamp_controller_dt(dt);
+    if (dt <= 0.0)
+        return;
 
     double target_pos[3];
     if (!game3d_entity_world_position_components(target, target_pos))
@@ -874,11 +1112,14 @@ void rt_game3d_thirdperson_controller_late_update(void *obj, void *world_obj, do
     double locked_pivot[3] = {0.0, 0.0, 0.0};
     int8_t lock_engaged = 0;
     {
-        rt_game3d_targetlock *lock = (rt_game3d_targetlock *)rt_g3d_checked_or_null(
-            controller->lock, RT_G3D_GAME3D_TARGETLOCK_CLASS_ID);
-        rt_game3d_entity *locked = lock ? (rt_game3d_entity *)rt_g3d_checked_or_null(
-                                              lock->target, RT_G3D_GAME3D_ENTITY_CLASS_ID)
-                                        : NULL;
+        rt_game3d_targetlock *lock = game3d_thirdperson_lock_ref(controller);
+        if (lock && lock->world && lock->world != world)
+            lock = NULL;
+        rt_game3d_entity *locked = lock && rt_obj_is_instance(lock->target,
+                                                              RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                              sizeof(rt_game3d_entity))
+                                       ? (rt_game3d_entity *)lock->target
+                                       : NULL;
         if (locked && game3d_entity_alive_or_record(locked) &&
             game3d_entity_world_position_components(locked, locked_pivot)) {
             lock_engaged = 1;
@@ -979,19 +1220,18 @@ void rt_game3d_thirdperson_controller_late_update(void *obj, void *world_obj, do
                 game3d_clamp_coord_or(pivot[i] + (locked_pivot[i] - pivot[i]) * 0.4, pivot[i]);
 
     rt_camera3d_look_at_components(
-        world->camera, eye[0], eye[1], eye[2], look[0], look[1], look[2], 0.0, 1.0, 0.0);
+        camera, eye[0], eye[1], eye[2], look[0], look[1], look[2], 0.0, 1.0, 0.0);
 
     /* Aim FOV: capture the base FOV when the blend engages, restore when it ends. */
     if (blend > 0.0) {
         if (!controller->base_fov_valid) {
-            controller->base_fov = rt_camera3d_get_fov(world->camera);
+            controller->base_fov = rt_camera3d_get_fov(camera);
             controller->base_fov_valid = 1;
         }
-        rt_camera3d_set_fov(world->camera,
-                            controller->base_fov +
-                                (controller->aim_fov - controller->base_fov) * blend);
+        rt_camera3d_set_fov(
+            camera, controller->base_fov + (controller->aim_fov - controller->base_fov) * blend);
     } else if (controller->base_fov_valid) {
-        rt_camera3d_set_fov(world->camera, controller->base_fov);
+        rt_camera3d_set_fov(camera, controller->base_fov);
         controller->base_fov_valid = 0;
     }
 

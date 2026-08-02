@@ -44,7 +44,13 @@
 /// @brief Return the runtime class id of an object (0 if none/plain value).
 /// @param p Borrowed object handle to inspect.
 /// @return Stable runtime class identifier, or zero for a null or class-less value.
+#ifdef __cplusplus
+extern "C" {
+#endif
 extern int64_t rt_obj_class_id(void *p);
+#ifdef __cplusplus
+}
+#endif
 
 /// @name Permanent Graphics3D and Game3D class identifiers
 /// @brief Frozen negative ABI sentinels used to tag opaque runtime objects.

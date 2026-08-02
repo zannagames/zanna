@@ -76,14 +76,25 @@
 /// @param obj Borrowed opaque runtime handle.
 /// @return Borrowed Scene3D payload on a class match, otherwise `NULL`.
 rt_scene3d *scene3d_checked(void *obj) {
-    return (rt_scene3d *)rt_g3d_checked_or_null(obj, RT_G3D_SCENE3D_CLASS_ID);
+#if defined(RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE) && RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE
+    return (rt_scene3d *)obj;
+#else
+    return rt_obj_is_instance(obj, RT_G3D_SCENE3D_CLASS_ID, sizeof(rt_scene3d)) ? (rt_scene3d *)obj
+                                                                                : NULL;
+#endif
 }
 
 /// @brief Validate @p obj as a SceneNode3D handle and return its typed pointer (NULL on mismatch).
 /// @param obj Borrowed opaque runtime handle.
 /// @return Borrowed SceneNode3D payload on a class match, otherwise `NULL`.
 rt_scene_node3d *scene_node3d_checked(void *obj) {
-    return (rt_scene_node3d *)rt_g3d_checked_or_null(obj, RT_G3D_SCENENODE3D_CLASS_ID);
+#if defined(RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE) && RT_G3D_INTERNAL_ASSUME_STRUCT_HANDLE
+    return (rt_scene_node3d *)obj;
+#else
+    return rt_obj_is_instance(obj, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d))
+               ? (rt_scene_node3d *)obj
+               : NULL;
+#endif
 }
 
 /// @brief Validate an immutable SceneNode3D payload without discarding const qualification.
@@ -94,7 +105,8 @@ static const rt_scene_node3d *scene_node3d_checked_const(const rt_scene_node3d *
     return obj;
 #else
     void *raw = (void *)(uintptr_t)obj;
-    return rt_g3d_has_class(raw, RT_G3D_SCENENODE3D_CLASS_ID) ? obj : NULL;
+    return rt_obj_is_instance(raw, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d)) ? obj
+                                                                                         : NULL;
 #endif
 }
 

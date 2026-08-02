@@ -107,7 +107,8 @@ uint64_t rt_mesh3d_global_geometry_epoch(void) {
 /// @param obj Candidate runtime object handle.
 /// @return Borrowed Mesh3D pointer, or NULL when @p obj is NULL or belongs to another class.
 static rt_mesh3d *mesh3d_checked(void *obj) {
-    return (rt_mesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_MESH3D_CLASS_ID);
+    return rt_obj_is_instance(obj, RT_G3D_MESH3D_CLASS_ID, sizeof(rt_mesh3d)) ? (rt_mesh3d *)obj
+                                                                              : NULL;
 }
 
 /// @brief Increment a diagnostic counter without allowing unsigned wraparound.

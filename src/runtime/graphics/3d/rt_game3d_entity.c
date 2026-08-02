@@ -115,26 +115,195 @@ static int game3d_node_stack_push(void ***stack_io,
     return 1;
 }
 
+/// @brief Hash-set sidecar used while preflighting a scene-node traversal.
+typedef struct game3d_node_seen_set {
+    void **slots;
+    size_t count;
+    size_t capacity;
+} game3d_node_seen_set;
+
+/// @brief Produce a stable cross-platform hash for an aligned node pointer.
+/// @param node Non-null SceneNode3D pointer.
+/// @return Mixed pointer bits suitable for a power-of-two open-addressed table.
+static size_t game3d_node_pointer_hash(void *node) {
+    uintptr_t bits = (uintptr_t)node;
+    bits ^= bits >> 16;
+    bits *= (uintptr_t)UINT32_C(0x7FEB352D);
+    bits ^= bits >> 15;
+    return (size_t)bits;
+}
+
+/// @brief Grow and rehash a traversal's seen-node table.
+/// @param[in,out] seen Seen-set storage to grow.
+/// @param minimum_capacity Minimum requested power-of-two capacity.
+/// @return Non-zero on success, otherwise zero without altering the old table.
+static int game3d_node_seen_reserve(game3d_node_seen_set *seen, size_t minimum_capacity) {
+    size_t capacity;
+    void **slots;
+    if (!seen)
+        return 0;
+    capacity = seen->capacity > 0 ? seen->capacity : 64u;
+    while (capacity < minimum_capacity) {
+        if (capacity > SIZE_MAX / 2u)
+            return 0;
+        capacity *= 2u;
+    }
+    if (capacity == seen->capacity)
+        return 1;
+    if (capacity > SIZE_MAX / sizeof(void *))
+        return 0;
+    slots = (void **)calloc(capacity, sizeof(void *));
+    if (!slots)
+        return 0;
+    for (size_t i = 0; i < seen->capacity; ++i) {
+        void *node = seen->slots[i];
+        if (!node)
+            continue;
+        size_t index = game3d_node_pointer_hash(node) & (capacity - 1u);
+        while (slots[index])
+            index = (index + 1u) & (capacity - 1u);
+        slots[index] = node;
+    }
+    free(seen->slots);
+    seen->slots = slots;
+    seen->capacity = capacity;
+    return 1;
+}
+
+/// @brief Record a node once in a traversal seen set.
+/// @param[in,out] seen Seen set receiving @p node.
+/// @param node Non-null SceneNode3D handle.
+/// @param[out] inserted Set to one for a new node, zero for a duplicate.
+/// @return Non-zero on success, or zero on allocation/overflow failure.
+static int game3d_node_seen_insert(game3d_node_seen_set *seen, void *node, int *inserted) {
+    size_t index;
+    if (!seen || !node || !inserted)
+        return 0;
+    *inserted = 0;
+    if (seen->capacity == 0 || seen->count >= seen->capacity / 2u) {
+        size_t requested = seen->capacity > 0 ? seen->capacity * 2u : 64u;
+        if (requested < seen->capacity || !game3d_node_seen_reserve(seen, requested))
+            return 0;
+    }
+    index = game3d_node_pointer_hash(node) & (seen->capacity - 1u);
+    while (seen->slots[index]) {
+        if (seen->slots[index] == node)
+            return 1;
+        index = (index + 1u) & (seen->capacity - 1u);
+    }
+    seen->slots[index] = node;
+    seen->count++;
+    *inserted = 1;
+    return 1;
+}
+
+/// @brief Collect a complete, duplicate-free SceneNode3D subtree before mutation.
+/// @details Breadth-first growth makes allocation failure transactional: callers
+///          receive every node or none and can then perform an infallible apply pass.
+/// @param root Valid SceneNode3D root to traverse.
+/// @param[out] nodes_out Owned node-pointer array on success.
+/// @param[out] count_out Number of collected nodes.
+/// @return Non-zero on success; zero for malformed graphs or allocation failure.
+static int game3d_entity_collect_nodes(void *root, void ***nodes_out, size_t *count_out) {
+    void **nodes = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    game3d_node_seen_set seen;
+    if (!nodes_out || !count_out ||
+        !rt_obj_is_instance(root, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d)))
+        return 0;
+    memset(&seen, 0, sizeof(seen));
+    int inserted = 0;
+    if (!game3d_node_seen_insert(&seen, root, &inserted) ||
+        !game3d_node_stack_push(&nodes, &count, &capacity, root))
+        goto fail;
+    for (size_t read = 0; read < count; ++read) {
+        int64_t child_count = rt_scene_node3d_child_count(nodes[read]);
+        if (child_count < 0)
+            goto fail;
+        for (int64_t i = 0; i < child_count; ++i) {
+            void *child = rt_scene_node3d_get_child(nodes[read], i);
+            if (!rt_obj_is_instance(child, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d)))
+                goto fail;
+            if (!game3d_node_seen_insert(&seen, child, &inserted))
+                goto fail;
+            if (inserted && !game3d_node_stack_push(&nodes, &count, &capacity, child))
+                goto fail;
+        }
+    }
+    free(seen.slots);
+    *nodes_out = nodes;
+    *count_out = count;
+    return 1;
+
+fail:
+    free(seen.slots);
+    free(nodes);
+    return 0;
+}
+
+/// @brief Release a retained runtime-string slot, clearing wrong-kind corruption unowned.
+/// @param[in,out] slot Address of an owned runtime-string slot.
+static void game3d_entity_release_string_slot(rt_string *slot) {
+    if (!slot || !*slot)
+        return;
+    if (!rt_string_is_handle(*slot)) {
+        *slot = NULL;
+        return;
+    }
+    game3d_release_ref((void **)slot);
+}
+
+/// @brief Repair an entity name to a valid retained runtime string.
+/// @param entity Entity whose private name slot is normalized.
+/// @return Valid retained name, or the shared empty string for a NULL entity.
+static rt_string game3d_entity_repair_name(rt_game3d_entity *entity) {
+    if (!entity)
+        return rt_const_cstr("");
+    if (entity->name && rt_string_is_handle(entity->name))
+        return entity->name;
+    entity->name = NULL;
+    rt_string empty = rt_const_cstr("");
+    rt_obj_retain_maybe(empty);
+    entity->name = empty;
+    if (entity->spawned &&
+        rt_obj_is_instance(entity->world, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world)))
+        ((rt_game3d_world *)entity->world)->name_index_valid = 0;
+    return entity->name;
+}
+
 /// @brief GC finalizer for an entity: release child entities, node/mesh/material/body/anim/name
 ///   references it owns, then free the child array.
 /// @param obj Entity3D storage being finalized; NULL is ignored.
 static void game3d_entity_finalize(void *obj) {
     rt_game3d_entity *entity = (rt_game3d_entity *)obj;
-    int32_t child_count;
     if (!entity)
         return;
-    child_count = game3d_entity_child_count(entity);
-    for (int32_t i = 0; i < child_count; ++i) {
-        rt_game3d_entity *child = (rt_game3d_entity *)rt_g3d_checked_or_null(
-            entity->children[i], RT_G3D_GAME3D_ENTITY_CLASS_ID);
-        if (child && child->parent == entity)
+    int storage_is_owned =
+        entity->children && entity->child_storage_capacity > 0 &&
+        entity->child_storage_cookie == game3d_entity_child_storage_cookie_value(
+                                            entity->children, entity->child_storage_capacity);
+    if (storage_is_owned) {
+        for (int32_t i = 0; i < entity->child_storage_capacity; ++i) {
+            rt_game3d_entity *child = rt_obj_is_instance(entity->children[i],
+                                                         RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                         sizeof(rt_game3d_entity))
+                                          ? entity->children[i]
+                                          : NULL;
+            if (!child || child->parent != entity) {
+                entity->children[i] = NULL;
+                continue;
+            }
             child->parent = NULL;
-        game3d_release_typed_ref((void **)&entity->children[i], RT_G3D_GAME3D_ENTITY_CLASS_ID);
+            game3d_release_typed_ref((void **)&entity->children[i], RT_G3D_GAME3D_ENTITY_CLASS_ID);
+        }
+        free(entity->children);
     }
-    free(entity->children);
     entity->children = NULL;
     entity->child_count = 0;
     entity->child_capacity = 0;
+    entity->child_storage_capacity = 0;
+    entity->child_storage_cookie = 0;
     game3d_release_typed_ref(&entity->node, RT_G3D_SCENENODE3D_CLASS_ID);
     game3d_release_typed_ref(&entity->mesh, RT_G3D_MESH3D_CLASS_ID);
     game3d_release_typed_ref(&entity->material, RT_G3D_MATERIAL3D_CLASS_ID);
@@ -144,8 +313,11 @@ static void game3d_entity_finalize(void *obj) {
     game3d_entity_release_combat_slots(entity);
     game3d_release_typed_ref(&entity->ragdoll, RT_G3D_RAGDOLL3D_CLASS_ID);
     {
-        rt_game3d_lipsync *lipsync_slot = (rt_game3d_lipsync *)rt_g3d_checked_or_null(
-            entity->lipsync, RT_G3D_GAME3D_LIPSYNC_CLASS_ID);
+        rt_game3d_lipsync *lipsync_slot = rt_obj_is_instance(entity->lipsync,
+                                                             RT_G3D_GAME3D_LIPSYNC_CLASS_ID,
+                                                             sizeof(rt_game3d_lipsync))
+                                              ? (rt_game3d_lipsync *)entity->lipsync
+                                              : NULL;
         if (lipsync_slot)
             lipsync_slot->entity = NULL;
     }
@@ -155,8 +327,8 @@ static void game3d_entity_finalize(void *obj) {
     game3d_release_typed_ref(&entity->interactor, RT_G3D_GAME3D_INTERACTOR_CLASS_ID);
     game3d_release_typed_ref(&entity->perception, RT_G3D_GAME3D_PERCEPTION_CLASS_ID);
     game3d_release_typed_ref(&entity->btree, RT_G3D_GAME3D_BTINSTANCE_CLASS_ID);
-    game3d_release_ref((void **)&entity->persistent_key);
-    game3d_release_ref((void **)&entity->name);
+    game3d_entity_release_string_slot(&entity->persistent_key);
+    game3d_entity_release_string_slot(&entity->name);
 }
 
 /// @brief Allocate a bare entity wrapping a fresh scene node, on the DYNAMIC layer
@@ -183,6 +355,12 @@ void *rt_game3d_entity_new(void) {
     entity->collision_mask_bits = ~(int64_t)0;
     entity->registry_index = -1;
     entity->name = rt_const_cstr("");
+    if (!entity->name) {
+        if (rt_obj_release_check0(entity))
+            rt_obj_free(entity);
+        rt_trap("Game3D.Entity3D.New: name allocation failed");
+        return NULL;
+    }
     rt_obj_retain_maybe(entity->name);
     entity->alive = 1;
     return entity;
@@ -193,6 +371,15 @@ void *rt_game3d_entity_new(void) {
 /// @param material Material3D to retain and mirror onto the new node, or NULL.
 /// @return A newly allocated Entity3D, or NULL when base entity allocation fails.
 void *rt_game3d_entity_of(void *mesh, void *material) {
+    if (mesh && !rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, sizeof(rt_mesh3d))) {
+        rt_trap("Game3D.Entity3D.Of: mesh must be Mesh3D");
+        return NULL;
+    }
+    if (material &&
+        !rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))) {
+        rt_trap("Game3D.Entity3D.Of: material must be Material3D");
+        return NULL;
+    }
     rt_game3d_entity *entity = (rt_game3d_entity *)rt_game3d_entity_new();
     if (!entity)
         return NULL;
@@ -220,7 +407,7 @@ void *rt_game3d_entity_from_node(void *root) {
     int transfer_scene_root = 0;
     memset(&owner_transaction, 0, sizeof(owner_transaction));
 #endif
-    if (!rt_g3d_has_class(root, RT_G3D_SCENENODE3D_CLASS_ID)) {
+    if (!rt_obj_is_instance(root, RT_G3D_SCENENODE3D_CLASS_ID, sizeof(rt_scene_node3d))) {
         rt_trap("Game3D.Entity3D.FromNode: root must be a SceneNode3D");
         return NULL;
     }
@@ -238,7 +425,7 @@ void *rt_game3d_entity_from_node(void *root) {
             return NULL;
         if (!scene_node_owner_transaction_prepare(node, &owner_transaction)) {
             game3d_release_ref((void **)&replacement_root);
-            rt_trap("Game3D.Entity3D.FromNode: owner traversal stack allocation failed");
+            rt_trap("Game3D.Entity3D.FromNode: owner traversal preflight failed");
             return NULL;
         }
     }
@@ -371,8 +558,15 @@ void *rt_game3d_entity_get_anim(void *obj) {
 int64_t rt_game3d_entity_get_layer(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_Layer: invalid entity");
-    return entity ? (game3d_valid_layer(entity->layer) ? entity->layer : RT_GAME3D_LAYER_DYNAMIC)
-                  : 0;
+    if (!entity)
+        return 0;
+    if (!game3d_valid_layer(entity->layer)) {
+        entity->layer = RT_GAME3D_LAYER_DYNAMIC;
+        void *body = game3d_entity_body_ref(entity);
+        if (body)
+            rt_body3d_set_collision_layer(body, entity->layer);
+    }
+    return entity->layer;
 }
 
 /// @brief Property setter for the collision layer (delegates to setLayer).
@@ -405,9 +599,7 @@ void rt_game3d_entity_set_collision_mask_prop(void *obj, void *mask) {
 rt_string rt_game3d_entity_get_name(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked(obj, "Game3D.Entity3D.get_Name: invalid entity");
-    if (!entity || !entity->name || !rt_string_is_handle(entity->name))
-        return rt_const_cstr("");
-    return entity->name;
+    return game3d_entity_repair_name(entity);
 }
 
 /// @brief Property setter for the name (delegates to the fluent setName).
@@ -505,7 +697,8 @@ void *rt_game3d_entity_set_rotation_euler(void *obj, double x_deg, double y_deg,
         y_deg = game3d_clamp_abs_or(y_deg, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
         z_deg = game3d_clamp_abs_or(z_deg, 0.0, RT_GAME3D_ANGLE_DEG_ABS_MAX);
         void *quat = rt_quat_from_euler(x_deg * deg, y_deg * deg, z_deg * deg);
-        rt_scene_node3d_set_rotation(node, quat);
+        if (quat)
+            rt_scene_node3d_set_rotation(node, quat);
         game3d_release_ref(&quat);
     }
     game3d_sync_body_from_entity_node(entity, 0);
@@ -522,7 +715,7 @@ void *rt_game3d_entity_set_mesh(void *obj, void *mesh) {
         game3d_entity_checked(obj, "Game3D.Entity3D.setMesh: invalid entity");
     if (!entity)
         return obj;
-    if (mesh && !rt_g3d_has_class(mesh, RT_G3D_MESH3D_CLASS_ID)) {
+    if (mesh && !rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, sizeof(rt_mesh3d))) {
         rt_trap("Game3D.Entity3D.setMesh: mesh must be Mesh3D");
         return obj;
     }
@@ -545,7 +738,8 @@ void *rt_game3d_entity_set_material(void *obj, void *material) {
         game3d_entity_checked(obj, "Game3D.Entity3D.setMaterial: invalid entity");
     if (!entity)
         return obj;
-    if (material && !rt_g3d_has_class(material, RT_G3D_MATERIAL3D_CLASS_ID)) {
+    if (material &&
+        !rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))) {
         rt_trap("Game3D.Entity3D.setMaterial: material must be Material3D");
         return obj;
     }
@@ -561,80 +755,52 @@ void *rt_game3d_entity_set_material(void *obj, void *material) {
 /// @brief Assign `mesh` to every mesh-bearing node in the subtree rooted at `root`,
 ///   walked as an iterative depth-first traversal over an explicit heap stack (avoids
 ///   C-stack overflow on deep hierarchies). If no node in the subtree carries a mesh,
-///   the mesh is assigned to `root` as a fallback. Traps on stack-allocation failure.
+///   the mesh is assigned to `root` as a fallback. Traps when traversal preflight fails.
 /// @param root SceneNode3D at the root of the traversal; NULL is a no-op.
 /// @param mesh Mesh3D value assigned to matching nodes; may be NULL to clear them.
 /// @return Count of nodes that received the mesh (>= 1 when `root` is non-NULL).
 static int game3d_entity_set_mesh_subtree(void *root, void *mesh) {
-    void **stack = NULL;
+    void **nodes = NULL;
     size_t count = 0;
-    size_t capacity = 0;
     int assigned = 0;
     if (!root)
         return 0;
-    if (!game3d_node_stack_push(&stack, &count, &capacity, root)) {
-        rt_trap("Game3D.Entity3D.setMeshRecursive: traversal stack allocation failed");
-        return 0;
+    if (!game3d_entity_collect_nodes(root, &nodes, &count)) {
+        rt_trap("Game3D.Entity3D.setMeshRecursive: traversal preflight failed");
+        return -1;
     }
-    while (count > 0) {
-        void *node = stack[--count];
-        int64_t child_count;
-        if (rt_scene_node3d_get_mesh(node)) {
-            rt_scene_node3d_set_mesh(node, mesh);
+    for (size_t i = 0; i < count; ++i) {
+        if (rt_scene_node3d_get_mesh(nodes[i])) {
+            rt_scene_node3d_set_mesh(nodes[i], mesh);
             assigned++;
         }
-        child_count = rt_scene_node3d_child_count(node);
-        for (int64_t i = child_count - 1; i >= 0; --i) {
-            void *child = rt_scene_node3d_get_child(node, i);
-            if (!child)
-                continue;
-            if (!game3d_node_stack_push(&stack, &count, &capacity, child)) {
-                free(stack);
-                rt_trap("Game3D.Entity3D.setMeshRecursive: traversal stack allocation failed");
-                return assigned;
-            }
-        }
     }
-    free(stack);
     if (!assigned) {
         rt_scene_node3d_set_mesh(root, mesh);
         assigned = 1;
     }
+    free(nodes);
     return assigned;
 }
 
 /// @brief Assign `material` to every node in the subtree rooted at `root`, walked as an
 ///   iterative depth-first traversal over an explicit heap stack (avoids C-stack overflow
-///   on deep hierarchies). Traps on stack-allocation failure.
+///   on deep hierarchies). Traps when traversal preflight fails.
 /// @param root SceneNode3D at the root of the traversal; NULL is a no-op.
 /// @param material Material3D value assigned to every visited node; may be NULL.
-static void game3d_entity_set_material_subtree(void *root, void *material) {
-    void **stack = NULL;
+static int game3d_entity_set_material_subtree(void *root, void *material) {
+    void **nodes = NULL;
     size_t count = 0;
-    size_t capacity = 0;
     if (!root)
-        return;
-    if (!game3d_node_stack_push(&stack, &count, &capacity, root)) {
-        rt_trap("Game3D.Entity3D.setMaterialRecursive: traversal stack allocation failed");
-        return;
+        return 1;
+    if (!game3d_entity_collect_nodes(root, &nodes, &count)) {
+        rt_trap("Game3D.Entity3D.setMaterialRecursive: traversal preflight failed");
+        return 0;
     }
-    while (count > 0) {
-        void *node = stack[--count];
-        int64_t child_count;
-        rt_scene_node3d_set_material(node, material);
-        child_count = rt_scene_node3d_child_count(node);
-        for (int64_t i = child_count - 1; i >= 0; --i) {
-            void *child = rt_scene_node3d_get_child(node, i);
-            if (!child)
-                continue;
-            if (!game3d_node_stack_push(&stack, &count, &capacity, child)) {
-                free(stack);
-                rt_trap("Game3D.Entity3D.setMaterialRecursive: traversal stack allocation failed");
-                return;
-            }
-        }
-    }
-    free(stack);
+    for (size_t i = 0; i < count; ++i)
+        rt_scene_node3d_set_material(nodes[i], material);
+    free(nodes);
+    return 1;
 }
 
 /// @brief Fluent: assign the mesh (validated as Mesh3D) to the entity and propagate it
@@ -647,14 +813,12 @@ void *rt_game3d_entity_set_mesh_recursive(void *obj, void *mesh) {
         game3d_entity_checked(obj, "Game3D.Entity3D.setMeshRecursive: invalid entity");
     if (!entity)
         return obj;
-    if (mesh && !rt_g3d_has_class(mesh, RT_G3D_MESH3D_CLASS_ID)) {
+    if (mesh && !rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, sizeof(rt_mesh3d))) {
         rt_trap("Game3D.Entity3D.setMeshRecursive: mesh must be Mesh3D");
         return obj;
     }
-    if (entity) {
+    if (game3d_entity_set_mesh_subtree(game3d_entity_node_ref(entity), mesh) >= 0)
         game3d_assign_typed_ref(&entity->mesh, mesh, RT_G3D_MESH3D_CLASS_ID);
-        game3d_entity_set_mesh_subtree(game3d_entity_node_ref(entity), mesh);
-    }
     return obj;
 }
 
@@ -668,14 +832,13 @@ void *rt_game3d_entity_set_material_recursive(void *obj, void *material) {
         game3d_entity_checked(obj, "Game3D.Entity3D.setMaterialRecursive: invalid entity");
     if (!entity)
         return obj;
-    if (material && !rt_g3d_has_class(material, RT_G3D_MATERIAL3D_CLASS_ID)) {
+    if (material &&
+        !rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))) {
         rt_trap("Game3D.Entity3D.setMaterialRecursive: material must be Material3D");
         return obj;
     }
-    if (entity) {
+    if (game3d_entity_set_material_subtree(game3d_entity_node_ref(entity), material))
         game3d_assign_typed_ref(&entity->material, material, RT_G3D_MATERIAL3D_CLASS_ID);
-        game3d_entity_set_material_subtree(game3d_entity_node_ref(entity), material);
-    }
     return obj;
 }
 
@@ -720,6 +883,60 @@ static int game3d_entity_restore_body_binding(rt_game3d_entity *entity,
     return 1;
 }
 
+/// @brief Restore a child's previous entity/node parent after a failed spawn step.
+/// @details The retain currently owned by @p new_parent's child slot is transferred
+///          back to the old parent when possible, or released exactly once.
+/// @param new_parent Parent whose just-added relationship is rolled back.
+/// @param child Child being restored.
+/// @param old_parent Previously consistent Entity3D parent, or NULL.
+/// @param old_index Previous dense-array position within @p old_parent.
+/// @param old_scene_parent Previous SceneNode3D parent, or NULL for a detached node.
+static void game3d_entity_restore_reparent(rt_game3d_entity *new_parent,
+                                           rt_game3d_entity *child,
+                                           rt_game3d_entity *old_parent,
+                                           int32_t old_index,
+                                           void *old_scene_parent) {
+    int transferred = 0;
+    if (!new_parent || !child)
+        return;
+    int32_t new_index = game3d_entity_find_child_index(new_parent, child);
+    if (new_index >= 0) {
+        int32_t count = game3d_entity_child_count(new_parent);
+        new_parent->child_count = count;
+        for (int32_t i = new_index; i < count - 1; ++i)
+            new_parent->children[i] = new_parent->children[i + 1];
+        new_parent->children[--new_parent->child_count] = NULL;
+    }
+    child->parent = NULL;
+
+    void *new_node = game3d_entity_node_ref(new_parent);
+    void *child_node = game3d_entity_node_ref(child);
+    if (new_node && child_node && rt_scene_node3d_get_parent(child_node) == new_node)
+        rt_scene_node3d_remove_child(new_node, child_node);
+    if (old_scene_parent && child_node &&
+        !rt_scene_node3d_try_add_child(old_scene_parent, child_node))
+        rt_trap("Game3D.Entity3D.addChild: failed to restore previous scene parent");
+
+    if (old_parent && old_index >= 0 &&
+        rt_obj_is_instance(old_parent, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity))) {
+        int32_t count = game3d_entity_child_count(old_parent);
+        if (count < INT32_MAX && game3d_entity_grow_children(old_parent, count + 1)) {
+            if (old_index > count)
+                old_index = count;
+            for (int32_t i = count; i > old_index; --i)
+                old_parent->children[i] = old_parent->children[i - 1];
+            old_parent->children[old_index] = child;
+            old_parent->child_count = count + 1;
+            child->parent = old_parent;
+            transferred = 1;
+        }
+    }
+    if (!transferred) {
+        void *owned_child = child;
+        game3d_release_ref(&owned_child);
+    }
+}
+
 /// @brief Fluent: parent `child_obj` under this entity (retaining it and linking the
 ///   nodes), mark this entity a group, and return it.
 /// @details Rejects self-parenting, cycles, destroyed entities, and inconsistent
@@ -752,6 +969,17 @@ void *rt_game3d_entity_add_child(void *obj, void *child_obj) {
     }
     if (child->parent == entity || game3d_entity_find_child_index(entity, child) >= 0)
         return obj;
+    entity->spawned = entity->spawned ? 1 : 0;
+    child->spawned = child->spawned ? 1 : 0;
+    if ((entity->spawned && !rt_obj_is_instance(entity->world,
+                                                RT_G3D_GAME3D_WORLD_CLASS_ID,
+                                                sizeof(rt_game3d_world))) ||
+        (child->spawned && !rt_obj_is_instance(child->world,
+                                               RT_G3D_GAME3D_WORLD_CLASS_ID,
+                                               sizeof(rt_game3d_world)))) {
+        rt_trap("Game3D.Entity3D.addChild: spawned entity has an invalid world");
+        return obj;
+    }
     if (entity->spawned && child->spawned && child->world != entity->world) {
         rt_trap("Game3D.Entity3D.addChild: child already belongs to another world");
         return obj;
@@ -761,48 +989,45 @@ void *rt_game3d_entity_add_child(void *obj, void *child_obj) {
             "Game3D.Entity3D.addChild: spawned child cannot be parented under an unspawned entity");
         return obj;
     }
+    void *entity_node = game3d_entity_node_ref(entity);
+    void *child_node = game3d_entity_node_ref(child);
+    if (!entity_node || !child_node) {
+        rt_trap("Game3D.Entity3D.addChild: both entities need valid scene nodes");
+        return obj;
+    }
+    rt_game3d_entity *old_parent = NULL;
+    int32_t old_index = -1;
+    if (child->parent && rt_obj_is_instance(child->parent,
+                                            RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                            sizeof(rt_game3d_entity))) {
+        old_parent = child->parent;
+        old_index = game3d_entity_find_child_index(old_parent, child);
+        if (old_index < 0)
+            old_parent = NULL;
+    }
+    if (!old_parent)
+        child->parent = NULL;
+    void *old_scene_parent = rt_scene_node3d_get_parent(child_node);
+
     entity->child_count = game3d_entity_child_count(entity);
     if (entity->child_count == INT32_MAX ||
         !game3d_entity_grow_children(entity, entity->child_count + 1)) {
         rt_trap("Game3D.Entity3D.addChild: allocation failed");
         return obj;
     }
+    if (!rt_scene_node3d_try_add_child(entity_node, child_node)) {
+        rt_trap("Game3D.Entity3D.addChild: scene-node parenting failed");
+        return obj;
+    }
     rt_obj_retain_maybe(child);
     game3d_entity_detach_from_parent(child);
     entity->children[entity->child_count++] = child;
     child->parent = entity;
-    void *entity_node = game3d_entity_node_ref(entity);
-    void *child_node = game3d_entity_node_ref(child);
-    if (entity_node && child_node) {
-        if (!rt_scene_node3d_try_add_child(entity_node, child_node)) {
-            entity->children[--entity->child_count] = NULL;
-            child->parent = NULL;
-            game3d_release_ref((void **)&child);
-            rt_trap("Game3D.Entity3D.addChild: scene-node parenting failed");
-            return obj;
-        }
-    }
     if (entity->spawned && entity->world && !child->spawned) {
         rt_game3d_world *world = (rt_game3d_world *)entity->world;
         int64_t next_id = world->next_entity_id;
         if (!game3d_world_spawn_entity_tree(world, child, 0, &next_id)) {
-            int32_t child_count;
-            entity_node = game3d_entity_node_ref(entity);
-            child_node = game3d_entity_node_ref(child);
-            if (entity_node && child_node && rt_scene_node3d_get_parent(child_node) == entity_node)
-                rt_scene_node3d_remove_child(entity_node, child_node);
-            child_count = game3d_entity_child_count(entity);
-            entity->child_count = child_count;
-            for (int32_t i = 0; i < child_count; ++i) {
-                if (entity->children[i] != child)
-                    continue;
-                for (int32_t j = i; j < entity->child_count - 1; ++j)
-                    entity->children[j] = entity->children[j + 1];
-                entity->children[--entity->child_count] = NULL;
-                break;
-            }
-            child->parent = NULL;
-            game3d_release_ref((void **)&child);
+            game3d_entity_restore_reparent(entity, child, old_parent, old_index, old_scene_parent);
             return obj;
         }
         world->next_entity_id = next_id;
@@ -831,12 +1056,20 @@ void *rt_game3d_entity_set_name(void *obj, rt_string name) {
         game3d_entity_checked(obj, "Game3D.Entity3D.setName: invalid entity");
     if (!name)
         name = rt_const_cstr("");
+    if (!name || !rt_string_is_handle(name)) {
+        rt_trap("Game3D.Entity3D.setName: name must be a runtime string");
+        return obj;
+    }
     if (entity) {
+        if (entity->name && !rt_string_is_handle(entity->name))
+            entity->name = NULL;
         game3d_assign_ref((void **)&entity->name, name);
         void *node = game3d_entity_node_ref(entity);
         if (node)
             rt_scene_node3d_set_name(node, name);
-        if (entity->spawned && entity->world)
+        if (entity->spawned && rt_obj_is_instance(entity->world,
+                                                  RT_G3D_GAME3D_WORLD_CLASS_ID,
+                                                  sizeof(rt_game3d_world)))
             ((rt_game3d_world *)entity->world)->name_index_valid = 0;
     }
     return obj;
@@ -906,7 +1139,9 @@ void *rt_game3d_entity_attach_body(void *obj, void *body_or_def) {
     void *body = body_or_def;
     void *created_body = NULL;
     rt_game3d_body_def *def =
-        (rt_game3d_body_def *)rt_g3d_checked_or_null(body_or_def, RT_G3D_GAME3D_BODYDEF_CLASS_ID);
+        rt_obj_is_instance(body_or_def, RT_G3D_GAME3D_BODYDEF_CLASS_ID, sizeof(rt_game3d_body_def))
+            ? (rt_game3d_body_def *)body_or_def
+            : NULL;
     if (def) {
         created_body = game3d_body_def_create_body(def);
         body = created_body;
@@ -915,7 +1150,15 @@ void *rt_game3d_entity_attach_body(void *obj, void *body_or_def) {
         return obj;
     }
     if (entity) {
-        rt_game3d_world *world = (rt_game3d_world *)entity->world;
+        rt_game3d_world *world =
+            rt_obj_is_instance(entity->world, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world))
+                ? (rt_game3d_world *)entity->world
+                : NULL;
+        if (entity->spawned && !world) {
+            game3d_release_ref(&created_body);
+            rt_trap("Game3D.Entity3D.attachBody: spawned entity has an invalid world");
+            return obj;
+        }
         void *old_body = game3d_entity_body_ref(entity);
         void *node = game3d_entity_node_ref(entity);
         int64_t old_layer = entity->layer;
@@ -1093,7 +1336,9 @@ int game3d_entity_world_position_components(rt_game3d_entity *entity, double out
 int8_t rt_game3d_entity_is_spawned(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked_allow_destroyed(obj, "Game3D.Entity3D.isSpawned: invalid entity");
-    return entity && entity->spawned ? 1 : 0;
+    if (entity)
+        entity->spawned = entity->spawned ? 1 : 0;
+    return entity ? entity->spawned : 0;
 }
 
 /// @brief True if the entity has been despawned/destroyed.
@@ -1102,7 +1347,9 @@ int8_t rt_game3d_entity_is_spawned(void *obj) {
 int8_t rt_game3d_entity_is_destroyed(void *obj) {
     rt_game3d_entity *entity =
         game3d_entity_checked_allow_destroyed(obj, "Game3D.Entity3D.isDestroyed: invalid entity");
-    return entity && entity->destroyed ? 1 : 0;
+    if (entity)
+        entity->destroyed = entity->destroyed ? 1 : 0;
+    return entity ? entity->destroyed : 0;
 }
 
 /// @brief Attach a child entity to a named bone of this entity's animated
@@ -1185,7 +1432,9 @@ void *rt_game3d_entity_enable_ragdoll(void *obj) {
     if (!entity)
         return NULL;
     rt_game3d_world *world =
-        (rt_game3d_world *)rt_g3d_checked_or_null(entity->world, RT_G3D_GAME3D_WORLD_CLASS_ID);
+        rt_obj_is_instance(entity->world, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world))
+            ? (rt_game3d_world *)entity->world
+            : NULL;
     void *animator = game3d_entity_anim_ref(entity);
     void *controller = animator ? rt_game3d_animator_get_controller(animator) : NULL;
     void *skeleton = controller ? rt_anim_controller3d_get_skeleton(controller) : NULL;

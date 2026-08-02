@@ -43,6 +43,7 @@ extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
 extern void rt_obj_set_finalizer(void *obj, void (*fn)(void *));
 extern int32_t rt_obj_release_check0(void *obj);
 extern void rt_obj_free(void *obj);
+extern int8_t rt_obj_is_instance(void *obj, int64_t class_id, size_t min_payload_bytes);
 #include "rt_trap.h"
 extern void *rt_vec3_new(double x, double y, double z);
 extern double rt_vec3_x(void *v);
@@ -93,6 +94,14 @@ typedef struct {
     double *owned_zs;
     double *owned_spline_cumulative;
 } rt_path3d;
+
+/// @brief Validate both the Path3D class tag and the complete private payload size.
+/// @param obj Candidate opaque runtime handle.
+/// @return Typed Path3D payload, or NULL for malformed and undersized handles.
+static rt_path3d *path3d_checked_or_null(void *obj) {
+    return rt_obj_is_instance(obj, RT_G3D_PATH3D_CLASS_ID, sizeof(rt_path3d)) ? (rt_path3d *)obj
+                                                                              : NULL;
+}
 
 /// @brief GC finalizer — release the three parallel coordinate arrays.
 /// @details Path control points are stored in struct-of-arrays layout
@@ -351,7 +360,7 @@ void *rt_path3d_new(void) {
 void rt_path3d_add_point(void *obj, void *pos) {
     if (!obj || !rt_g3d_is_vec3(pos))
         return;
-    rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
+    rt_path3d *p = path3d_checked_or_null(obj);
     if (!p)
         return;
     path3d_repair_storage(p);
@@ -515,7 +524,7 @@ static void path3d_eval_position(rt_path3d *p, double t, double *ox, double *oy,
 /// @param t   Parameter along the path (0 = start, 1 = end).
 /// @return New Vec3 at the interpolated position.
 void *rt_path3d_get_position_at(void *obj, double t) {
-    rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
+    rt_path3d *p = path3d_checked_or_null(obj);
     if (!p)
         return rt_vec3_new(0, 0, 0);
     path3d_repair(p);
@@ -532,7 +541,7 @@ void *rt_path3d_get_position_at(void *obj, double t) {
 /// @return Newly allocated Vec3 containing a unit tangent, or the zero vector for a degenerate
 /// path or invalid handle.
 void *rt_path3d_get_direction_at(void *obj, double t) {
-    rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
+    rt_path3d *p = path3d_checked_or_null(obj);
     double eps = 0.001;
     double p0x, p0y, p0z;
     double p1x, p1y, p1z;
@@ -738,7 +747,7 @@ static void path3d_spline_refresh(rt_path3d *p) {
 /// @param pos_out Required three-component output receiving the evaluated position.
 /// @param tan_out Optional three-component output receiving the unit tangent.
 void rt_path3d_eval_spline_raw(void *obj, double t, double *pos_out, double *tan_out) {
-    rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
+    rt_path3d *p = path3d_checked_or_null(obj);
     if (pos_out)
         pos_out[0] = pos_out[1] = pos_out[2] = 0.0;
     if (tan_out)
@@ -816,7 +825,7 @@ void rt_path3d_eval_spline_raw(void *obj, double t, double *pos_out, double *tan
 /// @return Cached or recomputed finite length in world units, or zero for an invalid or
 /// degenerate path.
 double rt_path3d_get_length(void *obj) {
-    rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
+    rt_path3d *p = path3d_checked_or_null(obj);
     if (!p)
         return 0.0;
     path3d_repair(p);
@@ -863,7 +872,7 @@ double rt_path3d_get_length(void *obj) {
 /// @param obj Path3D handle to inspect.
 /// @return Repaired non-negative control-point count, or zero for an invalid handle.
 int64_t rt_path3d_get_point_count(void *obj) {
-    rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
+    rt_path3d *p = path3d_checked_or_null(obj);
     if (!p)
         return 0;
     path3d_repair_storage(p);
@@ -874,7 +883,7 @@ int64_t rt_path3d_get_point_count(void *obj) {
 /// @param obj Path3D handle to modify.
 /// @param loop Nonzero to include a closing segment and wrap normalized parameters.
 void rt_path3d_set_looping(void *obj, int8_t loop) {
-    rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
+    rt_path3d *p = path3d_checked_or_null(obj);
     if (!p)
         return;
     path3d_repair_storage(p);
@@ -890,7 +899,7 @@ void rt_path3d_set_looping(void *obj, int8_t loop) {
 /// @param obj Path3D receiver.
 /// @return Nonzero for looping paths, or 0 for invalid handles.
 int8_t rt_path3d_get_looping(void *obj) {
-    rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
+    rt_path3d *p = path3d_checked_or_null(obj);
     if (!p)
         return 0;
     path3d_repair(p);
@@ -900,7 +909,7 @@ int8_t rt_path3d_get_looping(void *obj) {
 /// @brief Remove all control points, resetting the path to empty.
 /// @param obj Path3D handle to clear while retaining allocated coordinate capacity.
 void rt_path3d_clear(void *obj) {
-    rt_path3d *p = (rt_path3d *)rt_g3d_checked_or_null(obj, RT_G3D_PATH3D_CLASS_ID);
+    rt_path3d *p = path3d_checked_or_null(obj);
     if (!p)
         return;
     path3d_repair_storage(p);

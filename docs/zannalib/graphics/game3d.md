@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-29
+last-verified: 2026-08-02
 ---
 
 # Game3D
@@ -108,6 +108,13 @@ Constant classes are runtime-backed too: `Layers`, `BodyShape`, `SyncMode`,
 `AlphaMode`, `ShadingModel`, `QualityLevel`, `CollisionPhase`, `Keys`, and
 `MouseButtons`.
 
+All opaque Game3D and composed Graphics3D handles are validated by both runtime
+class and complete implementation size before their private payload is read.
+Wrong-class and same-class-but-undersized handles trap at mutating Game3D
+boundaries and otherwise fail closed with the documented neutral result. A
+trap handler is allowed to return, so every entry point also returns before
+touching state after reporting an invalid or destroyed receiver.
+
 `ShadingModel` mirrors `Zanna.Graphics3D.Material3D`: `Phong=0`, `Toon=1`,
 `PBR=2`, `Unlit=3`, `Fresnel=4`, and `Emissive=5`.
 
@@ -195,6 +202,13 @@ aggregates. `Summary()` returns stable `name=value` lines in that order,
 omitting zero counters and returning `""` when clean. Smoke probes can print
 `Game3D.Diagnostics.Summary()` and assert it is empty.
 
+Diagnostic increments, reads, and resets are atomic across simulation,
+streaming, animation, renderer, and audio-producing threads. Counters saturate
+at `Int64.MaxValue`; concurrent producers cannot lose increments or invoke
+signed-overflow behavior. `Summary()` snapshots through the public atomic
+getters and emits complete lines only, including when every degradation counter
+is at its maximum value.
+
 `Zanna.Graphics3D.PhysicsWorld3D.BroadphaseFallbackCount` reports the matching
 per-world broadphase fallback total. CCD inspection remains available through
 `LastCcdRequestedSubsteps`, `LastCcdSubsteps`, `CcdSubstepClampedCount`, plus
@@ -279,6 +293,12 @@ Game3D.World3D.Spawn(world, crate);
 
 Available prefab factories are `Box`, `BoxXYZ`, `Sphere`, `Cylinder`, `Plane`,
 and `Ground`. `Ground` also sets the entity layer to `Game3D.Layers.World`.
+Sphere and cylinder segment requests are bounded to `8..256`, including their
+fallback path. Optional materials must be complete `Material3D` objects and are
+validated before a mesh is allocated. Lighting presets construct their entire
+light rig before replacing the current one, so allocation failure leaves the
+existing lighting intact; prefab and post-FX construction likewise fail
+without publishing partial objects.
 
 ---
 
@@ -1197,6 +1217,14 @@ frame.
 | `bindPad(index)` / `padBound` | Merge gamepad `index`'s sticks into `MoveAxis()`/`LookAxis()` (`-1` unbinds; poll buttons/triggers via `Zanna.Input.Pad`) |
 | `padLookSensitivity` | Right-stick look speed (degrees per frame at full tilt, response curve x^1.8, radial deadzone 0.18) |
 
+`bindPad` accepts exactly `-1` or a supported controller slot; another negative
+value or an index beyond the backend slot count traps and preserves the prior
+binding. Rebinding and unbinding clear the cached pad snapshot immediately.
+Every query repairs corrupted/non-finite sensitivities, mouse deltas, wheel
+state, flags, and stick axes to finite documented bounds. An invalid `Input3D`
+receiver returns neutral input and never falls through to live process-wide
+keyboard/mouse state or changes cursor capture.
+
 Use `Zanna.Input.Key` and `Game3D.MouseButtons` instead of hard-coded integer
 input codes in game code. `Zanna.Input.Key` is the canonical key-code namespace
 for all runtime input APIs:
@@ -1264,9 +1292,16 @@ and `grounded()`. `gravity` is a positive downward acceleration magnitude;
 negative values are accepted as the same magnitude for compatibility. The
 controller owns a lower-level `Zanna.Graphics3D.Character3D`, binds it to the
 world's physics world, moves it with swept-slide collision, and mirrors the
-character position back to its Game3D entity. Walking movement uses only
-W/A/S/D or arrow keys for planar X/Z movement; Space is jump, and Shift/Ctrl are
-left available for application actions such as sprint.
+character position back to its Game3D entity. Walking movement uses W/A/S/D,
+arrow keys, and the bound pad's left stick for planar X/Z movement; Space is
+jump, and Shift/Ctrl are left available for application actions such as sprint.
+
+Controller updates treat `dt <= 0`, NaN, and infinity as a paused update: no
+look, movement, damping, lock timer, rail progress, or transition state is
+advanced. Positive deltas still clamp to the runtime frame-step ceiling. The
+built-in controllers also repair retained scalar state and reject incomplete or
+cross-world entity/controller bindings transactionally, preserving the prior
+valid binding after a failed setter.
 
 `OrbitController.New(world, target)` takes either a `Vec3` target position or an
 `Entity3D` target. Entity targets are resolved to world position during
@@ -1318,6 +1353,14 @@ for melee approach assist. Only entities managed through `Entity3D.attachBody`
 resolve as candidates, and layer policy is entity-owned — use `Entity3D.Layer`
 to place targetables on a dedicated bit and match it with `CandidateMask`.
 
+A third-person controller accepts only a `TargetLock3D` from its own world.
+Target-lock and third-person retained world/entity/controller slots are
+full-payload validated before use; corrupt numeric ranges and flags are repaired
+to their documented bounds. Occluder-fade storage carries a private ownership
+identity, so corrupted bookkeeping is quarantined without traversing or freeing
+foreign memory, while valid entries still restore their original materials on
+detach and finalization.
+
 While a lock target is engaged, the third-person controller ignores look input,
 eases yaw/pitch onto the player→target bearing, and pulls the look point 40%
 toward the target; releasing resumes free look from the framed angles.
@@ -1347,6 +1390,13 @@ historical uniform parameterization), `Speed` auto-advances in units/sec, and
 or tangent-facing by default. `AddFovKey(t, fov)` / `AddRollKey(t, degrees)`
 add piecewise keys (`KeyEase` selects smoothstep); roll composes an explicit
 up vector into the look-at basis.
+
+Each FOV and roll track stores at most 16 keys. Times are clamped to `[0,1]`,
+FOV to `[1,179]`, and roll to `[-720,720]`; keys are kept strictly sorted.
+Adding a key at an existing time replaces its value instead of consuming
+another slot. Corrupt counts, ordering, duplicate times, values, and unused
+slots are repaired before evaluation. Entity look targets must belong to the
+rail camera's world, and a zero/non-finite update delta preserves progress.
 
 `Timeline3D.New(world)` is the cutscene sequencer. Build tracks fluently —
 `AddCameraCut`, `AddCameraMove` (spline over a `Path3D` with a Vec3/Entity3D/
@@ -1498,7 +1548,7 @@ The Game3D runtime is covered by:
 
 | Test | Coverage |
 |------|----------|
-| `test_rt_game3d` | C runtime contracts for constants, masks, input, world defaults, spawn/despawn, stale-entity no-op diagnostics, shared-body rejection, collision-event clearing, native callback loops, fixed-loop accumulator/spiral-guard behavior, overlay hooks, final capture, packaged glTF hierarchy loading through `Assets3D.LoadEntityAsset`, synthetic controller input, orbit/follow late update, first-person character movement, material presets, prefabs, lighting, quality, environment, post-FX, debug helpers, streamed terrain metadata inspection and LOD seam stitching beyond the single-heightmap cap, Animator3D root motion/events, Sound3D helpers, and Effects3D presets/expiry |
+| `test_rt_game3d` | C runtime contracts for constants, masks, repaired input snapshots, exact opaque-handle layouts, returning traps, world defaults/component quarantine, hierarchy ownership and transactional reparenting, spawn/despawn, stale-entity no-op diagnostics, shared-body rejection, collision-event clearing, native callback loops, fixed-loop accumulator/spiral-guard behavior, overlay hooks, final capture, packaged glTF hierarchy loading through `Assets3D.LoadEntityAsset`, pause-safe controller input, orbit/follow late update, first-person character and bound-pad movement, transactional material/prefab/lighting setup, quality, environment, post-FX, debug helpers, streamed terrain metadata inspection and LOD seam stitching beyond the single-heightmap cap, Animator3D root motion/events, Sound3D helpers, and Effects3D presets/expiry |
 | `g3d_test_game3d_world_probe` | Zia construction, default subsystems, layer masks, entity spawn/find/despawn, direct `Entity3D.FromNode` subtree wrapping, synthetic `tick`, clamped `StepSimulation`, resize/aspect, manual frame path, final capture, and destroy |
 | `g3d_test_game3d_runframes_probe` | Zia deterministic `RunFramesOnly`, dt/elapsed/frame accounting, and final capture |
 | `g3d_test_game3d_runframes_callback_probe` | Interpreted Zia `runFrames` update callback bridge, fixed dt delivery, and frame accounting |
@@ -1510,11 +1560,11 @@ The Game3D runtime is covered by:
 | `g3d_test_game3d_camera_controllers_probe` | Zia free-fly synthetic input, orbit drag/zoom, and follow camera post-physics tracking |
 | `g3d_test_game3d_character_controller_probe` | Zia first-person character movement and late-update camera alignment |
 | `g3d_test_game3d_thirdperson_probe` | Zia third-person spring-arm drive, crouch, lock-on acquire, and traversal probes |
-| `test_rt_game3d_thirdperson` | ThirdPersonController boom/aim/fade, TargetLock3D scoring/cycling, Character3D crouch/push/platform/slide, and traversal probes |
+| `test_rt_game3d_thirdperson` | ThirdPersonController boom/aim/fade, private-state repair and fade-storage ownership, cross-world lock rejection, pause-safe TargetLock3D scoring/cycling/transitions, Character3D crouch/push/platform/slide, and traversal probes |
 | `g3d_test_game3d_combat_probe` | Zia hitbox swing → hit event → damage → hit-stop/pause/time-scale |
 | `test_rt_game3d_combat` | Hitbox overlap/rehit/filters/windows, Health3D lifecycle/i-frames/knockback, stale safety |
 | `test_rt_game3d_ragdoll_time` | Ragdoll3D builder/settle/blend + World3D time-scale/pause/hit-stop |
-| `test_rt_game3d_cinematics` | Spline evaluator constant-speed/continuity, RailCamera3D, DOF focus, Timeline3D firing/ownership/skip |
+| `test_rt_game3d_cinematics` | Spline evaluator constant-speed/continuity, RailCamera3D key/state repair and pause behavior, DOF focus, Timeline3D firing/ownership/skip |
 | `test_rt_game3d_dialogue_facial` | WorldToScreen projection, Dialogue3D reveal/choices/localization, LipSync3D envelope + blink determinism |
 | `test_rt_game3d_streaming_async` | Worker-backed streaming: async/blocking parity, staging-error recovery, cancellation drops, commit-budget pacing, prefetch + teleport reset |
 | `test_rt_game3d_hlod` | HLOD: proxy bake (merge/simplify/atlas + round-trip), no-gap proxy ring swaps (blocking + async), multi-frame impostor install and generation |

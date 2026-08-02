@@ -13,7 +13,9 @@
 //===----------------------------------------------------------------------===//
 
 #include "rt.hpp"
+#include "rt_graphics3d_ids.h"
 #include "rt_internal.h"
+#include "rt_object.h"
 #include "rt_path3d.h"
 #include "rt_transform3d.h"
 #include <cassert>
@@ -267,8 +269,7 @@ static void test_transform_clamps_extreme_finite_inputs() {
     EXPECT_TRUE(std::isfinite(rt_quat_x(rot)) && std::isfinite(rt_quat_w(rot)),
                 "Extreme finite rotation axis normalizes without overflow");
 
-    rt_transform3d_look_at(
-        xf, rt_vec3_new(1.0e300, 0.0, -1.0e300), rt_vec3_new(0.0, 1.0e300, 0.0));
+    rt_transform3d_look_at(xf, rt_vec3_new(1.0e300, 0.0, -1.0e300), rt_vec3_new(0.0, 1.0e300, 0.0));
     void *mat = rt_transform3d_get_matrix(xf);
     for (int r = 0; r < 4; ++r)
         for (int c = 0; c < 4; ++c)
@@ -363,6 +364,27 @@ static void test_path_rejects_non_vec3_points() {
     EXPECT_TRUE(rt_path3d_get_point_count(path) == 0, "Path3D.AddPoint rejects non-Vec3 handles");
 }
 
+static void test_path_rejects_undersized_class_spoofs() {
+    void *path = rt_obj_new_i64(RT_G3D_PATH3D_CLASS_ID, 1);
+    void *point = rt_vec3_new(1.0, 2.0, 3.0);
+    rt_path3d_add_point(path, point);
+    EXPECT_TRUE(rt_path3d_get_point_count(path) == 0,
+                "Path3D rejects an undersized class-id spoof before storage access");
+    EXPECT_NEAR(rt_path3d_get_length(path), 0.0, 0.0, "Undersized Path3D has zero length");
+    void *position = rt_path3d_get_position_at(path, 0.5);
+    EXPECT_NEAR(rt_vec3_x(position), 0.0, 0.0, "Undersized Path3D position falls back to zero");
+    rt_path3d_set_looping(path, 1);
+    EXPECT_TRUE(rt_path3d_get_looping(path) == 0,
+                "Undersized Path3D looping mutation is ignored safely");
+    rt_path3d_clear(path);
+    if (position && rt_obj_release_check0(position))
+        rt_obj_free(position);
+    if (point && rt_obj_release_check0(point))
+        rt_obj_free(point);
+    if (path && rt_obj_release_check0(path))
+        rt_obj_free(path);
+}
+
 int main() {
     /* Transform3D */
     test_transform_default();
@@ -386,6 +408,7 @@ int main() {
     test_path_looping();
     test_path_clear();
     test_path_rejects_non_vec3_points();
+    test_path_rejects_undersized_class_spoofs();
 
     printf("Transform3D+Path3D tests: %d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

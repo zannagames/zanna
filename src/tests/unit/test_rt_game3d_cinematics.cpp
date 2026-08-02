@@ -25,6 +25,8 @@
 
 #include "rt_canvas3d.h"
 #include "rt_game3d.h"
+#include "rt_graphics3d_ids.h"
+#include "rt_heap.h"
 #include "rt_object.h"
 #include "rt_path3d.h"
 #include "rt_postfx3d.h"
@@ -33,9 +35,32 @@
 
 #include <cmath>
 #include <csetjmp>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+
+typedef struct {
+    double t;
+    double value;
+} Game3DRailKeyTestLayout;
+
+typedef struct {
+    void *world;
+    void *path;
+    void *look_entity;
+    void *look_point;
+    void *look_path;
+    double progress;
+    double smoothed;
+    double speed;
+    double position_damping;
+    int8_t key_ease;
+    Game3DRailKeyTestLayout fov_keys[16];
+    int32_t fov_key_count;
+    Game3DRailKeyTestLayout roll_keys[16];
+    int32_t roll_key_count;
+} Game3DRailCameraTestLayout;
 
 namespace {
 static std::jmp_buf g_trap_jmp;
@@ -97,6 +122,18 @@ extern "C" void vm_trap(const char *msg) {
             return false;                                                                          \
         }                                                                                          \
     } while (0)
+
+template <typename Fn> static bool expect_trap_contains(Fn &&fn, const char *needle) {
+    g_last_trap = nullptr;
+    g_expect_trap = true;
+    if (setjmp(g_trap_jmp) == 0) {
+        fn();
+        g_expect_trap = false;
+        return false;
+    }
+    g_expect_trap = false;
+    return g_last_trap && std::strstr(g_last_trap, needle) != nullptr;
+}
 
 namespace {
 
@@ -218,6 +255,94 @@ bool test_rail_camera_progress_and_keys() {
                 1.0,
                 0.01,
                 "auto-advance reaches the end of the rail");
+    rt_game3d_world_destroy(world);
+    PASS();
+}
+
+bool test_rail_camera_repairs_corrupt_state_transactionally() {
+    TEST("RailCamera3D repairs corrupt state, keys, and undersized handles");
+    void *world = rt_game3d_world_new(rt_const_cstr("Rail Repair"), 64, 48);
+    void *path = rt_path3d_new();
+    path_add(path, 0.0, 1.0, 0.0);
+    path_add(path, 10.0, 1.0, 0.0);
+    void *rail = rt_game3d_rail_camera_new(world, path);
+    auto *view = static_cast<Game3DRailCameraTestLayout *>(rail);
+
+    view->progress = NAN;
+    view->smoothed = INFINITY;
+    view->speed = -INFINITY;
+    view->position_damping = INFINITY;
+    view->key_ease = 9;
+    view->fov_key_count = INT32_MAX;
+    view->fov_keys[0] = {0.8, 200.0};
+    view->fov_keys[1] = {0.2, NAN};
+    view->fov_keys[2] = {0.2, 40.0};
+    view->fov_keys[3] = {-INFINITY, -5.0};
+    view->roll_key_count = -100;
+
+    EXPECT_NEAR(rt_game3d_rail_camera_get_progress(rail),
+                0.0,
+                0.000001,
+                "non-finite progress repairs to the rail start");
+    EXPECT_NEAR(view->smoothed, 0.0, 0.000001, "smoothed progress repair persists");
+    EXPECT_NEAR(view->speed, 0.0, 0.000001, "negative rail speed repair persists");
+    EXPECT_NEAR(view->position_damping, 0.0, 0.000001, "non-finite rail damping repair persists");
+    EXPECT_EQ_INT(view->key_ease, 1, "rail key easing flag is canonicalized");
+    EXPECT_EQ_INT(view->fov_key_count, 3, "rail key repair coalesces duplicate times");
+    EXPECT_EQ_INT(view->roll_key_count, 0, "negative rail key count repairs to empty");
+    for (int32_t i = 0; i < view->fov_key_count; ++i) {
+        EXPECT_TRUE(std::isfinite(view->fov_keys[i].t) && view->fov_keys[i].t >= 0.0 &&
+                        view->fov_keys[i].t <= 1.0,
+                    "repaired FOV key times are finite and bounded");
+        EXPECT_TRUE(std::isfinite(view->fov_keys[i].value) && view->fov_keys[i].value >= 1.0 &&
+                        view->fov_keys[i].value <= 179.0,
+                    "repaired FOV values are finite and bounded");
+        if (i > 0)
+            EXPECT_TRUE(view->fov_keys[i - 1].t < view->fov_keys[i].t,
+                        "repaired FOV keys are strictly sorted");
+    }
+    EXPECT_NEAR(view->fov_keys[1].value,
+                40.0,
+                0.000001,
+                "duplicate rail keys deterministically keep the last value");
+    EXPECT_NEAR(view->fov_keys[3].t, 0.0, 0.000001, "unused key times are cleared");
+    EXPECT_NEAR(view->fov_keys[3].value, 0.0, 0.000001, "unused key values are cleared");
+
+    view->fov_key_count = 0;
+    rt_game3d_rail_camera_add_fov_key(rail, 0.5, 50.0);
+    rt_game3d_rail_camera_add_fov_key(rail, 0.5, 80.0);
+    EXPECT_EQ_INT(view->fov_key_count, 1, "adding a duplicate key replaces instead of growing");
+    EXPECT_NEAR(view->fov_keys[0].value,
+                80.0,
+                0.000001,
+                "duplicate-key replacement keeps the newest value");
+
+    rt_game3d_rail_camera_set_progress(rail, 0.25);
+    rt_game3d_rail_camera_set_speed(rail, 10.0);
+    rt_game3d_rail_camera_update(rail, world, 0.0);
+    EXPECT_NEAR(rt_game3d_rail_camera_get_progress(rail),
+                0.25,
+                0.000001,
+                "zero-delta rail update preserves progress");
+
+    void *wrong_path = rt_vec3_new(1.0, 2.0, 3.0);
+    size_t wrong_path_refcount = rt_heap_hdr(wrong_path)->refcnt;
+    void *saved_path = view->path;
+    view->path = wrong_path;
+    (void)rt_game3d_rail_camera_get_speed(rail);
+    EXPECT_TRUE(view->path == nullptr, "wrong-class private rail path is quarantined");
+    EXPECT_TRUE(rt_heap_hdr(wrong_path)->refcnt == wrong_path_refcount,
+                "quarantining an unowned wrong-class path does not release it");
+    view->path = saved_path;
+
+    void *undersized = rt_obj_new_i64(RT_G3D_GAME3D_RAILCAMERA_CLASS_ID, 1);
+    EXPECT_TRUE(expect_trap_contains([&] { (void)rt_game3d_rail_camera_get_speed(undersized); },
+                                     "invalid rail"),
+                "undersized RailCamera3D class spoof is rejected");
+    if (undersized && rt_obj_release_check0(undersized))
+        rt_obj_free(undersized);
+    if (wrong_path && rt_obj_release_check0(wrong_path))
+        rt_obj_free(wrong_path);
     rt_game3d_world_destroy(world);
     PASS();
 }
@@ -406,6 +531,7 @@ int main() {
     ok = test_spline_evaluator_constant_speed() && ok;
     ok = test_spline_evaluator_continuity_and_loop() && ok;
     ok = test_rail_camera_progress_and_keys() && ok;
+    ok = test_rail_camera_repairs_corrupt_state_transactionally() && ok;
     ok = test_dof_focus_drive() && ok;
     ok = test_timeline_firing_math() && ok;
     ok = test_timeline_camera_ownership() && ok;

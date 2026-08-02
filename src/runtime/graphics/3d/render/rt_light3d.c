@@ -58,7 +58,8 @@ extern double rt_vec3_z(void *v);
 /// @param obj Candidate runtime object.
 /// @return Borrowed Light3D implementation, or `NULL` for an invalid handle.
 static rt_light3d *light3d_checked(void *obj) {
-    return (rt_light3d *)rt_g3d_checked_or_null(obj, RT_G3D_LIGHT3D_CLASS_ID);
+    return rt_obj_is_instance(obj, RT_G3D_LIGHT3D_CLASS_ID, sizeof(rt_light3d)) ? (rt_light3d *)obj
+                                                                                : NULL;
 }
 
 /// @brief Monotonic generation stamp covering every Light3D mutation in the process.

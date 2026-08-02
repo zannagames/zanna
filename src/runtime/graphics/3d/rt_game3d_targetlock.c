@@ -47,15 +47,87 @@
 // Internal helpers
 //=========================================================================
 
+/// @brief Release a retained private slot only when its complete payload remains valid.
+/// @details Invalid same-class or wrong-class values are unowned corruption sentinels.
+/// @param[in,out] slot Address of the retained slot.
+/// @param class_id Required runtime class identifier.
+/// @param payload_size Minimum complete payload size.
+static void game3d_targetlock_release_instance_ref(void **slot,
+                                                   int64_t class_id,
+                                                   size_t payload_size) {
+    if (!slot || !*slot)
+        return;
+    if (!rt_obj_is_instance(*slot, class_id, payload_size)) {
+        *slot = NULL;
+        return;
+    }
+    game3d_release_ref(slot);
+}
+
+/// @brief Transactionally replace a complete retained private object slot.
+/// @param[in,out] slot Address of the retained slot.
+/// @param value Borrowed replacement, or NULL.
+/// @param class_id Required runtime class identifier.
+/// @param payload_size Minimum complete payload size.
+static void game3d_targetlock_assign_instance_ref(void **slot,
+                                                  void *value,
+                                                  int64_t class_id,
+                                                  size_t payload_size) {
+    if (!slot || *slot == value || (value && !rt_obj_is_instance(value, class_id, payload_size)))
+        return;
+    rt_obj_retain_maybe(value);
+    game3d_targetlock_release_instance_ref(slot, class_id, payload_size);
+    *slot = value;
+}
+
+/// @brief Repair private target-lock state before public field access.
+/// @param lock Complete TargetLock3D payload; NULL is ignored.
+void game3d_targetlock_repair_state(rt_game3d_targetlock *lock) {
+    if (!lock)
+        return;
+    if (lock->world &&
+        !rt_obj_is_instance(lock->world, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world)))
+        lock->world = NULL;
+    if (lock->owner &&
+        !rt_obj_is_instance(lock->owner, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity)))
+        lock->owner = NULL;
+    if (lock->target &&
+        !rt_obj_is_instance(lock->target, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity)))
+        lock->target = NULL;
+    lock->max_distance = game3d_positive_clamped_or(
+        lock->max_distance, RT_GAME3D_TL_DEFAULT_MAX_DISTANCE, RT_GAME3D_COORD_ABS_MAX);
+    lock->cone_degrees = game3d_clamp(
+        game3d_finite_or(lock->cone_degrees, RT_GAME3D_TL_DEFAULT_CONE_DEGREES), 1.0, 180.0);
+    lock->require_los = lock->require_los ? 1 : 0;
+    lock->stickiness =
+        game3d_positive_clamped_or(lock->stickiness, RT_GAME3D_TL_DEFAULT_STICKINESS, 1000.0);
+    lock->break_distance = game3d_positive_clamped_or(
+        lock->break_distance, RT_GAME3D_TL_DEFAULT_MAX_DISTANCE * 1.25, RT_GAME3D_COORD_ABS_MAX);
+    lock->los_grace_seconds = game3d_nonnegative_clamped_or(
+        lock->los_grace_seconds, RT_GAME3D_TL_DEFAULT_LOS_GRACE, 3600.0);
+    lock->los_broken_time = game3d_nonnegative_clamped_or(lock->los_broken_time, 0.0, 3600.0);
+    lock->just_acquired = lock->just_acquired ? 1 : 0;
+    lock->just_lost = lock->just_lost ? 1 : 0;
+    if (!lock->target)
+        lock->los_broken_time = 0.0;
+}
+
 /// @brief Return the lock's owner Entity3D when still alive, else NULL.
 /// @param lock Borrowed target-lock payload.
 /// @return Borrowed live owner entity, or `NULL` when absent, stale, or invalid.
-static rt_game3d_entity *game3d_targetlock_owner_ref(const rt_game3d_targetlock *lock) {
-    rt_game3d_entity *entity =
-        lock
-            ? (rt_game3d_entity *)rt_g3d_checked_or_null(lock->owner, RT_G3D_GAME3D_ENTITY_CLASS_ID)
-            : NULL;
-    return game3d_entity_alive_or_record(entity) ? entity : NULL;
+static rt_game3d_entity *game3d_targetlock_owner_ref(rt_game3d_targetlock *lock) {
+    rt_game3d_entity *entity = lock && rt_obj_is_instance(lock->owner,
+                                                          RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                          sizeof(rt_game3d_entity))
+                                   ? (rt_game3d_entity *)lock->owner
+                                   : NULL;
+    if (!entity)
+        return NULL;
+    if (game3d_entity_alive_or_record(entity))
+        return entity;
+    game3d_targetlock_release_instance_ref(
+        &lock->owner, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
+    return NULL;
 }
 
 /// @brief Test whether an entity is live and not latched dead by Health3D.
@@ -65,27 +137,40 @@ static int game3d_targetlock_entity_targetable(rt_game3d_entity *entity) {
     if (!game3d_entity_alive_or_record(entity))
         return 0;
     rt_game3d_health *health =
-        (rt_game3d_health *)rt_g3d_checked_or_null(entity->health, RT_G3D_GAME3D_HEALTH_CLASS_ID);
+        rt_obj_is_instance(entity->health, RT_G3D_GAME3D_HEALTH_CLASS_ID, sizeof(rt_game3d_health))
+            ? (rt_game3d_health *)entity->health
+            : NULL;
     return !health || !health->dead;
 }
 
 /// @brief Return the locked Entity3D when still alive, else NULL.
 /// @param lock Borrowed target-lock payload.
 /// @return Borrowed live target entity, or `NULL` when unlocked, stale, or invalid.
-static rt_game3d_entity *game3d_targetlock_target_ref(const rt_game3d_targetlock *lock) {
-    rt_game3d_entity *entity = lock ? (rt_game3d_entity *)rt_g3d_checked_or_null(
-                                          lock->target, RT_G3D_GAME3D_ENTITY_CLASS_ID)
-                                    : NULL;
+static rt_game3d_entity *game3d_targetlock_target_ref(rt_game3d_targetlock *lock) {
+    rt_game3d_entity *entity = lock && rt_obj_is_instance(lock->target,
+                                                          RT_G3D_GAME3D_ENTITY_CLASS_ID,
+                                                          sizeof(rt_game3d_entity))
+                                   ? (rt_game3d_entity *)lock->target
+                                   : NULL;
+    if (!entity)
+        return NULL;
     return game3d_targetlock_entity_targetable(entity) ? entity : NULL;
 }
 
 /// @brief Return the lock's world when still valid, else NULL.
 /// @param lock Borrowed target-lock payload.
 /// @return Borrowed World3D payload, or `NULL` when absent or type-mismatched.
-static rt_game3d_world *game3d_targetlock_world_ref(const rt_game3d_targetlock *lock) {
-    return lock ? (rt_game3d_world *)rt_g3d_checked_or_null(lock->world,
-                                                            RT_G3D_GAME3D_WORLD_CLASS_ID)
-                : NULL;
+static rt_game3d_world *game3d_targetlock_world_ref(rt_game3d_targetlock *lock) {
+    rt_game3d_world *world = lock && rt_obj_is_instance(lock->world,
+                                                        RT_G3D_GAME3D_WORLD_CLASS_ID,
+                                                        sizeof(rt_game3d_world))
+                                 ? (rt_game3d_world *)lock->world
+                                 : NULL;
+    if (!world || !world->destroyed)
+        return world;
+    game3d_targetlock_release_instance_ref(
+        &lock->world, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world));
+    return NULL;
 }
 
 /// @brief True when @p candidate has line of sight from @p owner (origin-to-origin).
@@ -252,7 +337,8 @@ static double game3d_targetlock_score(const rt_game3d_targetlock *lock,
 static void game3d_targetlock_install(rt_game3d_targetlock *lock, rt_game3d_entity *entity) {
     if (lock->target == (void *)entity)
         return;
-    game3d_assign_ref(&lock->target, entity);
+    game3d_targetlock_assign_instance_ref(
+        &lock->target, entity, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
     lock->los_broken_time = 0.0;
     if (entity)
         lock->just_acquired = 1;
@@ -263,7 +349,8 @@ static void game3d_targetlock_install(rt_game3d_targetlock *lock, rt_game3d_enti
 static void game3d_targetlock_release(rt_game3d_targetlock *lock) {
     if (!lock->target)
         return;
-    game3d_release_ref(&lock->target);
+    game3d_targetlock_release_instance_ref(
+        &lock->target, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
     lock->los_broken_time = 0.0;
     lock->just_lost = 1;
 }
@@ -274,9 +361,12 @@ static void game3d_targetlock_finalize(void *obj) {
     rt_game3d_targetlock *lock = (rt_game3d_targetlock *)obj;
     if (!lock)
         return;
-    game3d_release_ref(&lock->world);
-    game3d_release_ref(&lock->owner);
-    game3d_release_ref(&lock->target);
+    game3d_targetlock_release_instance_ref(
+        &lock->world, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world));
+    game3d_targetlock_release_instance_ref(
+        &lock->owner, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
+    game3d_targetlock_release_instance_ref(
+        &lock->target, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
 }
 
 //=========================================================================
@@ -307,8 +397,10 @@ void *rt_game3d_targetlock_new(void *world_obj, void *owner_entity) {
     }
     memset(lock, 0, sizeof(*lock));
     rt_obj_set_finalizer(lock, game3d_targetlock_finalize);
-    game3d_assign_ref(&lock->world, world);
-    game3d_assign_ref(&lock->owner, owner);
+    game3d_targetlock_assign_instance_ref(
+        &lock->world, world, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world));
+    game3d_targetlock_assign_instance_ref(
+        &lock->owner, owner, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
     lock->max_distance = RT_GAME3D_TL_DEFAULT_MAX_DISTANCE;
     lock->cone_degrees = RT_GAME3D_TL_DEFAULT_CONE_DEGREES;
     lock->candidate_mask = -1;
@@ -502,7 +594,8 @@ void rt_game3d_targetlock_clear(void *obj) {
     rt_game3d_targetlock *lock =
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.Clear: invalid lock");
     if (lock && lock->target) {
-        game3d_release_ref(&lock->target);
+        game3d_targetlock_release_instance_ref(
+            &lock->target, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity));
         lock->los_broken_time = 0.0;
     }
     if (lock) {
@@ -565,11 +658,13 @@ void rt_game3d_targetlock_update(void *obj, double dt) {
         game3d_targetlock_checked(obj, "Game3D.TargetLock3D.Update: invalid lock");
     if (!lock)
         return;
+    dt = game3d_clamp_controller_dt(dt);
+    if (dt <= 0.0)
+        return;
     lock->just_acquired = 0;
     lock->just_lost = 0;
     if (!lock->target)
         return;
-    dt = game3d_clamp_dt(dt);
     rt_game3d_entity *target = game3d_targetlock_target_ref(lock);
     rt_game3d_entity *owner = game3d_targetlock_owner_ref(lock);
     rt_game3d_world *world = game3d_targetlock_world_ref(lock);
@@ -587,7 +682,7 @@ void rt_game3d_targetlock_update(void *obj, double dt) {
     double dx = target_pos[0] - owner_pos[0];
     double dy = target_pos[1] - owner_pos[1];
     double dz = target_pos[2] - owner_pos[2];
-    double dist = sqrt(dx * dx + dy * dy + dz * dz);
+    double dist = hypot(hypot(dx, dy), dz);
     if (!isfinite(dist) || dist > lock->break_distance) {
         game3d_targetlock_release(lock);
         return;

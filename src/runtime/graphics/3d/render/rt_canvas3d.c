@@ -1365,7 +1365,8 @@ static void canvas3d_copy_or_compute_local_bounds(const rt_mesh3d *mesh,
 /// @brief Estimate a physical backing size for a requested logical size.
 /// @param c Canvas whose window scale is consulted; NULL implies scale 1.
 /// @param logical Logical dimension in canvas units.
-/// @return Rounded physical dimension. Non-positive or overflow-prone inputs are returned unchanged.
+/// @return Rounded physical dimension. Non-positive or overflow-prone inputs are returned
+/// unchanged.
 static int32_t canvas3d_scale_logical_size(rt_canvas3d *c, int32_t logical) {
     float scale;
 
@@ -1978,8 +1979,7 @@ static void *canvas3d_new_impl(rt_string title,
              * display query suggested (menu bars, WM policy) — trust the window. */
             int32_t actual_w = 0;
             int32_t actual_h = 0;
-            if (vgfx_get_size(c->gfx_win, &actual_w, &actual_h) && actual_w > 0 &&
-                actual_h > 0) {
+            if (vgfx_get_size(c->gfx_win, &actual_w, &actual_h) && actual_w > 0 && actual_h > 0) {
                 initial_width = actual_w;
                 initial_height = actual_h;
             }
@@ -1996,8 +1996,8 @@ static void *canvas3d_new_impl(rt_string title,
      * offscreen constructor (ADR 0191) opts into the platform backend with
      * the same software fallback windowed canvases use; backends that cannot
      * create a headless context fail create_ctx and fall back truthfully. */
-    c->backend = (offscreen && !offscreen_prefer_gpu) ? &vgfx3d_software_backend
-                                                      : vgfx3d_select_backend();
+    c->backend =
+        (offscreen && !offscreen_prefer_gpu) ? &vgfx3d_software_backend : vgfx3d_select_backend();
     c->backend_requested_name = (c->backend && c->backend->name) ? c->backend->name : "unknown";
     c->backend_fallback = 0;
     c->backend_fallback_reason = CANVAS3D_FALLBACK_REASON_NONE;
@@ -2217,8 +2217,8 @@ static void *canvas3d_new_offscreen_impl(void *target, int32_t prefer_gpu) {
         rt_trap("Canvas3D.NewOffscreen: render-target buffer allocation failed");
         return NULL;
     }
-    return canvas3d_new_impl(NULL, (int64_t)rtd->target->width, (int64_t)rtd->target->height, 0,
-                             rtd, prefer_gpu);
+    return canvas3d_new_impl(
+        NULL, (int64_t)rtd->target->width, (int64_t)rtd->target->height, 0, rtd, prefer_gpu);
 }
 
 /// @brief Create a deterministic windowless renderer bound to an explicit RenderTarget3D.
@@ -2682,7 +2682,8 @@ int rt_canvas3d_add_temp_object(void *obj, void *value) {
 
 /// @brief Get the current canvas width in pixels (updates on window resize).
 /// @param obj Canvas3D handle or approved stack fixture.
-/// @return Active render-target width when bound, otherwise logical window width; zero when invalid.
+/// @return Active render-target width when bound, otherwise logical window width; zero when
+/// invalid.
 int64_t rt_canvas3d_get_width(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
@@ -2983,7 +2984,7 @@ void rt_canvas3d_set_light(void *obj, int64_t index, void *light) {
         rt_trap("Canvas3D.SetLight: index out of range");
         return;
     }
-    if (light && !rt_g3d_has_class(light, RT_G3D_LIGHT3D_CLASS_ID)) {
+    if (light && !rt_obj_is_instance(light, RT_G3D_LIGHT3D_CLASS_ID, sizeof(rt_light3d))) {
         rt_trap("Canvas3D.SetLight: light must be Light3D");
         return;
     }
@@ -3013,7 +3014,9 @@ int64_t rt_canvas3d_get_light_count(void *obj) {
         return 0;
     for (int32_t i = 0; i < VGFX3D_MAX_LIGHTS; i++) {
         rt_light3d *light =
-            (rt_light3d *)rt_g3d_checked_or_null(c->lights[i], RT_G3D_LIGHT3D_CLASS_ID);
+            rt_obj_is_instance(c->lights[i], RT_G3D_LIGHT3D_CLASS_ID, sizeof(rt_light3d))
+                ? (rt_light3d *)c->lights[i]
+                : NULL;
         if (light && light->enabled)
             count++;
     }

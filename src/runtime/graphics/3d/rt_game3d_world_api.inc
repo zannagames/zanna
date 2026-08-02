@@ -892,7 +892,7 @@ int8_t rt_game3d_world_is_destroyed(void *obj) {
 /// @return Borrowed Canvas3D handle, or `NULL` when the world or stored canvas is invalid.
 void *rt_game3d_world_get_canvas(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.get_Canvas: invalid world");
-    return world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    return world ? rt_canvas3d_checked_or_stack(world->canvas) : NULL;
 }
 
 /// @brief Get the world's active camera (NULL if invalid).
@@ -900,7 +900,7 @@ void *rt_game3d_world_get_canvas(void *obj) {
 /// @return Borrowed Camera3D handle, or `NULL` when unavailable.
 void *rt_game3d_world_get_camera(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.get_Camera: invalid world");
-    return world ? rt_g3d_checked_or_null(world->camera, RT_G3D_CAMERA3D_CLASS_ID) : NULL;
+    return world ? rt_camera3d_checked_or_stack(world->camera) : NULL;
 }
 
 /// @brief Get the world's scene graph (NULL if invalid).
@@ -908,7 +908,7 @@ void *rt_game3d_world_get_camera(void *obj) {
 /// @return Borrowed Scene3D handle, or `NULL` when unavailable.
 void *rt_game3d_world_get_scene(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.get_Scene: invalid world");
-    return world ? rt_g3d_checked_or_null(world->scene, RT_G3D_SCENE3D_CLASS_ID) : NULL;
+    return world ? scene3d_checked(world->scene) : NULL;
 }
 
 /// @brief Get the world's physics simulation (NULL if invalid).
@@ -924,7 +924,10 @@ void *rt_game3d_world_get_physics(void *obj) {
 /// @return Borrowed Game3D input handle, or `NULL` when unavailable.
 void *rt_game3d_world_get_input(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.get_Input: invalid world");
-    return world ? rt_g3d_checked_or_null(world->input, RT_G3D_GAME3D_INPUT_CLASS_ID) : NULL;
+    return world && rt_obj_is_instance(
+                        world->input, RT_G3D_GAME3D_INPUT_CLASS_ID, sizeof(rt_game3d_input))
+               ? world->input
+               : NULL;
 }
 
 /// @brief Get the world's audio subsystem (NULL if invalid).
@@ -932,7 +935,10 @@ void *rt_game3d_world_get_input(void *obj) {
 /// @return Borrowed Game3D sound handle, or `NULL` when unavailable.
 void *rt_game3d_world_get_audio(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.get_Audio: invalid world");
-    return world ? rt_g3d_checked_or_null(world->audio, RT_G3D_GAME3D_SOUND_CLASS_ID) : NULL;
+    return world && rt_obj_is_instance(
+                        world->audio, RT_G3D_GAME3D_SOUND_CLASS_ID, sizeof(rt_game3d_audio))
+               ? world->audio
+               : NULL;
 }
 
 /// @brief Get the world's effect registry (NULL if invalid).
@@ -940,7 +946,10 @@ void *rt_game3d_world_get_audio(void *obj) {
 /// @return Borrowed Game3D effects handle, or `NULL` when unavailable.
 void *rt_game3d_world_get_effects(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.get_Effects: invalid world");
-    return world ? rt_g3d_checked_or_null(world->effects, RT_G3D_GAME3D_EFFECTS_CLASS_ID) : NULL;
+    return world && rt_obj_is_instance(
+                        world->effects, RT_G3D_GAME3D_EFFECTS_CLASS_ID, sizeof(rt_game3d_effects))
+               ? world->effects
+               : NULL;
 }
 
 /// @brief Get the world's owned stream controller, creating it on first access.
@@ -950,7 +959,9 @@ void *rt_game3d_world_get_stream(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.get_stream: invalid world");
     if (!world)
         return NULL;
-    if (world->stream && !rt_g3d_has_class(world->stream, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID))
+    if (world->stream && !rt_obj_is_instance(world->stream,
+                                             RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID,
+                                             sizeof(rt_game3d_world_stream)))
         game3d_release_typed_ref(&world->stream, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID);
     if (!world->stream) {
         rt_game3d_world_stream *stream =
@@ -1152,7 +1163,7 @@ int64_t rt_game3d_world_get_body_count(void *obj) {
 int64_t rt_game3d_world_get_draw_count(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.get_drawCount: invalid world");
-    void *canvas = world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    void *canvas = world ? rt_canvas3d_checked_or_stack(world->canvas) : NULL;
     return canvas ? rt_canvas3d_get_draw_count(canvas) : 0;
 }
 
@@ -1162,7 +1173,7 @@ int64_t rt_game3d_world_get_draw_count(void *obj) {
 int64_t rt_game3d_world_get_visible_node_count(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.get_visibleNodeCount: invalid world");
-    void *scene = world ? rt_g3d_checked_or_null(world->scene, RT_G3D_SCENE3D_CLASS_ID) : NULL;
+    void *scene = world ? scene3d_checked(world->scene) : NULL;
     return scene ? rt_scene3d_get_visible_node_count(scene) : 0;
 }
 
@@ -1172,7 +1183,7 @@ int64_t rt_game3d_world_get_visible_node_count(void *obj) {
 int64_t rt_game3d_world_get_occluded_draw_count(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.get_occludedDrawCount: invalid world");
-    void *canvas = world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    void *canvas = world ? rt_canvas3d_checked_or_stack(world->canvas) : NULL;
     return canvas ? rt_canvas3d_get_occluded_draw_count(canvas) : 0;
 }
 
@@ -1182,7 +1193,7 @@ int64_t rt_game3d_world_get_occluded_draw_count(void *obj) {
 int64_t rt_game3d_world_get_frustum_culled_draw_count(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.get_frustumCulledDrawCount: invalid world");
-    void *canvas = world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    void *canvas = world ? rt_canvas3d_checked_or_stack(world->canvas) : NULL;
     return canvas ? rt_canvas3d_get_frustum_culled_draw_count(canvas) : 0;
 }
 
@@ -1192,7 +1203,7 @@ int64_t rt_game3d_world_get_frustum_culled_draw_count(void *obj) {
 int64_t rt_game3d_world_get_cpu_occluded_draw_count(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.get_cpuOccludedDrawCount: invalid world");
-    void *canvas = world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    void *canvas = world ? rt_canvas3d_checked_or_stack(world->canvas) : NULL;
     return canvas ? rt_canvas3d_get_cpu_occluded_draw_count(canvas) : 0;
 }
 
@@ -1202,8 +1213,11 @@ int64_t rt_game3d_world_get_cpu_occluded_draw_count(void *obj) {
 int64_t rt_game3d_world_get_stream_resident_bytes(void *obj) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.get_streamResidentBytes: invalid world");
-    void *stream =
-        world ? rt_g3d_checked_or_null(world->stream, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID) : NULL;
+    void *stream = world && rt_obj_is_instance(world->stream,
+                                               RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID,
+                                               sizeof(rt_game3d_world_stream))
+                       ? world->stream
+                       : NULL;
     return stream ? rt_game3d_world_stream_get_resident_bytes(stream) : 0;
 }
 
@@ -1635,10 +1649,9 @@ void rt_game3d_world_clear_lights(void *obj) {
 /// @param world Borrowed world whose canvas skybox slot is repaired in place.
 static void game3d_world_repair_canvas_skybox(rt_game3d_world *world) {
 #ifdef ZANNA_ENABLE_GRAPHICS
-    rt_canvas3d *canvas;
-    if (!world || !world->canvas || !rt_g3d_has_class(world->canvas, RT_G3D_CANVAS3D_CLASS_ID))
+    rt_canvas3d *canvas = world ? rt_canvas3d_checked_or_stack(world->canvas) : NULL;
+    if (!canvas)
         return;
-    canvas = (rt_canvas3d *)world->canvas;
     if (!canvas->skybox)
         return;
     if (!rt_g3d_has_class(canvas->skybox, RT_G3D_CUBEMAP3D_CLASS_ID)) {
@@ -1703,18 +1716,23 @@ void rt_game3d_world_set_fog(
 void rt_game3d_world_set_quality(void *obj, int64_t quality) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.World3D.setQuality: invalid world");
     void *new_postfx;
-    if (!world || !world->canvas)
+    void *canvas = world ? rt_canvas3d_checked_or_stack(world->canvas) : NULL;
+    rt_game3d_effects *effects = world && rt_obj_is_instance(world->effects,
+                                                             RT_G3D_GAME3D_EFFECTS_CLASS_ID,
+                                                             sizeof(rt_game3d_effects))
+                                     ? (rt_game3d_effects *)world->effects
+                                     : NULL;
+    if (!canvas)
         return;
-    rt_canvas3d_set_quality(world->canvas, quality);
-    rt_game3d_effects *effects = (rt_game3d_effects *)world->effects;
+    rt_canvas3d_set_quality(canvas, quality);
     if (effects) {
-        new_postfx = rt_postfx3d_new_quality(world->canvas, quality);
+        new_postfx = rt_postfx3d_new_quality(canvas, quality);
         if (new_postfx) {
-            game3d_assign_ref(&effects->postfx, new_postfx);
-            rt_canvas3d_set_post_fx(world->canvas, effects->postfx);
+            game3d_assign_typed_ref(&effects->postfx, new_postfx, RT_G3D_POSTFX3D_CLASS_ID);
+            rt_canvas3d_set_post_fx(canvas, effects->postfx);
             game3d_release_ref(&new_postfx);
         } else if (effects->postfx) {
-            rt_canvas3d_set_post_fx(world->canvas, effects->postfx);
+            rt_canvas3d_set_post_fx(canvas, effects->postfx);
         }
     }
 }

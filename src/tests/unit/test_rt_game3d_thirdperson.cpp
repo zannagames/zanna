@@ -27,6 +27,8 @@
 #include "rt_canvas3d.h"
 #include "rt_collider3d.h"
 #include "rt_game3d.h"
+#include "rt_graphics3d_ids.h"
+#include "rt_heap.h"
 #include "rt_object.h"
 #include "rt_physics3d.h"
 #include "rt_quat.h"
@@ -94,6 +96,72 @@ extern "C" void vm_trap(const char *msg) {
     } while (0)
 
 namespace {
+
+struct ThirdPersonTestLayout {
+    void *world;
+    void *target;
+    void *character;
+    void *lock;
+    double yaw;
+    double pitch;
+    double distance;
+    double min_distance;
+    double max_distance;
+    double shoulder_offset[3];
+    double pivot_height;
+    double pitch_min;
+    double pitch_max;
+    double damping;
+    double collision_radius;
+    int64_t collision_mask;
+    int8_t occlusion_fade;
+    int8_t aiming;
+    double aim_blend;
+    double aim_distance;
+    double aim_fov;
+    double aim_shoulder_offset[3];
+    double base_fov;
+    int8_t base_fov_valid;
+    double current_distance;
+    void *fades;
+    int32_t fade_count;
+    int32_t fade_capacity;
+    int32_t fade_storage_capacity;
+    uint64_t fade_storage_cookie;
+};
+
+struct TargetLockTestLayout {
+    void *world;
+    void *owner;
+    void *target;
+    double max_distance;
+    double cone_degrees;
+    int64_t candidate_mask;
+    int8_t require_los;
+    double stickiness;
+    double break_distance;
+    double los_grace_seconds;
+    double los_broken_time;
+    int8_t just_acquired;
+    int8_t just_lost;
+};
+
+bool expect_trap_contains(void (*fn)(void *), void *context, const char *needle) {
+    g_last_trap = nullptr;
+    g_expect_trap = true;
+    if (setjmp(g_trap_jmp) == 0) {
+        fn(context);
+        g_expect_trap = false;
+        return false;
+    }
+    g_expect_trap = false;
+    return g_last_trap && std::strstr(g_last_trap, needle) != nullptr;
+}
+
+void release_runtime_ref(void *object) {
+    if (object && rt_obj_release_check0(object))
+        rt_obj_free(object);
+}
 
 /// @brief Spawn a static AABB wall entity; returns the entity handle.
 void *spawn_static_box(
@@ -184,6 +252,202 @@ bool test_thirdperson_defaults_and_orbit() {
     if (rt_obj_release_check0(cam_pos))
         rt_obj_free(cam_pos);
     rt_game3d_world_destroy(world);
+    PASS();
+}
+
+bool test_thirdperson_and_targetlock_repair_private_state() {
+    TEST("Third-person and target-lock private state repairs fail closed");
+    void *world = rt_game3d_world_new(rt_const_cstr("TP Repair"), 64, 48);
+    void *player = rt_game3d_entity_new();
+    rt_game3d_world_spawn(world, player);
+    void *controller = rt_game3d_thirdperson_controller_new(world, player);
+    void *lock = rt_game3d_targetlock_new(world, player);
+    rt_game3d_thirdperson_controller_set_lock_target(controller, lock);
+    auto *controller_view = static_cast<ThirdPersonTestLayout *>(controller);
+
+    void *saved_world = controller_view->world;
+    void *saved_target = controller_view->target;
+    void *saved_lock = controller_view->lock;
+    void *undersized_world = rt_obj_new_i64(RT_G3D_GAME3D_WORLD_CLASS_ID, 1);
+    void *undersized_entity = rt_obj_new_i64(RT_G3D_GAME3D_ENTITY_CLASS_ID, 1);
+    void *undersized_character = rt_obj_new_i64(RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID, 1);
+    void *undersized_lock = rt_obj_new_i64(RT_G3D_GAME3D_TARGETLOCK_CLASS_ID, 1);
+    EXPECT_TRUE(undersized_world && undersized_entity && undersized_character && undersized_lock,
+                "undersized private-slot fixtures allocate");
+
+    size_t before = rt_heap_hdr(undersized_world)->refcnt;
+    controller_view->world = undersized_world;
+    (void)rt_game3d_thirdperson_controller_get_distance(controller);
+    EXPECT_TRUE(controller_view->world == nullptr,
+                "undersized private third-person world is quarantined");
+    EXPECT_TRUE(rt_heap_hdr(undersized_world)->refcnt == before,
+                "quarantining an unowned world does not release it");
+    controller_view->world = saved_world;
+
+    before = rt_heap_hdr(undersized_entity)->refcnt;
+    controller_view->target = undersized_entity;
+    EXPECT_TRUE(rt_game3d_thirdperson_controller_get_target(controller) == nullptr,
+                "undersized private third-person target is quarantined");
+    EXPECT_TRUE(rt_heap_hdr(undersized_entity)->refcnt == before,
+                "quarantining an unowned target does not release it");
+    controller_view->target = saved_target;
+
+    before = rt_heap_hdr(undersized_character)->refcnt;
+    controller_view->character = undersized_character;
+    EXPECT_TRUE(rt_game3d_thirdperson_controller_get_character(controller) == nullptr,
+                "undersized private third-person character is quarantined");
+    EXPECT_TRUE(rt_heap_hdr(undersized_character)->refcnt == before,
+                "quarantining an unowned character does not release it");
+
+    struct CharacterSetterContext {
+        void *controller;
+        void *character;
+    } character_context{controller, undersized_character};
+
+    EXPECT_TRUE(expect_trap_contains(
+                    +[](void *opaque) {
+                        auto *context = static_cast<CharacterSetterContext *>(opaque);
+                        rt_game3d_thirdperson_controller_set_character(context->controller,
+                                                                       context->character);
+                    },
+                    &character_context,
+                    "invalid character"),
+                "third-person setter rejects an undersized character transactionally");
+    EXPECT_TRUE(controller_view->character == nullptr,
+                "failed character assignment preserves the empty binding");
+
+    before = rt_heap_hdr(undersized_lock)->refcnt;
+    controller_view->lock = undersized_lock;
+    EXPECT_TRUE(rt_game3d_thirdperson_controller_get_lock_target(controller) == nullptr,
+                "undersized private target lock is quarantined");
+    EXPECT_TRUE(rt_heap_hdr(undersized_lock)->refcnt == before,
+                "quarantining an unowned target lock does not release it");
+    controller_view->lock = saved_lock;
+
+    struct LockSetterContext {
+        void *controller;
+        void *lock;
+    } undersized_lock_context{controller, undersized_lock};
+
+    EXPECT_TRUE(expect_trap_contains(
+                    +[](void *opaque) {
+                        auto *context = static_cast<LockSetterContext *>(opaque);
+                        rt_game3d_thirdperson_controller_set_lock_target(context->controller,
+                                                                         context->lock);
+                    },
+                    &undersized_lock_context,
+                    "TargetLock3D"),
+                "third-person setter rejects an undersized target lock transactionally");
+    EXPECT_TRUE(controller_view->lock == saved_lock,
+                "failed lock assignment preserves the prior binding");
+
+    controller_view->yaw = INFINITY;
+    controller_view->pitch = INFINITY;
+    controller_view->distance = NAN;
+    controller_view->min_distance = -INFINITY;
+    controller_view->max_distance = -INFINITY;
+    controller_view->shoulder_offset[0] = INFINITY;
+    controller_view->aim_shoulder_offset[2] = -INFINITY;
+    controller_view->pivot_height = NAN;
+    controller_view->pitch_min = INFINITY;
+    controller_view->pitch_max = -INFINITY;
+    controller_view->damping = INFINITY;
+    controller_view->collision_radius = NAN;
+    controller_view->occlusion_fade = 7;
+    controller_view->aiming = -7;
+    controller_view->aim_blend = INFINITY;
+    controller_view->aim_distance = -INFINITY;
+    controller_view->aim_fov = INFINITY;
+    controller_view->base_fov = NAN;
+    controller_view->base_fov_valid = 9;
+    controller_view->current_distance = INFINITY;
+    void *foreign_fades = std::malloc(64);
+    controller_view->fades = foreign_fades;
+    controller_view->fade_count = 1;
+    controller_view->fade_capacity = 1;
+    controller_view->fade_storage_capacity = 0;
+    controller_view->fade_storage_cookie = 0;
+    EXPECT_NEAR(rt_game3d_thirdperson_controller_get_distance(controller),
+                4.0,
+                1e-9,
+                "non-finite third-person distance repairs to default");
+    EXPECT_TRUE(std::isfinite(controller_view->yaw) && std::isfinite(controller_view->pitch),
+                "third-person orbit angles repair to finite bounds");
+    EXPECT_TRUE(controller_view->occlusion_fade == 1 && controller_view->aiming == 1,
+                "third-person flags canonicalize");
+    EXPECT_TRUE(controller_view->base_fov_valid == 0, "invalid captured FOV state is discarded");
+    EXPECT_TRUE(controller_view->fades == nullptr && controller_view->fade_count == 0 &&
+                    controller_view->fade_capacity == 0,
+                "untrusted fade storage is quarantined without traversal");
+    std::free(foreign_fades);
+
+    auto *lock_view = static_cast<TargetLockTestLayout *>(lock);
+    void *saved_lock_world = lock_view->world;
+    void *saved_owner = lock_view->owner;
+    lock_view->max_distance = NAN;
+    lock_view->cone_degrees = INFINITY;
+    lock_view->stickiness = -INFINITY;
+    lock_view->break_distance = NAN;
+    lock_view->los_grace_seconds = -INFINITY;
+    lock_view->los_broken_time = INFINITY;
+    lock_view->require_los = 7;
+    lock_view->just_acquired = 8;
+    lock_view->just_lost = -8;
+    EXPECT_NEAR(rt_game3d_targetlock_get_max_distance(lock),
+                18.0,
+                1e-9,
+                "target-lock acquisition range repairs to default");
+    EXPECT_NEAR(lock_view->cone_degrees, 65.0, 1e-9, "target-lock cone repair persists");
+    EXPECT_NEAR(lock_view->stickiness, 1.25, 1e-9, "target-lock stickiness repair persists");
+    EXPECT_TRUE(lock_view->require_los == 1 && lock_view->just_acquired == 1 &&
+                    lock_view->just_lost == 1,
+                "target-lock flags canonicalize");
+    EXPECT_NEAR(
+        lock_view->los_broken_time, 0.0, 1e-9, "unlocked target-lock grace accumulation resets");
+
+    before = rt_heap_hdr(undersized_world)->refcnt;
+    lock_view->world = undersized_world;
+    (void)rt_game3d_targetlock_get_max_distance(lock);
+    EXPECT_TRUE(lock_view->world == nullptr, "undersized target-lock world is quarantined");
+    EXPECT_TRUE(rt_heap_hdr(undersized_world)->refcnt == before,
+                "target-lock world quarantine does not release unowned state");
+    lock_view->world = saved_lock_world;
+    before = rt_heap_hdr(undersized_entity)->refcnt;
+    lock_view->owner = undersized_entity;
+    EXPECT_TRUE(rt_game3d_targetlock_acquire(lock) == 0,
+                "undersized target-lock owner fails closed during acquisition");
+    EXPECT_TRUE(lock_view->owner == nullptr,
+                "undersized target-lock owner is quarantined persistently");
+    EXPECT_TRUE(rt_heap_hdr(undersized_entity)->refcnt == before,
+                "target-lock owner quarantine does not release unowned state");
+    lock_view->owner = saved_owner;
+
+    void *other_world = rt_game3d_world_new(rt_const_cstr("TP Repair Other"), 64, 48);
+    void *other_player = rt_game3d_entity_new();
+    rt_game3d_world_spawn(other_world, other_player);
+    void *other_lock = rt_game3d_targetlock_new(other_world, other_player);
+    LockSetterContext cross_world_context{controller, other_lock};
+    EXPECT_TRUE(expect_trap_contains(
+                    +[](void *opaque) {
+                        auto *context = static_cast<LockSetterContext *>(opaque);
+                        rt_game3d_thirdperson_controller_set_lock_target(context->controller,
+                                                                         context->lock);
+                    },
+                    &cross_world_context,
+                    "another world"),
+                "third-person controller rejects a cross-world target lock");
+    EXPECT_TRUE(controller_view->lock == saved_lock,
+                "cross-world lock rejection preserves the prior binding");
+
+    release_runtime_ref(undersized_lock);
+    release_runtime_ref(undersized_character);
+    release_runtime_ref(undersized_entity);
+    release_runtime_ref(undersized_world);
+    rt_game3d_world_destroy(other_world);
+    release_runtime_ref(other_lock);
+    rt_game3d_world_destroy(world);
+    release_runtime_ref(controller);
+    release_runtime_ref(lock);
     PASS();
 }
 
@@ -425,6 +689,9 @@ bool test_targetlock_acquire_prefers_near_center() {
                 "near-center target wins the angle-weighted score");
     EXPECT_TRUE(rt_game3d_targetlock_just_acquired(fx.lock) != 0,
                 "JustAcquired fires on acquisition");
+    rt_game3d_targetlock_update(fx.lock, 0.0);
+    EXPECT_TRUE(rt_game3d_targetlock_just_acquired(fx.lock) != 0,
+                "zero-delta target-lock update preserves transition state");
     rt_game3d_targetlock_update(fx.lock, 1.0 / 60.0);
     EXPECT_TRUE(rt_game3d_targetlock_just_acquired(fx.lock) == 0,
                 "JustAcquired clears on the next update");
@@ -898,6 +1165,7 @@ int main() {
     std::printf("Game3D third-person upgrade tests\n");
     bool ok = true;
     ok = test_thirdperson_defaults_and_orbit() && ok;
+    ok = test_thirdperson_and_targetlock_repair_private_state() && ok;
     ok = test_thirdperson_boom_pull_in_and_release() && ok;
     ok = test_thirdperson_penetrating_start_snaps_to_min() && ok;
     ok = test_thirdperson_character_drive_yaw_basis() && ok;

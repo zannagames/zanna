@@ -81,7 +81,9 @@ typedef struct {
 /// @param obj Runtime object handle to validate.
 /// @return Typed Character3D payload, or NULL for a class mismatch.
 static rt_character3d *character3d_checked(void *obj) {
-    return (rt_character3d *)rt_g3d_checked_or_null(obj, RT_G3D_CHARACTER3D_CLASS_ID);
+    return rt_obj_is_instance(obj, RT_G3D_CHARACTER3D_CLASS_ID, sizeof(rt_character3d))
+               ? (rt_character3d *)obj
+               : NULL;
 }
 
 /*==========================================================================
@@ -379,7 +381,8 @@ static int character3d_test_position(rt_character3d *ctrl,
             continue;
         if (!test_collision(body, other, normal, &depth, NULL, NULL, NULL, NULL, NULL))
             continue;
-        if (!isfinite(depth) || depth <= 0.0 || !character3d_sanitize_contact_normal(normal, normal))
+        if (!isfinite(depth) || depth <= 0.0 ||
+            !character3d_sanitize_contact_normal(normal, normal))
             continue;
         if (!best.hit || depth > best.depth) {
             best.hit = 1;
@@ -419,9 +422,12 @@ static void character3d_resolve_penetration(rt_character3d *ctrl) {
             return;
         if (push > CHARACTER3D_MOVE_ABS_MAX)
             push = CHARACTER3D_MOVE_ABS_MAX;
-        ctrl->body->position[0] = character3d_saturate_coord(ctrl->body->position[0] - hit.normal[0] * push);
-        ctrl->body->position[1] = character3d_saturate_coord(ctrl->body->position[1] - hit.normal[1] * push);
-        ctrl->body->position[2] = character3d_saturate_coord(ctrl->body->position[2] - hit.normal[2] * push);
+        ctrl->body->position[0] =
+            character3d_saturate_coord(ctrl->body->position[0] - hit.normal[0] * push);
+        ctrl->body->position[1] =
+            character3d_saturate_coord(ctrl->body->position[1] - hit.normal[1] * push);
+        ctrl->body->position[2] =
+            character3d_saturate_coord(ctrl->body->position[2] - hit.normal[2] * push);
     }
 }
 
@@ -633,19 +639,14 @@ static void character3d_push_dynamic(rt_character3d *ctrl,
     if (!isfinite(mag) || mag <= 0.0)
         return;
     /* Approximate contact point: capsule surface along the contact normal. */
-    double px = character3d_saturate_coord(ctrl->body->position[0] +
-                                           hit->normal[0] * ctrl->body->radius);
-    double py = character3d_saturate_coord(ctrl->body->position[1] +
-                                           hit->normal[1] * ctrl->body->radius);
-    double pz = character3d_saturate_coord(ctrl->body->position[2] +
-                                           hit->normal[2] * ctrl->body->radius);
-    rt_body3d_apply_impulse_at_point(hit->body,
-                                     hit->normal[0] * mag,
-                                     hit->normal[1] * mag,
-                                     hit->normal[2] * mag,
-                                     px,
-                                     py,
-                                     pz);
+    double px =
+        character3d_saturate_coord(ctrl->body->position[0] + hit->normal[0] * ctrl->body->radius);
+    double py =
+        character3d_saturate_coord(ctrl->body->position[1] + hit->normal[1] * ctrl->body->radius);
+    double pz =
+        character3d_saturate_coord(ctrl->body->position[2] + hit->normal[2] * ctrl->body->radius);
+    rt_body3d_apply_impulse_at_point(
+        hit->body, hit->normal[0] * mag, hit->normal[1] * mag, hit->normal[2] * mag, px, py, pz);
     rt_body3d_wake(hit->body);
     ctrl->pushed_body = hit->body;
 }
@@ -1003,8 +1004,8 @@ int8_t rt_character3d_try_set_height(void *o, double height) {
         return 0;
     if (!isfinite(height) || height <= 0.0)
         return 0;
-    double radius = c->body->radius > 0.0 ? c->body->radius
-                                          : rt_collider3d_get_radius_raw(c->body->collider);
+    double radius =
+        c->body->radius > 0.0 ? c->body->radius : rt_collider3d_get_radius_raw(c->body->collider);
     if (radius <= 0.0)
         return 0;
     if (height < radius * 2.0)
@@ -1068,8 +1069,8 @@ double rt_character3d_get_height(void *o) {
 void rt_character3d_set_push_strength(void *o, double strength) {
     rt_character3d *c = character3d_checked(o);
     if (c)
-        c->push_strength = (isfinite(strength) && strength > 0.0) ? clampd(strength, 0.0, 1000.0)
-                                                                  : 0.0;
+        c->push_strength =
+            (isfinite(strength) && strength > 0.0) ? clampd(strength, 0.0, 1000.0) : 0.0;
 }
 
 /// @brief `Character3D.get_PushStrength` — dynamic push impulse scale.
@@ -1158,7 +1159,9 @@ typedef struct {
 /// @param obj Runtime object handle to validate.
 /// @return Typed Trigger3D payload, or NULL for a class mismatch.
 static rt_trigger3d *trigger3d_checked(void *obj) {
-    return (rt_trigger3d *)rt_g3d_checked_or_null(obj, RT_G3D_TRIGGER3D_CLASS_ID);
+    return rt_obj_is_instance(obj, RT_G3D_TRIGGER3D_CLASS_ID, sizeof(rt_trigger3d))
+               ? (rt_trigger3d *)obj
+               : NULL;
 }
 
 /// @brief GC finalizer for `Trigger3D` — releases the tracking arrays.

@@ -79,3 +79,5 @@ Living ledgers that track findings and their resolution for high-risk subsystems
 - [Graphics3D Runtime Hardening Program (July 2026)](graphics3d-runtime-hardening-2026-07.md) — 48-item audit of `src/runtime/graphics/3d`
 - [Graphics3D Backend Correctness Audit (July 2026)](graphics3d-backend-audit-2026-07.md) — OpenGL, D3D11, Metal, and software renderer boundary review
 - [Graphics3D Animation and Navigation Audit (August 2026)](graphics3d-animation-navigation-audit-2026-08.md) — Resolution ledger for 104 IK, morph-target, and navigation findings
+- [Graphics3D Runtime Correctness Audit Follow-up (August 2026)](graphics3d-runtime-audit-followup-2026-08.md) — Resolution ledger for 114 foundational runtime findings
+- [Graphics3D Game-Core Correctness Audit (August 2026)](graphics3d-game-core-audit-2026-08.md) — Resolution ledger for 186 Game3D, controller, hierarchy, diagnostics, and boundary findings

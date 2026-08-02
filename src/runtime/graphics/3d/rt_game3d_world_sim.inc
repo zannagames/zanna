@@ -1121,19 +1121,22 @@ static void game3d_world_release_runtime(rt_game3d_world *world, int mark_entiti
     game3d_release_typed_ref(&world->active_dialogue, RT_G3D_GAME3D_DIALOGUE_CLASS_ID);
     game3d_release_ref(&world->debug_axis_origin);
     if (world->stream) {
-        rt_game3d_world_stream *stream = (rt_game3d_world_stream *)rt_g3d_checked_or_null(
-            world->stream, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID);
+        rt_game3d_world_stream *stream = rt_obj_is_instance(world->stream,
+                                                            RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID,
+                                                            sizeof(rt_game3d_world_stream))
+                                             ? (rt_game3d_world_stream *)world->stream
+                                             : NULL;
         if (stream && !stream->retains_world)
             stream->world = NULL;
     }
-    game3d_release_ref(&world->stream);
-    game3d_release_ref(&world->effects);
-    game3d_release_ref(&world->audio);
-    game3d_release_ref(&world->input);
-    game3d_release_ref(&world->physics);
-    game3d_release_ref(&world->scene);
-    game3d_release_ref(&world->camera);
-    game3d_release_ref(&world->canvas);
+    game3d_release_typed_ref(&world->stream, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID);
+    game3d_release_typed_ref(&world->effects, RT_G3D_GAME3D_EFFECTS_CLASS_ID);
+    game3d_release_typed_ref(&world->audio, RT_G3D_GAME3D_SOUND_CLASS_ID);
+    game3d_release_typed_ref(&world->input, RT_G3D_GAME3D_INPUT_CLASS_ID);
+    game3d_release_typed_ref(&world->physics, RT_G3D_WORLD3D_CLASS_ID);
+    game3d_release_typed_ref(&world->scene, RT_G3D_SCENE3D_CLASS_ID);
+    game3d_release_typed_ref(&world->camera, RT_G3D_CAMERA3D_CLASS_ID);
+    game3d_release_typed_ref(&world->canvas, RT_G3D_CANVAS3D_CLASS_ID);
     game3d_world_release_job_pool(world);
 }
 

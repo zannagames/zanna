@@ -44,6 +44,7 @@
 #include "rt_particles3d.h"
 #include "rt_physics3d.h"
 #include "rt_pixels.h"
+#include "rt_pixels_internal.h"
 #include "rt_platform.h"
 #include "rt_postfx3d.h"
 #include "rt_quat.h"
@@ -73,32 +74,36 @@
 /// @param obj Borrowed live World3D handle whose Canvas3D lighting is reset.
 void rt_game3d_lighting_clear(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Lighting.Clear: invalid world");
-    if (!world || !world->canvas)
+    void *canvas = world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    if (!canvas)
         return;
-    rt_canvas3d_clear_lights(world->canvas);
-    rt_canvas3d_set_ambient(world->canvas, 0.18, 0.18, 0.20);
+    rt_canvas3d_clear_lights(canvas);
+    rt_canvas3d_set_ambient(canvas, 0.18, 0.18, 0.20);
 }
 
 /// @brief Install a neutral two-light (key + fill) studio rig with a dark backdrop. See header.
 /// @param obj Borrowed live World3D handle receiving the rig.
 void rt_game3d_lighting_studio(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Lighting.Studio: invalid world");
-    if (!world || !world->canvas)
+    void *canvas = world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    if (!canvas)
         return;
-    rt_game3d_lighting_clear(world);
-    rt_canvas3d_set_ambient(world->canvas, 0.30, 0.32, 0.36);
-    game3d_world_set_clear_color(world, 0.055, 0.060, 0.070);
-
     void *key_dir = rt_vec3_new(-0.35, -0.85, -0.30);
     void *fill_dir = rt_vec3_new(0.75, -0.35, 0.40);
-    void *key = rt_light3d_new_directional(key_dir, 1.0, 0.96, 0.88);
-    void *fill = rt_light3d_new_directional(fill_dir, 0.55, 0.65, 1.0);
+    void *key = key_dir ? rt_light3d_new_directional(key_dir, 1.0, 0.96, 0.88) : NULL;
+    void *fill = fill_dir ? rt_light3d_new_directional(fill_dir, 0.55, 0.65, 1.0) : NULL;
+    if (!key_dir || !fill_dir || !key || !fill)
+        goto cleanup;
     if (key)
         rt_light3d_set_intensity(key, 1.35);
     if (fill)
         rt_light3d_set_intensity(fill, 0.35);
+    rt_game3d_lighting_clear(world);
+    rt_canvas3d_set_ambient(canvas, 0.30, 0.32, 0.36);
+    game3d_world_set_clear_color(world, 0.055, 0.060, 0.070);
     game3d_world_install_light(world, 0, key);
     game3d_world_install_light(world, 1, fill);
+cleanup:
     game3d_release_ref(&key);
     game3d_release_ref(&fill);
     game3d_release_ref(&key_dir);
@@ -111,20 +116,20 @@ void rt_game3d_lighting_studio(void *obj) {
 /// @param sun_dir Borrowed Vec3 direction to normalize, or `NULL` for the preset direction.
 void rt_game3d_lighting_outdoor(void *obj, void *sun_dir) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Lighting.Outdoor: invalid world");
-    if (!world || !world->canvas)
+    void *canvas = world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    if (!canvas)
         return;
     double dir_xyz[3] = {-0.45, -1.0, -0.22};
     if (sun_dir) {
         if (!game3d_read_vec3(sun_dir, dir_xyz, "Game3D.Lighting.Outdoor: sunDir must be Vec3"))
             return;
     }
-    double dir_len =
-        sqrt(dir_xyz[0] * dir_xyz[0] + dir_xyz[1] * dir_xyz[1] + dir_xyz[2] * dir_xyz[2]);
+    double dir_len = hypot(hypot(dir_xyz[0], dir_xyz[1]), dir_xyz[2]);
     if (!isfinite(dir_len) || dir_len <= 1e-12) {
         dir_xyz[0] = -0.45;
         dir_xyz[1] = -1.0;
         dir_xyz[2] = -0.22;
-        dir_len = sqrt(dir_xyz[0] * dir_xyz[0] + dir_xyz[1] * dir_xyz[1] + dir_xyz[2] * dir_xyz[2]);
+        dir_len = hypot(hypot(dir_xyz[0], dir_xyz[1]), dir_xyz[2]);
     }
     if (isfinite(dir_len) && dir_len > 1e-12) {
         dir_xyz[0] /= dir_len;
@@ -132,14 +137,17 @@ void rt_game3d_lighting_outdoor(void *obj, void *sun_dir) {
         dir_xyz[2] /= dir_len;
     }
 
-    rt_game3d_lighting_clear(world);
-    rt_canvas3d_set_ambient(world->canvas, 0.38, 0.42, 0.46);
-    game3d_world_set_clear_color(world, 0.50, 0.66, 0.86);
     void *dir = rt_vec3_new(dir_xyz[0], dir_xyz[1], dir_xyz[2]);
-    void *sun = rt_light3d_new_directional(dir, 1.0, 0.94, 0.82);
+    void *sun = dir ? rt_light3d_new_directional(dir, 1.0, 0.94, 0.82) : NULL;
+    if (!dir || !sun)
+        goto cleanup;
     if (sun)
         rt_light3d_set_intensity(sun, 1.55);
+    rt_game3d_lighting_clear(world);
+    rt_canvas3d_set_ambient(canvas, 0.38, 0.42, 0.46);
+    game3d_world_set_clear_color(world, 0.50, 0.66, 0.86);
     game3d_world_install_light(world, 0, sun);
+cleanup:
     game3d_release_ref(&sun);
     game3d_release_ref(&dir);
 }
@@ -148,21 +156,25 @@ void rt_game3d_lighting_outdoor(void *obj, void *sun_dir) {
 /// @param obj Borrowed live World3D handle receiving the rig.
 void rt_game3d_lighting_night(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Lighting.Night: invalid world");
-    if (!world || !world->canvas)
+    void *canvas = world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    if (!canvas)
         return;
-    rt_game3d_lighting_clear(world);
-    rt_canvas3d_set_ambient(world->canvas, 0.045, 0.055, 0.095);
-    game3d_world_set_clear_color(world, 0.015, 0.020, 0.040);
     void *moon_dir = rt_vec3_new(0.25, -1.0, 0.35);
-    void *moon = rt_light3d_new_directional(moon_dir, 0.55, 0.68, 1.0);
     void *lamp_pos = rt_vec3_new(0.0, 4.0, 2.0);
-    void *lamp = rt_light3d_new_point(lamp_pos, 0.55, 0.64, 1.0, 0.12);
+    void *moon = moon_dir ? rt_light3d_new_directional(moon_dir, 0.55, 0.68, 1.0) : NULL;
+    void *lamp = lamp_pos ? rt_light3d_new_point(lamp_pos, 0.55, 0.64, 1.0, 0.12) : NULL;
+    if (!moon_dir || !lamp_pos || !moon || !lamp)
+        goto cleanup;
     if (moon)
         rt_light3d_set_intensity(moon, 0.55);
     if (lamp)
         rt_light3d_set_intensity(lamp, 0.80);
+    rt_game3d_lighting_clear(world);
+    rt_canvas3d_set_ambient(canvas, 0.045, 0.055, 0.095);
+    game3d_world_set_clear_color(world, 0.015, 0.020, 0.040);
     game3d_world_install_light(world, 0, moon);
     game3d_world_install_light(world, 1, lamp);
+cleanup:
     game3d_release_ref(&moon);
     game3d_release_ref(&lamp);
     game3d_release_ref(&moon_dir);
@@ -173,21 +185,25 @@ void rt_game3d_lighting_night(void *obj) {
 /// @param obj Borrowed live World3D handle receiving the rig.
 void rt_game3d_lighting_interior(void *obj) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Lighting.Interior: invalid world");
-    if (!world || !world->canvas)
+    void *canvas = world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    if (!canvas)
         return;
-    rt_game3d_lighting_clear(world);
-    rt_canvas3d_set_ambient(world->canvas, 0.22, 0.20, 0.18);
-    game3d_world_set_clear_color(world, 0.055, 0.052, 0.048);
     void *key_pos = rt_vec3_new(0.0, 4.0, 2.5);
     void *rim_pos = rt_vec3_new(-3.5, 2.0, -2.0);
-    void *key = rt_light3d_new_point(key_pos, 1.0, 0.78, 0.52, 0.08);
-    void *rim = rt_light3d_new_point(rim_pos, 0.50, 0.62, 1.0, 0.12);
+    void *key = key_pos ? rt_light3d_new_point(key_pos, 1.0, 0.78, 0.52, 0.08) : NULL;
+    void *rim = rim_pos ? rt_light3d_new_point(rim_pos, 0.50, 0.62, 1.0, 0.12) : NULL;
+    if (!key_pos || !rim_pos || !key || !rim)
+        goto cleanup;
     if (key)
         rt_light3d_set_intensity(key, 1.25);
     if (rim)
         rt_light3d_set_intensity(rim, 0.45);
+    rt_game3d_lighting_clear(world);
+    rt_canvas3d_set_ambient(canvas, 0.22, 0.20, 0.18);
+    game3d_world_set_clear_color(world, 0.055, 0.052, 0.048);
     game3d_world_install_light(world, 0, key);
     game3d_world_install_light(world, 1, rim);
+cleanup:
     game3d_release_ref(&key);
     game3d_release_ref(&rim);
     game3d_release_ref(&key_pos);
@@ -302,6 +318,10 @@ void *rt_game3d_materials_unlit(double r, double g, double b) {
 /// @param pixels Borrowed Pixels texture passed to the material constructor.
 /// @return New GC-managed textured Material3D handle, or `NULL` on allocation failure.
 void *rt_game3d_materials_from_albedo_map(void *pixels) {
+    if (!rt_pixels_checked_impl_or_null(pixels)) {
+        rt_trap("Game3D.Materials.FromAlbedoMap: pixels must be Pixels");
+        return NULL;
+    }
     void *mat = rt_material3d_new_textured(pixels);
     if (mat) {
         rt_material3d_set_shading_model(mat, RT_GAME3D_SHADING_PBR);
@@ -355,8 +375,9 @@ void rt_game3d_postfx_none(void *obj) {
     if (!world)
         return;
     void *fx = rt_postfx3d_new();
-    if (fx)
-        rt_postfx3d_set_enabled(fx, 0);
+    if (!fx)
+        return;
+    rt_postfx3d_set_enabled(fx, 0);
     game3d_world_assign_postfx(world, fx);
     game3d_release_ref(&fx);
 }
@@ -368,38 +389,38 @@ void rt_game3d_postfx_none(void *obj) {
 /// @param quality Requested `RT_GAME3D_QUALITY_*` value.
 void rt_game3d_quality_apply(void *obj, int64_t quality) {
     rt_game3d_world *world = game3d_world_checked(obj, "Game3D.Quality.Apply: invalid world");
-    if (!world || !world->canvas)
+    void *canvas = world ? rt_g3d_checked_or_null(world->canvas, RT_G3D_CANVAS3D_CLASS_ID) : NULL;
+    if (!canvas)
         return;
     if (quality < RT_GAME3D_QUALITY_PERFORMANCE || quality > RT_GAME3D_QUALITY_CINEMATIC)
         quality = RT_GAME3D_QUALITY_BALANCED;
 
     rt_game3d_world_set_quality(world, quality);
-    rt_canvas3d_set_frustum_culling(world->canvas, 1);
+    rt_canvas3d_set_frustum_culling(canvas, 1);
     if (quality == RT_GAME3D_QUALITY_PERFORMANCE) {
-        rt_canvas3d_disable_shadows(world->canvas);
+        rt_canvas3d_disable_shadows(canvas);
         return;
     }
 
     rt_string shadows_capability = rt_const_cstr("shadows");
-    int8_t shadows_supported = rt_canvas3d_backend_supports(world->canvas, shadows_capability);
+    int8_t shadows_supported =
+        shadows_capability ? rt_canvas3d_backend_supports(canvas, shadows_capability) : 0;
     rt_string_unref(shadows_capability);
     if (shadows_supported) {
-        rt_canvas3d_enable_shadows(world->canvas,
-                                   quality == RT_GAME3D_QUALITY_CINEMATIC ? 2048 : 1024);
-        rt_canvas3d_set_shadow_bias(world->canvas,
-                                    quality == RT_GAME3D_QUALITY_CINEMATIC ? 0.003 : 0.005);
-        rt_canvas3d_set_shadow_slope_bias(world->canvas,
+        rt_canvas3d_enable_shadows(canvas, quality == RT_GAME3D_QUALITY_CINEMATIC ? 2048 : 1024);
+        rt_canvas3d_set_shadow_bias(canvas, quality == RT_GAME3D_QUALITY_CINEMATIC ? 0.003 : 0.005);
+        rt_canvas3d_set_shadow_slope_bias(canvas,
                                           quality == RT_GAME3D_QUALITY_CINEMATIC ? 0.75 : 1.0);
         rt_string csm_capability = rt_const_cstr("shadow-csm");
-        int8_t csm_supported = rt_canvas3d_backend_supports(world->canvas, csm_capability);
+        int8_t csm_supported =
+            csm_capability ? rt_canvas3d_backend_supports(canvas, csm_capability) : 0;
         rt_string_unref(csm_capability);
         if (csm_supported)
-            rt_canvas3d_set_shadow_cascades(world->canvas,
-                                            quality == RT_GAME3D_QUALITY_CINEMATIC ? 4 : 2);
+            rt_canvas3d_set_shadow_cascades(canvas, quality == RT_GAME3D_QUALITY_CINEMATIC ? 4 : 2);
         else
-            rt_canvas3d_set_shadow_cascades(world->canvas, 1);
+            rt_canvas3d_set_shadow_cascades(canvas, 1);
     } else {
-        rt_canvas3d_disable_shadows(world->canvas);
+        rt_canvas3d_disable_shadows(canvas);
     }
 }
 
@@ -407,14 +428,28 @@ void rt_game3d_quality_apply(void *obj, int64_t quality) {
 ///   (itself floored at 8) when the request is too low.
 /// @param segments Requested segment count.
 /// @param fallback Replacement used below the minimum.
-/// @return Segment count in `[8, 256]`; oversized fallback values are preserved only on the low
-/// request path.
+/// @return Segment count in `[8, 256]`.
 static int64_t game3d_sanitize_segments(int64_t segments, int64_t fallback) {
+    if (fallback < 8)
+        fallback = 8;
+    else if (fallback > 256)
+        fallback = 256;
     if (segments < 8)
-        return fallback < 8 ? 8 : fallback;
+        return fallback;
     if (segments > 256)
         return 256;
     return segments;
+}
+
+/// @brief Validate a borrowed optional prefab material before mesh allocation.
+/// @param material Optional Material3D handle.
+/// @return Non-zero for NULL or Material3D; zero after recording a trap otherwise.
+static int game3d_prefab_material_is_valid(void *material) {
+    if (!material ||
+        rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d)))
+        return 1;
+    rt_trap("Game3D.Prefab: material must be Material3D");
+    return 0;
 }
 
 /// @brief Wrap a freshly built mesh into a named entity, supplying a default plastic
@@ -425,9 +460,24 @@ static int64_t game3d_sanitize_segments(int64_t segments, int64_t fallback) {
 /// @return New GC-managed Entity3D handle, or `NULL` on construction failure.
 static void *game3d_prefab_from_mesh(void *mesh, void *material, const char *name) {
     int owns_material = 0;
+    if (!rt_obj_is_instance(mesh, RT_G3D_MESH3D_CLASS_ID, sizeof(rt_mesh3d))) {
+        if (mesh)
+            rt_trap("Game3D.Prefab: generated mesh is invalid");
+        return NULL;
+    }
+    if (material &&
+        !rt_obj_is_instance(material, RT_G3D_MATERIAL3D_CLASS_ID, sizeof(rt_material3d))) {
+        game3d_release_typed_ref(&mesh, RT_G3D_MESH3D_CLASS_ID);
+        rt_trap("Game3D.Prefab: material must be Material3D");
+        return NULL;
+    }
     if (!material) {
         material = rt_game3d_materials_plastic(0.72, 0.74, 0.76);
         owns_material = 1;
+        if (!material) {
+            game3d_release_typed_ref(&mesh, RT_G3D_MESH3D_CLASS_ID);
+            return NULL;
+        }
     }
     void *entity = rt_game3d_entity_of(mesh, material);
     if (entity && name) {
@@ -435,7 +485,7 @@ static void *game3d_prefab_from_mesh(void *mesh, void *material, const char *nam
         rt_game3d_entity_set_name(entity, runtime_name);
         rt_string_unref(runtime_name);
     }
-    game3d_release_ref(&mesh);
+    game3d_release_typed_ref(&mesh, RT_G3D_MESH3D_CLASS_ID);
     if (owns_material)
         game3d_release_ref(&material);
     return entity;
@@ -446,6 +496,8 @@ static void *game3d_prefab_from_mesh(void *mesh, void *material, const char *nam
 /// @param material Borrowed Material3D handle, or `NULL` for default plastic.
 /// @return New GC-managed Entity3D handle, or `NULL` on allocation failure.
 void *rt_game3d_prefab_box(double size, void *material) {
+    if (!game3d_prefab_material_is_valid(material))
+        return NULL;
     double s = game3d_positive_clamped_or(size, 1.0, RT_GAME3D_SCALE_ABS_MAX);
     return game3d_prefab_from_mesh(rt_mesh3d_new_box(s, s, s), material, "Box");
 }
@@ -457,6 +509,8 @@ void *rt_game3d_prefab_box(double size, void *material) {
 /// @param material Borrowed Material3D handle, or `NULL` for default plastic.
 /// @return New GC-managed Entity3D handle, or `NULL` on allocation failure.
 void *rt_game3d_prefab_box_xyz(double width, double height, double depth, void *material) {
+    if (!game3d_prefab_material_is_valid(material))
+        return NULL;
     double w = game3d_positive_clamped_or(width, 1.0, RT_GAME3D_SCALE_ABS_MAX);
     double h = game3d_positive_clamped_or(height, 1.0, RT_GAME3D_SCALE_ABS_MAX);
     double d = game3d_positive_clamped_or(depth, 1.0, RT_GAME3D_SCALE_ABS_MAX);
@@ -469,6 +523,8 @@ void *rt_game3d_prefab_box_xyz(double width, double height, double depth, void *
 /// @param material Borrowed Material3D handle, or `NULL` for default plastic.
 /// @return New GC-managed Entity3D handle, or `NULL` on allocation failure.
 void *rt_game3d_prefab_sphere(double radius, int64_t segments, void *material) {
+    if (!game3d_prefab_material_is_valid(material))
+        return NULL;
     double r = game3d_positive_clamped_or(radius, 0.5, RT_GAME3D_SCALE_ABS_MAX);
     return game3d_prefab_from_mesh(
         rt_mesh3d_new_sphere(r, game3d_sanitize_segments(segments, 32)), material, "Sphere");
@@ -481,6 +537,8 @@ void *rt_game3d_prefab_sphere(double radius, int64_t segments, void *material) {
 /// @param material Borrowed Material3D handle, or `NULL` for default plastic.
 /// @return New GC-managed Entity3D handle, or `NULL` on allocation failure.
 void *rt_game3d_prefab_cylinder(double radius, double height, int64_t segments, void *material) {
+    if (!game3d_prefab_material_is_valid(material))
+        return NULL;
     double r = game3d_positive_clamped_or(radius, 0.5, RT_GAME3D_SCALE_ABS_MAX);
     double h = game3d_positive_clamped_or(height, 1.0, RT_GAME3D_SCALE_ABS_MAX);
     return game3d_prefab_from_mesh(
@@ -493,6 +551,8 @@ void *rt_game3d_prefab_cylinder(double radius, double height, int64_t segments, 
 /// @param material Borrowed Material3D handle, or `NULL` for default plastic.
 /// @return New GC-managed Entity3D handle, or `NULL` on allocation failure.
 void *rt_game3d_prefab_plane(double width, double depth, void *material) {
+    if (!game3d_prefab_material_is_valid(material))
+        return NULL;
     double w = game3d_positive_clamped_or(width, 1.0, RT_GAME3D_SCALE_ABS_MAX);
     double d = game3d_positive_clamped_or(depth, 1.0, RT_GAME3D_SCALE_ABS_MAX);
     return game3d_prefab_from_mesh(rt_mesh3d_new_plane(w, d), material, "Plane");

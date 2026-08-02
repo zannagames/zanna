@@ -33,31 +33,31 @@
 #include "rt_game3d_diagnostics.h"
 
 #include "rt_audio_diagnostics.h"
+#include "rt_platform.h"
 
 #include <stdio.h>
-#include <string.h>
 
 /// @brief Process-lifetime storage for Game3D-owned diagnostic counters.
-/// @details Counters saturate at INT64_MAX through diag_increment. This state is
-///          intentionally allocation-free; callers provide any synchronization
-///          required by their execution context.
+/// @details Counters saturate at INT64_MAX through diag_increment. Every field
+///          is accessed atomically because producers include worker, streaming,
+///          render, and audio-adjacent threads.
 typedef struct {
-    int64_t broadphase_fallback_count;
-    int64_t ccd_clamped_frames;
-    int64_t ccd_clamped_bodies;
-    int64_t anim_events_dropped;
-    int64_t nav_grid_fallbacks;
-    int64_t stale_entity_calls;
-    int64_t stale_async_loads_dropped;
-    int64_t stream_staging_errors;
-    int64_t stream_stale_stages_dropped;
+    volatile int64_t broadphase_fallback_count;
+    volatile int64_t ccd_clamped_frames;
+    volatile int64_t ccd_clamped_bodies;
+    volatile int64_t anim_events_dropped;
+    volatile int64_t nav_grid_fallbacks;
+    volatile int64_t stale_entity_calls;
+    volatile int64_t stale_async_loads_dropped;
+    volatile int64_t stream_staging_errors;
+    volatile int64_t stream_stale_stages_dropped;
     /* EPA hit its polytope caps and reported a 0-depth contact: persistent counts
      * here usually mean an over-detailed convex hull collider (decimate it). */
-    int64_t epa_fallbacks;
+    volatile int64_t epa_fallbacks;
     /* Shadow slots satisfied from their previous-frame depth (signature match). */
-    int64_t shadow_slots_reused;
+    volatile int64_t shadow_slots_reused;
     /* Opaque draws folded into auto-instanced batches. */
-    int64_t auto_instanced_draws;
+    volatile int64_t auto_instanced_draws;
 } rt_game3d_diagnostics_state;
 
 static rt_game3d_diagnostics_state g_game3d_diagnostics;
@@ -69,24 +69,34 @@ static int64_t diag_nonnegative(int64_t value) {
     return value > 0 ? value : 0;
 }
 
+/// @brief Atomically observe and normalize one diagnostic counter.
+/// @param counter Counter storage to read; NULL produces zero.
+/// @return A non-negative snapshot of the counter.
+static int64_t diag_load(const volatile int64_t *counter) {
+    return counter ? diag_nonnegative(rt_atomic_load_i64(counter, __ATOMIC_ACQUIRE)) : 0;
+}
+
 /// @brief Add a positive amount to a counter without signed overflow.
 /// @param[in,out] counter Counter to update; NULL is ignored.
 /// @param amount Positive increment. Zero and negative amounts are ignored.
 /// @post A successful update saturates at INT64_MAX.
-static void diag_increment(int64_t *counter, int64_t amount) {
+static void diag_increment(volatile int64_t *counter, int64_t amount) {
+    int64_t observed;
     if (!counter || amount <= 0)
         return;
-    if (*counter > INT64_MAX - amount) {
-        *counter = INT64_MAX;
-        return;
+    observed = rt_atomic_load_i64(counter, __ATOMIC_RELAXED);
+    for (;;) {
+        int64_t base = observed > 0 ? observed : 0;
+        int64_t desired = base > INT64_MAX - amount ? INT64_MAX : base + amount;
+        if (rt_atomic_compare_exchange_i64(
+                counter, &observed, desired, __ATOMIC_RELAXED, __ATOMIC_RELAXED))
+            return;
     }
-    *counter += amount;
 }
 
 /// @brief Append one positive `name=value` diagnostic line to a bounded buffer.
-/// @details The function preserves NUL termination and truncates the formatted
-///          line when the remaining capacity cannot hold it in full. Zero-valued
-///          counters are intentionally omitted from summaries.
+/// @details The function preserves NUL termination and appends only complete
+///          lines. Zero-valued counters are intentionally omitted from summaries.
 /// @param[in,out] buffer Destination character buffer.
 /// @param capacity Total byte capacity of @p buffer, including the terminator.
 /// @param[in,out] offset Current used length; advanced by bytes copied.
@@ -96,18 +106,15 @@ static void diag_append_line(
     char *buffer, size_t capacity, size_t *offset, const char *name, int64_t value) {
     char line[96];
     int written;
-    size_t available;
     if (!buffer || capacity == 0 || !offset || !name || value <= 0 || *offset >= capacity)
         return;
     written = snprintf(line, sizeof(line), "%s=%lld\n", name, (long long)value);
-    if (written <= 0)
+    if (written <= 0 || (size_t)written >= sizeof(line))
         return;
-    available = capacity - *offset;
-    if ((size_t)written >= available)
-        written = (int)available - 1;
-    if (written <= 0)
+    if ((size_t)written >= capacity - *offset)
         return;
-    memcpy(buffer + *offset, line, (size_t)written);
+    for (int i = 0; i < written; ++i)
+        buffer[*offset + (size_t)i] = line[i];
     *offset += (size_t)written;
     buffer[*offset] = '\0';
 }
@@ -115,25 +122,25 @@ static void diag_append_line(
 /// @brief Return the number of broadphase operations that used a fallback path.
 /// @return The non-negative process-wide fallback count.
 int64_t rt_game3d_diagnostics_get_broadphase_fallback_count(void) {
-    return diag_nonnegative(g_game3d_diagnostics.broadphase_fallback_count);
+    return diag_load(&g_game3d_diagnostics.broadphase_fallback_count);
 }
 
 /// @brief Return how many frames clamped continuous-collision work.
 /// @return The non-negative process-wide clamped-frame count.
 int64_t rt_game3d_diagnostics_get_ccd_clamped_frames(void) {
-    return diag_nonnegative(g_game3d_diagnostics.ccd_clamped_frames);
+    return diag_load(&g_game3d_diagnostics.ccd_clamped_frames);
 }
 
 /// @brief Return the accumulated number of bodies affected by CCD clamping.
 /// @return The non-negative process-wide affected-body count.
 int64_t rt_game3d_diagnostics_get_ccd_clamped_bodies(void) {
-    return diag_nonnegative(g_game3d_diagnostics.ccd_clamped_bodies);
+    return diag_load(&g_game3d_diagnostics.ccd_clamped_bodies);
 }
 
 /// @brief Return the number of animation events discarded by bounded queues.
 /// @return The non-negative process-wide dropped-event count.
 int64_t rt_game3d_diagnostics_get_anim_events_dropped(void) {
-    return diag_nonnegative(g_game3d_diagnostics.anim_events_dropped);
+    return diag_load(&g_game3d_diagnostics.anim_events_dropped);
 }
 
 /// @brief Return the number of spatial audio voices evicted under pressure.
@@ -145,55 +152,66 @@ int64_t rt_game3d_diagnostics_get_audio_voices_evicted(void) {
 /// @brief Return the number of navigation queries that fell back from the grid.
 /// @return The non-negative process-wide navigation fallback count.
 int64_t rt_game3d_diagnostics_get_nav_grid_fallbacks(void) {
-    return diag_nonnegative(g_game3d_diagnostics.nav_grid_fallbacks);
+    return diag_load(&g_game3d_diagnostics.nav_grid_fallbacks);
 }
 
 /// @brief Return the number of API calls rejected for stale entity handles.
 /// @return The non-negative process-wide stale-call count.
 int64_t rt_game3d_diagnostics_get_stale_entity_calls(void) {
-    return diag_nonnegative(g_game3d_diagnostics.stale_entity_calls);
+    return diag_load(&g_game3d_diagnostics.stale_entity_calls);
 }
 
 /// @brief Return the number of obsolete asynchronous asset results discarded.
 /// @return The non-negative process-wide stale-load count.
 int64_t rt_game3d_diagnostics_get_stale_async_loads_dropped(void) {
-    return diag_nonnegative(g_game3d_diagnostics.stale_async_loads_dropped);
+    return diag_load(&g_game3d_diagnostics.stale_async_loads_dropped);
 }
 
 /// @brief Return the number of streaming staging operations that failed.
 /// @return The non-negative process-wide staging-error count.
 int64_t rt_game3d_diagnostics_get_stream_staging_errors(void) {
-    return diag_nonnegative(g_game3d_diagnostics.stream_staging_errors);
+    return diag_load(&g_game3d_diagnostics.stream_staging_errors);
 }
 
 /// @brief Return the number of obsolete prepared stream stages discarded.
 /// @return The non-negative process-wide stale-stage count.
 int64_t rt_game3d_diagnostics_get_stream_stale_stages_dropped(void) {
-    return diag_nonnegative(g_game3d_diagnostics.stream_stale_stages_dropped);
+    return diag_load(&g_game3d_diagnostics.stream_stale_stages_dropped);
 }
 
 /// @brief Return the number of EPA contacts that exhausted polytope limits.
 /// @return The non-negative process-wide EPA fallback count.
 int64_t rt_game3d_diagnostics_get_epa_fallbacks(void) {
-    return diag_nonnegative(g_game3d_diagnostics.epa_fallbacks);
+    return diag_load(&g_game3d_diagnostics.epa_fallbacks);
 }
 
 /// @brief Return the number of shadow slots reused from compatible prior frames.
 /// @return The non-negative process-wide reuse count.
 int64_t rt_game3d_diagnostics_get_shadow_slots_reused(void) {
-    return diag_nonnegative(g_game3d_diagnostics.shadow_slots_reused);
+    return diag_load(&g_game3d_diagnostics.shadow_slots_reused);
 }
 
 /// @brief Return the number of opaque draws folded into automatic instance batches.
 /// @return The non-negative process-wide folded-draw count.
 int64_t rt_game3d_diagnostics_get_auto_instanced_draws(void) {
-    return diag_nonnegative(g_game3d_diagnostics.auto_instanced_draws);
+    return diag_load(&g_game3d_diagnostics.auto_instanced_draws);
 }
 
 /// @brief Clear all Game3D and bridged spatial-audio diagnostic counters.
 /// @post Every public diagnostic getter returns zero until another event is recorded.
 void rt_game3d_diagnostics_reset(void) {
-    memset(&g_game3d_diagnostics, 0, sizeof(g_game3d_diagnostics));
+    rt_atomic_store_i64(&g_game3d_diagnostics.broadphase_fallback_count, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.ccd_clamped_frames, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.ccd_clamped_bodies, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.anim_events_dropped, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.nav_grid_fallbacks, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.stale_entity_calls, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.stale_async_loads_dropped, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.stream_staging_errors, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.stream_stale_stages_dropped, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.epa_fallbacks, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.shadow_slots_reused, 0, __ATOMIC_RELEASE);
+    rt_atomic_store_i64(&g_game3d_diagnostics.auto_instanced_draws, 0, __ATOMIC_RELEASE);
     rt_audio_diagnostics_reset_spatial_voice_evictions();
 }
 
@@ -205,29 +223,29 @@ void rt_game3d_diagnostics_reset(void) {
 /// @return A newly created runtime string containing the degradation digest, or
 ///         the canonical empty string when every degradation counter is zero.
 rt_string rt_game3d_diagnostics_summary(void) {
-    char buffer[512];
+    char buffer[1024];
     size_t offset = 0;
     buffer[0] = '\0';
     diag_append_line(buffer,
                      sizeof(buffer),
                      &offset,
                      "BroadphaseFallbackCount",
-                     g_game3d_diagnostics.broadphase_fallback_count);
+                     rt_game3d_diagnostics_get_broadphase_fallback_count());
     diag_append_line(buffer,
                      sizeof(buffer),
                      &offset,
                      "CcdClampedFrames",
-                     g_game3d_diagnostics.ccd_clamped_frames);
+                     rt_game3d_diagnostics_get_ccd_clamped_frames());
     diag_append_line(buffer,
                      sizeof(buffer),
                      &offset,
                      "CcdClampedBodies",
-                     g_game3d_diagnostics.ccd_clamped_bodies);
+                     rt_game3d_diagnostics_get_ccd_clamped_bodies());
     diag_append_line(buffer,
                      sizeof(buffer),
                      &offset,
                      "AnimEventsDropped",
-                     g_game3d_diagnostics.anim_events_dropped);
+                     rt_game3d_diagnostics_get_anim_events_dropped());
     diag_append_line(buffer,
                      sizeof(buffer),
                      &offset,
@@ -237,29 +255,29 @@ rt_string rt_game3d_diagnostics_summary(void) {
                      sizeof(buffer),
                      &offset,
                      "NavGridFallbacks",
-                     g_game3d_diagnostics.nav_grid_fallbacks);
+                     rt_game3d_diagnostics_get_nav_grid_fallbacks());
     diag_append_line(buffer,
                      sizeof(buffer),
                      &offset,
                      "StaleEntityCalls",
-                     g_game3d_diagnostics.stale_entity_calls);
+                     rt_game3d_diagnostics_get_stale_entity_calls());
     diag_append_line(buffer,
                      sizeof(buffer),
                      &offset,
                      "StaleAsyncLoadsDropped",
-                     g_game3d_diagnostics.stale_async_loads_dropped);
+                     rt_game3d_diagnostics_get_stale_async_loads_dropped());
     diag_append_line(buffer,
                      sizeof(buffer),
                      &offset,
                      "StreamStagingErrors",
-                     g_game3d_diagnostics.stream_staging_errors);
+                     rt_game3d_diagnostics_get_stream_staging_errors());
     diag_append_line(buffer,
                      sizeof(buffer),
                      &offset,
                      "StreamStaleStagesDropped",
-                     g_game3d_diagnostics.stream_stale_stages_dropped);
+                     rt_game3d_diagnostics_get_stream_stale_stages_dropped());
     diag_append_line(
-        buffer, sizeof(buffer), &offset, "EpaFallbacks", g_game3d_diagnostics.epa_fallbacks);
+        buffer, sizeof(buffer), &offset, "EpaFallbacks", rt_game3d_diagnostics_get_epa_fallbacks());
     /* ShadowSlotsReused and AutoInstancedDraws are HEALTH/throughput counters,
      * not degradation: they are exposed only through their properties. Summary()
      * stays a pure degradation digest so smoke probes can keep asserting it is

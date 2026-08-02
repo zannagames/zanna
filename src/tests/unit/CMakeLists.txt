@@ -1001,7 +1001,7 @@ function(zanna_add_runtime_tests)
     zanna_add_test_labels(test_rt_game3d graphics3d unit)
 
     zanna_add_test(test_rt_game3d_diagnostics ${ZANNA_TESTS_DIR}/unit/test_rt_game3d_diagnostics.cpp)
-    target_link_libraries(test_rt_game3d_diagnostics PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    target_link_libraries(test_rt_game3d_diagnostics PRIVATE ${ZANNA_RUNTIME_TEST_LIBS} Threads::Threads)
     zanna_add_ctest(test_rt_game3d_diagnostics test_rt_game3d_diagnostics)
     zanna_add_test_labels(test_rt_game3d_diagnostics graphics3d unit)
 

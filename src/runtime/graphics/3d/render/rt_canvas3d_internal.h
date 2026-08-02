@@ -39,6 +39,7 @@
 #include "rt_graphics3d_ids.h"
 #include "rt_heap.h"
 #include "rt_input.h"
+#include "rt_object.h"
 #include "rt_postfx3d.h"
 #include "rt_string.h"
 #include "vgfx.h"
@@ -1673,7 +1674,9 @@ typedef struct {
 /// @param obj Borrowed candidate Canvas3D payload.
 /// @return Validated mutable Canvas3D pointer, an allowed stack fixture, or `NULL`.
 static inline rt_canvas3d *rt_canvas3d_checked_or_stack(void *obj) {
-    rt_canvas3d *c = (rt_canvas3d *)rt_g3d_checked_or_null(obj, RT_G3D_CANVAS3D_CLASS_ID);
+    rt_canvas3d *c = rt_obj_is_instance(obj, RT_G3D_CANVAS3D_CLASS_ID, sizeof(rt_canvas3d))
+                         ? (rt_canvas3d *)obj
+                         : NULL;
     if (c)
         return c;
 #if defined(RT_G3D_ALLOW_STACK_FIXTURES) && RT_G3D_ALLOW_STACK_FIXTURES
@@ -1687,7 +1690,9 @@ static inline rt_canvas3d *rt_canvas3d_checked_or_stack(void *obj) {
 /// @param obj Borrowed candidate Camera3D payload.
 /// @return Validated mutable Camera3D pointer, an allowed stack fixture, or `NULL`.
 static inline rt_camera3d *rt_camera3d_checked_or_stack(void *obj) {
-    rt_camera3d *cam = (rt_camera3d *)rt_g3d_checked_or_null(obj, RT_G3D_CAMERA3D_CLASS_ID);
+    rt_camera3d *cam = rt_obj_is_instance(obj, RT_G3D_CAMERA3D_CLASS_ID, sizeof(rt_camera3d))
+                           ? (rt_camera3d *)obj
+                           : NULL;
     if (cam)
         return cam;
 #if defined(RT_G3D_ALLOW_STACK_FIXTURES) && RT_G3D_ALLOW_STACK_FIXTURES

@@ -205,14 +205,16 @@ _Static_assert(offsetof(rt_body3d, inv_inertia) == offsetof(rt_body3d_kinematics
 /// @param obj Candidate runtime handle.
 /// @return Borrowed World3D payload, or NULL on class mismatch.
 rt_world3d *world3d_checked(void *obj) {
-    return (rt_world3d *)rt_g3d_checked_or_null(obj, RT_G3D_WORLD3D_CLASS_ID);
+    return rt_obj_is_instance(obj, RT_G3D_WORLD3D_CLASS_ID, sizeof(rt_world3d)) ? (rt_world3d *)obj
+                                                                                : NULL;
 }
 
 /// @brief Validate @p obj as a Body3D handle and return its typed pointer (NULL on mismatch).
 /// @param obj Candidate runtime handle.
 /// @return Borrowed Body3D payload, or NULL on class mismatch.
 static rt_body3d *body3d_checked(void *obj) {
-    return (rt_body3d *)rt_g3d_checked_or_null(obj, RT_G3D_BODY3D_CLASS_ID);
+    return rt_obj_is_instance(obj, RT_G3D_BODY3D_CLASS_ID, sizeof(rt_body3d)) ? (rt_body3d *)obj
+                                                                              : NULL;
 }
 
 /// @brief Return the body's Collider3D slot only when it still has the expected class.

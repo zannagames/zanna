@@ -37,6 +37,7 @@
 #include "rt_gltf.h"
 #include "rt_graphics3d_ids.h"
 #include "rt_input.h"
+#include "rt_object.h"
 #include "rt_trap.h"
 
 // Default tuning constants applied when callers omit a value or pass a
@@ -88,11 +89,27 @@
 #define RT_GAME3D_ANIM_BLEND_TIME_MAX 1000000.0    ///< Max animation transition duration.
 #define RT_GAME3D_ANIM_STEP_MAX 1.0                ///< Max single Game3D animator update step.
 #define RT_GAME3D_ANIM_SPEED_ABS_MAX 1000000.0     ///< Max animation playback speed multiplier.
-#define RT_GAME3D_EFFECT_STEP_MAX 10.0             ///< Max single EffectRegistry3D update step.
-#define RT_GAME3D_EFFECT_LIFETIME_MAX 86400.0      ///< Max effect auto-expire lifetime.
+#define RT_GAME3D_ENTITY_CHILD_STORAGE_COOKIE                                                      \
+    UINT64_C(0x5A4348494C445245) ///< "ZCHILDRE": validates owned raw child storage.
+#define RT_GAME3D_TP_FADE_STORAGE_COOKIE                                                           \
+    UINT64_C(0x5A54504641444553)              ///< "ZTPFADES": validates owned fade storage.
+#define RT_GAME3D_EFFECT_STEP_MAX 10.0        ///< Max single EffectRegistry3D update step.
+#define RT_GAME3D_EFFECT_LIFETIME_MAX 86400.0 ///< Max effect auto-expire lifetime.
 #ifndef RT_GAME3D_MODEL_CACHE_KEY_MAX
 #define RT_GAME3D_MODEL_CACHE_KEY_MAX 4096 ///< Max bytes snapshotted for model cache/load paths.
 #endif
+
+/// @brief Bound a signed mouse delta before converting it to floating-point controller motion.
+/// @param value Candidate backend or snapshot delta.
+/// @return Value clamped to the finite Game3D coordinate range.
+static inline int64_t game3d_clamp_mouse_delta_i64(int64_t value) {
+    const int64_t limit = (int64_t)RT_GAME3D_COORD_ABS_MAX;
+    if (value > limit)
+        return limit;
+    if (value < -limit)
+        return -limit;
+    return value;
+}
 
 /// @brief Compute a geometrically grown private-array capacity without signed or byte overflow.
 /// @param current Current non-negative capacity.
@@ -337,7 +354,22 @@ typedef struct rt_game3d_entity {
     /// Last world sweep stamp that ticked this entity (despawn-safe sweeps).
     /// Appended at the end: test fixtures mirror prefixes of this layout.
     uint32_t sim_tick_stamp;
+    /// Trusted capacity paired with the raw `children` allocation.
+    int32_t child_storage_capacity;
+    /// Address/capacity ownership marker; appended to preserve fixture prefixes.
+    uint64_t child_storage_cookie;
 } rt_game3d_entity;
+
+/// @brief Derive the integrity marker for an entity's raw child allocation.
+/// @param children Allocation address, or NULL.
+/// @param capacity Number of pointer slots owned by the allocation.
+/// @return Marker binding the allocation address and capacity to this payload.
+static inline uint64_t game3d_entity_child_storage_cookie_value(const void *children,
+                                                                int32_t capacity) {
+    uint64_t address = (uint64_t)(uintptr_t)children;
+    uint64_t size = (uint64_t)(uint32_t)capacity;
+    return RT_GAME3D_ENTITY_CHILD_STORAGE_COOKIE ^ address ^ (size * UINT64_C(0x9E3779B185EBCA87));
+}
 
 /// @brief Return the entity's SceneNode3D slot only when it still has the expected class.
 /// @param entity Borrowed entity payload, or `NULL`.
@@ -374,14 +406,23 @@ static inline void *game3d_entity_anim_ref(const rt_game3d_entity *entity) {
     return entity ? rt_g3d_checked_or_null(entity->anim, RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID) : NULL;
 }
 
-/// @brief Safe number of child entity slots that may be read directly.
+/// @brief Safe dense prefix of child entity slots that may be read directly.
 /// @param entity Borrowed entity payload, or `NULL`.
-/// @return The child count capped to the allocated capacity, or zero for invalid storage.
+/// @return Valid dense child count recovered from trusted storage, or zero for invalid storage.
 static inline int32_t game3d_entity_child_count(const rt_game3d_entity *entity) {
-    if (!entity || !entity->children || entity->child_count <= 0 || entity->child_capacity <= 0)
+    if (!entity || !entity->children ||
+        entity->child_storage_cookie != game3d_entity_child_storage_cookie_value(
+                                            entity->children, entity->child_storage_capacity) ||
+        entity->child_storage_capacity <= 0)
         return 0;
-    return entity->child_count < entity->child_capacity ? entity->child_count
-                                                        : entity->child_capacity;
+    for (int32_t i = 0; i < entity->child_storage_capacity; ++i) {
+        if (!entity->children[i])
+            return i;
+        if (!rt_obj_is_instance(
+                entity->children[i], RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity)))
+            return i;
+    }
+    return entity->child_storage_capacity;
 }
 
 /// @brief Sound3D payload: listener, optional followed camera, a dynamic source
@@ -825,7 +866,20 @@ typedef struct rt_game3d_thirdperson_controller {
     rt_game3d_tp_fade_entry *fades; ///< Occluder-fade bookkeeping array.
     int32_t fade_count;             ///< Live fade entries.
     int32_t fade_capacity;          ///< Allocated fade entries.
+    int32_t fade_storage_capacity;  ///< Trusted capacity paired with `fades`.
+    uint64_t fade_storage_cookie;   ///< Address/capacity ownership marker.
 } rt_game3d_thirdperson_controller;
+
+/// @brief Derive the integrity marker for a third-person fade allocation.
+/// @param fades Allocation address, or NULL.
+/// @param capacity Number of fade entries owned by the allocation.
+/// @return Marker binding the allocation address and capacity to this payload.
+static inline uint64_t game3d_thirdperson_fade_storage_cookie_value(const void *fades,
+                                                                    int32_t capacity) {
+    uint64_t address = (uint64_t)(uintptr_t)fades;
+    uint64_t size = (uint64_t)(uint32_t)capacity;
+    return RT_GAME3D_TP_FADE_STORAGE_COOKIE ^ address ^ (size * UINT64_C(0xA24BAED4963EE407));
+}
 
 #define RT_GAME3D_TL_MAX_MARKERS_PER_STEP 64 ///< Marker events buffered per tick.
 #define RT_GAME3D_TL_TEXT_MAX 256            ///< Subtitle/name text capacity per track.
@@ -1237,7 +1291,9 @@ static inline const char *game3d_lifetime_diag(const char *method, const char *r
 /// @return Typed LayerMask payload, or `NULL` after recording the trap.
 static inline rt_game3d_layermask *game3d_layermask_checked(void *obj, const char *method) {
     rt_game3d_layermask *mask =
-        (rt_game3d_layermask *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_LAYERMASK_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_LAYERMASK_CLASS_ID, sizeof(rt_game3d_layermask))
+            ? (rt_game3d_layermask *)obj
+            : NULL;
     if (!mask)
         rt_trap(method);
     return mask;
@@ -1249,7 +1305,9 @@ static inline rt_game3d_layermask *game3d_layermask_checked(void *obj, const cha
 /// @return Typed Input3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_input *game3d_input_checked(void *obj, const char *method) {
     rt_game3d_input *input =
-        (rt_game3d_input *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_INPUT_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_INPUT_CLASS_ID, sizeof(rt_game3d_input))
+            ? (rt_game3d_input *)obj
+            : NULL;
     if (!input)
         rt_trap(method);
     return input;
@@ -1263,7 +1321,9 @@ static inline rt_game3d_input *game3d_input_checked(void *obj, const char *metho
 static inline rt_game3d_entity *game3d_entity_checked_allow_destroyed(void *obj,
                                                                       const char *method) {
     rt_game3d_entity *entity =
-        (rt_game3d_entity *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_ENTITY_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_ENTITY_CLASS_ID, sizeof(rt_game3d_entity))
+            ? (rt_game3d_entity *)obj
+            : NULL;
     if (!entity)
         rt_trap(method);
     return entity;
@@ -1312,7 +1372,9 @@ static inline rt_game3d_entity *game3d_entity_checked(void *obj, const char *met
 /// @return Typed Sound3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_audio *game3d_audio_checked(void *obj, const char *method) {
     rt_game3d_audio *audio =
-        (rt_game3d_audio *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_SOUND_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_SOUND_CLASS_ID, sizeof(rt_game3d_audio))
+            ? (rt_game3d_audio *)obj
+            : NULL;
     if (!audio)
         rt_trap(method);
     return audio;
@@ -1324,7 +1386,9 @@ static inline rt_game3d_audio *game3d_audio_checked(void *obj, const char *metho
 /// @return Typed EffectRegistry3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_effects *game3d_effects_checked(void *obj, const char *method) {
     rt_game3d_effects *effects =
-        (rt_game3d_effects *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_EFFECTS_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_EFFECTS_CLASS_ID, sizeof(rt_game3d_effects))
+            ? (rt_game3d_effects *)obj
+            : NULL;
     if (!effects)
         rt_trap(method);
     return effects;
@@ -1336,7 +1400,9 @@ static inline rt_game3d_effects *game3d_effects_checked(void *obj, const char *m
 /// @return Typed environment-handle payload, or `NULL` after recording the trap.
 static inline rt_game3d_env_handle *game3d_env_handle_checked(void *obj, const char *method) {
     rt_game3d_env_handle *env =
-        (rt_game3d_env_handle *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_ENV_HANDLE_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_ENV_HANDLE_CLASS_ID, sizeof(rt_game3d_env_handle))
+            ? (rt_game3d_env_handle *)obj
+            : NULL;
     if (!env)
         rt_trap(method);
     return env;
@@ -1348,7 +1414,9 @@ static inline rt_game3d_env_handle *game3d_env_handle_checked(void *obj, const c
 /// @return Typed BodyDef payload, or `NULL` after recording the trap.
 static inline rt_game3d_body_def *game3d_body_def_checked(void *obj, const char *method) {
     rt_game3d_body_def *def =
-        (rt_game3d_body_def *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_BODYDEF_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_BODYDEF_CLASS_ID, sizeof(rt_game3d_body_def))
+            ? (rt_game3d_body_def *)obj
+            : NULL;
     if (!def)
         rt_trap(method);
     return def;
@@ -1360,8 +1428,11 @@ static inline rt_game3d_body_def *game3d_body_def_checked(void *obj, const char 
 /// @return Typed collision-event payload, or `NULL` after recording the trap.
 static inline rt_game3d_collision_event *game3d_collision_event_checked(void *obj,
                                                                         const char *method) {
-    rt_game3d_collision_event *event = (rt_game3d_collision_event *)rt_g3d_checked_or_null(
-        obj, RT_G3D_GAME3D_COLLISION_EVENT_CLASS_ID);
+    rt_game3d_collision_event *event = rt_obj_is_instance(obj,
+                                                          RT_G3D_GAME3D_COLLISION_EVENT_CLASS_ID,
+                                                          sizeof(rt_game3d_collision_event))
+                                           ? (rt_game3d_collision_event *)obj
+                                           : NULL;
     if (!event)
         rt_trap(method);
     return event;
@@ -1373,7 +1444,9 @@ static inline rt_game3d_collision_event *game3d_collision_event_checked(void *ob
 /// @return Typed Animator3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_animator *game3d_animator_checked(void *obj, const char *method) {
     rt_game3d_animator *animator =
-        (rt_game3d_animator *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_ANIMATOR3D_CLASS_ID, sizeof(rt_game3d_animator))
+            ? (rt_game3d_animator *)obj
+            : NULL;
     if (!animator)
         rt_trap(method);
     return animator;
@@ -1385,8 +1458,11 @@ static inline rt_game3d_animator *game3d_animator_checked(void *obj, const char 
 /// @return Typed ModelTemplate payload, or `NULL` after recording the trap.
 static inline rt_game3d_model_template *game3d_model_template_checked(void *obj,
                                                                       const char *method) {
-    rt_game3d_model_template *model_template = (rt_game3d_model_template *)rt_g3d_checked_or_null(
-        obj, RT_G3D_GAME3D_MODEL_TEMPLATE_CLASS_ID);
+    rt_game3d_model_template *model_template =
+        rt_obj_is_instance(
+            obj, RT_G3D_GAME3D_MODEL_TEMPLATE_CLASS_ID, sizeof(rt_game3d_model_template))
+            ? (rt_game3d_model_template *)obj
+            : NULL;
     if (!model_template)
         rt_trap(method);
     return model_template;
@@ -1397,8 +1473,11 @@ static inline rt_game3d_model_template *game3d_model_template_checked(void *obj,
 /// @param method Diagnostic message used when validation fails.
 /// @return Typed AssetHandle3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_asset_handle *game3d_asset_handle_checked(void *obj, const char *method) {
-    rt_game3d_asset_handle *handle = (rt_game3d_asset_handle *)rt_g3d_checked_or_null(
-        obj, RT_G3D_GAME3D_ASSET_HANDLE3D_CLASS_ID);
+    rt_game3d_asset_handle *handle = rt_obj_is_instance(obj,
+                                                        RT_G3D_GAME3D_ASSET_HANDLE3D_CLASS_ID,
+                                                        sizeof(rt_game3d_asset_handle))
+                                         ? (rt_game3d_asset_handle *)obj
+                                         : NULL;
     if (!handle)
         rt_trap(method);
     return handle;
@@ -1409,8 +1488,11 @@ static inline rt_game3d_asset_handle *game3d_asset_handle_checked(void *obj, con
 /// @param method Diagnostic message used when validation fails.
 /// @return Typed WorldStream3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_world_stream *game3d_world_stream_checked(void *obj, const char *method) {
-    rt_game3d_world_stream *stream = (rt_game3d_world_stream *)rt_g3d_checked_or_null(
-        obj, RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID);
+    rt_game3d_world_stream *stream = rt_obj_is_instance(obj,
+                                                        RT_G3D_GAME3D_WORLD_STREAM3D_CLASS_ID,
+                                                        sizeof(rt_game3d_world_stream))
+                                         ? (rt_game3d_world_stream *)obj
+                                         : NULL;
     if (!stream)
         rt_trap(method);
     return stream;
@@ -1423,7 +1505,9 @@ static inline rt_game3d_world_stream *game3d_world_stream_checked(void *obj, con
 /// @return Typed World3D payload regardless of lifetime state, or `NULL` after a trap.
 static inline rt_game3d_world *game3d_world_checked_allow_destroyed(void *obj, const char *method) {
     rt_game3d_world *world =
-        (rt_game3d_world *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_WORLD_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_WORLD_CLASS_ID, sizeof(rt_game3d_world))
+            ? (rt_game3d_world *)obj
+            : NULL;
     if (!world)
         rt_trap(method);
     return world;
@@ -1436,8 +1520,10 @@ static inline rt_game3d_world *game3d_world_checked_allow_destroyed(void *obj, c
 /// @return Typed live World3D payload, or `NULL` after recording a trap.
 static inline rt_game3d_world *game3d_world_checked(void *obj, const char *method) {
     rt_game3d_world *world = game3d_world_checked_allow_destroyed(obj, method);
-    if (world && world->destroyed)
+    if (world && world->destroyed) {
         rt_trap(game3d_lifetime_diag(method, "world is destroyed"));
+        return NULL;
+    }
     return world;
 }
 
@@ -1448,8 +1534,11 @@ static inline rt_game3d_world *game3d_world_checked(void *obj, const char *metho
 static inline rt_game3d_character_controller *game3d_character_controller_checked(
     void *obj, const char *method) {
     rt_game3d_character_controller *controller =
-        (rt_game3d_character_controller *)rt_g3d_checked_or_null(
-            obj, RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID);
+        rt_obj_is_instance(obj,
+                           RT_G3D_GAME3D_CHARACTER_CONTROLLER_CLASS_ID,
+                           sizeof(rt_game3d_character_controller))
+            ? (rt_game3d_character_controller *)obj
+            : NULL;
     if (!controller)
         rt_trap(method);
     return controller;
@@ -1462,8 +1551,10 @@ static inline rt_game3d_character_controller *game3d_character_controller_checke
 static inline rt_game3d_first_person_controller *game3d_first_person_controller_checked(
     void *obj, const char *method) {
     rt_game3d_first_person_controller *controller =
-        (rt_game3d_first_person_controller *)rt_g3d_checked_or_null(
-            obj, RT_G3D_GAME3D_FIRSTPERSON_CLASS_ID);
+        rt_obj_is_instance(
+            obj, RT_G3D_GAME3D_FIRSTPERSON_CLASS_ID, sizeof(rt_game3d_first_person_controller))
+            ? (rt_game3d_first_person_controller *)obj
+            : NULL;
     if (!controller)
         rt_trap(method);
     return controller;
@@ -1476,8 +1567,10 @@ static inline rt_game3d_first_person_controller *game3d_first_person_controller_
 static inline rt_game3d_free_fly_controller *game3d_free_fly_controller_checked(
     void *obj, const char *method) {
     rt_game3d_free_fly_controller *controller =
-        (rt_game3d_free_fly_controller *)rt_g3d_checked_or_null(obj,
-                                                                RT_G3D_GAME3D_FREEFLY_CLASS_ID);
+        rt_obj_is_instance(
+            obj, RT_G3D_GAME3D_FREEFLY_CLASS_ID, sizeof(rt_game3d_free_fly_controller))
+            ? (rt_game3d_free_fly_controller *)obj
+            : NULL;
     if (!controller)
         rt_trap(method);
     return controller;
@@ -1490,7 +1583,9 @@ static inline rt_game3d_free_fly_controller *game3d_free_fly_controller_checked(
 static inline rt_game3d_orbit_controller *game3d_orbit_controller_checked(void *obj,
                                                                           const char *method) {
     rt_game3d_orbit_controller *controller =
-        (rt_game3d_orbit_controller *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_ORBIT_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_ORBIT_CLASS_ID, sizeof(rt_game3d_orbit_controller))
+            ? (rt_game3d_orbit_controller *)obj
+            : NULL;
     if (!controller)
         rt_trap(method);
     return controller;
@@ -1503,11 +1598,17 @@ static inline rt_game3d_orbit_controller *game3d_orbit_controller_checked(void *
 static inline rt_game3d_follow_controller *game3d_follow_controller_checked(void *obj,
                                                                             const char *method) {
     rt_game3d_follow_controller *controller =
-        (rt_game3d_follow_controller *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_FOLLOW_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_FOLLOW_CLASS_ID, sizeof(rt_game3d_follow_controller))
+            ? (rt_game3d_follow_controller *)obj
+            : NULL;
     if (!controller)
         rt_trap(method);
     return controller;
 }
+
+/// @brief Repair a validated third-person controller's private numeric and reference state.
+/// @param controller Complete ThirdPersonController payload; NULL is ignored.
+void game3d_thirdperson_repair_state(rt_game3d_thirdperson_controller *controller);
 
 /// @brief Validate `obj` as a ThirdPersonController handle, trapping `method` on mismatch.
 /// @param obj Opaque handle supplied by a public API caller.
@@ -1516,10 +1617,14 @@ static inline rt_game3d_follow_controller *game3d_follow_controller_checked(void
 static inline rt_game3d_thirdperson_controller *game3d_thirdperson_controller_checked(
     void *obj, const char *method) {
     rt_game3d_thirdperson_controller *controller =
-        (rt_game3d_thirdperson_controller *)rt_g3d_checked_or_null(
-            obj, RT_G3D_GAME3D_THIRDPERSON_CLASS_ID);
+        rt_obj_is_instance(
+            obj, RT_G3D_GAME3D_THIRDPERSON_CLASS_ID, sizeof(rt_game3d_thirdperson_controller))
+            ? (rt_game3d_thirdperson_controller *)obj
+            : NULL;
     if (!controller)
         rt_trap(method);
+    if (controller)
+        game3d_thirdperson_repair_state(controller);
     return controller;
 }
 
@@ -1529,7 +1634,9 @@ static inline rt_game3d_thirdperson_controller *game3d_thirdperson_controller_ch
 /// @return Typed LipSync3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_lipsync *game3d_lipsync_checked(void *obj, const char *method) {
     rt_game3d_lipsync *lipsync =
-        (rt_game3d_lipsync *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_LIPSYNC_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_LIPSYNC_CLASS_ID, sizeof(rt_game3d_lipsync))
+            ? (rt_game3d_lipsync *)obj
+            : NULL;
     if (!lipsync)
         rt_trap(method);
     return lipsync;
@@ -1541,7 +1648,9 @@ static inline rt_game3d_lipsync *game3d_lipsync_checked(void *obj, const char *m
 /// @return Typed Dialogue3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_dialogue *game3d_dialogue_checked(void *obj, const char *method) {
     rt_game3d_dialogue *dialogue =
-        (rt_game3d_dialogue *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_DIALOGUE_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_DIALOGUE_CLASS_ID, sizeof(rt_game3d_dialogue))
+            ? (rt_game3d_dialogue *)obj
+            : NULL;
     if (!dialogue)
         rt_trap(method);
     return dialogue;
@@ -1553,7 +1662,9 @@ static inline rt_game3d_dialogue *game3d_dialogue_checked(void *obj, const char 
 /// @return Typed Timeline3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_timeline *game3d_timeline_checked(void *obj, const char *method) {
     rt_game3d_timeline *timeline =
-        (rt_game3d_timeline *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_TIMELINE_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_TIMELINE_CLASS_ID, sizeof(rt_game3d_timeline))
+            ? (rt_game3d_timeline *)obj
+            : NULL;
     if (!timeline)
         rt_trap(method);
     return timeline;
@@ -1565,11 +1676,17 @@ static inline rt_game3d_timeline *game3d_timeline_checked(void *obj, const char 
 /// @return Typed RailCamera3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_rail_camera *game3d_rail_camera_checked(void *obj, const char *method) {
     rt_game3d_rail_camera *rail =
-        (rt_game3d_rail_camera *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_RAILCAMERA_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_RAILCAMERA_CLASS_ID, sizeof(rt_game3d_rail_camera))
+            ? (rt_game3d_rail_camera *)obj
+            : NULL;
     if (!rail)
         rt_trap(method);
     return rail;
 }
+
+/// @brief Repair a validated target-lock payload's private numeric and reference state.
+/// @param lock Complete TargetLock3D payload; NULL is ignored.
+void game3d_targetlock_repair_state(rt_game3d_targetlock *lock);
 
 /// @brief Validate `obj` as a TargetLock3D handle, trapping `method` on mismatch.
 /// @param obj Opaque handle supplied by a public API caller.
@@ -1577,9 +1694,13 @@ static inline rt_game3d_rail_camera *game3d_rail_camera_checked(void *obj, const
 /// @return Typed TargetLock3D payload, or `NULL` after recording the trap.
 static inline rt_game3d_targetlock *game3d_targetlock_checked(void *obj, const char *method) {
     rt_game3d_targetlock *lock =
-        (rt_game3d_targetlock *)rt_g3d_checked_or_null(obj, RT_G3D_GAME3D_TARGETLOCK_CLASS_ID);
+        rt_obj_is_instance(obj, RT_G3D_GAME3D_TARGETLOCK_CLASS_ID, sizeof(rt_game3d_targetlock))
+            ? (rt_game3d_targetlock *)obj
+            : NULL;
     if (!lock)
         rt_trap(method);
+    if (lock)
+        game3d_targetlock_repair_state(lock);
     return lock;
 }
 
@@ -1634,6 +1755,11 @@ double game3d_clamp(double value, double lo, double hi);
 /// @param dt Candidate elapsed time in seconds.
 /// @return A finite non-negative delta no greater than `RT_GAME3D_MAX_DT`.
 double game3d_clamp_dt(double dt);
+
+/// @brief Sanitize a controller delta while preserving explicit zero-time pauses.
+/// @param dt Candidate elapsed time in seconds.
+/// @return A finite value in `[0, RT_GAME3D_MAX_DT]`.
+double game3d_clamp_controller_dt(double dt);
 
 /// @brief Substitute a fallback for a non-finite scalar.
 /// @param value Candidate scalar.
@@ -1783,6 +1909,10 @@ void game3d_input_move_axis_components(rt_game3d_input *input,
 /// @param input Borrowed Input3D payload.
 /// @return Vertical wheel delta, or zero for invalid input.
 double game3d_input_wheel_y_snapshot(const rt_game3d_input *input);
+
+/// @brief Repair scalar, flag, and gamepad snapshot invariants in an Input3D payload.
+/// @param input Borrowed Input3D payload; NULL is ignored.
+void game3d_input_repair_state(rt_game3d_input *input);
 
 /// @brief Synchronize an entity's physics body transform from its scene node.
 /// @param entity Borrowed entity payload whose node and body may be synchronized.

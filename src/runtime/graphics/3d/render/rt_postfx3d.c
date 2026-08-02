@@ -327,7 +327,9 @@ static void postfx_run_bands(rt_postfx3d *fx, int32_t h, postfx_band_fn fn, void
 /// @param obj Candidate runtime object.
 /// @return The validated PostFX3D pointer, or `NULL` for a null or wrong-class object.
 static rt_postfx3d *postfx3d_checked(void *obj) {
-    return (rt_postfx3d *)rt_g3d_checked_or_null(obj, RT_G3D_POSTFX3D_CLASS_ID);
+    return rt_obj_is_instance(obj, RT_G3D_POSTFX3D_CLASS_ID, sizeof(rt_postfx3d))
+               ? (rt_postfx3d *)obj
+               : NULL;
 }
 
 /// @brief Return a bounded effect count that is safe to iterate.
