@@ -58,6 +58,8 @@ void rt_navagent3d_set_target(void *agent, void *position);
 /// @param agent Opaque NavAgent3D handle.
 void rt_navagent3d_clear_target(void *agent);
 /// @brief Tick the agent: traverse path corners, drive bound character/node, optionally repath.
+/// @details An automatic repath is transactional: a transient query or allocation
+///          failure preserves the existing valid path until a later retry.
 /// @param agent Opaque NavAgent3D handle.
 /// @param dt Frame duration in seconds, sanitized to the supported maximum step.
 void rt_navagent3d_update(void *agent, double dt);
@@ -103,6 +105,8 @@ int8_t rt_navagent3d_get_on_offmesh_link(void *agent);
 /// @return Retained runtime string containing the link kind, or the shared empty string.
 rt_string rt_navagent3d_get_link_kind(void *agent);
 /// @brief Distance in world units left along the path (0 when within stopping distance).
+/// @details The result combines the live distance to the current corner with a
+///          suffix-length cache built transactionally with the path, making the query O(1).
 /// @param agent Opaque NavAgent3D handle.
 /// @return Bounded non-negative remaining path length, zero without a path, or -1 for an invalid
 ///         handle.
@@ -149,11 +153,16 @@ double rt_navagent3d_get_avoidance_radius(void *agent);
 void rt_navagent3d_set_avoidance_radius(void *agent, double radius);
 
 /// @brief Bind a Character3D — Update will call its Move() with desired velocity.
+/// @details Rebinding synchronizes the authoritative position and immediately rebuilds
+///          an active target path from that position.
 /// @param agent Opaque NavAgent3D handle.
 /// @param controller Optional CharacterController3D handle retained by the agent; null clears the
 ///                   binding.
 void rt_navagent3d_bind_character(void *agent, void *controller);
 /// @brief Bind a SceneNode3D — Update will write the agent's position into the node's transform.
+/// @details World-to-local conversion is transactional for parented nodes; singular
+///          parent transforms leave local state unchanged. Rebinding immediately rebuilds
+///          an active target path from the synchronized world position.
 /// @param agent Opaque NavAgent3D handle.
 /// @param node Optional SceneNode3D handle retained by the agent; null clears the binding.
 void rt_navagent3d_bind_node(void *agent, void *node);

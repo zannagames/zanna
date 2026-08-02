@@ -50,8 +50,8 @@ extern "C" {
 void *rt_morphtarget3d_new(int64_t vertex_count);
 /// @brief Deep-copy a morph-target container, including shapes, deltas, and weights.
 /// @details Optional channels and current, previous, snapshot, and frame-history
-///          state are copied into independent storage. Packed payloads are
-///          rebuilt lazily in the clone.
+///          state are copied into independent storage after finite/canonical
+///          repair. Packed payloads are rebuilt lazily in the clone.
 /// @param[in] mt Source MorphTarget3D.
 /// @return New independent GC-managed clone, or `NULL` for an invalid source,
 ///         size error, or allocation failure.
@@ -84,8 +84,9 @@ void *rt_morphtarget3d_clone_remapped(void *mt,
 int64_t rt_morphtarget3d_add_shape(void *mt, rt_string name);
 /// @brief Set position delta for one vertex of one shape.
 /// @details Invalid indexes are ignored. Each lane is narrowed to finite float;
-///          non-finite or out-of-range values become zero. A successful write
-///          invalidates packed payload caches.
+///          non-finite or out-of-range values become zero. A changed write
+///          invalidates packed payload caches; an identical effective value is
+///          a cache-preserving no-op.
 /// @param[in,out] mt MorphTarget3D to modify.
 /// @param[in] shape Zero-based shape index.
 /// @param[in] vertex Zero-based vertex index.
@@ -96,8 +97,9 @@ void rt_morphtarget3d_set_delta(
     void *mt, int64_t shape, int64_t vertex, double dx, double dy, double dz);
 /// @brief Set normal delta for one vertex of one shape (lazy-allocates the per-shape normal array).
 /// @details Invalid indexes are ignored. Delta lanes use the same sanitization
-///          as position deltas; allocation failure traps and leaves no write.
-///          Morphed normals are renormalized at draw time.
+///          as position deltas; allocation failure traps and leaves no write. A
+///          zero edit against an absent channel remains sparse, and an identical
+///          edit preserves payload caches. Morphed normals are renormalized at draw time.
 /// @param[in,out] mt MorphTarget3D to modify.
 /// @param[in] shape Zero-based shape index.
 /// @param[in] vertex Zero-based vertex index.
@@ -108,8 +110,9 @@ void rt_morphtarget3d_set_normal_delta(
     void *mt, int64_t shape, int64_t vertex, double dx, double dy, double dz);
 /// @brief Set tangent delta for one vertex of one shape (lazy-allocates tangent storage).
 /// @details Only tangent XYZ is deformed; base handedness W is preserved and
-///          the result is renormalized. Any tangent channel currently forces
-///          CPU morphing.
+///          the result is renormalized. A zero edit against an absent channel
+///          remains sparse, and an identical edit preserves payload caches.
+///          Any allocated tangent channel currently forces CPU morphing.
 /// @param[in,out] mt MorphTarget3D to modify.
 /// @param[in] shape Zero-based shape index.
 /// @param[in] vertex Zero-based vertex index.
@@ -175,7 +178,8 @@ uint64_t rt_morphtarget3d_get_payload_generation(void *mt);
 /// @brief Bind a MorphTarget3D to a Mesh3D (vertex counts must match exactly).
 /// @details A successful binding retains the container, releases any previous
 ///          binding, and marks mesh geometry changed. Pass `NULL` to detach;
-///          invalid handles and count mismatches leave the binding unchanged.
+///          detaching an already-unbound mesh is a no-op. Invalid handles and
+///          count mismatches leave the binding unchanged.
 /// @param[in,out] mesh Mesh3D to configure.
 /// @param[in] morph_targets Borrowed matching MorphTarget3D, or `NULL`.
 void rt_mesh3d_set_morph_targets(void *mesh, void *morph_targets);
@@ -183,7 +187,10 @@ void rt_mesh3d_set_morph_targets(void *mesh, void *morph_targets);
 /// @details The transform must be a live Mat4 and also serves as the temporal
 ///          motion key. Mesh and morph vertex counts must match. Deferred GPU
 ///          aliases and CPU scratch vertices are tracked on the canvas through
-///          frame cleanup.
+///          frame cleanup. Every accepted draw advances weight history once per
+///          frame, including inactive and CPU-fallback draws, so later GPU motion
+///          vectors never reuse stale history. A draw rejected during local
+///          resource setup leaves history and preexisting frame retains unchanged.
 /// @param[in,out] canvas Canvas3D receiving the draw.
 /// @param[in] mesh Borrowed resident Mesh3D.
 /// @param[in] transform Borrowed Mat4 model transform.

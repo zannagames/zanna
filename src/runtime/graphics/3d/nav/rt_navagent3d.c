@@ -20,8 +20,9 @@
 //     apply in monotonic creation order, independent of caller array order.
 //
 // Ownership/Lifetime:
-//   - NavAgent3D is GC-managed; finalizer frees the path buffer and releases the
-//     navmesh / bound character / bound node refs.
+//   - NavAgent3D is GC-managed; private identities own the path and avoidance
+//     scratch buffers while legacy pointers remain repairable mirrors. The
+//     finalizer also releases navmesh / bound character / bound node refs.
 //   - All bindings (navmesh, character, node) are retained on assignment and
 //     released on rebind / finalize.
 //   - Process-lifetime batch scratch borrows but never retains agent pointers.
@@ -47,7 +48,6 @@
 
 #include "rt_g3d_ref_slots.h"
 #include "rt_graphics3d_ids.h"
-#include "rt_mat4.h"
 #include "rt_navmesh3d.h"
 #include "rt_physics3d.h"
 #include "rt_platform.h"
@@ -106,6 +106,16 @@ typedef struct rt_navagent3d {
     int32_t grid_cz;
     int8_t in_grid;
     uint64_t stable_order;
+    /// Immutable identity of the packed path-corner allocation.
+    double *owned_path_points_xyz;
+    /// Cached distance from each path corner through the final corner.
+    double *owned_path_suffix_lengths;
+    /// Actual number of point/suffix entries allocated for the current path.
+    int32_t path_allocation_capacity;
+    /// Immutable identity of the reusable avoidance-neighbor allocation.
+    struct rt_navagent3d **owned_avoidance_neighbors;
+    /// Actual number of pointers allocated in the neighbor scratch array.
+    int32_t avoidance_allocation_capacity;
 } rt_navagent3d;
 
 static rt_navagent3d *g_navagent3d_registry = NULL;
@@ -130,6 +140,8 @@ static int64_t g_navagent3d_registry_count = 0;
 #define NAVAGENT_HEIGHT_MAX 1000000.0
 #define NAVAGENT_DT_MAX 0.25
 #define NAVAGENT_DISTANCE_MAX 1000000000000000000.0
+#define NAVAGENT_REPATH_INTERVAL_MIN 0.01
+#define NAVAGENT_REPATH_INTERVAL_MAX 3600.0
 /* Sentinel returned by the numeric getters for an invalid agent handle. Every valid result is
  * clamped to >= 0, so a negative value is an unambiguous "invalid query" signal that callers can
  * distinguish from a legitimate zero (e.g. "no path" / "at goal"). */
@@ -145,6 +157,7 @@ static uint64_t g_navagent3d_next_stable_order = 0;
 static void navagent_grid_refresh(rt_navagent3d *agent);
 static void navagent_grid_remove(rt_navagent3d *agent);
 static void navagent_recompute_max_reach(void);
+static void navagent_repair_state(rt_navagent3d *agent);
 static double navagent_clamp_abs_or(double value, double fallback, double max_abs);
 static double navagent_coord_or(double value, double fallback);
 
@@ -152,7 +165,9 @@ static double navagent_coord_or(double value, double fallback);
 /// @param obj Opaque runtime object handle.
 /// @return Typed agent pointer when @p obj has the NavAgent3D class, otherwise null.
 static rt_navagent3d *navagent3d_checked(void *obj) {
-    return (rt_navagent3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVAGENT3D_CLASS_ID);
+    rt_navagent3d *agent = (rt_navagent3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVAGENT3D_CLASS_ID);
+    navagent_repair_state(agent);
+    return agent;
 }
 
 /// @brief Add an agent to the global registry and insert it into the spatial grid at its cell.
@@ -335,6 +350,98 @@ static void navagent_release_local(void *obj) {
         rt_obj_free(obj);
 }
 
+/// @brief Restore owned buffer mirrors and canonicalize all persistent agent state.
+/// @details Allocation capacities and identities are private authority; mutable
+///          legacy pointers/counts are restored to the current owned path.
+///          Wrong-class retained slots are cleared as unowned corruption. A
+///          repaired reach also grows the process-wide query bound so local
+///          avoidance cannot miss peers after numeric state repair.
+/// @param[in,out] agent Agent state to repair; null is ignored.
+static void navagent_repair_state(rt_navagent3d *agent) {
+    if (!agent)
+        return;
+    if (agent->navmesh && !rt_g3d_has_class(agent->navmesh, RT_G3D_NAVMESH3D_CLASS_ID))
+        rt_g3d_ref_slot_clear_unowned(&agent->navmesh);
+    if (agent->bound_character &&
+        !rt_g3d_has_class(agent->bound_character, RT_G3D_CHARACTER3D_CLASS_ID))
+        rt_g3d_ref_slot_clear_unowned(&agent->bound_character);
+    if (agent->bound_node && !rt_g3d_has_class(agent->bound_node, RT_G3D_SCENENODE3D_CLASS_ID))
+        rt_g3d_ref_slot_clear_unowned(&agent->bound_node);
+
+    agent->radius = navagent_nonnegative_capped_or(agent->radius, 0.4, NAVAGENT_RADIUS_MAX);
+    if (agent->radius <= 0.0)
+        agent->radius = 0.4;
+    agent->height = navagent_nonnegative_capped_or(agent->height, 1.8, NAVAGENT_HEIGHT_MAX);
+    if (agent->height <= 0.0)
+        agent->height = 1.8;
+    agent->avoidance_radius =
+        navagent_nonnegative_capped_or(agent->avoidance_radius, agent->radius, NAVAGENT_RADIUS_MAX);
+    agent->stopping_distance = navagent_nonnegative_capped_or(
+        agent->stopping_distance, agent->radius, NAVAGENT_DISTANCE_MAX);
+    agent->desired_speed =
+        navagent_nonnegative_capped_or(agent->desired_speed, 4.0, NAVAGENT_SPEED_MAX);
+    {
+        double repaired_reach =
+            agent->avoidance_radius + agent->desired_speed * NAVAGENT_RVO_MAX_TIME_HORIZON;
+        if (repaired_reach > g_navagent3d_max_reach)
+            g_navagent3d_max_reach = repaired_reach;
+    }
+    agent->remaining_distance =
+        navagent_nonnegative_capped_or(agent->remaining_distance, 0.0, NAVAGENT_DISTANCE_MAX);
+    if (!isfinite(agent->repath_interval) ||
+        agent->repath_interval < NAVAGENT_REPATH_INTERVAL_MIN ||
+        agent->repath_interval > NAVAGENT_REPATH_INTERVAL_MAX)
+        agent->repath_interval = 0.25;
+    agent->repath_accum =
+        navagent_nonnegative_capped_or(agent->repath_accum, 0.0, agent->repath_interval);
+    for (int lane = 0; lane < 3; ++lane) {
+        agent->position[lane] = navagent_coord_or(agent->position[lane], 0.0);
+        agent->velocity[lane] =
+            navagent_clamp_abs_or(agent->velocity[lane], 0.0, NAVAGENT_SPEED_MAX);
+        agent->desired_velocity[lane] =
+            navagent_clamp_abs_or(agent->desired_velocity[lane], 0.0, NAVAGENT_SPEED_MAX);
+        agent->target[lane] = navagent_coord_or(agent->target[lane], 0.0);
+    }
+    agent->has_target = agent->has_target ? 1 : 0;
+    agent->has_path = agent->has_path ? 1 : 0;
+    agent->auto_repath = agent->auto_repath ? 1 : 0;
+    agent->avoidance_enabled = agent->avoidance_enabled ? 1 : 0;
+    if (!agent->has_target)
+        agent->has_path = 0;
+
+    if (agent->owned_path_points_xyz && agent->owned_path_suffix_lengths &&
+        agent->path_allocation_capacity > 0) {
+        agent->path_points_xyz = agent->owned_path_points_xyz;
+        agent->path_point_count = agent->path_allocation_capacity;
+        if (agent->path_point_count > 0) {
+            if (agent->path_index < 0)
+                agent->path_index = 0;
+            if (agent->path_index >= agent->path_point_count)
+                agent->path_index = agent->path_point_count - 1;
+        } else {
+            agent->path_index = 0;
+            agent->has_path = 0;
+        }
+    } else {
+        agent->path_points_xyz = NULL;
+        agent->path_point_count = 0;
+        agent->path_index = 0;
+        agent->has_path = 0;
+        agent->remaining_distance = 0.0;
+    }
+    if (!agent->has_path)
+        agent->remaining_distance = 0.0;
+
+    if (agent->owned_avoidance_neighbors && agent->avoidance_allocation_capacity > 0) {
+        agent->avoidance_neighbors = agent->owned_avoidance_neighbors;
+        agent->avoidance_neighbor_capacity = agent->avoidance_allocation_capacity;
+    } else {
+        agent->avoidance_neighbors = NULL;
+        agent->avoidance_neighbor_capacity = 0;
+        agent->avoidance_allocation_capacity = 0;
+    }
+}
+
 /// @brief Address the xyz triple for corner `index` in the flat path buffer.
 /// @details Path corners are stored as a packed `[x0,y0,z0, x1,y1,z1, ...]`
 ///   array — returning a stride-adjusted pointer avoids constructing a
@@ -356,7 +463,11 @@ static const double *navagent_path_point(const rt_navagent3d *agent, int32_t ind
 static void navagent_clear_path(rt_navagent3d *agent) {
     if (!agent)
         return;
-    free(agent->path_points_xyz);
+    free(agent->owned_path_points_xyz);
+    free(agent->owned_path_suffix_lengths);
+    agent->owned_path_points_xyz = NULL;
+    agent->owned_path_suffix_lengths = NULL;
+    agent->path_allocation_capacity = 0;
     agent->path_points_xyz = NULL;
     agent->path_point_count = 0;
     agent->path_index = 0;
@@ -526,17 +637,21 @@ static void navagent_preferred_velocity_xz(const rt_navagent3d *agent,
         *out_vz = agent->desired_velocity[2];
         return;
     }
-    if (agent->has_path && agent->path_points_xyz && agent->path_point_count > 0) {
+    if (agent->has_path && agent->owned_path_points_xyz && agent->owned_path_suffix_lengths &&
+        agent->path_allocation_capacity > 0 && agent->path_point_count > 0) {
         int32_t idx = agent->path_index;
+        int32_t point_count = agent->path_point_count;
         const double *next;
         double dx;
         double dz;
         double dist;
+        if (point_count > agent->path_allocation_capacity)
+            point_count = agent->path_allocation_capacity;
         if (idx < 0)
             idx = 0;
-        if (idx >= agent->path_point_count)
-            idx = agent->path_point_count - 1;
-        next = navagent_path_point(agent, idx);
+        if (idx >= point_count)
+            idx = point_count - 1;
+        next = agent->owned_path_points_xyz + (size_t)idx * 3u;
         dx = next[0] - agent->position[0];
         dz = next[2] - agent->position[2];
         dist = sqrt(dx * dx + dz * dz);
@@ -730,27 +845,40 @@ static double navagent_rvo_peer_penalty(rt_navagent3d *agent,
 static int navagent_ensure_neighbor_capacity(rt_navagent3d *agent, int32_t needed) {
     rt_navagent3d **grown;
     int32_t new_capacity;
-    if (!agent || needed < 0 || agent->avoidance_neighbor_capacity < 0)
+    if (!agent || needed < 0)
         return 0;
-    if (needed <= agent->avoidance_neighbor_capacity)
+    if (agent->owned_avoidance_neighbors && agent->avoidance_allocation_capacity > 0) {
+        agent->avoidance_neighbors = agent->owned_avoidance_neighbors;
+        agent->avoidance_neighbor_capacity = agent->avoidance_allocation_capacity;
+    } else {
+        agent->avoidance_neighbors = NULL;
+        agent->avoidance_neighbor_capacity = 0;
+        agent->avoidance_allocation_capacity = 0;
+    }
+    if (needed <= agent->avoidance_allocation_capacity)
         return 1;
-    new_capacity = agent->avoidance_neighbor_capacity > 0 ? agent->avoidance_neighbor_capacity : 32;
+    new_capacity =
+        agent->avoidance_allocation_capacity > 0 ? agent->avoidance_allocation_capacity : 32;
     while (new_capacity < needed) {
+        if (new_capacity > INT32_MAX / 2) {
+            new_capacity = needed;
+            break;
+        }
         int32_t next = new_capacity * 2;
-        if (next <= new_capacity)
-            return 0;
         new_capacity = next;
     }
     // avoidance_neighbors is intentionally a reusable array of agent pointers.
     // cppcheck-suppress divideSizeof
     if ((size_t)new_capacity > SIZE_MAX / sizeof(*grown))
         return 0;
-    grown = (rt_navagent3d **)realloc(agent->avoidance_neighbors,
+    grown = (rt_navagent3d **)realloc(agent->owned_avoidance_neighbors,
                                       (size_t)new_capacity * sizeof(*grown));
     if (!grown)
         return 0;
+    agent->owned_avoidance_neighbors = grown;
     agent->avoidance_neighbors = grown;
     agent->avoidance_neighbor_capacity = new_capacity;
+    agent->avoidance_allocation_capacity = new_capacity;
     return 1;
 }
 
@@ -767,7 +895,7 @@ static int navagent_ensure_neighbor_capacity(rt_navagent3d *agent, int32_t neede
 static int navagent_neighbor_list_append(rt_navagent3d *owner,
                                          int32_t *count,
                                          rt_navagent3d *other) {
-    if (!owner || !count || !other || *count < 0)
+    if (!owner || !count || !other || *count < 0 || *count == INT32_MAX)
         return 0;
     if (!navagent_ensure_neighbor_capacity(owner, *count + 1))
         return 0;
@@ -1593,53 +1721,25 @@ static void navagent_get_node_world_position(void *node, double out_pos[3]) {
     }
     if (!rt_scene_node3d_get_world_position_components(
             node, &out_pos[0], &out_pos[1], &out_pos[2])) {
-        void *local = rt_scene_node3d_get_position(node);
-        navagent_vec_set(out_pos,
-                         local ? rt_vec3_x(local) : 0.0,
-                         local ? rt_vec3_y(local) : 0.0,
-                         local ? rt_vec3_z(local) : 0.0);
-        navagent_release_local(local);
+        navagent_vec_set(out_pos, 0.0, 0.0, 0.0);
     } else {
         navagent_vec_copy(out_pos, out_pos);
     }
 }
 
-/// @brief Write a world-space position into a SceneNode3D, converting through the
-/// inverse of the parent's world matrix so the node-local coordinate comes out right
-/// after the parent transform is applied. When the node is a root (no parent), the
-/// world position is written directly as the local position. Also falls back to direct
-/// write when the parent's world matrix can't be inverted (degenerate scale, etc.).
+/// @brief Write a world-space position into a SceneNode3D through its allocation-free
+/// world-position helper.
+/// @details Parent conversion is transactional. A singular parent leaves the node's
+///          existing local transform unchanged instead of treating a world position as local.
 /// @param node Borrowed SceneNode3D handle to reposition.
 /// @param world_pos Borrowed desired world-space position.
 static void navagent_set_node_world_position(void *node, const double world_pos[3]) {
-    void *parent;
     if (!node || !world_pos)
         return;
     double clean_world[3];
     navagent_vec_copy(clean_world, world_pos);
-    parent = rt_scene_node3d_get_parent(node);
-    if (!parent) {
-        rt_scene_node3d_set_position(node, clean_world[0], clean_world[1], clean_world[2]);
-        return;
-    }
-
-    {
-        void *parent_world = rt_scene_node3d_get_world_matrix(parent);
-        void *parent_inv = parent_world ? rt_mat4_try_inverse(parent_world) : NULL;
-        void *world_vec = rt_vec3_new(clean_world[0], clean_world[1], clean_world[2]);
-        void *local =
-            (parent_inv && world_vec) ? rt_mat4_transform_point(parent_inv, world_vec) : NULL;
-        if (local) {
-            rt_scene_node3d_set_position(
-                node, rt_vec3_x(local), rt_vec3_y(local), rt_vec3_z(local));
-        } else {
-            rt_scene_node3d_set_position(node, clean_world[0], clean_world[1], clean_world[2]);
-        }
-        navagent_release_local(local);
-        navagent_release_local(world_vec);
-        navagent_release_local(parent_inv);
-        navagent_release_local(parent_world);
-    }
+    (void)rt_scene_node3d_try_set_world_position(
+        node, clean_world[0], clean_world[1], clean_world[2]);
 }
 
 /// @brief Pull the agent's authoritative world position from whichever binding is
@@ -1712,11 +1812,10 @@ static void navagent_refresh_path_index(rt_navagent3d *agent) {
     }
 }
 
-/// @brief Sum the remaining world-space path length from the agent's current position
-/// to the goal — that is, the straight-line hop to the current `path_index` waypoint
-/// plus every subsequent corner-to-corner segment. Clamped `path_index` into valid
-/// range defensively. Callers expose this via `get_remaining_distance` so AI scripts
-/// can decide "am I almost there?" without repeating the walk themselves.
+/// @brief Read the remaining world-space path length in constant time.
+/// @details Adds the live hop to `path_index` to the suffix length cached when the
+///          path was published. The cursor is clamped defensively. Callers expose this
+///          via `get_remaining_distance` so AI scripts can decide "am I almost there?".
 /// @param agent Borrowed agent whose current path and position are measured.
 /// @return Remaining polyline length capped to the navigation distance bound, or zero without an
 ///         active path.
@@ -1733,35 +1832,33 @@ static double navagent_compute_remaining_distance(rt_navagent3d *agent) {
     remaining += navagent_dist(agent->position, navagent_path_point(agent, idx));
     if (remaining > NAVAGENT_DISTANCE_MAX)
         return NAVAGENT_DISTANCE_MAX;
-    for (int32_t i = idx; i < agent->path_point_count - 1; i++) {
-        remaining +=
-            navagent_dist(navagent_path_point(agent, i), navagent_path_point(agent, i + 1));
-        if (remaining > NAVAGENT_DISTANCE_MAX)
-            return NAVAGENT_DISTANCE_MAX;
-    }
-    return remaining;
+    remaining += agent->owned_path_suffix_lengths[idx];
+    return isfinite(remaining) && remaining <= NAVAGENT_DISTANCE_MAX ? remaining
+                                                                     : NAVAGENT_DISTANCE_MAX;
 }
 
-/// @brief Clear any previous path and query the navmesh for a fresh corner list between
-/// the agent's (navmesh-snapped) current position and its (navmesh-snapped) target.
-/// Resets the repath timer. On empty or failed path result, zeroes velocity so the agent
-/// stops cleanly instead of following a stale path. The first corner (`path_index = 1`)
-/// is the next waypoint, because corner 0 is the starting position.
+/// @brief Query and transactionally publish a fresh path and suffix-length cache.
+/// @details Resets the repath timer. Direct target/warp rebuilds clear motion on failure;
+///          automatic repaths may preserve an existing valid path across a transient query
+///          or allocation failure. Corner zero is the start, so a multi-corner path begins
+///          following at index one.
 /// @param agent Mutable agent whose owned path buffer and path-following state are replaced.
-static void navagent_rebuild_path(rt_navagent3d *agent) {
+/// @param preserve_existing_on_failure Nonzero to retain a previously valid path on failure.
+/// @return One after publishing a replacement path; otherwise zero.
+static int navagent_rebuild_path(rt_navagent3d *agent, int preserve_existing_on_failure) {
     double start[3];
     double goal[3];
     double *points = NULL;
+    double *suffix_lengths = NULL;
     int64_t point_count;
     if (!agent)
-        return;
-    navagent_clear_path(agent);
+        return 0;
+    navagent_repair_state(agent);
     agent->repath_accum = 0.0;
-    if (agent->navmesh && !rt_g3d_has_class(agent->navmesh, RT_G3D_NAVMESH3D_CLASS_ID))
-        agent->navmesh = NULL;
     if (!agent->navmesh || !agent->has_target) {
+        navagent_clear_path(agent);
         navagent_zero_motion(agent);
-        return;
+        return 0;
     }
 
     navagent_sync_position_from_bindings(agent);
@@ -1777,26 +1874,53 @@ static void navagent_rebuild_path(rt_navagent3d *agent) {
     navagent_release_local(start_vec);
     navagent_release_local(goal_vec);
     if (point_count <= 0 || !points) {
-        navagent_zero_motion(agent);
-        return;
-    }
-    if (point_count > INT32_MAX) {
         free(points);
-        navagent_zero_motion(agent);
-        return;
+        if (!preserve_existing_on_failure || !agent->has_path) {
+            navagent_clear_path(agent);
+            navagent_zero_motion(agent);
+        }
+        return 0;
+    }
+    if (point_count > INT32_MAX || (uint64_t)point_count > SIZE_MAX / sizeof(*suffix_lengths)) {
+        free(points);
+        if (!preserve_existing_on_failure || !agent->has_path) {
+            navagent_clear_path(agent);
+            navagent_zero_motion(agent);
+        }
+        return 0;
     }
     for (int64_t i = 0; i < point_count; ++i) {
         points[i * 3 + 0] = navagent_coord_or(points[i * 3 + 0], 0.0);
         points[i * 3 + 1] = navagent_coord_or(points[i * 3 + 1], 0.0);
         points[i * 3 + 2] = navagent_coord_or(points[i * 3 + 2], 0.0);
     }
+    suffix_lengths = (double *)calloc((size_t)point_count, sizeof(*suffix_lengths));
+    if (!suffix_lengths) {
+        free(points);
+        if (!preserve_existing_on_failure || !agent->has_path) {
+            navagent_clear_path(agent);
+            navagent_zero_motion(agent);
+        }
+        return 0;
+    }
+    for (int64_t i = point_count - 2; i >= 0; --i) {
+        double segment = navagent_dist(&points[i * 3], &points[(i + 1) * 3]);
+        double suffix = suffix_lengths[i + 1];
+        suffix_lengths[i] =
+            segment > NAVAGENT_DISTANCE_MAX - suffix ? NAVAGENT_DISTANCE_MAX : segment + suffix;
+    }
 
+    navagent_clear_path(agent);
+    agent->owned_path_points_xyz = points;
+    agent->owned_path_suffix_lengths = suffix_lengths;
     agent->path_points_xyz = points;
+    agent->path_allocation_capacity = (int32_t)point_count;
     agent->path_point_count = (int32_t)point_count;
     agent->path_index = point_count > 1 ? 1 : 0;
     agent->has_path = 1;
     navagent_refresh_path_index(agent);
     agent->remaining_distance = navagent_compute_remaining_distance(agent);
+    return 1;
 }
 
 /// @brief GC finalizer for NavAgent3D. Frees the heap-allocated path-points buffer and
@@ -1808,11 +1932,17 @@ static void navagent_finalize(void *obj) {
     if (!agent)
         return;
     navagent_unregister(agent);
-    free(agent->path_points_xyz);
+    free(agent->owned_path_points_xyz);
+    free(agent->owned_path_suffix_lengths);
+    agent->owned_path_points_xyz = NULL;
+    agent->owned_path_suffix_lengths = NULL;
     agent->path_points_xyz = NULL;
-    free(agent->avoidance_neighbors);
+    agent->path_allocation_capacity = 0;
+    free(agent->owned_avoidance_neighbors);
+    agent->owned_avoidance_neighbors = NULL;
     agent->avoidance_neighbors = NULL;
     agent->avoidance_neighbor_capacity = 0;
+    agent->avoidance_allocation_capacity = 0;
     navagent_release_class_ref(&agent->navmesh, RT_G3D_NAVMESH3D_CLASS_ID);
     navagent_release_class_ref(&agent->bound_character, RT_G3D_CHARACTER3D_CLASS_ID);
     navagent_release_class_ref(&agent->bound_node, RT_G3D_SCENENODE3D_CLASS_ID);
@@ -1877,7 +2007,7 @@ void rt_navagent3d_set_target(void *obj, void *position) {
         (double[3]){rt_vec3_x(position), rt_vec3_y(position), rt_vec3_z(position)},
         agent->target);
     agent->has_target = 1;
-    navagent_rebuild_path(agent);
+    navagent_rebuild_path(agent, 0);
 }
 
 /// @brief Cancel the active target and clear the path. Subsequent `_update` calls do nothing
@@ -1924,7 +2054,8 @@ static int navagent_prepare_update(rt_navagent3d *agent,
         else
             agent->repath_accum += dt;
         if (agent->repath_accum >= agent->repath_interval) {
-            navagent_rebuild_path(agent);
+            navagent_rebuild_path(agent, 1);
+            target_dist = agent->has_target ? navagent_dist(agent->position, agent->target) : 0.0;
         }
     }
 
@@ -2156,7 +2287,7 @@ void rt_navagent3d_warp(void *obj, void *position) {
     navagent_zero_motion(agent);
     navagent_clear_path(agent);
     if (agent->has_target)
-        navagent_rebuild_path(agent);
+        navagent_rebuild_path(agent, 0);
 }
 
 /// @brief Read the agent's current world position. Re-syncs from any bound character/node first.
@@ -2235,9 +2366,13 @@ double rt_navagent3d_get_stopping_distance(void *obj) {
 /// @param distance Requested stopping distance, bounded to the supported navigation range.
 void rt_navagent3d_set_stopping_distance(void *obj, double distance) {
     rt_navagent3d *agent = navagent3d_checked(obj);
+    double repaired;
     if (!agent)
         return;
-    agent->stopping_distance = navagent_nonnegative_capped_or(distance, 0.0, NAVAGENT_DISTANCE_MAX);
+    repaired = navagent_nonnegative_capped_or(distance, 0.0, NAVAGENT_DISTANCE_MAX);
+    if (agent->stopping_distance == repaired)
+        return;
+    agent->stopping_distance = repaired;
 }
 
 /// @brief Maximum movement speed in world units per second (default 4). Returns -1 for an
@@ -2256,10 +2391,21 @@ double rt_navagent3d_get_desired_speed(void *obj) {
 void rt_navagent3d_set_desired_speed(void *obj, double speed) {
     RT_ASSERT_MAIN_THREAD();
     rt_navagent3d *agent = navagent3d_checked(obj);
+    double old_reach;
+    double new_reach;
+    double repaired;
     if (!agent)
         return;
-    agent->desired_speed = navagent_nonnegative_capped_or(speed, 0.0, NAVAGENT_SPEED_MAX);
-    navagent_recompute_max_reach();
+    repaired = navagent_nonnegative_capped_or(speed, 0.0, NAVAGENT_SPEED_MAX);
+    if (agent->desired_speed == repaired)
+        return;
+    old_reach = navagent_reach(agent);
+    agent->desired_speed = repaired;
+    new_reach = navagent_reach(agent);
+    if (new_reach > g_navagent3d_max_reach)
+        g_navagent3d_max_reach = new_reach;
+    else if (new_reach < old_reach && old_reach >= g_navagent3d_max_reach)
+        navagent_recompute_max_reach();
 }
 
 /// @brief Returns 1 if the agent automatically rebuilds its path on the repath interval. When
@@ -2277,9 +2423,13 @@ int8_t rt_navagent3d_get_auto_repath(void *obj) {
 /// @param enabled Non-zero to enable periodic path rebuilding.
 void rt_navagent3d_set_auto_repath(void *obj, int8_t enabled) {
     rt_navagent3d *agent = navagent3d_checked(obj);
+    int8_t canonical;
     if (!agent)
         return;
-    agent->auto_repath = enabled ? 1 : 0;
+    canonical = enabled ? 1 : 0;
+    if (agent->auto_repath == canonical)
+        return;
+    agent->auto_repath = canonical;
 }
 
 /// @brief Returns 1 when same-NavMesh local separation steering is enabled.
@@ -2295,9 +2445,13 @@ int8_t rt_navagent3d_get_avoidance_enabled(void *obj) {
 /// @param enabled Non-zero to enable reciprocal local avoidance.
 void rt_navagent3d_set_avoidance_enabled(void *obj, int8_t enabled) {
     rt_navagent3d *agent = navagent3d_checked(obj);
+    int8_t canonical;
     if (!agent)
         return;
-    agent->avoidance_enabled = enabled ? 1 : 0;
+    canonical = enabled ? 1 : 0;
+    if (agent->avoidance_enabled == canonical)
+        return;
+    agent->avoidance_enabled = canonical;
 }
 
 /// @brief Radius used by local avoidance neighbor separation (defaults to the agent radius).
@@ -2316,10 +2470,21 @@ double rt_navagent3d_get_avoidance_radius(void *obj) {
 void rt_navagent3d_set_avoidance_radius(void *obj, double radius) {
     RT_ASSERT_MAIN_THREAD();
     rt_navagent3d *agent = navagent3d_checked(obj);
+    double old_reach;
+    double new_reach;
+    double repaired;
     if (!agent)
         return;
-    agent->avoidance_radius = navagent_nonnegative_capped_or(radius, 0.0, NAVAGENT_RADIUS_MAX);
-    navagent_recompute_max_reach();
+    repaired = navagent_nonnegative_capped_or(radius, 0.0, NAVAGENT_RADIUS_MAX);
+    if (agent->avoidance_radius == repaired)
+        return;
+    old_reach = navagent_reach(agent);
+    agent->avoidance_radius = repaired;
+    new_reach = navagent_reach(agent);
+    if (new_reach > g_navagent3d_max_reach)
+        g_navagent3d_max_reach = new_reach;
+    else if (new_reach < old_reach && old_reach >= g_navagent3d_max_reach)
+        navagent_recompute_max_reach();
 }
 
 /// @brief Bind the agent to a CharacterController3D — `_update` will call `_move` on the
@@ -2342,6 +2507,8 @@ void rt_navagent3d_bind_character(void *obj, void *controller) {
     navagent_sync_position_from_bindings(agent);
     if (agent->bound_character && agent->bound_node)
         navagent_set_node_world_position(agent->bound_node, agent->position);
+    if (agent->has_target)
+        navagent_rebuild_path(agent, 0);
 }
 
 /// @brief Bind the agent to a SceneNode3D — the node's world position will be updated to
@@ -2367,6 +2534,8 @@ void rt_navagent3d_bind_node(void *obj, void *node) {
     } else {
         navagent_sync_position_from_bindings(agent);
     }
+    if (agent->has_target)
+        navagent_rebuild_path(agent, 0);
 }
 
 /// @brief True while the agent's current path segment traverses a registered

@@ -5,10 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-// File: tests/unit/test_rt_morphtarget3d.cpp
+// File: src/tests/unit/test_rt_morphtarget3d.cpp
 // Purpose: Unit tests for MorphTarget3D — shape creation, delta application,
-//   weight blending, and morph computation.
+//   weight blending, packed payloads, temporal state, and storage repair.
 //
+// Key invariants:
+//   - Private allocation identities bound every mutable pointer/count mirror.
+//   - No-op/implicit-zero edits do not allocate or invalidate GPU payloads.
+// Ownership/Lifetime:
+//   - Runtime fixtures are process-owned unless a test explicitly finalizes one.
 // Links: rt_morphtarget3d.h, plans/3d/16-morph-targets.md
 //
 //===----------------------------------------------------------------------===//
@@ -66,6 +71,9 @@ struct MorphTarget3DShapeTest {
     float *pos_deltas;
     float *nrm_deltas;
     float *tan_deltas;
+    float *owned_pos_deltas;
+    float *owned_nrm_deltas;
+    float *owned_tan_deltas;
 };
 
 struct MorphTarget3DTestLayout {
@@ -77,9 +85,25 @@ struct MorphTarget3DTestLayout {
     float *packed_pos_deltas;
     float *packed_nrm_deltas;
     uint64_t payload_generation;
+    uint64_t max_delta_generation;
+    double max_position_delta_cache;
     int32_t shape_count;
     int32_t shape_capacity;
     int32_t vertex_count;
+    int64_t last_motion_frame;
+    int32_t name_lookup_memo;
+    int8_t has_prev_weights;
+    int8_t packed_dirty;
+    MorphTarget3DShapeTest *owned_shapes;
+    float *owned_weights;
+    float *owned_prev_weights;
+    float *owned_motion_weight_snapshot;
+    float *owned_packed_pos_deltas;
+    float *owned_packed_nrm_deltas;
+    int32_t allocation_shape_capacity;
+    int32_t allocation_vertex_count;
+    int32_t initialized_shape_count;
+    int8_t motion_frame_initialized;
 };
 
 extern "C" {
@@ -238,11 +262,16 @@ static void test_payload_generation_repairs_zero_sentinel() {
     void *mt = rt_morphtarget3d_new(2);
     auto *bits = reinterpret_cast<MorphTarget3DTestLayout *>(mt);
     bits->payload_generation = 0;
+    bits->max_delta_generation = 1;
+    bits->max_position_delta_cache = 99.0;
+    bits->packed_dirty = 0;
 
     EXPECT_TRUE(rt_morphtarget3d_get_payload_generation(mt) == 1,
                 "MorphTarget3D repairs a corrupt zero payload generation");
     EXPECT_TRUE(bits->payload_generation == 1,
                 "MorphTarget3D stores the repaired nonzero payload generation");
+    EXPECT_TRUE(bits->packed_dirty == 1 && bits->max_delta_generation == 0,
+                "Generation repair invalidates packed and maximum-delta caches");
 }
 
 static void test_packed_payload_exports_positions_and_normals() {
@@ -393,12 +422,124 @@ static void test_shape_count_repair_ignores_unallocated_slots() {
 static void test_max_position_delta_handles_large_finite_values() {
     void *mt = rt_morphtarget3d_new(1);
     rt_morphtarget3d_add_shape(mt, rt_const_cstr("huge"));
-    rt_morphtarget3d_set_delta(
-        mt, 0, 0, std::numeric_limits<float>::max(), 0.0, 0.0);
+    rt_morphtarget3d_set_delta(mt, 0, 0, std::numeric_limits<float>::max(), 0.0, 0.0);
 
     double max_delta = rt_morphtarget3d_get_max_position_delta(mt);
     EXPECT_TRUE(std::isfinite(max_delta) && max_delta > 1.0e38,
                 "MorphTarget3D max delta uses overflow-safe length for huge finite deltas");
+}
+
+static void test_noop_delta_edits_preserve_sparse_storage_and_payload_generation() {
+    void *mt = rt_morphtarget3d_new(2);
+    rt_morphtarget3d_add_shape(mt, rt_const_cstr("idle"));
+    auto *bits = reinterpret_cast<MorphTarget3DTestLayout *>(mt);
+    auto *shape = &bits->owned_shapes[0];
+    uint64_t initial_generation = rt_morphtarget3d_get_payload_generation(mt);
+
+    rt_morphtarget3d_set_delta(mt, 0, 0, 0.0, 0.0, 0.0);
+    rt_morphtarget3d_set_normal_delta(mt, 0, 0, 0.0, 0.0, 0.0);
+    rt_morphtarget3d_set_tangent_delta(mt, 0, 0, 0.0, 0.0, 0.0);
+    EXPECT_TRUE(rt_morphtarget3d_get_payload_generation(mt) == initial_generation,
+                "Implicit-zero edits do not invalidate an unchanged packed payload");
+    EXPECT_TRUE(shape->owned_nrm_deltas == nullptr && shape->owned_tan_deltas == nullptr,
+                "Implicit-zero normal/tangent edits retain sparse channel storage");
+    EXPECT_TRUE(rt_morphtarget3d_get_packed_normal_deltas(mt) == nullptr &&
+                    rt_morphtarget3d_has_tangent_deltas(mt) == 0,
+                "Implicit-zero edits do not force GPU normals or the CPU tangent path");
+
+    rt_morphtarget3d_set_delta(mt, 0, 0, 1.0, 2.0, 3.0);
+    uint64_t changed_generation = rt_morphtarget3d_get_payload_generation(mt);
+    rt_morphtarget3d_set_delta(mt, 0, 0, 1.0, 2.0, 3.0);
+    EXPECT_TRUE(rt_morphtarget3d_get_payload_generation(mt) == changed_generation,
+                "Repeating an identical position edit does not invalidate the payload");
+    rt_morphtarget3d_set_normal_delta(mt, 0, 0, 0.25, 0.5, 0.75);
+    uint64_t normal_generation = rt_morphtarget3d_get_payload_generation(mt);
+    rt_morphtarget3d_set_normal_delta(mt, 0, 0, 0.25, 0.5, 0.75);
+    EXPECT_TRUE(rt_morphtarget3d_get_payload_generation(mt) == normal_generation,
+                "Repeating an identical normal edit does not invalidate the payload");
+}
+
+static void test_owned_storage_repairs_pointer_count_vertex_and_name_corruption() {
+    void *mt = rt_morphtarget3d_new(2);
+    rt_morphtarget3d_add_shape(mt, rt_const_cstr("first"));
+    rt_morphtarget3d_add_shape(mt, rt_const_cstr("second"));
+    rt_morphtarget3d_set_delta(mt, 0, 0, 1.0, 2.0, 3.0);
+    const float *initial_packed = rt_morphtarget3d_get_packed_deltas(mt);
+    auto *bits = reinterpret_cast<MorphTarget3DTestLayout *>(mt);
+    MorphTarget3DShapeTest foreign_shapes[1] = {};
+    float foreign_weights[4] = {9.0f, 9.0f, 9.0f, 9.0f};
+    float foreign_deltas[6] = {8.0f, 8.0f, 8.0f, 8.0f, 8.0f, 8.0f};
+
+    bits->shapes = foreign_shapes;
+    bits->weights = foreign_weights;
+    bits->prev_weights = foreign_weights;
+    bits->motion_weight_snapshot = foreign_weights;
+    bits->packed_pos_deltas = foreign_deltas;
+    bits->packed_nrm_deltas = foreign_deltas;
+    bits->shape_count = INT32_MAX;
+    bits->shape_capacity = INT32_MAX;
+    bits->vertex_count = INT32_MAX;
+    EXPECT_TRUE(rt_morphtarget3d_get_shape_count(mt) == 2,
+                "MorphTarget3D derives the live shape prefix from allocation authority");
+    EXPECT_TRUE(bits->shapes == bits->owned_shapes && bits->weights == bits->owned_weights &&
+                    bits->prev_weights == bits->owned_prev_weights &&
+                    bits->motion_weight_snapshot == bits->owned_motion_weight_snapshot,
+                "MorphTarget3D restores all four aligned top-level array mirrors");
+    EXPECT_TRUE(bits->shape_capacity == bits->allocation_shape_capacity &&
+                    bits->vertex_count == bits->allocation_vertex_count,
+                "MorphTarget3D restores mutable capacity and vertex metadata");
+    bits->shape_count = 0;
+    EXPECT_TRUE(rt_morphtarget3d_get_shape_count(mt) == 2,
+                "MorphTarget3D restores a corrupt downward shape count without losing shapes");
+
+    auto *shape = &bits->owned_shapes[0];
+    std::memset(shape->name, 'n', sizeof(shape->name));
+    shape->pos_deltas = foreign_deltas;
+    shape->nrm_deltas = foreign_deltas;
+    shape->tan_deltas = foreign_deltas;
+    EXPECT_TRUE(rt_morphtarget3d_get_shape_count(mt) == 2,
+                "MorphTarget3D repairs per-shape channel mirrors before traversal");
+    EXPECT_TRUE(shape->pos_deltas == shape->owned_pos_deltas &&
+                    shape->nrm_deltas == shape->owned_nrm_deltas &&
+                    shape->tan_deltas == shape->owned_tan_deltas,
+                "MorphTarget3D follows only owned per-shape channel identities");
+    EXPECT_TRUE(shape->name[63] == '\0',
+                "MorphTarget3D repairs unterminated fixed-size shape names");
+    EXPECT_TRUE(rt_morphtarget3d_get_packed_deltas(mt) == initial_packed,
+                "MorphTarget3D restores the owned packed payload mirror when still clean");
+
+    bits->vertex_count = INT32_MAX;
+    void *clone = rt_morphtarget3d_clone(mt);
+    EXPECT_TRUE(clone != nullptr,
+                "MorphTarget3D.Clone repairs source vertex metadata before sizing copies");
+    if (clone) {
+        auto *clone_bits = reinterpret_cast<MorphTarget3DTestLayout *>(clone);
+        EXPECT_TRUE(clone_bits->allocation_vertex_count == 2,
+                    "MorphTarget3D.Clone retains the real allocation vertex count");
+    }
+}
+
+static void test_morphtarget_finalizer_uses_owned_identities_only() {
+    void *mt = rt_morphtarget3d_new(1);
+    rt_morphtarget3d_add_shape(mt, rt_const_cstr("owned"));
+    rt_morphtarget3d_set_delta(mt, 0, 0, 1.0, 0.0, 0.0);
+    (void)rt_morphtarget3d_get_packed_deltas(mt);
+    auto *bits = reinterpret_cast<MorphTarget3DTestLayout *>(mt);
+    MorphTarget3DShapeTest foreign_shapes[1] = {};
+    float foreign_storage[3] = {11.0f, 12.0f, 13.0f};
+    bits->owned_shapes[0].pos_deltas = foreign_storage;
+    bits->shapes = foreign_shapes;
+    bits->weights = foreign_storage;
+    bits->prev_weights = foreign_storage;
+    bits->motion_weight_snapshot = foreign_storage;
+    bits->packed_pos_deltas = foreign_storage;
+    bits->packed_nrm_deltas = foreign_storage;
+    if (rt_obj_release_check0(mt))
+        rt_obj_free(mt);
+    EXPECT_NEAR(foreign_storage[0],
+                11.0,
+                0.0,
+                "MorphTarget3D finalization never frees or mutates corrupt pointer mirrors");
 }
 
 namespace {
@@ -461,6 +602,9 @@ int main() {
     test_clone_copies_delta_payloads_and_weights();
     test_shape_count_repair_ignores_unallocated_slots();
     test_max_position_delta_handles_large_finite_values();
+    test_noop_delta_edits_preserve_sparse_storage_and_payload_generation();
+    test_owned_storage_repairs_pointer_count_vertex_and_name_corruption();
+    test_morphtarget_finalizer_uses_owned_identities_only();
     test_mesh_clone_deep_copy_releases_original_morph_target_on_clear();
 
     printf("MorphTarget3D tests: %d/%d passed\n", tests_passed, tests_run);

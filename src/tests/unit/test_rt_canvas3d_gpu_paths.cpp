@@ -1344,6 +1344,59 @@ static void test_cpu_morph_fallback_for_software(void) {
     cleanup_fake_canvas(&canvas);
 }
 
+static void test_cpu_morph_tracking_failure_rolls_back_new_mesh_retain(void) {
+    rt_canvas3d canvas;
+    init_fake_canvas(&canvas, &kSoftwareBackend);
+
+    void *mesh = make_test_mesh();
+    void *material = rt_material3d_new();
+    void *transform = rt_mat4_identity();
+    void *morph = rt_morphtarget3d_new(3);
+    rt_morphtarget3d_add_shape(morph, rt_const_cstr("raise"));
+    rt_morphtarget3d_set_delta(morph, 0, 0, 1.0, 0.0, 0.0);
+    rt_morphtarget3d_set_weight(morph, 0, 1.0);
+
+    canvas.temp_buf_capacity = -1;
+    rt_canvas3d_draw_mesh_morphed(&canvas, mesh, transform, material, morph);
+
+    EXPECT_TRUE(canvas.draw_count == 0,
+                "Rejected CPU morph resource setup does not enqueue a draw");
+    EXPECT_TRUE(canvas.temp_buf_count == 0,
+                "Rejected CPU morph resource setup transfers no scratch-buffer ownership");
+    EXPECT_TRUE(canvas.temp_obj_count == 0,
+                "Rejected CPU morph resource setup rolls back its new mesh retain");
+
+    canvas.temp_buf_capacity = 0;
+    cleanup_fake_canvas(&canvas);
+}
+
+static void test_gpu_morph_tracking_failure_preserves_existing_morph_retain(void) {
+    rt_canvas3d canvas;
+    init_fake_canvas(&canvas, &kOpenGLBackend);
+
+    void *mesh = make_test_mesh();
+    void *material = rt_material3d_new();
+    void *transform = rt_mat4_identity();
+    void *morph = rt_morphtarget3d_new(3);
+    rt_morphtarget3d_add_shape(morph, rt_const_cstr("raise"));
+    rt_morphtarget3d_set_delta(morph, 0, 0, 1.0, 0.0, 0.0);
+    rt_morphtarget3d_set_weight(morph, 0, 1.0);
+
+    EXPECT_TRUE(rt_canvas3d_add_temp_object(&canvas, morph) == 1,
+                "GPU rollback fixture pre-tracks the shared morph payload");
+    int32_t allocation_capacity = canvas.temp_obj_capacity;
+    canvas.temp_obj_capacity = -1;
+    rt_canvas3d_draw_mesh_morphed(&canvas, mesh, transform, material, morph);
+
+    EXPECT_TRUE(canvas.draw_count == 0,
+                "Rejected GPU morph resource setup does not enqueue a draw");
+    EXPECT_TRUE(canvas.temp_obj_count == 1 && canvas.temp_objects[0] == morph,
+                "GPU rollback preserves a morph retain owned by an earlier draw");
+
+    canvas.temp_obj_capacity = allocation_capacity;
+    cleanup_fake_canvas(&canvas);
+}
+
 static void test_morph_tangent_deltas_fall_back_to_cpu_for_metal(void) {
     rt_canvas3d canvas;
     init_fake_canvas(&canvas, &kMetalBackend);
@@ -1941,6 +1994,45 @@ static void test_morph_weight_history_forwarded(void) {
     if (draws[0].cmd.prev_morph_weights)
         EXPECT_TRUE(draws[0].cmd.prev_morph_weights[0] == 0.25f,
                     "Previous morph weights preserve the prior frame value");
+
+    cleanup_fake_canvas(&canvas);
+}
+
+static void test_rejected_morph_draw_does_not_advance_weight_history(void) {
+    rt_canvas3d canvas;
+    init_fake_canvas(&canvas, &kOpenGLBackend);
+
+    void *mesh = make_test_mesh();
+    void *material = rt_material3d_new();
+    void *transform = rt_mat4_identity();
+    void *morph = rt_morphtarget3d_new(3);
+    rt_morphtarget3d_add_shape(morph, rt_const_cstr("raise"));
+    rt_morphtarget3d_set_delta(morph, 0, 0, 1.0, 0.0, 0.0);
+
+    reset_canvas_frame(&canvas, 1);
+    rt_morphtarget3d_set_weight(morph, 0, 0.25);
+    rt_canvas3d_draw_mesh_morphed(&canvas, mesh, transform, material, morph);
+    EXPECT_TRUE(canvas.draw_count == 1, "History fixture accepts its first morph draw");
+    canvas3d_clear_temp_objects(&canvas);
+
+    reset_canvas_frame(&canvas, 2);
+    rt_morphtarget3d_set_weight(morph, 0, 0.5);
+    int32_t allocation_capacity = canvas.temp_obj_capacity;
+    canvas.temp_obj_capacity = -1;
+    rt_canvas3d_draw_mesh_morphed(&canvas, mesh, transform, material, morph);
+    EXPECT_TRUE(canvas.draw_count == 0, "History fixture rejects the resource-starved draw");
+    canvas.temp_obj_capacity = allocation_capacity;
+
+    reset_canvas_frame(&canvas, 3);
+    rt_morphtarget3d_set_weight(morph, 0, 0.75);
+    rt_canvas3d_draw_mesh_morphed(&canvas, mesh, transform, material, morph);
+    test_deferred_draw_t *draws = (test_deferred_draw_t *)canvas.draw_cmds;
+    EXPECT_TRUE(canvas.draw_count == 1, "History fixture accepts the recovery draw");
+    EXPECT_TRUE(draws[0].cmd.prev_morph_weights != nullptr,
+                "Recovery draw retains the last accepted morph history");
+    if (draws[0].cmd.prev_morph_weights)
+        EXPECT_TRUE(draws[0].cmd.prev_morph_weights[0] == 0.25f,
+                    "Rejected draw does not replace the previous accepted morph weight");
 
     cleanup_fake_canvas(&canvas);
 }
@@ -3887,6 +3979,8 @@ int main() {
     test_large_morph_payload_falls_back_to_cpu_for_d3d11();
     test_large_morph_payload_stays_on_gpu_for_metal();
     test_cpu_morph_fallback_for_software();
+    test_cpu_morph_tracking_failure_rolls_back_new_mesh_retain();
+    test_gpu_morph_tracking_failure_preserves_existing_morph_retain();
     test_morph_tangent_deltas_fall_back_to_cpu_for_metal();
     test_env_map_payload_forwarded();
     test_backend_skybox_hook_used();
@@ -3906,6 +4000,7 @@ int main() {
     test_rect2d_queues_overlay_pass();
     test_transform_history_forwarded_for_motion_blur();
     test_morph_weight_history_forwarded();
+    test_rejected_morph_draw_does_not_advance_weight_history();
     test_skinning_palette_history_forwarded();
     test_skinning_missing_previous_palette_disables_history();
     test_instanced_transform_history_forwarded();

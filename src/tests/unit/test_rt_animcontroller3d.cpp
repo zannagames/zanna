@@ -7,14 +7,15 @@
 //
 // File: src/tests/unit/test_rt_animcontroller3d.cpp
 // Purpose: Unit tests for AnimController3D state playback, events, root motion,
-//   and masked overlay layers.
+//   masked overlay layers, and IKSolver3D numeric/storage robustness.
 //
 // Key invariants:
 //   - Controller/blend-tree poses remain bounded across private storage growth.
 //   - Events, transitions, root motion, and overlays are deterministic.
 // Ownership/Lifetime:
 //   - Runtime objects are test-process managed and released by the runtime heap.
-// Links: rt_animcontroller3d.h, rt_blendtree3d.h, rt_skeleton3d.h
+// Links: rt_animcontroller3d.h, rt_blendtree3d.h, rt_iksolver3d.h,
+//   rt_skeleton3d.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -27,6 +28,7 @@
 #include "rt_box.h"
 #include "rt_iksolver3d.h"
 #include "rt_seq.h"
+#include "rt_seq_internal.h"
 #include "rt_skeleton3d.h"
 #include "rt_skeleton3d_internal.h"
 #include "rt_string.h"
@@ -46,6 +48,7 @@ extern void *rt_quat_new(double x, double y, double z, double w);
 extern void *rt_mat4_identity(void);
 extern void *rt_mat4_translate(double tx, double ty, double tz);
 extern void *rt_mat4_rotate_z(double angle);
+extern void *rt_mat4_rotate_y(double angle);
 extern void *rt_mat4_mul(void *a, void *b);
 extern double rt_mat4_get(void *m, int64_t row, int64_t col);
 extern void *rt_obj_new_i64(int64_t class_id, int64_t byte_size);
@@ -176,6 +179,18 @@ struct IKSolver3DTestPrefix {
     int32_t kind;
     int32_t chain_count;
     int32_t chain[32];
+    float target[3];
+    float pole[3];
+    int8_t has_pole;
+    float ground_normal[3];
+    int8_t has_ground_normal;
+    float weight;
+    float *solved_locals;
+    float *solved_globals;
+    float *owned_solved_locals;
+    float *owned_solved_globals;
+    int32_t pose_bone_capacity;
+    int32_t chain_bone_capacity;
 };
 
 static void fill_identity_pose(float *pose, int32_t bone_count) {
@@ -833,8 +848,113 @@ static void test_ik_solver_look_at_and_fabrik_factories() {
     EXPECT_NEAR(rt_mat4_get(end_mat, 0, 3), 0.0, 0.08, "FABRIK reaches target x");
     EXPECT_NEAR(rt_mat4_get(end_mat, 1, 3), 2.0, 0.08, "FABRIK reaches target y");
 
+    auto *fabrik_layout = reinterpret_cast<IKSolver3DTestPrefix *>(fabrik);
+    float fabrik_locals[4 * 16];
+    float fabrik_globals[4 * 16];
+    fill_identity_pose(fabrik_locals, 4);
+    fill_identity_pose(fabrik_globals, 4);
+    fabrik_layout->chain_count = 3;
+    EXPECT_TRUE(rt_ik_solver3d_apply_to_pose(fabrik, fabrik_locals, fabrik_globals, 4) == 0,
+                "IKSolver3D rejects a shortened FABRIK chain instead of changing algorithms");
+    fabrik_layout->chain_count = fabrik_layout->chain_bone_capacity;
+
     EXPECT_TRUE(rt_ik_solver3d_two_bone(skel, b0, b2, b1) == nullptr,
                 "IKSolver3D.TwoBone rejects non-parented chains");
+}
+
+static void test_ik_solver_repairs_parent_space_inputs_and_owned_pose_storage() {
+    const double half_pi = 1.5707963267948966;
+    void *skel = rt_skeleton3d_new();
+    int64_t root =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_rotate_y(half_pi));
+    int64_t aim = rt_skeleton3d_add_bone(skel, rt_const_cstr("aim"), root, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+    void *controller = rt_anim_controller3d_new(skel);
+    void *solver = rt_ik_solver3d_look_at(skel, aim);
+    rt_ik_solver3d_set_target(solver, rt_vec3_new(0.0, 0.0, 10.0));
+    EXPECT_TRUE(rt_anim_controller3d_set_ik_solver(controller, solver) == 1,
+                "IKSolver3D parent-space fixture attaches to the controller");
+    void *aim_matrix = rt_anim_controller3d_get_bone_matrix(controller, aim);
+    EXPECT_NEAR(rt_mat4_get(aim_matrix, 0, 2),
+                0.0,
+                0.03,
+                "LookAt removes a rotated parent's X-facing contribution");
+    EXPECT_NEAR(rt_mat4_get(aim_matrix, 2, 2),
+                1.0,
+                0.03,
+                "LookAt converts its desired global rotation into parent-local space");
+
+    EXPECT_TRUE(rt_ik_solver3d_fabrik(skel, skel) == nullptr,
+                "IKSolver3D.FABRIK rejects a non-Seq chain without trapping");
+    void *bad_chain = rt_seq_new_owned();
+    rt_seq_push(bad_chain, rt_box_f64(0.0));
+    rt_seq_push(bad_chain, rt_box_i64(1));
+    EXPECT_TRUE(rt_ik_solver3d_fabrik(skel, bad_chain) == nullptr,
+                "IKSolver3D.FABRIK rejects non-Integer chain entries without trapping");
+    auto *bad_chain_layout = reinterpret_cast<rt_seq_impl *>(bad_chain);
+    int64_t saved_capacity = bad_chain_layout->cap;
+    bad_chain_layout->cap = 1;
+    EXPECT_TRUE(rt_ik_solver3d_fabrik(skel, bad_chain) == nullptr,
+                "IKSolver3D.FABRIK rejects inconsistent Seq bounds without indexing storage");
+    bad_chain_layout->cap = saved_capacity;
+
+    auto *layout = reinterpret_cast<IKSolver3DTestPrefix *>(solver);
+    float foreign_locals[16];
+    float foreign_globals[16];
+    fill_identity_pose(foreign_locals, 1);
+    fill_identity_pose(foreign_globals, 1);
+    foreign_locals[3] = 123.0f;
+    foreign_globals[7] = 456.0f;
+    float *owned_locals = layout->owned_solved_locals;
+    float *owned_globals = layout->owned_solved_globals;
+    layout->solved_locals = foreign_locals;
+    layout->solved_globals = foreign_globals;
+    layout->target[0] = std::numeric_limits<float>::infinity();
+    layout->pole[1] = std::numeric_limits<float>::quiet_NaN();
+    layout->ground_normal[0] = 0.0f;
+    layout->ground_normal[1] = 0.0f;
+    layout->ground_normal[2] = 0.0f;
+    layout->has_pole = -7;
+    layout->has_ground_normal = 42;
+    layout->weight = std::numeric_limits<float>::infinity();
+    rt_ik_solver3d_solve(solver);
+    EXPECT_TRUE(layout->solved_locals == owned_locals && layout->solved_globals == owned_globals,
+                "IKSolver3D restores both pose mirrors from owned allocation identities");
+    EXPECT_NEAR(foreign_locals[3],
+                123.0,
+                0.0,
+                "IKSolver3D never writes through a corrupt local-pose mirror");
+    EXPECT_NEAR(foreign_globals[7],
+                456.0,
+                0.0,
+                "IKSolver3D never writes through a corrupt global-pose mirror");
+    EXPECT_TRUE(std::isfinite(layout->target[0]) && std::isfinite(layout->pole[1]) &&
+                    layout->has_pole == 1 && layout->has_ground_normal == 1,
+                "IKSolver3D canonicalizes retained goal lanes and optional-goal flags");
+    EXPECT_NEAR(layout->ground_normal[1],
+                1.0,
+                1e-6,
+                "IKSolver3D repairs a degenerate retained ground normal to world up");
+    EXPECT_NEAR(layout->weight, 0.0, 0.0, "IKSolver3D repairs a nonfinite retained weight");
+
+    float locals[2 * 16];
+    float globals[2 * 16];
+    fill_identity_pose(locals, 2);
+    fill_identity_pose(globals, 2);
+    layout->kind = INT32_MAX;
+    EXPECT_TRUE(rt_ik_solver3d_apply_to_pose(solver, locals, globals, 2) == 0,
+                "IKSolver3D rejects a corrupted algorithm kind instead of falling through");
+
+    void *finalized_solver = rt_ik_solver3d_look_at(skel, aim);
+    auto *finalized_layout = reinterpret_cast<IKSolver3DTestPrefix *>(finalized_solver);
+    finalized_layout->solved_locals = foreign_locals;
+    finalized_layout->solved_globals = foreign_globals;
+    if (rt_obj_release_check0(finalized_solver))
+        rt_obj_free(finalized_solver);
+    EXPECT_NEAR(foreign_locals[3],
+                123.0,
+                0.0,
+                "IKSolver3D finalization frees owned identities, not corrupt mirrors");
 }
 
 static void test_controller_animation_lod_throttles_updates_deterministically() {
@@ -1466,6 +1586,7 @@ int main() {
     test_controller_ik_solver_drives_end_effector();
     test_two_bone_ik_foot_aligns_to_ground_normal();
     test_ik_solver_look_at_and_fabrik_factories();
+    test_ik_solver_repairs_parent_space_inputs_and_owned_pose_storage();
     test_controller_animation_lod_throttles_updates_deterministically();
     test_controller_bone_count_lod_freezes_distal_bones();
     test_controller_events_cover_full_loops_and_reverse();

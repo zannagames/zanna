@@ -25,7 +25,9 @@
 #include "rt_scene3d.h"
 
 #include <chrono>
+#include <climits>
 #include <cmath>
+#include <cstdint>
 #include <cstdio>
 #include <limits>
 
@@ -43,6 +45,8 @@ extern void *rt_navmesh3d_find_path(void *navmesh, void *from, void *to);
 extern double rt_path3d_get_length(void *path);
 extern int64_t rt_path3d_get_point_count(void *path);
 extern void *rt_path3d_get_position_at(void *path, double t);
+extern int rt_obj_release_check0(void *obj);
+extern void rt_obj_free(void *obj);
 }
 
 struct NavAgent3DTestLayout {
@@ -71,6 +75,17 @@ struct NavAgent3DTestLayout {
     int8_t has_path;
     int8_t auto_repath;
     int8_t avoidance_enabled;
+    NavAgent3DTestLayout *registry_next;
+    NavAgent3DTestLayout *grid_next;
+    int32_t grid_cx;
+    int32_t grid_cz;
+    int8_t in_grid;
+    uint64_t stable_order;
+    double *owned_path_points_xyz;
+    double *owned_path_suffix_lengths;
+    int32_t path_allocation_capacity;
+    NavAgent3DTestLayout **owned_avoidance_neighbors;
+    int32_t avoidance_allocation_capacity;
 };
 
 static int tests_passed = 0;
@@ -582,6 +597,16 @@ static void test_navagent_getters_sanitize_corrupt_private_state() {
     agent->position[0] = std::numeric_limits<double>::infinity();
     agent->position[1] = -std::numeric_limits<double>::infinity();
     agent->position[2] = std::numeric_limits<double>::quiet_NaN();
+    agent->radius = std::numeric_limits<double>::quiet_NaN();
+    agent->height = std::numeric_limits<double>::infinity();
+    agent->avoidance_radius = -std::numeric_limits<double>::infinity();
+    agent->velocity[0] = std::numeric_limits<double>::infinity();
+    agent->desired_velocity[1] = std::numeric_limits<double>::quiet_NaN();
+    agent->target[2] = -std::numeric_limits<double>::infinity();
+    agent->remaining_distance = std::numeric_limits<double>::infinity();
+    agent->repath_interval = 0.0;
+    agent->repath_accum = std::numeric_limits<double>::infinity();
+    agent->has_target = -9;
     agent->has_path = -7;
     agent->auto_repath = -3;
     agent->avoidance_enabled = 42;
@@ -590,12 +615,110 @@ static void test_navagent_getters_sanitize_corrupt_private_state() {
     EXPECT_TRUE(std::isfinite(rt_vec3_x(pos)) && std::isfinite(rt_vec3_y(pos)) &&
                     std::isfinite(rt_vec3_z(pos)),
                 "NavAgent3D.GetPosition returns finite coordinates for corrupt private state");
-    EXPECT_TRUE(rt_navagent3d_get_has_path(agent_obj) == 1,
-                "NavAgent3D.HasPath getter normalizes corrupt nonzero flags");
+    EXPECT_TRUE(rt_navagent3d_get_has_path(agent_obj) == 0,
+                "NavAgent3D clears HasPath when no owned corner storage exists");
     EXPECT_TRUE(rt_navagent3d_get_auto_repath(agent_obj) == 1,
                 "NavAgent3D.AutoRepath getter normalizes corrupt nonzero flags");
     EXPECT_TRUE(rt_navagent3d_get_avoidance_enabled(agent_obj) == 1,
                 "NavAgent3D.AvoidanceEnabled getter normalizes corrupt nonzero flags");
+    EXPECT_TRUE(std::isfinite(agent->radius) && agent->radius > 0.0 &&
+                    std::isfinite(agent->height) && agent->height > 0.0 &&
+                    std::isfinite(agent->avoidance_radius) && agent->avoidance_radius >= 0.0,
+                "NavAgent3D persists repaired dimensions and avoidance radius");
+    EXPECT_TRUE(std::isfinite(agent->velocity[0]) && std::isfinite(agent->desired_velocity[1]) &&
+                    std::isfinite(agent->target[2]),
+                "NavAgent3D persists repaired motion and target vectors");
+    EXPECT_TRUE(agent->has_target == 1 && agent->repath_interval == 0.25 &&
+                    agent->repath_accum <= agent->repath_interval,
+                "NavAgent3D canonicalizes target and repath timer state");
+    EXPECT_NEAR(agent->remaining_distance,
+                0.0,
+                0.0,
+                "NavAgent3D clears remaining distance without owned path storage");
+}
+
+static void test_navagent_repairs_owned_path_and_neighbor_storage() {
+    void *mesh = rt_mesh3d_new_plane(20.0, 20.0);
+    void *navmesh = rt_navmesh3d_build(mesh, 0.4, 1.8);
+    void *agent_obj = rt_navagent3d_new(navmesh, 0.4, 1.8);
+    void *peer_obj = rt_navagent3d_new(navmesh, 0.4, 1.8);
+    auto *agent = reinterpret_cast<NavAgent3DTestLayout *>(agent_obj);
+    auto *peer = reinterpret_cast<NavAgent3DTestLayout *>(peer_obj);
+
+    rt_navagent3d_set_target(agent_obj, rt_vec3_new(5.0, 0.0, 0.0));
+    EXPECT_TRUE(agent->owned_path_points_xyz != nullptr &&
+                    agent->owned_path_suffix_lengths != nullptr &&
+                    agent->path_allocation_capacity >= 1,
+                "NavAgent3D path rebuild publishes owned corners and suffix distances together");
+    double *owned_points = agent->owned_path_points_xyz;
+    double fake_points[3] = {99.0, 99.0, 99.0};
+    agent->path_points_xyz = fake_points;
+    agent->path_point_count = INT32_MAX;
+    agent->path_index = INT32_MIN;
+    agent->has_path = -7;
+    EXPECT_TRUE(rt_navagent3d_get_has_path(agent_obj) == 1,
+                "NavAgent3D retains a live path after repairing corrupt logical metadata");
+    EXPECT_TRUE(agent->path_points_xyz == owned_points &&
+                    agent->path_point_count == agent->path_allocation_capacity &&
+                    agent->path_index == 0,
+                "NavAgent3D restores the path pointer and clamps count/index to allocation bounds");
+    rt_navagent3d_update(agent_obj, 0.05);
+    EXPECT_TRUE(std::isfinite(rt_navagent3d_get_remaining_distance(agent_obj)),
+                "NavAgent3D uses its suffix cache safely after path metadata repair");
+
+    rt_navagent3d_set_avoidance_enabled(agent_obj, 1);
+    rt_navagent3d_set_avoidance_enabled(peer_obj, 1);
+    rt_navagent3d_warp(agent_obj, rt_vec3_new(-1.0, 0.0, 0.0));
+    rt_navagent3d_warp(peer_obj, rt_vec3_new(1.0, 0.0, 0.0));
+    rt_navagent3d_set_target(agent_obj, rt_vec3_new(4.0, 0.0, 0.0));
+    rt_navagent3d_set_target(peer_obj, rt_vec3_new(-4.0, 0.0, 0.0));
+    rt_navagent3d_update(agent_obj, 0.05);
+    EXPECT_TRUE(agent->owned_avoidance_neighbors != nullptr &&
+                    agent->avoidance_allocation_capacity > 0,
+                "NavAgent3D grows reusable owned avoidance-neighbor storage");
+    auto **owned_neighbors = agent->owned_avoidance_neighbors;
+    NavAgent3DTestLayout *fake_neighbors[1] = {peer};
+    agent->avoidance_neighbors = fake_neighbors;
+    agent->avoidance_neighbor_capacity = INT32_MAX;
+    rt_navagent3d_update(agent_obj, 0.05);
+    EXPECT_TRUE(agent->avoidance_neighbors == owned_neighbors &&
+                    agent->avoidance_neighbor_capacity == agent->avoidance_allocation_capacity,
+                "NavAgent3D restores neighbor scratch mirrors before collection/growth");
+
+    agent->path_points_xyz = fake_points;
+    agent->avoidance_neighbors = fake_neighbors;
+    if (rt_obj_release_check0(agent_obj))
+        rt_obj_free(agent_obj);
+    EXPECT_NEAR(fake_points[0],
+                99.0,
+                0.0,
+                "NavAgent3D finalization frees owned path storage, not a corrupt mirror");
+    EXPECT_TRUE(fake_neighbors[0] == peer,
+                "NavAgent3D finalization leaves corrupt neighbor mirrors unowned");
+}
+
+static void test_navagent_singular_parent_world_write_is_exact_or_rejected() {
+    void *mesh = rt_mesh3d_new_plane(20.0, 20.0);
+    void *navmesh = rt_navmesh3d_build(mesh, 0.4, 1.8);
+    void *agent = rt_navagent3d_new(navmesh, 0.4, 1.8);
+    void *parent = rt_scene_node3d_new();
+    void *child = rt_scene_node3d_new();
+    double local_x = 0.0;
+    double local_y = 0.0;
+    double local_z = 0.0;
+
+    rt_scene_node3d_set_position(parent, 2.0, 0.0, 0.0);
+    rt_scene_node3d_set_scale(parent, 0.0, 1.0, 1.0);
+    rt_scene_node3d_set_position(child, 1.0, 0.0, 0.0);
+    rt_scene_node3d_add_child(parent, child);
+    rt_navagent3d_bind_node(agent, child);
+    rt_navagent3d_warp(agent, rt_vec3_new(5.0, 0.0, 0.0));
+    EXPECT_TRUE(rt_scene_node3d_get_position_components(child, &local_x, &local_y, &local_z) == 1,
+                "SceneNode3D exposes the singular-parent fixture's local position");
+    EXPECT_NEAR(local_x,
+                1.0,
+                0.0,
+                "NavAgent3D leaves local state unchanged when exact world conversion is singular");
 }
 
 static void test_navagent_invalid_handle_numeric_getters_return_sentinel() {
@@ -783,6 +906,8 @@ int main() {
     test_navagent_rejects_wrong_handle_types();
     test_navagent_repairs_wrong_class_private_bindings();
     test_navagent_getters_sanitize_corrupt_private_state();
+    test_navagent_repairs_owned_path_and_neighbor_storage();
+    test_navagent_singular_parent_world_write_is_exact_or_rejected();
     test_navagent_invalid_handle_numeric_getters_return_sentinel();
 
     std::printf("NavAgent3D tests: %d/%d passed\n", tests_passed, tests_run);

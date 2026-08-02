@@ -7,6 +7,13 @@
 //
 // File: src/runtime/graphics/3d/anim/rt_iksolver3d.h
 // Purpose: IKSolver3D runtime surface and controller-integration helpers.
+// Key invariants:
+//   - Solver targets and outputs use skeleton/model space.
+//   - Two-bone and FABRIK chains are strict direct-parent paths.
+// Ownership/Lifetime:
+//   - Solvers are GC-managed, retain/freeze their Skeleton3D, and own private pose buffers.
+//   - Input sequences, vectors, and controller pose arrays are borrowed for each call.
+// Links: rt_iksolver3d.c, rt_skeleton3d_internal.h, docs/graphics3d-guide.md
 //
 //===----------------------------------------------------------------------===//
 
@@ -40,7 +47,8 @@ extern "C" {
 void *rt_ik_solver3d_two_bone(void *skeleton, int64_t root, int64_t mid, int64_t end);
 /// @brief Create a one-bone look-at/aim solver.
 /// @details The solver rotates the selected bone's local forward axis toward
-///          its model-space target and starts at full weight.
+///          its model-space target, converting the desired global orientation
+///          through any valid parent rotation, and starts at full weight.
 /// @param[in,out] skeleton Borrowed Skeleton3D handle to retain and freeze.
 /// @param[in] bone Existing signed-32-bit-range bone index.
 /// @return New GC-managed IKSolver3D, or `NULL` for invalid input/index or
@@ -49,7 +57,9 @@ void *rt_ik_solver3d_look_at(void *skeleton, int64_t bone);
 /// @brief Create a FABRIK solver from a Seq[Integer] bone chain.
 /// @details The sequence must contain 2 through 32 boxed integer indexes that
 ///          exist and form a strict direct-parent path. The solver starts at
-///          full weight with the bind-pose end position as its target.
+///          full weight with the bind-pose end position as its target. Wrong
+///          sequence types, inconsistent sequence bounds, and non-integer
+///          elements are rejected without invoking trapping collection accessors.
 /// @param[in,out] skeleton Borrowed Skeleton3D handle to retain and freeze.
 /// @param[in] chain Borrowed runtime sequence of boxed bone indexes.
 /// @return New GC-managed IKSolver3D, or `NULL` for invalid input, length,
@@ -98,8 +108,10 @@ void *rt_ik_solver3d_get_skeleton(void *solver);
 /// @brief Apply the solver in place to a controller local-pose buffer and refresh globals.
 /// @details Both arrays must contain at least @p bone_count row-major
 ///          matrices. The count is clamped to the solver skeleton's safe bone
-///          count. A negligible weight is a successful no-op; otherwise the
-///          function rebuilds globals before and during constraint evaluation.
+///          count and its private pose allocation. Solver kind, chain topology,
+///          storage, and retained state are validated even for zero weight. A
+///          negligible valid weight is a successful no-op; otherwise the function
+///          rebuilds globals before and during constraint evaluation.
 /// @param[in,out] solver IKSolver3D whose configured constraint to apply.
 /// @param[in,out] locals Writable array of `bone_count * 16` local-matrix
 ///                       floats.

@@ -20,8 +20,9 @@
 //     solver retains its Skeleton3D and freezes it (skeleton->frozen = 1).
 //
 // Ownership/Lifetime:
-//   - IKSolver3D is GC-managed; it owns two heap pose buffers (solved_locals /
-//     solved_globals) and a retained Skeleton3D, all released by the finalizer.
+//   - IKSolver3D is GC-managed; private allocation identities own its two heap
+//     pose buffers while the legacy pointers are repaired mirrors. The solver
+//     also owns a retained Skeleton3D, all released by the finalizer.
 //
 // Links: rt_iksolver3d.h, rt_skeleton3d_internal.h (bone/bind-pose layout)
 //
@@ -102,6 +103,14 @@ typedef struct {
     float *solved_locals;
     /// Owned model-space matrices corresponding to @ref solved_locals.
     float *solved_globals;
+    /// Immutable identity of the local-pose allocation.
+    float *owned_solved_locals;
+    /// Immutable identity of the global-pose allocation.
+    float *owned_solved_globals;
+    /// Number of bone matrices allocated in both owned pose buffers.
+    int32_t pose_bone_capacity;
+    /// Construction-time number of bones in the fixed inline chain.
+    int32_t chain_bone_capacity;
 } rt_ik_solver3d;
 
 /// @brief Number of skeleton bones safe to read, or 0 when the handle is not a live Skeleton3D.
@@ -119,10 +128,9 @@ static int32_t ik3d_safe_bone_count(const rt_skeleton3d *skeleton) {
 /// @param[in] solver Solver to inspect.
 /// @return Safe readable chain-entry count, or zero.
 static int32_t ik3d_safe_chain_count(const rt_ik_solver3d *solver) {
-    if (!solver || solver->chain_count <= 0)
+    if (!solver || solver->chain_count <= 0 || solver->chain_count > RT_IK_SOLVER3D_MAX_CHAIN)
         return 0;
-    return solver->chain_count < RT_IK_SOLVER3D_MAX_CHAIN ? solver->chain_count
-                                                          : RT_IK_SOLVER3D_MAX_CHAIN;
+    return solver->chain_count;
 }
 
 /// @brief Validate @p obj as an IKSolver3D handle and return its typed pointer (NULL on mismatch).
@@ -226,19 +234,49 @@ static float ik3d_dot3(const float *a, const float *b) {
 /// @param[in] b Borrowed three-float right operand.
 /// @param[out] out Writable three-float cross product with sanitized lanes.
 static void ik3d_cross3(const float *a, const float *b, float *out) {
+    double cross[3];
+    double max_abs;
+    double scale = 1.0;
     if (!a || !b || !out)
         return;
-    out[0] = ik3d_finite_coord((double)a[1] * (double)b[2] - (double)a[2] * (double)b[1], 0.0f);
-    out[1] = ik3d_finite_coord((double)a[2] * (double)b[0] - (double)a[0] * (double)b[2], 0.0f);
-    out[2] = ik3d_finite_coord((double)a[0] * (double)b[1] - (double)a[1] * (double)b[0], 0.0f);
+    cross[0] = (double)a[1] * (double)b[2] - (double)a[2] * (double)b[1];
+    cross[1] = (double)a[2] * (double)b[0] - (double)a[0] * (double)b[2];
+    cross[2] = (double)a[0] * (double)b[1] - (double)a[1] * (double)b[0];
+    max_abs = fmax(fabs(cross[0]), fmax(fabs(cross[1]), fabs(cross[2])));
+    if (!isfinite(max_abs)) {
+        out[0] = 0.0f;
+        out[1] = 0.0f;
+        out[2] = 0.0f;
+        return;
+    }
+    if (max_abs > RT_IK_SOLVER3D_COORD_ABS_MAX)
+        scale = RT_IK_SOLVER3D_COORD_ABS_MAX / max_abs;
+    out[0] = ik3d_finite_float(cross[0] * scale, 0.0f);
+    out[1] = ik3d_finite_float(cross[1] * scale, 0.0f);
+    out[2] = ik3d_finite_float(cross[2] * scale, 0.0f);
 }
 
 /// @brief Euclidean length of a 3-vector (0 if the result is non-finite).
 /// @param[in] v Borrowed three-float vector.
 /// @return Finite Euclidean length, or zero.
 static float ik3d_len3(const float *v) {
-    float len = sqrtf(ik3d_dot3(v, v));
-    return isfinite(len) ? len : 0.0f;
+    double x;
+    double y;
+    double z;
+    double max_abs;
+    double len;
+    if (!v)
+        return 0.0f;
+    if (!isfinite(v[0]) || !isfinite(v[1]) || !isfinite(v[2]))
+        return 0.0f;
+    x = fabs((double)v[0]);
+    y = fabs((double)v[1]);
+    z = fabs((double)v[2]);
+    max_abs = fmax(x, fmax(y, z));
+    if (!(max_abs > 0.0) || !isfinite(max_abs))
+        return 0.0f;
+    len = max_abs * hypot(hypot(x / max_abs, y / max_abs), z / max_abs);
+    return ik3d_finite_float(len, 0.0f);
 }
 
 /// @brief Normalize a 3-vector in place; returns 0 (leaving it unchanged) if degenerate (len <=
@@ -246,12 +284,22 @@ static float ik3d_len3(const float *v) {
 /// @param[in,out] v Writable three-float vector.
 /// @return `1` after normalization, or `0` when degenerate.
 static int ik3d_normalize3(float *v) {
-    float len = ik3d_len3(v);
-    if (len <= 1e-6f)
+    double max_abs;
+    double scaled_len;
+    double len;
+    if (!v || !isfinite(v[0]) || !isfinite(v[1]) || !isfinite(v[2]))
         return 0;
-    v[0] /= len;
-    v[1] /= len;
-    v[2] /= len;
+    max_abs = fmax(fabs((double)v[0]), fmax(fabs((double)v[1]), fabs((double)v[2])));
+    if (!(max_abs > 0.0))
+        return 0;
+    scaled_len =
+        hypot(hypot((double)v[0] / max_abs, (double)v[1] / max_abs), (double)v[2] / max_abs);
+    len = max_abs * scaled_len;
+    if (!isfinite(scaled_len) || !isfinite(len) || len <= 1e-6)
+        return 0;
+    v[0] = (float)(((double)v[0] / max_abs) / scaled_len);
+    v[1] = (float)(((double)v[1] / max_abs) / scaled_len);
+    v[2] = (float)(((double)v[2] / max_abs) / scaled_len);
     return 1;
 }
 
@@ -260,10 +308,24 @@ static int ik3d_normalize3(float *v) {
 /// @param[in] b Borrowed second three-float point.
 /// @return Finite Euclidean distance, or zero for invalid input.
 static float ik3d_distance3(const float *a, const float *b) {
+    double x;
+    double y;
+    double z;
+    double max_abs;
+    double len;
     if (!a || !b)
         return 0.0f;
-    float d[3] = {a[0] - b[0], a[1] - b[1], a[2] - b[2]};
-    return ik3d_len3(d);
+    if (!isfinite(a[0]) || !isfinite(a[1]) || !isfinite(a[2]) || !isfinite(b[0]) ||
+        !isfinite(b[1]) || !isfinite(b[2]))
+        return 0.0f;
+    x = fabs((double)a[0] - (double)b[0]);
+    y = fabs((double)a[1] - (double)b[1]);
+    z = fabs((double)a[2] - (double)b[2]);
+    max_abs = fmax(x, fmax(y, z));
+    if (!(max_abs > 0.0))
+        return 0.0f;
+    len = max_abs * hypot(hypot(x / max_abs, y / max_abs), z / max_abs);
+    return ik3d_finite_float(len, 0.0f);
 }
 
 /// @brief Accumulate each bone's global matrix as parent_global * local.
@@ -378,15 +440,24 @@ static void ik3d_quat_identity(float *out) {
 /// @brief Normalize a quaternion in place, falling back to identity if degenerate.
 /// @param[in,out] q Writable four-float quaternion; `NULL` is ignored.
 static void ik3d_quat_normalize(float *q) {
+    double max_abs;
+    double scaled_len;
     if (!q)
         return;
-    float len = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-    if (!isfinite(len) || len <= 1e-8f) {
+    max_abs = fmax(fabs((double)q[0]),
+                   fmax(fabs((double)q[1]), fmax(fabs((double)q[2]), fabs((double)q[3]))));
+    if (!isfinite(max_abs) || max_abs <= 1e-8) {
+        ik3d_quat_identity(q);
+        return;
+    }
+    scaled_len = hypot(hypot((double)q[0] / max_abs, (double)q[1] / max_abs),
+                       hypot((double)q[2] / max_abs, (double)q[3] / max_abs));
+    if (!isfinite(scaled_len) || scaled_len <= 1e-8) {
         ik3d_quat_identity(q);
         return;
     }
     for (int i = 0; i < 4; i++)
-        q[i] /= len;
+        q[i] = (float)(((double)q[i] / max_abs) / scaled_len);
 }
 
 /// @brief Convert a 3x3 rotation (given row by row) into a quaternion via Shepperd's method.
@@ -683,6 +754,75 @@ static int ik3d_chain_is_parented(const rt_skeleton3d *skeleton,
     return 1;
 }
 
+/// @brief Restore private allocation mirrors and canonicalize retained solver state.
+/// @details The two public-layout pose pointers and the skeleton's mutable bone
+///          count are never accepted as allocation authority. Algorithm kinds
+///          must retain their construction-time chain cardinality.
+/// @param[in,out] solver Solver state to validate and repair.
+/// @return Number of bone matrices safe in both owned buffers, or zero when
+///         the solver cannot be used.
+static int32_t ik_solver3d_repair_state(rt_ik_solver3d *solver) {
+    int32_t bone_count;
+    int32_t expected_chain_count;
+    if (!solver)
+        return 0;
+    if (!solver->skeleton || !rt_g3d_has_class(solver->skeleton, RT_G3D_SKELETON3D_CLASS_ID)) {
+        if (solver->skeleton)
+            rt_g3d_ref_slot_clear_unowned((void **)&solver->skeleton);
+        return 0;
+    }
+    if (!solver->owned_solved_locals || !solver->owned_solved_globals ||
+        solver->pose_bone_capacity <= 0)
+        return 0;
+    solver->solved_locals = solver->owned_solved_locals;
+    solver->solved_globals = solver->owned_solved_globals;
+    bone_count = ik3d_safe_bone_count(solver->skeleton);
+    if (bone_count > solver->pose_bone_capacity)
+        bone_count = solver->pose_bone_capacity;
+    if (bone_count <= 0)
+        return 0;
+
+    if (solver->chain_bone_capacity <= 0 || solver->chain_bone_capacity > RT_IK_SOLVER3D_MAX_CHAIN)
+        return 0;
+    switch (solver->kind) {
+        case RT_IK_SOLVER3D_TWO_BONE:
+            expected_chain_count = 3;
+            break;
+        case RT_IK_SOLVER3D_LOOK_AT:
+            expected_chain_count = 1;
+            break;
+        case RT_IK_SOLVER3D_FABRIK:
+            expected_chain_count =
+                solver->chain_bone_capacity >= 2 ? solver->chain_bone_capacity : 0;
+            break;
+        default:
+            return 0;
+    }
+    if (expected_chain_count <= 0 || expected_chain_count > RT_IK_SOLVER3D_MAX_CHAIN ||
+        solver->chain_count != expected_chain_count ||
+        !ik3d_chain_is_parented(solver->skeleton, solver->chain, solver->chain_count))
+        return 0;
+
+    for (int lane = 0; lane < 3; ++lane) {
+        solver->target[lane] = ik3d_sanitize_coord_lane(solver->target[lane], 0.0f);
+        solver->pole[lane] = ik3d_sanitize_coord_lane(solver->pole[lane], 0.0f);
+    }
+    solver->has_pole = solver->has_pole ? 1 : 0;
+    solver->has_ground_normal = solver->has_ground_normal ? 1 : 0;
+    solver->weight = ik3d_clamp01(solver->weight);
+    if (solver->has_ground_normal) {
+        for (int lane = 0; lane < 3; ++lane)
+            solver->ground_normal[lane] =
+                ik3d_sanitize_coord_lane(solver->ground_normal[lane], lane == 1 ? 1.0f : 0.0f);
+        if (!ik3d_normalize3(solver->ground_normal)) {
+            solver->ground_normal[0] = 0.0f;
+            solver->ground_normal[1] = 1.0f;
+            solver->ground_normal[2] = 0.0f;
+        }
+    }
+    return bone_count;
+}
+
 /// @brief GC finalizer: release the retained skeleton and free both pose buffers.
 /// @param[in,out] obj IKSolver3D storage being finalized; `NULL` is ignored.
 static void ik_solver3d_finalize(void *obj) {
@@ -690,10 +830,14 @@ static void ik_solver3d_finalize(void *obj) {
     if (!solver)
         return;
     ik_solver3d_release_skeleton_ref((void **)&solver->skeleton);
-    free(solver->solved_locals);
-    free(solver->solved_globals);
+    free(solver->owned_solved_locals);
+    free(solver->owned_solved_globals);
     solver->solved_locals = NULL;
     solver->solved_globals = NULL;
+    solver->owned_solved_locals = NULL;
+    solver->owned_solved_globals = NULL;
+    solver->pose_bone_capacity = 0;
+    solver->chain_bone_capacity = 0;
 }
 
 /// @brief Shared constructor for all solver kinds.
@@ -726,24 +870,28 @@ static void *ik_solver3d_new(rt_skeleton3d *skeleton,
     memset(solver, 0, sizeof(*solver));
     solver->kind = kind;
     solver->chain_count = chain_count;
+    solver->chain_bone_capacity = chain_count;
     memcpy(solver->chain, chain, (size_t)chain_count * sizeof(int32_t));
     solver->target[0] = 0.0f;
     solver->target[1] = 0.0f;
     solver->target[2] = 0.0f;
     solver->weight = 1.0f;
-    rt_obj_retain_maybe(skeleton);
-    solver->skeleton = skeleton;
-    skeleton->frozen = 1;
     if (bone_count > 0) {
         size_t bytes = (size_t)bone_count * 16u * sizeof(float);
-        solver->solved_locals = (float *)calloc(1, bytes);
-        solver->solved_globals = (float *)calloc(1, bytes);
-        if (!solver->solved_locals || !solver->solved_globals) {
-            rt_trap("IKSolver3D.New: pose-buffer allocation failed");
-            ik_solver3d_finalize(solver);
+        solver->owned_solved_locals = (float *)calloc(1, bytes);
+        solver->owned_solved_globals = (float *)calloc(1, bytes);
+        if (!solver->owned_solved_locals || !solver->owned_solved_globals) {
+            free(solver->owned_solved_locals);
+            free(solver->owned_solved_globals);
+            solver->owned_solved_locals = NULL;
+            solver->owned_solved_globals = NULL;
             rt_obj_free(solver);
+            rt_trap("IKSolver3D.New: pose-buffer allocation failed");
             return NULL;
         }
+        solver->solved_locals = solver->owned_solved_locals;
+        solver->solved_globals = solver->owned_solved_globals;
+        solver->pose_bone_capacity = bone_count;
         for (int32_t bone = 0; bone < bone_count; bone++) {
             memcpy(&solver->solved_locals[bone * 16],
                    skeleton->bones[bone].bind_pose_local,
@@ -753,6 +901,9 @@ static void *ik_solver3d_new(rt_skeleton3d *skeleton,
         ik3d_global_position(
             solver->solved_globals, solver->chain[solver->chain_count - 1], solver->target);
     }
+    rt_obj_retain_maybe(skeleton);
+    solver->skeleton = skeleton;
+    skeleton->frozen = 1;
     rt_obj_set_finalizer(solver, ik_solver3d_finalize);
     rt_ik_solver3d_solve(solver);
     return solver;
@@ -803,15 +954,18 @@ void *rt_ik_solver3d_look_at(void *skeleton_obj, int64_t bone) {
 void *rt_ik_solver3d_fabrik(void *skeleton_obj, void *chain_obj) {
     rt_skeleton3d *skeleton = ik_solver3d_skeleton_checked(skeleton_obj);
     int64_t len;
+    int64_t capacity;
     int32_t chain[RT_IK_SOLVER3D_MAX_CHAIN];
-    if (!skeleton || !chain_obj)
+    if (!skeleton || !rt_obj_is_instance(chain_obj, RT_SEQ_CLASS_ID, 0))
         return NULL;
     len = rt_seq_len(chain_obj);
-    if (len < 2 || len > RT_IK_SOLVER3D_MAX_CHAIN)
+    capacity = rt_seq_cap(chain_obj);
+    if (len < 2 || len > RT_IK_SOLVER3D_MAX_CHAIN || capacity < len)
         return NULL;
     for (int64_t i = 0; i < len; i++) {
-        int64_t value = rt_unbox_i64(rt_seq_get(chain_obj, i));
-        if (value < INT32_MIN || value > INT32_MAX)
+        int64_t value;
+        if (!rt_box_try_to_i64(rt_seq_get(chain_obj, i), &value) || value < INT32_MIN ||
+            value > INT32_MAX)
             return NULL;
         chain[i] = (int32_t)value;
     }
@@ -882,8 +1036,8 @@ void rt_ik_solver3d_set_ground_normal(void *obj, void *normal) {
 
 /// @brief Orient the chain's end (foot) bone so its local +Y (sole-up) aligns with the supplied
 ///   ground normal, preserving the foot's facing as much as possible. Run after the position solve.
-///   The desired model-space rotation is converted into the foot's parent-local space, so it is correct
-///   for a foot parented under an arbitrarily-rotated leg.
+///   The desired model-space rotation is converted into the foot's parent-local space, so it is
+///   correct for a foot parented under an arbitrarily-rotated leg.
 /// @param[in] solver Solver providing skeleton, chain, normal, and blend
 ///                   weight.
 /// @param[in,out] locals Writable local-pose matrices.
@@ -932,7 +1086,7 @@ static void ik3d_apply_foot_orientation(rt_ik_solver3d *solver,
     ik3d_quat_from_matrix_rows(
         right[0], up[0], fwd[0], right[1], up[1], fwd[1], right[2], up[2], fwd[2], desired);
     parent = solver->skeleton->bones[end].parent_index;
-    if (parent >= 0 && parent < end && parent < bone_count) {
+    if (parent >= 0 && parent < bone_count && parent != end) {
         float ppos[3], pscl[3];
         ik3d_decompose_trs(&globals[parent * 16], ppos, parent_rot, pscl);
     } else {
@@ -1169,7 +1323,9 @@ static int ik3d_apply_look_at(rt_ik_solver3d *solver,
     float up[3] = {0.0f, 1.0f, 0.0f};
     float up2[3];
     float local_pos[3], local_rot[4], local_scl[3];
-    float target_rot[4], blended_rot[4];
+    float target_global_rot[4], target_local_rot[4], blended_rot[4];
+    float parent_rot[4], parent_conj[4];
+    int32_t parent;
     if (!solver || !locals || !globals || ik3d_safe_chain_count(solver) != 1)
         return 0;
     bone = solver->chain[0];
@@ -1201,9 +1357,18 @@ static int ik3d_apply_look_at(rt_ik_solver3d *solver,
                                right[2],
                                up2[2],
                                forward[2],
-                               target_rot);
+                               target_global_rot);
+    parent = solver->skeleton->bones[bone].parent_index;
+    if (parent >= 0 && parent < bone_count && parent != bone) {
+        float parent_pos[3], parent_scale[3];
+        ik3d_decompose_trs(&globals[parent * 16], parent_pos, parent_rot, parent_scale);
+    } else {
+        ik3d_quat_identity(parent_rot);
+    }
+    ik3d_quat_conjugate(parent_rot, parent_conj);
+    ik3d_quat_mul(parent_conj, target_global_rot, target_local_rot);
     ik3d_decompose_trs(&locals[bone * 16], local_pos, local_rot, local_scl);
-    ik3d_quat_slerp(local_rot, target_rot, solver->weight, blended_rot);
+    ik3d_quat_slerp(local_rot, target_local_rot, solver->weight, blended_rot);
     ik3d_build_trs(local_pos, blended_rot, local_scl, &locals[bone * 16]);
     ik3d_build_globals(solver->skeleton, locals, globals, bone_count);
     return 1;
@@ -1225,23 +1390,27 @@ static int ik3d_apply_look_at(rt_ik_solver3d *solver,
 int8_t rt_ik_solver3d_apply_to_pose(void *obj, float *locals, float *globals, int32_t bone_count) {
     rt_ik_solver3d *solver = ik_solver3d_checked(obj);
     int32_t safe_bone_count;
-    if (!solver || !solver->skeleton || !locals || !globals || bone_count <= 0)
+    if (!solver || !locals || !globals || bone_count <= 0)
         return 0;
-    if (!isfinite(solver->weight))
-        solver->weight = 0.0f;
+    safe_bone_count = ik_solver3d_repair_state(solver);
+    if (safe_bone_count <= 0)
+        return 0;
     if (solver->weight <= 1e-6f)
         return 1;
-    if (solver->weight > 1.0f)
-        solver->weight = 1.0f;
-    safe_bone_count = ik3d_safe_bone_count(solver->skeleton);
     if (bone_count > safe_bone_count)
         bone_count = safe_bone_count;
     if (bone_count <= 0)
         return 0;
     ik3d_build_globals(solver->skeleton, locals, globals, bone_count);
-    if (solver->kind == RT_IK_SOLVER3D_LOOK_AT)
-        return (int8_t)ik3d_apply_look_at(solver, locals, globals, bone_count);
-    return (int8_t)ik3d_apply_chain(solver, locals, globals, bone_count);
+    switch (solver->kind) {
+        case RT_IK_SOLVER3D_LOOK_AT:
+            return (int8_t)ik3d_apply_look_at(solver, locals, globals, bone_count);
+        case RT_IK_SOLVER3D_TWO_BONE:
+        case RT_IK_SOLVER3D_FABRIK:
+            return (int8_t)ik3d_apply_chain(solver, locals, globals, bone_count);
+        default:
+            return 0;
+    }
 }
 
 /// @brief Re-solve against the skeleton bind pose, refreshing the solver's owned pose buffers.
@@ -1251,9 +1420,9 @@ int8_t rt_ik_solver3d_apply_to_pose(void *obj, float *locals, float *globals, in
 void rt_ik_solver3d_solve(void *obj) {
     rt_ik_solver3d *solver = ik_solver3d_checked(obj);
     int32_t bone_count;
-    if (!solver || !solver->skeleton || !solver->solved_locals || !solver->solved_globals)
+    if (!solver)
         return;
-    bone_count = ik3d_safe_bone_count(solver->skeleton);
+    bone_count = ik_solver3d_repair_state(solver);
     if (bone_count <= 0)
         return;
     for (int32_t bone = 0; bone < bone_count; bone++) {
@@ -1270,7 +1439,13 @@ void rt_ik_solver3d_solve(void *obj) {
 ///         release it.
 void *rt_ik_solver3d_get_skeleton(void *obj) {
     rt_ik_solver3d *solver = ik_solver3d_checked(obj);
-    return solver ? rt_g3d_checked_or_null(solver->skeleton, RT_G3D_SKELETON3D_CLASS_ID) : NULL;
+    if (!solver || !solver->skeleton)
+        return NULL;
+    if (!rt_g3d_has_class(solver->skeleton, RT_G3D_SKELETON3D_CLASS_ID)) {
+        rt_g3d_ref_slot_clear_unowned((void **)&solver->skeleton);
+        return NULL;
+    }
+    return solver->skeleton;
 }
 
 #else
