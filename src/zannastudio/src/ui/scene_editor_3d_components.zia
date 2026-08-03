@@ -748,6 +748,182 @@ class SceneEditor3DComponentsLayer extends PreviousLayer.SceneEditor3DWorldTrans
         return true;
     }
 
+    /// @brief File-name-safe stem from a node name ("prefab" fallback).
+    hide func SanitizePrefabStem(name: String) -> String {
+        var stem = "";
+        var i = 0;
+        while i < Str.get_Length(name) {
+            var ch = Str.Substring(name, i, 1);
+            if (ch >= "a" and ch <= "z") or (ch >= "A" and ch <= "Z")
+               or (ch >= "0" and ch <= "9") or ch == "-" or ch == "_" {
+                stem = stem + Str.ToLower(ch);
+            } else if ch == " " {
+                stem = stem + "_";
+            }
+            i = i + 1;
+        }
+        if stem == "" { return "prefab"; }
+        return stem;
+    }
+
+    /// @brief Save the selected root-level nodes as a new `.scene3d` prefab
+    ///        beside the document and replace them with one instance
+    ///        reference — the inverse of Import as Instance.
+    /// @details The prefab content is extracted from an independent copy of
+    ///          the canonical document (never the live graph), re-centered on
+    ///          the primary node's pivot so the file is reusable, and the
+    ///          replacement instance node takes that pivot — content
+    ///          reappears exactly in place after the post-commit reload
+    ///          hydrates it. One undoable transaction; any failure restores
+    ///          the document and removes the written file. Exact-or-reject:
+    ///          only root-level, non-instance selections extract.
+    expose override func CreatePrefabFromSelection() -> Boolean {
+        if scene == null or currentDoc == null or currentSerialized == "" {
+            return false;
+        }
+        if currentDoc.filePath == "" {
+            detailLabel.SetText(
+                "Save this scene before creating a prefab so the new file "
+                + "can live beside it with a relative reference.");
+            toolbarStatus.SetText("Create Prefab needs a saved scene");
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        if selectedIndices.count() == 0 {
+            toolbarStatus.SetText("Select nodes to create a prefab");
+            return false;
+        }
+        if selectedIndex < 0
+           or scene_selection.Contains(selectedIndices, selectedIndex) == false {
+            selectedIndex = selectedIndices.get(0);
+        }
+        var roots = TopLevelIndicesFor(flatNodes, selectedIndices, selectedIndex);
+        if roots.count() == 0 { return false; }
+        var i = 0;
+        while i < roots.count() {
+            var candidate = flatNodes.get(roots.get(i));
+            if candidate.Parent != scene.Root {
+                detailLabel.SetText(
+                    "Create Prefab extracts root-level nodes only; move the "
+                    + "selection to the scene root first (exact-or-reject).");
+                toolbarStatus.SetText("Prefab needs root-level nodes");
+                return false;
+            }
+            if candidate.IsInstanceContent or candidate.PrefabPath != "" {
+                detailLabel.SetText(
+                    "Instance nodes and instance content cannot be extracted "
+                    + "into a new prefab; unpack the instance first.");
+                toolbarStatus.SetText("Prefab cannot nest instance content");
+                return false;
+            }
+            i = i + 1;
+        }
+
+        // Pivot: the primary root's live position; the prefab content is
+        // re-centered on it and the replacement instance takes it.
+        var pivotNode = flatNodes.get(roots.get(0));
+        var pivot = pivotNode.Position as Vec3;
+        if pivot == null { return false; }
+        var pivotX = pivot.X;
+        var pivotY = pivot.Y;
+        var pivotZ = pivot.Z;
+
+        // Extract from an independent copy of the canonical document so the
+        // live graph is untouched until the file write has succeeded.
+        var sourceGraph = LoadGraphFromContent(currentSerialized);
+        var sourceNodes = FlattenGraph(sourceGraph);
+        if sourceGraph == null or sourceNodes.count() != flatNodes.count() {
+            detailLabel.SetText(
+                "The document's canonical form is out of sync; save and "
+                + "retry Create Prefab.");
+            return false;
+        }
+        var prefabScene = SceneGraph.New();
+        i = 0;
+        while i < roots.count() {
+            var extracted = sourceNodes.get(roots.get(i));
+            extracted.Parent.RemoveChild(extracted);
+            var position = extracted.Position as Vec3;
+            if position != null {
+                extracted.SetPosition(position.X - pivotX,
+                                      position.Y - pivotY,
+                                      position.Z - pivotZ);
+            }
+            if prefabScene.TryAdd(extracted) == false {
+                detailLabel.SetText(
+                    "Studio could not assemble the prefab hierarchy; the "
+                    + "document is unchanged.");
+                return false;
+            }
+            i = i + 1;
+        }
+        var content = prefabScene.SaveToText();
+        if content == "" {
+            detailLabel.SetText(
+                "Studio could not serialize the prefab; the document is "
+                + "unchanged.");
+            return false;
+        }
+
+        // A unique file beside the document, named for the primary node.
+        var directory = Path.Directory(currentDoc.filePath);
+        var stem = SanitizePrefabStem(pivotNode.Name);
+        var prefabPath = Path.Join(directory, stem + ".scene3d");
+        var suffix = 2;
+        while File.Exists(prefabPath) and suffix < 100 {
+            prefabPath = Path.Join(directory, stem + "_" + suffix + ".scene3d");
+            suffix = suffix + 1;
+        }
+        if File.Exists(prefabPath) {
+            detailLabel.SetText(
+                "Could not find a free prefab file name beside the scene.");
+            return false;
+        }
+        if safe_io.WriteAllText(prefabPath, content) == false {
+            detailLabel.SetText("Writing " + prefabPath + " failed.");
+            toolbarStatus.SetText("Prefab write failed");
+            return false;
+        }
+
+        // Replace the live selection with the instance reference, all inside
+        // one undoable transaction.
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        i = 0;
+        while i < roots.count() {
+            scene.Root.RemoveChild(flatNodes.get(roots.get(i)));
+            i = i + 1;
+        }
+        var portable = scene_asset_browser.PortableReferencePath(
+            prefabPath, currentDoc.filePath);
+        var node = SceneNode.New();
+        node.Name = pivotNode.Name + " Instance";
+        node.SetPosition(pivotX, pivotY, pivotZ);
+        if portable == "" or node.SetPrefabReference(portable) == false {
+            File.Delete(prefabPath);
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "Studio could not reference the new prefab. "
+                + "The document was restored.");
+            return false;
+        }
+        scene.Add(node);
+        if CommitScene(
+               "Created prefab " + Path.Name(prefabPath) + " from "
+               + roots.count() + " node(s)") == false {
+            File.Delete(prefabPath);
+            return false;
+        }
+        LoadDocumentModel(currentDoc, true);
+        detailLabel.SetText(
+            "Saved " + portable + " and replaced the selection with an "
+            + "instance reference. Edit the file through Open Source; "
+            + "Reload re-grafts every instance.");
+        toolbarStatus.SetText("Prefab created");
+        return true;
+    }
+
     /// @brief Queue the referenced scene for the shell's open command.
     hide override func RequestOpenPrefabSource() {
         var node = SelectedNode();

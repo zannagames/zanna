@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-08-02
+last-verified: 2026-08-03
 ---
 
 # Game3D
@@ -580,6 +580,10 @@ Game3D.World3D.Spawn(world, enemy);
 | `LoadEntityAsset(assetPath)` | Load through the asset resolver first, with filesystem fallback for development |
 | `Prefab.Load(path)` | Load or reuse a cached filesystem prefab represented by a `SceneTemplate` |
 | `Prefab.LoadAsset(assetPath)` | Load or reuse a cached package-aware prefab represented by a `SceneTemplate` |
+| `LoadEntityResult(path)` / `LoadEntityAssetResult(assetPath)` | `Zanna.Result` peers of the entity loaders: ok wraps the entity, err carries the loader diagnostic instead of returning `null` (ADR 0233) |
+| `LoadAnimationResult(path, index)` / `LoadAnimationAssetResult(assetPath, index)` | `Zanna.Result` peers of the skeletal-clip loaders |
+| `LoadNodeAnimationResult(path, index)` / `LoadNodeAnimationAssetResult(assetPath, index)` | `Zanna.Result` peers of the node-animation loaders |
+| `Prefab.LoadResult(path)` / `Prefab.LoadAssetResult(assetPath)` | `Zanna.Result` peers of the prefab loaders |
 | `LoadEntityAsync(path)` | Return an `AssetHandle3D` for a filesystem/development entity |
 | `LoadEntityAssetAsync(assetPath)` | Return an `AssetHandle3D` for a package-aware entity |
 | `Prefab.LoadAsync(path)` | Return an `AssetHandle3D` for a cached filesystem prefab |
@@ -1051,6 +1055,28 @@ actions across keyboard, mouse, and gamepad instead of hard-coded key polling.
 
 ---
 
+## Timers, Tweens, And Time
+
+Game3D has no dedicated tween classes because the primitives already exist and
+compose with the world clock:
+
+- `Zanna.Game.Timer` — countdowns, repeating intervals, and cooldowns. Advance
+  it with the same `dt` your update callback receives so timers respect
+  `World3D` pause/step semantics.
+- `Zanna.Game.Tween` — scalar interpolation with easing
+  (`Start(from, to, durationMs, easing)`, then read `Value` per frame).
+- `Zanna.Math.Vec3.Lerp(a, b, t)` — positional tweening. Drive `t` from a
+  `Tween` (or accumulate `dt / duration`) and assign the result with
+  `entity.SetPositionV(...)`.
+- `Zanna.Math.Quat.Slerp(a, b, t)` — rotational tweening on the shortest arc;
+  pair with `SceneNode.Rotation` for smooth turns, door swings, and camera
+  blends.
+
+A camera dolly, a door swing, or a pickup bob is one `Tween` for `t` plus one
+`Lerp`/`Slerp` at the target — no per-component bookkeeping needed.
+
+---
+
 ## Sound3D And Effects3D
 
 `World3D.audio` owns a runtime `SoundListener3D` that follows the world camera
@@ -1204,20 +1230,22 @@ frame.
 
 | Method / property | Purpose |
 |-------------------|---------|
-| `lookSensitivity` | Multiplier for `LookAxis()` |
+| `LookSensitivity` | Multiplier for `LookAxis()` |
 | `Update()` | Synchronize input helper state |
-| `isDown(key)` / `pressed(key)` / `released(key)` | Keyboard queries |
-| `mouseDelta()` | Current mouse movement as `Vec2` (sub-pixel in relative mode) |
-| `mouseButton(button)` / `mousePressed(button)` | Mouse button queries |
-| `wheelY()` | Vertical wheel delta |
+| `IsDown(key)` / `Pressed(key)` / `Released(key)` | Keyboard queries |
+| `MouseDelta()` | Current mouse movement as `Vec2` (sub-pixel in relative mode) |
+| `MouseX` / `MouseY` | Absolute window-local cursor position in pixels, snapshotted with the deltas (ADR 0233) |
+| `MousePosition()` | Absolute cursor position as a fresh `Vec2`; feed it to `Camera3D.ScreenToRay`/`ScreenToRayOrigin` for picking |
+| `MouseButton(button)` / `MousePressed(button)` | Mouse button queries |
+| `WheelY()` | Vertical wheel delta |
 | `MoveAxis()` | WASD/arrow movement as a normalized `Vec3` (merges the bound pad's left stick) |
-| `LookAxis()` | Mouse look as `Vec2`, scaled by `lookSensitivity` (merges the bound pad's right stick) |
-| `captureMouse()` / `releaseMouse()` | Forward to the active mouse capture policy |
-| `setRelativeLook(on)` | Enable raw relative mouse-look: captures the cursor and switches `mouseDelta()`/`LookAxis()` to unbounded sub-pixel deltas (see `Zanna.Input.Mouse.SetRelativeMode`) |
-| `bindPad(index)` / `padBound` | Merge gamepad `index`'s sticks into `MoveAxis()`/`LookAxis()` (`-1` unbinds; poll buttons/triggers via `Zanna.Input.Pad`) |
-| `padLookSensitivity` | Right-stick look speed (degrees per frame at full tilt, response curve x^1.8, radial deadzone 0.18) |
+| `LookAxis()` | Mouse look as `Vec2`, scaled by `LookSensitivity` (merges the bound pad's right stick) |
+| `CaptureMouse()` / `ReleaseMouse()` | Forward to the active mouse capture policy |
+| `SetRelativeLook(on)` | Enable raw relative mouse-look: captures the cursor and switches `MouseDelta()`/`LookAxis()` to unbounded sub-pixel deltas (see `Zanna.Input.Mouse.SetRelativeMode`) |
+| `BindPad(index)` / `PadBound` | Merge gamepad `index`'s sticks into `MoveAxis()`/`LookAxis()` (`-1` unbinds; poll buttons/triggers via `Zanna.Input.Pad`) |
+| `PadLookSensitivity` | Right-stick look speed (degrees per frame at full tilt, response curve x^1.8, radial deadzone 0.18) |
 
-`bindPad` accepts exactly `-1` or a supported controller slot; another negative
+`BindPad` accepts exactly `-1` or a supported controller slot; another negative
 value or an index beyond the backend slot count traps and preserves the prior
 binding. Rebinding and unbinding clear the cached pad snapshot immediately.
 Every query repairs corrupted/non-finite sensitivities, mouse deltas, wheel

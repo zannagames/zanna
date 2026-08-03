@@ -57,9 +57,13 @@ static void metal_submit_draw(void *ctx_ptr,
         vgfx3d_draw_cmd_t safe_cmd;
         vgfx3d_light_params_t safe_lights[VGFX3D_MAX_LIGHTS];
         float safe_ambient[3];
-        if (!ctx || !ctx.encoder || !ctx.inFrame || !cmd || !cmd->vertices || !cmd->indices ||
-            cmd->vertex_count == 0 || cmd->index_count == 0)
+        if (!ctx)
             return;
+        if (!ctx.encoder || !ctx.inFrame || !cmd || !cmd->vertices || !cmd->indices ||
+            cmd->vertex_count == 0 || cmd->index_count == 0) {
+            ctx->_stats.dropped_draws++;
+            return;
+        }
         vgfx3d_sanitize_draw_command(cmd, &safe_cmd);
         cmd = &safe_cmd;
         light_count =
@@ -70,8 +74,10 @@ static void metal_submit_draw(void *ctx_ptr,
         vgfx3d_sanitize_ambient_rgb(ambient, safe_ambient);
         ambient = safe_ambient;
         index_count = vgfx3d_draw_cmd_validated_index_count(cmd);
-        if (index_count == 0)
+        if (index_count == 0) {
+            ctx->_stats.dropped_draws++;
             return;
+        }
 
         blend_mode = vgfx3d_metal_choose_blend_mode(cmd);
         [ctx.encoder setRenderPipelineState:metal_select_pipeline_state(ctx, cmd, NO)];
@@ -99,8 +105,10 @@ static void metal_submit_draw(void *ctx_ptr,
         else
             [ctx.encoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
 
-        if (!metal_get_geometry_buffers(ctx, cmd, &vb, &ib, &vb_offset, &ib_offset))
+        if (!metal_get_geometry_buffers(ctx, cmd, &vb, &ib, &vb_offset, &ib_offset)) {
+            ctx->_stats.dropped_draws++;
             return;
+        }
         [ctx.encoder setVertexBuffer:vb offset:vb_offset atIndex:0];
 
         /* Retain buffers until frame commit — prevents ARC from releasing
@@ -486,6 +494,7 @@ static void metal_submit_draw(void *ctx_ptr,
                                  indexType:MTLIndexTypeUInt32
                                indexBuffer:ib
                          indexBufferOffset:ib_offset];
+        ctx->_stats.draw_calls++;
     }
 }
 
@@ -550,6 +559,8 @@ static void metal_present(void *backend_ctx) {
             ctx.displayTexture = ctx.drawable.texture;
             [ctx.cmdBuf presentDrawable:ctx.drawable];
             metal_commit_pending(ctx, NO);
+            ctx->_stats.direct_presents++;
+            ctx->_stats.present_path = 1;
             return;
         }
         if (ctx.postfxCompositedToDrawable && ctx.cmdBuf && ctx.drawable) {
@@ -557,6 +568,8 @@ static void metal_present(void *backend_ctx) {
             [ctx.cmdBuf presentDrawable:ctx.drawable];
             metal_commit_pending(ctx, NO);
             ctx.postfxCompositedToDrawable = 0;
+            ctx->_stats.direct_presents++;
+            ctx->_stats.present_path = 1;
             return;
         }
 
@@ -577,6 +590,8 @@ static void metal_present(void *backend_ctx) {
             metal_commit_pending(ctx, YES);
             metal_present_texture_to_framebuffer(ctx, final_texture);
         }
+        ctx->_stats.offscreen_presents++;
+        ctx->_stats.present_path = 2;
     }
 }
 
@@ -1089,10 +1104,14 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         vgfx3d_light_params_t safe_lights[VGFX3D_MAX_LIGHTS];
         float safe_ambient[3];
         particle_mode = cmd && cmd->particle_instances != NULL;
-        if (!ctx || !ctx.encoder || !ctx.inFrame || !cmd || !cmd->vertices || !cmd->indices ||
-            cmd->vertex_count == 0 || cmd->index_count == 0 ||
-            (!particle_mode && !instance_matrices) || instance_count <= 0)
+        if (!ctx)
             return;
+        if (!ctx.encoder || !ctx.inFrame || !cmd || !cmd->vertices || !cmd->indices ||
+            cmd->vertex_count == 0 || cmd->index_count == 0 ||
+            (!particle_mode && !instance_matrices) || instance_count <= 0) {
+            ctx->_stats.dropped_draws++;
+            return;
+        }
         vgfx3d_sanitize_draw_command(cmd, &safe_cmd);
         cmd = &safe_cmd;
         light_count =
@@ -1104,8 +1123,10 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
         ambient = safe_ambient;
         particle_mode = cmd->particle_instances != NULL;
         index_count = vgfx3d_draw_cmd_validated_index_count(cmd);
-        if (index_count == 0)
+        if (index_count == 0) {
+            ctx->_stats.dropped_draws++;
             return;
+        }
 
         if (particle_mode) {
             if ((size_t)instance_count > SIZE_MAX / sizeof(vgfx3d_particle_instance_t))
@@ -1165,8 +1186,10 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
             [ctx.encoder setDepthBias:0.0f slopeScale:0.0f clamp:0.0f];
 
         /* Vertex/index buffers */
-        if (!metal_get_geometry_buffers(ctx, cmd, &vb, &ib, &vb_offset, &ib_offset))
+        if (!metal_get_geometry_buffers(ctx, cmd, &vb, &ib, &vb_offset, &ib_offset)) {
+            ctx->_stats.dropped_draws++;
             return;
+        }
         [ctx.encoder setVertexBuffer:vb offset:vb_offset atIndex:0];
         [ctx.encoder setVertexBuffer:instance_buffer offset:instance_offset atIndex:6];
         if (ctx.frameBuffers) {
@@ -1534,6 +1557,7 @@ static void metal_submit_draw_instanced(void *ctx_ptr,
                                indexBuffer:ib
                          indexBufferOffset:ib_offset
                              instanceCount:(NSUInteger)instance_count];
+        ctx->_stats.draw_calls++;
     }
 }
 

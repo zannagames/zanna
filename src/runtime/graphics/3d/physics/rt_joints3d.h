@@ -199,6 +199,56 @@ void rt_joint3d_solve(void *joint, int32_t joint_type, double dt);
 #define RT_JOINT_ROPE 3
 #define RT_JOINT_SIXDOF 4
 
+/* Joint readback (ADR 0233). BodyA/BodyB getters return the borrowed retained
+ * bodies (NULL on class mismatch); Vec3-returning getters allocate fresh
+ * snapshots. */
+/// @brief Borrowed first body. @param joint DistanceJoint3D handle.
+void *rt_distance_joint3d_get_body_a(void *joint);
+/// @brief Borrowed second body. @param joint DistanceJoint3D handle.
+void *rt_distance_joint3d_get_body_b(void *joint);
+/// @brief Borrowed first body. @param joint SpringJoint3D handle.
+void *rt_spring_joint3d_get_body_a(void *joint);
+/// @brief Borrowed second body. @param joint SpringJoint3D handle.
+void *rt_spring_joint3d_get_body_b(void *joint);
+/// @brief Borrowed first body. @param joint HingeJoint3D handle.
+void *rt_hinge_joint3d_get_body_a(void *joint);
+/// @brief Borrowed second body. @param joint HingeJoint3D handle.
+void *rt_hinge_joint3d_get_body_b(void *joint);
+/// @brief Borrowed first body. @param joint RopeJoint3D handle.
+void *rt_rope_joint3d_get_body_a(void *joint);
+/// @brief Borrowed second body. @param joint RopeJoint3D handle.
+void *rt_rope_joint3d_get_body_b(void *joint);
+/// @brief Borrowed first body. @param joint SixDofJoint3D handle.
+void *rt_sixdof_joint3d_get_body_a(void *joint);
+/// @brief Borrowed second body. @param joint SixDofJoint3D handle.
+void *rt_sixdof_joint3d_get_body_b(void *joint);
+/// @brief Retained motor flag. @param joint HingeJoint3D handle.
+int8_t rt_hinge_joint3d_get_motor_enabled(void *joint);
+/// @brief Retained motor target velocity (rad/s). @param joint HingeJoint3D handle.
+double rt_hinge_joint3d_get_motor_target_velocity(void *joint);
+/// @brief Retained per-step motor impulse bound. @param joint HingeJoint3D handle.
+double rt_hinge_joint3d_get_motor_max_impulse(void *joint);
+/// @brief Whether angle limits are active. @param joint HingeJoint3D handle.
+int8_t rt_hinge_joint3d_get_limits_enabled(void *joint);
+/// @brief Retained lower angle limit in radians (0 when disabled). @param joint HingeJoint3D handle.
+double rt_hinge_joint3d_get_limit_min(void *joint);
+/// @brief Retained upper angle limit in radians (0 when disabled). @param joint HingeJoint3D handle.
+double rt_hinge_joint3d_get_limit_max(void *joint);
+/// @brief Fresh Vec3 lower linear bounds. @param joint SixDofJoint3D handle.
+void *rt_sixdof_joint3d_get_linear_limit_min(void *joint);
+/// @brief Fresh Vec3 upper linear bounds. @param joint SixDofJoint3D handle.
+void *rt_sixdof_joint3d_get_linear_limit_max(void *joint);
+/// @brief Fresh Vec3 lower angular bounds (radians). @param joint SixDofJoint3D handle.
+void *rt_sixdof_joint3d_get_angular_limit_min(void *joint);
+/// @brief Fresh Vec3 upper angular bounds (radians). @param joint SixDofJoint3D handle.
+void *rt_sixdof_joint3d_get_angular_limit_max(void *joint);
+/// @brief Retained linear-motor flag. @param joint SixDofJoint3D handle.
+int8_t rt_sixdof_joint3d_get_linear_motor_enabled(void *joint);
+/// @brief Fresh Vec3 linear-motor target velocity. @param joint SixDofJoint3D handle.
+void *rt_sixdof_joint3d_get_linear_motor_velocity(void *joint);
+/// @brief Retained linear-motor impulse bound. @param joint SixDofJoint3D handle.
+double rt_sixdof_joint3d_get_linear_motor_max_impulse(void *joint);
+
 #ifdef __cplusplus
 }
 #endif

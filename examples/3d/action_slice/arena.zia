@@ -1,0 +1,300 @@
+// ============================================================================
+// action_slice/arena.zia — the gameplay core of the third-person action slice
+// ============================================================================
+// Builds and ticks the arena: a third-person player with a sword swing, three
+// patrolling enemy crates with health, a door and a healing chest to interact
+// with, a procedural Sky3D driven by TimeOfDay3D, a minimap with markers, and
+// footstep events over a tagged surface. Save/load runs through the world's
+// persistence records (F5/F9 in the game shell).
+//
+// The module is deliberately shell-agnostic: main.zia drives it from a
+// GameBase3D scene and test.zia drives it deterministically frame by frame.
+// ============================================================================
+
+module action_slice_arena;
+
+bind Zanna.Game3D;
+bind Zanna.Graphics3D;
+bind Zanna.Input.Key as Key;
+bind Zanna.Math;
+
+// Damage tags recorded on damage events (visible in HUD/debug flows).
+final SWORD_TAG: Integer = 1;
+
+// Interactable kinds.
+final KIND_DOOR: Integer = 1;
+final KIND_CHEST: Integer = 2;
+
+class Arena {
+    expose Entity3D player;
+    expose CharacterController3D character;
+    expose ThirdPersonController thirdPerson;
+    expose TargetLock3D lockOn;
+    expose Interactor3D scanner;
+    expose Hitbox3D sword;
+    expose Health3D playerHealth;
+    expose Footsteps3D footsteps;
+    expose Minimap3D minimap;
+    expose Sky3D sky;
+    expose TimeOfDay3D timeOfDay;
+    expose Interactable3D doorUse;
+    expose Interactable3D chestUse;
+    expose Entity3D door;
+    expose Boolean doorOpen;
+    expose Boolean chestLooted;
+    expose Integer enemiesDown;
+    expose Integer enemyTotal;
+    hide List[Entity3D] enemies;
+    hide List[Health3D] enemyHealth;
+    hide Number swingWindow;
+    hide Number swingCooldown;
+
+    // One-bone walk rig whose animation events drive Footsteps3D.
+    hide func makeWalkController() -> AnimController3D {
+        var skel = Skeleton3D.New();
+        var rootBone = Skeleton3D.AddBone(skel, "root", 0 - 1, Mat4.Identity());
+        Skeleton3D.ComputeInverseBind(skel);
+        var walk = Animation3D.New("walk", 0.6);
+        Animation3D.set_Looping(walk, true);
+        Animation3D.AddKeyframe(walk, rootBone, 0.0, Vec3.Zero(), Quat.Identity(), Vec3.One());
+        Animation3D.AddKeyframe(walk, rootBone, 0.6, Vec3.Zero(), Quat.Identity(), Vec3.One());
+        var controller = AnimController3D.New(skel);
+        AnimController3D.AddState(controller, "walk", walk);
+        AnimController3D.AddEvent(controller, "walk", 0.15, "footstep_l");
+        AnimController3D.AddEvent(controller, "walk", 0.45, "footstep_r");
+        return controller;
+    }
+
+    hide func spawnEnemy(world: World3D, x: Number, z: Number, orbitRadius: Number) {
+        var enemy = Prefab.Box(0.8, Materials.Plastic(0.85, 0.15, 0.15));
+        enemy.SetPosition(x, 0.4, z);
+        enemy.Name = "enemy_" + enemies.count;
+        world.Spawn(enemy);
+        enemy.SetPersistent("enemy_" + enemies.count);
+        enemy.AttachBehavior(Behavior3D.New().AddOrbit(x, 0.4, z, orbitRadius, 40.0));
+
+        // A kinematic body registers the enemy with spatial queries (lock-on
+        // scans bodies); the orbit behavior drives the node, so the node
+        // drives the body.
+        var body = PhysicsBody3D.NewAABB(0.45, 0.45, 0.45, 1.0);
+        body.IsKinematic = true;
+        enemy.AttachBody(body);
+        enemy.Layer = 8;
+        Entity3D.get_Node(enemy).SyncMode = SyncMode.get_BodyFromNode();
+
+        // Generous arcade hit zone: any adjacent swing connects regardless of
+        // the third-person facing at contact time.
+        var hurtShape = Collider3D.Sphere(1.2);
+        var hurt = Hitbox3D.New(enemy, hurtShape);
+        hurt.Team = 2;
+
+        var health = Health3D.New(50.0);
+        enemy.AttachHealth(health);
+
+        minimap.SetMarkerOnCompass(minimap.AddMarker(enemy, null, 0xE05050), true);
+        enemies.add(enemy);
+        enemyHealth.add(health);
+    }
+
+    expose func build(world: World3D) {
+        enemies = [];
+        enemyHealth = [];
+        doorOpen = false;
+        chestLooted = false;
+        enemiesDown = 0;
+        swingWindow = 0.0;
+        swingCooldown = 0.0;
+
+        world.SetAmbient(0.16, 0.17, 0.2);
+        Quality.Apply(world, QualityLevel.get_Balanced());
+
+        // Tagged ground the footstep component resolves surfaces against.
+        var groundSurface = Surfaces.Register("arena_ground");
+        var ground = Prefab.Ground(24.0, Materials.Rubber(0.24, 0.3, 0.26));
+        world.Spawn(ground);
+        if ground.Body != null {
+            var groundCollider = PhysicsBody3D.get_Collider(ground.Body);
+            if groundCollider != null {
+                groundCollider.SurfaceType = groundSurface;
+            }
+        }
+
+        // Sun + procedural sky under a day/night clock.
+        var sun = Light3D.Directional(Vec3.New(-0.4, -1.0, -0.3), 1.0, 0.96, 0.88);
+        Canvas3D.SetLight(world.Canvas, 0, sun);
+        sky = Sky3D.New();
+        sky.SetGroundAlbedo(0.22, 0.25, 0.2);
+        timeOfDay = TimeOfDay3D.New();
+        timeOfDay.Hours = 9.5;
+        timeOfDay.DayLengthSeconds = 180.0;
+        timeOfDay.SetSunLight(sun);
+        timeOfDay.SetSky(sky);
+
+        // Minimap over the arena rect with a compass strip.
+        minimap = Minimap3D.New(world, 128);
+        minimap.SetViewport(12.0, 60.0, 108.0, 108.0);
+        minimap.SetMapImage(null, -12.0, -12.0, 12.0, 12.0);
+        minimap.SetCompass(true, 200.0);
+
+        // Player: capsule character + spring-arm third-person camera.
+        player = Entity3D.New();
+        player.Name = "player";
+        player.SetPosition(0.0, 0.9, 6.0);
+        player.Mesh = Mesh3D.Box(0.55, 1.5, 0.55);
+        player.Material = Materials.Plastic(0.25, 0.45, 0.85);
+        world.Spawn(player);
+        player.SetPersistent("player");
+        character = CharacterController3D.New(world, player, 0.3, 1.8, 70.0);
+        thirdPerson = ThirdPersonController.New(world, player);
+        thirdPerson.Character = character;
+        world.SetCameraController(thirdPerson);
+        minimap.SetTrackedEntity(player);
+
+        playerHealth = Health3D.New(100.0);
+        player.AttachHealth(playerHealth);
+
+        // Sword hit volume in front of the player, activated per swing.
+        var swordShape = Collider3D.Sphere(0.55);
+        sword = Hitbox3D.New(player, swordShape);
+        sword.Kind = HitboxKind.get_Hit();
+        sword.Team = 1;
+        sword.SetLocalOffset(0.0, 0.2, 0.0 - 0.9);
+        sword.IsActive = false;
+
+        // Footsteps from the walk rig's animation events.
+        var animator = Animator3D.New(self.makeWalkController());
+        player.AttachAnimator(animator);
+        animator.Play("walk");
+        footsteps = Footsteps3D.New(player, SurfaceTable3D.New());
+
+        // Lock-on and interaction scanners.
+        lockOn = TargetLock3D.New(world, player);
+        lockOn.CandidateMask = 8;
+        lockOn.RequireLineOfSight = false;
+        scanner = Interactor3D.New(player);
+        scanner.RequireLineOfSight = false;
+
+        // Three patrolling enemies.
+        self.spawnEnemy(world, -4.0, -4.0, 2.0);
+        self.spawnEnemy(world, 4.5, -2.0, 1.5);
+        self.spawnEnemy(world, 0.0, -8.0, 2.5);
+        enemyTotal = 3;
+
+        // A sliding door and a healing chest, both persistent interactables.
+        door = Prefab.Box(1.0, Materials.Metal(0.5, 0.55, 0.6));
+        door.SetScaleXYZ(2.4, 2.4, 0.3);
+        door.SetPosition(0.0, 1.2, -10.0);
+        door.Name = "arena_door";
+        world.Spawn(door);
+        door.SetPersistent("arena_door");
+        doorUse = Interactable3D.New(door).WithPrompt("Open the door").WithKind(KIND_DOOR)
+            .WithRadius(3.0);
+
+        var chest = Prefab.Box(0.7, Materials.Emissive(0.9, 0.7, 0.2, 1.4));
+        chest.SetPosition(6.5, 0.35, 4.0);
+        chest.Name = "arena_chest";
+        world.Spawn(chest);
+        chest.SetPersistent("arena_chest");
+        chestUse = Interactable3D.New(chest).WithPrompt("Take the medkit").WithKind(KIND_CHEST)
+            .WithRadius(2.5);
+        minimap.SetObjectiveIndicator(minimap.AddMarkerAt(Vec3.New(6.5, 0.0, 4.0), null, 0x50E080),
+                                      true);
+    }
+
+    // Begin a sword swing if the cooldown allows it.
+    expose func swing() -> Boolean {
+        if swingCooldown > 0.0 {
+            return false;
+        }
+        swingWindow = 0.15;
+        swingCooldown = 0.6;
+        sword.IsActive = true;
+        return true;
+    }
+
+    // Toggle lock-on to the nearest enemy.
+    expose func toggleLock() {
+        if lockOn.Target != null {
+            lockOn.Clear();
+            thirdPerson.LockTarget = null;
+            return;
+        }
+        if lockOn.Acquire() {
+            thirdPerson.LockTarget = lockOn;
+        }
+    }
+
+    // Use whatever the scanner focuses; reports whether anything fired.
+    expose func interact(world: World3D) -> Boolean {
+        var focused = scanner.Focused;
+        if focused == null or scanner.Interact() == false {
+            return false;
+        }
+        var kind = Interactable3D.get_Kind(focused);
+        if kind == KIND_DOOR and doorOpen == false {
+            doorOpen = true;
+            door.SetPosition(2.6, 1.2, -10.0);
+            doorUse.IsEnabled = false;
+            world.Stream.SetCellFlag("arena", "door_open", 1);
+            return true;
+        }
+        if kind == KIND_CHEST and chestLooted == false {
+            chestLooted = true;
+            playerHealth.Heal(35.0);
+            chestUse.IsEnabled = false;
+            world.Stream.SetCellFlag("arena", "chest_looted", 1);
+            return true;
+        }
+        return true;
+    }
+
+    // Consume buffered hit events: sword contact damages enemy health, and
+    // dead enemies despawn (their persistence records go dead with them).
+    expose func resolveCombat(world: World3D) {
+        var hitCount = world.HitEventCount();
+        var i = 0;
+        while i < hitCount {
+            var hitEvent = world.HitEvent(i);
+            var victim = HitEvent3D.get_Victim(hitEvent);
+            if victim != null {
+                var health = Entity3D.get_Health(victim);
+                if health != null and health.IsDead == false {
+                    health.Damage(25.0, player, SWORD_TAG);
+                }
+            }
+            i = i + 1;
+        }
+        world.ClearHitEvents();
+
+        var e = 0;
+        while e < enemies.count {
+            var health = enemyHealth.get(e);
+            if health != null and health.IsDead and enemies.get(e).IsDestroyed() == false {
+                if enemies.get(e).IsSpawned() {
+                    world.Despawn(enemies.get(e));
+                    enemiesDown = enemiesDown + 1;
+                }
+            }
+            e = e + 1;
+        }
+    }
+
+    // Per-frame gameplay: swing windows, combat resolution, day/night.
+    expose func tick(world: World3D, dt: Number) {
+        if swingWindow > 0.0 {
+            swingWindow = swingWindow - dt;
+            if swingWindow <= 0.0 {
+                sword.IsActive = false;
+            }
+        }
+        if swingCooldown > 0.0 {
+            swingCooldown = swingCooldown - dt;
+        }
+        self.resolveCombat(world);
+        timeOfDay.Advance(dt, world.Canvas);
+    }
+
+    expose func won() -> Boolean {
+        return enemiesDown >= enemyTotal;
+    }
+}

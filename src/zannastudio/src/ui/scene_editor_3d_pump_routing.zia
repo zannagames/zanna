@@ -218,6 +218,10 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
            and selectedIndices.count() == 1 {
             changed = UnpackSelectedInstance() or changed;
         }
+        if createPrefabButton.WasClicked()
+           and selectedIndices.count() > 0 {
+            changed = CreatePrefabFromSelection() or changed;
+        }
         if relinkInstanceButton.WasClicked()
            and selectedIndices.count() == 1 {
             OpenImportInstanceBrowser();

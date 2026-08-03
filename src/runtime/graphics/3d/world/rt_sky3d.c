@@ -38,6 +38,7 @@
 #include "rt_graphics3d_ids.h"
 #include "rt_pixels_internal.h"
 #include "rt_trap.h"
+#include "rt_vec3.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -190,6 +191,26 @@ void rt_sky3d_set_ground_albedo(void *obj, double r, double g, double b) {
         memcpy(sky->ground_albedo, albedo, sizeof(albedo));
         sky->dirty = 1;
     }
+}
+
+/// @brief `Sky3D.SunDirection` — fresh Vec3 of the normalized sun direction (ADR 0233).
+/// @param obj Borrowed Sky3D handle.
+/// @return Newly allocated direction snapshot; origin for an invalid handle.
+void *rt_sky3d_get_sun_direction(void *obj) {
+    rt_sky3d *sky = sky3d_checked(obj, "Sky3D.get_SunDirection: invalid sky");
+    if (!sky)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(sky->sun_dir[0], sky->sun_dir[1], sky->sun_dir[2]);
+}
+
+/// @brief `Sky3D.GroundAlbedo` — fresh Vec3 of the retained ground albedo (ADR 0233).
+/// @param obj Borrowed Sky3D handle.
+/// @return Newly allocated albedo snapshot; origin for an invalid handle.
+void *rt_sky3d_get_ground_albedo(void *obj) {
+    rt_sky3d *sky = sky3d_checked(obj, "Sky3D.get_GroundAlbedo: invalid sky");
+    if (!sky)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(sky->ground_albedo[0], sky->ground_albedo[1], sky->ground_albedo[2]);
 }
 
 /// @brief Set the square pixel resolution generated for each cubemap face.

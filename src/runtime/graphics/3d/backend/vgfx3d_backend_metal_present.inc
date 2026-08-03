@@ -622,6 +622,7 @@ static int metal_get_geometry_buffers(VGFXMetalContext *ctx,
         if (!entry || entry.revision != cmd->geometry_revision ||
             entry.vertexCount != cmd->vertex_count || entry.indexCount != cmd->index_count ||
             entry.compactStream != wants_compact || !entry.vertexBuffer || !entry.indexBuffer) {
+            ctx->_stats.mesh_cache_misses++;
             VGFXMetalGeometryCacheEntry *new_entry;
             new_entry = [[VGFXMetalGeometryCacheEntry alloc] init];
             if (!new_entry)
@@ -652,6 +653,8 @@ static int metal_get_geometry_buffers(VGFXMetalContext *ctx,
                 metal_cache_evict_if_needed(ctx);
             ctx.geometryCache[key] = new_entry;
             entry = new_entry;
+        } else {
+            ctx->_stats.mesh_cache_hits++;
         }
         entry.lastUsedFrame = ctx.frameSerial;
         *outVB = entry.vertexBuffer;
@@ -659,6 +662,7 @@ static int metal_get_geometry_buffers(VGFXMetalContext *ctx,
         return (*outVB && *outIB) ? 1 : 0;
     }
 
+    ctx->_stats.mesh_stream_uploads++;
     *outVB = metal_upload_transient_buffer(ctx,
                                            VGFX3D_METAL_TRANSIENT_VERTEX,
                                            cmd->vertices,

@@ -26,7 +26,7 @@
 //     refs on texture and cached material.
 //   - Overflow draw slots fall back to canvas-owned temp buffers freed at end-of-frame.
 //
-// Links: rt_particles3d.h, plans/3d/17-particle-system.md
+// Links: rt_particles3d.h, rt_canvas3d.h
 //
 //===----------------------------------------------------------------------===//
 
@@ -43,6 +43,7 @@
 
 #include "rt_particles3d.h"
 #include "rt_canvas3d.h"
+#include "rt_vec3.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_g3d_ref_slots.h"
 #include "rt_pixels.h"
@@ -1059,6 +1060,172 @@ void rt_particles3d_set_emitter_size(void *o, double sx, double sy, double sz) {
     p->emitter_size[0] = fabs(particles_clamp_abs_or(sx, 0.0, PARTICLES3D_PARAM_MAX));
     p->emitter_size[1] = fabs(particles_clamp_abs_or(sy, 0.0, PARTICLES3D_PARAM_MAX));
     p->emitter_size[2] = fabs(particles_clamp_abs_or(sz, 0.0, PARTICLES3D_PARAM_MAX));
+}
+
+/* Emitter readback (ADR 0233) — read peers over the retained emitter state,
+ * named for the setter parameters they mirror. */
+
+/// @brief Repack a normalized RGB float triple to the packed 0xRRGGBB form.
+/// @param rgb Borrowed normalized channel triple.
+/// @return Packed color matching the `SetColor` input convention.
+static int64_t particles3d_pack_color(const float *rgb) {
+    int64_t r = (int64_t)(rgb[0] * 255.0f + 0.5f);
+    int64_t g = (int64_t)(rgb[1] * 255.0f + 0.5f);
+    int64_t b = (int64_t)(rgb[2] * 255.0f + 0.5f);
+    if (r < 0)
+        r = 0;
+    if (r > 255)
+        r = 255;
+    if (g < 0)
+        g = 0;
+    if (g > 255)
+        g = 255;
+    if (b < 0)
+        b = 0;
+    if (b > 255)
+        b = 255;
+    return (r << 16) | (g << 8) | b;
+}
+
+/// @brief `Particles3D.Rate` — retained emission rate. @param o Borrowed handle.
+double rt_particles3d_get_rate(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->rate : 0.0;
+}
+
+/// @brief `Particles3D.LifetimeMin` — retained minimum lifetime. @param o Borrowed handle.
+double rt_particles3d_get_lifetime_min(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->life_min : 0.0;
+}
+
+/// @brief `Particles3D.LifetimeMax` — retained maximum lifetime. @param o Borrowed handle.
+double rt_particles3d_get_lifetime_max(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->life_max : 0.0;
+}
+
+/// @brief `Particles3D.SpeedMin` — retained minimum emit speed. @param o Borrowed handle.
+double rt_particles3d_get_speed_min(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->speed_min : 0.0;
+}
+
+/// @brief `Particles3D.SpeedMax` — retained maximum emit speed. @param o Borrowed handle.
+double rt_particles3d_get_speed_max(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->speed_max : 0.0;
+}
+
+/// @brief `Particles3D.SizeStart` — retained spawn size. @param o Borrowed handle.
+double rt_particles3d_get_size_start(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->size_start : 0.0;
+}
+
+/// @brief `Particles3D.SizeEnd` — retained end-of-life size. @param o Borrowed handle.
+double rt_particles3d_get_size_end(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->size_end : 0.0;
+}
+
+/// @brief `Particles3D.AlphaStart` — retained spawn alpha. @param o Borrowed handle.
+double rt_particles3d_get_alpha_start(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->alpha_start : 0.0;
+}
+
+/// @brief `Particles3D.AlphaEnd` — retained end-of-life alpha. @param o Borrowed handle.
+double rt_particles3d_get_alpha_end(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->alpha_end : 0.0;
+}
+
+/// @brief `Particles3D.ColorStart` — packed 0xRRGGBB spawn color. @param o Borrowed handle.
+int64_t rt_particles3d_get_color_start(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? particles3d_pack_color(p->color_start) : 0;
+}
+
+/// @brief `Particles3D.ColorEnd` — packed 0xRRGGBB end color. @param o Borrowed handle.
+int64_t rt_particles3d_get_color_end(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? particles3d_pack_color(p->color_end) : 0;
+}
+
+/// @brief `Particles3D.Gravity` — fresh Vec3 of the retained gravity. @param o Borrowed handle.
+void *rt_particles3d_get_gravity(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    if (!p)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(p->gravity[0], p->gravity[1], p->gravity[2]);
+}
+
+/// @brief `Particles3D.Position` — fresh Vec3 of the emitter origin. @param o Borrowed handle.
+void *rt_particles3d_get_position_vec3(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    if (!p)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(p->position[0], p->position[1], p->position[2]);
+}
+
+/// @brief `Particles3D.Direction` — fresh Vec3 of the emit direction. @param o Borrowed handle.
+void *rt_particles3d_get_direction(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    if (!p)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(p->emit_dir[0], p->emit_dir[1], p->emit_dir[2]);
+}
+
+/// @brief `Particles3D.Spread` — retained emit-cone spread. @param o Borrowed handle.
+double rt_particles3d_get_spread(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->emit_spread : 0.0;
+}
+
+/// @brief `Particles3D.EmitterShape` — retained shape id (0=point, 1=sphere, 2=box).
+/// @param o Borrowed handle.
+int64_t rt_particles3d_get_emitter_shape(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? (int64_t)p->emitter_shape : 0;
+}
+
+/// @brief `Particles3D.EmitterSize` — fresh Vec3 of the emitter extents. @param o Borrowed handle.
+void *rt_particles3d_get_emitter_size(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    if (!p)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(p->emitter_size[0], p->emitter_size[1], p->emitter_size[2]);
+}
+
+/// @brief `Particles3D.Stretch` — retained velocity-stretch factor. @param o Borrowed handle.
+double rt_particles3d_get_stretch(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->stretch_k : 0.0;
+}
+
+/// @brief `Particles3D.TrailLifetime` — retained trail history seconds. @param o Borrowed handle.
+double rt_particles3d_get_trail_lifetime(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? (double)p->trail_lifetime : 0.0;
+}
+
+/// @brief `Particles3D.TrailSegments` — retained trail control points. @param o Borrowed handle.
+int64_t rt_particles3d_get_trail_segments(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? (int64_t)p->trail_segments : 0;
+}
+
+/// @brief `Particles3D.Softness` — retained soft-particle fade distance. @param o Borrowed handle.
+double rt_particles3d_get_softness(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p ? p->softness : 0.0;
+}
+
+/// @brief `Particles3D.Texture` — borrowed particle texture or NULL. @param o Borrowed handle.
+void *rt_particles3d_get_texture(void *o) {
+    rt_particles3d *p = particles3d_checked(o);
+    return p && particles3d_texture_valid(p->texture) ? p->texture : NULL;
 }
 
 /*==========================================================================

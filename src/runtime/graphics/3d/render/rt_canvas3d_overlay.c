@@ -1152,6 +1152,46 @@ void rt_canvas3d_clear_clip_rect2d(void *obj) {
     c->overlay_clip_active = 0;
 }
 
+/// @brief `Canvas3D.ClipRectActive` — whether an overlay clip rect is set (ADR 0233).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Nonzero while a clip rect is active.
+int8_t rt_canvas3d_get_clip_rect_active(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->overlay_clip_active ? 1 : 0;
+}
+
+/// @brief `Canvas3D.ClipRectX` — retained clip-rect left edge (ADR 0233).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Retained left edge in logical pixels; zero when no clip is active.
+int64_t rt_canvas3d_get_clip_rect_x(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->overlay_clip_active ? (int64_t)c->overlay_clip_x : 0;
+}
+
+/// @brief `Canvas3D.ClipRectY` — retained clip-rect top edge (ADR 0233).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Retained top edge in logical pixels; zero when no clip is active.
+int64_t rt_canvas3d_get_clip_rect_y(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->overlay_clip_active ? (int64_t)c->overlay_clip_y : 0;
+}
+
+/// @brief `Canvas3D.ClipRectWidth` — retained clip-rect width (ADR 0233).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Retained width in logical pixels; zero when no clip is active.
+int64_t rt_canvas3d_get_clip_rect_width(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->overlay_clip_active ? (int64_t)c->overlay_clip_w : 0;
+}
+
+/// @brief `Canvas3D.ClipRectHeight` — retained clip-rect height (ADR 0233).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Retained height in logical pixels; zero when no clip is active.
+int64_t rt_canvas3d_get_clip_rect_height(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->overlay_clip_active ? (int64_t)c->overlay_clip_h : 0;
+}
+
 /// @brief Width in pixels of DrawText2DScaled output for @p text at @p scale (Plan 08).
 /// @details The built-in font advances 6 dots per character at 2px per dot.
 /// @param obj Borrowed Canvas3D handle used for validation.
@@ -1615,6 +1655,14 @@ void rt_canvas3d_set_force_cpu_skinning(void *obj, int8_t enabled) {
         c->force_cpu_skinning = enabled ? 1 : 0;
 }
 
+/// @brief `Canvas3D.ForceCpuSkinning` — read the retained CPU-skinning override (ADR 0233).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Nonzero while skinned draws are forced through the CPU path.
+int8_t rt_canvas3d_get_force_cpu_skinning(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->force_cpu_skinning ? 1 : 0;
+}
+
 /// @brief Lifetime count of skinned draws routed to GPU vertex-shader skinning.
 /// @param obj Borrowed Canvas3D handle.
 /// @return Non-negative lifetime draw count.
@@ -1685,6 +1733,14 @@ void rt_canvas3d_set_shadow_budget(void *obj, int64_t budget) {
     c->shadow_budget = (int32_t)budget;
 }
 
+/// @brief `Canvas3D.ShadowBudget` — read the retained shadow-light slot budget (ADR 0233).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Retained slot budget, or zero for an invalid handle.
+int64_t rt_canvas3d_get_shadow_budget(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? (int64_t)c->shadow_budget : 0;
+}
+
 /// @brief Shadow slots rendered in the latest frame (cascades included).
 /// @param obj Borrowed Canvas3D handle.
 /// @return Latest used slot count, or zero.
@@ -1713,6 +1769,14 @@ void rt_canvas3d_set_cluster_light_budget(void *obj, int64_t budget) {
     if (budget > 64)
         budget = 64;
     c->cluster_light_budget = (int32_t)budget;
+}
+
+/// @brief `Canvas3D.ClusterLightBudget` — read the retained per-cluster capacity (ADR 0233).
+/// @param obj Borrowed Canvas3D handle.
+/// @return Retained per-cluster light-index capacity, or zero for an invalid handle.
+int64_t rt_canvas3d_get_cluster_light_budget(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? (int64_t)c->cluster_light_budget : 0;
 }
 
 /// @brief Lifetime count of cluster light-index entries truncated by capacity.

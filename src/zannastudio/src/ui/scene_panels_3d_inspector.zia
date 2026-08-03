@@ -312,6 +312,11 @@ func BuildNodeInspector(editor: scene_editor_3d.SceneEditor3D,
         editor.relinkInstanceButton = GUI.Button.New(instanceRow, "Re-link...");
         editor.relinkInstanceButton.SetTooltip(
             "Choose a different referenced scene for this instance");
+        editor.createPrefabButton = GUI.Button.New(instanceRow, "Create...");
+        editor.createPrefabButton.SetTooltip(
+            "Save the selected root-level nodes as a new .scene3d prefab "
+            + "beside this scene and replace them with an instance "
+            + "reference, in one undoable edit");
 }
 
 /// @brief Construct lightmap and probe-grid baking controls.

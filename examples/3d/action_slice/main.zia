@@ -1,0 +1,237 @@
+// ============================================================================
+// action_slice — a complete small third-person action game
+// ============================================================================
+// The demo the Game3D action tier never had: menu -> arena -> victory, with a
+// third-person sword fight, lock-on, interactables, a day/night procedural
+// sky, a minimap, footsteps, pause, and save/load — every system from the
+// ADR 0074-0100 gameplay tier in ~700 readable lines across three files.
+//
+// Run: zanna run examples/3d/action_slice/main.zia
+//
+// Controls:
+//   WASD + mouse  move / aim the third-person camera
+//   SPACE         sword swing
+//   TAB           toggle lock-on
+//   E             interact (door / medkit)
+//   P             pause
+//   F5 / F9       save / load
+//   ESC           back to the menu
+// ============================================================================
+
+bind "../../games/lib/gamebase3d";
+bind "../../games/lib/iscene3d";
+bind "./arena";
+
+bind Zanna.Game3D;
+bind Zanna.Graphics3D;
+bind Zanna.Input.Key as Key;
+bind Zanna.Core.Convert as Convert;
+bind Zanna.Math;
+
+final SAVE_APP: String = "zanna-action-slice";
+
+// --- Menu -------------------------------------------------------------------
+
+class MenuScene implements IScene3D {
+    hide ActionGame game;
+
+    expose func bindGame(owner: ActionGame) {
+        game = owner;
+    }
+
+    expose func onEnter(world: World3D) {
+        world.SetAmbient(0.2, 0.22, 0.28);
+    }
+
+    expose func onExit(_world: World3D) { }
+
+    expose func update(world: World3D, _dt: Number) {
+        var input: Input3D = world.Input;
+        if input.Pressed(Key.Enter) {
+            game.startPlay();
+        }
+    }
+
+    expose func drawOverlay(world: World3D) {
+        var canvas: Canvas3D = world.Canvas;
+        Canvas3D.DrawRect2DAlpha(canvas, 60, 70, 380, 150, 0x101828, 0.75);
+        Canvas3D.DrawText2D(canvas, 80, 90, "ACTION SLICE", 0xFFFFFF);
+        Canvas3D.DrawText2D(canvas, 80, 112, "defeat the three red crates", 0xA8C0FF);
+        Canvas3D.DrawText2D(canvas, 80, 134, "WASD move  SPACE swing  TAB lock-on", 0x8899AA);
+        Canvas3D.DrawText2D(canvas, 80, 150, "E interact  P pause  F5/F9 save/load", 0x8899AA);
+        Canvas3D.DrawText2D(canvas, 80, 180, "press ENTER to play", 0xE8F0FF);
+    }
+}
+
+// --- Arena ------------------------------------------------------------------
+
+class ArenaScene implements IScene3D {
+    hide ActionGame game;
+    hide Arena arena;
+    hide Boolean built;
+    hide String toast;
+    hide Number toastSeconds;
+
+    expose func bindGame(owner: ActionGame) {
+        game = owner;
+        built = false;
+        toast = "";
+        toastSeconds = 0.0;
+    }
+
+    hide func showToast(text: String) {
+        toast = text;
+        toastSeconds = 2.0;
+    }
+
+    expose func onEnter(world: World3D) {
+        if built == false {
+            arena = new Arena();
+            arena.build(world);
+            built = true;
+        }
+        world.IsPaused = false;
+    }
+
+    expose func onExit(world: World3D) {
+        world.IsPaused = false;
+    }
+
+    expose func update(world: World3D, dt: Number) {
+        var input: Input3D = world.Input;
+        if input.Pressed(Key.Escape) {
+            game.backToMenu();
+            return;
+        }
+        if input.Pressed(Key.P) {
+            world.IsPaused = world.IsPaused == false;
+        }
+        if world.IsPaused {
+            return;
+        }
+        if input.Pressed(Key.Space) {
+            arena.swing();
+        }
+        if input.Pressed(Key.Tab) {
+            arena.toggleLock();
+        }
+        if input.Pressed(Key.E) {
+            if arena.interact(world) {
+                self.showToast("used");
+            }
+        }
+        if input.Pressed(Key.F5) {
+            if world.SaveState(SAVE_APP, "slot1") {
+                self.showToast("saved to slot 1");
+            }
+        }
+        if input.Pressed(Key.F9) {
+            if world.LoadState(SAVE_APP, "slot1") {
+                self.showToast("loaded slot 1");
+            }
+        }
+
+        arena.tick(world, dt);
+        if toastSeconds > 0.0 {
+            toastSeconds = toastSeconds - dt;
+        }
+        if arena.won() {
+            game.finishRun();
+        }
+    }
+
+    expose func drawOverlay(world: World3D) {
+        var canvas: Canvas3D = world.Canvas;
+
+        // Health bar + score strip.
+        var healthWidth = 140.0 * (arena.playerHealth.Current / arena.playerHealth.Max);
+        Canvas3D.DrawRect2DAlpha(canvas, 12, 12, 148, 14, 0x202830, 0.8);
+        Canvas3D.DrawRect2DAlpha(canvas, 14, 14, Convert.NumToInt(healthWidth), 10,
+                                 0x40C060, 0.9);
+        Canvas3D.DrawText2D(canvas, 170, 14,
+                            "crates " + arena.enemiesDown + "/" + arena.enemyTotal, 0xE8F0FF);
+        Canvas3D.DrawText2D(canvas, 170, 30, "steps " + arena.footsteps.StepCount, 0x8899AA);
+
+        // Interaction prompt from the scanner focus.
+        var focused = arena.scanner.Focused;
+        if focused != null {
+            Canvas3D.DrawText2D(canvas, 200, 200,
+                                "[E] " + Interactable3D.get_Prompt(focused), 0xFFE080);
+        }
+        if world.IsPaused {
+            Canvas3D.DrawRect2DAlpha(canvas, 190, 100, 120, 30, 0x000000, 0.6);
+            Canvas3D.DrawText2D(canvas, 214, 110, "PAUSED", 0xFFFFFF);
+        }
+        if toastSeconds > 0.0 {
+            Canvas3D.DrawText2D(canvas, 12, 220, toast, 0xA8FFC0);
+        }
+
+        arena.minimap.Draw();
+    }
+}
+
+// --- Victory ----------------------------------------------------------------
+
+class WinScene implements IScene3D {
+    hide ActionGame game;
+
+    expose func bindGame(owner: ActionGame) {
+        game = owner;
+    }
+
+    expose func onEnter(world: World3D) {
+        world.SetAmbient(0.28, 0.26, 0.2);
+    }
+
+    expose func onExit(_world: World3D) { }
+
+    expose func update(world: World3D, _dt: Number) {
+        var input: Input3D = world.Input;
+        if input.Pressed(Key.Enter) or input.Pressed(Key.Escape) {
+            game.backToMenu();
+        }
+    }
+
+    expose func drawOverlay(world: World3D) {
+        var canvas: Canvas3D = world.Canvas;
+        Canvas3D.DrawRect2DAlpha(canvas, 100, 90, 300, 80, 0x102010, 0.8);
+        Canvas3D.DrawText2D(canvas, 140, 110, "ARENA CLEARED", 0xB0FFB0);
+        Canvas3D.DrawText2D(canvas, 140, 140, "press ENTER for the menu", 0xE8F0FF);
+    }
+}
+
+// --- Shell ------------------------------------------------------------------
+
+class ActionGame extends GameBase3D {
+    hide MenuScene menu;
+    hide ArenaScene arenaScene;
+    hide WinScene win;
+
+    override expose func onInit() {
+        menu = new MenuScene();
+        menu.bindGame(self);
+        arenaScene = new ArenaScene();
+        arenaScene.bindGame(self);
+        win = new WinScene();
+        win.bindGame(self);
+        self.setScene(menu);
+    }
+
+    expose func startPlay() {
+        self.transitionTo(arenaScene, 0x000000, 0.3);
+    }
+
+    expose func finishRun() {
+        self.transitionTo(win, 0x102010, 0.5);
+    }
+
+    expose func backToMenu() {
+        self.transitionTo(menu, 0x000000, 0.3);
+    }
+}
+
+func main() {
+    var game = new ActionGame();
+    game.initGame("Action Slice", 960, 540);
+    game.run();
+}

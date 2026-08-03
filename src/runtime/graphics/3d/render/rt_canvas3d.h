@@ -1455,6 +1455,37 @@ int8_t rt_material3d_get_double_sided(void *obj);
 /// @param slope_scaled_bias Signed slope-dependent offset, sanitized to the supported finite range.
 void rt_material3d_set_depth_bias(void *obj, double constant_bias, double slope_scaled_bias);
 
+/* Material readback (ADR 0233). Map-slot getters return the borrowed retained
+ * source handle or NULL; SetAlbedoMap/SetAlbedoRenderTarget alias the diffuse
+ * slot and SetEmissiveRenderTarget aliases the emissive slot. */
+/// @brief Borrowed diffuse/albedo source or NULL. @param obj Borrowed Material3D handle.
+void *rt_material3d_get_texture(void *obj);
+/// @brief Borrowed normal-map source or NULL. @param obj Borrowed Material3D handle.
+void *rt_material3d_get_normal_map(void *obj);
+/// @brief Borrowed specular-map source or NULL. @param obj Borrowed Material3D handle.
+void *rt_material3d_get_specular_map(void *obj);
+/// @brief Borrowed emissive-map source or NULL. @param obj Borrowed Material3D handle.
+void *rt_material3d_get_emissive_map(void *obj);
+/// @brief Borrowed metallic-roughness source or NULL. @param obj Borrowed Material3D handle.
+void *rt_material3d_get_metallic_roughness_map(void *obj);
+/// @brief Borrowed ambient-occlusion source or NULL. @param obj Borrowed Material3D handle.
+void *rt_material3d_get_ao_map(void *obj);
+/// @brief Borrowed baked-GI lightmap source or NULL. @param obj Borrowed Material3D handle.
+void *rt_material3d_get_lightmap(void *obj);
+/// @brief Borrowed environment cubemap or NULL. @param obj Borrowed Material3D handle.
+void *rt_material3d_get_env_map(void *obj);
+/// @brief Fresh Vec3 of the emissive multiplier. @param obj Borrowed Material3D handle.
+void *rt_material3d_get_emissive_color(void *obj);
+/// @brief Retained specular exponent. @param obj Borrowed Material3D handle.
+double rt_material3d_get_shininess(void *obj);
+/// @brief Retained constant depth bias. @param obj Borrowed Material3D handle.
+double rt_material3d_get_depth_bias(void *obj);
+/// @brief Retained slope-scaled depth bias. @param obj Borrowed Material3D handle.
+double rt_material3d_get_depth_slope_bias(void *obj);
+/// @brief Retained custom parameter (0 out of range). @param obj Borrowed Material3D handle.
+/// @param index Zero-based parameter index.
+double rt_material3d_get_custom_param(void *obj, int64_t index);
+
 //=========================================================================
 // Light3D — directional, point, or ambient light source
 //=========================================================================
@@ -1930,6 +1961,64 @@ void rt_canvas3d_set_frustum_culling(void *canvas, int8_t enabled);
 /// @param canvas Borrowed Canvas3D handle.
 /// @param enabled Non-zero to enable history-backed coarse occlusion testing.
 void rt_canvas3d_set_occlusion_culling(void *canvas, int8_t enabled);
+
+/* Render-settings readback (ADR 0233) — each write-only setter's read peer over
+ * retained state. Handle-returning getters are borrowed (NULL when unbound);
+ * Vec3-returning getters allocate fresh snapshots. */
+/// @brief Retained shadow sampling bias. @param canvas Borrowed Canvas3D handle.
+double rt_canvas3d_get_shadow_bias(void *canvas);
+/// @brief Retained slope-scaled shadow bias. @param canvas Borrowed Canvas3D handle.
+double rt_canvas3d_get_shadow_slope_bias(void *canvas);
+/// @brief Retained shadow occlusion darkness. @param canvas Borrowed Canvas3D handle.
+double rt_canvas3d_get_shadow_strength(void *canvas);
+/// @brief Retained PCF filtering tier (0-2). @param canvas Borrowed Canvas3D handle.
+int64_t rt_canvas3d_get_shadow_quality(void *canvas);
+/// @brief Retained cascade count (>= 1). @param canvas Borrowed Canvas3D handle.
+int64_t rt_canvas3d_get_shadow_cascades(void *canvas);
+/// @brief Retained shadow-light slot budget. @param canvas Borrowed Canvas3D handle.
+int64_t rt_canvas3d_get_shadow_budget(void *canvas);
+/// @brief Retained per-cluster light-index capacity. @param canvas Borrowed Canvas3D handle.
+int64_t rt_canvas3d_get_cluster_light_budget(void *canvas);
+/// @brief Retained backface-cull flag. @param canvas Borrowed Canvas3D handle.
+int8_t rt_canvas3d_get_backface_cull(void *canvas);
+/// @brief Whether distance fog is active. @param canvas Borrowed Canvas3D handle.
+int8_t rt_canvas3d_get_fog_enabled(void *canvas);
+/// @brief Retained fog start distance. @param canvas Borrowed Canvas3D handle.
+double rt_canvas3d_get_fog_near(void *canvas);
+/// @brief Retained full-strength fog distance. @param canvas Borrowed Canvas3D handle.
+double rt_canvas3d_get_fog_far(void *canvas);
+/// @brief Fresh Vec3 of the retained fog color. @param canvas Borrowed Canvas3D handle.
+void *rt_canvas3d_get_fog_color(void *canvas);
+/// @brief Fresh Vec3 of the retained ambient color. @param canvas Borrowed Canvas3D handle.
+void *rt_canvas3d_get_ambient_color(void *canvas);
+/// @brief Borrowed retained skybox cubemap or NULL. @param canvas Borrowed Canvas3D handle.
+void *rt_canvas3d_get_skybox(void *canvas);
+/// @brief Borrowed retained render target or NULL. @param canvas Borrowed Canvas3D handle.
+void *rt_canvas3d_get_render_target(void *canvas);
+/// @brief Borrowed retained post-effect chain or NULL. @param canvas Borrowed Canvas3D handle.
+void *rt_canvas3d_get_post_fx(void *canvas);
+/// @brief Retained frustum-cull flag. @param canvas Borrowed Canvas3D handle.
+int8_t rt_canvas3d_get_frustum_culling(void *canvas);
+/// @brief Retained occlusion-cull flag. @param canvas Borrowed Canvas3D handle.
+int8_t rt_canvas3d_get_occlusion_culling(void *canvas);
+/// @brief Retained texture-streaming flag. @param canvas Borrowed Canvas3D handle.
+int8_t rt_canvas3d_get_texture_streaming(void *canvas);
+/// @brief Retained streaming mip bias. @param canvas Borrowed Canvas3D handle.
+double rt_canvas3d_get_texture_streaming_bias(void *canvas);
+/// @brief Retained delta-time cap in ms (0 = uncapped). @param canvas Borrowed Canvas3D handle.
+int64_t rt_canvas3d_get_dt_max(void *canvas);
+/// @brief Retained CPU-skinning override flag. @param canvas Borrowed Canvas3D handle.
+int8_t rt_canvas3d_get_force_cpu_skinning(void *canvas);
+/// @brief Whether an overlay clip rect is active. @param canvas Borrowed Canvas3D handle.
+int8_t rt_canvas3d_get_clip_rect_active(void *canvas);
+/// @brief Retained clip-rect left edge (0 when inactive). @param canvas Borrowed Canvas3D handle.
+int64_t rt_canvas3d_get_clip_rect_x(void *canvas);
+/// @brief Retained clip-rect top edge (0 when inactive). @param canvas Borrowed Canvas3D handle.
+int64_t rt_canvas3d_get_clip_rect_y(void *canvas);
+/// @brief Retained clip-rect width (0 when inactive). @param canvas Borrowed Canvas3D handle.
+int64_t rt_canvas3d_get_clip_rect_width(void *canvas);
+/// @brief Retained clip-rect height (0 when inactive). @param canvas Borrowed Canvas3D handle.
+int64_t rt_canvas3d_get_clip_rect_height(void *canvas);
 
 /* Instanced rendering + Terrain */
 /// @brief Submit a Mesh3DBatch for GPU-instanced rendering (one draw call per batch).

@@ -832,6 +832,18 @@ int8_t rt_game3d_input_released(void *input, int64_t key);
 /// @param input Input3D instance or snapshot used by the operation.
 /// @return The runtime handle described above, or NULL when unavailable.
 void *rt_game3d_input_mouse_delta(void *input);
+/// @brief Absolute window-local cursor X for this frame's snapshot (ADR 0233).
+/// @param input Input3D instance or snapshot used by the operation.
+/// @return Cursor X in pixels, or zero when unavailable.
+int64_t rt_game3d_input_get_mouse_x(void *input);
+/// @brief Absolute window-local cursor Y for this frame's snapshot (ADR 0233).
+/// @param input Input3D instance or snapshot used by the operation.
+/// @return Cursor Y in pixels, or zero when unavailable.
+int64_t rt_game3d_input_get_mouse_y(void *input);
+/// @brief Absolute window-local cursor position as a fresh Vec2 (ADR 0233).
+/// @param input Input3D instance or snapshot used by the operation.
+/// @return The runtime handle described above, or NULL when unavailable.
+void *rt_game3d_input_mouse_position(void *input);
 /// @brief True while the given mouse button is held down this frame.
 /// @param input Input3D instance or snapshot used by the operation.
 /// @param button Runtime mouse-button index.
@@ -1618,6 +1630,28 @@ void *rt_game3d_assets_load_model_template(rt_string path);
 /// @param path Runtime path string naming the requested resource.
 /// @return The runtime handle described above, or NULL when unavailable.
 void *rt_game3d_assets_load_model_template_asset(rt_string path);
+/* Result-carrying loader peers (ADR 0233) — ok wraps the loaded handle, err
+ * carries the asset-error diagnostic text. */
+/// @brief Result peer of `rt_game3d_assets_load_model`. @param path Requested resource path.
+void *rt_game3d_assets_load_model_result(rt_string path);
+/// @brief Result peer of `rt_game3d_assets_load_model_asset`. @param path Requested resource path.
+void *rt_game3d_assets_load_model_asset_result(rt_string path);
+/// @brief Result peer of `rt_game3d_assets_load_animation`.
+/// @param path Requested resource path. @param index Zero-based clip index.
+void *rt_game3d_assets_load_animation_result(rt_string path, int64_t index);
+/// @brief Result peer of `rt_game3d_assets_load_animation_asset`.
+/// @param path Requested resource path. @param index Zero-based clip index.
+void *rt_game3d_assets_load_animation_asset_result(rt_string path, int64_t index);
+/// @brief Result peer of `rt_game3d_assets_load_node_animation`.
+/// @param path Requested resource path. @param index Zero-based clip index.
+void *rt_game3d_assets_load_node_animation_result(rt_string path, int64_t index);
+/// @brief Result peer of `rt_game3d_assets_load_node_animation_asset`.
+/// @param path Requested resource path. @param index Zero-based clip index.
+void *rt_game3d_assets_load_node_animation_asset_result(rt_string path, int64_t index);
+/// @brief Result peer of `rt_game3d_assets_load_model_template`. @param path Resource path.
+void *rt_game3d_assets_load_model_template_result(rt_string path);
+/// @brief Result peer of `rt_game3d_assets_load_model_template_asset`. @param path Resource path.
+void *rt_game3d_assets_load_model_template_asset_result(rt_string path);
 /// @brief Load a filesystem model through the AssetHandle3D contract.
 /// @param path Runtime path string naming the requested resource.
 /// @return The runtime handle described above, or NULL when unavailable.

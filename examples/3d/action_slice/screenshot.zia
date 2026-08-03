@@ -1,0 +1,45 @@
+// ============================================================================
+// action_slice/screenshot.zia — capture the arena's README screenshot
+// ============================================================================
+// Renders the arena for a few seconds on the software backend and writes
+// screenshot.png beside the demo. Not registered in CI; run by hand after
+// visual changes:
+//   ZANNA_3D_BACKEND=software zanna run examples/3d/action_slice/screenshot.zia
+// ============================================================================
+
+bind "./arena";
+
+bind Zanna.Game3D;
+bind Zanna.Graphics3D;
+bind Zanna.Graphics.Pixels as Pixels;
+bind Zanna.Math;
+bind Zanna.Terminal;
+
+func start() {
+    var world = World3D.New("Action Slice", 960, 540);
+    var arena = new Arena();
+    arena.build(world);
+    // Real gameplay ticks: the day/night clock generates the sky, enemies
+    // orbit into varied poses.
+    var i = 0;
+    while i < 90 {
+        world.StepSimulation(0.016666666666666666);
+        arena.tick(world, 0.016666666666666666);
+        i = i + 1;
+    }
+    // Frame the arena from a fixed vantage for the still.
+    world.SetCameraController(null);
+    Camera3D.LookAt(world.Camera, Vec3.New(8.0, 5.0, 11.0), Vec3.New(0.0, 0.5, -2.0),
+                    Vec3.New(0.0, 1.0, 0.0));
+    world.RunFramesOnly(2, 0.016666666666666666);
+    var snap = world.CaptureFinalFrame();
+    if snap == null {
+        Say("FAIL: no final frame");
+        return;
+    }
+    if Pixels.SavePng(snap, "screenshot.png") != 1 {
+        Say("FAIL: save failed");
+        return;
+    }
+    Say("PASS: wrote screenshot.png");
+}

@@ -83,6 +83,8 @@ typedef struct {
     int64_t mouse_dy;
     double mouse_fdx;
     double mouse_fdy;
+    int64_t mouse_x;
+    int64_t mouse_y;
     double wheel_y;
     int64_t bound_pad;
     double pad_look_sensitivity;

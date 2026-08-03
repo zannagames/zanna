@@ -33,6 +33,7 @@ bind Clock = Zanna.Time.Clock;
 final EVENT_MOUSE_MOVE = 1;
 final EVENT_MOUSE_DOWN = 2;
 final EVENT_MOUSE_UP = 3;
+final EVENT_WHEEL = 4;
 final EVENT_KEY_DOWN = 5;
 final EVENT_KEY_UP = 6;
 final EVENT_CLOSE = 9;
@@ -47,12 +48,17 @@ class ScenePlayController {
     expose String statusText;
     hide EmbedHost.EmbedChannel channel;
     hide Boolean sawFrame;
-    hide Boolean mouseWasDown;
+    /// Edge state for the three forwarded mouse buttons (left/right/middle).
+    hide List[Boolean] buttonsWereDown;
     /// Last forwarded pointer position in whole game pixels (-1 = none).
     hide Integer lastMouseX;
     hide Integer lastMouseY;
     hide List[Integer] trackedKeys;
     hide List[Boolean] trackedDown;
+
+    hide func ResetButtonEdges() {
+        buttonsWereDown = [false, false, false];
+    }
 
     expose func init() {
         active = false;
@@ -60,7 +66,7 @@ class ScenePlayController {
         statusText = "";
         channel = null;
         sawFrame = false;
-        mouseWasDown = false;
+        ResetButtonEdges();
         lastMouseX = -1;
         lastMouseY = -1;
         trackedKeys = [];
@@ -79,7 +85,7 @@ class ScenePlayController {
         channelName = name;
         active = true;
         sawFrame = false;
-        mouseWasDown = false;
+        ResetButtonEdges();
         statusText = "Play: building…";
         SeedTrackedKeys();
         return name;
@@ -164,16 +170,32 @@ class ScenePlayController {
                 lastMouseY = pixelY;
             }
         }
-        var down = Input.Mouse.IsDown(0);
-        if down != mouseWasDown and inside {
-            var kind = EVENT_MOUSE_UP;
-            if down { kind = EVENT_MOUSE_DOWN; }
-            host.PushEvent(
-                kind,
-                Zanna.Core.Convert.NumToInt(localX),
-                Zanna.Core.Convert.NumToInt(localY), 0);
+        // All three buttons edge-forward with their index in the event's
+        // third field (the channel contract's button slot).
+        var button = 0;
+        while button < buttonsWereDown.count() {
+            var down = Input.Mouse.IsDown(button);
+            if down != buttonsWereDown.get(button) and inside {
+                var kind = EVENT_MOUSE_UP;
+                if down { kind = EVENT_MOUSE_DOWN; }
+                host.PushEvent(
+                    kind,
+                    Zanna.Core.Convert.NumToInt(localX),
+                    Zanna.Core.Convert.NumToInt(localY),
+                    button);
+            }
+            buttonsWereDown.set(button, down);
+            button = button + 1;
         }
-        mouseWasDown = down;
+        // Wheel motion forwards as the contract's deltaY*120 encoding.
+        var wheelDelta = Input.Mouse.WheelYFloat();
+        if inside and (wheelDelta > 0.0001 or wheelDelta < -0.0001) {
+            host.PushEvent(
+                EVENT_WHEEL,
+                Zanna.Core.Convert.NumToInt(localX),
+                Zanna.Core.Convert.NumToInt(localY),
+                Zanna.Core.Convert.NumToInt(wheelDelta * 120.0));
+        }
         PumpTrackedKeys(host);
     }
 
@@ -204,6 +226,21 @@ class ScenePlayController {
         AddKey(Input.Key.Digit1);
         AddKey(Input.Key.Digit2);
         AddKey(Input.Key.Digit3);
+        AddKey(Input.Key.Digit4);
+        AddKey(Input.Key.Digit5);
+        // Common gameplay verbs beyond movement: pause, map, inventory,
+        // crouch/prone toggles, and the save/load function keys.
+        AddKey(Input.Key.P);
+        AddKey(Input.Key.M);
+        AddKey(Input.Key.I);
+        AddKey(Input.Key.C);
+        AddKey(Input.Key.X);
+        AddKey(Input.Key.Z);
+        AddKey(Input.Key.V);
+        AddKey(Input.Key.G);
+        AddKey(Input.Key.T);
+        AddKey(Input.Key.F5);
+        AddKey(Input.Key.F9);
     }
 
     hide func AddKey(code: Integer) {

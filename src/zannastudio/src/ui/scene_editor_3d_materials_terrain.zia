@@ -799,6 +799,21 @@ class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBake
 
     /// @brief Import one supported asset path into the active VSCN document.
     expose override func ImportAssetPath(path: String) -> Boolean {
+        return ImportAssetPathAt(path, false, 0.0, 0.0, 0.0);
+    }
+
+    /// @brief Import one 3D asset, optionally placing it at a world point.
+    /// @details The drop pump resolves the pointer to a spawn point and
+    ///          passes it here; menu imports keep the authored source
+    ///          placement. Placement translates every merged root so the
+    ///          combined world bounds center lands on the spawn XZ and the
+    ///          bounds floor sits at the spawn height — all inside the one
+    ///          import transaction.
+    expose override func ImportAssetPathAt(path: String,
+                                           useSpawn: Boolean,
+                                           spawnX: Number,
+                                           spawnY: Number,
+                                           spawnZ: Number) -> Boolean {
         if path == "" or currentDoc == null { return false; }
         var imported = SceneAsset.LoadResult(path);
         if imported == null or imported.IsOk == false {
@@ -827,6 +842,7 @@ class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBake
         // the user's working area; only a previously empty document frames.
         var mergingIntoExisting =
             scene != null and scene.Root.ChildCount > 0;
+        var mergedRoots: List[SceneNode] = [];
         if scene == null {
             scene = importedScene;
         } else if importedCount > 0 {
@@ -848,7 +864,11 @@ class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBake
                     GUI.Toast.Error("3D asset merge failed");
                     return false;
                 }
+                mergedRoots.add(importedNode);
             }
+        }
+        if useSpawn and mergedRoots.count > 0 {
+            PlaceMergedRootsAt(mergedRoots, spawnX, spawnY, spawnZ);
         }
         loadError = "";
         selectedIndex = -1;
@@ -863,6 +883,65 @@ class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBake
         if mergingIntoExisting == false { FrameAll(); }
         return CommitScene(
             "Imported " + importedCount + " node(s) from " + Path.Name(path));
+    }
+
+    /// @brief Translate freshly merged import roots onto a world spawn point.
+    /// @details Combined-bounds center moves to the spawn XZ and the bounds
+    ///          floor to the spawn height; meshless imports (invalid bounds)
+    ///          move their first root's pivot to the spawn point instead.
+    hide func PlaceMergedRootsAt(mergedRoots: List[SceneNode],
+                                 spawnX: Number,
+                                 spawnY: Number,
+                                 spawnZ: Number) {
+        var combined = new SceneEditor3DModel.WorldBounds3D();
+        var i = 0;
+        while i < mergedRoots.count {
+            var bounds = NodeWorldBounds(mergedRoots.get(i));
+            if bounds != null and bounds.valid {
+                if combined.valid == false {
+                    combined.minX = bounds.minX;
+                    combined.minY = bounds.minY;
+                    combined.minZ = bounds.minZ;
+                    combined.maxX = bounds.maxX;
+                    combined.maxY = bounds.maxY;
+                    combined.maxZ = bounds.maxZ;
+                    combined.valid = true;
+                } else {
+                    if bounds.minX < combined.minX { combined.minX = bounds.minX; }
+                    if bounds.minY < combined.minY { combined.minY = bounds.minY; }
+                    if bounds.minZ < combined.minZ { combined.minZ = bounds.minZ; }
+                    if bounds.maxX > combined.maxX { combined.maxX = bounds.maxX; }
+                    if bounds.maxY > combined.maxY { combined.maxY = bounds.maxY; }
+                    if bounds.maxZ > combined.maxZ { combined.maxZ = bounds.maxZ; }
+                }
+            }
+            i = i + 1;
+        }
+        var deltaX = 0.0;
+        var deltaY = 0.0;
+        var deltaZ = 0.0;
+        if combined.valid {
+            deltaX = spawnX - (combined.minX + combined.maxX) * 0.5;
+            deltaY = spawnY - combined.minY;
+            deltaZ = spawnZ - (combined.minZ + combined.maxZ) * 0.5;
+        } else {
+            var pivot = mergedRoots.get(0).Position as Vec3;
+            if pivot == null { return; }
+            deltaX = spawnX - pivot.X;
+            deltaY = spawnY - pivot.Y;
+            deltaZ = spawnZ - pivot.Z;
+        }
+        i = 0;
+        while i < mergedRoots.count {
+            var node = mergedRoots.get(i);
+            var position = node.Position as Vec3;
+            if position != null {
+                node.SetPosition(position.X + deltaX,
+                                 position.Y + deltaY,
+                                 position.Z + deltaZ);
+            }
+            i = i + 1;
+        }
     }
 
     /// @brief Build one bounded snap-increment spinner in the options row.

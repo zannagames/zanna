@@ -2816,6 +2816,14 @@ void rt_canvas3d_set_post_fx(void *canvas, void *postfx) {
     c->postfx = postfx;
 }
 
+/// @brief `Canvas3D.PostFX` — borrowed retained post-effect chain (ADR 0233).
+/// @param canvas Canvas3D receiver or supported stack-wrapper handle.
+/// @return Borrowed PostFX3D handle, or NULL when no chain is attached.
+void *rt_canvas3d_get_post_fx(void *canvas) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
+    return c ? c->postfx : NULL;
+}
+
 /// @brief Last recoverable PostFX configuration error ("" when none) — see SetPostFX.
 /// @param obj Candidate PostFX3D chain.
 /// @return A new runtime string containing the last error, or an empty string when none exists.

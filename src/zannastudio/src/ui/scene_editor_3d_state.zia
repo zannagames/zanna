@@ -136,6 +136,7 @@ class SceneEditor3DState extends SceneEditor3DContract.SceneEditor3DContract06 {
     expose GUI.Button openPrefabSourceButton;
     expose GUI.Button reloadInstancesButton;
     expose GUI.Button unpackInstanceButton;
+    expose GUI.Button createPrefabButton;
     expose GUI.Button relinkInstanceButton;
     hide Boolean importBrowserInstanceMode;
     hide String pendingOpenPrefabPath;

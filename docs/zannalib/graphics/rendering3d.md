@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-03
 ---
 
 # 3D Rendering, Animation, and Environment
@@ -188,6 +188,26 @@ accessors and language-level property assignment where supported, such as
 ---
 
 ## Camera And Rendering
+
+### Canvas3D Render-Settings Readback (ADR 0233)
+
+Every write-only Canvas3D render setting now has a read-only property peer
+over the retained state, so options menus and inspectors can render their own
+current values:
+
+| Property | Type | Mirrors |
+|----------|------|---------|
+| `ShadowBias` / `ShadowSlopeBias` / `ShadowStrength` | Double | `SetShadowBias` / `SetShadowSlopeBias` / `SetShadowStrength` |
+| `ShadowQuality` / `ShadowCascades` / `ShadowBudget` / `ClusterLightBudget` | Integer | The matching `Set*` methods |
+| `BackfaceCull` / `FrustumCulling` / `OcclusionCulling` / `TextureStreaming` / `ForceCpuSkinning` | Boolean | The matching `Set*` methods |
+| `TextureStreamingBias` | Double | `SetTextureStreamingBias` |
+| `MaxDeltaTime` | Integer | `SetMaxDeltaTime` (milliseconds; `0` = uncapped) |
+| `FogEnabled` | Boolean | True between `SetFog` and `ClearFog` |
+| `FogNear` / `FogFar` | Double | The sanitized `SetFog` distances |
+| `FogColor` / `AmbientColor` | Object (`Vec3`) | Fresh snapshots of the retained colors |
+| `Skybox` / `RenderTarget` / `PostFX` | Object | Borrowed retained handles (`CubeMap3D` / `RenderTarget3D` / `PostFX3D`), `null` when unbound |
+| `ClipRectActive` | Boolean | True while an overlay clip rect is set |
+| `ClipRectX` / `ClipRectY` / `ClipRectWidth` / `ClipRectHeight` | Integer | The retained overlay clip rect (zeros while inactive) |
 
 ### Depth Precision (Reversed-Z)
 
@@ -763,6 +783,15 @@ transforms.
 | `QueryAABB(min, max)` | `Seq(SceneNode)(Vec3, Vec3)` | Return visible mesh nodes whose world AABB intersects the box |
 | `QuerySphere(center, radius)` | `Seq(SceneNode)(Vec3, Double)` | Return visible mesh nodes whose world AABB intersects the sphere |
 | `RaycastNodes(origin, direction, maxDistance)` | `SceneNode(Vec3, Vec3, Double)` | Return the closest visible mesh node hit by the ray |
+| `RaycastNodesPrecise(origin, direction, maxDistance)` | `SceneNode(Vec3, Vec3, Double)` | Triangle-accurate closest-hit raycast (ADR 0193) |
+| `RaycastNodesPreciseAll(origin, direction, maxDistance)` | `Seq(SceneNode)(Vec3, Vec3, Double)` | Triangle-accurate all-hits raycast, nearest first |
+| `RaycastPreciseHit(origin, direction, maxDistance)` | `RayHit3D(Vec3, Vec3, Double)` | Triangle-accurate raycast returning the hit point/normal/distance |
+| `CulledCount` | `Integer` | Nodes rejected by culling in the most recent `Draw` |
+| `Load(path)` / `Save(path)` | — | Whole-scene `.vscn`/`.scene3d` round trip |
+| `LoadResult(path)` | `Result(String)` | `Zanna.Result` peer of `Load`: ok wraps the scene, err carries the loader diagnostic (ADR 0227) |
+| `SaveToText()` / `LoadTextResult(virtualPath, text)` | — | Canonical text serialization and its Result-carrying inverse; `virtualPath` anchors relative prefab references (ADR 0190/0227) |
+| `AdoptAnimations(source)` | `Integer(Object)` | Retain-append every baked animation clip carried by `source`, skipping clips already carried; returns the number adopted (ADR 0227) |
+| `UnresolvedPrefabCount` | `Integer` | Prefab references that loaded as empty placeholders; gate startup on zero to catch broken references (ADR 0227) |
 | `SetNodeTransforms(nodes, values)` | `Void(Object, Object)` | Batch-apply packed TRS values (10 floats per node: `px,py,pz,qx,qy,qz,qw,sx,sy,sz`) to a list of nodes in one runtime call |
 | `Draw(canvas, camera)` | `Void(Object, Object)` | Draw visible node meshes |
 | `SyncBindings(dt)` | `Void(Double)` | Push physics, animation, and binding transforms |
@@ -897,7 +926,14 @@ world-space values.
 | `Position` | Object | Read/Write | Camera position as `Vec3` |
 | `Forward`  | Object | Read       | Unit forward vector as `Vec3` |
 | `Right`    | Object | Read       | Unit right vector as `Vec3` |
+| `Up`       | Object | Read       | Unit up vector as `Vec3` (second row of the view basis) |
 | `IsOrtho`  | Boolean | Read      | True when camera is in orthographic projection mode |
+| `OrthoSize` | Double | Read/Write | Orthographic half-height in world units |
+| `NearPlane` / `FarPlane` | Double | Read/Write | Authored clip planes |
+| `EffectiveNearPlane` / `EffectiveFarPlane` | Double | Read | Sanitized clip planes actually used for projection (near below `0.1` snaps to `0.1`) |
+| `AspectRatio` | Double | Read | Aspect ratio used for projection |
+| `ViewMatrix` | Object (`Mat4`) | Read | Cached view matrix exactly as submitted to the renderer |
+| `ProjectionMatrix` | Object (`Mat4`) | Read | Cached render projection (reversed-Z exactly as submitted on GPU backends) |
 
 #### Methods
 
@@ -907,6 +943,9 @@ world-space values.
 | `SetHorizontalFov(fov)` | `Void(Double)` | Convert a horizontal FOV in degrees to the camera's stored vertical FOV |
 | `Orbit(pivot, yaw, pitch, distance)` | `Void(Object, Double, Double, Double)` | Position and orient camera on a sphere around `pivot` |
 | `ScreenToRay(sx, sy, screenW, screenH)` | `Object(Integer, Integer, Integer, Integer)` | Return a normalized `Vec3` direction from a screen pixel |
+| `ScreenToRayOrigin(sx, sy, screenW, screenH)` | `Object(Integer, Integer, Integer, Integer)` | World-space ray origin for the same pixel; pair with `ScreenToRay` (and `Input3D.MousePosition()`) for picking |
+| `FirstPersonInit()` | `Void()` | Initialize FPS-camera state (yaw and pitch reset to zero) |
+| `FirstPersonUpdate(yawDelta, pitchDelta, moveFwd, moveRight, moveUp, speed, dt)` | `Void(Double ×7)` | Apply mouse-look deltas in degrees plus signed camera-relative movement axes at `speed` world units per second |
 | `Shake(amplitude, frequency, duration)` | `Void(Double, Double, Double)` | Start a procedural camera shake |
 | `SmoothFollow(target, speed, minDist, maxDist, height)` | `Void(Object, Double, Double, Double, Double)` | Lerp toward a target with distance clamping |
 | `SmoothLookAt(target, speed, roll)` | `Void(Object, Double, Double)` | Slerp the camera orientation toward a target |
@@ -1016,6 +1055,7 @@ sprite draws.
 | `SetAlbedoRenderTarget(rt)` | `Void(Object)` | Bind a `RenderTarget3D`'s live contents as the albedo texture |
 | `ClearAlbedoRenderTarget()` | `Void()` | Detach a render-target albedo binding |
 | `SetEmissiveRenderTarget(rt)` | `Void(Object)` | Bind a `RenderTarget3D`'s live contents as the emissive map (glowing monitors) |
+| `GetCustomParam(index)` | `Double(Integer)` | Read a shading-model custom parameter set by `SetCustomParam` (zero out of range) |
 
 Texture map methods accept `Pixels` or `TextureAsset3D` handles with either an
 active RGBA8 fallback or retained native mip blocks. KTX2 BC1, BC3, BC4/BC5,
@@ -1059,6 +1099,11 @@ the currently resident RGBA8 mip and native block source for each draw.
 | `HasAmbientOcclusionMap` | Boolean | Read | Ambient-occlusion map slot is bound |
 | `HasEnvMap` | Boolean | Read | Environment cubemap slot is bound |
 | `Reflectivity` | Double | Read/Write | Environment reflection strength |
+| `Texture` / `NormalMap` / `SpecularMap` / `EmissiveMap` / `MetallicRoughnessMap` / `AmbientOcclusionMap` / `Lightmap` | Object | Read | Borrowed bound source handle for each map slot (`Pixels`, `TextureAsset3D`, or `RenderTarget3D`), or `null` when unbound. Unlike the decoded `*Pixels` readbacks, these return the exact object that was bound (ADR 0233). `SetAlbedoMap`/`SetAlbedoRenderTarget` alias the `Texture` slot; `SetEmissiveRenderTarget` aliases `EmissiveMap` |
+| `EnvMap` | Object (`CubeMap3D`) | Read | Borrowed bound environment cubemap, or `null` |
+| `EmissiveColor` | Object (`Vec3`) | Read | Fresh snapshot of the emissive color multiplier |
+| `Shininess` | Double | Read | Retained legacy specular exponent |
+| `DepthBias` / `DepthSlopeBias` | Double | Read | Retained depth-bias terms as clamped by `SetDepthBias` |
 
 Texture setters accept `Pixels` handles, except `SetEnvMap`, which accepts a
 `CubeMap3D`. Passing `NULL` clears the slot and immediately updates the matching
@@ -1722,6 +1767,19 @@ backend and can accompany the hardware billboard batch.
 |------------|---------|--------|-------------|
 | `Count`    | Integer | Read   | Currently live particle count; terminal snapshots are excluded |
 | `IsEmitting` | Boolean | Read | True while the emitter is running |
+| `Rate` | Double | Read | Retained emission rate (ADR 0233; every emitter parameter below reads back the value its setter retained) |
+| `LifetimeMin` / `LifetimeMax` | Double | Read | Retained lifetime range |
+| `SpeedMin` / `SpeedMax` | Double | Read | Retained spawn-speed range |
+| `SizeStart` / `SizeEnd` | Double | Read | Retained size-over-life range |
+| `AlphaStart` / `AlphaEnd` | Double | Read | Retained alpha-over-life range |
+| `ColorStart` / `ColorEnd` | Integer | Read | Retained gradient endpoints, packed `0xRRGGBB` |
+| `Gravity` / `Position` / `Direction` / `EmitterSize` | Object (`Vec3`) | Read | Fresh snapshots of the retained emitter vectors |
+| `Spread` | Double | Read | Retained emission-cone spread |
+| `EmitterShape` | Integer | Read | Retained shape id (`0=point`, `1=sphere`, `2=box`) |
+| `Stretch` | Double | Read | Retained velocity-stretch factor |
+| `TrailLifetime` / `TrailSegments` | Double / Integer | Read | Retained ribbon-trail history seconds and control-point count |
+| `Softness` | Double | Read | Retained soft-particle fade distance |
+| `Texture` | Object (`Pixels`) | Read | Borrowed particle texture, or `null` |
 | `Seed`     | Integer | Read/Write | Deterministic RNG seed for this emitter's spawn stream. Emitters no longer share a process-global sequence, so setting an explicit seed makes an effect bit-identical across runs regardless of construction order |
 | `RenderFinalFrame` | Boolean | Read/Write | Keep an expired particle's exact endpoint drawable until the next valid update. Defaults to true without keeping the particle live. |
 | `DroppedTime` | Double | Read | Cumulative complete-step time discarded by the one-second-per-call catch-up budget |
@@ -1738,7 +1796,7 @@ backend and can accompany the hardware billboard batch.
 | `SetLifetime(min, max)` | `Void(Double, Double)` | Set particle lifetime range in seconds |
 | `SetSize(min, max)` | `Void(Double, Double)` | Set particle size range |
 | `SetGravity(x, y, z)` | `Void(Double, Double, Double)` | Apply per-particle gravity vector |
-| `SetColor(startColor, endColor)` | `Void(Integer, Integer)` | Set per-particle color gradient (`0xRRGGBBAA`) |
+| `SetColor(startColor, endColor)` | `Void(Integer, Integer)` | Set per-particle color gradient (packed `0xRRGGBB`; opacity comes from `SetAlpha`) |
 | `SetAlpha(start, end)` | `Void(Double, Double)` | Set per-particle alpha fade |
 | `SetRate(particlesPerSecond)` | `Void(Double)` | Set continuous emission rate |
 | `SetTexture(pixels)` | `Void(Object)` | Set the particle sprite texture |
@@ -2127,6 +2185,14 @@ Animated water plane with wave simulation, reflections, and normal mapping.
 | Property | Type | Access | Description |
 |----------|------|--------|-------------|
 | `SimDistance` | Number | Read/Write | Camera distance beyond which the per-frame CPU wave rebuild is skipped (the last simulated surface keeps rendering). `0` (default) always simulates. Large or many water bodies should set this to their visible range — a 256-resolution surface rebuilds ~66K vertices per frame otherwise |
+| `Height` | Double | Read | Retained surface height (world Y) |
+| `Position` | Object (`Vec3`) | Read | Fresh snapshot of the surface center and height |
+| `WaveSpeed` / `WaveAmplitude` / `WaveFrequency` | Double | Read | Retained legacy single-wave parameters (ADR 0227) |
+| `Color` | Object (`Vec3`) | Read | Fresh snapshot of the retained tint |
+| `Alpha` / `Reflectivity` | Double | Read | Retained opacity and reflection strength |
+| `Resolution` | Integer | Read | Retained grid quads per axis |
+| `Texture` / `NormalMap` | Object (`Pixels`) | Read | Borrowed bound surfaces, `null` when unbound |
+| `EnvMap` | Object (`CubeMap3D`) | Read | Borrowed reflection cubemap, `null` when unbound |
 
 #### Methods
 
@@ -2170,6 +2236,35 @@ GPU-instanced foliage (grass, bushes) with density map, wind animation, and LOD.
 
 Vegetation draws use a double-sided blade material instead of mutating the
 canvas-wide backface-cull flag.
+
+---
+
+### Zanna.Graphics3D.Sky3D
+
+Deterministic procedural sky: a CPU-generated cubemap evaluated from sun
+direction, turbidity, and ground albedo (turbidity-tinted horizon, sun disc
+and halo, night fade). `Update(canvas)` regenerates the cubemap when dirty and
+installs it through the normal skybox path, so fog and image-based lighting
+observe the same environment.
+
+**Type:** Instance (obj)
+**Constructor:** `Sky3D.New()`
+
+| Method / Property | Signature | Description |
+|-------------------|-----------|-------------|
+| `SetSunDirection(dir)` | `Void(Object)` | Set the (normalized-on-load) direction toward the sun as a `Vec3` |
+| `SetGroundAlbedo(r, g, b)` | `Void(Double, Double, Double)` | Set the ground-bounce color, clamped to `[0, 1]` |
+| `SunDirection` | Object (`Vec3`) | Fresh snapshot of the normalized sun direction (ADR 0233) |
+| `GroundAlbedo` | Object (`Vec3`) | Fresh snapshot of the retained ground albedo (ADR 0233) |
+| `Turbidity` | Double (Read/Write) | Atmospheric haze factor |
+| `Resolution` | Integer (Read/Write) | Cubemap face resolution |
+| `Dirty` | Boolean (Read) | True while authored parameters are newer than the generated cubemap |
+| `Cubemap` | Object (Read) | Retained generated `CubeMap3D`, `null` before the first `Update` |
+| `Update(canvas)` | `Boolean(Object)` | Regenerate if dirty and install as `canvas`'s skybox (`null` skips the install) |
+
+Pair with `TimeOfDay3D`, which drives a `Light3D` and a bound `Sky3D` from an
+hour-of-day and latitude (`Hours`, `Latitude`, `SunDirection` readback, and
+per-frame `Advance`); see the Graphics3D guide for the full class table.
 
 ---
 

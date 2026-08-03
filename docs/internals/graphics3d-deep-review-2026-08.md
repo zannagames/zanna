@@ -186,7 +186,10 @@ The trust gaps are all at the GPU/platform boundary:
    It is also the feature-weakest backend: no `shadow_atlas_slots` (GAP-8 —
    point/omni shadows dead on Linux), no 5–8-influence GPU skinning, probed
    HDR. Implementing the OpenGL shadow-atlas hook closes the biggest
-   user-visible platform gap.
+   user-visible platform gap. *Tranche-3 execution note (2026-08-03): the
+   OpenGL TU is compile-guarded to `__linux__`, so this item cannot be
+   built or validated from a macOS host — deferred to a Linux session; the
+   remainder of tranche 3 executed.*
 2. **Metal debt**: no `get_backend_stats` (GAP-10 — all 7 `Backend*` stats
    read 0 on macOS), shared-helper test is 870 lines vs D3D11's 2,492, no
    Metal point-shadow probe despite the capability being advertised.

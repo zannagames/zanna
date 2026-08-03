@@ -595,6 +595,14 @@ void rt_canvas3d_set_render_target(void *canvas, void *target) {
         c->backend->set_render_target(c->backend_ctx, rtd->target);
 }
 
+/// @brief `Canvas3D.RenderTarget` — borrowed retained render target (ADR 0233).
+/// @param canvas Canvas3D receiver or supported stack-wrapper handle.
+/// @return Borrowed RenderTarget3D handle, or NULL when rendering to the window.
+void *rt_canvas3d_get_render_target(void *canvas) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
+    return c ? c->render_target_owner : NULL;
+}
+
 /// @brief Unbind the render target. Subsequent rendering goes to the window.
 /// @param canvas Window-backed Canvas3D whose retained target is released.
 void rt_canvas3d_reset_render_target(void *canvas) {

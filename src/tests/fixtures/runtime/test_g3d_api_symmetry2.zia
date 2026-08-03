@@ -1,0 +1,308 @@
+// ============================================================================
+// MODULE: test_g3d_api_symmetry2
+// PURPOSE: Regress the ADR 0233 API-symmetry surface end to end: physics
+//          week-one knobs (SetMass, Gravity readback, world body/joint
+//          enumeration), Canvas3D render-settings readback, Material3D map
+//          slots, Particles3D emitter readback, Sky3D environment readback,
+//          joint body/parameter readback, Input3D absolute cursor state, and
+//          the Result-carrying Game3D loader peers.
+// ============================================================================
+
+module test_g3d_api_symmetry2;
+
+bind Zanna.Graphics.Pixels as Pixels;
+bind Zanna.Graphics3D;
+bind Zanna.Game3D;
+bind Zanna.Math;
+bind Vec3 = Zanna.Math.Vec3;
+bind Zanna.Terminal;
+
+func near(a: Number, b: Number) -> Boolean {
+    var d = a - b;
+    if d < 0.0 { d = 0.0 - d; }
+    return d < 0.000001;
+}
+
+func fail(reason: String) {
+    Say("FAIL: " + reason);
+}
+
+func start() {
+    // --- Physics: gravity readback, enumeration, SetMass ------------------
+    var world = PhysicsWorld3D.New(0.0, -5.5, 0.0);
+    var gravity = world.Gravity;
+    if near(gravity.Y, -5.5) == false {
+        fail("PhysicsWorld3D.Gravity did not read back the constructor value");
+        return;
+    }
+    world.SetGravity(1.0, -9.8, 2.0);
+    gravity = world.Gravity;
+    if near(gravity.X, 1.0) == false or near(gravity.Z, 2.0) == false {
+        fail("PhysicsWorld3D.Gravity did not follow SetGravity");
+        return;
+    }
+
+    var bodyA = PhysicsBody3D.NewAABB(1.0, 1.0, 1.0, 2.0);
+    var bodyB = PhysicsBody3D.Sphere(0.5, 4.0);
+    world.Add(bodyA);
+    world.Add(bodyB);
+    if world.BodyCount != 2 {
+        fail("PhysicsWorld3D.BodyCount drifted after two adds");
+        return;
+    }
+    if world.GetBody(0) == null or world.GetBody(1) == null {
+        fail("PhysicsWorld3D.GetBody returned null for in-range indices");
+        return;
+    }
+    if world.GetBody(2) != null or world.GetBody(0 - 1) != null {
+        fail("PhysicsWorld3D.GetBody accepted an out-of-range index");
+        return;
+    }
+
+    if near(bodyB.Mass, 4.0) == false {
+        fail("PhysicsBody3D.Mass did not read back the constructor value");
+        return;
+    }
+    bodyB.SetMass(8.0);
+    if near(bodyB.Mass, 8.0) == false {
+        fail("PhysicsBody3D.SetMass did not update Mass readback");
+        return;
+    }
+
+    var hinge = HingeJoint3D.New(bodyA, bodyB, Vec3.New(0.0, 0.0, 0.0), Vec3.New(0.0, 1.0, 0.0));
+    world.AddJoint(hinge, 2);
+    if world.JointCount != 1 or world.GetJoint(0) == null {
+        fail("PhysicsWorld3D.GetJoint did not enumerate the registered hinge");
+        return;
+    }
+    if hinge.BodyA == null or hinge.BodyB == null {
+        fail("HingeJoint3D.BodyA/BodyB did not read back the connected bodies");
+        return;
+    }
+    hinge.SetMotor(true, 2.5, 7.0);
+    hinge.SetLimits(0.25, 1.5);
+    if hinge.MotorEnabled == false or near(hinge.MotorTargetVelocity, 2.5) == false
+       or near(hinge.MotorMaxImpulse, 7.0) == false {
+        fail("HingeJoint3D motor readback drifted");
+        return;
+    }
+    if hinge.LimitsEnabled == false or near(hinge.LimitMin, 0.25) == false
+       or near(hinge.LimitMax, 1.5) == false {
+        fail("HingeJoint3D limit readback drifted");
+        return;
+    }
+
+    var frameA = Zanna.Math.Mat4.Identity();
+    var frameB = Zanna.Math.Mat4.Identity();
+    var sixdof = SixDofJoint3D.New(bodyA, bodyB, frameA, frameB);
+    sixdof.SetLinearLimits(Vec3.New(0.0 - 1.0, 0.0 - 2.0, 0.0 - 3.0), Vec3.New(1.0, 2.0, 3.0));
+    sixdof.SetLinearMotor(true, Vec3.New(0.5, 0.0, 0.0), 9.0);
+    var linMax = sixdof.LinearLimitMax;
+    if near(linMax.X, 1.0) == false or near(linMax.Z, 3.0) == false {
+        fail("SixDofJoint3D.LinearLimitMax readback drifted");
+        return;
+    }
+    var motorVel = sixdof.LinearMotorVelocity;
+    if sixdof.LinearMotorEnabled == false or near(motorVel.X, 0.5) == false
+       or near(sixdof.LinearMotorMaxImpulse, 9.0) == false {
+        fail("SixDofJoint3D linear motor readback drifted");
+        return;
+    }
+    if sixdof.BodyA == null or sixdof.BodyB == null {
+        fail("SixDofJoint3D.BodyA/BodyB did not read back the connected bodies");
+        return;
+    }
+
+    // --- Canvas3D render-settings readback --------------------------------
+    var target = RenderTarget3D.New(64, 48);
+    var canvas = Canvas3D.NewOffscreen(target);
+    canvas.SetShadowBias(0.01);
+    canvas.SetShadowSlopeBias(2.0);
+    canvas.SetShadowStrength(0.5);
+    canvas.SetShadowQuality(2);
+    canvas.SetShadowBudget(3);
+    canvas.SetClusterLightBudget(16);
+    canvas.SetBackfaceCull(false);
+    canvas.SetFrustumCulling(false);
+    canvas.SetOcclusionCulling(true);
+    canvas.SetTextureStreaming(true);
+    canvas.SetTextureStreamingBias(1.5);
+    canvas.SetMaxDeltaTime(250);
+    canvas.SetForceCpuSkinning(true);
+    if near(canvas.ShadowBias, 0.01) == false or near(canvas.ShadowSlopeBias, 2.0) == false
+       or near(canvas.ShadowStrength, 0.5) == false or canvas.ShadowQuality != 2
+       or canvas.ShadowBudget != 3 or canvas.ClusterLightBudget != 16 {
+        fail("Canvas3D shadow/cluster readback drifted");
+        return;
+    }
+    if canvas.BackfaceCull or canvas.FrustumCulling or canvas.OcclusionCulling == false
+       or canvas.TextureStreaming == false or near(canvas.TextureStreamingBias, 1.5) == false
+       or canvas.MaxDeltaTime != 250 or canvas.ForceCpuSkinning == false {
+        fail("Canvas3D flag readback drifted");
+        return;
+    }
+    if canvas.FogEnabled {
+        fail("Canvas3D.FogEnabled reported fog before SetFog");
+        return;
+    }
+    canvas.SetFog(2.0, 40.0, 0.2, 0.3, 0.4);
+    var fogColor = canvas.FogColor;
+    if canvas.FogEnabled == false or near(canvas.FogNear, 2.0) == false
+       or near(canvas.FogFar, 40.0) == false or near(fogColor.Y, 0.3) == false {
+        fail("Canvas3D fog readback drifted");
+        return;
+    }
+    canvas.SetAmbient(0.1, 0.2, 0.3);
+    var ambient = canvas.AmbientColor;
+    if near(ambient.X, 0.1) == false or near(ambient.Z, 0.3) == false {
+        fail("Canvas3D.AmbientColor readback drifted");
+        return;
+    }
+    if canvas.ClipRectActive {
+        fail("Canvas3D.ClipRectActive reported a clip before SetClipRect2D");
+        return;
+    }
+    canvas.SetClipRect2D(4, 6, 32, 24);
+    if canvas.ClipRectActive == false or canvas.ClipRectX != 4 or canvas.ClipRectY != 6
+       or canvas.ClipRectWidth != 32 or canvas.ClipRectHeight != 24 {
+        fail("Canvas3D clip-rect readback drifted");
+        return;
+    }
+    if canvas.RenderTarget == null {
+        fail("Canvas3D.RenderTarget lost the offscreen target");
+        return;
+    }
+    if canvas.PostFX != null or canvas.Skybox != null {
+        fail("Canvas3D.PostFX/Skybox reported bindings before any were set");
+        return;
+    }
+    var chain = PostFX3D.New();
+    canvas.SetPostFX(chain);
+    if canvas.PostFX == null {
+        fail("Canvas3D.PostFX did not read back the attached chain");
+        return;
+    }
+
+    // --- Material3D map slots and scalars ---------------------------------
+    var mat = Material3D.New();
+    if mat.Texture != null or mat.NormalMap != null or mat.EnvMap != null {
+        fail("Material3D map slots reported bindings before any were set");
+        return;
+    }
+    var pix = new Pixels(4, 4);
+    mat.SetTexture(pix);
+    mat.SetNormalMap(pix);
+    mat.SetLightmap(pix);
+    if mat.Texture == null or mat.NormalMap == null or mat.Lightmap == null {
+        fail("Material3D map slots did not read back bound sources");
+        return;
+    }
+    mat.SetEmissiveColor(0.5, 0.25, 0.75);
+    mat.SetShininess(64.0);
+    mat.SetDepthBias(0.02, 0.5);
+    mat.SetCustomParam(3, 42.0);
+    var emissive = mat.EmissiveColor;
+    if near(emissive.X, 0.5) == false or near(emissive.Z, 0.75) == false
+       or near(mat.Shininess, 64.0) == false or near(mat.DepthBias, 0.02) == false
+       or near(mat.DepthSlopeBias, 0.5) == false or near(mat.GetCustomParam(3), 42.0) == false {
+        fail("Material3D scalar readback drifted");
+        return;
+    }
+    if near(mat.GetCustomParam(99), 0.0) == false {
+        fail("Material3D.GetCustomParam accepted an out-of-range index");
+        return;
+    }
+
+    // --- Particles3D emitter readback -------------------------------------
+    var particles = Particles3D.New(64);
+    particles.SetRate(12.0);
+    particles.SetLifetime(0.5, 2.5);
+    particles.SetSpeed(1.0, 3.0);
+    particles.SetSize(0.25, 0.75);
+    particles.SetAlpha(0.9, 0.1);
+    particles.SetColor(0xFF8040, 0x102030);
+    particles.SetGravity(0.0, 0.0 - 4.0, 0.0);
+    particles.SetDirection(0.0, 1.0, 0.0, 0.3);
+    particles.SetPosition(1.0, 2.0, 3.0);
+    particles.SetEmitterShape(2);
+    particles.SetEmitterSize(0.5, 1.0, 1.5);
+    particles.SetStretch(0.2);
+    particles.SetTrail(0.4, 6);
+    particles.SetSoftness(0.6);
+    if near(particles.Rate, 12.0) == false or near(particles.LifetimeMin, 0.5) == false
+       or near(particles.LifetimeMax, 2.5) == false or near(particles.SpeedMin, 1.0) == false
+       or near(particles.SpeedMax, 3.0) == false or near(particles.SizeStart, 0.25) == false
+       or near(particles.SizeEnd, 0.75) == false or near(particles.AlphaStart, 0.9) == false
+       or near(particles.AlphaEnd, 0.1) == false {
+        fail("Particles3D scalar emitter readback drifted");
+        return;
+    }
+    if particles.ColorStart != 0xFF8040 or particles.ColorEnd != 0x102030 {
+        fail("Particles3D packed color readback drifted");
+        return;
+    }
+    var pGravity = particles.Gravity;
+    var pPos = particles.Position;
+    var pDir = particles.Direction;
+    var pSize = particles.EmitterSize;
+    if near(pGravity.Y, 0.0 - 4.0) == false or near(pPos.Z, 3.0) == false
+       or near(pDir.Y, 1.0) == false or near(particles.Spread, 0.3) == false
+       or particles.EmitterShape != 2 or near(pSize.Z, 1.5) == false {
+        fail("Particles3D vector emitter readback drifted");
+        return;
+    }
+    if near(particles.Stretch, 0.2) == false or near(particles.TrailLifetime, 0.4) == false
+       or particles.TrailSegments != 6 or near(particles.Softness, 0.6) == false {
+        fail("Particles3D stretch/trail/softness readback drifted");
+        return;
+    }
+    if particles.Texture != null {
+        fail("Particles3D.Texture reported a binding before any was set");
+        return;
+    }
+
+    // --- Sky3D environment readback ---------------------------------------
+    var sky = Sky3D.New();
+    sky.SetSunDirection(Vec3.New(0.0, 1.0, 0.0));
+    sky.SetGroundAlbedo(0.2, 0.3, 0.4);
+    var sun = sky.SunDirection;
+    var albedo = sky.GroundAlbedo;
+    if near(sun.Y, 1.0) == false or near(albedo.X, 0.2) == false
+       or near(albedo.Z, 0.4) == false {
+        fail("Sky3D readback drifted");
+        return;
+    }
+
+    // --- Input3D absolute cursor state ------------------------------------
+    var input = Input3D.New();
+    input.Update();
+    var mousePos = input.MousePosition();
+    if mousePos == null {
+        fail("Input3D.MousePosition returned null");
+        return;
+    }
+    if near(mousePos.X, 1.0 * input.MouseX) == false
+       or near(mousePos.Y, 1.0 * input.MouseY) == false {
+        fail("Input3D.MousePosition disagreed with MouseX/MouseY");
+        return;
+    }
+
+    // --- Result-carrying Game3D loader peers ------------------------------
+    var badPrefab = Prefab.LoadResult("/nonexistent/prefab_source.gltf");
+    if badPrefab == null or badPrefab.IsOk {
+        fail("Prefab.LoadResult did not report a missing file as err");
+        return;
+    }
+    var badEntity = Assets3D.LoadEntityResult("/nonexistent/entity_source.gltf");
+    if badEntity == null or badEntity.IsOk {
+        fail("Assets3D.LoadEntityResult did not report a missing file as err");
+        return;
+    }
+    var badClip = Assets3D.LoadAnimationResult("/nonexistent/clip_source.gltf", 0);
+    if badClip == null or badClip.IsOk {
+        fail("Assets3D.LoadAnimationResult did not report a missing file as err");
+        return;
+    }
+
+    Say("PASS");
+}

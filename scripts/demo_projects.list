@@ -11,6 +11,10 @@ crackman|games|crackman
 chess|games|chess
 baseball|games|baseball
 
+# 3D demos
+action_slice|3d|action_slice
+game3d_starter|3d|game3d_starter
+
 # Applications
 paint|apps|paint
 zannasql|apps|zannasql

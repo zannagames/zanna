@@ -2093,6 +2093,17 @@ void rt_canvas3d_set_skybox(void *canvas, void *cubemap) {
     rt_canvas3d_invalidate_skybox_cache(c);
 }
 
+/// @brief `Canvas3D.Skybox` — borrowed retained skybox cubemap (ADR 0233).
+/// @param canvas Canvas3D receiver or supported stack-wrapper handle.
+/// @return Borrowed CubeMap3D handle, or NULL when no skybox is bound.
+void *rt_canvas3d_get_skybox(void *canvas) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(canvas);
+    if (!c)
+        return NULL;
+    canvas3d_repair_skybox_slot(c);
+    return cubemap_handle_valid(c->skybox) ? c->skybox : NULL;
+}
+
 /// @brief Remove the skybox from the canvas (reverts to solid clear color).
 /// @param canvas Canvas3D receiver or supported stack-wrapper handle; invalid
 ///   receivers are ignored.

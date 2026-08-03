@@ -9,6 +9,43 @@ func fail(message: String) {
     Terminal.Say("FAIL: " + message);
 }
 
+// Regression (2026-08-03): hitboxes built inside a helper whose locals die
+// before stepping must stay alive through the entity's combat registration.
+// The pre-fix constructor dropped the caller-adopted reference, so scoped
+// creation freed the hitbox and the combat pass read use-after-free volumes
+// (phantom hits at garbage points, or silent misses).
+func armScopedPair(attacker: Game3D.Entity3D, victim: Game3D.Entity3D) {
+    var hitShape = G3D.Collider3D.Sphere(0.4);
+    var hit = Game3D.Hitbox3D.New(attacker, hitShape);
+    hit.Kind = Game3D.HitboxKind.get_Hit();
+    hit.Team = 11;
+    hit.SetLocalOffset(0.0, 0.0, -0.7);
+    hit.IsActive = true;
+    var hurtShape = G3D.Collider3D.Sphere(0.5);
+    var hurt = Game3D.Hitbox3D.New(victim, hurtShape);
+    hurt.Team = 12;
+}
+
+func scopedLifetimeCase() -> Boolean {
+    var world = Game3D.World3D.New("Combat Scoped Lifetime", 64, 48);
+    world.SetGravity(0.0, 0.0, 0.0);
+    var attacker = Game3D.Entity3D.New();
+    attacker.SetPosition(0.0, 1.0, 0.0);
+    world.Spawn(attacker);
+    var victim = Game3D.Entity3D.New();
+    victim.SetPosition(0.0, 1.0, -1.0);
+    world.Spawn(victim);
+    armScopedPair(attacker, victim);
+    world.StepSimulation(0.016666666666666666);
+    var hits = world.HitEventCount();
+    world.Destroy();
+    if hits != 1 {
+        fail("scoped hitbox creation should still land exactly one hit (got " + hits + ")");
+        return false;
+    }
+    return true;
+}
+
 func near(a: Float, b: Float, eps: Float) -> Boolean {
     var d = a - b;
     if (d < 0.0) { d = 0.0 - d; }
@@ -16,6 +53,10 @@ func near(a: Float, b: Float, eps: Float) -> Boolean {
 }
 
 func start() {
+    if scopedLifetimeCase() == false {
+        return;
+    }
+
     var world = Game3D.World3D.New("Game3D Combat Probe", 64, 48);
     world.SetGravity(0.0, 0.0, 0.0);
 

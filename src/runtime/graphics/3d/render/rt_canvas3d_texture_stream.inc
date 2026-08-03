@@ -455,6 +455,14 @@ void rt_canvas3d_set_texture_streaming(void *obj, int8_t enabled) {
     c->texture_stream_enabled = enabled ? 1 : 0;
 }
 
+/// @brief `Canvas3D.TextureStreaming` — read the retained streaming flag (ADR 0233).
+/// @param obj Canvas3D receiver or supported stack-wrapper handle.
+/// @return Nonzero while automatic texture streaming is enabled.
+int8_t rt_canvas3d_get_texture_streaming(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->texture_stream_enabled ? 1 : 0;
+}
+
 /// @brief Bias automatic streaming's desired mip (positive drops more detail).
 /// @details Applied after the screen-coverage estimate and before clamping to
 ///          the mip chain; fractional values act as a soft threshold shift.
@@ -473,6 +481,14 @@ void rt_canvas3d_set_texture_streaming_bias(void *obj, double bias) {
     if (bias > 16.0)
         bias = 16.0;
     c->texture_stream_bias = bias;
+}
+
+/// @brief `Canvas3D.TextureStreamingBias` — read the retained mip bias (ADR 0233).
+/// @param obj Canvas3D receiver or supported stack-wrapper handle.
+/// @return Retained bias in [-16, 16], or zero for an invalid handle.
+double rt_canvas3d_get_texture_streaming_bias(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? c->texture_stream_bias : 0.0;
 }
 
 /// @brief Lifetime count of resident-window demotions applied by streaming.

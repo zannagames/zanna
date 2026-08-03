@@ -151,6 +151,7 @@ class SceneEditor3DStateInitialization extends PreviousLayer.SceneEditor3DState 
         reloadInstancesButton = null;
         unpackInstanceButton = null;
         relinkInstanceButton = null;
+        createPrefabButton = null;
         importBrowserInstanceMode = false;
         pendingOpenPrefabPath = "";
         materialLibraryGroup = null;

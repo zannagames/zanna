@@ -187,6 +187,23 @@ void rt_world3d_remove_joint(void *world, void *joint);
 /// @return Safely validated registered joint count.
 int64_t rt_world3d_joint_count(void *world);
 
+/// @brief Fresh `Vec3` snapshot of the retained gravity vector (ADR 0233).
+/// @param world World3D handle to inspect.
+/// @return Newly allocated gravity vector; origin for an invalid world.
+void *rt_world3d_get_gravity(void *world);
+
+/// @brief Borrowed registered body by index (ADR 0233).
+/// @param world World3D handle to inspect.
+/// @param index Zero-based index below `rt_world3d_body_count`.
+/// @return Borrowed body handle, or NULL when out of range.
+void *rt_world3d_get_body_at(void *world, int64_t index);
+
+/// @brief Borrowed registered joint by index (ADR 0233).
+/// @param world World3D handle to inspect.
+/// @param index Zero-based index below `rt_world3d_joint_count`.
+/// @return Borrowed joint handle, or NULL when out of range.
+void *rt_world3d_get_joint_at(void *world, int64_t index);
+
 /// @brief Number of iterative solver passes used for constraints.
 /// @param world World3D handle to inspect.
 /// @return Configured velocity/constraint solver iteration count.
@@ -967,6 +984,11 @@ void *rt_body3d_get_ground_normal(void *body);
 /// @param body Body3D handle to inspect.
 /// @return Effective simulation mass in kilograms, or zero for an immovable or invalid body.
 double rt_body3d_get_mass(void *body);
+
+/// @brief Change the body's mass and refresh derived state (ADR 0233).
+/// @param body Body3D handle to modify.
+/// @param mass Requested mass; non-finite or negative input clamps to zero.
+void rt_body3d_set_mass(void *body, double mass);
 
 /* Trigger3D — standalone AABB zone with enter/exit detection */
 /// @brief Create a standalone trigger zone (axis-aligned box from min to max corner).

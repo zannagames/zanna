@@ -66,6 +66,8 @@ void game3d_input_repair_state(rt_game3d_input *input) {
     input->mouse_dy = game3d_clamp_mouse_delta_i64(input->mouse_dy);
     input->mouse_fdx = game3d_clamp_abs_or(input->mouse_fdx, 0.0, RT_GAME3D_COORD_ABS_MAX);
     input->mouse_fdy = game3d_clamp_abs_or(input->mouse_fdy, 0.0, RT_GAME3D_COORD_ABS_MAX);
+    input->mouse_x = game3d_clamp_mouse_delta_i64(input->mouse_x);
+    input->mouse_y = game3d_clamp_mouse_delta_i64(input->mouse_y);
     input->wheel_y = game3d_clamp_abs_or(input->wheel_y, 0.0, RT_GAME3D_COORD_ABS_MAX);
     input->pad_look_sensitivity =
         game3d_nonnegative_clamped_or(input->pad_look_sensitivity, 1.5, 20.0);
@@ -149,6 +151,8 @@ void rt_game3d_input_update(void *obj) {
     input->mouse_dy = game3d_clamp_mouse_delta_i64(rt_mouse_delta_y());
     input->mouse_fdx = game3d_clamp_abs_or(rt_mouse_delta_xf(), 0.0, RT_GAME3D_COORD_ABS_MAX);
     input->mouse_fdy = game3d_clamp_abs_or(rt_mouse_delta_yf(), 0.0, RT_GAME3D_COORD_ABS_MAX);
+    input->mouse_x = game3d_clamp_mouse_delta_i64(rt_mouse_x());
+    input->mouse_y = game3d_clamp_mouse_delta_i64(rt_mouse_y());
     input->wheel_y = game3d_clamp_abs_or(rt_mouse_wheel_yf(), 0.0, RT_GAME3D_COORD_ABS_MAX);
     /* Snapshot bound-gamepad stick axes so Move/LookAxis observe a coherent
      * frame even if the pad is polled again mid-frame. */
@@ -199,6 +203,33 @@ void *rt_game3d_input_mouse_delta(void *obj) {
     rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.mouseDelta: invalid input");
     return rt_vec2_new(input ? game3d_input_mouse_fdx(input) : 0.0,
                        input ? game3d_input_mouse_fdy(input) : 0.0);
+}
+
+/// @brief Absolute window-local cursor X for this frame's snapshot (ADR 0233).
+/// @param obj Input3D runtime handle.
+/// @return Cursor X in pixels, or zero when invalid.
+int64_t rt_game3d_input_get_mouse_x(void *obj) {
+    rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.get_MouseX: invalid input");
+    return input ? game3d_input_mouse_x(input) : 0;
+}
+
+/// @brief Absolute window-local cursor Y for this frame's snapshot (ADR 0233).
+/// @param obj Input3D runtime handle.
+/// @return Cursor Y in pixels, or zero when invalid.
+int64_t rt_game3d_input_get_mouse_y(void *obj) {
+    rt_game3d_input *input = game3d_input_checked(obj, "Game3D.Input3D.get_MouseY: invalid input");
+    return input ? game3d_input_mouse_y(input) : 0;
+}
+
+/// @brief Absolute window-local cursor position as a fresh Vec2 (ADR 0233).
+/// @details Pairs with `Camera3D.ScreenToRay`/`ScreenToRayOrigin` for picking.
+/// @param obj Input3D runtime handle.
+/// @return A newly allocated Vec2 with the snapshot-aware cursor position.
+void *rt_game3d_input_mouse_position(void *obj) {
+    rt_game3d_input *input =
+        game3d_input_checked(obj, "Game3D.Input3D.mousePosition: invalid input");
+    return rt_vec2_new(input ? (double)game3d_input_mouse_x(input) : 0.0,
+                       input ? (double)game3d_input_mouse_y(input) : 0.0);
 }
 
 /// @brief True while mouse `button` is held this frame.

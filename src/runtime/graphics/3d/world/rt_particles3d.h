@@ -246,6 +246,53 @@ double rt_particles3d_get_residual_time(void *obj);
 /// @param obj Particles3D handle; invalid handles are ignored.
 void rt_particles3d_reset_dropped_time(void *obj);
 
+/* Emitter readback (ADR 0233) — read peers over the retained emitter state.
+ * Vec3-returning getters allocate fresh snapshots; Texture is borrowed. */
+/// @brief Retained emission rate. @param obj Particles3D handle.
+double rt_particles3d_get_rate(void *obj);
+/// @brief Retained minimum particle lifetime. @param obj Particles3D handle.
+double rt_particles3d_get_lifetime_min(void *obj);
+/// @brief Retained maximum particle lifetime. @param obj Particles3D handle.
+double rt_particles3d_get_lifetime_max(void *obj);
+/// @brief Retained minimum emit speed. @param obj Particles3D handle.
+double rt_particles3d_get_speed_min(void *obj);
+/// @brief Retained maximum emit speed. @param obj Particles3D handle.
+double rt_particles3d_get_speed_max(void *obj);
+/// @brief Retained spawn size. @param obj Particles3D handle.
+double rt_particles3d_get_size_start(void *obj);
+/// @brief Retained end-of-life size. @param obj Particles3D handle.
+double rt_particles3d_get_size_end(void *obj);
+/// @brief Retained spawn alpha. @param obj Particles3D handle.
+double rt_particles3d_get_alpha_start(void *obj);
+/// @brief Retained end-of-life alpha. @param obj Particles3D handle.
+double rt_particles3d_get_alpha_end(void *obj);
+/// @brief Packed 0xRRGGBB spawn color. @param obj Particles3D handle.
+int64_t rt_particles3d_get_color_start(void *obj);
+/// @brief Packed 0xRRGGBB end color. @param obj Particles3D handle.
+int64_t rt_particles3d_get_color_end(void *obj);
+/// @brief Fresh Vec3 of the retained gravity. @param obj Particles3D handle.
+void *rt_particles3d_get_gravity(void *obj);
+/// @brief Fresh Vec3 of the emitter origin. @param obj Particles3D handle.
+void *rt_particles3d_get_position_vec3(void *obj);
+/// @brief Fresh Vec3 of the emit direction. @param obj Particles3D handle.
+void *rt_particles3d_get_direction(void *obj);
+/// @brief Retained emit-cone spread. @param obj Particles3D handle.
+double rt_particles3d_get_spread(void *obj);
+/// @brief Retained emitter shape id (0=point, 1=sphere, 2=box). @param obj Particles3D handle.
+int64_t rt_particles3d_get_emitter_shape(void *obj);
+/// @brief Fresh Vec3 of the emitter extents. @param obj Particles3D handle.
+void *rt_particles3d_get_emitter_size(void *obj);
+/// @brief Retained velocity-stretch factor. @param obj Particles3D handle.
+double rt_particles3d_get_stretch(void *obj);
+/// @brief Retained trail history seconds (0 = trails off). @param obj Particles3D handle.
+double rt_particles3d_get_trail_lifetime(void *obj);
+/// @brief Retained trail control-point count. @param obj Particles3D handle.
+int64_t rt_particles3d_get_trail_segments(void *obj);
+/// @brief Retained soft-particle fade distance. @param obj Particles3D handle.
+double rt_particles3d_get_softness(void *obj);
+/// @brief Borrowed particle texture, or NULL. @param obj Particles3D handle.
+void *rt_particles3d_get_texture(void *obj);
+
 #ifdef __cplusplus
 }
 #endif

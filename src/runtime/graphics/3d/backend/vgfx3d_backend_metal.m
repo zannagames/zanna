@@ -129,6 +129,10 @@
     int32_t _depthProbeRequestCount;
     float _depthProbeResults[VGFX3D_DEPTH_PROBE_MAX];
     int32_t _depthProbeResultCount;
+    /* GAP-10: backend telemetry snapshot mirrored by get_backend_stats.
+     * Zero-initialized with the object; texture_fallback_binds stays zero on
+     * Metal (streaming fallbacks resolve inside ctx-free helpers). */
+    vgfx3d_backend_stats_t _stats;
 }
 @property(nonatomic, strong) id<MTLDevice> device;
 @property(nonatomic, strong) id<MTLCommandQueue> commandQueue;
@@ -411,6 +415,22 @@ static BOOL metal_target_uses_hdr_color(VGFXMetalContext *ctx);
 #include "vgfx3d_backend_metal_draw.inc"
 // clang-format on
 
+/// @brief Copy the Metal context's telemetry snapshot (GAP-10, ADR 0233 era).
+/// @details Metal always renders into its own drawable or offscreen target, so
+///          the default framebuffer is reported writable unconditionally.
+/// @param ctx_ptr Borrowed `VGFXMetalContext`, or NULL.
+/// @param out_stats Caller-owned snapshot destination.
+static void metal_get_backend_stats(void *ctx_ptr, vgfx3d_backend_stats_t *out_stats) {
+    if (!out_stats)
+        return;
+    memset(out_stats, 0, sizeof(*out_stats));
+    if (!ctx_ptr)
+        return;
+    VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)ctx_ptr;
+    *out_stats = ctx->_stats;
+    out_stats->default_framebuffer_writable = 1;
+}
+
 const vgfx3d_backend_t vgfx3d_metal_backend = {
     .name = "metal",
     .gpu_skinning = 1,
@@ -452,6 +472,7 @@ const vgfx3d_backend_t vgfx3d_metal_backend = {
     .get_texture_upload_bytes = metal_get_texture_upload_bytes,
     .get_native_texture_caps = metal_get_native_texture_caps,
     .get_feature_caps = metal_get_feature_caps,
+    .get_backend_stats = metal_get_backend_stats,
     .set_vsync = metal_set_vsync,
     .set_render_scale = metal_set_render_scale,
     .queue_depth_probe = metal_queue_depth_probe,

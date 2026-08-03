@@ -418,10 +418,11 @@ These are known platform-specific limitations, tracked across the project.
 | GAP-7 | Input | macOS gamepads have no vibration path through the generic IOKit HID interface | Low |
 | GAP-8 | Graphics3D | Point/omni-directional shadows are unavailable on Linux: the OpenGL backend is the only one without the `shadow_atlas_slots` hook, so `Canvas3D.BackendSupports("shadow-point")` reports false there (directional slots and primary CSM cascades work) | Medium |
 | GAP-9 | Graphics3D | `Canvas3D.FrameGpuTimeUs` is implemented only by the D3D11 backend; it reads 0 on macOS and Linux | Low |
-| GAP-10 | Graphics3D | The seven `Canvas3D.Backend*` statistics properties (`BackendDrawCalls`, `BackendDroppedDraws`, mesh-cache and streaming counters, `BackendPresentPath`) read 0 on macOS: the Metal backend does not implement `get_backend_stats` | Low |
+| GAP-10 | Graphics3D | Closed 2026-08-03: the Metal backend implements `get_backend_stats` (draw calls, dropped draws, mesh-cache hits/misses, stream uploads, present counts/path). `BackendTextureFallbackBinds` remains 0 on Metal — streaming fallbacks resolve inside ctx-free helpers — and the software backend reports zeros by design (no hook). Regression net: `g3d_test_canvas3d_backend_stats[_metal/_d3d11]` | Low |
 | GAP-11 | Graphics3D | Windows-on-ARM64 defaults to the software rasterizer because several Windows-on-ARM GPU stacks crash inside the display driver during Present; opt in to the GPU with `ZANNA_3D_BACKEND=d3d11`. `Canvas3D.BackendFallback` reports only runtime fallback, not this policy default | Medium |
 | GAP-12 | Graphics3D | The extended GPU-skinning path (`gpu_skinning_extras`) exists only on Metal; D3D11 and OpenGL take the reduced skinning path with no capability bit distinguishing them | Low |
 | GAP-13 | Graphics3D | SSR, HDR scene color, and TAA require backend hooks the software rasterizer does not implement; the corresponding `Canvas3D` settings are silently unavailable when the portable backend is active | Low |
+| GAP-14 | Testing | The fuzz lane (`src/tests/fuzz/`, including the eight 3D loader fuzzers) requires libFuzzer via `clang++` and is opt-in (`ZANNA_ENABLE_FUZZ=ON` / `scripts/fuzz_smoke.sh`); it never runs under MSVC, so Windows-only decode paths receive no fuzz coverage | Low |
 
 GAP-2 is closed: Windows directory operations use strict wide-character APIs and extended-length
 drive/UNC paths. GAP-3 and GAP-4 are also closed: Windows test infrastructure uses

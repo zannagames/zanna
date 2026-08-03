@@ -1,0 +1,10 @@
+project action_slice
+version 0.1.0
+lang zia
+entry main.zia
+
+package-name "Action Slice"
+package-description "A complete small third-person action game on the Game3D tier"
+package-identifier org.zanna-lang.action-slice
+package-author "Zanna Project"
+package-license MIT

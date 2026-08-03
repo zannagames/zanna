@@ -352,6 +352,32 @@ func VerifyScene3DDrops(ctx: SceneDndProbeContext) -> Boolean {
         Fail(shell, null, tempDir, "3D non-asset drop was not refused");
         return false;
     }
+
+    // Placement-aware import: the drop pump resolves the pointer to a world
+    // spawn and routes here; a meshless import moves its pivot to the spawn
+    // point, still as one transaction.
+    var placedBefore = editor3d.scene.Root.ChildCount;
+    var undoPlacedBefore = editor3d.undoStack.count();
+    if editor3d.ImportAssetPathAt(assetScenePath, true, 5.0, 0.5, -7.0) == false {
+        Fail(shell, null, tempDir, "3D placed import failed");
+        return false;
+    }
+    editor3d.Pump(doc3d);
+    if editor3d.scene.Root.ChildCount <= placedBefore
+       or editor3d.undoStack.count() != undoPlacedBefore + 1 {
+        Fail(shell, null, tempDir, "3D placed import was not one transaction");
+        return false;
+    }
+    var placedNode = editor3d.scene.Root.GetChild(
+        editor3d.scene.Root.ChildCount - 1);
+    var placedPos = placedNode.Position;
+    if placedPos.X < 4.9 or placedPos.X > 5.1
+       or placedPos.Y < 0.4 or placedPos.Y > 0.6
+       or placedPos.Z < -7.1 or placedPos.Z > -6.9 {
+        Fail(shell, null, tempDir,
+             "3D placed import did not land on the spawn point");
+        return false;
+    }
     shell.Destroy();
     return true;
 }

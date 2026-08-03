@@ -97,13 +97,12 @@ class SceneEditor3DDropsGizmoInputLayer extends PreviousLayer.SceneEditor3DTerra
             return ApplyMaterialDropAt(
                 viewportImage.GetDropX(), viewportImage.GetDropY());
         }
-        return ImportAssetDrop(dropData);
+        return ImportAssetDropAt(
+            dropData, viewportImage.GetDropX(), viewportImage.GetDropY());
     }
 
-    /// @brief Import one dropped 3D asset through the standard import path.
-    /// @details Shared by the viewport drop pump and the DnD probe: the
-    ///          extension gate refuses non-3D assets before any import work.
-    expose override func ImportAssetDrop(assetPath: String) -> Boolean {
+    /// @brief The shared drop extension gate for 3D asset payloads.
+    hide func AssetDropExtensionAllowed(assetPath: String) -> Boolean {
         if assetPath == "" { return false; }
         if scene_asset_browser.AssetExtensionAllowed(
                assetPath,
@@ -113,7 +112,33 @@ class SceneEditor3DDropsGizmoInputLayer extends PreviousLayer.SceneEditor3DTerra
                 "Only 3D assets can drop into the viewport.");
             return false;
         }
+        return true;
+    }
+
+    /// @brief Import one dropped 3D asset through the standard import path.
+    /// @details Shared by the DnD probe: source-authored placement, no drop
+    ///          point (the pointer-drop pump routes through ImportAssetDropAt).
+    expose override func ImportAssetDrop(assetPath: String) -> Boolean {
+        if AssetDropExtensionAllowed(assetPath) == false { return false; }
         return ImportAssetPath(assetPath);
+    }
+
+    /// @brief Import one dropped 3D asset at the pointer's drop location.
+    /// @details Resolves the drop pixel exactly like material drops, then
+    ///          places the import at the surface hit (ground plane fallback)
+    ///          so a dropped prop lands where the user pointed.
+    hide func ImportAssetDropAt(assetPath: String,
+                                dropX: Number,
+                                dropY: Number) -> Boolean {
+        if AssetDropExtensionAllowed(assetPath) == false { return false; }
+        var viewportX = Convert.NumToInt(
+            PhysicalPointerToUi(dropX)
+            - viewportImage.GetScreenX());
+        var viewportY = Convert.NumToInt(
+            PhysicalPointerToUi(dropY)
+            - viewportImage.GetScreenY());
+        var spawn = ViewportSpawnPoint(viewportX, viewportY);
+        return ImportAssetPathAt(assetPath, true, spawn.X, spawn.Y, spawn.Z);
     }
 
     /// @brief Apply the selected library material to the node under the drop.

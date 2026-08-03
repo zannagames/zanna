@@ -6,6 +6,13 @@
 #   SCRIPT       Probe script filename
 #   BACKEND      ZANNA_3D_BACKEND value
 #   NAME         Stable fixture/probe name for log output
+#
+# Optional -D arguments:
+#   MAX_AVG_MS   Wall-clock ceiling for the reported per-frame average. Pick
+#                generous order-of-magnitude bounds (battery E-cores can run
+#                several times slower than AC benchmarks); the goal is to
+#                catch algorithmic regressions, not to be a benchmark.
+#   MAX_SETUP_MS Wall-clock ceiling for the reported setup time.
 
 foreach (required_var IN ITEMS ZANNA_EXE WORKING_DIR SCRIPT BACKEND NAME)
     if (NOT DEFINED ${required_var} OR "${${required_var}}" STREQUAL "")
@@ -87,6 +94,22 @@ if (NOT bodies GREATER 0)
 endif ()
 if (NOT stream_bytes GREATER 0)
     message(FATAL_ERROR "Graphics3DPerfHarness: stream_bytes must be positive")
+endif ()
+
+if (DEFINED MAX_AVG_MS AND NOT "${MAX_AVG_MS}" STREQUAL "")
+    if (avg_ms GREATER "${MAX_AVG_MS}")
+        message(FATAL_ERROR
+                "Graphics3DPerfHarness: avg_ms ${avg_ms} exceeds the ${MAX_AVG_MS} ms ceiling "
+                "(order-of-magnitude regression guard; see the budget note above before raising)")
+    endif ()
+endif ()
+if (DEFINED MAX_SETUP_MS AND NOT "${MAX_SETUP_MS}" STREQUAL "")
+    extract_metric("setup_ms" measured_setup_ms)
+    if (measured_setup_ms GREATER "${MAX_SETUP_MS}")
+        message(FATAL_ERROR
+                "Graphics3DPerfHarness: setup_ms ${measured_setup_ms} exceeds the "
+                "${MAX_SETUP_MS} ms ceiling")
+    endif ()
 endif ()
 
 message("HARNESS: name=${NAME} backend=${reported_backend} frames=${frames} avg_ms=${avg_ms} fps=${fps} draw_count=${draw_count} visible_nodes=${visible_nodes} entities=${entities} bodies=${bodies} stream_bytes=${stream_bytes}")

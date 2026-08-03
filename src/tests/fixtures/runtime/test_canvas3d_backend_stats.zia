@@ -1,0 +1,66 @@
+// ============================================================================
+// MODULE: test_canvas3d_backend_stats
+// PURPOSE: Regress the Canvas3D Backend* telemetry surface (GAP-10). On GPU
+//          backends the counters must move (draw calls, cache hit+miss across
+//          two frames, a classified present path); on the software backend the
+//          hook is absent and every counter must stay at its documented zero.
+// ============================================================================
+
+module test_canvas3d_backend_stats;
+
+bind Zanna.Graphics3D;
+bind Zanna.Math;
+bind Zanna.Terminal;
+
+func fail(reason: String) {
+    Say("FAIL: " + reason);
+}
+
+func drawFrame(canvas: Canvas3D, cam: Camera3D, mesh: Mesh3D, mat: Material3D) {
+    canvas.Poll();
+    canvas.Clear(0.1, 0.1, 0.12);
+    canvas.Begin(cam);
+    canvas.DrawMesh(mesh, Mat4.Translate(0.0, 0.0, 0.0 - 3.0), mat);
+    canvas.End();
+    canvas.Flip();
+}
+
+func start() {
+    var canvas = Canvas3D.New("backend stats probe", 320, 240);
+    var cam = Camera3D.New(60.0, 320.0 / 240.0, 0.1, 100.0);
+    var mesh = Mesh3D.Box(1.0, 1.0, 1.0);
+    var mat = Material3D.FromColor(0.6, 0.4, 0.2);
+
+    // Two frames: the first uploads the box into the geometry cache (miss),
+    // the second reuses it (hit).
+    drawFrame(canvas, cam, mesh, mat);
+    drawFrame(canvas, cam, mesh, mat);
+
+    if canvas.Backend == "software" {
+        if canvas.BackendDrawCalls != 0 or canvas.BackendMeshCacheMisses != 0
+           or canvas.BackendPresentPath != 0 {
+            fail("software backend reported nonzero backend stats without a hook");
+            return;
+        }
+        Say("PASS: backend stats (software zeros)");
+        return;
+    }
+
+    if canvas.BackendDrawCalls < 2 {
+        fail("GPU backend did not count the two mesh draw calls");
+        return;
+    }
+    if canvas.BackendMeshCacheMisses < 1 or canvas.BackendMeshCacheHits < 1 {
+        fail("GPU backend did not count the cache miss/hit pair");
+        return;
+    }
+    if canvas.BackendPresentPath != 1 and canvas.BackendPresentPath != 2 {
+        fail("GPU backend did not classify its present path");
+        return;
+    }
+    if canvas.BackendDroppedDraws != 0 {
+        fail("GPU backend dropped draws in a well-formed frame");
+        return;
+    }
+    Say("PASS: backend stats (" + canvas.Backend + ")");
+}

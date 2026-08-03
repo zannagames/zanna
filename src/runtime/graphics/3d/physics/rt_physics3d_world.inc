@@ -1593,6 +1593,40 @@ void rt_world3d_set_gravity(void *obj, double gx, double gy, double gz) {
     ph3d_vec3_sanitize_state(w->gravity);
 }
 
+/// @brief `World3D.Gravity` — fresh `Vec3` of the retained gravity vector (ADR 0233).
+/// @param obj Borrowed `World3D` runtime object.
+/// @return Newly allocated gravity snapshot; origin for an invalid world.
+void *rt_world3d_get_gravity(void *obj) {
+    rt_world3d *w = world3d_checked(obj);
+    if (!w)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(w->gravity[0], w->gravity[1], w->gravity[2]);
+}
+
+/// @brief `World3D.GetBody(index)` — borrowed registered body by index (ADR 0233).
+/// @param obj Borrowed `World3D` runtime object.
+/// @param index Zero-based body index below `BodyCount`.
+/// @return Borrowed body handle, or NULL when the index is out of range.
+void *rt_world3d_get_body_at(void *obj, int64_t index) {
+    rt_world3d *w = world3d_checked(obj);
+    if (!w || index < 0 || index >= world3d_body_count_safe(w))
+        return NULL;
+    return w->bodies[index];
+}
+
+/// @brief `World3D.GetJoint(index)` — borrowed registered joint by index (ADR 0233).
+/// @details The returned object is one of the five registered joint classes;
+///          downstream per-class calls validate the handle as usual.
+/// @param obj Borrowed `World3D` runtime object.
+/// @param index Zero-based joint index below `JointCount`.
+/// @return Borrowed joint handle, or NULL when the index is out of range.
+void *rt_world3d_get_joint_at(void *obj, int64_t index) {
+    rt_world3d *w = world3d_checked(obj);
+    if (!w || index < 0 || index >= world3d_joint_count_safe(w))
+        return NULL;
+    return w->joints[index];
+}
+
 /// @brief Shift a contact's cached points by the floating-origin rebase @p delta.
 /// @details When the world recenters to keep coordinates near the origin, contact points must move
 ///          with it; saturates the shifted values to stay finite.

@@ -563,6 +563,31 @@ contextual selector (the redundant label hides at narrower widths). The
 permanent viewport status stays short; hover it for wrapped camera, render,
 material, fallback, and missing-resource diagnostics.
 
+### Prefab instances (3D)
+
+A saved 3D scene can reference other `.scene3d`/`.vscn` files as VSCN v7
+prefab instances. The full loop lives in the instance inspector group:
+
+- **Import as Instance** places a reference node; the file stores only the
+  reference plus that node's overrides, and the canonical loader grafts the
+  content on reload. Grafted content is locked — selection resolves to the
+  owning instance node, and authored children inside instances are refused.
+- **Create…** is the inverse (ADR 0234): it saves the selected root-level
+  nodes as a new `.scene3d` beside the document — named for the primary
+  node, re-centered on its pivot — and replaces them with one instance
+  reference, in a single undoable edit. Instance nodes and instance content
+  refuse extraction; unpack first. Undo restores the prior document bytes
+  exactly (the extracted file stays on disk for reuse).
+- **Open Source** opens the referenced scene as its own document,
+  **Reload** re-grafts every instance after the file changes on disk
+  (overrides preserved), **Unpack** converts an instance to plain editable
+  nodes, and **Re-link…** points it at a different referenced scene.
+
+Asset drops into the viewport are placed drops: the pointer resolves through
+the same precise-surface/ground-plane projection the primitive tools use, and
+the imported hierarchy lands with its bounds floor on that point (menu
+imports keep source-authored placement).
+
 The 2D command set switches among Select, Paint, Erase, Rectangle, Line,
 Ellipse, Fill, Pick, and Object modes. Paint, Fill, and the shape tools composite the
 selected active-layer atlas frame under the pointer before anything is written.

@@ -373,6 +373,9 @@ class SceneEditor3DContract02 extends PreviousContract.SceneEditor3DContract01 {
     /// @brief Neutral dispatch slot for ReloadPrefabInstances.
     expose func ReloadPrefabInstances() {}
 
+    /// @brief Neutral dispatch slot for CreatePrefabFromSelection.
+    expose func CreatePrefabFromSelection() -> Boolean { return false; }
+
     /// @brief Neutral dispatch slot for UnpackSelectedInstance.
     expose func UnpackSelectedInstance() -> Boolean { return false; }
 

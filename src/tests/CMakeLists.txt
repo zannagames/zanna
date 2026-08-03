@@ -3210,6 +3210,7 @@ set_tests_properties(g3d_vscn_golden PROPERTIES
 set(G3D_ZIA_TESTS
         test_animcontroller3d
         test_g3d_api_symmetry
+        test_g3d_api_symmetry2
         test_canvas3d_hello
         test_canvas3d_obj
         test_material3d_pbr
@@ -3744,6 +3745,50 @@ if (EXISTS "${CANVAS3D_POINT_SHADOWS_PROBE}")
                 LABELS "runtime;graphics3d;zia;requires_display;d3d11"
                 ENVIRONMENT "ZANNA_3D_BACKEND=d3d11"
                 TIMEOUT 120)
+    elseif (APPLE)
+        # Metal advertises shadow_atlas_slots; run the same probe on the real
+        # device so macOS point shadows have a default-lane regression net.
+        add_test(NAME g3d_test_canvas3d_point_shadows_metal
+                COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_POINT_SHADOWS_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_point_shadows_metal PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;metal"
+                ENVIRONMENT "ZANNA_3D_BACKEND=metal"
+                TIMEOUT 120)
+    endif ()
+endif ()
+
+# Backend telemetry surface (GAP-10): stats must move on the platform GPU
+# backend and stay zero on software (no hook).
+set(CANVAS3D_BACKEND_STATS_PROBE "${G3D_TESTS_DIR}/test_canvas3d_backend_stats.zia")
+if (EXISTS "${CANVAS3D_BACKEND_STATS_PROBE}")
+    add_test(NAME g3d_test_canvas3d_backend_stats
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_BACKEND_STATS_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_canvas3d_backend_stats PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            TIMEOUT 60)
+    if (APPLE)
+        add_test(NAME g3d_test_canvas3d_backend_stats_metal
+                COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_BACKEND_STATS_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_backend_stats_metal PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;metal"
+                ENVIRONMENT "ZANNA_3D_BACKEND=metal"
+                TIMEOUT 120)
+    elseif (WIN32)
+        add_test(NAME g3d_test_canvas3d_backend_stats_d3d11
+                COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_BACKEND_STATS_PROBE}"
+                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+        set_tests_properties(g3d_test_canvas3d_backend_stats_d3d11 PROPERTIES
+                PASS_REGULAR_EXPRESSION "PASS"
+                LABELS "runtime;graphics3d;zia;requires_display;d3d11"
+                ENVIRONMENT "ZANNA_3D_BACKEND=d3d11"
+                TIMEOUT 120)
     endif ()
 endif ()
 
@@ -3889,6 +3934,28 @@ if (EXISTS "${G3D_OVERHAUL_SHOWCASE_DIR}/probe.zia")
             TIMEOUT 60)
 endif ()
 
+# Third-person action slice: the Game3D action-tier reference demo. The probe
+# drives the shared Arena module deterministically (combat kill, lock-on,
+# interactables, footsteps, day/night, save/load) with no window input.
+set(G3D_ACTION_SLICE_DIR "${CMAKE_SOURCE_DIR}/examples/3d/action_slice")
+if (EXISTS "${G3D_ACTION_SLICE_DIR}/test.zia")
+    add_test(NAME g3d_action_slice_probe
+            COMMAND $<TARGET_FILE:zanna> run "test.zia"
+            WORKING_DIRECTORY "${G3D_ACTION_SLICE_DIR}")
+    set_tests_properties(g3d_action_slice_probe PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: action_slice"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            TIMEOUT 120)
+    add_test(NAME g3d_action_slice_package_dry_run
+            COMMAND $<TARGET_FILE:zanna> package "." --target tarball --dry-run
+            WORKING_DIRECTORY "${G3D_ACTION_SLICE_DIR}")
+    set_tests_properties(g3d_action_slice_package_dry_run PROPERTIES
+            PASS_REGULAR_EXPRESSION "action_slice"
+            LABELS "runtime;graphics3d;zia"
+            TIMEOUT 30)
+endif ()
+
 # GameBase3D/IScene3D scene-framework reference demo (menu -> fade -> play,
 # 240 bounded frames). The one examples/3d demo that exercises the shared
 # examples/games/lib scene stack end to end.
@@ -3933,6 +4000,9 @@ if (EXISTS "${GAME3D_OPENWORLD_SLICE_PROBE}")
             RESOURCE_LOCK zanna_display
             TIMEOUT 120)
 
+    # Budgets are order-of-magnitude guards over the ~29 ms avg / ~200 ms setup
+    # measured on an AC-powered M-series host — generous enough for battery
+    # E-cores, tight enough to catch algorithmic regressions.
     add_test(NAME g3d_openworld_slice_perf_harness
             COMMAND "${CMAKE_COMMAND}"
             -D "ZANNA_EXE=$<TARGET_FILE:zanna>"
@@ -3940,6 +4010,8 @@ if (EXISTS "${GAME3D_OPENWORLD_SLICE_PROBE}")
             -D "SCRIPT=perf_probe.zia"
             -D "BACKEND=software"
             -D "NAME=openworld_slice"
+            -D "MAX_AVG_MS=250"
+            -D "MAX_SETUP_MS=5000"
             -P "${CMAKE_SOURCE_DIR}/src/tests/tools/Graphics3DPerfHarness.cmake")
     set_tests_properties(g3d_openworld_slice_perf_harness PROPERTIES
             PASS_REGULAR_EXPRESSION "HARNESS: name=openworld_slice"

@@ -184,6 +184,13 @@ class SceneEditor3DContract03 extends PreviousContract.SceneEditor3DContract02 {
     /// @brief Neutral dispatch slot for ImportAssetPath.
     expose func ImportAssetPath(_path: String) -> Boolean { return false; }
 
+    /// @brief Neutral dispatch slot for ImportAssetPathAt.
+    expose func ImportAssetPathAt(_path: String,
+                                  _useSpawn: Boolean,
+                                  _spawnX: Number,
+                                  _spawnY: Number,
+                                  _spawnZ: Number) -> Boolean { return false; }
+
     /// @brief Neutral dispatch slot for AddSnapSpinner.
     expose func AddSnapSpinner(_minimum: Number,
                              _maximum: Number,

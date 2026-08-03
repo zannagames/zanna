@@ -1,6 +1,16 @@
 # 3D Examples
 
-## game3d_hello.zia
+A learning ladder from a 20-line hello world to a complete small game, plus a
+separate set of engine probes that exist for CI rather than for reading.
+
+**The ladder:** `game3d_hello` → `game3d_starter` → `game3d_scenes` →
+`sprite3d_demo` → `overhaul_showcase` → `action_slice`. After the capstone,
+the full games under `examples/games/` (ridgebound, ashfall-scenes) show
+production scale.
+
+---
+
+## 1. game3d_hello.zia — the smallest world
 
 `game3d_hello.zia` is the smallest code-first Game3D starting point: a lit
 world, walkable ground, first-person character, and one deterministic frame in
@@ -12,7 +22,68 @@ path instead of direct matrix composition.
 ZANNA_3D_BACKEND=software build/src/tools/zanna/zanna run examples/3d/game3d_hello.zia
 ```
 
-## walk_min.zia
+## 2. game3d_starter/ — the copyable template
+
+`game3d_starter/` is the recommended copyable starting point. It includes a
+`zanna.project`, package asset layout, source-tree and packaged
+`Assets3D.LoadEntityAsset` path, first-person character movement, and a
+deterministic `test.zia`.
+
+```sh
+cd examples/3d/game3d_starter
+../../../build/src/tools/zanna/zanna run main.zia
+ZANNA_3D_BACKEND=software ../../../build/src/tools/zanna/zanna run test.zia
+../../../build/src/tools/zanna/zanna package . --target tarball --dry-run
+```
+
+## 3. game3d_scenes/ — menus and scene flow
+
+The reference demo for the shared `GameBase3D`/`IScene3D` scene framework
+(`examples/games/lib/`): a scene stack with fade transitions driven by
+`Behavior3D` presets. Registered as CTest `g3d_game3d_scenes`.
+
+```sh
+../../build/src/tools/zanna/zanna run game3d_scenes/main.zia
+```
+
+## 4. sprite3d_demo.zia — camera-facing billboards
+
+Camera-facing `Sprite3D` billboards: procedural pixel-art trees and bobbing
+star collectibles over a lit ground plane, drawn with `Canvas3D.DrawSprite3D`
+from an orbiting camera. The only `Sprite3D` sample in the tree.
+
+```sh
+build/src/tools/zanna/zanna run examples/3d/sprite3d_demo.zia
+```
+
+## 5. overhaul_showcase/ — rendering polish
+
+`Behavior3D` presets composed with `Environment3D` in one compact program:
+`Environment3D.Sunset` with IBL over a metallic/roughness sweep, tuned
+shadows, mip-chain bloom + ACES + TAA/FXAA fallback, and `Zanna.Game.UI`
+HUD widgets on `Canvas3D`. Registered as CTest `g3d_overhaul_showcase_probe`.
+
+## 6. action_slice/ — the complete small game
+
+The capstone and the Game3D action-tier reference: a third-person sword-fight
+arena with menu/pause/victory scenes, lock-on, interactables, a `Sky3D` +
+`TimeOfDay3D` day/night cycle, a minimap, footsteps, and save/load — every
+system from the ADR 0074-0100 gameplay tier in ~700 readable lines. See
+[action_slice/README.md](action_slice/README.md) for the full map.
+Registered as CTests `g3d_action_slice_probe` / `g3d_action_slice_package_dry_run`.
+
+```sh
+build/src/tools/zanna/zanna run examples/3d/action_slice/main.zia
+```
+
+---
+
+# Engine probes and CI fixtures (not tutorials)
+
+These exist to pin engine behavior; read them for API reference, not as
+learning material.
+
+## walk_min.zia (+ probes)
 
 `walk_min.zia` is the small code-first baseline sample for the Game3D plan. It
 uses the normal C runtime `Zanna.Game3D` surface over `Zanna.Graphics3D`:
@@ -29,46 +100,21 @@ uses the normal C runtime `Zanna.Game3D` surface over `Zanna.Graphics3D`:
   which compares exact final-frame pixels and runtime state against the default
   path with scale flags explicitly off
 
-Run the interactive sample with:
-
 ```sh
 build/src/tools/zanna/zanna run examples/3d/walk_min.zia
-```
-
-Run the visual and movement probe with the software backend:
-
-```sh
 ZANNA_3D_BACKEND=software build/src/tools/zanna/zanna run examples/3d/walk_min_probe.zia
-```
-
-Run the bounded no-regression probe with the software backend:
-
-```sh
 ZANNA_3D_BACKEND=software build/src/tools/zanna/zanna run examples/3d/bounded_no_regression_probe.zia
-```
-
-## game3d_starter/
-
-`game3d_starter/` is the recommended copyable starting point. It includes a
-`zanna.project`, package asset layout, source-tree and packaged
-`Assets3D.LoadEntityAsset` path, first-person character movement, and a
-deterministic `test.zia`.
-
-```sh
-cd examples/3d/game3d_starter
-../../../build/src/tools/zanna/zanna run main.zia
-ZANNA_3D_BACKEND=software ../../../build/src/tools/zanna/zanna run test.zia
-../../../build/src/tools/zanna/zanna package . --target tarball --dry-run
 ```
 
 ## game3d_showcase/
 
-`game3d_showcase/showcase.zia` is the full-stack Game3D integration sample. It
+`game3d_showcase/showcase.zia` is the full-stack Game3D integration gate. It
 combines quality/post-FX/environment toggles, prefabs, a packaged glTF prop,
 first-person/follow/orbit cameras, a character controller, physics bodies,
 layers, triggers, collision events, animation events/root motion, positional
 and attached audio, 2D audio, VFX particles/decals, final-frame HUD capture,
-and deterministic replay.
+and deterministic replay. It renders at probe resolution and self-asserts
+with pixel checks — a CI gate wearing a demo's clothes.
 
 ```sh
 ZANNA_3D_BACKEND=software build/src/tools/zanna/zanna run examples/3d/game3d_showcase/showcase.zia
@@ -104,31 +150,6 @@ ZANNA_3D_BACKEND=software ../../../build/src/tools/zanna/zanna run perf_probe.zi
 ZANNA_3D_BACKEND=software ../../../build/src/tools/zanna/zanna run long_traversal.zia
 ZANNA_3D_BACKEND=metal ../../../build/src/tools/zanna/zanna run gpu_smoke.zia
 ../../../build/src/tools/zanna/zanna package . --target tarball --dry-run
-```
-
-## overhaul_showcase/
-
-`Behavior3D` presets composed with `Environment3D` in one compact program.
-Registered as CTest `g3d_overhaul_showcase_probe`.
-
-## game3d_scenes/
-
-The reference demo for the shared `GameBase3D`/`IScene3D` scene framework
-(`examples/games/lib/`): a scene stack with fade transitions driven by
-`Behavior3D` presets. Registered as CTest `g3d_game3d_scenes`.
-
-```sh
-../../build/src/tools/zanna/zanna run game3d_scenes/main.zia
-```
-
-## sprite3d_demo.zia
-
-Camera-facing `Sprite3D` billboards: procedural pixel-art trees and bobbing
-star collectibles over a lit ground plane, drawn with `Canvas3D.DrawSprite3D`
-from an orbiting camera. The only `Sprite3D` sample in the tree.
-
-```sh
-build/src/tools/zanna/zanna run examples/3d/sprite3d_demo.zia
 ```
 
 ## d3d11_rtt_readback_probe.zia

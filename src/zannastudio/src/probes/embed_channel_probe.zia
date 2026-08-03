@@ -100,6 +100,25 @@ func main() {
         fail("second input event did not round trip");
         return;
     }
+    // Play-mode input completion (2026-08): wheel events (kind 4, c =
+    // deltaY*120) and non-left buttons (button index in c) round trip.
+    if host.PushEvent(4, 15, 25, -240) == false
+       or host.PushEvent(2, 30, 40, 2) == false {
+        fail("host could not push wheel/buttoned events");
+        return;
+    }
+    if producer.PollEvent() != 4
+       or producer.EventA() != 15 or producer.EventB() != 25
+       or producer.EventC() != -240 {
+        fail("wheel event did not round trip with its delta");
+        return;
+    }
+    if producer.PollEvent() != 2
+       or producer.EventA() != 30 or producer.EventB() != 40
+       or producer.EventC() != 2 {
+        fail("middle-button event did not round trip with its button index");
+        return;
+    }
     if producer.PollEvent() != 0 {
         fail("drained ring still reported events");
         return;

@@ -1699,6 +1699,120 @@ void rt_material3d_set_depth_bias(void *obj, double constant_bias, double slope_
                                                MATERIAL3D_SLOPE_DEPTH_BIAS_ABS_MAX);
 }
 
+/* Map-slot and scalar readback (ADR 0233). Slot getters return the borrowed
+ * retained source handle (Pixels, TextureAsset3D, or RenderTarget3D), NULL
+ * when unbound. `SetAlbedoMap`/`SetAlbedoRenderTarget` alias the diffuse slot
+ * (`Texture`); `SetEmissiveRenderTarget` aliases `EmissiveMap`. */
+
+/// @brief `Material3D.Texture` — borrowed diffuse/albedo source (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Borrowed source handle, or NULL when unbound.
+void *rt_material3d_get_texture(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->texture : NULL;
+}
+
+/// @brief `Material3D.NormalMap` — borrowed normal-map source (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Borrowed source handle, or NULL when unbound.
+void *rt_material3d_get_normal_map(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->normal_map : NULL;
+}
+
+/// @brief `Material3D.SpecularMap` — borrowed specular-map source (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Borrowed source handle, or NULL when unbound.
+void *rt_material3d_get_specular_map(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->specular_map : NULL;
+}
+
+/// @brief `Material3D.EmissiveMap` — borrowed emissive-map source (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Borrowed source handle, or NULL when unbound.
+void *rt_material3d_get_emissive_map(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->emissive_map : NULL;
+}
+
+/// @brief `Material3D.MetallicRoughnessMap` — borrowed ORM-style source (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Borrowed source handle, or NULL when unbound.
+void *rt_material3d_get_metallic_roughness_map(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->metallic_roughness_map : NULL;
+}
+
+/// @brief `Material3D.AmbientOcclusionMap` — borrowed AO-map source (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Borrowed source handle, or NULL when unbound.
+void *rt_material3d_get_ao_map(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->ao_map : NULL;
+}
+
+/// @brief `Material3D.Lightmap` — borrowed baked-GI atlas source (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Borrowed source handle, or NULL when unbound.
+void *rt_material3d_get_lightmap(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->lightmap : NULL;
+}
+
+/// @brief `Material3D.EnvMap` — borrowed environment cubemap (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Borrowed CubeMap3D handle, or NULL when unbound.
+void *rt_material3d_get_env_map(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->env_map : NULL;
+}
+
+/// @brief `Material3D.EmissiveColor` — fresh Vec3 of the emissive multiplier (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Newly allocated color snapshot; origin for an invalid handle.
+void *rt_material3d_get_emissive_color(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    if (!mat)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(mat->emissive[0], mat->emissive[1], mat->emissive[2]);
+}
+
+/// @brief `Material3D.Shininess` — read the retained specular exponent (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Retained shininess, or zero for an invalid handle.
+double rt_material3d_get_shininess(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->shininess : 0.0;
+}
+
+/// @brief `Material3D.DepthBias` — read the retained constant depth bias (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Retained constant bias, or zero for an invalid handle.
+double rt_material3d_get_depth_bias(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->depth_bias : 0.0;
+}
+
+/// @brief `Material3D.DepthSlopeBias` — read the slope-scaled depth bias (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @return Retained slope-scaled bias, or zero for an invalid handle.
+double rt_material3d_get_depth_slope_bias(void *obj) {
+    rt_material3d *mat = material_checked(obj);
+    return mat ? mat->slope_scaled_depth_bias : 0.0;
+}
+
+/// @brief `Material3D.GetCustomParam(index)` — read one custom parameter (ADR 0233).
+/// @param obj Borrowed Material3D handle.
+/// @param index Zero-based parameter index; out-of-range reads return zero.
+/// @return Retained parameter value, or zero.
+double rt_material3d_get_custom_param(void *obj, int64_t index) {
+    rt_material3d *mat = material_checked(obj);
+    if (!mat || index < 0 || (size_t)index >= sizeof(mat->custom_params) / sizeof(double))
+        return 0.0;
+    return mat->custom_params[index];
+}
+
 #else
 typedef int rt_graphics_disabled_tu_guard;
 #endif /* ZANNA_ENABLE_GRAPHICS */

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-03
 ---
 
 # 3D Physics
@@ -29,7 +29,8 @@ and joint integration.
 
 | Property         | Type    | Access | Description |
 |------------------|---------|--------|-------------|
-| `BodyCount`      | Integer | Read   | Number of active bodies in the world |
+| `BodyCount`      | Integer | Read   | Number of active bodies in the world; enumerate with `GetBody(i)` |
+| `Gravity`        | Object (`Vec3`) | Read | Fresh snapshot of the retained gravity vector |
 | `CollisionCount` | Integer | Read   | Number of contacts from the most recent `Step()` |
 | `CollisionEventCount` | Integer | Read | Number of current collision events from the most recent `Step()` |
 | `EnterEventCount` | Integer | Read | Number of collision pairs that began touching this step |
@@ -60,6 +61,8 @@ and joint integration.
 | `Remove(body)`            | `Void(Object)`        | Remove a body from the world |
 | `ContainsBody(body)`      | `Boolean(Object)`     | Return whether the body is currently registered in the world |
 | `SetGravity(x, y, z)`     | `Void(Double, Double, Double)` | Change the gravity vector |
+| `GetBody(index)`          | `PhysicsBody3D(Integer)` | Borrowed registered body by index, `null` out of range |
+| `GetJoint(index)`         | `Object(Integer)` | Borrowed registered joint by index (one of the five joint classes), `null` out of range |
 | `AddJoint(joint, type)`   | `Void(Object, Integer)` | Add a joint (`0 = DistanceJoint3D`, `1 = SpringJoint3D`, `2 = HingeJoint3D`, `3 = RopeJoint3D`, `4 = SixDofJoint3D`) |
 | `RemoveJoint(joint)`      | `Void(Object)`        | Remove a joint from the world |
 | `Raycast(origin, direction, maxDistance, mask)` | `PhysicsHit3D(Object, Object, Double, Integer)` | Return the nearest `PhysicsHit3D` or `Nothing` |
@@ -367,13 +370,14 @@ sleeping, and optional CCD.
 | `UseCcd` | Boolean | Read/Write | Enable substep-based CCD for fast motion |
 | `IsGrounded` | Boolean | Read | Body touched a ground-like contact in the last step |
 | `GroundNormal` | Object (`Vec3`) | Read | Normal of the last ground contact |
-| `Mass` | Double | Read | Body mass |
+| `Mass` | Double | Read | Body mass; change it with `SetMass` |
 
 ### Methods
 
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `SetPosition(x, y, z)` | `Void(Double, Double, Double)` | Teleport body position |
+| `SetMass(mass)` | `Void(Double)` | Change the body's mass; recomputes derived inverse mass/inertia exactly as construction does and wakes the body. Non-finite or negative input clamps to zero (infinite effective mass on a dynamic body) |
 | `SetScale(x, y, z)` | `Void(Double, Double, Double)` | Set per-body collider scale |
 | `SetOrientation(quat)` | `Void(Object)` | Set body orientation from a `Zanna.Math.Quat` |
 | `SetVelocity(vx, vy, vz)` | `Void(Double, Double, Double)` | Set linear velocity |
@@ -587,6 +591,7 @@ Maintains a fixed distance between two `PhysicsBody3D` instances.
 | Property | Type | Access | Description |
 |----------|------|--------|-------------|
 | `Distance` | Double | Read/Write | Target separation distance |
+| `BodyA` / `BodyB` | `PhysicsBody3D` | Read | Borrowed connected bodies |
 
 ---
 
@@ -604,6 +609,7 @@ Hooke's-law spring constraint between two `PhysicsBody3D` instances.
 | `Stiffness` | Double | Read/Write | Spring constant |
 | `Damping` | Double | Read/Write | Velocity damping factor |
 | `RestLength` | Double | Read | Natural spring length |
+| `BodyA` / `BodyB` | `PhysicsBody3D` | Read | Borrowed connected bodies |
 
 ---
 
@@ -620,6 +626,17 @@ given hinge axis.
 
 - `anchor` and `axis` are `Vec3` values. The axis must be finite and non-zero.
 - Register with `PhysicsWorld3D.AddJoint(joint, 2)`.
+
+### Properties
+
+| Property | Type | Access | Description |
+|----------|------|--------|-------------|
+| `BodyA` / `BodyB` | `PhysicsBody3D` | Read | Borrowed connected bodies |
+| `MotorEnabled` | Boolean | Read | Whether the motor drives the hinge |
+| `MotorTargetVelocity` | Double | Read | Retained motor target, radians per second |
+| `MotorMaxImpulse` | Double | Read | Retained per-step motor impulse bound |
+| `LimitsEnabled` | Boolean | Read | Whether angle limits are active |
+| `LimitMin` / `LimitMax` | Double | Read | Retained angle limits in radians (`0` while disabled) |
 
 ### Methods
 
@@ -644,6 +661,7 @@ move closer than `MaxLength`; the solver only corrects separation beyond it.
 | Property | Type | Access | Description |
 |----------|------|--------|-------------|
 | `MaxLength` | Double | Read/Write | Maximum allowed separation |
+| `BodyA` / `BodyB` | `PhysicsBody3D` | Read | Borrowed connected bodies |
 
 ### Notes
 
@@ -674,6 +692,17 @@ relative orientation as the zero pose.
   rotary axis; the solver also removes angular velocity that would drive a
   locked axis or already-limited pose farther out of range.
 - Register with `PhysicsWorld3D.AddJoint(joint, 4)`.
+
+### Properties
+
+| Property | Type | Access | Description |
+|----------|------|--------|-------------|
+| `BodyA` / `BodyB` | `PhysicsBody3D` | Read | Borrowed connected bodies |
+| `LinearLimitMin` / `LinearLimitMax` | Object (`Vec3`) | Read | Fresh snapshots of the retained per-axis linear bounds |
+| `AngularLimitMin` / `AngularLimitMax` | Object (`Vec3`) | Read | Fresh snapshots of the retained per-axis pose-angle bounds, radians |
+| `LinearMotorEnabled` | Boolean | Read | Whether the linear motor is active |
+| `LinearMotorVelocity` | Object (`Vec3`) | Read | Fresh snapshot of the retained motor target velocity |
+| `LinearMotorMaxImpulse` | Double | Read | Retained per-step motor impulse bound |
 
 ### Methods
 

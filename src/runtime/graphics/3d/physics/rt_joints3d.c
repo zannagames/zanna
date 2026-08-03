@@ -43,6 +43,7 @@
 #include "rt_joints3d_internal.h"
 #include "rt_mat4.h"
 #include "rt_physics3d.h"
+#include "rt_vec3.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -1283,6 +1284,179 @@ void rt_joint3d_solve(void *joint, int32_t joint_type, double dt) {
     else if (joint_type == RT_JOINT_SIXDOF &&
              rt_g3d_has_class(joint, RT_G3D_SIXDOFJOINT3D_CLASS_ID))
         solve_sixdof((rt_sixdof_joint3d *)joint, dt);
+}
+
+/*==========================================================================
+ * Joint readback (ADR 0233)
+ *=========================================================================*/
+
+/// @brief Shared borrowed-body accessor for the per-class BodyA/BodyB getters.
+/// @param joint Candidate joint handle.
+/// @param joint_type Expected `RT_JOINT_*` discriminator.
+/// @param want_b Nonzero to select body B, zero for body A.
+/// @return Borrowed Body3D handle, or NULL for a class mismatch.
+static void *joint3d_body_readback(void *joint, int32_t joint_type, int want_b) {
+    void *body_a = NULL;
+    void *body_b = NULL;
+    if (!rt_joint3d_get_bodies(joint, joint_type, &body_a, &body_b))
+        return NULL;
+    return want_b ? body_b : body_a;
+}
+
+/// @brief `DistanceJoint3D.BodyA` — borrowed first body. @param joint Joint handle.
+void *rt_distance_joint3d_get_body_a(void *joint) {
+    return joint3d_body_readback(joint, RT_JOINT_DISTANCE, 0);
+}
+
+/// @brief `DistanceJoint3D.BodyB` — borrowed second body. @param joint Joint handle.
+void *rt_distance_joint3d_get_body_b(void *joint) {
+    return joint3d_body_readback(joint, RT_JOINT_DISTANCE, 1);
+}
+
+/// @brief `SpringJoint3D.BodyA` — borrowed first body. @param joint Joint handle.
+void *rt_spring_joint3d_get_body_a(void *joint) {
+    return joint3d_body_readback(joint, RT_JOINT_SPRING, 0);
+}
+
+/// @brief `SpringJoint3D.BodyB` — borrowed second body. @param joint Joint handle.
+void *rt_spring_joint3d_get_body_b(void *joint) {
+    return joint3d_body_readback(joint, RT_JOINT_SPRING, 1);
+}
+
+/// @brief `HingeJoint3D.BodyA` — borrowed first body. @param joint Joint handle.
+void *rt_hinge_joint3d_get_body_a(void *joint) {
+    return joint3d_body_readback(joint, RT_JOINT_HINGE, 0);
+}
+
+/// @brief `HingeJoint3D.BodyB` — borrowed second body. @param joint Joint handle.
+void *rt_hinge_joint3d_get_body_b(void *joint) {
+    return joint3d_body_readback(joint, RT_JOINT_HINGE, 1);
+}
+
+/// @brief `RopeJoint3D.BodyA` — borrowed first body. @param joint Joint handle.
+void *rt_rope_joint3d_get_body_a(void *joint) {
+    return joint3d_body_readback(joint, RT_JOINT_ROPE, 0);
+}
+
+/// @brief `RopeJoint3D.BodyB` — borrowed second body. @param joint Joint handle.
+void *rt_rope_joint3d_get_body_b(void *joint) {
+    return joint3d_body_readback(joint, RT_JOINT_ROPE, 1);
+}
+
+/// @brief `SixDofJoint3D.BodyA` — borrowed first body. @param joint Joint handle.
+void *rt_sixdof_joint3d_get_body_a(void *joint) {
+    return joint3d_body_readback(joint, RT_JOINT_SIXDOF, 0);
+}
+
+/// @brief `SixDofJoint3D.BodyB` — borrowed second body. @param joint Joint handle.
+void *rt_sixdof_joint3d_get_body_b(void *joint) {
+    return joint3d_body_readback(joint, RT_JOINT_SIXDOF, 1);
+}
+
+/// @brief Checked hinge downcast shared by the hinge readback getters.
+/// @param joint Candidate joint handle.
+/// @return Typed hinge pointer, or NULL for a class mismatch.
+static rt_hinge_joint3d *hinge_joint_readback_checked(void *joint) {
+    if (!rt_g3d_has_class(joint, RT_G3D_HINGEJOINT3D_CLASS_ID))
+        return NULL;
+    return (rt_hinge_joint3d *)joint;
+}
+
+/// @brief `HingeJoint3D.MotorEnabled` — retained motor flag. @param joint Joint handle.
+int8_t rt_hinge_joint3d_get_motor_enabled(void *joint) {
+    rt_hinge_joint3d *j = hinge_joint_readback_checked(joint);
+    return j && j->motor_enabled ? 1 : 0;
+}
+
+/// @brief `HingeJoint3D.MotorTargetVelocity` — retained target rad/s. @param joint Joint handle.
+double rt_hinge_joint3d_get_motor_target_velocity(void *joint) {
+    rt_hinge_joint3d *j = hinge_joint_readback_checked(joint);
+    return j ? j->motor_target_velocity : 0.0;
+}
+
+/// @brief `HingeJoint3D.MotorMaxImpulse` — retained motor bound. @param joint Joint handle.
+double rt_hinge_joint3d_get_motor_max_impulse(void *joint) {
+    rt_hinge_joint3d *j = hinge_joint_readback_checked(joint);
+    return j ? j->motor_max_impulse : 0.0;
+}
+
+/// @brief `HingeJoint3D.LimitsEnabled` — whether angle limits are active. @param joint Joint handle.
+int8_t rt_hinge_joint3d_get_limits_enabled(void *joint) {
+    rt_hinge_joint3d *j = hinge_joint_readback_checked(joint);
+    return j && j->has_limits ? 1 : 0;
+}
+
+/// @brief `HingeJoint3D.LimitMin` — retained lower angle limit (radians). @param joint Joint handle.
+double rt_hinge_joint3d_get_limit_min(void *joint) {
+    rt_hinge_joint3d *j = hinge_joint_readback_checked(joint);
+    return j && j->has_limits ? j->angle_min : 0.0;
+}
+
+/// @brief `HingeJoint3D.LimitMax` — retained upper angle limit (radians). @param joint Joint handle.
+double rt_hinge_joint3d_get_limit_max(void *joint) {
+    rt_hinge_joint3d *j = hinge_joint_readback_checked(joint);
+    return j && j->has_limits ? j->angle_max : 0.0;
+}
+
+/// @brief Checked 6DOF downcast shared by the sixdof readback getters.
+/// @param joint Candidate joint handle.
+/// @return Typed joint pointer, or NULL for a class mismatch.
+static rt_sixdof_joint3d *sixdof_joint_readback_checked(void *joint) {
+    return (rt_sixdof_joint3d *)rt_g3d_checked_or_null(joint, RT_G3D_SIXDOFJOINT3D_CLASS_ID);
+}
+
+/// @brief Box a stored double triple as a fresh Vec3 (origin for NULL joints).
+/// @param values Borrowed triple, or NULL.
+/// @return Newly allocated Vec3 snapshot.
+static void *joint3d_vec3_snapshot(const double *values) {
+    if (!values)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(values[0], values[1], values[2]);
+}
+
+/// @brief `SixDofJoint3D.LinearLimitMin` — fresh Vec3 lower bounds. @param joint Joint handle.
+void *rt_sixdof_joint3d_get_linear_limit_min(void *joint) {
+    rt_sixdof_joint3d *j = sixdof_joint_readback_checked(joint);
+    return joint3d_vec3_snapshot(j ? j->linear_min : NULL);
+}
+
+/// @brief `SixDofJoint3D.LinearLimitMax` — fresh Vec3 upper bounds. @param joint Joint handle.
+void *rt_sixdof_joint3d_get_linear_limit_max(void *joint) {
+    rt_sixdof_joint3d *j = sixdof_joint_readback_checked(joint);
+    return joint3d_vec3_snapshot(j ? j->linear_max : NULL);
+}
+
+/// @brief `SixDofJoint3D.AngularLimitMin` — fresh Vec3 lower bounds (radians).
+/// @param joint Joint handle.
+void *rt_sixdof_joint3d_get_angular_limit_min(void *joint) {
+    rt_sixdof_joint3d *j = sixdof_joint_readback_checked(joint);
+    return joint3d_vec3_snapshot(j ? j->angular_min : NULL);
+}
+
+/// @brief `SixDofJoint3D.AngularLimitMax` — fresh Vec3 upper bounds (radians).
+/// @param joint Joint handle.
+void *rt_sixdof_joint3d_get_angular_limit_max(void *joint) {
+    rt_sixdof_joint3d *j = sixdof_joint_readback_checked(joint);
+    return joint3d_vec3_snapshot(j ? j->angular_max : NULL);
+}
+
+/// @brief `SixDofJoint3D.LinearMotorEnabled` — retained motor flag. @param joint Joint handle.
+int8_t rt_sixdof_joint3d_get_linear_motor_enabled(void *joint) {
+    rt_sixdof_joint3d *j = sixdof_joint_readback_checked(joint);
+    return j && j->linear_motor_enabled ? 1 : 0;
+}
+
+/// @brief `SixDofJoint3D.LinearMotorVelocity` — fresh Vec3 target velocity.
+/// @param joint Joint handle.
+void *rt_sixdof_joint3d_get_linear_motor_velocity(void *joint) {
+    rt_sixdof_joint3d *j = sixdof_joint_readback_checked(joint);
+    return joint3d_vec3_snapshot(j ? j->linear_motor_velocity : NULL);
+}
+
+/// @brief `SixDofJoint3D.LinearMotorMaxImpulse` — retained motor bound. @param joint Joint handle.
+double rt_sixdof_joint3d_get_linear_motor_max_impulse(void *joint) {
+    rt_sixdof_joint3d *j = sixdof_joint_readback_checked(joint);
+    return j ? j->linear_motor_max_impulse : 0.0;
 }
 
 #else

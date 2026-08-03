@@ -198,9 +198,12 @@ static void *game3d_hitbox_new_impl(void *entity_obj,
         rt_trap("Game3D.Hitbox3D.New: hitbox registration failed");
         return NULL;
     }
-    /* Entity owns the reference now; drop the constructor's. */
-    if (rt_obj_release_check0(hitbox))
-        rt_obj_free(hitbox);
+    /* Two live references now: the entity's registration retain and the
+     * constructor's, which the caller adopts. Dropping the constructor's here
+     * (the pre-2026-08 behavior) left the caller's adopted reference
+     * uncounted, so a short-lived script local freed the hitbox while the
+     * entity's combat list still pointed at it — use-after-free volumes that
+     * produced phantom hits and silent misses. */
     return hitbox;
 }
 

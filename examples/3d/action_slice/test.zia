@@ -1,0 +1,153 @@
+// ============================================================================
+// action_slice/test.zia — deterministic probe over the arena gameplay core
+// ============================================================================
+// Drives the same Arena module the game shell uses, frame by frame with
+// StepSimulation, and asserts the flows the demo exists to demonstrate:
+// third-person combat killing an enemy, lock-on acquisition, interactables
+// (door + healing chest), footsteps over the tagged surface, day/night
+// advancement, minimap markers, and the SaveState/LoadState round trip.
+//
+// Run: ZANNA_3D_BACKEND=software zanna run examples/3d/action_slice/test.zia
+// ============================================================================
+
+bind "./arena";
+
+bind Zanna.Game3D;
+bind Zanna.Graphics3D;
+bind Zanna.Math;
+bind Zanna.Terminal;
+
+final STEP: Number = 0.016666666666666666;
+
+func fail(reason: String) {
+    Say("FAIL: " + reason);
+}
+
+func stepFrames(world: World3D, arena: Arena, frames: Integer) {
+    var i = 0;
+    while i < frames {
+        world.StepSimulation(STEP);
+        arena.tick(world, STEP);
+        i = i + 1;
+    }
+}
+
+func start() {
+    var world = World3D.New("Action Slice Probe", 320, 180);
+    var arena = new Arena();
+    arena.build(world);
+
+    // The build wires every advertised system.
+    if arena.enemyTotal != 3 or arena.minimap.MarkerCount != 4 {
+        fail("arena build should register three enemy markers plus the chest objective");
+        return;
+    }
+    var hoursBefore = arena.timeOfDay.Hours;
+    stepFrames(world, arena, 30);
+    if arena.timeOfDay.Hours <= hoursBefore {
+        fail("TimeOfDay3D should advance the clock during play");
+        return;
+    }
+    if arena.footsteps.StepCount < 1 {
+        fail("the walk rig should have fired footstep events");
+        return;
+    }
+
+    // Lock-on acquires one of the patrolling enemies.
+    arena.toggleLock();
+    if arena.lockOn.Target == null {
+        fail("lock-on should acquire a patrolling enemy");
+        return;
+    }
+    arena.toggleLock();
+
+    // Combat: teleport the player adjacent to an enemy and swing until it
+    // dies. Each swing window damages once (rehit suppression), so three
+    // swings at 25 damage each defeat a 50 HP crate with headroom.
+    var enemyOpt = world.FindEntity("enemy_0");
+    if enemyOpt.IsSome == false {
+        fail("enemy_0 should be spawned and findable");
+        return;
+    }
+    var enemy: Entity3D = enemyOpt.Unwrap();
+    var downBefore = arena.enemiesDown;
+    var swingsLeft = 6;
+    while swingsLeft > 0 and arena.enemiesDown == downBefore {
+        var target = Entity3D.get_Position(enemy);
+        arena.character.Teleport(Vec3.get_X(target), 0.9, Vec3.get_Z(target) + 0.8);
+        arena.swing();
+        stepFrames(world, arena, 45);
+        swingsLeft = swingsLeft - 1;
+    }
+    if arena.enemiesDown != downBefore + 1 {
+        fail("repeated sword swings should defeat the first crate");
+        return;
+    }
+
+    // Interactables: the door opens (and moves) once used in range.
+    arena.character.Teleport(0.0, 0.9, -8.2);
+    stepFrames(world, arena, 2);
+    if arena.scanner.Focused == null {
+        fail("the door should gain interaction focus in range");
+        return;
+    }
+    if arena.interact(world) == false or arena.doorOpen == false {
+        fail("using the focused door should open it");
+        return;
+    }
+    if world.Stream.GetCellFlag("arena", "door_open") != 1 {
+        fail("opening the door should persist the cell flag");
+        return;
+    }
+
+    // The chest heals damage taken.
+    arena.playerHealth.Damage(40.0, arena.player, 9);
+    var hurt = arena.playerHealth.Current;
+    arena.character.Teleport(6.5, 0.9, 5.2);
+    stepFrames(world, arena, 2);
+    if arena.interact(world) == false or arena.chestLooted == false {
+        fail("using the chest should loot it");
+        return;
+    }
+    if arena.playerHealth.Current <= hurt {
+        fail("the medkit should heal the player");
+        return;
+    }
+
+    // Persistence: save, mutate, load restores the door pose, state tag, and
+    // cell flag. (A live character controller re-drives the player body, so
+    // the door — a body-less persistent entity — is the pose assertion here.)
+    arena.door.StateTag = 5;
+    stepFrames(world, arena, 1);
+    if world.SaveState("zanna-action-slice-probe", "probe") == false {
+        fail("SaveState should succeed");
+        return;
+    }
+    arena.door.SetPosition(9.0, 1.2, 9.0);
+    arena.door.StateTag = 77;
+    world.Stream.SetCellFlag("arena", "door_open", 3);
+    stepFrames(world, arena, 2);
+    if world.LoadState("zanna-action-slice-probe", "probe") == false {
+        fail("LoadState should succeed");
+        return;
+    }
+    var restored = Entity3D.get_Position(arena.door);
+    if Vec3.get_X(restored) > 8.0 {
+        fail("LoadState should restore the saved door pose");
+        return;
+    }
+    if arena.door.StateTag != 5 {
+        fail("LoadState should restore the door state tag");
+        return;
+    }
+    if world.Stream.GetCellFlag("arena", "door_open") != 1 {
+        fail("LoadState should restore the door-open flag");
+        return;
+    }
+
+    // The minimap still draws after a despawn without trapping.
+    arena.minimap.Draw();
+
+    world.Destroy();
+    Say("PASS: action_slice");
+}

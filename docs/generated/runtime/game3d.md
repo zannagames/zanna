@@ -186,6 +186,8 @@ Constructor: `Zanna.Game3D.Input3D.New`
 | Property | Type | Access |
 |---|---|---|
 | <a id="zanna-game3d-input3d-looksensitivity"></a>`LookSensitivity` | `f64` | read/write |
+| <a id="zanna-game3d-input3d-mousex"></a>`MouseX` | `i64` | read-only |
+| <a id="zanna-game3d-input3d-mousey"></a>`MouseY` | `i64` | read-only |
 | <a id="zanna-game3d-input3d-padbound"></a>`PadBound` | `i64` | read-only |
 | <a id="zanna-game3d-input3d-padlooksensitivity"></a>`PadLookSensitivity` | `f64` | read/write |
 
@@ -198,6 +200,7 @@ Constructor: `Zanna.Game3D.Input3D.New`
 | <a id="zanna-game3d-input3d-pressed"></a>`Pressed` | `i1(i64)` | `Zanna.Game3D.Input3D.Pressed` |
 | <a id="zanna-game3d-input3d-released"></a>`Released` | `i1(i64)` | `Zanna.Game3D.Input3D.Released` |
 | <a id="zanna-game3d-input3d-mousedelta"></a>`MouseDelta` | `obj()` | `Zanna.Game3D.Input3D.MouseDelta` |
+| <a id="zanna-game3d-input3d-mouseposition"></a>`MousePosition` | `obj<Zanna.Math.Vec2>()` | `Zanna.Game3D.Input3D.MousePosition` |
 | <a id="zanna-game3d-input3d-mousebutton"></a>`MouseButton` | `i1(i64)` | `Zanna.Game3D.Input3D.MouseButton` |
 | <a id="zanna-game3d-input3d-mousepressed"></a>`MousePressed` | `i1(i64)` | `Zanna.Game3D.Input3D.MousePressed` |
 | <a id="zanna-game3d-input3d-wheely"></a>`WheelY` | `f64()` | `Zanna.Game3D.Input3D.WheelY` |
@@ -1276,14 +1279,16 @@ Its public surface exposes operations including `Box`, `BoxXYZ`, `Sphere`, `Cyli
 
 | Method | Signature | Runtime target |
 |---|---|---|
-| <a id="zanna-game3d-prefab-box"></a>`Box` | `obj(f64,obj)` | `Zanna.Game3D.Prefab.Box` |
-| <a id="zanna-game3d-prefab-boxxyz"></a>`BoxXYZ` | `obj(f64,f64,f64,obj)` | `Zanna.Game3D.Prefab.BoxXYZ` |
-| <a id="zanna-game3d-prefab-sphere"></a>`Sphere` | `obj(f64,i64,obj)` | `Zanna.Game3D.Prefab.Sphere` |
-| <a id="zanna-game3d-prefab-cylinder"></a>`Cylinder` | `obj(f64,f64,i64,obj)` | `Zanna.Game3D.Prefab.Cylinder` |
-| <a id="zanna-game3d-prefab-plane"></a>`Plane` | `obj(f64,f64,obj)` | `Zanna.Game3D.Prefab.Plane` |
-| <a id="zanna-game3d-prefab-ground"></a>`Ground` | `obj(f64,obj)` | `Zanna.Game3D.Prefab.Ground` |
-| <a id="zanna-game3d-prefab-load"></a>`Load` | `obj(str)` | `Zanna.Game3D.Prefab.Load` |
-| <a id="zanna-game3d-prefab-loadasset"></a>`LoadAsset` | `obj(str)` | `Zanna.Game3D.Prefab.LoadAsset` |
+| <a id="zanna-game3d-prefab-box"></a>`Box` | `obj<Zanna.Game3D.Entity3D>(f64,obj)` | `Zanna.Game3D.Prefab.Box` |
+| <a id="zanna-game3d-prefab-boxxyz"></a>`BoxXYZ` | `obj<Zanna.Game3D.Entity3D>(f64,f64,f64,obj)` | `Zanna.Game3D.Prefab.BoxXYZ` |
+| <a id="zanna-game3d-prefab-sphere"></a>`Sphere` | `obj<Zanna.Game3D.Entity3D>(f64,i64,obj)` | `Zanna.Game3D.Prefab.Sphere` |
+| <a id="zanna-game3d-prefab-cylinder"></a>`Cylinder` | `obj<Zanna.Game3D.Entity3D>(f64,f64,i64,obj)` | `Zanna.Game3D.Prefab.Cylinder` |
+| <a id="zanna-game3d-prefab-plane"></a>`Plane` | `obj<Zanna.Game3D.Entity3D>(f64,f64,obj)` | `Zanna.Game3D.Prefab.Plane` |
+| <a id="zanna-game3d-prefab-ground"></a>`Ground` | `obj<Zanna.Game3D.Entity3D>(f64,obj)` | `Zanna.Game3D.Prefab.Ground` |
+| <a id="zanna-game3d-prefab-load"></a>`Load` | `obj<Zanna.Game3D.SceneTemplate>(str)` | `Zanna.Game3D.Prefab.Load` |
+| <a id="zanna-game3d-prefab-loadasset"></a>`LoadAsset` | `obj<Zanna.Game3D.SceneTemplate>(str)` | `Zanna.Game3D.Prefab.LoadAsset` |
+| <a id="zanna-game3d-prefab-loadresult"></a>`LoadResult` | `obj<Zanna.Result>(str)` | `Zanna.Game3D.Prefab.LoadResult` |
+| <a id="zanna-game3d-prefab-loadassetresult"></a>`LoadAssetResult` | `obj<Zanna.Result>(str)` | `Zanna.Game3D.Prefab.LoadAssetResult` |
 | <a id="zanna-game3d-prefab-loadasync"></a>`LoadAsync` | `obj(str)` | `Zanna.Game3D.Prefab.LoadAsync` |
 | <a id="zanna-game3d-prefab-loadassetasync"></a>`LoadAssetAsync` | `obj(str)` | `Zanna.Game3D.Prefab.LoadAssetAsync` |
 
@@ -1379,6 +1384,12 @@ Its public surface exposes operations including `LoadEntity`, `LoadEntityAsset`,
 | <a id="zanna-game3d-assets3d-loadanimationasset"></a>`LoadAnimationAsset` | `obj<Zanna.Graphics3D.Animation3D>(str,i64)` | `Zanna.Game3D.Assets3D.LoadAnimationAsset` |
 | <a id="zanna-game3d-assets3d-loadnodeanimation"></a>`LoadNodeAnimation` | `obj<Zanna.Graphics3D.NodeAnimation3D>(str,i64)` | `Zanna.Game3D.Assets3D.LoadNodeAnimation` |
 | <a id="zanna-game3d-assets3d-loadnodeanimationasset"></a>`LoadNodeAnimationAsset` | `obj<Zanna.Graphics3D.NodeAnimation3D>(str,i64)` | `Zanna.Game3D.Assets3D.LoadNodeAnimationAsset` |
+| <a id="zanna-game3d-assets3d-loadentityresult"></a>`LoadEntityResult` | `obj<Zanna.Result>(str)` | `Zanna.Game3D.Assets3D.LoadEntityResult` |
+| <a id="zanna-game3d-assets3d-loadentityassetresult"></a>`LoadEntityAssetResult` | `obj<Zanna.Result>(str)` | `Zanna.Game3D.Assets3D.LoadEntityAssetResult` |
+| <a id="zanna-game3d-assets3d-loadanimationresult"></a>`LoadAnimationResult` | `obj<Zanna.Result>(str,i64)` | `Zanna.Game3D.Assets3D.LoadAnimationResult` |
+| <a id="zanna-game3d-assets3d-loadanimationassetresult"></a>`LoadAnimationAssetResult` | `obj<Zanna.Result>(str,i64)` | `Zanna.Game3D.Assets3D.LoadAnimationAssetResult` |
+| <a id="zanna-game3d-assets3d-loadnodeanimationresult"></a>`LoadNodeAnimationResult` | `obj<Zanna.Result>(str,i64)` | `Zanna.Game3D.Assets3D.LoadNodeAnimationResult` |
+| <a id="zanna-game3d-assets3d-loadnodeanimationassetresult"></a>`LoadNodeAnimationAssetResult` | `obj<Zanna.Result>(str,i64)` | `Zanna.Game3D.Assets3D.LoadNodeAnimationAssetResult` |
 | <a id="zanna-game3d-assets3d-loadentityasync"></a>`LoadEntityAsync` | `obj(str)` | `Zanna.Game3D.Assets3D.LoadEntityAsync` |
 | <a id="zanna-game3d-assets3d-loadentityassetasync"></a>`LoadEntityAssetAsync` | `obj(str)` | `Zanna.Game3D.Assets3D.LoadEntityAssetAsync` |
 | <a id="zanna-game3d-assets3d-setresidencybudget"></a>`SetResidencyBudget` | `void(i64)` | `Zanna.Game3D.Assets3D.SetResidencyBudget` |
@@ -1861,6 +1872,9 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Input3D.Pressed` | `i1(obj,i64)` | `rt_game3d_input_pressed` |
 | `Zanna.Game3D.Input3D.Released` | `i1(obj,i64)` | `rt_game3d_input_released` |
 | `Zanna.Game3D.Input3D.MouseDelta` | `obj<Zanna.Math.Vec2>(obj)` | `rt_game3d_input_mouse_delta` |
+| <a id="zanna-game3d-input3d-get-mousex"></a>`Zanna.Game3D.Input3D.get_MouseX` | `i64(obj)` | `rt_game3d_input_get_mouse_x` |
+| <a id="zanna-game3d-input3d-get-mousey"></a>`Zanna.Game3D.Input3D.get_MouseY` | `i64(obj)` | `rt_game3d_input_get_mouse_y` |
+| `Zanna.Game3D.Input3D.MousePosition` | `obj<Zanna.Math.Vec2>(obj)` | `rt_game3d_input_mouse_position` |
 | `Zanna.Game3D.Input3D.MouseButton` | `i1(obj,i64)` | `rt_game3d_input_mouse_button` |
 | `Zanna.Game3D.Input3D.MousePressed` | `i1(obj,i64)` | `rt_game3d_input_mouse_pressed` |
 | `Zanna.Game3D.Input3D.WheelY` | `f64(obj)` | `rt_game3d_input_wheel_y` |
@@ -2428,6 +2442,8 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Prefab.Ground` | `obj(f64,obj)` | `rt_game3d_prefab_ground` |
 | `Zanna.Game3D.Prefab.Load` | `obj<Zanna.Game3D.SceneTemplate>(str)` | `rt_game3d_assets_load_model_template` |
 | `Zanna.Game3D.Prefab.LoadAsset` | `obj<Zanna.Game3D.SceneTemplate>(str)` | `rt_game3d_assets_load_model_template_asset` |
+| `Zanna.Game3D.Prefab.LoadResult` | `obj<Zanna.Result>(str)` | `rt_game3d_assets_load_model_template_result` |
+| `Zanna.Game3D.Prefab.LoadAssetResult` | `obj<Zanna.Result>(str)` | `rt_game3d_assets_load_model_template_asset_result` |
 | `Zanna.Game3D.Prefab.LoadAsync` | `obj<Zanna.Game3D.AssetHandle3D>(str)` | `rt_game3d_assets_load_model_template_async` |
 | `Zanna.Game3D.Prefab.LoadAssetAsync` | `obj<Zanna.Game3D.AssetHandle3D>(str)` | `rt_game3d_assets_load_model_template_asset_async` |
 | `Zanna.Game3D.BodyDef.Box` | `obj(f64,f64,f64,f64)` | `rt_game3d_body_def_box` |
@@ -2481,6 +2497,12 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.Assets3D.LoadAnimationAsset` | `obj<Zanna.Graphics3D.Animation3D>(str,i64)` | `rt_game3d_assets_load_animation_asset` |
 | `Zanna.Game3D.Assets3D.LoadNodeAnimation` | `obj<Zanna.Graphics3D.NodeAnimation3D>(str,i64)` | `rt_game3d_assets_load_node_animation` |
 | `Zanna.Game3D.Assets3D.LoadNodeAnimationAsset` | `obj<Zanna.Graphics3D.NodeAnimation3D>(str,i64)` | `rt_game3d_assets_load_node_animation_asset` |
+| `Zanna.Game3D.Assets3D.LoadEntityResult` | `obj<Zanna.Result>(str)` | `rt_game3d_assets_load_model_result` |
+| `Zanna.Game3D.Assets3D.LoadEntityAssetResult` | `obj<Zanna.Result>(str)` | `rt_game3d_assets_load_model_asset_result` |
+| `Zanna.Game3D.Assets3D.LoadAnimationResult` | `obj<Zanna.Result>(str,i64)` | `rt_game3d_assets_load_animation_result` |
+| `Zanna.Game3D.Assets3D.LoadAnimationAssetResult` | `obj<Zanna.Result>(str,i64)` | `rt_game3d_assets_load_animation_asset_result` |
+| `Zanna.Game3D.Assets3D.LoadNodeAnimationResult` | `obj<Zanna.Result>(str,i64)` | `rt_game3d_assets_load_node_animation_result` |
+| `Zanna.Game3D.Assets3D.LoadNodeAnimationAssetResult` | `obj<Zanna.Result>(str,i64)` | `rt_game3d_assets_load_node_animation_asset_result` |
 | `Zanna.Game3D.Assets3D.LoadEntityAsync` | `obj<Zanna.Game3D.AssetHandle3D>(str)` | `rt_game3d_assets_load_model_async` |
 | `Zanna.Game3D.Assets3D.LoadEntityAssetAsync` | `obj<Zanna.Game3D.AssetHandle3D>(str)` | `rt_game3d_assets_load_model_asset_async` |
 | `Zanna.Game3D.Assets3D.SetResidencyBudget` | `void(i64)` | `rt_game3d_assets_set_residency_budget` |

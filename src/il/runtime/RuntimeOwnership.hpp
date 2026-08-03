@@ -356,6 +356,21 @@ template <std::size_t N>
            name == "Zanna.Graphics3D.PhysicsBody3D.get_Velocity" ||
            name == "Zanna.Graphics3D.PhysicsBody3D.get_AngularVelocity" ||
            name == "Zanna.Graphics3D.PhysicsBody3D.get_GroundNormal" ||
+           name == "Zanna.Graphics3D.PhysicsWorld3D.get_Gravity" ||
+           name == "Zanna.Graphics3D.Canvas3D.get_FogColor" ||
+           name == "Zanna.Graphics3D.Canvas3D.get_AmbientColor" ||
+           name == "Zanna.Graphics3D.Material3D.get_EmissiveColor" ||
+           name == "Zanna.Graphics3D.Particles3D.get_Gravity" ||
+           name == "Zanna.Graphics3D.Particles3D.get_Position" ||
+           name == "Zanna.Graphics3D.Particles3D.get_Direction" ||
+           name == "Zanna.Graphics3D.Particles3D.get_EmitterSize" ||
+           name == "Zanna.Graphics3D.Sky3D.get_SunDirection" ||
+           name == "Zanna.Graphics3D.Sky3D.get_GroundAlbedo" ||
+           name == "Zanna.Graphics3D.SixDofJoint3D.get_LinearLimitMin" ||
+           name == "Zanna.Graphics3D.SixDofJoint3D.get_LinearLimitMax" ||
+           name == "Zanna.Graphics3D.SixDofJoint3D.get_AngularLimitMin" ||
+           name == "Zanna.Graphics3D.SixDofJoint3D.get_AngularLimitMax" ||
+           name == "Zanna.Graphics3D.SixDofJoint3D.get_LinearMotorVelocity" ||
            name == "Zanna.Graphics3D.Character3D.get_Position" ||
            name == "Zanna.Graphics3D.Camera3D.get_Position" ||
            name == "Zanna.Graphics3D.Camera3D.get_Forward" ||
@@ -405,7 +420,18 @@ template <std::size_t N>
            name == "rt_ledge_hit3d_get_wall_normal" || name == "rt_ledge_hit3d_get_landing_point" ||
            name == "rt_body3d_get_position" || name == "rt_body3d_get_scale" ||
            name == "rt_body3d_get_velocity" || name == "rt_body3d_get_angular_velocity" ||
-           name == "rt_body3d_get_ground_normal" || name == "rt_character3d_get_position" ||
+           name == "rt_body3d_get_ground_normal" || name == "rt_world3d_get_gravity" ||
+           name == "rt_canvas3d_get_fog_color" || name == "rt_canvas3d_get_ambient_color" ||
+           name == "rt_material3d_get_emissive_color" || name == "rt_particles3d_get_gravity" ||
+           name == "rt_particles3d_get_position_vec3" || name == "rt_particles3d_get_direction" ||
+           name == "rt_particles3d_get_emitter_size" || name == "rt_sky3d_get_sun_direction" ||
+           name == "rt_sky3d_get_ground_albedo" ||
+           name == "rt_sixdof_joint3d_get_linear_limit_min" ||
+           name == "rt_sixdof_joint3d_get_linear_limit_max" ||
+           name == "rt_sixdof_joint3d_get_angular_limit_min" ||
+           name == "rt_sixdof_joint3d_get_angular_limit_max" ||
+           name == "rt_sixdof_joint3d_get_linear_motor_velocity" ||
+           name == "rt_character3d_get_position" ||
            name == "rt_camera3d_get_position" || name == "rt_camera3d_get_forward" ||
            name == "rt_camera3d_get_right" || name == "rt_camera3d_get_up" ||
            name == "rt_terrain3d_get_scale" || name == "rt_water3d_get_position" ||

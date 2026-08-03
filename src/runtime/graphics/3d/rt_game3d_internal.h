@@ -294,6 +294,10 @@ typedef struct rt_game3d_input {
     /* Sub-pixel mouse deltas (relative mouse mode); mirror mouse_dx/dy. */
     double mouse_fdx;
     double mouse_fdy;
+    /* Absolute window-local cursor position in pixels (ADR 0233); snapshotted
+     * alongside the deltas so picking math observes the same frame. */
+    int64_t mouse_x;
+    int64_t mouse_y;
     double wheel_y;
     /* Gamepad merge: index bound via Input3D.BindPad (-1 = none). Stick axes
      * are snapshotted per update so Move/LookAxis observe a coherent frame. */
@@ -1894,6 +1898,16 @@ double game3d_input_mouse_fdy(const rt_game3d_input *input);
 /// @param input Borrowed Input3D payload.
 /// @return Vertical mouse delta in pixels, or zero for invalid input.
 int64_t game3d_input_mouse_dy(const rt_game3d_input *input);
+
+/// @brief Read the absolute window-local cursor X from an Input3D snapshot or live input.
+/// @param input Borrowed Input3D payload.
+/// @return Cursor X in pixels, or zero for invalid input.
+int64_t game3d_input_mouse_x(const rt_game3d_input *input);
+
+/// @brief Read the absolute window-local cursor Y from an Input3D snapshot or live input.
+/// @param input Borrowed Input3D payload.
+/// @return Cursor Y in pixels, or zero for invalid input.
+int64_t game3d_input_mouse_y(const rt_game3d_input *input);
 
 /// @brief Merge keyboard and bound-gamepad movement into a normalized three-axis vector.
 /// @param input Borrowed Input3D payload.

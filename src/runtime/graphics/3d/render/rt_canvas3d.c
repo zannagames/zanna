@@ -2638,6 +2638,14 @@ void rt_canvas3d_set_backface_cull(void *obj, int8_t enabled) {
         c->backface_cull = enabled ? 1 : 0;
 }
 
+/// @brief `Canvas3D.BackfaceCull` — read the retained culling flag (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Nonzero while backface culling is enabled.
+int8_t rt_canvas3d_get_backface_cull(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->backface_cull ? 1 : 0;
+}
+
 /// @brief Park a `malloc`'d buffer for end-of-frame disposal.
 ///
 /// Used by skinning / morph-target paths that allocate
@@ -2852,6 +2860,14 @@ void rt_canvas3d_set_dt_max(void *obj, int64_t max_ms) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (c)
         c->dt_max_ms = max_ms > 0 ? (max_ms > INT64_MAX / 1000 ? INT64_MAX / 1000 : max_ms) : 0;
+}
+
+/// @brief `Canvas3D.MaxDeltaTime` — read the retained delta-time cap (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Retained cap in milliseconds (zero = uncapped), or zero when invalid.
+int64_t rt_canvas3d_get_dt_max(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? c->dt_max_ms : 0;
 }
 
 /// @brief Select live, synthetic, or live+synthetic input.
@@ -3150,6 +3166,16 @@ void rt_canvas3d_set_ambient(void *obj, double r, double g, double b) {
     canvas3d_invalidate_light_flatten_cache(c);
 }
 
+/// @brief `Canvas3D.AmbientColor` — fresh `Vec3` of the retained ambient color (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Newly allocated color snapshot; origin for an invalid handle.
+void *rt_canvas3d_get_ambient_color(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new((double)c->ambient[0], (double)c->ambient[1], (double)c->ambient[2]);
+}
+
 /// @brief Enable or disable image-based lighting from the canvas skybox.
 /// @details This setter only toggles state. The skybox's SH-9 irradiance and
 ///   GGX-prefiltered specular mip chain are prepared lazily by the first eligible
@@ -3229,6 +3255,40 @@ void rt_canvas3d_set_fog(
     c->fog_color[0] = canvas3d_clamp01_f64(r);
     c->fog_color[1] = canvas3d_clamp01_f64(g);
     c->fog_color[2] = canvas3d_clamp01_f64(b);
+}
+
+/// @brief `Canvas3D.FogEnabled` — read whether distance fog is active (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Nonzero while distance fog is enabled.
+int8_t rt_canvas3d_get_fog_enabled(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->fog_enabled ? 1 : 0;
+}
+
+/// @brief `Canvas3D.FogNear` — read the retained fog start distance (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Retained near distance, or zero for an invalid handle.
+double rt_canvas3d_get_fog_near(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? (double)c->fog_near : 0.0;
+}
+
+/// @brief `Canvas3D.FogFar` — read the retained full-strength fog distance (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Retained far distance, or zero for an invalid handle.
+double rt_canvas3d_get_fog_far(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? (double)c->fog_far : 0.0;
+}
+
+/// @brief `Canvas3D.FogColor` — fresh `Vec3` of the retained fog color (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Newly allocated color snapshot; origin for an invalid handle.
+void *rt_canvas3d_get_fog_color(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new((double)c->fog_color[0], (double)c->fog_color[1], (double)c->fog_color[2]);
 }
 
 /// @brief Enable exponential height fog on top of (or independent of) distance fog.
@@ -3364,6 +3424,14 @@ void rt_canvas3d_set_shadow_bias(void *obj, double bias) {
         canvas3d_clamp_f64_to_float(bias, 0.0, CANVAS3D_MATERIAL_DEPTH_BIAS_ABS_MAX, 0.005f);
 }
 
+/// @brief `Canvas3D.ShadowBias` — read the retained shadow sampling bias (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Retained bias, or zero for an invalid handle.
+double rt_canvas3d_get_shadow_bias(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? (double)c->shadow_bias : 0.0;
+}
+
 /// @brief Set the slope-scaled shadow-map rasterization bias for all casters.
 /// @details This complements `SetShadowBias`, which offsets the sampling comparison, by asking GPU
 ///   backends to bias depth during the shadow-map draw itself. Raising it reduces acne on grazing
@@ -3377,6 +3445,14 @@ void rt_canvas3d_set_shadow_slope_bias(void *obj, double bias) {
         return;
     c->shadow_slope_bias =
         canvas3d_clamp_f64_to_float(bias, 0.0, CANVAS3D_MATERIAL_SLOPE_DEPTH_BIAS_ABS_MAX, 1.0f);
+}
+
+/// @brief `Canvas3D.ShadowSlopeBias` — read the retained slope-scaled bias (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Retained slope bias, or zero for an invalid handle.
+double rt_canvas3d_get_shadow_slope_bias(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? (double)c->shadow_slope_bias : 0.0;
 }
 
 /// @brief Set how dark fully-occluded texels get (0 = shadows disabled, 1 = fully black).
@@ -3397,6 +3473,14 @@ void rt_canvas3d_set_shadow_strength(void *obj, double strength) {
     c->shadow_strength = (float)strength;
 }
 
+/// @brief `Canvas3D.ShadowStrength` — read the retained occlusion darkness (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Retained strength in [0, 1], or zero for an invalid handle.
+double rt_canvas3d_get_shadow_strength(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? (double)c->shadow_strength : 0.0;
+}
+
 /// @brief Select the shadow PCF filtering tier (0 = 4 taps, 1 = 8, 2 = 16 Poisson taps).
 /// @details Higher tiers produce smoother penumbrae at higher per-pixel cost. Values
 ///   outside [0, 2] clamp. `Canvas3D.SetQuality` also drives this (PERFORMANCE=0,
@@ -3413,6 +3497,14 @@ void rt_canvas3d_set_shadow_quality(void *obj, int64_t quality) {
     if (quality > 2)
         quality = 2;
     c->shadow_quality = (int32_t)quality;
+}
+
+/// @brief `Canvas3D.ShadowQuality` — read the retained PCF filtering tier (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Retained tier 0-2, or zero for an invalid handle.
+int64_t rt_canvas3d_get_shadow_quality(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? (int64_t)c->shadow_quality : 0;
 }
 
 /// @brief Configure cascaded shadow-map count, preserving current single-map fallback.
@@ -3439,6 +3531,14 @@ void rt_canvas3d_set_shadow_cascades(void *obj, int64_t count) {
         }
     }
     c->shadow_cascade_count = (int32_t)count;
+}
+
+/// @brief `Canvas3D.ShadowCascades` — read the retained cascade count (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Retained cascade count (>= 1), or zero for an invalid handle.
+int64_t rt_canvas3d_get_shadow_cascades(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? (int64_t)c->shadow_cascade_count : 0;
 }
 
 /// @brief Default auto shadow-coverage distance in world units (see shadow_distance).
@@ -3642,6 +3742,14 @@ void rt_canvas3d_set_frustum_culling(void *obj, int8_t enabled) {
     c->frustum_culling = enabled;
 }
 
+/// @brief `Canvas3D.FrustumCulling` — read the retained frustum-cull flag (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Nonzero while frustum culling is enabled.
+int8_t rt_canvas3d_get_frustum_culling(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->frustum_culling ? 1 : 0;
+}
+
 /// @brief Enable or disable coarse CPU occlusion culling for draw submission.
 /// @details Independent of frustum culling: toggling occlusion no longer overwrites the
 ///   frustum-culling flag (frustum culling defaults on; games may configure each
@@ -3656,6 +3764,14 @@ void rt_canvas3d_set_occlusion_culling(void *obj, int8_t enabled) {
     if (c->occlusion_culling != enabled)
         canvas3d_clear_occlusion_history(c);
     c->occlusion_culling = enabled;
+}
+
+/// @brief `Canvas3D.OcclusionCulling` — read the retained occlusion-cull flag (ADR 0233).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Nonzero while CPU occlusion culling is enabled.
+int8_t rt_canvas3d_get_occlusion_culling(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c && c->occlusion_culling ? 1 : 0;
 }
 
 #else

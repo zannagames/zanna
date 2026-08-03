@@ -1319,6 +1319,136 @@ void *rt_game3d_assets_load_model_template_asset(rt_string path) {
         path, 1, "Game3D.Assets3D.LoadModelTemplateAsset: failed to load model asset");
 }
 
+/// @brief Wrap one owned Game3D load outcome as a `Zanna.Result` (ADR 0233).
+/// @details Ok retains the value into the Result and releases the local
+///          reference; err carries the asset-error diagnostic text or
+///          @p fallback when the channel is empty. Mirrors the SceneGraph
+///          result contract from ADR 0227.
+/// @param value Owned freshly loaded handle, or `NULL` on failure.
+/// @param fallback Borrowed static fallback message.
+/// @return New Result carrying the value or the failure text.
+static void *game3d_load_value_to_result(void *value, const char *fallback) {
+    if (value) {
+        void *result = rt_result_ok(value);
+        if (rt_obj_release_check0(value))
+            rt_obj_free(value);
+        return result;
+    }
+    {
+        const char *message = rt_asset_error_get_message();
+        if (!message || message[0] == '\0') {
+            rt_string err = rt_const_cstr(fallback ? fallback : "Game3D asset load failed");
+            void *result = rt_result_err_str(err);
+            rt_string_unref(err);
+            return result;
+        }
+        {
+            rt_string err = rt_string_from_bytes(message, strlen(message));
+            void *result = rt_result_err_str(err);
+            rt_str_release_maybe(err);
+            return result;
+        }
+    }
+}
+
+/// @brief Non-trapping entity load shared by the entity Result peers (ADR 0233).
+/// @param path Runtime string containing the model path.
+/// @param asset_path Non-zero to load from the packed-asset namespace.
+/// @param method Diagnostic label recorded on failure.
+/// @return Owned entity, or NULL after recording the failure.
+static void *game3d_assets_load_model_no_trap(rt_string path,
+                                              int8_t asset_path,
+                                              const char *method) {
+    rt_game3d_model_template *model_template =
+        game3d_assets_load_template_uncached_impl(path, asset_path, method, 0);
+    void *entity;
+    if (!model_template)
+        return NULL;
+    entity = rt_game3d_model_template_instantiate(model_template);
+    if (rt_obj_release_check0(model_template))
+        rt_obj_free(model_template);
+    return entity;
+}
+
+/// @brief `Assets3D.LoadEntityResult(path)` — Result peer of `LoadEntity` (ADR 0233).
+/// @param path Runtime string containing the filesystem model path.
+/// @return New Result: ok wraps the entity, err carries diagnostics.
+void *rt_game3d_assets_load_model_result(rt_string path) {
+    return game3d_load_value_to_result(
+        game3d_assets_load_model_no_trap(
+            path, 0, "Assets3D.LoadEntityResult: failed to load model"),
+        "Assets3D.LoadEntityResult: failed to load model");
+}
+
+/// @brief `Assets3D.LoadEntityAssetResult(path)` — Result peer of `LoadEntityAsset` (ADR 0233).
+/// @param path Runtime string containing the packed model path.
+/// @return New Result: ok wraps the entity, err carries diagnostics.
+void *rt_game3d_assets_load_model_asset_result(rt_string path) {
+    return game3d_load_value_to_result(
+        game3d_assets_load_model_no_trap(
+            path, 1, "Assets3D.LoadEntityAssetResult: failed to load model"),
+        "Assets3D.LoadEntityAssetResult: failed to load model");
+}
+
+/// @brief `Assets3D.LoadAnimationResult(path, index)` — Result peer (ADR 0233).
+/// @param path Runtime string containing the filesystem model path.
+/// @param index Zero-based skeletal animation index.
+/// @return New Result: ok wraps the Animation3D, err carries diagnostics.
+void *rt_game3d_assets_load_animation_result(rt_string path, int64_t index) {
+    return game3d_load_value_to_result(rt_game3d_assets_load_animation(path, index),
+                                       "Assets3D.LoadAnimationResult: failed to load animation");
+}
+
+/// @brief `Assets3D.LoadAnimationAssetResult(path, index)` — Result peer (ADR 0233).
+/// @param path Runtime string containing the packed model path.
+/// @param index Zero-based skeletal animation index.
+/// @return New Result: ok wraps the Animation3D, err carries diagnostics.
+void *rt_game3d_assets_load_animation_asset_result(rt_string path, int64_t index) {
+    return game3d_load_value_to_result(
+        rt_game3d_assets_load_animation_asset(path, index),
+        "Assets3D.LoadAnimationAssetResult: failed to load animation");
+}
+
+/// @brief `Assets3D.LoadNodeAnimationResult(path, index)` — Result peer (ADR 0233).
+/// @param path Runtime string containing the filesystem model path.
+/// @param index Zero-based node animation index.
+/// @return New Result: ok wraps the NodeAnimation3D, err carries diagnostics.
+void *rt_game3d_assets_load_node_animation_result(rt_string path, int64_t index) {
+    return game3d_load_value_to_result(
+        rt_game3d_assets_load_node_animation(path, index),
+        "Assets3D.LoadNodeAnimationResult: failed to load node animation");
+}
+
+/// @brief `Assets3D.LoadNodeAnimationAssetResult(path, index)` — Result peer (ADR 0233).
+/// @param path Runtime string containing the packed model path.
+/// @param index Zero-based node animation index.
+/// @return New Result: ok wraps the NodeAnimation3D, err carries diagnostics.
+void *rt_game3d_assets_load_node_animation_asset_result(rt_string path, int64_t index) {
+    return game3d_load_value_to_result(
+        rt_game3d_assets_load_node_animation_asset(path, index),
+        "Assets3D.LoadNodeAnimationAssetResult: failed to load node animation");
+}
+
+/// @brief `Prefab.LoadResult(path)` — Result peer of `Prefab.Load` (ADR 0233).
+/// @param path Runtime string containing the filesystem model path.
+/// @return New Result: ok wraps the SceneTemplate, err carries diagnostics.
+void *rt_game3d_assets_load_model_template_result(rt_string path) {
+    return game3d_load_value_to_result(
+        game3d_assets_load_template_cached_impl(
+            path, 0, "Prefab.LoadResult: failed to load model", 0),
+        "Prefab.LoadResult: failed to load model");
+}
+
+/// @brief `Prefab.LoadAssetResult(name)` — Result peer of `Prefab.LoadAsset` (ADR 0233).
+/// @param path Runtime string containing the packed model path.
+/// @return New Result: ok wraps the SceneTemplate, err carries diagnostics.
+void *rt_game3d_assets_load_model_template_asset_result(rt_string path) {
+    return game3d_load_value_to_result(
+        game3d_assets_load_template_cached_impl(
+            path, 1, "Prefab.LoadAssetResult: failed to load model asset", 0),
+        "Prefab.LoadAssetResult: failed to load model asset");
+}
+
 /// @brief Finalize a synchronous (deferred) asset handle whose result was produced inline.
 /// @param handle AssetHandle3D to service and start if it is still deferred.
 static void game3d_asset_handle_complete_if_deferred(rt_game3d_asset_handle *handle) {

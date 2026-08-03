@@ -239,6 +239,85 @@ func main() {
         return;
     }
 
+    // ------------------------------------------------------------------
+    // Create Prefab from selection: the inverse workflow. The new file is
+    // plain content, the document stores only the reference, hydration
+    // grafts it back, and undo restores the exact prior bytes.
+    // ------------------------------------------------------------------
+    var crateIndex = editor.AddEmptyNode("Guard Crate", -1);
+    if crateIndex < 0 {
+        fail(shell, workDir, "could not author the extraction fixture");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+    editor.ApplyViewportSelection(crateIndex, false, false);
+    var createBaseline = sceneDoc.content;
+    var createRevision = editor.GetRevision();
+    if editor.CreatePrefabFromSelection() == false
+       or editor.GetRevision() != createRevision + 1 {
+        fail(shell, workDir, "create-prefab was not one transaction");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+    var prefabFile = Path.Join(workDir, "guard_crate.scene3d");
+    if File.Exists(prefabFile) == false {
+        fail(shell, workDir, "create-prefab did not write the new file");
+        return;
+    }
+    var prefabText = safe_io.ReadAllText(prefabFile);
+    if prefabText.ok == false
+       or Str.Contains(prefabText.text, "Guard Crate") == false
+       or Str.Contains(prefabText.text, "\"prefab\"") {
+        fail(shell, workDir, "the new prefab file was not plain content");
+        return;
+    }
+    if Str.Contains(sceneDoc.content, "guard_crate.scene3d") == false {
+        fail(shell, workDir,
+             "the document does not reference the created prefab");
+        return;
+    }
+    var createdIndex = -1;
+    scan = 0;
+    while scan < editor.flatNodes.count() {
+        if Str.Contains(
+               editor.flatNodes.get(scan).PrefabPath, "guard_crate") {
+            createdIndex = scan;
+        }
+        scan = scan + 1;
+    }
+    if createdIndex < 0
+       or editor.flatNodes.get(createdIndex).ChildCount != 1 {
+        fail(shell, workDir,
+             "the created instance did not hydrate its content");
+        return;
+    }
+    if editor.Undo() == false or sceneDoc.content != createBaseline {
+        fail(shell, workDir, "create-prefab did not undo byte-exact");
+        return;
+    }
+    pump(editor, sceneDoc, shell);
+
+    // Extracting an instance reference node is refused without history.
+    instanceIndex = -1;
+    scan = 0;
+    while scan < editor.flatNodes.count() {
+        if editor.flatNodes.get(scan).PrefabPath != ""
+           and instanceIndex < 0 {
+            instanceIndex = scan;
+        }
+        scan = scan + 1;
+    }
+    if instanceIndex >= 0 {
+        editor.ApplyViewportSelection(instanceIndex, false, false);
+        var refuseRevision = editor.GetRevision();
+        if editor.CreatePrefabFromSelection() != false
+           or editor.GetRevision() != refuseRevision {
+            fail(shell, workDir,
+                 "extracting an instance node was not refused cleanly");
+            return;
+        }
+    }
+
     Dir.RemoveAll(workDir);
     shell.Destroy();
     Terminal.Say("RESULT: ok");

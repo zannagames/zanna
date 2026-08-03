@@ -942,6 +942,11 @@ function(zanna_add_runtime_tests)
     zanna_add_ctest(test_rt_cubemap3d_ibl test_rt_cubemap3d_ibl)
     zanna_add_test_labels(test_rt_cubemap3d_ibl graphics3d unit)
 
+    zanna_add_test(test_rt_textureasset3d ${ZANNA_TESTS_DIR}/unit/test_rt_textureasset3d.cpp)
+    target_link_libraries(test_rt_textureasset3d PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    zanna_add_ctest(test_rt_textureasset3d test_rt_textureasset3d)
+    zanna_add_test_labels(test_rt_textureasset3d graphics3d unit)
+
     zanna_add_test(test_graphics3d_abi_surface ${ZANNA_TESTS_DIR}/unit/test_graphics3d_abi_surface.cpp)
     target_compile_definitions(test_graphics3d_abi_surface PRIVATE ZANNA_SOURCE_DIR="${CMAKE_SOURCE_DIR}")
     zanna_add_ctest(test_graphics3d_abi_surface test_graphics3d_abi_surface)

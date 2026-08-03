@@ -763,6 +763,8 @@ RT_FUNC(Game3DPrefabPlane,    rt_game3d_prefab_plane,    "Zanna.Game3D.Prefab.Pl
 RT_FUNC(Game3DPrefabGround,   rt_game3d_prefab_ground,   "Zanna.Game3D.Prefab.Ground",   "obj(f64,obj)")
 RT_FUNC(Game3DPrefabLoad,            rt_game3d_assets_load_model_template,             "Zanna.Game3D.Prefab.Load",            "obj<Zanna.Game3D.SceneTemplate>(str)")
 RT_FUNC(Game3DPrefabLoadAsset,       rt_game3d_assets_load_model_template_asset,       "Zanna.Game3D.Prefab.LoadAsset",       "obj<Zanna.Game3D.SceneTemplate>(str)")
+RT_FUNC(Game3DPrefabLoadResult,      rt_game3d_assets_load_model_template_result,      "Zanna.Game3D.Prefab.LoadResult",      "obj<Zanna.Result>(str)")
+RT_FUNC(Game3DPrefabLoadAssetResult, rt_game3d_assets_load_model_template_asset_result, "Zanna.Game3D.Prefab.LoadAssetResult", "obj<Zanna.Result>(str)")
 RT_FUNC(Game3DPrefabLoadAsync,       rt_game3d_assets_load_model_template_async,       "Zanna.Game3D.Prefab.LoadAsync",       "obj<Zanna.Game3D.AssetHandle3D>(str)")
 RT_FUNC(Game3DPrefabLoadAssetAsync,  rt_game3d_assets_load_model_template_asset_async, "Zanna.Game3D.Prefab.LoadAssetAsync",  "obj<Zanna.Game3D.AssetHandle3D>(str)")
 
@@ -771,14 +773,18 @@ RT_FUNC(Game3DPrefabLoadAssetAsync,  rt_game3d_assets_load_model_template_asset_
 /// `Zanna.Game3D.Prefab` is a static runtime surface and does not require an instance. Its public
 /// Its public surface exposes operations including `Box`, `BoxXYZ`, `Sphere`, `Cylinder`.
 RT_CLASS_BEGIN("Zanna.Game3D.Prefab", Game3DPrefab, "none", none)
-    RT_METHOD("Box", "obj(f64,obj)", Game3DPrefabBox)
-    RT_METHOD("BoxXYZ", "obj(f64,f64,f64,obj)", Game3DPrefabBoxXYZ)
-    RT_METHOD("Sphere", "obj(f64,i64,obj)", Game3DPrefabSphere)
-    RT_METHOD("Cylinder", "obj(f64,f64,i64,obj)", Game3DPrefabCylinder)
-    RT_METHOD("Plane", "obj(f64,f64,obj)", Game3DPrefabPlane)
-    RT_METHOD("Ground", "obj(f64,obj)", Game3DPrefabGround)
-    RT_METHOD("Load", "obj(str)", Game3DPrefabLoad)
-    RT_METHOD("LoadAsset", "obj(str)", Game3DPrefabLoadAsset)
+    // Factory returns are typed so `var e = Prefab.Box(...)` infers Entity3D
+    // without an annotation (untyped `obj` would infer the Prefab class).
+    RT_METHOD("Box", "obj<Zanna.Game3D.Entity3D>(f64,obj)", Game3DPrefabBox)
+    RT_METHOD("BoxXYZ", "obj<Zanna.Game3D.Entity3D>(f64,f64,f64,obj)", Game3DPrefabBoxXYZ)
+    RT_METHOD("Sphere", "obj<Zanna.Game3D.Entity3D>(f64,i64,obj)", Game3DPrefabSphere)
+    RT_METHOD("Cylinder", "obj<Zanna.Game3D.Entity3D>(f64,f64,i64,obj)", Game3DPrefabCylinder)
+    RT_METHOD("Plane", "obj<Zanna.Game3D.Entity3D>(f64,f64,obj)", Game3DPrefabPlane)
+    RT_METHOD("Ground", "obj<Zanna.Game3D.Entity3D>(f64,obj)", Game3DPrefabGround)
+    RT_METHOD("Load", "obj<Zanna.Game3D.SceneTemplate>(str)", Game3DPrefabLoad)
+    RT_METHOD("LoadAsset", "obj<Zanna.Game3D.SceneTemplate>(str)", Game3DPrefabLoadAsset)
+    RT_METHOD("LoadResult", "obj<Zanna.Result>(str)", Game3DPrefabLoadResult)
+    RT_METHOD("LoadAssetResult", "obj<Zanna.Result>(str)", Game3DPrefabLoadAssetResult)
     RT_METHOD("LoadAsync", "obj(str)", Game3DPrefabLoadAsync)
     RT_METHOD("LoadAssetAsync", "obj(str)", Game3DPrefabLoadAssetAsync)
 RT_CLASS_END()

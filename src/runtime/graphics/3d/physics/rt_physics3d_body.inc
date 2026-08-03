@@ -918,3 +918,21 @@ double rt_body3d_get_mass(void *o) {
     rt_body3d *b = body3d_checked(o);
     return b ? ph3d_clamp_nonnegative_finite(b->mass, 0.0) : 0;
 }
+
+/// @brief `Body3D.SetMass(mass)` — change the body's mass (ADR 0233).
+///
+/// Sanitizes to non-negative finite, then refreshes derived state through
+/// the same path construction uses (`inv_mass` and the shape-derived inverse
+/// inertia), and wakes the body so the solver observes the change. Mass near
+/// zero on a dynamic body yields infinite effective mass, identical to
+/// construction with mass 0.
+/// @param o Body3D handle to modify.
+/// @param mass Requested mass; non-finite or negative input clamps to zero.
+void rt_body3d_set_mass(void *o, double mass) {
+    rt_body3d *b = body3d_checked(o);
+    if (!b)
+        return;
+    b->mass = ph3d_clamp_nonnegative_finite(mass, 0.0);
+    body3d_refresh_motion_mode(b);
+    body3d_wake_if_dynamic(b);
+}

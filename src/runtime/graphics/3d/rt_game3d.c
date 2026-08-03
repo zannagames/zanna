@@ -47,6 +47,7 @@
 #include "rt_animcontroller3d.h"
 #include "rt_asset.h"
 #include "rt_asset_error.h"
+#include "rt_result.h"
 #include "rt_audio.h"
 #include "rt_box.h"
 #include "rt_canvas3d.h"
@@ -1565,6 +1566,22 @@ double game3d_input_mouse_fdx(const rt_game3d_input *input) {
 double game3d_input_mouse_fdy(const rt_game3d_input *input) {
     double value = input && input->has_snapshot ? input->mouse_fdy : rt_mouse_delta_yf();
     return game3d_clamp_abs_or(value, 0.0, RT_GAME3D_COORD_ABS_MAX);
+}
+
+/// @brief Absolute window-local cursor X. Snapshot-aware, else live cursor.
+/// @param input Optional Game3D input snapshot.
+/// @return Cursor X in pixels, bounded like the integral deltas.
+int64_t game3d_input_mouse_x(const rt_game3d_input *input) {
+    int64_t value = input && input->has_snapshot ? input->mouse_x : rt_mouse_x();
+    return game3d_clamp_mouse_delta_i64(value);
+}
+
+/// @brief Absolute window-local cursor Y. Snapshot-aware, else live cursor.
+/// @param input Optional Game3D input snapshot.
+/// @return Cursor Y in pixels, bounded like the integral deltas.
+int64_t game3d_input_mouse_y(const rt_game3d_input *input) {
+    int64_t value = input && input->has_snapshot ? input->mouse_y : rt_mouse_y();
+    return game3d_clamp_mouse_delta_i64(value);
 }
 
 /// @brief This frame's mouse wheel Y. Snapshot-aware, else live wheel value.

@@ -85,6 +85,16 @@ int8_t rt_sky3d_update(void *sky, void *canvas);
 /// owns the returned reference.
 void *rt_sky3d_get_cubemap(void *sky);
 
+/// @brief Fresh Vec3 of the normalized sun direction (ADR 0233).
+/// @param sky Sky3D handle; invalid handles trap.
+/// @return Newly allocated direction snapshot; origin for an invalid handle.
+void *rt_sky3d_get_sun_direction(void *sky);
+
+/// @brief Fresh Vec3 of the retained ground albedo (ADR 0233).
+/// @param sky Sky3D handle; invalid handles trap.
+/// @return Newly allocated albedo snapshot; origin for an invalid handle.
+void *rt_sky3d_get_ground_albedo(void *sky);
+
 #ifdef __cplusplus
 }
 #endif

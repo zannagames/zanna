@@ -34,6 +34,8 @@ while IFS='|' read -r name category directory extra || [[ -n "${name:-}" ]]; do
 
     case "$category" in
         games) game_count=$((game_count + 1)) ;;
+        # 3D reference demos count as games for the games-vs-apps ratio gate.
+        3d) game_count=$((game_count + 1)) ;;
         apps) app_count=$((app_count + 1)) ;;
         *)
             echo "error: invalid demo project category '$category' at $MANIFEST:$line_number" >&2
