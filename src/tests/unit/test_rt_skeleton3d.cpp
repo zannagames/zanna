@@ -30,6 +30,7 @@
 #include "rt_skeleton3d_internal.h"
 #include "rt_string.h"
 #include <cassert>
+#include <cfloat>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -269,8 +270,11 @@ static void test_animation_safe_counts_have_domain_ceilings() {
     EXPECT_TRUE(impl->channels != nullptr, "Animation3D channel-limit table allocated");
     if (!impl->channels)
         return;
+    impl->owned_channels = impl->channels;
     impl->channel_count = RT_ANIMATION3D_MAX_CHANNELS;
     impl->channel_capacity = RT_ANIMATION3D_MAX_CHANNELS;
+    impl->owned_channel_capacity = RT_ANIMATION3D_MAX_CHANNELS;
+    impl->initialized_channel_count = RT_ANIMATION3D_MAX_CHANNELS;
     for (int32_t i = 0; i < RT_ANIMATION3D_MAX_CHANNELS; i++)
         impl->channels[i].bone_index = -1;
 
@@ -414,6 +418,47 @@ static void test_player_loop() {
     rt_anim_player3d_set_time(player, -0.25);
     EXPECT_NEAR(
         rt_anim_player3d_get_time(player), 0.75, 0.01, "Looping SetTime wraps negative seeks");
+}
+
+/// @brief Extreme finite elapsed times and speeds must never overflow animation clocks.
+static void test_player_extreme_clock_arithmetic_stays_finite() {
+    void *skel = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+    void *anim = rt_animation3d_new(rt_const_cstr("extreme_clock"), 1.0);
+    void *rot = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *scl = rt_vec3_new(1.0, 1.0, 1.0);
+    rt_animation3d_add_keyframe(anim, 0, 0.0, rt_vec3_new(0.0, 0.0, 0.0), rot, scl);
+    rt_animation3d_add_keyframe(anim, 0, 1.0, rt_vec3_new(1.0, 0.0, 0.0), rot, scl);
+    void *player = rt_anim_player3d_new(skel);
+
+    rt_animation3d_set_looping(anim, 1);
+    rt_anim_player3d_play(player, anim);
+    rt_anim_player3d_set_speed(player, DBL_MAX);
+    rt_anim_player3d_update(player, DBL_MAX);
+    double loop_time = rt_anim_player3d_get_time(player);
+    EXPECT_TRUE(std::isfinite(loop_time) && loop_time >= 0.0 && loop_time < 1.0,
+                "Extreme looping clock stays finite and wrapped");
+
+    rt_animation3d_set_looping(anim, 0);
+    rt_anim_player3d_play(player, anim);
+    rt_anim_player3d_set_speed(player, DBL_MAX);
+    rt_anim_player3d_update(player, DBL_MAX);
+    EXPECT_NEAR(rt_anim_player3d_get_time(player),
+                1.0,
+                0.0,
+                "Extreme forward clock clamps exactly to the endpoint");
+    EXPECT_TRUE(rt_anim_player3d_is_playing(player) == 0,
+                "Extreme forward clock stops a non-looping clip");
+
+    rt_anim_player3d_play(player, anim);
+    rt_anim_player3d_set_time(player, 1.0);
+    rt_anim_player3d_set_speed(player, -DBL_MAX);
+    rt_anim_player3d_update(player, DBL_MAX);
+    EXPECT_NEAR(rt_anim_player3d_get_time(player),
+                0.0,
+                0.0,
+                "Extreme reverse clock clamps exactly to the start");
 }
 
 static void test_player_reverse_timing_and_bad_handles() {
@@ -822,10 +867,25 @@ static void test_animation_retarget_scales_by_proportion() {
     void *scl = rt_vec3_new(1.0, 1.0, 1.0);
     rt_animation3d_add_keyframe(anim, src_arm, 0.0, rt_vec3_new(0.0, 0.0, 0.0), rot, scl);
     rt_animation3d_add_keyframe(anim, src_arm, 2.0, rt_vec3_new(2.0, 0.0, 0.0), rot, scl);
+    void *tangent_anim = rt_animation3d_new(rt_const_cstr("reach-cubic"), 2.0);
+    rt_animation3d_add_keyframe(tangent_anim, src_arm, 0.0, rt_vec3_new(0.0, 0.0, 0.0), rot, scl);
+    rt_animation3d_add_keyframe(tangent_anim, src_arm, 2.0, rt_vec3_new(2.0, 0.0, 0.0), rot, scl);
+    const float tangent_in[3] = {-3.0f, 0.0f, 0.0f};
+    const float tangent_out[3] = {3.0f, 0.0f, 0.0f};
+    rt_animation3d_set_keyframe_tangents(
+        tangent_anim, src_arm, 0.0, tangent_in, tangent_out, nullptr, nullptr, nullptr, nullptr);
+    rt_animation3d_set_keyframe_tangents(
+        tangent_anim, src_arm, 2.0, tangent_in, tangent_out, nullptr, nullptr, nullptr, nullptr);
+
+    void *retargeted_tangent = rt_animation3d_retarget(tangent_anim, src, dst);
+    EXPECT_TRUE(retargeted_tangent != nullptr, "Proportional retarget returns an animation");
+    auto *retargeted_tangent_impl = static_cast<rt_animation3d *>(retargeted_tangent);
+    EXPECT_NEAR(retargeted_tangent_impl->channels[0].keyframes[0].pos_out_tangent[0],
+                6.0,
+                0.001,
+                "Retarget scales cubic translation tangents with translation values");
 
     void *retargeted = rt_animation3d_retarget(anim, src, dst);
-    EXPECT_TRUE(retargeted != nullptr, "Proportional retarget returns an animation");
-
     void *player = rt_anim_player3d_new(dst);
     rt_anim_player3d_play(player, retargeted);
     rt_anim_player3d_update(player, 1.0); /* sample at t=1 -> source mid pos (1,0,0) */
@@ -1026,6 +1086,7 @@ int main() {
     test_skeleton_freezes_after_player_creation();
     test_player_playback();
     test_player_loop();
+    test_player_extreme_clock_arithmetic_stays_finite();
     test_player_reverse_timing_and_bad_handles();
     test_player_stop_at_end();
     test_player_stop_returns_to_bind_pose();

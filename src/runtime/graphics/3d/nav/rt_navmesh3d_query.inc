@@ -1385,14 +1385,18 @@ int8_t rt_navmesh3d_set_offmesh_link_metadata(
     if (!nm || index < 0 || index >= link_count || !kind || !rt_string_is_handle(kind))
         return 0;
     nav_offmesh_link_t *link = &nm->offmesh_links[(int32_t)index];
-    if (link->kind) {
-        rt_string_unref(link->kind);
-        link->kind = NULL;
+    rt_string replacement = NULL;
+    if (rt_str_len(kind) > 0) {
+        replacement = rt_string_ref(kind);
+        if (!replacement)
+            return 0;
     }
-    const char *kind_bytes = rt_string_cstr(kind);
-    if (kind_bytes && kind_bytes[0] != '\0')
-        link->kind = rt_string_ref(kind);
-    link->traversal_cost = navmesh3d_sanitize_traversal_cost(traversal_cost);
+    float sanitized_cost = navmesh3d_sanitize_traversal_cost(traversal_cost);
+    rt_string previous = link->kind;
+    link->kind = replacement;
+    if (previous && rt_string_is_handle(previous))
+        rt_string_unref(previous);
+    link->traversal_cost = sanitized_cost;
     link->state_flags = state_flags;
     return 1;
 }
@@ -1613,20 +1617,29 @@ int8_t rt_navmesh3d_set_area(
     float max[3];
     if (!navmesh3d_read_obstacle_bounds(min_v, max_v, min, max))
         return 0;
+    int32_t source_triangle_count = nm->source_triangle_count > 0 ? nm->source_triangle_count : 0;
+    int32_t touched = 0;
+    for (int32_t i = 0; i < source_triangle_count; i++) {
+        if (navmesh3d_triangle_overlaps_bounds(nm, &nm->source_triangles[i], min, max)) {
+            touched = 1;
+            break;
+        }
+    }
+    if (touched == 0)
+        return 0;
     int32_t area_id = navmesh3d_ensure_area_id(nm, area);
     if (area_id < 0)
         return 0;
     float cost = navmesh3d_sanitize_traversal_cost(traversal_cost);
-    int32_t touched = 0;
-    for (int32_t i = 0; i < nm->source_triangle_count; i++) {
+    for (int32_t i = 0; i < source_triangle_count; i++) {
         nav_triangle_t *tri = &nm->source_triangles[i];
         if (!navmesh3d_triangle_overlaps_bounds(nm, tri, min, max))
             continue;
         tri->area_id = area_id;
         tri->traversal_cost = cost;
-        touched++;
     }
-    for (int32_t i = 0; i < nm->triangle_count; i++) {
+    int32_t triangle_count = navmesh3d_read_triangle_count(nm);
+    for (int32_t i = 0; i < triangle_count; i++) {
         nav_triangle_t *tri = &nm->triangles[i];
         if (!navmesh3d_triangle_overlaps_bounds(nm, tri, min, max))
             continue;
@@ -1691,7 +1704,29 @@ int64_t rt_navmesh3d_get_offmesh_link_count(void *obj) {
 /// @return Positive tile edge length for a tiled mesh, otherwise zero.
 double rt_navmesh3d_get_tile_size(void *obj) {
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
-    return nm && nm->tile_size > 0.0 ? nm->tile_size : 0.0;
+    return nm && isfinite(nm->tile_size) && nm->tile_size > 0.0 &&
+                   nm->tile_size <= NAVMESH3D_TILE_SIZE_MAX
+               ? nm->tile_size
+               : 0.0;
+}
+
+/// @brief Compare a query point with an off-mesh endpoint without overflow-prone squaring.
+/// @param endpoint Borrowed finite three-float endpoint.
+/// @param point Borrowed three-double query point.
+/// @param tolerance Non-negative component/radial tolerance.
+/// @return Non-zero when both points are finite and within the Euclidean tolerance.
+static int navmesh3d_link_endpoint_near(const float *endpoint,
+                                        const double *point,
+                                        double tolerance) {
+    if (!navmesh3d_float3_finite(endpoint) || !point || !isfinite(point[0]) ||
+        !isfinite(point[1]) || !isfinite(point[2]))
+        return 0;
+    double dx = (double)endpoint[0] - point[0];
+    double dy = (double)endpoint[1] - point[1];
+    double dz = (double)endpoint[2] - point[2];
+    if (fabs(dx) > tolerance || fabs(dy) > tolerance || fabs(dz) > tolerance)
+        return 0;
+    return hypot(hypot(dx, dy), dz) <= tolerance;
 }
 
 /// @brief Does the segment (a -> b) correspond to a registered off-mesh link?
@@ -1715,24 +1750,15 @@ int8_t rt_navmesh3d_segment_is_offmesh_link(void *obj,
     int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
     if (!nm || !a || !b || link_count <= 0)
         return 0;
-    const double tol2 = 0.25 * 0.25;
+    const double tolerance = 0.25;
     for (int32_t i = 0; i < link_count; i++) {
         const nav_offmesh_link_t *link = &nm->offmesh_links[i];
-        double f[3] = {link->from[0], link->from[1], link->from[2]};
-        double t[3] = {link->to[0], link->to[1], link->to[2]};
-        double dfa = (f[0] - a[0]) * (f[0] - a[0]) + (f[1] - a[1]) * (f[1] - a[1]) +
-                     (f[2] - a[2]) * (f[2] - a[2]);
-        double dtb = (t[0] - b[0]) * (t[0] - b[0]) + (t[1] - b[1]) * (t[1] - b[1]) +
-                     (t[2] - b[2]) * (t[2] - b[2]);
-        int forward = dfa <= tol2 && dtb <= tol2;
+        int forward = navmesh3d_link_endpoint_near(link->from, a, tolerance) &&
+                      navmesh3d_link_endpoint_near(link->to, b, tolerance);
         int backward = 0;
-        if (!forward && link->bidirectional) {
-            double dfb = (f[0] - b[0]) * (f[0] - b[0]) + (f[1] - b[1]) * (f[1] - b[1]) +
-                         (f[2] - b[2]) * (f[2] - b[2]);
-            double dta = (t[0] - a[0]) * (t[0] - a[0]) + (t[1] - a[1]) * (t[1] - a[1]) +
-                         (t[2] - a[2]) * (t[2] - a[2]);
-            backward = dfb <= tol2 && dta <= tol2;
-        }
+        if (!forward && link->bidirectional)
+            backward = navmesh3d_link_endpoint_near(link->from, b, tolerance) &&
+                       navmesh3d_link_endpoint_near(link->to, a, tolerance);
         if (forward || backward) {
             if (out_kind)
                 *out_kind = link->kind;
@@ -1875,7 +1901,10 @@ void rt_navmesh3d_set_max_slope(void *obj, double degrees) {
     if (!nm)
         return;
     double previous_slope = nm->max_slope;
-    nm->max_slope = navmesh3d_sanitize_slope(degrees);
+    double next_slope = navmesh3d_sanitize_slope(degrees);
+    if (next_slope == previous_slope)
+        return;
+    nm->max_slope = next_slope;
     if (!navmesh3d_apply_slope_filter(nm))
         nm->max_slope = previous_slope;
 }
@@ -1888,14 +1917,18 @@ void rt_navmesh3d_debug_draw(void *obj, void *canvas) {
     if (!obj || !canvas)
         return;
     rt_navmesh3d *nm = (rt_navmesh3d *)rt_g3d_checked_or_null(obj, RT_G3D_NAVMESH3D_CLASS_ID);
-    if (!nm || nm->triangle_count <= 0 || !nm->vertices || !nm->triangles)
+    int32_t triangle_count = navmesh3d_read_triangle_count(nm);
+    if (!nm || triangle_count <= 0 || !nm->vertices || !nm->triangles)
         return;
     int64_t color = 0x00FF44; /* green */
 
-    for (int32_t i = 0; i < nm->triangle_count; i++) {
+    for (int32_t i = 0; i < triangle_count; i++) {
         nav_triangle_t *tri = &nm->triangles[i];
         if (tri->blocked)
             continue; /* carved out — not part of the walkable surface */
+        if (tri->v[0] < 0 || tri->v[0] >= nm->vertex_count || tri->v[1] < 0 ||
+            tri->v[1] >= nm->vertex_count || tri->v[2] < 0 || tri->v[2] >= nm->vertex_count)
+            continue;
         float *v0 = nm->vertices[tri->v[0]].position;
         float *v1 = nm->vertices[tri->v[1]].position;
         float *v2 = nm->vertices[tri->v[2]].position;

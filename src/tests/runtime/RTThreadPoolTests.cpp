@@ -257,10 +257,15 @@ static void test_wait_for_success() {
 
 static void test_wait_for_immediate_check() {
     void *pool = rt_threadpool_new(2);
+    PoolMirror *state = (PoolMirror *)pool;
 
-    // No tasks submitted -> immediately done
-    int8_t done = rt_threadpool_wait_for(pool, 0);
-    assert(done == 1);
+    // Idle-worker monitor contention must not be mistaken for outstanding work.
+    rt_monitor_enter(state->monitor);
+    std::atomic<int> done{-1};
+    std::thread poller([&]() { done.store(rt_threadpool_wait_for(pool, 0)); });
+    poller.join();
+    rt_monitor_exit(state->monitor);
+    assert(done.load() == 1);
 
     rt_threadpool_shutdown(pool);
 }

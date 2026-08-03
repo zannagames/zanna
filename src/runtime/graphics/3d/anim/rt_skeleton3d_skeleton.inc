@@ -1,7 +1,20 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/anim/rt_skeleton3d_skeleton.inc  (#included from rt_skeleton3d.c;
-// not a standalone translation unit) Purpose: Skeleton3D bone hierarchy implementation
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/anim/rt_skeleton3d_skeleton.inc
+// Purpose: Skeleton3D hierarchy, bind poses, exact names, aliases, and lookup.
+// Key invariants:
+//   - Bone and alias counts never exceed authoritative initialized owned storage.
+//   - Parent indices are acyclic insertion-order references or the root sentinel.
+// Ownership/Lifetime:
+//   - Included by rt_skeleton3d.c; this is not a standalone translation unit.
+//   - Skeletons own bone/alias arrays and retain every published runtime name.
+// Links: rt_skeleton3d.c, rt_skeleton3d.h, rt_skeleton3d_internal.h
+//
 //===----------------------------------------------------------------------===//
 /**
  * @file rt_skeleton3d_skeleton.inc
@@ -40,6 +53,8 @@ static void skeleton3d_release_bone_names(rt_skeleton3d *skeleton) {
 /// @param[in] right Second runtime name.
 /// @return Nonzero exactly when both names contain the same byte sequence.
 static int skeleton3d_names_equal(rt_string left, rt_string right) {
+    if ((left && !rt_string_is_handle(left)) || (right && !rt_string_is_handle(right)))
+        return 0;
     int64_t left_len = left ? rt_str_len(left) : 0;
     int64_t right_len = right ? rt_str_len(right) : 0;
     const char *left_bytes;
@@ -61,6 +76,8 @@ static int skeleton3d_names_equal(rt_string left, rt_string right) {
 /// @param[in] c_name Null-terminated comparison name; `NULL` represents empty.
 /// @return Nonzero exactly when the two byte sequences match.
 static int skeleton3d_name_equals_cstr(rt_string runtime_name, const char *c_name) {
+    if (runtime_name && !rt_string_is_handle(runtime_name))
+        return 0;
     int64_t runtime_len = runtime_name ? rt_str_len(runtime_name) : 0;
     size_t c_len = c_name ? strlen(c_name) : 0;
     const char *runtime_bytes;
@@ -104,6 +121,9 @@ static int skeleton3d_copy_alias_name(rt_string name, char output[64]) {
 /// @param skeleton Borrowed Skeleton3D payload.
 /// @return Non-negative alias count bounded by the owned allocation.
 static int32_t skeleton3d_safe_alias_count(const rt_skeleton3d *skeleton) {
+    if (skeleton && (skeleton->owned_aliases || skeleton->owned_alias_capacity > 0 ||
+                     skeleton->initialized_alias_count > 0))
+        skeleton3d_repair_storage((rt_skeleton3d *)(uintptr_t)skeleton);
     if (!skeleton || !skeleton->aliases || skeleton->alias_count <= 0 ||
         skeleton->alias_capacity <= 0)
         return 0;
@@ -117,12 +137,19 @@ static int32_t skeleton3d_safe_alias_count(const rt_skeleton3d *skeleton) {
 /// and capacities after releasing every valid bone-name reference.
 static void rt_skeleton3d_finalize(void *obj) {
     rt_skeleton3d *s = (rt_skeleton3d *)obj;
+    skeleton3d_repair_storage(s);
     skeleton3d_release_bone_names(s);
-    free(s->bones);
+    free(s->owned_bones);
+    s->owned_bones = NULL;
+    s->owned_bone_capacity = 0;
+    s->initialized_bone_count = 0;
     s->bones = NULL;
     s->bone_count = 0;
     s->bone_capacity = 0;
-    free(s->aliases);
+    free(s->owned_aliases);
+    s->owned_aliases = NULL;
+    s->owned_alias_capacity = 0;
+    s->initialized_alias_count = 0;
     s->aliases = NULL;
     s->alias_count = 0;
     s->alias_capacity = 0;
@@ -148,6 +175,12 @@ void *rt_skeleton3d_new(void) {
     s->aliases = NULL;
     s->alias_count = 0;
     s->alias_capacity = 0;
+    s->owned_bones = NULL;
+    s->owned_bone_capacity = 0;
+    s->initialized_bone_count = 0;
+    s->owned_aliases = NULL;
+    s->owned_alias_capacity = 0;
+    s->initialized_alias_count = 0;
     rt_obj_set_finalizer(s, rt_skeleton3d_finalize);
     return s;
 }
@@ -175,6 +208,7 @@ int64_t rt_skeleton3d_add_bone(void *obj, rt_string name, int64_t parent_index, 
     rt_string retained_name;
     if (!s)
         return -1;
+    skeleton3d_repair_storage(s);
     if (s->frozen) {
         rt_trap("Skeleton3D.AddBone: skeleton is already bound to an animation runtime");
         return -1;
@@ -212,7 +246,7 @@ int64_t rt_skeleton3d_add_bone(void *obj, rt_string name, int64_t parent_index, 
             new_capacity = s->bone_count + 1;
         if (new_capacity > VGFX3D_MAX_SKELETON_BONES)
             new_capacity = VGFX3D_MAX_SKELETON_BONES;
-        nb = (vgfx3d_bone_t *)realloc(s->bones, (size_t)new_capacity * sizeof(vgfx3d_bone_t));
+        nb = (vgfx3d_bone_t *)realloc(s->owned_bones, (size_t)new_capacity * sizeof(vgfx3d_bone_t));
         if (!nb) {
             rt_string_unref(retained_name);
             return -1;
@@ -223,6 +257,8 @@ int64_t rt_skeleton3d_add_bone(void *obj, rt_string name, int64_t parent_index, 
         }
         s->bones = nb;
         s->bone_capacity = new_capacity;
+        s->owned_bones = nb;
+        s->owned_bone_capacity = new_capacity;
     }
 
     vgfx3d_bone_t *bone = &s->bones[s->bone_count];
@@ -259,6 +295,7 @@ int64_t rt_skeleton3d_add_bone(void *obj, rt_string name, int64_t parent_index, 
 
     int64_t idx = s->bone_count;
     s->bone_count++;
+    s->initialized_bone_count = s->bone_count;
     return idx;
 }
 
@@ -355,6 +392,10 @@ rt_string rt_skeleton3d_get_bone_name(void *obj, int64_t index) {
     s->bone_count = skeleton3d_safe_bone_count(s);
     if (index < 0 || index >= s->bone_count)
         return rt_const_cstr("");
+    if (s->bones[index].name && !rt_string_is_handle(s->bones[index].name)) {
+        s->bones[index].name = NULL;
+        return rt_const_cstr("");
+    }
     return rt_string_ref(s->bones[index].name ? s->bones[index].name : rt_str_empty());
 }
 
@@ -455,6 +496,7 @@ void rt_skeleton3d_set_bone_alias(void *obj, rt_string external, rt_string local
     char local_buf[64];
     if (!s)
         return;
+    skeleton3d_repair_storage(s);
     if (!skeleton3d_copy_alias_name(external, ext_buf) || ext_buf[0] == '\0') {
         rt_trap("Skeleton3D.SetBoneAlias: external name must be non-empty");
         return;
@@ -480,6 +522,7 @@ void rt_skeleton3d_set_bone_alias(void *obj, rt_string external, rt_string local
         if (found >= 0) {
             s->aliases[found] = s->aliases[s->alias_count - 1];
             s->alias_count--;
+            s->initialized_alias_count = s->alias_count;
         }
         return;
     }
@@ -497,13 +540,16 @@ void rt_skeleton3d_set_bone_alias(void *obj, rt_string external, rt_string local
             if (cap <= s->alias_count || (size_t)cap > SIZE_MAX / sizeof(*s->aliases))
                 return;
             rt_skeleton3d_alias *grown =
-                (rt_skeleton3d_alias *)realloc(s->aliases, (size_t)cap * sizeof(*grown));
+                (rt_skeleton3d_alias *)realloc(s->owned_aliases, (size_t)cap * sizeof(*grown));
             if (!grown)
                 return;
             s->aliases = grown;
             s->alias_capacity = cap;
+            s->owned_aliases = grown;
+            s->owned_alias_capacity = cap;
         }
         found = s->alias_count++;
+        s->initialized_alias_count = s->alias_count;
     }
     memcpy(s->aliases[found].external, ext_buf, sizeof(ext_buf));
     memcpy(s->aliases[found].local, local_buf, sizeof(local_buf));

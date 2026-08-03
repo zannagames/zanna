@@ -169,8 +169,8 @@ void rt_animation3d_add_keyframe(
 /// @brief Tolerance-based keyframe reduction; returns the number of dropped keys.
 /// @details Keeps channel endpoints, cubic/Hermite keys, presence-mask
 ///          changes, and any key not reconstructible by neighbor interpolation.
-///          Tolerances are narrowed directly to float and callers should pass
-///          finite nonnegative values.
+///          Negative and non-finite tolerances become zero; larger finite
+///          values saturate to the largest representable float.
 /// @param[in,out] anim Animation3D whose channels to reduce in place.
 /// @param[in] pos_tolerance Maximum allowed translation-lane error.
 /// @param[in] rot_tolerance Maximum allowed `1 - abs(quaternion dot)` error.
@@ -183,10 +183,11 @@ int64_t rt_animation3d_compress_keyframes(void *anim,
 
 /// @brief Attach CUBICSPLINE Hermite tangents (value units per second) to the
 ///   keyframe at (@p bone_index, @p time); NULL pairs leave that channel linear.
-/// @details A channel becomes cubic only when both its in/out pointers are
-///          present. Arrays are copied as three position, four rotation, or
-///          three scale floats. Missing channels/keys and non-finite time are
-///          ignored; lane finiteness is the importer's responsibility.
+/// @details A component becomes cubic only when both its in/out pointers are
+///          present and that complete TRS component exists in the key. Arrays
+///          are copied as three position, four rotation, or three scale floats;
+///          non-finite tangent lanes become zero. Missing channels/keys and
+///          non-finite time are ignored.
 /// @param[in,out] anim Animation3D containing the existing key.
 /// @param[in] bone_index Target channel's bone index.
 /// @param[in] time Existing key time matched with runtime time tolerance.
@@ -319,16 +320,19 @@ void *rt_anim_player3d_get_bone_matrix(void *player, int64_t bone_index);
 /// @brief Bind a Skeleton3D to the mesh so subsequent skinned draws use its bone palette.
 /// @details A successful non-null binding retains and freezes the skeleton,
 ///          releases the prior binding, updates the non-partitioned palette
-///          count up to 256 bones, and marks geometry changed. Pass `NULL` to
-///          detach; a wrong-class non-null handle is ignored.
+///          count up to 256 bones, and marks geometry changed only if the
+///          binding or derived palette count changes. Pass `NULL` to detach;
+///          a wrong-class non-null handle is ignored.
 /// @param[in,out] mesh Mesh3D to configure.
 /// @param[in,out] skeleton Borrowed Skeleton3D to retain/freeze, or `NULL`.
 void rt_mesh3d_set_skeleton(void *mesh, void *skeleton);
 /// @brief Set and normalize up to four bone influences for one mesh vertex.
 /// @details Bone indexes outside `[0,255]` are replaced with index/weight zero.
 ///          Only positive finite weights contribute and are normalized to sum
-///          one; an empty contribution leaves all four weights zero. The mesh
-///          palette count and geometry generation are updated.
+///          one with overflow-resistant max scaling; an empty contribution
+///          leaves all four weights zero. The mesh palette count is repaired,
+///          and geometry generation changes only when the normalized result or
+///          derived palette count differs.
 /// @param[in,out] mesh Mesh3D to modify.
 /// @param[in] vertex_index Zero-based vertex index.
 /// @param[in] b0 First palette-bone index.

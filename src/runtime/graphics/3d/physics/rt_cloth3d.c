@@ -45,6 +45,7 @@
 #include "rt_trap.h"
 #include "rt_vec3.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -57,6 +58,9 @@
 #define CLOTH3D_MAX_CHAIN_BONES 32
 #define CLOTH3D_MAX_SUBSTEPS 8
 #define CLOTH3D_GRAVITY 9.81
+#define CLOTH3D_MAX_GRAVITY_SCALE 1000000.0
+#define CLOTH3D_MAX_WIND_RESPONSE 120.0
+#define CLOTH3D_MAX_WIND_STRENGTH 1000000.0
 
 /// @brief Distance constraint joining two Verlet points.
 typedef struct cloth3d_constraint {
@@ -110,7 +114,148 @@ typedef struct rt_cloth3d {
     float *override_globals; /* skeleton bone count x 16 */
     int32_t skeleton_bone_count;
     double total_rest; /* summed rest length (teleport threshold basis) */
+    /* Stable allocation/reference identities and immutable topology metadata.
+     * The fields above remain convenient hot-path mirrors; checked entry points
+     * restore them from these authorities before any traversal or finalization. */
+    double *owned_pos;
+    double *owned_prev;
+    uint8_t *owned_pinned;
+    double *owned_pin_pos;
+    cloth3d_constraint *owned_constraints;
+    int32_t allocated_point_count;
+    int32_t allocated_constraint_count;
+    int32_t topology_width;
+    int32_t topology_height;
+    int32_t initialized_collider_count;
+    void *owned_mesh;
+    void *owned_animator;
+    int32_t initialized_chain_bone_count;
+    int8_t *owned_override_mask;
+    float *owned_override_globals;
+    int32_t allocated_skeleton_bone_count;
+    int8_t anchor_initialized;
 } rt_cloth3d;
+
+/// @brief Clamp one cloth-space coordinate to the common Game3D finite range.
+/// @param value Candidate coordinate.
+/// @param fallback Finite replacement for NaN or infinity.
+/// @return Finite coordinate in `[-RT_GAME3D_COORD_ABS_MAX, RT_GAME3D_COORD_ABS_MAX]`.
+static double cloth3d_coord_or(double value, double fallback) {
+    return game3d_clamp_coord_or(value, fallback);
+}
+
+/// @brief Overflow-resistant Euclidean length of a three-component vector.
+/// @param value Three readable doubles.
+/// @return Finite nonnegative length, or infinity for non-finite input.
+static double cloth3d_length3(const double value[3]) {
+    if (!value || !isfinite(value[0]) || !isfinite(value[1]) || !isfinite(value[2]))
+        return INFINITY;
+    return hypot(hypot(value[0], value[1]), value[2]);
+}
+
+/// @brief Return the sum of valid distance-constraint rest lengths.
+/// @param cloth Cloth whose authoritative constraint table is inspected.
+/// @return Positive finite sum capped to the common coordinate range.
+static double cloth3d_sum_rest_lengths(const rt_cloth3d *cloth) {
+    double sum = 0.0;
+    int32_t count = cloth ? cloth->allocated_constraint_count : 0;
+    if (!cloth || !cloth->owned_constraints || count <= 0)
+        return 0.0;
+    for (int32_t i = 0; i < count; ++i) {
+        double rest = cloth->owned_constraints[i].rest;
+        if (!isfinite(rest) || rest <= 0.0)
+            continue;
+        if (rest >= RT_GAME3D_COORD_ABS_MAX - sum)
+            return RT_GAME3D_COORD_ABS_MAX;
+        sum += rest;
+    }
+    return sum;
+}
+
+/// @brief Restore mutable cloth mirrors from stable ownership/topology authority.
+/// @param cloth Cloth payload to repair; NULL is ignored.
+static void cloth3d_repair_storage(rt_cloth3d *cloth) {
+    if (!cloth)
+        return;
+    cloth->pos = cloth->owned_pos;
+    cloth->prev = cloth->owned_prev;
+    cloth->pinned = cloth->owned_pinned;
+    cloth->pin_pos = cloth->owned_pin_pos;
+    cloth->constraints = cloth->owned_constraints;
+    cloth->point_count = cloth->allocated_point_count;
+    cloth->constraint_count = cloth->allocated_constraint_count;
+    cloth->width = cloth->topology_width;
+    cloth->height = cloth->topology_height;
+    cloth->mesh = cloth->owned_mesh;
+    cloth->animator = cloth->owned_animator;
+    cloth->override_mask = cloth->owned_override_mask;
+    cloth->override_globals = cloth->owned_override_globals;
+    cloth->skeleton_bone_count = cloth->allocated_skeleton_bone_count;
+    if (cloth->initialized_collider_count < 0)
+        cloth->initialized_collider_count = 0;
+    if (cloth->initialized_collider_count > CLOTH3D_MAX_COLLIDERS)
+        cloth->initialized_collider_count = CLOTH3D_MAX_COLLIDERS;
+    cloth->collider_count = cloth->initialized_collider_count;
+    if (cloth->initialized_chain_bone_count < 0)
+        cloth->initialized_chain_bone_count = 0;
+    if (cloth->initialized_chain_bone_count > CLOTH3D_MAX_CHAIN_BONES)
+        cloth->initialized_chain_bone_count = CLOTH3D_MAX_CHAIN_BONES;
+    cloth->chain_bone_count = cloth->initialized_chain_bone_count;
+    cloth->anchor_initialized = cloth->anchor_initialized ? 1 : 0;
+    if (!isfinite(cloth->damping))
+        cloth->damping = 0.02;
+    if (cloth->damping < 0.0)
+        cloth->damping = 0.0;
+    if (cloth->damping > 1.0)
+        cloth->damping = 1.0;
+    if (cloth->iterations < 1)
+        cloth->iterations = 1;
+    if (cloth->iterations > 32)
+        cloth->iterations = 32;
+    if (!isfinite(cloth->gravity_scale))
+        cloth->gravity_scale = 1.0;
+    if (cloth->gravity_scale > CLOTH3D_MAX_GRAVITY_SCALE)
+        cloth->gravity_scale = CLOTH3D_MAX_GRAVITY_SCALE;
+    if (cloth->gravity_scale < -CLOTH3D_MAX_GRAVITY_SCALE)
+        cloth->gravity_scale = -CLOTH3D_MAX_GRAVITY_SCALE;
+    if (!isfinite(cloth->wind_response) || cloth->wind_response < 0.0)
+        cloth->wind_response = 1.0;
+    if (cloth->wind_response > CLOTH3D_MAX_WIND_RESPONSE)
+        cloth->wind_response = CLOTH3D_MAX_WIND_RESPONSE;
+    for (int lane = 0; lane < 3; ++lane)
+        cloth->wind[lane] = cloth3d_coord_or(cloth->wind[lane], 0.0);
+    if (!isfinite(cloth->substep_dt) || cloth->substep_dt <= 0.0 || cloth->substep_dt > 1.0)
+        cloth->substep_dt = 1.0 / 120.0;
+    if (!isfinite(cloth->accumulator) || cloth->accumulator < 0.0)
+        cloth->accumulator = 0.0;
+    if (!isfinite(cloth->total_rest) || cloth->total_rest <= 0.0)
+        cloth->total_rest = cloth3d_sum_rest_lengths(cloth);
+    for (int32_t i = 0; i < cloth->collider_count; ++i) {
+        cloth3d_collider *collider = &cloth->colliders[i];
+        collider->is_capsule = collider->is_capsule ? 1 : 0;
+        for (int lane = 0; lane < 3; ++lane) {
+            collider->a[lane] = cloth3d_coord_or(collider->a[lane], 0.0);
+            collider->b[lane] = cloth3d_coord_or(collider->b[lane], collider->a[lane]);
+        }
+        if (!isfinite(collider->radius) || collider->radius <= 0.0)
+            collider->radius = 1.0;
+        if (collider->radius > RT_GAME3D_COORD_ABS_MAX)
+            collider->radius = RT_GAME3D_COORD_ABS_MAX;
+    }
+}
+
+/// @brief Retain a typed binding in stable ownership and republish its mirror.
+/// @param owner Stable retained slot.
+/// @param mirror Mutable hot-path mirror.
+/// @param value Optional new object.
+/// @param class_id Required Graphics3D class.
+static void cloth3d_assign_owned_ref(void **owner, void **mirror, void *value, int64_t class_id) {
+    if (!owner || !mirror)
+        return;
+    if (*owner != value)
+        game3d_assign_typed_ref(owner, value, class_id);
+    *mirror = *owner;
+}
 
 /// @brief Validate a runtime object as Cloth3D and trap with caller-specific context on failure.
 /// @param obj Candidate runtime handle.
@@ -120,6 +265,7 @@ static rt_cloth3d *cloth3d_checked(void *obj, const char *method) {
     rt_cloth3d *cloth = (rt_cloth3d *)rt_g3d_checked_or_null(obj, RT_G3D_CLOTH3D_CLASS_ID);
     if (!cloth)
         rt_trap(method);
+    cloth3d_repair_storage(cloth);
     return cloth;
 }
 
@@ -129,13 +275,20 @@ static void cloth3d_finalize(void *obj) {
     rt_cloth3d *cloth = (rt_cloth3d *)obj;
     if (!cloth)
         return;
-    free(cloth->pos);
-    free(cloth->prev);
-    free(cloth->pinned);
-    free(cloth->pin_pos);
-    free(cloth->constraints);
-    free(cloth->override_mask);
-    free(cloth->override_globals);
+    free(cloth->owned_pos);
+    free(cloth->owned_prev);
+    free(cloth->owned_pinned);
+    free(cloth->owned_pin_pos);
+    free(cloth->owned_constraints);
+    free(cloth->owned_override_mask);
+    free(cloth->owned_override_globals);
+    cloth->owned_pos = NULL;
+    cloth->owned_prev = NULL;
+    cloth->owned_pinned = NULL;
+    cloth->owned_pin_pos = NULL;
+    cloth->owned_constraints = NULL;
+    cloth->owned_override_mask = NULL;
+    cloth->owned_override_globals = NULL;
     cloth->pos = NULL;
     cloth->prev = NULL;
     cloth->pinned = NULL;
@@ -143,8 +296,10 @@ static void cloth3d_finalize(void *obj) {
     cloth->constraints = NULL;
     cloth->override_mask = NULL;
     cloth->override_globals = NULL;
-    game3d_release_ref(&cloth->mesh);
-    game3d_release_ref(&cloth->animator);
+    game3d_release_typed_ref(&cloth->owned_mesh, RT_G3D_MESH3D_CLASS_ID);
+    game3d_release_typed_ref(&cloth->owned_animator, RT_G3D_ANIMCONTROLLER3D_CLASS_ID);
+    cloth->mesh = NULL;
+    cloth->animator = NULL;
 }
 
 /// @brief Allocate a cloth with point/constraint storage; NULL plus a trap on failure.
@@ -153,25 +308,53 @@ static void cloth3d_finalize(void *obj) {
 /// @param method Diagnostic text reported for object or array allocation failure.
 /// @return Initialized runtime-managed cloth payload, or NULL after reporting allocation failure.
 static rt_cloth3d *cloth3d_alloc(int32_t points, int32_t constraints, const char *method) {
-    rt_cloth3d *cloth =
-        (rt_cloth3d *)rt_obj_new_i64(RT_G3D_CLOTH3D_CLASS_ID, (int64_t)sizeof(*cloth));
+    double *pos;
+    double *prev;
+    uint8_t *pinned;
+    double *pin_pos;
+    cloth3d_constraint *constraint_data;
+    rt_cloth3d *cloth;
+    if (points <= 0 || points > CLOTH3D_MAX_POINTS || constraints <= 0 ||
+        (size_t)points > SIZE_MAX / (3u * sizeof(double)) ||
+        (size_t)constraints > SIZE_MAX / sizeof(cloth3d_constraint)) {
+        rt_trap(method);
+        return NULL;
+    }
+    pos = (double *)calloc((size_t)points * 3u, sizeof(double));
+    prev = (double *)calloc((size_t)points * 3u, sizeof(double));
+    pinned = (uint8_t *)calloc((size_t)points, sizeof(uint8_t));
+    pin_pos = (double *)calloc((size_t)points * 3u, sizeof(double));
+    constraint_data = (cloth3d_constraint *)calloc((size_t)constraints, sizeof(cloth3d_constraint));
+    if (!pos || !prev || !pinned || !pin_pos || !constraint_data) {
+        free(pos);
+        free(prev);
+        free(pinned);
+        free(pin_pos);
+        free(constraint_data);
+        rt_trap(method);
+        return NULL;
+    }
+    cloth = (rt_cloth3d *)rt_obj_new_i64(RT_G3D_CLOTH3D_CLASS_ID, (int64_t)sizeof(*cloth));
     if (!cloth) {
+        free(pos);
+        free(prev);
+        free(pinned);
+        free(pin_pos);
+        free(constraint_data);
         rt_trap(method);
         return NULL;
     }
     memset(cloth, 0, sizeof(*cloth));
     rt_obj_set_finalizer(cloth, cloth3d_finalize);
-    cloth->pos = (double *)calloc((size_t)points * 3u, sizeof(double));
-    cloth->prev = (double *)calloc((size_t)points * 3u, sizeof(double));
-    cloth->pinned = (uint8_t *)calloc((size_t)points, sizeof(uint8_t));
-    cloth->pin_pos = (double *)calloc((size_t)points * 3u, sizeof(double));
-    cloth->constraints =
-        (cloth3d_constraint *)calloc((size_t)constraints, sizeof(cloth3d_constraint));
-    if (!cloth->pos || !cloth->prev || !cloth->pinned || !cloth->pin_pos || !cloth->constraints) {
-        rt_trap(method);
-        return NULL;
-    }
+    cloth->pos = cloth->owned_pos = pos;
+    cloth->prev = cloth->owned_prev = prev;
+    cloth->pinned = cloth->owned_pinned = pinned;
+    cloth->pin_pos = cloth->owned_pin_pos = pin_pos;
+    cloth->constraints = cloth->owned_constraints = constraint_data;
     cloth->point_count = points;
+    cloth->allocated_point_count = points;
+    cloth->constraint_count = constraints;
+    cloth->allocated_constraint_count = constraints;
     cloth->damping = 0.02;
     cloth->gravity_scale = 1.0;
     cloth->wind_response = 1.0;
@@ -190,8 +373,8 @@ void *rt_cloth3d_new_chain(int64_t segments, double total_length) {
         rt_trap("Cloth3D.NewChain: segments must be 1..256");
         return NULL;
     }
-    if (!isfinite(total_length) || total_length <= 0.0) {
-        rt_trap("Cloth3D.NewChain: totalLength must be positive");
+    if (!isfinite(total_length) || total_length <= 0.0 || total_length > RT_GAME3D_COORD_ABS_MAX) {
+        rt_trap("Cloth3D.NewChain: totalLength must be positive and within the coordinate range");
         return NULL;
     }
     int32_t points = (int32_t)segments + 1;
@@ -201,6 +384,8 @@ void *rt_cloth3d_new_chain(int64_t segments, double total_length) {
         return NULL;
     cloth->width = 1;
     cloth->height = points;
+    cloth->topology_width = 1;
+    cloth->topology_height = points;
     double seg = total_length / (double)segments;
     for (int32_t i = 0; i < points; ++i) {
         cloth->pos[i * 3 + 1] = -seg * (double)i;
@@ -228,8 +413,9 @@ void *rt_cloth3d_new_patch(int64_t w, int64_t h, double width, double height) {
         rt_trap("Cloth3D.NewPatch: grid dims must be 2..64");
         return NULL;
     }
-    if (!isfinite(width) || width <= 0.0 || !isfinite(height) || height <= 0.0) {
-        rt_trap("Cloth3D.NewPatch: size must be positive");
+    if (!isfinite(width) || width <= 0.0 || width > RT_GAME3D_COORD_ABS_MAX || !isfinite(height) ||
+        height <= 0.0 || height > RT_GAME3D_COORD_ABS_MAX) {
+        rt_trap("Cloth3D.NewPatch: size must be positive and within the coordinate range");
         return NULL;
     }
     int32_t points = (int32_t)(w * h);
@@ -240,18 +426,20 @@ void *rt_cloth3d_new_patch(int64_t w, int64_t h, double width, double height) {
         return NULL;
     cloth->width = (int32_t)w;
     cloth->height = (int32_t)h;
+    cloth->topology_width = (int32_t)w;
+    cloth->topology_height = (int32_t)h;
     double dx = width / (double)(w - 1);
     double dy = height / (double)(h - 1);
     for (int32_t iy = 0; iy < (int32_t)h; ++iy) {
         for (int32_t ix = 0; ix < (int32_t)w; ++ix) {
             int32_t p = iy * (int32_t)w + ix;
-            cloth->pos[p * 3 + 0] = dx * (double)ix;
-            cloth->pos[p * 3 + 1] = -dy * (double)iy;
+            cloth->pos[p * 3 + 0] = width * ((double)ix / (double)(w - 1));
+            cloth->pos[p * 3 + 1] = -height * ((double)iy / (double)(h - 1));
             memcpy(&cloth->prev[p * 3], &cloth->pos[p * 3], 3 * sizeof(double));
         }
     }
     int32_t c = 0;
-    double diag = sqrt(dx * dx + dy * dy);
+    double diag = hypot(dx, dy);
     for (int32_t iy = 0; iy < (int32_t)h; ++iy) {
         for (int32_t ix = 0; ix < (int32_t)w; ++ix) {
             int32_t p = iy * (int32_t)w + ix;
@@ -331,8 +519,13 @@ double rt_cloth3d_get_gravity_scale(void *obj) {
 /// @param scale Finite multiplier; non-finite values are ignored.
 void rt_cloth3d_set_gravity_scale(void *obj, double scale) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.set_GravityScale: invalid cloth");
-    if (cloth && isfinite(scale))
+    if (cloth && isfinite(scale)) {
+        if (scale > CLOTH3D_MAX_GRAVITY_SCALE)
+            scale = CLOTH3D_MAX_GRAVITY_SCALE;
+        if (scale < -CLOTH3D_MAX_GRAVITY_SCALE)
+            scale = -CLOTH3D_MAX_GRAVITY_SCALE;
         cloth->gravity_scale = scale;
+    }
 }
 
 /// @brief Read the coefficient that drives point velocity toward the configured wind vector.
@@ -349,7 +542,8 @@ double rt_cloth3d_get_wind_response(void *obj) {
 void rt_cloth3d_set_wind_response(void *obj, double response) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.set_WindResponse: invalid cloth");
     if (cloth && isfinite(response) && response >= 0.0)
-        cloth->wind_response = response;
+        cloth->wind_response =
+            response > CLOTH3D_MAX_WIND_RESPONSE ? CLOTH3D_MAX_WIND_RESPONSE : response;
 }
 
 /// @brief Read the fixed number of simulated points in a cloth.
@@ -382,10 +576,14 @@ void *rt_cloth3d_pin(void *obj, int64_t index) {
 /// @param method Diagnostic text reported when the 16-collider budget is exhausted.
 /// @return Reserved zero-based slot, or -1 after reporting budget exhaustion.
 static int cloth3d_push_collider(rt_cloth3d *cloth, const char *method) {
+    if (!cloth)
+        return -1;
+    cloth3d_repair_storage(cloth);
     if (cloth->collider_count >= CLOTH3D_MAX_COLLIDERS) {
         rt_trap(method);
         return -1;
     }
+    cloth->initialized_collider_count = cloth->collider_count + 1;
     return cloth->collider_count++;
 }
 
@@ -401,8 +599,8 @@ void *rt_cloth3d_add_sphere(void *obj, void *center, double radius) {
         return obj;
     if (!game3d_read_vec3(center, c, "Cloth3D.AddSphere: center must be Vec3"))
         return obj;
-    if (!isfinite(radius) || radius <= 0.0) {
-        rt_trap("Cloth3D.AddSphere: radius must be positive");
+    if (!isfinite(radius) || radius <= 0.0 || radius > RT_GAME3D_COORD_ABS_MAX) {
+        rt_trap("Cloth3D.AddSphere: radius must be positive and within the coordinate range");
         return obj;
     }
     int slot = cloth3d_push_collider(cloth, "Cloth3D.AddSphere: collider budget (16) exceeded");
@@ -428,8 +626,8 @@ void *rt_cloth3d_add_capsule(void *obj, void *a_obj, void *b_obj, double radius)
     if (!game3d_read_vec3(a_obj, a, "Cloth3D.AddCapsule: a must be Vec3") ||
         !game3d_read_vec3(b_obj, b, "Cloth3D.AddCapsule: b must be Vec3"))
         return obj;
-    if (!isfinite(radius) || radius <= 0.0) {
-        rt_trap("Cloth3D.AddCapsule: radius must be positive");
+    if (!isfinite(radius) || radius <= 0.0 || radius > RT_GAME3D_COORD_ABS_MAX) {
+        rt_trap("Cloth3D.AddCapsule: radius must be positive and within the coordinate range");
         return obj;
     }
     int slot = cloth3d_push_collider(cloth, "Cloth3D.AddCapsule: collider budget (16) exceeded");
@@ -455,8 +653,12 @@ void rt_cloth3d_set_wind(void *obj, void *direction, double strength) {
         return;
     if (!isfinite(strength))
         strength = 0.0;
+    if (strength > CLOTH3D_MAX_WIND_STRENGTH)
+        strength = CLOTH3D_MAX_WIND_STRENGTH;
+    if (strength < -CLOTH3D_MAX_WIND_STRENGTH)
+        strength = -CLOTH3D_MAX_WIND_STRENGTH;
     for (int i = 0; i < 3; ++i)
-        cloth->wind[i] = isfinite(d[i]) ? d[i] * strength : 0.0;
+        cloth->wind[i] = cloth3d_coord_or(d[i] * strength, 0.0);
 }
 
 /// @brief Current position of one point as a Vec3.
@@ -468,6 +670,12 @@ void *rt_cloth3d_get_point(void *obj, int64_t index) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.GetPoint: invalid cloth");
     if (!cloth || index < 0 || index >= cloth->point_count)
         return rt_vec3_new(0.0, 0.0, 0.0);
+    for (int lane = 0; lane < 3; ++lane) {
+        double fallback = cloth->pinned[index] ? cloth->pin_pos[index * 3 + lane] : 0.0;
+        cloth->pos[index * 3 + lane] = cloth3d_coord_or(cloth->pos[index * 3 + lane], fallback);
+        cloth->prev[index * 3 + lane] =
+            cloth3d_coord_or(cloth->prev[index * 3 + lane], cloth->pos[index * 3 + lane]);
+    }
     return rt_vec3_new(cloth->pos[index * 3], cloth->pos[index * 3 + 1], cloth->pos[index * 3 + 2]);
 }
 
@@ -477,6 +685,8 @@ void *rt_cloth3d_get_point(void *obj, int64_t index) {
 /// @return The original @p obj handle; incompatible cloth or mesh inputs are reported by a trap.
 void *rt_cloth3d_bind_mesh(void *obj, void *mesh) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.BindMesh: invalid cloth");
+    rt_mesh3d *mesh_data;
+    int32_t triangle_count;
     if (!cloth)
         return obj;
     if (cloth->width < 2) {
@@ -487,9 +697,26 @@ void *rt_cloth3d_bind_mesh(void *obj, void *mesh) {
         rt_trap("Cloth3D.BindMesh: expected Mesh3D");
         return obj;
     }
-    game3d_assign_ref(&cloth->mesh, mesh);
-    rt_mesh3d_clear(mesh);
+    mesh_data = (rt_mesh3d *)mesh;
     int32_t w = cloth->width, h = cloth->height;
+    triangle_count = (w - 1) * (h - 1) * 2;
+    for (int32_t p = 0; p < cloth->point_count; ++p) {
+        for (int lane = 0; lane < 3; ++lane) {
+            double value = cloth->pos[p * 3 + lane];
+            if (!isfinite(value) || value < -(double)FLT_MAX || value > (double)FLT_MAX) {
+                rt_trap("Cloth3D.BindMesh: point coordinates must fit float storage");
+                return obj;
+            }
+        }
+    }
+    rt_mesh3d_reserve(mesh, cloth->point_count, triangle_count);
+    if (mesh_data->vertex_capacity < (uint32_t)cloth->point_count ||
+        mesh_data->index_capacity < (uint32_t)triangle_count * 3u) {
+        rt_trap("Cloth3D.BindMesh: mesh reserve failed");
+        return obj;
+    }
+    rt_mesh3d_begin_geometry_batch(mesh_data);
+    rt_mesh3d_clear(mesh);
     for (int32_t p = 0; p < cloth->point_count; ++p)
         rt_mesh3d_add_vertex(mesh,
                              cloth->pos[p * 3],
@@ -507,6 +734,13 @@ void *rt_cloth3d_bind_mesh(void *obj, void *mesh) {
             rt_mesh3d_add_triangle(mesh, p + 1, p + w, p + w + 1);
         }
     }
+    rt_mesh3d_end_geometry_batch(mesh_data);
+    if (mesh_data->build_failed || mesh_data->vertex_count != (uint32_t)cloth->point_count ||
+        mesh_data->index_count != (uint32_t)triangle_count * 3u) {
+        rt_trap("Cloth3D.BindMesh: mesh construction failed");
+        return obj;
+    }
+    cloth3d_assign_owned_ref(&cloth->owned_mesh, &cloth->mesh, mesh, RT_G3D_MESH3D_CLASS_ID);
     return obj;
 }
 
@@ -520,13 +754,26 @@ void *rt_cloth3d_bind_mesh(void *obj, void *mesh) {
 /// @return The original @p obj handle; invalid, branching, or allocation cases report a trap.
 void *rt_cloth3d_bind_bone_chain(void *obj, void *animator, rt_string root_bone) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.BindBoneChain: invalid cloth");
+    int32_t staged_bones[CLOTH3D_MAX_CHAIN_BONES];
+    double staged_rest[CLOTH3D_MAX_CHAIN_BONES];
+    int32_t staged_bone_count = 0;
+    int8_t *new_override_mask;
+    float *new_override_globals;
     if (!cloth)
         return obj;
     if (cloth->width != 1) {
         rt_trap("Cloth3D.BindBoneChain: bone binding requires a chain cloth");
         return obj;
     }
-    void *skeleton = animator ? rt_anim_controller3d_get_skeleton(animator) : NULL;
+    if (!rt_g3d_has_class(animator, RT_G3D_ANIMCONTROLLER3D_CLASS_ID)) {
+        rt_trap("Cloth3D.BindBoneChain: expected AnimController3D with a skeleton");
+        return obj;
+    }
+    if (!root_bone || !rt_string_is_handle(root_bone)) {
+        rt_trap("Cloth3D.BindBoneChain: root bone must be a runtime string");
+        return obj;
+    }
+    void *skeleton = rt_anim_controller3d_get_skeleton(animator);
     if (!skeleton) {
         rt_trap("Cloth3D.BindBoneChain: expected AnimController3D with a skeleton");
         return obj;
@@ -537,16 +784,18 @@ void *rt_cloth3d_bind_bone_chain(void *obj, void *animator, rt_string root_bone)
         return obj;
     }
     int64_t bone_count = rt_skeleton3d_get_bone_count(skeleton);
-    cloth->chain_bone_count = 0;
     int64_t current = root;
-    while (current >= 0 && cloth->chain_bone_count < CLOTH3D_MAX_CHAIN_BONES) {
-        cloth->chain_bones[cloth->chain_bone_count++] = (int32_t)current;
+    while (current >= 0) {
+        if (staged_bone_count >= CLOTH3D_MAX_CHAIN_BONES) {
+            rt_trap("Cloth3D.BindBoneChain: bone chain exceeds the 32-bone limit");
+            return obj;
+        }
+        staged_bones[staged_bone_count++] = (int32_t)current;
         int64_t child = -1;
         for (int64_t i = 0; i < bone_count; ++i) {
             if (rt_skeleton3d_get_bone_parent_raw(skeleton, i) != current)
                 continue;
             if (child >= 0) {
-                cloth->chain_bone_count = 0;
                 rt_trap("Cloth3D.BindBoneChain: branching bone chains are not supported");
                 return obj;
             }
@@ -554,45 +803,100 @@ void *rt_cloth3d_bind_bone_chain(void *obj, void *animator, rt_string root_bone)
         }
         current = child;
     }
-    if (cloth->chain_bone_count < 1) {
+    if (staged_bone_count < 1) {
         rt_trap("Cloth3D.BindBoneChain: empty bone chain");
         return obj;
     }
     /* One point per bone plus a tip; reseed rest lengths from bind locals. */
-    int32_t needed = cloth->chain_bone_count + 1;
+    int32_t needed = staged_bone_count + 1;
     if (needed > cloth->point_count)
         needed = cloth->point_count;
     double local[16];
-    for (int32_t i = 0; i + 1 < needed && i + 1 < cloth->chain_bone_count + 1; ++i) {
+    for (int32_t i = 0; i + 1 < needed; ++i) {
         double rest = cloth->constraints[i].rest;
-        if (i + 1 < cloth->chain_bone_count &&
-            rt_skeleton3d_get_bone_bind_local_raw(skeleton, cloth->chain_bones[i + 1], local)) {
+        if (!isfinite(rest) || rest <= 0.0)
+            rest = cloth->total_rest / (double)(cloth->point_count - 1);
+        if (i + 1 < staged_bone_count &&
+            rt_skeleton3d_get_bone_bind_local_raw(skeleton, staged_bones[i + 1], local)) {
             /* Row-major bind local: translation in elements 3, 7, 11. */
             double tx = local[3], ty = local[7], tz = local[11];
-            double len = sqrt(tx * tx + ty * ty + tz * tz);
+            double translation[3] = {tx, ty, tz};
+            double len = cloth3d_length3(translation);
             if (isfinite(len) && len > 1e-6)
                 rest = len;
         }
-        if (i < cloth->constraint_count)
-            cloth->constraints[i].rest = rest;
+        staged_rest[i] = cloth3d_coord_or(rest, 1.0);
     }
-    game3d_assign_ref(&cloth->animator, animator);
-    free(cloth->override_mask);
-    free(cloth->override_globals);
-    cloth->skeleton_bone_count = (int32_t)bone_count;
-    cloth->override_mask = (int8_t *)calloc((size_t)bone_count, sizeof(int8_t));
-    cloth->override_globals = (float *)calloc((size_t)bone_count * 16u, sizeof(float));
-    if (!cloth->override_mask || !cloth->override_globals) {
+    new_override_mask = (int8_t *)calloc((size_t)bone_count, sizeof(int8_t));
+    new_override_globals = (float *)calloc((size_t)bone_count * 16u, sizeof(float));
+    if (!new_override_mask || !new_override_globals) {
+        free(new_override_mask);
+        free(new_override_globals);
         rt_trap("Cloth3D.BindBoneChain: allocation failed");
         return obj;
     }
+    cloth3d_assign_owned_ref(
+        &cloth->owned_animator, &cloth->animator, animator, RT_G3D_ANIMCONTROLLER3D_CLASS_ID);
+    free(cloth->owned_override_mask);
+    free(cloth->owned_override_globals);
+    cloth->owned_override_mask = cloth->override_mask = new_override_mask;
+    cloth->owned_override_globals = cloth->override_globals = new_override_globals;
+    cloth->allocated_skeleton_bone_count = cloth->skeleton_bone_count = (int32_t)bone_count;
+    memcpy(cloth->chain_bones, staged_bones, (size_t)staged_bone_count * sizeof(staged_bones[0]));
+    cloth->initialized_chain_bone_count = cloth->chain_bone_count = staged_bone_count;
+    for (int32_t i = 0; i + 1 < needed; ++i)
+        cloth->constraints[i].rest = staged_rest[i];
+    cloth->total_rest = cloth3d_sum_rest_lengths(cloth);
     cloth->pinned[0] = 1;
+    cloth->anchor_initialized = 0;
     return obj;
 }
 
 /*==========================================================================
  * Simulation
  *=========================================================================*/
+
+/// @brief Repair one Verlet point to finite bounded state before arithmetic.
+/// @param cloth Cloth containing the point.
+/// @param point Valid point index.
+static void cloth3d_repair_point(rt_cloth3d *cloth, int32_t point) {
+    if (!cloth || point < 0 || point >= cloth->point_count)
+        return;
+    cloth->pinned[point] = cloth->pinned[point] ? 1u : 0u;
+    for (int lane = 0; lane < 3; ++lane) {
+        size_t index = (size_t)point * 3u + (size_t)lane;
+        double fallback = cloth->pinned[point] ? cloth->pin_pos[index] : 0.0;
+        cloth->pin_pos[index] = cloth3d_coord_or(cloth->pin_pos[index], 0.0);
+        cloth->pos[index] = cloth3d_coord_or(cloth->pos[index], fallback);
+        cloth->prev[index] = cloth3d_coord_or(cloth->prev[index], cloth->pos[index]);
+    }
+}
+
+/// @brief Compute the closest point on a bounded capsule axis without squared-length overflow.
+/// @param a Segment start.
+/// @param b Segment end.
+/// @param point Query point.
+/// @param[out] closest Closest point on the closed segment.
+static void cloth3d_closest_on_segment(const double a[3],
+                                       const double b[3],
+                                       const double point[3],
+                                       double closest[3]) {
+    double axis[3] = {b[0] - a[0], b[1] - a[1], b[2] - a[2]};
+    double length = cloth3d_length3(axis);
+    double distance = 0.0;
+    if (isfinite(length) && length > 1e-12) {
+        for (int lane = 0; lane < 3; ++lane)
+            axis[lane] /= length;
+        distance =
+            (point[0] - a[0]) * axis[0] + (point[1] - a[1]) * axis[1] + (point[2] - a[2]) * axis[2];
+        if (!isfinite(distance) || distance < 0.0)
+            distance = 0.0;
+        if (distance > length)
+            distance = length;
+    }
+    for (int lane = 0; lane < 3; ++lane)
+        closest[lane] = cloth3d_coord_or(a[lane] + axis[lane] * distance, a[lane]);
+}
 
 /// @brief One fixed substep: integrate, relax constraints, push out, re-pin.
 /// @param cloth Valid mutable cloth payload to advance by its configured fixed interval.
@@ -601,31 +905,40 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
     double dt2 = dt * dt;
     double keep = 1.0 - cloth->damping;
     double gravity = -CLOTH3D_GRAVITY * cloth->gravity_scale;
+    double wind_coupling = cloth->wind_response * dt2;
+    double displacement_factor = keep - cloth->wind_response * dt;
     for (int32_t p = 0; p < cloth->point_count; ++p) {
+        cloth3d_repair_point(cloth, p);
         if (cloth->pinned[p])
             continue;
         double *pos = &cloth->pos[p * 3];
         double *prev = &cloth->prev[p * 3];
-        double vel[3] = {(pos[0] - prev[0]) / dt, (pos[1] - prev[1]) / dt, (pos[2] - prev[2]) / dt};
-        double accel[3] = {cloth->wind_response * (cloth->wind[0] - vel[0]),
-                           gravity + cloth->wind_response * (cloth->wind[1] - vel[1]),
-                           cloth->wind_response * (cloth->wind[2] - vel[2])};
         for (int i = 0; i < 3; ++i) {
-            double next = pos[i] + (pos[i] - prev[i]) * keep + accel[i] * dt2;
+            double displacement = pos[i] - prev[i];
+            double acceleration_term = cloth->wind[i] * wind_coupling;
+            double next;
+            if (i == 1)
+                acceleration_term += gravity * dt2;
+            next = pos[i] + displacement * displacement_factor + acceleration_term;
             prev[i] = pos[i];
-            pos[i] = next;
+            pos[i] = cloth3d_coord_or(next, prev[i]);
         }
     }
     for (int32_t it = 0; it < cloth->iterations; ++it) {
         for (int32_t c = 0; c < cloth->constraint_count; ++c) {
             cloth3d_constraint *con = &cloth->constraints[c];
+            if (con->a < 0 || con->a >= cloth->point_count || con->b < 0 ||
+                con->b >= cloth->point_count || con->a == con->b || !isfinite(con->rest) ||
+                con->rest <= 0.0)
+                continue;
             double *pa = &cloth->pos[con->a * 3];
             double *pb = &cloth->pos[con->b * 3];
             double d[3] = {pb[0] - pa[0], pb[1] - pa[1], pb[2] - pa[2]};
-            double len = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            double len = cloth3d_length3(d);
             if (!isfinite(len) || len < 1e-9)
                 continue;
-            double diff = (len - con->rest) / len;
+            double correction = len - con->rest;
+            double direction[3] = {d[0] / len, d[1] / len, d[2] / len};
             /* Distribute the correction so wa + wb == 1: an unpinned point
              * facing a pinned partner absorbs the whole correction; two free
              * points split it evenly; two pinned points cannot move. */
@@ -634,8 +947,8 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
             double wa = cloth->pinned[con->a] ? 0.0 : (cloth->pinned[con->b] ? 1.0 : 0.5);
             double wb = cloth->pinned[con->b] ? 0.0 : 1.0 - wa;
             for (int i = 0; i < 3; ++i) {
-                pa[i] += d[i] * diff * wa;
-                pb[i] -= d[i] * diff * wb;
+                pa[i] = cloth3d_coord_or(pa[i] + direction[i] * correction * wa, pa[i]);
+                pb[i] = cloth3d_coord_or(pb[i] - direction[i] * correction * wb, pb[i]);
             }
         }
     }
@@ -646,24 +959,14 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
                 continue;
             double *pos = &cloth->pos[p * 3];
             double closest[3];
-            if (col->is_capsule) {
-                double ab[3] = {
-                    col->b[0] - col->a[0], col->b[1] - col->a[1], col->b[2] - col->a[2]};
-                double ap[3] = {pos[0] - col->a[0], pos[1] - col->a[1], pos[2] - col->a[2]};
-                double ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
-                double t =
-                    ab2 > 1e-12 ? (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab2 : 0.0;
-                if (t < 0.0)
-                    t = 0.0;
-                else if (t > 1.0)
-                    t = 1.0;
-                for (int i = 0; i < 3; ++i)
-                    closest[i] = col->a[i] + ab[i] * t;
-            } else {
+            if (col->is_capsule)
+                cloth3d_closest_on_segment(col->a, col->b, pos, closest);
+            else
                 memcpy(closest, col->a, sizeof(closest));
-            }
             double d[3] = {pos[0] - closest[0], pos[1] - closest[1], pos[2] - closest[2]};
-            double dist = sqrt(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+            double dist = cloth3d_length3(d);
+            if (!isfinite(dist))
+                continue;
             if (dist >= col->radius)
                 continue;
             if (dist < 1e-9) {
@@ -674,7 +977,7 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
                 double eject[3] = {0.0, 1.0, 0.0};
                 const double *prev = &cloth->prev[p * 3];
                 double away[3] = {prev[0] - closest[0], prev[1] - closest[1], prev[2] - closest[2]};
-                double away_len = sqrt(away[0] * away[0] + away[1] * away[1] + away[2] * away[2]);
+                double away_len = cloth3d_length3(away);
                 if (isfinite(away_len) && away_len > 1e-9) {
                     eject[0] = away[0] / away_len;
                     eject[1] = away[1] / away_len;
@@ -685,15 +988,14 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
                      * capsule through its side, the nearest surface. */
                     double ab[3] = {
                         col->b[0] - col->a[0], col->b[1] - col->a[1], col->b[2] - col->a[2]};
-                    double ab_len = sqrt(ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2]);
+                    double ab_len = cloth3d_length3(ab);
                     if (isfinite(ab_len) && ab_len > 1e-9) {
                         double axis[3] = {ab[0] / ab_len, ab[1] / ab_len, ab[2] / ab_len};
                         double along = eject[0] * axis[0] + eject[1] * axis[1] + eject[2] * axis[2];
                         double perp[3] = {eject[0] - axis[0] * along,
                                           eject[1] - axis[1] * along,
                                           eject[2] - axis[2] * along};
-                        double perp_len =
-                            sqrt(perp[0] * perp[0] + perp[1] * perp[1] + perp[2] * perp[2]);
+                        double perp_len = cloth3d_length3(perp);
                         if (isfinite(perp_len) && perp_len > 1e-9) {
                             eject[0] = perp[0] / perp_len;
                             eject[1] = perp[1] / perp_len;
@@ -707,8 +1009,7 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
                             eject[0] = axis[1] * basis[2] - axis[2] * basis[1];
                             eject[1] = axis[2] * basis[0] - axis[0] * basis[2];
                             eject[2] = axis[0] * basis[1] - axis[1] * basis[0];
-                            double el = sqrt(eject[0] * eject[0] + eject[1] * eject[1] +
-                                             eject[2] * eject[2]);
+                            double el = cloth3d_length3(eject);
                             if (isfinite(el) && el > 1e-9) {
                                 eject[0] /= el;
                                 eject[1] /= el;
@@ -721,21 +1022,25 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
                         }
                     }
                 }
-                pos[0] = closest[0] + eject[0] * col->radius;
-                pos[1] = closest[1] + eject[1] * col->radius;
-                pos[2] = closest[2] + eject[2] * col->radius;
+                pos[0] = cloth3d_coord_or(closest[0] + eject[0] * col->radius, closest[0]);
+                pos[1] = cloth3d_coord_or(closest[1] + eject[1] * col->radius, closest[1]);
+                pos[2] = cloth3d_coord_or(closest[2] + eject[2] * col->radius, closest[2]);
                 continue;
             }
-            double push = col->radius / dist;
+            double push = col->radius;
             for (int i = 0; i < 3; ++i)
-                pos[i] = closest[i] + d[i] * push;
+                pos[i] = cloth3d_coord_or(closest[i] + (d[i] / dist) * push, closest[i]);
         }
     }
     for (int32_t p = 0; p < cloth->point_count; ++p) {
         if (!cloth->pinned[p])
             continue;
-        memcpy(&cloth->pos[p * 3], &cloth->pin_pos[p * 3], 3 * sizeof(double));
-        memcpy(&cloth->prev[p * 3], &cloth->pin_pos[p * 3], 3 * sizeof(double));
+        for (int lane = 0; lane < 3; ++lane) {
+            double target = cloth3d_coord_or(cloth->pin_pos[p * 3 + lane], 0.0);
+            cloth->pin_pos[p * 3 + lane] = target;
+            cloth->pos[p * 3 + lane] = target;
+            cloth->prev[p * 3 + lane] = target;
+        }
     }
 }
 
@@ -744,7 +1049,27 @@ static void cloth3d_substep(rt_cloth3d *cloth) {
 /// @param b Normalized destination direction.
 /// @param out Receives the normalized XYZW rotation quaternion.
 static void cloth3d_quat_from_to(const double a[3], const double b[3], double out[4]) {
-    double dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    double from[3] = {a ? a[0] : 0.0, a ? a[1] : 0.0, a ? a[2] : 0.0};
+    double to[3] = {b ? b[0] : 0.0, b ? b[1] : 0.0, b ? b[2] : 0.0};
+    double from_len = cloth3d_length3(from);
+    double to_len = cloth3d_length3(to);
+    double dot;
+    if (!out)
+        return;
+    if (!isfinite(from_len) || from_len <= 1e-12 || !isfinite(to_len) || to_len <= 1e-12) {
+        out[0] = out[1] = out[2] = 0.0;
+        out[3] = 1.0;
+        return;
+    }
+    for (int lane = 0; lane < 3; ++lane) {
+        from[lane] /= from_len;
+        to[lane] /= to_len;
+    }
+    dot = from[0] * to[0] + from[1] * to[1] + from[2] * to[2];
+    if (dot > 1.0)
+        dot = 1.0;
+    if (dot < -1.0)
+        dot = -1.0;
     if (dot > 1.0 - 1e-9) {
         out[0] = out[1] = out[2] = 0.0;
         out[3] = 1.0;
@@ -752,13 +1077,18 @@ static void cloth3d_quat_from_to(const double a[3], const double b[3], double ou
     }
     if (dot < -1.0 + 1e-9) {
         /* Antiparallel: rotate pi around any axis orthogonal to a. */
-        double axis[3] = {-a[1], a[0], 0.0};
-        double len = sqrt(axis[0] * axis[0] + axis[1] * axis[1]);
+        double axis[3] = {-from[1], from[0], 0.0};
+        double len = hypot(axis[0], axis[1]);
         if (len < 1e-6) {
             axis[0] = 0.0;
-            axis[1] = -a[2];
-            axis[2] = a[1];
-            len = sqrt(axis[1] * axis[1] + axis[2] * axis[2]);
+            axis[1] = -from[2];
+            axis[2] = from[1];
+            len = hypot(axis[1], axis[2]);
+        }
+        if (!isfinite(len) || len <= 1e-12) {
+            out[0] = 1.0;
+            out[1] = out[2] = out[3] = 0.0;
+            return;
         }
         out[0] = axis[0] / len;
         out[1] = axis[1] / len;
@@ -766,15 +1096,46 @@ static void cloth3d_quat_from_to(const double a[3], const double b[3], double ou
         out[3] = 0.0;
         return;
     }
-    double cross[3] = {
-        a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]};
+    double cross[3] = {from[1] * to[2] - from[2] * to[1],
+                       from[2] * to[0] - from[0] * to[2],
+                       from[0] * to[1] - from[1] * to[0]};
     out[0] = cross[0];
     out[1] = cross[1];
     out[2] = cross[2];
     out[3] = 1.0 + dot;
-    double norm = sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2] + out[3] * out[3]);
+    double norm = hypot(hypot(out[0], out[1]), hypot(out[2], out[3]));
+    if (!isfinite(norm) || norm <= 1e-12) {
+        out[0] = out[1] = out[2] = 0.0;
+        out[3] = 1.0;
+        return;
+    }
     for (int i = 0; i < 4; ++i)
         out[i] /= norm;
+}
+
+/// @brief Normalize a quaternion robustly, falling back to identity.
+/// @param[in,out] quaternion XYZW quaternion.
+static void cloth3d_quat_normalize(double quaternion[4]) {
+    double max_abs;
+    double norm;
+    if (!quaternion)
+        return;
+    max_abs = fmax(fmax(fabs(quaternion[0]), fabs(quaternion[1])),
+                   fmax(fabs(quaternion[2]), fabs(quaternion[3])));
+    if (!isfinite(max_abs) || max_abs <= 1e-12) {
+        quaternion[0] = quaternion[1] = quaternion[2] = 0.0;
+        quaternion[3] = 1.0;
+        return;
+    }
+    norm = hypot(hypot(quaternion[0] / max_abs, quaternion[1] / max_abs),
+                 hypot(quaternion[2] / max_abs, quaternion[3] / max_abs));
+    if (!isfinite(norm) || norm <= 1e-12) {
+        quaternion[0] = quaternion[1] = quaternion[2] = 0.0;
+        quaternion[3] = 1.0;
+        return;
+    }
+    for (int lane = 0; lane < 4; ++lane)
+        quaternion[lane] = (quaternion[lane] / max_abs) / norm;
 }
 
 /// @brief Hamilton product out = q1 * q2 (xyzw layout).
@@ -782,10 +1143,13 @@ static void cloth3d_quat_from_to(const double a[3], const double b[3], double ou
 /// @param q2 Right-hand XYZW quaternion.
 /// @param out Receives the XYZW Hamilton product.
 static void cloth3d_quat_mul(const double q1[4], const double q2[4], double out[4]) {
+    if (!q1 || !q2 || !out)
+        return;
     out[0] = q1[3] * q2[0] + q1[0] * q2[3] + q1[1] * q2[2] - q1[2] * q2[1];
     out[1] = q1[3] * q2[1] - q1[0] * q2[2] + q1[1] * q2[3] + q1[2] * q2[0];
     out[2] = q1[3] * q2[2] + q1[0] * q2[1] - q1[1] * q2[0] + q1[2] * q2[3];
     out[3] = q1[3] * q2[3] - q1[0] * q2[0] - q1[1] * q2[1] - q1[2] * q2[2];
+    cloth3d_quat_normalize(out);
 }
 
 /// @brief Column-layout 4x4 from quaternion + position (ragdoll override format).
@@ -819,35 +1183,49 @@ static void cloth3d_mat_from_quat_pos(const double q[4], const double p[3], doub
 /// @param cloth Chain cloth whose retained animator supplies the root pose.
 static void cloth3d_sync_anchor(rt_cloth3d *cloth) {
     double pos[3], quat[4];
-    if (!cloth->animator || cloth->chain_bone_count < 1)
+    if (!cloth || !cloth->animator || cloth->chain_bone_count < 1 || !cloth->pinned ||
+        !cloth->pin_pos || !cloth->pos || !cloth->prev)
         return;
+    if (!rt_g3d_has_class(cloth->animator, RT_G3D_ANIMCONTROLLER3D_CLASS_ID)) {
+        cloth->animator = cloth->owned_animator;
+        if (!rt_g3d_has_class(cloth->animator, RT_G3D_ANIMCONTROLLER3D_CLASS_ID))
+            return;
+    }
     if (!rt_anim_controller3d_get_bone_pose(cloth->animator, cloth->chain_bones[0], pos, quat))
         return;
+    for (int lane = 0; lane < 3; ++lane) {
+        if (!isfinite(pos[lane]))
+            return;
+        pos[lane] = cloth3d_coord_or(pos[lane], 0.0);
+    }
     double delta[3] = {
         pos[0] - cloth->pin_pos[0], pos[1] - cloth->pin_pos[1], pos[2] - cloth->pin_pos[2]};
-    double jump = sqrt(delta[0] * delta[0] + delta[1] * delta[1] + delta[2] * delta[2]);
+    double jump = cloth3d_length3(delta);
     double threshold = 0.5 * cloth->total_rest;
-    if (threshold < 0.25)
+    if (!isfinite(threshold) || threshold < 0.25)
         threshold = 0.25;
-    if (isfinite(jump) && jump > threshold) {
+    if (isfinite(jump) && (!cloth->anchor_initialized || jump > threshold)) {
         for (int32_t p = 0; p < cloth->point_count; ++p) {
             for (int i = 0; i < 3; ++i) {
-                cloth->pos[p * 3 + i] += delta[i];
-                cloth->prev[p * 3 + i] += delta[i];
+                cloth->pos[p * 3 + i] = cloth3d_coord_or(cloth->pos[p * 3 + i] + delta[i], pos[i]);
+                cloth->prev[p * 3 + i] =
+                    cloth3d_coord_or(cloth->prev[p * 3 + i] + delta[i], pos[i]);
                 if (cloth->pinned[p])
-                    cloth->pin_pos[p * 3 + i] += delta[i];
+                    cloth->pin_pos[p * 3 + i] =
+                        cloth3d_coord_or(cloth->pin_pos[p * 3 + i] + delta[i], pos[i]);
             }
         }
     }
     cloth->pinned[0] = 1;
     memcpy(&cloth->pin_pos[0], pos, sizeof(pos));
+    cloth->anchor_initialized = 1;
 }
 
 /// @brief Write simulated chain directions back as bone aim rotations.
 /// @param cloth Bound chain cloth whose pose-override buffers are populated and applied.
 static void cloth3d_write_bone_overrides(rt_cloth3d *cloth) {
     if (!cloth->animator || cloth->chain_bone_count < 1 || !cloth->override_mask ||
-        !cloth->override_globals)
+        !cloth->override_globals || cloth->skeleton_bone_count <= 0)
         return;
     memset(cloth->override_mask, 0, (size_t)cloth->skeleton_bone_count);
     int32_t links = cloth->chain_bone_count;
@@ -857,6 +1235,8 @@ static void cloth3d_write_bone_overrides(rt_cloth3d *cloth) {
     for (int32_t i = 0; i < links; ++i) {
         int32_t bone = cloth->chain_bones[i];
         double anim_pos[3], anim_quat[4];
+        if (bone < 0 || bone >= cloth->skeleton_bone_count)
+            continue;
         if (!rt_anim_controller3d_get_bone_pose(cloth->animator, bone, anim_pos, anim_quat))
             return;
         double anim_dir[3];
@@ -877,10 +1257,8 @@ static void cloth3d_write_bone_overrides(rt_cloth3d *cloth) {
         double sim_dir[3] = {cloth->pos[(i + 1) * 3] - cloth->pos[i * 3],
                              cloth->pos[(i + 1) * 3 + 1] - cloth->pos[i * 3 + 1],
                              cloth->pos[(i + 1) * 3 + 2] - cloth->pos[i * 3 + 2]};
-        double alen =
-            sqrt(anim_dir[0] * anim_dir[0] + anim_dir[1] * anim_dir[1] + anim_dir[2] * anim_dir[2]);
-        double slen =
-            sqrt(sim_dir[0] * sim_dir[0] + sim_dir[1] * sim_dir[1] + sim_dir[2] * sim_dir[2]);
+        double alen = cloth3d_length3(anim_dir);
+        double slen = cloth3d_length3(sim_dir);
         if (!have_anim_dir || !isfinite(alen) || alen < 1e-9 || !isfinite(slen) || slen < 1e-9)
             continue;
         for (int k = 0; k < 3; ++k) {
@@ -888,12 +1266,23 @@ static void cloth3d_write_bone_overrides(rt_cloth3d *cloth) {
             sim_dir[k] /= slen;
         }
         double delta[4], final_quat[4], global[16];
+        cloth3d_quat_normalize(anim_quat);
         cloth3d_quat_from_to(anim_dir, sim_dir, delta);
         cloth3d_quat_mul(delta, anim_quat, final_quat);
+        for (int lane = 0; lane < 3; ++lane)
+            anim_pos[lane] = cloth3d_coord_or(anim_pos[lane], 0.0);
         cloth3d_mat_from_quat_pos(final_quat, anim_pos, global);
         float *dst = &cloth->override_globals[bone * 16];
-        for (int k = 0; k < 16; ++k)
-            dst[k] = (float)global[k];
+        for (int k = 0; k < 16; ++k) {
+            double value = global[k];
+            if (!isfinite(value))
+                value = (k % 5 == 0) ? 1.0 : 0.0;
+            if (value > FLT_MAX)
+                value = FLT_MAX;
+            if (value < -FLT_MAX)
+                value = -FLT_MAX;
+            dst[k] = (float)value;
+        }
         cloth->override_mask[bone] = 1;
     }
     rt_anim_controller3d_apply_pose_override(
@@ -904,10 +1293,13 @@ static void cloth3d_write_bone_overrides(rt_cloth3d *cloth) {
 /// @param cloth Bound patch cloth supplying point positions and grid topology.
 static void cloth3d_write_mesh(rt_cloth3d *cloth) {
     rt_mesh3d *mesh = (rt_mesh3d *)cloth->mesh;
+    int changed = 0;
     if (!mesh || !rt_g3d_has_class(mesh, RT_G3D_MESH3D_CLASS_ID))
         return;
+    rt_mesh3d_repair_geometry_counts(mesh);
     int32_t w = cloth->width, h = cloth->height;
-    if (mesh->vertex_count < (uint32_t)cloth->point_count || !mesh->vertices)
+    if (w < 2 || h < 2 || (int64_t)w * h != cloth->point_count ||
+        mesh->vertex_count < (uint32_t)cloth->point_count || !mesh->vertices)
         return;
     for (int32_t iy = 0; iy < h; ++iy) {
         for (int32_t ix = 0; ix < w; ++ix) {
@@ -927,10 +1319,18 @@ static void cloth3d_write_mesh(rt_cloth3d *cloth) {
             /* ty x tx (not tx x ty): the grid is X-right / Y-down (pos.y = -dy*iy),
              * so tx x ty points -Z at rest, opposite the seeded bind normal (+Z)
              * and the CCW triangle winding's front face. Use ty x tx for +Z. */
+            double tx_len = cloth3d_length3(tx);
+            double ty_len = cloth3d_length3(ty);
+            if (isfinite(tx_len) && tx_len > 1e-12)
+                for (int lane = 0; lane < 3; ++lane)
+                    tx[lane] /= tx_len;
+            if (isfinite(ty_len) && ty_len > 1e-12)
+                for (int lane = 0; lane < 3; ++lane)
+                    ty[lane] /= ty_len;
             double n[3] = {ty[1] * tx[2] - ty[2] * tx[1],
                            ty[2] * tx[0] - ty[0] * tx[2],
                            ty[0] * tx[1] - ty[1] * tx[0]};
-            double nlen = sqrt(n[0] * n[0] + n[1] * n[1] + n[2] * n[2]);
+            double nlen = cloth3d_length3(n);
             if (!isfinite(nlen) || nlen < 1e-12) {
                 n[0] = 0.0;
                 n[1] = 0.0;
@@ -938,20 +1338,30 @@ static void cloth3d_write_mesh(rt_cloth3d *cloth) {
                 nlen = 1.0;
             }
             vgfx3d_vertex_t *vertex = &mesh->vertices[p];
-            vertex->pos[0] = (float)pos[0];
-            vertex->pos[1] = (float)pos[1];
-            vertex->pos[2] = (float)pos[2];
-            vertex->normal[0] = (float)(n[0] / nlen);
-            vertex->normal[1] = (float)(n[1] / nlen);
-            vertex->normal[2] = (float)(n[2] / nlen);
+            float next_pos[3];
+            float next_normal[3];
+            for (int lane = 0; lane < 3; ++lane) {
+                double finite_pos = cloth3d_coord_or(pos[lane], 0.0);
+                next_pos[lane] = (float)finite_pos;
+                next_normal[lane] = (float)(n[lane] / nlen);
+                if (vertex->pos[lane] != next_pos[lane] ||
+                    vertex->normal[lane] != next_normal[lane])
+                    changed = 1;
+                vertex->pos[lane] = next_pos[lane];
+                vertex->normal[lane] = next_normal[lane];
+            }
             if (mesh->positions64) {
-                mesh->positions64[p * 3 + 0] = pos[0];
-                mesh->positions64[p * 3 + 1] = pos[1];
-                mesh->positions64[p * 3 + 2] = pos[2];
+                for (int lane = 0; lane < 3; ++lane) {
+                    double next = cloth3d_coord_or(pos[lane], 0.0);
+                    if (mesh->positions64[p * 3 + lane] != next)
+                        changed = 1;
+                    mesh->positions64[p * 3 + lane] = next;
+                }
             }
         }
     }
-    rt_mesh3d_touch_geometry(mesh);
+    if (changed)
+        rt_mesh3d_touch_geometry(mesh);
 }
 
 /// @brief Advance the cloth by dt: anchor sync, fixed substeps, output bindings.
@@ -959,20 +1369,29 @@ static void cloth3d_write_mesh(rt_cloth3d *cloth) {
 /// @param dt Positive finite elapsed time accumulated into fixed simulation substeps.
 void rt_cloth3d_step(void *obj, double dt) {
     rt_cloth3d *cloth = cloth3d_checked(obj, "Cloth3D.Step: invalid cloth");
+    double max_catchup;
     if (!cloth || !isfinite(dt) || dt <= 0.0)
         return;
     cloth3d_sync_anchor(cloth);
-    cloth->accumulator += dt;
     int32_t steps = 0;
+    max_catchup = cloth->substep_dt * (double)CLOTH3D_MAX_SUBSTEPS;
+    if (dt >= max_catchup) {
+        double remainder = fmod(dt, cloth->substep_dt);
+        cloth->accumulator += remainder;
+        if (cloth->accumulator >= cloth->substep_dt)
+            cloth->accumulator = fmod(cloth->accumulator, cloth->substep_dt);
+        for (; steps < CLOTH3D_MAX_SUBSTEPS; ++steps)
+            cloth3d_substep(cloth);
+    } else {
+        cloth->accumulator += dt;
+    }
     while (cloth->accumulator >= cloth->substep_dt && steps < CLOTH3D_MAX_SUBSTEPS) {
         cloth3d_substep(cloth);
         cloth->accumulator -= cloth->substep_dt;
         ++steps;
     }
     if (steps == CLOTH3D_MAX_SUBSTEPS && cloth->accumulator >= cloth->substep_dt)
-        cloth->accumulator = 0.0; /* spiral guard: drop the excess entirely so the
-                                   * next Step starts fresh instead of instantly
-                                   * consuming one stale leftover substep */
+        cloth->accumulator = fmod(cloth->accumulator, cloth->substep_dt);
     if (steps > 0) {
         cloth3d_write_bone_overrides(cloth);
         cloth3d_write_mesh(cloth);
@@ -1042,6 +1461,7 @@ void rt_game3d_world_remove_cloth(void *world_obj, void *cloth_obj) {
         for (int32_t j = i; j + 1 < world->cloth_count; ++j)
             world->cloths[j] = world->cloths[j + 1];
         world->cloth_count -= 1;
+        world->cloths[world->cloth_count] = NULL;
         return;
     }
 }

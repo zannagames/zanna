@@ -1,8 +1,20 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/anim/rt_animcontroller3d_internals.inc  (#included from
-// rt_animcontroller3d.c; not a standalone translation unit) Purpose: AnimController3D
-// state/transition/event/layer tables and repair helpers
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/anim/rt_animcontroller3d_internals.inc
+// Purpose: AnimController3D state, transition, event, layer, and repair internals.
+// Key invariants:
+//   - Every public count is bounded before indexing fixed or dynamic storage.
+//   - Animation and skeleton handles are checked before private payload access.
+// Ownership/Lifetime:
+//   - Included by rt_animcontroller3d.c; this is not a standalone translation unit.
+//   - Controller-owned arrays and retained references live until controller finalization.
+// Links: rt_animcontroller3d.c, rt_animcontroller3d.h, rt_skeleton3d_internal.h
+//
 //===----------------------------------------------------------------------===//
 
 /// @file
@@ -188,7 +200,10 @@ static rt_anim_controller3d *anim_controller3d_checked(void *obj) {
 /// @return Borrowed typed skeleton pointer, or `NULL` on class/liveness
 ///         mismatch.
 static rt_skeleton3d *skeleton3d_checked(void *obj) {
-    return (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
+    rt_skeleton3d *skeleton =
+        (rt_skeleton3d *)rt_g3d_checked_or_null(obj, RT_G3D_SKELETON3D_CLASS_ID);
+    skeleton3d_repair_storage(skeleton);
+    return skeleton;
 }
 
 /// @brief Validate that @p obj is a live Animation3D handle, returning NULL otherwise.
@@ -196,7 +211,10 @@ static rt_skeleton3d *skeleton3d_checked(void *obj) {
 /// @return Borrowed typed animation pointer, or `NULL` on class/liveness
 ///         mismatch.
 static rt_animation3d *animation3d_checked(void *obj) {
-    return (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    rt_animation3d *animation =
+        (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    animation3d_repair_storage(animation);
+    return animation;
 }
 
 /// @brief Narrow a double to float, returning `fallback` for non-finite input and

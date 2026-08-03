@@ -2074,7 +2074,8 @@ static void test_skinning_missing_previous_palette_disables_history(void) {
     rt_canvas3d_draw_mesh_skinned(&canvas, mesh, transform, material, player);
 
     rt_anim_player3d *player_view = (rt_anim_player3d *)player;
-    std::free(player_view->prev_bone_palette);
+    std::free(player_view->owned_prev_bone_palette);
+    player_view->owned_prev_bone_palette = nullptr;
     player_view->prev_bone_palette = nullptr;
     player_view->has_prev_motion_palette = 1;
 

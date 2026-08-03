@@ -85,7 +85,8 @@ double rt_cloth3d_get_gravity_scale(void *cloth);
 
 /// @brief Set the gravity scale (0 disables gravity).
 /// @param cloth Cloth3D handle to modify.
-/// @param scale Finite gravity multiplier.
+/// @param scale Finite gravity multiplier clamped to `[-1000000, 1000000]`;
+///              negative values reverse the acceleration direction.
 void rt_cloth3d_set_gravity_scale(void *cloth, double scale);
 
 /// @brief Get the wind response coefficient (default 1).
@@ -95,7 +96,7 @@ double rt_cloth3d_get_wind_response(void *cloth);
 
 /// @brief Set the wind response coefficient (0 disables wind coupling).
 /// @param cloth Cloth3D handle to modify.
-/// @param response Finite non-negative wind-response coefficient.
+/// @param response Finite non-negative wind-response coefficient clamped to 120.
 void rt_cloth3d_set_wind_response(void *cloth, double response);
 
 /// @brief Number of simulated points.
@@ -127,7 +128,8 @@ void *rt_cloth3d_add_capsule(void *cloth, void *a, void *b, double radius);
 /// @brief Set the wind velocity: direction Vec3 scaled by @p strength.
 /// @param cloth Cloth3D handle to modify.
 /// @param direction Vec3 direction and relative per-axis magnitude.
-/// @param strength Scalar magnitude multiplier.
+/// @param strength Scalar magnitude multiplier clamped to `[-1000000, 1000000]`;
+///                 non-finite values become zero.
 void rt_cloth3d_set_wind(void *cloth, void *direction, double strength);
 
 /// @brief Current position of point @p index as a Vec3.
@@ -153,7 +155,9 @@ void *rt_cloth3d_bind_bone_chain(void *cloth, void *animator, rt_string root_bon
 
 /// @brief Advance the simulation by @p dt seconds (fixed internal substeps),
 ///   including anchor sync and output bindings. World-registered cloths are
-///   stepped automatically by World3D.StepSimulation.
+///   stepped automatically by World3D.StepSimulation. Catch-up is capped at
+///   eight substeps per call; excess whole substeps are dropped while the
+///   fractional remainder is retained to avoid an unbounded stall.
 /// @param cloth Cloth3D handle to advance.
 /// @param dt Positive finite elapsed time accumulated into fixed substeps.
 void rt_cloth3d_step(void *cloth, double dt);

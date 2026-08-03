@@ -20,14 +20,20 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifndef ZANNA_ENABLE_GRAPHICS
+#define ZANNA_ENABLE_GRAPHICS 1
+#endif
+
 #include "rt.hpp"
 #include "rt_blendtree3d.h"
+#include "rt_canvas3d_internal.h"
 #include "rt_internal.h"
 #include "rt_navmesh3d.h"
 #include "rt_option.h"
 #include "rt_path3d.h"
 #include "rt_scene3d.h"
 #include "rt_skeleton3d.h"
+#include "rt_string.h"
 #include <atomic>
 #include <cassert>
 #include <climits>
@@ -213,6 +219,19 @@ static void test_navmesh_build_plane() {
     void *nm = rt_navmesh3d_build(plane, 0.4, 1.8);
     EXPECT_TRUE(nm != nullptr, "NavMesh built from plane");
     EXPECT_TRUE(rt_navmesh3d_get_triangle_count(nm) > 0, "Plane has walkable triangles");
+}
+
+static void test_navmesh_rejects_all_degenerate_geometry() {
+    void *mesh = rt_mesh3d_new();
+    rt_mesh3d_add_vertex(mesh, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+    rt_mesh3d_add_vertex(mesh, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.5, 0.0);
+    rt_mesh3d_add_vertex(mesh, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0, 1.0, 0.0);
+    rt_mesh3d_add_triangle(mesh, 0, 1, 2);
+    auto *mesh_view = static_cast<rt_mesh3d *>(mesh);
+    mesh_view->vertices[2].pos[0] = 2.0f;
+    mesh_view->vertices[2].pos[2] = 0.0f;
+    EXPECT_TRUE(rt_navmesh3d_build(mesh, 0.4, 1.8) == nullptr,
+                "NavMesh rejects a source containing no non-degenerate triangles");
 }
 
 static void test_navmesh_is_walkable() {
@@ -845,6 +864,46 @@ static void test_navmesh_area_metadata_and_traversal_costs() {
                 "NavMesh area: invalid area string is rejected");
 }
 
+static void test_navmesh_metadata_updates_are_transactional_and_length_exact() {
+    void *nm = rt_navmesh3d_build(rt_mesh3d_new_plane(10.0, 10.0), 0.4, 1.8);
+    auto *view = static_cast<NavMesh3DTestLayout *>(nm);
+    int32_t area_count = view->area_name_count;
+    EXPECT_TRUE(rt_navmesh3d_set_area(nm,
+                                      rt_vec3_new(100.0, 0.0, 100.0),
+                                      rt_vec3_new(101.0, 1.0, 101.0),
+                                      rt_const_cstr("unused"),
+                                      2.0) == 0 &&
+                    view->area_name_count == area_count,
+                "SetArea does not intern a name when no source triangle is touched");
+
+    const char area_bytes[] = {'m', 'u', 'd', '\0', 'x'};
+    rt_string area = rt_string_from_bytes(area_bytes, sizeof(area_bytes));
+    EXPECT_TRUE(rt_navmesh3d_set_area(
+                    nm, rt_vec3_new(-5.0, -1.0, -5.0), rt_vec3_new(5.0, 1.0, 5.0), area, 2.0) == 1,
+                "NavMesh accepts a length-carrying area name with an embedded NUL");
+    rt_string_unref(area);
+    rt_string path = rt_const_cstr("/tmp/zanna_navmesh_embedded_nul.vnav");
+    EXPECT_TRUE(rt_navmesh3d_export(nm, path) == 1, "NavMesh exports exact-length area names");
+    void *imported = rt_navmesh3d_import(path);
+    rt_string loaded_area = rt_navmesh3d_get_area(imported, rt_vec3_new(0.0, 0.0, 0.0));
+    EXPECT_TRUE(imported && rt_str_len(loaded_area) == (int64_t)sizeof(area_bytes) &&
+                    std::memcmp(rt_string_cstr(loaded_area), area_bytes, sizeof(area_bytes)) == 0,
+                "NavMesh import/export preserves every area-name byte");
+
+    EXPECT_TRUE(rt_navmesh3d_add_offmesh_link(
+                    nm, rt_vec3_new(-4.0, 0.0, -4.0), rt_vec3_new(4.0, 0.0, 4.0), 1) == 1,
+                "NavMesh metadata fixture adds an off-mesh link");
+    rt_string kind = rt_string_from_bytes("jump", 4);
+    EXPECT_TRUE(rt_navmesh3d_set_offmesh_link_metadata(nm, 0, kind, 2.0, 7) == 1,
+                "NavMesh metadata fixture assigns a link kind");
+    rt_string_unref(kind);
+    rt_string sole_owned_kind = view->offmesh_links[0].kind;
+    EXPECT_TRUE(rt_navmesh3d_set_offmesh_link_metadata(nm, 0, sole_owned_kind, 3.0, 9) == 1 &&
+                    rt_str_len(view->offmesh_links[0].kind) == 4 &&
+                    std::memcmp(rt_string_cstr(view->offmesh_links[0].kind), "jump", 4) == 0,
+                "Link metadata retains a same-handle replacement before releasing the old slot");
+}
+
 static void *make_scene_bake_fixture() {
     void *scene = rt_scene3d_new();
     void *parent = rt_scene_node3d_new();
@@ -1416,6 +1475,7 @@ static void test_skeleton_alias_table_growth() {
 int main() {
     /* NavMesh3D */
     test_navmesh_build_plane();
+    test_navmesh_rejects_all_degenerate_geometry();
     test_navmesh_is_walkable();
     test_navmesh_not_walkable();
     test_navmesh_sample_position();
@@ -1437,6 +1497,7 @@ int main() {
     test_navmesh_obstacle_carving_uses_triangle_footprint();
     test_navmesh_add_obstacle_carves_walkable_triangles();
     test_navmesh_area_metadata_and_traversal_costs();
+    test_navmesh_metadata_updates_are_transactional_and_length_exact();
     test_navmesh_bake_scene_flattens_transformed_nodes();
     test_navmesh_bake_tiled_and_rebuild_tile_baseline();
     test_navmesh_rebuild_tile_is_tile_local();

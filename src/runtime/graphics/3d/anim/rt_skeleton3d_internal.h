@@ -143,6 +143,12 @@ typedef struct {
     int32_t keyframe_count;
     /// Number of allocated entries in `keyframes`.
     int32_t keyframe_capacity;
+    /// Stable allocation identity used for growth and finalization.
+    vgfx3d_keyframe_t *owned_keyframes;
+    /// Actual number of entries allocated in `owned_keyframes`.
+    int32_t owned_keyframe_capacity;
+    /// Number of initialized keyframes independently of the mutable public mirror.
+    int32_t initialized_keyframe_count;
 } vgfx3d_anim_channel_t;
 
 /// @brief External-name alias: "a rig calling this bone `external` means my
@@ -175,6 +181,18 @@ typedef struct rt_skeleton3d {
     int32_t alias_count;
     /// Allocated capacity of `aliases`.
     int32_t alias_capacity;
+    /// Stable allocation identity for the bone table.
+    vgfx3d_bone_t *owned_bones;
+    /// Actual capacity of `owned_bones`.
+    int32_t owned_bone_capacity;
+    /// Number of initialized bone records in `owned_bones`.
+    int32_t initialized_bone_count;
+    /// Stable allocation identity for the alias table.
+    rt_skeleton3d_alias *owned_aliases;
+    /// Actual capacity of `owned_aliases`.
+    int32_t owned_alias_capacity;
+    /// Number of initialized alias records in `owned_aliases`.
+    int32_t initialized_alias_count;
 } rt_skeleton3d;
 
 /// @brief Resolve an external bone name through a skeleton's alias table
@@ -202,6 +220,12 @@ typedef struct rt_animation3d {
     float duration;
     /// Nonzero when playback wraps at the duration.
     int8_t looping;
+    /// Stable allocation identity for the channel table.
+    vgfx3d_anim_channel_t *owned_channels;
+    /// Actual capacity of `owned_channels`.
+    int32_t owned_channel_capacity;
+    /// Number of initialized channel records in `owned_channels`.
+    int32_t initialized_channel_count;
 } rt_animation3d;
 
 /// @brief AnimPlayer3D payload: the skeleton, current and crossfade-source clips with
@@ -252,6 +276,22 @@ typedef struct rt_anim_player3d {
     int64_t last_motion_frame;
     /// Nonzero after a valid previous-frame palette has been captured.
     int8_t has_prev_motion_palette;
+    /// Stable retained skeleton identity, independent of the mutable mirror.
+    rt_skeleton3d *owned_skeleton;
+    /// Stable retained active-clip identity.
+    rt_animation3d *owned_current;
+    /// Stable retained outgoing-clip identity.
+    rt_animation3d *owned_crossfade_from;
+    /// Stable allocation identities for the five synchronized pose buffers.
+    float *owned_bone_palette;
+    float *owned_prev_bone_palette;
+    float *owned_motion_palette_snapshot;
+    float *owned_local_transforms;
+    float *owned_globals_buf;
+    /// Actual common capacity of all owned pose buffers.
+    int32_t owned_pose_capacity;
+    /// Nonzero after any frame serial, including zero, has been snapshotted.
+    int8_t motion_history_initialized;
 } rt_anim_player3d;
 
 /// @brief One AnimBlend3D state: a named clip with its own weight, playback time, speed,
@@ -269,6 +309,8 @@ typedef struct anim_blend_state_t {
     float speed;
     /// Captured looping policy for this state.
     int8_t looping;
+    /// Stable retained clip identity, independent of the mutable mirror.
+    rt_animation3d *owned_animation;
 } anim_blend_state_t;
 
 /// @brief AnimBlend3D payload: the skeleton, a fixed array of weighted blend states, and
@@ -302,7 +344,176 @@ typedef struct rt_anim_blend3d {
     int64_t last_motion_frame;
     /// Nonzero after a valid previous-frame palette has been captured.
     int8_t has_prev_motion_palette;
+    /// Stable retained skeleton identity.
+    rt_skeleton3d *owned_skeleton;
+    /// Stable allocation identities for all synchronized pose buffers.
+    float *owned_bone_palette;
+    float *owned_prev_bone_palette;
+    float *owned_motion_palette_snapshot;
+    float *owned_local_transforms;
+    float *owned_temp_state_local;
+    float *owned_blend_acc_trs;
+    float *owned_globals_buf;
+    /// Actual common capacity of all owned pose buffers.
+    int32_t owned_pose_capacity;
+    /// Number of initialized leading state records.
+    int32_t initialized_state_count;
+    /// Nonzero after any frame serial, including zero, has been snapshotted.
+    int8_t motion_history_initialized;
 } rt_anim_blend3d;
+
+/// @brief Restore Skeleton3D legacy mirrors from private ownership authority.
+/// @details Stack fixtures without ownership metadata retain their legacy
+/// mirrors. Heap-created skeletons publish ownership metadata with their first
+/// allocation, after which pointer, count, and capacity repair is deterministic.
+/// @param[in,out] skeleton Skeleton storage to repair.
+static inline void skeleton3d_repair_storage(rt_skeleton3d *skeleton) {
+    if (!skeleton)
+        return;
+    if (skeleton->owned_bones || skeleton->owned_bone_capacity > 0 ||
+        skeleton->initialized_bone_count > 0) {
+        if (!skeleton->owned_bones || skeleton->owned_bone_capacity <= 0) {
+            skeleton->owned_bones = NULL;
+            skeleton->owned_bone_capacity = 0;
+            skeleton->initialized_bone_count = 0;
+        } else {
+            if (skeleton->owned_bone_capacity > VGFX3D_MAX_SKELETON_BONES)
+                skeleton->owned_bone_capacity = VGFX3D_MAX_SKELETON_BONES;
+            if (skeleton->initialized_bone_count < 0)
+                skeleton->initialized_bone_count = 0;
+            if (skeleton->initialized_bone_count > skeleton->owned_bone_capacity)
+                skeleton->initialized_bone_count = skeleton->owned_bone_capacity;
+        }
+        skeleton->bones = skeleton->owned_bones;
+        skeleton->bone_capacity = skeleton->owned_bone_capacity;
+        skeleton->bone_count = skeleton->initialized_bone_count;
+    }
+    if (skeleton->owned_aliases || skeleton->owned_alias_capacity > 0 ||
+        skeleton->initialized_alias_count > 0) {
+        if (!skeleton->owned_aliases || skeleton->owned_alias_capacity <= 0) {
+            skeleton->owned_aliases = NULL;
+            skeleton->owned_alias_capacity = 0;
+            skeleton->initialized_alias_count = 0;
+        } else {
+            if (skeleton->initialized_alias_count < 0)
+                skeleton->initialized_alias_count = 0;
+            if (skeleton->initialized_alias_count > skeleton->owned_alias_capacity)
+                skeleton->initialized_alias_count = skeleton->owned_alias_capacity;
+            for (int32_t i = 0; i < skeleton->initialized_alias_count; ++i) {
+                skeleton->owned_aliases[i].external[63] = '\0';
+                skeleton->owned_aliases[i].local[63] = '\0';
+            }
+        }
+        skeleton->aliases = skeleton->owned_aliases;
+        skeleton->alias_capacity = skeleton->owned_alias_capacity;
+        skeleton->alias_count = skeleton->initialized_alias_count;
+    }
+    skeleton->frozen = skeleton->frozen ? 1 : 0;
+}
+
+/// @brief Restore one animation channel's keyframe mirrors from ownership authority.
+/// @param[in,out] channel Channel storage to repair.
+static inline void animation3d_repair_channel_storage(vgfx3d_anim_channel_t *channel) {
+    if (!channel)
+        return;
+    if (channel->owned_keyframes || channel->owned_keyframe_capacity > 0 ||
+        channel->initialized_keyframe_count > 0) {
+        if (!channel->owned_keyframes || channel->owned_keyframe_capacity <= 0) {
+            channel->owned_keyframes = NULL;
+            channel->owned_keyframe_capacity = 0;
+            channel->initialized_keyframe_count = 0;
+        } else {
+            if (channel->owned_keyframe_capacity > RT_ANIMATION3D_MAX_KEYFRAMES_PER_CHANNEL)
+                channel->owned_keyframe_capacity = RT_ANIMATION3D_MAX_KEYFRAMES_PER_CHANNEL;
+            if (channel->initialized_keyframe_count < 0)
+                channel->initialized_keyframe_count = 0;
+            if (channel->initialized_keyframe_count > channel->owned_keyframe_capacity)
+                channel->initialized_keyframe_count = channel->owned_keyframe_capacity;
+        }
+        channel->keyframes = channel->owned_keyframes;
+        channel->keyframe_capacity = channel->owned_keyframe_capacity;
+        channel->keyframe_count = channel->initialized_keyframe_count;
+    }
+}
+
+/// @brief Restore an Animation3D channel table and every initialized key table.
+/// @param[in,out] animation Clip storage to repair.
+static inline void animation3d_repair_storage(rt_animation3d *animation) {
+    if (!animation)
+        return;
+    animation->name[63] = '\0';
+    animation->looping = animation->looping ? 1 : 0;
+    if (animation->owned_channels || animation->owned_channel_capacity > 0 ||
+        animation->initialized_channel_count > 0) {
+        if (!animation->owned_channels || animation->owned_channel_capacity <= 0) {
+            animation->owned_channels = NULL;
+            animation->owned_channel_capacity = 0;
+            animation->initialized_channel_count = 0;
+        } else {
+            if (animation->owned_channel_capacity > RT_ANIMATION3D_MAX_CHANNELS)
+                animation->owned_channel_capacity = RT_ANIMATION3D_MAX_CHANNELS;
+            if (animation->initialized_channel_count < 0)
+                animation->initialized_channel_count = 0;
+            if (animation->initialized_channel_count > animation->owned_channel_capacity)
+                animation->initialized_channel_count = animation->owned_channel_capacity;
+            for (int32_t i = 0; i < animation->initialized_channel_count; ++i)
+                animation3d_repair_channel_storage(&animation->owned_channels[i]);
+        }
+        animation->channels = animation->owned_channels;
+        animation->channel_capacity = animation->owned_channel_capacity;
+        animation->channel_count = animation->initialized_channel_count;
+    }
+}
+
+/// @brief Restore an AnimPlayer3D's retained and buffer mirrors from stable identities.
+/// @param[in,out] player Player storage to repair.
+static inline void anim_player3d_repair_storage(rt_anim_player3d *player) {
+    if (!player)
+        return;
+    player->skeleton = player->owned_skeleton;
+    player->current = player->owned_current;
+    player->crossfade_from = player->owned_crossfade_from;
+    player->bone_palette = player->owned_bone_palette;
+    player->prev_bone_palette = player->owned_prev_bone_palette;
+    player->motion_palette_snapshot = player->owned_motion_palette_snapshot;
+    player->local_transforms = player->owned_local_transforms;
+    player->globals_buf = player->owned_globals_buf;
+    player->pose_capacity = player->owned_pose_capacity;
+    player->playing = player->playing ? 1 : 0;
+    player->loop_override_enabled = player->loop_override_enabled ? 1 : 0;
+    player->loop_override_value = player->loop_override_value ? 1 : 0;
+    player->crossfade_from_looping = player->crossfade_from_looping ? 1 : 0;
+    player->has_prev_motion_palette = player->has_prev_motion_palette ? 1 : 0;
+    player->motion_history_initialized = player->motion_history_initialized ? 1 : 0;
+}
+
+/// @brief Restore an AnimBlend3D's retained, state, and buffer mirrors.
+/// @param[in,out] blend Blender storage to repair.
+static inline void anim_blend3d_repair_storage(rt_anim_blend3d *blend) {
+    if (!blend)
+        return;
+    blend->skeleton = blend->owned_skeleton;
+    blend->bone_palette = blend->owned_bone_palette;
+    blend->prev_bone_palette = blend->owned_prev_bone_palette;
+    blend->motion_palette_snapshot = blend->owned_motion_palette_snapshot;
+    blend->local_transforms = blend->owned_local_transforms;
+    blend->temp_state_local = blend->owned_temp_state_local;
+    blend->blend_acc_trs = blend->owned_blend_acc_trs;
+    blend->globals_buf = blend->owned_globals_buf;
+    blend->pose_capacity = blend->owned_pose_capacity;
+    if (blend->initialized_state_count < 0)
+        blend->initialized_state_count = 0;
+    if (blend->initialized_state_count > RT_ANIM_BLEND3D_MAX_STATES)
+        blend->initialized_state_count = RT_ANIM_BLEND3D_MAX_STATES;
+    blend->state_count = blend->initialized_state_count;
+    for (int32_t i = 0; i < blend->initialized_state_count; ++i) {
+        blend->states[i].animation = blend->states[i].owned_animation;
+        blend->states[i].name[63] = '\0';
+        blend->states[i].looping = blend->states[i].looping ? 1 : 0;
+    }
+    blend->has_prev_motion_palette = blend->has_prev_motion_palette ? 1 : 0;
+    blend->motion_history_initialized = blend->motion_history_initialized ? 1 : 0;
+}
 
 /// @brief Bound a private dynamic-array count by its backing pointer and capacity.
 /// @param[in] array Backing allocation, which must be nonnull for a positive result.
@@ -323,6 +534,11 @@ static inline int32_t skeleton3d_clamped_array_count(const void *array,
 /// @return A nonnegative readable count capped by both allocated capacity and
 /// `VGFX3D_MAX_SKELETON_BONES`.
 static inline int32_t skeleton3d_safe_bone_count(const rt_skeleton3d *skeleton) {
+    rt_skeleton3d *mutable_skeleton = (rt_skeleton3d *)(uintptr_t)skeleton;
+    if (mutable_skeleton &&
+        (mutable_skeleton->owned_bones || mutable_skeleton->owned_bone_capacity > 0 ||
+         mutable_skeleton->initialized_bone_count > 0))
+        skeleton3d_repair_storage(mutable_skeleton);
     int32_t count = skeleton ? skeleton3d_clamped_array_count(
                                    skeleton->bones, skeleton->bone_count, skeleton->bone_capacity)
                              : 0;
@@ -352,6 +568,11 @@ static inline int32_t skeleton3d_valid_parent_index(const rt_skeleton3d *skeleto
 /// @return A nonnegative readable count capped by allocated capacity and
 /// `RT_ANIMATION3D_MAX_CHANNELS`.
 static inline int32_t animation3d_safe_channel_count(const rt_animation3d *animation) {
+    rt_animation3d *mutable_animation = (rt_animation3d *)(uintptr_t)animation;
+    if (mutable_animation &&
+        (mutable_animation->owned_channels || mutable_animation->owned_channel_capacity > 0 ||
+         mutable_animation->initialized_channel_count > 0))
+        animation3d_repair_storage(mutable_animation);
     int32_t count = animation ? skeleton3d_clamped_array_count(animation->channels,
                                                                animation->channel_count,
                                                                animation->channel_capacity)
@@ -364,6 +585,11 @@ static inline int32_t animation3d_safe_channel_count(const rt_animation3d *anima
 /// @return A nonnegative readable count capped by allocated capacity and
 /// `RT_ANIMATION3D_MAX_KEYFRAMES_PER_CHANNEL`.
 static inline int32_t animation3d_safe_keyframe_count(const vgfx3d_anim_channel_t *channel) {
+    vgfx3d_anim_channel_t *mutable_channel = (vgfx3d_anim_channel_t *)(uintptr_t)channel;
+    if (mutable_channel &&
+        (mutable_channel->owned_keyframes || mutable_channel->owned_keyframe_capacity > 0 ||
+         mutable_channel->initialized_keyframe_count > 0))
+        animation3d_repair_channel_storage(mutable_channel);
     int32_t count = channel ? skeleton3d_clamped_array_count(channel->keyframes,
                                                              channel->keyframe_count,
                                                              channel->keyframe_capacity)
@@ -397,8 +623,12 @@ static inline int8_t animation3d_channels_fit_skeleton(const rt_animation3d *ani
 /// @return The lesser of the stored count and fixed capacity, truncated at the
 /// first state without an animation; zero for invalid or empty input.
 static inline int32_t animblend3d_safe_state_count(const rt_anim_blend3d *blend) {
+    rt_anim_blend3d *mutable_blend = (rt_anim_blend3d *)(uintptr_t)blend;
     int32_t limit;
     int32_t count = 0;
+    if (mutable_blend && (mutable_blend->owned_skeleton || mutable_blend->owned_bone_palette ||
+                          mutable_blend->initialized_state_count > 0))
+        anim_blend3d_repair_storage(mutable_blend);
     if (!blend || blend->state_count <= 0)
         return 0;
     limit = blend->state_count < RT_ANIM_BLEND3D_MAX_STATES ? blend->state_count

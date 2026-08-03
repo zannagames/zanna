@@ -580,6 +580,7 @@ static void test_controller_private_skeleton_growth_stays_in_bounds() {
     if (!grown)
         return;
     skel_view->bones = grown;
+    skel_view->owned_bones = grown;
     std::memset(&skel_view->bones[1], 0, sizeof(vgfx3d_bone_t));
     skel_view->bones[1].name = rt_const_cstr("late");
     skel_view->bones[1].parent_index = 0;
@@ -587,6 +588,8 @@ static void test_controller_private_skeleton_growth_stays_in_bounds() {
     fill_identity_pose(skel_view->bones[1].inverse_bind, 1);
     skel_view->bone_capacity = 2;
     skel_view->bone_count = 2;
+    skel_view->owned_bone_capacity = 2;
+    skel_view->initialized_bone_count = 2;
 
     void *late = make_anim("late", 1, 0.0, 0.0, 0.0, 0.0, 2.0, 0.0);
     EXPECT_TRUE(rt_anim_controller3d_add_state(controller, rt_const_cstr("late"), late) == 0,
@@ -1506,17 +1509,11 @@ static void test_anim_controller_private_refs_clear_wrong_class_without_release(
     rt_obj_retain_maybe(wrong_player_skeleton);
     rt_obj_retain_maybe(wrong_player_current);
     rt_obj_retain_maybe(wrong_player_crossfade);
-    if (player_layout->skeleton && rt_obj_release_check0(player_layout->skeleton))
-        rt_obj_free(player_layout->skeleton);
     player_layout->skeleton = reinterpret_cast<rt_skeleton3d *>(wrong_player_skeleton);
-    if (player_layout->current && rt_obj_release_check0(player_layout->current))
-        rt_obj_free(player_layout->current);
     player_layout->current = reinterpret_cast<rt_animation3d *>(wrong_player_current);
-    if (player_layout->crossfade_from && rt_obj_release_check0(player_layout->crossfade_from))
-        rt_obj_free(player_layout->crossfade_from);
     player_layout->crossfade_from = reinterpret_cast<rt_animation3d *>(wrong_player_crossfade);
-    EXPECT_TRUE(rt_anim_player3d_get_bone_matrix(player_finalizer, 0) == nullptr,
-                "AnimPlayer3D bone queries hide wrong-class skeleton slots");
+    EXPECT_TRUE(rt_anim_player3d_get_bone_matrix(player_finalizer, 0) != nullptr,
+                "AnimPlayer3D repairs corrupted retained-reference mirrors");
     rt_anim_player3d_update(player_finalizer, 0.1);
     rt_anim_player3d_stop(player_finalizer);
     if (rt_obj_release_check0(player_finalizer))
@@ -1534,16 +1531,14 @@ static void test_anim_controller_private_refs_clear_wrong_class_without_release(
     auto *bad_skel_blend_layout = reinterpret_cast<rt_anim_blend3d *>(blend_with_bad_skeleton);
     void *wrong_blend_skeleton = rt_obj_new_i64(0, 8);
     rt_obj_retain_maybe(wrong_blend_skeleton);
-    if (bad_skel_blend_layout->skeleton && rt_obj_release_check0(bad_skel_blend_layout->skeleton))
-        rt_obj_free(bad_skel_blend_layout->skeleton);
     bad_skel_blend_layout->skeleton = reinterpret_cast<rt_skeleton3d *>(wrong_blend_skeleton);
     int32_t bad_blend_bones = 1;
-    EXPECT_TRUE(rt_anim_blend3d_get_skeleton(blend_with_bad_skeleton) == nullptr,
-                "AnimBlend3D hides wrong-class skeleton slots");
+    EXPECT_TRUE(rt_anim_blend3d_get_skeleton(blend_with_bad_skeleton) == skel,
+                "AnimBlend3D repairs its corrupted skeleton mirror");
     EXPECT_TRUE(rt_anim_blend3d_get_local_transform_data(blend_with_bad_skeleton,
-                                                         &bad_blend_bones) == nullptr &&
-                    bad_blend_bones == 0,
-                "AnimBlend3D local transform queries reject wrong-class skeleton slots");
+                                                         &bad_blend_bones) != nullptr &&
+                    bad_blend_bones == 1,
+                "AnimBlend3D local transform queries use repaired owned storage");
     rt_anim_blend3d_update(blend_with_bad_skeleton, 0.1);
     if (rt_obj_release_check0(blend_with_bad_skeleton))
         rt_obj_free(blend_with_bad_skeleton);
@@ -1556,14 +1551,11 @@ static void test_anim_controller_private_refs_clear_wrong_class_without_release(
     auto *bad_state_blend_layout = reinterpret_cast<rt_anim_blend3d *>(blend_with_bad_state);
     void *wrong_state_animation = rt_obj_new_i64(0, 8);
     rt_obj_retain_maybe(wrong_state_animation);
-    if (bad_state_blend_layout->states[0].animation &&
-        rt_obj_release_check0(bad_state_blend_layout->states[0].animation))
-        rt_obj_free(bad_state_blend_layout->states[0].animation);
     bad_state_blend_layout->states[0].animation =
         reinterpret_cast<rt_animation3d *>(wrong_state_animation);
     rt_anim_blend3d_update(blend_with_bad_state, 0.1);
-    EXPECT_TRUE(bad_state_blend_layout->states[0].animation == nullptr,
-                "AnimBlend3D update clears wrong-class state animation slots");
+    EXPECT_TRUE(bad_state_blend_layout->states[0].animation == move,
+                "AnimBlend3D update repairs wrong-class state mirrors");
     if (rt_obj_release_check0(blend_with_bad_state))
         rt_obj_free(blend_with_bad_state);
     expect_retained_probe_untouched(

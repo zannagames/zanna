@@ -111,14 +111,14 @@ static void navmesh3d_finalizer(void *obj) {
     if (nm->offmesh_links) {
         int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
         for (int32_t i = 0; i < link_count; i++) {
-            if (nm->offmesh_links[i].kind)
+            if (nm->offmesh_links[i].kind && rt_string_is_handle(nm->offmesh_links[i].kind))
                 rt_string_unref(nm->offmesh_links[i].kind);
         }
     }
     if (nm->area_names) {
         int32_t area_name_count = navmesh3d_read_area_name_count(nm);
         for (int32_t i = 0; i < area_name_count; i++) {
-            if (nm->area_names[i])
+            if (nm->area_names[i] && rt_string_is_handle(nm->area_names[i]))
                 rt_string_unref(nm->area_names[i]);
         }
     }
@@ -295,7 +295,7 @@ static int navmesh3d_portal_allows_agent(const rt_navmesh3d *nm, int32_t va, int
     const float *b = nm->vertices[vb].position;
     double dx = (double)b[0] - (double)a[0];
     double dz = (double)b[2] - (double)a[2];
-    double width = sqrt(dx * dx + dz * dz);
+    double width = hypot(dx, dz);
     return width + 1e-5 >= nm->agent_radius * 2.0 ? 1 : 0;
 }
 
@@ -494,9 +494,10 @@ static int navmesh3d_read_f64(FILE *f, double *out) {
 /// @return Non-zero on success, otherwise zero for an oversized string or I/O failure.
 static int navmesh3d_write_string(FILE *f, rt_string s) {
     const char *bytes = (s && rt_string_is_handle(s)) ? rt_string_cstr(s) : "";
-    size_t len = bytes ? strlen(bytes) : 0u;
-    if (len > UINT32_MAX)
+    int64_t stored_len = s && rt_string_is_handle(s) ? rt_str_len(s) : 0;
+    if (!bytes || stored_len < 0 || (uint64_t)stored_len > UINT32_MAX)
         return 0;
+    size_t len = (size_t)stored_len;
     return navmesh3d_write_u32(f, (uint32_t)len) &&
            (len == 0u || navmesh3d_io_write(f, bytes, len));
 }
@@ -681,6 +682,8 @@ static int navmesh3d_triangle_blocked_by_obstacle(const rt_navmesh3d *nm,
 /// @param area Borrowed runtime string to intern.
 /// @return The 1-based id, 0 for an empty name, or -1 on invalid input or allocation failure.
 static int32_t navmesh3d_ensure_area_id(rt_navmesh3d *nm, rt_string area) {
+    int64_t name_len64;
+    size_t name_len;
     if (!nm || !area || !rt_string_is_handle(area))
         return -1;
     if (nm->area_name_count < 0 || nm->area_name_capacity < 0 ||
@@ -688,11 +691,21 @@ static int32_t navmesh3d_ensure_area_id(rt_navmesh3d *nm, rt_string area) {
         (nm->area_name_capacity > 0 && !nm->area_names))
         return -1;
     const char *name = rt_string_cstr(area);
-    if (!name || name[0] == '\0')
+    name_len64 = rt_str_len(area);
+    if (!name || name_len64 < 0)
+        return -1;
+    if (name_len64 == 0)
         return 0;
+    name_len = (size_t)name_len64;
     for (int32_t i = 0; i < nm->area_name_count; i++) {
-        const char *existing = nm->area_names[i] ? rt_string_cstr(nm->area_names[i]) : "";
-        if (strcmp(existing, name) == 0)
+        rt_string existing_handle = nm->area_names[i];
+        if (!existing_handle || !rt_string_is_handle(existing_handle))
+            return -1;
+        const char *existing = rt_string_cstr(existing_handle);
+        int64_t existing_len64 = rt_str_len(existing_handle);
+        if (!existing || existing_len64 < 0)
+            return -1;
+        if ((size_t)existing_len64 == name_len && memcmp(existing, name, name_len) == 0)
             return i + 1;
     }
     if (nm->area_name_count >= nm->area_name_capacity) {
@@ -716,7 +729,10 @@ static int32_t navmesh3d_ensure_area_id(rt_navmesh3d *nm, rt_string area) {
         nm->area_names = areas;
         nm->area_name_capacity = new_cap;
     }
-    nm->area_names[nm->area_name_count] = rt_string_ref(area);
+    rt_string retained = rt_string_ref(area);
+    if (!retained)
+        return -1;
+    nm->area_names[nm->area_name_count] = retained;
     nm->area_name_count++;
     return nm->area_name_count;
 }
@@ -728,7 +744,8 @@ static int32_t navmesh3d_ensure_area_id(rt_navmesh3d *nm, rt_string area) {
 /// @return Retained authored name, or the shared `default` string.
 static rt_string navmesh3d_area_name(const rt_navmesh3d *nm, int32_t area_id) {
     int32_t area_name_count = navmesh3d_read_area_name_count(nm);
-    if (area_id > 0 && area_id <= area_name_count && nm->area_names[area_id - 1])
+    if (area_id > 0 && area_id <= area_name_count && nm->area_names[area_id - 1] &&
+        rt_string_is_handle(nm->area_names[area_id - 1]))
         return rt_string_ref(nm->area_names[area_id - 1]);
     return rt_const_cstr("default");
 }
@@ -738,7 +755,7 @@ static rt_string navmesh3d_area_name(const rt_navmesh3d *nm, int32_t area_id) {
 /// @param tri Triangle index.
 /// @return Finite multiplier in `[1, 1e6]`.
 static float navmesh3d_tri_cost(const rt_navmesh3d *nm, int32_t tri) {
-    if (!nm || !nm->triangles || tri < 0 || tri >= nm->triangle_count)
+    if (!nm || !nm->triangles || tri < 0 || tri >= navmesh3d_read_triangle_count(nm))
         return 1.0f;
     return navmesh3d_sanitize_traversal_cost((double)nm->triangles[tri].traversal_cost);
 }
@@ -1114,14 +1131,23 @@ static int navmesh3d_apply_slope_filter(rt_navmesh3d *nm) {
 /// @return 1 for a valid tiled mapping, otherwise 0.
 static int navmesh3d_tile_of_point(
     const rt_navmesh3d *nm, double px, double pz, int64_t *out_tx, int64_t *out_tz) {
-    if (!nm || nm->tile_size <= 0.0 || nm->qgrid_nx <= 0 || !isfinite(px) || !isfinite(pz) ||
-        !isfinite(nm->qgrid_min_x) || !isfinite(nm->qgrid_min_z))
+    if (!nm || !isfinite(nm->tile_size) || nm->tile_size < NAVMESH3D_CELL_SIZE_MIN ||
+        nm->tile_size > NAVMESH3D_TILE_SIZE_MAX || nm->qgrid_nx <= 0 || !isfinite(px) ||
+        !isfinite(pz) || !isfinite(nm->qgrid_min_x) || !isfinite(nm->qgrid_min_z))
         return 0;
     double inv = 1.0 / nm->tile_size;
+    double tx_value = floor((px - nm->qgrid_min_x) * inv);
+    double tz_value = floor((pz - nm->qgrid_min_z) * inv);
+    if (!isfinite(tx_value) || !isfinite(tz_value) ||
+        tx_value < -(double)NAVMESH3D_TILE_INDEX_ABS_MAX ||
+        tx_value > (double)NAVMESH3D_TILE_INDEX_ABS_MAX ||
+        tz_value < -(double)NAVMESH3D_TILE_INDEX_ABS_MAX ||
+        tz_value > (double)NAVMESH3D_TILE_INDEX_ABS_MAX)
+        return 0;
     if (out_tx)
-        *out_tx = (int64_t)floor((px - nm->qgrid_min_x) * inv);
+        *out_tx = (int64_t)tx_value;
     if (out_tz)
-        *out_tz = (int64_t)floor((pz - nm->qgrid_min_z) * inv);
+        *out_tz = (int64_t)tz_value;
     return 1;
 }
 
@@ -1402,29 +1428,61 @@ static int32_t navmesh3d_rebuild_voxel_tile(rt_navmesh3d *nm, int64_t tile_x, in
     return touched;
 }
 
-/// @brief Transform a point by a row-major Mat4.
-/// @param m Borrowed 16-element row-major transform.
-/// @param p Borrowed three-float point.
-/// @param out Caller-owned three-double transformed point.
-static void navmesh3d_transform_point(const double *m, const float *p, double *out) {
-    out[0] = navmesh3d_coord_or(
-        m[0] * (double)p[0] + m[1] * (double)p[1] + m[2] * (double)p[2] + m[3], 0.0);
-    out[1] = navmesh3d_coord_or(
-        m[4] * (double)p[0] + m[5] * (double)p[1] + m[6] * (double)p[2] + m[7], 0.0);
-    out[2] = navmesh3d_coord_or(
-        m[8] * (double)p[0] + m[9] * (double)p[1] + m[10] * (double)p[2] + m[11], 0.0);
+/// @brief Read one authoritative finite mesh position into the navigation coordinate range.
+/// @param mesh Borrowed mesh with repaired geometry counts.
+/// @param index Vertex index below the mesh's safe vertex count.
+/// @param out Caller-owned three-double destination.
+/// @return Non-zero when the authoritative position is finite, otherwise zero.
+static int navmesh3d_read_mesh_position(const rt_mesh3d *mesh, uint32_t index, double *out) {
+    if (!mesh || !out || index >= rt_mesh3d_safe_vertex_count(mesh))
+        return 0;
+    for (int lane = 0; lane < 3; lane++) {
+        double value = mesh->positions64 ? mesh->positions64[(size_t)index * 3u + (size_t)lane]
+                                         : (double)mesh->vertices[index].pos[lane];
+        if (!isfinite(value))
+            return 0;
+        out[lane] = navmesh3d_coord_or(value, 0.0);
+    }
+    return 1;
 }
 
-/// @brief Transform and normalize a normal by the row-major matrix's linear basis.
+/// @brief Transform a point by a row-major Mat4.
+/// @param m Borrowed 16-element row-major transform.
+/// @param p Borrowed three-double point.
+/// @param out Caller-owned three-double transformed point.
+static void navmesh3d_transform_point(const double *m, const double *p, double *out) {
+    out[0] = navmesh3d_coord_or(m[0] * p[0] + m[1] * p[1] + m[2] * p[2] + m[3], 0.0);
+    out[1] = navmesh3d_coord_or(m[4] * p[0] + m[5] * p[1] + m[6] * p[2] + m[7], 0.0);
+    out[2] = navmesh3d_coord_or(m[8] * p[0] + m[9] * p[1] + m[10] * p[2] + m[11], 0.0);
+}
+
+/// @brief Transform and normalize a normal by the linear basis's inverse transpose.
+/// @details The cofactor transform is proportional to inverse-transpose; its determinant sign is
+///          removed so reflected scene nodes retain their authored outward-facing normal. Unlike
+///          a direct linear transform, it remains correct for non-uniform scale.
 /// @param m Borrowed 16-element row-major transform.
 /// @param n Borrowed three-float normal.
 /// @param out Caller-owned normalized three-double result; degenerate input becomes positive Y.
 static void navmesh3d_transform_normal(const double *m, const float *n, double *out) {
-    double len;
-    out[0] = m[0] * (double)n[0] + m[1] * (double)n[1] + m[2] * (double)n[2];
-    out[1] = m[4] * (double)n[0] + m[5] * (double)n[1] + m[6] * (double)n[2];
-    out[2] = m[8] * (double)n[0] + m[9] * (double)n[1] + m[10] * (double)n[2];
-    len = sqrt(out[0] * out[0] + out[1] * out[1] + out[2] * out[2]);
+    double c00 = m[5] * m[10] - m[6] * m[9];
+    double c01 = m[6] * m[8] - m[4] * m[10];
+    double c02 = m[4] * m[9] - m[5] * m[8];
+    double c10 = m[2] * m[9] - m[1] * m[10];
+    double c11 = m[0] * m[10] - m[2] * m[8];
+    double c12 = m[1] * m[8] - m[0] * m[9];
+    double c20 = m[1] * m[6] - m[2] * m[5];
+    double c21 = m[2] * m[4] - m[0] * m[6];
+    double c22 = m[0] * m[5] - m[1] * m[4];
+    out[0] = c00 * (double)n[0] + c01 * (double)n[1] + c02 * (double)n[2];
+    out[1] = c10 * (double)n[0] + c11 * (double)n[1] + c12 * (double)n[2];
+    out[2] = c20 * (double)n[0] + c21 * (double)n[1] + c22 * (double)n[2];
+    double determinant = m[0] * c00 + m[1] * c01 + m[2] * c02;
+    if (isfinite(determinant) && determinant < 0.0) {
+        out[0] = -out[0];
+        out[1] = -out[1];
+        out[2] = -out[2];
+    }
+    double len = hypot(hypot(out[0], out[1]), out[2]);
     if (!isfinite(len) || len <= 1e-12) {
         out[0] = 0.0;
         out[1] = 1.0;
@@ -1445,27 +1503,63 @@ static int navmesh3d_append_scene_node_mesh(rt_mesh3d *dst, rt_scene_node3d *nod
     void *world_obj;
     double world[16];
     uint32_t base_vertex;
+    uint32_t src_vertex_count;
+    uint32_t src_index_count;
+    int success = 1;
     if (!dst || !node || !node->mesh)
         return 1;
     src = (rt_mesh3d *)rt_g3d_checked_or_null(node->mesh, RT_G3D_MESH3D_CLASS_ID);
-    if (!src || src->vertex_count == 0 || src->index_count < 3)
+    if (!src)
         return 1;
-    if (dst->vertex_count > UINT32_MAX - src->vertex_count)
+    rt_mesh3d_repair_geometry_counts(src);
+    rt_mesh3d_repair_geometry_counts(dst);
+    src_vertex_count = rt_mesh3d_safe_vertex_count(src);
+    src_index_count = rt_mesh3d_safe_index_count(src);
+    if (src_vertex_count == 0 || src_index_count < 3)
+        return 1;
+    if (dst->vertex_count > UINT32_MAX - src_vertex_count ||
+        dst->index_count > UINT32_MAX - src_index_count)
         return 0;
     world_obj = rt_scene_node3d_get_world_matrix(node);
     if (!world_obj)
         return 0;
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++)
-            world[r * 4 + c] = navmesh3d_coord_or(rt_mat4_get(world_obj, r, c), 0.0);
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            double value = rt_mat4_get(world_obj, r, c);
+            if (!isfinite(value)) {
+                navmesh3d_release_local(world_obj);
+                return 0;
+            }
+            world[r * 4 + c] = navmesh3d_coord_or(value, 0.0);
+        }
+    }
     navmesh3d_release_local(world_obj);
 
     base_vertex = dst->vertex_count;
-    for (uint32_t i = 0; i < src->vertex_count; i++) {
+    rt_mesh3d_reserve(dst,
+                      (int64_t)dst->vertex_count + (int64_t)src_vertex_count,
+                      ((int64_t)dst->index_count + (int64_t)src_index_count) / 3);
+    if (dst->vertex_capacity < dst->vertex_count + src_vertex_count ||
+        dst->index_capacity < dst->index_count + src_index_count)
+        return 0;
+    rt_mesh3d_begin_geometry_batch(dst);
+    for (uint32_t i = 0; i < src_vertex_count; i++) {
+        double local_pos[3];
         double pos[3];
         double normal[3];
-        navmesh3d_transform_point(world, src->vertices[i].pos, pos);
-        navmesh3d_transform_normal(world, src->vertices[i].normal, normal);
+        float authored_normal[3] = {
+            src->vertices[i].normal[0], src->vertices[i].normal[1], src->vertices[i].normal[2]};
+        if (!navmesh3d_read_mesh_position(src, i, local_pos)) {
+            success = 0;
+            break;
+        }
+        if (!navmesh3d_float3_finite(authored_normal)) {
+            authored_normal[0] = 0.0f;
+            authored_normal[1] = 1.0f;
+            authored_normal[2] = 0.0f;
+        }
+        navmesh3d_transform_point(world, local_pos, pos);
+        navmesh3d_transform_normal(world, authored_normal, normal);
         rt_mesh3d_add_vertex(dst,
                              pos[0],
                              pos[1],
@@ -1475,23 +1569,26 @@ static int navmesh3d_append_scene_node_mesh(rt_mesh3d *dst, rt_scene_node3d *nod
                              normal[2],
                              (double)src->vertices[i].uv[0],
                              (double)src->vertices[i].uv[1]);
-        if (dst->build_failed)
-            return 0;
+        if (dst->build_failed) {
+            success = 0;
+            break;
+        }
     }
-    for (uint32_t i = 0; i + 2 < src->index_count; i += 3) {
+    for (uint32_t i = 0; success && i + 2 < src_index_count; i += 3) {
         uint32_t i0 = src->indices[i];
         uint32_t i1 = src->indices[i + 1];
         uint32_t i2 = src->indices[i + 2];
-        if (i0 >= src->vertex_count || i1 >= src->vertex_count || i2 >= src->vertex_count)
+        if (i0 >= src_vertex_count || i1 >= src_vertex_count || i2 >= src_vertex_count)
             continue;
         rt_mesh3d_add_triangle(dst,
                                (int64_t)base_vertex + (int64_t)i0,
                                (int64_t)base_vertex + (int64_t)i1,
                                (int64_t)base_vertex + (int64_t)i2);
         if (dst->build_failed)
-            return 0;
+            success = 0;
     }
-    return 1;
+    rt_mesh3d_end_geometry_batch(dst);
+    return success;
 }
 
 /// @brief Gather all Mesh3D-bearing scene nodes into a temporary world-space Mesh3D.
@@ -1580,12 +1677,19 @@ void *rt_navmesh3d_build(void *mesh_obj, double agent_radius, double agent_heigh
     rt_mesh3d *m = (rt_mesh3d *)rt_g3d_checked_or_null(mesh_obj, RT_G3D_MESH3D_CLASS_ID);
     if (!m)
         return NULL;
-    if (m->vertex_count == 0 || m->index_count < 3)
+    rt_mesh3d_repair_geometry_counts(m);
+    uint32_t vertex_count = rt_mesh3d_safe_vertex_count(m);
+    uint32_t index_count = rt_mesh3d_safe_index_count(m);
+    if (vertex_count == 0 || index_count < 3)
         return NULL;
-    if (m->vertex_count > INT32_MAX || m->index_count > INT32_MAX ||
-        (m->index_count / 3u) > INT32_MAX) {
+    if (vertex_count > INT32_MAX || index_count > INT32_MAX || (index_count / 3u) > INT32_MAX) {
         rt_trap("NavMesh3D.Build: mesh is too large");
         return NULL;
+    }
+    for (uint32_t i = 0; i < vertex_count; i++) {
+        double position[3];
+        if (!navmesh3d_read_mesh_position(m, i, position))
+            return NULL;
     }
 
     rt_navmesh3d *nm =
@@ -1602,22 +1706,24 @@ void *rt_navmesh3d_build(void *mesh_obj, double agent_radius, double agent_heigh
     rt_obj_set_finalizer(nm, navmesh3d_finalizer);
 
     /* Phase 1: Copy vertices */
-    nm->vertex_count = (int32_t)m->vertex_count;
+    nm->vertex_count = (int32_t)vertex_count;
     nm->vertices = (nav_vertex_t *)malloc((size_t)nm->vertex_count * sizeof(nav_vertex_t));
     if (!nm->vertices) {
         navmesh3d_free_partial(nm);
         rt_trap("NavMesh3D.Build: vertex allocation failed");
         return NULL;
     }
-    for (uint32_t i = 0; i < m->vertex_count; i++) {
-        nm->vertices[i].position[0] = navmesh3d_coordf_or((double)m->vertices[i].pos[0], 0.0);
-        nm->vertices[i].position[1] = navmesh3d_coordf_or((double)m->vertices[i].pos[1], 0.0);
-        nm->vertices[i].position[2] = navmesh3d_coordf_or((double)m->vertices[i].pos[2], 0.0);
+    for (uint32_t i = 0; i < vertex_count; i++) {
+        double position[3];
+        (void)navmesh3d_read_mesh_position(m, i, position);
+        nm->vertices[i].position[0] = (float)position[0];
+        nm->vertices[i].position[1] = (float)position[1];
+        nm->vertices[i].position[2] = (float)position[2];
     }
 
     /* Phase 2: Copy non-degenerate source triangles; walkable filtering is
      * applied from this preserved set so SetMaxSlope can rebuild in-place. */
-    int32_t tri_cap = (int32_t)(m->index_count / 3);
+    int32_t tri_cap = (int32_t)(index_count / 3);
     nm->source_triangles = (nav_triangle_t *)malloc((size_t)tri_cap * sizeof(nav_triangle_t));
     nm->triangles = (nav_triangle_t *)malloc((size_t)tri_cap * sizeof(nav_triangle_t));
     if (!nm->source_triangles || !nm->triangles) {
@@ -1628,9 +1734,9 @@ void *rt_navmesh3d_build(void *mesh_obj, double agent_radius, double agent_heigh
     nm->source_triangle_count = 0;
     nm->triangle_count = 0;
 
-    for (uint32_t i = 0; i + 2 < m->index_count; i += 3) {
+    for (uint32_t i = 0; i + 2 < index_count; i += 3) {
         uint32_t i0 = m->indices[i], i1 = m->indices[i + 1], i2 = m->indices[i + 2];
-        if (i0 >= m->vertex_count || i1 >= m->vertex_count || i2 >= m->vertex_count)
+        if (i0 >= vertex_count || i1 >= vertex_count || i2 >= vertex_count)
             continue;
 
         float *p0 = nm->vertices[i0].position;
@@ -1638,21 +1744,24 @@ void *rt_navmesh3d_build(void *mesh_obj, double agent_radius, double agent_heigh
         float *p2 = nm->vertices[i2].position;
 
         /* Face normal via cross product */
-        float e1x = p1[0] - p0[0], e1y = p1[1] - p0[1], e1z = p1[2] - p0[2];
-        float e2x = p2[0] - p0[0], e2y = p2[1] - p0[1], e2z = p2[2] - p0[2];
-        float nx = e1y * e2z - e1z * e2y;
-        float ny = e1z * e2x - e1x * e2z;
-        float nz = e1x * e2y - e1y * e2x;
-        float nlen = sqrtf(nx * nx + ny * ny + nz * nz);
-        if (!isfinite(nlen) || nlen < 1e-8f)
+        double e1x = (double)p1[0] - (double)p0[0];
+        double e1y = (double)p1[1] - (double)p0[1];
+        double e1z = (double)p1[2] - (double)p0[2];
+        double e2x = (double)p2[0] - (double)p0[0];
+        double e2y = (double)p2[1] - (double)p0[1];
+        double e2z = (double)p2[2] - (double)p0[2];
+        double nx = e1y * e2z - e1z * e2y;
+        double ny = e1z * e2x - e1x * e2z;
+        double nz = e1x * e2y - e1y * e2x;
+        double nlen = hypot(hypot(nx, ny), nz);
+        if (!isfinite(nlen) || nlen < 1e-8)
             continue;
         nx /= nlen;
         ny /= nlen;
         nz /= nlen;
-        float authored_ny =
-            (m->vertices[i0].normal[1] + m->vertices[i1].normal[1] + m->vertices[i2].normal[1]) /
-            3.0f;
-        if (ny < 0.0f && authored_ny > 0.25f) {
+        double authored_ny = (double)m->vertices[i0].normal[1] + (double)m->vertices[i1].normal[1] +
+                             (double)m->vertices[i2].normal[1];
+        if (ny < 0.0 && isfinite(authored_ny) && authored_ny > 0.75) {
             nx = -nx;
             ny = -ny;
             nz = -nz;
@@ -1662,16 +1771,21 @@ void *rt_navmesh3d_build(void *mesh_obj, double agent_radius, double agent_heigh
         tri->v[0] = (int32_t)i0;
         tri->v[1] = (int32_t)i1;
         tri->v[2] = (int32_t)i2;
-        tri->normal[0] = nx;
-        tri->normal[1] = ny;
-        tri->normal[2] = nz;
-        tri->centroid[0] = (p0[0] + p1[0] + p2[0]) / 3.0f;
-        tri->centroid[1] = (p0[1] + p1[1] + p2[1]) / 3.0f;
-        tri->centroid[2] = (p0[2] + p1[2] + p2[2]) / 3.0f;
+        tri->normal[0] = (float)nx;
+        tri->normal[1] = (float)ny;
+        tri->normal[2] = (float)nz;
+        tri->centroid[0] = (float)(((double)p0[0] + (double)p1[0] + (double)p2[0]) / 3.0);
+        tri->centroid[1] = (float)(((double)p0[1] + (double)p1[1] + (double)p2[1]) / 3.0);
+        tri->centroid[2] = (float)(((double)p0[2] + (double)p1[2] + (double)p2[2]) / 3.0);
         tri->neighbors[0] = tri->neighbors[1] = tri->neighbors[2] = -1;
         tri->blocked = 0;
         tri->area_id = 0;
         tri->traversal_cost = 1.0f;
+    }
+
+    if (nm->source_triangle_count == 0) {
+        navmesh3d_free_partial(nm);
+        return NULL;
     }
 
     if (!navmesh3d_apply_slope_filter(nm)) {
@@ -1683,11 +1797,10 @@ void *rt_navmesh3d_build(void *mesh_obj, double agent_radius, double agent_heigh
     return nm;
 }
 
-/// @brief Recompute a navmesh triangle's cached geometry (centroid, edges, normal) from its
-///   vertex positions; returns 0 when any vertex index is out of range.
+/// @brief Recompute a navmesh triangle's cached geometry (centroid and normal) from its vertices.
 /// @param nm Borrowed navmesh supplying vertices.
 /// @param t Mutable triangle whose cached centroid and normal are replaced.
-/// @return 1 when all indices and positions are valid, otherwise 0.
+/// @return 1 when indices, positions, and triangle area are valid, otherwise 0.
 static int navmesh3d_recompute_triangle_geometry(rt_navmesh3d *nm, nav_triangle_t *t) {
     if (!nm || !t || !nm->vertices)
         return 0;
@@ -1701,24 +1814,24 @@ static int navmesh3d_recompute_triangle_geometry(rt_navmesh3d *nm, nav_triangle_
     if (!navmesh3d_float3_finite(p0) || !navmesh3d_float3_finite(p1) ||
         !navmesh3d_float3_finite(p2))
         return 0;
-    t->centroid[0] = (p0[0] + p1[0] + p2[0]) / 3.0f;
-    t->centroid[1] = (p0[1] + p1[1] + p2[1]) / 3.0f;
-    t->centroid[2] = (p0[2] + p1[2] + p2[2]) / 3.0f;
-    float ux = p1[0] - p0[0], uy = p1[1] - p0[1], uz = p1[2] - p0[2];
-    float wx = p2[0] - p0[0], wy = p2[1] - p0[1], wz = p2[2] - p0[2];
-    float nx = uy * wz - uz * wy;
-    float ny = uz * wx - ux * wz;
-    float nz = ux * wy - uy * wx;
-    float len = (float)sqrt((double)(nx * nx + ny * ny + nz * nz));
-    if (len > 1e-8f) {
-        t->normal[0] = nx / len;
-        t->normal[1] = ny / len;
-        t->normal[2] = nz / len;
-    } else {
-        t->normal[0] = 0.0f;
-        t->normal[1] = 1.0f;
-        t->normal[2] = 0.0f;
-    }
+    t->centroid[0] = (float)(((double)p0[0] + (double)p1[0] + (double)p2[0]) / 3.0);
+    t->centroid[1] = (float)(((double)p0[1] + (double)p1[1] + (double)p2[1]) / 3.0);
+    t->centroid[2] = (float)(((double)p0[2] + (double)p1[2] + (double)p2[2]) / 3.0);
+    double ux = (double)p1[0] - (double)p0[0];
+    double uy = (double)p1[1] - (double)p0[1];
+    double uz = (double)p1[2] - (double)p0[2];
+    double wx = (double)p2[0] - (double)p0[0];
+    double wy = (double)p2[1] - (double)p0[1];
+    double wz = (double)p2[2] - (double)p0[2];
+    double nx = uy * wz - uz * wy;
+    double ny = uz * wx - ux * wz;
+    double nz = ux * wy - uy * wx;
+    double len = hypot(hypot(nx, ny), nz);
+    if (!isfinite(len) || len <= 1e-8)
+        return 0;
+    t->normal[0] = (float)(nx / len);
+    t->normal[1] = (float)(ny / len);
+    t->normal[2] = (float)(nz / len);
     return 1;
 }
 
@@ -1732,6 +1845,23 @@ static int navmesh3d_write_triangle_record(FILE *f, const nav_triangle_t *t) {
            navmesh3d_write_i32(f, t->v[2]) && navmesh3d_write_u8(f, t->blocked ? 1u : 0u) &&
            navmesh3d_write_i32(f, t->area_id) &&
            navmesh3d_write_f32(f, navmesh3d_sanitize_traversal_cost((double)t->traversal_cost));
+}
+
+/// @brief Validate the serialized fields of one triangle against the current vertex/area tables.
+/// @param nm Borrowed navmesh owning the referenced tables.
+/// @param t Borrowed triangle to validate.
+/// @param area_name_count Number of valid area-name entries.
+/// @return Non-zero when every serialized index and scalar is valid.
+static int navmesh3d_triangle_record_export_valid(const rt_navmesh3d *nm,
+                                                  const nav_triangle_t *t,
+                                                  int32_t area_name_count) {
+    if (!nm || !t || t->area_id < 0 || t->area_id > area_name_count)
+        return 0;
+    for (int lane = 0; lane < 3; lane++) {
+        if (t->v[lane] < 0 || t->v[lane] >= nm->vertex_count)
+            return 0;
+    }
+    return isfinite(t->traversal_cost);
 }
 
 /// @brief Deserialize one navmesh triangle from @p f, validating its vertex and area indices
@@ -1768,7 +1898,7 @@ static int navmesh3d_export_v2(rt_navmesh3d *nm, FILE *f) {
     int32_t vc = nm->vertex_count < 0 ? 0 : nm->vertex_count;
     int32_t source_tc =
         (nm->source_triangles && nm->source_triangle_count > 0) ? nm->source_triangle_count : 0;
-    int32_t tc = nm->triangle_count < 0 ? 0 : nm->triangle_count;
+    int32_t tc = navmesh3d_read_triangle_count(nm);
     int32_t area_count = navmesh3d_read_area_name_count(nm);
     int32_t link_count = navmesh3d_read_offmesh_link_count(nm);
     int32_t obstacle_count = navmesh3d_read_obstacle_count(nm);
@@ -1776,9 +1906,32 @@ static int navmesh3d_export_v2(rt_navmesh3d *nm, FILE *f) {
         (tc > 0 && !nm->triangles) || (area_count > 0 && !nm->area_names) ||
         (link_count > 0 && !nm->offmesh_links) || (obstacle_count > 0 && !nm->obstacles))
         return 0;
+    for (int32_t i = 0; i < vc; i++) {
+        if (!navmesh3d_float3_finite(nm->vertices[i].position))
+            return 0;
+    }
+    for (int32_t i = 0; i < area_count; i++) {
+        if (!nm->area_names[i] || !rt_string_is_handle(nm->area_names[i]) ||
+            rt_str_len(nm->area_names[i]) <= 0)
+            return 0;
+    }
+    for (int32_t i = 0; i < source_tc; i++) {
+        if (!navmesh3d_triangle_record_export_valid(nm, &nm->source_triangles[i], area_count))
+            return 0;
+    }
+    for (int32_t i = 0; i < tc; i++) {
+        if (!navmesh3d_triangle_record_export_valid(nm, &nm->triangles[i], area_count))
+            return 0;
+    }
     int ok = navmesh3d_io_write(f, magic, sizeof(magic)) &&
-             navmesh3d_write_f64(f, nm->agent_radius) && navmesh3d_write_f64(f, nm->agent_height) &&
-             navmesh3d_write_f64(f, nm->max_slope) && navmesh3d_write_f64(f, nm->tile_size) &&
+             navmesh3d_write_f64(f, navmesh3d_agent_dim_or(nm->agent_radius, 0.4)) &&
+             navmesh3d_write_f64(f, navmesh3d_agent_dim_or(nm->agent_height, 1.8)) &&
+             navmesh3d_write_f64(f, navmesh3d_sanitize_slope(nm->max_slope)) &&
+             navmesh3d_write_f64(f,
+                                 isfinite(nm->tile_size) && nm->tile_size > 0.0 &&
+                                         nm->tile_size <= NAVMESH3D_TILE_SIZE_MAX
+                                     ? nm->tile_size
+                                     : 0.0) &&
              navmesh3d_write_u8(f, nm->skip_portal_width_gate ? 1u : 0u) &&
              navmesh3d_write_i32(f, vc);
     for (int32_t i = 0; ok && i < vc; i++) {
@@ -1798,6 +1951,11 @@ static int navmesh3d_export_v2(rt_navmesh3d *nm, FILE *f) {
     ok = ok && navmesh3d_write_i32(f, link_count);
     for (int32_t i = 0; ok && i < link_count; i++) {
         const nav_offmesh_link_t *link = &nm->offmesh_links[i];
+        if (!navmesh3d_float3_finite(link->from) || !navmesh3d_float3_finite(link->to) ||
+            (link->kind && !rt_string_is_handle(link->kind))) {
+            ok = 0;
+            break;
+        }
         ok = navmesh3d_write_f32(f, link->from[0]) && navmesh3d_write_f32(f, link->from[1]) &&
              navmesh3d_write_f32(f, link->from[2]) && navmesh3d_write_f32(f, link->to[0]) &&
              navmesh3d_write_f32(f, link->to[1]) && navmesh3d_write_f32(f, link->to[2]) &&
@@ -1810,6 +1968,12 @@ static int navmesh3d_export_v2(rt_navmesh3d *nm, FILE *f) {
     ok = ok && navmesh3d_write_i32(f, obstacle_count);
     for (int32_t i = 0; ok && i < obstacle_count; i++) {
         const nav_obstacle_t *obstacle = &nm->obstacles[i];
+        if (!navmesh3d_float3_finite(obstacle->min) || !navmesh3d_float3_finite(obstacle->max) ||
+            obstacle->min[0] > obstacle->max[0] || obstacle->min[1] > obstacle->max[1] ||
+            obstacle->min[2] > obstacle->max[2]) {
+            ok = 0;
+            break;
+        }
         ok = navmesh3d_write_f32(f, obstacle->min[0]) && navmesh3d_write_f32(f, obstacle->min[1]) &&
              navmesh3d_write_f32(f, obstacle->min[2]) && navmesh3d_write_f32(f, obstacle->max[0]) &&
              navmesh3d_write_f32(f, obstacle->max[1]) && navmesh3d_write_f32(f, obstacle->max[2]);
@@ -1923,6 +2087,14 @@ static rt_navmesh3d *navmesh3d_import_v1_after_magic(FILE *f) {
     }
     if (fgetc(f) != EOF)
         goto fail;
+
+    if (tc > 0) {
+        nm->source_triangles = (nav_triangle_t *)malloc((size_t)tc * sizeof(nav_triangle_t));
+        if (!nm->source_triangles)
+            goto fail;
+        memcpy(nm->source_triangles, nm->triangles, (size_t)tc * sizeof(nav_triangle_t));
+        nm->source_triangle_count = tc;
+    }
 
     if (!navmesh3d_build_adjacency(nm))
         goto fail;

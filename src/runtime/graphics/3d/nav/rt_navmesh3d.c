@@ -251,8 +251,12 @@ typedef struct {
 ///   retained prior grid or the bounded linear-scan fallback.
 /// @param nm Navigation mesh associated with the fallback, or NULL for a global-only diagnostic.
 static void navmesh3d_record_query_grid_fallback(rt_navmesh3d *nm) {
-    if (nm)
-        nm->qgrid_fallback_count++;
+    if (nm) {
+        if (nm->qgrid_fallback_count < 0)
+            nm->qgrid_fallback_count = 1;
+        else if (nm->qgrid_fallback_count < INT64_MAX)
+            nm->qgrid_fallback_count++;
+    }
     rt_game3d_diag_record_nav_grid_fallback();
 }
 

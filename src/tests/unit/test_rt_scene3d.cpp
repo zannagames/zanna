@@ -46,6 +46,7 @@
 #include "rt_scene3d_internal.h"
 #include "rt_seq.h"
 #include "rt_skeleton3d.h"
+#include "rt_skeleton3d_internal.h"
 #include "rt_string.h"
 #include "vgfx3d_backend.h"
 #include <cassert>
@@ -1593,7 +1594,9 @@ static void test_scene_precise_raycast_selects_through_aabb_gaps() {
         scene, rt_vec3_new(0.0, 0.5, 0.0), rt_vec3_new(0.0, 0.0, -1.0), 40.0);
     EXPECT_TRUE(hit_info != nullptr, "RaycastPreciseHit returns the nearest triangle hit");
     if (hit_info) {
-        EXPECT_NEAR(rt_ray3d_hit_distance(hit_info), 7.0, 1e-6,
+        EXPECT_NEAR(rt_ray3d_hit_distance(hit_info),
+                    7.0,
+                    1e-6,
                     "RaycastPreciseHit distance reaches the near face of the behind box");
         void *point = rt_ray3d_hit_point(hit_info);
         EXPECT_NEAR(rt_vec3_z(point), -7.0, 1e-6, "RaycastPreciseHit point sits on the near face");
@@ -2216,8 +2219,7 @@ static void test_scene_save_text_matches_file_bytes() {
     rt_scene3d_add(scene, node);
 
     rt_string memory = rt_scene3d_save_text(scene);
-    EXPECT_TRUE(memory && rt_str_len(memory) > 0,
-                "SceneGraph.SaveToText returns document text");
+    EXPECT_TRUE(memory && rt_str_len(memory) > 0, "SceneGraph.SaveToText returns document text");
     EXPECT_TRUE(rt_scene3d_save(scene, rt_const_cstr(path)) == 1,
                 "SceneGraph.Save writes the SaveToText parity file");
 
@@ -4081,8 +4083,7 @@ static void test_scene_node_light_property_retains_rejects_and_clears() {
     void *wrong_class = rt_material3d_new_color(1.0, 0.0, 0.0);
 
     rt_scene_node3d_set_light(node, light);
-    EXPECT_TRUE(rt_scene_node3d_get_light(node) == light,
-                "SceneNode exposes an attached Light3D");
+    EXPECT_TRUE(rt_scene_node3d_get_light(node) == light, "SceneNode exposes an attached Light3D");
     rt_scene_node3d_set_light(node, wrong_class);
     EXPECT_TRUE(rt_scene_node3d_get_light(node) == light,
                 "SceneNode rejects wrong-class light replacements without mutation");
@@ -4304,6 +4305,123 @@ static void test_scene_node_metadata_is_typed_bounded_and_persistent() {
     EXPECT_TRUE(rt_scene_node3d_metadata_remove(loaded_node, role) != 0 &&
                     rt_scene_node3d_metadata_remove(loaded_node, role) == 0,
                 "SceneNode.MetadataRemove reports removal and missing-key no-op distinctly");
+}
+
+/// @brief VSCN v3 rig persistence must reconstruct cached bind TRS, preserve exact
+///        names, reject JSON type confusion, and emit deterministic keyframe bytes.
+static void test_scene_skeletal_roundtrip_repairs_bind_cache_and_validates_wire_data() {
+    const char *path = "/tmp/zanna_scene_skeletal_roundtrip.vscn";
+    const char *second_path = "/tmp/zanna_scene_skeletal_roundtrip_second.vscn";
+    const char *malformed_path = "/tmp/zanna_scene_skeletal_wrong_numeric_type.vscn";
+    void *scene = rt_scene3d_new();
+    void *node = rt_scene_node3d_new();
+    void *mesh = rt_mesh3d_new();
+    void *skeleton = rt_skeleton3d_new();
+    const char bone_name_bytes[3] = {'r', '\0', 'x'};
+    rt_string bone_name = rt_string_from_bytes(bone_name_bytes, sizeof(bone_name_bytes));
+
+    rt_mesh3d_add_vertex(mesh, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+    rt_mesh3d_add_vertex(mesh, 1.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0);
+    rt_mesh3d_add_vertex(mesh, 0.0, 0.0, 1.0, 0.0, 1.0, 0.0, 0.0, 1.0);
+    rt_mesh3d_add_triangle(mesh, 0, 1, 2);
+    EXPECT_TRUE(rt_skeleton3d_add_bone(skeleton, bone_name, -1, rt_mat4_translate(3.0, 0.0, 0.0)) ==
+                    0,
+                "Skeletal VSCN fixture creates a translated bind pose");
+    rt_string_unref(bone_name);
+    rt_skeleton3d_compute_inverse_bind(skeleton);
+    rt_mesh3d_set_skeleton(mesh, skeleton);
+    rt_scene_node3d_set_name(node, rt_const_cstr("rigged"));
+    rt_scene_node3d_set_mesh(node, mesh);
+    rt_scene3d_add(scene, node);
+
+    void *animation = rt_animation3d_new(rt_const_cstr("partial"), 1.0);
+    void *rotation = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *scale = rt_vec3_new(1.0, 1.0, 1.0);
+    rt_animation3d_add_keyframe(animation, 0, 0.0, nullptr, rotation, scale);
+    rt_animation3d_add_keyframe(animation, 0, 1.0, nullptr, rotation, scale);
+    auto *scene_view = static_cast<rt_scene3d *>(scene);
+    scene_view->baked_animations = static_cast<void **>(calloc(1, sizeof(void *)));
+    EXPECT_TRUE(scene_view->baked_animations != nullptr,
+                "Skeletal VSCN fixture allocates an animation carrier");
+    if (!scene_view->baked_animations)
+        return;
+    scene_view->baked_animations[0] = animation;
+    scene_view->baked_animation_count = 1;
+    rt_obj_retain_maybe(animation);
+
+    EXPECT_TRUE(rt_scene3d_save(scene, rt_const_cstr(path)) == 1 &&
+                    rt_scene3d_save(scene, rt_const_cstr(second_path)) == 1,
+                "SceneGraph.Save writes repeatable skeletal VSCN documents");
+    std::string first_text;
+    std::string second_text;
+    EXPECT_TRUE(read_text_file(path, first_text) && read_text_file(second_path, second_text) &&
+                    first_text == second_text,
+                "Skeletal VSCN keyframe payloads are byte-deterministic");
+
+    void *loaded = rt_scene3d_load(rt_const_cstr(path));
+    EXPECT_TRUE(loaded != nullptr, "SceneGraph.Load reads the skeletal VSCN fixture");
+    if (loaded) {
+        void *loaded_node = rt_scene3d_find(loaded, rt_const_cstr("rigged"));
+        auto *loaded_mesh =
+            static_cast<rt_mesh3d *>(loaded_node ? rt_scene_node3d_get_mesh(loaded_node) : nullptr);
+        void *loaded_skeleton = loaded_mesh ? loaded_mesh->skeleton_ref : nullptr;
+        auto *loaded_scene = static_cast<rt_scene3d *>(loaded);
+        EXPECT_TRUE(loaded_skeleton != nullptr &&
+                        rt_skeleton3d_get_bone_count(loaded_skeleton) == 1,
+                    "Skeletal VSCN restores the mesh skeleton reference");
+        if (loaded_skeleton) {
+            rt_string loaded_name = rt_skeleton3d_get_bone_name(loaded_skeleton, 0);
+            EXPECT_TRUE(rt_str_len(loaded_name) == 3 && std::memcmp(rt_string_cstr(loaded_name),
+                                                                    bone_name_bytes,
+                                                                    sizeof(bone_name_bytes)) == 0,
+                        "Skeletal VSCN preserves exact bone-name bytes after embedded NUL");
+        }
+        EXPECT_TRUE(loaded_scene->baked_animation_count == 1 &&
+                        loaded_scene->baked_animations != nullptr,
+                    "Skeletal VSCN restores its animation carrier");
+        if (loaded_skeleton && loaded_scene->baked_animation_count == 1 &&
+            loaded_scene->baked_animations) {
+            void *player = rt_anim_player3d_new(loaded_skeleton);
+            rt_anim_player3d_play(player, loaded_scene->baked_animations[0]);
+            rt_anim_player3d_set_time(player, 0.5);
+
+            struct MatrixView {
+                double m[16];
+            };
+
+            auto *bone_matrix =
+                static_cast<MatrixView *>(rt_anim_player3d_get_bone_matrix(player, 0));
+            EXPECT_TRUE(bone_matrix != nullptr,
+                        "Loaded skeletal animation exposes a sampled bone matrix");
+            if (bone_matrix)
+                EXPECT_NEAR(bone_matrix->m[3],
+                            3.0,
+                            0.001,
+                            "Partial loaded tracks fall back to reconstructed bind translation");
+        }
+    }
+
+    size_t bind_tag = first_text.find("\"bindLocal\": [");
+    size_t bind_value = bind_tag == std::string::npos ? std::string::npos
+                                                      : bind_tag + std::strlen("\"bindLocal\": [");
+    size_t bind_comma =
+        bind_value == std::string::npos ? std::string::npos : first_text.find(',', bind_value);
+    EXPECT_TRUE(bind_value != std::string::npos && bind_comma != std::string::npos,
+                "Skeletal VSCN fixture contains a bindLocal numeric array");
+    if (bind_value != std::string::npos && bind_comma != std::string::npos) {
+        first_text.replace(bind_value, bind_comma - bind_value, "true");
+        EXPECT_TRUE(write_text_file(malformed_path, first_text.c_str()),
+                    "Wrong-typed bindLocal fixture can be written");
+        EXPECT_TRUE(rt_scene3d_load(rt_const_cstr(malformed_path)) == nullptr,
+                    "SceneGraph.Load rejects booleans in exact numeric bind arrays");
+    }
+
+    auto *animation_view = static_cast<rt_animation3d *>(animation);
+    float saved_rotation = animation_view->channels[0].keyframes[0].rotation[0];
+    animation_view->channels[0].keyframes[0].rotation[0] = NAN;
+    EXPECT_TRUE(rt_scene3d_save(scene, rt_const_cstr(second_path)) == 0,
+                "SceneGraph.Save rejects non-finite skeletal keyframe lanes");
+    animation_view->channels[0].keyframes[0].rotation[0] = saved_rotation;
 }
 
 static void test_scene_save_rejects_wrong_handle() {
@@ -4612,7 +4730,6 @@ static void test_node_animator_survives_target_removal_mid_clip() {
     EXPECT_TRUE(1, "animator update after target removal is memory-safe");
 }
 
-
 /// @brief Read one whole file into a std::string ("" when unreadable).
 static std::string prefab_read_file(const char *path) {
     std::string contents;
@@ -4658,9 +4775,9 @@ static void test_scene_prefab_reference_nodes() {
     EXPECT_TRUE(rt_scene_node3d_set_prefab_reference(
                     instance_a, rt_const_cstr("zanna_prefab_source.scene3d")) == 1,
                 "relative prefab reference is authored");
-    EXPECT_TRUE(rt_scene_node3d_set_prefab_reference(
-                    instance_a, rt_const_cstr("/abs/source.scene3d")) == 0,
-                "absolute prefab reference is rejected at authoring time");
+    EXPECT_TRUE(
+        rt_scene_node3d_set_prefab_reference(instance_a, rt_const_cstr("/abs/source.scene3d")) == 0,
+        "absolute prefab reference is rejected at authoring time");
     {
         rt_string ref = rt_scene_node3d_get_prefab_path(instance_a);
         EXPECT_TRUE(ref && strcmp(rt_string_cstr(ref), "zanna_prefab_source.scene3d") == 0,
@@ -4669,17 +4786,14 @@ static void test_scene_prefab_reference_nodes() {
     }
     void *instance_b = rt_scene_node3d_new();
     rt_scene_node3d_set_name(instance_b, rt_const_cstr("Lamp B"));
-    rt_scene_node3d_set_prefab_reference(instance_b,
-                                         rt_const_cstr("zanna_prefab_source.scene3d"));
-    rt_scene_node3d_metadata_set_string(
-        instance_b, rt_const_cstr("zone"), rt_const_cstr("plaza"));
+    rt_scene_node3d_set_prefab_reference(instance_b, rt_const_cstr("zanna_prefab_source.scene3d"));
+    rt_scene_node3d_metadata_set_string(instance_b, rt_const_cstr("zone"), rt_const_cstr("plaza"));
     void *plain = rt_scene_node3d_new();
     rt_scene_node3d_set_name(plain, rt_const_cstr("Ground"));
     rt_scene3d_add(world, instance_a);
     rt_scene3d_add(world, instance_b);
     rt_scene3d_add(world, plain);
-    EXPECT_TRUE(rt_scene3d_save(world, rt_const_cstr(world_path)) == 1,
-                "prefab world scene saves");
+    EXPECT_TRUE(rt_scene3d_save(world, rt_const_cstr(world_path)) == 1, "prefab world scene saves");
     {
         std::string text = prefab_read_file(world_path);
         EXPECT_TRUE(text.find("\"version\": 7") != std::string::npos,
@@ -4703,17 +4817,15 @@ static void test_scene_prefab_reference_nodes() {
         void *grafted = rt_scene_node3d_get_child(loaded_a, 0);
         EXPECT_TRUE(rt_scene_node3d_get_is_instance_content(grafted) == 1,
                     "grafted nodes carry the instance-content flag");
-        EXPECT_TRUE(rt_scene_node3d_get_is_instance_content(
-                        rt_scene_node3d_get_child(grafted, 0)) == 1,
-                    "instance-content flag reaches grafted descendants");
-        EXPECT_TRUE(rt_scene_node3d_get_is_instance_content(
-                        rt_scene_node3d_get_child(root, 2)) == 0,
+        EXPECT_TRUE(
+            rt_scene_node3d_get_is_instance_content(rt_scene_node3d_get_child(grafted, 0)) == 1,
+            "instance-content flag reaches grafted descendants");
+        EXPECT_TRUE(rt_scene_node3d_get_is_instance_content(rt_scene_node3d_get_child(root, 2)) ==
+                        0,
                     "plain nodes never gain the instance flag");
         {
             rt_string zone = rt_scene_node3d_metadata_get_string(
-                rt_scene_node3d_get_child(root, 1),
-                rt_const_cstr("zone"),
-                rt_const_cstr(""));
+                rt_scene_node3d_get_child(root, 1), rt_const_cstr("zone"), rt_const_cstr(""));
             EXPECT_TRUE(zone && strcmp(rt_string_cstr(zone), "plaza") == 0,
                         "prefab node metadata overrides round-trip");
             rt_string_unref(zone);
@@ -4742,13 +4854,11 @@ static void test_scene_prefab_reference_nodes() {
                     strstr(rt_asset_error_get_warning(0), "placeholder") != nullptr,
                 "the prefab warning names the unresolved reference");
     if (broken_loaded) {
-        void *ghost_loaded =
-            rt_scene_node3d_get_child(rt_scene3d_get_root(broken_loaded), 0);
+        void *ghost_loaded = rt_scene_node3d_get_child(rt_scene3d_get_root(broken_loaded), 0);
         EXPECT_TRUE(rt_scene_node3d_child_count(ghost_loaded) == 0,
                     "missing source loads as an empty placeholder");
         rt_string ref = rt_scene_node3d_get_prefab_path(ghost_loaded);
-        EXPECT_TRUE(ref &&
-                        strcmp(rt_string_cstr(ref), "zanna_prefab_missing.scene3d") == 0,
+        EXPECT_TRUE(ref && strcmp(rt_string_cstr(ref), "zanna_prefab_missing.scene3d") == 0,
                     "placeholder retains its prefab reference");
         rt_string_unref(ref);
         EXPECT_TRUE(rt_scene3d_save(broken_loaded, rt_const_cstr(broken_resaved_path)) == 1,
@@ -4772,25 +4882,24 @@ static void test_scene_prefab_reference_nodes() {
                     strstr(rt_asset_error_get_warning(0), "cycle") != nullptr,
                 "a reference cycle adds one warning naming the reason");
     if (cycle_loaded) {
-        EXPECT_TRUE(rt_scene_node3d_child_count(rt_scene_node3d_get_child(
-                        rt_scene3d_get_root(cycle_loaded), 0)) == 0,
+        EXPECT_TRUE(rt_scene_node3d_child_count(
+                        rt_scene_node3d_get_child(rt_scene3d_get_root(cycle_loaded), 0)) == 0,
                     "self-reference resolves to an empty placeholder");
     }
 
     /* Unpack: clearing the reference makes grafted content plain. */
     void *unpack_scene = rt_scene3d_load(rt_const_cstr(world_path));
     if (unpack_scene) {
-        void *unpack_node =
-            rt_scene_node3d_get_child(rt_scene3d_get_root(unpack_scene), 0);
+        void *unpack_node = rt_scene_node3d_get_child(rt_scene3d_get_root(unpack_scene), 0);
         EXPECT_TRUE(rt_scene_node3d_clear_prefab_reference(unpack_node) == 1,
                     "unpack clears the prefab reference");
         rt_string cleared = rt_scene_node3d_get_prefab_path(unpack_node);
         EXPECT_TRUE(cleared && rt_string_cstr(cleared)[0] == '\0',
                     "unpacked nodes report an empty reference");
         rt_string_unref(cleared);
-        EXPECT_TRUE(rt_scene_node3d_get_is_instance_content(
-                        rt_scene_node3d_get_child(unpack_node, 0)) == 0,
-                    "unpack clears descendant instance flags");
+        EXPECT_TRUE(
+            rt_scene_node3d_get_is_instance_content(rt_scene_node3d_get_child(unpack_node, 0)) == 0,
+            "unpack clears descendant instance flags");
         EXPECT_TRUE(rt_scene3d_save(unpack_scene, rt_const_cstr(plain_path)) == 1,
                     "unpacked scene saves");
         std::string unpacked_text = prefab_read_file(plain_path);
@@ -4892,8 +5001,7 @@ static void test_scene_adopt_baked_animations() {
                 "the fresh clip appends after the existing carrier");
 
     /* Degenerate inputs adopt nothing. */
-    EXPECT_TRUE(rt_scene3d_adopt_baked_animations(source, source) == 0,
-                "self-adoption is a no-op");
+    EXPECT_TRUE(rt_scene3d_adopt_baked_animations(source, source) == 0, "self-adoption is a no-op");
     EXPECT_TRUE(rt_scene3d_adopt_baked_animations(NULL, source) == 0,
                 "a null destination adopts nothing");
     EXPECT_TRUE(rt_scene3d_adopt_baked_animations(destination, NULL) == 0,
@@ -4983,6 +5091,7 @@ int main(int argc, char **argv) {
     test_scene_roundtrip_loads_shared_assets();
     test_scene_roundtrip_preserves_authoring_metadata();
     test_scene_node_metadata_is_typed_bounded_and_persistent();
+    test_scene_skeletal_roundtrip_repairs_bind_cache_and_validates_wire_data();
     test_scene_roundtrip_deep_hierarchy_uses_format_depth_limit();
     test_scene_save_skips_invalid_material_asset_refs();
     test_node_animator_handles_large_morph_weight_channels();

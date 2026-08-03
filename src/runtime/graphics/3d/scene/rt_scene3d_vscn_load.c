@@ -40,18 +40,19 @@
 
 #include "rt_asset_error.h"
 #include "rt_box.h"
-#include "rt_result.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_file_stdio.h"
 #include "rt_json.h"
-#include "rt_path.h"
 #include "rt_map.h"
+#include "rt_mat4.h"
 #include "rt_morphtarget3d.h"
 #include "rt_morphtarget3d_internal.h"
 #include "rt_object.h"
+#include "rt_path.h"
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
+#include "rt_result.h"
 #include "rt_scene3d.h"
 #include "rt_scene3d_internal.h"
 #include "rt_scene3d_vscn_internal.h"
@@ -62,6 +63,7 @@
 #include "rt_trap.h"
 #include "rt_untrusted_count.h"
 
+#include <float.h>
 #include <math.h>
 #include <stdarg.h>
 #include <stdint.h>
@@ -870,6 +872,31 @@ static double vjson_arr_f64(void *arr, int64_t index, double def) {
     return vjson_value_f64(rt_seq_get(arr, index), def);
 }
 
+/// @brief Read one required array element as a finite numeric double without bool coercion.
+/// @param arr Borrowed parsed JSON sequence.
+/// @param index Required zero-based element index.
+/// @param out Output receiving the finite numeric value.
+/// @return Nonzero only for an in-range integer or finite floating-point element.
+static int vjson_arr_f64_exact(void *arr, int64_t index, double *out) {
+    void *value;
+    double number;
+    if (!arr || !out || index < 0 || index >= vjson_len(arr))
+        return 0;
+    value = rt_seq_get(arr, index);
+    if (!value)
+        return 0;
+    if (rt_box_type(value) == 0)
+        number = (double)rt_unbox_i64(value);
+    else if (rt_box_type(value) == 1)
+        number = rt_unbox_f64(value);
+    else
+        return 0;
+    if (!isfinite(number))
+        return 0;
+    *out = number;
+    return 1;
+}
+
 /// @brief Read an optional integer index reference (e.g. a mesh/material index) from
 ///   @p key into @p out_index. Missing key → -1 and success; a value < -1 → failure (0).
 /// @param obj Borrowed parsed JSON map.
@@ -1467,8 +1494,10 @@ static rt_mesh3d *vscn_parse_mesh(void *mesh_obj) {
 }
 
 /// @brief Parse one v3 skeleton object ({"bones": [{name,parent,bindLocal[16],
-///   inverseBind[16]}...]}) into a retained Skeleton3D. Bones write directly into
-///   the runtime struct so the serialized inverse-bind matrices round-trip exactly.
+///   inverseBind[16]}...]}) into a retained Skeleton3D.
+/// @details Bone construction goes through the runtime insertion path so cached bind TRS and
+///          allocation ownership stay synchronized. Serialized parent indices and inverse-bind
+///          matrices are then restored exactly after validation.
 /// @param skel_obj Borrowed parsed JSON skeleton object.
 /// @return New owned Skeleton3D handle, or `NULL` on malformed data/failure.
 static void *vscn_parse_skeleton(void *skel_obj) {
@@ -1484,45 +1513,121 @@ static void *vscn_parse_skeleton(void *skel_obj) {
     skel = (rt_skeleton3d *)rt_skeleton3d_new();
     if (!skel)
         return NULL;
-    skel->bones = (vgfx3d_bone_t *)calloc((size_t)bone_count, sizeof(vgfx3d_bone_t));
-    if (!skel->bones) {
-        scene3d_release_ref((void **)&skel);
-        return NULL;
-    }
-    skel->bone_capacity = (int32_t)bone_count;
-    skel->bone_count = (int32_t)bone_count;
     for (int64_t b = 0; b < bone_count; b++) {
         void *bone_obj = rt_seq_get(bones_arr, b);
-        vgfx3d_bone_t *bone = &skel->bones[b];
-        const char *name;
+        vgfx3d_bone_t *bone;
+        rt_string parsed_name;
         void *bind_arr;
         void *inv_arr;
+        void *bind_matrix = NULL;
+        rt_string runtime_name = NULL;
         int64_t parent;
+        double bind[16];
+        float inverse[16];
         if (!vjson_is_map(bone_obj) || !vjson_i64_exact(bone_obj, "parent", -1, &parent) ||
             parent < -1 || parent >= bone_count)
             goto fail;
-        name = vjson_cstr(bone_obj, "name");
-        bone->name = rt_const_cstr(name ? name : "");
-        if (!bone->name)
+        parsed_name = vjson_string_value(bone_obj, "name");
+        if (vjson_get(bone_obj, "name") && !parsed_name)
             goto fail;
-        bone->parent_index = (int32_t)parent;
         bind_arr = vjson_get(bone_obj, "bindLocal");
         inv_arr = vjson_get(bone_obj, "inverseBind");
         if (vjson_len(bind_arr) != 16 || vjson_len(inv_arr) != 16)
             goto fail;
         for (int k = 0; k < 16; k++) {
-            double bv = 0.0;
-            double iv = 0.0;
-            bv = vjson_arr_f64(bind_arr, k, 0.0);
-            iv = vjson_arr_f64(inv_arr, k, 0.0);
-            bone->bind_pose_local[k] = (float)bv;
-            bone->inverse_bind[k] = (float)iv;
+            double inverse_value;
+            if (!vjson_arr_f64_exact(bind_arr, k, &bind[k]) ||
+                !vjson_arr_f64_exact(inv_arr, k, &inverse_value) || bind[k] < -(double)FLT_MAX ||
+                bind[k] > (double)FLT_MAX || inverse_value < -(double)FLT_MAX ||
+                inverse_value > (double)FLT_MAX)
+                goto fail;
+            inverse[k] = (float)inverse_value;
         }
+        runtime_name = parsed_name ? rt_string_ref(parsed_name) : rt_const_cstr("");
+        bind_matrix = rt_mat4_new(bind[0],
+                                  bind[1],
+                                  bind[2],
+                                  bind[3],
+                                  bind[4],
+                                  bind[5],
+                                  bind[6],
+                                  bind[7],
+                                  bind[8],
+                                  bind[9],
+                                  bind[10],
+                                  bind[11],
+                                  bind[12],
+                                  bind[13],
+                                  bind[14],
+                                  bind[15]);
+        if (!runtime_name || !bind_matrix ||
+            rt_skeleton3d_add_bone(skel, runtime_name, -1, bind_matrix) != b) {
+            rt_string_unref(runtime_name);
+            scene3d_release_ref(&bind_matrix);
+            goto fail;
+        }
+        rt_string_unref(runtime_name);
+        scene3d_release_ref(&bind_matrix);
+        bone = &skel->bones[b];
+        bone->parent_index = (int32_t)parent;
+        memcpy(bone->inverse_bind, inverse, sizeof(inverse));
     }
     return skel;
 fail:
     scene3d_release_ref((void **)&skel);
     return NULL;
+}
+
+/// @brief Validate and canonicalize decoded skeletal keyframes before publication.
+/// @details Times must be finite, non-negative, and strictly increasing. Presence/cubic masks are
+///          bounded to their defined bits, cubic components require complete values, every stored
+///          lane/tangent must be finite, and present rotations are normalized with scaled
+///          arithmetic so large finite quaternions cannot overflow their norm.
+/// @param keys Mutable decoded keyframe array.
+/// @param key_count Positive number of readable entries.
+/// @return Nonzero when the complete payload is safe for binary search and interpolation.
+static int vscn_skeletal_keyframes_valid(vgfx3d_keyframe_t *keys, int32_t key_count) {
+    double previous_time = -1.0;
+    if (!keys || key_count <= 0)
+        return 0;
+    for (int32_t index = 0; index < key_count; index++) {
+        vgfx3d_keyframe_t *key = &keys[index];
+        if (!isfinite(key->time) || key->time < 0.0 || key->time > (double)FLT_MAX ||
+            (index > 0 && !(key->time > previous_time)) || (key->position_mask & ~0x07u) != 0 ||
+            (key->rotation_mask != 0u && key->rotation_mask != 0x0Fu) ||
+            (key->scale_mask & ~0x07u) != 0 || (key->cubic_mask & ~0x07u) != 0 ||
+            ((key->cubic_mask & 1u) && key->position_mask != 0x07u) ||
+            ((key->cubic_mask & 2u) && key->rotation_mask != 0x0Fu) ||
+            ((key->cubic_mask & 4u) && key->scale_mask != 0x07u))
+            return 0;
+        previous_time = key->time;
+        for (int lane = 0; lane < 3; lane++) {
+            if (!isfinite(key->position[lane]) || !isfinite(key->scale_xyz[lane]) ||
+                !isfinite(key->pos_in_tangent[lane]) || !isfinite(key->pos_out_tangent[lane]) ||
+                !isfinite(key->scale_in_tangent[lane]) || !isfinite(key->scale_out_tangent[lane]))
+                return 0;
+        }
+        for (int lane = 0; lane < 4; lane++) {
+            if (!isfinite(key->rotation[lane]) || !isfinite(key->rot_in_tangent[lane]) ||
+                !isfinite(key->rot_out_tangent[lane]))
+                return 0;
+        }
+        if (key->rotation_mask == 0x0Fu) {
+            double max_abs =
+                fmax(fmax(fabs((double)key->rotation[0]), fabs((double)key->rotation[1])),
+                     fmax(fabs((double)key->rotation[2]), fabs((double)key->rotation[3])));
+            if (!isfinite(max_abs) || max_abs <= 1e-8)
+                return 0;
+            double length = hypot(
+                hypot((double)key->rotation[0] / max_abs, (double)key->rotation[1] / max_abs),
+                hypot((double)key->rotation[2] / max_abs, (double)key->rotation[3] / max_abs));
+            if (!isfinite(length) || length <= 1e-8)
+                return 0;
+            for (int lane = 0; lane < 4; lane++)
+                key->rotation[lane] = (float)(((double)key->rotation[lane] / max_abs) / length);
+        }
+    }
+    return 1;
 }
 
 /// @brief Parse one v3 animation clip ({name,duration,looping,keyframeFormat,
@@ -1534,6 +1639,7 @@ static void *vscn_parse_animation(void *anim_obj) {
     const char *format;
     void *channels_arr;
     int64_t channel_count;
+    double duration;
     rt_animation3d *anim;
     if (!vjson_is_map(anim_obj))
         return NULL;
@@ -1543,12 +1649,13 @@ static void *vscn_parse_animation(void *anim_obj) {
     name = vjson_cstr(anim_obj, "name");
     channels_arr = vjson_get(anim_obj, "channels");
     channel_count = vjson_len(channels_arr);
-    if (channel_count < 0 || channel_count > RT_ANIMATION3D_MAX_CHANNELS)
+    if (channel_count < 0 || channel_count > RT_ANIMATION3D_MAX_CHANNELS ||
+        !vjson_f64_exact(anim_obj, "duration", 1.0, &duration) || duration <= 0.0 ||
+        duration > (double)FLT_MAX)
         return NULL;
     {
         rt_string runtime_name = rt_const_cstr(name ? name : "baked");
-        anim = (rt_animation3d *)rt_animation3d_new(runtime_name,
-                                                    vjson_f64(anim_obj, "duration", 0.0));
+        anim = (rt_animation3d *)rt_animation3d_new(runtime_name, duration);
         rt_string_unref(runtime_name);
     }
     if (!anim)
@@ -1559,6 +1666,8 @@ static void *vscn_parse_animation(void *anim_obj) {
             (vgfx3d_anim_channel_t *)calloc((size_t)channel_count, sizeof(vgfx3d_anim_channel_t));
         if (!anim->channels)
             goto fail;
+        anim->owned_channels = anim->channels;
+        anim->owned_channel_capacity = (int32_t)channel_count;
         anim->channel_capacity = (int32_t)channel_count;
     }
     for (int64_t c = 0; c < channel_count; c++) {
@@ -1567,19 +1676,28 @@ static void *vscn_parse_animation(void *anim_obj) {
         const char *keys64;
         int64_t bone_index;
         int64_t key_count;
+        size_t keys_len = 0;
         size_t raw_len = 0;
         size_t raw_err = SIZE_MAX;
         uint8_t *raw;
         if (!vjson_is_map(ch_obj) || !vjson_i64_exact(ch_obj, "bone", 0, &bone_index) ||
             bone_index < 0 || bone_index >= VGFX3D_MAX_SKELETON_BONES ||
-            !vjson_i64_exact(ch_obj, "keyCount", 0, &key_count) || key_count < 0 ||
+            !vjson_i64_exact(ch_obj, "keyCount", 0, &key_count) || key_count <= 0 ||
             key_count > RT_ANIMATION3D_MAX_KEYFRAMES_PER_CHANNEL)
             goto fail;
-        keys64 = vjson_cstr(ch_obj, "keyframesBase64");
+        for (int64_t prior = 0; prior < c; prior++) {
+            if (anim->channels[prior].bone_index == (int32_t)bone_index)
+                goto fail;
+        }
+        keys64 = vjson_cstr_len(ch_obj, "keyframesBase64", &keys_len);
         if (!keys64)
             goto fail;
-        raw = vscn_base64_decode_ex(keys64, strlen(keys64), &raw_len, &raw_err);
+        raw = vscn_base64_decode_ex(keys64, keys_len, &raw_len, &raw_err);
         if (!raw || raw_len != (size_t)key_count * sizeof(vgfx3d_keyframe_t)) {
+            free(raw);
+            goto fail;
+        }
+        if (!vscn_skeletal_keyframes_valid((vgfx3d_keyframe_t *)raw, (int32_t)key_count)) {
             free(raw);
             goto fail;
         }
@@ -1587,7 +1705,11 @@ static void *vscn_parse_animation(void *anim_obj) {
         ch->keyframes = (vgfx3d_keyframe_t *)raw;
         ch->keyframe_count = (int32_t)key_count;
         ch->keyframe_capacity = (int32_t)key_count;
+        ch->owned_keyframes = ch->keyframes;
+        ch->owned_keyframe_capacity = (int32_t)key_count;
+        ch->initialized_keyframe_count = (int32_t)key_count;
         anim->channel_count = (int32_t)(c + 1);
+        anim->initialized_channel_count = anim->channel_count;
     }
     return anim;
 fail:
@@ -2623,8 +2745,7 @@ static int32_t vscn_graft_one_prefab(rt_scene_node3d *node,
             child_frame.parent = self_frame;
             child_frame.depth = self_frame->depth + 1;
             child_frame.instance_budget = self_frame->instance_budget;
-            child_scene =
-                (rt_scene3d *)vscn_prefab_load_file(canonical, &child_frame);
+            child_scene = (rt_scene3d *)vscn_prefab_load_file(canonical, &child_frame);
         }
     }
     rt_string_unref(joined);
@@ -2685,8 +2806,7 @@ static void vscn_graft_prefabs(rt_scene3d *scene,
     self_frame.canonical_path = rt_string_cstr(self_abs);
     self_frame.parent = parent_stack;
     self_frame.depth = parent_stack ? parent_stack->depth + 1 : 1;
-    self_frame.instance_budget =
-        parent_stack ? parent_stack->instance_budget : &local_budget;
+    self_frame.instance_budget = parent_stack ? parent_stack->instance_budget : &local_budget;
 
     stack = (rt_scene_node3d **)malloc(capacity * sizeof(*stack));
     if (stack) {
@@ -2703,8 +2823,8 @@ static void vscn_graft_prefabs(rt_scene3d *scene,
             for (int32_t i = 0; i < scene3d_node_child_count(current); ++i) {
                 if (count >= capacity) {
                     size_t next_capacity = capacity * 2u;
-                    rt_scene_node3d **grown = (rt_scene_node3d **)realloc(
-                        stack, next_capacity * sizeof(*stack));
+                    rt_scene_node3d **grown =
+                        (rt_scene_node3d **)realloc(stack, next_capacity * sizeof(*stack));
                     if (!grown)
                         break;
                     stack = grown;
@@ -3057,8 +3177,7 @@ static void *rt_scene3d_load_impl_from_buffer(const char *filepath,
     /* Document-level root metadata (scene conventions: bake.*, env.*). The
      * shared node parser reads the same "metadata" member shape. */
     if (!vscn_parse_node_metadata(scene->root, root, version)) {
-        rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
-                           "Scene3D.Load: invalid root metadata");
+        rt_asset_error_set(RT_ASSET_ERROR_CORRUPT, "Scene3D.Load: invalid root metadata");
         goto fail;
     }
     vscn_graft_prefabs(scene, filepath, prefab_stack);
@@ -3150,8 +3269,8 @@ void *rt_scene3d_load_from_memory(rt_string path, const char *text, size_t len) 
     }
     memcpy(copy, text, len);
     copy[len] = '\0';
-    void *scene = rt_scene3d_load_impl_from_buffer(
-        path ? rt_string_cstr(path) : "<memory>", copy, len, NULL);
+    void *scene =
+        rt_scene3d_load_impl_from_buffer(path ? rt_string_cstr(path) : "<memory>", copy, len, NULL);
     if (scene) {
         rt_asset_error_end_load_success();
     } else {
@@ -3257,9 +3376,9 @@ void *rt_scene3d_load_text_result(rt_string virtual_path, rt_string text) {
         rt_string_unref(err);
         return result;
     }
-    return scene3d_load_value_to_result(rt_scene3d_load_from_memory(virtual_path, bytes,
-                                                                    strlen(bytes)),
-                                        "SceneGraph.LoadTextResult failed");
+    return scene3d_load_value_to_result(
+        rt_scene3d_load_from_memory(virtual_path, bytes, strlen(bytes)),
+        "SceneGraph.LoadTextResult failed");
 }
 
 #endif // ZANNA_ENABLE_GRAPHICS

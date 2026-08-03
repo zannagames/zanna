@@ -25,7 +25,8 @@
 //     running in the same pool trap to prevent self-deadlock under exhaustion.
 //   - Worker handles are stolen under the pool monitor and joined outside the lock,
 //     so repeated Shutdown calls and concurrent finalization can never double-join.
-//   - All queue and state access is serialized through the monitor.
+//   - Queue links and non-atomic counters are serialized through the monitor;
+//     shutdown and zero-time drain snapshots use atomic publication.
 //
 // Ownership/Lifetime:
 //   - Borrowed task arguments are not retained; callers must keep them alive
@@ -114,7 +115,7 @@ typedef struct pool_impl {
     int64_t worker_count;     ///< Number of workers.
     int64_t pending_count;    ///< Number of tasks in queue.
     int64_t active_count;     ///< Number of tasks running.
-    int64_t error_count;      ///< Number of worker task traps not yet observed.
+    int64_t error_count;      ///< Atomic number of worker task traps not yet observed.
     char last_error[512];     ///< Last worker task trap message.
     int shutdown;             ///< Atomic shutdown flag.
     int shutdown_now;         ///< Atomic immediate-shutdown flag.
@@ -122,6 +123,7 @@ typedef struct pool_impl {
     int8_t shutdown_complete; ///< Every worker handle has finished and been released.
     int cleanup_scheduled;    ///< Atomic deferred-cleanup state (0 none, 1 thread, 2 fallback).
     int64_t max_pending;      ///< Maximum queued tasks before Submit applies backpressure.
+    int64_t work_count;       ///< Atomic number of queued plus active tasks.
 } pool_impl;
 
 //=============================================================================
@@ -168,6 +170,13 @@ static int8_t pool_shutdown_requested(const pool_impl *pool) {
 /// @return One after immediate shutdown has been requested, otherwise zero.
 static int8_t pool_shutdown_now_requested(const pool_impl *pool) {
     return pool && __atomic_load_n(&pool->shutdown_now, __ATOMIC_ACQUIRE) ? 1 : 0;
+}
+
+/// @brief Read the number of queued and active tasks with acquire ordering.
+/// @param pool Pool whose outstanding work is inspected.
+/// @return Number of accepted tasks that have not completed or been discarded.
+static int64_t pool_outstanding_count(const pool_impl *pool) {
+    return pool ? __atomic_load_n(&pool->work_count, __ATOMIC_ACQUIRE) : 0;
 }
 
 /// @brief Publish a shutdown request visible even when a collector prevents monitor acquisition.
@@ -289,14 +298,14 @@ static pool_impl *pool_require(void *pool_obj, const char *what, int8_t trap_on_
 /// @param out_size Capacity of @p out in bytes.
 /// @return One when accumulated errors were consumed, otherwise zero.
 static int8_t pool_take_error_locked(pool_impl *pool, char *out, size_t out_size) {
-    if (!pool || pool->error_count <= 0)
+    if (!pool || __atomic_load_n(&pool->error_count, __ATOMIC_ACQUIRE) <= 0)
         return 0;
     const char *msg = pool->last_error[0] ? pool->last_error : "Pool.Wait: task trapped";
     if (out && out_size > 0) {
         strncpy(out, msg, out_size - 1);
         out[out_size - 1] = '\0';
     }
-    pool->error_count = 0;
+    __atomic_store_n(&pool->error_count, 0, __ATOMIC_RELEASE);
     pool->last_error[0] = '\0';
     return 1;
 }
@@ -546,9 +555,12 @@ static pool_task *pool_detach_tasks_locked(pool_impl *pool) {
         return NULL;
     rt_gc_mutator_enter();
     pool_task *tasks = pool->queue_head;
+    int64_t detached_count = pool->pending_count;
     pool->queue_head = NULL;
     pool->queue_tail = NULL;
     pool->pending_count = 0;
+    if (detached_count > 0)
+        __atomic_fetch_sub(&pool->work_count, detached_count, __ATOMIC_RELEASE);
     rt_gc_mutator_exit();
     return tasks;
 }
@@ -692,9 +704,12 @@ static void pool_finalizer(void *obj) {
     // traversal from observing edges whose refcounts are already being dropped.
     rt_gc_mutator_enter();
     pool_task *task = pool->queue_head;
+    int64_t detached_count = pool->pending_count;
     pool->queue_head = NULL;
     pool->queue_tail = NULL;
     pool->pending_count = 0;
+    if (detached_count > 0)
+        __atomic_fetch_sub(&pool->work_count, detached_count, __ATOMIC_RELEASE);
     pool_worker *workers = pool->workers;
     pool->workers = NULL;
     void *monitor = pool->monitor;
@@ -762,7 +777,8 @@ void *rt_threadpool_new(int64_t size) {
     pool->pending_count = 0;
     pool->active_count = 0;
     pool->max_pending = pool_default_max_pending();
-    pool->error_count = 0;
+    __atomic_store_n(&pool->work_count, 0, __ATOMIC_RELAXED);
+    __atomic_store_n(&pool->error_count, 0, __ATOMIC_RELAXED);
     pool->last_error[0] = '\0';
     __atomic_store_n(&pool->shutdown, 0, __ATOMIC_RELAXED);
     __atomic_store_n(&pool->shutdown_now, 0, __ATOMIC_RELAXED);
@@ -904,14 +920,17 @@ static void worker_entry(void *arg) {
         // Mark task complete
         rt_monitor_enter(pool->monitor);
         if (trapped) {
-            if (pool->error_count < INT64_MAX)
-                pool->error_count++;
+            int64_t error_count = __atomic_load_n(&pool->error_count, __ATOMIC_RELAXED);
             strncpy(pool->last_error,
                     task_error[0] ? task_error : "Pool.Wait: task trapped",
                     sizeof(pool->last_error) - 1);
             pool->last_error[sizeof(pool->last_error) - 1] = '\0';
+            if (error_count < INT64_MAX)
+                error_count++;
+            __atomic_store_n(&pool->error_count, error_count, __ATOMIC_RELEASE);
         }
         pool->active_count--;
+        __atomic_fetch_sub(&pool->work_count, 1, __ATOMIC_RELEASE);
         // Signal waiters (for Wait() calls)
         if (pool->pending_count == 0 && pool->active_count == 0) {
             rt_monitor_pause_all(pool->monitor);
@@ -1056,6 +1075,7 @@ static int8_t threadpool_submit_impl(void *pool_obj,
         pool->queue_tail = task;
     }
     pool->pending_count++;
+    __atomic_fetch_add(&pool->work_count, 1, __ATOMIC_RELEASE);
 
     // Wake one worker
     rt_monitor_pause(pool->monitor);
@@ -1178,7 +1198,15 @@ int8_t rt_threadpool_wait_for(void *pool_obj, int64_t ms) {
     }
 
     if (ms <= 0) {
-        // Immediate check
+        /* Work state is published independently of the monitor so an idle
+           worker entering its condition wait cannot look like unfinished work. */
+        if (pool_outstanding_count(pool) == 0 &&
+            __atomic_load_n(&pool->error_count, __ATOMIC_ACQUIRE) <= 0) {
+            pool_release_object(pool);
+            return 1;
+        }
+
+        // Consume a completed task error only when the monitor is immediately available.
         if (!rt_monitor_try_enter(pool->monitor)) {
             pool_release_object(pool);
             return 0;

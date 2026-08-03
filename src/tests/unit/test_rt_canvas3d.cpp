@@ -762,6 +762,29 @@ static void test_mesh_generators_batch_geometry_revision_updates() {
     PASS();
 }
 
+static void test_mesh_bone_weights_normalize_extreme_values_idempotently() {
+    TEST("Mesh3D bone weights normalize extreme values without revision churn");
+    rt_mesh3d *mesh = (rt_mesh3d *)rt_mesh3d_new();
+    assert(mesh);
+    rt_mesh3d_add_vertex(mesh, 0.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0, 0.0);
+
+    rt_mesh3d_set_bone_weights(mesh, 0, 4, DBL_MAX, 3, DBL_MAX, 2, DBL_MAX, 1, DBL_MAX);
+    double sum = 0.0;
+    for (int lane = 0; lane < 4; ++lane) {
+        EXPECT_TRUE(std::isfinite(mesh->vertices[0].bone_weights[lane]),
+                    "normalized extreme bone weight is finite");
+        EXPECT_NEAR(mesh->vertices[0].bone_weights[lane], 0.25, 0.000001);
+        sum += mesh->vertices[0].bone_weights[lane];
+    }
+    EXPECT_NEAR(sum, 1.0, 0.000001);
+    EXPECT_EQ(mesh->bone_count, 5);
+
+    uint32_t revision = mesh->geometry_revision;
+    rt_mesh3d_set_bone_weights(mesh, 0, 4, DBL_MAX, 3, DBL_MAX, 2, DBL_MAX, 1, DBL_MAX);
+    EXPECT_EQ(mesh->geometry_revision, revision);
+    PASS();
+}
+
 static void test_mesh_reject_invalid_triangle_indices() {
     TEST("Mesh3D.AddTriangle rejects invalid indices");
     void *m = rt_mesh3d_new();
@@ -2868,11 +2891,26 @@ static void test_canvas3d_per_instance_skinning_chunking() {
     rt_canvas3d_draw_mesh_instanced_skinned(
         &canvas, mesh, mat, matrices.data(), 5, palettes_small.data(), nullptr, 8);
     EXPECT_EQ(canvas.draw_count, 1);
+    EXPECT_EQ(canvas.gpu_skinned_draw_count, 1);
+    EXPECT_EQ(canvas.skinning_upload_bytes, (int64_t)5 * 8 * 16 * (int64_t)sizeof(float));
 
     /* 3 instances x 200 bones: 256/200 = 1 instance per draw -> 3 chunks. */
     rt_canvas3d_draw_mesh_instanced_skinned(
         &canvas, mesh, mat, matrices.data(), 3, palettes_large.data(), nullptr, 200);
     EXPECT_EQ(canvas.draw_count, 4);
+    EXPECT_EQ(canvas.gpu_skinned_draw_count, 4);
+    EXPECT_EQ(canvas.skinning_upload_bytes,
+              ((int64_t)5 * 8 + (int64_t)3 * 200) * 16 * (int64_t)sizeof(float));
+
+    /* A legitimate queue drop must not inflate successful GPU telemetry. */
+    rt_mesh3d_set_resident(mesh, 0);
+    rt_canvas3d_draw_mesh_instanced_skinned(
+        &canvas, mesh, mat, matrices.data(), 5, palettes_small.data(), nullptr, 8);
+    EXPECT_EQ(canvas.draw_count, 4);
+    EXPECT_EQ(canvas.gpu_skinned_draw_count, 4);
+    EXPECT_EQ(canvas.skinning_upload_bytes,
+              ((int64_t)5 * 8 + (int64_t)3 * 200) * 16 * (int64_t)sizeof(float));
+    rt_mesh3d_set_resident(mesh, 1);
 
     /* Without hardware instancing the queue refuses per-instance palettes and
      * the draw falls back to one skinned draw per instance. */
@@ -5785,8 +5823,7 @@ static void test_rendertarget_try_read_rgba() {
                 "size mismatch reports 0 without trapping");
     EXPECT_TRUE(rt_rendertarget3d_try_read_rgba(NULL, frame.data(), 8, 4) == 0,
                 "null target reports 0");
-    EXPECT_TRUE(rt_rendertarget3d_try_read_rgba(rt, NULL, 8, 4) == 0,
-                "null destination reports 0");
+    EXPECT_TRUE(rt_rendertarget3d_try_read_rgba(rt, NULL, 8, 4) == 0, "null destination reports 0");
     EXPECT_TRUE(rt_rendertarget3d_try_read_rgba(rt, frame.data(), 0, 4) == 0,
                 "non-positive dimensions report 0");
     PASS();
@@ -10777,6 +10814,7 @@ int main() {
     test_mesh_mutations_restore_residency_and_counts_are_clamped();
     test_mesh_recalc_normals_reuses_large_accumulator();
     test_mesh_generators_batch_geometry_revision_updates();
+    test_mesh_bone_weights_normalize_extreme_values_idempotently();
     test_mesh_reject_invalid_triangle_indices();
     test_mesh_calc_tangents_tracks_mirrored_uv_handedness();
     test_mesh_box();

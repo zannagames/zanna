@@ -1,7 +1,20 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/anim/rt_skeleton3d_matrix.inc  (#included from rt_skeleton3d.c; not
-// a standalone translation unit) Purpose: Skeleton3D float row-major matrix math helpers
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/anim/rt_skeleton3d_matrix.inc
+// Purpose: Bounded Skeleton3D traversal and finite row-major matrix/TRS helpers.
+// Key invariants:
+//   - Public double inputs narrow only after finite range checks or saturation.
+//   - Matrix inversion and decomposition stage outputs so failure is alias-safe.
+// Ownership/Lifetime:
+//   - Included by rt_skeleton3d.c; this is not a standalone translation unit.
+//   - Helpers borrow input/output arrays and do not retain runtime objects.
+// Links: rt_skeleton3d.c, rt_skeleton3d.h, rt_skeleton3d_internal.h
+//
 //===----------------------------------------------------------------------===//
 /**
  * @file rt_skeleton3d_matrix.inc
@@ -23,10 +36,22 @@
 /// @param[out] out Destination containing 16 floats.
 /// @note `out` must not overlap either input matrix.
 static void mat4f_mul_local(const float *a, const float *b, float *out) {
-    for (int r = 0; r < 4; r++)
-        for (int c = 0; c < 4; c++)
-            out[r * 4 + c] = a[r * 4 + 0] * b[0 * 4 + c] + a[r * 4 + 1] * b[1 * 4 + c] +
-                             a[r * 4 + 2] * b[2 * 4 + c] + a[r * 4 + 3] * b[3 * 4 + c];
+    if (!a || !b || !out)
+        return;
+    for (int r = 0; r < 4; r++) {
+        for (int c = 0; c < 4; c++) {
+            double value =
+                (double)a[r * 4 + 0] * b[0 * 4 + c] + (double)a[r * 4 + 1] * b[1 * 4 + c] +
+                (double)a[r * 4 + 2] * b[2 * 4 + c] + (double)a[r * 4 + 3] * b[3 * 4 + c];
+            if (!isfinite(value))
+                value = 0.0;
+            if (value > FLT_MAX)
+                value = FLT_MAX;
+            if (value < -FLT_MAX)
+                value = -FLT_MAX;
+            out[r * 4 + c] = (float)value;
+        }
+    }
 }
 
 /// @brief Set `m` to the 4×4 identity matrix.
@@ -128,21 +153,30 @@ static mat4_impl *skeleton3d_mat4_checked(void *obj) {
 /// @param[in] obj Opaque candidate runtime object.
 /// @return The typed player payload, or `NULL` when validation fails.
 static rt_anim_player3d *anim_player3d_checked(void *obj) {
-    return (rt_anim_player3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMPLAYER3D_CLASS_ID);
+    rt_anim_player3d *player =
+        (rt_anim_player3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMPLAYER3D_CLASS_ID);
+    anim_player3d_repair_storage(player);
+    return player;
 }
 
 /// @brief Checked cast of an opaque handle to AnimBlend3D; NULL on class mismatch.
 /// @param[in] obj Opaque candidate runtime object.
 /// @return The typed blender payload, or `NULL` when validation fails.
 static rt_anim_blend3d *anim_blend3d_checked(void *obj) {
-    return (rt_anim_blend3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMBLEND3D_CLASS_ID);
+    rt_anim_blend3d *blend =
+        (rt_anim_blend3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMBLEND3D_CLASS_ID);
+    anim_blend3d_repair_storage(blend);
+    return blend;
 }
 
 /// @brief Checked cast of an opaque handle to Animation3D; NULL on class mismatch.
 /// @param[in] obj Opaque candidate runtime object.
 /// @return The typed animation payload, or `NULL` when validation fails.
 static rt_animation3d *animation3d_checked(void *obj) {
-    return (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    rt_animation3d *animation =
+        (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    animation3d_repair_storage(animation);
+    return animation;
 }
 
 /// @brief Clamp an AnimBlend3D state count without requiring contiguous live animation slots.
@@ -255,6 +289,88 @@ static float animation3d_wrap_time(float time, float duration) {
     return time;
 }
 
+/// @brief Advance one animation clock without overflowing an intermediate product.
+/// @details Looping clocks reduce elapsed time by the real-time loop period
+/// before multiplying by speed. Non-looping clocks compare elapsed time with
+/// the remaining endpoint time before performing a bounded multiply.
+/// @param current Current playback time.
+/// @param delta_time Nonnegative finite elapsed time.
+/// @param speed Finite signed playback multiplier.
+/// @param duration Positive finite clip duration.
+/// @param looping Nonzero to wrap instead of clamping.
+/// @param[out] hit_endpoint Optional flag set when a non-looping endpoint is reached.
+/// @return A finite time within the clip interval.
+static float animation3d_advance_clock(float current,
+                                       double delta_time,
+                                       float speed,
+                                       float duration,
+                                       int8_t looping,
+                                       int8_t *hit_endpoint) {
+    double next;
+    if (hit_endpoint)
+        *hit_endpoint = 0;
+    if (!isfinite(duration) || duration <= 0.0f)
+        duration = 1.0f;
+    if (!isfinite(current))
+        current = 0.0f;
+    if (!isfinite(speed))
+        speed = 1.0f;
+    if (!isfinite(delta_time) || delta_time <= 0.0)
+        return looping ? animation3d_wrap_time(current, duration)
+                       : (current < 0.0f ? 0.0f : (current > duration ? duration : current));
+    if (speed == 0.0f)
+        return looping ? animation3d_wrap_time(current, duration)
+                       : (current < 0.0f ? 0.0f : (current > duration ? duration : current));
+
+    if (looping) {
+        double abs_speed = fabs((double)speed);
+        double period = (double)duration / abs_speed;
+        double reduced_delta;
+        current = animation3d_wrap_time(current, duration);
+        if (!isfinite(period) || period <= 0.0)
+            return current;
+        reduced_delta = fmod(delta_time, period);
+        next = (double)current + reduced_delta * (double)speed;
+        next = fmod(next, (double)duration);
+        if (next < 0.0)
+            next += duration;
+        if (!isfinite(next) || next >= duration)
+            next = 0.0;
+        return (float)next;
+    }
+
+    if (current < 0.0f)
+        current = 0.0f;
+    if (current > duration)
+        current = duration;
+    if (speed > 0.0f) {
+        double remaining_seconds = ((double)duration - current) / (double)speed;
+        if (delta_time >= remaining_seconds) {
+            if (hit_endpoint)
+                *hit_endpoint = 1;
+            return duration;
+        }
+    } else {
+        double remaining_seconds = (double)current / -(double)speed;
+        if (delta_time >= remaining_seconds) {
+            if (hit_endpoint)
+                *hit_endpoint = 1;
+            return 0.0f;
+        }
+    }
+    next = (double)current + delta_time * (double)speed;
+    if (!isfinite(next)) {
+        if (hit_endpoint)
+            *hit_endpoint = 1;
+        return speed > 0.0f ? duration : 0.0f;
+    }
+    if (next <= 0.0)
+        return 0.0f;
+    if (next >= duration)
+        return duration;
+    return (float)next;
+}
+
 /// @brief Drop one GC reference held in `*slot` and clear the slot. NULL-safe.
 /// @param[in,out] slot Address of an owned reference slot.
 static void mesh3d_release_ref(void **slot) {
@@ -291,10 +407,19 @@ static void mesh3d_assign_skeleton_ref(void **slot, void *value) {
 /// @brief Invert a 4x4 float matrix. Returns 0 on success, -1 if singular.
 /// @param[in] m Row-major source matrix.
 /// @param[out] out Destination for the inverse; it may alias `m`.
-/// @return Zero on success, or `-1` when the determinant is non-finite or has
-/// magnitude below `1e-12`.
-static int mat4f_invert(const float *m, float *out) {
-    float inv[16];
+/// @return Zero on success, or `-1` when the input is singular/non-finite or
+/// the inverse cannot be represented in float storage.
+static int mat4f_invert(const float *input, float *out) {
+    double m[16];
+    double inv[16];
+    float staged[16];
+    if (!input || !out)
+        return -1;
+    for (int i = 0; i < 16; ++i) {
+        if (!isfinite(input[i]))
+            return -1;
+        m[i] = input[i];
+    }
     inv[0] = m[5] * m[10] * m[15] - m[5] * m[11] * m[14] - m[9] * m[6] * m[15] +
              m[9] * m[7] * m[14] + m[13] * m[6] * m[11] - m[13] * m[7] * m[10];
     inv[4] = -m[4] * m[10] * m[15] + m[4] * m[11] * m[14] + m[8] * m[6] * m[15] -
@@ -328,12 +453,17 @@ static int mat4f_invert(const float *m, float *out) {
     inv[15] = m[0] * m[5] * m[10] - m[0] * m[6] * m[9] - m[4] * m[1] * m[10] + m[4] * m[2] * m[9] +
               m[8] * m[1] * m[6] - m[8] * m[2] * m[5];
 
-    float det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
-    if (!isfinite(det) || fabsf(det) < 1e-12f)
+    double det = m[0] * inv[0] + m[1] * inv[4] + m[2] * inv[8] + m[3] * inv[12];
+    if (!isfinite(det) || det == 0.0)
         return -1;
-    float inv_det = 1.0f / det;
-    for (int i = 0; i < 16; i++)
-        out[i] = inv[i] * inv_det;
+    double inv_det = 1.0 / det;
+    for (int i = 0; i < 16; i++) {
+        double value = inv[i] * inv_det;
+        if (!isfinite(value) || value > FLT_MAX || value < -FLT_MAX)
+            return -1;
+        staged[i] = (float)value;
+    }
+    memcpy(out, staged, sizeof(staged));
     return 0;
 }
 
@@ -370,6 +500,8 @@ static void build_trs_float(const float *pos, const float *quat, const float *sc
 /// @brief Write the identity quaternion into a four-float destination.
 /// @param[out] out Destination in `(x, y, z, w)` order.
 static void quat_identity_float(float *out);
+/// @brief Robustly normalize a quaternion in place.
+static void quat_normalize_float(float *q);
 
 /// @brief SLERP between two quaternions (float arrays, x,y,z,w).
 /// @param[in] a Starting quaternion.
@@ -380,8 +512,17 @@ static void quat_identity_float(float *out);
 /// normalized linear interpolation, while a non-finite dot product or
 /// degenerate result produces the identity quaternion.
 static void quat_slerp_float(const float *a, const float *b, float t, float *out) {
-    float dot = a[0] * b[0] + a[1] * b[1] + a[2] * b[2] + a[3] * b[3];
-    float nb[4] = {b[0], b[1], b[2], b[3]};
+    float qa[4];
+    float nb[4];
+    float dot;
+    if (!a || !b || !out)
+        return;
+    memcpy(qa, a, sizeof(qa));
+    memcpy(nb, b, sizeof(nb));
+    quat_normalize_float(qa);
+    quat_normalize_float(nb);
+    dot = (float)((double)qa[0] * nb[0] + (double)qa[1] * nb[1] + (double)qa[2] * nb[2] +
+                  (double)qa[3] * nb[3]);
     t = skeleton3d_clamp01f(t);
     if (dot < 0.0f) {
         dot = -dot;
@@ -401,22 +542,16 @@ static void quat_slerp_float(const float *a, const float *b, float t, float *out
     if (dot > 0.9995f) {
         /* Nearly identical: linear interpolation + normalize */
         for (int i = 0; i < 4; i++)
-            out[i] = a[i] + t * (nb[i] - a[i]);
+            out[i] = qa[i] + t * (nb[i] - qa[i]);
     } else {
         float theta = acosf(dot);
         float sin_theta = sinf(theta);
         float wa = sinf((1.0f - t) * theta) / sin_theta;
         float wb = sinf(t * theta) / sin_theta;
         for (int i = 0; i < 4; i++)
-            out[i] = wa * a[i] + wb * nb[i];
+            out[i] = wa * qa[i] + wb * nb[i];
     }
-    /* Normalize */
-    float len = sqrtf(out[0] * out[0] + out[1] * out[1] + out[2] * out[2] + out[3] * out[3]);
-    if (isfinite(len) && len > 1e-8f)
-        for (int i = 0; i < 4; i++)
-            out[i] /= len;
-    else
-        quat_identity_float(out);
+    quat_normalize_float(out);
 }
 
 /// @brief Write the identity quaternion (0,0,0,1) into `out[4]`.
@@ -432,20 +567,28 @@ static void quat_identity_float(float *out) {
 ///        is non-finite or the length underflows (≤ 1e-8).
 /// @param[in,out] q Four-float quaternion, or `NULL`.
 static void quat_normalize_float(float *q) {
-    float len;
+    double max_abs;
+    double scaled_len;
     if (!q)
         return;
     if (!isfinite(q[0]) || !isfinite(q[1]) || !isfinite(q[2]) || !isfinite(q[3])) {
         quat_identity_float(q);
         return;
     }
-    len = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-    if (!isfinite(len) || len <= 1e-8f) {
+    max_abs = fmax(fmax(fabs((double)q[0]), fabs((double)q[1])),
+                   fmax(fabs((double)q[2]), fabs((double)q[3])));
+    if (!isfinite(max_abs) || max_abs <= 1e-8) {
+        quat_identity_float(q);
+        return;
+    }
+    scaled_len = hypot(hypot((double)q[0] / max_abs, (double)q[1] / max_abs),
+                       hypot((double)q[2] / max_abs, (double)q[3] / max_abs));
+    if (!isfinite(scaled_len) || scaled_len <= 1e-8) {
         quat_identity_float(q);
         return;
     }
     for (int i = 0; i < 4; i++)
-        q[i] /= len;
+        q[i] = (float)(((double)q[i] / max_abs) / scaled_len);
 }
 
 /// @brief Convert a 3x3 rotation matrix to a unit quaternion in `out[4]`.
@@ -483,25 +626,41 @@ static void quat_from_matrix3_float(float r00,
     }
     tr = r00 + r11 + r22;
     if (tr > 0.0f) {
-        float s = sqrtf(tr + 1.0f) * 2.0f;
+        float s = sqrtf(fmaxf(tr + 1.0f, 0.0f)) * 2.0f;
+        if (!isfinite(s) || s <= 1e-8f) {
+            quat_identity_float(out);
+            return;
+        }
         out[3] = 0.25f * s;
         out[0] = (r21 - r12) / s;
         out[1] = (r02 - r20) / s;
         out[2] = (r10 - r01) / s;
     } else if (r00 > r11 && r00 > r22) {
-        float s = sqrtf(1.0f + r00 - r11 - r22) * 2.0f;
+        float s = sqrtf(fmaxf(1.0f + r00 - r11 - r22, 0.0f)) * 2.0f;
+        if (!isfinite(s) || s <= 1e-8f) {
+            quat_identity_float(out);
+            return;
+        }
         out[3] = (r21 - r12) / s;
         out[0] = 0.25f * s;
         out[1] = (r01 + r10) / s;
         out[2] = (r02 + r20) / s;
     } else if (r11 > r22) {
-        float s = sqrtf(1.0f + r11 - r00 - r22) * 2.0f;
+        float s = sqrtf(fmaxf(1.0f + r11 - r00 - r22, 0.0f)) * 2.0f;
+        if (!isfinite(s) || s <= 1e-8f) {
+            quat_identity_float(out);
+            return;
+        }
         out[3] = (r02 - r20) / s;
         out[0] = (r01 + r10) / s;
         out[1] = 0.25f * s;
         out[2] = (r12 + r21) / s;
     } else {
-        float s = sqrtf(1.0f + r22 - r00 - r11) * 2.0f;
+        float s = sqrtf(fmaxf(1.0f + r22 - r00 - r11, 0.0f)) * 2.0f;
+        if (!isfinite(s) || s <= 1e-8f) {
+            quat_identity_float(out);
+            return;
+        }
         out[3] = (r10 - r01) / s;
         out[0] = (r02 + r20) / s;
         out[1] = (r12 + r21) / s;
@@ -518,36 +677,56 @@ static void quat_from_matrix3_float(float r00,
 /// @param[in] m Source row-major affine matrix.
 /// @param[out] out_pos Destination three-component translation.
 /// @param[out] out_rot Destination normalized rotation quaternion.
-/// @param[out] out_scl Destination three-component nonnegative scale.
+/// @param[out] out_scl Destination three-component scale; one axis carries a
+/// reflected basis sign when needed to preserve matrix handedness.
 static void mat4f_decompose_trs(const float *m, float *out_pos, float *out_rot, float *out_scl) {
-    float sx;
-    float sy;
-    float sz;
-    float inv_sx;
-    float inv_sy;
-    float inv_sz;
+    double sx;
+    double sy;
+    double sz;
+    double inv_sx;
+    double inv_sy;
+    double inv_sz;
+    float r00, r01, r02;
+    float r10, r11, r12;
+    float r20, r21, r22;
+    double determinant;
     if (!m || !out_pos || !out_rot || !out_scl)
         return;
     out_pos[0] = isfinite(m[3]) ? m[3] : 0.0f;
     out_pos[1] = isfinite(m[7]) ? m[7] : 0.0f;
     out_pos[2] = isfinite(m[11]) ? m[11] : 0.0f;
-    sx = sqrtf(m[0] * m[0] + m[4] * m[4] + m[8] * m[8]);
-    sy = sqrtf(m[1] * m[1] + m[5] * m[5] + m[9] * m[9]);
-    sz = sqrtf(m[2] * m[2] + m[6] * m[6] + m[10] * m[10]);
-    out_scl[0] = isfinite(sx) && sx > 1e-6f ? sx : 1.0f;
-    out_scl[1] = isfinite(sy) && sy > 1e-6f ? sy : 1.0f;
-    out_scl[2] = isfinite(sz) && sz > 1e-6f ? sz : 1.0f;
-    inv_sx = 1.0f / out_scl[0];
-    inv_sy = 1.0f / out_scl[1];
-    inv_sz = 1.0f / out_scl[2];
-    quat_from_matrix3_float(m[0] * inv_sx,
-                            m[1] * inv_sy,
-                            m[2] * inv_sz,
-                            m[4] * inv_sx,
-                            m[5] * inv_sy,
-                            m[6] * inv_sz,
-                            m[8] * inv_sx,
-                            m[9] * inv_sy,
-                            m[10] * inv_sz,
-                            out_rot);
+    sx = hypot(hypot((double)m[0], (double)m[4]), (double)m[8]);
+    sy = hypot(hypot((double)m[1], (double)m[5]), (double)m[9]);
+    sz = hypot(hypot((double)m[2], (double)m[6]), (double)m[10]);
+    if (!isfinite(sx) || sx <= 1e-6)
+        sx = 1.0;
+    if (!isfinite(sy) || sy <= 1e-6)
+        sy = 1.0;
+    if (!isfinite(sz) || sz <= 1e-6)
+        sz = 1.0;
+    inv_sx = 1.0 / sx;
+    inv_sy = 1.0 / sy;
+    inv_sz = 1.0 / sz;
+    r00 = (float)((double)m[0] * inv_sx);
+    r01 = (float)((double)m[1] * inv_sy);
+    r02 = (float)((double)m[2] * inv_sz);
+    r10 = (float)((double)m[4] * inv_sx);
+    r11 = (float)((double)m[5] * inv_sy);
+    r12 = (float)((double)m[6] * inv_sz);
+    r20 = (float)((double)m[8] * inv_sx);
+    r21 = (float)((double)m[9] * inv_sy);
+    r22 = (float)((double)m[10] * inv_sz);
+    determinant = (double)r00 * ((double)r11 * r22 - (double)r12 * r21) -
+                  (double)r01 * ((double)r10 * r22 - (double)r12 * r20) +
+                  (double)r02 * ((double)r10 * r21 - (double)r11 * r20);
+    if (isfinite(determinant) && determinant < 0.0) {
+        sx = -sx;
+        r00 = -r00;
+        r10 = -r10;
+        r20 = -r20;
+    }
+    out_scl[0] = (float)fmax(-FLT_MAX, fmin(FLT_MAX, sx));
+    out_scl[1] = (float)fmax(-FLT_MAX, fmin(FLT_MAX, sy));
+    out_scl[2] = (float)fmax(-FLT_MAX, fmin(FLT_MAX, sz));
+    quat_from_matrix3_float(r00, r01, r02, r10, r11, r12, r20, r21, r22, out_rot);
 }

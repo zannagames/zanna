@@ -1,7 +1,20 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/anim/rt_skeleton3d_animation.inc  (#included from rt_skeleton3d.c;
-// not a standalone translation unit) Purpose: Animation3D clip implementation and keyframe sampling
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/anim/rt_skeleton3d_animation.inc
+// Purpose: Animation3D clip storage, keyframe sampling, compression, and retargeting.
+// Key invariants:
+//   - Published channel/key counts never exceed their authoritative owned capacities.
+//   - Sparse TRS masks and finite normalized quaternion lanes govern sampling fallbacks.
+// Ownership/Lifetime:
+//   - Included by rt_skeleton3d.c; this is not a standalone translation unit.
+//   - Animation clips own channel/key arrays and retain no skeleton during retargeting.
+// Links: rt_skeleton3d.c, rt_skeleton3d.h, rt_skeleton3d_internal.h
+//
 //===----------------------------------------------------------------------===//
 /// @file
 /// @brief Implements Animation3D lifecycle, keyframes, sampling, and retargeting.
@@ -19,14 +32,29 @@
 ///       release.
 /// @param[in,out] obj Animation3D storage being finalized.
 static void rt_animation3d_finalize(void *obj) {
-    rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    rt_animation3d *a = (rt_animation3d *)obj;
     int32_t channel_count;
     if (!a)
         return;
-    channel_count = animation3d_safe_channel_count(a);
-    for (int32_t i = 0; i < channel_count; i++)
-        free(a->channels[i].keyframes);
-    free(a->channels);
+    animation3d_repair_storage(a);
+    channel_count = a->initialized_channel_count;
+    if (channel_count < 0)
+        channel_count = 0;
+    if (channel_count > a->owned_channel_capacity)
+        channel_count = a->owned_channel_capacity;
+    for (int32_t i = 0; i < channel_count; i++) {
+        free(a->owned_channels[i].owned_keyframes);
+        a->owned_channels[i].owned_keyframes = NULL;
+        a->owned_channels[i].keyframes = NULL;
+        a->owned_channels[i].owned_keyframe_capacity = 0;
+        a->owned_channels[i].keyframe_capacity = 0;
+        a->owned_channels[i].initialized_keyframe_count = 0;
+        a->owned_channels[i].keyframe_count = 0;
+    }
+    free(a->owned_channels);
+    a->owned_channels = NULL;
+    a->owned_channel_capacity = 0;
+    a->initialized_channel_count = 0;
     a->channels = NULL;
     a->channel_count = 0;
     a->channel_capacity = 0;
@@ -55,18 +83,23 @@ static void animation3d_release_class_ref(void **slot, int64_t class_id) {
     animation3d_release_ref(slot);
 }
 
-/// @brief Typed retain/release swap for private animation-runtime object slots.
-/// @details Retains @p value before releasing the prior class-validated slot;
-///          assigning the existing pointer is a no-op.
-/// @param[in,out] slot Address of the retained destination slot.
+/// @brief Retain-then-release a stable owner and republish its mutable mirror.
+/// @param[in,out] owner Stable retained reference slot.
+/// @param[in,out] mirror Legacy/publicly inspected mirror of @p owner.
 /// @param[in] value Borrowed replacement object, or `NULL`.
-/// @param[in] class_id Class expected for the prior slot value.
-static void animation3d_assign_class_ref(void **slot, void *value, int64_t class_id) {
-    if (!slot || *slot == value)
+/// @param[in] class_id Expected class of the retained object.
+static void animation3d_assign_owned_class_ref(void **owner,
+                                               void **mirror,
+                                               void *value,
+                                               int64_t class_id) {
+    if (!owner || !mirror)
         return;
-    rt_obj_retain_maybe(value);
-    animation3d_release_class_ref(slot, class_id);
-    *slot = value;
+    if (*owner != value) {
+        rt_obj_retain_maybe(value);
+        animation3d_release_class_ref(owner, class_id);
+        *owner = value;
+    }
+    *mirror = *owner;
 }
 
 /// @brief Borrow a private Skeleton3D slot, clearing it if corruption changed its class.
@@ -79,6 +112,7 @@ static rt_skeleton3d *animation3d_skeleton_slot(void **slot) {
         rt_g3d_ref_slot_clear_unowned(slot);
         return NULL;
     }
+    skeleton3d_repair_storage((rt_skeleton3d *)*slot);
     return (rt_skeleton3d *)*slot;
 }
 
@@ -92,6 +126,7 @@ static rt_animation3d *animation3d_clip_slot(void **slot) {
         rt_g3d_ref_slot_clear_unowned(slot);
         return NULL;
     }
+    animation3d_repair_storage((rt_animation3d *)*slot);
     return (rt_animation3d *)*slot;
 }
 
@@ -104,23 +139,7 @@ static rt_animation3d *animation3d_clip_slot(void **slot) {
 ///   producing a degenerate skinning matrix that collapses or inverts geometry.
 /// @param q float[4] quaternion in (x, y, z, w) order; modified in-place.
 static void sanitize_keyframe_quat(float *q) {
-    if (!q)
-        return;
-    if (!isfinite(q[0]) || !isfinite(q[1]) || !isfinite(q[2]) || !isfinite(q[3])) {
-        q[0] = q[1] = q[2] = 0.0f;
-        q[3] = 1.0f;
-        return;
-    }
-    float len = sqrtf(q[0] * q[0] + q[1] * q[1] + q[2] * q[2] + q[3] * q[3]);
-    if (!isfinite(len) || len <= 1e-8f) {
-        q[0] = q[1] = q[2] = 0.0f;
-        q[3] = 1.0f;
-        return;
-    }
-    q[0] /= len;
-    q[1] /= len;
-    q[2] /= len;
-    q[3] /= len;
+    quat_normalize_float(q);
 }
 
 /// @brief Clamp one sampled animation lane to a finite range that downstream matrix
@@ -206,7 +225,7 @@ void *rt_animation3d_new(rt_string name, double duration) {
     }
     a->vptr = NULL;
     memset(a->name, 0, 64);
-    if (name) {
+    if (name && rt_string_is_handle(name)) {
         const char *cstr = rt_string_cstr(name);
         if (cstr) {
             size_t len = strlen(cstr);
@@ -222,6 +241,9 @@ void *rt_animation3d_new(rt_string name, double duration) {
                       ? skeleton3d_clamp_nonnegative_float(duration, 1.0f)
                       : 1.0f;
     a->looping = 0;
+    a->owned_channels = NULL;
+    a->owned_channel_capacity = 0;
+    a->initialized_channel_count = 0;
     rt_obj_set_finalizer(a, rt_animation3d_finalize);
     return a;
 }
@@ -240,7 +262,7 @@ void *rt_animation3d_new(rt_string name, double duration) {
 /// @return Nonzero when the key was inserted or replaced.
 int rt_animation3d_try_add_keyframe(
     void *obj, int64_t bone_index, double time, void *position, void *rotation, void *scale) {
-    rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    rt_animation3d *a = animation3d_checked(obj);
     if (!a || bone_index < 0 || bone_index >= VGFX3D_MAX_SKELETON_BONES || !isfinite(time) ||
         fabs(time) > FLT_MAX)
         return 0;
@@ -322,6 +344,7 @@ int rt_animation3d_try_add_keyframe(
         }
 
     if (!ch) {
+        vgfx3d_keyframe_t *initial_keys;
         if (a->channel_count >= RT_ANIMATION3D_MAX_CHANNELS)
             return 0;
         if (a->channel_count >= a->channel_capacity) {
@@ -334,16 +357,31 @@ int rt_animation3d_try_add_keyframe(
                 return 0;
             if ((size_t)new_cap > SIZE_MAX / sizeof(vgfx3d_anim_channel_t))
                 return 0;
+            int32_t old_cap = a->owned_channel_capacity;
             vgfx3d_anim_channel_t *nc = (vgfx3d_anim_channel_t *)realloc(
-                a->channels, (size_t)new_cap * sizeof(vgfx3d_anim_channel_t));
+                a->owned_channels, (size_t)new_cap * sizeof(vgfx3d_anim_channel_t));
             if (!nc)
                 return 0;
+            if (new_cap > old_cap)
+                memset(nc + old_cap, 0, (size_t)(new_cap - old_cap) * sizeof(*nc));
+            a->owned_channels = nc;
+            a->owned_channel_capacity = new_cap;
             a->channels = nc;
             a->channel_capacity = new_cap;
         }
-        ch = &a->channels[a->channel_count++];
+        initial_keys = (vgfx3d_keyframe_t *)calloc(16u, sizeof(*initial_keys));
+        if (!initial_keys)
+            return 0;
+        ch = &a->channels[a->channel_count];
         memset(ch, 0, sizeof(vgfx3d_anim_channel_t));
         ch->bone_index = (int32_t)bone_index;
+        ch->keyframes = initial_keys;
+        ch->keyframe_capacity = 16;
+        ch->owned_keyframes = initial_keys;
+        ch->owned_keyframe_capacity = 16;
+        ch->initialized_keyframe_count = 0;
+        a->channel_count++;
+        a->initialized_channel_count = a->channel_count;
     }
 
     ch->keyframe_count = animation3d_safe_keyframe_count(ch);
@@ -361,10 +399,15 @@ int rt_animation3d_try_add_keyframe(
             return 0;
         if ((size_t)new_cap > SIZE_MAX / sizeof(vgfx3d_keyframe_t))
             return 0;
+        int32_t old_cap = ch->owned_keyframe_capacity;
         vgfx3d_keyframe_t *nk = (vgfx3d_keyframe_t *)realloc(
-            ch->keyframes, (size_t)new_cap * sizeof(vgfx3d_keyframe_t));
+            ch->owned_keyframes, (size_t)new_cap * sizeof(vgfx3d_keyframe_t));
         if (!nk)
             return 0;
+        if (new_cap > old_cap)
+            memset(nk + old_cap, 0, (size_t)(new_cap - old_cap) * sizeof(*nk));
+        ch->owned_keyframes = nk;
+        ch->owned_keyframe_capacity = new_cap;
         ch->keyframes = nk;
         ch->keyframe_capacity = new_cap;
     }
@@ -391,6 +434,7 @@ int rt_animation3d_try_add_keyframe(
     }
     ch->keyframes[insert] = new_kf;
     ch->keyframe_count++;
+    ch->initialized_keyframe_count = ch->keyframe_count;
     return 1;
 }
 
@@ -424,6 +468,10 @@ static int animation3d_keyframe_is_redundant(const vgfx3d_keyframe_t *a,
                                              float pos_tolerance,
                                              float rot_tolerance,
                                              float scl_tolerance) {
+    if (!a || !mid || !b || !isfinite(a->time) || !isfinite(mid->time) || !isfinite(b->time) ||
+        !isfinite(pos_tolerance) || pos_tolerance < 0.0f || !isfinite(rot_tolerance) ||
+        rot_tolerance < 0.0f || !isfinite(scl_tolerance) || scl_tolerance < 0.0f)
+        return 0;
     double span = b->time - a->time;
     float alpha;
     if (a->cubic_mask || mid->cubic_mask || b->cubic_mask)
@@ -438,20 +486,35 @@ static int animation3d_keyframe_is_redundant(const vgfx3d_keyframe_t *a,
     if (!(alpha >= 0.0f && alpha <= 1.0f))
         return 0;
     for (int i = 0; i < 3; i++) {
-        float lp = a->position[i] + alpha * (b->position[i] - a->position[i]);
-        float ls = a->scale_xyz[i] + alpha * (b->scale_xyz[i] - a->scale_xyz[i]);
-        if (fabsf(lp - mid->position[i]) > pos_tolerance)
-            return 0;
-        if (fabsf(ls - mid->scale_xyz[i]) > scl_tolerance)
-            return 0;
+        uint8_t bit = (uint8_t)(1u << i);
+        if (a->position_mask & bit) {
+            if (!isfinite(a->position[i]) || !isfinite(mid->position[i]) ||
+                !isfinite(b->position[i]))
+                return 0;
+            float lp = a->position[i] + alpha * (b->position[i] - a->position[i]);
+            if (!isfinite(lp) || fabsf(lp - mid->position[i]) > pos_tolerance)
+                return 0;
+        }
+        if (a->scale_mask & bit) {
+            if (!isfinite(a->scale_xyz[i]) || !isfinite(mid->scale_xyz[i]) ||
+                !isfinite(b->scale_xyz[i]))
+                return 0;
+            float ls = a->scale_xyz[i] + alpha * (b->scale_xyz[i] - a->scale_xyz[i]);
+            if (!isfinite(ls) || fabsf(ls - mid->scale_xyz[i]) > scl_tolerance)
+                return 0;
+        }
     }
-    {
+    if ((a->rotation_mask & 0x0Fu) == 0x0Fu) {
         float blended[4];
         float dot;
+        for (int i = 0; i < 4; ++i)
+            if (!isfinite(a->rotation[i]) || !isfinite(mid->rotation[i]) ||
+                !isfinite(b->rotation[i]))
+                return 0;
         quat_slerp_float(a->rotation, b->rotation, alpha, blended);
         dot = blended[0] * mid->rotation[0] + blended[1] * mid->rotation[1] +
               blended[2] * mid->rotation[2] + blended[3] * mid->rotation[3];
-        if (fabsf(dot) < 1.0f - rot_tolerance)
+        if (!isfinite(dot) || fabsf(dot) < 1.0f - rot_tolerance)
             return 0;
     }
     return 1;
@@ -470,11 +533,11 @@ int64_t rt_animation3d_compress_keyframes(void *obj,
                                           double pos_tolerance,
                                           double rot_tolerance,
                                           double scl_tolerance) {
-    rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    rt_animation3d *a = animation3d_checked(obj);
     int64_t dropped = 0;
-    float pos_tol = (float)pos_tolerance;
-    float rot_tol = (float)rot_tolerance;
-    float scl_tol = (float)scl_tolerance;
+    float pos_tol = skeleton3d_clamp_nonnegative_float(pos_tolerance, 0.0f);
+    float rot_tol = skeleton3d_clamp_nonnegative_float(rot_tolerance, 0.0f);
+    float scl_tol = skeleton3d_clamp_nonnegative_float(scl_tolerance, 0.0f);
     if (!a)
         return 0;
     for (int32_t c = 0, count = animation3d_safe_channel_count(a); c < count; c++) {
@@ -499,6 +562,7 @@ int64_t rt_animation3d_compress_keyframes(void *obj,
             kept++;
         }
         ch->keyframe_count = kept;
+        ch->initialized_keyframe_count = kept;
     }
     return dropped;
 }
@@ -527,10 +591,10 @@ void rt_animation3d_set_keyframe_tangents(void *obj,
                                           const float *rot_out,
                                           const float *scl_in,
                                           const float *scl_out) {
-    rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    rt_animation3d *a = animation3d_checked(obj);
     vgfx3d_anim_channel_t *ch = NULL;
     vgfx3d_keyframe_t *kf = NULL;
-    if (!a || !isfinite(time))
+    if (!a || bone_index < 0 || bone_index >= VGFX3D_MAX_SKELETON_BONES || !isfinite(time))
         return;
     for (int32_t c = 0, count = animation3d_safe_channel_count(a); c < count; c++) {
         if (a->channels[c].bone_index == (int32_t)bone_index) {
@@ -548,19 +612,25 @@ void rt_animation3d_set_keyframe_tangents(void *obj,
     }
     if (!kf)
         return;
-    if (pos_in && pos_out) {
-        memcpy(kf->pos_in_tangent, pos_in, 3 * sizeof(float));
-        memcpy(kf->pos_out_tangent, pos_out, 3 * sizeof(float));
+    if (pos_in && pos_out && (kf->position_mask & 0x07u) == 0x07u) {
+        for (int i = 0; i < 3; ++i) {
+            kf->pos_in_tangent[i] = animation3d_sanitize_lane(pos_in[i], 0.0f);
+            kf->pos_out_tangent[i] = animation3d_sanitize_lane(pos_out[i], 0.0f);
+        }
         kf->cubic_mask |= 1u;
     }
-    if (rot_in && rot_out) {
-        memcpy(kf->rot_in_tangent, rot_in, 4 * sizeof(float));
-        memcpy(kf->rot_out_tangent, rot_out, 4 * sizeof(float));
+    if (rot_in && rot_out && (kf->rotation_mask & 0x0Fu) == 0x0Fu) {
+        for (int i = 0; i < 4; ++i) {
+            kf->rot_in_tangent[i] = animation3d_sanitize_lane(rot_in[i], 0.0f);
+            kf->rot_out_tangent[i] = animation3d_sanitize_lane(rot_out[i], 0.0f);
+        }
         kf->cubic_mask |= 2u;
     }
-    if (scl_in && scl_out) {
-        memcpy(kf->scale_in_tangent, scl_in, 3 * sizeof(float));
-        memcpy(kf->scale_out_tangent, scl_out, 3 * sizeof(float));
+    if (scl_in && scl_out && (kf->scale_mask & 0x07u) == 0x07u) {
+        for (int i = 0; i < 3; ++i) {
+            kf->scale_in_tangent[i] = animation3d_sanitize_lane(scl_in[i], 0.0f);
+            kf->scale_out_tangent[i] = animation3d_sanitize_lane(scl_out[i], 0.0f);
+        }
         kf->cubic_mask |= 4u;
     }
 }
@@ -569,7 +639,7 @@ void rt_animation3d_set_keyframe_tangents(void *obj,
 /// @param[in,out] obj Animation3D to configure.
 /// @param[in] loop Zero for one-shot; nonzero for looping.
 void rt_animation3d_set_looping(void *obj, int8_t loop) {
-    rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    rt_animation3d *a = animation3d_checked(obj);
     if (a)
         a->looping = loop ? 1 : 0;
 }
@@ -578,7 +648,7 @@ void rt_animation3d_set_looping(void *obj, int8_t loop) {
 /// @param[in] obj Animation3D to inspect.
 /// @return `1` for looping; `0` for one-shot or invalid input.
 int8_t rt_animation3d_get_looping(void *obj) {
-    rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    rt_animation3d *a = animation3d_checked(obj);
     return a && a->looping ? 1 : 0;
 }
 
@@ -586,15 +656,19 @@ int8_t rt_animation3d_get_looping(void *obj) {
 /// @param[in] obj Animation3D to inspect.
 /// @return Positive finite duration, or `0.0`.
 double rt_animation3d_get_duration(void *obj) {
-    rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
-    return (a && isfinite(a->duration) && a->duration > 0.0f) ? a->duration : 0.0;
+    rt_animation3d *a = animation3d_checked(obj);
+    if (!a)
+        return 0.0;
+    if (!isfinite(a->duration) || a->duration <= 0.0f)
+        a->duration = 1.0f;
+    return a->duration;
 }
 
 /// @brief The clip's display / lookup name (empty string for NULL).
 /// @param[in] obj Animation3D to inspect.
 /// @return Owned runtime-string copy of the inline name, or an empty string.
 rt_string rt_animation3d_get_name(void *obj) {
-    rt_animation3d *a = (rt_animation3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    rt_animation3d *a = animation3d_checked(obj);
     return a ? rt_const_cstr(a->name) : rt_const_cstr("");
 }
 
@@ -685,9 +759,11 @@ static int32_t *animation3d_build_humanoid_role_cache(const rt_skeleton3d *skel)
     roles = (int32_t *)malloc((size_t)bone_count * sizeof(*roles));
     if (!roles)
         return NULL;
-    for (int32_t i = 0; i < bone_count; ++i)
+    for (int32_t i = 0; i < bone_count; ++i) {
+        rt_string name = skel->bones[i].name;
         roles[i] = animation3d_humanoid_role(
-            skel->bones[i].name ? rt_string_cstr(skel->bones[i].name) : "");
+            name && rt_string_is_handle(name) ? rt_string_cstr(name) : "");
+    }
     return roles;
 }
 
@@ -713,8 +789,11 @@ static int32_t animation3d_retarget_find_bone(const rt_skeleton3d *src,
     if (!src || !dst || src_bone < 0 || src_bone >= src_count)
         return -1;
     rt_string name_string = src->bones[src_bone].name;
-    const char *name = name_string ? rt_string_cstr(name_string) : "";
+    const char *name =
+        name_string && rt_string_is_handle(name_string) ? rt_string_cstr(name_string) : "";
     int role;
+    if (!name)
+        name = "";
     if (name && name[0] != '\0') {
         /* Destination-side alias: "a rig calling this bone <name> means my
          * bone <alias.local>" — the deterministic override for arbitrary
@@ -746,10 +825,11 @@ static int32_t animation3d_retarget_find_bone(const rt_skeleton3d *src,
     role = src_roles ? src_roles[src_bone] : animation3d_humanoid_role(name);
     if (role != 0) {
         for (int32_t i = 0; i < dst_count; ++i)
-            if ((dst_roles
-                     ? dst_roles[i]
-                     : animation3d_humanoid_role(
-                           dst->bones[i].name ? rt_string_cstr(dst->bones[i].name) : "")) == role)
+            if ((dst_roles ? dst_roles[i]
+                           : animation3d_humanoid_role(
+                                 dst->bones[i].name && rt_string_is_handle(dst->bones[i].name)
+                                     ? rt_string_cstr(dst->bones[i].name)
+                                     : "")) == role)
                 return i;
     }
     return src_bone < dst_count ? src_bone : -1;
@@ -784,8 +864,8 @@ static float animation3d_bone_bind_length(const rt_skeleton3d *skel, int32_t bon
         return 0.0f;
     m = skel->bones[bone].bind_pose_local;
     {
-        float len = sqrtf(m[3] * m[3] + m[7] * m[7] + m[11] * m[11]);
-        return isfinite(len) ? len : 0.0f;
+        double len = hypot(hypot((double)m[3], (double)m[7]), (double)m[11]);
+        return isfinite(len) && len <= FLT_MAX ? (float)len : 0.0f;
     }
 }
 
@@ -818,42 +898,76 @@ static int animation3d_retarget_copy_channel(rt_animation3d *dst,
         return 0;
     if (!isfinite(pos_scale) || pos_scale <= 0.0f)
         pos_scale = 1.0f;
-    vgfx3d_anim_channel_t *out = &dst->channels[dst->channel_count++];
+    vgfx3d_anim_channel_t *out = &dst->channels[dst->channel_count];
     memset(out, 0, sizeof(*out));
     out->bone_index = dst_bone;
-    out->keyframe_count = keyframe_count;
-    out->keyframe_capacity = keyframe_count;
-    if (keyframe_count == 0)
+    if (keyframe_count == 0) {
+        dst->channel_count++;
+        dst->initialized_channel_count = dst->channel_count;
         return 1;
+    }
     out->keyframes =
         (vgfx3d_keyframe_t *)malloc((size_t)keyframe_count * sizeof(vgfx3d_keyframe_t));
     if (!out->keyframes) {
-        out->keyframe_count = 0;
-        out->keyframe_capacity = 0;
+        memset(out, 0, sizeof(*out));
         return 0;
     }
+    out->owned_keyframes = out->keyframes;
+    out->keyframe_count = keyframe_count;
+    out->keyframe_capacity = keyframe_count;
+    out->initialized_keyframe_count = keyframe_count;
+    out->owned_keyframe_capacity = keyframe_count;
     memcpy(out->keyframes, src->keyframes, (size_t)keyframe_count * sizeof(*out->keyframes));
     /* Proportional retarget: scale translation keys by the bone-length ratio so a
      * clip authored on one skeleton fits a differently-proportioned one.
      * Rotations and scales transfer unchanged. */
+    double previous_time = 0.0;
     for (int32_t k = 0; k < out->keyframe_count; ++k) {
-        if (!isfinite(out->keyframes[k].time) || out->keyframes[k].time < 0.0)
-            out->keyframes[k].time = 0.0;
+        vgfx3d_keyframe_t *key = &out->keyframes[k];
+        if (!isfinite(key->time) || key->time < previous_time)
+            key->time = previous_time;
+        if (key->time < 0.0)
+            key->time = 0.0;
+        previous_time = key->time;
+        key->position_mask &= 0x07u;
+        key->rotation_mask &= 0x0Fu;
+        key->scale_mask &= 0x07u;
+        key->cubic_mask &= 0x07u;
+        if (key->position_mask != 0x07u)
+            key->cubic_mask &= (uint8_t)~1u;
+        if (key->rotation_mask != 0x0Fu)
+            key->cubic_mask &= (uint8_t)~2u;
+        if (key->scale_mask != 0x07u)
+            key->cubic_mask &= (uint8_t)~4u;
         if (pos_scale != 1.0f) {
-            out->keyframes[k].position[0] =
-                skeleton3d_clamp_to_float((double)out->keyframes[k].position[0] * pos_scale, 0.0f);
-            out->keyframes[k].position[1] =
-                skeleton3d_clamp_to_float((double)out->keyframes[k].position[1] * pos_scale, 0.0f);
-            out->keyframes[k].position[2] =
-                skeleton3d_clamp_to_float((double)out->keyframes[k].position[2] * pos_scale, 0.0f);
+            for (int lane = 0; lane < 3; ++lane) {
+                key->position[lane] =
+                    skeleton3d_clamp_to_float((double)key->position[lane] * pos_scale, 0.0f);
+                key->pos_in_tangent[lane] =
+                    skeleton3d_clamp_to_float((double)key->pos_in_tangent[lane] * pos_scale, 0.0f);
+                key->pos_out_tangent[lane] =
+                    skeleton3d_clamp_to_float((double)key->pos_out_tangent[lane] * pos_scale, 0.0f);
+            }
         }
-        animation3d_sanitize_trs(out->keyframes[k].position,
-                                 out->keyframes[k].rotation,
-                                 out->keyframes[k].scale_xyz,
-                                 fallback_pos,
-                                 fallback_rot,
-                                 fallback_scl);
+        for (int lane = 0; lane < 3; ++lane) {
+            key->pos_in_tangent[lane] = animation3d_sanitize_lane(key->pos_in_tangent[lane], 0.0f);
+            key->pos_out_tangent[lane] =
+                animation3d_sanitize_lane(key->pos_out_tangent[lane], 0.0f);
+            key->scale_in_tangent[lane] =
+                animation3d_sanitize_lane(key->scale_in_tangent[lane], 0.0f);
+            key->scale_out_tangent[lane] =
+                animation3d_sanitize_lane(key->scale_out_tangent[lane], 0.0f);
+        }
+        for (int lane = 0; lane < 4; ++lane) {
+            key->rot_in_tangent[lane] = animation3d_sanitize_lane(key->rot_in_tangent[lane], 0.0f);
+            key->rot_out_tangent[lane] =
+                animation3d_sanitize_lane(key->rot_out_tangent[lane], 0.0f);
+        }
+        animation3d_sanitize_trs(
+            key->position, key->rotation, key->scale_xyz, fallback_pos, fallback_rot, fallback_scl);
     }
+    dst->channel_count++;
+    dst->initialized_channel_count = dst->channel_count;
     return 1;
 }
 
@@ -901,6 +1015,8 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
         animation3d_release_ref(&out_obj);
         return NULL;
     }
+    out->owned_channels = out->channels;
+    out->owned_channel_capacity = src_channel_count;
     out->channel_capacity = src_channel_count;
     src_roles = animation3d_build_humanoid_role_cache(src_skel);
     dst_roles = animation3d_build_humanoid_role_cache(dst_skel);

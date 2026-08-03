@@ -20,6 +20,7 @@
 #include "rt_cloth3d.h"
 #include "rt_vec3.h"
 
+#include <cfloat>
 #include <cmath>
 #include <cstdio>
 
@@ -159,12 +160,43 @@ static void test_pins_hold() {
     EXPECT_TRUE(bottom[2] > 0.1, "unpinned bottom billows along the wind");
 }
 
+/// Extreme but finite public inputs stay bounded, and rejected deltas are exact no-ops.
+static void test_extreme_inputs_remain_finite() {
+    void *cloth = rt_cloth3d_new_chain(16, 2.0);
+    rt_cloth3d_pin(cloth, 0);
+    rt_cloth3d_set_gravity_scale(cloth, DBL_MAX);
+    rt_cloth3d_set_wind_response(cloth, DBL_MAX);
+    rt_cloth3d_set_wind(cloth, rt_vec3_new(1.0, -1.0, 0.5), DBL_MAX);
+    rt_cloth3d_add_capsule(cloth, rt_vec3_new(0.0, -1.0, 0.0), rt_vec3_new(0.0, -1.0, 0.0), 0.25);
+
+    rt_cloth3d_step(cloth, DBL_MAX);
+    bool finite = true;
+    for (int64_t point = 0; point < rt_cloth3d_get_point_count(cloth); ++point) {
+        double position[3];
+        point_of(cloth, point, position);
+        finite = finite && std::isfinite(position[0]) && std::isfinite(position[1]) &&
+                 std::isfinite(position[2]);
+    }
+    EXPECT_TRUE(finite, "extreme finite cloth inputs keep every point finite");
+    EXPECT_TRUE(rt_cloth3d_get_gravity_scale(cloth) == 1000000.0 &&
+                    rt_cloth3d_get_wind_response(cloth) == 120.0,
+                "extreme cloth coefficients clamp to documented stability bounds");
+
+    double before[3], after[3];
+    point_of(cloth, 16, before);
+    rt_cloth3d_step(cloth, NAN);
+    point_of(cloth, 16, after);
+    EXPECT_TRUE(before[0] == after[0] && before[1] == after[1] && before[2] == after[2],
+                "non-finite cloth delta is an exact no-op");
+}
+
 int main() {
     test_chain_settles();
     test_determinism_replay();
     test_substep_slicing_invariance();
     test_sphere_pushout();
     test_pins_hold();
+    test_extreme_inputs_remain_finite();
     std::printf("%d/%d tests passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;
 }

@@ -1,7 +1,20 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/anim/rt_skeleton3d_blend.inc  (#included from rt_skeleton3d.c; not a standalone translation unit)
-// Purpose: AnimBlend3D multi-state animation blending
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/anim/rt_skeleton3d_blend.inc
+// Purpose: AnimBlend3D multi-state playback, weighted pose blending, and palette output.
+// Key invariants:
+//   - State and bone counts are bounded before reading clips or pose buffers.
+//   - Pose buffers are replaced transactionally and share one authoritative capacity.
+// Ownership/Lifetime:
+//   - Included by rt_skeleton3d.c; this is not a standalone translation unit.
+//   - The blender retains its skeleton/clips and owns all current and temporal pose buffers.
+// Links: rt_skeleton3d.c, rt_skeleton3d.h, rt_skeleton3d_internal.h
+//
 //===----------------------------------------------------------------------===//
 /**
  * @file rt_skeleton3d_blend.inc
@@ -26,20 +39,35 @@
 /// pose, palette, accumulator, and scratch buffers, and clears their fields.
 static void anim_blend3d_finalizer(void *obj) {
     rt_anim_blend3d *b = (rt_anim_blend3d *)obj;
-    for (int32_t i = 0, count = anim_blend3d_state_slot_limit(b); i < count; i++) {
-        animation3d_release_class_ref((void **)&b->states[i].animation,
+    int32_t count = b ? b->initialized_state_count : 0;
+    if (!b)
+        return;
+    if (count < 0)
+        count = 0;
+    if (count > RT_ANIM_BLEND3D_MAX_STATES)
+        count = RT_ANIM_BLEND3D_MAX_STATES;
+    for (int32_t i = 0; i < count; i++) {
+        animation3d_release_class_ref((void **)&b->states[i].owned_animation,
                                       RT_G3D_ANIMATION3D_CLASS_ID);
+        b->states[i].animation = NULL;
     }
-    animation3d_release_class_ref((void **)&b->skeleton, RT_G3D_SKELETON3D_CLASS_ID);
-    free(b->bone_palette);
-    free(b->prev_bone_palette);
-    free(b->motion_palette_snapshot);
-    free(b->local_transforms);
-    free(b->temp_state_local);
-    free(b->blend_acc_trs);
-    free(b->globals_buf);
+    animation3d_release_class_ref((void **)&b->owned_skeleton, RT_G3D_SKELETON3D_CLASS_ID);
+    b->skeleton = NULL;
+    free(b->owned_bone_palette);
+    free(b->owned_prev_bone_palette);
+    free(b->owned_motion_palette_snapshot);
+    free(b->owned_local_transforms);
+    free(b->owned_temp_state_local);
+    free(b->owned_blend_acc_trs);
+    free(b->owned_globals_buf);
+    b->owned_bone_palette = b->owned_prev_bone_palette = b->owned_motion_palette_snapshot = NULL;
+    b->owned_local_transforms = b->owned_temp_state_local = b->owned_blend_acc_trs =
+        b->owned_globals_buf = NULL;
     b->bone_palette = b->prev_bone_palette = b->motion_palette_snapshot = NULL;
     b->local_transforms = b->temp_state_local = b->blend_acc_trs = b->globals_buf = NULL;
+    b->owned_pose_capacity = 0;
+    b->pose_capacity = 0;
+    b->initialized_state_count = 0;
     b->state_count = 0;
 }
 
@@ -50,21 +78,59 @@ static void anim_blend3d_finalizer(void *obj) {
 /// @details Capacity is rounded according to the shared skeleton allocation
 /// policy. Existing contents are preserved by the individual growth helpers.
 static int anim_blend3d_ensure_pose_capacity(rt_anim_blend3d *b, int32_t bone_count) {
+    float *staged[7] = {NULL, NULL, NULL, NULL, NULL, NULL, NULL};
+    float *old[7];
+    size_t old_floats;
+    size_t new_floats;
+    int reset_motion_history;
     if (!b)
         return 0;
+    anim_blend3d_repair_storage(b);
     int32_t new_capacity = skeleton3d_pose_capacity_for_count(bone_count);
-    int32_t old_capacity = b->pose_capacity > 0 ? b->pose_capacity : 0;
-    if (new_capacity <= old_capacity)
+    int32_t old_capacity = b->owned_pose_capacity > 0 ? b->owned_pose_capacity : 0;
+    if (new_capacity <= old_capacity && b->owned_bone_palette && b->owned_prev_bone_palette &&
+        b->owned_motion_palette_snapshot && b->owned_local_transforms &&
+        b->owned_temp_state_local && b->owned_blend_acc_trs && b->owned_globals_buf)
         return 1;
-    if (!skeleton3d_grow_pose_buffer(&b->bone_palette, old_capacity, new_capacity) ||
-        !skeleton3d_grow_pose_buffer(&b->prev_bone_palette, old_capacity, new_capacity) ||
-        !skeleton3d_grow_pose_buffer(&b->motion_palette_snapshot, old_capacity, new_capacity) ||
-        !skeleton3d_grow_pose_buffer(&b->local_transforms, old_capacity, new_capacity) ||
-        !skeleton3d_grow_pose_buffer(&b->temp_state_local, old_capacity, new_capacity) ||
-        !skeleton3d_grow_pose_buffer(&b->blend_acc_trs, old_capacity, new_capacity) ||
-        !skeleton3d_grow_pose_buffer(&b->globals_buf, old_capacity, new_capacity))
+    if (new_capacity < old_capacity)
+        new_capacity = old_capacity;
+    reset_motion_history = !b->owned_prev_bone_palette || !b->owned_motion_palette_snapshot;
+    old_floats = (size_t)old_capacity * 16u;
+    new_floats = (size_t)new_capacity * 16u;
+    if (new_floats > SIZE_MAX / sizeof(float))
         return 0;
-    b->pose_capacity = new_capacity;
+    old[0] = b->owned_bone_palette;
+    old[1] = b->owned_prev_bone_palette;
+    old[2] = b->owned_motion_palette_snapshot;
+    old[3] = b->owned_local_transforms;
+    old[4] = b->owned_temp_state_local;
+    old[5] = b->owned_blend_acc_trs;
+    old[6] = b->owned_globals_buf;
+    for (int32_t i = 0; i < 7; ++i) {
+        staged[i] = (float *)calloc(new_floats, sizeof(float));
+        if (!staged[i]) {
+            for (int32_t j = 0; j < 7; ++j)
+                free(staged[j]);
+            return 0;
+        }
+        if (old_floats > 0 && old[i])
+            memcpy(staged[i], old[i], old_floats * sizeof(float));
+    }
+    for (int32_t i = 0; i < 7; ++i)
+        free(old[i]);
+    b->owned_bone_palette = staged[0];
+    b->owned_prev_bone_palette = staged[1];
+    b->owned_motion_palette_snapshot = staged[2];
+    b->owned_local_transforms = staged[3];
+    b->owned_temp_state_local = staged[4];
+    b->owned_blend_acc_trs = staged[5];
+    b->owned_globals_buf = staged[6];
+    b->owned_pose_capacity = new_capacity;
+    if (reset_motion_history) {
+        b->has_prev_motion_palette = 0;
+        b->motion_history_initialized = 0;
+    }
+    anim_blend3d_repair_storage(b);
     return 1;
 }
 
@@ -93,11 +159,14 @@ void *rt_anim_blend3d_new(void *skel_obj) {
     }
     b->vptr = NULL;
     b->skeleton = skel;
+    b->owned_skeleton = skel;
     rt_obj_retain_maybe(skel);
     b->state_count = 0;
+    b->initialized_state_count = 0;
     memset(b->states, 0, sizeof(b->states));
     b->last_motion_frame = 0;
     b->has_prev_motion_palette = 0;
+    b->motion_history_initialized = 0;
 
     int32_t bone_count = skeleton3d_safe_bone_count(skel);
     b->pose_capacity = skeleton3d_pose_capacity_for_count(bone_count);
@@ -109,6 +178,14 @@ void *rt_anim_blend3d_new(void *skel_obj) {
     b->temp_state_local = (float *)calloc(1, buf_sz);
     b->blend_acc_trs = (float *)calloc(1, buf_sz);
     b->globals_buf = (float *)calloc(1, buf_sz);
+    b->owned_bone_palette = b->bone_palette;
+    b->owned_prev_bone_palette = b->prev_bone_palette;
+    b->owned_motion_palette_snapshot = b->motion_palette_snapshot;
+    b->owned_local_transforms = b->local_transforms;
+    b->owned_temp_state_local = b->temp_state_local;
+    b->owned_blend_acc_trs = b->blend_acc_trs;
+    b->owned_globals_buf = b->globals_buf;
+    b->owned_pose_capacity = b->pose_capacity;
     if (!b->bone_palette || !b->prev_bone_palette || !b->motion_palette_snapshot ||
         !b->local_transforms || !b->temp_state_local || !b->blend_acc_trs || !b->globals_buf) {
         anim_blend3d_finalizer(b);
@@ -143,10 +220,8 @@ void *rt_anim_blend3d_new(void *skel_obj) {
 /// @details A new state starts at time zero with weight zero, unit speed, and
 /// the clip's current looping setting.
 int64_t rt_anim_blend3d_add_state(void *obj, rt_string name, void *anim_obj) {
-    rt_anim_blend3d *b =
-        (rt_anim_blend3d *)rt_g3d_checked_or_null(obj, RT_G3D_ANIMBLEND3D_CLASS_ID);
-    rt_animation3d *anim =
-        (rt_animation3d *)rt_g3d_checked_or_null(anim_obj, RT_G3D_ANIMATION3D_CLASS_ID);
+    rt_anim_blend3d *b = anim_blend3d_checked(obj);
+    rt_animation3d *anim = animation3d_checked(anim_obj);
     rt_skeleton3d *skel;
     if (!b || !anim)
         return -1;
@@ -159,7 +234,7 @@ int64_t rt_anim_blend3d_add_state(void *obj, rt_string name, void *anim_obj) {
 
     anim_blend_state_t *st = &b->states[b->state_count];
     memset(st, 0, sizeof(anim_blend_state_t));
-    if (name) {
+    if (name && rt_string_is_handle(name)) {
         const char *cstr = rt_string_cstr(name);
         if (cstr) {
             size_t len = strlen(cstr);
@@ -170,12 +245,15 @@ int64_t rt_anim_blend3d_add_state(void *obj, rt_string name, void *anim_obj) {
         }
     }
     st->animation = anim;
+    st->owned_animation = anim;
     rt_obj_retain_maybe(anim);
     st->weight = 0.0f;
     st->anim_time = 0.0f;
     st->speed = 1.0f;
     st->looping = anim->looping ? 1 : 0;
-    return b->state_count++;
+    b->state_count++;
+    b->initialized_state_count = b->state_count;
+    return b->state_count - 1;
 }
 
 /// @brief Set one state's contribution to the blended pose.
@@ -197,7 +275,8 @@ void rt_anim_blend3d_set_weight(void *obj, int64_t state, double weight) {
         weight = 0.0;
     if (weight > 1.0)
         weight = 1.0;
-    b->states[state].weight = (float)weight;
+    if (b->states[state].weight != (float)weight)
+        b->states[state].weight = (float)weight;
 }
 
 /// @brief Set the first blend state whose stored name matches a string.
@@ -211,7 +290,7 @@ void rt_anim_blend3d_set_weight(void *obj, int64_t state, double weight) {
 void rt_anim_blend3d_set_weight_by_name(void *obj, rt_string name, double weight) {
     rt_anim_blend3d *b = anim_blend3d_checked(obj);
     char target_buf[64];
-    if (!b || !name)
+    if (!b || !name || !rt_string_is_handle(name))
         return;
     const char *target = rt_string_cstr(name);
     if (!target)
@@ -231,7 +310,8 @@ void rt_anim_blend3d_set_weight_by_name(void *obj, rt_string name, double weight
                 weight = 0.0;
             if (weight > 1.0)
                 weight = 1.0;
-            b->states[i].weight = (float)weight;
+            if (b->states[i].weight != (float)weight)
+                b->states[i].weight = (float)weight;
             return;
         }
     }
@@ -249,9 +329,9 @@ double rt_anim_blend3d_get_weight(void *obj, int64_t state) {
     if (state < 0 || state >= animblend3d_safe_state_count(b))
         return 0.0;
     if (!isfinite(b->states[state].weight) || b->states[state].weight <= 0.0f)
-        return 0.0;
-    if (b->states[state].weight >= 1.0f)
-        return 1.0;
+        b->states[state].weight = 0.0f;
+    else if (b->states[state].weight >= 1.0f)
+        b->states[state].weight = 1.0f;
     return (double)b->states[state].weight;
 }
 
@@ -271,7 +351,9 @@ void rt_anim_blend3d_set_speed(void *obj, int64_t state, double speed) {
         return;
     if (!isfinite(speed))
         speed = 1.0;
-    b->states[state].speed = skeleton3d_clamp_to_float(speed, 1.0f);
+    float repaired = skeleton3d_clamp_to_float(speed, 1.0f);
+    if (b->states[state].speed != repaired)
+        b->states[state].speed = repaired;
 }
 
 /// @brief Advance every contributing state by `dt` seconds and recompute the blended bone palette.
@@ -311,17 +393,11 @@ void rt_anim_blend3d_update(void *obj, double dt) {
             continue;
         if (!isfinite(st->speed))
             st->speed = 1.0f;
-        st->anim_time += skeleton3d_clamp_to_float(dt * (double)st->speed, 0.0f);
-        if (!isfinite(st->anim_time))
-            st->anim_time = 0.0f;
-        if (st->looping && anim->duration > 0)
-            st->anim_time = animation3d_wrap_time(st->anim_time, anim->duration);
-        else {
-            if (st->anim_time > anim->duration)
-                st->anim_time = anim->duration;
-            else if (st->anim_time < 0.0f)
-                st->anim_time = 0.0f;
-        }
+        if (!isfinite(anim->duration) || anim->duration <= 0.0f)
+            anim->duration = 1.0f;
+        st->looping = st->looping ? 1 : 0;
+        st->anim_time = animation3d_advance_clock(
+            st->anim_time, dt, st->speed, anim->duration, st->looping, NULL);
     }
 
     /* Blend entirely in TRS space and compose matrices exactly once per bone at the end.
@@ -340,17 +416,24 @@ void rt_anim_blend3d_update(void *obj, double dt) {
     }
 
     /* Blend active states */
-    float total_weight = 0.0f;
+    double total_weight = 0.0;
     for (int32_t s = 0; s < state_count; s++) {
         anim_blend_state_t *st = &b->states[s];
         rt_animation3d *anim = animation3d_clip_slot((void **)&st->animation);
         int32_t channel_count;
-        if (!anim || !isfinite(st->weight) || st->weight < 1e-6f)
+        if (!anim)
             continue;
+        if (!isfinite(st->weight) || st->weight <= 0.0f) {
+            st->weight = 0.0f;
+            continue;
+        }
+        if (st->weight > 1.0f)
+            st->weight = 1.0f;
 
         float w = st->weight;
-        total_weight += w;
-        float blend_t = skeleton3d_clamp01f((total_weight > 1e-6f) ? w / total_weight : 1.0f);
+        total_weight += (double)w;
+        float blend_t =
+            skeleton3d_clamp01f((float)((total_weight > 1e-6) ? (double)w / total_weight : 1.0));
 
         /* Sample this state's pose in TRS form into local_transforms' slots (free until the
          * final compose): bind TRS for every bone, then channel overrides — O(bones+channels),
@@ -464,9 +547,9 @@ static const float *anim_blend_prepare_prev_palette(rt_anim_blend3d *b, int64_t 
     if (!anim_blend3d_ensure_pose_capacity(b, bone_count))
         return NULL;
     size_t palette_size = (size_t)bone_count * 16 * sizeof(float);
-    if (b->last_motion_frame != frame_serial) {
+    if (!b->motion_history_initialized || b->last_motion_frame != frame_serial) {
         if (b->prev_bone_palette && b->motion_palette_snapshot && bone_count > 0 &&
-            b->last_motion_frame != 0) {
+            b->motion_history_initialized) {
             memcpy(b->prev_bone_palette, b->motion_palette_snapshot, palette_size);
             b->has_prev_motion_palette = 1;
         } else if (!b->prev_bone_palette) {
@@ -475,6 +558,7 @@ static const float *anim_blend_prepare_prev_palette(rt_anim_blend3d *b, int64_t 
         if (b->motion_palette_snapshot && bone_count > 0)
             memcpy(b->motion_palette_snapshot, b->bone_palette, palette_size);
         b->last_motion_frame = frame_serial;
+        b->motion_history_initialized = 1;
     }
     return b->has_prev_motion_palette ? b->prev_bone_palette : NULL;
 }

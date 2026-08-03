@@ -88,6 +88,21 @@ static rt_navmesh3d *navmesh3d_import_v2_after_magic(FILE *f) {
             if (!navmesh3d_read_string(f, &nm->area_names[i], NAVMESH3D_IMPORT_MAX_STRING_BYTES))
                 goto fail;
             nm->area_name_count = i + 1;
+            int64_t current_len = rt_str_len(nm->area_names[i]);
+            if (current_len <= 0)
+                goto fail;
+            const char *current_bytes = rt_string_cstr(nm->area_names[i]);
+            if (!current_bytes)
+                goto fail;
+            for (int32_t prior = 0; prior < i; prior++) {
+                int64_t prior_len = rt_str_len(nm->area_names[prior]);
+                const char *prior_bytes = rt_string_cstr(nm->area_names[prior]);
+                if (prior_len < 0 || !prior_bytes)
+                    goto fail;
+                if (prior_len == current_len &&
+                    memcmp(prior_bytes, current_bytes, (size_t)current_len) == 0)
+                    goto fail;
+            }
         }
     }
     if (!navmesh3d_read_i32(f, &source_tc) || source_tc < 0 ||
@@ -148,7 +163,7 @@ static rt_navmesh3d *navmesh3d_import_v2_after_magic(FILE *f) {
             link->from_tri = -1;
             link->to_tri = -1;
             link->traversal_cost = navmesh3d_sanitize_traversal_cost((double)link->traversal_cost);
-            if (kind && rt_string_cstr(kind) && rt_string_cstr(kind)[0] != '\0')
+            if (kind && rt_str_len(kind) > 0)
                 link->kind = kind;
             else if (kind)
                 rt_string_unref(kind);
@@ -171,6 +186,13 @@ static rt_navmesh3d *navmesh3d_import_v2_after_magic(FILE *f) {
                 !navmesh3d_read_f32(f, &nm->obstacles[i].max[1]) ||
                 !navmesh3d_read_f32(f, &nm->obstacles[i].max[2]))
                 goto fail;
+            for (int lane = 0; lane < 3; lane++) {
+                if (nm->obstacles[i].min[lane] > nm->obstacles[i].max[lane]) {
+                    float swap = nm->obstacles[i].min[lane];
+                    nm->obstacles[i].min[lane] = nm->obstacles[i].max[lane];
+                    nm->obstacles[i].max[lane] = swap;
+                }
+            }
             nm->obstacle_count = i + 1;
         }
     }

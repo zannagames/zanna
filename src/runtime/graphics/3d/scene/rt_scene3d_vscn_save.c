@@ -54,6 +54,7 @@
 #include "rt_textureasset3d.h"
 #include "rt_trap.h"
 
+#include <float.h>
 #include <inttypes.h>
 #include <math.h>
 #include <stdarg.h>
@@ -367,7 +368,7 @@ static int vscn_append(char **buf, size_t *len, size_t *cap, const char *fmt, ..
     }
 }
 
-/// @brief Append `text` to the buffer wrapped in JSON quotes with proper escapes.
+/// @brief Append an exact byte string to the buffer wrapped in JSON quotes with proper escapes.
 ///
 /// Emits the standard backslash escapes (`\"`, `\\`, `\b`, `\f`,
 /// `\n`, `\r`, `\t`) for ASCII control characters and `\u00XX`
@@ -376,13 +377,18 @@ static int vscn_append(char **buf, size_t *len, size_t *cap, const char *fmt, ..
 /// @param buf Address of caller-owned output allocation.
 /// @param len In/out populated byte length.
 /// @param cap In/out byte capacity.
-/// @param text Borrowed NUL-terminated UTF-8 string; `NULL` emits empty.
+/// @param text Borrowed UTF-8 bytes; `NULL` is valid only when @p text_len is zero.
+/// @param text_len Exact readable byte count, which may include embedded NUL bytes.
 /// @return Nonzero after successful escaped append, otherwise zero.
-static int vscn_append_json_string(char **buf, size_t *len, size_t *cap, const char *text) {
+static int vscn_append_json_bytes(
+    char **buf, size_t *len, size_t *cap, const char *text, size_t text_len) {
+    if ((!text && text_len > 0) || !buf || !len || !cap)
+        return 0;
     if (!vscn_append_raw(buf, len, cap, "\"", 1))
         return 0;
-    if (text) {
-        for (const unsigned char *p = (const unsigned char *)text; *p; ++p) {
+    if (text && text_len > 0) {
+        for (size_t index = 0; index < text_len; index++) {
+            const unsigned char *p = (const unsigned char *)text + index;
             char unicode_escape[7];
             switch (*p) {
                 case '\"':
@@ -426,6 +432,16 @@ static int vscn_append_json_string(char **buf, size_t *len, size_t *cap, const c
         }
     }
     return vscn_append_raw(buf, len, cap, "\"", 1);
+}
+
+/// @brief Append a NUL-terminated C string as escaped JSON text.
+/// @param buf Address of caller-owned output allocation.
+/// @param len In/out populated byte length.
+/// @param cap In/out byte capacity.
+/// @param text Borrowed NUL-terminated UTF-8 string; `NULL` emits empty.
+/// @return Nonzero after successful escaped append, otherwise zero.
+static int vscn_append_json_string(char **buf, size_t *len, size_t *cap, const char *text) {
+    return vscn_append_json_bytes(buf, len, cap, text, text ? strlen(text) : 0u);
 }
 
 /// @brief First pass: register every texture / cubemap referenced by `material` in the dedupe
@@ -1270,10 +1286,12 @@ static int vscn_serialize_metadata_object(
             case RT_SCENE3D_METADATA_STRING:
                 if (!entry->value.string_value.data || entry->value.string_value.length < 0 ||
                     entry->value.string_value.length > RT_SCENE_NODE3D_MAX_METADATA_STRING_BYTES ||
-                    strlen(entry->value.string_value.data) !=
-                        (size_t)entry->value.string_value.length ||
                     !vscn_append(buf, len, cap, ", \"value\": ") ||
-                    !vscn_append_json_string(buf, len, cap, entry->value.string_value.data))
+                    !vscn_append_json_bytes(buf,
+                                            len,
+                                            cap,
+                                            entry->value.string_value.data,
+                                            (size_t)entry->value.string_value.length))
                     return 0;
                 break;
         }
@@ -1801,9 +1819,19 @@ static int vscn_save_emit_skeletons(char **buf,
             return 0;
         for (int32_t b = 0; b < bone_count; b++) {
             const vgfx3d_bone_t *bone = &skel->bones[b];
+            if (!bone->name || !rt_string_is_handle(bone->name) || bone->parent_index < -1 ||
+                bone->parent_index >= bone_count)
+                return 0;
+            int64_t name_len = rt_str_len(bone->name);
+            const char *name_bytes = rt_string_cstr(bone->name);
+            if (name_len < 0 || (uint64_t)name_len > SIZE_MAX || !name_bytes)
+                return 0;
+            for (int k = 0; k < 16; k++) {
+                if (!isfinite(bone->bind_pose_local[k]) || !isfinite(bone->inverse_bind[k]))
+                    return 0;
+            }
             if (!vscn_append(buf, len, cap, "      {\"name\": ") ||
-                !vscn_append_json_string(
-                    buf, len, cap, bone->name ? rt_string_cstr(bone->name) : "") ||
+                !vscn_append_json_bytes(buf, len, cap, name_bytes, (size_t)name_len) ||
                 !vscn_append(
                     buf, len, cap, ", \"parent\": %d, \"bindLocal\": [", bone->parent_index))
                 return 0;
@@ -1828,6 +1856,94 @@ static int vscn_save_emit_skeletons(char **buf,
     return vscn_append(buf, len, cap, "  ],\n");
 }
 
+/// @brief Validate one animation channel and encode a padding-deterministic keyframe payload.
+/// @details Member-wise copies into zeroed structs prevent uninitialized C-struct padding from
+///          leaking into VSCN output or making identical saves byte-different. The validation
+///          mirrors loader invariants so the saver never emits a file it will later reject.
+/// @param channel Borrowed animation channel.
+/// @param key_count Positive safe keyframe count.
+/// @return Caller-owned Base64 text, or `NULL` for invalid data/allocation failure.
+static char *vscn_encode_skeletal_keyframes(const vgfx3d_anim_channel_t *channel,
+                                            int32_t key_count) {
+    vgfx3d_keyframe_t *wire;
+    char *encoded;
+    double previous_time = -1.0;
+    if (!channel || !channel->keyframes || key_count <= 0 ||
+        (size_t)key_count > SIZE_MAX / sizeof(*wire))
+        return NULL;
+    wire = (vgfx3d_keyframe_t *)calloc((size_t)key_count, sizeof(*wire));
+    if (!wire)
+        return NULL;
+    for (int32_t index = 0; index < key_count; index++) {
+        const vgfx3d_keyframe_t *source = &channel->keyframes[index];
+        vgfx3d_keyframe_t *target = &wire[index];
+        if (!isfinite(source->time) || source->time < 0.0 || source->time > (double)FLT_MAX ||
+            (index > 0 && !(source->time > previous_time)) ||
+            (source->position_mask & ~0x07u) != 0 ||
+            (source->rotation_mask != 0u && source->rotation_mask != 0x0Fu) ||
+            (source->scale_mask & ~0x07u) != 0 || (source->cubic_mask & ~0x07u) != 0 ||
+            ((source->cubic_mask & 1u) && source->position_mask != 0x07u) ||
+            ((source->cubic_mask & 2u) && source->rotation_mask != 0x0Fu) ||
+            ((source->cubic_mask & 4u) && source->scale_mask != 0x07u)) {
+            free(wire);
+            return NULL;
+        }
+        previous_time = source->time;
+        for (int lane = 0; lane < 3; lane++) {
+            if (!isfinite(source->position[lane]) || !isfinite(source->scale_xyz[lane]) ||
+                !isfinite(source->pos_in_tangent[lane]) ||
+                !isfinite(source->pos_out_tangent[lane]) ||
+                !isfinite(source->scale_in_tangent[lane]) ||
+                !isfinite(source->scale_out_tangent[lane])) {
+                free(wire);
+                return NULL;
+            }
+        }
+        for (int lane = 0; lane < 4; lane++) {
+            if (!isfinite(source->rotation[lane]) || !isfinite(source->rot_in_tangent[lane]) ||
+                !isfinite(source->rot_out_tangent[lane])) {
+                free(wire);
+                return NULL;
+            }
+        }
+        if (source->rotation_mask == 0x0Fu) {
+            double max_abs =
+                fmax(fmax(fabs((double)source->rotation[0]), fabs((double)source->rotation[1])),
+                     fmax(fabs((double)source->rotation[2]), fabs((double)source->rotation[3])));
+            double length = max_abs > 0.0 ? hypot(hypot((double)source->rotation[0] / max_abs,
+                                                        (double)source->rotation[1] / max_abs),
+                                                  hypot((double)source->rotation[2] / max_abs,
+                                                        (double)source->rotation[3] / max_abs))
+                                          : 0.0;
+            if (!isfinite(max_abs) || max_abs <= 1e-8 || !isfinite(length) || length <= 1e-8) {
+                free(wire);
+                return NULL;
+            }
+        }
+        target->time = source->time;
+        memcpy(target->position, source->position, sizeof(target->position));
+        memcpy(target->rotation, source->rotation, sizeof(target->rotation));
+        memcpy(target->scale_xyz, source->scale_xyz, sizeof(target->scale_xyz));
+        target->position_mask = source->position_mask;
+        target->rotation_mask = source->rotation_mask;
+        target->scale_mask = source->scale_mask;
+        target->cubic_mask = source->cubic_mask;
+        memcpy(target->pos_in_tangent, source->pos_in_tangent, sizeof(target->pos_in_tangent));
+        memcpy(target->pos_out_tangent, source->pos_out_tangent, sizeof(target->pos_out_tangent));
+        memcpy(target->rot_in_tangent, source->rot_in_tangent, sizeof(target->rot_in_tangent));
+        memcpy(target->rot_out_tangent, source->rot_out_tangent, sizeof(target->rot_out_tangent));
+        memcpy(
+            target->scale_in_tangent, source->scale_in_tangent, sizeof(target->scale_in_tangent));
+        memcpy(target->scale_out_tangent,
+               source->scale_out_tangent,
+               sizeof(target->scale_out_tangent));
+    }
+    encoded = vscn_base64_encode(
+        (const uint8_t *)wire, (size_t)key_count * sizeof(vgfx3d_keyframe_t), NULL);
+    free(wire);
+    return encoded;
+}
+
 /// @brief Emit the v3 `"animations": [ ... ],` array. Channels serialize their
 ///   keyframe arrays as raw little-endian structs tagged with a format name so
 ///   the loader can reject layout drift.
@@ -1850,6 +1966,9 @@ static int vscn_save_emit_animations(char **buf,
         if (!rt_g3d_has_class(anim, RT_G3D_ANIMATION3D_CLASS_ID))
             continue;
         channel_count = animation3d_safe_channel_count(anim);
+        if (!isfinite(anim->duration) || anim->duration <= 0.0f ||
+            !memchr(anim->name, '\0', sizeof(anim->name)))
+            return 0;
         if (!vscn_append(buf, len, cap, "    {\"name\": ") ||
             !vscn_append_json_string(buf, len, cap, anim->name) ||
             !vscn_append(buf,
@@ -1864,9 +1983,13 @@ static int vscn_save_emit_animations(char **buf,
         for (int32_t c = 0; c < channel_count; c++) {
             const vgfx3d_anim_channel_t *ch = &anim->channels[c];
             int32_t key_count = animation3d_safe_keyframe_count(ch);
-            char *keys64 = vscn_base64_encode((const uint8_t *)ch->keyframes,
-                                              (size_t)key_count * sizeof(vgfx3d_keyframe_t),
-                                              NULL);
+            if (ch->bone_index < 0 || ch->bone_index >= VGFX3D_MAX_SKELETON_BONES)
+                return 0;
+            for (int32_t prior = 0; prior < c; prior++) {
+                if (anim->channels[prior].bone_index == ch->bone_index)
+                    return 0;
+            }
+            char *keys64 = vscn_encode_skeletal_keyframes(ch, key_count);
             int ok;
             if (!keys64)
                 return 0;

@@ -1,7 +1,20 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/anim/rt_skeleton3d_player.inc  (#included from rt_skeleton3d.c; not a standalone translation unit)
-// Purpose: AnimPlayer3D single-clip playback implementation
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/anim/rt_skeleton3d_player.inc
+// Purpose: AnimPlayer3D playback, crossfading, pose evaluation, and palette output.
+// Key invariants:
+//   - Playback clocks remain finite and bounded for looping and non-looping clips.
+//   - All current, prior, local, global, and snapshot buffers share one valid capacity.
+// Ownership/Lifetime:
+//   - Included by rt_skeleton3d.c; this is not a standalone translation unit.
+//   - Players retain their skeleton/clips and own every current and temporal pose buffer.
+// Links: rt_skeleton3d.c, rt_skeleton3d.h, rt_skeleton3d_internal.h
+//
 //===----------------------------------------------------------------------===//
 /**
  * @file rt_skeleton3d_player.inc
@@ -23,19 +36,29 @@
 /// then frees the current, previous, snapshot, local, and global matrix arrays.
 static void rt_anim_player3d_finalize(void *obj) {
     rt_anim_player3d *p = (rt_anim_player3d *)obj;
-    animation3d_release_class_ref((void **)&p->skeleton, RT_G3D_SKELETON3D_CLASS_ID);
-    animation3d_release_class_ref((void **)&p->current, RT_G3D_ANIMATION3D_CLASS_ID);
-    animation3d_release_class_ref((void **)&p->crossfade_from, RT_G3D_ANIMATION3D_CLASS_ID);
-    free(p->bone_palette);
+    animation3d_release_class_ref((void **)&p->owned_skeleton, RT_G3D_SKELETON3D_CLASS_ID);
+    animation3d_release_class_ref((void **)&p->owned_current, RT_G3D_ANIMATION3D_CLASS_ID);
+    animation3d_release_class_ref((void **)&p->owned_crossfade_from, RT_G3D_ANIMATION3D_CLASS_ID);
+    p->skeleton = NULL;
+    p->current = NULL;
+    p->crossfade_from = NULL;
+    free(p->owned_bone_palette);
+    p->owned_bone_palette = NULL;
     p->bone_palette = NULL;
-    free(p->prev_bone_palette);
+    free(p->owned_prev_bone_palette);
+    p->owned_prev_bone_palette = NULL;
     p->prev_bone_palette = NULL;
-    free(p->motion_palette_snapshot);
+    free(p->owned_motion_palette_snapshot);
+    p->owned_motion_palette_snapshot = NULL;
     p->motion_palette_snapshot = NULL;
-    free(p->local_transforms);
+    free(p->owned_local_transforms);
+    p->owned_local_transforms = NULL;
     p->local_transforms = NULL;
-    free(p->globals_buf);
+    free(p->owned_globals_buf);
+    p->owned_globals_buf = NULL;
     p->globals_buf = NULL;
+    p->owned_pose_capacity = 0;
+    p->pose_capacity = 0;
 }
 
 /// @brief Re-evaluate a player's current animated pose and skinning palette.
@@ -60,47 +83,76 @@ static int32_t skeleton3d_pose_capacity_for_count(int32_t bone_count) {
     return bone_count;
 }
 
-/// @brief Grow one 16-float-per-bone pose buffer and clear its new suffix.
-/// @param[in,out] buffer Address of the owned buffer pointer.
-/// @param[in] old_capacity Number of existing bone slots.
-/// @param[in] new_capacity Required number of bone slots.
-/// @return Nonzero when no growth is needed or reallocation succeeds;
-/// otherwise zero.
-/// @details Existing floats are preserved. A null slot address is treated as
-/// requiring no work, matching callers that grow synchronized optional buffers.
-static int skeleton3d_grow_pose_buffer(float **buffer, int32_t old_capacity, int32_t new_capacity) {
-    if (!buffer || new_capacity <= old_capacity)
-        return 1;
-    size_t old_floats = (size_t)(old_capacity > 0 ? old_capacity : 0) * 16u;
-    size_t new_floats = (size_t)new_capacity * 16u;
-    if (new_floats > SIZE_MAX / sizeof(float))
-        return 0;
-    float *grown = (float *)realloc(*buffer, new_floats * sizeof(float));
-    if (!grown)
-        return 0;
-    memset(grown + old_floats, 0, (new_floats - old_floats) * sizeof(float));
-    *buffer = grown;
-    return 1;
-}
-
 /// @brief Ensure every player pose buffer can hold a requested skeleton.
 /// @param[in,out] p Player whose synchronized buffers may be enlarged.
 /// @param[in] bone_count Required number of bone matrices.
 /// @return Nonzero when all buffers have sufficient capacity; otherwise zero.
 static int anim_player3d_ensure_pose_capacity(rt_anim_player3d *p, int32_t bone_count) {
+    float *staged_bone_palette;
+    float *staged_prev_palette;
+    float *staged_snapshot;
+    float *staged_locals;
+    float *staged_globals;
+    size_t old_floats;
+    size_t new_floats;
+    int reset_motion_history;
     if (!p)
         return 0;
+    anim_player3d_repair_storage(p);
     int32_t new_capacity = skeleton3d_pose_capacity_for_count(bone_count);
-    int32_t old_capacity = p->pose_capacity > 0 ? p->pose_capacity : 0;
-    if (new_capacity <= old_capacity)
+    int32_t old_capacity = p->owned_pose_capacity > 0 ? p->owned_pose_capacity : 0;
+    if (new_capacity <= old_capacity && p->owned_bone_palette && p->owned_prev_bone_palette &&
+        p->owned_motion_palette_snapshot && p->owned_local_transforms && p->owned_globals_buf)
         return 1;
-    if (!skeleton3d_grow_pose_buffer(&p->bone_palette, old_capacity, new_capacity) ||
-        !skeleton3d_grow_pose_buffer(&p->prev_bone_palette, old_capacity, new_capacity) ||
-        !skeleton3d_grow_pose_buffer(&p->motion_palette_snapshot, old_capacity, new_capacity) ||
-        !skeleton3d_grow_pose_buffer(&p->local_transforms, old_capacity, new_capacity) ||
-        !skeleton3d_grow_pose_buffer(&p->globals_buf, old_capacity, new_capacity))
+    if (new_capacity < old_capacity)
+        new_capacity = old_capacity;
+    reset_motion_history = !p->owned_prev_bone_palette || !p->owned_motion_palette_snapshot;
+    old_floats = (size_t)old_capacity * 16u;
+    new_floats = (size_t)new_capacity * 16u;
+    if (new_floats > SIZE_MAX / sizeof(float))
         return 0;
-    p->pose_capacity = new_capacity;
+    staged_bone_palette = (float *)calloc(new_floats, sizeof(float));
+    staged_prev_palette = (float *)calloc(new_floats, sizeof(float));
+    staged_snapshot = (float *)calloc(new_floats, sizeof(float));
+    staged_locals = (float *)calloc(new_floats, sizeof(float));
+    staged_globals = (float *)calloc(new_floats, sizeof(float));
+    if (!staged_bone_palette || !staged_prev_palette || !staged_snapshot || !staged_locals ||
+        !staged_globals) {
+        free(staged_bone_palette);
+        free(staged_prev_palette);
+        free(staged_snapshot);
+        free(staged_locals);
+        free(staged_globals);
+        return 0;
+    }
+    if (old_floats > 0) {
+        if (p->owned_bone_palette)
+            memcpy(staged_bone_palette, p->owned_bone_palette, old_floats * sizeof(float));
+        if (p->owned_prev_bone_palette)
+            memcpy(staged_prev_palette, p->owned_prev_bone_palette, old_floats * sizeof(float));
+        if (p->owned_motion_palette_snapshot)
+            memcpy(staged_snapshot, p->owned_motion_palette_snapshot, old_floats * sizeof(float));
+        if (p->owned_local_transforms)
+            memcpy(staged_locals, p->owned_local_transforms, old_floats * sizeof(float));
+        if (p->owned_globals_buf)
+            memcpy(staged_globals, p->owned_globals_buf, old_floats * sizeof(float));
+    }
+    free(p->owned_bone_palette);
+    free(p->owned_prev_bone_palette);
+    free(p->owned_motion_palette_snapshot);
+    free(p->owned_local_transforms);
+    free(p->owned_globals_buf);
+    p->owned_bone_palette = staged_bone_palette;
+    p->owned_prev_bone_palette = staged_prev_palette;
+    p->owned_motion_palette_snapshot = staged_snapshot;
+    p->owned_local_transforms = staged_locals;
+    p->owned_globals_buf = staged_globals;
+    p->owned_pose_capacity = new_capacity;
+    if (reset_motion_history) {
+        p->has_prev_motion_palette = 0;
+        p->motion_history_initialized = 0;
+    }
+    anim_player3d_repair_storage(p);
     return 1;
 }
 
@@ -134,9 +186,12 @@ void *rt_anim_player3d_new(void *skeleton) {
     }
     p->vptr = NULL;
     p->skeleton = skel;
+    p->owned_skeleton = skel;
     rt_obj_retain_maybe(skeleton);
     p->current = NULL;
+    p->owned_current = NULL;
     p->crossfade_from = NULL;
+    p->owned_crossfade_from = NULL;
     p->current_time = 0.0f;
     p->crossfade_time = 0.0f;
     p->crossfade_duration = 0.0f;
@@ -149,6 +204,7 @@ void *rt_anim_player3d_new(void *skeleton) {
     p->crossfade_from_looping = 0;
     p->last_motion_frame = 0;
     p->has_prev_motion_palette = 0;
+    p->motion_history_initialized = 0;
 
     p->pose_capacity = skeleton3d_pose_capacity_for_count(bone_count);
     size_t palette_size = (size_t)p->pose_capacity * 16u * sizeof(float);
@@ -157,6 +213,12 @@ void *rt_anim_player3d_new(void *skeleton) {
     p->motion_palette_snapshot = (float *)calloc(1, palette_size);
     p->local_transforms = (float *)calloc(1, palette_size);
     p->globals_buf = (float *)calloc(1, palette_size);
+    p->owned_bone_palette = p->bone_palette;
+    p->owned_prev_bone_palette = p->prev_bone_palette;
+    p->owned_motion_palette_snapshot = p->motion_palette_snapshot;
+    p->owned_local_transforms = p->local_transforms;
+    p->owned_globals_buf = p->globals_buf;
+    p->owned_pose_capacity = p->pose_capacity;
     if (!p->bone_palette || !p->prev_bone_palette || !p->motion_palette_snapshot ||
         !p->local_transforms || !p->globals_buf) {
         rt_anim_player3d_finalize(p);
@@ -189,14 +251,19 @@ void rt_anim_player3d_play(void *obj, void *animation) {
     rt_animation3d *anim = animation ? animation3d_checked(animation) : NULL;
     if (!p || (animation && !anim))
         return;
-    animation3d_assign_class_ref((void **)&p->current, anim, RT_G3D_ANIMATION3D_CLASS_ID);
+    animation3d_assign_owned_class_ref(
+        (void **)&p->owned_current, (void **)&p->current, anim, RT_G3D_ANIMATION3D_CLASS_ID);
     p->current_time = 0.0f;
     p->playing = anim ? 1 : 0;
-    animation3d_assign_class_ref((void **)&p->crossfade_from, NULL, RT_G3D_ANIMATION3D_CLASS_ID);
+    animation3d_assign_owned_class_ref((void **)&p->owned_crossfade_from,
+                                       (void **)&p->crossfade_from,
+                                       NULL,
+                                       RT_G3D_ANIMATION3D_CLASS_ID);
     p->crossfade_time = 0.0f;
     p->crossfade_duration = 0.0f;
     p->crossfade_from_time = 0.0f;
     p->has_prev_motion_palette = 0;
+    p->motion_history_initialized = 0;
     p->last_motion_frame = 0;
     compute_bone_palette(p);
 }
@@ -224,16 +291,21 @@ void rt_anim_player3d_crossfade(void *obj, void *animation, double duration) {
         return;
     }
     current = animation3d_clip_slot((void **)&p->current);
-    animation3d_assign_class_ref((void **)&p->crossfade_from, current, RT_G3D_ANIMATION3D_CLASS_ID);
+    animation3d_assign_owned_class_ref((void **)&p->owned_crossfade_from,
+                                       (void **)&p->crossfade_from,
+                                       current,
+                                       RT_G3D_ANIMATION3D_CLASS_ID);
     p->crossfade_from_time = p->current_time;
     p->crossfade_from_speed = isfinite(p->speed) ? p->speed : 1.0f;
     p->crossfade_from_looping = anim_player_current_looping(p);
-    animation3d_assign_class_ref((void **)&p->current, anim, RT_G3D_ANIMATION3D_CLASS_ID);
+    animation3d_assign_owned_class_ref(
+        (void **)&p->owned_current, (void **)&p->current, anim, RT_G3D_ANIMATION3D_CLASS_ID);
     p->current_time = 0.0f;
     p->crossfade_time = 0.0f;
     p->crossfade_duration = skeleton3d_clamp_nonnegative_float(duration, FLT_MAX);
     p->playing = 1;
     p->has_prev_motion_palette = 0;
+    p->motion_history_initialized = 0;
     p->last_motion_frame = 0;
     compute_bone_palette(p);
 }
@@ -248,11 +320,15 @@ void rt_anim_player3d_stop(void *obj) {
     if (!p)
         return;
     p->playing = 0;
-    animation3d_assign_class_ref((void **)&p->crossfade_from, NULL, RT_G3D_ANIMATION3D_CLASS_ID);
+    animation3d_assign_owned_class_ref((void **)&p->owned_crossfade_from,
+                                       (void **)&p->crossfade_from,
+                                       NULL,
+                                       RT_G3D_ANIMATION3D_CLASS_ID);
     p->crossfade_time = 0.0f;
     p->crossfade_duration = 0.0f;
     p->crossfade_from_time = 0.0f;
     p->has_prev_motion_palette = 0;
+    p->motion_history_initialized = 0;
     p->last_motion_frame = 0;
     compute_player_bind_pose(p);
 }
@@ -339,7 +415,8 @@ static void compute_bone_palette(rt_anim_player3d *p) {
         /* Map bone -> channel index for each clip once (O(channels)) so the per-bone
          * blend below resolves channels with an O(1) lookup instead of the prior
          * O(channels) scan per bone (turning O(bones*channels) into O(bones+channels)).
-         * A NULL channel reproduces the original find-miss bind-pose fallback exactly. */
+         * Duplicate corrupt channels follow ordinary pose evaluation's last-channel-wins
+         * behavior; a NULL channel reproduces the find-miss bind-pose fallback exactly. */
         int32_t from_ch[VGFX3D_MAX_SKELETON_BONES];
         int32_t to_ch[VGFX3D_MAX_SKELETON_BONES];
         int32_t mapped =
@@ -352,12 +429,12 @@ static void compute_bone_palette(rt_anim_player3d *p) {
         }
         for (int32_t cidx = 0; cidx < from_count; cidx++) {
             int32_t b = crossfade_from->channels[cidx].bone_index;
-            if (b >= 0 && b < mapped && from_ch[b] < 0)
+            if (b >= 0 && b < mapped)
                 from_ch[b] = cidx;
         }
         for (int32_t cidx = 0; cidx < to_count; cidx++) {
             int32_t b = current->channels[cidx].bone_index;
-            if (b >= 0 && b < mapped && to_ch[b] < 0)
+            if (b >= 0 && b < mapped)
                 to_ch[b] = cidx;
         }
 
@@ -376,12 +453,8 @@ static void compute_bone_palette(rt_anim_player3d *p) {
                                          from_pos,
                                          from_rot,
                                          from_scl);
-            sample_animation_channel_trs(to_channel,
-                                         p->current_time,
-                                         &skel->bones[bone],
-                                         to_pos,
-                                         to_rot,
-                                         to_scl);
+            sample_animation_channel_trs(
+                to_channel, p->current_time, &skel->bones[bone], to_pos, to_rot, to_scl);
             for (int i = 0; i < 3; i++) {
                 blend_pos[i] = from_pos[i] + factor * (to_pos[i] - from_pos[i]);
                 blend_scl[i] = from_scl[i] + factor * (to_scl[i] - from_scl[i]);
@@ -424,56 +497,71 @@ void rt_anim_player3d_update(void *obj, double delta_time) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
     rt_animation3d *current;
     rt_animation3d *crossfade_from;
+    int8_t target_hit_endpoint = 0;
+    int8_t fade_complete = 0;
     if (!p)
         return;
     current = animation3d_clip_slot((void **)&p->current);
-    if (!p->playing || !current)
-        return;
     if (!isfinite(delta_time) || delta_time < 0.0)
+        return;
+    crossfade_from = animation3d_clip_slot((void **)&p->crossfade_from);
+    if (!current) {
+        if (crossfade_from)
+            animation3d_assign_owned_class_ref((void **)&p->owned_crossfade_from,
+                                               (void **)&p->crossfade_from,
+                                               NULL,
+                                               RT_G3D_ANIMATION3D_CLASS_ID);
+        p->playing = 0;
+        compute_player_bind_pose(p);
+        return;
+    }
+    if (!p->playing && !crossfade_from)
         return;
     if (!isfinite(p->speed))
         p->speed = 1.0f;
+    if (!isfinite(current->duration) || current->duration <= 0.0f)
+        current->duration = 1.0f;
 
-    p->current_time += skeleton3d_clamp_to_float(delta_time * (double)p->speed, 0.0f);
-    if (!isfinite(p->current_time))
-        p->current_time = 0.0f;
-
-    /* Handle looping / end */
-    if (anim_player_current_looping(p)) {
-        if (current->duration > 0.0f)
-            p->current_time = animation3d_wrap_time(p->current_time, current->duration);
-    } else {
-        if (p->current_time >= current->duration) {
-            p->current_time = current->duration;
+    if (p->playing) {
+        p->current_time = animation3d_advance_clock(p->current_time,
+                                                    delta_time,
+                                                    p->speed,
+                                                    current->duration,
+                                                    anim_player_current_looping(p),
+                                                    &target_hit_endpoint);
+        if (target_hit_endpoint)
             p->playing = 0;
-        } else if (p->current_time <= 0.0f && p->speed < 0.0f) {
-            p->current_time = 0.0f;
-            p->playing = 0;
-        }
     }
 
     /* Update crossfade */
-    crossfade_from = animation3d_clip_slot((void **)&p->crossfade_from);
     if (crossfade_from) {
-        p->crossfade_time += skeleton3d_clamp_to_float(delta_time, 0.0f);
-        p->crossfade_from_time +=
-            skeleton3d_clamp_to_float(delta_time * (double)p->crossfade_from_speed, 0.0f);
-        if (!isfinite(p->crossfade_time))
-            p->crossfade_time = 0.0f;
-        if (!isfinite(p->crossfade_from_time))
-            p->crossfade_from_time = 0.0f;
-        if (crossfade_from->duration > 0.0f) {
-            if (p->crossfade_from_looping)
-                p->crossfade_from_time =
-                    animation3d_wrap_time(p->crossfade_from_time, crossfade_from->duration);
-            else if (p->crossfade_from_time > crossfade_from->duration)
-                p->crossfade_from_time = crossfade_from->duration;
-            else if (p->crossfade_from_time < 0.0f)
-                p->crossfade_from_time = 0.0f;
+        if (!isfinite(p->crossfade_from_speed))
+            p->crossfade_from_speed = 1.0f;
+        if (!isfinite(crossfade_from->duration) || crossfade_from->duration <= 0.0f)
+            crossfade_from->duration = 1.0f;
+        p->crossfade_from_time = animation3d_advance_clock(p->crossfade_from_time,
+                                                           delta_time,
+                                                           p->crossfade_from_speed,
+                                                           crossfade_from->duration,
+                                                           p->crossfade_from_looping,
+                                                           NULL);
+        if (!isfinite(p->crossfade_duration) || p->crossfade_duration <= 0.0f) {
+            fade_complete = 1;
+        } else {
+            if (!isfinite(p->crossfade_time) || p->crossfade_time < 0.0f)
+                p->crossfade_time = 0.0f;
+            if (delta_time >= (double)p->crossfade_duration - p->crossfade_time) {
+                p->crossfade_time = p->crossfade_duration;
+                fade_complete = 1;
+            } else {
+                p->crossfade_time = (float)((double)p->crossfade_time + delta_time);
+            }
         }
-        if (p->crossfade_time >= p->crossfade_duration) {
-            animation3d_assign_class_ref(
-                (void **)&p->crossfade_from, NULL, RT_G3D_ANIMATION3D_CLASS_ID);
+        if (fade_complete) {
+            animation3d_assign_owned_class_ref((void **)&p->owned_crossfade_from,
+                                               (void **)&p->crossfade_from,
+                                               NULL,
+                                               RT_G3D_ANIMATION3D_CLASS_ID);
             p->crossfade_time = 0.0f;
             p->crossfade_duration = 0.0f;
             p->crossfade_from_time = 0.0f;
@@ -504,7 +592,11 @@ void rt_anim_player3d_set_speed(void *obj, double speed) {
 /// non-finite value.
 double rt_anim_player3d_get_speed(void *obj) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
-    return (p && isfinite(p->speed)) ? p->speed : 1.0;
+    if (!p)
+        return 1.0;
+    if (!isfinite(p->speed))
+        p->speed = 1.0f;
+    return p->speed;
 }
 
 /// @brief True if the player is currently advancing time on `update` calls.
@@ -521,7 +613,21 @@ int8_t rt_anim_player3d_is_playing(void *obj) {
 /// or non-finite state.
 double rt_anim_player3d_get_time(void *obj) {
     rt_anim_player3d *p = anim_player3d_checked(obj);
-    return (p && isfinite(p->current_time)) ? p->current_time : 0.0;
+    rt_animation3d *current;
+    if (!p)
+        return 0.0;
+    current = animation3d_clip_slot((void **)&p->current);
+    if (!isfinite(p->current_time))
+        p->current_time = 0.0f;
+    if (current && (!isfinite(current->duration) || current->duration <= 0.0f))
+        current->duration = 1.0f;
+    if (current && !anim_player_current_looping(p)) {
+        if (p->current_time < 0.0f)
+            p->current_time = 0.0f;
+        if (p->current_time > current->duration)
+            p->current_time = current->duration;
+    }
+    return p->current_time;
 }
 
 /// @brief Seek to an absolute time in the current clip.
@@ -548,6 +654,7 @@ void rt_anim_player3d_set_time(void *obj, double time) {
             p->current_time = skeleton3d_float_or(time, 0.0f);
         }
         p->has_prev_motion_palette = 0;
+        p->motion_history_initialized = 0;
         p->last_motion_frame = 0;
         if (current)
             compute_bone_palette(p);
@@ -579,9 +686,9 @@ static const float *anim_player_prepare_prev_palette(rt_anim_player3d *p, int64_
     if (!anim_player3d_ensure_pose_capacity(p, bone_count))
         return NULL;
     size_t palette_size = (size_t)bone_count * 16 * sizeof(float);
-    if (p->last_motion_frame != frame_serial) {
+    if (!p->motion_history_initialized || p->last_motion_frame != frame_serial) {
         if (p->prev_bone_palette && p->motion_palette_snapshot && bone_count > 0 &&
-            p->last_motion_frame != 0) {
+            p->motion_history_initialized) {
             memcpy(p->prev_bone_palette, p->motion_palette_snapshot, palette_size);
             p->has_prev_motion_palette = 1;
         } else if (!p->prev_bone_palette) {
@@ -590,6 +697,7 @@ static const float *anim_player_prepare_prev_palette(rt_anim_player3d *p, int64_
         if (p->motion_palette_snapshot && bone_count > 0)
             memcpy(p->motion_palette_snapshot, p->bone_palette, palette_size);
         p->last_motion_frame = frame_serial;
+        p->motion_history_initialized = 1;
     }
     return p->has_prev_motion_palette ? p->prev_bone_palette : NULL;
 }
@@ -613,6 +721,8 @@ void *rt_anim_player3d_get_bone_matrix(void *obj, int64_t bone_index) {
     bone_count = skeleton3d_safe_bone_count(skel);
     skel->bone_count = bone_count;
     if (bone_index < 0 || bone_index >= bone_count)
+        return NULL;
+    if (!anim_player3d_ensure_pose_capacity(p, bone_count) || bone_index >= p->owned_pose_capacity)
         return NULL;
     if (!p->globals_buf)
         compute_bone_palette(p);
