@@ -15,7 +15,7 @@
 //   - No wall-clock, no RNG; iteration order is fixed by construction order.
 // Ownership/Lifetime:
 //   - GC handle; retains bound mesh/animator; finalizer frees sim arrays.
-// Links: misc/plans/thirdpersonupgrade/27-cloth.md, ADR 0096
+// Links: ADR 0096, rt_cloth3d.h
 //
 //===----------------------------------------------------------------------===//
 

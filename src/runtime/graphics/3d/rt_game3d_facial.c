@@ -20,8 +20,7 @@
 // Ownership/Lifetime:
 //   - Entity retains the component; the backref is cleared at entity teardown.
 //     The component retains its morph handle, gaze solver, and target vec.
-// Links: misc/plans/thirdpersonupgrade/26-facial-lipsync.md, rt_audio.h,
-//   rt_morphtarget3d.h, rt_iksolver3d.h
+// Links: rt_audio.h, rt_morphtarget3d.h, rt_iksolver3d.h
 //
 //===----------------------------------------------------------------------===//
 

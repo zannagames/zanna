@@ -41,6 +41,7 @@
 #include "rt_tilemap_internal.h"
 
 #include "rt_graphics.h"
+#include "rt_graphics_internal.h"
 #include "rt_heap.h"
 #include "rt_internal.h"
 #include "rt_map.h"
@@ -132,14 +133,53 @@ static rt_tilemap_impl *tilemap_checked(void *tilemap_ptr, const char *trap_mess
     if (!rt_obj_is_instance(tilemap_ptr, RT_TILEMAP_CLASS_ID, sizeof(rt_tilemap_impl)))
         return NULL;
     rt_tilemap_impl *tilemap = (rt_tilemap_impl *)tilemap_ptr;
-    if (tilemap->width <= 0 || tilemap->height <= 0 || tilemap->tile_width <= 0 ||
-        tilemap->tile_height <= 0 || tilemap->source_frame_width <= 0 ||
-        tilemap->source_frame_height <= 0 || !tilemap->tiles || tilemap->layer_count < 1 ||
+    size_t tiles_size = 0;
+    if (tilemap->state_magic != RT_TILEMAP_STATE_MAGIC ||
+        !tilemap_checked_grid_size(tilemap->width, tilemap->height, NULL, &tiles_size) ||
+        tiles_size > SIZE_MAX - sizeof(*tilemap) ||
+        !rt_obj_is_instance(tilemap_ptr, RT_TILEMAP_CLASS_ID, sizeof(*tilemap) + tiles_size) ||
+        tilemap->tiles != (int64_t *)((uint8_t *)tilemap + sizeof(*tilemap)) ||
+        tilemap->tile_width <= 0 || tilemap->tile_height <= 0 || tilemap->source_frame_width <= 0 ||
+        tilemap->source_frame_height <= 0 || tilemap->layer_count < 1 ||
         tilemap->layer_count > TM_MAX_LAYERS || tilemap->collision_layer < 0 ||
         tilemap->collision_layer >= tilemap->layer_count || tilemap->tile_anim_count < 0 ||
         tilemap->tile_anim_count > TM_MAX_TILE_ANIMS || tilemap->autotile_count < 0 ||
-        tilemap->autotile_count > MAX_AUTOTILE_RULES)
+        tilemap->autotile_count > MAX_AUTOTILE_RULES ||
+        tilemap->import_orientation < RT_TILEMAP_IMPORT_ORTHOGONAL ||
+        tilemap->import_orientation > RT_TILEMAP_IMPORT_OBLIQUE ||
+        tilemap->import_render_order < RT_TILEMAP_IMPORT_RIGHT_DOWN ||
+        tilemap->import_render_order > RT_TILEMAP_IMPORT_LEFT_UP ||
+        (tilemap->import_stagger_axis != 0 && tilemap->import_stagger_axis != 1) ||
+        (tilemap->import_stagger_even != 0 && tilemap->import_stagger_even != 1) ||
+        !isfinite(tilemap->import_skew_x) || !isfinite(tilemap->import_skew_y) ||
+        !isfinite(tilemap->import_parallax_origin_x) ||
+        !isfinite(tilemap->import_parallax_origin_y))
         return NULL;
+
+    if (tilemap->layers[0].tiles != tilemap->tiles || tilemap->layers[0].owns_tiles != 0)
+        return NULL;
+    for (int32_t i = 0; i < tilemap->layer_count; ++i) {
+        tm_layer *layer = &tilemap->layers[i];
+        if (!layer->tiles || (layer->visible != 0 && layer->visible != 1) ||
+            (layer->owns_tiles != 0 && layer->owns_tiles != 1) ||
+            (i > 0 && layer->owns_tiles != 1) || !isfinite(layer->import_offset_x) ||
+            !isfinite(layer->import_offset_y) || !isfinite(layer->import_parallax_x) ||
+            !isfinite(layer->import_parallax_y) ||
+            (layer->tileset && !rt_pixels_checked_impl_or_null(layer->tileset)))
+            return NULL;
+    }
+    if (tilemap->tileset && !rt_pixels_checked_impl_or_null(tilemap->tileset))
+        return NULL;
+    for (int32_t i = 0; i < tilemap->tile_anim_count; ++i) {
+        tm_tile_anim *anim = &tilemap->tile_anims[i];
+        if (anim->base_tile_id <= 0 || anim->frame_count <= 0 ||
+            anim->frame_count > TM_MAX_IMPORT_ANIM_FRAMES || !anim->frame_tiles ||
+            !anim->frame_durations || anim->current_frame < 0 ||
+            anim->current_frame >= anim->frame_count || anim->ms_per_frame < 0 || anim->timer < 0 ||
+            anim->frame_durations[anim->current_frame] <= 0 ||
+            anim->timer >= anim->frame_durations[anim->current_frame])
+            return NULL;
+    }
     return tilemap;
 }
 
@@ -153,7 +193,7 @@ static rt_tilemap_impl *tilemap_checked(void *tilemap_ptr, const char *trap_mess
 /// @param tile_id Base tile identifier to resolve.
 /// @return Current animation frame tile when configured, otherwise @p tile_id.
 static inline int64_t tilemap_resolve_anim_tile_fast(rt_tilemap_impl *tm, int64_t tile_id) {
-    if (!tm || tm->tile_anim_count <= 0 || tm->tile_anim_count > TM_MAX_TILE_ANIMS)
+    if (!tm || tile_id <= 0 || tm->tile_anim_count <= 0 || tm->tile_anim_count > TM_MAX_TILE_ANIMS)
         return tile_id;
     for (int32_t i = 0; i < tm->tile_anim_count; i++) {
         tm_tile_anim *anim = &tm->tile_anims[i];
@@ -1013,20 +1053,32 @@ static int32_t tilemap_visible_span(int64_t canvas_size,
 ///          tile grid is inline in the managed allocation and is not freed separately.
 /// @param obj Candidate Tilemap supplied by the runtime finalizer.
 static void tilemap_finalize(void *obj) {
-    rt_tilemap_impl *tm = tilemap_checked(obj, NULL);
-    if (!tm)
+    if (!obj || !rt_obj_is_instance(obj, RT_TILEMAP_CLASS_ID, sizeof(rt_tilemap_impl)))
+        return;
+    rt_tilemap_impl *tm = (rt_tilemap_impl *)obj;
+    if (tm->state_magic != RT_TILEMAP_STATE_MAGIC)
         return;
     /* Release base tileset */
     if (tm->tileset)
         rt_heap_release(tm->tileset);
     /* Free per-layer owned tiles and release per-layer tilesets */
-    for (int32_t i = 0; i < tm->layer_count; i++) {
+    int32_t layer_count = tm->layer_count;
+    if (layer_count < 0)
+        layer_count = 0;
+    if (layer_count > TM_MAX_LAYERS)
+        layer_count = TM_MAX_LAYERS;
+    for (int32_t i = 0; i < layer_count; i++) {
         if (tm->layers[i].owns_tiles && tm->layers[i].tiles)
             free(tm->layers[i].tiles);
         if (tm->layers[i].tileset)
             rt_heap_release(tm->layers[i].tileset);
     }
-    for (int32_t i = 0; i < tm->tile_anim_count; ++i) {
+    int32_t animation_count = tm->tile_anim_count;
+    if (animation_count < 0)
+        animation_count = 0;
+    if (animation_count > TM_MAX_TILE_ANIMS)
+        animation_count = TM_MAX_TILE_ANIMS;
+    for (int32_t i = 0; i < animation_count; ++i) {
         free(tm->tile_anims[i].frame_tiles);
         free(tm->tile_anims[i].frame_durations);
     }
@@ -1073,6 +1125,7 @@ void *rt_tilemap_new(int64_t width, int64_t height, int64_t tile_width, int64_t 
         return NULL;
 
     memset(tilemap, 0, sizeof(rt_tilemap_impl));
+    tilemap->state_magic = RT_TILEMAP_STATE_MAGIC;
     tilemap->width = width;
     tilemap->height = height;
     tilemap->tile_width = tile_width;
@@ -1538,14 +1591,14 @@ static void tilemap_draw_native_cell(int64_t tile_x, int64_t tile_y, void *opaqu
     int64_t screen_x = tilemap_round_ties_away_saturating(projected_x + context->layer_offset_x);
     int64_t screen_y = tilemap_round_ties_away_saturating(projected_y + context->layer_offset_y);
 
-    rt_canvas_blit_region(context->canvas,
-                          screen_x,
-                          screen_y,
-                          context->tileset,
-                          source_x,
-                          source_y,
-                          context->source_width,
-                          context->source_height);
+    rt_canvas_blit_region_alpha(context->canvas,
+                                screen_x,
+                                screen_y,
+                                context->tileset,
+                                source_x,
+                                source_y,
+                                context->source_width,
+                                context->source_height);
 }
 
 /// @brief Render one tilemap layer over a rectangular region of tile coordinates.
@@ -2021,7 +2074,7 @@ static void tilemap_draw_scaled_cell(int64_t tile_x, int64_t tile_y, void *opaqu
         screen_y = tilemap_round_ties_away_saturating(projected_y * context->map_scale +
                                                       context->layer_offset_y);
     }
-    rt_canvas_blit(context->canvas, screen_x, screen_y, scaled);
+    rt_canvas_blit_alpha(context->canvas, screen_x, screen_y, scaled);
     if (release_after_draw)
         tilemap_release_temp(scaled);
 }
@@ -3274,6 +3327,10 @@ void rt_tilemap_update_anims(void *tilemap_ptr, int64_t dt_ms) {
             remaining %= cycle_duration;
         for (int32_t traversed = 0; traversed < anim->frame_count; ++traversed) {
             current_duration = anim->frame_durations[anim->current_frame];
+            if (current_duration <= 0) {
+                anim->timer = 0;
+                break;
+            }
             if (remaining < current_duration) {
                 anim->timer = remaining;
                 break;

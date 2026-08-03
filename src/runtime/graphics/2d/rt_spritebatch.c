@@ -72,6 +72,8 @@
 #define GROWTH_FACTOR 2
 /// @brief Hard upper bound on queued commands in one batch.
 #define MAX_BATCH_CAPACITY 1048576LL
+/// Private initialization cookie for complete SpriteBatch payloads.
+#define SPRITEBATCH_STATE_MAGIC UINT64_C(0x5A414E4E41425443)
 
 /// @brief Release a temporary Pixels object created during batch color transforms.
 /// @details The original source Pixels object is owned by the batch command; only
@@ -110,6 +112,7 @@ typedef struct {
 
 /// @brief Private state of one runtime-managed SpriteBatch.
 typedef struct {
+    uint64_t state_magic;          ///< SPRITEBATCH_STATE_MAGIC after construction.
     batch_item *items;             ///< Owned reusable command allocation.
     int64_t count;                 ///< Number of initialized queued commands.
     int64_t capacity;              ///< Number of allocated command slots.
@@ -138,7 +141,14 @@ static spritebatch_impl *spritebatch_checked_or_null(void *batch_ptr) {
     if (!batch_ptr ||
         !rt_obj_is_instance(batch_ptr, RT_SPRITEBATCH_CLASS_ID, sizeof(spritebatch_impl)))
         return NULL;
-    return (spritebatch_impl *)batch_ptr;
+    spritebatch_impl *batch = (spritebatch_impl *)batch_ptr;
+    if (batch->state_magic != SPRITEBATCH_STATE_MAGIC || batch->count < 0 || batch->capacity <= 0 ||
+        batch->capacity > MAX_BATCH_CAPACITY || batch->count > batch->capacity || !batch->items ||
+        (batch->active != 0 && batch->active != 1) ||
+        (batch->sort_by_depth != 0 && batch->sort_by_depth != 1) || batch->alpha < 0 ||
+        batch->alpha > 255 || batch->next_submission_order < 0)
+        return NULL;
+    return batch;
 }
 
 /// @brief Validate and return a live Pixels implementation without trapping.
@@ -274,6 +284,19 @@ static int64_t spritebatch_saturating_scaled_dim(int64_t value, int64_t scale) {
     return (int64_t)quotient;
 }
 
+/// @brief Return the destination prefix removed when a scaled source is clipped.
+/// @details Computing `scaled(full) - scaled(remaining)` keeps the clipped draw's
+///          far edge aligned with the originally requested scaled rectangle,
+///          including fractional percentages where independently rounding the
+///          skipped prefix would add or lose a pixel.
+static int64_t spritebatch_scaled_clipped_prefix(int64_t full, int64_t skipped, int64_t scale) {
+    if (full <= 0 || skipped <= 0 || skipped >= full)
+        return 0;
+    int64_t scaled_full = spritebatch_saturating_scaled_dim(full, scale);
+    int64_t scaled_remaining = spritebatch_saturating_scaled_dim(full - skipped, scale);
+    return scaled_full > scaled_remaining ? scaled_full - scaled_remaining : 0;
+}
+
 /// @brief Normalize an integer rotation before conversion to floating point.
 /// @param rotation Clockwise rotation in degrees.
 /// @return Equivalent angle in the inclusive range 0 through 359.
@@ -295,22 +318,27 @@ static int8_t spritebatch_clip_region(rt_pixels_impl *pixels,
                                       int64_t *sx,
                                       int64_t *sy,
                                       int64_t *sw,
-                                      int64_t *sh) {
+                                      int64_t *sh,
+                                      int64_t scale_x,
+                                      int64_t scale_y) {
     if (!pixels || !pixels->data || pixels->width <= 0 || pixels->height <= 0 || !dx || !dy ||
         !sx || !sy || !sw || !sh || *sw <= 0 || *sh <= 0)
         return 0;
 
     int64_t skip_x = rt_pixels_negative_skip(*sx, *sw);
     int64_t skip_y = rt_pixels_negative_skip(*sy, *sh);
-    if (skip_x >= *sw || skip_y >= *sh || *dx > INT64_MAX - skip_x || *dy > INT64_MAX - skip_y)
+    int64_t destination_skip_x = spritebatch_scaled_clipped_prefix(*sw, skip_x, scale_x);
+    int64_t destination_skip_y = spritebatch_scaled_clipped_prefix(*sh, skip_y, scale_y);
+    if (skip_x >= *sw || skip_y >= *sh || *dx > INT64_MAX - destination_skip_x ||
+        *dy > INT64_MAX - destination_skip_y)
         return 0;
     if (skip_x > 0) {
-        *dx += skip_x;
+        *dx += destination_skip_x;
         *sx = 0;
         *sw -= skip_x;
     }
     if (skip_y > 0) {
-        *dy += skip_y;
+        *dy += destination_skip_y;
         *sy = 0;
         *sh -= skip_y;
     }
@@ -483,7 +511,7 @@ static int8_t ensure_capacity(spritebatch_impl *batch, int64_t needed) {
 /// @param batch Active batch that will own the copied command.
 /// @param item Command template whose source is retained on successful append.
 static void add_item(spritebatch_impl *batch, batch_item *item) {
-    if (!ensure_capacity(batch, 1))
+    if (!batch || batch->next_submission_order == INT64_MAX || !ensure_capacity(batch, 1))
         return;
     spritebatch_retain_object(item->source);
     item->submission_order = batch->next_submission_order++;
@@ -683,10 +711,21 @@ static void draw_region_item(spritebatch_impl *batch, void *canvas, const batch_
 ///   the GC pool.
 /// @param obj Candidate SpriteBatch object supplied by the runtime finalizer.
 static void spritebatch_finalize(void *obj) {
-    spritebatch_impl *batch = spritebatch_checked_or_null(obj);
-    if (!batch)
+    if (!obj || !rt_obj_is_instance(obj, RT_SPRITEBATCH_CLASS_ID, sizeof(spritebatch_impl)))
         return;
-    spritebatch_clear_items(batch);
+    spritebatch_impl *batch = (spritebatch_impl *)obj;
+    if (batch->state_magic != SPRITEBATCH_STATE_MAGIC)
+        return;
+    int64_t release_count = batch->count;
+    if (!batch->items || release_count < 0 || batch->capacity < 0)
+        release_count = 0;
+    else if (release_count > batch->capacity)
+        release_count = batch->capacity;
+    if (release_count > MAX_BATCH_CAPACITY)
+        release_count = MAX_BATCH_CAPACITY;
+    for (int64_t i = 0; i < release_count; ++i)
+        spritebatch_release_item(&batch->items[i]);
+    batch->count = 0;
     free(batch->items);
     batch->items = NULL;
 }
@@ -704,6 +743,7 @@ void *rt_spritebatch_new(int64_t capacity) {
     if (!batch)
         return NULL;
     memset(batch, 0, sizeof(spritebatch_impl));
+    batch->state_magic = SPRITEBATCH_STATE_MAGIC;
 
     capacity = spritebatch_initial_capacity(capacity);
     if (capacity > INT64_MAX / (int64_t)sizeof(batch_item)) {
@@ -771,6 +811,10 @@ void rt_spritebatch_end(void *batch_ptr, void *canvas) {
     if (!batch->active)
         return;
     batch->active = 0;
+    if (batch->alpha == 0) {
+        spritebatch_clear_items(batch);
+        return;
+    }
     if (!canvas) {
         spritebatch_clear_items(batch);
         return;
@@ -972,7 +1016,9 @@ void rt_spritebatch_draw_region_ex(void *batch_ptr,
         return;
     if (!batch->active)
         return;
-    if (!spritebatch_clip_region(pixels_impl, &dx, &dy, &sx, &sy, &sw, &sh))
+    scale_x = spritebatch_normalize_scale(scale_x);
+    scale_y = spritebatch_normalize_scale(scale_y);
+    if (!spritebatch_clip_region(pixels_impl, &dx, &dy, &sx, &sy, &sw, &sh, scale_x, scale_y))
         return;
 
     batch_item item = {0};

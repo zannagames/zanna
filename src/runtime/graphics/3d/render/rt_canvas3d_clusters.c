@@ -26,7 +26,7 @@
 //   - Tables are plain POD owned by the canvas's revision-keyed ring; this
 //     file allocates nothing.
 // Links: vgfx3d_backend.h (table layout), rt_canvas3d_lighting.c (flatten +
-//   revision stamps), misc/plans/3d_overhaul/07-clustered-lighting.md
+//   revision stamps), docs/internals/graphics3d-architecture.md
 //
 //===----------------------------------------------------------------------===//
 

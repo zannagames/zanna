@@ -24,7 +24,7 @@
 //   - Entities are runtime-reference-counted and hold no external references,
 //     so they require no custom finalizer.
 //
-// Links: rt_entity.h, misc/plans/game/03-entity-class.md
+// Links: rt_entity.h
 //
 //===----------------------------------------------------------------------===//
 

@@ -13,8 +13,7 @@
 //   - Deterministic fixed steps; scenario replays produce identical results.
 // Ownership/Lifetime:
 //   - Test-created runtime handles rely on production GC conventions.
-// Links: misc/plans/thirdpersonupgrade/07-ragdoll.md,
-//   misc/plans/thirdpersonupgrade/08-time-control.md
+// Links: src/runtime/graphics/3d/physics/rt_ragdoll3d.c
 //
 //===----------------------------------------------------------------------===//
 

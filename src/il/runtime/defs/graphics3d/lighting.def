@@ -1479,7 +1479,7 @@ RT_FUNC(Body3DGetMass,          rt_body3d_get_mass,          "Zanna.Graphics3D.P
 /// @details
 /// Create `Zanna.Graphics3D.Physics3DBody` values through its registered constructor and use the
 /// returned object with the instance members below. Its public surface exposes properties such as
-/// `UserData`, `Collider`, `Position` and operations including `NewAABB`, `NewSphere`,
+/// `UserData`, `Collider`, `Position` and operations including `NewAABB`, `Sphere`,
 /// `NewCapsule`, `SetPosition`.
 RT_CLASS_BEGIN("Zanna.Graphics3D.PhysicsBody3D", Physics3DBody, "obj", Body3DNew)
     RT_PROP("UserData", "i64", Body3DGetUserData, Body3DSetUserData)

@@ -15,7 +15,7 @@
 //   - Rule-generated weights normalize to 255 (+-1) across both splat maps.
 // Ownership/Lifetime:
 //   - Test-created runtime handles rely on production GC conventions.
-// Links: misc/plans/thirdpersonupgrade/18-terrain-upgrades.md
+// Links: src/runtime/graphics/3d/world/rt_terrain3d.c
 //
 //===----------------------------------------------------------------------===//
 

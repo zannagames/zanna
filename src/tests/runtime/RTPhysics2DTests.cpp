@@ -12,8 +12,8 @@
 //   - A body belongs to at most one world and all retained arrays remain packed.
 //   - Shape, mass, force, collision, and projectile math stays finite at the
 //     supported numeric limits.
-//   - Same-class undersized runtime payloads are rejected before implementation
-//     fields are accessed.
+//   - Same-class undersized and uninitialized full-size runtime payloads are
+//     rejected before implementation fields are accessed.
 //
 // Ownership/Lifetime:
 //   - Tests retain caller references and release every explicitly allocated
@@ -31,6 +31,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 
 extern "C" {
@@ -1149,6 +1150,32 @@ static void test_undersized_same_class_handles_trap() {
     release_obj(short_projectile);
 }
 
+static void test_uninitialized_full_size_handles_trap() {
+    void *forged_world =
+        rt_obj_new_i64(RT_PHYSICS2D_WORLD_CLASS_ID, static_cast<int64_t>(sizeof(rt_world_impl)));
+    void *forged_body =
+        rt_obj_new_i64(RT_PHYSICS2D_BODY_CLASS_ID, static_cast<int64_t>(sizeof(rt_body_impl)));
+    void *forged_joint =
+        rt_obj_new_i64(RT_PHYSICS2D_JOINT_CLASS_ID, static_cast<int64_t>(sizeof(ph_joint)));
+    void *forged_projectile = rt_obj_new_i64(RT_PHYSICS2D_PROJECTILE_CLASS_ID, 256);
+    ASSERT(forged_world && forged_body && forged_joint && forged_projectile,
+           "full-size forged objects allocate");
+
+    memset(forged_world, 0, sizeof(rt_world_impl));
+    memset(forged_body, 0, sizeof(rt_body_impl));
+    memset(forged_joint, 0, sizeof(ph_joint));
+    memset(forged_projectile, 0, 256);
+    EXPECT_TRAP(rt_physics2d_world_body_count(forged_world));
+    EXPECT_TRAP(rt_physics2d_body_x(forged_body));
+    EXPECT_TRAP(rt_physics2d_joint_get_type(forged_joint));
+    EXPECT_TRAP(rt_projectile2d_total_time(forged_projectile));
+
+    release_obj(forged_world);
+    release_obj(forged_body);
+    release_obj(forged_joint);
+    release_obj(forged_projectile);
+}
+
 static void test_subpicometer_aabb_sweep_is_not_discarded() {
     void *world = rt_physics2d_world_new(0.0, 0.0);
     void *mover = rt_physics2d_body_new(0.0, 0.0, 1.0e-15, 1.0e-15, 1.0);
@@ -1319,6 +1346,7 @@ int main() {
     test_null_safety();
     test_wrong_handle_traps();
     test_undersized_same_class_handles_trap();
+    test_uninitialized_full_size_handles_trap();
     test_zero_dt();
     test_projectile_numeric_edges();
 

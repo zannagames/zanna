@@ -16,7 +16,7 @@
 //   - Replays of identical worlds produce byte-identical trajectories.
 // Ownership/Lifetime:
 //   - Test-created runtime handles rely on production GC conventions.
-// Links: misc/plans/thirdpersonupgrade/01..04, rt_game3d.h, rt_physics3d.h
+// Links: rt_game3d.h, rt_physics3d.h
 //
 //===----------------------------------------------------------------------===//
 

@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-20
+last-verified: 2026-08-03
 ---
 
 # 2D Tilemaps and Layers
@@ -78,6 +78,8 @@ The map-authored tile size is used; `SetTileSize` remains the default only for
   projection geometry, and authored offsets while keeping the caller's camera
   offset in destination pixels. Staggered and hexagonal hit tests use their
   exact cell shapes rather than an orthogonal approximation.
+- Native and scaled Tilemap drawing use source-over alpha compositing, so
+  transparent tile texels preserve lower layers and existing canvas content.
 - `AsepriteImporter` is a grid helper rather than a `.aseprite` parser; `TiledMapLoader`
   does parse supported Tiled JSON/TMX files and returns explicit Result diagnostics.
 - Atlas regions are validated against their backing `Pixels` buffer before registration.

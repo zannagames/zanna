@@ -24,7 +24,7 @@
 // Ownership/Lifetime:
 //   - GC-managed; finalizer releases world/bundle/entity/clip references. The
 //     world retains the shown dialogue until hidden or finished.
-// Links: misc/plans/thirdpersonupgrade/25-dialogue-3d.md, rt_game3d_internal.h
+// Links: rt_game3d_internal.h
 //
 //===----------------------------------------------------------------------===//
 

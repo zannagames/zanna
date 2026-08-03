@@ -358,12 +358,8 @@ void *rt_postprocess2d_apply(void *postprocess, void *pixels) {
 static void viewport2d_recalculate(rt_viewport2d_impl *viewport) {
     if (!viewport)
         return;
-    long double scale_x_ld =
-        ((long double)viewport->screen_width * 1000.0L) / (long double)viewport->virtual_width;
-    long double scale_y_ld =
-        ((long double)viewport->screen_height * 1000.0L) / (long double)viewport->virtual_height;
-    int64_t scale_x = scale_x_ld >= (long double)INT64_MAX ? INT64_MAX : (int64_t)scale_x_ld;
-    int64_t scale_y = scale_y_ld >= (long double)INT64_MAX ? INT64_MAX : (int64_t)scale_y_ld;
+    int64_t scale_x = viewport->screen_width * 1000 / viewport->virtual_width;
+    int64_t scale_y = viewport->screen_height * 1000 / viewport->virtual_height;
     viewport->scale = scale_x < scale_y ? scale_x : scale_y;
     if (viewport->scale < 1)
         viewport->scale = 1;
@@ -371,14 +367,8 @@ static void viewport2d_recalculate(rt_viewport2d_impl *viewport) {
         int64_t whole = viewport->scale / 1000;
         viewport->scale = whole > INT64_MAX / 1000 ? INT64_MAX : whole * 1000;
     }
-    long double scaled_width_ld =
-        ((long double)viewport->virtual_width * (long double)viewport->scale) / 1000.0L;
-    long double scaled_height_ld =
-        ((long double)viewport->virtual_height * (long double)viewport->scale) / 1000.0L;
-    int64_t scaled_width =
-        scaled_width_ld >= (long double)INT64_MAX ? INT64_MAX : (int64_t)scaled_width_ld;
-    int64_t scaled_height =
-        scaled_height_ld >= (long double)INT64_MAX ? INT64_MAX : (int64_t)scaled_height_ld;
+    int64_t scaled_width = viewport->virtual_width * viewport->scale / 1000;
+    int64_t scaled_height = viewport->virtual_height * viewport->scale / 1000;
     viewport->offset_x = (viewport->screen_width - scaled_width) / 2;
     viewport->offset_y = (viewport->screen_height - scaled_height) / 2;
 }
@@ -401,6 +391,11 @@ static void *viewport2d_new_with_class(int64_t virtual_width,
         (rt_viewport2d_impl *)rt_obj_new_i64(class_id, (int64_t)sizeof(rt_viewport2d_impl));
     if (!viewport)
         return NULL;
+    viewport->magic = RT2D_VIEWPORT_MAGIC;
+    viewport->scale = 1;
+    viewport->offset_x = 0;
+    viewport->offset_y = 0;
+    viewport->integer_scaling = 0;
     viewport->virtual_width = normalized_dim(virtual_width);
     viewport->virtual_height = normalized_dim(virtual_height);
     viewport->screen_width = normalized_dim(screen_width);
@@ -509,8 +504,8 @@ int64_t rt_viewport2d_get_offset_y(void *viewport) {
 }
 
 /// @brief Convert a virtual-space X coordinate to a screen-space X pixel position.
-/// @details Applies `screen_x = offset_x + (virtual_x * scale / 1000)` using `long double`
-///   to preserve sub-pixel accuracy before rounding to the nearest integer.
+/// @details Applies `screen_x = offset_x + round(virtual_x * scale / 1000)` using
+///   exact quotient/remainder arithmetic over the complete signed 64-bit domain.
 /// @param viewport Opaque Viewport2D or ScreenScaler handle.
 /// @param x Virtual-space X coordinate to map.
 /// @return The nearest screen-space X coordinate, saturated to `int64_t`; if
@@ -519,9 +514,8 @@ int64_t rt_viewport2d_world_to_screen_x(void *viewport, int64_t x) {
     rt_viewport2d_impl *impl = viewport2d_checked(viewport);
     if (!impl)
         return x;
-    long double mapped =
-        (long double)impl->offset_x + ((long double)x * (long double)impl->scale) / 1000.0L;
-    return round_long_double_to_i64(mapped);
+    return rt2d_saturating_add_i64(impl->offset_x,
+                                   rt2d_mul_div_round_saturating(x, impl->scale, 1000));
 }
 
 /// @brief Convert a virtual-space Y coordinate to a screen-space Y pixel position.
@@ -533,9 +527,8 @@ int64_t rt_viewport2d_world_to_screen_y(void *viewport, int64_t y) {
     rt_viewport2d_impl *impl = viewport2d_checked(viewport);
     if (!impl)
         return y;
-    long double mapped =
-        (long double)impl->offset_y + ((long double)y * (long double)impl->scale) / 1000.0L;
-    return round_long_double_to_i64(mapped);
+    return rt2d_saturating_add_i64(impl->offset_y,
+                                   rt2d_mul_div_round_saturating(y, impl->scale, 1000));
 }
 
 /// @brief Convert a screen-space X pixel position back to a virtual-space X coordinate.
@@ -548,9 +541,8 @@ int64_t rt_viewport2d_screen_to_world_x(void *viewport, int64_t x) {
     rt_viewport2d_impl *impl = viewport2d_checked(viewport);
     if (!impl)
         return x;
-    long double mapped =
-        ((long double)x - (long double)impl->offset_x) * 1000.0L / (long double)impl->scale;
-    return round_long_double_to_i64(mapped);
+    return rt2d_difference_mul_div_round_saturating(
+        x, impl->offset_x, 1000u, (uint64_t)impl->scale);
 }
 
 /// @brief Convert a screen-space Y pixel position back to a virtual-space Y coordinate.
@@ -562,7 +554,6 @@ int64_t rt_viewport2d_screen_to_world_y(void *viewport, int64_t y) {
     rt_viewport2d_impl *impl = viewport2d_checked(viewport);
     if (!impl)
         return y;
-    long double mapped =
-        ((long double)y - (long double)impl->offset_y) * 1000.0L / (long double)impl->scale;
-    return round_long_double_to_i64(mapped);
+    return rt2d_difference_mul_div_round_saturating(
+        y, impl->offset_y, 1000u, (uint64_t)impl->scale);
 }

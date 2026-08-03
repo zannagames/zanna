@@ -16,7 +16,7 @@
 //   - Proxy bake output respects the triangle budget and loads back cleanly.
 // Ownership/Lifetime:
 //   - Test-created runtime handles rely on production GC conventions.
-// Links: misc/plans/thirdpersonupgrade/12-hlod-impostors.md
+// Links: src/runtime/graphics/3d/rt_game3d_streaming.inc (HLOD proxy rings)
 //
 //===----------------------------------------------------------------------===//
 

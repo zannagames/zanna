@@ -25,7 +25,7 @@
 //   - Returned meshes are ordinary GC-managed Mesh3D objects whose finalizer
 //     frees the vertex/index arrays this file allocates.
 //
-// Links: rt_mesh_simplify.h, misc/plans/fps/09-asset-pipeline-upgrades.md
+// Links: rt_mesh_simplify.h
 //
 //===----------------------------------------------------------------------===//
 

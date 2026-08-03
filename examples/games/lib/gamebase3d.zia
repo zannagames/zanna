@@ -35,10 +35,10 @@ bind Zanna.Graphics3D;
 
 // Null Object sentinel — avoids optional interface chaining issues.
 class NullScene3D implements IScene3D {
-    expose func onEnter(world: World3D) { }
-    expose func onExit(world: World3D) { }
-    expose func update(world: World3D, dt: Number) { }
-    expose func drawOverlay(world: World3D) { }
+    expose func onEnter(_world: World3D) { }
+    expose func onExit(_world: World3D) { }
+    expose func update(_world: World3D, _dt: Number) { }
+    expose func drawOverlay(_world: World3D) { }
 }
 
 class GameBase3D {
@@ -224,5 +224,5 @@ class GameBase3D {
     expose func onInit() { }
 
     // Called every frame inside the overlay pass, after the scene's HUD.
-    expose func onOverlay(dt: Number) { }
+    expose func onOverlay(_dt: Number) { }
 }

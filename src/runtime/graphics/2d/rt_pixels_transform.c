@@ -798,6 +798,7 @@ void *rt_pixels_scale(void *pixels, int64_t new_width, int64_t new_height) {
     }
 
     free(x_map);
+    pixels_copy_alpha_classification_cache(result, p);
     return result;
 }
 
@@ -976,6 +977,59 @@ static void pixels_blur_accumulate(pixels_blur_accumulator *accumulator,
     accumulator->count += direction;
 }
 
+/// @brief Add or remove a complete one-dimensional window from a second-pass accumulator.
+/// @details Keeping the horizontal sums in their original precision avoids quantizing to
+///          straight-alpha RGBA between the two separable passes. The accumulated count is
+///          the exact number of source texels in the rectangular two-dimensional footprint.
+/// @param accumulator Mutable vertical-window state.
+/// @param window Borrowed horizontal-window sums.
+/// @param direction `1` to add or `-1` to remove.
+static void pixels_blur_accumulate_window(pixels_blur_accumulator *accumulator,
+                                          const pixels_blur_accumulator *window,
+                                          int64_t direction) {
+    accumulator->premul_r += direction * window->premul_r;
+    accumulator->premul_g += direction * window->premul_g;
+    accumulator->premul_b += direction * window->premul_b;
+    accumulator->alpha += direction * window->alpha;
+    accumulator->count += direction * window->count;
+}
+
+/// @brief Add or remove every horizontal blur window from one source row.
+/// @details Recomputing a row when it enters or leaves the vertical window
+///          keeps the exact unquantized two-dimensional sums while limiting
+///          auxiliary storage to one accumulator per column. Each source row
+///          is evaluated at most twice, so the blur remains linear in the
+///          number of pixels.
+/// @param pixels Valid nonempty source Pixels implementation.
+/// @param y Source row index.
+/// @param radius Positive blur radius.
+/// @param columns Mutable vertical accumulator for every destination column.
+/// @param direction `1` to add the row or `-1` to remove it.
+static void pixels_blur_accumulate_source_row(const rt_pixels_impl *pixels,
+                                              int64_t y,
+                                              int64_t radius,
+                                              pixels_blur_accumulator *columns,
+                                              int64_t direction) {
+    int64_t width = pixels->width;
+    const uint32_t *source_row = pixels->data + y * width;
+    pixels_blur_accumulator window = {0, 0, 0, 0, 0};
+    int64_t initial_right = radius < width - 1 ? radius : width - 1;
+    for (int64_t source_x = 0; source_x <= initial_right; source_x++)
+        pixels_blur_accumulate(&window, source_row[source_x], 1);
+
+    for (int64_t x = 0; x < width; x++) {
+        pixels_blur_accumulate_window(&columns[x], &window, direction);
+
+        int64_t remove_x = x - radius;
+        if (remove_x >= 0)
+            pixels_blur_accumulate(&window, source_row[remove_x], -1);
+        if (radius < width - 1 - x) {
+            int64_t add_x = x + radius + 1;
+            pixels_blur_accumulate(&window, source_row[add_x], 1);
+        }
+    }
+}
+
 /// @brief Convert one blur window accumulator to straight-alpha RGBA.
 static uint32_t pixels_blur_average(const pixels_blur_accumulator *accumulator) {
     return pixels_average_rgba_premul(accumulator->premul_r,
@@ -990,7 +1044,8 @@ static uint32_t pixels_blur_average(const pixels_blur_accumulator *accumulator) 
 ///          sliding window for `O(width * height)` work. Edge windows average
 ///          only in-bounds samples. A non-positive radius returns a clone;
 ///          values above ten clamp to ten. Empty images preserve their
-///          dimensions. Temporary row and column state is always freed.
+///          dimensions. Only one column accumulator per source column is
+///          retained, and that temporary state is always freed.
 /// @param pixels Opaque source Pixels handle; null or invalid input traps.
 /// @param radius Requested half-width of each one-dimensional box window.
 /// @return A distinct caller-owned Pixels handle, or null after layout,
@@ -1009,62 +1064,29 @@ void *rt_pixels_blur(void *pixels, int64_t radius) {
     int64_t h = p->height;
     if (w <= 0 || h <= 0)
         return pixels_alloc(w, h);
-    if (w > INT64_MAX / h || (uint64_t)(w * h) > SIZE_MAX / sizeof(uint32_t)) {
+    if ((uint64_t)w > (uint64_t)SIZE_MAX / sizeof(pixels_blur_accumulator)) {
         rt_trap("Pixels.Blur: dimensions too large");
         return NULL;
     }
 
-    // Separable box blur: horizontal pass → temp, then vertical pass → result.
-    // Reduces O(w×h×(2r+1)²) to O(w×h×(2r+1)×2).  Format: 0xRRGGBBAA.
-    size_t pixel_count = (size_t)w * (size_t)h;
-    uint32_t *tmp = (uint32_t *)malloc(pixel_count * sizeof(uint32_t));
-    if (!tmp)
-        return NULL;
-    if ((uint64_t)w > (uint64_t)SIZE_MAX / sizeof(pixels_blur_accumulator)) {
-        free(tmp);
-        return NULL;
-    }
+    // Keep exact unquantized column sums. Horizontal windows are recomputed as
+    // source rows enter or leave the vertical footprint, avoiding a 40-byte
+    // accumulator for every source pixel.
     pixels_blur_accumulator *columns =
         (pixels_blur_accumulator *)calloc((size_t)w, sizeof(*columns));
-    if (!columns) {
-        free(tmp);
+    if (!columns)
         return NULL;
-    }
 
     rt_pixels_impl *result = pixels_alloc(p->width, p->height);
     if (!result) {
         free(columns);
-        free(tmp);
         return NULL;
-    }
-
-    // Horizontal pass: slide one window across each source row.
-    for (int64_t y = 0; y < h; y++) {
-        pixels_blur_accumulator accumulator = {0, 0, 0, 0, 0};
-        int64_t initial_right = radius < w - 1 ? radius : w - 1;
-        for (int64_t sx = 0; sx <= initial_right; sx++)
-            pixels_blur_accumulate(&accumulator, p->data[y * w + sx], 1);
-
-        for (int64_t x = 0; x < w; x++) {
-            tmp[y * w + x] = pixels_blur_average(&accumulator);
-
-            int64_t remove_x = x - radius;
-            if (remove_x >= 0)
-                pixels_blur_accumulate(&accumulator, p->data[y * w + remove_x], -1);
-            if (radius < w - 1 - x) {
-                int64_t add_x = x + radius + 1;
-                pixels_blur_accumulate(&accumulator, p->data[y * w + add_x], 1);
-            }
-        }
     }
 
     // Seed all vertical column windows for the first destination row.
     int64_t initial_bottom = radius < h - 1 ? radius : h - 1;
-    for (int64_t sy = 0; sy <= initial_bottom; sy++) {
-        const uint32_t *row = tmp + sy * w;
-        for (int64_t x = 0; x < w; x++)
-            pixels_blur_accumulate(&columns[x], row[x], 1);
-    }
+    for (int64_t source_y = 0; source_y <= initial_bottom; source_y++)
+        pixels_blur_accumulate_source_row(p, source_y, radius, columns, 1);
 
     // Vertical pass: update every column accumulator in row-major order.
     for (int64_t y = 0; y < h; y++) {
@@ -1073,21 +1095,18 @@ void *rt_pixels_blur(void *pixels, int64_t radius) {
             dst_row[x] = pixels_blur_average(&columns[x]);
 
         int64_t remove_y = y - radius;
-        if (remove_y >= 0) {
-            const uint32_t *row = tmp + remove_y * w;
-            for (int64_t x = 0; x < w; x++)
-                pixels_blur_accumulate(&columns[x], row[x], -1);
-        }
+        if (remove_y >= 0)
+            pixels_blur_accumulate_source_row(p, remove_y, radius, columns, -1);
         if (radius < h - 1 - y) {
             int64_t add_y = y + radius + 1;
-            const uint32_t *row = tmp + add_y * w;
-            for (int64_t x = 0; x < w; x++)
-                pixels_blur_accumulate(&columns[x], row[x], 1);
+            pixels_blur_accumulate_source_row(p, add_y, radius, columns, 1);
         }
     }
 
     free(columns);
-    free(tmp);
+    if (p->alpha_scan_valid && p->alpha_scan_generation == p->generation &&
+        p->alpha_scan_classification == RT_PIXELS_ALPHA_OPAQUE)
+        pixels_copy_alpha_classification_cache(result, p);
     return result;
 }
 

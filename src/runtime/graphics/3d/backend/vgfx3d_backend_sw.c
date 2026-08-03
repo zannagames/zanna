@@ -1510,6 +1510,9 @@ const float *vgfx3d_sw_get_zbuf(void *ctx_ptr, int32_t *out_w, int32_t *out_h) {
 
 const vgfx3d_backend_t vgfx3d_software_backend = {
     .name = "software",
+    /* CPU parity implementations of the many-light path and cascade sampling. */
+    .clustered_lighting = 1,
+    .shadow_csm = 1,
     .create_ctx = sw_create_ctx,
     .destroy_ctx = sw_destroy_ctx,
     .clear = sw_clear,

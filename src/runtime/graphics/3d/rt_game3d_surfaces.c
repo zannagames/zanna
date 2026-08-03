@@ -14,7 +14,7 @@
 //   - Thread-safe via the platform once/mutex init pattern (CONC rules).
 // Ownership/Lifetime:
 //   - Names are copied into process-global storage; never freed (bounded 255).
-// Links: misc/plans/thirdpersonupgrade/20-physics-materials.md, ADR 0091.
+// Links: ADR 0091, rt_game3d_internal.h.
 //
 //===----------------------------------------------------------------------===//
 

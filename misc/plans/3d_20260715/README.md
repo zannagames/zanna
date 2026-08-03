@@ -96,13 +96,28 @@ common responsibilities first-class and composable.
 
 ## Where to start
 
-As of the 2026-07-16 reverification, no plan has begun implementation and both
-wave-A defects still reproduce exactly as documented (the overlay-alpha repro
-fails on software and Metal; the AA-text alias fails on Metal with software
-correct). The next actionable work is therefore plan 00's baseline capture
-followed by plans 01 and 02. Plans 08 and the design portion of plan 10 are the
-only other workstreams that may start in parallel without touching wave-A
-files.
+As of the 2026-08-03 reverification:
+
+- **Wave A is complete, outside this program.** Both wave-A defects were fixed
+  by the 2026-07-29 3D stabilization pass (overlay alpha in
+  `canvas3d_queue_screen_geometry`; Metal AA-text resource identity) and are
+  pinned by the default-lane CTests `zia_regress_overlay_alpha_blend` and
+  `zia_regress_overlay_aa_text_identity`. Plans 01–02 are obsolete; keep them
+  only as historical context.
+- **Plan 12 is partially overtaken:** a `GameBase3D`/`IScene3D` scene
+  framework now exists as an example-level library
+  (`examples/games/lib/gamebase3d.zia`, consumed by `examples/3d/game3d_scenes`
+  and `overhaul_showcase`). The plan's engine-level framework remains unbuilt;
+  any restart should begin by evaluating whether promoting that library is the
+  right shape.
+- **No other plan has begun implementation.**
+
+Before restarting any wave, reconcile this program against the current
+full-stack review in `docs/internals/graphics3d-deep-review-2026-08.md` —
+plans 13–15 (ranged combat, versioned saves, deterministic harness) and 16–19
+(docs/starters, demo migrations) overlap directly with that review's Tranche 4
+recommendations. The next actionable work is plan 00's baseline capture,
+skipping the wave-A repro steps.
 
 ## Program waves
 

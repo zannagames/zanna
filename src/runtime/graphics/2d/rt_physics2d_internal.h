@@ -35,6 +35,7 @@
 #include "rt_object.h"
 
 #include <float.h>
+#include <limits.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -63,6 +64,17 @@
 #define RT_PHYSICS2D_PROJECTILE_CLASS_ID INT64_C(-0x500204)
 /// @}
 
+/// @name Private Physics2D payload cookies
+/// @details These values distinguish initialized runtime payloads from
+///          same-class allocations whose byte size happens to be sufficient.
+///          They are internal implementation details, not public ABI fields.
+/// @{
+#define RT_PHYSICS2D_WORLD_STATE_MAGIC UINT64_C(0x5a3250574f524c44)
+#define RT_PHYSICS2D_BODY_STATE_MAGIC UINT64_C(0x5a32424f44595354)
+#define RT_PHYSICS2D_JOINT_STATE_MAGIC UINT64_C(0x5a324a4f494e5453)
+#define RT_PHYSICS2D_PROJECTILE_STATE_MAGIC UINT64_C(0x5a3250524f4a4543)
+/// @}
+
 /// @brief Smallest supported positive dynamic mass.
 /// @details Subnormal masses are normalized to the smallest normal `double`,
 ///          whose reciprocal is safely finite on every supported IEEE-754
@@ -77,8 +89,9 @@
 ///          the body is registered; @c owner_world and @c world_index cache
 ///          that membership.
 typedef struct {
-    void *vptr;  ///< Zia virtual-dispatch pointer (must be first).
-    double x, y; ///< Top-left position (AABB) or center (circle).
+    void *vptr;           ///< Zia virtual-dispatch pointer (must be first).
+    uint64_t state_magic; ///< Private initialized-payload cookie.
+    double x, y;          ///< Top-left position (AABB) or center (circle).
     /// Previous integration-substep position used by swept collision tests.
     double prev_x, prev_y;   ///< Previous-step position used for one-way tile tests.
     double w, h;             ///< Width and height of the AABB (0 for circles).
@@ -121,6 +134,7 @@ typedef struct {
 ///          fields describe allocated slots.
 typedef struct {
     void *vptr;
+    uint64_t state_magic; ///< Private initialized-payload cookie.
     double gravity_x;
     double gravity_y;
     rt_body_impl **bodies;
@@ -155,8 +169,9 @@ typedef struct {
 ///          springs also use stiffness/damping, and hinge constraints use the
 ///          world and local anchor fields.
 struct ph_joint {
-    void *vptr;   ///< Zia virtual-dispatch pointer (must be first).
-    int32_t type; ///< RT_JOINT_DISTANCE, etc.
+    void *vptr;           ///< Zia virtual-dispatch pointer (must be first).
+    uint64_t state_magic; ///< Private initialized-payload cookie.
+    int32_t type;         ///< RT_JOINT_DISTANCE, etc.
     void *body_a;
     void *body_b;
     double anchor_x, anchor_y;   ///< World-space anchor (hinge)
@@ -172,21 +187,71 @@ struct ph_joint {
 /// @param obj Opaque runtime object candidate.
 /// @return Nonzero only for a non-null world handle.
 static inline int8_t rt_physics2d_is_world_handle(void *obj) {
-    return obj && rt_obj_is_instance(obj, RT_PHYSICS2D_WORLD_CLASS_ID, sizeof(rt_world_impl));
+    if (!obj || !rt_obj_is_instance(obj, RT_PHYSICS2D_WORLD_CLASS_ID, sizeof(rt_world_impl)))
+        return 0;
+    const rt_world_impl *w = (const rt_world_impl *)obj;
+    if (w->state_magic != RT_PHYSICS2D_WORLD_STATE_MAGIC || !isfinite(w->gravity_x) ||
+        !isfinite(w->gravity_y) || w->body_count < 0 || w->body_capacity < 0 ||
+        w->body_count > w->body_capacity || w->joint_count < 0 || w->joint_capacity < 0 ||
+        w->joint_count > w->joint_capacity || w->contact_count < 0 || w->contact_capacity < 0 ||
+        w->contact_count > w->contact_capacity ||
+        (w->contact_overflow != 0 && w->contact_overflow != 1) || w->pair_scratch_count < 0 ||
+        w->pair_scratch_capacity < 0 || w->pair_scratch_count > w->pair_scratch_capacity ||
+        w->force_capacity < 0 || w->body_count > INT_MAX ||
+        (uint64_t)w->body_capacity > SIZE_MAX / sizeof(rt_body_impl *) ||
+        (uint64_t)w->joint_capacity > SIZE_MAX / sizeof(ph_joint *) ||
+        (uint64_t)w->contact_capacity > SIZE_MAX / sizeof(ph_contact_record) ||
+        (uint64_t)w->pair_scratch_capacity > SIZE_MAX / sizeof(uint64_t) ||
+        (uint64_t)w->force_capacity > SIZE_MAX / sizeof(rt_body_impl *) ||
+        (uint64_t)w->force_capacity > SIZE_MAX / sizeof(double))
+        return 0;
+    if ((w->body_capacity == 0) != (w->bodies == NULL) ||
+        (w->joint_capacity == 0) != (w->joints == NULL) ||
+        (w->contact_capacity == 0) != (w->contacts == NULL) ||
+        (w->pair_scratch_capacity == 0) != (w->pair_scratch == NULL))
+        return 0;
+    if (w->force_capacity == 0)
+        return !w->force_bodies && !w->force_x && !w->force_y;
+    return w->force_bodies && w->force_x && w->force_y;
 }
 
 /// @brief Test whether an opaque handle is a complete Physics2D.Body payload.
 /// @param obj Opaque runtime object candidate.
 /// @return Nonzero only for a non-null body handle.
 static inline int8_t rt_physics2d_is_body_handle(void *obj) {
-    return obj && rt_obj_is_instance(obj, RT_PHYSICS2D_BODY_CLASS_ID, sizeof(rt_body_impl));
+    if (!obj || !rt_obj_is_instance(obj, RT_PHYSICS2D_BODY_CLASS_ID, sizeof(rt_body_impl)))
+        return 0;
+    const rt_body_impl *b = (const rt_body_impl *)obj;
+    if (b->state_magic != RT_PHYSICS2D_BODY_STATE_MAGIC ||
+        (b->is_circle != 0 && b->is_circle != 1) || !isfinite(b->x) || !isfinite(b->y) ||
+        !isfinite(b->prev_x) || !isfinite(b->prev_y) || !isfinite(b->w) || !isfinite(b->h) ||
+        !isfinite(b->vx) || !isfinite(b->vy) || !isfinite(b->fx) || !isfinite(b->fy) ||
+        !isfinite(b->mass) || !isfinite(b->inv_mass) || !isfinite(b->restitution) ||
+        !isfinite(b->friction) || !isfinite(b->radius) || b->mass < 0.0 || b->inv_mass < 0.0 ||
+        b->restitution < 0.0 || b->restitution > 1.0 || b->friction < 0.0 || b->friction > 1.0)
+        return 0;
+    if ((b->mass == 0.0) != (b->inv_mass == 0.0) || (b->mass > 0.0 && b->inv_mass != 1.0 / b->mass))
+        return 0;
+    if (b->is_circle ? (b->radius <= 0.0 || b->w != 0.0 || b->h != 0.0)
+                     : (b->radius != 0.0 || b->w <= 0.0 || b->h <= 0.0))
+        return 0;
+    return b->owner_world ? b->world_index >= 0 : b->world_index == -1;
 }
 
 /// @brief Test whether an opaque handle is a complete Physics2D.Joint payload.
 /// @param obj Opaque runtime object candidate.
 /// @return Nonzero only for a non-null joint handle.
 static inline int8_t rt_physics2d_is_joint_handle(void *obj) {
-    return obj && rt_obj_is_instance(obj, RT_PHYSICS2D_JOINT_CLASS_ID, sizeof(ph_joint));
+    if (!obj || !rt_obj_is_instance(obj, RT_PHYSICS2D_JOINT_CLASS_ID, sizeof(ph_joint)))
+        return 0;
+    const ph_joint *j = (const ph_joint *)obj;
+    return j->state_magic == RT_PHYSICS2D_JOINT_STATE_MAGIC && j->type >= 0 && j->type <= 3 &&
+           (j->active == 0 || j->active == 1) && j->body_a != j->body_b &&
+           rt_physics2d_is_body_handle(j->body_a) && rt_physics2d_is_body_handle(j->body_b) &&
+           isfinite(j->anchor_x) && isfinite(j->anchor_y) && isfinite(j->anchor_ax) &&
+           isfinite(j->anchor_ay) && isfinite(j->anchor_bx) && isfinite(j->anchor_by) &&
+           isfinite(j->length) && j->length >= 0.0 && isfinite(j->stiffness) &&
+           j->stiffness >= 0.0 && isfinite(j->damping) && j->damping >= 0.0;
 }
 
 /// @brief Add two finite doubles, saturating instead of producing infinity.

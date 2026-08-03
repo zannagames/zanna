@@ -7,7 +7,7 @@ bind Zanna.Graphics3D;
 bind Zanna.Math;
 bind Zanna.Input;
 
-func make_tree_sprite() -> Pixels {
+func make_tree_sprite() -> Zanna.Graphics.Pixels {
     var tex = new Zanna.Graphics.Pixels(16, 32);
     // Draw a simple tree: brown trunk + green canopy
     var y = 0;
@@ -40,7 +40,7 @@ func make_tree_sprite() -> Pixels {
     return tex;
 }
 
-func make_star_sprite() -> Pixels {
+func make_star_sprite() -> Zanna.Graphics.Pixels {
     var tex = new Zanna.Graphics.Pixels(16, 16);
     var y = 0;
     while (y < 16) {

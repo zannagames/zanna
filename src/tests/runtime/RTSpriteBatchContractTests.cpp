@@ -303,6 +303,25 @@ static void test_zero_tint_applies_black_and_negative_tint_disables_tint() {
     assert(g_last_tint == tagged);
 }
 
+static void test_fully_transparent_batch_discards_without_transforming() {
+    StubPixels pixels{4, 4, 51};
+    void *batch = rt_spritebatch_new(0);
+    assert(batch != nullptr);
+    rt_spritebatch_set_alpha(batch, 0);
+    rt_spritebatch_set_sort_by_depth(batch, 1);
+    rt_spritebatch_begin(batch);
+    rt_spritebatch_draw_region_ex(batch, &pixels, 0, 0, 0, 0, 4, 4, 200, 200, 45, 1);
+    assert(rt_spritebatch_count(batch) == 1);
+
+    reset_draw_calls();
+    rt_spritebatch_end(batch, reinterpret_cast<void *>(1));
+    assert(g_alpha_call_count == 0);
+    assert(g_region_call_count == 0);
+    assert(g_scale_call_count == 0);
+    assert(g_rotate_call_count == 0);
+    assert(rt_spritebatch_count(batch) == 0);
+}
+
 static void test_rotated_region_keeps_requested_top_left() {
     StubPixels pixels{16, 16, 60};
 
@@ -341,6 +360,24 @@ static void test_regions_are_source_clipped_before_queueing() {
     assert(g_region_calls[0].sy == 0);
     assert(g_region_calls[0].w == 3);
     assert(g_region_calls[0].h == 3);
+}
+
+static void test_scaled_clipping_preserves_requested_far_edge() {
+    StubPixels pixels{8, 6, 71};
+
+    void *batch = rt_spritebatch_new(0);
+    assert(batch != nullptr);
+    rt_spritebatch_begin(batch);
+    rt_spritebatch_draw_region_ex(batch, &pixels, 100, 200, -3, 0, 6, 2, 50, 100, 0, 0);
+
+    reset_draw_calls();
+    rt_spritebatch_end(batch, reinterpret_cast<void *>(1));
+
+    assert(g_scale_call_count == 1);
+    assert(g_last_scale_width == 2);
+    assert(g_alpha_call_count == 1);
+    assert(g_alpha_calls[0].x == 101);
+    assert(g_alpha_calls[0].y == 200);
 }
 
 static void test_full_range_scale_uses_exact_integer_arithmetic() {
@@ -397,8 +434,10 @@ int main() {
     test_equal_depth_pixels_preserve_submission_order();
     test_depth_sort_preserves_submission_order_within_equal_depth();
     test_zero_tint_applies_black_and_negative_tint_disables_tint();
+    test_fully_transparent_batch_discards_without_transforming();
     test_rotated_region_keeps_requested_top_left();
     test_regions_are_source_clipped_before_queueing();
+    test_scaled_clipping_preserves_requested_far_edge();
     test_full_range_scale_uses_exact_integer_arithmetic();
     test_full_range_rotation_is_canonicalized_before_double_conversion();
     test_rotation_recentering_saturates_extreme_destinations();

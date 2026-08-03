@@ -20,8 +20,7 @@
 // Ownership/Lifetime:
 //   - GC-managed handle; finalizer restores faded materials and releases the
 //     retained world/target/character/lock references.
-// Links: misc/plans/thirdpersonupgrade/01-thirdperson-controller.md,
-//   rt_game3d_internal.h, rt_physics3d.h
+// Links: rt_game3d_internal.h, rt_physics3d.h
 //
 //===----------------------------------------------------------------------===//
 

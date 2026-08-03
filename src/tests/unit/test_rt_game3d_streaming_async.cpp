@@ -15,7 +15,7 @@
 //   - Worker staging failures are recoverable and never trap.
 // Ownership/Lifetime:
 //   - Test-created runtime handles rely on production GC conventions.
-// Links: misc/plans/thirdpersonupgrade/11-async-streaming.md
+// Links: src/runtime/graphics/3d/rt_game3d_streaming.inc
 //
 //===----------------------------------------------------------------------===//
 

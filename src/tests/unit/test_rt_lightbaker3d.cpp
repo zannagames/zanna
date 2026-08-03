@@ -14,7 +14,7 @@
 //   - Colored walls bleed their tint into neighboring texels via bounces.
 // Ownership/Lifetime:
 //   - Test-created runtime handles rely on production GC conventions.
-// Links: misc/plans/thirdpersonupgrade/14-baked-gi.md
+// Links: src/runtime/graphics/3d/render/rt_lightbaker3d.c, docs/adr/0088
 //
 //===----------------------------------------------------------------------===//
 

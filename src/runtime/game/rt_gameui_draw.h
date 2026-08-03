@@ -22,7 +22,7 @@
 // Ownership/Lifetime:
 //   - The ops table is a stack value filled per Draw call; it owns nothing.
 //   - Registered 3D hooks are process-global function pointers set once.
-// Links: misc/plans/3d_overhaul/08-ui-toolkit-3d.md, rt_gameui.h
+// Links: rt_gameui.h
 //
 //===----------------------------------------------------------------------===//
 #pragma once

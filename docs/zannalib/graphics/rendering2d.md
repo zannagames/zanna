@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-29
+last-verified: 2026-08-03
 ---
 
 # 2D Rendering and Effects
@@ -147,4 +147,5 @@ canvas.Blit(0, 0, video.Frame)
 - `RenderTarget2D`, `GpuTexture2D`, and `Viewport2D` expose compatibility behavior while retaining distinct runtime class IDs for code that needs exact type identity.
 - `PostProcess2D` has its own runtime class. It is accepted wherever a render pass expects an effect, but it is not treated as a `Shader2D` by direct shader APIs.
 - `RenderPass2D.New` requires valid `RenderTarget2D` or `Surface2D` source and target objects; invalid handles return `null`. `SetSource` and `SetTarget` accept valid render surfaces or `null`, and ignore unrelated handles. `SetShader` accepts either a `Shader2D`, a `PostProcess2D`, or `null`; unrelated handles are ignored.
+- A shaderless pass copies directly between distinct render surfaces without allocating an intermediate clone. A shaderless pass whose source and target are the same surface is an exact no-op, including its Pixels mutation generation.
 - `VideoPlayer` decodes in software on the calling thread. For best results call `Update` once per frame with the actual elapsed seconds rather than a fixed timestep.

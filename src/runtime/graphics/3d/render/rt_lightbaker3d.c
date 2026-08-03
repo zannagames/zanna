@@ -19,7 +19,7 @@
 //   - Baker/grid are GC-managed; the baker retains its scene and output atlas.
 //   - Explicit light state is copied at AddLight time rather than retained.
 //   - Bakers and grids own their native BVH, atlas, validity, and SH arrays.
-// Links: misc/plans/thirdpersonupgrade/14-baked-gi.md, docs/adr/0088.
+// Links: docs/adr/0088, rt_lightbaker3d.h.
 //
 //===----------------------------------------------------------------------===//
 

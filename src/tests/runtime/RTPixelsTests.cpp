@@ -62,6 +62,11 @@ static uint32_t test_png_read_u32(const uint8_t *p) {
     return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | (uint32_t)p[3];
 }
 
+static void release_test_object(void *obj) {
+    if (obj && rt_obj_release_check0(obj))
+        rt_obj_free(obj);
+}
+
 static void test_png_write_u32(std::vector<uint8_t> &out, uint32_t value) {
     out.push_back((uint8_t)(value >> 24));
     out.push_back((uint8_t)(value >> 16));
@@ -162,6 +167,50 @@ static void test_new_negative_dimensions() {
     void *p = rt_pixels_new(-10, -20);
     assert(p == nullptr);
     printf("test_new_negative_dimensions: PASSED\n");
+}
+
+static void test_pixels_reject_incomplete_or_inconsistent_inline_layouts() {
+    auto *short_data = static_cast<rt_pixels_impl *>(
+        rt_obj_new_i64(RT_PIXELS_CLASS_ID, static_cast<int64_t>(sizeof(rt_pixels_impl))));
+    assert(short_data != nullptr);
+    std::memset(short_data, 0, sizeof(*short_data));
+    short_data->width = 1;
+    short_data->height = 1;
+    short_data->data =
+        reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(short_data) + sizeof(*short_data));
+    short_data->cache_identity = 1;
+    EXPECT_TRAP(rt_pixels_width(short_data));
+    release_test_object(short_data);
+
+    auto *wrong_data = static_cast<rt_pixels_impl *>(rt_obj_new_i64(
+        RT_PIXELS_CLASS_ID, static_cast<int64_t>(sizeof(rt_pixels_impl) + sizeof(uint32_t))));
+    assert(wrong_data != nullptr);
+    std::memset(wrong_data, 0, sizeof(*wrong_data) + sizeof(uint32_t));
+    uint32_t external_pixel = 0;
+    wrong_data->width = 1;
+    wrong_data->height = 1;
+    wrong_data->data = &external_pixel;
+    wrong_data->cache_identity = 1;
+    EXPECT_TRAP(rt_pixels_height(wrong_data));
+    release_test_object(wrong_data);
+
+    auto *stale_cache = static_cast<rt_pixels_impl *>(rt_obj_new_i64(
+        RT_PIXELS_CLASS_ID, static_cast<int64_t>(sizeof(rt_pixels_impl) + sizeof(uint32_t))));
+    assert(stale_cache != nullptr);
+    std::memset(stale_cache, 0, sizeof(*stale_cache) + sizeof(uint32_t));
+    stale_cache->width = 1;
+    stale_cache->height = 1;
+    stale_cache->data = reinterpret_cast<uint32_t *>(reinterpret_cast<uint8_t *>(stale_cache) +
+                                                     sizeof(*stale_cache));
+    stale_cache->cache_identity = 1;
+    stale_cache->generation = 2;
+    stale_cache->alpha_scan_valid = 1;
+    stale_cache->alpha_scan_generation = 1;
+    stale_cache->alpha_scan_classification = RT_PIXELS_ALPHA_OPAQUE;
+    EXPECT_TRAP(rt_pixels_width(stale_cache));
+    release_test_object(stale_cache);
+
+    printf("test_pixels_reject_incomplete_or_inconsistent_inline_layouts: PASSED\n");
 }
 
 // ============================================================================
@@ -1785,6 +1834,98 @@ static void test_blur_alpha_aware_preserves_edge_color() {
     printf("test_blur_alpha_aware_preserves_edge_color: PASSED\n");
 }
 
+static void test_blur_does_not_quantize_between_separable_passes() {
+    void *p = rt_pixels_new(2, 2);
+    rt_pixels_set_rgba(p, 1, 1, pack_rgba(0, 0, 0, 5));
+
+    void *blurred = rt_pixels_blur(p, 1);
+    assert(blurred != nullptr);
+    for (int64_t y = 0; y < 2; ++y) {
+        for (int64_t x = 0; x < 2; ++x)
+            assert(channel_a(rt_pixels_get(blurred, x, y)) == 1);
+    }
+    printf("test_blur_does_not_quantize_between_separable_passes: PASSED\n");
+}
+
+static uint32_t reference_blur_pixel(
+    void *pixels, int64_t width, int64_t height, int64_t x, int64_t y, int64_t radius) {
+    if (radius > 10)
+        radius = 10;
+    int64_t left = x > radius ? x - radius : 0;
+    int64_t top = y > radius ? y - radius : 0;
+    int64_t right = radius < width - 1 - x ? x + radius : width - 1;
+    int64_t bottom = radius < height - 1 - y ? y + radius : height - 1;
+    int64_t premul_r = 0;
+    int64_t premul_g = 0;
+    int64_t premul_b = 0;
+    int64_t alpha = 0;
+    int64_t count = 0;
+    for (int64_t source_y = top; source_y <= bottom; source_y++) {
+        for (int64_t source_x = left; source_x <= right; source_x++) {
+            uint32_t pixel = static_cast<uint32_t>(rt_pixels_get(pixels, source_x, source_y));
+            int64_t sample_alpha = channel_a(pixel);
+            premul_r += channel_r(pixel) * sample_alpha;
+            premul_g += channel_g(pixel) * sample_alpha;
+            premul_b += channel_b(pixel) * sample_alpha;
+            alpha += sample_alpha;
+            count++;
+        }
+    }
+    int64_t averaged_alpha = (alpha + count / 2) / count;
+    if (averaged_alpha <= 0)
+        return 0;
+    int64_t red = (premul_r + alpha / 2) / alpha;
+    int64_t green = (premul_g + alpha / 2) / alpha;
+    int64_t blue = (premul_b + alpha / 2) / alpha;
+    return static_cast<uint32_t>(pack_rgba(red, green, blue, averaged_alpha));
+}
+
+static void test_blur_matches_exact_2d_footprint_across_edges() {
+    const int64_t dimensions[][2] = {{1, 1}, {1, 7}, {8, 1}, {2, 2}, {3, 5}, {7, 4}, {11, 12}};
+    const int64_t radii[] = {1, 2, 5, 10, 17};
+    uint32_t random_state = UINT32_C(0x9e3779b9);
+
+    for (const auto &dimension : dimensions) {
+        int64_t width = dimension[0];
+        int64_t height = dimension[1];
+        void *pixels = rt_pixels_new(width, height);
+        assert(pixels != nullptr);
+        for (int64_t y = 0; y < height; y++) {
+            for (int64_t x = 0; x < width; x++) {
+                random_state = random_state * UINT32_C(1664525) + UINT32_C(1013904223);
+                rt_pixels_set_rgba(pixels, x, y, random_state);
+            }
+        }
+
+        for (int64_t radius : radii) {
+            void *blurred = rt_pixels_blur(pixels, radius);
+            assert(blurred != nullptr);
+            for (int64_t y = 0; y < height; y++) {
+                for (int64_t x = 0; x < width; x++) {
+                    uint32_t expected = reference_blur_pixel(pixels, width, height, x, y, radius);
+                    assert(static_cast<uint32_t>(rt_pixels_get(blurred, x, y)) == expected);
+                }
+            }
+        }
+    }
+    printf("test_blur_matches_exact_2d_footprint_across_edges: PASSED\n");
+}
+
+static void test_opaque_blur_reuses_alpha_classification() {
+    void *p = rt_pixels_new(2, 2);
+    rt_pixels_fill_rgba(p, pack_rgba(10, 20, 30, 255));
+    auto *source = static_cast<rt_pixels_impl *>(p);
+    assert(rt_pixels_alpha_classification_cached(source) == RT_PIXELS_ALPHA_OPAQUE);
+
+    void *blurred = rt_pixels_blur(p, 1);
+    assert(blurred != nullptr);
+    auto *impl = static_cast<rt_pixels_impl *>(blurred);
+    assert(impl->alpha_scan_valid == 1);
+    assert(rt_pixels_alpha_classification_cached(impl) == RT_PIXELS_ALPHA_OPAQUE);
+    assert(impl->alpha_classification_scan_count == 0);
+    printf("test_opaque_blur_reuses_alpha_classification: PASSED\n");
+}
+
 static void test_blur_zero_returns_exact_copy() {
     void *p = rt_pixels_new(2, 2);
     rt_pixels_set(p, 0, 0, 0x11223344);
@@ -1914,6 +2055,7 @@ static void test_alpha_preserving_transforms_reuse_classification() {
                        rt_pixels_rotate_cw(p),
                        rt_pixels_rotate_ccw(p),
                        rt_pixels_rotate_180(p),
+                       rt_pixels_scale(p, 4, 1),
                        rt_pixels_invert(p),
                        rt_pixels_grayscale(p),
                        rt_pixels_tint(p, rt_color_rgb(255, 255, 255))};
@@ -2006,6 +2148,7 @@ int main() {
     test_new();
     test_new_zero_dimensions();
     test_new_negative_dimensions();
+    test_pixels_reject_incomplete_or_inconsistent_inline_layouts();
 
     // Pixel access
     test_get_set();
@@ -2084,6 +2227,9 @@ int main() {
     test_blur_empty_image_returns_empty_pixels();
     test_blur_rgba_channel_order();
     test_blur_alpha_aware_preserves_edge_color();
+    test_blur_does_not_quantize_between_separable_passes();
+    test_blur_matches_exact_2d_footprint_across_edges();
+    test_opaque_blur_reuses_alpha_classification();
     test_resize_rgba_channel_order();
     test_resize_alpha_aware_preserves_edge_color();
     test_resize_preserves_source_endpoints();

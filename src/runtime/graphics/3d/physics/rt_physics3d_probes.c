@@ -20,8 +20,7 @@
 // Ownership/Lifetime:
 //   - LedgeHit3D is a GC-managed plain result handle (PhysicsHit3D pattern);
 //     it retains nothing.
-// Links: misc/plans/thirdpersonupgrade/04-traversal-probes.md,
-//   rt_physics3d.h, rt_physics3d_internal.h
+// Links: rt_physics3d.h, rt_physics3d_internal.h
 //
 //===----------------------------------------------------------------------===//
 

@@ -16,7 +16,7 @@
 //     re-capture requests (time-of-day hooks set it).
 // Ownership/Lifetime:
 //   - GC-managed; the probe retains its captured cubemap until finalized.
-// Links: misc/plans/thirdpersonupgrade/15-reflection-probes.md, ADR 0089.
+// Links: ADR 0089, rt_reflectionprobe3d.h.
 //
 //===----------------------------------------------------------------------===//
 

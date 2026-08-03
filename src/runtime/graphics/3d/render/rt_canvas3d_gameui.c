@@ -19,8 +19,7 @@
 //   - box_alpha's 0..255 alpha converts to the overlay queue's 0..1 range.
 // Ownership/Lifetime:
 //   - Stateless: the ops table borrows the canvas handle per Draw call.
-// Links: src/runtime/game/rt_gameui_draw.h,
-//   misc/plans/3d_overhaul/08-ui-toolkit-3d.md
+// Links: src/runtime/game/rt_gameui_draw.h
 //
 //===----------------------------------------------------------------------===//
 

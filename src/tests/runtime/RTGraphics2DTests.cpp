@@ -33,6 +33,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <cstring>
 #include <limits>
 
 extern "C" {
@@ -289,6 +290,14 @@ static void *undersized_like(void *valid_object) {
     return undersized;
 }
 
+static void *zeroed_full_sized_like(void *valid_object) {
+    assert(valid_object != nullptr);
+    void *forged = rt_obj_new_i64(rt_obj_class_id(valid_object), 256);
+    assert(forged != nullptr);
+    std::memset(forged, 0, 256);
+    return forged;
+}
+
 static void test_extended_payload_transform_and_bulk_fill_guards() {
     void *pixels = rt_pixels_new(4, 3);
     assert(pixels != nullptr);
@@ -368,6 +377,23 @@ static void test_extended_payload_transform_and_bulk_fill_guards() {
     assert(rt_texturepackeratlas_get_atlas(bad_packer) == nullptr);
     assert(rt_asepriteimporter_get_frame_width(bad_aseprite) == 0);
     assert(rt_tiledmaploader_get_tile_width(bad_tiled) == 0);
+
+    void *forged_chunk_cache = zeroed_full_sized_like(chunk_cache);
+    void *forged_tile_renderer = zeroed_full_sized_like(tile_renderer);
+    void *forged_clip = zeroed_full_sized_like(clip);
+    void *forged_animated = zeroed_full_sized_like(animated);
+    void *forged_layout = zeroed_full_sized_like(layout);
+    void *forged_pass = zeroed_full_sized_like(pass);
+    void *forged_graph = zeroed_full_sized_like(graph);
+    void *forged_mask = zeroed_full_sized_like(mask);
+    assert(rt_tilechunkcache2d_get_chunk_width(forged_chunk_cache) == 0);
+    assert(rt_tilemaprenderer2d_get_draw_count(forged_tile_renderer) == 0);
+    assert(rt_animationclip2d_get_frame_count(forged_clip) == 0);
+    assert(rt_animatedsprite2d_is_playing(forged_animated) == 0);
+    assert(rt_textlayout2d_measure_width(forged_layout, rt_str_from_lit("x", 1)) == 8);
+    rt_renderpass2d_execute(forged_pass);
+    assert(rt_rendergraph2d_get_count(forged_graph) == 0);
+    assert(rt_collisionmask2d_get(forged_mask, 0, 0) == 0);
 
     rt_transform2d_set_origin(transform, INT64_MAX - 1, 0);
     assert(rt_transform2d_transform_x(transform, INT64_MAX, 0) == INT64_MAX);
@@ -538,6 +564,19 @@ static void test_viewport_tiles_and_objects() {
     assert(rt_viewport2d_get_scale(viewport) == 500);
     assert(rt_viewport2d_get_offset_x(viewport) == 0);
     assert(rt_viewport2d_get_offset_y(viewport) == 0);
+
+    void *fractional = rt_viewport2d_new(3, 3, 1, 1);
+    assert(rt_viewport2d_get_scale(fractional) == 333);
+    assert(rt_viewport2d_world_to_screen_x(fractional, INT64_MAX) == INT64_C(3071382888272640344));
+    assert(rt_viewport2d_world_to_screen_y(fractional, INT64_MIN) == INT64_C(-3071382888272640344));
+    void *letterboxed = rt_viewport2d_new(3, 2, 10, 10);
+    assert(rt_viewport2d_get_scale(letterboxed) == 3333);
+    assert(rt_viewport2d_get_offset_y(letterboxed) == 2);
+    assert(rt_viewport2d_screen_to_world_y(letterboxed, INT64_MIN) ==
+           INT64_C(-2767288339890421785));
+    void *forged_viewport = zeroed_full_sized_like(viewport);
+    assert(rt_viewport2d_get_scale(forged_viewport) == 1000);
+    assert(rt_viewport2d_world_to_screen_x(forged_viewport, 17) == 17);
 
     void *tiles = rt_pixels_new(4, 2);
     for (int64_t y = 0; y < 2; y++) {
@@ -772,6 +811,12 @@ static void test_animation_collision_palette_gradient_and_rig() {
     assert(rt_sprite_get_frame(sprite) >= 0);
     assert(rt_sprite_get_frame(sprite) < rt_sprite_get_frame_count(sprite));
 
+    rt_animatedsprite2d_set_clip(animated, clip);
+    rt_animatedsprite2d_update(animated, 49);
+    assert(rt_animatedsprite2d_get_frame(animated) == 0);
+    rt_animatedsprite2d_update(animated, INT64_MAX);
+    assert(rt_animatedsprite2d_get_frame(animated) == 1);
+
     void *oneshot = rt_animationclip2d_new(0, 2, 50, 0);
     rt_animatedsprite2d_set_clip(animated, oneshot);
     rt_animatedsprite2d_update(animated, 100);
@@ -931,8 +976,15 @@ static void test_layout_rendergraph_tile_helpers_and_importers() {
     rt_textlayout2d_set_scale(layout, 1);
     rt_textlayout2d_set_wrap_width(layout, 24);
     rt_string words = rt_str_from_lit("AA AA", 5);
-    assert(rt_textlayout2d_measure_width(layout, words) == 16);
+    assert(rt_textlayout2d_measure_width(layout, words) == 24);
     assert(rt_textlayout2d_measure_height(layout, words) == 16);
+    rt_textlayout2d_set_wrap_width(layout, 0);
+    assert(rt_textlayout2d_measure_width(layout, rt_str_from_lit(" A ", 3)) == 24);
+    assert(rt_textlayout2d_measure_width(layout, rt_str_from_lit("   ", 3)) == 24);
+    assert(rt_textlayout2d_measure_width(layout, rt_str_from_lit("\xC3\xA9", 2)) == 8);
+    rt_textlayout2d_set_wrap_width(layout, 10);
+    assert(rt_textlayout2d_measure_width(layout, rt_str_from_lit("AA", 2)) == 8);
+    assert(rt_textlayout2d_measure_height(layout, rt_str_from_lit("AA", 2)) == 16);
 
     void *src = rt_rendertarget2d_new(1, 1);
     void *dst = rt_rendertarget2d_new(1, 1);
@@ -956,6 +1008,12 @@ static void test_layout_rendergraph_tile_helpers_and_importers() {
     assert(surface_pass != nullptr);
     rt_renderpass2d_execute(surface_pass);
     assert(rt_pixels_get(rt_rendertarget2d_get_pixels(surface_dst), 0, 0) == 0x112233FF);
+    void *self_pass = rt_renderpass2d_new(src, src);
+    assert(self_pass != nullptr);
+    uint64_t source_generation = rt_pixels_generation(rt_rendertarget2d_get_pixels(src));
+    rt_renderpass2d_execute(self_pass);
+    assert(rt_pixels_get(rt_rendertarget2d_get_pixels(src), 0, 0) == 0x112233FF);
+    assert(rt_pixels_generation(rt_rendertarget2d_get_pixels(src)) == source_generation);
     assert(rt_rendertarget2d_get_pixels(rt_rendertarget2d_get_pixels(src)) == nullptr);
     rt_renderpass2d_execute(rt_rendertarget2d_get_pixels(src));
 

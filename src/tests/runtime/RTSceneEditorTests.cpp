@@ -1634,7 +1634,9 @@ int main() {
     void *styled_canvas = rt_canvas_new(rt_const_cstr("styled-test"), 4, 4);
     rt_tilemap_draw(rt_result_unwrap(styled_result), styled_canvas, 0, 0);
     void *styled_copy = rt_canvas_copy_rect(styled_canvas, 2, 2, 1, 1);
-    assert(static_cast<uint32_t>(rt_pixels_get(styled_copy, 0, 0)) == UINT32_C(0x8080ff80));
+    // Canvas starts as opaque black, so source-over composition of the
+    // half-opacity 0x8080ff tile produces opaque 0x404080.
+    assert(static_cast<uint32_t>(rt_pixels_get(styled_copy, 0, 0)) == UINT32_C(0x404080ff));
 
     write_text(tiled_dir / "object-gid.tmj",
                R"json({"type":"map","orientation":"orthogonal","infinite":false,
@@ -1952,9 +1954,8 @@ int main() {
     // fields existed; authored values round-trip with sanitization.
     {
         void *transform_scene = rt_game_scene_new(4, 3, 16, 16);
-        int64_t plain =
-            rt_game_scene_add_object(transform_scene, rt_const_cstr("entity"),
-                                     rt_const_cstr("plain"), 5, 6);
+        int64_t plain = rt_game_scene_add_object(
+            transform_scene, rt_const_cstr("entity"), rt_const_cstr("plain"), 5, 6);
         assert(plain == 0);
         assert(rt_game_scene_object_rotation(transform_scene, plain) == 0.0);
         assert(rt_game_scene_object_scale_x(transform_scene, plain) == 1.0);
@@ -1981,8 +1982,7 @@ int main() {
         assert(rt_game_scene_object_scale_y(transform_scene, plain) == 1.0);
         rt_game_scene_set_object_scale(transform_scene, plain, 2.0, -3.5);
         rt_game_scene_set_object_flip(transform_scene, plain, 1, 0);
-        rt_game_scene_set_object_tint(transform_scene, plain,
-                                      static_cast<int64_t>(0x11223344));
+        rt_game_scene_set_object_tint(transform_scene, plain, static_cast<int64_t>(0x11223344));
         rt_game_scene_set_object_pivot(transform_scene, plain, -0.5, 2.0);
         assert(rt_game_scene_object_pivot_x(transform_scene, plain) == 0.0);
         assert(rt_game_scene_object_pivot_y(transform_scene, plain) == 1.0);
@@ -2003,8 +2003,8 @@ int main() {
 
         // Duplication copies the transform; transform keys never leak into
         // the property bag.
-        int64_t copy = rt_game_scene_duplicate_object(
-            transform_scene, plain, rt_const_cstr("copy"));
+        int64_t copy =
+            rt_game_scene_duplicate_object(transform_scene, plain, rt_const_cstr("copy"));
         assert(copy == 1);
         assert(rt_game_scene_object_rotation(transform_scene, copy) == 270.0);
         assert(rt_game_scene_object_flip_x(transform_scene, copy) == 1);

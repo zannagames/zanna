@@ -435,6 +435,10 @@ static void test_software_backend_reports_canvas_fallback_features() {
                 "software backend does not advertise ETC2 compressed upload");
     EXPECT_TRUE((caps & RT_CANVAS3D_BACKEND_CAP_ANISOTROPY) == 0,
                 "software backend accepts but does not advertise anisotropy");
+    EXPECT_TRUE((caps & RT_CANVAS3D_BACKEND_CAP_CLUSTERED_LIGHTING) != 0,
+                "software backend advertises the CPU-parity clustered lighting path");
+    EXPECT_TRUE((caps & RT_CANVAS3D_BACKEND_CAP_SHADOW_CSM) != 0,
+                "software backend advertises the CPU-parity shadow cascade path");
 
     EXPECT_TRUE(backend_supports(&canvas, "postfx-overlay"),
                 "BackendSupports accepts postfx-overlay alias");
@@ -532,6 +536,20 @@ static void test_gpu_backend_capability_bits_and_names() {
                 "generic GPU backend does not imply ETC2 compressed upload");
     EXPECT_TRUE((caps & RT_CANVAS3D_BACKEND_CAP_ANISOTROPY) == 0,
                 "generic GPU backend does not imply anisotropic filtering");
+    EXPECT_TRUE((caps & RT_CANVAS3D_BACKEND_CAP_CLUSTERED_LIGHTING) == 0,
+                "generic GPU backend does not imply clustered lighting without the vtable field");
+    EXPECT_TRUE((caps & RT_CANVAS3D_BACKEND_CAP_SHADOW_CSM) == 0,
+                "generic GPU backend does not imply shadow cascades without the vtable field");
+
+    fake_gpu_backend.clustered_lighting = 1;
+    fake_gpu_backend.shadow_csm = 1;
+    caps = rt_canvas3d_get_backend_capabilities(&canvas);
+    EXPECT_TRUE((caps & RT_CANVAS3D_BACKEND_CAP_CLUSTERED_LIGHTING) != 0,
+                "declared clustered_lighting vtable field advertises clustered lighting");
+    EXPECT_TRUE((caps & RT_CANVAS3D_BACKEND_CAP_SHADOW_CSM) != 0,
+                "declared shadow_csm vtable field advertises cascaded shadow maps");
+    fake_gpu_backend.clustered_lighting = 0;
+    fake_gpu_backend.shadow_csm = 0;
 
     EXPECT_TRUE(backend_supports(&canvas, "hardware_instancing"),
                 "BackendSupports accepts hardware_instancing");

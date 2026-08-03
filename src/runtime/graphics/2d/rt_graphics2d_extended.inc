@@ -68,17 +68,20 @@ typedef struct {
 } rt_spriterenderer2d_impl;
 
 typedef struct {
+    uint64_t state_magic;
     int64_t chunk_width;
     int64_t chunk_height;
     int64_t dirty_count;
 } rt_tilechunkcache2d_impl;
 
 typedef struct {
+    uint64_t state_magic;
     void *cache;
     int64_t draw_count;
 } rt_tilemaprenderer2d_impl;
 
 typedef struct {
+    uint64_t state_magic;
     int64_t start_frame;
     int64_t frame_count;
     int64_t frame_delay_ms;
@@ -86,6 +89,7 @@ typedef struct {
 } rt_animationclip2d_impl;
 
 typedef struct {
+    uint64_t state_magic;
     void *sprite;
     void *clip;
     int64_t elapsed_ms;
@@ -94,6 +98,7 @@ typedef struct {
 } rt_animatedsprite2d_impl;
 
 typedef struct {
+    uint64_t state_magic;
     void *font;
     int64_t scale;
     int64_t wrap_width;
@@ -102,6 +107,7 @@ typedef struct {
 } rt_textlayout2d_impl;
 
 typedef struct {
+    uint64_t state_magic;
     void *source;
     void *target;
     void *shader;
@@ -109,12 +115,14 @@ typedef struct {
 } rt_renderpass2d_impl;
 
 typedef struct {
+    uint64_t state_magic;
     void **passes;
     int64_t count;
     int64_t capacity;
 } rt_rendergraph2d_impl;
 
 typedef struct {
+    uint64_t state_magic;
     int64_t width;
     int64_t height;
     uint8_t *bits;
@@ -161,6 +169,15 @@ typedef struct {
     int64_t tile_width;
     int64_t tile_height;
 } rt_tiledmaploader_impl;
+
+#define RT2D_TILECHUNKCACHE_MAGIC UINT64_C(0x5A324443484E4B31)
+#define RT2D_TILEMAPRENDERER_MAGIC UINT64_C(0x5A3244544D525231)
+#define RT2D_ANIMATIONCLIP_MAGIC UINT64_C(0x5A3244414E434C31)
+#define RT2D_ANIMATEDSPRITE_MAGIC UINT64_C(0x5A3244414E535031)
+#define RT2D_TEXTLAYOUT_MAGIC UINT64_C(0x5A32445445585431)
+#define RT2D_RENDERPASS_MAGIC UINT64_C(0x5A32445250415331)
+#define RT2D_RENDERGRAPH_MAGIC UINT64_C(0x5A32445247525031)
+#define RT2D_COLLISIONMASK_MAGIC UINT64_C(0x5A3244434F4C4D31)
 
 /// @brief Validate an extended 2D handle's class and complete payload layout.
 /// @details Every public extended-class entry point downcasts opaque handles.
@@ -238,6 +255,106 @@ static int32_t rt2d_extended_has_class(void *obj, int64_t class_id) {
             break;
     }
     return rt2d_has_class_min(obj, class_id, min_size);
+}
+
+/// @brief Validate TileChunkCache2D scalar state in addition to class/layout.
+static rt_tilechunkcache2d_impl *tilechunkcache2d_checked(void *cache) {
+    if (!rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID))
+        return NULL;
+    rt_tilechunkcache2d_impl *impl = (rt_tilechunkcache2d_impl *)cache;
+    return impl->state_magic == RT2D_TILECHUNKCACHE_MAGIC && impl->chunk_width >= 1 &&
+                   impl->chunk_width <= RT2D_MAX_DIM && impl->chunk_height >= 1 &&
+                   impl->chunk_height <= RT2D_MAX_DIM && impl->dirty_count >= 0
+               ? impl
+               : NULL;
+}
+
+/// @brief Validate an immutable AnimationClip2D payload.
+static rt_animationclip2d_impl *animationclip2d_checked(void *clip) {
+    if (!rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID))
+        return NULL;
+    rt_animationclip2d_impl *impl = (rt_animationclip2d_impl *)clip;
+    return impl->state_magic == RT2D_ANIMATIONCLIP_MAGIC && impl->start_frame >= 0 &&
+                   impl->frame_count > 0 && impl->frame_delay_ms > 0 &&
+                   (impl->loop == 0 || impl->loop == 1)
+               ? impl
+               : NULL;
+}
+
+/// @brief Validate AnimatedSprite2D playback state and retained handle classes.
+static rt_animatedsprite2d_impl *animatedsprite2d_checked(void *animated_sprite) {
+    if (!rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID))
+        return NULL;
+    rt_animatedsprite2d_impl *impl = (rt_animatedsprite2d_impl *)animated_sprite;
+    rt_animationclip2d_impl *clip = impl->clip ? animationclip2d_checked(impl->clip) : NULL;
+    if (impl->state_magic != RT2D_ANIMATEDSPRITE_MAGIC || !impl->sprite ||
+        !rt_obj_is_instance(impl->sprite, RT_SPRITE_CLASS_ID, 0) || impl->elapsed_ms < 0 ||
+        impl->frame < 0 || (impl->playing != 0 && impl->playing != 1) || (impl->clip && !clip) ||
+        (clip && impl->frame >= clip->frame_count) ||
+        (clip && impl->elapsed_ms >= clip->frame_delay_ms))
+        return NULL;
+    return impl;
+}
+
+/// @brief Validate TextLayout2D settings and its optional retained font.
+static rt_textlayout2d_impl *textlayout2d_checked(void *layout) {
+    if (!rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
+        return NULL;
+    rt_textlayout2d_impl *impl = (rt_textlayout2d_impl *)layout;
+    return impl->state_magic == RT2D_TEXTLAYOUT_MAGIC && impl->scale >= 1 && impl->scale <= 64 &&
+                   impl->wrap_width >= 0 && impl->alignment >= 0 && impl->alignment <= 2 &&
+                   (!impl->font || rt2d_is_bitmap_font_handle(impl->font))
+               ? impl
+               : NULL;
+}
+
+/// @brief Validate RenderPass2D state and every optional retained handle.
+static rt_renderpass2d_impl *renderpass2d_checked(void *pass) {
+    if (!rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID))
+        return NULL;
+    rt_renderpass2d_impl *impl = (rt_renderpass2d_impl *)pass;
+    if (impl->state_magic != RT2D_RENDERPASS_MAGIC || (impl->enabled != 0 && impl->enabled != 1) ||
+        (impl->source && !rendertarget2d_checked(impl->source)) ||
+        (impl->target && !rendertarget2d_checked(impl->target)) ||
+        (impl->shader && !rt2d_is_shader_like(impl->shader)))
+        return NULL;
+    return impl;
+}
+
+/// @brief Validate RenderGraph2D counts and backing-array ownership state.
+static rt_rendergraph2d_impl *rendergraph2d_checked(void *graph) {
+    if (!rt2d_extended_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID))
+        return NULL;
+    rt_rendergraph2d_impl *impl = (rt_rendergraph2d_impl *)graph;
+    if (impl->state_magic != RT2D_RENDERGRAPH_MAGIC || impl->count < 0 || impl->capacity < 0 ||
+        impl->count > impl->capacity || (impl->capacity == 0) != (impl->passes == NULL) ||
+        (impl->capacity > 0 && (uint64_t)impl->capacity > SIZE_MAX / sizeof(void *)))
+        return NULL;
+    return impl;
+}
+
+/// @brief Validate CollisionMask2D dimensions and required backing storage.
+static rt_collisionmask2d_impl *collisionmask2d_checked(void *mask) {
+    if (!rt2d_extended_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID))
+        return NULL;
+    rt_collisionmask2d_impl *impl = (rt_collisionmask2d_impl *)mask;
+    int64_t count = 0;
+    return impl->state_magic == RT2D_COLLISIONMASK_MAGIC &&
+                   rt2d_checked_count(impl->width, impl->height, 1, &count) && count > 0 &&
+                   impl->bits
+               ? impl
+               : NULL;
+}
+
+/// @brief Validate TileMapRenderer2D counters and optional cache binding.
+static rt_tilemaprenderer2d_impl *tilemaprenderer2d_checked(void *renderer) {
+    if (!rt2d_extended_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID))
+        return NULL;
+    rt_tilemaprenderer2d_impl *impl = (rt_tilemaprenderer2d_impl *)renderer;
+    return impl->state_magic == RT2D_TILEMAPRENDERER_MAGIC && impl->draw_count >= 0 &&
+                   (!impl->cache || tilechunkcache2d_checked(impl->cache))
+               ? impl
+               : NULL;
 }
 
 //=============================================================================
@@ -824,8 +941,10 @@ void *rt_tilechunkcache2d_new(int64_t chunk_width, int64_t chunk_height) {
         RT2D_TILECHUNKCACHE_CLASS_ID, (int64_t)sizeof(rt_tilechunkcache2d_impl));
     if (!impl)
         return NULL;
+    impl->state_magic = RT2D_TILECHUNKCACHE_MAGIC;
     impl->chunk_width = normalized_dim(chunk_width);
     impl->chunk_height = normalized_dim(chunk_height);
+    impl->dirty_count = 0;
     return impl;
 }
 
@@ -833,26 +952,24 @@ void *rt_tilechunkcache2d_new(int64_t chunk_width, int64_t chunk_height) {
 /// @param cache Borrowed TileChunkCache2D handle.
 /// @return The normalized chunk width, or `0` for an invalid handle.
 int64_t rt_tilechunkcache2d_get_chunk_width(void *cache) {
-    return rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)
-               ? ((rt_tilechunkcache2d_impl *)cache)->chunk_width
-               : 0;
+    rt_tilechunkcache2d_impl *impl = tilechunkcache2d_checked(cache);
+    return impl ? impl->chunk_width : 0;
 }
 
 /// @brief Return the chunk height in tiles.
 /// @param cache Borrowed TileChunkCache2D handle.
 /// @return The normalized chunk height, or `0` for an invalid handle.
 int64_t rt_tilechunkcache2d_get_chunk_height(void *cache) {
-    return rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)
-               ? ((rt_tilechunkcache2d_impl *)cache)->chunk_height
-               : 0;
+    rt_tilechunkcache2d_impl *impl = tilechunkcache2d_checked(cache);
+    return impl ? impl->chunk_height : 0;
 }
 
 /// @brief Increment the dirty counter — signals that at least one chunk needs rebuild.
 /// @param cache Borrowed TileChunkCache2D handle to update.
 void rt_tilechunkcache2d_mark_dirty(void *cache) {
-    if (!rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID))
+    rt_tilechunkcache2d_impl *impl = tilechunkcache2d_checked(cache);
+    if (!impl)
         return;
-    rt_tilechunkcache2d_impl *impl = (rt_tilechunkcache2d_impl *)cache;
     if (impl->dirty_count < INT64_MAX)
         impl->dirty_count++;
 }
@@ -860,17 +977,17 @@ void rt_tilechunkcache2d_mark_dirty(void *cache) {
 /// @brief Reset the dirty counter to zero after the renderer has processed all dirty chunks.
 /// @param cache Borrowed TileChunkCache2D handle to update.
 void rt_tilechunkcache2d_clear_dirty(void *cache) {
-    if (rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID))
-        ((rt_tilechunkcache2d_impl *)cache)->dirty_count = 0;
+    rt_tilechunkcache2d_impl *impl = tilechunkcache2d_checked(cache);
+    if (impl)
+        impl->dirty_count = 0;
 }
 
 /// @brief Return the number of pending dirty-chunk notifications.
 /// @param cache Borrowed TileChunkCache2D handle.
 /// @return The pending notification count, or `0` for an invalid handle.
 int64_t rt_tilechunkcache2d_get_dirty_count(void *cache) {
-    return rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)
-               ? ((rt_tilechunkcache2d_impl *)cache)->dirty_count
-               : 0;
+    rt_tilechunkcache2d_impl *impl = tilechunkcache2d_checked(cache);
+    return impl ? impl->dirty_count : 0;
 }
 
 /// @brief GC finalizer — releases the retained TileChunkCache2D reference.
@@ -879,6 +996,8 @@ static void tilemaprenderer2d_finalize(void *obj) {
     if (!rt2d_extended_has_class(obj, RT2D_TILEMAPRENDERER_CLASS_ID))
         return;
     rt_tilemaprenderer2d_impl *impl = (rt_tilemaprenderer2d_impl *)obj;
+    if (impl->state_magic != RT2D_TILEMAPRENDERER_MAGIC)
+        return;
     rt2d_release_ref_slot(&impl->cache);
 }
 
@@ -889,6 +1008,9 @@ void *rt_tilemaprenderer2d_new(void) {
         RT2D_TILEMAPRENDERER_CLASS_ID, (int64_t)sizeof(rt_tilemaprenderer2d_impl));
     if (!impl)
         return NULL;
+    impl->state_magic = RT2D_TILEMAPRENDERER_MAGIC;
+    impl->cache = NULL;
+    impl->draw_count = 0;
     rt_obj_set_finalizer(impl, tilemaprenderer2d_finalize);
     return impl;
 }
@@ -897,18 +1019,17 @@ void *rt_tilemaprenderer2d_new(void) {
 /// @param renderer Borrowed TileMapRenderer2D handle to update.
 /// @param cache Borrowed TileChunkCache2D to retain, or `NULL` to clear.
 void rt_tilemaprenderer2d_set_chunk_cache(void *renderer, void *cache) {
-    if (rt2d_extended_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID) &&
-        (!cache || rt2d_extended_has_class(cache, RT2D_TILECHUNKCACHE_CLASS_ID)))
-        spriterenderer2d_set_ref(&((rt_tilemaprenderer2d_impl *)renderer)->cache, cache);
+    rt_tilemaprenderer2d_impl *impl = tilemaprenderer2d_checked(renderer);
+    if (impl && (!cache || tilechunkcache2d_checked(cache)))
+        spriterenderer2d_set_ref(&impl->cache, cache);
 }
 
 /// @brief Return the number of tiles drawn by the last Draw/DrawRegion call.
 /// @param renderer Borrowed TileMapRenderer2D handle.
 /// @return The last recorded visible-tile count, or `0` for an invalid handle.
 int64_t rt_tilemaprenderer2d_get_draw_count(void *renderer) {
-    return rt2d_extended_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID)
-               ? ((rt_tilemaprenderer2d_impl *)renderer)->draw_count
-               : 0;
+    rt_tilemaprenderer2d_impl *impl = tilemaprenderer2d_checked(renderer);
+    return impl ? impl->draw_count : 0;
 }
 
 /// @brief Draw the entire tilemap into `canvas` offset by `(offset_x, offset_y)`.
@@ -921,9 +1042,15 @@ int64_t rt_tilemaprenderer2d_get_draw_count(void *renderer) {
 /// @param offset_y Destination Y offset.
 void rt_tilemaprenderer2d_draw(
     void *renderer, void *tilemap, void *canvas, int64_t offset_x, int64_t offset_y) {
-    if (!rt2d_extended_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID) || !tilemap || !canvas)
+    rt_tilemaprenderer2d_impl *impl = tilemaprenderer2d_checked(renderer);
+    if (!impl)
         return;
-    rt_tilemaprenderer2d_impl *impl = (rt_tilemaprenderer2d_impl *)renderer;
+    impl->draw_count = 0;
+    if (!tilemap || !canvas)
+        return;
+    if (rt_tilemap_get_width(tilemap) <= 0 || rt_tilemap_get_height(tilemap) <= 0 ||
+        rt_canvas_width(canvas) <= 0 || rt_canvas_height(canvas) <= 0)
+        return;
     impl->draw_count = rt_tilemap_count_drawn_visible(tilemap, canvas, offset_x, offset_y);
     rt_tilemap_draw(tilemap, canvas, offset_x, offset_y);
 }
@@ -950,9 +1077,15 @@ void rt_tilemaprenderer2d_draw_region(void *renderer,
                                       int64_t view_y,
                                       int64_t view_w,
                                       int64_t view_h) {
-    if (!rt2d_extended_has_class(renderer, RT2D_TILEMAPRENDERER_CLASS_ID) || !tilemap || !canvas)
+    rt_tilemaprenderer2d_impl *impl = tilemaprenderer2d_checked(renderer);
+    if (!impl)
         return;
-    rt_tilemaprenderer2d_impl *impl = (rt_tilemaprenderer2d_impl *)renderer;
+    impl->draw_count = 0;
+    if (!tilemap || !canvas)
+        return;
+    if (rt_tilemap_get_width(tilemap) <= 0 || rt_tilemap_get_height(tilemap) <= 0 ||
+        rt_canvas_width(canvas) <= 0 || rt_canvas_height(canvas) <= 0)
+        return;
     impl->draw_count = rt_tilemap_count_drawn_region(tilemap, view_x, view_y, view_w, view_h);
     rt_tilemap_draw_region(tilemap, canvas, offset_x, offset_y, view_x, view_y, view_w, view_h);
 }
@@ -977,6 +1110,7 @@ void *rt_animationclip2d_new(int64_t start_frame,
         RT2D_ANIMATIONCLIP_CLASS_ID, (int64_t)sizeof(rt_animationclip2d_impl));
     if (!impl)
         return NULL;
+    impl->state_magic = RT2D_ANIMATIONCLIP_MAGIC;
     impl->start_frame = start_frame < 0 ? 0 : start_frame;
     impl->frame_count = frame_count <= 0 ? 1 : frame_count;
     impl->frame_delay_ms = frame_delay_ms <= 0 ? 100 : frame_delay_ms;
@@ -988,36 +1122,32 @@ void *rt_animationclip2d_new(int64_t start_frame,
 /// @param clip Borrowed AnimationClip2D handle.
 /// @return The normalized start frame, or `0` for an invalid handle.
 int64_t rt_animationclip2d_get_start_frame(void *clip) {
-    return rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
-               ? ((rt_animationclip2d_impl *)clip)->start_frame
-               : 0;
+    rt_animationclip2d_impl *impl = animationclip2d_checked(clip);
+    return impl ? impl->start_frame : 0;
 }
 
 /// @brief Return the number of sprite frames in this clip.
 /// @param clip Borrowed AnimationClip2D handle.
 /// @return The positive frame count, or `0` for an invalid handle.
 int64_t rt_animationclip2d_get_frame_count(void *clip) {
-    return rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
-               ? ((rt_animationclip2d_impl *)clip)->frame_count
-               : 0;
+    rt_animationclip2d_impl *impl = animationclip2d_checked(clip);
+    return impl ? impl->frame_count : 0;
 }
 
 /// @brief Return the per-frame delay in milliseconds.
 /// @param clip Borrowed AnimationClip2D handle.
 /// @return The positive frame delay, or `0` for an invalid handle.
 int64_t rt_animationclip2d_get_frame_delay_ms(void *clip) {
-    return rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
-               ? ((rt_animationclip2d_impl *)clip)->frame_delay_ms
-               : 0;
+    rt_animationclip2d_impl *impl = animationclip2d_checked(clip);
+    return impl ? impl->frame_delay_ms : 0;
 }
 
 /// @brief Return non-zero if the clip loops back to its first frame after the last.
 /// @param clip Borrowed AnimationClip2D handle.
 /// @return `1` for a looping clip, otherwise `0`.
 int64_t rt_animationclip2d_get_loop(void *clip) {
-    return rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)
-               ? ((rt_animationclip2d_impl *)clip)->loop
-               : 0;
+    rt_animationclip2d_impl *impl = animationclip2d_checked(clip);
+    return impl ? impl->loop : 0;
 }
 
 /// @brief GC finalizer — releases retained references to the sprite and animation clip.
@@ -1026,6 +1156,8 @@ static void animatedsprite2d_finalize(void *obj) {
     if (!rt2d_extended_has_class(obj, RT2D_ANIMATEDSPRITE_CLASS_ID))
         return;
     rt_animatedsprite2d_impl *impl = (rt_animatedsprite2d_impl *)obj;
+    if (impl->state_magic != RT2D_ANIMATEDSPRITE_MAGIC)
+        return;
     rt2d_release_ref_slot(&impl->sprite);
     rt2d_release_ref_slot(&impl->clip);
 }
@@ -1047,6 +1179,7 @@ void *rt_animatedsprite2d_new(void *sprite) {
         rt2d_release_ref_slot(&owned_sprite);
         return NULL;
     }
+    impl->state_magic = RT2D_ANIMATEDSPRITE_MAGIC;
     impl->sprite = sprite;
     impl->clip = NULL;
     impl->elapsed_ms = 0;
@@ -1063,10 +1196,9 @@ void *rt_animatedsprite2d_new(void *sprite) {
 /// @param animated_sprite Borrowed AnimatedSprite2D handle to update.
 /// @param clip Borrowed AnimationClip2D to retain, or `NULL` to clear.
 void rt_animatedsprite2d_set_clip(void *animated_sprite, void *clip) {
-    if (!rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID) ||
-        (clip && !rt2d_extended_has_class(clip, RT2D_ANIMATIONCLIP_CLASS_ID)))
+    rt_animatedsprite2d_impl *impl = animatedsprite2d_checked(animated_sprite);
+    if (!impl || (clip && !animationclip2d_checked(clip)))
         return;
-    rt_animatedsprite2d_impl *impl = (rt_animatedsprite2d_impl *)animated_sprite;
     spriterenderer2d_set_ref(&impl->clip, clip);
     impl->elapsed_ms = 0;
     impl->frame = 0;
@@ -1078,13 +1210,10 @@ void rt_animatedsprite2d_set_clip(void *animated_sprite, void *clip) {
 /// @brief Resume playback after `Stop` (or after a non-looping clip finished).
 /// @param animated_sprite Borrowed AnimatedSprite2D handle to play.
 void rt_animatedsprite2d_play(void *animated_sprite) {
-    rt_animatedsprite2d_impl *impl =
-        rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
-            ? (rt_animatedsprite2d_impl *)animated_sprite
-            : NULL;
+    rt_animatedsprite2d_impl *impl = animatedsprite2d_checked(animated_sprite);
     if (!impl)
         return;
-    if (!impl->sprite || !rt2d_extended_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID)) {
+    if (!animationclip2d_checked(impl->clip)) {
         impl->playing = 0;
         return;
     }
@@ -1111,13 +1240,13 @@ void rt_animatedsprite2d_play(void *animated_sprite) {
 /// @brief Stop playback and reset to the clip's first frame.
 /// @param animated_sprite Borrowed AnimatedSprite2D handle to stop.
 void rt_animatedsprite2d_stop(void *animated_sprite) {
-    if (!rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID))
+    rt_animatedsprite2d_impl *impl = animatedsprite2d_checked(animated_sprite);
+    if (!impl)
         return;
-    rt_animatedsprite2d_impl *impl = (rt_animatedsprite2d_impl *)animated_sprite;
     impl->playing = 0;
     impl->elapsed_ms = 0;
     impl->frame = 0;
-    if (impl->sprite && rt2d_extended_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID))
+    if (animationclip2d_checked(impl->clip))
         rt_sprite_set_frame(impl->sprite, ((rt_animationclip2d_impl *)impl->clip)->start_frame);
 }
 
@@ -1141,15 +1270,12 @@ void rt_animatedsprite2d_stop(void *animated_sprite) {
 /// @param animated_sprite Borrowed AnimatedSprite2D handle to advance.
 /// @param delta_ms Elapsed milliseconds; negative values are treated as zero.
 void rt_animatedsprite2d_update(void *animated_sprite, int64_t delta_ms) {
-    rt_animatedsprite2d_impl *impl =
-        rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
-            ? (rt_animatedsprite2d_impl *)animated_sprite
-            : NULL;
+    rt_animatedsprite2d_impl *impl = animatedsprite2d_checked(animated_sprite);
     if (!impl || !impl->sprite || !impl->clip || !impl->playing)
         return;
-    if (!rt2d_extended_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID))
+    rt_animationclip2d_impl *clip = animationclip2d_checked(impl->clip);
+    if (!clip)
         return;
-    rt_animationclip2d_impl *clip = (rt_animationclip2d_impl *)impl->clip;
     int64_t sprite_frames = rt_sprite_get_frame_count(impl->sprite);
     if (sprite_frames <= 0 || clip->start_frame >= sprite_frames) {
         impl->playing = 0;
@@ -1173,25 +1299,33 @@ void rt_animatedsprite2d_update(void *animated_sprite, int64_t delta_ms) {
         impl->frame = clip->loop ? impl->frame % effective_count : effective_count - 1;
     if (delta_ms < 0)
         delta_ms = 0;
-    if (delta_ms > INT64_MAX - impl->elapsed_ms)
-        impl->elapsed_ms = INT64_MAX;
-    else
-        impl->elapsed_ms += delta_ms;
+    int64_t elapsed = impl->elapsed_ms % clip->frame_delay_ms;
+    int64_t whole_steps = delta_ms / clip->frame_delay_ms;
+    int64_t remainder = delta_ms % clip->frame_delay_ms;
+    int64_t until_boundary = clip->frame_delay_ms - elapsed;
+    int64_t carry = 0;
+    if (remainder >= until_boundary) {
+        remainder -= until_boundary;
+        carry = 1;
+    } else {
+        remainder += elapsed;
+    }
+    impl->elapsed_ms = remainder;
 
-    if (impl->elapsed_ms >= clip->frame_delay_ms) {
-        int64_t steps = impl->elapsed_ms / clip->frame_delay_ms;
-        impl->elapsed_ms %= clip->frame_delay_ms;
-        if (clip->loop) {
-            steps %= effective_count;
-            impl->frame = (impl->frame + steps) % effective_count;
+    if (clip->loop) {
+        int64_t steps = whole_steps % effective_count;
+        if (carry)
+            steps = steps == effective_count - 1 ? 0 : steps + 1;
+        int64_t until_wrap = effective_count - impl->frame;
+        impl->frame = steps >= until_wrap ? steps - until_wrap : impl->frame + steps;
+    } else {
+        int64_t until_stop = effective_count - impl->frame;
+        if (whole_steps >= until_stop || (carry && whole_steps == until_stop - 1)) {
+            impl->frame = effective_count - 1;
+            impl->playing = 0;
+            impl->elapsed_ms = 0;
         } else {
-            if (steps >= effective_count - impl->frame) {
-                impl->frame = effective_count - 1;
-                impl->playing = 0;
-                impl->elapsed_ms = 0;
-            } else {
-                impl->frame += steps;
-            }
+            impl->frame += whole_steps + carry;
         }
     }
     if (clip->start_frame <= INT64_MAX - impl->frame)
@@ -1202,23 +1336,16 @@ void rt_animatedsprite2d_update(void *animated_sprite, int64_t delta_ms) {
 /// @param animated_sprite Borrowed AnimatedSprite2D handle.
 /// @return The clip-local frame offset, or `0` for an invalid handle.
 int64_t rt_animatedsprite2d_get_frame(void *animated_sprite) {
-    return rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
-               ? ((rt_animatedsprite2d_impl *)animated_sprite)->frame
-               : 0;
+    rt_animatedsprite2d_impl *impl = animatedsprite2d_checked(animated_sprite);
+    return impl ? impl->frame : 0;
 }
 
 /// @brief Return non-zero if the animation is currently playing.
 /// @param animated_sprite Borrowed AnimatedSprite2D handle.
 /// @return `1` only when playing with a valid sprite and clip, otherwise `0`.
 int64_t rt_animatedsprite2d_is_playing(void *animated_sprite) {
-    rt_animatedsprite2d_impl *impl =
-        rt2d_extended_has_class(animated_sprite, RT2D_ANIMATEDSPRITE_CLASS_ID)
-            ? (rt_animatedsprite2d_impl *)animated_sprite
-            : NULL;
-    return impl && impl->playing && impl->sprite &&
-                   rt2d_extended_has_class(impl->clip, RT2D_ANIMATIONCLIP_CLASS_ID)
-               ? 1
-               : 0;
+    rt_animatedsprite2d_impl *impl = animatedsprite2d_checked(animated_sprite);
+    return impl && impl->playing && animationclip2d_checked(impl->clip) ? 1 : 0;
 }
 
 /// @brief GC finalizer — releases the retained BitmapFont reference.
@@ -1227,6 +1354,8 @@ static void textlayout2d_finalize(void *obj) {
     if (!rt2d_extended_has_class(obj, RT2D_TEXTLAYOUT_CLASS_ID))
         return;
     rt_textlayout2d_impl *impl = (rt_textlayout2d_impl *)obj;
+    if (impl->state_magic != RT2D_TEXTLAYOUT_MAGIC)
+        return;
     rt2d_release_ref_slot(&impl->font);
 }
 
@@ -1237,7 +1366,11 @@ void *rt_textlayout2d_new(void) {
         RT2D_TEXTLAYOUT_CLASS_ID, (int64_t)sizeof(rt_textlayout2d_impl));
     if (!impl)
         return NULL;
+    impl->state_magic = RT2D_TEXTLAYOUT_MAGIC;
+    impl->font = NULL;
     impl->scale = 1;
+    impl->wrap_width = 0;
+    impl->alignment = 0;
     impl->color = 0x00FFFFFF;
     rt_obj_set_finalizer(impl, textlayout2d_finalize);
     return impl;
@@ -1247,41 +1380,45 @@ void *rt_textlayout2d_new(void) {
 /// @param layout Borrowed TextLayout2D handle to update.
 /// @param font Borrowed BitmapFont to retain, or `NULL` for the built-in font.
 void rt_textlayout2d_set_font(void *layout, void *font) {
-    if (rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID) &&
-        (!font || rt2d_is_bitmap_font_handle(font)))
-        spriterenderer2d_set_ref(&((rt_textlayout2d_impl *)layout)->font, font);
+    rt_textlayout2d_impl *impl = textlayout2d_checked(layout);
+    if (impl && (!font || rt2d_is_bitmap_font_handle(font)))
+        spriterenderer2d_set_ref(&impl->font, font);
 }
 
 /// @brief Set the integer pixel scale; clamped to [1, 64].
 /// @param layout Borrowed TextLayout2D handle to update.
 /// @param scale Requested integer scale.
 void rt_textlayout2d_set_scale(void *layout, int64_t scale) {
-    if (rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
-        ((rt_textlayout2d_impl *)layout)->scale = clamp_i64(scale, 1, 64);
+    rt_textlayout2d_impl *impl = textlayout2d_checked(layout);
+    if (impl)
+        impl->scale = clamp_i64(scale, 1, 64);
 }
 
 /// @brief Set the wrap width in pixels; 0 means no wrapping.
 /// @param layout Borrowed TextLayout2D handle to update.
 /// @param width Requested wrap width; negative values become zero.
 void rt_textlayout2d_set_wrap_width(void *layout, int64_t width) {
-    if (rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
-        ((rt_textlayout2d_impl *)layout)->wrap_width = width < 0 ? 0 : width;
+    rt_textlayout2d_impl *impl = textlayout2d_checked(layout);
+    if (impl)
+        impl->wrap_width = width < 0 ? 0 : width;
 }
 
 /// @brief Set text alignment: 0=left, 1=center, 2=right; clamped to [0, 2].
 /// @param layout Borrowed TextLayout2D handle to update.
 /// @param alignment Requested alignment value.
 void rt_textlayout2d_set_alignment(void *layout, int64_t alignment) {
-    if (rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
-        ((rt_textlayout2d_impl *)layout)->alignment = clamp_i64(alignment, 0, 2);
+    rt_textlayout2d_impl *impl = textlayout2d_checked(layout);
+    if (impl)
+        impl->alignment = clamp_i64(alignment, 0, 2);
 }
 
 /// @brief Set the text color as 0x00RRGGBB (alpha bits are masked off).
 /// @param layout Borrowed TextLayout2D handle to update.
 /// @param rgb Packed text color.
 void rt_textlayout2d_set_color(void *layout, int64_t rgb) {
-    if (rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID))
-        ((rt_textlayout2d_impl *)layout)->color = rgb & 0x00FFFFFF;
+    rt_textlayout2d_impl *impl = textlayout2d_checked(layout);
+    if (impl)
+        impl->color = rgb & 0x00FFFFFF;
 }
 
 /// @brief Compute the raw pixel width of @p text using the layout's font and scale, without wrap
@@ -1310,9 +1447,33 @@ static int64_t textlayout2d_line_height(rt_textlayout2d_impl *impl) {
     return rt2d_saturating_mul_i64(line_height, scale);
 }
 
+/// @brief Return the byte offset immediately after one UTF-8 input unit.
+/// @details Valid continuation sequences stay together even when the scalar is
+///          overlong or otherwise invalid; the downstream renderers replace such
+///          sequences with one fallback glyph. A malformed lead/continuation byte
+///          consumes one byte, matching Canvas and BitmapFont decoding.
+static size_t textlayout2d_next_utf8_unit(const char *data, size_t len, size_t index) {
+    if (!data || index >= len)
+        return len;
+    const unsigned char *bytes = (const unsigned char *)data;
+    unsigned char lead = bytes[index];
+    size_t advance = 1;
+    if ((lead & 0xE0u) == 0xC0u && index + 1 < len && (bytes[index + 1] & 0xC0u) == 0x80u) {
+        advance = 2;
+    } else if ((lead & 0xF0u) == 0xE0u && index + 2 < len && (bytes[index + 1] & 0xC0u) == 0x80u &&
+               (bytes[index + 2] & 0xC0u) == 0x80u) {
+        advance = 3;
+    } else if ((lead & 0xF8u) == 0xF0u && index + 3 < len && (bytes[index + 1] & 0xC0u) == 0x80u &&
+               (bytes[index + 2] & 0xC0u) == 0x80u && (bytes[index + 3] & 0xC0u) == 0x80u) {
+        advance = 4;
+    }
+    return index + advance;
+}
+
 /// @brief Measure the scaled pixel width of a raw byte segment.
-/// @details Wraps the bytes in a temporary rt_string, measures via
-///          textlayout2d_raw_width, and releases it. Returns 0 for empty input.
+/// @details The built-in monospace path counts UTF-8 input units directly and
+///          performs no allocations. Custom bitmap-font spans are wrapped in one
+///          temporary runtime string so their variable glyph metrics remain exact.
 /// @param impl Borrowed layout implementation.
 /// @param data Borrowed segment bytes.
 /// @param len Number of bytes in @p data.
@@ -1323,6 +1484,16 @@ static int64_t textlayout2d_segment_width(rt_textlayout2d_impl *impl,
                                           size_t len) {
     if (!data || len == 0)
         return 0;
+    if (!impl || !impl->font) {
+        int64_t units = 0;
+        for (size_t index = 0; index < len;) {
+            index = textlayout2d_next_utf8_unit(data, len, index);
+            if (units < INT64_MAX)
+                units++;
+        }
+        int64_t scale = impl ? impl->scale : 1;
+        return rt2d_saturating_mul_i64(rt2d_saturating_mul_i64(units, 8), scale);
+    }
     rt_string segment = rt_string_from_bytes(data, len);
     if (!segment)
         return 0;
@@ -1346,62 +1517,63 @@ static void textlayout2d_commit_line(rt_textlayout2d_measure *m, int64_t line_wi
         m->max_width = line_width;
 }
 
-/// @brief Word-wrap accumulator: fit one word onto the current line or wrap.
-/// @details Adds @p word (plus any pending inter-word space) to @p line_width.
-///          If it would exceed @p wrap_width, commits the current line and
-///          starts a new one. Words wider than @p wrap_width are split across
-///          multiple lines. Updates @p line_width, @p pending_space_width and
-///          the @p measure (max width / line count) in place.
+/// @brief Advance to a new measured line, committing the current width.
+static void textlayout2d_wrap_line(rt_textlayout2d_measure *measure, int64_t *line_width) {
+    if (!measure || !line_width)
+        return;
+    textlayout2d_commit_line(measure, *line_width);
+    measure->lines = rt2d_saturating_add_i64(measure->lines, 1);
+    *line_width = 0;
+}
+
+/// @brief Fit one contiguous word or whitespace token onto wrapped lines.
+/// @details Tokens that fit the configured width stay intact. An overlong token
+///          is split only at UTF-8 input-unit boundaries, so multibyte glyphs are
+///          never divided and reported line widths always reflect real glyphs.
 /// @param impl Borrowed layout implementation supplying font and scale.
-/// @param word Borrowed word bytes.
-/// @param word_len Number of bytes in @p word.
+/// @param token Borrowed token bytes.
+/// @param token_len Number of bytes in @p token.
 /// @param wrap_width Positive wrap width, or zero to disable wrapping.
 /// @param line_width In-out width accumulated on the current line.
-/// @param pending_space_width In-out deferred inter-word spacing.
 /// @param measure In-out maximum-width and line-count accumulator.
-static void textlayout2d_commit_word(rt_textlayout2d_impl *impl,
-                                     const char *word,
-                                     size_t word_len,
-                                     int64_t wrap_width,
-                                     int64_t *line_width,
-                                     int64_t *pending_space_width,
-                                     rt_textlayout2d_measure *measure) {
-    if (!word || word_len == 0 || !line_width || !pending_space_width || !measure)
+static void textlayout2d_commit_token(rt_textlayout2d_impl *impl,
+                                      const char *token,
+                                      size_t token_len,
+                                      int64_t wrap_width,
+                                      int64_t *line_width,
+                                      rt_textlayout2d_measure *measure) {
+    if (!token || token_len == 0 || !line_width || !measure)
         return;
-    int64_t word_width = textlayout2d_segment_width(impl, word, word_len);
-    int64_t join_width = *line_width > 0 ? *pending_space_width : 0;
-    int64_t candidate =
-        rt2d_saturating_add_i64(*line_width, rt2d_saturating_add_i64(join_width, word_width));
-    if (wrap_width > 0 && *line_width > 0 && candidate > wrap_width) {
-        textlayout2d_commit_line(measure, *line_width);
-        measure->lines = rt2d_saturating_add_i64(measure->lines, 1);
-        *line_width = 0;
-        join_width = 0;
+    int64_t token_width = textlayout2d_segment_width(impl, token, token_len);
+    int64_t candidate = rt2d_saturating_add_i64(*line_width, token_width);
+    if (wrap_width <= 0) {
+        *line_width = candidate;
+        return;
+    }
+    if (token_width <= wrap_width) {
+        if (*line_width > 0 && candidate > wrap_width)
+            textlayout2d_wrap_line(measure, line_width);
+        *line_width = rt2d_saturating_add_i64(*line_width, token_width);
+        return;
     }
 
-    if (wrap_width > 0 && word_width > wrap_width) {
-        int64_t chunks = word_width / wrap_width;
-        if (word_width % wrap_width != 0)
-            chunks = rt2d_saturating_add_i64(chunks, 1);
-        if (chunks < 1)
-            chunks = 1;
-        if (chunks > 1)
-            measure->lines = rt2d_saturating_add_i64(measure->lines, chunks - 1);
-        if (wrap_width > measure->max_width)
-            measure->max_width = wrap_width;
-        int64_t rem = word_width % wrap_width;
-        *line_width = rem == 0 ? wrap_width : rem;
-    } else {
-        *line_width =
-            rt2d_saturating_add_i64(*line_width, rt2d_saturating_add_i64(join_width, word_width));
+    for (size_t index = 0; index < token_len;) {
+        size_t next = textlayout2d_next_utf8_unit(token, token_len, index);
+        int64_t unit_width = textlayout2d_segment_width(impl, token + index, next - index);
+        candidate = rt2d_saturating_add_i64(*line_width, unit_width);
+        if (*line_width > 0 && candidate > wrap_width)
+            textlayout2d_wrap_line(measure, line_width);
+        *line_width = rt2d_saturating_add_i64(*line_width, unit_width);
+        index = next;
+        if (*line_width > wrap_width && index < token_len)
+            textlayout2d_wrap_line(measure, line_width);
     }
-    *pending_space_width = 0;
 }
 
 /// @brief Measure wrapped text: compute max line width and total line count.
-/// @details Tokenizes @p text on spaces/tabs/newlines, feeding words through
-///          textlayout2d_commit_word with the layout's wrap width. Newlines
-///          force a line break. Returns {max_width, lines} (lines >= 1).
+/// @details Preserves leading, trailing, repeated, and whitespace-only spans.
+///          Words and whitespace runs remain intact when possible; overlong
+///          runs split at UTF-8 boundaries. CRLF counts as one explicit break.
 /// @param impl Borrowed layout implementation, or `NULL` for defaults.
 /// @param text Borrowed runtime string to measure.
 /// @return Maximum line width and total line count.
@@ -1411,51 +1583,28 @@ static rt_textlayout2d_measure textlayout2d_measure(rt_textlayout2d_impl *impl, 
         return measure;
 
     const char *data = rt_string_cstr(text);
-    size_t len = (size_t)rt_str_len(text);
+    int64_t raw_len = rt_str_len(text);
+    if (!data || raw_len < 0 || (uint64_t)raw_len > SIZE_MAX)
+        return measure;
+    size_t len = (size_t)raw_len;
     int64_t wrap_width = impl ? impl->wrap_width : 0;
     int64_t line_width = 0;
-    int64_t pending_space_width = 0;
-    size_t word_start = 0;
-    size_t word_len = 0;
-
-    for (size_t i = 0; i <= len; i++) {
-        char ch = i < len ? data[i] : '\0';
-        int is_end = i == len;
-        int is_newline = ch == '\n' || ch == '\r';
-        int is_space = ch == ' ' || ch == '\t';
-        if (!is_end && !is_newline && !is_space) {
-            if (word_len == 0)
-                word_start = i;
-            word_len++;
+    for (size_t index = 0; index < len;) {
+        if (data[index] == '\n' || data[index] == '\r') {
+            char newline = data[index++];
+            textlayout2d_wrap_line(&measure, &line_width);
+            if (newline == '\r' && index < len && data[index] == '\n')
+                index++;
             continue;
         }
 
-        if (word_len > 0) {
-            textlayout2d_commit_word(impl,
-                                     data + word_start,
-                                     word_len,
-                                     wrap_width,
-                                     &line_width,
-                                     &pending_space_width,
-                                     &measure);
-            word_len = 0;
-        }
-
-        if (is_space) {
-            if (line_width > 0)
-                pending_space_width = rt2d_saturating_add_i64(
-                    pending_space_width, textlayout2d_segment_width(impl, data + i, 1));
-            continue;
-        }
-
-        if (is_newline) {
-            textlayout2d_commit_line(&measure, line_width);
-            measure.lines = rt2d_saturating_add_i64(measure.lines, 1);
-            line_width = 0;
-            pending_space_width = 0;
-            if (ch == '\r' && i + 1 < len && data[i + 1] == '\n')
-                i++;
-        }
+        size_t token_start = index;
+        int32_t whitespace = data[index] == ' ' || data[index] == '\t';
+        while (index < len && data[index] != '\n' && data[index] != '\r' &&
+               ((data[index] == ' ' || data[index] == '\t') == whitespace))
+            index++;
+        textlayout2d_commit_token(
+            impl, data + token_start, index - token_start, wrap_width, &line_width, &measure);
     }
 
     textlayout2d_commit_line(&measure, line_width);
@@ -1467,9 +1616,7 @@ static rt_textlayout2d_measure textlayout2d_measure(rt_textlayout2d_impl *impl, 
 /// @param text Borrowed runtime string to measure.
 /// @return The maximum laid-out line width in pixels.
 int64_t rt_textlayout2d_measure_width(void *layout, rt_string text) {
-    rt_textlayout2d_impl *impl = rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID)
-                                     ? (rt_textlayout2d_impl *)layout
-                                     : NULL;
+    rt_textlayout2d_impl *impl = textlayout2d_checked(layout);
     rt_textlayout2d_measure measure = textlayout2d_measure(impl, text);
     return measure.max_width;
 }
@@ -1479,9 +1626,7 @@ int64_t rt_textlayout2d_measure_width(void *layout, rt_string text) {
 /// @param text Borrowed runtime string to measure.
 /// @return The saturating product of line height and computed line count.
 int64_t rt_textlayout2d_measure_height(void *layout, rt_string text) {
-    rt_textlayout2d_impl *impl = rt2d_extended_has_class(layout, RT2D_TEXTLAYOUT_CLASS_ID)
-                                     ? (rt_textlayout2d_impl *)layout
-                                     : NULL;
+    rt_textlayout2d_impl *impl = textlayout2d_checked(layout);
     rt_textlayout2d_measure measure = textlayout2d_measure(impl, text);
     return rt2d_saturating_mul_i64(textlayout2d_line_height(impl), measure.lines);
 }
@@ -1492,6 +1637,8 @@ static void renderpass2d_finalize(void *obj) {
     if (!rt2d_extended_has_class(obj, RT2D_RENDERPASS_CLASS_ID))
         return;
     rt_renderpass2d_impl *impl = (rt_renderpass2d_impl *)obj;
+    if (impl->state_magic != RT2D_RENDERPASS_MAGIC)
+        return;
     rt2d_release_ref_slot(&impl->source);
     rt2d_release_ref_slot(&impl->target);
     rt2d_release_ref_slot(&impl->shader);
@@ -1500,8 +1647,8 @@ static void renderpass2d_finalize(void *obj) {
 /// @brief Allocate a RenderPass2D that reads from `source` and writes to `target`.
 /// @details Both references must be valid RenderTarget2D or Surface2D handles
 ///          and are retained. The pass starts enabled. A Shader2D can be
-///          attached later via `SetShader`; without one, source is cloned
-///          directly into target (pixel-perfect copy).
+///          attached later via `SetShader`; without one, source pixels are
+///          copied directly into a distinct target (pixel-perfect copy).
 /// @param source Borrowed valid render surface retained as input.
 /// @param target Borrowed valid render surface retained as output.
 /// @return A new owned RenderPass2D, or `NULL` for invalid surfaces or
@@ -1513,6 +1660,7 @@ void *rt_renderpass2d_new(void *source, void *target) {
         RT2D_RENDERPASS_CLASS_ID, (int64_t)sizeof(rt_renderpass2d_impl));
     if (!impl)
         return NULL;
+    impl->state_magic = RT2D_RENDERPASS_MAGIC;
     impl->source = NULL;
     impl->target = NULL;
     impl->shader = NULL;
@@ -1534,73 +1682,72 @@ void *rt_renderpass2d_new(void *source, void *target) {
 /// @param pass Borrowed RenderPass2D handle to update.
 /// @param source Borrowed valid render surface to retain, or `NULL`.
 void rt_renderpass2d_set_source(void *pass, void *source) {
-    if (rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID) &&
-        (!source || rendertarget2d_checked(source)))
-        spriterenderer2d_set_ref(&((rt_renderpass2d_impl *)pass)->source, source);
+    rt_renderpass2d_impl *impl = renderpass2d_checked(pass);
+    if (impl && (!source || rendertarget2d_checked(source)))
+        spriterenderer2d_set_ref(&impl->source, source);
 }
 
 /// @brief Replace the target RenderTarget2D, retaining a reference to the new one.
 /// @param pass Borrowed RenderPass2D handle to update.
 /// @param target Borrowed valid render surface to retain, or `NULL`.
 void rt_renderpass2d_set_target(void *pass, void *target) {
-    if (rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID) &&
-        (!target || rendertarget2d_checked(target)))
-        spriterenderer2d_set_ref(&((rt_renderpass2d_impl *)pass)->target, target);
+    rt_renderpass2d_impl *impl = renderpass2d_checked(pass);
+    if (impl && (!target || rendertarget2d_checked(target)))
+        spriterenderer2d_set_ref(&impl->target, target);
 }
 
 /// @brief Bind a Shader2D for this pass, retaining a reference.
 /// @param pass Borrowed RenderPass2D handle to update.
 /// @param shader Borrowed Shader2D or PostProcess2D to retain, or `NULL`.
 void rt_renderpass2d_set_shader(void *pass, void *shader) {
-    if (rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID) &&
-        (!shader || rt2d_is_shader_like(shader)))
-        spriterenderer2d_set_ref(&((rt_renderpass2d_impl *)pass)->shader, shader);
+    rt_renderpass2d_impl *impl = renderpass2d_checked(pass);
+    if (impl && (!shader || rt2d_is_shader_like(shader)))
+        spriterenderer2d_set_ref(&impl->shader, shader);
 }
 
 /// @brief Enable or disable this pass (disabled passes are skipped by `Execute`).
 /// @param pass Borrowed RenderPass2D handle to update.
 /// @param enabled Nonzero to enable the pass.
 void rt_renderpass2d_set_enabled(void *pass, int64_t enabled) {
-    if (rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID))
-        ((rt_renderpass2d_impl *)pass)->enabled = enabled != 0;
+    rt_renderpass2d_impl *impl = renderpass2d_checked(pass);
+    if (impl)
+        impl->enabled = enabled != 0;
 }
 
 /// @brief Return non-zero if this pass is currently enabled.
 /// @param pass Borrowed RenderPass2D handle.
 /// @return `1` when enabled, otherwise `0`.
 int64_t rt_renderpass2d_get_enabled(void *pass) {
-    return rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID)
-               ? ((rt_renderpass2d_impl *)pass)->enabled
-               : 0;
+    rt_renderpass2d_impl *impl = renderpass2d_checked(pass);
+    return impl ? impl->enabled : 0;
 }
 
 /// @brief Execute this pass: apply the optional shader and blit the result to target.
 /// @details No-op if disabled, or if source/target are NULL or not valid render targets.
 ///          If a Shader2D is bound, applies it via `rt_shader2d_apply`; otherwise
-///          clones the source pixels directly. The target is cleared before writing.
+///          copies the borrowed source pixels directly without allocating a clone.
+///          The target is cleared before writing unless source and target are the
+///          same object, in which case the shaderless pass is an exact no-op.
 /// @param pass Borrowed RenderPass2D handle to execute.
 void rt_renderpass2d_execute(void *pass) {
-    rt_renderpass2d_impl *impl = rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID)
-                                     ? (rt_renderpass2d_impl *)pass
-                                     : NULL;
+    rt_renderpass2d_impl *impl = renderpass2d_checked(pass);
     if (!impl || !impl->enabled || !impl->source || !impl->target)
-        return;
-    if (!rendertarget2d_checked(impl->source) || !rendertarget2d_checked(impl->target))
-        return;
-    if (impl->shader && !rt2d_is_shader_like(impl->shader))
         return;
     void *source_pixels = rt_rendertarget2d_get_pixels(impl->source);
     if (!source_pixels)
         return;
-    void *processed = NULL;
-    if (impl->shader) {
-        if (shader2d_checked(impl->shader))
-            processed = rt_shader2d_apply(impl->shader, source_pixels);
-        else
-            processed = rt_postprocess2d_apply(impl->shader, source_pixels);
-    } else {
-        processed = rt_pixels_clone(source_pixels);
+    if (!impl->shader) {
+        if (impl->source == impl->target)
+            return;
+        rt_rendertarget2d_clear(impl->target, 0);
+        rt_rendertarget2d_draw_pixels(impl->target, 0, 0, source_pixels);
+        return;
     }
+    void *processed = NULL;
+    if (shader2d_checked(impl->shader))
+        processed = rt_shader2d_apply(impl->shader, source_pixels);
+    else
+        processed = rt_postprocess2d_apply(impl->shader, source_pixels);
     if (!processed)
         return;
     rt_rendertarget2d_clear(impl->target, 0);
@@ -1614,9 +1761,16 @@ static void rendergraph2d_finalize(void *obj) {
     if (!rt2d_extended_has_class(obj, RT2D_RENDERGRAPH_CLASS_ID))
         return;
     rt_rendergraph2d_impl *impl = (rt_rendergraph2d_impl *)obj;
-    if (!impl)
+    if (impl->state_magic != RT2D_RENDERGRAPH_MAGIC)
         return;
-    for (int64_t i = 0; i < impl->count; i++)
+    int64_t release_count = impl->count;
+    if (!impl->passes || release_count < 0 || impl->capacity < 0)
+        release_count = 0;
+    else if (release_count > impl->capacity)
+        release_count = impl->capacity;
+    if (release_count > RT2D_MAX_ELEMENTS)
+        release_count = RT2D_MAX_ELEMENTS;
+    for (int64_t i = 0; i < release_count; i++)
         rt2d_release_ref_slot(&impl->passes[i]);
     free(impl->passes);
 }
@@ -1629,6 +1783,8 @@ void *rt_rendergraph2d_new(int64_t capacity) {
         RT2D_RENDERGRAPH_CLASS_ID, (int64_t)sizeof(rt_rendergraph2d_impl));
     if (!impl)
         return NULL;
+    impl->state_magic = RT2D_RENDERGRAPH_MAGIC;
+    impl->count = 0;
     impl->capacity = rt2d_initial_capacity(capacity);
     impl->passes = (void **)calloc((size_t)impl->capacity, sizeof(void *));
     if (!impl->passes) {
@@ -1648,8 +1804,7 @@ void *rt_rendergraph2d_new(int64_t capacity) {
 /// @param needed Minimum required pass capacity.
 /// @return 1 on success, 0 on overflow or allocation failure.
 static int32_t rendergraph2d_reserve(rt_rendergraph2d_impl *impl, int64_t needed) {
-    if (!impl || needed < 0 || impl->count < 0 || impl->capacity < 0 ||
-        impl->count > impl->capacity || (impl->capacity > 0 && !impl->passes))
+    if (!rendergraph2d_checked(impl) || needed < 0)
         return 0;
     if (needed <= impl->capacity)
         return 1;
@@ -1677,10 +1832,8 @@ static int32_t rendergraph2d_reserve(rt_rendergraph2d_impl *impl, int64_t needed
 /// @param graph Borrowed RenderGraph2D receiving the pass.
 /// @param pass Borrowed valid RenderPass2D to retain.
 void rt_rendergraph2d_add_pass(void *graph, void *pass) {
-    rt_rendergraph2d_impl *impl = rt2d_extended_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID)
-                                      ? (rt_rendergraph2d_impl *)graph
-                                      : NULL;
-    if (!impl || !rt2d_extended_has_class(pass, RT2D_RENDERPASS_CLASS_ID))
+    rt_rendergraph2d_impl *impl = rendergraph2d_checked(graph);
+    if (!impl || !renderpass2d_checked(pass))
         return;
     if (impl->count == INT64_MAX || !rendergraph2d_reserve(impl, impl->count + 1)) {
         rt_trap("RenderGraph2D: capacity overflow");
@@ -1693,9 +1846,7 @@ void rt_rendergraph2d_add_pass(void *graph, void *pass) {
 /// @brief Remove all passes from the graph, releasing their retained references.
 /// @param graph Borrowed RenderGraph2D to clear.
 void rt_rendergraph2d_clear(void *graph) {
-    rt_rendergraph2d_impl *impl = rt2d_extended_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID)
-                                      ? (rt_rendergraph2d_impl *)graph
-                                      : NULL;
+    rt_rendergraph2d_impl *impl = rendergraph2d_checked(graph);
     if (!impl)
         return;
     for (int64_t i = 0; i < impl->count; i++)
@@ -1707,9 +1858,8 @@ void rt_rendergraph2d_clear(void *graph) {
 /// @param graph Borrowed RenderGraph2D handle.
 /// @return The pass count, or `0` for an invalid handle.
 int64_t rt_rendergraph2d_get_count(void *graph) {
-    return rt2d_extended_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID)
-               ? ((rt_rendergraph2d_impl *)graph)->count
-               : 0;
+    rt_rendergraph2d_impl *impl = rendergraph2d_checked(graph);
+    return impl ? impl->count : 0;
 }
 
 /// @brief Execute every pass in insertion order.
@@ -1717,9 +1867,7 @@ int64_t rt_rendergraph2d_get_count(void *graph) {
 ///          themselves via their `enabled` flag inside `rt_renderpass2d_execute`.
 /// @param graph Borrowed RenderGraph2D to execute.
 void rt_rendergraph2d_execute(void *graph) {
-    rt_rendergraph2d_impl *impl = rt2d_extended_has_class(graph, RT2D_RENDERGRAPH_CLASS_ID)
-                                      ? (rt_rendergraph2d_impl *)graph
-                                      : NULL;
+    rt_rendergraph2d_impl *impl = rendergraph2d_checked(graph);
     if (!impl)
         return;
     for (int64_t i = 0; i < impl->count; i++)
@@ -1732,6 +1880,8 @@ static void collisionmask2d_finalize(void *obj) {
     if (!rt2d_extended_has_class(obj, RT2D_COLLISIONMASK_CLASS_ID))
         return;
     rt_collisionmask2d_impl *impl = (rt_collisionmask2d_impl *)obj;
+    if (impl->state_magic != RT2D_COLLISIONMASK_MAGIC)
+        return;
     free(impl->bits);
 }
 
@@ -1761,6 +1911,7 @@ void *rt_collisionmask2d_new(int64_t width, int64_t height) {
     }
     impl->width = width;
     impl->height = height;
+    impl->state_magic = RT2D_COLLISIONMASK_MAGIC;
     rt_obj_set_finalizer(impl, collisionmask2d_finalize);
     return impl;
 }
@@ -1796,18 +1947,16 @@ void *rt_collisionmask2d_from_pixels(void *pixels, int64_t alpha_threshold) {
 /// @param mask Borrowed CollisionMask2D handle.
 /// @return The width, or `0` for an invalid handle.
 int64_t rt_collisionmask2d_get_width(void *mask) {
-    return rt2d_extended_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID)
-               ? ((rt_collisionmask2d_impl *)mask)->width
-               : 0;
+    rt_collisionmask2d_impl *impl = collisionmask2d_checked(mask);
+    return impl ? impl->width : 0;
 }
 
 /// @brief Return the height of the mask in cells.
 /// @param mask Borrowed CollisionMask2D handle.
 /// @return The height, or `0` for an invalid handle.
 int64_t rt_collisionmask2d_get_height(void *mask) {
-    return rt2d_extended_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID)
-               ? ((rt_collisionmask2d_impl *)mask)->height
-               : 0;
+    rt_collisionmask2d_impl *impl = collisionmask2d_checked(mask);
+    return impl ? impl->height : 0;
 }
 
 /// @brief Return non-zero if cell (x, y) is within the collision mask's bounds.
@@ -1825,9 +1974,7 @@ static int32_t collisionmask2d_in_bounds(rt_collisionmask2d_impl *impl, int64_t 
 /// @param y Cell Y coordinate.
 /// @param solid Nonzero to mark solid, zero to clear.
 void rt_collisionmask2d_set(void *mask, int64_t x, int64_t y, int64_t solid) {
-    rt_collisionmask2d_impl *impl = rt2d_extended_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID)
-                                        ? (rt_collisionmask2d_impl *)mask
-                                        : NULL;
+    rt_collisionmask2d_impl *impl = collisionmask2d_checked(mask);
     if (!collisionmask2d_in_bounds(impl, x, y))
         return;
     impl->bits[y * impl->width + x] = solid != 0;
@@ -1839,9 +1986,7 @@ void rt_collisionmask2d_set(void *mask, int64_t x, int64_t y, int64_t solid) {
 /// @param y Cell Y coordinate.
 /// @return `1` for a solid in-bounds cell, otherwise `0`.
 int64_t rt_collisionmask2d_get(void *mask, int64_t x, int64_t y) {
-    rt_collisionmask2d_impl *impl = rt2d_extended_has_class(mask, RT2D_COLLISIONMASK_CLASS_ID)
-                                        ? (rt_collisionmask2d_impl *)mask
-                                        : NULL;
+    rt_collisionmask2d_impl *impl = collisionmask2d_checked(mask);
     if (!collisionmask2d_in_bounds(impl, x, y))
         return 0;
     return impl->bits[y * impl->width + x] ? 1 : 0;
@@ -1862,12 +2007,8 @@ int64_t rt_collisionmask2d_get(void *mask, int64_t x, int64_t y) {
 /// @return `1` if the positioned masks share a solid cell, otherwise `0`.
 int64_t rt_collisionmask2d_overlaps(
     void *a, int64_t ax, int64_t ay, void *b, int64_t bx, int64_t by) {
-    rt_collisionmask2d_impl *ma = rt2d_extended_has_class(a, RT2D_COLLISIONMASK_CLASS_ID)
-                                      ? (rt_collisionmask2d_impl *)a
-                                      : NULL;
-    rt_collisionmask2d_impl *mb = rt2d_extended_has_class(b, RT2D_COLLISIONMASK_CLASS_ID)
-                                      ? (rt_collisionmask2d_impl *)b
-                                      : NULL;
+    rt_collisionmask2d_impl *ma = collisionmask2d_checked(a);
+    rt_collisionmask2d_impl *mb = collisionmask2d_checked(b);
     if (!ma || !mb)
         return 0;
     int64_t left = ax > bx ? ax : bx;

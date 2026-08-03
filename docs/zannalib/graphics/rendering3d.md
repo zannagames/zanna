@@ -2133,15 +2133,16 @@ Animated water plane with wave simulation, reflections, and normal mapping.
 | Method | Signature | Description |
 |--------|-----------|-------------|
 | `SetHeight(y)` | `Void(Double)` | Set the water plane world Y position |
-| `SetWaveParams(amplitude, frequency, speed)` | `Void(Double, Double, Double)` | Configure the base wave simulation |
+| `SetPosition(x, y, z)` | `Void(Double, Double, Double)` | Set the world-space surface center and base height |
+| `SetWaveParams(speed, amplitude, frequency)` | `Void(Double, Double, Double)` | Configure the legacy single-sine-wave parameters: signed temporal phase speed, vertical amplitude, spatial angular frequency |
 | `SetColor(r, g, b, a)` | `Void(Double, Double, Double, Double)` | Set base water color |
 | `SetTexture(pixels)` | `Void(Object)` | Set the surface texture |
 | `SetNormalMap(pixels)` | `Void(Object)` | Set the normal map for surface detail |
 | `SetEnvMap(cubeMap)` | `Void(Object)` | Set the reflection `CubeMap3D` |
 | `SetReflectivity(amount)` | `Void(Double)` | Set reflection strength `[0.0–1.0]` |
 | `SetResolution(pixels)` | `Void(Integer)` | Set reflection render resolution |
-| `AddWave(originX, originZ, amplitude, frequency, speed)` | `Void(Double, Double, Double, Double, Double)` | Add a Gerstner wave component |
-| `ClearWaves()` | `Void()` | Remove all wave components |
+| `AddWave(dirX, dirZ, speed, amplitude, wavelength)` | `Void(Double, Double, Double, Double, Double)` | Add a Gerstner wave: propagation direction (x, z), signed phase speed, vertical amplitude, wavelength in world units. Up to 8 waves total |
+| `ClearWaves()` | `Void()` | Remove all Gerstner waves (reverts to the legacy single-sine wave) |
 
 `Water3D.Update` rewrites the retained mesh vertex buffer in place and rebuilds
 index topology only when resolution or capacity changes.

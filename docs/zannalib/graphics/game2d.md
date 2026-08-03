@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-29
+last-verified: 2026-08-03
 ---
 
 # 2D Animation, Collision, And Camera
@@ -27,6 +27,7 @@ This page covers helpers that are usually attached to game objects or cameras ra
 
 - `Viewport2D.Scale` is fixed-point with `1000` representing `1.0x`. For example, `4000` means `4.0x`.
 - Integer scaling snaps only scales of `1.0x` and above to whole multiples, so very small screens keep the largest fitting fractional scale instead of overflowing the viewport.
+- World/screen conversions use exact integer quotient/remainder arithmetic and saturate at the signed 64-bit limits, producing the same results on Windows, macOS, and Linux even for extreme coordinates.
 - Viewport APIs validate that their receiver is a `Viewport2D`; invalid handles return safe defaults or no-op instead of reading unrelated graphics objects.
 - `Transform2D.Rotation` preserves the integer value that was assigned, but point transforms reduce it modulo 360 before trigonometry. Identity scale with a zero-modulo rotation uses exact saturating integer arithmetic.
 
@@ -49,7 +50,7 @@ rig.Update()
 
 `CollisionMask2D.FromPixels` requires a valid `Pixels` object and marks pixels solid when alpha is greater than or equal to the threshold. A threshold of `0` means "any non-zero alpha", so fully transparent pixels remain empty.
 `AnimatedSprite2D.New` requires a valid `Sprite`; invalid or null handles return `null` instead of creating a player that would fail during `Update`.
-`AnimatedSprite2D` starts stopped until a valid clip is set. `Play()` only starts when a valid sprite and clip are available, and restarts a finished non-looping clip from its first effective frame. `Stop()` stops playback and resets the sprite to the clip's first frame.
+`AnimatedSprite2D` starts stopped until a valid clip is set. `Play()` only starts when a valid sprite and clip are available, and restarts a finished non-looping clip from its first effective frame. `Stop()` stops playback and resets the sprite to the clip's first frame. Very large update deltas preserve the exact looping phase instead of saturating elapsed time, while non-looping clips still stop on their final effective frame.
 `CameraRig2D.New` accepts a `Camera` or `null`, and `SetCamera` ignores invalid non-camera handles. `SetSmoothing` is a percent value clamped to `0..100`; internally it is converted to the lower-level camera smooth-follow scale. Shake offsets and render coordinates use saturating integer arithmetic at the int64 limits.
 
 ## Related Game Utilities

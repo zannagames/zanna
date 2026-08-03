@@ -18,7 +18,7 @@
 // Ownership/Lifetime:
 //   - Records/flags are world- and stream-owned heap arrays freed by the
 //     owning finalizers; keys are retained rt_strings.
-// Links: misc/plans/thirdpersonupgrade/17-world-persistence.md, ADR 0097
+// Links: ADR 0097, rt_game3d_internal.h
 //
 //===----------------------------------------------------------------------===//
 

@@ -177,5 +177,6 @@ zanna build examples/games/ashfall/probes/gpu_perf_probe.zia \
   /tmp/ashfall_gpu_perf --sustained --fullscreen --paced)
 ```
 
-See `misc/plans/fps/` for the original design material and [CREDITS.md](CREDITS.md)
-for asset licensing.
+The original `misc/plans/fps/` design material was retired in the 2026-07
+documentation reorganization (recoverable from git history). See
+[CREDITS.md](CREDITS.md) for asset licensing.

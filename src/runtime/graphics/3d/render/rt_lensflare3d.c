@@ -25,8 +25,7 @@
 //   - LensFlare3D is GC-managed; the finalizer releases the bound Light3D and
 //     every element's ghost Pixels.
 //
-// Links: rt_lensflare3d.h, rt_canvas3d_overlay.c (image queue),
-//   misc/plans/fps/07-visual-polish.md
+// Links: rt_lensflare3d.h, rt_canvas3d_overlay.c (image queue)
 //
 //===----------------------------------------------------------------------===//
 

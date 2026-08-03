@@ -12,7 +12,7 @@
 //   - Capture is explicit/scripted; never runs per frame.
 // Ownership/Lifetime:
 //   - GC-managed; getters returning objects retain for the caller.
-// Links: rt_reflectionprobe3d.c, misc/plans/thirdpersonupgrade/15-reflection-probes.md
+// Links: rt_reflectionprobe3d.c, ADR 0089
 //
 //===----------------------------------------------------------------------===//
 

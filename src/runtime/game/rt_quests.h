@@ -23,8 +23,7 @@
 //   - Runtime-managed tracker retains registration/display strings; its
 //     finalizer releases them.
 //   - Returned nonempty strings are retained references for the caller.
-// Links: misc/plans/thirdpersonupgrade/29-quest-tracker.md, ADR 0099,
-//        src/runtime/game/rt_achievement.h (structural template)
+// Links: ADR 0099, src/runtime/game/rt_achievement.h (structural template)
 //
 //===----------------------------------------------------------------------===//
 #pragma once

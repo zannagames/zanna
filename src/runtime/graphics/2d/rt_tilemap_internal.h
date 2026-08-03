@@ -44,6 +44,8 @@
 #define MAX_PROP_KEY_LEN 32
 /// Maximum number of allocated auto-tile rule slots.
 #define MAX_AUTOTILE_RULES 64
+/// Private initialization cookie used to reject forged same-class payloads.
+#define RT_TILEMAP_STATE_MAGIC UINT64_C(0x5A414E4E41544D50)
 
 /// @brief One fixed-storage string-to-integer tile-property entry.
 typedef struct {
@@ -125,6 +127,8 @@ typedef struct {
 ///          @c tiles points into that trailing storage. Other owned allocations
 ///          are released by the Tilemap finalizer.
 typedef struct rt_tilemap_impl {
+    /// `RT_TILEMAP_STATE_MAGIC` for a completely initialized payload.
+    uint64_t state_magic;
     /// Logical grid width in cells.
     int64_t width;
     /// Logical grid height in cells.

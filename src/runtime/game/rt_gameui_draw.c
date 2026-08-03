@@ -20,7 +20,7 @@
 // Ownership/Lifetime:
 //   - Registered hooks are process-global function pointers set once by
 //     Canvas3D; no allocation or teardown.
-// Links: rt_gameui_draw.h, misc/plans/3d_overhaul/08-ui-toolkit-3d.md
+// Links: rt_gameui_draw.h
 //
 //===----------------------------------------------------------------------===//
 #include "rt_gameui_draw.h"

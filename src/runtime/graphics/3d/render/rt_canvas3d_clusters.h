@@ -18,7 +18,7 @@
 // Ownership/Lifetime:
 //   - Tables are POD owned by the canvas's revision-keyed ring.
 // Links: rt_canvas3d_clusters.c, vgfx3d_backend.h,
-//   misc/plans/3d_overhaul/07-clustered-lighting.md
+//   docs/internals/graphics3d-architecture.md
 //
 //===----------------------------------------------------------------------===//
 /// @file

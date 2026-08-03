@@ -19,7 +19,7 @@
 // Ownership/Lifetime:
 //   - Tables retain their clips; Footsteps3D retains its table and holds a
 //     zeroing weak reference to the owning entity.
-// Links: misc/plans/thirdpersonupgrade/23-footstep-surface-events.md, ADR 0092.
+// Links: ADR 0092, rt_game3d_surfaces.c.
 //
 //===----------------------------------------------------------------------===//
 

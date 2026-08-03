@@ -25,8 +25,7 @@
 //   - Entities own their hitboxes/health (retained slots); components hold
 //     plain backrefs cleared at teardown. Event records retain their handles
 //     until the buffer clears.
-// Links: misc/plans/thirdpersonupgrade/05-hitbox-hurtbox.md,
-//   misc/plans/thirdpersonupgrade/06-health-damage.md, rt_game3d_internal.h
+// Links: rt_game3d_internal.h
 //
 //===----------------------------------------------------------------------===//
 

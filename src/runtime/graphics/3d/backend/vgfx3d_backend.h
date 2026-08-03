@@ -677,6 +677,18 @@ typedef struct vgfx3d_backend {
     /// Nonzero when instanced draws accept compact particle-instance payloads.
     int8_t particle_instancing;
 
+    /* 1 = the backend ships the production many-light clustered/forward+ shader
+     * and light-table upload path. Replaces the old per-platform backend-identity
+     * gate in Canvas3D; partial or fake test backends stay 0 regardless of name. */
+    /// Nonzero when the production clustered/forward+ many-light path exists.
+    int8_t clustered_lighting;
+
+    /* 1 = the backend consumes multiple primary-light shadow slots as cascades
+     * (CSM). Canvas3D additionally requires the shadow_begin/draw/end hooks
+     * before advertising the capability. */
+    /// Nonzero when shadow slots can be consumed as primary-light cascades.
+    int8_t shadow_csm;
+
     /* Lifecycle */
     /// @brief Create backend-owned rendering state for a window and initial extent.
     /// @param[in] win Platform window handle.

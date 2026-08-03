@@ -25,7 +25,7 @@
 //     Entity3D references and releases them in its finalizer.
 //   - Entities retain an attached behavior via their `behavior` slot.
 //
-// Links: rt_game3d_internal.h, misc/plans/3d_overhaul/02-game3d-app-framework.md
+// Links: rt_game3d_internal.h
 //
 //===----------------------------------------------------------------------===//
 

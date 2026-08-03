@@ -16,7 +16,7 @@
 //   - Deterministic: pure function of sun direction/turbidity/ground albedo.
 // Ownership/Lifetime:
 //   - GC-managed; the sky retains its generated cubemap between updates.
-// Links: misc/plans/thirdpersonupgrade/16-timeofday-weather.md, ADR 0090.
+// Links: ADR 0090, rt_sky3d.h.
 //
 //===----------------------------------------------------------------------===//
 

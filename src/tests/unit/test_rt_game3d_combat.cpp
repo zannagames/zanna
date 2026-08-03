@@ -14,8 +14,7 @@
 //   - Deterministic: fixed steps only; replays produce identical event counts.
 // Ownership/Lifetime:
 //   - Test-created runtime handles rely on production GC conventions.
-// Links: misc/plans/thirdpersonupgrade/05-hitbox-hurtbox.md,
-//   misc/plans/thirdpersonupgrade/06-health-damage.md
+// Links: src/runtime/graphics/3d/rt_game3d_combat.c
 //
 //===----------------------------------------------------------------------===//
 

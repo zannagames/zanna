@@ -37,9 +37,10 @@
 #define RT2D_MAX_DIM 1000000LL
 #define RT2D_MAX_ELEMENTS 268435456LL
 #define RT2D_PI 3.14159265358979323846
-#define RT2D_RENDERTARGET_MAGIC 0x525432445247544cLL /* "RT2DRGTL" */
-#define RT2D_TEXTURE_MAGIC 0x525432445445584cLL      /* "RT2DTEXL" */
-#define RT2D_RENDERER_MAGIC 0x52543244524e444cLL     /* "RT2DRNDL" */
+#define RT2D_RENDERTARGET_MAGIC 0x525432445247544cLL     /* "RT2DRGTL" */
+#define RT2D_TEXTURE_MAGIC 0x525432445445584cLL          /* "RT2DTEXL" */
+#define RT2D_RENDERER_MAGIC 0x52543244524e444cLL         /* "RT2DRNDL" */
+#define RT2D_VIEWPORT_MAGIC UINT64_C(0x5A414E4E41565032) /* "ZANNAVP2" */
 #define RT2D_RENDERTARGET_CLASS_ID INT64_C(-0x620100)
 #define RT2D_TEXTURE_CLASS_ID INT64_C(-0x620101)
 #define RT2D_RENDERER_CLASS_ID INT64_C(-0x620102)
@@ -176,6 +177,7 @@ typedef struct {
 typedef rt_shader2d_impl rt_postprocess2d_impl;
 
 typedef struct {
+    uint64_t magic;
     int64_t virtual_width;
     int64_t virtual_height;
     int64_t screen_width;
@@ -391,12 +393,135 @@ static int32_t rt2d_is_shader_like(void *shader) {
 /// @param viewport Opaque Viewport2D or ScreenScaler candidate.
 /// @return The validated implementation pointer, or `NULL`.
 static rt_viewport2d_impl *viewport2d_checked(void *viewport) {
-    return rt2d_is_instance_of_either(viewport,
-                                      RT2D_VIEWPORT_CLASS_ID,
-                                      RT2D_SCREENSCALER_CLASS_ID,
-                                      sizeof(rt_viewport2d_impl))
-               ? (rt_viewport2d_impl *)viewport
-               : NULL;
+    if (!rt2d_is_instance_of_either(viewport,
+                                    RT2D_VIEWPORT_CLASS_ID,
+                                    RT2D_SCREENSCALER_CLASS_ID,
+                                    sizeof(rt_viewport2d_impl)))
+        return NULL;
+    rt_viewport2d_impl *impl = (rt_viewport2d_impl *)viewport;
+    if (impl->magic != RT2D_VIEWPORT_MAGIC || impl->virtual_width < 1 ||
+        impl->virtual_width > RT2D_MAX_DIM || impl->virtual_height < 1 ||
+        impl->virtual_height > RT2D_MAX_DIM || impl->screen_width < 1 ||
+        impl->screen_width > RT2D_MAX_DIM || impl->screen_height < 1 ||
+        impl->screen_height > RT2D_MAX_DIM ||
+        (impl->integer_scaling != 0 && impl->integer_scaling != 1) || impl->scale < 1)
+        return NULL;
+    return impl;
+}
+
+/// @brief Return the unsigned magnitude of a signed 64-bit value without overflow.
+static uint64_t rt2d_i64_magnitude(int64_t value) {
+    return value < 0 ? UINT64_C(0) - (uint64_t)value : (uint64_t)value;
+}
+
+/// @brief Divide a conceptual unsigned 128-bit product using portable uint64 arithmetic.
+/// @details The direct path handles products that fit. The binary fallback carries a
+///          quotient/remainder pair, avoiding compiler-specific 128-bit integer types.
+static int32_t rt2d_unsigned_mul_div(uint64_t lhs,
+                                     uint64_t rhs,
+                                     uint64_t divisor,
+                                     uint64_t limit,
+                                     uint64_t *quotient,
+                                     uint64_t *remainder) {
+    if (!quotient || !remainder || divisor == 0)
+        return 0;
+    if (lhs == 0 || rhs == 0) {
+        *quotient = 0;
+        *remainder = 0;
+        return 1;
+    }
+    if (lhs <= UINT64_MAX / rhs) {
+        uint64_t product = lhs * rhs;
+        uint64_t result = product / divisor;
+        if (result > limit)
+            return 0;
+        *quotient = result;
+        *remainder = product % divisor;
+        return 1;
+    }
+
+    uint64_t result_q = 0;
+    uint64_t result_r = 0;
+    uint64_t term_q = lhs / divisor;
+    uint64_t term_r = lhs % divisor;
+    uint64_t capped = limit + 1u;
+    while (rhs != 0) {
+        if ((rhs & 1u) != 0u) {
+            if (term_q > limit - result_q)
+                return 0;
+            result_q += term_q;
+            if (result_r >= divisor - term_r) {
+                result_r -= divisor - term_r;
+                if (result_q == limit)
+                    return 0;
+                result_q++;
+            } else {
+                result_r += term_r;
+            }
+        }
+        rhs >>= 1u;
+        if (rhs == 0)
+            break;
+        uint64_t carry = 0;
+        if (term_r >= divisor - term_r) {
+            term_r -= divisor - term_r;
+            carry = 1;
+        } else {
+            term_r += term_r;
+        }
+        if (term_q >= capped || term_q > (capped - carry) / 2u)
+            term_q = capped;
+        else
+            term_q = term_q * 2u + carry;
+    }
+    *quotient = result_q;
+    *remainder = result_r;
+    return 1;
+}
+
+/// @brief Round an unsigned rational magnitude and apply its sign with saturation.
+static int64_t rt2d_round_ratio_signed(uint64_t magnitude,
+                                       uint64_t multiplier,
+                                       uint64_t divisor,
+                                       int32_t negative) {
+    if (divisor == 0)
+        return 0;
+    uint64_t limit = negative ? (UINT64_C(1) << 63u) : (uint64_t)INT64_MAX;
+    uint64_t quotient = 0;
+    uint64_t remainder = 0;
+    if (!rt2d_unsigned_mul_div(magnitude, multiplier, divisor, limit, &quotient, &remainder))
+        return negative ? INT64_MIN : INT64_MAX;
+    uint64_t threshold = divisor / 2u + divisor % 2u;
+    if (remainder >= threshold) {
+        if (quotient == limit)
+            return negative ? INT64_MIN : INT64_MAX;
+        quotient++;
+    }
+    if (!negative)
+        return (int64_t)quotient;
+    return quotient == (UINT64_C(1) << 63u) ? INT64_MIN : -(int64_t)quotient;
+}
+
+/// @brief Compute a rounded signed multiply/divide across the complete int64 domain.
+static int64_t rt2d_mul_div_round_saturating(int64_t value, int64_t multiplier, int64_t divisor) {
+    if (divisor == 0)
+        return 0;
+    int32_t negative = (value < 0) ^ (multiplier < 0) ^ (divisor < 0);
+    return rt2d_round_ratio_signed(rt2d_i64_magnitude(value),
+                                   rt2d_i64_magnitude(multiplier),
+                                   rt2d_i64_magnitude(divisor),
+                                   negative);
+}
+
+/// @brief Scale the exact conceptual signed difference `value - offset`.
+static int64_t rt2d_difference_mul_div_round_saturating(int64_t value,
+                                                        int64_t offset,
+                                                        uint64_t multiplier,
+                                                        uint64_t divisor) {
+    int32_t negative = value < offset;
+    uint64_t magnitude =
+        negative ? (uint64_t)offset - (uint64_t)value : (uint64_t)value - (uint64_t)offset;
+    return rt2d_round_ratio_signed(magnitude, multiplier, divisor, negative);
 }
 
 /// @brief Tests whether a value lies in a half-open signed interval.

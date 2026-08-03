@@ -14,8 +14,7 @@
 //   - Deterministic fixed steps; replays produce identical results.
 // Ownership/Lifetime:
 //   - Test-created runtime handles rely on production GC conventions.
-// Links: misc/plans/thirdpersonupgrade/09-cutscene-sequencer.md,
-//   misc/plans/thirdpersonupgrade/10-camera-rails.md
+// Links: src/runtime/graphics/3d/rt_game3d_timeline.c, rt_game3d_railcamera.c
 //
 //===----------------------------------------------------------------------===//
 

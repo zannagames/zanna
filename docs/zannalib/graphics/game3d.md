@@ -144,7 +144,7 @@ touching state after reporting an invalid or destroyed receiver.
 | `streamResidentBytes` | Resident byte estimate from the world-owned stream controller |
 | `workerCount` | Internal deterministic job worker count, clamped to `1..64` |
 | `jobsEnabled` | True when `workerCount > 1`; false when the world runs single-threaded |
-| `floatingOrigin` | Enables camera-relative rebasing for large-coordinate scenes |
+| `FloatingOrigin` | Enables camera-relative rebasing for large-coordinate scenes |
 | `worldOrigin` | Accumulated world-space offset applied by floating-origin rebases |
 
 The constructor installs explicit default lighting, balanced backend-safe
@@ -224,15 +224,15 @@ vs. multi-worker parity tests. User-authored job callbacks are not part of the
 Game3D surface.
 
 `World3D.SetOriginRebaseThreshold(meters)` configures the floating-origin
-distance threshold. With `floatingOrigin` enabled, the world recenters around
+distance threshold. With `FloatingOrigin` enabled, the world recenters around
 the active camera when it crosses that threshold, calls
 `SceneGraph.RebaseOrigin()` for scene root subtrees, shifts physics bodies by the
 same delta, shifts the explicit audio listener pose, and rebases world-owned
 effect-registry particles and decals. The absolute offset accumulates in
 `worldOrigin`. `World3D.RebaseOrigin(dx, dy, dz)` exposes the same cross-system
 boundary for explicit world-streaming or sector handoff code and must be called
-between frames; calling it during an active `beginFrame`/`endScene` pass traps
-before state changes. During `World3D.beginFrame`, the flag also enables Canvas3D
+between frames; calling it during an active `BeginFrame`/`EndScene` pass traps
+before state changes. During `World3D.BeginFrame`, the flag also enables Canvas3D
 camera-relative upload for
 double-precision `DrawMesh` model matrices, identity-matrix raw meshes built
 through `Mesh3D.AddVertex`, generated `Particles3D` / `Sprite3D` / decal
@@ -361,7 +361,7 @@ Game3D.Debug3D.DrawCapabilities(world, true);
 
 The overlay reports backend, FPS, requested/active quality, fallback state,
 scene node/cull counts, physics body count, optional camera position, backend
-capability bits, and whether physics wire debug is enabled. `drawEffects()`
+capability bits, and whether physics wire debug is enabled. `DrawEffects()`
 draws axes and physics wire helpers during the 3D pass.
 
 ---
@@ -374,11 +374,11 @@ The managed frame helpers use this order:
 2. Update `world.dt`, `world.elapsed`, and `world.frame`.
 3. Run gameplay update if a callback loop is being used.
 4. Run the installed Game3D camera/controller `Update`.
-5. Advance spawned `Entity3D.anim` controllers and collect animation events.
+5. Advance spawned `Entity3D.Anim` controllers and collect animation events.
 6. Step physics.
 7. Sync physics-owned nodes, animation root motion, and 3D audio bindings.
 8. Update the effect registry and expire finished particle/decal effects.
-9. Run the installed Game3D camera/controller `lateUpdate`.
+9. Run the installed Game3D camera/controller `LateUpdate`.
 10. Begin the frame and draw the scene.
 11. Draw the effects registry.
 12. End the scene.
@@ -399,32 +399,32 @@ if (Game3D.World3D.Update(world)) {
 }
 ```
 
-`lateUpdate` runs after physics and binding sync, so follow cameras observe the
+`LateUpdate` runs after physics and binding sync, so follow cameras observe the
 final entity pose for the frame rather than the previous frame's transform.
 
 Manual code can use the same pieces directly:
 
 | Method | Purpose |
 |--------|---------|
-| `tick()` | Poll live input, sync backing-window resize state, and advance world timing; returns false when the window should close |
+| `Update()` | Poll live input, sync backing-window resize state, and advance world timing; returns false when the window should close |
 | `StepSimulation(step)` | Clamp invalid, zero, negative, and overlarge steps into the safe dt range; store `world.dt`, advance `frame`/`elapsed` when called directly, then step controllers, animation, physics, scene/audio bindings, effect expiry, and late camera/controller work |
-| `beginFrame()` | Clear and begin drawing with the world camera |
-| `drawScene()` | Draw the world scene |
-| `drawEffects()` | Draw effect-registry particles/decals plus debug axes/physics wires |
-| `endScene()` | End the draw pass without presenting |
-| `captureFinalFrame()` | Finalize post-FX/overlay and return `Pixels` |
-| `present()` | Finalize if needed and present the frame |
+| `BeginFrame()` | Clear and begin drawing with the world camera |
+| `DrawScene()` | Draw the world scene |
+| `DrawEffects()` | Draw effect-registry particles/decals plus debug axes/physics wires |
+| `EndScene()` | End the draw pass without presenting |
+| `CaptureFinalFrame()` | Finalize post-FX/overlay and return `Pixels` |
+| `Present()` | Finalize if needed and present the frame |
 
-For deterministic tests, use `runFrames(frameCount, stepSec, &update)`,
+For deterministic tests, use `RunFrames(frameCount, stepSec, &update)`,
 `RunFramesOnly(frameCount, stepSec)`, or call the manual methods explicitly.
 `RunFramesOnly` uses the synthetic clock path and leaves the final frame
-capturable. `runFrames` / `RunFramesOnly` temporarily switch the backing canvas
+capturable. `RunFrames` / `RunFramesOnly` temporarily switch the backing canvas
 to synthetic input and fixed-clock timing for callback, simulation, and render
 work, keep synthetic-held keys/buttons down across the whole deterministic run,
 then restore the previous canvas input source, clock source, and synthetic delta
-after the run completes. If a `runFrames` callback traps, the synthetic canvas
+after the run completes. If a `RunFrames` callback traps, the synthetic canvas
 state is restored before the original trap is rethrown. The built-in run loops
-avoid double-counting time because `tick()` / `runFrames()` own frame and
+avoid double-counting time because `Update()` / `RunFrames()` own frame and
 elapsed-time accounting.
 
 For worker-parity probes, set `World3D.SetWorkerCount(world, 1)` and a
@@ -447,7 +447,7 @@ The raw `Canvas3D` finalization calls map to the Game3D frame helpers this way:
 | `Canvas3D.ScreenshotFinal()` | Finalize the frame, then read back the post-FX-plus-overlay pixels. |
 | `Canvas3D.Flip()` | Finalize the frame if needed, then present it. |
 
-`World3D.EndScene()`, `captureFinalFrame()`, and `present()` are the Game3D
+`World3D.EndScene()`, `CaptureFinalFrame()`, and `Present()` are the Game3D
 wrappers for that contract.
 
 `World3D.OnResize(width, height)` updates the camera aspect and resizes the
@@ -463,7 +463,7 @@ backing window size, not a temporary `RenderTarget3D` bound on the canvas.
 ## Callback Boundary
 
 `World3D.run`, `runWithOverlay`, `runFixed`, `runFixedWithOverlay`,
-`runFrames`, and `drawOverlay` accept script function references in both
+`RunFrames`, and `DrawOverlay` accept script function references in both
 interpreted and native-compiled Zia. Update callbacks must have signature
 `(Float) -> Unit`; overlay callbacks must have signature `() -> Unit`.
 
@@ -510,21 +510,21 @@ an attached body only when the node sync mode is `SyncMode.BodyFromNode`:
 | Method | Purpose |
 |--------|---------|
 | `FromNode(rootNode)` | Wrap a detached hierarchy, or transactionally transfer a `SceneGraph`'s implicit root hierarchy into a spawnable group entity while replacing the source root |
-| `setPosition(x, y, z)` / `setPositionV(vec3)` | Set node position |
-| `setScale(s)` / `setScaleXYZ(x, y, z)` | Set node scale |
-| `setRotationEuler(xDeg, yDeg, zDeg)` | Set node orientation in degrees |
-| `setMesh(mesh)` / `setMaterial(material)` | Replace render resources |
-| `setMeshRecursive(mesh)` | Replace mesh handles on every drawable raw node in the entity subtree; if none are drawable, assign the root |
-| `setMaterialRecursive(material)` | Replace material handles on the root and every raw node in the entity subtree |
-| `addChild(child)` | Parent another Game3D entity; reparents from an old Game3D parent and rejects self/cycle parenting |
-| `setName(name)` | Name the entity and backing node for lookup |
-| `setLayer(layer)` | Set gameplay/physics layer |
-| `setCollisionMask(mask)` | Set the layer mask used by attached bodies |
+| `SetPosition(x, y, z)` / `SetPositionV(vec3)` | Set node position |
+| `SetScale(s)` / `SetScaleXYZ(x, y, z)` | Set node scale |
+| `SetRotationEuler(xDeg, yDeg, zDeg)` | Set node orientation in degrees |
+| `Mesh` / `Material` | Read/write properties replacing the render resources |
+| `SetMeshRecursive(mesh)` | Replace mesh handles on every drawable raw node in the entity subtree; if none are drawable, assign the root |
+| `SetMaterialRecursive(material)` | Replace material handles on the root and every raw node in the entity subtree |
+| `AddChild(child)` | Parent another Game3D entity; reparents from an old Game3D parent and rejects self/cycle parenting |
+| `Name` | Read/write property naming the entity and backing node for lookup |
+| `Layer` | Read/write property: gameplay/physics layer |
+| `CollisionMask` | Read/write property: the layer mask used by attached bodies |
 | `AttachBody(bodyDef)` | Create and attach a `Physics3DBody` from a `BodyDef` |
 | `AttachAnimator(animator)` | Attach an `Animator3D` or raw `AnimController3D` to the entity node |
-| `position` / `worldPosition` | Read local/world position (properties) |
-| `isSpawned()` / `isDestroyed()` | Inspect lifecycle state |
-| `isGroup()` | True when the entity wraps an imported/`FromNode` multi-node group rather than a single primitive |
+| `Position` / `WorldPosition` | Read local/world position (read-only properties) |
+| `IsSpawned()` / `IsDestroyed()` | Inspect lifecycle state |
+| `IsGroup()` | True when the entity wraps an imported/`FromNode` multi-node group rather than a single primitive |
 
 `World3D.Spawn(entity)` attaches the entity node to the world scene and registers
 the entity by name. `World3D.Despawn(entity)` removes it from the registry,
@@ -533,7 +533,7 @@ Destroying a world also marks any retained entities from that world stale. Stale
 entity getters return neutral values (`0`, `null`, or origin vectors), mutators
 including `AttachAnimator` no-op, and each stale API call increments
 `Game3D.Diagnostics.StaleEntityCalls`; invalid non-entity handles still trap.
-`isSpawned()` and `isDestroyed()` remain available for lifecycle inspection.
+`IsSpawned()` and `IsDestroyed()` remain available for lifecycle inspection.
 Child Game3D entities are owned by their parent for despawn purposes; raw
 imported child nodes remain part of the imported node subtree. Adding a child to
 an already-spawned entity spawns that child into the same world; adding a
@@ -669,7 +669,7 @@ the main-thread commit publishes the result, the stale staged model is discarded
 and `Game3D.Diagnostics.StaleAsyncLoadsDropped` increments. A still-retained
 handle is reloaded against the fresh generation; ownerless preload work is
 dropped.
-`World3D.tick` and simulation steps drain the asset commit queue with a fixed
+`World3D.Update` and simulation steps drain the asset commit queue with a fixed
 per-frame item budget plus a decoded-texture byte budget so preload commits do
 not require polling a returned handle. `Assets3D.SetUploadBudget(bytes)` changes
 that byte budget: negative means unlimited, `0` pauses positive-cost decoded
@@ -761,7 +761,7 @@ Resident terrain tiles instantiate `Terrain3D` payloads using the manifest
 dimensions and scale; an optional `heightmap` sidecar uses a small text format,
 `zanna-heightmap-v1 <width> <depth>` followed by normalized height values, and
 is applied through the existing 16-bit `Terrain3D.SetHeightmap` path. The
-world-owned stream renders resident terrain tiles during `World3D.drawScene`
+world-owned stream renders resident terrain tiles during `World3D.DrawScene`
 using their manifest-centered world positions. Each resident terrain tile also
 owns an invisible `*_heightfield_collider` entity
 with a static `Collider3D.NewHeightfield` body, so physics residency follows
@@ -1085,7 +1085,7 @@ attached audio observes the same final entity transforms as follow cameras.
 
 `World3D.effects` owns the existing `PostFX3D` chain plus a particle/decal
 registry. The registry can be driven manually, but world stepping and
-`drawEffects()` handle the normal update/draw path. When `World3D.floatingOrigin`
+`DrawEffects()` handle the normal update/draw path. When `World3D.FloatingOrigin`
 performs a rebase, registered particle emitters, live particles, and decals are
 shifted by the same delta; decal mesh caches are rebuilt on the next draw so
 their vertices stay near the rebased camera:
@@ -1305,8 +1305,8 @@ valid binding after a failed setter.
 
 `OrbitController.New(world, target)` takes either a `Vec3` target position or an
 `Entity3D` target. Entity targets are resolved to world position during
-`lateUpdate`. Holding the left mouse button and dragging changes yaw/pitch,
-wheel input changes distance, and `lateUpdate` places the camera on the orbit.
+`LateUpdate`. Holding the left mouse button and dragging changes yaw/pitch,
+wheel input changes distance, and `LateUpdate` places the camera on the orbit.
 
 `FollowController.New(world, entity, offset)` tracks an entity after physics.
 Set `damping` to `0.0` for a snap follow, or a positive value for exponential
@@ -1318,7 +1318,7 @@ optionally drives a `CharacterController3D` camera-relatively. During `Update`
 it consumes `Input3D.LookAxis()` into `Yaw`/`Pitch` (pitch clamps to
 -60..75 by default; positive pitch places the camera above the pivot), advances
 the aim blend, and — when `Character` is set — moves the character along the
-yaw basis (yaw `0` faces `-Z`, yaw `90` faces `-X`). During `lateUpdate` it
+yaw basis (yaw `0` faces `-Z`, yaw `90` faces `-X`). During `LateUpdate` it
 sphere-sweeps the camera boom from the pivot (entity position + `PivotHeight` +
 yaw-rotated `ShoulderOffset`): hits pull the camera in instantly (it never
 clips), release smooths back at `Damping`. `MinDistance`/`MaxDistance` bound the
@@ -1534,7 +1534,7 @@ Quest/objective tracking is 2D/3D-agnostic and lives at `Zanna.Game.Quests`
 | Symptom | Check |
 |---------|-------|
 | `LoadEntityAsset` or `Sound3D.loadAsset` returns `null` | Run from the project root or package the asset path in `zanna.project`; source-tree samples use `asset assets assets` or repository-relative fixture paths. |
-| Final overlay pixels look post-processed | Draw HUD after `World3D.EndScene()` with `Canvas3D.BeginOverlay()` / `EndOverlay()`, then call `captureFinalFrame()` or `present()`. |
+| Final overlay pixels look post-processed | Draw HUD after `World3D.EndScene()` with `Canvas3D.BeginOverlay()` / `EndOverlay()`, then call `CaptureFinalFrame()` or `Present()`. |
 | A callback loop traps before the callback runs | Check that the update callback is `(Float) -> Unit`, the overlay callback is `() -> Unit`, and the function reference comes from the active script module. |
 | Software backend disables a requested quality feature | Inspect `Canvas3D.get_QualityActive()` and `get_QualityFallback()`; `Quality.Apply` avoids unsupported shadow/post-FX paths. |
 | A body does not collide with another body | Verify the entity layer, `BodyDef.withLayer`, and `BodyDef.withMask`; masks must include the other body layer. |
@@ -1551,7 +1551,7 @@ The Game3D runtime is covered by:
 | `test_rt_game3d` | C runtime contracts for constants, masks, repaired input snapshots, exact opaque-handle layouts, returning traps, world defaults/component quarantine, hierarchy ownership and transactional reparenting, spawn/despawn, stale-entity no-op diagnostics, shared-body rejection, collision-event clearing, native callback loops, fixed-loop accumulator/spiral-guard behavior, overlay hooks, final capture, packaged glTF hierarchy loading through `Assets3D.LoadEntityAsset`, pause-safe controller input, orbit/follow late update, first-person character and bound-pad movement, transactional material/prefab/lighting setup, quality, environment, post-FX, debug helpers, streamed terrain metadata inspection and LOD seam stitching beyond the single-heightmap cap, Animator3D root motion/events, Sound3D helpers, and Effects3D presets/expiry |
 | `g3d_test_game3d_world_probe` | Zia construction, default subsystems, layer masks, entity spawn/find/despawn, direct `Entity3D.FromNode` subtree wrapping, synthetic `tick`, clamped `StepSimulation`, resize/aspect, manual frame path, final capture, and destroy |
 | `g3d_test_game3d_runframes_probe` | Zia deterministic `RunFramesOnly`, dt/elapsed/frame accounting, and final capture |
-| `g3d_test_game3d_runframes_callback_probe` | Interpreted Zia `runFrames` update callback bridge, fixed dt delivery, and frame accounting |
+| `g3d_test_game3d_runframes_callback_probe` | Interpreted Zia `RunFrames` update callback bridge, fixed dt delivery, and frame accounting |
 | `g3d_test_game3d_runfixed_callback_probe` | Interpreted Zia `runFixed` and `runFixedWithOverlay` callback bridges, re-entrant global mutation, fixed dt delivery, overlay invocation, and callback-driven teardown |
 | `native_run_game3d_runfixed_callback_probe` | Native-compiled Zia parity for the same fixed-step callback script |
 | `g3d_test_game3d_destroyed_handle_reject` | Interpreted Zia destroyed-`World3D` diagnostic for post-teardown handle use |
@@ -1592,7 +1592,7 @@ The Game3D runtime is covered by:
 | `g3d_openworld_slice_visibility_dense_probe` | Authored dense city/forest visibility fixture that records PVS draw-call/fill-proxy reduction and compares optimized software pixels against the no-PVS baseline |
 | `g3d_openworld_slice_gpu_smoke` | Capability-gated platform GPU backend smoke for the open-world slice, including a degenerate-basis normal-map robustness pass, 24-light clustered/forward+ draw, 3-cascade primary directional CSM fixture, and optional backend GPU frame-time telemetry; reports `SKIP` when the requested GPU backend is unavailable |
 | `g3d_openworld_slice_package_dry_run` | Open-world slice `zanna.project` asset packaging layout |
-| `g3d_3dnext2_surface_probe` | Phase-0 3D next-level surface probe covering worker-backed ordered `Zanna.Threads.Parallel` map output and `World3D.runFramesOnly` worker-count replay parity |
+| `g3d_3dnext2_surface_probe` | Phase-0 3D next-level surface probe covering worker-backed ordered `Zanna.Threads.Parallel` map output and `World3D.RunFramesOnly` worker-count replay parity |
 | `test_rt_g3d_commit_queue` | Internal Graphics3D main-thread commit queue FIFO/budgeted drain, worker-enqueue/main-thread-commit behavior, and worker-drain rejection |
 | `scripts/g3d_tsan_concurrency_lane.sh` | Focused ThreadSanitizer lane for the worker pool, ordered map/reduce, runtime concurrency stress, asset-worker decode paths, Game3D worker parity, open-world streaming hitch probe, and the Graphics3D commit queue |
 | NL3-031 determinism gate | `g3d_3dnext2_surface_probe`, `test_rt_game3d`, `test_codegen_env_is_native`, native-run Zia promise tests, and `test_crosslayer_arith` prove worker-count replay, ordered merge, and VM/native parity |

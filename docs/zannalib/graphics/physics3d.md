@@ -340,7 +340,7 @@ sleeping, and optional CCD.
 |-------------|-----------|-------------|
 | `New(mass)` | `PhysicsBody3D(Double)` | Create an empty body and assign a collider later |
 | `NewAABB(sx, sy, sz, mass)` | `PhysicsBody3D(Double, Double, Double, Double)` | Box body (`mass = 0` makes it static); name retained for compatibility |
-| `NewSphere(radius, mass)` | `PhysicsBody3D(Double, Double)` | Sphere body |
+| `Sphere(radius, mass)` | `PhysicsBody3D(Double, Double)` | Sphere body (note: named `Sphere`, not `NewSphere`) |
 | `NewCapsule(radius, height, mass)` | `PhysicsBody3D(Double, Double, Double)` | Capsule body; `height` is total height including caps |
 
 ### Properties
@@ -387,7 +387,7 @@ sleeping, and optional CCD.
 
 ### Notes
 
-- `NewAABB()`, `NewSphere()`, and `NewCapsule()` are now convenience factories that create a body,
+- `NewAABB()`, `Sphere()`, and `NewCapsule()` are now convenience factories that create a body,
   create the matching collider, and attach it internally.
 - Use `New(mass)` plus `body.Collider = collider` when you want reusable, mesh, compound, or heightfield shapes.
 - `Scale` is a physics scale, not a renderer transform; Game3D keeps it synchronized from `Entity3D` scale when a body is attached to an entity.

@@ -17,8 +17,7 @@
 // Ownership/Lifetime:
 //   - GC-managed handle; retains its bound mesh/animator; finalizer frees
 //     the point/constraint arrays and releases the bindings.
-// Links: misc/plans/thirdpersonupgrade/27-cloth.md, ADR 0096,
-//        src/runtime/graphics/3d/physics/rt_cloth3d.c
+// Links: ADR 0096, src/runtime/graphics/3d/physics/rt_cloth3d.c
 //
 //===----------------------------------------------------------------------===//
 

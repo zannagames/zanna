@@ -107,7 +107,31 @@ static inline rt_pixels_impl *rt_pixels_checked_impl(void *pixels, const char *o
         zanna_pixels_trap_invalid_handle(op, "Pixels: invalid pixels");
         return NULL;
     }
-    return (rt_pixels_impl *)pixels;
+    rt_pixels_impl *impl = (rt_pixels_impl *)pixels;
+    if (impl->width < 0 || impl->height < 0 ||
+        (impl->width != 0 && impl->height > INT64_MAX / impl->width)) {
+        zanna_pixels_trap_invalid_handle(op, "Pixels: invalid layout");
+        return NULL;
+    }
+    int64_t count = impl->width * impl->height;
+    if (count > (INT64_MAX - (int64_t)sizeof(*impl)) / (int64_t)sizeof(uint32_t) ||
+        (uint64_t)count >
+            ((uint64_t)SIZE_MAX - (uint64_t)sizeof(*impl)) / (uint64_t)sizeof(uint32_t)) {
+        zanna_pixels_trap_invalid_handle(op, "Pixels: invalid layout");
+        return NULL;
+    }
+    size_t required = sizeof(*impl) + (size_t)count * sizeof(uint32_t);
+    uint32_t *expected_data = count > 0 ? (uint32_t *)((uint8_t *)impl + sizeof(*impl)) : NULL;
+    if (!rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, required) || impl->data != expected_data ||
+        impl->cache_identity == 0 || (impl->alpha_scan_valid != 0 && impl->alpha_scan_valid != 1) ||
+        (impl->alpha_scan_valid &&
+         (impl->alpha_scan_generation != impl->generation ||
+          impl->alpha_scan_classification < RT_PIXELS_ALPHA_OPAQUE ||
+          impl->alpha_scan_classification > RT_PIXELS_ALPHA_FRACTIONAL))) {
+        zanna_pixels_trap_invalid_handle(op, "Pixels: invalid layout");
+        return NULL;
+    }
+    return impl;
 #endif
 }
 
@@ -124,7 +148,24 @@ static inline rt_pixels_impl *rt_pixels_checked_impl_or_null(void *pixels) {
 #else
     if (!pixels || !rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl)))
         return NULL;
-    return (rt_pixels_impl *)pixels;
+    rt_pixels_impl *impl = (rt_pixels_impl *)pixels;
+    if (impl->width < 0 || impl->height < 0 ||
+        (impl->width != 0 && impl->height > INT64_MAX / impl->width))
+        return NULL;
+    int64_t count = impl->width * impl->height;
+    if (count > (INT64_MAX - (int64_t)sizeof(*impl)) / (int64_t)sizeof(uint32_t) ||
+        (uint64_t)count >
+            ((uint64_t)SIZE_MAX - (uint64_t)sizeof(*impl)) / (uint64_t)sizeof(uint32_t))
+        return NULL;
+    size_t required = sizeof(*impl) + (size_t)count * sizeof(uint32_t);
+    uint32_t *expected_data = count > 0 ? (uint32_t *)((uint8_t *)impl + sizeof(*impl)) : NULL;
+    if (!rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, required) || impl->data != expected_data ||
+        impl->cache_identity == 0 || (impl->alpha_scan_valid != 0 && impl->alpha_scan_valid != 1) ||
+        (impl->alpha_scan_valid && (impl->alpha_scan_generation != impl->generation ||
+                                    impl->alpha_scan_classification < RT_PIXELS_ALPHA_OPAQUE ||
+                                    impl->alpha_scan_classification > RT_PIXELS_ALPHA_FRACTIONAL)))
+        return NULL;
+    return impl;
 #endif
 }
 

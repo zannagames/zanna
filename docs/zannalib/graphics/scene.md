@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-29
+last-verified: 2026-08-03
 ---
 
 # Scene Graph
@@ -498,7 +498,7 @@ Batched sprite rendering for improved performance when drawing many sprites.
 **Type:** Instance (obj)
 **Constructor:** `NEW Zanna.Graphics.SpriteBatch(capacity)`
 
-Creates a sprite batch with the given initial capacity (use 0 for default). SpriteBatch records draw calls, optionally sorts them by depth, applies shared tint/alpha state, and flushes them during `End(canvas)`. `End(canvas)` also clears the recorded batch so the same instance can be reused next frame. Use the `Draw` overloads for `Sprite` objects and `DrawPixels`/`DrawRegion` for raw `Pixels` buffers. `DrawPixels` preserves per-pixel alpha, so transparent sprites and overlays blend like `Canvas.BlitAlpha`. `DrawRegion` draws its extracted region at the requested destination top-left; any temporary transform or color copy does not recenter the final blit. When depth sorting is enabled, items with the same depth still preserve their original submission order. Scale values below `1` clamp to `1` for both sprite and raw-pixels batch entries. `Color.Rgba` tint values preserve their explicit alpha channel.
+Creates a sprite batch with the given initial capacity (use 0 for default). SpriteBatch records draw calls, optionally sorts them by depth, applies shared tint/alpha state, and flushes them during `End(canvas)`. `End(canvas)` also clears the recorded batch so the same instance can be reused next frame. Use the `Draw` overloads for `Sprite` objects and `DrawPixels`/`DrawRegion` for raw `Pixels` buffers. `DrawPixels` preserves per-pixel alpha, so transparent sprites and overlays blend like `Canvas.BlitAlpha`. `DrawRegion` draws its extracted region at the requested destination top-left; any temporary transform or color copy does not recenter the final blit. Source clipping advances that destination by the scaled clipped prefix and preserves the requested far edge at fractional scale percentages. When depth sorting is enabled, items with the same depth still preserve their original submission order. Scale values below `1` clamp to `1` for both sprite and raw-pixels batch entries. `Color.Rgba` tint values preserve their explicit alpha channel. A batch-wide alpha of zero discards queued work at `End` without sorting or creating transform buffers.
 SpriteBatch methods validate the batch receiver before recording or flushing; invalid handles are treated as empty/inactive batches or no-ops. Draw calls also validate their source objects: sprite draw methods require a real `Sprite`, and raw-pixels methods require a real `Pixels` buffer.
 
 ### Properties

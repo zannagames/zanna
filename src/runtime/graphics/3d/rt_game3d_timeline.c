@@ -20,8 +20,7 @@
 // Ownership/Lifetime:
 //   - GC-managed; finalizer releases retained track objects and the world ref.
 //     The world retains the active timeline; stop()/replacement releases it.
-// Links: misc/plans/thirdpersonupgrade/09-cutscene-sequencer.md,
-//   rt_game3d_internal.h, rt_path3d.h
+// Links: rt_game3d_internal.h, rt_path3d.h
 //
 //===----------------------------------------------------------------------===//
 

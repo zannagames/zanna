@@ -114,14 +114,57 @@ static rt_tilemap_impl *tilemap_io_checked(void *tm) {
     if (!tm || !rt_obj_is_instance(tm, RT_TILEMAP_CLASS_ID, sizeof(rt_tilemap_impl)))
         return NULL;
     rt_tilemap_impl *tilemap = (rt_tilemap_impl *)tm;
-    if (!tilemap_io_grid_supported(tilemap->width, tilemap->height) || tilemap->tile_width <= 0 ||
+    if (tilemap->state_magic != RT_TILEMAP_STATE_MAGIC ||
+        !tilemap_io_grid_supported(tilemap->width, tilemap->height) || tilemap->tile_width <= 0 ||
         tilemap->tile_height <= 0 || tilemap->source_frame_width <= 0 ||
-        tilemap->source_frame_height <= 0 || !tilemap->tiles || tilemap->layer_count < 1 ||
+        tilemap->source_frame_height <= 0 || tilemap->layer_count < 1 ||
         tilemap->layer_count > TM_MAX_LAYERS || tilemap->collision_layer < 0 ||
         tilemap->collision_layer >= tilemap->layer_count || tilemap->autotile_count < 0 ||
         tilemap->autotile_count > MAX_AUTOTILE_RULES || tilemap->tile_anim_count < 0 ||
-        tilemap->tile_anim_count > TM_MAX_TILE_ANIMS)
+        tilemap->tile_anim_count > TM_MAX_TILE_ANIMS ||
+        tilemap->import_orientation < RT_TILEMAP_IMPORT_ORTHOGONAL ||
+        tilemap->import_orientation > RT_TILEMAP_IMPORT_OBLIQUE ||
+        tilemap->import_render_order < RT_TILEMAP_IMPORT_RIGHT_DOWN ||
+        tilemap->import_render_order > RT_TILEMAP_IMPORT_LEFT_UP ||
+        (tilemap->import_stagger_axis != 0 && tilemap->import_stagger_axis != 1) ||
+        (tilemap->import_stagger_even != 0 && tilemap->import_stagger_even != 1) ||
+        !isfinite(tilemap->import_skew_x) || !isfinite(tilemap->import_skew_y) ||
+        !isfinite(tilemap->import_parallax_origin_x) ||
+        !isfinite(tilemap->import_parallax_origin_y))
         return NULL;
+
+    int64_t tile_count = tilemap->width * tilemap->height;
+    size_t tiles_size = (size_t)tile_count * sizeof(int64_t);
+    if (tiles_size > SIZE_MAX - sizeof(*tilemap) ||
+        !rt_obj_is_instance(tm, RT_TILEMAP_CLASS_ID, sizeof(*tilemap) + tiles_size) ||
+        tilemap->tiles != (int64_t *)((uint8_t *)tilemap + sizeof(*tilemap)) ||
+        tilemap->layers[0].tiles != tilemap->tiles || tilemap->layers[0].owns_tiles != 0 ||
+        (tilemap->tileset && !rt_pixels_checked_impl_or_null(tilemap->tileset)))
+        return NULL;
+    for (int32_t i = 0; i < tilemap->layer_count; ++i) {
+        tm_layer *layer = &tilemap->layers[i];
+        if (!layer->tiles || (layer->visible != 0 && layer->visible != 1) ||
+            (layer->owns_tiles != 0 && layer->owns_tiles != 1) ||
+            (i > 0 && layer->owns_tiles != 1) || !isfinite(layer->import_offset_x) ||
+            !isfinite(layer->import_offset_y) || !isfinite(layer->import_parallax_x) ||
+            !isfinite(layer->import_parallax_y) ||
+            (layer->tileset && !rt_pixels_checked_impl_or_null(layer->tileset)))
+            return NULL;
+    }
+    for (int32_t i = 0; i < tilemap->tile_anim_count; ++i) {
+        tm_tile_anim *anim = &tilemap->tile_anims[i];
+        if (anim->base_tile_id <= 0 || anim->frame_count <= 0 ||
+            anim->frame_count > TM_MAX_IMPORT_ANIM_FRAMES || !anim->frame_tiles ||
+            !anim->frame_durations || anim->current_frame < 0 ||
+            anim->current_frame >= anim->frame_count || anim->ms_per_frame < 0 || anim->timer < 0)
+            return NULL;
+        for (int32_t frame = 0; frame < anim->frame_count; ++frame) {
+            if (anim->frame_tiles[frame] <= 0 || anim->frame_durations[frame] <= 0)
+                return NULL;
+        }
+        if (anim->timer >= anim->frame_durations[anim->current_frame])
+            return NULL;
+    }
     return tilemap;
 }
 

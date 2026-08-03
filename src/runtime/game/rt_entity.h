@@ -25,7 +25,7 @@
 //     destroy entry point.
 //   - Entities retain no external objects and require no custom finalizer.
 //
-// Links: rt_entity.c (implementation), misc/plans/game/03-entity-class.md
+// Links: rt_entity.c (implementation)
 //
 //===----------------------------------------------------------------------===//
 

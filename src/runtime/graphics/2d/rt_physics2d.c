@@ -198,9 +198,8 @@ static int8_t ensure_contact_capacity(rt_world_impl *w, int64_t needed) {
 
 /// @brief Ensure all parallel per-step force-snapshot arrays have @p needed slots.
 /// @details The body-pointer, X-force, and Y-force arrays grow to one common
-///          capacity. Successfully reallocated earlier arrays remain installed
-///          if a later parallel allocation fails, while `force_capacity` is
-///          advanced only after all three succeed.
+///          capacity. Growth is transactional: all three replacements are
+///          allocated and populated before any live pointer is replaced.
 /// @param w Mutable world implementation whose snapshot arrays may grow.
 /// @param needed Nonnegative minimum number of snapshot entries.
 /// @return Nonzero when capacity is already sufficient or all growth succeeds;
@@ -216,20 +215,30 @@ static int8_t ensure_force_capacity(rt_world_impl *w, int64_t needed) {
         (uint64_t)new_capacity > SIZE_MAX / sizeof(double))
         return 0;
 
-    rt_body_impl **force_bodies =
-        (rt_body_impl **)realloc(w->force_bodies, (size_t)new_capacity * sizeof(rt_body_impl *));
-    if (!force_bodies)
+    size_t body_bytes = (size_t)new_capacity * sizeof(rt_body_impl *);
+    size_t force_bytes = (size_t)new_capacity * sizeof(double);
+    rt_body_impl **force_bodies = (rt_body_impl **)malloc(body_bytes);
+    double *force_x = (double *)malloc(force_bytes);
+    double *force_y = (double *)malloc(force_bytes);
+    if (!force_bodies || !force_x || !force_y) {
+        free(force_bodies);
+        free(force_x);
+        free(force_y);
         return 0;
+    }
+    if (w->force_capacity > 0) {
+        size_t old_body_bytes = (size_t)w->force_capacity * sizeof(rt_body_impl *);
+        size_t old_force_bytes = (size_t)w->force_capacity * sizeof(double);
+        memcpy(force_bodies, w->force_bodies, old_body_bytes);
+        memcpy(force_x, w->force_x, old_force_bytes);
+        memcpy(force_y, w->force_y, old_force_bytes);
+    }
+
+    free(w->force_bodies);
+    free(w->force_x);
+    free(w->force_y);
     w->force_bodies = force_bodies;
-
-    double *force_x = (double *)realloc(w->force_x, (size_t)new_capacity * sizeof(double));
-    if (!force_x)
-        return 0;
     w->force_x = force_x;
-
-    double *force_y = (double *)realloc(w->force_y, (size_t)new_capacity * sizeof(double));
-    if (!force_y)
-        return 0;
     w->force_y = force_y;
 
     w->force_capacity = new_capacity;
@@ -696,6 +705,7 @@ void *rt_physics2d_world_new(double gravity_x, double gravity_y) {
     }
     memset(w, 0, sizeof(*w));
     w->vptr = NULL;
+    w->state_magic = RT_PHYSICS2D_WORLD_STATE_MAGIC;
     w->gravity_x = finite_or(gravity_x, 0.0);
     w->gravity_y = finite_or(gravity_y, 0.0);
     w->body_count = 0;
@@ -1271,6 +1281,7 @@ void *rt_physics2d_body_new(double x, double y, double w, double h, double mass)
         return NULL;
     }
     b->vptr = NULL;
+    b->state_magic = RT_PHYSICS2D_BODY_STATE_MAGIC;
     x = finite_or(x, 0.0);
     y = finite_or(y, 0.0);
     w = positive_or(w, 1.0);
@@ -1587,6 +1598,8 @@ void rt_physics2d_body_set_collision_mask(void *obj, int64_t mask) {
 typedef struct {
     /// Reserved runtime object virtual-table slot.
     void *vptr;
+    /// Private initialized-payload cookie.
+    uint64_t state_magic;
     /// Initial horizontal and vertical position.
     double p0x, p0y;
     /// Initial horizontal and vertical velocity.
@@ -1615,7 +1628,16 @@ static rt_projectile2d_impl *checked_projectile(void *obj, const char *api) {
         rt_trap(api);
         return NULL;
     }
-    return (rt_projectile2d_impl *)obj;
+    rt_projectile2d_impl *p = (rt_projectile2d_impl *)obj;
+    if (p->state_magic != RT_PHYSICS2D_PROJECTILE_STATE_MAGIC || !isfinite(p->p0x) ||
+        !isfinite(p->p0y) || !isfinite(p->v0x) || !isfinite(p->v0y) || !isfinite(p->gx) ||
+        !isfinite(p->gy) || !isfinite(p->drag) || p->drag < 0.0 || !isfinite(p->total_time) ||
+        p->total_time < 0.0 || (p->landed != 0 && p->landed != 1) ||
+        (!isfinite(p->ground_y) && p->ground_y != INFINITY)) {
+        rt_trap(api);
+        return NULL;
+    }
+    return p;
 }
 
 /// @brief Return @p value if finite, else @p fallback (sanitizes user-supplied
@@ -1644,6 +1666,7 @@ void *rt_projectile2d_new(double p0x, double p0y, double v0x, double v0y, double
     if (!p)
         return NULL;
     memset(p, 0, sizeof(*p));
+    p->state_magic = RT_PHYSICS2D_PROJECTILE_STATE_MAGIC;
     p->p0x = projectile_finite_or(p0x, 0.0);
     p->p0y = projectile_finite_or(p0y, 0.0);
     p->v0x = projectile_finite_or(v0x, 0.0);

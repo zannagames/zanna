@@ -80,5 +80,5 @@ func start() {
         return;
     }
 
-    Say("RESULT: ok");
+    Say("PASS: navagent3d");
 }

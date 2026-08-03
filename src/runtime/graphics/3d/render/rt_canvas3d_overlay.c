@@ -1268,9 +1268,11 @@ rt_string rt_canvas3d_get_backend_fallback_reason(void *obj) {
 }
 
 /// @brief True when the active backend has the GPU many-light shader/upload path.
-/// @details Keep this tied to the real backend vtables, not backend-name strings, so
-///          stack/fake unit-test backends do not accidentally advertise production
-///          clustered/forward+ support just because they use a GPU-like name.
+/// @details Driven by the vtable's `clustered_lighting` field so a new backend
+///          opts in by declaration instead of editing this file. Fake unit-test
+///          backends stay at 0 regardless of a GPU-like name; backends named
+///          "software" keep the CPU-parity classification used throughout this
+///          file (covers stack/mock software canvases with zeroed fields).
 /// @param backend Borrowed backend vtable to classify.
 /// @return Non-zero for production backends with the many-light implementation.
 static int canvas3d_backend_supports_clustered_lighting(const vgfx3d_backend_t *backend) {
@@ -1279,22 +1281,12 @@ static int canvas3d_backend_supports_clustered_lighting(const vgfx3d_backend_t *
     if (backend == &vgfx3d_software_backend ||
         (backend->name && strcmp(backend->name, "software") == 0))
         return 1;
-#if RT_PLATFORM_MACOS
-    if (backend == &vgfx3d_metal_backend)
-        return 1;
-#endif
-#if RT_PLATFORM_WINDOWS
-    if (backend == &vgfx3d_d3d11_backend)
-        return 1;
-#endif
-#if RT_PLATFORM_LINUX && !defined(ZANNA_GRAPHICS_HEADLESS)
-    if (backend == &vgfx3d_opengl_backend)
-        return 1;
-#endif
-    return 0;
+    return backend->clustered_lighting != 0;
 }
 
 /// @brief True when the backend can consume multiple shadow slots as primary-light cascades.
+/// @details Requires both the declared `shadow_csm` vtable field and the live
+///          shadow hooks; "software"-named backends keep the CPU-parity path.
 /// @param backend Borrowed backend vtable to classify.
 /// @return Non-zero when required shadow hooks and a production CSM path exist.
 static int canvas3d_backend_supports_shadow_csm(const vgfx3d_backend_t *backend) {
@@ -1303,19 +1295,7 @@ static int canvas3d_backend_supports_shadow_csm(const vgfx3d_backend_t *backend)
     if (backend == &vgfx3d_software_backend ||
         (backend->name && strcmp(backend->name, "software") == 0))
         return 1;
-#if RT_PLATFORM_MACOS
-    if (backend == &vgfx3d_metal_backend)
-        return 1;
-#endif
-#if RT_PLATFORM_WINDOWS
-    if (backend == &vgfx3d_d3d11_backend)
-        return 1;
-#endif
-#if RT_PLATFORM_LINUX && !defined(ZANNA_GRAPHICS_HEADLESS)
-    if (backend == &vgfx3d_opengl_backend)
-        return 1;
-#endif
-    return 0;
+    return backend->shadow_csm != 0;
 }
 
 /// @brief Return whether @p backend can submit ordinary 3D draw commands.

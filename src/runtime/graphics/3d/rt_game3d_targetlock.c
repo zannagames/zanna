@@ -21,8 +21,7 @@
 //     at the start of the next Update.
 // Ownership/Lifetime:
 //   - GC-managed handle; finalizer releases retained world/owner/target refs.
-// Links: misc/plans/thirdpersonupgrade/02-target-lockon.md,
-//   rt_game3d_internal.h, rt_physics3d.h
+// Links: rt_game3d_internal.h, rt_physics3d.h
 //
 //===----------------------------------------------------------------------===//
 

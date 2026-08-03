@@ -883,6 +883,8 @@ function(zanna_add_runtime_tests)
     zanna_add_isolated_runtime_test(test_rt_tilemap_render_contract
             ${ZANNA_TESTS_DIR}/runtime/RTTilemapRenderContractTests.cpp
             ${CMAKE_SOURCE_DIR}/src/runtime/graphics/2d/rt_tilemap.c)
+    target_compile_definitions(test_rt_tilemap_render_contract PRIVATE
+            RT_PIXELS_INTERNAL_ASSUME_STRUCT_HANDLE=1)
 
     zanna_add_test(test_rt_physics_joints ${ZANNA_TESTS_DIR}/unit/test_rt_physics_joints.cpp)
     target_link_libraries(test_rt_physics_joints PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
@@ -1692,7 +1694,8 @@ function(zanna_add_runtime_tests)
             ${CMAKE_SOURCE_DIR}/src/runtime/graphics/3d/world/rt_water3d.c)
     target_compile_definitions(test_rt_water3d_contract PRIVATE
             ZANNA_ENABLE_GRAPHICS=1
-            RT_G3D_ALLOW_STACK_FIXTURES=1)
+            RT_G3D_ALLOW_STACK_FIXTURES=1
+            RT_PIXELS_INTERNAL_ASSUME_STRUCT_HANDLE=1)
 
     zanna_add_isolated_runtime_test(test_rt_vegetation3d_contract
             ${ZANNA_TESTS_DIR}/runtime/RTVegetation3DContractTests.cpp
@@ -1802,6 +1805,8 @@ function(zanna_add_runtime_tests)
     zanna_add_isolated_runtime_test(test_rt_spritebatch_contract
             ${ZANNA_TESTS_DIR}/runtime/RTSpriteBatchContractTests.cpp
             ${CMAKE_SOURCE_DIR}/src/runtime/graphics/2d/rt_spritebatch.c)
+    target_compile_definitions(test_rt_spritebatch_contract PRIVATE
+            RT_PIXELS_INTERNAL_ASSUME_STRUCT_HANDLE=1)
 
     zanna_add_isolated_runtime_test(test_rt_sprite_contract
             ${ZANNA_TESTS_DIR}/runtime/RTSpriteContractTests.cpp

@@ -22,8 +22,7 @@
 //   - *out_data is malloc-allocated on success; the caller owns and frees it.
 //   - Caller-provided output remains caller-owned and may contain partial
 //     decoded bytes after a failed exact-destination operation.
-// Links: src/runtime/io/rt_compress.h (DEFLATE counterpart),
-//   misc/plans/3d_overhaul/03-texture-pipeline.md
+// Links: src/runtime/io/rt_compress.h (DEFLATE counterpart)
 //
 //===----------------------------------------------------------------------===//
 

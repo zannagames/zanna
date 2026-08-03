@@ -18,8 +18,7 @@
 // Ownership/Lifetime:
 //   - GC-managed handle retaining its skeleton, bodies, joints, and (while
 //     active or blending) the world/controller/node references.
-// Links: misc/plans/thirdpersonupgrade/07-ragdoll.md, rt_physics3d.h,
-//   rt_joints3d.h, rt_animcontroller3d.h
+// Links: rt_physics3d.h, rt_joints3d.h, rt_animcontroller3d.h
 //
 //===----------------------------------------------------------------------===//
 

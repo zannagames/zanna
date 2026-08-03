@@ -23,7 +23,7 @@
 // Ownership/Lifetime:
 //   - GC-managed; retains skeleton always, bodies/joints for the rig lifetime,
 //     and world/controller/node only while active or blending out.
-// Links: misc/plans/thirdpersonupgrade/07-ragdoll.md, rt_ragdoll3d.h
+// Links: rt_ragdoll3d.h
 //
 //===----------------------------------------------------------------------===//
 

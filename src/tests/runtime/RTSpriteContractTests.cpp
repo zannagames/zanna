@@ -315,6 +315,44 @@ static void test_equivalent_full_rotations_use_untransformed_fast_path() {
     assert(g_last_blit_pixels_id == source.id);
 }
 
+static void test_off_image_rotation_origin_is_transformed_without_padding() {
+    StubPixels source(4, 2, 82);
+    void *sprite = rt_sprite_new(&source);
+    assert(sprite != nullptr);
+    rt_sprite_set_origin(sprite, -1, 5);
+
+    reset_draw_state();
+    rt_sprite_draw_transformed(
+        sprite, reinterpret_cast<void *>(1), 100, 200, 100, 100, 90, -1, 255);
+    assert(g_rotate_call_count == 1);
+    assert(g_last_blit_x == 104);
+    assert(g_last_blit_y == 201);
+
+    reset_draw_state();
+    rt_sprite_draw_transformed(
+        sprite, reinterpret_cast<void *>(1), 100, 200, 100, 100, 45, -1, 255);
+    assert(g_rotate_call_count == 1);
+    assert(g_last_blit_x == 103);
+    assert(g_last_blit_y == 198);
+}
+
+static void test_setting_current_frame_does_not_restart_animation_clock() {
+    StubPixels first(1, 1, 83);
+    StubPixels second(1, 1, 84);
+    void *sprite = rt_sprite_new(&first);
+    assert(sprite != nullptr);
+    rt_sprite_add_frame(sprite, &second);
+    rt_sprite_set_frame_delay(sprite, 10);
+
+    g_timer_ms = 0;
+    rt_sprite_update(sprite);
+    g_timer_ms = 5;
+    rt_sprite_set_frame(sprite, 0);
+    g_timer_ms = 10;
+    rt_sprite_update(sprite);
+    assert(rt_sprite_get_frame(sprite) == 1);
+}
+
 static void test_zero_timestamp_is_a_valid_sprite_animation_baseline() {
     StubPixels first(1, 1, 90);
     StubPixels second(1, 1, 91);
@@ -542,10 +580,14 @@ extern "C" void *rt_pixels_scale(void *pixels, int64_t width, int64_t height) {
     return src ? make_pixels(width, height, g_next_pixels_id++) : nullptr;
 }
 
-extern "C" void *rt_pixels_rotate(void *pixels, double) {
+extern "C" void *rt_pixels_rotate(void *pixels, double angle) {
     g_rotate_call_count++;
     auto *src = static_cast<StubPixels *>(pixels);
-    return src ? make_pixels(src->impl.width, src->impl.height, g_next_pixels_id++) : nullptr;
+    if (!src)
+        return nullptr;
+    if (angle == 90.0 || angle == 270.0)
+        return make_pixels(src->impl.height, src->impl.width, g_next_pixels_id++);
+    return make_pixels(src->impl.width, src->impl.height, g_next_pixels_id++);
 }
 
 extern "C" void *rt_pixels_tint(void *pixels, int64_t tint) {
@@ -614,6 +656,8 @@ int main() {
     test_animator_get_current_rejects_corrupt_clip_index();
     test_transform_cache_tracks_frame_generation();
     test_equivalent_full_rotations_use_untransformed_fast_path();
+    test_off_image_rotation_origin_is_transformed_without_padding();
+    test_setting_current_frame_does_not_restart_animation_clock();
     test_zero_timestamp_is_a_valid_sprite_animation_baseline();
     test_zero_timestamp_is_a_valid_animator_baseline();
     test_runtime_clip_names_reject_embedded_nul();

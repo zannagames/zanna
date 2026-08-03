@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-03
 ---
 
 # Images & Sprites
@@ -309,7 +309,7 @@ pixels.SavePng("output.png")
 - Resize uses endpoint-preserving, alpha-aware bilinear interpolation (smoother, better for non-integer scale factors)
 - Image processing methods (Invert, Grayscale, Tint, Blur) return new Pixels objects
 - Tint multiplies RGB by the provided color and multiplies alpha when the color includes alpha
-- Blur uses alpha-aware averaging so transparent edges keep their original color instead of darkening
+- Blur accumulates the complete two-dimensional box footprint in premultiplied-alpha form and quantizes only the final pixel, so low-alpha colors are not lost between its horizontal and vertical passes
 - PNG loading validates chunk CRCs and zlib checksums, and supports palette, grayscale, RGB, RGBA, and truecolor `tRNS` transparency
 
 ---
@@ -367,7 +367,9 @@ and `AddFrame` require real `Pixels` objects and retain the supplied frame buffe
 `Pixels.Clone()` first when you need the sprite to keep an independent snapshot. `AddFrame` grows the
 frame table as needed instead of using a fixed frame cap. `SetFrameDelay(ms)` updates the default and
 all existing frame delays; `SetFrameDelayAt(frame, ms)` customizes a single frame. Delays below 1 ms
-are normalized to 1 ms.
+are normalized to 1 ms. Assigning the already-current `Frame` is idempotent and does not restart the
+animation clock. Rotation transforms the configured origin analytically, including origins outside
+the frame; it does not allocate transparent padding proportional to the origin's distance.
 
 ### Zia Example
 
@@ -711,6 +713,8 @@ draw order. Tilemap drawing derives a conservative visible projected region
 from the canvas size, scroll offset, and artwork extent. Scaled draw and
 hit-test helpers use `scalePercent`; values less than or equal to zero are
 ignored or return an out-of-bounds hit result.
+Tile artwork is alpha-composited for both native and scaled draws, so transparent
+pixels in an upper tile or layer reveal the already-rendered content below.
 
 ### Zia Example
 

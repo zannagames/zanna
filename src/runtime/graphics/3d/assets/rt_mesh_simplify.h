@@ -13,7 +13,7 @@
 //     placement), so skinned meshes decimate safely and UV seams survive.
 //   - Deterministic for identical inputs.
 // Ownership/Lifetime: returned meshes are GC-managed Mesh3D objects.
-// Links: rt_mesh_simplify.c, misc/plans/fps/09-asset-pipeline-upgrades.md
+// Links: rt_mesh_simplify.c
 //
 //===----------------------------------------------------------------------===//
 

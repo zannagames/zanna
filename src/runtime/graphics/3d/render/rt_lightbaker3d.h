@@ -17,7 +17,7 @@
 // Ownership/Lifetime:
 //   - Objects are GC-managed; object-returning accessors provide caller-owned references.
 //   - Bakers retain their scene/atlas but copy explicit light state at registration.
-// Links: rt_lightbaker3d.c, misc/plans/thirdpersonupgrade/14-baked-gi.md
+// Links: rt_lightbaker3d.c, docs/adr/0088
 //
 //===----------------------------------------------------------------------===//
 #pragma once

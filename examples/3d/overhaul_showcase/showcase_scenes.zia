@@ -38,9 +38,9 @@ class MenuScene implements IScene3D {
         world.SetAmbient(0.22, 0.24, 0.3);
     }
 
-    expose func onExit(world: World3D) { }
+    expose func onExit(_world: World3D) { }
 
-    expose func update(world: World3D, dt: Number) {
+    expose func update(world: World3D, _dt: Number) {
         marquee = marquee + 2;
         if marquee > 520 {
             marquee = 0;
@@ -158,9 +158,9 @@ class PlayScene implements IScene3D {
             camera, Vec3.New(0.0, 3.2, 8.5), Vec3.New(0.0, 1.0, -0.4), Vec3.New(0.0, 1.0, 0.0));
     }
 
-    expose func onExit(world: World3D) { }
+    expose func onExit(_world: World3D) { }
 
-    expose func update(world: World3D, dt: Number) {
+    expose func update(world: World3D, _dt: Number) {
         pulseTick = pulseTick + 1;
         if pulseTick >= 120 {
             pulseTick = 0;

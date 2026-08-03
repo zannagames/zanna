@@ -115,10 +115,20 @@ Registered as CTest `g3d_overhaul_showcase_probe`.
 
 The reference demo for the shared `GameBase3D`/`IScene3D` scene framework
 (`examples/games/lib/`): a scene stack with fade transitions driven by
-`Behavior3D` presets.
+`Behavior3D` presets. Registered as CTest `g3d_game3d_scenes`.
 
 ```sh
 ../../build/src/tools/zanna/zanna run game3d_scenes/main.zia
+```
+
+## sprite3d_demo.zia
+
+Camera-facing `Sprite3D` billboards: procedural pixel-art trees and bobbing
+star collectibles over a lit ground plane, drawn with `Canvas3D.DrawSprite3D`
+from an orbiting camera. The only `Sprite3D` sample in the tree.
+
+```sh
+build/src/tools/zanna/zanna run examples/3d/sprite3d_demo.zia
 ```
 
 ## d3d11_rtt_readback_probe.zia

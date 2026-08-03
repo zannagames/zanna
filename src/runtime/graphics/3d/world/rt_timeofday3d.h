@@ -12,7 +12,7 @@
 //   - Advance(dt) is the only clock input; no wall-clock reads.
 // Ownership/Lifetime:
 //   - GC-managed; bound consumers are retained until rebound/finalized.
-// Links: rt_timeofday3d.c, misc/plans/thirdpersonupgrade/16-timeofday-weather.md
+// Links: rt_timeofday3d.c, ADR 0090
 //
 //===----------------------------------------------------------------------===//
 

@@ -18,7 +18,7 @@
 //     itself needs no roll state.
 // Ownership/Lifetime:
 //   - GC-managed; finalizer releases the retained world/path/look references.
-// Links: misc/plans/thirdpersonupgrade/10-camera-rails.md, rt_path3d.h
+// Links: rt_path3d.h, rt_game3d_internal.h
 //
 //===----------------------------------------------------------------------===//
 

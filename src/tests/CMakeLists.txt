@@ -3229,6 +3229,8 @@ set(G3D_ZIA_TESTS
         test_mesh_simplify
         test_fbx_ascii
         test_collisionevent3d
+        test_navagent3d
+        test_sound3d_objects
 )
 foreach (test_name IN LISTS G3D_ZIA_TESTS)
     set(test_file "${G3D_TESTS_DIR}/${test_name}.zia")
@@ -3887,6 +3889,21 @@ if (EXISTS "${G3D_OVERHAUL_SHOWCASE_DIR}/probe.zia")
             TIMEOUT 60)
 endif ()
 
+# GameBase3D/IScene3D scene-framework reference demo (menu -> fade -> play,
+# 240 bounded frames). The one examples/3d demo that exercises the shared
+# examples/games/lib scene stack end to end.
+set(G3D_GAME3D_SCENES_DIR "${CMAKE_SOURCE_DIR}/examples/3d/game3d_scenes")
+if (EXISTS "${G3D_GAME3D_SCENES_DIR}/main.zia")
+    add_test(NAME g3d_game3d_scenes
+            COMMAND $<TARGET_FILE:zanna> run "main.zia"
+            WORKING_DIRECTORY "${G3D_GAME3D_SCENES_DIR}")
+    set_tests_properties(g3d_game3d_scenes PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS: game3d_scenes"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            TIMEOUT 60)
+endif ()
+
 set(GAME3D_OPENWORLD_SLICE_DIR "${CMAKE_SOURCE_DIR}/examples/3d/openworld_slice")
 set(GAME3D_OPENWORLD_SLICE_PROBE "${GAME3D_OPENWORLD_SLICE_DIR}/test.zia")
 if (APPLE)
@@ -3942,7 +3959,8 @@ if (EXISTS "${GAME3D_OPENWORLD_SLICE_PROBE}")
             COMMAND $<TARGET_FILE:zanna> run "streaming_hitch_probe.zia"
             WORKING_DIRECTORY "${GAME3D_OPENWORLD_SLICE_DIR}")
     set_tests_properties(g3d_openworld_slice_streaming_hitch_native_compressed_probe PROPERTIES
-            PASS_REGULAR_EXPRESSION "(native_compressed_upload=1.*native_raw_rgba_bytes=64.*native_compressed_bytes=16.*native_ram_reduction_pct=75.*native_vram_reduction_pct=75.*native_tolerance_checked=1|SKIP: native compressed upload unsupported)"
+            PASS_REGULAR_EXPRESSION "native_compressed_upload=1.*native_raw_rgba_bytes=64.*native_compressed_bytes=16.*native_ram_reduction_pct=75.*native_vram_reduction_pct=75.*native_tolerance_checked=1"
+            SKIP_REGULAR_EXPRESSION "SKIP: native compressed upload unsupported"
             LABELS "runtime;graphics3d;zia;requires_display;gpu_smoke;perf"
             ENVIRONMENT "ZANNA_3D_BACKEND=${GAME3D_OPENWORLD_SLICE_GPU_BACKEND};ZANNA_OPENWORLD_NATIVE_COMPRESSED_PROBE=1"
             TIMEOUT 45)
@@ -3980,7 +3998,8 @@ if (EXISTS "${GAME3D_OPENWORLD_SLICE_GPU_SMOKE}")
             COMMAND $<TARGET_FILE:zanna> run "gpu_smoke.zia"
             WORKING_DIRECTORY "${GAME3D_OPENWORLD_SLICE_DIR}")
     set_tests_properties(g3d_openworld_slice_gpu_smoke PROPERTIES
-            PASS_REGULAR_EXPRESSION "(PASS|SKIP):"
+            PASS_REGULAR_EXPRESSION "PASS:"
+            SKIP_REGULAR_EXPRESSION "SKIP:"
             LABELS "runtime;graphics3d;zia;requires_display;gpu_smoke"
             ENVIRONMENT "ZANNA_3D_BACKEND=${GAME3D_OPENWORLD_SLICE_GPU_BACKEND}"
             TIMEOUT 45)

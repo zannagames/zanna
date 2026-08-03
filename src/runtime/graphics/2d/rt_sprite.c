@@ -64,6 +64,7 @@
 #include "rt_time.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -73,9 +74,12 @@
 #define SPRITE_INITIAL_FRAME_CAPACITY 4
 /// @brief Default per-frame animation delay in milliseconds.
 #define SPRITE_DEFAULT_FRAME_DELAY_MS 100
+/// Private initialization cookie used to reject forged same-class payloads.
+#define SPRITE_STATE_MAGIC UINT64_C(0x5A414E4E41535052)
 
 /// @brief Sprite implementation structure.
 typedef struct rt_sprite_impl {
+    uint64_t state_magic;       ///< SPRITE_STATE_MAGIC for initialized payloads.
     int64_t x;                  ///< X position
     int64_t y;                  ///< Y position
     int64_t scale_x;            ///< Horizontal scale (100 = 100%)
@@ -116,9 +120,30 @@ typedef struct rt_sprite_impl {
     int64_t cache_alpha;             ///< Cached alpha.
     int64_t cache_out_origin_x;      ///< Cached computed origin_x output.
     int64_t cache_out_origin_y;      ///< Cached computed origin_y output.
-    int8_t cache_out_centered;       ///< Cached origin_centered output.
     int8_t cache_valid;              ///< 1 when cache_pixels holds a usable result.
 } rt_sprite_impl;
+
+/// @brief Validate private Sprite scalar and parallel-storage invariants.
+static int8_t sprite_state_is_valid(const rt_sprite_impl *sprite) {
+    if (!sprite || sprite->state_magic != SPRITE_STATE_MAGIC || sprite->scale_x < 1 ||
+        sprite->scale_y < 1 || (sprite->visible != 0 && sprite->visible != 1) ||
+        (sprite->flip_x != 0 && sprite->flip_x != 1) ||
+        (sprite->flip_y != 0 && sprite->flip_y != 1) || sprite->frame_count < 0 ||
+        sprite->frame_capacity < 0 || sprite->frame_count > sprite->frame_capacity ||
+        (uint64_t)sprite->frame_capacity > SIZE_MAX / sizeof(void *) ||
+        (uint64_t)sprite->frame_capacity > SIZE_MAX / sizeof(int64_t) ||
+        (sprite->frame_capacity == 0 && (sprite->frames || sprite->frame_delays_ms)) ||
+        (sprite->frame_capacity > 0 && (!sprite->frames || !sprite->frame_delays_ms)) ||
+        (sprite->frame_count == 0 && sprite->current_frame != 0) ||
+        (sprite->frame_count > 0 &&
+         (sprite->current_frame < 0 || sprite->current_frame >= sprite->frame_count)) ||
+        sprite->frame_delay_ms <= 0 ||
+        (sprite->frame_clock_started != 0 && sprite->frame_clock_started != 1) ||
+        (sprite->cache_valid != 0 && sprite->cache_valid != 1) ||
+        (sprite->cache_valid && (!sprite->cache_pixels || !sprite->cache_frame)))
+        return 0;
+    return 1;
+}
 
 /// @brief Validate-and-cast an opaque sprite pointer to its impl, trapping on failure.
 /// @details Used by every public Sprite entry point that requires a non-NULL,
@@ -136,20 +161,27 @@ static rt_sprite_impl *sprite_checked(void *sprite_ptr, const char *op) {
         rt_trap(op ? op : "Sprite: invalid sprite");
         return NULL;
     }
-    return (rt_sprite_impl *)sprite_ptr;
+    rt_sprite_impl *sprite = (rt_sprite_impl *)sprite_ptr;
+    if (!sprite_state_is_valid(sprite)) {
+        rt_trap(op ? op : "Sprite: invalid state");
+        return NULL;
+    }
+    return sprite;
 }
 
 /// @brief Soft variant of sprite_checked — returns NULL instead of trapping.
-/// @details Used by lifetime-sensitive paths like the GC finalizer and
-///          Draw() loops where a stale handle is not a programming error
-///          and should be silently skipped.
+/// @details Used by draw and hit-test paths where a stale handle is not a
+///          programming error and should be silently skipped.
 /// @param sprite_ptr Opaque candidate sprite handle; may be `NULL`.
 /// @return The validated implementation pointer, or `NULL` for a null, stale,
 ///         undersized, or wrong-class object.
 static rt_sprite_impl *sprite_checked_or_null(void *sprite_ptr) {
     if (!sprite_ptr || !rt_obj_is_instance(sprite_ptr, RT_SPRITE_CLASS_ID, sizeof(rt_sprite_impl)))
         return NULL;
-    return (rt_sprite_impl *)sprite_ptr;
+    rt_sprite_impl *sprite = (rt_sprite_impl *)sprite_ptr;
+    if (!sprite_state_is_valid(sprite))
+        return NULL;
+    return sprite;
 }
 
 /// @brief Return the active frame's Pixels object, or NULL if none / out-of-range.
@@ -475,14 +507,17 @@ static int64_t sprite_scale_origin(int64_t origin, int64_t scale) {
     return sprite_saturating_scale(origin, scale);
 }
 
-/// @brief Saturating absolute value: handles the INT64_MIN edge case that overflows
-///        with plain negation (`-INT64_MIN == INT64_MIN` due to two's complement).
-/// @param value Signed value to make nonnegative.
-/// @return |value|, saturated to INT64_MAX when value == INT64_MIN.
-static int64_t sprite_abs_sat(int64_t value) {
-    if (value == INT64_MIN)
+/// @brief Round a floating coordinate to nearest with signed saturation.
+/// @param value Coordinate to round; non-finite values saturate by sign.
+/// @return The nearest integer with ties away from zero, clamped to int64.
+static int64_t sprite_round_double_saturating(double value) {
+    if (!isfinite(value))
+        return value < 0.0 ? INT64_MIN : INT64_MAX;
+    if (value >= (double)INT64_MAX)
         return INT64_MAX;
-    return value < 0 ? -value : value;
+    if (value <= (double)INT64_MIN)
+        return INT64_MIN;
+    return (int64_t)(value >= 0.0 ? floor(value + 0.5) : ceil(value - 0.5));
 }
 
 /// @brief Normalize a tint color value to either the "no tint" sentinel or a color value.
@@ -494,19 +529,6 @@ static int64_t sprite_normalize_tint(int64_t tint_color) {
     if (tint_color < 0)
         return -1;
     return tint_color;
-}
-
-/// @brief Release a transformed-pixels buffer if it isn't the original frame.
-///
-/// `sprite_prepare_pixels` may either return the frame unchanged
-/// (no transform applied) or a freshly-allocated working copy.
-/// This helper drops the temporary without ever releasing the
-/// canonical frame stored in `sprite->frames`.
-/// @param pixels Candidate transformed Pixels object; may be `NULL`.
-/// @param frame Borrowed canonical frame that must not be released.
-static void sprite_release_if_owned(void *pixels, void *frame) {
-    if (pixels && pixels != frame)
-        rt_heap_release(pixels);
 }
 
 /// @brief Release a GC-managed object unconditionally — utility wrapper for frame teardown.
@@ -585,12 +607,11 @@ static void *sprite_replace_pixels(void *replacement, void **slot, void *frame) 
 /// must NOT release it. The cache buffer is evicted on the next call whose
 /// transform key differs, and freed in the sprite finalizer. On internal failure
 /// the partial buffer is released here and NULL is returned.
-/// Also fills in the post-transform origin and a flag indicating whether the
-/// rotation step expanded the canvas to a centered square. Frame generation is
-/// part of the cache key, so in-place Pixels mutations trigger regeneration.
+/// Also fills in the post-transform origin. Frame generation is part of the
+/// cache key, so in-place Pixels mutations trigger regeneration.
 ///
 /// The pipeline order is horizontal/vertical flip, nearest-neighbor scale,
-/// optional transparent padding around a non-centered rotation origin, rotation,
+/// rotation with an analytically transformed origin,
 /// tint, and explicit alpha. The cache key includes the source Pixels mutation
 /// generation so in-place edits invalidate transformed content automatically.
 /// @param sprite Valid sprite whose current frame and flip/origin state are used.
@@ -600,10 +621,8 @@ static void *sprite_replace_pixels(void *replacement, void **slot, void *frame) 
 /// @param tint_color Tint accepted by `rt_pixels_tint()`, or negative for none.
 /// @param alpha Global alpha multiplier; values below zero become transparent
 ///              and values at or above 255 leave frame alpha unchanged.
-/// @param origin_x_out Optional destination for the scaled or padded X origin.
-/// @param origin_y_out Optional destination for the scaled or padded Y origin.
-/// @param origin_centered_out Optional destination set to 1 when rotation makes
-///                            the transformed image center the draw origin.
+/// @param origin_x_out Optional destination for the scaled/rotated X origin.
+/// @param origin_y_out Optional destination for the scaled/rotated Y origin.
 /// @return A borrowed current frame or cache-owned transformed Pixels object;
 ///         `NULL` when no frame exists or transformation fails.
 static void *sprite_prepare_pixels(rt_sprite_impl *sprite,
@@ -613,8 +632,7 @@ static void *sprite_prepare_pixels(rt_sprite_impl *sprite,
                                    int64_t tint_color,
                                    int64_t alpha,
                                    int64_t *origin_x_out,
-                                   int64_t *origin_y_out,
-                                   int8_t *origin_centered_out) {
+                                   int64_t *origin_y_out) {
     void *frame = sprite_get_current_frame_ptr(sprite);
     if (!frame)
         return NULL;
@@ -648,8 +666,6 @@ static void *sprite_prepare_pixels(rt_sprite_impl *sprite,
             *origin_x_out = sprite->cache_out_origin_x;
         if (origin_y_out)
             *origin_y_out = sprite->cache_out_origin_y;
-        if (origin_centered_out)
-            *origin_centered_out = sprite->cache_out_centered;
         return sprite->cache_pixels;
     }
 
@@ -692,52 +708,41 @@ static void *sprite_prepare_pixels(rt_sprite_impl *sprite,
      * the same artwork feature across a flip. */
     int64_t origin_x = sprite_scale_origin(sprite->origin_x, scale_x);
     int64_t origin_y = sprite_scale_origin(sprite->origin_y, scale_y);
-    int8_t origin_centered = 0;
 
     if (rotation != 0) {
         int64_t src_w = rt_pixels_width(transformed);
         int64_t src_h = rt_pixels_height(transformed);
-        int64_t center_x = src_w / 2;
-        int64_t center_y = src_h / 2;
-
-        if (origin_x != center_x || origin_y != center_y) {
-            int64_t half_w = sprite_abs_sat(origin_x);
-            int64_t edge_w = sprite_abs_sat(sprite_sub_saturating(src_w, origin_x));
-            int64_t half_h = sprite_abs_sat(origin_y);
-            int64_t edge_h = sprite_abs_sat(sprite_sub_saturating(src_h, origin_y));
-            if (edge_w > half_w)
-                half_w = edge_w;
-            if (edge_h > half_h)
-                half_h = edge_h;
-            if (half_w < 1)
-                half_w = 1;
-            if (half_h < 1)
-                half_h = 1;
-
-            if (half_w > INT64_MAX / 2 || half_h > INT64_MAX / 2) {
-                sprite_release_if_owned(transformed, frame);
-                rt_trap("Sprite.DrawTransformed: transformed dimensions too large");
-                return NULL;
-            }
-            void *padded = rt_pixels_new(half_w * 2, half_h * 2);
-            if (!padded) {
-                sprite_release_if_owned(transformed, frame);
-                return NULL;
-            }
-            rt_pixels_copy(
-                padded, half_w - origin_x, half_h - origin_y, transformed, 0, 0, src_w, src_h);
-            transformed = sprite_replace_pixels(padded, &transformed, frame);
-            if (!transformed)
-                return NULL;
-            origin_x = half_w;
-            origin_y = half_h;
-        }
-
         void *rotated = rt_pixels_rotate(transformed, (double)rotation);
         transformed = sprite_replace_pixels(rotated, &transformed, frame);
         if (!transformed)
             return NULL;
-        origin_centered = 1;
+
+        if (rotation == 90) {
+            int64_t next_x = sprite_sub_saturating(src_h - 1, origin_y);
+            origin_y = origin_x;
+            origin_x = next_x;
+        } else if (rotation == 180) {
+            origin_x = sprite_sub_saturating(src_w - 1, origin_x);
+            origin_y = sprite_sub_saturating(src_h - 1, origin_y);
+        } else if (rotation == 270) {
+            int64_t next_x = origin_y;
+            origin_y = sprite_sub_saturating(src_w - 1, origin_x);
+            origin_x = next_x;
+        } else {
+            double radians = (double)rotation * (3.14159265358979323846 / 180.0);
+            double cosine = cos(radians);
+            double sine = sin(radians);
+            double source_center_x = ((double)src_w - 1.0) * 0.5;
+            double source_center_y = ((double)src_h - 1.0) * 0.5;
+            double destination_center_x = ((double)rt_pixels_width(transformed) - 1.0) * 0.5;
+            double destination_center_y = ((double)rt_pixels_height(transformed) - 1.0) * 0.5;
+            double relative_x = (double)origin_x - source_center_x;
+            double relative_y = (double)origin_y - source_center_y;
+            origin_x = sprite_round_double_saturating(destination_center_x + relative_x * cosine -
+                                                      relative_y * sine);
+            origin_y = sprite_round_double_saturating(destination_center_y + relative_x * sine +
+                                                      relative_y * cosine);
+        }
     }
 
     int64_t tint = sprite_normalize_tint(tint_color);
@@ -759,8 +764,6 @@ static void *sprite_prepare_pixels(rt_sprite_impl *sprite,
         *origin_x_out = origin_x;
     if (origin_y_out)
         *origin_y_out = origin_y;
-    if (origin_centered_out)
-        *origin_centered_out = origin_centered;
 
     /* Store the freshly computed result in the cache (only an owned buffer, never
      * the frame itself). The cache takes over the single reference this function's
@@ -783,7 +786,6 @@ static void *sprite_prepare_pixels(rt_sprite_impl *sprite,
         sprite->cache_alpha = alpha;
         sprite->cache_out_origin_x = origin_x;
         sprite->cache_out_origin_y = origin_y;
-        sprite->cache_out_centered = origin_centered;
         sprite->cache_valid = 1;
     }
     return transformed;
@@ -795,11 +797,18 @@ static void *sprite_prepare_pixels(rt_sprite_impl *sprite,
 ///          accidental repeated finalization is harmless.
 /// @param obj Candidate sprite object supplied by the runtime finalizer.
 static void sprite_finalize(void *obj) {
-    rt_sprite_impl *sprite = sprite_checked_or_null(obj);
-    if (!sprite)
+    if (!obj || !rt_obj_is_instance(obj, RT_SPRITE_CLASS_ID, sizeof(rt_sprite_impl)))
         return;
-    for (int64_t i = 0; i < sprite->frame_count; i++) {
-        if (sprite->frames && sprite->frames[i])
+    rt_sprite_impl *sprite = (rt_sprite_impl *)obj;
+    if (sprite->state_magic != SPRITE_STATE_MAGIC)
+        return;
+    int64_t release_count = sprite->frame_count;
+    if (!sprite->frames || release_count < 0 || sprite->frame_capacity < 0)
+        release_count = 0;
+    else if (release_count > sprite->frame_capacity)
+        release_count = sprite->frame_capacity;
+    for (int64_t i = 0; i < release_count; i++) {
+        if (sprite->frames[i])
             rt_heap_release(sprite->frames[i]);
     }
     if (sprite->cache_pixels) {
@@ -827,6 +836,8 @@ static rt_sprite_impl *sprite_alloc(void) {
     if (!sprite)
         return NULL;
 
+    memset(sprite, 0, sizeof(*sprite));
+    sprite->state_magic = SPRITE_STATE_MAGIC;
     sprite->x = 0;
     sprite->y = 0;
     sprite->scale_x = 100;
@@ -872,7 +883,7 @@ void *rt_sprite_new(void *pixels) {
         rt_trap("Sprite.New: null pixels");
         return NULL;
     }
-    if (!rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl))) {
+    if (!rt_pixels_checked_impl_or_null(pixels)) {
         rt_trap("Sprite.New: invalid pixels");
         return NULL;
     }
@@ -1246,8 +1257,10 @@ void rt_sprite_set_frame(void *sprite_ptr, int64_t frame) {
     frame %= sprite->frame_count;
     if (frame < 0)
         frame += sprite->frame_count;
-    sprite->current_frame = frame;
-    sprite->frame_clock_started = 0;
+    if (sprite->current_frame != frame) {
+        sprite->current_frame = frame;
+        sprite->frame_clock_started = 0;
+    }
 }
 
 /// @brief Total number of frames added via `_add_frame` (0 if uninitialized).
@@ -1371,7 +1384,6 @@ void rt_sprite_draw_transformed(void *sprite_ptr,
 
     int64_t origin_x = 0;
     int64_t origin_y = 0;
-    int8_t origin_centered = 0;
     void *transformed = sprite_prepare_pixels(sprite,
                                               scale_x,
                                               scale_y,
@@ -1379,17 +1391,12 @@ void rt_sprite_draw_transformed(void *sprite_ptr,
                                               tint_color,
                                               canonical_alpha,
                                               &origin_x,
-                                              &origin_y,
-                                              &origin_centered);
+                                              &origin_y);
     if (!transformed)
         return;
 
     int64_t blit_x = sprite_sub_saturating(x, origin_x);
     int64_t blit_y = sprite_sub_saturating(y, origin_y);
-    if (origin_centered) {
-        blit_x = sprite_sub_saturating(x, rt_pixels_width(transformed) / 2);
-        blit_y = sprite_sub_saturating(y, rt_pixels_height(transformed) / 2);
-    }
 
     rt_canvas_blit_alpha(canvas_ptr, blit_x, blit_y, transformed);
     /* Do not release `transformed`: sprite_prepare_pixels returns a cache-owned
@@ -1450,7 +1457,7 @@ void rt_sprite_add_frame(void *sprite_ptr, void *pixels) {
         rt_trap("Sprite.AddFrame: null argument");
         return;
     }
-    if (!rt_obj_is_instance(pixels, RT_PIXELS_CLASS_ID, sizeof(rt_pixels_impl))) {
+    if (!rt_pixels_checked_impl_or_null(pixels)) {
         rt_trap("Sprite.AddFrame: invalid pixels");
         return;
     }

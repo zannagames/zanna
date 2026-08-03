@@ -42,7 +42,9 @@ bind Str = Zanna.String;
 bind TempFile = Zanna.IO.TempFile;
 bind Terminal = Zanna.Terminal;
 
-final ZIA_WORKSPACE_PROBE_WAIT_TICKS = 12000;
+// Workspace index queries are intentionally CPU-heavy and can take tens of
+// seconds in the repository's reduced-parallelism sanitizer builds.
+final ZIA_WORKSPACE_PROBE_WAIT_TICKS = 60000;
 
 func fail(shell: app_shell.AppShell,
           controller: zia_workspace_commands.ZiaWorkspaceCommandController,
@@ -100,7 +102,6 @@ class ZiaWorkspaceCommandProbeContext {
     expose zia_workspace_commands.ZiaWorkspaceCommandController controller;
     expose workspace_edit_preview.WorkspaceEditPreview renamePreview;
     expose String uiSource;
-    expose Integer tick;
 }
 
 /// @brief Verify asynchronous worker queries, bounds, and cancellation.
@@ -352,7 +353,6 @@ func VerifyWorkspaceReferenceCommand(
     ctx.controller = controller;
     ctx.renamePreview = renamePreview;
     ctx.uiSource = uiSource;
-    ctx.tick = tick;
     return true;
 }
 
@@ -371,7 +371,7 @@ func VerifyWorkspaceRenameAndCancellation(
     var controller = ctx.controller;
     var renamePreview = ctx.renamePreview;
     var uiSource = ctx.uiSource;
-    var tick = ctx.tick;
+    var tick = 0;
 
     // A completed rename query must hand its immutable edit set to the shared
     // review surface and leave both the live buffer and disk untouched.

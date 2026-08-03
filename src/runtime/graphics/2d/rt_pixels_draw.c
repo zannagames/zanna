@@ -131,21 +131,6 @@ static int64_t pixels_ceil_ld_to_i64_sat(long double value) {
     return (int64_t)ceill(value);
 }
 
-/// @brief Truncate (round toward zero) a long double to int64_t, saturating at extremes.
-/// @details Used for the scanline x-intercept in triangle fills where truncation toward
-///   zero matches the expected top-left rasterization rule.
-/// @param value Floating-point coordinate to truncate toward zero.
-/// @return The truncated coordinate, clamped to the signed 64-bit range.
-static int64_t pixels_trunc_ld_to_i64_sat(long double value) {
-    if (isnan(value))
-        return 0;
-    if (value >= (long double)INT64_MAX)
-        return INT64_MAX;
-    if (value <= (long double)INT64_MIN)
-        return INT64_MIN;
-    return (int64_t)value;
-}
-
 /// @brief Convert two's-complement unsigned bits to int64 without an
 ///        implementation-defined out-of-range cast.
 static int64_t pixels_i64_from_bits(uint64_t bits) {
@@ -193,6 +178,46 @@ static uint64_t pixels_scale_by_ratio_u64(uint64_t value,
     return quotient;
 }
 
+/// @brief Compute floor(value * numerator / denominator) for a unit ratio.
+/// @details This is the non-rounded companion to pixels_scale_by_ratio_u64 and uses the
+///          same portable quotient/remainder recurrence for conceptual 128-bit products.
+static uint64_t pixels_scale_by_ratio_u64_floor(uint64_t value,
+                                                uint64_t numerator,
+                                                uint64_t denominator,
+                                                uint64_t *remainder_out) {
+    if (remainder_out)
+        *remainder_out = 0;
+    if (value == 0 || numerator == 0 || denominator == 0)
+        return 0;
+    if (numerator >= denominator)
+        return value;
+
+    uint64_t quotient = 0;
+    uint64_t remainder = 0;
+    for (int bit = 63; bit >= 0; bit--) {
+        uint64_t carry = 0;
+        if (remainder >= denominator - remainder) {
+            remainder -= denominator - remainder;
+            carry = 1;
+        } else {
+            remainder += remainder;
+        }
+        quotient = quotient * 2u + carry;
+
+        if (((value >> (unsigned)bit) & 1u) != 0u) {
+            if (remainder >= denominator - numerator) {
+                remainder -= denominator - numerator;
+                quotient++;
+            } else {
+                remainder += numerator;
+            }
+        }
+    }
+    if (remainder_out)
+        *remainder_out = remainder;
+    return quotient;
+}
+
 /// @brief Interpolate one signed coordinate at an exact segment ratio.
 static int64_t pixels_interpolate_i64(int64_t start,
                                       int64_t end,
@@ -207,6 +232,85 @@ static int64_t pixels_interpolate_i64(int64_t start,
     uint64_t magnitude = pixels_scale_by_ratio_u64(full_magnitude, numerator, denominator);
     uint64_t bits = end >= start ? (uint64_t)start + magnitude : (uint64_t)start - magnitude;
     return pixels_i64_from_bits(bits);
+}
+
+/// @brief Interpolate one signed coordinate and truncate the rational result toward zero.
+/// @details Triangle scan conversion historically used C floating-to-integer truncation.
+///          This exact integer form preserves that rule for the complete int64 domain without
+///          relying on the host's `long double` precision or a saturated segment height.
+static int64_t pixels_interpolate_i64_trunc(int64_t start,
+                                            int64_t end,
+                                            uint64_t numerator,
+                                            uint64_t denominator) {
+    if (numerator == 0 || start == end)
+        return start;
+    if (numerator >= denominator)
+        return end;
+    uint64_t magnitude =
+        start >= end ? (uint64_t)start - (uint64_t)end : (uint64_t)end - (uint64_t)start;
+    uint64_t remainder = 0;
+    uint64_t offset =
+        pixels_scale_by_ratio_u64_floor(magnitude, numerator, denominator, &remainder);
+    uint64_t bits = end >= start ? (uint64_t)start + offset : (uint64_t)start - offset;
+    int64_t base = pixels_i64_from_bits(bits);
+    if (remainder != 0) {
+        if (end > start && base < 0)
+            base++;
+        else if (end < start && base > 0)
+            base--;
+    }
+    return base;
+}
+
+/// @brief Evaluate one quadratic Bezier coordinate with exact rational weights.
+/// @details The three nonnegative Bernstein weights sum to `denominator²`. Dividing
+///          each unsigned offset from the smallest control coordinate separately and
+///          recombining its quotient/remainder avoids both a conceptual 128-bit product
+///          and intermediate de Casteljau rounding. The final half-way case follows
+///          `roundl`: ties are rounded away from zero.
+static int64_t pixels_quadratic_coordinate_i64(
+    int64_t start, int64_t control, int64_t end, uint64_t numerator, uint64_t denominator) {
+    if (numerator == 0)
+        return start;
+    if (numerator >= denominator)
+        return end;
+
+    int64_t minimum = start;
+    if (control < minimum)
+        minimum = control;
+    if (end < minimum)
+        minimum = end;
+
+    uint64_t inverse = denominator - numerator;
+    uint64_t weights[3] = {
+        inverse * inverse,
+        2u * numerator * inverse,
+        numerator * numerator,
+    };
+    uint64_t denominator_squared = denominator * denominator;
+    uint64_t offsets[3] = {
+        (uint64_t)start - (uint64_t)minimum,
+        (uint64_t)control - (uint64_t)minimum,
+        (uint64_t)end - (uint64_t)minimum,
+    };
+    uint64_t quotient = 0;
+    uint64_t remainder = 0;
+    for (size_t index = 0; index < 3u; index++) {
+        uint64_t term_remainder = 0;
+        quotient += pixels_scale_by_ratio_u64_floor(
+            offsets[index], weights[index], denominator_squared, &term_remainder);
+        remainder += term_remainder;
+    }
+    quotient += remainder / denominator_squared;
+    remainder %= denominator_squared;
+
+    uint64_t result_bits = (uint64_t)minimum + quotient;
+    int64_t result = pixels_i64_from_bits(result_bits);
+    uint64_t half_floor = denominator_squared / 2u;
+    if (remainder > half_floor ||
+        (denominator_squared % 2u == 0u && remainder == half_floor && result >= 0))
+        result = pixels_i64_from_bits(result_bits + 1u);
+    return result;
 }
 
 enum {
@@ -1203,7 +1307,7 @@ void rt_pixels_draw_triangle(void *pixels,
         y3 = ty;
     }
 
-    int64_t total_h = rt_pixels_abs_diff_sat64(y3, y1);
+    uint64_t total_h = (uint64_t)y3 - (uint64_t)y1;
     if (total_h == 0)
         return;
     if (y3 < 0 || y1 >= p->height)
@@ -1211,16 +1315,13 @@ void rt_pixels_draw_triangle(void *pixels,
 
     int8_t wrote = 0;
     // Upper half: y1 .. y2
-    int64_t upper_h = rt_pixels_abs_diff_sat64(y2, y1);
+    uint64_t upper_h = (uint64_t)y2 - (uint64_t)y1;
     int64_t upper_start = y1 < 0 ? 0 : y1;
     int64_t upper_end = y2 >= p->height ? p->height - 1 : y2;
     for (int64_t scan_y = upper_start; scan_y <= upper_end; scan_y++) {
-        long double row = (long double)scan_y - (long double)y1;
-        int64_t ax = pixels_trunc_ld_to_i64_sat(
-            (long double)x1 + ((long double)x3 - (long double)x1) * row / (long double)total_h);
-        int64_t bx = pixels_trunc_ld_to_i64_sat((long double)x1 +
-                                                ((long double)x2 - (long double)x1) * row /
-                                                    (long double)(upper_h > 0 ? upper_h : 1));
+        uint64_t row = (uint64_t)scan_y - (uint64_t)y1;
+        int64_t ax = pixels_interpolate_i64_trunc(x1, x3, row, total_h);
+        int64_t bx = pixels_interpolate_i64_trunc(x1, x2, row, upper_h > 0 ? upper_h : 1u);
         if (ax > bx) {
             int64_t tmp = ax;
             ax = bx;
@@ -1230,20 +1331,16 @@ void rt_pixels_draw_triangle(void *pixels,
     }
 
     // Lower half: skip the split scanline unless the upper edge is flat.
-    int64_t lower_h = rt_pixels_abs_diff_sat64(y3, y2);
+    uint64_t lower_h = (uint64_t)y3 - (uint64_t)y2;
     int64_t lower_start = upper_h == 0 ? y2 : y2 == INT64_MAX ? INT64_MAX : y2 + 1;
     if (lower_start < 0)
         lower_start = 0;
     int64_t lower_end = y3 >= p->height ? p->height - 1 : y3;
     for (int64_t scan_y = lower_start; scan_y <= lower_end; scan_y++) {
-        long double row = (long double)scan_y - (long double)y2;
-        long double total_row = (long double)upper_h + row;
-        int64_t ax =
-            pixels_trunc_ld_to_i64_sat((long double)x1 + ((long double)x3 - (long double)x1) *
-                                                             total_row / (long double)total_h);
-        int64_t bx = pixels_trunc_ld_to_i64_sat((long double)x2 +
-                                                ((long double)x3 - (long double)x2) * row /
-                                                    (long double)(lower_h > 0 ? lower_h : 1));
+        uint64_t row = (uint64_t)scan_y - (uint64_t)y2;
+        uint64_t total_row = (uint64_t)scan_y - (uint64_t)y1;
+        int64_t ax = pixels_interpolate_i64_trunc(x1, x3, total_row, total_h);
+        int64_t bx = pixels_interpolate_i64_trunc(x2, x3, row, lower_h > 0 ? lower_h : 1u);
         if (ax > bx) {
             int64_t tmp = ax;
             ax = bx;
@@ -1258,8 +1355,8 @@ void rt_pixels_draw_triangle(void *pixels,
 /// @brief Draw a clipped quadratic Bezier curve through one control point.
 /// @details Selects an adaptive sample count from the endpoint and control
 ///          extents, clamps it to `[2, 10000]`, evaluates de Casteljau
-///          interpolation in `long double`, and joins rounded adjacent samples
-///          with raw Bresenham segments.
+///          interpolation with exact integer ratios, and joins rounded adjacent
+///          samples with raw Bresenham segments.
 /// @param pixels Opaque destination Pixels handle; null or invalid handles
 ///        trap.
 /// @param x1 Start-point X coordinate.
@@ -1328,15 +1425,12 @@ void rt_pixels_draw_bezier(void *pixels,
     int64_t prev_x = 0;
     int64_t prev_y = 0;
     int8_t have_prev = 0;
-    // Integer de Casteljau: P(t) via linear interpolation at t = i/steps
+    // Exact integer Bernstein evaluation at t = i / steps.
     for (int64_t i = 0; i <= steps; i++) {
-        long double t = (long double)i / (long double)steps;
-        long double lx0 = (long double)x1 + ((long double)cx_ctrl - (long double)x1) * t;
-        long double ly0 = (long double)y1 + ((long double)cy_ctrl - (long double)y1) * t;
-        long double lx1 = (long double)cx_ctrl + ((long double)x2 - (long double)cx_ctrl) * t;
-        long double ly1 = (long double)cy_ctrl + ((long double)y2 - (long double)cy_ctrl) * t;
-        int64_t bx = pixels_round_ld_to_i64_sat(lx0 + (lx1 - lx0) * t);
-        int64_t by = pixels_round_ld_to_i64_sat(ly0 + (ly1 - ly0) * t);
+        uint64_t numerator = (uint64_t)i;
+        uint64_t denominator = (uint64_t)steps;
+        int64_t bx = pixels_quadratic_coordinate_i64(x1, cx_ctrl, x2, numerator, denominator);
+        int64_t by = pixels_quadratic_coordinate_i64(y1, cy_ctrl, y2, numerator, denominator);
         if (have_prev)
             wrote |= pixels_draw_line_raw(p, prev_x, prev_y, bx, by, rgba);
         else

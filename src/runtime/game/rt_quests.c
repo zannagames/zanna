@@ -19,7 +19,7 @@
 //   - Mutations on Hidden/Complete/Failed quests are safe no-op false.
 // Ownership/Lifetime:
 //   - GC handle; retained id/title/text strings released by the finalizer.
-// Links: rt_quests.h, misc/plans/thirdpersonupgrade/29-quest-tracker.md
+// Links: rt_quests.h, ADR 0099
 //
 //===----------------------------------------------------------------------===//
 

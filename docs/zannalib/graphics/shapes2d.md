@@ -1,7 +1,7 @@
 ---
 status: active
 audience: public
-last-verified: 2026-07-26
+last-verified: 2026-08-03
 ---
 
 # 2D Shapes, Text, And UI
@@ -32,7 +32,7 @@ These classes draw into `Pixels` or onto `Canvas` and are grouped by what they r
 
 ## Text And UI
 
-`TextRenderer2D` wraps the built-in Canvas text path or a loaded `BitmapFont`. `TextLayout2D` adds measurement state such as scale, wrap width, and alignment metadata. Measurements respect explicit newlines; when `WrapWidth` is positive, words wrap onto additional measured lines.
+`TextRenderer2D` wraps the built-in Canvas text path or a loaded `BitmapFont`. `TextLayout2D` adds measurement state such as scale, wrap width, and alignment metadata. Measurements respect explicit newlines and preserve leading, trailing, repeated, and whitespace-only spans. When `WrapWidth` is positive, words and whitespace runs stay intact when they fit; overlong runs split only between UTF-8 input units, and every reported width is the width of actual glyph content rather than an artificial full-width chunk.
 
 `NineSlice2D` preserves corner pixels and stretches edges and center regions into a target.
 

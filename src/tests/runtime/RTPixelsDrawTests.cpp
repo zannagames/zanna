@@ -457,6 +457,15 @@ static void test_drawtriangle_extreme_collinear_edge_is_exact() {
     printf("test_drawtriangle_extreme_collinear_edge_is_exact: PASSED\n");
 }
 
+static void test_drawtriangle_full_height_uses_unsaturated_edge_ratio() {
+    void *p = rt_pixels_new(5, 2);
+    rt_pixels_draw_triangle(p, 0, INT64_MIN, 0, 0, 4, INT64_MAX, rt_color_rgba(9, 8, 7, 255));
+
+    assert(rt_pixels_get(p, 2, 0) == static_cast<int64_t>(0x090807FF));
+    assert(rt_pixels_get(p, 3, 0) == 0);
+    printf("test_drawtriangle_full_height_uses_unsaturated_edge_ratio: PASSED\n");
+}
+
 // ============================================================================
 // DrawBezier
 // ============================================================================
@@ -480,6 +489,23 @@ static void test_drawbezier_connects_sparse_samples() {
     for (int64_t x = 0; x < 12050; x += 137)
         assert(rt_pixels_get_rgb(p, x, 0) == 0x00CCFF);
     printf("test_drawbezier_connects_sparse_samples: PASSED\n");
+}
+
+static void test_drawbezier_full_range_control_points_cross_exact_center() {
+    void *p = rt_pixels_new(3, 8);
+    rt_pixels_draw_bezier(p, INT64_MIN, 0, 0, 10, INT64_MAX, 0, rt_color_rgba(1, 2, 3, 255));
+    assert(rt_pixels_get(p, 0, 5) == static_cast<int64_t>(0x010203FF));
+    printf("test_drawbezier_full_range_control_points_cross_exact_center: PASSED\n");
+}
+
+static void test_drawbezier_does_not_round_intermediate_lerps() {
+    void *p = rt_pixels_new(2, 3);
+    rt_pixels_draw_bezier(p, 0, 0, 0, 0, 1, 2, 0x123456);
+
+    // At t=1/2 the exact curve is (0.25, 0.5), which rounds to (0, 1).
+    // Rounding each de Casteljau interpolation first incorrectly produces (1, 1).
+    assert(rt_pixels_get_rgb(p, 0, 1) == 0x123456);
+    printf("test_drawbezier_does_not_round_intermediate_lerps: PASSED\n");
 }
 
 // ============================================================================
@@ -674,10 +700,13 @@ int main() {
     test_drawtriangle_interior();
     test_drawtriangle_degenerate_draws_longest_edge();
     test_drawtriangle_extreme_collinear_edge_is_exact();
+    test_drawtriangle_full_height_uses_unsaturated_edge_ratio();
 
     // DrawBezier
     test_drawbezier_endpoints();
     test_drawbezier_connects_sparse_samples();
+    test_drawbezier_full_range_control_points_cross_exact_center();
+    test_drawbezier_does_not_round_intermediate_lerps();
 
     // Golden pixel-hash regression (whole-framebuffer fingerprint)
     test_pixelhash_scene_is_deterministic();

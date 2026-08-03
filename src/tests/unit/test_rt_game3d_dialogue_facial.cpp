@@ -13,8 +13,7 @@
 //   - Deterministic fixed steps; blink timelines replay identically.
 // Ownership/Lifetime:
 //   - Test-created runtime handles rely on production GC conventions.
-// Links: misc/plans/thirdpersonupgrade/25-dialogue-3d.md,
-//   misc/plans/thirdpersonupgrade/26-facial-lipsync.md
+// Links: src/runtime/graphics/3d/rt_game3d_dialogue.c, rt_game3d_facial.c
 //
 //===----------------------------------------------------------------------===//
 

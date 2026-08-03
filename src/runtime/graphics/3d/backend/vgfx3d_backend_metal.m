@@ -416,6 +416,8 @@ const vgfx3d_backend_t vgfx3d_metal_backend = {
     .gpu_skinning = 1,
     .gpu_skinning_extras = 1,
     .particle_instancing = 1,
+    .clustered_lighting = 1,
+    .shadow_csm = 1,
     /* Slots >= VGFX3D_CSM_SLOTS render into the internal 4x2 depth atlas
      * (texture index 17); the shader remaps their UVs by static tile rects. */
     .shadow_atlas_slots = 1,

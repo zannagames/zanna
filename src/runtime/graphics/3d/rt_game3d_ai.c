@@ -23,7 +23,7 @@
 //   - Components hold plain entity backrefs (NULLed at teardown); instances
 //     retain their tree and keep targets through zeroing weak references;
 //     perception retains nothing beyond bookkeeping.
-// Links: misc/plans/thirdpersonupgrade/22-ai-perception-bt.md, ADR 0094.
+// Links: ADR 0094, rt_game3d_internal.h.
 //
 //===----------------------------------------------------------------------===//
 

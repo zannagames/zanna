@@ -33,9 +33,9 @@ class MenuScene implements IScene3D {
         world.SetAmbient(0.25, 0.25, 0.3);
     }
 
-    expose func onExit(world: World3D) { }
+    expose func onExit(_world: World3D) { }
 
-    expose func update(world: World3D, dt: Number) {
+    expose func update(world: World3D, _dt: Number) {
         var input: Input3D = world.Input;
         if input.Pressed(Key.Enter) {
             game.startPlay();
@@ -94,9 +94,9 @@ class PlayScene implements IScene3D {
             camera, Vec3.New(0.0, 3.5, 8.0), Vec3.New(0.0, 1.0, 0.0), Vec3.New(0.0, 1.0, 0.0));
     }
 
-    expose func onExit(world: World3D) { }
+    expose func onExit(_world: World3D) { }
 
-    expose func update(world: World3D, dt: Number) {
+    expose func update(world: World3D, _dt: Number) {
         var input: Input3D = world.Input;
         if input.Pressed(Key.Escape) {
             game.backToMenu();
@@ -138,4 +138,5 @@ func main() {
     game.initGame("Game3D Scenes", 640, 400);
     game.setMaxFrames(240); // demo probe: ~4s then exit; remove for free play
     game.run();
+    Zanna.Terminal.Say("PASS: game3d_scenes");
 }

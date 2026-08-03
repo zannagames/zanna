@@ -211,6 +211,7 @@ static ph_joint *alloc_joint(int32_t type, void *body_a, void *body_b) {
 
     memset(j, 0, sizeof(ph_joint));
     j->vptr = NULL;
+    j->state_magic = RT_PHYSICS2D_JOINT_STATE_MAGIC;
     j->type = type;
     j->body_a = a;
     j->body_b = b;
@@ -979,6 +980,7 @@ void *rt_physics2d_circle_body_new(double cx, double cy, double radius, double m
         return NULL;
 
     b->vptr = NULL;
+    b->state_magic = RT_PHYSICS2D_BODY_STATE_MAGIC;
     b->x = cx; // For circles, x/y is center
     b->y = cy;
     b->prev_x = cx;

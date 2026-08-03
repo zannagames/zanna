@@ -80,6 +80,7 @@ struct BlitCall {
 
 BlitCall g_blits[16];
 int g_blit_count = 0;
+int g_alpha_blit_count = 0;
 StubPixels *g_clones[16];
 int g_clone_count = 0;
 int g_pixels_freed = 0;
@@ -88,6 +89,7 @@ bool g_fail_map_new = false;
 void reset_blits() {
     std::memset(g_blits, 0, sizeof(g_blits));
     g_blit_count = 0;
+    g_alpha_blit_count = 0;
 }
 
 void reset_pixels_tracking() {
@@ -220,6 +222,23 @@ extern "C" void rt_canvas_blit(void *canvas, int64_t x, int64_t y, void *pixels)
         x, y, 0, 0, stub ? stub->width : 0, stub ? stub->height : 0, stub ? stub->id : 0};
 }
 
+extern "C" void rt_canvas_blit_region_alpha(void *canvas,
+                                            int64_t dx,
+                                            int64_t dy,
+                                            void *pixels,
+                                            int64_t sx,
+                                            int64_t sy,
+                                            int64_t w,
+                                            int64_t h) {
+    g_alpha_blit_count++;
+    rt_canvas_blit_region(canvas, dx, dy, pixels, sx, sy, w, h);
+}
+
+extern "C" void rt_canvas_blit_alpha(void *canvas, int64_t x, int64_t y, void *pixels) {
+    g_alpha_blit_count++;
+    rt_canvas_blit(canvas, x, y, pixels);
+}
+
 extern "C" void *rt_pixels_new(int64_t width, int64_t height) {
     auto *pixels = static_cast<StubPixels *>(std::calloc(1, sizeof(StubPixels)));
     assert(pixels != nullptr);
@@ -331,6 +350,7 @@ static void test_draw_uses_all_visible_layers_in_order() {
     rt_tilemap_draw(tm, &canvas, 0, 0);
 
     assert(g_blit_count == 2);
+    assert(g_alpha_blit_count == 2);
     assert(g_blits[0].pixels_id == 100);
     assert(g_blits[1].pixels_id == 200);
     assert(g_blits[0].dx == 0 && g_blits[0].dy == 0);
@@ -354,6 +374,7 @@ static void test_draw_region_can_render_layer_only_tilesets() {
     rt_tilemap_draw_region(tm, &canvas, 0, 0, 0, 0, 1, 1);
 
     assert(g_blit_count == 1);
+    assert(g_alpha_blit_count == 1);
     assert(g_blits[0].pixels_id == 300);
     assert(g_blits[0].dx == 0 && g_blits[0].dy == 0);
 }
@@ -756,6 +777,7 @@ static void test_full_range_scale_divides_before_saturating() {
     rt_tilemap_draw_scaled(tm, &canvas, 0, 0, INT64_MAX);
 
     assert(g_blit_count == 1);
+    assert(g_alpha_blit_count == 1);
     assert(g_blits[0].w == INT64_C(276701161105643274));
     assert(g_blits[0].h == INT64_C(92233720368547758));
 }

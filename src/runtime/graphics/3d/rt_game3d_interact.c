@@ -19,7 +19,7 @@
 // Ownership/Lifetime:
 //   - Components hold zeroing weak owner-entity slots; the interactor retains
 //     its focused interactable without extending the target entity's lifetime.
-// Links: misc/plans/thirdpersonupgrade/21-interaction-system.md, ADR 0093.
+// Links: ADR 0093, rt_game3d_internal.h.
 //
 //===----------------------------------------------------------------------===//
 

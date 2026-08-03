@@ -25,7 +25,7 @@
 //   - World3D owns retained body and joint references until removal/finalize.
 //   - Query/event result handles are GC-managed runtime objects.
 //
-// Links: rt_raycast3d.h, misc/plans/3d/20-phase-a-core-game-systems.md
+// Links: rt_raycast3d.h, docs/zannalib/graphics/physics3d.md
 //
 //===----------------------------------------------------------------------===//
 

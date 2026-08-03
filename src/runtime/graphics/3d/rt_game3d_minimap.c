@@ -18,7 +18,7 @@
 // Ownership/Lifetime:
 //   - GC handle; retains the world, map image, tracked entity, and marker
 //     entities/icons; finalizer releases everything.
-// Links: misc/plans/thirdpersonupgrade/28-minimap-markers.md, ADR 0098
+// Links: ADR 0098, rt_game3d_internal.h
 //
 //===----------------------------------------------------------------------===//
 

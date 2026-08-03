@@ -12,7 +12,7 @@
 //   - Deterministic function of sun direction, turbidity, and ground albedo.
 // Ownership/Lifetime:
 //   - GC-managed; getters returning objects retain for the caller.
-// Links: rt_sky3d.c, misc/plans/thirdpersonupgrade/16-timeofday-weather.md
+// Links: rt_sky3d.c, ADR 0090
 //
 //===----------------------------------------------------------------------===//
 

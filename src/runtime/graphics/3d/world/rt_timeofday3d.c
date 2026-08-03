@@ -16,7 +16,7 @@
 //     scaled dt, replay-stable, no wall-clock reads.
 // Ownership/Lifetime:
 //   - GC-managed; bound light/sky/probe are retained until finalized/rebound.
-// Links: misc/plans/thirdpersonupgrade/16-timeofday-weather.md, ADR 0090.
+// Links: ADR 0090, rt_timeofday3d.h.
 //
 //===----------------------------------------------------------------------===//
 

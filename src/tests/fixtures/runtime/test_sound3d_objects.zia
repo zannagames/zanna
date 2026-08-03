@@ -63,5 +63,5 @@ func start() {
         }
     }
 
-    Say("RESULT: ok");
+    Say("PASS: sound3d_objects");
 }

@@ -15,7 +15,7 @@
 // Ownership/Lifetime:
 //   - LensFlare3D is GC-managed; finalizer releases the bound light and every
 //     element's ghost Pixels.
-// Links: rt_canvas3d.h, rt_light3d.c, misc/plans/fps/07-visual-polish.md
+// Links: rt_canvas3d.h, rt_light3d.c, rt_lensflare3d.c
 //
 //===----------------------------------------------------------------------===//
 #pragma once
