@@ -16,7 +16,7 @@ The Zanna Game Engine is a comprehensive game development platform built into th
 
 Two language frontends are supported: **Zia** (modern, expressive) and **BASIC** (classic, beginner-friendly). Both compile to the same IL and have access to the full engine API.
 
-The engine powers games ranging from a simple bouncing ball to [XENOSCAPE](../../examples/games/xenoscape/), a 13,000-line Metroidvania with 25+ enemy types, 10 levels, parallax scrolling, particle effects, and a full save system.
+The engine powers games ranging from a simple bouncing ball to [XENOSCAPE](https://github.com/zannagames/zannademos/tree/main/games/xenoscape), a 13,000-line Metroidvania with 25+ enemy types, 10 levels, parallax scrolling, particle effects, and a full save system.
 
 ---
 
@@ -147,17 +147,17 @@ Zanna ships with 14 example games demonstrating the engine at every scale:
 
 | Game | LOC | Genre | Key Engine Features |
 |------|-----|-------|---------------------|
-| [XENOSCAPE](../../examples/games/xenoscape/) | 17,005 | Metroidvania | Entity, AnimState, Camera, Tilemap, Particles, ScreenFX, Audio, SceneManager, Save |
-| [Graphics Show](../../examples/games/graphics-show/) | 8,000+ | Demo collection | Canvas primitives, particles, physics, fractals (10 sub-demos) |
+| [XENOSCAPE](https://github.com/zannagames/zannademos/tree/main/games/xenoscape) | 17,005 | Metroidvania | Entity, AnimState, Camera, Tilemap, Particles, ScreenFX, Audio, SceneManager, Save |
+| [Graphics Show](https://github.com/zannagames/zannademos/tree/main/games/graphics-show) | 8,000+ | Demo collection | Canvas primitives, particles, physics, fractals (10 sub-demos) |
 | [Chess](../../examples/games/chess/) | 4,000+ | Board game | Canvas rendering, AI evaluation, StateMachine, SaveData, SoundBank |
-| [Centipede](../../examples/games/centipede/) | 2,553 | Arcade shooter | Grid2D, Timer, ScreenFX, ParticleEmitter, ObjectPool |
+| [Centipede](https://github.com/zannagames/zannademos/tree/main/games/centipede) | 2,553 | Arcade shooter | Grid2D, Timer, ScreenFX, ParticleEmitter, ObjectPool |
 | [Crackman](../../examples/games/crackman/) | 2,230 | Arcade | Ghost AI, StateMachine, ButtonGroup, Tween, SmoothValue |
-| [Frogger](../../examples/games/frogger/) | ~1,500 | Arcade | Entity, grid movement, collision, AI traffic |
+| [Frogger](https://github.com/zannagames/zannademos/tree/main/games/frogger) | ~1,500 | Arcade | Entity, grid movement, collision, AI traffic |
 | [VTris](../../examples/games/vtris/) | 1,132 | Puzzle (BASIC) | Terminal rendering, OOP classes, matrix rotation |
 | [Frogger BASIC](../../examples/games/frogger-basic/) | 1,320 | Arcade (BASIC) | OOP stress test, nested objects, collision |
-| [Pac-Man BASIC](../../examples/games/pacman-basic/) | 450 | Arcade (BASIC) | Ghost pathfinding, ANSI rendering |
+| [Pac-Man BASIC](https://github.com/zannagames/zannademos/tree/main/games/pacman-basic) | 450 | Arcade (BASIC) | Ghost pathfinding, ANSI rendering |
 | [Centipede BASIC](../../examples/games/centipede-basic/) | 450 | Arcade (BASIC) | Class-based architecture, grid field |
-| [Fade Test](../../examples/games/fade-test/) | 168 | Test harness | ScreenFX, Canvas coverage verification |
+| [Fade Test](https://github.com/zannagames/zannademos/tree/main/games/fade-test) | 168 | Test harness | ScreenFX, Canvas coverage verification |
 
 See the [Example Games Gallery](examples/README.md) for detailed descriptions and engine feature breakdowns.
 

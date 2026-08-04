@@ -130,7 +130,7 @@ echo ""
 # ============================================================================
 
 echo -e "${BLUE}[5/5]${NC} Verifying namespace_demo.bas compiles..."
-EXAMPLE_FILE="${REPO_ROOT}/examples/basic/namespace_demo.bas"
+EXAMPLE_FILE="${REPO_ROOT}/examples/vbasic/namespace_demo.bas"
 ILC="${BUILD_DIR}/src/tools/zanna/zanna"
 
 if [[ ! -f "$ILC" ]]; then

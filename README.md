@@ -108,24 +108,25 @@ See the [Getting Started Guide](docs/getting-started.md) for platform-specific s
 
 ## Examples
 
-The [examples](examples/README.md) tree includes applications, games, 3D scenes, API audits, language samples, IL programs, and C++ embedding demos.
+The [examples](examples/README.md) tree includes curated applications, games, 3D scenes, API audits, language samples, IL programs, and C++ embedding demos.
 
 | Demo | Description |
 |------|-------------|
-| [ZannaSQL](examples/apps/zannasql/) | PostgreSQL-compatible SQL database server and client |
 | [Paint](examples/apps/paint/) | Drawing app with tools, layers, file dialogs, zoom, and undo/redo |
-| [WebServer](examples/apps/webserver/) | Multi-threaded HTTP server demo |
 | [Chess](examples/games/chess/) | GUI chess with alpha-beta AI and drag-and-drop play |
 | [Crackman](examples/games/crackman/) | Maze chase game with pathfinding and mode-driven AI |
-| [XENOSCAPE](examples/games/xenoscape/) | Metroidvania-style sidescroller with abilities, enemies, levels, and saves |
-| [3D Bowling](examples/games/3dbowling/) | Physics-driven 3D bowling with camera modes |
-| [Ridgebound](examples/games/ridgebound/) | Open-world Game3D sample with terrain, water, skybox, PBR materials, beacon objectives, and post-FX |
+| [Game3D starter & scenes](examples/3d/) | The Game3D learning ladder, from hello-triangle to a streamed open world |
 
 ```sh
 zanna run examples/games/chess/
 zanna build examples/apps/paint/ -o paint
 ./scripts/build_demos.sh
 ```
+
+The larger showcase titles — XENOSCAPE, Ashfall, 3D Bowling, Ridgebound,
+ZannaSQL, and more — live in the
+[zannademos repository](https://github.com/zannagames/zannademos), which
+tests and builds them against a Zanna checkout.
 
 ---
 

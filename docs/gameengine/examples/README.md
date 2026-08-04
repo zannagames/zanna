@@ -12,7 +12,10 @@ last-verified: 2026-07-26
 
 ---
 
-All examples are in [`examples/games/`](../../../examples/games/). Each game is a complete, runnable project.
+The curated examples live in [`examples/games/`](../../../examples/games/); the
+larger showcase games live in the
+[zannademos repository](https://github.com/zannagames/zannademos). Each game is
+a complete, runnable project.
 
 ---
 
@@ -29,7 +32,7 @@ The flagship game demo showcasing the full Zanna game engine. Features 25+ enemy
 **Engine features demonstrated:**
 Canvas, Entity, Behavior, AnimStateMachine, PlatformerController, Camera (smooth follow + parallax), Tilemap, SpriteBatch, SoundBank + Synth, ScreenFX (shake, fade, transitions), ParticleEmitter, Lighting2D, StateMachine, SceneManager, LevelDocument, Config, GameUI, Dialogue, Timer, ObjectPool, AchievementTracker, DebugOverlay
 
-**Source:** [`examples/games/xenoscape/`](../../../examples/games/xenoscape/)
+**Source:** [`zannademos/games/xenoscape/`](https://github.com/zannagames/zannademos/tree/main/games/xenoscape)
 
 ---
 
@@ -55,7 +58,7 @@ Centipede clone with 6 enemy types (centipede segments, spider, flea, scorpion),
 
 **Engine features:** Canvas, Grid2D, Timer, SmoothValue, ScreenFX, ParticleEmitter, StateMachine, Input.Action
 
-**Source:** [`examples/games/centipede/`](../../../examples/games/centipede/)
+**Source:** [`zannademos/games/centipede/`](https://github.com/zannagames/zannademos/tree/main/games/centipede)
 
 ---
 
@@ -79,7 +82,7 @@ Classic Frogger with traffic lanes, grid-based movement, and AI-controlled cars.
 
 **Engine features:** Canvas, Entity, Grid-based collision
 
-**Source:** [`examples/games/frogger/`](../../../examples/games/frogger/)
+**Source:** [`zannademos/games/frogger/`](https://github.com/zannagames/zannademos/tree/main/games/frogger)
 
 ---
 
@@ -93,7 +96,7 @@ A menu-driven collection of 10 visual demos: starfield with parallax, Matrix rai
 
 **Engine features:** Canvas (all primitives), Randomization, Math, ParticleEmitter, Physics, Timer
 
-**Source:** [`examples/games/graphics-show/`](../../../examples/games/graphics-show/)
+**Source:** [`zannademos/games/graphics-show/`](https://github.com/zannagames/zannademos/tree/main/games/graphics-show)
 
 ---
 
@@ -105,7 +108,7 @@ Minimal test for ScreenFX fade and full-screen canvas coverage. Useful as a refe
 
 **Engine features:** Canvas, ScreenFX, Input.Action
 
-**Source:** [`examples/games/fade-test/`](../../../examples/games/fade-test/)
+**Source:** [`zannademos/games/fade-test/`](https://github.com/zannagames/zannademos/tree/main/games/fade-test)
 
 ---
 
@@ -117,7 +120,7 @@ These games use Zanna BASIC and render with ANSI terminal graphics (no Canvas). 
 |------|-----|-------|-------------|
 | [VTris](../../../examples/games/vtris/) | 1,132 | 4 | Tetris with full rules, line clearing, high scores. Demonstrates 2D arrays, matrix rotation, class composition. |
 | [Frogger BASIC](../../../examples/games/frogger-basic/) | 1,320 | 4 | Frogger clone. Stress test for object lifetime and nested references (Frog contains Position). |
-| [Pac-Man BASIC](../../../examples/games/pacman-basic/) | 450 | 5 | Pac-Man-style maze chase with ghost pathfinding and ANSI color maze rendering. |
+| [Pac-Man BASIC](https://github.com/zannagames/zannademos/tree/main/games/pacman-basic) | 450 | 5 | Pac-Man-style maze chase with ghost pathfinding and ANSI color maze rendering. |
 | [Centipede BASIC](../../../examples/games/centipede-basic/) | 450 | 5 | Centipede clone with class-based entity architecture. |
 
 ---

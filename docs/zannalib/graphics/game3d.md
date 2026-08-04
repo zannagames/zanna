@@ -1653,7 +1653,7 @@ now live in the C runtime.
 `examples/3d/walk_min.zia`, `examples/3d/game3d_starter/`, and
 `examples/3d/game3d_showcase/` are the current code-first samples.
 `examples/3d/openworld_slice/` is the streaming vertical-slice smoke project.
-The bowling setup migration lives at `examples/games/3dbowling/game3d/`.
+The bowling setup migration lives at `zannademos/games/3dbowling/game3d/`.
 
 Use the lower-level `Zanna.Graphics3D` and `Zanna.Audio` APIs as escape hatches
 when a sample needs behavior outside the Game3D convenience layer.

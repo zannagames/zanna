@@ -220,6 +220,32 @@ if (ZANNA_BASH_EXECUTABLE)
             LABELS "examples;smoke;requires_posix_shell"
             TIMEOUT 120)
 
+    # Bridge to the externalized demo suite (the zannademos repo cloned at
+    # <root>/zannademos). Absence of the clone is a visible Skipped result,
+    # never a silent gap; see docs/adr/0241.
+    add_test(NAME zannademos_smoke
+            COMMAND ${ZANNA_BASH_COMMAND}
+            scripts/zannademos_bridge.sh
+            --fast
+            --zanna $<TARGET_FILE:zanna>)
+    set_tests_properties(zannademos_smoke PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            LABELS "demos;requires_posix_shell"
+            SKIP_REGULAR_EXPRESSION "Skipping zannademos"
+            TIMEOUT 900)
+
+    add_test(NAME zannademos_full
+            COMMAND ${ZANNA_BASH_COMMAND}
+            scripts/zannademos_bridge.sh
+            --full
+            --zanna $<TARGET_FILE:zanna>)
+    set_tests_properties(zannademos_full PROPERTIES
+            WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+            LABELS "demos;slow;requires_posix_shell"
+            SKIP_REGULAR_EXPRESSION "Skipping zannademos"
+            RUN_SERIAL TRUE
+            TIMEOUT 5400)
+
     add_test(NAME fuzz_smoke_self_test
             COMMAND ${ZANNA_BASH_COMMAND}
             scripts/fuzz_smoke.sh
@@ -1594,6 +1620,7 @@ add_test(NAME zia_zannastudio_scene_gameplay_preview
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_gameplay_preview PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
+        SKIP_REGULAR_EXPRESSION "RESULT: skip"
         LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 150)
 
@@ -1602,6 +1629,7 @@ add_test(NAME zia_zannastudio_scene_gameplay_preview_2d
         WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/zannastudio/src/probes")
 set_tests_properties(zia_zannastudio_scene_gameplay_preview_2d PROPERTIES
         PASS_REGULAR_EXPRESSION "RESULT: ok"
+        SKIP_REGULAR_EXPRESSION "RESULT: skip"
         LABELS "zia;zannastudio;scene;requires_display;slow"
         TIMEOUT 150)
 
@@ -2164,100 +2192,24 @@ set_tests_properties(zia_zannastudio_console_search PROPERTIES
         LABELS "zia;zannastudio;console;search;requires_display"
         TIMEOUT 420)
 
-add_test(NAME zia_smoke_zannasql
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/apps/zannasql/smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/apps/zannasql")
-set_tests_properties(zia_smoke_zannasql PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke"
-        TIMEOUT 240)
-
-add_test(NAME zia_smoke_3dbowling
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dbowling")
-set_tests_properties(zia_smoke_3dbowling PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        TIMEOUT 90)
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set_tests_properties(zia_smoke_3dbowling PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-endif ()
-if (WIN32)
-    set_tests_properties(zia_smoke_3dbowling PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-endif ()
-
-add_test(NAME zia_smoke_3dbowling_trajectory
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/trajectory_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dbowling")
-set_tests_properties(zia_smoke_3dbowling_trajectory PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;slow"
-        TIMEOUT 120)
-
 # Overlay-composition regressions first observed on Metal (NL-ZANNA-001/002).
 # Each runs the checked-in reproduction on the platform's default backend and
 # passes only on the corrected observable output: source-over blending for
 # translucent overlay rects, and per-draw identity for same-size AA text.
 add_test(NAME zia_regress_overlay_alpha_blend
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/known_zanna_issues/overlay_alpha_repro.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/known_zanna_issues")
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/tests/fixtures/zia_regress/overlay_alpha_repro.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/tests/fixtures/zia_regress")
 set_tests_properties(zia_regress_overlay_alpha_blend PROPERTIES
         PASS_REGULAR_EXPRESSION "alpha50=9[4-8],6[2-6],3[0-4]"
         LABELS "zia;graphics3d"
         TIMEOUT 120)
 add_test(NAME zia_regress_overlay_aa_text_identity
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/known_zanna_issues/overlay_aa_text_repro.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/known_zanna_issues")
+        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/src/tests/fixtures/zia_regress/overlay_aa_text_repro.zia"
+        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/src/tests/fixtures/zia_regress")
 set_tests_properties(zia_regress_overlay_aa_text_identity PROPERTIES
         PASS_REGULAR_EXPRESSION "top-green-pixels=[1-9]"
         LABELS "zia;graphics3d"
         TIMEOUT 120)
-
-# --- ASHFALL (FPS showcase) probes -------------------------------------------
-add_test(NAME zia_smoke_ashfall_core
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/core_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_core PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke"
-        TIMEOUT 120)
-
-add_test(NAME zia_smoke_ashfall
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke"
-        TIMEOUT 120)
-
-add_test(NAME zia_smoke_ashfall_movement
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/movement_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_movement PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        ENVIRONMENT "ZANNA_3D_BACKEND=software"
-        TIMEOUT 120)
-
-add_test(NAME zia_smoke_ashfall_perf
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/perf_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_perf PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        ENVIRONMENT "ZANNA_3D_BACKEND=software"
-        TIMEOUT 120)
-
-add_test(NAME zia_smoke_ashfall_stress
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/stress_combat_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_stress PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        ENVIRONMENT "ZANNA_3D_BACKEND=software"
-        TIMEOUT 180)
 
 # Software-rasterizer determinism gate for the backend-conformance harness:
 # renders the fixed conformance scene twice and requires byte-identical output.
@@ -2296,190 +2248,9 @@ if (ZANNA_BASH_EXECUTABLE)
             TIMEOUT 900)
 endif ()
 
-add_test(NAME zia_smoke_ashfall_combat
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/combat_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_combat PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display;slow"
-        ENVIRONMENT "ZANNA_3D_BACKEND=software"
-        TIMEOUT 120)
-
-add_test(NAME zia_smoke_ashfall_enemy
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/enemy_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_enemy PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display;slow"
-        ENVIRONMENT "ZANNA_3D_BACKEND=software"
-        TIMEOUT 180)
-
-add_test(NAME zia_smoke_ashfall_level
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/level_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_level PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display;slow"
-        ENVIRONMENT "ZANNA_3D_BACKEND=software"
-        TIMEOUT 180)
-
-add_test(NAME zia_smoke_ashfall_manifest
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/manifest_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_manifest PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke"
-        TIMEOUT 120)
-
-add_test(NAME zia_smoke_ashfall_meta
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/meta_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_meta PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke"
-        TIMEOUT 120)
-
-add_test(NAME zia_smoke_ashfall_render
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/render_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_render PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display;slow"
-        ENVIRONMENT "ZANNA_3D_BACKEND=software"
-        TIMEOUT 120)
-
-# Exercise Ashfall's authored multi-light PBR scene and complete HDR post-FX chain on
-# the native Metal path. This catches CPU/MSL constant-buffer layout drift that the
-# portable software probes cannot observe.
-if (APPLE)
-    add_test(NAME zia_visual_ashfall_metal
-            COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/visual_probe.zia"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-    set_tests_properties(zia_visual_ashfall_metal PROPERTIES
-            PASS_REGULAR_EXPRESSION "RESULT: ok"
-            LABELS "zia;smoke;graphics3d;requires_display;metal;slow"
-            ENVIRONMENT "ZANNA_3D_BACKEND=metal;ZANNA_ASHFALL_EXPECT_BACKEND=metal"
-            TIMEOUT 180)
-endif ()
-
-add_test(NAME zia_smoke_ashfall_campaign
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/campaign_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_campaign PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display;slow"
-        ENVIRONMENT "ZANNA_3D_BACKEND=software"
-        TIMEOUT 240)
-
-add_test(NAME zia_smoke_ashfall_menu
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/menu_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_menu PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        ENVIRONMENT "ZANNA_3D_BACKEND=software"
-        TIMEOUT 120)
-
-add_test(NAME zia_smoke_ashfall_assets
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/probes/assets_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall")
-set_tests_properties(zia_smoke_ashfall_assets PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        ENVIRONMENT "ZANNA_3D_BACKEND=software"
-        TIMEOUT 240)
-
-add_test(NAME zia_smoke_3dbowling_aim
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/aim_smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dbowling")
-set_tests_properties(zia_smoke_3dbowling_aim PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        TIMEOUT 120)
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set_tests_properties(zia_smoke_3dbowling_aim PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-endif ()
+# Windows-only D3D11 render-to-texture readback regression (probe lives in the
+# kept examples/3d tree).
 if (WIN32)
-    set_tests_properties(zia_smoke_3dbowling_aim PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-endif ()
-
-add_test(NAME zia_smoke_3dscene
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dscene/smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dscene")
-set_tests_properties(zia_smoke_3dscene PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        TIMEOUT 30)
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set_tests_properties(zia_smoke_3dscene PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-endif ()
-if (WIN32)
-    set_tests_properties(zia_smoke_3dscene PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-endif ()
-
-add_test(NAME zia_smoke_ridgebound
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ridgebound/smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ridgebound")
-set_tests_properties(zia_smoke_ridgebound PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display;slow"
-        TIMEOUT 300)
-set(ZANNA_RIDGEBOUND_MAPLE_ASSET
-        "${CMAKE_SOURCE_DIR}/examples/games/ridgebound/MapleTree_1.fbx")
-if (EXISTS "${ZANNA_RIDGEBOUND_MAPLE_ASSET}")
-    add_test(NAME zia_smoke_ridgebound_tree_materials
-            COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ridgebound/tree_material_probe.zia"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ridgebound")
-    set_tests_properties(zia_smoke_ridgebound_tree_materials PROPERTIES
-            PASS_REGULAR_EXPRESSION "RESULT: ok"
-            LABELS "zia;smoke;graphics3d;requires_display;slow"
-            TIMEOUT 300)
-endif ()
-add_test(NAME zia_smoke_ridgebound_tree_fallback_materials
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ridgebound/tree_fallback_material_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_BINARY_DIR}")
-set_tests_properties(zia_smoke_ridgebound_tree_fallback_materials PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display;slow"
-        TIMEOUT 300)
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set_tests_properties(zia_smoke_ridgebound PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-    if (TEST zia_smoke_ridgebound_tree_materials)
-        set_property(TEST zia_smoke_ridgebound_tree_materials PROPERTY
-                ENVIRONMENT "ZANNA_3D_BACKEND=software")
-    endif ()
-    set_tests_properties(zia_smoke_ridgebound_tree_fallback_materials PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-endif ()
-if (WIN32)
-    # Ridgebound asserts a measured cinematic-frame budget. Keep its Windows
-    # Debug measurements isolated from the other CPU-heavy runtime tests and
-    # use explicit smoke ceilings for the MSVC software and hidden D3D11 paths.
-    # The demo's stricter defaults remain in effect outside this CTest lane.
-    set_tests_properties(zia_smoke_ridgebound PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software;ZANNA_RIDGEBOUND_PERF_BUDGET_SOFTWARE_MS=8000"
-            PROCESSORS 8)
-    if (TEST zia_smoke_ridgebound_tree_materials)
-        set_property(TEST zia_smoke_ridgebound_tree_materials PROPERTY
-                ENVIRONMENT "ZANNA_3D_BACKEND=software")
-    endif ()
-    set_tests_properties(zia_smoke_ridgebound_tree_fallback_materials PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-    add_test(NAME zia_smoke_ridgebound_d3d11
-            COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ridgebound/smoke_probe.zia"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ridgebound")
-    set_tests_properties(zia_smoke_ridgebound_d3d11 PROPERTIES
-            PASS_REGULAR_EXPRESSION "RESULT: ok backend=d3d11"
-            LABELS "zia;smoke;graphics3d;requires_display;d3d11"
-            ENVIRONMENT "ZANNA_3D_BACKEND=d3d11;ZANNA_RIDGEBOUND_PERF_BUDGET_GPU_MS=100"
-            RUN_SERIAL TRUE
-            RESOURCE_LOCK zanna_display
-            TIMEOUT 600)
     add_test(NAME zia_smoke_d3d11_rtt_readback
             COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/3d/d3d11_rtt_readback_probe.zia"
             WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
@@ -2489,67 +2260,6 @@ if (WIN32)
             ENVIRONMENT "ZANNA_3D_BACKEND=d3d11"
             RESOURCE_LOCK zanna_display
             TIMEOUT 120)
-endif ()
-if (APPLE)
-    add_test(NAME zia_smoke_ridgebound_software
-            COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ridgebound/smoke_probe.zia"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ridgebound")
-    set_tests_properties(zia_smoke_ridgebound_software PROPERTIES
-            PASS_REGULAR_EXPRESSION "RESULT: ok"
-            LABELS "zia;smoke;graphics3d;requires_display;slow"
-            ENVIRONMENT "ZANNA_3D_BACKEND=software"
-            TIMEOUT 300)
-endif ()
-
-add_test(NAME zia_smoke_3dbaseball
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dbaseball/smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dbaseball")
-set_tests_properties(zia_smoke_3dbaseball PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        TIMEOUT 30)
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set_tests_properties(zia_smoke_3dbaseball PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software"
-            TIMEOUT 90)
-endif ()
-if (WIN32)
-    set_tests_properties(zia_smoke_3dbaseball PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software"
-            TIMEOUT 90)
-endif ()
-
-add_test(NAME zia_smoke_3dbowling_overlay
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/overlay_smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dbowling")
-set_tests_properties(zia_smoke_3dbowling_overlay PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        TIMEOUT 90)
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set_tests_properties(zia_smoke_3dbowling_overlay PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-endif ()
-if (WIN32)
-    set_tests_properties(zia_smoke_3dbowling_overlay PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software"
-            TIMEOUT 180)
-endif ()
-
-add_test(NAME zia_smoke_3dbowling_title_postfx
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/title_postfx_smoke.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/3dbowling")
-set_tests_properties(zia_smoke_3dbowling_title_postfx PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;graphics3d;requires_display"
-        TIMEOUT 90)
-if (CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    set_tests_properties(zia_smoke_3dbowling_title_postfx PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
-endif ()
-if (WIN32)
-    set_tests_properties(zia_smoke_3dbowling_title_postfx PROPERTIES
-            ENVIRONMENT "ZANNA_3D_BACKEND=software")
 endif ()
 
 add_test(NAME zia_smoke_chess
@@ -2608,243 +2318,6 @@ set_tests_properties(zia_smoke_crackman_ghost_stall PROPERTIES
         LABELS "zia;smoke"
         TIMEOUT 30)
 
-add_test(NAME zia_smoke_xenoscape
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_smoke_xenoscape PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;requires_display"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_level_validation
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/level_validation_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_level_validation PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;slow"
-        TIMEOUT 180)
-
-add_test(NAME zia_ashfall_scene_parity
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall/tools/scene_parity_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall/tools")
-set_tests_properties(zia_ashfall_scene_parity PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;scene;slow"
-        TIMEOUT 300)
-
-add_test(NAME zia_ashfall_scenes_smoke
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
-set_tests_properties(zia_ashfall_scenes_smoke PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;slow"
-        TIMEOUT 300)
-
-add_test(NAME zia_ashfall_scenes_level
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/level_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
-set_tests_properties(zia_ashfall_scenes_level PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;scene;slow"
-        TIMEOUT 300)
-
-add_test(NAME zia_ashfall_scenes_campaign
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/campaign_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
-set_tests_properties(zia_ashfall_scenes_campaign PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;scene;slow"
-        TIMEOUT 300)
-
-# The remaining ashfall-scenes probes ship with the demo but were never
-# registered; the flagship scene-authored workflow now runs the same
-# breadth as the code-built ashfall suite. Perf probes carry the perf
-# label so budget-sensitive lanes opt in explicitly.
-foreach (_ashfall_scenes_probe assets combat core enemy manifest menu meta
-        movement render stress_combat visual)
-    add_test(NAME zia_ashfall_scenes_${_ashfall_scenes_probe}
-            COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/${_ashfall_scenes_probe}_probe.zia"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
-    set_tests_properties(zia_ashfall_scenes_${_ashfall_scenes_probe} PROPERTIES
-            PASS_REGULAR_EXPRESSION "RESULT: ok"
-            LABELS "zia;smoke;gameplay;scene;slow"
-            TIMEOUT 300)
-endforeach ()
-add_test(NAME zia_ashfall_scenes_perf
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/perf_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
-set_tests_properties(zia_ashfall_scenes_perf PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;perf;gameplay;scene;slow"
-        TIMEOUT 300)
-add_test(NAME zia_ashfall_scenes_gpu_perf
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes/probes/gpu_perf_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/ashfall-scenes")
-set_tests_properties(zia_ashfall_scenes_gpu_perf PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;perf;gpu_smoke;gameplay;scene;slow"
-        TIMEOUT 300)
-
-add_test(NAME zia_xenoscape_scene_parity
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/tools/scene_parity_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_scene_parity PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;scene;slow"
-        TIMEOUT 300)
-
-add_test(NAME zia_xenoscape_scenes_smoke
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape-scenes/smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape-scenes")
-set_tests_properties(zia_xenoscape_scenes_smoke PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;requires_display"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_scenes_level_validation
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape-scenes/level_validation_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape-scenes")
-set_tests_properties(zia_xenoscape_scenes_level_validation PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;scene;slow"
-        TIMEOUT 180)
-
-add_test(NAME zia_xenoscape_scenes_package
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape-scenes/package_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape-scenes")
-set_tests_properties(zia_xenoscape_scenes_package PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;package;scene"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_scenes_playthrough
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape-scenes/playthrough_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape-scenes")
-set_tests_properties(zia_xenoscape_scenes_playthrough PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;scene;slow"
-        TIMEOUT 300)
-
-add_test(NAME zia_xenoscape_playthrough
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/playthrough_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_playthrough PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_ui_flow
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/ui_flow_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_ui_flow PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_cadence
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/cadence_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_cadence PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;performance"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_progression
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/progression_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_progression PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_mechanics
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/mechanics_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_mechanics PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_world
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/world_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_world PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_meta
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/meta_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_meta PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_settings
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/settings_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_settings PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_campaign
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/campaign_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_campaign PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;slow"
-        TIMEOUT 180)
-
-add_test(NAME zia_xenoscape_render
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/render_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_render PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;render;requires_display"
-        RESOURCE_LOCK zanna_display
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_package
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/package_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_package PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;package"
-        TIMEOUT 30)
-
-add_test(NAME zia_xenoscape_performance
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/performance_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_performance PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;performance;slow"
-        TIMEOUT 60)
-
-add_test(NAME zia_xenoscape_soak
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/xenoscape/soak_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(zia_xenoscape_soak PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke;gameplay;performance"
-        TIMEOUT 30)
-
-if (WIN32)
-    # These sustained VM stress passes are sensitive to concurrent software-render
-    # load. Give each benchmark an exclusive measurement window so its timing
-    # remains stable without weakening the workload.
-    set_tests_properties(zia_xenoscape_performance zia_xenoscape_soak
-            PROPERTIES PROCESSORS 8)
-endif ()
-
-add_test(NAME xenoscape_package_dry_run
-        COMMAND $<TARGET_FILE:zanna> package "." --target tarball --dry-run
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-set_tests_properties(xenoscape_package_dry_run PROPERTIES
-        LABELS "zia;smoke;package"
-        TIMEOUT 60)
-
 add_test(NAME zanna_asset_bake_roundtrip
         COMMAND $<TARGET_FILE:zanna> asset bake
         "${CMAKE_SOURCE_DIR}/examples/3d/openworld_slice/assets/models/sphere_draco_eb.glb"
@@ -2874,20 +2347,6 @@ set_tests_properties(zanna_asset_bake_fidelity_report PROPERTIES
         LABELS "tools;graphics3d;smoke"
         TIMEOUT 60)
 
-if (NOT WIN32)
-    foreach (probe IN ITEMS mechanics campaign)
-        add_test(NAME native_xenoscape_${probe}
-                COMMAND ${CMAKE_COMMAND}
-                -DZANNA_EXE=$<TARGET_FILE:zanna>
-                -DTEST_FILE=${CMAKE_SOURCE_DIR}/examples/games/xenoscape/${probe}_probe.zia
-                -DOUT_EXE=${CMAKE_BINARY_DIR}/xenoscape_${probe}_native
-                -P ${CMAKE_CURRENT_SOURCE_DIR}/e2e/test_zia_native_run.cmake
-                WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/xenoscape")
-        set_tests_properties(native_xenoscape_${probe} PROPERTIES
-                LABELS "zia;smoke;gameplay;native_run"
-                TIMEOUT 120)
-    endforeach ()
-endif ()
 
 set(ZANNA_DISPLAY_TESTS
         zia_smoke_paint_canvas_capture
@@ -2918,97 +2377,9 @@ set(ZANNA_DISPLAY_TESTS
         zia_zannastudio_debug_tool_surfaces
         zia_zannastudio_run_debug_view
         zia_zannastudio_split_editor
-        zia_zannastudio_console_search
-        zia_smoke_3dbowling
-        zia_smoke_3dbowling_aim
-        zia_smoke_3dscene
-        zia_smoke_3dbaseball
-        zia_smoke_3dbowling_overlay
-        zia_smoke_3dbowling_title_postfx
-        zia_smoke_xenoscape)
-if (APPLE)
-    # The primary Ridgebound probe uses Metal on macOS. Windows and Linux
-    # explicitly select the headless software backend and need no display lock.
-    list(APPEND ZANNA_DISPLAY_TESTS zia_smoke_ridgebound)
-endif ()
+        zia_zannastudio_console_search)
 set_tests_properties(${ZANNA_DISPLAY_TESTS} PROPERTIES
         RESOURCE_LOCK zanna_display)
-
-add_test(NAME zia_smoke_baseball
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/baseball/smoke_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/baseball")
-set_tests_properties(zia_smoke_baseball PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke"
-        TIMEOUT 30)
-
-add_test(NAME zia_lineup_legality_baseball
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/baseball/lineup_legality_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/baseball")
-set_tests_properties(zia_lineup_legality_baseball PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke"
-        TIMEOUT 30)
-
-add_test(NAME zia_calibration_baseball
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/baseball/calibration_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/baseball")
-set_tests_properties(zia_calibration_baseball PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;comprehensive;slow"
-        TIMEOUT 300)
-
-add_test(NAME zia_staff_usage_baseball
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/baseball/staff_usage_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/baseball")
-set_tests_properties(zia_staff_usage_baseball PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke"
-        TIMEOUT 30)
-
-add_test(NAME zia_calendar_baseball
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/baseball/calendar_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/baseball")
-set_tests_properties(zia_calendar_baseball PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke"
-        TIMEOUT 30)
-
-add_test(NAME zia_season_baseball
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/baseball/season_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/baseball")
-set_tests_properties(zia_season_baseball PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;comprehensive;slow"
-        TIMEOUT 600)
-
-add_test(NAME zia_persistence_baseball
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/baseball/persistence_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/baseball")
-set_tests_properties(zia_persistence_baseball PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;comprehensive"
-        TIMEOUT 180)
-
-add_test(NAME zia_reporting_baseball
-        COMMAND $<TARGET_FILE:zia> "${CMAKE_SOURCE_DIR}/examples/games/baseball/reporting_probe.zia"
-        WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}/examples/games/baseball")
-set_tests_properties(zia_reporting_baseball PROPERTIES
-        PASS_REGULAR_EXPRESSION "RESULT: ok"
-        LABELS "zia;smoke"
-        TIMEOUT 90)
-
-set(ZANNA_BASEBALL_DATA_TESTS
-        zia_smoke_baseball
-        zia_lineup_legality_baseball
-        zia_calibration_baseball
-        zia_staff_usage_baseball
-        zia_calendar_baseball
-        zia_season_baseball
-        zia_persistence_baseball
-        zia_reporting_baseball)
-set_tests_properties(${ZANNA_BASEBALL_DATA_TESTS} PROPERTIES
-        RESOURCE_LOCK zanna_baseball_data)
 
 if (ZANNA_BASH_EXECUTABLE)
     add_test(NAME platform_policy_lint_strict
@@ -3087,14 +2458,6 @@ if (APPLE AND ZANNA_BASH_EXECUTABLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|
             LABELS "zia;smoke;native-link;slow"
             TIMEOUT 60)
 
-    add_test(NAME native_smoke_3dbowling_build_arm64
-            COMMAND ${ZANNA_BASH_COMMAND} "${CMAKE_SOURCE_DIR}/src/tests/e2e/test_3dbowling_native_build.sh"
-            $<TARGET_FILE:zanna> "${CMAKE_SOURCE_DIR}")
-    set_tests_properties(native_smoke_3dbowling_build_arm64 PROPERTIES
-            PASS_REGULAR_EXPRESSION "PASS"
-            LABELS "zia;smoke;native-link;slow"
-            TIMEOUT 120)
-
     add_test(NAME native_smoke_achievement_draw_arm64
             COMMAND ${ZANNA_BASH_COMMAND} "${CMAKE_SOURCE_DIR}/src/tests/e2e/test_achievement_draw_native.sh"
             $<TARGET_FILE:zanna> "${CMAKE_SOURCE_DIR}")
@@ -3102,23 +2465,6 @@ if (APPLE AND ZANNA_BASH_EXECUTABLE AND CMAKE_SYSTEM_PROCESSOR MATCHES "^(arm64|
             PASS_REGULAR_EXPRESSION "PASS"
             LABELS "zia;smoke;native-link;requires_display;slow"
             RESOURCE_LOCK zanna_display
-            TIMEOUT 60)
-
-    add_test(NAME native_smoke_xenoscape_start_arm64
-            COMMAND ${ZANNA_BASH_COMMAND} "${CMAKE_SOURCE_DIR}/src/tests/e2e/test_xenoscape_native_start.sh"
-            $<TARGET_FILE:zanna> "${CMAKE_SOURCE_DIR}")
-    set_tests_properties(native_smoke_xenoscape_start_arm64 PROPERTIES
-            PASS_REGULAR_EXPRESSION "PASS"
-            LABELS "zia;smoke;native-link;requires_display;slow"
-            RESOURCE_LOCK zanna_display
-            TIMEOUT 60)
-
-    add_test(NAME native_smoke_xenoscape_action_names_arm64
-            COMMAND ${ZANNA_BASH_COMMAND} "${CMAKE_SOURCE_DIR}/src/tests/e2e/test_xenoscape_native_action_names.sh"
-            $<TARGET_FILE:zanna> "${CMAKE_SOURCE_DIR}")
-    set_tests_properties(native_smoke_xenoscape_action_names_arm64 PROPERTIES
-            PASS_REGULAR_EXPRESSION "PASS"
-            LABELS "zia;smoke;native-link;slow"
             TIMEOUT 60)
 
     add_test(NAME native_smoke_chess_ai_arm64
@@ -4096,18 +3442,6 @@ if (EXISTS "${GAME3D_OPENWORLD_SLICE_GPU_SMOKE}")
             TIMEOUT 45)
 endif ()
 
-set(GAME3D_BOWLING_SETUP_PROBE "${CMAKE_SOURCE_DIR}/examples/games/3dbowling/game3d/game3d_setup.zia")
-if (EXISTS "${GAME3D_BOWLING_SETUP_PROBE}")
-    add_test(NAME g3d_game3d_bowling_setup
-            COMMAND $<TARGET_FILE:zanna> run "${GAME3D_BOWLING_SETUP_PROBE}"
-            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
-    set_tests_properties(g3d_game3d_bowling_setup PROPERTIES
-            PASS_REGULAR_EXPRESSION "PASS"
-            LABELS "runtime;graphics3d;zia;requires_display"
-            ENVIRONMENT "ZANNA_3D_BACKEND=software"
-            TIMEOUT 30)
-endif ()
-
 if (NOT TARGET runtime_surface_audit_bundle)
     add_custom_target(runtime_surface_audit_bundle
             DEPENDS
@@ -4155,11 +3489,6 @@ if (WIN32)
             zia_zannastudio_scene_editor_2d
             zia_zannastudio_scene_editor_3d
             zia_zannastudio_console_search
-            zia_season_baseball
-            zia_smoke_ridgebound_d3d11
-            zia_smoke_3dbowling_title_postfx
-            zia_smoke_ashfall_stress
-            zia_smoke_ashfall_menu
             test_zia_repl)
     foreach (_test IN LISTS _zanna_windows_slow_tests)
         if (TEST ${_test})
@@ -4177,37 +3506,12 @@ if (WIN32)
             set_property(TEST ${test_name} PROPERTY COST ${cost})
         endif ()
     endfunction()
-    _zanna_set_windows_test_cost(zia_smoke_ridgebound 170)
-    _zanna_set_windows_test_cost(zia_smoke_ridgebound_tree_fallback_materials 90)
-    _zanna_set_windows_test_cost(zia_smoke_ashfall_level 80)
-    _zanna_set_windows_test_cost(zia_smoke_ashfall_render 75)
     _zanna_set_windows_test_cost(test_zia_server_lsp 70)
-    _zanna_set_windows_test_cost(zia_smoke_ridgebound_d3d11 65)
     _zanna_set_windows_test_cost(zia_zannastudio_console_search 60)
-    _zanna_set_windows_test_cost(zia_season_baseball 50)
-    _zanna_set_windows_test_cost(zia_smoke_ashfall_enemy 45)
-    _zanna_set_windows_test_cost(zia_xenoscape_performance 200)
     _zanna_set_windows_test_cost(test_zia_repl 40)
-    _zanna_set_windows_test_cost(zia_smoke_ashfall_campaign 35)
-    _zanna_set_windows_test_cost(zia_calibration_baseball 30)
     _zanna_set_windows_test_cost(test_zia_bugfixes 30)
     _zanna_set_windows_test_cost(test_rt_scene3d 30)
-    _zanna_set_windows_test_cost(zia_smoke_zannasql 25)
-    _zanna_set_windows_test_cost(zia_smoke_ashfall_combat 20)
-    _zanna_set_windows_test_cost(zia_smoke_ashfall_menu 20)
-    _zanna_set_windows_test_cost(zia_smoke_ashfall_assets 20)
-    _zanna_set_windows_test_cost(zia_smoke_ashfall_movement 15)
-    _zanna_set_windows_test_cost(zia_smoke_ashfall_perf 15)
-    _zanna_set_windows_test_cost(zia_smoke_ashfall_stress 25)
     _zanna_set_windows_test_cost(zia_zannastudio_intellisense 15)
-
-    # The level probe completes in roughly 80-100 seconds by itself and in the
-    # representative eight-test contention group, but a clean MSVC Debug suite
-    # can keep the software renderer CPU-bound beyond its generic 180-second
-    # ceiling. Match the other large Windows render probes so sustained host
-    # load cannot turn a deterministic pass into a timeout.
-    set_property(TEST zia_smoke_ashfall_level PROPERTY TIMEOUT 300)
-    _zanna_set_windows_test_cost(zia_smoke_3dbaseball 10)
 
     # Every display-labelled test runs in its own process with window activation
     # disabled and windows hidden. A single Windows-wide display lock therefore

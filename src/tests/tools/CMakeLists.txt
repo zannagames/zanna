@@ -242,17 +242,17 @@ function(zanna_add_tools_tests)
                 SKIP_REGULAR_EXPRESSION "Skipping .*Windows user installer smoke")
         zanna_add_test_labels(windows_installer_user_smoke installer tools requires_windows slow)
 
-        zanna_add_ctest(windows_installer_xenoscape_smoke
+        zanna_add_ctest(windows_installer_crackman_smoke
                 ${CMAKE_COMMAND}
                 -DZANNA_BIN=$<TARGET_FILE:zanna>
                 -DZANNA_REPO_ROOT=${CMAKE_SOURCE_DIR}
-                -DTEST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/windows_installer_xenoscape_smoke
-                -P ${_ZANNA_TOOLS_DIR}/WindowsXenoScapeInstallerSmoke.cmake)
-        set_tests_properties(windows_installer_xenoscape_smoke PROPERTIES
+                -DTEST_WORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/windows_installer_crackman_smoke
+                -P ${_ZANNA_TOOLS_DIR}/WindowsCrackmanInstallerSmoke.cmake)
+        set_tests_properties(windows_installer_crackman_smoke PROPERTIES
                 RUN_SERIAL TRUE
                 TIMEOUT 540
-                SKIP_REGULAR_EXPRESSION "Skipping .*XenoScape Windows installer smoke")
-        zanna_add_test_labels(windows_installer_xenoscape_smoke installer tools zia requires_windows slow)
+                SKIP_REGULAR_EXPRESSION "Skipping .*Crackman Windows installer smoke")
+        zanna_add_test_labels(windows_installer_crackman_smoke installer tools zia requires_windows slow)
 
         zanna_add_ctest(windows_installer_elevated_smoke
                 ${CMAKE_COMMAND}

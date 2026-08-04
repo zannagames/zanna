@@ -34,4 +34,3 @@ apiaudit/**/*.bas	check	examples,basic	SELF	runtime API audit BASIC examples
 apps/**/*.zia	check	examples,slow	PROJECT2	app projects compile as project roots
 games/**/*.zia	check	examples,slow	PROJECT2	game projects compile as project roots
 games/**/*.bas	check	examples,basic,slow	PROJECT2	BASIC game projects compile as project roots
-sqldb-basic/*.bas	check	examples,basic,slow	sqldb-basic/main.bas	BASIC SQL engine compiles from main entry point

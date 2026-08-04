@@ -168,6 +168,7 @@ and the root process is reaped.
 | `golden` | 203 | Golden file regression (diagnostic messages, IL/optimizer output) |
 | `e2e` | 19 | End-to-end pipeline tests |
 | `examples` | — | Example/demo manifest audit and fast smoke |
+| `demos` | 2 | Bridge to the externalized zannademos suite (see below) |
 | `fuzz` | — | Fuzz corpus replay and fuzz-lane self-checks |
 | `audit` | 46 | Zia audit corpus plus local source-health and structural drift audits |
 | `ilopt` | 4 | IL optimizer pass golden tests |
@@ -185,6 +186,23 @@ to include them in the full suite, or use `ctest --test-dir build -L slow` to ru
 only that lane. A test may be slow on one platform only: Windows Debug tests
 whose representative runtime is about 30 seconds or more are labeled `slow` on
 Windows without changing the default lanes on Linux or macOS.
+
+### The zannademos bridge (`demos` label)
+
+The large showcase demos live in the separate
+[zannademos repository](https://github.com/zannagames/zannademos),
+conventionally cloned nested at `<zanna>/zannademos/` (gitignored). Their
+probe suites run through `zannademos/scripts/run_demo_tests.sh`, bridged into
+CTest by `scripts/zannademos_bridge.sh` (ADR 0241):
+
+- `zannademos_smoke` — the fast lane; runs in every full ctest when the clone
+  is present, shows as **Skipped** (never missing) when it is not.
+- `zannademos_full` — the full probe suite; additionally gated on
+  `ZANNA_RUN_DEMOS_FULL=1` to keep default wall time bounded:
+  `ZANNA_RUN_DEMOS_FULL=1 ctest --test-dir build -L demos`.
+
+The Studio scene-preview tests (`zia_zannastudio_scene_gameplay_preview{,_2d}`)
+use zannademos scene fixtures and skip visibly when the clone is absent.
 
 ## Test Categories
 
