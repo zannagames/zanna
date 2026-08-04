@@ -305,6 +305,7 @@ $skipSmoke = Set-EnvironmentDefault -Name "ZANNA_SKIP_SMOKE" -Default "0"
 $skipClean = Set-EnvironmentDefault -Name "ZANNA_SKIP_CLEAN" -Default "0"
 $runSlowTests = Set-EnvironmentDefault -Name "ZANNA_RUN_SLOW_TESTS" -Default "0"
 $fastDebug = Set-EnvironmentDefault -Name "ZANNA_FAST_DEBUG" -Default "1"
+$skipStudio = Set-EnvironmentDefault -Name "ZANNA_SKIP_STUDIO" -Default "0"
 $buildRoot = Get-FullPathFromRoot -Path $buildDir -Root $repoRoot
 $bashBuildDir = $buildDir.Replace('\', '/')
 
@@ -336,6 +337,15 @@ try {
     }
 
     $configArguments = @("-DZANNA_FAST_DEBUG=$fastDebug")
+    # The Zanna Studio native compile is the longest single build step. Pass
+    # the toggle explicitly every configure so a skipped run cannot leave a
+    # stale OFF cached into later full runs.
+    if ($skipStudio -eq "1") {
+        Write-Host "Skipping Zanna Studio build (ZANNA_SKIP_STUDIO=1)"
+        $configArguments += "-DZANNA_INSTALL_ZANNASTUDIO=OFF"
+    } else {
+        $configArguments += "-DZANNA_INSTALL_ZANNASTUDIO=ON"
+    }
     if ($null -ne $bashExe) {
         $configArguments += "-DZANNA_BASH_EXECUTABLE:FILEPATH=$bashExe"
     }

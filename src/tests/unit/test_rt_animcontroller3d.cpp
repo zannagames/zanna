@@ -38,6 +38,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <limits>
 
 extern "C" {
 extern void *rt_vec3_new(double x, double y, double z);

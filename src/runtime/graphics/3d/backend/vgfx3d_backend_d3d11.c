@@ -2398,6 +2398,16 @@ static int d3d11_ensure_instance_upload_capacity(d3d11_context_t *ctx, int32_t i
     return 1;
 }
 
+/// @brief Advance one monotonic backend telemetry counter without wrapping (GAP-10).
+/// @details Counters are lifetime totals surfaced through `get_backend_stats`; saturating
+///   at UINT64_MAX keeps a long-lived context from reporting a value that moved backwards.
+/// @param[in,out] counter Borrowed counter field inside `d3d11_context_t::stats`.
+static void d3d11_stats_count(uint64_t *counter) {
+    if (!counter)
+        return;
+    *counter = vgfx3d_d3d11_saturating_add_u64(*counter, 1u);
+}
+
 // Mesh cache — keyed by `(geometry_key, geometry_revision)`. Static
 // meshes are uploaded once and reused; dynamic meshes go through the
 // dynamic VB/IB instead. Bounded to D3D11_MESH_CACHE_CAPACITY entries
@@ -2515,6 +2525,7 @@ static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
         !d3d11_checked_mul_size((size_t)index_count, sizeof(uint32_t), &index_bytes))
         return 0;
     if (!cmd->geometry_key || cmd->geometry_revision == 0) {
+        d3d11_stats_count(&ctx->stats.mesh_stream_uploads);
         if (!d3d11_upload_dynamic_buffer(ctx,
                                          &ctx->dynamic_vb,
                                          &ctx->dynamic_vb_size,
@@ -2562,6 +2573,7 @@ static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
         if (slot->key != cmd->geometry_key || slot->revision != cmd->geometry_revision ||
             slot->vertex_count != cmd->vertex_count || slot->index_count != index_count ||
             slot->compact != wants_compact || !slot->vb || !slot->ib) {
+            d3d11_stats_count(&ctx->stats.mesh_cache_misses);
             if (wants_compact) {
                 /* R20: encode into the packed 48-byte layout; the compact input
                  * layouts decode it via input-assembler format conversion. */
@@ -2604,6 +2616,8 @@ static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
             slot->vertex_count = cmd->vertex_count;
             slot->index_count = index_count;
             slot->compact = wants_compact;
+        } else {
+            d3d11_stats_count(&ctx->stats.mesh_cache_hits);
         }
 
         slot->last_used_frame = ctx->frame_serial;

@@ -33,6 +33,7 @@
 #include <algorithm>
 #include <array>
 #include <cstring>
+#include <limits>
 
 namespace zanna::codegen::linker {
 

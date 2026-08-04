@@ -60,6 +60,7 @@ LINT_CHANGED_ONLY="${ZANNA_LINT_CHANGED_ONLY:-1}"
 SKIP_SMOKE="${ZANNA_SKIP_SMOKE:-0}"
 SKIP_TESTS="${ZANNA_SKIP_TESTS:-0}"
 SKIP_CLEAN="${ZANNA_SKIP_CLEAN:-0}"
+SKIP_STUDIO="${ZANNA_SKIP_STUDIO:-0}"
 TEST_LABEL="${ZANNA_TEST_LABEL:-}"
 NO_CCACHE="${ZANNA_NO_CCACHE:-0}"
 RUN_SLOW_TESTS="${ZANNA_RUN_SLOW_TESTS:-0}"
@@ -157,6 +158,16 @@ fi
 if [[ "$NO_CCACHE" != "1" ]] && command -v ccache >/dev/null 2>&1; then
     echo "[build_zanna] ccache detected; enabling compiler launcher (set ZANNA_NO_CCACHE=1 to disable)"
     CONFIGURE_ARGS+=(-DCMAKE_C_COMPILER_LAUNCHER=ccache -DCMAKE_CXX_COMPILER_LAUNCHER=ccache)
+fi
+
+# The Zanna Studio native compile is the longest single build step. Pass the
+# toggle explicitly every configure so a skipped run cannot leave a stale OFF
+# cached into later full runs.
+if [[ "$SKIP_STUDIO" == "1" ]]; then
+    echo "[build_zanna] Skipping Zanna Studio build (ZANNA_SKIP_STUDIO=1)"
+    CONFIGURE_ARGS+=(-DZANNA_INSTALL_ZANNASTUDIO=OFF)
+else
+    CONFIGURE_ARGS+=(-DZANNA_INSTALL_ZANNASTUDIO=ON)
 fi
 
 if [[ -n "${ZANNA_EXTRA_CMAKE_ARGS:-}" ]]; then

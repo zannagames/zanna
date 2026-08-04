@@ -859,6 +859,11 @@ if(ZANNA_INSTALL_ZANNASTUDIO)
   file(GLOB_RECURSE _ZANNASTUDIO_SOURCE_FILES CONFIGURE_DEPENDS
        "${CMAKE_SOURCE_DIR}/src/zannastudio/src/*.zia"
        "${CMAKE_SOURCE_DIR}/src/zannastudio/zanna.project")
+  # The Studio compile is the longest single custom-command step in the build:
+  # hundreds of Zia sources pass through one quiet zanna invocation that
+  # prints nothing until its final dead-strip summary (typically several
+  # minutes). Explicit start/finish markers below make that quiet window
+  # distinguishable from a hung build.
   if(APPLE)
     # Cocoa exposes the executable leaf name in the system application menu for
     # an unbundled process. Keep the stable `zannastudio` CLI as a tiny launcher
@@ -876,9 +881,13 @@ if(ZANNA_INSTALL_ZANNASTUDIO)
              "${_ZANNASTUDIO_COMPAT_NATIVE_BINARY}" "${_ZANNASTUDIO_COMPAT_BINARY}"
              "${_ZANNASTUDIO_COMPAT_BUILDINFO}"
       COMMAND ${CMAKE_COMMAND} -E make_directory "${_ZANNASTUDIO_OUTPUT_DIR}"
+      COMMAND ${CMAKE_COMMAND} -E echo
+              "Zanna Studio: compiling the ${_ZANNA_IDE_ARCH} native payload (one quiet step, typically several minutes)..."
       COMMAND ${CMAKE_COMMAND} -E env "ZANNA_BUILD_DIR=${CMAKE_BINARY_DIR}"
               "$<TARGET_FILE:zanna>" build "${CMAKE_SOURCE_DIR}/src/zannastudio"
               --arch "${_ZANNA_IDE_ARCH}" -o "${_ZANNASTUDIO_NATIVE_BINARY}"
+      COMMAND ${CMAKE_COMMAND} -E echo
+              "Zanna Studio: native compile finished, staging launcher and metadata"
       COMMAND ${CMAKE_COMMAND}
               "-DNATIVE_BINARY=${_ZANNASTUDIO_NATIVE_BINARY}"
               "-DLAUNCHER=${_ZANNASTUDIO_BINARY}"
@@ -925,9 +934,13 @@ if(ZANNA_INSTALL_ZANNASTUDIO)
       COMMAND ${CMAKE_COMMAND} -E make_directory "${_ZANNASTUDIO_COMPAT_OUTPUT_DIR}"
       COMMAND ${CMAKE_COMMAND} -E rm -f "${_ZANNASTUDIO_STAGED_BINARY}"
               "${_ZANNASTUDIO_COMPAT_STAGED_BINARY}"
+      COMMAND ${CMAKE_COMMAND} -E echo
+              "Zanna Studio: compiling the ${_ZANNA_IDE_ARCH} native binary (one quiet step, typically several minutes)..."
       COMMAND ${CMAKE_COMMAND} -E env "ZANNA_BUILD_DIR=${CMAKE_BINARY_DIR}"
               "$<TARGET_FILE:zanna>" build "${CMAKE_SOURCE_DIR}/src/zannastudio"
               --arch "${_ZANNA_IDE_ARCH}" -o "${_ZANNASTUDIO_STAGED_BINARY}"
+      COMMAND ${CMAKE_COMMAND} -E echo
+              "Zanna Studio: native compile finished, staging binary and metadata"
       COMMAND ${CMAKE_COMMAND}
               "-DOUTPUT_FILE=${_ZANNASTUDIO_BINARY}"
               "-DSTAGED_OUTPUT_FILE=${_ZANNASTUDIO_STAGED_BINARY}"

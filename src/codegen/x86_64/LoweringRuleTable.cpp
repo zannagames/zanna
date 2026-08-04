@@ -24,6 +24,7 @@
 #include "LowerILToMIR.hpp"
 
 #include <algorithm>
+#include <limits>
 #include <unordered_map>
 #include <vector>
 

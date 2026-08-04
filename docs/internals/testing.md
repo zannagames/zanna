@@ -54,6 +54,7 @@ platforms (ccache is auto-detected; disable with `ZANNA_NO_CCACHE=1`):
 | `ZANNA_TEST_LABEL=<label>` | Run only tests with the given ctest label |
 | `ZANNA_RUN_SLOW_TESTS=1` | Include tests labeled `slow` |
 | `ZANNA_SKIP_LINT=1`, `ZANNA_SKIP_AUDIT=1`, `ZANNA_SKIP_SMOKE=1`, `ZANNA_SKIP_INSTALL=1` | Skip the corresponding post-build stages |
+| `ZANNA_SKIP_STUDIO=1` | Configure with `-DZANNA_INSTALL_ZANNASTUDIO=OFF`, skipping the multi-minute Zanna Studio native compile (the longest single build step) |
 | `ZANNA_EXTRA_CMAKE_ARGS="-DZANNA_ENABLE_INDIVIDUAL_BASIC_TO_IL_GOLDEN_TESTS=ON"` | Register legacy per-case BASIC-to-IL golden tests alongside the default batch shards |
 | `ZANNA_GFX_NO_ACTIVATE=1` | On macOS and Linux, show new ZannaGFX windows without making them the active app/window; CTest applies this automatically to `requires_display` and `graphics3d` tests |
 | `ZANNA_GFX_HIDE_WINDOWS=1` | On macOS and Linux, keep ZannaGFX windows hidden while preserving framebuffer rendering; CTest applies this automatically to `requires_display` and `graphics3d` tests |

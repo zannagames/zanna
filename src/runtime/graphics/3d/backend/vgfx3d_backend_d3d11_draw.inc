@@ -1519,7 +1519,9 @@ static void d3d11_submit_draw(void *ctx_ptr,
     float safe_ambient[3];
 
     (void)win;
-    if (!ctx || ctx->frame_submission_failed || !cmd || !cmd->vertices || !cmd->indices ||
+    if (!ctx)
+        return;
+    if (ctx->frame_submission_failed || !cmd || !cmd->vertices || !cmd->indices ||
         cmd->vertex_count == 0 || cmd->index_count == 0 ||
         !vgfx3d_d3d11_draw_submission_is_ready(ctx->frame_active,
                                                ctx->shadow_pass_slot,
@@ -1527,8 +1529,10 @@ static void d3d11_submit_draw(void *ctx_ptr,
                                                ctx->current_rtv_count,
                                                ctx->current_rtvs[0] != NULL,
                                                ctx->current_width,
-                                               ctx->current_height))
+                                               ctx->current_height)) {
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
+    }
     vgfx3d_sanitize_draw_command(cmd, &safe_cmd);
     cmd = &safe_cmd;
     light_count = vgfx3d_sanitize_light_array(lights, light_count, safe_lights, VGFX3D_MAX_LIGHTS);
@@ -1538,8 +1542,10 @@ static void d3d11_submit_draw(void *ctx_ptr,
     vgfx3d_sanitize_ambient_rgb(ambient, safe_ambient);
     ambient = safe_ambient;
     index_count = vgfx3d_draw_cmd_validated_index_count(cmd);
-    if (index_count == 0)
+    if (index_count == 0) {
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
+    }
 
     d3d11_prepare_object_data(cmd, &object_data);
     d3d11_prepare_anim_resources(ctx, cmd, &object_data);
@@ -1547,6 +1553,7 @@ static void d3d11_submit_draw(void *ctx_ptr,
     hr = d3d11_update_constant_buffer(ctx, ctx->cb_per_object, &object_data, sizeof(object_data));
     if (FAILED(hr)) {
         d3d11_log_hresult("Map(cbPerObject)", hr);
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
     }
     /* Scene + light constants only change with the queued light-snapshot
@@ -1558,11 +1565,13 @@ static void d3d11_submit_draw(void *ctx_ptr,
         hr = d3d11_update_constant_buffer(ctx, ctx->cb_per_scene, &scene_data, sizeof(scene_data));
         if (FAILED(hr)) {
             d3d11_log_hresult("Map(cbPerScene)", hr);
+            d3d11_stats_count(&ctx->stats.dropped_draws);
             return;
         }
         hr = d3d11_update_constant_buffer(ctx, ctx->cb_per_lights, light_data, sizeof(light_data));
         if (FAILED(hr)) {
             d3d11_log_hresult("Map(cbPerLights)", hr);
+            d3d11_stats_count(&ctx->stats.dropped_draws);
             return;
         }
         hr = d3d11_upload_cluster_table(ctx,
@@ -1571,6 +1580,7 @@ static void d3d11_submit_draw(void *ctx_ptr,
                                         scene_data.light_count);
         if (FAILED(hr)) {
             d3d11_log_hresult("Map(cbCluster)", hr);
+            d3d11_stats_count(&ctx->stats.dropped_draws);
             return;
         }
         ctx->uploaded_lights_revision = cmd->lights_revision;
@@ -1609,12 +1619,14 @@ static void d3d11_submit_draw(void *ctx_ptr,
         d3d11_log_hresult("Map(cbPerMaterial)", hr);
         d3d11_unbind_draw_resources(ctx);
         d3d11_release_temporary_resources(&draw_resources);
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
     }
 
     if (!d3d11_acquire_mesh_buffers(ctx, cmd, &mesh_vb, &mesh_ib)) {
         d3d11_unbind_draw_resources(ctx);
         d3d11_release_temporary_resources(&draw_resources);
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
     }
 
@@ -1625,6 +1637,7 @@ static void d3d11_submit_draw(void *ctx_ptr,
     d3d11_bind_main_pipeline(ctx, cmd, wireframe, backface_cull, 0);
     ID3D11DeviceContext_DrawIndexed(ctx->ctx, index_count, 0, 0);
     (void)d3d11_record_frame_device_status(ctx, "DrawIndexed(main)");
+    d3d11_stats_count(&ctx->stats.draw_calls);
 
     d3d11_unbind_draw_resources(ctx);
     d3d11_release_temporary_resources(&draw_resources);
@@ -1680,7 +1693,9 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
     float safe_ambient[3];
 
     (void)win;
-    if (!ctx || ctx->frame_submission_failed || !cmd || instance_count <= 0 || !cmd->vertices ||
+    if (!ctx)
+        return;
+    if (ctx->frame_submission_failed || !cmd || instance_count <= 0 || !cmd->vertices ||
         !cmd->indices || (!instance_matrices && !cmd->particle_instances) ||
         !vgfx3d_d3d11_draw_submission_is_ready(ctx->frame_active,
                                                ctx->shadow_pass_slot,
@@ -1688,8 +1703,10 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
                                                ctx->current_rtv_count,
                                                ctx->current_rtvs[0] != NULL,
                                                ctx->current_width,
-                                               ctx->current_height))
+                                               ctx->current_height)) {
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
+    }
     vgfx3d_sanitize_draw_command(cmd, &safe_cmd);
     cmd = &safe_cmd;
     light_count = vgfx3d_sanitize_light_array(lights, light_count, safe_lights, VGFX3D_MAX_LIGHTS);
@@ -1700,19 +1717,25 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
     ambient = safe_ambient;
     particle_mode = cmd->particle_instances != NULL;
     index_count = vgfx3d_draw_cmd_validated_index_count(cmd);
-    if (index_count == 0)
+    if (index_count == 0) {
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
+    }
 
     instance_stride =
         particle_mode ? sizeof(vgfx3d_particle_instance_t) : sizeof(d3d_instance_data_t);
     if (!vgfx3d_d3d11_compute_instance_upload_bytes(
-            instance_count, instance_stride, &instance_upload_bytes))
+            instance_count, instance_stride, &instance_upload_bytes)) {
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
+    }
     if (particle_mode) {
         instance_upload_source = cmd->particle_instances;
     } else {
-        if (!d3d11_ensure_instance_upload_capacity(ctx, instance_count))
+        if (!d3d11_ensure_instance_upload_capacity(ctx, instance_count)) {
+            d3d11_stats_count(&ctx->stats.dropped_draws);
             return;
+        }
         vgfx3d_d3d11_fill_instance_data(
             ctx->instance_upload_data,
             instance_count,
@@ -1740,6 +1763,7 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
     hr = d3d11_update_constant_buffer(ctx, ctx->cb_per_object, &object_data, sizeof(object_data));
     if (FAILED(hr)) {
         d3d11_log_hresult("Map(cbPerObject)", hr);
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
     }
     /* Scene + light constants only change with the queued light-snapshot
@@ -1751,11 +1775,13 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
         hr = d3d11_update_constant_buffer(ctx, ctx->cb_per_scene, &scene_data, sizeof(scene_data));
         if (FAILED(hr)) {
             d3d11_log_hresult("Map(cbPerScene)", hr);
+            d3d11_stats_count(&ctx->stats.dropped_draws);
             return;
         }
         hr = d3d11_update_constant_buffer(ctx, ctx->cb_per_lights, light_data, sizeof(light_data));
         if (FAILED(hr)) {
             d3d11_log_hresult("Map(cbPerLights)", hr);
+            d3d11_stats_count(&ctx->stats.dropped_draws);
             return;
         }
         hr = d3d11_upload_cluster_table(ctx,
@@ -1764,6 +1790,7 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
                                         scene_data.light_count);
         if (FAILED(hr)) {
             d3d11_log_hresult("Map(cbCluster)", hr);
+            d3d11_stats_count(&ctx->stats.dropped_draws);
             return;
         }
         ctx->uploaded_lights_revision = cmd->lights_revision;
@@ -1802,6 +1829,7 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
         d3d11_log_hresult("Map(cbPerMaterial)", hr);
         d3d11_unbind_draw_resources(ctx);
         d3d11_release_temporary_resources(&draw_resources);
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
     }
 
@@ -1815,6 +1843,7 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
                                      D3D11_INITIAL_INSTANCE_BUFFER_SIZE)) {
         d3d11_unbind_draw_resources(ctx);
         d3d11_release_temporary_resources(&draw_resources);
+        d3d11_stats_count(&ctx->stats.dropped_draws);
         return;
     }
 
@@ -1832,6 +1861,7 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
     }
     ID3D11DeviceContext_DrawIndexedInstanced(ctx->ctx, index_count, instance_count, 0, 0, 0);
     (void)d3d11_record_frame_device_status(ctx, "DrawIndexedInstanced(main)");
+    d3d11_stats_count(&ctx->stats.draw_calls);
 
     d3d11_unbind_draw_resources(ctx);
     d3d11_release_temporary_resources(&draw_resources);

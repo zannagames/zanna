@@ -1612,6 +1612,27 @@ static int d3d11_readback_rgba(
     }
 }
 
+/// @brief Present the swapchain and classify the path taken for backend telemetry (GAP-10).
+/// @details `present_path` mirrors the last classification so diagnostics can tell a scene
+///   rendered straight into the back buffer from one resolved through the offscreen scene
+///   route. Only presents that reach the swapchain are counted, so a context without a swap
+///   chain leaves every present counter at its documented zero.
+/// @param[in,out] ctx Backend context owning the swap chain and telemetry snapshot.
+/// @param[in] offscreen Nonzero when the frame reached the back buffer through the offscreen
+///   scene target (post-FX composite or scene resolve) rather than direct swapchain rendering.
+static void d3d11_present_swapchain_classified(d3d11_context_t *ctx, int offscreen) {
+    if (!ctx || !ctx->swap_chain)
+        return;
+    d3d11_present_swapchain(ctx);
+    if (offscreen) {
+        d3d11_stats_count(&ctx->stats.offscreen_presents);
+        ctx->stats.present_path = 2;
+    } else {
+        d3d11_stats_count(&ctx->stats.direct_presents);
+        ctx->stats.present_path = 1;
+    }
+}
+
 /// @brief Internal present path — composite scene + post-FX + overlay onto the swapchain.
 /// @param[in,out] ctx Active D3D11 backend context with a completed pending frame.
 /// @param[in] chain Optional ordered post-processing chain to apply before presentation.
@@ -1622,7 +1643,8 @@ static void d3d11_present_internal(d3d11_context_t *ctx, const vgfx3d_postfx_cha
         return;
     ctx->frame_pending_present = 0;
     if (ctx->scene_composited_to_swapchain) {
-        d3d11_present_swapchain(ctx);
+        /* apply_postfx already resolved the offscreen scene route onto the back buffer. */
+        d3d11_present_swapchain_classified(ctx, 1);
         ctx->scene_composited_to_swapchain = 0;
         return;
     }
@@ -1633,26 +1655,26 @@ static void d3d11_present_internal(d3d11_context_t *ctx, const vgfx3d_postfx_cha
     if (!use_postfx) {
         if (d3d11_window_scene_route_enabled(ctx) && d3d11_has_scene_targets(ctx) &&
             d3d11_resolve_scene_to_target(ctx, ctx->rtv, ctx->width, ctx->height, 0, NULL)) {
-            d3d11_present_swapchain(ctx);
+            d3d11_present_swapchain_classified(ctx, 1);
             ctx->scene_composited_to_swapchain = 0;
             return;
         }
-        d3d11_present_swapchain(ctx);
+        d3d11_present_swapchain_classified(ctx, 0);
         ctx->scene_composited_to_swapchain = 0;
         return;
     }
 
     if (!d3d11_apply_postfx_chain(ctx, chain, ctx->rtv, ctx->width, ctx->height, 0, NULL)) {
         if (d3d11_resolve_scene_to_target(ctx, ctx->rtv, ctx->width, ctx->height, 0, NULL)) {
-            d3d11_present_swapchain(ctx);
+            d3d11_present_swapchain_classified(ctx, 1);
             ctx->scene_composited_to_swapchain = 0;
             return;
         }
-        d3d11_present_swapchain(ctx);
+        d3d11_present_swapchain_classified(ctx, 0);
         ctx->scene_composited_to_swapchain = 0;
         return;
     }
-    d3d11_present_swapchain(ctx);
+    d3d11_present_swapchain_classified(ctx, 1);
     ctx->scene_composited_to_swapchain = 0;
 }
 
