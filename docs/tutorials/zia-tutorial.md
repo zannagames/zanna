@@ -614,10 +614,12 @@ func getNextGuess() -> Integer {
 }
 ```
 
-For more complete examples, see the `examples/games/` directory:
-- `frogger/` — Full Frogger game with classes and collision detection
-- `centipede/` — Centipede arcade game with classes and game loop
-- `pacman/` — Crackman maze-chase game demonstrating movement and collision
+For more complete examples, see `examples/games/` and the
+[zannademos repository](https://github.com/zannagames/zannademos):
+- `examples/games/crackman/` — Crackman maze-chase game demonstrating movement and collision
+- `examples/games/chess/` — Full chess game with classes, AI, and a drag-and-drop GUI
+- `zannademos/games/frogger/` — Full Frogger game with classes and collision detection
+- `zannademos/games/centipede/` — Centipede arcade game with classes and game loop
 
 ---
 
@@ -630,8 +632,8 @@ For more complete examples, see the `examples/games/` directory:
 
 **Examples:**
 
-- `examples/games/frogger/` — Complete Frogger game example
-- `examples/games/centipede/` — Centipede arcade game
+- `zannademos/games/frogger/` — Complete Frogger game example
+- `zannademos/games/centipede/` — Centipede arcade game
 - `examples/games/crackman/` — Crackman game
 
 **Interactive:**

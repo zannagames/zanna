@@ -37,10 +37,53 @@
 
 module Crackman;
 
+bind Zanna.System.Environment as Env;
+bind Zanna.IO.File as File;
+bind Zanna.IO.Path as Path;
+bind Zanna.Terminal as Terminal;
 bind "./game";
+
+func hasArg(wanted: String) -> Boolean {
+    var count = Env.GetArgumentCount();
+    var i = 0;
+    while i < count {
+        if Env.GetArgument(i) == wanted { return true; }
+        i = i + 1;
+    }
+    return false;
+}
+
+func resolvePackageSmokePath(path: String) -> String {
+    if File.Exists(path) { return path; }
+    var exePath = Path.Join(Path.ExeDir(), path);
+    if File.Exists(exePath) { return exePath; }
+    return path;
+}
+
+/// @brief Headless install validation for packaged builds (no window).
+/// Verifies the declared asset payload landed next to the executable so the
+/// platform installer smokes can assert a working install.
+func runPackageSmoke() {
+    var fontPath = resolvePackageSmokePath(
+        Path.Join("assets", Path.Join("fonts", "zanna_8x8.bdf")));
+    if !File.Exists(fontPath) {
+        Terminal.Say("RESULT: missing_font_asset");
+        Env.Exit(2);
+        return;
+    }
+
+    Terminal.Say("RESULT: package_smoke_ok");
+    Env.Exit(0);
+}
 
 /// @brief Entry point. Construct Game; its run() has the main loop.
 func start() {
+    if hasArg("--zanna-package-smoke") or
+       Env.GetVariable("ZANNA_CRACKMAN_PACKAGE_SMOKE") == "1" {
+        runPackageSmoke();
+        return;
+    }
+
     var theGame = new game.Game();
     theGame.run();
 }

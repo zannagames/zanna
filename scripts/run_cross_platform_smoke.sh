@@ -160,7 +160,7 @@ run_named_tests() {
     done <<< "$listing"
 }
 
-core_regex='^(smoke_term_basic|smoke_basic_oop|zia_smoke_paint|zia_smoke_zannasql|zia_smoke_chess)$'
+core_regex='^(smoke_term_basic|smoke_basic_oop|zia_smoke_paint|zia_smoke_crackman|zia_smoke_chess)$'
 run_named_tests "$core_regex"
 
 surface_link_regex='^(test_rt_graphics_surface_link|test_rt_audio_surface_link)$'
@@ -182,12 +182,12 @@ planner_regex='^(test_linker_platform_import_planners|test_linker_runtime_import
 run_named_tests "$planner_regex"
 
 if [[ $HOST_MACOS -eq 1 && $NATIVE_LINK_A64 -eq 1 ]]; then
-    native_link_regex='^(native_smoke_3dbowling_build_arm64|native_smoke_xenoscape_start_arm64|native_smoke_xenoscape_action_names_arm64|native_smoke_zannastudio_completion_arm64)$'
+    native_link_regex='^(native_smoke_chess_ai_arm64|native_smoke_crackman_movement_arm64|native_smoke_zannastudio_completion_arm64)$'
     run_named_tests "$native_link_regex"
 fi
 
 if [[ $HAS_GRAPHICS -eq 1 && $HAS_DISPLAY -eq 1 ]]; then
-    display_regex='^(zia_smoke_zannastudio|zia_smoke_3dbowling|zia_smoke_3dscene|zia_smoke_3dbaseball|zia_smoke_xenoscape)$'
+    display_regex='^(zia_smoke_zannastudio)$'
     run_named_tests "$display_regex"
 else
     echo "Skipping display-bound smoke tests on this host"

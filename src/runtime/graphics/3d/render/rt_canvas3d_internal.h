@@ -1436,6 +1436,7 @@ typedef struct {
     int32_t temp_buf_capacity;
     void **temp_buffer_set;
     int32_t temp_buffer_set_capacity;
+    int32_t temp_buffer_set_count;
     rt_canvas3d_float_snapshot_entry *float_snapshots;
     int32_t float_snapshot_count;
     int32_t float_snapshot_capacity;
@@ -1459,6 +1460,7 @@ typedef struct {
     int32_t temp_obj_capacity;
     void **temp_object_set;
     int32_t temp_object_set_capacity;
+    int32_t temp_object_set_count;
 
     /* Reusable text rendering scratch buffers */
     vgfx3d_vertex_t *text_vertices;
@@ -1651,6 +1653,7 @@ typedef struct {
     int32_t motion_history_capacity;
     int32_t *motion_history_hash;
     int32_t motion_history_hash_capacity;
+    int32_t motion_history_hash_count;
     int32_t motion_history_retention_frames;
     rt_canvas3d_occlusion_history_entry *occlusion_history;
     int32_t occlusion_history_count;
@@ -2167,8 +2170,8 @@ typedef struct {
 uint32_t canvas3d_hash_u64(uintptr_t value);
 /// @brief Round a positive table-size request up to a representable power of two.
 /// @param value Requested minimum capacity.
-/// @return Smallest supported power of two at least @p value, subject to the
-///   implementation's saturation behavior.
+/// @return Smallest supported positive signed power of two at least @p value,
+///   or zero when the request exceeds `2^30`.
 int32_t canvas3d_next_power_of_two_i32(int32_t value);
 /// @brief Drop all retained previous-model matrices after an external coordinate-space shift.
 /// @details Floating-origin rebases change every world transform by the same delta. Retaining

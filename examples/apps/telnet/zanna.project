@@ -1,4 +1,0 @@
-project telnet
-version 0.1.0
-lang zia
-entry server.zia

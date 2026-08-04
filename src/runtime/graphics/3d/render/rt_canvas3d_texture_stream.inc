@@ -50,15 +50,28 @@ typedef struct {
     int32_t demote_streak;     /* consecutive decision frames wanting less detail */
 } canvas3d_texture_stream_entry_t;
 
+/// @brief Return whether two nonnegative frame stamps are separated by more than a bound.
+/// @details Ordering is checked before unsigned subtraction, avoiding signed addition/subtraction
+///   overflow near the frame-serial limit. Invalid or future prior stamps are treated as stale.
+/// @param current Current positive canvas frame serial.
+/// @param previous Earlier entry stamp.
+/// @param maximum_gap Largest consecutive gap that remains live.
+/// @return Nonzero when the entry is invalid, from the future, or older than @p maximum_gap.
+static int canvas3d_texture_stream_gap_exceeds(int64_t current,
+                                               int64_t previous,
+                                               uint64_t maximum_gap) {
+    if (current <= 0 || previous < 0 || previous > current)
+        return 1;
+    return (uint64_t)current - (uint64_t)previous > maximum_gap;
+}
+
 /// @brief Find the table slot for @p identity, or the empty slot to insert into.
 /// @param entries Open-addressed entry array.
 /// @param capacity Positive power-of-two number of slots in @p entries.
 /// @param identity Nonzero stable asset identity to find.
 /// @return Slot pointer, or NULL when the table has no capacity.
-static canvas3d_texture_stream_entry_t *
-canvas3d_texture_stream_slot(canvas3d_texture_stream_entry_t *entries,
-                             int32_t capacity,
-                             uint64_t identity) {
+static canvas3d_texture_stream_entry_t *canvas3d_texture_stream_slot(
+    canvas3d_texture_stream_entry_t *entries, int32_t capacity, uint64_t identity) {
     uint64_t hash;
     if (!entries || capacity <= 0 || identity == 0)
         return NULL;
@@ -88,8 +101,8 @@ static int canvas3d_texture_stream_grow(rt_canvas3d *c) {
 
     if (old_capacity > INT32_MAX / 2)
         return 0;
-    new_entries = (canvas3d_texture_stream_entry_t *)calloc((size_t)new_capacity,
-                                                            sizeof(*new_entries));
+    new_entries =
+        (canvas3d_texture_stream_entry_t *)calloc((size_t)new_capacity, sizeof(*new_entries));
     if (!new_entries)
         return 0;
     for (int32_t i = 0; i < old_capacity; i++) {
@@ -100,7 +113,8 @@ static int canvas3d_texture_stream_grow(rt_canvas3d *c) {
             continue;
         last_seen = entry->last_touch_serial > entry->demand_serial ? entry->last_touch_serial
                                                                     : entry->demand_serial;
-        if (last_seen + CANVAS3D_TEXTURE_STREAM_STALE_FRAMES < c->frame_serial)
+        if (canvas3d_texture_stream_gap_exceeds(
+                c->frame_serial, last_seen, CANVAS3D_TEXTURE_STREAM_STALE_FRAMES))
             continue;
         slot = canvas3d_texture_stream_slot(new_entries, new_capacity, entry->identity);
         if (slot) {
@@ -122,16 +136,17 @@ static int canvas3d_texture_stream_grow(rt_canvas3d *c) {
 /// @param identity Nonzero stable texture-asset cache identity.
 /// @param create Nonzero to insert a missing entry; zero for lookup only.
 /// @return Entry pointer, or NULL when @p identity is 0 or allocation fails.
-static canvas3d_texture_stream_entry_t *
-canvas3d_texture_stream_entry(rt_canvas3d *c, uint64_t identity, int create) {
+static canvas3d_texture_stream_entry_t *canvas3d_texture_stream_entry(rt_canvas3d *c,
+                                                                      uint64_t identity,
+                                                                      int create) {
     canvas3d_texture_stream_entry_t *slot;
 
     if (!c || identity == 0)
         return NULL;
-    slot = canvas3d_texture_stream_slot(
-        (canvas3d_texture_stream_entry_t *)c->texture_stream_entries,
-        c->texture_stream_capacity,
-        identity);
+    slot =
+        canvas3d_texture_stream_slot((canvas3d_texture_stream_entry_t *)c->texture_stream_entries,
+                                     c->texture_stream_capacity,
+                                     identity);
     if (slot && slot->identity == identity)
         return slot;
     if (!create)
@@ -303,7 +318,7 @@ static int canvas3d_texture_stream_touch(rt_canvas3d *c, void *asset) {
     previous_touch = entry->last_touch_serial;
     entry->last_touch_serial = c->frame_serial;
     /* A draw gap makes the accumulated demand stale — restart demotion pacing. */
-    if (previous_touch + 2 < c->frame_serial)
+    if (canvas3d_texture_stream_gap_exceeds(c->frame_serial, previous_touch, UINT64_C(2)))
         entry->demote_streak = 0;
 
     target = entry->frame_min_desired == INT32_MAX ? 0 : entry->frame_min_desired;
@@ -388,10 +403,8 @@ static void canvas3d_texture_stream_touch_material(rt_canvas3d *c, const rt_mate
         return;
     canvas3d_texture_stream_touch(c, rt_material3d_resolve_texture_native_asset(mat->texture));
     canvas3d_texture_stream_touch(c, rt_material3d_resolve_texture_native_asset(mat->normal_map));
-    canvas3d_texture_stream_touch(c,
-                                  rt_material3d_resolve_texture_native_asset(mat->specular_map));
-    canvas3d_texture_stream_touch(c,
-                                  rt_material3d_resolve_texture_native_asset(mat->emissive_map));
+    canvas3d_texture_stream_touch(c, rt_material3d_resolve_texture_native_asset(mat->specular_map));
+    canvas3d_texture_stream_touch(c, rt_material3d_resolve_texture_native_asset(mat->emissive_map));
     canvas3d_texture_stream_touch(
         c, rt_material3d_resolve_texture_native_asset(mat->metallic_roughness_map));
     canvas3d_texture_stream_touch(c, rt_material3d_resolve_texture_native_asset(mat->ao_map));
@@ -427,8 +440,7 @@ static void canvas3d_texture_stream_record_cmd(rt_canvas3d *c,
 ///          risking a visibly soft near instance.
 /// @param c Canvas owning demand aggregation.
 /// @param cmd Borrowed filled instanced draw command and its native asset slots.
-static void canvas3d_texture_stream_record_cmd_full(rt_canvas3d *c,
-                                                    const vgfx3d_draw_cmd_t *cmd) {
+static void canvas3d_texture_stream_record_cmd_full(rt_canvas3d *c, const vgfx3d_draw_cmd_t *cmd) {
     if (!c || !c->texture_stream_enabled || c->frame_is_2d || !cmd)
         return;
     canvas3d_texture_stream_demand(c, cmd->texture_asset, DBL_MAX);

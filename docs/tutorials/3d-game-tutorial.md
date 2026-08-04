@@ -127,5 +127,5 @@ Studio's command palette for the same result as a streamed job.
   `docs/zannalib/graphics/game3d.md` covers the `Zanna.Game3D` gameplay
   layer (characters, cameras, combat, dialogue, streaming).
 - `docs/specs/vscn-scene-format.md` specifies the `.scene3d` format.
-- The shipped demos scale the same pattern up: `examples/games/ashfall-scenes`
+- The shipped demos scale the same pattern up: `zannademos/games/ashfall-scenes`
   is a nine-mission campaign authored entirely as `.scene3d` files.

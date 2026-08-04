@@ -200,7 +200,7 @@ func runScenario(title: String, render: Boolean) -> Float {
 
     var audio = world.Audio;
     audio.SetAttenuation(1.0, 12.0);
-    var bounceClip = audio.LoadAsset("examples/games/xenoscape/sounds/jump.wav");
+    var bounceClip = audio.LoadAsset("zannademos/games/xenoscape/sounds/jump.wav");
     if (bounceClip == null) {
         bounceClip = Sound.Synth.Tone(440, 80, 0);
     }

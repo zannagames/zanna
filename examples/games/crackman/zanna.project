@@ -10,6 +10,10 @@ package-identifier org.zanna-lang.crackman
 package-author "Zanna Project"
 package-license MIT
 package-icon packaging/icon.png
+min-os-windows 10.0
+windows-install-scope user
+windows-install-dir Crackman
+shortcut-desktop on
 
 # === Assets ===
 asset assets assets

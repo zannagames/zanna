@@ -95,14 +95,15 @@ assembler and linker produced that Mach-O. And it printed the exact same thing t
 VM did: same program, two engines, identical output."
 
 ## 6. The spectacle — real programs (DRY-RUN THESE FIRST)
-All are runnable projects (`zanna.project` present):
+All are runnable projects (`zanna.project` present). The showcase titles live
+in the zannademos clone at `<zanna>/zannademos/`:
 ```sh
-zanna run examples/games/ridgebound   # Ridgebound: terrain, water, skybox, PBR, post-FX
-zanna run examples/games/xenoscape          # Metroid-style sidescroller
-zanna run examples/games/3dbowling          # physics-driven 3D
+zanna run zannademos/games/ridgebound   # Ridgebound: terrain, water, skybox, PBR, post-FX
+zanna run zannademos/games/xenoscape        # Metroid-style sidescroller
+zanna run zannademos/games/3dbowling        # physics-driven 3D
 zanna run examples/games/chess              # alpha-beta AI + drag-drop GUI
 zanna run examples/apps/paint               # layers, undo/redo
-zanna run examples/apps/zannasql            # SQL engine + client
+zanna run zannademos/apps/zannasql          # SQL engine + client
 ```
 Capture gameplay separately at high frame rate; cut to the best 4–6 seconds of each.
 

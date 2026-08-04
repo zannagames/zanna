@@ -651,9 +651,25 @@ int canvas3d_queue_screen_round_rect(rt_canvas3d *c,
 int canvas3d_track_final_overlay_temp_object(rt_canvas3d *c, void *obj) {
     if (!c || !obj)
         return 0;
+    if (c->final_overlay_temp_obj_capacity < 0)
+        return 0;
+    if (!c->final_overlay_temp_objects) {
+        c->final_overlay_temp_obj_count = 0;
+        c->final_overlay_temp_obj_capacity = 0;
+    } else {
+        if (c->final_overlay_temp_obj_count < 0)
+            c->final_overlay_temp_obj_count = 0;
+        if (c->final_overlay_temp_obj_count > c->final_overlay_temp_obj_capacity)
+            c->final_overlay_temp_obj_count = c->final_overlay_temp_obj_capacity;
+    }
+    for (int32_t i = 0; i < c->final_overlay_temp_obj_count; ++i) {
+        if (c->final_overlay_temp_objects[i] == obj)
+            return 1;
+    }
+    if (c->final_overlay_temp_obj_count >= INT32_MAX)
+        return 0;
     if (c->final_overlay_temp_obj_count >= c->final_overlay_temp_obj_capacity) {
-        if (c->final_overlay_temp_obj_capacity < 0 ||
-            c->final_overlay_temp_obj_capacity > INT32_MAX / 2)
+        if (c->final_overlay_temp_obj_capacity > INT32_MAX / 2)
             return 0;
         int32_t new_cap =
             c->final_overlay_temp_obj_capacity == 0 ? 8 : c->final_overlay_temp_obj_capacity * 2;
@@ -680,6 +696,17 @@ int canvas3d_track_final_overlay_temp_object(rt_canvas3d *c, void *obj) {
 void canvas3d_release_tracked_final_overlay_temp_object(rt_canvas3d *c, void *obj) {
     if (!c || !obj)
         return;
+    if (c->final_overlay_temp_obj_capacity < 0)
+        return;
+    if (!c->final_overlay_temp_objects) {
+        c->final_overlay_temp_obj_count = 0;
+        c->final_overlay_temp_obj_capacity = 0;
+        return;
+    }
+    if (c->final_overlay_temp_obj_count < 0)
+        c->final_overlay_temp_obj_count = 0;
+    if (c->final_overlay_temp_obj_count > c->final_overlay_temp_obj_capacity)
+        c->final_overlay_temp_obj_count = c->final_overlay_temp_obj_capacity;
     for (int32_t i = 0; i < c->final_overlay_temp_obj_count; ++i) {
         if (c->final_overlay_temp_objects[i] == obj) {
             int32_t last = c->final_overlay_temp_obj_count - 1;
@@ -998,6 +1025,29 @@ int canvas3d_queue_screen_line(rt_canvas3d *c,
     return canvas3d_queue_screen_geometry(c, verts, 4, indices, 6, r, g, b, a);
 }
 
+/// @brief Advance the positive frame epoch without invoking signed overflow.
+/// @details A serial discontinuity invalidates every canvas-owned table whose entries are stamped
+///   with the old epoch. External animation and particle owners key on serial inequality and
+///   therefore naturally start a new snapshot when the serial becomes one.
+/// @param c Canvas whose serial and temporal caches are advanced.
+static void canvas3d_advance_frame_serial(rt_canvas3d *c) {
+    if (!c)
+        return;
+    if (c->frame_serial > 0 && c->frame_serial < INT64_MAX) {
+        c->frame_serial++;
+        return;
+    }
+
+    c->frame_serial = 1;
+    canvas3d_clear_motion_history(c);
+    canvas3d_clear_occlusion_history(c);
+    free(c->texture_stream_entries);
+    c->texture_stream_entries = NULL;
+    c->texture_stream_capacity = 0;
+    c->texture_stream_live = 0;
+    canvas3d_clear_aa_text_cache(c);
+}
+
 /// @brief Switch the canvas into 2D-overlay mode for the next batch of draw calls.
 ///
 /// All subsequent screen-space draws (rects, lines, sprites, text)
@@ -1040,7 +1090,7 @@ void rt_canvas3d_begin_2d(void *obj) {
     c->cached_cam_near = 0.1f;
     c->cached_cam_far = 1000.0f;
     c->cached_cam_is_ortho = params.is_ortho;
-    c->frame_serial++;
+    canvas3d_advance_frame_serial(c);
     c->cpu_finalized_this_render = 0;
     canvas3d_prune_motion_history(c);
     canvas3d_reset_frame_submission_stats(c);
@@ -1526,7 +1576,7 @@ static void canvas3d_begin_camera_pass(void *obj,
     canvas3d_update_occlusion_state_for_begin(c, output_w, output_h);
 
     /* Reset draw command queue for this frame */
-    c->frame_serial++;
+    canvas3d_advance_frame_serial(c);
     c->cpu_finalized_this_render = 0;
     canvas3d_prune_motion_history(c);
     canvas3d_reset_frame_submission_stats(c);

@@ -27,8 +27,11 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT_DIR="$(dirname "$SCRIPT_DIR")"
 BUILD_DIR="$ROOT_DIR/build"
-BIN_DIR="$ROOT_DIR/examples/bin"
-DEMO_MANIFEST="$SCRIPT_DIR/demo_projects.list"
+# ZANNA_DEMO_ROOT / ZANNA_DEMO_BIN_DIR / ZANNA_DEMO_MANIFEST let an external
+# demo tree (the zannademos repo) reuse this builder unchanged.
+DEMO_ROOT="${ZANNA_DEMO_ROOT:-$ROOT_DIR/examples}"
+BIN_DIR="${ZANNA_DEMO_BIN_DIR:-$ROOT_DIR/examples/bin}"
+DEMO_MANIFEST="${ZANNA_DEMO_MANIFEST:-$SCRIPT_DIR/demo_projects.list}"
 
 ZANNA="$BUILD_DIR/src/tools/zanna/zanna"
 
@@ -110,7 +113,7 @@ load_demo_manifest() {
                 exit 1
                 ;;
         esac
-        SHOWCASE_DEMOS+=("$name:$ROOT_DIR/examples/$category/$directory")
+        SHOWCASE_DEMOS+=("$name:$DEMO_ROOT/$category/$directory")
     done < "$DEMO_MANIFEST"
 
     if [[ ${#SHOWCASE_DEMOS[@]} -eq 0 ]]; then
@@ -276,7 +279,7 @@ build_demo() {
 
 echo -e "${CYAN}Building Zanna demos with native assembler + linker (arm64)${NC}"
 if [[ $SKIP_RUN -eq 0 ]]; then
-    echo -e "${CYAN}Run validation: launch from ./examples/bin with timeout=${RUN_TIMEOUT_DEFAULT}s${NC}"
+    echo -e "${CYAN}Run validation: launch from $BIN_DIR with timeout=${RUN_TIMEOUT_DEFAULT}s${NC}"
 fi
 echo "=============================================="
 echo ""

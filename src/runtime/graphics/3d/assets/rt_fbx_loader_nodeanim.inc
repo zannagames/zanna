@@ -1311,7 +1311,6 @@ static int fbx_node_anim_append_morph_threshold_times(int64_t **times,
                 if (!isfinite(midpoint_delta))
                     return 0;
                 if (midpoint_delta == 0.0) {
-                    lo = midpoint;
                     hi = midpoint;
                     break;
                 }

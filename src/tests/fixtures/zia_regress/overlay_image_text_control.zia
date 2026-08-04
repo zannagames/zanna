@@ -1,0 +1,58 @@
+// ============================================================================
+// MODULE: overlay_image_text_control
+// PURPOSE: Existing-binary reproduction for switching between large overlay
+//          images while retaining geometry-based Canvas3D HUD text.
+//          Documents behavior only; does not modify the Zanna runtime.
+// ============================================================================
+
+module overlay_image_text_control;
+
+bind Zanna.Graphics.Pixels as Pixels;
+bind Zanna.Graphics3D;
+bind Zanna.IO.Path as Path;
+bind Zanna.IO.TempFile as TempFile;
+bind Zanna.Terminal;
+
+func main() {
+    var art = Pixels.Load("zannademos/games/3dbowling/assets/art/title-key-art.png");
+    var wood = Pixels.Load("zannademos/games/3dbowling/assets/textures/lane-maple.png");
+    if (art == null || wood == null) { Say("assets-missing"); return; }
+    var canvas = Canvas3D.New("Canvas3D image/text switch repro", 960, 540);
+    Canvas3D.SetTextureUploadBudget(canvas, 16777216);
+    var camera = Camera3D.New(50.0, 1.7777778, 0.1, 10.0);
+    var shot: Pixels = null;
+
+    for (var titleFrame: Integer = 0; titleFrame < 8; titleFrame = titleFrame + 1) {
+        Canvas3D.Clear(canvas, 0.0, 0.0, 0.0);
+        Canvas3D.Begin(canvas, camera); Canvas3D.End(canvas); Canvas3D.ClearOverlay(canvas);
+        Canvas3D.DrawImage2D(canvas, 0, 0, 960, 540, art);
+        for (var row: Integer = 0; row < 10; row = row + 1) {
+            Canvas3D.DrawText2DScaled(canvas, 600, 36 + row * 36,
+                "TITLE MENU ROW " + toString(row + 1), 0xFFFFFF, 1.1);
+        }
+        Canvas3D.ScreenshotFinal(canvas);
+        Canvas3D.Flip(canvas);
+    }
+
+    for (var gameFrame: Integer = 0; gameFrame < 8; gameFrame = gameFrame + 1) {
+        Canvas3D.Clear(canvas, 0.025, 0.045, 0.075);
+        Canvas3D.Begin(canvas, camera); Canvas3D.End(canvas); Canvas3D.ClearOverlay(canvas);
+        Canvas3D.DrawRoundRect2D(canvas, 24, 20, 520, 350, 14, 0x071622, 0.94);
+        for (var line: Integer = 0; line < 12; line = line + 1) {
+            Canvas3D.DrawText2DScaled(canvas, 48, 42 + line * 25,
+                "HUD STATUS LINE " + toString(line + 1), 0xFFFFFF, 1.0);
+        }
+        Canvas3D.DrawImage2D(canvas, 700, 90, 180, 110, wood);
+        for (var cell: Integer = 0; cell < 36; cell = cell + 1) {
+            Canvas3D.DrawRect2D(canvas, 706 + (cell % 9) * 18,
+                96 + (cell / 9) * 22, 10, 4, 0x36CFE1);
+        }
+        shot = Canvas3D.ScreenshotFinal(canvas);
+        if (gameFrame < 7) { Canvas3D.Flip(canvas); }
+    }
+
+    Pixels.SavePng(shot, Path.Join(TempFile.Dir(), "3dbowling_zanna_overlay_image_text_repro.png"));
+    Say("backend=" + canvas.Backend);
+    Say("expected=12-readable-HUD-lines-plus-wood-thumbnail");
+    Say("screenshot=3dbowling_zanna_overlay_image_text_repro.png");
+}

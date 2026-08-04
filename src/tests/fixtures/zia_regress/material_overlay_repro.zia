@@ -1,0 +1,77 @@
+// ============================================================================
+// MODULE: material_overlay_repro
+// PURPOSE: Existing-binary reproduction for mixing a Pixels-backed 3D albedo
+//          map with a different Pixels-backed final overlay on Metal.
+//          Documents behavior only; does not modify the Zanna runtime.
+// ============================================================================
+
+module material_overlay_repro;
+
+bind Zanna.Graphics.Pixels as Pixels;
+bind Zanna.Graphics3D;
+bind Zanna.Math;
+bind Zanna.IO.Path as Path;
+bind Zanna.IO.TempFile as TempFile;
+bind Zanna.Terminal;
+
+func visibleSamples(img: Pixels, x0: Integer, y0: Integer,
+                    x1: Integer, y1: Integer) -> Integer {
+    var count = 0;
+    for (var y: Integer = y0; y < y1; y = y + 8) {
+        for (var x: Integer = x0; x < x1; x = x + 8) {
+            var pixel = Pixels.Get(img, x, y);
+            var r = (pixel >> 24) & 255;
+            var g = (pixel >> 16) & 255;
+            var b = (pixel >> 8) & 255;
+            if (r + g + b > 50) { count = count + 1; }
+        }
+    }
+    return count;
+}
+
+func main() {
+    var wood = Pixels.Load("zannademos/games/3dbowling/assets/textures/lane-maple.png");
+    var art = Pixels.Load("zannademos/games/3dbowling/assets/art/title-key-art.png");
+    if (wood == null || art == null) { Say("assets-missing"); return; }
+
+    var canvas = Canvas3D.New("Canvas3D material/overlay repro", 640, 360);
+    Canvas3D.SetTextureUploadBudget(canvas, 16777216);
+    var camera = Camera3D.New(48.0, 1.7777778, 0.1, 20.0);
+    Camera3D.LookAt(camera, new Vec3(0.0, 0.7, -3.4),
+        new Vec3(0.0, 0.35, 0.0), new Vec3(0.0, 1.0, 0.0));
+    var sun = Light3D.Directional(new Vec3(-0.4, -1.0, -0.2), 1.0, 0.95, 0.85);
+    Light3D.SetIntensity(sun, 1.2);
+    Canvas3D.SetLight(canvas, 0, sun);
+    Canvas3D.SetAmbient(canvas, 0.16, 0.18, 0.22);
+
+    var mesh = Mesh3D.Box(2.0, 1.0, 1.0);
+    var material = Material3D.PBR(1.0, 1.0, 1.0);
+    Material3D.SetAlbedoMap(material, wood);
+    material.Roughness = 0.42;
+    var shot: Pixels = null;
+
+    for (var frame: Integer = 0; frame < 10; frame = frame + 1) {
+        Canvas3D.Clear(canvas, 0.015, 0.025, 0.045);
+        Canvas3D.Begin(canvas, camera);
+        Canvas3D.DrawMesh(canvas, mesh, Mat4.Translate(-0.72, 0.45, 0.0), material);
+        Canvas3D.End(canvas);
+        Canvas3D.ClearOverlay(canvas);
+        Canvas3D.DrawImage2DRegion(canvas, 360, 24, 248, 180, art,
+            0, 0, art.Width, art.Height);
+        Canvas3D.DrawImage2D(canvas, 28, 264, 244, 72, wood);
+        Canvas3D.DrawRoundRect2D(canvas, 346, 218, 276, 104, 12, 0x071622, 0.92);
+        Canvas3D.DrawText2DScaled(canvas, 366, 238, "3D MATERIAL + 2D IMAGE", 0x56CFE1, 1.0);
+        Canvas3D.DrawText2DScaled(canvas, 366, 270, "BOTH MUST STAY DISTINCT", 0xFFFFFF, 1.0);
+        shot = Canvas3D.ScreenshotFinal(canvas);
+        if (frame < 9) { Canvas3D.Flip(canvas); }
+    }
+
+    Pixels.SavePng(shot, Path.Join(TempFile.Dir(), "3dbowling_zanna_material_overlay_repro.png"));
+    Say("backend=" + canvas.Backend);
+    Say("screenshot=3dbowling_zanna_material_overlay_repro.png");
+    Say("expected=wood-textured-box-left,wood-thumbnail-bottom-left,title-art-right,two-labels");
+    Say("left-3d-visible-samples=" + toString(visibleSamples(shot, 80, 80, 340, 250)));
+    Say("title-art-visible-samples=" + toString(visibleSamples(shot, 360, 24, 608, 204)));
+    Say("labels-visible-samples=" + toString(visibleSamples(shot, 346, 218, 622, 322)));
+    Say("wood-thumbnail-visible-samples=" + toString(visibleSamples(shot, 28, 264, 272, 336)));
+}

@@ -1130,7 +1130,6 @@ static void *rt_model3d_load_impl(rt_string path,
             model3d_load_from_fbx(model, path, load_assets, preloaded_fbx_data, preloaded_fbx_size);
         free(preloaded_fbx_data);
         preloaded_fbx_data = NULL;
-        preloaded_fbx_size = 0u;
         if (!fbx_ok)
             goto fail;
     } else if (model_has_ext(path_cstr, ".obj")) {

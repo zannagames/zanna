@@ -311,12 +311,21 @@ func main() {
     var outDir = EnvText("ZANNA_SHOT_OUT", ".");
     var which = EnvText("ZANNA_SHOT_WHICH", "all");
 
+    // The scene fixtures live in the zannademos repo (nested clone at
+    // <zanna>/zannademos); shots need that clone present.
     var scene3d = EnvText("ZANNA_SHOT_SCENE3D",
-        "examples/games/ashfall-scenes/assets/scenes/mission-03.scene3d");
+        "zannademos/games/ashfall-scenes/assets/scenes/mission-03.scene3d");
     var scene2d = EnvText("ZANNA_SHOT_SCENE2D",
-        "examples/games/xenoscape-scenes/assets/scenes/region-01.scene2d");
+        "zannademos/games/xenoscape-scenes/assets/scenes/region-01.scene2d");
     var source = EnvText("ZANNA_SHOT_SOURCE",
         "examples/3d/game3d_hello.zia");
+    if File.Exists(scene3d) == false or File.Exists(scene2d) == false {
+        Terminal.Say("web_shot_probe: scene fixtures not found; clone " +
+            "github.com/zannagames/zannademos at <zanna>/zannademos " +
+            "or set ZANNA_SHOT_SCENE3D/ZANNA_SHOT_SCENE2D");
+        Env.Exit(2);
+        return;
+    }
 
     if which == "all" or which == "3d" {
         Shoot3D(width, height, outDir, scene3d);

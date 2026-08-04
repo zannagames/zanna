@@ -2,14 +2,8 @@
 # Format: executable-name|examples-category|project-directory
 
 # Games
-ashfall|games|ashfall
-ashfall-scenes|games|ashfall-scenes
-3dbowling|games|3dbowling
-ridgebound|games|ridgebound
-xenoscape|games|xenoscape
 crackman|games|crackman
 chess|games|chess
-baseball|games|baseball
 
 # 3D demos
 action_slice|3d|action_slice
@@ -19,4 +13,3 @@ overhaul_showcase|3d|overhaul_showcase
 
 # Applications
 paint|apps|paint
-zannasql|apps|zannasql

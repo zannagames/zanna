@@ -60,8 +60,8 @@ zanna run myprogram.bas
 You can also run an entire project directory:
 
 ```bash
-zanna run examples/games/frogger/
-zanna run examples/apps/zannasql/
+zanna run examples/games/chess/
+zanna run examples/apps/paint/
 ```
 
 The standalone tools `vbasic`, `zia`, and `ilrun` are also available:
@@ -74,37 +74,27 @@ ilrun program.il
 
 ### 6. Where can I find example programs?
 
-**2D games (Zia):**
+**In this repo (curated examples):**
 
-- `/examples/games/frogger/` - Full Frogger game demonstrating modules and game architecture
-- `/examples/games/centipede/` - Centipede game
 - `/examples/games/crackman/` - Crackman maze-chase game
 - `/examples/games/chess/` - Full chess engine with an AI opponent
-- `/examples/games/xenoscape/` - Ten-region action Metroidvania
-
-**3D games (Zia):**
-
-- `/examples/games/3dscene/` - Minimal Graphics3D scene walkthrough
-- `/examples/games/3dbaseball/`, `/examples/games/3dbowling/` - Complete 3D games over `Zanna.Game3D`
-- `/examples/games/ashfall/` - Nine-mission sci-fi FPS campaign
-- `/examples/games/ridgebound/` - Compact open-world Game3D demo
-
-**Scene-driven recreations:**
-
-- `/examples/games/xenoscape-scenes/`, `/examples/games/ashfall-scenes/` - The same games with regions authored as `.scene2d` / `.scene3d` documents instead of code
-
-**BASIC games:**
-
-- `/examples/games/vtris/` - Full Tetris game demonstrating OOP, graphics, and game-loop patterns
-- `/examples/games/frogger-basic/`, `/examples/games/centipede-basic/`, `/examples/games/pacman-basic/` - BASIC ports of the Zia games
-
-**Applications and other sources:**
-
-- `/examples/apps/` - Zia application examples such as `zannasql/`, `paint/`, `webserver/`, and `telnet/`
+- `/examples/games/vtris/` - Full Tetris game in BASIC demonstrating OOP, graphics, and game-loop patterns
+- `/examples/games/frogger-basic/`, `/examples/games/centipede-basic/` - BASIC games
+- `/examples/apps/paint/` - Drawing application
+- `/examples/3d/` - The Game3D learning ladder (hello-triangle through a streamed open world)
 - `/examples/apiaudit/` - Focused runtime API examples in both Zia and BASIC
 - `/src/zannastudio/` - Zanna Studio source, built separately from the examples
 - `/src/tests/zia/` - Frontend tests covering specific Zia language features
 - `/src/tests/basic/` - Frontend tests covering specific BASIC language features
+
+**In the [zannademos repository](https://github.com/zannagames/zannademos) (large showcase demos):**
+
+- `games/xenoscape/` - Ten-region action Metroidvania
+- `games/ashfall/` - Nine-mission sci-fi FPS campaign
+- `games/3dbowling/`, `games/ridgebound/`, `games/3dbaseball/`, `games/3dscene/` - 3D games over `Zanna.Game3D` / `Zanna.Graphics3D`
+- `games/xenoscape-scenes/`, `games/ashfall-scenes/` - The same games with regions authored as `.scene2d` / `.scene3d` documents instead of code
+- `games/frogger/`, `games/centipede/`, `games/pacman-basic/`, `games/baseball/` and more
+- `apps/zannasql/`, `apps/webserver/`, `apps/telnet/`, `sqldb-basic/` - Larger applications
 
 ### 7. What platforms does Zanna support?
 
@@ -184,7 +174,7 @@ func useOther() {
 }
 ```
 
-See `/examples/games/frogger/` for a complete multi-module Zia game example.
+See `/examples/games/chess/` for a complete multi-module Zia game example.
 
 ---
 

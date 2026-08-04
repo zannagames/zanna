@@ -128,7 +128,7 @@ static int canvas3d_ensure_mesh_snapshot_hash(rt_canvas3d *c, int32_t needed) {
     int32_t *grown;
     if (!c || needed < 0)
         return 0;
-    if (needed > INT32_MAX / 2) {
+    if (needed > (INT32_C(1) << 29)) {
         c->mesh_snapshot_hash_dirty = 1;
         return 0;
     }

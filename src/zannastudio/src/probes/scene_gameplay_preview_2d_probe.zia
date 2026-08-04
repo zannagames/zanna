@@ -20,8 +20,8 @@
 //   - The probe owns one AppShell and ProjectManager until process exit.
 //   - It reads repository fixtures and writes only one temporary screenshot.
 // Links: zannastudio/src/ui/scene_editor_2d.zia,
-//        examples/games/xenoscape-scenes/scene-components.json,
-//        examples/games/xenoscape-scenes/assets/scenes/region-01.scene2d,
+//        zannademos/games/xenoscape-scenes/scene-components.json,
+//        zannademos/games/xenoscape-scenes/assets/scenes/region-01.scene2d,
 //        docs/adr/0202-project-owned-2d-scene-background-previews.md,
 //        docs/adr/0206-project-owned-2d-object-preview-draw-stacks.md,
 //        docs/adr/0207-non-destructive-scene-game-view.md,
@@ -69,13 +69,20 @@ func HasArg(name: String) -> Boolean {
     return false;
 }
 
+// The Xenoscape: Scenes fixture lives in the zannademos repo, cloned nested at
+// <zanna>/zannademos. Returns "" when the clone is not present so callers can
+// skip visibly instead of failing.
 func projectRoot() -> String {
     var fromProbe =
-        "../../../../examples/games/xenoscape-scenes";
+        "../../../../zannademos/games/xenoscape-scenes";
     if File.Exists(Path.Join(fromProbe, "scene-components.json")) {
         return fromProbe;
     }
-    return "examples/games/xenoscape-scenes";
+    var fromRoot = "zannademos/games/xenoscape-scenes";
+    if File.Exists(Path.Join(fromRoot, "scene-components.json")) {
+        return fromRoot;
+    }
+    return "";
 }
 
 func fail(shell: app_shell.AppShell,
@@ -107,13 +114,18 @@ class GameplayPreview2DProbeContext {
 /// @brief Load the project and verify its preview schema and canonical scene.
 func VerifyProjectPreviewSetup(
     ctx: GameplayPreview2DProbeContext) -> Boolean {
+    var root = projectRoot();
+    if root == "" {
+        Terminal.Say("RESULT: skip (zannademos clone not present)");
+        return false;
+    }
+
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio Xenoscape Preview Probe", 1180, 780);
     shell.SetSceneWorkspaceMode(true);
 
     var project = new project_manager.ProjectManager();
     project.Setup(null);
-    var root = projectRoot();
     var scenePath =
         Path.Join(root, "assets/scenes/region-01.scene2d");
     if File.Exists(scenePath) == false

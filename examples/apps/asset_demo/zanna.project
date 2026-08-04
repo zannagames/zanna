@@ -1,9 +1,0 @@
-# Asset Embedding Demo
-project asset-demo
-version 0.1.0
-lang zia
-entry main.zia
-
-# Embed assets directly into the executable
-embed assets/greeting.txt
-embed assets/config.json

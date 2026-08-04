@@ -22,11 +22,10 @@ Full-featured applications built with [Zia](../docs/languages/zia-reference.md).
 
 | Project | Description | Highlights |
 |---------|-------------|------------|
-| [ZannaSQL](apps/zannasql/) | PostgreSQL-compatible SQL database server | MVCC, WAL, B-tree indexes, PG wire protocol, vsql client, 70K+ lines |
 | [Paint](apps/paint/) | Drawing application (MS Paint-style) | 8 tools, runtime actions, file dialogs, zoomable canvas, undo/redo, layers |
-| [WebServer](apps/webserver/) | Multi-threaded HTTP server | Routing, static files, JSON API, [thread pool](../docs/zannalib/threads.md) |
-| [Varc](apps/varc/) | Archive utility | DEFLATE compression, AES [encryption](../docs/zannalib/crypto.md), checksums |
-| [Telnet](apps/telnet/) | Telnet client and server | [TCP sockets](../docs/zannalib/network.md), session management, threading |
+
+More applications (ZannaSQL, WebServer, Varc, Telnet, asset demos) live in the
+[zannademos repository](https://github.com/zannagames/zannademos).
 
 ---
 
@@ -38,28 +37,31 @@ Playable games showcasing [graphics](../docs/zannalib/graphics/README.md), AI, a
 
 | Project | Description | Highlights |
 |---------|-------------|------------|
-| [Ashfall](games/ashfall/) | Nine-mission sci-fi FPS campaign (code-built levels) | World3D, Character3D, nav agents, waves and bosses, spatial audio, GLB art with procedural PBR fallbacks |
-| [Ashfall: Scenes](games/ashfall-scenes/) | The same campaign authored entirely as `.scene3d` files | Scene-driven levels, collider/gameplay metadata conventions, `--scene`/`--scene-watch` hot reload, project preview profiles, material library |
-| [Ridgebound](games/ridgebound/) | Open-world Game3D sample | Game3D world loop, procedural terrain, water, skybox, PBR materials, beacon objectives, post-FX, final overlay |
-| [3D Bowling](games/3dbowling/) | Ten-pin bowling with physics and AI rivals | Physics3D solver, six game modes, replays, post-FX, accessibility, progression |
-| [3D Baseball](games/3dbaseball/) | Minimal OBJ-model 3D scene and game | SceneGraph, SceneAsset OBJ import, CubeMap3D skybox |
-| [3D Scene](games/3dscene/) | Minimal Graphics3D walkthrough | Canvas3D, meshes, materials, lights, particles, PostFX3D |
 | [Chess](games/chess/) | Polished chess game with AI opponent | Alpha-beta AI, save slots, clocks, puzzles, themes, audio, FEN/PGN, drag-and-drop GUI |
-| [XENOSCAPE](games/xenoscape/) | Release-quality action Metroidvania | 10-region nonlinear campaign, 80 rooms, hub/economy, profiles, accessibility, ranks, Time Trials, Boss Rush, New Game+, authored/fallback art and adaptive audio |
 | [Crackman](games/crackman/) | Maze chase game with ghost AI | BFS pathfinding, scatter/chase/frightened modes, [Canvas](../docs/zannalib/graphics/canvas.md) rendering |
-| [Centipede](games/centipede/) | Arcade centipede game | Multiple enemy types, particle effects, Canvas graphics |
-| [Frogger](games/frogger/) | Frogger clone | Single-file implementation, ANSI terminal |
-| [Graphics Show](games/graphics-show/) | Visual effects showcase | Fireworks, plasma, Mandelbrot, starfield, matrix rain, snake |
-| [Fade Test](games/fade-test/) | Graphics transition test | Screen fade and transition effects |
 
 ### BASIC Games
 
 | Project | Description | Highlights |
 |---------|-------------|------------|
-| [Pac-Man](games/pacman-basic/) | Pac-Man with ghost AI | Chase/scatter/frightened FSM, ANSI rendering |
 | [Centipede](games/centipede-basic/) | Terminal centipede | OOP entities, level progression |
 | [Frogger](games/frogger-basic/) | Frogger clone | Multi-lane traffic, river mechanics, OOP |
 | [VTris](games/vtris/) | Tetris | All 7 pieces with rotation, line clearing, level progression |
+
+More games (Ashfall, Ashfall: Scenes, XENOSCAPE, Xenoscape: Scenes, 3D Bowling,
+Ridgebound, 3D Baseball, 3D Scene, Baseball, Centipede, Frogger, Graphics Show,
+Fade Test, Pac-Man BASIC, and others) live in the
+[zannademos repository](https://github.com/zannagames/zannademos).
+
+### 3D Learning Ladder
+
+The [`3d/`](3d/) directory is the Graphics3D/Game3D reference set, from
+single-file samples (`game3d_hello.zia`, `walk_min.zia`) through complete
+projects: [`game3d_starter/`](3d/game3d_starter/) (packaged starter with an
+embedded model), [`game3d_scenes/`](3d/game3d_scenes/) (scene-stack demo),
+[`action_slice/`](3d/action_slice/), [`overhaul_showcase/`](3d/overhaul_showcase/),
+and [`openworld_slice/`](3d/openworld_slice/) (streamed open world; also the
+runtime's model/asset test fixture set).
 
 ### Shared Game Library
 
@@ -68,12 +70,6 @@ The [`games/lib/`](games/lib/) directory provides reusable base classes for Zia 
 - **`GameBase`** (221 LOC) — Game loop, scene management, input handling, frame timing
 - **`IScene`** — Scene interface for state-driven game architecture
 - **`GameBase3D`** / **`IScene3D`** — The 3D equivalents: Canvas3D loop, scene stack with fade transitions, and input plumbing (reference demo: [`examples/3d/game3d_scenes/`](../examples/3d/game3d_scenes/))
-
----
-
-## 🗃️ SQL Engine — BASIC
-
-A [SQL database engine](sqldb-basic/) written entirely in [BASIC](../docs/languages/basic-reference.md) (9,600 lines). Implements a complete pipeline: lexer, parser, executor, indexes, schema management, and a test suite.
 
 ---
 
@@ -125,12 +121,12 @@ interface.
 
 ## 📘 BASIC Language Examples
 
-The [`basic/`](basic/) directory contains 28 BASIC programs demonstrating language features:
+The [`vbasic/`](vbasic/) directory contains 28 BASIC programs demonstrating language features:
 
 - **Namespaces** — `namespace_demo.bas`: USING directives, cross-namespace inheritance
 - **Control flow** — `select_case.bas`, `ex_elseif.bas`, `ex_not.bas`
 - **I/O** — `ex_input_prompt_min.bas`, `ex_print_commas.bas`, `ex_print_semicolons.bas`
-- **OOP** — [`oop/`](basic/oop/): collections, text processing, mixed reports
+- **OOP** — [`oop/`](vbasic/oop/): collections, text processing, mixed reports
 - **Math** — `monte_carlo_pi.bas`, `random_walk.bas`
 - **Basics** — `ex1` through `ex6`: hello world, loops, arrays, conditionals
 
@@ -138,7 +134,7 @@ The [`basic/`](basic/) directory contains 28 BASIC programs demonstrating langua
 
 ## ⚙️ IL Examples
 
-The [`il/`](il/) directory contains 22 [Zanna IL](../docs/il/il-guide.md) programs for VM development and testing:
+The [`il/`](il/) directory contains [Zanna IL](../docs/il/il-guide.md) programs (tutorials, benchmarks, and debugger fixtures) for VM development and testing:
 
 - **Tutorials** — `ex1` through `ex6`: progressive IL feature demonstrations (hello, loops, tables, factorial, strings, heap arrays)
 - **Benchmarks** — [`benchmarks/`](il/benchmarks/): VM and [optimizer](../docs/il/il-passes.md) performance tests (fib, arithmetic, branching, strings)

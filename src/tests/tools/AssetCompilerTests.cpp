@@ -83,11 +83,11 @@ TEST(AssetCompiler, SanitizesPackOutputName) {
     fs::remove_all(root, ec);
 }
 
-TEST(AssetCompiler, RidgeboundRequiredAssetsArePresent) {
+TEST(AssetCompiler, CrackmanRequiredAssetsArePresent) {
 #if defined(ZANNA_SOURCE_DIR)
-    fs::path output = makeTempRoot("zanna_ridgebound_asset_compiler");
+    fs::path output = makeTempRoot("zanna_crackman_asset_compiler");
     auto project = il::tools::common::resolveProject(zanna::filesystem::pathToUtf8(
-        fs::path(ZANNA_SOURCE_DIR) / "examples" / "games" / "ridgebound"));
+        fs::path(ZANNA_SOURCE_DIR) / "examples" / "games" / "crackman"));
     ASSERT_TRUE(project);
 
     std::string err;

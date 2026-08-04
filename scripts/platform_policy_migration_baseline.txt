@@ -3,8 +3,6 @@
 # The lint fails when a non-allowlisted file exceeds its count or a new file appears.
 # Decrease counts as files migrate to platform adapters or RT_PLATFORM/PlatformCapabilities.
 
-examples/games/xenoscape/gen_sounds.c 1
-examples/games/xenoscape-scenes/gen_sounds.c 1
 src/codegen/aarch64/TargetAArch64.hpp 2
 src/codegen/aarch64/peephole/StrengthReduce.cpp 3
 src/codegen/common/MagicDivision.hpp 2

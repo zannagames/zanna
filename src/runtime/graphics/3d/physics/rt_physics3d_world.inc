@@ -1,7 +1,21 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/physics/rt_physics3d_world.inc  (#included from rt_physics3d.c; not
-// a standalone translation unit) Purpose: Physics3D World3D lifecycle, stepping, and integration
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/physics/rt_physics3d_world.inc
+// Purpose: Implement Physics3D World3D lifecycle, stepping, and integration.
+//   Included by rt_physics3d.c.
+// Key invariants:
+//   - World body and joint counts never exceed their validated capacities.
+//   - A body has at most one owner world and a consistent owner index.
+// Ownership/Lifetime:
+//   - World3D strongly owns registered bodies, joints, and internal arrays.
+//   - Step inputs and diagnostic outputs are borrowed for the duration of calls.
+// Links: rt_physics3d.c, rt_physics3d_internal.h
+//
 //===----------------------------------------------------------------------===//
 
 /// @file
@@ -848,7 +862,6 @@ static int world3d_step_internal(rt_world3d *w, double dt, const char **error_ou
                             if (!world3d_ccd_body_proxy(b, center, &radius)) {
                                 ph3d_vec3_accumulate_state(
                                     b->position, delta[0], delta[1], delta[2]);
-                                remaining_dt = 0.0;
                                 break;
                             }
                             if (!world3d_ccd_record_trigger_crossings(
@@ -869,7 +882,6 @@ static int world3d_step_internal(rt_world3d *w, double dt, const char **error_ou
                                 toi >= 1.0) {
                                 ph3d_vec3_accumulate_state(
                                     b->position, delta[0], delta[1], delta[2]);
-                                remaining_dt = 0.0;
                                 break;
                             }
                             if (toi < 0.0)
@@ -1731,9 +1743,7 @@ static double ph3d_collider_dimension(double value) {
 
 /// @brief Materialize one node's authored collider, then recurse into
 ///   children. Returns the number of bodies created in this subtree.
-static int64_t ph3d_build_node_collider(void *world,
-                                        void *node,
-                                        const ph3d_collider_keys_t *keys) {
+static int64_t ph3d_build_node_collider(void *world, void *node, const ph3d_collider_keys_t *keys) {
     int64_t created = 0;
     rt_string kind_value;
     const char *kind;
@@ -1779,9 +1789,9 @@ static int64_t ph3d_build_node_collider(void *world,
                 double min_z = rt_vec3_z(bounds_min);
                 double max_x = rt_vec3_x(bounds_max), max_y = rt_vec3_y(bounds_max);
                 double max_z = rt_vec3_z(bounds_max);
-                if (isfinite(min_x) && isfinite(max_x) && max_x >= min_x &&
-                    isfinite(min_y) && isfinite(max_y) && max_y >= min_y &&
-                    isfinite(min_z) && isfinite(max_z) && max_z >= min_z) {
+                if (isfinite(min_x) && isfinite(max_x) && max_x >= min_x && isfinite(min_y) &&
+                    isfinite(max_y) && max_y >= min_y && isfinite(min_z) && isfinite(max_z) &&
+                    max_z >= min_z) {
                     collider = rt_collider3d_new_box(
                         ph3d_collider_dimension((max_x - min_x) * 0.5 * fabs(sx)),
                         ph3d_collider_dimension((max_y - min_y) * 0.5 * fabs(sy)),
@@ -1807,8 +1817,7 @@ static int64_t ph3d_build_node_collider(void *world,
                 void *orientation = rt_quat_new(qx, qy, qz, qw);
                 rt_body3d_set_collider(body, collider);
                 rt_body3d_set_static(body, 1);
-                rt_body3d_set_position(
-                    body, px + offset[0], py + offset[1], pz + offset[2]);
+                rt_body3d_set_position(body, px + offset[0], py + offset[1], pz + offset[2]);
                 if (orientation) {
                     rt_body3d_set_orientation(body, orientation);
                     if (rt_obj_release_check0(orientation))
@@ -1829,8 +1838,7 @@ static int64_t ph3d_build_node_collider(void *world,
     {
         int64_t child_count = rt_scene_node3d_child_count(node);
         for (int64_t i = 0; i < child_count; i++)
-            created += ph3d_build_node_collider(
-                world, rt_scene_node3d_get_child(node, i), keys);
+            created += ph3d_build_node_collider(world, rt_scene_node3d_get_child(node, i), keys);
     }
     return created;
 }

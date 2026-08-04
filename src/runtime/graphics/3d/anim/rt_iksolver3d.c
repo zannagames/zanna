@@ -237,18 +237,19 @@ static void ik3d_cross3(const float *a, const float *b, float *out) {
     double cross[3];
     double max_abs;
     double scale = 1.0;
-    if (!a || !b || !out)
+    if (!out)
+        return;
+    out[0] = 0.0f;
+    out[1] = 0.0f;
+    out[2] = 0.0f;
+    if (!a || !b)
         return;
     cross[0] = (double)a[1] * (double)b[2] - (double)a[2] * (double)b[1];
     cross[1] = (double)a[2] * (double)b[0] - (double)a[0] * (double)b[2];
     cross[2] = (double)a[0] * (double)b[1] - (double)a[1] * (double)b[0];
     max_abs = fmax(fabs(cross[0]), fmax(fabs(cross[1]), fabs(cross[2])));
-    if (!isfinite(max_abs)) {
-        out[0] = 0.0f;
-        out[1] = 0.0f;
-        out[2] = 0.0f;
+    if (!isfinite(max_abs))
         return;
-    }
     if (max_abs > RT_IK_SOLVER3D_COORD_ABS_MAX)
         scale = RT_IK_SOLVER3D_COORD_ABS_MAX / max_abs;
     out[0] = ik3d_finite_float(cross[0] * scale, 0.0f);

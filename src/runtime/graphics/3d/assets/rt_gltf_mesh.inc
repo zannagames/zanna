@@ -1,7 +1,21 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/assets/rt_gltf_mesh.inc  (#included from rt_gltf.c; not a
-// standalone translation unit) Purpose: glTF mesh import (preloaded and JSON paths)
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/assets/rt_gltf_mesh.inc
+// Purpose: Implement glTF mesh import for preloaded, accessor-backed, and
+//   compressed primitive paths. Included by rt_gltf.c.
+// Key invariants:
+//   - Parallel asset mesh/material/variant tables publish growth atomically.
+//   - Imported mesh counts and capacities always describe initialized slots.
+// Ownership/Lifetime:
+//   - Imported meshes and side tables are owned by the destination glTF asset.
+//   - Temporary decode storage remains borrowed or locally owned until commit.
+// Links: rt_gltf.c, rt_gltf_internal.h
+//
 //===----------------------------------------------------------------------===//
 
 /**
@@ -923,44 +937,61 @@ typedef struct {
 /// @return Non-zero when the current or expanded capacity is sufficient; zero on
 ///         integer overflow or allocation failure.
 static int gltf_mesh_grow_output_tables(gltf_mesh_load_context_t *ctx, int extra) {
-    rt_gltf_asset *asset = ctx->asset;
+    rt_gltf_asset *asset;
     int needed;
     int old_cap;
     int new_cap;
+    void **new_meshes;
+    void **new_materials;
+    int32_t **new_variant_mappings;
+    if (!ctx || !ctx->asset)
+        return 0;
+    asset = ctx->asset;
     if (extra <= 0)
-        return 1;
-    if (asset->mesh_count > INT32_MAX - extra)
+        return extra == 0;
+    old_cap = ctx->primitive_table_capacity;
+    if (old_cap < 0 || asset->mesh_count < 0 || asset->mesh_count > old_cap ||
+        asset->mesh_capacity < old_cap ||
+        (old_cap > 0 &&
+         (!asset->meshes || !ctx->primitive_materials || !ctx->primitive_variant_mappings)) ||
+        asset->mesh_count > INT32_MAX - extra)
         return 0;
     needed = asset->mesh_count + extra;
-    old_cap = ctx->primitive_table_capacity;
     if (needed <= old_cap)
         return 1;
     new_cap = old_cap > INT32_MAX / 2 ? needed : old_cap * 2;
     if (new_cap < needed)
         new_cap = needed;
-    {
-        void **nm = (void **)realloc(asset->meshes, (size_t)new_cap * sizeof(void *));
-        if (!nm)
-            return 0;
-        memset(nm + old_cap, 0, (size_t)(new_cap - old_cap) * sizeof(void *));
-        asset->meshes = nm;
-        asset->mesh_capacity = new_cap;
+    if ((size_t)new_cap > SIZE_MAX / sizeof(void *) ||
+        (size_t)new_cap > SIZE_MAX / sizeof(int32_t *))
+        return 0;
+
+    /* The three arrays form one logical table. Allocate every replacement
+     * before publishing any pointer so an allocation failure cannot leave the
+     * asset capacity ahead of one or both side tables. */
+    new_meshes = (void **)calloc((size_t)new_cap, sizeof(*new_meshes));
+    new_materials = (void **)calloc((size_t)new_cap, sizeof(*new_materials));
+    new_variant_mappings = (int32_t **)calloc((size_t)new_cap, sizeof(*new_variant_mappings));
+    if (!new_meshes || !new_materials || !new_variant_mappings) {
+        free(new_meshes);
+        free(new_materials);
+        free(new_variant_mappings);
+        return 0;
     }
-    {
-        void **pm = (void **)realloc(ctx->primitive_materials, (size_t)new_cap * sizeof(void *));
-        if (!pm)
-            return 0;
-        memset(pm + old_cap, 0, (size_t)(new_cap - old_cap) * sizeof(void *));
-        ctx->primitive_materials = pm;
+    if (old_cap > 0) {
+        memcpy(new_meshes, asset->meshes, (size_t)old_cap * sizeof(*new_meshes));
+        memcpy(new_materials, ctx->primitive_materials, (size_t)old_cap * sizeof(*new_materials));
+        memcpy(new_variant_mappings,
+               ctx->primitive_variant_mappings,
+               (size_t)old_cap * sizeof(*new_variant_mappings));
     }
-    {
-        int32_t **pv = (int32_t **)realloc(ctx->primitive_variant_mappings,
-                                           (size_t)new_cap * sizeof(int32_t *));
-        if (!pv)
-            return 0;
-        memset(pv + old_cap, 0, (size_t)(new_cap - old_cap) * sizeof(int32_t *));
-        ctx->primitive_variant_mappings = pv;
-    }
+    free(asset->meshes);
+    free(ctx->primitive_materials);
+    free(ctx->primitive_variant_mappings);
+    asset->meshes = new_meshes;
+    asset->mesh_capacity = new_cap;
+    ctx->primitive_materials = new_materials;
+    ctx->primitive_variant_mappings = new_variant_mappings;
     ctx->primitive_table_capacity = new_cap;
     return 1;
 }

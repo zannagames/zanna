@@ -189,7 +189,7 @@ typedef struct {
     /// Number of entries in @ref fields.
     uint8_t field_count;
     /// Endpoint precision in bits.
-    uint8_t epb;         /* endpoint precision bits */
+    uint8_t epb; /* endpoint precision bits */
     /// Whether endpoints after endpoint zero are stored as deltas.
     uint8_t transformed; /* endpoints 1..3 are deltas from endpoint 0 */
     /// Whether texels select between two endpoint subsets.
@@ -407,7 +407,6 @@ void bc6h_decode_block(const uint8_t block[16], int is_signed, uint16_t out_halv
         }
         for (int e = 1; e < endpoint_count; e++) {
             for (int c = 0; c < 3; c++) {
-                int width = epb;
                 if (is_signed || info->transformed) {
                     /* Delta width = highest bit this mode stores for the var. */
                     int max_bit = 0;
@@ -419,8 +418,7 @@ void bc6h_decode_block(const uint8_t block[16], int is_signed, uint16_t out_halv
                                 max_bit = top + 1;
                         }
                     }
-                    width = max_bit;
-                    endpoints[e][c] = bc6h_sign_extend(endpoints[e][c], width);
+                    endpoints[e][c] = bc6h_sign_extend(endpoints[e][c], max_bit);
                 }
             }
         }

@@ -54,7 +54,6 @@ CPackSourceConfig.cmake
 *.o
 *.obj
 !src/tests/fixtures/runtime/**/*.obj
-!examples/games/3dbaseball/model.obj
 !src/tests/fuzz/corpus/**/*.obj
 *.lo
 *.slo
@@ -173,10 +172,12 @@ zanna_zia_issues.md
 
 # --- Private project workspace (not for public repo) ---
 /baseball/
-examples/games/ashfall/ashfall_menu_probe_save/
 
 # --- zannagames.com site (separate repo: zannagames/zannaweb) ---
 /zannaweb/
+
+# --- Zanna demos workspace ---
+/zannademos/
 
 # Zanna Studio per-project build/run outputs (Play launches, packaged runs)
 .zanna-studio/

@@ -348,8 +348,27 @@ if (-not $toolBuildDirExplicit -and $demoArch -eq $hostArch) {
 
 $buildDir = Get-FullPath -Path $buildDirSetting -Base $repoRoot
 $toolBuildDir = Get-FullPath -Path $toolBuildDirSetting -Base $repoRoot
-$binDir = Join-Path $repoRoot "examples\bin"
-$manifest = Join-Path $scriptRoot "demo_projects.list"
+# ZANNA_DEMO_ROOT / ZANNA_DEMO_BIN_DIR / ZANNA_DEMO_MANIFEST let an external
+# demo tree (the zannademos repo) reuse this builder unchanged.
+$demoRootSetting = [Environment]::GetEnvironmentVariable("ZANNA_DEMO_ROOT", "Process")
+if ([string]::IsNullOrWhiteSpace($demoRootSetting)) {
+    $demoRoot = Join-Path $repoRoot "examples"
+} else {
+    $demoRoot = [IO.Path]::GetFullPath($demoRootSetting)
+}
+$binDirSetting = [Environment]::GetEnvironmentVariable("ZANNA_DEMO_BIN_DIR", "Process")
+if ([string]::IsNullOrWhiteSpace($binDirSetting)) {
+    $binDir = Join-Path $repoRoot "examples\bin"
+} else {
+    $binDir = [IO.Path]::GetFullPath($binDirSetting)
+}
+$expectedBinDir = [IO.Path]::GetFullPath($binDir)
+$manifestSetting = [Environment]::GetEnvironmentVariable("ZANNA_DEMO_MANIFEST", "Process")
+if ([string]::IsNullOrWhiteSpace($manifestSetting)) {
+    $manifest = Join-Path $scriptRoot "demo_projects.list"
+} else {
+    $manifest = [IO.Path]::GetFullPath($manifestSetting)
+}
 
 function Resolve-ZannaExecutable {
     param([Parameter(Mandatory = $true)][string]$Tree)
@@ -565,7 +584,7 @@ function Publish-DemoDirectory {
     $destinationFull = [IO.Path]::GetFullPath($Destination)
     if (-not (Test-PathWithin -Base $binDir -Candidate $stageFull) -or
         -not (Test-PathWithin -Base $binDir -Candidate $destinationFull)) {
-        throw "Demo directory publication escaped examples/bin."
+        throw "Demo directory publication escaped the demo output root."
     }
     Assert-NoReparsePath -Base $binDir -Candidate $stageFull `
         -Description "Demo directory staging path"
@@ -1196,8 +1215,7 @@ try {
         -Description "Demo output root"
     if ($clean) {
         Write-Host "Cleaning existing binaries..."
-        $expectedBin = [IO.Path]::GetFullPath((Join-Path $repoRoot "examples\bin"))
-        if ([IO.Path]::GetFullPath($binDir) -ne $expectedBin) {
+        if ([IO.Path]::GetFullPath($binDir) -ne $expectedBinDir) {
             throw "Refusing to clean unexpected demo directory: $binDir"
         }
         foreach ($entry in Get-ChildItem -LiteralPath $binDir -Force) {
@@ -1248,13 +1266,13 @@ try {
         }
         $seenNames[$name] = $true
         if ($category -ieq "games") {
-            $categoryRoot = Join-Path $repoRoot "examples\games"
+            $categoryRoot = Join-Path $demoRoot "games"
         } elseif ($category -ieq "apps") {
-            $categoryRoot = Join-Path $repoRoot "examples\apps"
+            $categoryRoot = Join-Path $demoRoot "apps"
         } elseif ($category -ieq "3d") {
             # 3d carries the reference demos under examples\3d (they count
             # as games in check_demo_projects.sh's ratio gate).
-            $categoryRoot = Join-Path $repoRoot "examples\3d"
+            $categoryRoot = Join-Path $demoRoot "3d"
         } else {
             Write-Host "ERROR: invalid demo category '$category' for '$name'"
             ++$failed

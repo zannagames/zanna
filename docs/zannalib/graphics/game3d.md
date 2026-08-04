@@ -1032,7 +1032,8 @@ Presets (all fluent, freely composable): `AddSpin(axis, degPerSec)`,
 speed)`, `AddFaceTarget(entity)` (yaw toward a target), `AddChase(entity,
 speed, range)` (direct XZ steering, or navmesh-routed when a `NavAgent3D` is
 bound via `SetNavAgent`), `AddFollowPath(path, speed, loop)` (constant-speed
-`Path3D` traversal), and `AddLifetime(seconds)` (despawns the entity).
+`Path3D` traversal by arc length, with speed measured in world units per
+simulation second), and `AddLifetime(seconds)` (despawns the entity).
 Presets apply in a fixed order each tick (lifetime, path, chase, orbit, sine,
 spin, face) so composed behaviors stay deterministic.
 
@@ -1652,7 +1653,7 @@ now live in the C runtime.
 `examples/3d/walk_min.zia`, `examples/3d/game3d_starter/`, and
 `examples/3d/game3d_showcase/` are the current code-first samples.
 `examples/3d/openworld_slice/` is the streaming vertical-slice smoke project.
-The bowling setup migration lives at `examples/games/3dbowling/game3d/`.
+The bowling setup migration lives at `zannademos/games/3dbowling/game3d/`.
 
 Use the lower-level `Zanna.Graphics3D` and `Zanna.Audio` APIs as escape hatches
 when a sample needs behavior outside the Game3D convenience layer.

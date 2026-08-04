@@ -32,6 +32,7 @@
 #include "rt_internal.h"
 #include "rt_joints3d.h"
 #include "rt_mat4.h"
+#include "rt_object.h"
 #include "rt_physics3d.h"
 #include "rt_physics3d_internal.h"
 #include "rt_pixels.h"
@@ -45,6 +46,7 @@
 #include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <limits>
 
 extern "C" {
 extern void *rt_vec3_new(double x, double y, double z);
@@ -61,6 +63,21 @@ extern void rt_mesh3d_add_triangle(void *obj, int64_t i0, int64_t i1, int64_t i2
 static int tests_passed = 0;
 static int tests_run = 0;
 static const double TEST_PI = 3.14159265358979323846;
+
+typedef struct {
+    void *vptr;
+    double bounds_min[3];
+    double bounds_max[3];
+    void **tracked_bodies;
+    int8_t *was_inside;
+    int8_t *is_inside;
+    uint32_t *seen_stamp;
+    int32_t tracked_count;
+    int32_t tracked_capacity;
+    uint32_t update_stamp;
+    int32_t enter_count;
+    int32_t exit_count;
+} Trigger3DTestLayout;
 
 namespace {
 static std::jmp_buf g_trap_jmp;
@@ -4772,6 +4789,35 @@ static void test_trigger_tracks_beyond_legacy_cap() {
                 "trigger tracks every occupant past the old 64-body cap");
 }
 
+static void test_trigger_repairs_tracking_and_zeroes_dead_bodies() {
+    void *world = rt_world3d_new(0, 0, 0);
+    void *trigger = rt_trigger3d_new(-1, -1, -1, 1, 1, 1);
+    Trigger3DTestLayout *view = (Trigger3DTestLayout *)trigger;
+
+    view->tracked_count = 7;
+    view->tracked_capacity = 16;
+    rt_trigger3d_update(trigger, world);
+    EXPECT_TRUE(view->tracked_count == 0 && view->tracked_capacity == 0,
+                "trigger repairs missing parallel occupancy arrays");
+
+    void *body = rt_body3d_new_sphere(0.25, 1.0);
+    rt_world3d_add(world, body);
+    rt_trigger3d_update(trigger, world);
+    EXPECT_TRUE(view->tracked_count == 1 && rt_trigger3d_get_enter_count(trigger) == 1,
+                "trigger records a managed occupant");
+    rt_world3d_remove(world, body);
+    (void)rt_memory_release(body);
+    EXPECT_TRUE(rt_weak_load(&view->tracked_bodies[0]) == nullptr,
+                "destroyed bodies zero their trigger occupancy weak handle");
+    rt_trigger3d_update(trigger, world);
+    EXPECT_TRUE(view->tracked_count == 0 && rt_trigger3d_get_exit_count(trigger) == 1,
+                "zeroed weak occupants prune with one exit edge");
+
+    view->bounds_min[0] = std::numeric_limits<double>::quiet_NaN();
+    EXPECT_TRUE(rt_trigger3d_contains(trigger, rt_vec3_new(0.0, 0.0, 0.0)) != 0,
+                "trigger queries repair corrupt non-finite bounds");
+}
+
 /* --- CCD per-body catch-up segments (clamped-substep regime) --- */
 
 static void test_ccd_clamped_body_catchup_segments_no_tunnel() {
@@ -5012,6 +5058,7 @@ int main() {
     test_trigger_set_bounds();
     test_trigger_detects_straddling_large_body();
     test_trigger_tracks_beyond_legacy_cap();
+    test_trigger_repairs_tracking_and_zeroes_dead_bodies();
 
     /* Sphere-sphere collision */
     test_sphere_sphere_collision();

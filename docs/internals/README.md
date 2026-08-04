@@ -82,3 +82,4 @@ Living ledgers that track findings and their resolution for high-risk subsystems
 - [Graphics3D Runtime Correctness Audit Follow-up (August 2026)](graphics3d-runtime-audit-followup-2026-08.md) — Resolution ledger for 114 foundational runtime findings
 - [Graphics3D Game-Core Correctness Audit (August 2026)](graphics3d-game-core-audit-2026-08.md) — Resolution ledger for 186 Game3D, controller, hierarchy, diagnostics, and boundary findings
 - [Graphics3D Core Runtime Deep Audit (August 2026)](graphics3d-core-runtime-deep-audit-2026-08.md) — Resolution ledger for 163 animation, skinning, cloth, navmesh, and VSCN findings
+- [Graphics3D Runtime Integrity Audit (August 2026)](graphics3d-runtime-integrity-audit-2026-08.md) — Resolution ledger for 170 behavior, transient ownership, temporal history, physics, loader, and particle findings

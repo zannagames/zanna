@@ -1,8 +1,21 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/assets/rt_textureasset3d_ktx2.inc  (#included from
-// rt_textureasset3d.c; not a standalone translation unit) Purpose: TextureAsset3D KTX2 parser and
-// the public TextureAsset3D API
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/assets/rt_textureasset3d_ktx2.inc
+// Purpose: Implement the TextureAsset3D KTX2 parser and public query API.
+//   Included by rt_textureasset3d.c.
+// Key invariants:
+//   - KTX2 ranges and mip geometry are validated before indexed access.
+//   - Format fallback selection comes from the authoritative format table.
+// Ownership/Lifetime:
+//   - TextureAsset3D owns its immutable canonical source backing and mip table.
+//   - Decoded Pixels results are new GC-managed objects returned to the caller.
+// Links: rt_textureasset3d.c, rt_textureasset3d_internal.h
+//
 //===----------------------------------------------------------------------===//
 /// @file
 /// @brief Implements KTX2 loading and the public TextureAsset3D query surface.
@@ -315,7 +328,7 @@ static void *textureasset3d_parse_ktx2(const uint8_t *data,
     uint64_t source_backing_bytes = 0;
     int attempted_cpu_decode = 0;
     int degraded = 0;
-    const char *decode_failure_detail = "unsupported or corrupt compressed blocks";
+    const char *decode_failure_detail = NULL;
     rt_textureasset3d *asset;
 
     if (!api_name)

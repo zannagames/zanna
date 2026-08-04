@@ -109,8 +109,11 @@ class Arena {
         Quality.Apply(world, QualityLevel.get_Balanced());
 
         // Tagged ground the footstep component resolves surfaces against.
+        // Prefab.Ground is visual-only: the static plane body must be
+        // attached explicitly or the character falls straight through.
         var groundSurface = Surfaces.Register("arena_ground");
         var ground = Prefab.Ground(24.0, Materials.Rubber(0.24, 0.3, 0.26));
+        ground.AttachBody(BodyDef.StaticPlane(24.0));
         world.Spawn(ground);
         if ground.Body != null {
             var groundCollider = PhysicsBody3D.get_Collider(ground.Body);
