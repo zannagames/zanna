@@ -391,6 +391,8 @@ template <std::size_t N>
            name == "Zanna.Graphics3D.NavAgent3D.get_Position" ||
            name == "Zanna.Graphics3D.NavAgent3D.get_Velocity" ||
            name == "Zanna.Graphics3D.NavAgent3D.get_DesiredVelocity" ||
+           name == "Zanna.Graphics3D.NavAgent3D.GetPathCorner" ||
+           name == "Zanna.Graphics3D.NavAgent3D.get_Target" ||
            name == "Zanna.Graphics3D.AnimController3D.get_RootMotionDelta" ||
            name == "Zanna.Graphics3D.AnimController3D.ConsumeRootMotion" ||
            name == "Zanna.Game3D.Perception3D.LastKnownPosition" ||
@@ -442,6 +444,7 @@ template <std::size_t N>
            name == "rt_timeofday3d_get_sun_direction" ||
            name == "rt_reflectionprobe3d_get_position" || name == "rt_navagent3d_get_position" ||
            name == "rt_navagent3d_get_velocity" || name == "rt_navagent3d_get_desired_velocity" ||
+           name == "rt_navagent3d_get_path_corner" || name == "rt_navagent3d_get_target" ||
            name == "rt_anim_controller3d_get_root_motion_delta" ||
            name == "rt_anim_controller3d_consume_root_motion" ||
            name == "rt_game3d_perception_last_known_position" ||

@@ -57,6 +57,7 @@ and joint integration.
 | `Step(dt)`                | `Void(Double)`        | Advance simulation by `dt` seconds |
 | `StepFixed(dt, fixedDt, maxSteps)` | `Integer(Double, Double, Integer)` | Accumulate variable frame time and run up to `maxSteps` fixed `fixedDt` steps, returning steps actually run |
 | `Add(body)`               | `Void(Object)`        | Add a `PhysicsBody3D` to the world |
+| `BuildSceneColliders(scene)` | `Integer(Object)` | Materialize the scene's authored `collider.*` metadata (Studio's collider inspector, ADR 0185) into static bodies and triggers at world poses; returns bodies created |
 | `TryAdd(body)`            | `Boolean(Object)`     | Add a body and report allocation/validation failure without changing the world |
 | `Remove(body)`            | `Void(Object)`        | Remove a body from the world |
 | `ContainsBody(body)`      | `Boolean(Object)`     | Return whether the body is currently registered in the world |
@@ -95,6 +96,13 @@ and joint integration.
 - Static bodies are immovable. Kinematic bodies move from explicit velocity but do not
   receive gravity or force integration.
 - `Add(body)` keeps the historical void API. `TryAdd(body)` returns `false` for invalid handles or allocation failure, returns `true` for already-present bodies, and leaves the body count stable on duplicates.
+- `BuildSceneColliders(scene)` reads the exact convention Studio's collider
+  inspector writes and its viewport overlay draws: `collider.kind` in
+  `box`/`sphere`/`capsule`/`mesh-bounds` plus per-kind dimensions and
+  `collider.trigger`. Every body is static, lands at the node's world pose
+  with world scale applied to the authored dimensions, and mesh-bounds boxes
+  recenter on the subtree bounds. Calling it twice adds duplicate bodies —
+  build into a fresh world per load (ADR 0235).
 - World storage for bodies, contacts, contact events, and joints grows on demand from production-sized initial capacities. Query result lists store a bounded nearest/result prefix for predictable allocation behavior, while `PhysicsHitList3D.TotalCount` and `Truncated` expose whether more matches existed.
 - Collision detection uses a body-centric sweep-and-prune broadphase before shape-specific narrow-phase tests. This is intentionally separate from the render-facing `SceneGraph` BVH: physics indexes all collider bodies, including non-render bodies, and applies solver filters such as static-static rejection, layer/mask checks, trigger state, and contact-event identity.
 - The unit lane includes a sparse 321-body step stress that exercises body

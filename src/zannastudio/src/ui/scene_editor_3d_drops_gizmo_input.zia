@@ -250,6 +250,49 @@ class SceneEditor3DDropsGizmoInputLayer extends PreviousLayer.SceneEditor3DTerra
             SelectSceneNodes([], -1);
             renderDirty = true;
         }
+        PumpArrowNudges();
+    }
+
+    /// @brief Apply arrow-key nudges through the deterministic Move command.
+    /// @details Left/Right move X, Up/Down move Z, PageUp/PageDown move Y —
+    ///          axis-absolute so a nudge means the same thing from every
+    ///          camera. Shift multiplies the step tenfold. Each pressed key
+    ///          commits one Move edit through the same command path as gizmo
+    ///          drags, so undo granularity matches direct manipulation.
+    hide func PumpArrowNudges() {
+        if selectedIndices.count() == 0 { return; }
+        var step = 0.1;
+        if ViewportShiftDown() { step = 1.0; }
+        if Input.Keyboard.WasPressed(Input.Key.Left) {
+            TransformSelectedAlongGizmoAxis(
+                SceneEditor3DModel.GIZMO_MODE_MOVE,
+                SceneEditor3DModel.GIZMO_AXIS_X, 0.0 - step, false);
+        }
+        if Input.Keyboard.WasPressed(Input.Key.Right) {
+            TransformSelectedAlongGizmoAxis(
+                SceneEditor3DModel.GIZMO_MODE_MOVE,
+                SceneEditor3DModel.GIZMO_AXIS_X, step, false);
+        }
+        if Input.Keyboard.WasPressed(Input.Key.Up) {
+            TransformSelectedAlongGizmoAxis(
+                SceneEditor3DModel.GIZMO_MODE_MOVE,
+                SceneEditor3DModel.GIZMO_AXIS_Z, 0.0 - step, false);
+        }
+        if Input.Keyboard.WasPressed(Input.Key.Down) {
+            TransformSelectedAlongGizmoAxis(
+                SceneEditor3DModel.GIZMO_MODE_MOVE,
+                SceneEditor3DModel.GIZMO_AXIS_Z, step, false);
+        }
+        if Input.Keyboard.WasPressed(Input.Key.PageUp) {
+            TransformSelectedAlongGizmoAxis(
+                SceneEditor3DModel.GIZMO_MODE_MOVE,
+                SceneEditor3DModel.GIZMO_AXIS_Y, step, false);
+        }
+        if Input.Keyboard.WasPressed(Input.Key.PageDown) {
+            TransformSelectedAlongGizmoAxis(
+                SceneEditor3DModel.GIZMO_MODE_MOVE,
+                SceneEditor3DModel.GIZMO_AXIS_Y, 0.0 - step, false);
+        }
     }
 
     /// @brief Give the viewport surface keyboard focus for its shortcuts.

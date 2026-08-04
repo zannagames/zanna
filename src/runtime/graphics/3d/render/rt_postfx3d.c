@@ -2778,6 +2778,100 @@ int64_t rt_postfx3d_get_effect_count(void *obj) {
     return postfx3d_safe_effect_count(fx);
 }
 
+/// @brief Kind discriminator of the effect at @p index in application order.
+/// @details Values mirror `vgfx3d_postfx_effect_kind_t` (the private entry
+///   types were defined to the same numbering), which is what the
+///   `Zanna.Graphics3D.PostFXEffectKind` constants expose to callers.
+/// @param obj Candidate PostFX3D chain.
+/// @param index Zero-based position in the chain.
+/// @return The kind value, or -1 for an invalid chain or out-of-range index.
+int64_t rt_postfx3d_get_effect_kind(void *obj, int64_t index) {
+    rt_postfx3d *fx = postfx3d_checked(obj);
+    int32_t count = postfx3d_safe_effect_count(fx);
+    if (!fx || index < 0 || index >= (int64_t)count)
+        return -1;
+    return (int64_t)fx->effects[(int32_t)index].type;
+}
+
+/// @brief Remove the effect at @p index, preserving the order of the rest.
+/// @details Later entries shift down one slot and the vacated tail entry is
+///   zeroed. The retained color-LUT Pixels strip (if any) is left in place —
+///   matching `Clear`, which also keeps it for a later `AddColorLut`.
+/// @param obj Candidate PostFX3D chain.
+/// @param index Zero-based position in the chain.
+/// @return 1 when an entry was removed, or 0 for an invalid chain or index.
+int8_t rt_postfx3d_remove_effect_at(void *obj, int64_t index) {
+    rt_postfx3d *fx = postfx3d_checked(obj);
+    int32_t count = postfx3d_safe_effect_count(fx);
+    if (!fx || index < 0 || index >= (int64_t)count)
+        return 0;
+    int32_t at = (int32_t)index;
+    if (at + 1 < count) {
+        memmove(&fx->effects[at],
+                &fx->effects[at + 1],
+                (size_t)(count - at - 1) * sizeof(*fx->effects));
+    }
+    memset(&fx->effects[count - 1], 0, sizeof(*fx->effects));
+    fx->effect_count = count - 1;
+    return 1;
+}
+
+/* Zanna.Graphics3D.PostFXEffectKind constants — one registered getter per
+ * effect kind, mirroring vgfx3d_postfx_effect_kind_t (see the enum note in
+ * rt_postfx3d.h; the private postfx_type_t uses the same numbering). */
+/// @brief PostFXEffectKind.Bloom constant.
+int64_t rt_postfx3d_effect_kind_bloom(void) {
+    return (int64_t)POSTFX_BLOOM;
+}
+/// @brief PostFXEffectKind.Tonemap constant.
+int64_t rt_postfx3d_effect_kind_tonemap(void) {
+    return (int64_t)POSTFX_TONEMAP;
+}
+/// @brief PostFXEffectKind.Fxaa constant.
+int64_t rt_postfx3d_effect_kind_fxaa(void) {
+    return (int64_t)POSTFX_FXAA;
+}
+/// @brief PostFXEffectKind.ColorGrade constant.
+int64_t rt_postfx3d_effect_kind_color_grade(void) {
+    return (int64_t)POSTFX_COLOR_GRADE;
+}
+/// @brief PostFXEffectKind.Vignette constant.
+int64_t rt_postfx3d_effect_kind_vignette(void) {
+    return (int64_t)POSTFX_VIGNETTE;
+}
+/// @brief PostFXEffectKind.Ssao constant.
+int64_t rt_postfx3d_effect_kind_ssao(void) {
+    return (int64_t)POSTFX_SSAO;
+}
+/// @brief PostFXEffectKind.Dof constant.
+int64_t rt_postfx3d_effect_kind_dof(void) {
+    return (int64_t)POSTFX_DOF;
+}
+/// @brief PostFXEffectKind.MotionBlur constant.
+int64_t rt_postfx3d_effect_kind_motion_blur(void) {
+    return (int64_t)POSTFX_MOTION_BLUR;
+}
+/// @brief PostFXEffectKind.Taa constant.
+int64_t rt_postfx3d_effect_kind_taa(void) {
+    return (int64_t)POSTFX_TAA;
+}
+/// @brief PostFXEffectKind.Ssr constant.
+int64_t rt_postfx3d_effect_kind_ssr(void) {
+    return (int64_t)POSTFX_SSR;
+}
+/// @brief PostFXEffectKind.AutoExposure constant.
+int64_t rt_postfx3d_effect_kind_auto_exposure(void) {
+    return (int64_t)POSTFX_AUTO_EXPOSURE;
+}
+/// @brief PostFXEffectKind.ColorLut constant.
+int64_t rt_postfx3d_effect_kind_color_lut(void) {
+    return (int64_t)POSTFX_COLOR_LUT;
+}
+/// @brief PostFXEffectKind.SunShafts constant.
+int64_t rt_postfx3d_effect_kind_sun_shafts(void) {
+    return (int64_t)POSTFX_SUN_SHAFTS;
+}
+
 /*==========================================================================
  * Canvas3D integration
  *=========================================================================*/

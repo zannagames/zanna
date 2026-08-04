@@ -1251,6 +1251,10 @@ try {
             $categoryRoot = Join-Path $repoRoot "examples\games"
         } elseif ($category -ieq "apps") {
             $categoryRoot = Join-Path $repoRoot "examples\apps"
+        } elseif ($category -ieq "3d") {
+            # 3d carries the reference demos under examples\3d (they count
+            # as games in check_demo_projects.sh's ratio gate).
+            $categoryRoot = Join-Path $repoRoot "examples\3d"
         } else {
             Write-Host "ERROR: invalid demo category '$category' for '$name'"
             ++$failed

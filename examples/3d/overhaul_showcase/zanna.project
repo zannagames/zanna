@@ -1,0 +1,10 @@
+project overhaul_showcase
+version 0.1.0
+lang zia
+entry main.zia
+
+package-name "Overhaul Showcase"
+package-description "Interactive showcase of IBL, shadow quality, post-processing, and HUD widgets on the 3D overhaul"
+package-identifier org.zanna-lang.overhaul-showcase
+package-author "Zanna Project"
+package-license MIT

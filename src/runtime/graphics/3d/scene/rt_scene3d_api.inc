@@ -246,6 +246,70 @@ int64_t rt_scene3d_adopt_baked_animations(void *obj, void *source) {
     return (int64_t)fresh_count;
 }
 
+/// @brief Number of baked animation clips this scene carries (imported rigs
+///   adopted through `rt_scene3d_adopt_baked_animations`, or loaded from VSCN).
+/// @param obj Borrowed SceneGraph handle.
+/// @return Bounded clip count, or zero for an invalid scene.
+int64_t rt_scene3d_get_animation_count(void *obj) {
+    rt_scene3d *scene = scene3d_checked(obj);
+    if (!scene || !scene->baked_animations || scene->baked_animation_count <= 0)
+        return 0;
+    return (int64_t)scene->baked_animation_count;
+}
+
+/// @brief Raw baked clip pointer at @p index, or NULL when out of range.
+/// @param obj Borrowed SceneGraph handle.
+/// @param index Zero-based clip index.
+/// @return Borrowed clip handle of either clip class, or NULL.
+static void *scene3d_baked_animation_at(void *obj, int64_t index) {
+    rt_scene3d *scene = scene3d_checked(obj);
+    if (!scene || !scene->baked_animations || index < 0 ||
+        index >= (int64_t)scene->baked_animation_count)
+        return NULL;
+    return scene->baked_animations[(int32_t)index];
+}
+
+/// @brief One baked node-animation clip by index.
+/// @details The carrier stores both clip classes: rigid-node clips
+///   (NodeAnimation3D, playable through NodeAnimator3D) and skeletal clips
+///   (Animation3D, driven by AnimController3D at runtime). This getter
+///   returns only the former; skeletal entries yield NULL — enumerate their
+///   names through `rt_scene3d_get_animation_name` instead.
+/// @param obj Borrowed SceneGraph handle.
+/// @param index Zero-based clip index.
+/// @return Borrowed validated NodeAnimation3D handle, or NULL for invalid
+///   input, out-of-range index, or a skeletal clip.
+void *rt_scene3d_get_animation(void *obj, int64_t index) {
+    return rt_g3d_checked_or_null(scene3d_baked_animation_at(obj, index),
+                                  RT_G3D_NODEANIMATION3D_CLASS_ID);
+}
+
+/// @brief Name of the baked clip at @p index, of either clip class.
+/// @param obj Borrowed SceneGraph handle.
+/// @param index Zero-based clip index.
+/// @return Retained runtime string, or the shared empty string when invalid.
+rt_string rt_scene3d_get_animation_name(void *obj, int64_t index) {
+    void *clip = scene3d_baked_animation_at(obj, index);
+    if (rt_g3d_has_class(clip, RT_G3D_NODEANIMATION3D_CLASS_ID))
+        return rt_node_animation3d_get_name(clip);
+    if (rt_g3d_has_class(clip, RT_G3D_ANIMATION3D_CLASS_ID))
+        return rt_animation3d_get_name(clip);
+    return rt_string_from_bytes("", 0);
+}
+
+/// @brief Duration in seconds of the baked clip at @p index, either class.
+/// @param obj Borrowed SceneGraph handle.
+/// @param index Zero-based clip index.
+/// @return Non-negative duration, or zero when invalid.
+double rt_scene3d_get_animation_duration(void *obj, int64_t index) {
+    void *clip = scene3d_baked_animation_at(obj, index);
+    if (rt_g3d_has_class(clip, RT_G3D_NODEANIMATION3D_CLASS_ID))
+        return rt_node_animation3d_get_duration(clip);
+    if (rt_g3d_has_class(clip, RT_G3D_ANIMATION3D_CLASS_ID))
+        return rt_animation3d_get_duration(clip);
+    return 0.0;
+}
+
 /// @brief `SceneGraph.get_UnresolvedPrefabCount` — placeholders left by
 ///        prefab references the loader could not resolve (ADR 0227).
 /// @param obj Borrowed Scene3D handle.

@@ -333,6 +333,23 @@ func VerifyBakeExecutionAndEnvironment(
         fail(shell, workDir, "the probe sidecar dirtied the scene");
         return false;
     }
+
+    // The viewport overlay toggles workspace-only: enabling imports the
+    // sidecar, rendering stays live, and the document never dirties.
+    editor.navOverlayCheck.SetChecked(true);
+    pump(editor, sceneDoc, shell);
+    if editor.showNavOverlay == false or editor.navOverlayMesh == null {
+        fail(shell, workDir, "the navmesh overlay did not import the sidecar");
+        return false;
+    }
+    pump(editor, sceneDoc, shell);
+    editor.navOverlayCheck.SetChecked(false);
+    pump(editor, sceneDoc, shell);
+    if editor.showNavOverlay or editor.navOverlayMesh != null
+       or sceneDoc.content != sidecarBaseline {
+        fail(shell, workDir, "the navmesh overlay leaked workspace state");
+        return false;
+    }
     if editor.RemoveSelectedProbeGrid() == false
        or editor.flatNodes.get(0).MetadataHas("probes.spacing") {
         fail(shell, workDir, "probe grid removal drifted");

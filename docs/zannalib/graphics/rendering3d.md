@@ -777,6 +777,7 @@ transforms.
 | `Root` | `SceneNode` | Implicit scene root |
 | `NodeCount` | `Integer` | Total nodes including root |
 | `VisibleNodeCount` | `Integer` | Drawable mesh nodes submitted by the most recent `Draw` |
+| `AnimationCount` | `Integer` | Baked animation clips the scene carries (imported rigs, VSCN bakes) |
 | `Add(node)` / `Remove(node)` | `Void(Object)` | Attach or detach root-level nodes |
 | `TryAdd(node)` | `Boolean(Object)` | Add a node and report validation/allocation failure |
 | `Find(name)` | `SceneNode(String)` | Search the scene by node name |
@@ -791,6 +792,15 @@ transforms.
 | `LoadResult(path)` | `Result(String)` | `Zanna.Result` peer of `Load`: ok wraps the scene, err carries the loader diagnostic (ADR 0227) |
 | `SaveToText()` / `LoadTextResult(virtualPath, text)` | — | Canonical text serialization and its Result-carrying inverse; `virtualPath` anchors relative prefab references (ADR 0190/0227) |
 | `AdoptAnimations(source)` | `Integer(Object)` | Retain-append every baked animation clip carried by `source`, skipping clips already carried; returns the number adopted (ADR 0227) |
+| `GetAnimation(index)` | `Object(Integer)` | Baked rigid-node clip as `NodeAnimation3D`, in carrier order; `null` when out of range or when the entry is a skeletal `Animation3D` clip |
+| `GetAnimationName(index)` | `String(Integer)` | Name of the baked clip at `index`, either clip class (`""` when out of range) |
+| `GetAnimationDuration(index)` | `Double(Integer)` | Duration in seconds of the baked clip at `index`, either clip class (0 when out of range) |
+
+The clip carrier holds both clip classes: rigid-node clips
+(`NodeAnimation3D`, playable through `NodeAnimator3D`) and skeletal clips
+(`Animation3D`, driven by `AnimController3D`). `AnimationCount` bounds the
+index; names and durations enumerate both, while `GetAnimation` returns only
+the rigid class so its type is honest.
 | `UnresolvedPrefabCount` | `Integer` | Prefab references that loaded as empty placeholders; gate startup on zero to catch broken references (ADR 0227) |
 | `SetNodeTransforms(nodes, values)` | `Void(Object, Object)` | Batch-apply packed TRS values (10 floats per node: `px,py,pz,qx,qy,qz,qw,sx,sy,sz`) to a list of nodes in one runtime call |
 | `Draw(canvas, camera)` | `Void(Object, Object)` | Draw visible node meshes |
@@ -1210,7 +1220,17 @@ Post-processing effect chain applied to a rendered scene.
 | `AddDof(focusDist, focalRange, blurRadius)` | `Void(Double, Double, Double)` | Add depth of field |
 | `AddMotionBlur(strength, samples)` | `Void(Double, Integer)` | Add motion blur |
 | `AddTaa(blend)` | `Void(Double)` | Add temporal anti-aliasing. `blend` is the history weight (0.5–0.98; typical 0.9) |
+| `GetEffectKind(index)` | `Integer(Integer)` | Kind of the effect at `index` in application order — one of the `PostFXEffectKind` constants; `-1` when out of range |
+| `RemoveEffectAt(index)` | `Boolean(Integer)` | Remove one effect, closing the chain over the gap; `false` when out of range |
 | `Clear()` | `Void()` | Remove all effects from the chain |
+
+Chain entries enumerate in application order: `EffectCount` bounds the index,
+`GetEffectKind(i)` identifies each entry against the static
+`Zanna.Graphics3D.PostFXEffectKind` constants (`Bloom`, `Tonemap`, `Fxaa`,
+`ColorGrade`, `Vignette`, `Ssao`, `Dof`, `MotionBlur`, `Taa`, `Ssr`,
+`AutoExposure`, `ColorLut`, `SunShafts`), and `RemoveEffectAt(i)` deletes a
+single entry without rebuilding the rest of the chain — the editor-style
+alternative to `Clear()` plus re-adding.
 
 Bloom runs as a progressive downsample/upsample mip chain: the scene is thresholded
 with a Karis-averaged 13-tap filter (suppressing single-pixel fireflies), blurred
@@ -2060,6 +2080,10 @@ Pathfinding agent that moves along a `NavMesh3D` toward a target.
 | `AvoidanceRadius`   | Double  | Read/Write | Local RVO radius; defaults to the agent radius and clamps to `>= 0` |
 | `OnOffMeshLink`     | Boolean | Read       | True while the agent's current path segment traverses an authored off-mesh link |
 | `LinkKind`          | String  | Read       | Kind string of the link being traversed (from `SetOffMeshLinkMetadata`), or `""` |
+| `IsStopped`         | Boolean | Read       | True while steering is paused by `Stop()` |
+| `HasTarget`         | Boolean | Read       | True while a navigation target is set |
+| `Target`            | Object  | Read       | Current goal position as `Vec3` (origin when none — check `HasTarget`) |
+| `PathCornerCount`   | Integer | Read       | Corners in the most recently computed path (0 when never pathed) |
 
 #### Methods
 
@@ -2069,8 +2093,19 @@ Pathfinding agent that moves along a `NavMesh3D` toward a target.
 | `ClearTarget()` | `Void()` | Cancel current path |
 | `Update(deltaSeconds)` | `Void(Double)` | Advance agent along the path |
 | `Warp(pos)` | `Void(Object)` | Teleport the agent to a position |
+| `Stop()` | `Void()` | Pause steering: the target and path are kept, motion is zeroed each tick |
+| `Resume()` | `Void()` | Resume steering paused by `Stop()`; the retained path continues |
+| `GetPathCorner(index)` | `Object(Integer)` | World-space corner of the current path as `Vec3`, in walk order (origin when out of range) |
 | `BindCharacter(character3D)` | `Void(Object)` | Drive a `Character3D` from agent velocity |
 | `BindNode(sceneNode)` | `Void(Object)` | Drive a `SceneNode` position from agent |
+
+`Stop`/`Resume` pause an agent without forgetting where it was going — the Unity
+`isStopped` idiom. A stopped agent still syncs its position from bindings and
+keeps `RemainingDistance` live, so HUD and AI readback stay correct while a
+cutscene or dialogue holds the character in place. `PathCornerCount` /
+`GetPathCorner(i)` expose the computed corner list for debug drawing and
+path-preview overlays; corners persist while the agent walks (or is stopped)
+and reset on `ClearTarget` or repath.
 
 Avoidance is local and opt-in. Agents on the same `NavMesh3D` with `AvoidanceEnabled=true` solve a deterministic reciprocal-velocity-obstacle candidate set over nearby grid peers before the update drives a character or node. The solver predicts collisions over a bounded horizon, prefers the path-following velocity, and has a named 200-agent CTest baseline.
 

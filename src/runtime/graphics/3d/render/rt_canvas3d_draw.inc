@@ -58,6 +58,7 @@ void rt_canvas3d_clear(void *obj, double r, double g, double b) {
         return;
     if (c->frame_finalized)
         canvas3d_reset_finalized_frame_state(c);
+    c->cpu_finalized_this_render = 0;
     float cr = canvas3d_clamp01_f64(r);
     float cg = canvas3d_clamp01_f64(g);
     float cb = canvas3d_clamp01_f64(b);
@@ -1040,6 +1041,7 @@ void rt_canvas3d_begin_2d(void *obj) {
     c->cached_cam_far = 1000.0f;
     c->cached_cam_is_ortho = params.is_ortho;
     c->frame_serial++;
+    c->cpu_finalized_this_render = 0;
     canvas3d_prune_motion_history(c);
     canvas3d_reset_frame_submission_stats(c);
     c->draw_count = 0;
@@ -1525,6 +1527,7 @@ static void canvas3d_begin_camera_pass(void *obj,
 
     /* Reset draw command queue for this frame */
     c->frame_serial++;
+    c->cpu_finalized_this_render = 0;
     canvas3d_prune_motion_history(c);
     canvas3d_reset_frame_submission_stats(c);
     /* Plan 07: froxel tables are camera-dependent — invalidate the revision ring

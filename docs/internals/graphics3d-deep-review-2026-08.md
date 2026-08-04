@@ -342,3 +342,41 @@ and retire it.
 | 6 | §7 strategic: VSCN v8 → typed sections → custom shaders → callbacks → OpenGL/Vulkan decision | program each |
 
 Tranches 1–3 stabilize ("polish what exists"); 4–6 are the "next level."
+
+---
+
+## 9. Execution ledger (2026-08-03, tranche 6 pass)
+
+Everything below landed in the tranche-6 execution session (ADRs 0235/0236;
+decision ADRs 0237–0240):
+
+- **Software capture double-gamma fixed.** The washed screenshots §5 noted
+  were not authored fog: the CPU finalize chain re-ran on captured frames
+  after present, double-encoding gamma. Finalization is now once-per-render
+  (`g3d_test_g3d_capture_idempotent`); the action-slice screenshot was
+  regenerated and matches Metal.
+- **Runtime additions (ADR 0235):** PostFX3D chain enumeration/removal +
+  `PostFXEffectKind`; NavAgent3D Stop/Resume/IsStopped + Target/HasTarget +
+  path-corner readback; SceneGraph baked-clip readback (both clip classes);
+  `PhysicsWorld3D.BuildSceneColliders` (the collider.* convention's runtime
+  read side); Pixels-typed returns for the four screenshot/LUT methods.
+- **Studio round three (ADR 0236):** Arrange align/distribute + arrow-key
+  nudges; group pivot Own/Primary/Center for world Rotate/Scale; import
+  scale + Z-up settings; Animation inspector v1 (list + workspace-only
+  rigid-clip preview; skeletal clips enumerate and defer to embedded Play);
+  baked-navmesh viewport overlay. Bake threading assessed: needs a
+  runtime-level incremental nav bake (main-thread affinity), deferred.
+- **Demos:** `game3d_scenes` and `overhaul_showcase` gained project files
+  and joined `demo_projects.list` (14 projects).
+- **Strategic decisions recorded:** VSCN v8 external references designed in
+  ADR 0237 (implementation next session); material extensibility decided as
+  a parameterized surface-graph vocabulary, not user shader source (ADR
+  0238); VM callbacks decided as event-queues-forever, no re-entrant
+  trampoline (ADR 0239); Linux GPU decided as OpenGL parity, no Vulkan
+  backend (ADR 0240).
+- **Still open after this pass:** VSCN v8 implementation (ADR 0237 phases),
+  typed scene sections (follows v8), the material-program phases (ADR
+  0238), event-queue coverage growth (ADR 0239), the Linux session items
+  (GAP-8 atlas, GL test batch), a rigid-node-clip end-to-end preview
+  fixture (no repo asset carries NodeAnimation3D clips yet), the shared
+  demo asset pack, and the 3d_20260715 plan-file refresh.

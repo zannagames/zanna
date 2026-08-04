@@ -465,6 +465,11 @@ class SceneEditor3DBakeEnvironmentLayer extends PreviousLayer.SceneEditor3DCompo
         detailLabel.SetText(
             "Baked navmesh to " + Path.Name(sidecarPath)
             + "; the scene document is untouched.");
+        // Keep an active viewport overlay truthful without a manual toggle.
+        if showNavOverlay {
+            navOverlayMesh = navmesh;
+            renderDirty = true;
+        }
         return true;
     }
 

@@ -263,9 +263,33 @@ func BuildTransformToolbar(editor: scene_editor_3d.SceneEditor3D) {
         editor.placementVertexItem =
             editor.placementMenu.AddItemWithShortcut("Vertex Move", "Shift+V");
         editor.placementVertexItem.SetCheckable(true);
+        editor.arrangeMenuButton = editor.viewBar.AddNamedButtonWithText(
+            "chevron-down", "Arrange...",
+            "Align the selection to the primary node or distribute it "
+            + "evenly along one local axis (same-parent selections)");
+        editor.arrangeMenuButton.SetVisible(false);
+        editor.arrangeMenu = GUI.ContextMenu.New();
+        editor.arrangeAlignXItem =
+            editor.arrangeMenu.AddItem("Align X to Primary");
+        editor.arrangeAlignYItem =
+            editor.arrangeMenu.AddItem("Align Y to Primary");
+        editor.arrangeAlignZItem =
+            editor.arrangeMenu.AddItem("Align Z to Primary");
+        editor.arrangeMenu.AddSeparator();
+        editor.arrangeDistributeXItem =
+            editor.arrangeMenu.AddItem("Distribute X Evenly");
+        editor.arrangeDistributeYItem =
+            editor.arrangeMenu.AddItem("Distribute Y Evenly");
+        editor.arrangeDistributeZItem =
+            editor.arrangeMenu.AddItem("Distribute Z Evenly");
         editor.transformSpaceButton = editor.viewBar.AddNamedButtonWithText(
             "space-local", "Local",
             "Use parent-relative local axes; choose World for global axes");
+        editor.groupPivotButton = editor.viewBar.AddButtonWithText(
+            "", "Pivot: Own",
+            "Cycle the multi-selection Rotate/Scale pivot for world-space "
+            + "edits: each node's own origin, the primary node, or the "
+            + "selection center");
         editor.snapTransformCheck = GUI.Checkbox.New(editor.viewControlRow, "Snap");
         editor.snapTransformCheck.SetTooltip(
             "Quantize the resulting transform using the current tool's step");
@@ -460,6 +484,24 @@ func BuildViewOptions(editor: scene_editor_3d.SceneEditor3D) {
         GUI.Label.New(editor.viewOptionsRow, "scale");
         editor.snapScaleSpinner = editor.AddSnapSpinner(
             0.001, 10.0, 0.05, 0.1, "Scale snap increment");
+        editor.navOverlayCheck =
+            GUI.Checkbox.New(editor.viewOptionsRow, "Navmesh");
+        editor.navOverlayCheck.SetTooltip(
+            "Overlay the baked .vnavmsh sidecar's walkable surface in the "
+            + "viewport; bake through Scene Settings first");
+        editor.navOverlayCheck.SetChecked(false);
+        editor.navOverlayRevision = editor.navOverlayCheck.GetRevision();
+        GUI.Label.New(editor.viewOptionsRow, "Import scale");
+        editor.importScaleSpinner = editor.AddSnapSpinner(
+            0.001, 1000.0, 0.1, 1.0, "Import scale factor");
+        editor.importScaleSpinner.SetTooltip(
+            "Uniform factor applied to every root of the next asset import");
+        editor.importZUpCheck =
+            GUI.Checkbox.New(editor.viewOptionsRow, "Z-up import");
+        editor.importZUpCheck.SetTooltip(
+            "Treat the next imported asset as Z-up: roots rotate -90 degrees "
+            + "about X so the source's up axis becomes Y");
+        editor.importZUpCheck.SetChecked(false);
         editor.viewOptionsRow.SetVisible(false);
 }
 

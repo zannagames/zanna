@@ -83,6 +83,13 @@ int64_t rt_world3d_get_dropped_fixed_steps(void *world);
 /// @param world World3D handle to modify.
 /// @param body Body3D handle to retain and register once.
 void rt_world3d_add(void *world, void *body);
+/// @brief Materialize a scene's authored `collider.*` metadata convention
+///   (Studio's collider inspector, ADR 0185) into static bodies and triggers
+///   at each node's world pose. Calling twice adds duplicates.
+/// @param world Borrowed PhysicsWorld3D receiving the new static bodies.
+/// @param scene Borrowed SceneGraph scanned recursively from its root.
+/// @return Number of bodies created, or zero for invalid input.
+int64_t rt_world3d_build_scene_colliders(void *world, void *scene);
 
 /// @brief Add a Body3D to the world and return whether it is present afterward.
 /// @param world World3D handle to modify.

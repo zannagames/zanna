@@ -509,6 +509,7 @@ enum class RuntimeTypeId : std::size_t {
     RTCLS_MorphTarget3D,
     RTCLS_Particles3D,
     RTCLS_PostFX3D,
+    RTCLS_PostFXEffectKind,
     RTCLS_Ray3D,
     RTCLS_RayHit3D,
     // ADR 0227: geometry helper namespaces promoted to class blocks.

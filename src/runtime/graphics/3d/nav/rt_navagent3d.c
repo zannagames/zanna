@@ -97,6 +97,9 @@ typedef struct rt_navagent3d {
     int8_t has_path;
     int8_t auto_repath;
     int8_t avoidance_enabled;
+    /* Steering pause (Stop/Resume): path and target are retained, motion is
+     * suppressed until resumed. */
+    int8_t stopped;
     struct rt_navagent3d *registry_next;
     /* Uniform spatial-hash grid links for O(1)-ish neighbor queries during avoidance. The agent is
      * present in exactly one cell (grid_cx,grid_cz); the cell is refreshed whenever position syncs.
@@ -2046,6 +2049,13 @@ static int navagent_prepare_update(rt_navagent3d *agent,
     stopping_distance =
         navagent_nonnegative_capped_or(agent->stopping_distance, 0.0, NAVAGENT_DISTANCE_MAX);
     *out_stopping_distance = stopping_distance;
+    if (agent->stopped) {
+        /* Paused steering: keep the path and target, publish zero motion, and
+         * keep the remaining distance live for HUD/AI readback. */
+        navagent_zero_motion(agent);
+        agent->remaining_distance = navagent_compute_remaining_distance(agent);
+        return 0;
+    }
     target_dist = agent->has_target ? navagent_dist(agent->position, agent->target) : 0.0;
 
     if (agent->auto_repath && agent->has_target && target_dist > stopping_distance) {
@@ -2334,6 +2344,83 @@ void *rt_navagent3d_get_desired_velocity(void *obj) {
 int8_t rt_navagent3d_get_has_path(void *obj) {
     rt_navagent3d *agent = navagent3d_checked(obj);
     return agent && agent->has_path ? 1 : 0;
+}
+
+/// @brief Pause steering: the agent keeps its target and path but publishes zero
+///   motion each tick until `_resume`. Idempotent.
+/// @param obj Opaque NavAgent3D handle; invalid handles are ignored.
+void rt_navagent3d_stop(void *obj) {
+    rt_navagent3d *agent = navagent3d_checked(obj);
+    if (!agent)
+        return;
+    agent->stopped = 1;
+    navagent_zero_motion(agent);
+}
+
+/// @brief Resume steering after `_stop`. Idempotent; no repath is forced (the
+///   retained path continues, and auto-repath policy applies as usual).
+/// @param obj Opaque NavAgent3D handle; invalid handles are ignored.
+void rt_navagent3d_resume(void *obj) {
+    rt_navagent3d *agent = navagent3d_checked(obj);
+    if (agent)
+        agent->stopped = 0;
+}
+
+/// @brief Returns 1 while steering is paused by `_stop`.
+/// @param obj Opaque NavAgent3D handle.
+/// @return 1 when paused, otherwise 0, including invalid handles.
+int8_t rt_navagent3d_get_is_stopped(void *obj) {
+    rt_navagent3d *agent = navagent3d_checked(obj);
+    return agent && agent->stopped ? 1 : 0;
+}
+
+/// @brief Number of corners in the most recently computed path.
+/// @details Corners persist while the agent walks the path (including while
+///   stopped) and reset to zero on `_clear_target` or a failed repath; an
+///   arrived agent keeps its last corners until the next path change.
+/// @param obj Opaque NavAgent3D handle.
+/// @return Bounded corner count, or zero for an invalid handle.
+int64_t rt_navagent3d_get_path_corner_count(void *obj) {
+    rt_navagent3d *agent = navagent3d_checked(obj);
+    if (!agent || !agent->path_points_xyz || agent->path_point_count <= 0)
+        return 0;
+    return (int64_t)agent->path_point_count;
+}
+
+/// @brief Read one world-space corner of the most recently computed path.
+/// @param obj Opaque NavAgent3D handle.
+/// @param index Zero-based corner index in walk order.
+/// @return Newly allocated Vec3 owned by the caller; invalid handles or
+///   out-of-range indices produce the origin (use `_get_path_corner_count`).
+void *rt_navagent3d_get_path_corner(void *obj, int64_t index) {
+    rt_navagent3d *agent = navagent3d_checked(obj);
+    const double *point;
+    if (!agent || index < 0 || index >= rt_navagent3d_get_path_corner_count(obj))
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    point = navagent_path_point(agent, (int32_t)index);
+    if (!point)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(point[0], point[1], point[2]);
+}
+
+/// @brief Returns 1 while a navigation target is set (between `_set_target` and
+///   `_clear_target`/arrival clearing).
+/// @param obj Opaque NavAgent3D handle.
+/// @return 1 when a target is set, otherwise 0, including invalid handles.
+int8_t rt_navagent3d_get_has_target(void *obj) {
+    rt_navagent3d *agent = navagent3d_checked(obj);
+    return agent && agent->has_target ? 1 : 0;
+}
+
+/// @brief Read the current navigation target position.
+/// @param obj Opaque NavAgent3D handle.
+/// @return Newly allocated Vec3 owned by the caller; agents without a target
+///   (and invalid handles) produce the origin (use `_get_has_target`).
+void *rt_navagent3d_get_target(void *obj) {
+    rt_navagent3d *agent = navagent3d_checked(obj);
+    if (!agent || !agent->has_target)
+        return rt_vec3_new(0.0, 0.0, 0.0);
+    return rt_vec3_new(agent->target[0], agent->target[1], agent->target[2]);
 }
 
 /// @brief World-space distance from the agent's current position along the path to the goal.

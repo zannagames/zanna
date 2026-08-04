@@ -75,6 +75,9 @@ struct NavAgent3DTestLayout {
     int8_t has_path;
     int8_t auto_repath;
     int8_t avoidance_enabled;
+    /* Byte-layout mirror of rt_navagent3d: keep the steering-pause flag in the
+     * same position as the runtime struct. */
+    int8_t stopped;
     NavAgent3DTestLayout *registry_next;
     NavAgent3DTestLayout *grid_next;
     int32_t grid_cx;

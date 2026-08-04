@@ -221,8 +221,8 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-settextureuploadbudget"></a>`SetTextureUploadBudget` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetTextureUploadBudget` |
 | <a id="zanna-graphics3d-canvas3d-settexturestreaming"></a>`SetTextureStreaming` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetTextureStreaming` |
 | <a id="zanna-graphics3d-canvas3d-settexturestreamingbias"></a>`SetTextureStreamingBias` | `void(f64)` | `Zanna.Graphics3D.Canvas3D.SetTextureStreamingBias` |
-| <a id="zanna-graphics3d-canvas3d-screenshot"></a>`Screenshot` | `obj()` | `Zanna.Graphics3D.Canvas3D.Screenshot` |
-| <a id="zanna-graphics3d-canvas3d-screenshotfinal"></a>`ScreenshotFinal` | `obj()` | `Zanna.Graphics3D.Canvas3D.ScreenshotFinal` |
+| <a id="zanna-graphics3d-canvas3d-screenshot"></a>`Screenshot` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics3D.Canvas3D.Screenshot` |
+| <a id="zanna-graphics3d-canvas3d-screenshotfinal"></a>`ScreenshotFinal` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics3D.Canvas3D.ScreenshotFinal` |
 | <a id="zanna-graphics3d-canvas3d-trycopyscreenshotto"></a>`TryCopyScreenshotTo` | `i1(obj)` | `Zanna.Graphics3D.Canvas3D.TryCopyScreenshotTo` |
 | <a id="zanna-graphics3d-canvas3d-trycopyscreenshotfinalto"></a>`TryCopyScreenshotFinalTo` | `i1(obj)` | `Zanna.Graphics3D.Canvas3D.TryCopyScreenshotFinalTo` |
 | <a id="zanna-graphics3d-canvas3d-finalizeframe"></a>`FinalizeFrame` | `void()` | `Zanna.Graphics3D.Canvas3D.FinalizeFrame` |
@@ -580,6 +580,7 @@ Constructor: `Zanna.Graphics3D.SceneGraph.New`
 | <a id="zanna-graphics3d-scenegraph-portalclipping"></a>`PortalClipping` | `i1` | read/write |
 | <a id="zanna-graphics3d-scenegraph-portaltraversalcount"></a>`PortalTraversalCount` | `i64` | read-only |
 | <a id="zanna-graphics3d-scenegraph-unresolvedprefabcount"></a>`UnresolvedPrefabCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-scenegraph-animationcount"></a>`AnimationCount` | `i64` | read-only |
 
 #### Methods
 
@@ -608,6 +609,9 @@ Constructor: `Zanna.Graphics3D.SceneGraph.New`
 | <a id="zanna-graphics3d-scenegraph-syncbindings"></a>`SyncBindings` | `void(f64)` | `Zanna.Graphics3D.SceneGraph.SyncBindings` |
 | <a id="zanna-graphics3d-scenegraph-rebaseorigin"></a>`RebaseOrigin` | `void(f64,f64,f64)` | `Zanna.Graphics3D.SceneGraph.RebaseOrigin` |
 | <a id="zanna-graphics3d-scenegraph-adoptanimations"></a>`AdoptAnimations` | `i64(obj)` | `Zanna.Graphics3D.SceneGraph.AdoptAnimations` |
+| <a id="zanna-graphics3d-scenegraph-getanimation"></a>`GetAnimation` | `obj<Zanna.Graphics3D.NodeAnimation3D>(i64)` | `Zanna.Graphics3D.SceneGraph.GetAnimation` |
+| <a id="zanna-graphics3d-scenegraph-getanimationname"></a>`GetAnimationName` | `str(i64)` | `Zanna.Graphics3D.SceneGraph.GetAnimationName` |
+| <a id="zanna-graphics3d-scenegraph-getanimationduration"></a>`GetAnimationDuration` | `f64(i64)` | `Zanna.Graphics3D.SceneGraph.GetAnimationDuration` |
 | <a id="zanna-graphics3d-scenegraph-new"></a>`New` | `obj()` | `Zanna.Graphics3D.SceneGraph.New` |
 
 <a id="zanna-graphics3d-scenenode"></a>
@@ -1145,7 +1149,7 @@ Constructor: `Zanna.Graphics3D.PostFX3D.New`
 |---|---|---|
 | <a id="zanna-graphics3d-postfx3d-addautoexposure"></a>`AddAutoExposure` | `void(f64,f64,f64)` | `Zanna.Graphics3D.PostFX3D.AddAutoExposure` |
 | <a id="zanna-graphics3d-postfx3d-addcolorlut"></a>`AddColorLut` | `void(obj,f64)` | `Zanna.Graphics3D.PostFX3D.AddColorLut` |
-| <a id="zanna-graphics3d-postfx3d-makeidentitylut"></a>`MakeIdentityLut` | `obj()` | `Zanna.Graphics3D.PostFX3D.MakeIdentityLut` |
+| <a id="zanna-graphics3d-postfx3d-makeidentitylut"></a>`MakeIdentityLut` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Graphics3D.PostFX3D.MakeIdentityLut` |
 | <a id="zanna-graphics3d-postfx3d-addsunshafts"></a>`AddSunShafts` | `void(f64,f64,i64)` | `Zanna.Graphics3D.PostFX3D.AddSunShafts` |
 | <a id="zanna-graphics3d-postfx3d-addbloom"></a>`AddBloom` | `void(f64,f64,i64)` | `Zanna.Graphics3D.PostFX3D.AddBloom` |
 | <a id="zanna-graphics3d-postfx3d-addtonemap"></a>`AddTonemap` | `void(i64,f64)` | `Zanna.Graphics3D.PostFX3D.AddTonemap` |
@@ -1153,6 +1157,8 @@ Constructor: `Zanna.Graphics3D.PostFX3D.New`
 | <a id="zanna-graphics3d-postfx3d-addcolorgrade"></a>`AddColorGrade` | `void(f64,f64,f64)` | `Zanna.Graphics3D.PostFX3D.AddColorGrade` |
 | <a id="zanna-graphics3d-postfx3d-addvignette"></a>`AddVignette` | `void(f64,f64)` | `Zanna.Graphics3D.PostFX3D.AddVignette` |
 | <a id="zanna-graphics3d-postfx3d-clear"></a>`Clear` | `void()` | `Zanna.Graphics3D.PostFX3D.Clear` |
+| <a id="zanna-graphics3d-postfx3d-geteffectkind"></a>`GetEffectKind` | `i64(i64)` | `Zanna.Graphics3D.PostFX3D.GetEffectKind` |
+| <a id="zanna-graphics3d-postfx3d-removeeffectat"></a>`RemoveEffectAt` | `i1(i64)` | `Zanna.Graphics3D.PostFX3D.RemoveEffectAt` |
 | <a id="zanna-graphics3d-postfx3d-newquality"></a>`NewQuality` | `obj(obj,i64)` | `Zanna.Graphics3D.PostFX3D.NewQuality` |
 | <a id="zanna-graphics3d-postfx3d-addssao"></a>`AddSsao` | `void(f64,f64,i64)` | `Zanna.Graphics3D.PostFX3D.AddSsao` |
 | <a id="zanna-graphics3d-postfx3d-adddof"></a>`AddDof` | `void(f64,f64,f64)` | `Zanna.Graphics3D.PostFX3D.AddDof` |
@@ -1161,6 +1167,33 @@ Constructor: `Zanna.Graphics3D.PostFX3D.New`
 | <a id="zanna-graphics3d-postfx3d-addtaa"></a>`AddTaa` | `void(f64)` | `Zanna.Graphics3D.PostFX3D.AddTaa` |
 | <a id="zanna-graphics3d-postfx3d-addssr"></a>`AddSsr` | `void(f64,f64)` | `Zanna.Graphics3D.PostFX3D.AddSsr` |
 | <a id="zanna-graphics3d-postfx3d-new"></a>`New` | `obj()` | `Zanna.Graphics3D.PostFX3D.New` |
+
+<a id="zanna-graphics3d-postfxeffectkind"></a>
+### `Zanna.Graphics3D.PostFXEffectKind`
+
+Provides Post FX Effect Kind constants identifying entries in a PostFX3D chain.
+
+`Zanna.Graphics3D.PostFXEffectKind` is a static runtime surface and does not require an
+instance. `PostFX3D.GetEffectKind` returns these values in chain application order. Its public
+surface exposes properties such as `Bloom`, `Tonemap`, `Ssao`, `SunShafts`.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-graphics3d-postfxeffectkind-bloom"></a>`Bloom` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-tonemap"></a>`Tonemap` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-fxaa"></a>`Fxaa` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-colorgrade"></a>`ColorGrade` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-vignette"></a>`Vignette` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-ssao"></a>`Ssao` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-dof"></a>`Dof` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-motionblur"></a>`MotionBlur` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-taa"></a>`Taa` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-ssr"></a>`Ssr` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-autoexposure"></a>`AutoExposure` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-colorlut"></a>`ColorLut` | `i64` | read-only |
+| <a id="zanna-graphics3d-postfxeffectkind-sunshafts"></a>`SunShafts` | `i64` | read-only |
 
 <a id="zanna-graphics3d-ray3d"></a>
 ### `Zanna.Graphics3D.Ray3D`
@@ -1385,6 +1418,7 @@ Constructor: `Zanna.Graphics3D.PhysicsWorld3D.New`
 | <a id="zanna-graphics3d-physicsworld3d-step"></a>`Step` | `void(f64)` | `Zanna.Graphics3D.PhysicsWorld3D.Step` |
 | <a id="zanna-graphics3d-physicsworld3d-stepfixed"></a>`StepFixed` | `i64(f64,f64,i64)` | `Zanna.Graphics3D.PhysicsWorld3D.StepFixed` |
 | <a id="zanna-graphics3d-physicsworld3d-add"></a>`Add` | `void(obj)` | `Zanna.Graphics3D.PhysicsWorld3D.Add` |
+| <a id="zanna-graphics3d-physicsworld3d-buildscenecolliders"></a>`BuildSceneColliders` | `i64(obj)` | `Zanna.Graphics3D.PhysicsWorld3D.BuildSceneColliders` |
 | <a id="zanna-graphics3d-physicsworld3d-tryadd"></a>`TryAdd` | `i1(obj)` | `Zanna.Graphics3D.PhysicsWorld3D.TryAdd` |
 | <a id="zanna-graphics3d-physicsworld3d-remove"></a>`Remove` | `void(obj)` | `Zanna.Graphics3D.PhysicsWorld3D.Remove` |
 | <a id="zanna-graphics3d-physicsworld3d-containsbody"></a>`ContainsBody` | `i1(obj)` | `Zanna.Graphics3D.PhysicsWorld3D.ContainsBody` |
@@ -2334,6 +2368,10 @@ Constructor: `Zanna.Graphics3D.NavAgent3D.New`
 | <a id="zanna-graphics3d-navagent3d-avoidanceradius"></a>`AvoidanceRadius` | `f64` | read/write |
 | <a id="zanna-graphics3d-navagent3d-onoffmeshlink"></a>`OnOffMeshLink` | `i1` | read-only |
 | <a id="zanna-graphics3d-navagent3d-linkkind"></a>`LinkKind` | `str` | read-only |
+| <a id="zanna-graphics3d-navagent3d-isstopped"></a>`IsStopped` | `i1` | read-only |
+| <a id="zanna-graphics3d-navagent3d-pathcornercount"></a>`PathCornerCount` | `i64` | read-only |
+| <a id="zanna-graphics3d-navagent3d-hastarget"></a>`HasTarget` | `i1` | read-only |
+| <a id="zanna-graphics3d-navagent3d-target"></a>`Target` | `obj<Zanna.Math.Vec3>` | read-only |
 
 #### Methods
 
@@ -2345,6 +2383,9 @@ Constructor: `Zanna.Graphics3D.NavAgent3D.New`
 | <a id="zanna-graphics3d-navagent3d-warp"></a>`Warp` | `void(obj)` | `Zanna.Graphics3D.NavAgent3D.Warp` |
 | <a id="zanna-graphics3d-navagent3d-bindcharacter"></a>`BindCharacter` | `void(obj)` | `Zanna.Graphics3D.NavAgent3D.BindCharacter` |
 | <a id="zanna-graphics3d-navagent3d-bindnode"></a>`BindNode` | `void(obj)` | `Zanna.Graphics3D.NavAgent3D.BindNode` |
+| <a id="zanna-graphics3d-navagent3d-stop"></a>`Stop` | `void()` | `Zanna.Graphics3D.NavAgent3D.Stop` |
+| <a id="zanna-graphics3d-navagent3d-resume"></a>`Resume` | `void()` | `Zanna.Graphics3D.NavAgent3D.Resume` |
+| <a id="zanna-graphics3d-navagent3d-getpathcorner"></a>`GetPathCorner` | `obj<Zanna.Math.Vec3>(i64)` | `Zanna.Graphics3D.NavAgent3D.GetPathCorner` |
 | <a id="zanna-graphics3d-navagent3d-new"></a>`New` | `obj(obj,f64,f64)` | `Zanna.Graphics3D.NavAgent3D.New` |
 
 <a id="zanna-graphics3d-animblend3d"></a>
@@ -2787,8 +2828,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-canvas3d-get-backendmeshstreamuploads"></a>`Zanna.Graphics3D.Canvas3D.get_BackendMeshStreamUploads` | `i64(obj)` | `rt_canvas3d_get_backend_mesh_stream_uploads` |
 | <a id="zanna-graphics3d-canvas3d-get-backendtexturefallbackbinds"></a>`Zanna.Graphics3D.Canvas3D.get_BackendTextureFallbackBinds` | `i64(obj)` | `rt_canvas3d_get_backend_texture_fallback_binds` |
 | <a id="zanna-graphics3d-canvas3d-get-backendpresentpath"></a>`Zanna.Graphics3D.Canvas3D.get_BackendPresentPath` | `i64(obj)` | `rt_canvas3d_get_backend_present_path` |
-| `Zanna.Graphics3D.Canvas3D.Screenshot` | `obj(obj)` | `rt_canvas3d_screenshot` |
-| `Zanna.Graphics3D.Canvas3D.ScreenshotFinal` | `obj(obj)` | `rt_canvas3d_screenshot_final` |
+| `Zanna.Graphics3D.Canvas3D.Screenshot` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_canvas3d_screenshot` |
+| `Zanna.Graphics3D.Canvas3D.ScreenshotFinal` | `obj<Zanna.Graphics.Pixels>(obj)` | `rt_canvas3d_screenshot_final` |
 | `Zanna.Graphics3D.Canvas3D.TryCopyScreenshotTo` | `i1(obj,obj)` | `rt_canvas3d_try_copy_screenshot_to` |
 | `Zanna.Graphics3D.Canvas3D.TryCopyScreenshotFinalTo` | `i1(obj,obj)` | `rt_canvas3d_try_copy_screenshot_final_to` |
 | <a id="zanna-graphics3d-canvas3d-get-framefinalized"></a>`Zanna.Graphics3D.Canvas3D.get_FrameFinalized` | `i1(obj)` | `rt_canvas3d_get_frame_finalized` |
@@ -3060,6 +3101,10 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.SceneGraph.SyncBindings` | `void(obj,f64)` | `rt_scene3d_sync_bindings` |
 | `Zanna.Graphics3D.SceneGraph.RebaseOrigin` | `void(obj,f64,f64,f64)` | `rt_scene3d_rebase_origin` |
 | `Zanna.Graphics3D.SceneGraph.AdoptAnimations` | `i64(obj,obj)` | `rt_scene3d_adopt_baked_animations` |
+| <a id="zanna-graphics3d-scenegraph-get-animationcount"></a>`Zanna.Graphics3D.SceneGraph.get_AnimationCount` | `i64(obj)` | `rt_scene3d_get_animation_count` |
+| `Zanna.Graphics3D.SceneGraph.GetAnimation` | `obj<Zanna.Graphics3D.NodeAnimation3D>(obj,i64)` | `rt_scene3d_get_animation` |
+| `Zanna.Graphics3D.SceneGraph.GetAnimationName` | `str(obj,i64)` | `rt_scene3d_get_animation_name` |
+| `Zanna.Graphics3D.SceneGraph.GetAnimationDuration` | `f64(obj,i64)` | `rt_scene3d_get_animation_duration` |
 | <a id="zanna-graphics3d-scenegraph-get-unresolvedprefabcount"></a>`Zanna.Graphics3D.SceneGraph.get_UnresolvedPrefabCount` | `i64(obj)` | `rt_scene3d_get_unresolved_prefab_count` |
 | `Zanna.Graphics3D.SceneNode.New` | `obj()` | `rt_scene_node3d_new` |
 | `Zanna.Graphics3D.SceneNode.SetPosition` | `void(obj,f64,f64,f64)` | `rt_scene_node3d_set_position` |
@@ -3344,8 +3389,23 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-postfx3d-get-isenabled"></a>`Zanna.Graphics3D.PostFX3D.get_IsEnabled` | `i1(obj)` | `rt_postfx3d_get_enabled` |
 | `Zanna.Graphics3D.PostFX3D.Clear` | `void(obj)` | `rt_postfx3d_clear` |
 | <a id="zanna-graphics3d-postfx3d-get-effectcount"></a>`Zanna.Graphics3D.PostFX3D.get_EffectCount` | `i64(obj)` | `rt_postfx3d_get_effect_count` |
+| `Zanna.Graphics3D.PostFX3D.GetEffectKind` | `i64(obj,i64)` | `rt_postfx3d_get_effect_kind` |
+| `Zanna.Graphics3D.PostFX3D.RemoveEffectAt` | `i1(obj,i64)` | `rt_postfx3d_remove_effect_at` |
 | `Zanna.Graphics3D.PostFX3D.NewQuality` | `obj(obj,i64)` | `rt_postfx3d_new_quality` |
 | `Zanna.Graphics3D.Canvas3D.SetPostFX` | `void(obj,obj)` | `rt_canvas3d_set_post_fx` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-bloom"></a>`Zanna.Graphics3D.PostFXEffectKind.get_Bloom` | `i64()` | `rt_postfx3d_effect_kind_bloom` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-tonemap"></a>`Zanna.Graphics3D.PostFXEffectKind.get_Tonemap` | `i64()` | `rt_postfx3d_effect_kind_tonemap` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-fxaa"></a>`Zanna.Graphics3D.PostFXEffectKind.get_Fxaa` | `i64()` | `rt_postfx3d_effect_kind_fxaa` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-colorgrade"></a>`Zanna.Graphics3D.PostFXEffectKind.get_ColorGrade` | `i64()` | `rt_postfx3d_effect_kind_color_grade` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-vignette"></a>`Zanna.Graphics3D.PostFXEffectKind.get_Vignette` | `i64()` | `rt_postfx3d_effect_kind_vignette` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-ssao"></a>`Zanna.Graphics3D.PostFXEffectKind.get_Ssao` | `i64()` | `rt_postfx3d_effect_kind_ssao` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-dof"></a>`Zanna.Graphics3D.PostFXEffectKind.get_Dof` | `i64()` | `rt_postfx3d_effect_kind_dof` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-motionblur"></a>`Zanna.Graphics3D.PostFXEffectKind.get_MotionBlur` | `i64()` | `rt_postfx3d_effect_kind_motion_blur` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-taa"></a>`Zanna.Graphics3D.PostFXEffectKind.get_Taa` | `i64()` | `rt_postfx3d_effect_kind_taa` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-ssr"></a>`Zanna.Graphics3D.PostFXEffectKind.get_Ssr` | `i64()` | `rt_postfx3d_effect_kind_ssr` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-autoexposure"></a>`Zanna.Graphics3D.PostFXEffectKind.get_AutoExposure` | `i64()` | `rt_postfx3d_effect_kind_auto_exposure` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-colorlut"></a>`Zanna.Graphics3D.PostFXEffectKind.get_ColorLut` | `i64()` | `rt_postfx3d_effect_kind_color_lut` |
+| <a id="zanna-graphics3d-postfxeffectkind-get-sunshafts"></a>`Zanna.Graphics3D.PostFXEffectKind.get_SunShafts` | `i64()` | `rt_postfx3d_effect_kind_sun_shafts` |
 | `Zanna.Graphics3D.Ray3D.IntersectTriangle` | `f64(obj,obj,obj,obj,obj)` | `rt_ray3d_intersect_triangle` |
 | `Zanna.Graphics3D.Ray3D.IntersectTriangleCull` | `f64(obj,obj,obj,obj,obj,i1)` | `rt_ray3d_intersect_triangle_cull` |
 | `Zanna.Graphics3D.Ray3D.IntersectMesh` | `obj(obj,obj,obj,obj)` | `rt_ray3d_intersect_mesh` |
@@ -3437,6 +3497,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-physicsworld3d-get-fixedstepalpha"></a>`Zanna.Graphics3D.PhysicsWorld3D.get_FixedStepAlpha` | `f64(obj)` | `rt_world3d_get_fixed_step_alpha` |
 | <a id="zanna-graphics3d-physicsworld3d-get-droppedfixedsteps"></a>`Zanna.Graphics3D.PhysicsWorld3D.get_DroppedFixedSteps` | `i64(obj)` | `rt_world3d_get_dropped_fixed_steps` |
 | `Zanna.Graphics3D.PhysicsWorld3D.Add` | `void(obj,obj)` | `rt_world3d_add` |
+| `Zanna.Graphics3D.PhysicsWorld3D.BuildSceneColliders` | `i64(obj,obj)` | `rt_world3d_build_scene_colliders` |
 | `Zanna.Graphics3D.PhysicsWorld3D.TryAdd` | `i1(obj,obj)` | `rt_world3d_try_add` |
 | `Zanna.Graphics3D.PhysicsWorld3D.Remove` | `void(obj,obj)` | `rt_world3d_remove` |
 | <a id="zanna-graphics3d-physicsworld3d-get-bodycount"></a>`Zanna.Graphics3D.PhysicsWorld3D.get_BodyCount` | `i64(obj)` | `rt_world3d_body_count` |
@@ -3910,6 +3971,13 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-navagent3d-set-avoidanceradius"></a>`Zanna.Graphics3D.NavAgent3D.set_AvoidanceRadius` | `void(obj,f64)` | `rt_navagent3d_set_avoidance_radius` |
 | `Zanna.Graphics3D.NavAgent3D.BindCharacter` | `void(obj,obj)` | `rt_navagent3d_bind_character` |
 | `Zanna.Graphics3D.NavAgent3D.BindNode` | `void(obj,obj)` | `rt_navagent3d_bind_node` |
+| `Zanna.Graphics3D.NavAgent3D.Stop` | `void(obj)` | `rt_navagent3d_stop` |
+| `Zanna.Graphics3D.NavAgent3D.Resume` | `void(obj)` | `rt_navagent3d_resume` |
+| <a id="zanna-graphics3d-navagent3d-get-isstopped"></a>`Zanna.Graphics3D.NavAgent3D.get_IsStopped` | `i1(obj)` | `rt_navagent3d_get_is_stopped` |
+| <a id="zanna-graphics3d-navagent3d-get-pathcornercount"></a>`Zanna.Graphics3D.NavAgent3D.get_PathCornerCount` | `i64(obj)` | `rt_navagent3d_get_path_corner_count` |
+| `Zanna.Graphics3D.NavAgent3D.GetPathCorner` | `obj<Zanna.Math.Vec3>(obj,i64)` | `rt_navagent3d_get_path_corner` |
+| <a id="zanna-graphics3d-navagent3d-get-hastarget"></a>`Zanna.Graphics3D.NavAgent3D.get_HasTarget` | `i1(obj)` | `rt_navagent3d_get_has_target` |
+| <a id="zanna-graphics3d-navagent3d-get-target"></a>`Zanna.Graphics3D.NavAgent3D.get_Target` | `obj<Zanna.Math.Vec3>(obj)` | `rt_navagent3d_get_target` |
 | `Zanna.Graphics3D.AnimBlend3D.New` | `obj(obj)` | `rt_anim_blend3d_new` |
 | `Zanna.Graphics3D.AnimBlend3D.AddState` | `i64(obj,str,obj)` | `rt_anim_blend3d_add_state` |
 | `Zanna.Graphics3D.AnimBlend3D.SetWeight` | `void(obj,i64,f64)` | `rt_anim_blend3d_set_weight` |
@@ -4023,7 +4091,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.PostFX3D.AddSsr` | `void(obj,f64,f64)` | `rt_postfx3d_add_ssr` |
 | `Zanna.Graphics3D.PostFX3D.AddAutoExposure` | `void(obj,f64,f64,f64)` | `rt_postfx3d_add_auto_exposure` |
 | `Zanna.Graphics3D.PostFX3D.AddColorLut` | `void(obj,obj,f64)` | `rt_postfx3d_add_color_lut` |
-| `Zanna.Graphics3D.PostFX3D.MakeIdentityLut` | `obj()` | `rt_postfx3d_make_identity_lut` |
+| `Zanna.Graphics3D.PostFX3D.MakeIdentityLut` | `obj<Zanna.Graphics.Pixels>()` | `rt_postfx3d_make_identity_lut` |
 | `Zanna.Graphics3D.PostFX3D.AddSunShafts` | `void(obj,f64,f64,i64)` | `rt_postfx3d_add_sun_shafts` |
 | <a id="zanna-graphics3d-postfx3d-get-lasterror"></a>`Zanna.Graphics3D.PostFX3D.get_LastError` | `str(obj)` | `rt_postfx3d_get_last_error` |
 | `Zanna.Graphics3D.Vegetation3D.New` | `obj(obj)` | `rt_vegetation3d_new` |

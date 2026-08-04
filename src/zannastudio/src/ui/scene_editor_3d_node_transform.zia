@@ -43,6 +43,7 @@ bind "scene_material_inspector_3d";
 bind "scene_material_3d";
 bind "scene_metadata_inspector_3d";
 bind "scene_pane_docking";
+bind "scene_layout_3d";
 bind "scene_terrain_3d";
 bind "scene_terrain_inspector_3d";
 bind "scene_transform_3d";
@@ -953,6 +954,155 @@ class SceneEditor3DNodeTransformLayer extends PreviousLayer.SceneEditor3DLayoutL
         }
         RefreshSelectedFields();
         SetEditorControlsEnabled(true);
+        renderDirty = true;
+        return true;
+    }
+
+    /// @brief Align or distribute the selected nodes' local positions once.
+    /// @details Align uses the primary selection as the explicit anchor;
+    ///          distribution leaves both extrema fixed and derives every
+    ///          intermediate target from them. All selected nodes must share
+    ///          one parent (local coordinates are only comparable inside one
+    ///          frame) and instance content is locked — both refuse rather
+    ///          than approximate. Rejected/no-op layouts create no history.
+    expose override func ArrangeSelectedNodes(operation: Integer) -> Boolean {
+        if scene == null or scene_layout_3d.IsOperation(operation) == false {
+            return false;
+        }
+        selectedIndices = scene_selection.Normalize(
+            selectedIndices, flatNodes.count(), selectedIndex);
+        var minimum = scene_layout_3d.MinimumSelection(operation);
+        if selectedIndices.count() < minimum
+           or selectedIndex < 0
+           or selectedIndex >= flatNodes.count() {
+            detailLabel.SetText(
+                scene_layout_3d.OperationLabel(operation)
+                + " needs at least " + minimum + " selected nodes.");
+            toolbarStatus.SetText("Arrange needs more selected nodes");
+            return false;
+        }
+        if scene_selection.Contains(selectedIndices, selectedIndex) == false {
+            selectedIndex = selectedIndices.get(0);
+        }
+        var anchorNode = flatNodes.get(selectedIndex);
+        var sharedParent = anchorNode.Parent;
+        var guardIndex = 0;
+        while guardIndex < selectedIndices.count() {
+            var candidate = flatNodes.get(selectedIndices.get(guardIndex));
+            if candidate.IsInstanceContent {
+                detailLabel.SetText(
+                    "Instance content is locked; select the owning instance "
+                    + "node instead (exact-or-reject).");
+                toolbarStatus.SetText("Arrange cannot edit instance content");
+                return false;
+            }
+            if candidate.Parent != sharedParent {
+                detailLabel.SetText(
+                    "Arrange edits local positions, so every selected node "
+                    + "must share one parent (exact-or-reject).");
+                toolbarStatus.SetText("Arrange needs one shared parent");
+                return false;
+            }
+            guardIndex = guardIndex + 1;
+        }
+
+        var previousSelection = selectedIndices;
+        var previousPrimary = selectedIndex;
+        var axis = scene_layout_3d.Axis(operation);
+        var changed = false;
+        if scene_layout_3d.IsDistribution(operation) {
+            var coordinates: List[Number] = [];
+            var readIndex = 0;
+            while readIndex < selectedIndices.count() {
+                var readNode = flatNodes.get(selectedIndices.get(readIndex));
+                var readPosition = readNode.Position;
+                if axis == 0 { coordinates.add(readPosition.X); }
+                else if axis == 1 { coordinates.add(readPosition.Y); }
+                else { coordinates.add(readPosition.Z); }
+                readIndex = readIndex + 1;
+            }
+            var ordered = scene_layout_3d.OrderedPositions(
+                selectedIndices, coordinates);
+            if ordered.count() < minimum { return false; }
+            var firstNode = flatNodes.get(ordered.get(0));
+            var lastNode = flatNodes.get(ordered.get(ordered.count() - 1));
+            var firstPosition = firstNode.Position;
+            var lastPosition = lastNode.Position;
+            var minimumCoordinate = firstPosition.X;
+            var maximumCoordinate = lastPosition.X;
+            if axis == 1 {
+                minimumCoordinate = firstPosition.Y;
+                maximumCoordinate = lastPosition.Y;
+            } else if axis == 2 {
+                minimumCoordinate = firstPosition.Z;
+                maximumCoordinate = lastPosition.Z;
+            }
+            var position = 0;
+            while position < ordered.count() {
+                var node = flatNodes.get(ordered.get(position));
+                var target = scene_layout_3d.DistributedCoordinate(
+                    minimumCoordinate, maximumCoordinate,
+                    position, ordered.count());
+                var current = node.Position;
+                var currentValue = current.X;
+                if axis == 1 { currentValue = current.Y; }
+                else if axis == 2 { currentValue = current.Z; }
+                if scene_transform_3d.NearlyEqual(
+                       currentValue, target) == false {
+                    if axis == 0 {
+                        node.SetPosition(target, current.Y, current.Z);
+                    } else if axis == 1 {
+                        node.SetPosition(current.X, target, current.Z);
+                    } else {
+                        node.SetPosition(current.X, current.Y, target);
+                    }
+                    changed = true;
+                }
+                position = position + 1;
+            }
+        } else {
+            var anchorPosition = anchorNode.Position;
+            var anchorValue = anchorPosition.X;
+            if axis == 1 { anchorValue = anchorPosition.Y; }
+            else if axis == 2 { anchorValue = anchorPosition.Z; }
+            var selectionIndex = 0;
+            while selectionIndex < selectedIndices.count() {
+                var node = flatNodes.get(selectedIndices.get(selectionIndex));
+                var current = node.Position;
+                var currentValue = current.X;
+                if axis == 1 { currentValue = current.Y; }
+                else if axis == 2 { currentValue = current.Z; }
+                if scene_transform_3d.NearlyEqual(
+                       currentValue, anchorValue) == false {
+                    if axis == 0 {
+                        node.SetPosition(anchorValue, current.Y, current.Z);
+                    } else if axis == 1 {
+                        node.SetPosition(current.X, anchorValue, current.Z);
+                    } else {
+                        node.SetPosition(current.X, current.Y, anchorValue);
+                    }
+                    changed = true;
+                }
+                selectionIndex = selectionIndex + 1;
+            }
+        }
+
+        if changed == false {
+            detailLabel.SetText(
+                "The selection already satisfies "
+                + scene_layout_3d.OperationLabel(operation) + ".");
+            return false;
+        }
+        if CommitScene(
+               scene_layout_3d.OperationLabel(operation)
+               + " (" + selectedIndices.count() + " nodes)") == false {
+            RollBackGroupEdit(
+                previousSelection, previousPrimary,
+                "The arranged node layout could not be committed.");
+            return false;
+        }
+        detailLabel.SetText("");
+        RefreshSelectedFields();
         renderDirty = true;
         return true;
     }

@@ -378,6 +378,90 @@ func VerifyScene3DDrops(ctx: SceneDndProbeContext) -> Boolean {
              "3D placed import did not land on the spawn point");
         return false;
     }
+
+    // Import settings: the view-options scale factor and Z-up conversion
+    // apply to imported roots inside the same import transaction. The
+    // fixture root sits at the origin with identity scale, so a 2x factor
+    // reads back directly and the Z-up conversion shows in the rotation.
+    editor3d.importScaleSpinner.SetValue(2.0);
+    editor3d.importZUpCheck.SetChecked(true);
+    var adjustedBefore = editor3d.scene.Root.ChildCount;
+    var undoAdjustedBefore = editor3d.undoStack.count();
+    if editor3d.ImportAssetPath(assetScenePath) == false {
+        Fail(shell, null, tempDir, "3D adjusted import failed");
+        return false;
+    }
+    editor3d.Pump(doc3d);
+    if editor3d.scene.Root.ChildCount <= adjustedBefore
+       or editor3d.undoStack.count() != undoAdjustedBefore + 1 {
+        Fail(shell, null, tempDir, "3D adjusted import was not one transaction");
+        return false;
+    }
+    var adjustedNode = editor3d.scene.Root.GetChild(
+        editor3d.scene.Root.ChildCount - 1);
+    var adjustedScale = adjustedNode.Scale;
+    if adjustedScale.X < 1.99 or adjustedScale.X > 2.01
+       or adjustedScale.Y < 1.99 or adjustedScale.Y > 2.01 {
+        Fail(shell, null, tempDir,
+             "import scale factor did not multiply the merged root scale");
+        return false;
+    }
+    // -90 degrees about X: the rotation quaternion carries X = -sin(45).
+    var adjustedRotation = adjustedNode.Rotation;
+    if adjustedRotation.X > -0.6 and adjustedRotation.X < 0.6 {
+        Fail(shell, null, tempDir,
+             "Z-up conversion did not rotate the merged root about X");
+        return false;
+    }
+    editor3d.importScaleSpinner.SetValue(1.0);
+    editor3d.importZUpCheck.SetChecked(false);
+
+    // Animation preview: importing an animated glTF adopts its clips onto
+    // the scene carrier; the preview plays workspace-only and Stop restores
+    // the canonical bytes exactly.
+    // Probe working directory is src/zannastudio/src/probes.
+    if editor3d.ImportAssetPath(
+           "../../../../examples/3d/openworld_slice/assets/models/"
+           + "skinned_agent.gltf") == false {
+        Fail(shell, null, tempDir, "animated glTF import failed");
+        return false;
+    }
+    editor3d.Pump(doc3d);
+    if editor3d.scene.AnimationCount < 1
+       or editor3d.scene.GetAnimationName(0) == ""
+       or editor3d.scene.GetAnimationDuration(0) <= 0.0 {
+        Fail(shell, null, tempDir,
+             "the imported glTF's clips did not enumerate by name/duration");
+        return false;
+    }
+    // The skinned agent's clips are skeletal Animation3D entries: the typed
+    // rigid-clip getter refuses them, and the workspace preview refuses to
+    // start — cleanly, with no document or history change.
+    if editor3d.scene.GetAnimation(0) != null {
+        Fail(shell, null, tempDir,
+             "a skeletal clip leaked through the NodeAnimation3D getter");
+        return false;
+    }
+    var animSelection: List[Integer] = [];
+    var animRootFlat = editor3d.flatNodes.count() - 1;
+    animSelection.add(animRootFlat);
+    editor3d.SelectSceneNodes(animSelection, animRootFlat);
+    var previewBaseline = doc3d.content;
+    var previewRevision = editor3d.GetRevision();
+    editor3d.StartAnimationPreview();
+    var tick = 0;
+    while tick < 3 {
+        editor3d.Pump(doc3d);
+        shell.Render();
+        tick = tick + 1;
+    }
+    if editor3d.animPreviewActive
+       or doc3d.content != previewBaseline
+       or editor3d.GetRevision() != previewRevision {
+        Fail(shell, null, tempDir,
+             "the skeletal-clip preview refusal changed workspace state");
+        return false;
+    }
     shell.Destroy();
     return true;
 }

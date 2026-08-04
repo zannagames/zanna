@@ -317,6 +317,29 @@ func BuildNodeInspector(editor: scene_editor_3d.SceneEditor3D,
             "Save the selected root-level nodes as a new .scene3d prefab "
             + "beside this scene and replace them with an instance "
             + "reference, in one undoable edit");
+
+        // Animation preview: visible only while the scene carries baked
+        // clips. Playback is workspace-only; Stop restores canonical bytes.
+        editor.animGroup = GUI.GroupBox.New(inspector, "Animation");
+        editor.animClipLabel = GUI.Label.New(
+            editor.animGroup, "No baked clips in this scene.");
+        editor.animClipLabel.SetWordWrap(true);
+        var animRow = GUI.Flex.New();
+        animRow.SetDirection(GUI.FlexDirection.Row);
+        animRow.SetWrap(GUI.FlexWrap.Wrap);
+        animRow.SetAlign(GUI.Align.Center);
+        animRow.SetGap(4.0);
+        editor.animGroup.AddChild(animRow);
+        editor.animPrevClipButton = GUI.Button.New(animRow, "<");
+        editor.animPrevClipButton.SetTooltip("Select the previous baked clip");
+        editor.animNextClipButton = GUI.Button.New(animRow, ">");
+        editor.animNextClipButton.SetTooltip("Select the next baked clip");
+        editor.animPlayButton = GUI.Button.New(animRow, "Play");
+        editor.animPlayButton.SetTooltip(
+            "Preview the selected clip on the selected node's subtree. "
+            + "Playback never touches the document: Stop restores the "
+            + "authored transforms exactly.");
+        editor.animGroup.SetVisible(false);
 }
 
 /// @brief Construct lightmap and probe-grid baking controls.

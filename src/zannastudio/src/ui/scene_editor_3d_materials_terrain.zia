@@ -867,6 +867,19 @@ class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBake
                 mergedRoots.add(importedNode);
             }
         }
+        // Import settings (view options row): uniform scale and Z-up
+        // conversion apply to the merged roots inside this same transaction,
+        // before spawn placement measures the adjusted bounds.
+        var importScale = 1.0;
+        if importScaleSpinner != null {
+            importScale = importScaleSpinner.Value;
+        }
+        var importZUp = importZUpCheck != null and importZUpCheck.IsChecked();
+        if mergedRoots.count > 0
+           and (importZUp
+                or scene_transform_3d.NearlyEqual(importScale, 1.0) == false) {
+            ApplyImportAdjustments(mergedRoots, importScale, importZUp);
+        }
         if useSpawn and mergedRoots.count > 0 {
             PlaceMergedRootsAt(mergedRoots, spawnX, spawnY, spawnZ);
         }
@@ -883,6 +896,45 @@ class SceneEditor3DMaterialsTerrainLayer extends PreviousLayer.SceneEditor3DBake
         if mergingIntoExisting == false { FrameAll(); }
         return CommitScene(
             "Imported " + importedCount + " node(s) from " + Path.Name(path));
+    }
+
+    /// @brief Apply the import-settings adjustments to freshly merged roots.
+    /// @details Z-up sources rotate -90 degrees about X (positions map
+    ///          (x, y, z) -> (x, z, -y)) so their up axis becomes Y; the
+    ///          uniform scale factor multiplies every root's scale AND
+    ///          position so multi-root assets keep their relative layout.
+    ///          Runs inside the import transaction, before spawn placement.
+    hide func ApplyImportAdjustments(mergedRoots: List[SceneNode],
+                                     factor: Number,
+                                     zUp: Boolean) {
+        var conversion = Quat.FromEuler(
+            0.0 - 90.0 * SceneEditor3DModel.DEG_TO_RAD, 0.0, 0.0);
+        var i = 0;
+        while i < mergedRoots.count {
+            var root = mergedRoots.get(i);
+            var position = root.Position;
+            var px = position.X;
+            var py = position.Y;
+            var pz = position.Z;
+            if zUp {
+                root.Rotation =
+                    Quat.Mul(conversion, root.Rotation).Normalize();
+                var rotatedY = pz;
+                var rotatedZ = 0.0 - py;
+                py = rotatedY;
+                pz = rotatedZ;
+            }
+            if scene_transform_3d.NearlyEqual(factor, 1.0) == false {
+                var scale = root.Scale;
+                root.SetScale(
+                    scale.X * factor, scale.Y * factor, scale.Z * factor);
+                px = px * factor;
+                py = py * factor;
+                pz = pz * factor;
+            }
+            root.SetPosition(px, py, pz);
+            i = i + 1;
+        }
     }
 
     /// @brief Translate freshly merged import roots onto a world spawn point.

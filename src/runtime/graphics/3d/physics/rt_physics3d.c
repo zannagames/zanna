@@ -54,6 +54,8 @@
 #include "rt_joints3d_internal.h"
 #include "rt_platform.h"
 #include "rt_raycast3d.h"
+#include "rt_scene3d.h"
+#include "rt_string.h"
 #include "rt_threadpool.h"
 
 #include "rt_physics3d_internal.h"

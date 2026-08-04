@@ -477,6 +477,13 @@ RT_FUNC(NavAgent3DGetAvoidanceRadius,   rt_navagent3d_get_avoidance_radius, "Zan
 RT_FUNC(NavAgent3DSetAvoidanceRadius,   rt_navagent3d_set_avoidance_radius, "Zanna.Graphics3D.NavAgent3D.set_AvoidanceRadius",  "void(obj,f64)")
 RT_FUNC(NavAgent3DBindCharacter,        rt_navagent3d_bind_character,       "Zanna.Graphics3D.NavAgent3D.BindCharacter",        "void(obj,obj)")
 RT_FUNC(NavAgent3DBindNode,             rt_navagent3d_bind_node,            "Zanna.Graphics3D.NavAgent3D.BindNode",             "void(obj,obj)")
+RT_FUNC(NavAgent3DStop,                 rt_navagent3d_stop,                 "Zanna.Graphics3D.NavAgent3D.Stop",                 "void(obj)")
+RT_FUNC(NavAgent3DResume,               rt_navagent3d_resume,               "Zanna.Graphics3D.NavAgent3D.Resume",               "void(obj)")
+RT_FUNC(NavAgent3DGetIsStopped,         rt_navagent3d_get_is_stopped,       "Zanna.Graphics3D.NavAgent3D.get_IsStopped",        "i1(obj)")
+RT_FUNC(NavAgent3DPathCornerCount,      rt_navagent3d_get_path_corner_count,"Zanna.Graphics3D.NavAgent3D.get_PathCornerCount",  "i64(obj)")
+RT_FUNC(NavAgent3DGetPathCorner,        rt_navagent3d_get_path_corner,      "Zanna.Graphics3D.NavAgent3D.GetPathCorner",        "obj<Zanna.Math.Vec3>(obj,i64)")
+RT_FUNC(NavAgent3DGetHasTarget,         rt_navagent3d_get_has_target,       "Zanna.Graphics3D.NavAgent3D.get_HasTarget",        "i1(obj)")
+RT_FUNC(NavAgent3DGetTarget,            rt_navagent3d_get_target,           "Zanna.Graphics3D.NavAgent3D.get_Target",           "obj<Zanna.Math.Vec3>(obj)")
 
 /// @summary Provides Nav Agent 3D functionality for 3D rendering and scene applications.
 /// @details
@@ -505,6 +512,16 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.NavAgent3D", NavAgent3D, "obj", NavAgent3DNew)
     // a registered link; LinkKind reports its authored kind (empty otherwise).
     RT_PROP("OnOffMeshLink", "i1", NavAgent3DOnOffMeshLink, none)
     RT_PROP("LinkKind", "str", NavAgent3DLinkKind, none)
+    // Steering pause: Stop keeps target + path but publishes zero motion each
+    // tick until Resume (ro prop + verbs per the registry convention).
+    RT_METHOD("Stop", "void()", NavAgent3DStop)
+    RT_METHOD("Resume", "void()", NavAgent3DResume)
+    RT_PROP("IsStopped", "i1", NavAgent3DGetIsStopped, none)
+    // Path readback: corners of the most recently computed path in walk order.
+    RT_PROP("PathCornerCount", "i64", NavAgent3DPathCornerCount, none)
+    RT_METHOD("GetPathCorner", "obj<Zanna.Math.Vec3>(i64)", NavAgent3DGetPathCorner)
+    RT_PROP("HasTarget", "i1", NavAgent3DGetHasTarget, none)
+    RT_PROP("Target", "obj<Zanna.Math.Vec3>", NavAgent3DGetTarget, none)
 RT_CLASS_END()
 
 //=============================================================================
@@ -818,7 +835,7 @@ RT_FUNC(PostFX3DAddTAA,         rt_postfx3d_add_taa,         "Zanna.Graphics3D.P
 RT_FUNC(PostFX3DAddSSR,         rt_postfx3d_add_ssr,         "Zanna.Graphics3D.PostFX3D.AddSsr",         "void(obj,f64,f64)")
 RT_FUNC(PostFX3DAddAutoExposure, rt_postfx3d_add_auto_exposure, "Zanna.Graphics3D.PostFX3D.AddAutoExposure", "void(obj,f64,f64,f64)")
 RT_FUNC(PostFX3DAddColorLUT,     rt_postfx3d_add_color_lut,     "Zanna.Graphics3D.PostFX3D.AddColorLut",     "void(obj,obj,f64)")
-RT_FUNC(PostFX3DMakeIdentityLUT, rt_postfx3d_make_identity_lut, "Zanna.Graphics3D.PostFX3D.MakeIdentityLut", "obj()")
+RT_FUNC(PostFX3DMakeIdentityLUT, rt_postfx3d_make_identity_lut, "Zanna.Graphics3D.PostFX3D.MakeIdentityLut", "obj<Zanna.Graphics.Pixels>()")
 RT_FUNC(PostFX3DAddSunShafts,    rt_postfx3d_add_sun_shafts,    "Zanna.Graphics3D.PostFX3D.AddSunShafts",    "void(obj,f64,f64,i64)")
 RT_FUNC(PostFX3DGetLastError,   rt_postfx3d_get_last_error,  "Zanna.Graphics3D.PostFX3D.get_LastError",  "str(obj)")
 

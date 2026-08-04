@@ -38,10 +38,10 @@ namespace {
 /* ADR 0233 def-batch (2026-08-03): +102 functions (Input3D cursor, physics
  * knobs/enumerators, Canvas3D/Material3D/Particles3D/Sky3D/joint readback,
  * Result loader peers), +89 properties, +13 methods. */
-constexpr std::size_t kExpectedFunctionCount = 2205;
-constexpr std::size_t kExpectedClassCount = 130;
-constexpr std::size_t kExpectedPropertyCount = 802;
-constexpr std::size_t kExpectedMethodCount = 1190;
+constexpr std::size_t kExpectedFunctionCount = 2232;
+constexpr std::size_t kExpectedClassCount = 131;
+constexpr std::size_t kExpectedPropertyCount = 820;
+constexpr std::size_t kExpectedMethodCount = 1199;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -222,7 +222,7 @@ int main() {
     // covers every function name/signature/C symbol and every class member binding.
     /* Rehashed for the ADR 0233-era Prefab factory typed returns
      * (obj<Entity3D>/<SceneTemplate>); member counts unchanged. */
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xe6ce8b2e87ee5c79);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xa10c7e01840e5ecc);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

@@ -119,5 +119,6 @@ func main() {
     if Part4.VerifyClipboardRejectionsAndMaterialImport(ctx) == false { return; }
     if Part4.VerifyMaterialMapsAndRoundTrip(ctx) == false { return; }
     if Part4.VerifyWorldSpaceTransforms(ctx) == false { return; }
+    if Part4.VerifyGroupPivotAndArrange(ctx) == false { return; }
     if Part4.VerifyTransformFailuresAndSaveSafety(ctx) == false { return; }
 }

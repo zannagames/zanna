@@ -1117,7 +1117,7 @@ Constructor: `Zanna.Game3D.World3D.New`
 | <a id="zanna-game3d-world3d-draweffects"></a>`DrawEffects` | `void()` | `Zanna.Game3D.World3D.DrawEffects` |
 | <a id="zanna-game3d-world3d-endscene"></a>`EndScene` | `void()` | `Zanna.Game3D.World3D.EndScene` |
 | <a id="zanna-game3d-world3d-drawoverlay"></a>`DrawOverlay` | `void(obj)` | `Zanna.Game3D.World3D.DrawOverlay` |
-| <a id="zanna-game3d-world3d-capturefinalframe"></a>`CaptureFinalFrame` | `obj()` | `Zanna.Game3D.World3D.CaptureFinalFrame` |
+| <a id="zanna-game3d-world3d-capturefinalframe"></a>`CaptureFinalFrame` | `obj<Zanna.Graphics.Pixels>()` | `Zanna.Game3D.World3D.CaptureFinalFrame` |
 | <a id="zanna-game3d-world3d-present"></a>`Present` | `void()` | `Zanna.Game3D.World3D.Present` |
 | <a id="zanna-game3d-world3d-new"></a>`New` | `obj(str,i64,i64)` | `Zanna.Game3D.World3D.New` |
 

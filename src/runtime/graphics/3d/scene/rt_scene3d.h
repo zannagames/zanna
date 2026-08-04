@@ -98,6 +98,26 @@ void rt_scene3d_remove(void *scene, void *node);
 /// @return Number of clips newly adopted, or 0 for invalid handles,
 ///         self-adoption, or allocation failure (destination unchanged).
 int64_t rt_scene3d_adopt_baked_animations(void *scene, void *source);
+/// @brief Number of baked animation clips the scene carries.
+/// @param scene Borrowed SceneGraph handle.
+/// @return Bounded clip count, or zero for an invalid scene.
+int64_t rt_scene3d_get_animation_count(void *scene);
+/// @brief One baked node-animation clip by index (borrowed; NULL when out of
+///   range or when the entry is a skeletal Animation3D clip).
+/// @param scene Borrowed SceneGraph handle.
+/// @param index Zero-based clip index.
+/// @return Borrowed validated NodeAnimation3D handle, or NULL.
+void *rt_scene3d_get_animation(void *scene, int64_t index);
+/// @brief Name of the baked clip at @p index (either clip class).
+/// @param scene Borrowed SceneGraph handle.
+/// @param index Zero-based clip index.
+/// @return Retained runtime string, or the shared empty string when invalid.
+rt_string rt_scene3d_get_animation_name(void *scene, int64_t index);
+/// @brief Duration in seconds of the baked clip at @p index (either class).
+/// @param scene Borrowed SceneGraph handle.
+/// @param index Zero-based clip index.
+/// @return Non-negative duration, or zero when invalid.
+double rt_scene3d_get_animation_duration(void *scene, int64_t index);
 
 /// @brief Count the placeholders left by unresolved prefab references (ADR 0227).
 /// @details Every unresolved reference — missing source, cycle, depth past the

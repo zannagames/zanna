@@ -48,6 +48,26 @@ final TRANSFORM_SCALE: Integer = 2;
 final TRANSFORM_SPACE_LOCAL: Integer = 0;
 final TRANSFORM_SPACE_WORLD: Integer = 1;
 
+// Group pivot policy for multi-selection world Rotate/Scale: each node's own
+// origin (default), the primary node's pivot, or the selection centroid.
+final GROUP_PIVOT_INDIVIDUAL: Integer = 0;
+final GROUP_PIVOT_PRIMARY: Integer = 1;
+final GROUP_PIVOT_CENTROID: Integer = 2;
+
+/// @brief Return the toolbar label for one group pivot policy.
+func GroupPivotLabel(pivotMode: Integer) -> String {
+    if pivotMode == GROUP_PIVOT_PRIMARY { return "Pivot: Primary"; }
+    if pivotMode == GROUP_PIVOT_CENTROID { return "Pivot: Center"; }
+    return "Pivot: Own";
+}
+
+/// @brief Return the next policy in the Own -> Primary -> Center cycle.
+func NextGroupPivotMode(pivotMode: Integer) -> Integer {
+    if pivotMode == GROUP_PIVOT_INDIVIDUAL { return GROUP_PIVOT_PRIMARY; }
+    if pivotMode == GROUP_PIVOT_PRIMARY { return GROUP_PIVOT_CENTROID; }
+    return GROUP_PIVOT_INDIVIDUAL;
+}
+
 final DEFAULT_MOVE_SNAP_INCREMENT: Number = 0.5;
 final DEFAULT_ROTATE_SNAP_INCREMENT: Number = 15.0;
 final DEFAULT_SCALE_SNAP_INCREMENT: Number = 0.1;

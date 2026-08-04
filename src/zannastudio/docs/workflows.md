@@ -586,7 +586,39 @@ prefab instances. The full loop lives in the instance inspector group:
 Asset drops into the viewport are placed drops: the pointer resolves through
 the same precise-surface/ground-plane projection the primitive tools use, and
 the imported hierarchy lands with its bounds floor on that point (menu
-imports keep source-authored placement).
+imports keep source-authored placement). Two view-option import settings
+apply inside the same transaction: a uniform **Import scale** factor
+(multiplies every merged root's scale and position, keeping multi-root
+layouts intact) and **Z-up import** (roots rotate −90° about X so a Z-up
+source's up axis becomes Y).
+
+### Arranging and previewing (3D)
+
+The **Arrange…** menu aligns the selection to the primary node or
+distributes it evenly along one local axis (ADR 0236). Every selected node
+must share one parent and instance content refuses — exact-or-reject.
+Distribution keeps both extrema and derives each intermediate from them; a
+selection already satisfying the layout commits nothing. Arrow keys nudge
+the selection along world X/Z (PageUp/PageDown for Y, Shift ×10) through
+the same deterministic Move command as gizmo drags — one undo entry per
+keypress.
+
+The **Pivot** button cycles the multi-selection Rotate/Scale pivot for
+world-space edits: each node's own origin, the primary node (satellites
+orbit the anchor), or the selection center. Local-space edits keep
+per-node pivots.
+
+When a scene carries baked clips, the **Animation** inspector group lists
+them with durations. Play binds the selected clip to the selected node's
+subtree and previews it workspace-only — Stop restores the authored
+transforms byte-exactly. Skeletal clips (from skinned rigs) enumerate but
+preview only in embedded Play, and the label says so.
+
+The **Navmesh** view option overlays the baked `.vnavmsh` sidecar's
+walkable surface in the viewport; re-baking through Scene Settings
+refreshes an active overlay. Games materialize the same authored collider
+convention with one call — `PhysicsWorld3D.BuildSceneColliders(scene)` —
+instead of hand-parsing `collider.*` metadata.
 
 The 2D command set switches among Select, Paint, Erase, Rectangle, Line,
 Ellipse, Fill, Pick, and Object modes. Paint, Fill, and the shape tools composite the

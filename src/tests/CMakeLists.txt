@@ -3232,6 +3232,7 @@ set(G3D_ZIA_TESTS
         test_collisionevent3d
         test_navagent3d
         test_sound3d_objects
+        test_g3d_scene_colliders
 )
 foreach (test_name IN LISTS G3D_ZIA_TESTS)
     set(test_file "${G3D_TESTS_DIR}/${test_name}.zia")
@@ -3245,6 +3246,21 @@ foreach (test_name IN LISTS G3D_ZIA_TESTS)
                 TIMEOUT 30)
     endif ()
 endforeach ()
+
+# Software-pinned: regresses the in-place CPU finalize chain (double-gamma
+# wash on capture-after-present); GPU backends composite from scene targets
+# and never had the defect.
+set(G3D_CAPTURE_IDEMPOTENT "${G3D_TESTS_DIR}/test_g3d_capture_idempotent.zia")
+if (EXISTS "${G3D_CAPTURE_IDEMPOTENT}")
+    add_test(NAME g3d_test_g3d_capture_idempotent
+            COMMAND $<TARGET_FILE:zanna> run "${G3D_CAPTURE_IDEMPOTENT}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    set_tests_properties(g3d_test_g3d_capture_idempotent PROPERTIES
+            PASS_REGULAR_EXPRESSION "PASS"
+            LABELS "runtime;graphics3d"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            TIMEOUT 30)
+endif ()
 
 set(GAME3D_SURFACE_PROBE "${G3D_TESTS_DIR}/game3d_surface_probe.zia")
 if (EXISTS "${GAME3D_SURFACE_PROBE}")

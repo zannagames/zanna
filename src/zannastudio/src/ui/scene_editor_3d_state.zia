@@ -59,6 +59,8 @@ bind Canvas3D = Zanna.Graphics3D.Canvas3D;
 bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
 bind Camera3D = Zanna.Graphics3D.Camera3D;
 bind PostFX3D = Zanna.Graphics3D.PostFX3D;
+bind NodeAnimator3D = Zanna.Graphics3D.NodeAnimator3D;
+bind NavMesh3D = Zanna.Graphics3D.NavMesh3D;
 bind LightBaker3D = Zanna.Graphics3D.LightBaker3D;
 bind LightProbeGrid3D = Zanna.Graphics3D.LightProbeGrid3D;
 bind CubeMap3D = Zanna.Graphics3D.CubeMap3D;
@@ -213,7 +215,37 @@ class SceneEditor3DState extends SceneEditor3DContract.SceneEditor3DContract06 {
     expose GUI.MenuItem placementSurfaceItem;
     expose GUI.MenuItem placementAlignItem;
     expose GUI.MenuItem placementVertexItem;
+    expose GUI.ToolbarItem arrangeMenuButton;
+    expose GUI.ContextMenu arrangeMenu;
+    expose GUI.MenuItem arrangeAlignXItem;
+    expose GUI.MenuItem arrangeAlignYItem;
+    expose GUI.MenuItem arrangeAlignZItem;
+    expose GUI.MenuItem arrangeDistributeXItem;
+    expose GUI.MenuItem arrangeDistributeYItem;
+    expose GUI.MenuItem arrangeDistributeZItem;
     expose GUI.ToolbarItem transformSpaceButton;
+    expose GUI.ToolbarItem groupPivotButton;
+    expose GUI.Spinner importScaleSpinner;
+    expose GUI.Checkbox importZUpCheck;
+    // Animation preview (workspace-only): clip selection cycles the scene's
+    // baked clips; Play binds a NodeAnimator3D to the selected node's subtree
+    // and Stop restores the canonical document bytes.
+    expose GUI.GroupBox animGroup;
+    expose GUI.Label animClipLabel;
+    expose GUI.Button animPrevClipButton;
+    expose GUI.Button animNextClipButton;
+    expose GUI.Button animPlayButton;
+    expose Integer animClipIndex;
+    expose Boolean animPreviewActive;
+    expose Boolean animStatusStale;
+    // Baked-navmesh viewport overlay (workspace-only): lazily imports the
+    // .vnavmsh sidecar and re-imports after each in-editor bake.
+    expose GUI.Checkbox navOverlayCheck;
+    expose Integer navOverlayRevision;
+    expose Boolean showNavOverlay;
+    expose NavMesh3D navOverlayMesh;
+    expose NodeAnimator3D animPreviewAnimator;
+    expose Integer animPreviewNodeIndex;
     expose GUI.Checkbox snapTransformCheck;
     expose GUI.Checkbox surfaceSnapCheck;
     expose GUI.Checkbox surfaceAlignCheck;
@@ -387,6 +419,7 @@ class SceneEditor3DState extends SceneEditor3DContract.SceneEditor3DContract06 {
     expose Integer renderedViewportHeight;
     expose Integer gizmoMode;
     expose Integer gizmoTransformSpace;
+    expose Integer groupPivotMode;
     expose Boolean gizmoSnapEnabled;
     expose Boolean surfaceSnapEnabled;
     expose Boolean surfaceAlignEnabled;

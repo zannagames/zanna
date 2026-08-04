@@ -132,6 +132,10 @@ RT_FUNC(Scene3DPortalTraversalCount, rt_scene3d_get_portal_traversal_count, "Zan
 RT_FUNC(Scene3DSyncBindings, rt_scene3d_sync_bindings,  "Zanna.Graphics3D.SceneGraph.SyncBindings",  "void(obj,f64)")
 RT_FUNC(Scene3DRebaseOrigin, rt_scene3d_rebase_origin,  "Zanna.Graphics3D.SceneGraph.RebaseOrigin",  "void(obj,f64,f64,f64)")
 RT_FUNC(Scene3DAdoptAnimations, rt_scene3d_adopt_baked_animations, "Zanna.Graphics3D.SceneGraph.AdoptAnimations", "i64(obj,obj)")
+RT_FUNC(Scene3DAnimationCount,  rt_scene3d_get_animation_count,    "Zanna.Graphics3D.SceneGraph.get_AnimationCount", "i64(obj)")
+RT_FUNC(Scene3DGetAnimation,    rt_scene3d_get_animation,          "Zanna.Graphics3D.SceneGraph.GetAnimation",       "obj<Zanna.Graphics3D.NodeAnimation3D>(obj,i64)")
+RT_FUNC(Scene3DAnimationName,   rt_scene3d_get_animation_name,     "Zanna.Graphics3D.SceneGraph.GetAnimationName",   "str(obj,i64)")
+RT_FUNC(Scene3DAnimationLength, rt_scene3d_get_animation_duration, "Zanna.Graphics3D.SceneGraph.GetAnimationDuration", "f64(obj,i64)")
 RT_FUNC(Scene3DUnresolvedPrefabCount, rt_scene3d_get_unresolved_prefab_count, "Zanna.Graphics3D.SceneGraph.get_UnresolvedPrefabCount", "i64(obj)")
 
 /// @summary Provides Scene Graph functionality for 3D rendering and scene applications.
@@ -179,6 +183,13 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.SceneGraph", Scene3D, "obj", Scene3DNew)
     RT_METHOD("SyncBindings", "void(f64)", Scene3DSyncBindings)
     RT_METHOD("RebaseOrigin", "void(f64,f64,f64)", Scene3DRebaseOrigin)
     RT_METHOD("AdoptAnimations", "i64(obj)", Scene3DAdoptAnimations)
+    // Baked clip readback: imported rigs' clips ride the scene carrier.
+    // GetAnimation returns rigid-node clips only (skeletal Animation3D
+    // entries yield null); names/durations enumerate both classes.
+    RT_PROP("AnimationCount", "i64", Scene3DAnimationCount, none)
+    RT_METHOD("GetAnimation", "obj<Zanna.Graphics3D.NodeAnimation3D>(i64)", Scene3DGetAnimation)
+    RT_METHOD("GetAnimationName", "str(i64)", Scene3DAnimationName)
+    RT_METHOD("GetAnimationDuration", "f64(i64)", Scene3DAnimationLength)
 RT_CLASS_END()
 
 // SceneNode
@@ -857,6 +868,8 @@ RT_FUNC(PostFX3DSetEnabled,     rt_postfx3d_set_enabled,     "Zanna.Graphics3D.P
 RT_FUNC(PostFX3DGetEnabled,     rt_postfx3d_get_enabled,     "Zanna.Graphics3D.PostFX3D.get_IsEnabled",    "i1(obj)")
 RT_FUNC(PostFX3DClear,          rt_postfx3d_clear,           "Zanna.Graphics3D.PostFX3D.Clear",          "void(obj)")
 RT_FUNC(PostFX3DEffectCount,    rt_postfx3d_get_effect_count,"Zanna.Graphics3D.PostFX3D.get_EffectCount","i64(obj)")
+RT_FUNC(PostFX3DEffectKindAt,   rt_postfx3d_get_effect_kind, "Zanna.Graphics3D.PostFX3D.GetEffectKind",  "i64(obj,i64)")
+RT_FUNC(PostFX3DRemoveEffectAt, rt_postfx3d_remove_effect_at,"Zanna.Graphics3D.PostFX3D.RemoveEffectAt", "i1(obj,i64)")
 RT_FUNC(PostFX3DNewQuality,     rt_postfx3d_new_quality,     "Zanna.Graphics3D.PostFX3D.NewQuality",     "obj(obj,i64)")
 RT_FUNC(Canvas3DSetPostFX,      rt_canvas3d_set_post_fx,     "Zanna.Graphics3D.Canvas3D.SetPostFX",      "void(obj,obj)")
 
@@ -872,7 +885,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.PostFX3D", PostFX3D, "obj", PostFX3DNew)
     // Eye adaptation + 3D LUT grading (identity strip via MakeIdentityLUT).
     RT_METHOD("AddAutoExposure", "void(f64,f64,f64)", PostFX3DAddAutoExposure)
     RT_METHOD("AddColorLut", "void(obj,f64)", PostFX3DAddColorLUT)
-    RT_METHOD("MakeIdentityLut", "obj()", PostFX3DMakeIdentityLUT)
+    RT_METHOD("MakeIdentityLut", "obj<Zanna.Graphics.Pixels>()", PostFX3DMakeIdentityLUT)
     RT_METHOD("AddSunShafts", "void(f64,f64,i64)", PostFX3DAddSunShafts)
     RT_PROP("LastError", "str", PostFX3DGetLastError, none)
     RT_METHOD("AddBloom", "void(f64,f64,i64)", PostFX3DAddBloom)
@@ -881,6 +894,10 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.PostFX3D", PostFX3D, "obj", PostFX3DNew)
     RT_METHOD("AddColorGrade", "void(f64,f64,f64)", PostFX3DAddColorGrade)
     RT_METHOD("AddVignette", "void(f64,f64)", PostFX3DAddVignette)
     RT_METHOD("Clear", "void()", PostFX3DClear)
+    // Chain enumeration: index order is application order; kinds are the
+    // Zanna.Graphics3D.PostFXEffectKind constants.
+    RT_METHOD("GetEffectKind", "i64(i64)", PostFX3DEffectKindAt)
+    RT_METHOD("RemoveEffectAt", "i1(i64)", PostFX3DRemoveEffectAt)
     RT_METHOD("NewQuality", "obj(obj,i64)", PostFX3DNewQuality)
     RT_METHOD("AddSsao", "void(f64,f64,i64)", PostFX3DAddSSAO)
     RT_METHOD("AddDof", "void(f64,f64,f64)", PostFX3DAddDOF)
@@ -888,6 +905,42 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.PostFX3D", PostFX3D, "obj", PostFX3DNew)
     RT_METHOD("AddMotionBlur", "void(f64,i64)", PostFX3DAddMotionBlur)
     RT_METHOD("AddTaa", "void(f64)", PostFX3DAddTAA)
     RT_METHOD("AddSsr", "void(f64,f64)", PostFX3DAddSSR)
+RT_CLASS_END()
+
+// PostFXEffectKind — the kind constants returned by PostFX3D.GetEffectKind.
+RT_FUNC(PostFXEffectKindBloom,        rt_postfx3d_effect_kind_bloom,         "Zanna.Graphics3D.PostFXEffectKind.get_Bloom",        "i64()")
+RT_FUNC(PostFXEffectKindTonemap,      rt_postfx3d_effect_kind_tonemap,       "Zanna.Graphics3D.PostFXEffectKind.get_Tonemap",      "i64()")
+RT_FUNC(PostFXEffectKindFxaa,         rt_postfx3d_effect_kind_fxaa,          "Zanna.Graphics3D.PostFXEffectKind.get_Fxaa",         "i64()")
+RT_FUNC(PostFXEffectKindColorGrade,   rt_postfx3d_effect_kind_color_grade,   "Zanna.Graphics3D.PostFXEffectKind.get_ColorGrade",   "i64()")
+RT_FUNC(PostFXEffectKindVignette,     rt_postfx3d_effect_kind_vignette,      "Zanna.Graphics3D.PostFXEffectKind.get_Vignette",     "i64()")
+RT_FUNC(PostFXEffectKindSsao,         rt_postfx3d_effect_kind_ssao,          "Zanna.Graphics3D.PostFXEffectKind.get_Ssao",         "i64()")
+RT_FUNC(PostFXEffectKindDof,          rt_postfx3d_effect_kind_dof,           "Zanna.Graphics3D.PostFXEffectKind.get_Dof",          "i64()")
+RT_FUNC(PostFXEffectKindMotionBlur,   rt_postfx3d_effect_kind_motion_blur,   "Zanna.Graphics3D.PostFXEffectKind.get_MotionBlur",   "i64()")
+RT_FUNC(PostFXEffectKindTaa,          rt_postfx3d_effect_kind_taa,           "Zanna.Graphics3D.PostFXEffectKind.get_Taa",          "i64()")
+RT_FUNC(PostFXEffectKindSsr,          rt_postfx3d_effect_kind_ssr,           "Zanna.Graphics3D.PostFXEffectKind.get_Ssr",          "i64()")
+RT_FUNC(PostFXEffectKindAutoExposure, rt_postfx3d_effect_kind_auto_exposure, "Zanna.Graphics3D.PostFXEffectKind.get_AutoExposure", "i64()")
+RT_FUNC(PostFXEffectKindColorLut,     rt_postfx3d_effect_kind_color_lut,     "Zanna.Graphics3D.PostFXEffectKind.get_ColorLut",     "i64()")
+RT_FUNC(PostFXEffectKindSunShafts,    rt_postfx3d_effect_kind_sun_shafts,    "Zanna.Graphics3D.PostFXEffectKind.get_SunShafts",    "i64()")
+
+/// @summary Provides Post FX Effect Kind constants identifying entries in a PostFX3D chain.
+/// @details
+/// `Zanna.Graphics3D.PostFXEffectKind` is a static runtime surface and does not require an
+/// instance. `PostFX3D.GetEffectKind` returns these values in chain application order. Its public
+/// surface exposes properties such as `Bloom`, `Tonemap`, `Ssao`, `SunShafts`.
+RT_CLASS_BEGIN("Zanna.Graphics3D.PostFXEffectKind", PostFXEffectKind, "none", none)
+    RT_PROP("Bloom", "i64", PostFXEffectKindBloom, none)
+    RT_PROP("Tonemap", "i64", PostFXEffectKindTonemap, none)
+    RT_PROP("Fxaa", "i64", PostFXEffectKindFxaa, none)
+    RT_PROP("ColorGrade", "i64", PostFXEffectKindColorGrade, none)
+    RT_PROP("Vignette", "i64", PostFXEffectKindVignette, none)
+    RT_PROP("Ssao", "i64", PostFXEffectKindSsao, none)
+    RT_PROP("Dof", "i64", PostFXEffectKindDof, none)
+    RT_PROP("MotionBlur", "i64", PostFXEffectKindMotionBlur, none)
+    RT_PROP("Taa", "i64", PostFXEffectKindTaa, none)
+    RT_PROP("Ssr", "i64", PostFXEffectKindSsr, none)
+    RT_PROP("AutoExposure", "i64", PostFXEffectKindAutoExposure, none)
+    RT_PROP("ColorLut", "i64", PostFXEffectKindColorLut, none)
+    RT_PROP("SunShafts", "i64", PostFXEffectKindSunShafts, none)
 RT_CLASS_END()
 
 // Ray3D — raycasting
@@ -1127,6 +1180,7 @@ RT_FUNC(World3DStepFixed,       rt_world3d_step_fixed,      "Zanna.Graphics3D.Ph
 RT_FUNC(World3DGetFixedStepAlpha, rt_world3d_get_fixed_step_alpha, "Zanna.Graphics3D.PhysicsWorld3D.get_FixedStepAlpha", "f64(obj)")
 RT_FUNC(World3DGetDroppedFixedSteps, rt_world3d_get_dropped_fixed_steps, "Zanna.Graphics3D.PhysicsWorld3D.get_DroppedFixedSteps", "i64(obj)")
 RT_FUNC(World3DAdd,             rt_world3d_add,             "Zanna.Graphics3D.PhysicsWorld3D.Add",             "void(obj,obj)")
+RT_FUNC(World3DBuildSceneColliders, rt_world3d_build_scene_colliders, "Zanna.Graphics3D.PhysicsWorld3D.BuildSceneColliders", "i64(obj,obj)")
 RT_FUNC(World3DTryAdd,          rt_world3d_try_add,         "Zanna.Graphics3D.PhysicsWorld3D.TryAdd",          "i1(obj,obj)")
 RT_FUNC(World3DRemove,          rt_world3d_remove,          "Zanna.Graphics3D.PhysicsWorld3D.Remove",          "void(obj,obj)")
 RT_FUNC(World3DBodyCount,       rt_world3d_body_count,      "Zanna.Graphics3D.PhysicsWorld3D.get_BodyCount",   "i64(obj)")
@@ -1270,6 +1324,9 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.PhysicsWorld3D", Physics3DWorld, "obj", World3D
     RT_METHOD("Step", "void(f64)", World3DStep)
     RT_METHOD("StepFixed", "i64(f64,f64,i64)", World3DStepFixed)
     RT_METHOD("Add", "void(obj)", World3DAdd)
+    // Materialize Studio's collider.* authoring convention (ADR 0185) into
+    // static bodies/triggers at world poses; returns bodies created.
+    RT_METHOD("BuildSceneColliders", "i64(obj)", World3DBuildSceneColliders)
     RT_METHOD("TryAdd", "i1(obj)", World3DTryAdd)
     RT_METHOD("Remove", "void(obj)", World3DRemove)
     RT_METHOD("ContainsBody", "i1(obj)", World3DContainsBody)

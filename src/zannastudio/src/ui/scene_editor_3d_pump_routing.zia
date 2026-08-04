@@ -46,6 +46,7 @@ bind "scene_settings_inspector_3d";
 bind "scene_pane_docking";
 bind "scene_terrain_3d";
 bind "scene_terrain_inspector_3d";
+bind "scene_layout_3d";
 bind "scene_transform_3d";
 bind Zanna.GUI as GUI;
 bind SceneGraph = Zanna.Graphics3D.SceneGraph;
@@ -55,6 +56,7 @@ bind Mesh3D = Zanna.Graphics3D.Mesh3D;
 bind Material3D = Zanna.Graphics3D.Material3D;
 bind Light3D = Zanna.Graphics3D.Light3D;
 bind Canvas3D = Zanna.Graphics3D.Canvas3D;
+bind NavMesh3D = Zanna.Graphics3D.NavMesh3D;
 bind RenderTarget3D = Zanna.Graphics3D.RenderTarget3D;
 bind Camera3D = Zanna.Graphics3D.Camera3D;
 bind PostFX3D = Zanna.Graphics3D.PostFX3D;
@@ -229,6 +231,7 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
                 "Choose the new referenced scene for "
                 + NodeDisplayName(SelectedNode()) + ".");
         }
+        PumpAnimationPreview();
         PumpBakeControls();
         changed = PumpBakeSteps() or changed;
         var projectMapPath = materialInspector.assetBrowser.Pump(
@@ -271,6 +274,30 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
            or placementDropItem.WasClicked() {
             changed = DropSelectedToSurface() or changed;
         }
+        if arrangeAlignXItem.WasClicked() {
+            changed = ArrangeSelectedNodes(
+                scene_layout_3d.LAYOUT_ALIGN_X) or changed;
+        }
+        if arrangeAlignYItem.WasClicked() {
+            changed = ArrangeSelectedNodes(
+                scene_layout_3d.LAYOUT_ALIGN_Y) or changed;
+        }
+        if arrangeAlignZItem.WasClicked() {
+            changed = ArrangeSelectedNodes(
+                scene_layout_3d.LAYOUT_ALIGN_Z) or changed;
+        }
+        if arrangeDistributeXItem.WasClicked() {
+            changed = ArrangeSelectedNodes(
+                scene_layout_3d.LAYOUT_DISTRIBUTE_X) or changed;
+        }
+        if arrangeDistributeYItem.WasClicked() {
+            changed = ArrangeSelectedNodes(
+                scene_layout_3d.LAYOUT_DISTRIBUTE_Y) or changed;
+        }
+        if arrangeDistributeZItem.WasClicked() {
+            changed = ArrangeSelectedNodes(
+                scene_layout_3d.LAYOUT_DISTRIBUTE_Z) or changed;
+        }
         if transformSpaceButton.WasClicked() {
             var nextSpace = scene_transform_3d.TRANSFORM_SPACE_WORLD;
             if gizmoTransformSpace
@@ -278,6 +305,13 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
                 nextSpace = scene_transform_3d.TRANSFORM_SPACE_LOCAL;
             }
             SetGizmoTransformSpace(nextSpace);
+        }
+        if groupPivotButton.WasClicked() {
+            // Workspace-only policy state: never enters VSCN bytes/history.
+            groupPivotMode =
+                scene_transform_3d.NextGroupPivotMode(groupPivotMode);
+            groupPivotButton.SetText(
+                scene_transform_3d.GroupPivotLabel(groupPivotMode));
         }
         var nextSnapRevision = snapTransformCheck.GetRevision();
         if nextSnapRevision != snapTransformRevision {
@@ -293,6 +327,25 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
         if nextAlignRevision != surfaceAlignRevision {
             surfaceAlignRevision = nextAlignRevision;
             SetSurfaceAlignEnabled(surfaceAlignCheck.IsChecked());
+        }
+        var nextNavRevision = navOverlayCheck.GetRevision();
+        if nextNavRevision != navOverlayRevision {
+            navOverlayRevision = nextNavRevision;
+            showNavOverlay = navOverlayCheck.IsChecked();
+            if showNavOverlay {
+                navOverlayMesh = NavMesh3D.Import(SceneSidecarPath(".vnavmsh"));
+                if navOverlayMesh == null {
+                    detailLabel.SetText(
+                        "No baked navmesh sidecar found beside this scene; "
+                        + "bake one through Scene Settings first.");
+                    toolbarStatus.SetText("Navmesh overlay needs a bake");
+                } else {
+                    toolbarStatus.SetText("Navmesh overlay on");
+                }
+            } else {
+                navOverlayMesh = null;
+            }
+            renderDirty = true;
         }
         var nextVertexRevision = vertexSnapCheck.GetRevision();
         if nextVertexRevision != vertexSnapRevision {
@@ -801,6 +854,125 @@ class SceneEditor3DPumpRoutingLayer extends PreviousLayer.SceneEditor3DProjectIn
         DrainTransformSpinnerEdges();
         CaptureWorkspaceState();
         return changed;
+    }
+
+    /// @brief Pump the workspace-only animation preview controls.
+    /// @details The group is visible only while the scene carries baked
+    ///          clips. Playback binds one NodeAnimator3D to the selected
+    ///          node's subtree and advances it a fixed step per pump so the
+    ///          preview is deterministic; Stop (or losing the clips on a
+    ///          document switch) restores the canonical document bytes, so
+    ///          preview motion can never leak into VSCN or history.
+    hide func PumpAnimationPreview() {
+        if animGroup == null or animPlayButton == null { return; }
+        var clipCount = 0;
+        if scene != null { clipCount = scene.AnimationCount; }
+        animGroup.SetVisible(clipCount > 0);
+        if clipCount == 0 {
+            if animPreviewActive { StopAnimationPreview(); }
+            return;
+        }
+        if animClipIndex >= clipCount or animClipIndex < 0 {
+            animClipIndex = 0;
+        }
+        var refreshLabel = false;
+        if animPrevClipButton.WasClicked() {
+            if animPreviewActive { StopAnimationPreview(); }
+            animClipIndex = animClipIndex - 1;
+            if animClipIndex < 0 { animClipIndex = clipCount - 1; }
+            refreshLabel = true;
+        }
+        if animNextClipButton.WasClicked() {
+            if animPreviewActive { StopAnimationPreview(); }
+            animClipIndex = animClipIndex + 1;
+            if animClipIndex >= clipCount { animClipIndex = 0; }
+            refreshLabel = true;
+        }
+        if animPlayButton.WasClicked() {
+            if animPreviewActive {
+                StopAnimationPreview();
+            } else {
+                StartAnimationPreview();
+            }
+            refreshLabel = true;
+        }
+        if animPreviewActive {
+            if animPreviewAnimator == null {
+                StopAnimationPreview();
+            } else {
+                animPreviewAnimator.Update(1.0 / 60.0);
+                renderDirty = true;
+            }
+        }
+        if refreshLabel or animStatusStale {
+            animStatusStale = false;
+            var clipName = scene.GetAnimationName(animClipIndex);
+            var suffix = "";
+            if animPreviewActive { suffix = " — playing"; }
+            else if scene.GetAnimation(animClipIndex) == null {
+                // Skeletal Animation3D clips are driven by AnimController3D
+                // at runtime; the workspace preview covers rigid-node clips.
+                suffix = " — skeletal; preview in play mode";
+            }
+            animClipLabel.SetText(
+                "Clip " + (animClipIndex + 1) + "/" + clipCount + ": "
+                + clipName + " ("
+                + scene.GetAnimationDuration(animClipIndex) + "s)" + suffix);
+        }
+    }
+
+    /// @brief Start previewing the selected clip on the selected node.
+    expose func StartAnimationPreview() {
+        if scene == null or selectedIndex < 0
+           or selectedIndex >= flatNodes.count() {
+            detailLabel.SetText(
+                "Select the node whose subtree should play the clip "
+                + "(imported rigs preview from their root).");
+            toolbarStatus.SetText("Preview needs a selected node");
+            return;
+        }
+        var clip = scene.GetAnimation(animClipIndex);
+        if clip == null {
+            detailLabel.SetText(
+                "This clip is skeletal (Animation3D): it drives a rig "
+                + "through AnimController3D at runtime. Use embedded Play "
+                + "to preview it; the workspace preview covers rigid-node "
+                + "clips.");
+            toolbarStatus.SetText("Skeletal clip — preview in play mode");
+            return;
+        }
+        var animator = NodeAnimator3D.New(clip);
+        if animator == null { return; }
+        var node = flatNodes.get(selectedIndex);
+        node.BindNodeAnimator(animator);
+        if animator.Play(clip.Name) == false {
+            node.ClearNodeAnimatorBinding();
+            toolbarStatus.SetText("The clip could not start");
+            return;
+        }
+        animPreviewAnimator = animator;
+        animPreviewNodeIndex = selectedIndex;
+        animPreviewActive = true;
+        animPlayButton.SetText("Stop");
+        toolbarStatus.SetText("Previewing " + clip.Name);
+    }
+
+    /// @brief Stop the preview and restore the canonical document bytes.
+    expose func StopAnimationPreview() {
+        animPreviewActive = false;
+        if animPreviewAnimator != null { animPreviewAnimator.Stop(); }
+        if animPreviewNodeIndex >= 0
+           and animPreviewNodeIndex < flatNodes.count() {
+            flatNodes.get(animPreviewNodeIndex).ClearNodeAnimatorBinding();
+        }
+        animPreviewAnimator = null;
+        animPreviewNodeIndex = -1;
+        animPlayButton.SetText("Play");
+        // The preview drove live transforms only; reload the canonical
+        // document so the workspace matches the authored bytes exactly.
+        if currentDoc != null { LoadDocumentModel(currentDoc, true); }
+        renderDirty = true;
+        animStatusStale = true;
     }
 }
 

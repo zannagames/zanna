@@ -1,0 +1,74 @@
+// ============================================================================
+// test_g3d_capture_idempotent — capture/present must not restack finalization
+// ============================================================================
+// Regression for the software-backend double-gamma wash: the CPU finalize
+// chain (post-FX gamma-out + overlay replay) mutates the framebuffer in
+// place, and Present resets frame_finalized for the next render. A capture
+// after a presented frame (or a second Present without re-rendering) used to
+// rerun the chain on already-encoded pixels, washing the frame gray.
+// Asserts: repeated Present and CaptureFinalFrame after Present all observe
+// the same pixel bytes as the first finalization.
+// ============================================================================
+
+bind Zanna.Game3D;
+bind Zanna.Graphics3D;
+bind Zanna.Graphics.Pixels as Pixels;
+bind Zanna.IO.TempFile as TempFile;
+bind Zanna.IO.Dir as Dir;
+bind Zanna.IO.Path as Path;
+bind Zanna.Terminal;
+
+hide func snapPixel(world: World3D, dir: String, name: String) -> Number {
+    var snap = world.CaptureFinalFrame();
+    if snap == null {
+        return 0.0 - 1.0;
+    }
+    var file = Path.Join(dir, name);
+    if Pixels.SavePng(snap, file) != 1 {
+        return 0.0 - 1.0;
+    }
+    var loaded = Pixels.LoadPng(file);
+    if loaded == null {
+        return 0.0 - 1.0;
+    }
+    return loaded.Get(32, 32);
+}
+
+func start() {
+    var dir = TempFile.CreateDirWithPrefix("g3d_capture_idem_");
+    if dir == "" {
+        Say("FAIL: no temp dir");
+        return;
+    }
+
+    var world = World3D.New("Capture Idempotent", 64, 64);
+    world.BeginFrame();
+    world.DrawScene();
+    world.EndScene();
+    world.Present();
+
+    // Capture after present: must observe the presented bytes, not a
+    // re-finalized (double-encoded) frame.
+    var first = snapPixel(world, dir, "cap1.png");
+    if first < 0.0 {
+        Dir.RemoveAll(dir);
+        Say("FAIL: first capture failed");
+        return;
+    }
+
+    // A second present without re-rendering must not change the frame.
+    world.Present();
+    var second = snapPixel(world, dir, "cap2.png");
+
+    // Captures themselves must be idempotent.
+    var third = snapPixel(world, dir, "cap3.png");
+
+    Dir.RemoveAll(dir);
+    // Pixel values are packed integers; range compares avoid W005 noise.
+    if second < first or second > first or third < first or third > first {
+        Say("FAIL: finalization restacked: " + first + " then " + second
+            + " then " + third);
+        return;
+    }
+    Say("PASS");
+}

@@ -1702,3 +1702,177 @@ void rt_world3d_rebase_origin(void *obj, double dx, double dy, double dz) {
     world3d_invalidate_query_broadphase(w);
     world3d_release_cached_event_objects(w);
 }
+
+/*==========================================================================
+ * Scene collider materialization (ADR 0185 authoring convention)
+ *=========================================================================*/
+
+/// @brief Borrowed key strings shared across one scene-collider walk.
+typedef struct {
+    rt_string kind;
+    rt_string half_x;
+    rt_string half_y;
+    rt_string half_z;
+    rt_string radius;
+    rt_string height;
+    rt_string trigger;
+    rt_string empty;
+} ph3d_collider_keys_t;
+
+/// @brief Clamp one authored collider dimension into the editor's documented
+///   strictly positive range (mirrors Studio's BoundDimension).
+static double ph3d_collider_dimension(double value) {
+    if (!(value >= 0.001))
+        return 0.001;
+    if (value > 1000000.0)
+        return 1000000.0;
+    return value;
+}
+
+/// @brief Materialize one node's authored collider, then recurse into
+///   children. Returns the number of bodies created in this subtree.
+static int64_t ph3d_build_node_collider(void *world,
+                                        void *node,
+                                        const ph3d_collider_keys_t *keys) {
+    int64_t created = 0;
+    rt_string kind_value;
+    const char *kind;
+    if (!node)
+        return 0;
+    kind_value = rt_scene_node3d_metadata_get_string(node, keys->kind, keys->empty);
+    kind = rt_string_cstr(kind_value);
+    if (kind && kind[0] != '\0') {
+        void *collider = NULL;
+        double sx = 1.0, sy = 1.0, sz = 1.0;
+        double px = 0.0, py = 0.0, pz = 0.0;
+        double qx = 0.0, qy = 0.0, qz = 0.0, qw = 1.0;
+        double offset[3] = {0.0, 0.0, 0.0};
+        rt_scene_node3d_get_world_scale_components(node, &sx, &sy, &sz);
+        rt_scene_node3d_get_world_position_components(node, &px, &py, &pz);
+        rt_scene_node3d_get_world_rotation_components(node, &qx, &qy, &qz, &qw);
+        if (strcmp(kind, "box") == 0) {
+            collider = rt_collider3d_new_box(
+                ph3d_collider_dimension(
+                    rt_scene_node3d_metadata_get_float(node, keys->half_x, 0.5) * fabs(sx)),
+                ph3d_collider_dimension(
+                    rt_scene_node3d_metadata_get_float(node, keys->half_y, 0.5) * fabs(sy)),
+                ph3d_collider_dimension(
+                    rt_scene_node3d_metadata_get_float(node, keys->half_z, 0.5) * fabs(sz)));
+        } else if (strcmp(kind, "sphere") == 0) {
+            double uniform = fabs(sx) > fabs(sy) ? fabs(sx) : fabs(sy);
+            if (fabs(sz) > uniform)
+                uniform = fabs(sz);
+            collider = rt_collider3d_new_sphere(ph3d_collider_dimension(
+                rt_scene_node3d_metadata_get_float(node, keys->radius, 0.5) * uniform));
+        } else if (strcmp(kind, "capsule") == 0) {
+            double radial = fabs(sx) > fabs(sz) ? fabs(sx) : fabs(sz);
+            collider = rt_collider3d_new_capsule(
+                ph3d_collider_dimension(
+                    rt_scene_node3d_metadata_get_float(node, keys->radius, 0.5) * radial),
+                ph3d_collider_dimension(
+                    rt_scene_node3d_metadata_get_float(node, keys->height, 1.0) * fabs(sy)));
+        } else if (strcmp(kind, "mesh-bounds") == 0) {
+            void *bounds_min = rt_scene_node3d_get_aabb_min(node);
+            void *bounds_max = rt_scene_node3d_get_aabb_max(node);
+            if (bounds_min && bounds_max) {
+                double min_x = rt_vec3_x(bounds_min), min_y = rt_vec3_y(bounds_min);
+                double min_z = rt_vec3_z(bounds_min);
+                double max_x = rt_vec3_x(bounds_max), max_y = rt_vec3_y(bounds_max);
+                double max_z = rt_vec3_z(bounds_max);
+                if (isfinite(min_x) && isfinite(max_x) && max_x >= min_x &&
+                    isfinite(min_y) && isfinite(max_y) && max_y >= min_y &&
+                    isfinite(min_z) && isfinite(max_z) && max_z >= min_z) {
+                    collider = rt_collider3d_new_box(
+                        ph3d_collider_dimension((max_x - min_x) * 0.5 * fabs(sx)),
+                        ph3d_collider_dimension((max_y - min_y) * 0.5 * fabs(sy)),
+                        ph3d_collider_dimension((max_z - min_z) * 0.5 * fabs(sz)));
+                    /* Bounds are rarely centered on the pivot: carry the local
+                     * center through the node's world rotation and scale. */
+                    double center[3];
+                    double rotation[4] = {qx, qy, qz, qw};
+                    center[0] = (min_x + max_x) * 0.5 * sx;
+                    center[1] = (min_y + max_y) * 0.5 * sy;
+                    center[2] = (min_z + max_z) * 0.5 * sz;
+                    quat_rotate_vec3(rotation, center, offset);
+                }
+            }
+            if (bounds_min && rt_obj_release_check0(bounds_min))
+                rt_obj_free(bounds_min);
+            if (bounds_max && rt_obj_release_check0(bounds_max))
+                rt_obj_free(bounds_max);
+        }
+        if (collider) {
+            void *body = rt_body3d_new(0.0);
+            if (body) {
+                void *orientation = rt_quat_new(qx, qy, qz, qw);
+                rt_body3d_set_collider(body, collider);
+                rt_body3d_set_static(body, 1);
+                rt_body3d_set_position(
+                    body, px + offset[0], py + offset[1], pz + offset[2]);
+                if (orientation) {
+                    rt_body3d_set_orientation(body, orientation);
+                    if (rt_obj_release_check0(orientation))
+                        rt_obj_free(orientation);
+                }
+                if (rt_scene_node3d_metadata_get_bool(node, keys->trigger, 0))
+                    rt_body3d_set_trigger(body, 1);
+                rt_world3d_add(world, body);
+                if (rt_obj_release_check0(body))
+                    rt_obj_free(body);
+                created++;
+            }
+            if (rt_obj_release_check0(collider))
+                rt_obj_free(collider);
+        }
+    }
+    rt_string_unref(kind_value);
+    {
+        int64_t child_count = rt_scene_node3d_child_count(node);
+        for (int64_t i = 0; i < child_count; i++)
+            created += ph3d_build_node_collider(
+                world, rt_scene_node3d_get_child(node, i), keys);
+    }
+    return created;
+}
+
+/// @brief Materialize every authored `collider.*` metadata convention in a
+///   scene into static physics bodies (triggers included). See header.
+/// @details The convention is what Studio's collider inspector writes and its
+///   viewport overlay draws (ADR 0185): `collider.kind` in {box, sphere,
+///   capsule, mesh-bounds} plus per-kind dimensions and `collider.trigger`.
+///   Bodies land at each node's world pose with world scale applied to the
+///   authored dimensions; mesh-bounds boxes are recentered on the subtree
+///   bounds. Every body is static; games needing dynamic bodies author them
+///   in code. Calling twice adds duplicate bodies — build into a fresh world.
+/// @param world Borrowed PhysicsWorld3D receiving the new static bodies.
+/// @param scene Borrowed SceneGraph whose nodes are scanned recursively.
+/// @return Number of bodies created, or zero for invalid input.
+int64_t rt_world3d_build_scene_colliders(void *world, void *scene) {
+    ph3d_collider_keys_t keys;
+    int64_t created;
+    void *root;
+    rt_world3d *w = world3d_checked(world);
+    if (!w || !scene)
+        return 0;
+    root = rt_scene3d_get_root(scene);
+    if (!root)
+        return 0;
+    keys.kind = rt_string_from_bytes("collider.kind", 13);
+    keys.half_x = rt_string_from_bytes("collider.halfX", 14);
+    keys.half_y = rt_string_from_bytes("collider.halfY", 14);
+    keys.half_z = rt_string_from_bytes("collider.halfZ", 14);
+    keys.radius = rt_string_from_bytes("collider.radius", 15);
+    keys.height = rt_string_from_bytes("collider.height", 15);
+    keys.trigger = rt_string_from_bytes("collider.trigger", 16);
+    keys.empty = rt_string_from_bytes("", 0);
+    created = ph3d_build_node_collider(world, root, &keys);
+    rt_string_unref(keys.kind);
+    rt_string_unref(keys.half_x);
+    rt_string_unref(keys.half_y);
+    rt_string_unref(keys.half_z);
+    rt_string_unref(keys.radius);
+    rt_string_unref(keys.height);
+    rt_string_unref(keys.trigger);
+    rt_string_unref(keys.empty);
+    return created;
+}

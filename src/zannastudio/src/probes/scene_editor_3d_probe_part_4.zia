@@ -32,6 +32,7 @@ bind "../ui/scene_component_authoring";
 bind "../ui/scene_component_schema";
 bind "../ui/scene_editor_3d";
 bind "../ui/scene_panels_3d";
+bind "../ui/scene_layout_3d";
 bind "../ui/scene_material_3d";
 bind "../ui/scene_transform_3d";
 
@@ -966,5 +967,232 @@ expose func VerifyTransformFailuresAndSaveSafety(ctx: Probe.SceneEditor3DProbeCo
     safe_io.DeleteFile(tempPath);
     shell.Destroy();
     Terminal.Say("RESULT: ok");
+    return true;
+}
+
+/// @brief Run the VerifyGroupPivotAndArrange scenario against the shared fixture.
+/// @details Covers the Arrange align/distribute commands (anchor semantics,
+///          same-parent refusal, single-transaction undo) and the group pivot
+///          policies for world Rotate: Primary orbits satellites around the
+///          anchor, Centroid preserves the selection center, and the default
+///          Individual policy rotates in place.
+expose func VerifyGroupPivotAndArrange(ctx: Probe.SceneEditor3DProbeContext) -> Boolean {
+    var tempPath = ctx.tempPath;
+    var shell = ctx.shell;
+    var editor = ctx.editor;
+    var sceneDoc = ctx.sceneDoc;
+
+    // The serial fixture's next scenario begins with Undo of the PREVIOUS
+    // scenario's final commit, so this one must leave the undo stack exactly
+    // as it found it: every commit below is unwound before returning.
+    var entryContent = sceneDoc.content;
+
+    var aIndex = editor.AddEmptyNode("Arrange A", -1);
+    var bIndex = editor.AddEmptyNode("Arrange B", -1);
+    var cIndex = editor.AddEmptyNode("Arrange C", -1);
+    if aIndex < 0 or bIndex < 0 or cIndex < 0
+       or editor.SetNodeTransform(aIndex, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0) == false
+       or editor.SetNodeTransform(bIndex, 1.0, 2.0, 0.0, 1.0, 1.0, 1.0) == false
+       or editor.SetNodeTransform(cIndex, 6.0, 4.0, 0.0, 1.0, 1.0, 1.0) == false {
+        Probe.fail(shell, tempPath, "could not create the arrange fixture");
+        return false;
+    }
+    aIndex = Probe.findNodeIndex(editor, "Arrange A");
+    bIndex = Probe.findNodeIndex(editor, "Arrange B");
+    cIndex = Probe.findNodeIndex(editor, "Arrange C");
+    var arrangeGroup: List[Integer] = [];
+    arrangeGroup.add(aIndex);
+    arrangeGroup.add(bIndex);
+    arrangeGroup.add(cIndex);
+    editor.SelectSceneNodes(arrangeGroup, aIndex);
+
+    // Align Y anchors every node to the primary's coordinate in one commit.
+    var alignRevision = editor.GetRevision();
+    var alignBaseline = sceneDoc.content;
+    if editor.ArrangeSelectedNodes(scene_layout_3d.LAYOUT_ALIGN_Y) == false
+       or editor.GetRevision() != alignRevision + 1
+       or Probe.near((editor.scene.Find("Arrange B").Unwrap()
+                as SceneNode).Position.Y, 0.0) == false
+       or Probe.near((editor.scene.Find("Arrange C").Unwrap()
+                as SceneNode).Position.Y, 0.0) == false {
+        Probe.fail(shell, tempPath, "Align Y did not anchor to the primary");
+        return false;
+    }
+    if editor.Undo() == false or sceneDoc.content != alignBaseline {
+        Probe.fail(shell, tempPath, "Align Y was not one canonical history entry");
+        return false;
+    }
+
+    // Distribute X keeps both extrema and spaces the middle exactly.
+    aIndex = Probe.findNodeIndex(editor, "Arrange A");
+    bIndex = Probe.findNodeIndex(editor, "Arrange B");
+    cIndex = Probe.findNodeIndex(editor, "Arrange C");
+    arrangeGroup = [];
+    arrangeGroup.add(aIndex);
+    arrangeGroup.add(bIndex);
+    arrangeGroup.add(cIndex);
+    editor.SelectSceneNodes(arrangeGroup, aIndex);
+    if editor.ArrangeSelectedNodes(
+           scene_layout_3d.LAYOUT_DISTRIBUTE_X) == false
+       or Probe.near((editor.scene.Find("Arrange A").Unwrap()
+                as SceneNode).Position.X, 0.0) == false
+       or Probe.near((editor.scene.Find("Arrange B").Unwrap()
+                as SceneNode).Position.X, 3.0) == false
+       or Probe.near((editor.scene.Find("Arrange C").Unwrap()
+                as SceneNode).Position.X, 6.0) == false {
+        Probe.fail(shell, tempPath, "Distribute X did not derive from the extrema");
+        return false;
+    }
+
+    // Mixed parents refuse without history (exact-or-reject).
+    var childIndex = editor.AddEmptyNode("Arrange Child", cIndex);
+    if childIndex < 0 {
+        Probe.fail(shell, tempPath, "could not author the mixed-parent fixture");
+        return false;
+    }
+    aIndex = Probe.findNodeIndex(editor, "Arrange A");
+    childIndex = Probe.findNodeIndex(editor, "Arrange Child");
+    var mixedGroup: List[Integer] = [];
+    mixedGroup.add(aIndex);
+    mixedGroup.add(childIndex);
+    editor.SelectSceneNodes(mixedGroup, aIndex);
+    var mixedRevision = editor.GetRevision();
+    if editor.ArrangeSelectedNodes(scene_layout_3d.LAYOUT_ALIGN_X) != false
+       or editor.GetRevision() != mixedRevision {
+        Probe.fail(shell, tempPath, "mixed-parent Arrange was not refused cleanly");
+        return false;
+    }
+
+    // Group pivot Primary: satellites orbit the anchor; the anchor stays put.
+    editor.SetGizmoTransformSpace(scene_transform_3d.TRANSFORM_SPACE_WORLD);
+    aIndex = Probe.findNodeIndex(editor, "Arrange A");
+    bIndex = Probe.findNodeIndex(editor, "Arrange B");
+    var pivotGroup: List[Integer] = [];
+    pivotGroup.add(aIndex);
+    pivotGroup.add(bIndex);
+    editor.SelectSceneNodes(pivotGroup, aIndex);
+    var anchorBefore =
+        (editor.scene.Find("Arrange A").Unwrap() as SceneNode).WorldPosition;
+    var satelliteBefore =
+        (editor.scene.Find("Arrange B").Unwrap() as SceneNode).WorldPosition;
+    editor.groupPivotMode = scene_transform_3d.GROUP_PIVOT_PRIMARY;
+    if editor.TransformSelectedAlongGizmoAxis(
+           scene_editor_3d.GIZMO_MODE_ROTATE,
+           scene_editor_3d.GIZMO_AXIS_Y,
+           90.0,
+           false) == false {
+        Probe.fail(shell, tempPath, "primary-pivot group rotate was not committed");
+        return false;
+    }
+    var anchorAfter =
+        (editor.scene.Find("Arrange A").Unwrap() as SceneNode).WorldPosition;
+    var satelliteAfter =
+        (editor.scene.Find("Arrange B").Unwrap() as SceneNode).WorldPosition;
+    var beforeDX = satelliteBefore.X - anchorBefore.X;
+    var beforeDZ = satelliteBefore.Z - anchorBefore.Z;
+    var afterDX = satelliteAfter.X - anchorAfter.X;
+    var afterDZ = satelliteAfter.Z - anchorAfter.Z;
+    if Probe.near(anchorAfter.X, anchorBefore.X) == false
+       or Probe.near(anchorAfter.Z, anchorBefore.Z) == false
+       or Probe.near(afterDX * afterDX + afterDZ * afterDZ,
+                     beforeDX * beforeDX + beforeDZ * beforeDZ) == false
+       or Probe.near(satelliteAfter.X, satelliteBefore.X)
+          and Probe.near(satelliteAfter.Z, satelliteBefore.Z) {
+        Probe.fail(shell, tempPath,
+             "primary-pivot rotate did not orbit the satellite around the anchor");
+        return false;
+    }
+    if editor.Undo() == false {
+        Probe.fail(shell, tempPath, "primary-pivot rotate was not one history entry");
+        return false;
+    }
+
+    // Group pivot Centroid: the selection center is preserved while both move.
+    aIndex = Probe.findNodeIndex(editor, "Arrange A");
+    bIndex = Probe.findNodeIndex(editor, "Arrange B");
+    pivotGroup = [];
+    pivotGroup.add(aIndex);
+    pivotGroup.add(bIndex);
+    editor.SelectSceneNodes(pivotGroup, aIndex);
+    var centroidBeforeX =
+        ((editor.scene.Find("Arrange A").Unwrap() as SceneNode).WorldPosition.X
+         + (editor.scene.Find("Arrange B").Unwrap()
+                as SceneNode).WorldPosition.X) / 2.0;
+    var centroidBeforeZ =
+        ((editor.scene.Find("Arrange A").Unwrap() as SceneNode).WorldPosition.Z
+         + (editor.scene.Find("Arrange B").Unwrap()
+                as SceneNode).WorldPosition.Z) / 2.0;
+    editor.groupPivotMode = scene_transform_3d.GROUP_PIVOT_CENTROID;
+    if editor.TransformSelectedAlongGizmoAxis(
+           scene_editor_3d.GIZMO_MODE_ROTATE,
+           scene_editor_3d.GIZMO_AXIS_Y,
+           90.0,
+           false) == false {
+        Probe.fail(shell, tempPath, "centroid-pivot group rotate was not committed");
+        return false;
+    }
+    var centroidAfterX =
+        ((editor.scene.Find("Arrange A").Unwrap() as SceneNode).WorldPosition.X
+         + (editor.scene.Find("Arrange B").Unwrap()
+                as SceneNode).WorldPosition.X) / 2.0;
+    var centroidAfterZ =
+        ((editor.scene.Find("Arrange A").Unwrap() as SceneNode).WorldPosition.Z
+         + (editor.scene.Find("Arrange B").Unwrap()
+                as SceneNode).WorldPosition.Z) / 2.0;
+    if Probe.near(centroidAfterX, centroidBeforeX) == false
+       or Probe.near(centroidAfterZ, centroidBeforeZ) == false {
+        Probe.fail(shell, tempPath,
+             "centroid-pivot rotate did not preserve the selection center");
+        return false;
+    }
+    if editor.Undo() == false {
+        Probe.fail(shell, tempPath, "centroid-pivot rotate was not one history entry");
+        return false;
+    }
+
+    // Default Individual policy: nodes rotate in place, positions unchanged.
+    editor.groupPivotMode = scene_transform_3d.GROUP_PIVOT_INDIVIDUAL;
+    aIndex = Probe.findNodeIndex(editor, "Arrange A");
+    bIndex = Probe.findNodeIndex(editor, "Arrange B");
+    pivotGroup = [];
+    pivotGroup.add(aIndex);
+    pivotGroup.add(bIndex);
+    editor.SelectSceneNodes(pivotGroup, aIndex);
+    var ownBefore =
+        (editor.scene.Find("Arrange B").Unwrap() as SceneNode).WorldPosition;
+    if editor.TransformSelectedAlongGizmoAxis(
+           scene_editor_3d.GIZMO_MODE_ROTATE,
+           scene_editor_3d.GIZMO_AXIS_Y,
+           90.0,
+           false) == false
+       or Probe.near((editor.scene.Find("Arrange B").Unwrap()
+                as SceneNode).WorldPosition.X, ownBefore.X) == false
+       or Probe.near((editor.scene.Find("Arrange B").Unwrap()
+                as SceneNode).WorldPosition.Z, ownBefore.Z) == false {
+        Probe.fail(shell, tempPath,
+             "individual-pivot rotate moved a node's position");
+        return false;
+    }
+    if editor.Undo() == false {
+        Probe.fail(shell, tempPath, "individual rotate was not one history entry");
+        return false;
+    }
+
+    // Unwind this scenario's eight remaining commits (three adds, three
+    // transforms, Distribute X, and the mixed-parent child) so the next
+    // scenario's leading Undo pops its predecessor's commit, not ours.
+    var unwind = 0;
+    while unwind < 8 {
+        if editor.Undo() == false {
+            Probe.fail(shell, tempPath, "arrange fixture unwind ran out of history");
+            return false;
+        }
+        unwind = unwind + 1;
+    }
+    if sceneDoc.content != entryContent {
+        Probe.fail(shell, tempPath,
+             "arrange fixture unwind did not restore the entry bytes");
+        return false;
+    }
     return true;
 }

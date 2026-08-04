@@ -1,0 +1,105 @@
+// ============================================================================
+// test_g3d_scene_colliders — PhysicsWorld3D.BuildSceneColliders (ADR 0185)
+// ============================================================================
+// Authors the Studio collider.* metadata convention on scene nodes and
+// asserts the materialized static bodies land at world poses with scale
+// applied, triggers flagged, and unrelated nodes skipped.
+// ============================================================================
+
+bind Zanna.Graphics3D;
+bind Vec3 = Zanna.Math.Vec3;
+bind Zanna.Terminal;
+
+func fail(reason: String) {
+    Say("FAIL: " + reason);
+}
+
+func start() {
+    var scene = SceneGraph.New();
+
+    // Box collider on a scaled, offset node.
+    var floor = SceneNode.New();
+    floor.Name = "Floor";
+    floor.SetPosition(0.0, 0.0 - 1.0, 0.0);
+    floor.SetScale(4.0, 1.0, 4.0);
+    floor.MetadataSetString("collider.kind", "box");
+    floor.MetadataSetFloat("collider.halfX", 2.0);
+    floor.MetadataSetFloat("collider.halfY", 0.5);
+    floor.MetadataSetFloat("collider.halfZ", 2.0);
+    scene.Add(floor);
+
+    // Sphere trigger on a child node (world position inherits the parent).
+    var parent = SceneNode.New();
+    parent.Name = "Trigger Parent";
+    parent.SetPosition(10.0, 0.0, 0.0);
+    var zone = SceneNode.New();
+    zone.Name = "Zone";
+    zone.SetPosition(0.0, 2.0, 0.0);
+    zone.MetadataSetString("collider.kind", "sphere");
+    zone.MetadataSetFloat("collider.radius", 1.5);
+    zone.MetadataSetBool("collider.trigger", true);
+    parent.AddChild(zone);
+    scene.Add(parent);
+
+    // A plain node contributes nothing.
+    var decor = SceneNode.New();
+    decor.Name = "Decor";
+    scene.Add(decor);
+
+    var world = PhysicsWorld3D.New(0.0, 0.0 - 9.8, 0.0);
+    var created = world.BuildSceneColliders(scene);
+    if created != 2 or world.BodyCount != 2 {
+        fail("expected exactly two materialized bodies, got " + created
+             + " created / " + world.BodyCount + " in world");
+        return;
+    }
+
+    // The floor box: a downward ray from above (0,5,0) must hit its top at
+    // y = -1 + 0.5*scaleY = -0.5.
+    var hit = world.Raycast(
+        Vec3.New(0.0, 5.0, 0.0), Vec3.New(0.0, 0.0 - 1.0, 0.0), 50.0, 0 - 1);
+    if hit == null {
+        fail("no hit on the materialized floor box");
+        return;
+    }
+    var point = hit.Point;
+    if point.Y < 0.0 - 0.6 or point.Y > 0.0 - 0.4 {
+        fail("floor box top surface off: y = " + point.Y);
+        return;
+    }
+    var floorBody = hit.Body;
+    if floorBody == null or floorBody.IsStatic == false
+       or floorBody.IsTrigger {
+        fail("the floor body is not a plain static body");
+        return;
+    }
+
+    // The trigger sphere: world position (10, 2, 0), radius 1.5, flagged as
+    // a trigger. Find it by scanning the two bodies.
+    var index = 0;
+    var trigger: PhysicsBody3D = null;
+    while index < world.BodyCount {
+        var candidate = world.GetBody(index);
+        if candidate != null and candidate.IsTrigger {
+            trigger = candidate;
+        }
+        index = index + 1;
+    }
+    if trigger == null {
+        fail("no materialized trigger body found");
+        return;
+    }
+    var triggerPos = trigger.Position;
+    if triggerPos.X < 9.9 or triggerPos.X > 10.1
+       or triggerPos.Y < 1.9 or triggerPos.Y > 2.1 {
+        fail("trigger sphere landed off its world pose: "
+             + triggerPos.X + ", " + triggerPos.Y);
+        return;
+    }
+    if trigger.IsStatic == false {
+        fail("the trigger body is not static");
+        return;
+    }
+
+    Say("PASS");
+}

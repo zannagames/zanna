@@ -1347,6 +1347,13 @@ typedef struct {
     int8_t final_overlay_recording;
     int8_t frame_finalized;
     int8_t frame_presented_by_finalize;
+    /* Set when the CPU finalization chain (in-place post-FX gamma-out +
+     * final overlay replay on the framebuffer) has run for the currently
+     * rendered content; cleared by Clear/Begin when new rendering starts.
+     * Present resets frame_finalized so the next frame can finalize, but a
+     * capture after present must NOT rerun the in-place chain on
+     * already-encoded pixels (double gamma washes the frame gray). */
+    int8_t cpu_finalized_this_render;
 
     /* Render target (NULL = render to window) */
     vgfx3d_rendertarget_t *render_target;

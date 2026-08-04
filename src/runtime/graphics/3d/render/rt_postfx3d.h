@@ -95,6 +95,49 @@ void rt_postfx3d_clear(void *obj);
 /// @return The number of safely iterable effect entries, or zero for an invalid chain.
 int64_t rt_postfx3d_get_effect_count(void *obj);
 
+/// @brief Kind discriminator of the effect at @p index in application order.
+/// @param obj Candidate PostFX3D chain.
+/// @param index Zero-based position in the chain.
+/// @return The `vgfx3d_postfx_effect_kind_t` value (also exposed through the
+///   `Zanna.Graphics3D.PostFXEffectKind` constants), or -1 for an invalid
+///   chain or out-of-range index.
+int64_t rt_postfx3d_get_effect_kind(void *obj, int64_t index);
+
+/// @brief Remove the effect at @p index, preserving the order of the rest.
+/// @param obj Candidate PostFX3D chain.
+/// @param index Zero-based position in the chain.
+/// @return 1 when an entry was removed, or 0 for an invalid chain or index.
+int8_t rt_postfx3d_remove_effect_at(void *obj, int64_t index);
+
+/* Zanna.Graphics3D.PostFXEffectKind constants — the values returned by
+ * rt_postfx3d_get_effect_kind (mirror vgfx3d_postfx_effect_kind_t). */
+/// @brief PostFXEffectKind.Bloom constant.
+int64_t rt_postfx3d_effect_kind_bloom(void);
+/// @brief PostFXEffectKind.Tonemap constant.
+int64_t rt_postfx3d_effect_kind_tonemap(void);
+/// @brief PostFXEffectKind.Fxaa constant.
+int64_t rt_postfx3d_effect_kind_fxaa(void);
+/// @brief PostFXEffectKind.ColorGrade constant.
+int64_t rt_postfx3d_effect_kind_color_grade(void);
+/// @brief PostFXEffectKind.Vignette constant.
+int64_t rt_postfx3d_effect_kind_vignette(void);
+/// @brief PostFXEffectKind.Ssao constant.
+int64_t rt_postfx3d_effect_kind_ssao(void);
+/// @brief PostFXEffectKind.Dof constant.
+int64_t rt_postfx3d_effect_kind_dof(void);
+/// @brief PostFXEffectKind.MotionBlur constant.
+int64_t rt_postfx3d_effect_kind_motion_blur(void);
+/// @brief PostFXEffectKind.Taa constant.
+int64_t rt_postfx3d_effect_kind_taa(void);
+/// @brief PostFXEffectKind.Ssr constant.
+int64_t rt_postfx3d_effect_kind_ssr(void);
+/// @brief PostFXEffectKind.AutoExposure constant.
+int64_t rt_postfx3d_effect_kind_auto_exposure(void);
+/// @brief PostFXEffectKind.ColorLut constant.
+int64_t rt_postfx3d_effect_kind_color_lut(void);
+/// @brief PostFXEffectKind.SunShafts constant.
+int64_t rt_postfx3d_effect_kind_sun_shafts(void);
+
 /// @brief Bind a PostFX chain to a Canvas3D for automatic application during Flip to the active
 /// output.
 /// @param canvas Canvas3D receiving the retained chain reference.

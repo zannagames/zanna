@@ -2335,8 +2335,17 @@ static void canvas3d_finalize_frame_impl(rt_canvas3d *c, int present_to_window) 
         return;
     }
 
-    rt_postfx3d_apply_to_canvas(c);
-    canvas3d_replay_final_overlay(c);
+    /* The CPU chain mutates the output buffer in place (post-FX gamma-out,
+     * overlay composite). Present clears frame_finalized for the next render,
+     * so a capture that follows a presented frame would otherwise rerun the
+     * chain on already-finalized pixels — double-applying gamma washes the
+     * frame gray. Run it at most once per rendered frame; Clear/Begin mark
+     * the next render and re-arm it. */
+    if (!c->cpu_finalized_this_render) {
+        c->cpu_finalized_this_render = 1;
+        rt_postfx3d_apply_to_canvas(c);
+        canvas3d_replay_final_overlay(c);
+    }
     c->frame_finalized = 1;
 }
 

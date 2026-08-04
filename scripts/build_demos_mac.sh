@@ -102,7 +102,9 @@ load_demo_manifest() {
             exit 1
         fi
         case "$category" in
-            games|apps) ;;
+            # 3d carries the reference demos under examples/3d (they count as
+            # games in check_demo_projects.sh's ratio gate).
+            games|apps|3d) ;;
             *)
                 echo -e "${RED}Error: invalid demo category '$category' at line $line_number${NC}"
                 exit 1

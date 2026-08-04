@@ -80,5 +80,66 @@ func start() {
         return;
     }
 
+    // Target readback mirrors SetTarget/ClearTarget.
+    if (NavAgent3D.get_HasTarget(agent) != true) {
+        Say("FAIL: NavAgent3D should report HasTarget after SetTarget");
+        return;
+    }
+    var targetPos = NavAgent3D.get_Target(agent);
+    if (Vec3.get_X(targetPos) < 4.9 || Vec3.get_X(targetPos) > 5.1) {
+        Say("FAIL: NavAgent3D.Target should read back the SetTarget position");
+        return;
+    }
+
+    // Path corners: walk order, first corner near the agent's side of the path.
+    if (NavAgent3D.get_PathCornerCount(agent) < 2) {
+        Say("FAIL: NavAgent3D should expose at least start/goal path corners");
+        return;
+    }
+    var lastCorner = NavAgent3D.GetPathCorner(
+        agent, NavAgent3D.get_PathCornerCount(agent) - 1);
+    if (Vec3.get_X(lastCorner) < 4.5 || Vec3.get_X(lastCorner) > 5.5) {
+        Say("FAIL: the final path corner should sit at the goal");
+        return;
+    }
+
+    // Stop keeps the target and path but suppresses motion until Resume.
+    NavAgent3D.Stop(agent);
+    if (NavAgent3D.get_IsStopped(agent) != true) {
+        Say("FAIL: NavAgent3D.Stop should latch IsStopped");
+        return;
+    }
+    var stoppedPos = NavAgent3D.get_Position(agent);
+    i = 0;
+    while (i < 10) {
+        NavAgent3D.Update(agent, 0.1);
+        i = i + 1;
+    }
+    var heldPos = NavAgent3D.get_Position(agent);
+    if (Vec3.get_X(heldPos) < Vec3.get_X(stoppedPos) - 0.001
+        || Vec3.get_X(heldPos) > Vec3.get_X(stoppedPos) + 0.001) {
+        Say("FAIL: a stopped NavAgent3D must not move");
+        return;
+    }
+    if (NavAgent3D.get_HasTarget(agent) != true) {
+        Say("FAIL: Stop must keep the navigation target");
+        return;
+    }
+    NavAgent3D.Resume(agent);
+    if (NavAgent3D.get_IsStopped(agent) != false) {
+        Say("FAIL: NavAgent3D.Resume should clear IsStopped");
+        return;
+    }
+    i = 0;
+    while (i < 10) {
+        NavAgent3D.Update(agent, 0.1);
+        i = i + 1;
+    }
+    var resumedPos = NavAgent3D.get_Position(agent);
+    if (Vec3.get_X(resumedPos) <= Vec3.get_X(heldPos) + 0.1) {
+        Say("FAIL: a resumed NavAgent3D should continue toward the target");
+        return;
+    }
+
     Say("PASS: navagent3d");
 }

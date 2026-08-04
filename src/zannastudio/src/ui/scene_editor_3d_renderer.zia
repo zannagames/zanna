@@ -129,6 +129,11 @@ class SceneEditor3DRendererLayer extends PreviousLayer.SceneEditor3DRendererSetu
         }
         DrawProjectWaterPreviews(
             viewportRenderCanvas, viewportRenderCamera);
+        if showNavOverlay and navOverlayMesh != null {
+            // Workspace-only walkable-surface overlay from the baked
+            // .vnavmsh sidecar; drawn inside the frame so depth composes.
+            navOverlayMesh.DebugDraw(viewportRenderCanvas);
+        }
         if renderMode == SceneEditor3DModel.VIEWPORT_MODE_SHADED_WIRE {
             // Combined mode: the wire pass draws over the shaded frame
             // without clearing, giving Unity's Shaded Wireframe look.

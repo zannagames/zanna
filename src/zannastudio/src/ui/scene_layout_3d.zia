@@ -1,0 +1,128 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: zannastudio/src/ui/scene_layout_3d.zia
+// Purpose: Pure operation metadata and deterministic ordering math for 3D
+//          multi-node layout commands (align to primary / distribute).
+// Key invariants:
+//   - Align operations use the explicitly selected primary node as anchor.
+//   - Distribution ordering is stable for equal coordinates and derives every
+//     intermediate target from the two unchanged extrema (no chained deltas).
+// Ownership/Lifetime:
+//   - This module owns values only; SceneEditor3D owns scene mutations/history.
+// Links: zannastudio/src/ui/scene_layout_2d.zia (2D twin),
+//        zannastudio/src/ui/scene_editor_3d_node_transform.zia
+//
+//===----------------------------------------------------------------------===//
+
+module scene_layout_3d;
+
+// ============================================================================
+// MODULE: scene_layout_3d
+// PURPOSE: Keep layout choice, stable ordering, and float interpolation
+//          independent from widgets and document history.
+//
+// WHERE-THIS-FITS: SceneEditor3D validates selection (same parent, no
+//          instance content) and commits one canonical transaction; this
+//          module supplies deterministic target geometry over local-position
+//          coordinates the caller reads out per node.
+//
+// TEACHING-NOTE: Distribution never chains rounded deltas. Every intermediate
+//          position derives from the original extrema, preventing drift.
+// ============================================================================
+
+final LAYOUT_ALIGN_X: Integer = 0;
+final LAYOUT_ALIGN_Y: Integer = 1;
+final LAYOUT_ALIGN_Z: Integer = 2;
+final LAYOUT_DISTRIBUTE_X: Integer = 3;
+final LAYOUT_DISTRIBUTE_Y: Integer = 4;
+final LAYOUT_DISTRIBUTE_Z: Integer = 5;
+
+/// @brief Return whether one operation identifier is supported.
+func IsOperation(operation: Integer) -> Boolean {
+    return operation >= LAYOUT_ALIGN_X and operation <= LAYOUT_DISTRIBUTE_Z;
+}
+
+/// @brief Return whether an operation distributes rather than aligns.
+func IsDistribution(operation: Integer) -> Boolean {
+    return operation >= LAYOUT_DISTRIBUTE_X and operation <= LAYOUT_DISTRIBUTE_Z;
+}
+
+/// @brief Return the local-position axis an operation reads and writes
+///        (0 = X, 1 = Y, 2 = Z).
+func Axis(operation: Integer) -> Integer {
+    if operation == LAYOUT_ALIGN_Y or operation == LAYOUT_DISTRIBUTE_Y {
+        return 1;
+    }
+    if operation == LAYOUT_ALIGN_Z or operation == LAYOUT_DISTRIBUTE_Z {
+        return 2;
+    }
+    return 0;
+}
+
+/// @brief Return the minimum useful selection size.
+func MinimumSelection(operation: Integer) -> Integer {
+    if IsDistribution(operation) { return 3; }
+    if IsOperation(operation) { return 2; }
+    return 1000000;
+}
+
+/// @brief Return concise history/inspector copy for one layout operation.
+func OperationLabel(operation: Integer) -> String {
+    if operation == LAYOUT_ALIGN_Y { return "Align Y to primary"; }
+    if operation == LAYOUT_ALIGN_Z { return "Align Z to primary"; }
+    if operation == LAYOUT_DISTRIBUTE_X { return "Distribute X"; }
+    if operation == LAYOUT_DISTRIBUTE_Y { return "Distribute Y"; }
+    if operation == LAYOUT_DISTRIBUTE_Z { return "Distribute Z"; }
+    return "Align X to primary";
+}
+
+/// @brief Return a stable coordinate/index ordering of node indices.
+/// @details Coordinates arrive as a parallel list (one per candidate index)
+///          so this module never touches scene state. Equal coordinates order
+///          by ascending flat index, keeping the result deterministic.
+func OrderedPositions(indices: List[Integer],
+                      coordinates: List[Number]) -> List[Integer] {
+    var ordered: List[Integer] = [];
+    var orderedCoords: List[Number] = [];
+    var sourceIndex = 0;
+    while sourceIndex < indices.count()
+          and sourceIndex < coordinates.count() {
+        var candidate = indices.get(sourceIndex);
+        var candidateCoordinate = coordinates.get(sourceIndex);
+        var insertAt = 0;
+        while insertAt < ordered.count() {
+            if candidateCoordinate < orderedCoords.get(insertAt)
+               or (candidateCoordinate <= orderedCoords.get(insertAt)
+                   and candidateCoordinate >= orderedCoords.get(insertAt)
+                   and candidate < ordered.get(insertAt)) {
+                break;
+            }
+            insertAt = insertAt + 1;
+        }
+        if insertAt < ordered.count() {
+            ordered.insert(insertAt, candidate);
+            orderedCoords.insert(insertAt, candidateCoordinate);
+        } else {
+            ordered.add(candidate);
+            orderedCoords.add(candidateCoordinate);
+        }
+        sourceIndex = sourceIndex + 1;
+    }
+    return ordered;
+}
+
+/// @brief Interpolate one deterministic position between two extrema.
+func DistributedCoordinate(minimum: Number,
+                           maximum: Number,
+                           position: Integer,
+                           count: Integer) -> Number {
+    if count < 2 or position <= 0 { return minimum; }
+    if position >= count - 1 { return maximum; }
+    var fraction = (1.0 * position) / (count - 1);
+    return minimum + (maximum - minimum) * fraction;
+}

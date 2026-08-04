@@ -330,6 +330,9 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
             ConfigurePlacementMenu();
             ShowCommandMenu(placementMenuButton, placementMenu);
         }
+        if arrangeMenuButton.WasClicked() {
+            ShowCommandMenu(arrangeMenuButton, arrangeMenu);
+        }
         if viewMenuButton.WasClicked() {
             ConfigureViewMenu();
             ShowCommandMenu(viewMenuButton, viewMenu);
@@ -391,6 +394,9 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
         surfaceSnapCheck.SetVisible(!useMenus);
         surfaceAlignCheck.SetVisible(!useMenus);
         vertexSnapCheck.SetVisible(!useMenus);
+        // Arrange is a compact menu at every width: six axis commands would
+        // crowd the direct toolbar, and the menu is one click either way.
+        arrangeMenuButton.SetVisible(true);
 
         viewMenuButton.SetVisible(useMenus);
         topViewButton.SetVisible(!useMenus);

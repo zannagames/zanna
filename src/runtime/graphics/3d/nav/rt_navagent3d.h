@@ -96,6 +96,33 @@ void *rt_navagent3d_get_desired_velocity(void *agent);
 /// @param agent Opaque NavAgent3D handle.
 /// @return 1 for an active path, otherwise 0, including invalid handles.
 int8_t rt_navagent3d_get_has_path(void *agent);
+/// @brief Pause steering while keeping the target and path (idempotent).
+/// @param agent Opaque NavAgent3D handle; invalid handles are ignored.
+void rt_navagent3d_stop(void *agent);
+/// @brief Resume steering paused by `rt_navagent3d_stop` (idempotent).
+/// @param agent Opaque NavAgent3D handle; invalid handles are ignored.
+void rt_navagent3d_resume(void *agent);
+/// @brief True while steering is paused by `rt_navagent3d_stop`.
+/// @param agent Opaque NavAgent3D handle.
+/// @return 1 when paused, otherwise 0, including invalid handles.
+int8_t rt_navagent3d_get_is_stopped(void *agent);
+/// @brief Number of corners in the most recently computed path.
+/// @param agent Opaque NavAgent3D handle.
+/// @return Bounded corner count, or zero for an invalid handle.
+int64_t rt_navagent3d_get_path_corner_count(void *agent);
+/// @brief Read one world-space path corner in walk order.
+/// @param agent Opaque NavAgent3D handle.
+/// @param index Zero-based corner index.
+/// @return Newly allocated Vec3 owned by the caller; invalid input produces the origin.
+void *rt_navagent3d_get_path_corner(void *agent, int64_t index);
+/// @brief True while a navigation target is set.
+/// @param agent Opaque NavAgent3D handle.
+/// @return 1 when a target is set, otherwise 0, including invalid handles.
+int8_t rt_navagent3d_get_has_target(void *agent);
+/// @brief Read the current navigation target position.
+/// @param agent Opaque NavAgent3D handle.
+/// @return Newly allocated Vec3 owned by the caller; no target produces the origin.
+void *rt_navagent3d_get_target(void *agent);
 /// @brief True while the current path segment traverses an off-mesh link.
 /// @param agent Opaque NavAgent3D handle.
 /// @return 1 when the active path segment matches an off-mesh link, otherwise 0.

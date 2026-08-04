@@ -571,7 +571,7 @@ RT_CLASS_BEGIN("Zanna.Game3D.World3D", Game3DWorld3D, "obj", Game3DWorldNew)
     RT_METHOD("DrawEffects", "void()", Game3DWorldDrawEffects)
     RT_METHOD("EndScene", "void()", Game3DWorldEndScene)
     RT_METHOD("DrawOverlay", "void(obj)", Game3DWorldDrawOverlay)
-    RT_METHOD("CaptureFinalFrame", "obj()", Game3DWorldCaptureFinal)
+    RT_METHOD("CaptureFinalFrame", "obj<Zanna.Graphics.Pixels>()", Game3DWorldCaptureFinal)
     RT_METHOD("Present", "void()", Game3DWorldPresent)
 RT_CLASS_END()
 

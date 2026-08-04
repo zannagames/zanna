@@ -417,4 +417,7 @@ class SceneEditor3DContract06 extends PreviousContract.SceneEditor3DContract05 {
     /// @brief Neutral dispatch slot for FindFlatIndex.
     hide func FindFlatIndex(_node: SceneNode) -> Integer { return 0; }
 
+    /// @brief Neutral dispatch slot for ArrangeSelectedNodes.
+    expose func ArrangeSelectedNodes(_operation: Integer) -> Boolean { return false; }
+
 }

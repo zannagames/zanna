@@ -183,6 +183,38 @@ func start() {
         return;
     }
 
+    // --- PostFX3D chain enumeration and removal ---------------------------
+    chain.AddBloom(0.8, 0.6, 2);
+    chain.AddTonemap(2, 1.0);
+    chain.AddVignette(0.7, 0.4);
+    if chain.EffectCount != 3
+       or chain.GetEffectKind(0) != PostFXEffectKind.Bloom
+       or chain.GetEffectKind(1) != PostFXEffectKind.Tonemap
+       or chain.GetEffectKind(2) != PostFXEffectKind.Vignette {
+        fail("PostFX3D.GetEffectKind did not enumerate the chain in order");
+        return;
+    }
+    if chain.GetEffectKind(3) != 0 - 1 or chain.GetEffectKind(0 - 1) != 0 - 1 {
+        fail("PostFX3D.GetEffectKind accepted an out-of-range index");
+        return;
+    }
+    if chain.RemoveEffectAt(1) == false
+       or chain.EffectCount != 2
+       or chain.GetEffectKind(0) != PostFXEffectKind.Bloom
+       or chain.GetEffectKind(1) != PostFXEffectKind.Vignette {
+        fail("PostFX3D.RemoveEffectAt did not close the chain over the gap");
+        return;
+    }
+    if chain.RemoveEffectAt(5) {
+        fail("PostFX3D.RemoveEffectAt accepted an out-of-range index");
+        return;
+    }
+    chain.Clear();
+    if chain.EffectCount != 0 {
+        fail("PostFX3D.Clear left effects behind");
+        return;
+    }
+
     // --- Material3D map slots and scalars ---------------------------------
     var mat = Material3D.New();
     if mat.Texture != null or mat.NormalMap != null or mat.EnvMap != null {
