@@ -9,4 +9,8 @@ package-identifier org.zanna-lang.game3d-starter
 package-author "Zanna Project"
 package-license MIT
 
-asset assets assets
+# Embed the marker model so the demo binary is self-contained: the loose
+# `asset` form only works when the binary runs beside its assets directory,
+# and examples/bin binaries run from anywhere (Assets3D.LoadEntityAsset
+# resolves embedded bytes first, filesystem second).
+embed assets/models/triangle.gltf
