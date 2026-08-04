@@ -624,7 +624,7 @@ void rt_transform3d_rotate(void *obj, void *axis, double angle) {
         return;
 
     /* Build quaternion from axis-angle */
-    double ax = axis_raw[0], ay = axis_raw[1], az = axis_raw[2];
+    double ax, ay, az;
     if (!isfinite(angle))
         return;
     if (!transform3d_normalize_vec3(axis_raw))

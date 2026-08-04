@@ -43,6 +43,7 @@
 #define CANVAS3D_FRAME_ARENA_CHUNK_BYTES (1u * 1024u * 1024u)
 #define CANVAS3D_FRAME_ARENA_RETAIN_CHUNKS 8
 #define CANVAS3D_FRAME_ARENA_ALIGN 16u
+#define CANVAS3D_HASH_MAX_CAPACITY (INT32_C(1) << 30)
 
 /// @brief One frame-arena chunk: bump storage with stable addresses.
 /// @details Chunks form a singly linked list; the arena grows by APPENDING
@@ -55,6 +56,80 @@ typedef struct canvas3d_frame_arena_chunk {
     size_t capacity;
     /* payload follows the header, CANVAS3D_FRAME_ARENA_ALIGN-aligned */
 } canvas3d_frame_arena_chunk;
+
+/// @brief Clamp pointer-list metadata to a range safe for iteration and append.
+/// @details A missing allocation has zero usable capacity. Negative metadata and
+///   counts beyond the recorded allocation are repaired without dereferencing the list.
+/// @param items Current list allocation (may be NULL).
+/// @param count_io Logical element count to repair.
+/// @param capacity_io Allocated element capacity to repair.
+static void canvas3d_repair_pointer_list_metadata(const void *items,
+                                                  int32_t *count_io,
+                                                  int32_t *capacity_io) {
+    if (!count_io || !capacity_io)
+        return;
+    if (!items || *capacity_io < 0) {
+        *count_io = 0;
+        *capacity_io = 0;
+        return;
+    }
+    if (*count_io < 0)
+        *count_io = 0;
+    if (*count_io > *capacity_io)
+        *count_io = *capacity_io;
+}
+
+/// @brief Return whether a signed hash capacity is a supported power of two.
+/// @param capacity Candidate slot count.
+/// @return Nonzero for powers of two in `[1, 2^30]`.
+static int canvas3d_valid_hash_capacity(int32_t capacity) {
+    return capacity > 0 && capacity <= CANVAS3D_HASH_MAX_CAPACITY &&
+           ((uint32_t)capacity & ((uint32_t)capacity - 1u)) == 0u;
+}
+
+/// @brief Break a cycle in a frame-arena chunk chain, if corrupted metadata formed one.
+/// @param head First retained arena chunk.
+static void canvas3d_frame_arena_break_cycle(canvas3d_frame_arena_chunk *head) {
+    canvas3d_frame_arena_chunk *slow = head;
+    canvas3d_frame_arena_chunk *fast = head;
+    canvas3d_frame_arena_chunk *cycle_start;
+    canvas3d_frame_arena_chunk *tail;
+    while (fast && fast->next) {
+        slow = slow->next;
+        fast = fast->next->next;
+        if (slow == fast)
+            break;
+    }
+    if (!fast || !fast->next || slow != fast)
+        return;
+    cycle_start = head;
+    while (cycle_start != slow) {
+        cycle_start = cycle_start->next;
+        slow = slow->next;
+    }
+    tail = cycle_start;
+    while (tail->next != cycle_start)
+        tail = tail->next;
+    tail->next = NULL;
+}
+
+/// @brief Repair per-chunk bump offsets and ensure current belongs to the retained chain.
+/// @param c Canvas owning the frame arena.
+static void canvas3d_frame_arena_repair(rt_canvas3d *c) {
+    canvas3d_frame_arena_chunk *chunk;
+    int current_found = 0;
+    if (!c)
+        return;
+    canvas3d_frame_arena_break_cycle(c->frame_arena_head);
+    for (chunk = c->frame_arena_head; chunk; chunk = chunk->next) {
+        if (chunk == c->frame_arena_current)
+            current_found = 1;
+        if (chunk->used > chunk->capacity)
+            chunk->used = chunk->capacity;
+    }
+    if (!current_found)
+        c->frame_arena_current = c->frame_arena_head;
+}
 
 /// @brief Payload base address of a chunk (header rounded up to the alignment).
 /// @param chunk Non-null arena chunk allocated with its payload trailing the header.
@@ -99,6 +174,7 @@ void *canvas3d_frame_arena_alloc(rt_canvas3d *c, size_t bytes) {
     canvas3d_frame_arena_chunk *chunk;
     if (!c || bytes == 0u)
         return NULL;
+    canvas3d_frame_arena_repair(c);
     bytes =
         (bytes + (CANVAS3D_FRAME_ARENA_ALIGN - 1u)) & ~(size_t)(CANVAS3D_FRAME_ARENA_ALIGN - 1u);
     if (bytes == 0u)
@@ -125,7 +201,10 @@ void *canvas3d_frame_arena_alloc(rt_canvas3d *c, size_t bytes) {
     {
         uint8_t *out = canvas3d_frame_arena_chunk_payload(chunk) + chunk->used;
         chunk->used += bytes;
-        c->frame_arena_frame_bytes += bytes;
+        if (c->frame_arena_frame_bytes > SIZE_MAX - bytes)
+            c->frame_arena_frame_bytes = SIZE_MAX;
+        else
+            c->frame_arena_frame_bytes += bytes;
         return out;
     }
 }
@@ -140,6 +219,7 @@ void canvas3d_frame_arena_reset(rt_canvas3d *c) {
     int32_t kept = 0;
     if (!c)
         return;
+    canvas3d_frame_arena_repair(c);
     chunk = c->frame_arena_head;
     while (chunk) {
         chunk->used = 0u;
@@ -168,6 +248,7 @@ void canvas3d_frame_arena_free(rt_canvas3d *c) {
     canvas3d_frame_arena_chunk *chunk;
     if (!c)
         return;
+    canvas3d_frame_arena_break_cycle(c->frame_arena_head);
     chunk = c->frame_arena_head;
     while (chunk) {
         canvas3d_frame_arena_chunk *next = chunk->next;
@@ -224,6 +305,14 @@ void *canvas3d_alloc_final_overlay_arena(rt_canvas3d *c, size_t bytes, size_t al
 
     if (!c || bytes == 0u)
         return NULL;
+    if (!c->final_overlay_arena) {
+        c->final_overlay_arena_capacity = 0u;
+        c->final_overlay_arena_used = 0u;
+    } else if (c->final_overlay_arena_used > c->final_overlay_arena_capacity) {
+        if (c->final_overlay_arena_used > c->final_overlay_arena_peak)
+            c->final_overlay_arena_peak = c->final_overlay_arena_used;
+        return NULL;
+    }
     if (!canvas3d_valid_power_of_two_alignment(alignment))
         alignment = sizeof(void *);
     if (alignment < sizeof(void *))
@@ -268,6 +357,18 @@ void canvas3d_reset_final_overlay_arena(rt_canvas3d *c) {
     size_t peak;
     if (!c)
         return;
+    if (!c->final_overlay_arena) {
+        c->final_overlay_arena_capacity = 0u;
+        c->final_overlay_arena_used = 0u;
+    } else if (c->final_overlay_arena_capacity == 0u) {
+        free(c->final_overlay_arena);
+        c->final_overlay_arena = NULL;
+        c->final_overlay_arena_used = 0u;
+    } else if (c->final_overlay_arena_used > c->final_overlay_arena_capacity) {
+        if (c->final_overlay_arena_used > c->final_overlay_arena_peak)
+            c->final_overlay_arena_peak = c->final_overlay_arena_used;
+        c->final_overlay_arena_used = 0u;
+    }
     peak = c->final_overlay_arena_peak;
     c->final_overlay_arena_used = 0u;
     c->final_overlay_arena_peak = 0u;
@@ -291,9 +392,22 @@ void canvas3d_reset_final_overlay_arena(rt_canvas3d *c) {
 /// @param c Canvas whose allocated duplicate-filter table is cleared; missing
 ///   tables and `NULL` canvases are ignored.
 static void canvas3d_temp_buffer_set_clear(rt_canvas3d *c) {
-    if (!c || !c->temp_buffer_set || c->temp_buffer_set_capacity <= 0)
+    if (!c)
         return;
+    if (!c->temp_buffer_set) {
+        c->temp_buffer_set_capacity = 0;
+        c->temp_buffer_set_count = 0;
+        return;
+    }
+    if (!canvas3d_valid_hash_capacity(c->temp_buffer_set_capacity)) {
+        free(c->temp_buffer_set);
+        c->temp_buffer_set = NULL;
+        c->temp_buffer_set_capacity = 0;
+        c->temp_buffer_set_count = 0;
+        return;
+    }
     memset(c->temp_buffer_set, 0, (size_t)c->temp_buffer_set_capacity * sizeof(void *));
+    c->temp_buffer_set_count = 0;
 }
 
 /// @brief Ensure the transient-buffer set is sized for @p count_hint tracked buffers.
@@ -307,38 +421,64 @@ static int canvas3d_ensure_temp_buffer_set(rt_canvas3d *c, int32_t count_hint) {
     void **grown;
     if (!c)
         return 0;
-    if (count_hint > INT32_MAX / 2)
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_buffers, &c->temp_buf_count, &c->temp_buf_capacity);
+    if (!c->temp_buffer_set) {
+        c->temp_buffer_set_capacity = 0;
+        c->temp_buffer_set_count = 0;
+    } else if (!canvas3d_valid_hash_capacity(c->temp_buffer_set_capacity)) {
+        free(c->temp_buffer_set);
+        c->temp_buffer_set = NULL;
+        c->temp_buffer_set_capacity = 0;
+        c->temp_buffer_set_count = 0;
+    } else if (c->temp_buffer_set_count < 0 ||
+               c->temp_buffer_set_count > c->temp_buffer_set_capacity) {
+        c->temp_buffer_set_count = 0;
+    }
+    if (count_hint < c->temp_buf_count)
+        count_hint = c->temp_buf_count;
+    if (count_hint < 0 || count_hint > CANVAS3D_HASH_MAX_CAPACITY / 2)
         return 0;
     needed = canvas3d_next_power_of_two_i32(count_hint > 0 ? count_hint * 2 : 32);
     if (needed < 32)
         needed = 32;
-    if (c->temp_buffer_set_capacity >= needed)
+    if (c->temp_buffer_set && c->temp_buffer_set_capacity >= needed &&
+        c->temp_buffer_set_count == c->temp_buf_count)
         return 1;
-    if ((size_t)needed > SIZE_MAX / sizeof(*c->temp_buffer_set))
-        return 0;
-    grown = (void **)realloc(c->temp_buffer_set, (size_t)needed * sizeof(*grown));
-    if (!grown)
-        return 0;
-    c->temp_buffer_set = grown;
-    c->temp_buffer_set_capacity = needed;
+    if (!c->temp_buffer_set || c->temp_buffer_set_capacity < needed) {
+        if ((size_t)needed > SIZE_MAX / sizeof(*c->temp_buffer_set))
+            return 0;
+        grown = (void **)realloc(c->temp_buffer_set, (size_t)needed * sizeof(*grown));
+        if (!grown)
+            return 0;
+        c->temp_buffer_set = grown;
+        c->temp_buffer_set_capacity = needed;
+    }
     canvas3d_temp_buffer_set_clear(c);
     for (int32_t i = 0; i < c->temp_buf_count; ++i) {
         void *existing = c->temp_buffers[i];
         int32_t mask;
         int32_t slot;
+        int inserted = 0;
         if (!existing)
-            continue;
+            return 0;
         mask = c->temp_buffer_set_capacity - 1;
         slot = (int32_t)(canvas3d_hash_u64((uintptr_t)existing) & (uint32_t)mask);
         for (int32_t probe = 0; probe < c->temp_buffer_set_capacity; ++probe) {
             if (!c->temp_buffer_set[slot]) {
                 c->temp_buffer_set[slot] = existing;
+                c->temp_buffer_set_count++;
+                inserted = 1;
                 break;
             }
+            if (c->temp_buffer_set[slot] == existing)
+                return 0;
             slot = (slot + 1) & mask;
         }
+        if (!inserted)
+            return 0;
     }
-    return 1;
+    return c->temp_buffer_set_count == c->temp_buf_count;
 }
 
 /// @brief Return whether @p buffer is currently tracked as a per-frame transient buffer.
@@ -350,9 +490,22 @@ static int canvas3d_ensure_temp_buffer_set(rt_canvas3d *c, int32_t count_hint) {
 static int canvas3d_temp_buffer_set_contains(rt_canvas3d *c, void *buffer) {
     int32_t mask;
     int32_t slot;
-    if (!c || !buffer || c->temp_buf_count <= 0)
+    if (!c || !buffer)
         return 0;
-    if (!c->temp_buffer_set || c->temp_buffer_set_capacity < c->temp_buf_count * 2) {
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_buffers, &c->temp_buf_count, &c->temp_buf_capacity);
+    if (c->temp_buf_count <= 0)
+        return 0;
+    if (c->temp_buf_count >= CANVAS3D_HASH_MAX_CAPACITY / 2) {
+        for (int32_t i = 0; i < c->temp_buf_count; ++i) {
+            if (c->temp_buffers[i] == buffer)
+                return 1;
+        }
+        return 0;
+    }
+    if (!c->temp_buffer_set || !canvas3d_valid_hash_capacity(c->temp_buffer_set_capacity) ||
+        c->temp_buffer_set_count != c->temp_buf_count ||
+        c->temp_buffer_set_capacity < c->temp_buf_count * 2) {
         if (!canvas3d_ensure_temp_buffer_set(c, c->temp_buf_count + 1)) {
             for (int32_t i = 0; i < c->temp_buf_count; ++i) {
                 if (c->temp_buffers[i] == buffer)
@@ -381,7 +534,7 @@ static int canvas3d_temp_buffer_set_contains(rt_canvas3d *c, void *buffer) {
 static int canvas3d_temp_buffer_set_insert(rt_canvas3d *c, void *buffer) {
     int32_t mask;
     int32_t slot;
-    if (!c || !buffer)
+    if (!c || !buffer || c->temp_buf_count < 0 || c->temp_buf_count >= INT32_MAX)
         return 0;
     if (!canvas3d_ensure_temp_buffer_set(c, c->temp_buf_count + 1))
         return 0;
@@ -390,6 +543,7 @@ static int canvas3d_temp_buffer_set_insert(rt_canvas3d *c, void *buffer) {
     for (int32_t probe = 0; probe < c->temp_buffer_set_capacity; ++probe) {
         if (!c->temp_buffer_set[slot]) {
             c->temp_buffer_set[slot] = buffer;
+            c->temp_buffer_set_count++;
             return 1;
         }
         if (c->temp_buffer_set[slot] == buffer)
@@ -402,11 +556,21 @@ static int canvas3d_temp_buffer_set_insert(rt_canvas3d *c, void *buffer) {
 /// @brief Rebuild the transient-buffer hash set from the tracked-buffer list.
 /// @param c Canvas whose existing set is cleared and repopulated; a missing set is ignored.
 static void canvas3d_rebuild_temp_buffer_set(rt_canvas3d *c) {
-    if (!c || !c->temp_buffer_set)
+    if (!c)
         return;
-    canvas3d_temp_buffer_set_clear(c);
-    for (int32_t i = 0; i < c->temp_buf_count; ++i)
-        canvas3d_temp_buffer_set_insert(c, c->temp_buffers[i]);
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_buffers, &c->temp_buf_count, &c->temp_buf_capacity);
+    if (c->temp_buf_count <= 0) {
+        canvas3d_temp_buffer_set_clear(c);
+        return;
+    }
+    if (!canvas3d_ensure_temp_buffer_set(c, c->temp_buf_count)) {
+        free(c->temp_buffer_set);
+        c->temp_buffer_set = NULL;
+        c->temp_buffer_set_capacity = 0;
+        c->temp_buffer_set_count = 0;
+        return;
+    }
 }
 
 /// @brief Track a malloc'd temp buffer so it is freed at end-of-frame.
@@ -420,8 +584,16 @@ static void canvas3d_rebuild_temp_buffer_set(rt_canvas3d *c) {
 int canvas3d_track_temp_buffer(rt_canvas3d *c, void *buffer) {
     if (!c || !buffer)
         return 0;
+    /* A negative capacity is an explicit fail-closed sentinel in rollback
+     * paths and cannot safely describe the allocation behind a non-null list. */
+    if (c->temp_buf_capacity < 0)
+        return 0;
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_buffers, &c->temp_buf_count, &c->temp_buf_capacity);
     if (canvas3d_temp_buffer_set_contains(c, buffer))
         return 1;
+    if (c->temp_buf_count >= INT32_MAX)
+        return 0;
     if (c->temp_buf_count >= c->temp_buf_capacity) {
         if (c->temp_buf_capacity < 0 || c->temp_buf_capacity > INT32_MAX / 2)
             return 0;
@@ -439,6 +611,13 @@ int canvas3d_track_temp_buffer(rt_canvas3d *c, void *buffer) {
             if (c->temp_buffers[i] == buffer)
                 return 1;
         }
+        /* The list remains authoritative under hash-allocation pressure. Drop
+         * an unusable/stale table so future membership checks take the safe
+         * linear fallback instead of publishing an unindexed entry. */
+        free(c->temp_buffer_set);
+        c->temp_buffer_set = NULL;
+        c->temp_buffer_set_capacity = 0;
+        c->temp_buffer_set_count = 0;
     }
     c->temp_buffers[c->temp_buf_count++] = buffer;
     return 1;
@@ -452,6 +631,8 @@ int canvas3d_track_temp_buffer(rt_canvas3d *c, void *buffer) {
 int canvas3d_untrack_temp_buffer(rt_canvas3d *c, void *buffer) {
     if (!c || !buffer)
         return 0;
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_buffers, &c->temp_buf_count, &c->temp_buf_capacity);
     for (int32_t i = 0; i < c->temp_buf_count; ++i) {
         if (c->temp_buffers[i] == buffer) {
             int32_t last = c->temp_buf_count - 1;
@@ -510,15 +691,24 @@ void canvas3d_release_tracked_mesh_snapshot(
 /// separate temp-buffer list cleared after Flip() or ClearOverlay().
 /// @param c Canvas that assumes frame-delayed ownership on success.
 /// @param buffer Non-null allocation compatible with `free`.
-/// @return Nonzero when appended to the final-overlay list; zero for invalid
-///   input, capacity overflow, or allocation failure. This list does not filter
-///   duplicate pointers, so callers must transfer each allocation only once.
+/// @return Nonzero when already tracked or appended to the final-overlay list;
+///   zero for invalid input, capacity overflow, or allocation failure.
 int canvas3d_track_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer) {
     if (!c || !buffer)
         return 0;
+    if (c->final_overlay_temp_buf_capacity < 0)
+        return 0;
+    canvas3d_repair_pointer_list_metadata(c->final_overlay_temp_buffers,
+                                          &c->final_overlay_temp_buf_count,
+                                          &c->final_overlay_temp_buf_capacity);
+    for (int32_t i = 0; i < c->final_overlay_temp_buf_count; ++i) {
+        if (c->final_overlay_temp_buffers[i] == buffer)
+            return 1;
+    }
+    if (c->final_overlay_temp_buf_count >= INT32_MAX)
+        return 0;
     if (c->final_overlay_temp_buf_count >= c->final_overlay_temp_buf_capacity) {
-        if (c->final_overlay_temp_buf_capacity < 0 ||
-            c->final_overlay_temp_buf_capacity > INT32_MAX / 2)
+        if (c->final_overlay_temp_buf_capacity > INT32_MAX / 2)
             return 0;
         int32_t new_cap =
             c->final_overlay_temp_buf_capacity == 0 ? 8 : c->final_overlay_temp_buf_capacity * 2;
@@ -542,6 +732,11 @@ int canvas3d_track_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer) {
 int canvas3d_untrack_final_overlay_temp_buffer(rt_canvas3d *c, void *buffer) {
     if (!c || !buffer)
         return 0;
+    if (c->final_overlay_temp_buf_capacity < 0)
+        return 0;
+    canvas3d_repair_pointer_list_metadata(c->final_overlay_temp_buffers,
+                                          &c->final_overlay_temp_buf_count,
+                                          &c->final_overlay_temp_buf_capacity);
     for (int32_t i = 0; i < c->final_overlay_temp_buf_count; ++i) {
         if (c->final_overlay_temp_buffers[i] == buffer) {
             int32_t last = c->final_overlay_temp_buf_count - 1;
@@ -568,9 +763,22 @@ void canvas3d_release_tracked_final_overlay_temp_buffer(rt_canvas3d *c, void *bu
 /// @param c Canvas whose allocated object duplicate-filter table is cleared;
 ///   unavailable tables and `NULL` canvases are ignored.
 void canvas3d_temp_object_set_clear(rt_canvas3d *c) {
-    if (!c || !c->temp_object_set || c->temp_object_set_capacity <= 0)
+    if (!c)
         return;
+    if (!c->temp_object_set) {
+        c->temp_object_set_capacity = 0;
+        c->temp_object_set_count = 0;
+        return;
+    }
+    if (!canvas3d_valid_hash_capacity(c->temp_object_set_capacity)) {
+        free(c->temp_object_set);
+        c->temp_object_set = NULL;
+        c->temp_object_set_capacity = 0;
+        c->temp_object_set_count = 0;
+        return;
+    }
     memset(c->temp_object_set, 0, (size_t)c->temp_object_set_capacity * sizeof(void *));
+    c->temp_object_set_count = 0;
 }
 
 /// @brief Ensure the transient-object set has a power-of-two capacity sized for @p count_hint
@@ -583,36 +791,62 @@ void canvas3d_temp_object_set_clear(rt_canvas3d *c) {
 int canvas3d_ensure_temp_object_set(rt_canvas3d *c, int32_t count_hint) {
     if (!c)
         return 0;
-    if (count_hint > INT32_MAX / 2)
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_objects, &c->temp_obj_count, &c->temp_obj_capacity);
+    if (!c->temp_object_set) {
+        c->temp_object_set_capacity = 0;
+        c->temp_object_set_count = 0;
+    } else if (!canvas3d_valid_hash_capacity(c->temp_object_set_capacity)) {
+        free(c->temp_object_set);
+        c->temp_object_set = NULL;
+        c->temp_object_set_capacity = 0;
+        c->temp_object_set_count = 0;
+    } else if (c->temp_object_set_count < 0 ||
+               c->temp_object_set_count > c->temp_object_set_capacity) {
+        c->temp_object_set_count = 0;
+    }
+    if (count_hint < c->temp_obj_count)
+        count_hint = c->temp_obj_count;
+    if (count_hint < 0 || count_hint > CANVAS3D_HASH_MAX_CAPACITY / 2)
         return 0;
     int32_t needed = canvas3d_next_power_of_two_i32(count_hint > 0 ? count_hint * 2 : 32);
     if (needed < 32)
         needed = 32;
-    if (c->temp_object_set_capacity >= needed)
+    if (c->temp_object_set && c->temp_object_set_capacity >= needed &&
+        c->temp_object_set_count == c->temp_obj_count)
         return 1;
-    if ((size_t)needed > SIZE_MAX / sizeof(*c->temp_object_set))
-        return 0;
-    void **grown = (void **)realloc(c->temp_object_set, (size_t)needed * sizeof(*grown));
-    if (!grown)
-        return 0;
-    c->temp_object_set = grown;
-    c->temp_object_set_capacity = needed;
+    if (!c->temp_object_set || c->temp_object_set_capacity < needed) {
+        if ((size_t)needed > SIZE_MAX / sizeof(*c->temp_object_set))
+            return 0;
+        void **grown = (void **)realloc(c->temp_object_set, (size_t)needed * sizeof(*grown));
+        if (!grown)
+            return 0;
+        c->temp_object_set = grown;
+        c->temp_object_set_capacity = needed;
+    }
     canvas3d_temp_object_set_clear(c);
     for (int32_t i = 0; i < c->temp_obj_count; ++i) {
         void *existing = c->temp_objects[i];
+        int inserted = 0;
         if (!existing)
-            continue;
+            return 0;
         int32_t mask = c->temp_object_set_capacity - 1;
         int32_t slot = (int32_t)(canvas3d_hash_u64((uintptr_t)existing) & (uint32_t)mask);
         for (int32_t probe = 0; probe < c->temp_object_set_capacity; ++probe) {
             if (!c->temp_object_set[slot]) {
                 c->temp_object_set[slot] = existing;
+                c->temp_object_set_count++;
+                inserted = 1;
                 break;
             }
+            if (c->temp_object_set[slot] == existing)
+                return 0;
             slot = (slot + 1) & mask;
         }
+        if (!inserted)
+            return 0;
     }
-    return 1;
+    return c->temp_object_set_count == c->temp_obj_count;
 }
 
 /// @brief Whether @p obj is currently tracked as a per-frame transient object (linear-probe
@@ -623,16 +857,24 @@ int canvas3d_ensure_temp_object_set(rt_canvas3d *c, int32_t count_hint) {
 /// @param obj Non-null object identity to locate.
 /// @return Nonzero when the exact pointer is tracked; zero when absent or invalid.
 int canvas3d_temp_object_set_contains(rt_canvas3d *c, void *obj) {
-    if (!c || !obj || c->temp_obj_count <= 0)
+    if (!c || !obj)
         return 0;
-    if (c->temp_obj_count > INT32_MAX / 2) {
+    if (c->temp_obj_capacity < 0)
+        return 0;
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_objects, &c->temp_obj_count, &c->temp_obj_capacity);
+    if (c->temp_obj_count <= 0)
+        return 0;
+    if (c->temp_obj_count >= CANVAS3D_HASH_MAX_CAPACITY / 2) {
         for (int32_t i = 0; i < c->temp_obj_count; ++i) {
             if (c->temp_objects[i] == obj)
                 return 1;
         }
         return 0;
     }
-    if (!c->temp_object_set || c->temp_object_set_capacity < c->temp_obj_count * 2) {
+    if (!c->temp_object_set || !canvas3d_valid_hash_capacity(c->temp_object_set_capacity) ||
+        c->temp_object_set_count != c->temp_obj_count ||
+        c->temp_object_set_capacity < c->temp_obj_count * 2) {
         if (!canvas3d_ensure_temp_object_set(c, c->temp_obj_count + 1)) {
             for (int32_t i = 0; i < c->temp_obj_count; ++i) {
                 if (c->temp_objects[i] == obj)
@@ -671,6 +913,7 @@ int canvas3d_temp_object_set_insert(rt_canvas3d *c, void *obj) {
     for (int32_t probe = 0; probe < c->temp_object_set_capacity; ++probe) {
         if (!c->temp_object_set[slot]) {
             c->temp_object_set[slot] = obj;
+            c->temp_object_set_count++;
             return 1;
         }
         if (c->temp_object_set[slot] == obj)
@@ -684,11 +927,21 @@ int canvas3d_temp_object_set_insert(rt_canvas3d *c, void *obj) {
 /// growth/removal).
 /// @param c Canvas whose existing object set is cleared and repopulated.
 void canvas3d_rebuild_temp_object_set(rt_canvas3d *c) {
-    if (!c || !c->temp_object_set)
+    if (!c)
         return;
-    canvas3d_temp_object_set_clear(c);
-    for (int32_t i = 0; i < c->temp_obj_count; ++i)
-        canvas3d_temp_object_set_insert(c, c->temp_objects[i]);
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_objects, &c->temp_obj_count, &c->temp_obj_capacity);
+    if (c->temp_obj_count <= 0) {
+        canvas3d_temp_object_set_clear(c);
+        return;
+    }
+    if (!canvas3d_ensure_temp_object_set(c, c->temp_obj_count)) {
+        free(c->temp_object_set);
+        c->temp_object_set = NULL;
+        c->temp_object_set_capacity = 0;
+        c->temp_object_set_count = 0;
+        return;
+    }
 }
 
 /// @brief Track a GC-managed object for end-of-frame release.
@@ -702,8 +955,17 @@ void canvas3d_rebuild_temp_object_set(rt_canvas3d *c) {
 int canvas3d_track_temp_object(rt_canvas3d *c, void *obj) {
     if (!c || !obj)
         return 0;
+    /* Preserve existing ownership when list bounds are unknowable. Repairing
+     * this sentinel to an empty list would leak prior retains and admit a draw
+     * whose resource transaction was required to fail. */
+    if (c->temp_obj_capacity < 0)
+        return 0;
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_objects, &c->temp_obj_count, &c->temp_obj_capacity);
     if (canvas3d_temp_object_set_contains(c, obj))
         return 1;
+    if (c->temp_obj_count >= INT32_MAX)
+        return 0;
     if (c->temp_obj_count >= c->temp_obj_capacity) {
         if (c->temp_obj_capacity < 0 || c->temp_obj_capacity > INT32_MAX / 2)
             return 0;
@@ -716,8 +978,12 @@ int canvas3d_track_temp_object(rt_canvas3d *c, void *obj) {
         c->temp_objects = nb;
         c->temp_obj_capacity = new_cap;
     }
-    if (!canvas3d_temp_object_set_insert(c, obj))
-        return 0;
+    if (!canvas3d_temp_object_set_insert(c, obj)) {
+        free(c->temp_object_set);
+        c->temp_object_set = NULL;
+        c->temp_object_set_capacity = 0;
+        c->temp_object_set_count = 0;
+    }
     rt_obj_retain_maybe(obj);
     c->temp_objects[c->temp_obj_count++] = obj;
     return 1;
@@ -729,6 +995,8 @@ int canvas3d_track_temp_object(rt_canvas3d *c, void *obj) {
 void canvas3d_release_tracked_temp_object(rt_canvas3d *c, void *obj) {
     if (!c || !obj)
         return;
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_objects, &c->temp_obj_count, &c->temp_obj_capacity);
     for (int32_t i = 0; i < c->temp_obj_count; ++i) {
         if (c->temp_objects[i] == obj) {
             int32_t last = c->temp_obj_count - 1;
@@ -756,8 +1024,12 @@ void canvas3d_clear_temp_buffers(rt_canvas3d *c) {
         c->last_mesh_snapshot_bytes = INT64_MAX;
     else
         c->last_mesh_snapshot_bytes = (int64_t)c->mesh_snapshot_bytes;
-    for (int32_t i = 0; i < c->temp_buf_count; i++)
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_buffers, &c->temp_buf_count, &c->temp_buf_capacity);
+    for (int32_t i = 0; i < c->temp_buf_count; i++) {
         free(c->temp_buffers[i]);
+        c->temp_buffers[i] = NULL;
+    }
     c->temp_buf_count = 0;
     canvas3d_temp_buffer_set_clear(c);
     c->float_snapshot_count = 0;
@@ -774,6 +1046,8 @@ void canvas3d_clear_temp_buffers(rt_canvas3d *c) {
 void canvas3d_clear_temp_objects(rt_canvas3d *c) {
     if (!c)
         return;
+    canvas3d_repair_pointer_list_metadata(
+        c->temp_objects, &c->temp_obj_count, &c->temp_obj_capacity);
     for (int32_t i = 0; i < c->temp_obj_count; i++) {
         if (c->temp_objects[i] && rt_obj_release_check0(c->temp_objects[i]))
             rt_obj_free(c->temp_objects[i]);

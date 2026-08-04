@@ -525,6 +525,7 @@ static void cleanup_fake_canvas(rt_canvas3d *canvas) {
     std::free(canvas->draw_cmds);
     std::free(canvas->sort_cmds);
     std::free(canvas->motion_history);
+    std::free(canvas->motion_history_hash);
     std::free(canvas->readback_rgba_scratch);
     if (canvas->postfx && rt_obj_release_check0(canvas->postfx))
         rt_obj_free(canvas->postfx);
@@ -541,13 +542,16 @@ static void cleanup_fake_canvas(rt_canvas3d *canvas) {
     canvas->draw_cmds = nullptr;
     canvas->sort_cmds = nullptr;
     canvas->motion_history = nullptr;
+    canvas->motion_history_hash = nullptr;
     canvas->readback_rgba_scratch = nullptr;
     canvas->readback_rgba_scratch_capacity = 0;
     canvas->postfx = nullptr;
     canvas->temp_buf_count = canvas->temp_buf_capacity = 0;
     canvas->temp_obj_count = canvas->temp_obj_capacity = 0;
     canvas->temp_buffer_set_capacity = 0;
+    canvas->temp_buffer_set_count = 0;
     canvas->temp_object_set_capacity = 0;
+    canvas->temp_object_set_count = 0;
     canvas->float_snapshot_count = canvas->float_snapshot_capacity = 0;
     canvas->mesh_snapshot_count = canvas->mesh_snapshot_capacity = 0;
     canvas->mesh_snapshot_hash_capacity = 0;
@@ -556,6 +560,8 @@ static void cleanup_fake_canvas(rt_canvas3d *canvas) {
     canvas->draw_count = canvas->draw_capacity = 0;
     canvas->sort_capacity = 0;
     canvas->motion_history_count = canvas->motion_history_capacity = 0;
+    canvas->motion_history_hash_capacity = 0;
+    canvas->motion_history_hash_count = 0;
     reset_recorded_instancing();
 }
 

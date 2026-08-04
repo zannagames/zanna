@@ -7021,6 +7021,17 @@ static bool test_behavior3d_presets_drive_entities() {
         chaser, rt_game3d_behavior_add_chase(rt_game3d_behavior_new(), target, 2.0, 1.0));
     rt_game3d_world_spawn(world, chaser);
 
+    /* FollowPath stores physical distance but Path3D evaluates normalized t.
+     * A 2 u/s behavior on this 10-unit line must therefore reach x=2 after 1s,
+     * not clamp immediately to the endpoint. */
+    void *path = rt_path3d_new();
+    rt_path3d_add_point(path, rt_vec3_new(0.0, 0.0, 0.0));
+    rt_path3d_add_point(path, rt_vec3_new(10.0, 0.0, 0.0));
+    void *follower = rt_game3d_entity_new();
+    rt_game3d_entity_attach_behavior(
+        follower, rt_game3d_behavior_add_follow_path(rt_game3d_behavior_new(), path, 2.0, 0));
+    rt_game3d_world_spawn(world, follower);
+
     /* Lifetime: despawn after 0.5s. */
     void *ephemeral = rt_game3d_entity_new();
     rt_game3d_entity_attach_behavior(
@@ -7053,6 +7064,11 @@ static bool test_behavior3d_presets_drive_entities() {
         void *pos = rt_game3d_entity_world_position(chaser);
         EXPECT_NEAR(rt_vec3_z(pos), 2.0, 1e-4, "chase advances speed*time toward target");
     }
+    {
+        void *pos = rt_game3d_entity_world_position(follower);
+        EXPECT_NEAR(rt_vec3_x(pos), 2.0, 0.02, "follow-path converts distance to normalized t");
+        EXPECT_NEAR(rt_vec3_y(pos), 0.0, 1e-6, "follow-path preserves line height");
+    }
     EXPECT_TRUE(rt_game3d_entity_is_spawned(ephemeral) == 0, "lifetime behavior despawns");
 
     /* Chase stops at range: from z=7 it may only advance to range 1 (z=9),
@@ -7066,6 +7082,31 @@ static bool test_behavior3d_presets_drive_entities() {
     }
 
     rt_game3d_world_destroy(world);
+    PASS();
+}
+
+/// Extreme but finite behavior parameters are clamped before arithmetic, and
+/// direct callers receive the same hitch-sized delta cap as the world loop.
+static bool test_behavior3d_extreme_finite_inputs_remain_finite() {
+    TEST("Behavior3D bounds extreme finite input and hot-loop state");
+    void *entity = rt_game3d_entity_new();
+    void *behavior =
+        rt_game3d_behavior_add_spin(rt_game3d_behavior_new(), 1.0e300, -1.0e300, 1.0e300, 1.0e300);
+    behavior =
+        rt_game3d_behavior_add_orbit(behavior, 1.0e300, -1.0e300, 1.0e300, 1.0e300, -1.0e300);
+    behavior = rt_game3d_behavior_add_sine_float(behavior, 1.0e300, 1.0e300);
+    rt_game3d_entity_attach_behavior(entity, behavior);
+
+    rt_game3d_behavior_update(behavior, entity, 1.0e300);
+
+    void *position = rt_game3d_entity_world_position(entity);
+    void *rotation = rt_scene_node3d_get_rotation(rt_game3d_entity_get_node(entity));
+    EXPECT_TRUE(std::isfinite(rt_vec3_x(position)) && std::isfinite(rt_vec3_y(position)) &&
+                    std::isfinite(rt_vec3_z(position)),
+                "extreme orbit/sine state leaves a finite position");
+    EXPECT_TRUE(std::isfinite(rt_quat_x(rotation)) && std::isfinite(rt_quat_y(rotation)) &&
+                    std::isfinite(rt_quat_z(rotation)) && std::isfinite(rt_quat_w(rotation)),
+                "overflow-safe spin normalization leaves a finite quaternion");
     PASS();
 }
 
@@ -7121,6 +7162,7 @@ int main() {
     ok = test_persistence_duplicate_load_is_transactional() && ok;
     ok = test_layermasks_and_constants() && ok;
     ok = test_behavior3d_presets_drive_entities() && ok;
+    ok = test_behavior3d_extreme_finite_inputs_remain_finite() && ok;
     ok = test_entity_sweep_survives_cross_despawn() && ok;
     ok = test_world_worker_controls() && ok;
     ok = test_input_axes() && ok;

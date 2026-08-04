@@ -43,12 +43,12 @@
 
 #include "rt_particles3d.h"
 #include "rt_canvas3d.h"
-#include "rt_vec3.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_g3d_ref_slots.h"
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
 #include "rt_platform.h"
+#include "rt_vec3.h"
 
 #include <float.h>
 #include <math.h>
@@ -1952,8 +1952,8 @@ static void particles3d_sort_keys_back_to_front(particle3d_sort_key *keys,
 /// @return Nonzero when both arrays can hold @p count keys, otherwise zero after trapping on
 /// overflow or allocation failure.
 static int particles3d_ensure_sort_keys(rt_particles3d *ps, int32_t count) {
-    void *grown;
-    void *scratch_grown;
+    void *new_keys;
+    void *new_scratch;
     int32_t target_capacity;
     if (!ps || count <= 0)
         return 0;
@@ -1966,19 +1966,21 @@ static int particles3d_ensure_sort_keys(rt_particles3d *ps, int32_t count) {
         rt_trap("Particles3D.Draw: sort key allocation overflow");
         return 0;
     }
-    grown = realloc(ps->sort_keys, (size_t)target_capacity * sizeof(particle3d_sort_key));
-    scratch_grown =
-        realloc(ps->sort_scratch, (size_t)target_capacity * sizeof(particle3d_sort_key));
-    if (!grown || !scratch_grown) {
-        if (grown)
-            ps->sort_keys = grown;
-        if (scratch_grown)
-            ps->sort_scratch = scratch_grown;
+    /* These arrays share one capacity and must grow as a transaction. Their
+     * contents are reconstructed before every sort, so fresh allocations also
+     * avoid copying stale keys during a resize. */
+    new_keys = malloc((size_t)target_capacity * sizeof(particle3d_sort_key));
+    new_scratch = malloc((size_t)target_capacity * sizeof(particle3d_sort_key));
+    if (!new_keys || !new_scratch) {
+        free(new_keys);
+        free(new_scratch);
         rt_trap("Particles3D.Draw: sort key allocation failed");
         return 0;
     }
-    ps->sort_keys = grown;
-    ps->sort_scratch = scratch_grown;
+    free(ps->sort_keys);
+    free(ps->sort_scratch);
+    ps->sort_keys = new_keys;
+    ps->sort_scratch = new_scratch;
     ps->sort_key_capacity = target_capacity;
     ps->sort_key_grow_count++;
     return 1;
@@ -2091,11 +2093,20 @@ static int particles3d_ensure_material(void **slot) {
 static int particles3d_ensure_overflow_draw_slots(rt_particles3d *ps, int32_t needed) {
     int32_t old_capacity;
     int32_t new_capacity;
+    vgfx3d_vertex_t **vertices;
+    uint32_t **indices;
+    uint32_t *vertex_caps;
+    uint32_t *index_caps;
+    void **materials;
     if (!ps || needed < 0 || ps->overflow_draw_slot_capacity < 0)
         return 0;
-    if (needed <= ps->overflow_draw_slot_capacity)
-        return 1;
     old_capacity = ps->overflow_draw_slot_capacity;
+    if (old_capacity > 0 && (!ps->overflow_draw_vertices || !ps->overflow_draw_indices ||
+                             !ps->overflow_draw_vertex_capacity ||
+                             !ps->overflow_draw_index_capacity || !ps->overflow_draw_materials))
+        return 0;
+    if (needed <= old_capacity)
+        return 1;
     new_capacity = old_capacity > 0 ? old_capacity : 4;
     while (new_capacity < needed) {
         if (new_capacity > INT32_MAX / 2) {
@@ -2111,40 +2122,40 @@ static int particles3d_ensure_overflow_draw_slots(rt_particles3d *ps, int32_t ne
         (size_t)new_capacity > SIZE_MAX / sizeof(*ps->overflow_draw_materials))
         return 0;
 
-    vgfx3d_vertex_t **vertices = (vgfx3d_vertex_t **)realloc(
-        ps->overflow_draw_vertices, (size_t)new_capacity * sizeof(*vertices));
-    if (!vertices)
+    vertices = (vgfx3d_vertex_t **)calloc((size_t)new_capacity, sizeof(*vertices));
+    indices = (uint32_t **)calloc((size_t)new_capacity, sizeof(*indices));
+    vertex_caps = (uint32_t *)calloc((size_t)new_capacity, sizeof(*vertex_caps));
+    index_caps = (uint32_t *)calloc((size_t)new_capacity, sizeof(*index_caps));
+    materials = (void **)calloc((size_t)new_capacity, sizeof(*materials));
+    if (!vertices || !indices || !vertex_caps || !index_caps || !materials) {
+        free(vertices);
+        free(indices);
+        free(vertex_caps);
+        free(index_caps);
+        free(materials);
         return 0;
-    ps->overflow_draw_vertices = vertices;
-    uint32_t **indices =
-        (uint32_t **)realloc(ps->overflow_draw_indices, (size_t)new_capacity * sizeof(*indices));
-    if (!indices)
-        return 0;
-    ps->overflow_draw_indices = indices;
-    uint32_t *vertex_caps = (uint32_t *)realloc(ps->overflow_draw_vertex_capacity,
-                                                (size_t)new_capacity * sizeof(*vertex_caps));
-    if (!vertex_caps)
-        return 0;
-    ps->overflow_draw_vertex_capacity = vertex_caps;
-    uint32_t *index_caps = (uint32_t *)realloc(ps->overflow_draw_index_capacity,
-                                               (size_t)new_capacity * sizeof(*index_caps));
-    if (!index_caps)
-        return 0;
-    ps->overflow_draw_index_capacity = index_caps;
-    void **materials =
-        (void **)realloc(ps->overflow_draw_materials, (size_t)new_capacity * sizeof(*materials));
-    if (!materials)
-        return 0;
-    ps->overflow_draw_materials = materials;
-
-    if (new_capacity > old_capacity) {
-        size_t added = (size_t)(new_capacity - old_capacity);
-        memset(ps->overflow_draw_vertices + old_capacity, 0, added * sizeof(*vertices));
-        memset(ps->overflow_draw_indices + old_capacity, 0, added * sizeof(*indices));
-        memset(ps->overflow_draw_vertex_capacity + old_capacity, 0, added * sizeof(*vertex_caps));
-        memset(ps->overflow_draw_index_capacity + old_capacity, 0, added * sizeof(*index_caps));
-        memset(ps->overflow_draw_materials + old_capacity, 0, added * sizeof(*materials));
     }
+    if (old_capacity > 0) {
+        memcpy(vertices, ps->overflow_draw_vertices, (size_t)old_capacity * sizeof(*vertices));
+        memcpy(indices, ps->overflow_draw_indices, (size_t)old_capacity * sizeof(*indices));
+        memcpy(vertex_caps,
+               ps->overflow_draw_vertex_capacity,
+               (size_t)old_capacity * sizeof(*vertex_caps));
+        memcpy(index_caps,
+               ps->overflow_draw_index_capacity,
+               (size_t)old_capacity * sizeof(*index_caps));
+        memcpy(materials, ps->overflow_draw_materials, (size_t)old_capacity * sizeof(*materials));
+    }
+    free(ps->overflow_draw_vertices);
+    free(ps->overflow_draw_indices);
+    free(ps->overflow_draw_vertex_capacity);
+    free(ps->overflow_draw_index_capacity);
+    free(ps->overflow_draw_materials);
+    ps->overflow_draw_vertices = vertices;
+    ps->overflow_draw_indices = indices;
+    ps->overflow_draw_vertex_capacity = vertex_caps;
+    ps->overflow_draw_index_capacity = index_caps;
+    ps->overflow_draw_materials = materials;
     ps->overflow_draw_slot_capacity = new_capacity;
     return 1;
 }

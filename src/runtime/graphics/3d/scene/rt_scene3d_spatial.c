@@ -10,6 +10,12 @@
 //   query), world-AABB bounds collection, and frustum/box/sphere candidate
 //   gathering used by culling. Split out of rt_scene3d.c; shares private
 //   structs/helpers via rt_scene3d_internal.h.
+// Key invariants:
+//   - Every BVH node range is bounded by the validated spatial-entry count.
+//   - Bounds and centroids remain finite and ordered during build and refit.
+// Ownership/Lifetime:
+//   - Scene3D owns spatial entries, BVH nodes, and query scratch storage.
+//   - Node, mesh, model, and frustum inputs are borrowed during each operation.
 // Links: rt_scene3d_internal.h, vgfx3d_frustum.h
 //
 //===----------------------------------------------------------------------===//
@@ -218,7 +224,7 @@ static double scene3d_spatial_entry_centroid_axis(const rt_scene3d_spatial_index
     if (!index || entry_index < 0 || entry_index >= index->count || axis < 0 || axis > 2)
         return 0.0;
     entry = &index->entries[entry_index];
-    return 0.5 * (entry->world_min[axis] + entry->world_max[axis]);
+    return 0.5 * entry->world_min[axis] + 0.5 * entry->world_max[axis];
 }
 
 /// @brief Ordering predicate for two entry indices along @p axis (by centroid, traversal-order

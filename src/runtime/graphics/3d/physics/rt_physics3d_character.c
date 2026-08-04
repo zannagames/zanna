@@ -13,7 +13,7 @@
 // Key invariants:
 //   - Character3D moves via kinematic sweeps against the world's bodies, sliding
 //     along contact normals; up to 3 slide iterations per move axis.
-//   - Trigger3D tracks up to TRG3D_MAX_TRACKED overlapping bodies as weak refs;
+//   - Trigger3D grows transactionally and stores zeroing weak body references;
 //     stale entries are pruned on the next Update.
 //
 // Ownership/Lifetime:
@@ -38,6 +38,7 @@
 
 #include "rt_collider3d.h"
 #include "rt_graphics3d_ids.h"
+#include "rt_object.h"
 #include "rt_physics3d.h"
 #include "rt_physics3d_internal.h"
 #include "rt_physics3d_query_internal.h"
@@ -101,6 +102,7 @@ typedef struct {
 #define CHARACTER3D_COORD_ABS_MAX 1000000000000.0
 #define CHARACTER3D_MOVE_ABS_MAX 1000.0
 #define CHARACTER3D_STEP_HEIGHT_MAX 100.0
+#define CHARACTER3D_HEIGHT_MAX 1000000.0
 #define CHARACTER3D_DT_MAX 1.0
 
 /// @brief Clamp a character/trigger coordinate to a finite physics state range.
@@ -145,11 +147,24 @@ static int character3d_sanitize_contact_normal(double out[3], const double *norm
 /// @return Sanitized vector length, or zero for invalid or negligible input.
 static double character3d_sanitize_delta(const double *src, double out[3]) {
     double len;
-    if (!src || !out)
+    double x;
+    double y;
+    double z;
+    if (!out)
         return 0.0;
-    out[0] = character3d_saturate_coord(src[0]);
-    out[1] = character3d_saturate_coord(src[1]);
-    out[2] = character3d_saturate_coord(src[2]);
+    if (!src) {
+        vec3_set(out, 0.0, 0.0, 0.0);
+        return 0.0;
+    }
+    /* Snapshot every source lane before writing so in-place sanitization is
+     * well-defined and static analysis can prove that a rejected source still
+     * leaves a deterministic output. */
+    x = character3d_saturate_coord(src[0]);
+    y = character3d_saturate_coord(src[1]);
+    z = character3d_saturate_coord(src[2]);
+    out[0] = x;
+    out[1] = y;
+    out[2] = z;
     len = vec3_len(out);
     if (!isfinite(len) || len <= 1e-12) {
         vec3_set(out, 0.0, 0.0, 0.0);
@@ -259,6 +274,24 @@ static int character3d_candidate_body(const rt_character3d *ctrl, const rt_body3
     return bodies_can_collide(ctrl->body, other);
 }
 
+/// @brief Repair reusable move-candidate metadata before a shortlist operation.
+/// @param ctrl Character controller whose pointer/count/capacity tuple is normalized.
+static void character3d_repair_move_candidates(rt_character3d *ctrl) {
+    if (!ctrl)
+        return;
+    if (!ctrl->move_candidates || ctrl->move_candidate_capacity < 0) {
+        ctrl->move_candidate_count = 0;
+        ctrl->move_candidate_capacity = 0;
+        ctrl->move_candidates_active = 0;
+        return;
+    }
+    if (ctrl->move_candidate_count < 0)
+        ctrl->move_candidate_count = 0;
+    if (ctrl->move_candidate_count > ctrl->move_candidate_capacity)
+        ctrl->move_candidate_count = ctrl->move_candidate_capacity;
+    ctrl->move_candidates_active = ctrl->move_candidates_active ? 1 : 0;
+}
+
 /// @brief Ensure the per-Move candidate shortlist can hold @p needed body pointers.
 /// @param ctrl Character3D payload whose reusable buffer may grow.
 /// @param needed Required non-negative number of pointer slots.
@@ -268,7 +301,8 @@ static int character3d_reserve_move_candidates(rt_character3d *ctrl, int32_t nee
     int32_t new_cap;
     if (!ctrl || needed < 0)
         return 0;
-    if (ctrl->move_candidate_capacity >= needed)
+    character3d_repair_move_candidates(ctrl);
+    if (ctrl->move_candidates && ctrl->move_candidate_capacity >= needed)
         return 1;
     new_cap = ctrl->move_candidate_capacity > 0 ? ctrl->move_candidate_capacity : 16;
     while (new_cap < needed) {
@@ -276,6 +310,8 @@ static int character3d_reserve_move_candidates(rt_character3d *ctrl, int32_t nee
             return 0;
         new_cap *= 2;
     }
+    if ((size_t)new_cap > SIZE_MAX / sizeof(*grown))
+        return 0;
     grown = (rt_body3d **)realloc(ctrl->move_candidates, (size_t)new_cap * sizeof(*grown));
     if (!grown)
         return 0;
@@ -298,9 +334,12 @@ static int character3d_reserve_move_candidates(rt_character3d *ctrl, int32_t nee
 static void character3d_begin_move_candidates(rt_character3d *ctrl,
                                               const double *start,
                                               double move_len) {
+    if (!ctrl)
+        return;
+    character3d_repair_move_candidates(ctrl);
     ctrl->move_candidates_active = 0;
     ctrl->move_candidate_count = 0;
-    if (!ctrl->world || !ctrl->body)
+    if (!ctrl->world || !ctrl->body || !start || !isfinite(move_len) || move_len < 0.0)
         return;
 
     int32_t entry_count = world3d_build_query_broadphase(ctrl->world);
@@ -317,8 +356,9 @@ static void character3d_begin_move_candidates(rt_character3d *ctrl,
     double qmin[3];
     double qmax[3];
     for (int axis = 0; axis < 3; axis++) {
-        qmin[axis] = start[axis] - reach;
-        qmax[axis] = start[axis] + reach;
+        double center = character3d_saturate_coord(start[axis]);
+        qmin[axis] = character3d_saturate_coord(center - reach);
+        qmax[axis] = character3d_saturate_coord(center + reach);
     }
 
     for (int32_t i = 0; i < entry_count; i++) {
@@ -327,7 +367,8 @@ static void character3d_begin_move_candidates(rt_character3d *ctrl,
             continue;
         if (!character3d_candidate_body(ctrl, entry->body))
             continue;
-        if (!character3d_reserve_move_candidates(ctrl, ctrl->move_candidate_count + 1))
+        if (ctrl->move_candidate_count >= INT32_MAX ||
+            !character3d_reserve_move_candidates(ctrl, ctrl->move_candidate_count + 1))
             return; /* stay inactive: full scan remains correct */
         ctrl->move_candidates[ctrl->move_candidate_count++] = entry->body;
     }
@@ -368,10 +409,17 @@ static int character3d_test_position(rt_character3d *ctrl,
     body->position[1] = test_pos[1];
     body->position[2] = test_pos[2];
 
+    character3d_repair_move_candidates(ctrl);
     rt_body3d **candidates =
         ctrl->move_candidates_active ? ctrl->move_candidates : ctrl->world->bodies;
+    int32_t candidate_capacity =
+        ctrl->move_candidates_active ? ctrl->move_candidate_capacity : ctrl->world->body_capacity;
     int32_t candidate_count =
         ctrl->move_candidates_active ? ctrl->move_candidate_count : ctrl->world->body_count;
+    if (!candidates || candidate_capacity < 0 || candidate_count < 0)
+        candidate_count = 0;
+    else if (candidate_count > candidate_capacity)
+        candidate_count = candidate_capacity;
 
     rt_character_hit3d best = {0};
     for (int32_t i = 0; i < candidate_count; i++) {
@@ -948,7 +996,7 @@ void *rt_character3d_get_world(void *o) {
 /// @return One when grounded on a walkable surface, otherwise zero.
 int8_t rt_character3d_is_grounded(void *o) {
     rt_character3d *c = character3d_checked(o);
-    return c ? c->is_grounded : 0;
+    return c && c->is_grounded ? 1 : 0;
 }
 
 /// @brief `Character3D.JustLanded` — edge-detect: true on the first frame after landing.
@@ -961,7 +1009,7 @@ int8_t rt_character3d_just_landed(void *o) {
     rt_character3d *c = character3d_checked(o);
     if (!c)
         return 0;
-    return c->is_grounded && !c->was_grounded;
+    return c->is_grounded && !c->was_grounded ? 1 : 0;
 }
 
 /// @brief `Character3D.GetPosition` — fresh `Vec3` of the body's position.
@@ -1006,8 +1054,10 @@ int8_t rt_character3d_try_set_height(void *o, double height) {
         return 0;
     double radius =
         c->body->radius > 0.0 ? c->body->radius : rt_collider3d_get_radius_raw(c->body->collider);
-    if (radius <= 0.0)
+    if (!isfinite(radius) || radius <= 0.0 || radius > CHARACTER3D_HEIGHT_MAX * 0.5)
         return 0;
+    if (height > CHARACTER3D_HEIGHT_MAX)
+        height = CHARACTER3D_HEIGHT_MAX;
     if (height < radius * 2.0)
         height = radius * 2.0;
     double old_height = rt_collider3d_get_height_raw(c->body->collider);
@@ -1060,7 +1110,11 @@ double rt_character3d_get_height(void *o) {
     if (!c || !c->body)
         return 0.0;
     double height = c->body->collider ? rt_collider3d_get_height_raw(c->body->collider) : 0.0;
-    return height > 0.0 ? height : c->body->height;
+    if (!isfinite(height) || height <= 0.0)
+        height = c->body->height;
+    if (!isfinite(height) || height <= 0.0)
+        return 0.0;
+    return height > CHARACTER3D_HEIGHT_MAX ? CHARACTER3D_HEIGHT_MAX : height;
 }
 
 /// @brief `Character3D.set_PushStrength(s)` — dynamic push impulse scale (0 = block only).
@@ -1078,7 +1132,9 @@ void rt_character3d_set_push_strength(void *o, double strength) {
 /// @return Configured dynamic-body push scale, or zero when invalid.
 double rt_character3d_get_push_strength(void *o) {
     rt_character3d *c = character3d_checked(o);
-    return c ? c->push_strength : 0.0;
+    if (!c || !isfinite(c->push_strength) || c->push_strength <= 0.0)
+        return 0.0;
+    return c->push_strength > 1000.0 ? 1000.0 : c->push_strength;
 }
 
 /// @brief `Character3D.set_CollideDynamic(on)` — dynamic bodies block/push (default)
@@ -1096,7 +1152,7 @@ void rt_character3d_set_collide_dynamic(void *o, int8_t enabled) {
 /// @return One when dynamic bodies are blockers, otherwise zero.
 int8_t rt_character3d_get_collide_dynamic(void *o) {
     rt_character3d *c = character3d_checked(o);
-    return c ? c->collide_dynamic : 0;
+    return c && c->collide_dynamic ? 1 : 0;
 }
 
 /// @brief `Character3D.set_RidePlatforms(on)` — track kinematic ground motion.
@@ -1113,7 +1169,7 @@ void rt_character3d_set_ride_platforms(void *o, int8_t enabled) {
 /// @return One when platform riding is enabled, otherwise zero.
 int8_t rt_character3d_get_ride_platforms(void *o) {
     rt_character3d *c = character3d_checked(o);
-    return c ? c->ride_platforms : 0;
+    return c && c->ride_platforms ? 1 : 0;
 }
 
 /// @brief `Character3D.IsSliding` — true while resting on a too-steep surface.
@@ -1121,7 +1177,7 @@ int8_t rt_character3d_get_ride_platforms(void *o) {
 /// @return One while resting against an unwalkable slope, otherwise zero.
 int8_t rt_character3d_is_sliding(void *o) {
     rt_character3d *c = character3d_checked(o);
-    return c ? c->is_sliding : 0;
+    return c && c->is_sliding ? 1 : 0;
 }
 
 /// @brief `Character3D.GetGroundBody` — borrowed body under the controller's feet
@@ -1164,17 +1220,74 @@ static rt_trigger3d *trigger3d_checked(void *obj) {
                : NULL;
 }
 
+/// @brief Release the temporary strong reference returned by `rt_weak_load`.
+/// @param body Managed Body3D handle, or NULL.
+static void trigger3d_release_loaded_body(void *body) {
+    if (body && rt_obj_release_check0(body))
+        rt_obj_free(body);
+}
+
+/// @brief Clear and destroy one zeroing-weak body slot.
+/// @param slot Address of a tracked weak-handle slot.
+static void trigger3d_clear_weak_body_slot(void **slot) {
+    if (slot)
+        rt_weak_store(slot, NULL);
+}
+
+/// @brief Increment an edge counter without signed overflow.
+/// @param count Enter/exit counter to increment.
+static void trigger3d_increment_edge_count(int32_t *count) {
+    if (count && *count < INT32_MAX)
+        (*count)++;
+}
+
+/// @brief Normalize a trigger's parallel occupancy arrays before iteration.
+/// @details If any allocation is missing, the tuple is discarded atomically;
+///   surviving weak handles are cleared before their pointer array is freed.
+/// @param t Trigger whose tracking metadata is repaired.
+static void trigger3d_repair_tracking(rt_trigger3d *t) {
+    int32_t safe_count;
+    if (!t)
+        return;
+    if (t->tracked_capacity < 0 || !t->tracked_bodies || !t->was_inside || !t->is_inside ||
+        !t->seen_stamp) {
+        safe_count = t->tracked_bodies && t->tracked_capacity > 0 && t->tracked_count > 0
+                         ? t->tracked_count
+                         : 0;
+        if (safe_count > t->tracked_capacity)
+            safe_count = t->tracked_capacity;
+        for (int32_t i = 0; i < safe_count; ++i)
+            trigger3d_clear_weak_body_slot(&t->tracked_bodies[i]);
+        free(t->tracked_bodies);
+        free(t->was_inside);
+        free(t->is_inside);
+        free(t->seen_stamp);
+        t->tracked_bodies = NULL;
+        t->was_inside = NULL;
+        t->is_inside = NULL;
+        t->seen_stamp = NULL;
+        t->tracked_count = 0;
+        t->tracked_capacity = 0;
+        return;
+    }
+    if (t->tracked_count < 0)
+        t->tracked_count = 0;
+    if (t->tracked_count > t->tracked_capacity)
+        t->tracked_count = t->tracked_capacity;
+}
+
 /// @brief GC finalizer for `Trigger3D` — releases the tracking arrays.
 ///
-/// Tracked bodies are stored as raw pointers (we don't retain them
-/// because the trigger is only an observer). Weak refs is fine here:
-/// if a tracked body is destroyed the next `Update` will discover the
-/// stale pointer and clean it up.
+/// Tracked bodies use zeroing weak handles: the trigger remains an observer,
+/// and body destruction cannot leave an address-reuse alias in occupancy state.
 /// @param obj Trigger3D payload whose tracking buffers are released.
 static void trigger3d_finalizer(void *obj) {
     rt_trigger3d *t = (rt_trigger3d *)obj;
     if (!t)
         return;
+    trigger3d_repair_tracking(t);
+    for (int32_t i = 0; i < t->tracked_count; ++i)
+        trigger3d_clear_weak_body_slot(&t->tracked_bodies[i]);
     free(t->tracked_bodies);
     free(t->was_inside);
     free(t->is_inside);
@@ -1252,6 +1365,13 @@ int8_t rt_trigger3d_contains(void *obj, void *point) {
     rt_trigger3d *t = trigger3d_checked(obj);
     if (!t || !rt_g3d_is_vec3(point))
         return 0;
+    trigger3d_set_bounds_raw(t,
+                             t->bounds_min[0],
+                             t->bounds_min[1],
+                             t->bounds_min[2],
+                             t->bounds_max[0],
+                             t->bounds_max[1],
+                             t->bounds_max[2]);
     double px = rt_vec3_x(point), py = rt_vec3_y(point), pz = rt_vec3_z(point);
     if (!isfinite(px) || !isfinite(py) || !isfinite(pz))
         return 0;
@@ -1268,10 +1388,17 @@ int8_t rt_trigger3d_contains(void *obj, void *point) {
 /// @param t Trigger3D payload whose occupancy table is searched.
 /// @param body Exact weak Body3D pointer to find.
 /// @return Zero-based tracked slot, or -1 when absent.
-static int32_t trigger3d_find_index(const rt_trigger3d *t, const void *body) {
-    for (int32_t i = 0; i < t->tracked_count; i++)
-        if (t->tracked_bodies[i] == body)
+static int32_t trigger3d_find_index(rt_trigger3d *t, const void *body) {
+    if (!t || !body)
+        return -1;
+    trigger3d_repair_tracking(t);
+    for (int32_t i = 0; i < t->tracked_count; i++) {
+        void *tracked = rt_weak_load(&t->tracked_bodies[i]);
+        int matches = tracked == body;
+        trigger3d_release_loaded_body(tracked);
+        if (matches)
             return i;
+    }
     return -1;
 }
 
@@ -1281,40 +1408,68 @@ static int32_t trigger3d_find_index(const rt_trigger3d *t, const void *body) {
 /// @return Slot index, or -1 on allocation failure (the body is skipped this
 ///   frame and retried on the next Update — graceful degradation, no cap).
 static int32_t trigger3d_add(rt_trigger3d *t, void *body) {
+    if (!t || !body)
+        return -1;
+    trigger3d_repair_tracking(t);
+    if (t->tracked_count >= INT32_MAX)
+        return -1;
     if (t->tracked_count >= t->tracked_capacity) {
-        int32_t new_cap = t->tracked_capacity == 0 ? 16 : t->tracked_capacity * 2;
-        void **grown_bodies;
-        int8_t *grown_was;
-        int8_t *grown_is;
-        uint32_t *grown_seen;
+        int32_t new_cap;
+        void **grown_bodies = NULL;
+        int8_t *grown_was = NULL;
+        int8_t *grown_is = NULL;
+        uint32_t *grown_seen = NULL;
         if (t->tracked_capacity > INT32_MAX / 2)
             return -1;
-        if ((size_t)new_cap > SIZE_MAX / sizeof(void *))
+        new_cap = t->tracked_capacity == 0 ? 16 : t->tracked_capacity * 2;
+        if ((size_t)new_cap > SIZE_MAX / sizeof(*grown_bodies) ||
+            (size_t)new_cap > SIZE_MAX / sizeof(*grown_was) ||
+            (size_t)new_cap > SIZE_MAX / sizeof(*grown_is) ||
+            (size_t)new_cap > SIZE_MAX / sizeof(*grown_seen))
             return -1;
-        grown_bodies = (void **)realloc(t->tracked_bodies, (size_t)new_cap * sizeof(void *));
-        if (!grown_bodies)
+        grown_bodies = (void **)calloc((size_t)new_cap, sizeof(*grown_bodies));
+        grown_was = (int8_t *)calloc((size_t)new_cap, sizeof(*grown_was));
+        grown_is = (int8_t *)calloc((size_t)new_cap, sizeof(*grown_is));
+        grown_seen = (uint32_t *)calloc((size_t)new_cap, sizeof(*grown_seen));
+        if (!grown_bodies || !grown_was || !grown_is || !grown_seen) {
+            free(grown_bodies);
+            free(grown_was);
+            free(grown_is);
+            free(grown_seen);
             return -1;
+        }
+        if (t->tracked_count > 0) {
+            memcpy(
+                grown_bodies, t->tracked_bodies, (size_t)t->tracked_count * sizeof(*grown_bodies));
+            memcpy(grown_was, t->was_inside, (size_t)t->tracked_count * sizeof(*grown_was));
+            memcpy(grown_is, t->is_inside, (size_t)t->tracked_count * sizeof(*grown_is));
+            memcpy(grown_seen, t->seen_stamp, (size_t)t->tracked_count * sizeof(*grown_seen));
+        }
+        free(t->tracked_bodies);
+        free(t->was_inside);
+        free(t->is_inside);
+        free(t->seen_stamp);
         t->tracked_bodies = grown_bodies;
-        grown_was = (int8_t *)realloc(t->was_inside, (size_t)new_cap * sizeof(int8_t));
-        if (!grown_was)
-            return -1;
         t->was_inside = grown_was;
-        grown_is = (int8_t *)realloc(t->is_inside, (size_t)new_cap * sizeof(int8_t));
-        if (!grown_is)
-            return -1;
         t->is_inside = grown_is;
-        grown_seen = (uint32_t *)realloc(t->seen_stamp, (size_t)new_cap * sizeof(uint32_t));
-        if (!grown_seen)
-            return -1;
         t->seen_stamp = grown_seen;
         t->tracked_capacity = new_cap;
     }
     {
-        int32_t idx = t->tracked_count++;
-        t->tracked_bodies[idx] = body;
+        int32_t idx = t->tracked_count;
+        void *loaded;
+        rt_weak_store(&t->tracked_bodies[idx], body);
+        loaded = rt_weak_load(&t->tracked_bodies[idx]);
+        if (loaded != body) {
+            trigger3d_release_loaded_body(loaded);
+            trigger3d_clear_weak_body_slot(&t->tracked_bodies[idx]);
+            return -1;
+        }
+        trigger3d_release_loaded_body(loaded);
         t->was_inside[idx] = 0;
         t->is_inside[idx] = 0;
         t->seen_stamp[idx] = 0;
+        t->tracked_count = idx + 1;
         return idx;
     }
 }
@@ -1323,12 +1478,23 @@ static int32_t trigger3d_add(rt_trigger3d *t, void *body) {
 /// @param t Trigger3D payload whose parallel arrays are compacted.
 /// @param i Zero-based valid slot to remove.
 static void trigger3d_remove_at(rt_trigger3d *t, int32_t i) {
+    if (!t)
+        return;
+    trigger3d_repair_tracking(t);
+    if (i < 0 || i >= t->tracked_count)
+        return;
     int32_t last = t->tracked_count - 1;
-    t->tracked_bodies[i] = t->tracked_bodies[last];
-    t->was_inside[i] = t->was_inside[last];
-    t->is_inside[i] = t->is_inside[last];
-    t->seen_stamp[i] = t->seen_stamp[last];
-    t->tracked_bodies[last] = NULL;
+    trigger3d_clear_weak_body_slot(&t->tracked_bodies[i]);
+    if (i != last) {
+        t->tracked_bodies[i] = t->tracked_bodies[last];
+        t->was_inside[i] = t->was_inside[last];
+        t->is_inside[i] = t->is_inside[last];
+        t->seen_stamp[i] = t->seen_stamp[last];
+        t->tracked_bodies[last] = NULL;
+    }
+    t->was_inside[last] = 0;
+    t->is_inside[last] = 0;
+    t->seen_stamp[last] = 0;
     t->tracked_count = last;
 }
 
@@ -1348,6 +1514,14 @@ void rt_trigger3d_update(void *obj, void *world_obj) {
     rt_world3d *w = world3d_checked(world_obj);
     if (!t || !w)
         return;
+    trigger3d_repair_tracking(t);
+    trigger3d_set_bounds_raw(t,
+                             t->bounds_min[0],
+                             t->bounds_min[1],
+                             t->bounds_min[2],
+                             t->bounds_max[0],
+                             t->bounds_max[1],
+                             t->bounds_max[2]);
 
     /* Advance the seen stamp; on wrap, reset every slot's stamp so no stale
      * slot can alias the new epoch. */
@@ -1360,13 +1534,16 @@ void rt_trigger3d_update(void *obj, void *world_obj) {
 
     /* Swap current → previous */
     for (int32_t i = 0; i < t->tracked_count; i++) {
-        t->was_inside[i] = t->is_inside[i];
+        t->was_inside[i] = t->is_inside[i] ? 1 : 0;
         t->is_inside[i] = 0;
     }
     t->enter_count = 0;
     t->exit_count = 0;
 
-    for (int32_t i = 0; i < w->body_count; i++) {
+    int32_t body_count = 0;
+    if (w->bodies && w->body_capacity > 0 && w->body_count > 0)
+        body_count = w->body_count > w->body_capacity ? w->body_capacity : w->body_count;
+    for (int32_t i = 0; i < body_count; i++) {
         rt_body3d *b = w->bodies[i];
         double bmn[3];
         double bmx[3];
@@ -1395,9 +1572,9 @@ void rt_trigger3d_update(void *obj, void *world_obj) {
         t->seen_stamp[idx] = t->update_stamp;
         t->is_inside[idx] = inside;
         if (inside && !t->was_inside[idx])
-            t->enter_count++;
+            trigger3d_increment_edge_count(&t->enter_count);
         if (!inside && t->was_inside[idx])
-            t->exit_count++;
+            trigger3d_increment_edge_count(&t->exit_count);
     }
 
     /* Prune: bodies that left the world (unseen) fire exit if they were
@@ -1409,7 +1586,7 @@ void rt_trigger3d_update(void *obj, void *world_obj) {
             continue;
         }
         if (t->seen_stamp[i] != t->update_stamp && t->was_inside[i])
-            t->exit_count++;
+            trigger3d_increment_edge_count(&t->exit_count);
         trigger3d_remove_at(t, i);
     }
 }
@@ -1419,7 +1596,7 @@ void rt_trigger3d_update(void *obj, void *world_obj) {
 /// @return Number of bodies newly inside during the latest update.
 int64_t rt_trigger3d_get_enter_count(void *obj) {
     rt_trigger3d *t = trigger3d_checked(obj);
-    return t ? t->enter_count : 0;
+    return t && t->enter_count > 0 ? t->enter_count : 0;
 }
 
 /// @brief `Trigger3D.ExitCount` — bodies that left this trigger this frame.
@@ -1427,7 +1604,7 @@ int64_t rt_trigger3d_get_enter_count(void *obj) {
 /// @return Number of bodies that left during the latest update.
 int64_t rt_trigger3d_get_exit_count(void *obj) {
     rt_trigger3d *t = trigger3d_checked(obj);
-    return t ? t->exit_count : 0;
+    return t && t->exit_count > 0 ? t->exit_count : 0;
 }
 
 /// @brief `Trigger3D.SetBounds(x0..z1)` — replace the trigger's AABB.

@@ -1772,6 +1772,7 @@ static void rt_canvas3d_finalize(void *obj) {
     free(c->motion_history_hash);
     c->motion_history_hash = NULL;
     c->motion_history_hash_capacity = 0;
+    c->motion_history_hash_count = 0;
     free(c->occlusion_history);
     c->occlusion_history = NULL;
     c->occlusion_history_count = c->occlusion_history_capacity = 0;
@@ -1801,6 +1802,7 @@ static void rt_canvas3d_finalize(void *obj) {
     free(c->temp_buffer_set);
     c->temp_buffer_set = NULL;
     c->temp_buffer_set_capacity = 0;
+    c->temp_buffer_set_count = 0;
     free(c->float_snapshots);
     c->float_snapshots = NULL;
     c->float_snapshot_count = c->float_snapshot_capacity = 0;
@@ -1818,6 +1820,7 @@ static void rt_canvas3d_finalize(void *obj) {
     free(c->temp_object_set);
     c->temp_object_set = NULL;
     c->temp_object_set_capacity = 0;
+    c->temp_object_set_count = 0;
     free(c->text_vertices);
     c->text_vertices = NULL;
     c->text_vertex_capacity = 0;
@@ -2074,6 +2077,7 @@ static void *canvas3d_new_impl(rt_string title,
     c->temp_buf_count = c->temp_buf_capacity = 0;
     c->temp_buffer_set = NULL;
     c->temp_buffer_set_capacity = 0;
+    c->temp_buffer_set_count = 0;
     c->float_snapshots = NULL;
     c->float_snapshot_count = c->float_snapshot_capacity = 0;
     c->final_overlay_arena = NULL;
@@ -2086,6 +2090,9 @@ static void *canvas3d_new_impl(rt_string title,
     c->mesh_snapshot_hash_capacity = 0;
     c->temp_objects = NULL;
     c->temp_obj_count = c->temp_obj_capacity = 0;
+    c->temp_object_set = NULL;
+    c->temp_object_set_capacity = 0;
+    c->temp_object_set_count = 0;
     c->aa_text_cache = NULL;
     c->aa_text_cache_count = 0;
     c->aa_text_cache_bytes = 0;

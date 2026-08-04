@@ -7367,6 +7367,35 @@ static void test_canvas_begin2d_uses_render_target_dimensions() {
     EXPECT_NEAR(g_canvas_begin_frame_params.projection[5], -2.0f / 182.0f, 0.0001);
 
     rt_canvas3d_end(&canvas);
+
+    float current_model[16] = {};
+    float previous_model[16] = {};
+    int8_t has_previous = 0;
+    current_model[0] = current_model[5] = current_model[10] = current_model[15] = 1.0f;
+    canvas.frame_serial = INT64_MAX;
+    canvas3d_resolve_previous_model(
+        &canvas, (uintptr_t)1u, current_model, previous_model, &has_previous);
+    canvas.occlusion_history =
+        (rt_canvas3d_occlusion_history_entry *)std::calloc(1u, sizeof(*canvas.occlusion_history));
+    canvas.occlusion_history_capacity = canvas.occlusion_history ? 1 : 0;
+    canvas.occlusion_history_count = canvas.occlusion_history ? 1 : 0;
+    canvas.texture_stream_entries = std::malloc(16u);
+    canvas.texture_stream_capacity = canvas.texture_stream_entries ? 1 : 0;
+    canvas.texture_stream_live = canvas.texture_stream_entries ? 1 : 0;
+
+    rt_canvas3d_begin_2d(&canvas);
+    EXPECT_EQ(canvas.frame_serial, 1);
+    EXPECT_EQ(canvas.motion_history_count, 0);
+    EXPECT_EQ(canvas.occlusion_history_count, 0);
+    EXPECT_TRUE(canvas.texture_stream_entries == nullptr && canvas.texture_stream_capacity == 0 &&
+                    canvas.texture_stream_live == 0,
+                "frame-serial rebasing invalidates serial-keyed canvas caches");
+    rt_canvas3d_end(&canvas);
+
+    std::free(canvas.motion_history);
+    std::free(canvas.motion_history_hash);
+    std::free(canvas.occlusion_history);
+    std::free(canvas.occlusion_history_hash);
     PASS();
 }
 
@@ -10549,6 +10578,166 @@ static void test_canvas_legacy_translucent_batch_falls_back_from_instancing() {
     PASS();
 }
 
+/// Exercise transient ownership and arena metadata recovery independently of a backend frame.
+static void test_canvas_transient_managers_repair_corrupt_metadata() {
+    TEST("Canvas3D transient managers repair metadata and reject duplicate ownership");
+    rt_canvas3d canvas = {};
+
+    canvas.temp_buffer_set_capacity = 64;
+    canvas.temp_buf_count = 7;
+    canvas.temp_buf_capacity = 8;
+    void *buffer = std::malloc(32u);
+    EXPECT_TRUE(buffer != nullptr && canvas3d_track_temp_buffer(&canvas, buffer) == 1,
+                "temp buffer tracking repairs missing list/set allocations");
+    EXPECT_EQ(canvas.temp_buf_count, 1);
+    EXPECT_TRUE(canvas3d_track_temp_buffer(&canvas, buffer) == 1 && canvas.temp_buf_count == 1,
+                "temp buffer duplicate does not acquire duplicate free ownership");
+    canvas3d_clear_temp_buffers(&canvas);
+
+    void *next_buffer = std::malloc(24u);
+    void *stale_buffer = std::malloc(24u);
+    EXPECT_TRUE(next_buffer != nullptr && stale_buffer != nullptr,
+                "stale-filter buffer fixtures allocate");
+    int32_t stale_buffer_slot = (int32_t)(canvas3d_hash_u64((uintptr_t)stale_buffer) &
+                                          (uint32_t)(canvas.temp_buffer_set_capacity - 1));
+    canvas.temp_buffer_set[stale_buffer_slot] = stale_buffer;
+    canvas.temp_buffer_set_count = 1;
+    EXPECT_TRUE(canvas3d_track_temp_buffer(&canvas, next_buffer) == 1 &&
+                    canvas3d_track_temp_buffer(&canvas, stale_buffer) == 1 &&
+                    canvas.temp_buf_count == 2,
+                "an empty authoritative buffer list invalidates stale filter entries");
+    canvas3d_clear_temp_buffers(&canvas);
+
+    canvas.temp_object_set_capacity = 64;
+    canvas.temp_obj_count = 5;
+    canvas.temp_obj_capacity = 8;
+    void *pixels = rt_pixels_new(1, 1);
+    EXPECT_TRUE(pixels != nullptr && canvas3d_track_temp_object(&canvas, pixels) == 1,
+                "temp object tracking repairs missing list/set allocations");
+    EXPECT_TRUE(canvas3d_track_temp_object(&canvas, pixels) == 1 && canvas.temp_obj_count == 1,
+                "temp object duplicate is retained only once");
+    canvas3d_clear_temp_objects(&canvas);
+
+    void *stale_pixels = rt_pixels_new(1, 1);
+    EXPECT_TRUE(stale_pixels != nullptr, "stale-filter object fixture allocates");
+    int32_t stale_object_slot = (int32_t)(canvas3d_hash_u64((uintptr_t)stale_pixels) &
+                                          (uint32_t)(canvas.temp_object_set_capacity - 1));
+    canvas.temp_object_set[stale_object_slot] = stale_pixels;
+    canvas.temp_object_set_count = 1;
+    EXPECT_TRUE(canvas3d_track_temp_object(&canvas, pixels) == 1 &&
+                    canvas3d_track_temp_object(&canvas, stale_pixels) == 1 &&
+                    canvas.temp_obj_count == 2,
+                "an empty authoritative object list invalidates stale filter entries");
+    canvas3d_clear_temp_objects(&canvas);
+
+    void *overlay_buffer = std::malloc(16u);
+    EXPECT_TRUE(overlay_buffer != nullptr &&
+                    canvas3d_track_final_overlay_temp_buffer(&canvas, overlay_buffer) == 1,
+                "final-overlay buffer is tracked");
+    EXPECT_TRUE(canvas3d_track_final_overlay_temp_buffer(&canvas, overlay_buffer) == 1 &&
+                    canvas.final_overlay_temp_buf_count == 1,
+                "final-overlay duplicate cannot become a double free");
+    int32_t overlay_buffer_capacity = canvas.final_overlay_temp_buf_capacity;
+    canvas.final_overlay_temp_buf_capacity = -1;
+    EXPECT_TRUE(canvas3d_track_final_overlay_temp_buffer(&canvas, overlay_buffer) == 0 &&
+                    canvas.final_overlay_temp_buf_count == 1,
+                "negative final-overlay buffer capacity fails closed without losing ownership");
+    canvas.final_overlay_temp_buf_capacity = overlay_buffer_capacity;
+    EXPECT_TRUE(canvas3d_untrack_final_overlay_temp_buffer(&canvas, overlay_buffer) == 1,
+                "final-overlay ownership can be rolled back");
+    std::free(overlay_buffer);
+
+    EXPECT_TRUE(canvas3d_track_final_overlay_temp_object(&canvas, pixels) == 1 &&
+                    canvas3d_track_final_overlay_temp_object(&canvas, pixels) == 1 &&
+                    canvas.final_overlay_temp_obj_count == 1,
+                "final-overlay object duplicate is retained only once");
+    int32_t overlay_object_capacity = canvas.final_overlay_temp_obj_capacity;
+    canvas.final_overlay_temp_obj_capacity = -1;
+    EXPECT_TRUE(canvas3d_track_final_overlay_temp_object(&canvas, pixels) == 0 &&
+                    canvas.final_overlay_temp_obj_count == 1,
+                "negative final-overlay object capacity fails closed without losing retains");
+    canvas.final_overlay_temp_obj_capacity = overlay_object_capacity;
+    canvas3d_release_tracked_final_overlay_temp_object(&canvas, pixels);
+
+    canvas.final_overlay_arena_capacity = 128u;
+    canvas.final_overlay_arena_used = 64u;
+    void *arena_block = canvas3d_alloc_final_overlay_arena(&canvas, 32u, 16u);
+    EXPECT_TRUE(arena_block != nullptr,
+                "missing final-overlay arena allocation repairs stale capacity/usage");
+    canvas.final_overlay_arena_used = canvas.final_overlay_arena_capacity + 1u;
+    EXPECT_TRUE(canvas3d_alloc_final_overlay_arena(&canvas, 16u, 16u) == nullptr,
+                "over-capacity arena metadata fails closed without pointer underflow");
+    canvas3d_reset_final_overlay_arena(&canvas);
+
+    canvas.frame_arena_frame_bytes = std::numeric_limits<size_t>::max() - 7u;
+    EXPECT_TRUE(canvas3d_frame_arena_alloc(&canvas, 16u) != nullptr,
+                "frame arena still serves a valid allocation near telemetry saturation");
+    EXPECT_TRUE(canvas.frame_arena_frame_bytes == std::numeric_limits<size_t>::max(),
+                "frame arena byte telemetry saturates instead of wrapping");
+
+    canvas3d_frame_arena_free(&canvas);
+    std::free(canvas.final_overlay_arena);
+    std::free(canvas.final_overlay_temp_buffers);
+    std::free(canvas.final_overlay_temp_objects);
+    std::free(canvas.temp_buffers);
+    std::free(canvas.temp_objects);
+    std::free(canvas.temp_buffer_set);
+    std::free(canvas.temp_object_set);
+    release_texture_test_object(stale_pixels);
+    release_texture_test_object(pixels);
+    PASS();
+}
+
+/// Prove motion history remains indexed across growth and safely handles aliasing/corruption.
+static void test_canvas_motion_history_repairs_and_preserves_entries() {
+    TEST("Canvas3D motion history is transactional, finite, and self-repairing");
+    rt_canvas3d canvas = {};
+    float matrices[40][16] = {};
+    int8_t has_previous = 0;
+
+    canvas.frame_serial = 1;
+    for (int32_t i = 0; i < 40; ++i) {
+        matrices[i][0] = matrices[i][5] = matrices[i][10] = matrices[i][15] = 1.0f;
+        matrices[i][3] = (float)i;
+        canvas3d_resolve_previous_model(
+            &canvas, (uintptr_t)(i + 1), matrices[i], matrices[i], &has_previous);
+        EXPECT_TRUE(has_previous == 0, "first observation has no previous transform");
+    }
+    EXPECT_EQ(canvas.motion_history_count, 40);
+    EXPECT_EQ(canvas.motion_history_hash_count, 40);
+
+    canvas.frame_serial = 2;
+    float current[16] = {};
+    float previous[16] = {};
+    current[0] = current[5] = current[10] = current[15] = 1.0f;
+    current[3] = 99.0f;
+    canvas3d_resolve_previous_model(&canvas, 1u, current, previous, &has_previous);
+    EXPECT_TRUE(has_previous == 1 && std::fabs(previous[3]) < 0.0001f,
+                "hash growth preserves the first entry's prior transform");
+
+    int32_t corrupt_slot =
+        (int32_t)(canvas3d_hash_u64(1u) & (uint32_t)(canvas.motion_history_hash_capacity - 1));
+    canvas.motion_history_hash[corrupt_slot] = std::numeric_limits<int32_t>::max();
+    canvas.motion_history_hash_count = canvas.motion_history_count;
+    canvas.frame_serial = 3;
+    current[3] = 100.0f;
+    canvas3d_resolve_previous_model(&canvas, 1u, current, previous, &has_previous);
+    EXPECT_TRUE(has_previous == 1 && std::fabs(previous[3] - 99.0f) < 0.0001f,
+                "invalid encoded hash slots trigger a complete rebuild");
+
+    int32_t count_before_nonfinite = canvas.motion_history_count;
+    current[0] = std::numeric_limits<float>::infinity();
+    canvas3d_resolve_previous_model(&canvas, 1000u, current, previous, &has_previous);
+    EXPECT_EQ(canvas.motion_history_count, count_before_nonfinite);
+    EXPECT_TRUE(has_previous == 0, "non-finite model matrices never poison temporal history");
+
+    EXPECT_TRUE(canvas3d_instance_motion_key(nullptr, nullptr, nullptr, 0, -1) == 0u,
+                "invalid instance ranges do not alias valid motion identities");
+    std::free(canvas.motion_history);
+    std::free(canvas.motion_history_hash);
+    PASS();
+}
+
 static int32_t g_chunked_fallback_submit_index = 0;
 static int8_t g_chunked_fallback_order_ok = 1;
 
@@ -11114,6 +11303,8 @@ int main() {
     test_canvas_instanced_gpu_synthesizes_previous_matrices();
     test_canvas_instanced_gpu_uses_explicit_previous_matrices();
     test_canvas_instanced_motion_history_separates_batches();
+    test_canvas_transient_managers_repair_corrupt_metadata();
+    test_canvas_motion_history_repairs_and_preserves_entries();
     test_canvas_legacy_translucent_batch_falls_back_from_instancing();
     test_canvas_instanced_fallback_chunks_without_omission();
     test_canvas_instanced_previous_matrices_require_pointer();

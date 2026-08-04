@@ -631,7 +631,8 @@ static CANVAS3D_UNUSED_PRIVATE int cmp_front_to_back(const void *a, const void *
 /// @param enqueue_index Candidate original queue position.
 /// @param previous_key Previously emitted depth key.
 /// @param previous_stable_sort_id Previously emitted identity.
-/// @param previous_enqueue_index Previously emitted queue position, or a negative sentinel initially.
+/// @param previous_enqueue_index Previously emitted queue position, or a negative sentinel
+/// initially.
 /// @param descending Non-zero for back-to-front ordering; zero for front-to-back.
 /// @return Non-zero when the candidate is strictly after the previous tuple.
 static int canvas3d_sort_tuple_after(float key,
@@ -720,8 +721,9 @@ static int canvas3d_ensure_sort_key_capacity(rt_canvas3d *c, int32_t needed) {
 }
 
 /// @brief Stable-sort deferred draws by a cached unsigned 64-bit key using byte-wise radix passes.
-/// @details The key function is evaluated exactly once per item. Scratch arrays are canvas-owned and
-/// retained across frames; allocation failure leaves the caller to use a fallback ordering path.
+/// @details The key function is evaluated exactly once per item. Scratch arrays are canvas-owned
+/// and retained across frames; allocation failure leaves the caller to use a fallback ordering
+/// path.
 /// @param c Canvas owning command and key scratch storage.
 /// @param[in,out] items Deferred-draw array sorted in place.
 /// @param count Number of valid entries.
@@ -1041,7 +1043,8 @@ static int canvas3d_cmd_has_runtime_deformation(const vgfx3d_draw_cmd_t *cmd) {
 ///   be depth-tested normally by the backend; they simply do not become CPU occluders.
 /// @param[in,out] dd Deferred draw whose conservative/test/write flags are finalized.
 /// @param conservative_bounds Non-zero when the stored AABB is deliberately over-inclusive.
-/// @param force_disable_occlusion Non-zero to disable both testing and occluder writes unconditionally.
+/// @param force_disable_occlusion Non-zero to disable both testing and occluder writes
+/// unconditionally.
 static void canvas3d_finalize_deferred_visibility_flags(deferred_draw_t *dd,
                                                         int conservative_bounds,
                                                         int force_disable_occlusion) {
@@ -1715,7 +1718,8 @@ static void canvas3d_insert_shadow_light_candidate(vgfx3d_light_params_t *out_li
 ///          prior frame can't leak into the shader constants.
 /// @param c Borrowed canvas providing the render-space camera position.
 /// @param cmds Borrowed deferred draw queue.
-/// @param shadow_indices Optional borrowed list selecting queue entries already accepted as casters.
+/// @param shadow_indices Optional borrowed list selecting queue entries already accepted as
+/// casters.
 /// @param draw_count Number of commands or selected indices to inspect.
 /// @param[out] out_lights Output buffer sized for @p max_shadow_lights.
 /// @param max_shadow_lights Caller cap; clamped to `VGFX3D_MAX_SHADOW_LIGHTS`.
@@ -1856,14 +1860,44 @@ static void canvas3d_apply_shadow_light_params(vgfx3d_light_params_t *lights,
 void canvas3d_clear_final_overlay(rt_canvas3d *c) {
     if (!c)
         return;
-    for (int32_t i = 0; i < c->final_overlay_temp_buf_count; i++)
+    if (!c->final_overlay_temp_buffers || c->final_overlay_temp_buf_capacity < 0) {
+        c->final_overlay_temp_buf_count = 0;
+        c->final_overlay_temp_buf_capacity = 0;
+    } else {
+        if (c->final_overlay_temp_buf_count < 0)
+            c->final_overlay_temp_buf_count = 0;
+        if (c->final_overlay_temp_buf_count > c->final_overlay_temp_buf_capacity)
+            c->final_overlay_temp_buf_count = c->final_overlay_temp_buf_capacity;
+    }
+    if (!c->final_overlay_temp_objects || c->final_overlay_temp_obj_capacity < 0) {
+        c->final_overlay_temp_obj_count = 0;
+        c->final_overlay_temp_obj_capacity = 0;
+    } else {
+        if (c->final_overlay_temp_obj_count < 0)
+            c->final_overlay_temp_obj_count = 0;
+        if (c->final_overlay_temp_obj_count > c->final_overlay_temp_obj_capacity)
+            c->final_overlay_temp_obj_count = c->final_overlay_temp_obj_capacity;
+    }
+    if (!c->final_overlay_cmds || c->final_overlay_capacity < 0) {
+        c->final_overlay_count = 0;
+        c->final_overlay_capacity = 0;
+    } else {
+        if (c->final_overlay_count < 0)
+            c->final_overlay_count = 0;
+        if (c->final_overlay_count > c->final_overlay_capacity)
+            c->final_overlay_count = c->final_overlay_capacity;
+    }
+    for (int32_t i = 0; i < c->final_overlay_temp_buf_count; i++) {
         free(c->final_overlay_temp_buffers[i]);
+        c->final_overlay_temp_buffers[i] = NULL;
+    }
     c->final_overlay_temp_buf_count = 0;
     canvas3d_reset_final_overlay_arena(c);
     for (int32_t i = 0; i < c->final_overlay_temp_obj_count; i++) {
         if (c->final_overlay_temp_objects[i] &&
             rt_obj_release_check0(c->final_overlay_temp_objects[i]))
             rt_obj_free(c->final_overlay_temp_objects[i]);
+        c->final_overlay_temp_objects[i] = NULL;
     }
     c->final_overlay_temp_obj_count = 0;
     c->final_overlay_count = 0;
@@ -2135,7 +2169,8 @@ static void canvas3d_extract_view_forward(const double *view, float *out_forward
 ///   the resulting VP (frustum extraction, unprojection via the inverse, the occlusion
 ///   projections) is self-consistent, so only the backend's clears/compares differ.
 /// @param c Borrowed canvas whose backend depth convention is inspected.
-/// @param[in,out] projection Row-major projection matrix adjusted in place when reversed-Z is active.
+/// @param[in,out] projection Row-major projection matrix adjusted in place when reversed-Z is
+/// active.
 static void canvas3d_apply_backend_depth_convention(const rt_canvas3d *c, float *projection) {
     if (!c || !projection || !c->backend || !c->backend->reversed_z)
         return;
@@ -2144,10 +2179,11 @@ static void canvas3d_apply_backend_depth_convention(const rt_canvas3d *c, float 
 }
 
 /// @brief Build a pixel-space orthographic camera for 2D overlay submission.
-/// @details The projection uses a top-left origin with Y down and adds two pixels of extent to avoid
-/// half-pixel edge clipping. Fog is disabled while shadow filtering settings remain consistent with
-/// replayed 3D overlay draws.
-/// @param c Borrowed canvas providing output dimensions, backend depth convention, and shadow state.
+/// @details The projection uses a top-left origin with Y down and adds two pixels of extent to
+/// avoid half-pixel edge clipping. Fog is disabled while shadow filtering settings remain
+/// consistent with replayed 3D overlay draws.
+/// @param c Borrowed canvas providing output dimensions, backend depth convention, and shadow
+/// state.
 /// @param[out] params Camera parameters initialized and populated in place.
 static void canvas3d_build_ortho_camera(const rt_canvas3d *c, vgfx3d_camera_params_t *params) {
     float w;
@@ -2245,8 +2281,8 @@ int canvas3d_begin_overlay_frame(rt_canvas3d *c, int8_t preserve_existing_color)
 /// using the camera that drew the scene); otherwise → 2D ortho VP.
 /// Used by 3D-aware overlay drawables (e.g., world-space tooltips).
 /// @param c Borrowed canvas.
-/// @return Borrowed pointer to an active/current or last-scene 16-float VP matrix, or NULL when none
-/// is available. The pointer remains owned by the canvas.
+/// @return Borrowed pointer to an active/current or last-scene 16-float VP matrix, or NULL when
+/// none is available. The pointer remains owned by the canvas.
 const float *canvas3d_active_scene_vp(const rt_canvas3d *c) {
     if (!c)
         return NULL;

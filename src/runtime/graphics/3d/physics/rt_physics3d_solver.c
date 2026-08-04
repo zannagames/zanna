@@ -1183,7 +1183,8 @@ static void ph3d_broadphase_insertion_sort(ph3d_broadphase_entry *entries,
 /// @param count Number of initialized entries.
 /// @param axis Primary comparison axis.
 /// @param limit Positive count at which the probe stops.
-/// @return The number of inversions observed, capped at @p limit; zero for invalid or trivial input.
+/// @return The number of inversions observed, capped at @p limit; zero for invalid or trivial
+/// input.
 static int32_t ph3d_broadphase_adjacent_inversions(const ph3d_broadphase_entry *entries,
                                                    int32_t count,
                                                    int axis,
@@ -1538,10 +1539,10 @@ int world3d_detect_contacts(rt_world3d *w) {
         double lo[3];
         double hi[3];
         for (int k = 0; k < 3; k++)
-            lo[k] = hi[k] = 0.5 * (entries[0].min[k] + entries[0].max[k]);
+            lo[k] = hi[k] = 0.5 * entries[0].min[k] + 0.5 * entries[0].max[k];
         for (int32_t i = 1; i < entry_count; i++) {
             for (int k = 0; k < 3; k++) {
-                double c = 0.5 * (entries[i].min[k] + entries[i].max[k]);
+                double c = 0.5 * entries[i].min[k] + 0.5 * entries[i].max[k];
                 if (c < lo[k])
                     lo[k] = c;
                 if (c > hi[k])
@@ -1554,7 +1555,6 @@ int world3d_detect_contacts(rt_world3d *w) {
             sweep_axis = 1;
         }
         if (hi[2] - lo[2] > best_spread) {
-            best_spread = hi[2] - lo[2];
             sweep_axis = 2;
         }
     }

@@ -1152,10 +1152,10 @@ void *rt_game3d_behavior_add_face_target(void *behavior, void *target_entity);
 /// @param range Value supplied for the range argument.
 /// @return The runtime handle described above, or NULL when unavailable.
 void *rt_game3d_behavior_add_chase(void *behavior, void *target_entity, double speed, double range);
-/// @brief Fluent: follow a Path3D at constant speed (looping or one-shot).
+/// @brief Fluent: follow a Path3D at constant arc-length speed (looping or one-shot).
 /// @param behavior Value supplied for the behavior argument.
-/// @param path Runtime path string naming the requested resource.
-/// @param speed Value supplied for the speed argument.
+/// @param path Path3D whose control points are interpreted in world space.
+/// @param speed Non-negative travel rate in world units per simulation second.
 /// @param loop Value supplied for the loop argument.
 /// @return The runtime handle described above, or NULL when unavailable.
 void *rt_game3d_behavior_add_follow_path(void *behavior, void *path, double speed, int8_t loop);

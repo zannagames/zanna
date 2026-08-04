@@ -1,7 +1,21 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/physics/rt_physics3d_collision_narrowphase.inc  (#included from rt_physics3d_collision.c; not a standalone translation unit)
-// Purpose: Physics3D shape-specific narrow-phase primitive collision tests
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/physics/rt_physics3d_collision_narrowphase.inc
+// Purpose: Implement shape-specific Physics3D narrow-phase collision tests.
+//   Included by rt_physics3d_collision.c.
+// Key invariants:
+//   - Successful tests return nonnegative depth and a normal from A toward B.
+//   - Mesh and compound traversal remains bounded by validated storage.
+// Ownership/Lifetime:
+//   - Collider, body, mesh, and pose inputs are borrowed for each test call.
+//   - Results are written only to caller-owned scalar/vector output storage.
+// Links: rt_physics3d_collision.c, rt_physics3d_internal.h
+//
 //===----------------------------------------------------------------------===//
 
 /**
@@ -1112,7 +1126,7 @@ static int test_meshlike_capsule(rt_mesh3d *mesh,
                                  const rt_body3d *capsule,
                                  double *normal,
                                  double *depth) {
-    double half_axis = fmax(capsule->height * 0.5 - capsule->radius, 0.0);
+    double half_axis;
     double axis_a[3], axis_b[3];
     double best_depth = 0.0;
     double best_normal[3] = {0.0, 1.0, 0.0};
@@ -1308,8 +1322,8 @@ static int test_meshlike_box(rt_mesh3d *mesh,
         int32_t top = 0;
         int overflow = 0;
         body_aabb(box, box_min, box_max);
-        ph3d_world_aabb_to_local_bounds(mesh_pose, box_min, box_max, local_query_min,
-                                        local_query_max);
+        ph3d_world_aabb_to_local_bounds(
+            mesh_pose, box_min, box_max, local_query_min, local_query_max);
         stack[top++] = 0;
         while (top > 0) {
             int32_t node_index = stack[--top];

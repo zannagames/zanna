@@ -92,13 +92,23 @@ static uint64_t g_next_cubemap_cache_identity = 1;
 
 #define CUBEMAP3D_MAX_FACE_SIZE 32768
 
-/// @brief Validate the full six-face cubemap invariant before sampling.
+/// @brief Borrowed six-face view resolved from one fully validated cubemap.
+/// @details Sampling a single filtered direction can require dozens of texel
+///   taps. Resolving the managed Pixels handles once keeps those taps off the
+///   runtime heap-registry validation path while the owning cubemap retains
+///   every face for the duration of the synchronous call.
+typedef struct cubemap_sample_view {
+    rt_pixels_impl *faces[6];
+} cubemap_sample_view;
+
+/// @brief Validate a cubemap and cache its six borrowed Pixels implementations.
 /// @param cm Candidate cubemap to inspect.
-/// @return Nonzero when the handle, identity, declared size, and all six square
-///   live Pixels faces are mutually consistent.
-static int cubemap_faces_valid(const rt_cubemap3d *cm) {
+/// @param out Output view populated only with live, matching square faces.
+/// @return Nonzero when the complete cubemap invariant holds.
+static int cubemap_sample_view_init(const rt_cubemap3d *cm, cubemap_sample_view *out) {
     int64_t face_size;
-    if (!cubemap_handle_valid(cm))
+
+    if (!out || !cubemap_handle_valid(cm))
         return 0;
     face_size = cm->face_size;
     if (face_size <= 0 || face_size > CUBEMAP3D_MAX_FACE_SIZE || cm->cache_identity == 0)
@@ -107,8 +117,19 @@ static int cubemap_faces_valid(const rt_cubemap3d *cm) {
         rt_pixels_impl *pv = cubemap_face_pixels_impl(cm->faces[face]);
         if (!pv || pv->width != face_size || pv->height != face_size)
             return 0;
+        out->faces[face] = pv;
     }
     return 1;
+}
+
+/// @brief Validate the full six-face cubemap invariant before sampling.
+/// @param cm Candidate cubemap to inspect.
+/// @return Nonzero when the handle, identity, declared size, and all six square
+///   live Pixels faces are mutually consistent.
+static int cubemap_faces_valid(const rt_cubemap3d *cm) {
+    cubemap_sample_view view;
+
+    return cubemap_sample_view_init(cm, &view);
 }
 
 /// @brief True if the cubemap has all six faces present, square, and at a consistent face size.
@@ -464,45 +485,37 @@ static void cubemap_face_uv_to_direction(
     *out_dz = dz;
 }
 
-/// @brief Nearest-neighbor RGBA sample from a cubemap along direction `(dx, dy, dz)`.
+/// @brief Nearest-neighbor RGBA sample from a prevalidated cubemap view.
 /// @details Three-step classical cubemap fetch:
 ///          1. Project the direction into face + UV.
 ///          2. Clamp UV to `[0, 1]` (guards against directions that
 ///             drift off-face by floating-point error at cube edges).
-///          3. Floor-scale UV into pixel coords and fetch through
-///             `rt_pixels_get`.
-///          Returns 0 (transparent black) for null cubemaps or empty
-///          faces. Used by skybox backgrounds and environment-map
-///          reflection in Material.reflectivity > 0 draws.
-/// @param cm Borrowed complete cubemap.
-/// @param dx Sample direction X component.
-/// @param dy Sample direction Y component.
-/// @param dz Sample direction Z component.
-/// @return Packed nearest texel, or zero for an invalid cubemap or direction.
-static uint32_t cubemap_sample_nearest_rgba(const rt_cubemap3d *cm, float dx, float dy, float dz) {
+///          3. Floor-scale UV into the already-resolved face storage.
+/// @param view Borrowed view with six live square face implementations.
+/// @param dx Unit sample direction X component.
+/// @param dy Unit sample direction Y component.
+/// @param dz Unit sample direction Z component.
+/// @return Packed nearest texel, or zero for an invalid direction.
+static uint32_t cubemap_sample_view_nearest_rgba(const cubemap_sample_view *view,
+                                                 float dx,
+                                                 float dy,
+                                                 float dz) {
     int face = 0;
     float u = 0.5f;
     float v = 0.5f;
     rt_pixels_impl *pv;
-    int64_t fw;
-    int64_t fh;
     int xi;
     int yi;
 
-    if (!cubemap_faces_valid(cm))
-        return 0;
-    if (!isfinite(dx) || !isfinite(dy) || !isfinite(dz) ||
+    if (!view || !isfinite(dx) || !isfinite(dy) || !isfinite(dz) ||
         (fabsf(dx) < 1e-10f && fabsf(dy) < 1e-10f && fabsf(dz) < 1e-10f))
         return 0;
-
-    cubemap_direction_to_face_uv(dx, dy, dz, &face, &u, &v);
+    cubemap_unit_direction_to_face_uv(dx, dy, dz, &face, &u, &v);
     if (face < 0 || face > 5)
         return 0;
-    pv = cubemap_face_pixels_impl(cm->faces[face]);
+    pv = view->faces[face];
     if (!pv)
         return 0;
-    fw = pv->width;
-    fh = pv->height;
 
     if (u < 0.0f)
         u = 0.0f;
@@ -513,17 +526,92 @@ static uint32_t cubemap_sample_nearest_rgba(const rt_cubemap3d *cm, float dx, fl
     else if (v > 1.0f)
         v = 1.0f;
 
-    xi = (int)floorf(u * (float)fw);
-    yi = (int)floorf(v * (float)fh);
-    if (xi >= (int)fw)
-        xi = (int)fw - 1;
-    if (yi >= (int)fh)
-        yi = (int)fh - 1;
+    xi = (int)floorf(u * (float)pv->width);
+    yi = (int)floorf(v * (float)pv->height);
+    if (xi >= (int)pv->width)
+        xi = (int)pv->width - 1;
+    if (yi >= (int)pv->height)
+        yi = (int)pv->height - 1;
     if (xi < 0)
         xi = 0;
     if (yi < 0)
         yi = 0;
     return pv->data[(int64_t)yi * pv->width + xi];
+}
+
+/// @brief Cross-face bilinear sample from a prevalidated cubemap view.
+/// @details The direction and all four topology-wrapped taps bypass managed
+///   object validation because @p view owns borrowed implementations resolved
+///   by `cubemap_sample_view_init` for this synchronous sampling operation.
+/// @param view Borrowed view with six live square face implementations.
+/// @param dx Unit sample direction X component.
+/// @param dy Unit sample direction Y component.
+/// @param dz Unit sample direction Z component.
+/// @param out_r Output normalized red channel.
+/// @param out_g Output normalized green channel.
+/// @param out_b Output normalized blue channel.
+static void cubemap_sample_view_unit(const cubemap_sample_view *view,
+                                     float dx,
+                                     float dy,
+                                     float dz,
+                                     float *out_r,
+                                     float *out_g,
+                                     float *out_b) {
+    int face = 0;
+    float u = 0.5f;
+    float v = 0.5f;
+    rt_pixels_impl *pv;
+    float fx;
+    float fy;
+    int x0;
+    int y0;
+    float sx;
+    float sy;
+    float tap_u[2];
+    float tap_v[2];
+    float direction[4][3];
+    uint32_t rgba[4];
+
+    cubemap_unit_direction_to_face_uv(dx, dy, dz, &face, &u, &v);
+    pv = view->faces[face];
+    fx = u * (float)pv->width - 0.5f;
+    fy = v * (float)pv->height - 0.5f;
+    x0 = (int)floorf(fx);
+    y0 = (int)floorf(fy);
+    sx = fx - (float)x0;
+    sy = fy - (float)y0;
+    tap_u[0] = ((float)x0 + 0.5f) / (float)pv->width;
+    tap_u[1] = ((float)(x0 + 1) + 0.5f) / (float)pv->width;
+    tap_v[0] = ((float)y0 + 0.5f) / (float)pv->height;
+    tap_v[1] = ((float)(y0 + 1) + 0.5f) / (float)pv->height;
+
+    cubemap_face_uv_to_direction(
+        face, tap_u[0], tap_v[0], &direction[0][0], &direction[0][1], &direction[0][2]);
+    cubemap_face_uv_to_direction(
+        face, tap_u[1], tap_v[0], &direction[1][0], &direction[1][1], &direction[1][2]);
+    cubemap_face_uv_to_direction(
+        face, tap_u[0], tap_v[1], &direction[2][0], &direction[2][1], &direction[2][2]);
+    cubemap_face_uv_to_direction(
+        face, tap_u[1], tap_v[1], &direction[3][0], &direction[3][1], &direction[3][2]);
+    for (int tap = 0; tap < 4; tap++) {
+        rgba[tap] = cubemap_sample_view_nearest_rgba(
+            view, direction[tap][0], direction[tap][1], direction[tap][2]);
+    }
+
+#define ZANNA_CUBEMAP_VIEW_BLEND(channel, shift)                                                   \
+    do {                                                                                           \
+        float c00 = (float)((rgba[0] >> (shift)) & 0xFF);                                          \
+        float c10 = (float)((rgba[1] >> (shift)) & 0xFF);                                          \
+        float c01 = (float)((rgba[2] >> (shift)) & 0xFF);                                          \
+        float c11 = (float)((rgba[3] >> (shift)) & 0xFF);                                          \
+        *(channel) =                                                                               \
+            ((c00 * (1.0f - sx) + c10 * sx) * (1.0f - sy) + (c01 * (1.0f - sx) + c11 * sx) * sy) / \
+            255.0f;                                                                                \
+    } while (0)
+    ZANNA_CUBEMAP_VIEW_BLEND(out_r, 24);
+    ZANNA_CUBEMAP_VIEW_BLEND(out_g, 16);
+    ZANNA_CUBEMAP_VIEW_BLEND(out_b, 8);
+#undef ZANNA_CUBEMAP_VIEW_BLEND
 }
 
 //=============================================================================
@@ -976,87 +1064,19 @@ void rt_cubemap_sample(const rt_cubemap3d *cm,
                        float *out_r,
                        float *out_g,
                        float *out_b) {
+    cubemap_sample_view view;
+
     if (!out_r || !out_g || !out_b)
         return;
-    if (!cubemap_faces_valid(cm)) {
+    if (!cubemap_sample_view_init(cm, &view)) {
         *out_r = *out_g = *out_b = 0.0f;
         return;
     }
-
-    /* Guard against invalid or zero-length directions (undefined ray). */
-    if (!isfinite(dx) || !isfinite(dy) || !isfinite(dz) ||
-        (fabsf(dx) < 1e-10f && fabsf(dy) < 1e-10f && fabsf(dz) < 1e-10f)) {
+    if (!cubemap_normalize_direction(&dx, &dy, &dz)) {
         *out_r = *out_g = *out_b = 0.0f;
         return;
     }
-
-    int face = 0;
-    float u = 0.5f;
-    float v = 0.5f;
-
-    /* Sample face texture using public API */
-    cubemap_direction_to_face_uv(dx, dy, dz, &face, &u, &v);
-    if (face < 0 || face > 5) {
-        *out_r = *out_g = *out_b = 0.0f;
-        return;
-    }
-    rt_pixels_impl *pv = cubemap_face_pixels_impl(cm->faces[face]);
-    if (!pv) {
-        *out_r = *out_g = *out_b = 0.0f;
-        return;
-    }
-    int64_t fw = pv->width;
-    int64_t fh = pv->height;
-
-    /* Bilinear interpolation for smooth cubemap sampling */
-    float fx = u * (float)fw - 0.5f;
-    float fy = v * (float)fh - 0.5f;
-    int x0 = (int)floorf(fx);
-    int y0 = (int)floorf(fy);
-    int x1 = x0 + 1;
-    int y1 = y0 + 1;
-    float sx = fx - (float)x0;
-    float sy = fy - (float)y0;
-
-    /* Bilinear taps follow the cubemap topology instead of clamping to one face. */
-    float tap_u0 = ((float)x0 + 0.5f) / (float)fw;
-    float tap_u1 = ((float)x1 + 0.5f) / (float)fw;
-    float tap_v0 = ((float)y0 + 0.5f) / (float)fh;
-    float tap_v1 = ((float)y1 + 0.5f) / (float)fh;
-    float dir00[3];
-    float dir10[3];
-    float dir01[3];
-    float dir11[3];
-    uint32_t p00;
-    uint32_t p10;
-    uint32_t p01;
-    uint32_t p11;
-
-    cubemap_face_uv_to_direction(face, tap_u0, tap_v0, &dir00[0], &dir00[1], &dir00[2]);
-    cubemap_face_uv_to_direction(face, tap_u1, tap_v0, &dir10[0], &dir10[1], &dir10[2]);
-    cubemap_face_uv_to_direction(face, tap_u0, tap_v1, &dir01[0], &dir01[1], &dir01[2]);
-    cubemap_face_uv_to_direction(face, tap_u1, tap_v1, &dir11[0], &dir11[1], &dir11[2]);
-
-    p00 = cubemap_sample_nearest_rgba(cm, dir00[0], dir00[1], dir00[2]);
-    p10 = cubemap_sample_nearest_rgba(cm, dir10[0], dir10[1], dir10[2]);
-    p01 = cubemap_sample_nearest_rgba(cm, dir01[0], dir01[1], dir01[2]);
-    p11 = cubemap_sample_nearest_rgba(cm, dir11[0], dir11[1], dir11[2]);
-
-/* Extract channels and bilinear blend */
-#define BL(ch, shift)                                                                              \
-    do {                                                                                           \
-        float c00 = (float)((p00 >> (shift)) & 0xFF);                                              \
-        float c10 = (float)((p10 >> (shift)) & 0xFF);                                              \
-        float c01 = (float)((p01 >> (shift)) & 0xFF);                                              \
-        float c11 = (float)((p11 >> (shift)) & 0xFF);                                              \
-        *(ch) =                                                                                    \
-            ((c00 * (1 - sx) + c10 * sx) * (1 - sy) + (c01 * (1 - sx) + c11 * sx) * sy) / 255.0f;  \
-    } while (0)
-
-    BL(out_r, 24);
-    BL(out_g, 16);
-    BL(out_b, 8);
-#undef BL
+    cubemap_sample_view_unit(&view, dx, dy, dz, out_r, out_g, out_b);
 }
 
 /// @brief Bilinearly sample a cubemap along a pre-normalized direction vector.
@@ -1078,86 +1098,15 @@ void rt_cubemap_sample_unit(const rt_cubemap3d *cm,
                             float *out_r,
                             float *out_g,
                             float *out_b) {
-    int face = 0;
-    float u = 0.5f;
-    float v = 0.5f;
-    rt_pixels_impl *pv;
-    int64_t fw;
-    int64_t fh;
-    float fx;
-    float fy;
-    int x0;
-    int y0;
-    int x1;
-    int y1;
-    float sx;
-    float sy;
-    float tap_u0;
-    float tap_u1;
-    float tap_v0;
-    float tap_v1;
-    float dir00[3];
-    float dir10[3];
-    float dir01[3];
-    float dir11[3];
-    uint32_t p00;
-    uint32_t p10;
-    uint32_t p01;
-    uint32_t p11;
+    cubemap_sample_view view;
 
     if (!out_r || !out_g || !out_b)
         return;
-    if (!cubemap_faces_valid(cm)) {
+    if (!cubemap_sample_view_init(cm, &view)) {
         *out_r = *out_g = *out_b = 0.0f;
         return;
     }
-    cubemap_unit_direction_to_face_uv(dx, dy, dz, &face, &u, &v);
-    if (face < 0 || face > 5) {
-        *out_r = *out_g = *out_b = 0.0f;
-        return;
-    }
-    pv = cubemap_face_pixels_impl(cm->faces[face]);
-    if (!pv) {
-        *out_r = *out_g = *out_b = 0.0f;
-        return;
-    }
-    fw = pv->width;
-    fh = pv->height;
-    fx = u * (float)fw - 0.5f;
-    fy = v * (float)fh - 0.5f;
-    x0 = (int)floorf(fx);
-    y0 = (int)floorf(fy);
-    x1 = x0 + 1;
-    y1 = y0 + 1;
-    sx = fx - (float)x0;
-    sy = fy - (float)y0;
-    tap_u0 = ((float)x0 + 0.5f) / (float)fw;
-    tap_u1 = ((float)x1 + 0.5f) / (float)fw;
-    tap_v0 = ((float)y0 + 0.5f) / (float)fh;
-    tap_v1 = ((float)y1 + 0.5f) / (float)fh;
-    cubemap_face_uv_to_direction(face, tap_u0, tap_v0, &dir00[0], &dir00[1], &dir00[2]);
-    cubemap_face_uv_to_direction(face, tap_u1, tap_v0, &dir10[0], &dir10[1], &dir10[2]);
-    cubemap_face_uv_to_direction(face, tap_u0, tap_v1, &dir01[0], &dir01[1], &dir01[2]);
-    cubemap_face_uv_to_direction(face, tap_u1, tap_v1, &dir11[0], &dir11[1], &dir11[2]);
-    p00 = cubemap_sample_nearest_rgba(cm, dir00[0], dir00[1], dir00[2]);
-    p10 = cubemap_sample_nearest_rgba(cm, dir10[0], dir10[1], dir10[2]);
-    p01 = cubemap_sample_nearest_rgba(cm, dir01[0], dir01[1], dir01[2]);
-    p11 = cubemap_sample_nearest_rgba(cm, dir11[0], dir11[1], dir11[2]);
-
-#define BL(ch, shift)                                                                              \
-    do {                                                                                           \
-        float c00 = (float)((p00 >> (shift)) & 0xFF);                                              \
-        float c10 = (float)((p10 >> (shift)) & 0xFF);                                              \
-        float c01 = (float)((p01 >> (shift)) & 0xFF);                                              \
-        float c11 = (float)((p11 >> (shift)) & 0xFF);                                              \
-        *(ch) =                                                                                    \
-            ((c00 * (1 - sx) + c10 * sx) * (1 - sy) + (c01 * (1 - sx) + c11 * sx) * sy) / 255.0f;  \
-    } while (0)
-
-    BL(out_r, 24);
-    BL(out_g, 16);
-    BL(out_b, 8);
-#undef BL
+    cubemap_sample_view_unit(&view, dx, dy, dz, out_r, out_g, out_b);
 }
 
 /// @brief Roughness-aware cubemap sample that fakes a prefiltered environment map.
@@ -1200,6 +1149,7 @@ void rt_cubemap_sample_roughness(const rt_cubemap3d *cm,
         {-0.70710678f, -0.70710678f},
     };
     static const float k_weights[9] = {4.0f, 1.5f, 1.5f, 1.5f, 1.5f, 1.0f, 1.0f, 1.0f, 1.0f};
+    cubemap_sample_view view;
     float len;
     float tx;
     float ty;
@@ -1217,7 +1167,7 @@ void rt_cubemap_sample_roughness(const rt_cubemap3d *cm,
     if (!out_r || !out_g || !out_b) {
         return;
     }
-    if (!cubemap_faces_valid(cm)) {
+    if (!cubemap_sample_view_init(cm, &view)) {
         *out_r = *out_g = *out_b = 0.0f;
         return;
     }
@@ -1232,7 +1182,7 @@ void rt_cubemap_sample_roughness(const rt_cubemap3d *cm,
     }
 
     if (roughness <= 0.001f) {
-        rt_cubemap_sample(cm, dx, dy, dz, out_r, out_g, out_b);
+        cubemap_sample_view_unit(&view, dx, dy, dz, out_r, out_g, out_b);
         return;
     }
 
@@ -1274,7 +1224,7 @@ void rt_cubemap_sample_roughness(const rt_cubemap3d *cm,
         sample_dx /= sample_len;
         sample_dy /= sample_len;
         sample_dz /= sample_len;
-        rt_cubemap_sample(cm, sample_dx, sample_dy, sample_dz, &sr, &sg, &sb);
+        cubemap_sample_view_unit(&view, sample_dx, sample_dy, sample_dz, &sr, &sg, &sb);
         accum_r += sr * k_weights[i];
         accum_g += sg * k_weights[i];
         accum_b += sb * k_weights[i];

@@ -212,7 +212,8 @@ static int fbx_ascii_lex_next(fbx_ascii_parser_t *parser) {
             return 0;
         }
         if (p < parser->end && (*p == 'e' || *p == 'E')) {
-            const char *exponent = ++p;
+            const char *exponent;
+            p++;
             if (p < parser->end && (*p == '+' || *p == '-'))
                 p++;
             exponent = p;

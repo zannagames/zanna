@@ -537,7 +537,8 @@ static int scene_node_const_stack_push(const rt_scene_node3d ***stack,
 static int32_t g_scene3d_test_owner_growth_failure_after = -1;
 
 /// @brief Configure deterministic owner-transaction allocation fault injection for tests.
-/// @param successful_growths Number of successful growths allowed before failure, or `-1` to disable.
+/// @param successful_growths Number of successful growths allowed before failure, or `-1` to
+/// disable.
 void rt_scene3d_test_set_owner_growth_failure(int32_t successful_growths) {
     g_scene3d_test_owner_growth_failure_after = successful_growths < -1 ? -1 : successful_growths;
 }
@@ -1294,7 +1295,6 @@ static void scene_node_sync_recursive(rt_scene3d *scene, rt_scene_node3d *node, 
         if (current->socket_animator) {
             /* Bone sockets supersede body/root-motion sync for this node. */
             scene_node_apply_bone_socket(current);
-            pull_from_body = 0;
             push_to_body = 0;
         } else if (pull_from_body) {
             double world_pos[3];

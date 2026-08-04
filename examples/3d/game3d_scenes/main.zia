@@ -136,7 +136,11 @@ class SceneGame extends GameBase3D {
 func main() {
     var game = new SceneGame();
     game.initGame("Game3D Scenes", 640, 400);
-    game.setMaxFrames(240); // demo probe: ~4s then exit; remove for free play
+    // CI probe mode only: the registered smoke test exits after ~4 seconds.
+    // Interactive runs play until the window closes.
+    if Zanna.System.Environment.GetVariable("ZANNA_DEMO_PROBE") != "" {
+        game.setMaxFrames(240);
+    }
     game.run();
     Zanna.Terminal.Say("PASS: game3d_scenes");
 }

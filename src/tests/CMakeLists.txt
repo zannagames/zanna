@@ -3932,8 +3932,11 @@ if (EXISTS "${GAME3D_STARTER_PROBE}")
     add_test(NAME g3d_game3d_starter_package_dry_run
             COMMAND $<TARGET_FILE:zanna> package "." --target tarball --dry-run
             WORKING_DIRECTORY "${GAME3D_STARTER_DIR}")
+    # The starter embeds its model (self-contained examples/bin binary), so
+    # the plan lists no loose asset mapping; the executable line proves the
+    # dry run planned the embedded build.
     set_tests_properties(g3d_game3d_starter_package_dry_run PROPERTIES
-            PASS_REGULAR_EXPRESSION "Asset: assets -> assets"
+            PASS_REGULAR_EXPRESSION "Executable: game3d_starter \\(build\\)"
             LABELS "runtime;graphics3d;zia"
             TIMEOUT 30)
 endif ()
@@ -3983,7 +3986,7 @@ if (EXISTS "${G3D_GAME3D_SCENES_DIR}/main.zia")
     set_tests_properties(g3d_game3d_scenes PROPERTIES
             PASS_REGULAR_EXPRESSION "PASS: game3d_scenes"
             LABELS "runtime;graphics3d;zia;requires_display"
-            ENVIRONMENT "ZANNA_3D_BACKEND=software"
+            ENVIRONMENT "ZANNA_3D_BACKEND=software;ZANNA_DEMO_PROBE=1"
             TIMEOUT 60)
 endif ()
 

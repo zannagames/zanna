@@ -235,7 +235,7 @@ static uint8_t *vscn_base64_decode_ex(const char *data,
     size_t olen = (len / 4) * 3;
     olen -= padding;
 
-    uint8_t *output = (uint8_t *)malloc(olen > 0 ? olen : 1);
+    uint8_t *output = (uint8_t *)calloc(olen > 0 ? olen : 1u, 1u);
     if (!output)
         return NULL;
 
@@ -304,6 +304,12 @@ static uint8_t *vscn_base64_decode_ex(const char *data,
         }
     }
 
+    if (j != olen) {
+        if (error_offset)
+            *error_offset = len;
+        free(output);
+        return NULL;
+    }
     if (out_len)
         *out_len = olen;
     return output;
@@ -344,8 +350,18 @@ static float *vscn_base64_decode_f32_le(const char *data,
         return NULL;
     }
     for (size_t i = 0; i < expected_count; ++i) {
-        uint32_t bits = ((uint32_t)raw[i * 4u + 0u]) | ((uint32_t)raw[i * 4u + 1u] << 8u) |
-                        ((uint32_t)raw[i * 4u + 2u] << 16u) | ((uint32_t)raw[i * 4u + 3u] << 24u);
+        size_t offset = i * sizeof(float);
+        uint32_t bits;
+        if (offset > raw_len || raw_len - offset < sizeof(float)) {
+            free(values);
+            free(raw);
+            rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT,
+                                "Scene3D.Load: %s decoded f32 payload ended early",
+                                field ? field : "f32 payload");
+            return NULL;
+        }
+        bits = ((uint32_t)raw[offset + 0u]) | ((uint32_t)raw[offset + 1u] << 8u) |
+               ((uint32_t)raw[offset + 2u] << 16u) | ((uint32_t)raw[offset + 3u] << 24u);
         memcpy(&values[i], &bits, sizeof(bits));
         if (!isfinite(values[i])) {
             free(values);
@@ -395,9 +411,18 @@ static double *vscn_base64_decode_f64_le(const char *data,
         return NULL;
     }
     for (size_t i = 0; i < expected_count; ++i) {
+        size_t offset = i * sizeof(double);
         uint64_t bits = 0;
+        if (offset > raw_len || raw_len - offset < sizeof(double)) {
+            free(values);
+            free(raw);
+            rt_asset_error_setf(RT_ASSET_ERROR_CORRUPT,
+                                "Scene3D.Load: %s decoded f64 payload ended early",
+                                field ? field : "f64 payload");
+            return NULL;
+        }
         for (size_t byte = 0; byte < 8u; ++byte)
-            bits |= (uint64_t)raw[i * 8u + byte] << (byte * 8u);
+            bits |= (uint64_t)raw[offset + byte] << (byte * 8u);
         memcpy(&values[i], &bits, sizeof(bits));
         if (!isfinite(values[i])) {
             free(values);

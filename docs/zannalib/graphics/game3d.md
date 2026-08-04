@@ -1032,7 +1032,8 @@ Presets (all fluent, freely composable): `AddSpin(axis, degPerSec)`,
 speed)`, `AddFaceTarget(entity)` (yaw toward a target), `AddChase(entity,
 speed, range)` (direct XZ steering, or navmesh-routed when a `NavAgent3D` is
 bound via `SetNavAgent`), `AddFollowPath(path, speed, loop)` (constant-speed
-`Path3D` traversal), and `AddLifetime(seconds)` (despawns the entity).
+`Path3D` traversal by arc length, with speed measured in world units per
+simulation second), and `AddLifetime(seconds)` (despawns the entity).
 Presets apply in a fixed order each tick (lifetime, path, chase, orbit, sine,
 spin, face) so composed behaviors stay deterministic.
 

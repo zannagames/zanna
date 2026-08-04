@@ -1,8 +1,21 @@
 //===----------------------------------------------------------------------===//
-// Part of the Zanna project, under the GNU GPL v3. See LICENSE.
-// File: src/runtime/graphics/3d/render/rt_canvas3d_occlusion.inc  (#included from rt_canvas3d.c;
-// not a standalone translation unit) Purpose: Canvas3D deferred world-bounds, shadow-cascade
-// splits, frustum tests, and CPU occlusion grid/history
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/runtime/graphics/3d/render/rt_canvas3d_occlusion.inc
+// Purpose: Implement Canvas3D bounds, cascade, frustum, and CPU occlusion
+//   processing. Included by rt_canvas3d.c.
+// Key invariants:
+//   - Occlusion identities remain stable across queue reordering and culling.
+//   - Hash capacities are supported powers of two before masked probing.
+// Ownership/Lifetime:
+//   - Canvas3D owns persistent history and coarse/fine occlusion buffers.
+//   - Deferred draws and geometry referenced during a frame are borrowed.
+// Links: rt_canvas3d.c, rt_canvas3d_internal.h
+//
 //===----------------------------------------------------------------------===//
 
 /// @file
@@ -110,7 +123,7 @@ static int canvas3d_ensure_occlusion_duplicate_counts(rt_canvas3d *c, int32_t dr
     rt_canvas3d_occlusion_duplicate_entry *grown;
     if (!c)
         return 0;
-    if (draw_count > INT32_MAX / 2)
+    if (draw_count < 0 || draw_count > (INT32_C(1) << 29))
         return 0;
     needed = canvas3d_next_power_of_two_i32(draw_count > 0 ? draw_count * 2 : 32);
     if (needed < 32)
@@ -976,7 +989,7 @@ static int canvas3d_ensure_occlusion_history_capacity(rt_canvas3d *c, int32_t ne
     int32_t new_cap;
     int32_t hash_cap;
 
-    if (!c || needed < 0)
+    if (!c || needed < 0 || needed > (INT32_C(1) << 29))
         return 0;
     if (c->occlusion_history_capacity < needed) {
         new_cap = c->occlusion_history_capacity > 0 ? c->occlusion_history_capacity : 64;
