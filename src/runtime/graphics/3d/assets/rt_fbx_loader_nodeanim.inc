@@ -183,7 +183,7 @@ static int fbx_node_anim_make_model_table(fbx_node_t *objects,
             continue;
         }
         models[count].id = fbx_prop_i64(object, 0);
-        models[count].parent_id = fbx_find_parent(ct, models[count].id);
+        models[count].parent_id = fbx_find_model_parent(objects, ct, models[count].id);
         models[count].parent_index = -1;
         models[count].import_index = i;
         models[count].is_skeleton = fbx_model_type_is_skeleton(fbx_prop_str(object, 2));
@@ -578,19 +578,24 @@ static int fbx_node_anim_sample_runtime_trs(const fbx_node_anim_model_builder_t 
         pose->count != model_count || !context)
         return 0;
     pose->z_up = z_up;
-    memset(pose->fixed_globals, 0, (size_t)model_count * sizeof(*pose->fixed_globals));
-    for (int32_t current = 0; current < model_count; ++current) {
-        if (!fbx_anim_sample_components(
-                &models[current].animation, source_time, &pose->components[current]))
+    /* Every emitted model of a stack replays the same tick set; only the first evaluation of
+     * a tick resamples the models — later targets restore the cached global matrices. */
+    if (!fbx_constraint_pose_cache_fetch(pose, source_time)) {
+        memset(pose->fixed_globals, 0, (size_t)model_count * sizeof(*pose->fixed_globals));
+        for (int32_t current = 0; current < model_count; ++current) {
+            if (!fbx_anim_sample_components(
+                    &models[current].animation, source_time, &pose->components[current]))
+                return 0;
+            fbx_build_model_transform_matrix(&pose->components[current],
+                                             fbx_constraint_pose_local(pose, current));
+            if (z_up)
+                fbx_mat4_apply_zup(fbx_constraint_pose_local(pose, current));
+        }
+        if (!fbx_constraint_pose_recompute(pose) ||
+            (constraints && !fbx_constraint_apply_set(constraints, pose, context)))
             return 0;
-        fbx_build_model_transform_matrix(&pose->components[current],
-                                         fbx_constraint_pose_local(pose, current));
-        if (z_up)
-            fbx_mat4_apply_zup(fbx_constraint_pose_local(pose, current));
+        fbx_constraint_pose_cache_store(pose, source_time);
     }
-    if (!fbx_constraint_pose_recompute(pose) ||
-        (constraints && !fbx_constraint_apply_set(constraints, pose, context)))
-        return 0;
     runtime_parent = models[model_index].parent_index;
     if (runtime_parent >= 0 && models[runtime_parent].is_skeleton)
         runtime_parent = -1;

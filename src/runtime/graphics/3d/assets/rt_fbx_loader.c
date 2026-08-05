@@ -666,6 +666,46 @@ static const double *fbx_constraint_static_global_for_id(const fbx_constraint_po
 #include "rt_fbx_loader_anim.inc"
 #include "rt_fbx_loader_nodeanim.inc"
 #include "rt_fbx_loader_loader.inc"
+
+/// @brief Compare a specialized translation/scale compose against the general 4x4 product.
+/// @details Builds the same matrix the general path would have multiplied by, runs both, and
+///          compares elementwise. Equality is IEEE `==`, so a positive and negative zero in the
+///          same slot compare equal: the specialized path skips the zero-valued product terms the
+///          general path sums, which can only ever differ in the sign of an exact zero.
+/// @param[in] acc Row-major accumulator to compose onto.
+/// @param[in] x First component of the translation or scale.
+/// @param[in] y Second component.
+/// @param[in] z Third component.
+/// @param[in] scale Nonzero to test the scale compose, zero for the translation compose.
+/// @return Nonzero when both paths agree on all sixteen elements.
+int rt_fbx_test_append_matches_general_product(
+    const double acc[16], double x, double y, double z, int scale) {
+    double specialized[16];
+    double general[16];
+    double step[16];
+    if (!acc)
+        return 0;
+    memcpy(specialized, acc, sizeof(specialized));
+    memcpy(general, acc, sizeof(general));
+    if (scale) {
+        fbx_mat4_scale_local(x, y, z, step);
+        fbx_mat4_append_scale_local(
+            specialized, fbx_scale_or_unit(x), fbx_scale_or_unit(y), fbx_scale_or_unit(z));
+    } else {
+        fbx_mat4_translate_local(x, y, z, step);
+        fbx_mat4_append_translation_local(specialized,
+                                          fbx_clamp_abs_or(x, 0.0, FBX_NUMERIC_ABS_MAX),
+                                          fbx_clamp_abs_or(y, 0.0, FBX_NUMERIC_ABS_MAX),
+                                          fbx_clamp_abs_or(z, 0.0, FBX_NUMERIC_ABS_MAX));
+    }
+    fbx_mat4_append_local(general, step);
+    for (int i = 0; i < 16; i++) {
+        if (!(specialized[i] == general[i]))
+            return 0;
+    }
+    return 1;
+}
+
 // clang-format on
 
 /*==========================================================================

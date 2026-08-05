@@ -2266,7 +2266,7 @@ static int fbx_anim_constraint_make_models(fbx_node_t *objects,
         if (!model->name || strcmp(model->name, "Model") != 0 || model->prop_count < 3)
             continue;
         models[count].id = fbx_prop_i64(model, 0);
-        models[count].parent_id = fbx_find_parent(ct, models[count].id);
+        models[count].parent_id = fbx_find_model_parent(objects, ct, models[count].id);
         models[count].parent_index = -1;
         models[count].import_index = i;
         models[count].is_skeleton = fbx_model_type_is_skeleton(fbx_prop_str(model, 2));
@@ -2591,19 +2591,24 @@ static int fbx_anim_constraint_sample_pose(const fbx_anim_constraint_model_t *mo
                                            double scale[3]) {
     double runtime_local[16];
     pose->z_up = z_up;
-    memset(pose->fixed_globals, 0, (size_t)model_count * sizeof(*pose->fixed_globals));
-    for (int32_t model = 0; model < model_count; ++model) {
-        if (!fbx_anim_sample_components(
-                &models[model].animation, source_time, &pose->components[model]))
+    /* Every bone of a stack replays the same tick set; only the first evaluation of a tick
+     * resamples the models — later bones restore the cached global matrices directly. */
+    if (!fbx_constraint_pose_cache_fetch(pose, source_time)) {
+        memset(pose->fixed_globals, 0, (size_t)model_count * sizeof(*pose->fixed_globals));
+        for (int32_t model = 0; model < model_count; ++model) {
+            if (!fbx_anim_sample_components(
+                    &models[model].animation, source_time, &pose->components[model]))
+                return 0;
+            fbx_build_model_transform_matrix(&pose->components[model],
+                                             fbx_constraint_pose_local(pose, model));
+            if (z_up)
+                fbx_mat4_apply_zup(fbx_constraint_pose_local(pose, model));
+        }
+        if (!fbx_constraint_pose_recompute(pose) ||
+            !fbx_constraint_apply_set(constraints, pose, context))
             return 0;
-        fbx_build_model_transform_matrix(&pose->components[model],
-                                         fbx_constraint_pose_local(pose, model));
-        if (z_up)
-            fbx_mat4_apply_zup(fbx_constraint_pose_local(pose, model));
+        fbx_constraint_pose_cache_store(pose, source_time);
     }
-    if (!fbx_constraint_pose_recompute(pose) ||
-        !fbx_constraint_apply_set(constraints, pose, context))
-        return 0;
     if (parent_model_index >= 0) {
         double inverse_parent[16];
         if (!fbx_mat4_inverse_affine(fbx_constraint_pose_global(pose, parent_model_index),
@@ -2642,44 +2647,45 @@ static int fbx_anim_constraint_emit_bone(void *animation,
                                          int z_up,
                                          fbx_constraint_set_t *constraints,
                                          fbx_constraint_pose_t *pose,
-                                         fbx_load_context_t *context) {
-    int64_t *times = NULL;
-    int32_t count = 0;
-    int32_t capacity = 0;
-    if (!fbx_anim_constraint_append_times(&times,
-                                          &count,
-                                          &capacity,
+                                         fbx_load_context_t *context,
+                                         int64_t **times_io,
+                                         int32_t *count_io,
+                                         int32_t *capacity_io) {
+    /* Caller-owned reusable per-stack buffer; see fbx_anim_build_bone_keyframes. */
+    if (!times_io || !count_io || !capacity_io)
+        return -1;
+    *count_io = 0;
+    if (!fbx_anim_constraint_append_times(times_io,
+                                          count_io,
+                                          capacity_io,
                                           models,
                                           model_count,
                                           model_index,
                                           constraints,
                                           pose,
                                           context)) {
-        free(times);
         return -1;
     }
-    fbx_anim_sort_unique_times(times, &count);
-    if (count == 0) {
-        free(times);
+    fbx_anim_sort_unique_times(*times_io, count_io);
+    if (*count_io == 0) {
         return 0;
     }
     {
         int32_t reserved = 16;
-        while (reserved < count) {
+        while (reserved < *count_io) {
             if (reserved > RT_ANIMATION3D_MAX_KEYFRAMES_PER_CHANNEL / 2) {
-                free(times);
                 return -1;
             }
             reserved *= 2;
         }
         if (!fbx_budget_charge(context, (uint64_t)reserved, sizeof(vgfx3d_keyframe_t)) ||
             !fbx_budget_charge(context, 8u, sizeof(vgfx3d_anim_channel_t))) {
-            free(times);
             return -1;
         }
     }
-    for (int32_t i = 0; i < count; ++i) {
-        double relative_time = ((double)times[i] - (double)clip_start) / (double)FBX_TIME_SECOND;
+    for (int32_t i = 0; i < *count_io; ++i) {
+        double relative_time =
+            ((double)(*times_io)[i] - (double)clip_start) / (double)FBX_TIME_SECOND;
         double position_value[3];
         double quaternion_value[4];
         double scale_value[3];
@@ -2690,7 +2696,7 @@ static int fbx_anim_constraint_emit_bone(void *animation,
                                              model_count,
                                              model_index,
                                              parent_model_index,
-                                             times[i],
+                                             (*times_io)[i],
                                              z_up,
                                              constraints,
                                              pose,
@@ -2698,7 +2704,6 @@ static int fbx_anim_constraint_emit_bone(void *animation,
                                              position_value,
                                              quaternion_value,
                                              scale_value)) {
-            free(times);
             return -1;
         }
         position = rt_vec3_new(position_value[0], position_value[1], position_value[2]);
@@ -2711,14 +2716,12 @@ static int fbx_anim_constraint_emit_bone(void *animation,
             fbx_release_ref(&position);
             fbx_release_ref(&rotation);
             fbx_release_ref(&scale);
-            free(times);
             return -1;
         }
         fbx_release_ref(&position);
         fbx_release_ref(&rotation);
         fbx_release_ref(&scale);
     }
-    free(times);
     return 1;
 }
 
@@ -2762,6 +2765,9 @@ static int fbx_extract_constraint_animations(fbx_node_t *objects,
         int64_t maximum = 0;
         void *animation = NULL;
         int emitted = 0;
+        int64_t *stack_times = NULL;
+        int32_t stack_time_count = 0;
+        int32_t stack_time_capacity = 0;
         memset(&pose, 0, sizeof(pose));
         memset(&layer_stack, 0, sizeof(layer_stack));
         if (strcmp(stack->name, "AnimationStack") != 0 || stack->prop_count < 1 ||
@@ -2826,8 +2832,12 @@ static int fbx_extract_constraint_animations(fbx_node_t *objects,
                                                    z_up,
                                                    constraints,
                                                    &pose,
-                                                   context);
+                                                   context,
+                                                   &stack_times,
+                                                   &stack_time_count,
+                                                   &stack_time_capacity);
             if (status < 0) {
+                free(stack_times);
                 fbx_release_ref(&animation);
                 fbx_constraint_pose_free(&pose);
                 free(models);
@@ -2838,6 +2848,7 @@ static int fbx_extract_constraint_animations(fbx_node_t *objects,
             if (status > 0)
                 emitted = 1;
         }
+        free(stack_times);
         fbx_constraint_pose_free(&pose);
         free(models);
         free(ids);
@@ -3007,16 +3018,24 @@ static int fbx_anim_build_bone_keyframes(void *anim,
                                          int64_t bone_idx,
                                          int z_up,
                                          int64_t clip_start_time,
-                                         fbx_load_context_t *context) {
-    int64_t *times = NULL;
-    int32_t time_count = 0;
-    int32_t time_capacity = 0;
+                                         fbx_load_context_t *context,
+                                         int64_t **times_io,
+                                         int32_t *time_count_io,
+                                         int32_t *time_capacity_io) {
+    /* The caller owns one reusable per-stack time buffer: with real bone hierarchies each
+     * bone appends its whole ancestor chain's key times, and a fresh doubling-growth array
+     * per bone charges the monotonic load budget for every bone of every stack — a
+     * 218-stack mocap package exhausts the budget on scratch alone. Resetting the count
+     * while keeping capacity charges each stack's high-water mark exactly once. */
     int emitted_any = 0;
+    if (!times_io || !time_count_io || !time_capacity_io)
+        return -1;
+    *time_count_io = 0;
     if (!builders[bone_idx].initialized)
         return 0;
-    if (!fbx_anim_append_inherited_sample_times(&times,
-                                                &time_count,
-                                                &time_capacity,
+    if (!fbx_anim_append_inherited_sample_times(times_io,
+                                                time_count_io,
+                                                time_capacity_io,
                                                 builders,
                                                 bone_count,
                                                 skeleton,
@@ -3028,18 +3047,16 @@ static int fbx_anim_build_bone_keyframes(void *anim,
             context && context->budget_exhausted
                 ? "FBX.Load: animation-layer sample times exceed the aggregate load budget"
                 : "FBX.Load: failed to collect animation-layer sample times");
-        free(times);
         return -1;
     }
-    fbx_anim_sort_unique_times(times, &time_count);
-    if (time_count > 0) {
+    fbx_anim_sort_unique_times(*times_io, time_count_io);
+    if (*time_count_io > 0) {
         int32_t reserved_keyframes = 16;
-        while (reserved_keyframes < time_count) {
+        while (reserved_keyframes < *time_count_io) {
             if (reserved_keyframes > RT_ANIMATION3D_MAX_KEYFRAMES_PER_CHANNEL / 2) {
                 rt_asset_error_set_if_empty(
                     RT_ASSET_ERROR_TOO_LARGE,
                     "FBX.Load: animation-layer channel exceeds the keyframe limit");
-                free(times);
                 return -1;
             }
             reserved_keyframes *= 2;
@@ -3049,12 +3066,11 @@ static int fbx_anim_build_bone_keyframes(void *anim,
             rt_asset_error_set_if_empty(
                 RT_ASSET_ERROR_TOO_LARGE,
                 "FBX.Load: animation-layer keyframes exceed the aggregate load budget");
-            free(times);
             return -1;
         }
     }
-    for (int32_t ti = 0; ti < time_count; ti++) {
-        int64_t fbx_time = times[ti];
+    for (int32_t ti = 0; ti < *time_count_io; ti++) {
+        int64_t fbx_time = (*times_io)[ti];
         double t = ((double)fbx_time - (double)clip_start_time) / (double)FBX_TIME_SECOND;
         double position_value[3];
         double quaternion_value[4];
@@ -3078,7 +3094,6 @@ static int fbx_anim_build_bone_keyframes(void *anim,
             rt_asset_error_set_if_empty(
                 RT_ASSET_ERROR_CORRUPT,
                 "FBX.Load: animation layer transform evaluation produced an invalid pose");
-            free(times);
             return -1;
         }
         position = rt_vec3_new(position_value[0], position_value[1], position_value[2]);
@@ -3093,7 +3108,6 @@ static int fbx_anim_build_bone_keyframes(void *anim,
             fbx_release_ref(&position);
             fbx_release_ref(&rotation);
             fbx_release_ref(&scale);
-            free(times);
             return -1;
         }
         emitted_any = 1;
@@ -3101,7 +3115,6 @@ static int fbx_anim_build_bone_keyframes(void *anim,
         fbx_release_ref(&rotation);
         fbx_release_ref(&scale);
     }
-    free(times);
     return emitted_any;
 }
 
@@ -3151,7 +3164,11 @@ static int fbx_extract_animations(fbx_node_t *root,
     if (bone_count > FBX_MAX_SKELETON_BONES ||
         (size_t)bone_count > SIZE_MAX / sizeof(fbx_anim_bone_builder_t))
         return 0;
-    if (constraints && constraints->count > 0)
+    /* Route on constraints the evaluator will actually apply. Unknown-kind and inactive
+     * entries never change a pose, so a file whose only constraint is an unevaluated rig
+     * definition (a MotionBuilder Character, for instance) bakes on the ordinary path
+     * instead of paying whole-pose constraint evaluation for every bone. */
+    if (constraints && constraints->evaluated_count > 0)
         return fbx_extract_constraint_animations(objects,
                                                  ct,
                                                  skeleton,
@@ -3229,10 +3246,23 @@ static int fbx_extract_animations(fbx_node_t *root,
             goto fail;
         }
 
+        int64_t *stack_times = NULL;
+        int32_t stack_time_count = 0;
+        int32_t stack_time_capacity = 0;
         for (int64_t bone_idx = 0; bone_idx < bone_count; bone_idx++) {
-            int build_status = fbx_anim_build_bone_keyframes(
-                anim, builders, bone_count, skeleton, bone_idx, z_up, min_time, context);
+            int build_status = fbx_anim_build_bone_keyframes(anim,
+                                                             builders,
+                                                             bone_count,
+                                                             skeleton,
+                                                             bone_idx,
+                                                             z_up,
+                                                             min_time,
+                                                             context,
+                                                             &stack_times,
+                                                             &stack_time_count,
+                                                             &stack_time_capacity);
             if (build_status < 0) {
+                free(stack_times);
                 free(builders);
                 fbx_anim_layer_stack_free(&layer_stack);
                 fbx_release_ref(&anim);
@@ -3241,6 +3271,7 @@ static int fbx_extract_animations(fbx_node_t *root,
             if (build_status > 0)
                 emitted_any = 1;
         }
+        free(stack_times);
         free(builders);
         fbx_anim_layer_stack_free(&layer_stack);
 

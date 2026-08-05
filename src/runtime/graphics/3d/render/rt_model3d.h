@@ -98,6 +98,25 @@ void *rt_model3d_load_asset_result(rt_string path);
 /// @param path Destination filesystem path.
 /// @return One after atomic publication, otherwise zero.
 int64_t rt_model3d_save(void *obj, rt_string path);
+/// @brief Retain only the listed animation clips, releasing every other clip in place.
+/// @details Tool-facing subset helper for per-clip bakes (`zanna asset bake --clips`) — not a
+///          registered scripting-surface method. Both index lists must be strictly ascending and
+///          in range; on any invalid input the model is left completely unchanged. Kept clips
+///          preserve their relative order. Scene templates hold no serialized references into the
+///          clip arrays (VSCN scenes own no clips), so a filtered model saves and reloads cleanly.
+/// @param obj Model3D whose clip inventory is filtered.
+/// @param animation_indices Strictly ascending kept skeletal-animation indices, or NULL when
+///        @p animation_index_count is zero (drops every skeletal clip).
+/// @param animation_index_count Number of kept skeletal-animation indices.
+/// @param node_animation_indices Strictly ascending kept node-animation indices, or NULL when
+///        @p node_animation_index_count is zero (drops every node clip).
+/// @param node_animation_index_count Number of kept node-animation indices.
+/// @return One after filtering, zero on invalid model or index lists (model unchanged).
+int64_t rt_model3d_keep_animation_subset(void *obj,
+                                         const int64_t *animation_indices,
+                                         int32_t animation_index_count,
+                                         const int64_t *node_animation_indices,
+                                         int32_t node_animation_index_count);
 /// @brief Internal async path: build a glTF/GLB model from preloaded root bytes.
 /// @details Takes ownership of @p preloaded_data; callers must not reuse it.
 /// @param path Logical source path for format and dependency resolution.
@@ -239,7 +258,8 @@ rt_string rt_model3d_get_variant_name(void *obj, int64_t index);
 /// @param variant_index Zero-based imported variant index.
 /// @return Number of nodes assigned a mapped material, or zero for invalid input.
 int64_t rt_model3d_apply_variant(void *obj, void *target, int64_t variant_index);
-/// @brief Generate LOD chains (1..4 levels of repeated ratio-scaled triangles) for every mesh node in
+/// @brief Generate LOD chains (1..4 levels of repeated ratio-scaled triangles) for every mesh node
+/// in
 ///        the asset's template and scene hierarchies, and enable auto screen-error
 ///        selection. Each unique mesh is decimated once; nodes that already carry LOD
 ///        chains are skipped. Instantiate() clones inherit the chains.

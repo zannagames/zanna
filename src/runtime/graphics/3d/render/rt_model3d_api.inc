@@ -125,11 +125,17 @@ int64_t rt_model3d_save(void *obj, rt_string path) {
     rt_vscn_asset_scene_view *scenes = NULL;
     int32_t scene_count;
     int64_t result;
-    if (!model || !path || !rt_string_is_handle(path) || !rt_string_cstr(path))
+    if (!model || !path || !rt_string_is_handle(path) || !rt_string_cstr(path)) {
+        rt_asset_error_set_if_empty(RT_ASSET_ERROR_CORRUPT,
+                                    "VSCN.Save: invalid model handle or destination path");
         return 0;
+    }
     scene_count = model_scene_count(model);
-    if (scene_count <= 0 || !model->template_root)
+    if (scene_count <= 0 || !model->template_root) {
+        rt_asset_error_set_if_empty(RT_ASSET_ERROR_CORRUPT,
+                                    "VSCN.Save: model has no serializable scene");
         return 0;
+    }
     scenes = (rt_vscn_asset_scene_view *)calloc((size_t)scene_count, sizeof(*scenes));
     if (!scenes)
         return 0;
@@ -172,6 +178,91 @@ int64_t rt_model3d_save(void *obj, rt_string path) {
     result = rt_vscn_save_asset_view(&view, path);
     free(scenes);
     return result;
+}
+
+/// @brief Validate one strictly ascending kept-index list against a clip array's safe count.
+/// @param indices Candidate kept indices, or NULL when @p index_count is zero.
+/// @param index_count Number of kept indices.
+/// @param available Safe readable clip count.
+/// @return Nonzero when every index is in range and the list is strictly ascending.
+static int model_subset_indices_valid(const int64_t *indices,
+                                      int32_t index_count,
+                                      int32_t available) {
+    if (index_count < 0 || index_count > available)
+        return 0;
+    if (index_count == 0)
+        return 1;
+    if (!indices)
+        return 0;
+    for (int32_t i = 0; i < index_count; i++) {
+        if (indices[i] < 0 || indices[i] >= (int64_t)available)
+            return 0;
+        if (i > 0 && indices[i] <= indices[i - 1])
+            return 0;
+    }
+    return 1;
+}
+
+/// @brief Compact one clip array to a validated kept-index list, releasing dropped clips.
+/// @param arr Clip pointer array.
+/// @param count In/out logical clip count.
+/// @param capacity Allocated clip capacity (unchanged; the array is not shrunk).
+/// @param indices Strictly ascending kept indices already validated by the caller.
+/// @param index_count Number of kept indices.
+/// @param class_id Runtime class released for dropped entries.
+static void model_subset_apply(void **arr,
+                               int32_t *count,
+                               int32_t capacity,
+                               const int64_t *indices,
+                               int32_t index_count,
+                               int64_t class_id) {
+    int32_t safe = model_clamped_array_count(arr, *count, capacity);
+    int32_t kept = 0;
+    for (int32_t i = 0; i < safe; i++) {
+        if (kept < index_count && indices[kept] == (int64_t)i) {
+            arr[kept] = arr[i];
+            kept++;
+        } else {
+            model_release_class_ref(&arr[i], class_id);
+        }
+    }
+    for (int32_t i = kept; i < safe; i++)
+        arr[i] = NULL;
+    *count = kept;
+}
+
+int64_t rt_model3d_keep_animation_subset(void *obj,
+                                         const int64_t *animation_indices,
+                                         int32_t animation_index_count,
+                                         const int64_t *node_animation_indices,
+                                         int32_t node_animation_index_count) {
+    rt_model3d *model = model3d_checked(obj);
+    int32_t safe_animations;
+    int32_t safe_node_animations;
+    if (!model)
+        return 0;
+    safe_animations = model_clamped_array_count(
+        model->animations, model->animation_count, model->animation_capacity);
+    safe_node_animations = model_clamped_array_count(
+        model->node_animations, model->node_animation_count, model->node_animation_capacity);
+    if (!model_subset_indices_valid(animation_indices, animation_index_count, safe_animations) ||
+        !model_subset_indices_valid(
+            node_animation_indices, node_animation_index_count, safe_node_animations)) {
+        return 0;
+    }
+    model_subset_apply(model->animations,
+                       &model->animation_count,
+                       model->animation_capacity,
+                       animation_indices,
+                       animation_index_count,
+                       RT_G3D_ANIMATION3D_CLASS_ID);
+    model_subset_apply(model->node_animations,
+                       &model->node_animation_count,
+                       model->node_animation_capacity,
+                       node_animation_indices,
+                       node_animation_index_count,
+                       RT_G3D_NODEANIMATION3D_CLASS_ID);
+    return 1;
 }
 
 /// @brief Load a model with explicit import options (Plan 09).
@@ -963,7 +1054,8 @@ void *rt_model3d_load_node_animation_asset_result(rt_string path, int64_t index)
 }
 
 /// @brief Locate a node in the template subtree by exact name match. NULL if not found.
-/// @details The returned node belongs to the immutable template and must not be mutated or released.
+/// @details The returned node belongs to the immutable template and must not be mutated or
+/// released.
 /// @param obj Model3D receiver.
 /// @param name Exact node name to match.
 /// @return Borrowed template SceneNode3D, or NULL.

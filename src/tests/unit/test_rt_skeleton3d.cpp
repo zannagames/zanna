@@ -50,6 +50,7 @@ extern double rt_quat_z(void *q);
 extern double rt_quat_w(void *q);
 extern void *rt_mat4_identity(void);
 extern void *rt_mat4_translate(double tx, double ty, double tz);
+extern void *rt_mat4_rotate_x(double angle);
 extern rt_string rt_const_cstr(const char *s);
 extern int rt_obj_release_check0(void *obj);
 }
@@ -953,6 +954,65 @@ static void test_animation_retarget_maps_humanoid_roles() {
         spine->m[11], 0.0, 0.05, "Humanoid retarget does not mis-map onto the index-fallback bone");
 }
 
+/// @brief A source key at its bind pose must land exactly on the destination bind pose.
+/// @details Rest-delta compensation contract: rigs bind differently (a Biped figure stance vs a
+///          T-pose auto-rig), and uncompensated verbatim rotation copy bakes that constant
+///          difference into every key. The source arm binds rotated 90 degrees about X; a key
+///          holding exactly that bind rotation must play back as the destination's own bind.
+static void test_animation_retarget_compensates_rest_pose_delta() {
+    void *src = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(src, rt_const_cstr("root"), -1, rt_mat4_identity());
+    int64_t src_arm =
+        rt_skeleton3d_add_bone(src, rt_const_cstr("arm"), 0, rt_mat4_rotate_x(1.5707963267948966));
+    rt_skeleton3d_compute_inverse_bind(src);
+
+    void *dst = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(dst, rt_const_cstr("root"), -1, rt_mat4_identity());
+    int64_t dst_arm =
+        rt_skeleton3d_add_bone(dst, rt_const_cstr("arm"), 0, rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_compute_inverse_bind(dst);
+
+    /* Key 0: exactly the source bind rotation. Key 1: bind followed by a 30-degree Z twist. */
+    void *anim = rt_animation3d_new(rt_const_cstr("delta"), 2.0);
+    void *scl = rt_vec3_new(1.0, 1.0, 1.0);
+    void *bind_rot = rt_quat_new(0.7071067811865476, 0.0, 0.0, 0.7071067811865476);
+    /* qX90 * qZ30 under this runtime's Hamilton convention. */
+    void *twisted_rot = rt_quat_new(
+        0.6830127018922193, -0.1830127018922193, 0.1830127018922193, 0.6830127018922193);
+    rt_animation3d_add_keyframe(anim, src_arm, 0.0, rt_vec3_new(0.0, 0.0, 0.0), bind_rot, scl);
+    rt_animation3d_add_keyframe(anim, src_arm, 2.0, rt_vec3_new(0.0, 0.0, 0.0), twisted_rot, scl);
+
+    void *retargeted = rt_animation3d_retarget(anim, src, dst);
+    EXPECT_TRUE(retargeted != nullptr, "Rest-delta retarget returns an animation");
+    if (!retargeted)
+        return;
+
+    typedef struct {
+        double m[16];
+    } mat4_view;
+
+    void *player = rt_anim_player3d_new(dst);
+    rt_anim_player3d_play(player, retargeted);
+    rt_anim_player3d_update(player, 0.0);
+    mat4_view *at_bind = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, dst_arm);
+    EXPECT_NEAR(at_bind->m[3], 1.0, 1e-4, "Bind-pose key keeps the destination bind translation");
+    EXPECT_NEAR(at_bind->m[0], 1.0, 1e-4, "Bind-pose key plays the destination bind rotation");
+    EXPECT_NEAR(at_bind->m[5], 1.0, 1e-4, "Bind-pose key does not inherit the source bind X-roll");
+    EXPECT_NEAR(at_bind->m[10], 1.0, 1e-4, "Bind-pose key stays upright on the destination");
+
+    /* The 30-degree source-local Z twist conjugates through the source bind X-roll into a
+     * world rotation about -Y: RotX(90) * RotZ(30) * RotX(-90) == RotY(-30). */
+    void *player2 = rt_anim_player3d_new(dst);
+    rt_anim_player3d_play(player2, retargeted);
+    rt_anim_player3d_update(player2, 2.0);
+    mat4_view *at_twist = (mat4_view *)rt_anim_player3d_get_bone_matrix(player2, dst_arm);
+    EXPECT_NEAR(at_twist->m[0], 0.8660254, 1e-3, "Delta transfers as a world -Y rotation (xx)");
+    EXPECT_NEAR(at_twist->m[2], -0.5, 1e-3, "Delta transfers as a world -Y rotation (xz)");
+    EXPECT_NEAR(at_twist->m[8], 0.5, 1e-3, "Delta transfers as a world -Y rotation (zx)");
+    EXPECT_NEAR(at_twist->m[10], 0.8660254, 1e-3, "Delta transfers as a world -Y rotation (zz)");
+    EXPECT_NEAR(at_twist->m[3], 1.0, 1e-4, "Zero translation delta keeps the bind offset");
+}
+
 static void test_animation_retarget_matches_bone_names() {
     void *src = rt_skeleton3d_new();
     rt_skeleton3d_add_bone(src, rt_const_cstr("root"), -1, rt_mat4_identity());
@@ -1104,6 +1164,7 @@ int main() {
     test_anim_blend_dt_zero_and_looping_defaults();
     test_anim_blend_long_state_names_use_canonical_lookup();
     test_animation_retarget_matches_bone_names();
+    test_animation_retarget_compensates_rest_pose_delta();
     test_animation_retarget_scales_by_proportion();
     test_animation_retarget_maps_humanoid_roles();
     test_non_topological_parent_order_evaluates_hierarchy();

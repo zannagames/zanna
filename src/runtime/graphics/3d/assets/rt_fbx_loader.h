@@ -84,6 +84,19 @@ uint64_t rt_fbx_test_get_last_budget_used_bytes(void);
 /// @brief CTest hook: report hash and adjacency probes from the latest load on this thread.
 /// @return Saturating probe count used to verify near-linear numeric graph resolution.
 uint64_t rt_fbx_test_get_last_lookup_probe_count(void);
+/// @brief CTest hook: check the specialized translation/scale composes against the general product.
+/// @details The transform stack post-multiplies by pure translation and pure scale matrices, which
+///          the importer applies without a general 4x4 multiply. This hook runs both paths over
+///          @p acc and reports whether every element compares equal, so the optimization cannot
+///          silently diverge from the matrix algebra it replaces.
+/// @param[in] acc Sixteen-element row-major accumulator to compose onto.
+/// @param[in] x First component of the translation or scale.
+/// @param[in] y Second component.
+/// @param[in] z Third component.
+/// @param[in] scale Nonzero to test the scale compose, zero to test the translation compose.
+/// @return Nonzero when the specialized result equals the general product elementwise.
+int rt_fbx_test_append_matches_general_product(
+    const double acc[16], double x, double y, double z, int scale);
 /// @brief Number of meshes in the loaded FBX.
 /// @param[in] fbx FBX asset handle.
 /// @return The safe readable mesh count, or zero for invalid input.

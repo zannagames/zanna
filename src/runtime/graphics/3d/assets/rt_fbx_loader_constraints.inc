@@ -129,6 +129,12 @@ typedef struct {
     int32_t count;
     /// Allocated entry capacity.
     int32_t capacity;
+    /// Number of entries the evaluator will actually apply: validated active constraints of a
+    /// supported kind. Unknown-kind and inactive entries are preserved for diagnostics but never
+    /// change a pose, so animation extraction may take the constraint-free path when this is
+    /// zero — mocap exporters routinely ship one unevaluated Character rig definition, and
+    /// routing on `count` alone forced every such file through whole-pose constraint baking.
+    int32_t evaluated_count;
     /// Owned topological array of indices into `entries`.
     int32_t *order;
     /// Borrowed context used for retained and scratch budget charges.
@@ -159,6 +165,24 @@ struct fbx_constraint_pose {
     uint8_t *fixed_globals;
     /// Reusable traversal and dependency-mark flags.
     uint8_t *evaluation_flags;
+    /* Per-source-time result cache. A pose is a pure function of its stack's curves, the source
+     * tick, the basis conversion, and the (stateless) constraint set, and every extractor that
+     * shares one pose iterates the same stack — so a tick evaluated for one target model can be
+     * replayed for every other target instead of resampling all models. Only the final global
+     * matrices are cached: post-evaluation consumers read globals exclusively (components and
+     * local matrices are evaluation scratch). */
+    /// Owned sorted array of cached source ticks.
+    int64_t *cache_times;
+    /// Owned per-cached-tick block indices into `cache_globals`, parallel to `cache_times`.
+    int32_t *cache_slots;
+    /// Owned cached global-matrix blocks of `count * 16` doubles each, in insertion order.
+    double *cache_globals;
+    /// Number of cached ticks.
+    int32_t cache_count;
+    /// Allocated cache capacity in ticks.
+    int32_t cache_capacity;
+    /// Zero after a cap or allocation failure permanently disables further caching.
+    int cache_disabled;
 };
 
 /// @brief Free every array owned by a constraint pose and reset it.
@@ -175,7 +199,112 @@ static void fbx_constraint_pose_free(fbx_constraint_pose_t *pose) {
     free(pose->id_table);
     free(pose->fixed_globals);
     free(pose->evaluation_flags);
+    free(pose->cache_times);
+    free(pose->cache_slots);
+    free(pose->cache_globals);
     memset(pose, 0, sizeof(*pose));
+}
+
+/// Ceiling on cached global-matrix bytes per pose; a pose lives for one animation stack.
+#define FBX_POSE_CACHE_MAX_BYTES (32u * 1024u * 1024u)
+
+/// @brief Locate a cached tick's slot in the pose result cache.
+/// @param[in] pose Pose whose sorted cache-time table is searched.
+/// @param[in] time Source tick.
+/// @return Index into `cache_times`/`cache_slots`, or `-1` when absent.
+static int32_t fbx_constraint_pose_cache_index(const fbx_constraint_pose_t *pose, int64_t time) {
+    int32_t lo = 0;
+    int32_t hi = pose->cache_count - 1;
+    while (lo <= hi) {
+        int32_t mid = lo + (hi - lo) / 2;
+        if (pose->cache_times[mid] == time)
+            return mid;
+        if (pose->cache_times[mid] < time)
+            lo = mid + 1;
+        else
+            hi = mid - 1;
+    }
+    return -1;
+}
+
+/// @brief Replay a previously evaluated tick's global matrices into @p pose.
+/// @param[in,out] pose Pose receiving the cached globals.
+/// @param[in] time Source tick.
+/// @return Nonzero when the tick was cached and the globals were restored.
+static int fbx_constraint_pose_cache_fetch(fbx_constraint_pose_t *pose, int64_t time) {
+    int32_t index;
+    if (!pose || pose->cache_count <= 0 || !pose->global_matrices)
+        return 0;
+    index = fbx_constraint_pose_cache_index(pose, time);
+    if (index < 0)
+        return 0;
+    memcpy(pose->global_matrices,
+           &pose->cache_globals[(size_t)pose->cache_slots[index] * (size_t)pose->count * 16u],
+           (size_t)pose->count * 16u * sizeof(double));
+    return 1;
+}
+
+/// @brief Record the current global matrices as the evaluated result for @p time.
+/// @details Failure never propagates: on a byte-cap hit or allocation failure the cache is
+///          permanently disabled for this pose and evaluation simply keeps recomputing.
+///          The cache is deliberately NOT charged to the aggregate load budget: that budget is
+///          monotonic with no refund for freed scratch, so charging a per-stack cache would make
+///          consumption scale with the file's stack count for memory that never coexists — a
+///          218-stack mocap package would exhaust the budget on cache alone. Exactly one pose
+///          (and therefore one cache) is live per extraction pass, and
+///          @ref FBX_POSE_CACHE_MAX_BYTES independently bounds its size, so the loader's
+///          peak-memory guarantee is preserved without budget interaction.
+/// @param[in,out] pose Pose whose current globals are captured.
+/// @param[in] time Source tick just evaluated.
+static void fbx_constraint_pose_cache_store(fbx_constraint_pose_t *pose, int64_t time) {
+    size_t block_doubles;
+    int32_t index;
+    if (!pose || pose->cache_disabled || pose->count <= 0 || !pose->global_matrices)
+        return;
+    if (fbx_constraint_pose_cache_index(pose, time) >= 0)
+        return;
+    block_doubles = (size_t)pose->count * 16u;
+    if (pose->cache_count == pose->cache_capacity) {
+        int32_t new_capacity = pose->cache_capacity == 0 ? 64 : pose->cache_capacity * 2;
+        uint64_t per_entry_bytes =
+            (uint64_t)block_doubles * sizeof(double) + sizeof(int64_t) + sizeof(int32_t);
+        int64_t *times;
+        int32_t *slots;
+        double *globals;
+        if ((uint64_t)new_capacity > SIZE_MAX / (block_doubles * sizeof(double)) ||
+            (uint64_t)new_capacity * per_entry_bytes > FBX_POSE_CACHE_MAX_BYTES) {
+            pose->cache_disabled = 1;
+            return;
+        }
+        times = (int64_t *)realloc(pose->cache_times, (size_t)new_capacity * sizeof(*times));
+        if (times)
+            pose->cache_times = times;
+        slots = (int32_t *)realloc(pose->cache_slots, (size_t)new_capacity * sizeof(*slots));
+        if (slots)
+            pose->cache_slots = slots;
+        globals = (double *)realloc(pose->cache_globals,
+                                    (size_t)new_capacity * block_doubles * sizeof(double));
+        if (globals)
+            pose->cache_globals = globals;
+        if (!times || !slots || !globals) {
+            pose->cache_disabled = 1;
+            return;
+        }
+        pose->cache_capacity = new_capacity;
+    }
+    /* Keep tick order sorted; blocks stay in insertion order behind the slot indirection. */
+    index = pose->cache_count;
+    while (index > 0 && pose->cache_times[index - 1] > time) {
+        pose->cache_times[index] = pose->cache_times[index - 1];
+        pose->cache_slots[index] = pose->cache_slots[index - 1];
+        --index;
+    }
+    pose->cache_times[index] = time;
+    pose->cache_slots[index] = pose->cache_count;
+    memcpy(&pose->cache_globals[(size_t)pose->cache_count * block_doubles],
+           pose->global_matrices,
+           block_doubles * sizeof(double));
+    ++pose->cache_count;
 }
 
 /// @brief Free a parsed constraint set, including all per-entry sources.
@@ -196,11 +325,9 @@ static void fbx_constraint_set_free(fbx_constraint_set_t *set) {
 static fbx_constraint_kind_t fbx_constraint_kind_from_text(const char *text) {
     if (!text)
         return FBX_CONSTRAINT_UNKNOWN;
-    if (fbx_ascii_equals_i(text, "Position From Positions") ||
-        fbx_ascii_equals_i(text, "Position"))
+    if (fbx_ascii_equals_i(text, "Position From Positions") || fbx_ascii_equals_i(text, "Position"))
         return FBX_CONSTRAINT_POSITION;
-    if (fbx_ascii_equals_i(text, "Rotation From Rotations") ||
-        fbx_ascii_equals_i(text, "Rotation"))
+    if (fbx_ascii_equals_i(text, "Rotation From Rotations") || fbx_ascii_equals_i(text, "Rotation"))
         return FBX_CONSTRAINT_ROTATION;
     if (fbx_ascii_equals_i(text, "Scale From Scales") || fbx_ascii_equals_i(text, "Scale"))
         return FBX_CONSTRAINT_SCALE;
@@ -208,8 +335,7 @@ static fbx_constraint_kind_t fbx_constraint_kind_from_text(const char *text) {
         return FBX_CONSTRAINT_PARENT;
     if (fbx_ascii_equals_i(text, "Aim"))
         return FBX_CONSTRAINT_AIM;
-    if (fbx_ascii_equals_i(text, "Single Chain IK") ||
-        fbx_ascii_equals_i(text, "SingleChainIK"))
+    if (fbx_ascii_equals_i(text, "Single Chain IK") || fbx_ascii_equals_i(text, "SingleChainIK"))
         return FBX_CONSTRAINT_SINGLE_CHAIN_IK;
     return FBX_CONSTRAINT_UNKNOWN;
 }
@@ -236,11 +362,8 @@ static const char *fbx_constraint_type_text(fbx_node_t *node) {
 /// @param[out] out_found Optional flag indicating an authored property.
 /// @return Nonzero for an absent or finite value; zero for invalid output or
 /// non-finite authored data.
-static int fbx_constraint_property_number(fbx_node_t *node,
-                                          const char *name,
-                                          double fallback,
-                                          double *out,
-                                          int *out_found) {
+static int fbx_constraint_property_number(
+    fbx_node_t *node, const char *name, double fallback, double *out, int *out_found) {
     fbx_node_t *property;
     double value;
     if (out_found)
@@ -277,11 +400,8 @@ static int fbx_constraint_property_number(fbx_node_t *node,
 /// @param[out] out Destination components.
 /// @param[out] out_found Optional flag indicating an authored property.
 /// @return Nonzero for an absent or valid finite vector, otherwise zero.
-static int fbx_constraint_property_xyz(fbx_node_t *node,
-                                       const char *name,
-                                       const double fallback[3],
-                                       double out[3],
-                                       int *out_found) {
+static int fbx_constraint_property_xyz(
+    fbx_node_t *node, const char *name, const double fallback[3], double out[3], int *out_found) {
     fbx_node_t *property;
     if (out_found)
         *out_found = 0;
@@ -340,8 +460,7 @@ static int fbx_constraint_name_has_suffix(const char *name, const char *suffix) 
         return 0;
     name_len = strlen(name);
     suffix_len = strlen(suffix);
-    return name_len > suffix_len &&
-           fbx_ascii_equals_i(name + name_len - suffix_len, suffix);
+    return name_len > suffix_len && fbx_ascii_equals_i(name + name_len - suffix_len, suffix);
 }
 
 /// @brief Match a dynamic property name against an exact model name and suffix.
@@ -419,12 +538,11 @@ static int fbx_constraint_append_source(fbx_constraint_t *constraint,
             return 0;
         capacity = constraint->source_capacity == 0 ? 4 : constraint->source_capacity * 2;
         if ((size_t)capacity > SIZE_MAX / sizeof(*grown) ||
-            !fbx_budget_charge(context,
-                               (uint64_t)(capacity - constraint->source_capacity),
-                               sizeof(*grown)))
+            !fbx_budget_charge(
+                context, (uint64_t)(capacity - constraint->source_capacity), sizeof(*grown)))
             return 0;
-        grown = (fbx_constraint_source_t *)realloc(
-            constraint->sources, (size_t)capacity * sizeof(*grown));
+        grown = (fbx_constraint_source_t *)realloc(constraint->sources,
+                                                   (size_t)capacity * sizeof(*grown));
         if (!grown)
             return 0;
         memset(grown + constraint->source_capacity,
@@ -570,20 +688,20 @@ static int fbx_constraint_read_source_properties(fbx_constraint_t *constraint,
             static const double zero[3] = {0.0, 0.0, 0.0};
             static const double one[3] = {1.0, 1.0, 1.0};
             fbx_node_t *property;
-            property = fbx_constraint_find_model_property(
-                constraint->source_node, model, ".Offset T");
+            property =
+                fbx_constraint_find_model_property(constraint->source_node, model, ".Offset T");
             if (property && !fbx_read_p_xyz(property, source->translation_offset))
                 return 0;
             if (!property)
                 memcpy(source->translation_offset, zero, sizeof(zero));
-            property = fbx_constraint_find_model_property(
-                constraint->source_node, model, ".Offset R");
+            property =
+                fbx_constraint_find_model_property(constraint->source_node, model, ".Offset R");
             if (property && !fbx_read_p_xyz(property, source->rotation_offset))
                 return 0;
             if (!property)
                 memcpy(source->rotation_offset, zero, sizeof(zero));
-            property = fbx_constraint_find_model_property(
-                constraint->source_node, model, ".Offset S");
+            property =
+                fbx_constraint_find_model_property(constraint->source_node, model, ".Offset S");
             if (property && !fbx_read_p_xyz(property, source->scale_offset))
                 return 0;
             if (!property)
@@ -610,30 +728,22 @@ static int fbx_constraint_read_common_properties(fbx_constraint_t *constraint) {
     if (!constraint ||
         !fbx_constraint_property_bool(constraint->source_node, "Active", 1, &constraint->active) ||
         !fbx_constraint_property_bool(constraint->source_node, "Lock", 0, &constraint->locked) ||
-        !fbx_constraint_property_number(
-            constraint->source_node, "Weight", 100.0, &weight, NULL) ||
+        !fbx_constraint_property_number(constraint->source_node, "Weight", 100.0, &weight, NULL) ||
         !fbx_constraint_property_xyz(constraint->source_node,
                                      "Translation",
                                      zero,
                                      constraint->translation_offset,
                                      &found_translation) ||
-        !fbx_constraint_property_xyz(constraint->source_node,
-                                     "Rotation",
-                                     zero,
-                                     constraint->rotation_offset,
-                                     NULL) ||
-        !fbx_constraint_property_xyz(constraint->source_node,
-                                     "Scaling",
-                                     one,
-                                     constraint->scale_offset,
-                                     &found_scaling))
+        !fbx_constraint_property_xyz(
+            constraint->source_node, "Rotation", zero, constraint->rotation_offset, NULL) ||
+        !fbx_constraint_property_xyz(
+            constraint->source_node, "Scaling", one, constraint->scale_offset, &found_scaling))
         return 0;
-    if (!found_translation &&
-        !fbx_constraint_property_xyz(constraint->source_node,
-                                     "TranslationOffset",
-                                     zero,
-                                     constraint->translation_offset,
-                                     NULL))
+    if (!found_translation && !fbx_constraint_property_xyz(constraint->source_node,
+                                                           "TranslationOffset",
+                                                           zero,
+                                                           constraint->translation_offset,
+                                                           NULL))
         return 0;
     if (!found_scaling) {
         int found_scaling_offset = 0;
@@ -643,11 +753,8 @@ static int fbx_constraint_read_common_properties(fbx_constraint_t *constraint) {
                                          constraint->scale_offset,
                                          &found_scaling_offset) ||
             (!found_scaling_offset &&
-             !fbx_constraint_property_xyz(constraint->source_node,
-                                          "ScaleOffset",
-                                          one,
-                                          constraint->scale_offset,
-                                          NULL)))
+             !fbx_constraint_property_xyz(
+                 constraint->source_node, "ScaleOffset", one, constraint->scale_offset, NULL)))
             return 0;
     }
     constraint->weight = fbx_clamp_double(weight / 100.0, 0.0, 1.0, 1.0);
@@ -701,11 +808,8 @@ static int fbx_constraint_read_common_properties(fbx_constraint_t *constraint) {
                                      constraint->world_up_vector,
                                      constraint->world_up_vector,
                                      NULL) ||
-        !fbx_constraint_property_xyz(constraint->source_node,
-                                     "PoleVector",
-                                     zero,
-                                     constraint->pole_vector,
-                                     NULL) ||
+        !fbx_constraint_property_xyz(
+            constraint->source_node, "PoleVector", zero, constraint->pole_vector, NULL) ||
         !fbx_constraint_property_number(
             constraint->source_node, "WorldUpType", 0.0, &enum_value, NULL))
         return 0;
@@ -735,7 +839,7 @@ static int fbx_constraint_model_parent_id(fbx_node_t *objects,
                                           const fbx_conn_table_t *ct,
                                           int64_t model_id,
                                           int64_t *out_parent_id) {
-    int64_t parent_id = fbx_find_parent(ct, model_id);
+    int64_t parent_id = fbx_find_model_parent(objects, ct, model_id);
     if (parent_id != 0) {
         fbx_node_t *parent = fbx_find_object_by_id(objects, parent_id);
         if (!parent || strcmp(parent->name, "Model") != 0)
@@ -810,8 +914,7 @@ static int fbx_constraint_affects_model_global(const fbx_constraint_t *producer,
                                                fbx_node_t *objects,
                                                const fbx_conn_table_t *ct,
                                                int64_t model_id) {
-    for (int64_t current = model_id, guard = 0;
-         current != 0 && guard++ <= objects->child_count;) {
+    for (int64_t current = model_id, guard = 0; current != 0 && guard++ <= objects->child_count;) {
         int64_t parent_id = 0;
         if (fbx_constraint_writes_model(producer, objects, ct, current))
             return 1;
@@ -833,21 +936,19 @@ static int fbx_constraint_depends_on(const fbx_constraint_t *consumer,
                                      fbx_node_t *objects,
                                      const fbx_conn_table_t *ct) {
     int64_t target_parent = 0;
-    if (!consumer || !producer || consumer == producer || !consumer->active ||
-        !producer->active || consumer->kind == FBX_CONSTRAINT_UNKNOWN ||
-        producer->kind == FBX_CONSTRAINT_UNKNOWN)
+    if (!consumer || !producer || consumer == producer || !consumer->active || !producer->active ||
+        consumer->kind == FBX_CONSTRAINT_UNKNOWN || producer->kind == FBX_CONSTRAINT_UNKNOWN)
         return 0;
     for (int32_t source = 0; source < consumer->source_count; ++source)
         if (fbx_constraint_affects_model_global(
                 producer, objects, ct, consumer->sources[source].model_id))
             return 1;
     {
-        const int64_t role_ids[] = {consumer->world_up_id,
-                                    consumer->ik_effector_id,
-                                    consumer->ik_pole_id};
+        const int64_t role_ids[] = {
+            consumer->world_up_id, consumer->ik_effector_id, consumer->ik_pole_id};
         for (size_t role = 0; role < sizeof(role_ids) / sizeof(role_ids[0]); ++role)
-            if (role_ids[role] != 0 && fbx_constraint_affects_model_global(
-                                              producer, objects, ct, role_ids[role]))
+            if (role_ids[role] != 0 &&
+                fbx_constraint_affects_model_global(producer, objects, ct, role_ids[role]))
                 return 1;
     }
     fbx_constraint_model_parent_id(objects, ct, consumer->target_id, &target_parent);
@@ -871,12 +972,11 @@ static int fbx_constraint_has_self_dependency(const fbx_constraint_t *constraint
                 constraint, objects, ct, constraint->sources[source].model_id))
             return 1;
     {
-        const int64_t role_ids[] = {constraint->world_up_id,
-                                    constraint->ik_effector_id,
-                                    constraint->ik_pole_id};
+        const int64_t role_ids[] = {
+            constraint->world_up_id, constraint->ik_effector_id, constraint->ik_pole_id};
         for (size_t role = 0; role < sizeof(role_ids) / sizeof(role_ids[0]); ++role)
-            if (role_ids[role] != 0 && fbx_constraint_affects_model_global(
-                                              constraint, objects, ct, role_ids[role]))
+            if (role_ids[role] != 0 &&
+                fbx_constraint_affects_model_global(constraint, objects, ct, role_ids[role]))
                 return 1;
     }
     return 0;
@@ -933,8 +1033,7 @@ static int fbx_constraint_build_order(fbx_constraint_set_t *set,
             if (constraint->active && constraint->kind != FBX_CONSTRAINT_UNKNOWN) {
                 for (int32_t to = 0; to < set->count; ++to) {
                     fbx_constraint_t *consumer = &set->entries[to];
-                    if (placed[to] || !consumer->active ||
-                        consumer->kind == FBX_CONSTRAINT_UNKNOWN)
+                    if (placed[to] || !consumer->active || consumer->kind == FBX_CONSTRAINT_UNKNOWN)
                         continue;
                     if (fbx_constraint_depends_on(consumer, constraint, objects, ct) &&
                         indegree[to] > 0)
@@ -997,8 +1096,8 @@ static int fbx_parse_constraints(fbx_node_t *objects,
         constraint->source_node = node;
         type_text = fbx_constraint_type_text(node);
         constraint->kind = fbx_constraint_kind_from_text(type_text);
-        constraint->scale_offset[0] = constraint->scale_offset[1] =
-            constraint->scale_offset[2] = 1.0;
+        constraint->scale_offset[0] = constraint->scale_offset[1] = constraint->scale_offset[2] =
+            1.0;
         for (int32_t connection = fbx_connections_first_for_parent(ct, constraint->id);
              connection >= 0;
              connection = fbx_connections_next_for_parent(ct, connection)) {
@@ -1050,6 +1149,7 @@ static int fbx_parse_constraints(fbx_node_t *objects,
                 goto invalid;
         if (fbx_constraint_has_self_dependency(constraint, objects, ct))
             goto invalid;
+        ++out_set->evaluated_count;
     }
     if (!fbx_constraint_build_order(out_set, objects, ct))
         goto invalid;
@@ -1074,9 +1174,8 @@ static int32_t fbx_constraint_pose_index(const fbx_constraint_pose_t *pose, int6
 /// @param[in] index Zero-based pose index.
 /// @return Mutable 16-double matrix pointer, or `NULL` when out of range.
 static double *fbx_constraint_pose_local(fbx_constraint_pose_t *pose, int32_t index) {
-    return pose && index >= 0 && index < pose->count
-               ? &pose->local_matrices[(size_t)index * 16u]
-               : NULL;
+    return pose && index >= 0 && index < pose->count ? &pose->local_matrices[(size_t)index * 16u]
+                                                     : NULL;
 }
 
 /// @brief Borrow one pose entry's row-major global matrix.
@@ -1084,9 +1183,8 @@ static double *fbx_constraint_pose_local(fbx_constraint_pose_t *pose, int32_t in
 /// @param[in] index Zero-based pose index.
 /// @return Mutable 16-double matrix pointer, or `NULL` when out of range.
 static double *fbx_constraint_pose_global(fbx_constraint_pose_t *pose, int32_t index) {
-    return pose && index >= 0 && index < pose->count
-               ? &pose->global_matrices[(size_t)index * 16u]
-               : NULL;
+    return pose && index >= 0 && index < pose->count ? &pose->global_matrices[(size_t)index * 16u]
+                                                     : NULL;
 }
 
 /// @brief Borrow a pose entry's global matrix by numeric Model ID.
@@ -1214,8 +1312,7 @@ static void fbx_constraint_quaternion_from_euler(const double euler[3], double o
 /// @param[out] out Destination three-angle vector.
 /// @details The gimbal-lock branch fixes Z to zero and derives X from the
 /// remaining matrix terms.
-static void fbx_constraint_euler_xyz_from_quaternion(const double quaternion[4],
-                                                     double out[3]) {
+static void fbx_constraint_euler_xyz_from_quaternion(const double quaternion[4], double out[3]) {
     static const double radians_to_degrees = 57.2957795130823208768;
     double matrix[16];
     double sy;
@@ -1330,11 +1427,10 @@ static void fbx_constraint_quaternion_from_to(const double from_value[3],
     }
     dot = fbx_clamp_double(fbx_constraint_vec3_dot(from, to), -1.0, 1.0, 1.0);
     if (dot < -0.999999) {
-        double axis[3] = {fabs(from[0]) < fabs(from[1]) && fabs(from[0]) < fabs(from[2]) ? 1.0
-                                                                                       : 0.0,
-                          fabs(from[1]) <= fabs(from[0]) && fabs(from[1]) < fabs(from[2]) ? 1.0
-                                                                                       : 0.0,
-                          0.0};
+        double axis[3] = {
+            fabs(from[0]) < fabs(from[1]) && fabs(from[0]) < fabs(from[2]) ? 1.0 : 0.0,
+            fabs(from[1]) <= fabs(from[0]) && fabs(from[1]) < fabs(from[2]) ? 1.0 : 0.0,
+            0.0};
         if (axis[0] == 0.0 && axis[1] == 0.0)
             axis[2] = 1.0;
         fbx_constraint_vec3_cross(from, axis, cross);
@@ -1380,12 +1476,11 @@ static int fbx_constraint_pose_recompute(fbx_constraint_pose_t *pose) {
             global = fbx_constraint_pose_global(pose, i);
             if (!pose->fixed_globals[i]) {
                 if (parent >= 0) {
-                    fbx_build_inherited_global_matrix(
-                        fbx_constraint_pose_global(pose, parent),
-                        &pose->components[parent],
-                        fbx_constraint_pose_local(pose, i),
-                        &pose->components[i],
-                        global);
+                    fbx_build_inherited_global_matrix(fbx_constraint_pose_global(pose, parent),
+                                                      &pose->components[parent],
+                                                      fbx_constraint_pose_local(pose, i),
+                                                      &pose->components[i],
+                                                      global);
                 } else {
                     memcpy(global, fbx_constraint_pose_local(pose, i), 16u * sizeof(double));
                 }
@@ -1484,13 +1579,12 @@ static int fbx_constraint_pose_apply_trs(fbx_constraint_pose_t *pose,
                              ? current_position[axis] +
                                    (desired_position[axis] - current_position[axis]) * weight
                              : current_position[axis];
-        scale[axis] = affect_scale[axis]
-                          ? current_scale[axis] + (desired_scale[axis] - current_scale[axis]) * weight
-                          : current_scale[axis];
+        scale[axis] = affect_scale[axis] ? current_scale[axis] +
+                                               (desired_scale[axis] - current_scale[axis]) * weight
+                                         : current_scale[axis];
     }
     if (all_rotation) {
-        fbx_constraint_quaternion_nlerp(
-            current_quaternion, desired_quaternion, weight, quaternion);
+        fbx_constraint_quaternion_nlerp(current_quaternion, desired_quaternion, weight, quaternion);
     } else {
         double current_euler[3];
         double desired_euler[3];
@@ -1499,8 +1593,8 @@ static int fbx_constraint_pose_apply_trs(fbx_constraint_pose_t *pose,
         fbx_constraint_euler_xyz_from_quaternion(desired_quaternion, desired_euler);
         for (int axis = 0; axis < 3; ++axis) {
             double delta = remainder(desired_euler[axis] - current_euler[axis], 360.0);
-            euler[axis] = affect_rotation[axis] ? current_euler[axis] + delta * weight
-                                                : current_euler[axis];
+            euler[axis] =
+                affect_rotation[axis] ? current_euler[axis] + delta * weight : current_euler[axis];
         }
         fbx_constraint_quaternion_from_euler(euler, quaternion);
     }
@@ -1541,18 +1635,15 @@ static int fbx_constraint_weighted_sources(const fbx_constraint_t *constraint,
         double weight = source->weight > 0.0 && isfinite(source->weight) ? source->weight : 0.0;
         if (source_index < 0)
             return 0;
-        memcpy(source_matrix,
-               fbx_constraint_pose_global(pose, source_index),
-               sizeof(source_matrix));
+        memcpy(
+            source_matrix, fbx_constraint_pose_global(pose, source_index), sizeof(source_matrix));
         if (parent_mode) {
             double offset[16];
             double composed[16];
             double offset_quaternion[4];
             fbx_constraint_quaternion_from_euler(source->rotation_offset, offset_quaternion);
-            fbx_constraint_compose_trs(source->translation_offset,
-                                       offset_quaternion,
-                                       source->scale_offset,
-                                       offset);
+            fbx_constraint_compose_trs(
+                source->translation_offset, offset_quaternion, source->scale_offset, offset);
             if (pose->z_up)
                 fbx_mat4_apply_zup(offset);
             fbx_mat4_mul_local(source_matrix, offset, composed);
@@ -1704,8 +1795,7 @@ static void fbx_constraint_parallel_fallback(const double direction[3], double o
 /// target's current local-up direction. Parallel aim/up inputs use a
 /// deterministic perpendicular fallback. Rotation offset, axis masks, and
 /// overall constraint weight are applied to the resulting basis rotation.
-static int fbx_constraint_apply_aim(fbx_constraint_t *constraint,
-                                    fbx_constraint_pose_t *pose) {
+static int fbx_constraint_apply_aim(fbx_constraint_t *constraint, fbx_constraint_pose_t *pose) {
     int32_t target = fbx_constraint_pose_index(pose, constraint->target_id);
     double current_position[3];
     double current_quaternion[4];
@@ -1730,12 +1820,9 @@ static int fbx_constraint_apply_aim(fbx_constraint_t *constraint,
     int affect_translation[3];
     int affect_rotation[3];
     int affect_scale[3];
-    if (target < 0 || !fbx_constraint_weighted_sources(constraint,
-                                                       pose,
-                                                       0,
-                                                       weighted_position,
-                                                       ignored_quaternion,
-                                                       ignored_scale))
+    if (target < 0 ||
+        !fbx_constraint_weighted_sources(
+            constraint, pose, 0, weighted_position, ignored_quaternion, ignored_scale))
         return 0;
     fbx_constraint_source_vector(pose, constraint->aim_vector, local_aim);
     fbx_constraint_source_vector(pose, constraint->up_vector, local_up);
@@ -1746,8 +1833,7 @@ static int fbx_constraint_apply_aim(fbx_constraint_t *constraint,
     direction[0] = weighted_position[0] - current_position[0];
     direction[1] = weighted_position[1] - current_position[1];
     direction[2] = weighted_position[2] - current_position[2];
-    if (!fbx_constraint_vec3_normalize(direction) ||
-        !fbx_constraint_vec3_normalize(local_aim) ||
+    if (!fbx_constraint_vec3_normalize(direction) || !fbx_constraint_vec3_normalize(local_aim) ||
         !fbx_constraint_vec3_normalize(local_up))
         return 0;
     if (constraint->world_up_type == 1) {
@@ -1763,9 +1849,8 @@ static int fbx_constraint_apply_aim(fbx_constraint_t *constraint,
         if (up_index < 0)
             return 0;
         fbx_constraint_source_vector(pose, constraint->world_up_vector, up_vector);
-        fbx_constraint_transform_vector(fbx_constraint_pose_global(pose, up_index),
-                                        up_vector,
-                                        world_up);
+        fbx_constraint_transform_vector(
+            fbx_constraint_pose_global(pose, up_index), up_vector, world_up);
     } else if (constraint->world_up_type == 3) {
         fbx_constraint_source_vector(pose, constraint->world_up_vector, world_up);
     } else if (constraint->world_up_type == 4) {
@@ -1813,14 +1898,12 @@ static int fbx_constraint_apply_aim(fbx_constraint_t *constraint,
     fbx_mat4_identity_local(rotation);
     for (int row = 0; row < 3; ++row)
         for (int column = 0; column < 3; ++column)
-            rotation[row * 4 + column] =
-                world_basis[row * 3 + 0] * local_basis[column * 3 + 0] +
-                world_basis[row * 3 + 1] * local_basis[column * 3 + 1] +
-                world_basis[row * 3 + 2] * local_basis[column * 3 + 2];
+            rotation[row * 4 + column] = world_basis[row * 3 + 0] * local_basis[column * 3 + 0] +
+                                         world_basis[row * 3 + 1] * local_basis[column * 3 + 1] +
+                                         world_basis[row * 3 + 2] * local_basis[column * 3 + 2];
     fbx_decompose_matrix_trs(rotation, NULL, desired_quaternion, NULL);
     fbx_constraint_source_rotation(pose, constraint->rotation_offset, offset_quaternion);
-    fbx_constraint_quaternion_multiply(
-        desired_quaternion, offset_quaternion, composed_quaternion);
+    fbx_constraint_quaternion_multiply(desired_quaternion, offset_quaternion, composed_quaternion);
     fbx_constraint_runtime_mask(pose, constraint->affect_translation, affect_translation);
     fbx_constraint_runtime_mask(pose, constraint->affect_rotation, affect_rotation);
     fbx_constraint_runtime_mask(pose, constraint->affect_scale, affect_scale);
@@ -1869,22 +1952,16 @@ static void fbx_constraint_rotate_about_axis(const double point[3],
 /// @param[in] pole World-space pole point.
 /// @details Each interior joint is projected with the pole onto the plane
 /// normal to its neighboring-joint axis and rotated by their signed angle.
-static void fbx_constraint_ik_apply_pole(double *positions,
-                                         int32_t count,
-                                         const double pole[3]) {
+static void fbx_constraint_ik_apply_pole(double *positions, int32_t count, const double pole[3]) {
     for (int32_t i = 1; i + 1 < count; ++i) {
         double *previous = &positions[(size_t)(i - 1) * 3u];
         double *current = &positions[(size_t)i * 3u];
         double *next = &positions[(size_t)(i + 1) * 3u];
-        double axis[3] = {next[0] - previous[0],
-                          next[1] - previous[1],
-                          next[2] - previous[2]};
-        double current_vector[3] = {current[0] - previous[0],
-                                    current[1] - previous[1],
-                                    current[2] - previous[2]};
-        double pole_vector[3] = {pole[0] - previous[0],
-                                 pole[1] - previous[1],
-                                 pole[2] - previous[2]};
+        double axis[3] = {next[0] - previous[0], next[1] - previous[1], next[2] - previous[2]};
+        double current_vector[3] = {
+            current[0] - previous[0], current[1] - previous[1], current[2] - previous[2]};
+        double pole_vector[3] = {
+            pole[0] - previous[0], pole[1] - previous[1], pole[2] - previous[2]};
         double projected_current[3];
         double projected_pole[3];
         double cross[3];
@@ -1904,11 +1981,10 @@ static void fbx_constraint_ik_apply_pole(double *positions,
             !fbx_constraint_vec3_normalize(projected_pole))
             continue;
         fbx_constraint_vec3_cross(projected_current, projected_pole, cross);
-        angle = atan2(fbx_constraint_vec3_dot(cross, axis),
-                      fbx_clamp_double(fbx_constraint_vec3_dot(projected_current, projected_pole),
-                                       -1.0,
-                                       1.0,
-                                       1.0));
+        angle =
+            atan2(fbx_constraint_vec3_dot(cross, axis),
+                  fbx_clamp_double(
+                      fbx_constraint_vec3_dot(projected_current, projected_pole), -1.0, 1.0, 1.0));
         fbx_constraint_rotate_about_axis(current, previous, axis, angle, current);
     }
 }
@@ -1975,12 +2051,10 @@ static int fbx_constraint_apply_ik(fbx_constraint_t *constraint,
             original[(size_t)i * 3u + (size_t)component] =
                 positions[(size_t)i * 3u + (size_t)component] = global[component * 4 + 3];
         if (i > 0) {
-            double delta[3] = {positions[(size_t)i * 3u + 0u] -
-                                   positions[(size_t)(i - 1) * 3u + 0u],
-                               positions[(size_t)i * 3u + 1u] -
-                                   positions[(size_t)(i - 1) * 3u + 1u],
-                               positions[(size_t)i * 3u + 2u] -
-                                   positions[(size_t)(i - 1) * 3u + 2u]};
+            double delta[3] = {
+                positions[(size_t)i * 3u + 0u] - positions[(size_t)(i - 1) * 3u + 0u],
+                positions[(size_t)i * 3u + 1u] - positions[(size_t)(i - 1) * 3u + 1u],
+                positions[(size_t)i * 3u + 2u] - positions[(size_t)(i - 1) * 3u + 2u]};
             lengths[i - 1] = fbx_constraint_vec3_length(delta);
             if (!isfinite(lengths[i - 1]) || lengths[i - 1] < 0.0)
                 goto fail;
@@ -2000,9 +2074,8 @@ static int fbx_constraint_apply_ik(fbx_constraint_t *constraint,
         pole[2] = fbx_constraint_pose_global(pose, pole_index)[11];
     }
     {
-        double to_target[3] = {target[0] - root_anchor[0],
-                               target[1] - root_anchor[1],
-                               target[2] - root_anchor[2]};
+        double to_target[3] = {
+            target[0] - root_anchor[0], target[1] - root_anchor[1], target[2] - root_anchor[2]};
         double target_distance = fbx_constraint_vec3_length(to_target);
         if (target_distance > total_length + 1e-9) {
             unreachable = 1;
@@ -2018,12 +2091,10 @@ static int fbx_constraint_apply_ik(fbx_constraint_t *constraint,
             for (int iteration = 0; iteration < 32; ++iteration) {
                 memcpy(&positions[(size_t)(count - 1) * 3u], target, sizeof(target));
                 for (int32_t i = count - 2; i >= 0; --i) {
-                    double direction[3] = {positions[(size_t)i * 3u + 0u] -
-                                               positions[(size_t)(i + 1) * 3u + 0u],
-                                           positions[(size_t)i * 3u + 1u] -
-                                               positions[(size_t)(i + 1) * 3u + 1u],
-                                           positions[(size_t)i * 3u + 2u] -
-                                               positions[(size_t)(i + 1) * 3u + 2u]};
+                    double direction[3] = {
+                        positions[(size_t)i * 3u + 0u] - positions[(size_t)(i + 1) * 3u + 0u],
+                        positions[(size_t)i * 3u + 1u] - positions[(size_t)(i + 1) * 3u + 1u],
+                        positions[(size_t)i * 3u + 2u] - positions[(size_t)(i + 1) * 3u + 2u]};
                     if (!fbx_constraint_vec3_normalize(direction))
                         continue;
                     for (int component = 0; component < 3; ++component)
@@ -2033,12 +2104,10 @@ static int fbx_constraint_apply_ik(fbx_constraint_t *constraint,
                 }
                 memcpy(positions, root_anchor, sizeof(root_anchor));
                 for (int32_t i = 1; i < count; ++i) {
-                    double direction[3] = {positions[(size_t)i * 3u + 0u] -
-                                               positions[(size_t)(i - 1) * 3u + 0u],
-                                           positions[(size_t)i * 3u + 1u] -
-                                               positions[(size_t)(i - 1) * 3u + 1u],
-                                           positions[(size_t)i * 3u + 2u] -
-                                               positions[(size_t)(i - 1) * 3u + 2u]};
+                    double direction[3] = {
+                        positions[(size_t)i * 3u + 0u] - positions[(size_t)(i - 1) * 3u + 0u],
+                        positions[(size_t)i * 3u + 1u] - positions[(size_t)(i - 1) * 3u + 1u],
+                        positions[(size_t)i * 3u + 2u] - positions[(size_t)(i - 1) * 3u + 2u]};
                     if (!fbx_constraint_vec3_normalize(direction))
                         continue;
                     for (int component = 0; component < 3; ++component)
@@ -2063,8 +2132,8 @@ static int fbx_constraint_apply_ik(fbx_constraint_t *constraint,
         double axis[3] = {positions[(size_t)(count - 1) * 3u + 0u] - positions[0],
                           positions[(size_t)(count - 1) * 3u + 1u] - positions[1],
                           positions[(size_t)(count - 1) * 3u + 2u] - positions[2]};
-        double radians = fbx_sanitize_rotation_degrees(constraint->twist) *
-                         3.14159265358979323846 / 180.0;
+        double radians =
+            fbx_sanitize_rotation_degrees(constraint->twist) * 3.14159265358979323846 / 180.0;
         if (fbx_constraint_vec3_normalize(axis))
             for (int32_t i = 1; i + 1 < count; ++i)
                 fbx_constraint_rotate_about_axis(&positions[(size_t)i * 3u],
@@ -2081,12 +2150,10 @@ static int fbx_constraint_apply_ik(fbx_constraint_t *constraint,
             double solved_current[3] = {positions[(size_t)i * 3u + 0u],
                                         positions[(size_t)i * 3u + 1u],
                                         positions[(size_t)i * 3u + 2u]};
-            double old_direction[3] = {original[(size_t)i * 3u + 0u] -
-                                           original[(size_t)(i - 1) * 3u + 0u],
-                                       original[(size_t)i * 3u + 1u] -
-                                           original[(size_t)(i - 1) * 3u + 1u],
-                                       original[(size_t)i * 3u + 2u] -
-                                           original[(size_t)(i - 1) * 3u + 2u]};
+            double old_direction[3] = {
+                original[(size_t)i * 3u + 0u] - original[(size_t)(i - 1) * 3u + 0u],
+                original[(size_t)i * 3u + 1u] - original[(size_t)(i - 1) * 3u + 1u],
+                original[(size_t)i * 3u + 2u] - original[(size_t)(i - 1) * 3u + 2u]};
             double solved_direction[3] = {solved_current[0] - solved_previous[0],
                                           solved_current[1] - solved_previous[1],
                                           solved_current[2] - solved_previous[2]};
@@ -2117,18 +2184,14 @@ static int fbx_constraint_apply_ik(fbx_constraint_t *constraint,
                                  current_scale);
         memcpy(desired_quaternion, current_quaternion, sizeof(desired_quaternion));
         if (i + 1 < count) {
-            double old_direction[3] = {original[(size_t)(i + 1) * 3u + 0u] -
-                                           original[(size_t)i * 3u + 0u],
-                                       original[(size_t)(i + 1) * 3u + 1u] -
-                                           original[(size_t)i * 3u + 1u],
-                                       original[(size_t)(i + 1) * 3u + 2u] -
-                                           original[(size_t)i * 3u + 2u]};
-            double new_direction[3] = {positions[(size_t)(i + 1) * 3u + 0u] -
-                                           positions[(size_t)i * 3u + 0u],
-                                       positions[(size_t)(i + 1) * 3u + 1u] -
-                                           positions[(size_t)i * 3u + 1u],
-                                       positions[(size_t)(i + 1) * 3u + 2u] -
-                                           positions[(size_t)i * 3u + 2u]};
+            double old_direction[3] = {
+                original[(size_t)(i + 1) * 3u + 0u] - original[(size_t)i * 3u + 0u],
+                original[(size_t)(i + 1) * 3u + 1u] - original[(size_t)i * 3u + 1u],
+                original[(size_t)(i + 1) * 3u + 2u] - original[(size_t)i * 3u + 2u]};
+            double new_direction[3] = {
+                positions[(size_t)(i + 1) * 3u + 0u] - positions[(size_t)i * 3u + 0u],
+                positions[(size_t)(i + 1) * 3u + 1u] - positions[(size_t)i * 3u + 1u],
+                positions[(size_t)(i + 1) * 3u + 2u] - positions[(size_t)i * 3u + 2u]};
             double delta[4];
             fbx_constraint_quaternion_from_to(old_direction, new_direction, delta);
             fbx_constraint_quaternion_multiply(delta, current_quaternion, desired_quaternion);
@@ -2234,8 +2297,7 @@ static int fbx_constraint_pose_allocate(fbx_constraint_pose_t *pose,
     pose->global_matrices = (double *)malloc((size_t)count * 16u * sizeof(double));
     pose->id_table = (fbx_model_id_entry_t *)malloc((size_t)count * sizeof(*pose->id_table));
     pose->fixed_globals = (uint8_t *)calloc((size_t)count, sizeof(*pose->fixed_globals));
-    pose->evaluation_flags =
-        (uint8_t *)malloc((size_t)count * sizeof(*pose->evaluation_flags));
+    pose->evaluation_flags = (uint8_t *)malloc((size_t)count * sizeof(*pose->evaluation_flags));
     if (!pose->ids || !pose->parent_indices || !pose->sources || !pose->components ||
         !pose->local_matrices || !pose->global_matrices || !pose->id_table ||
         !pose->fixed_globals || !pose->evaluation_flags) {
@@ -2295,7 +2357,7 @@ static int fbx_constraint_build_static_pose(fbx_node_t *objects,
           sizeof(*out_pose->id_table),
           fbx_model_id_entry_cmp);
     for (int32_t i = 0; i < out_pose->count; ++i) {
-        int64_t parent_id = fbx_find_parent(ct, out_pose->ids[i]);
+        int64_t parent_id = fbx_find_model_parent(objects, ct, out_pose->ids[i]);
         if (parent_id != 0)
             out_pose->parent_indices[i] = fbx_constraint_pose_index(out_pose, parent_id);
     }

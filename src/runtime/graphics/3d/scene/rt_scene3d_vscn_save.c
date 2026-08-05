@@ -34,6 +34,7 @@
 
 #ifdef ZANNA_ENABLE_GRAPHICS
 
+#include "rt_asset_error.h"
 #include "rt_box.h"
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
@@ -2307,14 +2308,32 @@ static int64_t vscn_write_atomic(const char *filepath, const char *buf, size_t l
     char *tmp_path = NULL;
     size_t written = 0;
     int64_t result;
-    if (!filepath || !buf || len > VSCN_MAX_FILE_BYTES)
+    if (!filepath || !buf)
         return 0;
+    if (len > VSCN_MAX_FILE_BYTES) {
+        rt_asset_error_setf(RT_ASSET_ERROR_TOO_LARGE,
+                            "VSCN.Save: serialized document is %llu bytes; the VSCN limit is %u "
+                            "bytes — bake a clip subset (zanna asset bake --clips) or reduce the "
+                            "asset",
+                            (unsigned long long)len,
+                            (unsigned)VSCN_MAX_FILE_BYTES);
+        return 0;
+    }
     file = rt_file_stdio_open_temp_for_replace_utf8(filepath, &tmp_path);
-    if (!file)
+    if (!file) {
+        rt_asset_error_setf(RT_ASSET_ERROR_UNREADABLE,
+                            "VSCN.Save: cannot open a temporary file beside '%s'",
+                            filepath);
         return 0;
+    }
     while (written < len) {
         size_t chunk = fwrite(buf + written, 1, len - written, file);
         if (chunk == 0) {
+            rt_asset_error_setf(RT_ASSET_ERROR_UNREADABLE,
+                                "VSCN.Save: write failed after %llu of %llu bytes for '%s'",
+                                (unsigned long long)written,
+                                (unsigned long long)len,
+                                filepath);
             fclose(file);
             (void)rt_file_stdio_unlink_utf8(tmp_path);
             free(tmp_path);
@@ -2323,13 +2342,18 @@ static int64_t vscn_write_atomic(const char *filepath, const char *buf, size_t l
         written += chunk;
     }
     if (!rt_file_stdio_flush_sync_close(file)) {
+        rt_asset_error_setf(
+            RT_ASSET_ERROR_UNREADABLE, "VSCN.Save: flush-and-sync failed for '%s'", filepath);
         (void)rt_file_stdio_unlink_utf8(tmp_path);
         free(tmp_path);
         return 0;
     }
     result = rt_file_stdio_replace_utf8(tmp_path, filepath) ? 1 : 0;
-    if (!result)
+    if (!result) {
+        rt_asset_error_setf(
+            RT_ASSET_ERROR_UNREADABLE, "VSCN.Save: atomic replace failed for '%s'", filepath);
         (void)rt_file_stdio_unlink_utf8(tmp_path);
+    }
     free(tmp_path);
     return result;
 }
@@ -2350,6 +2374,9 @@ int64_t rt_vscn_save_asset_view(const rt_vscn_asset_save_view *view, rt_string p
         return 0;
     filepath = rt_string_cstr(path);
     if (!filepath || filepath[0] == '\0' || !vscn_collect_asset_view(view, &ctx)) {
+        rt_asset_error_set_if_empty(
+            RT_ASSET_ERROR_CORRUPT,
+            "VSCN.Save: asset inventory failed validation before serialization");
         vscn_save_free_ctx(&ctx);
         return 0;
     }
@@ -2367,6 +2394,9 @@ int64_t rt_vscn_save_asset_view(const rt_vscn_asset_save_view *view, rt_string p
         !vscn_save_emit_variant_names(&buf, &len, &cap, &ctx) ||
         !vscn_save_emit_meshes(&buf, &len, &cap, &ctx) ||
         !vscn_save_emit_scenes(&buf, &len, &cap, &ctx) || !vscn_append(&buf, &len, &cap, "}\n")) {
+        rt_asset_error_set_if_empty(RT_ASSET_ERROR_CORRUPT,
+                                    "VSCN.Save: document serialization failed (allocation or "
+                                    "invalid retained resource)");
         vscn_save_free_ctx(&ctx);
         free(buf);
         return 0;
@@ -2491,6 +2521,10 @@ rt_string rt_scene3d_save_text(void *scene_obj) {
     if (!scene3d_build_vscn_text(scene, &buf, &len))
         return rt_str_empty();
     if (len > VSCN_MAX_FILE_BYTES) {
+        rt_asset_error_setf(RT_ASSET_ERROR_TOO_LARGE,
+                            "VSCN.Save: serialized text is %llu bytes; the VSCN limit is %u bytes",
+                            (unsigned long long)len,
+                            (unsigned)VSCN_MAX_FILE_BYTES);
         free(buf);
         return rt_str_empty();
     }

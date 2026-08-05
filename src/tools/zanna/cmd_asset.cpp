@@ -58,6 +58,15 @@ int64_t rt_pixels_width(void *pixels);
 int64_t rt_pixels_height(void *pixels);
 const uint32_t *rt_pixels_raw_buffer(void *pixels);
 rt_string rt_assets3d_get_import_report(void);
+void *rt_model3d_get_animation(void *model, int64_t index);
+rt_string rt_animation3d_get_name(void *anim);
+rt_string rt_model3d_get_node_animation_name(void *model, int64_t index);
+int64_t rt_model3d_keep_animation_subset(void *obj,
+                                         const int64_t *animation_indices,
+                                         int32_t animation_index_count,
+                                         const int64_t *node_animation_indices,
+                                         int32_t node_animation_index_count);
+const char *rt_asset_error_get_message(void);
 int rt_obj_release_check0(void *obj);
 void rt_obj_free(void *obj);
 }
@@ -594,15 +603,129 @@ std::string bakeReportJson(const char *input,
 void printBakeJsonError(const char *stage,
                         const char *input,
                         const char *output,
-                        const std::string &importReport) {
+                        const std::string &importReport,
+                        const std::string &message = std::string()) {
     std::string report = "{\"schema\":\"zanna.asset-bake-report/v1\",\"status\":\"error\"";
     report += ",\"stage\":" + jsonQuote(stage);
+    if (!message.empty())
+        report += ",\"message\":" + jsonQuote(message.c_str());
     report += ",\"input\":" + jsonQuote(input);
     report += ",\"output\":" + jsonQuote(output);
     report += ",\"importReport\":";
     report += importReport.empty() ? "{}" : importReport;
     report += "}";
     std::printf("%s\n", report.c_str());
+}
+
+/// @brief Borrow the runtime's last asset diagnostic as a std::string ("" when none).
+std::string lastAssetErrorMessage() {
+    const char *message = rt_asset_error_get_message();
+    return message && *message ? message : std::string();
+}
+
+/// @brief Resolve a `--clips` selection against a loaded model's clip inventories.
+/// @details Tokens are comma-separated and may be a zero-based skeletal-clip index, an inclusive
+///          index range `A-B`, or an exact clip name. Numeric tokens address skeletal clips only.
+///          Node animations are kept when their name matches a kept skeletal clip's name or a
+///          name token — mocap exporters emit paired skeletal/node clips under one stack name.
+/// @return True on success with both kept-index lists filled (ascending, unique); false with
+///         @p error describing the offending token.
+bool resolveClipSubset(void *model,
+                       const std::string &spec,
+                       std::vector<int64_t> &animIndices,
+                       std::vector<int64_t> &nodeIndices,
+                       std::string &error) {
+    const int64_t animCount = rt_model3d_get_animation_count(model);
+    const int64_t nodeCount = rt_model3d_get_node_animation_count(model);
+    std::vector<std::string> animNames(static_cast<size_t>(animCount));
+    for (int64_t i = 0; i < animCount; i++) {
+        void *anim = rt_model3d_get_animation(model, i);
+        rt_string name = anim ? rt_animation3d_get_name(anim) : nullptr;
+        const char *text = name ? rt_string_cstr(name) : nullptr;
+        animNames[static_cast<size_t>(i)] = text ? text : "";
+    }
+    std::vector<bool> keepAnim(static_cast<size_t>(animCount), false);
+    std::vector<std::string> keptNames;
+
+    size_t start = 0;
+    while (start <= spec.size()) {
+        size_t comma = spec.find(',', start);
+        std::string token =
+            spec.substr(start, comma == std::string::npos ? std::string::npos : comma - start);
+        start = comma == std::string::npos ? spec.size() + 1 : comma + 1;
+        if (token.empty())
+            continue;
+        char *tail = nullptr;
+        long first = std::strtol(token.c_str(), &tail, 10);
+        if (tail && *tail == '\0') {
+            if (first < 0 || first >= animCount) {
+                error = "clip index " + token + " is out of range (0.." +
+                        std::to_string(animCount > 0 ? animCount - 1 : 0) + ")";
+                return false;
+            }
+            keepAnim[static_cast<size_t>(first)] = true;
+            continue;
+        }
+        if (tail && *tail == '-' && tail != token.c_str()) {
+            char *rangeTail = nullptr;
+            long last = std::strtol(tail + 1, &rangeTail, 10);
+            if (rangeTail && *rangeTail == '\0' && rangeTail != tail + 1) {
+                if (first < 0 || last < first || last >= animCount) {
+                    error = "clip range " + token + " is out of range (0.." +
+                            std::to_string(animCount > 0 ? animCount - 1 : 0) + ")";
+                    return false;
+                }
+                for (long i = first; i <= last; i++)
+                    keepAnim[static_cast<size_t>(i)] = true;
+                continue;
+            }
+        }
+        bool matched = false;
+        for (int64_t i = 0; i < animCount; i++) {
+            if (animNames[static_cast<size_t>(i)] == token) {
+                keepAnim[static_cast<size_t>(i)] = true;
+                matched = true;
+            }
+        }
+        /* A name token may address node-only clips, so remember it either way. */
+        keptNames.push_back(token);
+        bool namesNode = false;
+        for (int64_t j = 0; j < nodeCount && !namesNode; j++) {
+            rt_string name = rt_model3d_get_node_animation_name(model, j);
+            const char *text = name ? rt_string_cstr(name) : nullptr;
+            namesNode = text && token == text;
+        }
+        if (!matched && !namesNode) {
+            error = "no clip is named '" + token + "'";
+            return false;
+        }
+    }
+
+    animIndices.clear();
+    for (int64_t i = 0; i < animCount; i++) {
+        if (keepAnim[static_cast<size_t>(i)]) {
+            animIndices.push_back(i);
+            keptNames.push_back(animNames[static_cast<size_t>(i)]);
+        }
+    }
+    nodeIndices.clear();
+    for (int64_t j = 0; j < nodeCount; j++) {
+        rt_string name = rt_model3d_get_node_animation_name(model, j);
+        const char *text = name ? rt_string_cstr(name) : nullptr;
+        if (!text)
+            continue;
+        for (const std::string &kept : keptNames) {
+            if (kept == text) {
+                nodeIndices.push_back(j);
+                break;
+            }
+        }
+    }
+    if (animIndices.empty() && nodeIndices.empty()) {
+        error = "--clips matched no animation clips";
+        return false;
+    }
+    return true;
 }
 
 /// @brief Copy the runtime's current asset-import diagnostics report.
@@ -622,11 +745,16 @@ void printAssetUsage(std::FILE *out) {
                  "usage: zanna asset <bake|validate> ...\n"
                  "  zanna asset bake <input> <output.scene3d> [--force-tangents]\n"
                  "                   [--eight-influences] [--compress-anims] [--lods N]\n"
-                 "                   [--json]\n"
+                 "                   [--clips LIST] [--json]\n"
                  "      Load a model through the full import pipeline (glTF/GLB/FBX/\n"
                  "      OBJ/STL, including meshopt/Draco/BasisU decode), optionally\n"
                  "      generate LOD chains, save the baked .scene3d scene, and report\n"
                  "      source-versus-baked fidelity. --json emits the v1 report.\n"
+                 "      --clips keeps only the selected animation clips: a comma-\n"
+                 "      separated list of clip names, zero-based skeletal-clip indices,\n"
+                 "      and A-B index ranges. Node animations follow matching clip\n"
+                 "      names. Use per-clip bakes when a full bake exceeds the VSCN\n"
+                 "      document size limit.\n"
                  "  zanna asset validate <input>\n"
                  "      Load a model and print the import diagnostics report (JSON).\n");
 }
@@ -673,6 +801,7 @@ int cmdAsset(int argc, char **argv) {
         const char *input = argv[1];
         const char *output = argv[2];
         std::string options;
+        std::string clipsSpec;
         long lods = 0;
         bool json = false;
         for (int i = 3; i < argc; i++) {
@@ -683,6 +812,12 @@ int cmdAsset(int argc, char **argv) {
                 options += options.empty() ? "eightInfluences" : ",eightInfluences";
             } else if (arg == "--compress-anims") {
                 options += options.empty() ? "compressAnimations" : ",compressAnimations";
+            } else if (arg == "--clips" && i + 1 < argc) {
+                clipsSpec = argv[++i];
+                if (clipsSpec.empty()) {
+                    std::fprintf(stderr, "zanna asset bake: --clips expects a selection\n");
+                    return 1;
+                }
             } else if (arg == "--lods" && i + 1 < argc) {
                 lods = std::strtol(argv[++i], nullptr, 10);
                 if (lods < 0 || lods > 8) {
@@ -701,35 +836,71 @@ int cmdAsset(int argc, char **argv) {
             rt_model3d_load_with_options_ex(rt_const_cstr(input), rt_const_cstr(options.c_str()));
         const std::string importReport = currentImportReport();
         if (!model) {
+            const std::string message = lastAssetErrorMessage();
             if (json)
-                printBakeJsonError("load", input, output, importReport);
+                printBakeJsonError("load", input, output, importReport, message);
             else
-                std::fprintf(stderr, "zanna asset bake: failed to load '%s'\n", input);
+                std::fprintf(stderr,
+                             "zanna asset bake: failed to load '%s'%s%s\n",
+                             input,
+                             message.empty() ? "" : ": ",
+                             message.c_str());
             return 2;
+        }
+        if (!clipsSpec.empty()) {
+            std::vector<int64_t> animIndices;
+            std::vector<int64_t> nodeIndices;
+            std::string subsetError;
+            if (!resolveClipSubset(model, clipsSpec, animIndices, nodeIndices, subsetError) ||
+                !rt_model3d_keep_animation_subset(
+                    model,
+                    animIndices.empty() ? nullptr : animIndices.data(),
+                    static_cast<int32_t>(animIndices.size()),
+                    nodeIndices.empty() ? nullptr : nodeIndices.data(),
+                    static_cast<int32_t>(nodeIndices.size()))) {
+                if (subsetError.empty())
+                    subsetError = "clip subset filtering failed";
+                if (rt_obj_release_check0(model))
+                    rt_obj_free(model);
+                if (json)
+                    printBakeJsonError("clips", input, output, importReport, subsetError);
+                else
+                    std::fprintf(stderr, "zanna asset bake: --clips: %s\n", subsetError.c_str());
+                return 2;
+            }
         }
         if (lods > 0)
             (void)rt_model3d_generate_lods(model, (int64_t)lods, 0.5);
         const AssetSnapshot sourceSnapshot = snapshotAsset(model);
         int64_t saved = rt_model3d_save(model, rt_const_cstr(output));
         if (!saved) {
+            const std::string message = lastAssetErrorMessage();
             if (rt_obj_release_check0(model))
                 rt_obj_free(model);
             if (json)
-                printBakeJsonError("save", input, output, importReport);
+                printBakeJsonError("save", input, output, importReport, message);
             else
-                std::fprintf(stderr, "zanna asset bake: failed to save '%s'\n", output);
+                std::fprintf(stderr,
+                             "zanna asset bake: failed to save '%s'%s%s\n",
+                             output,
+                             message.empty() ? "" : ": ",
+                             message.c_str());
             return 2;
         }
         void *bakedModel =
             rt_model3d_load_with_options_ex(rt_const_cstr(output), rt_const_cstr(""));
         if (!bakedModel) {
+            const std::string message = lastAssetErrorMessage();
             if (rt_obj_release_check0(model))
                 rt_obj_free(model);
             if (json)
-                printBakeJsonError("verify", input, output, importReport);
+                printBakeJsonError("verify", input, output, importReport, message);
             else
-                std::fprintf(
-                    stderr, "zanna asset bake: saved output failed verification '%s'\n", output);
+                std::fprintf(stderr,
+                             "zanna asset bake: saved output failed verification '%s'%s%s\n",
+                             output,
+                             message.empty() ? "" : ": ",
+                             message.c_str());
             return 2;
         }
         const AssetSnapshot bakedSnapshot = snapshotAsset(bakedModel);

@@ -229,7 +229,13 @@ rt_string rt_animation3d_get_name(void *anim);
 ///          Mapping uses explicit destination aliases and humanoid-role/name
 ///          inference with deterministic fallbacks; unmapped channels are
 ///          skipped. Translation values are scaled by source/destination bone
-///          length ratio for differing proportions.
+///          length ratio for differing proportions. Rigs whose bind
+///          conventions differ (rest-pose rotation deltas or non-colinear bind
+///          translations between mapped bones) are rest-delta compensated: a
+///          source key at its bind pose lands exactly on the destination bind
+///          pose, and deviations transfer through the constant per-bone
+///          bind-frame difference. Bind-compatible rigs keep the historical
+///          verbatim key copy byte for byte.
 /// @param[in] anim Source Animation3D.
 /// @param[in] src_skeleton Skeleton3D against which source channel indexes are
 ///                         interpreted.

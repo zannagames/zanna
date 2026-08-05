@@ -869,20 +869,139 @@ static float animation3d_bone_bind_length(const rt_skeleton3d *skel, int32_t bon
     }
 }
 
-/// @brief Copy an animation channel onto @p dst_bone, scaling its translation keys by @p pos_scale.
-/// @details Duplicates the source keyframes; translation keys are multiplied by the bone-length
-/// ratio
-///          (rotations/scales transfer unchanged) so motion fits a differently-proportioned
-///          skeleton.
-/// @param[in,out] dst Destination Animation3D with a preallocated free channel
-///                    slot.
+/// @brief Multiply two unit quaternions (`out = a * b`), safe for aliased output.
+static void animation3d_quat_mul(const float *a, const float *b, float *out) {
+    float r[4];
+    r[0] = a[3] * b[0] + a[0] * b[3] + a[1] * b[2] - a[2] * b[1];
+    r[1] = a[3] * b[1] - a[0] * b[2] + a[1] * b[3] + a[2] * b[0];
+    r[2] = a[3] * b[2] + a[0] * b[1] - a[1] * b[0] + a[2] * b[3];
+    r[3] = a[3] * b[3] - a[0] * b[0] - a[1] * b[1] - a[2] * b[2];
+    memcpy(out, r, sizeof(r));
+}
+
+/// @brief Conjugate (= inverse for unit quaternions), safe for aliased output.
+static void animation3d_quat_conjugate(const float *q, float *out) {
+    out[0] = -q[0];
+    out[1] = -q[1];
+    out[2] = -q[2];
+    out[3] = q[3];
+}
+
+/// @brief Rotate a 3-vector by a unit quaternion, safe for aliased output.
+static void animation3d_quat_rotate_vec3(const float *q, const float *v, float *out) {
+    /* v' = v + 2*cross(q.xyz, cross(q.xyz, v) + q.w*v) */
+    float t[3];
+    float c[3];
+    t[0] = q[1] * v[2] - q[2] * v[1] + q[3] * v[0];
+    t[1] = q[2] * v[0] - q[0] * v[2] + q[3] * v[1];
+    t[2] = q[0] * v[1] - q[1] * v[0] + q[3] * v[2];
+    c[0] = q[1] * t[2] - q[2] * t[1];
+    c[1] = q[2] * t[0] - q[0] * t[2];
+    c[2] = q[0] * t[1] - q[1] * t[0];
+    out[0] = v[0] + 2.0f * c[0];
+    out[1] = v[1] + 2.0f * c[1];
+    out[2] = v[2] + 2.0f * c[2];
+}
+
+/// @brief Extract a bone's parent-relative bind rotation (scale-normalized) and translation.
+/// @details Out-of-range bones read as identity so root parents (-1) compose cleanly.
+static void animation3d_bone_bind_local_trs(const rt_skeleton3d *skel,
+                                            int32_t bone,
+                                            float out_rot[4],
+                                            float out_pos[3]) {
+    out_rot[0] = out_rot[1] = out_rot[2] = 0.0f;
+    out_rot[3] = 1.0f;
+    out_pos[0] = out_pos[1] = out_pos[2] = 0.0f;
+    if (!skel || bone < 0 || bone >= skeleton3d_safe_bone_count(skel))
+        return;
+    {
+        const float *m = skel->bones[bone].bind_pose_local;
+        float col[3][3];
+        float len[3];
+        out_pos[0] = m[3];
+        out_pos[1] = m[7];
+        out_pos[2] = m[11];
+        for (int c = 0; c < 3; c++) {
+            col[c][0] = m[c];
+            col[c][1] = m[4 + c];
+            col[c][2] = m[8 + c];
+            len[c] = sqrtf(col[c][0] * col[c][0] + col[c][1] * col[c][1] + col[c][2] * col[c][2]);
+            if (!(len[c] > 1e-9f) || !isfinite(len[c]))
+                return; /* degenerate bind: keep identity rotation */
+            col[c][0] /= len[c];
+            col[c][1] /= len[c];
+            col[c][2] /= len[c];
+        }
+        quat_from_matrix3_float(col[0][0],
+                                col[1][0],
+                                col[2][0],
+                                col[0][1],
+                                col[1][1],
+                                col[2][1],
+                                col[0][2],
+                                col[1][2],
+                                col[2][2],
+                                out_rot);
+        sanitize_keyframe_quat(out_rot);
+    }
+}
+
+/// @brief Compose a bone chain's bind-global rotation (identity for bone < 0).
+static void animation3d_bind_global_rotation(const rt_skeleton3d *skel,
+                                             int32_t bone,
+                                             float out_rot[4]) {
+    int32_t chain[VGFX3D_MAX_SKELETON_BONES];
+    int32_t depth = 0;
+    float local_rot[4];
+    float local_pos[3];
+    out_rot[0] = out_rot[1] = out_rot[2] = 0.0f;
+    out_rot[3] = 1.0f;
+    if (!skel)
+        return;
+    for (int32_t walk = bone; walk >= 0 && depth < VGFX3D_MAX_SKELETON_BONES;
+         walk = skeleton3d_valid_parent_index(skel, walk, skeleton3d_safe_bone_count(skel))) {
+        chain[depth++] = walk;
+    }
+    for (int32_t i = depth - 1; i >= 0; i--) {
+        animation3d_bone_bind_local_trs(skel, chain[i], local_rot, local_pos);
+        animation3d_quat_mul(out_rot, local_rot, out_rot);
+    }
+    sanitize_keyframe_quat(out_rot);
+}
+
+/// @brief Whether a unit quaternion is the identity rotation within retarget tolerance.
+static int animation3d_quat_is_identity(const float *q) {
+    return fabsf(q[0]) < 1e-5f && fabsf(q[1]) < 1e-5f && fabsf(q[2]) < 1e-5f &&
+           fabsf(fabsf(q[3]) - 1.0f) < 1e-5f;
+}
+
+/// @brief Copy an animation channel onto @p dst_bone with rest-pose delta compensation.
+/// @details Bind-compatible rigs (rest deltas within tolerance and colinear bind translations)
+///          take the historical verbatim path: keys copy unchanged apart from the bone-length
+///          translation scale, byte-identical to previous releases. Rigs whose bind conventions
+///          differ (a Max Biped figure stance driving a T-pose auto-rig, for instance) transform
+///          every key by the constant rest-delta sandwich derived from the world-space transfer
+///          `dstGlobal(t) = srcGlobal(t) * inv(srcBindGlobal) * dstBindGlobal` under aligned
+///          parent mappings:
+///            rotation     r' = A * r * B
+///            translation  p' = dstBindPos + pos_scale * A(p - srcBindPos)
+///          with `A = inv(dstParentBindGlobalRot) * srcParentBindGlobalRot` and
+///          `B = inv(srcBindLocalRot) * inv(A) * dstBindLocalRot`, so a source key at its bind
+///          pose lands exactly on the destination bind pose. Cubic tangents transform by the
+///          same linear maps (quaternion multiplication is bilinear). Keys that omit a rotation
+///          or every position lane keep their masks: playback's bind-pose fallback on the
+///          destination equals the transform of the source fallback by construction.
+/// @param[in,out] dst Destination Animation3D with a preallocated free channel slot.
 /// @param[in] src Source channel and keyframe array.
+/// @param[in] src_skel Source skeleton providing bind transforms for the channel's bone.
+/// @param[in] dst_skel Destination skeleton providing bind transforms for @p dst_bone.
 /// @param[in] dst_bone Destination skeleton bone index.
-/// @param[in] pos_scale Positive translation scale; invalid/nonpositive values
-///                      become one.
+/// @param[in] pos_scale Positive translation scale; invalid/nonpositive values become one.
 /// @return 1 on success, 0 if the channel table is full or a keyframe copy fails.
 static int animation3d_retarget_copy_channel(rt_animation3d *dst,
                                              const vgfx3d_anim_channel_t *src,
+                                             const rt_skeleton3d *src_skel,
+                                             const rt_skeleton3d *dst_skel,
                                              int32_t dst_bone,
                                              float pos_scale) {
     static const float fallback_pos[3] = {0.0f, 0.0f, 0.0f};
@@ -898,6 +1017,43 @@ static int animation3d_retarget_copy_channel(rt_animation3d *dst,
         return 0;
     if (!isfinite(pos_scale) || pos_scale <= 0.0f)
         pos_scale = 1.0f;
+    /* Rest-pose delta between the mapped bones (see the function comment). */
+    float a_rot[4];
+    float b_rot[4];
+    float src_bind_rot[4];
+    float src_bind_pos[3];
+    float dst_bind_rot[4];
+    float dst_bind_pos[3];
+    int rest_delta;
+    {
+        float src_parent_grot[4];
+        float dst_parent_grot[4];
+        float inv_a[4];
+        float tmp[4];
+        int32_t src_bone = src->bone_index;
+        animation3d_bone_bind_local_trs(src_skel, src_bone, src_bind_rot, src_bind_pos);
+        animation3d_bone_bind_local_trs(dst_skel, dst_bone, dst_bind_rot, dst_bind_pos);
+        animation3d_bind_global_rotation(
+            src_skel,
+            skeleton3d_valid_parent_index(src_skel, src_bone, skeleton3d_safe_bone_count(src_skel)),
+            src_parent_grot);
+        animation3d_bind_global_rotation(
+            dst_skel,
+            skeleton3d_valid_parent_index(dst_skel, dst_bone, skeleton3d_safe_bone_count(dst_skel)),
+            dst_parent_grot);
+        animation3d_quat_conjugate(dst_parent_grot, tmp);
+        animation3d_quat_mul(tmp, src_parent_grot, a_rot);
+        sanitize_keyframe_quat(a_rot);
+        animation3d_quat_conjugate(src_bind_rot, tmp);
+        animation3d_quat_conjugate(a_rot, inv_a);
+        animation3d_quat_mul(tmp, inv_a, b_rot);
+        animation3d_quat_mul(b_rot, dst_bind_rot, b_rot);
+        sanitize_keyframe_quat(b_rot);
+        rest_delta = !(animation3d_quat_is_identity(a_rot) && animation3d_quat_is_identity(b_rot) &&
+                       fabsf(dst_bind_pos[0] - pos_scale * src_bind_pos[0]) < 1e-5f &&
+                       fabsf(dst_bind_pos[1] - pos_scale * src_bind_pos[1]) < 1e-5f &&
+                       fabsf(dst_bind_pos[2] - pos_scale * src_bind_pos[2]) < 1e-5f);
+    }
     vgfx3d_anim_channel_t *out = &dst->channels[dst->channel_count];
     memset(out, 0, sizeof(*out));
     out->bone_index = dst_bone;
@@ -939,7 +1095,46 @@ static int animation3d_retarget_copy_channel(rt_animation3d *dst,
             key->cubic_mask &= (uint8_t)~2u;
         if (key->scale_mask != 0x07u)
             key->cubic_mask &= (uint8_t)~4u;
-        if (pos_scale != 1.0f) {
+        if (rest_delta) {
+            if (key->position_mask != 0) {
+                float delta[3];
+                for (int lane = 0; lane < 3; ++lane) {
+                    float lane_value = (key->position_mask & (uint8_t)(1u << lane))
+                                           ? key->position[lane]
+                                           : src_bind_pos[lane];
+                    delta[lane] = lane_value - src_bind_pos[lane];
+                }
+                animation3d_quat_rotate_vec3(a_rot, delta, delta);
+                for (int lane = 0; lane < 3; ++lane) {
+                    key->position[lane] = skeleton3d_clamp_to_float(
+                        (double)dst_bind_pos[lane] + (double)delta[lane] * pos_scale, 0.0f);
+                }
+                key->position_mask = 0x07u;
+            }
+            if ((key->rotation_mask & 0x0Fu) == 0x0Fu) {
+                animation3d_quat_mul(a_rot, key->rotation, key->rotation);
+                animation3d_quat_mul(key->rotation, b_rot, key->rotation);
+                sanitize_keyframe_quat(key->rotation);
+            }
+            if (key->cubic_mask & 1u) {
+                animation3d_quat_rotate_vec3(a_rot, key->pos_in_tangent, key->pos_in_tangent);
+                animation3d_quat_rotate_vec3(a_rot, key->pos_out_tangent, key->pos_out_tangent);
+                for (int lane = 0; lane < 3; ++lane) {
+                    key->pos_in_tangent[lane] = skeleton3d_clamp_to_float(
+                        (double)key->pos_in_tangent[lane] * pos_scale, 0.0f);
+                    key->pos_out_tangent[lane] = skeleton3d_clamp_to_float(
+                        (double)key->pos_out_tangent[lane] * pos_scale, 0.0f);
+                }
+            }
+            if (key->cubic_mask & 2u) {
+                /* Quaternion multiplication is bilinear, so component derivatives transform by
+                 * the same sandwich; tangents are not unit quaternions — never normalize them. */
+                animation3d_quat_mul(a_rot, key->rot_in_tangent, key->rot_in_tangent);
+                animation3d_quat_mul(key->rot_in_tangent, b_rot, key->rot_in_tangent);
+                animation3d_quat_mul(a_rot, key->rot_out_tangent, key->rot_out_tangent);
+                animation3d_quat_mul(key->rot_out_tangent, b_rot, key->rot_out_tangent);
+            }
+        } else if (pos_scale != 1.0f) {
             for (int lane = 0; lane < 3; ++lane) {
                 key->position[lane] =
                     skeleton3d_clamp_to_float((double)key->position[lane] * pos_scale, 0.0f);
@@ -1030,7 +1225,8 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
         src_len = animation3d_bone_bind_length(src_skel, src_ch->bone_index);
         dst_len = animation3d_bone_bind_length(dst_skel, dst_bone);
         pos_scale = (src_len > 1e-6f && dst_len > 1e-6f) ? (dst_len / src_len) : 1.0f;
-        if (!animation3d_retarget_copy_channel(out, src_ch, dst_bone, pos_scale)) {
+        if (!animation3d_retarget_copy_channel(
+                out, src_ch, src_skel, dst_skel, dst_bone, pos_scale)) {
             free(src_roles);
             free(dst_roles);
             animation3d_release_ref(&out_obj);

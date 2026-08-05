@@ -264,6 +264,10 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_textureasset3d_test_get_supercompression_pea
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_fbx_test_set_load_budget_bytes")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_fbx_test_get_last_budget_used_bytes")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_fbx_test_get_last_lookup_probe_count")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_fbx_test_append_matches_general_product")
+// Tool-facing clip-subset filter behind `zanna asset bake --clips`; deliberately
+// absent from runtime.def (per-clip bakes are an offline packaging concern).
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_keep_animation_subset")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_textureasset3d_decode_bc1_block")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_textureasset3d_decode_bc3_block")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_textureasset3d_decode_bc4_block")

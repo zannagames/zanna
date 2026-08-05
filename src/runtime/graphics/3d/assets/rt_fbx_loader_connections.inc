@@ -307,11 +307,34 @@ static int32_t fbx_connections_next_for_parent(const fbx_conn_table_t *ct,
     return ct->entries[connection_index].next_by_parent;
 }
 
-/// @brief Return the first parent ID of a child endpoint.
+/// @brief Resolve the scene-hierarchy parent Model of a child object.
+/// @details A child's connection chain is not only its hierarchy link: exporters attach the
+///          same object to display layers, MotionBuilder groups, Deformer links, and — via OP
+///          property links — constraints (a Biped's Character rig links every core bone as
+///          `SpineLink`/`FootLink`/... BEFORE its real parent). Taking the first chain entry
+///          therefore resolved constraint or group IDs as "parents", silently flattening the
+///          imported skeleton, node-animation, pose, and scene hierarchies for such files.
+///          Hierarchy parents are exactly the object-to-object (`OO`, no property label) links
+///          whose parent is the scene root or another `Model` node, so this walk skips
+///          everything else.
+/// @param objects FBX Objects node used to classify candidate parents.
 /// @param ct Indexed connection table.
 /// @param child_id Numeric child endpoint.
-/// @return Parent ID, or zero for a root/missing endpoint.
-static int64_t fbx_find_parent(const fbx_conn_table_t *ct, int64_t child_id) {
-    int32_t index = fbx_connections_first_for_child(ct, child_id);
-    return index >= 0 ? ct->entries[index].parent_id : 0;
+/// @return Parent Model ID, or zero for a scene-root child or missing endpoint.
+static int64_t fbx_find_model_parent(fbx_node_t *objects,
+                                     const fbx_conn_table_t *ct,
+                                     int64_t child_id) {
+    for (int32_t index = fbx_connections_first_for_child(ct, child_id); index >= 0;
+         index = fbx_connections_next_for_child(ct, index)) {
+        const fbx_conn_t *entry = &ct->entries[index];
+        fbx_node_t *parent;
+        if (entry->prop)
+            continue; /* OP property link, not a hierarchy attachment */
+        if (entry->parent_id == 0)
+            return 0; /* explicit scene-root attachment */
+        parent = fbx_find_object_by_id(objects, entry->parent_id);
+        if (parent && parent->name && strcmp(parent->name, "Model") == 0)
+            return entry->parent_id;
+    }
+    return 0;
 }

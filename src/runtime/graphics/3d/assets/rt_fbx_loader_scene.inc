@@ -340,6 +340,45 @@ static void fbx_mat4_append_local(double acc[16], const double rhs[16]) {
     fbx_mat4_mul_local(acc, rhs, acc);
 }
 
+/// @brief Post-multiply @p acc by a translation (`acc = acc * T`) without a general multiply.
+/// @details Only column three of a row-major affine matrix depends on a translation, and it is
+///          computed with exactly the same expression and operand order the general product uses
+///          (`T[3][3]` is 1, so that term is an identity multiply). Columns zero through two are
+///          multiplied by an identity block and are copied through untouched. This replaces 64
+///          multiplies and 48 adds with three multiplies and three adds per row; the transform
+///          stack applies six translations per bone per sample, so it dominates import cost.
+/// @param acc Accumulated transform matrix, modified in place.
+/// @param x Translation along X, pre-clamped by the caller.
+/// @param y Translation along Y, pre-clamped by the caller.
+/// @param z Translation along Z, pre-clamped by the caller.
+static void fbx_mat4_append_translation_local(double acc[16], double x, double y, double z) {
+    if (!acc)
+        return;
+    for (int row = 0; row < 4; row++) {
+        double *r = &acc[row * 4];
+        r[3] = r[0] * x + r[1] * y + r[2] * z + r[3];
+    }
+}
+
+/// @brief Post-multiply @p acc by a scale (`acc = acc * S`) without a general multiply.
+/// @details A row-major affine scale touches only columns zero through two, each by its own
+///          factor; column three is multiplied by `S[3][3]` (1) and copied through. Same
+///          per-element arithmetic as the general product, without the zero terms.
+/// @param acc Accumulated transform matrix, modified in place.
+/// @param x Scale along X, pre-sanitized by the caller.
+/// @param y Scale along Y, pre-sanitized by the caller.
+/// @param z Scale along Z, pre-sanitized by the caller.
+static void fbx_mat4_append_scale_local(double acc[16], double x, double y, double z) {
+    if (!acc)
+        return;
+    for (int row = 0; row < 4; row++) {
+        double *r = &acc[row * 4];
+        r[0] *= x;
+        r[1] *= y;
+        r[2] *= z;
+    }
+}
+
 /// @brief Build a row-major translation matrix.
 /// @param x Translation along X.
 /// @param y Translation along Y.
@@ -519,18 +558,23 @@ static void fbx_build_model_transform_matrix(const fbx_transform_components_t *c
     }
     fbx_mat4_identity_local(out);
 
-    fbx_mat4_translate_local(c->translation[0] + c->geometric_translation[0],
-                             c->translation[1] + c->geometric_translation[1],
-                             c->translation[2] + c->geometric_translation[2],
-                             step);
-    fbx_mat4_append_local(out, step);
+    fbx_mat4_append_translation_local(
+        out,
+        fbx_clamp_abs_or(c->translation[0] + c->geometric_translation[0], 0.0, FBX_NUMERIC_ABS_MAX),
+        fbx_clamp_abs_or(c->translation[1] + c->geometric_translation[1], 0.0, FBX_NUMERIC_ABS_MAX),
+        fbx_clamp_abs_or(
+            c->translation[2] + c->geometric_translation[2], 0.0, FBX_NUMERIC_ABS_MAX));
 
-    fbx_mat4_translate_local(
-        c->rotation_offset[0], c->rotation_offset[1], c->rotation_offset[2], step);
-    fbx_mat4_append_local(out, step);
-    fbx_mat4_translate_local(
-        c->rotation_pivot[0], c->rotation_pivot[1], c->rotation_pivot[2], step);
-    fbx_mat4_append_local(out, step);
+    fbx_mat4_append_translation_local(
+        out,
+        fbx_clamp_abs_or(c->rotation_offset[0], 0.0, FBX_NUMERIC_ABS_MAX),
+        fbx_clamp_abs_or(c->rotation_offset[1], 0.0, FBX_NUMERIC_ABS_MAX),
+        fbx_clamp_abs_or(c->rotation_offset[2], 0.0, FBX_NUMERIC_ABS_MAX));
+    fbx_mat4_append_translation_local(
+        out,
+        fbx_clamp_abs_or(c->rotation_pivot[0], 0.0, FBX_NUMERIC_ABS_MAX),
+        fbx_clamp_abs_or(c->rotation_pivot[1], 0.0, FBX_NUMERIC_ABS_MAX),
+        fbx_clamp_abs_or(c->rotation_pivot[2], 0.0, FBX_NUMERIC_ABS_MAX));
     if (c->rotation_active) {
         fbx_mat4_euler_degrees(c->pre_rotation, c->rotation_order, step);
         fbx_mat4_append_local(out, step);
@@ -548,26 +592,39 @@ static void fbx_build_model_transform_matrix(const fbx_transform_components_t *c
     neg[0] = -c->rotation_pivot[0];
     neg[1] = -c->rotation_pivot[1];
     neg[2] = -c->rotation_pivot[2];
-    fbx_mat4_translate_local(neg[0], neg[1], neg[2], step);
-    fbx_mat4_append_local(out, step);
+    fbx_mat4_append_translation_local(out,
+                                      fbx_clamp_abs_or(neg[0], 0.0, FBX_NUMERIC_ABS_MAX),
+                                      fbx_clamp_abs_or(neg[1], 0.0, FBX_NUMERIC_ABS_MAX),
+                                      fbx_clamp_abs_or(neg[2], 0.0, FBX_NUMERIC_ABS_MAX));
 
-    fbx_mat4_translate_local(
-        c->scaling_offset[0], c->scaling_offset[1], c->scaling_offset[2], step);
-    fbx_mat4_append_local(out, step);
-    fbx_mat4_translate_local(c->scaling_pivot[0], c->scaling_pivot[1], c->scaling_pivot[2], step);
-    fbx_mat4_append_local(out, step);
-    fbx_mat4_scale_local(c->scale[0], c->scale[1], c->scale[2], step);
-    fbx_mat4_append_local(out, step);
+    fbx_mat4_append_translation_local(
+        out,
+        fbx_clamp_abs_or(c->scaling_offset[0], 0.0, FBX_NUMERIC_ABS_MAX),
+        fbx_clamp_abs_or(c->scaling_offset[1], 0.0, FBX_NUMERIC_ABS_MAX),
+        fbx_clamp_abs_or(c->scaling_offset[2], 0.0, FBX_NUMERIC_ABS_MAX));
+    fbx_mat4_append_translation_local(
+        out,
+        fbx_clamp_abs_or(c->scaling_pivot[0], 0.0, FBX_NUMERIC_ABS_MAX),
+        fbx_clamp_abs_or(c->scaling_pivot[1], 0.0, FBX_NUMERIC_ABS_MAX),
+        fbx_clamp_abs_or(c->scaling_pivot[2], 0.0, FBX_NUMERIC_ABS_MAX));
+    fbx_mat4_append_scale_local(out,
+                                fbx_scale_or_unit(c->scale[0]),
+                                fbx_scale_or_unit(c->scale[1]),
+                                fbx_scale_or_unit(c->scale[2]));
     neg[0] = -c->scaling_pivot[0];
     neg[1] = -c->scaling_pivot[1];
     neg[2] = -c->scaling_pivot[2];
-    fbx_mat4_translate_local(neg[0], neg[1], neg[2], step);
-    fbx_mat4_append_local(out, step);
+    fbx_mat4_append_translation_local(out,
+                                      fbx_clamp_abs_or(neg[0], 0.0, FBX_NUMERIC_ABS_MAX),
+                                      fbx_clamp_abs_or(neg[1], 0.0, FBX_NUMERIC_ABS_MAX),
+                                      fbx_clamp_abs_or(neg[2], 0.0, FBX_NUMERIC_ABS_MAX));
 
     fbx_mat4_euler_degrees(c->geometric_rotation, c->rotation_order, step);
     fbx_mat4_append_local(out, step);
-    fbx_mat4_scale_local(c->geometric_scale[0], c->geometric_scale[1], c->geometric_scale[2], step);
-    fbx_mat4_append_local(out, step);
+    fbx_mat4_append_scale_local(out,
+                                fbx_scale_or_unit(c->geometric_scale[0]),
+                                fbx_scale_or_unit(c->geometric_scale[1]),
+                                fbx_scale_or_unit(c->geometric_scale[2]));
 }
 
 /// @brief Invert an affine row-major 4x4 matrix.
@@ -1960,7 +2017,7 @@ static void *fbx_build_scene_root(rt_fbx_asset *asset,
         fbx_apply_model_node_trs(obj, node, z_up);
 
         models[model_count].id = model_id;
-        models[model_count].parent_id = fbx_find_parent(ct, model_id);
+        models[model_count].parent_id = fbx_find_model_parent(objects, ct, model_id);
         models[model_count].import_index = i;
         models[model_count].source = obj;
         models[model_count].node = node;

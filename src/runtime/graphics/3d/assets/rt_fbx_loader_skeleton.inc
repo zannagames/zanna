@@ -204,7 +204,7 @@ static void *fbx_extract_skeleton(fbx_node_t *root,
         bi->has_cluster_global_bind = fbx_find_cluster_transform_link_for_model(
             objects, ct, bi->id, z_up, bi->cluster_global_bind);
 
-        bi->parent_id = fbx_find_parent(ct, bi->id);
+        bi->parent_id = fbx_find_model_parent(objects, ct, bi->id);
     }
 
     if (bone_count == 0) {

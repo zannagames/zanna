@@ -3350,7 +3350,10 @@ static bool write_fbx_skinned_animation_fixture_ex(const char *path,
                                                    bool mismatched_x_curve,
                                                    bool bare_curve_component_names = false,
                                                    bool lowercase_curve_component_names = false,
-                                                   int64_t key_time_offset = 0) {
+                                                   int64_t key_time_offset = 0,
+                                                   bool unknown_constraint = false,
+                                                   bool second_stack = false,
+                                                   bool constraint_bone_links = false) {
     static const int64_t kGeometryId = 1100;
     static const int64_t kMeshModelId = 1200;
     static const int64_t kRootBoneId = 1300;
@@ -3498,6 +3501,13 @@ static bool write_fbx_skinned_animation_fixture_ex(const char *path,
 
     connections.name = "Connections";
     connections.children.push_back(make_fbx_connection_fixture(kMeshModelId, 0));
+    if (constraint_bone_links) {
+        /* Character-style OP rig links listed BEFORE the hierarchy links, exactly as Biped
+         * exports order them; parent resolution must skip these. */
+        connections.children.push_back(make_fbx_connection_fixture(kRootBoneId, 9500, "RootLink"));
+        connections.children.push_back(
+            make_fbx_connection_fixture(kChildBoneId, 9500, "SpineLink"));
+    }
     connections.children.push_back(make_fbx_connection_fixture(kRootBoneId, 0));
     connections.children.push_back(make_fbx_connection_fixture(kChildBoneId, kRootBoneId));
     connections.children.push_back(make_fbx_connection_fixture(kGeometryId, kMeshModelId));
@@ -3526,6 +3536,55 @@ static bool write_fbx_skinned_animation_fixture_ex(const char *path,
     }
     connections.children.push_back(
         make_fbx_connection_fixture(kCurveYId, kTranslateNodeId, curve_y_prop));
+    if (second_stack) {
+        /* A second independent stack named "Run" targeting the same bone, so multi-clip
+         * models (the mocap-package shape) can be built for clip-subset tests. */
+        static const int64_t kStack2Id = 1550;
+        static const int64_t kLayer2Id = 1551;
+        static const int64_t kTranslate2NodeId = 1560;
+        static const int64_t kCurve2XId = 1561;
+        static const int64_t kCurve2YId = 1562;
+        static const double kCurve2XValues[2] = {0.0, 20.0};
+        static const double kCurve2YValues[2] = {0.0, 4.0};
+        FbxNodeFixture run_stack;
+        FbxNodeFixture run_layer;
+        FbxNodeFixture run_translate;
+        run_stack.name = "AnimationStack";
+        run_stack.props.push_back(fbx_prop_i64_fixture(kStack2Id));
+        run_stack.props.push_back(
+            fbx_prop_string_fixture(make_fbx_object_name("Run", "AnimStack")));
+        run_stack.props.push_back(fbx_prop_string_fixture(""));
+        run_layer.name = "AnimationLayer";
+        run_layer.props.push_back(fbx_prop_i64_fixture(kLayer2Id));
+        run_layer.props.push_back(
+            fbx_prop_string_fixture(make_fbx_object_name("RunLayer", "AnimLayer")));
+        run_layer.props.push_back(fbx_prop_string_fixture(""));
+        run_translate.name = "AnimationCurveNode";
+        run_translate.props.push_back(fbx_prop_i64_fixture(kTranslate2NodeId));
+        run_translate.props.push_back(
+            fbx_prop_string_fixture(make_fbx_object_name("RunTranslate", "AnimCurveNode")));
+        run_translate.props.push_back(fbx_prop_string_fixture(""));
+        objects.children.push_back(run_stack);
+        objects.children.push_back(run_layer);
+        objects.children.push_back(run_translate);
+        objects.children.push_back(make_fbx_animation_curve_fixture(
+            kCurve2XId, key_times, kCurve2XValues, sizeof(key_times) / sizeof(key_times[0])));
+        objects.children.push_back(make_fbx_animation_curve_fixture(
+            kCurve2YId, key_times, kCurve2YValues, sizeof(key_times) / sizeof(key_times[0])));
+        connections.children.push_back(make_fbx_connection_fixture(kLayer2Id, kStack2Id));
+        connections.children.push_back(make_fbx_connection_fixture(kTranslate2NodeId, kLayer2Id));
+        connections.children.push_back(
+            make_fbx_connection_fixture(kTranslate2NodeId, animated_bone_id, "Lcl Translation"));
+        connections.children.push_back(
+            make_fbx_connection_fixture(kCurve2XId, kTranslate2NodeId, curve_x_prop));
+        connections.children.push_back(
+            make_fbx_connection_fixture(kCurve2YId, kTranslate2NodeId, curve_y_prop));
+    }
+    if (unknown_constraint) {
+        /* An unevaluated rig-definition constraint, as mocap exporters ship: unknown kind,
+         * no bindings. It must have zero effect on the imported animation. */
+        objects.children.push_back(make_fbx_constraint_fixture(9500, "MotionRig", "Character", {}));
+    }
 
     bytes.insert(bytes.end(), {'K', 'a', 'y', 'd', 'a', 'r', 'a', ' ', 'F',  'B',    'X', ' ',
                                'B', 'i', 'n', 'a', 'r', 'y', ' ', ' ', '\0', '\x1A', '\0'});
@@ -9601,6 +9660,271 @@ static void test_fbx_channel_index_matches_linear_scan_results() {
     std::remove(wide_path);
 }
 
+/// @brief The specialized translation/scale composes agree with the general 4x4 product.
+/// @details The transform stack applies six translations and two scales per bone per sample
+///          without a general multiply. This sweeps awkward accumulators — negative zeros,
+///          denormals, clamp boundaries, sign mixes — through both paths and requires elementwise
+///          equality, so the optimization cannot silently drift from the algebra it replaces.
+static void test_fbx_specialized_matrix_composes_match_general_product() {
+    /* Mirrors FBX_NUMERIC_ABS_MAX in rt_fbx_loader.c, which is loader-internal. */
+    static const double kFbxNumericAbsMax = 1000000000000.0;
+    static const double kValues[] = {0.0,
+                                     -0.0,
+                                     1.0,
+                                     -1.0,
+                                     0.5,
+                                     -37.25,
+                                     1e-300,
+                                     -1e-300,
+                                     1e11,
+                                     -1e11,
+                                     kFbxNumericAbsMax,
+                                     -kFbxNumericAbsMax,
+                                     kFbxNumericAbsMax * 2.0};
+    const size_t value_count = sizeof(kValues) / sizeof(kValues[0]);
+    uint64_t rng = 0x9E3779B97F4A7C15ull;
+    int translation_ok = 1;
+    int scale_ok = 1;
+
+    for (size_t trial = 0; trial < 4096u && (translation_ok || scale_ok); trial++) {
+        double acc[16];
+        for (int i = 0; i < 16; i++) {
+            rng = rng * 6364136223846793005ull + 1442695040888963407ull;
+            switch ((rng >> 59) & 3u) {
+                case 0:
+                    acc[i] = kValues[(rng >> 13) % value_count];
+                    break;
+                case 1:
+                    acc[i] = -0.0;
+                    break;
+                case 2:
+                    acc[i] = (double)(int64_t)(rng >> 40) * 1e-6;
+                    break;
+                default:
+                    acc[i] = (double)(int64_t)(rng >> 32) * 1.5;
+                    break;
+            }
+        }
+        double x = kValues[(rng >> 3) % value_count];
+        double y = kValues[(rng >> 17) % value_count];
+        double z = kValues[(rng >> 29) % value_count];
+        if (!rt_fbx_test_append_matches_general_product(acc, x, y, z, 0))
+            translation_ok = 0;
+        if (!rt_fbx_test_append_matches_general_product(acc, x, y, z, 1))
+            scale_ok = 0;
+    }
+    EXPECT_TRUE(translation_ok,
+                "Specialized translation compose equals the general 4x4 product elementwise");
+    EXPECT_TRUE(scale_ok, "Specialized scale compose equals the general 4x4 product elementwise");
+}
+
+/// @brief An unevaluated constraint must not change the imported animation at all.
+/// @details "Preserved but not evaluated" constraints (unknown kinds such as a MotionBuilder
+///          Character rig definition) previously forced the whole file onto the constraint-aware
+///          bake path — a massive slowdown, and a divergence risk if the two paths ever sampled
+///          differently. Extraction now routes on the evaluated-constraint count, so the two
+///          fixtures below must import byte-for-byte identically.
+static void test_fbx_unknown_constraint_matches_constraint_free_import() {
+    const char *plain_path = "/tmp/zanna_fbx_no_constraint.fbx";
+    const char *rigdef_path = "/tmp/zanna_fbx_unknown_constraint.fbx";
+    EXPECT_TRUE(write_fbx_skinned_animation_fixture_ex(
+                    plain_path, false, 0, 0, false, true, false, false, false, 0, false),
+                "Constraint-free skinned fixture can be written");
+    EXPECT_TRUE(write_fbx_skinned_animation_fixture_ex(
+                    rigdef_path, false, 0, 0, false, true, false, false, false, 0, true),
+                "Unknown-constraint skinned fixture can be written");
+
+    void *plain = rt_model3d_load(rt_const_cstr(plain_path));
+    void *rigdef = rt_model3d_load(rt_const_cstr(rigdef_path));
+    EXPECT_TRUE(plain != nullptr && rigdef != nullptr,
+                "Both unknown-constraint comparison fixtures import");
+    if (plain && rigdef) {
+        auto *plain_anim = static_cast<rt_animation3d *>(rt_model3d_get_animation(plain, 0));
+        auto *rigdef_anim = static_cast<rt_animation3d *>(rt_model3d_get_animation(rigdef, 0));
+        EXPECT_TRUE(plain_anim != nullptr && rigdef_anim != nullptr,
+                    "Both comparison fixtures produce an animation clip");
+        if (plain_anim && rigdef_anim) {
+            EXPECT_TRUE(plain_anim->channel_count == rigdef_anim->channel_count,
+                        "An unevaluated constraint does not change the imported channel count");
+            int32_t shared_channels = plain_anim->channel_count < rigdef_anim->channel_count
+                                          ? plain_anim->channel_count
+                                          : rigdef_anim->channel_count;
+            for (int32_t c = 0; c < shared_channels; c++) {
+                const vgfx3d_anim_channel_t *a = &plain_anim->channels[c];
+                const vgfx3d_anim_channel_t *b = &rigdef_anim->channels[c];
+                EXPECT_TRUE(a->bone_index == b->bone_index &&
+                                a->keyframe_count == b->keyframe_count,
+                            "An unevaluated constraint preserves channel targets and key counts");
+                int32_t shared_keys =
+                    a->keyframe_count < b->keyframe_count ? a->keyframe_count : b->keyframe_count;
+                for (int32_t k = 0; k < shared_keys; k++) {
+                    EXPECT_TRUE(a->keyframes[k].time == b->keyframes[k].time,
+                                "An unevaluated constraint preserves every key time");
+                    for (int component = 0; component < 3; component++) {
+                        EXPECT_TRUE(a->keyframes[k].position[component] ==
+                                        b->keyframes[k].position[component],
+                                    "An unevaluated constraint preserves sampled translations");
+                        EXPECT_TRUE(a->keyframes[k].scale_xyz[component] ==
+                                        b->keyframes[k].scale_xyz[component],
+                                    "An unevaluated constraint preserves sampled scales");
+                    }
+                    for (int component = 0; component < 4; component++) {
+                        EXPECT_TRUE(a->keyframes[k].rotation[component] ==
+                                        b->keyframes[k].rotation[component],
+                                    "An unevaluated constraint preserves sampled rotations");
+                    }
+                }
+            }
+        }
+    }
+    if (plain && rt_obj_release_check0(plain))
+        rt_obj_free(plain);
+    if (rigdef && rt_obj_release_check0(rigdef))
+        rt_obj_free(rigdef);
+    std::remove(plain_path);
+    std::remove(rigdef_path);
+}
+
+/// @brief Clip-subset filtering keeps the selected clips and survives a save/reload roundtrip.
+/// @details Backs `zanna asset bake --clips`: multi-clip packages exceed the VSCN document size
+///          limit when baked whole, so per-clip bakes must preserve exactly the chosen clips.
+static void test_model3d_keep_animation_subset_filters_and_roundtrips() {
+    const char *source_path = "/tmp/zanna_fbx_two_stack_subset.fbx";
+    const char *baked_path = "/tmp/zanna_fbx_two_stack_subset.scene3d";
+    EXPECT_TRUE(write_fbx_skinned_animation_fixture_ex(
+                    source_path, false, 0, 0, false, true, false, false, false, 0, false, true),
+                "Two-stack subset fixture can be written");
+
+    void *model = rt_model3d_load(rt_const_cstr(source_path));
+    EXPECT_TRUE(model != nullptr, "Two-stack subset fixture imports");
+    if (!model) {
+        std::remove(source_path);
+        return;
+    }
+    EXPECT_TRUE(rt_model3d_get_animation_count(model) == 2,
+                "Two independent stacks import as two skeletal clips");
+
+    /* Invalid selections leave the model untouched. */
+    const int64_t descending[2] = {1, 0};
+    EXPECT_TRUE(rt_model3d_keep_animation_subset(model, descending, 2, nullptr, 0) == 0,
+                "A non-ascending kept-index list is rejected");
+    const int64_t out_of_range[1] = {2};
+    EXPECT_TRUE(rt_model3d_keep_animation_subset(model, out_of_range, 1, nullptr, 0) == 0,
+                "An out-of-range kept index is rejected");
+    EXPECT_TRUE(rt_model3d_get_animation_count(model) == 2,
+                "Rejected subset selections change nothing");
+
+    const int64_t keep_run[1] = {1};
+    EXPECT_TRUE(rt_model3d_keep_animation_subset(model, keep_run, 1, nullptr, 0) == 1,
+                "Keeping the second clip succeeds");
+    EXPECT_TRUE(rt_model3d_get_animation_count(model) == 1,
+                "Exactly one clip remains after subsetting");
+    {
+        void *anim = rt_model3d_get_animation(model, 0);
+        rt_string name = anim ? rt_animation3d_get_name(anim) : nullptr;
+        const char *text = name ? rt_string_cstr(name) : nullptr;
+        EXPECT_TRUE(text && std::strcmp(text, "Run") == 0,
+                    "The kept clip is the selected 'Run' stack");
+        rt_string_unref(name);
+    }
+
+    EXPECT_TRUE(rt_model3d_save(model, rt_const_cstr(baked_path)) == 1,
+                "A clip-subset model saves");
+    void *baked = rt_model3d_load(rt_const_cstr(baked_path));
+    EXPECT_TRUE(baked != nullptr, "A clip-subset bake reloads");
+    if (baked) {
+        EXPECT_TRUE(rt_model3d_get_animation_count(baked) == 1,
+                    "The reloaded bake holds exactly the kept clip");
+        auto *anim = static_cast<rt_animation3d *>(rt_model3d_get_animation(baked, 0));
+        bool found_run_key = false;
+        for (int32_t c = 0; anim && c < anim->channel_count && !found_run_key; c++) {
+            for (int32_t k = 0; k < anim->channels[c].keyframe_count; k++) {
+                if (std::fabs(anim->channels[c].keyframes[k].position[0] - 20.0) < 1e-4) {
+                    found_run_key = true;
+                    break;
+                }
+            }
+        }
+        EXPECT_TRUE(found_run_key, "The reloaded clip carries the 'Run' stack's keyframe values");
+        if (rt_obj_release_check0(baked))
+            rt_obj_free(baked);
+    }
+    if (rt_obj_release_check0(model))
+        rt_obj_free(model);
+    std::remove(source_path);
+    std::remove(baked_path);
+}
+
+/// @brief A failed VSCN save reports a diagnostic instead of failing silently.
+/// @details The save path historically returned zero from every failure with no recorded
+///          message, so `zanna asset bake` printed `stage:"save"` and nothing else.
+static void test_model3d_save_reports_diagnostics_on_failure() {
+    const char *source_path = "/tmp/zanna_fbx_save_diagnostic.fbx";
+    EXPECT_TRUE(
+        write_fbx_skinned_animation_fixture_ex(source_path, false, 0, 0, false, true, false),
+        "Save-diagnostic fixture can be written");
+    void *model = rt_model3d_load(rt_const_cstr(source_path));
+    EXPECT_TRUE(model != nullptr, "Save-diagnostic fixture imports");
+    if (!model) {
+        std::remove(source_path);
+        return;
+    }
+    int64_t saved =
+        rt_model3d_save(model, rt_const_cstr("/tmp/zanna_no_such_dir_for_vscn_save/out.scene3d"));
+    EXPECT_TRUE(saved == 0, "Saving into a missing directory fails");
+    EXPECT_TRUE(rt_asset_error_get_message() &&
+                    std::strstr(rt_asset_error_get_message(), "VSCN.Save") != nullptr,
+                "A failed VSCN save records a VSCN.Save diagnostic");
+    if (rt_obj_release_check0(model))
+        rt_obj_free(model);
+    std::remove(source_path);
+}
+
+/// @brief Constraint OP links to bones must not displace their hierarchy parents.
+/// @details Biped exports list a Character constraint's `*Link` property connections before
+///          each core bone's real parent link; parent resolution previously took the first
+///          connection blindly, silently flattening the imported skeleton (and the
+///          node-animation, pose, and scene hierarchies) for every such file.
+static void test_fbx_constraint_property_links_do_not_flatten_the_skeleton() {
+    const char *path = "/tmp/zanna_fbx_constraint_link_hierarchy.fbx";
+    EXPECT_TRUE(write_fbx_skinned_animation_fixture_ex(
+                    path, false, 0, 0, false, true, false, false, false, 0, true, false, true),
+                "Constraint-link hierarchy fixture can be written");
+    void *model = rt_model3d_load(rt_const_cstr(path));
+    EXPECT_TRUE(model != nullptr, "Constraint-link hierarchy fixture imports");
+    if (!model) {
+        std::remove(path);
+        return;
+    }
+    void *skel = rt_model3d_get_skeleton(model, 0);
+    EXPECT_TRUE(skel != nullptr, "Constraint-link fixture yields a skeleton");
+    if (skel) {
+        int64_t root_index = -1;
+        int64_t child_index = -1;
+        int64_t bone_count = rt_skeleton3d_get_bone_count(skel);
+        for (int64_t i = 0; i < bone_count; i++) {
+            rt_string name = rt_skeleton3d_get_bone_name(skel, i);
+            const char *text = name ? rt_string_cstr(name) : nullptr;
+            if (text && std::strcmp(text, "RootBone") == 0)
+                root_index = i;
+            if (text && std::strcmp(text, "ChildBone") == 0)
+                child_index = i;
+            rt_string_unref(name);
+        }
+        EXPECT_TRUE(root_index >= 0 && child_index >= 0,
+                    "Both fixture bones import despite the constraint links");
+        if (root_index >= 0 && child_index >= 0) {
+            EXPECT_TRUE(rt_skeleton3d_get_bone_parent(skel, root_index) == -1,
+                        "The root bone stays a root");
+            EXPECT_TRUE(rt_skeleton3d_get_bone_parent(skel, child_index) == root_index,
+                        "The child bone keeps its hierarchy parent, not the constraint");
+        }
+    }
+    if (rt_obj_release_check0(model))
+        rt_obj_free(model);
+    std::remove(path);
+}
+
 static void test_fbx_imports_progressive_morph_fidelity_and_animation() {
     const char *path = "/tmp/zanna_fbx_progressive_morph.fbx";
     EXPECT_TRUE(write_fbx_progressive_morph_fixture(path),
@@ -9870,6 +10194,11 @@ int main() {
     test_fbx_objects_record_beyond_former_child_cap_imports();
     test_fbx_structural_limit_reports_size_error_not_corruption();
     test_fbx_channel_index_matches_linear_scan_results();
+    test_fbx_specialized_matrix_composes_match_general_product();
+    test_fbx_unknown_constraint_matches_constraint_free_import();
+    test_model3d_keep_animation_subset_filters_and_roundtrips();
+    test_model3d_save_reports_diagnostics_on_failure();
+    test_fbx_constraint_property_links_do_not_flatten_the_skeleton();
     test_fbx_imports_progressive_morph_fidelity_and_animation();
     test_model3d_rejects_truncated_fbx();
     test_model3d_missing_fbx_returns_null_without_trap();
