@@ -136,6 +136,7 @@ Lowerer::Module Lowerer::lower(ModuleDecl &module) {
     // Pre-pass 1: register all `final` constants so that class/function
     // method bodies can reference constants defined later in the same file.
     registerAllFinalConstants(module.declarations);
+    registerAllGlobalVariables(module.declarations);
 
     // Pre-pass 2: register all class/struct type layouts so that field access
     // in any method body can resolve types, even for forward-declared entities.

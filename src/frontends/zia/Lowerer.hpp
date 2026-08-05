@@ -637,6 +637,9 @@ class Lowerer {
     ///          class/function method bodies are lowered, fixing forward-reference issues
     ///          where an class method references a `final` defined later in the same file.
     void registerAllFinalConstants(std::vector<DeclPtr> &declarations);
+    /// @brief Pre-register mutable module variables so function bodies resolve them
+    ///        regardless of declaration order (see Lowerer_Decl.cpp).
+    void registerAllGlobalVariables(std::vector<DeclPtr> &declarations);
 
     /// @brief Register a single class type's field layout without lowering methods.
     /// @param decl The class declaration.

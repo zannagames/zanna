@@ -415,6 +415,41 @@ void Lowerer::registerAllFinalConstants(std::vector<DeclPtr> &declarations) {
     // emitGlobalInitializers() alongside mutable globals.
 }
 
+/// @brief Pre-register every mutable module variable before any function body lowers.
+/// @param declarations Top-level or namespace-scoped declarations to scan.
+/// @details Function bodies resolve module-variable names through @c globalVariables_.
+///          Declarations lower in textual order, so a function defined BEFORE a
+///          `var` declaration used to miss the map and silently fall back to a fresh
+///          local slot — assignments ran without error and were lost (the declared
+///          global kept its initializer value). Registering names and types up front
+///          makes textual order irrelevant, matching how functions and enums already
+///          hoist. `final` declarations are excluded: they are immutable (no
+///          assignment can target them) and follow their own constant-inlining paths.
+///          Recurses into namespaces with prefix threading.
+void Lowerer::registerAllGlobalVariables(std::vector<DeclPtr> &declarations) {
+    for (auto &decl : declarations) {
+        if (decl->kind == DeclKind::GlobalVar) {
+            auto *gvar = static_cast<GlobalVarDecl *>(decl.get());
+            if (gvar->isFinal)
+                continue;
+            std::string qualifiedName = declarationName(*gvar, gvar->name);
+            TypeRef type = gvar->type ? sema_.resolveType(gvar->type.get()) : nullptr;
+            if (!type && gvar->initializer)
+                type = sema_.typeOf(gvar->initializer.get());
+            globalVariables_[qualifiedName] = type;
+        } else if (decl->kind == DeclKind::Namespace) {
+            auto *ns = static_cast<NamespaceDecl *>(decl.get());
+            std::string savedPrefix = namespacePrefix_;
+            if (namespacePrefix_.empty())
+                namespacePrefix_ = ns->name;
+            else
+                namespacePrefix_ = namespacePrefix_ + "." + ns->name;
+            registerAllGlobalVariables(ns->declarations);
+            namespacePrefix_ = savedPrefix;
+        }
+    }
+}
+
 //=============================================================================
 // Namespace and Enum Declaration Lowering
 //=============================================================================

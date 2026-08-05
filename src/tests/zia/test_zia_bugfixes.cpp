@@ -3979,6 +3979,45 @@ func start() {
 
 } // namespace
 
+TEST(ZiaModuleGlobals, AssignmentBeforeDeclarationTargetsTheModuleVariable) {
+    /* ZB-7: a function defined before a module `var` declaration assigned a fresh
+     * local instead of the global — the write succeeded silently and was lost.
+     * Both declaration orders must lower the assignment through the module-variable
+     * address helper. */
+    SourceManager sm;
+    const std::string forwardSource = R"(
+module Test;
+
+func setIt() { late_ = "assigned"; }
+
+var late_: String = "";
+
+func start() { setIt(); }
+)";
+    const std::string declaredFirstSource = R"(
+module Test;
+
+var late_: String = "";
+
+func setIt() { late_ = "assigned"; }
+
+func start() { setIt(); }
+)";
+    CompilerInput forwardInput{.source = forwardSource, .path = "modvar_forward.zia"};
+    CompilerInput declaredInput{.source = declaredFirstSource, .path = "modvar_declared.zia"};
+    CompilerOptions opts{};
+
+    auto forwardResult = compile(forwardInput, opts, sm);
+    auto declaredResult = compile(declaredInput, opts, sm);
+
+    ASSERT_TRUE(forwardResult.succeeded());
+    ASSERT_TRUE(declaredResult.succeeded());
+    size_t forwardStores = countCallsTo(forwardResult.module, "rt_modvar_addr_str");
+    size_t declaredStores = countCallsTo(declaredResult.module, "rt_modvar_addr_str");
+    EXPECT_GE(forwardStores, static_cast<size_t>(1));
+    EXPECT_EQ(forwardStores, declaredStores);
+}
+
 int main() {
     return zanna_test::run_all_tests();
 }
