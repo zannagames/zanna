@@ -14,10 +14,13 @@
 //   - Gerstner multi-wave path sums up to WATER_MAX_WAVES superimposed waves.
 //   - Normals computed analytically from wave derivative for smooth shading.
 //   - Drawn with alpha-blended material; backface cull disabled around draw.
+//   - Mutable resource mirrors are republished from private retained-owner identities.
+//   - Retained scalar state is canonicalized before readback, distance gating, or mesh work.
+//   - Material-only edits never force a water-grid rebuild.
 //
 // Ownership/Lifetime:
-//   - Water3D is GC-managed; finalizer releases the texture / normal-map /
-//     env-map / mesh / material refs.
+//   - Water3D is GC-managed; finalizer releases private texture / normal-map /
+//     env-map / mesh / material owner identities, never mutable legacy mirrors.
 //
 // Links: rt_water3d.h, rt_canvas3d.h
 //
@@ -38,11 +41,11 @@
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
 #include "rt_g3d_ref_slots.h"
-#include "rt_vec3.h"
 #include "rt_heap.h"
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
 #include "rt_platform.h"
+#include "rt_vec3.h"
 #include "rt_world3d_common.h"
 
 #include <math.h>
@@ -148,6 +151,13 @@ typedef struct {
     double sim_distance;
     double last_camera_pos[3];
     int8_t has_camera_pos;
+    /* Appended private authority keeps implementation-only prefix views stable. */
+    int8_t material_dirty;
+    void *owned_mesh;
+    void *owned_material;
+    void *owned_texture;
+    void *owned_normal_map;
+    void *owned_env_map;
 } rt_water3d;
 
 /// @brief Validate @p obj as a Water3D handle and return its typed pointer (NULL on mismatch).
@@ -318,24 +328,153 @@ static int water3d_normalize_dir2(double *x, double *z) {
     return 1;
 }
 
-/// @brief Release corrupted cached resources so update can recreate valid ones.
+/// @brief Validate private retained owners and republish every mutable legacy resource mirror.
+/// @details Mirror corruption is never released because the mirror does not establish ownership.
+///   A missing/invalid private owner is cleared with its type-aware slot helper; valid owner
+///   identities survive corruption of the corresponding legacy field.
 /// @param w Water surface whose retained graphics handles are repaired.
 static void water3d_repair_resource_handles(rt_water3d *w) {
     if (!w)
         return;
-    if (w->mesh && !rt_g3d_has_class(w->mesh, RT_G3D_MESH3D_CLASS_ID)) {
-        water3d_release_mesh_slot(&w->mesh);
+    if (w->owned_mesh && !rt_g3d_has_class(w->owned_mesh, RT_G3D_MESH3D_CLASS_ID)) {
+        water3d_release_mesh_slot(&w->owned_mesh);
         w->mesh_dirty = 1;
     }
-    if (w->material && !rt_g3d_has_class(w->material, RT_G3D_MATERIAL3D_CLASS_ID))
-        water3d_release_material_slot(&w->material);
-    if (w->texture && !water3d_is_pixels_handle(w->texture))
-        water3d_release_pixels_slot(&w->texture);
-    if (w->normal_map && !water3d_is_pixels_handle(w->normal_map))
-        water3d_release_pixels_slot(&w->normal_map);
-    if (w->env_map && (!rt_g3d_has_class(w->env_map, RT_G3D_CUBEMAP3D_CLASS_ID) ||
-                       !rt_cubemap3d_is_complete(w->env_map)))
-        water3d_release_env_map_slot(&w->env_map);
+    if (w->owned_material && !rt_g3d_has_class(w->owned_material, RT_G3D_MATERIAL3D_CLASS_ID))
+        water3d_release_material_slot(&w->owned_material);
+    if (w->owned_texture && !water3d_is_pixels_handle(w->owned_texture))
+        water3d_release_pixels_slot(&w->owned_texture);
+    if (w->owned_normal_map && !water3d_is_pixels_handle(w->owned_normal_map))
+        water3d_release_pixels_slot(&w->owned_normal_map);
+    if (w->owned_env_map && (!rt_g3d_has_class(w->owned_env_map, RT_G3D_CUBEMAP3D_CLASS_ID) ||
+                             !rt_cubemap3d_is_complete(w->owned_env_map)))
+        water3d_release_env_map_slot(&w->owned_env_map);
+
+    if (w->mesh != w->owned_mesh)
+        w->mesh_dirty = 1;
+    if (w->material != w->owned_material || w->texture != w->owned_texture ||
+        w->normal_map != w->owned_normal_map || w->env_map != w->owned_env_map)
+        w->material_dirty = 1;
+    w->mesh = w->owned_mesh;
+    w->material = w->owned_material;
+    w->texture = w->owned_texture;
+    w->normal_map = w->owned_normal_map;
+    w->env_map = w->owned_env_map;
+}
+
+/// @brief Persist finite, bounded, internally consistent retained water state.
+/// @details The repair runs before every public read/use boundary. Geometry-affecting repairs mark
+///   the mesh dirty; tint/binding repairs mark only the material dirty so they cannot trigger an
+///   unnecessary `(resolution + 1)^2` vertex rewrite.
+/// @param w Water surface whose scalar state is canonicalized; NULL is accepted.
+static void water3d_repair_state(rt_water3d *w) {
+    double repaired;
+    int geometry_changed = 0;
+    int material_changed = 0;
+    if (!w)
+        return;
+    water3d_repair_resource_handles(w);
+
+    repaired = water3d_clamp_positive_or(w->width, 1.0, WATER3D_SIZE_MAX);
+    if (w->width != repaired) {
+        w->width = repaired;
+        geometry_changed = 1;
+    }
+    repaired = water3d_clamp_positive_or(w->depth, 1.0, WATER3D_SIZE_MAX);
+    if (w->depth != repaired) {
+        w->depth = repaired;
+        geometry_changed = 1;
+    }
+    repaired = water3d_clamp_abs_or(w->height, 0.0, WATER3D_HEIGHT_ABS_MAX);
+    if (w->height != repaired) {
+        w->height = repaired;
+        geometry_changed = 1;
+    }
+    repaired = water3d_clamp_abs_or(w->center_x, 0.0, WATER3D_SIZE_MAX);
+    if (w->center_x != repaired) {
+        w->center_x = repaired;
+        geometry_changed = 1;
+    }
+    repaired = water3d_clamp_abs_or(w->center_z, 0.0, WATER3D_SIZE_MAX);
+    if (w->center_z != repaired) {
+        w->center_z = repaired;
+        geometry_changed = 1;
+    }
+    repaired = water3d_clamp_abs_or(w->wave_speed, 0.0, WATER3D_PARAM_MAX);
+    if (w->wave_speed != repaired) {
+        w->wave_speed = repaired;
+        geometry_changed = 1;
+    }
+    repaired = water3d_clamp_nonnegative(w->wave_amplitude, WATER3D_PARAM_MAX);
+    if (w->wave_amplitude != repaired) {
+        w->wave_amplitude = repaired;
+        geometry_changed = 1;
+    }
+    repaired = water3d_clamp_nonnegative(w->wave_frequency, WATER3D_PARAM_MAX);
+    if (w->wave_frequency != repaired) {
+        w->wave_frequency = repaired;
+        geometry_changed = 1;
+    }
+    for (int32_t c = 0; c < 3; c++) {
+        repaired = water3d_clamp01(w->color[c]);
+        if (w->color[c] != repaired) {
+            w->color[c] = repaired;
+            material_changed = 1;
+        }
+    }
+    repaired = water3d_clamp01(w->alpha);
+    if (w->alpha != repaired) {
+        w->alpha = repaired;
+        material_changed = 1;
+    }
+    repaired = water3d_clamp01(w->reflectivity);
+    if (w->reflectivity != repaired) {
+        w->reflectivity = repaired;
+        material_changed = 1;
+    }
+    repaired = w->time;
+    if (!isfinite(repaired) || repaired < 0.0)
+        repaired = 0.0;
+    else if (repaired > WATER3D_TIME_MAX)
+        repaired = fmod(repaired, WATER3D_TIME_MAX);
+    if (!isfinite(repaired))
+        repaired = 0.0;
+    if (w->time != repaired) {
+        w->time = repaired;
+        geometry_changed = 1;
+    }
+    repaired = water3d_clamp_nonnegative(w->sim_distance, WATER3D_SIZE_MAX);
+    if (w->sim_distance != repaired)
+        w->sim_distance = repaired;
+
+    if (w->resolution < 8 || w->resolution > 256) {
+        w->resolution = WATER_GRID;
+        geometry_changed = 1;
+    }
+    if (w->wave_count < 0) {
+        w->wave_count = 0;
+        geometry_changed = 1;
+    } else if (w->wave_count > WATER_MAX_WAVES) {
+        w->wave_count = WATER_MAX_WAVES;
+        geometry_changed = 1;
+    }
+
+    w->has_camera_pos = w->has_camera_pos ? 1 : 0;
+    if (w->has_camera_pos &&
+        (!isfinite(w->last_camera_pos[0]) || !isfinite(w->last_camera_pos[1]) ||
+         !isfinite(w->last_camera_pos[2]) || fabs(w->last_camera_pos[0]) > WATER3D_HEIGHT_ABS_MAX ||
+         fabs(w->last_camera_pos[1]) > WATER3D_HEIGHT_ABS_MAX ||
+         fabs(w->last_camera_pos[2]) > WATER3D_HEIGHT_ABS_MAX)) {
+        w->has_camera_pos = 0;
+        memset(w->last_camera_pos, 0, sizeof(w->last_camera_pos));
+    }
+
+    w->mesh_dirty = w->mesh_dirty ? 1 : 0;
+    w->material_dirty = w->material_dirty ? 1 : 0;
+    if (geometry_changed)
+        w->mesh_dirty = 1;
+    if (material_changed)
+        w->material_dirty = 1;
 }
 
 /// @brief Ensure the retained water mesh has enough storage for a direct vertex/index rewrite.
@@ -348,48 +487,91 @@ static void water3d_repair_resource_handles(rt_water3d *w) {
 static int water3d_mesh_reserve(rt_mesh3d *mesh,
                                 uint32_t vertex_capacity,
                                 uint32_t index_capacity) {
+    vgfx3d_vertex_t *new_vertices = NULL;
+    double *new_positions64 = NULL;
+    uint32_t *new_indices = NULL;
+    int replace_vertices;
+    int replace_indices;
     if (!mesh)
         return 0;
-    if (vertex_capacity > mesh->vertex_capacity) {
-        vgfx3d_vertex_t *vertices;
-        double *positions64 = mesh->positions64;
+    replace_vertices = vertex_capacity > mesh->vertex_capacity || !mesh->vertices;
+    replace_indices = index_capacity > mesh->index_capacity || !mesh->indices;
+    if (!replace_vertices && !replace_indices)
+        return 1;
+
+    if (replace_vertices) {
+        uint32_t copy_count = mesh->vertex_count;
         if ((size_t)vertex_capacity > SIZE_MAX / sizeof(vgfx3d_vertex_t) ||
-            (positions64 && (size_t)vertex_capacity > SIZE_MAX / (3u * sizeof(double)))) {
+            (mesh->positions64 && (size_t)vertex_capacity > SIZE_MAX / (3u * sizeof(double)))) {
             rt_trap("Water3D.Update: mesh vertex allocation overflow");
             return 0;
         }
-        if (positions64) {
-            size_t position_values = (size_t)vertex_capacity * 3u;
-            positions64 = (double *)realloc(positions64, position_values * sizeof(double));
-            if (!positions64) {
-                rt_trap("Water3D.Update: mesh position sidecar allocation failed");
-                return 0;
-            }
-            mesh->positions64 = positions64;
-        }
-        vertices =
-            (vgfx3d_vertex_t *)realloc(mesh->vertices, (size_t)vertex_capacity * sizeof(*vertices));
-        if (!vertices) {
+        new_vertices = (vgfx3d_vertex_t *)malloc((size_t)vertex_capacity * sizeof(*new_vertices));
+        if (!new_vertices) {
             rt_trap("Water3D.Update: mesh vertex allocation failed");
             return 0;
         }
-        mesh->vertices = vertices;
-        mesh->vertex_capacity = vertex_capacity;
+        if (copy_count > mesh->vertex_capacity)
+            copy_count = mesh->vertex_capacity;
+        if (copy_count > vertex_capacity)
+            copy_count = vertex_capacity;
+        if (mesh->vertices && copy_count > 0)
+            memcpy(new_vertices, mesh->vertices, (size_t)copy_count * sizeof(*new_vertices));
+        if (mesh->positions64) {
+            new_positions64 =
+                (double *)malloc((size_t)vertex_capacity * 3u * sizeof(*new_positions64));
+            if (!new_positions64) {
+                free(new_vertices);
+                rt_trap("Water3D.Update: mesh position sidecar allocation failed");
+                return 0;
+            }
+            if (copy_count > 0)
+                memcpy(new_positions64,
+                       mesh->positions64,
+                       (size_t)copy_count * 3u * sizeof(*new_positions64));
+        }
     }
-    if (index_capacity > mesh->index_capacity) {
-        uint32_t *indices;
-        if ((size_t)index_capacity > SIZE_MAX / sizeof(uint32_t)) {
+    if (replace_indices) {
+        uint32_t copy_count = mesh->index_count;
+        if ((size_t)index_capacity > SIZE_MAX / sizeof(*new_indices)) {
+            free(new_vertices);
+            free(new_positions64);
             rt_trap("Water3D.Update: mesh index allocation overflow");
             return 0;
         }
-        indices = (uint32_t *)realloc(mesh->indices, (size_t)index_capacity * sizeof(*indices));
-        if (!indices) {
+        new_indices = (uint32_t *)malloc((size_t)index_capacity * sizeof(*new_indices));
+        if (!new_indices) {
+            free(new_vertices);
+            free(new_positions64);
             rt_trap("Water3D.Update: mesh index allocation failed");
             return 0;
         }
-        mesh->indices = indices;
+        if (copy_count > mesh->index_capacity)
+            copy_count = mesh->index_capacity;
+        if (copy_count > index_capacity)
+            copy_count = index_capacity;
+        if (mesh->indices && copy_count > 0)
+            memcpy(new_indices, mesh->indices, (size_t)copy_count * sizeof(*new_indices));
+    }
+
+    if (replace_vertices) {
+        free(mesh->vertices);
+        free(mesh->positions64);
+        mesh->vertices = new_vertices;
+        mesh->positions64 = new_positions64;
+        new_vertices = NULL;
+        new_positions64 = NULL;
+        mesh->vertex_capacity = vertex_capacity;
+    }
+    if (replace_indices) {
+        free(mesh->indices);
+        mesh->indices = new_indices;
+        new_indices = NULL;
         mesh->index_capacity = index_capacity;
     }
+    /* Staged allocations have escaped into the retained Mesh3D fields. Cppcheck does not model
+     * ownership transfer through this private object view. */
+    // cppcheck-suppress memleak
     return 1;
 }
 
@@ -407,17 +589,22 @@ static int water3d_sanitize_wave(water_wave_t *wv) {
     return wv->frequency > 0.0 && wv->amplitude > 0.0;
 }
 
-/// @brief GC finalizer: release every retained graphics resource (textures, mesh, material).
+/// @brief GC finalizer: release every private retained graphics-resource owner identity.
 /// @param obj Water3D runtime object being finalized; NULL is accepted.
 static void water3d_finalizer(void *obj) {
     rt_water3d *w = (rt_water3d *)obj;
     if (!w)
         return;
-    water3d_release_pixels_slot(&w->texture);
-    water3d_release_pixels_slot(&w->normal_map);
-    water3d_release_env_map_slot(&w->env_map);
-    water3d_release_mesh_slot(&w->mesh);
-    water3d_release_material_slot(&w->material);
+    water3d_release_pixels_slot(&w->owned_texture);
+    water3d_release_pixels_slot(&w->owned_normal_map);
+    water3d_release_env_map_slot(&w->owned_env_map);
+    water3d_release_mesh_slot(&w->owned_mesh);
+    water3d_release_material_slot(&w->owned_material);
+    w->texture = NULL;
+    w->normal_map = NULL;
+    w->env_map = NULL;
+    w->mesh = NULL;
+    w->material = NULL;
 }
 
 /// @brief Create a new water surface with animated wave simulation.
@@ -460,6 +647,15 @@ void *rt_water3d_new(double width, double depth) {
     w->wave_count = 0;
     w->resolution = WATER_GRID;
     w->mesh_dirty = 1;
+    w->sim_distance = 0.0;
+    memset(w->last_camera_pos, 0, sizeof(w->last_camera_pos));
+    w->has_camera_pos = 0;
+    w->material_dirty = 1;
+    w->owned_mesh = NULL;
+    w->owned_material = NULL;
+    w->owned_texture = NULL;
+    w->owned_normal_map = NULL;
+    w->owned_env_map = NULL;
     rt_obj_set_finalizer(w, water3d_finalizer);
     return w;
 }
@@ -470,8 +666,13 @@ void *rt_water3d_new(double width, double depth) {
 void rt_water3d_set_height(void *obj, double y) {
     rt_water3d *w = water3d_checked(obj);
     if (w) {
-        w->height = water3d_clamp_abs_or(y, w->height, WATER3D_HEIGHT_ABS_MAX);
-        w->mesh_dirty = 1;
+        double height;
+        water3d_repair_state(w);
+        height = water3d_clamp_abs_or(y, w->height, WATER3D_HEIGHT_ABS_MAX);
+        if (w->height != height) {
+            w->height = height;
+            w->mesh_dirty = 1;
+        }
     }
 }
 
@@ -487,10 +688,19 @@ void rt_water3d_set_height(void *obj, double y) {
 void rt_water3d_set_position(void *obj, double x, double y, double z) {
     rt_water3d *w = water3d_checked(obj);
     if (w) {
-        w->center_x = water3d_clamp_abs_or(x, w->center_x, WATER3D_SIZE_MAX);
-        w->height = water3d_clamp_abs_or(y, w->height, WATER3D_HEIGHT_ABS_MAX);
-        w->center_z = water3d_clamp_abs_or(z, w->center_z, WATER3D_SIZE_MAX);
-        w->mesh_dirty = 1;
+        double center_x;
+        double height;
+        double center_z;
+        water3d_repair_state(w);
+        center_x = water3d_clamp_abs_or(x, w->center_x, WATER3D_SIZE_MAX);
+        height = water3d_clamp_abs_or(y, w->height, WATER3D_HEIGHT_ABS_MAX);
+        center_z = water3d_clamp_abs_or(z, w->center_z, WATER3D_SIZE_MAX);
+        if (w->center_x != center_x || w->height != height || w->center_z != center_z) {
+            w->center_x = center_x;
+            w->height = height;
+            w->center_z = center_z;
+            w->mesh_dirty = 1;
+        }
     }
 }
 
@@ -503,10 +713,17 @@ void rt_water3d_set_wave_params(void *obj, double speed, double amplitude, doubl
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return;
-    w->wave_speed = water3d_clamp_abs_or(speed, 0.0, WATER3D_PARAM_MAX);
-    w->wave_amplitude = water3d_clamp_nonnegative(amplitude, WATER3D_PARAM_MAX);
-    w->wave_frequency = water3d_clamp_nonnegative(frequency, WATER3D_PARAM_MAX);
-    w->mesh_dirty = 1;
+    water3d_repair_state(w);
+    speed = water3d_clamp_abs_or(speed, 0.0, WATER3D_PARAM_MAX);
+    amplitude = water3d_clamp_nonnegative(amplitude, WATER3D_PARAM_MAX);
+    frequency = water3d_clamp_nonnegative(frequency, WATER3D_PARAM_MAX);
+    if (w->wave_speed != speed || w->wave_amplitude != amplitude ||
+        w->wave_frequency != frequency) {
+        w->wave_speed = speed;
+        w->wave_amplitude = amplitude;
+        w->wave_frequency = frequency;
+        w->mesh_dirty = 1;
+    }
 }
 
 /// @brief Set the base tint color and transparency of the water surface.
@@ -519,10 +736,18 @@ void rt_water3d_set_color(void *obj, double r, double g, double b, double a) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return;
-    w->color[0] = water3d_clamp01(r);
-    w->color[1] = water3d_clamp01(g);
-    w->color[2] = water3d_clamp01(b);
-    w->alpha = water3d_clamp01(a);
+    water3d_repair_state(w);
+    r = water3d_clamp01(r);
+    g = water3d_clamp01(g);
+    b = water3d_clamp01(b);
+    a = water3d_clamp01(a);
+    if (w->color[0] != r || w->color[1] != g || w->color[2] != b || w->alpha != a) {
+        w->color[0] = r;
+        w->color[1] = g;
+        w->color[2] = b;
+        w->alpha = a;
+        w->material_dirty = 1;
+    }
 }
 
 /// @brief Set surface texture for water.
@@ -532,11 +757,14 @@ void rt_water3d_set_texture(void *obj, void *pixels) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return;
-    if (w->material && !rt_g3d_has_class(w->material, RT_G3D_MATERIAL3D_CLASS_ID))
-        water3d_release_material_slot(&w->material);
+    water3d_repair_state(w);
     if (pixels && !water3d_is_pixels_handle(pixels))
         return;
-    water3d_assign_pixels_ref(&w->texture, pixels);
+    if (w->owned_texture == pixels)
+        return;
+    water3d_assign_pixels_ref(&w->owned_texture, pixels);
+    w->texture = w->owned_texture;
+    w->material_dirty = 1;
     if (w->material)
         rt_material3d_set_texture(w->material, pixels);
 }
@@ -548,11 +776,14 @@ void rt_water3d_set_normal_map(void *obj, void *pixels) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return;
-    if (w->material && !rt_g3d_has_class(w->material, RT_G3D_MATERIAL3D_CLASS_ID))
-        water3d_release_material_slot(&w->material);
+    water3d_repair_state(w);
     if (pixels && !water3d_is_pixels_handle(pixels))
         return;
-    water3d_assign_pixels_ref(&w->normal_map, pixels);
+    if (w->owned_normal_map == pixels)
+        return;
+    water3d_assign_pixels_ref(&w->owned_normal_map, pixels);
+    w->normal_map = w->owned_normal_map;
+    w->material_dirty = 1;
     if (w->material)
         rt_material3d_set_normal_map(w->material, pixels);
 }
@@ -564,7 +795,7 @@ void rt_water3d_set_env_map(void *obj, void *cubemap) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return;
-    water3d_repair_resource_handles(w);
+    water3d_repair_state(w);
     if (cubemap && (!rt_g3d_has_class(cubemap, RT_G3D_CUBEMAP3D_CLASS_ID) ||
                     !rt_cubemap3d_is_complete(cubemap))) {
         if (w->material) {
@@ -573,7 +804,11 @@ void rt_water3d_set_env_map(void *obj, void *cubemap) {
         }
         return;
     }
-    water3d_assign_env_map_ref(&w->env_map, cubemap);
+    if (w->owned_env_map == cubemap)
+        return;
+    water3d_assign_env_map_ref(&w->owned_env_map, cubemap);
+    w->env_map = w->owned_env_map;
+    w->material_dirty = 1;
     if (w->material) {
         rt_material3d_set_env_map(w->material, cubemap);
         rt_material3d_set_reflectivity(w->material, w->env_map ? w->reflectivity : 0.0);
@@ -587,10 +822,16 @@ void rt_water3d_set_reflectivity(void *obj, double r) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return;
-    water3d_repair_resource_handles(w);
-    w->reflectivity = water3d_clamp01(r);
-    if (w->material)
+    water3d_repair_state(w);
+    r = water3d_clamp01(r);
+    if (w->reflectivity != r) {
+        w->reflectivity = r;
+        w->material_dirty = 1;
+    }
+    if (w->material) {
+        rt_material3d_set_env_map(w->material, w->env_map);
         rt_material3d_set_reflectivity(w->material, w->env_map ? w->reflectivity : 0.0);
+    }
 }
 
 /// @brief `Water3D.SetSimDistance(distance)` — distance-gate the CPU wave rebuild.
@@ -604,10 +845,8 @@ void rt_water3d_set_sim_distance(void *obj, double distance) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return;
-    if (!isfinite(distance) || distance < 0.0)
-        distance = 0.0;
-    if (distance > WATER3D_SIZE_MAX)
-        distance = WATER3D_SIZE_MAX;
+    water3d_repair_state(w);
+    distance = water3d_clamp_nonnegative(distance, WATER3D_SIZE_MAX);
     w->sim_distance = distance;
 }
 
@@ -616,6 +855,7 @@ void rt_water3d_set_sim_distance(void *obj, double distance) {
 /// @return Configured nonnegative gate distance, or zero for an invalid handle.
 double rt_water3d_get_sim_distance(void *obj) {
     rt_water3d *w = water3d_checked(obj);
+    water3d_repair_state(w);
     return w ? w->sim_distance : 0.0;
 }
 
@@ -629,6 +869,7 @@ double rt_water3d_get_sim_distance(void *obj) {
 /// @return Retained height, or 0.0 for invalid handles.
 double rt_water3d_get_height(void *obj) {
     rt_water3d *w = water3d_checked(obj);
+    water3d_repair_state(w);
     return w ? w->height : 0.0;
 }
 
@@ -639,6 +880,7 @@ void *rt_water3d_get_position(void *obj) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return rt_vec3_new(0.0, 0.0, 0.0);
+    water3d_repair_state(w);
     return rt_vec3_new(w->center_x, w->height, w->center_z);
 }
 
@@ -647,6 +889,7 @@ void *rt_water3d_get_position(void *obj) {
 /// @return Retained wave speed, or 0.0 for invalid handles.
 double rt_water3d_get_wave_speed(void *obj) {
     rt_water3d *w = water3d_checked(obj);
+    water3d_repair_state(w);
     return w ? w->wave_speed : 0.0;
 }
 
@@ -655,6 +898,7 @@ double rt_water3d_get_wave_speed(void *obj) {
 /// @return Retained amplitude, or 0.0 for invalid handles.
 double rt_water3d_get_wave_amplitude(void *obj) {
     rt_water3d *w = water3d_checked(obj);
+    water3d_repair_state(w);
     return w ? w->wave_amplitude : 0.0;
 }
 
@@ -663,6 +907,7 @@ double rt_water3d_get_wave_amplitude(void *obj) {
 /// @return Retained frequency, or 0.0 for invalid handles.
 double rt_water3d_get_wave_frequency(void *obj) {
     rt_water3d *w = water3d_checked(obj);
+    water3d_repair_state(w);
     return w ? w->wave_frequency : 0.0;
 }
 
@@ -673,6 +918,7 @@ void *rt_water3d_get_color(void *obj) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return rt_vec3_new(0.0, 0.0, 0.0);
+    water3d_repair_state(w);
     return rt_vec3_new(w->color[0], w->color[1], w->color[2]);
 }
 
@@ -681,6 +927,7 @@ void *rt_water3d_get_color(void *obj) {
 /// @return Retained alpha, or 0.0 for invalid handles.
 double rt_water3d_get_alpha(void *obj) {
     rt_water3d *w = water3d_checked(obj);
+    water3d_repair_state(w);
     return w ? w->alpha : 0.0;
 }
 
@@ -689,6 +936,7 @@ double rt_water3d_get_alpha(void *obj) {
 /// @return Retained reflectivity, or 0.0 for invalid handles.
 double rt_water3d_get_reflectivity(void *obj) {
     rt_water3d *w = water3d_checked(obj);
+    water3d_repair_state(w);
     return w ? w->reflectivity : 0.0;
 }
 
@@ -697,6 +945,7 @@ double rt_water3d_get_reflectivity(void *obj) {
 /// @return Retained quads per axis, or 0 for invalid handles.
 int64_t rt_water3d_get_resolution(void *obj) {
     rt_water3d *w = water3d_checked(obj);
+    water3d_repair_state(w);
     return w ? (int64_t)w->resolution : 0;
 }
 
@@ -705,7 +954,8 @@ int64_t rt_water3d_get_resolution(void *obj) {
 /// @return Borrowed Pixels handle, or `NULL`.
 void *rt_water3d_get_texture(void *obj) {
     rt_water3d *w = water3d_checked(obj);
-    return w ? w->texture : NULL;
+    water3d_repair_state(w);
+    return w ? w->owned_texture : NULL;
 }
 
 /// @brief Read the retained wave normal map.
@@ -713,7 +963,8 @@ void *rt_water3d_get_texture(void *obj) {
 /// @return Borrowed Pixels handle, or `NULL`.
 void *rt_water3d_get_normal_map(void *obj) {
     rt_water3d *w = water3d_checked(obj);
-    return w ? w->normal_map : NULL;
+    water3d_repair_state(w);
+    return w ? w->owned_normal_map : NULL;
 }
 
 /// @brief Read the retained environment cubemap.
@@ -721,7 +972,8 @@ void *rt_water3d_get_normal_map(void *obj) {
 /// @return Borrowed CubeMap3D handle, or `NULL`.
 void *rt_water3d_get_env_map(void *obj) {
     rt_water3d *w = water3d_checked(obj);
-    return w ? w->env_map : NULL;
+    water3d_repair_state(w);
+    return w ? w->owned_env_map : NULL;
 }
 
 /// @brief Set grid resolution (clamped to [8, 256]).
@@ -731,6 +983,7 @@ void rt_water3d_set_resolution(void *obj, int64_t res) {
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return;
+    water3d_repair_state(w);
     if (res < 8)
         res = 8;
     if (res > 256)
@@ -753,10 +1006,7 @@ void rt_water3d_add_wave(
     rt_water3d *w = water3d_checked(obj);
     if (!w)
         return;
-    if (w->wave_count < 0)
-        w->wave_count = 0;
-    if (w->wave_count > WATER_MAX_WAVES)
-        w->wave_count = WATER_MAX_WAVES;
+    water3d_repair_state(w);
     if (w->wave_count >= WATER_MAX_WAVES)
         return;
     if (!isfinite(dirX) || !isfinite(dirZ) || !isfinite(speed) || !isfinite(amplitude) ||
@@ -780,6 +1030,9 @@ void rt_water3d_add_wave(
 void rt_water3d_clear_waves(void *obj) {
     rt_water3d *w = water3d_checked(obj);
     if (w) {
+        water3d_repair_state(w);
+        if (w->wave_count == 0)
+            return;
         w->wave_count = 0;
         memset(w->waves, 0, sizeof(w->waves));
         w->mesh_dirty = 1;
@@ -925,14 +1178,18 @@ static void water3d_fill_indices(rt_mesh3d *mesh, int32_t grid, int32_t row) {
 /// @param w Water surface owning material state and retained texture bindings.
 /// @return 0 when the material could not be allocated (caller aborts without clearing mesh_dirty).
 static int water3d_update_material(rt_water3d *w) {
-    if (!w->material) {
-        w->material = rt_material3d_new_color(w->color[0], w->color[1], w->color[2]);
-        if (!w->material)
+    if (!w)
+        return 0;
+    if (!w->owned_material) {
+        void *material = rt_material3d_new_color(w->color[0], w->color[1], w->color[2]);
+        if (!material)
             return 0;
-        rt_material3d_set_shininess(w->material, 128.0);
-    } else {
-        rt_material3d_set_color(w->material, w->color[0], w->color[1], w->color[2]);
+        w->owned_material = material;
+        w->material = material;
+        rt_material3d_set_shininess(material, 128.0);
     }
+    w->material = w->owned_material;
+    rt_material3d_set_color(w->material, w->color[0], w->color[1], w->color[2]);
     rt_material3d_set_alpha(w->material, w->alpha);
     water3d_enable_double_sided_material(w->material);
     rt_material3d_set_texture(w->material, w->texture);
@@ -942,6 +1199,7 @@ static int water3d_update_material(rt_water3d *w) {
     /* Plan 10: water opts into screen-space reflections; backends without SSR
      * (or chains without an SSR pass) simply keep the env-map term above. */
     rt_material3d_set_ssr_enabled(w->material, 1);
+    w->material_dirty = 0;
     return 1;
 }
 
@@ -953,37 +1211,40 @@ static int water3d_update_material(rt_water3d *w) {
 ///          (dy/dx, dy/dz) rather than numerically, keeping shading smooth across the
 ///          grid independent of resolution.
 ///
-///          Mesh and material are created lazily on the first update and then reused:
-///          `rt_mesh3d_clear` resets contents in place to avoid per-frame GC churn, and
-///          the material's color/alpha/texture/env-map bindings are pushed through every
-///          update so live property edits take effect on the next frame. Reflectivity is
-///          forced to 0 when no environment cubemap is bound so the shader skips the
-///          reflection path.
+///          Mesh and material are created lazily on the first update and then reused. Material
+///          bindings are refreshed only when retained material state changes; geometry-only
+///          frames avoid redundant setter traffic. Reflectivity is forced to 0 when no
+///          environment cubemap is bound so the shader skips the reflection path.
 ///
-///          No work is done when `dt <= 0` — this lets callers pause the simulation by
-///          passing dt=0 without redundant mesh rebuilds.
+///          A zero delta does not advance time or rewrite clean geometry, but it still applies
+///          pending material changes and lazily recovers missing/dirty render resources.
 /// @param obj Opaque water handle from `rt_water3d_new` (no-op when NULL).
 /// @param dt Elapsed seconds since the previous update (must be > 0 to apply).
 void rt_water3d_update(void *obj, double dt) {
     rt_water3d *w = water3d_checked(obj);
     if (!w || !isfinite(dt) || dt < 0.0)
         return;
-    water3d_repair_resource_handles(w);
+    water3d_repair_state(w);
     if (dt > WATER3D_DT_MAX)
         dt = WATER3D_DT_MAX;
-    if (dt == 0.0 && !w->mesh_dirty && w->mesh && w->material)
-        return;
     w->time += dt;
     if (!isfinite(w->time))
         w->time = 0.0;
     if (w->time > WATER3D_TIME_MAX)
         w->time = fmod(w->time, WATER3D_TIME_MAX);
 
+    /* Material invalidation is independent of the expensive water grid. Apply it before both the
+     * pause fast path and the distance gate so off-range water still reflects authored edits. */
+    if ((!w->owned_material || w->material_dirty) && !water3d_update_material(w))
+        w->material_dirty = 1;
+    if (dt == 0.0 && !w->mesh_dirty && w->owned_mesh)
+        return;
+
     /* Distance gate: when the last drawing camera is beyond sim_distance of
      * the water's surface rectangle, keep the phase advance above but skip the
      * grid rebuild entirely. First build (no mesh yet) always runs so the
      * water has geometry to draw when it comes into range. */
-    if (w->sim_distance > 0.0 && w->has_camera_pos && w->mesh && w->material && !w->mesh_dirty) {
+    if (w->sim_distance > 0.0 && w->has_camera_pos && w->owned_mesh && !w->mesh_dirty) {
         double half_w = w->width * 0.5;
         double half_d = w->depth * 0.5;
         double dx = fmax(fabs(w->last_camera_pos[0] - w->center_x) - half_w, 0.0);
@@ -994,28 +1255,12 @@ void rt_water3d_update(void *obj, double dt) {
             return;
     }
 
-    w->width = water3d_clamp_positive_or(w->width, 1.0, WATER3D_SIZE_MAX);
-    w->depth = water3d_clamp_positive_or(w->depth, 1.0, WATER3D_SIZE_MAX);
-    w->height = water3d_clamp_abs_or(w->height, 0.0, WATER3D_HEIGHT_ABS_MAX);
-    w->wave_speed = water3d_clamp_abs_or(w->wave_speed, 0.0, WATER3D_PARAM_MAX);
-    w->wave_amplitude = water3d_clamp_nonnegative(w->wave_amplitude, WATER3D_PARAM_MAX);
-    w->wave_frequency = water3d_clamp_nonnegative(w->wave_frequency, WATER3D_PARAM_MAX);
-    w->reflectivity = water3d_clamp01(w->reflectivity);
-    w->alpha = water3d_clamp01(w->alpha);
-    for (int32_t c = 0; c < 3; c++)
-        w->color[c] = water3d_clamp01(w->color[c]);
-    if (w->resolution < 8 || w->resolution > 256)
-        w->resolution = WATER_GRID;
-    if (w->wave_count < 0)
-        w->wave_count = 0;
-    if (w->wave_count > WATER_MAX_WAVES)
-        w->wave_count = WATER_MAX_WAVES;
     /* Sanitize each wave once up front (idempotent) and cache its validity plus
      * a range-reduced time phase. Doing this here — rather than per vertex —
      * removes O(grid^2 * wave_count) redundant work each rebuild, and the
      * fmod keeps per-vertex phase precision intact after long runtimes. */
-    int8_t wave_valid[WATER_MAX_WAVES];
-    double wave_time_phase[WATER_MAX_WAVES];
+    int8_t wave_valid[WATER_MAX_WAVES] = {0};
+    double wave_time_phase[WATER_MAX_WAVES] = {0.0};
     for (int32_t wi = 0; wi < w->wave_count; wi++) {
         wave_valid[wi] = water3d_sanitize_wave(&w->waves[wi]) ? 1 : 0;
         double tp = fmod(w->time * w->waves[wi].speed, WATER3D_TWO_PI);
@@ -1023,10 +1268,14 @@ void rt_water3d_update(void *obj, double dt) {
     }
 
     /* Regenerate mesh with new wave positions (reuse allocation to avoid GC pressure). */
-    if (!w->mesh)
-        w->mesh = rt_mesh3d_new();
-    if (!w->mesh)
-        return;
+    if (!w->owned_mesh) {
+        void *mesh_ref = rt_mesh3d_new();
+        if (!mesh_ref)
+            return;
+        w->owned_mesh = mesh_ref;
+        w->mesh = mesh_ref;
+        w->mesh_dirty = 1;
+    }
     int32_t grid = w->resolution;
     int32_t row = grid + 1;
     uint32_t required_vertices = (uint32_t)(row * row);
@@ -1069,9 +1318,6 @@ void rt_water3d_update(void *obj, double dt) {
         return;
     }
 
-    /* Update material — create on first use, update properties every frame */
-    if (!water3d_update_material(w))
-        return;
     w->mesh_dirty = 0;
 }
 
@@ -1093,6 +1339,7 @@ void rt_canvas3d_draw_water(void *canvas, void *obj, void *camera) {
     rt_water3d *w = water3d_checked(obj);
     if (!c || !w)
         return;
+    water3d_repair_state(w);
     /* Remember the drawing camera's position for the SetSimDistance gate in
      * rt_water3d_update (allocation-free component read; optional symbol —
      * see the extern above). */
@@ -1102,16 +1349,22 @@ void rt_canvas3d_draw_water(void *canvas, void *obj, void *camera) {
         double cz;
         if (camera && rt_camera3d_get_position_components &&
             rt_camera3d_get_position_components(camera, &cx, &cy, &cz)) {
-            w->last_camera_pos[0] = cx;
-            w->last_camera_pos[1] = cy;
-            w->last_camera_pos[2] = cz;
-            w->has_camera_pos = 1;
+            if (isfinite(cx) && isfinite(cy) && isfinite(cz) &&
+                fabs(cx) <= WATER3D_HEIGHT_ABS_MAX && fabs(cy) <= WATER3D_HEIGHT_ABS_MAX &&
+                fabs(cz) <= WATER3D_HEIGHT_ABS_MAX) {
+                w->last_camera_pos[0] = cx;
+                w->last_camera_pos[1] = cy;
+                w->last_camera_pos[2] = cz;
+                w->has_camera_pos = 1;
+            } else {
+                memset(w->last_camera_pos, 0, sizeof(w->last_camera_pos));
+                w->has_camera_pos = 0;
+            }
         }
     }
-    water3d_repair_resource_handles(w);
-    if (!w->mesh || !w->material || w->mesh_dirty)
+    if (!w->owned_mesh || !w->owned_material || w->mesh_dirty || w->material_dirty)
         rt_water3d_update(w, 0.0);
-    if (!w->mesh || !w->material)
+    if (!w->owned_mesh || !w->owned_material || w->mesh_dirty || w->material_dirty)
         return;
 
     static const double identity[16] = {
@@ -1132,14 +1385,14 @@ void rt_canvas3d_draw_water(void *canvas, void *obj, void *camera) {
         0.0,
         1.0,
     };
-    rt_mesh3d *mesh = (rt_mesh3d *)w->mesh;
-    water3d_enable_double_sided_material(w->material);
+    rt_mesh3d *mesh = (rt_mesh3d *)w->owned_mesh;
+    water3d_enable_double_sided_material(w->owned_material);
     if (rt_canvas3d_draw_mesh_matrix_keyed_bounds) {
         rt_mesh3d_refresh_bounds(mesh);
         rt_canvas3d_draw_mesh_matrix_keyed_bounds(c,
-                                                  w->mesh,
+                                                  w->owned_mesh,
                                                   identity,
-                                                  w->material,
+                                                  w->owned_material,
                                                   w,
                                                   NULL,
                                                   NULL,
@@ -1149,7 +1402,7 @@ void rt_canvas3d_draw_water(void *canvas, void *obj, void *camera) {
                                                   1,
                                                   0.0f);
     } else {
-        rt_canvas3d_draw_mesh_matrix(c, w->mesh, identity, w->material);
+        rt_canvas3d_draw_mesh_matrix(c, w->owned_mesh, identity, w->owned_material);
     }
 }
 

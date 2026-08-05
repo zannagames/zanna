@@ -767,7 +767,14 @@ static void fbx_skip(fbx_reader_t *r, size_t n) {
  * FBX node tree
  *=========================================================================*/
 
-#define FBX_MAX_CHILDREN 16384
+/* Maximum children of one FBX record. Exporters place one record per object under a single
+ * `Objects` node, so mocap animation packages routinely run to tens of thousands: a 218-clip
+ * package measures 67,056 (39,783 AnimationCurve + 26,596 AnimationCurveNode + 218 stacks +
+ * 218 layers + rig records). This bound only keeps a single array within int32 and one
+ * allocation sane; aggregate retained memory stays governed by the per-load byte budget
+ * (`fbx_budget_charge`, `RT_FBX_DEFAULT_LOAD_BUDGET_BYTES`), which every reserved slot is
+ * charged against before allocation. */
+#define FBX_MAX_CHILDREN 1048576
 #define FBX_MAX_NODE_DEPTH 512
 #define FBX_MAX_NODE_PROPS 4096
 #define FBX_MAX_PROPERTY_BYTES (64u * 1024u * 1024u)
@@ -897,8 +904,12 @@ static int fbx_node_reserve_child(fbx_node_t *node, fbx_load_context_t *context)
         return 0;
     if (node->child_count < node->child_capacity)
         return 1;
-    if (node->child_count < 0 || node->child_capacity < 0 ||
-        node->child_count >= FBX_MAX_CHILDREN || node->child_capacity > INT32_MAX / 2) {
+    if (node->child_count >= FBX_MAX_CHILDREN) {
+        if (context)
+            context->structural_limit_exceeded = 1;
+        return 0;
+    }
+    if (node->child_count < 0 || node->child_capacity < 0 || node->child_capacity > INT32_MAX / 2) {
         return 0;
     }
     new_capacity = node->child_capacity == 0 ? 8 : node->child_capacity * 2;
@@ -936,8 +947,12 @@ static int fbx_node_reserve_property(fbx_node_t *node, fbx_load_context_t *conte
         return 0;
     if (node->prop_count < node->prop_capacity)
         return 1;
-    if (node->prop_count < 0 || node->prop_capacity < 0 || node->prop_count >= FBX_MAX_NODE_PROPS ||
-        node->prop_capacity > INT32_MAX / 2) {
+    if (node->prop_count >= FBX_MAX_NODE_PROPS) {
+        if (context)
+            context->structural_limit_exceeded = 1;
+        return 0;
+    }
+    if (node->prop_count < 0 || node->prop_capacity < 0 || node->prop_capacity > INT32_MAX / 2) {
         return 0;
     }
     new_capacity = node->prop_capacity == 0 ? 4 : node->prop_capacity * 2;
@@ -1203,8 +1218,11 @@ static int fbx_parse_node(fbx_reader_t *r, fbx_node_t *node, int depth) {
     uint64_t props_start;
     uint64_t props_end;
 
-    if (depth > FBX_MAX_NODE_DEPTH)
+    if (depth > FBX_MAX_NODE_DEPTH) {
+        if (r && r->context)
+            r->context->structural_limit_exceeded = 1;
         return -1;
+    }
     memset(node, 0, sizeof(fbx_node_t));
 
     uint64_t end_offset = r->is_64bit ? fbx_u64(r) : fbx_u32(r);
@@ -1233,7 +1251,12 @@ static int fbx_parse_node(fbx_reader_t *r, fbx_node_t *node, int depth) {
     props_end = props_start + prop_list_len;
     if (props_end > r->len)
         return -1;
-    if (num_props > FBX_MAX_NODE_PROPS || (size_t)num_props > SIZE_MAX / sizeof(fbx_prop_t))
+    if (num_props > FBX_MAX_NODE_PROPS) {
+        if (r->context)
+            r->context->structural_limit_exceeded = 1;
+        return -1;
+    }
+    if ((size_t)num_props > SIZE_MAX / sizeof(fbx_prop_t))
         return -1;
     if (num_props > 0 && !rt_untrusted_count_ok((int64_t)num_props, 1u, (size_t)prop_list_len))
         return -1;

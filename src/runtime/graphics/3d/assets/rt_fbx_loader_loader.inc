@@ -1505,23 +1505,38 @@ static void *fbx_load_impl(rt_string path) {
         free(data);
         if (reader.error) {
             fbx_free_node(&root);
-            rt_asset_error_set(
-                context.budget_exhausted ? RT_ASSET_ERROR_TOO_LARGE : RT_ASSET_ERROR_CORRUPT,
-                context.budget_exhausted ? "FBX.Load: binary FBX exceeds the aggregate load budget"
-                                         : "FBX.Load: malformed or truncated binary FBX");
+            if (context.budget_exhausted) {
+                rt_asset_error_set(RT_ASSET_ERROR_TOO_LARGE,
+                                   "FBX.Load: binary FBX exceeds the aggregate load budget");
+            } else if (context.structural_limit_exceeded) {
+                rt_asset_error_set(
+                    RT_ASSET_ERROR_TOO_LARGE,
+                    "FBX.Load: binary FBX exceeds a parser structural limit (record child "
+                    "count, property count, or nesting depth)");
+            } else {
+                rt_asset_error_set(RT_ASSET_ERROR_CORRUPT,
+                                   "FBX.Load: malformed or truncated binary FBX");
+            }
             return NULL;
         }
     } else {
         int parsed = fbx_parse_ascii_document(data, (size_t)fsize, &root, &context);
         free(data);
         if (!parsed) {
-            rt_asset_error_set(context.budget_exhausted ? RT_ASSET_ERROR_TOO_LARGE
-                               : is_ascii_signature     ? RT_ASSET_ERROR_CORRUPT
-                                                        : RT_ASSET_ERROR_BAD_MAGIC,
-                               context.budget_exhausted
-                                   ? "FBX.Load: ASCII FBX exceeds the aggregate load budget"
-                               : is_ascii_signature ? "FBX.Load: malformed ASCII FBX"
-                                                    : "FBX.Load: not a supported FBX file");
+            if (context.budget_exhausted) {
+                rt_asset_error_set(RT_ASSET_ERROR_TOO_LARGE,
+                                   "FBX.Load: ASCII FBX exceeds the aggregate load budget");
+            } else if (context.structural_limit_exceeded) {
+                rt_asset_error_set(
+                    RT_ASSET_ERROR_TOO_LARGE,
+                    "FBX.Load: ASCII FBX exceeds a parser structural limit (record child "
+                    "count, property count, or nesting depth)");
+            } else {
+                rt_asset_error_set(is_ascii_signature ? RT_ASSET_ERROR_CORRUPT
+                                                      : RT_ASSET_ERROR_BAD_MAGIC,
+                                   is_ascii_signature ? "FBX.Load: malformed ASCII FBX"
+                                                      : "FBX.Load: not a supported FBX file");
+            }
             return NULL;
         }
     }

@@ -18,10 +18,13 @@
 //   - Rendering: queues instanced blade draws through Canvas3D so they share
 //     the same shadow, sorting, and overlay pipeline as other 3D content.
 //   - Backface culling temporarily disabled for grass (visible both sides).
+//   - Mutable resource/allocation mirrors are restored from private owner identities.
+//   - CSR metadata is allocation-bounded before any offset or blade index is consumed.
 //
 // Ownership/Lifetime:
-//   - Vegetation3D is GC-managed; finalizer frees per-instance buffers and
-//     releases the blade mesh, blade material, and density map.
+//   - Vegetation3D is GC-managed; finalizer frees/releases private owners for
+//     instance buffers, blade resources, the density map, and the spatial grid.
+//   - Mutable legacy mirrors are never treated as ownership evidence.
 //
 // Links: rt_vegetation3d.h, rt_terrain3d.h, rt_canvas3d.h
 //
@@ -130,6 +133,29 @@ typedef struct {
     float grid_cell_w;
     float grid_cell_d;
     int32_t grid_ready; /* 0 → rebuild before the next culling pass */
+    /* Appended authority keeps the legacy implementation-only prefix stable. */
+    void *owned_blade_mesh;
+    void *owned_blade_material;
+    void *owned_density_map;
+    float *owned_base_transforms;
+    float *owned_positions;
+    int32_t owned_total_count;
+    int32_t owned_capacity;
+    float *owned_visible_transforms;
+    int32_t owned_visible_count;
+    int32_t owned_visible_capacity;
+    int32_t *owned_grid_cell_start;
+    int32_t *owned_grid_indices;
+    int32_t owned_grid_cell_count;
+    int32_t owned_grid_index_count;
+    int32_t owned_grid_cells_x;
+    int32_t owned_grid_cells_z;
+    float owned_grid_min_x;
+    float owned_grid_min_z;
+    float owned_grid_cell_w;
+    float owned_grid_cell_d;
+    int8_t owned_grid_ready;
+    int8_t blade_mesh_dirty;
 } rt_vegetation3d;
 
 /// @brief Return @p value when finite, else @p fallback. Sanitizes scalar inputs.
@@ -301,17 +327,20 @@ static double vegetation3d_wind_wave(double phase, double bx, double bz) {
     return isfinite(wave) ? wave : 0.0;
 }
 
-/// @brief Release and clear corrupted retained resource slots.
+/// @brief Validate private retained owners and republish mutable legacy resource mirrors.
 /// @param v Vegetation system whose density, mesh, and material handles are repaired.
 static void vegetation3d_repair_resource_handles(rt_vegetation3d *v) {
     if (!v)
         return;
-    if (v->density_map && !vegetation3d_is_pixels_handle(v->density_map))
-        vegetation3d_release_pixels_slot(&v->density_map);
-    if (v->blade_mesh && !vegetation3d_mesh_ref(v->blade_mesh))
-        vegetation3d_release_mesh_slot(&v->blade_mesh);
-    if (v->blade_material && !vegetation3d_material_ref(v->blade_material))
-        vegetation3d_release_material_slot(&v->blade_material);
+    if (v->owned_density_map && !vegetation3d_is_pixels_handle(v->owned_density_map))
+        vegetation3d_release_pixels_slot(&v->owned_density_map);
+    if (v->owned_blade_mesh && !vegetation3d_mesh_ref(v->owned_blade_mesh))
+        vegetation3d_release_mesh_slot(&v->owned_blade_mesh);
+    if (v->owned_blade_material && !vegetation3d_material_ref(v->owned_blade_material))
+        vegetation3d_release_material_slot(&v->owned_blade_material);
+    v->density_map = v->owned_density_map;
+    v->blade_mesh = v->owned_blade_mesh;
+    v->blade_material = v->owned_blade_material;
 }
 
 /// @brief Free the spatial cull grid and mark it for rebuild.
@@ -319,12 +348,27 @@ static void vegetation3d_repair_resource_handles(rt_vegetation3d *v) {
 static void vegetation3d_free_grid(rt_vegetation3d *v) {
     if (!v)
         return;
-    free(v->grid_cell_start);
-    free(v->grid_indices);
+    free(v->owned_grid_cell_start);
+    free(v->owned_grid_indices);
+    v->owned_grid_cell_start = NULL;
+    v->owned_grid_indices = NULL;
+    v->owned_grid_cell_count = 0;
+    v->owned_grid_index_count = 0;
+    v->owned_grid_cells_x = 0;
+    v->owned_grid_cells_z = 0;
+    v->owned_grid_min_x = 0.0f;
+    v->owned_grid_min_z = 0.0f;
+    v->owned_grid_cell_w = 1.0f;
+    v->owned_grid_cell_d = 1.0f;
+    v->owned_grid_ready = 0;
     v->grid_cell_start = NULL;
     v->grid_indices = NULL;
     v->grid_cells_x = 0;
     v->grid_cells_z = 0;
+    v->grid_min_x = 0.0f;
+    v->grid_min_z = 0.0f;
+    v->grid_cell_w = 1.0f;
+    v->grid_cell_d = 1.0f;
     v->grid_ready = 0;
 }
 
@@ -333,9 +377,16 @@ static void vegetation3d_free_grid(rt_vegetation3d *v) {
 static void vegetation3d_clear_population_buffers(rt_vegetation3d *v) {
     if (!v)
         return;
-    free(v->base_transforms);
-    free(v->positions);
-    free(v->visible_transforms);
+    free(v->owned_base_transforms);
+    free(v->owned_positions);
+    free(v->owned_visible_transforms);
+    v->owned_base_transforms = NULL;
+    v->owned_positions = NULL;
+    v->owned_visible_transforms = NULL;
+    v->owned_total_count = 0;
+    v->owned_capacity = 0;
+    v->owned_visible_count = 0;
+    v->owned_visible_capacity = 0;
     v->base_transforms = NULL;
     v->positions = NULL;
     v->visible_transforms = NULL;
@@ -359,9 +410,12 @@ static void vegetation3d_finalizer(void *obj) {
     if (!v)
         return;
     vegetation3d_clear_population_buffers(v);
-    vegetation3d_release_pixels_slot(&v->density_map);
-    vegetation3d_release_mesh_slot(&v->blade_mesh);
-    vegetation3d_release_material_slot(&v->blade_material);
+    vegetation3d_release_pixels_slot(&v->owned_density_map);
+    vegetation3d_release_mesh_slot(&v->owned_blade_mesh);
+    vegetation3d_release_material_slot(&v->owned_blade_material);
+    v->density_map = NULL;
+    v->blade_mesh = NULL;
+    v->blade_material = NULL;
 }
 
 /// @brief Build the cross-billboard blade mesh (2 perpendicular quads).
@@ -431,41 +485,180 @@ static uint32_t vegetation3d_next_default_seed(void) {
     return vegetation3d_seed_from_i64(old);
 }
 
-/// @brief Repair count/buffer invariants before update/draw work touches flat arrays.
-/// @param v Vegetation system whose flat-buffer counts and handles are repaired.
+/// @brief Restore allocation mirrors and persist finite, bounded retained vegetation state.
+/// @param v Vegetation system whose flat-buffer counts, handles, and scalar state are repaired.
 /// @return 1 after repair, or 0 when @p v is NULL.
 static int vegetation3d_repair_state(rt_vegetation3d *v) {
+    double blade_width;
+    double blade_height;
+    double size_variation;
+    double wind_speed;
+    double wind_strength;
+    double wind_turbulence;
+    double repaired_time;
+    double lod_near;
+    double lod_far;
     if (!v)
         return 0;
     vegetation3d_repair_resource_handles(v);
-    if (v->capacity < 0)
-        v->capacity = 0;
-    if (!v->base_transforms || !v->positions || v->capacity == 0) {
-        free(v->base_transforms);
-        free(v->positions);
+
+    blade_width = vegetation_positive_or(v->blade_width, 0.4, VEGETATION3D_BLADE_DIM_MAX);
+    blade_height = vegetation_positive_or(v->blade_height, 1.2, VEGETATION3D_BLADE_DIM_MAX);
+    size_variation = vegetation_finite_or(v->size_variation, 0.0);
+    if (size_variation < 0.0)
+        size_variation = 0.0;
+    if (size_variation > 1.0)
+        size_variation = 1.0;
+    v->blade_mesh_dirty = v->blade_mesh_dirty ? 1 : 0;
+    if (v->blade_width != blade_width || v->blade_height != blade_height) {
+        v->blade_width = blade_width;
+        v->blade_height = blade_height;
+        v->blade_mesh_dirty = 1;
+    }
+    v->size_variation = size_variation;
+
+    wind_speed = vegetation_abs_or(v->wind_speed, 0.0, VEGETATION3D_WIND_PARAM_MAX);
+    wind_strength = vegetation_nonnegative_or(v->wind_strength, VEGETATION3D_WIND_PARAM_MAX);
+    wind_turbulence = vegetation_nonnegative_or(v->wind_turbulence, VEGETATION3D_WIND_PARAM_MAX);
+    v->wind_speed = wind_speed;
+    v->wind_strength = wind_strength;
+    v->wind_turbulence = wind_turbulence;
+    repaired_time = v->time;
+    if (!isfinite(repaired_time) || repaired_time < 0.0)
+        repaired_time = 0.0;
+    else if (repaired_time > VEGETATION3D_TIME_MAX)
+        repaired_time = fmod(repaired_time, VEGETATION3D_TIME_MAX);
+    if (!isfinite(repaired_time))
+        repaired_time = 0.0;
+    v->time = repaired_time;
+
+    lod_near = vegetation_nonnegative_or((double)v->lod_near, VEGETATION3D_TERRAIN_EXTENT_MAX);
+    lod_far = vegetation_nonnegative_or((double)v->lod_far, VEGETATION3D_TERRAIN_EXTENT_MAX);
+    if (lod_near <= 0.0)
+        lod_near = 40.0;
+    if (lod_far <= 0.0)
+        lod_far = 100.0;
+    if (lod_far <= lod_near + 1e-6)
+        lod_far = lod_near + 1.0;
+    if (lod_far > VEGETATION3D_TERRAIN_EXTENT_MAX)
+        lod_far = VEGETATION3D_TERRAIN_EXTENT_MAX;
+    if (lod_near >= lod_far)
+        lod_near = lod_far > 1.0 ? lod_far - 1.0 : 0.0;
+    v->lod_near = (float)lod_near;
+    v->lod_far = (float)lod_far;
+    if (v->scatter_seed == 0)
+        v->scatter_seed = vegetation3d_seed_from_i64(42);
+
+    if (v->owned_base_transforms && v->owned_positions && v->owned_capacity > 0 &&
+        v->owned_capacity <= VEGETATION3D_MAX_BLADES) {
+        if (v->owned_total_count < 0)
+            v->owned_total_count = 0;
+        if (v->owned_total_count > v->owned_capacity)
+            v->owned_total_count = v->owned_capacity;
+        v->base_transforms = v->owned_base_transforms;
+        v->positions = v->owned_positions;
+        v->capacity = v->owned_capacity;
+        v->total_count = v->owned_total_count;
+    } else {
+        free(v->owned_base_transforms);
+        free(v->owned_positions);
+        v->owned_base_transforms = NULL;
+        v->owned_positions = NULL;
+        v->owned_total_count = 0;
+        v->owned_capacity = 0;
         v->base_transforms = NULL;
         v->positions = NULL;
         v->total_count = 0;
         v->capacity = 0;
-    } else {
-        if (v->total_count < 0)
-            v->total_count = 0;
-        if (v->total_count > v->capacity)
-            v->total_count = v->capacity;
     }
-    if (v->visible_capacity < 0)
-        v->visible_capacity = 0;
-    if (!v->visible_transforms || v->visible_capacity == 0) {
-        free(v->visible_transforms);
+
+    if (v->owned_visible_transforms && v->owned_visible_capacity > 0 &&
+        v->owned_visible_capacity <= VEGETATION3D_MAX_BLADES) {
+        if (v->owned_visible_count < 0)
+            v->owned_visible_count = 0;
+        if (v->owned_visible_count > v->owned_visible_capacity)
+            v->owned_visible_count = v->owned_visible_capacity;
+        v->visible_transforms = v->owned_visible_transforms;
+        v->visible_capacity = v->owned_visible_capacity;
+        v->visible_count = v->owned_visible_count;
+    } else {
+        free(v->owned_visible_transforms);
+        v->owned_visible_transforms = NULL;
+        v->owned_visible_count = 0;
+        v->owned_visible_capacity = 0;
         v->visible_transforms = NULL;
         v->visible_count = 0;
         v->visible_capacity = 0;
-    } else {
-        if (v->visible_count < 0)
-            v->visible_count = 0;
-        if (v->visible_count > v->visible_capacity)
-            v->visible_count = v->visible_capacity;
     }
+
+    if (v->owned_grid_ready && v->owned_grid_cell_start && v->owned_grid_indices &&
+        v->owned_grid_cells_x > 0 && v->owned_grid_cells_x <= VEGETATION3D_GRID_MAX_CELLS &&
+        v->owned_grid_cells_z > 0 && v->owned_grid_cells_z <= VEGETATION3D_GRID_MAX_CELLS &&
+        v->owned_grid_cell_count == v->owned_grid_cells_x * v->owned_grid_cells_z &&
+        v->owned_grid_index_count >= 0 && v->owned_grid_index_count <= v->owned_total_count &&
+        isfinite(v->owned_grid_min_x) && isfinite(v->owned_grid_min_z) &&
+        isfinite(v->owned_grid_cell_w) && isfinite(v->owned_grid_cell_d) &&
+        v->owned_grid_cell_w > 0.0f && v->owned_grid_cell_d > 0.0f) {
+        v->grid_cell_start = v->owned_grid_cell_start;
+        v->grid_indices = v->owned_grid_indices;
+        v->grid_cells_x = v->owned_grid_cells_x;
+        v->grid_cells_z = v->owned_grid_cells_z;
+        v->grid_min_x = v->owned_grid_min_x;
+        v->grid_min_z = v->owned_grid_min_z;
+        v->grid_cell_w = v->owned_grid_cell_w;
+        v->grid_cell_d = v->owned_grid_cell_d;
+        v->grid_ready = 1;
+    } else if (v->owned_grid_cell_start || v->owned_grid_indices || v->owned_grid_ready) {
+        vegetation3d_free_grid(v);
+    } else {
+        v->grid_cell_start = NULL;
+        v->grid_indices = NULL;
+        v->grid_cells_x = 0;
+        v->grid_cells_z = 0;
+        v->grid_min_x = 0.0f;
+        v->grid_min_z = 0.0f;
+        v->grid_cell_w = 1.0f;
+        v->grid_cell_d = 1.0f;
+        v->grid_ready = 0;
+    }
+    return 1;
+}
+
+/// @brief Ensure the retained cross-billboard mesh and material are usable for drawing.
+/// @param v Vegetation system owning the shared render resources.
+/// @return Nonzero when an eight-vertex/four-triangle mesh and material are available.
+static int vegetation3d_ensure_render_resources(rt_vegetation3d *v) {
+    rt_mesh3d *mesh;
+    if (!v)
+        return 0;
+    vegetation3d_repair_resource_handles(v);
+    if (!v->owned_blade_mesh) {
+        v->owned_blade_mesh = rt_mesh3d_new();
+        if (!v->owned_blade_mesh)
+            return 0;
+        v->blade_mesh = v->owned_blade_mesh;
+        v->blade_mesh_dirty = 1;
+    }
+    mesh = (rt_mesh3d *)v->owned_blade_mesh;
+    if (v->blade_mesh_dirty || mesh->vertex_count != 8u || mesh->index_count != 12u ||
+        mesh->build_failed) {
+        rt_mesh3d_clear(mesh);
+        mesh->build_failed = 0;
+        build_blade_mesh(mesh, v->blade_width, v->blade_height);
+        v->blade_mesh_dirty =
+            mesh->build_failed || mesh->vertex_count != 8u || mesh->index_count != 12u;
+    }
+    if (v->blade_mesh_dirty)
+        return 0;
+    if (!v->owned_blade_material) {
+        v->owned_blade_material = rt_material3d_new();
+        if (!v->owned_blade_material)
+            return 0;
+        v->blade_material = v->owned_blade_material;
+        rt_material3d_set_unlit(v->owned_blade_material, 1);
+    }
+    v->blade_mesh = v->owned_blade_mesh;
+    v->blade_material = v->owned_blade_material;
     return 1;
 }
 
@@ -486,8 +679,10 @@ static int vegetation3d_matrix_is_drawable(const float *m) {
 /// @param v Vegetation system whose visible transform prefix is compacted in place.
 static void vegetation3d_compact_visible(rt_vegetation3d *v) {
     if (!v || !v->visible_transforms || v->visible_count <= 0) {
-        if (v)
+        if (v) {
             v->visible_count = 0;
+            v->owned_visible_count = 0;
+        }
         return;
     }
     int32_t out = 0;
@@ -500,6 +695,7 @@ static void vegetation3d_compact_visible(rt_vegetation3d *v) {
         out++;
     }
     v->visible_count = out;
+    v->owned_visible_count = out;
 }
 
 /// @brief Construct a Vegetation3D system. Allocates the shared cross-billboard blade mesh and
@@ -547,6 +743,28 @@ void *rt_vegetation3d_new(void *blade_texture) {
     v->grid_cell_w = 1.0f;
     v->grid_cell_d = 1.0f;
     v->grid_ready = 0;
+    v->owned_blade_mesh = NULL;
+    v->owned_blade_material = NULL;
+    v->owned_density_map = NULL;
+    v->owned_base_transforms = NULL;
+    v->owned_positions = NULL;
+    v->owned_total_count = 0;
+    v->owned_capacity = 0;
+    v->owned_visible_transforms = NULL;
+    v->owned_visible_count = 0;
+    v->owned_visible_capacity = 0;
+    v->owned_grid_cell_start = NULL;
+    v->owned_grid_indices = NULL;
+    v->owned_grid_cell_count = 0;
+    v->owned_grid_index_count = 0;
+    v->owned_grid_cells_x = 0;
+    v->owned_grid_cells_z = 0;
+    v->owned_grid_min_x = 0.0f;
+    v->owned_grid_min_z = 0.0f;
+    v->owned_grid_cell_w = 1.0f;
+    v->owned_grid_cell_d = 1.0f;
+    v->owned_grid_ready = 0;
+    v->blade_mesh_dirty = 1;
 
     /* Build blade mesh */
     v->blade_mesh = rt_mesh3d_new();
@@ -556,17 +774,21 @@ void *rt_vegetation3d_new(void *blade_texture) {
         rt_trap("Vegetation3D.New: blade mesh allocation failed");
         return NULL;
     }
+    v->owned_blade_mesh = v->blade_mesh;
     build_blade_mesh(v->blade_mesh, v->blade_width, v->blade_height);
+    v->blade_mesh_dirty = 0;
 
     /* Build material */
     v->blade_material = rt_material3d_new();
     if (!v->blade_material) {
-        vegetation3d_release_mesh_slot(&v->blade_mesh);
+        vegetation3d_release_mesh_slot(&v->owned_blade_mesh);
+        v->blade_mesh = NULL;
         if (rt_obj_release_check0(v))
             rt_obj_free(v);
         rt_trap("Vegetation3D.New: material allocation failed");
         return NULL;
     }
+    v->owned_blade_material = v->blade_material;
     if (blade_texture)
         rt_material3d_set_texture(v->blade_material, blade_texture);
     rt_material3d_set_unlit(v->blade_material, 1);
@@ -584,6 +806,7 @@ void rt_vegetation3d_set_density_map(void *obj, void *pixels) {
         (rt_vegetation3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEGETATION3D_CLASS_ID);
     if (!v)
         return;
+    vegetation3d_repair_state(v);
     if (pixels) {
         rt_pixels_impl *p =
             rt_pixels_checked_impl(pixels, "Vegetation3D.SetDensityMap: expected Pixels");
@@ -592,7 +815,8 @@ void rt_vegetation3d_set_density_map(void *obj, void *pixels) {
             return;
         }
     }
-    vegetation3d_assign_pixels_ref(&v->density_map, pixels);
+    vegetation3d_assign_pixels_ref(&v->owned_density_map, pixels);
+    v->density_map = v->owned_density_map;
 }
 
 /// @brief Configure wind animation. `speed` scales time, `strength` is the maximum top-of-blade
@@ -609,6 +833,7 @@ void rt_vegetation3d_set_wind_params(void *obj, double speed, double strength, d
         (rt_vegetation3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEGETATION3D_CLASS_ID);
     if (!v)
         return;
+    vegetation3d_repair_state(v);
     v->wind_speed = vegetation_abs_or(speed, 0.0, VEGETATION3D_WIND_PARAM_MAX);
     v->wind_strength = vegetation_nonnegative_or(strength, VEGETATION3D_WIND_PARAM_MAX);
     v->wind_turbulence = vegetation_nonnegative_or(turbulence, VEGETATION3D_WIND_PARAM_MAX);
@@ -627,6 +852,7 @@ void rt_vegetation3d_set_lod_distances(void *obj, double near_dist, double far_d
         (rt_vegetation3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEGETATION3D_CLASS_ID);
     if (!v)
         return;
+    vegetation3d_repair_state(v);
     near_dist = vegetation_nonnegative_or(near_dist, VEGETATION3D_TERRAIN_EXTENT_MAX);
     far_dist = vegetation_nonnegative_or(far_dist, VEGETATION3D_TERRAIN_EXTENT_MAX);
     if (near_dist <= 0.0)
@@ -657,6 +883,7 @@ void rt_vegetation3d_set_blade_size(void *obj, double width, double height, doub
         (rt_vegetation3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEGETATION3D_CLASS_ID);
     if (!v)
         return;
+    vegetation3d_repair_state(v);
     width = vegetation_positive_or(width, 0.4, VEGETATION3D_BLADE_DIM_MAX);
     height = vegetation_positive_or(height, 1.2, VEGETATION3D_BLADE_DIM_MAX);
     variation = vegetation_finite_or(variation, 0.0);
@@ -664,22 +891,17 @@ void rt_vegetation3d_set_blade_size(void *obj, double width, double height, doub
         variation = 0.0;
     if (variation > 1.0)
         variation = 1.0;
+    int geometry_changed = v->blade_width != width || v->blade_height != height;
+    int variation_changed = v->size_variation != variation;
+    if (!geometry_changed && !variation_changed && !v->blade_mesh_dirty)
+        return;
+    if (geometry_changed)
+        v->blade_mesh_dirty = 1;
     v->blade_width = width;
     v->blade_height = height;
     v->size_variation = variation;
-    /* Rebuild blade mesh with new size */
-    if (v->blade_mesh && !vegetation3d_mesh_ref(v->blade_mesh))
-        vegetation3d_release_mesh_slot(&v->blade_mesh);
-    if (!v->blade_mesh) {
-        v->blade_mesh = rt_mesh3d_new();
-        if (!v->blade_mesh) {
-            rt_trap("Vegetation3D.SetBladeSize: blade mesh allocation failed");
-            return;
-        }
-    } else {
-        rt_mesh3d_clear(v->blade_mesh);
-    }
-    build_blade_mesh(v->blade_mesh, width, height);
+    if ((geometry_changed || v->blade_mesh_dirty) && !vegetation3d_ensure_render_resources(v))
+        rt_trap("Vegetation3D.SetBladeSize: blade mesh allocation failed");
 }
 
 /// @brief Set the deterministic scatter seed used by subsequent Populate calls.
@@ -693,6 +915,7 @@ void rt_vegetation3d_set_seed(void *obj, int64_t seed) {
         (rt_vegetation3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEGETATION3D_CLASS_ID);
     if (!v)
         return;
+    vegetation3d_repair_state(v);
     v->scatter_seed = vegetation3d_seed_from_i64(seed);
 }
 
@@ -749,7 +972,7 @@ void rt_vegetation3d_populate(void *obj, void *terrain, int64_t count) {
         (rt_vegetation3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEGETATION3D_CLASS_ID);
     if (!v)
         return;
-    vegetation3d_repair_resource_handles(v);
+    vegetation3d_repair_state(v);
     if (count <= 0) {
         vegetation3d_clear_population_buffers(v);
         return;
@@ -809,16 +1032,8 @@ void rt_vegetation3d_populate(void *obj, void *terrain, int64_t count) {
         }
     }
 
-    free(v->base_transforms);
-    free(v->positions);
-    v->base_transforms = new_base_transforms;
-    v->positions = new_positions;
-    v->capacity = cap;
-    v->total_count = 0;
-    v->visible_count = 0;
-    v->grid_ready = 0;
-
     uint32_t rng = v->scatter_seed ? v->scatter_seed : vegetation3d_seed_from_i64(42);
+    int32_t populated_count = 0;
     double min_x = tw >= 4.0 ? 2.0 : 0.0;
     double max_x = tw >= 4.0 ? tw - 2.0 : tw;
     double min_z = td >= 4.0 ? 2.0 : 0.0;
@@ -863,13 +1078,28 @@ void rt_vegetation3d_populate(void *obj, void *terrain, int64_t count) {
         if (scale_var < 0.01)
             scale_var = 0.01;
 
-        int32_t idx = v->total_count;
-        build_transform(&v->base_transforms[idx * 16], wx, wy, wz, angle, scale_var);
-        v->positions[idx * 3 + 0] = (float)wx;
-        v->positions[idx * 3 + 1] = (float)wy;
-        v->positions[idx * 3 + 2] = (float)wz;
-        v->total_count++;
+        int32_t idx = populated_count;
+        build_transform(&new_base_transforms[idx * 16], wx, wy, wz, angle, scale_var);
+        new_positions[idx * 3 + 0] = (float)wx;
+        new_positions[idx * 3 + 1] = (float)wy;
+        new_positions[idx * 3 + 2] = (float)wz;
+        populated_count++;
     }
+
+    /* Publish the aligned population only after every candidate has been processed. */
+    free(v->owned_base_transforms);
+    free(v->owned_positions);
+    v->owned_base_transforms = new_base_transforms;
+    v->owned_positions = new_positions;
+    v->owned_capacity = cap;
+    v->owned_total_count = populated_count;
+    v->base_transforms = new_base_transforms;
+    v->positions = new_positions;
+    v->capacity = cap;
+    v->total_count = populated_count;
+    v->owned_visible_count = 0;
+    v->visible_count = 0;
+    vegetation3d_free_grid(v);
 }
 
 /// @brief Rebuild the CSR spatial grid that buckets blade indices by XZ cell.
@@ -922,7 +1152,8 @@ static int vegetation3d_rebuild_grid(rt_vegetation3d *v) {
         extent_z = 1e-3f;
 
     int32_t cell_count = cells * cells;
-    int32_t *starts = (int32_t *)calloc((size_t)cell_count + 1u, sizeof(int32_t));
+    size_t starts_values = (size_t)cell_count * 2u + 1u;
+    int32_t *starts = (int32_t *)calloc(starts_values, sizeof(int32_t));
     int32_t *indices = (int32_t *)malloc((size_t)v->total_count * sizeof(int32_t));
     if (!starts || !indices) {
         free(starts);
@@ -930,12 +1161,8 @@ static int vegetation3d_rebuild_grid(rt_vegetation3d *v) {
         return 0;
     }
 
-    v->grid_cells_x = cells;
-    v->grid_cells_z = cells;
-    v->grid_min_x = min_x;
-    v->grid_min_z = min_z;
-    v->grid_cell_w = extent_x / (float)cells;
-    v->grid_cell_d = extent_z / (float)cells;
+    float cell_w = extent_x / (float)cells;
+    float cell_d = extent_z / (float)cells;
 
     /* Counting sort: pass 1 counts, prefix-sum, pass 2 scatters. */
     for (int32_t i = 0; i < v->total_count; i++) {
@@ -943,8 +1170,8 @@ static int vegetation3d_rebuild_grid(rt_vegetation3d *v) {
         float bz = v->positions[i * 3 + 2];
         if (!isfinite(bx) || !isfinite(bz))
             continue;
-        int32_t cx = (int32_t)((bx - min_x) / v->grid_cell_w);
-        int32_t cz = (int32_t)((bz - min_z) / v->grid_cell_d);
+        int32_t cx = (int32_t)((bx - min_x) / cell_w);
+        int32_t cz = (int32_t)((bz - min_z) / cell_d);
         if (cx < 0)
             cx = 0;
         if (cx >= cells)
@@ -957,22 +1184,15 @@ static int vegetation3d_rebuild_grid(rt_vegetation3d *v) {
     }
     for (int32_t c = 0; c < cell_count; c++)
         starts[c + 1] += starts[c];
-    int32_t *cursor = (int32_t *)malloc((size_t)cell_count * sizeof(int32_t));
-    if (!cursor) {
-        free(starts);
-        free(indices);
-        v->grid_cells_x = 0;
-        v->grid_cells_z = 0;
-        return 0;
-    }
+    int32_t *cursor = &starts[(size_t)cell_count + 1u];
     memcpy(cursor, starts, (size_t)cell_count * sizeof(int32_t));
     for (int32_t i = 0; i < v->total_count; i++) {
         float bx = v->positions[i * 3 + 0];
         float bz = v->positions[i * 3 + 2];
         if (!isfinite(bx) || !isfinite(bz))
             continue;
-        int32_t cx = (int32_t)((bx - min_x) / v->grid_cell_w);
-        int32_t cz = (int32_t)((bz - min_z) / v->grid_cell_d);
+        int32_t cx = (int32_t)((bx - min_x) / cell_w);
+        int32_t cz = (int32_t)((bz - min_z) / cell_d);
         if (cx < 0)
             cx = 0;
         if (cx >= cells)
@@ -983,10 +1203,25 @@ static int vegetation3d_rebuild_grid(rt_vegetation3d *v) {
             cz = cells - 1;
         indices[cursor[cz * cells + cx]++] = i;
     }
-    free(cursor);
-
+    v->owned_grid_cell_start = starts;
+    v->owned_grid_indices = indices;
+    v->owned_grid_cell_count = cell_count;
+    v->owned_grid_index_count = starts[cell_count];
+    v->owned_grid_cells_x = cells;
+    v->owned_grid_cells_z = cells;
+    v->owned_grid_min_x = min_x;
+    v->owned_grid_min_z = min_z;
+    v->owned_grid_cell_w = cell_w;
+    v->owned_grid_cell_d = cell_d;
+    v->owned_grid_ready = 1;
     v->grid_cell_start = starts;
     v->grid_indices = indices;
+    v->grid_cells_x = cells;
+    v->grid_cells_z = cells;
+    v->grid_min_x = min_x;
+    v->grid_min_z = min_z;
+    v->grid_cell_w = cell_w;
+    v->grid_cell_d = cell_d;
     v->grid_ready = 1;
     return 1;
 }
@@ -1020,6 +1255,18 @@ static int32_t vegetation3d_clamp_grid_cell(double coordinate, int32_t cell_coun
     return (int32_t)floor(coordinate);
 }
 
+/// @brief Verify the constant-time CSR allocation/terminal invariants before traversal.
+/// @param v Vegetation system whose owned grid is considered.
+/// @return Nonzero when the table has bounded metadata and matching first/terminal offsets.
+static int vegetation3d_grid_terminal_valid(const rt_vegetation3d *v) {
+    if (!v || !v->owned_grid_ready || v->grid_cell_start != v->owned_grid_cell_start ||
+        v->grid_indices != v->owned_grid_indices || v->owned_grid_cell_count <= 0 ||
+        v->owned_grid_index_count < 0 || v->owned_grid_index_count > v->owned_total_count)
+        return 0;
+    return v->owned_grid_cell_start[0] == 0 &&
+           v->owned_grid_cell_start[v->owned_grid_cell_count] == v->owned_grid_index_count;
+}
+
 /// @brief Cull, thin, fade, and wind-shear one blade, appending it to the visible buffer.
 /// @param v Vegetation system containing source and destination transform buffers.
 /// @param i Source blade index.
@@ -1027,7 +1274,9 @@ static int32_t vegetation3d_clamp_grid_cell(double coordinate, int32_t cell_coun
 static void vegetation3d_collect_blade(rt_vegetation3d *v,
                                        int32_t i,
                                        const vegetation3d_update_params *p) {
-    if (i < 0 || i >= v->total_count)
+    if (!v || !p || i < 0 || i >= v->total_count || v->visible_count < 0 ||
+        v->visible_count >= v->visible_capacity ||
+        v->visible_transforms != v->owned_visible_transforms)
         return; /* stale grid entry after a state repair shrank the population */
     float bx = v->positions[i * 3 + 0];
     float bz = v->positions[i * 3 + 2];
@@ -1117,6 +1366,7 @@ static void vegetation3d_collect_blade(rt_vegetation3d *v,
         return;
 
     v->visible_count++;
+    v->owned_visible_count = v->visible_count;
 }
 
 /// @brief Per-frame tick. Advances wind time by `dt`, then rebuilds the visible-instances buffer:
@@ -1134,9 +1384,11 @@ void rt_vegetation3d_update(void *obj, double dt, double camX, double camY, doub
     (void)camY;
     rt_vegetation3d *v =
         (rt_vegetation3d *)rt_g3d_checked_or_null(obj, RT_G3D_VEGETATION3D_CLASS_ID);
-    if (!v || !isfinite(dt) || dt < 0.0)
+    if (!v)
         return;
     if (!vegetation3d_repair_state(v))
+        return;
+    if (!isfinite(dt) || dt < 0.0)
         return;
     if (dt > VEGETATION3D_DT_MAX)
         dt = VEGETATION3D_DT_MAX;
@@ -1150,6 +1402,7 @@ void rt_vegetation3d_update(void *obj, double dt, double camX, double camY, doub
 
     if (v->total_count <= 0 || !v->base_transforms || !v->positions) {
         v->visible_count = 0;
+        v->owned_visible_count = 0;
         return;
     }
 
@@ -1167,25 +1420,30 @@ void rt_vegetation3d_update(void *obj, double dt, double camX, double camY, doub
         vegetation_nonnegative_or(v->wind_turbulence, VEGETATION3D_WIND_PARAM_MAX);
 
     /* Ensure visible buffer is large enough */
-    if (v->visible_capacity < v->total_count) {
+    if (v->owned_visible_capacity < v->total_count) {
         size_t visible_count;
         size_t visible_bytes;
         if (!rt_world3d_checked_mul_size((size_t)v->total_count, 16u, &visible_count) ||
             !rt_world3d_checked_mul_size(visible_count, sizeof(float), &visible_bytes)) {
             v->visible_count = 0;
+            v->owned_visible_count = 0;
             rt_trap("Vegetation3D.Update: visible buffer size overflow");
             return;
         }
-        float *new_visible = (float *)realloc(v->visible_transforms, visible_bytes);
+        float *new_visible = (float *)realloc(v->owned_visible_transforms, visible_bytes);
         if (!new_visible) {
             v->visible_count = 0;
+            v->owned_visible_count = 0;
             rt_trap("Vegetation3D.Update: visible buffer allocation failed");
             return;
         }
+        v->owned_visible_transforms = new_visible;
+        v->owned_visible_capacity = v->total_count;
         v->visible_transforms = new_visible;
         v->visible_capacity = v->total_count;
     }
     v->visible_count = 0;
+    v->owned_visible_count = 0;
 
     vegetation3d_update_params params;
     params.camX = camX;
@@ -1202,8 +1460,11 @@ void rt_vegetation3d_update(void *obj, double dt, double camX, double camY, doub
     if (!v->grid_ready)
         vegetation3d_rebuild_grid(v);
 
-    if (v->grid_ready && v->grid_cell_start && v->grid_indices && v->grid_cells_x > 0 &&
-        v->grid_cells_z > 0) {
+    int grid_usable = v->grid_ready && v->grid_cell_start && v->grid_indices &&
+                      v->grid_cells_x > 0 && v->grid_cells_z > 0 &&
+                      vegetation3d_grid_terminal_valid(v);
+    int grid_corrupt = 0;
+    if (grid_usable) {
         /* Walk only the grid cells whose AABB intersects the lod_far disc around the camera. */
         int32_t cells_x = v->grid_cells_x;
         int32_t cells_z = v->grid_cells_z;
@@ -1232,12 +1493,31 @@ void rt_vegetation3d_update(void *obj, double dt, double camX, double camY, doub
                 int32_t c = cz * cells_x + cx;
                 int32_t begin = v->grid_cell_start[c];
                 int32_t end = v->grid_cell_start[c + 1];
-                for (int32_t k = begin; k < end; k++)
-                    vegetation3d_collect_blade(v, v->grid_indices[k], &params);
+                if (begin < 0 || end < begin || end > v->owned_grid_index_count) {
+                    grid_corrupt = 1;
+                    break;
+                }
+                for (int32_t k = begin; k < end; k++) {
+                    int32_t blade_index = v->grid_indices[k];
+                    if (blade_index < 0 || blade_index >= v->total_count) {
+                        grid_corrupt = 1;
+                        break;
+                    }
+                    vegetation3d_collect_blade(v, blade_index, &params);
+                }
+                if (grid_corrupt)
+                    break;
             }
+            if (grid_corrupt)
+                break;
         }
-    } else {
+    }
+    if (!grid_usable || grid_corrupt) {
         /* Grid unavailable (allocation failure): fall back to the full linear walk. */
+        if (grid_corrupt || (v->grid_ready && !grid_usable))
+            vegetation3d_free_grid(v);
+        v->visible_count = 0;
+        v->owned_visible_count = 0;
         for (int32_t i = 0; i < v->total_count; i++)
             vegetation3d_collect_blade(v, i, &params);
     }
@@ -1265,9 +1545,11 @@ void rt_canvas3d_draw_vegetation(void *canvas_obj, void *veg_obj) {
         rt_trap("Canvas3D.DrawVegetation: cannot draw vegetation during Begin2D/End");
         return;
     }
+    if (!vegetation3d_ensure_render_resources(v))
+        return;
 
-    rt_mesh3d *mesh = vegetation3d_mesh_ref(v->blade_mesh);
-    rt_material3d *mat = vegetation3d_material_ref(v->blade_material);
+    rt_mesh3d *mesh = vegetation3d_mesh_ref(v->owned_blade_mesh);
+    rt_material3d *mat = vegetation3d_material_ref(v->owned_blade_material);
     vegetation3d_compact_visible(v);
     if (!mesh || mesh->vertex_count == 0 || !mat || !v->visible_transforms ||
         v->visible_count <= 0 || v->visible_count > v->visible_capacity)

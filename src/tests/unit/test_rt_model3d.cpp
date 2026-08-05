@@ -3854,8 +3854,7 @@ static void test_model3d_load_text_result_loads_without_disk_document() {
         }
     }
 
-    void *wrong_ext =
-        rt_model3d_load_text_result(rt_const_cstr("/tmp/zanna_text_doc.gltf"), text);
+    void *wrong_ext = rt_model3d_load_text_result(rt_const_cstr("/tmp/zanna_text_doc.gltf"), text);
     EXPECT_TRUE(wrong_ext && rt_result_is_err(wrong_ext) == 1,
                 "SceneAsset.LoadTextResult rejects non-VSCN extensions with Err, not a trap");
 
@@ -3892,8 +3891,8 @@ static void test_model3d_load_text_result_resolves_prefabs_beside_virtual_path()
 
     /* The referencing document never exists on disk; only the virtual path's
      * directory matters for resolving the relative reference (ADR 0190). */
-    void *loaded = rt_model3d_load_text_result(
-        rt_const_cstr("/tmp/zanna_text_prefab_doc.scene3d"), text);
+    void *loaded =
+        rt_model3d_load_text_result(rt_const_cstr("/tmp/zanna_text_prefab_doc.scene3d"), text);
     EXPECT_TRUE(loaded && rt_result_is_ok(loaded) == 1,
                 "Text documents with relative prefab references load");
     if (loaded && rt_result_is_ok(loaded) == 1) {
@@ -9431,6 +9430,177 @@ static void test_fbx_rejects_invalid_native_light_dimensions() {
     std::remove(path);
 }
 
+/// @brief Write an `Objects` record holding far more children than the former 16384 cap.
+/// @details Commercial mocap packages place one record per AnimationCurve/AnimationCurveNode
+///          under a single `Objects` node; a 218-clip package was observed with 67,056 children.
+///          The filler records use a structural name the extractor does not recognize, so the
+///          fixture isolates the parser's per-record child capacity from object extraction.
+/// @param path Destination fixture path.
+/// @param filler_children Number of unrecognized filler records to emit before the mesh.
+/// @return True when the binary fixture was written.
+static bool write_fbx_wide_objects_record_fixture(const char *path, int filler_children) {
+    static const int64_t kGeometryId = 7801;
+    static const int64_t kModelId = 7802;
+    FbxNodeFixture objects;
+    FbxNodeFixture connections;
+    objects.name = "Objects";
+    for (int i = 0; i < filler_children; i++) {
+        FbxNodeFixture filler;
+        filler.name = "ZannaTestFiller";
+        filler.props.push_back(fbx_prop_i64_fixture((int64_t)i + 100000));
+        objects.children.push_back(std::move(filler));
+    }
+    objects.children.push_back(make_fbx_triangle_geometry_fixture(kGeometryId, "WideMesh", 0.0));
+    objects.children.push_back(
+        make_fbx_model_fixture(kModelId, "WideMeshModel", "Mesh", 0.0, 0.0, 0.0));
+    connections.name = "Connections";
+    connections.children.push_back(make_fbx_connection_fixture(kModelId, 0));
+    connections.children.push_back(make_fbx_connection_fixture(kGeometryId, kModelId));
+    return write_fbx_document_fixture(path, objects, connections);
+}
+
+/// @brief A single FBX record may hold far more children than the former fixed cap.
+/// @details Regression for the 218-clip mocap package that failed to import: the parser capped
+///          any record at 16384 children and reported the overflow as corrupt content.
+static void test_fbx_objects_record_beyond_former_child_cap_imports() {
+    const char *path = "/tmp/zanna_fbx_wide_objects_record.fbx";
+    /* Comfortably past the former 16384 cap without making the fixture slow to write. */
+    bool wrote_fixture = write_fbx_wide_objects_record_fixture(path, 40000);
+    EXPECT_TRUE(wrote_fixture, "Wide-Objects-record FBX fixture can be written");
+    if (!wrote_fixture)
+        return;
+
+    void *model = rt_model3d_load(rt_const_cstr(path));
+    EXPECT_TRUE(model != nullptr,
+                "SceneAsset.Load parses an FBX record with more children than the former cap");
+    if (!model) {
+        std::remove(path);
+        return;
+    }
+    EXPECT_TRUE(rt_model3d_get_mesh_count(model) == 1,
+                "The mesh past 40000 sibling records is still extracted");
+    std::remove(path);
+}
+
+/// @brief Write a well-formed document whose `Objects` record nests past the depth cap.
+/// @details Depth is the cheapest structural cap to exercise; it shares the reporting path with
+///          the child- and property-count caps, so it pins the diagnostic without materializing
+///          a million records.
+/// @param path Destination fixture path.
+/// @param depth Nesting levels to emit below `Objects`.
+/// @return True when the binary fixture was written.
+static bool write_fbx_overdeep_fixture(const char *path, int depth) {
+    FbxNodeFixture objects;
+    FbxNodeFixture connections;
+    FbxNodeFixture chain;
+    objects.name = "Objects";
+    connections.name = "Connections";
+    chain.name = "ZannaTestNest";
+    for (int i = 0; i < depth; i++) {
+        FbxNodeFixture parent;
+        parent.name = "ZannaTestNest";
+        parent.children.push_back(std::move(chain));
+        chain = std::move(parent);
+    }
+    objects.children.push_back(std::move(chain));
+    return write_fbx_document_fixture(path, objects, connections);
+}
+
+/// @brief Exceeding a hard structural cap reports a size diagnostic, never "malformed".
+/// @details The old code funneled every capacity failure into the corrupt-content branch, so a
+///          structurally valid file that outgrew a parser bound was reported as truncated.
+static void test_fbx_structural_limit_reports_size_error_not_corruption() {
+    const char *path = "/tmp/zanna_fbx_structural_limit.fbx";
+    /* Comfortably past FBX_MAX_NODE_DEPTH (512): valid FBX, beyond what the parser will nest. */
+    bool wrote_fixture = write_fbx_overdeep_fixture(path, 600);
+    EXPECT_TRUE(wrote_fixture, "Over-deep FBX fixture can be written");
+    if (!wrote_fixture)
+        return;
+
+    void *model = rt_model3d_load(rt_const_cstr(path));
+    EXPECT_TRUE(model == nullptr, "FBX rejects a document that exceeds the hard nesting cap");
+    EXPECT_TRUE(rt_asset_error_get_code() == RT_ASSET_ERROR_TOO_LARGE,
+                "A structural cap overflow reports a size error, not corrupt content");
+    EXPECT_TRUE(rt_asset_error_get_message() &&
+                    std::strstr(rt_asset_error_get_message(), "structural limit") != nullptr,
+                "The structural-cap diagnostic names the limit rather than claiming corruption");
+    std::remove(path);
+}
+
+/// @brief Many-channel stacks resolve through the channel index without changing sampled values.
+/// @details The `(layer_index, target_id)` bucket index replaced whole-array scans in the
+///          duplicate check, channel lookup, and scalar composition. A wide graph must therefore
+///          import identically to the narrow one it was grown from, and stay well inside the
+///          near-linear probe envelope.
+static void test_fbx_channel_index_matches_linear_scan_results() {
+    const char *narrow_path = "/tmp/zanna_fbx_channel_index_narrow.fbx";
+    const char *wide_path = "/tmp/zanna_fbx_channel_index_wide.fbx";
+    EXPECT_TRUE(
+        write_fbx_skinned_animation_fixture_ex(narrow_path, false, 0, 8, false, false, false),
+        "Narrow channel-index fixture can be written");
+    EXPECT_TRUE(
+        write_fbx_skinned_animation_fixture_ex(wide_path, false, 0, 2048, false, false, false),
+        "Wide channel-index fixture can be written");
+
+    void *narrow = rt_model3d_load(rt_const_cstr(narrow_path));
+    void *wide = rt_model3d_load(rt_const_cstr(wide_path));
+    EXPECT_TRUE(narrow != nullptr && wide != nullptr,
+                "Both channel-index fixtures import completely");
+    if (!narrow || !wide) {
+        std::remove(narrow_path);
+        std::remove(wide_path);
+        return;
+    }
+
+    auto *narrow_anim = static_cast<rt_animation3d *>(rt_model3d_get_animation(narrow, 0));
+    auto *wide_anim = static_cast<rt_animation3d *>(rt_model3d_get_animation(wide, 0));
+    EXPECT_TRUE(narrow_anim != nullptr && wide_anim != nullptr,
+                "Both channel-index fixtures produce an animation");
+    if (!narrow_anim || !wide_anim) {
+        std::remove(narrow_path);
+        std::remove(wide_path);
+        return;
+    }
+    EXPECT_TRUE(narrow_anim->channel_count == wide_anim->channel_count,
+                "Channel indexing does not change the imported channel count");
+
+    /* Padding curve nodes must not perturb the animated root: same keys, same values. */
+    const vgfx3d_anim_channel_t *narrow_root = nullptr;
+    const vgfx3d_anim_channel_t *wide_root = nullptr;
+    for (int32_t i = 0; i < narrow_anim->channel_count; i++)
+        if (narrow_anim->channels[i].bone_index == 0)
+            narrow_root = &narrow_anim->channels[i];
+    for (int32_t i = 0; i < wide_anim->channel_count; i++)
+        if (wide_anim->channels[i].bone_index == 0)
+            wide_root = &wide_anim->channels[i];
+    EXPECT_TRUE(narrow_root != nullptr && wide_root != nullptr,
+                "Both channel-index fixtures animate the root bone");
+    if (narrow_root && wide_root) {
+        EXPECT_TRUE(narrow_root->keyframe_count == wide_root->keyframe_count,
+                    "Channel indexing preserves the sampled keyframe count");
+        int32_t shared = narrow_root->keyframe_count < wide_root->keyframe_count
+                             ? narrow_root->keyframe_count
+                             : wide_root->keyframe_count;
+        for (int32_t i = 0; i < shared; i++) {
+            EXPECT_NEAR(wide_root->keyframes[i].position[0],
+                        narrow_root->keyframes[i].position[0],
+                        1e-9,
+                        "Indexed lookup samples the same root translation as the linear scan");
+            EXPECT_NEAR(wide_root->keyframes[i].time,
+                        narrow_root->keyframes[i].time,
+                        1e-9,
+                        "Indexed lookup samples at the same times as the linear scan");
+        }
+    }
+
+    if (rt_obj_release_check0(narrow))
+        rt_obj_free(narrow);
+    if (rt_obj_release_check0(wide))
+        rt_obj_free(wide);
+    std::remove(narrow_path);
+    std::remove(wide_path);
+}
+
 static void test_fbx_imports_progressive_morph_fidelity_and_animation() {
     const char *path = "/tmp/zanna_fbx_progressive_morph.fbx";
     EXPECT_TRUE(write_fbx_progressive_morph_fixture(path),
@@ -9697,6 +9867,9 @@ int main() {
     test_fbx_tessellates_surface_forms_and_every_patch_basis();
     test_fbx_rejects_malformed_procedural_surfaces_transactionally();
     test_fbx_rejects_invalid_native_light_dimensions();
+    test_fbx_objects_record_beyond_former_child_cap_imports();
+    test_fbx_structural_limit_reports_size_error_not_corruption();
+    test_fbx_channel_index_matches_linear_scan_results();
     test_fbx_imports_progressive_morph_fidelity_and_animation();
     test_model3d_rejects_truncated_fbx();
     test_model3d_missing_fbx_returns_null_without_trap();

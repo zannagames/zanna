@@ -607,6 +607,8 @@ fail:
 static int fbx_ascii_parse_node(fbx_ascii_parser_t *parser, fbx_node_t *node, int depth) {
     fbx_ascii_token_t name;
     int expect_value = 1;
+    if (parser && depth > FBX_MAX_NODE_DEPTH && parser->context)
+        parser->context->structural_limit_exceeded = 1;
     if (!parser || !node || depth > FBX_MAX_NODE_DEPTH ||
         parser->token.kind != FBX_ASCII_TOKEN_IDENTIFIER) {
         return 0;

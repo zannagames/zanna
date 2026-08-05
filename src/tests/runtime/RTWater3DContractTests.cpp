@@ -7,10 +7,11 @@
 //
 // File: src/tests/runtime/RTWater3DContractTests.cpp
 // Purpose: Isolated Water3D runtime contract tests for mesh sizing, material
-//   wiring, draw-state preservation, and numeric sanitization.
+//   wiring, draw-state preservation, numeric sanitization, and private-state repair.
 // Key invariants:
 //   - WaterView mirrors rt_water3d's private layout for targeted white-box checks.
 //   - Stack fixture handles are accepted only through the isolated test stubs.
+//   - Corrupted legacy resource mirrors cannot replace independently retained owners.
 // Ownership/Lifetime:
 //   - Test stubs allocate runtime objects with calloc and free them through
 //     rt_obj_free when the code under test releases owned references.
@@ -34,6 +35,7 @@ extern "C" {
 namespace {
 
 struct StubMaterial {
+    double color[3] = {0.0, 0.0, 0.0};
     double alpha = 0.0;
     double reflectivity = 0.0;
     void *texture = nullptr;
@@ -51,6 +53,7 @@ int g_dummy_texture = 1;
 int g_dummy_normal = 2;
 int g_dummy_env = 3;
 int g_dummy_incomplete_env = 4;
+double g_last_vec3[3] = {0.0, 0.0, 0.0};
 void *g_stub_meshes[16] = {nullptr};
 int g_stub_mesh_count = 0;
 void *g_stub_materials[16] = {nullptr};
@@ -85,6 +88,10 @@ struct WaterView {
     WaterWaveView waves[8];
     int32_t wave_count;
     int32_t resolution;
+    int8_t mesh_dirty;
+    double sim_distance;
+    double last_camera_pos[3];
+    int8_t has_camera_pos;
 };
 
 static bool stub_pointer_tracked(void *const *items, int count, void *value) {
@@ -152,7 +159,10 @@ extern "C" void rt_obj_retain_maybe(void *) {}
 /* ADR 0227 readback getters box positions/colors as Vec3; the isolated
  * contract build links no math objects, so a null-returning stub keeps the
  * target minimal (no contract case dereferences the boxed value). */
-extern "C" void *rt_vec3_new(double, double, double) {
+extern "C" void *rt_vec3_new(double x, double y, double z) {
+    g_last_vec3[0] = x;
+    g_last_vec3[1] = y;
+    g_last_vec3[2] = z;
     return nullptr;
 }
 
@@ -295,7 +305,12 @@ extern "C" void rt_material3d_set_reflectivity(void *m, double r) {
     static_cast<StubMaterial *>(m)->reflectivity = r;
 }
 
-extern "C" void rt_material3d_set_color(void *, double, double, double) {}
+extern "C" void rt_material3d_set_color(void *m, double r, double g, double b) {
+    auto *material = static_cast<StubMaterial *>(m);
+    material->color[0] = r;
+    material->color[1] = g;
+    material->color[2] = b;
+}
 
 extern "C" void rt_canvas3d_set_backface_cull(void *canvas, int8_t enabled) {
     if (canvas)
@@ -361,16 +376,129 @@ static void test_material_wiring_and_reflectivity() {
     material->env_map = &g_dummy_incomplete_env;
     material->reflectivity = 0.65;
     rt_water3d_set_env_map(water, &g_dummy_texture);
-    assert(view->env_map == nullptr);
-    assert(material->env_map == nullptr);
-    assert(material->reflectivity == 0.0);
+    assert(view->env_map == &g_dummy_env);
+    assert(material->env_map == &g_dummy_env);
+    assert(material->reflectivity == 0.65);
 
     view->env_map = &g_dummy_incomplete_env;
     material->env_map = &g_dummy_incomplete_env;
     material->reflectivity = 0.65;
     rt_water3d_set_reflectivity(water, 0.5);
-    assert(view->env_map == nullptr);
-    assert(material->reflectivity == 0.0);
+    assert(view->env_map == &g_dummy_env);
+    assert(material->env_map == &g_dummy_env);
+    assert(material->reflectivity == 0.5);
+}
+
+static void test_resource_mirrors_restore_retained_owners() {
+    void *water = rt_water3d_new(8.0, 8.0);
+    auto *view = static_cast<WaterView *>(water);
+    rt_water3d_set_texture(water, &g_dummy_texture);
+    rt_water3d_set_normal_map(water, &g_dummy_normal);
+    rt_water3d_set_env_map(water, &g_dummy_env);
+    rt_water3d_update(water, 0.1);
+
+    void *owned_mesh = view->mesh;
+    void *owned_material = view->material;
+    void *foreign_mesh = rt_mesh3d_new();
+    void *foreign_material = rt_material3d_new_color(0.0, 0.0, 0.0);
+    view->mesh = foreign_mesh;
+    view->material = foreign_material;
+    view->texture = &g_dummy_normal;
+    view->normal_map = &g_dummy_texture;
+    view->env_map = &g_dummy_incomplete_env;
+
+    assert(rt_water3d_get_texture(water) == &g_dummy_texture);
+    assert(rt_water3d_get_normal_map(water) == &g_dummy_normal);
+    assert(rt_water3d_get_env_map(water) == &g_dummy_env);
+    rt_water3d_update(water, 0.0);
+    assert(view->mesh == owned_mesh);
+    assert(view->material == owned_material);
+}
+
+static void test_corrupted_readback_state_is_persistently_repaired() {
+    const double nan = std::nan("");
+    void *water = rt_water3d_new(8.0, 8.0);
+    auto *view = static_cast<WaterView *>(water);
+    rt_water3d_update(water, 0.1);
+
+    view->width = nan;
+    view->depth = -10.0;
+    view->height = nan;
+    view->center_x = INFINITY;
+    view->center_z = -INFINITY;
+    view->wave_speed = INFINITY;
+    view->wave_amplitude = -1.0;
+    view->wave_frequency = nan;
+    view->color[0] = nan;
+    view->color[1] = 4.0;
+    view->color[2] = -2.0;
+    view->alpha = nan;
+    view->reflectivity = INFINITY;
+    view->resolution = INT32_MAX;
+    view->sim_distance = -1.0;
+
+    assert(rt_water3d_get_height(water) == 0.0);
+    assert(rt_water3d_get_wave_speed(water) == 0.0);
+    assert(rt_water3d_get_wave_amplitude(water) == 0.0);
+    assert(rt_water3d_get_wave_frequency(water) == 0.0);
+    assert(rt_water3d_get_alpha(water) == 0.0);
+    assert(rt_water3d_get_reflectivity(water) == 0.0);
+    assert(rt_water3d_get_resolution(water) == 64);
+    assert(rt_water3d_get_sim_distance(water) == 0.0);
+
+    (void)rt_water3d_get_position(water);
+    assert(g_last_vec3[0] == 0.0);
+    assert(g_last_vec3[1] == 0.0);
+    assert(g_last_vec3[2] == 0.0);
+    (void)rt_water3d_get_color(water);
+    assert(g_last_vec3[0] == 0.0);
+    assert(g_last_vec3[1] == 1.0);
+    assert(g_last_vec3[2] == 0.0);
+
+    assert(view->width == 1.0);
+    assert(view->depth == 1.0);
+    assert(view->resolution == 64);
+}
+
+static void test_distance_gate_cannot_bypass_state_repair() {
+    const double nan = std::nan("");
+    void *water = rt_water3d_new(8.0, 8.0);
+    auto *view = static_cast<WaterView *>(water);
+    rt_water3d_update(water, 0.1);
+
+    view->sim_distance = 1.0;
+    view->has_camera_pos = 1;
+    view->last_camera_pos[0] = 1000.0;
+    view->last_camera_pos[1] = 1000.0;
+    view->last_camera_pos[2] = 1000.0;
+    view->wave_speed = nan;
+    view->wave_amplitude = -2.0;
+    view->wave_frequency = INFINITY;
+    view->alpha = 5.0;
+    view->resolution = -1;
+    view->mesh_dirty = 0;
+
+    rt_water3d_update(water, 0.1);
+    assert(view->wave_speed == 0.0);
+    assert(view->wave_amplitude == 0.0);
+    assert(view->wave_frequency == 0.0);
+    assert(view->alpha == 1.0);
+    assert(view->resolution == 64);
+}
+
+static void test_color_edits_reach_an_existing_material_without_simulation() {
+    void *water = rt_water3d_new(8.0, 8.0);
+    auto *view = static_cast<WaterView *>(water);
+    rt_water3d_update(water, 0.1);
+    auto *material = static_cast<StubMaterial *>(view->material);
+    assert(material != nullptr);
+
+    rt_water3d_set_color(water, 0.8, 0.6, 0.4, 0.25);
+    rt_water3d_update(water, 0.0);
+    assert(material->color[0] == 0.8);
+    assert(material->color[1] == 0.6);
+    assert(material->color[2] == 0.4);
+    assert(material->alpha == 0.25);
 }
 
 static void test_draw_keeps_canvas_backface_state() {
@@ -423,8 +551,12 @@ static void test_numeric_inputs_are_sanitized() {
 int main() {
     test_resolution_clamp_drives_mesh_size();
     test_material_wiring_and_reflectivity();
+    test_resource_mirrors_restore_retained_owners();
     test_draw_keeps_canvas_backface_state();
     test_numeric_inputs_are_sanitized();
+    test_corrupted_readback_state_is_persistently_repaired();
+    test_distance_gate_cannot_bypass_state_repair();
+    test_color_edits_reach_an_existing_material_without_simulation();
     std::printf("RTWater3DContractTests passed.\n");
     return 0;
 }

@@ -906,6 +906,15 @@ static void http_cookie_header_state_release(http_cookie_header_state *state) {
     memset(state, 0, sizeof(*state));
 }
 
+/// @brief Release and destroy Cookie-header construction state.
+/// @param state State to consume; NULL is a no-op.
+static void http_cookie_header_state_destroy(http_cookie_header_state *state) {
+    if (!state)
+        return;
+    http_cookie_header_state_release(state);
+    free(state);
+}
+
 /// @brief Apply all matching session cookies to a newly built HttpReq.
 /// @details Matching and exact sizing occur under the client mutex. Output is
 ///          written directly into one native allocation, avoiding repeated
@@ -933,8 +942,7 @@ static int apply_cookie_header(rt_http_client_impl *c, void *req, rt_string url)
         rt_trap_clear_recovery();
         if (state->mutex_locked)
             HTTP_CLIENT_MUTEX_UNLOCK(&c->lock);
-        http_cookie_header_state_release(state);
-        free(state);
+        http_cookie_header_state_destroy(state);
         rt_trap(saved_error);
         return 0;
     }
@@ -965,8 +973,7 @@ static int apply_cookie_header(rt_http_client_impl *c, void *req, rt_string url)
     const int is_secure = scheme && strcasecmp(scheme, "https") == 0;
     if (!host || !host[0]) {
         rt_trap_clear_recovery();
-        http_cookie_header_state_release(state);
-        free(state);
+        http_cookie_header_state_destroy(state);
         return 1;
     }
 
@@ -1043,16 +1050,14 @@ static int apply_cookie_header(rt_http_client_impl *c, void *req, rt_string url)
     }
 
     rt_trap_clear_recovery();
-    http_cookie_header_state_release(state);
-    free(state);
+    http_cookie_header_state_destroy(state);
     return 1;
 
 returning_trap:
     rt_trap_clear_recovery();
     if (state->mutex_locked)
         HTTP_CLIENT_MUTEX_UNLOCK(&c->lock);
-    http_cookie_header_state_release(state);
-    free(state);
+    http_cookie_header_state_destroy(state);
     return 0;
 }
 
@@ -1266,6 +1271,15 @@ static void http_response_cookie_state_release(http_response_cookie_state *state
     memset(state, 0, sizeof(*state));
 }
 
+/// @brief Release and destroy response-cookie extraction state.
+/// @param state State to consume; NULL is a no-op.
+static void http_response_cookie_state_destroy(http_response_cookie_state *state) {
+    if (!state)
+        return;
+    http_response_cookie_state_release(state);
+    free(state);
+}
+
 /// @brief Parse and transactionally merge Set-Cookie response fields.
 /// @details URL/accessor allocations occur first. Every joined Set-Cookie field
 ///          is copied, parsed, and validated into detached native staging
@@ -1296,8 +1310,7 @@ static int store_response_cookies(rt_http_client_impl *c, void *res, rt_string u
         rt_trap_clear_recovery();
         if (state->mutex_locked)
             HTTP_CLIENT_MUTEX_UNLOCK(&c->lock);
-        http_response_cookie_state_release(state);
-        free(state);
+        http_response_cookie_state_destroy(state);
         rt_trap(saved_error);
         return 0;
     }
@@ -1327,8 +1340,7 @@ static int store_response_cookies(rt_http_client_impl *c, void *res, rt_string u
     const char *scheme = rt_string_cstr(state->scheme);
     if (!host || !host[0]) {
         rt_trap_clear_recovery();
-        http_response_cookie_state_release(state);
-        free(state);
+        http_response_cookie_state_destroy(state);
         return 1;
     }
     int host_is_ip = rt_dns_is_ip(state->host);
@@ -1405,16 +1417,14 @@ static int store_response_cookies(rt_http_client_impl *c, void *res, rt_string u
     }
 
     rt_trap_clear_recovery();
-    http_response_cookie_state_release(state);
-    free(state);
+    http_response_cookie_state_destroy(state);
     return 1;
 
 returning_trap:
     rt_trap_clear_recovery();
     if (state->mutex_locked)
         HTTP_CLIENT_MUTEX_UNLOCK(&c->lock);
-    http_response_cookie_state_release(state);
-    free(state);
+    http_response_cookie_state_destroy(state);
     return 0;
 }
 
@@ -1458,6 +1468,15 @@ static void http_client_request_transaction_release(http_client_request_transact
     memset(transaction, 0, sizeof(*transaction));
 }
 
+/// @brief Release and destroy one request transaction.
+/// @param transaction Transaction to consume; NULL is a no-op.
+static void http_client_request_transaction_destroy(http_client_request_transaction *transaction) {
+    if (!transaction)
+        return;
+    http_client_request_transaction_release(transaction);
+    free(transaction);
+}
+
 /// @brief Execute one session request, including client-managed redirect handling.
 /// @details The input URL and optional body are copied by exact runtime-string length, then all
 ///          request construction, default/header/cookie application, transport, cookie capture,
@@ -1490,8 +1509,7 @@ static void *do_request(rt_http_client_impl *c, const char *method, rt_string ur
         int saved_net_code = rt_trap_get_net_code();
         http_client_save_trap_error(saved_error, sizeof(saved_error), "HttpClient: request failed");
         rt_trap_clear_recovery();
-        http_client_request_transaction_release(transaction);
-        free(transaction);
+        http_client_request_transaction_destroy(transaction);
         if (saved_net_code)
             rt_trap_net(saved_error, saved_net_code);
         else
@@ -1634,14 +1652,12 @@ static void *do_request(rt_http_client_impl *c, const char *method, rt_string ur
     void *final_response = transaction->response;
     transaction->response = NULL;
     rt_trap_clear_recovery();
-    http_client_request_transaction_release(transaction);
-    free(transaction);
+    http_client_request_transaction_destroy(transaction);
     return final_response;
 
 returning_trap:
     rt_trap_clear_recovery();
-    http_client_request_transaction_release(transaction);
-    free(transaction);
+    http_client_request_transaction_destroy(transaction);
     return NULL;
 }
 

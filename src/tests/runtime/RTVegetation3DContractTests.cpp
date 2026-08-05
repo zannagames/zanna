@@ -17,6 +17,8 @@
 //     metadata crosses the same opaque descriptor boundary used in production.
 //   - Population is deterministic: a no-density populate(count) yields exactly
 //     `count` blades; a full-density (R=255) map keeps all; a zero map keeps none.
+//   - Private allocation/resource owners survive corruption of legacy pointer/count mirrors.
+//   - Malformed CSR offsets fail over to the bounded linear culling path.
 // Ownership/Lifetime:
 //   - Fixtures (terrain, density Pixels) are caller-owned and never freed by the
 //     subsystem in these tests (no finalize/reassign paths exercised).
@@ -57,6 +59,7 @@ void *g_terrain = nullptr;
 int g_instanced_batch_calls = 0;
 int g_last_instance_count = 0;
 int g_cull_during_batch = -1;
+int g_mesh_clear_calls = 0;
 
 // White-box mirror of the private rt_vegetation3d struct (rt_vegetation3d.c).
 struct VegetationView {
@@ -212,6 +215,7 @@ extern "C" void rt_mesh3d_clear(void *m) {
     if (!m)
         return;
     rt_mesh3d *mesh = static_cast<rt_mesh3d *>(m);
+    g_mesh_clear_calls++;
     mesh->vertex_count = 0;
     mesh->index_count = 0;
 }
@@ -755,6 +759,169 @@ static void test_grid_rebuilds_after_repopulate() {
     g_terrain = nullptr;
 }
 
+static void test_scalar_corruption_is_persistently_repaired() {
+    void *veg = rt_vegetation3d_new(nullptr);
+    auto *v = static_cast<VegetationView *>(veg);
+    FakeTerrain terrain = make_terrain(32, 32);
+    g_terrain = &terrain;
+    rt_vegetation3d_populate(veg, &terrain, 32);
+
+    v->blade_width = NAN;
+    v->blade_height = -1.0;
+    v->size_variation = INFINITY;
+    v->wind_speed = INFINITY;
+    v->wind_strength = -4.0;
+    v->wind_turbulence = NAN;
+    v->time = -10.0;
+    v->lod_near = NAN;
+    v->lod_far = -20.0f;
+    v->scatter_seed = 0;
+
+    rt_vegetation3d_update(veg, 0.0, 0.0, 0.0, 0.0);
+    assert(v->blade_width == 0.4);
+    assert(v->blade_height == 1.2);
+    assert(v->size_variation == 0.0);
+    assert(v->wind_speed == 0.0);
+    assert(v->wind_strength == 0.0);
+    assert(v->wind_turbulence == 0.0);
+    assert(v->time == 0.0);
+    assert(v->lod_near == 40.0f);
+    assert(v->lod_far == 100.0f);
+    assert(v->scatter_seed != 0);
+    g_terrain = nullptr;
+}
+
+static void test_population_and_visible_mirrors_restore_owned_allocations() {
+    void *veg = rt_vegetation3d_new(nullptr);
+    auto *v = static_cast<VegetationView *>(veg);
+    FakeTerrain terrain = make_terrain(64, 64);
+    g_terrain = &terrain;
+    rt_vegetation3d_populate(veg, &terrain, 64);
+    rt_vegetation3d_set_lod_distances(veg, 1000.0, 2000.0);
+    rt_vegetation3d_update(veg, 0.0, 32.0, 0.0, 32.0);
+
+    float *owned_base = v->base_transforms;
+    float *owned_positions = v->positions;
+    float *owned_visible = v->visible_transforms;
+    int32_t owned_count = v->total_count;
+    int32_t owned_capacity = v->capacity;
+    int32_t owned_visible_capacity = v->visible_capacity;
+    auto *foreign_base = static_cast<float *>(std::calloc(64u * 16u, sizeof(float)));
+    auto *foreign_positions = static_cast<float *>(std::calloc(64u * 3u, sizeof(float)));
+    auto *foreign_visible = static_cast<float *>(std::calloc(64u * 16u, sizeof(float)));
+    assert(foreign_base && foreign_positions && foreign_visible);
+
+    v->base_transforms = foreign_base;
+    v->positions = foreign_positions;
+    v->visible_transforms = foreign_visible;
+    v->total_count = 1;
+    v->capacity = INT32_MAX;
+    v->visible_count = INT32_MAX;
+    v->visible_capacity = INT32_MAX;
+    rt_vegetation3d_update(veg, 0.0, 32.0, 0.0, 32.0);
+
+    assert(v->base_transforms == owned_base);
+    assert(v->positions == owned_positions);
+    assert(v->visible_transforms == owned_visible);
+    assert(v->total_count == owned_count);
+    assert(v->capacity == owned_capacity);
+    assert(v->visible_capacity == owned_visible_capacity);
+    assert(v->visible_count > 0 && v->visible_count <= owned_count);
+    std::free(foreign_base);
+    std::free(foreign_positions);
+    std::free(foreign_visible);
+    g_terrain = nullptr;
+}
+
+static void test_render_resource_mirrors_restore_retained_owners() {
+    void *veg = rt_vegetation3d_new(nullptr);
+    auto *v = static_cast<VegetationView *>(veg);
+    void *owned_mesh = v->blade_mesh;
+    void *owned_material = v->blade_material;
+    void *foreign_mesh = rt_mesh3d_new();
+    void *foreign_material = rt_material3d_new();
+
+    v->blade_mesh = foreign_mesh;
+    v->blade_material = foreign_material;
+    rt_vegetation3d_set_blade_size(veg, 0.7, 1.8, 0.2);
+    assert(v->blade_mesh == owned_mesh);
+    assert(v->blade_material == owned_material);
+    auto *mesh = static_cast<rt_mesh3d *>(owned_mesh);
+    assert(mesh->vertex_count == 8);
+    assert(mesh->index_count == 12);
+}
+
+static void test_density_mirror_cannot_replace_retained_map() {
+    void *veg = rt_vegetation3d_new(nullptr);
+    auto *v = static_cast<VegetationView *>(veg);
+    FakeTerrain terrain = make_terrain(32, 32);
+    rt_pixels_impl full = {};
+    rt_pixels_impl zero = {};
+    uint32_t full_data[16] = {};
+    uint32_t zero_data[16] = {};
+    fill_density(&full, full_data, 4, 4, 255);
+    fill_density(&zero, zero_data, 4, 4, 0);
+    g_terrain = &terrain;
+
+    rt_vegetation3d_set_density_map(veg, &full);
+    v->density_map = &zero;
+    rt_vegetation3d_populate(veg, &terrain, 48);
+    assert(v->density_map == &full);
+    assert(v->total_count == 48);
+    g_terrain = nullptr;
+}
+
+static void test_grid_mirrors_and_malformed_offsets_fail_safe() {
+    void *veg = rt_vegetation3d_new(nullptr);
+    auto *v = static_cast<VegetationView *>(veg);
+    FakeTerrain terrain = make_terrain(64, 64);
+    g_terrain = &terrain;
+    rt_vegetation3d_populate(veg, &terrain, 128);
+    rt_vegetation3d_set_lod_distances(veg, 1000.0, 2000.0);
+    rt_vegetation3d_update(veg, 0.0, 32.0, 0.0, 32.0);
+    assert(v->grid_ready == 1);
+
+    int32_t *owned_starts = v->grid_cell_start;
+    int32_t *owned_indices = v->grid_indices;
+    int32_t owned_cells_x = v->grid_cells_x;
+    int32_t owned_cells_z = v->grid_cells_z;
+    int32_t cell_count = owned_cells_x * owned_cells_z;
+    auto *foreign_starts =
+        static_cast<int32_t *>(std::calloc(static_cast<size_t>(cell_count) + 1u, sizeof(int32_t)));
+    auto *foreign_indices = static_cast<int32_t *>(std::calloc(128u, sizeof(int32_t)));
+    assert(foreign_starts && foreign_indices);
+    v->grid_cell_start = foreign_starts;
+    v->grid_indices = foreign_indices;
+    v->grid_cells_x = 1;
+    v->grid_cells_z = 1;
+    v->grid_cell_w = NAN;
+    v->grid_cell_d = INFINITY;
+    v->grid_ready = 7;
+    rt_vegetation3d_update(veg, 0.0, 32.0, 0.0, 32.0);
+    assert(v->grid_cell_start == owned_starts);
+    assert(v->grid_indices == owned_indices);
+    assert(v->grid_cells_x == owned_cells_x);
+    assert(v->grid_cells_z == owned_cells_z);
+    assert(v->visible_count > 0);
+    std::free(foreign_starts);
+    std::free(foreign_indices);
+
+    /* Damage the owned CSR terminal offset. The update must reject the table before using any
+     * offset as an index, then reproduce visibility through the linear fallback. */
+    v->grid_cell_start[cell_count] = 0;
+    rt_vegetation3d_update(veg, 0.0, 32.0, 0.0, 32.0);
+    assert(v->visible_count > 0);
+    assert(v->visible_count <= v->total_count);
+    g_terrain = nullptr;
+}
+
+static void test_reapplying_blade_size_is_allocation_free() {
+    void *veg = rt_vegetation3d_new(nullptr);
+    g_mesh_clear_calls = 0;
+    rt_vegetation3d_set_blade_size(veg, 0.4, 1.2, 0.3);
+    assert(g_mesh_clear_calls == 0);
+}
+
 int main() {
     test_new_builds_blade_mesh_and_defaults();
     test_populate_scatters_requested_count();
@@ -774,6 +941,12 @@ int main() {
     test_lod_far_band_fades_scale();
     test_camera_outside_field_still_sees_blades();
     test_grid_rebuilds_after_repopulate();
+    test_scalar_corruption_is_persistently_repaired();
+    test_population_and_visible_mirrors_restore_owned_allocations();
+    test_render_resource_mirrors_restore_retained_owners();
+    test_density_mirror_cannot_replace_retained_map();
+    test_grid_mirrors_and_malformed_offsets_fail_safe();
+    test_reapplying_blade_size_is_allocation_free();
     std::printf("RTVegetation3DContractTests passed.\n");
     return 0;
 }

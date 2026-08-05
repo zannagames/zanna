@@ -667,7 +667,7 @@ static void test_scene_particles_water_and_render_targets_reject_wrong_handles()
     assert(water->env_map == cubemap);
     water->env_map = incomplete_cubemap;
     rt_water3d_update(water_obj, 0.0);
-    assert(water->env_map == nullptr);
+    assert(water->env_map == cubemap);
 
     assert(rt_rendertarget3d_get_width(fake) == 0);
     assert(rt_rendertarget3d_get_height(fake) == 0);
@@ -2128,6 +2128,8 @@ static void test_water_wrong_class_private_resources_clear_without_release() {
 static void test_vegetation_wrong_class_private_resources_clear_without_release() {
     auto *veg = static_cast<VegetationView *>(rt_vegetation3d_new(nullptr));
     assert(veg != nullptr);
+    void *owned_mesh = veg->blade_mesh;
+    void *owned_material = veg->blade_material;
 
     void *wrong = rt_obj_new_i64(0, 8);
     assert(wrong != nullptr);
@@ -2137,8 +2139,8 @@ static void test_vegetation_wrong_class_private_resources_clear_without_release(
     veg->density_map = wrong;
 
     rt_vegetation3d_update(veg, 0.0, 0.0, 0.0, 0.0);
-    assert(veg->blade_mesh == nullptr);
-    assert(veg->blade_material == nullptr);
+    assert(veg->blade_mesh == owned_mesh);
+    assert(veg->blade_material == owned_material);
     assert(veg->density_map == nullptr);
     assert(rt_obj_release_check0(wrong) == 0);
     if (rt_obj_release_check0(wrong))

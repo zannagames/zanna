@@ -21,6 +21,7 @@
 extern "C" {
 #include "rt_canvas3d_internal.h"
 #include "rt_particles3d.h"
+#include "rt_pixels_internal.h"
 }
 
 #include <cassert>
@@ -58,6 +59,39 @@ int g_particle_batch_count = 0;
 vgfx3d_particle_instance_t g_particle_batch_instances[64] = {};
 double g_particle_batch_alpha = 0.0;
 int g_particle_batch_additive = 0;
+double g_last_vec3[3] = {0.0, 0.0, 0.0};
+void *g_stub_materials[128] = {nullptr};
+int g_stub_material_count = 0;
+void *g_stub_pixels[16] = {nullptr};
+int g_stub_pixel_count = 0;
+
+static bool tracked_pointer(void *const *items, int count, const void *value) {
+    for (int i = 0; i < count; i++) {
+        if (items[i] == value)
+            return true;
+    }
+    return false;
+}
+
+static void track_pointer(void **items, int *count, int capacity, void *value) {
+    if (!items || !count || !value || tracked_pointer(items, *count, value))
+        return;
+    if (*count < capacity)
+        items[(*count)++] = value;
+}
+
+static void untrack_pointer(void **items, int *count, const void *value) {
+    if (!items || !count || !value)
+        return;
+    for (int i = 0; i < *count; i++) {
+        if (items[i] == value) {
+            items[i] = items[*count - 1];
+            items[*count - 1] = nullptr;
+            (*count)--;
+            return;
+        }
+    }
+}
 
 struct StubMaterial {
     void *vptr = nullptr;
@@ -152,6 +186,31 @@ struct ParticlesView {
     double emitter_size[3];
     uint32_t prng_state;
     void *cached_material;
+    vgfx3d_vertex_t *draw_vertices[4];
+    uint32_t *draw_indices[4];
+    uint32_t draw_vertex_capacity[4];
+    uint32_t draw_index_capacity[4];
+    void *draw_materials[4];
+    vgfx3d_vertex_t **overflow_draw_vertices;
+    uint32_t **overflow_draw_indices;
+    uint32_t *overflow_draw_vertex_capacity;
+    uint32_t *overflow_draw_index_capacity;
+    void **overflow_draw_materials;
+    int32_t overflow_draw_slot_capacity;
+    void *sort_keys;
+    void *sort_scratch;
+    int32_t sort_key_capacity;
+    uint64_t sort_key_grow_count;
+    int64_t draw_frame_serial;
+    int32_t draw_slots_used;
+    double simulation_residual;
+    double dropped_time_total;
+    double dropped_time_last_update;
+    int32_t terminal_count;
+    int8_t render_final_frame;
+    vgfx3d_particle_instance_t *instance_scratch;
+    int32_t instance_scratch_capacity;
+    uint64_t instance_scratch_grow_count;
 };
 
 struct RealParticleView {
@@ -174,6 +233,23 @@ static uint64_t hash_bytes(uint64_t seed, const void *data, size_t size) {
     return hash;
 }
 
+static rt_pixels_impl *make_test_pixels(uint32_t texel) {
+    size_t bytes = sizeof(rt_pixels_impl) + sizeof(uint32_t);
+    auto *pixels = static_cast<rt_pixels_impl *>(std::calloc(1, bytes));
+    assert(pixels != nullptr);
+    pixels->width = 1;
+    pixels->height = 1;
+    pixels->data = reinterpret_cast<uint32_t *>(reinterpret_cast<unsigned char *>(pixels) +
+                                                sizeof(rt_pixels_impl));
+    pixels->data[0] = texel;
+    pixels->cache_identity = 1;
+    track_pointer(g_stub_pixels,
+                  &g_stub_pixel_count,
+                  static_cast<int>(sizeof(g_stub_pixels) / sizeof(g_stub_pixels[0])),
+                  pixels);
+    return pixels;
+}
+
 } // namespace
 
 extern "C" int64_t rt_particles3d_test_sort_key_capacity(void *o);
@@ -185,7 +261,11 @@ extern "C" void *rt_obj_new_i64(int64_t, int64_t byte_size) {
     return std::calloc(1, static_cast<size_t>(byte_size));
 }
 
-extern "C" int64_t rt_obj_class_id(void *) {
+extern "C" int64_t rt_obj_class_id(void *obj) {
+    if (tracked_pointer(g_stub_materials, g_stub_material_count, obj))
+        return RT_G3D_MATERIAL3D_CLASS_ID;
+    if (tracked_pointer(g_stub_pixels, g_stub_pixel_count, obj))
+        return RT_PIXELS_CLASS_ID;
     return RT_G3D_PARTICLES3D_CLASS_ID;
 }
 
@@ -204,7 +284,10 @@ extern "C" void rt_obj_retain_maybe(void *) {}
 /* ADR 0233 emitter readback boxes positions/directions as Vec3; the isolated
  * contract build links no math objects, so a null-returning stub keeps the
  * target minimal (no contract case dereferences the boxed value). */
-extern "C" void *rt_vec3_new(double, double, double) {
+extern "C" void *rt_vec3_new(double x, double y, double z) {
+    g_last_vec3[0] = x;
+    g_last_vec3[1] = y;
+    g_last_vec3[2] = z;
     return nullptr;
 }
 
@@ -213,6 +296,7 @@ extern "C" int32_t rt_obj_release_check0(void *) {
 }
 
 extern "C" void rt_obj_free(void *obj) {
+    untrack_pointer(g_stub_materials, &g_stub_material_count, obj);
     std::free(obj);
 }
 
@@ -263,7 +347,12 @@ extern "C" int rt_canvas3d_queue_particle_batch(void *,
 }
 
 extern "C" void *rt_material3d_new(void) {
-    return std::calloc(1, sizeof(StubMaterial));
+    void *material = std::calloc(1, sizeof(StubMaterial));
+    track_pointer(g_stub_materials,
+                  &g_stub_material_count,
+                  static_cast<int>(sizeof(g_stub_materials) / sizeof(g_stub_materials[0])),
+                  material);
+    return material;
 }
 
 extern "C" void rt_material3d_set_color(void *m, double r, double g, double b) {
@@ -931,6 +1020,253 @@ static void test_alpha_sort_scratch_grows_to_capacity_and_reuses_for_repeated_dr
     }
 }
 
+static void test_corrupted_emitter_state_is_persistently_repaired() {
+    void *ps = rt_particles3d_new(8);
+    auto *v = static_cast<ParticlesView *>(ps);
+    assert(ps != nullptr);
+
+    v->position[0] = NAN;
+    v->position[1] = INFINITY;
+    v->position[2] = -INFINITY;
+    v->emit_dir[0] = 0.0;
+    v->emit_dir[1] = 0.0;
+    v->emit_dir[2] = 0.0;
+    v->emit_spread = INFINITY;
+    v->speed_min = -2.0;
+    v->speed_max = NAN;
+    v->life_min = -4.0;
+    v->life_max = INFINITY;
+    v->size_start = -1.0;
+    v->size_end = NAN;
+    v->gravity[0] = NAN;
+    v->gravity[1] = INFINITY;
+    v->gravity[2] = -INFINITY;
+    v->color_start[0] = -1.0f;
+    v->color_start[1] = 2.0f;
+    v->color_start[2] = 0.5f;
+    v->color_end[0] = 2.0f;
+    v->color_end[1] = -1.0f;
+    v->color_end[2] = 0.25f;
+    v->alpha_start = -2.0;
+    v->alpha_end = 4.0;
+    v->rate = NAN;
+    v->accumulator = INFINITY;
+    v->emitting = 7;
+    v->additive_blend = -4;
+    v->stretch_k = INFINITY;
+    v->softness = -5.0;
+    v->emitter_shape = INT32_MAX;
+    v->emitter_size[0] = -1.0;
+    v->emitter_size[1] = NAN;
+    v->emitter_size[2] = INFINITY;
+    v->prng_state = 0;
+    v->simulation_residual = INFINITY;
+    v->dropped_time_total = -1.0;
+    v->dropped_time_last_update = NAN;
+    v->render_final_frame = -8;
+
+    assert(rt_particles3d_get_rate(ps) == 0.0);
+    assert(rt_particles3d_get_lifetime_min(ps) == 0.01);
+    assert(rt_particles3d_get_lifetime_max(ps) == 0.01);
+    assert(rt_particles3d_get_speed_min(ps) == 0.0);
+    assert(rt_particles3d_get_speed_max(ps) == 0.0);
+    assert(rt_particles3d_get_size_start(ps) == 0.0);
+    assert(rt_particles3d_get_size_end(ps) == 0.0);
+    assert(rt_particles3d_get_alpha_start(ps) == 0.0);
+    assert(rt_particles3d_get_alpha_end(ps) == 1.0);
+    assert(rt_particles3d_get_color_start(ps) == 0x00FF80);
+    assert(rt_particles3d_get_color_end(ps) == 0xFF0040);
+    assert(rt_particles3d_get_spread(ps) == 0.0);
+    assert(rt_particles3d_get_emitter_shape(ps) == 0);
+    assert(rt_particles3d_get_stretch(ps) == 0.0);
+    assert(rt_particles3d_get_softness(ps) == 0.0);
+    assert(rt_particles3d_get_seed(ps) != 0);
+    assert(rt_particles3d_get_emitting(ps) == 1);
+    assert(rt_particles3d_get_additive(ps) == 1);
+    assert(rt_particles3d_get_render_final_frame(ps) == 1);
+    assert(rt_particles3d_get_dropped_time(ps) == 0.0);
+    assert(rt_particles3d_get_last_dropped_time(ps) == 0.0);
+    assert(rt_particles3d_get_residual_time(ps) == 0.0);
+
+    (void)rt_particles3d_get_position_vec3(ps);
+    assert(g_last_vec3[0] == 0.0 && g_last_vec3[1] == 0.0 && g_last_vec3[2] == 0.0);
+    (void)rt_particles3d_get_direction(ps);
+    assert(g_last_vec3[0] == 0.0 && g_last_vec3[1] == 1.0 && g_last_vec3[2] == 0.0);
+    (void)rt_particles3d_get_gravity(ps);
+    assert(g_last_vec3[0] == 0.0 && g_last_vec3[1] == 0.0 && g_last_vec3[2] == 0.0);
+    (void)rt_particles3d_get_emitter_size(ps);
+    assert(g_last_vec3[0] == 1.0 && g_last_vec3[1] == 0.0 && g_last_vec3[2] == 0.0);
+    assert(v->rate == 0.0);
+    assert(v->life_min == 0.01 && v->life_max == 0.01);
+    assert(v->emitting == 1 && v->additive_blend == 1 && v->render_final_frame == 1);
+}
+
+static void test_pool_and_trail_mirrors_restore_owned_storage() {
+    void *ps = rt_particles3d_new(8);
+    auto *v = static_cast<ParticlesView *>(ps);
+    rt_particles3d_burst(ps, 3);
+    void *owned_particles = v->particles;
+    auto *foreign_particles =
+        static_cast<RealParticleView *>(std::calloc(8u, sizeof(RealParticleView)));
+    assert(foreign_particles != nullptr);
+    v->particles = foreign_particles;
+    v->max_particles = INT32_MAX;
+    v->count = 3;
+    assert(rt_particles3d_get_count(ps) == 3);
+    assert(v->particles == owned_particles);
+    assert(v->max_particles == 8);
+    std::free(foreign_particles);
+
+    rt_particles3d_set_trail(ps, 1.0, 4);
+    float *owned_pos = v->trail_pos;
+    float *owned_age = v->trail_age;
+    int16_t *owned_len = v->trail_len;
+    int16_t *owned_head = v->trail_head;
+    auto *foreign_pos = static_cast<float *>(std::calloc(8u * 4u * 3u, sizeof(float)));
+    auto *foreign_age = static_cast<float *>(std::calloc(8u, sizeof(float)));
+    auto *foreign_len = static_cast<int16_t *>(std::calloc(8u, sizeof(int16_t)));
+    auto *foreign_head = static_cast<int16_t *>(std::calloc(8u, sizeof(int16_t)));
+    assert(foreign_pos && foreign_age && foreign_len && foreign_head);
+    v->trail_pos = foreign_pos;
+    v->trail_age = foreign_age;
+    v->trail_len = foreign_len;
+    v->trail_head = foreign_head;
+    rt_particles3d_set_trail(ps, 2.0, 4);
+    assert(v->trail_pos == owned_pos);
+    assert(v->trail_age == owned_age);
+    assert(v->trail_len == owned_len);
+    assert(v->trail_head == owned_head);
+    assert(v->trail_lifetime == 2.0f);
+    std::free(foreign_pos);
+    std::free(foreign_age);
+    std::free(foreign_len);
+    std::free(foreign_head);
+}
+
+static void test_texture_mirror_restores_retained_owner() {
+    void *ps = rt_particles3d_new(4);
+    auto *v = static_cast<ParticlesView *>(ps);
+    rt_pixels_impl *owned_texture = make_test_pixels(0xFFFFFFFFu);
+    rt_pixels_impl *foreign_texture = make_test_pixels(0x000000FFu);
+    rt_particles3d_set_texture(ps, owned_texture);
+    assert(v->texture == owned_texture);
+    v->texture = foreign_texture;
+    assert(rt_particles3d_get_texture(ps) == owned_texture);
+    assert(v->texture == owned_texture);
+}
+
+static void test_draw_and_scratch_mirrors_restore_owned_storage() {
+    void *ps = rt_particles3d_new(8);
+    auto *v = static_cast<ParticlesView *>(ps);
+    rt_canvas3d canvas = {};
+    rt_camera3d cam = make_test_camera();
+    rt_particles3d_set_lifetime(ps, 10.0, 10.0);
+    rt_particles3d_burst(ps, 3);
+
+    g_particle_instancing_supported = 0;
+    canvas.frame_serial = 70;
+    rt_particles3d_draw(ps, &canvas, &cam);
+    auto *owned_vertices = v->draw_vertices[0];
+    auto *owned_indices = v->draw_indices[0];
+    void *owned_material = v->draw_materials[0];
+    uint32_t vertex_capacity = v->draw_vertex_capacity[0];
+    uint32_t index_capacity = v->draw_index_capacity[0];
+    auto *foreign_vertices =
+        static_cast<vgfx3d_vertex_t *>(std::calloc(vertex_capacity, sizeof(vgfx3d_vertex_t)));
+    auto *foreign_indices = static_cast<uint32_t *>(std::calloc(index_capacity, sizeof(uint32_t)));
+    void *foreign_material = rt_material3d_new();
+    assert(foreign_vertices && foreign_indices && foreign_material);
+    v->draw_vertices[0] = foreign_vertices;
+    v->draw_indices[0] = foreign_indices;
+    v->draw_materials[0] = foreign_material;
+    canvas.frame_serial = 71;
+    rt_particles3d_draw(ps, &canvas, &cam);
+    assert(v->draw_vertices[0] == owned_vertices);
+    assert(v->draw_indices[0] == owned_indices);
+    assert(v->draw_materials[0] == owned_material);
+    std::free(foreign_vertices);
+    std::free(foreign_indices);
+    rt_obj_free(foreign_material);
+
+    void *owned_sort_keys = v->sort_keys;
+    void *owned_sort_scratch = v->sort_scratch;
+    int32_t owned_sort_capacity = v->sort_key_capacity;
+    void *foreign_sort_keys = std::calloc(8u, 32u);
+    void *foreign_sort_scratch = std::calloc(8u, 32u);
+    v->sort_keys = foreign_sort_keys;
+    v->sort_scratch = foreign_sort_scratch;
+    v->sort_key_capacity = INT32_MAX;
+    assert(rt_particles3d_test_sort_key_capacity(ps) == owned_sort_capacity);
+    assert(v->sort_keys == owned_sort_keys);
+    assert(v->sort_scratch == owned_sort_scratch);
+    std::free(foreign_sort_keys);
+    std::free(foreign_sort_scratch);
+
+    g_particle_instancing_supported = 1;
+    canvas.frame_serial = 72;
+    rt_particles3d_draw(ps, &canvas, &cam);
+    auto *owned_instances = v->instance_scratch;
+    int32_t owned_instance_capacity = v->instance_scratch_capacity;
+    auto *foreign_instances = static_cast<vgfx3d_particle_instance_t *>(
+        std::calloc(8u, sizeof(vgfx3d_particle_instance_t)));
+    v->instance_scratch = foreign_instances;
+    v->instance_scratch_capacity = INT32_MAX;
+    assert(rt_particles3d_test_instance_scratch_capacity(ps) == owned_instance_capacity);
+    assert(v->instance_scratch == owned_instances);
+    std::free(foreign_instances);
+    g_particle_instancing_supported = 0;
+}
+
+static void test_overflow_table_mirrors_restore_owned_storage() {
+    void *ps = rt_particles3d_new(4);
+    auto *v = static_cast<ParticlesView *>(ps);
+    rt_canvas3d canvas = {};
+    rt_camera3d cam = make_test_camera();
+    rt_particles3d_set_lifetime(ps, 10.0, 10.0);
+    rt_particles3d_burst(ps, 1);
+    canvas.frame_serial = 90;
+    for (int i = 0; i < 5; i++)
+        rt_particles3d_draw(ps, &canvas, &cam);
+    assert(v->overflow_draw_slot_capacity > 0);
+
+    auto *owned_vertices = v->overflow_draw_vertices;
+    auto *owned_indices = v->overflow_draw_indices;
+    auto *owned_vertex_caps = v->overflow_draw_vertex_capacity;
+    auto *owned_index_caps = v->overflow_draw_index_capacity;
+    auto *owned_materials = v->overflow_draw_materials;
+    int32_t owned_capacity = v->overflow_draw_slot_capacity;
+    auto *foreign_vertices = static_cast<vgfx3d_vertex_t **>(
+        std::calloc(static_cast<size_t>(owned_capacity), sizeof(vgfx3d_vertex_t *)));
+    auto *foreign_indices = static_cast<uint32_t **>(
+        std::calloc(static_cast<size_t>(owned_capacity), sizeof(uint32_t *)));
+    auto *foreign_vertex_caps =
+        static_cast<uint32_t *>(std::calloc(static_cast<size_t>(owned_capacity), sizeof(uint32_t)));
+    auto *foreign_index_caps =
+        static_cast<uint32_t *>(std::calloc(static_cast<size_t>(owned_capacity), sizeof(uint32_t)));
+    auto *foreign_materials =
+        static_cast<void **>(std::calloc(static_cast<size_t>(owned_capacity), sizeof(void *)));
+    assert(foreign_vertices && foreign_indices && foreign_vertex_caps && foreign_index_caps &&
+           foreign_materials);
+    v->overflow_draw_vertices = foreign_vertices;
+    v->overflow_draw_indices = foreign_indices;
+    v->overflow_draw_vertex_capacity = foreign_vertex_caps;
+    v->overflow_draw_index_capacity = foreign_index_caps;
+    v->overflow_draw_materials = foreign_materials;
+    v->overflow_draw_slot_capacity = owned_capacity;
+    assert(rt_particles3d_get_count(ps) == 1);
+    assert(v->overflow_draw_vertices == owned_vertices);
+    assert(v->overflow_draw_indices == owned_indices);
+    assert(v->overflow_draw_vertex_capacity == owned_vertex_caps);
+    assert(v->overflow_draw_index_capacity == owned_index_caps);
+    assert(v->overflow_draw_materials == owned_materials);
+    assert(v->overflow_draw_slot_capacity == owned_capacity);
+    std::free(foreign_vertices);
+    std::free(foreign_indices);
+    std::free(foreign_vertex_caps);
+    std::free(foreign_index_caps);
+    std::free(foreign_materials);
+}
+
 int main() {
     expect_trap_on_invalid_capacity();
     test_burst_and_clear();
@@ -946,6 +1282,11 @@ int main() {
     test_hardware_instances_match_software_billboards_and_reuse_scratch();
     test_hardware_particle_path_preserves_cpu_trail_ribbons();
     test_alpha_sort_scratch_grows_to_capacity_and_reuses_for_repeated_draws();
+    test_corrupted_emitter_state_is_persistently_repaired();
+    test_pool_and_trail_mirrors_restore_owned_storage();
+    test_texture_mirror_restores_retained_owner();
+    test_draw_and_scratch_mirrors_restore_owned_storage();
+    test_overflow_table_mirrors_restore_owned_storage();
     std::printf("RTParticles3DContractTests passed.\n");
     return 0;
 }

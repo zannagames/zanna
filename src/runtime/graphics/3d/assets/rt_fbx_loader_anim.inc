@@ -527,6 +527,16 @@ typedef struct {
     int32_t channel_count;
     /// Nonzero when at least one unmuted layer is soloed.
     int has_solo;
+    /// Owned bucket heads for the `(layer_index, target_id)` channel index; `-1` marks an
+    /// empty bucket. NULL when the stack has no channels, in which case every consumer falls
+    /// back to its linear scan.
+    int32_t *channel_buckets;
+    /// Owned bucket tails used only while appending, so chains stay in ascending channel order.
+    int32_t *channel_bucket_tails;
+    /// Number of bucket slots. Always a power of two so hashing masks instead of dividing.
+    int32_t channel_bucket_count;
+    /// Owned chain links parallel to `channels`; `-1` terminates a bucket's chain.
+    int32_t *channel_chain;
 } fbx_anim_layer_stack_t;
 
 /// Runtime selector for ordinary linear curve interpolation.
@@ -959,7 +969,94 @@ static void fbx_anim_layer_stack_free(fbx_anim_layer_stack_t *stack) {
         return;
     free(stack->layers);
     free(stack->channels);
+    free(stack->channel_buckets);
+    free(stack->channel_bucket_tails);
+    free(stack->channel_chain);
     memset(stack, 0, sizeof(*stack));
+}
+
+/// @brief Mix a `(layer_index, target_id)` channel key into a bucket hash.
+/// @details Both halves must contribute: one layer holds many targets and one target appears in
+///          many layers, so hashing either alone collapses whole animation stacks into one chain.
+/// @param layer_index Owning layer index.
+/// @param target_id Numeric FBX target object identifier.
+/// @return Unsigned hash to be masked by the power-of-two bucket count.
+static uint32_t fbx_anim_channel_key_hash(int32_t layer_index, int64_t target_id) {
+    uint64_t hash = (uint64_t)(uint32_t)layer_index * 0x9E3779B97F4A7C15ull;
+    hash ^= (uint64_t)target_id + 0x165667B19E3779F9ull + (hash << 6) + (hash >> 2);
+    hash *= 0xC2B2AE3D27D4EB4Full;
+    hash ^= hash >> 29;
+    return (uint32_t)hash;
+}
+
+/// @brief Choose a power-of-two bucket count that keeps chains short.
+/// @param channel_capacity Upper bound on channels the stack may hold.
+/// @return Bucket count, or zero when no index is needed.
+static int32_t fbx_anim_channel_bucket_count_for(int32_t channel_capacity) {
+    int64_t buckets = 16;
+    if (channel_capacity <= 0)
+        return 0;
+    while (buckets < (int64_t)channel_capacity * 2 && buckets < ((int64_t)1 << 30))
+        buckets <<= 1;
+    return (int32_t)buckets;
+}
+
+/// @brief Append channel @p index to its `(layer_index, target_id)` bucket.
+/// @details Channels are only ever appended at an increasing index, so tail insertion leaves each
+///          chain in ascending channel order. Consumers therefore see exactly the order the former
+///          whole-array scans produced, which matters where matches accumulate rather than
+///          short-circuit (`fbx_anim_layer_sample_scalar`).
+/// @param[in,out] stack Stack owning the index; unindexed stacks are ignored.
+/// @param index Channel slot already written into `stack->channels`.
+static void fbx_anim_channel_index_insert(fbx_anim_layer_stack_t *stack, int32_t index) {
+    uint32_t bucket;
+    int32_t tail;
+    if (!stack || !stack->channel_buckets || !stack->channel_bucket_tails ||
+        !stack->channel_chain || stack->channel_bucket_count <= 0 || index < 0)
+        return;
+    bucket = fbx_anim_channel_key_hash(stack->channels[index].layer_index,
+                                       stack->channels[index].target_id) &
+             (uint32_t)(stack->channel_bucket_count - 1);
+    tail = stack->channel_bucket_tails[bucket];
+    stack->channel_chain[index] = -1;
+    if (tail >= 0)
+        stack->channel_chain[tail] = index;
+    else
+        stack->channel_buckets[bucket] = index;
+    stack->channel_bucket_tails[bucket] = index;
+}
+
+/// @brief Begin a scan of the channels that may match `(layer_index, target_id)`.
+/// @details Indexed stacks walk only that key's bucket; unindexed stacks fall back to the whole
+///          array. Either way the visit order is ascending channel index, and callers still
+///          re-check the key because a bucket may hold hash collisions.
+/// @param[in] stack Parsed stack, or `NULL`.
+/// @param layer_index Owning layer index.
+/// @param target_id Numeric FBX target object identifier.
+/// @return First candidate channel index, or `-1` when there is none.
+static int32_t fbx_anim_channel_scan_first(const fbx_anim_layer_stack_t *stack,
+                                           int32_t layer_index,
+                                           int64_t target_id) {
+    uint32_t bucket;
+    if (!stack || stack->channel_count <= 0)
+        return -1;
+    if (!stack->channel_buckets || !stack->channel_chain || stack->channel_bucket_count <= 0)
+        return 0;
+    bucket = fbx_anim_channel_key_hash(layer_index, target_id) &
+             (uint32_t)(stack->channel_bucket_count - 1);
+    return stack->channel_buckets[bucket];
+}
+
+/// @brief Advance a scan started by @ref fbx_anim_channel_scan_first.
+/// @param[in] stack Parsed stack.
+/// @param current Index most recently visited.
+/// @return Next candidate channel index, or `-1` at the end of the scan.
+static int32_t fbx_anim_channel_scan_next(const fbx_anim_layer_stack_t *stack, int32_t current) {
+    if (!stack || current < 0)
+        return -1;
+    if (!stack->channel_buckets || !stack->channel_chain || stack->channel_bucket_count <= 0)
+        return current + 1 < stack->channel_count ? current + 1 : -1;
+    return stack->channel_chain[current];
 }
 
 /// @brief Parse and validate all layers and curve-node channels in one stack.
@@ -1024,6 +1121,34 @@ static int fbx_anim_layer_stack_parse(fbx_node_t *objects,
     if (!out->layers || (channel_capacity > 0 && !out->channels)) {
         fbx_anim_layer_stack_free(out);
         return 0;
+    }
+    /* Index channels by (layer_index, target_id). Without it both the duplicate check below and
+     * every later channel lookup scan the whole array, which is quadratic in channel count —
+     * mocap packages reach tens of thousands of curve nodes in a single stack. */
+    out->channel_bucket_count = fbx_anim_channel_bucket_count_for(channel_capacity);
+    if (out->channel_bucket_count > 0) {
+        if (!fbx_budget_charge(
+                context, (uint64_t)out->channel_bucket_count, 2u * sizeof(*out->channel_buckets)) ||
+            !fbx_budget_charge(context, (uint64_t)channel_capacity, sizeof(*out->channel_chain))) {
+            fbx_anim_layer_stack_free(out);
+            return 0;
+        }
+        out->channel_buckets =
+            (int32_t *)malloc((size_t)out->channel_bucket_count * sizeof(*out->channel_buckets));
+        out->channel_bucket_tails = (int32_t *)malloc((size_t)out->channel_bucket_count *
+                                                      sizeof(*out->channel_bucket_tails));
+        out->channel_chain =
+            (int32_t *)malloc((size_t)channel_capacity * sizeof(*out->channel_chain));
+        if (!out->channel_buckets || !out->channel_bucket_tails || !out->channel_chain) {
+            fbx_anim_layer_stack_free(out);
+            return 0;
+        }
+        for (int32_t i = 0; i < out->channel_bucket_count; ++i) {
+            out->channel_buckets[i] = -1;
+            out->channel_bucket_tails[i] = -1;
+        }
+        for (int32_t i = 0; i < channel_capacity; ++i)
+            out->channel_chain[i] = -1;
     }
     for (int32_t connection = fbx_connections_first_for_parent(ct, stack_id); connection >= 0;
          connection = fbx_connections_next_for_parent(ct, connection)) {
@@ -1157,7 +1282,10 @@ static int fbx_anim_layer_stack_parse(fbx_node_t *objects,
                 layer->weight_curve = candidate.curves[0];
                 continue;
             }
-            for (int32_t existing = 0; existing < out->channel_count; ++existing) {
+            for (int32_t existing =
+                     fbx_anim_channel_scan_first(out, candidate.layer_index, candidate.target_id);
+                 existing >= 0;
+                 existing = fbx_anim_channel_scan_next(out, existing)) {
                 const fbx_anim_layer_channel_t *prior = &out->channels[existing];
                 if (prior->layer_index == candidate.layer_index &&
                     prior->target_id == candidate.target_id &&
@@ -1166,7 +1294,9 @@ static int fbx_anim_layer_stack_parse(fbx_node_t *objects,
             }
             if (out->channel_count >= channel_capacity)
                 goto invalid;
-            out->channels[out->channel_count++] = candidate;
+            out->channels[out->channel_count] = candidate;
+            fbx_anim_channel_index_insert(out, out->channel_count);
+            ++out->channel_count;
         }
     }
     return 1;
@@ -1203,7 +1333,8 @@ static const fbx_anim_layer_channel_t *fbx_anim_layer_find_channel(
     int transform_path) {
     if (!stack)
         return NULL;
-    for (int32_t i = 0; i < stack->channel_count; ++i) {
+    for (int32_t i = fbx_anim_channel_scan_first(stack, layer_index, target_id); i >= 0;
+         i = fbx_anim_channel_scan_next(stack, i)) {
         const fbx_anim_layer_channel_t *channel = &stack->channels[i];
         if (channel->layer_index == layer_index && channel->target_id == target_id &&
             channel->transform_path == transform_path)
@@ -1449,7 +1580,9 @@ static int fbx_anim_layer_sample_scalar(const fbx_anim_layer_stack_t *stack,
             if (weight <= 0.0)
                 continue;
             blend_mode = layer_index == 0 ? 1 : layer->blend_mode;
-            for (int32_t channel_index = 0; channel_index < stack->channel_count; ++channel_index) {
+            for (int32_t channel_index = fbx_anim_channel_scan_first(stack, layer_index, target_id);
+                 channel_index >= 0;
+                 channel_index = fbx_anim_channel_scan_next(stack, channel_index)) {
                 const fbx_anim_layer_channel_t *channel = &stack->channels[channel_index];
                 double layer_value;
                 int present;

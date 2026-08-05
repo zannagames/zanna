@@ -139,6 +139,10 @@ typedef struct fbx_load_context {
     uint64_t budget_used;   ///< Saturating aggregate charged bytes.
     uint64_t lookup_probes; ///< Object-id and connection-endpoint hash probes.
     int budget_exhausted;   ///< Nonzero after overflow or a charge beyond the limit.
+    /// Nonzero when a hard per-record structural cap (child/property count, nesting depth) was
+    /// reached. Distinguishes a well-formed document that outgrew a parser bound from genuinely
+    /// malformed bytes, which would otherwise share the same failure path.
+    int structural_limit_exceeded;
 } fbx_load_context_t;
 
 /// @brief One-shot thread-local budget override used only by deterministic CTests.

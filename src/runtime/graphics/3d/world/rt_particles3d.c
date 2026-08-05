@@ -20,11 +20,13 @@
 //   - xorshift32 PRNG seeded from a local monotonic counter for deterministic
 //     randomization without object-address-derived seeds (no stdlib rand).
 //   - Draw materials are slotted per frame so queued commands are not mutated by later draws.
+//   - Mutable allocation/resource mirrors are restored from appended private owner identities.
+//   - Retained emitter state is canonicalized before readback, simulation, or rendering.
 //
 // Ownership/Lifetime:
-//   - Particles3D is GC-managed; finalizer frees the particle pool and drops
-//     refs on texture and cached material.
-//   - Overflow draw slots fall back to canvas-owned temp buffers freed at end-of-frame.
+//   - Particles3D is GC-managed; finalizer disposes only private owner identities for the
+//     particle pool, trails, draw slots, scratch buffers, texture, and materials.
+//   - Overflow draw slots are emitter-owned, grow transactionally, and are reused across frames.
 //
 // Links: rt_particles3d.h, rt_canvas3d.h
 //
@@ -158,6 +160,36 @@ typedef struct {
     vgfx3d_particle_instance_t *instance_scratch;
     int32_t instance_scratch_capacity;
     uint64_t instance_scratch_grow_count;
+    /* Appended private authority keeps historical implementation-only prefix views stable. */
+    vgfx3d_particle_t *owned_particles;
+    int32_t owned_max_particles;
+    int32_t owned_count;
+    int32_t owned_terminal_count;
+    float *owned_trail_pos;
+    float *owned_trail_age;
+    int16_t *owned_trail_len;
+    int16_t *owned_trail_head;
+    int32_t owned_trail_segments;
+    void *owned_texture;
+    void *owned_cached_material;
+    vgfx3d_vertex_t *owned_draw_vertices[PARTICLES3D_DRAW_SLOT_COUNT];
+    uint32_t *owned_draw_indices[PARTICLES3D_DRAW_SLOT_COUNT];
+    uint32_t owned_draw_vertex_capacity[PARTICLES3D_DRAW_SLOT_COUNT];
+    uint32_t owned_draw_index_capacity[PARTICLES3D_DRAW_SLOT_COUNT];
+    void *owned_draw_materials[PARTICLES3D_DRAW_SLOT_COUNT];
+    vgfx3d_vertex_t **owned_overflow_draw_vertices;
+    uint32_t **owned_overflow_draw_indices;
+    uint32_t *owned_overflow_draw_vertex_capacity;
+    uint32_t *owned_overflow_draw_index_capacity;
+    void **owned_overflow_draw_materials;
+    int32_t owned_overflow_draw_slot_capacity;
+    void *owned_sort_keys;
+    void *owned_sort_scratch;
+    int32_t owned_sort_key_capacity;
+    uint64_t owned_sort_key_grow_count;
+    vgfx3d_particle_instance_t *owned_instance_scratch;
+    int32_t owned_instance_scratch_capacity;
+    uint64_t owned_instance_scratch_grow_count;
 } rt_particles3d;
 
 /// @brief Generate a non-zero per-instance seed for Particles3D.
@@ -228,25 +260,167 @@ static void particles3d_assign_texture_ref(void **slot, void *value) {
     *slot = value;
 }
 
-/// @brief Clear corrupted retained refs before update/draw/finalize paths use them.
+/// @brief Dispose one complete trail-storage tuple; NULL members are accepted.
+/// @param positions Position-ring allocation.
+/// @param ages Per-particle sampling-age allocation.
+/// @param lengths Per-particle ring-length allocation.
+/// @param heads Per-particle ring-head allocation.
+static void particles3d_discard_trail_storage(float *positions,
+                                              float *ages,
+                                              int16_t *lengths,
+                                              int16_t *heads) {
+    free(positions);
+    free(ages);
+    free(lengths);
+    free(heads);
+}
+
+/// @brief Dispose the four private trail owners and publish the disabled trail tuple.
+/// @param ps Particle system whose trail history is discarded; NULL is accepted.
+static void particles3d_clear_owned_trails(rt_particles3d *ps) {
+    if (!ps)
+        return;
+    particles3d_discard_trail_storage(
+        ps->owned_trail_pos, ps->owned_trail_age, ps->owned_trail_len, ps->owned_trail_head);
+    ps->owned_trail_pos = NULL;
+    ps->owned_trail_age = NULL;
+    ps->owned_trail_len = NULL;
+    ps->owned_trail_head = NULL;
+    ps->owned_trail_segments = 0;
+    ps->trail_pos = NULL;
+    ps->trail_age = NULL;
+    ps->trail_len = NULL;
+    ps->trail_head = NULL;
+    ps->trail_segments = 0;
+    ps->trail_lifetime = 0.0f;
+}
+
+/// @brief Republish mutable allocation/count mirrors from private owner authority.
+/// @param ps Particle system whose native storage is repaired; NULL is accepted.
+static void particles3d_repair_storage(rt_particles3d *ps) {
+    if (!ps)
+        return;
+    if (!ps->owned_particles || ps->owned_max_particles <= 0 || ps->owned_max_particles > 100000) {
+        free(ps->owned_particles);
+        ps->owned_particles = NULL;
+        ps->owned_max_particles = 0;
+        ps->owned_count = 0;
+        ps->owned_terminal_count = 0;
+    } else {
+        if (ps->owned_count < 0)
+            ps->owned_count = 0;
+        if (ps->owned_count > ps->owned_max_particles)
+            ps->owned_count = ps->owned_max_particles;
+        if (ps->owned_terminal_count < 0 ||
+            ps->owned_terminal_count > ps->owned_max_particles - ps->owned_count)
+            ps->owned_terminal_count = 0;
+    }
+    ps->particles = ps->owned_particles;
+    ps->max_particles = ps->owned_max_particles;
+    ps->count = ps->owned_count;
+    ps->terminal_count = ps->owned_terminal_count;
+
+    if (ps->owned_trail_pos && ps->owned_trail_age && ps->owned_trail_len && ps->owned_trail_head &&
+        ps->owned_trail_segments >= 2 && ps->owned_trail_segments <= 16 && ps->owned_particles) {
+        ps->trail_pos = ps->owned_trail_pos;
+        ps->trail_age = ps->owned_trail_age;
+        ps->trail_len = ps->owned_trail_len;
+        ps->trail_head = ps->owned_trail_head;
+        ps->trail_segments = ps->owned_trail_segments;
+    } else if (ps->owned_trail_pos || ps->owned_trail_age || ps->owned_trail_len ||
+               ps->owned_trail_head || ps->owned_trail_segments != 0) {
+        particles3d_clear_owned_trails(ps);
+    } else {
+        ps->trail_pos = NULL;
+        ps->trail_age = NULL;
+        ps->trail_len = NULL;
+        ps->trail_head = NULL;
+        ps->trail_segments = 0;
+    }
+
+    for (int i = 0; i < PARTICLES3D_DRAW_SLOT_COUNT; ++i) {
+        if (!ps->owned_draw_vertices[i])
+            ps->owned_draw_vertex_capacity[i] = 0;
+        if (!ps->owned_draw_indices[i])
+            ps->owned_draw_index_capacity[i] = 0;
+        ps->draw_vertices[i] = ps->owned_draw_vertices[i];
+        ps->draw_indices[i] = ps->owned_draw_indices[i];
+        ps->draw_vertex_capacity[i] = ps->owned_draw_vertex_capacity[i];
+        ps->draw_index_capacity[i] = ps->owned_draw_index_capacity[i];
+        ps->draw_materials[i] = ps->owned_draw_materials[i];
+    }
+
+    if (ps->owned_overflow_draw_slot_capacity > 0 && ps->owned_overflow_draw_vertices &&
+        ps->owned_overflow_draw_indices && ps->owned_overflow_draw_vertex_capacity &&
+        ps->owned_overflow_draw_index_capacity && ps->owned_overflow_draw_materials) {
+        ps->overflow_draw_vertices = ps->owned_overflow_draw_vertices;
+        ps->overflow_draw_indices = ps->owned_overflow_draw_indices;
+        ps->overflow_draw_vertex_capacity = ps->owned_overflow_draw_vertex_capacity;
+        ps->overflow_draw_index_capacity = ps->owned_overflow_draw_index_capacity;
+        ps->overflow_draw_materials = ps->owned_overflow_draw_materials;
+        ps->overflow_draw_slot_capacity = ps->owned_overflow_draw_slot_capacity;
+    } else {
+        ps->overflow_draw_vertices = NULL;
+        ps->overflow_draw_indices = NULL;
+        ps->overflow_draw_vertex_capacity = NULL;
+        ps->overflow_draw_index_capacity = NULL;
+        ps->overflow_draw_materials = NULL;
+        ps->overflow_draw_slot_capacity = 0;
+    }
+
+    if (ps->owned_sort_keys && ps->owned_sort_scratch && ps->owned_sort_key_capacity > 0) {
+        ps->sort_keys = ps->owned_sort_keys;
+        ps->sort_scratch = ps->owned_sort_scratch;
+        ps->sort_key_capacity = ps->owned_sort_key_capacity;
+    } else {
+        free(ps->owned_sort_keys);
+        free(ps->owned_sort_scratch);
+        ps->owned_sort_keys = NULL;
+        ps->owned_sort_scratch = NULL;
+        ps->owned_sort_key_capacity = 0;
+        ps->sort_keys = NULL;
+        ps->sort_scratch = NULL;
+        ps->sort_key_capacity = 0;
+    }
+    ps->sort_key_grow_count = ps->owned_sort_key_grow_count;
+
+    if (ps->owned_instance_scratch && ps->owned_instance_scratch_capacity > 0) {
+        ps->instance_scratch = ps->owned_instance_scratch;
+        ps->instance_scratch_capacity = ps->owned_instance_scratch_capacity;
+    } else {
+        free(ps->owned_instance_scratch);
+        ps->owned_instance_scratch = NULL;
+        ps->owned_instance_scratch_capacity = 0;
+        ps->instance_scratch = NULL;
+        ps->instance_scratch_capacity = 0;
+    }
+    ps->instance_scratch_grow_count = ps->owned_instance_scratch_grow_count;
+}
+
+/// @brief Validate retained owners and republish texture/material mirrors.
 /// @param ps Particle system whose texture and material slots are repaired.
 static void particles3d_repair_refs(rt_particles3d *ps) {
     if (!ps)
         return;
-    if (ps->texture && !particles3d_texture_valid(ps->texture))
-        particles3d_release_texture_slot(&ps->texture);
-    if (ps->cached_material && !rt_g3d_has_class(ps->cached_material, RT_G3D_MATERIAL3D_CLASS_ID))
-        particles3d_release_material_slot(&ps->cached_material);
+    particles3d_repair_storage(ps);
+    if (ps->owned_texture && !particles3d_texture_valid(ps->owned_texture))
+        particles3d_release_texture_slot(&ps->owned_texture);
+    if (ps->owned_cached_material &&
+        !rt_g3d_has_class(ps->owned_cached_material, RT_G3D_MATERIAL3D_CLASS_ID))
+        particles3d_release_material_slot(&ps->owned_cached_material);
     for (int i = 0; i < PARTICLES3D_DRAW_SLOT_COUNT; ++i) {
-        if (ps->draw_materials[i] &&
-            !rt_g3d_has_class(ps->draw_materials[i], RT_G3D_MATERIAL3D_CLASS_ID))
-            particles3d_release_material_slot(&ps->draw_materials[i]);
+        if (ps->owned_draw_materials[i] &&
+            !rt_g3d_has_class(ps->owned_draw_materials[i], RT_G3D_MATERIAL3D_CLASS_ID))
+            particles3d_release_material_slot(&ps->owned_draw_materials[i]);
+        ps->draw_materials[i] = ps->owned_draw_materials[i];
     }
-    for (int32_t i = 0; i < ps->overflow_draw_slot_capacity; ++i) {
-        if (ps->overflow_draw_materials && ps->overflow_draw_materials[i] &&
-            !rt_g3d_has_class(ps->overflow_draw_materials[i], RT_G3D_MATERIAL3D_CLASS_ID))
-            particles3d_release_material_slot(&ps->overflow_draw_materials[i]);
+    for (int32_t i = 0; i < ps->owned_overflow_draw_slot_capacity; ++i) {
+        if (ps->owned_overflow_draw_materials && ps->owned_overflow_draw_materials[i] &&
+            !rt_g3d_has_class(ps->owned_overflow_draw_materials[i], RT_G3D_MATERIAL3D_CLASS_ID))
+            particles3d_release_material_slot(&ps->owned_overflow_draw_materials[i]);
     }
+    ps->texture = ps->owned_texture;
+    ps->cached_material = ps->owned_cached_material;
 }
 
 /*==========================================================================
@@ -400,6 +574,122 @@ static void normalize3(float *x, float *y, float *z) {
     *z = sz / len;
 }
 
+/// @brief Persist finite, bounded, internally consistent emitter state at public boundaries.
+/// @param ps Particle system whose authored state and storage mirrors are repaired.
+static void particles3d_repair_state(rt_particles3d *ps) {
+    double direction[3];
+    double max_component;
+    double length;
+    if (!ps)
+        return;
+    particles3d_repair_refs(ps);
+
+    for (int c = 0; c < 3; c++) {
+        ps->position[c] = particles_clamp_abs_or(ps->position[c], 0.0, PARTICLES3D_WORLD_ABS_MAX);
+        ps->gravity[c] = particles_clamp_abs_or(ps->gravity[c], 0.0, PARTICLES3D_PARAM_MAX);
+        ps->color_start[c] = (float)particles_clamp((double)ps->color_start[c], 0.0, 1.0);
+        ps->color_end[c] = (float)particles_clamp((double)ps->color_end[c], 0.0, 1.0);
+        direction[c] = particles_clamp_abs_or(ps->emit_dir[c], 0.0, PARTICLES3D_PARAM_MAX);
+        ps->emitter_size[c] =
+            fabs(particles_clamp_abs_or(ps->emitter_size[c], 0.0, PARTICLES3D_PARAM_MAX));
+    }
+    max_component = fmax(fabs(direction[0]), fmax(fabs(direction[1]), fabs(direction[2])));
+    length = 0.0;
+    if (isfinite(max_component) && max_component > 1e-8) {
+        double sx = direction[0] / max_component;
+        double sy = direction[1] / max_component;
+        double sz = direction[2] / max_component;
+        length = sqrt(sx * sx + sy * sy + sz * sz);
+        if (isfinite(length) && length > 1e-8) {
+            ps->emit_dir[0] = sx / length;
+            ps->emit_dir[1] = sy / length;
+            ps->emit_dir[2] = sz / length;
+        }
+    }
+    if (!isfinite(length) || length <= 1e-8) {
+        ps->emit_dir[0] = 0.0;
+        ps->emit_dir[1] = 1.0;
+        ps->emit_dir[2] = 0.0;
+    }
+    ps->emit_spread = particles_clamp(ps->emit_spread, 0.0, M_PI);
+
+    ps->speed_min = particles_nonnegative_or_zero(ps->speed_min);
+    ps->speed_max = particles_nonnegative_or_zero(ps->speed_max);
+    if (ps->speed_max < ps->speed_min) {
+        double tmp = ps->speed_min;
+        ps->speed_min = ps->speed_max;
+        ps->speed_max = tmp;
+    }
+    ps->life_min = particles_finite_or(ps->life_min, 0.01);
+    ps->life_max = particles_finite_or(ps->life_max, 0.01);
+    if (ps->life_min < 0.01)
+        ps->life_min = 0.01;
+    if (ps->life_max < 0.01)
+        ps->life_max = 0.01;
+    if (ps->life_min > PARTICLES3D_PARAM_MAX)
+        ps->life_min = PARTICLES3D_PARAM_MAX;
+    if (ps->life_max > PARTICLES3D_PARAM_MAX)
+        ps->life_max = PARTICLES3D_PARAM_MAX;
+    if (ps->life_max < ps->life_min) {
+        double tmp = ps->life_min;
+        ps->life_min = ps->life_max;
+        ps->life_max = tmp;
+    }
+    ps->size_start = particles_nonnegative_or_zero(ps->size_start);
+    ps->size_end = particles_nonnegative_or_zero(ps->size_end);
+    ps->alpha_start = particles_clamp(ps->alpha_start, 0.0, 1.0);
+    ps->alpha_end = particles_clamp(ps->alpha_end, 0.0, 1.0);
+    ps->rate = particles_nonnegative_or_zero(ps->rate);
+    if (!isfinite(ps->accumulator) || ps->accumulator < 0.0)
+        ps->accumulator = 0.0;
+    else if (ps->owned_max_particles > 0 &&
+             ps->accumulator > (double)ps->owned_max_particles + 0.999999)
+        ps->accumulator = (double)ps->owned_max_particles + 0.999999;
+    ps->emitting = ps->emitting ? 1 : 0;
+    ps->additive_blend = ps->additive_blend ? 1 : 0;
+    ps->stretch_k = particles_clamp(ps->stretch_k, 0.0, 8.0);
+    ps->softness = particles_nonnegative_or_zero(ps->softness);
+    if (ps->emitter_shape < 0 || ps->emitter_shape > 2)
+        ps->emitter_shape = 0;
+    if (ps->prng_state == 0)
+        ps->prng_state = 0xA341316Cu;
+
+    if (ps->owned_trail_segments > 0) {
+        double trail_lifetime = particles_nonnegative_or_zero((double)ps->trail_lifetime);
+        if (trail_lifetime <= 0.0) {
+            particles3d_clear_owned_trails(ps);
+        } else {
+            ps->trail_lifetime = (float)trail_lifetime;
+            for (int32_t i = 0; i < ps->owned_count; i++) {
+                if (!isfinite(ps->owned_trail_age[i]) || ps->owned_trail_age[i] < 0.0f)
+                    ps->owned_trail_age[i] = 0.0f;
+                if (ps->owned_trail_len[i] < 0 || ps->owned_trail_len[i] > ps->owned_trail_segments)
+                    ps->owned_trail_len[i] = 0;
+                if (ps->owned_trail_head[i] < 0 ||
+                    ps->owned_trail_head[i] >= ps->owned_trail_segments)
+                    ps->owned_trail_head[i] = 0;
+            }
+        }
+    } else {
+        ps->trail_lifetime = 0.0f;
+    }
+
+    if (!isfinite(ps->simulation_residual) || ps->simulation_residual < 0.0 ||
+        ps->simulation_residual >= PARTICLES3D_SIMULATION_STEP)
+        ps->simulation_residual = 0.0;
+    if (!isfinite(ps->dropped_time_total) || ps->dropped_time_total < 0.0)
+        ps->dropped_time_total = 0.0;
+    if (!isfinite(ps->dropped_time_last_update) || ps->dropped_time_last_update < 0.0)
+        ps->dropped_time_last_update = 0.0;
+    ps->render_final_frame = ps->render_final_frame ? 1 : 0;
+    if (!ps->render_final_frame) {
+        ps->owned_terminal_count = 0;
+        ps->terminal_count = 0;
+    }
+    if (ps->draw_slots_used < 0)
+        ps->draw_slots_used = 0;
+}
+
 /// @brief Generate a random direction within a cone of half-angle `spread`
 ///        around the given direction vector.
 /// @param ps Particle system supplying the deterministic PRNG state.
@@ -517,57 +807,50 @@ static void rt_particles3d_finalize(void *obj) {
     rt_particles3d *ps = (rt_particles3d *)obj;
     if (!ps)
         return;
-    free(ps->particles);
-    ps->particles = NULL;
-    free(ps->trail_pos);
-    ps->trail_pos = NULL;
-    free(ps->trail_age);
-    ps->trail_age = NULL;
-    free(ps->trail_len);
-    ps->trail_len = NULL;
-    free(ps->trail_head);
-    ps->trail_head = NULL;
+    free(ps->owned_particles);
+    ps->owned_particles = NULL;
+    particles3d_clear_owned_trails(ps);
     for (int i = 0; i < PARTICLES3D_DRAW_SLOT_COUNT; ++i) {
-        free(ps->draw_vertices[i]);
-        ps->draw_vertices[i] = NULL;
-        free(ps->draw_indices[i]);
-        ps->draw_indices[i] = NULL;
-        particles3d_release_material_slot(&ps->draw_materials[i]);
+        free(ps->owned_draw_vertices[i]);
+        ps->owned_draw_vertices[i] = NULL;
+        free(ps->owned_draw_indices[i]);
+        ps->owned_draw_indices[i] = NULL;
+        particles3d_release_material_slot(&ps->owned_draw_materials[i]);
     }
-    for (int32_t i = 0; i < ps->overflow_draw_slot_capacity; ++i) {
-        if (ps->overflow_draw_vertices)
-            free(ps->overflow_draw_vertices[i]);
-        if (ps->overflow_draw_indices)
-            free(ps->overflow_draw_indices[i]);
-        if (ps->overflow_draw_materials)
-            particles3d_release_material_slot(&ps->overflow_draw_materials[i]);
+    for (int32_t i = 0; i < ps->owned_overflow_draw_slot_capacity; ++i) {
+        if (ps->owned_overflow_draw_vertices)
+            free(ps->owned_overflow_draw_vertices[i]);
+        if (ps->owned_overflow_draw_indices)
+            free(ps->owned_overflow_draw_indices[i]);
+        if (ps->owned_overflow_draw_materials)
+            particles3d_release_material_slot(&ps->owned_overflow_draw_materials[i]);
     }
-    free(ps->overflow_draw_vertices);
-    free(ps->overflow_draw_indices);
-    free(ps->overflow_draw_vertex_capacity);
-    free(ps->overflow_draw_index_capacity);
-    free(ps->overflow_draw_materials);
-    ps->overflow_draw_vertices = NULL;
-    ps->overflow_draw_indices = NULL;
-    ps->overflow_draw_vertex_capacity = NULL;
-    ps->overflow_draw_index_capacity = NULL;
-    ps->overflow_draw_materials = NULL;
-    ps->overflow_draw_slot_capacity = 0;
-    free(ps->sort_keys);
-    ps->sort_keys = NULL;
-    free(ps->sort_scratch);
-    ps->sort_scratch = NULL;
-    ps->sort_key_capacity = 0;
-    ps->sort_key_grow_count = 0;
-    free(ps->instance_scratch);
-    ps->instance_scratch = NULL;
-    ps->instance_scratch_capacity = 0;
-    ps->instance_scratch_grow_count = 0;
-    particles3d_release_texture_slot(&ps->texture);
-    particles3d_release_material_slot(&ps->cached_material);
+    free(ps->owned_overflow_draw_vertices);
+    free(ps->owned_overflow_draw_indices);
+    free(ps->owned_overflow_draw_vertex_capacity);
+    free(ps->owned_overflow_draw_index_capacity);
+    free(ps->owned_overflow_draw_materials);
+    ps->owned_overflow_draw_vertices = NULL;
+    ps->owned_overflow_draw_indices = NULL;
+    ps->owned_overflow_draw_vertex_capacity = NULL;
+    ps->owned_overflow_draw_index_capacity = NULL;
+    ps->owned_overflow_draw_materials = NULL;
+    ps->owned_overflow_draw_slot_capacity = 0;
+    free(ps->owned_sort_keys);
+    ps->owned_sort_keys = NULL;
+    free(ps->owned_sort_scratch);
+    ps->owned_sort_scratch = NULL;
+    ps->owned_sort_key_capacity = 0;
+    ps->owned_sort_key_grow_count = 0;
+    free(ps->owned_instance_scratch);
+    ps->owned_instance_scratch = NULL;
+    ps->owned_instance_scratch_capacity = 0;
+    ps->owned_instance_scratch_grow_count = 0;
+    particles3d_release_texture_slot(&ps->owned_texture);
+    particles3d_release_material_slot(&ps->owned_cached_material);
 }
 
-/// @brief Allocate a new particle emitter with an internally-sized pool of up to
+/// @brief Create a particle emitter with an internally-sized pool of up to
 /// `max_particles` concurrent particles. Rejects 0 / negative / >100000 to keep a predictable
 /// memory ceiling — the pool is calloc'd up front so spawn/kill cost stays O(1) with no
 /// re-allocation. Defaults are tuned for a generic sparkle: upward cone emit, ~17° spread,
@@ -600,6 +883,10 @@ void *rt_particles3d_new(int64_t max_particles) {
     }
     ps->count = 0;
     ps->max_particles = (int32_t)max_particles;
+    ps->owned_particles = ps->particles;
+    ps->owned_count = 0;
+    ps->owned_max_particles = (int32_t)max_particles;
+    ps->owned_terminal_count = 0;
 
     ps->position[0] = ps->position[1] = ps->position[2] = 0.0;
     ps->emit_dir[0] = 0.0;
@@ -634,18 +921,30 @@ void *rt_particles3d_new(int64_t max_particles) {
     ps->trail_age = NULL;
     ps->trail_len = NULL;
     ps->trail_head = NULL;
+    ps->owned_trail_pos = NULL;
+    ps->owned_trail_age = NULL;
+    ps->owned_trail_len = NULL;
+    ps->owned_trail_head = NULL;
+    ps->owned_trail_segments = 0;
     ps->softness = 0.0;
     ps->texture = NULL;
+    ps->owned_texture = NULL;
     ps->emitter_shape = 0;
     ps->emitter_size[0] = ps->emitter_size[1] = ps->emitter_size[2] = 1.0;
     ps->prng_state = particles3d_next_seed();
     ps->cached_material = NULL;
+    ps->owned_cached_material = NULL;
     for (int i = 0; i < PARTICLES3D_DRAW_SLOT_COUNT; ++i) {
         ps->draw_vertices[i] = NULL;
         ps->draw_indices[i] = NULL;
         ps->draw_vertex_capacity[i] = 0;
         ps->draw_index_capacity[i] = 0;
         ps->draw_materials[i] = NULL;
+        ps->owned_draw_vertices[i] = NULL;
+        ps->owned_draw_indices[i] = NULL;
+        ps->owned_draw_vertex_capacity[i] = 0;
+        ps->owned_draw_index_capacity[i] = 0;
+        ps->owned_draw_materials[i] = NULL;
     }
     ps->overflow_draw_vertices = NULL;
     ps->overflow_draw_indices = NULL;
@@ -653,10 +952,20 @@ void *rt_particles3d_new(int64_t max_particles) {
     ps->overflow_draw_index_capacity = NULL;
     ps->overflow_draw_materials = NULL;
     ps->overflow_draw_slot_capacity = 0;
+    ps->owned_overflow_draw_vertices = NULL;
+    ps->owned_overflow_draw_indices = NULL;
+    ps->owned_overflow_draw_vertex_capacity = NULL;
+    ps->owned_overflow_draw_index_capacity = NULL;
+    ps->owned_overflow_draw_materials = NULL;
+    ps->owned_overflow_draw_slot_capacity = 0;
     ps->sort_keys = NULL;
     ps->sort_scratch = NULL;
     ps->sort_key_capacity = 0;
     ps->sort_key_grow_count = 0;
+    ps->owned_sort_keys = NULL;
+    ps->owned_sort_scratch = NULL;
+    ps->owned_sort_key_capacity = 0;
+    ps->owned_sort_key_grow_count = 0;
     ps->draw_frame_serial = -1;
     ps->draw_slots_used = 0;
     ps->simulation_residual = 0.0;
@@ -667,6 +976,9 @@ void *rt_particles3d_new(int64_t max_particles) {
     ps->instance_scratch = NULL;
     ps->instance_scratch_capacity = 0;
     ps->instance_scratch_grow_count = 0;
+    ps->owned_instance_scratch = NULL;
+    ps->owned_instance_scratch_capacity = 0;
+    ps->owned_instance_scratch_grow_count = 0;
 
     rt_obj_set_finalizer(ps, rt_particles3d_finalize);
     return ps;
@@ -686,6 +998,7 @@ void rt_particles3d_set_position(void *o, double x, double y, double z) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     p->position[0] = particles_clamp_abs_or(x, 0.0, PARTICLES3D_WORLD_ABS_MAX);
     p->position[1] = particles_clamp_abs_or(y, 0.0, PARTICLES3D_WORLD_ABS_MAX);
     p->position[2] = particles_clamp_abs_or(z, 0.0, PARTICLES3D_WORLD_ABS_MAX);
@@ -702,6 +1015,7 @@ void rt_particles3d_set_direction(void *o, double dx, double dy, double dz, doub
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     double dir[3] = {
         particles_clamp_abs_or(dx, 0.0, PARTICLES3D_PARAM_MAX),
         particles_clamp_abs_or(dy, 1.0, PARTICLES3D_PARAM_MAX),
@@ -740,6 +1054,7 @@ void rt_particles3d_set_speed(void *o, double mn, double mx) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     mn = particles_nonnegative_or_zero(mn);
     mx = particles_nonnegative_or_zero(mx);
     if (mx < mn) {
@@ -763,6 +1078,7 @@ void rt_particles3d_set_lifetime(void *o, double mn, double mx) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     mn = particles_finite_or(mn, 0.01);
     mx = particles_finite_or(mx, mn);
     if (mn < 0.01)
@@ -790,6 +1106,7 @@ void rt_particles3d_set_size(void *o, double s, double e) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     p->size_start = particles_nonnegative_or_zero(s);
     p->size_end = particles_nonnegative_or_zero(e);
 }
@@ -803,6 +1120,7 @@ void rt_particles3d_set_gravity(void *o, double gx, double gy, double gz) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     p->gravity[0] = particles_clamp_abs_or(gx, 0.0, PARTICLES3D_PARAM_MAX);
     p->gravity[1] = particles_clamp_abs_or(gy, 0.0, PARTICLES3D_PARAM_MAX);
     p->gravity[2] = particles_clamp_abs_or(gz, 0.0, PARTICLES3D_PARAM_MAX);
@@ -818,6 +1136,7 @@ void rt_particles3d_set_color(void *o, int64_t sc, int64_t ec) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     unpack_color(sc, p->color_start);
     unpack_color(ec, p->color_end);
 }
@@ -831,6 +1150,7 @@ void rt_particles3d_set_alpha(void *o, double sa, double ea) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     p->alpha_start = particles_clamp(sa, 0.0, 1.0);
     p->alpha_end = particles_clamp(ea, 0.0, 1.0);
 }
@@ -843,6 +1163,7 @@ void rt_particles3d_set_rate(void *o, double r) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     p->rate = particles_nonnegative_or_zero(r);
 }
 
@@ -856,6 +1177,7 @@ void rt_particles3d_set_softness(void *o, double distance) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     if (!isfinite(distance) || distance < 0.0)
         distance = 0.0;
     if (distance > PARTICLES3D_PARAM_MAX)
@@ -872,6 +1194,7 @@ void rt_particles3d_set_additive(void *o, int8_t a) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     p->additive_blend = a ? 1 : 0;
 }
 
@@ -880,6 +1203,7 @@ void rt_particles3d_set_additive(void *o, int8_t a) {
 /// @return Nonzero for additive blending, or 0 for invalid handles.
 int8_t rt_particles3d_get_additive(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p && p->additive_blend ? 1 : 0;
 }
 
@@ -891,6 +1215,7 @@ void rt_particles3d_set_stretch(void *o, double k) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     if (!isfinite(k) || k < 0.0)
         k = 0.0;
     if (k > 8.0)
@@ -901,59 +1226,60 @@ void rt_particles3d_set_stretch(void *o, double k) {
 /// @brief Enable per-particle ribbon trails: a ring of the last N positions is
 ///   emitted as a camera-facing strip that tapers and fades toward the tail.
 ///   @p lifetime_sec of history spread over @p segments control points (2..16);
-///   lifetime <= 0 disables trails and frees the history storage.
+///   lifetime <= 0 disables trails and discards the history storage.
 /// @param o Particles3D handle; invalid handles are ignored.
 /// @param lifetime_sec Seconds of trail history to retain; nonpositive values disable trails.
 /// @param segments Number of ring-buffer control points per particle, clamped to `[2, 16]`.
 void rt_particles3d_set_trail(void *o, double lifetime_sec, int64_t segments) {
     rt_particles3d *ps = particles3d_checked(o);
+    float *new_pos;
+    float *new_age;
+    int16_t *new_len;
+    int16_t *new_head;
+    size_t particle_count;
+    size_t position_count;
     if (!ps)
         return;
-    if (!isfinite(lifetime_sec) || lifetime_sec <= 0.0) {
-        free(ps->trail_pos);
-        free(ps->trail_age);
-        free(ps->trail_len);
-        free(ps->trail_head);
-        ps->trail_pos = NULL;
-        ps->trail_age = NULL;
-        ps->trail_len = NULL;
-        ps->trail_head = NULL;
-        ps->trail_lifetime = 0.0f;
-        ps->trail_segments = 0;
+    particles3d_repair_state(ps);
+    lifetime_sec = particles_nonnegative_or_zero(lifetime_sec);
+    if (lifetime_sec <= 0.0) {
+        particles3d_clear_owned_trails(ps);
         return;
     }
     if (segments < 2)
         segments = 2;
     if (segments > 16)
         segments = 16;
-    if (ps->max_particles <= 0)
+    if (!ps->owned_particles || ps->owned_max_particles <= 0)
         return;
-    if (ps->trail_pos && ps->trail_segments == (int32_t)segments) {
+    if (ps->owned_trail_pos && ps->owned_trail_segments == (int32_t)segments) {
         ps->trail_lifetime = (float)lifetime_sec;
         return;
     }
-    free(ps->trail_pos);
-    free(ps->trail_age);
-    free(ps->trail_len);
-    free(ps->trail_head);
-    size_t n = (size_t)ps->max_particles;
-    ps->trail_pos = (float *)calloc(n * (size_t)segments * 3u, sizeof(float));
-    ps->trail_age = (float *)calloc(n, sizeof(float));
-    ps->trail_len = (int16_t *)calloc(n, sizeof(int16_t));
-    ps->trail_head = (int16_t *)calloc(n, sizeof(int16_t));
-    if (!ps->trail_pos || !ps->trail_age || !ps->trail_len || !ps->trail_head) {
-        free(ps->trail_pos);
-        free(ps->trail_age);
-        free(ps->trail_len);
-        free(ps->trail_head);
-        ps->trail_pos = NULL;
-        ps->trail_age = NULL;
-        ps->trail_len = NULL;
-        ps->trail_head = NULL;
-        ps->trail_lifetime = 0.0f;
-        ps->trail_segments = 0;
+    particle_count = (size_t)ps->owned_max_particles;
+    if (particle_count > SIZE_MAX / (size_t)segments / 3u)
+        return;
+    position_count = particle_count * (size_t)segments * 3u;
+    new_pos = (float *)calloc(position_count, sizeof(*new_pos));
+    new_age = (float *)calloc(particle_count, sizeof(*new_age));
+    new_len = (int16_t *)calloc(particle_count, sizeof(*new_len));
+    new_head = (int16_t *)calloc(particle_count, sizeof(*new_head));
+    if (!new_pos || !new_age || !new_len || !new_head) {
+        particles3d_discard_trail_storage(new_pos, new_age, new_len, new_head);
         return;
     }
+
+    particles3d_discard_trail_storage(
+        ps->owned_trail_pos, ps->owned_trail_age, ps->owned_trail_len, ps->owned_trail_head);
+    ps->owned_trail_pos = new_pos;
+    ps->owned_trail_age = new_age;
+    ps->owned_trail_len = new_len;
+    ps->owned_trail_head = new_head;
+    ps->owned_trail_segments = (int32_t)segments;
+    ps->trail_pos = new_pos;
+    ps->trail_age = new_age;
+    ps->trail_len = new_len;
+    ps->trail_head = new_head;
     ps->trail_lifetime = (float)lifetime_sec;
     ps->trail_segments = (int32_t)segments;
 }
@@ -964,6 +1290,7 @@ void rt_particles3d_set_trail(void *o, double lifetime_sec, int64_t segments) {
 /// @param i Live-particle index to remove.
 static void particles3d_swap_kill(rt_particles3d *ps, int32_t i) {
     int32_t last = --ps->count;
+    ps->owned_count = ps->count;
     ps->particles[i] = ps->particles[last];
     if (ps->trail_pos && ps->trail_segments > 0 && i != last) {
         size_t stride = (size_t)ps->trail_segments * 3u;
@@ -1003,6 +1330,7 @@ static void particles3d_retain_terminal_particle(rt_particles3d *ps,
     int32_t slot = ps->max_particles - 1 - ps->terminal_count;
     ps->particles[slot] = *endpoint;
     ps->terminal_count++;
+    ps->owned_terminal_count = ps->terminal_count;
 }
 
 /// @brief Resolve one billboard ordinal across the live prefix followed by terminal snapshots.
@@ -1025,11 +1353,13 @@ void rt_particles3d_set_texture(void *o, void *tex) {
     rt_particles3d *ps = particles3d_checked(o);
     if (!ps)
         return;
+    particles3d_repair_state(ps);
     if (tex && !rt_pixels_checked_impl_or_null(tex))
         return;
-    if (ps->texture == tex)
+    if (ps->owned_texture == tex)
         return;
-    particles3d_assign_texture_ref(&ps->texture, tex);
+    particles3d_assign_texture_ref(&ps->owned_texture, tex);
+    ps->texture = ps->owned_texture;
 }
 
 /// @brief Select the emitter volume: 0 = point (default), 1 = sphere (uniform interior),
@@ -1040,6 +1370,7 @@ void rt_particles3d_set_emitter_shape(void *o, int64_t s) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     if (s < 0)
         s = 0;
     if (s > 2)
@@ -1057,6 +1388,7 @@ void rt_particles3d_set_emitter_size(void *o, double sx, double sy, double sz) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     p->emitter_size[0] = fabs(particles_clamp_abs_or(sx, 0.0, PARTICLES3D_PARAM_MAX));
     p->emitter_size[1] = fabs(particles_clamp_abs_or(sy, 0.0, PARTICLES3D_PARAM_MAX));
     p->emitter_size[2] = fabs(particles_clamp_abs_or(sz, 0.0, PARTICLES3D_PARAM_MAX));
@@ -1090,72 +1422,84 @@ static int64_t particles3d_pack_color(const float *rgb) {
 /// @brief `Particles3D.Rate` — retained emission rate. @param o Borrowed handle.
 double rt_particles3d_get_rate(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->rate : 0.0;
 }
 
 /// @brief `Particles3D.LifetimeMin` — retained minimum lifetime. @param o Borrowed handle.
 double rt_particles3d_get_lifetime_min(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->life_min : 0.0;
 }
 
 /// @brief `Particles3D.LifetimeMax` — retained maximum lifetime. @param o Borrowed handle.
 double rt_particles3d_get_lifetime_max(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->life_max : 0.0;
 }
 
 /// @brief `Particles3D.SpeedMin` — retained minimum emit speed. @param o Borrowed handle.
 double rt_particles3d_get_speed_min(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->speed_min : 0.0;
 }
 
 /// @brief `Particles3D.SpeedMax` — retained maximum emit speed. @param o Borrowed handle.
 double rt_particles3d_get_speed_max(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->speed_max : 0.0;
 }
 
 /// @brief `Particles3D.SizeStart` — retained spawn size. @param o Borrowed handle.
 double rt_particles3d_get_size_start(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->size_start : 0.0;
 }
 
 /// @brief `Particles3D.SizeEnd` — retained end-of-life size. @param o Borrowed handle.
 double rt_particles3d_get_size_end(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->size_end : 0.0;
 }
 
 /// @brief `Particles3D.AlphaStart` — retained spawn alpha. @param o Borrowed handle.
 double rt_particles3d_get_alpha_start(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->alpha_start : 0.0;
 }
 
 /// @brief `Particles3D.AlphaEnd` — retained end-of-life alpha. @param o Borrowed handle.
 double rt_particles3d_get_alpha_end(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->alpha_end : 0.0;
 }
 
 /// @brief `Particles3D.ColorStart` — packed 0xRRGGBB spawn color. @param o Borrowed handle.
 int64_t rt_particles3d_get_color_start(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? particles3d_pack_color(p->color_start) : 0;
 }
 
 /// @brief `Particles3D.ColorEnd` — packed 0xRRGGBB end color. @param o Borrowed handle.
 int64_t rt_particles3d_get_color_end(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? particles3d_pack_color(p->color_end) : 0;
 }
 
 /// @brief `Particles3D.Gravity` — fresh Vec3 of the retained gravity. @param o Borrowed handle.
 void *rt_particles3d_get_gravity(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     if (!p)
         return rt_vec3_new(0.0, 0.0, 0.0);
     return rt_vec3_new(p->gravity[0], p->gravity[1], p->gravity[2]);
@@ -1164,6 +1508,7 @@ void *rt_particles3d_get_gravity(void *o) {
 /// @brief `Particles3D.Position` — fresh Vec3 of the emitter origin. @param o Borrowed handle.
 void *rt_particles3d_get_position_vec3(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     if (!p)
         return rt_vec3_new(0.0, 0.0, 0.0);
     return rt_vec3_new(p->position[0], p->position[1], p->position[2]);
@@ -1172,6 +1517,7 @@ void *rt_particles3d_get_position_vec3(void *o) {
 /// @brief `Particles3D.Direction` — fresh Vec3 of the emit direction. @param o Borrowed handle.
 void *rt_particles3d_get_direction(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     if (!p)
         return rt_vec3_new(0.0, 0.0, 0.0);
     return rt_vec3_new(p->emit_dir[0], p->emit_dir[1], p->emit_dir[2]);
@@ -1180,6 +1526,7 @@ void *rt_particles3d_get_direction(void *o) {
 /// @brief `Particles3D.Spread` — retained emit-cone spread. @param o Borrowed handle.
 double rt_particles3d_get_spread(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->emit_spread : 0.0;
 }
 
@@ -1187,12 +1534,14 @@ double rt_particles3d_get_spread(void *o) {
 /// @param o Borrowed handle.
 int64_t rt_particles3d_get_emitter_shape(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? (int64_t)p->emitter_shape : 0;
 }
 
 /// @brief `Particles3D.EmitterSize` — fresh Vec3 of the emitter extents. @param o Borrowed handle.
 void *rt_particles3d_get_emitter_size(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     if (!p)
         return rt_vec3_new(0.0, 0.0, 0.0);
     return rt_vec3_new(p->emitter_size[0], p->emitter_size[1], p->emitter_size[2]);
@@ -1201,31 +1550,36 @@ void *rt_particles3d_get_emitter_size(void *o) {
 /// @brief `Particles3D.Stretch` — retained velocity-stretch factor. @param o Borrowed handle.
 double rt_particles3d_get_stretch(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->stretch_k : 0.0;
 }
 
 /// @brief `Particles3D.TrailLifetime` — retained trail history seconds. @param o Borrowed handle.
 double rt_particles3d_get_trail_lifetime(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? (double)p->trail_lifetime : 0.0;
 }
 
 /// @brief `Particles3D.TrailSegments` — retained trail control points. @param o Borrowed handle.
 int64_t rt_particles3d_get_trail_segments(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? (int64_t)p->trail_segments : 0;
 }
 
 /// @brief `Particles3D.Softness` — retained soft-particle fade distance. @param o Borrowed handle.
 double rt_particles3d_get_softness(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? p->softness : 0.0;
 }
 
 /// @brief `Particles3D.Texture` — borrowed particle texture or NULL. @param o Borrowed handle.
 void *rt_particles3d_get_texture(void *o) {
     rt_particles3d *p = particles3d_checked(o);
-    return p && particles3d_texture_valid(p->texture) ? p->texture : NULL;
+    particles3d_repair_state(p);
+    return p ? p->owned_texture : NULL;
 }
 
 /*==========================================================================
@@ -1237,8 +1591,10 @@ void *rt_particles3d_get_texture(void *o) {
 /// @param o Particles3D handle; invalid handles are ignored.
 void rt_particles3d_start(void *o) {
     rt_particles3d *p = particles3d_checked(o);
-    if (p)
+    if (p) {
+        particles3d_repair_state(p);
         p->emitting = 1;
+    }
 }
 
 /// @brief Stop continuous emission. Existing particles run to natural lifetime; for instant
@@ -1246,8 +1602,10 @@ void rt_particles3d_start(void *o) {
 /// @param o Particles3D handle; invalid handles are ignored.
 void rt_particles3d_stop(void *o) {
     rt_particles3d *p = particles3d_checked(o);
-    if (p)
+    if (p) {
+        particles3d_repair_state(p);
         p->emitting = 0;
+    }
 }
 
 /// @brief Kill every live particle and reset the spawn accumulator. Doesn't change emit state.
@@ -1256,10 +1614,13 @@ void rt_particles3d_clear(void *o) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     p->count = 0;
+    p->owned_count = 0;
     p->accumulator = 0.0;
     p->simulation_residual = 0.0;
     p->terminal_count = 0;
+    p->owned_terminal_count = 0;
 }
 
 /// @brief Number of particles currently alive.
@@ -1267,6 +1628,7 @@ void rt_particles3d_clear(void *o) {
 /// @return Validated live-particle count, or zero for an invalid or corrupt handle.
 int64_t rt_particles3d_get_count(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     if (!p || !p->particles || p->max_particles <= 0 || p->count <= 0)
         return 0;
     return p->count > p->max_particles ? p->max_particles : p->count;
@@ -1283,6 +1645,7 @@ void rt_particles3d_set_seed(void *o, int64_t seed) {
     rt_particles3d *p = particles3d_checked(o);
     if (!p)
         return;
+    particles3d_repair_state(p);
     p->prng_state = (uint32_t)seed ? (uint32_t)seed : 0xA341316Cu;
 }
 
@@ -1291,6 +1654,7 @@ void rt_particles3d_set_seed(void *o, int64_t seed) {
 /// @return Current unsigned 32-bit PRNG state widened to `int64_t`, or zero for an invalid handle.
 int64_t rt_particles3d_get_seed(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p ? (int64_t)p->prng_state : 0;
 }
 
@@ -1302,6 +1666,7 @@ void rt_particles3d_get_position(void *o, double out[3]) {
     rt_particles3d *p = particles3d_checked(o);
     if (!out)
         return;
+    particles3d_repair_state(p);
     out[0] = p ? particles_clamp_abs_or(p->position[0], 0.0, PARTICLES3D_WORLD_ABS_MAX) : 0.0;
     out[1] = p ? particles_clamp_abs_or(p->position[1], 0.0, PARTICLES3D_WORLD_ABS_MAX) : 0.0;
     out[2] = p ? particles_clamp_abs_or(p->position[2], 0.0, PARTICLES3D_WORLD_ABS_MAX) : 0.0;
@@ -1312,6 +1677,7 @@ void rt_particles3d_get_position(void *o, double out[3]) {
 /// @return 1 when continuous emission is enabled, otherwise 0.
 int8_t rt_particles3d_get_emitting(void *o) {
     rt_particles3d *p = particles3d_checked(o);
+    particles3d_repair_state(p);
     return p && p->emitting ? 1 : 0;
 }
 
@@ -1326,9 +1692,12 @@ void rt_particles3d_set_render_final_frame(void *o, int8_t enabled) {
     rt_particles3d *ps = particles3d_checked(o);
     if (!ps)
         return;
+    particles3d_repair_state(ps);
     ps->render_final_frame = enabled ? 1 : 0;
-    if (!ps->render_final_frame)
+    if (!ps->render_final_frame) {
         ps->terminal_count = 0;
+        ps->owned_terminal_count = 0;
+    }
 }
 
 /// @brief Return whether endpoint snapshots are retained for one terminal frame.
@@ -1336,6 +1705,7 @@ void rt_particles3d_set_render_final_frame(void *o, int8_t enabled) {
 /// @return 1 when terminal-frame rendering is enabled, otherwise 0 (including invalid handles).
 int8_t rt_particles3d_get_render_final_frame(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
+    particles3d_repair_state(ps);
     return ps && ps->render_final_frame ? 1 : 0;
 }
 
@@ -1347,6 +1717,7 @@ int8_t rt_particles3d_get_render_final_frame(void *o) {
 ///   invalid handle.
 double rt_particles3d_get_dropped_time(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
+    particles3d_repair_state(ps);
     return ps && isfinite(ps->dropped_time_total) && ps->dropped_time_total > 0.0
                ? ps->dropped_time_total
                : 0.0;
@@ -1357,6 +1728,7 @@ double rt_particles3d_get_dropped_time(void *o) {
 /// @return Finite nonnegative dropped seconds, or zero for no drop/invalid handle.
 double rt_particles3d_get_last_dropped_time(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
+    particles3d_repair_state(ps);
     return ps && isfinite(ps->dropped_time_last_update) && ps->dropped_time_last_update > 0.0
                ? ps->dropped_time_last_update
                : 0.0;
@@ -1367,6 +1739,7 @@ double rt_particles3d_get_last_dropped_time(void *o) {
 /// @return Residual seconds in `[0, 1/60)`, or zero for an invalid/corrupt handle.
 double rt_particles3d_get_residual_time(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
+    particles3d_repair_state(ps);
     return ps && isfinite(ps->simulation_residual) && ps->simulation_residual > 0.0 &&
                    ps->simulation_residual < PARTICLES3D_SIMULATION_STEP
                ? ps->simulation_residual
@@ -1379,6 +1752,7 @@ void rt_particles3d_reset_dropped_time(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
     if (!ps)
         return;
+    particles3d_repair_state(ps);
     ps->dropped_time_total = 0.0;
     ps->dropped_time_last_update = 0.0;
 }
@@ -1387,24 +1761,29 @@ void rt_particles3d_reset_dropped_time(void *o) {
  * Spawning
  *=========================================================================*/
 
-/// @brief Initialize and append one new particle to the active pool. Silently no-ops
+/// @brief Initialize and append one particle to the active pool. Silently no-ops
 /// when the pool is full — caller (`update`) decides emission rate, this only handles
 /// the per-particle slot. Reads emitter shape (point / sphere / box), velocity
 /// distribution, lifetime range, and start-colour to populate the new entry. Position
 /// is emitter-origin plus a per-shape offset. Velocity is randomised within the
 /// configured spread, then scaled to the speed range; lifetime gets a random value in
 /// the configured min..max window so the pool desynchronises naturally.
-/// @param ps Particle system receiving the new live particle.
+/// @param ps Particle system receiving the live particle.
 static void spawn_particle(rt_particles3d *ps) {
     if (!ps || !ps->particles || ps->max_particles <= 0)
         return;
-    if (ps->count < 0)
+    if (ps->count < 0) {
         ps->count = 0;
-    if (ps->terminal_count < 0 || ps->terminal_count > ps->max_particles)
+        ps->owned_count = 0;
+    }
+    if (ps->terminal_count < 0 || ps->terminal_count > ps->max_particles) {
         ps->terminal_count = 0;
+        ps->owned_terminal_count = 0;
+    }
     if (ps->count >= ps->max_particles - ps->terminal_count)
         return;
     vgfx3d_particle_t *p = &ps->particles[ps->count++];
+    ps->owned_count = ps->count;
 
     /* Position: emitter origin + shape offset */
     p->pos[0] = particles_clamp_abs_or(ps->position[0], 0.0, PARTICLES3D_WORLD_ABS_MAX);
@@ -1460,8 +1839,10 @@ static void spawn_particle(rt_particles3d *ps) {
         ps->trail_len[slot] = 0;
         ps->trail_head[slot] = 0;
     }
-    if (!particle_state_is_finite(p))
+    if (!particle_state_is_finite(p)) {
         ps->count--;
+        ps->owned_count = ps->count;
+    }
 }
 
 /// @brief Spawn `count` particles immediately (in addition to any continuous emission). Useful
@@ -1470,14 +1851,23 @@ static void spawn_particle(rt_particles3d *ps) {
 /// @param count Requested number of particles; spawning stops when the fixed pool is full.
 void rt_particles3d_burst(void *o, int64_t count) {
     rt_particles3d *ps = particles3d_checked(o);
-    if (!ps || count <= 0)
+    if (!ps)
         return;
-    if (ps->count < 0)
+    particles3d_repair_state(ps);
+    if (count <= 0)
+        return;
+    if (ps->count < 0) {
         ps->count = 0;
-    if (ps->count > ps->max_particles)
+        ps->owned_count = 0;
+    }
+    if (ps->count > ps->max_particles) {
         ps->count = ps->max_particles;
-    if (ps->terminal_count < 0 || ps->terminal_count > ps->max_particles - ps->count)
+        ps->owned_count = ps->count;
+    }
+    if (ps->terminal_count < 0 || ps->terminal_count > ps->max_particles - ps->count) {
         ps->terminal_count = 0;
+        ps->owned_terminal_count = 0;
+    }
     int64_t available =
         (int64_t)ps->max_particles - (int64_t)ps->count - (int64_t)ps->terminal_count;
     if (available <= 0)
@@ -1498,6 +1888,7 @@ void rt_particles3d_rebase_origin(void *o, double dx, double dy, double dz) {
     rt_particles3d *ps = particles3d_checked(o);
     if (!ps)
         return;
+    particles3d_repair_state(ps);
     double delta[3] = {particles_clamp_abs_or(dx, 0.0, PARTICLES3D_WORLD_ABS_MAX),
                        particles_clamp_abs_or(dy, 0.0, PARTICLES3D_WORLD_ABS_MAX),
                        particles_clamp_abs_or(dz, 0.0, PARTICLES3D_WORLD_ABS_MAX)};
@@ -1529,6 +1920,7 @@ void rt_particles3d_rebase_origin(void *o, double dx, double dy, double dz) {
         int32_t slot = particles3d_terminal_slot(ps, i);
         if (slot < 0) {
             ps->terminal_count = 0;
+            ps->owned_terminal_count = 0;
             break;
         }
         vgfx3d_particle_t *terminal = &ps->particles[slot];
@@ -1722,17 +2114,25 @@ void rt_particles3d_update(void *o, double delta_time) {
     rt_particles3d *ps = particles3d_checked(o);
     if (!ps)
         return;
+    particles3d_repair_state(ps);
     ps->dropped_time_last_update = 0.0;
     if (!isfinite(delta_time) || delta_time <= 0.0 || !ps->particles || ps->max_particles <= 0)
         return;
-    if (ps->count < 0)
+    if (ps->count < 0) {
         ps->count = 0;
-    if (ps->count > ps->max_particles)
+        ps->owned_count = 0;
+    }
+    if (ps->count > ps->max_particles) {
         ps->count = ps->max_particles;
-    if (ps->terminal_count < 0 || ps->terminal_count > ps->max_particles - ps->count)
+        ps->owned_count = ps->count;
+    }
+    if (ps->terminal_count < 0 || ps->terminal_count > ps->max_particles - ps->count) {
         ps->terminal_count = 0;
+        ps->owned_terminal_count = 0;
+    }
     /* A terminal snapshot represents exactly the interval between two valid Update calls. */
     ps->terminal_count = 0;
+    ps->owned_terminal_count = 0;
     if (!isfinite(ps->simulation_residual) || ps->simulation_residual < 0.0 ||
         ps->simulation_residual >= PARTICLES3D_SIMULATION_STEP)
         ps->simulation_residual = 0.0;
@@ -1957,10 +2357,12 @@ static int particles3d_ensure_sort_keys(rt_particles3d *ps, int32_t count) {
     int32_t target_capacity;
     if (!ps || count <= 0)
         return 0;
-    target_capacity = ps->max_particles > count ? ps->max_particles : count;
+    particles3d_repair_state(ps);
+    target_capacity = ps->owned_max_particles > count ? ps->owned_max_particles : count;
     if (target_capacity <= 0)
         return 0;
-    if (ps->sort_key_capacity >= target_capacity && ps->sort_keys && ps->sort_scratch)
+    if (ps->owned_sort_key_capacity >= target_capacity && ps->owned_sort_keys &&
+        ps->owned_sort_scratch)
         return 1;
     if ((size_t)target_capacity > SIZE_MAX / sizeof(particle3d_sort_key)) {
         rt_trap("Particles3D.Draw: sort key allocation overflow");
@@ -1977,12 +2379,16 @@ static int particles3d_ensure_sort_keys(rt_particles3d *ps, int32_t count) {
         rt_trap("Particles3D.Draw: sort key allocation failed");
         return 0;
     }
-    free(ps->sort_keys);
-    free(ps->sort_scratch);
-    ps->sort_keys = new_keys;
-    ps->sort_scratch = new_scratch;
-    ps->sort_key_capacity = target_capacity;
-    ps->sort_key_grow_count++;
+    free(ps->owned_sort_keys);
+    free(ps->owned_sort_scratch);
+    ps->owned_sort_keys = new_keys;
+    ps->owned_sort_scratch = new_scratch;
+    ps->owned_sort_key_capacity = target_capacity;
+    ps->owned_sort_key_grow_count++;
+    ps->sort_keys = ps->owned_sort_keys;
+    ps->sort_scratch = ps->owned_sort_scratch;
+    ps->sort_key_capacity = ps->owned_sort_key_capacity;
+    ps->sort_key_grow_count = ps->owned_sort_key_grow_count;
     return 1;
 }
 
@@ -1991,7 +2397,8 @@ static int particles3d_ensure_sort_keys(rt_particles3d *ps, int32_t count) {
 /// @return Current retained sort-key capacity, or zero for an invalid handle.
 int64_t rt_particles3d_test_sort_key_capacity(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
-    return ps ? ps->sort_key_capacity : 0;
+    particles3d_repair_state(ps);
+    return ps ? ps->owned_sort_key_capacity : 0;
 }
 
 /// @brief Test hook: number of persistent alpha-sort key buffer growth operations.
@@ -1999,7 +2406,8 @@ int64_t rt_particles3d_test_sort_key_capacity(void *o) {
 /// @return Number of successful persistent sort-buffer growth operations, or zero if invalid.
 uint64_t rt_particles3d_test_sort_key_grow_count(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
-    return ps ? ps->sort_key_grow_count : 0;
+    particles3d_repair_state(ps);
+    return ps ? ps->owned_sort_key_grow_count : 0;
 }
 
 /// @brief Ensure the emitter-owned compact particle instance scratch can hold @p count records.
@@ -2013,35 +2421,42 @@ uint64_t rt_particles3d_test_sort_key_grow_count(void *o) {
 static int particles3d_ensure_instance_scratch(rt_particles3d *ps, int32_t count) {
     int32_t target_capacity;
     vgfx3d_particle_instance_t *grown;
-    if (!ps || count <= 0 || count > ps->max_particles)
+    if (!ps || count <= 0)
         return 0;
-    if (ps->instance_scratch && ps->instance_scratch_capacity >= count)
+    particles3d_repair_state(ps);
+    if (count > ps->owned_max_particles)
+        return 0;
+    if (ps->owned_instance_scratch && ps->owned_instance_scratch_capacity >= count)
         return 1;
 
-    target_capacity = ps->instance_scratch_capacity > 0 ? ps->instance_scratch_capacity : 64;
-    if (target_capacity > ps->max_particles)
-        target_capacity = ps->max_particles;
+    target_capacity =
+        ps->owned_instance_scratch_capacity > 0 ? ps->owned_instance_scratch_capacity : 64;
+    if (target_capacity > ps->owned_max_particles)
+        target_capacity = ps->owned_max_particles;
     while (target_capacity < count) {
-        if (target_capacity > ps->max_particles / 2) {
-            target_capacity = ps->max_particles;
+        if (target_capacity > ps->owned_max_particles / 2) {
+            target_capacity = ps->owned_max_particles;
             break;
         }
         target_capacity *= 2;
     }
     if (target_capacity < count ||
-        (size_t)target_capacity > SIZE_MAX / sizeof(*ps->instance_scratch)) {
+        (size_t)target_capacity > SIZE_MAX / sizeof(*ps->owned_instance_scratch)) {
         rt_trap("Particles3D.Draw: compact instance allocation overflow");
         return 0;
     }
-    grown = (vgfx3d_particle_instance_t *)realloc(ps->instance_scratch,
+    grown = (vgfx3d_particle_instance_t *)realloc(ps->owned_instance_scratch,
                                                   (size_t)target_capacity * sizeof(*grown));
     if (!grown) {
         rt_trap("Particles3D.Draw: compact instance allocation failed");
         return 0;
     }
-    ps->instance_scratch = grown;
-    ps->instance_scratch_capacity = target_capacity;
-    ps->instance_scratch_grow_count++;
+    ps->owned_instance_scratch = grown;
+    ps->owned_instance_scratch_capacity = target_capacity;
+    ps->owned_instance_scratch_grow_count++;
+    ps->instance_scratch = ps->owned_instance_scratch;
+    ps->instance_scratch_capacity = ps->owned_instance_scratch_capacity;
+    ps->instance_scratch_grow_count = ps->owned_instance_scratch_grow_count;
     return 1;
 }
 
@@ -2052,17 +2467,19 @@ static int particles3d_ensure_instance_scratch(rt_particles3d *ps, int32_t count
 /// @return Current compact-instance capacity, or zero for an invalid handle.
 int64_t rt_particles3d_test_instance_scratch_capacity(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
-    return ps ? ps->instance_scratch_capacity : 0;
+    particles3d_repair_state(ps);
+    return ps ? ps->owned_instance_scratch_capacity : 0;
 }
 
 /// @brief Test hook returning the number of compact-instance scratch growth operations.
-/// @details The counter changes only after a successful realloc and therefore distinguishes
+/// @details The counter changes only after successful growth and therefore distinguishes
 ///   retained-buffer reuse from per-frame scratch reconstruction.
 /// @param o Particles3D handle.
 /// @return Number of successful compact-instance scratch growth operations, or zero if invalid.
 uint64_t rt_particles3d_test_instance_scratch_grow_count(void *o) {
     rt_particles3d *ps = particles3d_checked(o);
-    return ps ? ps->instance_scratch_grow_count : 0;
+    particles3d_repair_state(ps);
+    return ps ? ps->owned_instance_scratch_grow_count : 0;
 }
 
 /// @brief Lazily create the system's shared unlit white particle material in @p *slot.
@@ -2098,12 +2515,16 @@ static int particles3d_ensure_overflow_draw_slots(rt_particles3d *ps, int32_t ne
     uint32_t *vertex_caps;
     uint32_t *index_caps;
     void **materials;
-    if (!ps || needed < 0 || ps->overflow_draw_slot_capacity < 0)
+    if (!ps || needed < 0)
         return 0;
-    old_capacity = ps->overflow_draw_slot_capacity;
-    if (old_capacity > 0 && (!ps->overflow_draw_vertices || !ps->overflow_draw_indices ||
-                             !ps->overflow_draw_vertex_capacity ||
-                             !ps->overflow_draw_index_capacity || !ps->overflow_draw_materials))
+    particles3d_repair_state(ps);
+    old_capacity = ps->owned_overflow_draw_slot_capacity;
+    if (old_capacity < 0)
+        return 0;
+    if (old_capacity > 0 &&
+        (!ps->owned_overflow_draw_vertices || !ps->owned_overflow_draw_indices ||
+         !ps->owned_overflow_draw_vertex_capacity || !ps->owned_overflow_draw_index_capacity ||
+         !ps->owned_overflow_draw_materials))
         return 0;
     if (needed <= old_capacity)
         return 1;
@@ -2115,11 +2536,11 @@ static int particles3d_ensure_overflow_draw_slots(rt_particles3d *ps, int32_t ne
         }
         new_capacity *= 2;
     }
-    if ((size_t)new_capacity > SIZE_MAX / sizeof(*ps->overflow_draw_vertices) ||
-        (size_t)new_capacity > SIZE_MAX / sizeof(*ps->overflow_draw_indices) ||
-        (size_t)new_capacity > SIZE_MAX / sizeof(*ps->overflow_draw_vertex_capacity) ||
-        (size_t)new_capacity > SIZE_MAX / sizeof(*ps->overflow_draw_index_capacity) ||
-        (size_t)new_capacity > SIZE_MAX / sizeof(*ps->overflow_draw_materials))
+    if ((size_t)new_capacity > SIZE_MAX / sizeof(*ps->owned_overflow_draw_vertices) ||
+        (size_t)new_capacity > SIZE_MAX / sizeof(*ps->owned_overflow_draw_indices) ||
+        (size_t)new_capacity > SIZE_MAX / sizeof(*ps->owned_overflow_draw_vertex_capacity) ||
+        (size_t)new_capacity > SIZE_MAX / sizeof(*ps->owned_overflow_draw_index_capacity) ||
+        (size_t)new_capacity > SIZE_MAX / sizeof(*ps->owned_overflow_draw_materials))
         return 0;
 
     vertices = (vgfx3d_vertex_t **)calloc((size_t)new_capacity, sizeof(*vertices));
@@ -2136,21 +2557,30 @@ static int particles3d_ensure_overflow_draw_slots(rt_particles3d *ps, int32_t ne
         return 0;
     }
     if (old_capacity > 0) {
-        memcpy(vertices, ps->overflow_draw_vertices, (size_t)old_capacity * sizeof(*vertices));
-        memcpy(indices, ps->overflow_draw_indices, (size_t)old_capacity * sizeof(*indices));
+        memcpy(
+            vertices, ps->owned_overflow_draw_vertices, (size_t)old_capacity * sizeof(*vertices));
+        memcpy(indices, ps->owned_overflow_draw_indices, (size_t)old_capacity * sizeof(*indices));
         memcpy(vertex_caps,
-               ps->overflow_draw_vertex_capacity,
+               ps->owned_overflow_draw_vertex_capacity,
                (size_t)old_capacity * sizeof(*vertex_caps));
         memcpy(index_caps,
-               ps->overflow_draw_index_capacity,
+               ps->owned_overflow_draw_index_capacity,
                (size_t)old_capacity * sizeof(*index_caps));
-        memcpy(materials, ps->overflow_draw_materials, (size_t)old_capacity * sizeof(*materials));
+        memcpy(materials,
+               ps->owned_overflow_draw_materials,
+               (size_t)old_capacity * sizeof(*materials));
     }
-    free(ps->overflow_draw_vertices);
-    free(ps->overflow_draw_indices);
-    free(ps->overflow_draw_vertex_capacity);
-    free(ps->overflow_draw_index_capacity);
-    free(ps->overflow_draw_materials);
+    free(ps->owned_overflow_draw_vertices);
+    free(ps->owned_overflow_draw_indices);
+    free(ps->owned_overflow_draw_vertex_capacity);
+    free(ps->owned_overflow_draw_index_capacity);
+    free(ps->owned_overflow_draw_materials);
+    ps->owned_overflow_draw_vertices = vertices;
+    ps->owned_overflow_draw_indices = indices;
+    ps->owned_overflow_draw_vertex_capacity = vertex_caps;
+    ps->owned_overflow_draw_index_capacity = index_caps;
+    ps->owned_overflow_draw_materials = materials;
+    ps->owned_overflow_draw_slot_capacity = new_capacity;
     ps->overflow_draw_vertices = vertices;
     ps->overflow_draw_indices = indices;
     ps->overflow_draw_vertex_capacity = vertex_caps;
@@ -2186,35 +2616,53 @@ static int particles3d_prepare_draw_slot(vgfx3d_vertex_t **draw_vertices,
                                          vgfx3d_vertex_t **out_vertices,
                                          uint32_t **out_indices,
                                          void **out_material) {
+    vgfx3d_vertex_t *new_vertices = NULL;
+    uint32_t *new_indices = NULL;
+    int grow_vertices;
+    int grow_indices;
     if (!draw_vertices || !draw_indices || !vertex_capacity || !index_capacity || !draw_materials ||
         slot < 0 || !out_vertices || !out_indices || !out_material)
         return 0;
-    if (vert_count > vertex_capacity[slot]) {
-        vgfx3d_vertex_t *grown;
-        if ((size_t)vert_count > SIZE_MAX / sizeof(*grown))
-            return 0;
-        grown =
-            (vgfx3d_vertex_t *)realloc(draw_vertices[slot], (size_t)vert_count * sizeof(*grown));
-        if (!grown)
-            return 0;
-        draw_vertices[slot] = grown;
-        vertex_capacity[slot] = vert_count;
-    }
-    if (idx_count > index_capacity[slot]) {
-        uint32_t *grown;
-        if ((size_t)idx_count > SIZE_MAX / sizeof(*grown))
-            return 0;
-        grown = (uint32_t *)realloc(draw_indices[slot], (size_t)idx_count * sizeof(*grown));
-        if (!grown)
-            return 0;
-        draw_indices[slot] = grown;
-        index_capacity[slot] = idx_count;
-    }
     if (!particles3d_ensure_material(&draw_materials[slot]))
         return 0;
+    grow_vertices = vert_count > vertex_capacity[slot] || (vert_count > 0 && !draw_vertices[slot]);
+    grow_indices = idx_count > index_capacity[slot] || (idx_count > 0 && !draw_indices[slot]);
+    if (grow_vertices) {
+        if ((size_t)vert_count > SIZE_MAX / sizeof(*new_vertices))
+            return 0;
+        new_vertices = (vgfx3d_vertex_t *)malloc((size_t)vert_count * sizeof(*new_vertices));
+        if (!new_vertices)
+            return 0;
+    }
+    if (grow_indices) {
+        if ((size_t)idx_count > SIZE_MAX / sizeof(*new_indices)) {
+            free(new_vertices);
+            return 0;
+        }
+        new_indices = (uint32_t *)malloc((size_t)idx_count * sizeof(*new_indices));
+        if (!new_indices) {
+            free(new_vertices);
+            return 0;
+        }
+    }
+    if (grow_vertices) {
+        free(draw_vertices[slot]);
+        draw_vertices[slot] = new_vertices;
+        new_vertices = NULL;
+        vertex_capacity[slot] = vert_count;
+    }
+    if (grow_indices) {
+        free(draw_indices[slot]);
+        draw_indices[slot] = new_indices;
+        new_indices = NULL;
+        index_capacity[slot] = idx_count;
+    }
     *out_vertices = draw_vertices[slot];
     *out_indices = draw_indices[slot];
     *out_material = draw_materials[slot];
+    /* Both staging allocations have escaped into retained owner-array slots. Cppcheck does not
+     * model ownership transfer through an indexed pointer-to-pointer parameter. */
+    // cppcheck-suppress memleak
     return 1;
 }
 
@@ -2280,6 +2728,7 @@ static int particles3d_acquire_draw_storage(rt_particles3d *ps,
                                             int *out_canvas_owned) {
     int32_t slot;
     int64_t frame_serial;
+    int prepared;
     if (!ps || !canvas || !out_vertices || !out_indices || !out_material || !out_canvas_owned)
         return 0;
     *out_vertices = NULL;
@@ -2293,34 +2742,43 @@ static int particles3d_acquire_draw_storage(rt_particles3d *ps,
     }
     if (ps->draw_slots_used < 0 || ps->draw_slots_used == INT32_MAX)
         return 0;
-    slot = ps->draw_slots_used++;
-    if (slot < PARTICLES3D_DRAW_SLOT_COUNT)
-        return particles3d_prepare_draw_slot(ps->draw_vertices,
-                                             ps->draw_indices,
-                                             ps->draw_vertex_capacity,
-                                             ps->draw_index_capacity,
-                                             ps->draw_materials,
+    slot = ps->draw_slots_used;
+    if (slot < PARTICLES3D_DRAW_SLOT_COUNT) {
+        prepared = particles3d_prepare_draw_slot(ps->owned_draw_vertices,
+                                                 ps->owned_draw_indices,
+                                                 ps->owned_draw_vertex_capacity,
+                                                 ps->owned_draw_index_capacity,
+                                                 ps->owned_draw_materials,
+                                                 slot,
+                                                 vert_count,
+                                                 idx_count,
+                                                 out_vertices,
+                                                 out_indices,
+                                                 out_material);
+        particles3d_repair_refs(ps);
+        if (prepared)
+            ps->draw_slots_used++;
+        return prepared;
+    }
+
+    slot -= PARTICLES3D_DRAW_SLOT_COUNT;
+    if (!particles3d_ensure_overflow_draw_slots(ps, slot + 1))
+        return 0;
+    prepared = particles3d_prepare_draw_slot(ps->owned_overflow_draw_vertices,
+                                             ps->owned_overflow_draw_indices,
+                                             ps->owned_overflow_draw_vertex_capacity,
+                                             ps->owned_overflow_draw_index_capacity,
+                                             ps->owned_overflow_draw_materials,
                                              slot,
                                              vert_count,
                                              idx_count,
                                              out_vertices,
                                              out_indices,
                                              out_material);
-
-    slot -= PARTICLES3D_DRAW_SLOT_COUNT;
-    if (!particles3d_ensure_overflow_draw_slots(ps, slot + 1))
-        return 0;
-    return particles3d_prepare_draw_slot(ps->overflow_draw_vertices,
-                                         ps->overflow_draw_indices,
-                                         ps->overflow_draw_vertex_capacity,
-                                         ps->overflow_draw_index_capacity,
-                                         ps->overflow_draw_materials,
-                                         slot,
-                                         vert_count,
-                                         idx_count,
-                                         out_vertices,
-                                         out_indices,
-                                         out_material);
+    particles3d_repair_refs(ps);
+    if (prepared)
+        ps->draw_slots_used++;
+    return prepared;
 }
 
 /// @brief Build a row-major model matrix that translates by @p origin (identity rotation/scale).
@@ -2502,15 +2960,21 @@ void rt_particles3d_draw(void *o, void *canvas3d, void *camera) {
     rt_camera3d *cam = rt_camera3d_checked_or_stack(camera);
     if (!ps || !canvas || !cam)
         return;
-    particles3d_repair_refs(ps);
+    particles3d_repair_state(ps);
     if (!ps->particles || ps->max_particles <= 0)
         return;
-    if (ps->count < 0)
+    if (ps->count < 0) {
         ps->count = 0;
-    if (ps->count > ps->max_particles)
+        ps->owned_count = 0;
+    }
+    if (ps->count > ps->max_particles) {
         ps->count = ps->max_particles;
-    if (ps->terminal_count < 0 || ps->terminal_count > ps->max_particles - ps->count)
+        ps->owned_count = ps->count;
+    }
+    if (ps->terminal_count < 0 || ps->terminal_count > ps->max_particles - ps->count) {
         ps->terminal_count = 0;
+        ps->owned_terminal_count = 0;
+    }
     for (int32_t i = 0; i < ps->count;) {
         if (particle_state_is_finite(&ps->particles[i])) {
             i++;
@@ -2522,6 +2986,7 @@ void rt_particles3d_draw(void *o, void *canvas3d, void *camera) {
         int32_t slot = particles3d_terminal_slot(ps, i);
         if (slot < 0 || !particle_state_is_finite(&ps->particles[slot])) {
             ps->terminal_count = 0;
+            ps->owned_terminal_count = 0;
             break;
         }
     }

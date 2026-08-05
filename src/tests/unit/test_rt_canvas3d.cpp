@@ -7867,10 +7867,12 @@ static void test_particles3d_getters_sanitize_corrupt_private_state() {
     EXPECT_EQ(rt_particles3d_get_emitting(particles_obj), 1);
 
     particles->count = 99;
-    EXPECT_EQ(rt_particles3d_get_count(particles_obj), 4);
+    EXPECT_EQ(rt_particles3d_get_count(particles_obj), 0);
+    EXPECT_EQ(particles->count, 0);
 
     particles->max_particles = -1;
     EXPECT_EQ(rt_particles3d_get_count(particles_obj), 0);
+    EXPECT_EQ(particles->max_particles, 4);
 
     PASS();
 }
