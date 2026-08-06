@@ -1736,6 +1736,12 @@ static void test_postfx_readback_policy_helpers(void) {
                 "Presented snapshot is invalidated when Present fails");
     EXPECT_TRUE(vgfx3d_d3d11_should_keep_presented_snapshot(0, 1) == 0,
                 "Presented snapshot is invalidated when the pre-present copy fails");
+    EXPECT_TRUE(vgfx3d_d3d11_present_status_confirms_display(0) == 1,
+                "Exact S_OK confirms a displayed D3D11 frame");
+    EXPECT_TRUE(vgfx3d_d3d11_present_status_confirms_display(1) == 0,
+                "Informational DXGI success statuses do not count as displayed frames");
+    EXPECT_TRUE(vgfx3d_d3d11_present_status_confirms_display(-1) == 0,
+                "Failed DXGI status values do not count as displayed frames");
 
     EXPECT_TRUE(
         vgfx3d_d3d11_choose_readback_kind(1, 1, 0, 1, 1, 1, 1, 1, 1, VGFX3D_D3D11_TARGET_SCENE) ==
@@ -2421,6 +2427,31 @@ static void test_d3d11_backend_source_contracts(void) {
                 "D3D11 diagnostics remain initialized when CRT formatting fails");
     EXPECT_TRUE(strstr(source, "if (hr != S_OK)") != NULL,
                 "Present status codes do not publish an unconfirmed displayed-frame snapshot");
+    EXPECT_TRUE(strstr(source,
+                       "static void d3d11_present_swapchain_classified(d3d11_context_t *ctx, int "
+                       "offscreen) {\n"
+                       "    if (!ctx)\n"
+                       "        return;\n"
+                       "    ctx->stats.present_path = 0;\n"
+                       "    if (!ctx->swap_chain)\n"
+                       "        return;\n"
+                       "    if (!d3d11_present_swapchain(ctx))") != NULL,
+                "D3D11 clears stale present-path telemetry before every swapchain availability or "
+                "status check");
+    EXPECT_TRUE(
+        text_appears_in_order_after(source,
+                                    "if (!cmd->geometry_key || cmd->geometry_revision == 0)",
+                                    "D3D11_INITIAL_DYNAMIC_IB_SIZE))",
+                                    "&ctx->stats.mesh_stream_uploads"),
+        "D3D11 stream-upload telemetry commits after both buffer uploads succeed");
+    EXPECT_TRUE(count_text(source,
+                           "if (SUCCEEDED(d3d11_record_frame_device_status(ctx, "
+                           "\"DrawIndexed") >= 2u,
+                "D3D11 draw telemetry commits only while the device remains healthy");
+    EXPECT_TRUE(strstr(source,
+                       "out_stats->default_framebuffer_writable = "
+                       "ctx->swap_chain && ctx->rtv ? 1 : 0;") != NULL,
+                "D3D11 reports whether its default framebuffer is currently writable");
     EXPECT_TRUE(strstr(source, "D3D11_TEXTURE_CACHE_MAX_ENTRIES 4096") != NULL &&
                     strstr(source, "D3D11_CUBEMAP_CACHE_MAX_ENTRIES 256") != NULL,
                 "D3D11 bounds one-frame texture and cubemap cache-table growth");

@@ -1172,7 +1172,7 @@ static HRESULT d3d11_rasterizer_state_result(HRESULT hr,
 static void d3d11_destroy_ctx(void *ctx_ptr);
 static void d3d11_log_hresult(const char *msg, HRESULT hr);
 static void d3d11_log_shader_diagnostics(const char *stage, ID3DBlob *diagnostics, int failed);
-static void d3d11_present_swapchain(d3d11_context_t *ctx);
+static int d3d11_present_swapchain(d3d11_context_t *ctx);
 static int d3d11_snapshot_backbuffer_for_readback(d3d11_context_t *ctx);
 static void d3d11_bind_render_targets(d3d11_context_t *ctx);
 static void d3d11_unbind_draw_resources(d3d11_context_t *ctx);
@@ -1606,12 +1606,13 @@ static uint64_t d3d11_get_frame_gpu_time_us(void *ctx_ptr) {
 /// failures during window resize / device removal are expected and the
 /// next frame typically recovers.
 /// @param[in,out] ctx Backend context owning the swap chain and presented snapshot.
-static void d3d11_present_swapchain(d3d11_context_t *ctx) {
+/// @return One only when `Present` returns exact `S_OK`; otherwise zero.
+static int d3d11_present_swapchain(d3d11_context_t *ctx) {
     HRESULT hr;
     int snapshot_ok;
 
     if (!ctx || !ctx->swap_chain)
-        return;
+        return 0;
     snapshot_ok = d3d11_snapshot_backbuffer_for_readback(ctx);
     hr = IDXGISwapChain_Present(ctx->swap_chain, ctx->present_sync_interval, 0);
     if (hr != S_OK) {
@@ -1622,10 +1623,11 @@ static void d3d11_present_swapchain(d3d11_context_t *ctx) {
         /* Success-status codes such as DXGI_STATUS_OCCLUDED do not confirm that the captured
          * backbuffer reached the display. Do not expose that copy as a presented-frame snapshot. */
         ctx->presented_color_valid = 0;
-        return;
+        return 0;
     }
     ctx->presented_color_valid =
         (int8_t)vgfx3d_d3d11_should_keep_presented_snapshot(snapshot_ok, 1);
+    return vgfx3d_d3d11_present_status_confirms_display((int32_t)hr);
 }
 
 /// @brief Runtime-compile an HLSL shader entry point to bytecode.
@@ -2525,7 +2527,6 @@ static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
         !d3d11_checked_mul_size((size_t)index_count, sizeof(uint32_t), &index_bytes))
         return 0;
     if (!cmd->geometry_key || cmd->geometry_revision == 0) {
-        d3d11_stats_count(&ctx->stats.mesh_stream_uploads);
         if (!d3d11_upload_dynamic_buffer(ctx,
                                          &ctx->dynamic_vb,
                                          &ctx->dynamic_vb_size,
@@ -2541,6 +2542,7 @@ static int d3d11_acquire_mesh_buffers(d3d11_context_t *ctx,
                                          index_bytes,
                                          D3D11_INITIAL_DYNAMIC_IB_SIZE))
             return 0;
+        d3d11_stats_count(&ctx->stats.mesh_stream_uploads);
         *out_vb = ctx->dynamic_vb;
         *out_ib = ctx->dynamic_ib;
         return 1;
@@ -2973,6 +2975,7 @@ static void d3d11_get_backend_stats(void *ctx_ptr, vgfx3d_backend_stats_t *out_s
     if (!ctx)
         return;
     *out_stats = ctx->stats;
+    out_stats->default_framebuffer_writable = ctx->swap_chain && ctx->rtv ? 1 : 0;
 }
 
 /// @brief Return D3D11 feature bits that depend on the concrete backend.

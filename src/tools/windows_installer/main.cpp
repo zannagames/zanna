@@ -5,15 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file main.cpp
-/// @brief Provides the Unicode Win32 entry point for setup and maintenance operations.
-///
-/// Help and launch self-test modes do not require a package overlay. Package verification and log
-/// initialization precede lifecycle mutation. Automation output is either complete or reported as
-/// an error, and explicit output files are replaced atomically. Fatal diagnostics reach inherited
-/// standard error and, outside quiet mode, an interactive dialog.
-///
-/// CommandLineToArgvW memory and the COM apartment are released before process exit.
+// File: src/tools/windows_installer/main.cpp
+// Purpose: Provide the Unicode Win32 entry point for setup and maintenance operations.
+// Key invariants:
+//   - Package verification and log initialization precede every lifecycle mutation.
+//   - Automation output is atomic, and fatal diagnostics remain visible in quiet mode.
+// Ownership/Lifetime:
+//   - CommandLineToArgvW storage and the entry-thread COM apartment are released before exit.
+//   - Entry-point exception boundaries contain every allocation and lifecycle failure.
+// Links: WindowsInstallerHost.hpp, WindowsInstallerUpdate.hpp
 //
 //===----------------------------------------------------------------------===//
 
@@ -28,6 +28,7 @@
 #include <climits>
 #include <exception>
 #include <filesystem>
+#include <new>
 #include <stdexcept>
 #include <string>
 
@@ -89,8 +90,9 @@ bool writeUtf8(HANDLE handle, const std::string &utf8) {
 /// @return Converted message or a stable fallback for empty or invalid input.
 std::wstring safeWideDiagnostic(const char *message) noexcept {
     try {
-        return message ? zanna::installer::utf8ToWide(message)
-                       : L"The installer encountered an empty diagnostic message.";
+        return message && message[0] != '\0'
+                   ? zanna::installer::utf8ToWide(message)
+                   : L"The installer encountered an empty diagnostic message.";
     } catch (...) {
         return L"The installer encountered an invalid diagnostic message.";
     }
@@ -157,7 +159,19 @@ void writeFileAtomically(const fs::path &destination, std::wstring_view text) {
         failure = GetLastError();
     }
     if (failure != ERROR_SUCCESS) {
-        DeleteFileW(temporary.c_str());
+        DWORD cleanupFailure = ERROR_SUCCESS;
+        if (!DeleteFileW(temporary.c_str())) {
+            const DWORD error = GetLastError();
+            if (error != ERROR_FILE_NOT_FOUND && error != ERROR_PATH_NOT_FOUND)
+                cleanupFailure = error;
+        }
+        if (cleanupFailure != ERROR_SUCCESS) {
+            throw std::runtime_error(zanna::installer::wideToUtf8(
+                L"Cannot publish the automation output file: " +
+                zanna::installer::formatWindowsError(failure) +
+                L"; temporary automation output file could not be removed: " +
+                zanna::installer::formatWindowsError(cleanupFailure)));
+        }
         throwOutputError(L"Cannot publish the automation output file", failure);
     }
 }
@@ -185,41 +199,77 @@ bool samePath(const fs::path &left, const fs::path &right) {
     const std::wstring leftText = fs::absolute(left).lexically_normal().wstring();
     const std::wstring rightText = fs::absolute(right).lexically_normal().wstring();
     if (leftText.size() <= static_cast<size_t>(INT_MAX) &&
-        rightText.size() <= static_cast<size_t>(INT_MAX) &&
-        CompareStringOrdinal(leftText.data(),
-                             static_cast<int>(leftText.size()),
-                             rightText.data(),
-                             static_cast<int>(rightText.size()),
-                             TRUE) == CSTR_EQUAL) {
-        return true;
+        rightText.size() <= static_cast<size_t>(INT_MAX)) {
+        const int comparison = CompareStringOrdinal(leftText.data(),
+                                                    static_cast<int>(leftText.size()),
+                                                    rightText.data(),
+                                                    static_cast<int>(rightText.size()),
+                                                    TRUE);
+        if (comparison == CSTR_EQUAL)
+            return true;
+        if (comparison == 0)
+            throw std::runtime_error("cannot compare protected installer session paths");
     }
 
-    HANDLE leftHandle = CreateFileW(left.c_str(),
+    HANDLE leftHandle = CreateFileW(leftText.c_str(),
                                     FILE_READ_ATTRIBUTES,
                                     FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                     nullptr,
                                     OPEN_EXISTING,
                                     FILE_FLAG_BACKUP_SEMANTICS,
                                     nullptr);
-    HANDLE rightHandle = CreateFileW(right.c_str(),
+    const DWORD leftOpenError = leftHandle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    HANDLE rightHandle = CreateFileW(rightText.c_str(),
                                      FILE_READ_ATTRIBUTES,
                                      FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                                      nullptr,
                                      OPEN_EXISTING,
                                      FILE_FLAG_BACKUP_SEMANTICS,
                                      nullptr);
+    const DWORD rightOpenError =
+        rightHandle == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
     BY_HANDLE_FILE_INFORMATION leftInfo{};
     BY_HANDLE_FILE_INFORMATION rightInfo{};
-    const bool equal = leftHandle != INVALID_HANDLE_VALUE && rightHandle != INVALID_HANDLE_VALUE &&
-                       GetFileInformationByHandle(leftHandle, &leftInfo) &&
-                       GetFileInformationByHandle(rightHandle, &rightInfo) &&
-                       leftInfo.dwVolumeSerialNumber == rightInfo.dwVolumeSerialNumber &&
-                       leftInfo.nFileIndexHigh == rightInfo.nFileIndexHigh &&
-                       leftInfo.nFileIndexLow == rightInfo.nFileIndexLow;
-    if (leftHandle != INVALID_HANDLE_VALUE)
-        CloseHandle(leftHandle);
-    if (rightHandle != INVALID_HANDLE_VALUE)
-        CloseHandle(rightHandle);
+    DWORD identityError = ERROR_SUCCESS;
+    const auto missing = [](DWORD error) {
+        return error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND;
+    };
+    if (leftHandle == INVALID_HANDLE_VALUE && !missing(leftOpenError))
+        identityError = leftOpenError;
+    if (identityError == ERROR_SUCCESS && rightHandle == INVALID_HANDLE_VALUE &&
+        !missing(rightOpenError)) {
+        identityError = rightOpenError;
+    }
+    bool equal = false;
+    if (identityError == ERROR_SUCCESS && leftHandle != INVALID_HANDLE_VALUE &&
+        rightHandle != INVALID_HANDLE_VALUE) {
+        if (!GetFileInformationByHandle(leftHandle, &leftInfo)) {
+            identityError = GetLastError();
+        } else if (!GetFileInformationByHandle(rightHandle, &rightInfo)) {
+            identityError = GetLastError();
+        } else {
+            equal = leftInfo.dwVolumeSerialNumber == rightInfo.dwVolumeSerialNumber &&
+                    leftInfo.nFileIndexHigh == rightInfo.nFileIndexHigh &&
+                    leftInfo.nFileIndexLow == rightInfo.nFileIndexLow;
+        }
+    }
+    DWORD closeError = ERROR_SUCCESS;
+    if (leftHandle != INVALID_HANDLE_VALUE && !CloseHandle(leftHandle))
+        closeError = GetLastError();
+    if (rightHandle != INVALID_HANDLE_VALUE && !CloseHandle(rightHandle) &&
+        closeError == ERROR_SUCCESS) {
+        closeError = GetLastError();
+    }
+    if (identityError != ERROR_SUCCESS) {
+        throw std::runtime_error(
+            zanna::installer::wideToUtf8(L"cannot inspect a protected installer session path: " +
+                                         zanna::installer::formatWindowsError(identityError)));
+    }
+    if (closeError != ERROR_SUCCESS) {
+        throw std::runtime_error(
+            zanna::installer::wideToUtf8(L"cannot close a protected installer session path: " +
+                                         zanna::installer::formatWindowsError(closeError)));
+    }
     return equal;
 }
 
@@ -255,28 +305,45 @@ void showFatal(const zanna::installer::HostOptions *options,
                         MB_OK | MB_ICONERROR | MB_SETFOREGROUND);
         }
     } catch (...) {
+        static constexpr char kFallbackUtf8[] = "Zanna setup encountered a fatal error.\r\n";
         static constexpr wchar_t kFallback[] = L"Zanna setup encountered a fatal error.";
+        DWORD written = 0;
+        (void)WriteFile(GetStdHandle(STD_ERROR_HANDLE),
+                        kFallbackUtf8,
+                        static_cast<DWORD>(sizeof(kFallbackUtf8) - 1U),
+                        &written,
+                        nullptr);
         if (!options || options->uiLevel != zanna::installer::UiLevel::Quiet)
             MessageBoxW(nullptr, kFallback, L"Zanna Tools Installer", MB_OK | MB_ICONERROR);
     }
 }
 
-} // namespace
+/// @brief Establish per-monitor-v2 DPI behavior unless the process already has a manifest policy.
+/// @return @c true when the requested context is active or process policy was already fixed.
+bool initializeDpiAwareness() noexcept {
+    SetLastError(ERROR_SUCCESS);
+    if (SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2))
+        return true;
+    return GetLastError() == ERROR_ACCESS_DENIED;
+}
 
 /// @brief Initialize process services and dispatch the requested installer operation.
 /// @param instance Current module instance used by native installer surfaces.
 /// @return Stable installer process exit code.
-int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+int dispatchInstaller(HINSTANCE instance, zanna::installer::HostOptions &options) {
     const ComApartment comApartment;
-    SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+    const bool dpiAwarenessAvailable = initializeDpiAwareness();
     INITCOMMONCONTROLSEX controls{sizeof(controls), ICC_STANDARD_CLASSES | ICC_PROGRESS_CLASS};
     const bool commonControlsAvailable = InitCommonControlsEx(&controls) != FALSE;
 
     int argc = 0;
     wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
-    if (!argv)
+    if (!argv) {
+        showFatal(nullptr,
+                  L"Zanna Tools Installer",
+                  L"Windows could not parse the installer command line.");
         return zanna::installer::kExitInvalidCommandLine;
-    zanna::installer::HostOptions options;
+    }
     for (int i = 1; i < argc; ++i) {
         if (_wcsicmp(argv[i], L"/quiet") == 0 || _wcsicmp(argv[i], L"/silent") == 0) {
             options.uiLevel = zanna::installer::UiLevel::Quiet;
@@ -286,20 +353,39 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     try {
         options = zanna::installer::parseCommandLine(argc, argv);
     } catch (const std::exception &ex) {
-        const std::wstring message = safeWideDiagnostic(ex.what());
+        std::wstring message = safeWideDiagnostic(ex.what());
+        const bool releaseFailed = LocalFree(argv) != nullptr;
+        if (releaseFailed)
+            message += L"\r\nWindows could not release the parsed command-line storage.";
         showFatal(&options, L"Zanna Tools Installer", message);
-        LocalFree(argv);
-        return zanna::installer::kExitInvalidCommandLine;
+        return releaseFailed ? zanna::installer::kExitFatalError
+                             : zanna::installer::kExitInvalidCommandLine;
     }
-    LocalFree(argv);
+    if (LocalFree(argv) != nullptr) {
+        showFatal(&options,
+                  L"Zanna Tools Installer",
+                  L"Windows could not release the parsed command-line storage.");
+        return zanna::installer::kExitFatalError;
+    }
     if (options.operation == zanna::installer::Operation::Help) {
         const std::wstring help = zanna::installer::commandLineHelp();
-        if (!writeInherited(GetStdHandle(STD_OUTPUT_HANDLE), help))
-            MessageBoxW(nullptr, help.c_str(), L"Zanna Tools Installer Help", MB_OK);
+        if (!writeInherited(GetStdHandle(STD_OUTPUT_HANDLE), help) &&
+            MessageBoxW(nullptr, help.c_str(), L"Zanna Tools Installer Help", MB_OK) == 0) {
+            showFatal(&options,
+                      L"Zanna Tools Installer",
+                      L"Windows could not display or write the installer help text.");
+            return zanna::installer::kExitFatalError;
+        }
         return zanna::installer::kExitSuccess;
     }
     if (options.operation == zanna::installer::Operation::SelfTest)
         return zanna::installer::kExitSuccess;
+    if (!dpiAwarenessAvailable) {
+        showFatal(&options,
+                  L"Zanna Tools Installer",
+                  L"Windows per-monitor DPI awareness could not be initialized.");
+        return zanna::installer::kExitFatalError;
+    }
     if (!comApartment.available()) {
         showFatal(&options,
                   L"Zanna Tools Installer",
@@ -322,9 +408,11 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
             return zanna::installer::kExitSuccess;
         }
         zanna::installer::Logger logger;
-        logger.open(options.logPath.empty()
+        const bool useExclusiveDefaultLog = options.logPath.empty();
+        logger.open(useExclusiveDefaultLog
                         ? zanna::installer::defaultLogPath(package.metadata.identifier)
-                        : options.logPath);
+                        : options.logPath,
+                    useExclusiveDefaultLog);
         logger.info(L"Zanna native installer session started");
         logger.info(L"Package: " + zanna::installer::utf8ToWide(package.metadata.identifier) +
                     L" " + zanna::installer::utf8ToWide(package.metadata.version) + L" " +
@@ -364,6 +452,43 @@ int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
     } catch (const std::exception &ex) {
         const std::wstring message = safeWideDiagnostic(ex.what());
         showFatal(&options, L"Zanna Tools Installer", message);
+        return zanna::installer::kExitFatalError;
+    }
+}
+
+/// @brief Contain every C++ failure at the executable boundary while retaining quiet-mode policy.
+/// @param instance Current module instance.
+/// @return Stable installer process exit code.
+int runInstaller(HINSTANCE instance) {
+    zanna::installer::HostOptions options;
+    try {
+        return dispatchInstaller(instance, options);
+    } catch (const std::bad_alloc &) {
+        showFatal(&options,
+                  L"Zanna Tools Installer",
+                  L"The installer does not have enough memory to continue.");
+    } catch (const std::exception &ex) {
+        showFatal(&options, L"Zanna Tools Installer", safeWideDiagnostic(ex.what()));
+    } catch (...) {
+        showFatal(&options,
+                  L"Zanna Tools Installer",
+                  L"The installer encountered an unexpected fatal error.");
+    }
+    return zanna::installer::kExitFatalError;
+}
+
+} // namespace
+
+/// @brief Enter the Unicode Windows installer without allowing exceptions across the OS ABI.
+/// @param instance Current module instance.
+/// @return Stable installer process exit code.
+int WINAPI wWinMain(HINSTANCE instance, HINSTANCE, PWSTR, int) {
+    try {
+        return runInstaller(instance);
+    } catch (...) {
+        showFatal(nullptr,
+                  L"Zanna Tools Installer",
+                  L"The installer could not initialize its fatal-error handler.");
         return zanna::installer::kExitFatalError;
     }
 }

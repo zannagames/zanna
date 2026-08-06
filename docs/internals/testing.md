@@ -155,6 +155,14 @@ accepted range `4096` through `16777216`). A timeout counts as a successful
 interactive smoke only after the complete Windows process tree is terminated
 and the root process is reaped.
 
+External `ZANNA_DEMO_ROOT`, `ZANNA_DEMO_BIN_DIR`, and `ZANNA_DEMO_MANIFEST`
+values are resolved relative to the repository root when not absolute. Source,
+output, manifest, host-tool build, and target build paths must be non-reparse
+and non-overlapping. Destructive `--clean` is intentionally narrower: it is
+allowed only when the output is exactly `<demo-root>\bin`. Demo inventories and
+`zanna.project` metadata must be bounded BOM-free UTF-8; inventory names and
+categories use the same lowercase grammar on every platform.
+
 ## Test Labels
 
 | Label | Count | Description |

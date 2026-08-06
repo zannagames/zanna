@@ -1,7 +1,7 @@
 ---
 status: active
 audience: developers
-last-verified: 2026-08-01
+last-verified: 2026-08-05
 ---
 
 # Windows Runtime Reliability Audit
@@ -26,6 +26,8 @@ repairs. A second 2026-07-26 pass adds WR-658 through WR-715: 58 checked-synchro
 Direct3D object-identity/state, TLS contract, installer-cleanup, and native-link repairs. The
 2026-08-01 alpha-hardening pass adds WR-716 through WR-805: 90 shared-preview IPC, Direct3D
 frame-transaction, installer/update, Win32 runtime, audio, window-adapter, and validation repairs.
+The 2026-08-05 alpha-hardening pass adds WR-806 through WR-880: 75 demo/build confinement,
+Direct3D telemetry, process/ConPTY teardown, Win32 input, installer, and WASAPI lifecycle repairs.
 
 | ID | Area | Finding and repair |
 |----|------|--------------------|
@@ -834,6 +836,81 @@ frame-transaction, installer/update, Win32 runtime, audio, window-adapter, and v
 | WR-803 | Windows CTest scenario table | The VM/native parity test declared a three-element `std::array` after growing to five scenarios, so clean MSVC all-target builds failed with excess initializers. The scenario table now uses a size-deduced native array and cannot drift from its initializer count. |
 | WR-804 | Windows warning-as-error fixture | The action-mapping malformed UTF-8 fixture cast `0xC0` and `0xAF` directly to signed `char`; MSVC reports constant truncation and the Windows build treats it as an error. Unsigned bytes are now reinterpreted only at the byte-string API boundary. |
 | WR-805 | Windows CTest Python discovery | Git Bash's `command -v python3` accepted a nonfunctional Microsoft Store application alias, causing `benchmark_compare_self_test` to fail despite an installed interpreter. Discovery now executes a probe, honors only a working `PYTHON` override, and falls back through `python3`, `python`, and the standard `py -3` launcher. |
+| WR-806 | demo clean authorization | The expected clean directory was assigned from the configured output itself, making the destructive-path equality check tautological. `--clean` now requires the exact conventional `<demo-root>\bin` directory. |
+| WR-807 | demo override resolution | Relative external demo-root, output, and manifest overrides depended on the caller's current directory. Every override is now resolved deterministically from the repository root. |
+| WR-808 | demo root indirection | External root validation assumed ancestry beneath the repository and could not inspect absolute paths for junctions or symlinks. A volume-rooted ancestor walk now rejects reparse points wherever the configured roots live. |
+| WR-809 | demo protected paths | A malicious output root could contain the repository, script directory, or demo source root and make later cleanup own protected content. Configuration now rejects every such containment relationship. |
+| WR-810 | demo target build overlap | Demo publication could overlap the target CMake build tree, allowing clean or rollback operations to damage compiler artifacts. Source and output roots must now be disjoint from the target build. |
+| WR-811 | demo host-build metadata | External output could overlap the host-tool build or own the manifest file. Both relationships are rejected before any tool build or directory creation. |
+| WR-812 | demo source/build overlap | An external demo source root could contain either build tree, letting recursive asset inspection traverse generated compiler content. Source and host/target build roots must now be disjoint. |
+| WR-813 | demo cross-architecture trees | Cross-compilation could reuse one CMake tree as both the host compiler and target runtime, invalidating executable provenance. Non-native targets now require distinct canonical trees. |
+| WR-814 | demo source identity | A missing source root or a top-level reparse-point directory reached later project discovery with ambiguous errors. The complete configuration now requires one existing ordinary directory. |
+| WR-815 | demo manifest encoding | BOM-driven decoder switching allowed UTF-16/UTF-32 or BOM-prefixed UTF-8 inventory files despite the shared manifest's UTF-8 contract. The Windows reader now requires strict BOM-free UTF-8. |
+| WR-816 | demo project encoding | `zanna.project` asset and language metadata had the same permissive decoder path. Project metadata now uses the same bounded, strict, BOM-free UTF-8 reader. |
+| WR-817 | demo manifest grammar | Windows trimmed rows and accepted uppercase/dotted names that the Unix manifest gate rejected, creating platform-dependent inventories. Rows now forbid surrounding whitespace and require canonical lowercase `[a-z0-9_-]` names. |
+| WR-818 | demo category grammar | Category matching was case-insensitive only on Windows. The driver now accepts exactly `games`, `apps`, or `3d`, matching the shared manifest contract. |
+| WR-819 | demo project language | A manifest entry could point at a non-Zia project and fail deep in native generation. Preflight now requires an exact `lang zia` declaration before staging. |
+| WR-820 | demo Windows path grammar | DEL plus `CLOCK$`, `CONIN$`, `CONOUT$`, and superscript COM/LPT device aliases bypassed the asset/path sanitizer. All are now rejected component-wise. |
+| WR-821 | demo nested assets | Top-level asset directives were checked, but recursively discovered child names bypassed the Windows component sanitizer. Every copied child is now validated before destination construction. |
+| WR-822 | demo worker bounds | An arbitrarily large `JOBS` value could exhaust process or handle resources. The demo driver now accepts only 1 through 1024 workers. |
+| WR-823 | demo host architecture | Missing native-architecture variables produced an indirect null-method failure, and `X86_64` aliases were rejected. Detection now fails explicitly when absent and canonicalizes the common alias to x64. |
+| WR-824 | demo configuration names | Build-type validation was unnecessarily case-sensitive even though CMake configuration names are canonicalizable. Accepted spellings are normalized to the four supported names. |
+| WR-825 | demo staging rejection | Failure immediately after private staging-directory creation could leave the rejected directory behind. Creation and reparse validation now unwind the private path on failure. |
+| WR-826 | demo failure isolation | A project-specific preflight exception aborted the entire inventory rather than contributing one failed demo. Each project now has a guarded build transaction and later entries continue. |
+| WR-827 | demo tree termination | A timed-out `taskkill` helper was killed without proving that helper itself was reaped. Both normal and forced helper shutdown now have bounded, checked waits. |
+| WR-828 | demo smoke truthfulness | Process-tree termination or smoke-directory deletion could fail while the demo was still reported successful. Either cleanup failure now fails that demo's smoke result. |
+| WR-829 | demo live-workspace cleanup | The runner removed its smoke directory even when the child tree might still be alive and using it. Uncertain process teardown now preserves the directory and reports why. |
+| WR-830 | demo preflight ordering | Root/manifest failures could occur only after a lengthy Zanna tool build or output mutation. Complete path validation and manifest decoding now precede build discovery and directory creation. |
+| WR-831 | Windows build toggles | Nonbinary values such as `true`, `yes`, or `2` silently took inconsistent branches across ten build controls. Every canonical toggle now accepts exactly `0` or `1`. |
+| WR-832 | Windows build workers | The canonical build accepted unbounded job counts. Build and CTest concurrency are now limited to the same explicit 1-through-1024 range. |
+| WR-833 | Windows Studio policy | Generic extra CMake arguments could override the driver's Studio ON/OFF choice and leave a stale skipped configuration cached into a later full build. The canonical policy flag is now appended last. |
+| WR-834 | D3D11 Present status | Any non-failing DXGI status could be treated as proof that a frame reached the display. A shared classifier now accepts only exact `S_OK`, excluding informational statuses such as occlusion. |
+| WR-835 | D3D11 present telemetry | On-screen/off-screen present counters advanced even when `Present` failed or returned a non-display status. Counters now advance only after confirmed display-path completion. |
+| WR-836 | D3D11 present path | A failed or occluded present retained the prior frame's path classification. The live statistic is now reset to unknown on every unconfirmed presentation. |
+| WR-837 | D3D11 stream uploads | `mesh_stream_uploads` advanced before either dynamic vertex or index upload, counting partial/failed work. Publication now follows successful completion of both buffers. |
+| WR-838 | D3D11 indexed draws | Main draw-call telemetry advanced even when the post-command device-health check reported removal. It now counts only a healthy `DrawIndexed` submission. |
+| WR-839 | D3D11 instanced draws | Instanced draw telemetry had the same post-device-loss overcount. `DrawIndexedInstanced` is counted only after the frame-status check succeeds. |
+| WR-840 | D3D11 framebuffer telemetry | `default_framebuffer_writable` was a stale copied field rather than current backend state. Stats snapshots now derive it from the live swapchain/RTV pair. |
+| WR-841 | Win32 process termination | Process and ConPTY teardown used unbounded waits after forced termination. A shared helper rejects `INFINITE` and enforces a finite post-termination deadline. |
+| WR-842 | Win32 termination races | A child exiting between poll and `TerminateProcess` could turn successful teardown into a false failure. The helper probes before termination and rechecks after a lost race. |
+| WR-843 | Win32 exit confirmation | Forced termination assumed the requested code became final without querying the process. Success now requires a signaled object, a readable exit code, and a value other than `STILL_ACTIVE`. |
+| WR-844 | Process allocation unwind | Failure to allocate the runtime Process object terminated the already-created child and then waited forever. This rare initialization unwind now uses bounded confirmed teardown. |
+| WR-845 | Process finalization | Close always replaced a naturally completed child's real status with synthetic code 1. It now polls first and preserves the exact confirmed exit code. |
+| WR-846 | Process wait state | `WAIT_FAILED` marked a possibly live child stopped, preventing finalization from attempting termination. The running flag now remains true until exit is proven. |
+| WR-847 | Process exit query | `GetExitCodeProcess` failure silently became `-1` with no runtime diagnostic. The adapter now traps while retaining deterministic output state. |
+| WR-848 | ConPTY allocation unwind | ConPTY object-allocation failure used the same potentially infinite post-termination wait. It now shares bounded confirmed process teardown. |
+| WR-849 | ConPTY finalization | ConPTY close discarded the native result and reported synthetic status after an unchecked kill. It now polls first, bounds termination, and preserves the confirmed exit code. |
+| WR-850 | ConPTY blocking waits | Waiting indefinitely before draining redirected terminal output could deadlock when the pipe filled; wait/query failures also falsely cleared liveness. The loop now drains between short waits and retires state only after proven exit. |
+| WR-851 | Win32 mouse capture | Failure to acquire capture left only a false flag with no diagnostic. The adapter now verifies `GetCapture` and publishes a platform error. |
+| WR-852 | Win32 capture release | Focus loss, cancel mode, button release, and destruction cleared ownership even when `ReleaseCapture` failed. One checked helper retains truthful state and diagnoses failure. |
+| WR-853 | Win32 raw-input teardown | Window destruction ignored failure to unregister the raw mouse device. The result is now checked and reported before state retirement. |
+| WR-854 | Win32 cursor teardown | Destruction ignored failure to release process-wide cursor confinement. `ClipCursor(NULL)` is now checked and diagnosed. |
+| WR-855 | Win32 cursor confinement | Client-rect query, screen mapping, clip release, and clip application failures collapsed into an unexplained false result. Each native stage now has an exact diagnostic. |
+| WR-856 | Win32 relative-input rollback | If clipping failed after raw-input registration, unregister rollback failure disappeared. Rollback is now checked and reported independently. |
+| WR-857 | Win32 fullscreen rollback | Failed enter/leave placement ignored both style restores and the rollback `SetWindowPos`. A transactional helper checks both styles and complete bounds and distinguishes rollback failure. |
+| WR-858 | installer cleanup parent handle | The detached cleaner could report successful parent synchronization even if its process handle failed to close. Parent-handle close now has a stable failure code. |
+| WR-859 | installer cleanup self handles | Both self-rename and self-delete handles were closed without checking the result. Each close is now required for success and has a distinct stable code. |
+| WR-860 | installer cleanup rename storage | A byte vector did not guarantee the alignment required by `FILE_RENAME_INFO`. Fixed-size explicitly aligned storage now backs the variable-length record. |
+| WR-861 | installer cleanup attributes | Clearing the only `READONLY` bit could pass zero attributes instead of the documented normal-file value. The helper now substitutes `FILE_ATTRIBUTE_NORMAL`. |
+| WR-862 | installer cleanup boundary | Command-line storage release failures and C++ allocation/unexpected exceptions could escape or look successful. They now map to observable stable exit codes at `wWinMain`. |
+| WR-863 | installer automation output | Failed atomic publication ignored failure to remove its private temporary file. The diagnostic now reports both the publication error and any retained staging path. |
+| WR-864 | installer session aliases | Path comparison/open/identity/close failures were interpreted as “not equal,” allowing inaccessible aliases to bypass executable/log/output protection. Every non-missing native failure now fails closed. |
+| WR-865 | installer default logs | A timestamp/PID default path was opened with `OPEN_ALWAYS`, so a pre-created temp file could capture the session. Tick-qualified names are now created exclusively; explicit user paths retain append behavior. |
+| WR-866 | installer fatal diagnostics | Empty exception strings suppressed the stable message, and allocation failure in diagnostic conversion had no allocation-free stderr path. Empty text now falls back and a fixed UTF-8 record remains available. |
+| WR-867 | installer startup boundary | DPI setup, command-line release, help delivery, and pre-package exceptions could fail silently or escape the OS callback. Startup now checks each result and contains all C++ failures while honoring quiet-mode policy. |
+| WR-868 | WASAPI join retry stop | Thread-join timeout/error recovery discarded `IAudioClient::Stop` HRESULTs. Both retry paths now record stop failures in diagnostics and backend statistics. |
+| WR-869 | WASAPI join retry signal | The same recovery paths ignored stop-event signaling failure. A checked event helper now covers timeout and wait-error retries. |
+| WR-870 | WASAPI worker handle | Join returned success and cleared its worker handle even when `CloseHandle` failed. Handle retirement is now conditional and failed close makes the join fail. |
+| WR-871 | WASAPI startup failure handshake | Worker COM initialization failure ignored inability to signal the readiness event, forcing an unexplained creator timeout. The signal is now checked with a stage-specific diagnostic. |
+| WR-872 | WASAPI initialization unwind | Four event-creation/service/thread failure paths closed render, stop, and ready handles unchecked. A common cleanup helper attempts every close and records each failure. |
+| WR-873 | WASAPI readiness wait | Timeout, native wait failure, and a worker-reported startup failure all collapsed into one message. Startup now preserves the exact failure class after safe worker teardown. |
+| WR-874 | WASAPI readiness handle | Successful startup discarded `CloseHandle` failure and continued with a leaked readiness handle. Close failure now aborts initialization after proving worker exit and unwinding resources. |
+| WR-875 | WASAPI start and shutdown | Audio-client start failure and normal shutdown used separate partially checked signal/stop/close sequences. Both now use the same checked lifecycle helpers and deterministic diagnostics. |
+| WR-876 | MSVC animation masks | Three inverse-mask casts in the former per-channel retarget copy path emitted C4310 constant-truncation warnings in the Windows all-target build. The superseding pose-based retarget solver removes that obsolete copy path and its warning-producing casts entirely. |
+| WR-877 | D3D11 absent-swapchain telemetry | Classified presentation returned before clearing `present_path` when the swap chain had already been retired, so a previous direct/offscreen classification could survive teardown. Every classified attempt now resets the live path before checking swapchain availability or status. |
+| WR-878 | Windows embedded demo assets | MSVC emits the runtime's empty `__declspec(selectany)` asset fallbacks as `COMDAT ANY`, but the native linker treated them as hard duplicates of generated strong asset blobs. Windows COFF resolution now lets an ordinary definition replace a selectany fallback in either object order and strips the losing COMDAT group. |
+| WR-879 | Win32 asynchronous termination | `Process.Kill()` could successfully begin asynchronous termination and an immediate `Destroy()` could issue a second `TerminateProcess` before the child became signaled. The second request then failed and teardown trapped without using its finite confirmation window. The shared helper now waits within that existing bound even when termination is already in flight and reports success only after exact exit confirmation. |
+| WR-880 | Windows application runtime packaging | Package-generated release executables imported app-local MSVC runtime DLLs from a private temporary path, while the build-tree compiler kept redistributables only for installation. Packaging therefore failed closed even on a complete developer build. The native support-host directory now mirrors the installed runtime closure, and the application builder may source only recognized numbered compiler runtimes from that trusted directory while ordinary DLLs remain application-adjacent. |
 
 ## Regression coverage
 
@@ -842,7 +919,8 @@ frame-transaction, installer/update, Win32 runtime, audio, window-adapter, and v
   entropy argument handling, strict Windows path transcoding, checked directory conversion,
   Unicode/non-inheritable stdio, deny-write snapshot sharing, durable flush/replace behavior,
   failure-atomic save and custom-TLS-root source contracts, signed-minimum atomic subtraction,
-  exact thread-handle joining, ordinal comparison, fail-closed deletion guards, processor-count
+  exact thread-handle joining, bounded asynchronous process-termination confirmation, ordinal
+  comparison, fail-closed deletion guards, processor-count
   validity, drive-root temp preservation, long environment-backed home paths, CRT-aware network
   workers, restricted child handle inheritance, checked capture/wait failures, explicit Unicode
   event creation, checked critical-section construction and parallel completion signaling,
@@ -888,6 +966,14 @@ frame-transaction, installer/update, Win32 runtime, audio, window-adapter, and v
 - `test_linker_platform_import_planners` verifies that the 64-bit stat and floating-remainder
   exports plus `_fdclass`/`_fdtest` map to UCRT, the reliability APIs map to Kernel32, and
   Windows-only names stay excluded from Linux and macOS.
+- `test_linker_symbol_resolver` verifies that an ordinary Windows COFF asset definition overrides
+  a `COMDAT ANY` selectany fallback in either object order without weakening other duplicate-symbol
+  or COMDAT-selection rules.
+- `test_packaging_WindowsPackageBuilder_all` verifies that package-generated applications can
+  bundle a numbered MSVC runtime from the validated native-host support directory while missing
+  ordinary or compiler DLL dependencies still fail closed. The opt-in
+  `windows_installer_user_smoke` and `windows_installer_crackman_smoke` tests exercise the complete
+  package/install/launch/uninstall lifecycle with those app-local runtime bytes.
 - `test_rt_scene_editor` preserves the full boxed signed-64-bit range in tiled properties;
   `test_basic_lexer` covers CRLF and lone-CR EOL normalization; and `test_rt_model3d` supplies its
   own strict-decoded JPEG fixture.
@@ -958,6 +1044,34 @@ The `.cmd` demo shim delegates to that canonical PowerShell implementation under
 remains mandatory for future changes in these adapters.
 
 ## Validation record
+
+Final Windows x64/MSVC alpha-hardening validation on 2026-08-05:
+
+- A no-skip clean `scripts/build_zanna_win.ps1` run rebuilt the complete warning-as-error Debug
+  tree, including the native Zanna Studio target. The default non-slow selection passed
+  1,853/1,853 CTests, and the run continued through strict platform-policy lint, runtime-surface
+  audit, every cross-platform host smoke, and installation. An independent replay of the
+  post-build gates passed all eight focused runtime-surface tests and accounted for 7,852 runtime
+  functions, 531 classes, and 9,198 header declarations; the install manifest contains 1,219
+  files.
+- Full integration exposed three defects that focused review did not: generated demo assets
+  conflicting with MSVC `selectany` fallbacks (WR-878), an asynchronous process-termination race
+  in the Studio phase-2/phase-3 test (WR-879), and missing app-local MSVC runtime closure in
+  generated application installers (WR-880). Each now has a focused regression, and the clean
+  canonical run passed from the corrected source.
+- The opt-in slow Windows installer lifecycle selection passed the per-user synthetic-package and
+  Crackman application tests in 6.16 and 8.40 seconds. The all-users test reported its expected
+  explicit skip because this test session is not elevated.
+- `powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build_demos_win.ps1 --clean
+  --run` rebuilt, PE-validated, privately launch-smoked, and atomically published all seven
+  curated native x64 demos in 57.2 seconds: Crackman, Chess, Action Slice, Game3D Starter,
+  Game3D Scenes, Overhaul Showcase, and Paint.
+- `clang-format --dry-run --Werror` passed for all 22 textually changed native files. The full
+  source-header audit passed for all 19 changed C/C++ sources, all three changed PowerShell files
+  parsed cleanly, `scripts/check_docs.sh` passed, strict changed-only platform lint passed, and
+  `git diff --check` exited zero. Rebuilding the three header-comment-touched translation units
+  and their dependents completed warning-free, and all six affected linker, installer-host,
+  lifecycle, and packaging CTests passed.
 
 Final alpha-hardening revalidation on Windows x64/MSVC on 2026-08-01:
 

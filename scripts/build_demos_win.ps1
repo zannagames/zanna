@@ -10,6 +10,7 @@
 # Key invariants:
 #   - The shared demo manifest is the single project inventory.
 #   - Host and target tool trees remain distinct for cross-architecture builds.
+#   - External source/output roots are disjoint from protected build and metadata paths.
 #   - Existing CMake trees are built without mutating their generator platform.
 #   - Build, asset-stage, and requested launch failures contribute to the final exit code.
 #   - Executables and assets publish together from a complete private directory.
@@ -121,12 +122,25 @@ function Test-PathWithin {
     return $candidateFull.StartsWith($prefix, [StringComparison]::OrdinalIgnoreCase)
 }
 
+function Test-PathsEqual {
+    param(
+        [Parameter(Mandatory = $true)][string]$Left,
+        [Parameter(Mandatory = $true)][string]$Right
+    )
+
+    return [string]::Equals(
+        [IO.Path]::GetFullPath($Left).TrimEnd('\', '/'),
+        [IO.Path]::GetFullPath($Right).TrimEnd('\', '/'),
+        [StringComparison]::OrdinalIgnoreCase)
+}
+
 function Read-SafeAutomationLines {
     param(
         [Parameter(Mandatory = $true)][string]$Path,
         [Parameter(Mandatory = $true)][string]$Description,
         [Parameter(Mandatory = $true)][int64]$MaximumBytes,
-        [int]$MaximumLineLength = 65536
+        [int]$MaximumLineLength = 65536,
+        [switch]$RequireUtf8
     )
 
     if (-not (Test-Path -LiteralPath $Path -PathType Leaf)) {
@@ -143,8 +157,26 @@ function Read-SafeAutomationLines {
         if ($stream.Length -gt $MaximumBytes) {
             throw "$Description changed to an oversized file: $Path"
         }
+        if ($RequireUtf8 -and $stream.Length -gt 0) {
+            $prefix = [byte[]]::new([Math]::Min(4, [int]$stream.Length))
+            $read = $stream.Read($prefix, 0, $prefix.Length)
+            $stream.Position = 0
+            $hasBom = ($read -ge 2 -and
+                       (($prefix[0] -eq 0xFF -and $prefix[1] -eq 0xFE) -or
+                        ($prefix[0] -eq 0xFE -and $prefix[1] -eq 0xFF))) -or
+                      ($read -ge 3 -and $prefix[0] -eq 0xEF -and
+                       $prefix[1] -eq 0xBB -and $prefix[2] -eq 0xBF) -or
+                      ($read -ge 4 -and
+                       (($prefix[0] -eq 0x00 -and $prefix[1] -eq 0x00 -and
+                         $prefix[2] -eq 0xFE -and $prefix[3] -eq 0xFF) -or
+                        ($prefix[0] -eq 0xFF -and $prefix[1] -eq 0xFE -and
+                         $prefix[2] -eq 0x00 -and $prefix[3] -eq 0x00)))
+            if ($hasBom) {
+                throw "$Description contains an unsupported byte-order mark: $Path"
+            }
+        }
         $reader = [IO.StreamReader]::new(
-            $stream, [Text.UTF8Encoding]::new($false, $true), $true, 4096, $true)
+            $stream, [Text.UTF8Encoding]::new($false, $true), (-not $RequireUtf8), 4096, $true)
         try {
             $lines = [Collections.Generic.List[string]]::new()
             while (-not $reader.EndOfStream) {
@@ -177,6 +209,7 @@ function Assert-SafeRelativeWindowsPath {
     }
     if ([string]::IsNullOrWhiteSpace($Path) -or [IO.Path]::IsPathRooted($Path) -or
         $Path.IndexOfAny([char[]](0..31)) -ge 0 -or
+        $Path.IndexOf([char]127) -ge 0 -or
         $Path.IndexOfAny([char[]]('<', '>', ':', '"', '|', '?', '*')) -ge 0) {
         throw "$Description must be a safe relative Windows path: $Path"
     }
@@ -189,7 +222,8 @@ function Assert-SafeRelativeWindowsPath {
             throw "$Description contains an unsafe component: $Path"
         }
         $deviceStem = $component.Split('.')[0]
-        if ($deviceStem -imatch '^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])$') {
+        if ($deviceStem -imatch
+            '^(CON|PRN|AUX|NUL|CLOCK\$|CONIN\$|CONOUT\$|COM(?:[1-9]|\u00B9|\u00B2|\u00B3)|LPT(?:[1-9]|\u00B9|\u00B2|\u00B3))$') {
             throw "$Description contains a reserved Windows device name: $Path"
         }
     }
@@ -209,10 +243,11 @@ function Invoke-CheckedNative {
 
 function Show-Usage {
     Write-Host "Usage: build_demos_win.ps1 [--clean] [--run|--skip-run] [--arch arm64|x64]"
-    Write-Host "  --clean      Remove existing binaries before building"
+    Write-Host "  --clean      Remove the conventional <demo-root>\bin contents before building"
     Write-Host "  --run        Launch each built demo for smoke validation"
     Write-Host "  --skip-run   Build only; skip launch validation (default)"
     Write-Host "  --arch       Target architecture (default: host, or ZANNA_DEMO_ARCH)"
+    Write-Host "  Environment: ZANNA_DEMO_ROOT, ZANNA_DEMO_BIN_DIR, and ZANNA_DEMO_MANIFEST"
 }
 
 $clean = $false
@@ -273,24 +308,35 @@ if (-not $toolBuildDirExplicit) {
     $toolBuildDirSetting = Join-Path $repoRoot "build"
 }
 
-$buildType = Get-EnvironmentValue -Name "ZANNA_BUILD_TYPE" -Default "Debug"
-if ($buildType -notin @("Debug", "Release", "RelWithDebInfo", "MinSizeRel")) {
-    throw "ZANNA_BUILD_TYPE must be Debug, Release, RelWithDebInfo, or MinSizeRel; received '$buildType'."
+$buildTypeValue = Get-EnvironmentValue -Name "ZANNA_BUILD_TYPE" -Default "Debug"
+$buildType = switch ($buildTypeValue.ToLowerInvariant()) {
+    "debug" { "Debug" }
+    "release" { "Release" }
+    "relwithdebinfo" { "RelWithDebInfo" }
+    "minsizerel" { "MinSizeRel" }
+    default { "" }
+}
+if ([string]::IsNullOrEmpty($buildType)) {
+    throw "ZANNA_BUILD_TYPE must be Debug, Release, RelWithDebInfo, or MinSizeRel; received '$buildTypeValue'."
 }
 $jobsValue = Get-EnvironmentValue -Name "JOBS" `
     -Default (Get-EnvironmentValue -Name "NUMBER_OF_PROCESSORS" -Default "8")
 $jobs = 0
-if (-not [int]::TryParse($jobsValue, [ref]$jobs) -or $jobs -lt 1) {
-    throw "JOBS must be a positive integer; received '$jobsValue'."
+if (-not [int]::TryParse($jobsValue, [ref]$jobs) -or $jobs -lt 1 -or $jobs -gt 1024) {
+    throw "JOBS must be an integer from 1 through 1024; received '$jobsValue'."
 }
 
 $nativeArchitecture = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITEW6432", "Process")
 if ([string]::IsNullOrWhiteSpace($nativeArchitecture)) {
     $nativeArchitecture = [Environment]::GetEnvironmentVariable("PROCESSOR_ARCHITECTURE", "Process")
 }
+if ([string]::IsNullOrWhiteSpace($nativeArchitecture)) {
+    throw "Cannot determine the native Windows host architecture."
+}
 $hostArch = switch ($nativeArchitecture.ToUpperInvariant()) {
     "ARM64" { "arm64" }
     "AMD64" { "x64" }
+    "X86_64" { "x64" }
     default {
         throw "Unsupported native Windows host architecture '$nativeArchitecture'."
     }
@@ -354,20 +400,20 @@ $demoRootSetting = [Environment]::GetEnvironmentVariable("ZANNA_DEMO_ROOT", "Pro
 if ([string]::IsNullOrWhiteSpace($demoRootSetting)) {
     $demoRoot = Join-Path $repoRoot "examples"
 } else {
-    $demoRoot = [IO.Path]::GetFullPath($demoRootSetting)
+    $demoRoot = Get-FullPath -Path $demoRootSetting -Base $repoRoot
 }
 $binDirSetting = [Environment]::GetEnvironmentVariable("ZANNA_DEMO_BIN_DIR", "Process")
 if ([string]::IsNullOrWhiteSpace($binDirSetting)) {
     $binDir = Join-Path $repoRoot "examples\bin"
 } else {
-    $binDir = [IO.Path]::GetFullPath($binDirSetting)
+    $binDir = Get-FullPath -Path $binDirSetting -Base $repoRoot
 }
-$expectedBinDir = [IO.Path]::GetFullPath($binDir)
+$cleanOwnedBinDir = [IO.Path]::GetFullPath((Join-Path $demoRoot "bin"))
 $manifestSetting = [Environment]::GetEnvironmentVariable("ZANNA_DEMO_MANIFEST", "Process")
 if ([string]::IsNullOrWhiteSpace($manifestSetting)) {
     $manifest = Join-Path $scriptRoot "demo_projects.list"
 } else {
-    $manifest = [IO.Path]::GetFullPath($manifestSetting)
+    $manifest = Get-FullPath -Path $manifestSetting -Base $repoRoot
 }
 
 function Resolve-ZannaExecutable {
@@ -529,6 +575,91 @@ function Assert-NoReparsePath {
     }
 }
 
+function Assert-NoReparseAbsolutePath {
+    param(
+        [Parameter(Mandatory = $true)][string]$Candidate,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    $candidateFull = [IO.Path]::GetFullPath($Candidate)
+    $volumeRoot = [IO.Path]::GetPathRoot($candidateFull)
+    if ([string]::IsNullOrWhiteSpace($volumeRoot)) {
+        throw "$Description has no absolute volume root: $candidateFull"
+    }
+    $current = $volumeRoot
+    $relative = $candidateFull.Substring($volumeRoot.Length)
+    $components = $relative.Split(
+        [char[]]@([IO.Path]::DirectorySeparatorChar, [IO.Path]::AltDirectorySeparatorChar),
+        [StringSplitOptions]::RemoveEmptyEntries)
+    foreach ($component in @([string]::Empty) + $components) {
+        if (-not [string]::IsNullOrEmpty($component)) {
+            $current = Join-Path $current $component
+        }
+        if (-not (Test-Path -LiteralPath $current)) {
+            continue
+        }
+        $item = Get-Item -LiteralPath $current -Force
+        if (($item.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+            throw "$Description traverses a reparse point: $current"
+        }
+    }
+}
+
+function Assert-PathsDoNotOverlap {
+    param(
+        [Parameter(Mandatory = $true)][string]$Left,
+        [Parameter(Mandatory = $true)][string]$Right,
+        [Parameter(Mandatory = $true)][string]$Description
+    )
+
+    if ((Test-PathWithin -Base $Left -Candidate $Right -AllowBase) -or
+        (Test-PathWithin -Base $Right -Candidate $Left -AllowBase)) {
+        throw "$Description paths must not overlap: '$Left' and '$Right'"
+    }
+}
+
+function Assert-DemoPathConfiguration {
+    Assert-NoReparseAbsolutePath -Candidate $repoRoot -Description "Repository root"
+    Assert-NoReparseAbsolutePath -Candidate $demoRoot -Description "Demo source root"
+    Assert-NoReparseAbsolutePath -Candidate $binDir -Description "Demo output root"
+    Assert-NoReparseAbsolutePath -Candidate $manifest -Description "Demo manifest"
+
+    if (-not (Test-Path -LiteralPath $demoRoot -PathType Container)) {
+        throw "Demo source root is missing or is not an ordinary directory: $demoRoot"
+    }
+    $demoRootItem = Get-Item -LiteralPath $demoRoot -Force
+    if (($demoRootItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "Demo source root must not be a reparse point: $demoRoot"
+    }
+    foreach ($protectedPath in @($repoRoot, $scriptRoot, $demoRoot)) {
+        if (Test-PathWithin -Base $binDir -Candidate $protectedPath -AllowBase) {
+            throw "Demo output root must not contain protected path '$protectedPath': $binDir"
+        }
+    }
+    Assert-PathsDoNotOverlap -Left $binDir -Right $buildDir `
+        -Description "Demo output and target build"
+    if (-not (Test-PathsEqual -Left $buildDir -Right $toolBuildDir)) {
+        Assert-PathsDoNotOverlap -Left $binDir -Right $toolBuildDir `
+            -Description "Demo output and host-tool build"
+    }
+    Assert-PathsDoNotOverlap -Left $binDir -Right $manifest `
+        -Description "Demo output and manifest"
+    Assert-PathsDoNotOverlap -Left $demoRoot -Right $buildDir `
+        -Description "Demo source and target build"
+    if (-not (Test-PathsEqual -Left $buildDir -Right $toolBuildDir)) {
+        Assert-PathsDoNotOverlap -Left $demoRoot -Right $toolBuildDir `
+            -Description "Demo source and host-tool build"
+    }
+    if ($demoArch -ne $hostArch -and
+        (Test-PathsEqual -Left $buildDir -Right $toolBuildDir)) {
+        throw "Cross-architecture demos require distinct host-tool and target build trees."
+    }
+    if ($clean -and -not (Test-PathsEqual -Left $binDir -Right $cleanOwnedBinDir)) {
+        throw ("ZANNA_DEMO_BIN_DIR must be set to the conventional owned output root " +
+               "'$cleanOwnedBinDir' before --clean can remove its contents; received '$binDir'.")
+    }
+}
+
 function Assert-NoReparseTree {
     param(
         [Parameter(Mandatory = $true)][string]$Root,
@@ -655,7 +786,6 @@ function Ensure-ZannaBuild {
     param(
         [Parameter(Mandatory = $true)][string]$Tree,
         [Parameter(Mandatory = $true)][string]$Architecture,
-        [Parameter(Mandatory = $true)][bool]$TreeIsExplicit,
         [Parameter(Mandatory = $true)][string]$Description
     )
 
@@ -725,6 +855,8 @@ function Copy-DemoAssetEntry {
         Assert-NoReparsePath -Base $DestinationRoot -Candidate $Destination `
             -Description "Demo asset destination"
         foreach ($child in Get-ChildItem -LiteralPath $Source -Force) {
+            Assert-SafeRelativeWindowsPath -Path $child.Name `
+                -Description "Demo asset entry name"
             Copy-DemoAssetEntry -Source $child.FullName `
                 -Destination (Join-Path $Destination $child.Name) `
                 -DestinationRoot $DestinationRoot -Ownership $Ownership
@@ -806,6 +938,8 @@ function Copy-DemoAsset {
         -Description "Demo asset destination"
     if (Test-Path -LiteralPath $source -PathType Container) {
         foreach ($child in Get-ChildItem -LiteralPath $source -Force) {
+            Assert-SafeRelativeWindowsPath -Path $child.Name `
+                -Description "Demo asset entry name"
             Copy-DemoAssetEntry -Source $child.FullName `
                 -Destination (Join-Path $destination $child.Name) `
                 -DestinationRoot $DestinationRoot -Ownership $Ownership
@@ -826,7 +960,7 @@ function Stage-DemoAssets {
 
     $projectFile = Join-Path $ProjectDir "zanna.project"
     foreach ($line in @(Read-SafeAutomationLines -Path $projectFile `
-            -Description "Demo project manifest" -MaximumBytes 1048576)) {
+            -Description "Demo project manifest" -MaximumBytes 1048576 -RequireUtf8)) {
         $trimmed = $line.Trim()
         if ($trimmed.Length -eq 0 -or $trimmed.StartsWith("#")) {
             continue
@@ -926,8 +1060,11 @@ function Stop-DemoProcessTree {
         if (-not $killer.WaitForExit($processStopTimeoutMilliseconds)) {
             try {
                 $killer.Kill()
+                if (-not $killer.WaitForExit($processStopTimeoutMilliseconds)) {
+                    throw "Windows process-tree terminator could not be reaped after Kill."
+                }
             } catch {
-                # The bounded wait failure remains authoritative.
+                throw "Windows process-tree termination exceeded its bounded wait: $($_.Exception.Message)"
             }
             throw "Windows process-tree termination exceeded its bounded wait."
         }
@@ -980,6 +1117,8 @@ function Test-DemoRun {
             [Collections.Generic.Dictionary[string, string]]::new(
                 [StringComparer]::OrdinalIgnoreCase)
         foreach ($child in Get-ChildItem -LiteralPath $SourceDirectory -Force) {
+            Assert-SafeRelativeWindowsPath -Path $child.Name `
+                -Description "Demo asset entry name"
             Copy-DemoAssetEntry -Source $child.FullName `
                 -Destination (Join-Path $runDirectory $child.Name) `
                 -DestinationRoot $runDirectory -Ownership $runAssetOwners
@@ -1043,17 +1182,29 @@ function Test-DemoRun {
         Write-DemoRunOutput -Label "stdout" -Path $stdoutPath
         Write-DemoRunOutput -Label "stderr" -Path $stderrPath
     } finally {
+        $processTreeStopped = $true
         if ($null -ne $process) {
             if (-not $process.HasExited) {
                 try {
                     Stop-DemoProcessTree -Process $process
                 } catch {
                     Write-Warning "Could not fully terminate demo '$Name': $($_.Exception.Message)"
+                    $succeeded = $false
+                    $processTreeStopped = $false
                 }
             }
             $process.Dispose()
         }
-        Remove-DemoRunDirectory -Path $runDirectory
+        if ($processTreeStopped) {
+            try {
+                Remove-DemoRunDirectory -Path $runDirectory
+            } catch {
+                Write-Warning "Could not remove demo smoke directory '$runDirectory': $($_.Exception.Message)"
+                $succeeded = $false
+            }
+        } else {
+            Write-Warning "Preserving demo smoke directory because its process tree may still be active: $runDirectory"
+        }
     }
     return $succeeded
 }
@@ -1076,6 +1227,18 @@ function Build-Demo {
         return $false
     }
     Assert-NoReparseTree -Root $ProjectDir -Description "Demo project tree"
+    $projectFile = Join-Path $ProjectDir "zanna.project"
+    $projectLanguage = ""
+    foreach ($projectLine in @(Read-SafeAutomationLines -Path $projectFile `
+            -Description "Demo project manifest" -MaximumBytes 1048576 -RequireUtf8)) {
+        if ($projectLine -match '^\s*lang\s+(\S+)') {
+            $projectLanguage = $Matches[1]
+            break
+        }
+    }
+    if ($projectLanguage -cne "zia") {
+        throw "Demo project '$Name' must declare 'lang zia' (found '$($projectLanguage.Trim())')."
+    }
 
     $outputDirectory = Join-Path $binDir $Name
     $output = Join-Path $outputDirectory "$Name.exe"
@@ -1084,9 +1247,20 @@ function Build-Demo {
     if (Test-Path -LiteralPath $stageDirectory) {
         throw "Cannot allocate a private demo staging directory: $stageDirectory"
     }
-    [void][IO.Directory]::CreateDirectory($stageDirectory)
-    Assert-NoReparsePath -Base $binDir -Candidate $stageDirectory `
-        -Description "Demo staging directory"
+    try {
+        [void][IO.Directory]::CreateDirectory($stageDirectory)
+        Assert-NoReparsePath -Base $binDir -Candidate $stageDirectory `
+            -Description "Demo staging directory"
+    } catch {
+        if (Test-Path -LiteralPath $stageDirectory) {
+            try {
+                Remove-DemoRunDirectoryEntry -Path $stageDirectory
+            } catch {
+                Write-Warning "Could not remove rejected demo staging directory: $stageDirectory"
+            }
+        }
+        throw
+    }
     $stage = Join-Path $stageDirectory "$Name.exe"
     $buildArguments = @("build", $ProjectDir, "--arch", $demoArch)
     if ($windowsO0Demos -icontains $Name) {
@@ -1156,6 +1330,10 @@ function Build-Demo {
     return $true
 }
 
+Assert-DemoPathConfiguration
+$manifestLines = @(Read-SafeAutomationLines -Path $manifest `
+        -Description "Demo project inventory" -MaximumBytes 1048576 -RequireUtf8)
+
 $previousBuildDir = [Environment]::GetEnvironmentVariable("ZANNA_BUILD_DIR", "Process")
 $env:ZANNA_BUILD_DIR = $buildDir
 Push-Location $repoRoot
@@ -1190,12 +1368,12 @@ try {
     }
     if (-not (Test-Path -LiteralPath $zanna -PathType Leaf)) {
         $zanna = Ensure-ZannaBuild -Tree $toolBuildDir -Architecture $hostArch `
-            -TreeIsExplicit $toolBuildDirExplicit -Description "host Zanna tool"
+            -Description "host Zanna tool"
     }
     if ($toolBuildDir -ine $buildDir -and
         -not (Test-Path -LiteralPath $targetZanna -PathType Leaf)) {
         $targetZanna = Ensure-ZannaBuild -Tree $buildDir -Architecture $demoArch `
-            -TreeIsExplicit $buildDirExplicit -Description "target-architecture Zanna runtime"
+            -Description "target-architecture Zanna runtime"
     }
     Assert-PortableExecutableArchitecture -Binary $zanna -Architecture $hostArch
     if ($toolBuildDir -ine $buildDir) {
@@ -1211,11 +1389,10 @@ try {
     } else {
         [void][IO.Directory]::CreateDirectory($binDir)
     }
-    Assert-NoReparsePath -Base $repoRoot -Candidate $binDir `
-        -Description "Demo output root"
+    Assert-NoReparseAbsolutePath -Candidate $binDir -Description "Demo output root"
     if ($clean) {
         Write-Host "Cleaning existing binaries..."
-        if ([IO.Path]::GetFullPath($binDir) -ne $expectedBinDir) {
+        if (-not (Test-PathsEqual -Left $binDir -Right $cleanOwnedBinDir)) {
             throw "Refusing to clean unexpected demo directory: $binDir"
         }
         foreach ($entry in Get-ChildItem -LiteralPath $binDir -Force) {
@@ -1235,25 +1412,28 @@ try {
     $seenProjects =
         [Collections.Generic.Dictionary[string, string]]::new(
             [StringComparer]::OrdinalIgnoreCase)
-    foreach ($line in @(Read-SafeAutomationLines -Path $manifest `
-            -Description "Demo project inventory" -MaximumBytes 1048576)) {
-        $trimmed = $line.Trim()
-        if ($trimmed.Length -eq 0 -or $trimmed.StartsWith("#")) {
+    foreach ($line in $manifestLines) {
+        if ($line.Length -eq 0 -or $line.StartsWith("#", [StringComparison]::Ordinal)) {
             continue
         }
         ++$entries
-        $fields = $trimmed.Split('|')
-        if ($fields.Count -ne 3) {
-            Write-Host "ERROR: invalid demo manifest entry: $trimmed"
+        if (-not [string]::Equals($line, $line.Trim(), [StringComparison]::Ordinal)) {
+            Write-Host "ERROR: Demo manifest rows must not have surrounding whitespace: $line"
             ++$failed
             continue
         }
-        $name = $fields[0].Trim()
-        $category = $fields[1].Trim()
-        $directory = $fields[2].Trim()
-        if ($name -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$' -or
-            $directory -notmatch '^[A-Za-z0-9][A-Za-z0-9._-]*$') {
-            Write-Host "ERROR: unsafe demo name or directory in manifest entry: $trimmed"
+        $fields = $line.Split('|')
+        if ($fields.Count -ne 3) {
+            Write-Host "ERROR: invalid demo manifest entry: $line"
+            ++$failed
+            continue
+        }
+        $name = $fields[0]
+        $category = $fields[1]
+        $directory = $fields[2]
+        if ($name -cnotmatch '^[a-z0-9][a-z0-9_-]*$' -or
+            $directory -cnotmatch '^[a-z0-9][a-z0-9_-]*$') {
+            Write-Host "ERROR: unsafe demo name or directory in manifest entry: $line"
             ++$failed
             continue
         }
@@ -1265,22 +1445,36 @@ try {
             continue
         }
         $seenNames[$name] = $true
-        if ($category -ieq "games") {
-            $categoryRoot = Join-Path $demoRoot "games"
-        } elseif ($category -ieq "apps") {
-            $categoryRoot = Join-Path $demoRoot "apps"
-        } elseif ($category -ieq "3d") {
-            # 3d carries the reference demos under examples\3d (they count
-            # as games in check_demo_projects.sh's ratio gate).
-            $categoryRoot = Join-Path $demoRoot "3d"
-        } else {
-            Write-Host "ERROR: invalid demo category '$category' for '$name'"
-            ++$failed
+        $categoryRoot = $null
+        switch -CaseSensitive ($category) {
+            "games" { $categoryRoot = Join-Path $demoRoot "games" }
+            "apps" { $categoryRoot = Join-Path $demoRoot "apps" }
+            "3d" {
+                # 3d carries the reference demos under examples\3d (they count
+                # as games in check_demo_projects.sh's ratio gate).
+                $categoryRoot = Join-Path $demoRoot "3d"
+            }
+            default {
+                Write-Host "ERROR: invalid demo category '$category' for '$name'"
+                ++$failed
+            }
+        }
+        if ($null -eq $categoryRoot) {
             continue
         }
         $projectDir = [IO.Path]::GetFullPath((Join-Path $categoryRoot $directory))
         if (-not (Test-PathWithin -Base $categoryRoot -Candidate $projectDir)) {
             Write-Host "ERROR: demo directory escapes its category for '$name'"
+            ++$failed
+            continue
+        }
+        try {
+            Assert-NoReparsePath -Base $demoRoot -Candidate $projectDir `
+                -Description "Demo project path"
+            Assert-PathsDoNotOverlap -Left $binDir -Right $projectDir `
+                -Description "Demo output and project '$name'"
+        } catch {
+            Write-Host "ERROR: $($_.Exception.Message)"
             ++$failed
             continue
         }
@@ -1291,7 +1485,15 @@ try {
             continue
         }
         $seenProjects[$projectDir] = $name
-        if (Build-Demo -Name $name -ProjectDir $projectDir) {
+        try {
+            $demoBuilt = Build-Demo -Name $name -ProjectDir $projectDir
+        } catch {
+            Write-Host "  ERROR: $($_.Exception.Message)"
+            Write-Host "  FAILED"
+            Write-Host ""
+            $demoBuilt = $false
+        }
+        if ($demoBuilt) {
             ++$succeeded
             $publishedPath = Join-Path (Join-Path $binDir $name) "$name.exe"
             $publishedExecutables.Add((Get-Item -LiteralPath $publishedPath -Force))

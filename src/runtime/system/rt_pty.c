@@ -68,6 +68,7 @@
 
 #if defined(_WIN32)
 #define WIN32_LEAN_AND_MEAN
+#include "rt_win32_wait.h"
 #include <wchar.h>
 #include <windows.h>
 #ifndef PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE
@@ -91,6 +92,8 @@ extern char **environ;
 #define PTY_BUFFER_INITIAL_SIZE 4096
 /// @brief Maximum retained unread terminal-output bytes.
 #define PTY_BUFFER_MAX_SIZE (16 * 1024 * 1024)
+/// @brief Maximum time finalization waits for an asynchronously terminated ConPTY child.
+#define PTY_WINDOWS_TERMINATE_WAIT_MS 5000u
 /// @brief Capacity of the per-thread PTY diagnostic buffer.
 #define PTY_LAST_ERROR_MAX 256
 
@@ -932,8 +935,9 @@ static rt_pty_impl *pty_open_impl(
 
     rt_pty_impl *pty = pty_alloc();
     if (!pty) {
-        if (TerminateProcess(pi.hProcess, 1))
-            (void)WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD ignored_exit_code = STILL_ACTIVE;
+        (void)rt_win32_terminate_process_bounded(
+            pi.hProcess, 1, PTY_WINDOWS_TERMINATE_WAIT_MS, &ignored_exit_code);
         close_handle(&pi.hThread);
         close_handle(&pi.hProcess);
         pty_close_pc(hpc);
@@ -981,24 +985,35 @@ static void pty_drain(rt_pty_impl *pty) {
 ///          and performs a final drain. Wait failure records -1 and updates the
 ///          thread-local diagnostic.
 /// @param pty Session to update.
-/// @param wait Nonzero for an infinite wait, zero for a nonblocking poll.
+/// @param wait Nonzero to drain and poll until completion, zero for one nonblocking poll.
 static void pty_poll_internal(rt_pty_impl *pty, int wait) {
     if (!pty || pty->destroyed)
         return;
     pty_drain(pty);
     if (!pty->running || !pty->process)
         return;
-    DWORD wait_ms = wait ? INFINITE : 0;
-    DWORD r = WaitForSingleObject(pty->process, wait_ms);
+    DWORD r = WAIT_TIMEOUT;
+    if (wait) {
+        do {
+            pty_drain(pty);
+            r = WaitForSingleObject(pty->process, 10);
+        } while (r == WAIT_TIMEOUT);
+    } else {
+        r = WaitForSingleObject(pty->process, 0);
+    }
     if (r == WAIT_OBJECT_0) {
         DWORD code = 0;
-        pty->exit_code = GetExitCodeProcess(pty->process, &code) ? (int64_t)code : -1;
+        if (GetExitCodeProcess(pty->process, &code)) {
+            pty->exit_code = (int64_t)code;
+        } else {
+            pty_set_last_win32_error("GetExitCodeProcess(ConPTY process) failed");
+            pty->exit_code = -1;
+        }
         pty->running = 0;
         pty_drain(pty);
     } else if (r == WAIT_FAILED) {
         pty_set_last_win32_error("WaitForSingleObject(ConPTY process) failed");
         pty->exit_code = -1;
-        pty->running = 0;
     }
 }
 
@@ -1052,11 +1067,16 @@ static int64_t pty_write_impl(rt_pty_impl *pty, const char *bytes, size_t len) {
 static void pty_close(rt_pty_impl *pty) {
     if (!pty || pty->destroyed)
         return;
+    pty_poll_internal(pty, 0);
     if (pty->running && pty->process) {
-        if (TerminateProcess(pty->process, 1))
-            (void)WaitForSingleObject(pty->process, INFINITE);
-        pty->running = 0;
-        pty->exit_code = 1;
+        DWORD exit_code = STILL_ACTIVE;
+        if (rt_win32_terminate_process_bounded(
+                pty->process, 1, PTY_WINDOWS_TERMINATE_WAIT_MS, &exit_code)) {
+            pty->running = 0;
+            pty->exit_code = (int64_t)exit_code;
+        } else {
+            pty_set_last_win32_error("Bounded ConPTY child termination failed");
+        }
     }
     pty_drain(pty);
     if (pty->hpc && pty_close_pc) {

@@ -1621,9 +1621,13 @@ static int d3d11_readback_rgba(
 /// @param[in] offscreen Nonzero when the frame reached the back buffer through the offscreen
 ///   scene target (post-FX composite or scene resolve) rather than direct swapchain rendering.
 static void d3d11_present_swapchain_classified(d3d11_context_t *ctx, int offscreen) {
-    if (!ctx || !ctx->swap_chain)
+    if (!ctx)
         return;
-    d3d11_present_swapchain(ctx);
+    ctx->stats.present_path = 0;
+    if (!ctx->swap_chain)
+        return;
+    if (!d3d11_present_swapchain(ctx))
+        return;
     if (offscreen) {
         d3d11_stats_count(&ctx->stats.offscreen_presents);
         ctx->stats.present_path = 2;

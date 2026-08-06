@@ -13,6 +13,8 @@
 //     The main payload is a DEFLATE-compressed inner ZIP expanded at install time.
 //   - Installer/uninstaller behavior is driven by an explicit package layout,
 //     not by parsing installer metadata at runtime.
+//   - App-local compiler runtimes come only from the application tree or the
+//     validated native-installer support directory.
 //   - All package construction happens inside Zanna; no external tools are used.
 //
 // Ownership/Lifetime:
@@ -1106,14 +1108,17 @@ std::string dllInstallRelativePath(const fs::path &exeDir, const fs::path &dllPa
                                        "Windows DLL dependency path");
 }
 
-/// @brief Transitively collect non-system DLLs that ship next to @p exePath.
+/// @brief Transitively collect non-system DLLs required by @p exePath.
 /// @details Breadth-first walks the import tables of the executable and each
-///          discovered local DLL, skipping known redistributable/system DLLs, and
-///          returns the adjacent files that must be bundled into the installer
-///          together with the install-relative paths they should keep.
+///          discovered DLL, skipping system DLLs. Ordinary dependencies must be
+///          adjacent to the application. Numbered MSVC runtimes may instead come
+///          from the native installer support directory, which mirrors the
+///          installed toolchain's trusted app-local runtime layout.
 /// @param exePath Windows PE executable being packaged.
+/// @param compilerRuntimeDir Trusted directory containing compiler redistributables.
 /// @return Local DLL dependencies with resolved source paths and install targets.
-std::vector<WindowsDllDependency> discoverAdjacentDllDependencies(const fs::path &exePath) {
+std::vector<WindowsDllDependency> discoverAdjacentDllDependencies(
+    const fs::path &exePath, const fs::path &compilerRuntimeDir) {
     std::vector<WindowsDllDependency> deps;
     const fs::path dir = exePath.parent_path();
     std::set<std::string> seen;
@@ -1131,6 +1136,15 @@ std::vector<WindowsDllDependency> discoverAdjacentDllDependencies(const fs::path
                 deps.push_back({*local, dllInstallRelativePath(dir, *local)});
                 queue.push_back(*local);
                 continue;
+            }
+            if (isAppLocalMsvcRuntimeDll(dll) && !compilerRuntimeDir.empty()) {
+                const auto compilerRuntime = findLocalDllCaseInsensitive(compilerRuntimeDir, dll);
+                if (compilerRuntime) {
+                    deps.push_back(
+                        {*compilerRuntime, dllInstallRelativePath(dir, *compilerRuntime)});
+                    queue.push_back(*compilerRuntime);
+                    continue;
+                }
             }
             throw std::runtime_error("Windows package executable imports non-system DLL '" + dll +
                                      "' but no adjacent DLL was found next to " +
@@ -2166,8 +2180,12 @@ void buildWindowsPackage(const WindowsBuildParams &params) {
                              true,
                              &installedManifestPaths);
 
+    const fs::path compilerRuntimeDir =
+        params.installerHostPath.empty()
+            ? fs::path{}
+            : zanna::filesystem::pathFromUtf8(params.installerHostPath).parent_path();
     std::vector<WindowsDllDependency> dllDependencies =
-        discoverAdjacentDllDependencies(executablePath);
+        discoverAdjacentDllDependencies(executablePath, compilerRuntimeDir);
     for (const auto &dllRelPath : pkg.windowsDlls) {
         const fs::path dllPath =
             resolvePackageSourcePath(projectRoot, dllRelPath, "Windows DLL dependency");

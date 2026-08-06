@@ -1081,6 +1081,10 @@ vgfx3d_d3d11_readback_kind_t vgfx3d_d3d11_choose_readback_kind(
     int postfx_has_effects,
     int has_scene_targets,
     vgfx3d_d3d11_target_kind_t current_target_kind);
+/// @brief Decide whether a DXGI Present status confirms that a frame reached the display path.
+/// @param[in] present_status Signed 32-bit HRESULT/status value returned by `Present`.
+/// @return One only for the exact `S_OK` value; informational success statuses are not counted.
+int vgfx3d_d3d11_present_status_confirms_display(int32_t present_status);
 /// @brief Decide whether a pre-present snapshot remains valid after Present returns.
 /// @param[in] snapshot_ok Snapshot result.
 /// @param[in] present_ok Present result.

@@ -11,7 +11,11 @@
 // Key invariants:
 //   - Strong > Weak > Undefined precedence
 //   - Multiple strong definitions of the same symbol = linker error
+//   - Regular COFF definitions override selectany/COMDAT ANY fallbacks
 //   - Archives re-scanned until fixed point (handles cross-archive deps)
+// Ownership/Lifetime:
+//   - Caller-owned object and archive collections are mutated in place during resolution.
+//   - Extracted archive members remain owned by the aggregate object list through final layout.
 // Links: codegen/common/linker/SymbolResolver.hpp
 //
 //===----------------------------------------------------------------------===//
@@ -644,6 +648,32 @@ static bool addObjSymbols(const ObjFile &obj,
                     eraseUndefinedVariants(sym.name);
                     continue;
                 }
+                if (platform == LinkPlatform::Windows && hasCandidateComdat &&
+                    candidateComdat.selection == ComdatSelection::Any &&
+                    comdatIt == comdatDefs.end()) {
+                    // MSVC emits __declspec(selectany) fallbacks as ordinary external symbols in
+                    // COMDAT ANY sections. A non-COMDAT definition is the intentional override;
+                    // keep it and discard the later selectany section as link.exe/lld-link do.
+                    if (comdatLosers) {
+                        comdatLosers->push_back(
+                            InputSectionKey{candidateComdat.objIdx, candidateComdat.secIdx});
+                    }
+                    eraseUndefinedVariants(sym.name);
+                    continue;
+                }
+                if (platform == LinkPlatform::Windows && !hasCandidateComdat &&
+                    comdatIt != comdatDefs.end() &&
+                    comdatIt->second.selection == ComdatSelection::Any) {
+                    // The regular definition arrived after the selectany fallback. Replace the
+                    // selected symbol before stripping the earlier COMDAT contribution.
+                    const InputSectionKey loser{comdatIt->second.objIdx, comdatIt->second.secIdx};
+                    setEntryFromSymbol(existing, sym, objIdx, GlobalSymEntry::Global);
+                    comdatDefs.erase(comdatIt);
+                    if (comdatLosers)
+                        comdatLosers->push_back(loser);
+                    eraseUndefinedVariants(sym.name);
+                    continue;
+                }
                 if (allowDuplicateStrongDefinition(
                         sym.name, platform, allowArchiveDefinitionPreference))
                     continue;
@@ -959,13 +989,8 @@ bool resolveSymbols(const std::vector<ObjFile> &initialObjects,
     archiveViews.reserve(archives.size());
     for (const Archive &archive : archives)
         archiveViews.push_back(&archive);
-    return resolveSymbols(initialObjects,
-                          archiveViews,
-                          globalSyms,
-                          allObjects,
-                          dynamicSyms,
-                          err,
-                          platform);
+    return resolveSymbols(
+        initialObjects, archiveViews, globalSyms, allObjects, dynamicSyms, err, platform);
 }
 
 /// @brief Strip losing COMDAT groups and redirect displaced winner symbols.

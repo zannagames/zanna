@@ -4895,6 +4895,44 @@ TEST(WindowsPackageBuilder, BundlesAdjacentReleaseRuntimeDllDependencies) {
     fs::remove_all(tmpRoot);
 }
 
+TEST(WindowsPackageBuilder, BundlesCompilerRuntimeFromNativeHostDirectory) {
+    namespace fs = std::filesystem;
+    const fs::path tmpRoot =
+        fs::temp_directory_path() / "zanna_packaging_windows_host_runtime_test";
+    const fs::path appDir = tmpRoot / "app";
+    const fs::path supportDir = tmpRoot / "support";
+    fs::remove_all(tmpRoot);
+    fs::create_directories(appDir);
+    fs::create_directories(supportDir);
+
+    writeTestWindowsPe(appDir / "app.exe", "x64", {{"vcruntime140.dll", {"runtime_entry"}}});
+    writeTestWindowsPe(supportDir / "vcruntime140.dll");
+    writeTestWindowsPe(supportDir / "zanna-installer-host.exe");
+    writeTestWindowsPe(supportDir / "zanna-installer-cleanup.exe");
+
+    PackageConfig pkg;
+    pkg.displayName = "Host Runtime App";
+    pkg.identifier = "org.zanna.host-runtime-test";
+
+    WindowsBuildParams params;
+    params.projectName = "hostruntime";
+    params.version = "1.0.0";
+    params.executablePath = (appDir / "app.exe").string();
+    params.projectRoot = appDir.string();
+    params.pkgConfig = pkg;
+    params.outputPath = (tmpRoot / "host_runtime_setup.exe").string();
+    params.archStr = "x64";
+    params.installerHostPath = (supportDir / "zanna-installer-host.exe").string();
+    params.installerCleanupPath = (supportDir / "zanna-installer-cleanup.exe").string();
+
+    buildWindowsPackage(params);
+    const auto pe = readFile(params.outputPath);
+    const auto payloadZip = extractPeOverlayZipEntry(pe, "meta/payload.zip");
+    ASSERT_FALSE(payloadZip.empty());
+    EXPECT_TRUE(zipContainsEntries(payloadZip, {"hostruntime.exe", "vcruntime140.dll"}));
+    fs::remove_all(tmpRoot);
+}
+
 TEST(WindowsPackageBuilder, RejectsMissingReleaseRuntimeDllDependency) {
     namespace fs = std::filesystem;
     const fs::path tmpRoot =

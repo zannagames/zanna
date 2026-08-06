@@ -419,6 +419,18 @@ if(WIN32)
     target_link_libraries(zanna_installer_host PRIVATE
         advapi32 bcrypt comctl32 dwmapi gdi32 ole32 rstrtmgr shell32 shlwapi user32 uxtheme
         version winhttp)
+    # Application packaging links generated binaries against the release MSVC
+    # runtime even when the compiler itself is a Debug build. Mirror the
+    # installed app-local runtime beside the native support host so build-tree
+    # package commands and installer smokes have the same dependency closure.
+    if(MSVC AND ZANNA_INSTALL_MSVC_RUNTIME AND CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS)
+        add_custom_command(TARGET zanna_installer_host POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                ${CMAKE_INSTALL_SYSTEM_RUNTIME_LIBS}
+                "$<TARGET_FILE_DIR:zanna_installer_host>"
+            COMMENT "Staging app-local MSVC runtime for Windows application packaging"
+            VERBATIM)
+    endif()
     install(TARGETS zanna_installer_host RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR})
 
     add_executable(zanna_installer_cleanup WIN32

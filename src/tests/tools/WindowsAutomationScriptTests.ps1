@@ -11,7 +11,7 @@
 #   - A failed signer cannot replace an existing artifact or its metadata.
 #   - Successful signing publishes both the artifact and canonical hash metadata.
 #   - Signing validates output ancestry before and after directory creation.
-#   - Demo automation retains single-config lookup and path-confinement guards.
+#   - Demo automation confines external roots and authorizes destructive cleanup exactly.
 #   - Studio artifacts are staged, PE-validated, provenance-bound, and pair-published.
 #   - The cmd.exe demo compatibility entry point remains a logic-free forwarding shim.
 #   - Installer automation recognizes every existing-input spelling and requires Studio by default.
@@ -264,6 +264,10 @@ Assert-True ($demoSource.Contains('Get-CMakeGeneratedSystemProcessor')) `
     "The demo driver cannot prove architecture from generated CMake system data."
 Assert-True ($demoSource.Contains('Test-PathWithin')) `
     "The demo driver lacks asset and project path confinement."
+Assert-True ($demoSource.Contains('Assert-NoReparseAbsolutePath') -and
+             $demoSource.Contains('Assert-DemoPathConfiguration') -and
+             $demoSource.Contains('Demo output root must not contain protected path')) `
+    "The demo driver does not validate external-root ancestry or protected-path overlap."
 Assert-True ($demoSource.Contains('duplicate demo executable name')) `
     "The demo driver lacks duplicate-output rejection."
 Assert-True ($demoSource.Contains('$outputDirectory = Join-Path $binDir $Name')) `
@@ -298,6 +302,15 @@ Assert-True ($demoSource.Contains("Remove-DemoRunDirectoryEntry -Path `$entry.Fu
              -not $demoSource.Contains(
                  "Remove-Item -LiteralPath `$entry.FullName -Recurse -Force")) `
     "The demo clean path can recursively traverse a reparse point."
+Assert-True ($demoSource.Contains('Test-PathsEqual -Left $binDir -Right $cleanOwnedBinDir') -and
+             -not $demoSource.Contains(
+                 '[IO.Path]::GetFullPath($binDir) -ne $expectedBinDir')) `
+    "The demo clean path does not require the conventional owned output root."
+Assert-True ($demoSource.Contains('ZANNA_DEMO_BIN_DIR must be set to') -and
+             $demoSource.Contains('Assert-DemoPathConfiguration') -and
+             $demoSource.IndexOf('Assert-DemoPathConfiguration') -lt
+                 $demoSource.IndexOf('Ensure-ZannaBuild -Tree')) `
+    "Unsafe demo output configuration is not rejected before tool builds and cleanup."
 Assert-True ($demoSource.Contains("ConvertFrom-NativeArgumentString -Value `$trimmed") -and
              $demoSource.Contains("malformed asset directive")) `
     "The demo driver does not parse quoted asset paths fail-closed."
@@ -309,6 +322,10 @@ Assert-True (-not $demoSource.Contains("Get-DemoBinSnapshot") -and
     "Demo smoke cleanup can still mutate the shared published output directory."
 Assert-True ($demoSource.Contains("Read-SafeAutomationLines") -and
              $demoSource.Contains("reserved Windows device name") -and
+             $demoSource.Contains('CLOCK\$') -and
+             $demoSource.Contains('CONIN\$') -and
+             $demoSource.Contains('CONOUT\$') -and
+             $demoSource.Contains('[char]127') -and
              $demoSource.Contains("[IO.FileMode]::CreateNew") -and
              $demoSource.Contains("<generated demo executable>") -and
              $demoSource.Contains("Published demo generation")) `
@@ -324,6 +341,24 @@ Assert-True (([regex]::Matches(
 Assert-True (-not $demoSource.Contains(
                  "Get-ChildItem -LiteralPath `$Root -Force -Recurse")) `
     "The demo driver still recursively follows an unbounded source-tree enumeration."
+Assert-True ($demoSource.Contains('JOBS must be an integer from 1 through 1024') -and
+             $demoSource.Contains('Cannot determine the native Windows host architecture') -and
+             $demoSource.Contains('switch ($buildTypeValue.ToLowerInvariant())')) `
+    "The demo driver does not bound worker fanout or normalize host/build configuration."
+Assert-True ($demoSource.Contains('Demo manifest rows must not have surrounding whitespace') -and
+             $demoSource.Contains("'^[a-z0-9][a-z0-9_-]*$'") -and
+             $demoSource.Contains('switch -CaseSensitive ($category)') -and
+             $demoSource.Contains("must declare 'lang zia'")) `
+    "The Windows demo manifest contract still diverges from the cross-platform audit."
+Assert-True ($demoSource.Contains('Demo asset entry name') -and
+             $demoSource.Contains('-RequireUtf8') -and
+             $demoSource.Contains('contains an unsupported byte-order mark')) `
+    "Demo metadata and recursively copied asset names are not canonicalized fail-closed."
+Assert-True ($demoSource.Contains('$killer.Kill()') -and
+             $demoSource.Contains('$killer.WaitForExit($processStopTimeoutMilliseconds)') -and
+             $demoSource.Contains('Could not fully terminate demo') -and
+             $demoSource.Contains('$succeeded = $false')) `
+    "Demo smoke teardown can report success without reaping its process-tree helper."
 
 $demoCmd = [IO.Path]::ChangeExtension($DemoScript, ".cmd")
 Assert-True (Test-Path -LiteralPath $demoCmd -PathType Leaf) `
@@ -397,6 +432,16 @@ Assert-True ($buildSource.Contains(
              $buildSource.Contains(
                  'Skipping pre-configure clean because the build tree is not configured.')) `
     "The canonical Windows build cleans an absent or unconfigured build tree."
+Assert-True ($buildSource.Contains('must be 0 or 1; received') -and
+             $buildSource.Contains('ZANNA_SKIP_STUDIO') -and
+             $buildSource.Contains('must be an integer from 1 through 1024')) `
+    "The canonical Windows build does not bound boolean controls and worker counts."
+$extraCmakePosition = $buildSource.IndexOf(
+    '$configArguments += @(ConvertFrom-NativeArgumentString -Value $extraArguments)')
+$studioPolicyPosition = $buildSource.IndexOf(
+    '$configArguments += "-DZANNA_INSTALL_ZANNASTUDIO=$studioInstallSetting"')
+Assert-True ($extraCmakePosition -ge 0 -and $studioPolicyPosition -gt $extraCmakePosition) `
+    "Extra CMake arguments can override the canonical Windows Studio-build policy."
 
 $validatorSource = [IO.File]::ReadAllText($ValidatorScript)
 Assert-True ($validatorSource.Contains("windows_pe_validation.ps1")) `

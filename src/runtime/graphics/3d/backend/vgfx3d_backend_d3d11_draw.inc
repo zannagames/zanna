@@ -1636,8 +1636,8 @@ static void d3d11_submit_draw(void *ctx_ptr,
     ID3D11DeviceContext_IASetIndexBuffer(ctx->ctx, mesh_ib, DXGI_FORMAT_R32_UINT, 0);
     d3d11_bind_main_pipeline(ctx, cmd, wireframe, backface_cull, 0);
     ID3D11DeviceContext_DrawIndexed(ctx->ctx, index_count, 0, 0);
-    (void)d3d11_record_frame_device_status(ctx, "DrawIndexed(main)");
-    d3d11_stats_count(&ctx->stats.draw_calls);
+    if (SUCCEEDED(d3d11_record_frame_device_status(ctx, "DrawIndexed(main)")))
+        d3d11_stats_count(&ctx->stats.draw_calls);
 
     d3d11_unbind_draw_resources(ctx);
     d3d11_release_temporary_resources(&draw_resources);
@@ -1860,8 +1860,8 @@ static void d3d11_submit_draw_instanced(void *ctx_ptr,
         ID3D11DeviceContext_VSSetShader(ctx->ctx, ctx->vs_particles, NULL, 0);
     }
     ID3D11DeviceContext_DrawIndexedInstanced(ctx->ctx, index_count, instance_count, 0, 0, 0);
-    (void)d3d11_record_frame_device_status(ctx, "DrawIndexedInstanced(main)");
-    d3d11_stats_count(&ctx->stats.draw_calls);
+    if (SUCCEEDED(d3d11_record_frame_device_status(ctx, "DrawIndexedInstanced(main)")))
+        d3d11_stats_count(&ctx->stats.draw_calls);
 
     d3d11_unbind_draw_resources(ctx);
     d3d11_release_temporary_resources(&draw_resources);

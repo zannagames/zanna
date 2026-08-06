@@ -415,6 +415,42 @@ static int win32_set_window_style(HWND hwnd, int index, LONG value) {
     return previous != 0 || GetLastError() == ERROR_SUCCESS;
 }
 
+/// @brief Restore a previously validated style pair and outer-window rectangle after failure.
+/// @param hwnd Native window being restored.
+/// @param style Prior `GWL_STYLE` value.
+/// @param exstyle Prior `GWL_EXSTYLE` value.
+/// @param bounds Prior positive, INT-sized outer bounds.
+/// @return One only when both styles and the complete placement are restored.
+static int win32_restore_window_transition(HWND hwnd,
+                                           LONG style,
+                                           LONG exstyle,
+                                           const RECT *bounds) {
+    int style_ok;
+    int exstyle_ok;
+    int position_ok;
+    int64_t width;
+    int64_t height;
+
+    if (!hwnd || !bounds)
+        return 0;
+    width = (int64_t)bounds->right - bounds->left;
+    height = (int64_t)bounds->bottom - bounds->top;
+    if (width <= 0 || width > INT_MAX || height <= 0 || height > INT_MAX)
+        return 0;
+    style_ok = win32_set_window_style(hwnd, GWL_STYLE, style);
+    exstyle_ok = win32_set_window_style(hwnd, GWL_EXSTYLE, exstyle);
+    position_ok = SetWindowPos(hwnd,
+                               NULL,
+                               bounds->left,
+                               bounds->top,
+                               (int)width,
+                               (int)height,
+                               SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)
+                      ? 1
+                      : 0;
+    return style_ok && exstyle_ok && position_ok;
+}
+
 /// @brief Map a public cursor type to a shared Win32 stock cursor.
 /// @param type Public `VGFX_CURSOR_*` value.
 /// @return Loaded stock cursor handle, defaulting to the arrow.
@@ -1066,6 +1102,31 @@ static void win32_begin_mouse_capture(vgfx_win32_data *w32) {
     if (GetCapture() != w32->hwnd)
         (void)SetCapture(w32->hwnd);
     w32->mouse_captured = GetCapture() == w32->hwnd ? 1 : 0;
+    if (!w32->mouse_captured)
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to acquire Win32 mouse capture");
+}
+
+/// @brief Release this window's mouse capture and retain ownership state when Win32 refuses.
+/// @param w32 Platform state that may own mouse capture.
+/// @return One when the window no longer owns capture, otherwise zero.
+static int win32_release_mouse_capture(vgfx_win32_data *w32) {
+    if (!w32 || !w32->hwnd)
+        return 1;
+    if (GetCapture() != w32->hwnd) {
+        w32->mouse_captured = 0;
+        return 1;
+    }
+    if (!ReleaseCapture() && GetCapture() == w32->hwnd) {
+        w32->mouse_captured = 1;
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to release Win32 mouse capture");
+        return 0;
+    }
+    w32->mouse_captured = GetCapture() == w32->hwnd ? 1 : 0;
+    if (w32->mouse_captured) {
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to release Win32 mouse capture");
+        return 0;
+    }
+    return 1;
 }
 
 /// @brief Release pointer capture after the final supported mouse button is up.
@@ -1076,9 +1137,7 @@ static void win32_end_mouse_capture_if_idle(vgfx_win32_data *w32, WPARAM button_
         return;
     if ((button_state & (MK_LBUTTON | MK_RBUTTON | MK_MBUTTON)) != 0)
         return;
-    if (GetCapture() == w32->hwnd)
-        (void)ReleaseCapture();
-    w32->mouse_captured = 0;
+    (void)win32_release_mouse_capture(w32);
 }
 
 /// @brief Clear supported mouse-button state after native capture is cancelled.
@@ -1238,9 +1297,8 @@ static LRESULT CALLBACK vgfx_win32_wndproc(HWND hwnd, UINT msg, WPARAM wparam, L
             /* Window lost focus */
             vgfx_internal_set_focus_state(win, 0);
             if (w32) {
-                if (w32->mouse_captured && GetCapture() == hwnd)
-                    (void)ReleaseCapture();
-                w32->mouse_captured = 0;
+                if (w32->mouse_captured)
+                    (void)win32_release_mouse_capture(w32);
                 win32_clear_mouse_buttons(win);
                 w32->pending_high_surrogate = 0;
                 if (w32->ime_active)
@@ -1560,9 +1618,8 @@ static LRESULT CALLBACK vgfx_win32_wndproc(HWND hwnd, UINT msg, WPARAM wparam, L
 
         case WM_CANCELMODE:
             if (w32) {
-                if (w32->mouse_captured && GetCapture() == hwnd)
-                    (void)ReleaseCapture();
-                w32->mouse_captured = 0;
+                if (w32->mouse_captured)
+                    (void)win32_release_mouse_capture(w32);
                 win32_clear_mouse_buttons(win);
             }
             return DefWindowProcW(hwnd, msg, wparam, lparam);
@@ -1916,9 +1973,7 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
     vgfx_win32_data *w32 = (vgfx_win32_data *)win->platform_data;
 
     if (w32->mouse_captured) {
-        if (GetCapture() == w32->hwnd)
-            (void)ReleaseCapture();
-        w32->mouse_captured = 0;
+        (void)win32_release_mouse_capture(w32);
     }
 
     if (win->relative_mouse_enabled || win->relative_mouse_native) {
@@ -1928,9 +1983,15 @@ void vgfx_platform_destroy_window(struct vgfx_window *win) {
             rid.usUsage = 0x02;
             rid.dwFlags = RIDEV_REMOVE;
             rid.hwndTarget = NULL;
-            (void)RegisterRawInputDevices(&rid, 1, sizeof(rid));
+            if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM,
+                                        "Failed to unregister Win32 raw mouse input");
+            }
         }
-        ClipCursor(NULL);
+        if (!ClipCursor(NULL)) {
+            vgfx_internal_set_error(VGFX_ERR_PLATFORM,
+                                    "Failed to release Win32 cursor confinement");
+        }
     }
     win->relative_mouse_native = 0;
     win->relative_mouse_enabled = 0;
@@ -2430,16 +2491,13 @@ int vgfx_platform_set_fullscreen(struct vgfx_window *win, int fullscreen) {
                           (int)monitor_width,
                           (int)monitor_height,
                           SWP_NOOWNERZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
-            (void)win32_set_window_style(w32->hwnd, GWL_STYLE, current_style);
-            (void)win32_set_window_style(w32->hwnd, GWL_EXSTYLE, current_exstyle);
-            (void)SetWindowPos(w32->hwnd,
-                               NULL,
-                               current_rect.left,
-                               current_rect.top,
-                               (int)current_width,
-                               (int)current_height,
-                               SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-            vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to enter Win32 fullscreen mode");
+            if (win32_restore_window_transition(
+                    w32->hwnd, current_style, current_exstyle, &current_rect)) {
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to enter Win32 fullscreen mode");
+            } else {
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM,
+                                        "Failed to roll back Win32 fullscreen transition");
+            }
             return 0;
         }
         w32->saved_style = (DWORD)current_style;
@@ -2460,16 +2518,13 @@ int vgfx_platform_set_fullscreen(struct vgfx_window *win, int fullscreen) {
                           (int)saved_width,
                           (int)saved_height,
                           SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED)) {
-            (void)win32_set_window_style(w32->hwnd, GWL_STYLE, current_style);
-            (void)win32_set_window_style(w32->hwnd, GWL_EXSTYLE, current_exstyle);
-            (void)SetWindowPos(w32->hwnd,
-                               NULL,
-                               current_rect.left,
-                               current_rect.top,
-                               (int)current_width,
-                               (int)current_height,
-                               SWP_NOZORDER | SWP_NOACTIVATE | SWP_FRAMECHANGED);
-            vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to leave Win32 fullscreen mode");
+            if (win32_restore_window_transition(
+                    w32->hwnd, current_style, current_exstyle, &current_rect)) {
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to leave Win32 fullscreen mode");
+            } else {
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM,
+                                        "Failed to roll back Win32 fullscreen transition");
+            }
             return 0;
         }
         w32->is_fullscreen = 0;
@@ -2822,6 +2877,15 @@ void vgfx_platform_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
         vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to warp the Win32 cursor");
 }
 
+/// @brief Release any process cursor confinement and publish a platform error on failure.
+/// @return One when Win32 accepted the release, otherwise zero.
+static int win32_release_cursor_clip(void) {
+    if (ClipCursor(NULL))
+        return 1;
+    vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to release Win32 cursor confinement");
+    return 0;
+}
+
 /// @brief Confine or release the OS cursor to the window's client rect.
 /// @details Used by relative mouse mode: raw WM_INPUT deltas drive look
 ///          motion, while the (hidden) system cursor is clipped so stray
@@ -2832,26 +2896,31 @@ void vgfx_platform_warp_cursor(vgfx_window_t window, int32_t x, int32_t y) {
 /// @return 1 when ClipCursor accepted the requested state, otherwise 0.
 static int win32_apply_cursor_clip(struct vgfx_window *win, int enable) {
     if (!win || !win->platform_data) {
-        return ClipCursor(NULL) ? 1 : 0;
+        return win32_release_cursor_clip();
     }
     vgfx_win32_data *w32 = (vgfx_win32_data *)win->platform_data;
     if (!enable || !w32->hwnd) {
-        return ClipCursor(NULL) ? 1 : 0;
+        return win32_release_cursor_clip();
     }
     RECT client = {0};
     if (!GetClientRect(w32->hwnd, &client)) {
-        (void)ClipCursor(NULL);
+        if (win32_release_cursor_clip())
+            vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to query Win32 cursor bounds");
         return 0;
     }
     POINT tl = {client.left, client.top};
     POINT br = {client.right, client.bottom};
     if (!ClientToScreen(w32->hwnd, &tl) || !ClientToScreen(w32->hwnd, &br) || br.x <= tl.x ||
         br.y <= tl.y) {
-        (void)ClipCursor(NULL);
+        if (win32_release_cursor_clip())
+            vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to map Win32 cursor bounds");
         return 0;
     }
     RECT screen_rect = {tl.x, tl.y, br.x, br.y};
-    return ClipCursor(&screen_rect) ? 1 : 0;
+    if (ClipCursor(&screen_rect))
+        return 1;
+    vgfx_internal_set_error(VGFX_ERR_PLATFORM, "Failed to apply Win32 cursor confinement");
+    return 0;
 }
 
 /// @brief Enable or disable native raw relative mouse input.
@@ -2882,14 +2951,20 @@ int vgfx_platform_set_relative_mouse(struct vgfx_window *win, int enabled) {
         rid.hwndTarget = NULL;
     }
     if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
-        ClipCursor(NULL);
+        (void)win32_release_cursor_clip();
+        vgfx_internal_set_error(VGFX_ERR_PLATFORM,
+                                enabled ? "Failed to register Win32 raw mouse input"
+                                        : "Failed to unregister Win32 raw mouse input");
         return 0;
     }
     if (!win32_apply_cursor_clip(win, enabled)) {
         if (enabled) {
             rid.dwFlags = RIDEV_REMOVE;
             rid.hwndTarget = NULL;
-            (void)RegisterRawInputDevices(&rid, 1, sizeof(rid));
+            if (!RegisterRawInputDevices(&rid, 1, sizeof(rid))) {
+                vgfx_internal_set_error(VGFX_ERR_PLATFORM,
+                                        "Failed to roll back Win32 raw mouse input");
+            }
         }
         return 0;
     }

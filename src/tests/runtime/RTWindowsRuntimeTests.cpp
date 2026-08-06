@@ -28,6 +28,8 @@
 //   - SaveData snapshots UTF-16 environment values instead of borrowed ACP strings.
 //   - Child-process capture restricts inherited handles, uses CRT-aware threads,
 //     and reports wait, pipe, and exit-query failures.
+//   - Process and ConPTY teardown terminate and reap children with finite waits,
+//     including an asynchronous termination request already in flight.
 //
 // Ownership/Lifetime:
 //   - The test owns all worker threads and joins them before exit.
@@ -134,6 +136,61 @@ static void test_checked_win32_thread_join() {
     assert(rt_win32_join_thread_handle(event) == RT_WIN32_THREAD_JOIN_FAILED);
     assert(!GetHandleInformation(event, &flags));
     assert(GetLastError() == ERROR_INVALID_HANDLE);
+}
+
+static void test_bounded_win32_process_termination() {
+    DWORD exitCode = 0;
+    SetLastError(ERROR_SUCCESS);
+    assert(!rt_win32_terminate_process_bounded(nullptr, 73, 1000, &exitCode));
+    assert(GetLastError() == ERROR_INVALID_HANDLE);
+
+    wchar_t executable[32768] = {};
+    const DWORD length = GetModuleFileNameW(nullptr, executable, (DWORD)std::size(executable));
+    assert(length > 0 && length < std::size(executable));
+    STARTUPINFOW startup{};
+    startup.cb = sizeof(startup);
+    PROCESS_INFORMATION child{};
+    assert(CreateProcessW(executable,
+                          nullptr,
+                          nullptr,
+                          nullptr,
+                          FALSE,
+                          CREATE_SUSPENDED | CREATE_NO_WINDOW,
+                          nullptr,
+                          nullptr,
+                          &startup,
+                          &child));
+    assert(rt_win32_terminate_process_bounded(child.hProcess, 73, 5000, &exitCode));
+    assert(exitCode == 73);
+    assert(WaitForSingleObject(child.hProcess, 0) == WAIT_OBJECT_0);
+    assert(CloseHandle(child.hThread));
+    assert(CloseHandle(child.hProcess));
+
+    wchar_t delayedCommandLine[] = L"rt_windows_runtime_child --bounded-exit-child";
+    child = {};
+    assert(CreateProcessW(executable,
+                          delayedCommandLine,
+                          nullptr,
+                          nullptr,
+                          FALSE,
+                          CREATE_NO_WINDOW,
+                          nullptr,
+                          nullptr,
+                          &startup,
+                          &child));
+    HANDLE observeOnlyProcess = nullptr;
+    assert(DuplicateHandle(GetCurrentProcess(),
+                           child.hProcess,
+                           GetCurrentProcess(),
+                           &observeOnlyProcess,
+                           SYNCHRONIZE | PROCESS_QUERY_LIMITED_INFORMATION,
+                           FALSE,
+                           0));
+    assert(rt_win32_terminate_process_bounded(observeOnlyProcess, 73, 5000, &exitCode));
+    assert(exitCode == 41);
+    assert(CloseHandle(observeOnlyProcess));
+    assert(CloseHandle(child.hThread));
+    assert(CloseHandle(child.hProcess));
 }
 
 static void test_msvc_atomic_subtraction_wraparound() {
@@ -419,6 +476,13 @@ static void test_wasapi_backend_source_contracts() {
     assert(source.find("Failed to signal the WASAPI audio thread to stop") != std::string::npos);
     assert(source.find("Failed to stop the WASAPI audio client") != std::string::npos);
     assert(source.find("Failed to close the WASAPI render event") != std::string::npos);
+    assert(source.find("vaud_win32_signal_event") != std::string::npos);
+    assert(source.find("vaud_win32_stop_client") != std::string::npos);
+    assert(source.find("vaud_win32_close_events") != std::string::npos);
+    assert(source.find("(void)SetEvent") == std::string::npos);
+    assert(source.find("(void)IAudioClient_Stop") == std::string::npos);
+    assert(source.find("Timed out waiting for WASAPI audio thread readiness") != std::string::npos);
+    assert(source.find("Failed waiting for WASAPI audio thread readiness") != std::string::npos);
 
     const std::string coordinator = read_source({"src", "lib", "audio", "src", "vaud.c"});
     assert(coordinator.find("WaitForSingleObject(*event, INFINITE)") == std::string::npos);
@@ -588,6 +652,15 @@ static void test_win32_window_source_contracts() {
     assert(source.find("Win32 pacing timer timed out") != std::string::npos);
     assert(source.find("Win32 pacing timer wait failed") != std::string::npos);
     assert(source.find("Failed to refresh Win32 minimum-size constraints") != std::string::npos);
+    assert(source.find("win32_release_mouse_capture") != std::string::npos);
+    assert(source.find("Failed to acquire Win32 mouse capture") != std::string::npos);
+    assert(source.find("Failed to release Win32 mouse capture") != std::string::npos);
+    assert(source.find("Failed to unregister Win32 raw mouse input") != std::string::npos);
+    assert(source.find("Failed to release Win32 cursor confinement") != std::string::npos);
+    assert(source.find("Failed to roll back Win32 fullscreen transition") != std::string::npos);
+    assert(source.find("(void)ReleaseCapture()") == std::string::npos);
+    assert(source.find("(void)RegisterRawInputDevices") == std::string::npos);
+    assert(source.find("(void)ClipCursor(NULL)") == std::string::npos);
 }
 
 static void test_windows_machine_source_contracts() {
@@ -617,10 +690,30 @@ static void test_windows_run_process_source_contracts() {
     assert(source.find("failed to query child exit code") != std::string::npos);
 }
 
-int main() {
+static void test_windows_child_teardown_source_contracts() {
+    const std::string process = read_source({"src", "runtime", "system", "rt_process.c"});
+    const std::string pty = read_source({"src", "runtime", "system", "rt_pty.c"});
+    assert(process.find("rt_win32_terminate_process_bounded") != std::string::npos);
+    assert(pty.find("rt_win32_terminate_process_bounded") != std::string::npos);
+    assert(process.find("WaitForSingleObject(pi.hProcess, INFINITE)") == std::string::npos);
+    assert(process.find("WaitForSingleObject(proc->process, INFINITE)") == std::string::npos);
+    assert(pty.find("WaitForSingleObject(pi.hProcess, INFINITE)") == std::string::npos);
+    assert(pty.find("WaitForSingleObject(pty->process, INFINITE)") == std::string::npos);
+    assert(process.find("Process: failed to query child exit code") != std::string::npos);
+    assert(pty.find("GetExitCodeProcess(ConPTY process) failed") != std::string::npos);
+    assert(pty.find("WaitForSingleObject(pty->process, 10)") != std::string::npos);
+}
+
+int main(int argc, char **argv) {
+    if (argc == 2 && std::strcmp(argv[1], "--bounded-exit-child") == 0) {
+        Sleep(100);
+        return 41;
+    }
+
     test_finite_wait_deadlines();
     test_windows_filetime_conversion_contracts();
     test_checked_win32_thread_join();
+    test_bounded_win32_process_termination();
     test_msvc_atomic_subtraction_wraparound();
     test_concurrent_winsock_initialization();
     test_winsock_error_contracts();
@@ -638,6 +731,7 @@ int main() {
     test_windows_machine_source_contracts();
     test_windows_terminal_wrapper_source_contracts();
     test_windows_run_process_source_contracts();
+    test_windows_child_teardown_source_contracts();
     std::puts("RTWindowsRuntimeTests passed");
     return 0;
 }

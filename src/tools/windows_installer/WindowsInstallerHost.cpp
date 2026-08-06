@@ -597,7 +597,7 @@ fs::path currentExecutablePath() {
 
 /// @brief Build a unique default installer log path in the temporary directory.
 /// @param identifier Package identifier embedded in the filename.
-/// @return Path containing UTC timestamp and process ID.
+/// @return Path containing UTC timestamp, process ID, and monotonic tick count.
 /// @throws std::runtime_error When the temporary directory or identifier conversion fails.
 fs::path defaultLogPath(std::string_view identifier) {
     wchar_t tempPath[32768]{};
@@ -607,11 +607,12 @@ fs::path defaultLogPath(std::string_view identifier) {
     SYSTEMTIME now{};
     GetSystemTime(&now);
     const DWORD pid = GetCurrentProcessId();
+    const ULONGLONG tick = GetTickCount64();
     std::wostringstream leaf;
     leaf << L"ZannaInstaller-" << utf8ToWide(identifier) << L'-' << std::setfill(L'0')
          << std::setw(4) << now.wYear << std::setw(2) << now.wMonth << std::setw(2) << now.wDay
          << L'T' << std::setw(2) << now.wHour << std::setw(2) << now.wMinute << std::setw(2)
-         << now.wSecond << L'Z' << L'-' << pid << L".log";
+         << now.wSecond << L'Z' << L'-' << pid << L'-' << tick << L".log";
     return fs::path(tempPath) / leaf.str();
 }
 
@@ -648,9 +649,10 @@ Logger &Logger::operator=(Logger &&other) noexcept {
 
 /// @brief Open or create an append-only UTF-8 installer log.
 /// @param path Destination file, whose parent directories are created.
+/// @param requireNew Require exclusive creation instead of appending an existing file.
 /// @details Closes any prior handle and writes a UTF-8 BOM only to an empty file.
 /// @throws std::runtime_error On directory, close, open, size, BOM, or flush failure.
-void Logger::open(const fs::path &path) {
+void Logger::open(const fs::path &path, bool requireNew) {
     if (handle_ != INVALID_HANDLE_VALUE) {
         const HANDLE previous = handle_;
         handle_ = INVALID_HANDLE_VALUE;
@@ -664,7 +666,7 @@ void Logger::open(const fs::path &path) {
                           FILE_APPEND_DATA,
                           FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
                           nullptr,
-                          OPEN_ALWAYS,
+                          requireNew ? CREATE_NEW : OPEN_ALWAYS,
                           FILE_ATTRIBUTE_NORMAL,
                           nullptr);
     if (handle_ == INVALID_HANDLE_VALUE)

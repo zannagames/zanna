@@ -120,10 +120,21 @@ function Get-PositiveInteger {
     )
 
     $parsed = 0
-    if (-not [int]::TryParse($Value, [ref]$parsed) -or $parsed -lt 1) {
-        throw "$Name must be a positive integer; received '$Value'."
+    if (-not [int]::TryParse($Value, [ref]$parsed) -or $parsed -lt 1 -or $parsed -gt 1024) {
+        throw "$Name must be an integer from 1 through 1024; received '$Value'."
     }
     return $parsed
+}
+
+function Assert-BinaryToggle {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+
+    if ($Value -notin @("0", "1")) {
+        throw "$Name must be 0 or 1; received '$Value'."
+    }
 }
 
 function Get-FullPathFromRoot {
@@ -306,6 +317,19 @@ $skipClean = Set-EnvironmentDefault -Name "ZANNA_SKIP_CLEAN" -Default "0"
 $runSlowTests = Set-EnvironmentDefault -Name "ZANNA_RUN_SLOW_TESTS" -Default "0"
 $fastDebug = Set-EnvironmentDefault -Name "ZANNA_FAST_DEBUG" -Default "1"
 $skipStudio = Set-EnvironmentDefault -Name "ZANNA_SKIP_STUDIO" -Default "0"
+foreach ($toggle in @(
+        @{ Name = "ZANNA_SKIP_INSTALL"; Value = $skipInstall },
+        @{ Name = "ZANNA_SKIP_TESTS"; Value = $skipTests },
+        @{ Name = "ZANNA_SKIP_LINT"; Value = $skipLint },
+        @{ Name = "ZANNA_SKIP_AUDIT"; Value = $skipAudit },
+        @{ Name = "ZANNA_LINT_CHANGED_ONLY"; Value = $lintChangedOnly },
+        @{ Name = "ZANNA_SKIP_SMOKE"; Value = $skipSmoke },
+        @{ Name = "ZANNA_SKIP_CLEAN"; Value = $skipClean },
+        @{ Name = "ZANNA_RUN_SLOW_TESTS"; Value = $runSlowTests },
+        @{ Name = "ZANNA_FAST_DEBUG"; Value = $fastDebug },
+        @{ Name = "ZANNA_SKIP_STUDIO"; Value = $skipStudio })) {
+    Assert-BinaryToggle -Name $toggle.Name -Value $toggle.Value
+}
 $buildRoot = Get-FullPathFromRoot -Path $buildDir -Root $repoRoot
 $bashBuildDir = $buildDir.Replace('\', '/')
 
@@ -342,9 +366,9 @@ try {
     # stale OFF cached into later full runs.
     if ($skipStudio -eq "1") {
         Write-Host "Skipping Zanna Studio build (ZANNA_SKIP_STUDIO=1)"
-        $configArguments += "-DZANNA_INSTALL_ZANNASTUDIO=OFF"
+        $studioInstallSetting = "OFF"
     } else {
-        $configArguments += "-DZANNA_INSTALL_ZANNASTUDIO=ON"
+        $studioInstallSetting = "ON"
     }
     if ($null -ne $bashExe) {
         $configArguments += "-DZANNA_BASH_EXECUTABLE:FILEPATH=$bashExe"
@@ -355,6 +379,9 @@ try {
     }
     $extraArguments = [Environment]::GetEnvironmentVariable("ZANNA_EXTRA_CMAKE_ARGS", "Process")
     $configArguments += @(ConvertFrom-NativeArgumentString -Value $extraArguments)
+    # This policy flag is deliberately last so generic extra arguments cannot
+    # leave a skipped Studio setting cached into a later canonical full build.
+    $configArguments += "-DZANNA_INSTALL_ZANNASTUDIO=$studioInstallSetting"
 
     $warnAsError = [Environment]::GetEnvironmentVariable("ZANNA_WARN_AS_ERROR", "Process")
     if ([string]::IsNullOrWhiteSpace($warnAsError)) {

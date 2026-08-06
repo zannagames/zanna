@@ -5,18 +5,15 @@
 //
 //===----------------------------------------------------------------------===//
 //
-/// @file
-/// @brief Declares the native Windows installer package, command-line, logging,
-///        and lifecycle interfaces.
-///
-/// Package loading verifies the complete executable overlay before lifecycle
-/// mutation. HostPackage owns every extracted buffer; Logger exclusively owns
-/// its file handle and is movable but not copyable. Public lifecycle results use
-/// Windows Installer-compatible process codes.
-///
-/// @see WindowsInstallerHost.cpp
-/// @see WindowsInstallerLifecycle.cpp
-/// @see WindowsInstallerWizard.cpp
+// File: src/tools/windows_installer/WindowsInstallerHost.hpp
+// Purpose: Declare native Windows installer package, command-line, logging, and lifecycle APIs.
+// Key invariants:
+//   - Package loading verifies the complete executable overlay before lifecycle mutation.
+//   - Public lifecycle results use Windows Installer-compatible process codes.
+// Ownership/Lifetime:
+//   - HostPackage owns every extracted package buffer for its complete lifetime.
+//   - Logger exclusively owns its file handle and is movable but not copyable.
+// Links: WindowsInstallerHost.cpp, WindowsInstallerLifecycle.cpp, WindowsInstallerWizard.cpp
 //
 //===----------------------------------------------------------------------===//
 #pragma once
@@ -40,13 +37,13 @@
 
 namespace zanna::installer {
 
-inline constexpr int kExitSuccess = 0; ///< Lifecycle completed successfully.
-inline constexpr int kExitInvalidCommandLine = 87; ///< Invalid argument contract.
-inline constexpr int kExitUserCancelled = 1602; ///< User cancelled the operation.
-inline constexpr int kExitFatalError = 1603; ///< Unrecoverable lifecycle failure.
+inline constexpr int kExitSuccess = 0;                  ///< Lifecycle completed successfully.
+inline constexpr int kExitInvalidCommandLine = 87;      ///< Invalid argument contract.
+inline constexpr int kExitUserCancelled = 1602;         ///< User cancelled the operation.
+inline constexpr int kExitFatalError = 1603;            ///< Unrecoverable lifecycle failure.
 inline constexpr int kExitAnotherInstallRunning = 1618; ///< Lifecycle mutex conflict.
 inline constexpr int kExitNewerVersionInstalled = 1638; ///< Downgrade was rejected.
-inline constexpr int kExitRebootRequired = 3010; ///< Success requiring restart.
+inline constexpr int kExitRebootRequired = 3010;        ///< Success requiring restart.
 
 /// @brief Lifecycle failure carrying a Windows Installer-compatible process code.
 class InstallerError final : public std::runtime_error {
@@ -91,42 +88,42 @@ enum class ComponentPreset { Unspecified, Minimal, Typical, SDK, Complete };
 
 /// @brief Normalized, cross-validated command-line request for one host session.
 struct HostOptions {
-    Operation operation{Operation::Auto}; ///< Lifecycle or utility operation.
-    UiLevel uiLevel{UiLevel::Full};       ///< Requested interaction level.
-    std::optional<InstallScope> scope;    ///< Explicit scope, or metadata default.
-    std::filesystem::path destination;    ///< Optional custom install root.
-    std::filesystem::path logPath;        ///< Optional explicit session-log path.
-    std::filesystem::path outputPath;     ///< Optional JSON output path.
+    Operation operation{Operation::Auto};     ///< Lifecycle or utility operation.
+    UiLevel uiLevel{UiLevel::Full};           ///< Requested interaction level.
+    std::optional<InstallScope> scope;        ///< Explicit scope, or metadata default.
+    std::filesystem::path destination;        ///< Optional custom install root.
+    std::filesystem::path logPath;            ///< Optional explicit session-log path.
+    std::filesystem::path outputPath;         ///< Optional JSON output path.
     std::set<std::string> selectedComponents; ///< Explicit component IDs.
     ComponentPreset componentPreset{ComponentPreset::Unspecified}; ///< Named preset.
-    bool componentsSpecified{false};      ///< Whether explicit IDs were supplied.
-    std::optional<bool> addToPath;        ///< Explicit PATH integration choice.
+    bool componentsSpecified{false};          ///< Whether explicit IDs were supplied.
+    std::optional<bool> addToPath;            ///< Explicit PATH integration choice.
     std::optional<bool> registerAssociations; ///< Explicit association choice.
-    std::optional<bool> createShortcuts;  ///< Explicit shortcut choice.
-    bool allowDowngrade{false};           ///< Permit older-version installation.
-    bool noRestart{false};                ///< Suppress application/system restart.
-    bool closeApplications{false};        ///< Permit Restart Manager closure.
-    bool elevatedWorker{false};           ///< Internal elevated-worker mode.
-    bool uninstallWorker{false};          ///< Internal maintenance-handoff mode.
-    DWORD handoffParentId{0};             ///< Parent PID paired with uninstall worker.
-    bool launchIDE{false};                ///< Launch the packaged IDE afterward.
-    bool launchPrompt{false};             ///< Launch a configured prompt afterward.
-    bool openQuickstart{false};           ///< Open quick-start documentation afterward.
-    bool openSamples{false};              ///< Open installed samples afterward.
+    std::optional<bool> createShortcuts;      ///< Explicit shortcut choice.
+    bool allowDowngrade{false};               ///< Permit older-version installation.
+    bool noRestart{false};                    ///< Suppress application/system restart.
+    bool closeApplications{false};            ///< Permit Restart Manager closure.
+    bool elevatedWorker{false};               ///< Internal elevated-worker mode.
+    bool uninstallWorker{false};              ///< Internal maintenance-handoff mode.
+    DWORD handoffParentId{0};                 ///< Parent PID paired with uninstall worker.
+    bool launchIDE{false};                    ///< Launch the packaged IDE afterward.
+    bool launchPrompt{false};                 ///< Launch a configured prompt afterward.
+    bool openQuickstart{false};               ///< Open quick-start documentation afterward.
+    bool openSamples{false};                  ///< Open installed samples afterward.
 };
 
 /// @brief Fully owned and verified contents of a native installer executable.
 struct HostPackage {
-    std::filesystem::path executablePath; ///< Original executable path.
-    std::vector<uint8_t> executableBytes; ///< Complete stable executable image.
-    std::string executableSha256;         ///< Lowercase package digest.
-    size_t overlayOffset{0};              ///< Verified ZIP offset in executableBytes.
-    size_t overlayLength{0};              ///< Verified ZIP byte length.
+    std::filesystem::path executablePath;          ///< Original executable path.
+    std::vector<uint8_t> executableBytes;          ///< Complete stable executable image.
+    std::string executableSha256;                  ///< Lowercase package digest.
+    size_t overlayOffset{0};                       ///< Verified ZIP offset in executableBytes.
+    size_t overlayLength{0};                       ///< Verified ZIP byte length.
     zanna::pkg::WindowsInstallerMetadata metadata; ///< Parsed package contract.
-    std::vector<uint8_t> payloadZip;      ///< Verified install payload archive.
-    std::vector<uint8_t> cleanupBytes;    ///< Verified detached cleanup executable.
-    std::string licenseText;              ///< Optional UTF-8 license text.
-    std::string readmeText;               ///< Optional UTF-8 readme text.
+    std::vector<uint8_t> payloadZip;               ///< Verified install payload archive.
+    std::vector<uint8_t> cleanupBytes;             ///< Verified detached cleanup executable.
+    std::string licenseText;                       ///< Optional UTF-8 license text.
+    std::string readmeText;                        ///< Optional UTF-8 readme text.
     /// @brief Verified auxiliary outer entries keyed by overlay path.
     std::map<std::string, std::vector<uint8_t>, std::less<>> outerFileBytes;
 };
@@ -152,8 +149,9 @@ class Logger {
 
     /// @brief Open or create an append-only UTF-8 log.
     /// @param path Destination file.
+    /// @param requireNew Require exclusive creation instead of appending an existing file.
     /// @throws std::runtime_error On filesystem, handle, BOM, or flush failure.
-    void open(const std::filesystem::path &path);
+    void open(const std::filesystem::path &path, bool requireNew = false);
 
     /// @brief Append an informational record and publish progress.
     /// @param message Raw UTF-16 text.
@@ -222,7 +220,7 @@ std::filesystem::path currentExecutablePath();
 
 /// @brief Build a unique log path under the temporary directory.
 /// @param identifier Package identifier embedded in the filename.
-/// @return Timestamped, process-specific path.
+/// @return Timestamped, process- and tick-specific path.
 std::filesystem::path defaultLogPath(std::string_view identifier);
 
 /// @brief Parse and cross-validate the Unicode installer command line.

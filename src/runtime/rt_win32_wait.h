@@ -7,13 +7,14 @@
 //
 // File: src/runtime/rt_win32_wait.h
 // Purpose: Shared helpers for exact Win32 waits, including finite deadline
-//          slicing and checked thread-handle joins.
+//          slicing, checked thread-handle joins, and bounded process teardown.
 //
 // Key invariants:
 //   - A finite timeout never produces INFINITE (0xFFFFFFFF).
 //   - Long waits are split into finite slices and retain their absolute deadline.
 //   - Deadline addition saturates instead of wrapping GetTickCount64 values.
 //   - A thread join publishes success only after an exact signaled wait and close.
+//   - Process teardown never substitutes INFINITE and returns a confirmed exit code.
 //
 // Ownership/Lifetime:
 //   - Deadline helpers are pure and allocate no state.
@@ -28,7 +29,9 @@
 //        src/runtime/network/rt_http_server.c,
 //        src/runtime/network/rt_https_server.c,
 //        src/runtime/network/rt_ws_server.c,
-//        src/runtime/network/rt_wss_server.c
+//        src/runtime/network/rt_wss_server.c,
+//        src/runtime/system/rt_process.c,
+//        src/runtime/system/rt_pty.c
 //
 //===----------------------------------------------------------------------===//
 
@@ -106,6 +109,72 @@ static inline DWORD rt_win32_wait_slice_at(ULONGLONG now, ULONGLONG deadline) {
 ///         @ref RT_WIN32_MAX_FINITE_WAIT_MS.
 static inline DWORD rt_win32_wait_slice_until(ULONGLONG deadline) {
     return rt_win32_wait_slice_at(GetTickCount64(), deadline);
+}
+
+/// @brief Terminate a process when necessary and confirm its exit within a finite timeout.
+/// @details The helper first accepts an already-signaled process, which closes the race between a
+///          caller's last poll and teardown. Whether `TerminateProcess` starts termination or finds
+///          an asynchronous termination request already in flight, a bounded wait confirms the
+///          eventual exit. Success requires both an exact signaled wait and a non-active exit code.
+/// @param process Borrowed process handle with terminate, synchronize, and query rights.
+/// @param requested_exit_code Exit code requested when termination is necessary.
+/// @param timeout_ms Finite post-termination wait in milliseconds; `INFINITE` is rejected.
+/// @param[out] exit_code Optional destination for the confirmed native exit code.
+/// @return Nonzero only after the process is signaled and its exit code is available.
+static inline int rt_win32_terminate_process_bounded(HANDLE process,
+                                                     UINT requested_exit_code,
+                                                     DWORD timeout_ms,
+                                                     DWORD *exit_code) {
+    DWORD wait_result;
+    DWORD code = STILL_ACTIVE;
+    DWORD terminate_error;
+
+    if (exit_code)
+        *exit_code = STILL_ACTIVE;
+    if (!process || process == INVALID_HANDLE_VALUE) {
+        SetLastError(ERROR_INVALID_HANDLE);
+        return 0;
+    }
+    if (timeout_ms == INFINITE) {
+        SetLastError(ERROR_INVALID_PARAMETER);
+        return 0;
+    }
+
+    wait_result = WaitForSingleObject(process, 0);
+    if (wait_result == WAIT_FAILED)
+        return 0;
+    if (wait_result != WAIT_OBJECT_0) {
+        if (!TerminateProcess(process, requested_exit_code)) {
+            terminate_error = GetLastError();
+            wait_result = WaitForSingleObject(process, timeout_ms);
+            if (wait_result != WAIT_OBJECT_0) {
+                if (wait_result == WAIT_TIMEOUT)
+                    SetLastError(terminate_error == ERROR_SUCCESS ? ERROR_TIMEOUT
+                                                                  : terminate_error);
+                else if (wait_result != WAIT_FAILED)
+                    SetLastError(ERROR_INVALID_FUNCTION);
+                return 0;
+            }
+        } else {
+            wait_result = WaitForSingleObject(process, timeout_ms);
+            if (wait_result != WAIT_OBJECT_0) {
+                if (wait_result == WAIT_TIMEOUT)
+                    SetLastError(ERROR_TIMEOUT);
+                else if (wait_result != WAIT_FAILED)
+                    SetLastError(ERROR_INVALID_FUNCTION);
+                return 0;
+            }
+        }
+    }
+    if (!GetExitCodeProcess(process, &code))
+        return 0;
+    if (code == STILL_ACTIVE) {
+        SetLastError(ERROR_INVALID_DATA);
+        return 0;
+    }
+    if (exit_code)
+        *exit_code = code;
+    return 1;
 }
 
 /// @brief Wait for and close a real Win32 thread handle with exact status checks.

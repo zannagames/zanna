@@ -496,6 +496,76 @@ static void vaud_win32_free_render_buffers(vaud_win32_data *plat) {
     plat->format = NULL;
 }
 
+/// @brief Signal an optional backend event and surface native failure.
+/// @param ctx Audio context receiving diagnostics and statistics.
+/// @param event Event handle, or null when the lifecycle stage has no event.
+/// @param diagnostic Stable error text for this signal operation.
+/// @return 1 after a successful signal or for a null handle; otherwise 0.
+static int vaud_win32_signal_event(vaud_context_t ctx, HANDLE event, const char *diagnostic) {
+    if (!event)
+        return 1;
+    if (SetEvent(event))
+        return 1;
+    vaud_stats_add(&ctx->stats.backend_write_failures, 1);
+    vaud_set_error(VAUD_ERR_PLATFORM, diagnostic);
+    return 0;
+}
+
+/// @brief Stop an optional WASAPI client and surface HRESULT failure.
+/// @param ctx Audio context receiving diagnostics and statistics.
+/// @param client Client to stop, or null when initialization did not reach that stage.
+/// @param diagnostic Stable error text for this stop operation.
+/// @return 1 after a successful stop or for a null client; otherwise 0.
+static int vaud_win32_stop_client(vaud_context_t ctx,
+                                  IAudioClient *client,
+                                  const char *diagnostic) {
+    if (!client)
+        return 1;
+    if (SUCCEEDED(IAudioClient_Stop(client)))
+        return 1;
+    vaud_stats_add(&ctx->stats.backend_write_failures, 1);
+    vaud_set_error(VAUD_ERR_PLATFORM, diagnostic);
+    return 0;
+}
+
+/// @brief Close one optional Win32 handle and clear it only after success.
+/// @param ctx Audio context receiving diagnostics and statistics.
+/// @param handle Address of the owned handle slot.
+/// @param diagnostic Stable error text for this close operation.
+/// @return 1 when no handle remains; otherwise 0.
+static int vaud_win32_close_handle(vaud_context_t ctx, HANDLE *handle, const char *diagnostic) {
+    if (!handle || !*handle)
+        return 1;
+    if (!CloseHandle(*handle)) {
+        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
+        vaud_set_error(VAUD_ERR_PLATFORM, diagnostic);
+        return 0;
+    }
+    *handle = NULL;
+    return 1;
+}
+
+/// @brief Close every owned event handle while attempting all cleanup operations.
+/// @param ctx Audio context receiving diagnostics and statistics.
+/// @param plat Backend state containing render, stop, and readiness events.
+/// @return 1 when all event handles are closed; otherwise 0.
+static int vaud_win32_close_events(vaud_context_t ctx, vaud_win32_data *plat) {
+    int closed = 1;
+    if (!plat)
+        return 1;
+    if (!vaud_win32_close_handle(ctx, &plat->event, "Failed to close the WASAPI render event")) {
+        closed = 0;
+    }
+    if (!vaud_win32_close_handle(ctx, &plat->stop_event, "Failed to close the WASAPI stop event")) {
+        closed = 0;
+    }
+    if (!vaud_win32_close_handle(
+            ctx, &plat->ready_event, "Failed to close the WASAPI readiness event")) {
+        closed = 0;
+    }
+    return closed;
+}
+
 /// @brief Join the WASAPI worker thread before backend resources are released.
 /// @details A finite first wait makes hung shutdowns visible through the error
 ///          channel. Published contexts retain ownership after a bounded retry
@@ -522,20 +592,20 @@ static int vaud_win32_join_thread(vaud_context_t ctx,
     if (wait_rc == WAIT_TIMEOUT) {
         vaud_stats_add(&ctx->stats.backend_write_failures, 1);
         vaud_set_error(VAUD_ERR_PLATFORM, "Timed out waiting for WASAPI audio thread");
-        if (plat->client)
-            (void)IAudioClient_Stop(plat->client);
-        if (plat->stop_event)
-            (void)SetEvent(plat->stop_event);
+        (void)vaud_win32_stop_client(
+            ctx, plat->client, "Failed to stop the WASAPI client during thread join retry");
+        (void)vaud_win32_signal_event(
+            ctx, plat->stop_event, "Failed to signal the WASAPI thread during join retry");
         wait_rc = WaitForSingleObject(plat->thread, must_complete ? INFINITE : timeout_ms);
     }
     if (wait_rc != WAIT_OBJECT_0) {
         ULONGLONG deadline = GetTickCount64();
         vaud_stats_add(&ctx->stats.backend_write_failures, 1);
         vaud_set_error(VAUD_ERR_PLATFORM, "Failed waiting for WASAPI audio thread");
-        if (plat->client)
-            (void)IAudioClient_Stop(plat->client);
-        if (plat->stop_event)
-            (void)SetEvent(plat->stop_event);
+        (void)vaud_win32_stop_client(
+            ctx, plat->client, "Failed to stop the WASAPI client after a thread wait failure");
+        (void)vaud_win32_signal_event(
+            ctx, plat->stop_event, "Failed to signal the WASAPI thread after a wait failure");
         if (deadline <= ULLONG_MAX - timeout_ms)
             deadline += timeout_ms;
         else
@@ -546,11 +616,10 @@ static int vaud_win32_join_thread(vaud_context_t ctx,
             Sleep(1);
         }
     }
-    if (!CloseHandle(plat->thread)) {
-        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
-        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to close WASAPI audio thread handle");
+    if (!vaud_win32_close_handle(
+            ctx, &plat->thread, "Failed to close WASAPI audio thread handle")) {
+        return 0;
     }
-    plat->thread = NULL;
     plat->worker_thread_id = 0;
     return 1;
 }
@@ -577,16 +646,16 @@ static unsigned __stdcall audio_thread_func(void *arg) {
         InterlockedExchange(&plat->running, 0);
         vaud_stats_add(&ctx->stats.backend_write_failures, 1);
         vaud_set_error(VAUD_ERR_PLATFORM, "Failed to initialize COM on WASAPI audio thread");
-        (void)SetEvent(plat->ready_event);
+        (void)vaud_win32_signal_event(
+            ctx, plat->ready_event, "Failed to signal WASAPI audio thread startup failure");
         InterlockedExchange(&plat->thread_exited, 1);
         return 0;
     }
     InterlockedExchange(&plat->thread_start_status, 1);
-    if (!SetEvent(plat->ready_event)) {
+    if (!vaud_win32_signal_event(
+            ctx, plat->ready_event, "Failed to signal WASAPI audio thread readiness")) {
         InterlockedExchange(&plat->thread_start_status, -1);
         InterlockedExchange(&plat->running, 0);
-        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
-        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to signal WASAPI audio thread readiness");
         if (com_initialized)
             CoUninitialize();
         InterlockedExchange(&plat->thread_exited, 1);
@@ -882,12 +951,7 @@ int vaud_platform_init(vaud_context_t ctx) {
     plat->ready_event = CreateEventW(NULL, TRUE, FALSE, NULL);
 
     if (!plat->event || !plat->stop_event || !plat->ready_event) {
-        if (plat->event)
-            CloseHandle(plat->event);
-        if (plat->stop_event)
-            CloseHandle(plat->stop_event);
-        if (plat->ready_event)
-            CloseHandle(plat->ready_event);
+        (void)vaud_win32_close_events(ctx, plat);
         IAudioClient_Release(plat->client);
         IMMDevice_Release(plat->device);
         vaud_win32_free_render_buffers(plat);
@@ -903,9 +967,7 @@ int vaud_platform_init(vaud_context_t ctx) {
     /* Set event handle */
     hr = IAudioClient_SetEventHandle(plat->client, plat->event);
     if (FAILED(hr)) {
-        CloseHandle(plat->event);
-        CloseHandle(plat->stop_event);
-        CloseHandle(plat->ready_event);
+        (void)vaud_win32_close_events(ctx, plat);
         IAudioClient_Release(plat->client);
         IMMDevice_Release(plat->device);
         vaud_win32_free_render_buffers(plat);
@@ -925,9 +987,7 @@ int vaud_platform_init(vaud_context_t ctx) {
     if (FAILED(hr) || !plat->render) {
         if (plat->render)
             IAudioRenderClient_Release(plat->render);
-        CloseHandle(plat->event);
-        CloseHandle(plat->stop_event);
-        CloseHandle(plat->ready_event);
+        (void)vaud_win32_close_events(ctx, plat);
         IAudioClient_Release(plat->client);
         IMMDevice_Release(plat->device);
         vaud_win32_free_render_buffers(plat);
@@ -949,9 +1009,7 @@ int vaud_platform_init(vaud_context_t ctx) {
     if (!plat->thread) {
         InterlockedExchange(&plat->running, 0);
         IAudioRenderClient_Release(plat->render);
-        CloseHandle(plat->event);
-        CloseHandle(plat->stop_event);
-        CloseHandle(plat->ready_event);
+        (void)vaud_win32_close_events(ctx, plat);
         IAudioClient_Release(plat->client);
         IMMDevice_Release(plat->device);
         vaud_win32_free_render_buffers(plat);
@@ -967,13 +1025,18 @@ int vaud_platform_init(vaud_context_t ctx) {
     DWORD ready_wait = WaitForSingleObject(plat->ready_event, 5000);
     LONG start_status = InterlockedCompareExchange(&plat->thread_start_status, 0, 0);
     if (ready_wait != WAIT_OBJECT_0 || start_status != 1) {
+        const char *startup_diagnostic =
+            ready_wait == WAIT_TIMEOUT
+                ? "Timed out waiting for WASAPI audio thread readiness"
+                : (ready_wait == WAIT_FAILED
+                       ? "Failed waiting for WASAPI audio thread readiness"
+                       : "WASAPI audio thread reported an initialization failure");
         InterlockedExchange(&plat->running, 0);
-        (void)SetEvent(plat->stop_event);
-        vaud_win32_join_thread(ctx, plat, 5000, 1);
+        (void)vaud_win32_signal_event(
+            ctx, plat->stop_event, "Failed to signal a failed WASAPI audio thread to stop");
+        (void)vaud_win32_join_thread(ctx, plat, 5000, 1);
         IAudioRenderClient_Release(plat->render);
-        CloseHandle(plat->event);
-        CloseHandle(plat->stop_event);
-        CloseHandle(plat->ready_event);
+        (void)vaud_win32_close_events(ctx, plat);
         IAudioClient_Release(plat->client);
         IMMDevice_Release(plat->device);
         vaud_win32_free_render_buffers(plat);
@@ -982,21 +1045,38 @@ int vaud_platform_init(vaud_context_t ctx) {
             CoUninitialize();
         free(plat);
         ctx->platform_data = NULL;
-        vaud_set_error(VAUD_ERR_PLATFORM, "WASAPI audio thread failed to initialize");
+        vaud_set_error(VAUD_ERR_PLATFORM, startup_diagnostic);
         return 0;
     }
-    CloseHandle(plat->ready_event);
-    plat->ready_event = NULL;
+    if (!vaud_win32_close_handle(
+            ctx, &plat->ready_event, "Failed to close the WASAPI readiness event")) {
+        InterlockedExchange(&plat->running, 0);
+        (void)vaud_win32_signal_event(
+            ctx, plat->stop_event, "Failed to stop WASAPI after a readiness-handle failure");
+        (void)vaud_win32_join_thread(ctx, plat, 5000, 1);
+        IAudioRenderClient_Release(plat->render);
+        (void)vaud_win32_close_events(ctx, plat);
+        IAudioClient_Release(plat->client);
+        IMMDevice_Release(plat->device);
+        vaud_win32_free_render_buffers(plat);
+        DeleteCriticalSection(&plat->pause_cs);
+        if (plat->com_initialized)
+            CoUninitialize();
+        free(plat);
+        ctx->platform_data = NULL;
+        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to close the WASAPI readiness event");
+        return 0;
+    }
 
     /* Start audio client */
     hr = IAudioClient_Start(plat->client);
     if (FAILED(hr)) {
         InterlockedExchange(&plat->running, 0);
-        SetEvent(plat->stop_event);
-        vaud_win32_join_thread(ctx, plat, 5000, 1);
+        (void)vaud_win32_signal_event(
+            ctx, plat->stop_event, "Failed to signal WASAPI after audio-client start failure");
+        (void)vaud_win32_join_thread(ctx, plat, 5000, 1);
         IAudioRenderClient_Release(plat->render);
-        CloseHandle(plat->event);
-        CloseHandle(plat->stop_event);
+        (void)vaud_win32_close_events(ctx, plat);
         IAudioClient_Release(plat->client);
         IMMDevice_Release(plat->device);
         vaud_win32_free_render_buffers(plat);
@@ -1026,23 +1106,15 @@ int vaud_platform_shutdown(vaud_context_t ctx) {
 
     /* Signal thread to stop */
     InterlockedExchange(&plat->running, 0);
-    if (plat->stop_event && !SetEvent(plat->stop_event)) {
-        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
-        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to signal the WASAPI audio thread to stop");
-    }
+    (void)vaud_win32_signal_event(
+        ctx, plat->stop_event, "Failed to signal the WASAPI audio thread to stop");
 
     /* Wait for thread */
     if (!vaud_win32_join_thread(ctx, plat, 5000, 0))
         return 0;
 
     /* Stop audio client */
-    if (plat->client) {
-        const HRESULT stop_hr = IAudioClient_Stop(plat->client);
-        if (FAILED(stop_hr)) {
-            vaud_stats_add(&ctx->stats.backend_write_failures, 1);
-            vaud_set_error(VAUD_ERR_PLATFORM, "Failed to stop the WASAPI audio client");
-        }
-    }
+    (void)vaud_win32_stop_client(ctx, plat->client, "Failed to stop the WASAPI audio client");
 
     /* Release interfaces */
     if (plat->render)
@@ -1053,18 +1125,7 @@ int vaud_platform_shutdown(vaud_context_t ctx) {
         IMMDevice_Release(plat->device);
 
     /* Close handles */
-    if (plat->event && !CloseHandle(plat->event)) {
-        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
-        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to close the WASAPI render event");
-    }
-    if (plat->stop_event && !CloseHandle(plat->stop_event)) {
-        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
-        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to close the WASAPI stop event");
-    }
-    if (plat->ready_event && !CloseHandle(plat->ready_event)) {
-        vaud_stats_add(&ctx->stats.backend_write_failures, 1);
-        vaud_set_error(VAUD_ERR_PLATFORM, "Failed to close the WASAPI readiness event");
-    }
+    (void)vaud_win32_close_events(ctx, plat);
 
     int com_initialized = plat->com_initialized;
     vaud_win32_free_render_buffers(plat);

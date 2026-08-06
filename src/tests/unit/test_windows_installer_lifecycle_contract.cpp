@@ -105,6 +105,7 @@ int main() {
     const std::string hostSource = readHostSource();
     const std::string peValidationSource = readPeValidationSource();
     const std::string cleanupSource = readInstallerSource("WindowsInstallerCleanup.cpp");
+    const std::string mainSource = readInstallerSource("main.cpp");
     const std::string brandSource = readInstallerSource("WindowsInstallerBrandDialog.cpp");
     const std::string themeSource = readInstallerSource("WindowsInstallerTheme.cpp");
     const std::string wizardSource = readInstallerSource("WindowsInstallerWizard.cpp");
@@ -112,11 +113,13 @@ int main() {
     expect(!hostSource.empty(), "Windows installer host source is readable");
     expect(!peValidationSource.empty(), "Windows PE validation source is readable");
     expect(!cleanupSource.empty(), "Windows installer cleanup source is readable");
+    expect(!mainSource.empty(), "Windows installer entry-point source is readable");
     expect(!brandSource.empty(), "Windows installer brand-dialog source is readable");
     expect(!themeSource.empty(), "Windows installer theme source is readable");
     expect(!wizardSource.empty(), "Windows installer wizard source is readable");
     if (source.empty() || hostSource.empty() || peValidationSource.empty() ||
-        cleanupSource.empty() || brandSource.empty() || themeSource.empty() || wizardSource.empty())
+        cleanupSource.empty() || mainSource.empty() || brandSource.empty() || themeSource.empty() ||
+        wizardSource.empty())
         return 1;
 
     expect(source.find("CompareStringOrdinal") != std::string::npos &&
@@ -180,6 +183,7 @@ int main() {
                source.find("scheduled for reboot: ") != std::string::npos,
            "Reboot cleanup scheduling failures are reported instead of claimed as successes");
     expect(cleanupSource.find("const bool clearedReadOnly") != std::string::npos &&
+               cleanupSource.find("FILE_ATTRIBUTE_NORMAL") != std::string::npos &&
                cleanupSource.find("SetFileAttributesW(path.c_str(), attributes)") !=
                    std::string::npos,
            "Failed cleanup deletion restores a file's original read-only attribute");
@@ -188,6 +192,17 @@ int main() {
                           "const DWORD error = GetLastError()",
                           "error == ERROR_FILE_NOT_FOUND || error == ERROR_PATH_NOT_FOUND"),
            "Concurrent cleanup-target disappearance remains an idempotent success");
+    expect(cleanupSource.find("alignas(FILE_RENAME_INFO)") != std::string::npos,
+           "Self-delete variable-length rename storage satisfies FILE_RENAME_INFO alignment");
+    expect(cleanupSource.find("kExitParentCloseFailed") != std::string::npos &&
+               cleanupSource.find("kExitSelfRenameCloseFailed") != std::string::npos &&
+               cleanupSource.find("kExitSelfDeleteCloseFailed") != std::string::npos,
+           "Cleanup success requires every process and self-delete handle to close");
+    expect(cleanupSource.find("LocalFree(argv) != nullptr") != std::string::npos,
+           "Cleanup command-line storage release failures are observable");
+    expect(cleanupSource.find("catch (const std::bad_alloc &)") != std::string::npos &&
+               cleanupSource.find("catch (...)") != std::string::npos,
+           "Cleanup helper converts allocation and unexpected exceptions into stable exit codes");
 
     expect(source.find("kMaximumTextFileBytes") != std::string::npos &&
                source.find("metadata text file grew while being read") != std::string::npos,
@@ -264,6 +279,9 @@ int main() {
     expect(hostSource.find("appendLogRecord") != std::string::npos &&
                hostSource.find("written == 0 || written > requested") != std::string::npos,
            "Installer logs handle partial native writes without spinning");
+    expect(hostSource.find("GetTickCount64()") != std::string::npos &&
+               hostSource.find("CREATE_NEW") != std::string::npos,
+           "Default installer logs use collision-resistant names and exclusive creation");
     expect(hostSource.find("A broken presentation callback must stop mutation") !=
                std::string::npos,
            "Cancellation callback failures fail closed");
@@ -296,6 +314,25 @@ int main() {
     expect(brandSource.find("statusMessagePosted") != std::string::npos &&
                brandSource.find("pendingStatus") != std::string::npos,
            "Progress status updates are bounded and coalesced");
+    expect(mainSource.find("message && message[0] != '\\0'") != std::string::npos,
+           "Empty installer exception messages use a stable diagnostic fallback");
+    expect(mainSource.find("temporary automation output file could not be removed") !=
+               std::string::npos,
+           "Automation output failures report retained temporary files");
+    expect(
+        mainSource.find("cannot inspect a protected installer session path") != std::string::npos &&
+            mainSource.find("cannot close a protected installer session path") != std::string::npos,
+        "Installer session path identity checks fail closed on query and close errors");
+    expect(mainSource.find("kFallbackUtf8") != std::string::npos &&
+               mainSource.find("WriteFile(GetStdHandle(STD_ERROR_HANDLE)") != std::string::npos,
+           "Fatal-reporting allocation failures retain a no-allocation stderr fallback");
+    expect(mainSource.find("initializeDpiAwareness") != std::string::npos &&
+               mainSource.find("ERROR_ACCESS_DENIED") != std::string::npos,
+           "Installer startup distinguishes an existing DPI policy from initialization failure");
+    expect(mainSource.find("LocalFree(argv) != nullptr") != std::string::npos &&
+               mainSource.find("catch (const std::bad_alloc &)") != std::string::npos &&
+               mainSource.find("catch (...)") != std::string::npos,
+           "Installer startup observes command-line cleanup and contains all exceptions");
 
     std::cout << testsPassed << "/" << testsRun << " tests passed\n";
     return testsPassed == testsRun ? 0 : 1;

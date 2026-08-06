@@ -24,9 +24,11 @@
 #include <shellapi.h>
 
 #include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <new>
 #include <string>
 #include <vector>
 
@@ -39,6 +41,10 @@ constexpr DWORD kExitSelfReopenFailed = 12;
 constexpr DWORD kExitSelfDeleteFailed = 13;
 constexpr DWORD kExitParentWaitFailed = 14;
 constexpr DWORD kExitTargetCleanupFailed = 15;
+constexpr DWORD kExitParentCloseFailed = 16;
+constexpr DWORD kExitSelfRenameCloseFailed = 17;
+constexpr DWORD kExitSelfDeleteCloseFailed = 18;
+constexpr DWORD kExitUnexpectedFailure = 19;
 constexpr size_t kMaximumFiles = 64;
 constexpr size_t kMaximumDirectories = 64;
 constexpr int kMaximumArguments = 3 + static_cast<int>((kMaximumFiles + kMaximumDirectories) * 2);
@@ -57,7 +63,8 @@ DWORD waitForParent(DWORD processId) {
     }
     const DWORD result = WaitForSingleObject(process, 5U * 60U * 1000U);
     const DWORD error = result == WAIT_FAILED ? GetLastError() : ERROR_SUCCESS;
-    CloseHandle(process);
+    if (!CloseHandle(process))
+        return kExitParentCloseFailed;
     if (result == WAIT_OBJECT_0)
         return ERROR_SUCCESS;
     if (result == WAIT_TIMEOUT)
@@ -99,8 +106,8 @@ DWORD markSelfForDeletion() {
         return kExitSelfOpenFailed;
     constexpr wchar_t kDeletedStream[] = L":zanna-cleanup-deleted";
     constexpr DWORD kStreamBytes = sizeof(kDeletedStream) - sizeof(wchar_t);
-    std::vector<unsigned char> renameBytes(offsetof(FILE_RENAME_INFO, FileName) +
-                                           sizeof(kDeletedStream));
+    constexpr size_t kRenameBytes = offsetof(FILE_RENAME_INFO, FileName) + sizeof(kDeletedStream);
+    alignas(FILE_RENAME_INFO) std::array<unsigned char, kRenameBytes> renameBytes{};
     auto *rename = reinterpret_cast<FILE_RENAME_INFO *>(renameBytes.data());
     rename->ReplaceIfExists = TRUE;
     rename->RootDirectory = nullptr;
@@ -109,7 +116,8 @@ DWORD markSelfForDeletion() {
     const bool renamed =
         SetFileInformationByHandle(
             file, FileRenameInfo, rename, static_cast<DWORD>(renameBytes.size())) != FALSE;
-    CloseHandle(file);
+    if (!CloseHandle(file))
+        return kExitSelfRenameCloseFailed;
     if (!renamed)
         return kExitSelfRenameFailed;
 
@@ -128,7 +136,8 @@ DWORD markSelfForDeletion() {
     const bool deleted =
         SetFileInformationByHandle(
             file, FileDispositionInfoEx, &disposition, sizeof(disposition)) != FALSE;
-    CloseHandle(file);
+    if (!CloseHandle(file))
+        return kExitSelfDeleteCloseFailed;
     return deleted ? ERROR_SUCCESS : kExitSelfDeleteFailed;
 }
 
@@ -147,7 +156,10 @@ bool deleteFileWithRetry(const std::wstring &path) {
             return false;
         const bool clearedReadOnly = (attributes & FILE_ATTRIBUTE_READONLY) != 0;
         if (clearedReadOnly) {
-            if (!SetFileAttributesW(path.c_str(), attributes & ~FILE_ATTRIBUTE_READONLY))
+            DWORD writableAttributes = attributes & ~FILE_ATTRIBUTE_READONLY;
+            if (writableAttributes == 0)
+                writableAttributes = FILE_ATTRIBUTE_NORMAL;
+            if (!SetFileAttributesW(path.c_str(), writableAttributes))
                 return false;
         }
         if (DeleteFileW(path.c_str()))
@@ -232,19 +244,17 @@ bool containsTarget(const std::vector<std::wstring> &targets, const std::wstring
 
 /// @brief Parse cleanup requests and run the detached deletion sequence.
 /// @details Accepts one parent PID plus bounded @c /delete, @c /rmdir, and
-///          @c /rmdir-if-empty pairs. The WinMain parameters are intentionally
-///          unnamed because parsing uses GetCommandLineW for exact Unicode input.
+///          @c /rmdir-if-empty pairs from the exact Unicode process command line.
 /// @return ERROR_SUCCESS on complete cleanup, otherwise a stable validation,
 ///         self-delete, parent-wait, or target-cleanup exit code.
-int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+static int runCleanup() {
     int argc = 0;
     wchar_t **argv = CommandLineToArgvW(GetCommandLineW(), &argc);
     if (!argv)
         return kExitInvalidArguments;
     if (argc == 2 &&
         (lstrcmpiW(argv[1], L"/selftest") == 0 || lstrcmpiW(argv[1], L"/self-test") == 0)) {
-        LocalFree(argv);
-        return ERROR_SUCCESS;
+        return LocalFree(argv) == nullptr ? ERROR_SUCCESS : kExitInvalidArguments;
     }
 
     DWORD parentId = 0;
@@ -294,7 +304,8 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
             valid = false;
         }
     }
-    LocalFree(argv);
+    if (LocalFree(argv) != nullptr)
+        valid = false;
     if (!valid || !sawParent || parentId == 0 || files.empty())
         return kExitInvalidArguments;
     if (const DWORD selfDeleteError = markSelfForDeletion(); selfDeleteError != ERROR_SUCCESS)
@@ -308,4 +319,16 @@ int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
     for (const DirectoryRequest &directory : directories)
         success = removeEmptyDirectoryWithRetry(directory.path, directory.allowNonEmpty) && success;
     return success ? ERROR_SUCCESS : kExitTargetCleanupFailed;
+}
+
+/// @brief Convert all C++ failures at the Win32 entry point into stable helper status codes.
+/// @return Cleanup result, ERROR_NOT_ENOUGH_MEMORY, or a stable unexpected-failure code.
+int WINAPI wWinMain(HINSTANCE, HINSTANCE, PWSTR, int) {
+    try {
+        return runCleanup();
+    } catch (const std::bad_alloc &) {
+        return ERROR_NOT_ENOUGH_MEMORY;
+    } catch (...) {
+        return kExitUnexpectedFailure;
+    }
 }

@@ -1,6 +1,11 @@
+---
+status: proposed
+audience: developers
+last-verified: 2026-08-03
+---
+
 # Graphics3D Deep Review — 2026-08-03
 
-Status: proposed
 Scope: full 3D stack — runtime (`src/runtime/graphics/3d`), public Zia API,
 demos/examples, Zanna Studio 3D editing, tests, and cross-platform parity.
 Method: five parallel audits (runtime completeness, API surface via live

@@ -58,8 +58,9 @@
 #include <time.h>
 
 #if defined(_WIN32)
-#include "rt_file_path.h"
 #define WIN32_LEAN_AND_MEAN
+#include "rt_file_path.h"
+#include "rt_win32_wait.h"
 #include <wchar.h>
 #include <windows.h>
 #else
@@ -76,15 +77,17 @@ extern char **environ;
 #define PROCESS_BUFFER_INITIAL_SIZE 4096
 /// @brief Maximum retained bytes per stdout or stderr buffer.
 #define PROCESS_BUFFER_MAX_SIZE (16 * 1024 * 1024)
+/// @brief Maximum time finalization waits for an asynchronously terminated Windows child.
+#define PROCESS_WINDOWS_TERMINATE_WAIT_MS 5000u
 
 /// @brief Incremental byte buffer for one redirected child output stream.
 /// @details Storage is retained between reads for reuse. Once the 16 MiB cap is
 ///          reached, additional bytes are discarded and @c truncated remains
 ///          set until the next take operation reports and clears it.
 typedef struct process_buffer {
-    char *data;   ///< Owned allocation, or NULL before first append.
-    size_t len;   ///< Number of unread bytes currently retained.
-    size_t cap;   ///< Allocated byte capacity of @c data.
+    char *data;    ///< Owned allocation, or NULL before first append.
+    size_t len;    ///< Number of unread bytes currently retained.
+    size_t cap;    ///< Allocated byte capacity of @c data.
     int truncated; ///< Whether bytes were discarded since the previous take.
 } process_buffer;
 
@@ -92,9 +95,9 @@ typedef struct process_buffer {
 /// @details The vector owns references to runtime strings whose byte pointers
 ///          appear in @c values, keeping those pointers valid through spawning.
 typedef struct process_string_vector {
-    char **values;             ///< Owned pointer array ending in NULL.
-    rt_string *owned_strings;  ///< Owned array of retained runtime strings.
-    int64_t owned_count;       ///< Number of entries in @c owned_strings.
+    char **values;            ///< Owned pointer array ending in NULL.
+    rt_string *owned_strings; ///< Owned array of retained runtime strings.
+    int64_t owned_count;      ///< Number of entries in @c owned_strings.
 } process_string_vector;
 
 /// @brief Platform process state stored in a Zanna.System.Process object.
@@ -948,12 +951,12 @@ static void process_poll_internal(rt_process_impl *proc, int wait) {
             proc->exit_code = (int64_t)exit_code;
         } else {
             proc->exit_code = -1;
+            rt_trap("Process: failed to query child exit code");
         }
         proc->running = 0;
         process_drain(proc);
     } else if (wait_result == WAIT_FAILED) {
         proc->exit_code = -1;
-        proc->running = 0;
         process_drain(proc);
         rt_trap("Process: child wait failed");
     }
@@ -1102,8 +1105,9 @@ static rt_process_impl *process_start_impl(rt_string program,
 
     rt_process_impl *proc = process_alloc();
     if (!proc) {
-        (void)TerminateProcess(pi.hProcess, 1);
-        (void)WaitForSingleObject(pi.hProcess, INFINITE);
+        DWORD ignored_exit_code = STILL_ACTIVE;
+        (void)rt_win32_terminate_process_bounded(
+            pi.hProcess, 1, PROCESS_WINDOWS_TERMINATE_WAIT_MS, &ignored_exit_code);
         close_handle(&stdout_read);
         close_handle(&stderr_read);
         close_handle(&stdin_write);
@@ -1597,11 +1601,16 @@ static void process_close(rt_process_impl *proc) {
         return;
 
 #if defined(_WIN32)
+    process_poll_internal(proc, 0);
     if (proc->running && proc->process) {
-        (void)TerminateProcess(proc->process, 1);
-        (void)WaitForSingleObject(proc->process, INFINITE);
-        proc->running = 0;
-        proc->exit_code = 1;
+        DWORD exit_code = STILL_ACTIVE;
+        if (rt_win32_terminate_process_bounded(
+                proc->process, 1, PROCESS_WINDOWS_TERMINATE_WAIT_MS, &exit_code)) {
+            proc->running = 0;
+            proc->exit_code = (int64_t)exit_code;
+        } else {
+            rt_trap("Process: bounded child termination failed");
+        }
     }
     process_drain(proc);
     close_handle(&proc->stdout_read);

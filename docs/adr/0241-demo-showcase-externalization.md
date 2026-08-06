@@ -75,6 +75,13 @@ and `bin/`. No builder logic is duplicated. The zanna repo's
 games>apps ratio gate); the Windows installer smoke subject moved from
 xenoscape to crackman, which is also the macOS signing-smoke subject.
 
+The Windows adapter resolves relative overrides from the zanna repository,
+rejects reparse or overlapping source/output/build/manifest roots, and permits
+`--clean` only for the exact external `<demo-root>\bin` ownership boundary.
+Manifest and project metadata remain bounded BOM-free UTF-8 with the shared
+lowercase inventory grammar. These checks preserve externalization without
+expanding destructive authority to arbitrary configured output directories.
+
 ## Consequences
 
 - Clean zanna clones build and test green with no demos present; the

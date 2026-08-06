@@ -12,6 +12,7 @@
 // Key invariants:
 //   - Strong > Weak > Undefined precedence
 //   - Multiple strong definitions of the same symbol = linker error
+//   - A regular COFF definition overrides a selectany/COMDAT ANY fallback
 //   - Archives still satisfy symbols that also exist in shared libraries
 //   - Only allowlisted shared-library symbols remain dynamic after resolution
 //   - Unknown unresolved symbols are hard errors
@@ -306,6 +307,55 @@ int main() {
         CHECK(ok);
         CHECK(err.str().empty());
         CHECK(globalSyms["rtti_descriptor"].objIndex == 0);
+    }
+
+    // --- A regular COFF definition overrides a later selectany fallback ---
+    {
+        auto regular = makeObj("embedded-assets.o", {".rdata"});
+        addSymbol(regular, "zanna_asset_blob", 1, ObjSymbol::Global);
+        auto selectany = makeComdatObj(
+            "rt_asset.obj", "zanna_asset_blob", ComdatSelection::Any, {0x00}, "zanna_asset_blob");
+
+        std::vector<ObjFile> initObjs = {regular, selectany};
+        std::vector<Archive> archives;
+        std::unordered_map<std::string, GlobalSymEntry> globalSyms;
+        std::vector<ObjFile> allObjects;
+        std::unordered_set<std::string> dynamicSyms;
+        std::ostringstream err;
+
+        const bool ok = resolveSymbols(
+            initObjs, archives, globalSyms, allObjects, dynamicSyms, err, LinkPlatform::Windows);
+        CHECK(ok);
+        CHECK(err.str().empty());
+        CHECK(globalSyms["zanna_asset_blob"].objIndex == 0);
+        CHECK(!allObjects[0].sections[1].stripped);
+        CHECK(allObjects[1].sections[1].stripped);
+    }
+
+    // --- A later regular COFF definition replaces an earlier selectany fallback ---
+    {
+        auto selectany = makeComdatObj("rt_asset.obj",
+                                       "zanna_asset_blob_size",
+                                       ComdatSelection::Any,
+                                       std::vector<uint8_t>(8, 0),
+                                       "zanna_asset_blob_size");
+        auto regular = makeObj("embedded-assets.o", {".rdata"}, 8);
+        addSymbol(regular, "zanna_asset_blob_size", 1, ObjSymbol::Global);
+
+        std::vector<ObjFile> initObjs = {selectany, regular};
+        std::vector<Archive> archives;
+        std::unordered_map<std::string, GlobalSymEntry> globalSyms;
+        std::vector<ObjFile> allObjects;
+        std::unordered_set<std::string> dynamicSyms;
+        std::ostringstream err;
+
+        const bool ok = resolveSymbols(
+            initObjs, archives, globalSyms, allObjects, dynamicSyms, err, LinkPlatform::Windows);
+        CHECK(ok);
+        CHECK(err.str().empty());
+        CHECK(globalSyms["zanna_asset_blob_size"].objIndex == 1);
+        CHECK(allObjects[0].sections[1].stripped);
+        CHECK(!allObjects[1].sections[1].stripped);
     }
 
     // --- COMDAT SAME_SIZE diagnoses mismatched section sizes ---

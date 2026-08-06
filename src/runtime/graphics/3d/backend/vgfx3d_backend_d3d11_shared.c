@@ -2316,6 +2316,15 @@ vgfx3d_d3d11_readback_kind_t vgfx3d_d3d11_choose_readback_kind(
     return VGFX3D_D3D11_READBACK_BACKBUFFER;
 }
 
+/// @brief Accept only an exact `S_OK` as proof that DXGI completed the display path.
+/// @details DXGI informational success values such as `DXGI_STATUS_OCCLUDED` do not prove that the
+///   captured backbuffer reached the display and therefore must not advance presentation telemetry.
+/// @param[in] present_status Signed 32-bit HRESULT/status returned by `IDXGISwapChain::Present`.
+/// @return One for `S_OK`; otherwise zero.
+int vgfx3d_d3d11_present_status_confirms_display(int32_t present_status) {
+    return present_status == 0 ? 1 : 0;
+}
+
 /// @brief Keep a pre-present snapshot only when both snapshot and Present succeeded.
 /// @param[in] snapshot_ok Nonzero when snapshot capture succeeded.
 /// @param[in] present_ok Nonzero when swapchain presentation succeeded.
