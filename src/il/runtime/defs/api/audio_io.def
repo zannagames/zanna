@@ -102,7 +102,7 @@ RT_FUNC(MusicStop,        rt_music_stop,         "Zanna.Audio.Music.Stop",      
 RT_FUNC(MusicPause,       rt_music_pause,        "Zanna.Audio.Music.Pause",       "void(obj<Zanna.Audio.Music>)")
 RT_FUNC(MusicResume,      rt_music_resume,       "Zanna.Audio.Music.Resume",      "void(obj<Zanna.Audio.Music>)")
 RT_FUNC(MusicSetLoop,     rt_music_set_loop,     "Zanna.Audio.Music.SetLoop",     "void(obj<Zanna.Audio.Music>,i1)")
-RT_FUNC(MusicSetVolume,   rt_music_set_volume,   "Zanna.Audio.Music.SetVolume",   "void(obj<Zanna.Audio.Music>,i64)")
+RT_FUNC(MusicSetVolume,   rt_music_set_volume,   "Zanna.Audio.Music.set_Volume",   "void(obj<Zanna.Audio.Music>,i64)")
 RT_FUNC(MusicGetVolume,   rt_music_get_volume,   "Zanna.Audio.Music.get_Volume",  "i64(obj<Zanna.Audio.Music>)")
 RT_FUNC(MusicIsPlaying,   rt_music_is_playing,   "Zanna.Audio.Music.IsPlaying",   "i1(obj<Zanna.Audio.Music>)")
 RT_FUNC(MusicSeek,        rt_music_seek,         "Zanna.Audio.Music.Seek",        "void(obj<Zanna.Audio.Music>,i64)")

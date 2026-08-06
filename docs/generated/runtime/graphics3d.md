@@ -374,7 +374,7 @@ Constructor: `Zanna.Graphics3D.Camera3D.New`
 | <a id="zanna-graphics3d-camera3d-lookat"></a>`LookAt` | `void(obj,obj,obj)` | `Zanna.Graphics3D.Camera3D.LookAt` |
 | <a id="zanna-graphics3d-camera3d-orbit"></a>`Orbit` | `void(obj,f64,f64,f64)` | `Zanna.Graphics3D.Camera3D.Orbit` |
 | <a id="zanna-graphics3d-camera3d-screentoray"></a>`ScreenToRay` | `obj(i64,i64,i64,i64)` | `Zanna.Graphics3D.Camera3D.ScreenToRay` |
-| <a id="zanna-graphics3d-camera3d-worldtoscreen"></a>`WorldToScreen` | `obj(obj<Zanna.Math.Vec3>,i64,i64)` | `Zanna.Graphics3D.Camera3D.WorldToScreen` |
+| <a id="zanna-graphics3d-camera3d-worldtoscreen"></a>`WorldToScreen` | `obj<Zanna.Math.Vec3>(obj<Zanna.Math.Vec3>,i64,i64)` | `Zanna.Graphics3D.Camera3D.WorldToScreen` |
 | <a id="zanna-graphics3d-camera3d-screentorayorigin"></a>`ScreenToRayOrigin` | `obj(i64,i64,i64,i64)` | `Zanna.Graphics3D.Camera3D.ScreenToRayOrigin` |
 | <a id="zanna-graphics3d-camera3d-shake"></a>`Shake` | `void(f64,f64,f64)` | `Zanna.Graphics3D.Camera3D.Shake` |
 | <a id="zanna-graphics3d-camera3d-smoothfollow"></a>`SmoothFollow` | `void(obj,f64,f64,f64,f64)` | `Zanna.Graphics3D.Camera3D.SmoothFollow` |

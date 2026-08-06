@@ -2179,20 +2179,20 @@ Constructor: `Zanna.Game.DebugOverlay.New`
 | `Zanna.Game.UI.HudTextInput.Update` | `void(obj,i64)` | `rt_uitextinput_update` |
 | `Zanna.Game.UI.HudTextInput.Draw` | `void(obj,obj)` | `rt_uitextinput_draw` |
 | <a id="zanna-game-ui-hudtextinput-gettextcolor"></a>`Zanna.Game.UI.HudTextInput.GetTextColor` | `i64(obj)` | `rt_uitextinput_get_text_color` |
-| <a id="zanna-game-ui-hudtextinput-settextcolor"></a>`Zanna.Game.UI.HudTextInput.SetTextColor` | `void(obj,i64)` | `rt_uitextinput_set_text_color` |
+| <a id="zanna-game-ui-hudtextinput-set-textcolor"></a>`Zanna.Game.UI.HudTextInput.set_TextColor` | `void(obj,i64)` | `rt_uitextinput_set_text_color` |
 | <a id="zanna-game-ui-hudtextinput-getbgcolor"></a>`Zanna.Game.UI.HudTextInput.GetBgColor` | `i64(obj)` | `rt_uitextinput_get_bg_color` |
-| <a id="zanna-game-ui-hudtextinput-setbgcolor"></a>`Zanna.Game.UI.HudTextInput.SetBgColor` | `void(obj,i64)` | `rt_uitextinput_set_bg_color` |
+| <a id="zanna-game-ui-hudtextinput-set-backgroundcolor"></a>`Zanna.Game.UI.HudTextInput.set_BackgroundColor` | `void(obj,i64)` | `rt_uitextinput_set_bg_color` |
 | `Zanna.Game.UI.HudTextInput.SetCursorColor` | `void(obj,i64)` | `rt_uitextinput_set_cursor_color` |
 | `Zanna.Game.UI.HudTextInput.SetSelectionColor` | `void(obj,i64)` | `rt_uitextinput_set_selection_color` |
 | `Zanna.Game.UI.HudTextInput.SetBorderColor` | `void(obj,i64)` | `rt_uitextinput_set_border_color` |
 | `Zanna.Game.UI.HudTextInput.SetBorderColorFocused` | `void(obj,i64)` | `rt_uitextinput_set_border_color_focused` |
-| <a id="zanna-game-ui-hudtextinput-setfont"></a>`Zanna.Game.UI.HudTextInput.SetFont` | `void(obj,obj)` | `rt_uitextinput_set_font` |
+| <a id="zanna-game-ui-hudtextinput-set-font"></a>`Zanna.Game.UI.HudTextInput.set_Font` | `void(obj,obj)` | `rt_uitextinput_set_font` |
 | <a id="zanna-game-ui-hudtextinput-getvisible"></a>`Zanna.Game.UI.HudTextInput.GetVisible` | `i1(obj)` | `rt_uitextinput_get_visible` |
-| <a id="zanna-game-ui-hudtextinput-setvisible"></a>`Zanna.Game.UI.HudTextInput.SetVisible` | `void(obj,i1)` | `rt_uitextinput_set_visible` |
+| <a id="zanna-game-ui-hudtextinput-set-visible"></a>`Zanna.Game.UI.HudTextInput.set_Visible` | `void(obj,i1)` | `rt_uitextinput_set_visible` |
 | <a id="zanna-game-ui-hudtextinput-getenabled"></a>`Zanna.Game.UI.HudTextInput.GetEnabled` | `i1(obj)` | `rt_uitextinput_get_enabled` |
-| <a id="zanna-game-ui-hudtextinput-setenabled"></a>`Zanna.Game.UI.HudTextInput.SetEnabled` | `void(obj,i1)` | `rt_uitextinput_set_enabled` |
+| <a id="zanna-game-ui-hudtextinput-set-isenabled"></a>`Zanna.Game.UI.HudTextInput.set_IsEnabled` | `void(obj,i1)` | `rt_uitextinput_set_enabled` |
 | <a id="zanna-game-ui-hudtextinput-getfocused"></a>`Zanna.Game.UI.HudTextInput.GetFocused` | `i1(obj)` | `rt_uitextinput_get_focused` |
-| <a id="zanna-game-ui-hudtextinput-setfocused"></a>`Zanna.Game.UI.HudTextInput.SetFocused` | `void(obj,i1)` | `rt_uitextinput_set_focused` |
+| <a id="zanna-game-ui-hudtextinput-set-focused"></a>`Zanna.Game.UI.HudTextInput.set_Focused` | `void(obj,i1)` | `rt_uitextinput_set_focused` |
 | `Zanna.Game.UI.HudTextInput.SetPasswordMode` | `void(obj,i1)` | `rt_uitextinput_set_password_mode` |
 | `Zanna.Game.UI.HudTextInput.SetPlaceholder` | `void(obj,str)` | `rt_uitextinput_set_placeholder` |
 | `Zanna.Game.UI.HudTextInput.SetMaxCodepoints` | `void(obj,i64)` | `rt_uitextinput_set_max_codepoints` |

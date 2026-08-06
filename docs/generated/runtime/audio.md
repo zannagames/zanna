@@ -360,7 +360,7 @@ Its public surface exposes operations including `SetListener`, `PlayAt`, `Update
 | `Zanna.Audio.Music.Pause` | `void(obj<Zanna.Audio.Music>)` | `rt_music_pause` |
 | `Zanna.Audio.Music.Resume` | `void(obj<Zanna.Audio.Music>)` | `rt_music_resume` |
 | `Zanna.Audio.Music.SetLoop` | `void(obj<Zanna.Audio.Music>,i1)` | `rt_music_set_loop` |
-| <a id="zanna-audio-music-setvolume"></a>`Zanna.Audio.Music.SetVolume` | `void(obj<Zanna.Audio.Music>,i64)` | `rt_music_set_volume` |
+| <a id="zanna-audio-music-set-volume"></a>`Zanna.Audio.Music.set_Volume` | `void(obj<Zanna.Audio.Music>,i64)` | `rt_music_set_volume` |
 | <a id="zanna-audio-music-get-volume"></a>`Zanna.Audio.Music.get_Volume` | `i64(obj<Zanna.Audio.Music>)` | `rt_music_get_volume` |
 | `Zanna.Audio.Music.IsPlaying` | `i1(obj<Zanna.Audio.Music>)` | `rt_music_is_playing` |
 | `Zanna.Audio.Music.Seek` | `void(obj<Zanna.Audio.Music>,i64)` | `rt_music_seek` |

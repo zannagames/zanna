@@ -219,9 +219,11 @@ int main() {
 
     // Filled from the canonical registry after deliberate ABI review. This one value
     // covers every function name/signature/C symbol and every class member binding.
-    /* Rehashed for Animation3D.StripRootMotion (function + method added to
-     * the reviewed skeletal-animation surface). */
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xabfdc5f79b502198);
+    /* Rehashed for Animation3D.StripRootMotion (function + method added) and
+     * the Camera3D.WorldToScreen typed return (obj -> obj<Vec3>; the C entry
+     * always returns an owned Vec3, and the untyped form made Zia member
+     * lookups resolve against the receiver class). */
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x6f5ab143ff4d4e0e);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';
