@@ -243,6 +243,13 @@ rt_string rt_animation3d_get_name(void *anim);
 /// @return New GC-managed retargeted Animation3D, or `NULL` for invalid input
 ///         or allocation/copy failure.
 void *rt_animation3d_retarget(void *anim, void *src_skeleton, void *dst_skeleton);
+/// @brief Pin a bone channel's X/Z (and optionally Y) travel to its first key so the
+///        clip plays in place; gameplay code owns actor translation.
+/// @param anim Animation3D modified in place (use on retargeted copies, not shared clips).
+/// @param bone_index Root/hips bone whose channel is pinned.
+/// @param keep_vertical Nonzero preserves vertical motion (crouches, slides).
+/// @return One when a matching channel was modified, otherwise zero.
+int64_t rt_animation3d_strip_root_motion(void *anim, int64_t bone_index, int8_t keep_vertical);
 
 /// @}
 

@@ -880,11 +880,26 @@ static void test_animation_retarget_scales_by_proportion() {
 
     void *retargeted_tangent = rt_animation3d_retarget(tangent_anim, src, dst);
     EXPECT_TRUE(retargeted_tangent != nullptr, "Proportional retarget returns an animation");
-    auto *retargeted_tangent_impl = static_cast<rt_animation3d *>(retargeted_tangent);
-    EXPECT_NEAR(retargeted_tangent_impl->channels[0].keyframes[0].pos_out_tangent[0],
-                6.0,
-                0.001,
-                "Retarget scales cubic translation tangents with translation values");
+    {
+        /* Pose-based retargeting samples the cubic curve onto a dense grid instead of
+         * copying tangents; the played value must still match the scaled Hermite curve.
+         * Source cubic at t=0.5 (keys 0->2s, values 0->2, out-tangent +3, in-tangent
+         * -3) evaluates to 1.4375; the 2x-longer target scales it to 2.875. */
+        void *tangent_player = rt_anim_player3d_new(dst);
+        rt_anim_player3d_play(tangent_player, retargeted_tangent);
+        rt_anim_player3d_update(tangent_player, 0.5);
+
+        typedef struct {
+            double m[16];
+        } tangent_mat4_view;
+
+        tangent_mat4_view *tangent_arm =
+            (tangent_mat4_view *)rt_anim_player3d_get_bone_matrix(tangent_player, dst_arm);
+        EXPECT_NEAR(tangent_arm->m[3],
+                    2.875,
+                    0.02,
+                    "Retarget preserves scaled cubic curve shape through dense sampling");
+    }
 
     void *retargeted = rt_animation3d_retarget(anim, src, dst);
     void *player = rt_anim_player3d_new(dst);
@@ -1011,6 +1026,85 @@ static void test_animation_retarget_compensates_rest_pose_delta() {
     EXPECT_NEAR(at_twist->m[8], 0.5, 1e-3, "Delta transfers as a world -Y rotation (zx)");
     EXPECT_NEAR(at_twist->m[10], 0.8660254, 1e-3, "Delta transfers as a world -Y rotation (zz)");
     EXPECT_NEAR(at_twist->m[3], 1.0, 1e-4, "Zero translation delta keeps the bind offset");
+}
+
+/// @brief Two source bones mapping onto one destination bone compose parent-first.
+/// @details A Biped drives one glTF Hips from Bip01 (translation/facing) + Pelvis
+///          (hip rotation); first-claim used to silently drop whichever came second.
+static void test_animation_retarget_composes_chain_onto_one_bone() {
+    void *src = rt_skeleton3d_new();
+    int64_t s_com = rt_skeleton3d_add_bone(src, rt_const_cstr("Bip"), -1, rt_mat4_identity());
+    int64_t s_pelvis =
+        rt_skeleton3d_add_bone(src, rt_const_cstr("BipPelvis"), 0, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(src);
+
+    void *dst = rt_skeleton3d_new();
+    int64_t d_hips = rt_skeleton3d_add_bone(dst, rt_const_cstr("hips"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(dst);
+    rt_skeleton3d_set_bone_alias(dst, rt_const_cstr("Bip"), rt_const_cstr("hips"));
+    rt_skeleton3d_set_bone_alias(dst, rt_const_cstr("BipPelvis"), rt_const_cstr("hips"));
+
+    /* COM translates to (0,2,0); pelvis rotates 90 degrees about Z. Composed local:
+     * translation (0,2,0) THEN rotation Z90. */
+    void *anim = rt_animation3d_new(rt_const_cstr("combo"), 2.0);
+    void *ident = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *z90 = rt_quat_new(0.0, 0.0, 0.7071067811865476, 0.7071067811865476);
+    void *one = rt_vec3_new(1.0, 1.0, 1.0);
+    rt_animation3d_add_keyframe(anim, s_com, 0.0, rt_vec3_new(0.0, 2.0, 0.0), ident, one);
+    rt_animation3d_add_keyframe(anim, s_com, 2.0, rt_vec3_new(0.0, 2.0, 0.0), ident, one);
+    rt_animation3d_add_keyframe(anim, s_pelvis, 0.0, rt_vec3_new(0.0, 0.0, 0.0), z90, one);
+    rt_animation3d_add_keyframe(anim, s_pelvis, 2.0, rt_vec3_new(0.0, 0.0, 0.0), z90, one);
+
+    void *retargeted = rt_animation3d_retarget(anim, src, dst);
+    EXPECT_TRUE(retargeted != nullptr, "Chain retarget returns an animation");
+    if (!retargeted)
+        return;
+    auto *impl = static_cast<rt_animation3d *>(retargeted);
+    EXPECT_TRUE(impl->channel_count == 1, "Both source bones compose into ONE hips channel");
+
+    typedef struct {
+        double m[16];
+    } mat4_view;
+
+    void *player = rt_anim_player3d_new(dst);
+    rt_anim_player3d_play(player, retargeted);
+    rt_anim_player3d_update(player, 1.0);
+    mat4_view *hips = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, d_hips);
+    /* Rotation Z90: m[0]=0, m[1]=-1, m[4]=1, m[5]=0. Translation preserved (0,2,0). */
+    EXPECT_NEAR(hips->m[7], 2.0, 1e-3, "Composed channel keeps the COM translation");
+    EXPECT_NEAR(hips->m[0], 0.0, 1e-3, "Composed channel keeps the pelvis rotation (xx)");
+    EXPECT_NEAR(hips->m[1], -1.0, 1e-3, "Composed channel keeps the pelvis rotation (xy)");
+    EXPECT_NEAR(hips->m[4], 1.0, 1e-3, "Composed channel keeps the pelvis rotation (yx)");
+}
+
+/// @brief StripRootMotion pins X/Z travel to the first key and keeps Y when asked.
+static void test_animation_strip_root_motion_pins_travel() {
+    void *skel = rt_skeleton3d_new();
+    int64_t root = rt_skeleton3d_add_bone(skel, rt_const_cstr("hips"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    void *anim = rt_animation3d_new(rt_const_cstr("travel"), 2.0);
+    void *ident = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *one = rt_vec3_new(1.0, 1.0, 1.0);
+    rt_animation3d_add_keyframe(anim, root, 0.0, rt_vec3_new(1.0, 3.0, 2.0), ident, one);
+    rt_animation3d_add_keyframe(anim, root, 2.0, rt_vec3_new(9.0, 0.5, -7.0), ident, one);
+
+    EXPECT_TRUE(rt_animation3d_strip_root_motion(anim, root, 1) == 1,
+                "StripRootMotion reports the modified channel");
+
+    typedef struct {
+        double m[16];
+    } mat4_view;
+
+    void *player = rt_anim_player3d_new(skel);
+    rt_anim_player3d_play(player, anim);
+    rt_anim_player3d_update(player, 2.0);
+    mat4_view *hips = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, root);
+    EXPECT_NEAR(hips->m[3], 1.0, 1e-4, "X travel is pinned to the first key");
+    EXPECT_NEAR(hips->m[11], 2.0, 1e-4, "Z travel is pinned to the first key");
+    EXPECT_NEAR(hips->m[7], 0.5, 1e-4, "Vertical motion is preserved when requested");
+    EXPECT_TRUE(rt_animation3d_strip_root_motion(anim, root + 5, 1) == 0,
+                "A bone without a channel reports zero");
 }
 
 static void test_animation_retarget_matches_bone_names() {
@@ -1165,6 +1259,8 @@ int main() {
     test_anim_blend_long_state_names_use_canonical_lookup();
     test_animation_retarget_matches_bone_names();
     test_animation_retarget_compensates_rest_pose_delta();
+    test_animation_retarget_composes_chain_onto_one_bone();
+    test_animation_strip_root_motion_pins_travel();
     test_animation_retarget_scales_by_proportion();
     test_animation_retarget_maps_humanoid_roles();
     test_non_topological_parent_order_evaluates_hierarchy();

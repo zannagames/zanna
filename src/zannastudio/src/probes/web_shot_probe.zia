@@ -142,7 +142,19 @@ func Emit(harness: GUI.TestHarness,
 }
 
 /// @brief Capture the 3D scene editor with an authored .scene3d open.
-func Shoot3D(width: Integer, height: Integer, outDir: String, scenePath: String) {
+/// @param shotName Base name of the PNG, without extension.
+/// @param gameView Drop editor chrome and compose at the game's output size.
+/// @param focusMode Hide the scene panes so the viewport takes the window.
+/// @details Every variant shares this one path so a Game View or Focus capture
+///          is the production surface with one toggle flipped, not a second
+///          rendering route that could drift from the one users see.
+func Shoot3D(width: Integer,
+             height: Integer,
+             outDir: String,
+             scenePath: String,
+             shotName: String,
+             gameView: Boolean,
+             focusMode: Boolean) {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio", width, height);
     shell.Activate();
@@ -150,7 +162,7 @@ func Shoot3D(width: Integer, height: Integer, outDir: String, scenePath: String)
 
     var project = OpenOwningProject(scenePath);
     if project == null {
-        Terminal.Say("FAIL scene3d could not open owning project for "
+        Terminal.Say("FAIL " + shotName + " could not open owning project for "
                      + scenePath);
         shell.Destroy();
         return;
@@ -164,7 +176,7 @@ func Shoot3D(width: Integer, height: Integer, outDir: String, scenePath: String)
     var documents = new document_manager.DocumentManager();
     var doc = documents.OpenFile(scenePath);
     if doc == null {
-        Terminal.Say("FAIL scene3d could not open " + scenePath);
+        Terminal.Say("FAIL " + shotName + " could not open " + scenePath);
         project.CloseProject();
         shell.Destroy();
         return;
@@ -180,6 +192,24 @@ func Shoot3D(width: Integer, height: Integer, outDir: String, scenePath: String)
     shell.Poll();
     shell.Render();
 
+    // Toggles go on after the scene is live: Game View reframes to the
+    // project's declared output size, which needs the document's own settings
+    // already loaded, and Focus mode relayouts the shell around the viewport.
+    if focusMode {
+        shell.SetSceneFocusMode(true);
+        shell.Poll();
+        shell.Render();
+    }
+    if gameView {
+        editor.SetGameViewActive(true);
+        editor.Pump(doc);
+        shell.Poll();
+        shell.Render();
+        editor.Pump(doc);
+        shell.Poll();
+        shell.Render();
+    }
+
     shell.SetStatusLeft("Scene");
     shell.SetStatusRight(doc.fileName);
     shell.Poll();
@@ -187,20 +217,29 @@ func Shoot3D(width: Integer, height: Integer, outDir: String, scenePath: String)
 
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
-        Terminal.Say("FAIL scene3d harness binding");
+        Terminal.Say("FAIL " + shotName + " harness binding");
         project.CloseProject();
         shell.Destroy();
         return;
     }
     harness.RenderFrame(16.0);
-    Emit(harness, width, height, outDir + "/studio-scene3d.png", "scene3d");
+    Emit(harness, width, height, outDir + "/" + shotName + ".png", shotName);
     harness.UnbindApp();
     project.CloseProject();
     shell.Destroy();
 }
 
 /// @brief Capture the 2D scene editor with an authored .scene2d open.
-func Shoot2D(width: Integer, height: Integer, outDir: String, scenePath: String) {
+/// @param shotName Base name of the PNG, without extension.
+/// @param gameView Drop editor chrome and compose at the game's output size.
+/// @param toolMode Tool to arm before capture, or -1 to leave the default.
+func Shoot2D(width: Integer,
+             height: Integer,
+             outDir: String,
+             scenePath: String,
+             shotName: String,
+             gameView: Boolean,
+             toolMode: Integer) {
     var shell = new app_shell.AppShell();
     shell.Build("Zanna Studio", width, height);
     shell.Activate();
@@ -208,7 +247,7 @@ func Shoot2D(width: Integer, height: Integer, outDir: String, scenePath: String)
 
     var project = OpenOwningProject(scenePath);
     if project == null {
-        Terminal.Say("FAIL scene2d could not open owning project for "
+        Terminal.Say("FAIL " + shotName + " could not open owning project for "
                      + scenePath);
         shell.Destroy();
         return;
@@ -221,7 +260,7 @@ func Shoot2D(width: Integer, height: Integer, outDir: String, scenePath: String)
     var documents = new document_manager.DocumentManager();
     var doc = documents.OpenFile(scenePath);
     if doc == null {
-        Terminal.Say("FAIL scene2d could not open " + scenePath);
+        Terminal.Say("FAIL " + shotName + " could not open " + scenePath);
         project.CloseProject();
         shell.Destroy();
         return;
@@ -237,6 +276,25 @@ func Shoot2D(width: Integer, height: Integer, outDir: String, scenePath: String)
     shell.Poll();
     shell.Render();
 
+    // Arming a tool is a real mode change, not a paint: nothing is written to
+    // the document, so the capture shows the palette and tool chrome a user
+    // sees before their first stroke.
+    if toolMode >= 0 {
+        editor.SetToolMode(toolMode);
+        editor.Pump(doc);
+        shell.Poll();
+        shell.Render();
+    }
+    if gameView {
+        editor.SetGameViewActive(true);
+        editor.Pump(doc);
+        shell.Poll();
+        shell.Render();
+        editor.Pump(doc);
+        shell.Poll();
+        shell.Render();
+    }
+
     shell.SetStatusLeft("Scene");
     shell.SetStatusRight(doc.fileName);
     shell.Poll();
@@ -244,13 +302,13 @@ func Shoot2D(width: Integer, height: Integer, outDir: String, scenePath: String)
 
     var harness = GUI.TestHarness.New();
     if harness.BindApp(shell.app) == false {
-        Terminal.Say("FAIL scene2d harness binding");
+        Terminal.Say("FAIL " + shotName + " harness binding");
         project.CloseProject();
         shell.Destroy();
         return;
     }
     harness.RenderFrame(16.0);
-    Emit(harness, width, height, outDir + "/studio-scene2d.png", "scene2d");
+    Emit(harness, width, height, outDir + "/" + shotName + ".png", shotName);
     harness.UnbindApp();
     project.CloseProject();
     shell.Destroy();
@@ -327,13 +385,34 @@ func main() {
         return;
     }
 
+    // The scene editors, as you find them on open.
     if which == "all" or which == "3d" {
-        Shoot3D(width, height, outDir, scene3d);
+        Shoot3D(width, height, outDir, scene3d, "studio-scene3d", false, false);
     }
     if which == "all" or which == "2d" {
-        Shoot2D(width, height, outDir, scene2d);
+        Shoot2D(width, height, outDir, scene2d, "studio-scene2d", false, -1);
     }
     if which == "all" or which == "code" {
         ShootCode(width, height, outDir, source);
+    }
+
+    // Game View: the same documents with every editor affordance dropped and
+    // the frame composed at the project's own output size. Shot in both
+    // dimensions because the claim is that either editor can show you the
+    // picture your players get.
+    if which == "all" or which == "gameview" {
+        Shoot3D(width, height, outDir, scene3d, "studio-gameview", true, false);
+        Shoot2D(width, height, outDir, scene2d, "studio-gameview2d", true, -1);
+    }
+
+    // Focus mode: outer docks and scene chrome gone, viewport takes the window.
+    if which == "all" or which == "focus" {
+        Shoot3D(width, height, outDir, scene3d, "studio-focus", false, true);
+    }
+
+    // A paint tool armed, so the tile palette and tool chrome are in frame.
+    if which == "all" or which == "tiletools" {
+        Shoot2D(width, height, outDir, scene2d, "studio-tiletools", false,
+                scene_editor_2d.MODE_PAINT);
     }
 }

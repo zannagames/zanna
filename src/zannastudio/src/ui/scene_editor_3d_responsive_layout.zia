@@ -476,8 +476,12 @@ class SceneEditor3DResponsiveLayoutLayer extends PreviousLayer.SceneEditor3DWork
             importInstanceButton.SetText("Instance");
             createMenuButton.SetText("Create...");
             addEmptyButton.SetText("+ Node");
-            placementMenuButton.SetText("Placement...");
-            viewMenuButton.SetText("View...");
+            // Menu openers keep the compact labels here: the menus-mode view
+            // bar must fit every command menu ahead of the overflow chevron
+            // at 1x display scale, where text measures a few px wider than
+            // on 2x displays.
+            placementMenuButton.SetText("Place");
+            viewMenuButton.SetText("View");
             moveToolButton.SetText("M");
             rotateToolButton.SetText("R");
             scaleToolButton.SetText("S");

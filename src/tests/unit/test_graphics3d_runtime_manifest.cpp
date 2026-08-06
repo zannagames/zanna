@@ -35,13 +35,12 @@
 
 namespace {
 
-/* ADR 0233 def-batch (2026-08-03): +102 functions (Input3D cursor, physics
- * knobs/enumerators, Canvas3D/Material3D/Particles3D/Sky3D/joint readback,
- * Result loader peers), +89 properties, +13 methods. */
-constexpr std::size_t kExpectedFunctionCount = 2232;
+/* Animation3D.StripRootMotion (2026-08-05): +1 function, +1 method for
+ * retarget-time root-motion removal on skeletal clips. */
+constexpr std::size_t kExpectedFunctionCount = 2233;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 820;
-constexpr std::size_t kExpectedMethodCount = 1199;
+constexpr std::size_t kExpectedMethodCount = 1200;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -220,9 +219,9 @@ int main() {
 
     // Filled from the canonical registry after deliberate ABI review. This one value
     // covers every function name/signature/C symbol and every class member binding.
-    /* Rehashed for the ADR 0233-era Prefab factory typed returns
-     * (obj<Entity3D>/<SceneTemplate>); member counts unchanged. */
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xa10c7e01840e5ecc);
+    /* Rehashed for Animation3D.StripRootMotion (function + method added to
+     * the reviewed skeletal-animation surface). */
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xabfdc5f79b502198);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';
