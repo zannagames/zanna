@@ -705,6 +705,8 @@ typedef struct {
     int8_t additive_blend;  /* internal-only: route through additive blend state when true */
     int32_t alpha_mode;     /* 0=opaque, 1=mask, 2=blend */
     int8_t alpha_mode_auto; /* true when SetAlpha auto-promoted OPAQUE -> BLEND */
+    int8_t alpha_mode_explicit; /* true when SetAlphaMode was called: the user's
+                                 * choice wins over texture-alpha auto-promotion */
     int32_t shadow_mode;    /* 0=auto, 1=none, 2=cast even when alpha-blended */
     int32_t texture_wrap_s; /* RT_MATERIAL3D_TEXTURE_WRAP_* for imported material textures */
     int32_t texture_wrap_t;

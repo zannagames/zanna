@@ -1324,6 +1324,25 @@ class Lowerer {
     ///          values are stored directly with string retain/release handling.
     void emitInlineValueStore(TypeRef valueType, Value destPtr, Value value, bool destInitialized);
 
+    /// @brief Store a value into a module-level variable slot under slot
+    ///        ownership (the slot owns exactly one reference).
+    /// @details Managed representations (Str and Ptr slots) transfer the
+    ///          value's deferred +1 when present, retain a borrowed value
+    ///          otherwise, and release the slot's previous occupant when
+    ///          @p destInitialized is true. Non-managed representations store
+    ///          directly. Without the retain, storing a borrowed reference
+    ///          (e.g. a local variable) left the slot dangling once the
+    ///          local's exit release ran (ZB-16 use-after-free).
+    void emitGlobalManagedStore(Value addr, Value value, Type ilType, bool destInitialized);
+
+    /// @brief Hoist non-escaping constant-size allocas into the entry block.
+    /// @details ZB-11: the VM bump-allocates every executed `alloca`, so slots
+    ///          lowered into loop bodies grow the frame each iteration until
+    ///          it overflows. Runs over every completed function at the end of
+    ///          lower(); escaping addresses (stored as values, passed to
+    ///          calls, or forwarded as branch arguments) stay in place.
+    void hoistLoopAllocasToEntry(il::core::Function &fn);
+
     /// @brief Move a managed reference out of a temporary result slot.
     /// @details Loads the owned handle, then clears the slot without releasing
     ///          it. The returned SSA value becomes the sole owner and is

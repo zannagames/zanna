@@ -1,0 +1,44 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_bugfix_modvar_retain_m.zia
+// Purpose: Helper module for the ZB-16 module-variable retain regression.
+//          stash() stores a locally-held managed object into a module-level
+//          variable and registers a weak probe on it; alive() reports whether
+//          the stored object survived the helper's return.
+// Key invariants:
+//   - obj_ receives the object through a LOCAL variable (a borrowed
+//     reference), the exact shape that used to store without retaining.
+// Ownership/Lifetime:
+//   - obj_ owns one reference to the stored list after stash() returns.
+//   - probe_ observes the list without retaining it (zeroing weak ref).
+// Links: src/frontends/zia/Lowerer_Emit.cpp (emitGlobalManagedStore).
+//
+//===----------------------------------------------------------------------===//
+module test_bugfix_modvar_retain_m;
+
+var obj_: Any = null;
+var probe_: Any = null;
+
+expose func stash() -> Boolean {
+    var l: List[Integer] = [];
+    l.add(42);
+    probe_ = Zanna.Memory.WeakRef.New(l);
+    // ZB-16 shape: the right-hand side is a local variable, so the store
+    // receives a borrowed reference. Without the slot retain, the local's
+    // function-exit release freed the list and obj_ dangled.
+    obj_ = l;
+    return true;
+}
+
+expose func alive() -> Boolean {
+    return Zanna.Memory.WeakRef.IsAlive(probe_);
+}
+
+expose func stored() -> Any {
+    return obj_;
+}

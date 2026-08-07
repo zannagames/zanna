@@ -586,6 +586,42 @@ static void test_bone_socket_follows_animated_bone() {
     EXPECT_NEAR(y, 1.5, 1e-5, "detached socket no longer tracks the bone");
 }
 
+/// ZB-15: the parent's world scale must apply to the model-space bone pose.
+/// A centimetre-rigged model drawn under an entity-level unit scale otherwise
+/// lands its socketed props ~30x away from the hand (world = T x R x S).
+static void test_bone_socket_scales_with_parent() {
+    void *skel = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("hand"), 0, rt_mat4_identity());
+    /* Bone 1 holds a centimetre-scale pose: (100, 0, 0). */
+    void *anim = make_anim("hold", 1, 100.0, 0.0, 0.0, 100.0, 0.0, 0.0);
+    void *controller = rt_anim_controller3d_new(skel);
+    rt_anim_controller3d_add_state(controller, rt_const_cstr("hold"), anim);
+    rt_anim_controller3d_play(controller, rt_const_cstr("hold"));
+    rt_anim_controller3d_update(controller, 0.0);
+
+    void *scene = rt_scene3d_new();
+    void *character = rt_scene_node3d_new();
+    void *socket = rt_scene_node3d_new();
+    double x;
+    double y;
+    double z;
+
+    rt_scene3d_add(scene, character);
+    rt_scene_node3d_set_position(character, 5.0, 0.0, 0.0);
+    rt_scene_node3d_set_scale(character, 0.01, 0.01, 0.01);
+    rt_scene_node3d_try_add_child(character, socket);
+
+    /* Offset (0, 50, 0) in bone space: model = (100, 50, 0), scaled by the
+     * parent's 0.01 -> (1.0, 0.5, 0), world = (6.0, 0.5, 0). */
+    rt_scene_node3d_attach_to_bone(socket, controller, 1, 0.0, 50.0, 0.0);
+    rt_scene3d_sync_bindings(scene, 0.0);
+    socket_world_pos(socket, &x, &y, &z);
+    EXPECT_NEAR(x, 6.0, 1e-5, "parent world scale applies to the bone pose (x)");
+    EXPECT_NEAR(y, 0.5, 1e-5, "parent world scale applies to the socket offset (y)");
+    EXPECT_NEAR(z, 0.0, 1e-5, "scaled socket stays on the bone plane (z)");
+}
+
 int main() {
     test_node_from_body_resolves_child_local_space();
     test_body_from_node_uses_world_space();
@@ -599,6 +635,7 @@ int main() {
     test_node_animator_rebind_clears_previous_node_owner();
     test_clear_animator_binding_clears_node_animator();
     test_bone_socket_follows_animated_bone();
+    test_bone_socket_scales_with_parent();
 
     std::printf("SceneGraph binding tests: %d/%d passed\n", tests_passed, tests_run);
     return tests_passed == tests_run ? 0 : 1;

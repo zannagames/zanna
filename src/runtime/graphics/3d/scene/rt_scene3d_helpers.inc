@@ -1133,11 +1133,24 @@ static void scene_node_apply_bone_socket(rt_scene_node3d *node) {
     model_pos[2] = bone_pos[2] + rotated[2];
     quat_mul_local(bone_quat, node->socket_offset_quat, model_quat);
 
-    /* Model space -> world space through the parent (skinned model) node. */
+    /* Model space -> world space through the parent (skinned model) node.
+     * The parent's world SCALE must apply to the model-space offset: a
+     * centimetre-rigged model under an entity-level unit scale otherwise
+     * lands its socketed props ~30x away from the hand (ZB-15 — no bat or
+     * glove was ever visible). Per-axis scale composes before rotation
+     * (world = T * R * S * model). */
     quat_identity(parent_quat);
     if (node->parent) {
+        double psx = 1.0;
+        double psy = 1.0;
+        double psz = 1.0;
         scene_node_get_world_position(node->parent, &parent_pos[0], &parent_pos[1], &parent_pos[2]);
         scene_node_get_world_rotation(node->parent, parent_quat);
+        if (rt_scene_node3d_get_world_scale_components(node->parent, &psx, &psy, &psz)) {
+            model_pos[0] *= psx;
+            model_pos[1] *= psy;
+            model_pos[2] *= psz;
+        }
     }
     scene_node_quat_rotate_vec(parent_quat, model_pos, rotated);
     world_pos[0] = parent_pos[0] + rotated[0];

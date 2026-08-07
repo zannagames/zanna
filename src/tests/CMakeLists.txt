@@ -919,6 +919,8 @@ set(ZIA_RUNTIME_TESTS
         test_bytes_nullbyte
         test_final_const_expr
         test_namespace_length_collision
+        test_bugfix_modvar_retain
+        test_bugfix_loop_alloca
 )
 
 foreach (test_name IN LISTS ZIA_RUNTIME_TESTS)
@@ -2618,6 +2620,20 @@ if (EXISTS "${GAME3D_SURFACE_PROBE}")
             LABELS "runtime;graphics3d;zia;requires_display"
             ENVIRONMENT "ZANNA_3D_BACKEND=software"
             TIMEOUT 30)
+endif ()
+
+set(CANVAS3D_SHADOW_DARKENS_PROBE "${G3D_TESTS_DIR}/test_canvas3d_shadow_darkens_probe.zia")
+if (EXISTS "${CANVAS3D_SHADOW_DARKENS_PROBE}")
+    add_test(NAME g3d_test_canvas3d_shadow_darkens_probe
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_SHADOW_DARKENS_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    # No backend override: pins SHADOW PIXELS on the platform's windowed
+    # GPU backend (ZB-13 regression — Metal sampled shadow maps with the
+    # wrong depth range and no smoke ever checked the pixels).
+    set_tests_properties(g3d_test_canvas3d_shadow_darkens_probe PROPERTIES
+            PASS_REGULAR_EXPRESSION "RESULT: ok"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            TIMEOUT 60)
 endif ()
 
 set(CANVAS3D_CAPTURE_PRESENT_PROBE "${G3D_TESTS_DIR}/test_canvas3d_capture_present_probe.zia")

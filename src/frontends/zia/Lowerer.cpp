@@ -69,8 +69,11 @@
 
 #include "frontends/zia/Lowerer.hpp"
 #include "frontends/zia/RuntimeNames.hpp"
+#include "il/core/OpcodeInfo.hpp"
 #include "il/runtime/RuntimeSignatures.hpp"
 #include <cctype>
+#include <unordered_map>
+#include <unordered_set>
 
 namespace il::frontends::zia {
 
@@ -252,7 +255,145 @@ Lowerer::Module Lowerer::lower(ModuleDecl &module) {
             std::string(desc->name), desc->signature.retType, desc->signature.paramTypes);
     }
 
+    // Reclaim loop-body variable slots (ZB-11): the VM bump-allocates every
+    // executed `alloca`, so a slot lowered into a loop body grows the frame
+    // each iteration until it overflows. Hoist provably non-escaping
+    // constant-size allocas into the entry block so each slot is carved once
+    // per activation; the in-place initializing stores keep declaration
+    // semantics.
+    for (auto &fn : module_->functions)
+        hoistLoopAllocasToEntry(fn);
+
     return std::move(*module_);
+}
+
+/// @brief Hoist non-escaping constant-size allocas out of non-entry blocks.
+/// @param fn Completed IL function to rewrite in place.
+/// @details A slot may move only when every transitive use of its address is a
+///          load address, a store destination, or a GEP base (GEP results are
+///          tracked back to their root slot). Addresses that are stored as
+///          values, passed to calls, or forwarded as branch arguments keep
+///          their original position — sharing one entry slot across loop
+///          iterations could otherwise be observed. Hoisted slots land
+///          immediately before the entry block's terminator, which dominates
+///          every other block.
+void Lowerer::hoistLoopAllocasToEntry(il::core::Function &fn) {
+    using il::core::BasicBlock;
+    using il::core::Instr;
+    using il::core::Opcode;
+    using ValueK = il::core::Value;
+    if (fn.blocks.size() < 2)
+        return;
+
+    // Exception-handling regions keep their allocas in place: the bytecode
+    // backend's liveness does not track uses across unwind edges, so a slot
+    // carved in the entry block but only used inside a handler would read a
+    // reused register after the unwind.
+    for (auto &bb : fn.blocks) {
+        for (const Instr &in : bb.instructions) {
+            switch (in.op) {
+                case Opcode::EhPush:
+                case Opcode::EhPop:
+                case Opcode::EhEntry:
+                case Opcode::ResumeSame:
+                case Opcode::ResumeNext:
+                case Opcode::ResumeLabel:
+                    return;
+                default:
+                    break;
+            }
+        }
+    }
+
+    struct Site {
+        BasicBlock *block;
+        size_t index;
+        unsigned temp;
+    };
+    std::vector<Site> sites;
+    for (size_t b = 1; b < fn.blocks.size(); ++b) {
+        BasicBlock &bb = fn.blocks[b];
+        for (size_t i = 0; i < bb.instructions.size(); ++i) {
+            const Instr &in = bb.instructions[i];
+            if (in.op == Opcode::Alloca && in.result && in.operands.size() == 1 &&
+                in.operands[0].kind == ValueK::Kind::ConstInt)
+                sites.push_back({&bb, i, *in.result});
+        }
+    }
+    if (sites.empty())
+        return;
+
+    // Escape analysis over address temps: rootOf maps each tracked temp to
+    // the alloca slot it derives from; any disallowed use poisons the root.
+    std::unordered_map<unsigned, unsigned> rootOf;
+    std::unordered_set<unsigned> badRoots;
+    for (const Site &s : sites)
+        rootOf[s.temp] = s.temp;
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (auto &bb : fn.blocks) {
+            for (const Instr &in : bb.instructions) {
+                for (const auto &argVec : in.brArgs) {
+                    for (const auto &arg : argVec) {
+                        if (arg.kind != ValueK::Kind::Temp)
+                            continue;
+                        auto it = rootOf.find(arg.id);
+                        if (it != rootOf.end() && badRoots.insert(it->second).second)
+                            changed = true;
+                    }
+                }
+                for (size_t oi = 0; oi < in.operands.size(); ++oi) {
+                    const auto &v = in.operands[oi];
+                    if (v.kind != ValueK::Kind::Temp)
+                        continue;
+                    auto it = rootOf.find(v.id);
+                    if (it == rootOf.end())
+                        continue;
+                    bool ok = false;
+                    if ((in.op == Opcode::Load || in.op == Opcode::Store) && oi == 0) {
+                        ok = true;
+                    } else if (in.op == Opcode::GEP && oi == 0 && in.result) {
+                        ok = true;
+                        auto inserted = rootOf.emplace(*in.result, it->second);
+                        if (inserted.second)
+                            changed = true;
+                    }
+                    if (!ok && badRoots.insert(it->second).second)
+                        changed = true;
+                }
+            }
+        }
+    }
+
+    std::vector<Instr> hoisted;
+    // Erase per block in descending index order so indices stay valid.
+    for (auto rit = sites.rbegin(); rit != sites.rend(); ++rit) {
+        if (badRoots.count(rit->temp))
+            continue;
+        auto &insts = rit->block->instructions;
+        hoisted.push_back(insts[rit->index]);
+        // Scrub the source location: the slot now executes at function entry,
+        // and keeping the body line would let a source breakpoint on that
+        // line resolve to an entry-block PC (debugger would stop before the
+        // function's locals exist).
+        hoisted.back().loc = {};
+        insts.erase(insts.begin() + static_cast<std::ptrdiff_t>(rit->index));
+    }
+    if (hoisted.empty())
+        return;
+
+    BasicBlock &entry = fn.blocks[0];
+    size_t insertAt = entry.instructions.size();
+    for (size_t i = 0; i < entry.instructions.size(); ++i) {
+        if (il::core::getOpcodeInfo(entry.instructions[i].op).isTerminator) {
+            insertAt = i;
+            break;
+        }
+    }
+    entry.instructions.insert(entry.instructions.begin() + static_cast<std::ptrdiff_t>(insertAt),
+                              hoisted.begin(),
+                              hoisted.end());
 }
 
 } // namespace il::frontends::zia

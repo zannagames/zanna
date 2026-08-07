@@ -1,0 +1,44 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_bugfix_loop_alloca.zia
+// Purpose: Regression for ZB-11 — `var` declarations inside a loop body used
+//          to bump-allocate a fresh VM frame slot every iteration, so a few
+//          million iterations overflowed the frame (StackOverflow trap).
+//          The lowerer now hoists non-escaping constant-size allocas to the
+//          entry block, carving each slot once per activation.
+// Key invariants:
+//   - Three million iterations with loop-body declarations complete without
+//     a stack trap and compute the expected value.
+// Ownership/Lifetime:
+//   - Pure scalar locals; nothing escapes the loop body.
+// Links: src/frontends/zia/Lowerer.cpp (hoistLoopAllocasToEntry).
+//
+//===----------------------------------------------------------------------===//
+module test_bugfix_loop_alloca;
+
+bind Zanna.Terminal as Terminal;
+
+func start() {
+    var i = 0;
+    var acc = 0;
+    while i < 3000000 {
+        var a = i;
+        var b = a + 1;
+        var keep = b - a;
+        if keep > 0 {
+            var bump = keep;
+            acc = acc + bump;
+        }
+        i = i + 1;
+    }
+    if acc == 3000000 {
+        Terminal.Say("RESULT: ok");
+    } else {
+        Terminal.Say("RESULT: fail acc=" + toString(acc));
+    }
+}

@@ -1,0 +1,56 @@
+//===----------------------------------------------------------------------===//
+//
+// Part of the Zanna project, under the GNU GPL v3.
+// See LICENSE for license information.
+//
+//===----------------------------------------------------------------------===//
+//
+// File: src/tests/fixtures/runtime/test_bugfix_modvar_retain.zia
+// Purpose: Regression for ZB-16 — assigning a local variable (a borrowed
+//          reference) to a module-level variable must retain the value.
+//          Before the fix the slot took a raw pointer copy, the local's
+//          function-exit release freed the object, and the module variable
+//          dangled (nondeterministic use-after-free; first observed as
+//          Game3D.Entity3D.setMesh rejecting a freed Mesh3D).
+// Key invariants:
+//   - The weak probe must still be alive after stash() returns: the module
+//     variable is the object's only remaining owner.
+//   - Overwriting the slot must release the previous occupant exactly once
+//     (the probe zeroes after the overwrite).
+// Ownership/Lifetime:
+//   - The helper module owns the stored object; this driver only borrows.
+// Links: src/tests/fixtures/runtime/test_bugfix_modvar_retain_m.zia.
+//
+//===----------------------------------------------------------------------===//
+module test_bugfix_modvar_retain;
+
+bind Zanna.Terminal as Terminal;
+bind "./test_bugfix_modvar_retain_m";
+
+func start() {
+    if not test_bugfix_modvar_retain_m.stash() {
+        Terminal.Say("RESULT: fail (stash)");
+        return;
+    }
+    // The stored object's only strong reference is the module variable now.
+    if not test_bugfix_modvar_retain_m.alive() {
+        Terminal.Say("RESULT: fail (stored object died with the local)");
+        return;
+    }
+    // Re-stash: the old occupant must be released (probe re-arms onto the
+    // new list, and the swap must not trap or leak the previous one).
+    if not test_bugfix_modvar_retain_m.stash() {
+        Terminal.Say("RESULT: fail (restash)");
+        return;
+    }
+    if not test_bugfix_modvar_retain_m.alive() {
+        Terminal.Say("RESULT: fail (second stash died)");
+        return;
+    }
+    var back = test_bugfix_modvar_retain_m.stored();
+    if back == null {
+        Terminal.Say("RESULT: fail (null readback)");
+        return;
+    }
+    Terminal.Say("RESULT: ok");
+}

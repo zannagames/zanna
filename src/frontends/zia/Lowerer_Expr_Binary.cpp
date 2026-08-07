@@ -337,8 +337,7 @@ LowerResult Lowerer::lowerIdentAssignment(BinaryExpr *expr,
             if (globalType && globalType->kind == TypeKindSem::Struct) {
                 storeValue = emitBoxValue(right.value, right.type, globalType);
             }
-            emitStore(addr, storeValue, ilType);
-            consumeDeferred(storeValue);
+            emitGlobalManagedStore(addr, storeValue, ilType, /*destInitialized=*/true);
             return {storeValue, ilType};
         }
 
@@ -476,8 +475,7 @@ LowerResult Lowerer::lowerFieldAssignment(BinaryExpr *expr,
                     blockMgr_.currentBlock()->instructions.push_back(conv);
                     storeValue = Value::temp(convId);
                 }
-                emitStore(addr, storeValue, ilType);
-                consumeDeferred(storeValue);
+                emitGlobalManagedStore(addr, storeValue, ilType, /*destInitialized=*/true);
                 return {storeValue, ilType};
             }
         }

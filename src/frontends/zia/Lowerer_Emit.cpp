@@ -1026,6 +1026,39 @@ void Lowerer::emitInlineValueStore(TypeRef valueType,
     emitStore(destPtr, value, ilType);
 }
 
+/// @brief Store a value into a module-level variable slot under slot ownership.
+/// @param addr Runtime storage address of the module variable.
+/// @param value Lowered value to store.
+/// @param ilType IL representation of the slot (managed when Str or Ptr).
+/// @param destInitialized True when the slot may hold a previous occupant that
+///        must be released (false for the zero-initialized startup stores).
+/// @details The slot owns exactly one reference: the value's deferred +1
+///          transfers when present, borrowed values are retained, and the
+///          previous occupant is released after the store so self-assignment
+///          stays safe. Raw stores of borrowed references (ZB-16) dangled as
+///          soon as the borrowing local's function-exit release ran.
+void Lowerer::emitGlobalManagedStore(Value addr, Value value, Type ilType, bool destInitialized) {
+    const bool isString = ilType.kind == Type::Kind::Str;
+    const bool managed = isString || ilType.kind == Type::Kind::Ptr;
+    if (!managed) {
+        emitStore(addr, value, ilType);
+        return;
+    }
+    const bool owned = consumeDeferred(value);
+    if (!owned)
+        emitCall(isString ? runtime::kStrRetainMaybe : "rt_obj_retain_maybe", {value});
+    Value oldValue = Value::null();
+    if (destInitialized)
+        oldValue = emitLoad(addr, ilType);
+    emitStore(addr, value, ilType);
+    if (destInitialized) {
+        if (isString)
+            emitCall(runtime::kStrReleaseMaybe, {oldValue});
+        else
+            emitManagedRelease(oldValue, /*isString=*/false);
+    }
+}
+
 /// @brief Move a managed handle out of a slot without releasing it.
 /// @param slot Address of the owning slot.
 /// @param type Managed string or pointer representation to load.

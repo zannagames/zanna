@@ -177,8 +177,9 @@ void Lowerer::emitGlobalInitializers() {
 
         auto coerced = coerceValueToType(lowered.value, lowered.type, sourceType, entry.type);
         Value addr = getGlobalVarAddr(entry.name, entry.type);
-        emitStore(addr, coerced.value, mapType(entry.type));
-        consumeDeferred(coerced.value);
+        // Slots start zero-initialized, so there is no previous occupant to
+        // release; the store still transfers-or-retains (ZB-16).
+        emitGlobalManagedStore(addr, coerced.value, mapType(entry.type), /*destInitialized=*/false);
     }
 }
 

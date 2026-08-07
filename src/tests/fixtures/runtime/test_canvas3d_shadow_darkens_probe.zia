@@ -1,0 +1,100 @@
+module test_canvas3d_shadow_darkens_probe;
+
+bind Zanna.Game3D as Game3D;
+bind Zanna.Graphics as Graphics;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math;
+bind Zanna.Terminal as Terminal;
+
+// ZB-13 regression (requires a display): on the platform's windowed GPU
+// backend, a box on a plane under one shadow-casting directional light must
+// produce a visibly darker region on the plane. The Metal shadow SAMPLING
+// omitted the GL->[0,1] depth remap its own depth pass applied, so maps
+// rendered but every compare read "lit" — and no prior smoke checked
+// shadow PIXELS, only that readback returned an image.
+
+func fail(message: String) {
+    Terminal.Say("FAIL: " + message);
+}
+
+func regionMinLuma(shot: Any, x0: Integer, y0: Integer,
+                   x1: Integer, y1: Integer) -> Integer {
+    var minL = 256;
+    var y = y0;
+    var x = 0;
+    var p = 0;
+    var l = 0;
+    while y < y1 {
+        x = x0;
+        while x < x1 {
+            p = Graphics.Pixels.GetRgba(shot, x, y);
+            l = ((p / 16777216) % 256 * 77 + (p / 65536) % 256 * 150 +
+                 (p / 256) % 256 * 29) / 256;
+            if l < minL { minL = l; }
+            x = x + 4;
+        }
+        y = y + 4;
+    }
+    return minL;
+}
+
+func regionAvgLuma(shot: Any, x0: Integer, y0: Integer,
+                   x1: Integer, y1: Integer) -> Integer {
+    var sum = 0;
+    var n = 0;
+    var y = y0;
+    var x = 0;
+    var p = 0;
+    while y < y1 {
+        x = x0;
+        while x < x1 {
+            p = Graphics.Pixels.GetRgba(shot, x, y);
+            sum = sum + ((p / 16777216) % 256 * 77 + (p / 65536) % 256 * 150 +
+                         (p / 256) % 256 * 29) / 256;
+            n = n + 1;
+            x = x + 4;
+        }
+        y = y + 4;
+    }
+    if n == 0 { return 0; }
+    return sum / n;
+}
+
+func start() {
+    var world = Game3D.World3D.WithCamera("shadow darkens probe", 640, 400,
+                                          30.0, 0.5, 1000.0);
+    var ground = Game3D.Prefab.Plane(60.0, 60.0, G3D.Material3D.PBR(0.55, 0.55, 0.5));
+    ground.SetPosition(0.0, 0.0, 0.0);
+    world.Spawn(ground);
+    var box = Game3D.Prefab.BoxXYZ(3.0, 6.0, 3.0, G3D.Material3D.PBR(0.8, 0.3, 0.2));
+    box.SetPosition(0.0, 3.0, 0.0);
+    world.Spawn(box);
+    Game3D.Lighting.Outdoor(world, new Vec3(0.0 - 0.5, 0.0 - 0.7, 0.0 - 0.3));
+    // Low ambient makes the shadow contrast a crisp discriminator.
+    world.SetAmbient(0.10, 0.10, 0.12);
+    G3D.Canvas3D.EnableShadows(world.Canvas, 2048);
+    G3D.Canvas3D.SetShadowDistance(world.Canvas, 200.0);
+    world.Camera.LookAt(new Vec3(14.0, 10.0, 22.0), new Vec3(0.0, 2.0, 0.0),
+                        new Vec3(0.0, 1.0, 0.0));
+    world.RunFramesOnly(4, 0.05);
+    var shot = world.CaptureFinalFrame();
+    if shot == null {
+        fail("no capture");
+        return;
+    }
+    // The cast shadow lands left of the box; the right side of the plane
+    // stays lit (fixed camera + light, both regions on the ground plane).
+    var shadowMin = regionMinLuma(shot, 150, 200, 260, 270);
+    var litAvg = regionAvgLuma(shot, 460, 240, 620, 330);
+    if litAvg < 40 {
+        fail("lit region unexpectedly dark (avg " + toString(litAvg) + ")");
+        return;
+    }
+    if shadowMin * 10 >= litAvg * 8 {
+        fail("no shadow contrast: shadow min " + toString(shadowMin) +
+             " vs lit avg " + toString(litAvg));
+        return;
+    }
+    Terminal.Say("RESULT: ok (shadow min " + toString(shadowMin) +
+                 " vs lit avg " + toString(litAvg) + ")");
+}

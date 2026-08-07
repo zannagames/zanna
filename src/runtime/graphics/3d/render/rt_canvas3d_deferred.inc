@@ -1392,7 +1392,13 @@ static void canvas3d_fill_material_cmd(const rt_material3d *mat, vgfx3d_draw_cmd
     cmd->alpha_mode = (mat->alpha_mode >= 0 && mat->alpha_mode <= 2) ? mat->alpha_mode : 0;
     alpha_classification = canvas3d_texture_source_alpha_classification(mat->texture);
     cmd->has_alpha_texture = alpha_classification != RT_PIXELS_ALPHA_OPAQUE ? 1 : 0;
-    if (cmd->has_alpha_texture && cmd->alpha_mode == RT_MATERIAL3D_ALPHA_MODE_OPAQUE) {
+    if (cmd->has_alpha_texture && cmd->alpha_mode == RT_MATERIAL3D_ALPHA_MODE_OPAQUE &&
+        !mat->alpha_mode_explicit) {
+        /* Auto-promotion is a convenience for DEFAULT materials whose texture
+         * carries alpha. An explicit SetAlphaMode(Opaque) must win: imported
+         * baseColor textures often ship a soft alpha channel on genuinely
+         * opaque surfaces, and the silent BLEND promotion also removed those
+         * draws from the shadow pass (no player ever cast a shadow). */
         cmd->alpha_mode = alpha_classification == RT_PIXELS_ALPHA_FRACTIONAL
                               ? RT_MATERIAL3D_ALPHA_MODE_BLEND
                               : RT_MATERIAL3D_ALPHA_MODE_MASK;

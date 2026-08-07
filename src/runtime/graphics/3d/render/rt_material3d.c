@@ -580,6 +580,7 @@ static void material_init_defaults(rt_material3d *mat) {
     mat->alpha_cutoff = 0.5;
     mat->alpha_mode = RT_MATERIAL3D_ALPHA_MODE_OPAQUE;
     mat->alpha_mode_auto = 0;
+    mat->alpha_mode_explicit = 0;
     mat->shadow_mode = RT_MATERIAL3D_SHADOW_MODE_AUTO;
     material_init_texture_slots(mat);
     mat->env_map = NULL;
@@ -740,6 +741,7 @@ static void *material_clone_like(void *obj) {
     dst->alpha_cutoff = src->alpha_cutoff;
     dst->alpha_mode = src->alpha_mode;
     dst->alpha_mode_auto = src->alpha_mode_auto;
+    dst->alpha_mode_explicit = src->alpha_mode_explicit;
     dst->shadow_mode = src->shadow_mode;
     dst->texture_wrap_s = src->texture_wrap_s;
     dst->texture_wrap_t = src->texture_wrap_t;
@@ -1611,6 +1613,7 @@ void rt_material3d_set_alpha_mode(void *obj, int64_t mode) {
         mode = RT_MATERIAL3D_ALPHA_MODE_OPAQUE;
     mat->alpha_mode = (int32_t)mode;
     mat->alpha_mode_auto = 0;
+    mat->alpha_mode_explicit = 1;
 }
 
 /// @brief Read the alpha mode (default OPAQUE).
