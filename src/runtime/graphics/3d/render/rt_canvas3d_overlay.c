@@ -41,6 +41,9 @@
 
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
+#include "rt_internal.h"
+#include "rt_ttf_font.h"
+#include "vg_font.h"
 #include "rt_font.h"
 #include "rt_object.h"
 #include "rt_pixels.h"
@@ -135,13 +138,15 @@ static void *canvas3d_find_aa_text_cache_entry(rt_canvas3d *c,
                                                int64_t color,
                                                double scale,
                                                int32_t width,
-                                               int32_t height) {
+                                               int32_t height,
+                                               int64_t font_identity) {
     if (!c || !text)
         return NULL;
     for (int32_t i = 0; i < c->aa_text_cache_count; i++) {
         rt_canvas3d_aa_text_cache_entry *entry = &c->aa_text_cache[i];
         if (entry->text_len != text_len || entry->color != color || entry->scale != scale ||
-            entry->width != width || entry->height != height || !entry->text ||
+            entry->width != width || entry->height != height ||
+            entry->font_identity != font_identity || !entry->text ||
             memcmp(entry->text, text, text_len) != 0)
             continue;
         entry->last_used_frame = c->frame_serial;
@@ -167,6 +172,7 @@ static int canvas3d_insert_aa_text_cache_entry(rt_canvas3d *c,
                                                double scale,
                                                int32_t width,
                                                int32_t height,
+                                               int64_t font_identity,
                                                void *pixels) {
     rt_canvas3d_aa_text_cache_entry *entry;
     size_t pixel_count;
@@ -213,6 +219,7 @@ static int canvas3d_insert_aa_text_cache_entry(rt_canvas3d *c,
     entry->scale = scale;
     entry->color = color;
     entry->last_used_frame = c->frame_serial;
+    entry->font_identity = font_identity;
     entry->width = width;
     entry->height = height;
     c->aa_text_cache_bytes += retained_bytes;
@@ -934,7 +941,7 @@ void rt_canvas3d_draw_text2d_aa(
         return;
     rgb_color = color & 0xFFFFFF;
 
-    pixels = canvas3d_find_aa_text_cache_entry(c, str, len, rgb_color, scale, out_w, out_h);
+    pixels = canvas3d_find_aa_text_cache_entry(c, str, len, rgb_color, scale, out_w, out_h, 0);
     if (pixels) {
         cache_owns_pixels = 1;
     } else {
@@ -972,7 +979,7 @@ void rt_canvas3d_draw_text2d_aa(
             }
         }
         cache_owns_pixels = canvas3d_insert_aa_text_cache_entry(
-            c, str, len, rgb_color, scale, out_w, out_h, pixels);
+            c, str, len, rgb_color, scale, out_w, out_h, 0, pixels);
     }
 
     if (!c->in_frame) {
@@ -996,6 +1003,169 @@ void rt_canvas3d_draw_text2d_aa(
         c, (float)x, (float)y, (float)out_w, (float)out_h, pixels, 0.0f, 0.0f, 1.0f, 1.0f);
     if (started_temp_frame)
         rt_canvas3d_end(c);
+}
+
+/// @brief Draw UTF-8 text with a loaded TrueType face onto the 2D overlay.
+/// @details Rasterizes the string once into a Pixels raster (kerned glyph
+///          composite at @p size_px), caches it in the AA-text LRU keyed by
+///          the font identity, and submits a textured overlay quad. @p y is
+///          the TOP of the text box (matching DrawText2DScaled), not the
+///          baseline.
+/// @param obj Borrowed Canvas3D handle.
+/// @param font Borrowed live TtfFont handle.
+/// @param x Left destination edge in logical pixels.
+/// @param y Top destination edge in logical pixels.
+/// @param text Borrowed runtime string (up to 512 bytes are rendered).
+/// @param size_px Font pixel size, clamped to the TtfFont range.
+/// @param color Packed 0xRRGGBB (alpha comes from glyph coverage).
+void rt_canvas3d_draw_text2d_ttf(void *obj,
+                                 void *font,
+                                 int64_t x,
+                                 int64_t y,
+                                 rt_string text,
+                                 double size_px,
+                                 int64_t color) {
+    int8_t started_temp_frame = 0;
+    const char *str;
+    size_t len;
+    int32_t out_w;
+    int32_t out_h;
+    void *pixels;
+    int cache_owns_pixels = 0;
+    int64_t rgb_color;
+    int64_t identity;
+    struct vg_font *face;
+    vg_text_metrics_t text_metrics;
+    vg_font_metrics_t font_metrics;
+
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c || !text)
+        return;
+    face = rt_ttf_font_face(font);
+    identity = rt_ttf_font_identity(font);
+    if (!face || identity == 0) {
+        rt_trap("Canvas3D.DrawText2DTtf: invalid font");
+        return;
+    }
+    str = rt_string_cstr(text);
+    if (!str)
+        return;
+    len = strlen(str);
+    if (len == 0)
+        return;
+    if (len > 512)
+        len = 512;
+    size_px = rt_ttf_font_clamp_size(size_px);
+
+    memset(&text_metrics, 0, sizeof(text_metrics));
+    memset(&font_metrics, 0, sizeof(font_metrics));
+    vg_font_measure_text((vg_font_t *)face, (float)size_px, str, &text_metrics);
+    vg_font_get_metrics((vg_font_t *)face, (float)size_px, &font_metrics);
+    out_w = (int32_t)ceil((double)text_metrics.width) + 2;
+    out_h = font_metrics.line_height > 0 ? (int32_t)font_metrics.line_height
+                                         : (int32_t)ceil(size_px * 1.25);
+    if (out_w <= 2 || out_h <= 0 || out_w > VGFX3D_RENDERTARGET_DIM_MAX)
+        return;
+    rgb_color = color & 0xFFFFFF;
+
+    pixels =
+        canvas3d_find_aa_text_cache_entry(c, str, len, rgb_color, size_px, out_w, out_h, identity);
+    if (pixels) {
+        cache_owns_pixels = 1;
+    } else {
+        pixels = rt_pixels_new((int64_t)out_w, (int64_t)out_h);
+        if (!pixels)
+            return;
+        {
+            int64_t rgb_hi = ((rgb_color >> 16) & 0xFF);
+            int64_t rgb_mid = ((rgb_color >> 8) & 0xFF);
+            int64_t rgb_lo = (rgb_color & 0xFF);
+            const char *cursor = str;
+            const char *end = str + len;
+            double pen = 0.0;
+            uint32_t prev_cp = 0;
+            while (cursor < end) {
+                uint32_t cp = vg_utf8_decode(&cursor);
+                const vg_glyph_t *glyph;
+                if (cp == 0)
+                    break;
+                if (prev_cp != 0)
+                    pen += (double)vg_font_get_kerning(
+                        (vg_font_t *)face, (float)size_px, prev_cp, cp);
+                glyph = vg_font_get_glyph((vg_font_t *)face, (float)size_px, cp);
+                if (glyph) {
+                    int32_t base_x = (int32_t)floor(pen) + glyph->bearing_x;
+                    int32_t base_y = font_metrics.ascent - glyph->bearing_y;
+                    for (int32_t gy = 0; gy < glyph->height; gy++) {
+                        int32_t py = base_y + gy;
+                        if (py < 0 || py >= out_h)
+                            continue;
+                        for (int32_t gx = 0; gx < glyph->width; gx++) {
+                            int32_t px = base_x + gx;
+                            uint8_t alpha;
+                            if (px < 0 || px >= out_w)
+                                continue;
+                            alpha = glyph->bitmap[(size_t)gy * (size_t)glyph->width + (size_t)gx];
+                            if (alpha == 0)
+                                continue;
+                            {
+                                /* Kerned glyphs may overlap: keep the higher
+                                 * coverage instead of overwriting. */
+                                int64_t existing =
+                                    rt_pixels_get_rgba(pixels, (int64_t)px, (int64_t)py);
+                                int64_t existing_alpha = existing & 0xFF;
+                                if ((int64_t)alpha > existing_alpha) {
+                                    int64_t packed = (rgb_hi << 24) | (rgb_mid << 16) |
+                                                     (rgb_lo << 8) | (int64_t)alpha;
+                                    rt_pixels_set_rgba(pixels, (int64_t)px, (int64_t)py, packed);
+                                }
+                            }
+                        }
+                    }
+                    pen += (double)glyph->advance;
+                }
+                prev_cp = cp;
+            }
+        }
+        cache_owns_pixels = canvas3d_insert_aa_text_cache_entry(
+            c, str, len, rgb_color, size_px, out_w, out_h, identity, pixels);
+    }
+
+    if (!c->in_frame) {
+        if (!canvas3d_begin_overlay_frame(c, 1)) {
+            if (!cache_owns_pixels && rt_obj_release_check0(pixels))
+                rt_obj_free(pixels);
+            return;
+        }
+        started_temp_frame = 1;
+    }
+    if (!rt_canvas3d_add_temp_object(c, pixels)) {
+        if (!cache_owns_pixels && rt_obj_release_check0(pixels))
+            rt_obj_free(pixels);
+        if (started_temp_frame)
+            rt_canvas3d_end(c);
+        return;
+    }
+    if (!cache_owns_pixels && rt_obj_release_check0(pixels))
+        rt_obj_free(pixels); /* temp queue holds the surviving reference */
+    (void)canvas3d_queue_screen_image_uv(
+        c, (float)x, (float)y, (float)out_w, (float)out_h, pixels, 0.0f, 0.0f, 1.0f, 1.0f);
+    if (started_temp_frame)
+        rt_canvas3d_end(c);
+}
+
+/// @brief Width in pixels of DrawText2DTtf output for @p text at @p size_px.
+/// @param obj Borrowed Canvas3D handle used for validation.
+/// @param font Borrowed live TtfFont handle.
+/// @param text Borrowed runtime string measured up to the renderer limit.
+/// @param size_px Font pixel size, clamped to the TtfFont range.
+/// @return Ceil-rounded output width in logical pixels, or zero for invalid
+///         input.
+int64_t rt_canvas3d_measure_text2d_ttf(void *obj, void *font, rt_string text, double size_px) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c)
+        return 0;
+    return (int64_t)ceil(rt_ttf_font_measure_width(font, text, size_px));
 }
 
 /// @brief Width in pixels of DrawText2DAA output for @p text at @p scale.

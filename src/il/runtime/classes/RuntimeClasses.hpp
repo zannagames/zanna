@@ -467,6 +467,7 @@ enum class RuntimeTypeId : std::size_t {
     RTCLS_ShapeRenderer2D,
     RTCLS_TextRenderer2D,
     RTCLS_SdfFont,
+    RTCLS_TtfFont,
     RTCLS_NineSlice2D,
     RTCLS_DebugDraw2D,
     RTCLS_Transform2D,

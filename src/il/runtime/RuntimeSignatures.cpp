@@ -68,6 +68,7 @@
 #include "rt_binbuf.h"
 #include "rt_binfile.h"
 #include "rt_bitmapfont.h"
+#include "rt_ttf_font.h"
 #include "rt_bits.h"
 #include "rt_bitset.h"
 #include "rt_blendtree3d.h"

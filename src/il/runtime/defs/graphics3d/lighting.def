@@ -1060,6 +1060,8 @@ RT_FUNC(Canvas3DClearHeightFog, rt_canvas3d_clear_height_fog, "Zanna.Graphics3D.
 RT_FUNC(Canvas3DGetHeightFogEnabled, rt_canvas3d_get_height_fog_enabled, "Zanna.Graphics3D.Canvas3D.get_HeightFogEnabled", "i1(obj)")
 RT_FUNC(Canvas3DDrawText2DAA, rt_canvas3d_draw_text2d_aa, "Zanna.Graphics3D.Canvas3D.DrawText2DAA", "void(obj,i64,i64,str,i64,f64)")
 RT_FUNC(Canvas3DMeasureText2DAA, rt_canvas3d_measure_text2d_aa, "Zanna.Graphics3D.Canvas3D.MeasureText2DAA", "i64(obj,str,f64)")
+RT_FUNC(Canvas3DDrawText2DTtf, rt_canvas3d_draw_text2d_ttf, "Zanna.Graphics3D.Canvas3D.DrawText2DTtf", "void(obj,obj,i64,i64,str,f64,i64)")
+RT_FUNC(Canvas3DMeasureText2DTtf, rt_canvas3d_measure_text2d_ttf, "Zanna.Graphics3D.Canvas3D.MeasureText2DTtf", "i64(obj,obj,str,f64)")
 RT_FUNC(Canvas3DDrawImage2DNineSlice, rt_canvas3d_draw_image2d_nine_slice, "Zanna.Graphics3D.Canvas3D.DrawImage2DNineSlice", "void(obj,i64,i64,i64,i64,obj,i64,i64,i64,i64)")
 RT_FUNC(Canvas3DDrawImage2DRegion, rt_canvas3d_draw_image2d_region, "Zanna.Graphics3D.Canvas3D.DrawImage2DRegion", "void(obj,i64,i64,i64,i64,obj,i64,i64,i64,i64)")
 RT_FUNC(Canvas3DSetClipRect2D,  rt_canvas3d_set_clip_rect2d, "Zanna.Graphics3D.Canvas3D.SetClipRect2D",  "void(obj,i64,i64,i64,i64)")

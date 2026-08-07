@@ -270,6 +270,8 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-clearheightfog"></a>`ClearHeightFog` | `void()` | `Zanna.Graphics3D.Canvas3D.ClearHeightFog` |
 | <a id="zanna-graphics3d-canvas3d-drawtext2daa"></a>`DrawText2DAA` | `void(i64,i64,str,i64,f64)` | `Zanna.Graphics3D.Canvas3D.DrawText2DAA` |
 | <a id="zanna-graphics3d-canvas3d-measuretext2daa"></a>`MeasureText2DAA` | `i64(str,f64)` | `Zanna.Graphics3D.Canvas3D.MeasureText2DAA` |
+| <a id="zanna-graphics3d-canvas3d-drawtext2dttf"></a>`DrawText2DTtf` | `void(obj<Zanna.Graphics.TtfFont>,i64,i64,str,f64,i64)` | `Zanna.Graphics3D.Canvas3D.DrawText2DTtf` |
+| <a id="zanna-graphics3d-canvas3d-measuretext2dttf"></a>`MeasureText2DTtf` | `i64(obj<Zanna.Graphics.TtfFont>,str,f64)` | `Zanna.Graphics3D.Canvas3D.MeasureText2DTtf` |
 | <a id="zanna-graphics3d-canvas3d-drawimage2dnineslice"></a>`DrawImage2DNineSlice` | `void(i64,i64,i64,i64,obj,i64,i64,i64,i64)` | `Zanna.Graphics3D.Canvas3D.DrawImage2DNineSlice` |
 | <a id="zanna-graphics3d-canvas3d-drawimage2dregion"></a>`DrawImage2DRegion` | `void(i64,i64,i64,i64,obj,i64,i64,i64,i64)` | `Zanna.Graphics3D.Canvas3D.DrawImage2DRegion` |
 | <a id="zanna-graphics3d-canvas3d-setcliprect2d"></a>`SetClipRect2D` | `void(i64,i64,i64,i64)` | `Zanna.Graphics3D.Canvas3D.SetClipRect2D` |
@@ -3453,6 +3455,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-canvas3d-get-heightfogenabled"></a>`Zanna.Graphics3D.Canvas3D.get_HeightFogEnabled` | `i1(obj)` | `rt_canvas3d_get_height_fog_enabled` |
 | `Zanna.Graphics3D.Canvas3D.DrawText2DAA` | `void(obj,i64,i64,str,i64,f64)` | `rt_canvas3d_draw_text2d_aa` |
 | `Zanna.Graphics3D.Canvas3D.MeasureText2DAA` | `i64(obj,str,f64)` | `rt_canvas3d_measure_text2d_aa` |
+| `Zanna.Graphics3D.Canvas3D.DrawText2DTtf` | `void(obj,obj,i64,i64,str,f64,i64)` | `rt_canvas3d_draw_text2d_ttf` |
+| `Zanna.Graphics3D.Canvas3D.MeasureText2DTtf` | `i64(obj,obj,str,f64)` | `rt_canvas3d_measure_text2d_ttf` |
 | `Zanna.Graphics3D.Canvas3D.DrawImage2DNineSlice` | `void(obj,i64,i64,i64,i64,obj,i64,i64,i64,i64)` | `rt_canvas3d_draw_image2d_nine_slice` |
 | `Zanna.Graphics3D.Canvas3D.DrawImage2DRegion` | `void(obj,i64,i64,i64,i64,obj,i64,i64,i64,i64)` | `rt_canvas3d_draw_image2d_region` |
 | `Zanna.Graphics3D.Canvas3D.SetClipRect2D` | `void(obj,i64,i64,i64,i64)` | `rt_canvas3d_set_clip_rect2d` |

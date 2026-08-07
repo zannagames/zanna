@@ -140,6 +140,34 @@ operations including `LoadBdf`, `LoadPsf`, `TextWidth`.
 | <a id="zanna-graphics-bitmapfont-loadpsf"></a>`LoadPsf` | `obj<Zanna.Graphics.BitmapFont>(str)` | `Zanna.Graphics.BitmapFont.LoadPsf` |
 | <a id="zanna-graphics-bitmapfont-textwidth"></a>`TextWidth` | `i64(str)` | `Zanna.Graphics.BitmapFont.TextWidth` |
 
+<a id="zanna-graphics-ttffont"></a>
+### `Zanna.Graphics.TtfFont`
+
+Loads TrueType faces for real typography on runtime canvases.
+
+`Zanna.Graphics.TtfFont` wraps the engine's from-scratch TrueType stack
+(parser, anti-aliased rasterizer, kerning, glyph cache). `Load` reads a
+.ttf from disk; `LoadDefault` returns the embedded JetBrains Mono face.
+Handles are garbage-collected; the face and its glyph cache release with
+the handle. Rendering happens through `Canvas3D.DrawText2DTtf`, which
+keys its raster cache on the font handle's process-unique identity.
+
+#### Properties
+
+| Property | Type | Access |
+|---|---|---|
+| <a id="zanna-graphics-ttffont-family"></a>`Family` | `str` | read-only |
+
+#### Methods
+
+| Method | Signature | Runtime target |
+|---|---|---|
+| <a id="zanna-graphics-ttffont-load"></a>`Load` | `obj<Zanna.Graphics.TtfFont>(str)` | `Zanna.Graphics.TtfFont.Load` |
+| <a id="zanna-graphics-ttffont-loaddefault"></a>`LoadDefault` | `obj<Zanna.Graphics.TtfFont>()` | `Zanna.Graphics.TtfFont.LoadDefault` |
+| <a id="zanna-graphics-ttffont-measurewidth"></a>`MeasureWidth` | `f64(str,f64)` | `Zanna.Graphics.TtfFont.MeasureWidth` |
+| <a id="zanna-graphics-ttffont-lineheight"></a>`LineHeight` | `f64(f64)` | `Zanna.Graphics.TtfFont.LineHeight` |
+| <a id="zanna-graphics-ttffont-ascent"></a>`Ascent` | `f64(f64)` | `Zanna.Graphics.TtfFont.Ascent` |
+
 <a id="zanna-graphics-color"></a>
 ### `Zanna.Graphics.Color`
 
@@ -1540,6 +1568,12 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-graphics-bitmapfont-get-ismonospace"></a>`Zanna.Graphics.BitmapFont.get_IsMonospace` | `i1(obj)` | `rt_bitmapfont_is_monospace` |
 | `Zanna.Graphics.BitmapFont.TextWidth` | `i64(obj,str)` | `rt_bitmapfont_text_width` |
 | <a id="zanna-graphics-bitmapfont-get-textheight"></a>`Zanna.Graphics.BitmapFont.get_TextHeight` | `i64(obj)` | `rt_bitmapfont_text_height` |
+| `Zanna.Graphics.TtfFont.Load` | `obj<Zanna.Graphics.TtfFont>(str)` | `rt_ttf_font_load` |
+| `Zanna.Graphics.TtfFont.LoadDefault` | `obj<Zanna.Graphics.TtfFont>()` | `rt_ttf_font_load_default` |
+| `Zanna.Graphics.TtfFont.MeasureWidth` | `f64(obj,str,f64)` | `rt_ttf_font_measure_width` |
+| `Zanna.Graphics.TtfFont.LineHeight` | `f64(obj,f64)` | `rt_ttf_font_line_height` |
+| `Zanna.Graphics.TtfFont.Ascent` | `f64(obj,f64)` | `rt_ttf_font_ascent` |
+| <a id="zanna-graphics-ttffont-get-family"></a>`Zanna.Graphics.TtfFont.get_Family` | `str(obj)` | `rt_ttf_font_family` |
 | `Zanna.Graphics.Canvas.BoxAlpha` | `void(obj,i64,i64,i64,i64,i64,i64)` | `rt_canvas_box_alpha` |
 | `Zanna.Graphics.Canvas.DiscAlpha` | `void(obj,i64,i64,i64,i64,i64)` | `rt_canvas_disc_alpha` |
 | `Zanna.Graphics.Canvas.EllipseAlpha` | `void(obj,i64,i64,i64,i64,i64,i64)` | `rt_canvas_ellipse_alpha` |

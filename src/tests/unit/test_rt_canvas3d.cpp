@@ -31,6 +31,7 @@
 #include "rt.hpp"
 #include "rt_asset_error.h"
 #include "rt_canvas3d.h"
+#include "rt_ttf_font.h"
 #include "rt_internal.h"
 #include "rt_morphtarget3d.h"
 #include "rt_particles3d.h"
@@ -11010,6 +11011,44 @@ static void test_canvas3d_capture_after_present_flag() {
     PASS();
 }
 
+static void test_canvas3d_ttf_font_and_text() {
+    TEST("TtfFont: default face metrics, measurement, and canvas draw");
+    /* E1 font bridge. The embedded JetBrains Mono face must load, report
+     * sane metrics, and render through the Canvas3D TTF path without
+     * trapping; the raster cache keys on the font's process-unique
+     * identity, which is nonzero for live handles and zero otherwise. */
+    void *font = rt_ttf_font_load_default();
+    assert(font);
+    EXPECT_TRUE(rt_ttf_font_identity(font) != 0, "live font has nonzero identity");
+    EXPECT_EQ(rt_ttf_font_identity(nullptr), 0);
+    rt_string family = rt_ttf_font_family(font);
+    EXPECT_TRUE(family != nullptr, "family string present");
+
+    double line = rt_ttf_font_line_height(font, 32.0);
+    EXPECT_TRUE(line >= 32.0 && line <= 64.0, "line height in sane range");
+    double ascent = rt_ttf_font_ascent(font, 32.0);
+    EXPECT_TRUE(ascent > 0.0 && ascent < line, "ascent positive, under line");
+
+    rt_string hello = rt_const_cstr("HELLO");
+    double w = rt_ttf_font_measure_width(font, hello, 32.0);
+    EXPECT_TRUE(w > 40.0 && w < 400.0, "HELLO width plausible");
+    /* Monospace: doubling the text roughly doubles the width. */
+    rt_string hello2 = rt_const_cstr("HELLOHELLO");
+    double w2 = rt_ttf_font_measure_width(font, hello2, 32.0);
+    EXPECT_TRUE(w2 > 1.8 * w && w2 < 2.2 * w, "monospace width scales");
+
+    void *target = rt_rendertarget3d_new(256, 64);
+    void *canvas = rt_canvas3d_new_offscreen(target);
+    assert(canvas);
+    EXPECT_EQ(rt_canvas3d_measure_text2d_ttf(canvas, font, hello, 32.0),
+              (int64_t)ceil(w));
+    /* Outside a frame the draw opens its own overlay frame (the same
+     * contract DrawText2DAA honors). Second draw hits the raster cache. */
+    rt_canvas3d_draw_text2d_ttf(canvas, font, 4, 4, hello, 32.0, 0xFFFFFF);
+    rt_canvas3d_draw_text2d_ttf(canvas, font, 4, 36, hello, 32.0, 0xFFFFFF);
+    PASS();
+}
+
 //=============================================================================
 // Main
 //=============================================================================
@@ -11348,6 +11387,7 @@ int main() {
     test_wind_deform_zero_strength_and_null_safe();
     test_canvas3d_window_bindings_null_safe();
     test_canvas3d_capture_after_present_flag();
+    test_canvas3d_ttf_font_and_text();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_total);
     return tests_passed == tests_total ? 0 : 1;

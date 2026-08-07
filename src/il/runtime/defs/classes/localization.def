@@ -686,6 +686,24 @@ RT_CLASS_BEGIN("Zanna.Graphics.BitmapFont", BitmapFont, "none", none)
     RT_METHOD("TextWidth", "i64(str)", BitmapFontTextWidth)
 RT_CLASS_END()
 
+// Zanna.Graphics.TtfFont - GC-managed TrueType face (E1 font bridge)
+/// @summary Loads TrueType faces for real typography on runtime canvases.
+/// @details
+/// `Zanna.Graphics.TtfFont` wraps the engine's from-scratch TrueType stack
+/// (parser, anti-aliased rasterizer, kerning, glyph cache). `Load` reads a
+/// .ttf from disk; `LoadDefault` returns the embedded JetBrains Mono face.
+/// Handles are garbage-collected; the face and its glyph cache release with
+/// the handle. Rendering happens through `Canvas3D.DrawText2DTtf`, which
+/// keys its raster cache on the font handle's process-unique identity.
+RT_CLASS_BEGIN("Zanna.Graphics.TtfFont", TtfFont, "none", none)
+    RT_PROP("Family", "str", TtfFontFamily, none)
+    RT_METHOD("Load", "obj<Zanna.Graphics.TtfFont>(str)", TtfFontLoad)
+    RT_METHOD("LoadDefault", "obj<Zanna.Graphics.TtfFont>()", TtfFontLoadDefault)
+    RT_METHOD("MeasureWidth", "f64(str,f64)", TtfFontMeasureWidth)
+    RT_METHOD("LineHeight", "f64(f64)", TtfFontLineHeight)
+    RT_METHOD("Ascent", "f64(f64)", TtfFontAscent)
+RT_CLASS_END()
+
 // Zanna.Graphics.SpriteFont - game-facing alias for BitmapFont
 
 // Zanna.Graphics.Color - color utilities

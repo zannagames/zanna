@@ -63,6 +63,14 @@ RT_FUNC(BitmapFontIsMonospace, rt_bitmapfont_is_monospace, "Zanna.Graphics.Bitma
 RT_FUNC(BitmapFontTextWidth,   rt_bitmapfont_text_width,   "Zanna.Graphics.BitmapFont.TextWidth",      "i64(obj,str)")
 RT_FUNC(BitmapFontTextHeight,  rt_bitmapfont_text_height,  "Zanna.Graphics.BitmapFont.get_TextHeight", "i64(obj)")
 
+// TtfFont — GC-managed TrueType face (E1 font bridge; vg_font stack)
+RT_FUNC(TtfFontLoad,           rt_ttf_font_load,           "Zanna.Graphics.TtfFont.Load",              "obj<Zanna.Graphics.TtfFont>(str)")
+RT_FUNC(TtfFontLoadDefault,    rt_ttf_font_load_default,   "Zanna.Graphics.TtfFont.LoadDefault",       "obj<Zanna.Graphics.TtfFont>()")
+RT_FUNC(TtfFontMeasureWidth,   rt_ttf_font_measure_width,  "Zanna.Graphics.TtfFont.MeasureWidth",      "f64(obj,str,f64)")
+RT_FUNC(TtfFontLineHeight,     rt_ttf_font_line_height,    "Zanna.Graphics.TtfFont.LineHeight",        "f64(obj,f64)")
+RT_FUNC(TtfFontAscent,         rt_ttf_font_ascent,         "Zanna.Graphics.TtfFont.Ascent",            "f64(obj,f64)")
+RT_FUNC(TtfFontFamily,         rt_ttf_font_family,         "Zanna.Graphics.TtfFont.get_Family",        "str(obj)")
+
 RT_FUNC(CanvasBoxAlpha,        rt_canvas_box_alpha,         "Zanna.Graphics.Canvas.BoxAlpha",        "void(obj,i64,i64,i64,i64,i64,i64)")
 RT_FUNC(CanvasDiscAlpha,       rt_canvas_disc_alpha,        "Zanna.Graphics.Canvas.DiscAlpha",       "void(obj,i64,i64,i64,i64,i64)")
 RT_FUNC(CanvasEllipseAlpha,    rt_canvas_ellipse_alpha,     "Zanna.Graphics.Canvas.EllipseAlpha",    "void(obj,i64,i64,i64,i64,i64,i64)")

@@ -529,6 +529,23 @@ void rt_canvas3d_draw_text2d_aa(
 /// @param scale Positive size multiplier.
 /// @return Rounded rendered width in pixels, or zero for invalid input.
 int64_t rt_canvas3d_measure_text2d_aa(void *obj, rt_string text, double scale);
+/// @brief Draw kerned TrueType text with a loaded TtfFont (E1 font bridge).
+/// @param obj Borrowed Canvas3D handle.
+/// @param font Borrowed live TtfFont handle.
+/// @param x Left origin in logical pixels.
+/// @param y Top origin in logical pixels (top of the text box, not baseline).
+/// @param text Borrowed runtime string.
+/// @param size_px Font pixel size (clamped to the TtfFont range).
+/// @param color Packed 0xRRGGBB color; alpha comes from glyph coverage.
+void rt_canvas3d_draw_text2d_ttf(
+    void *obj, void *font, int64_t x, int64_t y, rt_string text, double size_px, int64_t color);
+/// @brief Width in pixels of DrawText2DTtf output for @p text at @p size_px.
+/// @param obj Borrowed Canvas3D handle.
+/// @param font Borrowed live TtfFont handle.
+/// @param text Borrowed runtime string to measure.
+/// @param size_px Font pixel size (clamped to the TtfFont range).
+/// @return Rounded rendered width in pixels, or zero for invalid input.
+int64_t rt_canvas3d_measure_text2d_ttf(void *obj, void *font, rt_string text, double size_px);
 /// @brief Draw a 9-slice image: corners unscaled, edges axis-stretched, center stretched.
 /// @param obj Borrowed Canvas3D handle.
 /// @param x Destination left edge in logical pixels.

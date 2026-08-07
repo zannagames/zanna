@@ -300,6 +300,7 @@ set(RT_GRAPHICS_SOURCES
         graphics/2d/rt_spritebatch.c
         graphics/2d/rt_texatlas.c
         graphics/text/rt_bitmapfont.c
+        graphics/text/rt_ttf_font.c
         graphics/2d/rt_graphics2d.c
         graphics/2d/rt_graphics2d_tilemap.c
         graphics/2d/rt_graphics2d_render.c
@@ -466,6 +467,7 @@ set(RT_GRAPHICS_DISABLED_SOURCES
         graphics/2d/rt_spritebatch.c
         graphics/2d/rt_texatlas.c
         graphics/text/rt_bitmapfont.c
+        graphics/text/rt_ttf_font.c
         graphics/2d/rt_graphics2d.c
         graphics/2d/rt_graphics2d_tilemap.c
         graphics/2d/rt_graphics2d_render.c

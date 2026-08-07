@@ -717,6 +717,12 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_soundlistener3d_set_position_vec")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_soundsource3d_set_position_vec")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_soundsource3d_rebase_origin")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_bitmapfont_destroy")
+// TtfFont renderer seams (E1 font bridge): the canvas TTF draw borrows the
+// face and keys its raster cache on the identity; the size clamp is shared
+// between the class and the canvas entry points. None are frontend surface.
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_ttf_font_face")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_ttf_font_identity")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_ttf_font_clamp_size")
 
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_camera_clear_dirty")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_camera_is_dirty")

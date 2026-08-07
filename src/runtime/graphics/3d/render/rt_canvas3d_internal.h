@@ -889,6 +889,7 @@ typedef struct {
     double scale;
     int64_t color;
     int64_t last_used_frame;
+    int64_t font_identity; ///< 0 = built-in bitmap font; else TtfFont identity.
     int32_t width;
     int32_t height;
 } rt_canvas3d_aa_text_cache_entry;
