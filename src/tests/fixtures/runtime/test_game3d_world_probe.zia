@@ -95,10 +95,19 @@ func start() {
         fail("World3D.tick did not advance synthetic timing");
         return;
     }
+    // Dual step contract (ZB-9): Update() already advanced this frame's
+    // counters, so the documented StepSimulation(DeltaTime) pattern must
+    // not re-count, and a zero step is a pure re-render frame.
+    world.StepSimulation(world.DeltaTime);
+    if (world.Frame != 1 ||
+        near(world.DeltaTime, 0.020, 0.0001) == false) {
+        fail("World3D.stepSimulation re-counted the combined-loop frame");
+        return;
+    }
     world.StepSimulation(0.0);
-    if (world.Frame != 2 ||
-        near(world.DeltaTime, 1.0 / 60.0, 0.0001) == false) {
-        fail("World3D.stepSimulation did not clamp and advance frame timing");
+    if (world.Frame != 1 ||
+        near(world.DeltaTime, 0.0, 0.0001) == false) {
+        fail("World3D.stepSimulation zero step was not a pure re-render");
         return;
     }
     world.BeginFrame();

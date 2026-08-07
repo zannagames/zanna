@@ -146,6 +146,7 @@ typedef struct {
     double hitstop_remaining;
     double unscaled_dt;
     double unscaled_elapsed;
+    int64_t tick_frame_stamp;
     int64_t worker_count;
     void *job_pool;
     int8_t jobs_enabled;

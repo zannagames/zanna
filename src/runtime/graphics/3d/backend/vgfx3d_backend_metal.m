@@ -282,6 +282,7 @@
 @property(nonatomic) vgfx3d_metal_frame_history_t frameHistory;
 @property(nonatomic) int8_t postfxEncodedThisFrame;
 @property(nonatomic) int8_t postfxCompositedToDrawable;
+@property(nonatomic) int8_t captureAfterPresent;
 @end
 
 @implementation VGFXMetalContext
@@ -475,6 +476,7 @@ const vgfx3d_backend_t vgfx3d_metal_backend = {
     .get_backend_stats = metal_get_backend_stats,
     .set_vsync = metal_set_vsync,
     .set_render_scale = metal_set_render_scale,
+    .set_capture_after_present = metal_set_capture_after_present,
     .queue_depth_probe = metal_queue_depth_probe,
     .read_depth_probe = metal_read_depth_probe,
 };

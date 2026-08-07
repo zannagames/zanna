@@ -1932,6 +1932,16 @@ double rt_canvas3d_get_shadow_distance(void *canvas);
 /// @param canvas Borrowed Canvas3D handle.
 /// @param enabled Non-zero to request synchronized presentation; zero for unpaced presentation.
 void rt_canvas3d_set_vsync(void *canvas, int8_t enabled);
+
+/// @brief Request pre-present capture so readback after Present() sees the shown frame.
+/// @param canvas Canvas3D handle.
+/// @param enabled Non-zero to capture every presented frame (one blit/frame on GPU present paths).
+void rt_canvas3d_set_capture_after_present(void *canvas, int8_t enabled);
+
+/// @brief Requested capture-after-present state (defaults to off).
+/// @param canvas Canvas3D handle.
+/// @return Non-zero when pre-present capture is requested.
+int8_t rt_canvas3d_get_capture_after_present(void *canvas);
 /// @brief Requested vsync state (defaults to on).
 /// @param canvas Borrowed Canvas3D handle.
 /// @return Requested state, or 1 for invalid input to preserve the default contract.

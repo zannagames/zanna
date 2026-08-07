@@ -214,6 +214,8 @@ RT_FUNC(Canvas3DSetShadowDistance, rt_canvas3d_set_shadow_distance, "Zanna.Graph
 RT_FUNC(Canvas3DGetShadowDistance, rt_canvas3d_get_shadow_distance, "Zanna.Graphics3D.Canvas3D.get_ShadowDistance", "f64(obj)")
 RT_FUNC(Canvas3DSetVSync,          rt_canvas3d_set_vsync,          "Zanna.Graphics3D.Canvas3D.SetVSync",          "void(obj,i1)")
 RT_FUNC(Canvas3DGetVSync,          rt_canvas3d_get_vsync,          "Zanna.Graphics3D.Canvas3D.get_VSync",         "i1(obj)")
+RT_FUNC(Canvas3DSetCaptureAfterPresent, rt_canvas3d_set_capture_after_present, "Zanna.Graphics3D.Canvas3D.SetCaptureAfterPresent", "void(obj,i1)")
+RT_FUNC(Canvas3DGetCaptureAfterPresent, rt_canvas3d_get_capture_after_present, "Zanna.Graphics3D.Canvas3D.get_CaptureAfterPresent", "i1(obj)")
 RT_FUNC(Canvas3DTrySetRenderScale, rt_canvas3d_try_set_render_scale, "Zanna.Graphics3D.Canvas3D.TrySetRenderScale", "i1(obj,f64)")
 RT_FUNC(Canvas3DGetRenderScale,    rt_canvas3d_get_render_scale,   "Zanna.Graphics3D.Canvas3D.get_RenderScale",   "f64(obj)")
 RT_FUNC(Canvas3DSetFrustumCulling, rt_canvas3d_set_frustum_culling, "Zanna.Graphics3D.Canvas3D.SetFrustumCulling", "void(obj,i1)")
@@ -443,7 +445,9 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Canvas3D", Canvas3D, "obj", Canvas3DNew)
     // Present pacing: vsync defaults on; disabling presents immediately for lowest
     // latency where the backend supports it (BackendSupports("vsync-control")).
     RT_METHOD("SetVSync", "void(i1)", Canvas3DSetVSync)
+    RT_METHOD("SetCaptureAfterPresent", "void(i1)", Canvas3DSetCaptureAfterPresent)
     RT_PROP("VSync", "i1", Canvas3DGetVSync, none)
+    RT_PROP("CaptureAfterPresent", "i1", Canvas3DGetCaptureAfterPresent, none)
     // Render the 3D scene at a reduced resolution and upscale at presentation —
     // the most effective performance lever on fill-rate/CPU-bound scenes. Values
     // >= 1 restore native rendering; reduced scales require

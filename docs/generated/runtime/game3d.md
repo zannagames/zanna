@@ -1452,8 +1452,8 @@ to construct the class directly. Its public surface exposes properties such as `
 | <a id="zanna-game3d-scenetemplate-getscenename"></a>`GetSceneName` | `str(i64)` | `Zanna.Game3D.SceneTemplate.GetSceneName` |
 | <a id="zanna-game3d-scenetemplate-getcameracount"></a>`GetCameraCount` | `i64(i64)` | `Zanna.Game3D.SceneTemplate.GetCameraCount` |
 | <a id="zanna-game3d-scenetemplate-getcamera"></a>`GetCamera` | `obj(i64,i64)` | `Zanna.Game3D.SceneTemplate.GetCamera` |
-| <a id="zanna-game3d-scenetemplate-instantiate"></a>`Instantiate` | `obj()` | `Zanna.Game3D.SceneTemplate.Instantiate` |
-| <a id="zanna-game3d-scenetemplate-instantiatesceneat"></a>`InstantiateSceneAt` | `obj(i64)` | `Zanna.Game3D.SceneTemplate.InstantiateSceneAt` |
+| <a id="zanna-game3d-scenetemplate-instantiate"></a>`Instantiate` | `obj<Zanna.Game3D.Entity3D>()` | `Zanna.Game3D.SceneTemplate.Instantiate` |
+| <a id="zanna-game3d-scenetemplate-instantiatesceneat"></a>`InstantiateSceneAt` | `obj<Zanna.Game3D.Entity3D>(i64)` | `Zanna.Game3D.SceneTemplate.InstantiateSceneAt` |
 
 <a id="zanna-game3d-behavior3d"></a>
 ### `Zanna.Game3D.Behavior3D`

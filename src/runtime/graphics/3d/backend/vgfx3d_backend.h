@@ -968,6 +968,18 @@ typedef struct vgfx3d_backend {
     /// @return Nonzero when the backend accepted and applied the scale.
     int8_t (*set_render_scale)(void *ctx, float scale);
 
+    /* Optional capture-after-present support. Nonzero asks the on-screen
+     * present path to preserve the presented image in a readable texture
+     * BEFORE handing the drawable to the display, so screenshot readback
+     * after Present() returns the shown frame instead of undefined
+     * contents (costs one full-screen blit per presented frame). NULL =
+     * the backend's readback is already present-safe (software renderer,
+     * offscreen/composited routes). */
+    /// @brief Enable or disable pre-present capture of the on-screen image.
+    /// @param[in,out] ctx Backend context.
+    /// @param[in] enabled Nonzero to capture every presented frame for readback.
+    void (*set_capture_after_present)(void *ctx, int8_t enabled);
+
     /* Optional active-target depth probes for occlusion-aware effects (lens flares).
      * queue_depth_probe registers one NDC point (x, y in [-1, 1]) during frame
      * building and returns its slot id, or -1 when unsupported/full. Slot ids

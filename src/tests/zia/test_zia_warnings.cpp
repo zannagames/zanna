@@ -10,6 +10,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "frontends/zia/Compiler.hpp"
+#include "frontends/zia/WarningSuppressions.hpp"
 #include "frontends/zia/Warnings.hpp"
 #include "frontends/zia/ZiaAnalysis.hpp"
 #include "support/source_manager.hpp"
@@ -526,6 +527,56 @@ func start() {    // @suppress(division-by-zero)
 )");
     EXPECT_TRUE(r.succeeded());
     EXPECT_FALSE(hasWarningCode(r, "W010"));
+}
+
+TEST(ZiaWarnings, SuppressionScannerMatchesLexicalCommentBoundaries) {
+    auto isSuppressed = [](std::string_view source,
+                           uint32_t line,
+                           WarningCode code = WarningCode::W001_UnusedVariable) {
+        WarningSuppressions suppressions;
+        suppressions.scan(7, source);
+        return suppressions.isSuppressed(code, SourceLoc{7, line, 1});
+    };
+
+    // Accepted directive layouts and payloads.
+    EXPECT_TRUE(isSuppressed("// @suppress(W001)\nvalue", 2));
+    EXPECT_TRUE(isSuppressed("//@suppress(W001)\nvalue", 2));
+    EXPECT_TRUE(isSuppressed("//\t@suppress(W001)\nvalue", 2));
+    EXPECT_TRUE(isSuppressed("// @suppress \t(W001)\nvalue", 2));
+    EXPECT_TRUE(isSuppressed("value // note @suppress(W001)", 1));
+    EXPECT_TRUE(isSuppressed("// @suppress(unused-variable)\nvalue", 2));
+    EXPECT_TRUE(isSuppressed("// @suppress( W001 )\nvalue", 2));
+    EXPECT_TRUE(isSuppressed("// @suppress(W019, W001)\nvalue", 2));
+    EXPECT_TRUE(isSuppressed("// @suppress(W019) @suppress(W001)\nvalue", 2));
+    EXPECT_TRUE(isSuppressed("// @suppress(W019) note @suppress(W001)\nvalue", 2));
+    EXPECT_TRUE(isSuppressed("// @suppress(W001)\rvalue", 2));
+    EXPECT_TRUE(isSuppressed("// @suppress(W001)\r\nvalue", 2));
+    EXPECT_TRUE(isSuppressed("// @suppress(W001)\nvalue", 1));
+
+    // Lookalikes in literals and non-line comments must never suppress warnings.
+    EXPECT_FALSE(isSuppressed("\"// @suppress(W001)\"\nvalue", 2));
+    EXPECT_FALSE(isSuppressed("\"escaped \\\" // @suppress(W001)\"\nvalue", 2));
+    EXPECT_FALSE(isSuppressed("/* // @suppress(W001) */\nvalue", 2));
+    EXPECT_FALSE(isSuppressed("/* outer /* // @suppress(W001) */ end */\nvalue", 2));
+    EXPECT_FALSE(isSuppressed("/* open\n// @suppress(W001)\nclose */\nvalue", 4));
+    EXPECT_FALSE(isSuppressed("\"\"\"open\n// @suppress(W001)\nclose\"\"\"\nvalue", 4));
+    EXPECT_FALSE(isSuppressed("// not@suppress(W001)\nvalue", 2));
+    EXPECT_FALSE(isSuppressed("// @suppressor(W001)\nvalue", 2));
+    EXPECT_FALSE(isSuppressed("// @suppress W001\nvalue", 2));
+    EXPECT_FALSE(isSuppressed("// @suppress(unknown-warning)\nvalue", 2));
+    EXPECT_FALSE(isSuppressed("// @suppress()\nvalue", 2));
+}
+
+TEST(ZiaWarnings, SuppressionScannerKeepsFilesAndRescansIndependent) {
+    WarningSuppressions suppressions;
+    suppressions.scan(1, "// @suppress(W001)\nvalue");
+    suppressions.scan(2, "// @suppress(W002)\nvalue");
+    EXPECT_TRUE(suppressions.isSuppressed(WarningCode::W001_UnusedVariable, SourceLoc{1, 2, 1}));
+    EXPECT_FALSE(suppressions.isSuppressed(WarningCode::W001_UnusedVariable, SourceLoc{2, 2, 1}));
+    suppressions.scan(1, "value");
+    EXPECT_FALSE(suppressions.isSuppressed(WarningCode::W001_UnusedVariable, SourceLoc{1, 2, 1}));
+    suppressions.clear();
+    EXPECT_FALSE(suppressions.isSuppressed(WarningCode::W002_UnreachableCode, SourceLoc{2, 2, 1}));
 }
 
 TEST(ZiaWarnings, WallEnablesAllWarnings) {

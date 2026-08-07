@@ -160,6 +160,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-iblintensity"></a>`IblIntensity` | `f64` | read/write |
 | <a id="zanna-graphics3d-canvas3d-shadowdistance"></a>`ShadowDistance` | `f64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-vsync"></a>`VSync` | `i1` | read-only |
+| <a id="zanna-graphics3d-canvas3d-captureafterpresent"></a>`CaptureAfterPresent` | `i1` | read-only |
 | <a id="zanna-graphics3d-canvas3d-renderscale"></a>`RenderScale` | `f64` | read-only |
 | <a id="zanna-graphics3d-canvas3d-heightfogenabled"></a>`HeightFogEnabled` | `i1` | read-only |
 
@@ -245,6 +246,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 | <a id="zanna-graphics3d-canvas3d-setshadowcascades"></a>`SetShadowCascades` | `void(i64)` | `Zanna.Graphics3D.Canvas3D.SetShadowCascades` |
 | <a id="zanna-graphics3d-canvas3d-setshadowdistance"></a>`SetShadowDistance` | `void(f64)` | `Zanna.Graphics3D.Canvas3D.SetShadowDistance` |
 | <a id="zanna-graphics3d-canvas3d-setvsync"></a>`SetVSync` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetVSync` |
+| <a id="zanna-graphics3d-canvas3d-setcaptureafterpresent"></a>`SetCaptureAfterPresent` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetCaptureAfterPresent` |
 | <a id="zanna-graphics3d-canvas3d-trysetrenderscale"></a>`TrySetRenderScale` | `i1(f64)` | `Zanna.Graphics3D.Canvas3D.TrySetRenderScale` |
 | <a id="zanna-graphics3d-canvas3d-drawinstanced"></a>`DrawInstanced` | `void(obj)` | `Zanna.Graphics3D.Canvas3D.DrawInstanced` |
 | <a id="zanna-graphics3d-canvas3d-drawinstancedskinned"></a>`DrawInstancedSkinned` | `void(obj,obj)` | `Zanna.Graphics3D.Canvas3D.DrawInstancedSkinned` |
@@ -830,6 +832,7 @@ Constructor: `Zanna.Graphics3D.Animation3D.New`
 | <a id="zanna-graphics3d-animation3d-addkeyframe"></a>`AddKeyframe` | `void(i64,f64,obj,obj,obj)` | `Zanna.Graphics3D.Animation3D.AddKeyframe` |
 | <a id="zanna-graphics3d-animation3d-retarget"></a>`Retarget` | `obj<Zanna.Graphics3D.Animation3D>(obj,obj)` | `Zanna.Graphics3D.Animation3D.Retarget` |
 | <a id="zanna-graphics3d-animation3d-striprootmotion"></a>`StripRootMotion` | `i64(i64,i1)` | `Zanna.Graphics3D.Animation3D.StripRootMotion` |
+| <a id="zanna-graphics3d-animation3d-extractrange"></a>`ExtractRange` | `obj(f64,f64)` | `Zanna.Graphics3D.Animation3D.ExtractRange` |
 | <a id="zanna-graphics3d-animation3d-new"></a>`New` | `obj(str,f64)` | `Zanna.Graphics3D.Animation3D.New` |
 
 <a id="zanna-graphics3d-animplayer3d"></a>
@@ -2851,6 +2854,8 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-canvas3d-get-shadowdistance"></a>`Zanna.Graphics3D.Canvas3D.get_ShadowDistance` | `f64(obj)` | `rt_canvas3d_get_shadow_distance` |
 | `Zanna.Graphics3D.Canvas3D.SetVSync` | `void(obj,i1)` | `rt_canvas3d_set_vsync` |
 | <a id="zanna-graphics3d-canvas3d-get-vsync"></a>`Zanna.Graphics3D.Canvas3D.get_VSync` | `i1(obj)` | `rt_canvas3d_get_vsync` |
+| `Zanna.Graphics3D.Canvas3D.SetCaptureAfterPresent` | `void(obj,i1)` | `rt_canvas3d_set_capture_after_present` |
+| <a id="zanna-graphics3d-canvas3d-get-captureafterpresent"></a>`Zanna.Graphics3D.Canvas3D.get_CaptureAfterPresent` | `i1(obj)` | `rt_canvas3d_get_capture_after_present` |
 | `Zanna.Graphics3D.Canvas3D.TrySetRenderScale` | `i1(obj,f64)` | `rt_canvas3d_try_set_render_scale` |
 | <a id="zanna-graphics3d-canvas3d-get-renderscale"></a>`Zanna.Graphics3D.Canvas3D.get_RenderScale` | `f64(obj)` | `rt_canvas3d_get_render_scale` |
 | `Zanna.Graphics3D.Canvas3D.SetFrustumCulling` | `void(obj,i1)` | `rt_canvas3d_set_frustum_culling` |
@@ -3224,6 +3229,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | <a id="zanna-graphics3d-animation3d-get-name"></a>`Zanna.Graphics3D.Animation3D.get_Name` | `str(obj)` | `rt_animation3d_get_name` |
 | `Zanna.Graphics3D.Animation3D.Retarget` | `obj(obj,obj,obj)` | `rt_animation3d_retarget` |
 | `Zanna.Graphics3D.Animation3D.StripRootMotion` | `i64(obj,i64,i1)` | `rt_animation3d_strip_root_motion` |
+| `Zanna.Graphics3D.Animation3D.ExtractRange` | `obj(obj,f64,f64)` | `rt_animation3d_extract_range` |
 | `Zanna.Graphics3D.AnimPlayer3D.New` | `obj(obj)` | `rt_anim_player3d_new` |
 | `Zanna.Graphics3D.AnimPlayer3D.Play` | `void(obj,obj)` | `rt_anim_player3d_play` |
 | `Zanna.Graphics3D.AnimPlayer3D.Crossfade` | `void(obj,obj,f64)` | `rt_anim_player3d_crossfade` |

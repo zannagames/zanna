@@ -35,12 +35,14 @@
 
 namespace {
 
-/* Animation3D.StripRootMotion (2026-08-05): +1 function, +1 method for
- * retarget-time root-motion removal on skeletal clips. */
-constexpr std::size_t kExpectedFunctionCount = 2233;
+/* Animation3D.StripRootMotion (2026-08-05) and Animation3D.ExtractRange
+ * (2026-08-06, broadcast action-core trimming): +1 function/+1 method each.
+ * Canvas3D.SetCaptureAfterPresent + get_CaptureAfterPresent (2026-08-06,
+ * E3): +2 functions / +1 method / +1 property. */
+constexpr std::size_t kExpectedFunctionCount = 2236;
 constexpr std::size_t kExpectedClassCount = 131;
-constexpr std::size_t kExpectedPropertyCount = 820;
-constexpr std::size_t kExpectedMethodCount = 1200;
+constexpr std::size_t kExpectedPropertyCount = 821;
+constexpr std::size_t kExpectedMethodCount = 1202;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -219,11 +221,15 @@ int main() {
 
     // Filled from the canonical registry after deliberate ABI review. This one value
     // covers every function name/signature/C symbol and every class member binding.
-    /* Rehashed for Animation3D.StripRootMotion (function + method added) and
-     * the Camera3D.WorldToScreen typed return (obj -> obj<Vec3>; the C entry
-     * always returns an owned Vec3, and the untyped form made Zia member
-     * lookups resolve against the receiver class). */
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x6f5ab143ff4d4e0e);
+    /* Rehashed 2026-08-06: Animation3D.ExtractRange, then the
+     * SceneTemplate.Instantiate(SceneAt) typed method returns
+     * (obj -> obj<Entity3D>; the untyped method-table form made Zia type
+     * instantiated entities as SceneTemplate — the ZB-1 dual-registry
+     * drift pattern), then Canvas3D.SetCaptureAfterPresent /
+     * get_CaptureAfterPresent (E3 capture hardening: opt-in pre-present
+     * blit so post-Present readback sees the shown frame on GPU
+     * direct-present paths). */
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0x5268e90fa6d0fbc9);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

@@ -92,6 +92,7 @@ static void *game3d_world_new_with_camera_impl(rt_string title,
     world->next_entity_id = 1;
     world->dt = RT_GAME3D_DEFAULT_DT;
     world->time_scale = 1.0;
+    world->tick_frame_stamp = -1;
     world->fixed_interpolation_alpha = 0.0;
     world->worker_count = game3d_default_worker_count();
     world->jobs_enabled = world->worker_count > 1 ? 1 : 0;

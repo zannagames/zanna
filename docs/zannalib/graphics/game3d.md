@@ -407,7 +407,7 @@ Manual code can use the same pieces directly:
 | Method | Purpose |
 |--------|---------|
 | `Update()` | Poll live input, sync backing-window resize state, and advance world timing; returns false when the window should close |
-| `StepSimulation(step)` | Clamp invalid, zero, negative, and overlarge steps into the safe dt range; store `world.dt`, advance `frame`/`elapsed` when called directly, then step controllers, animation, physics, scene/audio bindings, effect expiry, and late camera/controller work |
+| `StepSimulation(step)` | Dual contract. **Combined loop** (an `Update` ran earlier this frame — the pattern above): `step` is the ALREADY-SCALED simulation delta (`DeltaTime`); time-scale, hit-stop decay, and the frame/elapsed/unscaled counters are NOT re-applied (Update did them once), and a zero/paused delta performs a pure re-render frame. **Standalone** (no `Update` this frame — fixed-step drivers, tests): historical semantics — `step` is an unscaled real delta, clamped into the safe range, scaled by `TimeScale`/hit-stop here, with `frame`/`elapsed` advanced. Both paths then step controllers, animation, physics, scene/audio bindings, effect expiry, and late camera/controller work |
 | `BeginFrame()` | Clear and begin drawing with the world camera |
 | `DrawScene()` | Draw the world scene |
 | `DrawEffects()` | Draw effect-registry particles/decals plus debug axes/physics wires |

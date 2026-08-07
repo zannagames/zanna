@@ -556,7 +556,15 @@ static void metal_present(void *backend_ctx) {
 
         if (!metal_window_scene_route_enabled(ctx) &&
             ctx.currentTargetKind == VGFX3D_METAL_TARGET_SWAPCHAIN && ctx.cmdBuf && ctx.drawable) {
-            ctx.displayTexture = ctx.drawable.texture;
+            if (ctx.captureAfterPresent) {
+                /* A presented drawable's contents are undefined; blit it
+                 * into the readable display texture first so post-present
+                 * readback (SetCaptureAfterPresent contract) sees the
+                 * shown frame. */
+                (void)metal_capture_current_drawable_to_display_texture(ctx);
+            } else {
+                ctx.displayTexture = ctx.drawable.texture;
+            }
             [ctx.cmdBuf presentDrawable:ctx.drawable];
             metal_commit_pending(ctx, NO);
             ctx->_stats.direct_presents++;
@@ -2311,6 +2319,22 @@ static void metal_show_gpu_layer(void *backend_ctx) {
             metal_update_layer_size(ctx);
             ctx.metalLayer.hidden = NO;
         }
+    }
+}
+
+/// @brief Backend hook: capture every presented frame into the readable
+///   display texture BEFORE handing the drawable to the display, so
+///   screenshot readback after Present() sees the shown image (the
+///   swapchain drawable's contents are undefined once presented). One
+///   full-screen blit per presented frame while enabled.
+/// @param backend_ctx Borrowed `VGFXMetalContext`.
+/// @param enabled Nonzero to enable pre-present capture.
+static void metal_set_capture_after_present(void *backend_ctx, int8_t enabled) {
+    if (!backend_ctx)
+        return;
+    @autoreleasepool {
+        VGFXMetalContext *ctx = (__bridge VGFXMetalContext *)backend_ctx;
+        ctx.captureAfterPresent = enabled ? 1 : 0;
     }
 }
 

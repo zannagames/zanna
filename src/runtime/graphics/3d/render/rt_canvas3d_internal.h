@@ -1481,6 +1481,9 @@ typedef struct {
      * backend set_vsync hook when available. GPU backends own their pacing;
      * software_frame_limit preserves the vgfx creation cap for the CPU backend. */
     int8_t vsync_enabled;
+    /* Nonzero requests pre-present capture on the backend so screenshot
+     * readback after Present() sees the shown frame (SetCaptureAfterPresent). */
+    int8_t capture_after_present;
     int32_t software_frame_limit;
 
     /* Requested scene render scale (1 = native); applied through the backend

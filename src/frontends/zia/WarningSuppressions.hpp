@@ -25,6 +25,7 @@
 
 #include "frontends/zia/Warnings.hpp"
 #include "support/source_location.hpp"
+#include <cstddef>
 #include <string_view>
 #include <unordered_map>
 #include <unordered_set>
@@ -51,17 +52,21 @@ class WarningSuppressions {
         fileSuppressions.clear();
         uint32_t lineNum = 1;
         size_t pos = 0;
+        ScanState state;
 
         while (pos < source.size()) {
-            // Find end of current line
-            size_t eol = source.find('\n', pos);
-            if (eol == std::string_view::npos)
-                eol = source.size();
+            size_t eol = pos;
+            while (eol < source.size() && source[eol] != '\n' && source[eol] != '\r')
+                ++eol;
 
             std::string_view line = source.substr(pos, eol - pos);
-            parseLine(fileSuppressions, line, lineNum);
+            parseLine(fileSuppressions, line, lineNum, state);
 
-            pos = eol + 1;
+            pos = eol;
+            if (pos < source.size() && source[pos] == '\r')
+                ++pos;
+            if (pos < source.size() && source[pos] == '\n')
+                ++pos;
             lineNum++;
         }
     }
@@ -90,6 +95,12 @@ class WarningSuppressions {
     }
 
   private:
+    /// @brief Lexical state retained while the suppression pre-scan crosses lines.
+    struct ScanState {
+        size_t blockCommentDepth{0};
+        bool inTripleString{false};
+    };
+
     /// @brief Parse a single line for @suppress directives.
     /// @param fileSuppressions Mutable per-line suppression map for the source file.
     /// @param line One physical source line.
@@ -98,39 +109,50 @@ class WarningSuppressions {
     ///          unknown warning codes are ignored.
     void parseLine(std::unordered_map<uint32_t, std::unordered_set<WarningCode>> &fileSuppressions,
                    std::string_view line,
-                   uint32_t lineNum) {
-        auto commentStart = findLineCommentStart(line);
+                   uint32_t lineNum,
+                   ScanState &state) {
+        auto commentStart = findLineCommentStart(line, state);
         if (commentStart == std::string_view::npos)
             return;
 
-        // Look for "@suppress(" in the actual comment text.
-        std::string_view comment = line.substr(commentStart);
-        auto directivePos = comment.find("// @suppress(");
-        if (directivePos == std::string_view::npos)
-            directivePos = comment.find("//@suppress(");
-        if (directivePos == std::string_view::npos)
-            return;
+        std::string_view comment = line.substr(commentStart + 2);
+        size_t directivePos = 0;
+        while ((directivePos = comment.find("@suppress", directivePos)) != std::string_view::npos) {
+            const size_t nameEnd = directivePos + std::string_view("@suppress").size();
+            if (directivePos > 0 && isDirectiveWordChar(comment[directivePos - 1])) {
+                directivePos = nameEnd;
+                continue;
+            }
 
-        auto commentPos = commentStart + directivePos;
-        if (commentPos == std::string_view::npos)
-            return;
+            size_t openPos = nameEnd;
+            while (openPos < comment.size() && isHorizontalWhitespace(comment[openPos]))
+                ++openPos;
+            if (openPos >= comment.size() || comment[openPos] != '(') {
+                directivePos = nameEnd;
+                continue;
+            }
 
-        size_t start = line.find('(', commentPos);
-        if (start == std::string_view::npos)
-            return;
-        ++start;
-        auto closePos = line.find(')', start);
-        if (closePos == std::string_view::npos)
-            return;
+            const size_t start = openPos + 1;
+            const size_t closePos = comment.find(')', start);
+            if (closePos == std::string_view::npos)
+                return;
 
-        // Extract the content between parens: "W001, W005" or "unused-variable"
-        std::string_view content = line.substr(start, closePos - start);
+            parseDirectiveContents(
+                fileSuppressions, comment.substr(start, closePos - start), lineNum);
+            directivePos = closePos + 1;
+        }
+    }
 
+    /// @brief Parse the comma-separated payload of one suppression directive.
+    static void parseDirectiveContents(
+        std::unordered_map<uint32_t, std::unordered_set<WarningCode>> &fileSuppressions,
+        std::string_view content,
+        uint32_t lineNum) {
         // Split by comma and parse each code
         size_t p = 0;
         while (p < content.size()) {
             // Skip whitespace
-            while (p < content.size() && (content[p] == ' ' || content[p] == '\t'))
+            while (p < content.size() && isHorizontalWhitespace(content[p]))
                 p++;
             if (p >= content.size())
                 break;
@@ -142,7 +164,7 @@ class WarningSuppressions {
 
             // Trim trailing whitespace
             size_t end = tokenEnd;
-            while (end > p && (content[end - 1] == ' ' || content[end - 1] == '\t'))
+            while (end > p && isHorizontalWhitespace(content[end - 1]))
                 end--;
 
             if (end > p) {
@@ -156,6 +178,15 @@ class WarningSuppressions {
         }
     }
 
+    static bool isHorizontalWhitespace(char ch) {
+        return ch == ' ' || ch == '\t' || ch == '\v' || ch == '\f';
+    }
+
+    static bool isDirectiveWordChar(char ch) {
+        return (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') ||
+               ch == '_' || ch == '-';
+    }
+
     /// @brief Find the first line-comment marker outside a string literal.
     /// @param line One physical source line.
     /// @return Offset of `//`, or npos when the line contains no real line comment.
@@ -163,11 +194,28 @@ class WarningSuppressions {
     /// @details This lightweight scanner is intentionally local to warning suppression
     ///          parsing. It recognizes ordinary quoted strings and backslash escapes so
     ///          text like `"// @suppress(W001)"` is not treated as a directive.
-    static size_t findLineCommentStart(std::string_view line) {
+    static size_t findLineCommentStart(std::string_view line, ScanState &state) {
         bool inString = false;
         bool escaped = false;
-        for (size_t i = 0; i + 1 < line.size(); ++i) {
+        for (size_t i = 0; i < line.size(); ++i) {
             char ch = line[i];
+            if (state.blockCommentDepth > 0) {
+                if (ch == '/' && i + 1 < line.size() && line[i + 1] == '*') {
+                    ++state.blockCommentDepth;
+                    ++i;
+                } else if (ch == '*' && i + 1 < line.size() && line[i + 1] == '/') {
+                    --state.blockCommentDepth;
+                    ++i;
+                }
+                continue;
+            }
+            if (state.inTripleString) {
+                if (ch == '"' && i + 2 < line.size() && line[i + 1] == '"' && line[i + 2] == '"') {
+                    state.inTripleString = false;
+                    i += 2;
+                }
+                continue;
+            }
             if (inString) {
                 if (escaped) {
                     escaped = false;
@@ -182,11 +230,20 @@ class WarningSuppressions {
                 continue;
             }
             if (ch == '"') {
+                if (i + 2 < line.size() && line[i + 1] == '"' && line[i + 2] == '"') {
+                    state.inTripleString = true;
+                    i += 2;
+                    continue;
+                }
                 inString = true;
                 continue;
             }
-            if (ch == '/' && line[i + 1] == '/')
+            if (ch == '/' && i + 1 < line.size() && line[i + 1] == '/')
                 return i;
+            if (ch == '/' && i + 1 < line.size() && line[i + 1] == '*') {
+                state.blockCommentDepth = 1;
+                ++i;
+            }
         }
         return std::string_view::npos;
     }

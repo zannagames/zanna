@@ -969,6 +969,135 @@ static void test_animation_retarget_maps_humanoid_roles() {
         spine->m[11], 0.0, 0.05, "Humanoid retarget does not mis-map onto the index-fallback bone");
 }
 
+/// @brief Biped-style names ("Bip01 L UpperArm") carry their side as a lone
+///        letter that fuses onto the keyword when separators are stripped;
+///        role inference must still land left on left. The destination is
+///        laid out so the old raw-index fallback would cross-map the left
+///        arm onto RightArm.
+static void test_animation_retarget_biped_side_letters() {
+    void *src = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(src, rt_const_cstr("Bip01"), -1, rt_mat4_identity());
+    int64_t s_left = rt_skeleton3d_add_bone(
+        src, rt_const_cstr("Bip01 L UpperArm"), 0, rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_add_bone(
+        src, rt_const_cstr("Bip01 R UpperArm"), 0, rt_mat4_translate(-1.0, 0.0, 0.0));
+    rt_skeleton3d_compute_inverse_bind(src);
+
+    void *dst = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(dst, rt_const_cstr("root"), -1, rt_mat4_identity());
+    int64_t d_right =
+        rt_skeleton3d_add_bone(dst, rt_const_cstr("RightArm"), 0, rt_mat4_translate(-1.0, 0.0, 0.0));
+    int64_t d_left =
+        rt_skeleton3d_add_bone(dst, rt_const_cstr("LeftArm"), 0, rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_compute_inverse_bind(dst);
+
+    /* Slide the source LEFT arm +1.0 in Z by t=2 (t=1 samples +0.5). */
+    void *anim = rt_animation3d_new(rt_const_cstr("wave"), 2.0);
+    void *rot = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *scl = rt_vec3_new(1.0, 1.0, 1.0);
+    rt_animation3d_add_keyframe(anim, s_left, 0.0, rt_vec3_new(1.0, 0.0, 0.0), rot, scl);
+    rt_animation3d_add_keyframe(anim, s_left, 2.0, rt_vec3_new(1.0, 0.0, 1.0), rot, scl);
+
+    void *retargeted = rt_animation3d_retarget(anim, src, dst);
+    EXPECT_TRUE(retargeted != nullptr, "Biped-side retarget returns an animation");
+
+    void *player = rt_anim_player3d_new(dst);
+    rt_anim_player3d_play(player, retargeted);
+    rt_anim_player3d_update(player, 1.0);
+
+    typedef struct {
+        double m[16];
+    } mat4_view;
+    mat4_view *left = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, d_left);
+    mat4_view *right = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, d_right);
+    EXPECT_NEAR(left->m[11], 0.5, 0.05, "Bip01 L UpperArm drives LeftArm by role");
+    EXPECT_NEAR(right->m[11], 0.0, 0.05, "RightArm is not cross-mapped from the left channel");
+}
+
+/// @brief Cross-rig bind-posture conform: an A-pose source driving a T-pose
+///        destination must reproduce the SOURCE posture at the source's
+///        bind-pose key — the destination arm chain swings onto the source's
+///        bind direction instead of keeping its own T-pose (the bias that
+///        made every clip play with raised arms) or folding (the picked-pair
+///        conform failure).
+static void test_animation_retarget_conforms_bind_posture() {
+    void *src = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(src, rt_const_cstr("Hips"), -1, rt_mat4_identity());
+    int64_t s_arm = rt_skeleton3d_add_bone(
+        src, rt_const_cstr("LeftArm"), 0, rt_mat4_translate(0.7071, -0.7071, 0.0));
+    rt_skeleton3d_add_bone(
+        src, rt_const_cstr("LeftHand"), (int64_t)s_arm, rt_mat4_translate(0.7071, -0.7071, 0.0));
+    rt_skeleton3d_compute_inverse_bind(src);
+
+    void *dst = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(dst, rt_const_cstr("root"), -1, rt_mat4_identity());
+    int64_t d_arm =
+        rt_skeleton3d_add_bone(dst, rt_const_cstr("LeftArm"), 0, rt_mat4_translate(1.0, 0.0, 0.0));
+    int64_t d_hand = rt_skeleton3d_add_bone(
+        dst, rt_const_cstr("LeftHand"), (int64_t)d_arm, rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_compute_inverse_bind(dst);
+
+    /* Two keys holding exactly the source bind pose. */
+    void *anim = rt_animation3d_new(rt_const_cstr("hold"), 2.0);
+    void *rot = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *scl = rt_vec3_new(1.0, 1.0, 1.0);
+    rt_animation3d_add_keyframe(anim, s_arm, 0.0, rt_vec3_new(0.7071, -0.7071, 0.0), rot, scl);
+    rt_animation3d_add_keyframe(anim, s_arm, 2.0, rt_vec3_new(0.7071, -0.7071, 0.0), rot, scl);
+
+    void *retargeted = rt_animation3d_retarget(anim, src, dst);
+    EXPECT_TRUE(retargeted != nullptr, "Conform retarget returns an animation");
+
+    void *player = rt_anim_player3d_new(dst);
+    rt_anim_player3d_play(player, retargeted);
+    rt_anim_player3d_update(player, 1.0);
+
+    typedef struct {
+        double m[16];
+    } mat4_view;
+    mat4_view *hand = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, d_hand);
+    /* The unmapped root keeps the destination's own shoulder offset (1,0,0)
+     * — joint offsets are rig proportions — while the mapped arm BONE
+     * conforms onto the source's 45-degree-down bind direction: the hand
+     * lands at shoulder + R(-45deg)*(1,0,0) = (1.707, -0.707, 0). A plain
+     * (un-conformed) transfer would leave it T-posed at (2, 0, 0). */
+    EXPECT_NEAR(hand->m[3], 1.707, 0.05, "Conformed arm keeps the source bind direction (X)");
+    EXPECT_NEAR(hand->m[7], -0.707, 0.05, "Conformed arm keeps the source bind direction (Y)");
+}
+
+/// @brief Across different rigs an unmappable bone must be dropped, never
+///        paired by raw index (an arm channel driving a toe). The fallback
+///        only applies when both skeletons share the same layout size.
+static void test_animation_retarget_no_cross_rig_index_fallback() {
+    void *src = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(src, rt_const_cstr("root"), -1, rt_mat4_identity());
+    int64_t s_gizmo =
+        rt_skeleton3d_add_bone(src, rt_const_cstr("gizmo"), 0, rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_compute_inverse_bind(src);
+
+    void *dst = rt_skeleton3d_new();
+    rt_skeleton3d_add_bone(dst, rt_const_cstr("root"), -1, rt_mat4_identity());
+    int64_t d_arm =
+        rt_skeleton3d_add_bone(dst, rt_const_cstr("LeftArm"), 0, rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_add_bone(dst, rt_const_cstr("LeftForeArm"), (int64_t)d_arm,
+                           rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_compute_inverse_bind(dst);
+
+    void *anim = rt_animation3d_new(rt_const_cstr("slide"), 2.0);
+    void *rot = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *scl = rt_vec3_new(1.0, 1.0, 1.0);
+    rt_animation3d_add_keyframe(anim, s_gizmo, 0.0, rt_vec3_new(1.0, 0.0, 0.0), rot, scl);
+    rt_animation3d_add_keyframe(anim, s_gizmo, 2.0, rt_vec3_new(1.0, 0.0, 1.0), rot, scl);
+
+    void *retargeted = rt_animation3d_retarget(anim, src, dst);
+    /* Pre-fix, the raw-index fallback paired "gizmo" (src bone 1) with
+     * LeftArm (dst bone 1) and produced a bogus animated clip. Now the
+     * channel is unmappable, nothing lands on the destination, and the
+     * retarget rejects the clip outright (callers keep their fallback). */
+    EXPECT_TRUE(retargeted == nullptr,
+                "Unmappable cross-rig clip is rejected, not index-paired");
+    (void)d_arm;
+}
+
 /// @brief A source key at its bind pose must land exactly on the destination bind pose.
 /// @details Rest-delta compensation contract: rigs bind differently (a Biped figure stance vs a
 ///          T-pose auto-rig), and uncompensated verbatim rotation copy bakes that constant
@@ -1105,6 +1234,45 @@ static void test_animation_strip_root_motion_pins_travel() {
     EXPECT_NEAR(hips->m[7], 0.5, 1e-4, "Vertical motion is preserved when requested");
     EXPECT_TRUE(rt_animation3d_strip_root_motion(anim, root + 5, 1) == 0,
                 "A bone without a channel reports zero");
+}
+
+/// @brief ExtractRange copies the span verbatim, rebased to the earliest key.
+static void test_animation_extract_range_trims_and_rebases() {
+    void *skel = rt_skeleton3d_new();
+    int64_t root = rt_skeleton3d_add_bone(skel, rt_const_cstr("hips"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    void *anim = rt_animation3d_new(rt_const_cstr("long"), 6.0);
+    void *ident = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *one = rt_vec3_new(1.0, 1.0, 1.0);
+    for (int k = 0; k <= 6; ++k)
+        rt_animation3d_add_keyframe(anim, root, (double)k,
+                                    rt_vec3_new((double)k * 10.0, 0.0, 0.0), ident, one);
+
+    void *core = rt_animation3d_extract_range(anim, 2.0, 4.0);
+    EXPECT_TRUE(core != NULL, "ExtractRange returns a clip for a valid span");
+    EXPECT_NEAR(rt_animation3d_get_duration(core), 2.0, 1e-6,
+                "core duration equals the span");
+
+    typedef struct {
+        double m[16];
+    } mat4_view;
+    void *player = rt_anim_player3d_new(skel);
+    rt_anim_player3d_play(player, core);
+    rt_anim_player3d_update(player, 0.0);
+    mat4_view *hips0 = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, root);
+    EXPECT_NEAR(hips0->m[3], 20.0, 1e-4, "core starts at the span's first key");
+    rt_anim_player3d_update(player, 2.0);
+    mat4_view *hips2 = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, root);
+    EXPECT_NEAR(hips2->m[3], 40.0, 1e-4, "core ends at the span's last key");
+
+    /* Source untouched; degenerate/empty spans return NULL. */
+    EXPECT_NEAR(rt_animation3d_get_duration(anim), 6.0, 1e-6,
+                "source clip duration is unchanged");
+    EXPECT_TRUE(rt_animation3d_extract_range(anim, 4.0, 4.0) == NULL,
+                "an empty span yields NULL");
+    EXPECT_TRUE(rt_animation3d_extract_range(NULL, 0.0, 1.0) == NULL,
+                "invalid input yields NULL");
 }
 
 static void test_animation_retarget_matches_bone_names() {
@@ -1261,8 +1429,12 @@ int main() {
     test_animation_retarget_compensates_rest_pose_delta();
     test_animation_retarget_composes_chain_onto_one_bone();
     test_animation_strip_root_motion_pins_travel();
+    test_animation_extract_range_trims_and_rebases();
     test_animation_retarget_scales_by_proportion();
     test_animation_retarget_maps_humanoid_roles();
+    test_animation_retarget_biped_side_letters();
+    test_animation_retarget_no_cross_rig_index_fallback();
+    test_animation_retarget_conforms_bind_posture();
     test_non_topological_parent_order_evaluates_hierarchy();
     test_cyclic_parent_indices_degrade_to_finite_pose();
     test_crossfade_preserves_structure();

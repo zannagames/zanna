@@ -1200,6 +1200,9 @@ typedef struct rt_game3d_world {
     double hitstop_remaining; /* one-shot freeze, decays by REAL (unscaled) dt */
     double unscaled_dt;       /* real clamped frame step (UI/menus) */
     double unscaled_elapsed;  /* real elapsed seconds (UI/menus) */
+    int64_t tick_frame_stamp; /* frame index stamped by Update(); StepSimulation
+                                 detects the documented combined loop and skips
+                                 the per-frame accounting Update already did */
     int64_t worker_count;
     void *job_pool;
     int8_t jobs_enabled;

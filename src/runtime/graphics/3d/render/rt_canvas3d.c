@@ -2049,6 +2049,8 @@ static void *canvas3d_new_impl(rt_string title,
         vgfx_set_gpu_present(c->gfx_win, c->backend != &vgfx3d_software_backend);
     if (c->backend && c->backend->set_vsync && c->backend_ctx)
         c->backend->set_vsync(c->backend_ctx, c->vsync_enabled);
+    if (c->backend && c->backend->set_capture_after_present && c->backend_ctx)
+        c->backend->set_capture_after_present(c->backend_ctx, c->capture_after_present);
     canvas3d_apply_window_pacing(c);
 
     /* Plan 07: clustered forward+ defaults on for GPU backends (identified by the
@@ -3616,6 +3618,32 @@ void rt_canvas3d_set_vsync(void *obj, int8_t enabled) {
 int8_t rt_canvas3d_get_vsync(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     return c ? c->vsync_enabled : 1;
+}
+
+/// @brief Request capture of every presented frame for post-present readback.
+/// @details On GPU backends whose on-screen present path hands the swapchain image to the
+///   display (contents undefined afterwards — the Metal direct-present route), enabling this
+///   blits the frame into a readable texture BEFORE presentation, so CaptureFinalFrame /
+///   screenshot readback taken after Present() returns the shown image at the cost of one
+///   full-screen copy per frame. Backends whose readback is already present-safe (software,
+///   offscreen/composited routes) retain the request but need no copy. Default off.
+/// @param obj Canvas3D handle or approved stack fixture; invalid handles are ignored.
+/// @param enabled Non-zero to capture every presented frame.
+void rt_canvas3d_set_capture_after_present(void *obj, int8_t enabled) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    if (!c)
+        return;
+    c->capture_after_present = enabled ? 1 : 0;
+    if (c->backend && c->backend->set_capture_after_present && c->backend_ctx)
+        c->backend->set_capture_after_present(c->backend_ctx, c->capture_after_present);
+}
+
+/// @brief Requested capture-after-present state (defaults to off).
+/// @param obj Canvas3D handle or approved stack fixture.
+/// @return Stored requested state, or 0 for invalid input.
+int8_t rt_canvas3d_get_capture_after_present(void *obj) {
+    rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
+    return c ? c->capture_after_present : 0;
 }
 
 /// @brief Attempt to set the scene render scale without trapping.

@@ -1,0 +1,90 @@
+module test_canvas3d_capture_present_probe;
+
+bind Zanna.Game3D as Game3D;
+bind Zanna.Graphics as Graphics;
+bind Zanna.Graphics3D as G3D;
+bind Zanna.Math;
+bind Zanna.Terminal as Terminal;
+
+// E3 capture hardening smoke (requires a display): on the platform's
+// windowed GPU backend, the manual Update/Step/Draw/Present loop with
+// SetCaptureAfterPresent(true) must yield a NON-BLANK CaptureFinalFrame
+// taken after Present() — the Metal direct-present route hands the
+// swapchain drawable to the display (contents undefined afterwards), so
+// the flag makes it blit the frame into a readable texture first.
+
+func fail(message: String) {
+    Terminal.Say("FAIL: " + message);
+}
+
+func start() {
+    var world = Game3D.World3D.WithCamera("capture present probe", 320, 200,
+                                          45.0, 0.1, 200.0);
+    if world == null {
+        fail("WithCamera returned null");
+        return;
+    }
+    G3D.Canvas3D.SetCaptureAfterPresent(world.Canvas, true);
+    if G3D.Canvas3D.get_CaptureAfterPresent(world.Canvas) == false {
+        fail("flag did not round-trip");
+        return;
+    }
+
+    // A bright box in front of the camera guarantees at least two distinct
+    // colors in a correct capture (clear color + lit faces).
+    var ent = Game3D.Prefab.Box(2.0, G3D.Material3D.PBR(0.95, 0.35, 0.1));
+    ent.SetPosition(0.0, 0.0, 0.0);
+    world.Spawn(ent);
+    Game3D.Lighting.Outdoor(world, new Vec3(0.0 - 0.4, 0.0 - 0.8, 0.0 - 0.3));
+    world.Camera.LookAt(new Vec3(0.0, 1.5, 6.0), new Vec3(0.0, 0.0, 0.0),
+                        new Vec3(0.0, 1.0, 0.0));
+
+    var i = 0;
+    while i < 6 {
+        world.Update();
+        world.StepSimulation(world.DeltaTime);
+        world.BeginFrame();
+        world.DrawScene();
+        world.EndScene();
+        world.Present();
+        i = i + 1;
+    }
+
+    var shot = world.CaptureFinalFrame();
+    if shot == null {
+        fail("CaptureFinalFrame returned null after Present");
+        return;
+    }
+    var w = Graphics.Pixels.get_Width(shot);
+    var h = Graphics.Pixels.get_Height(shot);
+    if w < 16 || h < 16 {
+        fail("capture too small: " + toString(w) + "x" + toString(h));
+        return;
+    }
+    // Sample a coarse grid; a blank/undefined capture is a single flat
+    // color (or zeros), a real frame has clear-vs-box contrast.
+    var minG = 256;
+    var maxG = 0 - 1;
+    var y = 0;
+    var x = 0;
+    var p = 0;
+    var g = 0;
+    while y < h {
+        x = 0;
+        while x < w {
+            p = Graphics.Pixels.GetRgba(shot, x, y);
+            g = (p / 65536) % 256;
+            if g < minG { minG = g; }
+            if g > maxG { maxG = g; }
+            x = x + 16;
+        }
+        y = y + 16;
+    }
+    if maxG - minG < 8 {
+        fail("capture is flat (spread " + toString(maxG - minG) +
+             ") — post-present readback lost the frame");
+        return;
+    }
+    Terminal.Say("RESULT: ok (post-present capture " + toString(w) + "x" +
+                 toString(h) + ", green spread " + toString(maxG - minG) + ")");
+}

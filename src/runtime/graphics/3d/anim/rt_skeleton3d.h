@@ -250,6 +250,7 @@ void *rt_animation3d_retarget(void *anim, void *src_skeleton, void *dst_skeleton
 /// @param keep_vertical Nonzero preserves vertical motion (crouches, slides).
 /// @return One when a matching channel was modified, otherwise zero.
 int64_t rt_animation3d_strip_root_motion(void *anim, int64_t bone_index, int8_t keep_vertical);
+void *rt_animation3d_extract_range(void *anim, double start_sec, double end_sec);
 
 /// @}
 

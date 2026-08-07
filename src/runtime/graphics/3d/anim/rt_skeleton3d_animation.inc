@@ -701,43 +701,56 @@ static int animation3d_humanoid_role(const char *raw) {
     s = b;
     if (strncmp(s, "mixamorig", 9) == 0)
         s += 9;
+    const char *hit = NULL;
     if (strstr(s, "left"))
         side = 1;
     else if (strstr(s, "right"))
         side = 2;
-    if (strstr(s, "hip") || strstr(s, "pelvis"))
+    if ((hit = strstr(s, "hip")) || (hit = strstr(s, "pelvis")))
         base = 1;
-    else if (strstr(s, "upperchest"))
+    else if ((hit = strstr(s, "upperchest")))
         base = 4;
-    else if (strstr(s, "chest"))
+    else if ((hit = strstr(s, "chest")))
         base = 3;
-    else if (strstr(s, "spine"))
+    else if ((hit = strstr(s, "spine")))
         base = 2;
-    else if (strstr(s, "neck"))
+    else if ((hit = strstr(s, "neck")))
         base = 5;
-    else if (strstr(s, "head"))
+    else if ((hit = strstr(s, "head")))
         base = 6;
-    else if (strstr(s, "shoulder") || strstr(s, "clavicle"))
+    else if ((hit = strstr(s, "shoulder")) || (hit = strstr(s, "clavicle")))
         base = 7;
-    else if (strstr(s, "forearm") || strstr(s, "lowerarm"))
+    else if ((hit = strstr(s, "forearm")) || (hit = strstr(s, "lowerarm")))
         base = 9;
-    else if (strstr(s, "upperarm") || strstr(s, "uparm") || strstr(s, "arm"))
+    else if ((hit = strstr(s, "upperarm")) || (hit = strstr(s, "uparm")) ||
+             (hit = strstr(s, "arm")))
         base = 8;
-    else if (strstr(s, "hand"))
+    else if ((hit = strstr(s, "hand")))
         base = 10;
-    else if (strstr(s, "upperleg") || strstr(s, "upleg") || strstr(s, "thigh"))
+    else if ((hit = strstr(s, "upperleg")) || (hit = strstr(s, "upleg")) ||
+             (hit = strstr(s, "thigh")))
         base = 11;
-    else if (strstr(s, "lowerleg") || strstr(s, "calf") || strstr(s, "shin") || strstr(s, "leg"))
+    else if ((hit = strstr(s, "lowerleg")) || (hit = strstr(s, "calf")) ||
+             (hit = strstr(s, "shin")) || (hit = strstr(s, "leg")))
         base = 12;
-    else if (strstr(s, "foot") || strstr(s, "ankle"))
+    else if ((hit = strstr(s, "foot")) || (hit = strstr(s, "ankle")))
         base = 13;
-    else if (strstr(s, "toe") || strstr(s, "ball"))
+    else if ((hit = strstr(s, "toe")) || (hit = strstr(s, "ball")))
         base = 14;
     if (base == 0)
         return 0;
-    if (side == 0 && base >= 7) { /* limb without an explicit side word: trailing l/r */
+    if (side == 0 && base >= 7) {
+        /* Limb without an explicit side word. Biped-style names ("Bip01 L
+         * UpperArm") fuse the side letter onto the keyword when separators
+         * are stripped ("...lupperarm"), so first check the character
+         * immediately before the matched keyword, then a trailing l/r. */
+        char prev = (hit && hit > s) ? hit[-1] : '\0';
         char last = n > 0 ? b[n - 1] : '\0';
-        if (last == 'l')
+        if (prev == 'l')
+            side = 1;
+        else if (prev == 'r')
+            side = 2;
+        else if (last == 'l')
             side = 1;
         else if (last == 'r')
             side = 2;
@@ -832,7 +845,9 @@ static int32_t animation3d_retarget_find_bone(const rt_skeleton3d *src,
                                      : "")) == role)
                 return i;
     }
-    return src_bone < dst_count ? src_bone : -1;
+    /* Raw-index fallback only makes sense for same-layout skeletons; across
+     * different rigs it pairs unrelated bones (an arm driving a toe). */
+    return (src_count == dst_count && src_bone < dst_count) ? src_bone : -1;
 }
 
 /// @brief Bone length = magnitude of the bind-pose local translation (offset
@@ -1013,54 +1028,70 @@ static int animation3d_time_cmp(const void *a, const void *b) {
 
 static int animation3d_vec3_normalize(float v[3]);
 
-/// @brief Rotation aligning two reference directions onto two target directions.
-/// @details Gram-Schmidt both pairs into right-handed bases and compose R = U * R_ref^T —
-///          a full 3-DOF solve for bones with two mapped children (hips: spine + a thigh),
-///          where a single aim axis would leave the twist unconstrained.
-/// @return Nonzero on success; zero when either pair is degenerate (parallel/zero).
-static int animation3d_quat_from_two_dirs(const float rest1[3],
-                                          const float rest2[3],
-                                          const float dir1[3],
-                                          const float dir2[3],
-                                          float out[4]) {
-    float r1[3];
-    float r2[3];
-    float u1[3];
-    float u2[3];
-    memcpy(r1, rest1, sizeof(r1));
-    memcpy(r2, rest2, sizeof(r2));
-    memcpy(u1, dir1, sizeof(u1));
-    memcpy(u2, dir2, sizeof(u2));
-    if (!animation3d_vec3_normalize(r1) || !animation3d_vec3_normalize(u1))
+/// @brief Least-squares rotation (Wahba's problem, Davenport q-method)
+///   mapping each reference direction @p rdirs[k] onto @p udirs[k].
+/// @details Builds the Davenport K matrix from B = sum(u r^T) and extracts
+///   its dominant eigenvector by shifted power iteration. With two or more
+///   direction pairs whose mutual angles disagree between rigs (a Biped's
+///   near-parallel bind thighs vs an auto-rig's splayed ones), the exact
+///   two-dirs solve dumps its whole residual into one axis; the
+///   least-squares answer spreads it evenly, which is what a bind-posture
+///   conform needs. Directions must be pre-normalized.
+/// @return Nonzero on success; zero for fewer than two pairs.
+static int animation3d_quat_wahba(const float (*rdirs)[3],
+                                  const float (*udirs)[3],
+                                  int count,
+                                  float out[4]) {
+    float b[9] = {0};
+    float k[16];
+    float q[4] = {0.0f, 0.0f, 0.0f, 1.0f};
+    float shift;
+    if (count < 2)
         return 0;
+    for (int n = 0; n < count; ++n)
+        for (int i = 0; i < 3; ++i)
+            for (int j = 0; j < 3; ++j)
+                b[i * 3 + j] += udirs[n][i] * rdirs[n][j];
     {
-        float d = r2[0] * r1[0] + r2[1] * r1[1] + r2[2] * r1[2];
-        r2[0] -= d * r1[0];
-        r2[1] -= d * r1[1];
-        r2[2] -= d * r1[2];
-        d = u2[0] * u1[0] + u2[1] * u1[1] + u2[2] * u1[2];
-        u2[0] -= d * u1[0];
-        u2[1] -= d * u1[1];
-        u2[2] -= d * u1[2];
+        float tr = b[0] + b[4] + b[8];
+        /* K rows/cols ordered (x, y, z, w). */
+        k[0] = b[0] + b[0] - tr;
+        k[1] = b[1] + b[3];
+        k[2] = b[2] + b[6];
+        k[3] = b[7] - b[5];
+        k[4] = k[1];
+        k[5] = b[4] + b[4] - tr;
+        k[6] = b[5] + b[7];
+        k[7] = b[2] - b[6];
+        k[8] = k[2];
+        k[9] = k[6];
+        k[10] = b[8] + b[8] - tr;
+        k[11] = b[3] - b[1];
+        k[12] = k[3];
+        k[13] = k[7];
+        k[14] = k[11];
+        k[15] = tr;
+        shift = 2.0f * (float)count + 1.0f;
+        k[0] += shift;
+        k[5] += shift;
+        k[10] += shift;
+        k[15] += shift;
     }
-    if (!animation3d_vec3_normalize(r2) || !animation3d_vec3_normalize(u2))
-        return 0;
-    {
-        float r3[3];
-        float u3[3];
-        float m[9];
-        r3[0] = r1[1] * r2[2] - r1[2] * r2[1];
-        r3[1] = r1[2] * r2[0] - r1[0] * r2[2];
-        r3[2] = r1[0] * r2[1] - r1[1] * r2[0];
-        u3[0] = u1[1] * u2[2] - u1[2] * u2[1];
-        u3[1] = u1[2] * u2[0] - u1[0] * u2[2];
-        u3[2] = u1[0] * u2[1] - u1[1] * u2[0];
-        for (int i = 0; i < 3; i++)
-            for (int j = 0; j < 3; j++)
-                m[i * 3 + j] = u1[i] * r1[j] + u2[i] * r2[j] + u3[i] * r3[j];
-        quat_from_matrix3_float(m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], out);
-        sanitize_keyframe_quat(out);
+    for (int it = 0; it < 48; ++it) {
+        float n0 = k[0] * q[0] + k[1] * q[1] + k[2] * q[2] + k[3] * q[3];
+        float n1 = k[4] * q[0] + k[5] * q[1] + k[6] * q[2] + k[7] * q[3];
+        float n2 = k[8] * q[0] + k[9] * q[1] + k[10] * q[2] + k[11] * q[3];
+        float n3 = k[12] * q[0] + k[13] * q[1] + k[14] * q[2] + k[15] * q[3];
+        float len = sqrtf(n0 * n0 + n1 * n1 + n2 * n2 + n3 * n3);
+        if (!(len > 1e-12f) || !isfinite(len))
+            return 0;
+        q[0] = n0 / len;
+        q[1] = n1 / len;
+        q[2] = n2 / len;
+        q[3] = n3 / len;
     }
+    memcpy(out, q, sizeof(q));
+    sanitize_keyframe_quat(out);
     return 1;
 }
 
@@ -1160,10 +1191,9 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
         int32_t *dst_anchor = NULL; /* bottom-of-chain src bone (position anchor) */
         int32_t *dst_chain_len = NULL;
         int32_t (*dst_chain)[8] = NULL;
-        int32_t *child_of = NULL;  /* first mapped dst child, or -1 */
-        int32_t *child2_of = NULL; /* second mapped dst child for triad solves, or -1 */
         float (*a_rot)[4] = NULL;
-        float (*f_rot)[4] = NULL;      /* inv(srcBindGlobalRot(anchor)) * dstBindGlobalRot */
+        float (*g_align)[4] = NULL; /* constant world swing conforming dst bind posture to src */
+        float (*f_rot)[4] = NULL;   /* inv(srcBindGlobalRot(anchor)) * g_align * dstBindGlobalRot */
         float (*bind_c_pos)[3] = NULL; /* composed source bind translation */
         float *pos_scale = NULL;
         double *times = NULL;
@@ -1183,9 +1213,8 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
             dst_anchor = (int32_t *)malloc((size_t)n_dst * sizeof(*dst_anchor));
             dst_chain_len = (int32_t *)calloc((size_t)n_dst, sizeof(*dst_chain_len));
             dst_chain = (int32_t (*)[8])calloc((size_t)n_dst, sizeof(*dst_chain));
-            child_of = (int32_t *)malloc((size_t)n_dst * sizeof(*child_of));
-            child2_of = (int32_t *)malloc((size_t)n_dst * sizeof(*child2_of));
             a_rot = (float (*)[4])calloc((size_t)n_dst, sizeof(*a_rot));
+            g_align = (float (*)[4])calloc((size_t)n_dst, sizeof(*g_align));
             f_rot = (float (*)[4])calloc((size_t)n_dst, sizeof(*f_rot));
             bind_c_pos = (float (*)[3])calloc((size_t)n_dst, sizeof(*bind_c_pos));
             pos_scale = (float *)malloc((size_t)n_dst * sizeof(*pos_scale));
@@ -1198,16 +1227,14 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
             src_order = (int32_t *)malloc((size_t)n_src * sizeof(*src_order));
             dst_order = (int32_t *)malloc((size_t)n_dst * sizeof(*dst_order));
             ok = src_order && dst_order && src_channel_of && dst_src && dst_anchor &&
-                 dst_chain_len && dst_chain && child_of && child2_of && a_rot && f_rot &&
-                 bind_c_pos && pos_scale && sg_pos && sg_rot && sg_scl && dg_pos && dg_rot &&
-                 keys_of;
+                 dst_chain_len && dst_chain && a_rot && g_align &&
+                 f_rot && bind_c_pos && pos_scale && sg_pos && sg_rot && sg_scl && dg_pos &&
+                 dg_rot && keys_of;
         }
         if (ok) {
             for (int32_t d = 0; d < n_dst; ++d) {
                 dst_src[d] = -1;
                 dst_anchor[d] = -1;
-                child_of[d] = -1;
-                child2_of[d] = -1;
             }
             for (int32_t i = 0; i < src_channel_count; ++i) {
                 int32_t b = src_anim->channels[i].bone_index;
@@ -1251,46 +1278,6 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
                     }
                 }
                 dst_anchor[d] = dst_chain[d][dst_chain_len[d] - 1];
-            }
-            /* Aim-pair selection: among each bone's mapped children pick the pair whose
-             * bind directions are least parallel (max |cross|) — hips must pair a thigh
-             * with the spine, not the two near-parallel thighs; the chest a clavicle
-             * with the neck, not the two mirrored clavicles. */
-            for (int32_t d = 0; d < n_dst; ++d) {
-                int32_t kids[6];
-                int32_t kid_count = 0;
-                for (int32_t c = 0; c < n_dst && kid_count < 6; ++c)
-                    if (dst_src[c] >= 0 && skeleton3d_valid_parent_index(dst_skel, c, n_dst) == d)
-                        kids[kid_count++] = c;
-                if (kid_count == 1) {
-                    child_of[d] = kids[0];
-                } else if (kid_count >= 2) {
-                    float best = -1.0f;
-                    for (int32_t i = 0; i < kid_count; ++i)
-                        for (int32_t j = i + 1; j < kid_count; ++j) {
-                            float r1[4];
-                            float p1[3];
-                            float r2[4];
-                            float p2[3];
-                            float cx[3];
-                            float score;
-                            animation3d_bone_bind_local_trs(dst_skel, kids[i], r1, p1);
-                            animation3d_bone_bind_local_trs(dst_skel, kids[j], r2, p2);
-                            if (!animation3d_vec3_normalize(p1) || !animation3d_vec3_normalize(p2))
-                                continue;
-                            cx[0] = p1[1] * p2[2] - p1[2] * p2[1];
-                            cx[1] = p1[2] * p2[0] - p1[0] * p2[2];
-                            cx[2] = p1[0] * p2[1] - p1[1] * p2[0];
-                            score = cx[0] * cx[0] + cx[1] * cx[1] + cx[2] * cx[2];
-                            if (score > best) {
-                                best = score;
-                                child_of[d] = kids[i];
-                                child2_of[d] = kids[j];
-                            }
-                        }
-                    if (child_of[d] < 0)
-                        child_of[d] = kids[0];
-                }
             }
             /* Imported skeletons need not store bones parent-first (glTF keeps joint-array
              * order); build explicit parent-first traversal orders for both hierarchies. */
@@ -1339,6 +1326,122 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
                 }
                 free(seen);
             }
+            /* Bind-posture conform: one constant WORLD swing per destination
+             * bone aligning its bind bone direction(s) onto the source's
+             * (solved from bind globals, two-child triad when available,
+             * single shortest-arc otherwise, inherited from the parent for
+             * leaves). Folded into f_rot below so keys transfer as pure
+             * world deltas: at bind the destination reproduces the source
+             * posture exactly and there is NO per-frame aim solve to
+             * destabilize extreme poses (the folded-torso / garbled-arm
+             * failure of cross-convention rigs). */
+            {
+                float(*dg_scl)[3] = (float(*)[3])malloc((size_t)n_dst * sizeof(*dg_scl));
+                int32_t *conf_src = (int32_t *)malloc((size_t)n_dst * sizeof(*conf_src));
+                if (!dg_scl || !conf_src)
+                    ok = 0;
+                /* Conform correspondence per destination bone: the claimed
+                 * chain anchor when a channel landed there, otherwise any
+                 * name/role-mapped source bone — a child needs no animation
+                 * of its own to define the bind bone direction. */
+                for (int32_t c = 0; ok && c < n_dst; ++c)
+                    conf_src[c] = dst_anchor[c];
+                for (int32_t sb = 0; ok && sb < n_src; ++sb) {
+                    int32_t d =
+                        animation3d_retarget_find_bone(src_skel, dst_skel, src_roles, dst_roles, sb);
+                    if (d >= 0 && d < n_dst && conf_src[d] < 0)
+                        conf_src[d] = sb;
+                }
+                /* Source bind globals into the sg_* scratch (free before the
+                 * key loop reuses it), destination bind globals into dg_*. */
+                for (int32_t so = 0; ok && so < n_src; ++so) {
+                    int32_t sb = src_order[so];
+                    float br[4];
+                    float bp[3];
+                    float bs[3];
+                    animation3d_bone_bind_local_trs_scaled(src_skel, sb, br, bp, bs);
+                    int32_t sp = skeleton3d_valid_parent_index(src_skel, sb, n_src);
+                    if (sp < 0) {
+                        memcpy(sg_pos[sb], bp, sizeof(bp));
+                        memcpy(sg_rot[sb], br, sizeof(br));
+                        memcpy(sg_scl[sb], bs, sizeof(bs));
+                    } else {
+                        memcpy(sg_pos[sb], sg_pos[sp], sizeof(bp));
+                        memcpy(sg_rot[sb], sg_rot[sp], sizeof(br));
+                        memcpy(sg_scl[sb], sg_scl[sp], sizeof(bs));
+                        animation3d_trs_compose(sg_pos[sb], sg_rot[sb], sg_scl[sb], bp, br, bs);
+                    }
+                }
+                for (int32_t od = 0; ok && od < n_dst; ++od) {
+                    int32_t db = dst_order[od];
+                    float br[4];
+                    float bp[3];
+                    float bs[3];
+                    animation3d_bone_bind_local_trs_scaled(dst_skel, db, br, bp, bs);
+                    int32_t dp = skeleton3d_valid_parent_index(dst_skel, db, n_dst);
+                    if (dp < 0) {
+                        memcpy(dg_pos[db], bp, sizeof(bp));
+                        memcpy(dg_rot[db], br, sizeof(br));
+                        memcpy(dg_scl[db], bs, sizeof(bs));
+                    } else {
+                        memcpy(dg_pos[db], dg_pos[dp], sizeof(bp));
+                        memcpy(dg_rot[db], dg_rot[dp], sizeof(br));
+                        memcpy(dg_scl[db], dg_scl[dp], sizeof(bs));
+                        animation3d_trs_compose(dg_pos[db], dg_rot[db], dg_scl[db], bp, br, bs);
+                    }
+                }
+                for (int32_t od = 0; ok && od < n_dst; ++od) {
+                    int32_t d = dst_order[od];
+                    int32_t pd = skeleton3d_valid_parent_index(dst_skel, d, n_dst);
+                    int solved = 0;
+                    g_align[d][0] = 0.0f;
+                    g_align[d][1] = 0.0f;
+                    g_align[d][2] = 0.0f;
+                    g_align[d][3] = 1.0f;
+                    if (pd >= 0)
+                        memcpy(g_align[d], g_align[pd], sizeof(g_align[d]));
+                    if (dst_src[d] < 0 || dst_anchor[d] < 0)
+                        continue;
+                    /* All mapped children contribute; a least-squares solve
+                     * over every bone direction spreads cross-rig
+                     * inter-child angle disagreement evenly instead of
+                     * dumping it into one axis (the picked-pair failure:
+                     * hips conformed off the two thighs pitched the whole
+                     * torso). */
+                    float ddirs[6][3];
+                    float sdirs[6][3];
+                    int pairs = 0;
+                    for (int32_t c = 0; c < n_dst && pairs < 6; ++c) {
+                        if (conf_src[c] < 0 ||
+                            skeleton3d_valid_parent_index(dst_skel, c, n_dst) != d)
+                            continue;
+                        float dd[3];
+                        float sd[3];
+                        dd[0] = dg_pos[c][0] - dg_pos[d][0];
+                        dd[1] = dg_pos[c][1] - dg_pos[d][1];
+                        dd[2] = dg_pos[c][2] - dg_pos[d][2];
+                        sd[0] = sg_pos[conf_src[c]][0] - sg_pos[dst_anchor[d]][0];
+                        sd[1] = sg_pos[conf_src[c]][1] - sg_pos[dst_anchor[d]][1];
+                        sd[2] = sg_pos[conf_src[c]][2] - sg_pos[dst_anchor[d]][2];
+                        if (!animation3d_vec3_normalize(dd) || !animation3d_vec3_normalize(sd))
+                            continue;
+                        memcpy(ddirs[pairs], dd, sizeof(dd));
+                        memcpy(sdirs[pairs], sd, sizeof(sd));
+                        ++pairs;
+                    }
+                    if (pairs >= 2)
+                        solved = animation3d_quat_wahba(ddirs, sdirs, pairs, g_align[d]);
+                    if (!solved && pairs == 1) {
+                        animation3d_quat_shortest_arc(ddirs[0], sdirs[0], g_align[d]);
+                        sanitize_keyframe_quat(g_align[d]);
+                        solved = 1;
+                    }
+                    if (!solved && pd >= 0)
+                        memcpy(g_align[d], g_align[pd], sizeof(g_align[d]));
+                }
+                free(dg_scl);
+                free(conf_src);
+            }
             /* Per-bone constants. */
             for (int32_t d = 0; d < n_dst; ++d) {
                 if (dst_src[d] < 0)
@@ -1379,7 +1482,8 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
                     animation3d_bind_global_rotation(src_skel, dst_anchor[d], src_bg);
                     animation3d_bind_global_rotation(dst_skel, d, dst_bg);
                     animation3d_quat_conjugate(src_bg, inv_src_bg);
-                    animation3d_quat_mul(inv_src_bg, dst_bg, f_rot[d]);
+                    animation3d_quat_mul(inv_src_bg, g_align[d], f_rot[d]);
+                    animation3d_quat_mul(f_rot[d], dst_bg, f_rot[d]);
                     sanitize_keyframe_quat(f_rot[d]);
                 }
                 {
@@ -1547,87 +1651,16 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
                             l_pos[1] = bind_pos[1] + pos_scale[d] * delta[1];
                             l_pos[2] = bind_pos[2] + pos_scale[d] * delta[2];
                         }
-                        int aimed = 0;
-                        int32_t dc = child_of[d];
-                        if (dc >= 0 && dst_anchor[dc] >= 0 && dst_anchor[d] >= 0) {
-                            float src_dir[3];
-                            float rest_world[4];
-                            float child_bind_rot[4];
-                            float child_bind_pos[3];
-                            float rest_dir[3];
-                            src_dir[0] = sg_pos[dst_anchor[dc]][0] - sg_pos[dst_anchor[d]][0];
-                            src_dir[1] = sg_pos[dst_anchor[dc]][1] - sg_pos[dst_anchor[d]][1];
-                            src_dir[2] = sg_pos[dst_anchor[dc]][2] - sg_pos[dst_anchor[d]][2];
-                            animation3d_quat_mul(pg_rot, bind_rot, rest_world);
-                            animation3d_bone_bind_local_trs(
-                                dst_skel, dc, child_bind_rot, child_bind_pos);
-                            animation3d_quat_rotate_vec3(rest_world, child_bind_pos, rest_dir);
-                            int32_t dc2 = child2_of[d];
-                            if (dc2 >= 0 && dst_anchor[dc2] >= 0) {
-                                float src_dir2[3];
-                                float rest_dir2[3];
-                                float arc[4];
-                                src_dir2[0] = sg_pos[dst_anchor[dc2]][0] - sg_pos[dst_anchor[d]][0];
-                                src_dir2[1] = sg_pos[dst_anchor[dc2]][1] - sg_pos[dst_anchor[d]][1];
-                                src_dir2[2] = sg_pos[dst_anchor[dc2]][2] - sg_pos[dst_anchor[d]][2];
-                                animation3d_bone_bind_local_trs(
-                                    dst_skel, dc2, child_bind_rot, child_bind_pos);
-                                animation3d_quat_rotate_vec3(rest_world, child_bind_pos, rest_dir2);
-                                if (animation3d_quat_from_two_dirs(
-                                        rest_dir, rest_dir2, src_dir, src_dir2, arc)) {
-                                    float world_rot[4];
-                                    float inv_pg[4];
-                                    animation3d_quat_mul(arc, rest_world, world_rot);
-                                    animation3d_quat_conjugate(pg_rot, inv_pg);
-                                    animation3d_quat_mul(inv_pg, world_rot, l_rot);
-                                    sanitize_keyframe_quat(l_rot);
-                                    aimed = 1;
-                                }
-                            }
-                            if (!aimed && animation3d_vec3_normalize(src_dir)) {
-                                /* Single aim child: start from the absolute
-                                 * bind-frame transfer so the source's roll about
-                                 * the bone axis (forearm/neck twist) survives,
-                                 * then apply only the minimal swing that re-aims
-                                 * the bone direction. Bind-compatible rigs make
-                                 * the swing an identity, i.e. the exact source
-                                 * pose including twist. */
-                                float world_abs[4];
-                                float abs_dir[3];
-                                animation3d_quat_mul(
-                                    sg_rot[dst_anchor[d]], f_rot[d], world_abs);
-                                animation3d_bone_bind_local_trs(
-                                    dst_skel, dc, child_bind_rot, child_bind_pos);
-                                animation3d_quat_rotate_vec3(
-                                    world_abs, child_bind_pos, abs_dir);
-                                if (animation3d_vec3_normalize(abs_dir)) {
-                                    float arc[4];
-                                    float world_rot[4];
-                                    float inv_pg[4];
-                                    animation3d_quat_shortest_arc(abs_dir, src_dir, arc);
-                                    animation3d_quat_mul(arc, world_abs, world_rot);
-                                    animation3d_quat_conjugate(pg_rot, inv_pg);
-                                    animation3d_quat_mul(inv_pg, world_rot, l_rot);
-                                    sanitize_keyframe_quat(l_rot);
-                                    aimed = 1;
-                                } else if (animation3d_vec3_normalize(rest_dir)) {
-                                    float arc[4];
-                                    float world_rot[4];
-                                    float inv_pg[4];
-                                    animation3d_quat_shortest_arc(rest_dir, src_dir, arc);
-                                    animation3d_quat_mul(arc, rest_world, world_rot);
-                                    animation3d_quat_conjugate(pg_rot, inv_pg);
-                                    animation3d_quat_mul(inv_pg, world_rot, l_rot);
-                                    sanitize_keyframe_quat(l_rot);
-                                    aimed = 1;
-                                }
-                            }
-                        }
-                        if (!aimed) {
-                            /* No aim child: transfer the source bone's ABSOLUTE world
-                             * orientation through the constant bind-frame swap, localized
-                             * against the runtime parent — consistent with aimed parents
-                             * and exact for bind-compatible rigs. */
+                        {
+                            /* Pure world-delta transfer: the source anchor's
+                             * world rotation through the constant conform
+                             * sandwich (f_rot folds the bind-posture
+                             * alignment), localized against the runtime
+                             * parent. No per-frame aim solve — the conform
+                             * already put every bone direction on the
+                             * source's at bind, and world deltas keep them
+                             * tracking through extreme poses without the
+                             * fold/garble failure modes of per-key aiming. */
                             float world_rot[4];
                             float inv_pg[4];
                             animation3d_quat_mul(sg_rot[dst_anchor[d]], f_rot[d], world_rot);
@@ -1664,6 +1697,18 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
                     ok = 0;
                     break;
                 }
+                /* Quaternion hemisphere continuity: keep consecutive keys on
+                 * the same cover so interpolation never swings the long way. */
+                for (int32_t k = 1; k < time_count; ++k) {
+                    float *q = keys_of[d][k].rotation;
+                    const float *p = keys_of[d][k - 1].rotation;
+                    if (q[0] * p[0] + q[1] * p[1] + q[2] * p[2] + q[3] * p[3] < 0.0f) {
+                        q[0] = -q[0];
+                        q[1] = -q[1];
+                        q[2] = -q[2];
+                        q[3] = -q[3];
+                    }
+                }
                 vgfx3d_anim_channel_t *ch = &out->channels[out->channel_count];
                 memset(ch, 0, sizeof(*ch));
                 ch->bone_index = d;
@@ -1687,9 +1732,8 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
         free(dst_anchor);
         free(dst_chain_len);
         free(dst_chain);
-        free(child_of);
-        free(child2_of);
         free(a_rot);
+        free(g_align);
         free(f_rot);
         free(bind_c_pos);
         free(pos_scale);
@@ -1755,6 +1799,107 @@ int64_t rt_animation3d_strip_root_motion(void *anim, int64_t bone_index, int8_t 
         return 1;
     }
     return 0;
+}
+
+/// @brief Copy the [start_sec, end_sec] span of a clip into a NEW clip whose
+///   time base starts at zero.
+/// @details Broadcast staging needs action cores: mocap packs ship clips with
+///          long lead-ins/outs (a 6 s windup whose delivery is the middle
+///          2.5 s). Keys inside the span are copied verbatim — masks and
+///          cubic tangents included — and rebased against the EARLIEST kept
+///          key across all channels (one shared origin keeps channels in
+///          sync; densely-baked clips share a key grid, so the boundary
+///          error is at most one sample). Channels with no keys in the span
+///          are dropped. The source clip is never modified.
+/// @param obj Source Animation3D (borrowed).
+/// @param start_sec Span start; clamps to zero.
+/// @param end_sec Span end; clamps to the clip duration.
+/// @return A new owned Animation3D, or NULL when the input is invalid or the
+///         span contains no keys.
+void *rt_animation3d_extract_range(void *obj, double start_sec, double end_sec) {
+    rt_animation3d *src = animation3d_checked(obj);
+    if (!src || !isfinite(start_sec) || !isfinite(end_sec))
+        return NULL;
+    if (start_sec < 0.0)
+        start_sec = 0.0;
+    if (end_sec > (double)src->duration)
+        end_sec = (double)src->duration;
+    if (end_sec - start_sec <= 1e-6)
+        return NULL;
+
+    int32_t channel_count = animation3d_safe_channel_count(src);
+    double t0 = end_sec + 1.0;
+    for (int32_t c = 0; c < channel_count; ++c) {
+        vgfx3d_anim_channel_t *ch = &src->channels[c];
+        int32_t key_count = animation3d_safe_keyframe_count(ch);
+        for (int32_t k = 0; k < key_count; ++k) {
+            double t = ch->keyframes[k].time;
+            if (t >= start_sec && t <= end_sec && t < t0)
+                t0 = t;
+        }
+    }
+    if (t0 > end_sec)
+        return NULL; /* no keys anywhere in the span */
+
+    rt_animation3d *out = (rt_animation3d *)rt_animation3d_new(NULL, end_sec - t0);
+    if (!out)
+        return NULL;
+    memcpy(out->name, src->name, sizeof(out->name));
+    out->looping = src->looping;
+    out->owned_channels = (vgfx3d_anim_channel_t *)calloc(
+        (size_t)(channel_count > 0 ? channel_count : 1), sizeof(vgfx3d_anim_channel_t));
+    if (!out->owned_channels) {
+        animation3d_release_ref((void **)&out);
+        return NULL;
+    }
+    out->channels = out->owned_channels;
+    out->channel_capacity = channel_count;
+    out->owned_channel_capacity = channel_count;
+
+    for (int32_t c = 0; c < channel_count; ++c) {
+        vgfx3d_anim_channel_t *ch = &src->channels[c];
+        int32_t key_count = animation3d_safe_keyframe_count(ch);
+        int32_t kept = 0;
+        for (int32_t k = 0; k < key_count; ++k) {
+            double t = ch->keyframes[k].time;
+            if (t >= start_sec && t <= end_sec)
+                ++kept;
+        }
+        if (kept <= 0)
+            continue;
+        vgfx3d_keyframe_t *keys =
+            (vgfx3d_keyframe_t *)malloc((size_t)kept * sizeof(vgfx3d_keyframe_t));
+        if (!keys) {
+            animation3d_release_ref((void **)&out);
+            return NULL;
+        }
+        int32_t w = 0;
+        for (int32_t k = 0; k < key_count; ++k) {
+            double t = ch->keyframes[k].time;
+            if (t < start_sec || t > end_sec)
+                continue;
+            keys[w] = ch->keyframes[k];
+            double rebased = t - t0;
+            keys[w].time = rebased < 0.0 ? 0.0 : rebased;
+            ++w;
+        }
+        vgfx3d_anim_channel_t *oc = &out->channels[out->channel_count];
+        memset(oc, 0, sizeof(*oc));
+        oc->bone_index = ch->bone_index;
+        oc->keyframes = keys;
+        oc->owned_keyframes = keys;
+        oc->keyframe_count = kept;
+        oc->keyframe_capacity = kept;
+        oc->owned_keyframe_capacity = kept;
+        oc->initialized_keyframe_count = kept;
+        out->channel_count += 1;
+        out->initialized_channel_count = out->channel_count;
+    }
+    if (out->channel_count == 0) {
+        animation3d_release_ref((void **)&out);
+        return NULL;
+    }
+    return out;
 }
 
 /*==========================================================================

@@ -1027,6 +1027,16 @@ function(zanna_add_runtime_tests)
     zanna_add_ctest(test_rt_game3d_ragdoll_time test_rt_game3d_ragdoll_time)
     zanna_add_test_labels(test_rt_game3d_ragdoll_time graphics3d unit)
 
+    zanna_add_test(test_rt_game3d_step_contract ${ZANNA_TESTS_DIR}/unit/test_rt_game3d_step_contract.cpp)
+    target_link_libraries(test_rt_game3d_step_contract PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    zanna_add_ctest(test_rt_game3d_step_contract test_rt_game3d_step_contract)
+    zanna_add_test_labels(test_rt_game3d_step_contract graphics3d unit)
+
+    zanna_add_test(test_rt_game3d_quality_digest ${ZANNA_TESTS_DIR}/unit/test_rt_game3d_quality_digest.cpp)
+    target_link_libraries(test_rt_game3d_quality_digest PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
+    zanna_add_ctest(test_rt_game3d_quality_digest test_rt_game3d_quality_digest)
+    zanna_add_test_labels(test_rt_game3d_quality_digest graphics3d unit)
+
     zanna_add_test(test_rt_game3d_cinematics ${ZANNA_TESTS_DIR}/unit/test_rt_game3d_cinematics.cpp)
     target_link_libraries(test_rt_game3d_cinematics PRIVATE ${ZANNA_RUNTIME_TEST_LIBS})
     zanna_add_ctest(test_rt_game3d_cinematics test_rt_game3d_cinematics)

@@ -2620,6 +2620,19 @@ if (EXISTS "${GAME3D_SURFACE_PROBE}")
             TIMEOUT 30)
 endif ()
 
+set(CANVAS3D_CAPTURE_PRESENT_PROBE "${G3D_TESTS_DIR}/test_canvas3d_capture_present_probe.zia")
+if (EXISTS "${CANVAS3D_CAPTURE_PRESENT_PROBE}")
+    add_test(NAME g3d_test_canvas3d_capture_present_probe
+            COMMAND $<TARGET_FILE:zanna> run "${CANVAS3D_CAPTURE_PRESENT_PROBE}"
+            WORKING_DIRECTORY "${CMAKE_SOURCE_DIR}")
+    # No backend override: the point is the platform's windowed GPU
+    # present path (Metal direct-present on macOS) — E3 capture hardening.
+    set_tests_properties(g3d_test_canvas3d_capture_present_probe PROPERTIES
+            PASS_REGULAR_EXPRESSION "RESULT: ok"
+            LABELS "runtime;graphics3d;zia;requires_display"
+            TIMEOUT 60)
+endif ()
+
 set(GAME3D_WORLD_PROBE "${G3D_TESTS_DIR}/test_game3d_world_probe.zia")
 if (EXISTS "${GAME3D_WORLD_PROBE}")
     add_test(NAME g3d_test_game3d_world_probe

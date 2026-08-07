@@ -10990,6 +10990,26 @@ static void test_canvas3d_window_bindings_null_safe() {
     PASS();
 }
 
+static void test_canvas3d_capture_after_present_flag() {
+    TEST("SetCaptureAfterPresent: round-trip, default off, NULL-safe");
+    /* E3 capture hardening. The flag itself is backend-agnostic canvas
+     * state; GPU present paths consume it via the backend hook (Metal's
+     * direct-present route blits the drawable into the readable display
+     * texture pre-present when set). Software readback is present-safe, so
+     * the request is retained with no backend hook. */
+    rt_canvas3d_set_capture_after_present(nullptr, 1); /* NULL-safe */
+    EXPECT_EQ(rt_canvas3d_get_capture_after_present(nullptr), 0);
+    void *target = rt_rendertarget3d_new(64, 48);
+    void *canvas = rt_canvas3d_new_offscreen(target);
+    assert(canvas);
+    EXPECT_EQ(rt_canvas3d_get_capture_after_present(canvas), 0);
+    rt_canvas3d_set_capture_after_present(canvas, 1);
+    EXPECT_EQ(rt_canvas3d_get_capture_after_present(canvas), 1);
+    rt_canvas3d_set_capture_after_present(canvas, 0);
+    EXPECT_EQ(rt_canvas3d_get_capture_after_present(canvas), 0);
+    PASS();
+}
+
 //=============================================================================
 // Main
 //=============================================================================
@@ -11327,6 +11347,7 @@ int main() {
     test_wind_deform_base_fixed_canopy_sways();
     test_wind_deform_zero_strength_and_null_safe();
     test_canvas3d_window_bindings_null_safe();
+    test_canvas3d_capture_after_present_flag();
 
     printf("\n%d/%d tests passed\n", tests_passed, tests_total);
     return tests_passed == tests_total ? 0 : 1;

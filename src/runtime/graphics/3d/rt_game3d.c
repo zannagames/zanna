@@ -1929,6 +1929,10 @@ int8_t rt_game3d_world_tick(void *obj) {
         world->elapsed += world->dt;
     }
     world->frame += 1;
+    /* Stamp the frame so StepSimulation can recognize the documented
+     * Update -> StepSimulation combined loop and skip the per-frame
+     * accounting (scale, hit-stop decay, counters) this tick just did. */
+    world->tick_frame_stamp = world->frame;
     if (world->camera && world->width > 0 && world->height > 0)
         game3d_camera_sync_render_aspect(world->camera,
                                          (double)world->width / (double)world->height);
@@ -2272,12 +2276,40 @@ static void game3d_world_step_simulation_impl(rt_game3d_world *world,
 ///   update, physics step, scene/audio binding sync, effect update, then the camera
 ///   late-update. See header.
 /// @param obj World3D to advance.
-/// @param step_sec Requested unscaled step duration in seconds.
+/// @param step_sec Step duration in seconds. Dual contract: when `Update()` ran
+///   earlier THIS frame (the documented manual loop), the value is treated as the
+///   ALREADY-SCALED simulation delta — pass `DeltaTime` — and the per-frame
+///   accounting `Update()` performed (time-scale application, hit-stop decay,
+///   frame/elapsed/unscaled counters) is not repeated. Standalone calls keep the
+///   historical semantics: the value is an unscaled real delta, scaled here.
 void rt_game3d_world_step_simulation(void *obj, double step_sec) {
     rt_game3d_world *world =
         game3d_world_checked(obj, "Game3D.World3D.stepSimulation: invalid world");
     if (!world)
         return;
+    if (world->tick_frame_stamp == world->frame && world->frame > 0) {
+        /* Combined Update() -> StepSimulation() loop. Update already decayed
+         * hit-stop, applied the time scale, and advanced every counter for
+         * this frame; doing any of it again squares the time scale, halves
+         * hit-stop duration, and double-counts frame/elapsed (ZB-9). A
+         * frozen frame (pause / hit-stop) reaches here as step_sec == 0 via
+         * DeltaTime — honor it as a pure re-render instead of letting the
+         * clamp inflate it to a default-length step. */
+        if (world->paused || world->hitstop_remaining > 0.0 ||
+            !(step_sec > 0.0) || !isfinite(step_sec)) {
+            world->dt = 0.0;
+            game3d_world_paused_frame(world);
+            return;
+        }
+        double dt = step_sec;
+        if (dt > RT_GAME3D_MAX_DT)
+            dt = RT_GAME3D_MAX_DT;
+        int64_t combined_t0 = rt_clock_ticks_us();
+        game3d_world_step_simulation_impl(world, dt, 0);
+        game3d_world_note_hitches(world,
+                                  (double)(rt_clock_ticks_us() - combined_t0) / 1000.0);
+        return;
+    }
     double real_dt = game3d_clamp_dt(step_sec);
     double effective = game3d_world_effective_scale_tick(world, real_dt);
     world->unscaled_dt = real_dt;
