@@ -251,6 +251,20 @@ void *rt_animation3d_retarget(void *anim, void *src_skeleton, void *dst_skeleton
 /// @return One when a matching channel was modified, otherwise zero.
 int64_t rt_animation3d_strip_root_motion(void *anim, int64_t bone_index, int8_t keep_vertical);
 void *rt_animation3d_extract_range(void *anim, double start_sec, double end_sec);
+/// @brief Produce the left/right-mirrored copy of a clip (ADR 0243).
+/// @details Conjugates every LOCAL keyframe across the model-space X=0 plane
+///          (position X negated, quaternion Y/Z negated, scale untouched,
+///          cubic tangents transformed with their lanes) while swapping each
+///          channel onto its Left<->Right partner bone — resolved by exact
+///          side-token name swap, then humanoid-role side flip; center bones
+///          self-mirror. Duration, key times, and looping are preserved; the
+///          name gains a "_mirror" suffix. The skinned result reads correctly
+///          when the skeleton's bind pose is bilaterally symmetric.
+/// @param[in] anim Source Animation3D (never modified).
+/// @param[in] skeleton Skeleton3D interpreting the channel bone indices.
+/// @return New GC-managed mirrored Animation3D, or `NULL` for invalid input
+///         or a clip with no mappable channels.
+void *rt_animation3d_mirror(void *anim, void *skeleton);
 
 /// @}
 

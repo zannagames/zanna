@@ -1275,6 +1275,70 @@ static void test_animation_extract_range_trims_and_rebases() {
                 "invalid input yields NULL");
 }
 
+/// @brief Mirror swaps L/R channels, conjugates keys, and round-trips (ADR 0243).
+static void test_animation_mirror_swaps_and_conjugates() {
+    void *skel = rt_skeleton3d_new();
+    int64_t hips = rt_skeleton3d_add_bone(skel, rt_const_cstr("hips"), -1, rt_mat4_identity());
+    int64_t larm = rt_skeleton3d_add_bone(skel, rt_const_cstr("LeftArm"), 0, rt_mat4_identity());
+    int64_t rarm = rt_skeleton3d_add_bone(skel, rt_const_cstr("RightArm"), 0, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    /* LeftArm: translate (2,3,4) + rotate Z+90; hips (center): translate (5,1,2). */
+    const double s = 0.70710678118654752;
+    void *anim = rt_animation3d_new(rt_const_cstr("swing"), 2.0);
+    void *one = rt_vec3_new(1.0, 1.0, 1.0);
+    void *ident = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *zpos = rt_quat_new(0.0, 0.0, s, s);
+    rt_animation3d_add_keyframe(anim, larm, 0.0, rt_vec3_new(2.0, 3.0, 4.0), zpos, one);
+    rt_animation3d_add_keyframe(anim, larm, 2.0, rt_vec3_new(2.0, 3.0, 4.0), zpos, one);
+    rt_animation3d_add_keyframe(anim, hips, 0.0, rt_vec3_new(5.0, 1.0, 2.0), ident, one);
+    rt_animation3d_add_keyframe(anim, hips, 2.0, rt_vec3_new(5.0, 1.0, 2.0), ident, one);
+    rt_animation3d_set_looping(anim, 1);
+
+    void *mir = rt_animation3d_mirror(anim, skel);
+    EXPECT_TRUE(mir != nullptr, "Animation3D.Mirror returns an animation");
+    EXPECT_NEAR(rt_animation3d_get_duration(mir), 2.0, 1e-6, "Mirror preserves duration");
+    EXPECT_TRUE(rt_animation3d_get_looping(mir) != 0, "Mirror preserves looping");
+    EXPECT_TRUE(std::strcmp(rt_string_cstr(rt_animation3d_get_name(mir)), "swing_mirror") == 0,
+                "Mirror suffixes the clip name");
+
+    typedef struct {
+        double m[16];
+    } mat4_view;
+    void *player = rt_anim_player3d_new(skel);
+    rt_anim_player3d_play(player, mir);
+    rt_anim_player3d_update(player, 1.0);
+    /* The LeftArm performance now drives RightArm, reflected across X=0.
+     * Bone matrices are model-space: arm global = mirrored hips (-5,1,2)
+     * composed with the mirrored arm local (-2,3,4) = (-7,4,6); rotation
+     * Z+90 conjugates to Z-90 (m[1]=1, m[4]=-1). */
+    mat4_view *rm = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, rarm);
+    EXPECT_NEAR(rm->m[3], -7.0, 1e-3, "Mirror negates the swapped channel's X");
+    EXPECT_NEAR(rm->m[7], 4.0, 1e-3, "Mirror preserves Y translation");
+    EXPECT_NEAR(rm->m[11], 6.0, 1e-3, "Mirror preserves Z translation");
+    EXPECT_NEAR(rm->m[1], 1.0, 1e-3, "Mirror conjugates the rotation (Z+90 -> Z-90)");
+    EXPECT_NEAR(rm->m[4], -1.0, 1e-3, "Mirror conjugates the rotation (yx lane)");
+    /* Center bone self-mirrors with X negated. */
+    mat4_view *hm = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, hips);
+    EXPECT_NEAR(hm->m[3], -5.0, 1e-3, "Center bone self-mirrors with negated X");
+    EXPECT_NEAR(hm->m[7], 1.0, 1e-3, "Center bone keeps Y");
+
+    /* Mirror∘Mirror round-trips onto the original bones and values. */
+    void *back = rt_animation3d_mirror(mir, skel);
+    EXPECT_TRUE(back != nullptr, "Mirror of a mirror returns an animation");
+    void *player2 = rt_anim_player3d_new(skel);
+    rt_anim_player3d_play(player2, back);
+    rt_anim_player3d_update(player2, 1.0);
+    mat4_view *lm = (mat4_view *)rt_anim_player3d_get_bone_matrix(player2, larm);
+    /* Round-trip global = hips (5,1,2) + arm local (2,3,4) = (7,4,6). */
+    EXPECT_NEAR(lm->m[3], 7.0, 1e-3, "Mirror round-trip restores X translation");
+    EXPECT_NEAR(lm->m[1], -1.0, 1e-3, "Mirror round-trip restores the rotation");
+
+    /* Degenerate inputs. */
+    EXPECT_TRUE(rt_animation3d_mirror(NULL, skel) == NULL, "NULL clip yields NULL");
+    EXPECT_TRUE(rt_animation3d_mirror(anim, NULL) == NULL, "NULL skeleton yields NULL");
+}
+
 static void test_animation_retarget_matches_bone_names() {
     void *src = rt_skeleton3d_new();
     rt_skeleton3d_add_bone(src, rt_const_cstr("root"), -1, rt_mat4_identity());
@@ -1430,6 +1494,7 @@ int main() {
     test_animation_retarget_composes_chain_onto_one_bone();
     test_animation_strip_root_motion_pins_travel();
     test_animation_extract_range_trims_and_rebases();
+    test_animation_mirror_swaps_and_conjugates();
     test_animation_retarget_scales_by_proportion();
     test_animation_retarget_maps_humanoid_roles();
     test_animation_retarget_biped_side_letters();

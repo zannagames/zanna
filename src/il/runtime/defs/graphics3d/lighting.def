@@ -454,6 +454,7 @@ RT_FUNC(Animation3DGetName,     rt_animation3d_get_name,     "Zanna.Graphics3D.A
 RT_FUNC(Animation3DRetarget,    rt_animation3d_retarget,     "Zanna.Graphics3D.Animation3D.Retarget",     "obj(obj,obj,obj)")
 RT_FUNC(Animation3DStripRootMotion, rt_animation3d_strip_root_motion, "Zanna.Graphics3D.Animation3D.StripRootMotion", "i64(obj,i64,i1)")
 RT_FUNC(Animation3DExtractRange, rt_animation3d_extract_range, "Zanna.Graphics3D.Animation3D.ExtractRange", "obj(obj,f64,f64)")
+RT_FUNC(Animation3DMirror,      rt_animation3d_mirror,       "Zanna.Graphics3D.Animation3D.Mirror",       "obj(obj,obj)")
 
 /// @summary Provides Animation 3D functionality for 3D rendering and scene applications.
 /// @details
@@ -468,6 +469,7 @@ RT_CLASS_BEGIN("Zanna.Graphics3D.Animation3D", Animation3D, "obj", Animation3DNe
     RT_METHOD("Retarget", "obj<Zanna.Graphics3D.Animation3D>(obj,obj)", Animation3DRetarget)
     RT_METHOD("StripRootMotion", "i64(i64,i1)", Animation3DStripRootMotion)
     RT_METHOD("ExtractRange", "obj(f64,f64)", Animation3DExtractRange)
+    RT_METHOD("Mirror", "obj<Zanna.Graphics3D.Animation3D>(obj)", Animation3DMirror)
 RT_CLASS_END()
 
 // AnimPlayer3D

@@ -836,6 +836,7 @@ Constructor: `Zanna.Graphics3D.Animation3D.New`
 | <a id="zanna-graphics3d-animation3d-retarget"></a>`Retarget` | `obj<Zanna.Graphics3D.Animation3D>(obj,obj)` | `Zanna.Graphics3D.Animation3D.Retarget` |
 | <a id="zanna-graphics3d-animation3d-striprootmotion"></a>`StripRootMotion` | `i64(i64,i1)` | `Zanna.Graphics3D.Animation3D.StripRootMotion` |
 | <a id="zanna-graphics3d-animation3d-extractrange"></a>`ExtractRange` | `obj(f64,f64)` | `Zanna.Graphics3D.Animation3D.ExtractRange` |
+| <a id="zanna-graphics3d-animation3d-mirror"></a>`Mirror` | `obj<Zanna.Graphics3D.Animation3D>(obj)` | `Zanna.Graphics3D.Animation3D.Mirror` |
 | <a id="zanna-graphics3d-animation3d-new"></a>`New` | `obj(str,f64)` | `Zanna.Graphics3D.Animation3D.New` |
 
 <a id="zanna-graphics3d-animplayer3d"></a>
@@ -3234,6 +3235,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Animation3D.Retarget` | `obj(obj,obj,obj)` | `rt_animation3d_retarget` |
 | `Zanna.Graphics3D.Animation3D.StripRootMotion` | `i64(obj,i64,i1)` | `rt_animation3d_strip_root_motion` |
 | `Zanna.Graphics3D.Animation3D.ExtractRange` | `obj(obj,f64,f64)` | `rt_animation3d_extract_range` |
+| `Zanna.Graphics3D.Animation3D.Mirror` | `obj(obj,obj)` | `rt_animation3d_mirror` |
 | `Zanna.Graphics3D.AnimPlayer3D.New` | `obj(obj)` | `rt_anim_player3d_new` |
 | `Zanna.Graphics3D.AnimPlayer3D.Play` | `void(obj,obj)` | `rt_anim_player3d_play` |
 | `Zanna.Graphics3D.AnimPlayer3D.Crossfade` | `void(obj,obj,f64)` | `rt_anim_player3d_crossfade` |

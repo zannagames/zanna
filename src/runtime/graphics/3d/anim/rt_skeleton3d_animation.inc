@@ -1902,6 +1902,194 @@ void *rt_animation3d_extract_range(void *obj, double start_sec, double end_sec) 
     return out;
 }
 
+/// @brief Case-preserving side-token swap ("Left"<->"Right", "left"<->"right")
+///        for mirror-bone name resolution.
+/// @param[in] name Source bone name.
+/// @param[out] out Destination buffer for the swapped spelling.
+/// @param[in] cap Capacity of @p out in bytes.
+/// @return Nonzero when at least one side token was swapped.
+static int animation3d_mirror_swap_name(const char *name, char *out, size_t cap) {
+    size_t w = 0;
+    int swapped = 0;
+    if (!name || !out || cap == 0)
+        return 0;
+    for (size_t i = 0; name[i] != '\0' && w + 6 < cap;) {
+        if (strncmp(name + i, "Left", 4) == 0) {
+            memcpy(out + w, "Right", 5);
+            w += 5;
+            i += 4;
+            swapped = 1;
+        } else if (strncmp(name + i, "Right", 5) == 0) {
+            memcpy(out + w, "Left", 4);
+            w += 4;
+            i += 5;
+            swapped = 1;
+        } else if (strncmp(name + i, "left", 4) == 0) {
+            memcpy(out + w, "right", 5);
+            w += 5;
+            i += 4;
+            swapped = 1;
+        } else if (strncmp(name + i, "right", 5) == 0) {
+            memcpy(out + w, "left", 4);
+            w += 4;
+            i += 5;
+            swapped = 1;
+        } else {
+            out[w++] = name[i++];
+        }
+    }
+    out[w] = '\0';
+    return swapped;
+}
+
+/// @brief Resolve a bone's sagittal mirror partner: exact-name side-token
+///        swap first, then a humanoid-role side flip, else the bone itself
+///        (center bones self-mirror).
+/// @param[in] skel Skeleton whose bones are searched.
+/// @param[in] roles Optional per-bone humanoid-role cache.
+/// @param[in] bone Source bone index (caller-validated).
+/// @param[in] bone_count Valid readable bone count.
+/// @return Mirror bone index (possibly @p bone itself).
+static int32_t animation3d_mirror_bone(const rt_skeleton3d *skel,
+                                       const int32_t *roles,
+                                       int32_t bone,
+                                       int32_t bone_count) {
+    rt_string name_string = skel->bones[bone].name;
+    const char *name =
+        name_string && rt_string_is_handle(name_string) ? rt_string_cstr(name_string) : "";
+    char swapped[96];
+    if (name[0] != '\0' && animation3d_mirror_swap_name(name, swapped, sizeof(swapped))) {
+        for (int32_t i = 0; i < bone_count; ++i)
+            if (skeleton3d_name_equals_cstr(skel->bones[i].name, swapped))
+                return i;
+    }
+    {
+        int32_t role = roles ? roles[bone] : animation3d_humanoid_role(name);
+        int32_t side = role % 4;
+        if (role != 0 && (side == 1 || side == 2)) {
+            int32_t want = role - side + (3 - side); /* 1<->2, base preserved */
+            for (int32_t i = 0; i < bone_count; ++i) {
+                int32_t r = roles ? roles[i]
+                                  : animation3d_humanoid_role(
+                                        skel->bones[i].name &&
+                                                rt_string_is_handle(skel->bones[i].name)
+                                            ? rt_string_cstr(skel->bones[i].name)
+                                            : "");
+                if (r == want)
+                    return i;
+            }
+        }
+    }
+    return bone;
+}
+
+/// @brief Produce the left/right-mirrored copy of a clip (ADR 0243).
+/// @details Reflection across the model-space X=0 plane is the conjugation
+///          `T' = M·T·M` (`M = diag(-1,1,1)`): local translation X negates,
+///          local quaternion Y/Z negate, scale is untouched. Applying it to
+///          every LOCAL keyframe while swapping each channel onto its
+///          Left<->Right partner yields exactly the reflected model-space
+///          pose (induction from the root) — no global composition needed.
+///          Cubic tangents conjugate with their lanes. Key times, duration,
+///          and looping are preserved; the name gains a "_mirror" suffix.
+///          The skinned result reads correctly when the skeleton's bind pose
+///          is bilaterally symmetric (true of humanoid auto-rigs). The
+///          source clip is never modified.
+/// @param[in] animation Source Animation3D (borrowed).
+/// @param[in] skeleton Skeleton3D interpreting the channel bone indices.
+/// @return A new owned Animation3D, or NULL for invalid input, allocation
+///         failure, or a clip with no mappable channels.
+void *rt_animation3d_mirror(void *animation, void *skeleton) {
+    rt_animation3d *src = animation3d_checked(animation);
+    rt_skeleton3d *skel =
+        (rt_skeleton3d *)rt_g3d_checked_or_null(skeleton, RT_G3D_SKELETON3D_CLASS_ID);
+    if (!src || !skel)
+        return NULL;
+    int32_t bone_count = skeleton3d_safe_bone_count(skel);
+    if (bone_count <= 0)
+        return NULL;
+    int32_t channel_count = animation3d_safe_channel_count(src);
+    if (channel_count <= 0)
+        return NULL;
+    int32_t *roles = animation3d_build_humanoid_role_cache(skel);
+    uint8_t *used = (uint8_t *)calloc((size_t)bone_count, sizeof(uint8_t));
+    rt_animation3d *out = (rt_animation3d *)rt_animation3d_new(NULL, (double)src->duration);
+    if (!out || !used) {
+        free(roles);
+        free(used);
+        if (out)
+            animation3d_release_ref((void **)&out);
+        return NULL;
+    }
+    {
+        size_t n = strnlen(src->name, sizeof(out->name) - 8);
+        memcpy(out->name, src->name, n);
+        memcpy(out->name + n, "_mirror", 8);
+    }
+    out->looping = src->looping;
+    out->owned_channels = (vgfx3d_anim_channel_t *)calloc(
+        (size_t)channel_count, sizeof(vgfx3d_anim_channel_t));
+    if (!out->owned_channels) {
+        free(roles);
+        free(used);
+        animation3d_release_ref((void **)&out);
+        return NULL;
+    }
+    out->channels = out->owned_channels;
+    out->channel_capacity = channel_count;
+    out->owned_channel_capacity = channel_count;
+
+    for (int32_t c = 0; c < channel_count; ++c) {
+        vgfx3d_anim_channel_t *ch = &src->channels[c];
+        int32_t key_count = animation3d_safe_keyframe_count(ch);
+        int32_t b = ch->bone_index;
+        if (key_count <= 0 || b < 0 || b >= bone_count)
+            continue;
+        int32_t d = animation3d_mirror_bone(skel, roles, b, bone_count);
+        if (d < 0 || d >= bone_count || used[d])
+            continue; /* defensive: first channel onto a bone wins */
+        used[d] = 1;
+        vgfx3d_keyframe_t *keys =
+            (vgfx3d_keyframe_t *)malloc((size_t)key_count * sizeof(vgfx3d_keyframe_t));
+        if (!keys) {
+            free(roles);
+            free(used);
+            animation3d_release_ref((void **)&out);
+            return NULL;
+        }
+        for (int32_t k = 0; k < key_count; ++k) {
+            keys[k] = ch->keyframes[k];
+            keys[k].position[0] = -keys[k].position[0];
+            keys[k].rotation[1] = -keys[k].rotation[1];
+            keys[k].rotation[2] = -keys[k].rotation[2];
+            keys[k].pos_in_tangent[0] = -keys[k].pos_in_tangent[0];
+            keys[k].pos_out_tangent[0] = -keys[k].pos_out_tangent[0];
+            keys[k].rot_in_tangent[1] = -keys[k].rot_in_tangent[1];
+            keys[k].rot_in_tangent[2] = -keys[k].rot_in_tangent[2];
+            keys[k].rot_out_tangent[1] = -keys[k].rot_out_tangent[1];
+            keys[k].rot_out_tangent[2] = -keys[k].rot_out_tangent[2];
+        }
+        vgfx3d_anim_channel_t *oc = &out->channels[out->channel_count];
+        memset(oc, 0, sizeof(*oc));
+        oc->bone_index = d;
+        oc->keyframes = keys;
+        oc->owned_keyframes = keys;
+        oc->keyframe_count = key_count;
+        oc->keyframe_capacity = key_count;
+        oc->owned_keyframe_capacity = key_count;
+        oc->initialized_keyframe_count = key_count;
+        out->channel_count += 1;
+        out->initialized_channel_count = out->channel_count;
+    }
+    free(roles);
+    free(used);
+    if (out->channel_count == 0) {
+        animation3d_release_ref((void **)&out);
+        return NULL;
+    }
+    return out;
+}
+
 /*==========================================================================
  * Keyframe sampling
  *=========================================================================*/
