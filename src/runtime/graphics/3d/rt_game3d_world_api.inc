@@ -66,10 +66,11 @@ static void *game3d_world_new_with_camera_impl(rt_string title,
                                                double near_plane,
                                                double far_plane,
                                                int8_t horizontal_fov,
-                                               int8_t fullscreen) {
+                                               int8_t fullscreen,
+                                               void *adopt_canvas2d) {
     double aspect;
 
-    if (fullscreen) {
+    if (fullscreen || adopt_canvas2d) {
         /* Dimensions resolve from the display after the canvas is created;
          * seed with a sane aspect so early math never divides by zero. */
         width = 1280;
@@ -103,9 +104,10 @@ static void *game3d_world_new_with_camera_impl(rt_string title,
     world->clear_b = 0.065;
     world->debug_axis_size = 1.0;
 
-    world->canvas =
-        fullscreen ? rt_canvas3d_new_fullscreen(title) : rt_canvas3d_new(title, width, height);
-    if (fullscreen && world->canvas) {
+    world->canvas = adopt_canvas2d ? rt_canvas3d_new_on_canvas(adopt_canvas2d)
+                    : fullscreen   ? rt_canvas3d_new_fullscreen(title)
+                                   : rt_canvas3d_new(title, width, height);
+    if ((fullscreen || adopt_canvas2d) && world->canvas) {
         /* Adopt the real fullscreen dimensions for the world and camera aspect. */
         int64_t actual_w = rt_canvas3d_get_width(world->canvas);
         int64_t actual_h = rt_canvas3d_get_height(world->canvas);
@@ -159,7 +161,7 @@ void *rt_game3d_world_new_with_camera(rt_string title,
                                       double near_plane,
                                       double far_plane) {
     return game3d_world_new_with_camera_impl(
-        title, width, height, fov_deg, near_plane, far_plane, 0, 0);
+        title, width, height, fov_deg, near_plane, far_plane, 0, 0, NULL);
 }
 
 /// @brief Create a fullscreen world at desktop resolution with a horizontal-FOV camera.
@@ -175,7 +177,31 @@ void *rt_game3d_world_new_fullscreen(rt_string title) {
                                              RT_GAME3D_DEFAULT_NEAR,
                                              RT_GAME3D_DEFAULT_FAR,
                                              0,
-                                             1);
+                                             1,
+                                             NULL);
+}
+
+/// @brief Create a world that renders inside an existing 2D canvas's window.
+/// @details Single-window mode: the Canvas3D adopts the window owned by
+///   @p canvas2d instead of opening a second OS window, so menus (2D) and
+///   gameplay (3D) share one surface. The window is borrowed — when the world
+///   is destroyed, presentation returns to the 2D canvas and the window stays
+///   open. World and camera dimensions adopt the window's current size.
+/// @param canvas2d Borrowed live Zanna.Graphics.Canvas handle.
+/// @param fov_deg Initial vertical field of view in degrees.
+/// @param near_plane Positive near clipping distance.
+/// @param far_plane Far clipping distance greater than @p near_plane.
+/// @return New GC-managed World3D handle, or `NULL` on failure.
+void *rt_game3d_world_new_with_canvas_camera(void *canvas2d,
+                                             double fov_deg,
+                                             double near_plane,
+                                             double far_plane) {
+    if (!canvas2d) {
+        rt_trap("Game3D.World3D.WithCanvasCamera: invalid canvas");
+        return NULL;
+    }
+    return game3d_world_new_with_camera_impl(
+        NULL, 0, 0, fov_deg, near_plane, far_plane, 0, 0, canvas2d);
 }
 
 /// @brief Create a world whose initial camera FOV is interpreted horizontally.
@@ -197,7 +223,7 @@ void *rt_game3d_world_new_with_horizontal_camera(rt_string title,
                                                  double near_plane,
                                                  double far_plane) {
     return game3d_world_new_with_camera_impl(
-        title, width, height, horizontal_fov_deg, near_plane, far_plane, 1, 0);
+        title, width, height, horizontal_fov_deg, near_plane, far_plane, 1, 0, NULL);
 }
 
 /// @brief Create a fullscreen world at desktop resolution with a horizontal-FOV camera.
@@ -211,7 +237,7 @@ void *rt_game3d_world_new_fullscreen_with_horizontal_camera(rt_string title,
                                                             double near_plane,
                                                             double far_plane) {
     return game3d_world_new_with_camera_impl(
-        title, 0, 0, horizontal_fov_deg, near_plane, far_plane, 1, 1);
+        title, 0, 0, horizontal_fov_deg, near_plane, far_plane, 1, 1, NULL);
 }
 
 /// @brief Allocate and initialize a world-stream object bound to a world, with default

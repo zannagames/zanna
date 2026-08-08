@@ -80,6 +80,11 @@
 extern void *rt_fbx_get_scene_root(void *fbx);
 extern void *rt_pixels_load(void *path);
 
+/* Parallel LOD chain generation (GenerateLODs phase 2). */
+extern void *rt_thread_start_fn(void (*entry)(void *), void *arg);
+extern void rt_thread_join(void *thread);
+extern int64_t rt_machine_cores(void);
+
 #define MODEL3D_MAX_WALK_NODES 1048576
 #define MODEL3D_OBJ_MAX_LINE_BYTES (1024u * 1024u)
 #define MODEL3D_OBJ_MAX_PATH_BYTES (64u * 1024u)

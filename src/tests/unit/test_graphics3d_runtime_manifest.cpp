@@ -41,10 +41,10 @@ namespace {
  * E3): +2 functions / +1 method / +1 property.
  * Canvas3D.DrawText2DTtf + MeasureText2DTtf (2026-08-07, E1 font bridge):
  * +2 functions / +2 methods. */
-constexpr std::size_t kExpectedFunctionCount = 2238;
+constexpr std::size_t kExpectedFunctionCount = 2240;
 constexpr std::size_t kExpectedClassCount = 131;
 constexpr std::size_t kExpectedPropertyCount = 821;
-constexpr std::size_t kExpectedMethodCount = 1204;
+constexpr std::size_t kExpectedMethodCount = 1206;
 
 bool is3DName(std::string_view name) {
     return name.starts_with("Zanna.Graphics3D.") || name.starts_with("Zanna.Game3D.");
@@ -231,7 +231,7 @@ int main() {
      * get_CaptureAfterPresent (E3 capture hardening: opt-in pre-present
      * blit so post-Present readback sees the shown frame on GPU
      * direct-present paths). */
-    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xbaea744792555c50);
+    constexpr std::uint64_t kExpectedManifestHash = UINT64_C(0xd966e6395df8c8fb);
     if (hash.value() != kExpectedManifestHash) {
         std::cerr << "FAIL: 3D ABI manifest changed; reviewed hash is 0x" << std::hex
                   << hash.value() << '\n';

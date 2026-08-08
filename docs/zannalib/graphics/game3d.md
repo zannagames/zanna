@@ -261,6 +261,15 @@ pass `--windowed`-style flags through your own game code by choosing the
 constructor at startup. `Canvas3D.NewFullscreen(title)` is the low-level
 equivalent when driving the canvas directly.
 
+`World3D.WithCanvasCamera(canvas, fov, near, far)` renders the 3D world inside
+an existing 2D `Graphics.Canvas` window instead of opening a second one —
+single-window games where 2D menus and 3D gameplay share one surface. The
+window is borrowed, not owned: destroying the world returns presentation to
+the 2D canvas and the window stays open (keep the 2D canvas alive for the
+world's lifetime). World and camera dimensions adopt the window's current
+size. `Canvas3D.NewOnCanvas(canvas)` is the low-level equivalent when driving
+the canvas directly.
+
 ---
 
 ## Presets And Prefabs

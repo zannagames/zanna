@@ -3082,6 +3082,12 @@ void *rt_game3d_world_new_with_horizontal_camera(rt_string title,
 /// @param title Value supplied for the title argument.
 /// @return The runtime handle described above, or NULL when unavailable.
 void *rt_game3d_world_new_fullscreen(rt_string title);
+/// @brief Create a world that renders inside an existing 2D canvas's window
+/// (single-window mode); the window is borrowed and survives world teardown.
+void *rt_game3d_world_new_with_canvas_camera(void *canvas2d,
+                                             double fov_deg,
+                                             double near_plane,
+                                             double far_plane);
 /// @brief Create a fullscreen world with a camera FOV authored in horizontal degrees.
 /// @param title Value supplied for the title argument.
 /// @param horizontal_fov_deg Value supplied for the horizontal fov deg argument.

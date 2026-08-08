@@ -376,6 +376,13 @@ void rt_canvas3d_draw_mesh_matrix_skinned_keyed_bounds(void *canvas,
     tmp.bone_palette = NULL;
     tmp.prev_bone_palette = NULL;
     tmp.bone_count = 0;
+    /* The cached AABB copied from the source mesh describes the PRE-skinned
+     * vertices — for a skinned variant mesh that is a bone-local cluster near
+     * the entity origin — so frustum/occlusion/shadow fits against it hide
+     * posed characters whose origin leaves the view. Recompute the bounds
+     * from the vertices actually being submitted. */
+    tmp.bounds_dirty = 1;
+    rt_mesh3d_refresh_bounds(&tmp);
     rt_canvas3d_draw_mesh_matrix_keyed_bounds(canvas,
                                               &tmp,
                                               model_matrix,

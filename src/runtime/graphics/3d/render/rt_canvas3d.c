@@ -41,6 +41,7 @@
 #include "rt_canvas3d_internal.h"
 #include "rt_g3d_ref_slots.h"
 #include "rt_game3d_diagnostics.h"
+#include "rt_graphics.h"
 #include "rt_graphics_internal.h"
 #include "rt_heap.h"
 #include "rt_input.h"
@@ -110,6 +111,7 @@ static const char CANVAS3D_FALLBACK_REASON_INIT_FAILED[] =
 static void *g_canvas3d_synthetic_owner = NULL;
 static void canvas3d_release_synthetic_input(rt_canvas3d *c);
 static void canvas3d_release_synthetic_state(rt_canvas3d *c);
+static void canvas3d_return_borrowed_window(rt_canvas3d *c);
 int32_t canvas3d_active_light_limit(rt_canvas3d *c);
 int32_t build_light_params(rt_canvas3d *c, vgfx3d_light_params_t *out, int32_t max);
 uint32_t canvas3d_stamp_light_snapshot(rt_canvas3d *c,
@@ -1851,8 +1853,32 @@ static void rt_canvas3d_finalize(void *obj) {
 
     if (c->gfx_win) {
         rt_canvas3d_detach_input(c->gfx_win);
-        vgfx_destroy_window(c->gfx_win);
+        if (c->owns_window)
+            vgfx_destroy_window(c->gfx_win);
+        else
+            canvas3d_return_borrowed_window(c);
         c->gfx_win = NULL;
+    }
+}
+
+/// @brief Return a borrowed window to its lending 2D canvas.
+/// @details Single-window mode teardown: presentation goes back to the 2D
+///          software path, the 3D resize callback is removed, and the lender
+///          is told to re-push its cached window state (the 3D canvas
+///          overwrote coord scale). The backend context (and its GPU layer)
+///          is destroyed by the caller before this runs.
+/// @param c Canvas holding a borrowed, non-owned window.
+static void canvas3d_return_borrowed_window(rt_canvas3d *c) {
+    /* If the backend context still lives (window-close path), hide its GPU
+     * layer so the lender's software present is not covered by a stale
+     * sublayer; the finalizer's destroy_ctx removes the layer entirely. */
+    if (c->backend && c->backend->hide_gpu_layer && c->backend_ctx)
+        c->backend->hide_gpu_layer(c->backend_ctx);
+    vgfx_set_gpu_present(c->gfx_win, 0);
+    vgfx_set_resize_callback(c->gfx_win, NULL, NULL);
+    if (c->lender_canvas) {
+        rt_canvas_mark_window_state_dirty(c->lender_canvas);
+        c->lender_canvas = NULL;
     }
 }
 
@@ -1873,7 +1899,10 @@ static void canvas3d_close_window(rt_canvas3d *c) {
             c->relative_mouse_applied = 0;
         }
         rt_canvas3d_detach_input(c->gfx_win);
-        vgfx_destroy_window(c->gfx_win);
+        if (c->owns_window)
+            vgfx_destroy_window(c->gfx_win);
+        else
+            canvas3d_return_borrowed_window(c);
         c->gfx_win = NULL;
     }
     c->should_close = 1;
@@ -1917,10 +1946,24 @@ static void *canvas3d_new_impl(rt_string title,
                                int64_t h,
                                int32_t fullscreen,
                                rt_rendertarget3d *offscreen_target,
-                               int32_t offscreen_prefer_gpu) {
+                               int32_t offscreen_prefer_gpu,
+                               vgfx_window_t adopt_win,
+                               void *adopt_lender) {
     vgfx_framebuffer_t fb;
     const int32_t offscreen = offscreen_target != NULL;
 
+    if (adopt_win && !offscreen) {
+        /* Single-window adoption (ADR): render into a window the 2D canvas
+         * owns. Requested dimensions are ignored — the window's current
+         * logical size is the truth. */
+        int32_t win_w = 0;
+        int32_t win_h = 0;
+        if (vgfx_get_size(adopt_win, &win_w, &win_h) && win_w > 0 && win_h > 0) {
+            w = win_w;
+            h = win_h;
+        }
+        fullscreen = 0;
+    }
     if (fullscreen && !offscreen) {
         /* Fullscreen creation sizes the window to the desktop; the requested
          * dimensions are ignored (vgfx resolves the display size). */
@@ -1952,23 +1995,31 @@ static void *canvas3d_new_impl(rt_string title,
     memset(c, 0, sizeof(rt_canvas3d));
     c->offscreen = offscreen ? 1 : 0;
     c->vsync_enabled = offscreen ? 0 : 1;
+    c->owns_window = 1;
     rt_obj_set_finalizer(c, rt_canvas3d_finalize);
 
     if (!offscreen) {
-        /* Create the platform window only for the established windowed/fullscreen constructors. */
-        vgfx_window_params_t params = vgfx_window_params_default();
-        params.width = (int32_t)w;
-        params.height = (int32_t)h;
-        params.fullscreen = fullscreen;
-        if (title)
-            params.title = rt_string_cstr(title);
+        if (adopt_win) {
+            /* Borrow the caller's window: no creation, no ownership. */
+            c->gfx_win = adopt_win;
+            c->owns_window = 0;
+            c->lender_canvas = adopt_lender;
+        } else {
+            /* Create the platform window for the established constructors. */
+            vgfx_window_params_t params = vgfx_window_params_default();
+            params.width = (int32_t)w;
+            params.height = (int32_t)h;
+            params.fullscreen = fullscreen;
+            if (title)
+                params.title = rt_string_cstr(title);
 
-        c->gfx_win = vgfx_create_window(&params);
-        if (!c->gfx_win) {
-            if (rt_obj_release_check0(c))
-                rt_obj_free(c);
-            rt_trap("Canvas3D.New: failed to create window (display server unavailable?)");
-            return NULL;
+            c->gfx_win = vgfx_create_window(&params);
+            if (!c->gfx_win) {
+                if (rt_obj_release_check0(c))
+                    rt_obj_free(c);
+                rt_trap("Canvas3D.New: failed to create window (display server unavailable?)");
+                return NULL;
+            }
         }
         c->software_frame_limit = vgfx_get_fps(c->gfx_win);
 
@@ -2196,7 +2247,7 @@ static void *canvas3d_new_impl(rt_string title,
 /// @param h Logical window height in pixels, from 1 through `CANVAS3D_MAX_DIMENSION`.
 /// @return New GC-managed Canvas3D handle, or NULL after reporting construction failure.
 void *rt_canvas3d_new(rt_string title, int64_t w, int64_t h) {
-    return canvas3d_new_impl(title, w, h, 0, NULL, 0);
+    return canvas3d_new_impl(title, w, h, 0, NULL, 0, NULL, NULL);
 }
 
 /// @brief Create a fullscreen 3D canvas at desktop resolution.
@@ -2206,7 +2257,7 @@ void *rt_canvas3d_new(rt_string title, int64_t w, int64_t h) {
 /// @param title Borrowed runtime string used as the platform-window title.
 /// @return New GC-managed fullscreen Canvas3D handle, or NULL after reporting construction failure.
 void *rt_canvas3d_new_fullscreen(rt_string title) {
-    return canvas3d_new_impl(title, 0, 0, 1, NULL, 0);
+    return canvas3d_new_impl(title, 0, 0, 1, NULL, 0, NULL, NULL);
 }
 
 /// @brief Shared validation and construction for both windowless constructors.
@@ -2227,7 +2278,24 @@ static void *canvas3d_new_offscreen_impl(void *target, int32_t prefer_gpu) {
         return NULL;
     }
     return canvas3d_new_impl(
-        NULL, (int64_t)rtd->target->width, (int64_t)rtd->target->height, 0, rtd, prefer_gpu);
+        NULL, (int64_t)rtd->target->width, (int64_t)rtd->target->height, 0, rtd, prefer_gpu, NULL, NULL);
+}
+
+/// @brief Create a 3D canvas that renders into an existing 2D canvas's window.
+/// @details Single-window mode (ADR): the GPU surface attaches to the window
+///          the 2D canvas owns — menus and the live game share one OS window.
+///          The window is BORROWED: destroying this canvas returns
+///          presentation to the 2D canvas instead of closing the window. The
+///          caller must keep the 2D canvas alive for this canvas's lifetime.
+/// @param canvas2d Live Zanna.Graphics.Canvas handle whose window is adopted.
+/// @return New GC-managed Canvas3D, or NULL after a validation trap.
+void *rt_canvas3d_new_on_canvas(void *canvas2d) {
+    vgfx_window_t win = rt_canvas_borrow_window(canvas2d);
+    if (!win) {
+        rt_trap("Canvas3D.NewOnCanvas: invalid or closed canvas");
+        return NULL;
+    }
+    return canvas3d_new_impl(NULL, 0, 0, 0, NULL, 0, win, canvas2d);
 }
 
 /// @brief Create a deterministic windowless renderer bound to an explicit RenderTarget3D.

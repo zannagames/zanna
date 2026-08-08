@@ -1269,3 +1269,63 @@ void *rt_pixels_resize(void *pixels, int64_t new_width, int64_t new_height) {
     pixels_release_transform_result(area_result);
     return result;
 }
+
+/// @brief Blend bright texels toward a team color, keeping shadows and skin.
+/// @details Native port of the luminance-masked uniform tint (overhaul G5a):
+///          per texel, integer Rec.601-ish luma = (77R + 150G + 29B) / 256;
+///          texels at or above @p lum_lo blend toward @p rgb by @p strength,
+///          ramped linearly between @p lum_lo and @p lum_hi so mid-tones
+///          feather instead of banding. Alpha is preserved. The interpreted
+///          per-pixel loop this replaces cost ~4.2M VM iterations per 2048
+///          square texture at game startup.
+/// @param pixels Borrowed Pixels handle mutated in place.
+/// @param rgb Packed 0xRRGGBB target color.
+/// @param strength Blend strength at full mask, clamped to [0, 1].
+/// @param lum_lo Luma at which the mask begins (0..255).
+/// @param lum_hi Luma at which the mask reaches full strength (> lum_lo).
+void rt_pixels_tint_luminance_masked(
+    void *pixels, int64_t rgb, double strength, int64_t lum_lo, int64_t lum_hi) {
+    rt_pixels_impl *p = rt_pixels_checked_impl(pixels, "Pixels.TintLuminanceMasked: null pixels");
+    int64_t tr;
+    int64_t tg;
+    int64_t tb;
+    int64_t count;
+    if (!p || !p->data)
+        return;
+    if (!isfinite(strength))
+        return;
+    if (strength < 0.0)
+        strength = 0.0;
+    if (strength > 1.0)
+        strength = 1.0;
+    if (lum_lo < 0)
+        lum_lo = 0;
+    if (lum_hi <= lum_lo)
+        lum_hi = lum_lo + 1;
+    tr = (rgb >> 16) & 0xFF;
+    tg = (rgb >> 8) & 0xFF;
+    tb = rgb & 0xFF;
+    count = p->width * p->height;
+    for (int64_t i = 0; i < count; i++) {
+        uint32_t texel = p->data[i]; /* raw 0xRRGGBBAA */
+        int64_t pr = (texel >> 24) & 0xFF;
+        int64_t pg = (texel >> 16) & 0xFF;
+        int64_t pb = (texel >> 8) & 0xFF;
+        uint32_t pa = texel & 0xFF;
+        int64_t lum = (pr * 77 + pg * 150 + pb * 29) / 256;
+        double a;
+        int64_t nr;
+        int64_t ng;
+        int64_t nb;
+        if (lum < lum_lo)
+            continue;
+        a = strength;
+        if (lum < lum_hi)
+            a = strength * (double)(lum - lum_lo) / (double)(lum_hi - lum_lo);
+        nr = (int64_t)((double)pr * (1.0 - a) + (double)tr * a);
+        ng = (int64_t)((double)pg * (1.0 - a) + (double)tg * a);
+        nb = (int64_t)((double)pb * (1.0 - a) + (double)tb * a);
+        p->data[i] = ((uint32_t)nr << 24) | ((uint32_t)ng << 16) | ((uint32_t)nb << 8) | pa;
+    }
+    pixels_touch(p);
+}

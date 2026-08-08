@@ -1068,6 +1068,7 @@ Constructor: `Zanna.Game3D.World3D.New`
 | <a id="zanna-game3d-world3d-newwithhorizontalcamera"></a>`NewWithHorizontalCamera` | `obj(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.NewWithHorizontalCamera` |
 | <a id="zanna-game3d-world3d-withcamera"></a>`WithCamera` | `obj(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.WithCamera` |
 | <a id="zanna-game3d-world3d-withhorizontalcamera"></a>`WithHorizontalCamera` | `obj(str,i64,i64,f64,f64,f64)` | `Zanna.Game3D.World3D.WithHorizontalCamera` |
+| <a id="zanna-game3d-world3d-withcanvascamera"></a>`WithCanvasCamera` | `obj(obj<Zanna.Graphics.Canvas>,f64,f64,f64)` | `Zanna.Game3D.World3D.WithCanvasCamera` |
 | <a id="zanna-game3d-world3d-newfullscreen"></a>`NewFullscreen` | `obj(str)` | `Zanna.Game3D.World3D.NewFullscreen` |
 | <a id="zanna-game3d-world3d-newfullscreenwithhorizontalcamera"></a>`NewFullscreenWithHorizontalCamera` | `obj(str,f64,f64,f64)` | `Zanna.Game3D.World3D.NewFullscreenWithHorizontalCamera` |
 | <a id="zanna-game3d-world3d-destroy"></a>`Destroy` | `void()` | `Zanna.Game3D.World3D.Destroy` |
@@ -2277,6 +2278,7 @@ Its public surface exposes properties such as `BroadphaseFallbackCount`, `CcdCla
 | `Zanna.Game3D.World3D.NewWithHorizontalCamera` | `obj(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_horizontal_camera` |
 | `Zanna.Game3D.World3D.WithCamera` | `obj(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_camera` |
 | `Zanna.Game3D.World3D.WithHorizontalCamera` | `obj(str,i64,i64,f64,f64,f64)` | `rt_game3d_world_new_with_horizontal_camera` |
+| `Zanna.Game3D.World3D.WithCanvasCamera` | `obj(obj<Zanna.Graphics.Canvas>,f64,f64,f64)` | `rt_game3d_world_new_with_canvas_camera` |
 | `Zanna.Game3D.World3D.NewFullscreen` | `obj(str)` | `rt_game3d_world_new_fullscreen` |
 | `Zanna.Game3D.World3D.NewFullscreenWithHorizontalCamera` | `obj(str,f64,f64,f64)` | `rt_game3d_world_new_fullscreen_with_horizontal_camera` |
 | `Zanna.Game3D.World3D.Destroy` | `void(obj)` | `rt_game3d_world_destroy` |

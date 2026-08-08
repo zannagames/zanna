@@ -78,6 +78,13 @@ void *rt_canvas3d_new(rt_string title, int64_t w, int64_t h);
 /// @param title Borrowed runtime string used as the platform-window title.
 /// @return New GC-managed fullscreen Canvas3D handle, or NULL on construction failure.
 void *rt_canvas3d_new_fullscreen(rt_string title);
+/// @brief Create a 3D canvas that renders into an existing 2D canvas's window.
+/// @details The window is borrowed, not owned: destroying this Canvas3D returns
+/// presentation to the 2D canvas instead of closing the window. The caller must
+/// keep the 2D canvas alive for this canvas's lifetime.
+/// @param canvas2d Live Zanna.Graphics.Canvas handle whose window is adopted.
+/// @return New GC-managed Canvas3D handle, or NULL after a validation trap.
+void *rt_canvas3d_new_on_canvas(void *canvas2d);
 /// @brief Create a windowless software Canvas3D bound to an explicit RenderTarget3D.
 /// @param target Live RenderTarget3D retained as the initial output.
 /// @return New deterministic software-backed Canvas3D handle, or NULL for invalid target or

@@ -528,6 +528,30 @@ double scene3d_mesh_dynamic_bound_pad(rt_mesh3d *mesh,
         if (raw_morph_pad > pad)
             pad = raw_morph_pad;
     }
+    if (effective_animator) {
+        /* Skinned variant meshes store bone-local vertices, so the static AABB
+         * (and its radius) describe a tiny cluster near the node origin — not
+         * the posed character. Every skinned position is palette*v, bounded by
+         * the largest palette translation plus the cluster radius, so pad by
+         * the posed-skeleton extent read from the live palette. */
+        int32_t bone_count = 0;
+        const float *palette =
+            rt_anim_controller3d_get_final_palette_data(effective_animator, &bone_count);
+        if (palette && bone_count > 0) {
+            double max_reach = 0.0;
+            for (int32_t b = 0; b < bone_count; b++) {
+                const float *m = palette + (size_t)b * 16u;
+                double t = hypot(hypot(fabs((double)m[3]), fabs((double)m[7])),
+                                 fabs((double)m[11]));
+                if (isfinite(t) && t > max_reach)
+                    max_reach = t;
+            }
+            double skel_pad =
+                scene3d_distance_or_zero(max_reach + scene3d_distance_or_zero(base_radius));
+            if (skel_pad > pad)
+                pad = skel_pad;
+        }
+    }
     if (effective_animator || (mesh && mesh->morph_shape_count > 0 && pad <= 0.0)) {
         double fallback = scene3d_distance_or_zero(base_radius);
         if (fallback > pad)

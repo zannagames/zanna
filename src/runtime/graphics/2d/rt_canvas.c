@@ -241,6 +241,31 @@ int8_t rt_canvas_is_handle(void *canvas_ptr) {
     return rt_canvas_checked(canvas_ptr) != NULL ? 1 : 0;
 }
 
+/// @brief Borrow the platform window behind a live 2D canvas.
+/// @details Single-window adoption seam (Canvas3D.NewOnCanvas): the 3D
+///          renderer attaches its GPU surface to this window instead of
+///          creating a second one. The window stays owned by the 2D canvas.
+/// @param canvas_ptr Candidate Canvas handle.
+/// @return Borrowed vgfx window, or NULL for invalid/closed canvases.
+vgfx_window_t rt_canvas_borrow_window(void *canvas_ptr) {
+    rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
+    if (!canvas)
+        return NULL;
+    return canvas->gfx_win;
+}
+
+/// @brief Mark a 2D canvas's cached window state stale.
+/// @details Called when a borrowing Canvas3D returns the window: the 3D
+///          canvas overwrote coord scale and presentation flags, so the 2D
+///          canvas must re-push its own state on the next frame.
+/// @param canvas_ptr Candidate Canvas handle; invalid handles are ignored.
+void rt_canvas_mark_window_state_dirty(void *canvas_ptr) {
+    rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
+    if (!canvas)
+        return;
+    canvas->window_state_synced = 0;
+}
+
 /// @brief Destroy a Canvas, releasing the window and associated resources.
 /// @details Decrements the GC refcount. If the count reaches zero, the
 ///   finalizer frees the title string and destroys the ZannaGFX window.

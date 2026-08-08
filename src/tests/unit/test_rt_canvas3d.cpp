@@ -6660,6 +6660,63 @@ static void test_canvas_occlusion_culling_skips_covered_opaque_draws() {
     PASS();
 }
 
+static void test_frustum_culling_keeps_runtime_deformed_draws() {
+    TEST("Canvas3D frustum culling keeps skinned draws whose static AABB is out of view");
+    vgfx3d_backend_t backend = {};
+    rt_canvas3d canvas;
+    void *camera = rt_camera3d_new(60.0, 1.0, 0.1, 100.0);
+    void *mesh = rt_mesh3d_new();
+    void *material = rt_material3d_new();
+    /* The static mesh AABB lands at x ~= +1000 through this transform — far
+     * outside the frustum — while a bone pose can move the actual triangles
+     * back on screen. The cull test must not trust pre-skinned bounds. */
+    void *offside_xf = rt_mat4_translate(1000.0, 0.0, -5.0);
+    void *skel = rt_skeleton3d_new();
+    void *player;
+
+    rt_mesh3d_add_vertex(mesh, -2.0, -2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 0.0);
+    rt_mesh3d_add_vertex(mesh, 2.0, -2.0, 0.0, 0.0, 0.0, 1.0, 1.0, 0.0);
+    rt_mesh3d_add_vertex(mesh, 0.0, 2.0, 0.0, 0.0, 0.0, 1.0, 0.0, 1.0);
+    rt_mesh3d_add_triangle(mesh, 0, 1, 2);
+    for (int64_t i = 0; i < 3; i++)
+        rt_mesh3d_set_bone_weights(mesh, i, 0, 1.0, 0, 0.0, 0, 0.0, 0, 0.0);
+    rt_skeleton3d_add_bone(skel, rt_const_cstr("root"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+    player = rt_anim_player3d_new(skel);
+
+    backend.name = "opengl";
+    backend.gpu_skinning = 1; /* mock mirrors real GPU backends */
+    backend.begin_frame = tracked_begin_frame;
+    backend.submit_draw = tracked_submit_draw;
+    backend.end_frame = tracked_end_frame;
+
+    memset(&canvas, 0, sizeof(canvas));
+    canvas.backend = &backend;
+    canvas.gfx_win = (vgfx_window_t)1;
+    canvas.width = 128;
+    canvas.height = 128;
+    rt_canvas3d_set_frustum_culling(&canvas, 1);
+
+    /* Skinned draw: runtime deformation means the stored AABB is the
+     * pre-skinned (bone-local) geometry, so it must conservatively pass. */
+    g_canvas_submit_draw_calls = 0;
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh_skinned(&canvas, mesh, offside_xf, material, player);
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(g_canvas_submit_draw_calls, 1);
+    EXPECT_EQ(rt_canvas3d_get_frustum_culled_draw_count(&canvas), 0);
+
+    /* Control: the same geometry drawn rigid through the same transform is
+     * genuinely off screen and must still be culled. */
+    g_canvas_submit_draw_calls = 0;
+    rt_canvas3d_begin(&canvas, camera);
+    rt_canvas3d_draw_mesh(&canvas, mesh, offside_xf, material);
+    rt_canvas3d_end(&canvas);
+    EXPECT_EQ(g_canvas_submit_draw_calls, 0);
+    EXPECT_EQ(rt_canvas3d_get_frustum_culled_draw_count(&canvas), 1);
+    PASS();
+}
+
 static void test_backend_reversed_z_negates_projection_z_row() {
     TEST("Canvas3D negates the projection z row for reversed-Z backends");
     vgfx3d_backend_t standard_backend = {};
@@ -11284,6 +11341,7 @@ int main() {
     test_canvas_texture_backend_support_queries();
     test_canvas_light_revision_stamps();
     test_canvas_occlusion_culling_skips_covered_opaque_draws();
+    test_frustum_culling_keeps_runtime_deformed_draws();
     test_backend_reversed_z_negates_projection_z_row();
     test_canvas_hiz_rasterizer_culls_behind_rotated_occluder();
     test_canvas_hiz_high_poly_proxy_is_conservative();

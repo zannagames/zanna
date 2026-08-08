@@ -415,6 +415,11 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_box_try_to_i1")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_box_try_to_str")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas_polyline")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas_polygon")
+/* Single-window Canvas3D adoption (ADR 0242): C-level accessors the 3D
+ * canvas uses to borrow the 2D canvas's platform window and to force a
+ * window-state re-sync when the loan returns. Not frontend surface. */
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas_borrow_window")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas_mark_window_state_dirty")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas_polygon_frame")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_str_split_fields")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_parse_double_str")

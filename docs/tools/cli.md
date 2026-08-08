@@ -540,7 +540,10 @@ the complete validated KTX2, PNG, JPEG, GIF, or BMP container when the importer
 had those bytes; otherwise it stores canonical RGBA8 texels. The command reloads
 the written file and compares texture content and metadata before reporting
 success. Options: `--force-tangents`,
-`--eight-influences`, `--compress-anims`, `--lods N` (0-8, halving ratio), and
+`--eight-influences`, `--compress-anims`, `--lods N` (0-8, halving ratio),
+`--simplify-meshes N` (decimate every mesh above N triangles to at most N
+before saving; N ≥ 8), `--strip-meshes` (drop all meshes and materials for
+animation-only bakes — the saved scene keeps nodes, skeletons, and clips), and
 `--json`.
 
 In the default output mode, success keeps the historical `baked <input> ->

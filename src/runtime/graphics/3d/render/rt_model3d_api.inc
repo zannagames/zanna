@@ -265,6 +265,159 @@ int64_t rt_model3d_keep_animation_subset(void *obj,
     return 1;
 }
 
+/// @brief Walk every template/scene node and hand each one to @p visit.
+/// @param model Validated model whose hierarchies are traversed.
+/// @param visit Callback receiving each live scene node once.
+/// @param ctx Opaque callback context.
+static void model_visit_nodes(rt_model3d *model,
+                              void (*visit)(rt_scene_node3d *node, void *ctx),
+                              void *ctx) {
+    rt_scene_node3d *stack_local[64];
+    rt_scene_node3d **stack = stack_local;
+    int32_t stack_capacity = 64;
+    int32_t stack_count = 0;
+    int32_t visited = 0;
+    if (model->template_root)
+        stack[stack_count++] = model->template_root;
+    for (int32_t si = 0; si < model_scene_count(model); si++) {
+        rt_scene_node3d *scene_root = (rt_scene_node3d *)rt_g3d_checked_or_null(
+            model->scenes[si].root, RT_G3D_SCENENODE3D_CLASS_ID);
+        if (!scene_root || scene_root == model->template_root)
+            continue;
+        if (stack_count < stack_capacity)
+            stack[stack_count++] = scene_root;
+    }
+    while (stack_count > 0) {
+        rt_scene_node3d *current = stack[--stack_count];
+        int32_t child_count;
+        if (!current || ++visited >= MODEL3D_MAX_WALK_NODES)
+            continue;
+        visit(current, ctx);
+        child_count = model_node_child_count(current);
+        for (int32_t i = 0; i < child_count; i++) {
+            rt_scene_node3d *child = (rt_scene_node3d *)rt_g3d_checked_or_null(
+                current->children[i], RT_G3D_SCENENODE3D_CLASS_ID);
+            if (!child)
+                continue;
+            if (stack_count >= stack_capacity) {
+                if (stack == stack_local) {
+                    rt_scene_node3d **grown = (rt_scene_node3d **)malloc(
+                        (size_t)stack_capacity * 2 * sizeof(*grown));
+                    if (!grown)
+                        break;
+                    memcpy(grown, stack, (size_t)stack_count * sizeof(*grown));
+                    stack = grown;
+                } else {
+                    rt_scene_node3d **grown = (rt_scene_node3d **)realloc(
+                        stack, (size_t)stack_capacity * 2 * sizeof(*grown));
+                    if (!grown)
+                        break;
+                    stack = grown;
+                }
+                stack_capacity *= 2;
+            }
+            stack[stack_count++] = child;
+        }
+    }
+    if (stack != stack_local)
+        free(stack);
+}
+
+/// @brief model_visit_nodes callback: detach the node's mesh and material.
+static void model_strip_node_visuals(rt_scene_node3d *node, void *ctx) {
+    (void)ctx;
+    rt_scene_node3d_set_mesh(node, NULL);
+    rt_scene_node3d_set_material(node, NULL);
+}
+
+/// @brief Drop every mesh and material from the asset (animation-only bake).
+/// @details Tool-facing (`zanna asset bake --strip-meshes`): clip bakes only
+///          need the animations and skeletons, but the importer carries the
+///          full render mesh into every per-clip document — hundreds of MB
+///          of dead payload across a clip library. Nodes keep their
+///          transforms/names so skeleton hierarchies survive; loaders accept
+///          mesh-less documents.
+/// @param obj Model3D to strip in place.
+/// @return Number of meshes dropped, or 0 for invalid input.
+int64_t rt_model3d_strip_meshes(void *obj) {
+    rt_model3d *model = model3d_checked(obj);
+    int32_t safe_meshes;
+    int32_t safe_materials;
+    if (!model)
+        return 0;
+    model_visit_nodes(model, model_strip_node_visuals, NULL);
+    safe_meshes =
+        model_clamped_array_count(model->meshes, model->mesh_count, model->mesh_capacity);
+    for (int32_t i = 0; i < safe_meshes; i++) {
+        model_release_local(model->meshes[i]);
+        model->meshes[i] = NULL;
+    }
+    model->mesh_count = 0;
+    safe_materials = model_clamped_array_count(
+        model->materials, model->material_count, model->material_capacity);
+    for (int32_t i = 0; i < safe_materials; i++) {
+        model_release_local(model->materials[i]);
+        model->materials[i] = NULL;
+    }
+    model->material_count = 0;
+    return safe_meshes;
+}
+
+/// @brief Context for the simplify-remap node visit.
+typedef struct {
+    void *old_mesh;
+    void *new_mesh;
+} model_mesh_swap_ctx;
+
+/// @brief model_visit_nodes callback: retarget nodes from old_mesh to new_mesh.
+static void model_swap_node_mesh(rt_scene_node3d *node, void *ctx) {
+    model_mesh_swap_ctx *swap = (model_mesh_swap_ctx *)ctx;
+    if (node->mesh == swap->old_mesh)
+        rt_scene_node3d_set_mesh(node, swap->new_mesh);
+}
+
+/// @brief Decimate every mesh above @p max_tris in place (QEM subset placement).
+/// @details Tool-facing (`zanna asset bake --simplify-meshes N`): heavy prop
+///          scans (a 1.9M-triangle glove) can be shipped pre-decimated so no
+///          consumer pays the QEM cost at load. Node references are remapped
+///          to the decimated meshes.
+/// @param obj Model3D to decimate in place.
+/// @param max_tris Triangle ceiling per mesh (minimum 8).
+/// @return Number of meshes replaced, or 0 for invalid input.
+int64_t rt_model3d_simplify_meshes(void *obj, int64_t max_tris) {
+    rt_model3d *model = model3d_checked(obj);
+    int32_t safe_meshes;
+    int64_t replaced = 0;
+    if (!model)
+        return 0;
+    if (max_tris < 8)
+        max_tris = 8;
+    safe_meshes =
+        model_clamped_array_count(model->meshes, model->mesh_count, model->mesh_capacity);
+    for (int32_t i = 0; i < safe_meshes; i++) {
+        void *mesh_obj = model->meshes[i];
+        rt_mesh3d *mesh =
+            (rt_mesh3d *)rt_g3d_checked_or_null(mesh_obj, RT_G3D_MESH3D_CLASS_ID);
+        void *slim;
+        model_mesh_swap_ctx swap;
+        if (!mesh)
+            continue;
+        rt_mesh3d_repair_geometry_counts(mesh);
+        if ((int64_t)(rt_mesh3d_validated_index_count(mesh) / 3u) <= max_tris)
+            continue;
+        slim = rt_mesh3d_simplify(mesh_obj, max_tris);
+        if (!slim)
+            continue;
+        swap.old_mesh = mesh_obj;
+        swap.new_mesh = slim;
+        model_visit_nodes(model, model_swap_node_mesh, &swap);
+        model->meshes[i] = slim; /* keep the construction ref as the array ref */
+        model_release_local(mesh_obj);
+        replaced++;
+    }
+    return replaced;
+}
+
 /// @brief Load a model with explicit import options (Plan 09).
 /// @details `force_tangents` generates tangents for every UV0-mapped glTF primitive even
 ///   when its material has no normal map at load time — for assets whose materials gain
@@ -784,32 +937,87 @@ typedef struct {
     void *lods[4];
     double distances[4];
     int32_t count;
+    uint32_t base_tris;   ///< Validated source triangle count (main thread).
+    double first_distance; ///< Level-0 threshold from the mesh bounding radius.
+    int8_t prepared;      ///< Nonzero once main-thread prep ran and decimation
+                          ///< is worthwhile (>= 8 triangles).
 } model_lod_chain_entry;
 
-/// @brief Build (or fetch) the shared LOD chain for @p mesh_obj inside @p entries.
-/// @details Mirrors rt_scene_node3d_generate_lods' decimation schedule: level k holds
-///          a repeatedly ratio-scaled share of the source triangles and distance thresholds
-///          derive from the
-///          mesh bounding radius. Meshes under 8 triangles produce an empty chain.
+/// @brief One worker's slice of the parallel LOD chain build.
+/// @details Workers stride the entry array (entry w, w+W, ...), so no two
+///          workers ever touch the same entry or source mesh. All source-mesh
+///          mutation (geometry repair, bounds refresh) happened on the main
+///          thread during collection; workers only read sources and allocate
+///          fresh decimated meshes through the thread-safe runtime heap.
+typedef struct {
+    model_lod_chain_entry *entries;
+    int32_t entry_count;
+    int32_t worker_index;
+    int32_t worker_count;
+    int64_t levels;
+    double ratio;
+} model_lod_build_slice_t;
+
+/// @brief Build the LOD chain for one prepared entry (worker or inline).
+/// @details Chained decimation: level k reduces level k-1 instead of the
+///          base, cutting QEM cost by more than half on heavy scans while
+///          producing the same visual ladder.
+/// @param entry Prepared cache entry whose chain is filled in place.
+/// @param levels Sanitized chain length.
+/// @param ratio Per-level triangle ratio.
+static void model_lod_chain_build_one(model_lod_chain_entry *entry,
+                                      int64_t levels,
+                                      double ratio) {
+    void *source = entry->mesh;
+    double target = (double)entry->base_tris;
+    double distance = entry->first_distance;
+    if (!entry->prepared)
+        return;
+    for (int64_t k = 0; k < levels; k++) {
+        int64_t tri_target;
+        void *lod;
+        target *= ratio;
+        tri_target = (int64_t)target;
+        if (tri_target < 2)
+            tri_target = 2;
+        lod = rt_mesh3d_simplify(source, tri_target);
+        if (!lod)
+            break;
+        entry->lods[entry->count] = lod; /* construction ref released by the caller */
+        entry->distances[entry->count] = distance;
+        entry->count++;
+        distance *= 2.0;
+        source = lod;
+    }
+}
+
+/// @brief Thread entry: build every chain in this worker's stride.
+/// @param arg Borrowed model_lod_build_slice_t owned by the dispatching frame.
+static void model_lod_chain_build_slice(void *arg) {
+    model_lod_build_slice_t *slice = (model_lod_build_slice_t *)arg;
+    for (int32_t i = slice->worker_index; i < slice->entry_count; i += slice->worker_count)
+        model_lod_chain_build_one(&slice->entries[i], slice->levels, slice->ratio);
+}
+
+/// @brief Find (or register and prepare) the shared cache entry for @p mesh_obj.
+/// @details Main-thread half of chain generation: dedups by mesh pointer and
+///          runs every source-mesh MUTATION (geometry-count repair, bounds
+///          refresh) plus the triangle/radius reads, so the parallel build
+///          phase only reads sources. Meshes under 8 triangles are marked
+///          unprepared and keep an empty chain.
 /// @param entries Address of the shared-chain cache array.
 /// @param entry_count Address of the initialized cache-entry count.
 /// @param entry_capacity Address of the cache-array capacity.
-/// @param mesh_obj Mesh3D whose chain is fetched or generated.
-/// @param levels Sanitized number of LOD meshes to attempt.
-/// @param ratio Per-level target triangle ratio.
+/// @param mesh_obj Mesh3D whose entry is fetched or prepared.
 /// @return The cache entry for @p mesh_obj, or NULL on allocation failure.
-static model_lod_chain_entry *model_lod_chain_find_or_build(model_lod_chain_entry **entries,
-                                                            int32_t *entry_count,
-                                                            int32_t *entry_capacity,
-                                                            void *mesh_obj,
-                                                            int64_t levels,
-                                                            double ratio) {
+static model_lod_chain_entry *model_lod_chain_find_or_prepare(model_lod_chain_entry **entries,
+                                                              int32_t *entry_count,
+                                                              int32_t *entry_capacity,
+                                                              void *mesh_obj) {
     rt_mesh3d *mesh;
     model_lod_chain_entry *entry;
     uint32_t base_tris;
     double radius;
-    double target;
-    double distance;
     for (int32_t i = 0; i < *entry_count; i++) {
         if ((*entries)[i].mesh == mesh_obj)
             return &(*entries)[i];
@@ -838,23 +1046,9 @@ static model_lod_chain_entry *model_lod_chain_find_or_build(model_lod_chain_entr
         return entry; /* nothing worth decimating */
     rt_mesh3d_refresh_bounds(mesh);
     radius = mesh->bsphere_radius > 0.0f ? (double)mesh->bsphere_radius : 1.0;
-    target = (double)base_tris;
-    distance = radius * 12.0;
-    for (int64_t k = 0; k < levels; k++) {
-        int64_t tri_target;
-        void *lod;
-        target *= ratio;
-        tri_target = (int64_t)target;
-        if (tri_target < 2)
-            tri_target = 2;
-        lod = rt_mesh3d_simplify(mesh_obj, tri_target);
-        if (!lod)
-            break;
-        entry->lods[entry->count] = lod; /* construction ref released by the caller */
-        entry->distances[entry->count] = distance;
-        entry->count++;
-        distance *= 2.0;
-    }
+    entry->base_tris = base_tris;
+    entry->first_distance = radius * 12.0;
+    entry->prepared = 1;
     return entry;
 }
 
@@ -880,6 +1074,10 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
     int32_t visited_count = 0;
     int64_t chained_nodes = 0;
     int32_t scene_count;
+    rt_scene_node3d **pending_nodes = NULL;
+    int32_t *pending_entries = NULL;
+    int32_t pending_count = 0;
+    int32_t pending_capacity = 0;
     if (!model)
         return 0;
     if (levels < 1)
@@ -907,6 +1105,8 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
             break; /* unreachable with the initial capacity; scenes are few */
         stack[stack_count++] = scene_root;
     }
+    /* Phase 1 (main thread): walk, dedup meshes, run every source-mesh
+     * mutation, and remember which node pairs with which cache entry. */
     while (stack_count > 0) {
         rt_scene_node3d *current = stack[--stack_count];
         int32_t child_count;
@@ -914,22 +1114,40 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
             continue;
         if (++visited_count >= MODEL3D_MAX_WALK_NODES) {
             free(stack);
-            model_lod_chain_entry *entries = chains;
-            for (int32_t i = 0; i < chain_count; i++)
-                for (int32_t k = 0; k < entries[i].count; k++)
-                    model_release_local(entries[i].lods[k]);
+            free(pending_nodes);
+            free(pending_entries);
             free(chains);
             rt_trap("SceneAsset.GenerateLODs: too many nodes");
             return chained_nodes;
         }
         if (current->mesh && model_node_lod_count(current) == 0) {
-            model_lod_chain_entry *entry = model_lod_chain_find_or_build(
-                &chains, &chain_count, &chain_capacity, current->mesh, levels, ratio);
-            if (entry && entry->count > 0) {
-                for (int32_t k = 0; k < entry->count; k++)
-                    rt_scene_node3d_add_lod(current, entry->distances[k], entry->lods[k]);
-                rt_scene_node3d_set_auto_lod(current, 1, 3.0);
-                chained_nodes++;
+            model_lod_chain_entry *entry = model_lod_chain_find_or_prepare(
+                &chains, &chain_count, &chain_capacity, current->mesh);
+            if (entry) {
+                if (pending_count >= pending_capacity) {
+                    int32_t new_capacity = pending_capacity > 0 ? pending_capacity * 2 : 32;
+                    rt_scene_node3d **grown_nodes = (rt_scene_node3d **)realloc(
+                        pending_nodes, (size_t)new_capacity * sizeof(*pending_nodes));
+                    int32_t *grown_entries = NULL;
+                    if (grown_nodes) {
+                        pending_nodes = grown_nodes;
+                        grown_entries = (int32_t *)realloc(
+                            pending_entries, (size_t)new_capacity * sizeof(*pending_entries));
+                    }
+                    if (!grown_nodes || !grown_entries) {
+                        free(stack);
+                        free(pending_nodes);
+                        free(pending_entries);
+                        free(chains);
+                        rt_trap("SceneAsset.GenerateLODs: node list allocation failed");
+                        return 0;
+                    }
+                    pending_entries = grown_entries;
+                    pending_capacity = new_capacity;
+                }
+                pending_nodes[pending_count] = current;
+                pending_entries[pending_count] = (int32_t)(entry - chains);
+                pending_count++;
             }
         }
         child_count = model_node_child_count(current);
@@ -955,6 +1173,74 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
         }
     }
     free(stack);
+    /* Phase 2: decimate the unique meshes, striped across worker threads.
+     * Chains are per-entry state and workers stride disjoint entries, so the
+     * only shared machinery is the thread-safe runtime heap. Falls back to
+     * inline builds when threads are unavailable or the batch is small. */
+    if (chain_count > 0) {
+        int64_t cores = rt_machine_cores();
+        int32_t workers = (int32_t)(cores > 1 ? cores - 1 : 1);
+        if (workers > chain_count)
+            workers = chain_count;
+        if (workers > 8)
+            workers = 8;
+        if (workers > 1) {
+            model_lod_build_slice_t slices[8];
+            void *threads[8];
+            int32_t started = 0;
+            for (int32_t w = 0; w < workers; w++) {
+                slices[w].entries = chains;
+                slices[w].entry_count = chain_count;
+                slices[w].worker_index = w;
+                slices[w].worker_count = workers;
+                slices[w].levels = levels;
+                slices[w].ratio = ratio;
+            }
+            /* Slice 0 runs on this thread; extras run on spawned threads. */
+            for (int32_t w = 1; w < workers; w++) {
+                threads[w] = rt_thread_start_fn(model_lod_chain_build_slice, &slices[w]);
+                if (threads[w])
+                    started++;
+            }
+            if (started == workers - 1) {
+                model_lod_chain_build_slice(&slices[0]);
+            } else {
+                /* Some spawns failed: join what started, then finish every
+                 * remaining entry inline (build_one skips filled chains via
+                 * entry->count already being set only by its owner — chains
+                 * touched by started workers are theirs alone, so rebuild
+                 * only slices that never got a worker). */
+                for (int32_t w = 1; w < workers; w++) {
+                    if (threads[w])
+                        rt_thread_join(threads[w]);
+                }
+                for (int32_t w = 0; w < workers; w++) {
+                    int32_t had_thread = w == 0 ? 0 : (threads[w] ? 1 : 0);
+                    if (!had_thread)
+                        model_lod_chain_build_slice(&slices[w]);
+                }
+            }
+            for (int32_t w = 1; w < workers; w++) {
+                if (started == workers - 1 && threads[w])
+                    rt_thread_join(threads[w]);
+            }
+        } else {
+            for (int32_t i = 0; i < chain_count; i++)
+                model_lod_chain_build_one(&chains[i], levels, ratio);
+        }
+    }
+    /* Phase 3 (main thread): attach the shared chains to their nodes. */
+    for (int32_t n = 0; n < pending_count; n++) {
+        model_lod_chain_entry *entry = &chains[pending_entries[n]];
+        if (entry->count > 0) {
+            for (int32_t k = 0; k < entry->count; k++)
+                rt_scene_node3d_add_lod(pending_nodes[n], entry->distances[k], entry->lods[k]);
+            rt_scene_node3d_set_auto_lod(pending_nodes[n], 1, 3.0);
+            chained_nodes++;
+        }
+    }
+    free(pending_nodes);
+    free(pending_entries);
     /* Nodes retained the LOD meshes through add_lod; drop the construction refs. */
     for (int32_t i = 0; i < chain_count; i++)
         for (int32_t k = 0; k < chains[i].count; k++)

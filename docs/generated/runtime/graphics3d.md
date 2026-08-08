@@ -170,6 +170,7 @@ Constructor: `Zanna.Graphics3D.Canvas3D.New`
 |---|---|---|
 | <a id="zanna-graphics3d-canvas3d-isavailable"></a>`IsAvailable` | `i1()` | `Zanna.Graphics3D.Canvas3D.IsAvailable` |
 | <a id="zanna-graphics3d-canvas3d-newfullscreen"></a>`NewFullscreen` | `obj(str)` | `Zanna.Graphics3D.Canvas3D.NewFullscreen` |
+| <a id="zanna-graphics3d-canvas3d-newoncanvas"></a>`NewOnCanvas` | `obj(obj<Zanna.Graphics.Canvas>)` | `Zanna.Graphics3D.Canvas3D.NewOnCanvas` |
 | <a id="zanna-graphics3d-canvas3d-newoffscreen"></a>`NewOffscreen` | `obj(obj<Zanna.Graphics3D.RenderTarget3D>)` | `Zanna.Graphics3D.Canvas3D.NewOffscreen` |
 | <a id="zanna-graphics3d-canvas3d-newoffscreenaccelerated"></a>`NewOffscreenAccelerated` | `obj(obj<Zanna.Graphics3D.RenderTarget3D>)` | `Zanna.Graphics3D.Canvas3D.NewOffscreenAccelerated` |
 | <a id="zanna-graphics3d-canvas3d-setforcecpuskinning"></a>`SetForceCpuSkinning` | `void(i1)` | `Zanna.Graphics3D.Canvas3D.SetForceCpuSkinning` |
@@ -2718,6 +2719,7 @@ Constructor: `Zanna.Graphics3D.TextureAtlas3D.New`
 | `Zanna.Graphics3D.Canvas3D.IsAvailable` | `i1()` | `rt_canvas3d_is_available` |
 | `Zanna.Graphics3D.Canvas3D.New` | `obj(str,i64,i64)` | `rt_canvas3d_new` |
 | `Zanna.Graphics3D.Canvas3D.NewFullscreen` | `obj(str)` | `rt_canvas3d_new_fullscreen` |
+| `Zanna.Graphics3D.Canvas3D.NewOnCanvas` | `obj(obj<Zanna.Graphics.Canvas>)` | `rt_canvas3d_new_on_canvas` |
 | `Zanna.Graphics3D.Canvas3D.NewOffscreen` | `obj(obj<Zanna.Graphics3D.RenderTarget3D>)` | `rt_canvas3d_new_offscreen` |
 | `Zanna.Graphics3D.Canvas3D.NewOffscreenAccelerated` | `obj(obj<Zanna.Graphics3D.RenderTarget3D>)` | `rt_canvas3d_new_offscreen_accelerated` |
 | <a id="zanna-graphics3d-canvas3d-get-isoffscreen"></a>`Zanna.Graphics3D.Canvas3D.get_IsOffscreen` | `i1(obj)` | `rt_canvas3d_get_is_offscreen` |

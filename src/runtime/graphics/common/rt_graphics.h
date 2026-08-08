@@ -62,6 +62,15 @@ void *rt_canvas_new(rt_string title, int64_t width, int64_t height);
 /// @param canvas Candidate opaque handle.
 /// @return `1` for a live Canvas handle; otherwise `0`.
 int8_t rt_canvas_is_handle(void *canvas);
+/// @brief Opaque platform-window forward declaration (full type in vgfx.h).
+struct vgfx_window;
+/// @brief Borrow the platform window behind a live 2D canvas (may be NULL).
+/// @param canvas Candidate Canvas handle.
+/// @return Borrowed vgfx window handle, or NULL.
+struct vgfx_window *rt_canvas_borrow_window(void *canvas);
+/// @brief Invalidate a 2D canvas's cached window state (post-3D-adoption resync).
+/// @param canvas Candidate Canvas handle; invalid handles are ignored.
+void rt_canvas_mark_window_state_dirty(void *canvas);
 
 /// @brief Destroy a graphics canvas and free resources.
 /// @param canvas Canvas handle from rt_canvas_new.

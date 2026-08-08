@@ -106,6 +106,15 @@ void rt_pixels_set_rgba(void *pixels, int64_t x, int64_t y, int64_t rgba);
 /// @param color Canvas `0x00RRGGBB` or explicitly tagged Color value.
 void rt_pixels_set_color(void *pixels, int64_t x, int64_t y, int64_t color);
 
+/// @brief Blend bright texels toward a team color (luminance-masked tint).
+/// @param pixels Borrowed Pixels handle mutated in place.
+/// @param rgb Packed 0xRRGGBB target color.
+/// @param strength Blend strength at full mask, clamped to [0, 1].
+/// @param lum_lo Luma where the mask begins (0..255).
+/// @param lum_hi Luma where the mask reaches full strength (> lum_lo).
+void rt_pixels_tint_luminance_masked(
+    void *pixels, int64_t rgb, double strength, int64_t lum_lo, int64_t lum_hi);
+
 /// @brief Get direct read-only access to the underlying RGBA pixel buffer.
 /// @param pixels Pixels object.
 /// @return Pointer to width*height uint32_t values (0xRRGGBBAA), or NULL.

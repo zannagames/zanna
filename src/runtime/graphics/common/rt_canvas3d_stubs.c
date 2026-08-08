@@ -227,6 +227,17 @@ void *rt_canvas3d_new(rt_string title, int64_t w, int64_t h) {
     return NULL;
 }
 
+/// @brief Stub for window-adopting Canvas3D construction.
+/// @details Single-window adoption still requires graphics support, so this
+///          follows the existing stateful-constructor trap policy.
+/// @param canvas2d Canvas whose window would be adopted (ignored before trapping).
+/// @return Never returns normally.
+void *rt_canvas3d_new_on_canvas(void *canvas2d) {
+    (void)canvas2d;
+    rt_graphics_unavailable_("Canvas3D.NewOnCanvas: graphics support not compiled in");
+    return NULL;
+}
+
 /// @brief Stub for windowless Canvas3D construction.
 /// @details A usable offscreen renderer still requires graphics support, so this follows the
 ///          existing stateful-constructor trap policy.

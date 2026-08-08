@@ -2069,6 +2069,31 @@ static void test_alpha_preserving_transforms_reuse_classification() {
     printf("test_alpha_preserving_transforms_reuse_classification: PASSED\n");
 }
 
+static void test_tint_luminance_masked_keeps_handle_valid() {
+    void *p = rt_pixels_new(2, 1);
+    rt_pixels_set_rgba(p, 0, 0, 0xF0F0F0FF); /* bright: takes the tint */
+    rt_pixels_set_rgba(p, 1, 0, 0x101010FF); /* dark: below lumLo, untouched */
+    rt_pixels_impl *impl = static_cast<rt_pixels_impl *>(p);
+    /* Populate the alpha-scan cache first: the handle validator rejects a
+     * valid-flagged scan whose generation is stale, so an in-place mutator
+     * that bumps generation without invalidating the cache bricks the
+     * handle (found via the 2048x2048 team-tint path). */
+    assert(rt_pixels_alpha_classification_cached(impl) == RT_PIXELS_ALPHA_OPAQUE);
+    assert(impl->alpha_scan_valid == 1);
+
+    rt_pixels_tint_luminance_masked(p, 0x2244AA, 0.5, 132, 168);
+
+    /* The handle must still validate after the in-place tint. */
+    assert(rt_pixels_checked_impl_or_null(p) != nullptr);
+    assert(rt_pixels_width(p) == 2);
+    /* Bright texel moved toward the tint; dark texel untouched; alpha kept. */
+    uint32_t bright = (uint32_t)rt_pixels_get_rgba(p, 0, 0);
+    assert(bright != 0xF0F0F0FFu);
+    assert((bright & 0xFFu) == 0xFFu);
+    assert((uint32_t)rt_pixels_get_rgba(p, 1, 0) == 0x101010FFu);
+    printf("test_tint_luminance_masked_keeps_handle_valid: PASSED\n");
+}
+
 // ============================================================================
 // BlendPixel Tests
 // ============================================================================
@@ -2238,6 +2263,7 @@ int main() {
     test_alpha_preserving_transforms_reuse_classification();
 
     // BlendPixel
+    test_tint_luminance_masked_keeps_handle_valid();
     test_blend_fully_opaque();
     test_blend_opaque_normalizes_tagged_color_rgb();
     test_blend_transparent();

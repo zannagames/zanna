@@ -39,6 +39,8 @@ rt_string rt_const_cstr(const char *text);
 const char *rt_string_cstr(rt_string s);
 void *rt_model3d_load_with_options_ex(rt_string path, rt_string options);
 int64_t rt_model3d_generate_lods(void *model, int64_t levels, double ratio);
+int64_t rt_model3d_strip_meshes(void *model);
+int64_t rt_model3d_simplify_meshes(void *model, int64_t max_tris);
 int64_t rt_model3d_save(void *model, rt_string path);
 int64_t rt_model3d_get_mesh_count(void *model);
 int64_t rt_model3d_get_material_count(void *model);
@@ -745,7 +747,8 @@ void printAssetUsage(std::FILE *out) {
                  "usage: zanna asset <bake|validate> ...\n"
                  "  zanna asset bake <input> <output.scene3d> [--force-tangents]\n"
                  "                   [--eight-influences] [--compress-anims] [--lods N]\n"
-                 "                   [--clips LIST] [--json]\n"
+                 "                   [--clips LIST] [--strip-meshes] [--simplify-meshes N]\n"
+                 "                   [--json]\n"
                  "      Load a model through the full import pipeline (glTF/GLB/FBX/\n"
                  "      OBJ/STL, including meshopt/Draco/BasisU decode), optionally\n"
                  "      generate LOD chains, save the baked .scene3d scene, and report\n"
@@ -803,6 +806,8 @@ int cmdAsset(int argc, char **argv) {
         std::string options;
         std::string clipsSpec;
         long lods = 0;
+        long simplifyMeshes = 0;
+        bool stripMeshes = false;
         bool json = false;
         for (int i = 3; i < argc; i++) {
             const std::string arg = argv[i];
@@ -824,6 +829,16 @@ int cmdAsset(int argc, char **argv) {
                     std::fprintf(stderr, "zanna asset bake: --lods expects 0..8\n");
                     return 1;
                 }
+            } else if (arg == "--simplify-meshes" && i + 1 < argc) {
+                simplifyMeshes = std::strtol(argv[++i], nullptr, 10);
+                if (simplifyMeshes < 8) {
+                    std::fprintf(stderr,
+                                 "zanna asset bake: --simplify-meshes expects a triangle "
+                                 "ceiling >= 8\n");
+                    return 1;
+                }
+            } else if (arg == "--strip-meshes") {
+                stripMeshes = true;
             } else if (arg == "--json") {
                 json = true;
             } else {
@@ -869,6 +884,10 @@ int cmdAsset(int argc, char **argv) {
                 return 2;
             }
         }
+        if (stripMeshes)
+            (void)rt_model3d_strip_meshes(model);
+        if (simplifyMeshes > 0)
+            (void)rt_model3d_simplify_meshes(model, (int64_t)simplifyMeshes);
         if (lods > 0)
             (void)rt_model3d_generate_lods(model, (int64_t)lods, 0.5);
         const AssetSnapshot sourceSnapshot = snapshotAsset(model);

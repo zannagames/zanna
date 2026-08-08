@@ -1252,6 +1252,12 @@ void *rt_rendertarget3d_material_pixels(void *obj);
 typedef struct {
     void *vptr;
     vgfx_window_t gfx_win;      /* underlying vgfx window (owns framebuffer) */
+    int8_t owns_window;         /* 0 = adopted from a 2D canvas (single-window
+                                 * mode): teardown returns it instead of
+                                 * destroying it */
+    void *lender_canvas;        /* borrowed rt_canvas that lent gfx_win (kept
+                                 * alive by the caller for the game's life;
+                                 * used to resync its window state on return) */
     int32_t width;              /* public/logical coordinate width */
     int32_t height;             /* public/logical coordinate height */
     int32_t framebuffer_width;  /* physical backing-pixel width */

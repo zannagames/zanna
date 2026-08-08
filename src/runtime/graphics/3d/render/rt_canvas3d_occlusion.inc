@@ -909,7 +909,12 @@ static int canvas3d_deferred_intersects_world_bounds(rt_canvas3d *c,
 ///   instance for instanced batches, otherwise the single transformed bound)
 ///   and tests it against the view frustum. Draws without usable bounds
 ///   (e.g. procedural geometry with no declared local AABB) conservatively
-///   pass so nothing visible is clipped away.
+///   pass so nothing visible is clipped away. Runtime-deformed draws
+///   (skinning, morphs) also pass unconditionally: their static Mesh3D AABB
+///   describes pre-deformation vertices — for a skinned variant mesh that is
+///   a bone-local cluster near the entity origin — so testing it culls
+///   characters whose origin leaves the frustum while their posed triangles
+///   are on screen (e.g. a broadcast closeup framing a batter's hands).
 /// @param c Borrowed Canvas3D used for uncached bound transforms.
 /// @param dd Borrowed deferred draw to classify.
 /// @param frustum Borrowed normalized view-frustum planes.
@@ -922,6 +927,8 @@ static int canvas3d_deferred_intersects_frustum(rt_canvas3d *c,
     int8_t has_bounds = 0;
 
     if (!c || !dd || !frustum)
+        return 1;
+    if (canvas3d_cmd_has_runtime_deformation(&dd->cmd))
         return 1;
     canvas3d_accumulate_deferred_world_bounds(c, dd, world_min, world_max, &has_bounds);
     if (!has_bounds)

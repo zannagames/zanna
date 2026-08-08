@@ -60,6 +60,7 @@ Creates a new pixel buffer initialized to transparent black (0x00000000). Negati
 | `SetRgba(x, y, color)`            | `Void(Integer, Integer, Integer)`                                    | Explicit raw `0xRRGGBBAA` set alias                                               |
 | `SetColor(x, y, color)`           | `Void(Integer, Integer, Integer)`                                    | Set from `Color.Rgb()`, Canvas `0x00RRGGBB`, or `Color.Rgba()`                    |
 | `Tint(color)`                     | `Pixels(Integer)`                                                    | Return a copy with a color tint applied; `Color.Rgba` input also scales alpha     |
+| `TintLuminanceMasked(rgb, strength, lumLo, lumHi)` | `Void(Integer, Double, Integer, Integer)`           | In-place tint toward `0x00RRGGBB` masked by per-pixel luminance: untouched below `lumLo`, ramping to full `strength` at/above `lumHi` (0-255 luma); alpha preserved |
 | `ToBytes()`                       | `Bytes()`                                                            | Convert to raw bytes (RGBA, row-major)                                            |
 
 ### Static Methods
