@@ -258,6 +258,17 @@ rt_string rt_model3d_get_variant_name(void *obj, int64_t index);
 /// @param variant_index Zero-based imported variant index.
 /// @return Number of nodes assigned a mapped material, or zero for invalid input.
 int64_t rt_model3d_apply_variant(void *obj, void *target, int64_t variant_index);
+/// @brief Drop all node visuals and release the model's mesh/material inventories.
+/// @details Used by animation-only asset bakes; node transforms, names, skeletons, and animation
+///          clips remain intact.
+/// @param obj Model3D modified in place.
+/// @return Number of inventory meshes released, or zero for invalid input/failure.
+int64_t rt_model3d_strip_meshes(void *obj);
+/// @brief Replace over-budget meshes with simplified copies throughout the model hierarchy.
+/// @param obj Model3D modified in place.
+/// @param max_tris Maximum triangles retained by each simplified mesh.
+/// @return Number of inventory meshes replaced, or zero for invalid input/failure.
+int64_t rt_model3d_simplify_meshes(void *obj, int64_t max_tris);
 /// @brief Generate LOD chains (1..4 levels of repeated ratio-scaled triangles) for every mesh node
 /// in
 ///        the asset's template and scene hierarchies, and enable auto screen-error

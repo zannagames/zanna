@@ -265,9 +265,12 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_fbx_test_set_load_budget_bytes")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_fbx_test_get_last_budget_used_bytes")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_fbx_test_get_last_lookup_probe_count")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_fbx_test_append_matches_general_product")
-// Tool-facing clip-subset filter behind `zanna asset bake --clips`; deliberately
-// absent from runtime.def (per-clip bakes are an offline packaging concern).
+// Tool-facing transforms behind `zanna asset bake`; deliberately absent from
+// runtime.def because offline packaging policy is not a language runtime API
+// (ADR 0244).
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_keep_animation_subset")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_simplify_meshes")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_model3d_strip_meshes")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_textureasset3d_decode_bc1_block")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_textureasset3d_decode_bc3_block")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_textureasset3d_decode_bc4_block")
@@ -420,6 +423,7 @@ RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas_polygon")
  * window-state re-sync when the loan returns. Not frontend surface. */
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas_borrow_window")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas_mark_window_state_dirty")
+RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas_return_window")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_canvas_polygon_frame")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_str_split_fields")
 RUNTIME_SURFACE_INTERNAL_SYMBOL("rt_parse_double_str")

@@ -1877,8 +1877,9 @@ static void canvas3d_return_borrowed_window(rt_canvas3d *c) {
     vgfx_set_gpu_present(c->gfx_win, 0);
     vgfx_set_resize_callback(c->gfx_win, NULL, NULL);
     if (c->lender_canvas) {
-        rt_canvas_mark_window_state_dirty(c->lender_canvas);
+        void *lender = c->lender_canvas;
         c->lender_canvas = NULL;
+        rt_canvas_return_window(lender);
     }
 }
 
@@ -2277,8 +2278,14 @@ static void *canvas3d_new_offscreen_impl(void *target, int32_t prefer_gpu) {
         rt_trap("Canvas3D.NewOffscreen: render-target buffer allocation failed");
         return NULL;
     }
-    return canvas3d_new_impl(
-        NULL, (int64_t)rtd->target->width, (int64_t)rtd->target->height, 0, rtd, prefer_gpu, NULL, NULL);
+    return canvas3d_new_impl(NULL,
+                             (int64_t)rtd->target->width,
+                             (int64_t)rtd->target->height,
+                             0,
+                             rtd,
+                             prefer_gpu,
+                             NULL,
+                             NULL);
 }
 
 /// @brief Create a 3D canvas that renders into an existing 2D canvas's window.
@@ -2291,11 +2298,15 @@ static void *canvas3d_new_offscreen_impl(void *target, int32_t prefer_gpu) {
 /// @return New GC-managed Canvas3D, or NULL after a validation trap.
 void *rt_canvas3d_new_on_canvas(void *canvas2d) {
     vgfx_window_t win = rt_canvas_borrow_window(canvas2d);
+    void *canvas3d;
     if (!win) {
-        rt_trap("Canvas3D.NewOnCanvas: invalid or closed canvas");
+        rt_trap("Canvas3D.NewOnCanvas: invalid, closed, or already adopted canvas");
         return NULL;
     }
-    return canvas3d_new_impl(NULL, 0, 0, 0, NULL, 0, win, canvas2d);
+    canvas3d = canvas3d_new_impl(NULL, 0, 0, 0, NULL, 0, win, canvas2d);
+    if (!canvas3d)
+        rt_canvas_return_window(canvas2d);
+    return canvas3d;
 }
 
 /// @brief Create a deterministic windowless renderer bound to an explicit RenderTarget3D.

@@ -231,6 +231,9 @@ from [0000-template.md](0000-template.md) and take the next unused number.
 - [ADR 0194](0194-scene-watch-hot-reload.md) — The --scene-watch Hot-Reload Contract
 - [ADR 0195](0195-2d-layer-opacity.md) — Optional 2D Layer Opacity
 - [ADR 0227](0227-3d-api-symmetry-readback-and-scene-diagnostics.md) — 3D API Symmetry, Readback, and Scene Diagnostics
+- [ADR 0242](0242-canvas3d-window-adoption.md) — Adopt a Canvas Window through an Exclusive Retained Loan
+- [ADR 0243](0243-animation3d-mirror.md) — Mirror Animation3D Clips across the Sagittal Plane
+- [ADR 0244](0244-offline-model-bake-c-abi.md) — Classify Offline Model Bake Helpers as Internal C ABI
 
 ## Release & Packaging
 

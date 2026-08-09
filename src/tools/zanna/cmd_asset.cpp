@@ -20,6 +20,7 @@
 #include "cmd_asset.hpp"
 
 #ifdef ZANNA_ENABLE_GRAPHICS
+#include "rt_model3d.h"
 #include "rt_textureasset3d.h"
 #endif
 
@@ -39,8 +40,6 @@ rt_string rt_const_cstr(const char *text);
 const char *rt_string_cstr(rt_string s);
 void *rt_model3d_load_with_options_ex(rt_string path, rt_string options);
 int64_t rt_model3d_generate_lods(void *model, int64_t levels, double ratio);
-int64_t rt_model3d_strip_meshes(void *model);
-int64_t rt_model3d_simplify_meshes(void *model, int64_t max_tris);
 int64_t rt_model3d_save(void *model, rt_string path);
 int64_t rt_model3d_get_mesh_count(void *model);
 int64_t rt_model3d_get_material_count(void *model);

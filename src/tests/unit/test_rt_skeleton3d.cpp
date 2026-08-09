@@ -36,6 +36,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <string>
 
 extern "C" {
 extern void *rt_vec3_new(double x, double y, double z);
@@ -985,8 +986,8 @@ static void test_animation_retarget_biped_side_letters() {
 
     void *dst = rt_skeleton3d_new();
     rt_skeleton3d_add_bone(dst, rt_const_cstr("root"), -1, rt_mat4_identity());
-    int64_t d_right =
-        rt_skeleton3d_add_bone(dst, rt_const_cstr("RightArm"), 0, rt_mat4_translate(-1.0, 0.0, 0.0));
+    int64_t d_right = rt_skeleton3d_add_bone(
+        dst, rt_const_cstr("RightArm"), 0, rt_mat4_translate(-1.0, 0.0, 0.0));
     int64_t d_left =
         rt_skeleton3d_add_bone(dst, rt_const_cstr("LeftArm"), 0, rt_mat4_translate(1.0, 0.0, 0.0));
     rt_skeleton3d_compute_inverse_bind(dst);
@@ -1008,6 +1009,7 @@ static void test_animation_retarget_biped_side_letters() {
     typedef struct {
         double m[16];
     } mat4_view;
+
     mat4_view *left = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, d_left);
     mat4_view *right = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, d_right);
     EXPECT_NEAR(left->m[11], 0.5, 0.05, "Bip01 L UpperArm drives LeftArm by role");
@@ -1054,6 +1056,7 @@ static void test_animation_retarget_conforms_bind_posture() {
     typedef struct {
         double m[16];
     } mat4_view;
+
     mat4_view *hand = (mat4_view *)rt_anim_player3d_get_bone_matrix(player, d_hand);
     /* The unmapped root keeps the destination's own shoulder offset (1,0,0)
      * — joint offsets are rig proportions — while the mapped arm BONE
@@ -1078,8 +1081,8 @@ static void test_animation_retarget_no_cross_rig_index_fallback() {
     rt_skeleton3d_add_bone(dst, rt_const_cstr("root"), -1, rt_mat4_identity());
     int64_t d_arm =
         rt_skeleton3d_add_bone(dst, rt_const_cstr("LeftArm"), 0, rt_mat4_translate(1.0, 0.0, 0.0));
-    rt_skeleton3d_add_bone(dst, rt_const_cstr("LeftForeArm"), (int64_t)d_arm,
-                           rt_mat4_translate(1.0, 0.0, 0.0));
+    rt_skeleton3d_add_bone(
+        dst, rt_const_cstr("LeftForeArm"), (int64_t)d_arm, rt_mat4_translate(1.0, 0.0, 0.0));
     rt_skeleton3d_compute_inverse_bind(dst);
 
     void *anim = rt_animation3d_new(rt_const_cstr("slide"), 2.0);
@@ -1093,8 +1096,7 @@ static void test_animation_retarget_no_cross_rig_index_fallback() {
      * LeftArm (dst bone 1) and produced a bogus animated clip. Now the
      * channel is unmappable, nothing lands on the destination, and the
      * retarget rejects the clip outright (callers keep their fallback). */
-    EXPECT_TRUE(retargeted == nullptr,
-                "Unmappable cross-rig clip is rejected, not index-paired");
+    EXPECT_TRUE(retargeted == nullptr, "Unmappable cross-rig clip is rejected, not index-paired");
     (void)d_arm;
 }
 
@@ -1246,17 +1248,17 @@ static void test_animation_extract_range_trims_and_rebases() {
     void *ident = rt_quat_new(0.0, 0.0, 0.0, 1.0);
     void *one = rt_vec3_new(1.0, 1.0, 1.0);
     for (int k = 0; k <= 6; ++k)
-        rt_animation3d_add_keyframe(anim, root, (double)k,
-                                    rt_vec3_new((double)k * 10.0, 0.0, 0.0), ident, one);
+        rt_animation3d_add_keyframe(
+            anim, root, (double)k, rt_vec3_new((double)k * 10.0, 0.0, 0.0), ident, one);
 
     void *core = rt_animation3d_extract_range(anim, 2.0, 4.0);
     EXPECT_TRUE(core != NULL, "ExtractRange returns a clip for a valid span");
-    EXPECT_NEAR(rt_animation3d_get_duration(core), 2.0, 1e-6,
-                "core duration equals the span");
+    EXPECT_NEAR(rt_animation3d_get_duration(core), 2.0, 1e-6, "core duration equals the span");
 
     typedef struct {
         double m[16];
     } mat4_view;
+
     void *player = rt_anim_player3d_new(skel);
     rt_anim_player3d_play(player, core);
     rt_anim_player3d_update(player, 0.0);
@@ -1267,12 +1269,9 @@ static void test_animation_extract_range_trims_and_rebases() {
     EXPECT_NEAR(hips2->m[3], 40.0, 1e-4, "core ends at the span's last key");
 
     /* Source untouched; degenerate/empty spans return NULL. */
-    EXPECT_NEAR(rt_animation3d_get_duration(anim), 6.0, 1e-6,
-                "source clip duration is unchanged");
-    EXPECT_TRUE(rt_animation3d_extract_range(anim, 4.0, 4.0) == NULL,
-                "an empty span yields NULL");
-    EXPECT_TRUE(rt_animation3d_extract_range(NULL, 0.0, 1.0) == NULL,
-                "invalid input yields NULL");
+    EXPECT_NEAR(rt_animation3d_get_duration(anim), 6.0, 1e-6, "source clip duration is unchanged");
+    EXPECT_TRUE(rt_animation3d_extract_range(anim, 4.0, 4.0) == NULL, "an empty span yields NULL");
+    EXPECT_TRUE(rt_animation3d_extract_range(NULL, 0.0, 1.0) == NULL, "invalid input yields NULL");
 }
 
 /// @brief Mirror swaps L/R channels, conjugates keys, and round-trips (ADR 0243).
@@ -1305,6 +1304,7 @@ static void test_animation_mirror_swaps_and_conjugates() {
     typedef struct {
         double m[16];
     } mat4_view;
+
     void *player = rt_anim_player3d_new(skel);
     rt_anim_player3d_play(player, mir);
     rt_anim_player3d_update(player, 1.0);
@@ -1337,6 +1337,82 @@ static void test_animation_mirror_swaps_and_conjugates() {
     /* Degenerate inputs. */
     EXPECT_TRUE(rt_animation3d_mirror(NULL, skel) == NULL, "NULL clip yields NULL");
     EXPECT_TRUE(rt_animation3d_mirror(anim, NULL) == NULL, "NULL skeleton yields NULL");
+}
+
+/// @brief Mirror swaps only complete side tokens and supports all-uppercase rig names.
+static void test_animation_mirror_respects_name_boundaries() {
+    void *skel = rt_skeleton3d_new();
+    int64_t bright = rt_skeleton3d_add_bone(skel, rt_const_cstr("Bright"), -1, rt_mat4_identity());
+    int64_t bleft = rt_skeleton3d_add_bone(skel, rt_const_cstr("Bleft"), -1, rt_mat4_identity());
+    int64_t leftover =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("Leftover"), -1, rt_mat4_identity());
+    int64_t rightover =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("Rightover"), -1, rt_mat4_identity());
+    int64_t left_widget =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("LEFT_WIDGET"), -1, rt_mat4_identity());
+    int64_t right_widget =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("RIGHT_WIDGET"), -1, rt_mat4_identity());
+    std::string long_left_name = "Left_" + std::string(120, 'a');
+    std::string long_right_name = "Right_" + std::string(120, 'a');
+    int64_t long_left =
+        rt_skeleton3d_add_bone(skel,
+                               rt_string_from_bytes(long_left_name.data(), long_left_name.size()),
+                               -1,
+                               rt_mat4_identity());
+    int64_t long_right =
+        rt_skeleton3d_add_bone(skel,
+                               rt_string_from_bytes(long_right_name.data(), long_right_name.size()),
+                               -1,
+                               rt_mat4_identity());
+    int64_t left_arm =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("LeftArm"), -1, rt_mat4_identity());
+    int64_t mix_left_arm =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("mixamorig:LeftArm"), -1, rt_mat4_identity());
+    int64_t right_arm =
+        rt_skeleton3d_add_bone(skel, rt_const_cstr("RightArm"), -1, rt_mat4_identity());
+    rt_skeleton3d_compute_inverse_bind(skel);
+
+    void *anim = rt_animation3d_new(rt_const_cstr("names"), 1.0);
+    void *ident = rt_quat_new(0.0, 0.0, 0.0, 1.0);
+    void *one = rt_vec3_new(1.0, 1.0, 1.0);
+    rt_animation3d_add_keyframe(anim, bright, 0.0, rt_vec3_new(1.0, 0.0, 0.0), ident, one);
+    rt_animation3d_add_keyframe(anim, leftover, 0.0, rt_vec3_new(2.0, 0.0, 0.0), ident, one);
+    rt_animation3d_add_keyframe(anim, left_widget, 0.0, rt_vec3_new(3.0, 0.0, 0.0), ident, one);
+    rt_animation3d_add_keyframe(anim, long_left, 0.0, rt_vec3_new(4.0, 0.0, 0.0), ident, one);
+    rt_animation3d_add_keyframe(anim, left_arm, 0.0, rt_vec3_new(5.0, 0.0, 0.0), ident, one);
+    rt_animation3d_add_keyframe(anim, mix_left_arm, 0.0, rt_vec3_new(6.0, 0.0, 0.0), ident, one);
+
+    auto *mir = static_cast<rt_animation3d *>(rt_animation3d_mirror(anim, skel));
+    EXPECT_TRUE(mir != nullptr, "Mirror accepts boundary-sensitive bone names");
+    bool found_bright = false;
+    bool found_leftover = false;
+    bool found_right_widget = false;
+    bool found_bleft = false;
+    bool found_rightover = false;
+    bool found_long_right = false;
+    bool found_right_arm = false;
+    bool found_mix_left_arm = false;
+    if (mir) {
+        for (int32_t i = 0; i < mir->channel_count; ++i) {
+            found_bright |= mir->channels[i].bone_index == bright;
+            found_leftover |= mir->channels[i].bone_index == leftover;
+            found_right_widget |= mir->channels[i].bone_index == right_widget;
+            found_bleft |= mir->channels[i].bone_index == bleft;
+            found_rightover |= mir->channels[i].bone_index == rightover;
+            found_long_right |= mir->channels[i].bone_index == long_right;
+            found_right_arm |= mir->channels[i].bone_index == right_arm;
+            found_mix_left_arm |= mir->channels[i].bone_index == mix_left_arm;
+        }
+    }
+    EXPECT_TRUE(found_bright && !found_bleft,
+                "Mirror does not interpret the substring in Bright as a side token");
+    EXPECT_TRUE(found_leftover && !found_rightover,
+                "Mirror does not interpret the prefix in Leftover as a side token");
+    EXPECT_TRUE(found_right_widget, "Mirror swaps a complete all-uppercase LEFT token to RIGHT");
+    EXPECT_TRUE(found_long_right,
+                "Mirror resolves side tokens in exact bone names longer than its stack buffer");
+    EXPECT_TRUE(found_right_arm && found_mix_left_arm,
+                "Mirror preserves channels when two inferred roles target the same partner");
 }
 
 static void test_animation_retarget_matches_bone_names() {
@@ -1495,6 +1571,7 @@ int main() {
     test_animation_strip_root_motion_pins_travel();
     test_animation_extract_range_trims_and_rebases();
     test_animation_mirror_swaps_and_conjugates();
+    test_animation_mirror_respects_name_boundaries();
     test_animation_retarget_scales_by_proportion();
     test_animation_retarget_maps_humanoid_roles();
     test_animation_retarget_biped_side_letters();

@@ -1233,8 +1233,12 @@ void rt_canvas3d_draw_text_3d_scaled(
         user_scale = 64.0;
 
     const char *str = rt_string_cstr(text);
+    size_t text_len;
+    const char *text_end;
     if (!str)
         return;
+    text_len = strnlen(str, RT_CANVAS3D_TEXT_MAX_BYTES);
+    text_end = str + text_len;
 
     float r = (float)((color >> 16) & 0xFF) / 255.0f;
     float g = (float)((color >> 8) & 0xFF) / 255.0f;
@@ -1295,7 +1299,7 @@ void rt_canvas3d_draw_text_3d_scaled(
 
     /* Count "on" pixels to size the reusable scratch mesh exactly. */
     size_t quad_count = 0;
-    for (const char *p = str; *p; p++) {
+    for (const char *p = str; p < text_end; p++) {
         int ch = *p;
         if (ch < 32 || ch > 126)
             ch = 32;
@@ -1329,7 +1333,7 @@ void rt_canvas3d_draw_text_3d_scaled(
     float cx = (float)x;
     int32_t quad_idx = 0;
 
-    for (const char *p = str; *p; p++) {
+    for (const char *p = str; p < text_end; p++) {
         int ch = *p;
         if (ch < 32 || ch > 126)
             ch = 32;

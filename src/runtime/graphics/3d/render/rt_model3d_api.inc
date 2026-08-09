@@ -265,62 +265,179 @@ int64_t rt_model3d_keep_animation_subset(void *obj,
     return 1;
 }
 
-/// @brief Walk every template/scene node and hand each one to @p visit.
-/// @param model Validated model whose hierarchies are traversed.
-/// @param visit Callback receiving each live scene node once.
-/// @param ctx Opaque callback context.
-static void model_visit_nodes(rt_model3d *model,
-                              void (*visit)(rt_scene_node3d *node, void *ctx),
-                              void *ctx) {
-    rt_scene_node3d *stack_local[64];
-    rt_scene_node3d **stack = stack_local;
-    int32_t stack_capacity = 64;
-    int32_t stack_count = 0;
-    int32_t visited = 0;
-    if (model->template_root)
-        stack[stack_count++] = model->template_root;
-    for (int32_t si = 0; si < model_scene_count(model); si++) {
-        rt_scene_node3d *scene_root = (rt_scene_node3d *)rt_g3d_checked_or_null(
-            model->scenes[si].root, RT_G3D_SCENENODE3D_CLASS_ID);
-        if (!scene_root || scene_root == model->template_root)
-            continue;
-        if (stack_count < stack_capacity)
-            stack[stack_count++] = scene_root;
+/// @brief Duplicate-suppression table for model hierarchy preflight walks.
+typedef struct model_node_seen_set {
+    rt_scene_node3d **slots;
+    size_t count;
+    size_t capacity;
+} model_node_seen_set;
+
+/// @brief Mix an aligned node pointer for a power-of-two open-addressed table.
+static size_t model_node_pointer_hash(const rt_scene_node3d *node) {
+    uintptr_t bits = (uintptr_t)node;
+    bits ^= bits >> 16;
+    bits *= (uintptr_t)UINT32_C(0x7FEB352D);
+    bits ^= bits >> 15;
+    return (size_t)bits;
+}
+
+/// @brief Grow a model traversal's seen-node table without disturbing it on failure.
+static int model_node_seen_reserve(model_node_seen_set *seen, size_t minimum_capacity) {
+    size_t capacity;
+    rt_scene_node3d **slots;
+    if (!seen)
+        return 0;
+    capacity = seen->capacity > 0 ? seen->capacity : 64u;
+    while (capacity < minimum_capacity) {
+        if (capacity > SIZE_MAX / 2u)
+            return 0;
+        capacity *= 2u;
     }
-    while (stack_count > 0) {
-        rt_scene_node3d *current = stack[--stack_count];
-        int32_t child_count;
-        if (!current || ++visited >= MODEL3D_MAX_WALK_NODES)
+    if (capacity == seen->capacity)
+        return 1;
+    if (capacity > SIZE_MAX / sizeof(*slots))
+        return 0;
+    slots = (rt_scene_node3d **)calloc(capacity, sizeof(*slots));
+    if (!slots)
+        return 0;
+    for (size_t i = 0; i < seen->capacity; i++) {
+        rt_scene_node3d *node = seen->slots[i];
+        size_t index;
+        if (!node)
             continue;
-        visit(current, ctx);
+        index = model_node_pointer_hash(node) & (capacity - 1u);
+        while (slots[index])
+            index = (index + 1u) & (capacity - 1u);
+        slots[index] = node;
+    }
+    free(seen->slots);
+    seen->slots = slots;
+    seen->capacity = capacity;
+    return 1;
+}
+
+/// @brief Record one node once in a model traversal.
+static int model_node_seen_insert(model_node_seen_set *seen, rt_scene_node3d *node, int *inserted) {
+    size_t index;
+    if (!seen || !node || !inserted)
+        return 0;
+    *inserted = 0;
+    if (seen->capacity == 0 || seen->count >= seen->capacity / 2u) {
+        size_t requested = seen->capacity > 0 ? seen->capacity * 2u : 64u;
+        if (requested < seen->capacity || !model_node_seen_reserve(seen, requested))
+            return 0;
+    }
+    index = model_node_pointer_hash(node) & (seen->capacity - 1u);
+    while (seen->slots[index]) {
+        if (seen->slots[index] == node)
+            return 1;
+        index = (index + 1u) & (seen->capacity - 1u);
+    }
+    seen->slots[index] = node;
+    seen->count++;
+    *inserted = 1;
+    return 1;
+}
+
+/// @brief Append a node to a checked growable pointer vector.
+static int model_node_vector_push(rt_scene_node3d ***nodes_io,
+                                  size_t *count_io,
+                                  size_t *capacity_io,
+                                  rt_scene_node3d *node) {
+    rt_scene_node3d **nodes;
+    size_t count;
+    size_t capacity;
+    if (!nodes_io || !count_io || !capacity_io || !node)
+        return 0;
+    nodes = *nodes_io;
+    count = *count_io;
+    capacity = *capacity_io;
+    if (count >= capacity) {
+        size_t new_capacity = capacity > 0 ? capacity * 2u : 64u;
+        rt_scene_node3d **grown;
+        if (new_capacity <= capacity || new_capacity > SIZE_MAX / sizeof(*grown))
+            return 0;
+        grown = (rt_scene_node3d **)realloc(nodes, new_capacity * sizeof(*grown));
+        if (!grown)
+            return 0;
+        nodes = grown;
+        capacity = new_capacity;
+    }
+    nodes[count++] = node;
+    *nodes_io = nodes;
+    *count_io = count;
+    *capacity_io = capacity;
+    return 1;
+}
+
+/// @brief Collect every live template/scene node exactly once before mutation.
+/// @details The breadth-first vector doubles as the work queue. Root counts are not capped by a
+/// fixed local array, shared subtrees and cycles terminate through the seen set, and callers never
+/// begin an apply pass unless the complete walk has succeeded.
+/// @param model Validated model whose template and scene roots are traversed.
+/// @param[out] nodes_out Owned node vector on success; `NULL` on failure.
+/// @param[out] count_out Number of initialized entries in @p nodes_out.
+/// @param trap_message Allocation/limit diagnostic emitted before failure.
+/// @return Nonzero on complete success, otherwise zero.
+static int model_collect_nodes(rt_model3d *model,
+                               rt_scene_node3d ***nodes_out,
+                               size_t *count_out,
+                               const char *trap_message) {
+    rt_scene_node3d **nodes = NULL;
+    size_t count = 0;
+    size_t capacity = 0;
+    model_node_seen_set seen;
+    int inserted;
+    if (nodes_out)
+        *nodes_out = NULL;
+    if (count_out)
+        *count_out = 0;
+    if (!model || !nodes_out || !count_out)
+        return 0;
+    memset(&seen, 0, sizeof(seen));
+
+#define MODEL_COLLECT_ROOT(candidate_)                                                             \
+    do {                                                                                           \
+        rt_scene_node3d *root_ =                                                                   \
+            (rt_scene_node3d *)rt_g3d_checked_or_null((candidate_), RT_G3D_SCENENODE3D_CLASS_ID);  \
+        if (root_) {                                                                               \
+            if (!model_node_seen_insert(&seen, root_, &inserted) ||                                \
+                (inserted && !model_node_vector_push(&nodes, &count, &capacity, root_)))           \
+                goto fail;                                                                         \
+        }                                                                                          \
+    } while (0)
+
+    MODEL_COLLECT_ROOT(model->template_root);
+    for (int32_t si = 0, scene_count = model_scene_count(model); si < scene_count; si++)
+        MODEL_COLLECT_ROOT(model->scenes[si].root);
+#undef MODEL_COLLECT_ROOT
+
+    for (size_t read = 0; read < count; read++) {
+        rt_scene_node3d *current = nodes[read];
+        int32_t child_count;
+        if (count > (size_t)MODEL3D_MAX_WALK_NODES)
+            goto fail;
         child_count = model_node_child_count(current);
         for (int32_t i = 0; i < child_count; i++) {
             rt_scene_node3d *child = (rt_scene_node3d *)rt_g3d_checked_or_null(
                 current->children[i], RT_G3D_SCENENODE3D_CLASS_ID);
             if (!child)
                 continue;
-            if (stack_count >= stack_capacity) {
-                if (stack == stack_local) {
-                    rt_scene_node3d **grown = (rt_scene_node3d **)malloc(
-                        (size_t)stack_capacity * 2 * sizeof(*grown));
-                    if (!grown)
-                        break;
-                    memcpy(grown, stack, (size_t)stack_count * sizeof(*grown));
-                    stack = grown;
-                } else {
-                    rt_scene_node3d **grown = (rt_scene_node3d **)realloc(
-                        stack, (size_t)stack_capacity * 2 * sizeof(*grown));
-                    if (!grown)
-                        break;
-                    stack = grown;
-                }
-                stack_capacity *= 2;
-            }
-            stack[stack_count++] = child;
+            if (!model_node_seen_insert(&seen, child, &inserted) ||
+                (inserted && !model_node_vector_push(&nodes, &count, &capacity, child)))
+                goto fail;
         }
     }
-    if (stack != stack_local)
-        free(stack);
+    free(seen.slots);
+    *nodes_out = nodes;
+    *count_out = count;
+    return 1;
+
+fail:
+    free(seen.slots);
+    free(nodes);
+    rt_trap(trap_message);
+    return 0;
 }
 
 /// @brief model_visit_nodes callback: detach the node's mesh and material.
@@ -341,13 +458,19 @@ static void model_strip_node_visuals(rt_scene_node3d *node, void *ctx) {
 /// @return Number of meshes dropped, or 0 for invalid input.
 int64_t rt_model3d_strip_meshes(void *obj) {
     rt_model3d *model = model3d_checked(obj);
+    rt_scene_node3d **nodes = NULL;
+    size_t node_count = 0;
     int32_t safe_meshes;
     int32_t safe_materials;
     if (!model)
         return 0;
-    model_visit_nodes(model, model_strip_node_visuals, NULL);
-    safe_meshes =
-        model_clamped_array_count(model->meshes, model->mesh_count, model->mesh_capacity);
+    if (!model_collect_nodes(
+            model, &nodes, &node_count, "SceneAsset.StripMeshes: node walk allocation failed"))
+        return 0;
+    for (size_t i = 0; i < node_count; i++)
+        model_strip_node_visuals(nodes[i], NULL);
+    free(nodes);
+    safe_meshes = model_clamped_array_count(model->meshes, model->mesh_count, model->mesh_capacity);
     for (int32_t i = 0; i < safe_meshes; i++) {
         model_release_local(model->meshes[i]);
         model->meshes[i] = NULL;
@@ -386,18 +509,21 @@ static void model_swap_node_mesh(rt_scene_node3d *node, void *ctx) {
 /// @return Number of meshes replaced, or 0 for invalid input.
 int64_t rt_model3d_simplify_meshes(void *obj, int64_t max_tris) {
     rt_model3d *model = model3d_checked(obj);
+    rt_scene_node3d **nodes = NULL;
+    size_t node_count = 0;
     int32_t safe_meshes;
     int64_t replaced = 0;
     if (!model)
         return 0;
     if (max_tris < 8)
         max_tris = 8;
-    safe_meshes =
-        model_clamped_array_count(model->meshes, model->mesh_count, model->mesh_capacity);
+    if (!model_collect_nodes(
+            model, &nodes, &node_count, "SceneAsset.SimplifyMeshes: node walk allocation failed"))
+        return 0;
+    safe_meshes = model_clamped_array_count(model->meshes, model->mesh_count, model->mesh_capacity);
     for (int32_t i = 0; i < safe_meshes; i++) {
         void *mesh_obj = model->meshes[i];
-        rt_mesh3d *mesh =
-            (rt_mesh3d *)rt_g3d_checked_or_null(mesh_obj, RT_G3D_MESH3D_CLASS_ID);
+        rt_mesh3d *mesh = (rt_mesh3d *)rt_g3d_checked_or_null(mesh_obj, RT_G3D_MESH3D_CLASS_ID);
         void *slim;
         model_mesh_swap_ctx swap;
         if (!mesh)
@@ -410,11 +536,13 @@ int64_t rt_model3d_simplify_meshes(void *obj, int64_t max_tris) {
             continue;
         swap.old_mesh = mesh_obj;
         swap.new_mesh = slim;
-        model_visit_nodes(model, model_swap_node_mesh, &swap);
+        for (size_t node_index = 0; node_index < node_count; node_index++)
+            model_swap_node_mesh(nodes[node_index], &swap);
         model->meshes[i] = slim; /* keep the construction ref as the array ref */
         model_release_local(mesh_obj);
         replaced++;
     }
+    free(nodes);
     return replaced;
 }
 
@@ -937,10 +1065,10 @@ typedef struct {
     void *lods[4];
     double distances[4];
     int32_t count;
-    uint32_t base_tris;   ///< Validated source triangle count (main thread).
+    uint32_t base_tris;    ///< Validated source triangle count (main thread).
     double first_distance; ///< Level-0 threshold from the mesh bounding radius.
-    int8_t prepared;      ///< Nonzero once main-thread prep ran and decimation
-                          ///< is worthwhile (>= 8 triangles).
+    int8_t prepared;       ///< Nonzero once main-thread prep ran and decimation
+                           ///< is worthwhile (>= 8 triangles).
 } model_lod_chain_entry;
 
 /// @brief One worker's slice of the parallel LOD chain build.
@@ -965,10 +1093,9 @@ typedef struct {
 /// @param entry Prepared cache entry whose chain is filled in place.
 /// @param levels Sanitized chain length.
 /// @param ratio Per-level triangle ratio.
-static void model_lod_chain_build_one(model_lod_chain_entry *entry,
-                                      int64_t levels,
-                                      double ratio) {
+static void model_lod_chain_build_one(model_lod_chain_entry *entry, int64_t levels, double ratio) {
     void *source = entry->mesh;
+    int64_t source_tris = (int64_t)entry->base_tris;
     double target = (double)entry->base_tris;
     double distance = entry->first_distance;
     if (!entry->prepared)
@@ -976,18 +1103,31 @@ static void model_lod_chain_build_one(model_lod_chain_entry *entry,
     for (int64_t k = 0; k < levels; k++) {
         int64_t tri_target;
         void *lod;
+        rt_mesh3d *lod_mesh;
+        int64_t lod_tris;
+        if (source_tris <= 2)
+            break;
         target *= ratio;
         tri_target = (int64_t)target;
         if (tri_target < 2)
             tri_target = 2;
+        if (tri_target >= source_tris)
+            tri_target = source_tris - 1;
         lod = rt_mesh3d_simplify(source, tri_target);
         if (!lod)
             break;
+        lod_mesh = (rt_mesh3d *)rt_g3d_checked_or_null(lod, RT_G3D_MESH3D_CLASS_ID);
+        lod_tris = lod_mesh ? (int64_t)(rt_mesh3d_validated_index_count(lod_mesh) / 3u) : 0;
+        if (lod_tris <= 0 || lod_tris >= source_tris) {
+            model_release_local(lod);
+            break;
+        }
         entry->lods[entry->count] = lod; /* construction ref released by the caller */
         entry->distances[entry->count] = distance;
         entry->count++;
         distance *= 2.0;
         source = lod;
+        source_tris = lod_tris;
     }
 }
 
@@ -1023,10 +1163,12 @@ static model_lod_chain_entry *model_lod_chain_find_or_prepare(model_lod_chain_en
             return &(*entries)[i];
     }
     if (*entry_count >= *entry_capacity) {
-        int32_t new_capacity = *entry_capacity > 0 ? *entry_capacity * 2 : 8;
+        int32_t new_capacity;
         model_lod_chain_entry *grown;
-        if (*entry_capacity > INT32_MAX / 2 ||
-            (size_t)new_capacity > SIZE_MAX / sizeof(model_lod_chain_entry))
+        if (*entry_capacity > INT32_MAX / 2)
+            return NULL;
+        new_capacity = *entry_capacity > 0 ? *entry_capacity * 2 : 8;
+        if ((size_t)new_capacity > SIZE_MAX / sizeof(model_lod_chain_entry))
             return NULL;
         grown = (model_lod_chain_entry *)realloc(*entries, (size_t)new_capacity * sizeof(*grown));
         if (!grown)
@@ -1045,7 +1187,9 @@ static model_lod_chain_entry *model_lod_chain_find_or_prepare(model_lod_chain_en
     if (base_tris < 8u)
         return entry; /* nothing worth decimating */
     rt_mesh3d_refresh_bounds(mesh);
-    radius = mesh->bsphere_radius > 0.0f ? (double)mesh->bsphere_radius : 1.0;
+    radius = isfinite(mesh->bsphere_radius) && mesh->bsphere_radius > 0.0f
+                 ? (double)mesh->bsphere_radius
+                 : 1.0;
     entry->base_tris = base_tris;
     entry->first_distance = radius * 12.0;
     entry->prepared = 1;
@@ -1068,12 +1212,9 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
     model_lod_chain_entry *chains = NULL;
     int32_t chain_count = 0;
     int32_t chain_capacity = 0;
-    rt_scene_node3d **stack;
-    int32_t stack_count = 0;
-    int32_t stack_capacity = 32;
-    int32_t visited_count = 0;
+    rt_scene_node3d **nodes = NULL;
+    size_t node_count = 0;
     int64_t chained_nodes = 0;
-    int32_t scene_count;
     rt_scene_node3d **pending_nodes = NULL;
     int32_t *pending_entries = NULL;
     int32_t pending_count = 0;
@@ -1086,104 +1227,59 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
         levels = 4;
     if (!isfinite(ratio) || ratio <= 0.0 || ratio >= 1.0)
         ratio = 0.4;
-    stack = (rt_scene_node3d **)malloc((size_t)stack_capacity * sizeof(*stack));
-    if (!stack) {
-        rt_trap("SceneAsset.GenerateLODs: walk stack allocation failed");
+    if (!model_collect_nodes(
+            model, &nodes, &node_count, "SceneAsset.GenerateLODs: node walk allocation failed"))
         return 0;
-    }
-    if (model->template_root)
-        stack[stack_count++] = model->template_root;
-    scene_count = model_scene_count(model);
-    for (int32_t si = 0; si < scene_count; si++) {
-        rt_scene_node3d *scene_root = (rt_scene_node3d *)rt_g3d_checked_or_null(
-            model->scenes[si].root, RT_G3D_SCENENODE3D_CLASS_ID);
-        /* Scene 0 aliases the template root; the per-node lod_count guard below also
-         * keeps a re-visit harmless. */
-        if (!scene_root || scene_root == model->template_root)
-            continue;
-        if (stack_count >= stack_capacity)
-            break; /* unreachable with the initial capacity; scenes are few */
-        stack[stack_count++] = scene_root;
-    }
     /* Phase 1 (main thread): walk, dedup meshes, run every source-mesh
      * mutation, and remember which node pairs with which cache entry. */
-    while (stack_count > 0) {
-        rt_scene_node3d *current = stack[--stack_count];
-        int32_t child_count;
-        if (!current)
-            continue;
-        if (++visited_count >= MODEL3D_MAX_WALK_NODES) {
-            free(stack);
-            free(pending_nodes);
-            free(pending_entries);
-            free(chains);
-            rt_trap("SceneAsset.GenerateLODs: too many nodes");
-            return chained_nodes;
-        }
+    for (size_t node_index = 0; node_index < node_count; node_index++) {
+        rt_scene_node3d *current = nodes[node_index];
         if (current->mesh && model_node_lod_count(current) == 0) {
             model_lod_chain_entry *entry = model_lod_chain_find_or_prepare(
                 &chains, &chain_count, &chain_capacity, current->mesh);
-            if (entry) {
-                if (pending_count >= pending_capacity) {
-                    int32_t new_capacity = pending_capacity > 0 ? pending_capacity * 2 : 32;
-                    rt_scene_node3d **grown_nodes = (rt_scene_node3d **)realloc(
-                        pending_nodes, (size_t)new_capacity * sizeof(*pending_nodes));
-                    int32_t *grown_entries = NULL;
-                    if (grown_nodes) {
-                        pending_nodes = grown_nodes;
-                        grown_entries = (int32_t *)realloc(
-                            pending_entries, (size_t)new_capacity * sizeof(*pending_entries));
-                    }
-                    if (!grown_nodes || !grown_entries) {
-                        free(stack);
-                        free(pending_nodes);
-                        free(pending_entries);
-                        free(chains);
-                        rt_trap("SceneAsset.GenerateLODs: node list allocation failed");
-                        return 0;
-                    }
-                    pending_entries = grown_entries;
-                    pending_capacity = new_capacity;
-                }
-                pending_nodes[pending_count] = current;
-                pending_entries[pending_count] = (int32_t)(entry - chains);
-                pending_count++;
-            }
-        }
-        child_count = model_node_child_count(current);
-        for (int32_t i = 0; i < child_count; i++) {
-            rt_scene_node3d *child = (rt_scene_node3d *)rt_g3d_checked_or_null(
-                current->children[i], RT_G3D_SCENENODE3D_CLASS_ID);
-            if (!child)
-                continue;
-            if (stack_count >= stack_capacity) {
+            if (!entry)
+                goto phase1_fail;
+            if (pending_count >= pending_capacity) {
                 int32_t new_capacity;
-                rt_scene_node3d **grown;
-                if (stack_capacity > INT32_MAX / 2 ||
-                    (size_t)(stack_capacity * 2) > SIZE_MAX / sizeof(rt_scene_node3d *))
-                    break;
-                new_capacity = stack_capacity * 2;
-                grown = (rt_scene_node3d **)realloc(stack, (size_t)new_capacity * sizeof(*stack));
-                if (!grown)
-                    break;
-                stack = grown;
-                stack_capacity = new_capacity;
+                rt_scene_node3d **grown_nodes;
+                int32_t *grown_entries;
+                if (pending_capacity > INT32_MAX / 2)
+                    goto phase1_fail;
+                new_capacity = pending_capacity > 0 ? pending_capacity * 2 : 32;
+                if ((size_t)new_capacity > SIZE_MAX / sizeof(*pending_nodes) ||
+                    (size_t)new_capacity > SIZE_MAX / sizeof(*pending_entries))
+                    goto phase1_fail;
+                grown_nodes = (rt_scene_node3d **)realloc(
+                    pending_nodes, (size_t)new_capacity * sizeof(*pending_nodes));
+                if (!grown_nodes)
+                    goto phase1_fail;
+                pending_nodes = grown_nodes;
+                grown_entries = (int32_t *)realloc(pending_entries,
+                                                   (size_t)new_capacity * sizeof(*pending_entries));
+                if (!grown_entries)
+                    goto phase1_fail;
+                pending_entries = grown_entries;
+                pending_capacity = new_capacity;
             }
-            stack[stack_count++] = child;
+            pending_nodes[pending_count] = current;
+            pending_entries[pending_count] = (int32_t)(entry - chains);
+            pending_count++;
         }
     }
-    free(stack);
+    free(nodes);
     /* Phase 2: decimate the unique meshes, striped across worker threads.
      * Chains are per-entry state and workers stride disjoint entries, so the
      * only shared machinery is the thread-safe runtime heap. Falls back to
      * inline builds when threads are unavailable or the batch is small. */
     if (chain_count > 0) {
         int64_t cores = rt_machine_cores();
-        int32_t workers = (int32_t)(cores > 1 ? cores - 1 : 1);
-        if (workers > chain_count)
-            workers = chain_count;
-        if (workers > 8)
-            workers = 8;
+        int64_t worker_count = cores > 1 ? cores - 1 : 1;
+        int32_t workers;
+        if (worker_count > chain_count)
+            worker_count = chain_count;
+        if (worker_count > 8)
+            worker_count = 8;
+        workers = (int32_t)worker_count;
         if (workers > 1) {
             model_lod_build_slice_t slices[8];
             void *threads[8];
@@ -1235,8 +1331,12 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
         if (entry->count > 0) {
             for (int32_t k = 0; k < entry->count; k++)
                 rt_scene_node3d_add_lod(pending_nodes[n], entry->distances[k], entry->lods[k]);
-            rt_scene_node3d_set_auto_lod(pending_nodes[n], 1, 3.0);
-            chained_nodes++;
+            if (model_node_lod_count(pending_nodes[n]) == entry->count) {
+                rt_scene_node3d_set_auto_lod(pending_nodes[n], 1, 3.0);
+                chained_nodes++;
+            } else {
+                rt_scene_node3d_clear_lod(pending_nodes[n]);
+            }
         }
     }
     free(pending_nodes);
@@ -1247,6 +1347,14 @@ int64_t rt_model3d_generate_lods(void *obj, int64_t levels, double ratio) {
             model_release_local(chains[i].lods[k]);
     free(chains);
     return chained_nodes;
+
+phase1_fail:
+    free(nodes);
+    free(pending_nodes);
+    free(pending_entries);
+    free(chains);
+    rt_trap("SceneAsset.GenerateLODs: node list allocation failed");
+    return 0;
 }
 
 /// @brief Load a temporary Model3D and return one retained clip from it.

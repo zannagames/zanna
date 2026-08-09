@@ -31,7 +31,8 @@
 #include "rt.hpp"
 #include "rt_asset_error.h"
 #include "rt_canvas3d.h"
-#include "rt_ttf_font.h"
+#include "rt_graphics.h"
+#include "rt_graphics_internal.h"
 #include "rt_internal.h"
 #include "rt_morphtarget3d.h"
 #include "rt_particles3d.h"
@@ -44,7 +45,9 @@
 #include "rt_terrain3d.h"
 #include "rt_texatlas3d.h"
 #include "rt_textureasset3d.h"
+#include "rt_ttf_font.h"
 #include "tests/common/PosixCompat.h"
+#include <atomic>
 #include <cassert>
 #include <cfloat>
 #include <cmath>
@@ -55,6 +58,7 @@
 #include <cstring>
 #include <limits>
 #include <string>
+#include <thread>
 #include <vector>
 
 extern "C" {
@@ -1530,6 +1534,76 @@ static void test_material_new() {
     TEST("Material3D.New — default white");
     void *m = rt_material3d_new();
     assert(m);
+    PASS();
+}
+
+static void test_canvas3d_window_loan_is_exclusive_and_retained() {
+    TEST("Canvas3D window loans retain the lender and reject concurrent adoption");
+    auto *canvas = static_cast<rt_canvas *>(
+        rt_obj_new_i64(RT_CANVAS_CLASS_ID, static_cast<int64_t>(sizeof(rt_canvas))));
+    EXPECT_TRUE(canvas != nullptr, "test Canvas allocation succeeds");
+    if (!canvas)
+        return;
+    std::memset(canvas, 0, sizeof(*canvas));
+    canvas->magic = RT_CANVAS_MAGIC;
+    canvas->gfx_win = reinterpret_cast<vgfx_window_t>(uintptr_t(1));
+    canvas->window_state_synced = 1;
+    const size_t initial_refcount = rt_heap_hdr(canvas)->refcnt;
+
+    EXPECT_TRUE(rt_canvas_borrow_window(canvas) == canvas->gfx_win, "first window loan succeeds");
+    EXPECT_TRUE(canvas->window_loan_active == 1, "successful loan records exclusivity");
+    EXPECT_TRUE(rt_heap_hdr(canvas)->refcnt == initial_refcount + 1,
+                "successful loan retains the 2D canvas owner");
+    EXPECT_TRUE(rt_canvas_borrow_window(canvas) == nullptr,
+                "second simultaneous window loan is rejected");
+    EXPECT_TRUE(rt_heap_hdr(canvas)->refcnt == initial_refcount + 1,
+                "rejected loan does not add a retain");
+    EXPECT_TRUE(expect_trap_contains([&] { rt_canvas_close(canvas); }, "adopted by Canvas3D"),
+                "2D Canvas.Close fails closed during adoption");
+    EXPECT_TRUE(canvas->gfx_win != nullptr && canvas->should_close == 0,
+                "rejected close preserves the shared window");
+
+    rt_canvas_return_window(canvas);
+    EXPECT_TRUE(canvas->window_loan_active == 0, "return clears the exclusive loan");
+    EXPECT_TRUE(canvas->window_state_synced == 0, "return invalidates lender presentation state");
+    EXPECT_TRUE(rt_heap_hdr(canvas)->refcnt == initial_refcount,
+                "return releases the lender retain");
+    rt_canvas_return_window(canvas);
+    EXPECT_TRUE(rt_heap_hdr(canvas)->refcnt == initial_refcount, "duplicate return is idempotent");
+
+    constexpr int kBorrowers = 16;
+    std::atomic<int> ready{0};
+    std::atomic<bool> start{false};
+    std::vector<void *> loans(kBorrowers, nullptr);
+    std::vector<std::thread> borrowers;
+    borrowers.reserve(kBorrowers);
+    for (int i = 0; i < kBorrowers; ++i) {
+        borrowers.emplace_back([&, i] {
+            ready.fetch_add(1, std::memory_order_release);
+            while (!start.load(std::memory_order_acquire))
+                std::this_thread::yield();
+            loans[i] = rt_canvas_borrow_window(canvas);
+        });
+    }
+    while (ready.load(std::memory_order_acquire) != kBorrowers)
+        std::this_thread::yield();
+    start.store(true, std::memory_order_release);
+    for (auto &borrower : borrowers)
+        borrower.join();
+    int successful_loans = 0;
+    for (void *loan : loans)
+        successful_loans += loan != nullptr ? 1 : 0;
+    EXPECT_TRUE(successful_loans == 1, "concurrent borrowers elect exactly one window owner");
+    EXPECT_TRUE(rt_heap_hdr(canvas)->refcnt == initial_refcount + 1,
+                "concurrent adoption adds exactly one lender retain");
+    rt_canvas_return_window(canvas);
+    EXPECT_TRUE(rt_heap_hdr(canvas)->refcnt == initial_refcount,
+                "concurrent adoption winner returns its lender retain");
+
+    canvas->gfx_win = nullptr; /* synthetic handle must not reach the platform finalizer */
+    canvas->magic = 0;
+    if (rt_obj_release_check0(canvas))
+        rt_obj_free(canvas);
     PASS();
 }
 
@@ -11048,6 +11122,44 @@ static void test_canvas3d_window_bindings_null_safe() {
     PASS();
 }
 
+static void test_canvas3d_image_regions_validate_overflow_safe_bounds() {
+    TEST("Canvas3D image regions reject invalid bounds before opening a frame");
+    void *target = rt_rendertarget3d_new(32, 32);
+    void *canvas = rt_canvas3d_new_offscreen(target);
+    void *pixels = rt_pixels_new(8, 8);
+    assert(canvas && pixels);
+    auto *raw = static_cast<rt_canvas3d *>(canvas);
+    rt_canvas3d_set_clip_rect2d(canvas, INT64_MAX, INT64_MIN, INT64_MAX, INT64_MAX);
+    EXPECT_EQ(rt_canvas3d_get_clip_rect_x(canvas), INT64_MAX);
+    EXPECT_EQ(rt_canvas3d_get_clip_rect_y(canvas), INT64_MIN);
+    EXPECT_EQ(rt_canvas3d_get_clip_rect_width(canvas), INT64_MAX);
+    EXPECT_EQ(rt_canvas3d_get_clip_rect_height(canvas), INT64_MAX);
+    rt_canvas3d_clear_clip_rect2d(canvas);
+    rt_canvas3d_begin_2d(canvas);
+    int32_t initial_draw_count = raw->draw_count;
+
+    rt_canvas3d_draw_image2d_region(canvas, 0, 0, 8, 8, pixels, INT64_MAX, 0, 1, 1);
+    EXPECT_EQ(raw->draw_count, initial_draw_count);
+    rt_canvas3d_draw_image2d_region(canvas, 0, 0, 8, 8, pixels, 7, 0, 2, 1);
+    EXPECT_EQ(raw->draw_count, initial_draw_count);
+
+    rt_canvas3d_draw_image2d_region(canvas, 0, 0, 8, 8, pixels, 0, 0, 8, 8);
+    EXPECT_TRUE(raw->draw_count > initial_draw_count, "valid source region queues an image");
+    rt_canvas3d_draw_image2d_nine_slice(canvas, 0, 0, 16, 16, pixels, INT64_MAX, 1, INT64_MAX, 1);
+    rt_canvas3d_end(canvas);
+
+    std::memset(raw->last_scene_vp, 0, sizeof(raw->last_scene_vp));
+    raw->last_scene_vp[0] = raw->last_scene_vp[5] = raw->last_scene_vp[10] =
+        raw->last_scene_vp[15] = 1.0f;
+    raw->has_last_scene_vp = 1;
+    const double bad_point[3] = {std::numeric_limits<double>::quiet_NaN(), 0.0, 0.0};
+    const double good_point[3] = {0.0, 0.0, 0.0};
+    int64_t serial_before_bad_projection = rt_canvas3d_get_frame_serial(canvas);
+    rt_canvas3d_draw_line3d_raw(canvas, bad_point, good_point, 0xFFFFFF);
+    EXPECT_EQ(rt_canvas3d_get_frame_serial(canvas), serial_before_bad_projection);
+    PASS();
+}
+
 static void test_canvas3d_capture_after_present_flag() {
     TEST("SetCaptureAfterPresent: round-trip, default off, NULL-safe");
     /* E3 capture hardening. The flag itself is backend-agnostic canvas
@@ -11097,8 +11209,24 @@ static void test_canvas3d_ttf_font_and_text() {
     void *target = rt_rendertarget3d_new(256, 64);
     void *canvas = rt_canvas3d_new_offscreen(target);
     assert(canvas);
-    EXPECT_EQ(rt_canvas3d_measure_text2d_ttf(canvas, font, hello, 32.0),
-              (int64_t)ceil(w));
+    EXPECT_EQ(rt_canvas3d_measure_text2d_ttf(canvas, font, hello, 32.0), (int64_t)ceil(w));
+
+    std::string long_text(600, 'A');
+    std::string bounded_text(512, 'A');
+    rt_string long_runtime = rt_string_from_bytes(long_text.data(), long_text.size());
+    rt_string bounded_runtime = rt_string_from_bytes(bounded_text.data(), bounded_text.size());
+    EXPECT_EQ(rt_canvas3d_measure_text2d_ttf(canvas, font, long_runtime, 32.0),
+              rt_canvas3d_measure_text2d_ttf(canvas, font, bounded_runtime, 32.0));
+    EXPECT_EQ(rt_canvas3d_measure_text2d(canvas, long_runtime, 1.0),
+              rt_canvas3d_measure_text2d(canvas, bounded_runtime, 1.0));
+
+    std::string split_codepoint(511, 'A');
+    split_codepoint.append("\xE2\x82\xAC", 3); /* U+20AC would straddle byte 512. */
+    std::string complete_prefix(511, 'A');
+    rt_string split_runtime = rt_string_from_bytes(split_codepoint.data(), split_codepoint.size());
+    rt_string prefix_runtime = rt_string_from_bytes(complete_prefix.data(), complete_prefix.size());
+    EXPECT_EQ(rt_canvas3d_measure_text2d_ttf(canvas, font, split_runtime, 32.0),
+              rt_canvas3d_measure_text2d_ttf(canvas, font, prefix_runtime, 32.0));
     /* Outside a frame the draw opens its own overlay frame (the same
      * contract DrawText2DAA honors). Second draw hits the raster cache. */
     rt_canvas3d_draw_text2d_ttf(canvas, font, 4, 4, hello, 32.0, 0xFFFFFF);
@@ -11190,6 +11318,7 @@ int main() {
 
     /* Material3D */
     test_material_new();
+    test_canvas3d_window_loan_is_exclusive_and_retained();
     test_material_new_color();
     test_material_new_textured();
     test_material_texture_setters_reject_invalid_handles();
@@ -11444,6 +11573,7 @@ int main() {
     test_wind_deform_base_fixed_canopy_sways();
     test_wind_deform_zero_strength_and_null_safe();
     test_canvas3d_window_bindings_null_safe();
+    test_canvas3d_image_regions_validate_overflow_safe_bounds();
     test_canvas3d_capture_after_present_flag();
     test_canvas3d_ttf_font_and_text();
 

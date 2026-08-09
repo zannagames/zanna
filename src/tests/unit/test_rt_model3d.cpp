@@ -7799,7 +7799,7 @@ static void test_model3d_generate_lods_builds_chains() {
     EXPECT_TRUE(model != nullptr, "GenerateLODs OBJ fixture loads");
     if (!model)
         return;
-    int64_t chained = rt_model3d_generate_lods(model, 2, 0.5);
+    int64_t chained = rt_model3d_generate_lods(model, 2, 0.99);
     EXPECT_TRUE(chained == 1, "SceneAsset.GenerateLODs chains the box mesh node");
 
     void *inst = rt_model3d_instantiate(model);
@@ -7814,6 +7814,19 @@ static void test_model3d_generate_lods_builds_chains() {
     EXPECT_TRUE(mesh_node->lod_count >= 1, "Instantiated nodes inherit the generated LOD chain");
     EXPECT_TRUE(mesh_node->auto_lod_enabled == 1,
                 "Instantiated nodes inherit auto screen-error LOD selection");
+    int64_t previous_triangles = static_cast<int64_t>(
+        rt_mesh3d_validated_index_count(static_cast<rt_mesh3d *>(mesh_node->mesh)) / 3u);
+    bool strictly_decreasing = true;
+    for (int32_t i = 0; i < mesh_node->lod_count; ++i) {
+        auto *lod_mesh = static_cast<rt_mesh3d *>(mesh_node->lod_levels[i].mesh);
+        int64_t lod_triangles =
+            lod_mesh ? static_cast<int64_t>(rt_mesh3d_validated_index_count(lod_mesh) / 3u) : 0;
+        if (lod_triangles <= 0 || lod_triangles >= previous_triangles)
+            strictly_decreasing = false;
+        previous_triangles = lod_triangles;
+    }
+    EXPECT_TRUE(strictly_decreasing,
+                "near-one LOD ratios still produce strictly smaller successive meshes");
 
     EXPECT_TRUE(rt_model3d_generate_lods(model, 2, 0.5) == 0,
                 "GenerateLODs skips nodes that already carry LOD chains");
@@ -7821,6 +7834,67 @@ static void test_model3d_generate_lods_builds_chains() {
                 "GenerateLODs rejects invalid handles");
     if (rt_obj_release_check0(inst))
         rt_obj_free(inst);
+    if (rt_obj_release_check0(model))
+        rt_obj_free(model);
+}
+
+static void test_model3d_strip_meshes_visits_all_scene_roots_once() {
+    const char *obj_path = "/tmp/zanna_model3d_many_scene_roots.obj";
+    const char *obj_text = "v 0 0 0\nv 1 0 0\nv 0 1 0\nf 1 2 3\n";
+    constexpr int kSceneCount = 80;
+    EXPECT_TRUE(write_text_file(obj_path, obj_text),
+                "StripMeshes many-root OBJ fixture can be created");
+    void *model = rt_model3d_load(rt_const_cstr(obj_path));
+    EXPECT_TRUE(model != nullptr, "StripMeshes many-root OBJ fixture loads");
+    if (!model)
+        return;
+
+    auto *view = static_cast<SceneAssetView *>(model);
+    EXPECT_TRUE(view->mesh_count == 1 && view->meshes && view->meshes[0],
+                "many-root fixture exposes one shared mesh");
+    if (view->mesh_count != 1 || !view->meshes || !view->meshes[0])
+        return;
+
+    const int old_count = view->scene_count;
+    auto *grown = static_cast<decltype(view->scenes)>(
+        std::realloc(view->scenes, sizeof(*view->scenes) * kSceneCount));
+    EXPECT_TRUE(grown != nullptr, "many-root scene table grows");
+    if (!grown)
+        return;
+    view->scenes = grown;
+    std::memset(view->scenes + old_count,
+                0,
+                sizeof(*view->scenes) * static_cast<size_t>(kSceneCount - old_count));
+    view->scene_capacity = kSceneCount;
+    view->scene_count = kSceneCount;
+
+    for (int i = old_count; i < kSceneCount; ++i) {
+        auto *root = static_cast<rt_scene_node3d *>(rt_scene_node3d_new());
+        EXPECT_TRUE(root != nullptr, "many-root scene node allocates");
+        if (!root)
+            return;
+        rt_scene_node3d_set_mesh(root, view->meshes[0]);
+        view->scenes[i].root = root; /* construction reference becomes scene ownership */
+    }
+
+    /* A repeated root must be visited once, not turn the walk into duplicate work. */
+    rt_scene_node3d *duplicate = view->scenes[kSceneCount - 1].root;
+    if (rt_obj_release_check0(view->scenes[kSceneCount - 2].root))
+        rt_obj_free(view->scenes[kSceneCount - 2].root);
+    rt_obj_retain_maybe(duplicate);
+    view->scenes[kSceneCount - 2].root = duplicate;
+
+    EXPECT_TRUE(rt_model3d_strip_meshes(model) == 1,
+                "StripMeshes drops the one shared inventory mesh");
+    bool all_stripped = true;
+    for (int i = 0; i < kSceneCount; ++i) {
+        auto *root = view->scenes[i].root;
+        if (root && root->mesh)
+            all_stripped = false;
+    }
+    EXPECT_TRUE(all_stripped,
+                "StripMeshes visits roots beyond the former fixed 64-root stack capacity");
+
     if (rt_obj_release_check0(model))
         rt_obj_free(model);
 }
@@ -10217,6 +10291,7 @@ int main() {
     test_model3d_vscn_v5_corruption_rolls_back();
     test_model3d_draco_corrupt_payloads_fail_cleanly();
     test_model3d_generate_lods_builds_chains();
+    test_model3d_strip_meshes_visits_all_scene_roots_once();
     test_model3d_applies_material_variants();
     test_model3d_autoplays_gltf_node_and_morph_animation();
     test_gltf_short_node_weights_clear_morph_tail();

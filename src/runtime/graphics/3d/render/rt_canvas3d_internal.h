@@ -52,6 +52,8 @@
 #include <string.h>
 
 #define VGFX3D_RENDERTARGET_DIM_MAX 16384
+/// Maximum byte prefix consumed by Canvas3D bitmap and TrueType text paths.
+#define RT_CANVAS3D_TEXT_MAX_BYTES 512u
 
 //=============================================================================
 // Vertex format
@@ -702,13 +704,13 @@ typedef struct {
     double reflectivity;       /* [0.0=no reflection, 1.0=mirror], default 0.0 */
     int8_t unlit;
     int8_t double_sided;
-    int8_t additive_blend;  /* internal-only: route through additive blend state when true */
-    int32_t alpha_mode;     /* 0=opaque, 1=mask, 2=blend */
-    int8_t alpha_mode_auto; /* true when SetAlpha auto-promoted OPAQUE -> BLEND */
+    int8_t additive_blend;      /* internal-only: route through additive blend state when true */
+    int32_t alpha_mode;         /* 0=opaque, 1=mask, 2=blend */
+    int8_t alpha_mode_auto;     /* true when SetAlpha auto-promoted OPAQUE -> BLEND */
     int8_t alpha_mode_explicit; /* true when SetAlphaMode was called: the user's
                                  * choice wins over texture-alpha auto-promotion */
-    int32_t shadow_mode;    /* 0=auto, 1=none, 2=cast even when alpha-blended */
-    int32_t texture_wrap_s; /* RT_MATERIAL3D_TEXTURE_WRAP_* for imported material textures */
+    int32_t shadow_mode;        /* 0=auto, 1=none, 2=cast even when alpha-blended */
+    int32_t texture_wrap_s;     /* RT_MATERIAL3D_TEXTURE_WRAP_* for imported material textures */
     int32_t texture_wrap_t;
     int32_t texture_filter;     /* RT_MATERIAL3D_TEXTURE_FILTER_* */
     int32_t texture_min_filter; /* independent imported minification filter */
@@ -1255,9 +1257,7 @@ typedef struct {
     int8_t owns_window;         /* 0 = adopted from a 2D canvas (single-window
                                  * mode): teardown returns it instead of
                                  * destroying it */
-    void *lender_canvas;        /* borrowed rt_canvas that lent gfx_win (kept
-                                 * alive by the caller for the game's life;
-                                 * used to resync its window state on return) */
+    void *lender_canvas;        /* retained rt_canvas that exclusively lent gfx_win */
     int32_t width;              /* public/logical coordinate width */
     int32_t height;             /* public/logical coordinate height */
     int32_t framebuffer_width;  /* physical backing-pixel width */

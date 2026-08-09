@@ -408,6 +408,7 @@ typedef struct {
     int8_t relative_mouse_applied; ///< Relative (raw) mouse mode currently applied to the window
     int8_t window_state_synced;    ///< Cached scale/clip state has been applied to gfx_win
     int8_t applied_clip_enabled;   ///< Clip-enabled value last applied to gfx_win
+    int32_t window_loan_active;    ///< Atomic state: 0=available, 1=loaned, 2=closing/closed
     float applied_coord_scale;     ///< Coordinate scale last applied to gfx_win
     int64_t applied_clip_x;        ///< Logical clip X last applied to gfx_win
     int64_t applied_clip_y;        ///< Logical clip Y last applied to gfx_win

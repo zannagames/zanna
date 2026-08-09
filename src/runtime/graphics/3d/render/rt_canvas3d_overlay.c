@@ -41,16 +41,16 @@
 
 #include "rt_canvas3d.h"
 #include "rt_canvas3d_internal.h"
-#include "rt_internal.h"
-#include "rt_ttf_font.h"
-#include "vg_font.h"
 #include "rt_font.h"
+#include "rt_internal.h"
 #include "rt_object.h"
 #include "rt_pixels.h"
 #include "rt_pixels_internal.h"
 #include "rt_string.h"
 #include "rt_textureasset3d.h"
+#include "rt_ttf_font.h"
 #include "rt_vec3.h"
+#include "vg_font.h"
 #include "vgfx3d_backend.h"
 
 #include <limits.h>
@@ -70,6 +70,58 @@ extern int8_t rt_textureasset3d_cpu_supports_ktx2(void);
 #define CANVAS3D_AA_TEXT_CACHE_MAX_ENTRIES 128
 #define CANVAS3D_AA_TEXT_CACHE_MAX_BYTES (8u * 1024u * 1024u)
 #define CANVAS3D_AA_TEXT_CACHE_MAX_ENTRY_BYTES (2u * 1024u * 1024u)
+
+/// @brief Copy the bounded, complete-codepoint prefix consumed by Canvas3D TTF rendering.
+/// @details Runtime strings carry a byte length and may contain embedded NULs. The vg font API is
+///          NUL-terminated, so this helper stops at the first NUL and never cuts a well-formed
+///          multi-byte UTF-8 sequence at the renderer's byte ceiling. Malformed bytes remain
+///          single-byte input and are converted to U+FFFD by `vg_utf8_decode`.
+/// @param text Borrowed runtime string.
+/// @param out Writable buffer of at least `RT_CANVAS3D_TEXT_MAX_BYTES + 1` bytes.
+/// @return Number of copied bytes, excluding the terminator.
+static size_t canvas3d_copy_ttf_text_prefix(rt_string text,
+                                            char out[RT_CANVAS3D_TEXT_MAX_BYTES + 1u]) {
+    const char *source;
+    int64_t stored_len;
+    size_t limit;
+    size_t cursor = 0;
+    if (!out)
+        return 0;
+    out[0] = '\0';
+    if (!text)
+        return 0;
+    source = rt_string_cstr(text);
+    stored_len = rt_str_len(text);
+    if (!source || stored_len <= 0)
+        return 0;
+    limit = (size_t)stored_len;
+    if (limit > RT_CANVAS3D_TEXT_MAX_BYTES)
+        limit = RT_CANVAS3D_TEXT_MAX_BYTES;
+    while (cursor < limit && source[cursor] != '\0') {
+        const unsigned char lead = (unsigned char)source[cursor];
+        size_t sequence_bytes = 1;
+        if ((lead & 0xE0u) == 0xC0u)
+            sequence_bytes = 2;
+        else if ((lead & 0xF0u) == 0xE0u)
+            sequence_bytes = 3;
+        else if ((lead & 0xF8u) == 0xF0u)
+            sequence_bytes = 4;
+        if (sequence_bytes > 1) {
+            int complete = cursor + sequence_bytes <= limit;
+            for (size_t i = 1; complete && i < sequence_bytes; i++)
+                complete = ((unsigned char)source[cursor + i] & 0xC0u) == 0x80u;
+            if (!complete) {
+                if (cursor + sequence_bytes > limit)
+                    break;
+                sequence_bytes = 1;
+            }
+        }
+        cursor += sequence_bytes;
+    }
+    memcpy(out, source, cursor);
+    out[cursor] = '\0';
+    return cursor;
+}
 
 /// @brief Drop one AA text cache entry and compact the live prefix.
 /// @param c Canvas3D owning the retained raster and key storage.
@@ -250,22 +302,28 @@ static int canvas3d_insert_aa_text_cache_entry(rt_canvas3d *c,
 static int world_to_screen(
     const rt_canvas3d *c, const float *wp, float *sx, float *sy, int32_t fb_w, int32_t fb_h) {
     const float *vp = canvas3d_active_scene_vp(c);
-    float pos4[4] = {wp[0], wp[1], wp[2], 1.0f};
+    float pos4[4];
     float clip[4];
-    if (!vp)
+    if (!vp || !wp || !sx || !sy || fb_w <= 0 || fb_h <= 0 || !isfinite(wp[0]) ||
+        !isfinite(wp[1]) || !isfinite(wp[2]))
         return 0;
+    pos4[0] = wp[0];
+    pos4[1] = wp[1];
+    pos4[2] = wp[2];
+    pos4[3] = 1.0f;
     clip[0] = vp[0] * pos4[0] + vp[1] * pos4[1] + vp[2] * pos4[2] + vp[3] * pos4[3];
     clip[1] = vp[4] * pos4[0] + vp[5] * pos4[1] + vp[6] * pos4[2] + vp[7] * pos4[3];
     clip[2] = vp[8] * pos4[0] + vp[9] * pos4[1] + vp[10] * pos4[2] + vp[11] * pos4[3];
     clip[3] = vp[12] * pos4[0] + vp[13] * pos4[1] + vp[14] * pos4[2] + vp[15] * pos4[3];
-    if (clip[3] <= 0.0f)
+    if (!isfinite(clip[0]) || !isfinite(clip[1]) || !isfinite(clip[2]) || !isfinite(clip[3]) ||
+        clip[3] <= 0.0f)
         return 0;
     {
         const float iw = 1.0f / clip[3];
         *sx = (clip[0] * iw + 1.0f) * 0.5f * (float)fb_w;
         *sy = (1.0f - clip[1] * iw) * 0.5f * (float)fb_h;
     }
-    return 1;
+    return isfinite(*sx) && isfinite(*sy);
 }
 
 /// @brief Resolve the active output surface's public coordinate size.
@@ -295,6 +353,20 @@ static int overlay_output_size(const rt_canvas3d *c, int32_t *out_w, int32_t *ou
     if (out_h)
         *out_h = c->height;
     return c->width > 0 && c->height > 0;
+}
+
+/// @brief Convert retained float coordinates back to public integers without out-of-range casts.
+/// @param value Finite or corrupt floating-point coordinate.
+/// @return Truncated coordinate saturated to the signed 64-bit domain; non-finite values return 0.
+static int64_t canvas3d_overlay_float_to_i64(float value) {
+    const double wide = (double)value;
+    if (!isfinite(value))
+        return 0;
+    if (wide >= (double)INT64_MAX)
+        return INT64_MAX;
+    if (wide <= (double)INT64_MIN)
+        return INT64_MIN;
+    return (int64_t)wide;
 }
 
 /// @brief Pack an RGBA byte surface into `Pixels`, scaling to logical size when needed.
@@ -672,12 +744,19 @@ void rt_canvas3d_draw_frame2d(
     b = (float)(color & 0xFF) / 255.0f;
     (void)canvas3d_queue_screen_rect(c, (float)x, (float)y, (float)w, 1.0f, r, g, b, (float)alpha);
     (void)canvas3d_queue_screen_rect(
-        c, (float)x, (float)(y + h - 1), (float)w, 1.0f, r, g, b, (float)alpha);
+        c, (float)x, (float)y + (float)h - 1.0f, (float)w, 1.0f, r, g, b, (float)alpha);
     if (h > 2) {
         (void)canvas3d_queue_screen_rect(
-            c, (float)x, (float)(y + 1), 1.0f, (float)(h - 2), r, g, b, (float)alpha);
-        (void)canvas3d_queue_screen_rect(
-            c, (float)(x + w - 1), (float)(y + 1), 1.0f, (float)(h - 2), r, g, b, (float)alpha);
+            c, (float)x, (float)y + 1.0f, 1.0f, (float)h - 2.0f, r, g, b, (float)alpha);
+        (void)canvas3d_queue_screen_rect(c,
+                                         (float)x + (float)w - 1.0f,
+                                         (float)y + 1.0f,
+                                         1.0f,
+                                         (float)h - 2.0f,
+                                         r,
+                                         g,
+                                         b,
+                                         (float)alpha);
     }
     if (started_temp_frame)
         rt_canvas3d_end(c);
@@ -793,10 +872,10 @@ void rt_canvas3d_draw_round_frame2d(void *obj,
     }
 
     {
-        const float ccx[4] = {
-            (float)x + rad, (float)(x + w) - rad, (float)(x + w) - rad, (float)x + rad};
-        const float ccy[4] = {
-            (float)y + rad, (float)y + rad, (float)(y + h) - rad, (float)(y + h) - rad};
+        const float right = (float)x + (float)w;
+        const float bottom = (float)y + (float)h;
+        const float ccx[4] = {(float)x + rad, right - rad, right - rad, (float)x + rad};
+        const float ccy[4] = {(float)y + rad, (float)y + rad, bottom - rad, bottom - rad};
         const float start_ang[4] = {3.14159265f, 4.71238898f, 0.0f, 1.57079633f};
         for (int corner = 0; corner < 4; corner++) {
             for (int s = 0; s <= RRF_SEG; s++) {
@@ -877,6 +956,10 @@ void rt_canvas3d_draw_image2d_region(void *obj,
     ph = rt_pixels_height(pixels);
     if (pw <= 0 || ph <= 0)
         return;
+    /* Validate without evaluating `sx + sw` / `sy + sh`: caller-controlled signed
+     * coordinates must not be able to overflow before conversion to normalized UVs. */
+    if (sx < 0 || sy < 0 || sw > pw || sh > ph || sx > pw - sw || sy > ph - sh)
+        return;
     if (!c->in_frame) {
         if (!canvas3d_begin_overlay_frame(c, 1))
             return;
@@ -890,8 +973,8 @@ void rt_canvas3d_draw_image2d_region(void *obj,
                                          pixels,
                                          (float)sx / (float)pw,
                                          (float)sy / (float)ph,
-                                         (float)(sx + sw) / (float)pw,
-                                         (float)(sy + sh) / (float)ph);
+                                         ((float)sx + (float)sw) / (float)pw,
+                                         ((float)sy + (float)sh) / (float)ph);
     if (started_temp_frame)
         rt_canvas3d_end(c);
 }
@@ -926,11 +1009,9 @@ void rt_canvas3d_draw_text2d_aa(
     str = rt_string_cstr(text);
     if (!str)
         return;
-    len = strlen(str);
+    len = strnlen(str, RT_CANVAS3D_TEXT_MAX_BYTES);
     if (len == 0)
         return;
-    if (len > 512)
-        len = 512;
     if (!isfinite(scale) || scale <= 0.0)
         scale = 1.0;
     if (scale > 64.0)
@@ -1018,13 +1099,8 @@ void rt_canvas3d_draw_text2d_aa(
 /// @param text Borrowed runtime string (up to 512 bytes are rendered).
 /// @param size_px Font pixel size, clamped to the TtfFont range.
 /// @param color Packed 0xRRGGBB (alpha comes from glyph coverage).
-void rt_canvas3d_draw_text2d_ttf(void *obj,
-                                 void *font,
-                                 int64_t x,
-                                 int64_t y,
-                                 rt_string text,
-                                 double size_px,
-                                 int64_t color) {
+void rt_canvas3d_draw_text2d_ttf(
+    void *obj, void *font, int64_t x, int64_t y, rt_string text, double size_px, int64_t color) {
     int8_t started_temp_frame = 0;
     const char *str;
     size_t len;
@@ -1037,6 +1113,9 @@ void rt_canvas3d_draw_text2d_ttf(void *obj,
     struct vg_font *face;
     vg_text_metrics_t text_metrics;
     vg_font_metrics_t font_metrics;
+    char render_text[RT_CANVAS3D_TEXT_MAX_BYTES + 1u];
+    double raster_width;
+    double raster_height;
 
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c || !text)
@@ -1047,25 +1126,25 @@ void rt_canvas3d_draw_text2d_ttf(void *obj,
         rt_trap("Canvas3D.DrawText2DTtf: invalid font");
         return;
     }
-    str = rt_string_cstr(text);
-    if (!str)
-        return;
-    len = strlen(str);
+    len = canvas3d_copy_ttf_text_prefix(text, render_text);
     if (len == 0)
         return;
-    if (len > 512)
-        len = 512;
+    str = render_text;
     size_px = rt_ttf_font_clamp_size(size_px);
 
     memset(&text_metrics, 0, sizeof(text_metrics));
     memset(&font_metrics, 0, sizeof(font_metrics));
     vg_font_measure_text((vg_font_t *)face, (float)size_px, str, &text_metrics);
     vg_font_get_metrics((vg_font_t *)face, (float)size_px, &font_metrics);
-    out_w = (int32_t)ceil((double)text_metrics.width) + 2;
-    out_h = font_metrics.line_height > 0 ? (int32_t)font_metrics.line_height
-                                         : (int32_t)ceil(size_px * 1.25);
-    if (out_w <= 2 || out_h <= 0 || out_w > VGFX3D_RENDERTARGET_DIM_MAX)
+    raster_width = ceil((double)text_metrics.width) + 2.0;
+    raster_height =
+        font_metrics.line_height > 0 ? (double)font_metrics.line_height : ceil(size_px * 1.25);
+    if (!isfinite(raster_width) || !isfinite(raster_height) || raster_width <= 2.0 ||
+        raster_height <= 0.0 || raster_width > (double)VGFX3D_RENDERTARGET_DIM_MAX ||
+        raster_height > (double)VGFX3D_RENDERTARGET_DIM_MAX)
         return;
+    out_w = (int32_t)raster_width;
+    out_h = (int32_t)raster_height;
     rgb_color = color & 0xFFFFFF;
 
     pixels =
@@ -1090,8 +1169,8 @@ void rt_canvas3d_draw_text2d_ttf(void *obj,
                 if (cp == 0)
                     break;
                 if (prev_cp != 0)
-                    pen += (double)vg_font_get_kerning(
-                        (vg_font_t *)face, (float)size_px, prev_cp, cp);
+                    pen +=
+                        (double)vg_font_get_kerning((vg_font_t *)face, (float)size_px, prev_cp, cp);
                 glyph = vg_font_get_glyph((vg_font_t *)face, (float)size_px, cp);
                 if (glyph) {
                     int32_t base_x = (int32_t)floor(pen) + glyph->bearing_x;
@@ -1162,10 +1241,25 @@ void rt_canvas3d_draw_text2d_ttf(void *obj,
 /// @return Ceil-rounded output width in logical pixels, or zero for invalid
 ///         input.
 int64_t rt_canvas3d_measure_text2d_ttf(void *obj, void *font, rt_string text, double size_px) {
+    vg_text_metrics_t metrics;
+    struct vg_font *face;
+    char render_text[RT_CANVAS3D_TEXT_MAX_BYTES + 1u];
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
     if (!c)
         return 0;
-    return (int64_t)ceil(rt_ttf_font_measure_width(font, text, size_px));
+    face = rt_ttf_font_face(font);
+    if (!face) {
+        rt_trap("Canvas3D.MeasureText2DTtf: invalid font");
+        return 0;
+    }
+    if (canvas3d_copy_ttf_text_prefix(text, render_text) == 0)
+        return 0;
+    memset(&metrics, 0, sizeof(metrics));
+    vg_font_measure_text(
+        (vg_font_t *)face, (float)rt_ttf_font_clamp_size(size_px), render_text, &metrics);
+    if (!isfinite(metrics.width) || metrics.width <= 0.0f || metrics.width >= (float)INT64_MAX)
+        return 0;
+    return (int64_t)ceil((double)metrics.width);
 }
 
 /// @brief Width in pixels of DrawText2DAA output for @p text at @p scale.
@@ -1182,9 +1276,7 @@ int64_t rt_canvas3d_measure_text2d_aa(void *obj, rt_string text, double scale) {
     str = rt_string_cstr(text);
     if (!str)
         return 0;
-    len = strlen(str);
-    if (len > 512)
-        len = 512;
+    len = strnlen(str, RT_CANVAS3D_TEXT_MAX_BYTES);
     if (!isfinite(scale) || scale <= 0.0)
         scale = 1.0;
     if (scale > 64.0)
@@ -1233,11 +1325,11 @@ void rt_canvas3d_draw_image2d_nine_slice(void *obj,
         inset_r = 0;
     if (inset_b < 0)
         inset_b = 0;
-    if (inset_l + inset_r >= pw) {
+    if (inset_l >= pw || inset_r >= pw - inset_l) {
         inset_l = pw / 3;
         inset_r = pw / 3;
     }
-    if (inset_t + inset_b >= ph) {
+    if (inset_t >= ph || inset_b >= ph - inset_t) {
         inset_t = ph / 3;
         inset_b = ph / 3;
     }
@@ -1246,11 +1338,11 @@ void rt_canvas3d_draw_image2d_nine_slice(void *obj,
     int64_t dr = inset_r;
     int64_t dt = inset_t;
     int64_t db = inset_b;
-    if (dl + dr > w) {
+    if (dl > w || dr > w - dl) {
         dl = w / 2;
         dr = w - dl;
     }
-    if (dt + db > h) {
+    if (dt > h || db > h - dt) {
         dt = h / 2;
         db = h - dt;
     }
@@ -1264,8 +1356,10 @@ void rt_canvas3d_draw_image2d_nine_slice(void *obj,
             0.0f, (float)inset_l / (float)pw, (float)(pw - inset_r) / (float)pw, 1.0f};
         const float sv[4] = {
             0.0f, (float)inset_t / (float)ph, (float)(ph - inset_b) / (float)ph, 1.0f};
-        const float dx[4] = {(float)x, (float)(x + dl), (float)(x + w - dr), (float)(x + w)};
-        const float dy[4] = {(float)y, (float)(y + dt), (float)(y + h - db), (float)(y + h)};
+        const float dx[4] = {
+            (float)x, (float)x + (float)dl, (float)x + ((float)w - (float)dr), (float)x + (float)w};
+        const float dy[4] = {
+            (float)y, (float)y + (float)dt, (float)y + ((float)h - (float)db), (float)y + (float)h};
         for (int row = 0; row < 3; row++) {
             for (int col = 0; col < 3; col++) {
                 float dw = dx[col + 1] - dx[col];
@@ -1335,7 +1429,7 @@ int8_t rt_canvas3d_get_clip_rect_active(void *obj) {
 /// @return Retained left edge in logical pixels; zero when no clip is active.
 int64_t rt_canvas3d_get_clip_rect_x(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
-    return c && c->overlay_clip_active ? (int64_t)c->overlay_clip_x : 0;
+    return c && c->overlay_clip_active ? canvas3d_overlay_float_to_i64(c->overlay_clip_x) : 0;
 }
 
 /// @brief `Canvas3D.ClipRectY` — retained clip-rect top edge (ADR 0233).
@@ -1343,7 +1437,7 @@ int64_t rt_canvas3d_get_clip_rect_x(void *obj) {
 /// @return Retained top edge in logical pixels; zero when no clip is active.
 int64_t rt_canvas3d_get_clip_rect_y(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
-    return c && c->overlay_clip_active ? (int64_t)c->overlay_clip_y : 0;
+    return c && c->overlay_clip_active ? canvas3d_overlay_float_to_i64(c->overlay_clip_y) : 0;
 }
 
 /// @brief `Canvas3D.ClipRectWidth` — retained clip-rect width (ADR 0233).
@@ -1351,7 +1445,7 @@ int64_t rt_canvas3d_get_clip_rect_y(void *obj) {
 /// @return Retained width in logical pixels; zero when no clip is active.
 int64_t rt_canvas3d_get_clip_rect_width(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
-    return c && c->overlay_clip_active ? (int64_t)c->overlay_clip_w : 0;
+    return c && c->overlay_clip_active ? canvas3d_overlay_float_to_i64(c->overlay_clip_w) : 0;
 }
 
 /// @brief `Canvas3D.ClipRectHeight` — retained clip-rect height (ADR 0233).
@@ -1359,7 +1453,7 @@ int64_t rt_canvas3d_get_clip_rect_width(void *obj) {
 /// @return Retained height in logical pixels; zero when no clip is active.
 int64_t rt_canvas3d_get_clip_rect_height(void *obj) {
     rt_canvas3d *c = rt_canvas3d_checked_or_stack(obj);
-    return c && c->overlay_clip_active ? (int64_t)c->overlay_clip_h : 0;
+    return c && c->overlay_clip_active ? canvas3d_overlay_float_to_i64(c->overlay_clip_h) : 0;
 }
 
 /// @brief Width in pixels of DrawText2DScaled output for @p text at @p scale (Plan 08).
@@ -1378,7 +1472,7 @@ int64_t rt_canvas3d_measure_text2d(void *obj, rt_string text, double scale) {
     str = rt_string_cstr(text);
     if (!str)
         return 0;
-    len = strlen(str);
+    len = strnlen(str, RT_CANVAS3D_TEXT_MAX_BYTES);
     if (!isfinite(scale) || scale <= 0.0)
         scale = 1.0;
     if (scale > 64.0)
@@ -1404,20 +1498,26 @@ void rt_canvas3d_draw_crosshair(void *obj, int64_t color, int64_t size) {
     {
         const int32_t cx = out_w / 2;
         const int32_t cy = out_h / 2;
-        const int32_t half = (int32_t)(size / 2);
+        int64_t max_span = (int64_t)(out_w > out_h ? out_w : out_h) * 2;
+        float half;
         const float r = (float)((color >> 16) & 0xFF) / 255.0f;
         const float g = (float)((color >> 8) & 0xFF) / 255.0f;
         const float b = (float)(color & 0xFF) / 255.0f;
 
+        if (size <= 0)
+            size = 1;
+        if (size > max_span)
+            size = max_span;
+        half = (float)size * 0.5f;
         if (!c->in_frame) {
             if (!canvas3d_begin_overlay_frame(c, 1))
                 return;
             started_temp_frame = 1;
         }
         (void)canvas3d_queue_screen_line(
-            c, (float)(cx - half), (float)cy, (float)(cx + half), (float)cy, 1.0f, r, g, b, 1.0f);
+            c, (float)cx - half, (float)cy, (float)cx + half, (float)cy, 1.0f, r, g, b, 1.0f);
         (void)canvas3d_queue_screen_line(
-            c, (float)cx, (float)(cy - half), (float)cx, (float)(cy + half), 1.0f, r, g, b, 1.0f);
+            c, (float)cx, (float)cy - half, (float)cx, (float)cy + half, 1.0f, r, g, b, 1.0f);
     }
     if (started_temp_frame)
         rt_canvas3d_end(c);
@@ -2423,6 +2523,9 @@ void rt_canvas3d_draw_aabb_wire_raw(void *obj,
                                     int64_t color) {
     if (!obj || !min_v || !max_v)
         return;
+    for (int i = 0; i < 3; i++)
+        if (!isfinite(min_v[i]) || !isfinite(max_v[i]))
+            return;
     double mn[3] = {min_v[0], min_v[1], min_v[2]};
     double mx[3] = {max_v[0], max_v[1], max_v[2]};
     double corners[8][3];
@@ -2480,6 +2583,9 @@ void rt_canvas3d_draw_sphere_wire(void *obj, void *center, double radius, int64_
     const double cx = rt_vec3_x(center);
     const double cy = rt_vec3_y(center);
     const double cz = rt_vec3_z(center);
+    if (!isfinite(cx) || !isfinite(cy) || !isfinite(cz) || radius > DBL_MAX - fabs(cx) ||
+        radius > DBL_MAX - fabs(cy) || radius > DBL_MAX - fabs(cz))
+        return;
     const int segs = 24;
     const double step = 2.0 * 3.14159265358979323846 / segs;
 
@@ -2520,11 +2626,15 @@ void rt_canvas3d_draw_sphere_wire(void *obj, void *center, double radius, int64_
 /// @param length Finite direction multiplier.
 /// @param color Packed RGB runtime color.
 void rt_canvas3d_draw_debug_ray(void *obj, void *origin, void *dir, double length, int64_t color) {
+    double end_position[3];
     if (!obj || !origin || !dir || !isfinite(length))
         return;
-    void *end = rt_vec3_new(rt_vec3_x(origin) + rt_vec3_x(dir) * length,
-                            rt_vec3_y(origin) + rt_vec3_y(dir) * length,
-                            rt_vec3_z(origin) + rt_vec3_z(dir) * length);
+    end_position[0] = rt_vec3_x(origin) + rt_vec3_x(dir) * length;
+    end_position[1] = rt_vec3_y(origin) + rt_vec3_y(dir) * length;
+    end_position[2] = rt_vec3_z(origin) + rt_vec3_z(dir) * length;
+    if (!isfinite(end_position[0]) || !isfinite(end_position[1]) || !isfinite(end_position[2]))
+        return;
+    void *end = rt_vec3_new(end_position[0], end_position[1], end_position[2]);
     rt_canvas3d_draw_line3d(obj, origin, end, color);
     canvas3d_release_local(end);
 }
@@ -2535,11 +2645,17 @@ void rt_canvas3d_draw_debug_ray(void *obj, void *origin, void *dir, double lengt
 /// @param origin Borrowed Vec3 gizmo origin.
 /// @param scale Finite signed arm length in world units.
 void rt_canvas3d_draw_axis(void *obj, void *origin, double scale) {
+    double ox;
+    double oy;
+    double oz;
     if (!obj || !origin || !isfinite(scale))
         return;
-    const double ox = rt_vec3_x(origin);
-    const double oy = rt_vec3_y(origin);
-    const double oz = rt_vec3_z(origin);
+    ox = rt_vec3_x(origin);
+    oy = rt_vec3_y(origin);
+    oz = rt_vec3_z(origin);
+    if (!isfinite(ox) || !isfinite(oy) || !isfinite(oz) || !isfinite(ox + scale) ||
+        !isfinite(oy + scale) || !isfinite(oz + scale))
+        return;
     void *end = rt_vec3_new(ox + scale, oy, oz);
     rt_canvas3d_draw_line3d(obj, origin, end, 0xFF0000);
     canvas3d_release_local(end);

@@ -525,14 +525,14 @@ void rt_canvas3d_set_height_fog(
 /// @param obj Borrowed Canvas3D handle.
 /// @param x Left origin in logical pixels.
 /// @param y Top origin in logical pixels.
-/// @param text Borrowed runtime string.
+/// @param text Borrowed runtime string; at most 512 bytes are rendered.
 /// @param color Packed runtime color value.
 /// @param scale Positive size multiplier.
 void rt_canvas3d_draw_text2d_aa(
     void *obj, int64_t x, int64_t y, rt_string text, int64_t color, double scale);
 /// @brief Width in pixels of DrawText2DAA output for @p text at @p scale.
 /// @param obj Borrowed Canvas3D handle.
-/// @param text Borrowed runtime string to measure.
+/// @param text Borrowed runtime string; at most 512 bytes are measured.
 /// @param scale Positive size multiplier.
 /// @return Rounded rendered width in pixels, or zero for invalid input.
 int64_t rt_canvas3d_measure_text2d_aa(void *obj, rt_string text, double scale);
@@ -541,7 +541,8 @@ int64_t rt_canvas3d_measure_text2d_aa(void *obj, rt_string text, double scale);
 /// @param font Borrowed live TtfFont handle.
 /// @param x Left origin in logical pixels.
 /// @param y Top origin in logical pixels (top of the text box, not baseline).
-/// @param text Borrowed runtime string.
+/// @param text Borrowed runtime string; at most 512 bytes ending on a complete UTF-8 codepoint are
+///             rendered.
 /// @param size_px Font pixel size (clamped to the TtfFont range).
 /// @param color Packed 0xRRGGBB color; alpha comes from glyph coverage.
 void rt_canvas3d_draw_text2d_ttf(
@@ -549,7 +550,8 @@ void rt_canvas3d_draw_text2d_ttf(
 /// @brief Width in pixels of DrawText2DTtf output for @p text at @p size_px.
 /// @param obj Borrowed Canvas3D handle.
 /// @param font Borrowed live TtfFont handle.
-/// @param text Borrowed runtime string to measure.
+/// @param text Borrowed runtime string; at most 512 bytes ending on a complete UTF-8 codepoint are
+///             measured.
 /// @param size_px Font pixel size (clamped to the TtfFont range).
 /// @return Rounded rendered width in pixels, or zero for invalid input.
 int64_t rt_canvas3d_measure_text2d_ttf(void *obj, void *font, rt_string text, double size_px);
@@ -1750,7 +1752,7 @@ void rt_canvas3d_draw_crosshair(void *canvas, int64_t color, int64_t size);
 /// @param canvas Borrowed Canvas3D handle.
 /// @param x Left origin in logical pixels.
 /// @param y Top origin in logical pixels.
-/// @param text Borrowed runtime string.
+/// @param text Borrowed runtime string; at most 512 bytes are rendered.
 /// @param color Packed runtime color value.
 void rt_canvas3d_draw_text2d(void *canvas, int64_t x, int64_t y, rt_string text, int64_t color);
 /// @brief Blit a Pixels image into the 2D overlay at (x,y) scaled to (w,h). NULL-safe.
@@ -1820,7 +1822,7 @@ void rt_canvas3d_draw_round_frame2d(void *canvas,
 /// @param canvas Borrowed Canvas3D handle.
 /// @param x Left origin in logical pixels.
 /// @param y Top origin in logical pixels.
-/// @param text Borrowed runtime string.
+/// @param text Borrowed runtime string; at most 512 bytes are rendered.
 /// @param color Packed runtime color value.
 /// @param scale Positive font-size multiplier.
 void rt_canvas3d_draw_text2d_scaled(
@@ -1858,7 +1860,7 @@ void rt_canvas3d_set_clip_rect2d(void *canvas, int64_t x, int64_t y, int64_t w, 
 void rt_canvas3d_clear_clip_rect2d(void *canvas);
 /// @brief Width in pixels of DrawText2DScaled output for @p text at @p scale.
 /// @param canvas Borrowed Canvas3D handle.
-/// @param text Borrowed runtime string to measure.
+/// @param text Borrowed runtime string; at most 512 bytes are measured.
 /// @param scale Positive font-size multiplier.
 /// @return Rounded rendered width in pixels, or zero for invalid input.
 int64_t rt_canvas3d_measure_text2d(void *canvas, rt_string text, double scale);
@@ -1866,7 +1868,7 @@ int64_t rt_canvas3d_measure_text2d(void *canvas, rt_string text, double scale);
 /// @param canvas Borrowed Canvas3D handle.
 /// @param x Left origin in logical pixels.
 /// @param y Top origin in logical pixels.
-/// @param text Borrowed runtime string.
+/// @param text Borrowed runtime string; at most 512 bytes are rendered.
 /// @param color Packed runtime color value.
 /// @param scale Positive font-size multiplier.
 void rt_canvas3d_draw_text_3d_scaled(

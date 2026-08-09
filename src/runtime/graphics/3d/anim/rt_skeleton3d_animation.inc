@@ -1227,9 +1227,8 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
             src_order = (int32_t *)malloc((size_t)n_src * sizeof(*src_order));
             dst_order = (int32_t *)malloc((size_t)n_dst * sizeof(*dst_order));
             ok = src_order && dst_order && src_channel_of && dst_src && dst_anchor &&
-                 dst_chain_len && dst_chain && a_rot && g_align &&
-                 f_rot && bind_c_pos && pos_scale && sg_pos && sg_rot && sg_scl && dg_pos &&
-                 dg_rot && keys_of;
+                 dst_chain_len && dst_chain && a_rot && g_align && f_rot && bind_c_pos &&
+                 pos_scale && sg_pos && sg_rot && sg_scl && dg_pos && dg_rot && keys_of;
         }
         if (ok) {
             for (int32_t d = 0; d < n_dst; ++d) {
@@ -1336,19 +1335,24 @@ void *rt_animation3d_retarget(void *animation, void *src_skeleton, void *dst_ske
              * destabilize extreme poses (the folded-torso / garbled-arm
              * failure of cross-convention rigs). */
             {
-                float(*dg_scl)[3] = (float(*)[3])malloc((size_t)n_dst * sizeof(*dg_scl));
+                float (*dg_scl)[3] = (float (*)[3])malloc((size_t)n_dst * sizeof(*dg_scl));
                 int32_t *conf_src = (int32_t *)malloc((size_t)n_dst * sizeof(*conf_src));
-                if (!dg_scl || !conf_src)
+                if (!dg_scl || !conf_src) {
                     ok = 0;
+                } else {
+                    /* Keep this initialization structurally dominated by both successful
+                     * allocations. Besides making the ownership proof explicit, this avoids
+                     * teaching static analyzers to reason about `ok` as an allocation proxy. */
+                    for (int32_t c = 0; c < n_dst; ++c)
+                        conf_src[c] = dst_anchor[c];
+                }
                 /* Conform correspondence per destination bone: the claimed
                  * chain anchor when a channel landed there, otherwise any
                  * name/role-mapped source bone — a child needs no animation
                  * of its own to define the bind bone direction. */
-                for (int32_t c = 0; ok && c < n_dst; ++c)
-                    conf_src[c] = dst_anchor[c];
                 for (int32_t sb = 0; ok && sb < n_src; ++sb) {
-                    int32_t d =
-                        animation3d_retarget_find_bone(src_skel, dst_skel, src_roles, dst_roles, sb);
+                    int32_t d = animation3d_retarget_find_bone(
+                        src_skel, dst_skel, src_roles, dst_roles, sb);
                     if (d >= 0 && d < n_dst && conf_src[d] < 0)
                         conf_src[d] = sb;
                 }
@@ -1902,8 +1906,40 @@ void *rt_animation3d_extract_range(void *obj, double start_sec, double end_sec) 
     return out;
 }
 
-/// @brief Case-preserving side-token swap ("Left"<->"Right", "left"<->"right")
-///        for mirror-bone name resolution.
+/// @brief Return whether an ASCII character can continue an ordinary bone-name word.
+static int animation3d_mirror_name_word_char(unsigned char c) {
+    return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9');
+}
+
+/// @brief Return whether a side word begins at a delimiter or camel-case boundary.
+static int animation3d_mirror_token_starts(const char *name, size_t offset) {
+    unsigned char current;
+    unsigned char previous;
+    if (!name || offset == 0)
+        return 1;
+    current = (unsigned char)name[offset];
+    previous = (unsigned char)name[offset - 1u];
+    if (!animation3d_mirror_name_word_char(previous))
+        return 1;
+    return previous >= 'a' && previous <= 'z' && current >= 'A' && current <= 'Z';
+}
+
+/// @brief Return whether a side word ends at a delimiter or camel-case boundary.
+static int animation3d_mirror_token_ends(const char *name, size_t offset) {
+    unsigned char next;
+    if (!name || name[offset] == '\0')
+        return 1;
+    next = (unsigned char)name[offset];
+    if (!animation3d_mirror_name_word_char(next))
+        return 1;
+    return next >= 'A' && next <= 'Z';
+}
+
+/// @brief Case-preserving side-token swap for mirror-bone name resolution.
+/// @details Recognizes `Left`/`Right`, lowercase and uppercase spellings only at delimiter or
+/// camel-case boundaries. Substrings such as `Bright`, `upright`, and `Leftover` are not sides.
+/// The conversion is all-or-nothing: an undersized destination is cleared rather than returning a
+/// truncated name that could accidentally resolve to a different bone.
 /// @param[in] name Source bone name.
 /// @param[out] out Destination buffer for the swapped spelling.
 /// @param[in] cap Capacity of @p out in bytes.
@@ -1913,33 +1949,45 @@ static int animation3d_mirror_swap_name(const char *name, char *out, size_t cap)
     int swapped = 0;
     if (!name || !out || cap == 0)
         return 0;
-    for (size_t i = 0; name[i] != '\0' && w + 6 < cap;) {
-        if (strncmp(name + i, "Left", 4) == 0) {
-            memcpy(out + w, "Right", 5);
-            w += 5;
-            i += 4;
-            swapped = 1;
-        } else if (strncmp(name + i, "Right", 5) == 0) {
-            memcpy(out + w, "Left", 4);
-            w += 4;
-            i += 5;
-            swapped = 1;
-        } else if (strncmp(name + i, "left", 4) == 0) {
-            memcpy(out + w, "right", 5);
-            w += 5;
-            i += 4;
-            swapped = 1;
-        } else if (strncmp(name + i, "right", 5) == 0) {
-            memcpy(out + w, "left", 4);
-            w += 4;
-            i += 5;
-            swapped = 1;
-        } else {
-            out[w++] = name[i++];
+    for (size_t i = 0; name[i] != '\0';) {
+        const char *replacement = NULL;
+        size_t source_length = 0;
+        size_t replacement_length = 0;
+        if (animation3d_mirror_token_starts(name, i)) {
+#define ANIMATION3D_MIRROR_TOKEN(from_, to_)                                                       \
+    if (!replacement && strncmp(name + i, (from_), sizeof(from_) - 1u) == 0 &&                     \
+        animation3d_mirror_token_ends(name, i + sizeof(from_) - 1u)) {                             \
+        replacement = (to_);                                                                       \
+        source_length = sizeof(from_) - 1u;                                                        \
+        replacement_length = sizeof(to_) - 1u;                                                     \
+    }
+            ANIMATION3D_MIRROR_TOKEN("Left", "Right")
+            ANIMATION3D_MIRROR_TOKEN("Right", "Left")
+            ANIMATION3D_MIRROR_TOKEN("left", "right")
+            ANIMATION3D_MIRROR_TOKEN("right", "left")
+            ANIMATION3D_MIRROR_TOKEN("LEFT", "RIGHT")
+            ANIMATION3D_MIRROR_TOKEN("RIGHT", "LEFT")
+#undef ANIMATION3D_MIRROR_TOKEN
         }
+        if (replacement) {
+            if (replacement_length >= cap - w)
+                goto overflow;
+            memcpy(out + w, replacement, replacement_length);
+            w += replacement_length;
+            i += source_length;
+            swapped = 1;
+            continue;
+        }
+        if (w + 1u >= cap)
+            goto overflow;
+        out[w++] = name[i++];
     }
     out[w] = '\0';
     return swapped;
+
+overflow:
+    out[0] = '\0';
+    return 0;
 }
 
 /// @brief Resolve a bone's sagittal mirror partner: exact-name side-token
@@ -1957,24 +2005,45 @@ static int32_t animation3d_mirror_bone(const rt_skeleton3d *skel,
     rt_string name_string = skel->bones[bone].name;
     const char *name =
         name_string && rt_string_is_handle(name_string) ? rt_string_cstr(name_string) : "";
-    char swapped[96];
-    if (name[0] != '\0' && animation3d_mirror_swap_name(name, swapped, sizeof(swapped))) {
-        for (int32_t i = 0; i < bone_count; ++i)
-            if (skeleton3d_name_equals_cstr(skel->bones[i].name, swapped))
-                return i;
+    char local_swapped[96];
+    char *swapped = local_swapped;
+    size_t name_len = strlen(name);
+    size_t swapped_capacity = sizeof(local_swapped);
+    if (name_len > SIZE_MAX - name_len / 4u - 2u)
+        name_len = 0;
+    if (name_len > 0) {
+        size_t required_capacity = name_len + name_len / 4u + 2u;
+        if (required_capacity > swapped_capacity) {
+            swapped = (char *)malloc(required_capacity);
+            if (swapped)
+                swapped_capacity = required_capacity;
+            else
+                swapped = local_swapped;
+        }
     }
+    if (name_len > 0 && animation3d_mirror_swap_name(name, swapped, swapped_capacity)) {
+        for (int32_t i = 0; i < bone_count; ++i) {
+            if (skeleton3d_name_equals_cstr(skel->bones[i].name, swapped)) {
+                if (swapped != local_swapped)
+                    free(swapped);
+                return i;
+            }
+        }
+    }
+    if (swapped != local_swapped)
+        free(swapped);
     {
         int32_t role = roles ? roles[bone] : animation3d_humanoid_role(name);
         int32_t side = role % 4;
         if (role != 0 && (side == 1 || side == 2)) {
             int32_t want = role - side + (3 - side); /* 1<->2, base preserved */
             for (int32_t i = 0; i < bone_count; ++i) {
-                int32_t r = roles ? roles[i]
-                                  : animation3d_humanoid_role(
-                                        skel->bones[i].name &&
-                                                rt_string_is_handle(skel->bones[i].name)
-                                            ? rt_string_cstr(skel->bones[i].name)
-                                            : "");
+                int32_t r =
+                    roles ? roles[i]
+                          : animation3d_humanoid_role(
+                                skel->bones[i].name && rt_string_is_handle(skel->bones[i].name)
+                                    ? rt_string_cstr(skel->bones[i].name)
+                                    : "");
                 if (r == want)
                     return i;
             }
@@ -2027,8 +2096,8 @@ void *rt_animation3d_mirror(void *animation, void *skeleton) {
         memcpy(out->name + n, "_mirror", 8);
     }
     out->looping = src->looping;
-    out->owned_channels = (vgfx3d_anim_channel_t *)calloc(
-        (size_t)channel_count, sizeof(vgfx3d_anim_channel_t));
+    out->owned_channels =
+        (vgfx3d_anim_channel_t *)calloc((size_t)channel_count, sizeof(vgfx3d_anim_channel_t));
     if (!out->owned_channels) {
         free(roles);
         free(used);
@@ -2046,8 +2115,19 @@ void *rt_animation3d_mirror(void *animation, void *skeleton) {
         if (key_count <= 0 || b < 0 || b >= bone_count)
             continue;
         int32_t d = animation3d_mirror_bone(skel, roles, b, bone_count);
-        if (d < 0 || d >= bone_count || used[d])
-            continue; /* defensive: first channel onto a bone wins */
+        if (d < 0 || d >= bone_count)
+            continue;
+        /* Ambiguous role inference must not silently discard a valid source channel. Prefer its
+         * own still-free bone as a conservative fallback; duplicate/corrupt channels whose source
+         * and destination are both occupied still fail closed below. */
+        if (used[d] && !used[b])
+            d = b;
+        if (used[d]) {
+            free(roles);
+            free(used);
+            animation3d_release_ref((void **)&out);
+            return NULL;
+        }
         used[d] = 1;
         vgfx3d_keyframe_t *keys =
             (vgfx3d_keyframe_t *)malloc((size_t)key_count * sizeof(vgfx3d_keyframe_t));

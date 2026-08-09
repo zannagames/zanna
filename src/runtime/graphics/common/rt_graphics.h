@@ -64,10 +64,16 @@ void *rt_canvas_new(rt_string title, int64_t width, int64_t height);
 int8_t rt_canvas_is_handle(void *canvas);
 /// @brief Opaque platform-window forward declaration (full type in vgfx.h).
 struct vgfx_window;
-/// @brief Borrow the platform window behind a live 2D canvas (may be NULL).
+/// @brief Exclusively borrow and retain the platform window behind a live 2D canvas.
+/// @details At most one borrower may hold the window. A successful call retains the Canvas until
+/// `rt_canvas_return_window` releases the loan.
 /// @param canvas Candidate Canvas handle.
-/// @return Borrowed vgfx window handle, or NULL.
+/// @return Borrowed window, or NULL for an invalid, closed, or already-loaned Canvas.
 struct vgfx_window *rt_canvas_borrow_window(void *canvas);
+/// @brief Return an exclusive platform-window loan and release its retained Canvas owner.
+/// @param canvas Canvas passed to a successful `rt_canvas_borrow_window`; invalid or duplicate
+/// returns are ignored.
+void rt_canvas_return_window(void *canvas);
 /// @brief Invalidate a 2D canvas's cached window state (post-3D-adoption resync).
 /// @param canvas Candidate Canvas handle; invalid handles are ignored.
 void rt_canvas_mark_window_state_dirty(void *canvas);

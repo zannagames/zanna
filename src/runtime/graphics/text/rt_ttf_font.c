@@ -27,6 +27,7 @@
 #include "fonts/embedded_font.h"
 #include "rt_internal.h"
 #include "rt_object.h"
+#include "rt_platform.h"
 #include "vg_font.h"
 
 #include <math.h>
@@ -39,7 +40,21 @@ typedef struct rt_ttf_font_impl {
 } rt_ttf_font_impl;
 
 /// @brief Next identity handed to a newly loaded font (0 reserved).
-static int64_t g_ttf_font_next_identity = 1;
+static uint64_t g_ttf_font_next_identity = 1;
+
+/// @brief Atomically allocate a nonzero process-wide font cache identity.
+/// @details Relaxed ordering is sufficient because identities carry no synchronization state.
+///          Unsigned arithmetic makes full-range wrap defined; zero remains reserved.
+/// @return A nonzero 64-bit identity represented in the public signed storage type.
+static int64_t ttf_font_next_cache_identity(void) {
+    uint64_t bits;
+    int64_t identity;
+    do {
+        bits = rt_atomic_fetch_add_u64(&g_ttf_font_next_identity, UINT64_C(1), __ATOMIC_RELAXED);
+    } while (bits == 0);
+    memcpy(&identity, &bits, sizeof(identity));
+    return identity;
+}
 
 /// @brief Validate a candidate handle as a live TtfFont payload.
 /// @param obj Candidate handle; may be NULL or unrelated.
@@ -71,15 +86,15 @@ static void *ttf_font_wrap(vg_font_t *face) {
     rt_ttf_font_impl *font;
     if (!face)
         return NULL;
-    font = (rt_ttf_font_impl *)rt_obj_new_i64(RT_TTF_FONT_CLASS_ID,
-                                              (int64_t)sizeof(rt_ttf_font_impl));
+    font =
+        (rt_ttf_font_impl *)rt_obj_new_i64(RT_TTF_FONT_CLASS_ID, (int64_t)sizeof(rt_ttf_font_impl));
     if (!font) {
         vg_font_destroy(face);
         rt_trap("TtfFont: allocation failed");
         return NULL;
     }
     font->face = face;
-    font->cache_identity = g_ttf_font_next_identity++;
+    font->cache_identity = ttf_font_next_cache_identity();
     rt_obj_set_finalizer(font, ttf_font_finalize);
     return font;
 }

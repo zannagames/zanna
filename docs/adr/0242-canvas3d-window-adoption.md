@@ -35,13 +35,14 @@ surface (frontend-visible, hence this ADR):
   `void *rt_game3d_world_new_with_canvas_camera(void *canvas2d, double, double, double)`
 
 Supporting internal accessors in `rt_canvas.c` (C-level, not frontend
-surface): `rt_canvas_borrow_window(canvas2d)` returns the 2D canvas's
-`vgfx_window_t`; `rt_canvas_mark_window_state_dirty(canvas2d)` forces the 2D
-canvas to re-sync window state after the loan returns.
+surface): `rt_canvas_borrow_window(canvas2d)` exclusively claims the 2D
+canvas's `vgfx_window_t` and retains its owner; `rt_canvas_return_window(canvas2d)`
+invalidates cached window state, clears the claim, and releases that retain.
 
 Ownership model:
 
-- `struct rt_canvas3d` gains `owns_window` and `lender_canvas`. The adoption
+- `struct rt_canvas3d` gains `owns_window` and `lender_canvas`; `struct rt_canvas`
+  tracks an atomic `window_loan_active` state (available, loaned, or closing/closed). The adoption
   path in `canvas3d_new_impl` skips `vgfx_create_window`, reads dimensions
   from the borrowed window, and records the lender.
 - Teardown (finalizer and `close_window`) branches on ownership: an owned
@@ -49,9 +50,11 @@ Ownership model:
   `hide_gpu_layer` backend hook (Metal removes its sublayer),
   `vgfx_set_gpu_present(win, 0)`, resize callback cleared, and the lender's
   window-state cache invalidated so the 2D canvas repaints correctly.
-- The caller must keep the 2D canvas alive for the Canvas3D's lifetime
-  (documented on both entries); the 2D canvas remains the window's owner
-  throughout.
+- The Canvas3D loan retains the 2D canvas automatically, so releasing the caller's
+  Canvas reference cannot destroy the shared window early. A second simultaneous
+  adoption and an explicit `Canvas.Close()` while adopted fail closed; the 2D canvas
+  remains the window's owner throughout. Adoption, return, and close claim the state with
+  compare-and-exchange so concurrent callers cannot both win a check-then-act race.
 
 Fullscreen: the adopted window keeps whatever mode the 2D canvas set
 (`Canvas.Fullscreen()` / `Windowed()` with automatic logical-size upscaling

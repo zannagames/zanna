@@ -1,14 +1,14 @@
 ---
-status: draft
+status: active
 audience: contributors
-last-verified: 2026-08-07
+last-verified: 2026-08-08
 ---
 
 # ADR 0243: Animation3D.Mirror (Left/Right Clip Mirroring)
 
 ## Status
 
-Proposed (decision recorded)
+Accepted (2026-08-08)
 
 ## Context
 
@@ -58,17 +58,22 @@ Semantics:
   `mirror(b)` and every keyframe (and its cubic tangents) is conjugated:
   position X negated, quaternion Y/Z negated, scale copied.
 - `mirror(b)` resolution order, per bone of the supplied skeleton:
-  1. **Exact-name side-token swap** — `Left`/`Right`, `left`/`right` swapped
-     within the name and looked up in the skeleton (handles `LeftForeArm` ↔
-     `RightForeArm` and every Mixamo/Biped-style convention with explicit
-     side words).
+  1. **Exact-name side-token swap** — complete `Left`/`Right`, `left`/`right`,
+     and `LEFT`/`RIGHT` words are swapped at delimiter or camel-case
+     boundaries and looked up in the skeleton (handles `LeftForeArm` ↔
+     `RightForeArm` and Mixamo/Biped-style conventions without interpreting
+     substrings such as `Bright` or `Leftover`). Exact names are not capped by
+     the stack scratch size; dynamic capacity is checked and truncation is
+     never used for lookup.
   2. **Humanoid-role swap** — the bone's cached role with side 1↔2 flipped,
      matched against the other bones' roles (covers fused/abbreviated side
      spellings the tokenizer recognizes).
   3. **Self** — side-less (center) bones mirror onto themselves.
-- Collisions are defensive: if two source channels resolve to the same output
-  bone, the first wins and later ones are dropped (never two channels driving
-  one bone).
+- Collisions are defensive without silently losing animation: if an inferred
+  role targets an already claimed output, the channel remains on its own
+  still-free source bone. If both targets are already claimed, the entire
+  mirror operation fails closed and releases the partial result (never two
+  channels driving one bone and never a silently incomplete clip).
 
 ## Consequences
 
@@ -93,6 +98,8 @@ Semantics:
 - Mirror∘Mirror round-trips the original keys within float tolerance.
 - Degenerate inputs (`NULL` clip, `NULL`/empty skeleton) return `NULL`.
 - Cubic tangents conjugate with their lanes.
+- Complete-token boundaries, uppercase tokens, exact names longer than the
+  stack scratch buffer, and inferred-role collisions preserve all channels.
 
 `src/tests/unit/test_graphics3d_runtime_manifest.cpp`: manifest re-pin
 covering the new method.

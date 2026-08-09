@@ -34,6 +34,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "rt_graphics_internal.h"
+#include "rt_platform.h"
 #include "rt_time.h"
 
 #ifdef ZANNA_ENABLE_GRAPHICS
@@ -73,7 +74,19 @@ static void rt_canvas_detach_input(vgfx_window_t gfx_win) {
 ///          subsequent ops see a closed canvas.
 /// @param canvas Borrowed Canvas implementation; null/closed objects are ignored.
 static void rt_canvas_destroy_window(rt_canvas *canvas) {
-    if (!canvas || !canvas->gfx_win)
+    int expected_loan_state = 0;
+    if (!canvas)
+        return;
+    if (!rt_atomic_compare_exchange_i32(&canvas->window_loan_active,
+                                        &expected_loan_state,
+                                        2,
+                                        __ATOMIC_ACQ_REL,
+                                        __ATOMIC_ACQUIRE)) {
+        if (expected_loan_state == 1)
+            rt_trap("Canvas.Close: window is adopted by Canvas3D");
+        return;
+    }
+    if (!canvas->gfx_win)
         return;
     /* Restore normal cursor behavior before the window goes away — relative
      * mouse mode is a per-process setting on some platforms (macOS cursor
@@ -175,6 +188,7 @@ void *rt_canvas_new(rt_string title, int64_t width, int64_t height) {
     canvas->relative_mouse_applied = 0;
     canvas->window_state_synced = 0;
     canvas->applied_clip_enabled = 0;
+    canvas->window_loan_active = 0;
     canvas->applied_coord_scale = 1.0f;
     canvas->applied_clip_x = 0;
     canvas->applied_clip_y = 0;
@@ -241,17 +255,47 @@ int8_t rt_canvas_is_handle(void *canvas_ptr) {
     return rt_canvas_checked(canvas_ptr) != NULL ? 1 : 0;
 }
 
-/// @brief Borrow the platform window behind a live 2D canvas.
+/// @brief Exclusively borrow the platform window behind a live 2D canvas.
 /// @details Single-window adoption seam (Canvas3D.NewOnCanvas): the 3D
 ///          renderer attaches its GPU surface to this window instead of
-///          creating a second one. The window stays owned by the 2D canvas.
+///          creating a second one. The window stays owned by the 2D canvas, whose lifetime is
+///          retained until `rt_canvas_return_window`. Concurrent adoption is rejected because
+///          resize callbacks, input routing, pacing, and GPU presentation are per-window state.
 /// @param canvas_ptr Candidate Canvas handle.
-/// @return Borrowed vgfx window, or NULL for invalid/closed canvases.
+/// @return Borrowed vgfx window, or NULL for invalid, closed, or already-loaned canvases.
 vgfx_window_t rt_canvas_borrow_window(void *canvas_ptr) {
     rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
-    if (!canvas)
+    int expected_loan_state = 0;
+    if (!canvas || !rt_atomic_compare_exchange_i32(&canvas->window_loan_active,
+                                                   &expected_loan_state,
+                                                   1,
+                                                   __ATOMIC_ACQ_REL,
+                                                   __ATOMIC_ACQUIRE))
         return NULL;
+    if (!canvas->gfx_win) {
+        rt_atomic_store_i32(&canvas->window_loan_active, 2, __ATOMIC_RELEASE);
+        return NULL;
+    }
+    rt_obj_retain_maybe(canvas);
     return canvas->gfx_win;
+}
+
+/// @brief Return an exclusive Canvas3D window loan and release the lender retain.
+/// @details Presentation-state invalidation happens before the release because that release may
+/// finalize a Canvas whose caller destroyed its own reference while Canvas3D was active.
+/// @param canvas_ptr Canvas passed to a successful `rt_canvas_borrow_window` call.
+void rt_canvas_return_window(void *canvas_ptr) {
+    rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
+    int expected_loan_state = 1;
+    if (!canvas || !rt_atomic_compare_exchange_i32(&canvas->window_loan_active,
+                                                   &expected_loan_state,
+                                                   0,
+                                                   __ATOMIC_RELEASE,
+                                                   __ATOMIC_RELAXED))
+        return;
+    canvas->window_state_synced = 0;
+    if (rt_obj_release_check0(canvas))
+        rt_obj_free(canvas);
 }
 
 /// @brief Mark a 2D canvas's cached window state stale.
@@ -711,9 +755,10 @@ void rt_canvas_resize(void *canvas_ptr, int64_t width, int64_t height) {
 /// @param canvas_ptr Canvas handle. NULL-safe.
 void rt_canvas_close(void *canvas_ptr) {
     rt_canvas *canvas = rt_canvas_checked(canvas_ptr);
-    if (canvas && canvas->gfx_win) {
+    if (canvas) {
         rt_canvas_destroy_window(canvas);
-        canvas->should_close = 1;
+        if (!canvas->gfx_win)
+            canvas->should_close = 1;
     }
 }
 
